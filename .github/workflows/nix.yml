@@ -11,17 +11,21 @@ concurrency:
   # same PR makes the older run's answer worthless.
   #
   # PUSH runs get a group of their OWN, one per commit, and this is deliberate
-  # (TASK-2954). A run on `main` may owe main a vendorHash heal, and losing it
-  # loses the fix SILENTLY: the next push's run recomputes correctly, but its
-  # go.mod/go.sum gate sees only its own commits, so nothing ever retries the
-  # skipped heal. `cancel-in-progress: false` is not enough to prevent that —
+  # (TASK-2954). A run on `main` may owe main a vendorHash heal, and an evicted
+  # run never performs it. `cancel-in-progress: false` is not enough on its own —
   # GitHub holds only ONE pending run per group, so a third push evicts the
   # queued second, and the eviction looks exactly like a run that decided there
   # was nothing to do. A per-commit group cannot be evicted by anything.
   #
+  # What an evicted heal costs is now DELAY, not the fix. Since BUG-2974 the
+  # heal is gated on the committed hash rather than on what the push touched, so
+  # the next push to main meets the same stale hash and heals it from its own
+  # run. The per-commit group is what makes the heal land on the merge that
+  # caused it instead of waiting for whatever lands next.
+  #
   # What that trades for: two main runs can reach the push step at once, and the
   # loser gets a non-fast-forward rejection and goes red. That is the right
-  # direction — a red job is read, and the next merge's run heals anyway.
+  # direction — a red job is read, and the next push to main heals anyway.
   group: nix-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
@@ -141,26 +145,38 @@ jobs:
   # WHY ON `push: main` AND NOT ON THE PR (ruled on TASK-2954's trail). A
   # Dependabot PR run gets a read-only token whatever `permissions` says. The
   # merge, though, is authored by a human, so the `push` run that follows is an
-  # ordinary run with an ordinary token. `main` self-heals one commit after the
-  # merge — usually one commit after it; see the non-fast-forward note below for
-  # the case where it takes the next merge instead — and the PR's own check was
-  # already honest because the job above recomputes in the working tree. The two rejected alternatives were a PAT in
-  # the Dependabot secret store (a standing credential for a once-a-week fix) and
-  # enabling write tokens for pull-request workflows (which would give them to
-  # FORK PRs on a public repo — the surface CONVE-2438 exists to keep closed).
+  # ordinary run with an ordinary token. The PR's own check was already honest,
+  # because the job above recomputes in the working tree; `main` is what needs
+  # the committed fix, and it gets it from the run of the merge itself — or,
+  # when that run loses the push race, from the run of the next push to main.
+  # The two rejected alternatives were a PAT in the Dependabot secret store (a
+  # standing credential for a once-a-week fix) and enabling write tokens for
+  # pull-request workflows (which would give them to FORK PRs on a public repo —
+  # the surface CONVE-2438 exists to keep closed).
   #
-  # THE LOOP GUARD IS THE COMMIT'S OWN CONTENTS. This job pushes a commit that
-  # touches `nix/package.nix` and nothing else. That push triggers this workflow
-  # again, the first gate below asks whether go.mod or go.sum moved across the
-  # push's range, and for the bot's own commit the answer is no — so the second
-  # run stops there. The gate is not a heuristic about who pushed; it is the fact
-  # that the fix cannot invalidate the hash it just wrote.
+  # THE LOOP TERMINATES BECAUSE A CORRECTED TREE COMPUTES NO BUMP. This job
+  # pushes a commit that touches `nix/package.nix` and nothing else. That push
+  # triggers this workflow again; the build job above now finds the hash
+  # correct, prints "Build is green; vendorHash is current.", and never sets
+  # `bumped` — so this job is not merely gated, it does not start at all. The
+  # terminator is the FIX's own effect on the build, and it holds regardless of
+  # what any push touched.
+  #
+  # THAT DISTINCTION IS LOAD-BEARING, AND IT WAS GOT WRONG ONCE (BUG-2974). This
+  # comment used to name the loop guard as a gate asking whether the push had
+  # touched `go.mod`/`go.sum`, and that gate existed as a step below. It is the
+  # right question for loop prevention and the WRONG one for recovery: after a
+  # lost push race the tree that needs healing was written by an EARLIER push,
+  # so every later merge that did not itself move the module set refused to fix
+  # it, exited GREEN, and left main carrying a hash a clean nix build rejects.
+  # The gate is gone. The state comparison below is the only gate, and being a
+  # question about state it is equally true for a hash this push broke and one
+  # an earlier push broke and could not land.
   #
   # If another merge lands while this job runs, the push is REJECTED as a
-  # non-fast-forward and this job goes red rather than overwriting anything. The
-  # heal is not lost: that merge's own run recomputes and heals. The window is
-  # the length of a nix build, and the failure mode is loud rather than silent —
-  # which is the same trade the per-commit concurrency group above makes.
+  # non-fast-forward and this job goes RED rather than overwriting anything —
+  # and the heal is genuinely not lost now, because the next push to main meets
+  # the same stale hash, recomputes it, and heals it from its own run.
   #
   # `needs: nix` without `if: always()` is the second half: this runs only when
   # the build job SUCCEEDED, so a module set whose corrected tree still fails
@@ -179,55 +195,27 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # Full history: the gate below asks what THIS PUSH changed, which is
-          # `before..after`, not `HEAD~1..HEAD`. A direct push of several commits
-          # can carry the go.sum change anywhere in the range, and a two-commit
-          # clone would see only the last one and skip a heal that was owed.
+          # Nothing here reads history any more — BUG-2974 removed the gate that
+          # did. The depth stays full rather than dropping to the default shallow
+          # clone: this is the clone the heal commit is pushed from, full depth is
+          # what every run of this job has ever used, and a shallow push is not a
+          # variable worth introducing on a job that runs only when a Go bump
+          # actually moves the module set.
           fetch-depth: 0
 
-      - name: Did this push touch the Go module set?
-        id: gate
-        env:
-          BEFORE: ${{ github.event.before }}
-          AFTER: ${{ github.sha }}
-        run: |
-          # A branch created by this push, or a `before` the clone cannot resolve
-          # (a force push whose old tip is gone), leaves the range unanswerable.
-          # Fall through to the hash comparison rather than skipping: the second
-          # gate is the one that decides, and this one only avoids pointless work.
-          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ] \
-             || ! git rev-parse --verify -q "$BEFORE^{commit}" >/dev/null; then
-            echo "Push range unresolvable; deferring to the hash comparison."
-            echo "touched=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if git diff --name-only "$BEFORE" "$AFTER" | command grep -qE '^go\.(mod|sum)$'; then
-            echo "touched=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "go.mod/go.sum unchanged across $BEFORE..$AFTER — nothing here could have moved the hash."
-            echo "touched=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        if: steps.gate.outputs.touched == 'true'
         with:
           name: recomputed-package-nix
           path: nix/
 
-      - name: Commit and push
-        if: steps.gate.outputs.touched == 'true'
-        run: |
-          # The second gate. The artifact only exists because the build job found
-          # a mismatch, but comparing here keeps the job honest about the tree it
-          # is actually looking at rather than about what another job reported.
-          if git diff --quiet -- nix/package.nix; then
-            echo "package.nix already matches the recomputed hash; nothing to push."
-            exit 0
-          fi
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add nix/package.nix
-          git commit -m "chore(nix): heal vendorHash for the module set in ${SHA} (TASK-2954)"
-          git push
+      # THE GATE, and the only one, lives in the script: does what main COMMITTED
+      # differ from what the build job RECOMPUTED? The artifact exists only
+      # because the build job found a mismatch, but comparing there keeps the job
+      # honest about the tree it is actually looking at rather than about what
+      # another job reported. It is a file rather than a `run:` block so that
+      # nix/heal-vendor-hash_test.sh can drive it against a real git remote —
+      # BUG-2974 shipped green for a day because nothing could exercise it.
+      - name: Commit and push the recomputed hash
+        run: nix/heal-vendor-hash.sh
         env:
           SHA: ${{ github.sha }}

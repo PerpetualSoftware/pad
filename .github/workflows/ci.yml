@@ -72,6 +72,16 @@ jobs:
       - name: Test the Nix vendorHash bump parser
         run: nix/bump-vendor-hash_test.sh
 
+      # The heal job that pushes the parser's output to main (BUG-2974). Gated
+      # here for the same reason and one more: in nix.yml that job runs only
+      # after a real merge has moved the module set, so its defect shipped green
+      # for a day and was found by reading run logs. The suite drives the script
+      # against a real git remote, and its load-bearing case is the one that
+      # shipped — a heal owed by an EARLIER push, on a push that touched no
+      # go.mod/go.sum.
+      - name: Test the Nix vendorHash heal job
+        run: nix/heal-vendor-hash_test.sh
+
       - name: Run golangci-lint
         # only-new-issues: false means CI fails on ANY linter finding,
         # not just findings on PR-changed lines. The IDEA-732 cleanup
