@@ -477,3 +477,36 @@ func TestEBMLDocTypeSurvivesPaddingPastTheHead(t *testing.T) {
 			"in the bytes we hold even though its declared padding is not", got)
 	}
 }
+
+// TestEBMLParseDetails covers the two DocType-walk properties that survive the
+// magic-only ruling untouched. They were lost when the structural-validation
+// tests were cut wholesale, and a mutation run caught the gap: both mutations
+// below had gone from detected to surviving.
+func TestEBMLParseDetails(t *testing.T) {
+	t.Run("DocType ends at its first NUL", func(t *testing.T) {
+		// A real Matroska whose DocType payload is "matroska\x00junk" with a
+		// declared length of 13. Bytes after the terminator are padding;
+		// trimming instead of terminating stored this as WebM.
+		if got := SniffMIME(readFixture(t, "matroska-nul-terminated-doctype.head512")); got != "video/x-matroska" {
+			t.Errorf("SniffMIME = %q, want video/x-matroska", got)
+		}
+	})
+
+	t.Run("reserved all-ones EBML IDs are refused", func(t *testing.T) {
+		// 0xFF is a reserved ID, not a valid element. Accepting it let junk
+		// act as a zero-length child and carry the walk onward to a DocType
+		// that followed it.
+		bad := []byte{0x1A, 0x45, 0xDF, 0xA3, 0x8D, 0xFF, 0x80,
+			0x42, 0x82, 0x88, 'm', 'a', 't', 'r', 'o', 's', 'k', 'a'}
+		if got := sniffEBMLDocType(bad); got != "" {
+			t.Errorf("sniffEBMLDocType = %q, want no answer — the walk crossed a reserved ID", got)
+		}
+		// Control: the same shape WITHOUT the reserved ID must parse, so the
+		// leg above fails on the ID rather than on anything else about it.
+		ok := []byte{0x1A, 0x45, 0xDF, 0xA3, 0x8B,
+			0x42, 0x82, 0x88, 'm', 'a', 't', 'r', 'o', 's', 'k', 'a'}
+		if got := sniffEBMLDocType(ok); got != "video/x-matroska" {
+			t.Errorf("premise failed: control sniffed %q, want video/x-matroska", got)
+		}
+	})
+}
