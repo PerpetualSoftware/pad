@@ -55,11 +55,13 @@ install: build
 test:
 	go test -timeout=45m ./... -v
 
-# The vendorHash bump parser (TASK-2954). Pure bash, no toolchain, ~1s — its own
-# target rather than part of `test`, which means `go test`. CI runs this same
-# script in the Go job so a change to the parser is gated rather than trusted.
+# The vendorHash bump parser (TASK-2954) and the heal job that pushes its output
+# to main (BUG-2974). Pure bash + git, no toolchain, ~3s — their own target
+# rather than part of `test`, which means `go test`. CI runs these same scripts
+# in the Go job so a change to either is gated rather than trusted.
 test-nix-hash:
 	@nix/bump-vendor-hash_test.sh
+	@nix/heal-vendor-hash_test.sh
 
 # Run tests against PostgreSQL (starts a container automatically).
 #
