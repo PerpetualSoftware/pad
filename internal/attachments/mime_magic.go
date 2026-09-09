@@ -1,9 +1,12 @@
 package attachments
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/bzip2"
 	"encoding/binary"
 	"hash/crc32"
+	"io"
 )
 
 // This file closes the second half of the gap BUG-2961 opened: the upload
@@ -12,22 +15,33 @@ import (
 // over real files (BUG-2963) found 25 of 48 allowlist entries unreachable as a
 // stored type.
 //
-// EVERY CHECK HERE VALIDATES STRUCTURE, NOT A PREFIX. That is the whole design
-// and it was learned the hard way: the first version of this file matched
-// magic bytes and nothing else, and an adversarial round walked straight
-// through it — a real, executing ELF binary with the five bytes "ustar"
-// sitting in unused padding at offset 257 was stored as application/x-tar, a
-// six-byte body was a 7z archive, and "fLaC\x00" was a FLAC stream. Each of
-// those was REFUSED before the change and accepted after it, which means a
-// prefix matcher does not make an allowlisted type reachable — it makes the
-// allowlist porous, on a door whose entire posture is default-deny.
+// WHAT THESE CHECKS DO AND DO NOT ESTABLISH. They RECOGNISE a format from its
+// header, using the format's own structure rather than a magic-byte prefix.
+// They do not PROVE the bytes are that format, and this is not a gap to be
+// closed by adding more field checks — two review rounds walked that path to
+// its end:
 //
-// So each format is admitted only by the integrity check the format itself
-// defines: tar's header checksum, bzip2's block magic, 7z's start-header CRC,
-// FLAC's mandatory STREAMINFO block, ADTS's reserved field values. These are
-// cheap — all of them read the first 512 bytes we already have — and they are
-// the difference between "these bytes begin like an X" and "these bytes are
-// the beginning of an X".
+//   - Round 1 defeated prefix matching: a real, executing ELF binary with
+//     "ustar" in unused padding at offset 257 was stored as application/x-tar.
+//   - Round 2 defeated the checksum that was round 1's answer, with an ELF
+//     carrying a correctly computed tar checksum. Measured here afterwards:
+//     archive/tar's OWN Reader.Next accepts that file too. A 512-byte tar
+//     header is exactly those fields, and nothing forbids an ELF's padding
+//     from containing them, so the two are not distinguishable at this size —
+//     by this package or by the standard library.
+//
+// That is a property of the formats, not a weakness in the code, and it is why
+// the SAFETY property lives somewhere else entirely: whatever these bytes turn
+// out to be, they are stored opaquely, never executed or decompressed by this
+// server, and served back under a type from a reviewed allowlist with
+// nosniff — as an attachment for every type recognised here. Content sniffing
+// is heuristic by nature; the stdlib's own detector accepts a PNG signature
+// followed by anything. What these checks buy is that ORDINARY files of a
+// named type are recognised and ordinary files of other types are not.
+//
+// So each check uses the strongest reading available for its format — the
+// standard library's real parser where one exists — and the comments say
+// "recognises", never "establishes".
 //
 // No filename is trusted to introduce a type here. The one place an extension
 // participates is documented at validADTSHeader, and it only DISAMBIGUATES a
@@ -74,7 +88,17 @@ func validSevenZipHeader(head []byte) bool {
 		return false
 	}
 	want := binary.LittleEndian.Uint32(head[8:12])
-	return crc32.ChecksumIEEE(head[12:startHeader]) == want
+	if crc32.ChecksumIEEE(head[12:startHeader]) != want {
+		return false
+	}
+	// A CRC proves the twenty bytes are the ones the writer intended; it says
+	// nothing about whether they are POSSIBLE. A round-2 finding recomputed a
+	// valid CRC over a header whose next-header position cannot be
+	// represented, so the arithmetic is checked too.
+	offset := binary.LittleEndian.Uint64(head[12:20])
+	size := binary.LittleEndian.Uint64(head[20:28])
+	end := offset + size + startHeader
+	return end >= offset && end >= size
 }
 
 // validFLACStream reports whether head opens a native FLAC stream: the "fLaC"
@@ -87,7 +111,8 @@ func validSevenZipHeader(head []byte) bool {
 // checking them costs nothing and rejects a header that merely starts right.
 func validFLACStream(head []byte) bool {
 	const markerAndBlockHeader = 8
-	if len(head) < markerAndBlockHeader || !bytes.HasPrefix(head, []byte("fLaC")) {
+	const streamInfoLen = 34
+	if len(head) < markerAndBlockHeader+streamInfoLen || !bytes.HasPrefix(head, []byte("fLaC")) {
 		return false
 	}
 	// head[4]: high bit is the last-block flag, low seven bits the type.
@@ -95,82 +120,84 @@ func validFLACStream(head []byte) bool {
 		return false
 	}
 	blockLen := uint32(head[5])<<16 | uint32(head[6])<<8 | uint32(head[7])
-	return blockLen == 34
+	if blockLen != streamInfoLen {
+		return false
+	}
+	// The declaration is not the block. A round-2 finding accepted an
+	// eight-byte file that PROMISED 34 bytes of STREAMINFO and supplied none,
+	// and a 42-byte one whose STREAMINFO was all zeroes. So read the fields
+	// the format constrains (RFC 9639 §8.2): block sizes are at least 16 and
+	// ordered, and the sample rate may not be zero.
+	info := head[markerAndBlockHeader : markerAndBlockHeader+streamInfoLen]
+	minBlock := binary.BigEndian.Uint16(info[0:2])
+	maxBlock := binary.BigEndian.Uint16(info[2:4])
+	if minBlock < 16 || maxBlock < minBlock {
+		return false
+	}
+	sampleRate := uint32(info[10])<<12 | uint32(info[11])<<4 | uint32(info[12])>>4
+	return sampleRate != 0
 }
 
-// validBzip2Stream reports whether head opens a bzip2 stream: "BZh", the
-// block-size digit, and then one of the two 48-bit magics the format defines.
+// validBzip2Stream reports whether head opens a bzip2 stream, by DECODING it
+// with the standard library.
 //
-// A bzip2 stream is "BZh" + '1'..'9' + a sequence of blocks, and every block
-// begins with the compressed-block magic (the digits of pi); a stream with no
-// blocks at all begins with the end-of-stream magic (the digits of the square
-// root of pi) instead. There is no third possibility, so a file that has "BZh9"
-// and then anything else is not a bzip2 stream — which is what the previous
-// version of this check accepted.
+// The header alone is four bytes plus a block magic, and a round-2 finding
+// showed that a stream declaring itself empty could carry an invalid combined
+// CRC and still pass a header-only test. Decoding is what reads the CRC, so
+// this decodes — bounded, from the 512 bytes already in hand.
+//
+// It keeps the block-magic check as well; see the body for why neither the
+// magic nor the decode subsumes the other.
 func validBzip2Stream(head []byte) bool {
-	const prefixAndMagic = 10
-	if len(head) < prefixAndMagic || !bytes.HasPrefix(head, []byte("BZh")) {
+	if len(head) < 4 || !bytes.HasPrefix(head, []byte("BZh")) {
 		return false
 	}
 	if head[3] < '1' || head[3] > '9' {
 		return false
 	}
+	// The block magic, checked BEFORE decoding and kept alongside it. These
+	// two catch different things and neither subsumes the other, which is what
+	// makes both load-bearing rather than belt-and-braces:
+	//
+	//   - the magic refuses a stream too short for the decoder to judge —
+	//     "BZh9\x00" is five bytes, and the decoder can only say "truncated";
+	//   - the decode refuses an empty stream carrying an invalid combined CRC,
+	//     which no header inspection reaches (round-2 finding).
+	const prefixAndMagic = 10
+	if len(head) < prefixAndMagic {
+		return false
+	}
 	blockMagic := []byte{0x31, 0x41, 0x59, 0x26, 0x53, 0x59}     // pi
 	streamEndMagic := []byte{0x17, 0x72, 0x45, 0x38, 0x50, 0x90} // sqrt(pi)
-	return bytes.Equal(head[4:prefixAndMagic], blockMagic) ||
-		bytes.Equal(head[4:prefixAndMagic], streamEndMagic)
+	if !bytes.Equal(head[4:prefixAndMagic], blockMagic) &&
+		!bytes.Equal(head[4:prefixAndMagic], streamEndMagic) {
+		return false
+	}
+	// Truncation is NOT a failure: this sees the head of a file, so a real
+	// archive usually runs out mid-block and io.ErrUnexpectedEOF means "so
+	// far, so good". Only a STRUCTURAL error refuses.
+	_, err := io.ReadAll(io.LimitReader(bzip2.NewReader(bytes.NewReader(head)), 1<<16))
+	return err == nil || err == io.ErrUnexpectedEOF
 }
 
-// validTarHeader reports whether head opens a POSIX ustar archive: the magic
-// at offset 257 AND a header checksum that verifies.
+// validTarHeader reports whether head opens a tar archive, as read by the
+// standard library's own tar reader.
 //
-// The checksum is the point. "ustar" is five bytes at a fixed offset, and an
-// adversarial round demonstrated a working ELF executable carrying them in
-// padding — accepted as a tar by a matcher that stopped at the magic. The
-// checksum is a sum over all 512 header bytes, so it cannot be satisfied
-// incidentally; a file that passes it has a tar header, not a coincidence.
+// archive/tar is used rather than a hand-rolled magic-plus-checksum test for
+// one reason: it is the same parser anything consuming the file would use, so
+// this cannot drift from it, and it handles GNU and pax variants for free.
 //
-// Both the unsigned and the signed sum are accepted, matching archive/tar:
-// historical implementations disagreed about whether the bytes are signed, and
-// real archives in the wild carry both.
+// It is NOT a stronger answer to the crafted-file question — measured: an ELF
+// with "ustar" at 257 and a correctly computed checksum is accepted by
+// Reader.Next as readily as by a hand-written check. See this file's header
+// for why that is a property of the format rather than something to fix here.
 func validTarHeader(head []byte) bool {
 	const blockSize = 512
 	if len(head) < blockSize || !bytes.Equal(head[257:262], []byte("ustar")) {
 		return false
 	}
-	want, ok := parseTarOctal(head[148:156])
-	if !ok {
-		return false
-	}
-	var unsigned, signed int64
-	for i := 0; i < blockSize; i++ {
-		b := head[i]
-		// The checksum field itself is read as spaces, per the format —
-		// otherwise the sum would depend on the value being computed.
-		if i >= 148 && i < 156 {
-			b = ' '
-		}
-		unsigned += int64(b)
-		signed += int64(int8(b))
-	}
-	return want == unsigned || want == signed
-}
-
-// parseTarOctal reads tar's octal-ASCII number fields, which are padded with
-// spaces or NULs on either side and may be terminated by either.
-func parseTarOctal(field []byte) (int64, bool) {
-	field = bytes.Trim(field, " \x00")
-	if len(field) == 0 {
-		return 0, false
-	}
-	var n int64
-	for _, c := range field {
-		if c < '0' || c > '7' {
-			return 0, false
-		}
-		n = n*8 + int64(c-'0')
-	}
-	return n, true
+	_, err := tar.NewReader(bytes.NewReader(head)).Next()
+	return err == nil
 }
 
 // sniffEBMLDocType returns the MIME for an EBML file by READING ITS DOCTYPE
@@ -223,8 +250,17 @@ func sniffEBMLDocType(head []byte) string {
 			return ""
 		}
 		if childID == docTypeID {
-			// DocType is an ASCII string, NUL-padded to its declared length.
-			switch string(bytes.TrimRight(after[:childSize], "\x00")) {
+			// DocType is an ASCII string whose value ENDS at the first NUL;
+			// anything after that is padding and is not part of the value
+			// (RFC 8794 §13). TrimRight was wrong here — a round-2 finding
+			// produced an ffprobe-readable Matroska whose DocType payload was
+			// "matroska\x00junk", which trimming left intact and so failed to
+			// match, storing a real Matroska as WebM.
+			value := after[:childSize]
+			if i := bytes.IndexByte(value, 0); i >= 0 {
+				value = value[:i]
+			}
+			switch string(value) {
 			case "matroska":
 				return "video/x-matroska"
 			case "webm":
@@ -253,8 +289,20 @@ func readEBMLID(b []byte) (id uint32, rest []byte, ok bool) {
 	for i := 0; i < n; i++ {
 		id = id<<8 | uint32(b[i])
 	}
+	// An ID whose value bits are all ones is RESERVED and not a valid element
+	// ID (RFC 8794 §5). Accepting one let malformed bytes act as a
+	// zero-length child and carry the walk onward to a DocType that follows
+	// them, which a round-2 finding used to have 1a45dfa3 8d ff80 ... parse
+	// as Matroska.
+	if id == allOnesEBMLID[n] {
+		return 0, nil, false
+	}
 	return id, b[n:], true
 }
+
+// allOnesEBMLID is the reserved value at each ID width: the marker bit plus
+// every value bit set.
+var allOnesEBMLID = [5]uint32{0, 0xFF, 0x7FFF, 0x3FFFFF, 0x1FFFFFFF}
 
 // readEBMLSize reads an EBML data size, whose length marker is REMOVED from
 // the value (unlike an ID). An all-ones value means "unknown size", which this
@@ -327,51 +375,41 @@ func validADTSHeader(head []byte) bool {
 	if idx := head[2] >> 2 & 0x0F; idx > 12 { // 13, 14, 15 are reserved
 		return false
 	}
+	// Bit 0 of byte 1 is protection_absent: when it is CLEAR a two-byte CRC
+	// follows the header, so the frame cannot be shorter than nine bytes. A
+	// round-2 finding passed a frame declaring seven bytes with the CRC flag
+	// set — too short for its own header.
+	minFrame := uint32(headerBytes)
+	if head[1]&0x01 == 0 {
+		minFrame += 2
+	}
 	frameLen := uint32(head[3]&0x03)<<11 | uint32(head[4])<<3 | uint32(head[5])>>5
-	return frameLen >= headerBytes
+	return frameLen >= minFrame
 }
 
-// sniffOggAudio returns audio/ogg for an Ogg stream whose first packet
-// identifies an AUDIO codec, and "" for anything else in an Ogg container.
+// Ogg is deliberately NOT recognised here, and this comment is the record of
+// why, because "add an application/ogg alias" is the obvious thing for the
+// next reader to try (BUG-2963 F1; ruled in, then ruled out again after
+// review).
 //
 // The stdlib names Ogg by its container (application/ogg); the allowlist names
-// the payload it reviewed (audio/ogg). A plain spelling alias between the two
-// was the first attempt and it was wrong in a way worth recording: an
-// adversarial round uploaded a real VP8-in-Ogg file as clip.ogv and the door
-// stored it as audio/ogg, category audio, SERVED INLINE. Ogg carries video and
-// applications as readily as audio, so aliasing the container name to an audio
-// type makes a video format the allowlist never reviewed uploadable — which is
-// the one thing a default-deny list exists to prevent (BUG-2963 F1, re-ruled
-// day 62 after that finding).
+// the payload it reviewed (audio/ogg). Bridging the two requires deciding that
+// a file is AUDIO, and that question cannot be answered from the head of the
+// file:
 //
-// So the alias is conditional on the codec. Theora and VP8 in Ogg stay refused
-// exactly as they are today; video/ogg is deliberately NOT added to the
-// allowlist, because admitting a format is a review, not a side effect.
+//   - An unconditional alias admits Ogg video. A real VP8-in-Ogg file was
+//     stored as audio/ogg, category audio, and served INLINE.
+//   - Gating on the first packet's codec does not fix it. An Ogg with an Opus
+//     stream first and a VP8 stream second passes, because Ogg multiplexes and
+//     the second stream's pages come later in the file — past anything a
+//     512-byte sniff can see.
+//   - The gate is also wrong in the other direction: a legitimate
+//     Skeleton-prefixed Ogg audio file leads with "fishead\x00" and would be
+//     refused, and a codec check that matches only an identification magic
+//     accepts an eight-byte packet carrying no identification fields at all.
 //
-// Ogg page layout (RFC 3533 §6): a 27-byte header, then one length byte per
-// segment, then the packet data — so the first packet's identification header,
-// which every Ogg codec puts first, sits at a computable offset.
-func sniffOggAudio(head []byte) string {
-	const pageHeader = 27
-	if len(head) < pageHeader || !bytes.HasPrefix(head, []byte("OggS")) {
-		return ""
-	}
-	segments := int(head[pageHeader-1])
-	packet := pageHeader + segments
-	if packet >= len(head) {
-		return ""
-	}
-	first := head[packet:]
-	// The identification headers the audio codecs on the allowlist emit.
-	for _, magic := range [][]byte{
-		[]byte("\x01vorbis"), // RFC 5334 — Vorbis
-		[]byte("OpusHead"),   // RFC 7845 §5.1 — Opus
-		[]byte("\x7fFLAC"),   // RFC 9639 §10.1 — FLAC in Ogg
-		[]byte("Speex   "),   // Speex identification header
-	} {
-		if bytes.HasPrefix(first, magic) {
-			return "audio/ogg"
-		}
-	}
-	return ""
-}
+// So Ogg stays refused, exactly as it was before this change — no regression,
+// and no acceptance the allowlist never reviewed. Making Ogg work means either
+// adding video/ogg to the allowlist as a reviewed type, or demuxing far enough
+// to enumerate the streams. Both are decisions of their own, and neither
+// belongs in a change whose whole premise is that it adds no new trust.

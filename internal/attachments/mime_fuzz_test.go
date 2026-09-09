@@ -48,7 +48,6 @@ func FuzzSniffMIME(f *testing.F) {
 		// attributed to the check that owns it rather than to the dispatcher.
 		sniffOpaqueMagic(head)
 		sniffEBMLDocType(head)
-		sniffOggAudio(head)
 		validADTSHeader(head)
 		SniffMIME(head)
 		ValidateUpload(head, "fuzz.aac")

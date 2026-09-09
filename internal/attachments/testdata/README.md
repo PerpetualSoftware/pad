@@ -52,13 +52,19 @@ the first version of these signatures.
 |---|---|---|
 | `tar-bmp-firstmember.head512` | GNU `tar -cf` on a file named `BM.txt` | a structurally valid tar the stdlib reads as `image/bmp` — a real file exercising competing detections, refused before this change and still refused |
 | `elf-with-ustar-magic.head512` | hand-built, and hand-built ON PURPOSE | an ELF header with `ustar` at offset 257 and no valid tar checksum. It exists to be refused, so it tests the checksum rather than anyone's reading of the ELF spec. The finding it comes from used a real, executing binary |
-| `webm-void-says-matroska.head512` | FFmpeg WebM with a Void element containing the string `matroska`, header size widened to match; ffprobe-readable | a substring search calls this Matroska; its DocType is `webm` |
-| `matroska-void-padded.head512` | FFmpeg Matroska with 40 bytes of Void padding, header size widened to match; ffprobe-readable | DocType moves to offset 66, past any fixed leading window — the mistyping this change fixes, still live under a search |
+| `webm-void-says-matroska.head512` | FFmpeg WebM with a Void element containing the string `matroska`, header size widened to match | a substring search calls this Matroska; its DocType is `webm` |
+| `matroska-void-padded.head512` | FFmpeg Matroska with 40 bytes of Void padding, header size widened to match | DocType moves to offset 66, past any fixed leading window — the mistyping this change fixes, still live under a search |
+| `elf-with-valid-tar-checksum.head512` | hand-built | an ELF header carrying a well-formed tar header in its padding, checksum included. It is ACCEPTED, deliberately: `archive/tar`'s own reader accepts it too, so it records a limitation rather than a defect |
 | `ogg-vp8-video.head512` | FFmpeg 7.1 `-c:v libvpx -f ogg` | a real Ogg file whose first packet is `OVP80`: video in an Ogg container, which an unconditional `application/ogg` → `audio/ogg` alias accepted as inline audio |
 
 Void elements are legal anywhere in an EBML header and their contents are
 meaningless by specification, which is why only a parse can tell payload from
 padding.
+
+The two EBML entries say "ffprobe-readable" of the FILES THEY WERE MADE FROM.
+What is committed is the first 512 bytes, as with every fixture here, so
+running ffprobe on the committed file fails with a premature EOF — that is the
+truncation, not the file.
 
 The FFmpeg used is the one bundled with Remotion
 (`@remotion/compositor-linux-x64-gnu`), transcoded from real project assets;

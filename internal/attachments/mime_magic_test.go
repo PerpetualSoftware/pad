@@ -40,7 +40,6 @@ func TestBUG2963FormatsReachTheAllowlist(t *testing.T) {
 		{"flac.head512", "track.flac", "audio/flac", "", CategoryAudio, "fLaC plus a 34-byte STREAMINFO block"},
 		{"aac-adts.head512", "track.aac", "audio/aac", "application/octet-stream", CategoryAudio, "valid ADTS header, gated on the extension"},
 		{"avi.head512", "clip.avi", "video/x-msvideo", "", CategoryVideo, "video/avi alias"},
-		{"ogg-opus.head512", "track.ogg", "audio/ogg", "", CategoryAudio, "Ogg page whose first packet is OpusHead"},
 		{"matroska.head512", "clip.mkv", "video/x-matroska", "", CategoryVideo, "EBML DocType matroska"},
 	}
 	for _, tc := range cases {
@@ -126,10 +125,14 @@ func TestStructuralValidationRefusesNearMisses(t *testing.T) {
 // an adversarial round used to break a substring search, and they broke it
 // BOTH ways — the reason this is a parse now.
 //
-// Both adversarial fixtures are complete files that ffprobe reads, built by
-// inserting a legal Void element (ID 0xEC, contents meaningless by
-// specification) into the ordinary fixtures and widening the header's size
-// field to match.
+// Both adversarial fixtures were built by inserting a legal Void element (ID
+// 0xEC, contents meaningless by specification) into the ordinary fixtures and
+// widening the header's size field to match. The COMPLETE files ffprobe reads;
+// what is committed here is their first 512 bytes, like every fixture in this
+// package, because that is the whole input domain of SniffMIME. Running
+// ffprobe on the committed prefix fails with a premature EOF, which says
+// nothing about the file it came from — an earlier version of this comment
+// claimed the committed files were themselves readable, and they are not.
 func TestEBMLDocTypeIsParsedNotSearched(t *testing.T) {
 	cases := []struct {
 		fixture string
@@ -160,23 +163,28 @@ func TestEBMLDocTypeIsParsedNotSearched(t *testing.T) {
 	}
 }
 
-// TestOggAliasIsCodecGated covers the re-ruling that followed an adversarial
-// round: application/ogg is a CONTAINER name, and mapping it to audio/ogg
-// unconditionally made a real VP8-in-Ogg video uploadable as audio, category
-// audio, served inline — a video format the allowlist never reviewed. The
-// alias is now conditional on the first packet naming an audio codec.
-func TestOggAliasIsCodecGated(t *testing.T) {
-	if got := SniffMIME(readFixture(t, "ogg-opus.head512")); got != "audio/ogg" {
-		t.Errorf("Opus-in-Ogg sniffed %q, want audio/ogg", got)
-	}
-
-	video := readFixture(t, "ogg-vp8-video.head512")
-	if got := SniffMIME(video); got != "application/ogg" {
-		t.Errorf("VP8-in-Ogg sniffed %q, want the unaliased application/ogg", got)
-	}
-	if entry, _, err := ValidateUpload(video, "clip.ogv"); err == nil {
-		t.Errorf("VP8-in-Ogg accepted and stored as %q; video/ogg is not on the allowlist "+
-			"and admitting a format is a review, not a side effect", entry.MIME)
+// TestOggStaysRefused records a decision, not a mechanism: Ogg is NOT
+// recognised, and both fixtures are kept so the next person to reach for an
+// application/ogg alias meets the evidence first.
+//
+// An alias was written, ruled in, and then removed after review showed the
+// question it has to answer — is this container AUDIO — cannot be answered
+// from the head of the file. Ogg multiplexes, so a second video stream's pages
+// come later than any sniff can see. Both files below are refused today
+// exactly as they were before BUG-2963, which is the point: no regression, and
+// no acceptance of a type the allowlist never reviewed.
+func TestOggStaysRefused(t *testing.T) {
+	for _, f := range []string{"ogg-opus.head512", "ogg-vp8-video.head512"} {
+		t.Run(f, func(t *testing.T) {
+			if got := SniffMIME(readFixture(t, f)); got != "application/ogg" {
+				t.Errorf("SniffMIME = %q, want the unaliased application/ogg", got)
+			}
+			if entry, _, err := ValidateUpload(readFixture(t, f), "track.ogg"); err == nil {
+				t.Errorf("accepted and stored as %q; audio/ogg stays unreachable until "+
+					"either video/ogg is a reviewed allowlist entry or something "+
+					"demuxes far enough to enumerate the streams", entry.MIME)
+			}
+		})
 	}
 }
 
@@ -207,10 +215,12 @@ func TestADTSGuardsAreBothLoadBearing(t *testing.T) {
 		t.Errorf("code = %q, want mime_not_allowed", code)
 	}
 
-	// The octet-stream gate, isolated. These two bytes carry a valid ADTS
-	// sync AND the stdlib types them as text/plain, so the ONLY thing keeping
-	// the AAC branch from firing is the gate on the stdlib's verdict. Remove
-	// it and this leg flips from a category mismatch to an accepted AAC.
+	// Two ADTS sync bytes named .aac. This leg does NOT isolate the
+	// octet-stream gate — validADTSHeader refuses two bytes on length before
+	// the gate could matter, so removing the gate leaves this passing. It is
+	// kept as an ordinary category-mismatch case, and the leg that actually
+	// isolates the gate is the seven-byte one below. The comment here claimed
+	// the wrong mutation twice; it now says what is true.
 	if _, code, _ := ValidateUpload([]byte{0xFF, 0xF1}, "short.aac"); code != "mime_extension_mismatch" {
 		t.Errorf("two ADTS sync bytes named .aac gave code %q, want mime_extension_mismatch — "+
 			"the stdlib called them text, and the branch must not run on a type it recognised", code)
@@ -300,12 +310,29 @@ func TestOpaqueMagicBoundaries(t *testing.T) {
 	if got := sniffOpaqueMagic(nil); got != "" {
 		t.Errorf("sniffOpaqueMagic(nil) = %q, want no match", got)
 	}
-	// Truncating a REAL archive below each check's minimum must also refuse
-	// rather than panic — the case a caller hits with a short upload.
-	for _, f := range []string{"tar.head512", "sevenzip.head512", "flac.head512", "bzip2.head512"} {
-		full := readFixture(t, f)
-		for n := 0; n < len(full) && n < 40; n++ {
-			sniffOpaqueMagic(full[:n])
+	// Truncating a REAL archive below its check's minimum must REFUSE, not
+	// merely fail to panic. An earlier version of this loop discarded the
+	// return value and stopped at 40 bytes, so it asserted nothing at all —
+	// flac.head512[:8] was accepted while the test passed.
+	//
+	// The bound per format is the smallest prefix its check can accept; below
+	// it the answer must be "". At and above it, a real archive's prefix is
+	// legitimately recognised, so nothing is asserted there.
+	for _, tc := range []struct {
+		fixture string
+		min     int
+	}{
+		{"tar.head512", 512},
+		{"sevenzip.head512", 32},
+		{"flac.head512", 42},
+		{"bzip2.head512", 10},
+	} {
+		full := readFixture(t, tc.fixture)
+		for n := 0; n < tc.min && n <= len(full); n++ {
+			if got := sniffOpaqueMagic(full[:n]); got != "" {
+				t.Errorf("sniffOpaqueMagic(%s[:%d]) = %q, want no match below the %d-byte minimum",
+					tc.fixture, n, got, tc.min)
+			}
 		}
 	}
 }
@@ -410,5 +437,84 @@ func TestTextFamilyStillStoresAsPlain(t *testing.T) {
 			t.Errorf("%s stored as %q, want text/plain — if this changed, the F5 "+
 				"extension-trust work landed and this test should move with it", tc.name, entry.MIME)
 		}
+	}
+}
+
+// TestLegalVariantsAreNotRefused is the other direction, and it was missing:
+// every negative case above pushes toward refusing more, and nothing pushed
+// back. A review round confirmed the gap by removing bzip2's end-of-stream
+// acceptance, FLAC's last-block mask and the ADTS protection arithmetic with
+// the suite still green.
+func TestLegalVariantsAreNotRefused(t *testing.T) {
+	// An EMPTY bzip2 stream: the end-of-stream magic comes first, with the
+	// combined CRC of nothing. Produced by `bzip2 -c < /dev/null`.
+	emptyBz2 := []byte{
+		0x42, 0x5A, 0x68, 0x39, // BZh9
+		0x17, 0x72, 0x45, 0x38, 0x50, 0x90, // end-of-stream magic
+		0x00, 0x00, 0x00, 0x00, // combined CRC of an empty stream
+	}
+	if !validBzip2Stream(emptyBz2) {
+		t.Error("an empty bzip2 stream was refused; the end-of-stream magic is a legal first block")
+	}
+
+	// STREAMINFO carrying the LAST-BLOCK flag: legal, and the only shape a
+	// FLAC file with no other metadata blocks can have.
+	flac := append([]byte(nil), readFixture(t, "flac.head512")...)
+	flac[4] |= 0x80
+	if !validFLACStream(flac) {
+		t.Error("STREAMINFO marked as the last metadata block was refused; the flag is legal " +
+			"and the type check must mask it off")
+	}
+
+	// A CRC-PROTECTED ADTS frame: protection_absent clear, frame length long
+	// enough for the nine-byte protected header.
+	adts := append([]byte(nil), readFixture(t, "aac-adts.head512")...)
+	adts[1] &^= 0x01 // protection present
+	if !validADTSHeader(adts) {
+		t.Error("a CRC-protected ADTS frame was refused; protection is optional, not invalid")
+	}
+
+	// ...and the arithmetic that check turns on: the same frame declaring a
+	// length that fits the unprotected header but not the protected one.
+	tooShort := append([]byte(nil), adts...)
+	tooShort[3] = tooShort[3]&^0x03 | 0x00
+	tooShort[4] = 0x01 // frame length 8: >= 7, < 9
+	tooShort[5] &^= 0xE0
+	if validADTSHeader(tooShort) {
+		t.Error("a protected ADTS frame declaring 8 bytes was accepted; its own header needs 9")
+	}
+}
+
+// TestTarAndELFAreNotDistinguishableHere records a LIMITATION as a test,
+// because it is the kind that otherwise gets rediscovered as a bug.
+//
+// The fixture is an ELF header carrying a well-formed tar header in its
+// padding — `ustar` at 257, valid octal mode/uid/gid/size/mtime, and a
+// correctly computed checksum. It is ACCEPTED as application/x-tar, and it is
+// accepted by archive/tar's own Reader.Next, which is the parser this package
+// delegates to. A 512-byte tar header is exactly those fields; nothing forbids
+// another format's padding from containing them.
+//
+// So this asserts the current, understood behaviour rather than a wish. If it
+// ever starts failing, someone has found a discriminator that the Go standard
+// library does not have — which is interesting and should be read, not
+// silently accommodated.
+func TestTarAndELFAreNotDistinguishableHere(t *testing.T) {
+	b := readFixture(t, "elf-with-valid-tar-checksum.head512")
+	if string(b[1:4]) != "ELF" {
+		t.Fatal("premise failed: the fixture must still be an ELF header")
+	}
+	entry, _, err := ValidateUpload(b, "p.bin")
+	if err != nil {
+		t.Fatalf("refused (%v) — if this is a deliberate improvement, replace this test "+
+			"and say what discriminates the two", err)
+	}
+	if entry.MIME != "application/x-tar" {
+		t.Errorf("stored as %q, want application/x-tar", entry.MIME)
+	}
+	// The property that makes the above tolerable is where the bytes GO, not
+	// what they are called: an archive is never served inline.
+	if entry.ServeInline() {
+		t.Error("application/x-tar is inline-safe; it must be served as an attachment")
 	}
 }

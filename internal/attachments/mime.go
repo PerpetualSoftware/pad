@@ -245,7 +245,9 @@ func SniffMIME(head []byte) string {
 	if alias, ok := sniffAliases[got]; ok {
 		got = alias
 	}
-	// Three BUG-2963 refinements. Each is keyed on what the stdlib already
+	// Two BUG-2963 refinements. (Ogg was a third and was removed; see
+	// mime_magic.go for why a container name cannot be aliased to an audio
+	// type.) Each is keyed on what the stdlib already
 	// said, so none can retype a file the stdlib recognised as something else
 	// — and each then VALIDATES STRUCTURE before naming a type, which is the
 	// half that keeps them honest (see mime_magic.go's header for what
@@ -253,17 +255,11 @@ func SniffMIME(head []byte) string {
 	//
 	//   - video/webm is refined, because the mimesniff table answers it from
 	//     the bare EBML magic and cannot tell Matroska from WebM;
-	//   - application/ogg is refined per CODEC, because Ogg is a container and
-	//     only its audio payloads are on the allowlist;
 	//   - application/octet-stream is the stdlib having NO opinion, which is
 	//     the only case where recognising more formats adds anything.
 	switch got {
 	case "video/webm":
 		if mime := sniffEBMLDocType(head); mime != "" {
-			return mime
-		}
-	case "application/ogg":
-		if mime := sniffOggAudio(head); mime != "" {
 			return mime
 		}
 	case "application/octet-stream":
