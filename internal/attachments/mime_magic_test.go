@@ -103,6 +103,11 @@ func TestStructuralValidationRefusesNearMisses(t *testing.T) {
 			"the marker is present; the mandatory first metadata block is not"},
 		{"BZh9 with no block magic", []byte("BZh9\x00"), "p.bin",
 			"bzip2 streams continue with a block magic or an end-of-stream magic; there is no third case"},
+		{"BZh9 long enough to reach the block magic, carrying the wrong one",
+			append([]byte("BZh9\xde\xad\xbe\xef\xde\xad"), make([]byte, 32)...), "p.bin",
+			"the short case above is refused by the LENGTH guard before the magic is read, so on " +
+				"its own it says nothing about the magic check; the NUL padding keeps this one " +
+				"binary, so the stdlib says octet-stream and the magic table is actually consulted"},
 		{"three-byte ADTS", []byte{0xFF, 0xF1, 0x00}, "p.aac",
 			"three bytes cannot contain a seven-byte header"},
 		{"ADTS with a reserved sampling-rate index", adtsBadRate, "p.aac",
@@ -211,6 +216,25 @@ func TestADTSGuardsAreBothLoadBearing(t *testing.T) {
 	if _, code, _ := ValidateUpload([]byte{0xFF, 0xF1}, "short.aac"); code != "mime_extension_mismatch" {
 		t.Errorf("two ADTS sync bytes named .aac gave code %q, want mime_extension_mismatch — "+
 			"the stdlib called them text, and the branch must not run on a type it recognised", code)
+	}
+
+	// The octet-stream gate, isolated at full strength. These seven bytes are
+	// a STRUCTURALLY VALID ADTS header — sync, layer 00, sampling index 0,
+	// frame length 2570 — and every byte is one the stdlib reads as text, so
+	// it answers text/plain. That combination is the only thing that can tell
+	// the gate apart from the structural check: with the gate removed, this
+	// file named .aac is stored as audio/aac. The two-byte case above cannot
+	// show it, because two bytes fail validADTSHeader on length first.
+	textualADTS := []byte{0xFF, 0xF1, 0x40, 0x41, 0x41, 0x41, 0x41}
+	if !validADTSHeader(textualADTS) {
+		t.Fatal("premise failed: the input must be a valid ADTS header, " +
+			"or this says nothing about the stdlib gate")
+	}
+	if _, code, err := ValidateUpload(textualADTS, "textual.aac"); err == nil {
+		t.Error("a valid ADTS header that the stdlib reads as TEXT was accepted; " +
+			"the branch must not run on a type the stdlib recognised")
+	} else if code != "mime_extension_mismatch" {
+		t.Errorf("code = %q, want mime_extension_mismatch", code)
 	}
 
 	// The layer-bit mask, isolated. Layer bits of 01 are invalid for ADTS and
