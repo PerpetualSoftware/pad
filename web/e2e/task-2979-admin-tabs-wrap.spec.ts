@@ -16,8 +16,7 @@ import { test } from './fixtures';
  * THE VIEWPORT IS 320, NOT THE PROJECT DEFAULT. Self-host renders four tabs,
  * which fit from 360px up, so a leg at the mobile project's 412px would pass
  * on the broken build. The width is chosen to be the one where THIS tab set
- * genuinely overflows, and the precondition below fails loudly if that ever
- * stops being true (a renamed or removed tab would do it).
+ * genuinely overflows, and the precondition below asserts that it still does.
  */
 
 const NARROW = { width: 320, height: 844 };
@@ -55,9 +54,13 @@ test('TASK-2979: no admin console tab is clipped at 320px', async ({ browser, fi
 
 		const bar = await probeAdminTabs(page);
 
-		// Non-vacuous: at this width the tabs genuinely cannot fit on one row.
-		// If a tab is renamed or dropped and they start fitting, this fails and
-		// the leg gets re-chosen rather than passing for the wrong reason.
+		// Non-vacuous: at this width the tabs genuinely cannot fit on one row, so
+		// "nothing is clipped" is a claim about wrapping rather than about a row
+		// that happened to fit. It asserts exactly that and nothing more — a
+		// renamed or dropped tab does NOT necessarily trip it, since the rest may
+		// still overflow (codex round 1 corrected an earlier comment here that
+		// claimed otherwise). What it does catch is the case that would make this
+		// leg vacuous: a tab set that starts fitting at 320px.
 		expect(bar.intrinsicWidth).toBeGreaterThan(bar.clientWidth);
 
 		expect(bar.clipped, 'admin console tabs clipped out of view').toEqual([]);
