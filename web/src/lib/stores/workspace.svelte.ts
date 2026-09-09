@@ -76,8 +76,10 @@ export const workspaceStore = {
 	get currentMembership() { return currentMembership; },
 
 	/**
-	 * True once a membership fetch has SETTLED for the current workspace, so a
-	 * null `currentMembership` means "no access" rather than "not yet loaded".
+	 * True once membership RESOLUTION has settled for the current workspace, so
+	 * a null `currentMembership` means "no access" rather than "not yet loaded".
+	 * Resolution, not fetch: a workspace that does not resolve at all settles
+	 * this without any `/me` request being made.
 	 *
 	 * False spans the whole replacing call — workspace resolution and creation
 	 * included, not just the `/me` request itself.
@@ -162,8 +164,9 @@ export const workspaceStore = {
 	 * gate, and it is cheap: two reads, both false on a healthy session.
 	 *
 	 * IDEMPOTENT AND SELF-LIMITING. When identity is intact this does nothing
-	 * and issues no request. `loading` keeps it from stacking a second list call
-	 * on an in-flight one.
+	 * and issues no request. A concurrent list call is not duplicated either:
+	 * `inFlightFor` JOINS the one already running — `loading` is a rendering
+	 * signal here and is not consulted for that.
 	 */
 	async recoverIfMissing(ws: string): Promise<void> {
 		if (workspaces.length === 0) {
