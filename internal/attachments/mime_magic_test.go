@@ -907,6 +907,29 @@ func TestBUG2963CFBOfficeTrio(t *testing.T) {
 		})
 	}
 
+	// A CFB header whose SECTOR DATA happens to carry "ustar" at offset 257.
+	// The magic table refines such a file to application/x-tar, so a branch
+	// gated on the REFINED verdict would refuse a real Word document under its
+	// own .doc name — the false refusal this bug exists to remove. Gating on
+	// the stdlib's verdict asks the question that matters: did anything
+	// IDENTIFY these bytes? Nothing did. Same reasoning as the .aac branch,
+	// and this is the case that makes it not academic here.
+	t.Run("a CFB carrying ustar at 257 is still a Word document", func(t *testing.T) {
+		collide := cfbHeader(504)
+		copy(collide[257:262], []byte("ustar"))
+		if got := SniffMIME(collide); got != "application/x-tar" {
+			t.Fatalf("premise failed: these bytes refine to %q, not application/x-tar — "+
+				"without the collision there is nothing for the gate to get wrong", got)
+		}
+		entry, code, err := ValidateUpload(collide, "report.doc")
+		if err != nil {
+			t.Fatalf("refused (code=%s): %v", code, err)
+		}
+		if entry.MIME != "application/msword" {
+			t.Errorf("stored as %q, want application/msword", entry.MIME)
+		}
+	})
+
 	// And the header is required: the extension introduces nothing on its own.
 	t.Run("one byte off is not a CFB", func(t *testing.T) {
 		broken := cfbHeader(56)

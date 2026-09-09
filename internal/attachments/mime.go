@@ -375,7 +375,15 @@ func ValidateUpload(head []byte, filename string) (entry MIMEEntry, code string,
 	// .msi is a CFB container too, and so are Visio files. It is "is this one
 	// of the three types the allowlist reviewed", and that is a list, not a
 	// predicate. Everything else keeps falling through to mime_not_allowed.
-	if sniffed == "application/octet-stream" && validCFBHeader(head) {
+	//
+	// The gate is on THE STANDARD LIBRARY'S verdict, not the refined one, for
+	// the reason the .aac branch above gives and with a live case of its own:
+	// a CFB file's 512-byte header is sector data, so one can carry "ustar" at
+	// offset 257 and be refined to application/x-tar. Gating on the refined
+	// value would refuse that file under its own .doc name — the false refusal
+	// this whole bug exists to remove — while gating on the stdlib asks the
+	// question that matters, which is whether anything IDENTIFIED the bytes.
+	if stdlib == "application/octet-stream" && validCFBHeader(head) {
 		switch ext {
 		case ".doc", ".xls", ".ppt":
 			if extEntry, extAllowed := allowed[NormalizeMIME(extMIMEMap[ext])]; extAllowed &&
