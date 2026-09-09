@@ -51,6 +51,15 @@ type MetaPayload struct {
 	// So the advertised revision is a claim pad makes deliberately. Moving
 	// it means reading the new revision's delta against this server's
 	// surface first; a library bump must not move it on its own.
+	//
+	// The claim is also ENFORCED now, not merely documented (TASK-2977). The
+	// handshake cap is not the whole story: mcp-go 1.0's Streamable HTTP
+	// transport serves both eras on one endpoint and advertises the modern one
+	// through server/discover by default, so pinning this literal while
+	// leaving the transport unrestricted would have published one maximum here
+	// and a higher one on the wire. ServedProtocolVersions restricts the
+	// transport to the handshake era, and a test ties its newest entry to this
+	// constant, so the two cannot drift apart in either direction.
 	MCPProtocolVersion string `json:"mcp_protocol_version"`
 }
 
@@ -65,9 +74,16 @@ type MetaPayload struct {
 // upper bound, not any specific session.
 // AdvertisedMCPProtocolVersion is the MCP wire protocol revision pad claims
 // to negotiate. It is deliberately a literal rather than a library constant —
-// see MetaPayload.MCPProtocolVersion — and TestAdvertisedProtocolVersion pins
-// it to what the library's handshake actually answers, so a bump that moves
-// one and not the other fails instead of shipping a false claim.
+// see MetaPayload.MCPProtocolVersion.
+//
+// Two tests hold it in place, and they answer different questions.
+// TestAdvertisedProtocolVersion pins it to what the library's HANDSHAKE
+// answers. That is necessary and not sufficient: the era introduced in
+// 2026-07-28 has no handshake, so a handshake test cannot see the transport
+// advertising it through server/discover.
+// TestAdvertisedRevisionMatchesWhatTheTransportServes closes that half by
+// pinning this constant to the newest revision ServedProtocolVersions allows
+// the transport to advertise (TASK-2977).
 const AdvertisedMCPProtocolVersion = "2025-11-25"
 
 func BuildMetaPayload(padVersion string) MetaPayload {
