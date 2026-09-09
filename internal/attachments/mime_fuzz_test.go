@@ -3,7 +3,7 @@ package attachments
 import "testing"
 
 // FuzzSniffMIME exercises the whole sniff path — the stdlib call, both
-// refinements, and the structural validators — against arbitrary bytes.
+// refinements, and the magic recognisers — against arbitrary bytes.
 //
 // It exists because BUG-2963 added a PARSER. Every other check in this package
 // reads fixed offsets and is bounded by construction; sniffEBMLDocType walks
