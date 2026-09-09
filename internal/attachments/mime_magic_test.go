@@ -191,11 +191,39 @@ func TestADTSGate(t *testing.T) {
 		t.Errorf("stored as %q, want audio/aac", entry.MIME)
 	}
 
-	// But a type the stdlib DOES recognise is untouched by the .aac name. PNG
-	// bytes stay an image and are refused for the category mismatch they are.
+	// A type that IS identified is untouched by the .aac name. PNG bytes stay
+	// an image — but note what that leg does and does not establish: PNG fails
+	// validADTSHeader on its first byte, so it would be refused with the
+	// verdict gate removed too. It is a sanity case, not a control.
 	if _, code, _ := ValidateUpload([]byte("\x89PNG\r\n\x1a\n"), "sneaky.aac"); code != "mime_extension_mismatch" {
-		t.Errorf("PNG bytes named .aac gave code %q, want mime_extension_mismatch — "+
-			"the branch must not run on a type the stdlib recognised", code)
+		t.Errorf("PNG bytes named .aac gave code %q, want mime_extension_mismatch", code)
+	}
+
+	// THE control. This buffer opens with a valid ADTS header AND carries
+	// "ustar" at offset 257, so recognition identifies it as a tar. Named
+	// .aac it must be refused for the category mismatch it is — archive
+	// against audio. Remove the gate on the stdlib's verdict and the AAC
+	// branch overwrites that identification and accepts it as audio.
+	//
+	// This is the only shape that separates the verdict gate from the
+	// structural check: the input has to PASS validADTSHeader and ALSO be
+	// identified as something else. A mutation run is what showed the PNG leg
+	// above could not do it.
+	collide := make([]byte, 512)
+	copy(collide, adts[:8])
+	copy(collide[257:], []byte("ustar"))
+	if !validADTSHeader(collide) {
+		t.Fatal("premise failed: the collision buffer must be a valid ADTS header")
+	}
+	if got := SniffMIME(collide); got != "application/x-tar" {
+		t.Fatalf("premise failed: the collision buffer sniffed %q, want application/x-tar — "+
+			"it must be identified as something else for this to control anything", got)
+	}
+	if entry, code, err := ValidateUpload(collide, "track.aac"); err == nil {
+		t.Errorf("accepted as %q; a file identified as a tar must not be re-read as AAC "+
+			"because of its name", entry.MIME)
+	} else if code != "mime_extension_mismatch" {
+		t.Errorf("code = %q, want mime_extension_mismatch", code)
 	}
 
 	// The signature, byte by byte. Each leg below fails for exactly one
