@@ -84,7 +84,55 @@
 		{ id: 'storage', label: 'Storage', icon: '\uD83D\uDCBE', ownerOnly: false },
 		{ id: 'danger', label: 'Danger Zone', icon: '\u26A0\uFE0F', ownerOnly: true },
 	];
-	let tabs = $derived(allTabs.filter(t => !t.ownerOnly || workspaceStore.canEditWorkspace));
+	// BUG-2978: gate the owner-only tab on a STICKY read of the permission, not
+	// on `workspaceStore.canEditWorkspace` directly.
+	//
+	// `setCurrent` clears `currentMembership` to null before `/me` resolves, and
+	// the permission helpers treat unknown as no-access by design. This route
+	// calls it twice per load — once from the workspace layout, once from this
+	// page's own `load()` — so `canEditWorkspace` reads true -> false -> true on
+	// an ordinary owner page load. Measured on the trail: the effect below
+	// applied `#danger` correctly at 219ms and the false window at 244ms snapped
+	// it back to General, with `pendingHash` already consumed, so the tab was
+	// lost for good and 0/10 deep links landed.
+	//
+	// Same two-effect shape the dashboard uses for its owner-gated CTA, and for
+	// the same reason (CONVE-606: reset on a real workspace switch, update only
+	// when membership is definitively known). Default false so owner-only chrome
+	// never flashes before `/me` confirms; the server-side owner check remains
+	// the enforcement boundary, this is a stability fix.
+	let canEditWs = $state(false);
+	// Same treatment, same reason: read straight from the store these flip false
+	// during that window too, so on an ordinary owner load the Save buttons, the
+	// invite form and the delete controls go readonly and then come back.
+	let isOwner = $state(false);
+	let canExport = $state(false);
+	let lastPermSlug: string | null = null;
+	$effect(() => {
+		if (wsSlug !== lastPermSlug) {
+			lastPermSlug = wsSlug;
+			// ONE reset for every sticky permission on this page. A second
+			// effect testing the same `wsSlug !== lastPermSlug` could never
+			// fire — whichever ran first would have already updated the marker.
+			canEditWs = false;
+			isOwner = false;
+			canExport = false;
+		}
+	});
+	$effect(() => {
+		// Read through the store's getters rather than re-deriving the cascade —
+		// they mirror the server's ResolveUserPermission and must not be forked.
+		if (workspaceStore.currentMembership !== null) {
+			canEditWs = workspaceStore.canEditWorkspace;
+			isOwner = workspaceStore.isOwner;
+			// Editor-or-owner predicate for affordances outside the strict
+			// owner-only line (Export bundle is a read-side action gated to
+			// editor+ per project policy).
+			const role = workspaceStore.currentRole;
+			canExport = role === 'owner' || role === 'editor';
+		}
+	});
+	let tabs = $derived(allTabs.filter(t => !t.ownerOnly || canEditWs));
 	let validTabIds = $derived(tabs.map(t => t.id));
 
 	// Hash-driven tab restoration. The hash is captured once on mount, but
@@ -421,13 +469,6 @@
 		}
 	}
 
-	let isOwner = $derived(workspaceStore.isOwner);
-	// Editor-or-owner predicate for affordances that fall outside the
-	// strict canEditWorkspace owner-only line (e.g. Export bundle is a
-	// read-side action that we still gate to editor+ per project policy).
-	let canExport = $derived(
-		workspaceStore.currentRole === 'owner' || workspaceStore.currentRole === 'editor'
-	);
 
 	let confirmDelete = $state(false);
 	let deleting = $state(false);
