@@ -216,10 +216,11 @@ var sniffAliases = map[string]string{
 	"audio/wave":         "audio/wav",        // .wav
 	"application/x-gzip": "application/gzip", // .gz / .tar.gz
 	"video/avi":          "video/x-msvideo",  // .avi — pure spelling difference
-	// application/ogg is deliberately NOT here. It is a CONTAINER name, and
-	// mapping it to audio/ogg unconditionally admitted Ogg video — see
-	// sniffOggAudio, which does it per codec instead. An alias table is for
-	// two names of one thing; Ogg is one name for several things.
+	// application/ogg is deliberately NOT here, and there is no per-codec
+	// refinement either — both were written and both were removed. An alias
+	// table is for two names of ONE thing, and Ogg is one name for several:
+	// see mime_magic.go for why a container name cannot be resolved to an
+	// audio type from the head of the file.
 }
 
 // SniffMIME detects the MIME type from the leading bytes of a payload

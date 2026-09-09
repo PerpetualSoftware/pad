@@ -40,7 +40,18 @@ than 512 because the whole file is.
 | `matroska.head512` | FFmpeg 7.1 `-f matroska` | EBML magic with DocType `matroska` at offset 24 |
 | `webm.head512` | FFmpeg 7.1 `-f webm` | EBML magic with DocType `webm` at offset 24 — the control that stops the DocType read from answering Matroska for everything |
 | `avi.head512` | FFmpeg 7.1 `-f avi` | RIFF/AVI, which the stdlib names `video/avi` against the allowlist's `video/x-msvideo` |
-| `ogg-opus.head512` | FFmpeg 7.1 `-c:a libopus -f ogg` | `OggS`, which the stdlib names `application/ogg` against the allowlist's `audio/ogg` |
+
+### Fixtures for files the recogniser must ACCEPT
+
+Real files that three rounds of structural validation refused. Each is a file a
+user legitimately has, and refusing them is the defect BUG-2963 exists to fix —
+reintroduced, for a while, by its own fix.
+
+| file | produced by | what it proves |
+|---|---|---|
+| `tar-pax.head512` | `tar --format=pax -cf` (tar 1.34) | a PAX archive leads with a metadata header, so a full parse needs more blocks than this door ever reads |
+| `tar-gnu-longname.head512` | `tar --format=gnu -cf` with a 144-character member name | same shape, via GNU's long-name header |
+| `flac-zero-sample-rate.head512` | `flac.head512` with the sample-rate field zeroed | RFC 9639 permits a zero sample rate for non-audio samples and still registers the result as `audio/flac` |
 
 ### Adversarial fixtures — the round-1 findings, kept as tests
 
@@ -55,7 +66,6 @@ the first version of these signatures.
 | `webm-void-says-matroska.head512` | FFmpeg WebM with a Void element containing the string `matroska`, header size widened to match | a substring search calls this Matroska; its DocType is `webm` |
 | `matroska-void-padded.head512` | FFmpeg Matroska with 40 bytes of Void padding, header size widened to match | DocType moves to offset 66, past any fixed leading window — the mistyping this change fixes, still live under a search |
 | `elf-with-valid-tar-checksum.head512` | hand-built | an ELF header carrying a well-formed tar header in its padding, checksum included. It is ACCEPTED, deliberately: `archive/tar`'s own reader accepts it too, so it records a limitation rather than a defect |
-| `ogg-vp8-video.head512` | FFmpeg 7.1 `-c:v libvpx -f ogg` | a real Ogg file whose first packet is `OVP80`: video in an Ogg container, which an unconditional `application/ogg` → `audio/ogg` alias accepted as inline audio |
 
 Void elements are legal anywhere in an EBML header and their contents are
 meaningless by specification, which is why only a parse can tell payload from
@@ -65,6 +75,20 @@ The two EBML entries say "ffprobe-readable" of the FILES THEY WERE MADE FROM.
 What is committed is the first 512 bytes, as with every fixture here, so
 running ffprobe on the committed file fails with a premature EOF — that is the
 truncation, not the file.
+
+### Ogg fixtures — kept for a format the sniffer does NOT recognise
+
+Both are refused, and both are kept so the next person to reach for an
+`application/ogg` alias meets the evidence before writing one.
+
+| file | produced by | what it proves |
+|---|---|---|
+| `ogg-opus.head512` | FFmpeg 7.1 `-c:a libopus -f ogg` | ordinary Ogg audio, refused — `audio/ogg` stays unreachable |
+| `ogg-vp8-video.head512` | FFmpeg 7.1 `-c:v libvpx -f ogg` | a real Ogg file whose first packet is `OVP80`: video in an Ogg container, which an unconditional alias accepted as inline audio |
+
+An alias was written, ruled in, and removed: whether an Ogg container is
+audio-only cannot be decided from its first page, because Ogg multiplexes and a
+second video stream's pages come later than any 512-byte sniff can see.
 
 The FFmpeg used is the one bundled with Remotion
 (`@remotion/compositor-linux-x64-gnu`), transcoded from real project assets;
