@@ -71,76 +71,53 @@ func applierEcho(t *testing.T, conn *websocket.Conn) func() {
 	return func() { _ = conn.Close(); <-done }
 }
 
-// waitForApplierPath blocks until a content PATCH is actually taking the
-// applier path, and returns once it is.
+// waitForApplierPath blocks until a content PATCH would actually take the applier
+// path, and returns once it would.
 //
-// The readiness signal is the observable difference between the two paths
-// rather than an internal field: on the APPLIER path the markdown goes to the
-// Y.Doc and items.content is left alone, while on the direct-write path
-// items.content changes. So a SUCCEEDING probe PATCH that leaves items.content
-// untouched is proof the applier answered — no exported accessor for
-// "electable conns" exists, and reaching into the manager's unexported state
-// is not available from this package.
+// It asks the routing predicate the handler itself uses — RoomManager.HasElectableApplier,
+// added by TASK-2987 — rather than probing with real PATCHes.
+//
+// THE PROBE LOOP THIS REPLACES, and why it had to go (BUG-2995). It PATCHed every
+// few milliseconds and inferred the route from whether items.content changed, with a
+// comment explaining that no exported accessor for electable conns existed. That was
+// true when it was written and stopped being true at TASK-2987, which added the
+// accessor precisely so the handler could learn the route without taking it.
+//
+// Leaving it as a write loop was not merely wasteful. Those writes go through the
+// ordinary API rate limiter (600/min, burst 60) and the bucket is shared across the
+// package, so each caller of this helper drains it for the tests that follow. With
+// one caller it stayed under the burst; a second caller (BUG-2995's) pushed a THIRD
+// caller — TestApplierPathRefusalLeavesNoOpLogRow_OpenChildren, which was green on
+// main and had nothing to do with the change — over the edge in CI, where it spent a
+// full 15s budget being answered 429 and failed. A readiness helper that consumes a
+// shared, exhaustible resource makes unrelated tests fail as a function of how many
+// other tests ran first, which is the worst kind of flake to diagnose from a log.
+//
+// Asking the predicate directly costs nothing, cannot be rate-limited, and answers
+// the exact question instead of inferring it from a side effect.
 func waitForApplierPath(t *testing.T, srv *Server, wsSlug, itemSlug, itemID string) {
 	t.Helper()
+	if srv.collab == nil {
+		t.Fatal("waitForApplierPath: server has no collab manager; the applier path cannot exist")
+	}
 	deadline := time.Now().Add(applierProbeBudget)
-	var rateLimited bool
-	for attempt := 0; time.Now().Before(deadline); attempt++ {
-		probe := "applier-path probe"
-		rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+wsSlug+"/items/"+itemSlug,
-			map[string]interface{}{"content": probe})
-		// The probe loop is a WRITE loop against the ordinary API limiter (600/min,
-		// burst 60), so a long enough poll drains the bucket and starts answering
-		// 429 — which says nothing about which content route the server would take.
-		// Treating that as a hard failure made this helper flaky the moment a second
-		// test used it: one test at -count=1 stays under the burst, two tests at
-		// -count=5 do not (BUG-2995). Wait for the refill instead, and keep the
-		// distinction if the deadline expires — "rate-limited throughout" and "never
-		// took the applier path" are different diagnoses.
-		if rr.Code == http.StatusTooManyRequests {
-			rateLimited = true
-			time.Sleep(applierProbeBackoff)
-			continue
-		}
-		if rr.Code != http.StatusOK {
-			t.Fatalf("probe PATCH failed: %d %s", rr.Code, rr.Body.String())
-		}
-		item, err := srv.store.GetItem(itemID)
-		if err != nil {
-			t.Fatalf("GetItem: %v", err)
-		}
-		if item.Content != probe {
-			return // content did not land in the row: the applier took it
+	for time.Now().Before(deadline) {
+		if srv.collab.HasElectableApplier(itemID) {
+			return
 		}
 		time.Sleep(applierProbePoll)
 	}
-	if rateLimited {
-		// Deliberately reported as INCONCLUSIVE rather than as the direct-path
-		// verdict. The flag is sticky, so some probes did complete and did write the
-		// row — the failure is real either way and this branch does not suppress it.
-		// What it prevents is a confident diagnosis: a run that spent part of its
-		// budget being refused has not measured the room's routing, and sending the
-		// next reader after a product bug that may not exist costs more than the
-		// hedge does.
-		t.Fatal("no applier path within the probe budget, and the loop was rate-limited during part " +
-			"of it: treat this as inconclusive about which route the server takes rather than as " +
-			"evidence it writes items.content directly")
-	}
-	t.Fatal("no applier path within the probe budget: every probe PATCH wrote items.content directly")
+	t.Fatalf("no electable applier for item %s within %s: a content PATCH would take the "+
+		"direct-write path, so this test cannot measure applier-path behaviour", itemID,
+		applierProbeBudget)
 }
 
-// Probe pacing. The poll is slow enough that a full 3s of probing stays inside the
-// API limiter's burst, and the backoff is long enough to earn tokens back at the
-// 10/s refill rather than spinning against a drained bucket.
+// Probe pacing. The budget is a READINESS wait, not an assertion — every millisecond
+// of it is spent only while the room has no electable conn, and a passing run returns
+// in a few polls. A too-short budget does not catch a product bug; it invents a flaky
+// test (BUG-2995: election lost the race in 2 runs of 5 against 3s).
 const (
-	applierProbePoll    = 25 * time.Millisecond
-	applierProbeBackoff = 150 * time.Millisecond
-	// The budget is a READINESS wait, not an assertion: it bounds how long the room
-	// may take to produce an electable conn, and every millisecond of it is spent
-	// only when the room is not ready yet. 3s was enough for one test on an idle
-	// machine and not for a package under -count, where election lost the race in
-	// 2 runs of 5 (BUG-2995). A too-short budget here does not catch a product bug,
-	// it invents a flaky one — the test that follows is what asserts behaviour.
+	applierProbePoll   = 5 * time.Millisecond
 	applierProbeBudget = 15 * time.Second
 )
 
