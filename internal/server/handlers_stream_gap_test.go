@@ -351,7 +351,7 @@ func TestRefusedConnectionDoesNotCountASyncRequired(t *testing.T) {
 		t.Fatalf("building the request: %v", err)
 	}
 	req.Header.Set("Last-Event-ID", "not-a-number")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := isolatedTestClient().Do(req)
 	if err != nil {
 		t.Fatalf("connecting: %v", err)
 	}

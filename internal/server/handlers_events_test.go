@@ -41,7 +41,10 @@ func connectSSE(ctx context.Context, t *testing.T, baseURL, workspaceSlug string
 		t.Fatalf("failed to create SSE request: %v", err)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	// isolatedTestClient(), not http.DefaultClient: this helper's request lives
+	// for the whole test, and a caller may be parallel (BUG-3008). A helper cannot
+	// know which of its callers is exposed, so it does not try to.
+	resp, err := isolatedTestClient().Do(req)
 	if err != nil {
 		t.Fatalf("failed to connect to SSE: %v", err)
 	}
@@ -102,7 +105,9 @@ func apiRequest(t *testing.T, baseURL, method, path string, body interface{}) *h
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := http.DefaultClient.Do(req)
+	// isolatedTestClient() for the reason on connectSSE above (BUG-3008): callers
+	// include parallel tests, and the helper cannot tell them apart.
+	resp, err := isolatedTestClient().Do(req)
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
@@ -381,7 +386,7 @@ func TestSSEGlobalConnectionLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := isolatedTestClient().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -412,7 +417,7 @@ func TestSSEPerWorkspaceLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := isolatedTestClient().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -446,7 +451,7 @@ func TestSSELimitsExistingConnectionsUnaffected(t *testing.T) {
 
 	// Try (and fail) to get a second connection
 	req, _ := http.NewRequest("GET", ts.URL+"/api/v1/events?workspace="+slug, nil)
-	resp, _ := http.DefaultClient.Do(req)
+	resp, _ := isolatedTestClient().Do(req)
 	resp.Body.Close()
 
 	// The existing connection should still work — publish an event

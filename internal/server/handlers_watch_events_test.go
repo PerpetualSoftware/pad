@@ -81,7 +81,7 @@ func connectWatchStreamWithHeadersAndQuery(ctx context.Context, t *testing.T, ba
 		req.Header.Set(k, v)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := isolatedTestClient().Do(req)
 	if err != nil {
 		t.Fatalf("failed to connect: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestWatchEventsStream_RequiresAuth(t *testing.T) {
 	defer ts.Close()
 
 	req, _ := http.NewRequest("GET", ts.URL+"/api/v1/events/stream", nil)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := isolatedTestClient().Do(req)
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
