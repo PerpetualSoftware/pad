@@ -136,9 +136,15 @@ func TestBUG2995_DirectPathCarriesNoPendingMarker(t *testing.T) {
 	item := createTaskWithFields(t, srv, slug, "Item", `{"status":"open"}`)
 
 	// No tab is connected, so this takes the direct-write path and lands in the row.
+	//
+	// The undeclared field is load-bearing rather than incidental: the warnings
+	// object is only built when there is something to say, so without it a mutant
+	// that stamps content_outcome unconditionally survives — the marker lands
+	// inside a block this path never enters. It was found exactly that way, as a
+	// SURVIVED mutant against the first version of this leg.
 	const sent = "content written with nobody connected"
 	rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+item.Slug,
-		map[string]interface{}{"content": sent})
+		map[string]interface{}{"content": sent, "fields": `{"not_in_schema":"x"}`})
 	if rr.Code != http.StatusOK {
 		t.Fatalf("PATCH: want 200, got %d: %s", rr.Code, rr.Body.String())
 	}
@@ -160,7 +166,15 @@ func TestBUG2995_DirectPathCarriesNoPendingMarker(t *testing.T) {
 	if got, _ := body["content"].(string); got != sent {
 		t.Errorf("direct-path 200 content = %q, want the stored value %q", got, sent)
 	}
-	if warnings, ok := body["warnings"].(map[string]any); ok {
+	warnings, ok := body["warnings"].(map[string]any)
+	if !ok {
+		t.Fatalf("precondition: this leg needs a warnings object (the undeclared field should have "+
+			"produced one), got body keys %v", keysOf(body))
+	}
+	if undeclared, _ := warnings["undeclared_fields"].([]any); len(undeclared) == 0 {
+		t.Fatalf("precondition: expected undeclared_fields to be named, got %v", warnings)
+	}
+	{
 		if outcome, _ := warnings["content_outcome"].(string); outcome != "" {
 			t.Errorf("direct-path 200 carries content_outcome=%q; the content IS in the row, so there is "+
 				"nothing pending and the marker must be absent", outcome)
