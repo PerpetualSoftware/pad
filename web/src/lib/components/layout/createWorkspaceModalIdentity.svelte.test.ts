@@ -39,6 +39,11 @@ vi.mock('$lib/api/client', () => ({
 }));
 vi.mock('$app/navigation', () => ({ goto }));
 
+const toastShow = vi.hoisted(() => vi.fn());
+vi.mock('$lib/stores/toast.svelte', () => ({
+	toastStore: { show: toastShow, dismiss: vi.fn(), get toasts() { return []; } },
+}));
+
 import CreateWorkspaceModal from './CreateWorkspaceModal.svelte';
 import { authStore } from '$lib/stores/auth.svelte';
 import { uiStore } from '$lib/stores/ui.svelte';
@@ -84,6 +89,7 @@ async function attachBundle(container: HTMLElement): Promise<void> {
 
 beforeEach(async () => {
 	goto.mockClear();
+	toastShow.mockClear();
 	api.templates.list.mockResolvedValue([]);
 	api.workspaces.list.mockResolvedValue([]);
 	api.workspaces.get.mockResolvedValue(WS);
@@ -237,6 +243,81 @@ describe('BUG-2991: the create-workspace modal does not act for a session that e
 
 		expect(goto).not.toHaveBeenCalled();
 		expect(onWorkspaceCreated).not.toHaveBeenCalled();
+	});
+
+	it('does not report a FAILED import to the user who did not start it', async () => {
+		// codex round 7. The success path was fenced and the failure path was
+		// not, so an import that rejected after the signed-in user changed
+		// showed A's error to B — an error for an operation B never started,
+		// naming a file they never chose.
+		const imported = deferred<typeof WS>();
+		let rejectImport!: (e: unknown) => void;
+		api.workspaces.importBundle.mockReturnValue(new Promise((_res, rej) => { rejectImport = rej; }));
+		void imported;
+
+		const { container } = render(CreateWorkspaceModal, { props: {} });
+		await attachBundle(container);
+		btn(container, /Import Workspace/).click();
+		await settle();
+		expect(api.workspaces.importBundle).toHaveBeenCalled();
+
+		authStore.clear();
+		rejectImport(new Error('boom'));
+		await settle();
+
+		expect(toastShow).not.toHaveBeenCalled();
+	});
+
+	it('DOES report a failed import to the user who started it', async () => {
+		// The counterfactual: the fence must not swallow real errors.
+		api.workspaces.importBundle.mockRejectedValue(new Error('boom'));
+
+		const { container } = render(CreateWorkspaceModal, { props: {} });
+		await attachBundle(container);
+		btn(container, /Import Workspace/).click();
+		await settle();
+
+		expect(toastShow).toHaveBeenCalled();
+		expect(String(toastShow.mock.calls[0]?.[0])).toContain('Import failed');
+	});
+
+	it('does not report a FAILED create to the user who did not start it', async () => {
+		let rejectCreate!: (e: unknown) => void;
+		api.workspaces.create.mockReturnValue(new Promise((_res, rej) => { rejectCreate = rej; }));
+
+		const { container } = render(CreateWorkspaceModal, { props: {} });
+		const name = container.querySelector('#ws-create-name') as HTMLInputElement;
+		await fireEvent.input(name, { target: { value: 'Other' } });
+		btn(container, /Create Workspace/).click();
+		await settle();
+		expect(api.workspaces.create).toHaveBeenCalled();
+
+		authStore.clear();
+		rejectCreate(new Error('boom'));
+		await settle();
+
+		expect(toastShow).not.toHaveBeenCalled();
+	});
+
+	it('closes itself when the signed-in user changes, so no draft is inherited', async () => {
+		// codex round 7. The OPERATIONS were fenced; the DRAFT was not. A modal
+		// left open by one user kept their typed name, description, chosen
+		// template and selected bundle on screen for whoever signed in next —
+		// visible to them, and submittable by them.
+		const { container } = render(CreateWorkspaceModal, { props: {} });
+		const name = container.querySelector('#ws-create-name') as HTMLInputElement;
+		await fireEvent.input(name, { target: { value: 'A private project name' } });
+		await settle();
+		expect(uiStore.createWorkspaceOpen).toBe(true);
+
+		authStore.clear();
+		await settle();
+
+		expect(uiStore.createWorkspaceOpen).toBe(false);
+		// And reopening starts clean rather than restoring the draft.
+		uiStore.openCreateWorkspace();
+		await settle();
+		expect((container.querySelector('#ws-create-name') as HTMLInputElement).value).toBe('');
 	});
 
 	it('navigates when the user is unchanged during an IMPORT', async () => {

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { untrack } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
@@ -114,6 +114,19 @@
 		uiStore.closeCreateWorkspace();
 	}
 
+	// A DRAFT IS PER-USER TOO (codex round 7). The operations are fenced, but a
+	// modal left open by one user kept their typed workspace name, description,
+	// chosen template and selected import FILE on screen for whoever signed in
+	// next — visible, and submittable by them. Closing is the whole fix,
+	// because the reset above runs on the next open transition; there is no
+	// separate teardown to keep in step with it.
+	//
+	// Registered here rather than folded into the store's own listener because
+	// this is component state, and it unsubscribes on destroy.
+	onMount(() => authStore.onIdentityChange(() => {
+		if (uiStore.createWorkspaceOpen) close();
+	}));
+
 	function selectBlank() {
 		selectedTemplate = 'blank';
 	}
@@ -139,6 +152,9 @@
 
 	async function createWorkspace() {
 		if (!newName.trim()) return;
+		// Captured for the FAILURE path only — the success path is fenced in the
+		// store, which returns null when the user changed (codex round 7).
+		const createUser = authStore.userId;
 		try {
 			const ws = await workspaceStore.create({
 				name: newName.trim(),
@@ -164,6 +180,12 @@
 			close();
 			goto(`/${ws.owner_username}/${ws.slug}`);
 		} catch (err: unknown) {
+			// Same fence on the failure path as on the success path (codex
+			// round 7). A create that rejects after the signed-in user changed
+			// reported the previous session's failure to whoever is here now,
+			// and the plan-limit branch is worse than the generic one — it
+			// would tell B their plan is full because A's was.
+			if (authStore.userId !== createUser) return;
 			if (isPlanLimitError(err)) {
 				toastStore.show(planLimitMessage(err) + ' Upgrade to Pro', 'error', 6000, '/console/billing');
 			} else {
@@ -213,6 +235,14 @@
 			toastStore.show(`Imported workspace "${ws.name}"`, 'success');
 			goto(`/${ws.owner_username}/${ws.slug}`);
 		} catch (err) {
+			// The FAILURE path needs the same fence (codex round 7). An import
+			// that rejects after the signed-in user changed reported A's error
+			// to B — an error for an operation B never started, naming a file
+			// they never chose. The comment above claimed the fence covered
+			// "the callback, the toast and the goto"; the toast down here was
+			// unconditional, which made that comment a claim the code did not
+			// keep. The same applies when `loadAll` is what rejected.
+			if (authStore.userId !== callUser) return;
 			toastStore.show(`Import failed: ${err instanceof Error ? err.message : 'Unknown error'}`, 'error');
 		} finally {
 			importing = false;
