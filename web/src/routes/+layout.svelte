@@ -106,7 +106,7 @@
 		// Deliberately outside the async body below — an `onMount` that returns
 		// a Promise has its resolved value ignored, so a cleanup returned from
 		// an async `onMount` is never called.
-		return authStore.onIdentityChange(() => {
+		return authStore.onIdentityChange((previousUserId) => {
 			// Re-armed for the pre-reload window: this latch is THIS component's
 			// state and the reload below may not have happened yet.
 			workspacesRequested = false;
@@ -122,6 +122,12 @@
 			// remembered. What it does NOT drop — localStorage, sessionStorage,
 			// IndexedDB — is still an enumeration, but over STORAGE KEYS, which
 			// is bounded and greppable.
+			// ONLY WHEN SOMEBODY WAS SIGNED IN BEFORE. A sign-IN from an
+			// unauthenticated tab changes the identity, but the state it would
+			// be dropping is anonymous — nobody's private data — and reloading
+			// there puts a full page load in the middle of the login flow,
+			// racing its own navigation. Sign-OUT and a swap both reload.
+			if (!previousUserId) return;
 			reloadForIdentityChange();
 		});
 	});

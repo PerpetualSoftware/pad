@@ -30,6 +30,9 @@ vi.mock('$lib/api/client', () => ({
 
 // `goto` must not run: the unauthenticated branches call it, and jsdom has no
 // navigation. Nothing here asserts on it.
+const identityReload = vi.hoisted(() => ({ reloadForIdentityChange: vi.fn() }));
+vi.mock('$lib/stores/identityReload.svelte', () => identityReload);
+
 vi.mock('$app/navigation', () => ({
 	goto: vi.fn(),
 	beforeNavigate: () => {},
@@ -134,5 +137,66 @@ describe('BUG-2991: the root layout refetches workspaces when the user changes',
 		await settle();
 
 		expect(workspaceStore.workspaces).toEqual([U2_WS]);
+	});
+});
+
+describe('BUG-3005: which identity transitions reload the tab', () => {
+	// The reload exists so one user's data cannot be visible to the next. Which
+	// transitions need it is therefore a question about whose data is being
+	// dropped, and an ANONYMOUS baseline holds nobody's private data — so a
+	// sign-IN does not reload. Reloading there also put a full page load in the
+	// middle of the login flow, racing its own navigation; the E2E suite caught
+	// that, which is why these three legs exist.
+	//
+	// EACH LEG ASSERTS AN EXACT CALL COUNT, and that is load-bearing rather than
+	// style: `afterEach` clears the store, so every test starts from an
+	// ESTABLISHED empty identity and its own setup performs a sign-in. Removing
+	// the guard therefore adds a reload during setup and all three legs fail —
+	// the swap and sign-out ones on the COUNT rather than on the absence.
+
+	it('reloads on a SWAP from one user to another', async () => {
+		render(Layout, { props: { children: childSnippet } });
+		await settle();
+		// PRECONDITION: u1 is established, so what follows is a change rather
+		// than a baseline.
+		expect(authStore.userId).toBe('u1');
+		expect(identityReload.reloadForIdentityChange).not.toHaveBeenCalled();
+
+		api.auth.session.mockResolvedValue(sessionFor('u2'));
+		await authStore.load();
+		await settle();
+
+		expect(identityReload.reloadForIdentityChange).toHaveBeenCalledTimes(1);
+	});
+
+	it('reloads on SIGN-OUT', async () => {
+		render(Layout, { props: { children: childSnippet } });
+		await settle();
+		expect(authStore.userId).toBe('u1');
+
+		authStore.clear();
+		await settle();
+
+		expect(identityReload.reloadForIdentityChange).toHaveBeenCalledTimes(1);
+	});
+
+	it('does NOT reload on a SIGN-IN from an unauthenticated tab', async () => {
+		// The leg the E2E failure is about. `collab-helpers.ts` signs in from
+		// inside a mounted page, and a reload there takes the page out from
+		// under whatever is driving it — in a test, and in the real login flow.
+		api.auth.session.mockResolvedValue(null);
+		render(Layout, { props: { children: childSnippet } });
+		await settle();
+		// PRECONDITION: the tab is unauthenticated and that baseline is
+		// established, so the sign-in below IS a transition and this leg is not
+		// passing because nothing fired.
+		expect(authStore.userId).toBe('');
+
+		api.auth.session.mockResolvedValue(sessionFor('u1'));
+		await authStore.load();
+		await settle();
+
+		expect(authStore.userId).toBe('u1');
+		expect(identityReload.reloadForIdentityChange).not.toHaveBeenCalled();
 	});
 });

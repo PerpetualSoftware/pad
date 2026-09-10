@@ -31,7 +31,7 @@ let generation = 0;
 //
 // The direction of the dependency is unchanged: `workspace.svelte.ts` imports
 // this module and registers here, so this module still imports nothing of it.
-const identityListeners = new Set<() => void>();
+const identityListeners = new Set<(previousUserId: string) => void>();
 // The id whose listeners have already been notified. Compared rather than
 // assumed, so a `load()` that returns the SAME user (the common case — the root
 // layout fetches the session on every cold start) notifies nobody and cannot
@@ -121,6 +121,7 @@ function notifyIdentityChange() {
 		return;
 	}
 	if (id === notifiedUserId) return;
+	const previousUserId = notifiedUserId;
 	notifiedUserId = id;
 	// BEFORE the listeners, not after. A listener may capture a fence while it
 	// runs — dropping state and immediately reloading is the expected shape —
@@ -139,7 +140,15 @@ function notifyIdentityChange() {
 	// before the change (codex round 2 read "stops" as a claim that they all
 	// reload, so this says which is which).
 	identityEpoch++;
-	for (const fn of identityListeners) fn();
+	// The PREVIOUS established identity is passed to listeners, because one of
+	// them has to distinguish a sign-IN from a sign-out or a swap (BUG-3005,
+	// lead ruling after the E2E failure). The reload exists to stop one user's
+	// data being visible to the next, and an ANONYMOUS baseline holds nobody's
+	// private data — so `'' -> user` needs no reload, while `user -> user` and
+	// `user -> ''` do. Reloading on sign-in also put a full page load in the
+	// middle of the primary login path, racing whatever navigation that flow
+	// was doing.
+	for (const fn of identityListeners) fn(previousUserId);
 }
 
 export const authStore = {
@@ -239,8 +248,13 @@ export const authStore = {
 	 * Fired only on a real change of user id, so a session refetch that returns
 	 * the same user is silent. See `identityListeners` above for why this exists
 	 * rather than a call at each sign-out site.
+	 *
+	 * The listener receives the PREVIOUS established user id — `''` when the tab
+	 * was unauthenticated. Most listeners ignore it and simply drop state; the
+	 * root layout uses it to reload on a sign-out or a swap but NOT on a
+	 * sign-in.
 	 */
-	onIdentityChange(fn: () => void): () => void {
+	onIdentityChange(fn: (previousUserId: string) => void): () => void {
 		identityListeners.add(fn);
 		return () => identityListeners.delete(fn);
 	},
