@@ -115,9 +115,16 @@ func waitForApplierPath(t *testing.T, srv *Server, wsSlug, itemSlug, itemID stri
 		time.Sleep(applierProbePoll)
 	}
 	if rateLimited {
-		t.Fatal("no applier path within the probe budget, and the loop was rate-limited during it: the " +
-			"result is inconclusive about which route the server takes, not evidence that it " +
-			"writes items.content directly")
+		// Deliberately reported as INCONCLUSIVE rather than as the direct-path
+		// verdict. The flag is sticky, so some probes did complete and did write the
+		// row — the failure is real either way and this branch does not suppress it.
+		// What it prevents is a confident diagnosis: a run that spent part of its
+		// budget being refused has not measured the room's routing, and sending the
+		// next reader after a product bug that may not exist costs more than the
+		// hedge does.
+		t.Fatal("no applier path within the probe budget, and the loop was rate-limited during part " +
+			"of it: treat this as inconclusive about which route the server takes rather than as " +
+			"evidence it writes items.content directly")
 	}
 	t.Fatal("no applier path within the probe budget: every probe PATCH wrote items.content directly")
 }

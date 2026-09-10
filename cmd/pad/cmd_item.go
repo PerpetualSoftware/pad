@@ -3837,7 +3837,8 @@ func warnContentPendingFlush(item *models.Item) {
 		return
 	}
 	fmt.Fprintln(os.Stderr, "warning: the content was applied to the live collaborative document "+
-		"(an editor has this item open) and the stored copy has not been updated yet. The "+
-		"response's content is what you sent; a read before a collab-snapshot flush lands will show "+
-		"the previous content, and the stored form may end up differing slightly from what you sent.")
+		"(an editor has this item open), so this request did not write the stored copy — a "+
+		"collab-snapshot flush does that, and one may already have run. The response's content is "+
+		"what you sent; a read before such a flush lands shows the previous content, and the "+
+		"stored form may end up differing slightly from what you sent.")
 }
