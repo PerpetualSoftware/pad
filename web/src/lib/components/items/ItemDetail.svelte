@@ -1407,7 +1407,7 @@
 						// still lose chars without this branch.
 						item = adoptServerItem(updated);
 						void refreshCollectionIfMoved(updated);
-						const links = await api.links.list(reqWsSlug, updated.slug).catch(() => []);
+						const links = await refreshLinksPreservingOnFailure(reqWsSlug, updated.slug);
 						if (!item || item.id !== reqItemId || myItemGen !== itemGen) return;
 						itemLinks = links;
 					} catch {
@@ -1512,7 +1512,7 @@
 					const myItemGen = ++itemGen;
 					item = adoptServerItem(updated);
 					void refreshCollectionIfMoved(updated);
-					const links = await api.links.list(reqWsSlug, updated.slug).catch(() => []);
+					const links = await refreshLinksPreservingOnFailure(reqWsSlug, updated.slug);
 					if (!item || item.id !== reqItemId || myItemGen !== itemGen) return;
 					itemLinks = links;
 				}
@@ -1529,10 +1529,14 @@
 				// adoptions above — a long tab absence can span a move too
 				// (codex round 2 P1).
 				void refreshCollectionIfMoved(updated);
-				const links = await api.links.list(reqWsSlug, updated.slug).catch(() => []);
+				const links = await refreshLinksPreservingOnFailure(reqWsSlug, updated.slug);
 				if (!item || item.id !== reqItemId || myItemGen !== itemGen) return;
 				itemLinks = links;
-				syncService.markSynced(); // Advance cursor now that reload succeeded
+				// Advance the cursor now that the ITEM reload succeeded. The links
+				// half may have failed and been preserved rather than fetched
+				// (`refreshLinksPreservingOnFailure`), which the cursor cannot
+				// express — BUG-2992.
+				syncService.markSynced();
 			} catch {
 				// Ignore — will catch up on next event
 			}
@@ -1592,6 +1596,25 @@
 
 	async function loadData() {
 		const myGen = ++loadGeneration;
+		// The item whose links `itemLinks` currently describes, captured BEFORE
+		// this load can replace `item`. `loadData` is not only a first load or a
+		// switch: the edit-collection handler calls it for a SAME-item reload
+		// after a schema change (see the `itemMatchesRef` gate below, which
+		// exists for that case). On such a reload a failed links request must
+		// keep the links it has, for the same reason the three refresh callers
+		// do — and on a real switch it must NOT, or one item's relationships
+		// render under another's title (BUG-2871, codex P1).
+		//
+		// READ THROUGH `untrack`, and that is not a style choice (CONVE-1688).
+		// `loadData` is called from an `$effect` whose tracked deps are
+		// `wsSlug`/`collSlug`/`itemSlug`, and it WRITES `item` further down. A
+		// plain read here adds `item` to that effect's dependencies, making the
+		// effect self-invalidating: dev throws `effect_update_depth_exceeded`,
+		// and the PRODUCTION build silently wedges the global effect scheduler,
+		// so the app stops re-rendering with no error at all. That is what this
+		// line did on its first version — the whole e2e suite failed, the
+		// attachment viewer included, because nothing downstream ever rendered.
+		const linksHeldForItemId = untrack(() => item?.id ?? null);
 		// Join the unified collection-snapshot fence so this load's `collection`
 		// write is dropped if a newer SSE refresh / callback landed a fresher
 		// snapshot while this load was in flight (Codex — separate lifecycle
@@ -1913,12 +1936,30 @@
 			// (BUG-1461 — previously this was a fire-and-forget call here,
 			// which raced the Y.Doc seed and could bake `[[X]]` text in).
 
-			// Load links for this item
+			// Load links for this item.
+			//
+			// This failure path clears CONDITIONALLY, and the condition is the
+			// point. `loadData` runs for a first load, for a switch to a
+			// DIFFERENT item, and — via the edit-collection handler after a
+			// schema change — for a SAME-item reload. Keeping the previous list
+			// across a switch would render one item's relationships under
+			// another item's title; clearing it on a same-item reload destroys
+			// good rows and takes any click straddling it with them, which is
+			// the whole defect. So the test is `linksHeldForItemId`, not which
+			// function we are in (BUG-2871; the unconditional clear here was
+			// codex P1 on the first version of this fix).
 			try {
 				const links = await api.links.list(wsSlug, itemData.slug);
 				if (myGen !== loadGeneration) return;
 				itemLinks = links;
-			} catch { if (myGen !== loadGeneration) return; itemLinks = []; }
+			} catch {
+				if (myGen !== loadGeneration) return;
+				// Clear only when the rows we hold belong to a DIFFERENT item (or
+				// to no item yet). A same-item reload keeps them, matching the
+				// three refresh callers; the asymmetry is about whose rows they
+				// are, not about which function is running.
+				if (linksHeldForItemId !== itemData.id) itemLinks = [];
+			}
 
 			// Load workspace members and agent roles for the assignment picker.
 			// Both are workspace-invariant, so reuse the cached copy on a
@@ -3855,6 +3896,46 @@
 		if (ref) return ref;
 		if (title) return title;
 		return fallback || 'Unknown item';
+	}
+
+	/**
+	 * Refresh this item's links, KEEPING the current list if the request fails.
+	 *
+	 * The three same-item refresh callers used `.catch(() => [])`, which threw
+	 * away rows that were on screen and correct: a failed request says nothing
+	 * about the links it did not fetch. Two reasons that mattered beyond the
+	 * lost data.
+	 *
+	 * An empty list collapses `{#if relationshipGroups.length > 0}`, which sits
+	 * ABOVE both `{#each}` keys — so keying the rows protects nothing here, and
+	 * the whole section is destroyed and later rebuilt. A click straddling that
+	 * loses its target the same way BUG-2871's Children rows did: no navigation,
+	 * no error, because a click needs mousedown and mouseup on ONE node.
+	 *
+	 * And silence on a failed same-item refresh is the ruled behaviour (BUG-2871
+	 * trail): last-good rows are valid data. That ruling only holds if the rows
+	 * actually survive the failure — which is the half this closes, exactly as
+	 * the Children fix had to cover its error branch as well as its loading one.
+	 *
+	 * WHAT IT DOES NOT PROMISE is a retry. Turning the error into a successful
+	 * return means the full-refresh caller's `syncService.markSynced()` still
+	 * advances the cursor, so stale links can persist until something else asks
+	 * — and a non-structural link change emits no event to ask on. That is not
+	 * introduced here (`.catch(() => [])` returned successfully too) but this
+	 * makes it survivable rather than visibly empty, so it is filed rather than
+	 * left implied: BUG-2992.
+	 *
+	 * Callers still re-check item identity after awaiting, since this returns
+	 * links for whatever `slug` they asked about.
+	 */
+	async function refreshLinksPreservingOnFailure(ws: string, slug: string): Promise<ItemLink[]> {
+		try {
+			return await api.links.list(ws, slug);
+		} catch {
+			// The current list, so the assignment at the call site is a no-op
+			// rather than a destructive one.
+			return itemLinks;
+		}
 	}
 
 	function relationHref(collectionSlug?: string, refOrSlug?: string): string | null {
