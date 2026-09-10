@@ -95,7 +95,12 @@ func TestNewWatchEventsStreamRequest_UnsendableLabelStillConnects(t *testing.T) 
 		t.Fatalf("build request: %v", err)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	// srv.Client(), not http.DefaultClient: httptest.Server.Close() closes idle
+	// connections on the PROCESS-WIDE default transport (the standard library
+	// does it deliberately, calling it "not part of httptest.Server's
+	// correctness"), so with several parallel tests in this package any one of
+	// them finishing could break this request mid-flight. BUG-3008.
+	resp, err := srv.Client().Do(req)
 	if err != nil {
 		t.Fatalf("request was not sendable — the monitor would retry forever and deliver nothing: %v", err)
 	}
@@ -130,7 +135,8 @@ func TestNewWatchEventsStreamRequest_ArmedSendsQueryParam(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build request: %v", err)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	// srv.Client() rather than http.DefaultClient, for the reason above (BUG-3008).
+	resp, err := srv.Client().Do(req)
 	if err != nil {
 		t.Fatalf("request not sendable: %v", err)
 	}
