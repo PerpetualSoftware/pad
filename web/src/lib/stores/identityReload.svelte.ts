@@ -79,7 +79,15 @@ export function clearPersistentIdentityState(): void {
 }
 
 /**
- * Clear what survives a reload, then reload.
+ * Clear what survives a reload, then reload — the SWAP path only.
+ *
+ * A swap (one signed-in user to another) is the transition where nothing else
+ * navigates, so the reload is the whole mechanism. A SIGN-OUT does not come
+ * here: both sign-out sites navigate away by themselves, and a reload racing
+ * them aborts one of the two — which is exactly what it did, caught by
+ * `account-delete.spec.ts` rather than by any reasoning of mine. Sign-out
+ * calls `clearPersistentIdentityState` directly and lets its own hard
+ * navigation drop the rest.
  *
  * Separated from `clearPersistentIdentityState` so a test can drive the clears
  * without navigating, and so the reload itself is one mockable call rather

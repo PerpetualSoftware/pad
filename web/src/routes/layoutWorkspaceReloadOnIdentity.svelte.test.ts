@@ -30,7 +30,10 @@ vi.mock('$lib/api/client', () => ({
 
 // `goto` must not run: the unauthenticated branches call it, and jsdom has no
 // navigation. Nothing here asserts on it.
-const identityReload = vi.hoisted(() => ({ reloadForIdentityChange: vi.fn() }));
+const identityReload = vi.hoisted(() => ({
+	reloadForIdentityChange: vi.fn(),
+	clearPersistentIdentityState: vi.fn(),
+}));
 vi.mock('$lib/stores/identityReload.svelte', () => identityReload);
 
 vi.mock('$app/navigation', () => ({
@@ -169,7 +172,31 @@ describe('BUG-3005: which identity transitions reload the tab', () => {
 		expect(identityReload.reloadForIdentityChange).toHaveBeenCalledTimes(1);
 	});
 
-	it('reloads on SIGN-OUT', async () => {
+	it('does not CLEAR-without-reloading on a swap — the reload path owns both', async () => {
+		// The counterfactual for the split: a swap must not take the sign-out
+		// branch, or it would clear the storage and then leave the tab standing
+		// with the previous user's page still mounted and nothing navigating
+		// away from it.
+		render(Layout, { props: { children: childSnippet } });
+		await settle();
+
+		api.auth.session.mockResolvedValue(sessionFor('u2'));
+		await authStore.load();
+		await settle();
+
+		expect(identityReload.clearPersistentIdentityState).not.toHaveBeenCalled();
+	});
+
+	it('CLEARS but does not reload on SIGN-OUT', async () => {
+		// Both sign-out sites navigate away by themselves — account delete with
+		// `location.href`, console logout with a hard navigation for the same
+		// reason — and a reload racing them ABORTS one of the two. That is not
+		// a hypothesis: `account-delete.spec.ts:147` failed with
+		// `net::ERR_ABORTED; maybe frame was detached?` and that is how this
+		// branch learned it.
+		//
+		// The clears still have to run: a hard navigation drops the tab's
+		// memory, not localStorage, sessionStorage or IndexedDB.
 		render(Layout, { props: { children: childSnippet } });
 		await settle();
 		expect(authStore.userId).toBe('u1');
@@ -177,7 +204,8 @@ describe('BUG-3005: which identity transitions reload the tab', () => {
 		authStore.clear();
 		await settle();
 
-		expect(identityReload.reloadForIdentityChange).toHaveBeenCalledTimes(1);
+		expect(identityReload.clearPersistentIdentityState).toHaveBeenCalledTimes(1);
+		expect(identityReload.reloadForIdentityChange).not.toHaveBeenCalled();
 	});
 
 	it('does NOT reload on a SIGN-IN from an unauthenticated tab', async () => {
@@ -198,5 +226,6 @@ describe('BUG-3005: which identity transitions reload the tab', () => {
 
 		expect(authStore.userId).toBe('u1');
 		expect(identityReload.reloadForIdentityChange).not.toHaveBeenCalled();
+		expect(identityReload.clearPersistentIdentityState).not.toHaveBeenCalled();
 	});
 });

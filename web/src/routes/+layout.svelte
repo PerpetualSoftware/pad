@@ -5,7 +5,10 @@
 	import { page } from '$app/state';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
-	import { reloadForIdentityChange } from '$lib/stores/identityReload.svelte';
+	import {
+		reloadForIdentityChange,
+		clearPersistentIdentityState,
+	} from '$lib/stores/identityReload.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
 	import { setAccessRevokedHandler, setRateLimitHandler } from '$lib/api/client';
@@ -125,9 +128,28 @@
 			// ONLY WHEN SOMEBODY WAS SIGNED IN BEFORE. A sign-IN from an
 			// unauthenticated tab changes the identity, but the state it would
 			// be dropping is anonymous — nobody's private data — and reloading
-			// there puts a full page load in the middle of the login flow,
-			// racing its own navigation. Sign-OUT and a swap both reload.
+			// there puts a full page load in the middle of the login flow.
 			if (!previousUserId) return;
+
+			// SIGN-OUT CLEARS BUT DOES NOT RELOAD. Both sign-out sites navigate
+			// away by themselves — account delete with `location.href`, console
+			// logout with a hard navigation for the same reason — and a reload
+			// racing them ABORTS one of the two. That is not a hypothesis: it
+			// is `account-delete.spec.ts:147` failing with
+			// `net::ERR_ABORTED; maybe frame was detached?`, which is how this
+			// branch learned it. The persistent clears still have to happen,
+			// because a hard navigation drops the tab's memory and not
+			// localStorage, sessionStorage or IndexedDB.
+			//
+			// A SWAP has no such navigation of its own, so there the reload IS
+			// the mechanism.
+			//
+			// The property is the same either way: every transition away from a
+			// real user drops that user's in-tab state.
+			if (!authStore.userId) {
+				clearPersistentIdentityState();
+				return;
+			}
 			reloadForIdentityChange();
 		});
 	});
