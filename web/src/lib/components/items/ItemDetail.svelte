@@ -2581,7 +2581,12 @@
 			// [P1] of TASK-1319.
 			const skipFlush = skipFlushOnNextCleanup;
 			skipFlushOnNextCleanup = false;
-			if (!rawMode && !skipFlush) {
+			// The same discard rule as the beforeunload handler and the raw
+			// saver (BUG-3005): this cleanup also runs on an identity change,
+			// and a Y.Doc snapshot written then carries the wrong user's
+			// cookie.
+			const identityHeld = authStore.identityEpoch === identityEpochAtLoad;
+			if (!rawMode && !skipFlush && identityHeld) {
 				collabFlusher.flushNow(ctx, true);
 			}
 			provider.destroy();
@@ -2608,6 +2613,25 @@
 	$effect(() => {
 		if (typeof window === 'undefined') return;
 		const onBeforeUnload = (event: BeforeUnloadEvent) => {
+			// WHEN THE IDENTITY MOVED, THIS HANDLER DOES NOTHING AT ALL
+			// (BUG-3005, codex round 4). Two separate defects, both created by
+			// the fix that reloads the tab on an identity change:
+			//
+			//   - it FLUSHES. Both paths below persist editor content with
+			//     `keepalive`, and the unload they run in is the identity
+			//     reload's own — so A's Y.Doc snapshot and A's pending markdown
+			//     would be PATCHed carrying B's cookie. The raw saver has its
+			//     own guard; the collab flush did not, and my grep for
+			//     `keepalive: true` missed it because it takes the flag
+			//     positionally. Guarding here covers both by construction.
+			//   - it PROMPTS. `preventDefault()` on a dirty editor raises the
+			//     native "unsaved changes" dialog, and "Stay" CANCELS the
+			//     reload — leaving B in A's page shell with the stores already
+			//     cleared and no remount left to rebuild it. The prompt exists
+			//     to protect the author's unsaved work, and after an identity
+			//     change the author is not the one sitting here.
+			if (authStore.identityEpoch !== identityEpochAtLoad) return;
+
 			// Collab path: flush the live Y.Doc snapshot (unchanged).
 			const ctx = activeCollabContext;
 			if (ctx) collabFlusher.flushNow(ctx, true);

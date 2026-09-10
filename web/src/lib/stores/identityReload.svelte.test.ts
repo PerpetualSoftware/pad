@@ -20,6 +20,8 @@ import {
 	clearPersistentIdentityState,
 	reloadForIdentityChange,
 	RECENT_SEARCHES_KEY,
+	LAST_ROUTE_PREFIX,
+	LAST_SCROLL_PREFIX,
 } from './identityReload.svelte';
 import { CURSOR_STORAGE_PREFIX } from '$lib/collab/wsProvider.svelte';
 import { clearAttachmentMetadataCache } from '$lib/components/editor/attachment-metadata';
@@ -57,6 +59,31 @@ describe('clearPersistentIdentityState', () => {
 		expect(sessionStorage.getItem(`${CURSOR_STORAGE_PREFIX}item-a`)).toBeNull();
 		expect(sessionStorage.getItem(`${CURSOR_STORAGE_PREFIX}item-b`)).toBeNull();
 		expect(sessionStorage.getItem('pad-unrelated')).toBe('keep me');
+	});
+
+	it('drops route and scroll memory, which carry private item paths', async () => {
+		// `pad-last-scroll-...` embeds the pathname in its own KEY, so a private
+		// item slug is legible from the key list without reading any value. Both
+		// are keyed by workspace with no user in them.
+		localStorage.setItem(`${LAST_ROUTE_PREFIX}ws`, '/alice/ws/ideas/alphas-secret');
+		localStorage.setItem(`${LAST_SCROLL_PREFIX}ws-/alice/ws/ideas/alphas-secret`, '420');
+		localStorage.setItem('pad-theme', 'dark');
+
+		clearPersistentIdentityState();
+
+		expect(localStorage.getItem(`${LAST_ROUTE_PREFIX}ws`)).toBeNull();
+		expect(localStorage.getItem(`${LAST_SCROLL_PREFIX}ws-/alice/ws/ideas/alphas-secret`)).toBeNull();
+		// And leaves an ordinary UI preference alone — the clear is scoped, not
+		// a localStorage wipe.
+		expect(localStorage.getItem('pad-theme')).toBe('dark');
+	});
+
+	it('LAST_ROUTE_PREFIX still matches the key workspace-route.ts builds', async () => {
+		const src = readFileSync(
+			resolve(__dirname, '../utils/workspace-route.ts'),
+			'utf8',
+		);
+		expect(src).toContain(LAST_ROUTE_PREFIX);
 	});
 
 	it('drops the attachment-metadata memo', async () => {

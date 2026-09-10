@@ -27,6 +27,10 @@ import { CURSOR_STORAGE_PREFIX } from '$lib/collab/wsProvider.svelte';
  */
 /** Must equal `RECENT_SEARCHES_KEY` in CommandPalette.svelte. Pinned by a test. */
 export const RECENT_SEARCHES_KEY = 'pad-recent-searches';
+/** Built by `workspace-route.ts`; the prefix is duplicated, pinned by a test. */
+export const LAST_ROUTE_PREFIX = 'pad-last-route-';
+/** Built inline by every page that uses `createScrollRestoration`. */
+export const LAST_SCROLL_PREFIX = 'pad-last-scroll-';
 
 export function clearPersistentIdentityState(): void {
 	if (!browser) return;
@@ -44,6 +48,22 @@ export function clearPersistentIdentityState(): void {
 		localStorage.removeItem(RECENT_SEARCHES_KEY);
 	} catch {
 		// A browser with storage disabled throws on access. Nothing to clear.
+	}
+
+	// Route and scroll memory. `pad-last-route-<ws>` holds the last URL visited
+	// in a workspace — which can be a private item slug — and
+	// `pad-last-scroll-<ws>-<pathname>` embeds the path in its own KEY. Both are
+	// keyed by workspace with no user in them, so two accounts with access to
+	// the same workspace slug share them, and the second one is legible from
+	// the key list alone without reading a single value (codex round 4).
+	try {
+		for (const key of Object.keys(localStorage)) {
+			if (key.startsWith(LAST_ROUTE_PREFIX) || key.startsWith(LAST_SCROLL_PREFIX)) {
+				localStorage.removeItem(key);
+			}
+		}
+	} catch {
+		// As above.
 	}
 
 	// Collaborative-editing cursors, keyed by item id ALONE. B opening an item
