@@ -732,11 +732,12 @@ export interface ItemWriteWarnings {
 	/**
 	 * Where a content write ended up, in the same vocabulary the
 	 * `content_not_applied` error uses. On a 200 it takes exactly one value,
-	 * `"applied_pending_flush"`: the content reached the collaborative document
-	 * and `items.content` does not hold it — the row is updated only by a later
+	 * `"applied_pending_flush"`: the content went to the collaborative document
+	 * rather than to `items.content` — the row is updated only by a later
 	 * collab-snapshot flush, usually from the tab that applied it — so this
 	 * response's `content` is the markdown as SENT rather than as stored
-	 * (BUG-2995).
+	 * (BUG-2995). It describes the WRITE, not the row's state when you read it:
+	 * a concurrent flush may already have updated the row.
 	 *
 	 * A caller comparing this response's `content` to a later read needs it: the
 	 * two can still differ after the row is updated, because the markdown makes

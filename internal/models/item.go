@@ -89,11 +89,16 @@ type ItemWriteWarnings struct {
 	UnresolvedRelations []string `json:"unresolved_relations,omitempty"`
 	// ContentOutcome names where a content write ended up, in the same vocabulary
 	// the content_not_applied error uses. On a 200 it takes exactly one value,
-	// "applied_pending_flush": the content reached the collaborative document and
-	// items.content does not hold it — the row is updated only by a later
+	// "applied_pending_flush": the content went to the collaborative document rather
+	// than to items.content — the row is updated only by a later
 	// ?source=collab-snapshot write, which nothing guarantees happens — so the
 	// `content` on this response is the markdown as SENT rather than as stored
 	// (BUG-2995).
+	//
+	// It describes THIS WRITE, not the row's state when you read the response: a
+	// concurrent flush may already have updated the row, and the server does not
+	// re-read to find out. Either way the caller's move is to re-read rather than
+	// to re-send.
 	//
 	// A caller that reads `content` back to confirm its own write needs this: the
 	// stored form may still differ from the sent form after the row is updated,

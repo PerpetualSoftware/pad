@@ -2159,7 +2159,10 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	//
 	// The response carries the content as SENT, and the marker below is what makes
 	// that honest: the echoed value is a true statement about what the applier
-	// received, and a false one about the row until the flush lands. Echoing
+	// received, and not a claim about what the row holds. The marker describes this
+	// WRITE — that the content went to the document rather than the row — rather
+	// than reporting the row's state at response time, which would need a lock
+	// across the apply and a re-read, neither of which this path has. Echoing
 	// without the marker would be the overclaim — the stored form MAY differ from
 	// the sent form (measured on BUG-2995's trail; markdown already in the editor's
 	// preferred form survives unchanged, anything else normalises), so a caller

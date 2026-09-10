@@ -307,7 +307,10 @@ Actions:
                   applied it, though any such write updates the row — and nothing
                   guarantees one happens. The
                   response echoes the content you SENT and carries
-                  warnings.content_outcome="applied_pending_flush". A 'get' (or
+                  warnings.content_outcome="applied_pending_flush", which describes
+                  this WRITE — the content went to the document, not the row — and is
+                  not a live reading of the row, which a concurrent flush may already
+                  have updated. A 'get' (or
                   'list' with full=true — a default list carries no content at all)
                   before such a flush lands reads the stored copy and answers with the PREVIOUS
                   content: the lag, not a failed write, so do not re-send on the

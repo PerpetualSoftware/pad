@@ -83,11 +83,25 @@ func applierEcho(t *testing.T, conn *websocket.Conn) func() {
 // is not available from this package.
 func waitForApplierPath(t *testing.T, srv *Server, wsSlug, itemSlug, itemID string) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(applierProbeBudget)
+	var rateLimited bool
 	for attempt := 0; time.Now().Before(deadline); attempt++ {
 		probe := "applier-path probe"
 		rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+wsSlug+"/items/"+itemSlug,
 			map[string]interface{}{"content": probe})
+		// The probe loop is a WRITE loop against the ordinary API limiter (600/min,
+		// burst 60), so a long enough poll drains the bucket and starts answering
+		// 429 — which says nothing about which content route the server would take.
+		// Treating that as a hard failure made this helper flaky the moment a second
+		// test used it: one test at -count=1 stays under the burst, two tests at
+		// -count=5 do not (BUG-2995). Wait for the refill instead, and keep the
+		// distinction if the deadline expires — "rate-limited throughout" and "never
+		// took the applier path" are different diagnoses.
+		if rr.Code == http.StatusTooManyRequests {
+			rateLimited = true
+			time.Sleep(applierProbeBackoff)
+			continue
+		}
 		if rr.Code != http.StatusOK {
 			t.Fatalf("probe PATCH failed: %d %s", rr.Code, rr.Body.String())
 		}
@@ -98,10 +112,30 @@ func waitForApplierPath(t *testing.T, srv *Server, wsSlug, itemSlug, itemID stri
 		if item.Content != probe {
 			return // content did not land in the row: the applier took it
 		}
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(applierProbePoll)
 	}
-	t.Fatal("no applier path within 3s: every probe PATCH wrote items.content directly")
+	if rateLimited {
+		t.Fatal("no applier path within the probe budget, and the loop was rate-limited during it: the " +
+			"result is inconclusive about which route the server takes, not evidence that it " +
+			"writes items.content directly")
+	}
+	t.Fatal("no applier path within the probe budget: every probe PATCH wrote items.content directly")
 }
+
+// Probe pacing. The poll is slow enough that a full 3s of probing stays inside the
+// API limiter's burst, and the backoff is long enough to earn tokens back at the
+// 10/s refill rather than spinning against a drained bucket.
+const (
+	applierProbePoll    = 25 * time.Millisecond
+	applierProbeBackoff = 150 * time.Millisecond
+	// The budget is a READINESS wait, not an assertion: it bounds how long the room
+	// may take to produce an electable conn, and every millisecond of it is spent
+	// only when the room is not ready yet. 3s was enough for one test on an idle
+	// machine and not for a package under -count, where election lost the race in
+	// 2 runs of 5 (BUG-2995). A too-short budget here does not catch a product bug,
+	// it invents a flaky one — the test that follows is what asserts behaviour.
+	applierProbeBudget = 15 * time.Second
+)
 
 // TestBUG2840HalfA_RefusedPatchLeavesTheDocumentUntouched asserts the property the
 // reorder buys: a refused PATCH on the applier path changes NOTHING — not the row,
