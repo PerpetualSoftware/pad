@@ -13,6 +13,51 @@ let inflight: Promise<AuthSession | null> | null = null;
 // state when the generation they captured at fetch-start still matches.
 let generation = 0;
 
+// Identity-change subscribers (BUG-2991).
+//
+// `workspace.svelte.ts` holds state that BELONGS to the signed-in user but is
+// not keyed by them — `current`, `workspaces`, and a `currentMembership` that
+// has already been published. Logout is an SPA navigation, so none of it is
+// torn down by a page load, and a clean account change with no `/me` in flight
+// left the previous user's workspace list and live permission state on screen.
+// `settleIfCurrent`'s identity fence only covers the case where a settle is
+// racing the change; it cannot cover the case where nothing is racing at all.
+//
+// A subscription rather than a call at each sign-out site, for the same reason
+// `answeredMembership` is keyed by user rather than cleared on logout: it makes
+// the invalidation STRUCTURAL. There are two `authStore.clear()` sites today
+// and a third would not have to remember anything, and it fires on sign-IN as a
+// different user too, which no logout path could have covered.
+//
+// The direction of the dependency is unchanged: `workspace.svelte.ts` imports
+// this module and registers here, so this module still imports nothing of it.
+const identityListeners = new Set<() => void>();
+// The id whose listeners have already been notified. Compared rather than
+// assumed, so a `load()` that returns the SAME user (the common case — the root
+// layout fetches the session on every cold start) notifies nobody and cannot
+// clear a store mid-session.
+let notifiedUserId = '';
+// Whether an identity has been ESTABLISHED yet. The first resolution of the
+// session is not a change from anything, and firing on it would be a live
+// hazard rather than a no-op: the root layout loads the session and the
+// workspace list concurrently, so a cold start whose `/auth/session` lands
+// second would clear a `workspaces` array that had just been populated. A
+// cold start has nothing stale to drop, so the first answer only records the
+// baseline. Every later transition — including back to '' on sign-out — fires.
+let identityEstablished = false;
+
+function notifyIdentityChange() {
+	const id = session?.user?.id ?? '';
+	if (!identityEstablished) {
+		identityEstablished = true;
+		notifiedUserId = id;
+		return;
+	}
+	if (id === notifiedUserId) return;
+	notifiedUserId = id;
+	for (const fn of identityListeners) fn();
+}
+
 export const authStore = {
 	get session() { return session; },
 	get user() { return session?.user ?? null; },
@@ -52,11 +97,17 @@ export const authStore = {
 		const isCurrent = () => generation === myGeneration;
 		inflight = api.auth.session()
 			.then((s) => {
-				if (isCurrent()) session = s;
+				if (isCurrent()) {
+					session = s;
+					notifyIdentityChange();
+				}
 				return session;
 			})
 			.catch((err) => {
-				if (isCurrent()) session = null;
+				if (isCurrent()) {
+					session = null;
+					notifyIdentityChange();
+				}
 				throw err; // Re-throw so callers can distinguish fetch errors from "not authenticated".
 			})
 			.finally(() => {
@@ -80,9 +131,23 @@ export const authStore = {
 		return this.load();
 	},
 
+	/**
+	 * Register a listener fired when the SIGNED-IN USER changes — sign-out,
+	 * sign-in, or a swap between two accounts. Returns an unsubscribe function.
+	 *
+	 * Fired only on a real change of user id, so a session refetch that returns
+	 * the same user is silent. See `identityListeners` above for why this exists
+	 * rather than a call at each sign-out site.
+	 */
+	onIdentityChange(fn: () => void): () => void {
+		identityListeners.add(fn);
+		return () => identityListeners.delete(fn);
+	},
+
 	clear() {
 		session = null;
 		generation++;
+		notifyIdentityChange();
 		// Drop the in-flight promise reference so the next ensureLoaded()/load()
 		// call fires a fresh fetch rather than attaching to a pre-logout request.
 		// The old promise may still resolve/reject in the background; the

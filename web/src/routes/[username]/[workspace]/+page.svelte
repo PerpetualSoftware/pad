@@ -71,7 +71,7 @@
 	//
 	// Two effects per CONVE-606 (split reactive-state sync from route-change
 	// effects): one resets the cache on a real workspace switch, the other
-	// updates it only when membership is definitively known (non-null).
+	// updates it only when membership is definitively known.
 	// Initial default is `false` so we never flash owner-only UI before /me
 	// confirms ownership. Server enforcement (handlers_collections.go:48)
 	// remains the security boundary; this is purely a stability fix for the
@@ -85,8 +85,20 @@
 		}
 	});
 	$effect(() => {
-		const mem = workspaceStore.currentMembership;
-		if (mem !== null) isOwner = mem.role === 'owner';
+		// Gated on `membershipKnown`, NOT on `currentMembership !== null`
+		// (BUG-2990). Null means both "not fetched yet" and "no access", so
+		// gating on non-null holds the last good answer forever once the answer
+		// becomes a definitive DENIAL: an owner removed from the workspace, or
+		// a `/me` that 403s, kept the New Collection CTA and the collection
+		// editor's trigger on screen for the life of the page. `membershipKnown`
+		// is false for the span of any call that will replace membership, which
+		// is exactly the window this cache exists to ride out, and true for an
+		// answer of either sign — so a denial now clears the cache.
+		//
+		// Read through the store's `isOwner` getter rather than re-deriving the
+		// role test, matching settings/+page.svelte: the helpers mirror the
+		// server's ResolveUserPermission and must not be forked.
+		if (workspaceStore.membershipKnown) isOwner = workspaceStore.isOwner;
 	});
 
 	// Post IDEA-1516 / TASK-1530: the canonical onboarding signal is
