@@ -278,11 +278,13 @@ func (s *Store) ResolveRelationReferentsQ(
 				// below by taking the same shape a ref would have.
 				item = titled
 			case outside != nil:
-				// The title names a live item, just not one in this
-				// collection. MatchedID carries WHICH item so the server's
-				// visibility collapse can judge that exact row instead of
-				// re-resolving a title through a ladder that does not speak
-				// titles — see the field's own comment.
+				// The title names a live item the requester CAN see, just not
+				// one in this collection — the probe above already applied
+				// visibility, so an invisible match never reaches here.
+				// VisibilityChecked tells the server's collapse to leave this
+				// alone: that pass re-resolves through a UUID-or-ref ladder
+				// which cannot speak titles, so it would find nothing and
+				// collapse a reason the caller is entitled to see.
 				issues = append(issues, RelationIssue{
 					Key: def.Key, Value: value, Target: def.Collection,
 					Reason: RelationTargetWrongCollection, VisibilityChecked: canSee != nil,
@@ -296,12 +298,12 @@ func (s *Store) ResolveRelationReferentsQ(
 			}
 		}
 		if item.CollectionID != targetID {
-			// MatchedID is deliberately NOT set here. A ref-derived issue is
-			// re-resolvable by the server through the same ladder that produced
-			// it, so it does not need the id — and setting it would silently
-			// change the ref path's behaviour (no second lookup, no TOCTOU
-			// window) inside a unit whose scope says not to touch it. That
-			// window is real and is filed separately rather than fixed in
+			// VisibilityChecked is deliberately NOT set here. A ref-derived
+			// issue is re-resolvable by the server through the same ladder that
+			// produced it, so it keeps its own collapse — judging it here would
+			// silently change the ref path's behaviour (no second lookup, no
+			// TOCTOU window) inside a unit whose scope says not to touch it.
+			// That window is real and is filed as BUG-3012 rather than fixed in
 			// passing.
 			issues = append(issues, RelationIssue{
 				Key: def.Key, Value: value, Target: def.Collection, Reason: RelationTargetWrongCollection,
@@ -454,6 +456,23 @@ func (s *Store) resolveRelationTitleQ(
 	// "Unifying the two families needs a caller-supplied visibility predicate
 	// on the store API."
 	//
+	// TWO COSTS, both bounded, and stated because they are real (codex round 4):
+	//
+	// The walk loads each candidate and asks canSee about it, so it is O(live
+	// items sharing this exact title in this collection) queries. That set is
+	// normally ONE. It only grows when a collection holds many identically
+	// titled items, and the walk stops at the SECOND VISIBLE match — so the
+	// expensive shape is many HIDDEN same-titled items, which requires write
+	// access to the collection the walker cannot read. A caller who has that
+	// does not need this probe to learn anything.
+	//
+	// The cursor is not snapshot-stable, and that is not a defect: rows are
+	// ordered by `id` and the cursor only advances, so every row that existed
+	// when the walk STARTED is still visited. What a concurrent INSERT can do
+	// is land below the cursor and go unseen — inherent to any non-snapshot
+	// read, equally true of the LIMIT 2 count this replaced, and a row created
+	// after the request began is not one the answer owed anything to.
+	//
 	// PAGED ON `id`, not item_number: item_number is NULLABLE (migration 006
 	// adds it with no constraint and nothing since makes it NOT NULL), and
 	// `item_number > ?` silently excludes every NULL row — so a legacy
@@ -532,36 +551,86 @@ func (s *Store) resolveRelationTitleQ(
 
 	// Nothing in the target collection. One workspace-wide probe, for the
 	// refusal only.
-	var otherID string
-	err = q.QueryRow(s.q(`
-		SELECT id FROM items
-		WHERE workspace_id = ? AND title = ? AND deleted_at IS NULL
-		LIMIT 1
-	`), workspaceID, title).Scan(&otherID)
-	if err == sql.ErrNoRows {
-		return nil, nil, false, nil
+	//
+	// It walks for a VISIBLE match rather than taking an arbitrary one and
+	// filtering it. `LIMIT 1` plus a filter was the first shape and it broke
+	// the property in the other direction: if the row it happened to pick was
+	// hidden the caller got not_found, while a DIFFERENT live match they can
+	// see would have earned `wrong_collection` — so a hidden match changed the
+	// answer again (codex round 4).
+	other, perr := s.firstVisibleTitleMatchQ(q, workspaceID, title, canSee)
+	if perr != nil {
+		return nil, nil, false, perr
 	}
-	if err != nil {
-		return nil, nil, false, fmt.Errorf("relation title probe: %w", err)
-	}
-	other, gerr := s.GetItemQ(q, otherID)
-	if gerr != nil {
-		return nil, nil, false, gerr
-	}
-	if other != nil && canSee != nil {
-		ok, verr := canSee(q, workspaceID, other)
-		if verr != nil {
-			return nil, nil, false, verr
-		}
-		if !ok {
-			// A `wrong_collection` refusal names a LIVE item, so raising it for
-			// a target the requester cannot see is the existence oracle the
-			// server collapse closes for refs. Answering not_found here means
-			// the collapse has nothing left to do on the title path.
-			return nil, nil, false, nil
-		}
-	}
+	// A `wrong_collection` refusal names a LIVE item, so raising it for a
+	// target the requester cannot see is the existence oracle the server
+	// collapse closes for refs. Answering not_found here means the collapse has
+	// nothing left to do on the title path.
 	return nil, other, false, nil
+}
+
+// firstVisibleTitleMatchQ returns the first live item anywhere in the workspace
+// with this exact title that the requester may SEE, or nil.
+//
+// canSee == nil means no requester, and then the first live match is the
+// answer — nobody is being told anything.
+func (s *Store) firstVisibleTitleMatchQ(
+	q Queryer,
+	workspaceID, title string,
+	canSee RelationVisibilityFunc,
+) (*models.Item, error) {
+	cursor := ""
+	for {
+		rows, err := q.Query(s.q(`
+			SELECT id FROM items
+			WHERE workspace_id = ? AND title = ? AND deleted_at IS NULL AND id > ?
+			ORDER BY id
+			LIMIT ?
+		`), workspaceID, title, cursor, relationTitlePageSize)
+		if err != nil {
+			return nil, fmt.Errorf("relation title probe: %w", err)
+		}
+		var ids []string
+		for rows.Next() {
+			var id string
+			if scanErr := rows.Scan(&id); scanErr != nil {
+				rows.Close()
+				return nil, fmt.Errorf("relation title probe scan: %w", scanErr)
+			}
+			ids = append(ids, id)
+		}
+		if rowsErr := rows.Err(); rowsErr != nil {
+			rows.Close()
+			return nil, fmt.Errorf("relation title probe rows: %w", rowsErr)
+		}
+		rows.Close()
+		if len(ids) == 0 {
+			return nil, nil
+		}
+		for _, id := range ids {
+			cursor = id
+			item, gerr := s.GetItemQ(q, id)
+			if gerr != nil {
+				return nil, gerr
+			}
+			if item == nil {
+				continue
+			}
+			if canSee == nil {
+				return item, nil
+			}
+			ok, verr := canSee(q, workspaceID, item)
+			if verr != nil {
+				return nil, verr
+			}
+			if ok {
+				return item, nil
+			}
+		}
+		if len(ids) < relationTitlePageSize {
+			return nil, nil
+		}
+	}
 }
 
 // relationTitlePageSize bounds MEMORY for the walk above, not the answer: the

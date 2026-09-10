@@ -217,9 +217,10 @@ func TestRelationTitleDoors_ReadDoesNotHydrateAnInvisibleTarget(t *testing.T) {
 // VISIBLE ones count — zero is not_found, one RESOLVES, two or more is
 // ambiguous. A hidden match never changes the answer a caller gets.
 //
-// The store cannot apply that rule (it has no requester and says so at the top
-// of its own file), so its `ambiguous` is provisional and the server re-decides
-// against the candidate ids the store carries up.
+// The rule lives in the RESOLVER, which takes the requester's visibility
+// predicate (store.RelationVisibilityFunc). It was a server-side second pass
+// first, and that left the cross-workspace copy — which runs the resolver
+// inside its own transaction — deciding without it.
 
 // restrictedTitleFixture builds two same-titled colours and a member who can
 // see the Doors collection plus, through an ITEM-LEVEL grant, exactly the
@@ -521,5 +522,62 @@ func TestRelationTitleDoors_LateDefaultResolvesForACallerWhoSeesOne(t *testing.T
 	}
 	if stored != visible.ID {
 		t.Errorf("stored %v, want the one VISIBLE match %s", stored, visible.ID)
+	}
+}
+
+// TestRelationTitleDoors_ProbeFindsAVisibleMatchNotAnArbitraryOne is codex
+// round 4's P2, and it is the property failing in the other direction.
+//
+// When nothing in the declared collection carries the title, the resolver
+// probes the workspace so it can answer `wrong_collection` instead of
+// not_found. That probe took ONE arbitrary row and visibility-filtered it — so
+// if the row it happened to pick was hidden, the caller got not_found even
+// though a DIFFERENT live match they can see would have earned the specific
+// reason. A hidden match changed the answer again.
+func TestRelationTitleDoors_ProbeFindsAVisibleMatchNotAnArbitraryOne(t *testing.T) {
+	f := newDoorFixture(t)
+
+	// Two collections, NEITHER of them the relation's declared target, each
+	// holding an item with the same title. The caller can see one.
+	collOne := mustSchemaCollection(t, f.srv, f.ws.ID, "Vault One", `{"fields":[]}`)
+	collTwo := mustSchemaCollection(t, f.srv, f.ws.ID, "Vault Two", `{"fields":[]}`)
+	itemOne, err := f.srv.store.CreateItem(f.ws.ID, collOne.ID, models.ItemCreate{Title: "Split Title", CreatedBy: f.owner.ID})
+	if err != nil {
+		t.Fatalf("CreateItem(one): %v", err)
+	}
+	itemTwo, err := f.srv.store.CreateItem(f.ws.ID, collTwo.ID, models.ItemCreate{Title: "Split Title", CreatedBy: f.owner.ID})
+	if err != nil {
+		t.Fatalf("CreateItem(two): %v", err)
+	}
+
+	// DETERMINISM. The probe walks by `id`, and ids are random UUIDs, so which
+	// row it reaches first is chance — a test that hid an arbitrary one would
+	// pass roughly half the time against the BROKEN code and look fine. Hide
+	// the collection holding the LEXICALLY SMALLER id, so the first row the
+	// probe sees is always the hidden one and the leg always exercises the
+	// case it names.
+	hiddenColl, openColl := collOne, collTwo
+	if itemTwo.ID < itemOne.ID {
+		hiddenColl, openColl = collTwo, collOne
+	}
+
+	member := mustUser(t, f.srv, "probe-split@example.com", "probesplit", "")
+	if err := f.srv.store.AddWorkspaceMember(f.ws.ID, member.ID, "editor"); err != nil {
+		t.Fatalf("AddWorkspaceMember: %v", err)
+	}
+	// Can see the collection under test and openColl; NOT hiddenColl, whose
+	// item the probe reaches first.
+	if err := f.srv.store.SetMemberCollectionAccess(f.ws.ID, member.ID, "specific",
+		[]string{f.tasks.ID, openColl.ID}); err != nil {
+		t.Fatalf("SetMemberCollectionAccess: %v", err)
+	}
+
+	rr := f.createByTitle(member, "Split Title", "Probing")
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "is not an item in collection") {
+		t.Errorf("the caller CAN see the match in %q, so they are owed the specific reason; the probe reaches %q first and must keep walking rather than filtering one arbitrary row: %s", openColl.Name, hiddenColl.Name, body)
 	}
 }
