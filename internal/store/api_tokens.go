@@ -220,6 +220,30 @@ func (s *Store) DeleteUserAPIToken(id, userID string) error {
 // database, checks expiry, and updates last_used_at. Returns nil if the
 // token is invalid or expired.
 func (s *Store) ValidateToken(token string) (*models.APIToken, error) {
+	return s.validateToken(token, true)
+}
+
+// ValidateTokenForLiveness answers "is this token still valid" WITHOUT touching
+// `last_used_at` (BUG-3007, codex round 1).
+//
+// Two reasons it is a separate door rather than a flag at the call site:
+//
+//   - COST. The stream-liveness tick runs per connection per ~60s, so at the
+//     default 1000-connection admission limit `ValidateToken` would turn a
+//     read-only health check into ~16 sustained writes/second, forever, on a
+//     table nothing else writes at that rate.
+//   - MEANING. `last_used_at` is what an operator reads to decide whether a
+//     token is still in use before revoking it. A background liveness probe is
+//     not use, and letting it bump the field would make every idle-but-
+//     connected token look active — quietly defeating the audit this column
+//     exists for.
+func (s *Store) ValidateTokenForLiveness(token string) (*models.APIToken, error) {
+	return s.validateToken(token, false)
+}
+
+// validateToken is the shared read. `touch` controls the `last_used_at` write
+// so the two doors above cannot drift in what they consider valid.
+func (s *Store) validateToken(token string, touch bool) (*models.APIToken, error) {
 	hash := sha256.Sum256([]byte(token))
 	tokenHash := hex.EncodeToString(hash[:])
 
@@ -259,8 +283,10 @@ func (s *Store) ValidateToken(token string) (*models.APIToken, error) {
 	}
 
 	// Update last_used_at
-	ts := now()
-	_, _ = s.db.Exec(s.q("UPDATE api_tokens SET last_used_at = ? WHERE id = ?"), ts, t.ID)
+	if touch {
+		ts := now()
+		_, _ = s.db.Exec(s.q("UPDATE api_tokens SET last_used_at = ? WHERE id = ?"), ts, t.ID)
+	}
 
 	return &t, nil
 }

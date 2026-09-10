@@ -681,3 +681,120 @@ func TestEventsStream_SessionBearerIsValidatedAsASession(t *testing.T) {
 		t.Fatal("stream with a session BEARER stayed open after that session was destroyed")
 	}
 }
+
+// The three-valued predicate, unit-tested at the seam. The eleven tests above
+// drive it through real connections, which is where the wiring is proved
+// (CONVE-19); these pin the two answers a live server is hard to push into on
+// demand — a store that cannot answer, and a credential kind nobody taught it.
+
+func TestCredentialLiveness_UnknownKindFailsClosed(t *testing.T) {
+	// The lead's ruling, and the reason the default branch is not a fallthrough
+	// to "valid": a credential kind nobody taught this predicate about is a
+	// connection nobody can revoke, which is BUG-3007 under a new name. A
+	// future auth path that forgets to set `ctxAuthKind` must break LOUDLY.
+	srv := testServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/events?workspace=x", nil)
+	req = req.WithContext(context.WithValue(req.Context(), ctxAuthKind, "some_future_scheme"))
+
+	if got := srv.credentialLiveness(req); got != credentialInvalid {
+		t.Fatalf("credentialLiveness for an unknown kind = %v, want credentialInvalid", got)
+	}
+	if srv.streamCredentialStillValid(req) {
+		t.Fatal("an unrecognised credential kind kept the stream open; the default branch must fail closed")
+	}
+}
+
+func TestCredentialLiveness_NoCredentialIsValid(t *testing.T) {
+	// The counterfactual for the branch above: the fresh-install window and the
+	// legacy no-auth path carry no credential and have nothing to revoke.
+	// Closing them would turn a security fix into an availability regression.
+	srv := testServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/events?workspace=x", nil)
+
+	if got := srv.credentialLiveness(req); got != credentialValid {
+		t.Fatalf("credentialLiveness with no credential = %v, want credentialValid", got)
+	}
+	if !srv.streamCredentialStillValid(req) {
+		t.Fatal("a request with no credential was closed; there is nothing there to invalidate")
+	}
+}
+
+func TestCredentialLiveness_StoreErrorKeepsTheConnection(t *testing.T) {
+	// codex round 1, HIGH. The first version of this predicate was a bool, so
+	// a store ERROR read as "invalid" and a transient DB blip would have closed
+	// every affected stream on the next tick — a fleet-wide reconnect storm for
+	// users whose credentials were fine. "Cannot ask" and "definitively gone"
+	// are opposite facts and a bool collapses them.
+	srv := testServer(t)
+
+	// Close the database underneath the server: every lookup now errors rather
+	// than answering "no such session".
+	if err := srv.store.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/events?workspace=x", nil)
+	req = req.WithContext(context.WithValue(req.Context(), ctxAuthKind, authKindSessionBearer))
+	req.Header.Set("Authorization", "Bearer padsess_"+strings.Repeat("a", 64))
+
+	if got := srv.credentialLiveness(req); got != credentialUnknown {
+		t.Fatalf("credentialLiveness with an unreachable store = %v, want credentialUnknown", got)
+	}
+	if !srv.streamCredentialStillValid(req) {
+		t.Fatal("a store error closed the stream; a database blip is not a revocation")
+	}
+}
+
+func TestValidateTokenForLiveness_DoesNotTouchLastUsed(t *testing.T) {
+	// codex round 1, MEDIUM — and a meaning problem as much as a cost one:
+	// `last_used_at` is what an operator reads before revoking a token, so a
+	// background liveness probe bumping it would make every idle-but-connected
+	// token look actively used.
+	srv := testServer(t)
+
+	user, err := srv.store.CreateUser(models.UserCreate{
+		Email: "tokentouch@example.com", Name: "T", Password: "correct-horse-battery-staple", Role: "member",
+	})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	secret, id := mintPAT(t, srv, user.ID, "touch-probe")
+
+	// PRECONDITION: the ordinary door DOES touch it, or "the liveness door
+	// leaves it alone" is true of a column nothing ever writes.
+	if _, err := srv.store.ValidateToken(secret); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	touched, err := srv.store.ListUserAPITokens(user.ID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	var before *time.Time
+	for _, tok := range touched {
+		if tok.ID == id {
+			before = tok.LastUsedAt
+		}
+	}
+	if before == nil {
+		t.Fatal("ValidateToken did not set last_used_at; this test cannot discriminate")
+	}
+
+	// The liveness door must leave it exactly where it was.
+	time.Sleep(1100 * time.Millisecond) // second-resolution timestamps
+	if _, err := srv.store.ValidateTokenForLiveness(secret); err != nil {
+		t.Fatalf("liveness validate: %v", err)
+	}
+	after, err := srv.store.ListUserAPITokens(user.ID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	for _, tok := range after {
+		if tok.ID == id {
+			if tok.LastUsedAt == nil || !tok.LastUsedAt.Equal(*before) {
+				t.Fatalf("last_used_at moved from %v to %v; the liveness door must not touch it", before, tok.LastUsedAt)
+			}
+		}
+	}
+}
