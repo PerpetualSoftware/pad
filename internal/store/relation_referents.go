@@ -94,6 +94,24 @@ type RelationIssue struct {
 	// Internal only: this type has no JSON tags and reaches callers through
 	// Message().
 	MatchedID string
+
+	// CandidateIDs are the live items whose exact TITLE matched, inside the
+	// declared collection, set ONLY alongside `RelationTargetAmbiguous`.
+	//
+	// It exists because THIS PACKAGE CANNOT DECIDE AMBIGUITY. The rule is that
+	// title resolution is scoped to what the requester can SEE — among live
+	// exact-title matches, only visible ones count, so zero is not_found, one
+	// RESOLVES, and two or more is ambiguous. Visibility is request-scoped and
+	// deliberately absent here (see the file header), so the count this package
+	// produces is provisional and the server re-decides against these ids.
+	//
+	// Empty with an ambiguous reason means the match count exceeded
+	// relationTitleCandidateCap, and the answer stands for every caller.
+	//
+	// Internal only, like MatchedID: no JSON tags, and nothing puts it on the
+	// wire — the ids are exactly what a caller who cannot see them must not
+	// receive.
+	CandidateIDs []string
 }
 
 // Message renders the issue the way every door reports it. One function so the
@@ -260,14 +278,15 @@ func (s *Store) ResolveRelationReferentsQ(
 			// U6: the value is neither a UUID nor a ref, so try it as an exact
 			// TITLE — scoped to the declared collection, which is the whole
 			// distinction from ResolveItem's workspace-wide ladder (R11).
-			titled, outside, ambiguous, terr := s.resolveRelationTitleQ(q, workspaceID, targetID, value)
+			titled, outside, ambiguous, candidates, terr := s.resolveRelationTitleQ(q, workspaceID, targetID, value)
 			if terr != nil {
 				return nil, terr
 			}
 			switch {
 			case ambiguous:
 				issues = append(issues, RelationIssue{
-					Key: def.Key, Value: value, Target: def.Collection, Reason: RelationTargetAmbiguous,
+					Key: def.Key, Value: value, Target: def.Collection,
+					Reason: RelationTargetAmbiguous, CandidateIDs: candidates,
 				})
 				continue
 			case titled != nil:
@@ -431,44 +450,63 @@ func (s *Store) resolveRelationTargetQ(q Queryer, workspaceID, value string) (*m
 func (s *Store) resolveRelationTitleQ(
 	q Queryer,
 	workspaceID, targetCollectionID, title string,
-) (item *models.Item, outside *models.Item, ambiguous bool, err error) {
-	// Two rows are enough to answer "more than one" without counting the whole
-	// collection.
+) (item *models.Item, outside *models.Item, ambiguous bool, candidates []string, err error) {
+	// Bounded fetch rather than LIMIT 2, because the count this function
+	// returns is NOT the count that decides the caller's answer.
+	//
+	// The rule (lead ruling, PLAN-2857 U6) is that title resolution is scoped
+	// to what the REQUESTER CAN SEE: among live exact-title matches in the
+	// target collection, only visible ones count — zero is not_found, one
+	// resolves, two or more is ambiguous — so a hidden match never changes the
+	// answer a caller gets. Visibility is request-scoped and cannot be decided
+	// here (see this file's header), so this returns the CANDIDATES and the
+	// server layer re-decides. LIMIT 2 would be enough only if every match
+	// counted, which is the behaviour that leaked.
 	rows, err := q.Query(s.q(`
 		SELECT id FROM items
 		WHERE workspace_id = ? AND collection_id = ? AND title = ? AND deleted_at IS NULL
-		LIMIT 2
-	`), workspaceID, targetCollectionID, title)
+		ORDER BY item_number
+		LIMIT ?
+	`), workspaceID, targetCollectionID, title, relationTitleCandidateCap+1)
 	if err != nil {
-		return nil, nil, false, fmt.Errorf("relation title lookup: %w", err)
+		return nil, nil, false, nil, fmt.Errorf("relation title lookup: %w", err)
 	}
 	var ids []string
 	for rows.Next() {
 		var id string
 		if scanErr := rows.Scan(&id); scanErr != nil {
 			rows.Close()
-			return nil, nil, false, fmt.Errorf("relation title lookup scan: %w", scanErr)
+			return nil, nil, false, nil, fmt.Errorf("relation title lookup scan: %w", scanErr)
 		}
 		ids = append(ids, id)
 	}
 	if rowsErr := rows.Err(); rowsErr != nil {
 		rows.Close()
-		return nil, nil, false, fmt.Errorf("relation title lookup rows: %w", rowsErr)
+		return nil, nil, false, nil, fmt.Errorf("relation title lookup rows: %w", rowsErr)
 	}
 	rows.Close()
 
+	if len(ids) > relationTitleCandidateCap {
+		// Past the cap the candidates are not returned, so the server cannot
+		// narrow by visibility and the answer stays ambiguous for everyone.
+		// That is the safe direction and it is not a real case: a caller
+		// cannot be meaningfully handed one of more than relationTitleCandidateCap
+		// same-titled items, and answering "be more specific" is right whoever
+		// is asking.
+		return nil, nil, true, nil, nil
+	}
 	if len(ids) > 1 {
-		return nil, nil, true, nil
+		return nil, nil, true, ids, nil
 	}
 	if len(ids) == 1 {
 		found, gerr := s.GetItemQ(q, ids[0])
 		if gerr != nil {
-			return nil, nil, false, gerr
+			return nil, nil, false, nil, gerr
 		}
 		// A row that vanished between the two reads is treated as no match
 		// rather than as an error: the next thing the caller does is refuse,
 		// and refusing because the target is gone is the honest answer.
-		return found, nil, false, nil
+		return found, nil, false, ids, nil
 	}
 
 	// Nothing in the target collection. One workspace-wide probe, for the
@@ -480,17 +518,23 @@ func (s *Store) resolveRelationTitleQ(
 		LIMIT 1
 	`), workspaceID, title).Scan(&otherID)
 	if err == sql.ErrNoRows {
-		return nil, nil, false, nil
+		return nil, nil, false, nil, nil
 	}
 	if err != nil {
-		return nil, nil, false, fmt.Errorf("relation title probe: %w", err)
+		return nil, nil, false, nil, fmt.Errorf("relation title probe: %w", err)
 	}
 	other, gerr := s.GetItemQ(q, otherID)
 	if gerr != nil {
-		return nil, nil, false, gerr
+		return nil, nil, false, nil, gerr
 	}
-	return nil, other, false, nil
+	return nil, other, false, nil, nil
 }
+
+// relationTitleCandidateCap bounds the exact-title fetch. Past it the server
+// is not given candidates to narrow by visibility and every caller gets
+// `ambiguous` — see resolveRelationTitleQ for why that is the right answer
+// rather than a degradation.
+const relationTitleCandidateCap = 25
 
 // collectionIDBySlugQ returns the collection's ID, or "" when the workspace
 // has no live collection with that slug. ID only: the referent check compares
@@ -1228,17 +1272,12 @@ func (s *Store) DropInvisibleRelationDefaultsQ(
 // hole on its UUID branch and says so; this is the read-side half. A foreign id
 // falls through to the ID-only path below, which is the honest answer: the
 // value is stored, and there is nothing here to tell the caller about it.
-//
-// The SECOND return maps a resolved target's id to its collection id. Callers
-// that serve a request need it to drop a target in a collection the requester
-// cannot see back to ID-only; it is not on RelationTarget because that type is
-// the wire shape and a collection id there would be a disclosure of its own.
 func (s *Store) HydrateRelationTargetsQ(
 	q Queryer,
 	workspaceID string,
 	items []models.Item,
 	schemas map[string]models.CollectionSchema,
-) (map[string]map[string]models.RelationTarget, map[string]string, error) {
+) (map[string]map[string]models.RelationTarget, error) {
 	// item ID -> field key -> stored value
 	perItem := map[string]map[string]string{}
 	wanted := map[string]struct{}{}
@@ -1280,7 +1319,7 @@ func (s *Store) HydrateRelationTargetsQ(
 		}
 	}
 	if len(wanted) == 0 {
-		return nil, nil, nil
+		return nil, nil
 	}
 
 	ids := make([]string, 0, len(wanted))
@@ -1291,7 +1330,6 @@ func (s *Store) HydrateRelationTargetsQ(
 	sort.Strings(ids)
 
 	resolved := map[string]models.RelationTarget{}
-	collectionOf := map[string]string{}
 	// Chunked: some drivers cap placeholders per statement, and a workspace
 	// with a long list read can exceed it.
 	const chunk = 200
@@ -1307,31 +1345,30 @@ func (s *Store) HydrateRelationTargetsQ(
 			args = append(args, id)
 		}
 		rows, err := q.Query(s.q(`
-			SELECT i.id, i.title, i.item_number, i.collection_id, c.prefix
+			SELECT i.id, i.title, i.item_number, c.prefix
 			FROM items i
 			JOIN collections c ON c.id = i.collection_id
 			WHERE i.workspace_id = ? AND i.id IN (`+placeholders+`) AND i.deleted_at IS NULL
 		`), append([]any{workspaceID}, args...)...)
 		if err != nil {
-			return nil, nil, fmt.Errorf("hydrate relation targets: %w", err)
+			return nil, fmt.Errorf("hydrate relation targets: %w", err)
 		}
 		for rows.Next() {
-			var id, title, collectionID, prefix string
+			var id, title, prefix string
 			var number int
-			if err := rows.Scan(&id, &title, &number, &collectionID, &prefix); err != nil {
+			if err := rows.Scan(&id, &title, &number, &prefix); err != nil {
 				rows.Close()
-				return nil, nil, fmt.Errorf("hydrate relation targets scan: %w", err)
+				return nil, fmt.Errorf("hydrate relation targets scan: %w", err)
 			}
 			resolved[id] = models.RelationTarget{
 				ID:    id,
 				Ref:   fmt.Sprintf("%s-%d", prefix, number),
 				Title: title,
 			}
-			collectionOf[id] = collectionID
 		}
 		if err := rows.Err(); err != nil {
 			rows.Close()
-			return nil, nil, fmt.Errorf("hydrate relation targets rows: %w", err)
+			return nil, fmt.Errorf("hydrate relation targets rows: %w", err)
 		}
 		rows.Close()
 	}
@@ -1351,5 +1388,5 @@ func (s *Store) HydrateRelationTargetsQ(
 			out[itemID][key] = target
 		}
 	}
-	return out, collectionOf, nil
+	return out, nil
 }

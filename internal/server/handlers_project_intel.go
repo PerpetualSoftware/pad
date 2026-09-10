@@ -441,7 +441,7 @@ func (s *Server) handleGetProjectChangelog(w http.ResponseWriter, r *http.Reques
 		// (codex R1 P1, TASK-1916: using collIDs here dropped parent
 		// fields for items whose parent lives in an item-grant-only
 		// collection, silently breaking ?parent= for that guest).
-		s.enrichItemsWithParent(workspaceID, items, navVisibleIDs)
+		s.enrichItemsWithParent(r, workspaceID, items, navVisibleIDs)
 		filtered := items[:0]
 		for _, item := range items {
 			if itemMatchesParentFilter(item, parent) {

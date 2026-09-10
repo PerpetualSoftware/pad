@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -205,5 +206,167 @@ func TestRelationTitleDoors_ReadDoesNotHydrateAnInvisibleTarget(t *testing.T) {
 	}
 	if ownerOut.RelationTargets["owner_ref"].Ref != f.target.Ref {
 		t.Errorf("control: the owner should see the full triple, got %+v", ownerOut.RelationTargets["owner_ref"])
+	}
+}
+
+// --- title resolution is scoped to what the caller can SEE ----------------
+//
+// Lead ruling on PLAN-2857 U6, one step past "collapse ambiguous when nothing
+// is visible": among live exact-title matches in the declared collection, only
+// VISIBLE ones count — zero is not_found, one RESOLVES, two or more is
+// ambiguous. A hidden match never changes the answer a caller gets.
+//
+// The store cannot apply that rule (it has no requester and says so at the top
+// of its own file), so its `ambiguous` is provisional and the server re-decides
+// against the candidate ids the store carries up.
+
+// restrictedTitleFixture builds two same-titled colours and a member who can
+// see the Doors collection plus, through an ITEM-LEVEL grant, exactly the
+// colours named. Item grants are the point: they are what makes
+// VisibleCollectionIDs nav-lenient, and therefore what a collection-level
+// filter gets wrong.
+func restrictedTitleFixture(t *testing.T, f *doorFixture, email string, grantItems ...*models.Item) *models.User {
+	t.Helper()
+	u := mustUser(t, f.srv, email, strings.ReplaceAll(email, "@example.com", ""), "")
+	if err := f.srv.store.AddWorkspaceMember(f.ws.ID, u.ID, "editor"); err != nil {
+		t.Fatalf("AddWorkspaceMember: %v", err)
+	}
+	// Explicit access to the collection under test only. People is reachable
+	// ONLY through the item grants below — the nav-lenient case.
+	if err := f.srv.store.SetMemberCollectionAccess(f.ws.ID, u.ID, "specific", []string{f.tasks.ID}); err != nil {
+		t.Fatalf("SetMemberCollectionAccess: %v", err)
+	}
+	for _, it := range grantItems {
+		if _, err := f.srv.store.CreateItemGrant(f.ws.ID, it.ID, u.ID, "read", f.owner.ID); err != nil {
+			t.Fatalf("CreateItemGrant(%s): %v", it.Title, err)
+		}
+	}
+	return u
+}
+
+// createByTitle drives the create door as `user` with a relation supplied BY
+// TITLE, returning the recorder so each leg can assert on the outcome.
+func (f *doorFixture) createByTitle(user *models.User, title, itemTitle string) *httptest.ResponseRecorder {
+	f.t.Helper()
+	return f.callAs(user, "editor", f.srv.handleCreateItem, "POST",
+		"/api/v1/workspaces/"+f.ws.Slug+"/collections/"+f.tasks.Slug+"/items",
+		map[string]string{"collSlug": f.tasks.Slug},
+		map[string]any{"title": itemTitle, "fields": map[string]any{"owner_ref": title}})
+}
+
+func TestRelationTitleDoors_AmbiguityIsCountedOverVISIBLEMatchesOnly(t *testing.T) {
+	f := newDoorFixture(t)
+	// Two live people share a title. The OWNER sees both.
+	twinA, err := f.srv.store.CreateItem(f.ws.ID, f.people.ID, models.ItemCreate{Title: "Robin", CreatedBy: f.owner.ID})
+	if err != nil {
+		t.Fatalf("CreateItem(twinA): %v", err)
+	}
+	twinB, err := f.srv.store.CreateItem(f.ws.ID, f.people.ID, models.ItemCreate{Title: "Robin", CreatedBy: f.owner.ID})
+	if err != nil {
+		t.Fatalf("CreateItem(twinB): %v", err)
+	}
+
+	t.Run("two visible matches stay ambiguous", func(t *testing.T) {
+		both := restrictedTitleFixture(t, f, "sees-both@example.com", twinA, twinB)
+		rr := f.createByTitle(both, "Robin", "Both")
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d: %s", rr.Code, rr.Body.String())
+		}
+		if !strings.Contains(rr.Body.String(), "more than one") && !strings.Contains(rr.Body.String(), "ambiguous") {
+			t.Errorf("a caller who can see BOTH matches must be told the title is ambiguous, got: %s", rr.Body.String())
+		}
+	})
+
+	t.Run("one visible match resolves, and the hidden twin changes nothing", func(t *testing.T) {
+		one := restrictedTitleFixture(t, f, "sees-one@example.com", twinA)
+		rr := f.createByTitle(one, "Robin", "Only one")
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("a caller who can see exactly ONE match must have it resolve — the other is not ambiguity for them: %d %s", rr.Code, rr.Body.String())
+		}
+		var created models.Item
+		if err := json.Unmarshal(rr.Body.Bytes(), &created); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		stored, ok := f.storedRelation(created.ID)
+		if !ok {
+			t.Fatal("no owner_ref stored")
+		}
+		if stored != twinA.ID {
+			t.Errorf("stored %v, want the VISIBLE twin %s", stored, twinA.ID)
+		}
+	})
+
+	t.Run("no visible match is not_found, never ambiguous", func(t *testing.T) {
+		none := restrictedTitleFixture(t, f, "sees-none@example.com")
+		rr := f.createByTitle(none, "Robin", "Neither")
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d: %s", rr.Code, rr.Body.String())
+		}
+		body := rr.Body.String()
+		if strings.Contains(body, "more than one") || strings.Contains(body, "ambiguous") {
+			t.Errorf("telling a caller the title matches SEVERAL items they cannot see is the oracle this rule closes: %s", body)
+		}
+		if !strings.Contains(body, "does not name an item") {
+			t.Errorf("expected the not_found phrasing, got: %s", body)
+		}
+	})
+}
+
+// TestRelationTitleDoors_HydrationUsesITEMVisibilityNotCollectionVisibility is
+// the read-side half of the same trap, and it is a leak a collection-level
+// filter cannot catch.
+//
+// store.VisibleCollectionIDs is deliberately NAV-LENIENT: it folds in a
+// collection reachable only through an ITEM grant "so the collection appears in
+// navigation", leaving item-level filtering to handlers.
+// requireCollectionFullyVisible's comment says so, and exists because BUG-1920
+// walked into it. So a member holding a grant on ONE person gets People in that
+// set — and a hydration filtered on it hands them the ref and title of EVERY
+// person any item points at.
+func TestRelationTitleDoors_HydrationUsesITEMVisibilityNotCollectionVisibility(t *testing.T) {
+	f := newDoorFixture(t)
+
+	granted, err := f.srv.store.CreateItem(f.ws.ID, f.people.ID, models.ItemCreate{Title: "Granted Person", CreatedBy: f.owner.ID})
+	if err != nil {
+		t.Fatalf("CreateItem(granted): %v", err)
+	}
+
+	pointsAtGranted := f.seed(`{"owner_ref":"` + granted.ID + `"}`)
+	pointsAtSecret := f.seed(`{"owner_ref":"` + f.target.ID + `"}`)
+
+	// The grant is on `granted` ONLY. f.target (Ada) is a sibling in the same
+	// collection, with no grant.
+	member := restrictedTitleFixture(t, f, "item-grant@example.com", granted, pointsAtGranted, pointsAtSecret)
+
+	read := func(it *models.Item) models.RelationTarget {
+		t.Helper()
+		rr := f.callAs(member, "editor", f.srv.handleGetItem, "GET",
+			"/api/v1/workspaces/"+f.ws.Slug+"/items/"+it.Slug,
+			map[string]string{"itemSlug": it.Slug}, nil)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("get %s: expected 200, got %d: %s", it.Slug, rr.Code, rr.Body.String())
+		}
+		var out models.Item
+		if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return out.RelationTargets["owner_ref"]
+	}
+
+	// THE LEAK: a sibling in a nav-lenient collection, with no grant of its own.
+	secret := read(pointsAtSecret)
+	if secret.Ref != "" || secret.Title != "" {
+		t.Errorf("hydrated an UNGRANTED sibling as %+v — the collection is only reachable through an item grant, and filtering on collection visibility hands over every item in it", secret)
+	}
+	if secret.ID == "" {
+		t.Error("the stored id was dropped; id-only is the honest answer, omission is not")
+	}
+
+	// CONTROL, same member and same request shape: the item they DO hold a
+	// grant on still hydrates fully. Without this a hydrator that returned
+	// id-only for everything would pass the assertion above.
+	ok := read(pointsAtGranted)
+	if ok.Ref != granted.Ref || ok.Title != "Granted Person" {
+		t.Errorf("control: the GRANTED target should hydrate fully, got %+v", ok)
 	}
 }

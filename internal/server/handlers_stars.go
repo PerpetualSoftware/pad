@@ -204,7 +204,7 @@ func (s *Server) handleListStarredItems(w http.ResponseWriter, r *http.Request) 
 	items = filtered
 
 	// Hydrate items with parent links and computed refs
-	s.enrichItemsWithParent(workspaceID, items, visibleIDs)
+	s.enrichItemsWithParent(r, workspaceID, items, visibleIDs)
 
 	if len(items) == 0 {
 		items = []models.Item{}

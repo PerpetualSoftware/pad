@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"net/http"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -18,7 +19,17 @@ import (
 //
 //   - the value resolves to nothing live in this workspace (dangling, or an id
 //     naming another workspace, which the store declines to resolve);
-//   - it resolves to an item in a collection the requester cannot see.
+//   - the requester cannot see the target ITEM.
+//
+// THAT SECOND CHECK IS PER-ITEM, NOT PER-COLLECTION, and the difference is a
+// leak rather than a nicety. `store.VisibleCollectionIDs` is deliberately
+// NAV-LENIENT: it folds in a collection reachable only through an ITEM-level
+// grant "so the collection appears in navigation", and leaves item-level
+// filtering to the handlers — requireCollectionFullyVisible's comment says so,
+// and exists because BUG-1920 walked into it. Filtering hydration on that set
+// would hand a member with a grant on ONE item in a collection the ref and
+// title of EVERY item any relation points at there. `checkItemVisible` is the
+// authority, and it is asked once per DISTINCT TARGET, not once per item.
 //
 // Omitting the key instead would say "this item has no relation here", which is
 // a different statement and a false one. An id-only entry says the true thing:
@@ -32,14 +43,9 @@ import (
 // the same reason: `relation_targets` is additive convenience, and a list read
 // that 500s because a convenience field could not be built is a worse answer
 // than one without it.
-func (s *Server) hydrateRelationTargets(workspaceID string, items []models.Item, visibleIDs ...[]string) {
-	if len(items) == 0 {
+func (s *Server) hydrateRelationTargets(r *http.Request, workspaceID string, items []models.Item, visibleIDs ...[]string) {
+	if len(items) == 0 || r == nil {
 		return
-	}
-	var vis []string
-	hasVis := len(visibleIDs) > 0 && visibleIDs[0] != nil
-	if hasVis {
-		vis = visibleIDs[0]
 	}
 
 	schemas, err := s.relationSchemasForWorkspace(workspaceID)
@@ -47,9 +53,35 @@ func (s *Server) hydrateRelationTargets(workspaceID string, items []models.Item,
 		return
 	}
 
-	targets, collectionOf, err := s.store.HydrateRelationTargetsQ(s.store.DB(), workspaceID, items, schemas)
+	targets, err := s.store.HydrateRelationTargetsQ(s.store.DB(), workspaceID, items, schemas)
 	if err != nil || len(targets) == 0 {
 		return
+	}
+
+	// workspaceRole(r) is the right role here, unlike in the cross-workspace
+	// copy: every item being enriched belongs to the workspace in the URL,
+	// which is the workspace that role was stashed for.
+	user, role, bearer := currentUser(r), workspaceRole(r), isBearerAuth(r)
+
+	// One decision per DISTINCT target, reused across every item pointing at
+	// it. A list page of 50 items sharing one target asks once.
+	allowed := map[string]bool{}
+	visible := func(id string) bool {
+		if seen, done := allowed[id]; done {
+			return seen
+		}
+		item, err := s.store.GetItem(id)
+		if err != nil || item == nil {
+			allowed[id] = false
+			return false
+		}
+		seen, err := s.checkItemVisible(workspaceID, item, user, role, bearer)
+		if err != nil {
+			// Fail CLOSED. An error here is not a licence to disclose.
+			seen = false
+		}
+		allowed[id] = seen
+		return seen
 	}
 
 	for i := range items {
@@ -59,7 +91,7 @@ func (s *Server) hydrateRelationTargets(workspaceID string, items []models.Item,
 		}
 		out := make(map[string]models.RelationTarget, len(perField))
 		for key, target := range perField {
-			if hasVis && target.Ref != "" && !isCollectionVisible(collectionOf[target.ID], vis) {
+			if target.Ref != "" && !visible(target.ID) {
 				// Resolved, but not for these eyes. Keep the id — the value IS
 				// stored — and drop what would disclose the target.
 				target = models.RelationTarget{ID: target.ID}

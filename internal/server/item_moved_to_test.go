@@ -797,7 +797,7 @@ func TestMovedTo_MutationResponsesDoNotCarryPointer(t *testing.T) {
 	if fresh.MovedTo != nil {
 		t.Fatal("store-level item carries MovedTo; it must only ever be set by handleGetItem")
 	}
-	if err := f.srv.enrichItemForResponse(fresh, nil); err != nil {
+	if err := f.srv.enrichItemForResponse(httptest.NewRequest("GET", "/", nil), fresh, nil); err != nil {
 		t.Fatalf("enrichItemForResponse: %v", err)
 	}
 	if fresh.MovedTo != nil {

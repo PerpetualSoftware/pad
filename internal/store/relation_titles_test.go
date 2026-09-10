@@ -152,6 +152,8 @@ func TestRelationTitle_RefWinsOverAnItemTitledLikeARef(t *testing.T) {
 
 	// A second colour whose TITLE is the first colour's REF.
 	impostor := createTestItem(t, s, ws.ID, colors.ID, red.Ref, "")
+	// A third with an ordinary title, for the control below.
+	plain := createTestItem(t, s, ws.ID, colors.ID, "Cerulean", "")
 
 	stored, issues := resolveOne(t, s, ws, schema, red.Ref)
 	if len(issues) != 0 {
@@ -162,6 +164,21 @@ func TestRelationTitle_RefWinsOverAnItemTitledLikeARef(t *testing.T) {
 	}
 	if stored == impostor.ID {
 		t.Error("the title rung shadowed the ref rung")
+	}
+
+	// CONTROL, and the reason this test needs one (codex round 1 nit): the
+	// assertions above supply a REF and exercise only the pre-existing ref
+	// rung, so they pass with exact-title resolution removed entirely and the
+	// impostor is decoration. The control resolves an ORDINARY title in the
+	// same run, so the test fails if the title rung goes away — which is what
+	// makes the shadowing assertion above a statement about PRECEDENCE rather
+	// than about a rung that might not exist.
+	byTitle, issues := resolveOne(t, s, ws, schema, "Cerulean")
+	if len(issues) != 0 {
+		t.Fatalf("control: an ordinary title must resolve, got %v", issues)
+	}
+	if byTitle != plain.ID {
+		t.Errorf("control: stored %q, want %q", byTitle, plain.ID)
 	}
 }
 
@@ -230,7 +247,7 @@ func TestHydrateRelationTargets_ResolvesDanglesAndRefusesForeignWorkspaces(t *te
 	crossWS := mk(foreign.ID)
 
 	schemas := map[string]models.CollectionSchema{cars.ID: u1RelationSchema("colors")}
-	out, collectionOf, err := s.HydrateRelationTargetsQ(s.DB(), ws.ID, []models.Item{resolvable, dangling, crossWS}, schemas)
+	out, err := s.HydrateRelationTargetsQ(s.DB(), ws.ID, []models.Item{resolvable, dangling, crossWS}, schemas)
 	if err != nil {
 		t.Fatalf("hydrate: %v", err)
 	}
@@ -239,9 +256,6 @@ func TestHydrateRelationTargets_ResolvesDanglesAndRefusesForeignWorkspaces(t *te
 	got := out[resolvable.ID]["color"]
 	if got.ID != red.ID || got.Ref != red.Ref || got.Title != red.Title {
 		t.Errorf("resolvable hydrated as %+v, want {id:%s ref:%s title:%s}", got, red.ID, red.Ref, red.Title)
-	}
-	if collectionOf[red.ID] == "" {
-		t.Error("no collection id returned for a resolved target; the server cannot run its visibility collapse without one")
 	}
 
 	// Dangling: ID-ONLY, and PRESENT. Omitting the key would say "this item has
