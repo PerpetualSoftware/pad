@@ -97,7 +97,11 @@
 			importFile = null;
 			importing = false;
 			// Load templates
-			if (templates.length === 0) {
+			// Guarded on `loadingTemplates` as well as emptiness (codex round
+			// 5): close-and-reopen, or a destroy-and-remount, before the first
+			// response lands would otherwise issue a second request while the
+			// first is still in flight.
+			if (templates.length === 0 && !loadingTemplates) {
 				loadingTemplates = true;
 				api.templates.list().then(t => templates = t).catch(() => {}).finally(() => loadingTemplates = false);
 			}
@@ -190,6 +194,17 @@
 				return;
 			}
 			await workspaceStore.loadAll();
+			// CHECKED AGAIN AFTER `loadAll` (codex round 5). One check after the
+			// upload is not enough: `loadAll` is a second await, and a swap
+			// landing inside it put the callback, the toast and the navigation
+			// back in the new user's session. The rule is per-AWAIT, not
+			// per-operation — the same reason `create` needs two checks rather
+			// than one — so the guard sits immediately before the side effects
+			// it protects rather than at the top of the block.
+			if (authStore.userId !== callUser) {
+				close();
+				return;
+			}
 			// Same Phase F hook as create — claim code is equally useful for
 			// imported workspaces, and the user explicitly opted into this
 			// modal so opening the Connect modal post-import isn't surprising.

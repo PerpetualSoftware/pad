@@ -203,15 +203,29 @@
 	// calls `workspaceStore.loadAll()`) would re-fire this effect and cause
 	// the dashboard to refetch + re-render — a visible flicker. Wrap in
 	// `untrack` so the only tracked dep is `wsSlug` from the if-check.
+	// Keyed on (USER, WORKSPACE) — see `lastOwnerKey` above for the identity
+	// half (BUG-2991, codex round 3). A sign-in as somebody else on the same
+	// route changes no route param, so without the user in this key the board
+	// kept showing the previous user's items, counts and activity.
+	//
+	// The DATA IS DROPPED before the reload, not merely hidden behind `loading`
+	// (codex round 5). Relying on the loading branch was a fail-open: if the
+	// new user's dashboard request FAILS, `loading` goes false with `dashboard`
+	// still holding the previous key's board, and the template renders it —
+	// the `dashError` branch sits after it. So the previous user's data came
+	// back on a 500 or a 403, which is the worst moment for it to.
+	let lastLoadKey: string | null = null;
 	$effect(() => {
-		// Keyed on the USER as well as the slug (BUG-2991, codex round 3). A
-		// sign-in as somebody else on the same route changes no route param, so
-		// without this the board kept showing the previous user's items,
-		// counts and activity. Re-running `load` both hides them — a
-		// non-silent load flips `loading`, and the loading branch is first in
-		// the template — and refetches as the new user.
-		sessionUserId;
-		if (wsSlug) untrack(() => load(wsSlug));
+		const key = `${sessionUserId}\n${wsSlug}`;
+		if (key === lastLoadKey) return;
+		lastLoadKey = key;
+		untrack(() => {
+			dashboard = null;
+			dashboardSlug = null;
+			collections = [];
+			dashError = null;
+			if (wsSlug) load(wsSlug);
+		});
 	});
 
 	// Workspace home shows only the workspace-level title — clear section/item.

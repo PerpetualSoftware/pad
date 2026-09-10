@@ -254,6 +254,35 @@ describe('BUG-2990: dashboard owner chrome expires on a definitive denial', () =
 		expect(meCalls.length).toBeGreaterThan(meBefore);
 	});
 
+	it('does not bring the previous user\'s board back when the new user\'s load FAILS', async () => {
+		// BUG-2991, codex round 5. Hiding A's board behind `loading` was a
+		// fail-open: `loading` goes false when the new user's request settles
+		// EITHER WAY, and on a failure `dashboard` still held A's data with the
+		// template rendering it ahead of the `dashError` branch. So A's items,
+		// counts and activity came back on a 500 or a 403 — the worst moment
+		// for them to. The data is dropped at the transition now.
+		await authStore.load();
+		await mountAsOwner();
+		expect(host.querySelector('.coll-grid')).not.toBeNull();
+
+		// B signs in, and everything B asks for fails.
+		dashboardGet.mockRejectedValue(new Error('500'));
+		sessionGet.mockResolvedValue({
+			authenticated: true,
+			user: { id: 'u2', email: 'u2@example.com' },
+		});
+		await authStore.load();
+		await settle();
+
+		// Answer B's membership request so the load gets past `setCurrent` and
+		// reaches the failing dashboard fetch, then settles.
+		const i = await nextMe(meCalls.length - 1 < 0 ? 0 : meCalls.length - 1);
+		meCalls[i]!(OWNER);
+		await settle();
+
+		expect(host.querySelector('.coll-grid')).toBeNull();
+	});
+
 	it('keeps the card up across the window a refetch opens', async () => {
 		// The complement, and the reason the sticky cache exists at all: the
 		// fix must not turn "unknown" into "not an owner".

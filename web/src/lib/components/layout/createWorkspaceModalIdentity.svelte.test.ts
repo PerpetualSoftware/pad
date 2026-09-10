@@ -162,6 +162,14 @@ describe('BUG-2991: the create-workspace modal does not act for a session that e
 		await fireEvent.click(btn(container, /Create Workspace/));
 
 		// The POST is open. The session ends.
+		// NON-VACUITY, and it is not decoration: before BUG-3004 was fixed the
+		// reset wiped the typed name, the submit button was disabled, the click
+		// did nothing, and this exact assertion pair passed for that reason
+		// (codex round 5 flagged the shape; the first version of this test had
+		// it). "Did not navigate" is trivially true of a submit that never
+		// happened.
+		expect(api.workspaces.create).toHaveBeenCalled();
+
 		authStore.clear();
 		created.resolve(WS);
 		await settle();
@@ -194,8 +202,37 @@ describe('BUG-2991: the create-workspace modal does not act for a session that e
 		await attachBundle(container);
 		await fireEvent.click(btn(container, /Import Workspace/));
 
+		// NON-VACUITY, same reason as the create case above.
+		expect(api.workspaces.importBundle).toHaveBeenCalled();
+
 		authStore.clear();
 		imported.resolve(WS);
+		await settle();
+
+		expect(goto).not.toHaveBeenCalled();
+		expect(onWorkspaceCreated).not.toHaveBeenCalled();
+	});
+
+	it('does not navigate when the user changes during the import\'s loadAll', async () => {
+		// The SECOND await (codex round 5). One check after the upload is not
+		// enough: `loadAll` is another await, and a swap landing inside it put
+		// the callback, the toast and the navigation back in the new user's
+		// session. The rule is per-await, not per-operation.
+		api.workspaces.importBundle.mockResolvedValue(WS);
+		const listing = deferred<unknown[]>();
+		api.workspaces.list.mockReturnValue(listing.promise);
+		const onWorkspaceCreated = vi.fn();
+
+		const { container } = render(CreateWorkspaceModal, { props: { onWorkspaceCreated } });
+		await attachBundle(container);
+		btn(container, /Import Workspace/).click();
+		await settle();
+
+		expect(api.workspaces.importBundle).toHaveBeenCalled();
+		// The upload is done and the identity check after it has passed; we are
+		// sitting inside `loadAll`.
+		authStore.clear();
+		listing.resolve([]);
 		await settle();
 
 		expect(goto).not.toHaveBeenCalled();

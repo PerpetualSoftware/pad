@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
-	import { onMount, onDestroy } from 'svelte';
+	import { onMount, onDestroy, untrack } from 'svelte';
 	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
 	import { sseService } from '$lib/services/sse.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
@@ -205,21 +205,37 @@
 		history.replaceState(null, '', `#${tabId}`);
 	}
 
+	// Keyed on (USER, WORKSPACE) (BUG-2991, codex round 3). This page's own data
+	// — workspace name, members, invitations, collections, the context editor —
+	// is local state that the store's identity reset does not touch, so a
+	// sign-in as somebody else on the same route would otherwise leave the
+	// previous user's MEMBERS LIST on screen.
+	//
+	// It already re-fired by ACCIDENT: `load` calls `workspaceStore.setCurrent`,
+	// which synchronously reads `workspaces` before its first await, so emptying
+	// that array on the reset happened to invalidate this effect. That is a
+	// dependency nobody declared, and the dashboard's twin deliberately
+	// suppresses exactly it with `untrack`. Naming the real key makes the
+	// behaviour survive someone fixing the accident.
+	//
+	// The DATA IS DROPPED before the reload, not merely hidden behind `loading`
+	// (codex round 5). `load`'s catch allows a partial render and its `finally`
+	// clears `loading` regardless, so a FAILED load for the new user left the
+	// previous user's name, members and invitations on screen the moment the
+	// spinner went away.
+	let lastLoadKey: string | null = null;
 	$effect(() => {
-		// Keyed on the USER as well as the slug (BUG-2991, codex round 3). This
-		// page's own data — workspace name, members, invitations, collections,
-		// the context editor — is local state that the store's identity reset
-		// does not touch, so a sign-in as somebody else on the same route would
-		// otherwise leave the previous user's members list on screen.
-		//
-		// It already re-fired by ACCIDENT: `load` calls `workspaceStore
-		// .setCurrent`, which synchronously reads `workspaces` before its first
-		// await, so emptying that array on the reset happened to invalidate this
-		// effect. That is a dependency nobody declared and the dashboard's twin
-		// deliberately suppresses with `untrack`. Naming the real key makes the
-		// behaviour survive someone fixing the accident.
-		sessionUserId;
-		if (wsSlug) load(wsSlug);
+		const key = `${sessionUserId}\n${wsSlug}`;
+		if (key === lastLoadKey) return;
+		lastLoadKey = key;
+		untrack(() => {
+			wsName = '';
+			contextEditor = '';
+			collections = [];
+			members = [];
+			invitations = [];
+			if (wsSlug) load(wsSlug);
+		});
 	});
 
 	// BUG-2265: keep the collections list fresh when another client changes a
