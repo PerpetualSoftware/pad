@@ -247,11 +247,37 @@ func TestSettleContentRouteBoundsTheStandoff(t *testing.T) {
 	t.Run("gives up on a room that never settles, having written nothing", func(t *testing.T) {
 		attempts := 0
 		start := time.Now()
-		out, err := settleContentRoute(
-			func() bool { return false },
-			func() error { attempts++; return collab.ErrRoomActiveDuringPrune },
-			60*time.Millisecond, 5*time.Millisecond,
-		)
+
+		// Bounded by the test rather than trusted to return: the ONLY exit from the
+		// standoff branch is the deadline, so a broken deadline check loops forever
+		// and the failure arrives as a 10-minute package timeout with no --- FAIL
+		// line — which a mutation harness reads as "the package broke", not as a
+		// detection. Measured: that is exactly what the mutant making the deadline
+		// unreachable produced before this select was added.
+		type result struct {
+			out settleOutcome
+			err error
+		}
+		done := make(chan result, 1)
+		go func() {
+			o, e := settleContentRoute(
+				func() bool { return false },
+				func() error { attempts++; return collab.ErrRoomActiveDuringPrune },
+				60*time.Millisecond, 5*time.Millisecond,
+			)
+			done <- result{o, e}
+		}()
+
+		var out settleOutcome
+		var err error
+		select {
+		case r := <-done:
+			out, err = r.out, r.err
+		case <-time.After(5 * time.Second):
+			t.Fatal("settleContentRoute never returned: a room that never settles must reach a " +
+				"terminal answer, not spin holding the request open")
+		}
+
 		if out != settleUnsettled || err != nil {
 			t.Fatalf("want settleUnsettled/nil, got %v/%v", out, err)
 		}
