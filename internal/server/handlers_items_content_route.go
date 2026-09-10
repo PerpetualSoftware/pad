@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"log/slog"
@@ -101,6 +102,7 @@ func (s *Server) routeContentUpdate(
 ) (contentRoute, *models.Item, error) {
 	var updated *models.Item
 	outcome, paErr := settleContentRoute(
+		r.Context(),
 		func() bool { return s.collab.HasElectableApplier(item.ID) },
 		func() error {
 			return s.collab.PruneAndApply(item.ID, func() error {
@@ -174,12 +176,22 @@ const (
 // ApplyExternalContent, which could succeed through a freshly joined applier and let
 // the row write run last after all.
 func settleContentRoute(
+	ctx context.Context,
 	hasElectableApplier func() bool,
 	tryDirectWrite func() error,
 	budget, poll time.Duration,
 ) (settleOutcome, error) {
 	deadline := time.Now().Add(budget)
 	for {
+		// The caller going away ends the wait immediately. This is the only NEW
+		// blocking wait the reorder introduces — the rest of this path was already
+		// context-blind on main and stays that way, deliberately, since threading a
+		// context into the store and the applier round-trip is a change of a
+		// different size (codex round 2). Bounding what this unit ADDED is the part
+		// that belongs to this unit.
+		if err := ctx.Err(); err != nil {
+			return settleUnsettled, nil
+		}
 		if hasElectableApplier() {
 			return settleElectApplier, nil
 		}
@@ -194,7 +206,11 @@ func settleContentRoute(
 			if time.Now().After(deadline) {
 				return settleUnsettled, nil
 			}
-			time.Sleep(poll)
+			select {
+			case <-time.After(poll):
+			case <-ctx.Done():
+				return settleUnsettled, nil
+			}
 		default:
 			return settleDirectFailed, err
 		}
@@ -239,15 +255,7 @@ func (s *Server) applierFirstWrite(
 				"A concurrent version restore made this edit's outcome ambiguous; please retry.")
 			return contentRouteHandled, nil, nil
 		}
-		// Whether the content DEMONSTRABLY did not land, or merely was not
-		// confirmed. ErrAllAppliersTimedOut is only returned once an
-		// applier_request has gone out on the wire, so the elected peer may have
-		// applied it with the ack lost or late; the no-room / no-applier errors
-		// mean nothing ever reached a peer.
-		outcome := contentOutcomeNotApplied
-		if errors.Is(aerr, collab.ErrAllAppliersTimedOut) {
-			outcome = contentOutcomeUnknown
-		}
+		outcome := classifyApplyOutcome(aerr)
 		slog.Warn("collab: row write landed but the apply did not confirm; answering content_not_applied",
 			"item_id", item.ID,
 			"content_outcome", outcome,
@@ -258,6 +266,34 @@ func (s *Server) applierFirstWrite(
 	}
 
 	return contentRouteApplierWrote, updated, nil
+}
+
+// classifyApplyOutcome decides whether a failed apply DEMONSTRABLY left the content
+// out of the collaborative document, or merely failed to confirm.
+//
+// It is written as a WHITELIST — unknown unless proven otherwise — and that is the
+// correction from codex round 2 rather than the original shape. The first version
+// asked whether the error was a timeout and called everything else "not applied", on
+// the reasoning that ApplyExternalContent's own anyWriteSucceeded tracking already
+// separated the two. That reasoning was one file short of true: anyWriteSucceeded is
+// tracked PER ELECTION, and two paths escaped it — a restore storm returning after
+// several elections that may each have sent a request, and a registerPendingAck
+// failure on a retry attempt returning a raw error after an earlier attempt had
+// already put bytes on the wire. Both would have answered "content_landed: false"
+// about content that may well have landed.
+//
+// The storm path is fixed at its source (ApplyExternalContent now carries sentAny
+// across restarts). This function covers the rest by construction: only the two
+// sentinels that MEAN nothing reached a peer are allowed to make the claim, and every
+// other error — sentinel, wrapped, or entirely unforeseen — is unknown. A new error
+// added upstream therefore degrades to the honest answer rather than to a false one.
+func classifyApplyOutcome(err error) string {
+	switch {
+	case errors.Is(err, collab.ErrNoActiveRoom), errors.Is(err, collab.ErrNoApplierAvailable):
+		return contentOutcomeNotApplied
+	default:
+		return contentOutcomeUnknown
+	}
 }
 
 // composePruneWithPrecheck rides the op-log prune inside the write's own transaction

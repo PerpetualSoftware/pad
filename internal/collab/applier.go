@@ -252,8 +252,17 @@ func (m *RoomManager) ApplyExternalContent(itemID string, markdown string) error
 		return ErrNoActiveRoom
 	}
 
+	// sentAny is tracked ACROSS restarts, not just within one election, because the
+	// sentinel this function ends on is read by callers as a claim about whether the
+	// markdown ever reached a peer (PLAN-2975: content_not_applied says so on the
+	// wire). electAndApply tracks it per election and a superseded election discards
+	// it, so without this the restore-storm return below would answer "no applier was
+	// available" — i.e. nothing was sent — after up to applierMaxRestartsAfterRestore
+	// elections that may each have put an applier_request on the wire.
+	var sentAny bool
 	for restart := 0; restart < applierMaxRestartsAfterRestore; restart++ {
-		err, superseded := m.electAndApply(room, itemID, markdown)
+		err, superseded, sent := m.electAndApply(room, itemID, markdown)
+		sentAny = sentAny || sent
 		if !superseded {
 			return err
 		}
@@ -261,7 +270,12 @@ func (m *RoomManager) ApplyExternalContent(itemID string, markdown string) error
 		// (electAndApply already waited it out). Re-elect from scratch: a fresh
 		// request_id + tried set against the post-restore room.
 	}
-	// Restore storm: fall back to a direct write rather than spin.
+	// Restore storm: fall back to a direct write rather than spin. Which sentinel is
+	// not cosmetic — ErrNoApplierAvailable asserts nothing reached a peer, and after
+	// a storm in which a request DID go out that assertion is false.
+	if sentAny {
+		return ErrAllAppliersTimedOut
+	}
 	return ErrNoApplierAvailable
 }
 
@@ -342,11 +356,16 @@ func (m *RoomManager) HasElectableApplier(itemID string) bool {
 }
 
 // electAndApply runs one designated-applier election (first attempt + one retry)
-// against the room, gated on the restore coordinator. It returns (err, superseded):
-// superseded==true means a version restore interrupted the election and has resolved,
-// so ApplyExternalContent should restart; err is meaningless in that case. When
-// superseded==false, err is the final outcome (nil on success, or a sentinel).
-func (m *RoomManager) electAndApply(room *Room, itemID, markdown string) (error, bool) {
+// against the room, gated on the restore coordinator. It returns
+// (err, superseded, sentAny): superseded==true means a version restore interrupted
+// the election and has resolved, so ApplyExternalContent should restart; err is
+// meaningless in that case. When superseded==false, err is the final outcome (nil on
+// success, or a sentinel).
+//
+// sentAny reports whether an applier_request actually reached a peer during THIS
+// election. The caller accumulates it across restarts so the sentinel it finally
+// returns does not claim nothing was sent when something was (PLAN-2975).
+func (m *RoomManager) electAndApply(room *Room, itemID, markdown string) (error, bool, bool) {
 	// A FRESH request_id per election: a late ack from a superseded prior election
 	// (same conn, re-picked after a rollback) can't be mistaken for this one's.
 	requestID := uuid.NewString()
@@ -370,7 +389,7 @@ func (m *RoomManager) electAndApply(room *Room, itemID, markdown string) (error,
 		// !waited return ADMITS us; finishAdmission MUST run before we wait on the
 		// outcome so a concurrent beginRestore drains us (P1).
 		if room.enterApplierGate() {
-			return nil, true
+			return nil, true, anyWriteSucceeded
 		}
 
 		applier := room.pickApplier(tried)
@@ -378,9 +397,9 @@ func (m *RoomManager) electAndApply(room *Room, itemID, markdown string) (error,
 			// No more candidates left.
 			room.finishAdmission()
 			if !anyWriteSucceeded {
-				return ErrNoApplierAvailable, false
+				return ErrNoApplierAvailable, false, anyWriteSucceeded
 			}
-			return ErrAllAppliersTimedOut, false
+			return ErrAllAppliersTimedOut, false, anyWriteSucceeded
 		}
 		tried[applier.conn] = struct{}{}
 
@@ -390,7 +409,7 @@ func (m *RoomManager) electAndApply(room *Room, itemID, markdown string) (error,
 		room.finishAdmission()
 		if registerErr != nil {
 			// Race: room closed between pickApplier and registration.
-			return registerErr, false
+			return registerErr, false, anyWriteSucceeded
 		}
 
 		// Send the applier_request as a TextMessage. y-protocol
@@ -412,7 +431,7 @@ func (m *RoomManager) electAndApply(room *Room, itemID, markdown string) (error,
 		payload, err := json.Marshal(msg)
 		if err != nil {
 			room.cancelPendingAck(requestID)
-			return fmt.Errorf("marshal applier_request: %w", err), false
+			return fmt.Errorf("marshal applier_request: %w", err), false, anyWriteSucceeded
 		}
 		// Bounded write (BUG-2276 residual 2, P1a): a dead/slow peer wedged in a
 		// deadline-free writeLoop write holds writeMu, which would otherwise block
@@ -447,7 +466,7 @@ func (m *RoomManager) electAndApply(room *Room, itemID, markdown string) (error,
 			case applierPersisted:
 				// The applier's setContent durably landed (no frame in its apply
 				// bracket was frozen-dropped). All peers are on the new state.
-				return nil, false
+				return nil, false, anyWriteSucceeded
 			case applierAmbiguous:
 				// Legacy conn caught by a restore: setContent MIGHT have landed but we
 				// can't confirm. FAIL-SAFE — do NOT re-apply (that could clobber peer
@@ -460,7 +479,7 @@ func (m *RoomManager) electAndApply(room *Room, itemID, markdown string) (error,
 					"item_id", itemID,
 					"client_id", applier.id,
 				)
-				return ErrApplierAmbiguous, false
+				return ErrApplierAmbiguous, false, anyWriteSucceeded
 			default: // applierNotPersisted
 				// A version restore froze this apply, so setContent did NOT land. This
 				// is a DURABLE determination (see restore_coord.go), not a timing guess
@@ -472,7 +491,7 @@ func (m *RoomManager) electAndApply(room *Room, itemID, markdown string) (error,
 					"item_id", itemID,
 					"client_id", applier.id,
 				)
-				return nil, true
+				return nil, true, anyWriteSucceeded
 			}
 		case <-time.After(timeouts[attempt]):
 			room.cancelPendingAck(requestID)
@@ -492,9 +511,9 @@ func (m *RoomManager) electAndApply(room *Room, itemID, markdown string) (error,
 	if !anyWriteSucceeded {
 		// applierMaxAttempts exhausted without ever putting bytes on
 		// the wire. Same recovery profile as no-applier-found.
-		return ErrNoApplierAvailable, false
+		return ErrNoApplierAvailable, false, anyWriteSucceeded
 	}
-	return ErrAllAppliersTimedOut, false
+	return ErrAllAppliersTimedOut, false, anyWriteSucceeded
 }
 
 // applierMaxRestartsAfterRestore caps how many times ApplyExternalContent re-elects

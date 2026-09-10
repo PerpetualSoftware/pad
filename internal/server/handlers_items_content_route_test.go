@@ -1,8 +1,10 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -231,6 +233,7 @@ func TestSettleContentRouteBoundsTheStandoff(t *testing.T) {
 	t.Run("elects an applier immediately when one exists", func(t *testing.T) {
 		calls := 0
 		out, err := settleContentRoute(
+			context.Background(),
 			func() bool { return true },
 			func() error { calls++; return nil },
 			time.Second, time.Millisecond,
@@ -245,6 +248,7 @@ func TestSettleContentRouteBoundsTheStandoff(t *testing.T) {
 
 	t.Run("writes directly when the room has no live writer", func(t *testing.T) {
 		out, err := settleContentRoute(
+			context.Background(),
 			func() bool { return false },
 			func() error { return nil },
 			time.Second, time.Millisecond,
@@ -271,6 +275,7 @@ func TestSettleContentRouteBoundsTheStandoff(t *testing.T) {
 		done := make(chan result, 1)
 		go func() {
 			o, e := settleContentRoute(
+				context.Background(),
 				func() bool { return false },
 				func() error { attempts++; return collab.ErrRoomActiveDuringPrune },
 				60*time.Millisecond, 5*time.Millisecond,
@@ -303,6 +308,7 @@ func TestSettleContentRouteBoundsTheStandoff(t *testing.T) {
 	t.Run("takes the applier path when the writer anchors inside the budget", func(t *testing.T) {
 		attempts := 0
 		out, err := settleContentRoute(
+			context.Background(),
 			func() bool { return attempts >= 2 },
 			func() error { attempts++; return collab.ErrRoomActiveDuringPrune },
 			time.Second, time.Millisecond,
@@ -316,6 +322,7 @@ func TestSettleContentRouteBoundsTheStandoff(t *testing.T) {
 		boom := errors.New("store exploded")
 		attempts := 0
 		out, err := settleContentRoute(
+			context.Background(),
 			func() bool { return false },
 			func() error { attempts++; return boom },
 			time.Second, time.Millisecond,
@@ -358,5 +365,73 @@ func TestApplierSettleBudgetCoversTheMeasuredAnchoringWindow(t *testing.T) {
 	if applierSettlePoll <= 0 || applierSettlePoll >= applierSettleBudget {
 		t.Errorf("applierSettlePoll %s must be positive and smaller than the budget %s, or the budget "+
 			"is spent sleeping rather than re-deciding", applierSettlePoll, applierSettleBudget)
+	}
+}
+
+// TestClassifyApplyOutcomeIsUnknownUnlessProven covers the discriminator directly,
+// including the cases the end-to-end tests cannot reach.
+//
+// Codex round 2 found the first version of this classification wrong: it asked
+// whether the error was a timeout and called everything else "not applied", which is
+// a false claim for a restore storm that sent requests across several elections, and
+// for a registerPendingAck failure returning a raw error after an earlier attempt had
+// already put bytes on the wire. Those are the last two subtests, and neither is
+// constructible through the HTTP handler.
+func TestClassifyApplyOutcomeIsUnknownUnlessProven(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"no room at all — nothing could have been sent", collab.ErrNoActiveRoom, contentOutcomeNotApplied},
+		{"no electable applier — nothing reached a peer", collab.ErrNoApplierAvailable, contentOutcomeNotApplied},
+		{"wrapped no-room still reads through errors.Is", fmt.Errorf("apply: %w", collab.ErrNoActiveRoom), contentOutcomeNotApplied},
+		{"timed out — the request went out and may have been applied", collab.ErrAllAppliersTimedOut, contentOutcomeUnknown},
+		{"ambiguous — outcome unknown by construction", collab.ErrApplierAmbiguous, contentOutcomeUnknown},
+		{"a raw registerPendingAck error after an earlier send", errors.New("collab: room closing"), contentOutcomeUnknown},
+		{"an error nobody has written yet", errors.New("something new upstream"), contentOutcomeUnknown},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classifyApplyOutcome(tc.err); got != tc.want {
+				t.Errorf("classifyApplyOutcome(%v) = %q, want %q", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSettleContentRouteStopsWhenTheCallerGoesAway pins the only new blocking wait
+// this change introduces. Without it a cancelled request keeps re-deciding for the
+// full budget against a room nobody is waiting on any more.
+func TestSettleContentRouteStopsWhenTheCallerGoesAway(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	attempts := 0
+	done := make(chan settleOutcome, 1)
+	go func() {
+		out, _ := settleContentRoute(
+			ctx,
+			func() bool { return false },
+			func() error { attempts++; return collab.ErrRoomActiveDuringPrune },
+			10*time.Second, 5*time.Millisecond,
+		)
+		done <- out
+	}()
+
+	// Let it take at least one lap, so cancellation is what ends it rather than the
+	// loop never having started.
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+
+	select {
+	case out := <-done:
+		if out != settleUnsettled {
+			t.Errorf("a cancelled request must end unsettled, got %v", out)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("settleContentRoute ignored cancellation and kept re-deciding; the 10s budget here " +
+			"is far longer than any caller would wait")
+	}
+	if attempts == 0 {
+		t.Error("the loop never ran, so this proved nothing about cancelling it")
 	}
 }
