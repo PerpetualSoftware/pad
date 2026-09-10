@@ -127,15 +127,25 @@ func keysOf(m map[string]any) []string {
 	return out
 }
 
-// TestBUG2995_DirectPathCarriesNoPendingMarker is the control leg. The marker means
-// something only if it is absent when the content DID land in the row, so a change
-// that stamps it unconditionally has to fail somewhere.
-func TestBUG2995_DirectPathCarriesNoPendingMarker(t *testing.T) {
+// TestBUG2995_NoPendingMarkerWhenTheContentIsInTheRow is the control leg. The marker
+// means something only if it is absent when the content DID land in the row, so a
+// change that stamps it unconditionally has to fail somewhere.
+//
+// WHAT IT ESTABLISHES, stated exactly (codex round 1 P2). The precondition it checks
+// is that items.content holds the sent value — which is true of the direct-write
+// path, and equally true of contentRouteFallThrough or any ordinary non-routed
+// write. It therefore does NOT prove which route ran, and an earlier name
+// ("DirectPath") claimed that it did. The invariant is the one worth pinning and is
+// route-independent: wherever the content reached the row, there is nothing pending,
+// so the marker must be absent.
+func TestBUG2995_NoPendingMarkerWhenTheContentIsInTheRow(t *testing.T) {
 	srv := testServerWithCollab(t)
 	slug := createWSWithCollections(t, srv)
 	item := createTaskWithFields(t, srv, slug, "Item", `{"status":"open"}`)
 
-	// No tab is connected, so this takes the direct-write path and lands in the row.
+	// No tab is connected, so no applier can be elected and the content reaches the
+	// row. Which of the non-applier routes carried it is not asserted and does not
+	// matter here — see this test's doc comment.
 	//
 	// The undeclared field is load-bearing rather than incidental: the warnings
 	// object is only built when there is something to say, so without it a mutant
@@ -154,7 +164,8 @@ func TestBUG2995_DirectPathCarriesNoPendingMarker(t *testing.T) {
 		t.Fatalf("GetItem: %v", err)
 	}
 	if stored.Content != sent {
-		t.Fatalf("precondition: this test needs the direct path, but items.content is %q", stored.Content)
+		t.Fatalf("precondition: this test needs the content to have reached the row, but items.content "+
+			"is %q", stored.Content)
 	}
 
 	var body map[string]any
@@ -164,7 +175,7 @@ func TestBUG2995_DirectPathCarriesNoPendingMarker(t *testing.T) {
 	// The echo is applier-path-only. A change that overwrites `content` on every
 	// path would blank it here, since there is no applied markdown to echo.
 	if got, _ := body["content"].(string); got != sent {
-		t.Errorf("direct-path 200 content = %q, want the stored value %q", got, sent)
+		t.Errorf("200 content = %q, want the stored value %q", got, sent)
 	}
 	warnings, ok := body["warnings"].(map[string]any)
 	if !ok {
@@ -176,8 +187,8 @@ func TestBUG2995_DirectPathCarriesNoPendingMarker(t *testing.T) {
 	}
 	{
 		if outcome, _ := warnings["content_outcome"].(string); outcome != "" {
-			t.Errorf("direct-path 200 carries content_outcome=%q; the content IS in the row, so there is "+
-				"nothing pending and the marker must be absent", outcome)
+			t.Errorf("200 carries content_outcome=%q; the content IS in the row, so there is nothing "+
+				"pending and the marker must be absent", outcome)
 		}
 	}
 }

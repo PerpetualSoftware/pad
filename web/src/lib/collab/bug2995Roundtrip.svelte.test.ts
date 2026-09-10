@@ -72,13 +72,26 @@ const normalising: Array<[string, string, string]> = [
 const stable = ['a perfectly ordinary paragraph', '3. three\n4. four', 'just one line'];
 
 describe('BUG-2995: applier markdown vs flushed markdown', () => {
-	for (const [name, sent, stored] of normalising) {
-		it(`normalises: ${name}`, () => {
-			const out = roundTrip(sent);
-			expect(out).not.toBe(sent);
-			expect(out).toBe(stored);
+	// THE PROPERTY the response contract rests on: the sent form is not what comes
+	// back. Only inequality is asserted here, so an editor or tiptap-markdown bump
+	// that changes HOW a construct is normalised leaves these green — the contract
+	// does not depend on the particular output, only on there being a difference.
+	for (const [name, sent] of normalising) {
+		it(`does not round-trip unchanged: ${name}`, () => {
+			expect(roundTrip(sent)).not.toBe(sent);
 		});
 	}
+
+	// The RECORDED FORMS, kept separate on purpose (codex round 1, nit). These pin
+	// exact serializer output and are the brittle half: a dependency bump can change
+	// them without touching the property above. When this fails and the block above
+	// does not, the contract is intact and the fixtures need re-recording — update
+	// the table rather than reaching for the property tests.
+	it('recorded stored forms (re-record on a serializer change; not the contract)', () => {
+		const actual = normalising.map(([name, sent]) => [name, roundTrip(sent)] as const);
+		const expected = normalising.map(([name, , stored]) => [name, stored] as const);
+		expect(actual).toEqual(expected);
+	});
 
 	for (const sent of stable) {
 		it(`round-trips unchanged: ${JSON.stringify(sent)}`, () => {
