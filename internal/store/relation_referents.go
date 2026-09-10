@@ -1219,11 +1219,26 @@ func (s *Store) DropInvisibleRelationDefaultsQ(
 // `schemas` maps a collection ID to that collection's schema, since a batch can
 // span collections; an item whose collection is absent from the map is skipped
 // rather than guessed at.
+//
+// SCOPED TO ONE WORKSPACE, and that is load-bearing rather than tidy. A stored
+// relation value is just an id in a blob: nothing stops a legacy row, or a
+// value that predates U1's validation, from naming an item in ANOTHER
+// workspace. Resolving it would put that item's ref and title in a response to
+// someone who cannot see its workspace at all. The resolver guards the same
+// hole on its UUID branch and says so; this is the read-side half. A foreign id
+// falls through to the ID-only path below, which is the honest answer: the
+// value is stored, and there is nothing here to tell the caller about it.
+//
+// The SECOND return maps a resolved target's id to its collection id. Callers
+// that serve a request need it to drop a target in a collection the requester
+// cannot see back to ID-only; it is not on RelationTarget because that type is
+// the wire shape and a collection id there would be a disclosure of its own.
 func (s *Store) HydrateRelationTargetsQ(
 	q Queryer,
+	workspaceID string,
 	items []models.Item,
 	schemas map[string]models.CollectionSchema,
-) (map[string]map[string]models.RelationTarget, error) {
+) (map[string]map[string]models.RelationTarget, map[string]string, error) {
 	// item ID -> field key -> stored value
 	perItem := map[string]map[string]string{}
 	wanted := map[string]struct{}{}
@@ -1265,7 +1280,7 @@ func (s *Store) HydrateRelationTargetsQ(
 		}
 	}
 	if len(wanted) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	ids := make([]string, 0, len(wanted))
@@ -1276,6 +1291,7 @@ func (s *Store) HydrateRelationTargetsQ(
 	sort.Strings(ids)
 
 	resolved := map[string]models.RelationTarget{}
+	collectionOf := map[string]string{}
 	// Chunked: some drivers cap placeholders per statement, and a workspace
 	// with a long list read can exceed it.
 	const chunk = 200
@@ -1291,30 +1307,31 @@ func (s *Store) HydrateRelationTargetsQ(
 			args = append(args, id)
 		}
 		rows, err := q.Query(s.q(`
-			SELECT i.id, i.title, i.item_number, c.prefix
+			SELECT i.id, i.title, i.item_number, i.collection_id, c.prefix
 			FROM items i
 			JOIN collections c ON c.id = i.collection_id
-			WHERE i.id IN (`+placeholders+`) AND i.deleted_at IS NULL
-		`), args...)
+			WHERE i.workspace_id = ? AND i.id IN (`+placeholders+`) AND i.deleted_at IS NULL
+		`), append([]any{workspaceID}, args...)...)
 		if err != nil {
-			return nil, fmt.Errorf("hydrate relation targets: %w", err)
+			return nil, nil, fmt.Errorf("hydrate relation targets: %w", err)
 		}
 		for rows.Next() {
-			var id, title, prefix string
+			var id, title, collectionID, prefix string
 			var number int
-			if err := rows.Scan(&id, &title, &number, &prefix); err != nil {
+			if err := rows.Scan(&id, &title, &number, &collectionID, &prefix); err != nil {
 				rows.Close()
-				return nil, fmt.Errorf("hydrate relation targets scan: %w", err)
+				return nil, nil, fmt.Errorf("hydrate relation targets scan: %w", err)
 			}
 			resolved[id] = models.RelationTarget{
 				ID:    id,
 				Ref:   fmt.Sprintf("%s-%d", prefix, number),
 				Title: title,
 			}
+			collectionOf[id] = collectionID
 		}
 		if err := rows.Err(); err != nil {
 			rows.Close()
-			return nil, fmt.Errorf("hydrate relation targets rows: %w", err)
+			return nil, nil, fmt.Errorf("hydrate relation targets rows: %w", err)
 		}
 		rows.Close()
 	}
@@ -1334,5 +1351,5 @@ func (s *Store) HydrateRelationTargetsQ(
 			out[itemID][key] = target
 		}
 	}
-	return out, nil
+	return out, collectionOf, nil
 }

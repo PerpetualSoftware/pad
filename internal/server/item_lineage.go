@@ -22,6 +22,11 @@ func (s *Server) enrichItemsWithParent(workspaceID string, items []models.Item, 
 		hasVis = true
 	}
 
+	// U6 hydration runs BEFORE the parent-map early return below. The two are
+	// unrelated decorations, and a workspace with no parent links at all would
+	// otherwise return here and silently ship every list read unhydrated.
+	s.hydrateRelationTargets(workspaceID, items, visibleIDs...)
+
 	parentMap, err := s.store.GetParentMap(workspaceID)
 	if err != nil || len(parentMap) == 0 {
 		return
@@ -93,6 +98,13 @@ func (s *Server) enrichItemForResponse(item *models.Item, visibleIDs ...[]string
 		return err
 	}
 	item.DerivedClosure = closure
+
+	// U6: one item is the degenerate batch. Going through the same helper means
+	// a single read and a list read cannot disagree about what `relation_targets`
+	// says for the same item — including which targets collapse to id-only.
+	one := []models.Item{*item}
+	s.hydrateRelationTargets(item.WorkspaceID, one, visibleIDs...)
+	item.RelationTargets = one[0].RelationTargets
 
 	// Populate parent link info — skip if parent is in a hidden collection
 	parentLink, err := s.store.GetParentForItem(item.ID)

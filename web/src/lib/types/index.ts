@@ -853,6 +853,15 @@ export interface ItemCopyPreflightDropped {
 		| 'wrong_collection'
 		| 'target_missing'
 		/**
+		 * An exact TITLE matched two or more live items inside the field's
+		 * declared collection, so it names no single one (PLAN-2857 U6). Only
+		 * the title path can produce it — a UUID and a ref are unique by
+		 * construction. It is its own reason rather than `not_found` because
+		 * that would tell the caller the opposite of what happened: the title
+		 * matched too much, not too little.
+		 */
+		| 'ambiguous'
+		/**
 		 * The destination schema's default for this field is not a reference at
 		 * all. Injected defaults are never type-checked, so this is the one
 		 * route by which a non-string reaches a relation field.
