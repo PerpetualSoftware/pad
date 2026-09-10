@@ -92,58 +92,104 @@ func (s *Server) routeContentUpdate(
 	parentLink *store.ParentLinkUpdate,
 	content string,
 ) (contentRoute, *models.Item, error) {
-	deadline := time.Now().Add(applierSettleBudget)
+	var updated *models.Item
+	outcome, paErr := settleContentRoute(
+		func() bool { return s.collab.HasElectableApplier(item.ID) },
+		func() error {
+			return s.collab.PruneAndApply(item.ID, func() error {
+				precheck := composePruneWithPrecheck(s, item.ID, openChildrenPrecheck)
+				u, uerr := s.store.UpdateItemWithParentLink(item.ID, *input, precheck, parentLink)
+				if uerr != nil {
+					return uerr
+				}
+				updated = u
+				return nil
+			})
+		},
+		applierSettleBudget, applierSettlePoll,
+	)
 
-	for {
-		if s.collab.HasElectableApplier(item.ID) {
-			return s.applierFirstWrite(w, item, input, openChildrenPrecheck, parentLink, content)
+	switch outcome {
+	case settleElectApplier:
+		return s.applierFirstWrite(w, item, input, openChildrenPrecheck, parentLink, content)
+
+	case settleDirectWrote:
+		return contentRouteDirectWrote, updated, nil
+
+	case settleUnsettled:
+		slog.Info("collab: room neither electable nor peerless within the settle budget; refusing",
+			"item_id", item.ID,
+			"budget", applierSettleBudget,
+		)
+		writeRoomSettlingError(w, itemRefOrSlug(*item))
+		return contentRouteHandled, nil, nil
+
+	default: // settleDirectFailed
+		if s.writeTypedItemRefusal(w, item, paErr) {
+			return contentRouteHandled, nil, nil
 		}
+		slog.Warn("collab: direct-write path failed; falling through to the ordinary row write",
+			"item_id", item.ID,
+			"error", paErr,
+		)
+		return contentRouteFallThrough, nil, paErr
+	}
+}
 
-		// No electable applier. PruneAndApply is the authority on whether the room
-		// is genuinely peerless: its scan blocks on ANY conn with canWrite, which is
-		// a wider set than election's (election also demands unfrozen and
-		// replay-done). Going straight to it — rather than through
-		// ApplyExternalContent — is what keeps a writer that anchors underneath us
-		// from applying content ahead of the row write.
-		var updated *models.Item
-		paErr := s.collab.PruneAndApply(item.ID, func() error {
-			precheck := composePruneWithPrecheck(s, item.ID, openChildrenPrecheck)
-			u, uerr := s.store.UpdateItemWithParentLink(item.ID, *input, precheck, parentLink)
-			if uerr != nil {
-				return uerr
-			}
-			updated = u
-			return nil
-		})
+// settleOutcome is what one pass of the route decision concluded.
+type settleOutcome int
 
+const (
+	// settleElectApplier — an applier is electable; take the reordered path.
+	settleElectApplier settleOutcome = iota
+	// settleDirectWrote — the room had no live writer and the direct write ran.
+	settleDirectWrote
+	// settleUnsettled — the budget expired with the room neither electable nor
+	// peerless. NOTHING has been written.
+	settleUnsettled
+	// settleDirectFailed — the direct write itself failed; the error is returned.
+	settleDirectFailed
+)
+
+// settleContentRoute is the route decision, extracted from its I/O so the budget
+// expiry is testable without a seam into the conn anchoring machinery — which is
+// where a test-only lever would otherwise have to reach, and which PLAN-2975 fences
+// off as its own unit.
+//
+// The standoff it bounds is not a race the server can win by trying harder.
+// PruneAndApply blocks on ANY conn with canWrite; election additionally requires the
+// conn to be unfrozen and past its replay. A room whose only writer has joined and
+// not yet anchored satisfies the first and fails the second, so neither path can run,
+// and only that conn anchoring resolves it — which this request does not control.
+//
+// Re-deciding here, before anything is written, is also what closes the route-flip
+// the predecessor had: retrying inside applyContentViaCollab re-called
+// ApplyExternalContent, which could succeed through a freshly joined applier and let
+// the row write run last after all.
+func settleContentRoute(
+	hasElectableApplier func() bool,
+	tryDirectWrite func() error,
+	budget, poll time.Duration,
+) (settleOutcome, error) {
+	deadline := time.Now().Add(budget)
+	for {
+		if hasElectableApplier() {
+			return settleElectApplier, nil
+		}
+		err := tryDirectWrite()
 		switch {
-		case paErr == nil:
-			return contentRouteDirectWrote, updated, nil
-
-		case errors.Is(paErr, collab.ErrRoomActiveDuringPrune):
-			// The standoff, or a writer that is about to become electable. Neither
-			// path can run right now and NOTHING has been written — PruneAndApply
-			// returns before it calls applyFn. Wait a bounded moment and re-decide.
+		case err == nil:
+			return settleDirectWrote, nil
+		case errors.Is(err, collab.ErrRoomActiveDuringPrune):
+			// A writer exists but is not electable, or is about to become so.
+			// PruneAndApply returns this BEFORE it calls applyFn, so nothing has
+			// been written and waiting is free of consequence.
 			if time.Now().After(deadline) {
-				slog.Info("collab: room neither electable nor peerless within the settle budget; refusing",
-					"item_id", item.ID,
-					"budget", applierSettleBudget,
-				)
-				writeRoomSettlingError(w, itemRefOrSlug(*item))
-				return contentRouteHandled, nil, nil
+				return settleUnsettled, nil
 			}
-			time.Sleep(applierSettlePoll)
-			continue
-
+			time.Sleep(poll)
 		default:
-			if s.writeTypedItemRefusal(w, item, paErr) {
-				return contentRouteHandled, nil, nil
-			}
-			slog.Warn("collab: direct-write path failed; falling through to the ordinary row write",
-				"item_id", item.ID,
-				"error", paErr,
-			)
-			return contentRouteFallThrough, nil, paErr
+			return settleDirectFailed, err
 		}
 	}
 }

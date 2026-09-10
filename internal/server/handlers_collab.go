@@ -1,7 +1,6 @@
 package server
 
 import (
-	"database/sql"
 	"errors"
 	"log/slog"
 	"math/rand"
@@ -11,7 +10,6 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/collab"
 	"github.com/PerpetualSoftware/pad/internal/models"
-	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
 )
@@ -407,217 +405,19 @@ func isAccessDenial(err error) bool {
 	return errors.As(err, &sErr)
 }
 
-// applyContentViaCollab routes an external content update through a
-// connected browser tab via the collab room manager's
-// designated-applier protocol. Returns nil when an applier acked
-// successfully (caller should suppress the direct items.content
-// write); any error means "fall back to direct write".
+// The write-first-apply-second router in handlers_items_content_route.go replaced the
+// helper chain that used to live here (applyContentViaCollab / applyContentViaCollabOnce
+// / directWriteFn / applyContentMaxRetries / isDeterministicWriteFailure), removed in
+// PLAN-2975 unit 2.
 //
-// Errors are categorised + logged at the right level so operators
-// can see when degraded paths fire. Returning the error rather than
-// silently swallowing lets callers add their own telemetry / metrics
-// later without re-deriving the categorisation.
-//
-// Retries internally when the no-room classification races a fresh
-// Join (PruneAndApply returns ErrRoomActiveDuringPrune): the room
-// is now active, so we re-call ApplyExternalContent against the
-// live peer. Capped at applyContentMaxRetries to prevent runaway
-// loops if joins keep landing during the prune attempts.
-const applyContentMaxRetries = 3
-
-// directWriteFn is the caller's items.content writer. Invoked only
-// on the no-room/no-applier paths, INSIDE the per-item setup lock
-// (so a fresh Join cannot replay stale op-log between prune and
-// content write).
-//
-// It receives the op-log prune as a hook to run INSIDE its own write
-// transaction rather than performing the prune itself, so the two
-// move together or not at all (BUG-2840 half B). The caller must run
-// the hook when it is non-nil; a write that commits without it leaves
-// a stale op-log that a later Join would replay over the content just
-// written, which is the hazard the prune exists to prevent.
-type directWriteFn func(pruneOpLog func(tx *sql.Tx) error) error
-
-func (s *Server) applyContentViaCollab(r *http.Request, itemID, markdown string, directWrite directWriteFn) error {
-	if s.collab == nil {
-		return errors.New("collab not configured")
-	}
-
-	for attempt := 0; attempt < applyContentMaxRetries; attempt++ {
-		err := s.applyContentViaCollabOnce(r, itemID, markdown, directWrite)
-		if !errors.Is(err, collab.ErrRoomActiveDuringPrune) {
-			return err
-		}
-		// A fresh Join slipped in during PruneAndApply's check.
-		// Loop and re-try ApplyExternalContent against the now-
-		// active room rather than direct-writing past the live
-		// peer (whose Y.Doc would otherwise outvote the direct
-		// write on next flush). Per Codex review round 6.
-	}
-	slog.Warn("collab: exhausted prune retries; falling back to direct write",
-		"item_id", itemID,
-	)
-	return collab.ErrRoomActiveDuringPrune
-}
-
-// isDeterministicWriteFailure reports whether an error from a direct-write
-// callback is a settled answer rather than a transient condition.
-//
-// These are the errors handleUpdateItem already treats as FINAL at every call
-// site: a rejection, a conflict, and two refusals. None can come out
-// differently on a retry, so a fallback path that swallows one and retries is
-// doing the work twice to reach the same answer — and, worse, may reach it by
-// a route that reports it differently.
-//
-// THIS LIST IS A CLOSED SET THAT KEEPS GETTING REOPENED. It said "these three"
-// until BUG-2833 added a fourth store-level refusal on the same write path, and
-// nothing failed when the new error was omitted — the request still reached an
-// answer, just twice and by the other route. Anyone adding a typed, permanent
-// refusal to store.UpdateItem owes this function an entry and the sentence
-// above a recount.
-func isDeterministicWriteFailure(err error) bool {
-	if err == nil {
-		return false
-	}
-	if _, ok := asOpenChildrenGuardError(err); ok {
-		return true
-	}
-	if _, ok := asUpdateConflictError(err); ok {
-		return true
-	}
-	var badTitle *store.InvalidItemTitleError
-	if errors.As(err, &badTitle) {
-		return true
-	}
-	var tooLarge *store.ItemRenameCascadeTooLargeError
-	return errors.As(err, &tooLarge)
-}
-
-func (s *Server) applyContentViaCollabOnce(r *http.Request, itemID, markdown string, directWrite directWriteFn) error {
-	err := s.collab.ApplyExternalContent(itemID, markdown)
-	switch {
-	case err == nil:
-		// Caller suppresses the direct write.
-		return nil
-
-	case errors.Is(err, collab.ErrNoActiveRoom),
-		errors.Is(err, collab.ErrNoApplierAvailable):
-		// No live editors — direct write is the right thing. We
-		// also prune the op-log here: any prior collab state is
-		// strictly older than the items.content the caller is
-		// about to write, and replaying it on the next collab
-		// session would resurrect stale content and silently
-		// overwrite this update on the next 5s flush. Common
-		// triggers for this path are (a) CLI/MCP/API updates
-		// outside any co-edit session, (b) raw-mode toggles that
-		// destroy the in-tab provider before saving, and (c) raw
-		// saves that hit the server while the room is still in
-		// its 60s grace TTL with zero conns (returns
-		// ErrNoApplierAvailable).
-		//
-		// PruneAndApply runs the prune under the per-item setup
-		// lock so a fresh Join racing in this exact window can't
-		// load the soon-to-be-pruned op-log under our feet.
-		// Pruning is safe in both no-conn cases — there are no
-		// peers in memory whose Y.Doc would diverge.
-		// ErrAllAppliersTimedOut is intentionally NOT pruned
-		// because peers may still be alive there.
-		paErr := s.collab.PruneAndApply(itemID, func() error {
-			// The prune runs INSIDE the write's own transaction, via
-			// the hook, so a refused or failed write rolls it back
-			// (BUG-2840 half B). It used to run first, in its own
-			// statement: the justification for pruning is that "any
-			// prior collab state is strictly older than the
-			// items.content the caller is about to write", and that
-			// premise is FALSE on every path where the write then
-			// refuses — the ops were destroyed and nothing replaced
-			// them. That is not hypothetical on this branch: it fires
-			// on ErrNoApplierAvailable, i.e. a room inside its grace
-			// TTL with zero connections, which is exactly the state
-			// where the op-log holds a closed tab's edits that never
-			// reached items.content.
-			//
-			// Same shape, and the same reasoning, as PruneItemOpLogTx's
-			// use by version-restore, whose comment already says a
-			// split prune/commit "leaves a divergent state on any
-			// failure" in EITHER order. This path was the remaining
-			// split.
-			//
-			// Still under the per-item lock, so a concurrent Join
-			// cannot slip between prune and write, replay an empty
-			// op-log, then overwrite the fresh write from its stale
-			// Y.Doc state (Codex review round 8).
-			return directWrite(func(tx *sql.Tx) error {
-				return s.store.PruneItemOpLogTx(tx, itemID)
-			})
-		})
-		switch {
-		case paErr == nil:
-			// Prune + direct write completed atomically.
-			// Caller suppresses any subsequent items.content write.
-			return nil
-		case errors.Is(paErr, collab.ErrRoomActiveDuringPrune):
-			// A peer joined between ApplyExternalContent's check
-			// and PruneAndApply's re-check. Surface the error so
-			// the outer retry loop in applyContentViaCollab
-			// re-routes through the now-active applier — direct-
-			// writing past a live peer would let its Y.Doc
-			// outvote our update on the next flush. Per Codex
-			// review round 6.
-			return paErr
-		default:
-			// A DETERMINISTIC failure from directWrite is the caller's answer,
-			// not a collab routing problem, so it must survive this branch
-			// (BUG-2804 / codex R2). Returning `err` here discards it and hands
-			// the caller the original collab error instead, which reads as
-			// "couldn't route through an applier" — recoverable — so the caller
-			// falls through to its own direct write and re-derives the identical
-			// refusal from scratch. Measured: a refused rename ran the whole
-			// cascade TWICE, 64 rewritten bodies built for one request.
-			//
-			// Scoped to errors that cannot come out differently on a second
-			// attempt. Everything else keeps returning `err`, preserving the
-			// graceful-degradation contract this branch exists for: a prune
-			// failure or a transient write fault should still fall through.
-			if isDeterministicWriteFailure(paErr) {
-				return paErr
-			}
-			slog.Warn("collab: failed to prune op-log on direct-write fallback",
-				"item_id", itemID,
-				"error", paErr,
-			)
-			return err
-		}
-
-	case errors.Is(err, collab.ErrAllAppliersTimedOut):
-		slog.Warn("collab: all designated appliers timed out; falling back to direct items.content write",
-			"item_id", itemID,
-			"actor", actorIDFromRequest(r),
-		)
-		return err
-
-	default:
-		slog.Warn("collab: applier path failed; falling back to direct items.content write",
-			"item_id", itemID,
-			"error", err,
-		)
-		return err
-	}
-}
-
-// actorIDFromRequest returns a non-empty identity string for the
-// caller when one is available — user id, token id, or empty. Used
-// in slog calls where we want SOMETHING actor-shaped without
-// caring about the precise auth path.
-func actorIDFromRequest(r *http.Request) string {
-	if u := currentUser(r); u != nil {
-		return u.ID
-	}
-	if tw := tokenWorkspaceID(r); tw != "" {
-		return "token-ws:" + tw
-	}
-	return ""
-}
+// It is worth saying WHY rather than leaving a gap: that chain retried
+// ErrRoomActiveDuringPrune internally and re-called ApplyExternalContent, which could
+// succeed through a freshly joined applier and return nil — after which the handler's
+// row write ran last, which is BUG-2840 half A. The retry budget now sits in
+// settleContentRoute, above the write, where a re-decision cannot leave content in the
+// document ahead of a refusal. isDeterministicWriteFailure's job — classifying the
+// typed, permanent refusals — is writeTypedItemRefusal's now, and it carries that
+// function's closed-set warning with it.
 
 // statusError lets authorizeCollabAccess return a typed error that
 // carries the HTTP status + payload pieces handleCollab should write.

@@ -261,36 +261,43 @@ func TestCreateItemCheckedMapsStoreTitleRefusalTo400(t *testing.T) {
 	}
 }
 
-// TestIsDeterministicWriteFailureIncludesTitleRefusal regresses codex round 1
-// P1 on the collab fallback.
+// TestWriteTypedItemRefusalIncludesTitleRefusal regresses codex round 1 P1 on the
+// collab fallback, PORTED from isDeterministicWriteFailure when PLAN-2975 unit 2
+// replaced that classifier with writeTypedItemRefusal.
 //
-// isDeterministicWriteFailure decides whether a direct-write failure is a
-// settled answer. A permanent refusal it does not recognise is returned as a
-// generic collab-routing error, so the caller falls through to its own direct
-// write and re-derives the identical refusal from scratch — BUG-2804 measured
-// that as running a whole rename cascade twice for one request, and reported
-// the answer by the other route.
+// The property is unchanged and is why the port was worth doing rather than deleting
+// the test with the function: a permanent refusal the handler does not RECOGNISE is
+// treated as a recoverable routing error, so the request falls through to another
+// write path and re-derives the identical refusal from scratch — BUG-2804 measured
+// that as running a whole rename cascade twice for one request, and answering by the
+// other route.
 //
-// The store gained a fourth such refusal with the item-title bound and nothing
-// failed when it was left out, which is exactly why this test exists: the
-// omission is invisible from the outside.
-func TestIsDeterministicWriteFailureIncludesTitleRefusal(t *testing.T) {
-	if !isDeterministicWriteFailure(&store.InvalidItemTitleError{Reason: "Title is required"}) {
+// The store gained a fourth such refusal with the item-title bound and nothing failed
+// when it was left out, which is exactly why this exists: the omission is invisible
+// from the outside.
+func TestWriteTypedItemRefusalIncludesTitleRefusal(t *testing.T) {
+	srv := testServer(t)
+	item := &models.Item{ID: "item-1", Ref: "TASK-1", Slug: "task-1"}
+
+	refused := func(err error) bool {
+		return srv.writeTypedItemRefusal(httptest.NewRecorder(), item, err)
+	}
+
+	if !refused(&store.InvalidItemTitleError{Reason: "Title is required"}) {
 		t.Error("an invalid-title refusal is permanent: retrying the same title always refuses")
 	}
 	// Through a wrapper, since the call path wraps on the way up.
-	if !isDeterministicWriteFailure(fmt.Errorf("update item: %w", &store.InvalidItemTitleError{Reason: "Title is too long"})) {
+	if !refused(fmt.Errorf("update item: %w", &store.InvalidItemTitleError{Reason: "Title is too long"})) {
 		t.Error("must see through wrappers")
 	}
-	// Controls. Without these, a mutant returning true unconditionally would
-	// pass — and that mutant would break the graceful-degradation contract the
-	// function exists to protect, by treating a transient prune failure as
-	// final.
-	if isDeterministicWriteFailure(nil) {
+	// Controls. Without these a mutant returning true unconditionally would pass —
+	// and that mutant would swallow every transient failure as a settled refusal,
+	// answering a 4xx for a condition that would have succeeded on retry.
+	if refused(nil) {
 		t.Error("nil is not a failure")
 	}
-	if isDeterministicWriteFailure(errors.New("transient prune failure")) {
-		t.Error("an unrecognised error must stay recoverable so the fallback still degrades gracefully")
+	if refused(errors.New("transient prune failure")) {
+		t.Error("an unrecognised error must stay recoverable so the route still degrades gracefully")
 	}
 }
 

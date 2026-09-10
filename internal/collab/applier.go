@@ -291,16 +291,16 @@ func (m *RoomManager) ApplyExternalContent(itemID string, markdown string) error
 // decision 2), which is why every judgement call here resolves toward true.
 //
 // That asymmetry is a statement about THIS function's answer, not a guarantee about
-// everything downstream of it, and the difference matters. A caller that reorders on
-// a true and then meets an apply failure inherits whatever its fallback does — and
-// the fallback that exists today can itself write content past live peers: when
-// applyContentViaCollab exhausts its ErrRoomActiveDuringPrune retries, the PATCH
-// handler falls through to a plain direct write while a live writer may be holding a
-// Y.Doc that will outvote it on the next flush (internal/server/handlers_collab.go's
-// retry cap, consumed by handleUpdateItem's "any other error path" fall-through).
-// That predates this function and is unchanged by it; it is named here because a
-// reader would otherwise take "a false positive costs a partial answer" as a claim
-// about the whole path rather than about this return value (codex round 2, PLAN-2975).
+// everything downstream of it. When this comment was written the caller's fallback
+// could itself write content past live peers — a three-try give-up that fell through
+// to a plain direct write while a live writer held a Y.Doc that would outvote it on
+// the next flush — so the sentence above was true of this return value and false of
+// the path. PLAN-2975 unit 2 removed that fallback: an unsettled room now answers a
+// retryable room_settling refusal, and an apply that fails after the row write
+// answers content_not_applied rather than a success the content never reached. The
+// distinction is kept because it is still the right way to read this function: a
+// false positive costs the CALLER an honest partial answer, and what the caller does
+// with that is the caller's contract, not this one's.
 //
 // That is why an in-progress version restore answers TRUE rather than consulting the
 // conns. ForceRefreshRoom freezes every conn for the duration, and pickApplier skips
