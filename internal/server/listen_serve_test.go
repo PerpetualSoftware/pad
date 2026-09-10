@@ -42,7 +42,11 @@ func TestListenAndServe_StillServes(t *testing.T) {
 	t.Cleanup(func() { _ = ln.Close() })
 
 	// The split must not have changed what a bound server does: it answers.
-	client := &http.Client{Timeout: 2 * time.Second}
+	// A nil Transport means http.DefaultTransport, which another test's
+	// httptest server teardown reaches into (BUG-3008). The timeout is the
+	// reason this is not a bare isolatedTestClient() call.
+	client := isolatedTestClient()
+	client.Timeout = 2 * time.Second
 	var resp *http.Response
 	for i := 0; i < 20; i++ {
 		resp, err = client.Get("http://" + ln.Addr().String() + "/api/v1/health")
