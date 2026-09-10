@@ -798,3 +798,169 @@ func TestValidateTokenForLiveness_DoesNotTouchLastUsed(t *testing.T) {
 		}
 	}
 }
+
+func TestCredentialLiveness_AResolvedPrincipalWithoutAKindFailsClosed(t *testing.T) {
+	// codex round 2, P1. The empty-kind branch means "no credential on the
+	// wire" — the fresh-install window and the legacy no-auth path — and it
+	// KEEPS the connection. A request that carries a resolved USER but no kind
+	// is a different animal wearing that branch's coat: somebody accepted a
+	// credential and did not record which, so the predicate has nothing to
+	// re-check and no way to notice. Both MCP accept points were in that state
+	// when this was written.
+	//
+	// The counterfactual is TestCredentialLiveness_NoCredentialIsValid above:
+	// same empty kind, no principal, connection KEPT. The two together are what
+	// make this branch discriminate rather than just close things.
+	srv := testServer(t)
+
+	user, err := srv.store.CreateUser(models.UserCreate{
+		Email: "nokind@example.com", Name: "N", Password: "correct-horse-battery-staple", Role: "member",
+	})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/events?workspace=x", nil)
+	req = req.WithContext(WithCurrentUser(req.Context(), user))
+
+	// PRECONDITION: the kind really is absent, or this test proves nothing
+	// about the branch it claims to exercise.
+	if k := authKind(req); k != "" {
+		t.Fatalf("auth kind = %q, want empty; this test cannot discriminate", k)
+	}
+
+	if got := srv.credentialLiveness(req); got != credentialInvalid {
+		t.Fatalf("credentialLiveness for a principal with no auth kind = %v, want credentialInvalid", got)
+	}
+	if srv.streamCredentialStillValid(req) {
+		t.Fatal("a resolved principal with no auth kind kept the stream open; an accept point that records a user and not its credential must not exempt itself from revalidation")
+	}
+}
+
+func TestCredentialLiveness_StoreErrorRecoversOnTheNextTick(t *testing.T) {
+	// codex round 2, P2. TestCredentialLiveness_StoreErrorKeepsTheConnection
+	// closes the whole store, which is a PERMANENT failure — it proves the
+	// classification and not the promise the classification is made for, that
+	// the tick TRIES AGAIN and the connection comes back under a store that
+	// recovers. A permanently-broken store cannot tell those apart.
+	//
+	// So break the seam transiently instead: rename the table ValidateSession
+	// reads, ask, put it back, ask again. Same error path (a failing query, not
+	// a closed handle), and it ends.
+	srv := testServer(t)
+
+	user, err := srv.store.CreateUser(models.UserCreate{
+		Email: "transient@example.com", Name: "T", Password: "correct-horse-battery-staple", Role: "member",
+	})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	token, err := srv.store.CreateSession(user.ID, "test", "127.0.0.1", "go-test", 24*time.Hour)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/events?workspace=x", nil)
+	req = req.WithContext(context.WithValue(req.Context(), ctxAuthKind, authKindSessionBearer))
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	// PRECONDITION: valid BEFORE the outage, or "it recovered" is a claim about
+	// a credential that was never good.
+	if got := srv.credentialLiveness(req); got != credentialValid {
+		t.Fatalf("credentialLiveness before the outage = %v, want credentialValid", got)
+	}
+
+	db := srv.store.DB()
+	if _, err := db.Exec("ALTER TABLE sessions RENAME TO sessions_outage"); err != nil {
+		t.Fatalf("hide sessions table: %v", err)
+	}
+	if got := srv.credentialLiveness(req); got != credentialUnknown {
+		t.Fatalf("credentialLiveness during the outage = %v, want credentialUnknown", got)
+	}
+	if !srv.streamCredentialStillValid(req) {
+		t.Fatal("a transient store error closed the stream; a database blip is not a revocation")
+	}
+
+	if _, err := db.Exec("ALTER TABLE sessions_outage RENAME TO sessions"); err != nil {
+		t.Fatalf("restore sessions table: %v", err)
+	}
+	if got := srv.credentialLiveness(req); got != credentialValid {
+		t.Fatalf("credentialLiveness after the store recovered = %v, want credentialValid; the tick must not latch", got)
+	}
+
+	// And the recovered tick still ANSWERS: destroy the session and the same
+	// predicate closes. Without this the test would pass on a predicate that
+	// returned valid unconditionally after an error.
+	if err := srv.store.DeleteSession(token); err != nil {
+		t.Fatalf("delete session: %v", err)
+	}
+	if got := srv.credentialLiveness(req); got != credentialInvalid {
+		t.Fatalf("credentialLiveness after recovery + revocation = %v, want credentialInvalid", got)
+	}
+}
+
+func TestMCPBearerAuth_PATPathRecordsTheAPITokenKind(t *testing.T) {
+	// codex round 2, P1. The MCP transport is a second accept point: it
+	// resolves a principal without going through TokenAuth, so it has to record
+	// the credential kind itself or the liveness predicate sees a user it
+	// cannot re-check. The PAT branch needs no new door — the credential IS a
+	// PAT in the Authorization header — so it records `api_token` and the
+	// existing door revalidates it.
+	//
+	// The OAuth branch deliberately records nothing (no liveness door for an
+	// opaque fosite token yet) and is covered by the fail-closed guard in
+	// TestCredentialLiveness_AResolvedPrincipalWithoutAKindFailsClosed.
+	srv := testServer(t)
+
+	user, err := srv.store.CreateUser(models.UserCreate{
+		Email: "mcpkind@example.com", Name: "M", Password: "correct-horse-battery-staple", Role: "member",
+	})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	secret, id := mintPAT(t, srv, user.ID, "mcp-kind")
+
+	var seenKind string
+	var seenUser *models.User
+	var seenLiveness credentialLiveness
+	inner := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		seenKind = authKind(r)
+		seenUser = currentUser(r)
+		seenLiveness = srv.credentialLiveness(r)
+	})
+
+	call := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+		req.Header.Set("Authorization", "Bearer "+secret)
+		req.RemoteAddr = "192.0.2.1:1234"
+		rr := httptest.NewRecorder()
+		srv.MCPBearerAuth(inner).ServeHTTP(rr, req)
+		return rr
+	}
+
+	// PRECONDITION: the middleware ADMITTED the call. A 401 would leave every
+	// assertion below reading the zero value of a handler that never ran.
+	if rr := call(); rr.Code != http.StatusOK {
+		t.Fatalf("MCPBearerAuth rejected a valid PAT: %d %s", rr.Code, rr.Body.String())
+	}
+	if seenUser == nil {
+		t.Fatal("MCPBearerAuth admitted the call without resolving a principal; this test cannot discriminate")
+	}
+	if seenKind != authKindAPIToken {
+		t.Fatalf("auth kind on an MCP PAT request = %q, want %q", seenKind, authKindAPIToken)
+	}
+	if seenLiveness != credentialValid {
+		t.Fatalf("credentialLiveness on a live MCP PAT request = %v, want credentialValid", seenLiveness)
+	}
+
+	// And the recorded kind is the one that makes revocation reachable: revoke
+	// the PAT and the same request is now closable. Without this the test would
+	// pass on a kind that was merely spelled right.
+	if err := srv.store.DeleteUserAPIToken(id, user.ID); err != nil {
+		t.Fatalf("revoke PAT: %v", err)
+	}
+	rr := call()
+	if rr.Code == http.StatusOK && seenLiveness != credentialInvalid {
+		t.Fatalf("credentialLiveness after the MCP PAT was revoked = %v, want credentialInvalid", seenLiveness)
+	}
+}

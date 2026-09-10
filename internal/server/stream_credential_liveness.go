@@ -133,6 +133,25 @@ func (s *Server) credentialLiveness(r *http.Request) credentialLiveness {
 		// and closing their streams would turn a security fix into an
 		// availability regression on exactly the deployments least able to
 		// diagnose it.
+		//
+		// A RESOLVED PRINCIPAL WITH NO KIND IS NOT THAT CASE, and is the one
+		// way the empty branch could quietly become the exemption the default
+		// branch exists to prevent (codex round 2, P1). Somebody was
+		// authenticated, so a credential was accepted; an accept point that
+		// records the user and not how it established them leaves this
+		// predicate with nothing to re-check and no way to notice. Both MCP
+		// accept points were in exactly that state when this was written — the
+		// PAT one is fixed by recording its kind, and the OAuth one has no
+		// liveness door yet, so it lands here and CLOSES rather than streaming
+		// past a revoked connected app. Neither is reachable today (no MCP
+		// route is long-lived: internal/mcp/dispatch_http_routes.go maps
+		// nothing under /api/v1/events or /api/v1/collab), which is why this
+		// is a guard rather than an incident.
+		if currentUser(r) != nil {
+			slog.Warn("stream: a principal was resolved without an auth kind, closing the connection",
+				"path", r.URL.Path)
+			return credentialInvalid
+		}
 		return credentialValid
 
 	default:
