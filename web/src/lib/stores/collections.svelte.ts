@@ -158,6 +158,13 @@ export const collectionStore = {
 		// authenticated one. Same source as every `bootstrap` caller passes, so
 		// the two cannot disagree.
 		const userId = authStore.userId || null;
+		// The IDENTITY this load is issued under (BUG-3005). Captured out here,
+		// before `run` and therefore before any await, so it names the identity
+		// that ASKED rather than whichever one is signed in when the response
+		// lands. `isLatest` is a navigation fence and does not cover this: a
+		// same-route account swap supersedes nothing, so the older load is still
+		// "latest" and commits A's collection names into B's session.
+		const isSameIdentity = authStore.identityFence();
 		// ALWAYS ISSUES — `run` never coalesces. The join is `ensureCollections`'s
 		// alone, via `inFlightFor`, because every other caller here knows the list
 		// MOVED and a request issued before that move cannot answer it.
@@ -179,7 +186,7 @@ export const collectionStore = {
 			// switch that resolved first) has superseded this one, so writing
 			// `collections`/`collectionsWorkspace` here would clobber the newer
 			// workspace's data with this older load (Codex review).
-			if (!isLatest()) return;
+			if (!isLatest() || !isSameIdentity()) return;
 			collections = result;
 			// Stamp the array with its source workspace so consumers can tell
 			// it apart from a stale previous-workspace load (see
@@ -196,17 +203,26 @@ export const collectionStore = {
 	},
 
 	async loadItems(ws: string, collectionSlug?: string, params?: Record<string, string | number | boolean | undefined>) {
+		const isSameIdentity = authStore.identityFence();
 		loading = true;
 		try {
 			if (collectionSlug) {
-				items = await api.items.listByCollection(ws, collectionSlug, params);
+				const result = await api.items.listByCollection(ws, collectionSlug, params);
+				// A response issued as someone else must not become this
+				// session's item list (BUG-3005). Assigned through a local
+				// first, because `items = await ...` publishes whatever comes
+				// back before any check can run.
+				if (!isSameIdentity()) return;
+				items = result;
 				// Partial load — the stored array no longer represents the
 				// full workspace, so invalidate the freshness stamp. A
 				// downstream caller asking `itemsAreFreshFor(ws)` will
 				// correctly trigger a full re-load.
 				itemsWorkspace = null;
 			} else {
-				items = await api.items.list(ws, params);
+				const result = await api.items.list(ws, params);
+				if (!isSameIdentity()) return;
+				items = result;
 				itemsWorkspace = ws;
 			}
 		} finally {
@@ -215,7 +231,14 @@ export const collectionStore = {
 	},
 
 	async loadItem(ws: string, slug: string) {
-		activeItem = await api.items.get(ws, slug);
+		const isSameIdentity = authStore.identityFence();
+		const result = await api.items.get(ws, slug);
+		// Returns null rather than the fetched item when the identity moved:
+		// the caller asked on behalf of a session that has ended, and handing
+		// it the item would put it on screen for whoever is signed in now
+		// (BUG-3005). `activeItem` is left as the reset found it.
+		if (!isSameIdentity()) return null;
+		activeItem = result;
 		return activeItem;
 	},
 
@@ -242,4 +265,37 @@ export const collectionStore = {
 			activeItem = null;
 		}
 	},
+
+	/**
+	 * Drop everything this store holds. Exported for the identity subscription
+	 * below and for tests; there is no other caller.
+	 */
+	clear() {
+		collections = [];
+		items = [];
+		itemsWorkspace = null;
+		collectionsWorkspace = null;
+		activeItem = null;
+	},
 };
+
+// Drop the previous user's collections, items and open item when the signed-in
+// user changes (BUG-3005).
+//
+// Every piece of state here belongs to a user and none of it is keyed by one:
+// the loader is keyed by workspace SLUG, and the workspace layout drives it
+// from a slug-keyed effect, so a same-route sign-in as a different user starts
+// no new load at all. Routes that read `collections` — Roles, the item picker,
+// the editor's link gate — then render A's collection names and item titles
+// inside B's session.
+//
+// The FRESHNESS STAMPS are cleared with the arrays, deliberately. Leaving
+// `collectionsWorkspace` set while emptying `collections` would make
+// `collectionsAreFreshFor(ws)` answer true for an empty list, which is the one
+// answer that stops TASK-2200's recovery from re-fetching.
+//
+// Module scope, registered once, never unsubscribed: singleton store, tab
+// lifetime.
+authStore.onIdentityChange(() => {
+	collectionStore.clear();
+});
