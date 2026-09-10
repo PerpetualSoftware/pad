@@ -608,16 +608,28 @@ func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
 		})
 		return best
 	}
-	hasUniqueLiteral := func(b *ast.BlockStmt) bool {
+	// The arm is an IF CONDITION, and the check reads only conditions (codex round
+	// 7). Accepting any string literal in the block would let an unrelated nested
+	// closure, or a message string that happened to quote the phrase, satisfy the
+	// guard after the real mapping had been deleted — the guard passing for a reason
+	// that has nothing to do with what it claims.
+	hasUniqueArm := func(b *ast.BlockStmt) bool {
 		found := false
 		ast.Inspect(b, func(n ast.Node) bool {
-			lit, ok := n.(*ast.BasicLit)
-			if !ok || lit.Kind != token.STRING {
+			ifStmt, ok := n.(*ast.IfStmt)
+			if !ok || ifStmt.Cond == nil {
 				return true
 			}
-			if strings.Contains(lit.Value, "UNIQUE constraint") {
-				found = true
-			}
+			ast.Inspect(ifStmt.Cond, func(c ast.Node) bool {
+				lit, ok := c.(*ast.BasicLit)
+				if !ok || lit.Kind != token.STRING {
+					return true
+				}
+				if strings.Contains(lit.Value, "UNIQUE constraint") {
+					found = true
+				}
+				return true
+			})
 			return true
 		})
 		return found
@@ -630,7 +642,7 @@ func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
 				"this check relies on does not hold", updateLines[i])
 			continue
 		}
-		if !hasUniqueLiteral(b) {
+		if !hasUniqueArm(b) {
 			t.Errorf("the error block at line %d has no UNIQUE-constraint arm in its own scope. A "+
 				"concurrent slug/title collision answers 409 on the routes that map it and 500 on "+
 				"the ones that do not, for the identical store error — which is the regression that "+
