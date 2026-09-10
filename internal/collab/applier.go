@@ -209,9 +209,20 @@ var (
 	// direct write.
 	ErrNoApplierAvailable = errors.New("collab: no live conn available to apply")
 
-	// ErrAllAppliersTimedOut — every attempt timed out without an
-	// ack. Caller falls back to direct write and (depending on
-	// preference) logs a warn so operators can see degraded sessions.
+	// ErrAllAppliersTimedOut — an applier_request REACHED a peer and the
+	// round-trip was never confirmed. The usual cause is what the name says
+	// (every attempt timed out without an ack); since PLAN-2975 it also covers
+	// a restore storm that exhausted its re-elections after sending, which is
+	// not a timeout but has the identical meaning to a caller: bytes went out
+	// and the outcome is unknown.
+	//
+	// That "bytes went out" is the load-bearing half, and two callers depend on
+	// it rather than on the timeout wording. The op-log prune deliberately does
+	// NOT fire here (a peer may hold a Y.Doc derived from the log), and the
+	// items PATCH handler reports the content outcome as UNKNOWN rather than
+	// not-applied, because the peer may have applied the markdown with its ack
+	// lost or late. ErrNoApplierAvailable is the sentinel that means nothing
+	// reached a peer; keep the two distinct when adding a return path.
 	ErrAllAppliersTimedOut = errors.New("collab: all designated appliers timed out")
 
 	// ErrApplierAmbiguous — a legacy (non-bracket-capable) applier round-trip was
@@ -518,8 +529,15 @@ func (m *RoomManager) electAndApply(room *Room, itemID, markdown string) (error,
 
 // applierMaxRestartsAfterRestore caps how many times ApplyExternalContent re-elects
 // after being superseded by a restore, so a pathological back-to-back restore storm
-// can't spin the election forever. On exhaustion the caller falls back to a direct
-// write (ErrNoApplierAvailable) — safe graceful degradation.
+// can't spin the election forever.
+//
+// On exhaustion the sentinel depends on whether any election put an applier_request
+// on the wire (PLAN-2975). Nothing sent → ErrNoApplierAvailable, and the caller's
+// direct write with an op-log prune is safe graceful degradation. Something sent →
+// ErrAllAppliersTimedOut, which suppresses the prune and reports the content outcome
+// as unknown: a peer may hold a Y.Doc built from the log, and may have applied the
+// markdown. Answering the no-applier sentinel there would assert that nothing reached
+// a peer, which is exactly the false claim this distinction exists to prevent.
 const applierMaxRestartsAfterRestore = 5
 
 // applierWriteDeadlineVar bounds the applier_request write so a dead/slow peer
