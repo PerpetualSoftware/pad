@@ -46,6 +46,32 @@ let notifiedUserId = '';
 // baseline. Every later transition — including back to '' on sign-out — fires.
 let identityEstablished = false;
 
+// The identity EPOCH (BUG-3005): a monotonic counter bumped on exactly the
+// transitions `onIdentityChange` fires on.
+//
+// WHY A COUNTER AND NOT THE USER ID. A store that starts a request as one user
+// and commits its response later needs to ask "is this still the identity I
+// issued under?", and a user id answers a WEAKER question — "is this a
+// different user?". The two come apart on sign out of A, in as B, back in as
+// A: a request issued during the FIRST A session settles, compares its
+// captured id against the current one, finds them equal, and commits data
+// belonging to a session that has ended. An ordinal cannot be confused that
+// way, because the epoch it captured is strictly lower than the one it settles
+// into. `workspace.svelte.ts`'s `userId` fence has exactly that hole; it is
+// narrower than the primary defect (it needs a request to outlive two identity
+// changes) and it is the same class.
+//
+// NOT BUMPED ON THE BASELINE, matching `notifyIdentityChange`'s own early
+// return: the first resolution of the session is not a change from anything,
+// and a fence captured before an identity was established has nothing stale to
+// refuse.
+//
+// Distinct from `generation` above, which bumps ONLY on `clear()` and fences
+// this module's own `/auth/session` fetches. A sign-in as a different user
+// through `load()` moves the identity without touching `generation`, so
+// `generation` cannot serve as the epoch — it would miss the swap.
+let identityEpoch = 0;
+
 function notifyIdentityChange() {
 	const id = session?.user?.id ?? '';
 	if (!identityEstablished) {
@@ -55,6 +81,11 @@ function notifyIdentityChange() {
 	}
 	if (id === notifiedUserId) return;
 	notifiedUserId = id;
+	// BEFORE the listeners, not after. A listener may capture a fence while it
+	// runs — dropping state and immediately reloading is the expected shape —
+	// and a fence captured under the OLD epoch would refuse that reload's own
+	// response.
+	identityEpoch++;
 	for (const fn of identityListeners) fn();
 }
 
@@ -159,6 +190,38 @@ export const authStore = {
 	onIdentityChange(fn: () => void): () => void {
 		identityListeners.add(fn);
 		return () => identityListeners.delete(fn);
+	},
+
+	/**
+	 * The current identity epoch — a monotonic counter of identity CHANGES.
+	 * Read it to compare two moments; use `identityFence()` to guard a settle.
+	 */
+	get identityEpoch() { return identityEpoch; },
+
+	/**
+	 * Capture the current identity, and return a predicate that says whether it
+	 * is still the current one.
+	 *
+	 * The intended shape, for any store that reads user-scoped data:
+	 *
+	 *     const isSameIdentity = authStore.identityFence();
+	 *     const result = await api.something();
+	 *     if (!isSameIdentity()) return;   // issued as someone else; drop it
+	 *
+	 * Offered as a helper rather than left to each call site because this store
+	 * and `workspace.svelte.ts` already hand-rolled the same three parts of a
+	 * single-flight loader and drifted three times in one afternoon
+	 * (`singleFlight.ts`'s own note). A fence is smaller and there are more
+	 * places that need one.
+	 *
+	 * It is NOT a navigation fence and does not replace one. A workspace switch
+	 * under one identity leaves the epoch alone, which is correct — that race is
+	 * about WHICH WORKSPACE the answer describes, not about who asked. Stores
+	 * that can race a switch need both, and neither subsumes the other.
+	 */
+	identityFence(): () => boolean {
+		const captured = identityEpoch;
+		return () => identityEpoch === captured;
 	},
 
 	clear() {
