@@ -82,12 +82,15 @@ let identityEstablished = false;
 // and the layout renders NO children until then — so no route can issue a
 // fenced request before the baseline either.
 //
-// What that means for the residual: it needs a fence captured by something that
-// runs before any child renders, and today the only pre-baseline request in the
-// app is `authStore.load()` itself, which takes no fence. So the residual is
-// currently UNREACHABLE rather than merely narrow — but it is a property of the
-// callers, not of this code, and a future module that fetches from the root
-// layout would restore it.
+// What that means for the residual: on the ORDINARY path it needs a fence
+// captured by something that runs before any child renders, and the only
+// pre-baseline request there is `authStore.load()` itself, which takes no
+// fence. TWO EXCEPTIONS, both real (codex round 3, correcting this comment a
+// second time): the share-page branch sets `authReady` WITHOUT calling
+// `authStore.load()` at all, and the auth-FAILURE path proceeds deliberately —
+// so children can render and fetch with no baseline established in either. The
+// residual is therefore narrow rather than unreachable, and it is a property of
+// the callers rather than of this code.
 //
 // The exemption itself stays for a different and simpler reason: the bump and
 // the listener notification are the same event, and firing listeners on the

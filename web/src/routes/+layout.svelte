@@ -5,7 +5,7 @@
 	import { page } from '$app/state';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
-	import { clearAttachmentMetadataCache } from '$lib/components/editor/attachment-metadata';
+	import { reloadForIdentityChange } from '$lib/stores/identityReload.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
 	import { setAccessRevokedHandler, setRateLimitHandler } from '$lib/api/client';
@@ -107,14 +107,22 @@
 		// a Promise has its resolved value ignored, so a cleanup returned from
 		// an async `onMount` is never called.
 		return authStore.onIdentityChange(() => {
+			// Re-armed for the pre-reload window: this latch is THIS component's
+			// state and the reload below may not have happened yet.
 			workspacesRequested = false;
-			// The editor's attachment-metadata memo is keyed by workspace and
-			// uuid with no user in it, and lives for the page lifetime — so B
-			// would be answered from A's HEAD probe with no request made
-			// (BUG-3005). Cleared from here because that module is deliberately
-			// rune-free and cannot import the auth store; the root layout is the
-			// one listener that covers every route, editor or not.
-			clearAttachmentMetadataCache();
+			// WHAT A REAL IDENTITY CHANGE DOES TO THIS TAB (BUG-3005, lead
+			// ruling after codex round 3): clear the persistent state a reload
+			// would not drop, then reload.
+			//
+			// Three review rounds each found another layer of surfaces holding
+			// the previous user's data, because the fix was per-surface and the
+			// population is "everything in the tab that ever held a fetch". A
+			// reload ends the enumeration: every store, component, cache and
+			// in-flight request goes at once, and no future surface has to be
+			// remembered. What it does NOT drop — localStorage, sessionStorage,
+			// IndexedDB — is still an enumeration, but over STORAGE KEYS, which
+			// is bounded and greppable.
+			reloadForIdentityChange();
 		});
 	});
 

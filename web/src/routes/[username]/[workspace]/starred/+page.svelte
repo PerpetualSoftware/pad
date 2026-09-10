@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { onMount, onDestroy } from 'svelte';
+	import { onMount } from 'svelte';
 	import { api } from '$lib/api/client';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
@@ -51,36 +51,12 @@
 		workspaceStore.setCurrent(wsSlug);
 	});
 
-	// This page keeps its OWN copy of the previous user's data, and the store
-	// fix alone does not reach it (BUG-3005, codex round 1). Two reasons it is
-	// worse here than a stale cache:
-	//
-	//   - the load effect is keyed on `wsSlug` and the terminal filter, so a
-	//     same-route account swap starts no reload at all;
-	//   - `items` falls back to UNFILTERED `fetchedItems` whenever
-	//     `starredStore.loaded` is false, which is exactly what the store's
-	//     identity reset sets it to. So the store's own fix routes this page
-	//     around its only filter.
-	//
-	// Drop the page's copy and reload for whoever is signed in now.
-	const stopIdentityWatch = authStore.onIdentityChange(() => {
-		fetchedItems = [];
-		collections = [];
-		loading = true;
-		// Invalidate any load already in flight: it was issued as the previous
-		// user and its `seq` check would otherwise accept it.
-		loadSeq++;
-		if (!wsSlug) return;
-		loadStarred(wsSlug);
-		// AND the shared store (codex round 2). Its reset leaves `loaded=false`,
-		// and this page renders correctly through its own fallback either way —
-		// so without this line the store stays empty and every OTHER view in the
-		// workspace shows every item as unstarred until something else reloads
-		// it. The page's private fetch hid the store's emptiness rather than
-		// fixing it.
-		starredStore.load(wsSlug);
-	});
-	onDestroy(stopIdentityWatch);
+	// NO IDENTITY LISTENER HERE, deliberately (BUG-3005, lead ruling). This page
+	// had one, and with the tab reloading on a real identity change it became
+	// the third path doing the same reload — the layout's listener, this one,
+	// and the page's own mount effect. One mechanism; the fence below is what
+	// this page still needs, because it covers a response settling in the
+	// window before the reload takes the page away.
 
 	async function loadStarred(slug: string) {
 		loading = true;

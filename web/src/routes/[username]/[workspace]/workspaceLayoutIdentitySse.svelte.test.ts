@@ -3,15 +3,16 @@
 // BUG-3005, codex round 2 — the persistent workspace layout across an identity
 // change. Two bindings, and neither is observable anywhere else (CONVE-19):
 //
-//   1. the layout re-runs its per-workspace work on the identity signal, and
-//      DISCONNECTS the SSE stream first. `sseService.connect` is idempotent per
-//      workspace, so without the explicit disconnect B's tab keeps the
-//      EventSource A opened — still authorized, because signing in as B
-//      replaces the cookie without destroying A's session row, which is
-//      precisely the case BUG-3007's server-side close cannot see;
-//   2. leaf pages are remounted, keyed on the identity EPOCH. Fourteen route
-//      components under this layout own user-scoped state and key their reloads
-//      on the workspace slug, so a same-route swap re-runs none of them.
+// A real identity change RELOADS the tab (lead ruling after round 3), so this
+// layout no longer re-runs its per-workspace work and no longer remounts leaf
+// pages — the reload does both, properly, and one mechanism is the point.
+//
+// What survives here is the SSE DISCONNECT, and it is not redundant with the
+// reload. `sseService.connect` is idempotent per workspace, so the EventSource
+// A opened keeps delivering into this tab for the whole pre-reload window —
+// still authorized, because signing in as B replaces the cookie without
+// destroying A's session row, which is precisely the case BUG-3007's
+// server-side close cannot see. Closing it here bounds that window to zero.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
 import { createRawSnippet, tick } from 'svelte';
@@ -116,7 +117,7 @@ describe('workspace layout across an identity change', () => {
 		authStore.clear();
 	});
 
-	it('disconnects the previous identity\'s SSE stream and reconnects', async () => {
+	it('disconnects the previous identity\'s SSE stream', async () => {
 		render(Layout, { props: { children: childSnippet } });
 		await settle();
 
@@ -130,34 +131,25 @@ describe('workspace layout across an identity change', () => {
 		await authStore.load();
 		await settle();
 
-		// The DISCONNECT is the load-bearing half: `connect` is idempotent per
-		// workspace, so reconnecting without it keeps A's EventSource.
 		expect(sse.disconnect.mock.calls.length).toBeGreaterThan(disconnectsBefore);
-		expect(sse.connect.mock.calls.length).toBeGreaterThan(connectsBefore);
+		// And does NOT reconnect: the tab is reloading, and a fresh connection
+		// opened milliseconds before teardown is work nobody needs.
+		expect(sse.connect.mock.calls.length).toBe(connectsBefore);
 	});
 
-	it('remounts the leaf page so its route-local state cannot survive', async () => {
+	it('does NOT remount the leaf page — the reload owns that now', async () => {
+		// The `{#key}` remount this layout carried for one round is gone. It was
+		// a second mechanism doing the reload's job, and it gave the starred
+		// page three reload paths on one identity change. Pinned as an ABSENCE
+		// so re-adding it has to be a deliberate change rather than a quiet one.
 		render(Layout, { props: { children: childSnippet } });
 		await settle();
 
-		// PRECONDITION: mounted once for A.
+		// PRECONDITION: mounted once for A, so "still 1" is a claim about a
+		// component that actually rendered.
 		expect(mountCount).toBe(1);
 
 		api.auth.session.mockResolvedValue(sessionFor('user-b'));
-		await authStore.load();
-		await settle();
-
-		expect(mountCount).toBe(2);
-	});
-
-	it('does NOT remount when the session refetch returns the same user', async () => {
-		// The counterfactual. Keying on anything that moves on an ordinary
-		// session poll would tear down and refetch every leaf page during normal
-		// use — worse than the staleness being fixed.
-		render(Layout, { props: { children: childSnippet } });
-		await settle();
-		expect(mountCount).toBe(1);
-
 		await authStore.load();
 		await settle();
 

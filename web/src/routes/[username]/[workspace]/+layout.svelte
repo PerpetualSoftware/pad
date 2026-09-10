@@ -229,30 +229,24 @@
 		}
 	});
 
-	// The same work, on an identity change (BUG-3005, codex round 2). The
-	// effect above is keyed on `wsSlug` and a same-route account swap moves no
-	// slug, so nothing above re-runs — this layout stays mounted across a sign
-	// in as somebody else, holding every connection and subscription it made
-	// for the previous user.
+	// CLOSE THE STREAM, and let the reload do the rest (BUG-3005, lead ruling
+	// after codex round 3).
 	//
-	// The SSE connection is the reason this is a leak rather than staleness.
-	// `sseService.connect` is idempotent per workspace, so calling it again
-	// would keep A's EventSource — a stream opened with A's cookie, still
-	// authorized, still delivering A's workspace events into B's tab.
-	// BUG-3007 closes a long-lived connection when its CREDENTIAL stops being
-	// valid, and this is the case it cannot see: signing in as B REPLACES the
-	// cookie without destroying A's session row, so A's credential is still
-	// good. Only the client knows the tab changed hands. Hence the explicit
-	// `disconnect()` first (BUG-3011 tracks the server-side question).
+	// A real identity change reloads this tab — see `reloadForIdentityChange`
+	// in the root layout for why the fix stopped being per-surface. So this
+	// listener no longer re-runs the layout's per-workspace work: the page is
+	// going away, and a reload does it properly.
+	//
+	// The SSE disconnect STAYS, and is the reason this listener still exists.
+	// `sseService.connect` is idempotent per workspace, so the EventSource A
+	// opened would otherwise keep delivering into this tab for the whole
+	// pre-reload window — a stream still authorized, because signing in as B
+	// REPLACES the cookie without destroying A's session row, which is exactly
+	// the case BUG-3007's server-side close cannot see (BUG-3011 tracks the
+	// server half). Closing it here bounds that window to zero rather than to
+	// however long the reload takes.
 	const stopIdentityWatch = authStore.onIdentityChange(() => {
 		sseService.disconnect();
-		if (!wsSlug) return;
-		workspaceStore.setCurrent(wsSlug);
-		collectionStore.loadCollections(wsSlug);
-		starredStore.load(wsSlug);
-		syncService.setWorkspace(wsSlug);
-		connectSSE();
-		connectWebMCP();
 	});
 	onDestroy(stopIdentityWatch);
 
@@ -476,27 +470,7 @@
 	<MobileContextBar />
 </div>
 
-<!--
-	REMOUNT EVERY LEAF PAGE ON AN IDENTITY CHANGE (BUG-3005, codex round 2).
-
-	Fourteen route components under this layout own user-scoped arrays and key
-	their reloads on the workspace slug or a filter — roles' lanes, the
-	collection list, activity, insights, tags, playbooks, settings. A
-	same-route account swap re-runs none of them, so B reads A's data out of a
-	component that never unmounted.
-
-	Keyed on the identity EPOCH rather than the user id, for the reason the
-	epoch exists: an id cannot distinguish the first A session from a later
-	one, so A -> B -> A would produce the same key and skip the remount.
-
-	Structural on purpose. Fixing fourteen pages one at a time leaves the
-	fifteenth to be remembered, and this is the same argument
-	`onIdentityChange` itself was built on — make the invalidation something a
-	future author cannot forget rather than something they must repeat.
--->
-{#key authStore.identityEpoch}
-	{@render children()}
-{/key}
+{@render children()}
 
 <div style="display: contents" inert={paneOverlay.mobileOverlayActive}>
 	<BottomNav />

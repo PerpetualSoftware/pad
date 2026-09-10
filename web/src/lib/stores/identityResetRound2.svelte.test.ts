@@ -160,3 +160,29 @@ describe('workspaceStore single-flight slot across A -> B -> A', () => {
 		expect(workspaceStore.workspaces).toHaveLength(0);
 	});
 });
+
+describe('openChildrenDialog across an identity change', () => {
+	it('abandons the queued mutation instead of letting B confirm it', async () => {
+		// The one place on this branch where the item's own bound ("nothing here
+		// is an authorization bypass") would stop being true: the dialog holds
+		// the FETCHED child list and a continuation that PERFORMS A's mutation
+		// when confirmed. It is mounted in the root layout, outside anything the
+		// workspace layout controls.
+		const { openChildrenDialog } = await import('./openChildrenDialog.svelte');
+		const details = { count: 2, children: [{ ref: 'TASK-9', title: "Alpha's child" }] } as never;
+
+		const first = openChildrenDialog.request('TASK-1', details);
+		const queued = openChildrenDialog.request('TASK-2', details);
+		// PRECONDITION: one is showing and one is queued behind it, so the test
+		// covers the queue and not just the active entry.
+		expect(openChildrenDialog.active).not.toBeNull();
+
+		auth.fireIdentityChange('user-b');
+
+		// FALSE, not a hanging promise: the producer awaiting this takes its
+		// cancel path and does not perform the write.
+		await expect(first).resolves.toBe(false);
+		await expect(queued).resolves.toBe(false);
+		expect(openChildrenDialog.active).toBeNull();
+	});
+});

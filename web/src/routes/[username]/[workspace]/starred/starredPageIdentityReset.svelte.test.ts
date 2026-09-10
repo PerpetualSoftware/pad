@@ -84,64 +84,27 @@ describe('starred page across an identity change', () => {
 		authStore.clear();
 	});
 
-	it("does not render A's starred items after B signs in on the same route", async () => {
-		api.items.starred.mockResolvedValue([ITEM_A]);
-		api.collections.list.mockResolvedValue([
-			{ id: 'c1', slug: 'ideas', name: 'Ideas', is_default: true, sort_order: 1 },
-		]);
+	it('refuses a load issued as A that settles after the identity changed', async () => {
+		// The page's identity LISTENER is gone (the tab reloads instead), so
+		// what it still owns is the pre-reload window: a request issued as A can
+		// settle before the reload takes the page away, and `loadSeq` is a
+		// navigation fence that an account swap does not move.
+		let resolve!: (v: unknown) => void;
+		api.items.starred.mockReturnValueOnce(new Promise((r) => { resolve = r; }));
+		api.collections.list.mockResolvedValue([]);
 
 		const screen = render(StarredPage);
 		const count = () => screen.container.querySelector('.count')?.textContent ?? '';
 		await settle();
+		// PRECONDITION: nothing rendered yet, so a later '0' is the fence
+		// refusing rather than a page that never had data.
+		expect(count()).toBe('0');
 
-		// PRECONDITION: the page is showing one starred item — A's. Asserted
-		// through the header COUNT rather than the card's title text: the count
-		// is derived from the same `items` array the cards are, and ItemCard
-		// needs workspace/collection context this harness does not stand up, so
-		// asserting on its rendered title would test the card rather than the
-		// leak. Without this precondition the assertion below passes against a
-		// page that rendered nothing at all.
-		expect(count()).toBe('1');
-
-		// B signs in with no navigation — the route, and therefore the page's
-		// load effect key, never changes. B's own starred list is empty.
-		api.items.starred.mockResolvedValue([]);
-		api.collections.list.mockResolvedValue([]);
 		api.auth.session.mockResolvedValue(sessionFor('user-b'));
 		await authStore.load();
+		resolve([ITEM_A]);
 		await settle();
 
 		expect(count()).toBe('0');
-	});
-
-	it('reloads the shared starredStore, not just its own copy', async () => {
-		// codex round 2. The page renders correctly through its own fallback
-		// either way, so a page-local reload HIDES the store's emptiness rather
-		// than fixing it — and every other view in the workspace consults
-		// `starredStore.isStarred()`, so they show every item as unstarred until
-		// something else happens to reload it.
-		api.items.starred.mockResolvedValue([ITEM_A]);
-		api.collections.list.mockResolvedValue([]);
-
-		// The workspace LAYOUT is what calls `starredStore.load` on mount, and
-		// this harness renders the page alone — so seed the store the way the
-		// layout would, or the precondition below is asserting about a store
-		// nothing ever populated.
-		await starredStore.load('ws');
-		render(StarredPage);
-		await settle();
-		// PRECONDITION: the store holds A's star, so "B's is loaded" is a claim
-		// about a store that was populated and changed rather than one that was
-		// always in this state.
-		expect(starredStore.isStarred('item-a')).toBe(true);
-
-		api.items.starred.mockResolvedValue([{ ...ITEM_A, id: 'item-b' }]);
-		api.auth.session.mockResolvedValue(sessionFor('user-b'));
-		await authStore.load();
-		await settle();
-
-		expect(starredStore.loaded).toBe(true);
-		expect(starredStore.isStarred('item-a')).toBe(false);
-		expect(starredStore.isStarred('item-b')).toBe(true);
 	});
 });
