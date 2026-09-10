@@ -116,8 +116,11 @@ func TestRelationTitle_AmbiguousRefusesWithItsOwnReason(t *testing.T) {
 	if issues[0].Reason != RelationTargetAmbiguous {
 		t.Errorf("reason = %q, want %q", issues[0].Reason, RelationTargetAmbiguous)
 	}
-	if stored == "" {
-		t.Error("the supplied value was blanked; an unresolvable supplied value is refused, not silently emptied")
+	// The supplied value is left as the caller sent it, not blanked and not
+	// canonicalised to either twin — an ambiguous title names no single item,
+	// so there is nothing to canonicalise to.
+	if stored != "Teal" {
+		t.Errorf("stored = %q, want the supplied title back untouched", stored)
 	}
 
 	// The vocabulary must be enumerable, since the copy preflight puts these on
@@ -148,7 +151,7 @@ func TestRelationTitle_RefWinsOverAnItemTitledLikeARef(t *testing.T) {
 	schema := u1RelationSchema("colors")
 
 	// A second colour whose TITLE is the first colour's REF.
-	impostor := createTestItem(t, s, ws.ID, colors.ID, red.Ref, "")
+	createTestItem(t, s, ws.ID, colors.ID, red.Ref, "")
 	// A third with an ordinary title, for the control below.
 	plain := createTestItem(t, s, ws.ID, colors.ID, "Cerulean", "")
 
@@ -158,9 +161,6 @@ func TestRelationTitle_RefWinsOverAnItemTitledLikeARef(t *testing.T) {
 	}
 	if stored != red.ID {
 		t.Errorf("stored %q, want the REF's target %q — the ref rung must win over an item merely titled like one", stored, red.ID)
-	}
-	if stored == impostor.ID {
-		t.Error("the title rung shadowed the ref rung")
 	}
 
 	// CONTROL, and the reason this test needs one (codex round 1 nit): the
@@ -335,5 +335,72 @@ func TestRelationTitle_ANullItemNumberCandidateStillCounts(t *testing.T) {
 	}
 	if stored != ordinary.ID {
 		t.Errorf("control: stored %q, want %q", stored, ordinary.ID)
+	}
+}
+
+// TestMigrateRelationTitle_CarriedValueIgnoresTheMoversVisibility is codex
+// round 5's P1, and this file's own standing argument, as a test.
+//
+// A CARRIED value was asserted by nobody, so no caller is probing with it —
+// and judging it by the MOVER's visibility is exactly what
+// MigrateRelationReferentsQ's comment calls out as making "the STORED BYTES
+// depend on who performed the move". U6 made that reachable for the first
+// time: before it, a carried value that happened to match a title never
+// resolved at all, so there was nothing for visibility to change.
+//
+// Both legs use a predicate that hides EVERYTHING. If the carried path
+// consulted it, the relation would be dropped; it must survive identically.
+func TestMigrateRelationTitle_CarriedValueIgnoresTheMoversVisibility(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ws, _, _, red := relationFixture(t, s)
+
+	blind := func(Queryer, string, *models.Item) (bool, error) { return false, nil }
+
+	// The carried value is a TITLE — the U6 spelling, and the one that was
+	// never resolvable before this unit.
+	fields := map[string]any{"color": red.Title, "status": "open"}
+	refusals, dropped, err := s.MigrateRelationReferents(blind, ws.ID, u1RelationSchema("colors"), fields, nil, carriedFrom(fields), RelationCarryWithinWorkspace)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(refusals) != 0 || len(dropped) != 0 {
+		t.Fatalf("a carried title was judged by the mover's visibility, so the stored bytes now depend on WHO moved the item: refusals=%+v dropped=%+v", refusals, dropped)
+	}
+	if fields["color"] != red.ID {
+		t.Errorf("carried title resolved to %v, want the canonical id %s", fields["color"], red.ID)
+	}
+
+	// PARITY: the same carried title with a permissive predicate must produce
+	// the identical stored value. Without this leg, a migrate that ignored the
+	// value entirely would pass the assertions above.
+	seeing := func(Queryer, string, *models.Item) (bool, error) { return true, nil }
+	fields2 := map[string]any{"color": red.Title, "status": "open"}
+	if _, _, err := s.MigrateRelationReferents(seeing, ws.ID, u1RelationSchema("colors"), fields2, nil, carriedFrom(fields2), RelationCarryWithinWorkspace); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if fields2["color"] != fields["color"] {
+		t.Errorf("two movers stored different values for one carried title: %v vs %v", fields["color"], fields2["color"])
+	}
+}
+
+// TestRelationTitle_SuppliedValueStillObeysVisibility is the other half, and it
+// is what stops the fix above from being "visibility was switched off".
+//
+// A SUPPLIED title — one the caller typed — must still be judged, because that
+// is the probe the whole rule exists to answer.
+func TestRelationTitle_SuppliedValueStillObeysVisibility(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ws, _, _, red := relationFixture(t, s)
+
+	blind := func(Queryer, string, *models.Item) (bool, error) { return false, nil }
+	fields := map[string]any{"color": red.Title}
+	issues, err := s.ResolveRelationReferents(ws.ID, u1RelationSchema("colors"), fields, blind)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(issues) != 1 || issues[0].Reason != RelationTargetNotFound {
+		t.Fatalf("a SUPPLIED title naming an item the caller cannot see must be not_found — the carried carve-out must not reach it: %v", issues)
 	}
 }

@@ -456,22 +456,34 @@ func (s *Store) resolveRelationTitleQ(
 	// "Unifying the two families needs a caller-supplied visibility predicate
 	// on the store API."
 	//
-	// TWO COSTS, both bounded, and stated because they are real (codex round 4):
+	// TWO COSTS, stated because they are real, and stated more carefully than
+	// the first version of this comment (codex rounds 4 and 5 — round 5 was
+	// right that both claims were overstated):
 	//
 	// The walk loads each candidate and asks canSee about it, so it is O(live
-	// items sharing this exact title in this collection) queries. That set is
-	// normally ONE. It only grows when a collection holds many identically
-	// titled items, and the walk stops at the SECOND VISIBLE match — so the
-	// expensive shape is many HIDDEN same-titled items, which requires write
-	// access to the collection the walker cannot read. A caller who has that
-	// does not need this probe to learn anything.
+	// items sharing this exact title) queries — in this collection here, and
+	// ANYWHERE IN THE WORKSPACE for the wrong_collection probe below, which is
+	// the larger set. Normally that set is ONE. It grows when many items share
+	// a title, and the walk stops at the SECOND VISIBLE match, so the shape
+	// that actually scans is many HIDDEN same-titled items.
 	//
-	// The cursor is not snapshot-stable, and that is not a defect: rows are
-	// ordered by `id` and the cursor only advances, so every row that existed
-	// when the walk STARTED is still visited. What a concurrent INSERT can do
-	// is land below the cursor and go unseen — inherent to any non-snapshot
-	// read, equally true of the LIMIT 2 count this replaced, and a row created
-	// after the request began is not one the answer owed anything to.
+	// An earlier version of this comment claimed that shape requires write
+	// access to a collection the walker cannot read. That is FALSE: an
+	// item-level grant lets a caller write the destination while seeing only
+	// selected items in the target collection, which the fixtures in
+	// relation_titles_doors_test.go build directly. The honest bound is the
+	// page size on memory and early termination on the common cases, not an
+	// argument that the bad case is unreachable.
+	//
+	// The cursor is not snapshot-stable. Rows are ordered by `id` and the
+	// cursor only advances, so an UNCHANGED, still-matching row that existed
+	// when the walk started is visited. That is weaker than "every row that
+	// existed is visited", which is what this used to say: each page is its own
+	// snapshot, so a row deleted or retitled before its page is reached is
+	// skipped, and a later insert may be observed. None of that is a defect —
+	// it is inherent to any non-snapshot read, equally true of the LIMIT 2
+	// count this replaced, and a row that changed mid-request is not one the
+	// answer owed anything to.
 	//
 	// PAGED ON `id`, not item_number: item_number is NULLABLE (migration 006
 	// adds it with no constraint and nothing since makes it NOT NULL), and
@@ -497,13 +509,20 @@ func (s *Store) resolveRelationTitleQ(
 		for _, id := range ids {
 			cursor = id
 			if canSee == nil {
-				seen++
-				if seen > 1 {
-					return nil, nil, true, nil
-				}
+				// Load BEFORE counting. Counting first meant a row deleted
+				// between the id page and this fetch still counted, so one
+				// remaining live match could answer `ambiguous` (codex round
+				// 5). A vanished row is not a match.
 				found, gerr := s.GetItemQ(q, id)
 				if gerr != nil {
 					return nil, nil, false, gerr
+				}
+				if found == nil {
+					continue
+				}
+				seen++
+				if seen > 1 {
+					return nil, nil, true, nil
 				}
 				only = found
 				continue
@@ -1081,7 +1100,21 @@ func (s *Store) MigrateRelationReferentsQ(
 		// below, which exists to keep dangling referents out of the blob. So
 		// this comment is also a warning: if you ever change that rule, you
 		// are changing this too, in the other direction.
-		issues, resolveErr := s.ResolveRelationReferentsQ(q, workspaceID, schema, carried, canSee)
+		// nil, NOT canSee, and the argument is the twenty lines above this
+		// one. A carried value was asserted by nobody, so no caller is probing
+		// with it; and judging it by the MOVER's visibility is precisely what
+		// "would make the STORED BYTES depend on who performed the move".
+		//
+		// U6 made that reachable for the first time. Before it a carried value
+		// that happened to match a title never resolved at all, so there was
+		// nothing for visibility to change. Passing the predicate here — which
+		// I did, against this file's own standing argument — meant a carried
+		// title resolved for one mover and was DROPPED for another, and the
+		// item's stored fields depended on who touched it (codex round 5).
+		//
+		// The disclosure the predicate exists to prevent needs a caller who
+		// TYPED the title. Supplied values and injected defaults still get it.
+		issues, resolveErr := s.ResolveRelationReferentsQ(q, workspaceID, schema, carried, nil)
 		if resolveErr != nil {
 			return nil, nil, resolveErr
 		}

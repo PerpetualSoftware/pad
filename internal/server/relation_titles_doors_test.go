@@ -386,8 +386,11 @@ func TestRelationTitleDoors_HydrationUsesITEMVisibilityNotCollectionVisibility(t
 func TestRelationTitleDoors_VisibilityNarrowingHasNoCountBoundary(t *testing.T) {
 	f := newDoorFixture(t)
 
-	// One visible match, created FIRST so the walk has to pass every hidden
-	// one to reach the end and conclude there is only one.
+	// One visible match. Creation ORDER does not place it in the walk — the
+	// walk goes by `id` and ids are random UUIDs — so this is not "created
+	// first, therefore visited last". What forces the walk past the page
+	// boundary is the COUNT: 251 matches against a page size of 100, so the
+	// single visible one cannot be decided without paging wherever it lands.
 	visible, err := f.srv.store.CreateItem(f.ws.ID, f.people.ID, models.ItemCreate{Title: "Crowd", CreatedBy: f.owner.ID})
 	if err != nil {
 		t.Fatalf("CreateItem(visible): %v", err)
