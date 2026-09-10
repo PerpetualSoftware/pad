@@ -71,37 +71,55 @@ func applierEcho(t *testing.T, conn *websocket.Conn) func() {
 	return func() { _ = conn.Close(); <-done }
 }
 
-// waitForApplierPath blocks until a content PATCH is actually taking the
-// applier path, and returns once it is.
+// waitForApplierPath blocks until a content PATCH would actually take the applier
+// path, and returns once it would.
 //
-// The readiness signal is the observable difference between the two paths
-// rather than an internal field: on the APPLIER path the markdown goes to the
-// Y.Doc and items.content is left alone, while on the direct-write path
-// items.content changes. So a SUCCEEDING probe PATCH that leaves items.content
-// untouched is proof the applier answered — no exported accessor for
-// "electable conns" exists, and reaching into the manager's unexported state
-// is not available from this package.
+// It asks the routing predicate the handler itself uses — RoomManager.HasElectableApplier,
+// added by TASK-2987 — rather than probing with real PATCHes.
+//
+// THE PROBE LOOP THIS REPLACES, and why it had to go (BUG-2995). It PATCHed every
+// few milliseconds and inferred the route from whether items.content changed, with a
+// comment explaining that no exported accessor for electable conns existed. That was
+// true when it was written and stopped being true at TASK-2987, which added the
+// accessor precisely so the handler could learn the route without taking it.
+//
+// Leaving it as a write loop was not merely wasteful. Those writes go through the
+// ordinary API rate limiter (600/min, burst 60) and the bucket is shared across the
+// package, so each caller of this helper drains it for the tests that follow. With
+// one caller it stayed under the burst; a second caller (BUG-2995's) pushed a THIRD
+// caller — TestApplierPathRefusalLeavesNoOpLogRow_OpenChildren, which was green on
+// main and had nothing to do with the change — over the edge in CI, where it spent a
+// full 15s budget being answered 429 and failed. A readiness helper that consumes a
+// shared, exhaustible resource makes unrelated tests fail as a function of how many
+// other tests ran first, which is the worst kind of flake to diagnose from a log.
+//
+// Asking the predicate directly costs nothing, cannot be rate-limited, and answers
+// the exact question instead of inferring it from a side effect.
 func waitForApplierPath(t *testing.T, srv *Server, wsSlug, itemSlug, itemID string) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for attempt := 0; time.Now().Before(deadline); attempt++ {
-		probe := "applier-path probe"
-		rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+wsSlug+"/items/"+itemSlug,
-			map[string]interface{}{"content": probe})
-		if rr.Code != http.StatusOK {
-			t.Fatalf("probe PATCH failed: %d %s", rr.Code, rr.Body.String())
-		}
-		item, err := srv.store.GetItem(itemID)
-		if err != nil {
-			t.Fatalf("GetItem: %v", err)
-		}
-		if item.Content != probe {
-			return // content did not land in the row: the applier took it
-		}
-		time.Sleep(5 * time.Millisecond)
+	if srv.collab == nil {
+		t.Fatal("waitForApplierPath: server has no collab manager; the applier path cannot exist")
 	}
-	t.Fatal("no applier path within 3s: every probe PATCH wrote items.content directly")
+	deadline := time.Now().Add(applierProbeBudget)
+	for time.Now().Before(deadline) {
+		if srv.collab.HasElectableApplier(itemID) {
+			return
+		}
+		time.Sleep(applierProbePoll)
+	}
+	t.Fatalf("no electable applier for item %s within %s: a content PATCH would take the "+
+		"direct-write path, so this test cannot measure applier-path behaviour", itemID,
+		applierProbeBudget)
 }
+
+// Probe pacing. The budget is a READINESS wait, not an assertion — every millisecond
+// of it is spent only while the room has no electable conn, and a passing run returns
+// in a few polls. A too-short budget does not catch a product bug; it invents a flaky
+// test (BUG-2995: election lost the race in 2 runs of 5 against 3s).
+const (
+	applierProbePoll   = 5 * time.Millisecond
+	applierProbeBudget = 15 * time.Second
+)
 
 // TestBUG2840HalfA_RefusedPatchLeavesTheDocumentUntouched asserts the property the
 // reorder buys: a refused PATCH on the applier path changes NOTHING — not the row,

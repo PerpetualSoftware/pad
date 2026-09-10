@@ -435,6 +435,28 @@ const (
 	// contentOutcomeUnknown — a request went out and was not acked in time. The
 	// peer may have applied it.
 	contentOutcomeUnknown = "unknown"
+	// contentOutcomeAppliedPendingFlush — the apply SUCCEEDED and the content went
+	// to the collaborative document rather than to items.content: the applier
+	// path's row write runs with Content nil, and the row is written only if and
+	// when some later ?source=collab-snapshot write lands. In practice that is the
+	// tab that applied the content, but the row does not care which caller sends
+	// it, and nothing here guarantees one is ever sent — BUG-3000 carries the open
+	// half — so nothing built on this value may state a duration.
+	//
+	// IT IS A STATEMENT ABOUT THIS WRITE, NOT A LIVE READING OF THE ROW. It says
+	// this request did not put the content in items.content. It deliberately does
+	// NOT claim the row is stale at the moment the response is read: a concurrent
+	// flush can land between the apply and the response being built, or at any
+	// point afterwards, and the server neither takes a lock across that window nor
+	// re-reads to find out. Answering the row's current state would need a
+	// synchronisation this path does not have and does not want — and the caller's
+	// action is the same either way, which is to re-read rather than re-send.
+	//
+	// It is the only one of the three that rides on a 200 rather than on an error,
+	// because it is the only one where nothing went wrong. It exists so the third
+	// state has a NAME in the same vocabulary as the other two: applied to the
+	// document, not applied, or in the document and not yet in the row (BUG-2995).
+	contentOutcomeAppliedPendingFlush = models.ContentOutcomeAppliedPendingFlush
 )
 
 // writeRoomSettlingError emits the pad-structured-error/v1 envelope for a room that

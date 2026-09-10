@@ -936,6 +936,45 @@ const CmdhelpVersion = "0.1"
 //     there is no legitimate call this refuses — the carried-value
 //     case, which is the one with a real claim to leniency, is
 //     already exempt by provenance rather than by a flag.
+//
+//   - POST-0.30, NO BUMP — BUG-2995. A successful content write through
+//     the designated applier used to answer with the item's PREVIOUS
+//     content: on that path the markdown goes to a live browser tab's
+//     Y.Doc and the row write runs with Content nil, so the response,
+//     built from that row, described the item as it stood before the
+//     request. It now carries the content as SENT, plus an additive
+//     omitempty `warnings.content_outcome: "applied_pending_flush"`
+//     naming where the content actually is.
+//
+//     Deliberately NOT a bump, and the line is worth stating because
+//     0.9 looks like a counter-example. 0.9 bumped because list rows
+//     LOST fields a consumer was reading — `content` replaced by a
+//     preview, UUID plumbing dropped. Here nothing is removed and
+//     nothing changes type; what changed is the VALUE of one field on
+//     one path, and that is worth stating plainly rather than filing
+//     under "additive": a caller does observe different bytes than it
+//     did before.
+//
+//     The claim is that no DOCUMENTED OR SUPPORTED reliance breaks, not
+//     that no reliance can possibly exist. A consumer could in
+//     principle have detected the applier path by noticing that the
+//     response echoed something other than what it sent, and that
+//     detection stops working. But it was never documented, the same
+//     mismatch was equally produced by a genuinely lost write, and
+//     `warnings.content_outcome` now answers the question that hack was
+//     approximating — so the supported replacement ships in the same
+//     change. Against that: every consumer taking the response at face
+//     value was being told its write was lost. That balance is the
+//     BUG-2304 disposition (a wrong answer corrected, no names/enums/
+//     shapes changed, hence no bump) rather than 0.9's.
+//
+//     What a consumer SHOULD change is reading, not parsing: during
+//     the window a `get` (or `list` with full=true) still answers from
+//     the row and returns the previous content, so the warning is the
+//     signal to re-read later rather than to re-send. Whether the row
+//     is ever updated is not established — the flush belongs to a
+//     browser tab and BUG-3000 carries the open half — so no surface
+//     here states a duration.
 const ToolSurfaceVersion = "0.30"
 
 // MetaVersionURI is the canonical URI of the queryable version document.

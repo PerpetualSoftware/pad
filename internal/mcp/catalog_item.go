@@ -301,6 +301,22 @@ Actions:
                   — NOT a comma-separated string.
   update        — Update an item by ref.
                   Required: ref. At least one mutable field.
+                  Writing 'content' while a browser tab has the item open sends the
+                  markdown to that live document first; the stored copy is updated
+                  only by a later collab-snapshot flush — usually from the tab that
+                  applied it, though any such write updates the row — and nothing
+                  guarantees one happens. The
+                  response echoes the content you SENT and carries
+                  warnings.content_outcome="applied_pending_flush", which describes
+                  this WRITE — the content went to the document, not the row — and is
+                  not a live reading of the row, which a concurrent flush may already
+                  have updated. A 'get' (or
+                  'list' with full=true — a default list carries no content at all)
+                  before such a flush lands reads the stored copy and answers with the PREVIOUS
+                  content: the lag, not a failed write, so do not re-send on the
+                  strength of it. The stored form may also not be byte-identical to what
+                  you sent, since the markdown round-trips through the editor, so compare
+                  on meaning rather than bytes.
                   Optional: title, status, priority, content, role, assign, parent, comment, tags,
                   field, fields, expected_updated_at.
                   Same placement rules as create. Field updates are applied as a

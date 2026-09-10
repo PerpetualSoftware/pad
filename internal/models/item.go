@@ -87,7 +87,35 @@ type ItemWriteWarnings struct {
 	UndeclaredFields    []string `json:"undeclared_fields,omitempty"`
 	DroppedFields       []string `json:"dropped_fields,omitempty"`
 	UnresolvedRelations []string `json:"unresolved_relations,omitempty"`
+	// ContentOutcome names where a content write ended up, in the same vocabulary
+	// the content_not_applied error uses. On a 200 it takes exactly one value,
+	// "applied_pending_flush": the content went to the collaborative document rather
+	// than to items.content — the row is updated only by a later
+	// ?source=collab-snapshot write, which nothing guarantees happens — so the
+	// `content` on this response is the markdown as SENT rather than as stored
+	// (BUG-2995).
+	//
+	// It describes THIS WRITE, not the row's state when you read the response: a
+	// concurrent flush may already have updated the row, and the server does not
+	// re-read to find out. Either way the caller's move is to re-read rather than
+	// to re-send.
+	//
+	// A caller that reads `content` back to confirm its own write needs this: the
+	// stored form may still differ from the sent form after the row is updated,
+	// because the markdown makes a round trip through the editor on its way there
+	// (measured on BUG-2995's trail: setext headings, bullet markers, emphasis
+	// characters, list renumbering and blank-line runs normalise, while markdown
+	// already in the editor's preferred form survives unchanged).
+	ContentOutcome string `json:"content_outcome,omitempty"`
 }
+
+// ContentOutcomeAppliedPendingFlush is the only ContentOutcome value that rides on
+// a 2xx: the content reached the collaborative document and items.content has not
+// caught up. It lives here rather than beside the error-path outcome constants
+// because two packages read it — the server writes it, the CLI renders a warning
+// on it — and a duplicated string literal is a rename away from one side silently
+// never matching (BUG-2995).
+const ContentOutcomeAppliedPendingFlush = "applied_pending_flush"
 
 // IsReservedItemField reports whether key is system-written metadata rather than
 // a user-facing schema field. Callers that filter, migrate, or render an item's
@@ -196,8 +224,12 @@ type Item struct {
 
 	// Warnings is populated on WRITE responses only (create / update), never
 	// on reads, and is never stored. It carries things the write did that the
-	// caller might not have meant — today, field keys the collection's schema
-	// does not declare (BUG-2850).
+	// caller might not have meant, or could not otherwise learn: field keys the
+	// collection's schema does not declare (BUG-2850), keys the write dropped or
+	// kept unresolved (TASK-2878), and where the content ended up when it went
+	// to a live collaborative document rather than the row (BUG-2995). See
+	// ItemWriteWarnings for the members; this comment names the kinds rather
+	// than enumerating them, so adding one does not falsify it.
 	//
 	// Additive and omitempty: a client that does not know the key ignores it,
 	// and a write with nothing to report is byte-identical to before. The
