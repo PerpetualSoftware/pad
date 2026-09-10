@@ -104,10 +104,27 @@ export const authStore = {
 				return session;
 			})
 			.catch((err) => {
-				if (isCurrent()) {
-					session = null;
-					notifyIdentityChange();
-				}
+				if (isCurrent()) session = null;
+				// DELIBERATELY NO `notifyIdentityChange()` HERE (BUG-2991, codex
+				// round 9). A rejection is a FETCH ERROR, not an identity
+				// signal: "not authenticated" comes back as a resolved session
+				// (that is what the re-throw below exists to distinguish), so a
+				// rejected `/auth/session` says a request failed and nothing
+				// about who is signed in.
+				//
+				// Treating it as a sign-out was destructive rather than merely
+				// wrong. Listeners drop the workspace store, re-arm the layout's
+				// load latch and CLOSE the create-workspace modal, and an
+				// in-flight create or import then returns without a toast, a
+				// navigation or a close — so a user who is still legitimately
+				// signed in lost a successful operation, silently, because one
+				// session poll failed. `/console/billing` polls `load()`, so
+				// this is reachable in ordinary use rather than exotic.
+				//
+				// `session = null` still happens, because that is the state the
+				// rest of the app already had for a failed load; what changes is
+				// that nobody is told an identity CHANGED. A real sign-out goes
+				// through `clear()`, which does notify.
 				throw err; // Re-throw so callers can distinguish fetch errors from "not authenticated".
 			})
 			.finally(() => {

@@ -224,6 +224,15 @@
 			dashboardSlug = null;
 			collections = [];
 			dashError = null;
+			// The aha-highlight track goes with the data it describes (codex
+			// round 9). It is keyed on `dashboardSlug`, which does NOT change
+			// on a same-route identity change, so the previous user's
+			// `onboarding: true` was still standing when the new user's first
+			// response arrived with `false` — read as the true→false edge, and
+			// the new user's items were highlighted as though they had just
+			// created them.
+			onboardingTrack = null;
+			justCreatedSlugs = new Set();
 			if (wsSlug) load(wsSlug);
 		});
 	});

@@ -104,6 +104,52 @@ describe('authStore.onIdentityChange', () => {
 		expect(fired).toHaveBeenCalledTimes(2);
 	});
 
+	it('does NOT fire when the session request FAILS', async () => {
+		// BUG-2991, codex round 9. A rejection is a fetch error, not an identity
+		// signal — "not authenticated" comes back as a RESOLVED session, which
+		// is what `load`'s re-throw exists to distinguish. Treating a failed
+		// poll as a sign-out was destructive: listeners drop the workspace
+		// store, re-arm the layout's load latch and close the create-workspace
+		// modal, so a user who is still signed in lost an in-flight create or
+		// import with no toast, no navigation and no close. `/console/billing`
+		// polls `load()`, so a single flaky request reached it.
+		const { authStore } = await import('./auth.svelte');
+		const api = (await import('$lib/api/client')).api as unknown as {
+			auth: { session: ReturnType<typeof vi.fn> };
+		};
+		session.value = user('u1');
+		await authStore.load();
+
+		const fired = vi.fn();
+		authStore.onIdentityChange(fired);
+
+		api.auth.session.mockRejectedValueOnce(new Error('network'));
+		await expect(authStore.load()).rejects.toThrow('network');
+
+		expect(fired).not.toHaveBeenCalled();
+	});
+
+	it('still fires on a real sign-out that follows a failed request', async () => {
+		// The counterfactual: silencing the failure path must not silence the
+		// real one that comes after it.
+		const { authStore } = await import('./auth.svelte');
+		const api = (await import('$lib/api/client')).api as unknown as {
+			auth: { session: ReturnType<typeof vi.fn> };
+		};
+		session.value = user('u1');
+		await authStore.load();
+
+		const fired = vi.fn();
+		authStore.onIdentityChange(fired);
+
+		api.auth.session.mockRejectedValueOnce(new Error('network'));
+		await expect(authStore.load()).rejects.toThrow('network');
+		expect(fired).not.toHaveBeenCalled();
+
+		authStore.clear();
+		expect(fired).toHaveBeenCalledTimes(1);
+	});
+
 	it('unsubscribes', async () => {
 		const { authStore } = await import('./auth.svelte');
 		session.value = user('u1');

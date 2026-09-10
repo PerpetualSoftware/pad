@@ -361,6 +361,53 @@ describe('BUG-2991: the create-workspace modal does not act for a session that e
 		expect(goto).not.toHaveBeenCalled();
 	});
 
+	it('does not re-enable the NEXT user\'s in-flight import when a stale one settles', async () => {
+		// codex round 9. `importing` is COMPONENT state and the component
+		// outlives the operation, so a stale import's `finally` cleared it
+		// unconditionally: A starts an import, identity changes, B opens the
+		// modal and starts their own, and A's promise settling re-enabled B's
+		// button mid-upload — offering a duplicate submit.
+		let resolveA!: (v: typeof WS) => void;
+		api.workspaces.importBundle.mockReturnValueOnce(
+			new Promise((res) => { resolveA = res; }),
+		);
+
+		const { container } = render(CreateWorkspaceModal, { props: {} });
+		await attachBundle(container);
+		btn(container, /Import Workspace/).click();
+		await settle();
+		expect(api.workspaces.importBundle).toHaveBeenCalledTimes(1);
+
+		// Identity changes; the listener closes A's modal.
+		authStore.clear();
+		await settle();
+
+		// B opens a fresh modal and starts their own import.
+		uiStore.openCreateWorkspace();
+		await settle();
+		await attachBundle(container);
+		let resolveB!: (v: typeof WS) => void;
+		api.workspaces.importBundle.mockReturnValueOnce(
+			new Promise((res) => { resolveB = res; }),
+		);
+		btn(container, /Import Workspace/).click();
+		await settle();
+		expect(api.workspaces.importBundle).toHaveBeenCalledTimes(2);
+
+		// PRECONDITION: B's button really is disabled while B's upload runs.
+		expect(btn(container, /Importing/).disabled).toBe(true);
+
+		// Now A's stale import settles.
+		resolveA(WS);
+		await settle();
+
+		// B's button must still be disabled — their upload is still running.
+		expect(btn(container, /Importing/).disabled).toBe(true);
+
+		resolveB(WS);
+		await settle();
+	});
+
 	it('navigates when the user is unchanged during an IMPORT', async () => {
 		api.workspaces.importBundle.mockResolvedValue(WS);
 		const onWorkspaceCreated = vi.fn();

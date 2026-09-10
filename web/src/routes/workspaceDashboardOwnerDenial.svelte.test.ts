@@ -62,21 +62,30 @@ const OWNER = { role: 'owner', collection_grants: [], item_grants: [] };
  * one throws during render and leaves the page blank, which would read exactly
  * like "the owner card did not render" and make the denial leg pass vacuously.
  */
-function dashboard() {
+function dashboard(over: { needs_onboarding?: boolean; active_items?: unknown[] } = {}) {
 	return {
 		summary: { total_items: 0, by_collection: {} },
-		active_items: [],
+		active_items: over.active_items ?? [],
 		starred_items: [],
 		active_plans: [],
 		attention: [],
 		recent_activity: [],
 		suggested_next: [],
 		has_agent_activity: false,
-		needs_onboarding: false,
+		needs_onboarding: over.needs_onboarding ?? false,
 		degraded: false,
 		degraded_sections: []
 	};
 }
+
+const ITEM = {
+	slug: 'a-thing',
+	title: 'A thing',
+	collection_slug: 'tasks',
+	status: 'open',
+	priority: 'medium',
+	updated_at: new Date().toISOString(),
+};
 
 let host: HTMLElement;
 let app: Record<string, unknown> | null = null;
@@ -288,6 +297,41 @@ describe('BUG-2990: dashboard owner chrome expires on a definitive denial', () =
 		expect(host.querySelector('.dash-error')).not.toBeNull();
 		expect(host.textContent).toContain('Retry');
 		expect(host.querySelector('.coll-grid')).toBeNull();
+	});
+
+	it('does not highlight the new user\'s items as if they had just created them', async () => {
+		// codex round 9. The aha-highlight track is keyed on `dashboardSlug`,
+		// which does NOT change on a same-route identity change, so the previous
+		// user's `needs_onboarding: true` was still standing when the new user's
+		// first response arrived with `false`. That reads as the true→false
+		// edge the highlight exists for, and the NEW user's existing items were
+		// badged as though they had just created them.
+		await authStore.load();
+		dashboardGet.mockResolvedValue(dashboard({ needs_onboarding: true }));
+		app = mount(DashboardPage, { target: host, props: {} }) as Record<string, unknown>;
+		flushSync();
+		const i0 = await nextMe(0);
+		meCalls[i0]!(OWNER);
+		await settle();
+
+		// u2 signs in and their board is a normal, already-onboarded one.
+		dashboardGet.mockResolvedValue(
+			dashboard({ needs_onboarding: false, active_items: [ITEM] }),
+		);
+		sessionGet.mockResolvedValue({
+			authenticated: true,
+			user: { id: 'u2', email: 'u2@example.com' },
+		});
+		await authStore.load();
+		await settle();
+		const i1 = await nextMe(meCalls.length - 1);
+		meCalls[i1]!(OWNER);
+		await settle();
+
+		// PRECONDITION: u2's item really did render, or "no highlight" is true
+		// of an empty page and proves nothing.
+		expect(host.querySelector('.active-card')).not.toBeNull();
+		expect(host.querySelector('.just-created')).toBeNull();
 	});
 
 	it('keeps the card up across the window a refetch opens', async () => {

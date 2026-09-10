@@ -44,6 +44,8 @@
 	let templates = $state<WorkspaceTemplate[]>([]);
 	let loadingTemplates = $state(false);
 	let importing = $state(false);
+	// Monotonic token for the import in flight — see `importWorkspace`.
+	let importOp = 0;
 	let importFile = $state<File | null>(null);
 	let fileInputEl = $state<HTMLInputElement>();
 	let nameInputEl = $state<HTMLInputElement>();
@@ -201,6 +203,15 @@
 
 	async function importWorkspace() {
 		if (!importFile) return;
+		// OPERATION TOKEN, because `importing` is COMPONENT state and the
+		// component outlives the operation (codex round 9). A stale import's
+		// `finally` used to clear it unconditionally, so: A starts an import,
+		// identity changes, B opens the modal and starts their own — and when
+		// A's promise settles it re-enabled B's button mid-upload, offering
+		// them a duplicate submit. A token rather than an identity check
+		// because it also covers a same-user restart, which has the identical
+		// shape and no identity change to notice.
+		const myImport = ++importOp;
 		importing = true;
 		// Captured before the upload, checked after it (BUG-2991, codex round
 		// 4). Import is `create`'s sibling — it mints a workspace through the
@@ -248,7 +259,7 @@
 			if (authStore.userId !== callUser) return;
 			toastStore.show(`Import failed: ${err instanceof Error ? err.message : 'Unknown error'}`, 'error');
 		} finally {
-			importing = false;
+			if (myImport === importOp) importing = false;
 		}
 	}
 
