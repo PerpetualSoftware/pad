@@ -8,10 +8,12 @@ import { workspaceStore } from '$lib/stores/workspace.svelte';
  * BUG-2978 — the owner-only settings tab was lost whenever the workspace
  * permission went known -> unknown -> known.
  *
- * `workspaceStore.setCurrent` clears `currentMembership` to null before `/me`
- * resolves, and the permission helpers treat unknown as no-access by design.
+ * `workspaceStore.setCurrent` USED TO clear `currentMembership` to null before
+ * `/me` resolves — TASK-2988 stopped it doing that for a workspace the session
+ * has already answered, which is the second call here — and the permission
+ * helpers treat unknown as no-access by design.
  * The settings route calls `setCurrent` twice per load (workspace layout, then
- * the page's own `load()`), so an owner sees `canEditWorkspace` read
+ * the page's own `load()`), so an owner saw `canEditWorkspace` read
  * true -> false -> true. During the false window the Danger Zone tab left the
  * tab set, the hash-restoration effect's snap-back moved `activeTab` off it,
  * and `pendingHash` had already been consumed — so nothing restored it.
@@ -74,7 +76,7 @@ describe('BUG-2978: settings permissions survive the /me window', () => {
 		// singleton, and each test re-establishes its state through `setCurrent`.
 	});
 
-	it('keeps the deep-linked owner-only tab selected when membership goes known -> unknown -> known', async () => {
+	it('keeps the deep-linked owner-only tab selected across the page load\'s second setCurrent', async () => {
 		render(SettingsPage);
 
 		// First /me resolves as owner: the Danger Zone tab appears and the
@@ -88,10 +90,22 @@ describe('BUG-2978: settings permissions survive the /me window', () => {
 		});
 
 		// A SECOND setCurrent — what the page's own load() does after the
-		// layout's — clears membership to null before its /me resolves. This is
-		// the window the bug lived in.
+		// layout's. This USED to clear membership to null before its /me
+		// resolved, and that window is where BUG-2978 lived: the snap-back moved
+		// activeTab off the owner-only tab and consumed pendingHash, so the
+		// correct value arriving 6ms later had nothing left to restore.
+		//
+		// TASK-2988 closed the window in the STORE rather than per consumer:
+		// membership is no longer dropped to "unknown" for a workspace the
+		// session has already answered. So this test now asserts two things at
+		// once, and the first is the load-bearing one — the window does not open
+		// at all. The page keeps its sticky `membershipKnown`-gated read as
+		// defence in depth (and it still covers a FIRST resolution), which is
+		// why the assertion below would also hold if the store fix were
+		// reverted; the membership assertion is what fails in that case.
 		const second = workspaceStore.setCurrent('ws');
-		await waitFor(() => expect(workspaceStore.currentMembership).toBeNull());
+		expect(workspaceStore.currentMembership).toEqual(OWNER);
+		expect(workspaceStore.membershipKnown).toBe(true);
 
 		await resolveMe(1, OWNER);
 		await second;

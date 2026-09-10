@@ -3568,6 +3568,17 @@
 	{/if}
 </div>
 
+<!-- Owner-gated block wrapping a STATEFUL dialog: an unmount here destroys
+     whatever the user has typed into it, and the returning true cannot
+     restore it. What keeps that from happening is a guarantee in the STORE,
+     not anything local — `membershipKnown` never drops to false for a
+     workspace the session has already answered, so a REPEAT resolution leaves
+     `isOwner` alone. Before TASK-2988 it did not, and this block unmounted
+     mid-edit; the reachable route is `recoverIfMissing`, which the workspace
+     layout calls on every sync result and which re-resolves whenever `current`
+     names a different workspace — as it does after a create. These four gates
+     are the consumers relying on that guarantee; if it ever moves, they are
+     what to re-check. -->
 {#if isOwner && collection}
 	<ShareDialog
 		{wsSlug}
@@ -3578,6 +3589,17 @@
 	/>
 {/if}
 
+<!-- Owner-gated block wrapping a STATEFUL dialog: an unmount here destroys
+     whatever the user has typed into it, and the returning true cannot
+     restore it. What keeps that from happening is a guarantee in the STORE,
+     not anything local — `membershipKnown` never drops to false for a
+     workspace the session has already answered, so a REPEAT resolution leaves
+     `isOwner` alone. Before TASK-2988 it did not, and this block unmounted
+     mid-edit; the reachable route is `recoverIfMissing`, which the workspace
+     layout calls on every sync result and which re-resolves whenever `current`
+     names a different workspace — as it does after a create. These four gates
+     are the consumers relying on that guarantee; if it ever moves, they are
+     what to re-check. -->
 {#if isOwner && collection}
 	<EditCollectionModal
 		bind:open={editCollectionOpen}
