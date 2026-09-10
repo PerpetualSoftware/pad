@@ -265,6 +265,82 @@ func (m *RoomManager) ApplyExternalContent(itemID string, markdown string) error
 	return ErrNoApplierAvailable
 }
 
+// HasElectableApplier reports whether an external content update for itemID would,
+// at this instant, route through a designated applier rather than fall back to a
+// direct items.content write. It is a HINT for ordering a caller's row write ahead
+// of the apply (PLAN-2975 decision 1) — never a lock, a reservation, or a promise.
+//
+// It mutates nothing: no admission is taken (enterApplierGate / finishAdmission are
+// deliberately NOT involved), no pending-ack entry is registered, no election is
+// recorded. A concurrent ApplyExternalContent is neither blocked by nor visible to
+// it. Lock discipline: m.mu, then restoreMu, then room.mu, each released before the
+// next is taken, so restoreMu stays a leaf and the itemLock -> appendMu -> room.mu
+// order is untouched.
+//
+// WHAT IT ANSWERS vs WHAT A CALLER USUALLY WANTS. It answers "is at least one conn
+// electable right now". It does not answer "the apply will succeed", and cannot:
+// after a true, ApplyExternalContent can still return ErrNoApplierAvailable (the last
+// candidate's write fails and it is evicted), ErrAllAppliersTimedOut, or
+// ErrApplierAmbiguous. A caller that reorders on a true owes an honest answer for
+// each of those (PLAN-2975 decision 2).
+//
+// THE ERROR DIRECTION IS ASYMMETRIC AND DELIBERATE. A false negative is the defect
+// this exists to prevent: it sends a caller back to apply-then-write, which is
+// BUG-2840 half A verbatim — content in the live Y.Doc, then a refused row write. A
+// false positive costs the caller an honest partial answer instead (PLAN-2975
+// decision 2), which is why every judgement call here resolves toward true.
+//
+// That asymmetry is a statement about THIS function's answer, not a guarantee about
+// everything downstream of it, and the difference matters. A caller that reorders on
+// a true and then meets an apply failure inherits whatever its fallback does — and
+// the fallback that exists today can itself write content past live peers: when
+// applyContentViaCollab exhausts its ErrRoomActiveDuringPrune retries, the PATCH
+// handler falls through to a plain direct write while a live writer may be holding a
+// Y.Doc that will outvote it on the next flush (internal/server/handlers_collab.go's
+// retry cap, consumed by handleUpdateItem's "any other error path" fall-through).
+// That predates this function and is unchanged by it; it is named here because a
+// reader would otherwise take "a false positive costs a partial answer" as a claim
+// about the whole path rather than about this return value (codex round 2, PLAN-2975).
+//
+// That is why an in-progress version restore answers TRUE rather than consulting the
+// conns. ForceRefreshRoom freezes every conn for the duration, and pickApplier skips
+// frozen conns, so a bare pickApplier check answers false for the whole restore
+// window — and on a restore ROLLBACK the conns are unfrozen and an applier is
+// elected, making that false the dangerous direction in exactly the window this is
+// required to compose with. On the success path the conns stay frozen and are
+// force-closed, so the room ends with no applier: a false positive, the tolerable
+// direction. Rollback unfreezes before the deferred resolveRestore runs, so there is
+// no window with restoreActive false and conns still frozen.
+//
+// Eligibility is delegated to pickApplier rather than restated, so the hint and the
+// elector cannot disagree about the RULE: read-only conns, frozen conns, and
+// unanchored conns are excluded here because they are excluded there, and a future
+// change to that predicate reaches both. They can still disagree about the ANSWER,
+// because the room's state moves between the two calls — this is a point-in-time
+// read, not a reservation. Known routes by which a false NO becomes a live applier:
+// a fresh writer joins; an unanchored conn finishes replay and flips replayDone; a
+// view-only conn is promoted by the collab handler's periodic revalidation
+// (SetConnWritable); a restore rolls back and unfreezes (covered by the clause
+// above). Passing a nil tried-set asks "is ANY conn electable", which is the
+// condition for the applier path being attempted at all.
+func (m *RoomManager) HasElectableApplier(itemID string) bool {
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return false
+	}
+	room := m.rooms[itemID]
+	m.mu.Unlock()
+
+	if room == nil {
+		return false
+	}
+	if room.restoreInProgress() {
+		return true
+	}
+	return room.pickApplier(nil) != nil
+}
+
 // electAndApply runs one designated-applier election (first attempt + one retry)
 // against the room, gated on the restore coordinator. It returns (err, superseded):
 // superseded==true means a version restore interrupted the election and has resolved,

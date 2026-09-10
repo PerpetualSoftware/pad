@@ -131,6 +131,19 @@ func (r *Room) finishAdmission() {
 	r.restoreMu.Unlock()
 }
 
+// restoreInProgress reports whether a version restore currently holds the room.
+//
+// Unlike enterApplierGate it NEVER blocks and never admits: it is a point-in-time
+// read for HasElectableApplier, whose caller is on a request path that must not wait
+// out a restore-tx before deciding how to order its write. The answer is stale the
+// instant it returns, which is sound only because the caller treats true as a hint
+// biased toward the safe ordering (see HasElectableApplier).
+func (r *Room) restoreInProgress() bool {
+	r.restoreMu.Lock()
+	defer r.restoreMu.Unlock()
+	return r.restoreActive
+}
+
 // waitRestoreResolved blocks until the in-progress restore (if any) resolves. Called
 // by a round-trip the restore finalized to not-persisted, so it doesn't re-elect
 // until the restore's effects (unfreeze on rollback / force-close on commit) are in
