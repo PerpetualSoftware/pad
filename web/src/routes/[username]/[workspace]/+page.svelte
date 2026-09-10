@@ -59,12 +59,15 @@
 
 	// Owner-gate state for the New Collection trigger.
 	//
-	// Reading `workspaceStore.isOwner` directly would make the trigger button
+	// Reading `workspaceStore.isOwner` directly USED TO make the trigger button
 	// flicker visibility every 30 s: the dashboard's silent poll (and sync
-	// signals) call `load()` → `workspaceStore.setCurrent()`, which clears
-	// `currentMembership` to null before `/me` resolves. During that window
-	// `workspaceStore.isOwner` returns false even for owners, hiding the CTA
-	// and dropping any focus on it.
+	// signals) call `load()` → `workspaceStore.setCurrent()`, which cleared
+	// `currentMembership` to null before `/me` resolved. During that window
+	// `workspaceStore.isOwner` returned false even for owners, hiding the CTA
+	// and dropping any focus on it. TASK-2988 closed that window in the store
+	// for a workspace already answered, which this poll normally is — though not
+	// one that lands before the first membership answer settles. The cache here
+	// is kept as defence in depth and still covers that first resolution.
 	//
 	// Two effects per CONVE-606 (split reactive-state sync from route-change
 	// effects): one resets the cache on a real workspace switch, the other
@@ -706,8 +709,12 @@
 	<!--
 		Mount unconditionally (gated on wsSlug, not isOwner) so an owner editing
 		the modal isn't unmounted mid-edit when the 30s dashboard poll or a sync
-		signal calls load() → workspaceStore.setCurrent(), which transiently
-		clears currentMembership and flips isOwner false until /me resolves.
+		signal calls load() → workspaceStore.setCurrent(). That call used to
+		transiently clear currentMembership and flip isOwner false until /me
+		resolved; TASK-2988 stopped it for a workspace already answered, and
+		found the same unmount-mid-edit defect at four sites that had NOT been
+		written this way. This mount stays unconditional regardless — it does
+		not depend on the store's guarantee.
 		The trigger button is owner-gated above; this matches Sidebar.svelte's
 		pattern, and the server-side owner check (handlers_collections.go:48)
 		remains the enforcement boundary.

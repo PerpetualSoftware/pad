@@ -27,6 +27,13 @@ const WS = { id: 'w1', slug: 'ws', name: 'WS' };
 
 describe('workspaceStore.membershipKnown', () => {
 	beforeEach(() => {
+		// Fresh module registry per test. These tests all resolve the SAME slug,
+		// and since TASK-2988 the store remembers the answer it settled for a
+		// slug — so without this, a test asserting the FIRST-resolution unknown
+		// window would be handed a previous test's answer and fail for a reason
+		// that has nothing to do with what it tests. The isolation is what makes
+		// each `it` mean what it says; it was only ever accidental before.
+		vi.resetModules();
 		vi.resetAllMocks();
 	});
 

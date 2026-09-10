@@ -2,6 +2,10 @@ import { api } from '$lib/api/client';
 import type { Workspace, WorkspaceMembership } from '$lib/types';
 import * as perms from '$lib/utils/permissions';
 import { createKeyedSingleFlight } from './singleFlight';
+// Identity, for the membership answer cache below. `auth.svelte.ts` does not
+// import this module, so this direction adds no cycle.
+import { authStore } from './auth.svelte';
+import { untrack } from 'svelte';
 
 let workspaces = $state<Workspace[]>([]);
 let current = $state<Workspace | null>(null);
@@ -14,6 +18,17 @@ let currentMembership = $state<WorkspaceMembership | null>(null);
 // includes resolving the workspace itself, and the part of a create that
 // follows a successful API call — until that call settles: a fetched
 // membership, a 403, or a workspace that did not resolve.
+//
+// EXCEPT for a workspace this session has already answered once, where it
+// stays true across the replacing call and the previous answer keeps being
+// served while the refetch runs (TASK-2988, `answeredMembership` below).
+// Dropping to "unknown" during a repeat resolution unmounted permission-gated
+// blocks that read the store directly, taking the state of any dialog inside
+// one with it. A repeat is not constant — `recoverIfMissing` is CALLED on every
+// sync result but only re-resolves when `current` is null or names a different
+// workspace, and a create makes the latter true while a route stays mounted —
+// but it needs no misuse to happen, and the consumer cannot defend itself
+// because "unknown" and "denied" look identical from outside.
 //
 // A create that THROWS is outside all of that. It changes no state at all,
 // because a failed create says nothing about the workspace you are still
@@ -31,6 +46,135 @@ let loading = $state(false);
 // selection race increments nothing — see the comment in `create` for the three
 // orderings that shapes.
 let membershipSeq = 0;
+
+// The last membership ANSWER settled, per user and workspace slug — for the
+// life of the PAGE, which outlives a sign-out, so the same user returning after
+// a logout can be served an answer from before it
+// (TASK-2988). Populated only by `settleMembership`, which is also the only
+// writer of `membershipKnown = true` — one function so a future settle site
+// cannot record the state without the answer, or the answer without the state.
+//
+// Read on entry to `setCurrent` to answer a REPEAT resolution of a workspace
+// already seen, instead of dropping to "unknown" for the length of the
+// refetch. Keyed by the slug being SET (and by user, below), so it can only ever
+// serve the grants of that workspace — never the previous one, which is what the
+// entry clear exists to prevent.
+//
+// KEYED BY USER AS WELL AS SLUG, and that is a correctness requirement rather
+// than tidiness: logout is an SPA navigation (`authStore.clear()` +
+// `goto('/login')`), so this map outlives a sign-out. Keyed by slug alone, the
+// NEXT user to resolve the same workspace would be served the PREVIOUS user's
+// grants until their own `/me` settled — a cross-account grant leak in the UI
+// (codex round 3). Keying on identity makes the CACHE's invalidation
+// structural: a different user simply has no entry, so no logout path has to
+// remember to clear anything. It does not fence the store's other state —
+// `current`, `workspaces` and a `currentMembership` already published are not
+// identity-scoped, and `authStore.clear()` does not clear them, so a clean
+// account change with no settle in flight can still leave the previous user's
+// live permission state on screen (codex round 6, filed rather than widened
+// into this change).
+//
+// The identity is captured when the CALL starts and carried to its settle, and
+// `settleIfCurrent` discards a settle whose captured id no longer matches the
+// signed-in one. Taking it at settle time instead would let a `/me` issued as
+// one user land under the next user's key — the root layout renders after an
+// auth failure, so an empty id is reachable and is not merely a cache miss.
+//
+// Not a $state: it is never rendered and only ever read here, so tracking it
+// would add invalidations with nothing to invalidate.
+//
+// A cached DENIAL is served too, deliberately — denied is an answer, and a
+// denied workspace flickering to "unknown" is the same defect wearing the
+// opposite sign. Inherited from the settle sites: a transient /me or
+// workspace-resolution failure is recorded as a denial, exactly as those sites
+// already treat it as an answer. A serve is normally corrected by the same
+// call's settle, but not always and not on a bound: a failed workspace GET
+// settles a denial without reaching `/me`, a superseded call returns without
+// settling at all (the newer call settles instead), and a request that never
+// answers leaves the served value standing indefinitely. Nothing SCHEDULES a
+// retry either — `recoverIfMissing` retries on a null or mismatched `current`,
+// not on a null membership, which is pre-existing. The server stays the
+// enforcement boundary throughout; what is at stake here is only what the UI
+// shows.
+const answeredMembership = new Map<string, WorkspaceMembership | null>();
+
+/**
+ * The signed-in user's id, read WITHOUT establishing a reactive dependency.
+ *
+ * `setCurrent` reads this synchronously before its first await, and not every
+ * caller is inside `untrack` — the settings page calls `load(wsSlug)` straight
+ * from an `$effect`. A tracked read there would make that effect re-run on any
+ * session change, which is a dependency the caller never asked for and cannot
+ * see (codex round 4).
+ */
+function currentUserId(): string {
+	return untrack(() => authStore.userId);
+}
+
+/** Cache key for `slug` under `userId`. See `answeredMembership`. */
+function membershipKey(userId: string, slug: string): string {
+	// A newline separator, which appears in neither a user id (uuid) nor a
+	// workspace slug (kebab-case), so no id/slug pair can collide with
+	// another by concatenation.
+	return `${userId}\n${slug}`;
+}
+
+/**
+ * Settle membership for `userId`'s view of `slug`: publish the answer and
+ * remember it. Every path that turns `membershipKnown` true goes through here.
+ *
+ * Reached through `settleIfCurrent` rather than called directly, so the two
+ * fences a settle needs cannot be forgotten at a call site.
+ */
+function settleMembership(userId: string, slug: string, m: WorkspaceMembership | null) {
+	currentMembership = m;
+	membershipKnown = true;
+	answeredMembership.set(membershipKey(userId, slug), m);
+}
+
+/**
+ * Settle only if this call is still the one that speaks for the store.
+ *
+ * TWO fences, for two different races. `seq` is the navigation fence: a slow
+ * `/me` for workspace A must not clobber a membership freshly set for B.
+ * `userId` is the identity fence: logout is an SPA navigation, so a `/me`
+ * issued as one user can settle after another has signed in — and without this
+ * it would both publish that answer and record it under the NEW user's cache
+ * key (codex round 4). Neither fence subsumes the other: a sign-in does not
+ * advance `membershipSeq`, and a navigation does not change the user.
+ *
+ * The two fences DISPOSE of a rejected settle differently, and that asymmetry
+ * is the point. A superseded call returns silently, because a newer call is
+ * already speaking and its state is the right state. An identity mismatch
+ * instead CLEARS to unknown: if the answer we were about to publish belongs to
+ * a user who is no longer signed in, then so does whatever is published right
+ * now — including an answer replayed from the cache a moment ago, which is how
+ * a stale owner read would otherwise survive a sign-out (codex round 5).
+ * Unknown is the fail-safe reading, since the helpers treat it as no access.
+ *
+ * It also drops `current`, which is what makes the clear SELF-HEALING rather
+ * than terminal (codex round 6). `recoverIfMissing` re-resolves on a null
+ * `current` and runs on every sync result, so the new user gets a real answer
+ * at the next one; leaving `current` in place would have left them unknown
+ * until a navigation, and a sign-in that does not navigate would never get one.
+ * The cost is the sidebar's links blanking for that interval — the TASK-2200
+ * shape, and the mechanism built for it is exactly what recovers here.
+ */
+function settleIfCurrent(
+	seq: number,
+	userId: string,
+	slug: string,
+	m: WorkspaceMembership | null,
+) {
+	if (seq !== membershipSeq) return;
+	if (userId !== currentUserId()) {
+		currentMembership = null;
+		membershipKnown = false;
+		current = null;
+		return;
+	}
+	settleMembership(userId, slug, m);
+}
 
 // The keyed single-flight loader fencing `loadAll` (TASK-2947) — the same
 // primitive `collections.svelte.ts` uses, which is the point: generation,
@@ -76,13 +220,22 @@ export const workspaceStore = {
 	get currentMembership() { return currentMembership; },
 
 	/**
-	 * True once membership RESOLUTION has settled for the current workspace, so
-	 * a null `currentMembership` means "no access" rather than "not yet loaded".
+	 * True once membership RESOLUTION has settled for the workspace
+	 * `currentMembership` describes, so a null `currentMembership` means "no
+	 * access" rather than "not yet loaded". Not necessarily `current`: between
+	 * `setCurrent`'s entry and its `current = resolved`, membership already
+	 * names the workspace being SET while `current` still names the previous
+	 * one. Consumers read grants from the helpers and identity from `current`,
+	 * and the grants are the ones for the workspace the route is moving to.
 	 * Resolution, not fetch: a workspace that does not resolve at all settles
 	 * this without any `/me` request being made.
 	 *
 	 * False spans the whole replacing call — workspace resolution and creation
-	 * included, not just the `/me` request itself.
+	 * included, not just the `/me` request itself — for a workspace this
+	 * session has NOT answered before. For one it has, the flag stays true
+	 * across the call and the prior answer is served meanwhile (TASK-2988), so
+	 * a repeat resolution is invisible to consumers. Only a FIRST resolution
+	 * shows "unknown".
 	 *
 	 * Consumers that cache a permission to avoid flickering during that window
 	 * (BUG-2978) must gate on this rather than on `currentMembership !==
@@ -210,10 +363,37 @@ export const workspaceStore = {
 		// membershipSeq comment at top of file.
 		const seq = ++membershipSeq;
 
-		// Clear stale membership immediately so helpers don't briefly answer
-		// "yes" using the previous workspace's grants while /me is in flight.
-		currentMembership = null;
-		membershipKnown = false;
+		// Drop stale membership so helpers can't briefly answer using the
+		// PREVIOUS workspace's grants while /me is in flight — but serve this
+		// workspace's own last answer if the session has one, rather than
+		// dropping to "unknown" (TASK-2988). Both halves matter and they are
+		// about different workspaces: what must never be visible is another
+		// workspace's grants, and `answeredMembership` is keyed by the slug
+		// being set, so what it serves is only ever this workspace's.
+		//
+		// Without this, a REPEAT setCurrent for a workspace already resolved
+		// once made `membershipKnown` false again, and consumers cannot tell
+		// that from "no access" — so a permission-gated block reading the store
+		// DIRECTLY unmounted for the length of a refetch, destroying the state
+		// of any dialog inside one. Consumers holding a sticky copy (the
+		// settings page, the dashboard CTA) rode it out, which is why the four
+		// sites this was found at are the ones that did not.
+		const entrySlug = typeof ws === 'object' ? ws.slug : ws;
+		// Captured once, and used for both the lookup here and the settle below,
+		// so this call records under the identity that ISSUED it rather than
+		// whoever happens to be signed in when its `/me` comes back.
+		const callUser = currentUserId();
+		const entryKey = membershipKey(callUser, entrySlug);
+		if (answeredMembership.has(entryKey)) {
+			// Re-settling the same answer, so this goes through the one settle
+			// function rather than writing the two pieces of state here: it
+			// keeps `settleMembership` the sole writer of `membershipKnown =
+			// true`, which is the claim its own comment makes.
+			settleMembership(callUser, entrySlug, answeredMembership.get(entryKey) ?? null);
+		} else {
+			currentMembership = null;
+			membershipKnown = false;
+		}
 
 		// Resolve the workspace itself. Membership is fetched once we know
 		// the slug.
@@ -246,15 +426,15 @@ export const workspaceStore = {
 		if (resolved) {
 			try {
 				const m = await api.workspaces.me(slug);
-				if (seq === membershipSeq) { currentMembership = m; membershipKnown = true; }
+				settleIfCurrent(seq, callUser, slug, m);
 			} catch {
 				// A 403 or a removed member is an ANSWER, not a pending state.
-				if (seq === membershipSeq) { currentMembership = null; membershipKnown = true; }
+				settleIfCurrent(seq, callUser, slug, null);
 			}
-		} else if (seq === membershipSeq) {
+		} else {
 			// The workspace itself did not resolve (404, or no access): also an
 			// answer, and the same one.
-			membershipKnown = true;
+			settleIfCurrent(seq, callUser, slug, null);
 		}
 	},
 
@@ -288,6 +468,11 @@ export const workspaceStore = {
 		// the newer intent), and a failed create claims nothing and therefore
 		// invalidates nothing.
 		const entrySeq = membershipSeq;
+		// Identity captured BEFORE the POST, not after it. A create issued as one
+		// user can return after another has signed in, and capturing on success
+		// would cache the first user's membership under the SECOND user's key —
+		// which is the leak the key was introduced to close (codex round 5).
+		const callUser = currentUserId();
 		const ws = await api.workspaces.create(data);
 
 		// THE LIST IS ADDITIVE; ONLY THE SELECTION IS RACED (codex round 5).
@@ -312,9 +497,9 @@ export const workspaceStore = {
 		// New workspace — refresh membership for the just-created context.
 		try {
 			const m = await api.workspaces.me(ws.slug);
-			if (seq === membershipSeq) { currentMembership = m; membershipKnown = true; }
+			settleIfCurrent(seq, callUser, ws.slug, m);
 		} catch {
-			if (seq === membershipSeq) { currentMembership = null; membershipKnown = true; }
+			settleIfCurrent(seq, callUser, ws.slug, null);
 		}
 		return ws;
 	}
