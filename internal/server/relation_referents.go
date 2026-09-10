@@ -2,7 +2,6 @@ package server
 
 import (
 	"net/http"
-	"slices"
 	"sort"
 	"strings"
 
@@ -86,7 +85,7 @@ func (s *Server) resolveRelationReferentsAs(
 		return canonical
 	}
 
-	issues, err := s.store.ResolveRelationReferents(workspaceID, schema, fieldMap)
+	issues, err := s.store.ResolveRelationReferents(workspaceID, schema, fieldMap, s.relationVisibility(r, role))
 	if err != nil {
 		return nil, err
 	}
@@ -121,59 +120,22 @@ func (s *Server) resolveRelationReferentsAs(
 			// where a person belongs" is the useful half of this reason.
 			//
 			// Any other issue is already `not_found`-shaped and needs nothing.
-			// U6, lead ruling: title resolution is scoped to what the caller
-			// can SEE. Among live exact-title matches in the declared
-			// collection, only VISIBLE ones count — zero is not_found, one
-			// resolves, two or more is ambiguous — so a hidden match never
-			// changes the answer a caller gets. The store cannot apply that
-			// (it has no requester), so its `ambiguous` is provisional and is
-			// re-decided here against the candidates it carried up.
-			if ri.Reason == store.RelationTargetAmbiguous {
-				resolvedID, rerr := s.narrowAmbiguousRelationTitle(r, workspaceID, role, ri)
-				if rerr != nil {
-					return nil, rerr
-				}
-				switch resolvedID {
-				case ambiguityStands:
-					// Two or more visible matches: the caller really cannot be
-					// handed one, and "be more specific" is theirs to act on.
-				case ambiguityNoneVisible:
-					// Every match is hidden. Saying `ambiguous` would tell the
-					// caller that two or more items they cannot see carry the
-					// title they guessed, which is the same oracle the
-					// wrong_collection collapse closes — and titles are
-					// guessable in a way refs are not.
-					collapseIssue(issues, def.Key, store.RelationTargetNotFound)
-				default:
-					// Exactly one visible match. It is not ambiguous FOR THIS
-					// CALLER, so it resolves and the issue goes away entirely.
-					fieldMap[def.Key] = resolvedID
-					issues = removeIssue(issues, def.Key)
-				}
-				continue
-			}
+			// An `ambiguous` reason arrives already decided: since the
+			// resolver takes this requester's visibility predicate, its count
+			// is the VISIBLE count and there is nothing left to narrow here.
+			// It used to be re-decided in this layer, which left the copy
+			// transaction — where no server pass runs — leaking.
 			if ri.Reason != store.RelationTargetWrongCollection {
 				continue
 			}
-			// U6: a TITLE-derived issue carries the id of the item the store
-			// matched, and MUST be judged on that item. Re-resolving it here
-			// would run the value through ResolveRelationTarget's UUID-or-ref
-			// ladder, which does not speak titles: it would find nothing, take
-			// the `target == nil` arm below, and collapse EVERY title-derived
-			// wrong_collection to not_found — including the visible ones this
-			// rule exists to keep specific. A test that only checks the
-			// invisible leg cannot see that happen.
-			//
-			// The ref path keeps its re-resolve unchanged. It is re-resolvable
-			// by construction, and the TOCTOU its second lookup opens is filed
-			// separately rather than fixed inside this unit.
-			var target *models.Item
-			var terr error
-			if ri.MatchedID != "" {
-				target, terr = s.store.GetItem(ri.MatchedID)
-			} else {
-				target, terr = s.store.ResolveRelationTarget(workspaceID, ri.Value)
+			if ri.VisibilityChecked {
+				// The resolver judged this one against this requester already
+				// (title path). Re-resolving it here would run a title through
+				// a UUID-or-ref ladder, find nothing, and collapse a reason the
+				// caller is entitled to see.
+				continue
 			}
+			target, terr := s.store.ResolveRelationTarget(workspaceID, ri.Value)
 			if terr != nil {
 				return nil, terr
 			}
@@ -228,108 +190,6 @@ func (s *Server) resolveRelationReferentsAs(
 	return issues, nil
 }
 
-// ambiguityStands and ambiguityNoneVisible are the two non-id outcomes of
-// narrowAmbiguousRelationTitle. Sentinels rather than a second return value
-// because there are exactly three answers and a (string, bool, bool) signature
-// invites callers to check them in the wrong order.
-const (
-	ambiguityStands      = "\x00stands"
-	ambiguityNoneVisible = "\x00none"
-)
-
-// narrowAmbiguousRelationTitle re-decides a store-provisional `ambiguous`
-// against what THIS requester can see (PLAN-2857 U6, lead ruling).
-//
-// Returns the single visible match's id, or one of the two sentinels above.
-//
-// An ambiguous issue with NO candidates means the store's match count exceeded
-// its cap and it declined to hand up ids; the answer stands for everyone, which
-// is both the safe direction and the right one — nobody can be meaningfully
-// handed one of that many same-titled items.
-func (s *Server) narrowAmbiguousRelationTitle(
-	r *http.Request,
-	workspaceID, role string,
-	ri store.RelationIssue,
-) (string, error) {
-	if ri.TitleCollectionID == "" {
-		// Not a title-derived ambiguity, so there is nothing to narrow.
-		return ambiguityStands, nil
-	}
-	user, bearer := currentUser(r), isBearerAuth(r)
-
-	visible := ""
-	count := 0
-	after := 0
-	for {
-		ids, numbers, err := s.store.RelationTitleCandidatesQ(
-			s.store.Q(), workspaceID, ri.TitleCollectionID, ri.Value, after, relationTitleCandidatePage)
-		if err != nil {
-			return "", err
-		}
-		if len(ids) == 0 {
-			break
-		}
-		for i, id := range ids {
-			after = numbers[i]
-			item, err := s.store.GetItem(id)
-			if err != nil {
-				return "", err
-			}
-			if item == nil {
-				// Deleted between the resolver's read and this one. Not a match
-				// any more, so it does not count towards ambiguity — the same
-				// treatment the vanished-target arm gives elsewhere.
-				continue
-			}
-			seen, err := s.checkItemVisible(workspaceID, item, user, role, bearer)
-			if err != nil {
-				return "", err
-			}
-			if !seen {
-				continue
-			}
-			count++
-			if count > 1 {
-				// Two visible matches is the answer; nothing later can change
-				// it, so the remaining pages are never read.
-				return ambiguityStands, nil
-			}
-			visible = item.ID
-		}
-		if len(ids) < relationTitleCandidatePage {
-			break
-		}
-	}
-	if count == 0 {
-		return ambiguityNoneVisible, nil
-	}
-	return visible, nil
-}
-
-// relationTitleCandidatePage is the page size for that walk. It bounds MEMORY,
-// not the answer: the loop stops at the second visible match or at the end of
-// the rows, so no match count changes what a caller is told. A cap on the
-// ANSWER was the first shape and it was an oracle — "one visible plus cap
-// hidden" read differently from "one visible plus cap+1 hidden".
-//
-// The worst case is a scan of every live item sharing one exact title in one
-// collection, which is a set the workspace's own writers created and is
-// normally 1.
-const relationTitleCandidatePage = 100
-
-// removeIssue drops the issue raised for key. Used when a refusal turns out not
-// to apply to this requester after all — an `ambiguous` that resolves for a
-// caller who can see exactly one of the matches.
-func removeIssue(issues []store.RelationIssue, key string) []store.RelationIssue {
-	out := issues[:0]
-	for _, ri := range issues {
-		if ri.Key != key {
-			out = append(out, ri)
-		}
-	}
-	return out
-}
-
 // issueForKey returns the issue already raised for key, if any.
 func issueForKey(issues []store.RelationIssue, key string) (store.RelationIssue, bool) {
 	for _, ri := range issues {
@@ -367,66 +227,18 @@ func collapseIssue(issues []store.RelationIssue, key string, reason store.Relati
 // Reviewer named ONE site; this is applied at all five late-default sites,
 // per CONVE-18 — the class is "a store-resolved issue reaching a caller
 // without passing the visibility collapse", not the one call it was spotted at.
-// Returns the issues that SURVIVE. An `ambiguous` that resolved for this
-// caller is not a drop and must not be counted as one — returning the slice
-// rather than marking entries in place makes every call site reassign, so the
-// compiler enforces what a "remember to filter afterwards" helper would only
-// ask for.
-func (s *Server) collapseInvisibleRelationIssues(r *http.Request, workspaceID, role string, issues []store.RelationIssue, fieldMap map[string]any) ([]store.RelationIssue, error) {
-	var resolved []string
+// ONLY the ref path reaches here now. A title-derived issue is decided inside
+// the resolver, which takes this requester's visibility predicate — so an
+// invisible title match never becomes a `wrong_collection` in the first place,
+// and there is nothing for this pass to collapse.
+func (s *Server) collapseInvisibleRelationIssues(r *http.Request, workspaceID, role string, issues []store.RelationIssue) error {
 	for i := range issues {
-		// A late-default `ambiguous` gets the same narrowing AND the same
-		// resolution the main pass applies. Downgrading a single visible match
-		// to not_found here — which is what this did first — still leaks the
-		// hidden twin: the caller sees a default RESOLVE when they are the only
-		// match and FAIL when a twin they cannot see exists, so the outcome
-		// itself answers the question the reason was careful not to (codex
-		// round 2 on U6).
-		//
-		// The field map is threaded in for exactly this. ResolveLateRelationDefaults
-		// has already deleted the key, so resolving means putting it back.
-		if issues[i].Reason == store.RelationTargetAmbiguous {
-			narrowed, nerr := s.narrowAmbiguousRelationTitle(r, workspaceID, role, issues[i])
-			if nerr != nil {
-				return nil, nerr
-			}
-			switch narrowed {
-			case ambiguityStands:
-				// Two or more visible: genuinely ambiguous for this caller.
-			case ambiguityNoneVisible:
-				issues[i].Reason = store.RelationTargetNotFound
-			default:
-				if fieldMap != nil {
-					fieldMap[issues[i].Key] = narrowed
-					resolved = append(resolved, issues[i].Key)
-					break
-				}
-				// No field map to restore into: the honest answer is the one
-				// that discloses least.
-				issues[i].Reason = store.RelationTargetNotFound
-			}
+		if issues[i].Reason != store.RelationTargetWrongCollection || issues[i].VisibilityChecked {
 			continue
 		}
-		if issues[i].Reason != store.RelationTargetWrongCollection {
-			continue
-		}
-		// U6: a TITLE-derived issue carries the id the store matched and must
-		// be judged on THAT item. ResolveRelationTarget speaks a UUID-or-ref
-		// ladder and cannot resolve a title, so re-resolving one here finds
-		// nothing, takes the `target == nil` arm below, and collapses every
-		// title-derived wrong_collection — including the VISIBLE ones this
-		// rule exists to keep specific. The main pass was fixed for exactly
-		// this; the late pass is a second road to the same defect, which is
-		// why it is fixed here rather than only there (codex round 1 on U6).
-		var target *models.Item
-		var terr error
-		if issues[i].MatchedID != "" {
-			target, terr = s.store.GetItem(issues[i].MatchedID)
-		} else {
-			target, terr = s.store.ResolveRelationTarget(workspaceID, issues[i].Value)
-		}
+		target, terr := s.store.ResolveRelationTarget(workspaceID, issues[i].Value)
 		if terr != nil {
-			return nil, terr
+			return terr
 		}
 		if target == nil {
 			// Vanished between the two reads. The reason still SAYS the value
@@ -436,22 +248,13 @@ func (s *Server) collapseInvisibleRelationIssues(r *http.Request, workspaceID, r
 		}
 		seen, verr := s.checkItemVisible(workspaceID, target, currentUser(r), role, isBearerAuth(r))
 		if verr != nil {
-			return nil, verr
+			return verr
 		}
 		if !seen {
 			issues[i].Reason = store.RelationTargetNotFound
 		}
 	}
-	if len(resolved) == 0 {
-		return issues, nil
-	}
-	kept := make([]store.RelationIssue, 0, len(issues))
-	for _, ri := range issues {
-		if !slices.Contains(resolved, ri.Key) {
-			kept = append(kept, ri)
-		}
-	}
-	return kept, nil
+	return nil
 }
 
 // refuseRelationIssues writes the 400 a write door owes and reports whether it
@@ -665,12 +468,11 @@ func (s *Server) resolveRelationsForWrite(
 	// — and reporting none of it. The refusals are still returned; they are
 	// the carry report, not a stop.
 
-	lateDropped, err := s.store.ResolveLateRelationDefaults(workspaceID, schema, fieldMap, presentBefore)
+	lateDropped, err := s.store.ResolveLateRelationDefaults(s.relationVisibility(r, role), workspaceID, schema, fieldMap, presentBefore)
 	if err != nil {
 		return nil, nil, err
 	}
-	lateDropped, cerr := s.collapseInvisibleRelationIssues(r, workspaceID, role, lateDropped, fieldMap)
-	if cerr != nil {
+	if cerr := s.collapseInvisibleRelationIssues(r, workspaceID, role, lateDropped); cerr != nil {
 		return nil, nil, cerr
 	}
 	if required := store.RequiredRelationIssues(schema, lateDropped); len(required) > 0 {

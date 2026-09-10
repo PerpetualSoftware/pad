@@ -76,44 +76,24 @@ type RelationIssue struct {
 	Value  string
 	Target string
 	Reason RelationIssueReason
-	// MatchedID is the item the resolver actually found, set ONLY when a TITLE
-	// matched a live item outside the declared collection — i.e. alongside
-	// `RelationTargetWrongCollection` on the title path. Empty everywhere else,
-	// including on a ref-derived wrong_collection.
+
+	// VisibilityChecked is set when the RESOLVER already judged this issue
+	// against a requester — i.e. it was given a RelationVisibilityFunc.
 	//
-	// It exists so the server's visibility collapse can check the exact item
-	// this resolver matched instead of looking the value up a second time
-	// (PLAN-2857 U6). For a ref the second lookup works, because
-	// `ResolveRelationTarget` speaks the same UUID-or-ref ladder; for a TITLE it
-	// does not, and a collapse pass that re-resolved a title through that ladder
-	// would find nothing and downgrade EVERY title-derived wrong_collection to
-	// not_found — including the visible ones the ruling says keep the specific
-	// message. That failure is invisible from the invisible-target test alone,
-	// which is why the id is carried rather than re-derived.
+	// Only the TITLE path sets it, and only because the server's collapse pass
+	// must then leave it alone. That pass re-resolves the value through
+	// `ResolveRelationTarget`, which speaks a UUID-or-ref ladder and cannot
+	// resolve a title: it would find nothing, take the vanished-target arm, and
+	// collapse a `wrong_collection` the caller is entitled to see. Removing an
+	// earlier marker field reintroduced exactly that, and the VISIBLE leg of
+	// the door test caught it — the invisible leg passes either way.
+	//
+	// The ref path deliberately keeps its own collapse. Retrofitting it is a
+	// change to working code and belongs to BUG-3012, not here.
 	//
 	// Internal only: this type has no JSON tags and reaches callers through
 	// Message().
-	MatchedID string
-
-	// TitleCollectionID is the collection the TITLE lookup searched, set only
-	// alongside `RelationTargetAmbiguous`.
-	//
-	// It exists because THIS PACKAGE CANNOT DECIDE AMBIGUITY. The rule is that
-	// title resolution is scoped to what the requester can SEE — among live
-	// exact-title matches, only visible ones count, so zero is not_found, one
-	// RESOLVES, and two or more is ambiguous. Visibility is request-scoped and
-	// deliberately absent here (see the file header), so the count this package
-	// produces is PROVISIONAL and the server re-decides.
-	//
-	// The collection id rather than the matched ids: the server pages through
-	// candidates with RelationTitleCandidatesQ and stops at the second VISIBLE
-	// one, so it never needs the whole set in memory and there is no match
-	// count at which the answer changes. Carrying a bounded id list was the
-	// first shape and it made the bound an oracle — a caller could tell
-	// "one visible + cap hidden" from "one visible + cap+1 hidden".
-	//
-	// Internal only, like MatchedID: no JSON tags, nothing puts it on the wire.
-	TitleCollectionID string
+	VisibilityChecked bool
 }
 
 // Message renders the issue the way every door reports it. One function so the
@@ -199,8 +179,9 @@ func (s *Store) ResolveRelationReferents(
 	workspaceID string,
 	schema models.CollectionSchema,
 	fieldMap map[string]any,
+	canSee RelationVisibilityFunc,
 ) ([]RelationIssue, error) {
-	return s.ResolveRelationReferentsQ(s.Q(), workspaceID, schema, fieldMap)
+	return s.ResolveRelationReferentsQ(s.Q(), workspaceID, schema, fieldMap, canSee)
 }
 
 // ResolveRelationReferentsQ is ResolveRelationReferents parameterised over its
@@ -218,6 +199,7 @@ func (s *Store) ResolveRelationReferentsQ(
 	workspaceID string,
 	schema models.CollectionSchema,
 	fieldMap map[string]any,
+	canSee RelationVisibilityFunc,
 ) ([]RelationIssue, error) {
 	var issues []RelationIssue
 	// Cache per target slug: a schema with several relations aimed at one
@@ -280,16 +262,15 @@ func (s *Store) ResolveRelationReferentsQ(
 			// U6: the value is neither a UUID nor a ref, so try it as an exact
 			// TITLE — scoped to the declared collection, which is the whole
 			// distinction from ResolveItem's workspace-wide ladder (R11).
-			titled, outside, ambiguous, candidates, terr := s.resolveRelationTitleQ(q, workspaceID, targetID, value)
+			titled, outside, ambiguous, terr := s.resolveRelationTitleQ(q, workspaceID, targetID, value, canSee)
 			if terr != nil {
 				return nil, terr
 			}
 			switch {
 			case ambiguous:
-				_ = candidates
 				issues = append(issues, RelationIssue{
 					Key: def.Key, Value: value, Target: def.Collection,
-					Reason: RelationTargetAmbiguous, TitleCollectionID: targetID,
+					Reason: RelationTargetAmbiguous,
 				})
 				continue
 			case titled != nil:
@@ -304,7 +285,7 @@ func (s *Store) ResolveRelationReferentsQ(
 				// titles — see the field's own comment.
 				issues = append(issues, RelationIssue{
 					Key: def.Key, Value: value, Target: def.Collection,
-					Reason: RelationTargetWrongCollection, MatchedID: outside.ID,
+					Reason: RelationTargetWrongCollection, VisibilityChecked: canSee != nil,
 				})
 				continue
 			default:
@@ -453,56 +434,100 @@ func (s *Store) resolveRelationTargetQ(q Queryer, workspaceID, value string) (*m
 func (s *Store) resolveRelationTitleQ(
 	q Queryer,
 	workspaceID, targetCollectionID, title string,
-) (item *models.Item, outside *models.Item, ambiguous bool, candidates []string, err error) {
-	// Two rows answer "more than one" without counting the collection. That is
-	// all THIS package needs: its answer is provisional whenever a requester
-	// exists, because the rule (lead ruling, PLAN-2857 U6) is that title
-	// resolution is scoped to what the requester CAN SEE — among live
-	// exact-title matches, only visible ones count, so zero is not_found, one
-	// resolves, two or more is ambiguous, and a hidden match never changes the
-	// answer. Visibility cannot be decided here (see this file's header), so an
-	// ambiguous issue carries the collection searched and the server pages
-	// through candidates itself with RelationTitleCandidatesQ.
+	canSee RelationVisibilityFunc,
+) (item *models.Item, outside *models.Item, ambiguous bool, err error) {
+	// THE COUNT THAT DECIDES IS THE VISIBLE COUNT (lead ruling, PLAN-2857 U6).
+	// Among live exact-title matches in the target collection, only ones the
+	// requester can SEE count: zero is not_found, exactly one resolves, two or
+	// more is ambiguous. A hidden match never changes the answer.
 	//
-	// For a caller with NO requester — copy, migrate, import — this count is
-	// the final answer, and every live match counting is right there: nobody is
-	// being told anything.
-	rows, err := q.Query(s.q(`
-		SELECT id FROM items
-		WHERE workspace_id = ? AND collection_id = ? AND title = ? AND deleted_at IS NULL
-		ORDER BY item_number
-		LIMIT 2
-	`), workspaceID, targetCollectionID, title)
-	if err != nil {
-		return nil, nil, false, nil, fmt.Errorf("relation title lookup: %w", err)
-	}
-	var ids []string
-	for rows.Next() {
-		var id string
-		if scanErr := rows.Scan(&id); scanErr != nil {
-			rows.Close()
-			return nil, nil, false, nil, fmt.Errorf("relation title lookup scan: %w", scanErr)
+	// canSee == nil means there is NO requester — import, and any migrate that
+	// runs outside a request — and then every live match counts, which is right
+	// because nobody is being told anything.
+	//
+	// This lives HERE rather than as a second pass in the server layer, and the
+	// difference is not tidiness. The cross-workspace copy runs the resolver
+	// inside its own transaction, where no server-layer pass can reach it, so a
+	// server-side re-decision left the copy door leaking and made preflight and
+	// copy disagree. `RelationVisibilityFunc` already existed for exactly this
+	// shape, and resolveRelationsForWrite's own comment named the gap:
+	// "Unifying the two families needs a caller-supplied visibility predicate
+	// on the store API."
+	//
+	// PAGED ON `id`, not item_number: item_number is NULLABLE (migration 006
+	// adds it with no constraint and nothing since makes it NOT NULL), and
+	// `item_number > ?` silently excludes every NULL row — so a legacy
+	// visible match could be skipped while the unpaged count still saw it, and
+	// the two disagreed. `id` is the primary key and cannot be null; the order
+	// is arbitrary but STABLE, which is all a cursor needs. Nothing observable
+	// depends on WHICH order, because the only case that resolves has exactly
+	// one visible match.
+	seen := 0
+	var only *models.Item
+	anyMatch := false
+	cursor := ""
+	for {
+		ids, cerr := s.relationTitleIDPageQ(q, workspaceID, targetCollectionID, title, cursor, relationTitlePageSize)
+		if cerr != nil {
+			return nil, nil, false, cerr
 		}
-		ids = append(ids, id)
-	}
-	if rowsErr := rows.Err(); rowsErr != nil {
-		rows.Close()
-		return nil, nil, false, nil, fmt.Errorf("relation title lookup rows: %w", rowsErr)
-	}
-	rows.Close()
-
-	if len(ids) > 1 {
-		return nil, nil, true, ids, nil
-	}
-	if len(ids) == 1 {
-		found, gerr := s.GetItemQ(q, ids[0])
-		if gerr != nil {
-			return nil, nil, false, nil, gerr
+		if len(ids) == 0 {
+			break
 		}
-		// A row that vanished between the two reads is treated as no match
-		// rather than as an error: the next thing the caller does is refuse,
-		// and refusing because the target is gone is the honest answer.
-		return found, nil, false, ids, nil
+		anyMatch = true
+		for _, id := range ids {
+			cursor = id
+			if canSee == nil {
+				seen++
+				if seen > 1 {
+					return nil, nil, true, nil
+				}
+				found, gerr := s.GetItemQ(q, id)
+				if gerr != nil {
+					return nil, nil, false, gerr
+				}
+				only = found
+				continue
+			}
+			found, gerr := s.GetItemQ(q, id)
+			if gerr != nil {
+				return nil, nil, false, gerr
+			}
+			if found == nil {
+				// Vanished between the id read and this one; not a match.
+				continue
+			}
+			ok, verr := canSee(q, workspaceID, found)
+			if verr != nil {
+				return nil, nil, false, verr
+			}
+			if !ok {
+				continue
+			}
+			seen++
+			if seen > 1 {
+				// Nothing later can change this, so the rest is never read.
+				return nil, nil, true, nil
+			}
+			only = found
+		}
+		if len(ids) < relationTitlePageSize {
+			break
+		}
+	}
+	if seen == 1 {
+		// `only` can be nil if the row vanished between the two reads; the
+		// caller then refuses, which is the honest answer.
+		return only, nil, false, nil
+	}
+	if anyMatch {
+		// The title DOES match inside the declared collection — the requester
+		// just cannot see any of them. Answer not_found and do NOT fall
+		// through to the workspace-wide probe: that probe has no collection
+		// filter, so it would rediscover one of these very items and report
+		// `wrong_collection`, which is both untrue (it is in the right
+		// collection) and the disclosure this rule exists to prevent.
+		return nil, nil, false, nil
 	}
 
 	// Nothing in the target collection. One workspace-wide probe, for the
@@ -514,59 +539,70 @@ func (s *Store) resolveRelationTitleQ(
 		LIMIT 1
 	`), workspaceID, title).Scan(&otherID)
 	if err == sql.ErrNoRows {
-		return nil, nil, false, nil, nil
+		return nil, nil, false, nil
 	}
 	if err != nil {
-		return nil, nil, false, nil, fmt.Errorf("relation title probe: %w", err)
+		return nil, nil, false, fmt.Errorf("relation title probe: %w", err)
 	}
 	other, gerr := s.GetItemQ(q, otherID)
 	if gerr != nil {
-		return nil, nil, false, nil, gerr
+		return nil, nil, false, gerr
 	}
-	return nil, other, false, nil, nil
+	if other != nil && canSee != nil {
+		ok, verr := canSee(q, workspaceID, other)
+		if verr != nil {
+			return nil, nil, false, verr
+		}
+		if !ok {
+			// A `wrong_collection` refusal names a LIVE item, so raising it for
+			// a target the requester cannot see is the existence oracle the
+			// server collapse closes for refs. Answering not_found here means
+			// the collapse has nothing left to do on the title path.
+			return nil, nil, false, nil
+		}
+	}
+	return nil, other, false, nil
 }
 
-// RelationTitleCandidatesQ returns one PAGE of the live items whose exact title
-// matches, inside the given collection, ordered by item_number and starting
-// after `afterItemNumber` (0 for the first page).
+// relationTitlePageSize bounds MEMORY for the walk above, not the answer: the
+// loop stops at the second VISIBLE match or at the end of the rows, so no match
+// count changes what a caller is told. A cap on the ANSWER was an earlier shape
+// and it was an oracle in itself — "one visible plus cap hidden" read
+// differently from "one visible plus cap+1 hidden".
+const relationTitlePageSize = 100
+
+// relationTitleIDPageQ returns one page of ids of live items with this exact
+// title in this collection, ordered by id, starting after `afterID`.
 //
-// The server pages through these to apply the visibility rule, stopping at the
-// SECOND visible match. Paging rather than one bounded fetch is what keeps the
-// rule free of an oracle: with a cap, a caller could tell "one visible plus cap
-// hidden" from "one visible plus cap+1 hidden", because the answer changed at
-// the boundary. Here nothing changes at any count.
-//
-// Ids and item numbers only — the caller decides what it may look at before it
-// loads anything.
-func (s *Store) RelationTitleCandidatesQ(
+// Ids only: the caller decides what it may look at before loading anything.
+func (s *Store) relationTitleIDPageQ(
 	q Queryer,
-	workspaceID, collectionID, title string,
-	afterItemNumber, limit int,
-) (ids []string, itemNumbers []int, err error) {
+	workspaceID, collectionID, title, afterID string,
+	limit int,
+) ([]string, error) {
 	rows, err := q.Query(s.q(`
-		SELECT id, item_number FROM items
+		SELECT id FROM items
 		WHERE workspace_id = ? AND collection_id = ? AND title = ?
-		  AND deleted_at IS NULL AND item_number > ?
-		ORDER BY item_number
+		  AND deleted_at IS NULL AND id > ?
+		ORDER BY id
 		LIMIT ?
-	`), workspaceID, collectionID, title, afterItemNumber, limit)
+	`), workspaceID, collectionID, title, afterID, limit)
 	if err != nil {
-		return nil, nil, fmt.Errorf("relation title candidates: %w", err)
+		return nil, fmt.Errorf("relation title page: %w", err)
 	}
 	defer rows.Close()
+	var ids []string
 	for rows.Next() {
 		var id string
-		var num int
-		if scanErr := rows.Scan(&id, &num); scanErr != nil {
-			return nil, nil, fmt.Errorf("relation title candidates scan: %w", scanErr)
+		if scanErr := rows.Scan(&id); scanErr != nil {
+			return nil, fmt.Errorf("relation title page scan: %w", scanErr)
 		}
 		ids = append(ids, id)
-		itemNumbers = append(itemNumbers, num)
 	}
 	if rowsErr := rows.Err(); rowsErr != nil {
-		return nil, nil, fmt.Errorf("relation title candidates rows: %w", rowsErr)
+		return nil, fmt.Errorf("relation title page rows: %w", rowsErr)
 	}
-	return ids, itemNumbers, nil
+	return ids, nil
 }
 
 // collectionIDBySlugQ returns the collection's ID, or "" when the workspace
@@ -721,6 +757,7 @@ func (o RelationOrigin) Refuses() bool {
 // Mutates fieldMap: dropped keys are deleted, and values that survive are
 // canonicalised to their target's ID.
 func (s *Store) MigrateRelationReferents(
+	canSee RelationVisibilityFunc,
 	workspaceID string,
 	schema models.CollectionSchema,
 	fieldMap map[string]any,
@@ -728,13 +765,14 @@ func (s *Store) MigrateRelationReferents(
 	sourceFields map[string]any,
 	mode RelationCarryMode,
 ) (refusals []RelationIssue, dropped []RelationIssue, err error) {
-	return s.MigrateRelationReferentsQ(s.Q(), workspaceID, schema, fieldMap, supplied, sourceFields, mode)
+	return s.MigrateRelationReferentsQ(s.Q(), canSee, workspaceID, schema, fieldMap, supplied, sourceFields, mode)
 }
 
 // MigrateRelationReferentsQ is MigrateRelationReferents on a caller-supplied
 // read executor — see ResolveRelationReferentsQ for why the copy door needs it.
 func (s *Store) MigrateRelationReferentsQ(
 	q Queryer,
+	canSee RelationVisibilityFunc,
 	workspaceID string,
 	schema models.CollectionSchema,
 	fieldMap map[string]any,
@@ -775,7 +813,7 @@ func (s *Store) MigrateRelationReferentsQ(
 
 	// Supplied values are ordinary writes.
 	if suppliedRelations := byOrigin[RelationOriginSupplied]; len(suppliedRelations) > 0 {
-		issues, resolveErr := s.ResolveRelationReferentsQ(q, workspaceID, schema, suppliedRelations)
+		issues, resolveErr := s.ResolveRelationReferentsQ(q, workspaceID, schema, suppliedRelations, canSee)
 		if resolveErr != nil {
 			return nil, nil, resolveErr
 		}
@@ -853,7 +891,7 @@ func (s *Store) MigrateRelationReferentsQ(
 			delete(fieldMap, def.Key)
 			delete(defaults, def.Key)
 		}
-		issues, resolveErr := s.ResolveRelationReferentsQ(q, workspaceID, schema, defaults)
+		issues, resolveErr := s.ResolveRelationReferentsQ(q, workspaceID, schema, defaults, canSee)
 		if resolveErr != nil {
 			return nil, nil, resolveErr
 		}
@@ -974,7 +1012,7 @@ func (s *Store) MigrateRelationReferentsQ(
 		// below, which exists to keep dangling referents out of the blob. So
 		// this comment is also a warning: if you ever change that rule, you
 		// are changing this too, in the other direction.
-		issues, resolveErr := s.ResolveRelationReferentsQ(q, workspaceID, schema, carried)
+		issues, resolveErr := s.ResolveRelationReferentsQ(q, workspaceID, schema, carried, canSee)
 		if resolveErr != nil {
 			return nil, nil, resolveErr
 		}
@@ -1034,18 +1072,20 @@ func RelationKeysPresent(schema models.CollectionSchema, fieldMap map[string]any
 // MigrateRelationReferents gives RelationOriginDestinationDefault, which is
 // what this is: the same origin, arriving late.
 func (s *Store) ResolveLateRelationDefaults(
+	canSee RelationVisibilityFunc,
 	workspaceID string,
 	schema models.CollectionSchema,
 	fieldMap map[string]any,
 	before map[string]bool,
 ) (dropped []RelationIssue, err error) {
-	return s.ResolveLateRelationDefaultsQ(s.Q(), workspaceID, schema, fieldMap, before)
+	return s.ResolveLateRelationDefaultsQ(s.Q(), canSee, workspaceID, schema, fieldMap, before)
 }
 
 // ResolveLateRelationDefaultsQ is ResolveLateRelationDefaults on a
 // caller-supplied read executor — the copy door runs inside a transaction.
 func (s *Store) ResolveLateRelationDefaultsQ(
 	q Queryer,
+	canSee RelationVisibilityFunc,
 	workspaceID string,
 	schema models.CollectionSchema,
 	fieldMap map[string]any,
@@ -1094,7 +1134,7 @@ func (s *Store) ResolveLateRelationDefaultsQ(
 		// silently discarded them.
 		return dropped, nil
 	}
-	issues, resolveErr := s.ResolveRelationReferentsQ(q, workspaceID, schema, late)
+	issues, resolveErr := s.ResolveRelationReferentsQ(q, workspaceID, schema, late, canSee)
 	if resolveErr != nil {
 		return nil, resolveErr
 	}

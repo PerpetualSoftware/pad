@@ -2457,6 +2457,7 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	relRefusals, relDropped, relErr := s.store.MigrateRelationReferents(
+		s.relationVisibility(r, workspaceRole(r)),
 		workspaceID, items.SchemaForMigratedFields(targetSchema), result.Fields,
 		input.FieldOverrides, store.CarriedSourceValues(currentFields, result.Dropped),
 		store.RelationCarryWithinWorkspace)
@@ -2499,13 +2500,13 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	// the required-field check has to see a value referent resolution dropped,
 	// which is why the main pass runs first — see ResolveLateRelationDefaults.
 	lateDropped, lateErr := s.store.ResolveLateRelationDefaults(
+		s.relationVisibility(r, workspaceRole(r)),
 		workspaceID, items.SchemaForMigratedFields(targetSchema), result.Fields, relBefore)
 	if lateErr != nil {
 		writeInternalError(w, lateErr)
 		return
 	}
-	lateDropped, cerr := s.collapseInvisibleRelationIssues(r, workspaceID, workspaceRole(r), lateDropped, result.Fields)
-	if cerr != nil {
+	if cerr := s.collapseInvisibleRelationIssues(r, workspaceID, workspaceRole(r), lateDropped); cerr != nil {
 		writeInternalError(w, cerr)
 		return
 	}

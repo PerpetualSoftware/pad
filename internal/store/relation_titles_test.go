@@ -25,7 +25,7 @@ import (
 func resolveOne(t *testing.T, s *Store, ws *models.Workspace, schema models.CollectionSchema, supplied string) (string, []RelationIssue) {
 	t.Helper()
 	fields := map[string]any{"color": supplied}
-	issues, err := s.ResolveRelationReferents(ws.ID, schema, fields)
+	issues, err := s.ResolveRelationReferents(ws.ID, schema, fields, nil)
 	if err != nil {
 		t.Fatalf("resolve %q: %v", supplied, err)
 	}
@@ -77,9 +77,6 @@ func TestRelationTitle_ScopeIsTheDeclaredCollection(t *testing.T) {
 	}
 	if issues[0].Reason != RelationTargetWrongCollection {
 		t.Errorf("reason = %q, want %q — resolving it workspace-wide is the R11 defect this guards", issues[0].Reason, RelationTargetWrongCollection)
-	}
-	if issues[0].MatchedID != sedan.ID {
-		t.Errorf("MatchedID = %q, want %q — the server's visibility collapse judges THIS item, and cannot re-derive it from a title", issues[0].MatchedID, sedan.ID)
 	}
 	if stored == sedan.ID {
 		t.Error("the out-of-collection item was stored anyway")

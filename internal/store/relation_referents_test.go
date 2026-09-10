@@ -58,7 +58,7 @@ func TestResolveRelationReferents_AcceptsIDAndRefAndCanonicalises(t *testing.T) 
 	// leg a resolver that refused everything would pass the whole suite.
 	for _, supplied := range []string{red.ID, red.Ref} {
 		fields := map[string]any{"color": supplied}
-		issues, err := s.ResolveRelationReferents(ws.ID, u1RelationSchema("colors"), fields)
+		issues, err := s.ResolveRelationReferents(ws.ID, u1RelationSchema("colors"), fields, nil)
 		if err != nil {
 			t.Fatalf("supplied %q: %v", supplied, err)
 		}
@@ -109,7 +109,7 @@ func TestResolveRelationReferents_RejectsUnresolvableValues(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			fields := map[string]any{"color": tc.value}
-			issues, err := s.ResolveRelationReferents(ws.ID, u1RelationSchema("colors"), fields)
+			issues, err := s.ResolveRelationReferents(ws.ID, u1RelationSchema("colors"), fields, nil)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -158,7 +158,7 @@ func TestResolveRelationReferents_LeavesNonWritesAlone(t *testing.T) {
 			case "explicit null":
 				fields["color"] = nil
 			}
-			issues, err := s.ResolveRelationReferents(ws.ID, u1RelationSchema("colors"), fields)
+			issues, err := s.ResolveRelationReferents(ws.ID, u1RelationSchema("colors"), fields, nil)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -183,7 +183,7 @@ func TestResolveRelationReferents_SoftDeletedTargetDoesNotResolve(t *testing.T) 
 	// two halves are what make "deleted" distinguishable from "never resolved"
 	// in the UI, so this must not quietly become not_found's twin.
 	fields := map[string]any{"color": gone.ID}
-	issues, err := s.ResolveRelationReferents(ws.ID, u1RelationSchema("colors"), fields)
+	issues, err := s.ResolveRelationReferents(ws.ID, u1RelationSchema("colors"), fields, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -201,7 +201,7 @@ func TestResolveRelationReferents_TargetCollectionProblems(t *testing.T) {
 		// A relation field with no target cannot be checked against anything.
 		// Surfaced rather than treated as permission to store whatever.
 		fields := map[string]any{"color": red.ID}
-		issues, err := s.ResolveRelationReferents(ws.ID, u1RelationSchema(""), fields)
+		issues, err := s.ResolveRelationReferents(ws.ID, u1RelationSchema(""), fields, nil)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -212,7 +212,7 @@ func TestResolveRelationReferents_TargetCollectionProblems(t *testing.T) {
 
 	t.Run("target names no collection", func(t *testing.T) {
 		fields := map[string]any{"color": red.ID}
-		issues, err := s.ResolveRelationReferents(ws.ID, u1RelationSchema("nonexistent"), fields)
+		issues, err := s.ResolveRelationReferents(ws.ID, u1RelationSchema("nonexistent"), fields, nil)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -238,7 +238,7 @@ func TestResolveRelationReferents_IsDeterministicAndBatched(t *testing.T) {
 	var first string
 	for i := 0; i < 8; i++ {
 		fields := map[string]any{"accent": "nope-a", "color": "nope-b"}
-		issues, err := s.ResolveRelationReferents(ws.ID, schema, fields)
+		issues, err := s.ResolveRelationReferents(ws.ID, schema, fields, nil)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -270,7 +270,7 @@ func TestMigrateRelationReferents_SameWorkspaceKeepsWhatResolves(t *testing.T) {
 	// relation must survive. Dropping it would lose data on every move of a
 	// correctly-related item.
 	fields := map[string]any{"color": red.Ref, "status": "open"}
-	refusals, dropped, err := s.MigrateRelationReferents(ws.ID, u1RelationSchema("colors"), fields, nil, carriedFrom(fields), RelationCarryWithinWorkspace)
+	refusals, dropped, err := s.MigrateRelationReferents(nil, ws.ID, u1RelationSchema("colors"), fields, nil, carriedFrom(fields), RelationCarryWithinWorkspace)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -291,7 +291,7 @@ func TestMigrateRelationReferents_SameWorkspaceDropsWhatDoesNot(t *testing.T) {
 	// accepted any string for a relation all along, so an item carrying "red"
 	// must stay MOVABLE. Dropped and reported, never refused.
 	fields := map[string]any{"color": "red", "status": "open"}
-	refusals, dropped, err := s.MigrateRelationReferents(ws.ID, u1RelationSchema("colors"), fields, nil, carriedFrom(fields), RelationCarryWithinWorkspace)
+	refusals, dropped, err := s.MigrateRelationReferents(nil, ws.ID, u1RelationSchema("colors"), fields, nil, carriedFrom(fields), RelationCarryWithinWorkspace)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -319,7 +319,7 @@ func TestMigrateRelationReferents_CrossWorkspaceDropsEveryCarriedRelation(t *tes
 	// so there is nothing in the destination it could mean. Same reason
 	// github_pr uses, because it is the same fact about the same kind of value.
 	fields := map[string]any{"color": red.ID, "status": "open"}
-	refusals, dropped, err := s.MigrateRelationReferents(ws.ID, u1RelationSchema("colors"), fields, nil, carriedFrom(fields), RelationCarryCrossWorkspace)
+	refusals, dropped, err := s.MigrateRelationReferents(nil, ws.ID, u1RelationSchema("colors"), fields, nil, carriedFrom(fields), RelationCarryCrossWorkspace)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -345,7 +345,7 @@ func TestMigrateRelationReferents_SuppliedOverrideRefusesOnEitherMode(t *testing
 	for _, mode := range []RelationCarryMode{RelationCarryWithinWorkspace, RelationCarryCrossWorkspace} {
 		fields := map[string]any{"color": "nope"}
 		supplied := map[string]any{"color": "nope"}
-		refusals, dropped, err := s.MigrateRelationReferents(ws.ID, u1RelationSchema("colors"), fields, supplied, carriedFrom(fields), mode)
+		refusals, dropped, err := s.MigrateRelationReferents(nil, ws.ID, u1RelationSchema("colors"), fields, supplied, carriedFrom(fields), mode)
 		if err != nil {
 			t.Fatalf("mode %v: %v", mode, err)
 		}
@@ -366,7 +366,7 @@ func TestMigrateRelationReferents_SuppliedOverrideRefusesOnEitherMode(t *testing
 	// on a copy at all.
 	fields := map[string]any{"color": red.ID}
 	supplied := map[string]any{"color": red.ID}
-	refusals, dropped, err := s.MigrateRelationReferents(ws.ID, u1RelationSchema("colors"), fields, supplied, carriedFrom(fields), RelationCarryCrossWorkspace)
+	refusals, dropped, err := s.MigrateRelationReferents(nil, ws.ID, u1RelationSchema("colors"), fields, supplied, carriedFrom(fields), RelationCarryCrossWorkspace)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -407,12 +407,12 @@ func TestResolveRelationReferents_OverflowingRefDoesNotResolve(t *testing.T) {
 	// Sanity: the honest ref for that item still resolves, so a failure below
 	// is about the overflow and not about the fixture.
 	ok := map[string]any{"color": red.Ref}
-	if issues, err := s.ResolveRelationReferents(ws.ID, u1RelationSchema("colors"), ok); err != nil || len(issues) != 0 {
+	if issues, err := s.ResolveRelationReferents(ws.ID, u1RelationSchema("colors"), ok, nil); err != nil || len(issues) != 0 {
 		t.Fatalf("control: %v %+v", err, issues)
 	}
 
 	overflowed := map[string]any{"color": "COLO-18446744073709551617"}
-	issues, err := s.ResolveRelationReferents(ws.ID, u1RelationSchema("colors"), overflowed)
+	issues, err := s.ResolveRelationReferents(ws.ID, u1RelationSchema("colors"), overflowed, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

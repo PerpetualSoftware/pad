@@ -1143,7 +1143,7 @@ func (s *Store) migrateCopyFields(q Queryer, destWorkspaceID, sourceFieldsJSON, 
 	if scope == items.CrossWorkspace {
 		mode = RelationCarryCrossWorkspace
 	}
-	relRefusals, relDropped, relErr := s.MigrateRelationReferentsQ(q, destWorkspaceID,
+	relRefusals, relDropped, relErr := s.MigrateRelationReferentsQ(q, canSee, destWorkspaceID,
 		items.SchemaForMigratedFields(targetSchema), migrated.Fields, overrides,
 		CarriedSourceValues(currentFields, migrated.Dropped), mode)
 	if relErr != nil {
@@ -1179,7 +1179,7 @@ func (s *Store) migrateCopyFields(q Queryer, destWorkspaceID, sourceFieldsJSON, 
 	}
 	// Relation defaults ValidateFields just injected, which the pass above
 	// could not have seen (codex round 2).
-	lateDropped, lateErr := s.ResolveLateRelationDefaultsQ(q, destWorkspaceID,
+	lateDropped, lateErr := s.ResolveLateRelationDefaultsQ(q, canSee, destWorkspaceID,
 		items.SchemaForMigratedFields(targetSchema), migrated.Fields, relBefore)
 	if lateErr != nil {
 		return nil, nil, fmt.Errorf("copy item across workspaces: resolve relation defaults: %w", lateErr)
