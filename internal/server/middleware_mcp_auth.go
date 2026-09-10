@@ -181,6 +181,16 @@ func (s *Server) handleMCPPATAuth(w http.ResponseWriter, r *http.Request, token 
 	// handlers that distinguish session vs token auth see the same
 	// shape they would on /api/v1/*. Cheap, future-proof.
 	ctx = context.WithValue(ctx, ctxIsAPIToken, true)
+	// ...and the same auth KIND, for the same reason (BUG-3007, codex
+	// round 2). The credential here IS a PAT in the Authorization
+	// header, so the liveness predicate's existing api_token door
+	// re-checks it verbatim — no new machinery, and this accept point
+	// stops being a hole the predicate cannot see. The OAuth branch
+	// below deliberately records no kind: its credential is an opaque
+	// fosite token whose liveness door does not exist yet, so it fails
+	// closed rather than exempting itself. Neither matters until an MCP
+	// route is long-lived, and none is.
+	ctx = context.WithValue(ctx, ctxAuthKind, authKindAPIToken)
 	// Stash the token's scopes so the in-process MCP dispatcher
 	// (internal/mcp/dispatch_http.go) can enforce per-tool scope
 	// checks. Without this, a PAT with `["read"]` scope can drive

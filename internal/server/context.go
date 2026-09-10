@@ -21,6 +21,16 @@ import (
 // request. Subsequent handler-tree code can reach the user via the
 // existing currentUser(r) helper without any change.
 //
+// It does NOT record HOW the credential was established (`ctxAuthKind`,
+// BUG-3007), because it cannot know: the caller resolved the principal
+// by some means this package did not witness. A request carrying a user
+// with no auth kind is therefore CLOSED by the long-lived-connection
+// liveness predicate (`streamCredentialStillValid`) rather than exempted
+// from revalidation — see the empty-kind branch in
+// stream_credential_liveness.go. Nothing today dispatches a long-lived
+// route through this helper; a caller that wants to must teach the
+// predicate its credential's door first.
+//
 // Pass nil to clear (rare; mostly useful in tests).
 func WithCurrentUser(ctx context.Context, user *models.User) context.Context {
 	return context.WithValue(ctx, ctxCurrentUser, user)
