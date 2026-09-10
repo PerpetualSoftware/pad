@@ -123,7 +123,25 @@ func (s *Server) resolveRelationReferentsAs(
 			if ri.Reason != store.RelationTargetWrongCollection {
 				continue
 			}
-			target, terr := s.store.ResolveRelationTarget(workspaceID, ri.Value)
+			// U6: a TITLE-derived issue carries the id of the item the store
+			// matched, and MUST be judged on that item. Re-resolving it here
+			// would run the value through ResolveRelationTarget's UUID-or-ref
+			// ladder, which does not speak titles: it would find nothing, take
+			// the `target == nil` arm below, and collapse EVERY title-derived
+			// wrong_collection to not_found — including the visible ones this
+			// rule exists to keep specific. A test that only checks the
+			// invisible leg cannot see that happen.
+			//
+			// The ref path keeps its re-resolve unchanged. It is re-resolvable
+			// by construction, and the TOCTOU its second lookup opens is filed
+			// separately rather than fixed inside this unit.
+			var target *models.Item
+			var terr error
+			if ri.MatchedID != "" {
+				target, terr = s.store.GetItem(ri.MatchedID)
+			} else {
+				target, terr = s.store.ResolveRelationTarget(workspaceID, ri.Value)
+			}
 			if terr != nil {
 				return nil, terr
 			}

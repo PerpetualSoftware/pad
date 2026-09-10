@@ -2,7 +2,9 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -48,6 +50,14 @@ const (
 	// so nothing can be checked against it. A schema problem, surfaced rather
 	// than treated as permission to store anything.
 	RelationTargetMissing RelationIssueReason = "target_missing"
+	// RelationTargetAmbiguous — the value is an exact TITLE matching more than
+	// one live item in the target collection, so it names no single referent
+	// (PLAN-2857 U6). Distinct from `not_found` deliberately: telling a caller
+	// their title matched nothing, when it matched twice, sends them to write
+	// the item that already exists. Titles are not unique in a collection and
+	// nothing in this codebase makes them so, which is why this reason exists
+	// rather than the lookup taking the first row.
+	RelationTargetAmbiguous RelationIssueReason = "ambiguous"
 	// RelationTargetInvalidShape — the value is not a string at all, so it
 	// cannot name anything. Normally `ValidateFields` catches this and the
 	// resolver deliberately stays out of it (one error per defect), but an
@@ -66,6 +76,24 @@ type RelationIssue struct {
 	Value  string
 	Target string
 	Reason RelationIssueReason
+	// MatchedID is the item the resolver actually found, set ONLY when a TITLE
+	// matched a live item outside the declared collection — i.e. alongside
+	// `RelationTargetWrongCollection` on the title path. Empty everywhere else,
+	// including on a ref-derived wrong_collection.
+	//
+	// It exists so the server's visibility collapse can check the exact item
+	// this resolver matched instead of looking the value up a second time
+	// (PLAN-2857 U6). For a ref the second lookup works, because
+	// `ResolveRelationTarget` speaks the same UUID-or-ref ladder; for a TITLE it
+	// does not, and a collapse pass that re-resolved a title through that ladder
+	// would find nothing and downgrade EVERY title-derived wrong_collection to
+	// not_found — including the visible ones the ruling says keep the specific
+	// message. That failure is invisible from the invisible-target test alone,
+	// which is why the id is carried rather than re-derived.
+	//
+	// Internal only: this type has no JSON tags and reaches callers through
+	// Message().
+	MatchedID string
 }
 
 // Message renders the issue the way every door reports it. One function so the
@@ -80,6 +108,12 @@ func (ri RelationIssue) Message() string {
 		// earlier wording named only the first and misdiagnosed the second as
 		// a schema that says nothing when it says something broken.
 		return fmt.Sprintf("field %q has no valid target collection, so %q cannot be resolved", ri.Key, ri.Value)
+	case RelationTargetAmbiguous:
+		// Names the collection searched, like wrong_collection does, because
+		// the caller's next move is either to disambiguate by ref or to look
+		// at the duplicates — and both need to know where the search ran.
+		return fmt.Sprintf("field %q: %q matches more than one item in collection %q; use a ref (e.g. PREFIX-3) to say which",
+			ri.Key, ri.Value, ri.Target)
 	case RelationTargetInvalidShape:
 		return fmt.Sprintf("field %q has a default that is not a reference", ri.Key)
 	default:
@@ -102,6 +136,7 @@ func RelationIssueReasons() []RelationIssueReason {
 		RelationTargetMissing,
 		RelationTargetNotPortable,
 		RelationTargetInvalidShape,
+		RelationTargetAmbiguous,
 	}
 }
 
@@ -222,12 +257,49 @@ func (s *Store) ResolveRelationReferentsQ(
 			return nil, err
 		}
 		if item == nil {
-			issues = append(issues, RelationIssue{
-				Key: def.Key, Value: value, Target: def.Collection, Reason: RelationTargetNotFound,
-			})
-			continue
+			// U6: the value is neither a UUID nor a ref, so try it as an exact
+			// TITLE — scoped to the declared collection, which is the whole
+			// distinction from ResolveItem's workspace-wide ladder (R11).
+			titled, outside, ambiguous, terr := s.resolveRelationTitleQ(q, workspaceID, targetID, value)
+			if terr != nil {
+				return nil, terr
+			}
+			switch {
+			case ambiguous:
+				issues = append(issues, RelationIssue{
+					Key: def.Key, Value: value, Target: def.Collection, Reason: RelationTargetAmbiguous,
+				})
+				continue
+			case titled != nil:
+				// Resolved by title. Falls through to the canonicalisation
+				// below by taking the same shape a ref would have.
+				item = titled
+			case outside != nil:
+				// The title names a live item, just not one in this
+				// collection. MatchedID carries WHICH item so the server's
+				// visibility collapse can judge that exact row instead of
+				// re-resolving a title through a ladder that does not speak
+				// titles — see the field's own comment.
+				issues = append(issues, RelationIssue{
+					Key: def.Key, Value: value, Target: def.Collection,
+					Reason: RelationTargetWrongCollection, MatchedID: outside.ID,
+				})
+				continue
+			default:
+				issues = append(issues, RelationIssue{
+					Key: def.Key, Value: value, Target: def.Collection, Reason: RelationTargetNotFound,
+				})
+				continue
+			}
 		}
 		if item.CollectionID != targetID {
+			// MatchedID is deliberately NOT set here. A ref-derived issue is
+			// re-resolvable by the server through the same ladder that produced
+			// it, so it does not need the id — and setting it would silently
+			// change the ref path's behaviour (no second lookup, no TOCTOU
+			// window) inside a unit whose scope says not to touch it. That
+			// window is real and is filed separately rather than fixed in
+			// passing.
 			issues = append(issues, RelationIssue{
 				Key: def.Key, Value: value, Target: def.Collection, Reason: RelationTargetWrongCollection,
 			})
@@ -322,6 +394,102 @@ func (s *Store) resolveRelationTargetQ(q Queryer, workspaceID, value string) (*m
 		return nil, err
 	}
 	return item, nil
+}
+
+// resolveRelationTitleQ resolves an exact TITLE to an item, scoped to the
+// declared target collection (PLAN-2857 U6, lead ruling day 55).
+//
+// It returns at most one of:
+//
+//   - item      — exactly one live item in `targetCollectionID` carries this
+//     title. This is the only case that resolves.
+//   - outside   — nothing in the target collection carries it, but a live item
+//     elsewhere in the workspace does. Returned so the caller can
+//     refuse with `wrong_collection` AND record which item it was;
+//     it never resolves.
+//   - ambiguous — two or more live items in the TARGET collection carry it, so
+//     the title names no single referent.
+//
+// All three empty means nothing in the workspace carries the title.
+//
+// WHY THE SCOPE IS THE WHOLE POINT. `ResolveItem`'s ladder is workspace-wide
+// and ends in a SLUG, so `--field color=red` would resolve a `red` item in any
+// collection — R11 in the design pass, and the reason this is new code instead
+// of a reuse. The workspace-wide query below exists ONLY to turn "not here"
+// into a better refusal; it is never allowed to produce a resolution.
+//
+// EXACTNESS. `=` on the stored title, against the caller's already-trimmed
+// value: case-sensitive and whitespace-sensitive on both engines. "Exact
+// title" is taken literally, because the alternative — folding case, or
+// trimming the stored side — invents a matching rule nobody ratified and makes
+// two visibly different titles collide.
+//
+// The ORDER of the ladder above this matters too: UUID, then ref, then title.
+// An item literally titled "TASK-5" is therefore unreachable by title while a
+// ref TASK-5 resolves. That is the correct precedence — refs are the canonical
+// form — but it is a real edge, so it is written down here rather than found.
+func (s *Store) resolveRelationTitleQ(
+	q Queryer,
+	workspaceID, targetCollectionID, title string,
+) (item *models.Item, outside *models.Item, ambiguous bool, err error) {
+	// Two rows are enough to answer "more than one" without counting the whole
+	// collection.
+	rows, err := q.Query(s.q(`
+		SELECT id FROM items
+		WHERE workspace_id = ? AND collection_id = ? AND title = ? AND deleted_at IS NULL
+		LIMIT 2
+	`), workspaceID, targetCollectionID, title)
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("relation title lookup: %w", err)
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if scanErr := rows.Scan(&id); scanErr != nil {
+			rows.Close()
+			return nil, nil, false, fmt.Errorf("relation title lookup scan: %w", scanErr)
+		}
+		ids = append(ids, id)
+	}
+	if rowsErr := rows.Err(); rowsErr != nil {
+		rows.Close()
+		return nil, nil, false, fmt.Errorf("relation title lookup rows: %w", rowsErr)
+	}
+	rows.Close()
+
+	if len(ids) > 1 {
+		return nil, nil, true, nil
+	}
+	if len(ids) == 1 {
+		found, gerr := s.GetItemQ(q, ids[0])
+		if gerr != nil {
+			return nil, nil, false, gerr
+		}
+		// A row that vanished between the two reads is treated as no match
+		// rather than as an error: the next thing the caller does is refuse,
+		// and refusing because the target is gone is the honest answer.
+		return found, nil, false, nil
+	}
+
+	// Nothing in the target collection. One workspace-wide probe, for the
+	// refusal only.
+	var otherID string
+	err = q.QueryRow(s.q(`
+		SELECT id FROM items
+		WHERE workspace_id = ? AND title = ? AND deleted_at IS NULL
+		LIMIT 1
+	`), workspaceID, title).Scan(&otherID)
+	if err == sql.ErrNoRows {
+		return nil, nil, false, nil
+	}
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("relation title probe: %w", err)
+	}
+	other, gerr := s.GetItemQ(q, otherID)
+	if gerr != nil {
+		return nil, nil, false, gerr
+	}
+	return nil, other, false, nil
 }
 
 // collectionIDBySlugQ returns the collection's ID, or "" when the workspace
@@ -1033,4 +1201,138 @@ func (s *Store) DropInvisibleRelationDefaultsQ(
 		delete(fieldMap, def.Key)
 	}
 	return dropped, nil
+}
+
+// HydrateRelationTargetsQ resolves the stored `relation` values on a batch of
+// items into {id, ref, title} entries (PLAN-2857 U6).
+//
+// BATCHED ON PURPOSE. A list read of 50 items with two relation fields each is
+// 100 values; resolving them one at a time is 100 queries behind one page. This
+// collects every distinct id across every item first and asks once.
+//
+// It answers only what the ITEMS say. Visibility is not its business — the same
+// division the resolver documents at the top of this file — so a caller that
+// serves a request filters the result before sending it. What it does do is
+// leave an unresolvable value as an ID-ONLY entry rather than dropping it,
+// because dropping it says "no relation here" and that is false.
+//
+// `schemas` maps a collection ID to that collection's schema, since a batch can
+// span collections; an item whose collection is absent from the map is skipped
+// rather than guessed at.
+func (s *Store) HydrateRelationTargetsQ(
+	q Queryer,
+	items []models.Item,
+	schemas map[string]models.CollectionSchema,
+) (map[string]map[string]models.RelationTarget, error) {
+	// item ID -> field key -> stored value
+	perItem := map[string]map[string]string{}
+	wanted := map[string]struct{}{}
+
+	for i := range items {
+		schema, ok := schemas[items[i].CollectionID]
+		if !ok {
+			continue
+		}
+		fieldMap := map[string]any{}
+		if items[i].Fields != "" {
+			if err := json.Unmarshal([]byte(items[i].Fields), &fieldMap); err != nil {
+				// A blob that will not parse is a different defect and other
+				// code reports it; hydration declines to be the second voice.
+				continue
+			}
+		}
+		for _, def := range schema.Fields {
+			if def.Type != "relation" {
+				continue
+			}
+			raw, exists := fieldMap[def.Key]
+			if !exists || raw == nil {
+				continue
+			}
+			value, isStr := raw.(string)
+			if !isStr {
+				continue
+			}
+			value = strings.TrimSpace(value)
+			if value == "" {
+				continue
+			}
+			if perItem[items[i].ID] == nil {
+				perItem[items[i].ID] = map[string]string{}
+			}
+			perItem[items[i].ID][def.Key] = value
+			wanted[value] = struct{}{}
+		}
+	}
+	if len(wanted) == 0 {
+		return nil, nil
+	}
+
+	ids := make([]string, 0, len(wanted))
+	for id := range wanted {
+		ids = append(ids, id)
+	}
+	// Deterministic order so a query plan and any test on it are stable.
+	sort.Strings(ids)
+
+	resolved := map[string]models.RelationTarget{}
+	// Chunked: some drivers cap placeholders per statement, and a workspace
+	// with a long list read can exceed it.
+	const chunk = 200
+	for start := 0; start < len(ids); start += chunk {
+		end := start + chunk
+		if end > len(ids) {
+			end = len(ids)
+		}
+		batch := ids[start:end]
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(batch)), ",")
+		args := make([]any, 0, len(batch))
+		for _, id := range batch {
+			args = append(args, id)
+		}
+		rows, err := q.Query(s.q(`
+			SELECT i.id, i.title, i.item_number, c.prefix
+			FROM items i
+			JOIN collections c ON c.id = i.collection_id
+			WHERE i.id IN (`+placeholders+`) AND i.deleted_at IS NULL
+		`), args...)
+		if err != nil {
+			return nil, fmt.Errorf("hydrate relation targets: %w", err)
+		}
+		for rows.Next() {
+			var id, title, prefix string
+			var number int
+			if err := rows.Scan(&id, &title, &number, &prefix); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("hydrate relation targets scan: %w", err)
+			}
+			resolved[id] = models.RelationTarget{
+				ID:    id,
+				Ref:   fmt.Sprintf("%s-%d", prefix, number),
+				Title: title,
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("hydrate relation targets rows: %w", err)
+		}
+		rows.Close()
+	}
+
+	out := map[string]map[string]models.RelationTarget{}
+	for itemID, fields := range perItem {
+		for key, value := range fields {
+			target, ok := resolved[value]
+			if !ok {
+				// Dangling: the stored value names nothing live. ID-only, so
+				// the read stays honest instead of erroring or pretending.
+				target = models.RelationTarget{ID: value}
+			}
+			if out[itemID] == nil {
+				out[itemID] = map[string]models.RelationTarget{}
+			}
+			out[itemID][key] = target
+		}
+	}
+	return out, nil
 }

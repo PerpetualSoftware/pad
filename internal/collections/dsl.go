@@ -47,7 +47,31 @@ func ParseFieldsDSL(fieldsDSL string) (models.CollectionSchema, error) {
 			Label: cases.Title(language.English).String(strings.ReplaceAll(parts[0], "_", " ")),
 			Type:  parts[1],
 		}
-		if len(parts) == 3 && parts[2] != "" {
+		if fd.Type == "relation" {
+			// PLAN-2857 U6. For a relation the third part is the TARGET
+			// COLLECTION slug, not an options list.
+			//
+			// It used to fall into Options like every other type, which did not
+			// merely fail to declare the target: it produced a relation field
+			// with Options=["colors"] and NO target, and every write to that
+			// field was then refused with `target_missing`. A DSL that builds a
+			// field nothing can ever write to is worse than one that refuses,
+			// so a bare `owner:relation` is now an error at parse time.
+			target := ""
+			if len(parts) == 3 {
+				target = strings.TrimSpace(parts[2])
+			}
+			if target == "" {
+				return schema, fmt.Errorf("invalid field definition: %q — a relation needs its target collection (expected %s:relation:<collection-slug>)", f, fd.Key)
+			}
+			if strings.Contains(target, ",") {
+				// A comma here means the caller wrote an options list, which is
+				// the pre-U6 shape. Refusing names the mistake; accepting the
+				// first item would silently pick a target they did not choose.
+				return schema, fmt.Errorf("invalid field definition: %q — a relation takes ONE target collection, not a list", f)
+			}
+			fd.Collection = target
+		} else if len(parts) == 3 && parts[2] != "" {
 			fd.Options = strings.Split(parts[2], ",")
 		}
 		if fd.Type == "select" && fd.Key == "status" {
