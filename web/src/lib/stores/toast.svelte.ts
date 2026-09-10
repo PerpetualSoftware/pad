@@ -155,4 +155,3 @@ export const toastStore = {
 authStore.onIdentityChange(() => {
 	toastStore.clearAll();
 });
-

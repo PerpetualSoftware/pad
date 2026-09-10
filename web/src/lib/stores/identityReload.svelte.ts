@@ -86,7 +86,17 @@ export function clearPersistentIdentityState(): void {
  * than a bare `location.reload()` buried in a layout.
  */
 export function reloadForIdentityChange(): void {
-	clearPersistentIdentityState();
 	if (!browser) return;
-	location.reload();
+	try {
+		clearPersistentIdentityState();
+	} finally {
+		// THE RELOAD HAPPENS EITHER WAY (codex round 5). The clears are
+		// best-effort hygiene; the reload is the mechanism. A throw on the way
+		// through — today only reachable if the attachment memo's `clear()`
+		// grows an implementation that can fail — would otherwise leave the tab
+		// mounted with the previous user's page under the new identity, which
+		// is the state this whole fix exists to prevent, reached by the fix
+		// itself failing quietly.
+		location.reload();
+	}
 }

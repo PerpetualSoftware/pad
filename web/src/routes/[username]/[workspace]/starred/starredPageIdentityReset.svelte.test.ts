@@ -67,7 +67,11 @@ async function settle(): Promise<void> {
 
 describe('starred page across an identity change', () => {
 	beforeEach(async () => {
-		vi.resetModules();
+		// NO vi.resetModules() here (codex round 5): this file imports the page
+		// component and the auth store at top level, and resetting the registry
+		// mid-file hands the test a different authStore instance than the one
+		// the component closed over — so the identity change fires into a store
+		// nothing under test is listening to.
 		api.items.starred.mockReset();
 		api.collections.list.mockReset();
 		api.auth.session.mockReset();
@@ -89,22 +93,58 @@ describe('starred page across an identity change', () => {
 		// what it still owns is the pre-reload window: a request issued as A can
 		// settle before the reload takes the page away, and `loadSeq` is a
 		// navigation fence that an account swap does not move.
-		let resolve!: (v: unknown) => void;
-		api.items.starred.mockReturnValueOnce(new Promise((r) => { resolve = r; }));
+		//
+		// The page's FIRST load is the one left pending, because it is the only
+		// one this harness can hold open reliably — an attempt to start a second
+		// through the terminal-filter toggle left the fence undetectable by its
+		// own mutant, which is the failure this file has produced twice now.
+		// EVERY mock also carries a DEFAULT beside the pending one-shot (codex
+		// round 5): without that, a later call resolved `undefined`, `items.map`
+		// threw, and vitest reported PASSED with an unhandled error beside it.
+		let resolveA!: (v: unknown) => void;
+		api.items.starred.mockReturnValueOnce(new Promise((r) => { resolveA = r; }));
+		api.items.starred.mockResolvedValue([]);
 		api.collections.list.mockResolvedValue([]);
 
 		const screen = render(StarredPage);
 		const count = () => screen.container.querySelector('.count')?.textContent ?? '';
 		await settle();
-		// PRECONDITION: nothing rendered yet, so a later '0' is the fence
-		// refusing rather than a page that never had data.
+		// PRECONDITION: A's request is out and unanswered, so what follows is
+		// about the settle rather than about a page that never asked.
+		expect(api.items.starred).toHaveBeenCalled();
 		expect(count()).toBe('0');
 
 		api.auth.session.mockResolvedValue(sessionFor('user-b'));
 		await authStore.load();
-		resolve([ITEM_A]);
+		resolveA([ITEM_A]);
 		await settle();
 
 		expect(count()).toBe('0');
+		expect(screen.queryByText("Alpha's secret item")).toBeNull();
+
+		// WHAT THIS LEG DOES NOT PROVE, measured rather than assumed: removing
+		// the page's identity fence (`|| !isSameIdentity()`) leaves it GREEN.
+		// The mutant survives because the page's own `$effect` re-runs during
+		// the identity transition and advances `loadSeq`, so the NAVIGATION
+		// fence refuses A's settle first and the identity fence never decides
+		// anything here. The leg is an end-state regression fence — A's items
+		// must not appear — and the identity fence's coverage of the pre-reload
+		// window is an argument, not a measurement. Said plainly because a
+		// surviving mutant recorded as a passing test is how this file already
+		// shipped one assertion pointed the wrong way.
+	});
+
+	it("renders A's items when the identity holds still", async () => {
+		// The counterfactual the test above needs to mean anything: the same
+		// harness, no identity change, and the data DOES render. Without it,
+		// `count === '0'` is equally consistent with a page that never works.
+		api.items.starred.mockResolvedValue([ITEM_A]);
+		api.collections.list.mockResolvedValue([]);
+
+		const screen = render(StarredPage);
+		const count = () => screen.container.querySelector('.count')?.textContent ?? '';
+		await settle();
+
+		expect(count()).toBe('1');
 	});
 });
