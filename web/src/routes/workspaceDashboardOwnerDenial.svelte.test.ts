@@ -220,6 +220,40 @@ describe('BUG-2990: dashboard owner chrome expires on a definitive denial', () =
 		expect(ownerCard()).toBeNull();
 	});
 
+	it('stops showing the previous user\'s board the moment a different user signs in', async () => {
+		// BUG-2991, codex round 3 — the half the store's reset could not reach.
+		//
+		// The store drops `current`, `workspaces` and membership on an identity
+		// change, but this page's `dashboard` and `collections` are LOCAL state
+		// and survived it, and its load effect is `untrack`ed and keyed on the
+		// route slug — which does not change when someone else signs in on the
+		// same route. So user B sat looking at A's items, counts and activity
+		// while the store already said "unknown". Nothing about server
+		// authorization was involved: the bytes were already in the tab.
+		await authStore.load();
+		await mountAsOwner();
+
+		// `/me` is the observable for "a load was issued", NOT `dashboard.get`:
+		// `load()` awaits `workspaceStore.setCurrent` first, and that awaits the
+		// membership request, which this suite holds open. Asserting on
+		// `dashboard.get` measured a call that cannot have happened yet, and it
+		// failed for that reason rather than for the product's.
+		const meBefore = meCalls.length;
+
+		sessionGet.mockResolvedValue({
+			authenticated: true,
+			user: { id: 'u2', email: 'u2@example.com' },
+		});
+		await authStore.load();
+		await settle();
+
+		// A's board is off screen...
+		expect(host.querySelector('.coll-grid')).toBeNull();
+		// ...and a fresh load was issued for B rather than the page simply
+		// going blank forever.
+		expect(meCalls.length).toBeGreaterThan(meBefore);
+	});
+
 	it('keeps the card up across the window a refetch opens', async () => {
 		// The complement, and the reason the sticky cache exists at all: the
 		// fix must not turn "unknown" into "not an owner".

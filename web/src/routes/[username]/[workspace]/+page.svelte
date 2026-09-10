@@ -43,6 +43,14 @@
 	let dashboardSlug = $state<string | null>(null);
 	let collections = $state<Collection[]>([]);
 
+	// Memoised so the effects below re-run on a change of USER and not on every
+	// replacement of the session object (codex round 3). `authStore.userId`
+	// reads the reactive `session`, so any `authStore.load()` — including the
+	// routine refetch that returns the same user — assigns a new object and
+	// would otherwise re-fire both. A `$derived` propagates only when its value
+	// actually changes.
+	let sessionUserId = $derived(authStore.userId);
+
 	// Scroll position restoration (BUG-1425). Dashboard renders progressively
 	// (active items, attention list, etc.) — wait for the initial dashboard
 	// fetch before applying a saved offset so the document is tall enough.
@@ -89,7 +97,7 @@
 	// on a path that does not exist yet.
 	let lastOwnerKey: string | null = null;
 	$effect(() => {
-		const key = `${authStore.userId}\n${wsSlug}`;
+		const key = `${sessionUserId}\n${wsSlug}`;
 		if (key !== lastOwnerKey) {
 			lastOwnerKey = key;
 			isOwner = false;
@@ -196,6 +204,13 @@
 	// the dashboard to refetch + re-render — a visible flicker. Wrap in
 	// `untrack` so the only tracked dep is `wsSlug` from the if-check.
 	$effect(() => {
+		// Keyed on the USER as well as the slug (BUG-2991, codex round 3). A
+		// sign-in as somebody else on the same route changes no route param, so
+		// without this the board kept showing the previous user's items,
+		// counts and activity. Re-running `load` both hides them — a
+		// non-silent load flips `loading`, and the loading branch is first in
+		// the template — and refetches as the new user.
+		sessionUserId;
 		if (wsSlug) untrack(() => load(wsSlug));
 	});
 

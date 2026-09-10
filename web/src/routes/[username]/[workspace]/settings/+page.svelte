@@ -102,6 +102,13 @@
 	// when membership is definitively known). Default false so owner-only chrome
 	// never flashes before `/me` confirms; the server-side owner check remains
 	// the enforcement boundary, this is a stability fix.
+	// Memoised so the effects below re-run on a change of USER and not on every
+	// replacement of the session object (BUG-2991, codex round 3).
+	// `authStore.userId` reads the reactive `session`, so any `authStore.load()`
+	// — the routine same-user refetch included — assigns a new object and would
+	// otherwise re-fire them. A `$derived` propagates only on a real change.
+	let sessionUserId = $derived(authStore.userId);
+
 	let canEditWs = $state(false);
 	// Same treatment, same reason: read straight from the store these flip false
 	// during that window too, so on an ordinary owner load the Save buttons, the
@@ -116,23 +123,29 @@
 	// same-route sign-in as somebody else.
 	//
 	// NOT COVERED BY A DISCRIMINATING TEST, and that is stated here rather than
-	// left for a reader to discover. On THIS page the defect is masked: the
-	// identity reset also nulls `workspaceStore.current`, and this page renders
-	// nothing at all without it, so the owner-only chrome vanishes during the
-	// unknown window whether the key carries identity or not. A mutant dropping
-	// identity from the key SURVIVES every DOM assertion available here — the
-	// first version of that test asserted the tab was gone and passed against a
-	// blanked page, which is the vacuous-fixture shape (CONVE-34).
+	// left for a reader to discover. The defect is MASKED on this page: an
+	// identity change re-fires the load effect below, which sets `loading` and
+	// swaps the whole page for the loading branch, so the owner-only chrome
+	// vanishes during the unknown window whether or not the key carries
+	// identity. A mutant dropping identity from this key SURVIVES every DOM
+	// assertion available here — a test asserting the Danger Zone tab is gone
+	// passes against a page that is rendering nothing at all, which is the
+	// vacuous-fixture shape (CONVE-34).
+	//
+	// (An earlier version of this comment blamed a null `workspaceStore
+	// .current`. That was wrong — rendering is gated on `loading` alone — and
+	// the claim was written from an observation rather than from reading the
+	// template. The observation was right and the mechanism was not, which is
+	// the more dangerous half to leave behind.)
 	//
 	// The guard stays because the class does: the dashboard's instance IS
-	// discriminated (`workspaceDashboardOwnerDenial`, which keeps rendering its
-	// own data through the window and so can tell the two apart), the two pages
-	// are the same pattern, and the masking here is incidental — it depends on
-	// this page having nothing to render without `current`, which is not a
-	// property anyone promised to preserve.
+	// discriminated (`workspaceDashboardOwnerDenial` — that page keeps its own
+	// data on screen through the window and so can tell the two apart), the two
+	// pages are the same pattern, and the masking here depends on a rendering
+	// decision nobody promised to preserve.
 	let lastPermKey: string | null = null;
 	$effect(() => {
-		const key = `${authStore.userId}\n${wsSlug}`;
+		const key = `${sessionUserId}\n${wsSlug}`;
 		if (key !== lastPermKey) {
 			lastPermKey = key;
 			// ONE reset for every sticky permission on this page. A second
@@ -193,6 +206,19 @@
 	}
 
 	$effect(() => {
+		// Keyed on the USER as well as the slug (BUG-2991, codex round 3). This
+		// page's own data — workspace name, members, invitations, collections,
+		// the context editor — is local state that the store's identity reset
+		// does not touch, so a sign-in as somebody else on the same route would
+		// otherwise leave the previous user's members list on screen.
+		//
+		// It already re-fired by ACCIDENT: `load` calls `workspaceStore
+		// .setCurrent`, which synchronously reads `workspaces` before its first
+		// await, so emptying that array on the reset happened to invalidate this
+		// effect. That is a dependency nobody declared and the dashboard's twin
+		// deliberately suppresses with `untrack`. Naming the real key makes the
+		// behaviour survive someone fixing the accident.
+		sessionUserId;
 		if (wsSlug) load(wsSlug);
 	});
 
