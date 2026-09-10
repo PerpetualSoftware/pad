@@ -438,9 +438,10 @@ const (
 	// contentOutcomeAppliedPendingFlush — the apply SUCCEEDED and the content is in
 	// the collaborative document, but items.content does not hold it: the applier
 	// path's row write runs with Content nil, and the row is written only if and
-	// when a connected tab flushes (?source=collab-snapshot). That flush belongs to
-	// a browser tab and is not guaranteed to happen at all — BUG-3000 carries the
-	// open half — so nothing built on this value may state a duration.
+	// when some later ?source=collab-snapshot write lands. In practice that is the
+	// tab that applied the content, but the row does not care which caller sends
+	// it, and nothing here guarantees one is ever sent — BUG-3000 carries the open
+	// half — so nothing built on this value may state a duration.
 	//
 	// It is the only one of the three that rides on a 200 rather than on an error,
 	// because it is the only one where nothing went wrong. It exists so the third

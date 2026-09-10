@@ -1019,10 +1019,11 @@ func updateCmd() *cobra.Command {
 Items can be referenced by issue ID (e.g. TASK-5) or slug.
 
 When --content is written while someone has the item open in an editor, the
-markdown goes to that live document first and the stored copy is updated only
-when that editor next flushes. The response echoes what you sent and carries
+markdown goes to that live document first and the stored copy is updated only by
+a later collab-snapshot flush — usually from the tab that applied it, though any
+such write updates the row. The response echoes what you sent and carries
 warnings.content_outcome=applied_pending_flush; a warning line is printed to
-stderr. A "pad item show" before that flush reads the stored copy and will show
+stderr. A "pad item show" before such a flush lands reads the stored copy and shows
 the PREVIOUS content — that is the lag, not a failed write. Nothing here
 guarantees the flush happens (see BUG-3000), so the window has no stated
 duration.
@@ -3837,6 +3838,6 @@ func warnContentPendingFlush(item *models.Item) {
 	}
 	fmt.Fprintln(os.Stderr, "warning: the content was applied to the live collaborative document "+
 		"(an editor has this item open) and the stored copy has not been updated yet. The "+
-		"response's content is what you sent; a read before that editor flushes will show the "+
-		"previous content, and the stored form may end up differing slightly from what you sent.")
+		"response's content is what you sent; a read before a collab-snapshot flush lands will show "+
+		"the previous content, and the stored form may end up differing slightly from what you sent.")
 }

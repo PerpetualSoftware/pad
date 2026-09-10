@@ -90,8 +90,10 @@ type ItemWriteWarnings struct {
 	// ContentOutcome names where a content write ended up, in the same vocabulary
 	// the content_not_applied error uses. On a 200 it takes exactly one value,
 	// "applied_pending_flush": the content reached the collaborative document and
-	// items.content has not caught up yet, so the `content` on this response is the
-	// markdown as SENT rather than as stored (BUG-2995).
+	// items.content does not hold it — the row is updated only by a later
+	// ?source=collab-snapshot write, which nothing guarantees happens — so the
+	// `content` on this response is the markdown as SENT rather than as stored
+	// (BUG-2995).
 	//
 	// A caller that reads `content` back to confirm its own write needs this: the
 	// stored form may still differ from the sent form after the row is updated,
