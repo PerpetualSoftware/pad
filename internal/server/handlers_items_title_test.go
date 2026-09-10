@@ -585,47 +585,56 @@ func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
 	// create and restore paths and one in handlers_items_bulk.go. ALL THREE mutation
 	// controls survived that version; it asserted nothing. A block's arm lives in the
 	// block's own function, so that is the containment to test.
-	funcOf := func(pos token.Pos) *ast.FuncDecl {
-		for _, f := range files {
-			for _, decl := range f.Decls {
-				fn, ok := decl.(*ast.FuncDecl)
-				if !ok {
-					continue
-				}
-				if pos >= fn.Pos() && pos <= fn.End() {
-					return fn
-				}
+	// The containment is the innermost BLOCK STATEMENT holding the block's first arm,
+	// not the enclosing function. Per-function was the second wrong answer and the
+	// controls said so: handleUpdateItem holds TWO refusal blocks with an arm each, so
+	// neutralising either one hid behind the other and survived. Only the
+	// writeTypedItemRefusal control was detected, i.e. the check covered one of the
+	// three blocks it claimed to cover.
+	innermostBlock := func(pos token.Pos) *ast.BlockStmt {
+		var best *ast.BlockStmt
+		inspectAll(func(n ast.Node) bool {
+			b, ok := n.(*ast.BlockStmt)
+			if !ok {
+				return true
 			}
-		}
-		return nil
+			if pos < b.Pos() || pos > b.End() {
+				return true
+			}
+			if best == nil || b.Pos() > best.Pos() {
+				best = b
+			}
+			return true
+		})
+		return best
 	}
-	uniqueInFunc := map[*ast.FuncDecl]bool{}
-	inspectAll(func(n ast.Node) bool {
-		lit, ok := n.(*ast.BasicLit)
-		if !ok || lit.Kind != token.STRING {
+	hasUniqueLiteral := func(b *ast.BlockStmt) bool {
+		found := false
+		ast.Inspect(b, func(n ast.Node) bool {
+			lit, ok := n.(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING {
+				return true
+			}
+			if strings.Contains(lit.Value, "UNIQUE constraint") {
+				found = true
+			}
 			return true
-		}
-		if !strings.Contains(lit.Value, "UNIQUE constraint") {
-			return true
-		}
-		if fn := funcOf(lit.Pos()); fn != nil {
-			uniqueInFunc[fn] = true
-		}
-		return true
-	})
+		})
+		return found
+	}
 
 	for i, lo := range updateStart {
-		fn := funcOf(lo)
-		if fn == nil {
-			t.Errorf("the error block at line %d is not inside any function declaration; the "+
-				"containment this check relies on does not hold", updateLines[i])
+		b := innermostBlock(lo)
+		if b == nil {
+			t.Errorf("the error block at line %d is not inside any block statement; the containment "+
+				"this check relies on does not hold", updateLines[i])
 			continue
 		}
-		if !uniqueInFunc[fn] {
-			t.Errorf("%s contains an error block at line %d but no UNIQUE-constraint arm. A "+
+		if !hasUniqueLiteral(b) {
+			t.Errorf("the error block at line %d has no UNIQUE-constraint arm in its own scope. A "+
 				"concurrent slug/title collision answers 409 on the routes that map it and 500 on "+
 				"the ones that do not, for the identical store error — which is the regression that "+
-				"put this check here.", fn.Name.Name, updateLines[i])
+				"put this check here.", updateLines[i])
 		}
 	}
 
