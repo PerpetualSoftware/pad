@@ -949,15 +949,24 @@ const CmdhelpVersion = "0.1"
 //     Deliberately NOT a bump, and the line is worth stating because
 //     0.9 looks like a counter-example. 0.9 bumped because list rows
 //     LOST fields a consumer was reading — `content` replaced by a
-//     preview, UUID plumbing dropped. Here nothing is removed, nothing
-//     changes type, and the one field whose value moved was previously
-//     answering a content PATCH with content from before that PATCH. A
-//     consumer comparing the response's `content` to what it sent used
-//     to find a mismatch and could only conclude its write was lost;
-//     it now matches. There is no reliance to break, only a wrong
-//     answer to stop giving — which is the BUG-2304 disposition
-//     (advertised-but-unrouted actions fixed, no names/enums/shapes
-//     changed, hence no bump) rather than 0.9's.
+//     preview, UUID plumbing dropped. Here nothing is removed and
+//     nothing changes type; what changed is the VALUE of one field on
+//     one path, and that is worth stating plainly rather than filing
+//     under "additive": a caller does observe different bytes than it
+//     did before.
+//
+//     The claim is that no DOCUMENTED OR SUPPORTED reliance breaks, not
+//     that no reliance can possibly exist. A consumer could in
+//     principle have detected the applier path by noticing that the
+//     response echoed something other than what it sent, and that
+//     detection stops working. But it was never documented, the same
+//     mismatch was equally produced by a genuinely lost write, and
+//     `warnings.content_outcome` now answers the question that hack was
+//     approximating — so the supported replacement ships in the same
+//     change. Against that: every consumer taking the response at face
+//     value was being told its write was lost. That balance is the
+//     BUG-2304 disposition (a wrong answer corrected, no names/enums/
+//     shapes changed, hence no bump) rather than 0.9's.
 //
 //     What a consumer SHOULD change is reading, not parsing: during
 //     the window a `get` (or `list` with full=true) still answers from

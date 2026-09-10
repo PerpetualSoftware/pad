@@ -94,10 +94,11 @@ type ItemWriteWarnings struct {
 	// markdown as SENT rather than as stored (BUG-2995).
 	//
 	// A caller that reads `content` back to confirm its own write needs this: the
-	// stored form is not byte-identical to the sent form even once the row catches
-	// up, because the markdown makes a round trip through the editor on its way
-	// there (measured on BUG-2995's trail: setext headings, bullet markers,
-	// emphasis characters, list renumbering and blank-line runs all normalise).
+	// stored form may still differ from the sent form after the row is updated,
+	// because the markdown makes a round trip through the editor on its way there
+	// (measured on BUG-2995's trail: setext headings, bullet markers, emphasis
+	// characters, list renumbering and blank-line runs normalise, while markdown
+	// already in the editor's preferred form survives unchanged).
 	ContentOutcome string `json:"content_outcome,omitempty"`
 }
 

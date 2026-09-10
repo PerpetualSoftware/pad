@@ -64,9 +64,15 @@ func TestBUG2995_ApplierPatchDoesNotEchoPreviousContent(t *testing.T) {
 		t.Fatalf("GetItem: %v", err)
 	}
 
+	// The undeclared field rides along deliberately: the pending marker and the
+	// undeclared-key warning are produced at different points and merged into ONE
+	// warnings object, and an earlier draft of that merge REPLACED the object
+	// rather than building it. Sending both in one request is what makes a
+	// regression there visible here rather than in whichever of the two a future
+	// reader happens to test.
 	const sent = "NEW content, sent through the applier"
 	rr = doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+item.Slug,
-		map[string]interface{}{"content": sent})
+		map[string]interface{}{"content": sent, "fields": `{"not_in_schema":"x"}`})
 	if rr.Code != http.StatusOK {
 		t.Fatalf("applier-path PATCH: want 200, got %d: %s", rr.Code, rr.Body.String())
 	}
@@ -94,13 +100,18 @@ func TestBUG2995_ApplierPatchDoesNotEchoPreviousContent(t *testing.T) {
 
 	// The marker is what makes the echo honest — without it the echoed value is an
 	// implicit claim about the row, and the row does not hold it yet (and will not
-	// hold it byte-identically once it does).
+	// necessarily hold it byte-for-byte if it ever does).
 	warnings, _ := body["warnings"].(map[string]any)
 	if warnings == nil {
 		t.Fatalf("want a warnings object naming where the content is; got body keys %v", keysOf(body))
 	}
 	if outcome, _ := warnings["content_outcome"].(string); outcome != contentOutcomeAppliedPendingFlush {
 		t.Errorf("warnings.content_outcome = %q, want %q", outcome, contentOutcomeAppliedPendingFlush)
+	}
+	// Both members, from the same request: neither writer may clobber the other.
+	if undeclared, _ := warnings["undeclared_fields"].([]any); len(undeclared) == 0 {
+		t.Errorf("the pending marker displaced undeclared_fields; want both in one warnings object, got %v",
+			warnings)
 	}
 
 	// The row is deliberately still behind: this change does not make the flush

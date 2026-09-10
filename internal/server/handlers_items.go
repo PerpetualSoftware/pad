@@ -2160,9 +2160,10 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	// The response carries the content as SENT, and the marker below is what makes
 	// that honest: the echoed value is a true statement about what the applier
 	// received, and a false one about the row until the flush lands. Echoing
-	// without the marker would be the overclaim — the stored form is not
-	// byte-identical to the sent form (measured on BUG-2995's trail), so a caller
-	// comparing this value to a later read would find a difference it could not
+	// without the marker would be the overclaim — the stored form MAY differ from
+	// the sent form (measured on BUG-2995's trail; markdown already in the editor's
+	// preferred form survives unchanged, anything else normalises), so a caller
+	// comparing this value to a later read could find a difference it had no way to
 	// account for.
 	if contentAppliedPendingFlush {
 		updated.Content = appliedContent

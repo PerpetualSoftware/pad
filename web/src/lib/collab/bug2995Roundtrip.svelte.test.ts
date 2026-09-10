@@ -65,10 +65,11 @@ const normalising: Array<[string, string, string]> = [
 	['lazy blockquote continuation is joined', '> quoted line\ncontinued lazily', '> quoted line continued lazily'],
 ];
 
-// Fixtures that survive unchanged. They are the reason the claim is "not
-// byte-identical" rather than "always rewritten": a caller whose markdown is
-// already in the editor's preferred form sees no difference at all, which is
-// exactly why the divergence is easy to miss in casual testing.
+// Fixtures that survive unchanged. They are the reason every surface says the
+// stored form MAY differ rather than that it always does: a caller whose markdown
+// is already in the editor's preferred form sees no difference at all, which is
+// exactly why the divergence is easy to miss in casual testing — and why a
+// contract written as an invariant would have been false.
 const stable = ['a perfectly ordinary paragraph', '3. three\n4. four', 'just one line'];
 
 describe('BUG-2995: applier markdown vs flushed markdown', () => {

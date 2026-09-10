@@ -436,9 +436,11 @@ const (
 	// peer may have applied it.
 	contentOutcomeUnknown = "unknown"
 	// contentOutcomeAppliedPendingFlush — the apply SUCCEEDED and the content is in
-	// the collaborative document, but items.content has not caught up: the applier
-	// path's row write runs with Content nil, and the row is written when a
-	// connected tab next flushes (?source=collab-snapshot).
+	// the collaborative document, but items.content does not hold it: the applier
+	// path's row write runs with Content nil, and the row is written only if and
+	// when a connected tab flushes (?source=collab-snapshot). That flush belongs to
+	// a browser tab and is not guaranteed to happen at all — BUG-3000 carries the
+	// open half — so nothing built on this value may state a duration.
 	//
 	// It is the only one of the three that rides on a 200 rather than on an error,
 	// because it is the only one where nothing went wrong. It exists so the third
