@@ -90,7 +90,7 @@ func TestSSEStream_AnnouncesAnAccessChangeButStaysQuietOtherwise(t *testing.T) {
 	}
 	req.Header.Set("User-Agent", testSessionUA)
 	req.AddCookie(&http.Cookie{Name: sessionCookieName(srv.secureCookies), Value: token})
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := isolatedTestClient().Do(req)
 	if err != nil {
 		t.Fatalf("open stream: %v", err)
 	}

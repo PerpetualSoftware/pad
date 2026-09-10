@@ -2,41 +2,42 @@ package server
 
 import "net/http"
 
-// isolatedTestClient returns an HTTP client with a transport of its own, for
-// tests that must survive another test's teardown (BUG-3008).
+// isolatedTestClient returns an HTTP client with a transport of its own. Test
+// requests in this package go through it (or through srv.Client()), never
+// through http.DefaultClient (BUG-3008).
 //
-// WHY THIS EXISTS. `httptest.Server.Close()` closes idle connections on the
-// PROCESS-WIDE default transport — the standard library says so in its own
-// comment, calling it "not part of httptest.Server's correctness" and doing it
-// to help out users who are on the standard transport:
+// WHY THIS EXISTS. `httptest.Server.Close()` reaches into the PROCESS-WIDE
+// default transport — the standard library says so in its own comment, calling
+// it "not part of httptest.Server's correctness" and doing it to help out
+// users who are on the standard transport:
 //
 //	if t, ok := http.DefaultTransport.(closeIdleTransport); ok {
 //	    t.CloseIdleConnections()
 //	}
 //
-// So in a package where several PARALLEL tests each stand up an httptest
-// server, any one of them finishing reaches into a transport every other test
-// is sharing. `Transport.CloseIdleConnections` does three things there, and the
-// first two can land on a request that is already under way:
+// So in a package where many tests each stand up an httptest server, every
+// `defer ts.Close()` mutates state that every other test's requests depend on.
+// What CI observed (BUG-2949, then BUG-3008) is a request in one test failing
+// with "transport connection broken: http: CloseIdleConnections called" while
+// the server that closed belonged to a different test entirely.
 //
-//   - it closes every pooled connection with `errCloseIdleConns`, which a
-//     concurrent `getConn` may have just handed to a request;
-//   - it cancels the dials in progress that are not waiting
-//     (`w.cancelCtx()` over `t.dialsInProgress`);
-//   - it sets `closeIdle`, so connections that go idle later close too.
+// WHAT IS AND IS NOT CLAIMED HERE. Read out of `net/http/transport.go`,
+// `Transport.CloseIdleConnections` closes each pooled connection with
+// `errCloseIdleConns` — the error in that message — and sets `closeIdle`, so
+// connections going idle afterwards are closed instead of pooled until the next
+// `queueForIdleConn` clears the flag. It also cancels dials in progress that
+// are not waiting. Its doc comment states that it "does not interrupt any
+// connections currently in use", and the idle pool is mutated under `idleMu`,
+// so the precise interleaving by which that error reached a caller's `Do()` is
+// NOT reconstructed here.
 //
-// The symptom is "transport connection broken: http: CloseIdleConnections
-// called" on a request that had nothing to do with the server that closed. It
-// needs two tests to interleave inside a window of microseconds, so it reads as
-// infrastructure noise and survives local `-count` runs.
-//
-// A client with its own transport cannot be reached that way.
+// That unknown is the argument for isolation rather than a narrower repair: a
+// client with its own transport is outside the reach of another test's
+// teardown whichever window it was. Guessing at the window and fixing only
+// that would leave the next seat to rediscover this from a worse position.
 //
 // It is deliberately not a shared package-level var: two tests holding one
-// transport would reintroduce a smaller version of the same coupling. The
-// per-call transport does not accumulate anything, either — `httptest.Server.Close`
-// waits for outstanding requests and closes every connection it accepted, so
-// the client's pool is dead by the time the test returns.
+// transport would reintroduce a smaller version of the same coupling.
 func isolatedTestClient() *http.Client {
 	// No Timeout on purpose. These are SSE and long-poll requests; a timeout
 	// here would cancel the stream the test is measuring.

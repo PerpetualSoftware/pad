@@ -554,7 +554,7 @@ func TestCollabUpgradeRejectsSchemaVersionMismatch(t *testing.T) {
 	// Server's RoomManager is at "1" (DefaultSchemaVersion); send "9"
 	// to force a mismatch. We hit the HTTP path directly rather than
 	// through dialCollab so we can read the JSON error body.
-	resp, err := http.Get(ts.URL + "/api/v1/collab/" + itemID + "?schema_version=9")
+	resp, err := isolatedTestClient().Get(ts.URL + "/api/v1/collab/" + itemID + "?schema_version=9")
 	if err != nil {
 		t.Fatalf("http get: %v", err)
 	}
@@ -614,7 +614,7 @@ func TestCollabUpgradeMissingItemIDBadRequest(t *testing.T) {
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 
-	resp, err := http.Get(ts.URL + "/api/v1/collab/")
+	resp, err := isolatedTestClient().Get(ts.URL + "/api/v1/collab/")
 	if err != nil {
 		t.Fatalf("http get: %v", err)
 	}

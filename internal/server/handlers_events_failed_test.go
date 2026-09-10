@@ -59,7 +59,7 @@ func TestAFailedSubscriptionIsRefusedWithARetryableStatus(t *testing.T) {
 		if lastID != "" {
 			req.Header.Set("Last-Event-ID", lastID)
 		}
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := isolatedTestClient().Do(req)
 		if err != nil {
 			t.Fatalf("%s: GET: %v", name, err)
 		}

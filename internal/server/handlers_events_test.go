@@ -386,7 +386,7 @@ func TestSSEGlobalConnectionLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := isolatedTestClient().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -417,7 +417,7 @@ func TestSSEPerWorkspaceLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := isolatedTestClient().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -451,7 +451,7 @@ func TestSSELimitsExistingConnectionsUnaffected(t *testing.T) {
 
 	// Try (and fail) to get a second connection
 	req, _ := http.NewRequest("GET", ts.URL+"/api/v1/events?workspace="+slug, nil)
-	resp, _ := http.DefaultClient.Do(req)
+	resp, _ := isolatedTestClient().Do(req)
 	resp.Body.Close()
 
 	// The existing connection should still work — publish an event
