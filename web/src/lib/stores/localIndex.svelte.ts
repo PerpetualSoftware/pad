@@ -2310,6 +2310,22 @@ export const localIndex = {
 		// This catches an index whose workspace state was already gone: the two
 		// maps are keyed independently and nothing keeps them in step.
 		localSearch.resetAll();
+		// THE DURABLE WIPE THIS INHERITS, and why it is kept (codex round 1).
+		// `reset` fire-and-forgets `persistWipe` for the workspace's last-known
+		// userId, so this drops the previous user's IndexedDB cache as well as
+		// their RAM. Not required for ISOLATION — the cache is namespaced per
+		// (user, workspace), so the next user could never read it — and it costs
+		// a returning user their warm cache.
+		//
+		// Kept because it is the behaviour sign-out already had (the workspace
+		// layout has called `reset` on sign-out since TASK-1360) and because
+		// leaving a signed-out user's item titles on the disk of a shared
+		// browser is the wrong default to adopt silently. What this DOES widen
+		// is the pre-existing race where a fast re-login's hydrate overlaps a
+		// wipe still in flight: it now applies to every workspace the tab
+		// visited rather than the one the layout named. Filed rather than fixed
+		// here — sequencing a fire-and-forget wipe against the next hydrate is
+		// a change to the persistence layer, not to this sweep.
 	},
 
 	/** Number of items currently held for a workspace. Test/debug aid. */

@@ -66,6 +66,25 @@ let identityEstablished = false;
 // and a fence captured before an identity was established has nothing stale to
 // refuse.
 //
+// THE RESIDUAL THAT LEAVES, stated rather than discovered (codex round 1).
+// A request issued before the baseline resolves carries whatever cookie the
+// browser had; the baseline then reports whoever that cookie belongs to. Those
+// are the same principal unless the cookie CHANGED mid-flight — another tab
+// signing out and in — in which case the pre-baseline request settles under a
+// fence that still says current, and commits.
+//
+// It is not closed by refusing every pre-baseline settle, and that was tried on
+// paper first: the root layout issues the workspace list CONCURRENTLY with
+// /auth/session (see the `identityEstablished` comment below, which exists
+// because of that concurrency), so refusing pre-baseline settles would drop the
+// cold start's own data and leave a signed-in user with an empty app until
+// something re-fetched. Nothing inside this tab can tell the two apart: both
+// look like "a response arrived before we knew who was asking".
+//
+// The honest boundary is therefore: the epoch covers identity changes THIS TAB
+// observed, and a cross-tab change during the pre-baseline window is outside
+// it.
+//
 // Distinct from `generation` above, which bumps ONLY on `clear()` and fences
 // this module's own `/auth/session` fetches. A sign-in as a different user
 // through `load()` moves the identity without touching `generation`, so
@@ -85,6 +104,14 @@ function notifyIdentityChange() {
 	// runs — dropping state and immediately reloading is the expected shape —
 	// and a fence captured under the OLD epoch would refuse that reload's own
 	// response.
+	//
+	// THE CONTRACT THIS PLACES ON LISTENERS (codex round 1): a fence captured
+	// inside a listener passes, so a listener must reload for the identity that
+	// is signed in NOW and never re-issue a request built from the identity it
+	// was just told about. The fence cannot check this for them — it compares
+	// epochs, and by the time a listener runs the epoch is already the new one.
+	// Every listener on this branch clears state and either stops or reloads
+	// from the current route, which satisfies it.
 	identityEpoch++;
 	for (const fn of identityListeners) fn();
 }

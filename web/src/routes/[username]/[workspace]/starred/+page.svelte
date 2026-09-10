@@ -1,10 +1,11 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { onMount } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 	import { api } from '$lib/api/client';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { starredStore } from '$lib/stores/starred.svelte';
+	import { authStore } from '$lib/stores/auth.svelte';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import ItemCard from '$lib/components/collections/ItemCard.svelte';
 	import PageHeader from '$lib/components/common/PageHeader.svelte';
@@ -50,21 +51,47 @@
 		workspaceStore.setCurrent(wsSlug);
 	});
 
+	// This page keeps its OWN copy of the previous user's data, and the store
+	// fix alone does not reach it (BUG-3005, codex round 1). Two reasons it is
+	// worse here than a stale cache:
+	//
+	//   - the load effect is keyed on `wsSlug` and the terminal filter, so a
+	//     same-route account swap starts no reload at all;
+	//   - `items` falls back to UNFILTERED `fetchedItems` whenever
+	//     `starredStore.loaded` is false, which is exactly what the store's
+	//     identity reset sets it to. So the store's own fix routes this page
+	//     around its only filter.
+	//
+	// Drop the page's copy and reload for whoever is signed in now.
+	const stopIdentityWatch = authStore.onIdentityChange(() => {
+		fetchedItems = [];
+		collections = [];
+		loading = true;
+		// Invalidate any load already in flight: it was issued as the previous
+		// user and its `seq` check would otherwise accept it.
+		loadSeq++;
+		if (wsSlug) loadStarred(wsSlug);
+	});
+	onDestroy(stopIdentityWatch);
+
 	async function loadStarred(slug: string) {
 		loading = true;
 		const seq = ++loadSeq;
+		// The identity that ASKED. `seq` is a navigation/refresh fence and does
+		// not move on an account swap, so it cannot tell this apart.
+		const isSameIdentity = authStore.identityFence();
 		try {
 			const [starredItems, colls] = await Promise.all([
 				api.items.starred(slug, { include_terminal: includeTerminal }),
 				api.collections.list(slug)
 			]);
-			if (seq !== loadSeq) return;
+			if (seq !== loadSeq || !isSameIdentity()) return;
 			fetchedItems = starredItems;
 			collections = colls;
 		} catch {
 			if (seq !== loadSeq) return;
 		} finally {
-			if (seq === loadSeq) loading = false;
+			if (seq === loadSeq && isSameIdentity()) loading = false;
 		}
 	}
 

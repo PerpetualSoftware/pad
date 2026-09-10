@@ -226,7 +226,12 @@ export const collectionStore = {
 				itemsWorkspace = ws;
 			}
 		} finally {
-			loading = false;
+			// FENCED TOO (codex round 1, P2). `loading` is module state written
+			// after an await like any other: A's load settling while B's is
+			// still in flight would clear B's flag and flash empty-state or
+			// error UI mid-load. `clear()` resets the flag on the identity
+			// change itself, so nothing is left stuck true.
+			if (isSameIdentity()) loading = false;
 		}
 	},
 
@@ -276,6 +281,11 @@ export const collectionStore = {
 		itemsWorkspace = null;
 		collectionsWorkspace = null;
 		activeItem = null;
+		// The flag any in-flight load will now decline to clear (see the fenced
+		// `finally` in `loadItems`). Reset here so the identity change itself
+		// owns it and no consumer is left waiting on a load that will never
+		// report finished.
+		loading = false;
 	},
 };
 

@@ -1,3 +1,5 @@
+import { authStore } from './auth.svelte';
+
 // Module-singleton editor scalars — ONE `dirty`/`lastSaveTime`/`saveStatus`
 // for the whole page, regardless of how many <ItemDetail> instances are
 // mounted. That's fine today (only one is ever live), but PLAN-2154 (the
@@ -38,4 +40,25 @@ export const editorStore = {
 	enterRaw() { mode = 'raw'; },
 	enterEdit() { mode = 'edit'; },
 	resetForDoc() { mode = 'edit'; dirty = false; externalChange = false; },
+
+	/**
+	 * Drop every editor scalar (BUG-3005). Wider than `resetForDoc`, which
+	 * deliberately keeps `saveStatus` and `lastSaveTime` because it is a
+	 * DOCUMENT change within one session. An identity change ends the session.
+	 */
+	clear() {
+		mode = 'edit';
+		saveStatus = 'idle';
+		dirty = false;
+		lastSaveTime = 0;
+		externalChange = false;
+	},
 };
+
+// These scalars survive an SPA identity swap, and they are not merely stale —
+// they are consumed by GUARDS. `dirty` drives unsaved-draft prompts and SSE
+// archive/delete suppression, so A's dirty editor makes B's navigation and save
+// paths act on a document B never opened (BUG-3005, codex round 1).
+authStore.onIdentityChange(() => {
+	editorStore.clear();
+});

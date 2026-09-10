@@ -2,6 +2,8 @@
 // Admin store – shared state & utilities for the admin section
 // ---------------------------------------------------------------------------
 
+import { authStore } from './auth.svelte';
+
 // ---- Interfaces -----------------------------------------------------------
 
 export interface AdminUser {
@@ -134,5 +136,24 @@ export const adminStore = {
 	get error() {
 		return error;
 	},
-	loadStats
+	loadStats,
+
+	/**
+	 * Drop the loaded statistics (BUG-3005). `stats` is instance-wide DATA but
+	 * it is authorization-scoped: only an admin can read it, so it must not
+	 * outlive the admin who did.
+	 */
+	clear() {
+		stats = null;
+		loading = true;
+		error = '';
+	}
 };
+
+// An admin signing out — or a swap to a non-admin on the same console route —
+// must not leave the previous admin's statistics on screen. The admin layout
+// loads on mount, and a same-route identity change mounts nothing (BUG-3005,
+// codex round 1).
+authStore.onIdentityChange(() => {
+	adminStore.clear();
+});

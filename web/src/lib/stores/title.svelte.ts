@@ -1,3 +1,4 @@
+import { authStore } from './auth.svelte';
 /**
  * Title store — central source of truth for the browser-tab title.
  *
@@ -128,3 +129,12 @@ export const titleStore = {
 		itemPath = undefined;
 	},
 };
+
+// The path STAMP is what normally retires a title part, and a same-route
+// identity change moves no path — so A's workspace name and item ref stayed in
+// the browser tab and the mobile context bar for B (BUG-3005, codex round 1).
+// Cosmetic rather than a data leak of any size, and cheap enough that leaving
+// one member of the class unfixed costs more than fixing it.
+authStore.onIdentityChange(() => {
+	titleStore.clearPageTitle();
+});
