@@ -209,9 +209,20 @@ var (
 	// direct write.
 	ErrNoApplierAvailable = errors.New("collab: no live conn available to apply")
 
-	// ErrAllAppliersTimedOut — every attempt timed out without an
-	// ack. Caller falls back to direct write and (depending on
-	// preference) logs a warn so operators can see degraded sessions.
+	// ErrAllAppliersTimedOut — an applier_request REACHED a peer and the
+	// round-trip was never confirmed. The usual cause is what the name says
+	// (every attempt timed out without an ack); since PLAN-2975 it also covers
+	// a restore storm that exhausted its re-elections after sending, which is
+	// not a timeout but has the identical meaning to a caller: bytes went out
+	// and the outcome is unknown.
+	//
+	// That "bytes went out" is the load-bearing half, and two callers depend on
+	// it rather than on the timeout wording. The op-log prune deliberately does
+	// NOT fire here (a peer may hold a Y.Doc derived from the log), and the
+	// items PATCH handler reports the content outcome as UNKNOWN rather than
+	// not-applied, because the peer may have applied the markdown with its ack
+	// lost or late. ErrNoApplierAvailable is the sentinel that means nothing
+	// reached a peer; keep the two distinct when adding a return path.
 	ErrAllAppliersTimedOut = errors.New("collab: all designated appliers timed out")
 
 	// ErrApplierAmbiguous — a legacy (non-bracket-capable) applier round-trip was
@@ -252,8 +263,17 @@ func (m *RoomManager) ApplyExternalContent(itemID string, markdown string) error
 		return ErrNoActiveRoom
 	}
 
+	// sentAny is tracked ACROSS restarts, not just within one election, because the
+	// sentinel this function ends on is read by callers as a claim about whether the
+	// markdown ever reached a peer (PLAN-2975: content_not_applied says so on the
+	// wire). electAndApply tracks it per election and a superseded election discards
+	// it, so without this the restore-storm return below would answer "no applier was
+	// available" — i.e. nothing was sent — after up to applierMaxRestartsAfterRestore
+	// elections that may each have put an applier_request on the wire.
+	var sentAny bool
 	for restart := 0; restart < applierMaxRestartsAfterRestore; restart++ {
-		err, superseded := m.electAndApply(room, itemID, markdown)
+		err, superseded, sent := m.electAndApply(room, itemID, markdown)
+		sentAny = sentAny || sent
 		if !superseded {
 			return err
 		}
@@ -261,7 +281,12 @@ func (m *RoomManager) ApplyExternalContent(itemID string, markdown string) error
 		// (electAndApply already waited it out). Re-elect from scratch: a fresh
 		// request_id + tried set against the post-restore room.
 	}
-	// Restore storm: fall back to a direct write rather than spin.
+	// Restore storm: fall back to a direct write rather than spin. Which sentinel is
+	// not cosmetic — ErrNoApplierAvailable asserts nothing reached a peer, and after
+	// a storm in which a request DID go out that assertion is false.
+	if sentAny {
+		return ErrAllAppliersTimedOut
+	}
 	return ErrNoApplierAvailable
 }
 
@@ -291,16 +316,16 @@ func (m *RoomManager) ApplyExternalContent(itemID string, markdown string) error
 // decision 2), which is why every judgement call here resolves toward true.
 //
 // That asymmetry is a statement about THIS function's answer, not a guarantee about
-// everything downstream of it, and the difference matters. A caller that reorders on
-// a true and then meets an apply failure inherits whatever its fallback does — and
-// the fallback that exists today can itself write content past live peers: when
-// applyContentViaCollab exhausts its ErrRoomActiveDuringPrune retries, the PATCH
-// handler falls through to a plain direct write while a live writer may be holding a
-// Y.Doc that will outvote it on the next flush (internal/server/handlers_collab.go's
-// retry cap, consumed by handleUpdateItem's "any other error path" fall-through).
-// That predates this function and is unchanged by it; it is named here because a
-// reader would otherwise take "a false positive costs a partial answer" as a claim
-// about the whole path rather than about this return value (codex round 2, PLAN-2975).
+// everything downstream of it. When this comment was written the caller's fallback
+// could itself write content past live peers — a three-try give-up that fell through
+// to a plain direct write while a live writer held a Y.Doc that would outvote it on
+// the next flush — so the sentence above was true of this return value and false of
+// the path. PLAN-2975 unit 2 removed that fallback: an unsettled room now answers a
+// retryable room_settling refusal, and an apply that fails after the row write
+// answers content_not_applied rather than a success the content never reached. The
+// distinction is kept because it is still the right way to read this function: a
+// false positive costs the CALLER an honest partial answer, and what the caller does
+// with that is the caller's contract, not this one's.
 //
 // That is why an in-progress version restore answers TRUE rather than consulting the
 // conns. ForceRefreshRoom freezes every conn for the duration, and pickApplier skips
@@ -342,11 +367,16 @@ func (m *RoomManager) HasElectableApplier(itemID string) bool {
 }
 
 // electAndApply runs one designated-applier election (first attempt + one retry)
-// against the room, gated on the restore coordinator. It returns (err, superseded):
-// superseded==true means a version restore interrupted the election and has resolved,
-// so ApplyExternalContent should restart; err is meaningless in that case. When
-// superseded==false, err is the final outcome (nil on success, or a sentinel).
-func (m *RoomManager) electAndApply(room *Room, itemID, markdown string) (error, bool) {
+// against the room, gated on the restore coordinator. It returns
+// (err, superseded, sentAny): superseded==true means a version restore interrupted
+// the election and has resolved, so ApplyExternalContent should restart; err is
+// meaningless in that case. When superseded==false, err is the final outcome (nil on
+// success, or a sentinel).
+//
+// sentAny reports whether an applier_request actually reached a peer during THIS
+// election. The caller accumulates it across restarts so the sentinel it finally
+// returns does not claim nothing was sent when something was (PLAN-2975).
+func (m *RoomManager) electAndApply(room *Room, itemID, markdown string) (error, bool, bool) {
 	// A FRESH request_id per election: a late ack from a superseded prior election
 	// (same conn, re-picked after a rollback) can't be mistaken for this one's.
 	requestID := uuid.NewString()
@@ -370,7 +400,7 @@ func (m *RoomManager) electAndApply(room *Room, itemID, markdown string) (error,
 		// !waited return ADMITS us; finishAdmission MUST run before we wait on the
 		// outcome so a concurrent beginRestore drains us (P1).
 		if room.enterApplierGate() {
-			return nil, true
+			return nil, true, anyWriteSucceeded
 		}
 
 		applier := room.pickApplier(tried)
@@ -378,9 +408,9 @@ func (m *RoomManager) electAndApply(room *Room, itemID, markdown string) (error,
 			// No more candidates left.
 			room.finishAdmission()
 			if !anyWriteSucceeded {
-				return ErrNoApplierAvailable, false
+				return ErrNoApplierAvailable, false, anyWriteSucceeded
 			}
-			return ErrAllAppliersTimedOut, false
+			return ErrAllAppliersTimedOut, false, anyWriteSucceeded
 		}
 		tried[applier.conn] = struct{}{}
 
@@ -390,7 +420,7 @@ func (m *RoomManager) electAndApply(room *Room, itemID, markdown string) (error,
 		room.finishAdmission()
 		if registerErr != nil {
 			// Race: room closed between pickApplier and registration.
-			return registerErr, false
+			return registerErr, false, anyWriteSucceeded
 		}
 
 		// Send the applier_request as a TextMessage. y-protocol
@@ -412,7 +442,7 @@ func (m *RoomManager) electAndApply(room *Room, itemID, markdown string) (error,
 		payload, err := json.Marshal(msg)
 		if err != nil {
 			room.cancelPendingAck(requestID)
-			return fmt.Errorf("marshal applier_request: %w", err), false
+			return fmt.Errorf("marshal applier_request: %w", err), false, anyWriteSucceeded
 		}
 		// Bounded write (BUG-2276 residual 2, P1a): a dead/slow peer wedged in a
 		// deadline-free writeLoop write holds writeMu, which would otherwise block
@@ -447,7 +477,7 @@ func (m *RoomManager) electAndApply(room *Room, itemID, markdown string) (error,
 			case applierPersisted:
 				// The applier's setContent durably landed (no frame in its apply
 				// bracket was frozen-dropped). All peers are on the new state.
-				return nil, false
+				return nil, false, anyWriteSucceeded
 			case applierAmbiguous:
 				// Legacy conn caught by a restore: setContent MIGHT have landed but we
 				// can't confirm. FAIL-SAFE — do NOT re-apply (that could clobber peer
@@ -460,7 +490,7 @@ func (m *RoomManager) electAndApply(room *Room, itemID, markdown string) (error,
 					"item_id", itemID,
 					"client_id", applier.id,
 				)
-				return ErrApplierAmbiguous, false
+				return ErrApplierAmbiguous, false, anyWriteSucceeded
 			default: // applierNotPersisted
 				// A version restore froze this apply, so setContent did NOT land. This
 				// is a DURABLE determination (see restore_coord.go), not a timing guess
@@ -472,7 +502,7 @@ func (m *RoomManager) electAndApply(room *Room, itemID, markdown string) (error,
 					"item_id", itemID,
 					"client_id", applier.id,
 				)
-				return nil, true
+				return nil, true, anyWriteSucceeded
 			}
 		case <-time.After(timeouts[attempt]):
 			room.cancelPendingAck(requestID)
@@ -492,15 +522,22 @@ func (m *RoomManager) electAndApply(room *Room, itemID, markdown string) (error,
 	if !anyWriteSucceeded {
 		// applierMaxAttempts exhausted without ever putting bytes on
 		// the wire. Same recovery profile as no-applier-found.
-		return ErrNoApplierAvailable, false
+		return ErrNoApplierAvailable, false, anyWriteSucceeded
 	}
-	return ErrAllAppliersTimedOut, false
+	return ErrAllAppliersTimedOut, false, anyWriteSucceeded
 }
 
 // applierMaxRestartsAfterRestore caps how many times ApplyExternalContent re-elects
 // after being superseded by a restore, so a pathological back-to-back restore storm
-// can't spin the election forever. On exhaustion the caller falls back to a direct
-// write (ErrNoApplierAvailable) — safe graceful degradation.
+// can't spin the election forever.
+//
+// On exhaustion the sentinel depends on whether any election put an applier_request
+// on the wire (PLAN-2975). Nothing sent → ErrNoApplierAvailable, and the caller's
+// direct write with an op-log prune is safe graceful degradation. Something sent →
+// ErrAllAppliersTimedOut, which suppresses the prune and reports the content outcome
+// as unknown: a peer may hold a Y.Doc built from the log, and may have applied the
+// markdown. Answering the no-applier sentinel there would assert that nothing reached
+// a peer, which is exactly the false claim this distinction exists to prevent.
 const applierMaxRestartsAfterRestore = 5
 
 // applierWriteDeadlineVar bounds the applier_request write so a dead/slow peer

@@ -9,6 +9,7 @@ import (
 	"go/token"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"sort"
 	"strings"
 	"testing"
@@ -261,36 +262,83 @@ func TestCreateItemCheckedMapsStoreTitleRefusalTo400(t *testing.T) {
 	}
 }
 
-// TestIsDeterministicWriteFailureIncludesTitleRefusal regresses codex round 1
-// P1 on the collab fallback.
+// TestWriteTypedItemRefusalIncludesTitleRefusal regresses codex round 1 P1 on the
+// collab fallback, PORTED from isDeterministicWriteFailure when PLAN-2975 unit 2
+// replaced that classifier with writeTypedItemRefusal.
 //
-// isDeterministicWriteFailure decides whether a direct-write failure is a
-// settled answer. A permanent refusal it does not recognise is returned as a
-// generic collab-routing error, so the caller falls through to its own direct
-// write and re-derives the identical refusal from scratch — BUG-2804 measured
-// that as running a whole rename cascade twice for one request, and reported
-// the answer by the other route.
+// The property is unchanged and is why the port was worth doing rather than deleting
+// the test with the function: a permanent refusal the handler does not RECOGNISE is
+// treated as a recoverable routing error, so the request falls through to another
+// write path and re-derives the identical refusal from scratch — BUG-2804 measured
+// that as running a whole rename cascade twice for one request, and answering by the
+// other route.
 //
-// The store gained a fourth such refusal with the item-title bound and nothing
-// failed when it was left out, which is exactly why this test exists: the
-// omission is invisible from the outside.
-func TestIsDeterministicWriteFailureIncludesTitleRefusal(t *testing.T) {
-	if !isDeterministicWriteFailure(&store.InvalidItemTitleError{Reason: "Title is required"}) {
+// The store gained a fourth such refusal with the item-title bound and nothing failed
+// when it was left out, which is exactly why this exists: the omission is invisible
+// from the outside.
+func TestWriteTypedItemRefusalIncludesTitleRefusal(t *testing.T) {
+	srv := testServer(t)
+	item := &models.Item{ID: "item-1", Ref: "TASK-1", Slug: "task-1"}
+
+	// The recorder is inspected, not discarded: the classifier's answer is only half
+	// the contract — a mutant that returns true while writing the wrong status would
+	// pass a boolean-only assertion (codex round 1, this unit).
+	refused := func(err error) bool {
+		rec := httptest.NewRecorder()
+		got := srv.writeTypedItemRefusal(rec, item, err)
+		if got {
+			if rec.Code < 400 || rec.Code > 499 {
+				t.Errorf("a recognised refusal wrote status %d; a refusal must answer 4xx or the "+
+					"caller cannot tell it from success", rec.Code)
+			}
+			if rec.Body.Len() == 0 {
+				t.Error("a recognised refusal wrote no body; the structured envelope is the contract")
+			}
+		} else if rec.Body.Len() != 0 {
+			t.Errorf("an unrecognised error wrote a body (%s) while reporting not-handled; the "+
+				"caller will write a second response on top of it", rec.Body.String())
+		}
+		return got
+	}
+
+	if !refused(&store.InvalidItemTitleError{Reason: "Title is required"}) {
 		t.Error("an invalid-title refusal is permanent: retrying the same title always refuses")
 	}
 	// Through a wrapper, since the call path wraps on the way up.
-	if !isDeterministicWriteFailure(fmt.Errorf("update item: %w", &store.InvalidItemTitleError{Reason: "Title is too long"})) {
+	if !refused(fmt.Errorf("update item: %w", &store.InvalidItemTitleError{Reason: "Title is too long"})) {
 		t.Error("must see through wrappers")
 	}
-	// Controls. Without these, a mutant returning true unconditionally would
-	// pass — and that mutant would break the graceful-degradation contract the
-	// function exists to protect, by treating a transient prune failure as
-	// final.
-	if isDeterministicWriteFailure(nil) {
+	// Controls. Without these a mutant returning true unconditionally would pass —
+	// and that mutant would swallow every transient failure as a settled refusal,
+	// answering a 4xx for a condition that would have succeeded on retry.
+	if refused(nil) {
 		t.Error("nil is not a failure")
 	}
-	if isDeterministicWriteFailure(errors.New("transient prune failure")) {
-		t.Error("an unrecognised error must stay recoverable so the fallback still degrades gracefully")
+	if refused(errors.New("transient prune failure")) {
+		t.Error("an unrecognised error must stay recoverable so the route still degrades gracefully")
+	}
+
+	// The FIFTH arm. Before PLAN-2975 the applier path's row write fell through the
+	// ordinary error block and inherited its UNIQUE-constraint mapping; routing that
+	// path through this helper dropped it, turning a benign race into a 500 on that
+	// route only (codex round 5, a regression rather than a gap). Both wordings are
+	// asserted because the store hands back the driver's message verbatim and SQLite
+	// and Postgres word it differently — testing one would leave the other route to
+	// the 500.
+	for _, msg := range []string{
+		"UNIQUE constraint failed: items.slug",
+		`pq: duplicate key value violates unique constraint "items_invocation_slug_idx"`,
+	} {
+		rec := httptest.NewRecorder()
+		if !srv.writeTypedItemRefusal(rec, item, errors.New(msg)) {
+			t.Errorf("a unique-constraint race (%q) must be recognised; unrecognised it answers 500 "+
+				"for a request the server understood and declined", msg)
+			continue
+		}
+		if rec.Code != http.StatusConflict {
+			t.Errorf("a unique-constraint race answered %d, want 409 to match the create path and "+
+				"the ordinary update path", rec.Code)
+		}
 	}
 }
 
@@ -339,16 +387,19 @@ func TestIsDeterministicWriteFailureIncludesTitleRefusal(t *testing.T) {
 // the lock window. Driving that from a test needs a store-level seam that does
 // not exist. The helper itself is unit-tested; these arms' job is to call it.
 func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "handlers_items.go", nil, 0)
-	if err != nil {
-		t.Fatalf("parse handlers_items.go: %v", err)
-	}
-
-	// The arms, in the order every block must apply them. Order is part of the
-	// contract, not style: the UNIQUE-constraint arm that closes each block
-	// matches on error TEXT, so a typed arm placed after it can be swallowed by
-	// a substring match rather than reached.
+	// TWO FILES since PLAN-2975, and the second one is why the expected block
+	// count changed rather than the guard weakening.
+	//
+	// The write-first-apply-second reorder took the applier branch's inline block
+	// out of handlers_items.go and replaced it with a call to writeTypedItemRefusal,
+	// which maps all four arms once and is consulted by every ordering. That is a
+	// STRONGER shape than three parallel blocks — the failure this guard exists to
+	// catch is an arm mapped in some routes and not others, and a single shared
+	// function cannot drift against itself — but it moves one block into another
+	// file, so a scan of handlers_items.go alone now sees two blocks and fails
+	// closed. It failed closed when the reorder landed, which is the guard working;
+	// teaching it the new shape is the response, and the count below is the part a
+	// future restructuring will trip again on purpose.
 	want := []string{
 		"asOpenChildrenGuardError",
 		"asUpdateConflictError",
@@ -359,6 +410,60 @@ func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
 	for _, w := range want {
 		wantArm[w] = true
 	}
+
+	// THE FILE SET IS DERIVED, NOT LISTED (codex round 5). A hardcoded pair passes
+	// while an unmapped block sits in a third file, which is the same
+	// under-counting this guard exists to catch — so the sources are every
+	// non-test file in the package that calls UpdateItemWithParentLink, and a file
+	// that starts calling it joins the scan by doing so.
+	fset := token.NewFileSet()
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read package dir: %v", err)
+	}
+	var files []*ast.File
+	var sources []string
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		src, rerr := os.ReadFile(name)
+		if rerr != nil {
+			t.Fatalf("read %s: %v", name, rerr)
+		}
+		// The predicate is a UNION, and fail-open is the failure mode it is fighting
+		// (codex round 6): a file reaching the store through a wrapper or a variable
+		// would not match the call text, so a file that calls any of the refusal ARMS
+		// is scanned too. A refusal block lives where the arms are called, whatever it
+		// calls the store through.
+		text := string(src)
+		relevant := strings.Contains(text, "UpdateItemWithParentLink(")
+		for _, arm := range want {
+			if strings.Contains(text, arm+"(") {
+				relevant = true
+			}
+		}
+		if !relevant {
+			continue
+		}
+		f, perr := parser.ParseFile(fset, name, src, 0)
+		if perr != nil {
+			t.Fatalf("parse %s: %v", name, perr)
+		}
+		files = append(files, f)
+		sources = append(sources, name)
+	}
+	if len(files) == 0 {
+		t.Fatal("no non-test file in this package calls UpdateItemWithParentLink; the scan found " +
+			"nothing to check, so every assertion below would be vacuous")
+	}
+	t.Logf("scanning %v", sources)
+
+	// The arms, in the order every block must apply them. Order is part of the
+	// contract, not style: the UNIQUE-constraint arm that closes each block
+	// matches on error TEXT, so a typed arm placed after it can be swallowed by
+	// a substring match rather than reached.
 
 	// ---- membership + order, per block ----
 	//
@@ -381,7 +486,12 @@ func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
 		pos  token.Pos
 	}
 	var refs []armRef
-	ast.Inspect(file, func(n ast.Node) bool {
+	inspectAll := func(fn func(ast.Node) bool) {
+		for _, f := range files {
+			ast.Inspect(f, fn)
+		}
+	}
+	inspectAll(func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
 			return true
@@ -399,10 +509,12 @@ func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
 
 	var blocks [][]string
 	var lines []int
+	var startPos []token.Pos
 	for _, r := range refs {
 		if r.name == want[0] {
 			blocks = append(blocks, nil)
 			lines = append(lines, fset.Position(r.pos).Line)
+			startPos = append(startPos, r.pos)
 		}
 		if len(blocks) == 0 {
 			t.Fatalf("arm %q at line %d precedes any %q — the block-splitting assumption is wrong",
@@ -416,13 +528,23 @@ func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
 	// BUG-2833 door sweep), so single-arm blocks are not update blocks.
 	var updateBlocks [][]string
 	var updateLines []int
+	var updateStart []token.Pos
 	for i, b := range blocks {
 		if len(b) > 1 {
 			updateBlocks = append(updateBlocks, b)
 			updateLines = append(updateLines, lines[i])
+			updateStart = append(updateStart, startPos[i])
 		}
 	}
 
+	// Three: two inline blocks remaining in handlers_items.go, plus
+	// writeTypedItemRefusal's single shared block. The number is unchanged from
+	// before PLAN-2975 by coincidence — what changed is that one of the three is now
+	// reached by every content-PATCH ordering instead of being copied per route.
+	//
+	// The constant is deliberately brittle. A restructuring that changes the count
+	// should stop here and be looked at, because that is the moment a refusal
+	// silently stops being mapped on one route.
 	const wantBlocks = 3
 	if len(updateBlocks) != wantBlocks {
 		t.Fatalf("found %d UpdateItem error block(s) at lines %v, want %d — the instrument's block "+
@@ -446,6 +568,88 @@ func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
 		}
 	}
 
+	// ---- the fifth arm: the UNIQUE-constraint race ----
+	//
+	// It is not in `want` because it is not a call to a named helper — it is a string
+	// match on the driver's message, so the AST walk above cannot see it. It is
+	// checked anyway, and separately, because dropping it is exactly the regression
+	// codex round 5 found: the applier path inherited this mapping from the ordinary
+	// block until the reorder routed around it, and a benign race answered 500 on one
+	// route and 409 on the other.
+	//
+	// SCOPED TO THE ENCLOSING FUNCTION, which is what made it discriminate. The first
+	// version asked whether a UNIQUE literal appeared between this block's start and
+	// the next block's start in token.Pos. Those windows span whole FILES — the gap
+	// between the last block of one file and the first block of the next swallows
+	// every literal in between, including two in handlers_items.go belonging to the
+	// create and restore paths and one in handlers_items_bulk.go. ALL THREE mutation
+	// controls survived that version; it asserted nothing. A block's arm lives in the
+	// block's own function, so that is the containment to test.
+	// The containment is the innermost BLOCK STATEMENT holding the block's first arm,
+	// not the enclosing function. Per-function was the second wrong answer and the
+	// controls said so: handleUpdateItem holds TWO refusal blocks with an arm each, so
+	// neutralising either one hid behind the other and survived. Only the
+	// writeTypedItemRefusal control was detected, i.e. the check covered one of the
+	// three blocks it claimed to cover.
+	innermostBlock := func(pos token.Pos) *ast.BlockStmt {
+		var best *ast.BlockStmt
+		inspectAll(func(n ast.Node) bool {
+			b, ok := n.(*ast.BlockStmt)
+			if !ok {
+				return true
+			}
+			if pos < b.Pos() || pos > b.End() {
+				return true
+			}
+			if best == nil || b.Pos() > best.Pos() {
+				best = b
+			}
+			return true
+		})
+		return best
+	}
+	// The arm is an IF CONDITION, and the check reads only conditions (codex round
+	// 7). Accepting any string literal in the block would let an unrelated nested
+	// closure, or a message string that happened to quote the phrase, satisfy the
+	// guard after the real mapping had been deleted — the guard passing for a reason
+	// that has nothing to do with what it claims.
+	hasUniqueArm := func(b *ast.BlockStmt) bool {
+		found := false
+		ast.Inspect(b, func(n ast.Node) bool {
+			ifStmt, ok := n.(*ast.IfStmt)
+			if !ok || ifStmt.Cond == nil {
+				return true
+			}
+			ast.Inspect(ifStmt.Cond, func(c ast.Node) bool {
+				lit, ok := c.(*ast.BasicLit)
+				if !ok || lit.Kind != token.STRING {
+					return true
+				}
+				if strings.Contains(lit.Value, "UNIQUE constraint") {
+					found = true
+				}
+				return true
+			})
+			return true
+		})
+		return found
+	}
+
+	for i, lo := range updateStart {
+		b := innermostBlock(lo)
+		if b == nil {
+			t.Errorf("the error block at line %d is not inside any block statement; the containment "+
+				"this check relies on does not hold", updateLines[i])
+			continue
+		}
+		if !hasUniqueArm(b) {
+			t.Errorf("the error block at line %d has no UNIQUE-constraint arm in its own scope. A "+
+				"concurrent slug/title collision answers 409 on the routes that map it and 500 on "+
+				"the ones that do not, for the identical store error — which is the regression that "+
+				"put this check here.", updateLines[i])
+		}
+	}
+
 	// ---- reachability ----
 	//
 	// Counting call expressions detects a DELETED arm but not a disabled one:
@@ -465,7 +669,7 @@ func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
 	//
 	// Anything else is either a disabling mutation or a restructuring that
 	// deserves to be looked at deliberately.
-	ast.Inspect(file, func(n ast.Node) bool {
+	inspectAll(func(n ast.Node) bool {
 		ifStmt, ok := n.(*ast.IfStmt)
 		if !ok {
 			return true
@@ -497,7 +701,14 @@ func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
 	// let the next arm write another, or let the request continue to the
 	// generic 500 (codex round 6). The body's last statement is a bare return
 	// in all three blocks; anything else is a behaviour change worth looking at.
-	ast.Inspect(file, func(n ast.Node) bool {
+	//
+	// BOUNDARY, stated because the shared block weakened this leg and pretending
+	// otherwise would be the exact overclaim this file's header warns about: in
+	// writeTypedItemRefusal the arms end in `return true`, a handled-FLAG its
+	// callers act on, not a return from the request. This walk therefore proves
+	// the arm stops the FUNCTION, and the caller honouring the flag is checked
+	// behaviourally by the route tests rather than here.
+	inspectAll(func(n ast.Node) bool {
 		ifStmt, ok := n.(*ast.IfStmt)
 		if !ok {
 			return true

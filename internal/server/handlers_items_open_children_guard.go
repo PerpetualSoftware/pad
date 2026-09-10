@@ -70,6 +70,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -345,6 +346,124 @@ func writeUpdateConflictEnvelope(w http.ResponseWriter, ref, expectedUpdatedAt s
 				// and the item path parses/compares via time.Equal regardless.
 				"expected_updated_at": expectedUpdatedAt,
 				"actual_updated_at":   actualUpdatedAt.UTC().Format(time.RFC3339Nano),
+			},
+		},
+	})
+}
+
+// contentNotAppliedRetryAfterSeconds is the Retry-After hint on a room_settling
+// refusal. One second: the wait that preceded it already covered the measured
+// anchoring window with an order of magnitude to spare, so a room still unsettled
+// after it is waiting on something slower than replay — a slow network, a wedged
+// conn, a store under load — and a sub-second retry would just re-refuse.
+const contentNotAppliedRetryAfterSeconds = 1
+
+// writeContentNotAppliedError emits the pad-structured-error/v1 envelope for the
+// outcome the write-first-apply-second ordering creates (PLAN-2975 decision 2): the
+// row write COMMITTED and the content did not reach the collaborative document.
+//
+// It is a 409 rather than a 200-with-a-warning, and that is the ruled shape rather
+// than a stylistic choice. The two failure modes are not symmetric: a client that
+// ignores an advisory on a 200 believes the content landed and loses the information
+// silently, while a client that meets a non-2xx retries — the fields it re-sends hit
+// optimistic concurrency and converge, and the content it re-sends applies. The
+// property being bought is that a response after which the content is not in the
+// document is never readable as success.
+//
+// `landedFields` names what the row write did store, so the caller can tell that the
+// non-content half of its PATCH is done and must not be re-sent blind.
+// `actualUpdatedAt` is the post-write value: a content-only retry that echoes it back
+// as expected_updated_at will not trip the OCC check on a timestamp this very request
+// moved. `reason` carries the underlying apply failure so an operator can tell a
+// timed-out applier from an evicted one.
+//
+// `contentOutcome` is the part a first draft of this got WRONG, and the reason it is
+// a parameter rather than a constant false (codex round 1, this unit). An apply that
+// TIMED OUT is not the same as one that never happened: ApplyExternalContent only
+// returns ErrAllAppliersTimedOut after an applier_request has actually gone out on
+// the wire, and the elected peer may have applied the markdown and persisted its ops
+// while the ack was lost or merely late. Answering `content_landed: false` there
+// states as fact something the server cannot know — the same overclaim the ruling
+// avoided by leaving applier_ambiguous alone. So the envelope reports what the server
+// can actually distinguish, and the discriminator already exists upstream:
+// ErrNoActiveRoom / ErrNoApplierAvailable mean nothing ever reached a peer
+// (anyWriteSucceeded == false), while ErrAllAppliersTimedOut means something did.
+func writeContentNotAppliedError(w http.ResponseWriter, ref string, landedFields []string, actualUpdatedAt time.Time, contentOutcome, reason string) {
+	if landedFields == nil {
+		landedFields = []string{}
+	}
+	msg := fmt.Sprintf(
+		"%s was updated, but its content could not be applied to the live collaborative document; retry the content on its own.",
+		ref)
+	details := map[string]any{
+		"ref":           ref,
+		"landed_fields": landedFields,
+		// Full RFC3339Nano for the same reason writeUpdateConflictEnvelope uses it:
+		// this value is meant to be round-tripped back as the caller's
+		// expected_updated_at token.
+		"actual_updated_at": actualUpdatedAt.UTC().Format(time.RFC3339Nano),
+		"apply_reason":      reason,
+		"content_outcome":   contentOutcome,
+	}
+	switch contentOutcome {
+	case contentOutcomeNotApplied:
+		details["content_landed"] = false
+	default: // contentOutcomeUnknown
+		// content_landed is DELIBERATELY ABSENT rather than false: the request went
+		// out and may have been applied. A caller that retries converges either way
+		// — a re-applied identical markdown is a no-op diff — but a caller that
+		// reads content_landed:false may take an action premised on the content
+		// being gone, and that premise would be unfounded.
+		msg = fmt.Sprintf(
+			"%s was updated, but the outcome of applying its content to the live collaborative document is unknown; retry the content on its own.",
+			ref)
+	}
+	writeJSON(w, http.StatusConflict, map[string]any{
+		"error": map[string]any{
+			"code":    "content_not_applied",
+			"message": msg,
+			"details": details,
+		},
+	})
+}
+
+// contentOutcome values for writeContentNotAppliedError's details.
+const (
+	// contentOutcomeNotApplied — no applier_request ever reached a peer, so the
+	// content demonstrably did not land.
+	contentOutcomeNotApplied = "not_applied"
+	// contentOutcomeUnknown — a request went out and was not acked in time. The
+	// peer may have applied it.
+	contentOutcomeUnknown = "unknown"
+)
+
+// writeRoomSettlingError emits the pad-structured-error/v1 envelope for a room that
+// is neither settled enough to elect an applier nor empty enough to write directly
+// (PLAN-2975 decision 2, standoff clause).
+//
+// That state is real and is not a race the server can resolve by trying harder:
+// PruneAndApply blocks on any conn with canWrite, while election additionally
+// requires the conn to be unfrozen and past its replay. A room whose only writer has
+// joined but not finished replaying satisfies the first and fails the second, so the
+// direct path refuses and the applier path has nobody to elect. Only the conn
+// anchoring resolves it, which this request does not control.
+//
+// The predecessor behaviour was to give up after three attempts and write
+// items.content directly past that live peer — a write the peer's next flush
+// overwrites. A refusal the caller can retry is strictly better than a write that is
+// silently lost, which is why this refusal replaces it on the applier route. NOTHING
+// has been written when this fires: PruneAndApply returns before it calls applyFn.
+func writeRoomSettlingError(w http.ResponseWriter, ref string) {
+	w.Header().Set("Retry-After", strconv.Itoa(contentNotAppliedRetryAfterSeconds))
+	writeJSON(w, http.StatusConflict, map[string]any{
+		"error": map[string]any{
+			"code": "room_settling",
+			"message": fmt.Sprintf(
+				"%s has a collaborator connecting right now; nothing was changed. Retry in a moment.",
+				ref),
+			"details": map[string]any{
+				"ref":                 ref,
+				"retry_after_seconds": contentNotAppliedRetryAfterSeconds,
 			},
 		},
 	})

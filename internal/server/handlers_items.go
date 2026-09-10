@@ -14,7 +14,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/PerpetualSoftware/pad/internal/collab"
 	"github.com/PerpetualSoftware/pad/internal/events"
 	"github.com/PerpetualSoftware/pad/internal/items"
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -1645,12 +1644,15 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	//
 	// Field-only PATCHes (input.Content == nil) skip this branch
 	// entirely; they continue straight to UpdateItem unchanged.
-	// fullWriteHandled is set when applyContentViaCollab's directWrite
-	// callback ran the FULL UpdateItem (content + title + fields +
-	// everything) inside the per-item lock. In that case we must not
-	// re-run UpdateItem below — we'd duplicate the write and could
-	// produce two version-history rows. Instead we re-fetch the
-	// post-write snapshot for the response. Per Codex review round 9.
+	// fullWriteHandled is set when routeContentUpdate already ran the FULL
+	// UpdateItem — either through the direct path's PruneAndApply callback (content
+	// + title + fields + everything, inside the per-item lock) or through the
+	// applier path's row write. In either case we must not re-run UpdateItem below:
+	// we would duplicate the write and could produce two version-history rows.
+	// Instead the router hands back the post-write snapshot for the response.
+	// (Originally Codex round 9 on applyContentViaCollab's directWrite callback;
+	// that helper was retired with PLAN-2975's reorder and the invariant moved
+	// rather than went away.)
 	var fullWriteHandled bool
 	var fullWriteUpdated *models.Item
 	// `?source=collab-snapshot` opts out of the applier-routing path so
@@ -1880,105 +1882,44 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if input.Content != nil && s.collab != nil && !collabSnapshot {
-		// applyContentViaCollab calls directWrite ONLY on the no-
-		// room/no-applier paths (where pruning the op-log is safe
-		// and we need to land items.content under the per-item
-		// lock). The callback owns the full UpdateItem so a mixed
-		// content + title + fields PATCH stays atomic — Round 8's
-		// content-only split lost atomicity and broke
-		// Store.UpdateItem's content-versioning peek at Title.
-		// Per Codex review round 9.
-		err := s.applyContentViaCollab(r, item.ID, *input.Content, func(pruneOpLog func(*sql.Tx) error) error {
-			// The op-log prune rides INSIDE this write's transaction
-			// (BUG-2840 half B): composed onto the precheck hook, which
-			// UpdateItemWithParentLink runs inside the tx, so a refusal
-			// from the guard or from the update itself rolls the prune
-			// back. Before this the prune was a separate statement that
-			// ran FIRST, and a refused write left the op-log emptied with
-			// nothing written to supersede it.
-			precheck := openChildrenPrecheck
-			if pruneOpLog != nil {
-				inner := precheck
-				precheck = func(tx *sql.Tx, existing *models.Item) error {
-					// Guard first — a preference, not an enforced invariant,
-					// and mutation-checked as such: swapping these two
-					// survives the suite because both run in ONE transaction,
-					// so a refusal rolls the prune back either way. The order
-					// buys two smaller things: the DELETE is not done for a
-					// write that is about to refuse, and an error from the
-					// prune cannot mask the guard's refusal as the caller's
-					// answer. Neither is observable without a failing prune,
-					// so this comment claims a preference rather than a rule
-					// nothing enforces.
-					if inner != nil {
-						if err := inner(tx, existing); err != nil {
-							return err
-						}
-					}
-					return pruneOpLog(tx)
-				}
-			}
-			updated, uerr := s.store.UpdateItemWithParentLink(item.ID, input, precheck, parentLink)
-			if uerr != nil {
-				return uerr
-			}
+		// PLAN-2975: WRITE FIRST, APPLY SECOND on the applier path.
+		//
+		// Before this, the content half was pushed into the live Y.Doc by
+		// ApplyExternalContent and the row write ran afterwards, so any of the
+		// four typed refusals below answered 4xx while the content was already
+		// in the collaborative document and would reach items.content on the
+		// next ?source=collab-snapshot flush (BUG-2840 half A). A refused PATCH
+		// must not change the item.
+		//
+		// The ordering is only possible because the handler can now learn which
+		// path it is on WITHOUT applying (TASK-2987's HasElectableApplier);
+		// previously the only way to discover the applier path was to take it.
+		contentToApply := *input.Content
+
+		route, updated, routeErr := s.routeContentUpdate(w, r, item, &input, openChildrenPrecheck, parentLink, contentToApply)
+		switch route {
+		case contentRouteHandled:
+			// The refusal or the settling answer has already been written.
+			return
+		case contentRouteApplierWrote:
+			// The row write committed and the apply succeeded: content is in the
+			// document and reaches items.content on the next flush.
 			fullWriteHandled = true
 			fullWriteUpdated = updated
-			return nil
-		})
-		if err == nil {
-			// Either the applier path acked (content propagated via
-			// Y.Doc; UpdateItem still needs to run for other fields)
-			// or directWrite ran the full UpdateItem inside the
-			// lock (fullWriteHandled tracks which).
 			input.Content = nil
-		} else if details, ok := asOpenChildrenGuardError(err); ok {
-			// IDEA-1494 R2: the open-children guard fired inside the
-			// directWrite callback. Don't let applyContentViaCollab's
-			// "any error falls through" policy retry the write —
-			// rejection is final.
-			writeOpenChildrenError(w, itemRefOrSlug(*item), details)
-			return
-		} else if conflict, ok := asUpdateConflictError(err); ok {
-			// TASK-2022: optimistic-concurrency conflict from inside the
-			// directWrite callback is also final — a retry would just lose
-			// the same race again.
-			writeUpdateConflictError(w, itemRefOrSlug(*item), conflict)
-			return
-		} else if writeItemRenameCascadeTooLarge(w, err) {
-			// FINAL, like the guard and conflict arms above. The refusal is
-			// deterministic, so the fall-through to the direct write below would
-			// re-run the entire cascade — every linking body read and projected a
-			// second time — and refuse identically (codex R2).
-			return
-		} else if writeInvalidItemTitle(w, err) {
-			// FINAL for the same reason, and the pair with
-			// isDeterministicWriteFailure: that function is what stops
-			// applyContentViaCollab swallowing this error, and THIS arm is what
-			// consumes it once it arrives. Without both, a refused title falls
-			// through to the direct write below and is re-derived from scratch.
-			//
-			// BUG-2833 / codex R2. The comment on writeItemRenameCascadeTooLarge
-			// says this handler has THREE error blocks and that mapping only the
-			// plain one is a population error rather than a typo. I mapped two,
-			// then a reviewer named a third — and this is the fourth unit to make
-			// the identical mistake in the identical function. CONVE-18: the
-			// instance a reviewer names is a sample; grep the class.
-			return
-		} else if errors.Is(err, collab.ErrApplierAmbiguous) {
-			// BUG-2276 residual 2 (P1, mixed-deploy window): a legacy (non-bracket-
-			// capable) applier was caught by a concurrent version restore and its
-			// outcome can't be confirmed. FAIL-SAFE — do NOT fall through to a direct
-			// write (which could clobber the live doc / lose the write); return a
-			// retryable 409 so the external caller retries once clients converge.
-			writeError(w, http.StatusConflict, "applier_ambiguous",
-				"A concurrent version restore made this edit's outcome ambiguous; please retry.")
-			return
+		case contentRouteDirectWrote:
+			// PruneAndApply ran the full write (content included) under the
+			// per-item lock, for a room with no live writer at all.
+			fullWriteHandled = true
+			fullWriteUpdated = updated
+			input.Content = nil
+		case contentRouteFallThrough:
+			// A transient, non-deterministic failure that is NOT a lost-write
+			// hazard: no live writer holds a diverging Y.Doc, so the ordinary
+			// row write below still carries the content. routeErr is logged by
+			// the router.
+			_ = routeErr
 		}
-		// Any other error path (e.g. ErrAllAppliersTimedOut, retry
-		// exhaustion) falls through to direct write — graceful
-		// degradation. The helper logs the specifics so operators
-		// see degraded paths.
 	}
 
 	var updated *models.Item
