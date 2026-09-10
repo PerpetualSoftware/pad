@@ -400,6 +400,17 @@ func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
 	// closed. It failed closed when the reorder landed, which is the guard working;
 	// teaching it the new shape is the response, and the count below is the part a
 	// future restructuring will trip again on purpose.
+	want := []string{
+		"asOpenChildrenGuardError",
+		"asUpdateConflictError",
+		"writeItemRenameCascadeTooLarge",
+		"writeInvalidItemTitle",
+	}
+	wantArm := map[string]bool{}
+	for _, w := range want {
+		wantArm[w] = true
+	}
+
 	// THE FILE SET IS DERIVED, NOT LISTED (codex round 5). A hardcoded pair passes
 	// while an unmapped block sits in a third file, which is the same
 	// under-counting this guard exists to catch — so the sources are every
@@ -421,7 +432,19 @@ func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
 		if rerr != nil {
 			t.Fatalf("read %s: %v", name, rerr)
 		}
-		if !strings.Contains(string(src), "UpdateItemWithParentLink(") {
+		// The predicate is a UNION, and fail-open is the failure mode it is fighting
+		// (codex round 6): a file reaching the store through a wrapper or a variable
+		// would not match the call text, so a file that calls any of the refusal ARMS
+		// is scanned too. A refusal block lives where the arms are called, whatever it
+		// calls the store through.
+		text := string(src)
+		relevant := strings.Contains(text, "UpdateItemWithParentLink(")
+		for _, arm := range want {
+			if strings.Contains(text, arm+"(") {
+				relevant = true
+			}
+		}
+		if !relevant {
 			continue
 		}
 		f, perr := parser.ParseFile(fset, name, src, 0)
@@ -441,16 +464,6 @@ func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
 	// contract, not style: the UNIQUE-constraint arm that closes each block
 	// matches on error TEXT, so a typed arm placed after it can be swallowed by
 	// a substring match rather than reached.
-	want := []string{
-		"asOpenChildrenGuardError",
-		"asUpdateConflictError",
-		"writeItemRenameCascadeTooLarge",
-		"writeInvalidItemTitle",
-	}
-	wantArm := map[string]bool{}
-	for _, w := range want {
-		wantArm[w] = true
-	}
 
 	// ---- membership + order, per block ----
 	//
@@ -496,10 +509,12 @@ func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
 
 	var blocks [][]string
 	var lines []int
+	var startPos []token.Pos
 	for _, r := range refs {
 		if r.name == want[0] {
 			blocks = append(blocks, nil)
 			lines = append(lines, fset.Position(r.pos).Line)
+			startPos = append(startPos, r.pos)
 		}
 		if len(blocks) == 0 {
 			t.Fatalf("arm %q at line %d precedes any %q — the block-splitting assumption is wrong",
@@ -513,10 +528,12 @@ func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
 	// BUG-2833 door sweep), so single-arm blocks are not update blocks.
 	var updateBlocks [][]string
 	var updateLines []int
+	var updateStart []token.Pos
 	for i, b := range blocks {
 		if len(b) > 1 {
 			updateBlocks = append(updateBlocks, b)
 			updateLines = append(updateLines, lines[i])
+			updateStart = append(updateStart, startPos[i])
 		}
 	}
 
@@ -548,6 +565,67 @@ func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
 					updateLines[i], arms, want)
 				break
 			}
+		}
+	}
+
+	// ---- the fifth arm: the UNIQUE-constraint race ----
+	//
+	// It is not in `want` because it is not a call to a named helper — it is a string
+	// match on the driver's message, so the AST walk above cannot see it. It is
+	// checked anyway, and separately, because dropping it is exactly the regression
+	// codex round 5 found: the applier path inherited this mapping from the ordinary
+	// block until the reorder routed around it, and a benign race answered 500 on one
+	// route and 409 on the other.
+	//
+	// SCOPED TO THE ENCLOSING FUNCTION, which is what made it discriminate. The first
+	// version asked whether a UNIQUE literal appeared between this block's start and
+	// the next block's start in token.Pos. Those windows span whole FILES — the gap
+	// between the last block of one file and the first block of the next swallows
+	// every literal in between, including two in handlers_items.go belonging to the
+	// create and restore paths and one in handlers_items_bulk.go. ALL THREE mutation
+	// controls survived that version; it asserted nothing. A block's arm lives in the
+	// block's own function, so that is the containment to test.
+	funcOf := func(pos token.Pos) *ast.FuncDecl {
+		for _, f := range files {
+			for _, decl := range f.Decls {
+				fn, ok := decl.(*ast.FuncDecl)
+				if !ok {
+					continue
+				}
+				if pos >= fn.Pos() && pos <= fn.End() {
+					return fn
+				}
+			}
+		}
+		return nil
+	}
+	uniqueInFunc := map[*ast.FuncDecl]bool{}
+	inspectAll(func(n ast.Node) bool {
+		lit, ok := n.(*ast.BasicLit)
+		if !ok || lit.Kind != token.STRING {
+			return true
+		}
+		if !strings.Contains(lit.Value, "UNIQUE constraint") {
+			return true
+		}
+		if fn := funcOf(lit.Pos()); fn != nil {
+			uniqueInFunc[fn] = true
+		}
+		return true
+	})
+
+	for i, lo := range updateStart {
+		fn := funcOf(lo)
+		if fn == nil {
+			t.Errorf("the error block at line %d is not inside any function declaration; the "+
+				"containment this check relies on does not hold", updateLines[i])
+			continue
+		}
+		if !uniqueInFunc[fn] {
+			t.Errorf("%s contains an error block at line %d but no UNIQUE-constraint arm. A "+
+				"concurrent slug/title collision answers 409 on the routes that map it and 500 on "+
+				"the ones that do not, for the identical store error — which is the regression that "+
+				"put this check here.", fn.Name.Name, updateLines[i])
 		}
 	}
 
