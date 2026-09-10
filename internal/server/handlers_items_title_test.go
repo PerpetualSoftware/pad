@@ -9,6 +9,7 @@ import (
 	"go/token"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"sort"
 	"strings"
 	"testing"
@@ -316,6 +317,29 @@ func TestWriteTypedItemRefusalIncludesTitleRefusal(t *testing.T) {
 	if refused(errors.New("transient prune failure")) {
 		t.Error("an unrecognised error must stay recoverable so the route still degrades gracefully")
 	}
+
+	// The FIFTH arm. Before PLAN-2975 the applier path's row write fell through the
+	// ordinary error block and inherited its UNIQUE-constraint mapping; routing that
+	// path through this helper dropped it, turning a benign race into a 500 on that
+	// route only (codex round 5, a regression rather than a gap). Both wordings are
+	// asserted because the store hands back the driver's message verbatim and SQLite
+	// and Postgres word it differently — testing one would leave the other route to
+	// the 500.
+	for _, msg := range []string{
+		"UNIQUE constraint failed: items.slug",
+		`pq: duplicate key value violates unique constraint "items_invocation_slug_idx"`,
+	} {
+		rec := httptest.NewRecorder()
+		if !srv.writeTypedItemRefusal(rec, item, errors.New(msg)) {
+			t.Errorf("a unique-constraint race (%q) must be recognised; unrecognised it answers 500 "+
+				"for a request the server understood and declined", msg)
+			continue
+		}
+		if rec.Code != http.StatusConflict {
+			t.Errorf("a unique-constraint race answered %d, want 409 to match the create path and "+
+				"the ordinary update path", rec.Code)
+		}
+	}
 }
 
 // TestUpdateItemErrorBlocksMapEveryStoreRefusal is a structural guard, and it
@@ -376,16 +400,42 @@ func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
 	// closed. It failed closed when the reorder landed, which is the guard working;
 	// teaching it the new shape is the response, and the count below is the part a
 	// future restructuring will trip again on purpose.
+	// THE FILE SET IS DERIVED, NOT LISTED (codex round 5). A hardcoded pair passes
+	// while an unmapped block sits in a third file, which is the same
+	// under-counting this guard exists to catch — so the sources are every
+	// non-test file in the package that calls UpdateItemWithParentLink, and a file
+	// that starts calling it joins the scan by doing so.
 	fset := token.NewFileSet()
-	sources := []string{"handlers_items.go", "handlers_items_content_route.go"}
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read package dir: %v", err)
+	}
 	var files []*ast.File
-	for _, name := range sources {
-		f, err := parser.ParseFile(fset, name, nil, 0)
-		if err != nil {
-			t.Fatalf("parse %s: %v", name, err)
+	var sources []string
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		src, rerr := os.ReadFile(name)
+		if rerr != nil {
+			t.Fatalf("read %s: %v", name, rerr)
+		}
+		if !strings.Contains(string(src), "UpdateItemWithParentLink(") {
+			continue
+		}
+		f, perr := parser.ParseFile(fset, name, src, 0)
+		if perr != nil {
+			t.Fatalf("parse %s: %v", name, perr)
 		}
 		files = append(files, f)
+		sources = append(sources, name)
 	}
+	if len(files) == 0 {
+		t.Fatal("no non-test file in this package calls UpdateItemWithParentLink; the scan found " +
+			"nothing to check, so every assertion below would be vacuous")
+	}
+	t.Logf("scanning %v", sources)
 
 	// The arms, in the order every block must apply them. Order is part of the
 	// contract, not style: the UNIQUE-constraint arm that closes each block
@@ -470,11 +520,14 @@ func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
 		}
 	}
 
-	// Three still: two inline blocks remaining in handlers_items.go, plus
-	// writeTypedItemRefusal's single shared block in handlers_items_content_route.go.
-	// The number is unchanged by coincidence — what changed is that one of the three
-	// is now reached by every content-PATCH ordering instead of being copied per
-	// route (PLAN-2975).
+	// Three: two inline blocks remaining in handlers_items.go, plus
+	// writeTypedItemRefusal's single shared block. The number is unchanged from
+	// before PLAN-2975 by coincidence — what changed is that one of the three is now
+	// reached by every content-PATCH ordering instead of being copied per route.
+	//
+	// The constant is deliberately brittle. A restructuring that changes the count
+	// should stop here and be looked at, because that is the moment a refusal
+	// silently stops being mapped on one route.
 	const wantBlocks = 3
 	if len(updateBlocks) != wantBlocks {
 		t.Fatalf("found %d UpdateItem error block(s) at lines %v, want %d — the instrument's block "+

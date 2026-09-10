@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/collab"
@@ -319,6 +320,14 @@ func composePruneWithPrecheck(s *Server, itemID string, inner func(*sql.Tx, *mod
 // consulted by every ordering is what stops the count drifting again: anyone adding a
 // typed refusal to store.UpdateItem changes this and every path inherits it.
 func (s *Server) writeTypedItemRefusal(w http.ResponseWriter, item *models.Item, err error) bool {
+	// A nil error is not a refusal. The typed arms below all tolerate nil (errors.As
+	// and the write helpers check), but the string-matching arm dereferences, so
+	// without this a caller asking "is this a refusal?" about success panics. Caught
+	// by the nil control leg in TestWriteTypedItemRefusalIncludesTitleRefusal the
+	// moment that arm was added — which is what the control is for.
+	if err == nil {
+		return false
+	}
 	if details, ok := asOpenChildrenGuardError(err); ok {
 		writeOpenChildrenError(w, itemRefOrSlug(*item), details)
 		return true
@@ -331,6 +340,29 @@ func (s *Server) writeTypedItemRefusal(w http.ResponseWriter, item *models.Item,
 		return true
 	}
 	if writeInvalidItemTitle(w, err) {
+		return true
+	}
+	// The FIFTH arm, and the one this function was built without — found by codex
+	// round 5 as a REGRESSION, not a gap. The ordinary path maps a UNIQUE-constraint
+	// race to a 409 (a concurrent update that passes checkUniqueFields and then hits
+	// the partial unique index on invocation_slug), and before the reorder the
+	// applier path's row write ran through that block and inherited it. Routing the
+	// applier path through a helper built from "the four typed refusals" turned a
+	// benign race into a 500 on that path only.
+	//
+	// The irony is the lesson: this function exists BECAUSE this handler's refusal
+	// set has been under-counted three times, and building it I under-counted the set
+	// again — by taking the count from the typed errors rather than from the block
+	// that actually answers them. The population is what the ordinary path maps, not
+	// what has a Go type.
+	//
+	// It stays a string match here for the same reason it is one there: the store
+	// returns the driver's error verbatim and SQLite and Postgres word it
+	// differently. Kept LAST, after every typed arm, because a substring match can
+	// swallow a typed refusal whose message happens to contain the text.
+	if strings.Contains(err.Error(), "UNIQUE constraint") || strings.Contains(err.Error(), "duplicate key") {
+		writeError(w, http.StatusConflict, "conflict",
+			"An item conflicts with an existing record (duplicate slug, title, or invocation slug)")
 		return true
 	}
 	return false
