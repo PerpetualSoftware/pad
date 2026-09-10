@@ -34,7 +34,9 @@ func readRawSSEFramesAuthed(t *testing.T, ctx context.Context, url, lastEventID,
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	// isolatedTestClient(), not http.DefaultClient — same helper reasoning as
+	// connectSSE (BUG-3008).
+	resp, err := isolatedTestClient().Do(req)
 	if err != nil {
 		t.Fatalf("connecting: %v", err)
 	}
