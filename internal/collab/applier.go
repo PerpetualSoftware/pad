@@ -287,8 +287,20 @@ func (m *RoomManager) ApplyExternalContent(itemID string, markdown string) error
 // THE ERROR DIRECTION IS ASYMMETRIC AND DELIBERATE. A false negative is the defect
 // this exists to prevent: it sends a caller back to apply-then-write, which is
 // BUG-2840 half A verbatim — content in the live Y.Doc, then a refused row write. A
-// false positive costs a partial answer, not corruption. So every judgement call
-// here resolves toward true.
+// false positive costs the caller an honest partial answer instead (PLAN-2975
+// decision 2), which is why every judgement call here resolves toward true.
+//
+// That asymmetry is a statement about THIS function's answer, not a guarantee about
+// everything downstream of it, and the difference matters. A caller that reorders on
+// a true and then meets an apply failure inherits whatever its fallback does — and
+// the fallback that exists today can itself write content past live peers: when
+// applyContentViaCollab exhausts its ErrRoomActiveDuringPrune retries, the PATCH
+// handler falls through to a plain direct write while a live writer may be holding a
+// Y.Doc that will outvote it on the next flush (internal/server/handlers_collab.go's
+// retry cap, consumed by handleUpdateItem's "any other error path" fall-through).
+// That predates this function and is unchanged by it; it is named here because a
+// reader would otherwise take "a false positive costs a partial answer" as a claim
+// about the whole path rather than about this return value (codex round 2, PLAN-2975).
 //
 // That is why an in-progress version restore answers TRUE rather than consulting the
 // conns. ForceRefreshRoom freezes every conn for the duration, and pickApplier skips
@@ -301,10 +313,16 @@ func (m *RoomManager) ApplyExternalContent(itemID string, markdown string) error
 // no window with restoreActive false and conns still frozen.
 //
 // Eligibility is delegated to pickApplier rather than restated, so the hint and the
-// elector cannot drift: read-only conns, frozen conns, and unanchored conns are
-// excluded here because they are excluded there. Passing a nil tried-set asks
-// "is ANY conn electable", which is the condition for the applier path being
-// attempted at all.
+// elector cannot disagree about the RULE: read-only conns, frozen conns, and
+// unanchored conns are excluded here because they are excluded there, and a future
+// change to that predicate reaches both. They can still disagree about the ANSWER,
+// because the room's state moves between the two calls — this is a point-in-time
+// read, not a reservation. Known routes by which a false NO becomes a live applier:
+// a fresh writer joins; an unanchored conn finishes replay and flips replayDone; a
+// view-only conn is promoted by the collab handler's periodic revalidation
+// (SetConnWritable); a restore rolls back and unfreezes (covered by the clause
+// above). Passing a nil tried-set asks "is ANY conn electable", which is the
+// condition for the applier path being attempted at all.
 func (m *RoomManager) HasElectableApplier(itemID string) bool {
 	m.mu.Lock()
 	if m.closed {
