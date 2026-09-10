@@ -844,7 +844,8 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	// This is the only site where a MigrateRelationReferents drop reason
 	// reaches a caller — move and bulk move report dropped KEYS and no
 	// reasons — so the class is one site, not five.
-	if cerr := s.collapseInvisibleRelationIssues(r, dst.WorkspaceID(), dst.Role, relDropped); cerr != nil {
+	relDropped, cerr := s.collapseInvisibleRelationIssues(r, dst.WorkspaceID(), dst.Role, relDropped, nil)
+	if cerr != nil {
 		writeInternalError(w, fmt.Errorf("copy preflight: carried relation visibility: %w", cerr))
 		return
 	}
@@ -871,7 +872,8 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 		writeInternalError(w, fmt.Errorf("copy preflight: resolve relation defaults: %w", lateErr))
 		return
 	}
-	if cerr := s.collapseInvisibleRelationIssues(r, dst.WorkspaceID(), dst.Role, lateDropped); cerr != nil {
+	lateDropped, cerr = s.collapseInvisibleRelationIssues(r, dst.WorkspaceID(), dst.Role, lateDropped, final)
+	if cerr != nil {
 		writeInternalError(w, fmt.Errorf("copy preflight: relation issue visibility: %w", cerr))
 		return
 	}

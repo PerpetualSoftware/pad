@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 
@@ -250,40 +251,71 @@ func (s *Server) narrowAmbiguousRelationTitle(
 	workspaceID, role string,
 	ri store.RelationIssue,
 ) (string, error) {
-	if len(ri.CandidateIDs) == 0 {
+	if ri.TitleCollectionID == "" {
+		// Not a title-derived ambiguity, so there is nothing to narrow.
 		return ambiguityStands, nil
 	}
+	user, bearer := currentUser(r), isBearerAuth(r)
+
 	visible := ""
 	count := 0
-	for _, id := range ri.CandidateIDs {
-		item, err := s.store.GetItem(id)
+	after := 0
+	for {
+		ids, numbers, err := s.store.RelationTitleCandidatesQ(
+			s.store.Q(), workspaceID, ri.TitleCollectionID, ri.Value, after, relationTitleCandidatePage)
 		if err != nil {
 			return "", err
 		}
-		if item == nil {
-			// Deleted between the resolver's read and this one. It is not a
-			// match any more, so it does not count towards ambiguity — the
-			// same treatment the vanished-target arm gives elsewhere.
-			continue
+		if len(ids) == 0 {
+			break
 		}
-		seen, err := s.checkItemVisible(workspaceID, item, currentUser(r), role, isBearerAuth(r))
-		if err != nil {
-			return "", err
+		for i, id := range ids {
+			after = numbers[i]
+			item, err := s.store.GetItem(id)
+			if err != nil {
+				return "", err
+			}
+			if item == nil {
+				// Deleted between the resolver's read and this one. Not a match
+				// any more, so it does not count towards ambiguity — the same
+				// treatment the vanished-target arm gives elsewhere.
+				continue
+			}
+			seen, err := s.checkItemVisible(workspaceID, item, user, role, bearer)
+			if err != nil {
+				return "", err
+			}
+			if !seen {
+				continue
+			}
+			count++
+			if count > 1 {
+				// Two visible matches is the answer; nothing later can change
+				// it, so the remaining pages are never read.
+				return ambiguityStands, nil
+			}
+			visible = item.ID
 		}
-		if !seen {
-			continue
+		if len(ids) < relationTitleCandidatePage {
+			break
 		}
-		count++
-		if count > 1 {
-			return ambiguityStands, nil
-		}
-		visible = item.ID
 	}
 	if count == 0 {
 		return ambiguityNoneVisible, nil
 	}
 	return visible, nil
 }
+
+// relationTitleCandidatePage is the page size for that walk. It bounds MEMORY,
+// not the answer: the loop stops at the second visible match or at the end of
+// the rows, so no match count changes what a caller is told. A cap on the
+// ANSWER was the first shape and it was an oracle — "one visible plus cap
+// hidden" read differently from "one visible plus cap+1 hidden".
+//
+// The worst case is a scan of every live item sharing one exact title in one
+// collection, which is a set the workspace's own writers created and is
+// normally 1.
+const relationTitleCandidatePage = 100
 
 // removeIssue drops the issue raised for key. Used when a refusal turns out not
 // to apply to this requester after all — an `ambiguous` that resolves for a
@@ -335,23 +367,42 @@ func collapseIssue(issues []store.RelationIssue, key string, reason store.Relati
 // Reviewer named ONE site; this is applied at all five late-default sites,
 // per CONVE-18 — the class is "a store-resolved issue reaching a caller
 // without passing the visibility collapse", not the one call it was spotted at.
-func (s *Server) collapseInvisibleRelationIssues(r *http.Request, workspaceID, role string, issues []store.RelationIssue) error {
+// Returns the issues that SURVIVE. An `ambiguous` that resolved for this
+// caller is not a drop and must not be counted as one — returning the slice
+// rather than marking entries in place makes every call site reassign, so the
+// compiler enforces what a "remember to filter afterwards" helper would only
+// ask for.
+func (s *Server) collapseInvisibleRelationIssues(r *http.Request, workspaceID, role string, issues []store.RelationIssue, fieldMap map[string]any) ([]store.RelationIssue, error) {
+	var resolved []string
 	for i := range issues {
-		// A late-default `ambiguous` gets the same visibility narrowing the
-		// main pass applies. It cannot RESOLVE here — an injected default has
-		// no field map for this pass to write into — so a single visible match
-		// is not ambiguous for this caller and reads as not_found, which is
-		// the answer they would have got had the default named that item and
-		// been refused for some other reason. Two or more visible matches keep
-		// the specific reason; none visible collapses, because saying
-		// `ambiguous` would confirm that items they cannot see carry that
-		// title (PLAN-2857 U6).
+		// A late-default `ambiguous` gets the same narrowing AND the same
+		// resolution the main pass applies. Downgrading a single visible match
+		// to not_found here — which is what this did first — still leaks the
+		// hidden twin: the caller sees a default RESOLVE when they are the only
+		// match and FAIL when a twin they cannot see exists, so the outcome
+		// itself answers the question the reason was careful not to (codex
+		// round 2 on U6).
+		//
+		// The field map is threaded in for exactly this. ResolveLateRelationDefaults
+		// has already deleted the key, so resolving means putting it back.
 		if issues[i].Reason == store.RelationTargetAmbiguous {
 			narrowed, nerr := s.narrowAmbiguousRelationTitle(r, workspaceID, role, issues[i])
 			if nerr != nil {
-				return nerr
+				return nil, nerr
 			}
-			if narrowed != ambiguityStands {
+			switch narrowed {
+			case ambiguityStands:
+				// Two or more visible: genuinely ambiguous for this caller.
+			case ambiguityNoneVisible:
+				issues[i].Reason = store.RelationTargetNotFound
+			default:
+				if fieldMap != nil {
+					fieldMap[issues[i].Key] = narrowed
+					resolved = append(resolved, issues[i].Key)
+					break
+				}
+				// No field map to restore into: the honest answer is the one
+				// that discloses least.
 				issues[i].Reason = store.RelationTargetNotFound
 			}
 			continue
@@ -375,7 +426,7 @@ func (s *Server) collapseInvisibleRelationIssues(r *http.Request, workspaceID, r
 			target, terr = s.store.ResolveRelationTarget(workspaceID, issues[i].Value)
 		}
 		if terr != nil {
-			return terr
+			return nil, terr
 		}
 		if target == nil {
 			// Vanished between the two reads. The reason still SAYS the value
@@ -385,13 +436,22 @@ func (s *Server) collapseInvisibleRelationIssues(r *http.Request, workspaceID, r
 		}
 		seen, verr := s.checkItemVisible(workspaceID, target, currentUser(r), role, isBearerAuth(r))
 		if verr != nil {
-			return verr
+			return nil, verr
 		}
 		if !seen {
 			issues[i].Reason = store.RelationTargetNotFound
 		}
 	}
-	return nil
+	if len(resolved) == 0 {
+		return issues, nil
+	}
+	kept := make([]store.RelationIssue, 0, len(issues))
+	for _, ri := range issues {
+		if !slices.Contains(resolved, ri.Key) {
+			kept = append(kept, ri)
+		}
+	}
+	return kept, nil
 }
 
 // refuseRelationIssues writes the 400 a write door owes and reports whether it
@@ -609,7 +669,8 @@ func (s *Server) resolveRelationsForWrite(
 	if err != nil {
 		return nil, nil, err
 	}
-	if cerr := s.collapseInvisibleRelationIssues(r, workspaceID, role, lateDropped); cerr != nil {
+	lateDropped, cerr := s.collapseInvisibleRelationIssues(r, workspaceID, role, lateDropped, fieldMap)
+	if cerr != nil {
 		return nil, nil, cerr
 	}
 	if required := store.RequiredRelationIssues(schema, lateDropped); len(required) > 0 {

@@ -95,23 +95,25 @@ type RelationIssue struct {
 	// Message().
 	MatchedID string
 
-	// CandidateIDs are the live items whose exact TITLE matched, inside the
-	// declared collection, set ONLY alongside `RelationTargetAmbiguous`.
+	// TitleCollectionID is the collection the TITLE lookup searched, set only
+	// alongside `RelationTargetAmbiguous`.
 	//
 	// It exists because THIS PACKAGE CANNOT DECIDE AMBIGUITY. The rule is that
 	// title resolution is scoped to what the requester can SEE — among live
 	// exact-title matches, only visible ones count, so zero is not_found, one
 	// RESOLVES, and two or more is ambiguous. Visibility is request-scoped and
 	// deliberately absent here (see the file header), so the count this package
-	// produces is provisional and the server re-decides against these ids.
+	// produces is PROVISIONAL and the server re-decides.
 	//
-	// Empty with an ambiguous reason means the match count exceeded
-	// relationTitleCandidateCap, and the answer stands for every caller.
+	// The collection id rather than the matched ids: the server pages through
+	// candidates with RelationTitleCandidatesQ and stops at the second VISIBLE
+	// one, so it never needs the whole set in memory and there is no match
+	// count at which the answer changes. Carrying a bounded id list was the
+	// first shape and it made the bound an oracle — a caller could tell
+	// "one visible + cap hidden" from "one visible + cap+1 hidden".
 	//
-	// Internal only, like MatchedID: no JSON tags, and nothing puts it on the
-	// wire — the ids are exactly what a caller who cannot see them must not
-	// receive.
-	CandidateIDs []string
+	// Internal only, like MatchedID: no JSON tags, nothing puts it on the wire.
+	TitleCollectionID string
 }
 
 // Message renders the issue the way every door reports it. One function so the
@@ -284,9 +286,10 @@ func (s *Store) ResolveRelationReferentsQ(
 			}
 			switch {
 			case ambiguous:
+				_ = candidates
 				issues = append(issues, RelationIssue{
 					Key: def.Key, Value: value, Target: def.Collection,
-					Reason: RelationTargetAmbiguous, CandidateIDs: candidates,
+					Reason: RelationTargetAmbiguous, TitleCollectionID: targetID,
 				})
 				continue
 			case titled != nil:
@@ -451,23 +454,25 @@ func (s *Store) resolveRelationTitleQ(
 	q Queryer,
 	workspaceID, targetCollectionID, title string,
 ) (item *models.Item, outside *models.Item, ambiguous bool, candidates []string, err error) {
-	// Bounded fetch rather than LIMIT 2, because the count this function
-	// returns is NOT the count that decides the caller's answer.
+	// Two rows answer "more than one" without counting the collection. That is
+	// all THIS package needs: its answer is provisional whenever a requester
+	// exists, because the rule (lead ruling, PLAN-2857 U6) is that title
+	// resolution is scoped to what the requester CAN SEE — among live
+	// exact-title matches, only visible ones count, so zero is not_found, one
+	// resolves, two or more is ambiguous, and a hidden match never changes the
+	// answer. Visibility cannot be decided here (see this file's header), so an
+	// ambiguous issue carries the collection searched and the server pages
+	// through candidates itself with RelationTitleCandidatesQ.
 	//
-	// The rule (lead ruling, PLAN-2857 U6) is that title resolution is scoped
-	// to what the REQUESTER CAN SEE: among live exact-title matches in the
-	// target collection, only visible ones count — zero is not_found, one
-	// resolves, two or more is ambiguous — so a hidden match never changes the
-	// answer a caller gets. Visibility is request-scoped and cannot be decided
-	// here (see this file's header), so this returns the CANDIDATES and the
-	// server layer re-decides. LIMIT 2 would be enough only if every match
-	// counted, which is the behaviour that leaked.
+	// For a caller with NO requester — copy, migrate, import — this count is
+	// the final answer, and every live match counting is right there: nobody is
+	// being told anything.
 	rows, err := q.Query(s.q(`
 		SELECT id FROM items
 		WHERE workspace_id = ? AND collection_id = ? AND title = ? AND deleted_at IS NULL
 		ORDER BY item_number
-		LIMIT ?
-	`), workspaceID, targetCollectionID, title, relationTitleCandidateCap+1)
+		LIMIT 2
+	`), workspaceID, targetCollectionID, title)
 	if err != nil {
 		return nil, nil, false, nil, fmt.Errorf("relation title lookup: %w", err)
 	}
@@ -486,15 +491,6 @@ func (s *Store) resolveRelationTitleQ(
 	}
 	rows.Close()
 
-	if len(ids) > relationTitleCandidateCap {
-		// Past the cap the candidates are not returned, so the server cannot
-		// narrow by visibility and the answer stays ambiguous for everyone.
-		// That is the safe direction and it is not a real case: a caller
-		// cannot be meaningfully handed one of more than relationTitleCandidateCap
-		// same-titled items, and answering "be more specific" is right whoever
-		// is asking.
-		return nil, nil, true, nil, nil
-	}
 	if len(ids) > 1 {
 		return nil, nil, true, ids, nil
 	}
@@ -530,11 +526,48 @@ func (s *Store) resolveRelationTitleQ(
 	return nil, other, false, nil, nil
 }
 
-// relationTitleCandidateCap bounds the exact-title fetch. Past it the server
-// is not given candidates to narrow by visibility and every caller gets
-// `ambiguous` — see resolveRelationTitleQ for why that is the right answer
-// rather than a degradation.
-const relationTitleCandidateCap = 25
+// RelationTitleCandidatesQ returns one PAGE of the live items whose exact title
+// matches, inside the given collection, ordered by item_number and starting
+// after `afterItemNumber` (0 for the first page).
+//
+// The server pages through these to apply the visibility rule, stopping at the
+// SECOND visible match. Paging rather than one bounded fetch is what keeps the
+// rule free of an oracle: with a cap, a caller could tell "one visible plus cap
+// hidden" from "one visible plus cap+1 hidden", because the answer changed at
+// the boundary. Here nothing changes at any count.
+//
+// Ids and item numbers only — the caller decides what it may look at before it
+// loads anything.
+func (s *Store) RelationTitleCandidatesQ(
+	q Queryer,
+	workspaceID, collectionID, title string,
+	afterItemNumber, limit int,
+) (ids []string, itemNumbers []int, err error) {
+	rows, err := q.Query(s.q(`
+		SELECT id, item_number FROM items
+		WHERE workspace_id = ? AND collection_id = ? AND title = ?
+		  AND deleted_at IS NULL AND item_number > ?
+		ORDER BY item_number
+		LIMIT ?
+	`), workspaceID, collectionID, title, afterItemNumber, limit)
+	if err != nil {
+		return nil, nil, fmt.Errorf("relation title candidates: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var num int
+		if scanErr := rows.Scan(&id, &num); scanErr != nil {
+			return nil, nil, fmt.Errorf("relation title candidates scan: %w", scanErr)
+		}
+		ids = append(ids, id)
+		itemNumbers = append(itemNumbers, num)
+	}
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return nil, nil, fmt.Errorf("relation title candidates rows: %w", rowsErr)
+	}
+	return ids, itemNumbers, nil
+}
 
 // collectionIDBySlugQ returns the collection's ID, or "" when the workspace
 // has no live collection with that slug. ID only: the referent check compares

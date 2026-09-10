@@ -43,7 +43,7 @@ import (
 // the same reason: `relation_targets` is additive convenience, and a list read
 // that 500s because a convenience field could not be built is a worse answer
 // than one without it.
-func (s *Server) hydrateRelationTargets(r *http.Request, workspaceID string, items []models.Item, visibleIDs ...[]string) {
+func (s *Server) hydrateRelationTargets(r *http.Request, workspaceID string, items []models.Item) {
 	if len(items) == 0 || r == nil {
 		return
 	}

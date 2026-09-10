@@ -2504,7 +2504,8 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, lateErr)
 		return
 	}
-	if cerr := s.collapseInvisibleRelationIssues(r, workspaceID, workspaceRole(r), lateDropped); cerr != nil {
+	lateDropped, cerr := s.collapseInvisibleRelationIssues(r, workspaceID, workspaceRole(r), lateDropped, result.Fields)
+	if cerr != nil {
 		writeInternalError(w, cerr)
 		return
 	}

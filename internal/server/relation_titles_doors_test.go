@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -368,5 +369,157 @@ func TestRelationTitleDoors_HydrationUsesITEMVisibilityNotCollectionVisibility(t
 	ok := read(pointsAtGranted)
 	if ok.Ref != granted.Ref || ok.Title != "Granted Person" {
 		t.Errorf("control: the GRANTED target should hydrate fully, got %+v", ok)
+	}
+}
+
+// TestRelationTitleDoors_VisibilityNarrowingHasNoCountBoundary is the
+// regression test for codex round 2's P1: the first fix bounded the candidate
+// list at a constant and answered `ambiguous` past it, which made the BOUND an
+// oracle — a caller could tell "one visible plus cap hidden" (resolves) from
+// "one visible plus cap+1 hidden" (ambiguous), and the difference is entirely
+// about items they cannot see.
+//
+// The fix pages through candidates and stops at the SECOND VISIBLE one, so no
+// match count changes the answer. This drives well past the page size with a
+// single visible match: it must still resolve.
+func TestRelationTitleDoors_VisibilityNarrowingHasNoCountBoundary(t *testing.T) {
+	f := newDoorFixture(t)
+
+	// One visible match, created FIRST so the walk has to pass every hidden
+	// one to reach the end and conclude there is only one.
+	visible, err := f.srv.store.CreateItem(f.ws.ID, f.people.ID, models.ItemCreate{Title: "Crowd", CreatedBy: f.owner.ID})
+	if err != nil {
+		t.Fatalf("CreateItem(visible): %v", err)
+	}
+	// Comfortably past relationTitleCandidatePage (100), so the walk pages.
+	const hidden = 250
+	for i := 0; i < hidden; i++ {
+		if _, err := f.srv.store.CreateItem(f.ws.ID, f.people.ID, models.ItemCreate{
+			Title: "Crowd", CreatedBy: f.owner.ID,
+		}); err != nil {
+			t.Fatalf("CreateItem(hidden %d): %v", i, err)
+		}
+	}
+
+	member := restrictedTitleFixture(t, f, "one-in-a-crowd@example.com", visible)
+	rr := f.createByTitle(member, "Crowd", "Found in the crowd")
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("a caller who can see exactly ONE of %d matches must have it resolve, whatever the total: %d %s", hidden+1, rr.Code, rr.Body.String())
+	}
+	var created models.Item
+	if err := json.Unmarshal(rr.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	stored, ok := f.storedRelation(created.ID)
+	if !ok {
+		t.Fatal("no owner_ref stored")
+	}
+	if stored != visible.ID {
+		t.Errorf("stored %v, want the one visible match %s", stored, visible.ID)
+	}
+
+	// CONTROL: the OWNER sees all 251 and is told it is ambiguous. Without
+	// this, a narrowing that resolved to the first match for everybody would
+	// pass the leg above.
+	ownerRR := f.call(f.srv.handleCreateItem, "POST",
+		"/api/v1/workspaces/"+f.ws.Slug+"/collections/"+f.tasks.Slug+"/items",
+		map[string]string{"collSlug": f.tasks.Slug},
+		map[string]any{"title": "Owner tries", "fields": map[string]any{"owner_ref": "Crowd"}})
+	if ownerRR.Code != http.StatusBadRequest {
+		t.Fatalf("control: a caller who sees every match must be refused, got %d: %s", ownerRR.Code, ownerRR.Body.String())
+	}
+}
+
+// TestRelationTitleDoors_UpdateDoorAppliesTheSameNarrowing answers codex round
+// 2's P2 on coverage: the three ambiguity legs only drove CREATE, and each door
+// reaches the resolver by its own route.
+func TestRelationTitleDoors_UpdateDoorAppliesTheSameNarrowing(t *testing.T) {
+	f := newDoorFixture(t)
+	twinA, err := f.srv.store.CreateItem(f.ws.ID, f.people.ID, models.ItemCreate{Title: "Sam", CreatedBy: f.owner.ID})
+	if err != nil {
+		t.Fatalf("CreateItem(twinA): %v", err)
+	}
+	if _, err := f.srv.store.CreateItem(f.ws.ID, f.people.ID, models.ItemCreate{Title: "Sam", CreatedBy: f.owner.ID}); err != nil {
+		t.Fatalf("CreateItem(twinB): %v", err)
+	}
+
+	subject := f.seed(`{"status":"open"}`)
+	member := restrictedTitleFixture(t, f, "update-sees-one@example.com", twinA, subject)
+
+	rr := f.callAs(member, "editor", f.srv.handleUpdateItem, "PATCH",
+		"/api/v1/workspaces/"+f.ws.Slug+"/items/"+subject.Slug,
+		map[string]string{"itemSlug": subject.Slug},
+		map[string]any{"fields_patch": map[string]any{"owner_ref": "Sam"}})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("the update door must narrow the same way create does: %d %s", rr.Code, rr.Body.String())
+	}
+	stored, ok := f.storedRelation(subject.ID)
+	if !ok {
+		t.Fatal("no owner_ref stored")
+	}
+	if stored != twinA.ID {
+		t.Errorf("stored %v, want the VISIBLE twin %s", stored, twinA.ID)
+	}
+}
+
+// TestRelationTitleDoors_LateDefaultResolvesForACallerWhoSeesOne is codex round
+// 2's other P1, and it is a leak through the OUTCOME rather than the message.
+//
+// A relation DEFAULT declared as a title goes through the late pass, which runs
+// after validation injects it. The first fix could only downgrade a narrowed
+// ambiguity to not_found there — ResolveLateRelationDefaults has already
+// deleted the key and the collapse had no field map to restore it into. So a
+// caller who was the twin's only visible match got the default APPLIED when
+// they were the sole match and DROPPED when a twin they cannot see existed. The
+// reason said nothing, and the outcome said everything.
+func TestRelationTitleDoors_LateDefaultResolvesForACallerWhoSeesOne(t *testing.T) {
+	f := newDoorFixture(t)
+
+	visible, err := f.srv.store.CreateItem(f.ws.ID, f.people.ID, models.ItemCreate{Title: "Morgan", CreatedBy: f.owner.ID})
+	if err != nil {
+		t.Fatalf("CreateItem(visible): %v", err)
+	}
+	if _, err := f.srv.store.CreateItem(f.ws.ID, f.people.ID, models.ItemCreate{Title: "Morgan", CreatedBy: f.owner.ID}); err != nil {
+		t.Fatalf("CreateItem(hidden twin): %v", err)
+	}
+
+	// The default is a TITLE, and it is ambiguous in the store's own counting.
+	defaulted := mustSchemaCollection(t, f.srv, f.ws.ID, "TitleDefaulted", fmt.Sprintf(`{"fields":[
+		{"key":"status","label":"Status","type":"select","options":["open","done"]},
+		{"key":"priority","label":"Priority","type":"select","options":["low","high"]},
+		{"key":"owner_ref","label":"Owner","type":"relation","collection":%q,"default":"Morgan"}
+	]}`, f.people.Slug))
+
+	subject, err := f.srv.store.CreateItem(f.ws.ID, defaulted.ID, models.ItemCreate{
+		Title: "Gets a defaulted owner", Fields: `{"status":"open"}`, CreatedBy: f.owner.ID,
+	})
+	if err != nil {
+		t.Fatalf("CreateItem(subject): %v", err)
+	}
+
+	member := restrictedTitleFixture(t, f, "late-default@example.com", visible, subject)
+	if err := f.srv.store.SetMemberCollectionAccess(f.ws.ID, member.ID, "specific",
+		[]string{f.tasks.ID, defaulted.ID}); err != nil {
+		t.Fatalf("SetMemberCollectionAccess: %v", err)
+	}
+
+	// The BULK door, not fields_patch. The patch route resolves only the keys
+	// the caller named, so a defaulted relation never reaches the late pass
+	// there at all — I aimed this at fields_patch first and it proved nothing.
+	// `set-priority` is the same route TestRelationDoors_BulkUpdateResolves-
+	// InjectedRelationDefault uses, and it does run the injection.
+	rr := f.callAs(member, "editor", f.srv.handleBulkItems, "POST",
+		"/api/v1/workspaces/"+f.ws.Slug+"/items/bulk", nil,
+		map[string]any{"op": "set-priority", "ids": []string{subject.ID}, "priority": "high"})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	stored, ok := f.storedRelationKey(subject.ID, "owner_ref")
+	if !ok {
+		t.Fatal("the defaulted relation was DROPPED for a caller who can see exactly one match; the drop itself tells them a twin they cannot see exists")
+	}
+	if stored != visible.ID {
+		t.Errorf("stored %v, want the one VISIBLE match %s", stored, visible.ID)
 	}
 }
