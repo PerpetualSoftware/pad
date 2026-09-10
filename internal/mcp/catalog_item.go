@@ -302,14 +302,16 @@ Actions:
   update        — Update an item by ref.
                   Required: ref. At least one mutable field.
                   Writing 'content' while a browser tab has the item open sends the
-                  markdown to that live document first; the stored copy catches up
-                  afterwards. The response echoes the content you SENT and carries
-                  warnings.content_outcome="applied_pending_flush". A get/list in that
-                  window reads the stored copy and answers with the PREVIOUS content —
-                  that is the lag, not a failed write, so do not re-send on the strength
-                  of it. The stored form is also not byte-identical to what you sent
-                  (the markdown round-trips through the editor), so compare on meaning
-                  rather than bytes.
+                  markdown to that live document first; the stored copy is updated only
+                  when that tab next flushes, and nothing guarantees it does. The
+                  response echoes the content you SENT and carries
+                  warnings.content_outcome="applied_pending_flush". A 'get' (or
+                  'list' with full=true — a default list carries no content at all)
+                  before that flush reads the stored copy and answers with the PREVIOUS
+                  content: the lag, not a failed write, so do not re-send on the
+                  strength of it. The stored form may also not be byte-identical to what
+                  you sent, since the markdown round-trips through the editor, so compare
+                  on meaning rather than bytes.
                   Optional: title, status, priority, content, role, assign, parent, comment, tags,
                   field, fields, expected_updated_at.
                   Same placement rules as create. Field updates are applied as a

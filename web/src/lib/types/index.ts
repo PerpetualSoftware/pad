@@ -701,9 +701,12 @@ export interface Item {
 	 * update responses only — never on a read, and never stored — so
 	 * `undefined` is the normal case and says nothing went unreported.
 	 *
-	 * The Go side has carried this since BUG-2850 and TASK-2878 added two
-	 * more members; nothing here mirrored it, so typed code could not reach
-	 * a warning the server was already sending (codex round 18).
+	 * The Go side has carried this since BUG-2850 and has gained members
+	 * since (TASK-2878, BUG-2995); nothing here mirrored it at first, so typed
+	 * code could not reach a warning the server was already sending (codex
+	 * round 18). Keep this interface in step with `models.ItemWriteWarnings`
+	 * — the members are listed there, and a count in this sentence would go
+	 * stale on the next addition.
 	 */
 	warnings?: ItemWriteWarnings;
 }
@@ -734,10 +737,12 @@ export interface ItemWriteWarnings {
 	 * markdown as SENT rather than as stored (BUG-2995).
 	 *
 	 * A caller comparing this response's `content` to a later read needs it: the
-	 * two differ even after the row catches up, because the markdown makes a
-	 * round trip through the editor on its way there (setext headings, bullet
-	 * markers, emphasis characters, list renumbering and blank-line runs all
-	 * normalise — see `lib/collab/bug2995Roundtrip.svelte.test.ts`).
+	 * two can still differ after the row is updated, because the markdown makes
+	 * a round trip through the editor on its way there — setext headings, bullet
+	 * markers, emphasis characters, list renumbering and blank-line runs
+	 * normalise, while already-canonical markdown survives unchanged (see
+	 * `lib/collab/bug2995Roundtrip.svelte.test.ts`). Nothing guarantees the
+	 * stored copy is ever updated (BUG-3000), so this carries no duration.
 	 */
 	content_outcome?: 'applied_pending_flush';
 }

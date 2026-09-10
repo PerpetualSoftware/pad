@@ -936,6 +936,36 @@ const CmdhelpVersion = "0.1"
 //     there is no legitimate call this refuses — the carried-value
 //     case, which is the one with a real claim to leniency, is
 //     already exempt by provenance rather than by a flag.
+//
+//   - POST-0.30, NO BUMP — BUG-2995. A successful content write through
+//     the designated applier used to answer with the item's PREVIOUS
+//     content: on that path the markdown goes to a live browser tab's
+//     Y.Doc and the row write runs with Content nil, so the response,
+//     built from that row, described the item as it stood before the
+//     request. It now carries the content as SENT, plus an additive
+//     omitempty `warnings.content_outcome: "applied_pending_flush"`
+//     naming where the content actually is.
+//
+//     Deliberately NOT a bump, and the line is worth stating because
+//     0.9 looks like a counter-example. 0.9 bumped because list rows
+//     LOST fields a consumer was reading — `content` replaced by a
+//     preview, UUID plumbing dropped. Here nothing is removed, nothing
+//     changes type, and the one field whose value moved was previously
+//     answering a content PATCH with content from before that PATCH. A
+//     consumer comparing the response's `content` to what it sent used
+//     to find a mismatch and could only conclude its write was lost;
+//     it now matches. There is no reliance to break, only a wrong
+//     answer to stop giving — which is the BUG-2304 disposition
+//     (advertised-but-unrouted actions fixed, no names/enums/shapes
+//     changed, hence no bump) rather than 0.9's.
+//
+//     What a consumer SHOULD change is reading, not parsing: during
+//     the window a `get` (or `list` with full=true) still answers from
+//     the row and returns the previous content, so the warning is the
+//     signal to re-read later rather than to re-send. Whether the row
+//     is ever updated is not established — the flush belongs to a
+//     browser tab and BUG-3000 carries the open half — so no surface
+//     here states a duration.
 const ToolSurfaceVersion = "0.30"
 
 // MetaVersionURI is the canonical URI of the queryable version document.

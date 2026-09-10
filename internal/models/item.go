@@ -216,8 +216,12 @@ type Item struct {
 
 	// Warnings is populated on WRITE responses only (create / update), never
 	// on reads, and is never stored. It carries things the write did that the
-	// caller might not have meant — today, field keys the collection's schema
-	// does not declare (BUG-2850).
+	// caller might not have meant, or could not otherwise learn: field keys the
+	// collection's schema does not declare (BUG-2850), keys the write dropped or
+	// kept unresolved (TASK-2878), and where the content ended up when it went
+	// to a live collaborative document rather than the row (BUG-2995). See
+	// ItemWriteWarnings for the members; this comment names the kinds rather
+	// than enumerating them, so adding one does not falsify it.
 	//
 	// Additive and omitempty: a client that does not know the key ignores it,
 	// and a write with nothing to report is byte-identical to before. The
