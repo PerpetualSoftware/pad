@@ -339,6 +339,7 @@ Run with --help-collections to see available collections and their status values
 			// into a parser — which is exactly the caller most likely to have
 			// sent a mistyped key and least likely to notice (codex round 2).
 			warnUndeclaredFields(item)
+			warnContentPendingFlush(item)
 
 			if formatFlag == "json" {
 				return cli.PrintJSON(item)
@@ -1017,6 +1018,13 @@ func updateCmd() *cobra.Command {
 
 Items can be referenced by issue ID (e.g. TASK-5) or slug.
 
+When --content is written while someone has the item open in an editor, the
+markdown goes to that live document first and the stored copy catches up
+afterwards. The response echoes what you sent and carries
+warnings.content_outcome=applied_pending_flush; a warning line is printed to
+stderr. A "pad item show" during that window reads the stored copy and will
+show the PREVIOUS content — that is the lag, not a failed write.
+
 Examples:
   pad item update TASK-5 --status done
   pad item update TASK-5 --status done --comment "Fixed the login bug"
@@ -1329,6 +1337,7 @@ Examples:
 			// Stderr, before the JSON early-return — see the note on the
 			// create path (codex round 2).
 			warnUndeclaredFields(updated)
+			warnContentPendingFlush(updated)
 
 			if formatFlag == "json" {
 				return cli.PrintJSON(updated)
@@ -3479,6 +3488,7 @@ Set EDITOR or VISUAL env var to choose your editor (default: vi).`,
 			}
 
 			warnUndeclaredFields(updated)
+			warnContentPendingFlush(updated)
 
 			ref := cli.ItemRef(*updated)
 			if ref != "" {
@@ -3799,4 +3809,32 @@ func warnUndeclaredFields(item *models.Item) {
 	fmt.Fprintf(os.Stderr, "warning: %s not declared by this collection's schema — stored as-is: %s\n",
 		pluralize(len(item.Warnings.UndeclaredFields), "field", "fields"),
 		strings.Join(item.Warnings.UndeclaredFields, ", "))
+}
+
+// warnContentPendingFlush prints one line to STDERR when a content write reached
+// the collaborative document but not yet items.content (BUG-2995).
+//
+// It matters to a CLI caller specifically because the obvious way to confirm a
+// write is `pad item update --content ... && pad item show`, and during this
+// window `show` reads the ROW and answers with the previous content. Without
+// this line the caller sees a successful update followed by a read that appears
+// to contradict it.
+//
+// Stderr for warnUndeclaredFields's reason: --format json output is piped into
+// scripts and a warning on stdout would corrupt the JSON they parse.
+//
+// It deliberately states no duration. It is not established that the flush
+// always lands — see BUG-3000 — so a number here would be a claim this command
+// cannot support.
+func warnContentPendingFlush(item *models.Item) {
+	if item == nil || item.Warnings == nil {
+		return
+	}
+	if item.Warnings.ContentOutcome != models.ContentOutcomeAppliedPendingFlush {
+		return
+	}
+	fmt.Fprintln(os.Stderr, "warning: the content was applied to the live collaborative document "+
+		"(an editor has this item open) and the stored copy has not caught up yet. The content "+
+		"printed above is what you sent; a read before the editor flushes will show the previous "+
+		"content, and the stored form may differ slightly from what you sent.")
 }

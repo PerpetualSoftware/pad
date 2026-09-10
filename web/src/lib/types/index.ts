@@ -726,6 +726,20 @@ export interface ItemWriteWarnings {
 	 * which is about the key rather than what it points at.
 	 */
 	unresolved_relations?: string[];
+	/**
+	 * Where a content write ended up, in the same vocabulary the
+	 * `content_not_applied` error uses. On a 200 it takes exactly one value,
+	 * `"applied_pending_flush"`: the content reached the collaborative document
+	 * and `items.content` has not caught up, so this response's `content` is the
+	 * markdown as SENT rather than as stored (BUG-2995).
+	 *
+	 * A caller comparing this response's `content` to a later read needs it: the
+	 * two differ even after the row catches up, because the markdown makes a
+	 * round trip through the editor on its way there (setext headings, bullet
+	 * markers, emphasis characters, list renumbering and blank-line runs all
+	 * normalise — see `lib/collab/bug2995Roundtrip.svelte.test.ts`).
+	 */
+	content_outcome?: 'applied_pending_flush';
 }
 
 // ─── Items index (skinny projection) ─────────────────────────────────────────

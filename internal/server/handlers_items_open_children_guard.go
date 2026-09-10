@@ -444,7 +444,7 @@ const (
 	// because it is the only one where nothing went wrong. It exists so the third
 	// state has a NAME in the same vocabulary as the other two: applied to the
 	// document, not applied, or in the document and not yet in the row (BUG-2995).
-	contentOutcomeAppliedPendingFlush = "applied_pending_flush"
+	contentOutcomeAppliedPendingFlush = models.ContentOutcomeAppliedPendingFlush
 )
 
 // writeRoomSettlingError emits the pad-structured-error/v1 envelope for a room that

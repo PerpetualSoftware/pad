@@ -101,6 +101,14 @@ type ItemWriteWarnings struct {
 	ContentOutcome string `json:"content_outcome,omitempty"`
 }
 
+// ContentOutcomeAppliedPendingFlush is the only ContentOutcome value that rides on
+// a 2xx: the content reached the collaborative document and items.content has not
+// caught up. It lives here rather than beside the error-path outcome constants
+// because two packages read it — the server writes it, the CLI renders a warning
+// on it — and a duplicated string literal is a rename away from one side silently
+// never matching (BUG-2995).
+const ContentOutcomeAppliedPendingFlush = "applied_pending_flush"
+
 // IsReservedItemField reports whether key is system-written metadata rather than
 // a user-facing schema field. Callers that filter, migrate, or render an item's
 // fields map should consult this rather than enumerating the constants.
