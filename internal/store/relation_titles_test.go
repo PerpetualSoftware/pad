@@ -293,3 +293,47 @@ func mustCollectionID(t *testing.T, s *Store, workspaceID, slug string) string {
 	t.Fatalf("no collection %q in workspace %s (have %d)", slug, workspaceID, len(colls))
 	return ""
 }
+
+// TestRelationTitle_ANullItemNumberCandidateStillCounts is codex round 3's
+// third P1, and it is the reason the candidate walk pages on `id`.
+//
+// The first paging shape used `item_number > ?` as its cursor. item_number is
+// NULLABLE — migration 006 adds it with no constraint and nothing since makes
+// it NOT NULL — and `item_number > ?` excludes every NULL row, while the count
+// that decided ambiguity did not. So the two disagreed about the candidate set,
+// and a live legacy row could be skipped: the walk would see one match where
+// there were two, and RESOLVE a title that is genuinely ambiguous.
+//
+// `id` is the primary key and cannot be null.
+func TestRelationTitle_ANullItemNumberCandidateStillCounts(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ws, colors, _, _ := relationFixture(t, s)
+	schema := u1RelationSchema("colors")
+
+	ordinary := createTestItem(t, s, ws.ID, colors.ID, "Legacy Hue", "")
+	legacy := createTestItem(t, s, ws.ID, colors.ID, "Legacy Hue", "")
+	// A pre-006 row: live, titled, and carrying no item_number at all.
+	if _, err := s.db.Exec(s.q("UPDATE items SET item_number = NULL WHERE id = ?"), legacy.ID); err != nil {
+		t.Fatalf("null the item_number: %v", err)
+	}
+
+	_, issues := resolveOne(t, s, ws, schema, "Legacy Hue")
+	if len(issues) != 1 || issues[0].Reason != RelationTargetAmbiguous {
+		t.Fatalf("two live items carry this title — one of them with a NULL item_number — so it is ambiguous, got %v", issues)
+	}
+
+	// CONTROL: with the NULL-numbered row gone the same title resolves, so the
+	// leg above is about the NULL row counting rather than about the resolver
+	// refusing everything.
+	if err := s.DeleteItem(legacy.ID); err != nil {
+		t.Fatalf("delete legacy: %v", err)
+	}
+	stored, issues := resolveOne(t, s, ws, schema, "Legacy Hue")
+	if len(issues) != 0 {
+		t.Fatalf("control: one live match must resolve, got %v", issues)
+	}
+	if stored != ordinary.ID {
+		t.Errorf("control: stored %q, want %q", stored, ordinary.ID)
+	}
+}
