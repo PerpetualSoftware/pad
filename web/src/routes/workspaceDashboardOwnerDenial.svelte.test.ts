@@ -280,6 +280,13 @@ describe('BUG-2990: dashboard owner chrome expires on a definitive denial', () =
 		meCalls[i]!(OWNER);
 		await settle();
 
+		// NON-VACUITY (codex round 6). "The grid is absent" is also true of a
+		// page still sitting in its loading branch, which would prove nothing
+		// about whether the old board was restored. Pin the state precisely:
+		// the load has SETTLED into its error branch, with the Retry affordance
+		// up and the previous user's board gone.
+		expect(host.querySelector('.dash-error')).not.toBeNull();
+		expect(host.textContent).toContain('Retry');
 		expect(host.querySelector('.coll-grid')).toBeNull();
 	});
 
