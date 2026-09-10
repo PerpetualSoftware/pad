@@ -11,7 +11,8 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// BUG-2840 half A, STEP ONE: measure the premise before designing anything.
+// BUG-2840 half A: this file MEASURED the defect, and now asserts the property that
+// replaced it (PLAN-2975 unit 2).
 //
 // The filing claims that on the APPLIER path a refused PATCH still lands its
 // content — applyContentViaCollab pushes the markdown into the live Y.Doc,
@@ -102,9 +103,16 @@ func waitForApplierPath(t *testing.T, srv *Server, wsSlug, itemSlug, itemID stri
 	t.Fatal("no applier path within 3s: every probe PATCH wrote items.content directly")
 }
 
-// TestBUG2840HalfA_RefusedPatchOnApplierPath measures what a refusal leaves
-// behind. It asserts today's behaviour, defect included.
-func TestBUG2840HalfA_RefusedPatchOnApplierPath(t *testing.T) {
+// TestBUG2840HalfA_RefusedPatchLeavesTheDocumentUntouched asserts the property the
+// reorder buys: a refused PATCH on the applier path changes NOTHING — not the row,
+// and not the collaborative document.
+//
+// Until PLAN-2975 unit 2 this same test asserted the DEFECT (that the refused request
+// left op-log rows behind) and skipped if it could not reproduce it. The inversion is
+// deliberate and is the only honest way to reuse it: leaving the old assertion in
+// place would have turned the fix into a SKIP, and a skip reads as a pass in the
+// summary line.
+func TestBUG2840HalfA_RefusedPatchLeavesTheDocumentUntouched(t *testing.T) {
 	srv := testServerWithCollab(t)
 	ts := httptest.NewServer(srv)
 	t.Cleanup(ts.Close)
@@ -167,18 +175,24 @@ func TestBUG2840HalfA_RefusedPatchOnApplierPath(t *testing.T) {
 	// wire: a refused PATCH leaves DURABLE COLLAB STATE created by that same
 	// refused request. Any tab that joins afterwards replays it.
 	afterOps := countOpLog(t, srv, item.ID)
-	t.Logf("MEASURED: op-log rows before refusal=%d, after refusal=%d; "+
-		"items.content before=%q after=%q", beforeOps, afterOps, before.Content, after.Content)
+	t.Logf("op-log rows before refusal=%d, after refusal=%d; items.content before=%q after=%q",
+		beforeOps, afterOps, before.Content, after.Content)
 
-	if afterOps <= beforeOps {
-		t.Skipf("inconclusive: the refused PATCH left no new op-log rows (%d -> %d), so this "+
-			"harness did not reproduce the applier writing durable state. The premise is "+
-			"NOT established and half A should not be designed against it yet.",
-			beforeOps, afterOps)
+	// THE PROPERTY. Before the reorder the refused request pushed its markdown into
+	// the live Y.Doc first, and the relay persisted the resulting update — so the
+	// refusal left DURABLE collab state that any later joiner replays and flushes
+	// back into items.content. The caller's 409 was true of the row and false of the
+	// document.
+	//
+	// Now the row write runs FIRST and refuses before ApplyExternalContent is ever
+	// called, so there is nothing to persist. Op-log rows unchanged is what "the
+	// document did not move" reduces to on this side of the wire: the server cannot
+	// read the document itself, because collab here is a dumb relay that never parses
+	// the opaque Yjs updates it stores.
+	if afterOps != beforeOps {
+		t.Errorf("a refused PATCH left %d new op-log row(s) behind (%d -> %d). The refusal is true of "+
+			"the row and false of the collaborative document: a tab joining later replays those ops "+
+			"and flushes them back as items.content, landing the content the caller was told was "+
+			"rejected.", afterOps-beforeOps, beforeOps, afterOps)
 	}
-
-	t.Logf("PREMISE ESTABLISHED, in the form the server can observe: the refused PATCH "+
-		"added %d op-log row(s) that outlive it. items.content is untouched, so the caller's "+
-		"409 is true of the row and false of the collaborative document; a tab joining later "+
-		"replays those ops and flushes them back as items.content.", afterOps-beforeOps)
 }

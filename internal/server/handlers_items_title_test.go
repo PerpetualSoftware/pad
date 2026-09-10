@@ -339,10 +339,28 @@ func TestIsDeterministicWriteFailureIncludesTitleRefusal(t *testing.T) {
 // the lock window. Driving that from a test needs a store-level seam that does
 // not exist. The helper itself is unit-tested; these arms' job is to call it.
 func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
+	// TWO FILES since PLAN-2975, and the second one is why the expected block
+	// count changed rather than the guard weakening.
+	//
+	// The write-first-apply-second reorder took the applier branch's inline block
+	// out of handlers_items.go and replaced it with a call to writeTypedItemRefusal,
+	// which maps all four arms once and is consulted by every ordering. That is a
+	// STRONGER shape than three parallel blocks — the failure this guard exists to
+	// catch is an arm mapped in some routes and not others, and a single shared
+	// function cannot drift against itself — but it moves one block into another
+	// file, so a scan of handlers_items.go alone now sees two blocks and fails
+	// closed. It failed closed when the reorder landed, which is the guard working;
+	// teaching it the new shape is the response, and the count below is the part a
+	// future restructuring will trip again on purpose.
 	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "handlers_items.go", nil, 0)
-	if err != nil {
-		t.Fatalf("parse handlers_items.go: %v", err)
+	sources := []string{"handlers_items.go", "handlers_items_content_route.go"}
+	var files []*ast.File
+	for _, name := range sources {
+		f, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		files = append(files, f)
 	}
 
 	// The arms, in the order every block must apply them. Order is part of the
@@ -381,7 +399,12 @@ func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
 		pos  token.Pos
 	}
 	var refs []armRef
-	ast.Inspect(file, func(n ast.Node) bool {
+	inspectAll := func(fn func(ast.Node) bool) {
+		for _, f := range files {
+			ast.Inspect(f, fn)
+		}
+	}
+	inspectAll(func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
 			return true
@@ -423,6 +446,11 @@ func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
 		}
 	}
 
+	// Three still: two inline blocks remaining in handlers_items.go, plus
+	// writeTypedItemRefusal's single shared block in handlers_items_content_route.go.
+	// The number is unchanged by coincidence — what changed is that one of the three
+	// is now reached by every content-PATCH ordering instead of being copied per
+	// route (PLAN-2975).
 	const wantBlocks = 3
 	if len(updateBlocks) != wantBlocks {
 		t.Fatalf("found %d UpdateItem error block(s) at lines %v, want %d — the instrument's block "+
@@ -465,7 +493,7 @@ func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
 	//
 	// Anything else is either a disabling mutation or a restructuring that
 	// deserves to be looked at deliberately.
-	ast.Inspect(file, func(n ast.Node) bool {
+	inspectAll(func(n ast.Node) bool {
 		ifStmt, ok := n.(*ast.IfStmt)
 		if !ok {
 			return true
@@ -497,7 +525,14 @@ func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
 	// let the next arm write another, or let the request continue to the
 	// generic 500 (codex round 6). The body's last statement is a bare return
 	// in all three blocks; anything else is a behaviour change worth looking at.
-	ast.Inspect(file, func(n ast.Node) bool {
+	//
+	// BOUNDARY, stated because the shared block weakened this leg and pretending
+	// otherwise would be the exact overclaim this file's header warns about: in
+	// writeTypedItemRefusal the arms end in `return true`, a handled-FLAG its
+	// callers act on, not a return from the request. This walk therefore proves
+	// the arm stops the FUNCTION, and the caller honouring the flag is checked
+	// behaviourally by the route tests rather than here.
+	inspectAll(func(n ast.Node) bool {
 		ifStmt, ok := n.(*ast.IfStmt)
 		if !ok {
 			return true
