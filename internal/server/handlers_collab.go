@@ -16,7 +16,11 @@ import (
 
 // collabMembershipRevalInterval is how often an active collab WS
 // re-runs authorizeCollabAccess to catch a mid-stream revocation
-// (member removed, role demoted, item-grant revoked, etc.). 60s
+// (member removed, role demoted, item-grant revoked, etc.) AND — since
+// BUG-3007 — re-checks that the credential which opened the connection
+// is still valid at all. The two are different questions: the access
+// check asks what the principal captured at upgrade may do, and a
+// logout or a PAT revocation changes none of it. 60s
 // matches the SSE membership-revalidation cadence and trades
 // "promptness of revocation visibility" against "per-conn DB
 // load". Exposed as a package var so tests can shrink it without
@@ -71,7 +75,10 @@ const collabMaxMessageBytes = 1 << 20 // 1 MiB
 // also re-check freshness of the user (via store.GetUser) so a
 // mid-session admin demotion or member removal closes the upgrade
 // path immediately, mirroring sseSubscriberStillHasAccess. The
-// periodic per-connection revalidation lives in TASK-1256.
+// periodic per-connection revalidation lives in TASK-1256, and since
+// BUG-3007 it also ends the connection when the credential that opened
+// it is destroyed — which the access checks above cannot notice,
+// because they are about the principal and not about the credential.
 func (s *Server) handleCollab(w http.ResponseWriter, r *http.Request) {
 	itemID := chi.URLParam(r, "itemID")
 	if itemID == "" {
@@ -314,6 +321,30 @@ func (s *Server) collabRevalidationLoop(
 		case <-stop:
 			return
 		case <-timer.C:
+			// The CREDENTIAL first (BUG-3007). Everything below asks what
+			// the principal captured at UPGRADE time may do — `currentUser(r)`
+			// — and a logout or a PAT revocation changes none of it. This is
+			// the connection with WRITE access: measured still open 150s past
+			// a logout and 100s past a revocation, with `/auth/me` on that
+			// credential answering 401 and a control leg confirming the
+			// upgrade really is authenticated (no header -> 401, bogus token
+			// -> 401).
+			//
+			// `CloseConn` with a policy violation, matching the
+			// item-disappeared branch below rather than inventing a fourth way
+			// to end a collab connection.
+			if !s.streamCredentialStillValid(r) {
+				slog.Info("collab: credential invalidated mid-stream, closing connection",
+					"item_id", itemID,
+					"user_id", userID,
+				)
+				s.collab.CloseConn(
+					itemID, conn,
+					websocket.ClosePolicyViolation,
+					"Your session has ended.",
+				)
+				return
+			}
 			// Re-fetch the item every tick so a mid-session move
 			// (item collection changed to one the user can't see)
 			// or hard-delete is honoured as an access change. The

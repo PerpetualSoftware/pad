@@ -402,6 +402,23 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 			flusher.Flush()
 
 		case <-revalC:
+			// The CREDENTIAL first (BUG-3007). `refreshUser` below is
+			// already the strictest of the three long-lived connections —
+			// it fails closed on a deleted or disabled USER — and it still
+			// cannot see this, because a logout destroys a SESSION and
+			// leaves a live enabled user behind. Measured: this stream was
+			// still open and emitting keepalives 180s after a logout, and
+			// 120s after a PAT revocation, in both cases with `/auth/me`
+			// on that credential answering 401.
+			//
+			// Closing rather than denying. `deny = true` would silence a
+			// stream that stays connected forever; this connection has no
+			// principal left, and the reference for THAT is the item
+			// -disappeared branch above, which closes.
+			if !s.streamCredentialStillValid(r) {
+				slog.Info("watch-events: credential invalidated mid-stream, closing", "user_id", user.ID)
+				return
+			}
 			// TASK-2533 codex round 4: reset the identity/visibility
 			// cache FIRST, unconditionally, BEFORE attempting the watch-
 			// list reload — the two used to be coupled (visCache.reset()
@@ -535,7 +552,10 @@ func (c *watchVisCache) reset() {
 // reasoned as "a stale-but-previously-valid snapshot can't widen
 // visibility beyond what it already had, so don't punish a DB blip."
 // This function fails CLOSED instead (sets deny = true) on any of
-// {fetch error, user gone, user disabled} — not a blanket "mirror
+// {fetch error, user gone, user disabled}. It does NOT cover a
+// destroyed SESSION or a revoked PAT — a logout leaves a live enabled
+// user, so nothing here fires; that is `streamCredentialStillValid`,
+// checked by the tick before this runs (BUG-3007) — not a blanket "mirror
 // exactly" claim, and it shouldn't be described as one. A nudge
 // stream's wrong failure mode is different from a browser SSE tab's:
 // delivering a fact (an assignment, a watched status change) to someone

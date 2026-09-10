@@ -71,7 +71,40 @@ const (
 	// never checked or rejected" — see the codex-round-3 fix note there
 	// (TASK-1932).
 	ctxValidatedSessionBearer contextKey = "validated_session_bearer"
+
+	// HOW the principal on this request was established (BUG-3007).
+	//
+	// Set exactly once, by the middleware branch that accepts the
+	// credential, and read by `streamCredentialStillValid` so a long-lived
+	// connection can re-check the SAME KIND of credential it was opened
+	// with. Sniffing the wire a second time would be a second place to get
+	// the session-bearer-versus-PAT split wrong; this makes the middleware
+	// the single authority on what the credential is.
+	//
+	// The predicate's default branch fails CLOSED, so a future auth path
+	// that forgets to set this ends long-lived connections loudly rather
+	// than exempting itself from revalidation. That direction is
+	// deliberate: an unrecognised credential that keeps streaming is the
+	// same defect BUG-3007 fixed, wearing a different coat.
+	ctxAuthKind contextKey = "auth_kind"
 )
+
+// Credential kinds recorded in ctxAuthKind. See the key's comment.
+const (
+	authKindSessionBearer = "session_bearer"
+	authKindSessionCookie = "session_cookie"
+	authKindAPIToken      = "api_token"
+)
+
+// authKind returns how this request's principal was established, or "" when no
+// credential was accepted — the fresh-install window and the legacy no-auth
+// path both land there.
+func authKind(r *http.Request) string {
+	if k, ok := r.Context().Value(ctxAuthKind).(string); ok {
+		return k
+	}
+	return ""
+}
 
 // TokenAuth middleware checks for an Authorization: Bearer pad_xxx header.
 // If a valid token is found, the associated workspace ID is stored in the
@@ -164,6 +197,7 @@ func (s *Server) TokenAuth(next http.Handler) http.Handler {
 			}
 			ctx := context.WithValue(r.Context(), ctxCurrentUser, session.User)
 			ctx = context.WithValue(ctx, ctxValidatedSessionBearer, true)
+			ctx = context.WithValue(ctx, ctxAuthKind, authKindSessionBearer)
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
@@ -194,6 +228,7 @@ func (s *Server) TokenAuth(next http.Handler) http.Handler {
 		setTokenExpiryWarning(w, apiToken)
 
 		ctx := context.WithValue(r.Context(), ctxIsAPIToken, true)
+		ctx = context.WithValue(ctx, ctxAuthKind, authKindAPIToken)
 		// Stash the token's scopes so downstream handlers can enforce
 		// write-scope on paths where the method gate above isn't
 		// sufficient. The chain-level tokenScopeAllows check keys on the
@@ -309,6 +344,7 @@ func (s *Server) SessionAuth(next http.Handler) http.Handler {
 		}
 
 		ctx := context.WithValue(r.Context(), ctxCurrentUser, session.User)
+		ctx = context.WithValue(ctx, ctxAuthKind, authKindSessionCookie)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

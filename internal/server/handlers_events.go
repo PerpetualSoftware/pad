@@ -536,6 +536,28 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 
 		case <-membershipCheck.C:
+			// The CREDENTIAL first (BUG-3007). The access check below asks
+			// whether this USER may still see this workspace, and a sign-out
+			// does not change the answer — the user is still a member, so this
+			// stream ran on for as long as the client held it open. Measured at
+			// 165s past a logout whose `/auth/me` answered 401, and 64s past a
+			// PAT revocation. Ordered before the access check because it is the
+			// cheaper question and the more fundamental one: there is no point
+			// asking what a principal may see once the credential that named
+			// them is gone.
+			if !s.streamCredentialStillValid(r) {
+				slog.Info("SSE: credential invalidated mid-stream, closing connection",
+					"workspace", ws.Slug, "user_id", sseUserID)
+				if err := writeSSEEvent(w, "unauthorized", 0, map[string]string{
+					"reason": "Your session has ended.",
+				}); err != nil {
+					slog.Debug("SSE: unauthorized write failed (client likely already gone)",
+						"workspace", ws.Slug, "error", err)
+				} else {
+					flusher.Flush()
+				}
+				return
+			}
 			// Re-verify access. If the subscriber has been removed from
 			// the workspace (or had all grants revoked) since the SSE
 			// connection was established, stop streaming to them.
