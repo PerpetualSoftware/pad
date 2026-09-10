@@ -408,6 +408,48 @@ describe('BUG-2991: the create-workspace modal does not act for a session that e
 		await settle();
 	});
 
+	it('does not act on a stale operation after the modal is remounted, same user', async () => {
+		// codex round 10. The token used to be instance-local, so a remount —
+		// a logout, or navigating between the console and workspace shells —
+		// reset it while an older promise still held the old value. Identity
+		// cannot answer this case: the user did NOT change. What changed is
+		// that the continuation stopped being the operation anyone is waiting
+		// on, and it would otherwise have fired the Phase F callback, a toast,
+		// `close()` and a `goto` to a workspace nobody asked for.
+		let resolveOld!: (v: typeof WS) => void;
+		api.workspaces.importBundle.mockReturnValueOnce(
+			new Promise((res) => { resolveOld = res; }),
+		);
+		const onWorkspaceCreated = vi.fn();
+
+		const first = render(CreateWorkspaceModal, { props: { onWorkspaceCreated } });
+		await attachBundle(first.container);
+		btn(first.container, /Import Workspace/).click();
+		await settle();
+		expect(api.workspaces.importBundle).toHaveBeenCalledTimes(1);
+
+		// The modal is destroyed and a new instance mounts — same user
+		// throughout, which is the point.
+		cleanup();
+		uiStore.openCreateWorkspace();
+		const second = render(CreateWorkspaceModal, { props: { onWorkspaceCreated } });
+		await settle();
+		// PRECONDITION: the new instance is really up and open, or "nothing
+		// happened" would be true of an empty page.
+		expect(second.container.querySelector('#ws-create-name')).not.toBeNull();
+		expect(uiStore.createWorkspaceOpen).toBe(true);
+
+		// Now the FIRST instance's import lands.
+		resolveOld(WS);
+		await settle();
+
+		expect(goto).not.toHaveBeenCalled();
+		expect(onWorkspaceCreated).not.toHaveBeenCalled();
+		expect(toastShow).not.toHaveBeenCalled();
+		// ...and the new instance's modal is still open.
+		expect(uiStore.createWorkspaceOpen).toBe(true);
+	});
+
 	it('navigates when the user is unchanged during an IMPORT', async () => {
 		api.workspaces.importBundle.mockResolvedValue(WS);
 		const onWorkspaceCreated = vi.fn();

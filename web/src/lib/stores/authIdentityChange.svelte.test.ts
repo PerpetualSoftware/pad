@@ -150,6 +150,27 @@ describe('authStore.onIdentityChange', () => {
 		expect(fired).toHaveBeenCalledTimes(1);
 	});
 
+	it('fires on a RESOLVED unauthenticated session, which is what a real sign-out looks like', async () => {
+		// The other half of the rejection rule, and the one that keeps it
+		// honest (codex round 10). `/auth/session` is public and answers 200
+		// with `authenticated: false` for a missing or expired session, so an
+		// ordinary sign-out arrives RESOLVED. If silencing the rejection path
+		// had also silenced this, the whole identity reset would have stopped
+		// working for the commonest case there is.
+		const { authStore } = await import('./auth.svelte');
+		session.value = user('u1');
+		await authStore.load();
+
+		const fired = vi.fn();
+		authStore.onIdentityChange(fired);
+
+		session.value = { authenticated: false, user: null };
+		await authStore.load();
+
+		expect(authStore.userId).toBe('');
+		expect(fired).toHaveBeenCalledTimes(1);
+	});
+
 	it('unsubscribes', async () => {
 		const { authStore } = await import('./auth.svelte');
 		session.value = user('u1');

@@ -1,3 +1,25 @@
+<script module lang="ts">
+	/**
+	 * Monotonic token for the create/import operation in flight, MODULE-SCOPED
+	 * rather than per instance (BUG-2991, codex round 10).
+	 *
+	 * An instance-local counter fences one component's own state and nothing
+	 * else, and this modal is destroyed and remounted routinely — a logout, a
+	 * navigation between the console and workspace shells. So: A starts an
+	 * import, the modal unmounts, A signs back in and a NEW instance mounts,
+	 * the OLD instance's request resolves — its identity check passes, because
+	 * it really is the same user, and it fires the Phase F callback, the toast,
+	 * `close()` and a `goto` to a workspace nobody is currently asking for,
+	 * dismissing the new instance's modal on the way.
+	 *
+	 * Identity cannot answer this: the user did not change. What changed is
+	 * that this continuation stopped being the operation anyone is waiting on.
+	 * Module scope is what makes the token outlive the instance, which is
+	 * exactly the lifetime the defect lives in.
+	 */
+	let opSeq = 0;
+</script>
+
 <script lang="ts">
 	import { onMount, untrack } from 'svelte';
 	import { goto } from '$app/navigation';
@@ -44,8 +66,6 @@
 	let templates = $state<WorkspaceTemplate[]>([]);
 	let loadingTemplates = $state(false);
 	let importing = $state(false);
-	// Monotonic token for the import in flight — see `importWorkspace`.
-	let importOp = 0;
 	let importFile = $state<File | null>(null);
 	let fileInputEl = $state<HTMLInputElement>();
 	let nameInputEl = $state<HTMLInputElement>();
@@ -125,6 +145,16 @@
 	//
 	// Registered here rather than folded into the store's own listener because
 	// this is component state, and it unsubscribes on destroy.
+	// This instance's own lifetime. A module-scoped token says whether a NEWER
+	// operation has superseded this one; it cannot say whether the instance that
+	// started this one still exists, because a remount that starts nothing
+	// advances no counter (codex round 10, and the first version of that fix
+	// missed exactly this). A destroyed instance's continuation must not fire a
+	// callback, a toast, a close or a navigation on behalf of a component
+	// nobody is looking at.
+	let alive = true;
+	onMount(() => () => { alive = false; });
+
 	onMount(() => authStore.onIdentityChange(() => {
 		if (uiStore.createWorkspaceOpen) close();
 	}));
@@ -157,6 +187,7 @@
 		// Captured for the FAILURE path only — the success path is fenced in the
 		// store, which returns null when the user changed (codex round 7).
 		const createUser = authStore.userId;
+		const myOp = ++opSeq;
 		try {
 			const ws = await workspaceStore.create({
 				name: newName.trim(),
@@ -170,6 +201,11 @@
 			// navigation nobody asked for, and the server denies them anyway.
 			// No toast either — nothing failed for the user in front of us, and
 			// they did not start this create.
+			// Not the operation anyone is waiting on any more (codex round 10) —
+			// a later create/import, or a remount that started one, has
+			// superseded this. Silent return: no callback, no navigation, no
+			// close.
+			if (!alive || myOp !== opSeq) return;
 			if (!ws) {
 				// RETURN WITHOUT CLOSING (codex round 8). `close()` is global —
 				// it writes `uiStore.createWorkspaceOpen` — and by the time we
@@ -192,6 +228,7 @@
 			// reported the previous session's failure to whoever is here now,
 			// and the plan-limit branch is worse than the generic one — it
 			// would tell B their plan is full because A's was.
+			if (!alive || myOp !== opSeq) return;
 			if (authStore.userId !== createUser) return;
 			if (isPlanLimitError(err)) {
 				toastStore.show(planLimitMessage(err) + ' Upgrade to Pro', 'error', 6000, '/console/billing');
@@ -211,7 +248,7 @@
 		// them a duplicate submit. A token rather than an identity check
 		// because it also covers a same-user restart, which has the identical
 		// shape and no identity change to notice.
-		const myImport = ++importOp;
+		const myOp = ++opSeq;
 		importing = true;
 		// Captured before the upload, checked after it (BUG-2991, codex round
 		// 4). Import is `create`'s sibling — it mints a workspace through the
@@ -227,6 +264,7 @@
 		const callUser = authStore.userId;
 		try {
 			const ws = await api.workspaces.importBundle(importFile, newName.trim() || undefined);
+			if (!alive || myOp !== opSeq) return;
 			// Return without closing — see the create path for why (codex round
 			// 8): the identity listener has already closed this modal, and a
 			// second `close()` would dismiss the fresh one the new user may
@@ -240,6 +278,7 @@
 			// per-operation — the same reason `create` needs two checks rather
 			// than one — so the guard sits immediately before the side effects
 			// it protects rather than at the top of the block.
+			if (!alive || myOp !== opSeq) return;
 			if (authStore.userId !== callUser) return;
 			// Same Phase F hook as create — claim code is equally useful for
 			// imported workspaces, and the user explicitly opted into this
@@ -256,10 +295,11 @@
 			// "the callback, the toast and the goto"; the toast down here was
 			// unconditional, which made that comment a claim the code did not
 			// keep. The same applies when `loadAll` is what rejected.
+			if (!alive || myOp !== opSeq) return;
 			if (authStore.userId !== callUser) return;
 			toastStore.show(`Import failed: ${err instanceof Error ? err.message : 'Unknown error'}`, 'error');
 		} finally {
-			if (myImport === importOp) importing = false;
+			if (alive && myOp === opSeq) importing = false;
 		}
 	}
 
