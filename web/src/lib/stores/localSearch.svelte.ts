@@ -500,6 +500,22 @@ export const localSearch = {
 	},
 
 	/**
+	 * Drop EVERY workspace's index (BUG-3005).
+	 *
+	 * `reset` is per-workspace and its callers name a slug, which is right for
+	 * a 403 purge or a workspace deletion. An identity change is not scoped to
+	 * a workspace: every index in this map was built from item titles and
+	 * bodies the PREVIOUS user could see, and this map is keyed independently
+	 * of `localIndex`'s — so an index whose workspace state is already gone
+	 * would survive a sweep that only visited the workspaces localIndex still
+	 * knows about.
+	 */
+	resetAll(): void {
+		indexes.clear();
+		epochs.clear();
+	},
+
+	/**
 	 * Reactive per-workspace mutation epoch. Bumped on every successful
 	 * `rebuild` / `upsert` / `remove`. Consumers should READ this inside
 	 * a `$effect` so their derived state (e.g. a `searchResultIds` Set

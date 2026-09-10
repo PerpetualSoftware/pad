@@ -2,6 +2,8 @@
 // Admin store – shared state & utilities for the admin section
 // ---------------------------------------------------------------------------
 
+import { authStore } from './auth.svelte';
+
 // ---- Interfaces -----------------------------------------------------------
 
 export interface AdminUser {
@@ -115,12 +117,19 @@ let error = $state('');
 async function loadStats() {
 	loading = true;
 	error = '';
+	// The identity that ASKED (BUG-3005, codex round 2). Clearing on the signal
+	// is not enough on its own: a request already in flight settles afterwards
+	// and writes the previous admin's statistics into the new session.
+	const isSameIdentity = authStore.identityFence();
 	try {
-		stats = await adminFetch('/admin/stats');
+		const result = await adminFetch('/admin/stats');
+		if (!isSameIdentity()) return;
+		stats = result;
 	} catch (e) {
+		if (!isSameIdentity()) return;
 		error = e instanceof Error ? e.message : 'Failed to load';
 	} finally {
-		loading = false;
+		if (isSameIdentity()) loading = false;
 	}
 }
 
@@ -134,5 +143,29 @@ export const adminStore = {
 	get error() {
 		return error;
 	},
-	loadStats
+	loadStats,
+
+	/**
+	 * Drop the loaded statistics (BUG-3005). `stats` is instance-wide DATA but
+	 * it is authorization-scoped: only an admin can read it, so it must not
+	 * outlive the admin who did.
+	 */
+	clear() {
+		stats = null;
+		// FALSE, not true (codex round 2). The admin layout loads on MOUNT, and
+		// a same-route admin-to-admin swap mounts nothing — leaving this true
+		// would pin the console on "Loading admin data…" forever. The layout
+		// re-issues the load on the same signal; until it lands the honest
+		// state is "nothing loaded", not "loading".
+		loading = false;
+		error = '';
+	}
 };
+
+// An admin signing out — or a swap to a non-admin on the same console route —
+// must not leave the previous admin's statistics on screen. The admin layout
+// loads on mount, and a same-route identity change mounts nothing (BUG-3005,
+// codex round 1).
+authStore.onIdentityChange(() => {
+	adminStore.clear();
+});

@@ -5,6 +5,10 @@
 	import { page } from '$app/state';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
+	import {
+		reloadForIdentityChange,
+		clearPersistentIdentityState,
+	} from '$lib/stores/identityReload.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
 	import { setAccessRevokedHandler, setRateLimitHandler } from '$lib/api/client';
@@ -105,8 +109,48 @@
 		// Deliberately outside the async body below — an `onMount` that returns
 		// a Promise has its resolved value ignored, so a cleanup returned from
 		// an async `onMount` is never called.
-		return authStore.onIdentityChange(() => {
+		return authStore.onIdentityChange((previousUserId) => {
+			// Re-armed for the pre-reload window: this latch is THIS component's
+			// state and the reload below may not have happened yet.
 			workspacesRequested = false;
+			// WHAT A REAL IDENTITY CHANGE DOES TO THIS TAB (BUG-3005, lead
+			// ruling after codex round 3): clear the persistent state a reload
+			// would not drop, then reload.
+			//
+			// Three review rounds each found another layer of surfaces holding
+			// the previous user's data, because the fix was per-surface and the
+			// population is "everything in the tab that ever held a fetch". A
+			// reload ends the enumeration: every store, component, cache and
+			// in-flight request goes at once, and no future surface has to be
+			// remembered. What it does NOT drop — localStorage, sessionStorage,
+			// IndexedDB — is still an enumeration, but over STORAGE KEYS, which
+			// is bounded and greppable.
+			// ONLY WHEN SOMEBODY WAS SIGNED IN BEFORE. A sign-IN from an
+			// unauthenticated tab changes the identity, but the state it would
+			// be dropping is anonymous — nobody's private data — and reloading
+			// there puts a full page load in the middle of the login flow.
+			if (!previousUserId) return;
+
+			// SIGN-OUT CLEARS BUT DOES NOT RELOAD. Both sign-out sites navigate
+			// away by themselves — account delete with `location.href`, console
+			// logout with a hard navigation for the same reason — and a reload
+			// racing them ABORTS one of the two. That is not a hypothesis: it
+			// is `account-delete.spec.ts:147` failing with
+			// `net::ERR_ABORTED; maybe frame was detached?`, which is how this
+			// branch learned it. The persistent clears still have to happen,
+			// because a hard navigation drops the tab's memory and not
+			// localStorage, sessionStorage or IndexedDB.
+			//
+			// A SWAP has no such navigation of its own, so there the reload IS
+			// the mechanism.
+			//
+			// The property is the same either way: every transition away from a
+			// real user drops that user's in-tab state.
+			if (!authStore.userId) {
+				clearPersistentIdentityState();
+				return;
+			}
+			reloadForIdentityChange();
 		});
 	});
 

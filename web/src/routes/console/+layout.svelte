@@ -42,7 +42,14 @@
 	async function logout() {
 		await api.auth.logout();
 		authStore.clear();
-		goto('/login');
+		// HARD navigation, not `goto` (BUG-3005). An SPA navigation to /login
+		// leaves every client-side singleton, component and cache exactly where
+		// it was — which is the original defect: the next person to sign in on
+		// this browser reads the previous user's data out of a tab that never
+		// went away. Account deletion in `console/settings/+page.svelte` has
+		// always done this, with a comment saying why; the two sign-out sites
+		// agree now.
+		window.location.href = '/login';
 	}
 
 	function closeMobileMenu() {

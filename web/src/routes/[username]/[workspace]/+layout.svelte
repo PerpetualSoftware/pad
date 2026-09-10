@@ -229,6 +229,27 @@
 		}
 	});
 
+	// CLOSE THE STREAM, and let the reload do the rest (BUG-3005, lead ruling
+	// after codex round 3).
+	//
+	// A real identity change reloads this tab — see `reloadForIdentityChange`
+	// in the root layout for why the fix stopped being per-surface. So this
+	// listener no longer re-runs the layout's per-workspace work: the page is
+	// going away, and a reload does it properly.
+	//
+	// The SSE disconnect STAYS, and is the reason this listener still exists.
+	// `sseService.connect` is idempotent per workspace, so the EventSource A
+	// opened would otherwise keep delivering into this tab for the whole
+	// pre-reload window — a stream still authorized, because signing in as B
+	// REPLACES the cookie without destroying A's session row, which is exactly
+	// the case BUG-3007's server-side close cannot see (BUG-3011 tracks the
+	// server half). Closing it here bounds that window to zero rather than to
+	// however long the reload takes.
+	const stopIdentityWatch = authStore.onIdentityChange(() => {
+		sseService.disconnect();
+	});
+	onDestroy(stopIdentityWatch);
+
 	// Re-attempt WebMCP registration when the auth gate resolves. The
 	// workspace $effect above runs inside untrack() (so a workspace switch
 	// doesn't drag in the whole workspaces array as a dep), which means it

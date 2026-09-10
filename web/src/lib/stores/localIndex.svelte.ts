@@ -70,6 +70,7 @@ import {
 } from './localIndexPersistence';
 import { preserveProjectionMetadata, mergeEqualSeqProjection } from './itemRowMerge';
 import { localSearch } from './localSearch.svelte';
+import { authStore } from './auth.svelte';
 import type { Item, ItemChangeRow, ItemIndexRow } from '$lib/types';
 
 export type BootstrapState = 'cold' | 'loading' | 'ready' | 'error';
@@ -2293,8 +2294,59 @@ export const localIndex = {
 		persistWipe(priorUserId, ws).catch(() => undefined);
 	},
 
+	/**
+	 * Drop EVERY workspace's state — the identity-change sweep (BUG-3005).
+	 *
+	 * `reset(ws)` is per-workspace and the sign-out path called it for the ONE
+	 * workspace the layout happened to be looking at. Everything this store
+	 * holds is per-user: rows the previous user could see, their cursor, their
+	 * access epoch. A tab that visited two workspaces kept the other one.
+	 */
+	resetAll(): void {
+		for (const ws of [...workspaces.keys()]) {
+			localIndex.reset(ws);
+		}
+		// `reset` already drops the search index for each workspace it visits.
+		// This catches an index whose workspace state was already gone: the two
+		// maps are keyed independently and nothing keeps them in step.
+		localSearch.resetAll();
+		// THE DURABLE WIPE THIS INHERITS, and why it is kept (codex round 1).
+		// `reset` fire-and-forgets `persistWipe` for the workspace's last-known
+		// userId, so this drops the previous user's IndexedDB cache as well as
+		// their RAM. Not required for ISOLATION — the cache is namespaced per
+		// (user, workspace), so the next user could never read it — and it costs
+		// a returning user their warm cache.
+		//
+		// Kept because it is the behaviour sign-out already had (the workspace
+		// layout has called `reset` on sign-out since TASK-1360) and because
+		// leaving a signed-out user's item titles on the disk of a shared
+		// browser is the wrong default to adopt silently. What this DOES widen
+		// is the pre-existing race where a fast re-login's hydrate overlaps a
+		// wipe still in flight: it now applies to every workspace the tab
+		// visited rather than the one the layout named. Filed rather than fixed
+		// here — sequencing a fire-and-forget wipe against the next hydrate is
+		// a change to the persistence layer, not to this sweep.
+	},
+
 	/** Number of items currently held for a workspace. Test/debug aid. */
 	size(ws: string): number {
 		return workspaces.get(ws)?.items.size ?? 0;
 	},
 };
+
+// Drop every workspace's rows and search index when the signed-in user changes
+// (BUG-3005).
+//
+// This store reset only on `bootstrap()` noticing a userId mismatch, which
+// makes the invalidation depend on somebody calling bootstrap: a route that
+// does not bootstrap the index on an identity change kept the previous user's
+// rows in RAM, and `localSearch` kept a full-text index built from their item
+// titles and bodies. The subscription makes it structural — the same reason
+// `onIdentityChange` exists rather than a call at each sign-out site.
+//
+// The bootstrap mismatch check STAYS. It covers a different case: a first
+// bootstrap for a workspace whose cached state predates this tab's identity
+// signal, where no change has fired because nothing changed within this tab.
+authStore.onIdentityChange(() => {
+	localIndex.resetAll();
+});

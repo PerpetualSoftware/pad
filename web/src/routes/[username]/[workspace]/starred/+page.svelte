@@ -5,6 +5,7 @@
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { starredStore } from '$lib/stores/starred.svelte';
+	import { authStore } from '$lib/stores/auth.svelte';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import ItemCard from '$lib/components/collections/ItemCard.svelte';
 	import PageHeader from '$lib/components/common/PageHeader.svelte';
@@ -50,21 +51,31 @@
 		workspaceStore.setCurrent(wsSlug);
 	});
 
+	// NO IDENTITY LISTENER HERE, deliberately (BUG-3005, lead ruling). This page
+	// had one, and with the tab reloading on a real identity change it became
+	// the third path doing the same reload — the layout's listener, this one,
+	// and the page's own mount effect. One mechanism; the fence below is what
+	// this page still needs, because it covers a response settling in the
+	// window before the reload takes the page away.
+
 	async function loadStarred(slug: string) {
 		loading = true;
 		const seq = ++loadSeq;
+		// The identity that ASKED. `seq` is a navigation/refresh fence and does
+		// not move on an account swap, so it cannot tell this apart.
+		const isSameIdentity = authStore.identityFence();
 		try {
 			const [starredItems, colls] = await Promise.all([
 				api.items.starred(slug, { include_terminal: includeTerminal }),
 				api.collections.list(slug)
 			]);
-			if (seq !== loadSeq) return;
+			if (seq !== loadSeq || !isSameIdentity()) return;
 			fetchedItems = starredItems;
 			collections = colls;
 		} catch {
 			if (seq !== loadSeq) return;
 		} finally {
-			if (seq === loadSeq) loading = false;
+			if (seq === loadSeq && isSameIdentity()) loading = false;
 		}
 	}
 

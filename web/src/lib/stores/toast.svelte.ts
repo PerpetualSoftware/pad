@@ -1,3 +1,4 @@
+import { authStore } from './auth.svelte';
 export interface ToastAction {
 	label: string;
 	onAction: () => void;
@@ -116,6 +117,19 @@ function clearHistory(): void {
 	unreadCount = 0;
 }
 
+/**
+ * Drop live toasts, the history and the unread count (BUG-3005).
+ *
+ * Timers are cancelled rather than left to fire: a pending auto-dismiss for a
+ * toast that no longer exists would call `dismiss` on a missing id, and the
+ * map would keep the handle until then.
+ */
+function clearAll(): void {
+	for (const id of [...timers.keys()]) clearTimerFor(id);
+	toasts = [];
+	clearHistory();
+}
+
 export const toastStore = {
 	get toasts(): Toast[] {
 		return toasts;
@@ -129,5 +143,15 @@ export const toastStore = {
 	show,
 	dismiss,
 	markAllRead,
-	clearHistory
+	clearHistory,
+	clearAll
 };
+
+// The notification tray is a readable LOG of the previous user's actions
+// (BUG-3005, the enumeration table). Toast text routinely names items —
+// "Archived TASK-12" — so leaving the history in place lets B read what A just
+// did. Live toasts go too: a toast fired for A's action has no meaning in B's
+// session, and `dismissAll` also cancels their timers.
+authStore.onIdentityChange(() => {
+	toastStore.clearAll();
+});

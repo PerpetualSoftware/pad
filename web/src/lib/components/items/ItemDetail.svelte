@@ -223,6 +223,11 @@
 	// stores after unmount (PLAN-2105 / TASK-2112; Codex rounds 1-2 P1). Plain
 	// counter — not reactive; it only fences async writes.
 	let loadGeneration = 0;
+	// The identity this component's editor contents belong to (BUG-3005).
+	// Captured at load rather than at save: the markdown in the editor was
+	// typed under whoever was signed in when the item was loaded, and that is
+	// the identity a pending write may legitimately be persisted as.
+	let identityEpochAtLoad = authStore.identityEpoch;
 
 	// UNIFIED collection-snapshot generation (BUG-2265 Codex): bumped by EVERY
 	// operation that assigns `collection` — loadData's collection fetch, the SSE
@@ -1596,6 +1601,10 @@
 
 	async function loadData() {
 		const myGen = ++loadGeneration;
+		// Re-stamp the identity this editor's contents belong to (BUG-3005). A
+		// load is where the contents are replaced, so it is where the claim
+		// "this markdown was typed by the current user" becomes true again.
+		identityEpochAtLoad = authStore.identityEpoch;
 		// The item whose links `itemLinks` currently describes, captured BEFORE
 		// this load can replace `item`. `loadData` is not only a first load or a
 		// switch: the edit-collection handler calls it for a SAME-item reload
@@ -2572,7 +2581,12 @@
 			// [P1] of TASK-1319.
 			const skipFlush = skipFlushOnNextCleanup;
 			skipFlushOnNextCleanup = false;
-			if (!rawMode && !skipFlush) {
+			// The same discard rule as the beforeunload handler and the raw
+			// saver (BUG-3005): this cleanup also runs on an identity change,
+			// and a Y.Doc snapshot written then carries the wrong user's
+			// cookie.
+			const identityHeld = authStore.identityEpoch === identityEpochAtLoad;
+			if (!rawMode && !skipFlush && identityHeld) {
 				collabFlusher.flushNow(ctx, true);
 			}
 			provider.destroy();
@@ -2599,6 +2613,25 @@
 	$effect(() => {
 		if (typeof window === 'undefined') return;
 		const onBeforeUnload = (event: BeforeUnloadEvent) => {
+			// WHEN THE IDENTITY MOVED, THIS HANDLER DOES NOTHING AT ALL
+			// (BUG-3005, codex round 4). Two separate defects, both created by
+			// the fix that reloads the tab on an identity change:
+			//
+			//   - it FLUSHES. Both paths below persist editor content with
+			//     `keepalive`, and the unload they run in is the identity
+			//     reload's own — so A's Y.Doc snapshot and A's pending markdown
+			//     would be PATCHed carrying B's cookie. The raw saver has its
+			//     own guard; the collab flush did not, and my grep for
+			//     `keepalive: true` missed it because it takes the flag
+			//     positionally. Guarding here covers both by construction.
+			//   - it PROMPTS. `preventDefault()` on a dirty editor raises the
+			//     native "unsaved changes" dialog, and "Stay" CANCELS the
+			//     reload — leaving B in A's page shell with the stores already
+			//     cleared and no remount left to rebuild it. The prompt exists
+			//     to protect the author's unsaved work, and after an identity
+			//     change the author is not the one sitting here.
+			if (authStore.identityEpoch !== identityEpochAtLoad) return;
+
 			// Collab path: flush the live Y.Doc snapshot (unchanged).
 			const ctx = activeCollabContext;
 			if (ctx) collabFlusher.flushNow(ctx, true);
@@ -3637,6 +3670,24 @@
 		debounceMs: 1200,
 		save: (markdown, { keepalive }) => {
 			if (!item) return;
+			// DISCARD RATHER THAN PERSIST WHEN THE IDENTITY MOVED (BUG-3005).
+			//
+			// This markdown was typed by whoever was signed in when they typed
+			// it. If a different user is signed in now, writing it means one
+			// account's unsaved edit is persisted as another's — a WRITE under
+			// the wrong identity, which is a different class from the display
+			// leaks the rest of that fix is about.
+			//
+			// The keepalive path is why this is load-bearing rather than
+			// theoretical: an identity change RELOADS this tab, the reload fires
+			// `beforeunload`, and that handler flushes pending raw markdown with
+			// `keepalive: true` — a request deliberately built to outlive the
+			// page, and it would go out carrying the NEW user's cookie. The fix
+			// that reloads is what makes this reachable, so it ships with it.
+			//
+			// Compared against the epoch captured when this item was LOADED,
+			// which is the identity the editor's contents belong to.
+			if (authStore.identityEpoch !== identityEpochAtLoad) return;
 			// HT-2176 Option A (TASK-2172): NO peeking recheck here. NEW raw input
 			// is blocked at the editor (`readonly={!canEdit || peeking}`), so this
 			// only ever fires for a debounced save the user INITIATED before the

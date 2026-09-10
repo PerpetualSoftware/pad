@@ -580,4 +580,12 @@ authStore.onIdentityChange(() => {
 	current = null;
 	currentMembership = null;
 	membershipKnown = false;
+	// The SINGLE-FLIGHT SLOT, for the reason collectionStore's reset carries
+	// the same line (BUG-3005, codex round 2): dropping the list while leaving
+	// the previous identity's promise published lets the next caller JOIN it,
+	// that run's own fence then refuses to commit, and the joiner gets no data
+	// and no request. Not a defect this file was filed for — it is the same
+	// defect in the store BUG-2991 fixed, and leaving the identical one line
+	// away would be knowing about it and not saying so.
+	loadAllFlight.invalidate();
 });

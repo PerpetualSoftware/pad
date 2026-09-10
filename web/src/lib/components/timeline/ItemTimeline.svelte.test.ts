@@ -75,7 +75,17 @@ vi.mock('$lib/services/sse.svelte', () => ({
 }));
 
 vi.mock('$lib/stores/auth.svelte', () => ({
-	authStore: { userId: 'user-1', user: { id: 'user-1', role: 'member' } },
+	// `onIdentityChange` and `identityFence` are part of the store's surface as
+	// of BUG-3005: several singletons subscribe at MODULE scope, so a partial
+	// mock throws while the component tree is still being imported, before any
+	// assertion here runs.
+	authStore: {
+		userId: 'user-1',
+		user: { id: 'user-1', role: 'member' },
+		identityEpoch: 0,
+		identityFence: () => () => true,
+		onIdentityChange: () => () => {},
+	},
 }));
 
 // Controllable so the TASK-2474 peek leg can set the timeline's OWN canEdit

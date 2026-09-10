@@ -128,7 +128,10 @@ export type ForceRefreshHandler = () => void;
  * reconnect would land on a stale-cursor force_refresh even though
  * B has been a stable session the whole time.
  */
-const CURSOR_STORAGE_PREFIX = 'pad:collab:cursor:';
+// Exported so the identity-change clear can find these keys without copying
+// the literal (BUG-3005). A second spelling of a storage prefix is a clear that
+// silently stops matching.
+export const CURSOR_STORAGE_PREFIX = 'pad:collab:cursor:';
 
 function cursorStorageKey(itemID: string): string {
 	return `${CURSOR_STORAGE_PREFIX}${itemID}`;
