@@ -124,7 +124,7 @@ User-based authentication with email/password. When no users exist (fresh instal
 pad auth setup         # Create the first admin account on the server host
 
 # Subsequent logins
-pad auth login         # Email + password prompt
+pad auth login         # Browser-based login (add -i for an email + password prompt)
 pad auth whoami        # Show current user
 pad auth logout        # Sign out
 pad auth reset-password user@example.com  # Recover a locked-out account (run ON THE SERVER HOST)
