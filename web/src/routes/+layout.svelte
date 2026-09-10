@@ -5,6 +5,7 @@
 	import { page } from '$app/state';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
+	import { clearAttachmentMetadataCache } from '$lib/components/editor/attachment-metadata';
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
 	import { setAccessRevokedHandler, setRateLimitHandler } from '$lib/api/client';
@@ -107,6 +108,13 @@
 		// an async `onMount` is never called.
 		return authStore.onIdentityChange(() => {
 			workspacesRequested = false;
+			// The editor's attachment-metadata memo is keyed by workspace and
+			// uuid with no user in it, and lives for the page lifetime — so B
+			// would be answered from A's HEAD probe with no request made
+			// (BUG-3005). Cleared from here because that module is deliberately
+			// rune-free and cannot import the auth store; the root layout is the
+			// one listener that covers every route, editor or not.
+			clearAttachmentMetadataCache();
 		});
 	});
 

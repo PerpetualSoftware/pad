@@ -102,7 +102,12 @@ describe('adminStore across an identity change', () => {
 		auth.fireIdentityChange();
 
 		expect(adminStore.stats).toBeNull();
-		expect(adminStore.loading).toBe(true);
+		// FALSE, not true (codex round 2). The admin layout loads on MOUNT and a
+		// same-route admin-to-admin swap mounts nothing, so leaving this true
+		// pinned the console on "Loading admin data…" forever. The layout
+		// re-issues the load on the same signal; until then the honest state is
+		// "nothing loaded".
+		expect(adminStore.loading).toBe(false);
 		expect(adminStore.error).toBe('');
 		vi.unstubAllGlobals();
 	});

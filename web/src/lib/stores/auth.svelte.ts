@@ -73,13 +73,26 @@ let identityEstablished = false;
 // signing out and in — in which case the pre-baseline request settles under a
 // fence that still says current, and commits.
 //
-// It is not closed by refusing every pre-baseline settle, and that was tried on
-// paper first: the root layout issues the workspace list CONCURRENTLY with
-// /auth/session (see the `identityEstablished` comment below, which exists
-// because of that concurrency), so refusing pre-baseline settles would drop the
-// cold start's own data and leave a signed-in user with an empty app until
-// something re-fetched. Nothing inside this tab can tell the two apart: both
-// look like "a response arrived before we knew who was asking".
+// CORRECTED (codex round 2). This comment previously justified the exemption by
+// saying the root layout issues the workspace list concurrently with
+// /auth/session, so refusing pre-baseline settles would empty the app. That is
+// FALSE, and I had taken it from the `identityEstablished` comment below rather
+// than reading the layout: `workspaceStore.loadAll()` is gated on `authReady`
+// (routes/+layout.svelte), which flips only after `authStore.load()` resolves,
+// and the layout renders NO children until then — so no route can issue a
+// fenced request before the baseline either.
+//
+// What that means for the residual: it needs a fence captured by something that
+// runs before any child renders, and today the only pre-baseline request in the
+// app is `authStore.load()` itself, which takes no fence. So the residual is
+// currently UNREACHABLE rather than merely narrow — but it is a property of the
+// callers, not of this code, and a future module that fetches from the root
+// layout would restore it.
+//
+// The exemption itself stays for a different and simpler reason: the bump and
+// the listener notification are the same event, and firing listeners on the
+// baseline is a live hazard the `identityEstablished` comment below documents.
+// Separating them would mean two signals where one is honest.
 //
 // The honest boundary is therefore: the epoch covers identity changes THIS TAB
 // observed, and a cross-tab change during the pre-baseline window is outside
@@ -89,7 +102,13 @@ let identityEstablished = false;
 // this module's own `/auth/session` fetches. A sign-in as a different user
 // through `load()` moves the identity without touching `generation`, so
 // `generation` cannot serve as the epoch — it would miss the swap.
-let identityEpoch = 0;
+// `$state`, unlike `generation` and `notifiedUserId` beside it, because this
+// one is READ FROM A TEMPLATE: the workspace layout keys its leaf-page block on
+// it (`{#key authStore.identityEpoch}`) to remount route components whose own
+// state is not identity-scoped. A plain `let` is invisible to the template and
+// the block never re-runs — which is exactly how the first version of that
+// remount shipped, silently, until a test counted mounts (codex round 2).
+let identityEpoch = $state(0);
 
 function notifyIdentityChange() {
 	const id = session?.user?.id ?? '';
@@ -110,8 +129,12 @@ function notifyIdentityChange() {
 	// is signed in NOW and never re-issue a request built from the identity it
 	// was just told about. The fence cannot check this for them — it compares
 	// epochs, and by the time a listener runs the epoch is already the new one.
-	// Every listener on this branch clears state and either stops or reloads
-	// from the current route, which satisfies it.
+	// Every listener on this branch satisfies it, and most satisfy it by doing
+	// nothing further: clearing state and stopping cannot re-issue anything.
+	// The two that DO reload — the workspace layout and the starred page — read
+	// the workspace from the live route rather than from anything captured
+	// before the change (codex round 2 read "stops" as a claim that they all
+	// reload, so this says which is which).
 	identityEpoch++;
 	for (const fn of identityListeners) fn();
 }

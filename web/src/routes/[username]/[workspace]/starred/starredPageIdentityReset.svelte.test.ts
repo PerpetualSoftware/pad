@@ -42,6 +42,7 @@ vi.mock('$app/navigation', () => ({
 
 import StarredPage from './+page.svelte';
 import { authStore } from '$lib/stores/auth.svelte';
+import { starredStore } from '$lib/stores/starred.svelte';
 import { page } from '$app/state';
 
 function sessionFor(id: string) {
@@ -111,5 +112,36 @@ describe('starred page across an identity change', () => {
 		await settle();
 
 		expect(count()).toBe('0');
+	});
+
+	it('reloads the shared starredStore, not just its own copy', async () => {
+		// codex round 2. The page renders correctly through its own fallback
+		// either way, so a page-local reload HIDES the store's emptiness rather
+		// than fixing it — and every other view in the workspace consults
+		// `starredStore.isStarred()`, so they show every item as unstarred until
+		// something else happens to reload it.
+		api.items.starred.mockResolvedValue([ITEM_A]);
+		api.collections.list.mockResolvedValue([]);
+
+		// The workspace LAYOUT is what calls `starredStore.load` on mount, and
+		// this harness renders the page alone — so seed the store the way the
+		// layout would, or the precondition below is asserting about a store
+		// nothing ever populated.
+		await starredStore.load('ws');
+		render(StarredPage);
+		await settle();
+		// PRECONDITION: the store holds A's star, so "B's is loaded" is a claim
+		// about a store that was populated and changed rather than one that was
+		// always in this state.
+		expect(starredStore.isStarred('item-a')).toBe(true);
+
+		api.items.starred.mockResolvedValue([{ ...ITEM_A, id: 'item-b' }]);
+		api.auth.session.mockResolvedValue(sessionFor('user-b'));
+		await authStore.load();
+		await settle();
+
+		expect(starredStore.loaded).toBe(true);
+		expect(starredStore.isStarred('item-a')).toBe(false);
+		expect(starredStore.isStarred('item-b')).toBe(true);
 	});
 });

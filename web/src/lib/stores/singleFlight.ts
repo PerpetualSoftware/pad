@@ -75,6 +75,18 @@ export interface KeyedSingleFlight<K> {
 	inFlightFor(key: K): Promise<void> | null;
 
 	/**
+	 * Abandon the current run and the published slot (BUG-3005, codex round 2).
+	 *
+	 * A single-flight slot outlives the DATA its owner drops. Clearing a store
+	 * on an identity change without this leaves the previous identity's promise
+	 * published, so the next caller JOINS it, that run's own fence then refuses
+	 * to commit, and the joiner is answered with nothing — no request issued and
+	 * no data. Bumping the sequence is what makes the abandoned run lose
+	 * `isLatest` as well, so it cannot commit after the slot is cleared either.
+	 */
+	invalidate(): void;
+
+	/**
 	 * Issue a run. ALWAYS issues; never joins an existing one.
 	 *
 	 * `work` receives a handle whose `isLatest()` says whether this run may
@@ -97,6 +109,16 @@ export function createKeyedSingleFlight<K>(options: SingleFlightOptions = {}): K
 		inFlightFor(key: K): Promise<void> | null {
 			if (inFlightPromise && inFlightKey === key) return inFlightPromise;
 			return null;
+		},
+
+		invalidate(): void {
+			// The bump is the load-bearing half: it is what strips `isLatest`
+			// from the run being abandoned. Clearing the slot alone would stop
+			// new joiners while still letting that run commit.
+			seq++;
+			inFlightKey = null;
+			inFlightPromise = null;
+			setLoading?.(false);
 		},
 
 		run(key: K, work: (run: SingleFlightRun) => Promise<void>): Promise<void> {

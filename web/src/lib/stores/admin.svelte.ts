@@ -117,12 +117,19 @@ let error = $state('');
 async function loadStats() {
 	loading = true;
 	error = '';
+	// The identity that ASKED (BUG-3005, codex round 2). Clearing on the signal
+	// is not enough on its own: a request already in flight settles afterwards
+	// and writes the previous admin's statistics into the new session.
+	const isSameIdentity = authStore.identityFence();
 	try {
-		stats = await adminFetch('/admin/stats');
+		const result = await adminFetch('/admin/stats');
+		if (!isSameIdentity()) return;
+		stats = result;
 	} catch (e) {
+		if (!isSameIdentity()) return;
 		error = e instanceof Error ? e.message : 'Failed to load';
 	} finally {
-		loading = false;
+		if (isSameIdentity()) loading = false;
 	}
 }
 
@@ -145,7 +152,12 @@ export const adminStore = {
 	 */
 	clear() {
 		stats = null;
-		loading = true;
+		// FALSE, not true (codex round 2). The admin layout loads on MOUNT, and
+		// a same-route admin-to-admin swap mounts nothing — leaving this true
+		// would pin the console on "Loading admin data…" forever. The layout
+		// re-issues the load on the same signal; until it lands the honest
+		// state is "nothing loaded", not "loading".
+		loading = false;
 		error = '';
 	}
 };

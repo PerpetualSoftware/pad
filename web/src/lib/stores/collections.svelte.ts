@@ -286,6 +286,13 @@ export const collectionStore = {
 		// owns it and no consumer is left waiting on a load that will never
 		// report finished.
 		loading = false;
+		// And the SINGLE-FLIGHT SLOT (codex round 2). Dropping the data while
+		// leaving A's promise published made this reset actively harmful: B's
+		// `ensureCollections` joined A's request, A's identity fence then
+		// refused to commit, and B was answered with no data and no request of
+		// its own — a permanently empty sidebar, which is the exact failure the
+		// cleared freshness stamp was supposed to prevent.
+		collectionsFlight.invalidate();
 	},
 };
 

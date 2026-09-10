@@ -92,6 +92,29 @@ export type AttachmentMetadataResult =
 
 const cache = new Map<string, Promise<AttachmentMetadataResult>>();
 
+// The key carries no USER (BUG-3005). Every entry is a HEAD result obtained
+// under the signed-in user's authorization, and this cache lives for the page
+// lifetime by design — so after a same-route account swap, B reading the same
+// attachment id in the same workspace is answered from A's probe with no
+// request made.
+//
+// CLEARED ON THE SIGNAL RATHER THAN KEYED BY USER, which was the other option
+// and is the stronger one in general. Keying would mean four call sites
+// composing the key and two PREFIX SCANS
+// (`invalidateAttachmentMetadataForWorkspace`) agreeing with them on a userId
+// that can move between the fetch and the invalidation — a new way to write an
+// entry nothing can ever delete. The strength a key would add over a clear is
+// coverage of requests issued before an identity is established, and nothing
+// here can be in that window: the root layout renders no children until
+// `authReady`, so no editor exists to probe an attachment before the session
+// has resolved.
+//
+// The subscription is NOT registered here, and that is not tidiness: this
+// module is deliberately rune-free and is imported by tests in vitest's `node`
+// project, so importing `auth.svelte` breaks them with `$state is not defined`
+// before a single assertion runs. The root layout owns the call instead — see
+// `clearAttachmentMetadataCache` below.
+
 /**
  * Is this result a DURABLE fact worth keeping for the page's lifetime?
  *
@@ -236,6 +259,17 @@ export function invalidateAttachmentMetadata(workspaceSlug: string, uuid: string
  * what answers: a genuinely deleted row 404s again and re-latches. The cache was
  * never the authority — it was only ever a memo of one.
  */
+/**
+ * Drop EVERY entry, for every workspace (BUG-3005).
+ *
+ * Called from the root layout on an identity change. Exported rather than
+ * self-subscribing so this module keeps no dependency on the auth store — see
+ * the note on `cache` for why that dependency is not free here.
+ */
+export function clearAttachmentMetadataCache(): void {
+	cache.clear();
+}
+
 export function invalidateAttachmentMetadataForWorkspace(workspaceSlug: string): void {
 	if (!workspaceSlug) return;
 	const prefix = `${workspaceSlug}:`;

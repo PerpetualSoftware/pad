@@ -70,7 +70,15 @@
 		// Invalidate any load already in flight: it was issued as the previous
 		// user and its `seq` check would otherwise accept it.
 		loadSeq++;
-		if (wsSlug) loadStarred(wsSlug);
+		if (!wsSlug) return;
+		loadStarred(wsSlug);
+		// AND the shared store (codex round 2). Its reset leaves `loaded=false`,
+		// and this page renders correctly through its own fallback either way —
+		// so without this line the store stays empty and every OTHER view in the
+		// workspace shows every item as unstarred until something else reloads
+		// it. The page's private fetch hid the store's emptiness rather than
+		// fixing it.
+		starredStore.load(wsSlug);
 	});
 	onDestroy(stopIdentityWatch);
 
