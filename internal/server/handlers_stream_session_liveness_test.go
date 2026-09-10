@@ -847,10 +847,30 @@ func TestCredentialLiveness_StoreErrorRecoversOnTheNextTick(t *testing.T) {
 	// So break the seam transiently instead: rename the table ValidateSession
 	// reads, ask, put it back, ask again. Same error path (a failing query, not
 	// a closed handle), and it ends.
-	srv := testServer(t)
+	//
+	// SQLite leg. testServer is hardwired to storetest.NewSQLite, so this one
+	// stays SQLite even under `make test-pg` — the Postgres leg below is a
+	// separate test, not the same test on another backend (codex round 3).
+	credentialLivenessRecovery(t, testServer(t), "sqlite")
+}
+
+func TestCredentialLiveness_StoreErrorRecoversOnTheNextTickPostgres(t *testing.T) {
+	// The Postgres leg of the test above. The predicate is dialect-independent
+	// but the INSTRUMENT is not — `ALTER TABLE ... RENAME TO` and the error a
+	// missing table produces are both dialect-specific, and a store error
+	// classified as `unknown` on SQLite would be worth nothing if Postgres
+	// surfaced it as something else. Skips when PAD_TEST_POSTGRES_URL is unset.
+	srv, _ := testServerPostgres(t)
+	credentialLivenessRecovery(t, srv, "postgres")
+}
+
+// credentialLivenessRecovery drives one store through the outage-and-back
+// sequence. Shared so the two legs cannot drift.
+func credentialLivenessRecovery(t *testing.T, srv *Server, backend string) {
+	t.Helper()
 
 	user, err := srv.store.CreateUser(models.UserCreate{
-		Email: "transient@example.com", Name: "T", Password: "correct-horse-battery-staple", Role: "member",
+		Email: "transient-" + backend + "@example.com", Name: "T", Password: "correct-horse-battery-staple", Role: "member",
 	})
 	if err != nil {
 		t.Fatalf("create user: %v", err)
@@ -874,6 +894,23 @@ func TestCredentialLiveness_StoreErrorRecoversOnTheNextTick(t *testing.T) {
 	if _, err := db.Exec("ALTER TABLE sessions RENAME TO sessions_outage"); err != nil {
 		t.Fatalf("hide sessions table: %v", err)
 	}
+	// Restore registered IMMEDIATELY, not after the assertions (codex round 3,
+	// P2): a t.Fatalf between here and the manual restore would otherwise leave
+	// the schema renamed for whatever shares this database. Idempotent, so the
+	// manual restore below can still happen first.
+	restored := false
+	restore := func() {
+		if restored {
+			return
+		}
+		if _, err := db.Exec("ALTER TABLE sessions_outage RENAME TO sessions"); err != nil {
+			t.Errorf("restore sessions table: %v", err)
+			return
+		}
+		restored = true
+	}
+	t.Cleanup(restore)
+
 	if got := srv.credentialLiveness(req); got != credentialUnknown {
 		t.Fatalf("credentialLiveness during the outage = %v, want credentialUnknown", got)
 	}
@@ -881,9 +918,7 @@ func TestCredentialLiveness_StoreErrorRecoversOnTheNextTick(t *testing.T) {
 		t.Fatal("a transient store error closed the stream; a database blip is not a revocation")
 	}
 
-	if _, err := db.Exec("ALTER TABLE sessions_outage RENAME TO sessions"); err != nil {
-		t.Fatalf("restore sessions table: %v", err)
-	}
+	restore()
 	if got := srv.credentialLiveness(req); got != credentialValid {
 		t.Fatalf("credentialLiveness after the store recovered = %v, want credentialValid; the tick must not latch", got)
 	}
