@@ -170,7 +170,11 @@ func RelationIssuesMessage(issues []RelationIssue) string {
 //     targets are out of PLAN-2857 v1.
 //   - Empty and absent values are not issues. Clearing a relation is a
 //     legitimate write, and a required-field check is `ValidateFields`'s job.
-//   - Exact-title resolution is U6. A ref or a UUID resolve; nothing else does.
+//   - A UUID, a ref, or an EXACT TITLE resolve; nothing else does. The title
+//     rung is U6 (PLAN-2857) and is scoped to the field's declared collection,
+//     unlike `ResolveItem`'s workspace-wide ladder. This line used to say
+//     "exact-title resolution is U6. A ref or a UUID resolve; nothing else
+//     does" — it was U1's scope note and U6 falsified it.
 //   - Soft-deleted targets do not resolve (`ResolveItem` and `GetItem` exclude
 //     them), so writing a reference to a deleted item is refused while an
 //     ALREADY-STORED one still renders honestly on read — the read half U2
@@ -423,11 +427,17 @@ func (s *Store) resolveRelationTargetQ(q Queryer, workspaceID, value string) (*m
 // of a reuse. The workspace-wide query below exists ONLY to turn "not here"
 // into a better refusal; it is never allowed to produce a resolution.
 //
-// EXACTNESS. `=` on the stored title, against the caller's already-trimmed
-// value: case-sensitive and whitespace-sensitive on both engines. "Exact
-// title" is taken literally, because the alternative — folding case, or
-// trimming the stored side — invents a matching rule nobody ratified and makes
-// two visibly different titles collide.
+// EXACTNESS, and precisely what is exact about it. `=` on the STORED title,
+// case-sensitive on both engines, with no folding and no trimming of the stored
+// side: the alternative invents a matching rule nobody ratified and makes two
+// visibly different titles collide.
+//
+// The SUPPLIED value is trimmed before it gets here, by the same TrimSpace the
+// whole resolver applies to every relation value (a relation names a reference,
+// not content, and a whitespace-only one has meant "no reference" since U1). So
+// `" Red "` does match a stored `"Red"`, while a stored `" Red "` is reachable
+// only by a value that trims to it. Worth stating, because "exact" on its own
+// implies neither.
 //
 // The ORDER of the ladder above this matters too: UUID, then ref, then title.
 // An item literally titled "TASK-5" is therefore unreachable by title while a
