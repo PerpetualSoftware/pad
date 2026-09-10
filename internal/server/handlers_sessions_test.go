@@ -29,7 +29,7 @@ func getSessions(t *testing.T, baseURL, token string) (int, sessionsResponse) {
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := isolatedTestClient().Do(req)
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestListSessions_IsNotCacheable(t *testing.T) {
 
 	req, _ := http.NewRequest("GET", ts.URL+"/api/v1/sessions", nil)
 	req.Header.Set("Authorization", "Bearer "+tok.Token)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := isolatedTestClient().Do(req)
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}

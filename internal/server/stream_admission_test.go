@@ -30,7 +30,7 @@ func rawWatchStreamStatus(t *testing.T, baseURL, token string) int {
 		t.Fatalf("build request: %v", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := isolatedTestClient().Do(req)
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
@@ -56,7 +56,7 @@ func holdAuthedSSE(ctx context.Context, t *testing.T, baseURL, slug, token strin
 		t.Fatalf("build request: %v", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := isolatedTestClient().Do(req)
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
@@ -459,7 +459,7 @@ func rawSSEStatus(t *testing.T, baseURL, slug string) int {
 	if err != nil {
 		t.Fatalf("build request: %v", err)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := isolatedTestClient().Do(req)
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
@@ -724,7 +724,7 @@ func TestStreamLimitRefusalContractIsIdenticalOnBothEndpoints(t *testing.T) {
 			t.Fatalf("%s: build request: %v", tc.name, err)
 		}
 		req.Header.Set("Authorization", "Bearer "+tc.token)
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := isolatedTestClient().Do(req)
 		if err != nil {
 			t.Fatalf("%s: request failed: %v", tc.name, err)
 		}

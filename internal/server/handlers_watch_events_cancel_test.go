@@ -86,7 +86,7 @@ func TestDisconnectDuringTheResumeSettleReleasesTheAdmissionSlot(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := isolatedTestClient().Do(req)
 		if err == nil {
 			_ = resp.Body.Close()
 		}
