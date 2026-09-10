@@ -279,8 +279,25 @@ func TestWriteTypedItemRefusalIncludesTitleRefusal(t *testing.T) {
 	srv := testServer(t)
 	item := &models.Item{ID: "item-1", Ref: "TASK-1", Slug: "task-1"}
 
+	// The recorder is inspected, not discarded: the classifier's answer is only half
+	// the contract — a mutant that returns true while writing the wrong status would
+	// pass a boolean-only assertion (codex round 1, this unit).
 	refused := func(err error) bool {
-		return srv.writeTypedItemRefusal(httptest.NewRecorder(), item, err)
+		rec := httptest.NewRecorder()
+		got := srv.writeTypedItemRefusal(rec, item, err)
+		if got {
+			if rec.Code < 400 || rec.Code > 499 {
+				t.Errorf("a recognised refusal wrote status %d; a refusal must answer 4xx or the "+
+					"caller cannot tell it from success", rec.Code)
+			}
+			if rec.Body.Len() == 0 {
+				t.Error("a recognised refusal wrote no body; the structured envelope is the contract")
+			}
+		} else if rec.Body.Len() != 0 {
+			t.Errorf("an unrecognised error wrote a body (%s) while reporting not-handled; the "+
+				"caller will write a second response on top of it", rec.Body.String())
+		}
+		return got
 	}
 
 	if !refused(&store.InvalidItemTitleError{Reason: "Title is required"}) {

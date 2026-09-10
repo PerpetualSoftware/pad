@@ -1644,12 +1644,15 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	//
 	// Field-only PATCHes (input.Content == nil) skip this branch
 	// entirely; they continue straight to UpdateItem unchanged.
-	// fullWriteHandled is set when applyContentViaCollab's directWrite
-	// callback ran the FULL UpdateItem (content + title + fields +
-	// everything) inside the per-item lock. In that case we must not
-	// re-run UpdateItem below — we'd duplicate the write and could
-	// produce two version-history rows. Instead we re-fetch the
-	// post-write snapshot for the response. Per Codex review round 9.
+	// fullWriteHandled is set when routeContentUpdate already ran the FULL
+	// UpdateItem — either through the direct path's PruneAndApply callback (content
+	// + title + fields + everything, inside the per-item lock) or through the
+	// applier path's row write. In either case we must not re-run UpdateItem below:
+	// we would duplicate the write and could produce two version-history rows.
+	// Instead the router hands back the post-write snapshot for the response.
+	// (Originally Codex round 9 on applyContentViaCollab's directWrite callback;
+	// that helper was retired with PLAN-2975's reorder and the invariant moved
+	// rather than went away.)
 	var fullWriteHandled bool
 	var fullWriteUpdated *models.Item
 	// `?source=collab-snapshot` opts out of the applier-routing path so

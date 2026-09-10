@@ -177,8 +177,18 @@ func TestApplyFailureAfterRowWriteAnswersContentNotApplied(t *testing.T) {
 	if code != "content_not_applied" {
 		t.Fatalf("want code content_not_applied, got %q (body %s)", code, rr.Body.String())
 	}
-	if landed, _ := details["content_landed"].(bool); landed {
-		t.Error("content_landed must be false: the whole point of the code is that it did not")
+	// The silent applier ACCEPTS the request and never acks, so this is the TIMED-OUT
+	// case: the request went out on the wire and the peer might have applied it. The
+	// response must say the outcome is unknown rather than assert it did not land —
+	// asserting that would state as fact something the server cannot know (codex
+	// round 1).
+	if got, _ := details["content_outcome"].(string); got != "unknown" {
+		t.Errorf("content_outcome = %q, want \"unknown\": ErrAllAppliersTimedOut is only returned "+
+			"after an applier_request reached a peer, so the content may in fact have been applied", got)
+	}
+	if _, present := details["content_landed"]; present {
+		t.Error("content_landed must be ABSENT when the outcome is unknown: a caller that reads " +
+			"false may act on a premise the server cannot support")
 	}
 	if _, ok := details["actual_updated_at"].(string); !ok {
 		t.Error("actual_updated_at missing: without it a content-only retry trips OCC on a timestamp " +

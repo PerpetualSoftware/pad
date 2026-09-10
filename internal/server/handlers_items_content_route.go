@@ -68,6 +68,13 @@ const (
 // out. Error direction is safe in both senses: too long merely delays a request that
 // was going to be refused, and too short converts a room that would have settled
 // into a retryable refusal. Nothing is written on either side of the bound.
+//
+// IT IS A RE-DECISION BUDGET, NOT A HARD REQUEST BOUND, and the difference is worth
+// stating because the name suggests otherwise (codex round 1, this unit). The
+// deadline is only consulted between attempts, and an attempt calls PruneAndApply,
+// which can itself block on the per-item lock or on appendMu while a restore holds
+// the room. A request can therefore exceed this budget under contention. What the
+// budget bounds is how long the route keeps ASKING, not how long the request takes.
 const applierSettleBudget = 500 * time.Millisecond
 
 // applierSettlePoll is the re-decision interval inside that budget. HasElectableApplier
@@ -232,11 +239,21 @@ func (s *Server) applierFirstWrite(
 				"A concurrent version restore made this edit's outcome ambiguous; please retry.")
 			return contentRouteHandled, nil, nil
 		}
-		slog.Warn("collab: row write landed but the apply failed; answering content_not_applied",
+		// Whether the content DEMONSTRABLY did not land, or merely was not
+		// confirmed. ErrAllAppliersTimedOut is only returned once an
+		// applier_request has gone out on the wire, so the elected peer may have
+		// applied it with the ack lost or late; the no-room / no-applier errors
+		// mean nothing ever reached a peer.
+		outcome := contentOutcomeNotApplied
+		if errors.Is(aerr, collab.ErrAllAppliersTimedOut) {
+			outcome = contentOutcomeUnknown
+		}
+		slog.Warn("collab: row write landed but the apply did not confirm; answering content_not_applied",
 			"item_id", item.ID,
+			"content_outcome", outcome,
 			"error", aerr,
 		)
-		writeContentNotAppliedError(w, itemRefOrSlug(*item), landedFieldNames(input), updated.UpdatedAt, aerr.Error())
+		writeContentNotAppliedError(w, itemRefOrSlug(*item), landedFieldNames(input), updated.UpdatedAt, outcome, aerr.Error())
 		return contentRouteHandled, nil, nil
 	}
 
