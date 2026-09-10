@@ -159,6 +159,53 @@ describe('workspaceStore: identity change drops the previous user\'s state', () 
 		expect(api.workspaces.me).not.toHaveBeenCalled();
 	});
 
+	it('refuses to commit a workspace list fetched for the previous user', async () => {
+		// `loadAll` is guarded by a single-flight GENERATION, which only advances
+		// when a newer `loadAll` starts — it says nothing about the user. The
+		// request is issued before the reset and commits after it, which is the
+		// one door the reset itself cannot close (codex round 1).
+		const { workspaceStore } = await import('./workspace.svelte');
+		const listing = deferred<typeof WS[]>();
+		api.workspaces.list.mockReturnValueOnce(listing.promise);
+
+		const pending = workspaceStore.loadAll();
+
+		auth.userId = 'user-2';
+		auth.fireIdentityChange();
+		// user-1's listing arrives after the swap.
+		listing.resolve([WS]);
+		await pending;
+
+		expect(workspaceStore.workspaces).toEqual([]);
+	});
+
+	it('still commits a workspace list that completes under the same user', async () => {
+		// The counterfactual for the fence above: it must not make `loadAll` a
+		// no-op in the ordinary case.
+		const { workspaceStore } = await import('./workspace.svelte');
+		api.workspaces.list.mockResolvedValue([WS]);
+
+		await workspaceStore.loadAll();
+
+		expect(workspaceStore.workspaces).toEqual([WS]);
+	});
+
+	it('returns null from a create whose user changed, so the caller navigates nowhere', async () => {
+		// The store refusing to mutate is not enough on its own: the only caller
+		// navigates to whatever comes back, so returning the workspace sent the
+		// NEW user to the PREVIOUS user's slug (codex round 1).
+		const { workspaceStore } = await import('./workspace.svelte');
+		const created = deferred<typeof OTHER>();
+		api.workspaces.create.mockReturnValueOnce(created.promise);
+
+		const pending = workspaceStore.create({ name: 'Other' });
+		auth.userId = 'user-2';
+		auth.fireIdentityChange();
+		created.resolve(OTHER);
+
+		await expect(pending).resolves.toBeNull();
+	});
+
 	it('still lists and selects a create that completes under the same user', async () => {
 		// The counterfactual for the fence: it must not turn every create into a
 		// no-op. Same user throughout, which is the ordinary case.

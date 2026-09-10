@@ -37,6 +37,14 @@
 	// is down. Recovery belongs where it can be gated on a CONDITION rather than
 	// on a flag: `workspaceStore.recoverIfMissing`, driven by the workspace
 	// layout's sync subscriber.
+	// One-shot latch so the effect below issues `loadAll` once per session
+	// rather than on every re-run. RE-ARMED ON AN IDENTITY CHANGE (BUG-2991,
+	// codex round 1): the workspace store now drops the previous user's list
+	// when the signed-in user changes, and this latch is what would otherwise
+	// stop the new user's list ever being fetched — logout is an SPA
+	// navigation, so this layout stays mounted and the latch stays true. The
+	// symptom would be TASK-2200's exactly: an empty sidebar with no links and
+	// nothing but F5 to fix it.
 	let workspacesRequested = $state(false);
 	let authLoadFailed = $state(false);
 	let isAuthPage = $derived(
@@ -85,6 +93,21 @@
 	// toast-store import, matching the access-revoked split above.
 	setRateLimitHandler((retryAfterMs) => {
 		notifyServerBusy(retryAfterMs);
+	});
+
+	onMount(() => {
+		// Re-arm the one-shot workspace-load latch whenever the signed-in user
+		// changes (BUG-2991, codex round 1). Registered here rather than folded
+		// into the store's own listener because the latch is THIS component's
+		// state: the store drops the list, and the component has to be willing
+		// to ask for it again. Returned unsubscribe runs on destroy.
+		//
+		// Deliberately outside the async body below — an `onMount` that returns
+		// a Promise has its resolved value ignored, so a cleanup returned from
+		// an async `onMount` is never called.
+		return authStore.onIdentityChange(() => {
+			workspacesRequested = false;
+		});
 	});
 
 	onMount(async () => {

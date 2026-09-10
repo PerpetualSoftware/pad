@@ -278,6 +278,15 @@ export const workspaceStore = {
 
 	async loadAll() {
 		return loadAllFlight.run(LOAD_ALL_KEY, async ({ isLatest }) => {
+			// Captured before the request, compared after it (BUG-2991, codex
+			// round 1). `isLatest` is a NAVIGATION fence — its generation only
+			// advances when a newer `loadAll` starts — so it says nothing about
+			// whether the same USER is still signed in. Without this, A's list
+			// resolving after A signed out and B signed in commits A's
+			// workspaces into B's store, which is the identity reset's own
+			// defect arriving through the one door the reset cannot close: the
+			// request was issued before the reset and commits after it.
+			const callUser = currentUserId();
 			const list = await api.workspaces.list();
 			// WHICH RESPONSE COMMITS (TASK-2947, and a behaviour change rather
 			// than a move). Two overlapping calls used to leave the OLDER list in
@@ -288,6 +297,7 @@ export const workspaceStore = {
 			// store's own comment as pre-existing; extracting the primitive is
 			// where it closes, because the primitive owns the rule.
 			if (!isLatest()) return;
+			if (currentUserId() !== callUser) return;
 			workspaces = list;
 		});
 	},
@@ -487,14 +497,21 @@ export const workspaceStore = {
 		// sign-in does not advance `membershipSeq`, which is the same reason
 		// `settleIfCurrent` needs two fences rather than one.
 		//
-		// Refusing to touch the store is the whole fix. The workspace was really
-		// created, so `ws` is still returned rather than thrown — the caller
-		// asked for a workspace and got one — and what it does with it is
-		// outside this store. `authStore.onIdentityChange` has already reset the
-		// store for the new user by the time we get here, so there is nothing to
-		// clear and nothing to re-resolve; the membership fetch below is skipped
-		// with it, since it would settle for a user who is not signed in.
-		if (currentUserId() !== callUser) return ws;
+		// Returns NULL rather than the workspace (codex round 1). Refusing to
+		// touch the store is most of the fix, but not all of it: the only caller
+		// navigates to whatever comes back, so returning `ws` sent the NEW user
+		// to the PREVIOUS user's workspace. The server denies them, so it is not
+		// a bypass — it is a navigation nobody asked for, to a slug that leaks
+		// the other account's workspace name in the URL.
+		//
+		// Null says "no workspace for THIS session", which is the honest answer:
+		// the workspace was really created, but not for whoever is signed in
+		// now. Throwing would have been worse — it renders as "Failed to create
+		// workspace" over a create that succeeded.
+		//
+		// The membership fetch below is skipped with the rest: a `/me` for a
+		// user who is no longer signed in has nowhere to land.
+		if (currentUserId() !== callUser) return null;
 
 		// THE LIST IS ADDITIVE; ONLY THE SELECTION IS RACED (codex round 5).
 		// Two concurrent creates both succeed on the server, so both workspaces

@@ -113,6 +113,17 @@
 				description: newDescription.trim() || undefined,
 				template: selectedTemplate || undefined
 			});
+			// NULL means the signed-in user changed while the POST was open, so
+			// this workspace belongs to the session that started the create and
+			// not to whoever is here now (BUG-2991). Close, and navigate
+			// nowhere: sending the new user to the previous user's slug is a
+			// navigation nobody asked for, and the server denies them anyway.
+			// No toast either — nothing failed for the user in front of us, and
+			// they did not start this create.
+			if (!ws) {
+				close();
+				return;
+			}
 			// Fire the Phase F hook BEFORE close + goto so the consumer can
 			// stage state (e.g. uiStore.requestConnectAfterNavigate) that
 			// the destination route will read on mount. Callback is purely
