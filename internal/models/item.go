@@ -87,6 +87,18 @@ type ItemWriteWarnings struct {
 	UndeclaredFields    []string `json:"undeclared_fields,omitempty"`
 	DroppedFields       []string `json:"dropped_fields,omitempty"`
 	UnresolvedRelations []string `json:"unresolved_relations,omitempty"`
+	// ContentOutcome names where a content write ended up, in the same vocabulary
+	// the content_not_applied error uses. On a 200 it takes exactly one value,
+	// "applied_pending_flush": the content reached the collaborative document and
+	// items.content has not caught up yet, so the `content` on this response is the
+	// markdown as SENT rather than as stored (BUG-2995).
+	//
+	// A caller that reads `content` back to confirm its own write needs this: the
+	// stored form is not byte-identical to the sent form even once the row catches
+	// up, because the markdown makes a round trip through the editor on its way
+	// there (measured on BUG-2995's trail: setext headings, bullet markers,
+	// emphasis characters, list renumbering and blank-line runs all normalise).
+	ContentOutcome string `json:"content_outcome,omitempty"`
 }
 
 // IsReservedItemField reports whether key is system-written metadata rather than

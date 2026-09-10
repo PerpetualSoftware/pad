@@ -1655,6 +1655,12 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	// rather than went away.)
 	var fullWriteHandled bool
 	var fullWriteUpdated *models.Item
+	// BUG-2995: set when the content went through the designated applier, which
+	// writes the row WITHOUT content. The response is built from that row, so
+	// without this the 200 answers a content PATCH with the content from before the
+	// request — the caller's own verify read shows its write missing.
+	var contentAppliedPendingFlush bool
+	var appliedContent string
 	// `?source=collab-snapshot` opts out of the applier-routing path so
 	// a connected collab tab can flush its Y.Doc-derived markdown to
 	// items.content WITHOUT looping back through ApplyExternalContent
@@ -1907,6 +1913,8 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			fullWriteHandled = true
 			fullWriteUpdated = updated
 			input.Content = nil
+			contentAppliedPendingFlush = true
+			appliedContent = contentToApply
 		case contentRouteDirectWrote:
 			// PruneAndApply ran the full write (content included) under the
 			// per-item lock, for a room with no live writer at all.
@@ -2144,12 +2152,32 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// BUG-2995: on the applier path `updated` is the row as it stood BEFORE this
+	// request, because applierFirstWrite nils Content so the markdown can travel
+	// through the live Y.Doc instead. Answering with that row's content tells a
+	// caller its write was dropped.
+	//
+	// The response carries the content as SENT, and the marker below is what makes
+	// that honest: the echoed value is a true statement about what the applier
+	// received, and a false one about the row until the flush lands. Echoing
+	// without the marker would be the overclaim — the stored form is not
+	// byte-identical to the sent form (measured on BUG-2995's trail), so a caller
+	// comparing this value to a later read would find a difference it could not
+	// account for.
+	if contentAppliedPendingFlush {
+		updated.Content = appliedContent
+	}
+
 	// Advisory, post-write, same as create (BUG-2850).
-	if len(undeclaredFields) > 0 || len(droppedDefaults) > 0 {
-		updated.Warnings = &models.ItemWriteWarnings{
+	if len(undeclaredFields) > 0 || len(droppedDefaults) > 0 || contentAppliedPendingFlush {
+		warnings := &models.ItemWriteWarnings{
 			UndeclaredFields: undeclaredFields,
 			DroppedFields:    droppedDefaults,
 		}
+		if contentAppliedPendingFlush {
+			warnings.ContentOutcome = contentOutcomeAppliedPendingFlush
+		}
+		updated.Warnings = warnings
 	}
 
 	writeJSON(w, http.StatusOK, updated)
