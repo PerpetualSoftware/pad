@@ -1,6 +1,30 @@
+<script module lang="ts">
+	/**
+	 * Monotonic token for the create/import operation in flight, MODULE-SCOPED
+	 * rather than per instance (BUG-2991, codex round 10).
+	 *
+	 * An instance-local counter fences one component's own state and nothing
+	 * else, and this modal is destroyed and remounted routinely — a logout, a
+	 * navigation between the console and workspace shells. So: A starts an
+	 * import, the modal unmounts, A signs back in and a NEW instance mounts,
+	 * the OLD instance's request resolves — its identity check passes, because
+	 * it really is the same user, and it fires the Phase F callback, the toast,
+	 * `close()` and a `goto` to a workspace nobody is currently asking for,
+	 * dismissing the new instance's modal on the way.
+	 *
+	 * Identity cannot answer this: the user did not change. What changed is
+	 * that this continuation stopped being the operation anyone is waiting on.
+	 * Module scope is what makes the token outlive the instance, which is
+	 * exactly the lifetime the defect lives in.
+	 */
+	let opSeq = 0;
+</script>
+
 <script lang="ts">
+	import { onMount, untrack } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
+	import { authStore } from '$lib/stores/auth.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
 	import { toastStore } from '$lib/stores/toast.svelte';
@@ -58,8 +82,34 @@
 		})).filter((g) => g.templates.length > 0)
 	);
 
+	// Reset on the OPEN TRANSITION, not on every run of this effect.
+	//
+	// It used to reset whenever it re-ran with `createWorkspaceOpen` true — and
+	// it re-runs on its own, because the body READS `templates.length` and
+	// WRITES `templates` from the response. So the templates request, which is
+	// fired by this very effect on open, wiped the typed name, the chosen
+	// template, the expanded state and any selected import bundle a moment
+	// later. Anyone typing faster than that round-trip lost what they typed.
+	//
+	// Found while writing the identity tests for this modal (BUG-2991): every
+	// click-driven case failed because the state under test was reset out from
+	// under it. It is also the shape CONVE-1688 names — an `$effect` that reads
+	// a `$state` it also writes — which in a production build can wedge Svelte's
+	// scheduler rather than merely misbehaving.
+	//
+	// The writes are `untrack`ed so nothing in the body can invalidate the
+	// effect, and the marker makes the reset a real edge rather than a
+	// steady-state condition.
+	let wasOpen = false;
 	$effect(() => {
-		if (uiStore.createWorkspaceOpen) {
+		const open = uiStore.createWorkspaceOpen;
+		if (!open) {
+			wasOpen = false;
+			return;
+		}
+		if (wasOpen) return;
+		wasOpen = true;
+		untrack(() => {
 			// Reset state on open
 			mode = 'create';
 			newName = '';
@@ -69,18 +119,45 @@
 			importFile = null;
 			importing = false;
 			// Load templates
-			if (templates.length === 0) {
+			// Guarded on `loadingTemplates` as well as emptiness (codex round
+			// 5): close-and-reopen, or a destroy-and-remount, before the first
+			// response lands would otherwise issue a second request while the
+			// first is still in flight.
+			if (templates.length === 0 && !loadingTemplates) {
 				loadingTemplates = true;
 				api.templates.list().then(t => templates = t).catch(() => {}).finally(() => loadingTemplates = false);
 			}
-			// Focus name input
-			requestAnimationFrame(() => nameInputEl?.focus());
-		}
+		});
+		// Focus name input
+		requestAnimationFrame(() => nameInputEl?.focus());
 	});
 
 	function close() {
 		uiStore.closeCreateWorkspace();
 	}
+
+	// A DRAFT IS PER-USER TOO (codex round 7). The operations are fenced, but a
+	// modal left open by one user kept their typed workspace name, description,
+	// chosen template and selected import FILE on screen for whoever signed in
+	// next — visible, and submittable by them. Closing is the whole fix,
+	// because the reset above runs on the next open transition; there is no
+	// separate teardown to keep in step with it.
+	//
+	// Registered here rather than folded into the store's own listener because
+	// this is component state, and it unsubscribes on destroy.
+	// This instance's own lifetime. A module-scoped token says whether a NEWER
+	// operation has superseded this one; it cannot say whether the instance that
+	// started this one still exists, because a remount that starts nothing
+	// advances no counter (codex round 10, and the first version of that fix
+	// missed exactly this). A destroyed instance's continuation must not fire a
+	// callback, a toast, a close or a navigation on behalf of a component
+	// nobody is looking at.
+	let alive = true;
+	onMount(() => () => { alive = false; });
+
+	onMount(() => authStore.onIdentityChange(() => {
+		if (uiStore.createWorkspaceOpen) close();
+	}));
 
 	function selectBlank() {
 		selectedTemplate = 'blank';
@@ -107,12 +184,37 @@
 
 	async function createWorkspace() {
 		if (!newName.trim()) return;
+		// Captured for the FAILURE path only — the success path is fenced in the
+		// store, which returns null when the user changed (codex round 7).
+		const createUser = authStore.userId;
+		const myOp = ++opSeq;
 		try {
 			const ws = await workspaceStore.create({
 				name: newName.trim(),
 				description: newDescription.trim() || undefined,
 				template: selectedTemplate || undefined
 			});
+			// NULL means the signed-in user changed while the POST was open, so
+			// this workspace belongs to the session that started the create and
+			// not to whoever is here now (BUG-2991). Close, and navigate
+			// nowhere: sending the new user to the previous user's slug is a
+			// navigation nobody asked for, and the server denies them anyway.
+			// No toast either — nothing failed for the user in front of us, and
+			// they did not start this create.
+			// Not the operation anyone is waiting on any more (codex round 10) —
+			// a later create/import, or a remount that started one, has
+			// superseded this. Silent return: no callback, no navigation, no
+			// close.
+			if (!alive || myOp !== opSeq) return;
+			if (!ws) {
+				// RETURN WITHOUT CLOSING (codex round 8). `close()` is global —
+				// it writes `uiStore.createWorkspaceOpen` — and by the time we
+				// are here the identity listener has already closed this modal.
+				// If the new user has since opened a FRESH one, closing again
+				// dismisses THEIR modal and their draft. There is nothing left
+				// for this continuation to close.
+				return;
+			}
 			// Fire the Phase F hook BEFORE close + goto so the consumer can
 			// stage state (e.g. uiStore.requestConnectAfterNavigate) that
 			// the destination route will read on mount. Callback is purely
@@ -121,6 +223,13 @@
 			close();
 			goto(`/${ws.owner_username}/${ws.slug}`);
 		} catch (err: unknown) {
+			// Same fence on the failure path as on the success path (codex
+			// round 7). A create that rejects after the signed-in user changed
+			// reported the previous session's failure to whoever is here now,
+			// and the plan-limit branch is worse than the generic one — it
+			// would tell B their plan is full because A's was.
+			if (!alive || myOp !== opSeq) return;
+			if (authStore.userId !== createUser) return;
 			if (isPlanLimitError(err)) {
 				toastStore.show(planLimitMessage(err) + ' Upgrade to Pro', 'error', 6000, '/console/billing');
 			} else {
@@ -131,10 +240,46 @@
 
 	async function importWorkspace() {
 		if (!importFile) return;
+		// OPERATION TOKEN, because `importing` is COMPONENT state and the
+		// component outlives the operation (codex round 9). A stale import's
+		// `finally` used to clear it unconditionally, so: A starts an import,
+		// identity changes, B opens the modal and starts their own — and when
+		// A's promise settles it re-enabled B's button mid-upload, offering
+		// them a duplicate submit. A token rather than an identity check
+		// because it also covers a same-user restart, which has the identical
+		// shape and no identity change to notice.
+		const myOp = ++opSeq;
 		importing = true;
+		// Captured before the upload, checked after it (BUG-2991, codex round
+		// 4). Import is `create`'s sibling — it mints a workspace through the
+		// same server path — and it had none of the same fencing: an import
+		// issued by user A that returns after B has signed in fired the Phase F
+		// hook for B, toasted A's workspace name at them, and navigated them to
+		// A's slug. The server denies them, so it is not a bypass; it is a
+		// navigation nobody asked for, carrying another account's workspace name
+		// in the toast and the URL.
+		//
+		// The store is safe on its own — `loadAll` has its own identity fence —
+		// so this guards the SIDE EFFECTS: the callback, the toast and the goto.
+		const callUser = authStore.userId;
 		try {
 			const ws = await api.workspaces.importBundle(importFile, newName.trim() || undefined);
+			if (!alive || myOp !== opSeq) return;
+			// Return without closing — see the create path for why (codex round
+			// 8): the identity listener has already closed this modal, and a
+			// second `close()` would dismiss the fresh one the new user may
+			// have opened in the meantime.
+			if (authStore.userId !== callUser) return;
 			await workspaceStore.loadAll();
+			// CHECKED AGAIN AFTER `loadAll` (codex round 5). One check after the
+			// upload is not enough: `loadAll` is a second await, and a swap
+			// landing inside it put the callback, the toast and the navigation
+			// back in the new user's session. The rule is per-AWAIT, not
+			// per-operation — the same reason `create` needs two checks rather
+			// than one — so the guard sits immediately before the side effects
+			// it protects rather than at the top of the block.
+			if (!alive || myOp !== opSeq) return;
+			if (authStore.userId !== callUser) return;
 			// Same Phase F hook as create — claim code is equally useful for
 			// imported workspaces, and the user explicitly opted into this
 			// modal so opening the Connect modal post-import isn't surprising.
@@ -143,9 +288,18 @@
 			toastStore.show(`Imported workspace "${ws.name}"`, 'success');
 			goto(`/${ws.owner_username}/${ws.slug}`);
 		} catch (err) {
+			// The FAILURE path needs the same fence (codex round 7). An import
+			// that rejects after the signed-in user changed reported A's error
+			// to B — an error for an operation B never started, naming a file
+			// they never chose. The comment above claimed the fence covered
+			// "the callback, the toast and the goto"; the toast down here was
+			// unconditional, which made that comment a claim the code did not
+			// keep. The same applies when `loadAll` is what rejected.
+			if (!alive || myOp !== opSeq) return;
+			if (authStore.userId !== callUser) return;
 			toastStore.show(`Import failed: ${err instanceof Error ? err.message : 'Unknown error'}`, 'error');
 		} finally {
-			importing = false;
+			if (alive && myOp === opSeq) importing = false;
 		}
 	}
 

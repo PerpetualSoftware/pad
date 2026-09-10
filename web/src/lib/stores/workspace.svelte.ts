@@ -69,10 +69,11 @@ let membershipSeq = 0;
 // structural: a different user simply has no entry, so no logout path has to
 // remember to clear anything. It does not fence the store's other state —
 // `current`, `workspaces` and a `currentMembership` already published are not
-// identity-scoped, and `authStore.clear()` does not clear them, so a clean
-// account change with no settle in flight can still leave the previous user's
-// live permission state on screen (codex round 6, filed rather than widened
-// into this change).
+// identity-scoped. That used to mean a clean account change with no settle in
+// flight left the previous user's live permission state on screen (codex round
+// 6); BUG-2991 closed it the same structural way, with the
+// `authStore.onIdentityChange` subscription at the foot of this file, so the
+// drop happens whether or not anything is racing.
 //
 // The identity is captured when the CALL starts and carried to its settle, and
 // `settleIfCurrent` discards a settle whose captured id no longer matches the
@@ -277,6 +278,15 @@ export const workspaceStore = {
 
 	async loadAll() {
 		return loadAllFlight.run(LOAD_ALL_KEY, async ({ isLatest }) => {
+			// Captured before the request, compared after it (BUG-2991, codex
+			// round 1). `isLatest` is a NAVIGATION fence — its generation only
+			// advances when a newer `loadAll` starts — so it says nothing about
+			// whether the same USER is still signed in. Without this, A's list
+			// resolving after A signed out and B signed in commits A's
+			// workspaces into B's store, which is the identity reset's own
+			// defect arriving through the one door the reset cannot close: the
+			// request was issued before the reset and commits after it.
+			const callUser = currentUserId();
 			const list = await api.workspaces.list();
 			// WHICH RESPONSE COMMITS (TASK-2947, and a behaviour change rather
 			// than a move). Two overlapping calls used to leave the OLDER list in
@@ -287,6 +297,7 @@ export const workspaceStore = {
 			// store's own comment as pre-existing; extracting the primitive is
 			// where it closes, because the primitive owns the rule.
 			if (!isLatest()) return;
+			if (currentUserId() !== callUser) return;
 			workspaces = list;
 		});
 	},
@@ -475,6 +486,33 @@ export const workspaceStore = {
 		const callUser = currentUserId();
 		const ws = await api.workspaces.create(data);
 
+		// IDENTITY FENCE, BEFORE ANY STORE MUTATION (BUG-2991).
+		//
+		// The append below is unconditional and the selection is guarded only by
+		// the sequence token — and neither of those is an identity question. A
+		// create issued by user A that returns after user B has signed in
+		// (logout is an SPA navigation, so no page load tears the store down)
+		// put A's workspace into B's list, and, absent an intervening sequence
+		// claim, made it B's `current`. The sequence token cannot catch it: a
+		// sign-in does not advance `membershipSeq`, which is the same reason
+		// `settleIfCurrent` needs two fences rather than one.
+		//
+		// Returns NULL rather than the workspace (codex round 1). Refusing to
+		// touch the store is most of the fix, but not all of it: the only caller
+		// navigates to whatever comes back, so returning `ws` sent the NEW user
+		// to the PREVIOUS user's workspace. The server denies them, so it is not
+		// a bypass — it is a navigation nobody asked for, to a slug that leaks
+		// the other account's workspace name in the URL.
+		//
+		// Null says "no workspace for THIS session", which is the honest answer:
+		// the workspace was really created, but not for whoever is signed in
+		// now. Throwing would have been worse — it renders as "Failed to create
+		// workspace" over a create that succeeded.
+		//
+		// The membership fetch below is skipped with the rest: a `/me` for a
+		// user who is no longer signed in has nowhere to land.
+		if (currentUserId() !== callUser) return null;
+
 		// THE LIST IS ADDITIVE; ONLY THE SELECTION IS RACED (codex round 5).
 		// Two concurrent creates both succeed on the server, so both workspaces
 		// exist and both belong in `workspaces` — but only one can be the
@@ -501,6 +539,45 @@ export const workspaceStore = {
 		} catch {
 			settleIfCurrent(seq, callUser, ws.slug, null);
 		}
+
+		// SECOND identity check, for the `/me` phase (codex round 2). The check
+		// above covers the POST; this one covers everything after it. A swap
+		// landing while the membership request is open leaves the store correct
+		// — `settleIfCurrent` refuses the write and the reset listener has
+		// already cleared what `create` wrote — but the RETURN VALUE was still
+		// A's workspace, and the caller navigates to whatever comes back.
+		//
+		// Two checks rather than one at the end: the first has to run before the
+		// store writes, and the second has to run after the last await. Neither
+		// position answers for the other.
+		if (currentUserId() !== callUser) return null;
 		return ws;
 	}
 };
+
+/**
+ * Drop everything scoped to the signed-in user when the signed-in user changes
+ * (BUG-2991).
+ *
+ * `answeredMembership` is deliberately NOT cleared: it is keyed by user id, so
+ * the next user has no entry and the previous user's answers are still correct
+ * for them if they sign back in — which is the invalidation TASK-2988 made
+ * structural, and clearing it here would undo it.
+ *
+ * `membershipSeq` is advanced so that anything already in flight — a `/me`, a
+ * `setCurrent`, the tail of a `create` — is superseded rather than allowed to
+ * write into the new user's store. `settleIfCurrent` would reject those on its
+ * own identity fence; the bump also covers the writes that happen BEFORE a
+ * settle, which is the half `create` was missing.
+ *
+ * Registered at module scope rather than called from each sign-out site, so a
+ * future sign-out path cannot forget it. Never unsubscribed: this module lives
+ * as long as the page does.
+ */
+authStore.onIdentityChange(() => {
+	membershipSeq++;
+	workspaces = [];
+	current = null;
+	currentMembership = null;
+	membershipKnown = false;
+});

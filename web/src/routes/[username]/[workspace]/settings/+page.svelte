@@ -1,10 +1,11 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
-	import { onMount, onDestroy } from 'svelte';
+	import { onMount, onDestroy, untrack } from 'svelte';
 	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
 	import { sseService } from '$lib/services/sse.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
+	import { authStore } from '$lib/stores/auth.svelte';
 	import type { Collection, WorkspaceContext } from '$lib/types';
 	import { parseSchema } from '$lib/types';
 	import CreateCollectionModal from '$lib/components/collections/CreateCollectionModal.svelte';
@@ -101,19 +102,55 @@
 	// when membership is definitively known). Default false so owner-only chrome
 	// never flashes before `/me` confirms; the server-side owner check remains
 	// the enforcement boundary, this is a stability fix.
+	// Memoised so the effects below re-run on a change of USER and not on every
+	// replacement of the session object (BUG-2991, codex round 3).
+	// `authStore.userId` reads the reactive `session`, so any `authStore.load()`
+	// — the routine same-user refetch included — assigns a new object and would
+	// otherwise re-fire them. A `$derived` propagates only on a real change.
+	let sessionUserId = $derived(authStore.userId);
+
 	let canEditWs = $state(false);
 	// Same treatment, same reason: read straight from the store these flip false
 	// during that window too, so on an ordinary owner load the Save buttons, the
 	// invite form and the delete controls go readonly and then come back.
 	let isOwner = $state(false);
 	let canExport = $state(false);
-	let lastPermSlug: string | null = null;
+	// KEYED ON (USER, WORKSPACE), not on workspace alone (BUG-2991, codex
+	// round 2). Same hole the dashboard had, for the same reason and found in
+	// the same sweep: since BUG-2991 the store drops membership to UNKNOWN when
+	// the signed-in user changes, unknown deliberately does not update these
+	// caches, and keyed on slug alone the previous user's answers survive a
+	// same-route sign-in as somebody else.
+	//
+	// NOT COVERED BY A DISCRIMINATING TEST, and that is stated here rather than
+	// left for a reader to discover. The defect is MASKED on this page: an
+	// identity change re-fires the load effect below, which sets `loading` and
+	// swaps the whole page for the loading branch, so the owner-only chrome
+	// vanishes during the unknown window whether or not the key carries
+	// identity. A mutant dropping identity from this key SURVIVES every DOM
+	// assertion available here — a test asserting the Danger Zone tab is gone
+	// passes against a page that is rendering nothing at all, which is the
+	// vacuous-fixture shape (CONVE-34).
+	//
+	// (An earlier version of this comment blamed a null `workspaceStore
+	// .current`. That was wrong — rendering is gated on `loading` alone — and
+	// the claim was written from an observation rather than from reading the
+	// template. The observation was right and the mechanism was not, which is
+	// the more dangerous half to leave behind.)
+	//
+	// The guard stays because the class does: the dashboard's instance IS
+	// discriminated (`workspaceDashboardOwnerDenial` — that page keeps its own
+	// data on screen through the window and so can tell the two apart), the two
+	// pages are the same pattern, and the masking here depends on a rendering
+	// decision nobody promised to preserve.
+	let lastPermKey: string | null = null;
 	$effect(() => {
-		if (wsSlug !== lastPermSlug) {
-			lastPermSlug = wsSlug;
+		const key = `${sessionUserId}\n${wsSlug}`;
+		if (key !== lastPermKey) {
+			lastPermKey = key;
 			// ONE reset for every sticky permission on this page. A second
-			// effect testing the same `wsSlug !== lastPermSlug` could never
-			// fire — whichever ran first would have already updated the marker.
+			// effect testing the same key could never fire — whichever ran
+			// first would have already updated the marker.
 			canEditWs = false;
 			isOwner = false;
 			canExport = false;
@@ -168,8 +205,37 @@
 		history.replaceState(null, '', `#${tabId}`);
 	}
 
+	// Keyed on (USER, WORKSPACE) (BUG-2991, codex round 3). This page's own data
+	// — workspace name, members, invitations, collections, the context editor —
+	// is local state that the store's identity reset does not touch, so a
+	// sign-in as somebody else on the same route would otherwise leave the
+	// previous user's MEMBERS LIST on screen.
+	//
+	// It already re-fired by ACCIDENT: `load` calls `workspaceStore.setCurrent`,
+	// which synchronously reads `workspaces` before its first await, so emptying
+	// that array on the reset happened to invalidate this effect. That is a
+	// dependency nobody declared, and the dashboard's twin deliberately
+	// suppresses exactly it with `untrack`. Naming the real key makes the
+	// behaviour survive someone fixing the accident.
+	//
+	// The DATA IS DROPPED before the reload, not merely hidden behind `loading`
+	// (codex round 5). `load`'s catch allows a partial render and its `finally`
+	// clears `loading` regardless, so a FAILED load for the new user left the
+	// previous user's name, members and invitations on screen the moment the
+	// spinner went away.
+	let lastLoadKey: string | null = null;
 	$effect(() => {
-		if (wsSlug) load(wsSlug);
+		const key = `${sessionUserId}\n${wsSlug}`;
+		if (key === lastLoadKey) return;
+		lastLoadKey = key;
+		untrack(() => {
+			wsName = '';
+			contextEditor = '';
+			collections = [];
+			members = [];
+			invitations = [];
+			if (wsSlug) load(wsSlug);
+		});
 	});
 
 	// BUG-2265: keep the collections list fresh when another client changes a

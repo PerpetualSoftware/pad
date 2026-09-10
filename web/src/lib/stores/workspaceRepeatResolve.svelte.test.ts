@@ -30,7 +30,29 @@ vi.mock('$lib/api/client', () => ({ api }));
 
 // The answer cache is keyed by signed-in user as well as slug, so the identity
 // has to be controllable to test that a second user inherits nothing.
-const auth = vi.hoisted(() => ({ userId: 'user-1' }));
+//
+// `onIdentityChange` is a REAL minimal implementation rather than a no-op stub
+// (BUG-2991): the store registers a reset through it at module scope, and a
+// stub that swallowed the registration would make every test here pass against
+// a store whose identity reset had been deleted.
+const auth = vi.hoisted(() => {
+	const listeners = new Set<() => void>();
+	return {
+		userId: 'user-1',
+		onIdentityChange(fn: () => void) {
+			listeners.add(fn);
+			return () => listeners.delete(fn);
+		},
+		/** Test-only: fire what `authStore.clear()` / a sign-in would fire. */
+		fireIdentityChange() {
+			for (const fn of listeners) fn();
+		},
+		/** Test-only: drop registrations from a previous `vi.resetModules()`. */
+		resetListeners() {
+			listeners.clear();
+		},
+	};
+});
 vi.mock('./auth.svelte', () => ({ authStore: auth }));
 
 const OWNER = { role: 'owner', collection_grants: [], item_grants: [] };
@@ -53,6 +75,10 @@ describe('workspaceStore: repeat resolution of an already-answered workspace', (
 		// reason — which is exactly the failure this suite is built to catch.
 		vi.resetModules();
 		vi.resetAllMocks();
+		// Before the module re-registers: each fresh import of the store adds a
+		// listener, and leftovers from previous tests close over THAT module's
+		// state, so firing would reset a store no test is looking at.
+		auth.resetListeners();
 		auth.userId = 'user-1';
 	});
 
@@ -330,6 +356,13 @@ describe('workspaceStore: repeat resolution of an already-answered workspace', (
 
 		const created = deferred<typeof OTHER>();
 		api.workspaces.create.mockReturnValueOnce(created.promise);
+		// Staged and expected to go UNCONSUMED. Before BUG-2991 the create ran
+		// on past its POST and issued this `/me`, and the only thing standing
+		// between user-1's answer and user-2's store was `settleIfCurrent`
+		// rejecting it at the very end. The fence now returns before the fetch:
+		// a `/me` for a user who is no longer signed in has no answer worth
+		// having, and every write that used to happen ahead of that rejection —
+		// the list append, the selection — no longer happens either.
 		api.workspaces.me.mockResolvedValueOnce(OWNER);
 		const pending = workspaceStore.create({ name: 'Other' });
 
@@ -338,11 +371,23 @@ describe('workspaceStore: repeat resolution of an already-answered workspace', (
 		created.resolve(OTHER);
 		await pending;
 
+		// The create is fenced at the identity check, so no membership was even
+		// requested for it.
+		expect(api.workspaces.me).not.toHaveBeenCalled();
 		// user-1's owner answer must not be published for user-2...
 		expect(workspaceStore.isOwner).toBe(false);
 		expect(workspaceStore.membershipKnown).toBe(false);
+		// ...and user-1's workspace must not be in user-2's list or selected
+		// (BUG-2991: the append used to run unconditionally, ahead of every
+		// fence, so it landed even when the selection was rejected).
+		expect(workspaceStore.workspaces).toEqual([]);
+		expect(workspaceStore.current).toBeNull();
 
 		// ...nor be waiting in user-2's cache for their own next resolve.
+		// The staged OWNER above is dropped rather than left to be picked up by
+		// the `setCurrent` below, which would answer this leg for the wrong
+		// reason.
+		api.workspaces.me.mockReset();
 		const mine = deferred<typeof VIEWER>();
 		api.workspaces.me.mockReturnValueOnce(mine.promise);
 		const second = workspaceStore.setCurrent('other');

@@ -43,6 +43,14 @@
 	let dashboardSlug = $state<string | null>(null);
 	let collections = $state<Collection[]>([]);
 
+	// Memoised so the effects below re-run on a change of USER and not on every
+	// replacement of the session object (codex round 3). `authStore.userId`
+	// reads the reactive `session`, so any `authStore.load()` — including the
+	// routine refetch that returns the same user — assigns a new object and
+	// would otherwise re-fire both. A `$derived` propagates only when its value
+	// actually changes.
+	let sessionUserId = $derived(authStore.userId);
+
 	// Scroll position restoration (BUG-1425). Dashboard renders progressively
 	// (active items, attention list, etc.) — wait for the initial dashboard
 	// fetch before applying a saved offset so the document is tall enough.
@@ -71,22 +79,45 @@
 	//
 	// Two effects per CONVE-606 (split reactive-state sync from route-change
 	// effects): one resets the cache on a real workspace switch, the other
-	// updates it only when membership is definitively known (non-null).
+	// updates it only when membership is definitively known.
 	// Initial default is `false` so we never flash owner-only UI before /me
 	// confirms ownership. Server enforcement (handlers_collections.go:48)
 	// remains the security boundary; this is purely a stability fix for the
 	// UX gate.
 	let isOwner = $state(false);
-	let lastOwnerSlug: string | null = null;
+	// KEYED ON (USER, WORKSPACE), not on workspace alone (BUG-2991, codex
+	// round 2). A sticky permission is an answer about a PERSON as much as
+	// about a workspace, and since BUG-2991 the store drops membership to
+	// UNKNOWN when the signed-in user changes. Unknown does not update the
+	// cache — that is the whole point of the `membershipKnown` gate below — so
+	// keyed on slug alone the previous owner's `true` survived a sign-in as
+	// somebody else on the same route, and the new user saw owner-only chrome
+	// until their own `/me` landed. Adding identity to the key closes it
+	// declaratively: no subscription, no lifecycle, and it cannot be forgotten
+	// on a path that does not exist yet.
+	let lastOwnerKey: string | null = null;
 	$effect(() => {
-		if (wsSlug !== lastOwnerSlug) {
-			lastOwnerSlug = wsSlug;
+		const key = `${sessionUserId}\n${wsSlug}`;
+		if (key !== lastOwnerKey) {
+			lastOwnerKey = key;
 			isOwner = false;
 		}
 	});
 	$effect(() => {
-		const mem = workspaceStore.currentMembership;
-		if (mem !== null) isOwner = mem.role === 'owner';
+		// Gated on `membershipKnown`, NOT on `currentMembership !== null`
+		// (BUG-2990). Null means both "not fetched yet" and "no access", so
+		// gating on non-null holds the last good answer forever once the answer
+		// becomes a definitive DENIAL: an owner removed from the workspace, or
+		// a `/me` that 403s, kept the New Collection CTA and the collection
+		// editor's trigger on screen for the life of the page. `membershipKnown`
+		// is false for the span of any call that will replace membership, which
+		// is exactly the window this cache exists to ride out, and true for an
+		// answer of either sign — so a denial now clears the cache.
+		//
+		// Read through the store's `isOwner` getter rather than re-deriving the
+		// role test, matching settings/+page.svelte: the helpers mirror the
+		// server's ResolveUserPermission and must not be forked.
+		if (workspaceStore.membershipKnown) isOwner = workspaceStore.isOwner;
 	});
 
 	// Post IDEA-1516 / TASK-1530: the canonical onboarding signal is
@@ -172,8 +203,38 @@
 	// calls `workspaceStore.loadAll()`) would re-fire this effect and cause
 	// the dashboard to refetch + re-render — a visible flicker. Wrap in
 	// `untrack` so the only tracked dep is `wsSlug` from the if-check.
+	// Keyed on (USER, WORKSPACE) — see `lastOwnerKey` above for the identity
+	// half (BUG-2991, codex round 3). A sign-in as somebody else on the same
+	// route changes no route param, so without the user in this key the board
+	// kept showing the previous user's items, counts and activity.
+	//
+	// The DATA IS DROPPED before the reload, not merely hidden behind `loading`
+	// (codex round 5). Relying on the loading branch was a fail-open: if the
+	// new user's dashboard request FAILS, `loading` goes false with `dashboard`
+	// still holding the previous key's board, and the template renders it —
+	// the `dashError` branch sits after it. So the previous user's data came
+	// back on a 500 or a 403, which is the worst moment for it to.
+	let lastLoadKey: string | null = null;
 	$effect(() => {
-		if (wsSlug) untrack(() => load(wsSlug));
+		const key = `${sessionUserId}\n${wsSlug}`;
+		if (key === lastLoadKey) return;
+		lastLoadKey = key;
+		untrack(() => {
+			dashboard = null;
+			dashboardSlug = null;
+			collections = [];
+			dashError = null;
+			// The aha-highlight track goes with the data it describes (codex
+			// round 9). It is keyed on `dashboardSlug`, which does NOT change
+			// on a same-route identity change, so the previous user's
+			// `onboarding: true` was still standing when the new user's first
+			// response arrived with `false` — read as the true→false edge, and
+			// the new user's items were highlighted as though they had just
+			// created them.
+			onboardingTrack = null;
+			justCreatedSlugs = new Set();
+			if (wsSlug) load(wsSlug);
+		});
 	});
 
 	// Workspace home shows only the workspace-level title — clear section/item.
