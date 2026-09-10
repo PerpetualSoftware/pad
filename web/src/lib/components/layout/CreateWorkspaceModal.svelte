@@ -1,6 +1,8 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
+	import { authStore } from '$lib/stores/auth.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
 	import { toastStore } from '$lib/stores/toast.svelte';
@@ -58,8 +60,34 @@
 		})).filter((g) => g.templates.length > 0)
 	);
 
+	// Reset on the OPEN TRANSITION, not on every run of this effect.
+	//
+	// It used to reset whenever it re-ran with `createWorkspaceOpen` true — and
+	// it re-runs on its own, because the body READS `templates.length` and
+	// WRITES `templates` from the response. So the templates request, which is
+	// fired by this very effect on open, wiped the typed name, the chosen
+	// template, the expanded state and any selected import bundle a moment
+	// later. Anyone typing faster than that round-trip lost what they typed.
+	//
+	// Found while writing the identity tests for this modal (BUG-2991): every
+	// click-driven case failed because the state under test was reset out from
+	// under it. It is also the shape CONVE-1688 names — an `$effect` that reads
+	// a `$state` it also writes — which in a production build can wedge Svelte's
+	// scheduler rather than merely misbehaving.
+	//
+	// The writes are `untrack`ed so nothing in the body can invalidate the
+	// effect, and the marker makes the reset a real edge rather than a
+	// steady-state condition.
+	let wasOpen = false;
 	$effect(() => {
-		if (uiStore.createWorkspaceOpen) {
+		const open = uiStore.createWorkspaceOpen;
+		if (!open) {
+			wasOpen = false;
+			return;
+		}
+		if (wasOpen) return;
+		wasOpen = true;
+		untrack(() => {
 			// Reset state on open
 			mode = 'create';
 			newName = '';
@@ -73,9 +101,9 @@
 				loadingTemplates = true;
 				api.templates.list().then(t => templates = t).catch(() => {}).finally(() => loadingTemplates = false);
 			}
-			// Focus name input
-			requestAnimationFrame(() => nameInputEl?.focus());
-		}
+		});
+		// Focus name input
+		requestAnimationFrame(() => nameInputEl?.focus());
 	});
 
 	function close() {
@@ -143,8 +171,24 @@
 	async function importWorkspace() {
 		if (!importFile) return;
 		importing = true;
+		// Captured before the upload, checked after it (BUG-2991, codex round
+		// 4). Import is `create`'s sibling — it mints a workspace through the
+		// same server path — and it had none of the same fencing: an import
+		// issued by user A that returns after B has signed in fired the Phase F
+		// hook for B, toasted A's workspace name at them, and navigated them to
+		// A's slug. The server denies them, so it is not a bypass; it is a
+		// navigation nobody asked for, carrying another account's workspace name
+		// in the toast and the URL.
+		//
+		// The store is safe on its own — `loadAll` has its own identity fence —
+		// so this guards the SIDE EFFECTS: the callback, the toast and the goto.
+		const callUser = authStore.userId;
 		try {
 			const ws = await api.workspaces.importBundle(importFile, newName.trim() || undefined);
+			if (authStore.userId !== callUser) {
+				close();
+				return;
+			}
 			await workspaceStore.loadAll();
 			// Same Phase F hook as create — claim code is equally useful for
 			// imported workspaces, and the user explicitly opted into this
