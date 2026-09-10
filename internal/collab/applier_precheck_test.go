@@ -123,6 +123,45 @@ func TestHasElectableApplierManagerClosed(t *testing.T) {
 	}
 }
 
+// TestHasElectableApplierClosedFlagAloneAnswersFalse pins the m.closed guard itself.
+//
+// It exists because the guard is UNREACHABLE as a distinct answer through the public
+// API: Close sets m.closed and replaces m.rooms with an empty map inside ONE m.mu
+// critical section, so after a real Close the room lookup already answers nil and the
+// test above passes with the guard deleted (measured — that mutant survived).
+//
+// So this constructs a state Close does not currently produce: closed set, rooms map
+// left populated. That is not a state to defend against today; it is the coupling the
+// guard exists to break. Without it, HasElectableApplier's correctness depends on an
+// invariant living in Close that nothing enforces, and a future Close that stops
+// clearing the map would silently hand out appliers from a dead manager.
+func TestHasElectableApplierClosedFlagAloneAnswersFalse(t *testing.T) {
+	bus := NewMemoryOpBus()
+	defer bus.Close()
+	mgr := NewRoomManager(&fakeOpLog{}, bus)
+	defer mgr.Close()
+
+	srv := newCollabTestServer(t, mgr)
+	defer srv.Close()
+
+	conn := dialWS(t, srv, "item-a")
+	defer conn.Close()
+	waitElectable(t, mgr, "item-a", 1)
+
+	mgr.mu.Lock()
+	mgr.closed = true
+	mgr.mu.Unlock()
+	defer func() {
+		mgr.mu.Lock()
+		mgr.closed = false
+		mgr.mu.Unlock()
+	}()
+
+	if mgr.HasElectableApplier("item-a") {
+		t.Fatal("a manager whose closed flag is set must answer false even while its rooms map still holds an electable conn")
+	}
+}
+
 // TestHasElectableApplierGraceTTLNoConns: the room outlives its last conn for
 // graceTTL. ApplyExternalContent answers ErrNoApplierAvailable there, so the hint
 // must answer false — this is the path whose direct write also prunes the op-log.
