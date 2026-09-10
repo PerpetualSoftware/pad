@@ -1,4 +1,5 @@
 import { api } from '$lib/api/client';
+import { authStore } from './auth.svelte';
 
 // Set of starred item IDs for the current user in the current workspace
 let starredIds = $state<Set<string>>(new Set());
@@ -41,6 +42,14 @@ export const starredStore = {
 	async load(wsSlug: string) {
 		currentWs = wsSlug;
 		const seq = ++requestSeq;
+		// TWO FENCES, for two races (BUG-3005). `seq` is the navigation fence: a
+		// slower load for workspace A must not overwrite a faster one for B.
+		// The identity fence is a different question — this list is PER USER, so
+		// a response issued as A must not land in B's session even when the
+		// workspace never changed. Neither subsumes the other: a same-route
+		// account swap moves no workspace, and a workspace switch moves no
+		// identity.
+		const isSameIdentity = authStore.identityFence();
 		pendingToggles.clear();
 		// Clear stale state immediately to avoid showing a previous user/workspace's stars
 		starredIds = new Set();
@@ -48,11 +57,11 @@ export const starredStore = {
 
 		try {
 			const items = await api.items.starred(wsSlug, { include_terminal: true });
-			if (seq !== requestSeq) return;
+			if (seq !== requestSeq || !isSameIdentity()) return;
 			starredIds = applyPendingToggles(new Set(items.map(i => i.id)));
 			loaded = true;
 		} catch {
-			if (seq !== requestSeq) return;
+			if (seq !== requestSeq || !isSameIdentity()) return;
 			// Preserve any optimistic toggles even if the load failed
 			starredIds = applyPendingToggles(new Set());
 			loaded = true;
@@ -64,6 +73,7 @@ export const starredStore = {
 		// Drop rapid duplicate clicks while a toggle is in flight for this item
 		if (toggleInFlight.has(itemId)) return;
 
+		const isSameIdentity = authStore.identityFence();
 		const wasStarred = starredIds.has(itemId);
 		const nowStarred = !wasStarred;
 
@@ -87,8 +97,11 @@ export const starredStore = {
 				await api.items.star(wsSlug, itemSlug);
 			}
 		} catch {
-			// Revert on failure (only if still on the same workspace)
-			if (currentWs !== wsSlug) return;
+			// Revert on failure — only if this is still the same workspace AND
+			// the same signed-in user. Without the identity half, a star request
+			// that fails after an account swap writes A's item id into B's
+			// starred set (BUG-3005).
+			if (currentWs !== wsSlug || !isSameIdentity()) return;
 			pendingToggles.set(itemId, wasStarred);
 			const reverted = new Set(starredIds);
 			if (wasStarred) {
@@ -110,3 +123,17 @@ export const starredStore = {
 		toggleInFlight.clear();
 	}
 };
+
+// Drop this user's stars the moment the signed-in user changes (BUG-3005).
+//
+// `load()` clears before it fetches, which covers a workspace SWITCH — but it
+// is keyed by workspace slug and a same-route account swap starts no new load,
+// so A's starred ids stayed on screen for B until something else happened to
+// trigger one. The fences above cover a settle that RACES the change; this
+// covers the case where nothing is racing at all, which is the common one.
+//
+// Module scope, registered once, never unsubscribed: this store is a singleton
+// and its lifetime is the tab's.
+authStore.onIdentityChange(() => {
+	starredStore.clear();
+});
