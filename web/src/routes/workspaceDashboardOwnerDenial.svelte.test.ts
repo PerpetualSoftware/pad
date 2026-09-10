@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { flushSync, mount, unmount, tick } from 'svelte';
 import { page } from '$app/state';
 import { workspaceStore } from '$lib/stores/workspace.svelte';
+import { authStore } from '$lib/stores/auth.svelte';
 
 /**
  * BUG-2990 — the dashboard's sticky owner cache gated on
@@ -32,8 +33,11 @@ vi.mock('$lib/services/sync.svelte', () => ({
 	syncService: { onSync: () => () => {}, start: () => {}, stop: () => {} }
 }));
 
+const sessionGet = vi.hoisted(() => vi.fn<() => Promise<unknown>>());
+
 vi.mock('$lib/api/client', () => ({
 	api: {
+		auth: { session: () => sessionGet() },
 		dashboard: { get: (slug: string) => dashboardGet(slug) },
 		collections: { list: vi.fn().mockResolvedValue([]) },
 		workspaces: {
@@ -122,12 +126,20 @@ beforeEach(async () => {
 	page.params.username = 'alice';
 	dashboardGet.mockReset();
 	dashboardGet.mockResolvedValue(dashboard());
+	sessionGet.mockReset();
+	sessionGet.mockResolvedValue({
+		authenticated: true,
+		user: { id: 'u1', email: 'u1@example.com' },
+	});
 });
 
 afterEach(() => {
 	if (app) unmount(app as never);
 	app = null;
 	host.remove();
+	// The auth store is a module singleton too, and an identity left over from
+	// one test would silently change the reset key the next one starts from.
+	authStore.clear();
 	// The store is a module-scoped singleton shared with every other suite in
 	// this file's worker. Deliberately NOT `vi.resetModules()` — see the note in
 	// settingsPermissionFlicker: a fresh module graph brings a second copy of
@@ -175,6 +187,36 @@ describe('BUG-2990: dashboard owner chrome expires on a definitive denial', () =
 		expect(workspaceStore.currentMembership).toBeNull();
 		// The assertion this file exists for. Gated on `currentMembership !==
 		// null` the cache still reads true here and the card is still on screen.
+		expect(ownerCard()).toBeNull();
+	});
+
+	it('drops the card the moment a DIFFERENT user signs in, before their /me lands', async () => {
+		// BUG-2991, codex round 2 — the hole `membershipKnown` alone leaves open.
+		//
+		// An identity change drops membership to UNKNOWN, and unknown
+		// deliberately does not update this cache; that is what the gate is
+		// for. The slug did not change either, so the reset effect keyed on
+		// `wsSlug` alone never fired. Net: the previous owner's `true` survived
+		// a sign-in as somebody else on the same route, and the new user saw
+		// owner-only chrome until their own `/me` landed. The cache is keyed on
+		// (user, workspace) now.
+		//
+		// This is the UNKNOWN window, not a settled denial — the other test
+		// covers the settled case, and neither subsumes the other.
+		await authStore.load();
+		await mountAsOwner();
+
+		sessionGet.mockResolvedValue({
+			authenticated: true,
+			user: { id: 'u2', email: 'u2@example.com' },
+		});
+		await authStore.load();
+		await settle();
+
+		// Membership really is unknown here — no answer has arrived for u2. If
+		// this read `true` the assertion below would be about a settled state
+		// and would prove something else.
+		expect(workspaceStore.membershipKnown).toBe(false);
 		expect(ownerCard()).toBeNull();
 	});
 

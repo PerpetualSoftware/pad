@@ -77,10 +77,21 @@
 	// remains the security boundary; this is purely a stability fix for the
 	// UX gate.
 	let isOwner = $state(false);
-	let lastOwnerSlug: string | null = null;
+	// KEYED ON (USER, WORKSPACE), not on workspace alone (BUG-2991, codex
+	// round 2). A sticky permission is an answer about a PERSON as much as
+	// about a workspace, and since BUG-2991 the store drops membership to
+	// UNKNOWN when the signed-in user changes. Unknown does not update the
+	// cache — that is the whole point of the `membershipKnown` gate below — so
+	// keyed on slug alone the previous owner's `true` survived a sign-in as
+	// somebody else on the same route, and the new user saw owner-only chrome
+	// until their own `/me` landed. Adding identity to the key closes it
+	// declaratively: no subscription, no lifecycle, and it cannot be forgotten
+	// on a path that does not exist yet.
+	let lastOwnerKey: string | null = null;
 	$effect(() => {
-		if (wsSlug !== lastOwnerSlug) {
-			lastOwnerSlug = wsSlug;
+		const key = `${authStore.userId}\n${wsSlug}`;
+		if (key !== lastOwnerKey) {
+			lastOwnerKey = key;
 			isOwner = false;
 		}
 	});

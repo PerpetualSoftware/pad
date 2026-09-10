@@ -46,6 +46,9 @@ import { page } from '$app/state';
 
 const childSnippet = createRawSnippet(() => ({ render: () => `<div>child</div>` }));
 
+const U1_WS = { id: 'w1', slug: 'ws', name: 'WS' };
+const U2_WS = { id: 'w2', slug: 'other', name: 'Other' };
+
 function sessionFor(id: string) {
 	return { authenticated: true, user: { id, email: `${id}@example.com` } };
 }
@@ -63,7 +66,7 @@ beforeEach(() => {
 	// A protected app page: not an auth page, not a share page, so the layout's
 	// load effect is allowed to fire.
 	page.url = new URL('http://localhost/alice/ws');
-	api.workspaces.list.mockResolvedValue([{ id: 'w1', slug: 'ws', name: 'WS' }]);
+	api.workspaces.list.mockResolvedValue([U1_WS]);
 	api.auth.session.mockResolvedValue(sessionFor('u1'));
 });
 
@@ -85,11 +88,19 @@ describe('BUG-2991: the root layout refetches workspaces when the user changes',
 
 		// A different user signs in. The store's own listener empties the list;
 		// this layout's listener re-arms the latch so the effect asks again.
+		//
+		// The second response is DIFFERENT DATA, deliberately (codex round 2).
+		// A call count alone is a weak oracle: returning the same fixture twice
+		// would let this pass even if the second call committed nothing, or
+		// committed the first user's list. Asserting the store ends up holding
+		// u2's workspace is the claim that actually matters.
+		api.workspaces.list.mockResolvedValue([U2_WS]);
 		api.auth.session.mockResolvedValue(sessionFor('u2'));
 		await authStore.load();
 		await settle();
 
 		expect(api.workspaces.list).toHaveBeenCalledTimes(2);
+		expect(workspaceStore.workspaces).toEqual([U2_WS]);
 	});
 
 	it('does NOT refetch when the session refetch returns the same user', async () => {
@@ -103,5 +114,25 @@ describe('BUG-2991: the root layout refetches workspaces when the user changes',
 		await settle();
 
 		expect(api.workspaces.list).toHaveBeenCalledTimes(1);
+		expect(workspaceStore.workspaces).toEqual([U1_WS]);
+	});
+
+	it('refetches after a real sign-out and sign-in as someone else', async () => {
+		// The logout path specifically, which the first case skips by going
+		// straight from one user to another.
+		render(Layout, { props: { children: childSnippet } });
+		await settle();
+		expect(api.workspaces.list).toHaveBeenCalledTimes(1);
+
+		authStore.clear();
+		await settle();
+		expect(workspaceStore.workspaces).toEqual([]);
+
+		api.workspaces.list.mockResolvedValue([U2_WS]);
+		api.auth.session.mockResolvedValue(sessionFor('u2'));
+		await authStore.load();
+		await settle();
+
+		expect(workspaceStore.workspaces).toEqual([U2_WS]);
 	});
 });

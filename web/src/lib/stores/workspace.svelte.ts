@@ -539,6 +539,18 @@ export const workspaceStore = {
 		} catch {
 			settleIfCurrent(seq, callUser, ws.slug, null);
 		}
+
+		// SECOND identity check, for the `/me` phase (codex round 2). The check
+		// above covers the POST; this one covers everything after it. A swap
+		// landing while the membership request is open leaves the store correct
+		// — `settleIfCurrent` refuses the write and the reset listener has
+		// already cleared what `create` wrote — but the RETURN VALUE was still
+		// A's workspace, and the caller navigates to whatever comes back.
+		//
+		// Two checks rather than one at the end: the first has to run before the
+		// store writes, and the second has to run after the last await. Neither
+		// position answers for the other.
+		if (currentUserId() !== callUser) return null;
 		return ws;
 	}
 };

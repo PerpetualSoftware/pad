@@ -5,6 +5,7 @@
 	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
 	import { sseService } from '$lib/services/sse.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
+	import { authStore } from '$lib/stores/auth.svelte';
 	import type { Collection, WorkspaceContext } from '$lib/types';
 	import { parseSchema } from '$lib/types';
 	import CreateCollectionModal from '$lib/components/collections/CreateCollectionModal.svelte';
@@ -107,13 +108,36 @@
 	// invite form and the delete controls go readonly and then come back.
 	let isOwner = $state(false);
 	let canExport = $state(false);
-	let lastPermSlug: string | null = null;
+	// KEYED ON (USER, WORKSPACE), not on workspace alone (BUG-2991, codex
+	// round 2). Same hole the dashboard had, for the same reason and found in
+	// the same sweep: since BUG-2991 the store drops membership to UNKNOWN when
+	// the signed-in user changes, unknown deliberately does not update these
+	// caches, and keyed on slug alone the previous user's answers survive a
+	// same-route sign-in as somebody else.
+	//
+	// NOT COVERED BY A DISCRIMINATING TEST, and that is stated here rather than
+	// left for a reader to discover. On THIS page the defect is masked: the
+	// identity reset also nulls `workspaceStore.current`, and this page renders
+	// nothing at all without it, so the owner-only chrome vanishes during the
+	// unknown window whether the key carries identity or not. A mutant dropping
+	// identity from the key SURVIVES every DOM assertion available here — the
+	// first version of that test asserted the tab was gone and passed against a
+	// blanked page, which is the vacuous-fixture shape (CONVE-34).
+	//
+	// The guard stays because the class does: the dashboard's instance IS
+	// discriminated (`workspaceDashboardOwnerDenial`, which keeps rendering its
+	// own data through the window and so can tell the two apart), the two pages
+	// are the same pattern, and the masking here is incidental — it depends on
+	// this page having nothing to render without `current`, which is not a
+	// property anyone promised to preserve.
+	let lastPermKey: string | null = null;
 	$effect(() => {
-		if (wsSlug !== lastPermSlug) {
-			lastPermSlug = wsSlug;
+		const key = `${authStore.userId}\n${wsSlug}`;
+		if (key !== lastPermKey) {
+			lastPermKey = key;
 			// ONE reset for every sticky permission on this page. A second
-			// effect testing the same `wsSlug !== lastPermSlug` could never
-			// fire — whichever ran first would have already updated the marker.
+			// effect testing the same key could never fire — whichever ran
+			// first would have already updated the marker.
 			canEditWs = false;
 			isOwner = false;
 			canExport = false;

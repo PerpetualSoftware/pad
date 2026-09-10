@@ -177,6 +177,13 @@ describe('workspaceStore: identity change drops the previous user\'s state', () 
 		await pending;
 
 		expect(workspaceStore.workspaces).toEqual([]);
+
+		// And the fence must not have poisoned the door: user-2's OWN list still
+		// commits. Asserting only the empty array would pass against a `loadAll`
+		// that had stopped committing anything at all (codex round 2).
+		api.workspaces.list.mockResolvedValue([OTHER]);
+		await workspaceStore.loadAll();
+		expect(workspaceStore.workspaces).toEqual([OTHER]);
 	});
 
 	it('still commits a workspace list that completes under the same user', async () => {
@@ -204,6 +211,33 @@ describe('workspaceStore: identity change drops the previous user\'s state', () 
 		created.resolve(OTHER);
 
 		await expect(pending).resolves.toBeNull();
+	});
+
+	it('returns null when the user changes during the create\'s /me phase', async () => {
+		// The window AFTER the post-POST identity check (codex round 2). The
+		// store is protected there — `settleIfCurrent` refuses the write and the
+		// reset has already cleared what `create` wrote — but the RETURN VALUE
+		// was still the previous user's workspace, and the caller navigates to
+		// whatever comes back. Two checks are needed, and neither position
+		// answers for the other.
+		const { workspaceStore } = await import('./workspace.svelte');
+		api.workspaces.create.mockResolvedValue(OTHER);
+		const me = deferred<typeof OWNER>();
+		api.workspaces.me.mockReturnValueOnce(me.promise);
+
+		const pending = workspaceStore.create({ name: 'Other' });
+		// Let the POST resolve and the store writes happen under user-1.
+		await Promise.resolve();
+		await Promise.resolve();
+
+		auth.userId = 'user-2';
+		auth.fireIdentityChange();
+		me.resolve(OWNER);
+
+		await expect(pending).resolves.toBeNull();
+		expect(workspaceStore.workspaces).toEqual([]);
+		expect(workspaceStore.current).toBeNull();
+		expect(workspaceStore.membershipKnown).toBe(false);
 	});
 
 	it('still lists and selects a create that completes under the same user', async () => {
