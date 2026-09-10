@@ -20,12 +20,34 @@ import (
 // the advertisement is the promise a client acts on, and nothing here has
 // been read against the modern revision, let alone tested.
 //
-// It is also not merely a documentation gap. pad_set_workspace pins a session
-// default workspace, and the stateless era has no sessions for that pin to
-// live in — so the modern era is not something pad happens not to advertise,
-// it is something pad is not known to be able to serve. Establishing what it
-// would take is a separate unit; until then the honest advertisement is the
-// era pad was built against and is tested against.
+// It is also not merely a documentation gap: something pad relies on is deleted
+// by that era. internal/server/middleware_mcp_session.go keys the
+// mcp-active-sessions gauge on the Mcp-Session-Id header, and the generate-only
+// session-id manager at this transport's call site exists SO THAT the header is
+// always minted and the gauge stays observable. SEP-2567 removes session IDs in
+// 2026-07-28 — a server serving that version never mints or echoes one — so in
+// that era nothing pad mints is available to key on. The tracker does fall back
+// to a client-supplied REQUEST header, so the honest claim is under-counting by
+// a margin nobody controls rather than a flat zero; either way it is missing
+// numbers rather than wrong ones, in the direction that reads as quiet. The
+// full statement is at that header's declaration. Whoever opens that era
+// re-keys the gauge first; the cost is recorded at the metric's definition.
+//
+// AN EARLIER VERSION OF THIS COMMENT GAVE A DIFFERENT AND FALSE REASON, and it
+// is worth the four lines because the false one is the plausible one. It said
+// pad_set_workspace pins a session default workspace that the stateless era has
+// nowhere to keep. That is true of the LOCAL stdio transport and false of this
+// one: cmd/pad builds the cloud dispatcher with a SHARED workspace state whose
+// ResolveDefault() returns "" by construction (BUG-1865, the cross-user
+// workspace bleed), so the pin is recorded and never consulted here, and
+// resolution is already per-request — the explicit workspace argument, else a
+// default derived from the caller's own OAuth identity and token allow-list.
+// This transport has therefore been stateless with respect to workspace
+// resolution since that bug was fixed, and the fix for a cross-user bug turns
+// out to be most of the work a stateless era would need.
+//
+// Until the gauge is re-keyed, the honest advertisement is the era pad was
+// built against and is tested against.
 //
 // DERIVED, NOT LISTED, and that is load-bearing. mcp.LegacyProtocolVersions()
 // is the SDK's own answer to "which revisions use the handshake", so a future

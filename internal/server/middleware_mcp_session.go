@@ -269,6 +269,32 @@ func (s *Server) stopMCPSessionTracker() {
 // the audit row's status, so this matches the audit row's view.
 //
 // No-op when the tracker isn't wired (selfhost / tests).
+//
+// ACCEPTED COST, RECORDED HERE BECAUSE THIS IS WHERE THE KEY IS CHOSEN
+// (TASK-2977, ruled day 62). This gauge is keyed on a header the MCP protocol
+// DELETES: SEP-2567 removes session IDs in revision 2026-07-28, and a server
+// serving that revision never mints or echoes one. So in that era there is no
+// PROTOCOL-PROVIDED id for this to key on.
+//
+// Read trackMCPSession below before believing the stronger claim, which an
+// earlier draft of this comment made: the id falls back to the REQUEST header,
+// so a modern-era client that volunteers an Mcp-Session-Id anyway is still
+// tracked. The accurate statement is therefore not "that era is invisible" but
+// "the gauge stops depending on anything pad mints and starts depending on
+// whether clients keep sending a header the spec removed" — under-counting by a
+// margin nobody controls, in the direction that reads as quiet rather than as
+// breakage.
+//
+// It costs nothing today because pad's remote transport does not advertise that
+// revision: ServedProtocolVersions in internal/mcp restricts it to the
+// handshake era, and the gauge's observability is one of the two reasons stated
+// there. Named by path rather than as a symbol because it is not callable from
+// here — internal/mcp imports this package, not the other way round, which is
+// also why the transport is handed to the router as a plain http.Handler. The
+// obligation is on whoever opens that era — RE-KEY THIS GAUGE FIRST, on
+// something the modern era carries (the caller's identity plus a per-connection
+// value), because the era's arrival is exactly the moment a silently-flat gauge
+// would be read as "no MCP traffic" instead of "no measurement".
 const mcpSessionIDHeader = "Mcp-Session-Id"
 
 func (s *Server) trackMCPSession(reqHeader, respHeader func(string) string, method string, httpStatus int) {
