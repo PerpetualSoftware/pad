@@ -169,7 +169,12 @@
 			// No toast either — nothing failed for the user in front of us, and
 			// they did not start this create.
 			if (!ws) {
-				close();
+				// RETURN WITHOUT CLOSING (codex round 8). `close()` is global —
+				// it writes `uiStore.createWorkspaceOpen` — and by the time we
+				// are here the identity listener has already closed this modal.
+				// If the new user has since opened a FRESH one, closing again
+				// dismisses THEIR modal and their draft. There is nothing left
+				// for this continuation to close.
 				return;
 			}
 			// Fire the Phase F hook BEFORE close + goto so the consumer can
@@ -211,10 +216,11 @@
 		const callUser = authStore.userId;
 		try {
 			const ws = await api.workspaces.importBundle(importFile, newName.trim() || undefined);
-			if (authStore.userId !== callUser) {
-				close();
-				return;
-			}
+			// Return without closing — see the create path for why (codex round
+			// 8): the identity listener has already closed this modal, and a
+			// second `close()` would dismiss the fresh one the new user may
+			// have opened in the meantime.
+			if (authStore.userId !== callUser) return;
 			await workspaceStore.loadAll();
 			// CHECKED AGAIN AFTER `loadAll` (codex round 5). One check after the
 			// upload is not enough: `loadAll` is a second await, and a swap
@@ -223,10 +229,7 @@
 			// per-operation — the same reason `create` needs two checks rather
 			// than one — so the guard sits immediately before the side effects
 			// it protects rather than at the top of the block.
-			if (authStore.userId !== callUser) {
-				close();
-				return;
-			}
+			if (authStore.userId !== callUser) return;
 			// Same Phase F hook as create — claim code is equally useful for
 			// imported workspaces, and the user explicitly opted into this
 			// modal so opening the Connect modal post-import isn't surprising.

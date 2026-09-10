@@ -235,6 +235,12 @@ describe('BUG-2991: the create-workspace modal does not act for a session that e
 		await settle();
 
 		expect(api.workspaces.importBundle).toHaveBeenCalled();
+		// PRECONDITION, not decoration (codex round 8): without it a regression
+		// that returned right after the FIRST identity check would satisfy every
+		// assertion below, and this test exists for the SECOND one. Reaching
+		// `api.workspaces.list` is what proves we are past the first check and
+		// inside `loadAll`.
+		expect(api.workspaces.list).toHaveBeenCalled();
 		// The upload is done and the identity check after it has passed; we are
 		// sitting inside `loadAll`.
 		authStore.clear();
@@ -318,6 +324,41 @@ describe('BUG-2991: the create-workspace modal does not act for a session that e
 		uiStore.openCreateWorkspace();
 		await settle();
 		expect((container.querySelector('#ws-create-name') as HTMLInputElement).value).toBe('');
+	});
+
+	it('does not close the NEXT user\'s freshly opened modal when a stale create lands', async () => {
+		// codex round 8. `close()` is global — it writes
+		// `uiStore.createWorkspaceOpen` — so a continuation belonging to the
+		// previous session dismissed the modal the NEW user had just opened,
+		// taking their draft with it. By then the identity listener has already
+		// closed the previous user's modal, so there is nothing left for the
+		// continuation to close.
+		const created = deferred<typeof WS>();
+		api.workspaces.create.mockReturnValue(created.promise);
+
+		const { container } = render(CreateWorkspaceModal, { props: {} });
+		const name = container.querySelector('#ws-create-name') as HTMLInputElement;
+		await fireEvent.input(name, { target: { value: 'Other' } });
+		btn(container, /Create Workspace/).click();
+		await settle();
+		expect(api.workspaces.create).toHaveBeenCalled();
+
+		// Identity changes: the listener closes the modal.
+		authStore.clear();
+		await settle();
+		expect(uiStore.createWorkspaceOpen).toBe(false);
+
+		// The new user opens a fresh one...
+		uiStore.openCreateWorkspace();
+		await settle();
+		expect(uiStore.createWorkspaceOpen).toBe(true);
+
+		// ...and only THEN does the previous session's create land.
+		created.resolve(WS);
+		await settle();
+
+		expect(uiStore.createWorkspaceOpen).toBe(true);
+		expect(goto).not.toHaveBeenCalled();
 	});
 
 	it('navigates when the user is unchanged during an IMPORT', async () => {
