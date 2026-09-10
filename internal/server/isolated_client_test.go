@@ -27,8 +27,9 @@ import "net/http"
 // `Transport.CloseIdleConnections` closes each pooled HTTP/1 connection with
 // `errCloseIdleConns` — the error in that message; HTTP/2 connections go
 // through `h2transport.CloseIdleConnections()` separately. It sets
-// `closeIdle`, so connections going idle afterwards are closed instead of
-// pooled, until a later `queueForIdleConn` clears it (which it does not reach
+// `closeIdle`, so a connection going idle afterwards is closed rather than
+// pooled when no request is waiting for one — a waiter is still handed it —
+// until a later `queueForIdleConn` clears the flag (which it does not reach
 // when `DisableKeepAlives` is set). It also cancels the dials in progress that
 // have a `cancelCtx` and are not waiting.
 //
