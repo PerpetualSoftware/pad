@@ -292,3 +292,35 @@ func TestSettleContentRouteBoundsTheStandoff(t *testing.T) {
 		}
 	})
 }
+
+// TestApplierSettleBudgetCoversTheMeasuredAnchoringWindow pins the CONSTANT, which
+// every other test in this file bypasses by passing its own budget.
+//
+// Found by mutation: setting applierSettleBudget to 0 survived the whole suite. A
+// zero budget makes settleContentRoute refuse on its first pass, so every room with a
+// writer still anchoring answers room_settling instead of waiting the few milliseconds
+// it needs — correct in the sense that nothing is written, and useless in the sense
+// that the retryable refusal is the normal answer.
+//
+// The floor is the measurement the budget was sized from (TASK-2989, real store and
+// real WS chain, n=5 per bucket): worst single observation 46.41ms at 5000 op-log
+// rows. A budget below that refuses rooms the measurement says would have settled.
+// The ceiling is judgement, not measurement: a PATCH that blocks for seconds is worse
+// than one that asks the caller to retry.
+func TestApplierSettleBudgetCoversTheMeasuredAnchoringWindow(t *testing.T) {
+	const measuredWorstAnchor = 47 * time.Millisecond
+
+	if applierSettleBudget < measuredWorstAnchor {
+		t.Errorf("applierSettleBudget is %s, below the %s worst anchoring time measured for this "+
+			"deployment: a room that the measurement says would have settled is refused instead",
+			applierSettleBudget, measuredWorstAnchor)
+	}
+	if applierSettleBudget > 5*time.Second {
+		t.Errorf("applierSettleBudget is %s: a content PATCH that blocks this long is worse than a "+
+			"retryable refusal", applierSettleBudget)
+	}
+	if applierSettlePoll <= 0 || applierSettlePoll >= applierSettleBudget {
+		t.Errorf("applierSettlePoll %s must be positive and smaller than the budget %s, or the budget "+
+			"is spent sleeping rather than re-deciding", applierSettlePoll, applierSettleBudget)
+	}
+}
