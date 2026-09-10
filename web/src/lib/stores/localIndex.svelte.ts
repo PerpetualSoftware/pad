@@ -70,6 +70,7 @@ import {
 } from './localIndexPersistence';
 import { preserveProjectionMetadata, mergeEqualSeqProjection } from './itemRowMerge';
 import { localSearch } from './localSearch.svelte';
+import { authStore } from './auth.svelte';
 import type { Item, ItemChangeRow, ItemIndexRow } from '$lib/types';
 
 export type BootstrapState = 'cold' | 'loading' | 'ready' | 'error';
@@ -2293,8 +2294,43 @@ export const localIndex = {
 		persistWipe(priorUserId, ws).catch(() => undefined);
 	},
 
+	/**
+	 * Drop EVERY workspace's state — the identity-change sweep (BUG-3005).
+	 *
+	 * `reset(ws)` is per-workspace and the sign-out path called it for the ONE
+	 * workspace the layout happened to be looking at. Everything this store
+	 * holds is per-user: rows the previous user could see, their cursor, their
+	 * access epoch. A tab that visited two workspaces kept the other one.
+	 */
+	resetAll(): void {
+		for (const ws of [...workspaces.keys()]) {
+			localIndex.reset(ws);
+		}
+		// `reset` already drops the search index for each workspace it visits.
+		// This catches an index whose workspace state was already gone: the two
+		// maps are keyed independently and nothing keeps them in step.
+		localSearch.resetAll();
+	},
+
 	/** Number of items currently held for a workspace. Test/debug aid. */
 	size(ws: string): number {
 		return workspaces.get(ws)?.items.size ?? 0;
 	},
 };
+
+// Drop every workspace's rows and search index when the signed-in user changes
+// (BUG-3005).
+//
+// This store reset only on `bootstrap()` noticing a userId mismatch, which
+// makes the invalidation depend on somebody calling bootstrap: a route that
+// does not bootstrap the index on an identity change kept the previous user's
+// rows in RAM, and `localSearch` kept a full-text index built from their item
+// titles and bodies. The subscription makes it structural — the same reason
+// `onIdentityChange` exists rather than a call at each sign-out site.
+//
+// The bootstrap mismatch check STAYS. It covers a different case: a first
+// bootstrap for a workspace whose cached state predates this tab's identity
+// signal, where no change has fired because nothing changed within this tab.
+authStore.onIdentityChange(() => {
+	localIndex.resetAll();
+});
