@@ -100,17 +100,22 @@ export type ResolveRow = (id: string) => ItemIndexRow | null | undefined;
  * rename applied to the index before the collection list caught up, are not the
  * value's fault and must not turn every lane unresolved.
  *
- * THIS RULE ALSO LIVES INLINE IN `FieldEditor.svelte`'s relation branch, which
- * is where it was first worked out. It is duplicated here rather than extracted
- * from there because that file is being edited under TASK-2996 as this lands;
- * unifying the two is worth doing once both are in, and until then a divergence
- * shows up as a lane and a chip disagreeing about the same value.
+ * WORKED OUT FIRST IN `FieldEditor.svelte`'s relation branch, which now calls
+ * this rather than carrying its own copy. It was briefly duplicated — that file
+ * was being edited under TASK-2996 when the board needed the same rule — and
+ * the fork was closed as soon as 2996 merged without touching it. The reason to
+ * keep it single is concrete: a divergence shows up as a board lane and a
+ * properties chip disagreeing about what the same id is called.
  */
 export function narrowRelationRow(
 	row: ItemIndexRow | null | undefined,
 	value: string,
 	declaredCollection: string | undefined,
-	knownCollectionSlugs?: ReadonlySet<string>,
+	// `null` accepted as well as omitted: FieldEditor's own set is
+	// `Set<string> | null` — null while the collection list has not loaded —
+	// and "we do not know the collections yet" is exactly the case this
+	// argument's guard already treats as "do not judge".
+	knownCollectionSlugs?: ReadonlySet<string> | null,
 ): ItemIndexRow | null {
 	if (!row) return null;
 	if (row.id !== value) return null;

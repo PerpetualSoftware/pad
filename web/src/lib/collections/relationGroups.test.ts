@@ -224,3 +224,14 @@ describe('relationChipFor', () => {
 		});
 	});
 });
+
+describe('narrowRelationRow with no collection list yet', () => {
+	it('does not judge the collection when the set is null', () => {
+		// FieldEditor's own set is `Set<string> | null` — null while the
+		// collection list has not loaded — and that is the same "do not judge"
+		// case as a slug the list does not know. Typed rather than coerced at
+		// the call site, so the shared helper states the rule.
+		const stray = { ...row('red', 'Red'), collection_slug: 'tasks' } as ItemIndexRow;
+		expect(narrowRelationRow(stray, 'red', 'colors', null)).toBe(stray);
+	});
+});
