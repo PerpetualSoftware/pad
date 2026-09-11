@@ -590,7 +590,26 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 	// without inventing a second ordering rule to keep in sync with the first,
 	// and it is taken BEFORE the row lock, preserving the order this comment
 	// exists to protect.
-	if len(input.Migrations) > 0 || renaming {
+	// The relation reverse index is rebuilt below whenever the SCHEMA moves,
+	// and that rebuild must not interleave with item writes: an item
+	// transaction that read the OLD schema can commit its own relation hook
+	// after the reindex has run, leaving the index matching neither the old
+	// shape nor the new one (codex round 2). So the same workspace lock the
+	// migrations take is taken for a schema change too.
+	//
+	// Gated rather than unconditional, and that is a cost decision as much as
+	// a correctness one: an icon or description edit changes nothing the index
+	// depends on, and reindexing a 10k-item collection for it would put ~1.8s
+	// on an update that has no business paying it.
+	// CHANGE-SENSITIVE, not merely "a schema pointer was supplied". A client
+	// that round-trips the collection and submits identical schema bytes would
+	// otherwise pay the whole-collection reindex for a no-op, which is the
+	// same cost the icon-edit gate above exists to avoid — and my first
+	// version of this line claimed to test movement while only testing
+	// presence (codex round 3).
+	schemaMoved := input.Schema != nil && *input.Schema != existing.Schema
+	reindexRelations := schemaMoved || len(input.Migrations) > 0
+	if len(input.Migrations) > 0 || renaming || reindexRelations {
 		if err := s.acquireWorkspaceSeqLock(tx, existing.WorkspaceID); err != nil {
 			return nil, err
 		}
@@ -692,6 +711,21 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 	if renamedTo != "" && lockedSlug != renamedTo {
 		if err := s.retargetRelationFieldsTx(tx, existing.WorkspaceID, lockedSlug, renamedTo, args[0]); err != nil {
 			return nil, fmt.Errorf("retarget relation fields: %w", err)
+		}
+	}
+
+	// Rebuild this collection's relation reverse index, LAST in the tx so it
+	// sees both the new schema and any field-value migration above
+	// (PLAN-2857 U5, lead ruling). A schema change can move which keys ARE
+	// relations without touching a single item, so nothing else in this
+	// transaction would repair the index — and the next per-item write never
+	// comes for items nobody edits.
+	//
+	// Only when the schema or the field VALUES actually moved — see the
+	// workspace-lock note above for why this is gated.
+	if reindexRelations {
+		if err := s.ReindexCollectionRelationLinks(tx, id, existing.WorkspaceID); err != nil {
+			return nil, fmt.Errorf("reindex relation links: %w", err)
 		}
 	}
 
@@ -825,6 +859,15 @@ func (s *Store) MigrateItemFieldValues(collectionID string, migrations []models.
 
 	totalAffected, err := s.applyFieldMigrationsTx(tx, collectionID, workspaceID, migrations)
 	if err != nil {
+		return totalAffected, err
+	}
+
+	// This function has no non-test caller today, and the hook is here anyway
+	// (PLAN-2857 U5). It rewrites field VALUES in bulk, so wiring it to a door
+	// later without this line would stale the relation index for a whole
+	// collection — a trap that costs one line to remove now and a debugging
+	// session to find later.
+	if err := s.ReindexCollectionRelationLinks(tx, collectionID, workspaceID); err != nil {
 		return totalAffected, err
 	}
 

@@ -1502,6 +1502,25 @@ func (s *Store) RemapAttachmentReferencesInWorkspace(workspaceID string, oldToNe
 	}
 	defer tx.Rollback()
 
+	// Serialise against concurrent item writes in this workspace (codex round
+	// 5 on PLAN-2857 U5). This function SCANS every item's fields and content,
+	// then writes the snapshot back — so without the lock a concurrent update
+	// can commit newer fields in between and this overwrites them.
+	//
+	// That lost update predates the relation index and is not caused by it;
+	// what U5 adds is that the same stale snapshot is now also used to rebuild
+	// the reverse index, so the staleness reaches a second place. One lock
+	// closes both.
+	//
+	// It is the same advisory lock ITEM writers take, and taking it first here
+	// preserves their order (workspace, then rows) so the two cannot invert.
+	// Comment writers do not take it at all — which is safe, because a lock
+	// nobody else in that path holds cannot participate in a cycle, and this
+	// transaction takes no lock a comment writer could be waiting on.
+	if err := s.acquireWorkspaceSeqLock(tx, workspaceID); err != nil {
+		return err
+	}
+
 	// ORDER BY id (BUG-2778 class sweep): this gathers rows and then UPDATEs
 	// them one by one inside a transaction, so the scan's order IS the lock
 	// order. Two concurrent remaps in one workspace would otherwise be free to
@@ -1518,26 +1537,27 @@ func (s *Store) RemapAttachmentReferencesInWorkspace(workspaceID string, oldToNe
 	// where the second stage locks the renamed row itself and ordering the
 	// cascade therefore cannot help, ordering IS sufficient for the cycle
 	// between these per-row updates.
-	rows, err := tx.Query(s.q(`SELECT id, content, fields FROM items WHERE workspace_id = ? AND deleted_at IS NULL ORDER BY id`), workspaceID)
+	rows, err := tx.Query(s.q(`SELECT id, collection_id, content, fields FROM items WHERE workspace_id = ? AND deleted_at IS NULL ORDER BY id`), workspaceID)
 	if err != nil {
 		return fmt.Errorf("scan items for remap: %w", err)
 	}
 	type rowUpdate struct {
-		id      string
-		content string
-		fields  string
+		id           string
+		collectionID string
+		content      string
+		fields       string
 	}
 	var updates []rowUpdate
 	for rows.Next() {
-		var id, content, fields string
-		if err := rows.Scan(&id, &content, &fields); err != nil {
+		var id, collectionID, content, fields string
+		if err := rows.Scan(&id, &collectionID, &content, &fields); err != nil {
 			rows.Close()
 			return fmt.Errorf("scan item: %w", err)
 		}
 		newContent := remapAttachmentRefs(content, oldToNew)
 		newFields := remapAttachmentRefs(fields, oldToNew)
 		if newContent != content || newFields != fields {
-			updates = append(updates, rowUpdate{id: id, content: newContent, fields: newFields})
+			updates = append(updates, rowUpdate{id: id, collectionID: collectionID, content: newContent, fields: newFields})
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -1619,6 +1639,15 @@ func (s *Store) RemapAttachmentReferencesInWorkspace(workspaceID string, oldToNe
 		if _, err := tx.Exec(s.q(`UPDATE items SET content = ?, fields = ? WHERE id = ?`),
 			u.content, u.fields, u.id); err != nil {
 			return fmt.Errorf("update item %s: %w", u.id, err)
+		}
+		// This rewrite maps `pad-attachment:` ids and cannot change a relation
+		// VALUE — but it does write the blob, and the hook is a pure function
+		// of (blob, schema), so calling it is a no-op while OMITTING it would
+		// be a standing claim about what remapAttachmentRefs can touch. The
+		// collection id rides along on the scan above rather than costing a
+		// lookup per item (PLAN-2857 U5).
+		if _, err := s.replaceRelationLinks(tx, u.id, workspaceID, u.collectionID, u.fields); err != nil {
+			return fmt.Errorf("index relation links for item %s: %w", u.id, err)
 		}
 	}
 	for _, u := range commentUpdates {

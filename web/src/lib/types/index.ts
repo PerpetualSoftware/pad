@@ -1339,6 +1339,43 @@ export interface ItemLinkCreate {
  * Mirrors `internal/models/backlink.go`. The Phase 3 UI (TASK-1596) renders
  * these as the "Mentioned in" panel beneath an item's content.
  */
+/**
+ * One item that points at another through a `relation` FIELD — the
+ * "Referenced by" section's data (PLAN-2857 U5).
+ *
+ * Deliberately not a `Backlink`. A wiki backlink is a mention in prose and
+ * carries a `snippet`; this is a typed field-valued edge and carries the
+ * `field_key` it points through, which is what lets the section say
+ * "referenced by CAR-3 via Colour" rather than just "referenced by". There is
+ * no snippet because a field value has no surrounding text to quote.
+ */
+export interface RelationBacklink {
+	source_item_id: string;
+	/** Empty on a legacy item with no item_number — render the title alone. */
+	source_ref: string;
+	source_title: string;
+	collection_slug: string;
+	/** The schema key the value sits under. */
+	field_key: string;
+	/** The field's human label, when the schema gives one. */
+	field_label?: string;
+}
+
+/**
+ * The "Referenced by" payload.
+ *
+ * `total` is the COUNT UNDER THE VIEWER'S VISIBILITY, not the true one — a
+ * true count would tell the viewer that items they cannot see exist. So
+ * "Referenced by 3" means "by 3 you can see", and the number is computed under
+ * the same filters as the page it accompanies.
+ */
+export interface RelationBacklinksPage {
+	relation_backlinks: RelationBacklink[];
+	total: number;
+	limit: number;
+	offset: number;
+}
+
 export interface Backlink {
 	source_item_id: string;
 	source_ref: string;

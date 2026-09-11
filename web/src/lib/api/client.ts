@@ -7,6 +7,7 @@ import type {
 	CollectionCreate,
 	CollectionUpdate,
 	Backlink,
+	RelationBacklinksPage,
 	Item,
 	BulkItemsRequest,
 	BulkItemsResponse,
@@ -1365,6 +1366,32 @@ export const api = {
 		) =>
 			request<Backlink[]>(
 				`/workspaces/${ws}/items/${slug}/backlinks${qs({
+					limit: opts?.limit,
+					offset: opts?.offset,
+				})}`
+			),
+
+		/**
+		 * Inbound `relation` FIELD references to an item — the "Referenced
+		 * by" section (PLAN-2857 U5). Distinct from `backlinks`, which is
+		 * `[[...]]` mentions in prose: these are typed field edges and each
+		 * carries the `field_key` it points through.
+		 *
+		 * `total` is the count under the CALLER'S visibility, not the true
+		 * one. A viewer with partial access sees their own number, because a
+		 * true count would disclose the existence of items they cannot read.
+		 *
+		 * No cross-workspace tier: a relation names an item id and PLAN-2857
+		 * v1 excludes cross-workspace targets, so there is nothing foreign to
+		 * page through.
+		 */
+		relationBacklinks: (
+			ws: string,
+			slug: string,
+			opts?: { limit?: number; offset?: number }
+		) =>
+			request<RelationBacklinksPage>(
+				`/workspaces/${ws}/items/${slug}/relation-backlinks${qs({
 					limit: opts?.limit,
 					offset: opts?.offset,
 				})}`
