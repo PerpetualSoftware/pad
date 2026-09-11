@@ -122,8 +122,14 @@ func assertAckLossKeepsTheWorkspace(t *testing.T, srv *Server) {
 		t.Fatalf("the member add reached COMMIT %d time(s), want 1: the retry must die on the primary key "+
 			"the first attempt's committed row created", n)
 	}
+	// BOUNDARY, stated because the line reads stronger than it is: this log is
+	// emitted immediately BEFORE the retry call, so it pins that the retry BRANCH
+	// was entered, not that the second INSERT executed. Nothing between the two can
+	// skip it, so the distinction is theoretical today — but a reader should not
+	// take this as proof the retry ran (codex round 2).
 	if logged := logBuf.String(); !strings.Contains(logged, "add owner member failed, retrying") {
-		t.Errorf("the retry did not run; without it this test does not describe the reported path. log: %s", logged)
+		t.Errorf("the retry branch was not entered; without it this test does not describe the reported "+
+			"path. log: %s", logged)
 	}
 
 	after, err := srv.store.ListWorkspaces()
@@ -188,6 +194,11 @@ func TestAutoCreateWorkspace_UnreadableMembershipKeepsTheWorkspace(t *testing.T)
 		t.Fatalf("ListWorkspaces before: %v", err)
 	}
 
+	var logBuf bytes.Buffer
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+
 	// Both attempts fail outright — nothing is committed, so on the evidence the
 	// handler has, the membership may or may not exist.
 	restore := srv.store.SetAddWorkspaceMemberCommitHookForTesting(func(tx *sql.Tx) error {
@@ -215,6 +226,17 @@ func TestAutoCreateWorkspace_UnreadableMembershipKeepsTheWorkspace(t *testing.T)
 	if len(after) != len(before)+1 {
 		t.Errorf("workspace count %d -> %d, want exactly one more: the workspace was destroyed on a "+
 			"membership state that could not be read", len(before), len(after))
+	}
+
+	// The count alone does NOT identify this arm — the owner-success arm keeps the
+	// workspace too, so collapsing UNREADABLE into it would pass the check above
+	// (codex round 2). The log is what separates them.
+	logged := logBuf.String()
+	if !strings.Contains(logged, "KEEPING the workspace because its state is unknown") {
+		t.Errorf("the unreadable-state arm did not run; some other arm kept the workspace. log: %s", logged)
+	}
+	if strings.Contains(logged, "reconciled to success") {
+		t.Errorf("an unreadable membership state was reported as success. log: %s", logged)
 	}
 }
 
@@ -269,6 +291,11 @@ func TestAutoCreateWorkspace_WrongRoleMembershipKeepsTheWorkspace(t *testing.T) 
 		t.Fatalf("ListWorkspaces before: %v", err)
 	}
 
+	var logBuf bytes.Buffer
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+
 	restore := srv.store.SetAddWorkspaceMemberCommitHookForTesting(func(tx *sql.Tx) error {
 		_ = tx.Rollback()
 		return errSimMemberAckLoss
@@ -294,5 +321,22 @@ func TestAutoCreateWorkspace_WrongRoleMembershipKeepsTheWorkspace(t *testing.T) 
 	if len(after) != len(before)+1 {
 		t.Errorf("workspace count %d -> %d, want exactly one more: a membership row exists, so somebody "+
 			"has access and the workspace must not be destroyed", len(before), len(after))
+	}
+
+	// THE POINT OF THIS TEST, and the count above cannot carry it: the owner arm
+	// keeps the workspace too, so folding wrong-role back into "a row exists means
+	// success" — the exact defect round 1 found — would pass the count check
+	// (codex round 2). What must be true is that this is reported as a FAILURE
+	// needing a human, not as a success.
+	logged := logBuf.String()
+	if !strings.Contains(logged, "carries a "+"different role") {
+		t.Errorf("the wrong-role arm did not run. log: %s", logged)
+	}
+	if strings.Contains(logged, "reconciled to success") {
+		t.Errorf("a non-owner membership row was reported as success; the user cannot administer their "+
+			"own auto-created workspace. log: %s", logged)
+	}
+	if !strings.Contains(logged, "found_role=viewer") {
+		t.Errorf("the log does not name the role actually found, so on-call cannot see what happened. log: %s", logged)
 	}
 }
