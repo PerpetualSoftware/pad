@@ -34,6 +34,7 @@
 	} from '$lib/components/timeline/feed';
 	import ChildItems from '$lib/components/ChildItems.svelte';
 	import BacklinksPanel from '$lib/components/BacklinksPanel.svelte';
+	import RelationBacklinksPanel from '$lib/components/RelationBacklinksPanel.svelte';
 	import { goto } from '$app/navigation';
 	import { relativeTime, wikiLinksToMarkdown, markdownToWikiLinks, cleanBrokenLinks, unescapeDocLinks } from '$lib/utils/markdown';
 	import { toastStore } from '$lib/stores/toast.svelte';
@@ -6066,6 +6067,22 @@
 					{itemSlug}
 					itemId={item.id}
 					onCountChange={(n) => { if (keyedSlug !== itemSlug) return; backlinksCount = n; }}
+				/>
+			</div>
+			<!--
+				Referenced-by panel (PLAN-2857 U5). Sits beside the
+				mentioned-in panel rather than inside it: a `[[wiki-link]]` in
+				prose and a typed `relation` FIELD value are different
+				relationships, and merging them would produce a list where
+				half the entries have a snippet and half have a field name.
+				Its own count is the VIEWER'S count, not the true one.
+			-->
+			<div id="item-relation-backlinks">
+				<RelationBacklinksPanel
+					{wsSlug}
+					{username}
+					{itemSlug}
+					itemId={item.id}
 				/>
 			</div>
 		{/if}

@@ -1807,6 +1807,7 @@ func (s *Server) setupRouter() {
 						r.Get("/children", s.handleGetItemChildren)
 						r.Get("/progress", s.handleGetItemProgress)
 						r.Get("/backlinks", s.handleGetItemBacklinks)
+						r.Get("/relation-backlinks", s.handleGetItemRelationBacklinks)
 						r.Get("/tasks", s.handleGetItemChildren) // deprecated alias
 						r.Get("/grants", s.handleListItemGrants)
 						r.Post("/grants", s.handleCreateItemGrant)
