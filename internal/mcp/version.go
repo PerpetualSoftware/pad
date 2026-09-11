@@ -1017,6 +1017,17 @@ const CmdhelpVersion = "0.1"
 //     browser tab and BUG-3000 carries the open half — so no surface
 //     here states a duration.
 //
+//     0.37 — PR #1337. Added the optional `agent` boolean to
+//     `pad_item.get`. When true, both transports return a compact
+//     projection that keeps the full body and work-relevant metadata
+//     while dropping internal UUID plumbing and duplicate join fields.
+//     Default `get` output is unchanged. The CLI exposes the same
+//     projection as `pad item show --agent`.
+//
+//     A catalog bump is required because `agent` is a new declared tool
+//     input. The behavior is additive and opt-in; callers that do not send
+//     it receive the prior response shape byte-for-byte.
+//
 //     0.36 — BUG-3082. A REF-SHAPED `relation` value no longer falls
 //     back to matching by item NUMBER when its prefix names a collection
 //     that is live in the workspace. Such a value is now `not_found`.
@@ -1129,13 +1140,12 @@ const CmdhelpVersion = "0.1"
 //     an ORDERED LIST of references, each element resolving through the
 //     same UUID -> ref -> exact-title ladder a scalar `relation` uses.
 //
-//     0.32 IS RESERVED FOR PR #1337, which claims it and was opened
-//     first. This unit took 0.33 on a lead ruling rather than contest the
-//     number: version numbers are not scarce, and two branches claiming
-//     one means whichever merges second renumbers under merge pressure,
-//     which is when a version bump is least likely to be checked. So 0.32
-//     may be SKIPPED in this changelog if #1337 is ever abandoned — a gap
-//     is cheaper than a collision.
+//     0.32 was reserved for PR #1337, which was opened first. This unit
+//     took 0.33 on a lead ruling rather than contest the number. PR #1337
+//     remained open while 0.33 through 0.36 landed, so its additive
+//     contract now lands as 0.37 rather than moving the advertised version
+//     backward. Version 0.32 remains skipped; a gap is cheaper than a
+//     collision.
 //
 //     A BEHAVIOR bump on the 0.31/0.30/0.29 grounds — no tool name or
 //     action enum changed. Two halves, and they have opposite
@@ -1231,7 +1241,7 @@ const CmdhelpVersion = "0.1"
 //     content into the row — so no surface here states a duration for
 //     this one either, and it is not a promise that the row will catch
 //     up at all.
-const ToolSurfaceVersion = "0.36"
+const ToolSurfaceVersion = "0.37"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

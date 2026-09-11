@@ -1375,6 +1375,51 @@ func (d *HTTPHandlerDispatcher) dispatchItemList(
 	return packageJSONResult(string(enc)), nil
 }
 
+// dispatchItemShow keeps the default HTTP result byte-for-byte compatible and
+// applies the same compact projection as `pad item show --agent` only when the
+// caller opts in. A pure RouteMapper cannot transform response bodies.
+func (d *HTTPHandlerDispatcher) dispatchItemShow(
+	ctx context.Context,
+	input map[string]any,
+	user *models.User,
+) (*mcp.CallToolResult, error) {
+	const cmdKey = "item show"
+	mapper := routeTable[cmdKey]
+	method, urlPath, body, err := mapper(input)
+	if err != nil {
+		return validationFailedResult(cmdKey, err.Error(),
+			"Pass workspace=<slug> and ref=<issue id or slug>."), nil
+	}
+	if agent, _ := input["agent"].(bool); !agent {
+		return d.executeRequest(ctx, cmdKey, user, method, urlPath, body)
+	}
+
+	req, err := d.buildAuthedRequest(ctx, method, urlPath, body, user)
+	if err != nil {
+		return buildRequestErrorResult(cmdKey, err), nil
+	}
+	rec := httptest.NewRecorder()
+	d.Handler.ServeHTTP(rec, req)
+	resp := rec.Result()
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return dispatcherErrorResult(cmdKey, "read response", err), nil
+	}
+	if resp.StatusCode >= 400 {
+		return classifyHTTPStatus(req.Context(), cmdKey, resp.StatusCode, bodyBytes, d.Lister), nil
+	}
+	var item models.Item
+	if err := json.Unmarshal(bodyBytes, &item); err != nil {
+		return dispatcherErrorResult(cmdKey, "decode item", err), nil
+	}
+	enc, err := json.Marshal(cli.ToItemAgentView(item))
+	if err != nil {
+		return dispatcherErrorResult(cmdKey, "encode agent item view", err), nil
+	}
+	return packageJSONResult(string(enc)), nil
+}
+
 // itemVersionSummary mirrors the token-light projection the CLI's
 // `pad item history --format json` emits by default (cmd/pad/
 // cmd_item.go itemVersionSummary): version metadata WITHOUT the

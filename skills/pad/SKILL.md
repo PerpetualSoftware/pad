@@ -191,7 +191,7 @@ All commands accepting an item reference take issue IDs (e.g. `TASK-5`, `BUG-8`)
 ```bash
 pad item create <collection> "title" [--status X] [--priority X] [--parent REF] [--role X] [--assign X] [--field key=value] [--content "..." | --stdin]
 pad item list [collection] [--status X] [--role X] [--assign X] [--parent REF] [--all] [--field key=value]
-pad item show TASK-5 [--format markdown]
+pad item show TASK-5 [--agent | --format markdown]
 pad item update TASK-5 [--status X] [--role X] [--assign X] [--comment "..."] [--stdin]
 pad item delete TASK-5
 pad item search "query"
