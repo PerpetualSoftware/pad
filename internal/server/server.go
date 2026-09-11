@@ -335,6 +335,20 @@ type Server struct {
 	// reconciliation end-to-end through the real handler.
 	restoreAckFault func() error
 
+	// directWritePruneFault is a TEST SEAM (always nil in production, BUG-2994).
+	// When non-nil, composePruneWithPrecheck invokes it in place of the op-log
+	// prune; a non-nil return is an untyped store error raised INSIDE the direct
+	// write's transaction, so the transaction rolls back and nothing is written.
+	//
+	// It exists because that error shape is the one the removed fall-through was
+	// WORST for and the one no other injection reaches: an honest rollback, no
+	// double write, but a second attempt that does NOT carry the prune — so the
+	// replay set items.content while the per-item op-log still held the ops the
+	// prune existed to remove. The ack-loss seam cannot produce it, and a test
+	// built only on that seam stays green if someone re-opens the fall-through
+	// for "non-commit" errors.
+	directWritePruneFault func() error
+
 	// watchPredicatesLoadFault is a TEST SEAM (always nil in production,
 	// TASK-2533). When non-nil, loadWatchPredicates calls it before
 	// touching the store; a non-nil return short-circuits the real

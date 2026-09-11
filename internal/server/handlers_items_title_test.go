@@ -314,8 +314,14 @@ func TestWriteTypedItemRefusalIncludesTitleRefusal(t *testing.T) {
 	if refused(nil) {
 		t.Error("nil is not a failure")
 	}
+	// The wording here used to say an unrecognised error must "stay recoverable so
+	// the route still degrades gracefully". That rationale died with BUG-2994: the
+	// route no longer degrades, it answers. The ASSERTION is unchanged and still
+	// load-bearing, for the reason underneath it — an unrecognised error must not be
+	// dressed up as a typed 4xx refusal, so it reaches writeInternalError and the
+	// caller is told the server failed rather than that the request was declined.
 	if refused(errors.New("transient prune failure")) {
-		t.Error("an unrecognised error must stay recoverable so the route still degrades gracefully")
+		t.Error("an unrecognised error must not be mapped to a typed refusal; it belongs to writeInternalError")
 	}
 
 	// The FIFTH arm. Before PLAN-2975 the applier path's row write fell through the

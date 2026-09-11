@@ -1902,7 +1902,7 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		// previously the only way to discover the applier path was to take it.
 		contentToApply := *input.Content
 
-		route, updated, routeErr := s.routeContentUpdate(w, r, item, &input, openChildrenPrecheck, parentLink, contentToApply)
+		route, updated := s.routeContentUpdate(w, r, item, &input, openChildrenPrecheck, parentLink, contentToApply)
 		switch route {
 		case contentRouteHandled:
 			// The refusal or the settling answer has already been written.
@@ -1921,13 +1921,10 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			fullWriteHandled = true
 			fullWriteUpdated = updated
 			input.Content = nil
-		case contentRouteFallThrough:
-			// A transient, non-deterministic failure that is NOT a lost-write
-			// hazard: no live writer holds a diverging Y.Doc, so the ordinary
-			// row write below still carries the content. routeErr is logged by
-			// the router.
-			_ = routeErr
 		}
+		// No default and no fall-through arm: routeContentUpdate answers every
+		// failure itself and returns nothing for this caller to answer again
+		// (BUG-2994).
 	}
 
 	var updated *models.Item

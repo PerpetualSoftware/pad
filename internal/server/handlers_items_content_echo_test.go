@@ -144,8 +144,10 @@ func keysOf(m map[string]any) []string {
 //
 // WHAT IT ESTABLISHES, stated exactly (codex round 1 P2). The precondition it checks
 // is that items.content holds the sent value — which is true of the direct-write
-// path, and equally true of contentRouteFallThrough or any ordinary non-routed
-// write. It therefore does NOT prove which route ran, and an earlier name
+// path, and equally true of any ordinary non-routed write. (It named
+// contentRouteFallThrough as a third case until BUG-2994 removed that route; the
+// point the sentence makes is unchanged, since it never depended on which of them
+// ran.) It therefore does NOT prove which route ran, and an earlier name
 // ("DirectPath") claimed that it did. The invariant is the one worth pinning and is
 // route-independent: wherever the content reached the row, there is nothing pending,
 // so the marker must be absent.

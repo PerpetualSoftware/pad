@@ -111,6 +111,24 @@ type Store struct {
 	// (codex round 3).
 	afterItemPreLockRead func(itemID string)
 
+	// commitItemUpdate is a TEST-ONLY seam, nil in production. When set,
+	// updateItemWithParentLinkOnce routes its final COMMIT through it instead
+	// of calling tx.Commit directly.
+	//
+	// It exists for BUG-2994, whose whole subject is the one outcome no other
+	// seam can produce: a transaction that DURABLY COMMITTED and whose
+	// tx.Commit() nevertheless reported an error, which is what Postgres does
+	// when the acknowledgement is lost at the connection boundary. A hook that
+	// calls tx.Commit itself and then returns a non-nil error reproduces that
+	// exactly — the effects are on disk, the caller is told they are not — and
+	// it does so without faking a commit the store never ran, which is the
+	// distinction that keeps the resulting test from being vacuous.
+	//
+	// Same usage constraint as the seams above: set it only while no other
+	// request is in flight against this Store. It fires once per ATTEMPT, so
+	// note that updateItemWithParentLinkOnce runs under retryOnParentSetChanged.
+	commitItemUpdate func(tx *sql.Tx) error
+
 	// afterDocumentPreLockRead is a TEST-ONLY seam, nil in production. When
 	// set, UpdateDocument calls it after its pre-transaction read and before
 	// it opens the transaction that takes the rename lock (BUG-2778) — the

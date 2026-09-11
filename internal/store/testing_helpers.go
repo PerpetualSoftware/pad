@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"fmt"
 	"strings"
 )
@@ -110,4 +111,27 @@ func traitUniquenessIndexDDL(driver DriverType) ([]string, error) {
 		return nil, fmt.Errorf("expected 2 CREATE UNIQUE INDEX statements in %s, found %d", path, len(out))
 	}
 	return out, nil
+}
+
+// SetItemUpdateCommitHookForTesting routes updateItemWithParentLinkOnce's final
+// COMMIT through hook for the lifetime of the returned restore function.
+//
+// It exists for BUG-2994. The defect is that an item update whose transaction
+// COMMITTED but whose tx.Commit() reported an error anyway — the Postgres
+// ack-loss shape — was written a second time by the handler above. Nothing else
+// in the tree can produce that outcome: every other failure injection makes the
+// commit actually fail, which is the case the code already handles.
+//
+// The honest hook calls tx.Commit() itself and returns a non-nil error on top,
+// so the transaction's effects really are durable and the caller really is told
+// they are not. A hook that returns an error WITHOUT committing is a different
+// (already-covered) case and will not exercise the double write.
+//
+// Production code MUST NOT call this. The "ForTesting" suffix is the grep
+// signal — any non-test caller is a bug. Set it only while no other request is
+// in flight against this Store.
+func (s *Store) SetItemUpdateCommitHookForTesting(hook func(tx *sql.Tx) error) (restore func()) {
+	prev := s.commitItemUpdate
+	s.commitItemUpdate = hook
+	return func() { s.commitItemUpdate = prev }
 }
