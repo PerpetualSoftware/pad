@@ -1921,13 +1921,11 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			fullWriteHandled = true
 			fullWriteUpdated = updated
 			input.Content = nil
-		case contentRouteFallThrough:
-			// A transient, non-deterministic failure that is NOT a lost-write
-			// hazard: no live writer holds a diverging Y.Doc, so the ordinary
-			// row write below still carries the content. routeErr is logged by
-			// the router.
-			_ = routeErr
 		}
+		// No default and no fall-through arm: routeContentUpdate answers every
+		// failure itself (BUG-2994). routeErr is logged by the router and is kept
+		// only so the switch's failure arm stays named at this call site.
+		_ = routeErr
 	}
 
 	var updated *models.Item

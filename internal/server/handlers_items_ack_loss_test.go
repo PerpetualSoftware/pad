@@ -1,0 +1,156 @@
+package server
+
+import (
+	"database/sql"
+	"errors"
+	"net/http"
+	"sync/atomic"
+	"testing"
+
+	"github.com/PerpetualSoftware/pad/internal/collab"
+	"github.com/PerpetualSoftware/pad/internal/events"
+	"github.com/PerpetualSoftware/pad/internal/store"
+	"github.com/PerpetualSoftware/pad/internal/store/storetest"
+)
+
+// BUG-2994: a content PATCH whose transaction COMMITS but whose tx.Commit()
+// reports an error must not be written a second time.
+//
+// The path, enumerated rather than assumed: handleUpdateItem writes twice iff
+// routeContentUpdate returns contentRouteFallThrough, and that return had exactly
+// one producer — the settleDirectFailed arm, reached when PruneAndApply's applyFn
+// (the store write) fails and writeTypedItemRefusal does not recognise the error.
+// PruneAndApply's only other error, ErrRoomActiveDuringPrune, is consumed by the
+// settle loop above and never reaches that arm, so EVERY error arriving there is a
+// store write-transaction error. The fall-through's premise — "nothing was written"
+// — is an inference from rollback semantics, and a lost commit ack falsifies it.
+//
+// WHY THE OBVIOUS INSTRUMENT DOES NOT WORK. Counting item_versions rows does not
+// discriminate here, and a test built on it would pass against the defect. The
+// version INSERT is gated on `*input.Content != existing.Content` (items.go), and
+// the second write re-reads `existing` AFTER the first commit landed — so it sees
+// the content it is about to write and mints no row. One version row is what BOTH
+// the broken and the fixed code produce.
+//
+// What does discriminate: how many transactions reached COMMIT (counted at the seam
+// itself, which is the property stated directly), the number of item_updated events
+// the request emits, and the status code — a second write that succeeds answers 200
+// about a request whose first write's outcome was never established.
+
+var errSimItemAckLoss = errors.New("simulated commit ack loss")
+
+// ackLossServer builds a *Server on the named backend with collab and an event bus
+// wired. The Postgres leg skips unless PAD_TEST_POSTGRES_URL is set (make test-pg).
+//
+// It exists because testServer is hardwired to storetest.NewSQLite, so a test built
+// on that helper measures SQLite whatever gate is running it — the trap recorded on
+// this bug's sibling unit. testServerPostgres is the precedent for the other leg.
+func ackLossServer(t *testing.T, driver store.DriverType) *Server {
+	t.Helper()
+	var s *store.Store
+	if driver == store.DriverPostgres {
+		s = storetest.NewPostgres(t) // skips if PAD_TEST_POSTGRES_URL is unset
+	} else {
+		s = storetest.NewSQLite(t)
+	}
+	if got := s.D().Driver(); got != driver {
+		t.Fatalf("wanted a %s store, got %s — this leg would have measured the wrong backend", driver, got)
+	}
+	srv := New(s)
+	t.Cleanup(func() { srv.Stop() })
+
+	obus := collab.NewMemoryOpBus()
+	t.Cleanup(obus.Close)
+	rm := collab.NewRoomManager(srv.store, obus)
+	t.Cleanup(rm.Close)
+	srv.SetCollabRoomManager(rm)
+
+	srv.SetEventBus(events.New())
+	return srv
+}
+
+func TestContentPatchAckLossCommitsOnce_SQLite(t *testing.T) {
+	assertContentPatchAckLossCommitsOnce(t, ackLossServer(t, store.DriverSQLite))
+}
+
+func TestContentPatchAckLossCommitsOnce_Postgres(t *testing.T) {
+	assertContentPatchAckLossCommitsOnce(t, ackLossServer(t, store.DriverPostgres))
+}
+
+func assertContentPatchAckLossCommitsOnce(t *testing.T, srv *Server) {
+	t.Helper()
+
+	slug := createWSWithCollections(t, srv)
+	item := createTaskWithFields(t, srv, slug, "Ack loss", `{"status":"open"}`)
+
+	// PRECONDITION, not decoration: with no conn dialled there is no electable
+	// applier, so routeContentUpdate takes the DIRECT-WRITE route — the only route
+	// that can reach the fall-through. Without this the test could pass by never
+	// visiting the path it exists to measure.
+	if srv.collab.HasElectableApplier(item.ID) {
+		t.Fatal("an applier is electable; this test would have measured the applier path instead")
+	}
+
+	// Fail the FIRST commit only, and commit it for real first. That is the whole
+	// point: the transaction's effects are durable and the caller is told they are
+	// not. A hook that returned an error WITHOUT committing would exercise the
+	// ordinary rollback case, which was never broken.
+	var commits int32
+	restore := srv.store.SetItemUpdateCommitHookForTesting(func(tx *sql.Tx) error {
+		n := atomic.AddInt32(&commits, 1)
+		if cerr := tx.Commit(); cerr != nil {
+			return cerr
+		}
+		if n == 1 {
+			return errSimItemAckLoss
+		}
+		return nil
+	})
+	t.Cleanup(restore)
+
+	rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+item.Slug,
+		map[string]interface{}{
+			"title":   "Renamed by the one request",
+			"content": "content written once",
+		})
+
+	// The seam must have fired, or nothing below means anything.
+	if atomic.LoadInt32(&commits) == 0 {
+		t.Fatal("the commit seam never fired; the request did not reach the store write this test measures")
+	}
+
+	// THE PROPERTY. One request, at most one committed transaction.
+	//
+	// Counted at the seam because the two instruments a reader reaches for first do
+	// NOT discriminate, and a test built on either passes against the defect. Both
+	// fail for one reason: the replayed write re-reads `existing` AFTER the first
+	// commit landed, so it finds every field already at its target value. The
+	// item_versions INSERT is gated on *input.Content != existing.Content and mints
+	// nothing; emitItemUpdateEventsTx gates on itemUpdatedSliceChanged and emits
+	// nothing. Measured against the unfixed tree, not reasoned about.
+	if n := atomic.LoadInt32(&commits); n != 1 {
+		t.Errorf("one PATCH drove %d transactions to COMMIT, want 1: the lost ack was read as a rollback "+
+			"and the write was replayed against the row it had already changed", n)
+	}
+
+	// ANTI-VACUITY CONTROL. The seam is only honest if the first transaction really
+	// did land, so assert the effects are on disk even though the caller was told
+	// they were not. Without this the whole test could pass against a seam that
+	// merely failed the commit, which is the case the code already handled.
+	after, gerr := srv.store.GetItem(item.ID)
+	if gerr != nil || after == nil {
+		t.Fatalf("re-read item: %v", gerr)
+	}
+	if after.Title != "Renamed by the one request" || after.Content != "content written once" {
+		t.Fatalf("the first transaction did not durably land (title=%q content=%q); the seam did not "+
+			"reproduce a lost ack and nothing above measures this bug", after.Title, after.Content)
+	}
+
+	// A commit whose outcome was never established must not be answered as success.
+	// 500 is what the plain path already answers for the same unrecognised store
+	// error, so this is parity rather than a new refusal.
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("PATCH answered %d; a write whose commit outcome is unknown must not read as success "+
+			"(body %s)", rr.Code, rr.Body.String())
+	}
+}

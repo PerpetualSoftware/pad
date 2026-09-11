@@ -40,11 +40,30 @@ const (
 	// contentRouteDirectWrote — PruneAndApply ran the full write for a room with no
 	// live writer.
 	contentRouteDirectWrote
-	// contentRouteFallThrough — nothing was written and no live writer holds a
-	// diverging document, so the caller's ordinary row write should carry the
-	// content as it always did.
-	contentRouteFallThrough
 )
+
+// There is deliberately no fall-through route (BUG-2994). One used to exist, on the
+// premise that a failed direct write left nothing behind and the handler's ordinary
+// row write could carry the content instead. That premise came from the store's
+// rollback semantics and is false for the case it mattered most in: a transaction
+// that COMMITTED and whose tx.Commit() reported an error anyway, which is what
+// Postgres does when the acknowledgement is lost at the connection boundary. The
+// handler then wrote the item a SECOND time, re-running the open-children precheck
+// against the row it had already changed.
+//
+// The population is what settles it. settleDirectFailed carries only applyFn's
+// error, because PruneAndApply's own ErrRoomActiveDuringPrune is consumed by the
+// settle loop before it can reach that arm — so EVERY error arriving there comes out
+// of a store write transaction, and there is no member of the set for which
+// re-running the same write is both safe and useful. The second defect makes that
+// concrete: the ordinary write does NOT carry composePruneWithPrecheck, so a
+// PruneItemOpLogTx failure — an honest rollback, no double write — fell through to a
+// write that set items.content while the op-log still held the ops the prune existed
+// to remove, which a reconnecting peer then replays over it.
+//
+// So the direct write is terminal, and answers with the same classification the
+// ordinary path gives the same error (writeTypedItemRefusal's five arms, then
+// writeInternalError). Parity, not a new refusal.
 
 // applierSettleBudget bounds the wait for a room that is neither settled enough to
 // elect an applier nor empty enough to write directly.
@@ -138,11 +157,14 @@ func (s *Server) routeContentUpdate(
 		if s.writeTypedItemRefusal(w, item, paErr) {
 			return contentRouteHandled, nil, nil
 		}
-		slog.Warn("collab: direct-write path failed; falling through to the ordinary row write",
+		// Terminal: no second write. The first attempt's outcome is unknown — it may
+		// have durably committed — so replaying it is the defect, not the recovery.
+		slog.Error("collab: the direct-write transaction failed; answering without a second write",
 			"item_id", item.ID,
 			"error", paErr,
 		)
-		return contentRouteFallThrough, nil, paErr
+		writeInternalError(w, paErr)
+		return contentRouteHandled, nil, paErr
 	}
 }
 

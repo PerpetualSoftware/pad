@@ -2888,7 +2888,15 @@ func (s *Store) updateItemWithParentLinkOnce(
 		return nil, err
 	}
 
-	if err := tx.Commit(); err != nil {
+	// Routed through the seam so a test can reproduce the ONE commit outcome
+	// this path must survive and cannot otherwise be shown: a transaction that
+	// durably landed whose acknowledgement was lost, which surfaces here as an
+	// ordinary error (BUG-2994). Nil in production, where this is tx.Commit().
+	commit := tx.Commit
+	if s.commitItemUpdate != nil {
+		commit = func() error { return s.commitItemUpdate(tx) }
+	}
+	if err := commit(); err != nil {
 		return nil, err
 	}
 
