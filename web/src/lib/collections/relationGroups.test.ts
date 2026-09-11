@@ -202,9 +202,27 @@ describe('relationChipFor', () => {
 		// are built from one function. Two would drift, and the drift would be
 		// invisible until a user saw a board lane and a filter chip disagree
 		// about what the same id is called.
+		//
+		// `relationLanes` CALLS `relationChipFor`, so this leg alone is partly
+		// tautological — a change to the shared helper moves both sides (codex
+		// round 4). The independent anchor is below: the expected shape is
+		// written out by hand, so the helper cannot redefine what agreement
+		// means.
 		const chip = relationChipFor('red', resolve);
 		const lane = relationLanes([item('a', 'red')], 'car', resolve)[0];
 		expect(chip).toEqual(lane);
+	});
+
+	it('describes a live value in the shape both surfaces render', () => {
+		// The independent half: this is what a chip and a lane are, spelled out
+		// rather than derived from either producer.
+		expect(relationChipFor('red', resolve)).toEqual({
+			value: 'red',
+			ref: 'COLOR-1',
+			title: 'Red',
+			label: 'Red',
+			state: 'live',
+		});
 	});
 
 	it('is null for an empty value — the caller owns what "no filter" says', () => {

@@ -171,6 +171,17 @@ test.describe('relation filter and group (PLAN-2857 U7)', () => {
 			// Every car is placed exactly once: four cars, four cards.
 			await expect(page.locator('.kanban-column .item-card')).toHaveCount(4);
 
+			// AND IN THE RIGHT LANES (codex round 4). A total count survives a
+			// mutant that puts every card in one lane while the headings still
+			// render, which is exactly what dropping the bucketing callback
+			// does.
+			const laneWith = (name: string) =>
+				page.locator('.kanban-column').filter({ has: page.locator('.column-name', { hasText: name }) });
+			await expect(laneWith(`Red ${stamp}`).locator('.item-card')).toHaveCount(1);
+			await expect(laneWith(`Blue ${stamp}`).locator('.item-card')).toHaveCount(1);
+			await expect(laneWith(`Doomed ${stamp}`).locator('.item-card')).toHaveCount(1);
+			await expect(laneWith('Uncategorized').locator('.item-card')).toHaveCount(1);
+
 			// FILTER by Red: the picker is scoped to the colours collection.
 			// The bar lives behind the toolbar's filter toggle — found by the
 			// first run of this leg timing out on a trigger that was never

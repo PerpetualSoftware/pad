@@ -156,6 +156,37 @@ describe('FilterBar relation filter', () => {
 		expect(getByCollection).toHaveBeenCalledWith('ws', 'colors');
 	});
 
+	it('sets the filter to the picked item\'s ID', async () => {
+		// The picker test above proves the picker is SCOPED; nothing proved what
+		// selecting does. A mutant writing `row.slug`, `row.title` or nothing at
+		// all survived it (codex round 4) — and the id is the whole contract,
+		// since `filteredItems` compares the stored field value against this.
+		getByCollection.mockReturnValue([
+			{
+				id: 'id-red',
+				title: 'Red',
+				slug: 'red',
+				item_number: 1,
+				collection_prefix: 'COLOR',
+				collection_slug: 'colors',
+				deleted_at: null,
+			} as unknown as ItemIndexRow,
+		]);
+		const onFilterChange = vi.fn();
+		const screen = renderBar({ onFilterChange });
+		await fireEvent.click(trigger(screen)!);
+		await tick();
+		await tick();
+
+		const option = screen.container.querySelector('.picker-result') as HTMLButtonElement | null;
+		// PRECONDITION: the picker offered something to pick.
+		expect(option, 'the picker rendered no options').not.toBeNull();
+		option!.click();
+		await tick();
+
+		expect(onFilterChange).toHaveBeenCalledWith({ car_color: 'id-red' });
+	});
+
 	it('offers no × until a filter is actually set', () => {
 		// The counterfactual for the clear button: without it, "the × clears the
 		// filter" passes against a bar that shows a clear control permanently.
