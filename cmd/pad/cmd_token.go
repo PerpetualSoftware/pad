@@ -1,8 +1,11 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -54,11 +57,16 @@ func tokenCreateCmd() *cobra.Command {
 		Short: "Mint a new API token (secret shown once)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			scopes, err := encodeTokenScopes(scopesFlag)
+			if err != nil {
+				return err
+			}
+
 			client, _ := getClient()
 
 			input := models.APITokenCreate{
 				Name:      nameFlag,
-				Scopes:    scopesFlag,
+				Scopes:    scopes,
 				ExpiresIn: expiresInFlag,
 			}
 
@@ -95,7 +103,7 @@ func tokenCreateCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&nameFlag, "name", "", "token name (required; shown in list and audit log)")
 	cmd.Flags().IntVar(&expiresInFlag, "expires-in", 0, "expiry in days (0 = platform default)")
-	cmd.Flags().StringVar(&scopesFlag, "scopes", "", "optional scopes string")
+	cmd.Flags().StringVar(&scopesFlag, "scopes", "", "comma-separated scopes: *, read, write, pad:read, pad:write, pad:admin (default: full access)")
 	_ = cmd.MarkFlagRequired("name")
 
 	return cmd
@@ -175,6 +183,39 @@ typo is a not-found error rather than a wrong token revoked.`,
 			return nil
 		},
 	}
+}
+
+// tokenScopeVocabulary is the server's recognized scope set
+// (internal/server/middleware_auth.go tokenScopeAllows). Anything else
+// is stored verbatim and then denied on every request, so the CLI
+// refuses it locally rather than minting a dead token.
+var tokenScopeVocabulary = []string{"*", "read", "write", "pad:read", "pad:write", "pad:admin"}
+
+// encodeTokenScopes turns the --scopes flag's comma-separated value into
+// the JSON-array string the server's scope check parses. Empty stays
+// empty (the server records full access). Values are trimmed; an empty
+// element or one outside the vocabulary is refused with the allowed
+// list named.
+func encodeTokenScopes(raw string) (string, error) {
+	if raw == "" {
+		return "", nil
+	}
+	var scopes []string
+	for _, part := range strings.Split(raw, ",") {
+		scope := strings.TrimSpace(part)
+		if scope == "" {
+			return "", fmt.Errorf("--scopes has an empty entry in %q; allowed values: %s", raw, strings.Join(tokenScopeVocabulary, ", "))
+		}
+		if !slices.Contains(tokenScopeVocabulary, scope) {
+			return "", fmt.Errorf("unknown scope %q; allowed values: %s", scope, strings.Join(tokenScopeVocabulary, ", "))
+		}
+		scopes = append(scopes, scope)
+	}
+	encoded, err := json.Marshal(scopes)
+	if err != nil {
+		return "", fmt.Errorf("encode scopes: %w", err)
+	}
+	return string(encoded), nil
 }
 
 // formatTokenExpiry renders an expiry timestamp for display; a nil

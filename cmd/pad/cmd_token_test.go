@@ -47,12 +47,18 @@ func newStubTokenServer(t *testing.T, wantToken string) *stubTokenServer {
 		switch r.Method {
 		case http.MethodGet:
 			s.listHits++
+			// The first row deliberately carries a "token" key the real
+			// server never sends on list: the renderer must print known
+			// metadata columns only, so this secret-shaped value must not
+			// reach stdout even from a buggy or hostile server. That is
+			// what makes the no-secret assertion below falsifiable.
 			_ = json.NewEncoder(w).Encode([]map[string]any{
 				{
 					"id": "tok-1111", "name": "ci-agent", "prefix": "pad_abc1",
 					"created_at":   "2026-08-01T10:00:00Z",
 					"last_used_at": "2026-09-01T09:00:00Z",
 					"expires_at":   "2026-11-01T10:00:00Z",
+					"token":        "pad_leakedsecretmaterial",
 				},
 				{
 					"id": "tok-2222", "name": "sweep", "prefix": "pad_def2",
@@ -191,8 +197,70 @@ func TestTokenList_RendersMetadataWithoutSecret(t *testing.T) {
 			t.Errorf("list output missing %q:\n%s", want, out)
 		}
 	}
-	if strings.Contains(out, "secret") {
-		t.Errorf("list output must never carry secret material:\n%s", out)
+	if strings.Contains(out, "pad_leaked") {
+		t.Errorf("list output must never carry secret material, even when the server response does:\n%s", out)
+	}
+}
+
+// --scopes values are validated locally and posted as the JSON array the
+// server's tokenScopeAllows requires — the raw string was stored verbatim
+// before, minting a token every request refused (#1237 review).
+func TestTokenCreate_ScopesPostedAsJSONArray(t *testing.T) {
+	srv := setupTokenEnv(t)
+
+	cases := []struct {
+		flag string
+		want string
+	}{
+		{"read", `["read"]`},
+		{"read,write", `["read","write"]`},
+		{" pad:read , pad:write ", `["pad:read","pad:write"]`},
+		{"*", `["*"]`},
+	}
+	for i, tc := range cases {
+		cmd := tokenCreateCmd()
+		cmd.SetArgs([]string{"--name", "scoped", "--scopes", tc.flag})
+		var runErr error
+		captureStdout(t, func() {
+			runErr = cmd.Execute()
+		})
+		if runErr != nil {
+			t.Fatalf("token create --scopes %q: %v", tc.flag, runErr)
+		}
+		if len(srv.createBodies) != i+1 {
+			t.Fatalf("expected %d POSTs after case %q, got %d", i+1, tc.flag, len(srv.createBodies))
+		}
+		got, _ := srv.createBodies[i]["scopes"].(string)
+		if got != tc.want {
+			t.Errorf("--scopes %q posted scopes %q, want %q", tc.flag, got, tc.want)
+		}
+	}
+}
+
+// A scope outside the server's vocabulary is refused locally, naming the
+// allowed values, before any request — the server would store it verbatim
+// and then deny every call made with the token.
+func TestTokenCreate_UnknownScopeRefusedLocally(t *testing.T) {
+	srv := setupTokenEnv(t)
+
+	for _, bad := range []string{"read-only", "read,,write", "admin"} {
+		cmd := tokenCreateCmd()
+		cmd.SetArgs([]string{"--name", "scoped", "--scopes", bad})
+		cmd.SilenceUsage = true
+		cmd.SilenceErrors = true
+		var runErr error
+		captureStdout(t, func() {
+			runErr = cmd.Execute()
+		})
+		if runErr == nil {
+			t.Fatalf("--scopes %q must be refused", bad)
+		}
+		if !strings.Contains(runErr.Error(), "pad:admin") {
+			t.Errorf("--scopes %q error should name the allowed vocabulary, got %q", bad, runErr.Error())
+		}
+		if len(srv.createBodies) != 0 {
+			t.Fatalf("no POST should reach the server for --scopes %q, got %d", bad, len(srv.createBodies))
+		}
 	}
 }
 
