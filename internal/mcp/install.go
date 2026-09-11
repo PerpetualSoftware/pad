@@ -591,6 +591,9 @@ type Installer struct {
 	// StructuredOnly opts installed clients into the token-efficient result
 	// mode by appending --structured-only to `pad mcp serve`.
 	StructuredOnly bool
+	// TextOnly selects the equivalent text-preserving mode for clients that do
+	// not expose structured-only results to the model.
+	TextOnly bool
 	// Home overrides os.UserHomeDir when non-empty (test-only).
 	Home string
 	// CWD overrides os.Getwd when non-empty (test-only). Used to resolve
@@ -659,6 +662,9 @@ func (i *Installer) Install(agentName string) (string, bool, error) {
 	if i.Binary == "" {
 		return "", false, errors.New("Installer.Binary is required")
 	}
+	if i.StructuredOnly && i.TextOnly {
+		return "", false, errors.New("Installer.StructuredOnly and TextOnly are mutually exclusive")
+	}
 	agent, err := FindAgent(agentName)
 	if err != nil {
 		return "", false, err
@@ -670,6 +676,8 @@ func (i *Installer) Install(agentName string) (string, bool, error) {
 	args := []string{"mcp", "serve"}
 	if i.StructuredOnly {
 		args = append(args, "--structured-only")
+	} else if i.TextOnly {
+		args = append(args, "--text-only")
 	}
 	modified, err := addEntry(agent, path, i.Binary, args)
 	return path, modified, err

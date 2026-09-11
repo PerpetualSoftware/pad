@@ -301,17 +301,27 @@ func TestInstaller_Install_RoundTripWithTempHome(t *testing.T) {
 	}
 }
 
-func TestInstaller_StructuredOnlyConfiguresCursorAndCodex(t *testing.T) {
-	for _, agent := range []string{"cursor", "codex"} {
-		t.Run(agent, func(t *testing.T) {
+func TestInstaller_CompactModesConfigureCursorAndCodex(t *testing.T) {
+	tests := []struct {
+		agent          string
+		structuredOnly bool
+		textOnly       bool
+		modeArg        any
+	}{
+		{agent: "cursor", textOnly: true, modeArg: "--text-only"},
+		{agent: "codex", structuredOnly: true, modeArg: "--structured-only"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.agent, func(t *testing.T) {
 			tmpHome := t.TempDir()
 			inst := &Installer{
 				Binary:         "/usr/local/bin/pad",
 				Home:           tmpHome,
 				GOOS:           "linux",
-				StructuredOnly: true,
+				StructuredOnly: tt.structuredOnly,
+				TextOnly:       tt.textOnly,
 			}
-			path, modified, err := inst.Install(agent)
+			path, modified, err := inst.Install(tt.agent)
 			if err != nil {
 				t.Fatalf("Install: %v", err)
 			}
@@ -320,18 +330,31 @@ func TestInstaller_StructuredOnlyConfiguresCursorAndCodex(t *testing.T) {
 			}
 
 			var args []any
-			if agent == "codex" {
+			if tt.agent == "codex" {
 				cfg := readTOML(t, path)
 				args = cfg[codexServersKey].(map[string]any)[MCPServerKey].(map[string]any)["args"].([]any)
 			} else {
 				cfg := readConfig(t, path)
 				args = cfg["mcpServers"].(map[string]any)[MCPServerKey].(map[string]any)["args"].([]any)
 			}
-			want := []any{"mcp", "serve", "--structured-only"}
+			want := []any{"mcp", "serve", tt.modeArg}
 			if !reflect.DeepEqual(args, want) {
 				t.Errorf("args = %#v, want %#v", args, want)
 			}
 		})
+	}
+}
+
+func TestInstaller_RejectsConflictingCompactModes(t *testing.T) {
+	inst := &Installer{
+		Binary:         "/usr/local/bin/pad",
+		Home:           t.TempDir(),
+		GOOS:           "linux",
+		StructuredOnly: true,
+		TextOnly:       true,
+	}
+	if _, _, err := inst.Install("cursor"); err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("Install error = %v, want mutually exclusive modes", err)
 	}
 }
 
