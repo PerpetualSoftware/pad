@@ -1502,6 +1502,20 @@ func (s *Store) RemapAttachmentReferencesInWorkspace(workspaceID string, oldToNe
 	}
 	defer tx.Rollback()
 
+	// Serialise against concurrent item writes in this workspace (codex round
+	// 5 on PLAN-2857 U5). This function SCANS every item's fields and content,
+	// then writes the snapshot back — so without the lock a concurrent update
+	// can commit newer fields in between and this overwrites them.
+	//
+	// That lost update predates the relation index and is not caused by it;
+	// what U5 adds is that the same stale snapshot is now also used to rebuild
+	// the reverse index, so the staleness reaches a second place. One lock
+	// closes both, and it is the same workspace lock every other writer here
+	// takes, acquired first so it cannot invert against them.
+	if err := s.acquireWorkspaceSeqLock(tx, workspaceID); err != nil {
+		return err
+	}
+
 	// ORDER BY id (BUG-2778 class sweep): this gathers rows and then UPDATEs
 	// them one by one inside a transaction, so the scan's order IS the lock
 	// order. Two concurrent remaps in one workspace would otherwise be free to
