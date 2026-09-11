@@ -121,13 +121,25 @@ func assertContentPatchAckLossCommitsOnce(t *testing.T, srv *Server) {
 
 	// THE PROPERTY. One request, at most one committed transaction.
 	//
-	// Counted at the seam because the two instruments a reader reaches for first do
-	// NOT discriminate, and a test built on either passes against the defect. Both
-	// fail for one reason: the replayed write re-reads `existing` AFTER the first
-	// commit landed, so it finds every field already at its target value. The
-	// item_versions INSERT is gated on *input.Content != existing.Content and mints
-	// nothing; emitItemUpdateEventsTx gates on itemUpdatedSliceChanged and emits
-	// nothing. Measured against the unfixed tree, not reasoned about.
+	// Counted at the seam because the two instruments a reader reaches for first
+	// cannot tell ONE committed write from TWO, so a test built on either passes
+	// against the defect:
+	//
+	//   - item_versions rows. The INSERT is gated on *input.Content !=
+	//     existing.Content, and the replayed write re-reads `existing` AFTER the
+	//     first commit landed, so it finds the content already at its target value
+	//     and mints nothing.
+	//   - item_updated events. The store's outbox emit is gated on
+	//     itemUpdatedSliceChanged and finds nothing changed for the same reason; the
+	//     handler's SSE publish fires once per successful REQUEST, not once per
+	//     write. Stated carefully because an earlier draft of this comment said
+	//     "events do not discriminate" full stop, and that is wrong in the other
+	//     direction (codex round 1): the fixed tree emits ZERO, because 500 returns
+	//     before the publish. That distinguishes fixed from unfixed — but it is the
+	//     same fact the status assertion below already pins, and it says nothing
+	//     about how many times the row was written, which is the property here.
+	//
+	// Measured against the unfixed tree, not reasoned about.
 	if n := atomic.LoadInt32(&commits); n != 1 {
 		t.Errorf("one PATCH drove %d transactions to COMMIT, want 1: the lost ack was read as a rollback "+
 			"and the write was replayed against the row it had already changed", n)

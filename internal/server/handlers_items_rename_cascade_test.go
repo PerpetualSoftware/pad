@@ -207,11 +207,18 @@ func TestItemRenameCascadeTooLarge_MappedOnTheCollabSnapshotPath(t *testing.T) {
 // TestItemRenameCascadeTooLarge_CollabEditPathDoesNotRunTheCascadeTwice closes
 // the other half of codex R2's second finding.
 //
-// The collab-edit path treats most callback errors as recoverable and falls
-// through to a direct write — graceful degradation for applier timeouts. A
-// cascade refusal is NOT recoverable: it is deterministic, so the fall-through
-// re-reads every linking body, re-charges the projection, and refuses
-// identically. The caller waits twice for one answer.
+// The collab-edit path USED TO treat most callback errors as recoverable and fall
+// through to a direct write — graceful degradation for applier timeouts. A cascade
+// refusal is NOT recoverable: it is deterministic, so the fall-through re-read every
+// linking body, re-charged the projection, and refused identically. The caller
+// waited twice for one answer.
+//
+// BUG-2994 removed that fall-through entirely, so the double cascade now has two
+// independent guards rather than one. This test still pins the first and the older
+// of them: a cascade refusal is TYPED, so writeTypedItemRefusal answers it and the
+// route returns handled — it never reached the fall-through even while one existed.
+// Drop that arm and the refusal goes untyped, answering 500 instead of 413, which
+// this test's status assertion catches.
 //
 // STATUS CANNOT PIN THIS. Both behaviours end in 413 — the fall-through reaches
 // the plain path's arm — so a status assertion passes either way. The

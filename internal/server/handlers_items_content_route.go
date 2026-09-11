@@ -53,17 +53,32 @@ const (
 //
 // The population is what settles it. settleDirectFailed carries only applyFn's
 // error, because PruneAndApply's own ErrRoomActiveDuringPrune is consumed by the
-// settle loop before it can reach that arm — so EVERY error arriving there comes out
-// of a store write transaction, and there is no member of the set for which
-// re-running the same write is both safe and useful. The second defect makes that
-// concrete: the ordinary write does NOT carry composePruneWithPrecheck, so a
-// PruneItemOpLogTx failure — an honest rollback, no double write — fell through to a
-// write that set items.content while the op-log still held the ops the prune existed
-// to remove, which a reconnecting peer then replays over it.
+// settle loop before it can reach that arm. That error splits three ways, and the
+// split is worth stating because an earlier draft of this comment claimed all of it
+// came out of a write transaction, which is not true (codex round 1):
+//
+//   - BEFORE any transaction — GetItem, validateAssignmentScope, or db.Begin
+//     failing. Nothing was written.
+//   - INSIDE the transaction, rolled back. Nothing was written.
+//   - The COMMIT, whose acknowledgement was lost. The effects ARE on disk.
+//
+// Terminal is right for all three, for two different reasons. The third is BUG-2994
+// itself: a replay writes the item twice. The first two are the second defect, and
+// it is the one that makes a "transient failures may retry" carve-out unsafe — the
+// ordinary write does NOT carry composePruneWithPrecheck, so a rolled-back direct
+// write fell through to a write that set items.content while the per-item op-log
+// still held the ops the prune existed to remove, which a reconnecting peer then
+// replays over it.
 //
 // So the direct write is terminal, and answers with the same classification the
 // ordinary path gives the same error (writeTypedItemRefusal's five arms, then
 // writeInternalError). Parity, not a new refusal.
+//
+// THE COST, named rather than left for someone to discover: a one-shot transient
+// failure in the first bucket used to get a second attempt that could answer 200,
+// and now answers 500. That is precisely what the ordinary path already answers for
+// the same error, so this makes the two orderings agree rather than singling this
+// one out — but it is an availability change and not only a correctness fix.
 
 // applierSettleBudget bounds the wait for a room that is neither settled enough to
 // elect an applier nor empty enough to write directly.
