@@ -130,8 +130,15 @@ export function narrowRelationRow(
 	return row;
 }
 
+/**
+ * TRIMMED (codex round 1, P1). `relationChipFor` has always trimmed, so a
+ * legacy value stored as `" id-red "` produced a live CHIP and an unresolved
+ * LANE — the same value described two ways by the two functions this module
+ * exists to keep in agreement. The pre-TASK-2878 write path accepted any
+ * string, padding included, so those rows exist.
+ */
 function laneValue(raw: unknown): string {
-	return typeof raw === 'string' ? raw : '';
+	return typeof raw === 'string' ? raw.trim() : '';
 }
 
 /**
@@ -202,6 +209,22 @@ export function relationLaneValueFor(item: Item, fieldKey: string, resolve: Reso
 	const value = laneValue(parseFields(item)[fieldKey]);
 	if (!value) return UNCATEGORIZED;
 	return resolve(value) ? value : UNRESOLVED_LANE;
+}
+
+/**
+ * The lane label for assistive technology — the same words the eye gets.
+ *
+ * The board's group `aria-label` used to format the raw column VALUE, so a lane
+ * reading "COLOR-1 Red" announced as "Id-Red column" and the unresolved lane as
+ * "$Unresolved column" (codex round 1). The claim this unit makes is that a
+ * lane is named from its target rather than from the stored id, and a claim
+ * that holds only for sighted users is not the claim.
+ */
+export function relationLaneAriaName(lane: RelationLane | undefined, fallback: string): string {
+	if (!lane) return fallback;
+	const parts = [lane.ref, lane.title ?? lane.label].filter(Boolean);
+	const name = parts.join(' ');
+	return lane.state === 'deleted' ? `${name} (deleted)` : name;
 }
 
 /**

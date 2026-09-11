@@ -273,10 +273,28 @@ export function visibleFields(fields: FieldDef[]): FieldDef[] {
  *  else `status` if the schema has one, else the first select field, else ''. */
 export function resolveGroupField(collection: PublicCollection): string {
 	const explicit = collection.settings.board_group_by;
-	if (explicit && findField(collection.fields, explicit)) return explicit;
+	// A RELATION FIELD IS NOT GROUPABLE HERE (TASK-2998, codex round 1).
+	//
+	// The authenticated board resolves a relation value against the local index
+	// and labels the lane with the target's ref and title. A public share has
+	// neither: the payload carries field VALUES, so grouping by a relation
+	// would render a lane per stored id, formatted — a wall of title-cased
+	// UUIDs, which is the exact thing this unit exists to stop showing.
+	//
+	// Falling through to the owner's next grouping is better than one honest-
+	// but-useless lane per id, and better than showing ids. The real fix is for
+	// the share payload to carry the target's ref and title, which is a server
+	// change and a separate unit.
+	if (explicit && isGroupableHere(collection, explicit)) return explicit;
 	if (findField(collection.fields, 'status')) return 'status';
 	const firstSelect = collection.fields.find((f) => f.type === 'select');
 	return firstSelect?.key ?? '';
+}
+
+/** A field a PUBLIC view can group by: it exists, and it is not a relation. */
+function isGroupableHere(collection: PublicCollection, key: string): boolean {
+	const field = findField(collection.fields, key);
+	return !!field && field.type !== 'relation';
 }
 
 // ── Presentation helpers (mirror the in-app vocabularies) ───────────────────

@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { UNPARENTED_FILTER_FIELD, filterEvaluable, matchesFilter, parsePublicItem } from './shareView';
+import {
+	UNPARENTED_FILTER_FIELD,
+	filterEvaluable,
+	matchesFilter,
+	parsePublicItem,
+	resolveGroupField,
+} from './shareView';
 
 function item(fields: Record<string, unknown>) {
 	return parsePublicItem({ title: 'x', ref: 'TASK-1', fields });
@@ -81,5 +87,48 @@ describe('matchesFilter', () => {
 		expect(
 			matchesFilter(item({ unparented: 'false' }), { field: 'unparented', op: 'eq', value: 'true' }),
 		).toBe(false);
+	});
+});
+
+describe('resolveGroupField with a relation field (TASK-2998, codex round 1)', () => {
+	function coll(fields: { key: string; type: string; options?: string[] }[], boardGroupBy?: string) {
+		return {
+			fields,
+			settings: boardGroupBy ? { board_group_by: boardGroupBy } : {},
+		} as unknown as Parameters<typeof resolveGroupField>[0];
+	}
+
+	it('does NOT group a public board by a relation field', () => {
+		// The authenticated board resolves the value against the local index and
+		// labels the lane with the target's ref and title. A share has neither —
+		// the payload carries field VALUES — so grouping by a relation renders a
+		// lane per stored id, formatted: a wall of title-cased UUIDs, which is
+		// the exact thing this unit exists to stop showing.
+		const c = coll(
+			[
+				{ key: 'car_color', type: 'relation' },
+				{ key: 'status', type: 'select', options: ['open'] },
+			],
+			'car_color',
+		);
+		expect(resolveGroupField(c)).toBe('status');
+	});
+
+	it('falls all the way through to ungrouped when there is nothing else', () => {
+		const c = coll([{ key: 'car_color', type: 'relation' }], 'car_color');
+		expect(resolveGroupField(c)).toBe('');
+	});
+
+	it('still honours an ordinary group field — the counterfactual', () => {
+		// A refusal that fired for every field would silently ungroup every
+		// shared board on the instance.
+		const c = coll(
+			[
+				{ key: 'phase', type: 'select', options: ['a'] },
+				{ key: 'status', type: 'select', options: ['open'] },
+			],
+			'phase',
+		);
+		expect(resolveGroupField(c)).toBe('phase');
 	});
 });

@@ -191,12 +191,31 @@ describe('the drop gate on a relation lane', () => {
 	 *
 	 * WHAT A SOURCE GUARD CANNOT DO: it checks spellings, not behaviour. A gate
 	 * that consulted the wrong lane, or one made unreachable by an earlier
-	 * return, would still pass.
+	 * return, would still pass — and the rollback below is asserted as an
+	 * ASSIGNMENT rather than as a board that visibly snaps back. The honest
+	 * instrument for that is a drag driven through svelte-dnd-action, which
+	 * tests the drag library as much as this decision.
 	 */
 	const SRC = readFileSync(resolve(__dirname, './BoardView.svelte'), 'utf8').replace(
 		/^[ \t]*\/\/.*$/gm,
 		'',
 	);
+
+	it('puts the card BACK when it refuses the drop', () => {
+		// codex round 1, P1, and the most important mutant this file missed:
+		// svelte-dnd-action has already moved the card in `columnData` by the
+		// time the gate runs, so refusing the WRITE without undoing that leaves
+		// the board showing a move that never happened — the exact failure the
+		// refusal exists to avoid, one step later. Every rendering test stayed
+		// green through it.
+		const start = SRC.indexOf('async function commitColumnMove(');
+		const body = SRC.slice(start, SRC.indexOf('\n\t}', start));
+		const gate = body.indexOf('relationLaneAcceptsDrop');
+		const restore = body.indexOf('columnData = propColumnData');
+		expect(restore, 'the refused drop is not reverted').toBeGreaterThan(-1);
+		expect(restore).toBeGreaterThan(gate);
+		expect(restore).toBeLessThan(body.indexOf('onStatusChange('));
+	});
 
 	it('consults relationLaneAcceptsDrop BEFORE calling onStatusChange', () => {
 		const start = SRC.indexOf('async function commitColumnMove(');

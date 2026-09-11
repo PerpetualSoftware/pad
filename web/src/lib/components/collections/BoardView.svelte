@@ -7,6 +7,7 @@
 	import {
 		narrowRelationRow,
 		relationLaneAcceptsDrop,
+		relationLaneAriaName,
 		relationLaneValueFor,
 		relationLanes,
 		type RelationLane,
@@ -414,7 +415,21 @@
 		// the write would fail behind it, which is worse than not moving.
 		if (isRelationGroup) {
 			const lane = relationLaneByValue.get(targetColumn);
-			if (!lane || !relationLaneAcceptsDrop(lane)) return;
+			if (!lane || !relationLaneAcceptsDrop(lane)) {
+				// AND PUT THE CARD BACK (codex round 1, P1). By the time this
+				// runs, svelte-dnd-action has already moved the card in
+				// `columnData` — refusing the WRITE without undoing that leaves
+				// the board showing a move that never happened, which is the
+				// exact failure the refusal exists to avoid, one step later.
+				//
+				// Re-reading `propColumnData` is how the failure path below
+				// reverts too: it is the props-derived truth, and the sync
+				// effect is gated on the cooldown rather than owning the
+				// restore. Assigning here rather than releasing a cooldown
+				// nobody set is the same repair without the two-second window.
+				columnData = propColumnData;
+				return;
+			}
 		}
 		dropCooldown = true;
 
@@ -553,7 +568,7 @@
 			class:dragging-source={draggedColumn === colValue}
 			class:uncategorized-column={isUncategorized}
 			role="group"
-			aria-label="{formatLabel(colValue)} column"
+			aria-label="{relationLaneAriaName(relLane, formatLabel(colValue))} column"
 			ondragover={(e) => handleColumnDragOver(e, colValue)}
 			ondragleave={handleColumnDragLeave}
 			ondrop={(e) => handleColumnDrop(e, colValue)}
@@ -601,7 +616,7 @@
 							<button
 								class="lane-btn lane-menu-btn"
 								title="Lane actions"
-								aria-label="{formatLabel(colValue)} lane actions"
+								aria-label="{relationLaneAriaName(relLane, formatLabel(colValue))} lane actions"
 								aria-haspopup="menu"
 								aria-expanded={openMenuColumn === colValue}
 								onclick={(e) => { e.stopPropagation(); toggleMenu(colValue); }}

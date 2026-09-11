@@ -6,6 +6,7 @@ import {
 	narrowRelationRow,
 	relationChipFor,
 	relationLaneAcceptsDrop,
+	relationLaneAriaName,
 	relationLaneValueFor,
 	relationLanes,
 } from './relationGroups';
@@ -233,5 +234,50 @@ describe('narrowRelationRow with no collection list yet', () => {
 		// the call site, so the shared helper states the rule.
 		const stray = { ...row('red', 'Red'), collection_slug: 'tasks' } as ItemIndexRow;
 		expect(narrowRelationRow(stray, 'red', 'colors', null)).toBe(stray);
+	});
+});
+
+describe('codex round 1 — values the write path used to accept', () => {
+	it('trims a padded value, so the lane and the chip agree', () => {
+		// `relationChipFor` has always trimmed; `relationLaneValueFor` did not.
+		// A legacy `" red "` therefore produced a LIVE chip and an UNRESOLVED
+		// lane — the same value described two ways by the two functions this
+		// module exists to keep in agreement. The pre-TASK-2878 write path
+		// accepted any string, padding included.
+		expect(relationLaneValueFor(item('a', '  red  '), 'car', resolve)).toBe('red');
+		expect(relationChipFor('  red  ', resolve)).toMatchObject({ value: 'red', state: 'live' });
+		const lanes = relationLanes([item('a', '  red  ')], 'car', resolve);
+		expect(lanes).toHaveLength(1);
+		expect(lanes[0]).toMatchObject({ value: 'red', state: 'live' });
+	});
+
+	it('collapses padded and unpadded forms of the same value into ONE lane', () => {
+		// Otherwise the board shows "Red" twice, which is worse than either
+		// version of the bug on its own.
+		const lanes = relationLanes([item('a', 'red'), item('b', ' red')], 'car', resolve);
+		expect(lanes).toHaveLength(1);
+	});
+});
+
+describe('relationLaneAriaName', () => {
+	it('gives assistive technology the words the eye gets', () => {
+		// The group's aria-label used to format the raw column VALUE, so a lane
+		// reading "COLOR-1 Red" announced as "Id-Red column". A claim that a
+		// lane is named from its target rather than its id is not a claim if it
+		// holds only for sighted users.
+		const [live] = relationLanes([item('a', 'red')], 'car', resolve);
+		expect(relationLaneAriaName(live, 'fallback')).toBe('COLOR-1 Red');
+	});
+
+	it('says a deleted target is deleted, and never echoes an unresolved value', () => {
+		const [deleted] = relationLanes([item('a', 'gone')], 'car', resolve);
+		expect(relationLaneAriaName(deleted, 'fallback')).toBe('COLOR-3 Gone (deleted)');
+		const [unresolved] = relationLanes([item('a', 'nope')], 'car', resolve);
+		expect(relationLaneAriaName(unresolved, 'fallback')).toBe('Unresolved reference');
+	});
+
+	it('falls back for a lane that is not a relation lane at all', () => {
+		// UNCATEGORIZED and every ordinary select lane come through here too.
+		expect(relationLaneAriaName(undefined, 'Uncategorized')).toBe('Uncategorized');
 	});
 });
