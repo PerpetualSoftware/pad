@@ -220,8 +220,12 @@ WARNING: This will overwrite the current database contents.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			inputFile := args[0]
-			if _, err := os.Stat(inputFile); os.IsNotExist(err) {
-				return fmt.Errorf("backup file not found: %s", inputFile)
+			inputInfo, err := os.Stat(inputFile)
+			if err != nil {
+				if os.IsNotExist(err) {
+					return fmt.Errorf("backup file not found: %s", inputFile)
+				}
+				return fmt.Errorf("stat backup file: %w", err)
 			}
 
 			dbDriver := os.Getenv("PAD_DB_DRIVER")
@@ -274,6 +278,13 @@ WARNING: This will overwrite the current database contents.`,
 				return fmt.Errorf("load config: %w", err)
 			}
 			dstPath := cfg.DBPath
+			if dstInfo, err := os.Stat(dstPath); err == nil {
+				if os.SameFile(inputInfo, dstInfo) {
+					return fmt.Errorf("backup file %s is the SQLite database being restored; choose a different backup file", inputFile)
+				}
+			} else if !os.IsNotExist(err) {
+				return fmt.Errorf("stat database: %w", err)
+			}
 
 			// Refuse to overwrite the database out from under a running server:
 			// the server holds it open and its background WAL checkpointer could
