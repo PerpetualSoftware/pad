@@ -27,7 +27,7 @@ func TestAgentSkillPromptBudget(t *testing.T) {
 			if len(payload) > agentSkillPromptBudget {
 				t.Fatalf("%s installed skill payload is %d bytes; budget is %d", agent, len(payload), agentSkillPromptBudget)
 			}
-			for _, required := range []string{"pad bootstrap", "issue IDs", "convention_index", "pad agent guide"} {
+			for _, required := range []string{"pad bootstrap", "do not rerun bootstrap", "issue IDs", "convention_index", "pad agent guide"} {
 				if !contains(string(payload), required) {
 					t.Errorf("%s installed skill is missing core guidance %q", agent, required)
 				}
