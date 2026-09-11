@@ -776,6 +776,15 @@ func showCmd() *cobra.Command {
 						if item.Convention != nil && (k == "category" || k == "trigger" || k == "scope" || k == "priority" || k == "enforcement" || k == "surfaces" || k == "commands") {
 							continue // shown in dedicated section below
 						}
+						// U6: a relation's stored value is an item id, which
+						// tells a reader nothing. The response already carries
+						// the hydrated target, so this is a render, not a
+						// lookup — and it falls back to the raw value when the
+						// field is not a relation or was not hydrated.
+						if target, ok := item.RelationTargets[k]; ok {
+							fmt.Printf("%-12s %s\n", k+":", cli.RenderRelationValue(target))
+							continue
+						}
 						fmt.Printf("%-12s %v\n", k+":", v)
 					}
 					fmt.Println("---")

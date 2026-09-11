@@ -109,6 +109,20 @@ type ItemWriteWarnings struct {
 	ContentOutcome string `json:"content_outcome,omitempty"`
 }
 
+// RelationTarget is one hydrated `relation` value: the item an ID points at,
+// in the smallest shape a caller needs to RENDER it without a second request
+// (PLAN-2857 U6).
+//
+// `ID` is always set — it is the stored value, and it is all there is when the
+// target is gone or invisible. `Ref` and `Title` are present only when the
+// target resolved and the requester may see it, so a consumer must treat them
+// as optional rather than assuming a hydrated entry is complete.
+type RelationTarget struct {
+	ID    string `json:"id"`
+	Ref   string `json:"ref,omitempty"`
+	Title string `json:"title,omitempty"`
+}
+
 // ContentOutcomeAppliedPendingFlush is the only ContentOutcome value that rides on
 // a 2xx: the content reached the collaborative document and items.content has not
 // caught up. It lives here rather than beside the error-path outcome constants
@@ -221,6 +235,25 @@ type Item struct {
 	ParentTitle          string `json:"parent_title,omitempty"`
 	ParentSlug           string `json:"parent_slug,omitempty"`
 	ParentCollectionSlug string `json:"parent_collection_slug,omitempty"`
+
+	// RelationTargets hydrates `relation` field values for READ responses
+	// (PLAN-2857 U6): field key -> the item that value names.
+	//
+	// It sits BESIDE `fields` rather than inside it, by lead ruling. `fields` is
+	// a write shape as well as a read shape — a caller reads an item, changes
+	// one key and writes the object back — so replacing a relation's ID string
+	// with an object there would break that round trip for every existing
+	// client. Here it is additive and omitempty: a consumer that does not know
+	// the key ignores it.
+	//
+	// A value that cannot be hydrated appears as an ID-ONLY entry rather than
+	// being omitted. Omitting it would read as "this item has no relation",
+	// which is a different and false statement; the honest one is "it points at
+	// this id and I cannot tell you more". Two cases produce that: a DANGLING
+	// value whose target is gone, and a target the requester may not see —
+	// hydrating a ref or title for the latter would leak exactly what the
+	// write-side visibility collapse exists to withhold.
+	RelationTargets map[string]RelationTarget `json:"relation_targets,omitempty"`
 
 	// Warnings is populated on WRITE responses only (create / update), never
 	// on reads, and is never stored. It carries things the write did that the

@@ -25,8 +25,9 @@
  *
  * KEPT IN THE SAME ORDER as the Go declarations so a diff of one against the
  * other is readable. The first five are the migrate-level reasons in
- * `handlers_items_copy_preflight.go`; the last five are the relation-level
- * `RelationIssueReason` constants in `internal/store/relation_referents.go`.
+ * `handlers_items_copy_preflight.go`; the rest are the relation-level
+ * `RelationIssueReason` constants in `internal/store/relation_referents.go`
+ * (five at TASK-2878, plus `ambiguous` at PLAN-2857 U6).
  *
  * This list is the CONTRACT the completeness test checks the map against. It
  * is duplicated from Go rather than generated, so it can go stale — which is
@@ -47,6 +48,7 @@ export const COPY_DROP_REASONS = [
 	'wrong_collection',
 	'target_missing',
 	'invalid_shape',
+	'ambiguous',
 ] as const;
 
 export type CopyDropReason = (typeof COPY_DROP_REASONS)[number];
@@ -81,6 +83,13 @@ const MESSAGES: Record<CopyDropReason, string> = {
 	target_missing: 'the field has no valid collection to link to',
 
 	invalid_shape: 'the destination field’s default is not a valid reference',
+
+	// PLAN-2857 U6. Reachable only from a TITLE — a UUID and a ref are unique
+	// by construction — and it says the title matched TOO MUCH, which is the
+	// opposite of `not_found`. The sentence names the fix the user can act on
+	// (be more specific) without claiming how many matched, which the response
+	// does not say.
+	ambiguous: 'more than one item in that collection has this title',
 };
 
 /**

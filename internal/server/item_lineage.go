@@ -2,6 +2,7 @@ package server
 
 import (
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -10,7 +11,7 @@ import (
 // enrichItemsWithParent batch-populates parent link info on a slice of items.
 // Used by list endpoints where calling enrichItemForResponse per-item is too expensive.
 // visibleIDs controls which parent collections are allowed; nil means all visible.
-func (s *Server) enrichItemsWithParent(workspaceID string, items []models.Item, visibleIDs ...[]string) {
+func (s *Server) enrichItemsWithParent(r *http.Request, workspaceID string, items []models.Item, visibleIDs ...[]string) {
 	if len(items) == 0 {
 		return
 	}
@@ -21,6 +22,11 @@ func (s *Server) enrichItemsWithParent(workspaceID string, items []models.Item, 
 		vis = visibleIDs[0]
 		hasVis = true
 	}
+
+	// U6 hydration runs BEFORE the parent-map early return below. The two are
+	// unrelated decorations, and a workspace with no parent links at all would
+	// otherwise return here and silently ship every list read unhydrated.
+	s.hydrateRelationTargets(r, workspaceID, items)
 
 	parentMap, err := s.store.GetParentMap(workspaceID)
 	if err != nil || len(parentMap) == 0 {
@@ -77,7 +83,7 @@ func (s *Server) enrichItemsWithParent(workspaceID string, items []models.Item, 
 // enrichItemForResponse populates derived closure and parent info on a single item.
 // An optional visibleIDs slice filters related items so hidden-collection metadata
 // is not leaked. Pass nil (or omit) for full access.
-func (s *Server) enrichItemForResponse(item *models.Item, visibleIDs ...[]string) error {
+func (s *Server) enrichItemForResponse(r *http.Request, item *models.Item, visibleIDs ...[]string) error {
 	if item == nil {
 		return nil
 	}
@@ -93,6 +99,13 @@ func (s *Server) enrichItemForResponse(item *models.Item, visibleIDs ...[]string
 		return err
 	}
 	item.DerivedClosure = closure
+
+	// U6: one item is the degenerate batch. Going through the same helper means
+	// a single read and a list read cannot disagree about what `relation_targets`
+	// says for the same item — including which targets collapse to id-only.
+	one := []models.Item{*item}
+	s.hydrateRelationTargets(r, item.WorkspaceID, one)
+	item.RelationTargets = one[0].RelationTargets
 
 	// Populate parent link info — skip if parent is in a hidden collection
 	parentLink, err := s.store.GetParentForItem(item.ID)

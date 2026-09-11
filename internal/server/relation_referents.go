@@ -85,7 +85,7 @@ func (s *Server) resolveRelationReferentsAs(
 		return canonical
 	}
 
-	issues, err := s.store.ResolveRelationReferents(workspaceID, schema, fieldMap)
+	issues, err := s.store.ResolveRelationReferents(workspaceID, schema, fieldMap, s.relationVisibility(r, role))
 	if err != nil {
 		return nil, err
 	}
@@ -120,7 +120,19 @@ func (s *Server) resolveRelationReferentsAs(
 			// where a person belongs" is the useful half of this reason.
 			//
 			// Any other issue is already `not_found`-shaped and needs nothing.
+			// An `ambiguous` reason arrives already decided: since the
+			// resolver takes this requester's visibility predicate, its count
+			// is the VISIBLE count and there is nothing left to narrow here.
+			// It used to be re-decided in this layer, which left the copy
+			// transaction — where no server pass runs — leaking.
 			if ri.Reason != store.RelationTargetWrongCollection {
+				continue
+			}
+			if ri.VisibilityChecked {
+				// The resolver judged this one against this requester already
+				// (title path). Re-resolving it here would run a title through
+				// a UUID-or-ref ladder, find nothing, and collapse a reason the
+				// caller is entitled to see.
 				continue
 			}
 			target, terr := s.store.ResolveRelationTarget(workspaceID, ri.Value)
@@ -215,9 +227,13 @@ func collapseIssue(issues []store.RelationIssue, key string, reason store.Relati
 // Reviewer named ONE site; this is applied at all five late-default sites,
 // per CONVE-18 — the class is "a store-resolved issue reaching a caller
 // without passing the visibility collapse", not the one call it was spotted at.
+// ONLY the ref path reaches here now. A title-derived issue is decided inside
+// the resolver, which takes this requester's visibility predicate — so an
+// invisible title match never becomes a `wrong_collection` in the first place,
+// and there is nothing for this pass to collapse.
 func (s *Server) collapseInvisibleRelationIssues(r *http.Request, workspaceID, role string, issues []store.RelationIssue) error {
 	for i := range issues {
-		if issues[i].Reason != store.RelationTargetWrongCollection {
+		if issues[i].Reason != store.RelationTargetWrongCollection || issues[i].VisibilityChecked {
 			continue
 		}
 		target, terr := s.store.ResolveRelationTarget(workspaceID, issues[i].Value)
@@ -452,7 +468,7 @@ func (s *Server) resolveRelationsForWrite(
 	// — and reporting none of it. The refusals are still returned; they are
 	// the carry report, not a stop.
 
-	lateDropped, err := s.store.ResolveLateRelationDefaults(workspaceID, schema, fieldMap, presentBefore)
+	lateDropped, err := s.store.ResolveLateRelationDefaults(s.relationVisibility(r, role), workspaceID, schema, fieldMap, presentBefore)
 	if err != nil {
 		return nil, nil, err
 	}

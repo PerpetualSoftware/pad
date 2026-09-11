@@ -937,6 +937,47 @@ const CmdhelpVersion = "0.1"
 //     case, which is the one with a real claim to leniency, is
 //     already exempt by provenance rather than by a flag.
 //
+//     0.31 — PLAN-2857 U6 / TASK-2996. A `relation` field value may now
+//     be an EXACT TITLE, scoped to the collection that field declares,
+//     alongside the UUID and ref U1 accepted; reads carry a new
+//     `relation_targets` member hydrating each stored id to
+//     {id, ref, title}; and `pad_collection.create`'s `fields` DSL takes
+//     the target collection slug as a relation's third part.
+//
+//     A BEHAVIOR bump on the v0.30/v0.29 grounds — no tool name, action
+//     enum or param shape changed. Two of the three parts are purely
+//     additive: a title is a THIRD accepted spelling, so nothing a 0.30
+//     consumer sends stops working, and `relation_targets` is additive
+//     and omitempty. The bump is owed by the DSL: `fields="owner:relation"`
+//     used to be ACCEPTED and is now REFUSED.
+//
+//     That refusal is the fix, not a regression. The old parser put the
+//     third part into Options for every type, so a relation declared
+//     through the DSL got Options=["colors"] and NO target collection —
+//     and every subsequent write to that field was refused with
+//     `target_missing`. The DSL was building a field that could never
+//     accept a value, and a caller relying on that was relying on a
+//     field that did not work. Same disposition as v0.24's strict-input
+//     half: the reliance was indistinguishable from a caller bug, so the
+//     break is the fix.
+//
+//     Title resolution is COLLECTION-SCOPED, and that is the whole
+//     point rather than an implementation detail. A title unique only
+//     workspace-wide REFUSES, naming the collection searched; resolving
+//     it workspace-wide would let free text land on whatever happens to
+//     carry that title today. Two or more matches inside the declared
+//     collection get a new `ambiguous` reason rather than `not_found`,
+//     which would state the opposite of what happened. The ladder is
+//     UUID, then ref, then title, so an item literally TITLED "COLO-3"
+//     is unreachable by title while the ref COLO-3 resolves — deliberate,
+//     since refs are canonical and the ambiguity is the title's doing.
+//
+//     An id-only `relation_targets` entry means the target is gone OR
+//     the caller may not see it, and consumers must not render it as
+//     either: the two are made indistinguishable on purpose, and the
+//     write side collapses `wrong_collection` to `not_found` for the
+//     same reason.
+//
 //   - POST-0.30, NO BUMP — BUG-2995. A successful content write through
 //     the designated applier used to answer with the item's PREVIOUS
 //     content: on that path the markdown goes to a live browser tab's
@@ -975,7 +1016,7 @@ const CmdhelpVersion = "0.1"
 //     is ever updated is not established — the flush belongs to a
 //     browser tab and BUG-3000 carries the open half — so no surface
 //     here states a duration.
-const ToolSurfaceVersion = "0.30"
+const ToolSurfaceVersion = "0.31"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

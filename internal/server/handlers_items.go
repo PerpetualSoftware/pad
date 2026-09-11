@@ -78,7 +78,7 @@ func (s *Server) handleListItems(w http.ResponseWriter, r *http.Request) {
 	if result == nil {
 		result = []models.Item{}
 	}
-	s.enrichItemsWithParent(workspaceID, result, visibleIDs)
+	s.enrichItemsWithParent(r, workspaceID, result, visibleIDs)
 
 	writeJSON(w, http.StatusOK, result)
 }
@@ -245,7 +245,7 @@ func (s *Server) handleListItemsIndex(w http.ResponseWriter, r *http.Request) {
 	if result == nil {
 		result = []models.Item{}
 	}
-	s.enrichItemsWithParent(workspaceID, result, visibleIDs)
+	s.enrichItemsWithParent(r, workspaceID, result, visibleIDs)
 
 	// Cursor: max(pre-list workspace floor, MAX(returned-rows.seq)).
 	// See the long comment above MaxItemSeq for why the floor is read
@@ -389,7 +389,7 @@ func (s *Server) handleListItemsChanges(w http.ResponseWriter, r *http.Request) 
 	// /items-index payload shape. Soft-deleted parents are skipped by
 	// the underlying GetItem (deleted_at IS NULL), so we don't leak
 	// parent title / ref after the parent itself has been archived.
-	s.enrichItemsWithParent(workspaceID, rows, visibleIDs)
+	s.enrichItemsWithParent(r, workspaceID, rows, visibleIDs)
 
 	changes := make([]itemChangeRow, 0, len(rows))
 	for _, it := range rows {
@@ -586,7 +586,7 @@ func (s *Server) handleListCollectionItems(w http.ResponseWriter, r *http.Reques
 	if result == nil {
 		result = []models.Item{}
 	}
-	s.enrichItemsWithParent(workspaceID, result, visibleIDs)
+	s.enrichItemsWithParent(r, workspaceID, result, visibleIDs)
 
 	writeJSON(w, http.StatusOK, result)
 }
@@ -735,7 +735,7 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	createVisIDs, _ := s.visibleCollectionIDs(r, workspaceID)
-	if err := s.enrichItemForResponse(item, createVisIDs); err != nil {
+	if err := s.enrichItemForResponse(r, item, createVisIDs); err != nil {
 		writeInternalError(w, err)
 		return
 	}
@@ -1003,7 +1003,7 @@ func (s *Server) handleGetItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	enrichVisIDs, _ := s.visibleCollectionIDs(r, workspaceID)
-	if err := s.enrichItemForResponse(item, enrichVisIDs); err != nil {
+	if err := s.enrichItemForResponse(r, item, enrichVisIDs); err != nil {
 		writeInternalError(w, err)
 		return
 	}
@@ -2147,7 +2147,7 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	updateVisIDs, _ := s.visibleCollectionIDs(r, workspaceID)
-	if err := s.enrichItemForResponse(updated, updateVisIDs); err != nil {
+	if err := s.enrichItemForResponse(r, updated, updateVisIDs); err != nil {
 		writeInternalError(w, err)
 		return
 	}
@@ -2283,7 +2283,7 @@ func (s *Server) handleRestoreItem(w http.ResponseWriter, r *http.Request) {
 	s.publishItemEventWithName(sseItemRestored, workspaceID, restored.ID, restored.Title, restored.CollectionSlug, actor, actorNameFromRequest(r), source, restored.Seq)
 
 	restoreVisIDs, _ := s.visibleCollectionIDs(r, workspaceID)
-	if err := s.enrichItemForResponse(restored, restoreVisIDs); err != nil {
+	if err := s.enrichItemForResponse(r, restored, restoreVisIDs); err != nil {
 		writeInternalError(w, err)
 		return
 	}
@@ -2457,6 +2457,7 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	relRefusals, relDropped, relErr := s.store.MigrateRelationReferents(
+		s.relationVisibility(r, workspaceRole(r)),
 		workspaceID, items.SchemaForMigratedFields(targetSchema), result.Fields,
 		input.FieldOverrides, store.CarriedSourceValues(currentFields, result.Dropped),
 		store.RelationCarryWithinWorkspace)
@@ -2499,6 +2500,7 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	// the required-field check has to see a value referent resolution dropped,
 	// which is why the main pass runs first — see ResolveLateRelationDefaults.
 	lateDropped, lateErr := s.store.ResolveLateRelationDefaults(
+		s.relationVisibility(r, workspaceRole(r)),
 		workspaceID, items.SchemaForMigratedFields(targetSchema), result.Fields, relBefore)
 	if lateErr != nil {
 		writeInternalError(w, lateErr)
@@ -2651,7 +2653,7 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	s.publishWatchNotifications(workspaceID, moved, actor, actorNameForMove)
 
 	moveVisIDs, _ := s.visibleCollectionIDs(r, workspaceID)
-	if err := s.enrichItemForResponse(moved, moveVisIDs); err != nil {
+	if err := s.enrichItemForResponse(r, moved, moveVisIDs); err != nil {
 		writeInternalError(w, err)
 		return
 	}
@@ -3039,7 +3041,7 @@ func (s *Server) handleGetItemChildren(w http.ResponseWriter, r *http.Request) {
 		children = filtered
 	}
 
-	s.enrichItemsWithParent(workspaceID, children, visibleIDs)
+	s.enrichItemsWithParent(r, workspaceID, children, visibleIDs)
 	if visibleIDs != nil {
 		// Visibility-aware has_children: only count visible grandchildren
 		for i := range children {

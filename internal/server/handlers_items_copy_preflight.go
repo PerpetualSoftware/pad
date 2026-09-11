@@ -811,6 +811,7 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	relRefusals, relDropped, relErr := s.store.MigrateRelationReferents(
+		s.relationVisibility(r, dst.Role),
 		dst.WorkspaceID(), items.SchemaForMigratedFields(targetSchema), final,
 		input.FieldOverrides, carriedSource, relMode)
 	if relErr != nil {
@@ -866,6 +867,7 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	// reported an unresolved default as carrying while the copy dropped it
 	// would be the DR-6 divergence in a new place.
 	lateDropped, lateErr := s.store.ResolveLateRelationDefaults(
+		s.relationVisibility(r, dst.Role),
 		dst.WorkspaceID(), items.SchemaForMigratedFields(targetSchema), final, relBefore)
 	if lateErr != nil {
 		writeInternalError(w, fmt.Errorf("copy preflight: resolve relation defaults: %w", lateErr))

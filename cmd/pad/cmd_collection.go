@@ -168,8 +168,13 @@ Two ways to define the schema:
 
   --fields  Compact DSL for the simple case: key:type[:option1,option2,...]
             Separate multiple fields with semicolons. Does not support
-            terminal_options, custom defaults, computed fields, suffixes,
-            or relation collections.
+            terminal_options, custom defaults, computed fields, or suffixes.
+
+            For a relation the third part is the TARGET COLLECTION slug
+            rather than an options list, and it is required:
+              owner:relation:people
+            A relation with no target is refused, because such a field
+            cannot accept any value.
 
   --schema  Full CollectionSchema JSON for everything else. Accepts:
               inline JSON:  --schema '{"fields":[...]}'
@@ -181,6 +186,7 @@ Two ways to define the schema:
 Examples:
   pad collection create "Bugs" --fields "status:select:new,triaged,fixing,resolved;severity:select:low,medium,high,critical;component:text"
   pad collection create "Decisions" --icon "⚖️" --fields "status:select:proposed,accepted,rejected;impact:select:low,medium,high"
+  pad collection create "Reviews" --fields "status:select:open,done;reviewer:relation:people"
   pad collection create "Marketing" --schema '{"fields":[{"key":"status","label":"Status","type":"select","options":["idea","drafting","review","published","archived"],"terminal_options":["published","archived"],"default":"idea","required":true}]}'
   pad collection create "Marketing" --schema @./marketing-schema.json
   cat schema.json | pad collection create "Marketing" --schema -

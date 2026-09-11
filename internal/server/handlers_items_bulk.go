@@ -563,7 +563,7 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 	for k, v := range suppliedRelations {
 		fieldMap[k] = v
 	}
-	lateDropped, lateErr := s.store.ResolveLateRelationDefaults(workspaceID, schema, fieldMap, relBefore)
+	lateDropped, lateErr := s.store.ResolveLateRelationDefaults(s.relationVisibility(r, workspaceRole(r)), workspaceID, schema, fieldMap, relBefore)
 	if lateErr != nil {
 		return nil, &bulkOpError{message: "Failed to resolve relation references", code: "internal_error"}
 	}
@@ -822,6 +822,7 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 		return nil, &bulkOpError{message: relationIssuesMessage(invisible), code: "validation_error"}
 	}
 	relRefusals, relDropped, relErr := s.store.MigrateRelationReferents(
+		s.relationVisibility(r, workspaceRole(r)),
 		workspaceID, items.SchemaForMigratedFields(targetSchema), result.Fields,
 		suppliedByCaller, store.CarriedSourceValues(currentFields, result.Dropped),
 		store.RelationCarryWithinWorkspace)
@@ -851,6 +852,7 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 	// Relation defaults ValidateFields just injected (codex round 2). After
 	// validation for the reason ResolveLateRelationDefaults documents.
 	lateDropped, lateErr := s.store.ResolveLateRelationDefaults(
+		s.relationVisibility(r, workspaceRole(r)),
 		workspaceID, items.SchemaForMigratedFields(targetSchema), result.Fields, relBefore)
 	if lateErr != nil {
 		return nil, &bulkOpError{message: "Failed to resolve relation references", code: "internal_error"}

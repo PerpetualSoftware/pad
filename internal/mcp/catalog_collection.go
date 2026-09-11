@@ -40,7 +40,7 @@ var padCollectionTool = ToolDef{
 			{
 				Name:        "fields",
 				Type:        "string",
-				Description: "Compact field DSL: \"key:type[:options]; ...\". Optional for action=create. Example: \"status:select:open,done; priority:select:high,medium,low\". Use `schema` instead when you need terminal_options, custom defaults, computed fields, suffixes, or relation collections — the DSL cannot express those. Mutually exclusive with `schema`.",
+				Description: "Compact field DSL: \"key:type[:options]; ...\". Optional for action=create. Example: \"status:select:open,done; priority:select:high,medium,low\". For a relation the third part is the TARGET COLLECTION slug rather than an options list, and it is required: \"reviewer:relation:people\" — a relation with no target is refused, since such a field cannot accept any value. Use `schema` instead when you need terminal_options, custom defaults, computed fields, or suffixes — the DSL cannot express those. Mutually exclusive with `schema`.",
 			},
 			{
 				Name:        "schema",
@@ -104,11 +104,15 @@ Actions:
             Optional: fields OR schema (mutually exclusive), icon, description,
                       layout, default_view, board_group_by.
             DSL example:    fields="status:select:open,done; priority:select:high,medium,low"
+            Relation in the DSL: the third part is the TARGET COLLECTION slug,
+            not an options list, and it is required —
+            fields="reviewer:relation:people". A relation with no target is
+            refused rather than built, because such a field cannot accept any
+            value.
             Schema example: schema={"fields":[{"key":"status","type":"select","options":["new","done"],"terminal_options":["done"]}]}
             Prefer schema when terminal_options matters (driving dashboard
             active/complete counts) or when fields need defaults, computed
-            flags, suffixes, or relation collections — the DSL cannot express
-            those.
+            flags, or suffixes — the DSL cannot express those.
   update  — Update an existing collection's name, icon, description, prefix,
             schema, or sort order. Workspace owner only.
             Required: workspace, slug.

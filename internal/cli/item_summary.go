@@ -20,6 +20,10 @@ import (
 // `tags` are emitted as nested JSON (not escaped strings) so agents can read
 // them without a second parse.
 //
+// The one id-bearing member it KEEPS is `relation_targets` (PLAN-2857 U6) —
+// see the field's own comment for why a relation is the exception to the
+// dropped-UUID rule.
+//
 // The full shape (raw models.Item) is still available via `item list --full`.
 type ItemSummary struct {
 	Ref            string          `json:"ref,omitempty"`
@@ -35,8 +39,23 @@ type ItemSummary struct {
 	AssignedUser   string          `json:"assigned_user,omitempty"`
 	AgentRole      string          `json:"agent_role,omitempty"`
 	HasChildren    bool            `json:"has_children,omitempty"`
-	CreatedAt      time.Time       `json:"created_at"`
-	UpdatedAt      time.Time       `json:"updated_at"`
+
+	// RelationTargets carries the hydrated `relation` values (PLAN-2857 U6).
+	//
+	// It survives the summary projection while the other UUID plumbing does
+	// not, because it is the ONE case where the id in `fields` is useless on
+	// its own: a relation stores an item id, and without this member a client
+	// reading a list has a UUID and no way to render it short of a request per
+	// value. That is the defect U6 exists to close, and dropping it here would
+	// leave it open on the agent doors — `pad item list --format json` and
+	// `pad_item.list` on both transports — which are the doors that matter
+	// most.
+	//
+	// Small by construction: one entry per relation field the item actually
+	// carries, and absent entirely on the items that carry none.
+	RelationTargets map[string]models.RelationTarget `json:"relation_targets,omitempty"`
+	CreatedAt       time.Time                        `json:"created_at"`
+	UpdatedAt       time.Time                        `json:"updated_at"`
 }
 
 // contentPreviewLimit caps the content_preview at a small, agent-friendly
@@ -97,21 +116,22 @@ func rawJSONOrNil(s string) json.RawMessage {
 // ToItemSummary projects a single models.Item into the summary shape.
 func ToItemSummary(item models.Item) ItemSummary {
 	return ItemSummary{
-		Ref:            item.Ref,
-		Title:          item.Title,
-		Slug:           item.Slug,
-		CollectionSlug: item.CollectionSlug,
-		ItemNumber:     item.ItemNumber,
-		Fields:         rawJSONOrNil(item.Fields),
-		Tags:           rawJSONOrNil(item.Tags),
-		Pinned:         item.Pinned,
-		ContentPreview: contentPreview(item.Content),
-		ParentRef:      item.ParentRef,
-		AssignedUser:   item.AssignedUserName,
-		AgentRole:      item.AgentRoleSlug,
-		HasChildren:    item.HasChildren,
-		CreatedAt:      item.CreatedAt,
-		UpdatedAt:      item.UpdatedAt,
+		Ref:             item.Ref,
+		Title:           item.Title,
+		Slug:            item.Slug,
+		CollectionSlug:  item.CollectionSlug,
+		ItemNumber:      item.ItemNumber,
+		Fields:          rawJSONOrNil(item.Fields),
+		Tags:            rawJSONOrNil(item.Tags),
+		Pinned:          item.Pinned,
+		ContentPreview:  contentPreview(item.Content),
+		ParentRef:       item.ParentRef,
+		AssignedUser:    item.AssignedUserName,
+		AgentRole:       item.AgentRoleSlug,
+		HasChildren:     item.HasChildren,
+		RelationTargets: item.RelationTargets,
+		CreatedAt:       item.CreatedAt,
+		UpdatedAt:       item.UpdatedAt,
 	}
 }
 
