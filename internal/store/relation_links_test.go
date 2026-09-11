@@ -253,9 +253,13 @@ func TestRelationLinks_BackfillDerivesRowsWrittenBeforeTheIndexExisted(t *testin
 	ws, _, cars, red := relationIndexFixture(t, s)
 	carPointingAt(t, s, ws, cars, "Pre-index Car", red.ID)
 
-	// Simulate the pre-migration state: the rows exist, the index does not.
+	// Simulate the pre-migration state: the rows exist, the index does not,
+	// and no completed pass has been recorded.
 	if _, err := s.db.Exec(s.q(`DELETE FROM item_relation_links`)); err != nil {
 		t.Fatalf("clear index: %v", err)
+	}
+	if _, err := s.db.Exec(s.q(`DELETE FROM platform_settings WHERE key = ?`), relationLinksBackfilledFlag); err != nil {
+		t.Fatalf("clear backfill marker: %v", err)
 	}
 	if n := countFor(t, s, red, ws); n != 0 {
 		t.Fatalf("the index was not actually cleared (count %d), so the leg below would pass without a backfill", n)
@@ -367,5 +371,113 @@ func TestRelationLinks_ImportIndexesTheRemappedIDs(t *testing.T) {
 	}
 	if len(links) != 1 || links[0].SourceItemID != car.ID {
 		t.Errorf("backlink = %+v, want the DESTINATION's car id %s — an index built at the first-pass insert would hold the exported id instead", links, car.ID)
+	}
+}
+
+// TestRelationLinks_RestoreAfterASchemaChangeReindexes is codex round 1's
+// second P1, and it is a hole my own site enumeration could not have found.
+//
+// I enumerated the sites that WRITE items.fields. Restore writes no fields —
+// it clears deleted_at — so it never appeared. But the index depends on
+// (blob, schema) AND on the item being live, and the collection reindex
+// deliberately skips soft-deleted items. So: delete an item, change the
+// collection's schema while it is gone, restore it, and its rows are whatever
+// they were before the deletion — stale against a schema that has moved.
+//
+// Both directions matter. A field that BECAME a relation leaves the restored
+// item missing edges; a field that stopped being one leaves it with edges it
+// should not have.
+func TestRelationLinks_RestoreAfterASchemaChangeReindexes(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ws, _, cars, red := relationIndexFixture(t, s)
+
+	car := carPointingAt(t, s, ws, cars, "Time Traveller", red.ID)
+	if n := countFor(t, s, red, ws); n != 1 {
+		t.Fatalf("setup: referenced by %d, want 1", n)
+	}
+
+	// Gone while the schema moves under it.
+	if err := s.DeleteItem(car.ID); err != nil {
+		t.Fatalf("DeleteItem: %v", err)
+	}
+	plain := `{"fields":[{"key":"status","type":"select","options":["open","done"],"default":"open"},{"key":"color","type":"text"}]}`
+	if _, err := s.UpdateCollection(cars.ID, models.CollectionUpdate{Schema: &plain}); err != nil {
+		t.Fatalf("UpdateCollection: %v", err)
+	}
+
+	if _, err := s.RestoreItem(car.ID); err != nil {
+		t.Fatalf("RestoreItem: %v", err)
+	}
+	if n := countFor(t, s, red, ws); n != 0 {
+		t.Errorf("the restored item is referenced %d times, want 0 — `color` is a TEXT field now, and the reindex that would have noticed skipped this item because it was deleted at the time", n)
+	}
+
+	// The other direction: make it a relation again while the item is gone,
+	// and the restore must FIND the edge.
+	if err := s.DeleteItem(car.ID); err != nil {
+		t.Fatalf("DeleteItem (second): %v", err)
+	}
+	back := `{"fields":[{"key":"status","type":"select","options":["open","done"],"default":"open"},{"key":"color","type":"relation","collection":"colors"}]}`
+	if _, err := s.UpdateCollection(cars.ID, models.CollectionUpdate{Schema: &back}); err != nil {
+		t.Fatalf("UpdateCollection (back): %v", err)
+	}
+	if _, err := s.RestoreItem(car.ID); err != nil {
+		t.Fatalf("RestoreItem (second): %v", err)
+	}
+	if n := countFor(t, s, red, ws); n != 1 {
+		t.Errorf("the restored item is referenced %d times, want 1 — `color` is a relation again and the restore must derive the edge the reindex could not", n)
+	}
+}
+
+// TestRelationLinks_AnInterruptedBackfillIsRetriedNotSkipped is codex round
+// 1's first P1.
+//
+// The guard used to be "does item_relation_links have any row". Rows commit
+// per item, so a crash partway through leaves the table NON-EMPTY AND
+// INCOMPLETE — and that guard then skips forever, with the missing edges never
+// derived. The rebuild story ("delete the table") only ever covered deliberate
+// deletion.
+//
+// Completion is now recorded explicitly and only after a full pass, so a table
+// that is partially populated with no marker must be RE-DERIVED.
+func TestRelationLinks_AnInterruptedBackfillIsRetriedNotSkipped(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ws, colors, cars, red := relationIndexFixture(t, s)
+	blue := createTestItem(t, s, ws.ID, colors.ID, "Blue", "")
+
+	carPointingAt(t, s, ws, cars, "Indexed Car", red.ID)
+	carPointingAt(t, s, ws, cars, "Missed Car", blue.ID)
+
+	// The shape an interrupted run leaves behind: one item's rows present,
+	// another's missing, and NO completion marker.
+	if _, err := s.db.Exec(s.q(`DELETE FROM item_relation_links WHERE target_item_id = ?`), blue.ID); err != nil {
+		t.Fatalf("simulate partial index: %v", err)
+	}
+	if _, err := s.db.Exec(s.q(`DELETE FROM platform_settings WHERE key = ?`), relationLinksBackfilledFlag); err != nil {
+		t.Fatalf("clear marker: %v", err)
+	}
+	if n := countFor(t, s, blue, ws); n != 0 {
+		t.Fatalf("the partial state was not established (blue count %d); the assertion below would pass for the wrong reason", n)
+	}
+	if n := countFor(t, s, red, ws); n != 1 {
+		t.Fatalf("the partial state removed too much (red count %d)", n)
+	}
+
+	res, err := s.BackfillRelationLinks()
+	if err != nil {
+		t.Fatalf("BackfillRelationLinks: %v", err)
+	}
+	if res.Skipped {
+		t.Fatal("the backfill SKIPPED a partially populated table; under the old any-row guard the missing edges would never be derived")
+	}
+	if n := countFor(t, s, blue, ws); n != 1 {
+		t.Errorf("the missed edge is still missing (count %d) after a retry", n)
+	}
+	// And the already-indexed one is not duplicated — the pass is idempotent
+	// because replaceRelationLinks deletes before it inserts.
+	if n := countFor(t, s, red, ws); n != 1 {
+		t.Errorf("the already-indexed edge is now counted %d times; a repeat pass must replace rather than append", n)
 	}
 }

@@ -24,40 +24,49 @@ type BackfillRelationLinksResult struct {
 // BackfillRelationLinks derives `item_relation_links` for every live item.
 // Called from server startup after migrations.
 //
-// ITS SHORT-CIRCUIT IS NOT THE WIKI BACKFILL'S, and the difference is the
-// interesting part. BackfillWikiLinks skips an item that already HAS rows. That
-// test does not work here: most items carry no relation value at all, so "zero
-// rows" is the correct steady state for them and is indistinguishable from
-// "never indexed". A per-item EXISTS would therefore re-derive almost every
-// item on every boot, forever.
+// ITS GUARD IS A COMPLETION MARKER, and the two shapes it is not are both
+// instructive.
 //
-// So the guard is asked at the TABLE and the SCHEMA instead:
+// It is not the wiki backfill's per-item EXISTS. That test does not work here:
+// most items carry no relation value, so "zero rows" is their correct steady
+// state and is indistinguishable from "never indexed" — a per-item EXISTS
+// would re-derive nearly every item on every boot, forever.
 //
-//  1. any row in item_relation_links at all → the index is populated and the
-//     write hooks have kept it current since; nothing to do.
-//  2. no collection in the database declares a relation field → there is
-//     nothing this index could contain; nothing to do.
+// It is also no longer "does the table have any row", which is what I wrote
+// first and which codex round 1 correctly called a P1. Rows commit per item,
+// so a crash partway through leaves the table NON-EMPTY AND INCOMPLETE — and
+// that guard then skips forever, with the missing edges never derived. The
+// "rebuild by deleting the table" story only ever covered deliberate deletion,
+// not an interrupted run.
 //
-// Only when both are false does it walk items. That makes the steady-state
-// cost two cheap queries, and it makes a REBUILD a one-line migration exactly
-// as migration 062 did for wiki-links: DELETE the table and the next boot
-// repopulates it from scratch.
+// So completion is recorded EXPLICITLY, in platform_settings, and only AFTER a
+// full pass finishes. A crash before that leaves no marker and the next boot
+// re-derives — which is safe because replaceRelationLinks deletes before it
+// inserts, so a repeat pass is idempotent rather than additive. The marker is
+// written after the work for the same reason a dedupe token must be: writing
+// it first turns a mid-run failure into a permanent silent loss.
 //
-// The residual case is a database that uses relation fields but happens to
-// have zero live values — it re-scans each boot. That is bounded by the item
-// count and does no writes, and paying it is better than the alternative,
-// which is a marker row whose staleness nothing would ever check.
+// A REBUILD is still one line, just a different one: delete the marker (or the
+// table and the marker) and restart.
+//
+// The schema probe stays as a cheap second skip — a database where no
+// collection declares a relation field has nothing to derive — and it records
+// completion too, because a pass over zero work is a completed pass. A
+// relation field arriving later is handled by UpdateCollection's reindex and
+// the write hooks, not by this.
 //
 // PLAN-2857 U5 / TASK-2997.
 func (s *Store) BackfillRelationLinks() (*BackfillRelationLinksResult, error) {
 	result := &BackfillRelationLinksResult{}
 
-	var existing int
-	if err := s.db.QueryRow(s.q(`SELECT 1 FROM item_relation_links LIMIT 1`)).Scan(&existing); err == nil {
+	var marker string
+	err := s.db.QueryRow(s.q(`SELECT value FROM platform_settings WHERE key = ?`), relationLinksBackfilledFlag).Scan(&marker)
+	if err == nil && marker == "1" {
 		result.Skipped = true
 		return result, nil
-	} else if !errors.Is(err, sql.ErrNoRows) {
-		return nil, fmt.Errorf("probe relation links: %w", err)
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("probe relation backfill marker: %w", err)
 	}
 
 	// Which collections declare a relation field, and what their relation keys
@@ -68,6 +77,10 @@ func (s *Store) BackfillRelationLinks() (*BackfillRelationLinksResult, error) {
 		return nil, err
 	}
 	if len(relationKeysByCollection) == 0 {
+		// A pass over zero work is a completed pass.
+		if err := s.markRelationLinksBackfilled(); err != nil {
+			return nil, err
+		}
 		result.Skipped = true
 		return result, nil
 	}
@@ -121,7 +134,30 @@ func (s *Store) BackfillRelationLinks() (*BackfillRelationLinksResult, error) {
 		}
 		result.LinksInserted += len(edges)
 	}
+
+	// ONLY NOW. Every earlier return path is a failure, and none of them
+	// records completion — so an interrupted run is re-derived on the next
+	// boot rather than skipped forever.
+	if err := s.markRelationLinksBackfilled(); err != nil {
+		return nil, err
+	}
 	return result, nil
+}
+
+// relationLinksBackfilledFlag is the platform_settings key recording that a
+// FULL relation-index derivation has completed. Same mechanism the
+// webhook-secret encryption migration uses for the same question.
+const relationLinksBackfilledFlag = "relation_links_backfilled"
+
+// markRelationLinksBackfilled records a completed pass.
+func (s *Store) markRelationLinksBackfilled() error {
+	if _, err := s.db.Exec(s.q(`
+		INSERT INTO platform_settings (key, value, updated_at) VALUES (?, ?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+	`), relationLinksBackfilledFlag, "1", now()); err != nil {
+		return fmt.Errorf("persist relation backfill marker: %w", err)
+	}
+	return nil
 }
 
 // collectionsWithRelationFields maps collection id -> its relation field keys,

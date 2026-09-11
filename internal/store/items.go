@@ -3053,6 +3053,21 @@ func (s *Store) restoreItemOnce(id string, opt mutationOptions) (*models.Item, e
 		return nil, sql.ErrNoRows
 	}
 
+	// Re-derive the relation index for the item coming back (PLAN-2857 U5).
+	//
+	// Restore writes no `fields`, which is why this site does not appear in
+	// the list of field-writing hooks — and it is a hole exactly because the
+	// index depends on the item being LIVE as well as on (blob, schema).
+	// ReindexCollectionRelationLinks deliberately skips soft-deleted items, so
+	// a schema change that happens WHILE an item is deleted never reaches it:
+	// the item comes back carrying whatever rows it had before, against a
+	// schema that has moved. Both directions bite — a field that became a
+	// relation leaves the restored item missing edges, one that stopped being
+	// a relation leaves it with edges it should not have (codex round 1).
+	if err := s.replaceRelationLinks(tx, id, existing.WorkspaceID, existing.CollectionID, existing.Fields); err != nil {
+		return nil, fmt.Errorf("index relation links on restore: %w", err)
+	}
+
 	// item.restored carries the POST-restore snapshot (SPEC-3 v1.1). Read
 	// after the UPDATE, in-tx: the row is live again at this point, so
 	// getItemTx sees it, and the snapshot reflects the state a consumer will
