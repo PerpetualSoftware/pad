@@ -154,3 +154,80 @@ func assertContentPatchAckLossCommitsOnce(t *testing.T, srv *Server) {
 			"(body %s)", rr.Code, rr.Body.String())
 	}
 }
+
+var errSimPruneFailure = errors.New("simulated op-log prune failure")
+
+// TestDirectWritePruneFailureDoesNotReplayWithoutThePrune is the SECOND defect of
+// the same removed fall-through (BUG-2994), and it is a different error shape on
+// purpose.
+//
+// The direct write rides the op-log prune inside its own transaction
+// (composePruneWithPrecheck) so a refusal from either half rolls the other back.
+// The handler's ordinary write does NOT carry that composition. So a prune failure
+// — an honest rollback, nothing committed, no double write — fell through to a
+// write that set items.content while the per-item op-log still held exactly the ops
+// the prune existed to remove. PruneAndApply has already established under appendMu
+// that no live writer holds the room, so those rows belong to departed peers and a
+// reconnecting client replays them over the content just seeded.
+//
+// WHY THIS EXISTS ALONGSIDE THE ACK-LOSS TEST rather than being folded into it: the
+// two errors are terminal for different reasons, and the arm must be terminal for
+// ALL of them. Re-opening the fall-through for "non-commit" errors only — the
+// plausible shape of a future regression, since a transient error looks retryable —
+// leaves the ack-loss test green and is caught only here.
+func TestDirectWritePruneFailureDoesNotReplayWithoutThePrune(t *testing.T) {
+	srv := ackLossServer(t, store.DriverSQLite)
+	slug := createWSWithCollections(t, srv)
+	item := createTaskWithFields(t, srv, slug, "Prune failure", `{"status":"open"}`)
+
+	// Op-log rows standing in for a departed peer's unflushed edits: content that
+	// exists ONLY in the op-log, which is what the prune is there to discard.
+	seedOpLog(t, srv, item.ID, 3)
+	if got := countOpLog(t, srv, item.ID); got != 3 {
+		t.Fatalf("seeded op-log = %d rows, want 3", got)
+	}
+	if srv.collab.HasElectableApplier(item.ID) {
+		t.Fatal("an applier is electable; this test would have measured the applier path instead")
+	}
+
+	before, err := srv.store.GetItem(item.ID)
+	if err != nil || before == nil {
+		t.Fatalf("GetItem: %v", err)
+	}
+
+	var faults int32
+	srv.directWritePruneFault = func() error {
+		atomic.AddInt32(&faults, 1)
+		return errSimPruneFailure
+	}
+	t.Cleanup(func() { srv.directWritePruneFault = nil })
+
+	rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+item.Slug,
+		map[string]interface{}{"content": "content that must not outrun the prune"})
+
+	if atomic.LoadInt32(&faults) == 0 {
+		t.Fatal("the prune seam never fired; the request did not reach the direct write this test measures")
+	}
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("PATCH answered %d, want 500: a write that could not prune the op-log must be refused, "+
+			"not retried without the prune (body %s)", rr.Code, rr.Body.String())
+	}
+
+	after, err := srv.store.GetItem(item.ID)
+	if err != nil || after == nil {
+		t.Fatalf("GetItem: %v", err)
+	}
+	if after.Content != before.Content {
+		t.Errorf("items.content moved to %q despite the prune failing: the replayed write did not carry "+
+			"composePruneWithPrecheck, so it seeded content the surviving op-log will be replayed over",
+			after.Content)
+	}
+	// PRECONDITION, not a discriminator — it holds either way, and saying so keeps
+	// it from reading as coverage it does not provide. The rows survive in BOTH
+	// trees (the replayed write carried no prune at all), which is precisely what
+	// makes the content move above harmful: there is something left to replay over
+	// it. Measured against the unfixed tree.
+	if got := countOpLog(t, srv, item.ID); got != 3 {
+		t.Errorf("op-log = %d rows, want the 3 seeded: the prune must roll back with its transaction", got)
+	}
+}

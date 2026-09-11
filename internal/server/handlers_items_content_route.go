@@ -329,6 +329,9 @@ func composePruneWithPrecheck(s *Server, itemID string, inner func(*sql.Tx, *mod
 				return err
 			}
 		}
+		if s.directWritePruneFault != nil {
+			return s.directWritePruneFault()
+		}
 		return s.store.PruneItemOpLogTx(tx, itemID)
 	}
 }
