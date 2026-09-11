@@ -1,6 +1,6 @@
 import { test, expect } from './fixtures';
 import { browserLogin, seedDoc } from './lib/collab-helpers';
-import type { APIRequestContext, Page } from '@playwright/test';
+import type { APIRequestContext, Locator, Page } from '@playwright/test';
 import type { SuiteFixture } from './fixtures';
 
 /**
@@ -132,6 +132,243 @@ function itemCard(page: Page, title: string) {
 	return page.locator('.item-card').filter({ has: page.locator('.card-title', { hasText: title }) });
 }
 
+
+/**
+ * BUG-2993 falsifier. Separates the three candidates in ONE run:
+ *   1. the anchor has no usable `href` at click time  -> render race
+ *   2. something calls preventDefault on the modifier click -> interception
+ *   3. href fine, not prevented, no `page` event -> popup in an unobserved context
+ *
+ * The capture-phase listener records what the anchor looked like when the click
+ * started; the BUBBLE-phase one runs after the element's own handler, so its
+ * `defaultPrevented` is the answer to candidate 2.
+ */
+async function armCtrlClickProbe(page: Page): Promise<void> {
+	await page.evaluate(() => {
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		const w = window as any;
+		w.__bug2993 = { capture: [], bubble: [], down: [], up: [] };
+		// NODE IDENTITY ACROSS THE PRESS (BUG-2993, round 2 of the falsifier).
+		// Chromium activates a link on the mouseup that matches the mousedown's
+		// node. If Svelte replaces the anchor between them, a `click` event
+		// still fires and `closest('a')` still resolves — on the NEW node — so
+		// every earlier probe looks healthy while the browser declines to
+		// navigate. Stamping the node at mousedown and reading the stamp at
+		// mouseup is the only way to tell those apart.
+		let stamp = 0;
+		document.addEventListener(
+			'mousedown',
+			(e) => {
+				const a = (e.target as HTMLElement)?.closest?.('a');
+				if (a) (a as unknown as Record<string, unknown>).__b2993 = ++stamp;
+				w.__bug2993.down.push({ hasAnchor: !!a, stamp: a ? stamp : null });
+			},
+			true,
+		);
+		document.addEventListener(
+			'mouseup',
+			(e) => {
+				const a = (e.target as HTMLElement)?.closest?.('a');
+				w.__bug2993.up.push({
+					hasAnchor: !!a,
+					stamp: a ? ((a as unknown as Record<string, unknown>).__b2993 ?? null) : null,
+					sameNodeAsDown: !!a && (a as unknown as Record<string, unknown>).__b2993 != null,
+				});
+			},
+			true,
+		);
+		document.addEventListener(
+			'click',
+			(e) => {
+				const a = (e.target as HTMLElement)?.closest?.('a');
+				// THE EDITABLE HOST (lead's hypothesis). Chromium activates a
+				// link differently inside a contenteditable host — the click is
+				// a caret placement, not a navigation — and it does that with no
+				// event evidence at all: default is not prevented, propagation
+				// is not stopped, and nothing navigates. That is exactly the
+				// shape every other probe here has recorded. It also explains
+				// the two facts the other candidates could not: an injected
+				// control anchor OUTSIDE any editable host opens normally, and a
+				// retry works once an editable/read-only transition has settled
+				// after load.
+				const host = a ? (a.closest('[contenteditable]') as HTMLElement | null) : null;
+				w.__bug2993.capture.push({
+					href: a ? a.getAttribute('href') : null,
+					hasAnchor: !!a,
+					target: a ? a.getAttribute('target') : null,
+					ctrl: (e as MouseEvent).ctrlKey || (e as MouseEvent).metaKey,
+					button: (e as MouseEvent).button,
+					anchorIsContentEditable: a ? a.isContentEditable : null,
+					editableHost: host
+						? {
+								tag: host.tagName,
+								cls: host.getAttribute('class'),
+								attr: host.getAttribute('contenteditable'),
+								live: host.isContentEditable,
+							}
+						: null,
+					designMode: document.designMode,
+					renderStamp: a
+						? ((a as unknown as Record<string, unknown>).__b2993render ?? null)
+						: null,
+				});
+			},
+			true,
+		);
+		document.addEventListener('click', (e) => {
+			const a = (e.target as HTMLElement)?.closest?.('a');
+			w.__bug2993.bubble.push({
+				defaultPrevented: e.defaultPrevented,
+				href: a ? a.getAttribute('href') : null,
+			});
+		});
+		// AND ON WINDOW (round 6). The document-level probe above cannot see a
+		// `preventDefault` called by a listener registered on WINDOW, because
+		// window is the last hop of the bubble path — SvelteKit's client router
+		// listens there. Every "defaultPrevented: false" recorded so far was
+		// therefore an answer about document, not about the event's final
+		// state.
+		w.addEventListener('click', (e: Event) => {
+			const a = (e.target as HTMLElement)?.closest?.('a');
+			w.__bug2993.window = w.__bug2993.window ?? [];
+			w.__bug2993.window.push({
+				defaultPrevented: e.defaultPrevented,
+				href: a ? a.getAttribute('href') : null,
+			});
+		});
+	});
+}
+
+async function readCtrlClickProbe(page: Page): Promise<string> {
+	try {
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		const v = await page.evaluate(() => (window as any).__bug2993 ?? null);
+		return JSON.stringify(v);
+	} catch (err) {
+		return `probe unreadable: ${String(err)}`;
+	}
+}
+
+/** Ctrl-click that reports WHY no popup arrived instead of timing out blind. */
+async function ctrlClickForPopup(page: Page, target: Locator, label: string) {
+	// ROUND 5 — an A/B, because rounds 1-4 established that the DOM state at the
+	// failing click and at the succeeding retry are INDISTINGUISHABLE (same
+	// href, ctrl, button, same anchor node down and up, defaultPrevented false,
+	// page complete/visible/focused, no navigation events). The difference is
+	// time, so the experiment has to be about time.
+	if (process.env.BUG2993_SETTLE) {
+		await page.waitForTimeout(Number(process.env.BUG2993_SETTLE));
+	}
+	await armCtrlClickProbe(page);
+	// RENDER-TIME STAMP. The mousedown/mouseup stamp only proves the node
+	// survived the PRESS. This one is applied while the test still believes the
+	// row is settled, so a failing click can say whether it landed on the same
+	// object the assertions were made against.
+	await target.evaluate((el) => {
+		(el as unknown as Record<string, unknown>).__b2993render = Date.now();
+	});
+	const hrefBefore = await target.getAttribute('href');
+	// Round 3 of the falsifier. Node identity and interception are both REFUTED
+	// — same anchor at mousedown and mouseup, `defaultPrevented` false, a real
+	// href — so the remaining question is what the BROWSER was doing when the
+	// activation arrived. A main-frame navigation still committing is the
+	// timing-shaped candidate that fits a one-in-three failure.
+	const nav: string[] = [];
+	const onFrameNav = (f: { url: () => string }) => nav.push(`framenavigated ${f.url()}`);
+	const onPopup = () => nav.push('popup event');
+	page.on('framenavigated', onFrameNav);
+	page.on('popup', onPopup);
+	const stateAtClick = await page.evaluate(() => ({
+		readyState: document.readyState,
+		visibility: document.visibilityState,
+		hasFocus: document.hasFocus(),
+		url: location.href,
+	}));
+	const popupPromise = page
+		.context()
+		.waitForEvent('page', { timeout: 20_000 })
+		.catch(() => null);
+	await target.click({ modifiers: ['ControlOrMeta'] });
+	let popup = await popupPromise;
+	// ROUND 4. Everything a link activation needs was present and Chromium did
+	// nothing: complete/visible/focused page, a real href, ctrl+button 0, the
+	// SAME anchor node at mousedown and mouseup, `defaultPrevented` false, and
+	// not one navigation event. So the question is no longer "what blocked the
+	// click" but "is this a window that PASSES" — a retry answers that and
+	// nothing passive can.
+	const retries: string[] = [];
+	if (!popup) {
+		// A CONTROL ANCHOR, injected at the moment of failure (round 6). Every
+		// probe so far describes the APP's anchor; none of them can tell "this
+		// app element is not activating" from "no link in this tab is
+		// activating right now". A bare <a href> the app has never touched,
+		// ctrl-clicked in the same window, separates those.
+		const controlResult = await (async () => {
+			// INSIDE THE PANE this time, beside the anchor that failed, rather
+			// than on <body>. An outside control already opened; if an inside
+			// one ALSO opens, the pane subtree is exonerated and the difference
+			// is the anchor itself.
+			await page.evaluate(() => {
+				const a = document.createElement('a');
+				a.id = 'bug2993-control';
+				a.href = '/';
+				a.textContent = 'control';
+				a.style.cssText =
+					'position:fixed;top:0;left:0;z-index:2147483647;background:#fff;padding:8px';
+				(document.querySelector('.item-pane') ?? document.body).appendChild(a);
+			});
+			const controlPopup = page
+				.context()
+				.waitForEvent('page', { timeout: 6_000 })
+				.catch(() => null);
+			await page.locator('#bug2993-control').click({ modifiers: ['ControlOrMeta'] });
+			const got = await controlPopup;
+			if (got) await got.close();
+			await page.evaluate(() => document.getElementById('bug2993-control')?.remove());
+			return got ? 'CONTROL ANCHOR OPENED' : 'control anchor ALSO produced nothing';
+		})().catch((err) => `control probe failed: ${String(err)}`);
+		retries.push(controlResult);
+	}
+	for (let attempt = 1; attempt <= 2 && !popup; attempt++) {
+		await page.waitForTimeout(750);
+		const again = page
+			.context()
+			.waitForEvent('page', { timeout: 8_000 })
+			.catch(() => null);
+		await target.click({ modifiers: ['ControlOrMeta'] });
+		popup = await again;
+		retries.push(`attempt ${attempt}: ${popup ? 'POPUP' : 'still nothing'}`);
+	}
+	page.off('framenavigated', onFrameNav);
+	page.off('popup', onPopup);
+	if (popup && retries.length) {
+		// Not a pass. A retry that works says the first click landed in a window
+		// where activation was suppressed, which is the finding — so fail
+		// LOUDLY with it rather than swallowing it as a flake.
+		throw new Error(
+			`BUG-2993 FALSIFIER [${label}]: first ctrl-click produced no popup, a RETRY did.\n` +
+				`  retries: ${JSON.stringify(retries)}\n` +
+				`  state at first click: ${JSON.stringify(stateAtClick)}\n` +
+				`  probe: ${await readCtrlClickProbe(page)}`,
+		);
+	}
+	if (!popup) {
+		const hrefAfter = await target.getAttribute('href').catch(() => '<detached>');
+		throw new Error(
+			`BUG-2993 FALSIFIER [${label}]: no page event after ctrl-click.\n` +
+				`  href before click: ${JSON.stringify(hrefBefore)}\n` +
+				`  href after click:  ${JSON.stringify(hrefAfter)}\n` +
+				`  pages in context:  ${page.context().pages().length}\n` +
+				`  state at click:    ${JSON.stringify(stateAtClick)}\n` +
+				`  nav events:        ${JSON.stringify(nav)}\n` +
+				`  retries:           ${JSON.stringify(retries)}\n` +
+				`  url now:           ${page.url()}\n` +
+				`  probe:             ${await readCtrlClickProbe(page)}`,
+		);
+	}
+	return popup;
+}
+
 test.describe('content-link anchor interception (PLAN-2154 / TASK-2159)', () => {
 	test.beforeEach(({}, testInfo) => {
 		test.skip(
@@ -182,10 +419,7 @@ test.describe('content-link anchor interception (PLAN-2154 / TASK-2159)', () => 
 		// The pane retarget reset the tab to Details — re-activate Relationships.
 		await pane.getByRole('tab', { name: 'Relationships' }).click();
 		await expect(childRow).toBeVisible();
-		const [popup] = await Promise.all([
-			page.context().waitForEvent('page'),
-			childRow.click({ modifiers: ['ControlOrMeta'] }),
-		]);
+		const popup = await ctrlClickForPopup(page, childRow, 'children-row');
 		await waitForItemPopup(popup, child.slug);
 		await popup.close();
 		expect(openItemParam(page)).toBe(new URL(paneUrlAtParent).searchParams.get('item'));
@@ -226,10 +460,7 @@ test.describe('content-link anchor interception (PLAN-2154 / TASK-2159)', () => 
 		// The pane retarget reset the tab to Details — re-activate Relationships.
 		await pane.getByRole('tab', { name: 'Relationships' }).click();
 		await expect(relLink).toBeVisible();
-		const [popup] = await Promise.all([
-			page.context().waitForEvent('page'),
-			relLink.click({ modifiers: ['ControlOrMeta'] }),
-		]);
+		const popup = await ctrlClickForPopup(page, relLink, 'relationships-link');
 		await waitForItemPopup(popup, bRef);
 		await popup.close();
 		expect(openItemParam(page)).toBe(new URL(paneUrlAtA).searchParams.get('item'));
@@ -305,10 +536,7 @@ test.describe('content-link anchor interception (PLAN-2154 / TASK-2159)', () => 
 		// same-item guard, dropping the click entirely).
 		const openBtn = drawer.locator('.controls .open-btn', { hasText: 'Open' });
 		await expect(openBtn).toBeVisible();
-		const [popup] = await Promise.all([
-			page.context().waitForEvent('page'),
-			openBtn.click({ modifiers: ['ControlOrMeta'] }),
-		]);
+		const popup = await ctrlClickForPopup(page, openBtn, 'graph-open-btn');
 		await waitForItemPopup(popup, parentRef);
 		await popup.close();
 		// The pane itself never navigated away.
