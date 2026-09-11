@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
 import type { Collection, Item, ItemIndexRow } from '$lib/types';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 /**
  * TASK-2998, codex round 4 — the LIST half of relation grouping.
@@ -152,5 +154,29 @@ describe('ListView grouped by a relation field', () => {
 		);
 		expect(groups(screen)).toContainEqual({ ref: null, note: null, name: 'Open' });
 		expect(screen.container.querySelector('[title="Click to cycle status"]')).not.toBeNull();
+	});
+});
+
+describe('group reorder under relation grouping', () => {
+	/** ListView's source with comments stripped. */
+	const SRC = readFileSync(resolve(__dirname, './ListView.svelte'), 'utf8').replace(
+		/^[ \t]*\/\/.*$/gm,
+		'',
+	);
+
+	it('does not call onGroupReorder for a relation group', () => {
+		// A source guard: the handler is reached through svelte-dnd-action's
+		// group zone, and driving that tests the drag library. WHAT IT CANNOT
+		// DO: it checks spellings, not behaviour.
+		//
+		// The order is alphabetical by target title, not schema-held, so there
+		// is nowhere to persist it — and what the page WOULD persist is item
+		// ids into the schema's `options`. The page refuses that write at its
+		// own end; this stops the gesture from appearing to work.
+		const start = SRC.indexOf('function handleGroupFinalize(');
+		expect(start, 'handleGroupFinalize was renamed').toBeGreaterThan(-1);
+		const body = SRC.slice(start, SRC.indexOf('\n\t}', start));
+		expect(body).toContain('!isRelationGroup');
+		expect(body.indexOf('!isRelationGroup')).toBeLessThan(body.indexOf('onGroupReorder('));
 	});
 });

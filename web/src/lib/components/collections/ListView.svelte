@@ -194,7 +194,14 @@
 	function handleGroupFinalize(e: CustomEvent<DndEvent<GroupItem>>) {
 		groupItems = e.detail.items;
 		isDraggingGroup = false;
-		if (onGroupReorder) {
+		// NO GROUP REORDER UNDER RELATION GROUPING (TASK-2998). The order is
+		// alphabetical by target title, not schema-held, so there is nowhere to
+		// persist it — and what `handleGroupReorder` WOULD persist is the lane
+		// values, which for a relation are item ids going into the schema's
+		// `options`. The page refuses that write at its own end; this stops the
+		// gesture from looking like it worked and then snapping back on the
+		// next derivation.
+		if (onGroupReorder && !isRelationGroup) {
 			const newOrder = groupItems
 				.filter((g: any) => !g[SHADOW_ITEM_MARKER_PROPERTY_NAME])
 				.map((g) => g.id);
