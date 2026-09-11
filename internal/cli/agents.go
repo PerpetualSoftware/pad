@@ -91,11 +91,14 @@ const agentsSkillBody = `# Pad — Talk to Your Project
 Use Pad when the user discusses project work: issues, tasks, plans, ideas,
 progress, dependencies, conventions, roles, standups, or retrospectives.
 
-## Start every invocation
+## Load context once per conversation
 
-Run ` + "`pad bootstrap --format json`" + ` before acting. It returns the workspace,
-user, collections and schemas, always-on conventions, convention index, roles,
-playbooks, dashboard, and recent activity in one call.
+Before the first Pad action in a conversation, run ` + "`pad bootstrap --format json`" + `.
+Reuse that context for later Pad turns in the same workspace. Refresh it only
+after switching workspaces, after changing collections/conventions/roles/playbooks,
+when Pad reports stale schema/context, or when the user asks for a refresh. Use a
+targeted item or dashboard read for changing work state; do not rerun bootstrap
+just because the skill was invoked again.
 
 - If ` + "`pad`" + ` is missing, ask the user to install it or add it to PATH.
 - If bootstrap fails, run ` + "`pad agent guide context-loading`" + ` and follow that
