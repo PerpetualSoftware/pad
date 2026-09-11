@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -297,6 +298,40 @@ func TestInstaller_Install_RoundTripWithTempHome(t *testing.T) {
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Errorf("expected config file written at %s, got: %v", path, err)
+	}
+}
+
+func TestInstaller_StructuredOnlyConfiguresCursorAndCodex(t *testing.T) {
+	for _, agent := range []string{"cursor", "codex"} {
+		t.Run(agent, func(t *testing.T) {
+			tmpHome := t.TempDir()
+			inst := &Installer{
+				Binary:         "/usr/local/bin/pad",
+				Home:           tmpHome,
+				GOOS:           "linux",
+				StructuredOnly: true,
+			}
+			path, modified, err := inst.Install(agent)
+			if err != nil {
+				t.Fatalf("Install: %v", err)
+			}
+			if !modified {
+				t.Fatal("fresh install should modify config")
+			}
+
+			var args []any
+			if agent == "codex" {
+				cfg := readTOML(t, path)
+				args = cfg[codexServersKey].(map[string]any)[MCPServerKey].(map[string]any)["args"].([]any)
+			} else {
+				cfg := readConfig(t, path)
+				args = cfg["mcpServers"].(map[string]any)[MCPServerKey].(map[string]any)["args"].([]any)
+			}
+			want := []any{"mcp", "serve", "--structured-only"}
+			if !reflect.DeepEqual(args, want) {
+				t.Errorf("args = %#v, want %#v", args, want)
+			}
+		})
 	}
 }
 

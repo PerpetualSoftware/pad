@@ -47,6 +47,7 @@ See https://getpad.dev/mcp/local for client configuration.`,
 // for every supported agent (creating config dirs as needed).
 func mcpInstallCmd() *cobra.Command {
 	var allFlag bool
+	var structuredOnly bool
 	cmd := &cobra.Command{
 		Use:   "install [agent]",
 		Short: "Install pad as an MCP server for a client app",
@@ -88,7 +89,7 @@ are preserved — only the "pad" entry is touched.`,
 			if err != nil || binary == "" {
 				binary = os.Args[0]
 			}
-			inst := &mcpserver.Installer{Binary: binary}
+			inst := &mcpserver.Installer{Binary: binary, StructuredOnly: structuredOnly}
 			switch {
 			case allFlag:
 				return runMCPInstallAll(cmd, inst)
@@ -100,6 +101,7 @@ are preserved — only the "pad" entry is touched.`,
 		},
 	}
 	cmd.Flags().BoolVar(&allFlag, "all", false, "install for every supported agent")
+	cmd.Flags().BoolVar(&structuredOnly, "structured-only", false, "omit duplicate structured-result JSON text")
 	return cmd
 }
 
@@ -186,7 +188,11 @@ func runMCPInstallOne(cmd *cobra.Command, inst *mcpserver.Installer, agent strin
 	}
 	w := cmd.OutOrStdout()
 	if modified {
-		fmt.Fprintf(w, "Installed pad MCP entry for %s\n  config: %s\n  command: %s mcp serve\n", agent, path, inst.Binary)
+		serveArgs := "mcp serve"
+		if inst.StructuredOnly {
+			serveArgs += " --structured-only"
+		}
+		fmt.Fprintf(w, "Installed pad MCP entry for %s\n  config: %s\n  command: %s %s\n", agent, path, inst.Binary, serveArgs)
 		fmt.Fprintln(w, "  → Restart the client to pick up the new server entry.")
 	} else {
 		fmt.Fprintf(w, "%s already up to date\n  config: %s\n", agent, path)
@@ -225,6 +231,7 @@ func runMCPInstallAll(cmd *cobra.Command, inst *mcpserver.Installer) error {
 // drive them directly.
 func mcpServeCmd() *cobra.Command {
 	var debug bool
+	var structuredOnly bool
 	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Run the MCP server over stdio",
@@ -321,6 +328,7 @@ Shuts down cleanly on EOF, SIGINT, or SIGTERM.`,
 				RootFlags:        rootFlags,
 				PadVersion:       fullVersion(),
 				BootstrapFetcher: bootstrapFetcher,
+				StructuredOnly:   structuredOnly,
 			}); err != nil {
 				return fmt.Errorf("pad mcp serve: register tools: %w", err)
 			}
@@ -354,5 +362,6 @@ Shuts down cleanly on EOF, SIGINT, or SIGTERM.`,
 		},
 	}
 	cmd.Flags().BoolVar(&debug, "debug", false, "verbose logging on stderr (development)")
+	cmd.Flags().BoolVar(&structuredOnly, "structured-only", false, "omit duplicate structured-result JSON text")
 	return cmd
 }

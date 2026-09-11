@@ -54,6 +54,10 @@ type RegistryOptions struct {
 	// fetch the blob separately via pad_meta.action=bootstrap or
 	// pad://workspace/{ws}/bootstrap. PLAN-1377 / TASK-1380.
 	BootstrapFetcher BootstrapFetcher
+
+	// StructuredOnly removes text copies of successful structured tool
+	// results. It is opt-in for clients that consume structuredContent.
+	StructuredOnly bool
 }
 
 // Register installs pad's MCP tools on srv: the built-in
@@ -80,11 +84,12 @@ func Register(srv *server.MCPServer, opts RegistryOptions) (int, error) {
 	count := 1 // pad_set_workspace
 
 	catalogCount, err := RegisterCatalog(srv, CatalogOptions{
-		Doc:        opts.Doc,
-		Workspace:  opts.Workspace,
-		Dispatcher: opts.Dispatcher,
-		RootFlags:  opts.RootFlags,
-		PadVersion: opts.PadVersion,
+		Doc:            opts.Doc,
+		Workspace:      opts.Workspace,
+		Dispatcher:     opts.Dispatcher,
+		RootFlags:      opts.RootFlags,
+		PadVersion:     opts.PadVersion,
+		StructuredOnly: opts.StructuredOnly,
 	})
 	if err != nil {
 		return 0, fmt.Errorf("register catalog: %w", err)
