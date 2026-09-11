@@ -235,7 +235,12 @@ func TestAutoCreateWorkspace_UnreadableMembershipKeepsTheWorkspace(t *testing.T)
 	if !strings.Contains(logged, "KEEPING the workspace because its state is unknown") {
 		t.Errorf("the unreadable-state arm did not run; some other arm kept the workspace. log: %s", logged)
 	}
-	if strings.Contains(logged, "reconciled to success") {
+	// The arm's OWN phrase, not the bare "reconciled to success" a first draft
+	// used: that substring is also emitted by the collab restore reconcile
+	// (internal/collab/manager.go), so it could only ever produce a false FAILURE
+	// here, but a negative assertion keyed on a string another subsystem owns is
+	// fragile for no benefit (codex round 3).
+	if strings.Contains(logged, "the owner row is present") {
 		t.Errorf("an unreadable membership state was reported as success. log: %s", logged)
 	}
 }
@@ -332,7 +337,9 @@ func TestAutoCreateWorkspace_WrongRoleMembershipKeepsTheWorkspace(t *testing.T) 
 	if !strings.Contains(logged, "carries a "+"different role") {
 		t.Errorf("the wrong-role arm did not run. log: %s", logged)
 	}
-	if strings.Contains(logged, "reconciled to success") {
+	// This arm's own phrase rather than the bare "reconciled to success", which
+	// the collab restore reconcile also emits (codex round 3).
+	if strings.Contains(logged, "the owner row is present") {
 		t.Errorf("a non-owner membership row was reported as success; the user cannot administer their "+
 			"own auto-created workspace. log: %s", logged)
 	}
