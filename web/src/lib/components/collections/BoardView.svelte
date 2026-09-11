@@ -449,7 +449,18 @@
 				// effect is gated on the cooldown rather than owning the
 				// restore. Assigning here rather than releasing a cooldown
 				// nobody set is the same repair without the two-second window.
-				columnData = propColumnData;
+				//
+				// COPIED, not aliased (codex round 6). The sync effect assigns
+				// the derived VALUE into `columnData`, so the two share object
+				// identity — and `moveItem` mutates `columnData[col]` in place
+				// before calling this. On the menu path that mutation had
+				// already written THROUGH to `propColumnData`'s cached object,
+				// so assigning it back restored nothing and the card stayed in
+				// the lane the drop had just been refused. The drag path
+				// escaped because svelte-dnd-action hands over fresh arrays.
+				columnData = Object.fromEntries(
+					Object.entries(propColumnData).map(([key, list]) => [key, [...list]]),
+				);
 				return;
 			}
 		}
@@ -457,7 +468,14 @@
 
 		let moveSucceeded = true;
 		const fields = parseFields(item);
-		if (fields[groupField] !== targetColumn) {
+		// TRIMMED for a relation, as the list already was (codex round 6). A
+		// legacy value of `" id-red "` is ALREADY in the `id-red` lane, and a
+		// raw `!==` fired a pointless write for it — the same asymmetry between
+		// these two views, in the other direction this time.
+		const currentValue = isRelationGroup
+			? relationLaneValueFor(item, groupField, resolveRelation)
+			: fields[groupField];
+		if (currentValue !== targetColumn) {
 			try {
 				await onStatusChange(item, targetColumn);
 			} catch {

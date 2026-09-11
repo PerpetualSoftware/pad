@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
+import { tick } from 'svelte';
 import type { Collection, Item, ItemIndexRow } from '$lib/types';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -328,10 +329,15 @@ describe('the drop gate on a relation lane', () => {
 		const start = SRC.indexOf('async function commitColumnMove(');
 		const body = SRC.slice(start, SRC.indexOf('\n\t}', start));
 		const gate = body.indexOf('relationLaneAcceptsDrop');
-		const restore = body.indexOf('columnData = propColumnData');
+		// Matched as "reassigns columnData from propColumnData", not as one exact
+		// spelling: the restore became a COPY in round 6 (the two aliased, so
+		// assigning the derived back restored nothing), and a guard pinned to
+		// the old literal failed the fix rather than the defect.
+		const restore = body.indexOf('columnData =');
 		expect(restore, 'the refused drop is not reverted').toBeGreaterThan(-1);
 		expect(restore).toBeGreaterThan(gate);
 		expect(restore).toBeLessThan(body.indexOf('onStatusChange('));
+		expect(body.slice(restore, body.indexOf('onStatusChange('))).toContain('propColumnData');
 	});
 
 	it('consults relationLaneAcceptsDrop BEFORE calling onStatusChange', () => {
@@ -347,9 +353,21 @@ describe('the drop gate on a relation lane', () => {
 	});
 
 	it('gates on isRelationGroup, so an ordinary board is untouched', () => {
+		// THE EIGHTH WRONG-REASON TEST (codex round 6). It asserted only that
+		// the source CONTAINS `if (isRelationGroup)` — a mutant leaving that
+		// block empty and calling `onStatusChange` unconditionally would pass.
+		// It now requires the refusal to live INSIDE that block, ahead of the
+		// write.
 		const start = SRC.indexOf('async function commitColumnMove(');
 		const body = SRC.slice(start, SRC.indexOf('\n\t}', start));
-		expect(body).toContain('if (isRelationGroup)');
+		const gate = body.indexOf('if (isRelationGroup)');
+		const refuse = body.indexOf('relationLaneAcceptsDrop');
+		const write = body.indexOf('onStatusChange(');
+		expect(gate).toBeGreaterThan(-1);
+		expect(refuse).toBeGreaterThan(gate);
+		expect(refuse).toBeLessThan(write);
+		// and the block returns rather than falling through
+		expect(body.slice(gate, write)).toContain('return;');
 	});
 });
 
@@ -385,5 +403,71 @@ describe('a relation field with no declared target collection', () => {
 		const start = SRC.indexOf('onAddItem={onCreateInColumn');
 		expect(start, 'the lane menu no longer passes onAddItem').toBeGreaterThan(-1);
 		expect(SRC.slice(start, start + 160)).toContain('!isRelationGroup');
+	});
+});
+
+describe('the MENU move into a refused relation lane', () => {
+	/**
+	 * codex round 6, P2 — and the reason this leg is rendered rather than
+	 * source-guarded like its drag sibling.
+	 *
+	 * `moveItem` mutates `columnData[col]` in place before committing, and the
+	 * sync effect assigns the DERIVED VALUE into `columnData`, so the two share
+	 * object identity: the mutation wrote THROUGH to `propColumnData`'s cached
+	 * object, and restoring by assigning it back restored nothing. The drag
+	 * path escaped because svelte-dnd-action hands over fresh arrays.
+	 *
+	 * No source guard could have seen that — the restore line was present and
+	 * correct-looking the whole time. It took driving the menu.
+	 */
+	const cardsIn = (screen: { container: HTMLElement }, laneName: string) => {
+		for (const col of screen.container.querySelectorAll('.kanban-column')) {
+			const name = (col.querySelector('.column-name')?.textContent ?? '').replace(/\s+/g, '');
+			if (name === laneName) return [...col.querySelectorAll('.card-title')].map((e) => e.textContent?.trim());
+		}
+		return null;
+	};
+
+	it('leaves the card where it was', async () => {
+		const onStatusChange = vi.fn();
+		const screen = render(BoardView, {
+			props: {
+				items: [item('car-1', 'id-red'), item('car-2', 'id-gone')],
+				collection: collection(),
+				wsSlug: 'ws',
+				groupField: 'car_color',
+				onStatusChange,
+				onReorder: vi.fn(),
+			} as never,
+		});
+
+		// PRECONDITION: two lanes, each holding its own card, and the deleted
+		// lane is to the RIGHT of the live one (lanes sort live-then-deleted).
+		expect(cardsIn(screen, 'COLOR-1Red')).toEqual(['car-1']);
+		expect(cardsIn(screen, 'COLOR-9Gone(deleted)')).toEqual(['car-2']);
+
+		// Open car-1's action menu and move it right, into the deleted lane.
+		// The card's own ⋮ (ItemActionsMenu), not the lane's ⋯ — and the menu may
+		// render into <body>, so the search below is document-wide.
+		const cardMenuButtons = [...screen.container.querySelectorAll('.item-card button')].filter(
+			(b) => (b.textContent ?? '').trim() === '⋮',
+		) as HTMLButtonElement[];
+		expect(cardMenuButtons.length, 'no card action menu trigger — re-point this test').toBeGreaterThan(0);
+		cardMenuButtons[0].click();
+		await tick();
+		await tick();
+
+		const moveRight = [...document.querySelectorAll('button')].find((b) =>
+			(b.textContent ?? '').includes('Move right'),
+		);
+		expect(moveRight, '"Move right" was not offered — re-point this test').toBeTruthy();
+		moveRight!.click();
+		await tick();
+		await tick();
+
+		// The write was refused AND the board did not keep the card there.
+		expect(onStatusChange).not.toHaveBeenCalled();
+		expect(cardsIn(screen, 'COLOR-1Red')).toEqual(['car-1']);
+		expect(cardsIn(screen, 'COLOR-9Gone(deleted)')).toEqual(['car-2']);
 	});
 });
