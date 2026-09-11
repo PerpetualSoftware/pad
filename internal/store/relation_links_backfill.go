@@ -145,10 +145,26 @@ func (s *Store) BackfillRelationLinks() (*BackfillRelationLinksResult, error) {
 		// hook in between — writing the snapshot would then overwrite a
 		// current index with a stale blob, making the backfill a source of the
 		// corruption it exists to repair (codex round 2).
+		// LOCKED, not just re-read. The re-read alone closes the gap between
+		// the SCAN and this transaction — it does not close the gap between
+		// this read and the replacement below, and codex round 3 was right
+		// that my earlier claim to the contrary was false. Under Postgres READ
+		// COMMITTED the interleaving is: this reads the old blob, a concurrent
+		// item update commits the new blob AND its correct index rows, then
+		// this deletes and reinserts from the old value and commits last —
+		// leaving stale rows behind, and then marking the pass complete.
+		//
+		// FOR UPDATE makes the item row the serialisation point, so a
+		// concurrent writer waits for this item's transaction rather than
+		// interleaving with it. SQLite does not need it (its write lock
+		// already serialises) and does not support it here, hence the dialect
+		// gate — the same shape UpdateCollection uses for its own re-read.
+		lockedRead := `SELECT fields, collection_id FROM items WHERE id = ? AND deleted_at IS NULL`
+		if s.dialect.Driver() == DriverPostgres {
+			lockedRead += " FOR UPDATE"
+		}
 		var fields, collectionID string
-		if err := tx.QueryRow(s.q(`
-			SELECT fields, collection_id FROM items WHERE id = ? AND deleted_at IS NULL
-		`), it.id).Scan(&fields, &collectionID); err != nil {
+		if err := tx.QueryRow(s.q(lockedRead), it.id).Scan(&fields, &collectionID); err != nil {
 			tx.Rollback() //nolint:errcheck // the item vanished or errored; either way skip it
 			if errors.Is(err, sql.ErrNoRows) {
 				continue

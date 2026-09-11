@@ -601,7 +601,14 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 	// a correctness one: an icon or description edit changes nothing the index
 	// depends on, and reindexing a 10k-item collection for it would put ~1.8s
 	// on an update that has no business paying it.
-	reindexRelations := input.Schema != nil || len(input.Migrations) > 0
+	// CHANGE-SENSITIVE, not merely "a schema pointer was supplied". A client
+	// that round-trips the collection and submits identical schema bytes would
+	// otherwise pay the whole-collection reindex for a no-op, which is the
+	// same cost the icon-edit gate above exists to avoid — and my first
+	// version of this line claimed to test movement while only testing
+	// presence (codex round 3).
+	schemaMoved := input.Schema != nil && *input.Schema != existing.Schema
+	reindexRelations := schemaMoved || len(input.Migrations) > 0
 	if len(input.Migrations) > 0 || renaming || reindexRelations {
 		if err := s.acquireWorkspaceSeqLock(tx, existing.WorkspaceID); err != nil {
 			return nil, err
