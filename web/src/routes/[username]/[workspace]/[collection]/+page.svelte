@@ -1790,6 +1790,17 @@
 		const s = parseSchema(base);
 		const idx = s.fields.findIndex((f) => f.key === groupField);
 		if (idx === -1) return;
+		// NEVER WRITE LANE ORDER BACK FOR A RELATION FIELD (TASK-2998).
+		//
+		// `newOrder` is the board's lane values, and for a relation those are
+		// ITEM IDS — writing them here would persist uuids into the schema as
+		// `options`, which is both meaningless and hard to undo by hand.
+		//
+		// BoardView already withholds column dragging on a relation board, so
+		// nothing should reach this; the guard is here because this is the
+		// DESTRUCTIVE end, and a guard at the affordance protects only the
+		// affordances somebody remembered.
+		if (s.fields[idx].type === 'relation') return;
 		s.fields[idx].options = newOrder;
 		const schemaStr = JSON.stringify(s);
 
