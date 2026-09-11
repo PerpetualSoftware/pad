@@ -6,9 +6,9 @@ import (
 	"testing"
 )
 
-// This initially records the existing shared Cursor/Codex payload with modest
-// headroom. Later prompt-reduction changes should lower this budget, not spend it.
-const agentSkillPromptBudget = 40 * 1024
+// The compact dispatcher should stay small enough to load eagerly. Detailed
+// reference material belongs behind `pad agent guide`, not in this payload.
+const agentSkillPromptBudget = 5 * 1024
 
 func TestAgentSkillPromptBudget(t *testing.T) {
 	skill, err := os.ReadFile(filepath.Join("..", "..", "skills", "pad", "SKILL.md"))
@@ -26,6 +26,11 @@ func TestAgentSkillPromptBudget(t *testing.T) {
 			t.Logf("%s installed skill payload: %d bytes (budget %d)", agent, len(payload), agentSkillPromptBudget)
 			if len(payload) > agentSkillPromptBudget {
 				t.Fatalf("%s installed skill payload is %d bytes; budget is %d", agent, len(payload), agentSkillPromptBudget)
+			}
+			for _, required := range []string{"pad bootstrap", "issue IDs", "convention_index", "pad agent guide"} {
+				if !contains(string(payload), required) {
+					t.Errorf("%s installed skill is missing core guidance %q", agent, required)
+				}
 			}
 		})
 	}
