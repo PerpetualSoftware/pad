@@ -1,8 +1,11 @@
 package server
 
 import (
+	"bytes"
 	"database/sql"
 	"errors"
+	"log/slog"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -82,6 +85,11 @@ func assertAckLossKeepsTheWorkspace(t *testing.T, srv *Server) {
 		t.Fatalf("ListWorkspaces before: %v", err)
 	}
 
+	var logBuf bytes.Buffer
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+
 	// Fail the FIRST commit only, and commit it for real first: the membership row
 	// is durable and the caller is told it is not. The retry then hits the primary
 	// key on its own, with no help from the seam — which is the mechanism under
@@ -101,8 +109,21 @@ func assertAckLossKeepsTheWorkspace(t *testing.T, srv *Server) {
 
 	srv.autoCreateWorkspace(user)
 
-	if atomic.LoadInt32(&commits) == 0 {
-		t.Fatal("the commit seam never fired; autoCreateWorkspace did not reach the member add")
+	// EXACTLY ONE commit — and the one is the mechanism, not an accident. The retry
+	// does run, but its INSERT dies on PRIMARY KEY (workspace_id, user_id) before it
+	// ever reaches tx.Commit, BECAUSE the first attempt's row is already on disk.
+	// So a commit count of 1 here is positive evidence that the first write landed.
+	//
+	// (Measured, after a first draft asserted 2 on the assumption that a retry
+	// reaches COMMIT — codex round 1 P3 asked for the retry to be pinned, and the
+	// obvious way to pin it encodes a mechanism that does not hold.) The retry's
+	// existence is pinned by its log line below instead.
+	if n := atomic.LoadInt32(&commits); n != 1 {
+		t.Fatalf("the member add reached COMMIT %d time(s), want 1: the retry must die on the primary key "+
+			"the first attempt's committed row created", n)
+	}
+	if logged := logBuf.String(); !strings.Contains(logged, "add owner member failed, retrying") {
+		t.Errorf("the retry did not run; without it this test does not describe the reported path. log: %s", logged)
 	}
 
 	after, err := srv.store.ListWorkspaces()
@@ -114,21 +135,39 @@ func assertAckLossKeepsTheWorkspace(t *testing.T, srv *Server) {
 			"the owner-membership row had committed", len(before), len(after))
 	}
 
-	// ANTI-VACUITY CONTROL. The whole test is meaningless unless the first commit
-	// genuinely landed, so assert the row is really there. Without this the test
-	// would also pass against a seam that merely failed the insert — the case the
-	// ghost-user test already covers and which was never broken.
 	// (ListWorkspaces filters deleted_at IS NULL, so the COUNT above IS the
 	// not-deleted assertion; a separate DeletedAt check on a returned row would be
 	// vacuous by construction.)
-	ws := after[len(after)-1]
-	member, cerr := srv.store.IsWorkspaceMember(ws.ID, user.ID)
-	if cerr != nil {
-		t.Fatalf("IsWorkspaceMember: %v", cerr)
+	//
+	// Found BY OWNER, not by position: ListWorkspaces is ORDER BY name ASC, so
+	// after[len(after)-1] is only this workspace by accident of today's empty
+	// fixture (codex round 1).
+	var ws *models.Workspace
+	for i := range after {
+		if after[i].OwnerID == user.ID {
+			ws = &after[i]
+			break
+		}
 	}
-	if !member {
+	if ws == nil {
+		t.Fatal("no workspace owned by the new user; autoCreateWorkspace did not create one")
+	}
+
+	// ANTI-VACUITY CONTROL. The test is meaningless unless the first commit
+	// genuinely landed, so assert the row is really there AND carries the role the
+	// write attempted. Without this the test would also pass against a seam that
+	// merely failed the insert — the case the ghost-user FK test already covers and
+	// which was never broken.
+	member, cerr := srv.store.GetWorkspaceMember(ws.ID, user.ID)
+	if cerr != nil {
+		t.Fatalf("GetWorkspaceMember: %v", cerr)
+	}
+	if member == nil {
 		t.Fatal("the owner-membership row is absent, so the first commit did not land and this test " +
 			"measured the ordinary insert-failure path instead of an ack loss")
+	}
+	if member.Role != "owner" {
+		t.Fatalf("membership role = %q, want owner", member.Role)
 	}
 }
 
@@ -158,9 +197,9 @@ func TestAutoCreateWorkspace_UnreadableMembershipKeepsTheWorkspace(t *testing.T)
 	t.Cleanup(restore)
 
 	var checks int32
-	srv.membershipCheck = func(string, string) (bool, error) {
+	srv.membershipCheck = func(string, string) (*models.WorkspaceMember, error) {
 		atomic.AddInt32(&checks, 1)
-		return false, errors.New("simulated membership read failure")
+		return nil, errors.New("simulated membership read failure")
 	}
 	t.Cleanup(func() { srv.membershipCheck = nil })
 
@@ -207,5 +246,53 @@ func TestAutoCreateWorkspaceReconcileArmsAreDistinguishable(t *testing.T) {
 	if len(after) != len(before) {
 		t.Errorf("workspace count %d -> %d, want unchanged: a genuinely absent membership leaves the "+
 			"workspace unreachable, so the cleanup must still delete it", len(before), len(after))
+	}
+}
+
+// TestAutoCreateWorkspace_WrongRoleMembershipKeepsTheWorkspace pins the fourth arm.
+//
+// It exists because the first version of this reconcile asked the wrong question
+// (codex round 1 P2): it used an EXISTENCE check, so a row carrying any role at all
+// reconciled to success. What was attempted was an OWNER row, so a row with another
+// role means the write did NOT land — and the user cannot administer their own
+// auto-created workspace, since owner > editor > viewer.
+//
+// Neither success nor deletion is honest there, so the workspace is kept and the
+// failure is logged loudly. Collapsing this arm back into the LANDED one restores a
+// silent success, and nothing else in the suite would notice.
+func TestAutoCreateWorkspace_WrongRoleMembershipKeepsTheWorkspace(t *testing.T) {
+	srv := ackLossCloudServer(t, store.DriverSQLite)
+	user := realUser(t, srv, "wrongrole@example.com")
+
+	before, err := srv.store.ListWorkspaces()
+	if err != nil {
+		t.Fatalf("ListWorkspaces before: %v", err)
+	}
+
+	restore := srv.store.SetAddWorkspaceMemberCommitHookForTesting(func(tx *sql.Tx) error {
+		_ = tx.Rollback()
+		return errSimMemberAckLoss
+	})
+	t.Cleanup(restore)
+
+	var checks int32
+	srv.membershipCheck = func(workspaceID, userID string) (*models.WorkspaceMember, error) {
+		atomic.AddInt32(&checks, 1)
+		return &models.WorkspaceMember{WorkspaceID: workspaceID, UserID: userID, Role: "viewer"}, nil
+	}
+	t.Cleanup(func() { srv.membershipCheck = nil })
+
+	srv.autoCreateWorkspace(user)
+
+	if atomic.LoadInt32(&checks) == 0 {
+		t.Fatal("the membership check never ran; the reconcile was not reached")
+	}
+	after, err := srv.store.ListWorkspaces()
+	if err != nil {
+		t.Fatalf("ListWorkspaces after: %v", err)
+	}
+	if len(after) != len(before)+1 {
+		t.Errorf("workspace count %d -> %d, want exactly one more: a membership row exists, so somebody "+
+			"has access and the workspace must not be destroyed", len(before), len(after))
 	}
 }

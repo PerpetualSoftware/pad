@@ -353,12 +353,13 @@ type Server struct {
 	// non-nil, autoCreateWorkspace's reconcile calls it instead of
 	// store.IsWorkspaceMember.
 	//
-	// It exists for the UNCERTAIN arm only. A COUNT(*) over two indexed columns has
-	// no natural failure this test could provoke, and that arm is the one carrying
-	// the safety property worth pinning: when the membership state cannot be READ,
-	// the workspace is kept rather than destroyed. Without a test, collapsing the
-	// error case back into "absent" would restore the deletion silently.
-	membershipCheck func(workspaceID, userID string) (bool, error)
+	// It exists for the two arms with no natural trigger: UNREADABLE (a single-row
+	// SELECT over the primary key has no failure this test could provoke) and
+	// WRONG-ROLE. Both carry safety properties a later simplification would drop
+	// silently — collapsing the error case back into "absent" restores the
+	// deletion, and collapsing the role check back into existence restores the
+	// silent-success this reconcile was corrected to avoid.
+	membershipCheck func(workspaceID, userID string) (*models.WorkspaceMember, error)
 
 	// watchPredicatesLoadFault is a TEST SEAM (always nil in production,
 	// TASK-2533). When non-nil, loadWatchPredicates calls it before

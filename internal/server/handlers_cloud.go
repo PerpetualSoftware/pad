@@ -1236,14 +1236,21 @@ func (s *Server) autoCreateWorkspace(user *models.User) {
 			// fails deterministically. Deleting here destroyed the workspace
 			// PRECISELY when the membership write had succeeded.
 			//
-			// Three outcomes, not two:
-			membershipCheck := s.store.IsWorkspaceMember
+			// TWO QUESTIONS, not one, and an earlier draft of this reconcile
+			// conflated them (codex round 1): "did MY write land?" and "is it safe
+			// to destroy this workspace?". Existence answers the second; only the
+			// ROLE answers the first, because what was attempted was an OWNER row.
+			// A row carrying some other role means my write did NOT land, and also
+			// that somebody has access — so neither success nor deletion is honest.
+			// Hence four arms over GetWorkspaceMember's (row, error), not three
+			// over a bool.
+			membershipCheck := s.store.GetWorkspaceMember
 			if s.membershipCheck != nil {
 				membershipCheck = s.membershipCheck
 			}
 			switch member, cerr := membershipCheck(ws.ID, user.ID); {
 			case cerr != nil:
-				// UNCERTAIN — the read itself failed, so we cannot tell a genuine
+				// UNREADABLE — the read itself failed, so we cannot tell a genuine
 				// absence from an ack-lost success. Keep the workspace. An orphan is
 				// recoverable (and three sibling call sites accept one deliberately,
 				// BUG-2715); deleting a live workspace on a state nobody could read
@@ -1253,13 +1260,7 @@ func (s *Server) autoCreateWorkspace(user *models.User) {
 					"workspace_id", ws.ID, "workspace_slug", ws.Slug, "user_id", user.ID,
 					"error", err, "check_error", cerr)
 				return
-			case member:
-				// LANDED despite the reported error. Nothing is wrong with this
-				// workspace; fall through to success.
-				slog.Warn("auto-create workspace: add owner member reported an error but the row is present; "+
-					"reconciled to success",
-					"workspace_id", ws.ID, "workspace_slug", ws.Slug, "user_id", user.ID, "error", err)
-			default:
+			case member == nil:
 				// ABSENT — the original behaviour, now reached only when the row
 				// genuinely is not there and the workspace really is unreachable.
 				slog.Error("auto-create workspace: add owner member failed after retry; deleting orphaned workspace",
@@ -1268,6 +1269,30 @@ func (s *Server) autoCreateWorkspace(user *models.User) {
 					slog.Error("auto-create workspace: failed to clean up orphaned workspace; manual intervention required",
 						"workspace_id", ws.ID, "workspace_slug", ws.Slug, "user_id", user.ID, "error", delErr)
 				}
+				return
+			// The literal matches the AddWorkspaceMember call above and every other
+			// role comparison in this package; there is no shared constant.
+			case member.Role == "owner":
+				// LANDED as owner despite the reported error. Nothing is wrong with
+				// this workspace; fall through to success.
+				slog.Warn("auto-create workspace: add owner member reported an error but the owner row is present; "+
+					"reconciled to success",
+					"workspace_id", ws.ID, "workspace_slug", ws.Slug, "user_id", user.ID, "error", err)
+			default:
+				// PRESENT WITH THE WRONG ROLE. Not a success — the user cannot
+				// administer their own auto-created workspace (owner > editor >
+				// viewer) — and not a deletion either, since somebody does have
+				// access to it. Keep it and say so loudly; this needs a human, and
+				// silently claiming success would hide that.
+				//
+				// Deliberately NOT repaired by writing the role: this path cannot
+				// tell an ack-lost write from another actor's deliberate one, and
+				// escalating a role on that ambiguity is the wrong default for a
+				// permission.
+				slog.Error("auto-create workspace: add owner member failed and the membership row carries a "+
+					"different role; KEEPING the workspace, manual intervention required",
+					"workspace_id", ws.ID, "workspace_slug", ws.Slug, "user_id", user.ID,
+					"found_role", member.Role, "error", err)
 				return
 			}
 		}
