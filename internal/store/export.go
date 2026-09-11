@@ -857,6 +857,22 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 		if err != nil {
 			return nil, fmt.Errorf("remap item %s: %w", it.Title, err)
 		}
+
+		// Index the relation edges (PLAN-2857 U5). HERE and not at the
+		// first-pass INSERT: this pass writes the FINAL blob, with
+		// source-workspace ids already remapped to their new ones, and it
+		// visits every inserted item (the guard above skips only items that
+		// were never inserted). Indexing at the insert would index ids
+		// belonging to the exporting workspace.
+		//
+		// A value the bundle carries that is not an id — a title, say — is
+		// indexed as written and simply matches no target. That row is inert
+		// for the reverse query, which is the same disposition migration 088
+		// gives every dangling reference. BUG-3014 tracks the separate
+		// question of how such a value should READ.
+		if err := s.replaceRelationLinks(tx, newItemID, ws.ID, collMap[it.CollectionID], fields); err != nil {
+			return nil, fmt.Errorf("index relation links for item %s: %w", it.Title, err)
+		}
 	}
 
 	// Import comments

@@ -1518,26 +1518,27 @@ func (s *Store) RemapAttachmentReferencesInWorkspace(workspaceID string, oldToNe
 	// where the second stage locks the renamed row itself and ordering the
 	// cascade therefore cannot help, ordering IS sufficient for the cycle
 	// between these per-row updates.
-	rows, err := tx.Query(s.q(`SELECT id, content, fields FROM items WHERE workspace_id = ? AND deleted_at IS NULL ORDER BY id`), workspaceID)
+	rows, err := tx.Query(s.q(`SELECT id, collection_id, content, fields FROM items WHERE workspace_id = ? AND deleted_at IS NULL ORDER BY id`), workspaceID)
 	if err != nil {
 		return fmt.Errorf("scan items for remap: %w", err)
 	}
 	type rowUpdate struct {
-		id      string
-		content string
-		fields  string
+		id           string
+		collectionID string
+		content      string
+		fields       string
 	}
 	var updates []rowUpdate
 	for rows.Next() {
-		var id, content, fields string
-		if err := rows.Scan(&id, &content, &fields); err != nil {
+		var id, collectionID, content, fields string
+		if err := rows.Scan(&id, &collectionID, &content, &fields); err != nil {
 			rows.Close()
 			return fmt.Errorf("scan item: %w", err)
 		}
 		newContent := remapAttachmentRefs(content, oldToNew)
 		newFields := remapAttachmentRefs(fields, oldToNew)
 		if newContent != content || newFields != fields {
-			updates = append(updates, rowUpdate{id: id, content: newContent, fields: newFields})
+			updates = append(updates, rowUpdate{id: id, collectionID: collectionID, content: newContent, fields: newFields})
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -1619,6 +1620,15 @@ func (s *Store) RemapAttachmentReferencesInWorkspace(workspaceID string, oldToNe
 		if _, err := tx.Exec(s.q(`UPDATE items SET content = ?, fields = ? WHERE id = ?`),
 			u.content, u.fields, u.id); err != nil {
 			return fmt.Errorf("update item %s: %w", u.id, err)
+		}
+		// This rewrite maps `pad-attachment:` ids and cannot change a relation
+		// VALUE — but it does write the blob, and the hook is a pure function
+		// of (blob, schema), so calling it is a no-op while OMITTING it would
+		// be a standing claim about what remapAttachmentRefs can touch. The
+		// collection id rides along on the scan above rather than costing a
+		// lookup per item (PLAN-2857 U5).
+		if err := s.replaceRelationLinks(tx, u.id, workspaceID, u.collectionID, u.fields); err != nil {
+			return fmt.Errorf("index relation links for item %s: %w", u.id, err)
 		}
 	}
 	for _, u := range commentUpdates {

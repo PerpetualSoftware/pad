@@ -695,6 +695,16 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 		}
 	}
 
+	// Rebuild this collection's relation reverse index, LAST in the tx so it
+	// sees both the new schema and any field-value migration above
+	// (PLAN-2857 U5, lead ruling). A schema change can move which keys ARE
+	// relations without touching a single item, so nothing else in this
+	// transaction would repair the index — and the next per-item write never
+	// comes for items nobody edits.
+	if err := s.ReindexCollectionRelationLinks(tx, id, existing.WorkspaceID); err != nil {
+		return nil, fmt.Errorf("reindex relation links: %w", err)
+	}
+
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit collection update: %w", err)
 	}
@@ -825,6 +835,15 @@ func (s *Store) MigrateItemFieldValues(collectionID string, migrations []models.
 
 	totalAffected, err := s.applyFieldMigrationsTx(tx, collectionID, workspaceID, migrations)
 	if err != nil {
+		return totalAffected, err
+	}
+
+	// This function has no non-test caller today, and the hook is here anyway
+	// (PLAN-2857 U5). It rewrites field VALUES in bulk, so wiring it to a door
+	// later without this line would stale the relation index for a whole
+	// collection — a trap that costs one line to remove now and a debugging
+	// session to find later.
+	if err := s.ReindexCollectionRelationLinks(tx, collectionID, workspaceID); err != nil {
 		return totalAffected, err
 	}
 

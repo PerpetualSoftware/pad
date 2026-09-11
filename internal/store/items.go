@@ -378,6 +378,15 @@ func (s *Store) insertItemTx(tx *sql.Tx, id, workspaceID, collectionID, slug, ts
 		return fmt.Errorf("index wiki links: %w", err)
 	}
 
+	// Index this item's `relation` field values, in the same transaction and
+	// for the same reason as the line above: partial state never lands, and a
+	// rolled-back write rolls back its index rows. This site covers create AND
+	// the cross-workspace copy, which reaches it through createItemTxWithID.
+	// PLAN-2857 U5 / TASK-2997.
+	if err := s.replaceRelationLinks(tx, id, workspaceID, collectionID, fields); err != nil {
+		return fmt.Errorf("index relation links: %w", err)
+	}
+
 	// Phase 2a (TASK-1595): flip any pre-existing broken `[[Title]]`
 	// rows that have been waiting for an item with this title to
 	// arrive. Cheap when no broken rows match (the common case).
@@ -2780,6 +2789,24 @@ func (s *Store) updateItemWithParentLinkOnce(
 		}
 	}
 
+	// Re-index `relation` values when the blob was written (PLAN-2857 U5).
+	//
+	// Read the blob BACK from the row rather than indexing *input.Fields. An
+	// update's field write is a server-side field-level MERGE (IDEA-1480), so
+	// what was submitted is not what was stored — indexing the submission
+	// would drop the edges of every key the caller did not mention. Reading
+	// the row makes the index match stored truth by construction, which is the
+	// only version of this that stays true as the merge rules change.
+	if input.Fields != nil {
+		var storedFields string
+		if err := tx.QueryRow(s.q(`SELECT fields FROM items WHERE id = ?`), id).Scan(&storedFields); err != nil {
+			return nil, fmt.Errorf("re-read fields for relation index: %w", err)
+		}
+		if err := s.replaceRelationLinks(tx, id, existing.WorkspaceID, existing.CollectionID, storedFields); err != nil {
+			return nil, fmt.Errorf("index relation links: %w", err)
+		}
+	}
+
 	// BUG-2013: apply the parent-link mutation INSIDE this tx, after the
 	// field write. A failure here (cycle detected, DB error) rolls the
 	// whole transaction back, so the caller can never observe the field
@@ -4897,6 +4924,16 @@ func (s *Store) moveItemWithPreCheckOnce(
 		targetCollectionID, newFieldsJSON, moveTS, existing.WorkspaceID, itemID)
 	if err != nil {
 		return nil, fmt.Errorf("move item: %w", err)
+	}
+
+	// Re-index against the DESTINATION collection (PLAN-2857 U5). A move is
+	// the one write where the blob and the SCHEMA change together: the
+	// identical value indexes differently on the other side, because which
+	// keys are relations is a property of the collection, not of the item. A
+	// hook that passed the item's old collection here would leave every moved
+	// item indexed under the shape it just left.
+	if err := s.replaceRelationLinks(tx, itemID, existing.WorkspaceID, targetCollectionID, newFieldsJSON); err != nil {
+		return nil, fmt.Errorf("index relation links on move: %w", err)
 	}
 
 	// A move can carry a status-changing field override (e.g.
