@@ -1217,21 +1217,59 @@ func (s *Server) autoCreateWorkspace(user *models.User) {
 	// every request (owner_id alone grants no access), and the
 	// workspace never shows up in GetUserWorkspaces — it becomes a
 	// permanently orphaned, completely unreachable row. Retry once for
-	// transient blips (e.g. a dropped Postgres connection); if it still
-	// fails, delete the now-useless workspace rather than leaving that
-	// orphan behind, and log loudly either way so on-call can see it
-	// happened (B6, TASK-1932).
+	// transient blips (e.g. a dropped Postgres connection); if it still fails,
+	// RECONCILE against the durable row before deciding — see BUG-3026 below —
+	// and delete the now-useless workspace only when the membership genuinely is
+	// absent. Log loudly on every branch so on-call can see it happened
+	// (B6, TASK-1932).
 	if err := s.store.AddWorkspaceMember(ws.ID, user.ID, "owner"); err != nil {
 		slog.Warn("auto-create workspace: add owner member failed, retrying",
 			"workspace_id", ws.ID, "workspace_slug", ws.Slug, "user_id", user.ID, "error", err)
 		if err := s.store.AddWorkspaceMember(ws.ID, user.ID, "owner"); err != nil {
-			slog.Error("auto-create workspace: add owner member failed after retry; deleting orphaned workspace",
-				"workspace_id", ws.ID, "workspace_slug", ws.Slug, "user_id", user.ID, "error", err)
-			if delErr := s.store.DeleteWorkspace(ws.Slug); delErr != nil {
-				slog.Error("auto-create workspace: failed to clean up orphaned workspace; manual intervention required",
-					"workspace_id", ws.ID, "workspace_slug", ws.Slug, "user_id", user.ID, "error", delErr)
+			// RECONCILE BEFORE DESTROYING (BUG-3026). The retry's failure does not
+			// mean the row is absent, and the case where it does not is the very
+			// failure the retry was written for. AddWorkspaceMember is a plain
+			// INSERT against PRIMARY KEY (workspace_id, user_id) returning the raw
+			// tx.Commit() error, so a commit whose acknowledgement was lost — the
+			// "dropped Postgres connection" this comment already names — lands the
+			// row and reports an error; the retry then hits the primary key and
+			// fails deterministically. Deleting here destroyed the workspace
+			// PRECISELY when the membership write had succeeded.
+			//
+			// Three outcomes, not two:
+			membershipCheck := s.store.IsWorkspaceMember
+			if s.membershipCheck != nil {
+				membershipCheck = s.membershipCheck
 			}
-			return
+			switch member, cerr := membershipCheck(ws.ID, user.ID); {
+			case cerr != nil:
+				// UNCERTAIN — the read itself failed, so we cannot tell a genuine
+				// absence from an ack-lost success. Keep the workspace. An orphan is
+				// recoverable (and three sibling call sites accept one deliberately,
+				// BUG-2715); deleting a live workspace on a state nobody could read
+				// is not.
+				slog.Error("auto-create workspace: add owner member failed and the membership read also failed; "+
+					"KEEPING the workspace because its state is unknown",
+					"workspace_id", ws.ID, "workspace_slug", ws.Slug, "user_id", user.ID,
+					"error", err, "check_error", cerr)
+				return
+			case member:
+				// LANDED despite the reported error. Nothing is wrong with this
+				// workspace; fall through to success.
+				slog.Warn("auto-create workspace: add owner member reported an error but the row is present; "+
+					"reconciled to success",
+					"workspace_id", ws.ID, "workspace_slug", ws.Slug, "user_id", user.ID, "error", err)
+			default:
+				// ABSENT — the original behaviour, now reached only when the row
+				// genuinely is not there and the workspace really is unreachable.
+				slog.Error("auto-create workspace: add owner member failed after retry; deleting orphaned workspace",
+					"workspace_id", ws.ID, "workspace_slug", ws.Slug, "user_id", user.ID, "error", err)
+				if delErr := s.store.DeleteWorkspace(ws.Slug); delErr != nil {
+					slog.Error("auto-create workspace: failed to clean up orphaned workspace; manual intervention required",
+						"workspace_id", ws.ID, "workspace_slug", ws.Slug, "user_id", user.ID, "error", delErr)
+				}
+				return
+			}
 		}
 	}
 

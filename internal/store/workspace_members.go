@@ -47,7 +47,14 @@ func (s *Store) AddWorkspaceMember(workspaceID, userID, role string) error {
 		return err
 	}
 
-	if err := tx.Commit(); err != nil {
+	// Routed through the seam so a test can reproduce the one commit outcome this
+	// path must survive and cannot otherwise be shown (BUG-3026). Nil in
+	// production, where this is tx.Commit().
+	commit := tx.Commit
+	if s.commitAddWorkspaceMember != nil {
+		commit = func() error { return s.commitAddWorkspaceMember(tx) }
+	}
+	if err := commit(); err != nil {
 		return fmt.Errorf("add workspace member: %w", err)
 	}
 	return nil

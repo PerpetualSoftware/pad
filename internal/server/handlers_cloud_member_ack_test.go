@@ -1,0 +1,211 @@
+package server
+
+import (
+	"database/sql"
+	"errors"
+	"sync/atomic"
+	"testing"
+
+	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
+	"github.com/PerpetualSoftware/pad/internal/store/storetest"
+)
+
+// BUG-3026: the cloud auto-create path soft-deleted the workspace it had just
+// created successfully, whenever AddWorkspaceMember's commit landed and reported an
+// error anyway (the Postgres ack-loss shape).
+//
+// AddWorkspaceMember is a plain INSERT against PRIMARY KEY (workspace_id, user_id)
+// returning the raw tx.Commit() error. So a lost acknowledgement puts the row on
+// disk and reports failure; the handler's retry then hits the primary key and fails
+// deterministically; and the handler concluded the owner could not be added and
+// deleted the workspace. The deletion fired PRECISELY in the case where the write
+// had succeeded — and on exactly the "dropped Postgres connection" the retry was
+// written for.
+//
+// Found by the CONVE-18 class sweep for BUG-2994, which is the same defect (a store
+// write retried after an error whose outcome is ambiguous) with a worse consequence.
+//
+// The ABSENT arm — a membership that genuinely is not there, where deleting remains
+// correct — is covered by the older ghost-user FK test in
+// handlers_cloud_autocreate_workspace_test.go, which must keep passing.
+
+var errSimMemberAckLoss = errors.New("simulated member-add commit ack loss")
+
+func ackLossCloudServer(t *testing.T, driver store.DriverType) *Server {
+	t.Helper()
+	var s *store.Store
+	if driver == store.DriverPostgres {
+		s = storetest.NewPostgres(t) // skips if PAD_TEST_POSTGRES_URL is unset
+	} else {
+		s = storetest.NewSQLite(t)
+	}
+	if got := s.D().Driver(); got != driver {
+		t.Fatalf("wanted a %s store, got %s — this leg would have measured the wrong backend", driver, got)
+	}
+	srv := New(s)
+	t.Cleanup(func() { srv.Stop() })
+	srv.cloudMode = true
+	return srv
+}
+
+// realUser inserts a user so workspace_members' FK is satisfied and the INSERT can
+// actually succeed — the opposite setup from the ghost-user test, and the
+// precondition for measuring a commit that LANDS.
+func realUser(t *testing.T, srv *Server, email string) *models.User {
+	t.Helper()
+	u, err := srv.store.CreateUser(models.UserCreate{
+		Email:    email,
+		Name:     "Ack Loss",
+		Password: "correct-horse-battery-staple",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	return u
+}
+
+func TestAutoCreateWorkspace_MemberAddAckLossKeepsTheWorkspace_SQLite(t *testing.T) {
+	assertAckLossKeepsTheWorkspace(t, ackLossCloudServer(t, store.DriverSQLite))
+}
+
+func TestAutoCreateWorkspace_MemberAddAckLossKeepsTheWorkspace_Postgres(t *testing.T) {
+	assertAckLossKeepsTheWorkspace(t, ackLossCloudServer(t, store.DriverPostgres))
+}
+
+func assertAckLossKeepsTheWorkspace(t *testing.T, srv *Server) {
+	t.Helper()
+	user := realUser(t, srv, "ackloss@example.com")
+
+	before, err := srv.store.ListWorkspaces()
+	if err != nil {
+		t.Fatalf("ListWorkspaces before: %v", err)
+	}
+
+	// Fail the FIRST commit only, and commit it for real first: the membership row
+	// is durable and the caller is told it is not. The retry then hits the primary
+	// key on its own, with no help from the seam — which is the mechanism under
+	// test, not something the test simulates.
+	var commits int32
+	restore := srv.store.SetAddWorkspaceMemberCommitHookForTesting(func(tx *sql.Tx) error {
+		n := atomic.AddInt32(&commits, 1)
+		if cerr := tx.Commit(); cerr != nil {
+			return cerr
+		}
+		if n == 1 {
+			return errSimMemberAckLoss
+		}
+		return nil
+	})
+	t.Cleanup(restore)
+
+	srv.autoCreateWorkspace(user)
+
+	if atomic.LoadInt32(&commits) == 0 {
+		t.Fatal("the commit seam never fired; autoCreateWorkspace did not reach the member add")
+	}
+
+	after, err := srv.store.ListWorkspaces()
+	if err != nil {
+		t.Fatalf("ListWorkspaces after: %v", err)
+	}
+	if len(after) != len(before)+1 {
+		t.Fatalf("workspace count %d -> %d, want exactly one more: the workspace was deleted even though "+
+			"the owner-membership row had committed", len(before), len(after))
+	}
+
+	// ANTI-VACUITY CONTROL. The whole test is meaningless unless the first commit
+	// genuinely landed, so assert the row is really there. Without this the test
+	// would also pass against a seam that merely failed the insert — the case the
+	// ghost-user test already covers and which was never broken.
+	// (ListWorkspaces filters deleted_at IS NULL, so the COUNT above IS the
+	// not-deleted assertion; a separate DeletedAt check on a returned row would be
+	// vacuous by construction.)
+	ws := after[len(after)-1]
+	member, cerr := srv.store.IsWorkspaceMember(ws.ID, user.ID)
+	if cerr != nil {
+		t.Fatalf("IsWorkspaceMember: %v", cerr)
+	}
+	if !member {
+		t.Fatal("the owner-membership row is absent, so the first commit did not land and this test " +
+			"measured the ordinary insert-failure path instead of an ack loss")
+	}
+}
+
+// TestAutoCreateWorkspace_UnreadableMembershipKeepsTheWorkspace pins the third
+// outcome, and it is the arm most likely to be lost to a later simplification:
+// collapsing the read ERROR back into "absent" restores the deletion silently, and
+// nothing else in the suite would notice.
+//
+// Destroying a workspace on a state nobody could read is the worst of the three
+// outcomes. The orphan it would avoid is recoverable, and three sibling call sites
+// accept exactly that orphan deliberately (BUG-2715).
+func TestAutoCreateWorkspace_UnreadableMembershipKeepsTheWorkspace(t *testing.T) {
+	srv := ackLossCloudServer(t, store.DriverSQLite)
+	user := realUser(t, srv, "unreadable@example.com")
+
+	before, err := srv.store.ListWorkspaces()
+	if err != nil {
+		t.Fatalf("ListWorkspaces before: %v", err)
+	}
+
+	// Both attempts fail outright — nothing is committed, so on the evidence the
+	// handler has, the membership may or may not exist.
+	restore := srv.store.SetAddWorkspaceMemberCommitHookForTesting(func(tx *sql.Tx) error {
+		_ = tx.Rollback()
+		return errSimMemberAckLoss
+	})
+	t.Cleanup(restore)
+
+	var checks int32
+	srv.membershipCheck = func(string, string) (bool, error) {
+		atomic.AddInt32(&checks, 1)
+		return false, errors.New("simulated membership read failure")
+	}
+	t.Cleanup(func() { srv.membershipCheck = nil })
+
+	srv.autoCreateWorkspace(user)
+
+	if atomic.LoadInt32(&checks) == 0 {
+		t.Fatal("the membership check never ran; the reconcile was not reached")
+	}
+	after, err := srv.store.ListWorkspaces()
+	if err != nil {
+		t.Fatalf("ListWorkspaces after: %v", err)
+	}
+	if len(after) != len(before)+1 {
+		t.Errorf("workspace count %d -> %d, want exactly one more: the workspace was destroyed on a "+
+			"membership state that could not be read", len(before), len(after))
+	}
+}
+
+// TestAutoCreateWorkspaceReconcileArmsAreDistinguishable is the control for the two
+// tests above: it proves the ABSENT arm still deletes, so a fix that simply stopped
+// deleting altogether — which would pass both tests above — fails here.
+func TestAutoCreateWorkspaceReconcileArmsAreDistinguishable(t *testing.T) {
+	srv := ackLossCloudServer(t, store.DriverSQLite)
+	user := realUser(t, srv, "absent@example.com")
+
+	before, err := srv.store.ListWorkspaces()
+	if err != nil {
+		t.Fatalf("ListWorkspaces before: %v", err)
+	}
+
+	restore := srv.store.SetAddWorkspaceMemberCommitHookForTesting(func(tx *sql.Tx) error {
+		_ = tx.Rollback()
+		return errSimMemberAckLoss
+	})
+	t.Cleanup(restore)
+	// No membershipCheck seam: the REAL read runs and correctly reports absence.
+
+	srv.autoCreateWorkspace(user)
+
+	after, err := srv.store.ListWorkspaces()
+	if err != nil {
+		t.Fatalf("ListWorkspaces after: %v", err)
+	}
+	if len(after) != len(before) {
+		t.Errorf("workspace count %d -> %d, want unchanged: a genuinely absent membership leaves the "+
+			"workspace unreachable, so the cleanup must still delete it", len(before), len(after))
+	}
+}
