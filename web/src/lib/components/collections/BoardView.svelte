@@ -4,6 +4,15 @@
 	import { itemComparator, type SortMode } from '$lib/collections/itemSort';
 	import { reorderGroup, disabledDirections, adjacentColumn, type ReorderDirection } from '$lib/collections/reorder';
 	import { bucketByColumn, UNCATEGORIZED } from '$lib/collections/boardColumns';
+	import {
+		narrowRelationRow,
+		relationLaneAcceptsDrop,
+		relationLaneValueFor,
+		relationLanes,
+		type RelationLane,
+	} from '$lib/collections/relationGroups';
+	import { localIndex } from '$lib/stores/localIndex.svelte';
+	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { columnAccentClassFor } from '$lib/utils/fieldColors';
 	import { dndzone, TRIGGERS, SHADOW_ITEM_MARKER_PROPERTY_NAME } from 'svelte-dnd-action';
 	import type { DndEvent } from 'svelte-dnd-action';
@@ -191,7 +200,37 @@
 
 	let schema = $derived(parseSchema(collection));
 	let field = $derived(schema.fields.find((f) => f.key === groupField));
-	let columns = $derived(field?.options ?? []);
+
+	// GROUPING BY A RELATION (TASK-2998 / PLAN-2857 U7). Every other groupable
+	// type has an option list to bucket against; a relation's lanes are the
+	// targets the rows point at, so they are derived from the items and
+	// resolved through the local index. The rules — ordering, what a deleted or
+	// dangling target is labelled, which lanes accept a drop — live in
+	// `$lib/collections/relationGroups`, because they are decisions and a
+	// decision reachable only by mounting a board is one nobody tests.
+	let isRelationGroup = $derived(field?.type === 'relation');
+	let knownCollectionSlugs = $derived(
+		new Set(collectionStore.collections.map((c) => c.slug)),
+	);
+	let resolveRelation = $derived((id: string) =>
+		wsSlug
+			? narrowRelationRow(
+					localIndex.findByIdOrSlug(wsSlug, id),
+					id,
+					field?.collection,
+					knownCollectionSlugs,
+				)
+			: null,
+	);
+	let relationLaneList = $derived<RelationLane[]>(
+		isRelationGroup ? relationLanes(items, groupField, resolveRelation) : [],
+	);
+	let relationLaneByValue = $derived(
+		new Map(relationLaneList.map((lane) => [lane.value, lane])),
+	);
+	let columns = $derived(
+		isRelationGroup ? relationLaneList.map((lane) => lane.value) : (field?.options ?? []),
+	);
 
 	// Column order state — tracks the displayed order, syncs from schema when not dragging
 	let columnOrder = $state<string[]>([]);
@@ -257,7 +296,12 @@
 	let propColumnData = $derived.by(() => {
 		// Bucket items into their lanes, routing empty/unknown-value items
 		// into the UNCATEGORIZED ('') lane instead of dropping them (IDEA-2275).
-		const result = bucketByColumn(items, groupField, columns);
+		const result = bucketByColumn(
+			items,
+			groupField,
+			columns,
+			isRelationGroup ? (item) => relationLaneValueFor(item, groupField, resolveRelation) : undefined,
+		);
 		// `preserveOrder` opts out of the in-column sort so search rank
 		// from the parent isn't overridden — TASK-1367. Otherwise sort
 		// each lane by its effective mode — the per-lane override if set,
@@ -363,6 +407,15 @@
 	// dnd-provided target order (e.detail.items); the menu passes 'top' (the
 	// card has already been inserted at the target lane's head). DR-7.
 	async function commitColumnMove(item: Item, targetColumn: string, placement: Item[] | 'top') {
+		// A RELATION LANE ONLY ACCEPTS A DROP WHEN ITS TARGET IS LIVE
+		// (TASK-2998). Writing the value of the uncategorised, deleted or
+		// unresolved lanes would either clear the field or write a reference
+		// TASK-2878's validator refuses — so the card would move on screen and
+		// the write would fail behind it, which is worse than not moving.
+		if (isRelationGroup) {
+			const lane = relationLaneByValue.get(targetColumn);
+			if (!lane || !relationLaneAcceptsDrop(lane)) return;
+		}
 		dropCooldown = true;
 
 		let moveSucceeded = true;
@@ -483,7 +536,17 @@
 	{#each renderColumns as colValue (colValue)}
 		{@const colItems = columnData[colValue] ?? []}
 		{@const isUncategorized = colValue === UNCATEGORIZED}
-		{@const colDraggable = canEdit && !isUncategorized}
+		{@const relLane = relationLaneByValue.get(colValue)}
+		{@const laneName = relLane ? (relLane.title ?? relLane.label) : formatLabel(colValue)}
+		{@const laneRef = relLane?.ref ?? null}
+		<!--
+			A relation lane is NOT column-draggable and offers no "+". Its order
+			is alphabetical rather than schema-held, so a reorder would have
+			nowhere to persist to and would snap back; and creating an item
+			"into" a lane means writing a relation, which the picker owns
+			(TASK-2998 keeps that to the drop gesture in this unit).
+		-->
+		{@const colDraggable = canEdit && !isUncategorized && !isRelationGroup}
 		<div
 			class="kanban-column"
 			class:drag-over-left={dragOverColumn === colValue}
@@ -507,7 +570,10 @@
 				{#if colDraggable}
 					<span class="column-drag-handle" title="Drag to reorder">⠿</span>
 				{/if}
-				<span class="column-name">{formatLabel(colValue)}</span>
+				<span class="column-name">
+					{#if laneRef}<span class="lane-ref">{laneRef}</span>{/if}{laneName}
+					{#if relLane?.state === 'deleted'}<span class="lane-note" title="This item has been deleted.">(deleted)</span>{/if}
+				</span>
 				<div class="column-actions">
 					<span class="column-count">{colItems.length}</span>
 					<!-- Affordance visibility is driven purely by callback
@@ -520,7 +586,7 @@
 					     UNCATEGORIZED lane hides "add" (creating an explicitly
 					     uncategorized item makes no sense) but keeps the bulk
 					     ⋯ menu — "move/tag/assign all" is useful for triage. -->
-					{#if onCreateInColumn && !isUncategorized}
+					{#if onCreateInColumn && !isUncategorized && !isRelationGroup}
 						<button
 							class="lane-btn lane-add-btn"
 							title="Add item to {formatLabel(colValue).toLowerCase()}"
@@ -763,6 +829,20 @@
 	.column-drag-handle:active {
 		opacity: 1;
 		cursor: grabbing;
+	}
+
+	.lane-ref {
+		font-family: var(--font-mono, ui-monospace, monospace);
+		font-size: 0.85em;
+		opacity: 0.7;
+		margin-right: 0.35em;
+	}
+
+	.lane-note {
+		font-size: 0.85em;
+		opacity: 0.7;
+		margin-left: 0.35em;
+		font-style: italic;
 	}
 
 	.column-name {

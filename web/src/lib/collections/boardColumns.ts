@@ -40,7 +40,15 @@ function laneValue(raw: unknown): string {
 export function bucketByColumn(
 	items: Item[],
 	groupField: string,
-	columns: string[]
+	columns: string[],
+	/**
+	 * How to read an item's lane value, when the field's own value is not it.
+	 * A RELATION field needs this (TASK-2998): values that resolve to nothing
+	 * are folded onto a sentinel first, so "no value", "target deleted" and
+	 * "points at nothing" do not all collapse into UNCATEGORIZED. Defaults to
+	 * the field's own value, so every existing caller is unchanged.
+	 */
+	valueFor?: (item: Item) => string
 ): Record<string, Item[]> {
 	const known = new Set(columns);
 	const result: Record<string, Item[]> = { [UNCATEGORIZED]: [] };
@@ -48,7 +56,7 @@ export function bucketByColumn(
 		result[col] = [];
 	}
 	for (const item of items) {
-		const value = laneValue(parseFields(item)[groupField]);
+		const value = valueFor ? valueFor(item) : laneValue(parseFields(item)[groupField]);
 		if (value && known.has(value)) {
 			result[value].push(item);
 		} else {
