@@ -4,12 +4,105 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"unicode"
 
 	"github.com/spf13/cobra"
 
 	pad "github.com/PerpetualSoftware/pad"
 	"github.com/PerpetualSoftware/pad/internal/cli"
 )
+
+func agentGuideCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "guide [topic]",
+		Short: "Print Pad agent guidance on demand",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			body := string(cli.StripFrontmatter(pad.PadSkill))
+			if len(args) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "Available Pad agent guide topics:")
+				for _, topic := range agentGuideTopics(body) {
+					fmt.Fprintf(cmd.OutOrStdout(), "  %s\n", topic)
+				}
+				fmt.Fprintln(cmd.OutOrStdout(), "\nUse `pad agent guide <topic>` for one section or `pad agent guide all` for the full guide.")
+				return nil
+			}
+
+			if args[0] == "all" {
+				fmt.Fprint(cmd.OutOrStdout(), body)
+				return nil
+			}
+			section, ok := agentGuideSection(body, args[0])
+			if !ok {
+				return fmt.Errorf("unknown guide topic %q; run `pad agent guide` to list topics", args[0])
+			}
+			fmt.Fprint(cmd.OutOrStdout(), section)
+			return nil
+		},
+	}
+}
+
+func agentGuideTopics(markdown string) []string {
+	var topics []string
+	for _, line := range strings.Split(markdown, "\n") {
+		_, topic, ok := agentGuideHeading(line)
+		if ok {
+			topics = append(topics, topic)
+		}
+	}
+	return topics
+}
+
+func agentGuideSection(markdown, topic string) (string, bool) {
+	want := agentGuideSlug(topic)
+	lines := strings.Split(markdown, "\n")
+	start, level := -1, 0
+	for i, line := range lines {
+		lineLevel, lineTopic, ok := agentGuideHeading(line)
+		if start < 0 {
+			if ok && lineTopic == want {
+				start, level = i, lineLevel
+			}
+			continue
+		}
+		if ok && lineLevel <= level {
+			return strings.Join(lines[start:i], "\n") + "\n", true
+		}
+	}
+	if start >= 0 {
+		return strings.Join(lines[start:], "\n"), true
+	}
+	return "", false
+}
+
+func agentGuideHeading(line string) (level int, topic string, ok bool) {
+	line = strings.TrimSpace(line)
+	for level < len(line) && line[level] == '#' {
+		level++
+	}
+	if level < 2 || level >= len(line) || line[level] != ' ' {
+		return 0, "", false
+	}
+	topic = agentGuideSlug(line[level+1:])
+	return level, topic, topic != ""
+}
+
+func agentGuideSlug(s string) string {
+	var out strings.Builder
+	dash := false
+	for _, r := range strings.ToLower(strings.TrimSpace(s)) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			if dash && out.Len() > 0 {
+				out.WriteByte('-')
+			}
+			out.WriteRune(r)
+			dash = false
+		} else {
+			dash = true
+		}
+	}
+	return out.String()
+}
 
 func installCmd() *cobra.Command {
 	cmd := &cobra.Command{

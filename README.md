@@ -504,6 +504,7 @@ pad library list                      Browse convention and playbook library
 pad library activate <title>          Activate a convention or playbook
 
 pad agent install [tool]              Install /pad skill for AI coding tools
+pad agent guide [topic]               Print one section of the canonical agent guide
 pad agent status                      Show supported tools and installation status
 pad agent update                      Update installed tool integrations
 
