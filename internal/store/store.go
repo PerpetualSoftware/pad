@@ -129,6 +129,18 @@ type Store struct {
 	// note that updateItemWithParentLinkOnce runs under retryOnParentSetChanged.
 	commitItemUpdate func(tx *sql.Tx) error
 
+	// commitAddWorkspaceMember is a TEST-ONLY seam, nil in production. Same shape
+	// and same reason as commitItemUpdate above, for BUG-3026: AddWorkspaceMember
+	// is a plain INSERT against PRIMARY KEY (workspace_id, user_id) returning the
+	// raw tx.Commit() error, so a commit that landed and whose acknowledgement was
+	// lost leaves the row on disk while the caller is told it is not — and the
+	// cloud auto-create path then deleted the workspace over it.
+	//
+	// Nothing else reproduces that state. Every other injection makes the INSERT
+	// genuinely fail, which is the case the code already handled (and which the
+	// existing ghost-user FK test covers).
+	commitAddWorkspaceMember func(tx *sql.Tx) error
+
 	// afterDocumentPreLockRead is a TEST-ONLY seam, nil in production. When
 	// set, UpdateDocument calls it after its pre-transaction read and before
 	// it opens the transaction that takes the rename lock (BUG-2778) — the

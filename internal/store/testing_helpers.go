@@ -135,3 +135,20 @@ func (s *Store) SetItemUpdateCommitHookForTesting(hook func(tx *sql.Tx) error) (
 	s.commitItemUpdate = hook
 	return func() { s.commitItemUpdate = prev }
 }
+
+// SetAddWorkspaceMemberCommitHookForTesting routes AddWorkspaceMember's COMMIT
+// through hook for the lifetime of the returned restore function.
+//
+// It exists for BUG-3026, and the honest hook is the same as its BUG-2994 twin:
+// call tx.Commit() and return a non-nil error on top, so the membership row really
+// is durable and the caller really is told it is not. A hook that returns an error
+// WITHOUT committing exercises the ordinary insert-failed case, which the existing
+// ghost-user FK test already covers and which was never broken.
+//
+// Production code MUST NOT call this. The "ForTesting" suffix is the grep signal.
+// Set it only while no other request is in flight against this Store.
+func (s *Store) SetAddWorkspaceMemberCommitHookForTesting(hook func(tx *sql.Tx) error) (restore func()) {
+	prev := s.commitAddWorkspaceMember
+	s.commitAddWorkspaceMember = hook
+	return func() { s.commitAddWorkspaceMember = prev }
+}

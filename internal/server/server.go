@@ -349,6 +349,18 @@ type Server struct {
 	// for "non-commit" errors.
 	directWritePruneFault func() error
 
+	// membershipCheck is a TEST SEAM (always nil in production, BUG-3026). When
+	// non-nil, autoCreateWorkspace's reconcile calls it instead of
+	// store.IsWorkspaceMember.
+	//
+	// It exists for the two arms with no natural trigger: UNREADABLE (a single-row
+	// SELECT over the primary key has no failure this test could provoke) and
+	// WRONG-ROLE. Both carry safety properties a later simplification would drop
+	// silently — collapsing the error case back into "absent" restores the
+	// deletion, and collapsing the role check back into existence restores the
+	// silent-success this reconcile was corrected to avoid.
+	membershipCheck func(workspaceID, userID string) (*models.WorkspaceMember, error)
+
 	// watchPredicatesLoadFault is a TEST SEAM (always nil in production,
 	// TASK-2533). When non-nil, loadWatchPredicates calls it before
 	// touching the store; a non-nil return short-circuits the real
