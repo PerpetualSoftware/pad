@@ -390,15 +390,14 @@ pad mcp install claude-desktop   # or: cursor, windsurf, claude-code, codex, --a
 Cursor and Codex installations can opt into compact tool results:
 
 ```bash
-pad mcp install cursor --structured-only
-pad mcp install codex --structured-only
+pad mcp install cursor --compact-results
+pad mcp install codex --compact-results
 ```
 
-This keeps successful `structuredContent` and sends an empty required `content`
-array instead of repeating the same JSON as text. Errors and text-only results
-still carry text. Leave the flag off for clients that only read compatibility
-fallbacks; MCP recommends the duplicate for backward compatibility but does not
-require it.
+Pad keeps the result channel each client currently exposes to its model: JSON
+text for Cursor and `structuredContent` for Codex. It removes the duplicate
+channel only from successful structured results; errors and one-channel results
+remain unchanged. Leave the flag off for other clients or compatibility testing.
 
 `pad mcp install` writes each client's native config: JSON `mcpServers` for
 Claude Desktop / Cursor / Windsurf, a **project-local `.mcp.json`** in the current
