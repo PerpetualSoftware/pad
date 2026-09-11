@@ -58,6 +58,22 @@ type ItemSummary struct {
 	UpdatedAt       time.Time                        `json:"updated_at"`
 }
 
+// ItemAgentView is the compact, complete-enough projection used when an agent
+// reads one item. It keeps the body and the item metadata that can change the
+// meaning of the work, while dropping internal UUIDs and duplicate join fields
+// that are useful to storage code but not to a Cursor or Codex transcript.
+type ItemAgentView struct {
+	ItemSummary
+	Content             string                          `json:"content,omitempty"`
+	DeletedAt           *time.Time                      `json:"deleted_at,omitempty"`
+	MovedTo             []models.ItemMovedTo            `json:"moved_to,omitempty"`
+	DerivedClosure      *models.ItemDerivedClosure      `json:"derived_closure,omitempty"`
+	CodeContext         *models.ItemCodeContext         `json:"code_context,omitempty"`
+	Convention          *models.ItemConventionMetadata  `json:"convention,omitempty"`
+	ImplementationNotes []models.ItemImplementationNote `json:"implementation_notes,omitempty"`
+	DecisionLog         []models.ItemDecisionLogEntry   `json:"decision_log,omitempty"`
+}
+
 // contentPreviewLimit caps the content_preview at a small, agent-friendly
 // length. A preview exists so an agent can recognize an item without pulling
 // the whole body; the full body is one `pad item show <ref>` away.
@@ -133,6 +149,48 @@ func ToItemSummary(item models.Item) ItemSummary {
 		CreatedAt:       item.CreatedAt,
 		UpdatedAt:       item.UpdatedAt,
 	}
+}
+
+// ToItemAgentView projects one item for machine consumption. The full content
+// replaces content_preview so the same text is never paid for twice.
+func ToItemAgentView(item models.Item) ItemAgentView {
+	summary := ToItemSummary(item)
+	summary.ContentPreview = ""
+	summary.Fields = agentItemFields(summary.Fields)
+	return ItemAgentView{
+		ItemSummary:         summary,
+		Content:             item.Content,
+		DeletedAt:           item.DeletedAt,
+		MovedTo:             item.MovedTo,
+		DerivedClosure:      item.DerivedClosure,
+		CodeContext:         item.CodeContext,
+		Convention:          item.Convention,
+		ImplementationNotes: item.ImplementationNotes,
+		DecisionLog:         item.DecisionLog,
+	}
+}
+
+// agentItemFields removes entries already hydrated as top-level arrays. These
+// keys remain in storage for append semantics, but repeating them in an agent
+// response spends tokens and leaves the caller to decide which copy is real.
+func agentItemFields(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return nil
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return raw
+	}
+	delete(fields, models.ItemFieldImplementationNotes)
+	delete(fields, models.ItemFieldDecisionLog)
+	if len(fields) == 0 {
+		return nil
+	}
+	b, err := json.Marshal(fields)
+	if err != nil {
+		return raw
+	}
+	return json.RawMessage(b)
 }
 
 // ToItemSummaries projects a slice of items into summary shape, preserving

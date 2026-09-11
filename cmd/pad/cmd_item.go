@@ -706,7 +706,8 @@ func printItemsGroupedByCollection(items []models.Item) {
 // --- show ---
 
 func showCmd() *cobra.Command {
-	return &cobra.Command{
+	var agentOutput bool
+	cmd := &cobra.Command{
 		Use:     "show <ref>",
 		Aliases: []string{"read"},
 		Short:   "Show item detail (fields + content)",
@@ -718,6 +719,9 @@ func showCmd() *cobra.Command {
 			item, err := client.GetItem(ws, args[0])
 			if err != nil {
 				return err
+			}
+			if agentOutput {
+				return cli.PrintJSONCompact(cli.ToItemAgentView(*item))
 			}
 
 			// PLAN-1593 / TASK-1596: fetch the top 5 backlinks
@@ -938,6 +942,8 @@ func showCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&agentOutput, "agent", false, "return compact agent-oriented JSON")
+	return cmd
 }
 
 // --- open ---

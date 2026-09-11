@@ -978,6 +978,17 @@ const CmdhelpVersion = "0.1"
 //     write side collapses `wrong_collection` to `not_found` for the
 //     same reason.
 //
+//     0.32 — Added the optional `agent` boolean to `pad_item.get`. When true,
+//     both transports return a compact projection that keeps the full body,
+//     typed fields, relations, decisions, implementation notes, code context,
+//     convention metadata, closure state, and move destination, while dropping
+//     internal UUID plumbing and duplicate join fields. Default `get` output is
+//     unchanged. The CLI exposes the same projection as `item show --agent`.
+//
+//     A catalog bump is required because `agent` is a new declared tool input.
+//     The behavior is additive and opt-in; callers that do not send it receive
+//     the prior response shape byte-for-byte.
+//
 //   - POST-0.30, NO BUMP — BUG-2995. A successful content write through
 //     the designated applier used to answer with the item's PREVIOUS
 //     content: on that path the markdown goes to a live browser tab's
@@ -1016,7 +1027,7 @@ const CmdhelpVersion = "0.1"
 //     is ever updated is not established — the flush belongs to a
 //     browser tab and BUG-3000 carries the open half — so no surface
 //     here states a duration.
-const ToolSurfaceVersion = "0.31"
+const ToolSurfaceVersion = "0.32"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

@@ -124,7 +124,7 @@ just because the skill was invoked again.
 
 ` + "```bash" + `
 pad project dashboard --format json
-pad item show TASK-5 --format json
+pad item show TASK-5 --agent
 pad item list [collection] --format json
 pad item create <collection> "Title" [flags]
 pad item update TASK-5 [flags]

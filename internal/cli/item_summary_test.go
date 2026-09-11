@@ -67,6 +67,57 @@ func TestToItemSummary_DropsContentAndUUIDs(t *testing.T) {
 	}
 }
 
+func TestToItemAgentView_KeepsWorkContextAndDropsStoragePlumbing(t *testing.T) {
+	item := models.Item{
+		ID:             "item-uuid",
+		WorkspaceID:    "workspace-uuid",
+		CollectionID:   "collection-uuid",
+		Title:          "Implement the compact reader",
+		Slug:           "implement-compact-reader",
+		Ref:            "TASK-9",
+		Content:        "The complete body an agent needs.",
+		Fields:         `{"status":"in-progress","estimate":3,"implementation_notes":[{"summary":"Preserve this execution context"}],"decision_log":[{"decision":"Use an additive projection"}]}`,
+		Tags:           `["agents"]`,
+		CollectionSlug: "tasks",
+		AssignedUserID: strPtr("user-uuid"),
+		ImplementationNotes: []models.ItemImplementationNote{
+			{Summary: "Preserve this execution context"},
+		},
+		DecisionLog: []models.ItemDecisionLogEntry{
+			{Decision: "Use an additive projection"},
+		},
+	}
+
+	b, err := json.Marshal(ToItemAgentView(item))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	js := string(b)
+	for _, want := range []string{
+		`"ref":"TASK-9"`,
+		`"content":"The complete body an agent needs."`,
+		`"estimate":3`,
+		`"status":"in-progress"`,
+		`"implementation_notes"`,
+		`"decision_log"`,
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("agent view should contain %q; got %s", want, js)
+		}
+	}
+	for _, banned := range []string{
+		"item-uuid", "workspace-uuid", "collection-uuid", "user-uuid",
+		`"workspace_id"`, `"collection_id"`, `"content_preview"`,
+	} {
+		if strings.Contains(js, banned) {
+			t.Errorf("agent view should not contain %q; got %s", banned, js)
+		}
+	}
+	if strings.Count(js, "Preserve this execution context") != 1 || strings.Count(js, "Use an additive projection") != 1 {
+		t.Errorf("hydrated notes and decisions should appear once, got %s", js)
+	}
+}
+
 // TestContentPreview_TruncatesAndStrips checks the preview helper.
 func TestContentPreview_TruncatesAndStrips(t *testing.T) {
 	if got := contentPreview(""); got != "" {
