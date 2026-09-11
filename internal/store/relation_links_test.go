@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -14,8 +15,14 @@ import (
 // hooks that maintain it, so a test that exercised the helper directly would
 // vouch for nothing — these go through the real write paths (CreateItem,
 // UpdateItem, DeleteItem, RestoreItem, MoveItem, UpdateCollection) and read
-// through the real query. The counterfactual that proves they are wired lives
-// in TestRelationLinks_RemovedHookGoesStale at the bottom.
+// through the real query.
+//
+// The counterfactual that proves they are wired is a MUTATION, not a test in
+// this file: replaceRelationLinks is stubbed to return early, the mutant is
+// checked to COMPILE, and every leg here must fail. It is recorded in the
+// commit messages with its verdict. An earlier version of this comment
+// pointed at a TestRelationLinks_RemovedHookGoesStale that does not exist —
+// a claim about the file's own contents that nothing checked (codex round 7).
 
 // unrestricted is the visibility vector for a viewer who sees everything. The
 // viewer-scoped legs build their own.
@@ -651,5 +658,56 @@ func TestRelationLinks_BacklinkCarriesTheFieldLabel(t *testing.T) {
 	// disagree the day either changes.
 	if got := byKey["sidekick"].FieldLabel; got != "" {
 		t.Errorf("sidekick's label = %q, want empty — a field with no schema label must not have one invented for it", got)
+	}
+}
+
+// TestRelationBacklinksDoNoSecondPoolRead is the guard for the invariant round
+// 7's P1 cost me.
+//
+// GetRelationBacklinks holds the rows cursor open while it builds the result.
+// The first version of the field-LABEL lookup issued a SELECT per distinct
+// collection inside that loop — which needs a SECOND pool connection, and when
+// the pool is saturated the second connection never arrives. That is an
+// application deadlock no SQLSTATE names, the same class BUG-2409 closed for
+// the collection writers, and it only shows up under load.
+//
+// With MaxOpenConns(1) the open cursor owns the only connection, so ANY second
+// pool read here deadlocks deterministically instead of rarely. Works on both
+// dialects.
+func TestRelationBacklinksDoNoSecondPoolRead(t *testing.T) {
+	s := testStore(t)
+	ws, _, cars, red := relationIndexFixture(t, s)
+
+	// Two sources in DIFFERENT collections, so a per-collection lookup would
+	// have to issue more than one — a single-collection fixture would let the
+	// broken shape pass on a lucky cache hit.
+	carPointingAt(t, s, ws, cars, "Pool Car", red.ID)
+	other, err := s.CreateCollection(ws.ID, models.CollectionCreate{
+		Name:   "Garages Too",
+		Schema: `{"fields":[{"key":"status","type":"select","options":["open","done"],"default":"open"},{"key":"color","label":"Paint","type":"relation","collection":"colors"}]}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection: %v", err)
+	}
+	blob, _ := json.Marshal(map[string]any{"status": "open", "color": red.ID})
+	if _, err := s.CreateItem(ws.ID, other.ID, models.ItemCreate{Title: "Pool Garage", Fields: string(blob)}); err != nil {
+		t.Fatalf("CreateItem: %v", err)
+	}
+
+	// From here the pool has exactly one connection.
+	s.db.SetMaxOpenConns(1)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.GetRelationBacklinks(red.ID, ws.ID, 50, 0, unrestricted)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("GetRelationBacklinks: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("GetRelationBacklinks did not complete under MaxOpenConns(1): it issued a pool read while holding its own rows cursor, and is waiting for a connection it is itself occupying")
 	}
 }

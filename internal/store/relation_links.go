@@ -315,7 +315,7 @@ func (s *Store) GetRelationBacklinks(targetItemID, workspaceID string, limit, of
 
 	rows, err := s.db.Query(s.q(`
 		SELECT rl.source_item_id, rl.source_field_key,
-		       s.title, s.item_number, s.collection_id, c.prefix, c.slug
+		       s.title, s.item_number, s.collection_id, c.prefix, c.slug, c.schema
 		FROM item_relation_links rl
 		JOIN items s ON s.id = rl.source_item_id
 		JOIN collections c ON c.id = s.collection_id
@@ -335,24 +335,26 @@ func (s *Store) GetRelationBacklinks(targetItemID, workspaceID string, limit, of
 	}
 	defer rows.Close()
 
-	// Field LABELS come from each source collection's schema, parsed once per
-	// distinct collection rather than per row. The field was declared and the
-	// UI consumed it while nothing populated it, so every group rendered its
-	// raw key (codex round 6) — the choice was to populate it or delete it,
-	// and a label is what the schema author wrote for humans to read.
+	// Field LABELS come from the source collection's schema, which the query
+	// above already carries on every row — parsed once per distinct collection
+	// here rather than re-queried.
+	//
+	// The first version issued a SELECT per distinct collection WHILE THE ROWS
+	// CURSOR WAS STILL OPEN. That needs a SECOND pool connection, and when the
+	// pool is saturated the second connection never arrives — an application
+	// deadlock no SQLSTATE names, and the same class BUG-2409 closed for the
+	// collection writers (codex round 7). It was also an N+1. Selecting
+	// `c.schema` in the one query removes both.
 	labels := map[string]map[string]string{}
-	labelFor := func(collectionSlug, collectionID, key string) string {
+	labelFor := func(collectionID, schemaJSON, key string) string {
 		byKey, known := labels[collectionID]
 		if !known {
 			byKey = map[string]string{}
-			var schemaJSON sql.NullString
-			if err := s.db.QueryRow(s.q(`SELECT schema FROM collections WHERE id = ?`), collectionID).Scan(&schemaJSON); err == nil && schemaJSON.Valid {
-				var schema models.CollectionSchema
-				if json.Unmarshal([]byte(schemaJSON.String), &schema) == nil {
-					for _, def := range schema.Fields {
-						if def.Label != "" {
-							byKey[def.Key] = def.Label
-						}
+			var schema models.CollectionSchema
+			if json.Unmarshal([]byte(schemaJSON), &schema) == nil {
+				for _, def := range schema.Fields {
+					if def.Label != "" {
+						byKey[def.Key] = def.Label
 					}
 				}
 			}
@@ -368,14 +370,15 @@ func (s *Store) GetRelationBacklinks(targetItemID, workspaceID string, limit, of
 		// errors and would take the whole list down, the same defect U6 shipped
 		// in hydration (codex round 7 there).
 		var number sql.NullInt64
+		var schemaJSON sql.NullString
 		var prefix, collectionID string
-		if err := rows.Scan(&b.SourceItemID, &b.FieldKey, &b.SourceTitle, &number, &collectionID, &prefix, &b.CollectionSlug); err != nil {
+		if err := rows.Scan(&b.SourceItemID, &b.FieldKey, &b.SourceTitle, &number, &collectionID, &prefix, &b.CollectionSlug, &schemaJSON); err != nil {
 			return nil, fmt.Errorf("scan relation backlink: %w", err)
 		}
 		if number.Valid {
 			b.SourceRef = fmt.Sprintf("%s-%d", prefix, number.Int64)
 		}
-		b.FieldLabel = labelFor(b.CollectionSlug, collectionID, b.FieldKey)
+		b.FieldLabel = labelFor(collectionID, schemaJSON.String, b.FieldKey)
 		out = append(out, b)
 	}
 	if err := rows.Err(); err != nil {
