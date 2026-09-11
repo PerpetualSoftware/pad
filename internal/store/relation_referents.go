@@ -753,6 +753,14 @@ func (s *Store) itemByRefQ(q Queryer, workspaceID, prefix string, number int) (*
 	return s.GetItemQ(q, id)
 }
 
+// relationWant is one stored relation value plus the collection slug its field
+// DECLARES, carried together so hydration can check the second against the
+// first without re-walking the schemas.
+type relationWant struct {
+	value      string
+	targetSlug string
+}
+
 // RelationTargetNotPortable — a carried relation value that cannot cross a
 // workspace boundary. Not a defect in the value: it names a live item in the
 // SOURCE workspace, and PLAN-2857 v1 excludes cross-workspace relation
@@ -1463,8 +1471,9 @@ func (s *Store) HydrateRelationTargetsQ(
 	items []models.Item,
 	schemas map[string]models.CollectionSchema,
 ) (map[string]map[string]models.RelationTarget, error) {
-	// item ID -> field key -> stored value
-	perItem := map[string]map[string]string{}
+	// item ID -> field key -> the stored value and the collection its field
+	// DECLARES as the target.
+	perItem := map[string]map[string]relationWant{}
 	wanted := map[string]struct{}{}
 
 	for i := range items {
@@ -1497,9 +1506,9 @@ func (s *Store) HydrateRelationTargetsQ(
 				continue
 			}
 			if perItem[items[i].ID] == nil {
-				perItem[items[i].ID] = map[string]string{}
+				perItem[items[i].ID] = map[string]relationWant{}
 			}
-			perItem[items[i].ID][def.Key] = value
+			perItem[items[i].ID][def.Key] = relationWant{value: value, targetSlug: def.Collection}
 			wanted[value] = struct{}{}
 		}
 	}
@@ -1515,6 +1524,9 @@ func (s *Store) HydrateRelationTargetsQ(
 	sort.Strings(ids)
 
 	resolved := map[string]models.RelationTarget{}
+	// The collection each resolved target actually lives in, for the
+	// declared-collection check below.
+	resolvedIn := map[string]string{}
 	// Chunked: some drivers cap placeholders per statement, and a workspace
 	// with a long list read can exceed it.
 	const chunk = 200
@@ -1530,7 +1542,7 @@ func (s *Store) HydrateRelationTargetsQ(
 			args = append(args, id)
 		}
 		rows, err := q.Query(s.q(`
-			SELECT i.id, i.title, i.item_number, c.prefix
+			SELECT i.id, i.title, i.item_number, i.collection_id, c.prefix
 			FROM items i
 			JOIN collections c ON c.id = i.collection_id
 			WHERE i.workspace_id = ? AND i.id IN (`+placeholders+`) AND i.deleted_at IS NULL
@@ -1539,17 +1551,24 @@ func (s *Store) HydrateRelationTargetsQ(
 			return nil, fmt.Errorf("hydrate relation targets: %w", err)
 		}
 		for rows.Next() {
-			var id, title, prefix string
-			var number int
-			if err := rows.Scan(&id, &title, &number, &prefix); err != nil {
+			var id, title, collectionID, prefix string
+			// NULLABLE. item_number is added by migration 006 with no
+			// constraint and nothing since makes it NOT NULL, so a pre-006 row
+			// carries NULL — and scanning NULL into an int ERRORS. This
+			// function is best-effort and its caller drops the whole map on
+			// error, so one legacy row would have silently removed
+			// `relation_targets` from the ENTIRE response (codex round 7).
+			var number sql.NullInt64
+			if err := rows.Scan(&id, &title, &number, &collectionID, &prefix); err != nil {
 				rows.Close()
 				return nil, fmt.Errorf("hydrate relation targets scan: %w", err)
 			}
-			resolved[id] = models.RelationTarget{
-				ID:    id,
-				Ref:   fmt.Sprintf("%s-%d", prefix, number),
-				Title: title,
+			target := models.RelationTarget{ID: id, Title: title}
+			if number.Valid {
+				target.Ref = fmt.Sprintf("%s-%d", prefix, number.Int64)
 			}
+			resolvedIn[id] = collectionID
+			resolved[id] = target
 		}
 		if err := rows.Err(); err != nil {
 			rows.Close()
@@ -1558,14 +1577,38 @@ func (s *Store) HydrateRelationTargetsQ(
 		rows.Close()
 	}
 
+	// Declared target slug -> collection id, resolved once per distinct slug.
+	declaredIDs := map[string]string{}
+
 	out := map[string]map[string]models.RelationTarget{}
 	for itemID, fields := range perItem {
-		for key, value := range fields {
+		for key, want := range fields {
+			value := want.value
 			target, ok := resolved[value]
 			if !ok {
 				// Dangling: the stored value names nothing live. ID-only, so
 				// the read stays honest instead of erroring or pretending.
 				target = models.RelationTarget{ID: value}
+			} else if want.targetSlug != "" {
+				// THE VALUE MUST LIVE WHERE THE FIELD SAYS IT DOES. The write
+				// side refuses a relation pointing outside the declared
+				// collection, but legacy and corrupt rows predate that, and
+				// rendering one as `{ref, title}` presents a Task as though it
+				// were the Colour the field promised. ID-only is the honest
+				// shape — the same one a dangling value gets, for the same
+				// reason (codex round 7).
+				declaredID, known := declaredIDs[want.targetSlug]
+				if !known {
+					var derr error
+					declaredID, derr = s.collectionIDBySlugQ(q, workspaceID, want.targetSlug)
+					if derr != nil {
+						return nil, derr
+					}
+					declaredIDs[want.targetSlug] = declaredID
+				}
+				if declaredID == "" || resolvedIn[value] != declaredID {
+					target = models.RelationTarget{ID: value}
+				}
 			}
 			if out[itemID] == nil {
 				out[itemID] = map[string]models.RelationTarget{}

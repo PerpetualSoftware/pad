@@ -404,3 +404,77 @@ func TestRelationTitle_SuppliedValueStillObeysVisibility(t *testing.T) {
 		t.Fatalf("a SUPPLIED title naming an item the caller cannot see must be not_found — the carried carve-out must not reach it: %v", issues)
 	}
 }
+
+// TestHydrateRelationTargets_WrongCollectionAndNullNumberStayHonest covers
+// codex round 7's two read-side P2s.
+//
+// Both are about legacy rows: the write side has refused wrong-collection
+// relation values since U1 and item_number has been populated since migration
+// 006, but rows predating either still exist and the READ has to hold up.
+func TestHydrateRelationTargets_WrongCollectionAndNullNumberStayHonest(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ws, colors, cars, red := relationFixture(t, s)
+
+	// A live item in the WRONG collection for the `color` field.
+	sedan := createTestItem(t, s, ws.ID, cars.ID, "Sedan", "")
+	// A legitimate target whose item_number is NULL, as a pre-006 row is.
+	legacy := createTestItem(t, s, ws.ID, colors.ID, "Legacy Blue", "")
+	if _, err := s.db.Exec(s.q("UPDATE items SET item_number = NULL WHERE id = ?"), legacy.ID); err != nil {
+		t.Fatalf("null the item_number: %v", err)
+	}
+
+	mk := func(label, value string) models.Item {
+		it := createTestItem(t, s, ws.ID, cars.ID, label, "")
+		blob, _ := json.Marshal(map[string]any{"status": "open", "color": value})
+		fields := string(blob)
+		if _, err := s.UpdateItem(it.ID, models.ItemUpdate{Fields: &fields}); err != nil {
+			t.Fatalf("seed %s: %v", label, err)
+		}
+		got, err := s.GetItem(it.ID)
+		if err != nil {
+			t.Fatalf("reload %s: %v", label, err)
+		}
+		return *got
+	}
+
+	good := mk("Points at a colour", red.ID)
+	wrong := mk("Points at a car", sedan.ID)
+	nulled := mk("Points at a legacy colour", legacy.ID)
+
+	schemas := map[string]models.CollectionSchema{cars.ID: u1RelationSchema("colors")}
+	out, err := s.HydrateRelationTargetsQ(s.DB(), ws.ID, []models.Item{good, wrong, nulled}, schemas)
+	if err != nil {
+		t.Fatalf("hydrate: %v", err)
+	}
+
+	// A NULL item_number must not take the whole response down with it. This
+	// function is best-effort and its caller drops the entire map on error, so
+	// scanning NULL into an int would have removed relation_targets from every
+	// item in the response, not just this one.
+	if len(out) == 0 {
+		t.Fatal("hydration returned nothing at all; one legacy row with a NULL item_number erased the whole response")
+	}
+	if got := out[good.ID]["color"]; got.Ref != red.Ref || got.Title != red.Title {
+		t.Errorf("the ordinary target did not hydrate: %+v", got)
+	}
+
+	// Wrong collection: id-only. Rendering it fully would present a Car as
+	// though it were the Colour the field promised.
+	if got := out[wrong.ID]["color"]; got.Ref != "" || got.Title != "" {
+		t.Errorf("a value pointing OUTSIDE the declared collection hydrated as %+v; the field says colors and this is a car", got)
+	} else if got.ID != sedan.ID {
+		t.Errorf("the wrong-collection entry lost its stored id: %+v", got)
+	}
+
+	// NULL item_number: the row is a legitimate target in the right
+	// collection, so it hydrates — with a title and no ref, because there is
+	// no number to build one from. Not id-only, and not an error.
+	got := out[nulled.ID]["color"]
+	if got.Title != "Legacy Blue" {
+		t.Errorf("a NULL-numbered target lost its title: %+v", got)
+	}
+	if got.Ref != "" {
+		t.Errorf("a NULL-numbered target invented a ref: %+v", got)
+	}
+}
