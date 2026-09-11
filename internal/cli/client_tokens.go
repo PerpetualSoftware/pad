@@ -48,3 +48,21 @@ func (c *Client) CreateUserToken(input models.APITokenCreate) (*models.APITokenW
 func (c *Client) RevokeUserToken(id string) error {
 	return c.delete("/auth/tokens/" + url.PathEscape(id))
 }
+
+// RotateUserToken generates a new secret for an existing token, keeping
+// its metadata (name, scopes, workspace). The OLD secret dies with the
+// UPDATE — RotateAPIToken replaces the hash in place, so there is no
+// grace window. expiresIn > 0 sets a new expiry in days (capped by the
+// platform max lifetime); 0 preserves the original. Like minting, this
+// requires an interactive session (#1267) — a PAT-authenticated call is
+// refused 403 session_required.
+func (c *Client) RotateUserToken(id string, expiresIn int) (*models.APITokenWithSecret, error) {
+	input := struct {
+		ExpiresIn int `json:"expires_in,omitempty"`
+	}{ExpiresIn: expiresIn}
+	var out models.APITokenWithSecret
+	if err := c.post("/auth/tokens/"+url.PathEscape(id)+"/rotate", input, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}

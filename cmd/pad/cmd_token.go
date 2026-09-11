@@ -32,11 +32,13 @@ Examples:
   pad token create --name ci-agent
   pad token create --name cursor --expires-in 30
   pad token list
+  pad token rotate 7fde5e41-...
   pad token revoke 7fde5e41-...`,
 	}
 	cmd.AddCommand(
 		tokenCreateCmd(),
 		tokenListCmd(),
+		tokenRotateCmd(),
 		tokenRevokeCmd(),
 	)
 	return cmd
@@ -151,6 +153,54 @@ func tokenListCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func tokenRotateCmd() *cobra.Command {
+	var expiresInFlag int
+
+	cmd := &cobra.Command{
+		Use:   "rotate <token-id>",
+		Short: "Replace a token's secret (the old one stops working immediately)",
+		Long: `Rotate an API token by its exact id (from 'pad token list'): the server
+generates a new secret and the old one stops working with the same write —
+there is no grace window, so anything still using the old secret fails on
+its next call. Metadata (name, scopes) is preserved; last-used resets.
+
+The new secret is shown exactly once. --expires-in sets a new expiry in
+days; without it the original expiry is preserved.
+
+Like create, rotation needs a login session: a call authenticated by a
+pad_ API token is refused with 403 session_required.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+
+			token, err := client.RotateUserToken(args[0], expiresInFlag)
+			if err != nil {
+				return err
+			}
+
+			if formatFlag == "json" {
+				return cli.PrintJSON(token)
+			}
+
+			green := color.New(color.FgGreen)
+			fmt.Printf("%s Token rotated: %s\n", green.Sprint("✓"), token.Name)
+			fmt.Printf("  ID:      %s\n", token.ID)
+			fmt.Printf("  Prefix:  %s\n", token.Prefix)
+			fmt.Printf("  Expires: %s\n", formatTokenExpiry(token.ExpiresAt))
+			fmt.Println()
+			fmt.Printf("  %s\n", color.New(color.Bold).Sprint(token.Token))
+			fmt.Println()
+			yellow := color.New(color.FgYellow)
+			fmt.Printf("%s This secret is shown only this once — store it now. The old secret stopped working immediately.\n", yellow.Sprint("!"))
+			return nil
+		},
+	}
+
+	cmd.Flags().IntVar(&expiresInFlag, "expires-in", 0, "new expiry in days (0 = keep the original expiry)")
+
+	return cmd
 }
 
 func tokenRevokeCmd() *cobra.Command {

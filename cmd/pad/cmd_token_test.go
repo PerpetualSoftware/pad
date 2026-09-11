@@ -23,6 +23,8 @@ type stubTokenServer struct {
 	wantToken    string
 	createBodies []map[string]any
 	deletePaths  []string
+	rotatePaths  []string
+	rotateBodies []map[string]any
 	listHits     int
 }
 
@@ -85,19 +87,38 @@ func newStubTokenServer(t *testing.T, wantToken string) *stubTokenServer {
 		if !authorized(w, r) {
 			return
 		}
-		if r.Method != http.MethodDelete {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-		s.deletePaths = append(s.deletePaths, r.URL.Path)
-		if strings.HasSuffix(r.URL.Path, "/tok-missing") {
-			w.WriteHeader(http.StatusNotFound)
+		switch {
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/rotate"):
+			s.rotatePaths = append(s.rotatePaths, r.URL.Path)
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			s.rotateBodies = append(s.rotateBodies, body)
+			if strings.HasSuffix(r.URL.Path, "/tok-missing/rotate") {
+				w.WriteHeader(http.StatusNotFound)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"error": map[string]any{"code": "not_found", "message": "Token not found"},
+				})
+				return
+			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"error": map[string]any{"code": "not_found", "message": "Token not found"},
+				"id": "tok-1111", "name": "ci-agent", "prefix": "pad_rot8",
+				"created_at": "2026-08-01T10:00:00Z",
+				"expires_at": "2026-12-01T10:00:00Z",
+				"token":      "pad_rot8secretsecretsecret",
 			})
-			return
+		case r.Method == http.MethodDelete:
+			s.deletePaths = append(s.deletePaths, r.URL.Path)
+			if strings.HasSuffix(r.URL.Path, "/tok-missing") {
+				w.WriteHeader(http.StatusNotFound)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"error": map[string]any{"code": "not_found", "message": "Token not found"},
+				})
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
-		w.WriteHeader(http.StatusNoContent)
 	})
 	s.Server = httptest.NewServer(mux)
 	t.Cleanup(s.Close)
@@ -213,6 +234,79 @@ func TestTokenRevoke_DeletesById(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(out), "revoked") {
 		t.Errorf("output should confirm the revoke:\n%s", out)
+	}
+}
+
+// rotate POSTs to the exact id's /rotate and prints the NEW secret
+// exactly once, with the store-it-now notice and a warning that the old
+// secret is already dead — RotateAPIToken replaces the hash in place,
+// so there is no grace window and the wording must not imply one.
+func TestTokenRotate_PrintsNewSecretOnceAndNamesImmediateCutover(t *testing.T) {
+	srv := setupTokenEnv(t)
+
+	cmd := tokenRotateCmd()
+	var runErr error
+	out := captureStdout(t, func() {
+		runErr = cmd.RunE(cmd, []string{"tok-1111"})
+	})
+	if runErr != nil {
+		t.Fatalf("token rotate: %v", runErr)
+	}
+	if len(srv.rotatePaths) != 1 || !strings.HasSuffix(srv.rotatePaths[0], "/auth/tokens/tok-1111/rotate") {
+		t.Fatalf("rotate paths = %v, want exactly one ending in /auth/tokens/tok-1111/rotate", srv.rotatePaths)
+	}
+	if _, present := srv.rotateBodies[0]["expires_in"]; present {
+		t.Errorf("no expires_in should be posted without the flag (the server preserves the original expiry), got body %v", srv.rotateBodies[0])
+	}
+	if strings.Count(out, "pad_rot8secretsecretsecret") != 1 {
+		t.Errorf("the new secret must appear exactly once:\n%s", out)
+	}
+	lower := strings.ToLower(out)
+	if !strings.Contains(lower, "store") && !strings.Contains(lower, "shown") {
+		t.Errorf("output must warn the new secret is shown only now:\n%s", out)
+	}
+	if !strings.Contains(lower, "old secret") || !strings.Contains(lower, "immediately") {
+		t.Errorf("output must say the old secret already stopped working, immediately:\n%s", out)
+	}
+}
+
+// --expires-in posts the new expiry in days; the server caps it against
+// the platform max lifetime.
+func TestTokenRotate_ExpiresInPosted(t *testing.T) {
+	srv := setupTokenEnv(t)
+
+	cmd := tokenRotateCmd()
+	if err := cmd.Flags().Set("expires-in", "30"); err != nil {
+		t.Fatalf("set --expires-in: %v", err)
+	}
+	var runErr error
+	captureStdout(t, func() {
+		runErr = cmd.RunE(cmd, []string{"tok-1111"})
+	})
+	if runErr != nil {
+		t.Fatalf("token rotate --expires-in 30: %v", runErr)
+	}
+	if n, _ := srv.rotateBodies[0]["expires_in"].(float64); int(n) != 30 {
+		t.Errorf("posted expires_in = %v, want 30", srv.rotateBodies[0]["expires_in"])
+	}
+}
+
+// rotate surfaces the server's 404 for an unknown id — exact id only,
+// same discipline as revoke: a typo is not-found, never a wrong token
+// rotated (which would kill a live secret somewhere).
+func TestTokenRotate_NotFoundSurfacesError(t *testing.T) {
+	setupTokenEnv(t)
+
+	cmd := tokenRotateCmd()
+	var runErr error
+	captureStdout(t, func() {
+		runErr = cmd.RunE(cmd, []string{"tok-missing"})
+	})
+	if runErr == nil {
+		t.Fatal("expected an error for an unknown token id")
+	}
+	if !strings.Contains(runErr.Error(), "not found") && !strings.Contains(runErr.Error(), "Token not found") {
+		t.Errorf("error should say the token was not found, got %q", runErr.Error())
 	}
 }
 
