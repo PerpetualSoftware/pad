@@ -181,6 +181,14 @@ func TestHTTPItemList_FullOptsIntoCompleteBodies(t *testing.T) {
 
 func TestHTTPItemShow_AgentProjectionKeepsBodyAndDropsStoragePlumbing(t *testing.T) {
 	d := newListSummaryFixture(t)
+	rawCtx := WithDispatchInput(context.Background(), map[string]any{
+		"workspace": "list-ws",
+		"ref":       "TASK-1",
+	})
+	rawRes, rawErr := d.Dispatch(rawCtx, []string{"item", "show"}, nil)
+	if rawErr != nil || rawRes.IsError {
+		t.Fatalf("default item show failed: err=%v result=%s", rawErr, textOf(rawRes))
+	}
 	ctx := WithDispatchInput(context.Background(), map[string]any{
 		"workspace": "list-ws",
 		"ref":       "TASK-1",
@@ -194,6 +202,10 @@ func TestHTTPItemShow_AgentProjectionKeepsBodyAndDropsStoragePlumbing(t *testing
 		t.Fatalf("Dispatch(item show) returned an error result: %s", textOf(res))
 	}
 	text := textOf(res)
+	t.Logf("item show fixture: %d bytes default, %d bytes agent projection", len(textOf(rawRes)), len(text))
+	if len(text) >= len(textOf(rawRes)) {
+		t.Errorf("agent projection should be smaller than default item JSON: default=%d agent=%d", len(textOf(rawRes)), len(text))
+	}
 	if !strings.Contains(text, listSummaryContentMarker) {
 		t.Errorf("agent item view dropped the full body:\n%s", text)
 	}
