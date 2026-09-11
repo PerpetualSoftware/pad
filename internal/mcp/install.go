@@ -209,6 +209,10 @@ func codexPathFor(home, _ string) (string, error) {
 // Returns (modified=true, nil) when the on-disk content actually
 // changed, (false, nil) when the file was already up to date.
 func AddPadEntry(path, binary string) (bool, error) {
+	return addPadEntryJSON(path, binary, []string{"mcp", "serve"})
+}
+
+func addPadEntryJSON(path, binary string, args []string) (bool, error) {
 	if binary == "" {
 		return false, errors.New("AddPadEntry: binary path is required")
 	}
@@ -218,7 +222,7 @@ func AddPadEntry(path, binary string) (bool, error) {
 	}
 	wantedEntry := map[string]any{
 		"command": binary,
-		"args":    []any{"mcp", "serve"},
+		"args":    stringsToAny(args),
 	}
 	servers, _ := cfg["mcpServers"].(map[string]any)
 	if servers == nil {
@@ -403,6 +407,10 @@ func jsonEqual(a, b map[string]any) bool {
 // unrelated keys and other mcp_servers entries are preserved. Returns
 // (modified=true, nil) only when the on-disk content actually changed.
 func addPadEntryTOML(path, binary string) (bool, error) {
+	return addPadEntryTOMLWithArgs(path, binary, []string{"mcp", "serve"})
+}
+
+func addPadEntryTOMLWithArgs(path, binary string, args []string) (bool, error) {
 	if binary == "" {
 		return false, errors.New("addPadEntryTOML: binary path is required")
 	}
@@ -412,7 +420,7 @@ func addPadEntryTOML(path, binary string) (bool, error) {
 	}
 	wantedEntry := map[string]any{
 		"command": binary,
-		"args":    []any{"mcp", "serve"},
+		"args":    stringsToAny(args),
 	}
 	// If mcp_servers exists but isn't a table (e.g. a scalar left by a
 	// hand-edit or an incompatible tool), refuse rather than silently
@@ -543,11 +551,19 @@ func writeTOMLConfig(path string, cfg map[string]any) error {
 // read and written in its native format. JSON is the default; TOML is
 // Codex-only for now.
 
-func addEntry(agent *Agent, path, binary string) (bool, error) {
+func addEntry(agent *Agent, path, binary string, args []string) (bool, error) {
 	if agent.Format == formatTOML {
-		return addPadEntryTOML(path, binary)
+		return addPadEntryTOMLWithArgs(path, binary, args)
 	}
-	return AddPadEntry(path, binary)
+	return addPadEntryJSON(path, binary, args)
+}
+
+func stringsToAny(values []string) []any {
+	out := make([]any, len(values))
+	for i, value := range values {
+		out[i] = value
+	}
+	return out
 }
 
 func removeEntry(agent *Agent, path string) (bool, error) {
@@ -572,6 +588,9 @@ func hasEntry(agent *Agent, path string) (bool, string, error) {
 type Installer struct {
 	// Binary is the pad executable to register. Required for Install.
 	Binary string
+	// StructuredOnly opts installed clients into the token-efficient result
+	// mode by appending --structured-only to `pad mcp serve`.
+	StructuredOnly bool
 	// Home overrides os.UserHomeDir when non-empty (test-only).
 	Home string
 	// CWD overrides os.Getwd when non-empty (test-only). Used to resolve
@@ -648,7 +667,11 @@ func (i *Installer) Install(agentName string) (string, bool, error) {
 	if err != nil {
 		return "", false, err
 	}
-	modified, err := addEntry(agent, path, i.Binary)
+	args := []string{"mcp", "serve"}
+	if i.StructuredOnly {
+		args = append(args, "--structured-only")
+	}
+	modified, err := addEntry(agent, path, i.Binary, args)
 	return path, modified, err
 }
 
