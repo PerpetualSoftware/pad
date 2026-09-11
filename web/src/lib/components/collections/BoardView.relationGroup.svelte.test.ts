@@ -24,6 +24,14 @@ const ROWS: Record<string, ItemIndexRow> = {
 		collection_slug: 'colors',
 		deleted_at: null,
 	} as unknown as ItemIndexRow,
+	'id-blue': {
+		id: 'id-blue',
+		title: 'Blue',
+		item_number: 2,
+		collection_prefix: 'COLOR',
+		collection_slug: 'colors',
+		deleted_at: null,
+	} as unknown as ItemIndexRow,
 	'id-gone': {
 		id: 'id-gone',
 		title: 'Gone',
@@ -411,14 +419,16 @@ describe('the MENU move into a refused relation lane', () => {
 	 * codex round 6, P2 — and the reason this leg is rendered rather than
 	 * source-guarded like its drag sibling.
 	 *
-	 * `moveItem` mutates `columnData[col]` in place before committing, and the
-	 * sync effect assigns the DERIVED VALUE into `columnData`, so the two share
-	 * object identity: the mutation wrote THROUGH to `propColumnData`'s cached
-	 * object, and restoring by assigning it back restored nothing. The drag
-	 * path escaped because svelte-dnd-action hands over fresh arrays.
+	 * Round 6 reported that `moveItem`'s `columnData[col] = ...` writes THROUGH
+	 * to `propColumnData`'s cached object, so restoring by assigning it back
+	 * restores nothing. That premise is FALSE (settled in round 7, see the
+	 * failure-exit block at the end of this file): the alias mutant SURVIVES
+	 * this test, and a direct probe of the shape reports the derived's cache
+	 * unchanged by the write.
 	 *
-	 * No source guard could have seen that — the restore line was present and
-	 * correct-looking the whole time. It took driving the menu.
+	 * What this test does prove — verified by a gate mutant killing it — is
+	 * that it drives the refusal path for real. No source guard could have done
+	 * that; it took driving the menu.
 	 */
 	const cardsIn = (screen: { container: HTMLElement }, laneName: string) => {
 		for (const col of screen.container.querySelectorAll('.kanban-column')) {
@@ -469,5 +479,87 @@ describe('the MENU move into a refused relation lane', () => {
 		expect(onStatusChange).not.toHaveBeenCalled();
 		expect(cardsIn(screen, 'COLOR-1Red')).toEqual(['car-1']);
 		expect(cardsIn(screen, 'COLOR-9Gone(deleted)')).toEqual(['car-2']);
+	});
+});
+
+describe('the MENU move whose WRITE fails', () => {
+	/**
+	 * codex round 7, P1 — REFUTED, and this test is what refutes it.
+	 *
+	 * Rounds 6 and 7 both reasoned that the sync `$effect` assigns the
+	 * `$derived.by` VALUE into `columnData`, so `moveItem`'s
+	 * `columnData[col] = …` writes THROUGH to the derived cache — round 6
+	 * against the refusal exit, round 7 against this one, the failure exit
+	 * where `onStatusChange` rejects and the restore rests on
+	 * `dropCooldown = false` alone.
+	 *
+	 * The premise does not hold. A probe over exactly that shape — a
+	 * `$derived.by` object assigned into a `$state`, a property written on the
+	 * `$state`, then the derived read back — reported the derived's cached
+	 * value UNCHANGED (`after mutation, derived.a=[1]`), and the restore then
+	 * produced the original lanes. A `$state` holding a derived's object is a
+	 * deep proxy; its property writes do not reach what the derivation cached.
+	 *
+	 * So this test passes against the tree as written, and that is the finding
+	 * rather than a fix. It is kept because the failure exit had NO behavioural
+	 * coverage before it and because it discriminates: removing
+	 * `dropCooldown = false` turns it red (measured), so its green is evidence
+	 * that the cooldown release is what restores the board, not an accident of
+	 * a card that never moved — which the `toHaveBeenCalledTimes(1)`
+	 * precondition rules out separately.
+	 *
+	 * The class is every exit from `commitColumnMove` that must restore lanes
+	 * after `moveItem` mutated them. There are two, the refusal and the
+	 * failure; both are now covered, and neither is defective.
+	 */
+	const cardsIn = (screen: { container: HTMLElement }, laneName: string) => {
+		for (const col of screen.container.querySelectorAll('.kanban-column')) {
+			const name = (col.querySelector('.column-name')?.textContent ?? '').replace(/\s+/g, '');
+			if (name === laneName) return [...col.querySelectorAll('.card-title')].map((e) => e.textContent?.trim());
+		}
+		return null;
+	};
+
+	it('puts the card back when onStatusChange rejects', async () => {
+		const onStatusChange = vi.fn().mockRejectedValue(new Error('nope'));
+		const screen = render(BoardView, {
+			props: {
+				items: [item('car-1', 'id-blue'), item('car-2', 'id-red')],
+				collection: collection(),
+				wsSlug: 'ws',
+				groupField: 'car_color',
+				onStatusChange,
+				onReorder: vi.fn(),
+			} as never,
+		});
+
+		// PRECONDITION: two LIVE lanes, sorted by title, each holding its card.
+		expect(cardsIn(screen, 'COLOR-2Blue')).toEqual(['car-1']);
+		expect(cardsIn(screen, 'COLOR-1Red')).toEqual(['car-2']);
+
+		const cardMenuButtons = [...screen.container.querySelectorAll('.item-card button')].filter(
+			(b) => (b.textContent ?? '').trim() === '⋮',
+		) as HTMLButtonElement[];
+		expect(cardMenuButtons.length, 'no card action menu trigger — re-point this test').toBeGreaterThan(0);
+		cardMenuButtons[0].click();
+		await tick();
+		await tick();
+
+		const moveRight = [...document.querySelectorAll('button')].find((b) =>
+			(b.textContent ?? '').includes('Move right'),
+		);
+		expect(moveRight, '"Move right" was not offered — re-point this test').toBeTruthy();
+		moveRight!.click();
+		await tick();
+		await tick();
+		await tick();
+
+		// PRECONDITION for the assertion below: the write was ATTEMPTED and
+		// failed. Without this, a board that never moved the card would pass.
+		expect(onStatusChange).toHaveBeenCalledTimes(1);
+
+		// The write failed, so the board must show the state it started in.
+		expect(cardsIn(screen, 'COLOR-2Blue')).toEqual(['car-1']);
+		expect(cardsIn(screen, 'COLOR-1Red')).toEqual(['car-2']);
 	});
 });

@@ -450,14 +450,25 @@
 				// restore. Assigning here rather than releasing a cooldown
 				// nobody set is the same repair without the two-second window.
 				//
-				// COPIED, not aliased (codex round 6). The sync effect assigns
-				// the derived VALUE into `columnData`, so the two share object
-				// identity — and `moveItem` mutates `columnData[col]` in place
-				// before calling this. On the menu path that mutation had
-				// already written THROUGH to `propColumnData`'s cached object,
-				// so assigning it back restored nothing and the card stayed in
-				// the lane the drop had just been refused. The drag path
-				// escaped because svelte-dnd-action hands over fresh arrays.
+				// COPIED rather than aliased — defensive, and NOT for the
+				// reason rounds 6 and 7 gave. Both rounds argued that the sync
+				// effect assigns the derived VALUE into `columnData`, so a
+				// later `columnData[col] = ...` writes THROUGH to
+				// `propColumnData`'s cached object and assigning it back
+				// restores nothing. That premise is FALSE, measured rather than
+				// argued: a `$state` assigned a `$derived`'s object is a deep
+				// proxy whose property writes do not reach the derived's cache.
+				// A probe over exactly this shape ($derived.by object → $state
+				// → property write → read the derived) reported
+				// `after mutation, derived.a=[1]`, the pre-mutation value. The
+				// rendered tests agree from the other side: the round-6 menu
+				// test survives the alias mutant, and the failure-exit test
+				// below passes on the cooldown release alone while going red
+				// when that release is removed.
+				// So the copy buys nothing against aliasing; it stays only
+				// because a restore path should not hand its caller an object
+				// somebody else owns. Do not re-derive the aliasing story from
+				// the shape of this code — it has now cost two review rounds.
 				columnData = Object.fromEntries(
 					Object.entries(propColumnData).map(([key, list]) => [key, [...list]]),
 				);
