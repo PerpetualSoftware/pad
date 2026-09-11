@@ -97,7 +97,7 @@ pad server info                         # How this client is connected to Pad
 
 ### For AI Agents
 
-**Your agent becomes a project partner.** Install the `/pad` skill once, and your AI coding tool can read, create, and update project items through natural language.
+**Your agent becomes a project partner.** Install the `/pad` skill once, and your AI coding tool can read, create, and update project items through natural language. Cursor, Codex, Windsurf, and OpenCode receive a compact dispatcher and load detailed guidance by topic with `pad agent guide`, keeping routine turns small.
 
 ```bash
 pad agent install        # Auto-detects your tools and installs the skill
