@@ -60,10 +60,15 @@ const (
 //   - BEFORE any transaction — GetItem, validateAssignmentScope, or db.Begin
 //     failing. Nothing was written.
 //   - INSIDE the transaction, rolled back. Nothing was written.
-//   - The COMMIT, whose acknowledgement was lost. The effects ARE on disk.
+//   - The COMMIT reported an error. The outcome is AMBIGUOUS: a serialization or
+//     deferred-constraint failure wrote nothing, while a lost acknowledgement means
+//     the effects ARE on disk. Nothing at this layer can tell the two apart, which
+//     is the whole difficulty rather than an aside (codex round 2 — an earlier
+//     wording asserted the effects had landed, which is only one of the cases).
 //
 // Terminal is right for all three, for two different reasons. The third is BUG-2994
-// itself: a replay writes the item twice. The first two are the second defect, and
+// itself: the replay may write the item twice, and no caller can know whether it
+// did. The first two are the second defect, and
 // it is the one that makes a "transient failures may retry" carve-out unsafe — the
 // ordinary write does NOT carry composePruneWithPrecheck, so a rolled-back direct
 // write fell through to a write that set items.content while the per-item op-log
@@ -120,6 +125,11 @@ const applierSettlePoll = 10 * time.Millisecond
 
 // routeContentUpdate decides which ordering a content PATCH takes and executes it.
 //
+// It returns no error, deliberately (BUG-2994, codex round 2). Every failure is
+// ANSWERED here, so an error returned alongside a response that has already been
+// written is a contract inviting a future caller to answer it twice. The error is
+// logged at the arm that owns it.
+//
 // It owns the re-decision deliberately. The predecessor helper retried
 // ErrRoomActiveDuringPrune INSIDE applyContentViaCollab and re-called
 // ApplyExternalContent, which could succeed through a freshly-joined applier and
@@ -134,7 +144,7 @@ func (s *Server) routeContentUpdate(
 	openChildrenPrecheck func(*sql.Tx, *models.Item) error,
 	parentLink *store.ParentLinkUpdate,
 	content string,
-) (contentRoute, *models.Item, error) {
+) (contentRoute, *models.Item) {
 	var updated *models.Item
 	outcome, paErr := settleContentRoute(
 		r.Context(),
@@ -158,7 +168,7 @@ func (s *Server) routeContentUpdate(
 		return s.applierFirstWrite(w, item, input, openChildrenPrecheck, parentLink, content)
 
 	case settleDirectWrote:
-		return contentRouteDirectWrote, updated, nil
+		return contentRouteDirectWrote, updated
 
 	case settleUnsettled:
 		slog.Info("collab: room neither electable nor peerless within the settle budget; refusing",
@@ -166,11 +176,11 @@ func (s *Server) routeContentUpdate(
 			"budget", applierSettleBudget,
 		)
 		writeRoomSettlingError(w, itemRefOrSlug(*item))
-		return contentRouteHandled, nil, nil
+		return contentRouteHandled, nil
 
 	default: // settleDirectFailed
 		if s.writeTypedItemRefusal(w, item, paErr) {
-			return contentRouteHandled, nil, nil
+			return contentRouteHandled, nil
 		}
 		// Terminal: no second write. The first attempt's outcome is unknown — it may
 		// have durably committed — so replaying it is the defect, not the recovery.
@@ -179,7 +189,7 @@ func (s *Server) routeContentUpdate(
 			"error", paErr,
 		)
 		writeInternalError(w, paErr)
-		return contentRouteHandled, nil, paErr
+		return contentRouteHandled, nil
 	}
 }
 
@@ -265,7 +275,7 @@ func (s *Server) applierFirstWrite(
 	openChildrenPrecheck func(*sql.Tx, *models.Item) error,
 	parentLink *store.ParentLinkUpdate,
 	content string,
-) (contentRoute, *models.Item, error) {
+) (contentRoute, *models.Item) {
 	rowInput := *input
 	// The content half travels through the applier, not the row. Every store content
 	// write is gated on Content != nil, so a nil here means the row write touches
@@ -278,10 +288,10 @@ func (s *Server) applierFirstWrite(
 		// ApplyExternalContent is ever called, so there is no Y.Doc write, no
 		// op-log row, and nothing for a later flush to carry.
 		if s.writeTypedItemRefusal(w, item, uerr) {
-			return contentRouteHandled, nil, nil
+			return contentRouteHandled, nil
 		}
 		writeInternalError(w, uerr)
-		return contentRouteHandled, nil, nil
+		return contentRouteHandled, nil
 	}
 
 	if aerr := s.collab.ApplyExternalContent(item.ID, content); aerr != nil {
@@ -291,7 +301,7 @@ func (s *Server) applierFirstWrite(
 			// would be a false statement, so it keeps its own retryable answer.
 			writeError(w, http.StatusConflict, "applier_ambiguous",
 				"A concurrent version restore made this edit's outcome ambiguous; please retry.")
-			return contentRouteHandled, nil, nil
+			return contentRouteHandled, nil
 		}
 		outcome := classifyApplyOutcome(aerr)
 		slog.Warn("collab: row write landed but the apply did not confirm; answering content_not_applied",
@@ -300,10 +310,10 @@ func (s *Server) applierFirstWrite(
 			"error", aerr,
 		)
 		writeContentNotAppliedError(w, itemRefOrSlug(*item), landedFieldNames(input), updated.UpdatedAt, outcome, aerr.Error())
-		return contentRouteHandled, nil, nil
+		return contentRouteHandled, nil
 	}
 
-	return contentRouteApplierWrote, updated, nil
+	return contentRouteApplierWrote, updated
 }
 
 // classifyApplyOutcome decides whether a failed apply DEMONSTRABLY left the content

@@ -16,26 +16,29 @@ import (
 // BUG-2994: a content PATCH whose transaction COMMITS but whose tx.Commit()
 // reports an error must not be written a second time.
 //
-// The path, enumerated rather than assumed: handleUpdateItem writes twice iff
-// routeContentUpdate returns contentRouteFallThrough, and that return had exactly
+// The path, enumerated rather than assumed: handleUpdateItem wrote twice iff
+// routeContentUpdate returned contentRouteFallThrough, and that return had exactly
 // one producer — the settleDirectFailed arm, reached when PruneAndApply's applyFn
-// (the store write) fails and writeTypedItemRefusal does not recognise the error.
+// (the store call) fails and writeTypedItemRefusal does not recognise the error.
 // PruneAndApply's only other error, ErrRoomActiveDuringPrune, is consumed by the
-// settle loop above and never reaches that arm, so EVERY error arriving there is a
-// store write-transaction error. The fall-through's premise — "nothing was written"
-// — is an inference from rollback semantics, and a lost commit ack falsifies it.
+// settle loop above and never reaches that arm.
 //
-// WHY THE OBVIOUS INSTRUMENT DOES NOT WORK. Counting item_versions rows does not
-// discriminate here, and a test built on it would pass against the defect. The
-// version INSERT is gated on `*input.Content != existing.Content` (items.go), and
-// the second write re-reads `existing` AFTER the first commit landed — so it sees
-// the content it is about to write and mints no row. One version row is what BOTH
-// the broken and the fixed code produce.
+// The fall-through's premise was "nothing was written", inferred from rollback
+// semantics. A commit that reported an error falsifies it: the outcome is ambiguous,
+// and a lost acknowledgement means the row already changed. (An earlier wording here
+// said every error arriving at that arm came out of a write TRANSACTION. It does
+// not — GetItem, validateAssignmentScope and db.Begin all fail before one is opened
+// — and the enum comment in handlers_items_content_route.go carries the three-way
+// split. Corrected in codex round 2, having been corrected wrongly in round 1: the
+// round-1 edit fixed the enum comment and left this one contradicting it.)
+//
+// WHY THE OBVIOUS INSTRUMENTS DO NOT WORK — see the note above the commit-count
+// assertion below, which names each and what it actually measures.
 //
 // What does discriminate: how many transactions reached COMMIT (counted at the seam
-// itself, which is the property stated directly), the number of item_updated events
-// the request emits, and the status code — a second write that succeeds answers 200
-// about a request whose first write's outcome was never established.
+// itself, which is the property stated directly), and the status code — a second
+// write that succeeds answers 200 about a request whose first write's outcome was
+// never established.
 
 var errSimItemAckLoss = errors.New("simulated commit ack loss")
 
@@ -129,15 +132,19 @@ func assertContentPatchAckLossCommitsOnce(t *testing.T, srv *Server) {
 	//     existing.Content, and the replayed write re-reads `existing` AFTER the
 	//     first commit landed, so it finds the content already at its target value
 	//     and mints nothing.
-	//   - item_updated events. The store's outbox emit is gated on
-	//     itemUpdatedSliceChanged and finds nothing changed for the same reason; the
-	//     handler's SSE publish fires once per successful REQUEST, not once per
-	//     write. Stated carefully because an earlier draft of this comment said
-	//     "events do not discriminate" full stop, and that is wrong in the other
-	//     direction (codex round 1): the fixed tree emits ZERO, because 500 returns
-	//     before the publish. That distinguishes fixed from unfixed — but it is the
-	//     same fact the status assertion below already pins, and it says nothing
-	//     about how many times the row was written, which is the property here.
+	//   - item_updated events, on EITHER of the two surfaces that carry that name,
+	//     which are worth separating because an earlier draft of this comment ran
+	//     them together (codex rounds 1 and 2):
+	//
+	//     The DURABLE OUTBOX row, written in-transaction by emitItemUpdateEventsTx
+	//     and gated on itemUpdatedSliceChanged. One write produces one; the replay
+	//     produces none, for the same reason the version INSERT mints none.
+	//
+	//     The SSE publish, which the HANDLER makes once per successful request, not
+	//     once per write. It fires once on the unfixed tree and not at all on the
+	//     fixed one, since a 500 returns before it — so it separates fixed from
+	//     unfixed, but it is the same fact the status assertion below pins, and it
+	//     is silent on how many times the row was written, which is the property.
 	//
 	// Measured against the unfixed tree, not reasoned about.
 	if n := atomic.LoadInt32(&commits); n != 1 {

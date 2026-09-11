@@ -1902,7 +1902,7 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		// previously the only way to discover the applier path was to take it.
 		contentToApply := *input.Content
 
-		route, updated, routeErr := s.routeContentUpdate(w, r, item, &input, openChildrenPrecheck, parentLink, contentToApply)
+		route, updated := s.routeContentUpdate(w, r, item, &input, openChildrenPrecheck, parentLink, contentToApply)
 		switch route {
 		case contentRouteHandled:
 			// The refusal or the settling answer has already been written.
@@ -1923,9 +1923,8 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			input.Content = nil
 		}
 		// No default and no fall-through arm: routeContentUpdate answers every
-		// failure itself (BUG-2994). routeErr is logged by the router and is kept
-		// only so the switch's failure arm stays named at this call site.
-		_ = routeErr
+		// failure itself and returns nothing for this caller to answer again
+		// (BUG-2994).
 	}
 
 	var updated *models.Item
