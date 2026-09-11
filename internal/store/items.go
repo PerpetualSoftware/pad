@@ -383,7 +383,7 @@ func (s *Store) insertItemTx(tx *sql.Tx, id, workspaceID, collectionID, slug, ts
 	// rolled-back write rolls back its index rows. This site covers create AND
 	// the cross-workspace copy, which reaches it through createItemTxWithID.
 	// PLAN-2857 U5 / TASK-2997.
-	if err := s.replaceRelationLinks(tx, id, workspaceID, collectionID, fields); err != nil {
+	if _, err := s.replaceRelationLinks(tx, id, workspaceID, collectionID, fields); err != nil {
 		return fmt.Errorf("index relation links: %w", err)
 	}
 
@@ -2802,7 +2802,7 @@ func (s *Store) updateItemWithParentLinkOnce(
 		if err := tx.QueryRow(s.q(`SELECT fields FROM items WHERE id = ?`), id).Scan(&storedFields); err != nil {
 			return nil, fmt.Errorf("re-read fields for relation index: %w", err)
 		}
-		if err := s.replaceRelationLinks(tx, id, existing.WorkspaceID, existing.CollectionID, storedFields); err != nil {
+		if _, err := s.replaceRelationLinks(tx, id, existing.WorkspaceID, existing.CollectionID, storedFields); err != nil {
 			return nil, fmt.Errorf("index relation links: %w", err)
 		}
 	}
@@ -3064,7 +3064,7 @@ func (s *Store) restoreItemOnce(id string, opt mutationOptions) (*models.Item, e
 	// schema that has moved. Both directions bite — a field that became a
 	// relation leaves the restored item missing edges, one that stopped being
 	// a relation leaves it with edges it should not have (codex round 1).
-	if err := s.replaceRelationLinks(tx, id, existing.WorkspaceID, existing.CollectionID, existing.Fields); err != nil {
+	if _, err := s.replaceRelationLinks(tx, id, existing.WorkspaceID, existing.CollectionID, existing.Fields); err != nil {
 		return nil, fmt.Errorf("index relation links on restore: %w", err)
 	}
 
@@ -4947,7 +4947,7 @@ func (s *Store) moveItemWithPreCheckOnce(
 	// keys are relations is a property of the collection, not of the item. A
 	// hook that passed the item's old collection here would leave every moved
 	// item indexed under the shape it just left.
-	if err := s.replaceRelationLinks(tx, itemID, existing.WorkspaceID, targetCollectionID, newFieldsJSON); err != nil {
+	if _, err := s.replaceRelationLinks(tx, itemID, existing.WorkspaceID, targetCollectionID, newFieldsJSON); err != nil {
 		return nil, fmt.Errorf("index relation links on move: %w", err)
 	}
 

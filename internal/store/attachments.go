@@ -1510,8 +1510,13 @@ func (s *Store) RemapAttachmentReferencesInWorkspace(workspaceID string, oldToNe
 	// That lost update predates the relation index and is not caused by it;
 	// what U5 adds is that the same stale snapshot is now also used to rebuild
 	// the reverse index, so the staleness reaches a second place. One lock
-	// closes both, and it is the same workspace lock every other writer here
-	// takes, acquired first so it cannot invert against them.
+	// closes both.
+	//
+	// It is the same advisory lock ITEM writers take, and taking it first here
+	// preserves their order (workspace, then rows) so the two cannot invert.
+	// Comment writers do not take it at all — which is safe, because a lock
+	// nobody else in that path holds cannot participate in a cycle, and this
+	// transaction takes no lock a comment writer could be waiting on.
 	if err := s.acquireWorkspaceSeqLock(tx, workspaceID); err != nil {
 		return err
 	}
@@ -1641,7 +1646,7 @@ func (s *Store) RemapAttachmentReferencesInWorkspace(workspaceID string, oldToNe
 		// be a standing claim about what remapAttachmentRefs can touch. The
 		// collection id rides along on the scan above rather than costing a
 		// lookup per item (PLAN-2857 U5).
-		if err := s.replaceRelationLinks(tx, u.id, workspaceID, u.collectionID, u.fields); err != nil {
+		if _, err := s.replaceRelationLinks(tx, u.id, workspaceID, u.collectionID, u.fields); err != nil {
 			return fmt.Errorf("index relation links for item %s: %w", u.id, err)
 		}
 	}

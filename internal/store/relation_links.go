@@ -40,28 +40,31 @@ import (
 // Calling it on a write that did not touch a relation value is a deliberate
 // no-op rather than an omission, so no caller has to reason about which
 // writes "can" matter.
-func (s *Store) replaceRelationLinks(tx *sql.Tx, sourceItemID, workspaceID, collectionID, fieldsJSON string) error {
+// Returns the number of edge rows written, so a caller reporting progress
+// counts what LANDED rather than re-deriving a prediction from a schema it read
+// earlier — those two disagree the moment a schema changes underneath.
+func (s *Store) replaceRelationLinks(tx *sql.Tx, sourceItemID, workspaceID, collectionID, fieldsJSON string) (int, error) {
 	// Delete first so callers never pre-clear, and so a blob that has lost
 	// its relation values correctly ends with zero rows.
 	if _, err := tx.Exec(s.q(`DELETE FROM item_relation_links WHERE source_item_id = ?`), sourceItemID); err != nil {
-		return fmt.Errorf("delete prior relation links: %w", err)
+		return 0, fmt.Errorf("delete prior relation links: %w", err)
 	}
 
 	schema, err := s.relationSchemaForCollectionTx(tx, collectionID)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if len(schema) == 0 {
 		// The collection declares no relation fields, so there is nothing to
 		// index. Not an error, and the delete above still ran — which is what
 		// makes retyping a field away from `relation` self-healing on the
 		// next write of each item.
-		return nil
+		return 0, nil
 	}
 
 	values := relationValuesFromBlob(fieldsJSON, schema)
 	if len(values) == 0 {
-		return nil
+		return 0, nil
 	}
 
 	for _, v := range values {
@@ -70,10 +73,10 @@ func (s *Store) replaceRelationLinks(tx *sql.Tx, sourceItemID, workspaceID, coll
 				(source_item_id, source_field_key, target_item_id, workspace_id, ordinal)
 			VALUES (?, ?, ?, ?, ?)
 		`), sourceItemID, v.fieldKey, v.targetID, workspaceID, v.ordinal); err != nil {
-			return fmt.Errorf("insert relation link %s/%s: %w", v.fieldKey, v.targetID, err)
+			return 0, fmt.Errorf("insert relation link %s/%s: %w", v.fieldKey, v.targetID, err)
 		}
 	}
-	return nil
+	return len(values), nil
 }
 
 // relationLinkRow is one edge about to be written.
@@ -227,7 +230,7 @@ func (s *Store) ReindexCollectionRelationLinks(tx *sql.Tx, collectionID, workspa
 	rows.Close()
 
 	for _, r := range items {
-		if err := s.replaceRelationLinks(tx, r.id, workspaceID, collectionID, r.fields); err != nil {
+		if _, err := s.replaceRelationLinks(tx, r.id, workspaceID, collectionID, r.fields); err != nil {
 			return err
 		}
 	}
@@ -312,7 +315,7 @@ func (s *Store) GetRelationBacklinks(targetItemID, workspaceID string, limit, of
 
 	rows, err := s.db.Query(s.q(`
 		SELECT rl.source_item_id, rl.source_field_key,
-		       s.title, s.item_number, c.prefix, c.slug
+		       s.title, s.item_number, s.collection_id, c.prefix, c.slug
 		FROM item_relation_links rl
 		JOIN items s ON s.id = rl.source_item_id
 		JOIN collections c ON c.id = s.collection_id
@@ -332,6 +335,32 @@ func (s *Store) GetRelationBacklinks(targetItemID, workspaceID string, limit, of
 	}
 	defer rows.Close()
 
+	// Field LABELS come from each source collection's schema, parsed once per
+	// distinct collection rather than per row. The field was declared and the
+	// UI consumed it while nothing populated it, so every group rendered its
+	// raw key (codex round 6) — the choice was to populate it or delete it,
+	// and a label is what the schema author wrote for humans to read.
+	labels := map[string]map[string]string{}
+	labelFor := func(collectionSlug, collectionID, key string) string {
+		byKey, known := labels[collectionID]
+		if !known {
+			byKey = map[string]string{}
+			var schemaJSON sql.NullString
+			if err := s.db.QueryRow(s.q(`SELECT schema FROM collections WHERE id = ?`), collectionID).Scan(&schemaJSON); err == nil && schemaJSON.Valid {
+				var schema models.CollectionSchema
+				if json.Unmarshal([]byte(schemaJSON.String), &schema) == nil {
+					for _, def := range schema.Fields {
+						if def.Label != "" {
+							byKey[def.Key] = def.Label
+						}
+					}
+				}
+			}
+			labels[collectionID] = byKey
+		}
+		return byKey[key]
+	}
+
 	var out []RelationBacklink
 	for rows.Next() {
 		var b RelationBacklink
@@ -339,13 +368,14 @@ func (s *Store) GetRelationBacklinks(targetItemID, workspaceID string, limit, of
 		// errors and would take the whole list down, the same defect U6 shipped
 		// in hydration (codex round 7 there).
 		var number sql.NullInt64
-		var prefix string
-		if err := rows.Scan(&b.SourceItemID, &b.FieldKey, &b.SourceTitle, &number, &prefix, &b.CollectionSlug); err != nil {
+		var prefix, collectionID string
+		if err := rows.Scan(&b.SourceItemID, &b.FieldKey, &b.SourceTitle, &number, &collectionID, &prefix, &b.CollectionSlug); err != nil {
 			return nil, fmt.Errorf("scan relation backlink: %w", err)
 		}
 		if number.Valid {
 			b.SourceRef = fmt.Sprintf("%s-%d", prefix, number.Int64)
 		}
+		b.FieldLabel = labelFor(b.CollectionSlug, collectionID, b.FieldKey)
 		out = append(out, b)
 	}
 	if err := rows.Err(); err != nil {

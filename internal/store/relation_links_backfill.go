@@ -101,8 +101,14 @@ func (s *Store) BackfillRelationLinks() (*BackfillRelationLinksResult, error) {
 		return result, nil
 	}
 
+	// IDS ONLY. The scan used to carry every item's `fields` blob, which put
+	// the whole database's field JSON in memory before a single row was
+	// written (codex round 6). It was never needed: each write re-reads the
+	// blob under a lock, precisely because a snapshot written later is a
+	// snapshot that can be stale. Three ids per row is ~100 bytes, so 100k
+	// items is ~10MB rather than the sum of every blob.
 	rows, err := s.db.Query(s.q(`
-		SELECT id, workspace_id, collection_id, fields
+		SELECT id, workspace_id, collection_id
 		FROM items
 		WHERE deleted_at IS NULL
 	`))
@@ -112,7 +118,7 @@ func (s *Store) BackfillRelationLinks() (*BackfillRelationLinksResult, error) {
 	var items []itemRow
 	for rows.Next() {
 		var r itemRow
-		if scanErr := rows.Scan(&r.id, &r.workspaceID, &r.collectionID, &r.fields); scanErr != nil {
+		if scanErr := rows.Scan(&r.id, &r.workspaceID, &r.collectionID); scanErr != nil {
 			rows.Close()
 			return nil, fmt.Errorf("scan relation backfill row: %w", scanErr)
 		}
@@ -148,7 +154,7 @@ func (s *Store) BackfillRelationLinks() (*BackfillRelationLinksResult, error) {
 			if end > len(wsItems) {
 				end = len(wsItems)
 			}
-			inserted, err := s.backfillRelationChunk(workspaceID, wsItems[start:end], relationKeysByCollection)
+			inserted, err := s.backfillRelationChunk(workspaceID, wsItems[start:end])
 			if err != nil {
 				return nil, err
 			}
@@ -207,10 +213,11 @@ func (s *Store) collectionsWithRelationFields() (map[string]map[string]struct{},
 	return out, nil
 }
 
-// itemRow is one row of the backfill's initial scan. The `fields` value is
-// carried only so the scan is a single query; every write re-reads it under a
-// lock, because a snapshot written later is a snapshot that can be stale.
-type itemRow struct{ id, workspaceID, collectionID, fields string }
+// itemRow is one row of the backfill's initial scan — identity only. The blob
+// is deliberately absent: every write re-reads it under a lock, so carrying it
+// here would cost memory proportional to the database's total field JSON and
+// buy a value that must be discarded anyway.
+type itemRow struct{ id, workspaceID, collectionID string }
 
 // relationBackfillChunk bounds one backfill transaction. Small enough that the
 // workspace lock is never held long at boot, large enough that a big database
@@ -219,7 +226,7 @@ const relationBackfillChunk = 500
 
 // backfillRelationChunk indexes one bounded batch of items from ONE workspace,
 // in a single transaction holding that workspace's lock.
-func (s *Store) backfillRelationChunk(workspaceID string, batch []itemRow, keysByCollection map[string]map[string]struct{}) (int, error) {
+func (s *Store) backfillRelationChunk(workspaceID string, batch []itemRow) (int, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return 0, fmt.Errorf("begin relation backfill tx: %w", err)
@@ -243,8 +250,6 @@ func (s *Store) backfillRelationChunk(workspaceID string, batch []itemRow, keysB
 
 	inserted := 0
 	for _, it := range batch {
-		keys := keysByCollection[it.collectionID]
-
 		// LOCKED, not just re-read. The re-read closes the gap between the
 		// SCAN and this transaction; the lock closes the gap between this read
 		// and the replacement below. SQLite's write lock already serialises
@@ -267,10 +272,15 @@ func (s *Store) backfillRelationChunk(workspaceID string, batch []itemRow, keysB
 		// the zero-edge case was an optimisation that preserved exactly the
 		// stale rows this pass exists to clear — replaceRelationLinks deletes
 		// before it inserts, so that case is the one that must run.
-		if err := s.replaceRelationLinks(tx, it.id, workspaceID, collectionID, fields); err != nil {
+		// The COUNT comes from the write itself. Deriving it from the
+		// schema map captured before the pass would disagree with reality
+		// whenever a schema changed underneath — reporting a number of rows
+		// that were never written (codex round 6).
+		n, err := s.replaceRelationLinks(tx, it.id, workspaceID, collectionID, fields)
+		if err != nil {
 			return 0, err
 		}
-		inserted += len(relationValuesFromBlob(fields, keys))
+		inserted += n
 	}
 
 	if err := tx.Commit(); err != nil {

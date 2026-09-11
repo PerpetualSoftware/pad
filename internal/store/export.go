@@ -870,7 +870,7 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 		// for the reverse query, which is the same disposition migration 088
 		// gives every dangling reference. BUG-3014 tracks the separate
 		// question of how such a value should READ.
-		if err := s.replaceRelationLinks(tx, newItemID, ws.ID, collMap[it.CollectionID], fields); err != nil {
+		if _, err := s.replaceRelationLinks(tx, newItemID, ws.ID, collMap[it.CollectionID], fields); err != nil {
 			return nil, fmt.Errorf("index relation links for item %s: %w", it.Title, err)
 		}
 	}

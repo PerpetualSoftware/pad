@@ -601,3 +601,55 @@ func TestRelationLinks_HardDeleteCascadesTheEdges(t *testing.T) {
 		t.Errorf("referenced by %d after the source was hard-deleted, want 0", n)
 	}
 }
+
+// TestRelationLinks_BacklinkCarriesTheFieldLabel pins codex round 6's nit,
+// which was a field declared, documented, consumed by the UI — and never
+// populated, so every group rendered its raw key.
+//
+// The label is what the schema author wrote for humans, so the choice was to
+// populate it or delete the field. This asserts the populated version, and the
+// fallback case (a field with no label) alongside it, because the UI branches
+// on exactly that.
+func TestRelationLinks_BacklinkCarriesTheFieldLabel(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ws, _, _, red := relationIndexFixture(t, s)
+
+	// `owner` carries a label; `sidekick` deliberately does not.
+	labelled, err := s.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Labelled",
+		Schema: `{"fields":[
+			{"key":"status","type":"select","options":["open","done"],"default":"open"},
+			{"key":"owner","label":"Responsible Colour","type":"relation","collection":"colors"},
+			{"key":"sidekick","type":"relation","collection":"colors"}
+		]}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection: %v", err)
+	}
+	blob, _ := json.Marshal(map[string]any{"status": "open", "owner": red.ID, "sidekick": red.ID})
+	if _, err := s.CreateItem(ws.ID, labelled.ID, models.ItemCreate{Title: "Two Ways", Fields: string(blob)}); err != nil {
+		t.Fatalf("CreateItem: %v", err)
+	}
+
+	links, err := s.GetRelationBacklinks(red.ID, ws.ID, 50, 0, unrestricted)
+	if err != nil {
+		t.Fatalf("GetRelationBacklinks: %v", err)
+	}
+	if len(links) != 2 {
+		t.Fatalf("want 2 edges (one per relation field), got %d", len(links))
+	}
+	byKey := map[string]RelationBacklink{}
+	for _, l := range links {
+		byKey[l.FieldKey] = l
+	}
+	if got := byKey["owner"].FieldLabel; got != "Responsible Colour" {
+		t.Errorf("owner's label = %q, want %q — the field was declared and consumed while nothing populated it", got, "Responsible Colour")
+	}
+	// No label in the schema means an EMPTY one here, not the key: the client
+	// owns that fallback, and duplicating it server-side would make the two
+	// disagree the day either changes.
+	if got := byKey["sidekick"].FieldLabel; got != "" {
+		t.Errorf("sidekick's label = %q, want empty — a field with no schema label must not have one invented for it", got)
+	}
+}
