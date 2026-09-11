@@ -131,6 +131,122 @@ describe('BoardView grouped by a relation field', () => {
 				.trim(),
 		}));
 
+	/**
+	 * Cards per lane, read from the DOM. Header assertions alone cannot see the
+	 * bucketing (codex round 3): removing `bucketByColumn`'s `valueFor`
+	 * callback leaves every relation lane RENDERED and EMPTY while the cards
+	 * fall into Uncategorized, and every label test stays green.
+	 */
+	const cardsByLane = (screen: { container: HTMLElement }) => {
+		const out: Record<string, number> = {};
+		for (const col of screen.container.querySelectorAll('.kanban-column')) {
+			// Whitespace stripped ENTIRELY: the ref, name and note are separate
+			// spans with CSS spacing, so their textContent runs together in one
+			// place and not another depending on markup indentation.
+			const name = (col.querySelector('.column-name')?.textContent ?? '').replace(/\s+/g, '');
+			out[name] = col.querySelectorAll('.item-card').length;
+		}
+		return out;
+	};
+
+	it('puts the cards in the lanes, not merely the lanes on the board', () => {
+		const screen = renderBoard([
+			item('car-1', 'id-red'),
+			item('car-2', 'id-red'),
+			item('car-3', 'id-gone'),
+			item('car-4', DANGLING),
+			item('car-5'),
+		]);
+
+		const byLane = cardsByLane(screen);
+		// PRECONDITION: every card is somewhere, so a lane reading 0 is a
+		// misplacement rather than a card that never rendered.
+		expect(Object.values(byLane).reduce((a, b) => a + b, 0)).toBe(5);
+		expect(byLane['COLOR-1Red']).toBe(2);
+		expect(byLane['COLOR-9Gone(deleted)']).toBe(1);
+		expect(byLane['Unresolvedreference']).toBe(1);
+		expect(byLane['Uncategorized']).toBe(1);
+	});
+
+	it('places a PADDED legacy value in the same lane as its clean form', () => {
+		// The seam the trim closed, asserted where a user would see it.
+		const screen = renderBoard([item('car-1', 'id-red'), item('car-2', '  id-red  ')]);
+		expect(cardsByLane(screen)['COLOR-1Red']).toBe(2);
+	});
+
+	it('does not turn the card\'s status chip into a RELATION setter', () => {
+		// codex round 3, P1. Cards were handed `statusOptions={columns}`, which
+		// is fine while a lane value is a status option — under relation
+		// grouping the lanes are ITEM IDS, and the parent handler writes what it
+		// receives into `fields[groupField]`. So a click on the status chip set
+		// the card's relation, cycling through target ids and able to land on
+		// the deleted or unresolved lane, which the write path then refuses.
+		// The collection needs a STATUS field as well as the relation, or the
+		// card renders no status chip for an unrelated reason and the test
+		// cannot discriminate. Measured: without it the mutant survived.
+		const coll = collection();
+		coll.schema = JSON.stringify({
+			fields: [
+				{ key: 'car_color', label: 'Colour', type: 'relation', collection: 'colors' },
+				{ key: 'status', label: 'Status', type: 'select', options: ['open', 'done'] },
+			],
+		});
+		const withStatus = (id: string, color: string) =>
+			({
+				...item(id, color),
+				fields: JSON.stringify({ car_color: color, status: 'open' }),
+			}) as Item;
+
+		const screen = render(BoardView, {
+			props: {
+				items: [withStatus('car-1', 'id-red'), withStatus('car-2', 'id-blue')],
+				collection: coll,
+				wsSlug: 'ws',
+				groupField: 'car_color',
+				onStatusChange: vi.fn(),
+			} as never,
+		});
+
+		// PRECONDITION: the cards rendered, so "no chip" is not "no card".
+		expect(screen.container.querySelectorAll('.item-card')).toHaveLength(2);
+		expect(screen.container.querySelector('[title="Click to cycle status"]')).toBeNull();
+	});
+
+	it('STILL offers status cycling on an ordinary board — the counterfactual', () => {
+		// Withholding it everywhere would remove a working affordance from every
+		// board on the instance, which is worse than the defect.
+		const coll = collection();
+		coll.schema = JSON.stringify({
+			fields: [{ key: 'status', label: 'Status', type: 'select', options: ['open', 'done'] }],
+		});
+		const withStatus = (id: string) =>
+			({
+				id,
+				workspace_id: 'ws1',
+				collection_id: 'c1',
+				slug: id,
+				title: id,
+				content: '',
+				fields: JSON.stringify({ status: 'open' }),
+				tags: '[]',
+				status: 'open',
+				created_at: '2026-01-01T00:00:00Z',
+				updated_at: '2026-01-01T00:00:00Z',
+			}) as unknown as Item;
+
+		const screen = render(BoardView, {
+			props: {
+				items: [withStatus('car-1')],
+				collection: coll,
+				wsSlug: 'ws',
+				groupField: 'status',
+				onStatusChange: vi.fn(),
+			} as never,
+		});
+
+		expect(screen.container.querySelector('[title="Click to cycle status"]')).not.toBeNull();
+	});
+
 	it('labels a live lane with REF and title, not the stored id', () => {
 		const screen = renderBoard([item('car-1', 'id-red')]);
 

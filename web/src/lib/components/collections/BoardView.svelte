@@ -239,6 +239,23 @@
 	);
 
 	// Column order state — tracks the displayed order, syncs from schema when not dragging
+	/**
+	 * What a CARD's status chip cycles through — the board's lanes for every
+	 * ordinary grouping, and nothing at all when the lanes are relation targets
+	 * (codex round 3, P1).
+	 *
+	 * `statusOptions={columns}` was fine while a lane value was always a status
+	 * option. Under relation grouping the lanes are ITEM IDS, and the parent's
+	 * handler writes whatever it receives into `fields[groupField]` — so a
+	 * click on the status chip set the card's RELATION, cycling through target
+	 * ids and able to land on the deleted or unresolved lane, which the write
+	 * path then refuses. The chip is withheld rather than repointed at the real
+	 * status field: a status chip on a relation-grouped board would be cycling
+	 * a field the board is not showing, which is a different feature and not
+	 * one this unit was asked for.
+	 */
+	let cardStatusOptions = $derived(isRelationGroup ? [] : columns);
+
 	let columnOrder = $state<string[]>([]);
 
 	$effect(() => {
@@ -715,8 +732,8 @@
 							{collection}
 							compact={true}
 							focused={focusedItemId === item.id}
-							statusOptions={columns}
-							onStatusClick={onStatusChange}
+							statusOptions={cardStatusOptions}
+							onStatusClick={isRelationGroup ? undefined : onStatusChange}
 							progress={itemProgress?.[item.id] ?? null}
 							{progressLabel}
 							onReorderItem={canReorderLane(colValue) ? (it, dir) => reorderItem(colValue, it, dir) : undefined}
