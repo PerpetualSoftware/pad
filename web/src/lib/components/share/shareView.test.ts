@@ -5,6 +5,7 @@ import {
 	matchesFilter,
 	parsePublicItem,
 	resolveGroupField,
+	isPublicGroupable,
 } from './shareView';
 
 function item(fields: Record<string, unknown>) {
@@ -130,5 +131,27 @@ describe('resolveGroupField with a relation field (TASK-2998, codex round 1)', (
 			'phase',
 		);
 		expect(resolveGroupField(c)).toBe('phase');
+	});
+});
+
+describe('isPublicGroupable (TASK-2998, codex round 2)', () => {
+	function coll(fields: { key: string; type: string }[]) {
+		return { fields, settings: {} } as unknown as Parameters<typeof isPublicGroupable>[0];
+	}
+
+	it('refuses a relation field, which is the LIST view\'s door', () => {
+		// `resolveGroupField` only guards the board. A saved view with
+		// `view_type: "list"` routes its `group_by` to `list_group_by`, which
+		// PublicListView resolves itself — so refusing in one place left a
+		// shared LIST rendering one group per stored id, the same wall of raw
+		// ids the board refusal had just closed.
+		const c = coll([{ key: 'car_color', type: 'relation' }]);
+		expect(isPublicGroupable(c, 'car_color')).toBe(false);
+	});
+
+	it('accepts an ordinary field, and refuses one that does not exist', () => {
+		const c = coll([{ key: 'phase', type: 'select' }]);
+		expect(isPublicGroupable(c, 'phase')).toBe(true);
+		expect(isPublicGroupable(c, 'nope')).toBe(false);
 	});
 });

@@ -46,6 +46,7 @@
 		unparentedEffective,
 		viewHasUnparentedFilter,
 	} from '$lib/collections/unparentedFilter';
+	import { relationFilterMatches } from '$lib/collections/relationGroups';
 	import { KNOWN_COLLECTION_URL_PARAMS, buildCollectionUrlParams } from '$lib/collections/paneUrlParams';
 	import { type ResolvedPaneState } from '$lib/collections/paneController';
 	import { createPaneController } from '$lib/collections/paneHostController';
@@ -1315,6 +1316,11 @@
 
 	let statusOptions = $derived(collection ? getStatusOptions(collection) : []);
 
+	/** Schema keys whose filter value names an item rather than an option. */
+	let relationFilterKeys = $derived(
+		new Set((schema?.fields ?? []).filter((f) => f.type === 'relation').map((f) => f.key)),
+	);
+
 	let filteredItems = $derived.by(() => {
 		let result = items;
 
@@ -1327,6 +1333,14 @@
 					return item.parent_link_id === value;
 				}
 				const fields = parseFields(item);
+				// A RELATION value is compared trimmed (TASK-2998, codex round
+				// 2). The board already trimmed, so without this an item
+				// storing `" id-red "` sat in the `Red` lane and vanished when
+				// you filtered for `Red` — one value, two answers, one screen
+				// apart. Every other field type keeps strict equality.
+				if (relationFilterKeys.has(key)) {
+					return relationFilterMatches(fields[key], value);
+				}
 				return fields[key] === value;
 			});
 		}

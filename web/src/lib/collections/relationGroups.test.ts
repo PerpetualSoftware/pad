@@ -5,6 +5,7 @@ import {
 	UNRESOLVED_LANE,
 	narrowRelationRow,
 	relationChipFor,
+	relationFilterMatches,
 	relationLaneAcceptsDrop,
 	relationLaneAriaName,
 	relationLaneValueFor,
@@ -279,5 +280,31 @@ describe('relationLaneAriaName', () => {
 	it('falls back for a lane that is not a relation lane at all', () => {
 		// UNCATEGORIZED and every ordinary select lane come through here too.
 		expect(relationLaneAriaName(undefined, 'Uncategorized')).toBe('Uncategorized');
+	});
+});
+
+describe('relationFilterMatches (codex round 2)', () => {
+	it('matches a padded stored value against an unpadded filter', () => {
+		// The defect it closes: the board trimmed and the filter did not, so an
+		// item storing `" red "` sat in the Red LANE and vanished when you
+		// filtered for Red. One value, two answers, one screen apart.
+		expect(relationFilterMatches(' red ', 'red')).toBe(true);
+		expect(relationFilterMatches('red', ' red ')).toBe(true);
+		expect(relationFilterMatches('red', 'red')).toBe(true);
+	});
+
+	it('still refuses a different value', () => {
+		// The counterfactual: trimming must not become "matches anything".
+		expect(relationFilterMatches('blue', 'red')).toBe(false);
+		expect(relationFilterMatches('', 'red')).toBe(false);
+	});
+
+	it('refuses a non-string, including the multi_relation ARRAY shape', () => {
+		// U4 stores an array, and no amount of trimming makes `===` match one.
+		// Matching an array is that unit's to define; guessing here would fix
+		// half of it in a way U4 would have to undo.
+		expect(relationFilterMatches(['red'], 'red')).toBe(false);
+		expect(relationFilterMatches(null, 'red')).toBe(false);
+		expect(relationFilterMatches(42, 'red')).toBe(false);
 	});
 });

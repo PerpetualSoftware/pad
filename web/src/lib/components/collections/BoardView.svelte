@@ -209,7 +209,12 @@
 	// dangling target is labelled, which lanes accept a drop — live in
 	// `$lib/collections/relationGroups`, because they are decisions and a
 	// decision reachable only by mounting a board is one nobody tests.
-	let isRelationGroup = $derived(field?.type === 'relation');
+	// A DECLARED TARGET IS REQUIRED (codex round 2). `narrowRelationRow` skips
+	// the collection check when there is nothing to check against, so a legacy
+	// or half-written relation field with no `collection` would resolve ids
+	// ANYWHERE in the workspace and label lanes with whatever it found. The
+	// filter UI already requires it; the board did not.
+	let isRelationGroup = $derived(field?.type === 'relation' && !!field?.collection);
 	let knownCollectionSlugs = $derived(
 		new Set(collectionStore.collections.map((c) => c.slug)),
 	);
@@ -634,7 +639,9 @@
 									laneSort={laneSortOverrides[colValue]}
 									onSetLaneSort={(m) => setLaneSort(colValue, m)}
 									onClose={closeMenu}
-									onAddItem={onCreateInColumn && !isUncategorized ? () => openDraft(colValue) : undefined}
+									onAddItem={onCreateInColumn && !isUncategorized && !isRelationGroup
+										? () => openDraft(colValue)
+										: undefined}
 									onArchive={onArchiveColumn ? () => onArchiveColumn?.(colItems) : undefined}
 									onMove={onMoveColumn ? (status) => onMoveColumn?.(colItems, status) : undefined}
 									onTag={onTagColumn ? (tag) => onTagColumn?.(colItems, tag) : undefined}

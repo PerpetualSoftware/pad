@@ -46,6 +46,12 @@ vi.mock('$lib/stores/collections.svelte', () => ({
 
 import BoardView from './BoardView.svelte';
 
+/** BoardView's source with comments stripped, so a guard cannot be satisfied by prose. */
+const SRC = readFileSync(resolve(__dirname, './BoardView.svelte'), 'utf8').replace(
+	/^[ \t]*\/\/.*$/gm,
+	'',
+);
+
 function collection(): Collection {
 	return {
 		id: 'c1',
@@ -196,11 +202,6 @@ describe('the drop gate on a relation lane', () => {
 	 * instrument for that is a drag driven through svelte-dnd-action, which
 	 * tests the drag library as much as this decision.
 	 */
-	const SRC = readFileSync(resolve(__dirname, './BoardView.svelte'), 'utf8').replace(
-		/^[ \t]*\/\/.*$/gm,
-		'',
-	);
-
 	it('puts the card BACK when it refuses the drop', () => {
 		// codex round 1, P1, and the most important mutant this file missed:
 		// svelte-dnd-action has already moved the card in `columnData` by the
@@ -233,5 +234,40 @@ describe('the drop gate on a relation lane', () => {
 		const start = SRC.indexOf('async function commitColumnMove(');
 		const body = SRC.slice(start, SRC.indexOf('\n\t}', start));
 		expect(body).toContain('if (isRelationGroup)');
+	});
+});
+
+describe('a relation field with no declared target collection', () => {
+	it('is NOT grouped as a relation', () => {
+		// `narrowRelationRow` skips the collection check when there is nothing
+		// to check against, so a legacy or half-written relation field would
+		// resolve ids ANYWHERE in the workspace and label lanes with whatever it
+		// found. The filter UI already required a target; the board did not
+		// (codex round 2).
+		const coll = collection();
+		coll.schema = JSON.stringify({
+			fields: [{ key: 'car_color', label: 'Colour', type: 'relation' }],
+		});
+		const screen = render(BoardView, {
+			props: {
+				items: [item('car-1', 'id-red')],
+				collection: coll,
+				wsSlug: 'ws',
+				groupField: 'car_color',
+				onStatusChange: vi.fn(),
+			} as never,
+		});
+
+		// No lane resolved from the workspace-wide index — the ref is the tell.
+		expect(screen.container.querySelector('.lane-ref')).toBeNull();
+	});
+
+	it('withholds the lane menu\'s "add" for a relation lane, like the visible +', () => {
+		// Otherwise the menu is an undocumented second creation path into a
+		// lane whose "+" was deliberately withheld, and it contradicts this
+		// component's own stated design rather than merely duplicating it.
+		const start = SRC.indexOf('onAddItem={onCreateInColumn');
+		expect(start, 'the lane menu no longer passes onAddItem').toBeGreaterThan(-1);
+		expect(SRC.slice(start, start + 160)).toContain('!isRelationGroup');
 	});
 });

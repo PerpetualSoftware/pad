@@ -241,3 +241,25 @@ export function relationLaneAriaName(lane: RelationLane | undefined, fallback: s
 export function relationLaneAcceptsDrop(lane: Pick<RelationLane, 'state'>): boolean {
 	return lane.state === 'live';
 }
+
+/**
+ * Does this item's value for a RELATION field match a filter value?
+ *
+ * Strict `===` was the whole comparison, and the board had already started
+ * trimming — so an item storing `" id-red "` appeared in the `Red` LANE and
+ * vanished when you filtered for `Red` (codex round 2). The same value, two
+ * answers, one screen apart.
+ *
+ * Trimming on BOTH sides rather than normalising the stored data: the write
+ * path has refused padded values since TASK-2878, so there is nothing new to
+ * clean up and nothing to migrate — only old rows to read correctly.
+ *
+ * Scalar only, deliberately. `multi_relation` (U4) stores an ARRAY and no
+ * amount of trimming makes `===` match one; matching an array is that unit's
+ * to define, and guessing here would fix half of it in a way U4 would have to
+ * undo.
+ */
+export function relationFilterMatches(stored: unknown, filterValue: string): boolean {
+	if (typeof stored !== 'string') return false;
+	return stored.trim() === filterValue.trim();
+}

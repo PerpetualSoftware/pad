@@ -285,14 +285,22 @@ export function resolveGroupField(collection: PublicCollection): string {
 	// but-useless lane per id, and better than showing ids. The real fix is for
 	// the share payload to carry the target's ref and title, which is a server
 	// change and a separate unit.
-	if (explicit && isGroupableHere(collection, explicit)) return explicit;
+	if (explicit && isPublicGroupable(collection, explicit)) return explicit;
 	if (findField(collection.fields, 'status')) return 'status';
 	const firstSelect = collection.fields.find((f) => f.type === 'select');
 	return firstSelect?.key ?? '';
 }
 
-/** A field a PUBLIC view can group by: it exists, and it is not a relation. */
-function isGroupableHere(collection: PublicCollection, key: string): boolean {
+/**
+ * A field a PUBLIC view can group by: it exists, and it is not a relation.
+ *
+ * Exported because the BOARD is not the only door (codex round 2): a saved view
+ * with `view_type: "list"` routes its `group_by` to `list_group_by`, and
+ * `PublicListView` resolves that key itself. Refusing in one place and not the
+ * other left a shared LIST rendering one group per stored id — the same wall of
+ * raw ids the board refusal had just closed.
+ */
+export function isPublicGroupable(collection: PublicCollection, key: string): boolean {
 	const field = findField(collection.fields, key);
 	return !!field && field.type !== 'relation';
 }
