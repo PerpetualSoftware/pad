@@ -145,6 +145,25 @@ func (s *Store) BackfillRelationLinks() (*BackfillRelationLinksResult, error) {
 		// hook in between — writing the snapshot would then overwrite a
 		// current index with a stale blob, making the backfill a source of the
 		// corruption it exists to repair (codex round 2).
+		// WORKSPACE LOCK FIRST, then the item row — the order every item write
+		// and UpdateCollection use, so this cannot invert against them.
+		//
+		// The item-row lock alone is not enough: it serialises against
+		// concurrent ITEM writes but not against a concurrent SCHEMA change,
+		// which is serialised by the workspace lock. Without this the
+		// interleaving is: the backfill locks an item and reads the old
+		// schema; UpdateCollection changes the schema and reindexes the
+		// collection; the backfill then writes rows derived from the OLD
+		// schema and commits last, leaving the index stale under a completion
+		// marker (codex round 4).
+		//
+		// A Postgres advisory transaction lock, so it is free on SQLite and
+		// released at commit.
+		if err := s.acquireWorkspaceSeqLock(tx, it.workspaceID); err != nil {
+			tx.Rollback() //nolint:errcheck // the error below is the one that matters
+			return nil, err
+		}
+
 		// LOCKED, not just re-read. The re-read alone closes the gap between
 		// the SCAN and this transaction — it does not close the gap between
 		// this read and the replacement below, and codex round 3 was right

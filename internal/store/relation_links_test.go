@@ -566,3 +566,38 @@ func TestRelationLinks_ASourceInADeletedCollectionIsNotCounted(t *testing.T) {
 		t.Errorf("the page returned %d rows while the count says 1 — the two ran under different filters", len(links))
 	}
 }
+
+// TestRelationLinks_HardDeleteCascadesTheEdges pins a claim the input matrix
+// makes and nothing else checked (codex round 4's nit).
+//
+// The matrix says a hard delete needs no hook because `ON DELETE CASCADE` on
+// source_item_id removes the outgoing edges with the row. That is a claim
+// about a FOREIGN KEY being enforced — which on SQLite depends on
+// `foreign_keys=on` being set by the connection, not on the DDL alone. A
+// matrix row resting on "the schema says so" is worth one test.
+func TestRelationLinks_HardDeleteCascadesTheEdges(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ws, _, cars, red := relationIndexFixture(t, s)
+	car := carPointingAt(t, s, ws, cars, "Doomed Car", red.ID)
+
+	if n := countFor(t, s, red, ws); n != 1 {
+		t.Fatalf("setup: referenced by %d, want 1", n)
+	}
+
+	// Hard delete, not soft: the row goes, and the FK must take its edges.
+	if _, err := s.db.Exec(s.q(`DELETE FROM items WHERE id = ?`), car.ID); err != nil {
+		t.Fatalf("hard delete: %v", err)
+	}
+
+	var orphans int
+	if err := s.db.QueryRow(s.q(`SELECT COUNT(*) FROM item_relation_links WHERE source_item_id = ?`), car.ID).Scan(&orphans); err != nil {
+		t.Fatalf("count orphan rows: %v", err)
+	}
+	if orphans != 0 {
+		t.Errorf("%d index row(s) survived a hard delete of their source — the cascade is not firing, and the input matrix's 'no hook needed here' reason does not hold", orphans)
+	}
+	if n := countFor(t, s, red, ws); n != 0 {
+		t.Errorf("referenced by %d after the source was hard-deleted, want 0", n)
+	}
+}
