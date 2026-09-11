@@ -3399,6 +3399,7 @@
 						unparentedAvailable={unparentedMetadataAvailable}
 						unparentedActive={unparentedApplied}
 						onUnparentedChange={handleUnparentedChange}
+						{wsSlug}
 					/>
 				</div>
 			{/if}

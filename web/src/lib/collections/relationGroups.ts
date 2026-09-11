@@ -33,17 +33,49 @@ export const UNRESOLVED_LANE = '$unresolved';
 
 export type RelationLaneState = 'empty' | 'live' | 'deleted' | 'unresolved';
 
-export interface RelationLane {
-	/** The value `bucketByColumn` buckets on — an item id, or a sentinel. */
+/**
+ * How a single relation VALUE presents — the lane header and the filter chip
+ * say the same things about the same value, so they are built from one
+ * function rather than two that drift.
+ */
+export interface RelationChip {
 	value: string;
-	/** Ref of the target, when there is one. `null` for the sentinel lanes. */
 	ref: string | null;
-	/** Title of the target, when there is one. `null` for the sentinel lanes. */
 	title: string | null;
-	/** What the lane header should say when there is no ref/title to show. */
+	/** What to say when there is no ref/title — never the stored value. */
 	label: string;
 	state: RelationLaneState;
 }
+
+/**
+ * Describe one relation value. `null` for an empty value (the caller decides
+ * what "no filter" or "uncategorised" looks like); an unresolvable value
+ * becomes the honest unresolved chip rather than the string it holds.
+ */
+export function relationChipFor(value: string, resolve: ResolveRow): RelationChip | null {
+	const raw = typeof value === 'string' ? value.trim() : '';
+	if (!raw) return null;
+	const row = resolve(raw);
+	if (!row) {
+		return {
+			value: UNRESOLVED_LANE,
+			ref: null,
+			title: null,
+			label: 'Unresolved reference',
+			state: 'unresolved',
+		};
+	}
+	return {
+		value: raw,
+		ref: formatItemRef(row),
+		title: row.title ?? null,
+		label: row.title ?? '',
+		state: row.deleted_at ? 'deleted' : 'live',
+	};
+}
+
+/** A lane IS a chip plus its position on the board. Same vocabulary. */
+export type RelationLane = RelationChip;
 
 /** Resolve an item id against whatever row source the caller has. */
 export type ResolveRow = (id: string) => ItemIndexRow | null | undefined;
@@ -125,19 +157,12 @@ export function relationLanes(items: Item[], fieldKey: string, resolve: ResolveR
 		const value = laneValue(parseFields(item)[fieldKey]);
 		if (!value || seen.has(value)) continue;
 		seen.add(value);
-		const row = resolve(value);
-		if (!row) {
+		const chip = relationChipFor(value, resolve);
+		if (!chip || chip.state === 'unresolved') {
 			hasUnresolved = true;
 			continue;
 		}
-		const lane: RelationLane = {
-			value,
-			ref: formatItemRef(row),
-			title: row.title ?? null,
-			label: row.title ?? '',
-			state: row.deleted_at ? 'deleted' : 'live',
-		};
-		(row.deleted_at ? deleted : live).push(lane);
+		(chip.state === 'deleted' ? deleted : live).push(chip);
 	}
 
 	const byTitle = (a: RelationLane, b: RelationLane) =>

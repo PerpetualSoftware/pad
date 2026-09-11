@@ -4,6 +4,7 @@ import { UNCATEGORIZED, bucketByColumn } from './boardColumns';
 import {
 	UNRESOLVED_LANE,
 	narrowRelationRow,
+	relationChipFor,
 	relationLaneAcceptsDrop,
 	relationLaneValueFor,
 	relationLanes,
@@ -190,5 +191,36 @@ describe('narrowRelationRow', () => {
 	it('passes a missing row straight through as null', () => {
 		expect(narrowRelationRow(null, 'red', 'colors', known)).toBeNull();
 		expect(narrowRelationRow(undefined, 'red', 'colors', known)).toBeNull();
+	});
+});
+
+describe('relationChipFor', () => {
+	it('is the SAME vocabulary a lane header uses', () => {
+		// The filter chip and the lane header describe the same value, so they
+		// are built from one function. Two would drift, and the drift would be
+		// invisible until a user saw a board lane and a filter chip disagree
+		// about what the same id is called.
+		const chip = relationChipFor('red', resolve);
+		const lane = relationLanes([item('a', 'red')], 'car', resolve)[0];
+		expect(chip).toEqual(lane);
+	});
+
+	it('is null for an empty value — the caller owns what "no filter" says', () => {
+		expect(relationChipFor('', resolve)).toBeNull();
+		expect(relationChipFor('   ', resolve)).toBeNull();
+	});
+
+	it('never echoes an unresolvable value back', () => {
+		const chip = relationChipFor('not-an-item', resolve);
+		expect(chip?.state).toBe('unresolved');
+		expect(JSON.stringify(chip)).not.toContain('not-an-item');
+	});
+
+	it('marks a deleted target without hiding which one it is', () => {
+		expect(relationChipFor('gone', resolve)).toMatchObject({
+			ref: 'COLOR-3',
+			title: 'Gone',
+			state: 'deleted',
+		});
 	});
 });

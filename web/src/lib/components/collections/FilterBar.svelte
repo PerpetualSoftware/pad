@@ -4,6 +4,10 @@
 	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
 	import { viewport } from '$lib/stores/breakpoint.svelte';
 	import TagFilter from '$lib/components/collections/TagFilter.svelte';
+	import ItemPicker from '$lib/components/items/ItemPicker.svelte';
+	import { localIndex } from '$lib/stores/localIndex.svelte';
+	import { collectionStore } from '$lib/stores/collections.svelte';
+	import { narrowRelationRow, relationChipFor } from '$lib/collections/relationGroups';
 
 	interface Props {
 		collection: Collection;
@@ -28,6 +32,14 @@
 		/** Current effective state of the unparented chip. */
 		unparentedActive?: boolean;
 		onUnparentedChange?: (value: boolean) => void;
+		/**
+		 * Workspace slug, for the relation filters (TASK-2998 / PLAN-2857 U7).
+		 * Omitted = no relation filter renders, which is what a caller with no
+		 * workspace context (the public share view) wants: it cannot resolve a
+		 * target's title, and a filter chip showing a bare id is worse than no
+		 * chip.
+		 */
+		wsSlug?: string;
 	}
 
 	let {
@@ -44,6 +56,7 @@
 		unparentedAvailable = false,
 		unparentedActive = false,
 		onUnparentedChange = () => {},
+		wsSlug = '',
 	}: Props = $props();
 
 	let schema = $derived(parseSchema(collection));
@@ -60,6 +73,44 @@
 		} else {
 			next.status = value;
 		}
+		onFilterChange(next);
+	}
+
+	// FILTERING BY A RELATION VALUE (TASK-2998 / PLAN-2857 U7).
+	//
+	// The page's `filteredItems` already compares `fields[key] === value` for
+	// any key, so the mechanism has always been there — what was missing is a
+	// way to SET one, and a chip that says what the stored id means. Both reuse
+	// U3's picker and U2's chip vocabulary rather than inventing a second way
+	// to choose and name an item.
+	//
+	// The hardcoded tasks→plans parent filter above is deliberately left alone:
+	// it filters on `parent_link_id`, not on a field, so it is a different
+	// mechanism wearing a similar hat. Generalising THAT is not this unit.
+	let knownCollectionSlugs = $derived(new Set(collectionStore.collections.map((c) => c.slug)));
+	let relationFields = $derived(
+		wsSlug ? schema.fields.filter((f) => f.type === 'relation' && !!f.collection) : [],
+	);
+	let openPickerFor = $state<string | null>(null);
+
+	function resolveRelation(id: string, declared: string | undefined) {
+		if (!wsSlug) return null;
+		return narrowRelationRow(
+			localIndex.findByIdOrSlug(wsSlug, id),
+			id,
+			declared,
+			knownCollectionSlugs,
+		);
+	}
+
+	function setRelationFilter(key: string, value: string) {
+		const next = { ...activeFilters };
+		if (value) {
+			next[key] = value;
+		} else {
+			delete next[key];
+		}
+		openPickerFor = null;
 		onFilterChange(next);
 	}
 
@@ -182,6 +233,50 @@
 			</select>
 		{/if}
 	{/if}
+
+	{#each relationFields as rf (rf.key)}
+		{@const active = activeFilters[rf.key] ?? ''}
+		{@const chip = active ? relationChipFor(active, (id) => resolveRelation(id, rf.collection)) : null}
+		<div class="relation-filter">
+			<button
+				type="button"
+				class="relation-filter-trigger"
+				class:active={!!active}
+				aria-haspopup="dialog"
+				aria-expanded={openPickerFor === rf.key}
+				onclick={() => (openPickerFor = openPickerFor === rf.key ? null : rf.key)}
+			>
+				{#if chip}
+					{#if chip.ref}<span class="relation-filter-ref">{chip.ref}</span>{/if}
+					<span>{chip.title ?? chip.label}</span>
+					{#if chip.state === 'deleted'}<span class="relation-filter-note">(deleted)</span>{/if}
+				{:else}
+					All {(rf.label ?? rf.key).toLowerCase()}
+				{/if}
+			</button>
+			{#if active}
+				<button
+					type="button"
+					class="relation-filter-clear"
+					aria-label="Clear {rf.label ?? rf.key} filter"
+					onclick={() => setRelationFilter(rf.key, '')}
+				>×</button>
+			{/if}
+			{#if openPickerFor === rf.key}
+				<div class="relation-filter-picker" role="dialog" aria-label="Filter by {rf.label ?? rf.key}">
+					<ItemPicker
+						{wsSlug}
+						collection={rf.collection}
+						source="index"
+						autofocus
+						label="Filter by {rf.label ?? rf.key}"
+						placeholder="Search {rf.collection}…"
+						onselect={(row) => setRelationFilter(rf.key, row.id)}
+					/>
+				</div>
+			{/if}
+		</div>
+	{/each}
 
 	{#if unparentedAvailable}
 		<!--
@@ -365,6 +460,66 @@
 		background: var(--bg-tertiary);
 		border-color: var(--accent-blue);
 		font-weight: 600;
+	}
+
+	.relation-filter {
+		position: relative;
+		display: inline-flex;
+		align-items: center;
+		gap: 0.25rem;
+	}
+
+	.relation-filter-trigger {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.35rem;
+		padding: 0.35rem 0.6rem;
+		border: 1px solid var(--border);
+		border-radius: 999px;
+		background: var(--bg-elevated, var(--bg));
+		color: var(--text);
+		font-size: 0.85rem;
+		cursor: pointer;
+	}
+
+	.relation-filter-trigger.active {
+		border-color: var(--accent, var(--border));
+	}
+
+	.relation-filter-ref {
+		font-family: var(--font-mono, ui-monospace, monospace);
+		font-size: 0.85em;
+		opacity: 0.7;
+	}
+
+	.relation-filter-note {
+		font-size: 0.85em;
+		opacity: 0.7;
+		font-style: italic;
+	}
+
+	.relation-filter-clear {
+		border: none;
+		background: none;
+		color: var(--text-muted, var(--text));
+		cursor: pointer;
+		font-size: 1rem;
+		line-height: 1;
+		padding: 0 0.2rem;
+	}
+
+	.relation-filter-picker {
+		position: absolute;
+		top: calc(100% + 0.35rem);
+		left: 0;
+		z-index: 30;
+		min-width: min(22rem, 90vw);
+		max-width: 90vw;
+		padding: 0.5rem;
+		border: 1px solid var(--border);
+		border-radius: 0.5rem;
+		background: var(--bg-elevated, var(--bg));
+		box-shadow: 0 8px 24px rgb(0 0 0 / 0.18);
 	}
 
 	.search-wrapper {
