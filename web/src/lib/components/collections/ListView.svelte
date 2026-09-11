@@ -111,6 +111,17 @@
 	// the targets, values folded onto a sentinel before bucketing, and the
 	// chip vocabulary for the label.
 	let isRelationGroup = $derived(field?.type === 'relation' && !!field?.collection);
+	/**
+	 * A relation field with no declared target (legacy or half-written) is not
+	 * groupable AT ALL here (codex round 5).
+	 *
+	 * The board falls into UNCATEGORIZED for this, because its lanes come from
+	 * `field.options` and a relation has none. This view DISCOVERS values from
+	 * the items, so the same schema produced one group per raw ITEM ID — the
+	 * two siblings disagreeing about a malformed field, with the list landing
+	 * on the one outcome this whole unit exists to prevent.
+	 */
+	let relationWithoutTarget = $derived(field?.type === 'relation' && !field?.collection);
 	let knownCollectionSlugs = $derived(
 		new Set(collectionStore.collections.map((c) => c.slug)),
 	);
@@ -140,6 +151,7 @@
 
 	/** The value an item is grouped under — sentinel-folded for a relation. */
 	function groupValueFor(item: Item): string {
+		if (relationWithoutTarget) return '';
 		if (isRelationGroup) return relationLaneValueFor(item, groupField, resolveRelation);
 		return (parseFields(item)[groupField] ?? '') as string;
 	}
@@ -150,6 +162,7 @@
 	 * values discovered from items (handles text fields with no options).
 	 */
 	let displayGroups = $derived.by(() => {
+		if (relationWithoutTarget) return [''];
 		if (isRelationGroup) {
 			const lanes = relationLaneList.map((lane) => lane.value);
 			const hasEmpty = items.some((i) => groupValueFor(i) === '');
@@ -284,9 +297,25 @@
 			// the field or write a reference the validator refuses.
 			const relLane = isRelationGroup ? relationLaneByValue.get(groupName) : undefined;
 			const dropAllowed = !isRelationGroup || (!!relLane && relationLaneAcceptsDrop(relLane));
-			if (originalItem && onStatusChange && dropAllowed) {
+			if (!dropAllowed) {
+				// AND NO REORDER EITHER (codex round 5). Skipping only the
+				// relation write left `onReorder` running unconditionally, so a
+				// refused cross-group drop still rewrote every `sort_order` in
+				// the destination — a persisted side effect of a gesture the
+				// component had just declined. Re-deriving from props puts the
+				// card back, as the board's refusal does.
+				groupData = propGroupData;
+				return;
+			}
+			if (originalItem && onStatusChange) {
 				const fields = parseFields(originalItem);
-				if (fields[groupField] !== groupName) {
+				// TRIMMED, like every other comparison against a stored relation
+				// value: an item holding `" id-red "` is already in this group,
+				// and a raw `!==` would fire a pointless write for it.
+				const current = isRelationGroup
+					? relationLaneValueFor(originalItem, groupField, resolveRelation)
+					: (fields[groupField] ?? '');
+				if (current !== groupName) {
 					await onStatusChange(originalItem, groupName);
 				}
 			}

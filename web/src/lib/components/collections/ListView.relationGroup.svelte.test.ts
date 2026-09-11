@@ -164,19 +164,81 @@ describe('group reorder under relation grouping', () => {
 		'',
 	);
 
-	it('does not call onGroupReorder for a relation group', () => {
-		// A source guard: the handler is reached through svelte-dnd-action's
-		// group zone, and driving that tests the drag library. WHAT IT CANNOT
-		// DO: it checks spellings, not behaviour.
+	it('gates the onGroupReorder CALL, not merely mentions the flag nearby', () => {
+		// THE SIXTH WRONG-REASON TEST ON THIS BRANCH, and codex caught it in the
+		// same round it was written. The first version searched the handler for
+		// `!isRelationGroup` appearing before `onGroupReorder(` — a condition
+		// the file satisfies in several ways that leave the callback
+		// unconditional. It asserts the guard is IN the `if` that wraps the
+		// call now.
 		//
-		// The order is alphabetical by target title, not schema-held, so there
-		// is nowhere to persist it — and what the page WOULD persist is item
-		// ids into the schema's `options`. The page refuses that write at its
-		// own end; this stops the gesture from appearing to work.
+		// Still a source guard: the handler is reached through
+		// svelte-dnd-action's group zone, and driving that tests the drag
+		// library. WHAT IT CANNOT DO: it checks spellings, not behaviour.
 		const start = SRC.indexOf('function handleGroupFinalize(');
 		expect(start, 'handleGroupFinalize was renamed').toBeGreaterThan(-1);
 		const body = SRC.slice(start, SRC.indexOf('\n\t}', start));
-		expect(body).toContain('!isRelationGroup');
-		expect(body.indexOf('!isRelationGroup')).toBeLessThan(body.indexOf('onGroupReorder('));
+		expect(body).toMatch(/if\s*\(\s*onGroupReorder\s*&&\s*!isRelationGroup\s*\)/);
+	});
+});
+
+describe('a rejected drop in the list', () => {
+	/** ListView's source with comments stripped. */
+	const SRC2 = readFileSync(resolve(__dirname, './ListView.svelte'), 'utf8').replace(
+		/^[ \t]*\/\/.*$/gm,
+		'',
+	);
+
+	it('writes NEITHER the relation NOR the sort order', () => {
+		// codex round 5, P1. Skipping only `onStatusChange` left
+		// `onReorder(reorderUpdates)` running unconditionally, so a refused
+		// cross-group drop still rewrote every `sort_order` in the destination
+		// — a persisted side effect of a gesture the component had just
+		// declined.
+		const start = SRC2.indexOf('async function handleFinalize(');
+		expect(start, 'handleFinalize was renamed').toBeGreaterThan(-1);
+		const body = SRC2.slice(start, SRC2.indexOf('\n\t}', start));
+
+		const refuse = body.indexOf('if (!dropAllowed)');
+		const statusWrite = body.indexOf('onStatusChange(');
+		const reorderWrite = body.indexOf('onReorder(');
+		expect(refuse, 'the refusal is gone').toBeGreaterThan(-1);
+		expect(refuse).toBeLessThan(statusWrite);
+		expect(refuse).toBeLessThan(reorderWrite);
+		// and it RETURNS rather than falling through to either write
+		expect(body.slice(refuse, statusWrite)).toContain('return;');
+	});
+
+	it('restores the rendered order from props', () => {
+		const start = SRC2.indexOf('async function handleFinalize(');
+		const body = SRC2.slice(start, SRC2.indexOf('\n\t}', start));
+		expect(body).toContain('groupData = propGroupData');
+	});
+});
+
+describe('a relation field with no declared target, in the list', () => {
+	it('is not grouped at all, rather than grouped by raw ids', () => {
+		// The board falls into UNCATEGORIZED for this, because its lanes come
+		// from `field.options` and a relation has none. This view DISCOVERS
+		// values from the items, so the same malformed schema produced one
+		// group per raw ITEM ID — the two siblings disagreeing, with the list
+		// landing on the one outcome this unit exists to prevent (codex round
+		// 5).
+		const screen = renderList(
+			[item('car-1', 'id-red'), item('car-2', 'id-gone')],
+			[{ key: 'car_color', label: 'Colour', type: 'relation' }],
+			'car_color',
+		);
+
+		// PRECONDITION: the cards rendered, so "one group" is not "no list".
+		expect(screen.container.querySelectorAll('.item-card').length).toBe(2);
+
+		// ASSERTED AS THE GROUP SHAPE, not as the absence of the id string.
+		// `formatLabel('id-red')` renders "Id-Red", so `not.toContain('id-red')`
+		// passes against a list grouping by raw values — the SEVENTH time that
+		// exact trap has caught a test on this branch. One group, and it is not
+		// named after a target.
+		expect(groups(screen)).toHaveLength(1);
+		expect(groups(screen)[0].ref).toBeNull();
 	});
 });
