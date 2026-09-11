@@ -145,11 +145,27 @@ func (s *Store) relationSchemaForCollectionTx(tx *sql.Tx, collectionID string) (
 	if !schemaJSON.Valid || strings.TrimSpace(schemaJSON.String) == "" {
 		return nil, nil
 	}
+	return relationKeysFromSchemaJSON(schemaJSON.String), nil
+}
+
+// relationKeysFromSchemaJSON returns the field keys a collection schema
+// declares as `relation` (or `multi_relation`).
+//
+// ONE function so the write hook and the backfill cannot disagree about what
+// counts as a relation field — two copies of this rule would drift the moment
+// a third relation-ish type appears, and the symptom would be an index that is
+// correct at write time and wrong after a rebuild.
+//
+// A schema that will not parse yields no keys rather than an error: that is a
+// different defect, reported elsewhere, and the index declines to be the
+// second voice.
+func relationKeysFromSchemaJSON(schemaJSON string) map[string]struct{} {
+	if strings.TrimSpace(schemaJSON) == "" {
+		return nil
+	}
 	var schema models.CollectionSchema
-	if err := json.Unmarshal([]byte(schemaJSON.String), &schema); err != nil {
-		// A schema that will not parse is a different defect, reported
-		// elsewhere; the index declines to be the second voice.
-		return nil, nil
+	if err := json.Unmarshal([]byte(schemaJSON), &schema); err != nil {
+		return nil
 	}
 	keys := map[string]struct{}{}
 	for _, def := range schema.Fields {
@@ -157,7 +173,10 @@ func (s *Store) relationSchemaForCollectionTx(tx *sql.Tx, collectionID string) (
 			keys[def.Key] = struct{}{}
 		}
 	}
-	return keys, nil
+	if len(keys) == 0 {
+		return nil
+	}
+	return keys
 }
 
 // ReindexCollectionRelationLinks rebuilds the reverse index for every live
@@ -213,4 +232,168 @@ func (s *Store) ReindexCollectionRelationLinks(tx *sql.Tx, collectionID, workspa
 		}
 	}
 	return nil
+}
+
+// RelationBacklink is one item that points at the target through a relation
+// field, plus the field it points through.
+//
+// FieldKey is the part that makes this not a wiki backlink: the reverse side
+// can say "referenced by CAR-3 via `color`" rather than just "referenced by",
+// which is the whole reason this index is its own table.
+type RelationBacklink struct {
+	SourceItemID   string `json:"source_item_id"`
+	SourceRef      string `json:"source_ref"`
+	SourceTitle    string `json:"source_title"`
+	CollectionSlug string `json:"collection_slug"`
+	FieldKey       string `json:"field_key"`
+	FieldLabel     string `json:"field_label,omitempty"`
+}
+
+// relationBacklinkCap bounds any single page. Matches GetBacklinks' cap for
+// the same reason: a caller that asks for everything should not be able to.
+const relationBacklinkCap = 300
+
+// GetRelationBacklinks returns the live items that reference targetItemID
+// through a `relation` field, filtered to what this viewer may see.
+//
+// VISIBILITY IS THE VIEWER'S, NOT THE TRUTH (ratified, day 55). `vis` is built
+// from ResolveBacklinksVisibility — the same resolver the wiki-link reverse
+// side uses, reused verbatim rather than reinvented — and the consequence is
+// on the record deliberately: "Referenced by 3" means "by 3 you can see". A
+// true count would leak the existence of items the viewer has no access to,
+// which is the exact leak that resolver exists to close.
+//
+// Filtering happens in SQL, not after the fetch, so LIMIT counts VISIBLE rows.
+// Filtering above the limit would let invisible rows consume page slots and
+// silently shrink pages — and worse, a page that came back short would itself
+// be a signal about how many hidden rows there are.
+//
+// Soft-deleted SOURCES are excluded by the join, so a deleted item stops
+// referencing and a restore brings it back without re-deriving anything. A
+// soft-deleted TARGET keeps its rows: the question "who pointed at this?"
+// still has an answer after deletion.
+func (s *Store) GetRelationBacklinks(targetItemID, workspaceID string, limit, offset int, vis BacklinksVisibility) ([]RelationBacklink, error) {
+	if limit <= 0 || limit > relationBacklinkCap {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	// Restricted with nothing visible → empty without a query. Postgres
+	// rejects the `IN ()` form this would otherwise build.
+	if !vis.Unrestricted && len(vis.FullCollectionIDs) == 0 && len(vis.GrantedItemIDs) == 0 {
+		return nil, nil
+	}
+
+	args := []any{targetItemID, workspaceID}
+	visClause := ""
+	if !vis.Unrestricted {
+		collClause := "FALSE"
+		if len(vis.FullCollectionIDs) > 0 {
+			ph := make([]string, len(vis.FullCollectionIDs))
+			for i, cid := range vis.FullCollectionIDs {
+				ph[i] = "?"
+				args = append(args, cid)
+			}
+			collClause = "s.collection_id IN (" + strings.Join(ph, ",") + ")"
+		}
+		itemClause := "FALSE"
+		if len(vis.GrantedItemIDs) > 0 {
+			ph := make([]string, len(vis.GrantedItemIDs))
+			for i, iid := range vis.GrantedItemIDs {
+				ph[i] = "?"
+				args = append(args, iid)
+			}
+			itemClause = "s.id IN (" + strings.Join(ph, ",") + ")"
+		}
+		visClause = " AND (" + collClause + " OR " + itemClause + ")"
+	}
+	args = append(args, limit, offset)
+
+	rows, err := s.db.Query(s.q(`
+		SELECT rl.source_item_id, rl.source_field_key,
+		       s.title, s.item_number, c.prefix, c.slug
+		FROM item_relation_links rl
+		JOIN items s ON s.id = rl.source_item_id
+		JOIN collections c ON c.id = s.collection_id
+		WHERE rl.target_item_id = ? AND rl.workspace_id = ?
+		  AND s.deleted_at IS NULL
+		  AND s.id != rl.target_item_id`+visClause+`
+		ORDER BY s.updated_at DESC, rl.source_item_id, rl.source_field_key
+		LIMIT ? OFFSET ?
+	`), args...)
+	if err != nil {
+		return nil, fmt.Errorf("query relation backlinks: %w", err)
+	}
+	defer rows.Close()
+
+	var out []RelationBacklink
+	for rows.Next() {
+		var b RelationBacklink
+		// item_number is NULLABLE on legacy rows — scanning it into an int
+		// errors and would take the whole list down, the same defect U6 shipped
+		// in hydration (codex round 7 there).
+		var number sql.NullInt64
+		var prefix string
+		if err := rows.Scan(&b.SourceItemID, &b.FieldKey, &b.SourceTitle, &number, &prefix, &b.CollectionSlug); err != nil {
+			return nil, fmt.Errorf("scan relation backlink: %w", err)
+		}
+		if number.Valid {
+			b.SourceRef = fmt.Sprintf("%s-%d", prefix, number.Int64)
+		}
+		out = append(out, b)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate relation backlinks: %w", err)
+	}
+	return out, nil
+}
+
+// CountRelationBacklinks is GetRelationBacklinks' count, under the SAME
+// visibility and the SAME filters.
+//
+// It exists as its own query rather than len() of the page because the UI
+// wants "Referenced by N" without fetching N rows. The filters must stay in
+// lockstep with GetRelationBacklinks — a drift would let the header promise a
+// number the list cannot produce, which is exactly the failure CountBacklinks
+// documents for the wiki side.
+func (s *Store) CountRelationBacklinks(targetItemID, workspaceID string, vis BacklinksVisibility) (int, error) {
+	if !vis.Unrestricted && len(vis.FullCollectionIDs) == 0 && len(vis.GrantedItemIDs) == 0 {
+		return 0, nil
+	}
+	args := []any{targetItemID, workspaceID}
+	visClause := ""
+	if !vis.Unrestricted {
+		collClause := "FALSE"
+		if len(vis.FullCollectionIDs) > 0 {
+			ph := make([]string, len(vis.FullCollectionIDs))
+			for i, cid := range vis.FullCollectionIDs {
+				ph[i] = "?"
+				args = append(args, cid)
+			}
+			collClause = "s.collection_id IN (" + strings.Join(ph, ",") + ")"
+		}
+		itemClause := "FALSE"
+		if len(vis.GrantedItemIDs) > 0 {
+			ph := make([]string, len(vis.GrantedItemIDs))
+			for i, iid := range vis.GrantedItemIDs {
+				ph[i] = "?"
+				args = append(args, iid)
+			}
+			itemClause = "s.id IN (" + strings.Join(ph, ",") + ")"
+		}
+		visClause = " AND (" + collClause + " OR " + itemClause + ")"
+	}
+	var n int
+	err := s.db.QueryRow(s.q(`
+		SELECT COUNT(*)
+		FROM item_relation_links rl
+		JOIN items s ON s.id = rl.source_item_id
+		WHERE rl.target_item_id = ? AND rl.workspace_id = ?
+		  AND s.deleted_at IS NULL
+		  AND s.id != rl.target_item_id`+visClause), args...).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count relation backlinks: %w", err)
+	}
+	return n, nil
 }

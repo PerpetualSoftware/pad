@@ -177,6 +177,23 @@ func serveCmd() *cobra.Command {
 					"items_scanned", bf.ItemsScanned, "errors", bf.Errors)
 			}
 
+			// The same job for `relation` field values (PLAN-2857 U5).
+			// Non-fatal for the same reason: a database without the reverse
+			// index is a database missing a "Referenced by" section, not a
+			// broken one, and refusing to boot over it would be the worse
+			// failure.
+			if rb, err := s.BackfillRelationLinks(); err != nil {
+				slog.Warn("relation-link backfill failed; non-fatal", "error", err)
+			} else if rb.LinksInserted > 0 {
+				slog.Info("Relation-link backfill complete",
+					"items_scanned", rb.ItemsScanned,
+					"links_inserted", rb.LinksInserted,
+				)
+			} else if !rb.Skipped {
+				slog.Debug("Relation-link backfill found nothing to index",
+					"items_scanned", rb.ItemsScanned)
+			}
+
 			// Backfill: populate status_transitions from the historical
 			// activity log (PLAN-1628 / TASK-1637). Idempotent — gated on an
 			// empty table, so it replays history exactly once on the first
