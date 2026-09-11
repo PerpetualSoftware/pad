@@ -151,6 +151,52 @@ func TestMakeFanOutHandler_DispatchesPerAction(t *testing.T) {
 	}
 }
 
+func TestMakeFanOutHandler_StructuredOnlyRemovesDuplicateSuccessText(t *testing.T) {
+	payload := map[string]any{"body": strings.Repeat("work context ", 400)}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	def := ToolDef{
+		Name: "pad_test",
+		Actions: map[string]ActionFn{
+			"get": func(_ context.Context, _ map[string]any, _ ActionEnv) (*mcp.CallToolResult, error) {
+				return mcp.NewToolResultStructured(payload, string(raw)), nil
+			},
+		},
+	}
+	req := callToolRequest(map[string]any{"action": "get"})
+	legacy, err := makeFanOutHandler(def, ActionEnv{})(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	modern, err := makeFanOutHandler(def, ActionEnv{StructuredOnly: true})(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(legacy.Content) == 0 {
+		t.Fatal("default mode must retain the compatibility text fallback")
+	}
+	if modern.Content == nil || len(modern.Content) != 0 {
+		t.Fatalf("structured-only content = %#v, want non-nil empty array", modern.Content)
+	}
+	if modern.StructuredContent == nil {
+		t.Fatal("structured-only mode dropped structuredContent")
+	}
+	legacyJSON, _ := json.Marshal(legacy)
+	modernJSON, _ := json.Marshal(modern)
+	t.Logf("representative structured result: %d bytes default, %d bytes structured-only", len(legacyJSON), len(modernJSON))
+	if len(modernJSON)*3 >= len(legacyJSON)*2 {
+		t.Errorf("structured-only mode should remove roughly half the duplicated payload: default=%d modern=%d", len(legacyJSON), len(modernJSON))
+	}
+
+	errorResult := NewErrorResult(ErrorPayload{Code: ErrValidationFailed, Message: "fix the input"})
+	kept, err := applyStructuredOnly(errorResult, nil, true)
+	if err != nil || len(kept.Content) == 0 {
+		t.Fatal("structured errors must retain their diagnostic text fallback")
+	}
+}
+
 // TestMakeFanOutHandler_MissingAction returns a structured error
 // listing valid actions so the agent can self-correct without a
 // human round-trip. Wire-level guarantee: IsError = true, message

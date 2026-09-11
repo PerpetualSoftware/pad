@@ -134,6 +134,10 @@ type ActionEnv struct {
 	// Catalog is the live catalog slice — supplied so pad_meta.action:
 	// tool-surface can introspect the catalog without an import cycle.
 	Catalog []ToolDef
+
+	// StructuredOnly removes duplicated text fallbacks from successful
+	// structured results. Opt-in because older MCP clients may only read text.
+	StructuredOnly bool
 }
 
 // Dispatch is the helper most fan-out actions use. Looks up cmdInfo
@@ -198,11 +202,12 @@ func appendToCatalog(def ToolDef) {
 // CatalogOptions configures RegisterCatalog. Mirrors RegistryOptions
 // for the cmdhelp-walk path but adds PadVersion (needed by pad_meta).
 type CatalogOptions struct {
-	Doc        *cmdhelp.Document
-	Workspace  *WorkspaceState
-	Dispatcher Dispatcher
-	RootFlags  map[string]string
-	PadVersion string
+	Doc            *cmdhelp.Document
+	Workspace      *WorkspaceState
+	Dispatcher     Dispatcher
+	RootFlags      map[string]string
+	PadVersion     string
+	StructuredOnly bool
 }
 
 // RegisterCatalog installs the v0.2 catalog tools on srv. Returns the
@@ -217,12 +222,13 @@ func RegisterCatalog(srv *server.MCPServer, opts CatalogOptions) (int, error) {
 		return 0, err
 	}
 	env := ActionEnv{
-		Doc:        opts.Doc,
-		Workspace:  opts.Workspace,
-		Dispatcher: opts.Dispatcher,
-		RootFlags:  opts.RootFlags,
-		PadVersion: opts.PadVersion,
-		Catalog:    Catalog,
+		Doc:            opts.Doc,
+		Workspace:      opts.Workspace,
+		Dispatcher:     opts.Dispatcher,
+		RootFlags:      opts.RootFlags,
+		PadVersion:     opts.PadVersion,
+		Catalog:        Catalog,
+		StructuredOnly: opts.StructuredOnly,
 	}
 	count := 0
 	for _, def := range Catalog {
@@ -424,8 +430,22 @@ func makeFanOutHandler(def ToolDef, env ActionEnv) server.ToolHandlerFunc {
 			}
 			stripped[k] = v
 		}
-		return handler(ctx, stripped, env)
+		result, err := handler(ctx, stripped, env)
+		return applyStructuredOnly(result, err, env.StructuredOnly)
 	}
+}
+
+// applyStructuredOnly keeps MCP's required content array but removes the
+// serialized JSON fallback when a modern client has explicitly opted into
+// structuredContent. Errors and text-only results retain their text so an
+// agent can still diagnose and recover from a failed call.
+func applyStructuredOnly(result *mcp.CallToolResult, err error, enabled bool) (*mcp.CallToolResult, error) {
+	if !enabled || err != nil || result == nil || result.IsError || result.StructuredContent == nil {
+		return result, err
+	}
+	trimmed := *result
+	trimmed.Content = []mcp.Content{}
+	return &trimmed, nil
 }
 
 // compatAcceptedInputKeys lists input keys that are ACCEPTED without
