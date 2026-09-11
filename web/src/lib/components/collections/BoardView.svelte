@@ -4,6 +4,16 @@
 	import { itemComparator, type SortMode } from '$lib/collections/itemSort';
 	import { reorderGroup, disabledDirections, adjacentColumn, type ReorderDirection } from '$lib/collections/reorder';
 	import { bucketByColumn, UNCATEGORIZED } from '$lib/collections/boardColumns';
+	import {
+		narrowRelationRow,
+		relationLaneAcceptsDrop,
+		relationLaneAriaName,
+		relationLaneValueFor,
+		relationLanes,
+		type RelationLane,
+	} from '$lib/collections/relationGroups';
+	import { localIndex } from '$lib/stores/localIndex.svelte';
+	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { columnAccentClassFor } from '$lib/utils/fieldColors';
 	import { dndzone, TRIGGERS, SHADOW_ITEM_MARKER_PROPERTY_NAME } from 'svelte-dnd-action';
 	import type { DndEvent } from 'svelte-dnd-action';
@@ -191,9 +201,61 @@
 
 	let schema = $derived(parseSchema(collection));
 	let field = $derived(schema.fields.find((f) => f.key === groupField));
-	let columns = $derived(field?.options ?? []);
+
+	// GROUPING BY A RELATION (TASK-2998 / PLAN-2857 U7). Every other groupable
+	// type has an option list to bucket against; a relation's lanes are the
+	// targets the rows point at, so they are derived from the items and
+	// resolved through the local index. The rules — ordering, what a deleted or
+	// dangling target is labelled, which lanes accept a drop — live in
+	// `$lib/collections/relationGroups`, because they are decisions and a
+	// decision reachable only by mounting a board is one nobody tests.
+	// A DECLARED TARGET IS REQUIRED (codex round 2). `narrowRelationRow` skips
+	// the collection check when there is nothing to check against, so a legacy
+	// or half-written relation field with no `collection` would resolve ids
+	// ANYWHERE in the workspace and label lanes with whatever it found. The
+	// filter UI already requires it; the board did not.
+	let isRelationGroup = $derived(field?.type === 'relation' && !!field?.collection);
+	let knownCollectionSlugs = $derived(
+		new Set(collectionStore.collections.map((c) => c.slug)),
+	);
+	let resolveRelation = $derived((id: string) =>
+		wsSlug
+			? narrowRelationRow(
+					localIndex.findByIdOrSlug(wsSlug, id),
+					id,
+					field?.collection,
+					knownCollectionSlugs,
+				)
+			: null,
+	);
+	let relationLaneList = $derived<RelationLane[]>(
+		isRelationGroup ? relationLanes(items, groupField, resolveRelation) : [],
+	);
+	let relationLaneByValue = $derived(
+		new Map(relationLaneList.map((lane) => [lane.value, lane])),
+	);
+	let columns = $derived(
+		isRelationGroup ? relationLaneList.map((lane) => lane.value) : (field?.options ?? []),
+	);
 
 	// Column order state — tracks the displayed order, syncs from schema when not dragging
+	/**
+	 * What a CARD's status chip cycles through — the board's lanes for every
+	 * ordinary grouping, and nothing at all when the lanes are relation targets
+	 * (codex round 3, P1).
+	 *
+	 * `statusOptions={columns}` was fine while a lane value was always a status
+	 * option. Under relation grouping the lanes are ITEM IDS, and the parent's
+	 * handler writes whatever it receives into `fields[groupField]` — so a
+	 * click on the status chip set the card's RELATION, cycling through target
+	 * ids and able to land on the deleted or unresolved lane, which the write
+	 * path then refuses. The chip is withheld rather than repointed at the real
+	 * status field: a status chip on a relation-grouped board would be cycling
+	 * a field the board is not showing, which is a different feature and not
+	 * one this unit was asked for.
+	 */
+	let cardStatusOptions = $derived(isRelationGroup ? [] : columns);
+
 	let columnOrder = $state<string[]>([]);
 
 	$effect(() => {
@@ -257,7 +319,12 @@
 	let propColumnData = $derived.by(() => {
 		// Bucket items into their lanes, routing empty/unknown-value items
 		// into the UNCATEGORIZED ('') lane instead of dropping them (IDEA-2275).
-		const result = bucketByColumn(items, groupField, columns);
+		const result = bucketByColumn(
+			items,
+			groupField,
+			columns,
+			isRelationGroup ? (item) => relationLaneValueFor(item, groupField, resolveRelation) : undefined,
+		);
 		// `preserveOrder` opts out of the in-column sort so search rank
 		// from the parent isn't overridden — TASK-1367. Otherwise sort
 		// each lane by its effective mode — the per-lane override if set,
@@ -363,11 +430,63 @@
 	// dnd-provided target order (e.detail.items); the menu passes 'top' (the
 	// card has already been inserted at the target lane's head). DR-7.
 	async function commitColumnMove(item: Item, targetColumn: string, placement: Item[] | 'top') {
+		// A RELATION LANE ONLY ACCEPTS A DROP WHEN ITS TARGET IS LIVE
+		// (TASK-2998). Writing the value of the uncategorised, deleted or
+		// unresolved lanes would either clear the field or write a reference
+		// TASK-2878's validator refuses — so the card would move on screen and
+		// the write would fail behind it, which is worse than not moving.
+		if (isRelationGroup) {
+			const lane = relationLaneByValue.get(targetColumn);
+			if (!lane || !relationLaneAcceptsDrop(lane)) {
+				// AND PUT THE CARD BACK (codex round 1, P1). By the time this
+				// runs, svelte-dnd-action has already moved the card in
+				// `columnData` — refusing the WRITE without undoing that leaves
+				// the board showing a move that never happened, which is the
+				// exact failure the refusal exists to avoid, one step later.
+				//
+				// Re-reading `propColumnData` is how the failure path below
+				// reverts too: it is the props-derived truth, and the sync
+				// effect is gated on the cooldown rather than owning the
+				// restore. Assigning here rather than releasing a cooldown
+				// nobody set is the same repair without the two-second window.
+				//
+				// COPIED rather than aliased — defensive, and NOT for the
+				// reason rounds 6 and 7 gave. Both rounds argued that the sync
+				// effect assigns the derived VALUE into `columnData`, so a
+				// later `columnData[col] = ...` writes THROUGH to
+				// `propColumnData`'s cached object and assigning it back
+				// restores nothing. That premise is FALSE, measured rather than
+				// argued: a `$state` assigned a `$derived`'s object is a deep
+				// proxy whose property writes do not reach the derived's cache.
+				// A probe over exactly this shape ($derived.by object → $state
+				// → property write → read the derived) reported
+				// `after mutation, derived.a=[1]`, the pre-mutation value. The
+				// rendered tests agree from the other side: the round-6 menu
+				// test survives the alias mutant, and the failure-exit test
+				// below passes on the cooldown release alone while going red
+				// when that release is removed.
+				// So the copy buys nothing against aliasing; it stays only
+				// because a restore path should not hand its caller an object
+				// somebody else owns. Do not re-derive the aliasing story from
+				// the shape of this code — it has now cost two review rounds.
+				columnData = Object.fromEntries(
+					Object.entries(propColumnData).map(([key, list]) => [key, [...list]]),
+				);
+				return;
+			}
+		}
 		dropCooldown = true;
 
 		let moveSucceeded = true;
 		const fields = parseFields(item);
-		if (fields[groupField] !== targetColumn) {
+		// TRIMMED for a relation, as the list already was (codex round 6). A
+		// legacy value of `" id-red "` is ALREADY in the `id-red` lane, and a
+		// raw `!==` fired a pointless write for it — the same asymmetry between
+		// these two views, in the other direction this time.
+		const currentValue = isRelationGroup
+			? relationLaneValueFor(item, groupField, resolveRelation)
+			: fields[groupField];
+		if (currentValue !== targetColumn) {
 			try {
 				await onStatusChange(item, targetColumn);
 			} catch {
@@ -483,14 +602,24 @@
 	{#each renderColumns as colValue (colValue)}
 		{@const colItems = columnData[colValue] ?? []}
 		{@const isUncategorized = colValue === UNCATEGORIZED}
-		{@const colDraggable = canEdit && !isUncategorized}
+		{@const relLane = relationLaneByValue.get(colValue)}
+		{@const laneName = relLane ? (relLane.title ?? relLane.label) : formatLabel(colValue)}
+		{@const laneRef = relLane?.ref ?? null}
+		<!--
+			A relation lane is NOT column-draggable and offers no "+". Its order
+			is alphabetical rather than schema-held, so a reorder would have
+			nowhere to persist to and would snap back; and creating an item
+			"into" a lane means writing a relation, which the picker owns
+			(TASK-2998 keeps that to the drop gesture in this unit).
+		-->
+		{@const colDraggable = canEdit && !isUncategorized && !isRelationGroup}
 		<div
 			class="kanban-column"
 			class:drag-over-left={dragOverColumn === colValue}
 			class:dragging-source={draggedColumn === colValue}
 			class:uncategorized-column={isUncategorized}
 			role="group"
-			aria-label="{formatLabel(colValue)} column"
+			aria-label="{relationLaneAriaName(relLane, formatLabel(colValue))} column"
 			ondragover={(e) => handleColumnDragOver(e, colValue)}
 			ondragleave={handleColumnDragLeave}
 			ondrop={(e) => handleColumnDrop(e, colValue)}
@@ -507,7 +636,10 @@
 				{#if colDraggable}
 					<span class="column-drag-handle" title="Drag to reorder">⠿</span>
 				{/if}
-				<span class="column-name">{formatLabel(colValue)}</span>
+				<span class="column-name">
+					{#if laneRef}<span class="lane-ref">{laneRef}</span>{/if}{laneName}
+					{#if relLane?.state === 'deleted'}<span class="lane-note" title="This item has been deleted.">(deleted)</span>{/if}
+				</span>
 				<div class="column-actions">
 					<span class="column-count">{colItems.length}</span>
 					<!-- Affordance visibility is driven purely by callback
@@ -520,7 +652,7 @@
 					     UNCATEGORIZED lane hides "add" (creating an explicitly
 					     uncategorized item makes no sense) but keeps the bulk
 					     ⋯ menu — "move/tag/assign all" is useful for triage. -->
-					{#if onCreateInColumn && !isUncategorized}
+					{#if onCreateInColumn && !isUncategorized && !isRelationGroup}
 						<button
 							class="lane-btn lane-add-btn"
 							title="Add item to {formatLabel(colValue).toLowerCase()}"
@@ -535,7 +667,7 @@
 							<button
 								class="lane-btn lane-menu-btn"
 								title="Lane actions"
-								aria-label="{formatLabel(colValue)} lane actions"
+								aria-label="{relationLaneAriaName(relLane, formatLabel(colValue))} lane actions"
 								aria-haspopup="menu"
 								aria-expanded={openMenuColumn === colValue}
 								onclick={(e) => { e.stopPropagation(); toggleMenu(colValue); }}
@@ -553,7 +685,9 @@
 									laneSort={laneSortOverrides[colValue]}
 									onSetLaneSort={(m) => setLaneSort(colValue, m)}
 									onClose={closeMenu}
-									onAddItem={onCreateInColumn && !isUncategorized ? () => openDraft(colValue) : undefined}
+									onAddItem={onCreateInColumn && !isUncategorized && !isRelationGroup
+										? () => openDraft(colValue)
+										: undefined}
 									onArchive={onArchiveColumn ? () => onArchiveColumn?.(colItems) : undefined}
 									onMove={onMoveColumn ? (status) => onMoveColumn?.(colItems, status) : undefined}
 									onTag={onTagColumn ? (tag) => onTagColumn?.(colItems, tag) : undefined}
@@ -627,8 +761,8 @@
 							{collection}
 							compact={true}
 							focused={focusedItemId === item.id}
-							statusOptions={columns}
-							onStatusClick={onStatusChange}
+							statusOptions={cardStatusOptions}
+							onStatusClick={isRelationGroup ? undefined : onStatusChange}
 							progress={itemProgress?.[item.id] ?? null}
 							{progressLabel}
 							onReorderItem={canReorderLane(colValue) ? (it, dir) => reorderItem(colValue, it, dir) : undefined}
@@ -763,6 +897,20 @@
 	.column-drag-handle:active {
 		opacity: 1;
 		cursor: grabbing;
+	}
+
+	.lane-ref {
+		font-family: var(--font-mono, ui-monospace, monospace);
+		font-size: 0.85em;
+		opacity: 0.7;
+		margin-right: 0.35em;
+	}
+
+	.lane-note {
+		font-size: 0.85em;
+		opacity: 0.7;
+		margin-left: 0.35em;
+		font-style: italic;
 	}
 
 	.column-name {

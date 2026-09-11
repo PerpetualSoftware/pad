@@ -18,6 +18,7 @@ handlers — onchange is never called.
 	import { onDestroy } from 'svelte';
 	import { formatItemRef, type FieldDef, type ItemIndexRow, type PaneTarget } from '$lib/types';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
+	import { narrowRelationRow } from '$lib/collections/relationGroups';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
@@ -114,50 +115,23 @@ handlers — onchange is never called.
 		if (!isRelation || !wsSlug) return null;
 		const raw = typeof value === 'string' ? value.trim() : '';
 		if (!raw) return null;
-		const row = localIndex.findByIdOrSlug(wsSlug, raw);
-		if (!row) return null;
-		// TWO narrowings on what `findByIdOrSlug` will happily return, both
-		// found by driving this in a real browser.
+		// ONE IMPLEMENTATION OF THE TWO NARROWINGS (TASK-2998). They were worked
+		// out here and duplicated into `relationGroups` when the board needed
+		// them; TASK-2996 has merged without touching this file, so the fork is
+		// closed rather than left as a note. The reasoning — why an id-only
+		// match, why the collection check only fires when both slugs are known —
+		// lives on `narrowRelationRow`.
 		//
-		// 1. ID ONLY. That helper resolves by id OR SLUG, so a legacy free-text
-		//    value like "red" — exactly what the old text fallback wrote — RESOLVES
-		//    to the item whose slug is "red" and renders as a working reference.
-		//    The field's contract is that it stores an item ID; displaying a slug
-		//    match makes the chip lie about what is stored, and slugs are mutable,
-		//    so the same value could point somewhere else tomorrow.
-		// 2. TARGET COLLECTION. The helper is workspace-wide, so without this a
-		//    relation declared against `colors` could render an item from `tasks`
-		//    that happens to share the identifier. This is the same defect
-		//    PLAN-2857's recon recorded against the SERVER's `ResolveItem`
-		//    (workspace-wide, not collection-scoped); I wrote that finding down and
-		//    then reproduced it here.
-		if (row.id !== raw) return null;
-		// The collection mismatch is only EVIDENCE that the value is wrong when
-		// the collection list and the item index agree about the world — that is,
-		// when both the declared target and the row's own collection are slugs
-		// the current list knows.
-		//
-		// Two ways they disagree, and neither is the value's fault:
-		//   * the target was renamed, so it names nothing (`relationTarget`
-		//     'stale');
-		//   * the rename has been applied to the INDEX but not yet to the
-		//     collection list — `retagCollection` moves the rows immediately and
-		//     `loadCollections` is fired without being awaited (and with its
-		//     rejection swallowed by `void`), so the row's new slug is unknown to
-		//     a list that still lists the old one. That window is brief when the
-		//     refetch succeeds and PERMANENT when it fails (codex round 2 P1).
-		//
-		// Requiring both to be known collapses both cases to "don't judge", while
-		// a genuine cross-collection value — target `colors`, row `tasks`, both
-		// live — still resolves to null.
-		if (
-			relationTarget === 'live' &&
-			knownCollectionSlugs?.has(row.collection_slug ?? '') &&
-			row.collection_slug !== field.collection
-		) {
-			return null;
-		}
-		return row;
+		// `relationTarget === 'live'` and "the collection list knows the
+		// declared slug" are the same condition: `relationTarget` is derived
+		// from that same list, so the helper's own guard covers the stale and
+		// unknown cases this branch used to name.
+		return narrowRelationRow(
+			localIndex.findByIdOrSlug(wsSlug, raw),
+			raw,
+			field.collection,
+			knownCollectionSlugs,
+		);
 	});
 	let relationState = $derived.by((): 'empty' | 'live' | 'deleted' | 'unresolved' => {
 		if (!isRelation) return 'empty';

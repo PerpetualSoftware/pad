@@ -46,6 +46,7 @@
 		unparentedEffective,
 		viewHasUnparentedFilter,
 	} from '$lib/collections/unparentedFilter';
+	import { relationFilterMatches } from '$lib/collections/relationGroups';
 	import { KNOWN_COLLECTION_URL_PARAMS, buildCollectionUrlParams } from '$lib/collections/paneUrlParams';
 	import { type ResolvedPaneState } from '$lib/collections/paneController';
 	import { createPaneController } from '$lib/collections/paneHostController';
@@ -1315,6 +1316,11 @@
 
 	let statusOptions = $derived(collection ? getStatusOptions(collection) : []);
 
+	/** Schema keys whose filter value names an item rather than an option. */
+	let relationFilterKeys = $derived(
+		new Set((schema?.fields ?? []).filter((f) => f.type === 'relation').map((f) => f.key)),
+	);
+
 	let filteredItems = $derived.by(() => {
 		let result = items;
 
@@ -1327,6 +1333,14 @@
 					return item.parent_link_id === value;
 				}
 				const fields = parseFields(item);
+				// A RELATION value is compared trimmed (TASK-2998, codex round
+				// 2). The board already trimmed, so without this an item
+				// storing `" id-red "` sat in the `Red` lane and vanished when
+				// you filtered for `Red` — one value, two answers, one screen
+				// apart. Every other field type keeps strict equality.
+				if (relationFilterKeys.has(key)) {
+					return relationFilterMatches(fields[key], value);
+				}
 				return fields[key] === value;
 			});
 		}
@@ -1776,6 +1790,17 @@
 		const s = parseSchema(base);
 		const idx = s.fields.findIndex((f) => f.key === groupField);
 		if (idx === -1) return;
+		// NEVER WRITE LANE ORDER BACK FOR A RELATION FIELD (TASK-2998).
+		//
+		// `newOrder` is the board's lane values, and for a relation those are
+		// ITEM IDS — writing them here would persist uuids into the schema as
+		// `options`, which is both meaningless and hard to undo by hand.
+		//
+		// BoardView already withholds column dragging on a relation board, so
+		// nothing should reach this; the guard is here because this is the
+		// DESTRUCTIVE end, and a guard at the affordance protects only the
+		// affordances somebody remembered.
+		if (s.fields[idx].type === 'relation') return;
 		s.fields[idx].options = newOrder;
 		const schemaStr = JSON.stringify(s);
 
@@ -3399,6 +3424,7 @@
 						unparentedAvailable={unparentedMetadataAvailable}
 						unparentedActive={unparentedApplied}
 						onUnparentedChange={handleUnparentedChange}
+						{wsSlug}
 					/>
 				</div>
 			{/if}

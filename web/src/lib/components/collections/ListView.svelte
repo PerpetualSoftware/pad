@@ -3,6 +3,15 @@
 	import { parseSchema, parseFields } from '$lib/types';
 	import { itemComparator, type SortMode } from '$lib/collections/itemSort';
 	import { reorderGroup, disabledDirections, type ReorderDirection } from '$lib/collections/reorder';
+	import {
+		narrowRelationRow,
+		relationLaneAcceptsDrop,
+		relationLaneValueFor,
+		relationLanes,
+		type RelationLane,
+	} from '$lib/collections/relationGroups';
+	import { localIndex } from '$lib/stores/localIndex.svelte';
+	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { SvelteSet } from 'svelte/reactivity';
 	import { dndzone, TRIGGERS, SHADOW_ITEM_MARKER_PROPERTY_NAME } from 'svelte-dnd-action';
 	import type { DndEvent } from 'svelte-dnd-action';
@@ -90,6 +99,62 @@
 
 	let schema = $derived(parseSchema(collection));
 	let field = $derived(schema.fields.find((f) => f.key === groupField));
+
+	// GROUPING BY A RELATION (TASK-2998 / PLAN-2857 U7, codex round 4).
+	//
+	// This component discovers extra group values from the ITEMS already, which
+	// is what makes a text field groupable — and is exactly why a relation
+	// grouped here rendered one group per stored ITEM ID. The board was fixed
+	// and this was not: the same class, one component over.
+	//
+	// Same three pieces as BoardView, from the same module: lanes derived from
+	// the targets, values folded onto a sentinel before bucketing, and the
+	// chip vocabulary for the label.
+	let isRelationGroup = $derived(field?.type === 'relation' && !!field?.collection);
+	/**
+	 * A relation field with no declared target (legacy or half-written) is not
+	 * groupable AT ALL here (codex round 5).
+	 *
+	 * The board falls into UNCATEGORIZED for this, because its lanes come from
+	 * `field.options` and a relation has none. This view DISCOVERS values from
+	 * the items, so the same schema produced one group per raw ITEM ID — the
+	 * two siblings disagreeing about a malformed field, with the list landing
+	 * on the one outcome this whole unit exists to prevent.
+	 */
+	let relationWithoutTarget = $derived(field?.type === 'relation' && !field?.collection);
+	let knownCollectionSlugs = $derived(
+		new Set(collectionStore.collections.map((c) => c.slug)),
+	);
+	let resolveRelation = $derived((id: string) =>
+		wsSlug
+			? narrowRelationRow(
+					localIndex.findByIdOrSlug(wsSlug, id),
+					id,
+					field?.collection,
+					knownCollectionSlugs,
+				)
+			: null,
+	);
+	let relationLaneList = $derived<RelationLane[]>(
+		isRelationGroup ? relationLanes(items, groupField, resolveRelation) : [],
+	);
+	let relationLaneByValue = $derived(
+		new Map(relationLaneList.map((lane) => [lane.value, lane])),
+	);
+	// THE STATUS CHIP IS WITHHELD ON A RELATION-GROUPED LIST, for the reason the
+	// board withholds it: `onStatusChange` writes what it receives into
+	// `fields[groupField]`, so a status click on a list grouped by a relation
+	// wrote a STATUS STRING into the relation field. This component takes real
+	// `statusOptions` as a prop rather than reusing its lanes, so the chip
+	// showed the right options and sent them to the wrong field — the same
+	// defect as the board's, arriving from the opposite direction.
+
+	/** The value an item is grouped under — sentinel-folded for a relation. */
+	function groupValueFor(item: Item): string {
+		if (relationWithoutTarget) return '';
+		if (isRelationGroup) return relationLaneValueFor(item, groupField, resolveRelation);
+		return (parseFields(item)[groupField] ?? '') as string;
+	}
 	let groupOptions = $derived(field?.options ?? []);
 
 	/**
@@ -97,6 +162,12 @@
 	 * values discovered from items (handles text fields with no options).
 	 */
 	let displayGroups = $derived.by(() => {
+		if (relationWithoutTarget) return [''];
+		if (isRelationGroup) {
+			const lanes = relationLaneList.map((lane) => lane.value);
+			const hasEmpty = items.some((i) => groupValueFor(i) === '');
+			return hasEmpty ? [...lanes, ''] : lanes;
+		}
 		const known = new Set(groupOptions);
 		const extra: string[] = [];
 		let hasUngrouped = false;
@@ -136,7 +207,14 @@
 	function handleGroupFinalize(e: CustomEvent<DndEvent<GroupItem>>) {
 		groupItems = e.detail.items;
 		isDraggingGroup = false;
-		if (onGroupReorder) {
+		// NO GROUP REORDER UNDER RELATION GROUPING (TASK-2998). The order is
+		// alphabetical by target title, not schema-held, so there is nowhere to
+		// persist it — and what `handleGroupReorder` WOULD persist is the lane
+		// values, which for a relation are item ids going into the schema's
+		// `options`. The page refuses that write at its own end; this stops the
+		// gesture from looking like it worked and then snapping back on the
+		// next derivation.
+		if (onGroupReorder && !isRelationGroup) {
 			const newOrder = groupItems
 				.filter((g: any) => !g[SHADOW_ITEM_MARKER_PROPERTY_NAME])
 				.map((g) => g.id);
@@ -157,8 +235,7 @@
 			result[opt] = [];
 		}
 		for (const item of items) {
-			const fields = parseFields(item);
-			const value = fields[groupField] ?? '';
+			const value = groupValueFor(item);
 			if (result[value] !== undefined) {
 				result[value].push(item);
 			} else {
@@ -215,9 +292,30 @@
 
 		if (trigger === TRIGGERS.DROPPED_INTO_ZONE) {
 			const originalItem = items.find((i) => i.id === itemId);
+			// A RELATION GROUP ONLY ACCEPTS A DROP WHEN ITS TARGET IS LIVE
+			// (TASK-2998) — same rule as the board. The other three would clear
+			// the field or write a reference the validator refuses.
+			const relLane = isRelationGroup ? relationLaneByValue.get(groupName) : undefined;
+			const dropAllowed = !isRelationGroup || (!!relLane && relationLaneAcceptsDrop(relLane));
+			if (!dropAllowed) {
+				// AND NO REORDER EITHER (codex round 5). Skipping only the
+				// relation write left `onReorder` running unconditionally, so a
+				// refused cross-group drop still rewrote every `sort_order` in
+				// the destination — a persisted side effect of a gesture the
+				// component had just declined. Re-deriving from props puts the
+				// card back, as the board's refusal does.
+				groupData = propGroupData;
+				return;
+			}
 			if (originalItem && onStatusChange) {
 				const fields = parseFields(originalItem);
-				if (fields[groupField] !== groupName) {
+				// TRIMMED, like every other comparison against a stored relation
+				// value: an item holding `" id-red "` is already in this group,
+				// and a raw `!==` would fire a pointless write for it.
+				const current = isRelationGroup
+					? relationLaneValueFor(originalItem, groupField, resolveRelation)
+					: (fields[groupField] ?? '');
+				if (current !== groupName) {
 					await onStatusChange(originalItem, groupName);
 				}
 			}
@@ -306,7 +404,18 @@
 					<span class="collapse-icon" class:collapsed={collapsedGroups.has(groupName)}
 						>&#9662;</span
 					>
-					<span class="group-title">{formatLabel(groupName)}</span>
+					<span class="group-title">
+						{#if relationLaneByValue.get(groupName)?.ref}<span class="group-ref"
+							>{relationLaneByValue.get(groupName)?.ref}</span
+						>{/if}{relationLaneByValue.get(groupName)
+							? (relationLaneByValue.get(groupName)?.title ??
+								relationLaneByValue.get(groupName)?.label)
+							: formatLabel(groupName)}
+						{#if relationLaneByValue.get(groupName)?.state === 'deleted'}<span
+								class="group-note"
+								title="This item has been deleted.">(deleted)</span
+							>{/if}
+					</span>
 					<span class="group-actions">
 						<span class="group-count">{itemCount(grpItems)}</span>
 						<!-- Gate on onArchiveGroup alone (not canEdit): archive-all
@@ -361,8 +470,8 @@
 									{collection}
 									compact={false}
 									focused={focusedItemId === item.id}
-									{statusOptions}
-									onStatusClick={onStatusChange}
+									statusOptions={isRelationGroup ? [] : statusOptions}
+									onStatusClick={isRelationGroup ? undefined : onStatusChange}
 									progress={itemProgress?.[item.id] ?? null}
 									{progressLabel}
 									onReorderItem={canReorderItems ? (it, dir) => reorderItem(groupName, it, dir) : undefined}
@@ -504,6 +613,20 @@
 
 	.collapse-icon.collapsed {
 		transform: rotate(-90deg);
+	}
+
+	.group-ref {
+		font-family: var(--font-mono, ui-monospace, monospace);
+		font-size: 0.85em;
+		opacity: 0.7;
+		margin-right: 0.35em;
+	}
+
+	.group-note {
+		font-size: 0.85em;
+		opacity: 0.7;
+		margin-left: 0.35em;
+		font-style: italic;
 	}
 
 	.group-title {
