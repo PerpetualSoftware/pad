@@ -590,7 +590,19 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 	// without inventing a second ordering rule to keep in sync with the first,
 	// and it is taken BEFORE the row lock, preserving the order this comment
 	// exists to protect.
-	if len(input.Migrations) > 0 || renaming {
+	// The relation reverse index is rebuilt below whenever the SCHEMA moves,
+	// and that rebuild must not interleave with item writes: an item
+	// transaction that read the OLD schema can commit its own relation hook
+	// after the reindex has run, leaving the index matching neither the old
+	// shape nor the new one (codex round 2). So the same workspace lock the
+	// migrations take is taken for a schema change too.
+	//
+	// Gated rather than unconditional, and that is a cost decision as much as
+	// a correctness one: an icon or description edit changes nothing the index
+	// depends on, and reindexing a 10k-item collection for it would put ~1.8s
+	// on an update that has no business paying it.
+	reindexRelations := input.Schema != nil || len(input.Migrations) > 0
+	if len(input.Migrations) > 0 || renaming || reindexRelations {
 		if err := s.acquireWorkspaceSeqLock(tx, existing.WorkspaceID); err != nil {
 			return nil, err
 		}
@@ -701,8 +713,13 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 	// relations without touching a single item, so nothing else in this
 	// transaction would repair the index — and the next per-item write never
 	// comes for items nobody edits.
-	if err := s.ReindexCollectionRelationLinks(tx, id, existing.WorkspaceID); err != nil {
-		return nil, fmt.Errorf("reindex relation links: %w", err)
+	//
+	// Only when the schema or the field VALUES actually moved — see the
+	// workspace-lock note above for why this is gated.
+	if reindexRelations {
+		if err := s.ReindexCollectionRelationLinks(tx, id, existing.WorkspaceID); err != nil {
+			return nil, fmt.Errorf("reindex relation links: %w", err)
+		}
 	}
 
 	if err := tx.Commit(); err != nil {

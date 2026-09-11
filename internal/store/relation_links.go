@@ -318,6 +318,11 @@ func (s *Store) GetRelationBacklinks(targetItemID, workspaceID string, limit, of
 		JOIN collections c ON c.id = s.collection_id
 		WHERE rl.target_item_id = ? AND rl.workspace_id = ?
 		  AND s.deleted_at IS NULL
+		  -- A soft-deleted COLLECTION leaves its items live, so without this a
+		  -- source in a collection the viewer can no longer open still shows
+		  -- up here — including for an Unrestricted viewer, who has no
+		  -- collection filter to catch it (codex round 2).
+		  AND c.deleted_at IS NULL
 		  AND s.id != rl.target_item_id`+visClause+`
 		ORDER BY s.updated_at DESC, rl.source_item_id, rl.source_field_key
 		LIMIT ? OFFSET ?
@@ -389,8 +394,12 @@ func (s *Store) CountRelationBacklinks(targetItemID, workspaceID string, vis Bac
 		SELECT COUNT(*)
 		FROM item_relation_links rl
 		JOIN items s ON s.id = rl.source_item_id
+		JOIN collections c ON c.id = s.collection_id
 		WHERE rl.target_item_id = ? AND rl.workspace_id = ?
 		  AND s.deleted_at IS NULL
+		  -- Same filter as the page query. The two must stay identical or the
+		  -- header promises a number the list cannot produce.
+		  AND c.deleted_at IS NULL
 		  AND s.id != rl.target_item_id`+visClause), args...).Scan(&n)
 	if err != nil {
 		return 0, fmt.Errorf("count relation backlinks: %w", err)

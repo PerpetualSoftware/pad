@@ -481,3 +481,88 @@ func TestRelationLinks_AnInterruptedBackfillIsRetriedNotSkipped(t *testing.T) {
 		t.Errorf("the already-indexed edge is now counted %d times; a repeat pass must replace rather than append", n)
 	}
 }
+
+// TestRelationLinks_BackfillClearsAStaleEdge is codex round 2's first P1.
+//
+// The backfill used to SKIP an item whose blob carries no edges, as an
+// optimisation. That is wrong for exactly the state it exists to repair: an
+// interrupted pass can leave a STALE row for an item whose value has since
+// been cleared, and skipping it preserves that row and then writes the
+// completion marker over it — permanently.
+//
+// The retry test above covers a MISSING edge. This one covers the opposite,
+// which is the case the optimisation hid.
+func TestRelationLinks_BackfillClearsAStaleEdge(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ws, _, cars, red := relationIndexFixture(t, s)
+	car := carPointingAt(t, s, ws, cars, "Cleared Car", red.ID)
+
+	// The item's value is gone, but the index still carries the edge — the
+	// shape an interrupted pass leaves behind. Written directly so the hook
+	// does not repair it first.
+	cleared, _ := json.Marshal(map[string]any{"status": "open"})
+	if _, err := s.db.Exec(s.q(`UPDATE items SET fields = ? WHERE id = ?`), string(cleared), car.ID); err != nil {
+		t.Fatalf("clear the value behind the hook's back: %v", err)
+	}
+	if _, err := s.db.Exec(s.q(`DELETE FROM platform_settings WHERE key = ?`), relationLinksBackfilledFlag); err != nil {
+		t.Fatalf("clear marker: %v", err)
+	}
+	if n := countFor(t, s, red, ws); n != 1 {
+		t.Fatalf("the stale state was not established (count %d); the assertion below would pass for the wrong reason", n)
+	}
+
+	if _, err := s.BackfillRelationLinks(); err != nil {
+		t.Fatalf("BackfillRelationLinks: %v", err)
+	}
+	if n := countFor(t, s, red, ws); n != 0 {
+		t.Errorf("the stale edge survived the backfill (count %d) — an item with zero edges is precisely the one that must still be rewritten, because replaceRelationLinks deletes before it inserts", n)
+	}
+}
+
+// TestRelationLinks_ASourceInADeletedCollectionIsNotCounted is codex round 2's
+// disclosure P1.
+//
+// DeleteCollection soft-deletes the COLLECTION and leaves its items live. The
+// reverse query joins collections, so without a deleted_at filter a source
+// sitting in a collection the viewer can no longer open still appears — and
+// for an Unrestricted viewer there is no collection filter anywhere else to
+// catch it.
+func TestRelationLinks_ASourceInADeletedCollectionIsNotCounted(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ws, _, cars, red := relationIndexFixture(t, s)
+
+	doomed, err := s.CreateCollection(ws.ID, models.CollectionCreate{
+		Name:   "Doomed",
+		Schema: `{"fields":[{"key":"status","type":"select","options":["open","done"],"default":"open"},{"key":"color","type":"relation","collection":"colors"}]}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection: %v", err)
+	}
+	blob, _ := json.Marshal(map[string]any{"status": "open", "color": red.ID})
+	if _, err := s.CreateItem(ws.ID, doomed.ID, models.ItemCreate{Title: "Doomed Car", Fields: string(blob)}); err != nil {
+		t.Fatalf("CreateItem: %v", err)
+	}
+	// CONTROL: a source in a LIVE collection, so the assertion below is about
+	// the deletion rather than about the query returning nothing.
+	carPointingAt(t, s, ws, cars, "Surviving Car", red.ID)
+
+	if n := countFor(t, s, red, ws); n != 2 {
+		t.Fatalf("setup: referenced by %d, want 2", n)
+	}
+
+	if err := s.DeleteCollection(doomed.ID, ""); err != nil {
+		t.Fatalf("DeleteCollection: %v", err)
+	}
+	if n := countFor(t, s, red, ws); n != 1 {
+		t.Errorf("referenced by %d, want 1 — a source in a soft-deleted collection is still being disclosed; its items stay live, so only a collections.deleted_at filter hides it", n)
+	}
+	links, err := s.GetRelationBacklinks(red.ID, ws.ID, 50, 0, unrestricted)
+	if err != nil {
+		t.Fatalf("GetRelationBacklinks: %v", err)
+	}
+	if len(links) != 1 {
+		t.Errorf("the page returned %d rows while the count says 1 — the two ran under different filters", len(links))
+	}
+}

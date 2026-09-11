@@ -55,6 +55,22 @@ type BackfillRelationLinksResult struct {
 // relation field arriving later is handled by UpdateCollection's reindex and
 // the write hooks, not by this.
 //
+// TWO SERVERS BOOTING AT ONCE is redundant, not corrupting, and the argument
+// is worth writing down because the obvious fix — a startup lock — has worse
+// failure modes than the thing it prevents (a crashed holder blocking boot).
+//
+// Both servers see no marker and both walk items. Each per-item write re-reads
+// the blob inside its own transaction and replaces that item's rows wholesale,
+// so two passes over one item converge on the same rows rather than doubling
+// them. Whichever server finishes first writes the marker, and the marker is
+// honest at that moment: a full pass DID complete. The other server's
+// remaining writes re-derive rows that are already correct.
+//
+// The interleaving that WOULD corrupt — an older pass writing a stale blob
+// over a newer one — is closed by the in-transaction re-read, not by the
+// marker. That is the load-bearing part; the marker only decides whether a
+// pass runs at all.
+//
 // PLAN-2857 U5 / TASK-2997.
 func (s *Store) BackfillRelationLinks() (*BackfillRelationLinksResult, error) {
 	result := &BackfillRelationLinksResult{}
@@ -115,24 +131,47 @@ func (s *Store) BackfillRelationLinks() (*BackfillRelationLinksResult, error) {
 			continue
 		}
 		result.ItemsScanned++
-		edges := relationValuesFromBlob(it.fields, keys)
-		if len(edges) == 0 {
-			continue
-		}
+
 		// Per-item transaction, matching the wiki backfill: one bad row must
 		// not poison the whole pass.
 		tx, err := s.db.Begin()
 		if err != nil {
 			return nil, fmt.Errorf("begin relation backfill tx: %w", err)
 		}
-		if err := s.replaceRelationLinks(tx, it.id, it.workspaceID, it.collectionID, it.fields); err != nil {
+
+		// RE-READ THE BLOB INSIDE THE TRANSACTION rather than using the
+		// snapshot taken above. The scan and this write are far apart in time
+		// on a large database, and a concurrent update commits its own correct
+		// hook in between — writing the snapshot would then overwrite a
+		// current index with a stale blob, making the backfill a source of the
+		// corruption it exists to repair (codex round 2).
+		var fields, collectionID string
+		if err := tx.QueryRow(s.q(`
+			SELECT fields, collection_id FROM items WHERE id = ? AND deleted_at IS NULL
+		`), it.id).Scan(&fields, &collectionID); err != nil {
+			tx.Rollback() //nolint:errcheck // the item vanished or errored; either way skip it
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			return nil, fmt.Errorf("re-read item %s for backfill: %w", it.id, err)
+		}
+
+		// CALLED UNCONDITIONALLY, even when the blob carries no edges. The
+		// earlier version skipped an item with zero edges as an optimisation,
+		// which is wrong for exactly the case this backfill exists to repair:
+		// an interrupted pass can leave a STALE row for an item whose blob no
+		// longer references anything, and skipping it preserves that row and
+		// then writes the completion marker over it. replaceRelationLinks
+		// deletes before it inserts, so the zero-edge case is precisely the
+		// one that needs to run (codex round 2).
+		if err := s.replaceRelationLinks(tx, it.id, it.workspaceID, collectionID, fields); err != nil {
 			tx.Rollback() //nolint:errcheck // the error below is the one that matters
 			return nil, err
 		}
 		if err := tx.Commit(); err != nil {
 			return nil, fmt.Errorf("commit relation backfill tx: %w", err)
 		}
-		result.LinksInserted += len(edges)
+		result.LinksInserted += len(relationValuesFromBlob(fields, keys))
 	}
 
 	// ONLY NOW. Every earlier return path is a failure, and none of them
