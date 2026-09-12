@@ -6,7 +6,7 @@ Pad is a project tracker for developers and AI agents — issues (TASK, BUG), pl
 
 If the user is asking general code questions with no project-management thread, you don't need this server.
 
-## Tool surface (v0.32)
+## Tool surface (v0.33)
 
 Ten resource × action tools, plus `pad_set_workspace` (which takes a `workspace` slug only — no action enum). Eleven tools total.
 
@@ -18,7 +18,7 @@ Inputs are validated strictly: an undeclared top-level key is rejected with a st
 
 Reads carry a `relation_targets` member beside `fields`: field key → `{id, ref, title}`, so you can render a relation without a request per value. `fields` still holds the canonical id, which is what you write back. An entry with an `id` and NO `ref`/`title` means the target is gone **or** you may not see it — the two are deliberately indistinguishable, so do not render it as either "deleted" or "hidden"; "unavailable" is the honest word.
 
-**`multi_relation` fields (v0.32).** A field declared `multi_relation` holds an ORDERED LIST of references — `["<uuid>", "COLO-3", "Red"]` — and every element resolves through the same UUID → ref → exact-title ladder, with the same collection scoping. Declare one through the `fields` DSL as `owners:multi_relation:people`: the third part is the TARGET COLLECTION, and omitting it is refused at parse time rather than building a field no write can ever satisfy.
+**`multi_relation` fields (v0.33).** A field declared `multi_relation` holds an ORDERED LIST of references — `["<uuid>", "COLO-3", "Red"]` — and every element resolves through the same UUID → ref → exact-title ladder, with the same collection scoping. Declare one through the `fields` DSL as `owners:multi_relation:people`: the third part is the TARGET COLLECTION, and omitting it is refused at parse time rather than building a field no write can ever satisfy.
 
 Four rules differ from a scalar `relation`, and none of them is guessable from the scalar behaviour:
 

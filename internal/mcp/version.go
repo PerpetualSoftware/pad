@@ -1017,18 +1017,17 @@ const CmdhelpVersion = "0.1"
 //     browser tab and BUG-3000 carries the open half — so no surface
 //     here states a duration.
 //
-//     0.32 — PLAN-2857 U4 / TASK-2999. A new `multi_relation` field type:
+//     0.33 — PLAN-2857 U4 / TASK-2999. A new `multi_relation` field type:
 //     an ORDERED LIST of references, each element resolving through the
 //     same UUID -> ref -> exact-title ladder a scalar `relation` uses.
 //
-//     VERSION COLLISION, stated rather than resolved silently: PR #1337
-//     also claims 0.32 and was opened first. It had NOT merged when this
-//     was written (`gh pr view 1337` -> OPEN, main still at 0.31), and the
-//     standing instruction is to take 0.33 only once it HAS merged — so
-//     this takes 0.32 and flags the contest. Whichever of the two merges
-//     SECOND owes a renumber to 0.33, in this constant and in the entry
-//     above it. 0.33 is free if the reviewer would rather not have the
-//     contest at all.
+//     0.32 IS RESERVED FOR PR #1337, which claims it and was opened
+//     first. This unit took 0.33 on a lead ruling rather than contest the
+//     number: version numbers are not scarce, and two branches claiming
+//     one means whichever merges second renumbers under merge pressure,
+//     which is when a version bump is least likely to be checked. So 0.32
+//     may be SKIPPED in this changelog if #1337 is ever abandoned — a gap
+//     is cheaper than a collision.
 //
 //     A BEHAVIOR bump on the 0.31/0.30/0.29 grounds — no tool name or
 //     action enum changed. Two halves, and they have opposite
@@ -1082,7 +1081,7 @@ const CmdhelpVersion = "0.1"
 //     partially, and reports it once through the same
 //     `warnings.dropped_fields` channel BUG-2674 established — so an
 //     import can never change an element count.
-const ToolSurfaceVersion = "0.32"
+const ToolSurfaceVersion = "0.33"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a
