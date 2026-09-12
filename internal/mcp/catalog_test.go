@@ -45,6 +45,7 @@ func TestRegisterCatalog_RequiresOptions(t *testing.T) {
 		{"missing Doc", CatalogOptions{Workspace: NewWorkspaceState(""), Dispatcher: &fakeDispatcher{}}, "Doc"},
 		{"missing Workspace", CatalogOptions{Doc: fixtureDoc(), Dispatcher: &fakeDispatcher{}}, "Workspace"},
 		{"missing Dispatcher", CatalogOptions{Doc: fixtureDoc(), Workspace: NewWorkspaceState("")}, "Dispatcher"},
+		{"conflicting result modes", CatalogOptions{Doc: fixtureDoc(), Workspace: NewWorkspaceState(""), Dispatcher: &fakeDispatcher{}, StructuredOnly: true, TextOnly: true}, "mutually exclusive"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -148,6 +149,67 @@ func TestMakeFanOutHandler_DispatchesPerAction(t *testing.T) {
 	}
 	if got := textOf(res); got != "bar-result" {
 		t.Errorf("result text = %q, want bar-result", got)
+	}
+}
+
+func TestMakeFanOutHandler_CompactModesKeepTheClientVisibleChannel(t *testing.T) {
+	payload := map[string]any{"body": strings.Repeat("work context ", 400)}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	def := ToolDef{
+		Name: "pad_test",
+		Actions: map[string]ActionFn{
+			"get": func(_ context.Context, _ map[string]any, _ ActionEnv) (*mcp.CallToolResult, error) {
+				return mcp.NewToolResultStructured(payload, string(raw)), nil
+			},
+		},
+	}
+	req := callToolRequest(map[string]any{"action": "get"})
+	legacy, err := makeFanOutHandler(def, ActionEnv{})(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	structured, err := makeFanOutHandler(def, ActionEnv{StructuredOnly: true})(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(legacy.Content) == 0 {
+		t.Fatal("default mode must retain the compatibility text fallback")
+	}
+	if structured.Content == nil || len(structured.Content) != 0 {
+		t.Fatalf("structured-only content = %#v, want non-nil empty array", structured.Content)
+	}
+	if structured.StructuredContent == nil {
+		t.Fatal("structured-only mode dropped structuredContent")
+	}
+	textOnly, err := makeFanOutHandler(def, ActionEnv{TextOnly: true})(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(textOnly.Content) == 0 {
+		t.Fatal("text-only mode dropped content")
+	}
+	if textOnly.StructuredContent != nil {
+		t.Fatal("text-only mode retained duplicate structuredContent")
+	}
+	legacyJSON, _ := json.Marshal(legacy)
+	structuredJSON, _ := json.Marshal(structured)
+	textJSON, _ := json.Marshal(textOnly)
+	t.Logf("representative structured result: %d bytes default, %d bytes structured-only, %d bytes text-only", len(legacyJSON), len(structuredJSON), len(textJSON))
+	for mode, compactLen := range map[string]int{"structured-only": len(structuredJSON), "text-only": len(textJSON)} {
+		if compactLen*3 >= len(legacyJSON)*2 {
+			t.Errorf("%s mode should remove roughly half the duplicated payload: default=%d compact=%d", mode, len(legacyJSON), compactLen)
+		}
+	}
+
+	errorResult := NewErrorResult(ErrorPayload{Code: ErrValidationFailed, Message: "fix the input"})
+	for _, modes := range [][2]bool{{true, false}, {false, true}} {
+		kept, err := applyResultMode(errorResult, nil, modes[0], modes[1])
+		if err != nil || len(kept.Content) == 0 || kept.StructuredContent == nil {
+			t.Fatal("structured errors must retain both diagnostic channels")
+		}
 	}
 }
 

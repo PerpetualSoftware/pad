@@ -134,6 +134,12 @@ type ActionEnv struct {
 	// Catalog is the live catalog slice — supplied so pad_meta.action:
 	// tool-surface can introspect the catalog without an import cycle.
 	Catalog []ToolDef
+
+	// StructuredOnly removes duplicated text fallbacks from successful
+	// structured results. TextOnly removes the structured copy instead for
+	// clients that expose only text results to the model.
+	StructuredOnly bool
+	TextOnly       bool
 }
 
 // Dispatch is the helper most fan-out actions use. Looks up cmdInfo
@@ -198,11 +204,13 @@ func appendToCatalog(def ToolDef) {
 // CatalogOptions configures RegisterCatalog. Mirrors RegistryOptions
 // for the cmdhelp-walk path but adds PadVersion (needed by pad_meta).
 type CatalogOptions struct {
-	Doc        *cmdhelp.Document
-	Workspace  *WorkspaceState
-	Dispatcher Dispatcher
-	RootFlags  map[string]string
-	PadVersion string
+	Doc            *cmdhelp.Document
+	Workspace      *WorkspaceState
+	Dispatcher     Dispatcher
+	RootFlags      map[string]string
+	PadVersion     string
+	StructuredOnly bool
+	TextOnly       bool
 }
 
 // RegisterCatalog installs the v0.2 catalog tools on srv. Returns the
@@ -217,12 +225,14 @@ func RegisterCatalog(srv *server.MCPServer, opts CatalogOptions) (int, error) {
 		return 0, err
 	}
 	env := ActionEnv{
-		Doc:        opts.Doc,
-		Workspace:  opts.Workspace,
-		Dispatcher: opts.Dispatcher,
-		RootFlags:  opts.RootFlags,
-		PadVersion: opts.PadVersion,
-		Catalog:    Catalog,
+		Doc:            opts.Doc,
+		Workspace:      opts.Workspace,
+		Dispatcher:     opts.Dispatcher,
+		RootFlags:      opts.RootFlags,
+		PadVersion:     opts.PadVersion,
+		Catalog:        Catalog,
+		StructuredOnly: opts.StructuredOnly,
+		TextOnly:       opts.TextOnly,
 	}
 	count := 0
 	for _, def := range Catalog {
@@ -235,6 +245,9 @@ func RegisterCatalog(srv *server.MCPServer, opts CatalogOptions) (int, error) {
 }
 
 func validateCatalogOptions(opts CatalogOptions) error {
+	if opts.StructuredOnly && opts.TextOnly {
+		return &catalogError{msg: "CatalogOptions.StructuredOnly and TextOnly are mutually exclusive"}
+	}
 	if opts.Doc == nil {
 		return errCatalogMissing("Doc")
 	}
@@ -424,8 +437,28 @@ func makeFanOutHandler(def ToolDef, env ActionEnv) server.ToolHandlerFunc {
 			}
 			stripped[k] = v
 		}
-		return handler(ctx, stripped, env)
+		result, err := handler(ctx, stripped, env)
+		return applyResultMode(result, err, env.StructuredOnly, env.TextOnly)
 	}
+}
+
+// applyResultMode keeps only the result channel the configured client exposes
+// to its model. Errors and one-channel results stay untouched so compact mode
+// can never turn a useful result into an empty one.
+func applyResultMode(result *mcp.CallToolResult, err error, structuredOnly, textOnly bool) (*mcp.CallToolResult, error) {
+	if err != nil || result == nil || result.IsError || result.StructuredContent == nil {
+		return result, err
+	}
+	trimmed := *result
+	if structuredOnly {
+		trimmed.Content = []mcp.Content{}
+		return &trimmed, nil
+	}
+	if textOnly && len(result.Content) > 0 {
+		trimmed.StructuredContent = nil
+		return &trimmed, nil
+	}
+	return result, err
 }
 
 // compatAcceptedInputKeys lists input keys that are ACCEPTED without

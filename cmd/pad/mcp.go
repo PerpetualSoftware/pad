@@ -47,6 +47,7 @@ See https://getpad.dev/mcp/local for client configuration.`,
 // for every supported agent (creating config dirs as needed).
 func mcpInstallCmd() *cobra.Command {
 	var allFlag bool
+	var compactResults bool
 	cmd := &cobra.Command{
 		Use:   "install [agent]",
 		Short: "Install pad as an MCP server for a client app",
@@ -68,6 +69,10 @@ agents (run ` + "`pad mcp status`" + ` for the same view). With
 --all, installs for every per-user agent, creating config files
 on demand.
 
+For Cursor or Codex, --compact-results removes the duplicate successful-result
+channel while preserving the channel that client exposes to its model. It
+configures text-only results for Cursor and structured-only results for Codex.
+
 Existing MCP server entries (other servers configured by the user)
 are preserved — only the "pad" entry is touched.`,
 		ValidArgs: agentValidArgs(),
@@ -84,11 +89,28 @@ are preserved — only the "pad" entry is touched.`,
 			if allFlag && len(args) > 0 {
 				return fmt.Errorf("--all cannot be combined with an agent name")
 			}
+			if compactResults && (allFlag || len(args) == 0) {
+				return fmt.Errorf("--compact-results requires an explicit cursor or codex agent")
+			}
 			binary, err := os.Executable()
 			if err != nil || binary == "" {
 				binary = os.Args[0]
 			}
 			inst := &mcpserver.Installer{Binary: binary}
+			if compactResults {
+				agent, err := mcpserver.FindAgent(args[0])
+				if err != nil {
+					return err
+				}
+				switch agent.Name {
+				case "cursor":
+					inst.TextOnly = true
+				case "codex":
+					inst.StructuredOnly = true
+				default:
+					return fmt.Errorf("--compact-results is supported only for cursor and codex")
+				}
+			}
 			switch {
 			case allFlag:
 				return runMCPInstallAll(cmd, inst)
@@ -100,6 +122,7 @@ are preserved — only the "pad" entry is touched.`,
 		},
 	}
 	cmd.Flags().BoolVar(&allFlag, "all", false, "install for every supported agent")
+	cmd.Flags().BoolVar(&compactResults, "compact-results", false, "configure one model-visible result channel (Cursor/Codex)")
 	return cmd
 }
 
@@ -186,7 +209,13 @@ func runMCPInstallOne(cmd *cobra.Command, inst *mcpserver.Installer, agent strin
 	}
 	w := cmd.OutOrStdout()
 	if modified {
-		fmt.Fprintf(w, "Installed pad MCP entry for %s\n  config: %s\n  command: %s mcp serve\n", agent, path, inst.Binary)
+		serveArgs := "mcp serve"
+		if inst.StructuredOnly {
+			serveArgs += " --structured-only"
+		} else if inst.TextOnly {
+			serveArgs += " --text-only"
+		}
+		fmt.Fprintf(w, "Installed pad MCP entry for %s\n  config: %s\n  command: %s %s\n", agent, path, inst.Binary, serveArgs)
 		fmt.Fprintln(w, "  → Restart the client to pick up the new server entry.")
 	} else {
 		fmt.Fprintf(w, "%s already up to date\n  config: %s\n", agent, path)
@@ -225,6 +254,8 @@ func runMCPInstallAll(cmd *cobra.Command, inst *mcpserver.Installer) error {
 // drive them directly.
 func mcpServeCmd() *cobra.Command {
 	var debug bool
+	var structuredOnly bool
+	var textOnly bool
 	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Run the MCP server over stdio",
@@ -236,7 +267,7 @@ etc.) per its mcp.json configuration. Direct human invocation is rare;
 when running interactively you'll see an idle process waiting for the
 client's initialize message.
 
-The tool surface is the hand-curated v0.11 catalog —
+The tool surface is the hand-curated v` + mcpserver.ToolSurfaceVersion + ` catalog —
 ten resource × action tools (` + "`pad_item`, `pad_workspace`, `pad_collection`, `pad_project`, `pad_role`, `pad_search`, `pad_meta`, `pad_playbook`, `pad_library`, `pad_attachment`" + `) plus ` + "`pad_set_workspace`" + ` for session-default workspace
 pinning. cmdhelp (v0.1) still drives per-command argument
 schemas at dispatch time, but the historical leaf-walker that
@@ -249,6 +280,9 @@ Shuts down cleanly on EOF, SIGINT, or SIGTERM.`,
 		// corrupt the JSON-RPC stream if a client misread the state.
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if structuredOnly && textOnly {
+				return fmt.Errorf("--structured-only and --text-only are mutually exclusive")
+			}
 			srv := mcpserver.NewServer(mcpserver.Options{
 				Version: fullVersion(),
 				Debug:   debug,
@@ -321,6 +355,8 @@ Shuts down cleanly on EOF, SIGINT, or SIGTERM.`,
 				RootFlags:        rootFlags,
 				PadVersion:       fullVersion(),
 				BootstrapFetcher: bootstrapFetcher,
+				StructuredOnly:   structuredOnly,
+				TextOnly:         textOnly,
 			}); err != nil {
 				return fmt.Errorf("pad mcp serve: register tools: %w", err)
 			}
@@ -354,5 +390,7 @@ Shuts down cleanly on EOF, SIGINT, or SIGTERM.`,
 		},
 	}
 	cmd.Flags().BoolVar(&debug, "debug", false, "verbose logging on stderr (development)")
+	cmd.Flags().BoolVar(&structuredOnly, "structured-only", false, "omit duplicate structured-result JSON text")
+	cmd.Flags().BoolVar(&textOnly, "text-only", false, "omit duplicate structuredContent while keeping JSON text")
 	return cmd
 }

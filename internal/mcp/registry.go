@@ -54,6 +54,11 @@ type RegistryOptions struct {
 	// fetch the blob separately via pad_meta.action=bootstrap or
 	// pad://workspace/{ws}/bootstrap. PLAN-1377 / TASK-1380.
 	BootstrapFetcher BootstrapFetcher
+
+	// StructuredOnly and TextOnly select one successful result channel for
+	// clients that expose only that channel to the model. Both are opt-in.
+	StructuredOnly bool
+	TextOnly       bool
 }
 
 // Register installs pad's MCP tools on srv: the built-in
@@ -75,16 +80,21 @@ func Register(srv *server.MCPServer, opts RegistryOptions) (int, error) {
 	if opts.Dispatcher == nil {
 		return 0, fmt.Errorf("RegistryOptions.Dispatcher is required")
 	}
+	if opts.StructuredOnly && opts.TextOnly {
+		return 0, fmt.Errorf("RegistryOptions.StructuredOnly and TextOnly are mutually exclusive")
+	}
 
 	registerSetWorkspaceTool(srv, opts.Workspace, opts.BootstrapFetcher)
 	count := 1 // pad_set_workspace
 
 	catalogCount, err := RegisterCatalog(srv, CatalogOptions{
-		Doc:        opts.Doc,
-		Workspace:  opts.Workspace,
-		Dispatcher: opts.Dispatcher,
-		RootFlags:  opts.RootFlags,
-		PadVersion: opts.PadVersion,
+		Doc:            opts.Doc,
+		Workspace:      opts.Workspace,
+		Dispatcher:     opts.Dispatcher,
+		RootFlags:      opts.RootFlags,
+		PadVersion:     opts.PadVersion,
+		StructuredOnly: opts.StructuredOnly,
+		TextOnly:       opts.TextOnly,
 	})
 	if err != nil {
 		return 0, fmt.Errorf("register catalog: %w", err)

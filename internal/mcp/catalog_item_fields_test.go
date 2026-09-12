@@ -1688,7 +1688,7 @@ func TestFieldConflictProperty_SourcesDerivedFromTheDeclaredSchema(t *testing.T)
 		"title": true, "content": true, "slug": true, "pinned": true,
 
 		// Shape the response or the query.
-		"limit": true, "offset": true, "full": true, "sort": true, "query": true,
+		"limit": true, "offset": true, "full": true, "agent": true, "sort": true, "query": true,
 		"group_by": true, "all": true, "archived": true, "include_archived": true,
 		"unparented": true, "since": true, "days": true, "actor": true,
 		"category_filter": true, "parent_ref": true,

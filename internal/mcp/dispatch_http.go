@@ -443,6 +443,7 @@ func (d *HTTPHandlerDispatcher) specialRoutes() map[string]specialDispatchFn {
 func (d *HTTPHandlerDispatcher) buildSpecialRoutes() map[string]specialDispatchFn {
 	return map[string]specialDispatchFn{
 		"item update":         d.dispatchItemUpdate,
+		"item show":           d.dispatchItemShow,
 		"item list":           d.dispatchItemList,
 		"item history":        d.dispatchItemHistory,
 		"item deps":           d.dispatchItemDeps,
