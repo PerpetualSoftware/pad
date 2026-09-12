@@ -192,7 +192,26 @@ func TestContentStateClearsOnceTheFlushWatermarkCatchesUp(t *testing.T) {
 // So this is a column/Scan alignment guard first and a behaviour test second. A door
 // that returns the right marker has, necessarily, a matching destination.
 func TestEveryContentBearingReadDoorCarriesTheMarker(t *testing.T) {
-	s := storetest.NewSQLite(t)
+	for _, backend := range []struct {
+		name string
+		open func(*testing.T) *store.Store
+	}{
+		{"SQLite", storetest.NewSQLite},
+		{"Postgres", storetest.NewPostgres}, // skips unless PAD_TEST_POSTGRES_URL is set
+	} {
+		t.Run(backend.name, func(t *testing.T) {
+			everyContentBearingReadDoor(t, backend.open(t))
+		})
+	}
+}
+
+// everyContentBearingReadDoor is the body, parameterised over the backend because
+// the FTS branches are DIALECT-SPECIFIC: ListItems(search) and Search take different
+// SELECTs on SQLite and Postgres, so a SQLite-only enumeration leaves the Postgres
+// variants of those spliced queries unexercised — and an unexercised spliced query
+// is precisely the runtime-mismatch hazard this test exists for (codex round 3).
+func everyContentBearingReadDoor(t *testing.T, s *store.Store) {
+	t.Helper()
 	wsID, _, item := seedStaleItem(t, s)
 	if _, err := s.AppendYjsUpdate(item.ID, []byte{7}, "1"); err != nil {
 		t.Fatalf("AppendYjsUpdate: %v", err)
@@ -259,8 +278,15 @@ func TestEveryContentBearingReadDoorCarriesTheMarker(t *testing.T) {
 		return s.GetItemBySlugIncludeDeleted(wsID, item.Slug)
 	})
 	one("ResolveItem", func() (*models.Item, error) { return s.ResolveItem(wsID, item.Slug) })
-	one("ResolveItemIncludeDeleted", func() (*models.Item, error) {
-		return s.ResolveItemIncludeDeleted(wsID, item.Slug)
+	// By REF, not slug: a slug falls through to GetItemBySlugIncludeDeleted and
+	// leaves this function's own ref SELECT — a separately spliced query —
+	// unexercised. Passing the slug here made this leg pass while measuring the
+	// wrong query (codex round 3).
+	one("ResolveItemIncludeDeleted(by ref)", func() (*models.Item, error) {
+		return s.ResolveItemIncludeDeleted(wsID, item.Ref)
+	})
+	one("ResolveItem(by ref)", func() (*models.Item, error) {
+		return s.ResolveItem(wsID, item.Ref)
 	})
 
 	first("ListItems", func() ([]models.Item, error) {

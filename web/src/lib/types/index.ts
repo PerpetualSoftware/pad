@@ -652,7 +652,7 @@ export interface Item {
 	 * field. It matters for surfaces that render `content` straight from the
 	 * API without joining the room.
 	 */
-	content_state?: string;
+	content_state?: 'applied_pending_flush';
 	fields: string;
 	tags: string;
 	pinned: boolean;

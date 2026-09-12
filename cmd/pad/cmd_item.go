@@ -792,8 +792,12 @@ func showCmd() *cobra.Command {
 				}
 			}
 
+			// Before the empty-body check, not inside it: an item whose STORED
+			// body is empty while its document holds the real text is exactly
+			// this bug's shape, and it is the case where a reader has least to
+			// go on — they see nothing at all (codex round 3).
+			warnContentStale(item)
 			if item.Content != "" {
-				warnContentStale(item)
 				fmt.Println(item.Content)
 			}
 
