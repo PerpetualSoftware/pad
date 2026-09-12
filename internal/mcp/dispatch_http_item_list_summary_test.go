@@ -178,3 +178,28 @@ func TestHTTPItemList_FullOptsIntoCompleteBodies(t *testing.T) {
 		t.Errorf("full: true should return complete content bodies; marker absent:\n%s", text)
 	}
 }
+
+func TestHTTPItemShow_AgentProjectionKeepsBodyAndDropsStoragePlumbing(t *testing.T) {
+	d := newListSummaryFixture(t)
+	ctx := WithDispatchInput(context.Background(), map[string]any{
+		"workspace": "list-ws",
+		"ref":       "TASK-1",
+		"agent":     true,
+	})
+	res, err := d.Dispatch(ctx, []string{"item", "show"}, nil)
+	if err != nil {
+		t.Fatalf("Dispatch(item show): %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("Dispatch(item show) returned an error result: %s", textOf(res))
+	}
+	text := textOf(res)
+	if !strings.Contains(text, listSummaryContentMarker) {
+		t.Errorf("agent item view dropped the full body:\n%s", text)
+	}
+	for _, banned := range []string{`"workspace_id"`, `"collection_id"`, `"content_preview"`} {
+		if strings.Contains(text, banned) {
+			t.Errorf("agent item view should omit %s:\n%s", banned, text)
+		}
+	}
+}
