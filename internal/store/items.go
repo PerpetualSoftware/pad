@@ -652,9 +652,6 @@ func (s *Store) getItemTx(tx *sql.Tx, id string) (*models.Item, error) {
 	return item, nil
 }
 
-// getItemScanQ is the one item-row scan behind GetItem, getItemTx and
-// GetItemIncludeDeleted — identical SELECT and hydration, differing only in
-// executor and in whether soft-deleted rows are visible. (nil, nil) on no row.
 // contentStateSQL is the SELECT-list expression behind models.Item.ContentState
 // (BUG-3000): it reports that items.content is BEHIND the item's live
 // collaborative document.
@@ -702,6 +699,9 @@ const contentStateSQL = `CASE WHEN EXISTS (
 			  AND u.id > COALESCE(i.content_flushed_op_log_id, 0)
 		) THEN 'applied_pending_flush' ELSE '' END`
 
+// getItemScanQ is the one item-row scan behind GetItem, getItemTx and
+// GetItemIncludeDeleted — identical SELECT and hydration, differing only in
+// executor and in whether soft-deleted rows are visible. (nil, nil) on no row.
 func (s *Store) getItemScanQ(q Queryer, id string, includeDeleted bool) (*models.Item, error) {
 	var item models.Item
 	var createdAt, updatedAt string
