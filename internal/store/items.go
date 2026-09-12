@@ -4724,6 +4724,10 @@ func (s *Store) GetChildItemsForParents(parentIDs []string) (map[string][]models
 		args[i] = id
 	}
 	rows, err := s.db.Query(s.q(fmt.Sprintf(`
+		-- BUG-3000: NO contentStateSQL here. This query selects an empty-string
+		-- literal for content (child batching needs the metadata, not the body), and
+		-- a staleness marker on an empty body would be a false signal about content
+		-- this query never returns.
 		SELECT DISTINCT il.target_id,
 		       i.id, i.workspace_id, i.collection_id, i.title, i.slug, '', i.fields, i.tags,
 		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
@@ -5423,10 +5427,6 @@ func (s *Store) ItemsModifiedSince(workspaceID string, since time.Time) (updated
 	// Fetch updated items: active items modified since the timestamp,
 	// PLUS items archived since the timestamp (so archived views can update).
 	query := s.q(`
-		-- BUG-3000: NO contentStateSQL here. This query selects '' for content
-		-- (child batching needs the metadata, not the body), and a staleness marker
-		-- on an empty body would be a false signal about content this query never
-		-- returns. The marker is spliced only where a real content column is.
 		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, ` + contentStateSQL + `, i.fields, i.tags,
 		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 		       i.created_by, i.last_modified_by, i.source,

@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
@@ -176,4 +177,166 @@ func TestContentStateClearsOnceTheFlushWatermarkCatchesUp(t *testing.T) {
 		t.Errorf("content_state = %q after the watermark caught up, want empty: the row is current "+
 			"and a permanent marker would be worse than none", got.ContentState)
 	}
+}
+
+// TestEveryContentBearingReadDoorCarriesTheMarker drives EVERY store function whose
+// query was spliced, against one item in the stale state.
+//
+// It exists because of how the first implementation pass failed. A column added to a
+// SELECT without its matching Scan destination is a RUNTIME error, not a compile
+// error: `go build` stayed green across a half-applied edit, and the mismatch
+// surfaced only when a test happened to exercise the query. Two of the fifteen
+// spliced queries were reachable only through paths no content-state test touched,
+// so "the suite is green" was not evidence that all fifteen were aligned.
+//
+// So this is a column/Scan alignment guard first and a behaviour test second. A door
+// that returns the right marker has, necessarily, a matching destination.
+func TestEveryContentBearingReadDoorCarriesTheMarker(t *testing.T) {
+	s := storetest.NewSQLite(t)
+	wsID, _, item := seedStaleItem(t, s)
+	if _, err := s.AppendYjsUpdate(item.ID, []byte{7}, "1"); err != nil {
+		t.Fatalf("AppendYjsUpdate: %v", err)
+	}
+	want := models.ContentOutcomeAppliedPendingFlush
+
+	// A child so the child-item doors have something to return.
+	child, err := s.CreateItem(wsID, item.CollectionID, models.ItemCreate{
+		Title: "Child", Content: "child body",
+	})
+	if err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	// The hierarchy lives in item_links, not in a parent_id column, so the link has
+	// to be created explicitly — a ParentID on ItemCreate leaves GetChildItems
+	// empty and the leg below would report "measured nothing" rather than a marker
+	// failure. (It did, first time round.)
+	if _, err := s.CreateItemLink(wsID, models.ItemLinkCreate{
+		TargetID: item.ID, LinkType: "parent",
+	}, child.ID); err != nil {
+		t.Fatalf("link child to parent: %v", err)
+	}
+	if _, err := s.AppendYjsUpdate(child.ID, []byte{8}, "1"); err != nil {
+		t.Fatalf("AppendYjsUpdate(child): %v", err)
+	}
+
+	one := func(name string, get func() (*models.Item, error)) {
+		t.Run(name, func(t *testing.T) {
+			got, err := get()
+			if err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+			if got == nil {
+				t.Fatalf("%s returned no item; this leg measured nothing", name)
+			}
+			if got.ContentState != want {
+				t.Errorf("%s content_state = %q, want %q", name, got.ContentState, want)
+			}
+		})
+	}
+	first := func(name string, get func() ([]models.Item, error), id string) {
+		t.Run(name, func(t *testing.T) {
+			items, err := get()
+			if err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+			for _, it := range items {
+				if it.ID != id {
+					continue
+				}
+				if it.ContentState != want {
+					t.Errorf("%s content_state = %q, want %q", name, it.ContentState, want)
+				}
+				return
+			}
+			t.Fatalf("%s did not return the item; this leg measured nothing", name)
+		})
+	}
+
+	one("GetItem", func() (*models.Item, error) { return s.GetItem(item.ID) })
+	one("GetItemIncludeDeleted", func() (*models.Item, error) { return s.GetItemIncludeDeleted(item.ID) })
+	one("GetItemBySlug", func() (*models.Item, error) { return s.GetItemBySlug(wsID, item.Slug) })
+	one("GetItemBySlugIncludeDeleted", func() (*models.Item, error) {
+		return s.GetItemBySlugIncludeDeleted(wsID, item.Slug)
+	})
+	one("ResolveItem", func() (*models.Item, error) { return s.ResolveItem(wsID, item.Slug) })
+	one("ResolveItemIncludeDeleted", func() (*models.Item, error) {
+		return s.ResolveItemIncludeDeleted(wsID, item.Slug)
+	})
+
+	first("ListItems", func() ([]models.Item, error) {
+		return s.ListItems(wsID, models.ItemListParams{})
+	}, item.ID)
+	first("ListItems(search→FTS)", func() ([]models.Item, error) {
+		return s.ListItems(wsID, models.ItemListParams{Search: "Stale"})
+	}, item.ID)
+	first("GetChildItems", func() ([]models.Item, error) { return s.GetChildItems(item.ID) }, child.ID)
+	first("ItemsModifiedSince", func() ([]models.Item, error) {
+		updated, _, err := s.ItemsModifiedSince(wsID, time.Time{})
+		return updated, err
+	}, item.ID)
+
+	// The starred door specifically: it lives in item_stars.go and reaches the
+	// SHARED scanItems helper from outside items.go, which is exactly how the first
+	// implementation pass broke — and it broke at runtime, with the build green.
+	t.Run("ListStarredItems", func(t *testing.T) {
+		// A real user row: item_stars carries an FK on user_id, so a synthetic id
+		// fails the insert rather than the assertion.
+		u, err := s.CreateUser(models.UserCreate{
+			Email: "star@example.com", Name: "Star", Password: "correct-horse-battery-staple",
+		})
+		if err != nil {
+			t.Fatalf("CreateUser: %v", err)
+		}
+		if err := s.StarItem(u.ID, item.ID); err != nil {
+			t.Fatalf("StarItem: %v", err)
+		}
+		items, err := s.ListStarredItems(u.ID, wsID, true)
+		if err != nil {
+			t.Fatalf("ListStarredItems: %v", err)
+		}
+		for _, it := range items {
+			if it.ID != item.ID {
+				continue
+			}
+			if it.ContentState != want {
+				t.Errorf("ListStarredItems content_state = %q, want %q", it.ContentState, want)
+			}
+			return
+		}
+		t.Fatal("ListStarredItems did not return the item; this leg measured nothing")
+	})
+
+	t.Run("SearchItems", func(t *testing.T) {
+		results, err := s.SearchItems(wsID, "Stale")
+		if err != nil {
+			t.Fatalf("SearchItems: %v", err)
+		}
+		for _, r := range results {
+			if r.Item.ID != item.ID {
+				continue
+			}
+			if r.Item.ContentState != want {
+				t.Errorf("SearchItems content_state = %q, want %q", r.Item.ContentState, want)
+			}
+			return
+		}
+		t.Fatal("SearchItems did not return the item; this leg measured nothing")
+	})
+
+	t.Run("Search", func(t *testing.T) {
+		resp, err := s.Search(store.SearchParams{WorkspaceIDs: []string{wsID}, Query: "Stale"})
+		if err != nil {
+			t.Fatalf("Search: %v", err)
+		}
+		for _, r := range resp.Results {
+			if r.Item.ID != item.ID {
+				continue
+			}
+			if r.Item.ContentState != want {
+				t.Errorf("Search content_state = %q, want %q", r.Item.ContentState, want)
+			}
+			return
+		}
+		t.Fatal("Search did not return the item; this leg measured nothing")
+	})
 }
