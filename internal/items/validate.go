@@ -276,6 +276,51 @@ func validateFieldType(def models.FieldDef, val any) error {
 		if _, ok := val.(string); !ok {
 			return fmt.Errorf("field %q must be a string (item ID)", def.Key)
 		}
+	case "multi_relation":
+		// PLAN-2857 U4. SHAPE ONLY — this package is DB-free, so whether an
+		// element names a live item is `ResolveRelationReferentsQ`'s question,
+		// exactly as it is for a scalar `relation`.
+		//
+		// Two rules that differ from the scalar case, both ruled day 64 as NEW
+		// rules rather than inherited ones (see BUG-3028 for why there was
+		// nothing coherent to inherit):
+		//
+		//   * an EMPTY or WHITESPACE-ONLY element is REFUSED here, where the
+		//     scalar resolver merely skips such a value. Skipping is how a
+		//     scalar relation ended up with three stored spellings for "no
+		//     target"; inside an array it would also silently change the
+		//     element count, and an ORDERED list whose length depends on which
+		//     elements were blank is not a list anyone can reason about.
+		//   * `[]` is ACCEPTED as a shape and means "no targets". Normalising
+		//     it to an absent key is the WRITE DOOR's job, and `required` is
+		//     enforced against RESOLVED elements in `RequiredRelationIssues`
+		//     — neither belongs to a shape check that cannot resolve anything.
+		//     Refusing `[]` here would leave a caller no way to clear the
+		//     field at all.
+		//
+		// `[]string` is accepted alongside `[]any` for the same reason
+		// multi_select accepts both: a Go caller that never round-tripped
+		// through JSON has the typed slice.
+		switch v := val.(type) {
+		case []any:
+			for i, entry := range v {
+				sv, ok := entry.(string)
+				if !ok {
+					return fmt.Errorf("field %q element %d must be a string (item ID, ref, or exact title)", def.Key, i)
+				}
+				if strings.TrimSpace(sv) == "" {
+					return fmt.Errorf("field %q element %d is empty; remove it rather than sending a blank reference", def.Key, i)
+				}
+			}
+		case []string:
+			for i, sv := range v {
+				if strings.TrimSpace(sv) == "" {
+					return fmt.Errorf("field %q element %d is empty; remove it rather than sending a blank reference", def.Key, i)
+				}
+			}
+		default:
+			return fmt.Errorf("field %q must be an array of strings (item IDs, refs, or exact titles)", def.Key)
+		}
 	case "json":
 		// Accept only structured JSON values (object, array, null). Raw
 		// strings / numbers / bools are rejected so a generic text input in

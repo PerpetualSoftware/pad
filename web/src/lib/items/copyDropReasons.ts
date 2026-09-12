@@ -33,9 +33,17 @@
  * is duplicated from Go rather than generated, so it can go stale — which is
  * exactly what happened when BUG-2674 added `referent_not_portable`
  * server-side and nothing here learned it, and the reason rendered through the
- * fallback as a raw enum string. The test cannot catch a reason added to Go
- * and not added here; what it CAN catch is a reason added here without a
+ * fallback as a raw enum string. THIS module's test cannot catch a reason added
+ * to Go and not added here; what it CAN catch is a reason added here without a
  * sentence, and it makes this list the one place to update.
+ *
+ * The Go→here direction IS covered, just not from here:
+ * `TestCopyPreflightDropReasonsAreRenderedByTheDialog`
+ * (`internal/server/copy_preflight_drop_reason_parity_test.go`) enumerates
+ * `preflightDropReasons()` and fails unless each entry appears in the type
+ * union, in the list below, AND in the MESSAGES map. Said explicitly because
+ * the paragraph above reads like that direction is uncovered, and a reader who
+ * believes it builds a second instrument for a gap that is already closed.
  */
 export const COPY_DROP_REASONS = [
 	'no_target_field',
@@ -49,6 +57,7 @@ export const COPY_DROP_REASONS = [
 	'target_missing',
 	'invalid_shape',
 	'ambiguous',
+	'duplicate_referent',
 ] as const;
 
 export type CopyDropReason = (typeof COPY_DROP_REASONS)[number];
@@ -90,6 +99,13 @@ const MESSAGES: Record<CopyDropReason, string> = {
 	// (be more specific) without claiming how many matched, which the response
 	// does not say.
 	ambiguous: 'more than one item in that collection has this title',
+
+	// PLAN-2857 U4, and reachable only from a `multi_relation` array. The
+	// sentence avoids saying the two elements were the same TEXT, because
+	// usually they are not — a UUID and a ref naming one item is the common
+	// case, and a user told "this value appears twice" while looking at two
+	// different strings reads the message as a bug.
+	duplicate_referent: 'it refers to an item already linked earlier in this field',
 };
 
 /**

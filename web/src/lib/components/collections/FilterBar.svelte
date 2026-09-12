@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { isResolvableRelation } from '$lib/items/relationFieldTypes';
 	import type { Collection } from '$lib/types';
 	import { parseSchema } from '$lib/types';
 	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
@@ -89,7 +90,11 @@
 	// mechanism wearing a similar hat. Generalising THAT is not this unit.
 	let knownCollectionSlugs = $derived(new Set(collectionStore.collections.map((c) => c.slug)));
 	let relationFields = $derived(
-		wsSlug ? schema.fields.filter((f) => f.type === 'relation' && !!f.collection) : [],
+		// BOTH relation types (U4). Filtering a `multi_relation` is MEMBERSHIP —
+		// `relationFilterMatches` contains-checks an array — so the picker this
+		// drives needs no change: it still returns ONE target id, and the question
+		// asked of the stored value is what differs.
+		wsSlug ? schema.fields.filter((f) => isResolvableRelation(f)) : [],
 	);
 	let openPickerFor = $state<string | null>(null);
 

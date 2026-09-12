@@ -8,6 +8,7 @@
 </script>
 
 <script lang="ts">
+	import { isRelationType } from '$lib/items/relationFieldTypes';
 	import {
 		FIELD_TYPES,
 		slugifyKey,
@@ -154,7 +155,13 @@
 	// in both modals' save paths matches the UI.
 	const supportsDefault = $derived(typeSupportsDefault(field.type));
 
-	const isRelation = $derived(field.type === 'relation');
+	// BOTH relation types (U4). The "Relates to" picker below declares WHERE
+	// the referenced items live, which is identical for one reference and for a
+	// list of them — cardinality is a property of the VALUE. Without this the
+	// schema editor offers `multi_relation` in the type dropdown (FIELD_TYPES)
+	// and then gives no way to say what it points at, so every field declared
+	// through the UI would be refused on its first write with `target_missing`.
+	const isRelation = $derived(isRelationType(field.type));
 	const isNumber = $derived(field.type === 'number');
 	const isCheckboxType = $derived(field.type === 'checkbox');
 	const isSelectSingle = $derived(field.type === 'select');

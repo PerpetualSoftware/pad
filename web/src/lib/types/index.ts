@@ -369,7 +369,7 @@ export interface WorkspaceTemplate {
 export interface FieldDef {
 	key: string;
 	label: string;
-	type: 'text' | 'number' | 'select' | 'multi_select' | 'date' | 'checkbox' | 'url' | 'relation' | 'json';
+	type: 'text' | 'number' | 'select' | 'multi_select' | 'date' | 'checkbox' | 'url' | 'relation' | 'multi_relation' | 'json';
 	options?: string[];
 	terminal_options?: string[];
 	default?: any;
@@ -866,7 +866,15 @@ export interface ItemCopyPreflightDropped {
 		 * all. Injected defaults are never type-checked, so this is the one
 		 * route by which a non-string reaches a relation field.
 		 */
-		| 'invalid_shape';
+		| 'invalid_shape'
+		/**
+		 * Two elements of one `multi_relation` value resolve to the SAME item
+		 * (PLAN-2857 U4). Only an ARRAY-valued relation can produce it, and only
+		 * after resolution: the duplicated elements are usually different
+		 * strings — a UUID and a ref, or a ref and an exact title — so nothing
+		 * that cannot resolve them can see the duplication.
+		 */
+		| 'duplicate_referent';
 }
 
 export interface ItemCopyPreflightNeedsValue {

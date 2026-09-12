@@ -53,9 +53,9 @@ type ItemSummary struct {
 	//
 	// Small by construction: one entry per relation field the item actually
 	// carries, and absent entirely on the items that carry none.
-	RelationTargets map[string]models.RelationTarget `json:"relation_targets,omitempty"`
-	CreatedAt       time.Time                        `json:"created_at"`
-	UpdatedAt       time.Time                        `json:"updated_at"`
+	RelationTargets map[string]models.RelationTargetSet `json:"relation_targets,omitempty"`
+	CreatedAt       time.Time                           `json:"created_at"`
+	UpdatedAt       time.Time                           `json:"updated_at"`
 }
 
 // contentPreviewLimit caps the content_preview at a small, agent-friendly

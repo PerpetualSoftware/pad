@@ -123,6 +123,82 @@ type RelationTarget struct {
 	Title string `json:"title,omitempty"`
 }
 
+// RelationTargetSet is what one `relation_targets` KEY carries: a single target
+// object for a `relation` field, or a JSON ARRAY of them, in stored order, for a
+// `multi_relation` field (PLAN-2857 U4, lead ruling day 64).
+//
+// ONE map, not two. A parallel `multi_relation_targets` key was the obvious
+// alternative and was ruled against: a consumer rendering "what does this field
+// point at?" would have to ask two questions and merge the answers, and the
+// field's key already says which shape to expect because the consumer has the
+// schema. The cost is this custom marshaller; the benefit is that there is
+// exactly one place to look.
+//
+// A SCALAR ENTRY MARSHALS BYTE-IDENTICALLY to what v0.31 emitted — the whole
+// compatibility claim rests on that, and a test asserts it against a literal
+// rather than against another call to this code.
+type RelationTargetSet struct {
+	// One is set for a scalar `relation` key.
+	One *RelationTarget
+	// List is set for a `multi_relation` key. A non-nil EMPTY list marshals as
+	// `[]`, which is distinct from the key being absent: absent means "nothing
+	// hydrated this field", `[]` means "this field holds no references".
+	List []RelationTarget
+}
+
+// NewRelationTargetSet wraps one scalar target.
+func NewRelationTargetSet(t RelationTarget) RelationTargetSet {
+	return RelationTargetSet{One: &t}
+}
+
+// NewRelationTargetList wraps an ordered list of targets.
+func NewRelationTargetList(ts []RelationTarget) RelationTargetSet {
+	if ts == nil {
+		ts = []RelationTarget{}
+	}
+	return RelationTargetSet{List: ts}
+}
+
+func (r RelationTargetSet) MarshalJSON() ([]byte, error) {
+	if r.List != nil {
+		return json.Marshal(r.List)
+	}
+	if r.One != nil {
+		return json.Marshal(*r.One)
+	}
+	// Neither set. `null` rather than `{}`: an empty object would read as a
+	// target with an empty id, which is a claim, and this state is the absence
+	// of one.
+	return []byte("null"), nil
+}
+
+// UnmarshalJSON accepts both shapes, because the CLI decodes item JSON the
+// server produced and must round-trip whichever one it is handed.
+func (r *RelationTargetSet) UnmarshalJSON(b []byte) error {
+	trimmed := bytes.TrimSpace(b)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		r.One, r.List = nil, nil
+		return nil
+	}
+	if trimmed[0] == '[' {
+		var list []RelationTarget
+		if err := json.Unmarshal(trimmed, &list); err != nil {
+			return err
+		}
+		if list == nil {
+			list = []RelationTarget{}
+		}
+		r.One, r.List = nil, list
+		return nil
+	}
+	var one RelationTarget
+	if err := json.Unmarshal(trimmed, &one); err != nil {
+		return err
+	}
+	r.One, r.List = &one, nil
+	return nil
+}
+
 // ContentOutcomeAppliedPendingFlush is the only ContentOutcome value that rides on
 // a 2xx: the content reached the collaborative document and items.content has not
 // caught up. It lives here rather than beside the error-path outcome constants
@@ -253,7 +329,7 @@ type Item struct {
 	// value whose target is gone, and a target the requester may not see —
 	// hydrating a ref or title for the latter would leak exactly what the
 	// write-side visibility collapse exists to withhold.
-	RelationTargets map[string]RelationTarget `json:"relation_targets,omitempty"`
+	RelationTargets map[string]RelationTargetSet `json:"relation_targets,omitempty"`
 
 	// Warnings is populated on WRITE responses only (create / update), never
 	// on reads, and is never stored. It carries things the write did that the
