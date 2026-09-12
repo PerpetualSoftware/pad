@@ -209,6 +209,25 @@ func TestRelationTitle_SoftDeletedTitleDoesNotResolve(t *testing.T) {
 	}
 }
 
+// scalarHydrated unwraps a SCALAR `relation_targets` entry.
+//
+// Added in U4, when the entry became a RelationTargetSet that carries either one
+// target or a list. It FAILS rather than returning a zero value when the entry
+// is a list, because a scalar field hydrating as a list is precisely the
+// regression the set type makes possible — and a helper that quietly returned
+// `{}` would turn that into a confusing assertion failure two lines later
+// instead of a clear one here.
+func scalarHydrated(t *testing.T, set models.RelationTargetSet) models.RelationTarget {
+	t.Helper()
+	if set.List != nil {
+		t.Fatalf("a scalar relation hydrated as a LIST (%d entries); only multi_relation may do that", len(set.List))
+	}
+	if set.One == nil {
+		t.Fatal("hydrated entry carries neither a scalar target nor a list")
+	}
+	return *set.One
+}
+
 // TestHydrateRelationTargets_ResolvesDanglesAndRefusesForeignWorkspaces covers
 // the read side: what a caller gets back for each kind of stored value.
 //
@@ -250,24 +269,24 @@ func TestHydrateRelationTargets_ResolvesDanglesAndRefusesForeignWorkspaces(t *te
 	}
 
 	// Resolvable: the full triple.
-	got := out[resolvable.ID]["color"]
+	got := scalarHydrated(t, out[resolvable.ID]["color"])
 	if got.ID != red.ID || got.Ref != red.Ref || got.Title != red.Title {
 		t.Errorf("resolvable hydrated as %+v, want {id:%s ref:%s title:%s}", got, red.ID, red.Ref, red.Title)
 	}
 
 	// Dangling: ID-ONLY, and PRESENT. Omitting the key would say "this item has
 	// no relation", which is a different and false statement.
-	got = out[dangling.ID]["color"]
 	if _, present := out[dangling.ID]["color"]; !present {
 		t.Fatal("a dangling value was omitted rather than hydrated id-only")
 	}
+	got = scalarHydrated(t, out[dangling.ID]["color"])
 	if got.Ref != "" || got.Title != "" {
 		t.Errorf("dangling hydrated as %+v, want id-only", got)
 	}
 
 	// Cross-workspace: also ID-ONLY. This is the disclosure leg — a ref or a
 	// title here is another workspace's data.
-	got = out[crossWS.ID]["color"]
+	got = scalarHydrated(t, out[crossWS.ID]["color"])
 	if got.Ref != "" || got.Title != "" {
 		t.Errorf("a foreign-workspace id hydrated as %+v — that is %s's ref/title in this workspace's response", got, otherWS.Slug)
 	}
@@ -455,13 +474,13 @@ func TestHydrateRelationTargets_WrongCollectionAndNullNumberStayHonest(t *testin
 	if len(out) == 0 {
 		t.Fatal("hydration returned nothing at all; one legacy row with a NULL item_number erased the whole response")
 	}
-	if got := out[good.ID]["color"]; got.Ref != red.Ref || got.Title != red.Title {
+	if got := scalarHydrated(t, out[good.ID]["color"]); got.Ref != red.Ref || got.Title != red.Title {
 		t.Errorf("the ordinary target did not hydrate: %+v", got)
 	}
 
 	// Wrong collection: id-only. Rendering it fully would present a Car as
 	// though it were the Colour the field promised.
-	if got := out[wrong.ID]["color"]; got.Ref != "" || got.Title != "" {
+	if got := scalarHydrated(t, out[wrong.ID]["color"]); got.Ref != "" || got.Title != "" {
 		t.Errorf("a value pointing OUTSIDE the declared collection hydrated as %+v; the field says colors and this is a car", got)
 	} else if got.ID != sedan.ID {
 		t.Errorf("the wrong-collection entry lost its stored id: %+v", got)
@@ -470,7 +489,7 @@ func TestHydrateRelationTargets_WrongCollectionAndNullNumberStayHonest(t *testin
 	// NULL item_number: the row is a legitimate target in the right
 	// collection, so it hydrates — with a title and no ref, because there is
 	// no number to build one from. Not id-only, and not an error.
-	got := out[nulled.ID]["color"]
+	got := scalarHydrated(t, out[nulled.ID]["color"])
 	if got.Title != "Legacy Blue" {
 		t.Errorf("a NULL-numbered target lost its title: %+v", got)
 	}

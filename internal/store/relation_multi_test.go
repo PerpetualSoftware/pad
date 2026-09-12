@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -203,4 +204,103 @@ func relationColorsID(t *testing.T, s *Store, ws *models.Workspace) string {
 		t.Fatalf("get colors: %v", err)
 	}
 	return c.ID
+}
+
+// Read-side hydration of a `multi_relation` (PLAN-2857 U4, row 11).
+//
+// The ruling: `relation_targets[key]` is a LIST of the same scalar target object,
+// in STORED ORDER, with scalar entries byte-identical. So the legs here are
+// order, position preservation for an element that resolves to nothing, and the
+// scalar control that proves the shape did not change for everyone else.
+func TestHydrateMultiRelation_ListInStoredOrderWithPositionsKept(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ws, colors, _, red := relationFixture(t, s)
+	blue := createTestItem(t, s, ws.ID, colors.ID, "Blue", "")
+
+	cars, err := s.CreateCollection(ws.ID, models.CollectionCreate{
+		Name:   "Fleet",
+		Schema: `{"fields":[{"key":"status","type":"select","options":["open","done"],"default":"open","required":true},{"key":"colors","type":"multi_relation","collection":"colors"}]}`,
+	})
+	if err != nil {
+		t.Fatalf("create fleet: %v", err)
+	}
+
+	// A live target, a DANGLING one, then another live target — so a failure to
+	// keep position shows up as a reordering rather than only as a short list.
+	car := createTestItem(t, s, ws.ID, cars.ID, "Car", "")
+	if _, err := s.UpdateItem(car.ID, models.ItemUpdate{
+		Fields: strPtr(`{"status":"open","colors":["` + red.ID + `","no-such-colour","` + blue.ID + `"]}`),
+	}); err != nil {
+		t.Fatalf("set colors: %v", err)
+	}
+	stored, err := s.GetItem(car.ID)
+	if err != nil {
+		t.Fatalf("get car: %v", err)
+	}
+
+	var schema models.CollectionSchema
+	if err := json.Unmarshal([]byte(cars.Schema), &schema); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	out, err := s.HydrateRelationTargetsQ(s.DB(), ws.ID, []models.Item{*stored}, map[string]models.CollectionSchema{cars.ID: schema})
+	if err != nil {
+		t.Fatalf("hydrate: %v", err)
+	}
+
+	set, present := out[car.ID]["colors"]
+	if !present {
+		t.Fatal("a multi_relation field was not hydrated at all")
+	}
+	if set.One != nil {
+		t.Fatal("a multi_relation hydrated as a SCALAR; a consumer indexing the list would break")
+	}
+	if len(set.List) != 3 {
+		t.Fatalf("hydrated %d entries, want 3 — position must be preserved even for an element that names nothing: %+v", len(set.List), set.List)
+	}
+	if set.List[0].ID != red.ID || set.List[0].Ref != red.Ref {
+		t.Errorf("element 0 = %+v, want the full triple for %s", set.List[0], red.Ref)
+	}
+	// The dangling element keeps its POSITION and hydrates ID-only — the same
+	// honest shape a dangling scalar gets.
+	if set.List[1].ID != "no-such-colour" || set.List[1].Ref != "" || set.List[1].Title != "" {
+		t.Errorf("element 1 = %+v, want id-only for the value that names nothing", set.List[1])
+	}
+	if set.List[2].ID != blue.ID || set.List[2].Ref != blue.Ref {
+		t.Errorf("element 2 = %+v, want the full triple for %s — order is part of the value", set.List[2], blue.Ref)
+	}
+}
+
+// THE SCALAR CONTROL. Without it, a change that turned every entry into a list
+// would pass the test above and break every v0.31 consumer.
+func TestHydrateMultiRelation_ScalarEntriesAreStillScalar(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ws, _, cars, red := relationFixture(t, s)
+
+	car := createTestItem(t, s, ws.ID, cars.ID, "Car", "")
+	if _, err := s.UpdateItem(car.ID, models.ItemUpdate{
+		Fields: strPtr(`{"status":"open","color":"` + red.ID + `"}`),
+	}); err != nil {
+		t.Fatalf("set color: %v", err)
+	}
+	stored, err := s.GetItem(car.ID)
+	if err != nil {
+		t.Fatalf("get car: %v", err)
+	}
+	var schema models.CollectionSchema
+	if err := json.Unmarshal([]byte(cars.Schema), &schema); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	out, err := s.HydrateRelationTargetsQ(s.DB(), ws.ID, []models.Item{*stored}, map[string]models.CollectionSchema{cars.ID: schema})
+	if err != nil {
+		t.Fatalf("hydrate: %v", err)
+	}
+	set := out[car.ID]["color"]
+	if set.List != nil {
+		t.Fatalf("a SCALAR relation hydrated as a list (%d entries) — that breaks every v0.31 consumer", len(set.List))
+	}
+	if set.One == nil || set.One.ID != red.ID || set.One.Ref != red.Ref {
+		t.Errorf("scalar hydrated as %+v, want the full triple for %s", set.One, red.Ref)
+	}
 }

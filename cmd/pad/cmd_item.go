@@ -782,8 +782,10 @@ func showCmd() *cobra.Command {
 						// lookup — and it falls back to the raw value when the
 						// field is not a relation or was not hydrated.
 						if target, ok := item.RelationTargets[k]; ok {
-							fmt.Printf("%-12s %s\n", k+":", cli.RenderRelationValue(target))
-							continue
+							if rendered := cli.RenderRelationTargets(target); rendered != "" {
+								fmt.Printf("%-12s %s\n", k+":", rendered)
+								continue
+							}
 						}
 						fmt.Printf("%-12s %v\n", k+":", v)
 					}

@@ -27,6 +27,24 @@ import (
 // Read back out of the database rather than off the response, for the reason
 // storedRelation documents: a handler that echoed the right thing while writing
 // the wrong thing would pass a response-only check.
+
+// scalarTarget unwraps a SCALAR `relation_targets` entry.
+//
+// Added in U4, when the entry became a RelationTargetSet carrying either one
+// target or a list. It FAILS on a list rather than returning a zero value: a
+// scalar field hydrating as a list is exactly the regression the set type makes
+// possible, and the door tests are where it would surface first.
+func scalarTarget(t *testing.T, set models.RelationTargetSet) models.RelationTarget {
+	t.Helper()
+	if set.List != nil {
+		t.Fatalf("a scalar relation hydrated as a LIST (%d entries); only multi_relation may do that", len(set.List))
+	}
+	if set.One == nil {
+		t.Fatal("hydrated entry carries neither a scalar target nor a list")
+	}
+	return *set.One
+}
+
 func TestRelationTitleDoors_ThreeSpellingsAgreeThroughTheCreateDoor(t *testing.T) {
 	f := newDoorFixture(t)
 	path := "/api/v1/workspaces/" + f.ws.Slug + "/collections/" + f.tasks.Slug + "/items"
@@ -135,19 +153,21 @@ func TestRelationTitleDoors_ReadHydratesTheTarget(t *testing.T) {
 	}
 
 	got := get(live)
-	target, ok := got.RelationTargets["owner_ref"]
+	set, ok := got.RelationTargets["owner_ref"]
 	if !ok {
 		t.Fatal("the read door returned no relation_targets — the hydrator is not bound to it, which every store-level test would still pass")
 	}
+	target := scalarTarget(t, set)
 	if target.ID != f.target.ID || target.Ref != f.target.Ref || target.Title != f.target.Title {
 		t.Errorf("hydrated as %+v, want {id:%s ref:%s title:%s}", target, f.target.ID, f.target.Ref, f.target.Title)
 	}
 
 	got = get(dangling)
-	target, ok = got.RelationTargets["owner_ref"]
+	set, ok = got.RelationTargets["owner_ref"]
 	if !ok {
 		t.Fatal("a dangling value was OMITTED; omission reads as \"this item has no relation\", which is a different and false statement")
 	}
+	target = scalarTarget(t, set)
 	if target.Ref != "" || target.Title != "" {
 		t.Errorf("a dangling value hydrated as %+v, want id-only", target)
 	}
@@ -188,10 +208,11 @@ func TestRelationTitleDoors_ReadDoesNotHydrateAnInvisibleTarget(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	target, ok := out.RelationTargets["owner_ref"]
+	set, ok := out.RelationTargets["owner_ref"]
 	if !ok {
 		t.Fatal("the key was omitted entirely; id-only is the honest answer, omission says the item has no relation")
 	}
+	target := scalarTarget(t, set)
 	if target.Ref != "" || target.Title != "" {
 		t.Errorf("hydrated an invisible target as %+v — that is the ref and title the write-side collapse exists to withhold", target)
 	}
@@ -205,7 +226,7 @@ func TestRelationTitleDoors_ReadDoesNotHydrateAnInvisibleTarget(t *testing.T) {
 	if err := json.Unmarshal(ownerRR.Body.Bytes(), &ownerOut); err != nil {
 		t.Fatalf("decode owner: %v", err)
 	}
-	if ownerOut.RelationTargets["owner_ref"].Ref != f.target.Ref {
+	if scalarTarget(t, ownerOut.RelationTargets["owner_ref"]).Ref != f.target.Ref {
 		t.Errorf("control: the owner should see the full triple, got %+v", ownerOut.RelationTargets["owner_ref"])
 	}
 }
@@ -352,7 +373,7 @@ func TestRelationTitleDoors_HydrationUsesITEMVisibilityNotCollectionVisibility(t
 		if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
 			t.Fatalf("decode: %v", err)
 		}
-		return out.RelationTargets["owner_ref"]
+		return scalarTarget(t, out.RelationTargets["owner_ref"])
 	}
 
 	// THE LEAK: a sibling in a nav-lenient collection, with no grant of its own.
