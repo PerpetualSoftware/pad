@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -25,6 +26,30 @@ import (
 // `not_found` as "does not exist" when the server also emits it for a target
 // the caller merely cannot see. The server works to make those two
 // indistinguishable; the renderer must not undo that in the last inch.
+// RenderRelationTargets renders one `relation_targets` entry — a scalar target,
+// or a `multi_relation` LIST joined with ", " in stored order (PLAN-2857 U4).
+//
+// An EMPTY list renders as "(none)" rather than as an empty string: a field
+// printed with nothing after it reads as a rendering bug, and the honest
+// statement is that the field holds no references. A set with neither shape set
+// renders empty, which is the caller's signal to fall back to the raw value.
+func RenderRelationTargets(set models.RelationTargetSet) string {
+	if set.List != nil {
+		if len(set.List) == 0 {
+			return "(none)"
+		}
+		parts := make([]string, len(set.List))
+		for i, t := range set.List {
+			parts[i] = RenderRelationValue(t)
+		}
+		return strings.Join(parts, ", ")
+	}
+	if set.One != nil {
+		return RenderRelationValue(*set.One)
+	}
+	return ""
+}
+
 func RenderRelationValue(target models.RelationTarget) string {
 	if target.Ref == "" {
 		return fmt.Sprintf("%s (unavailable)", target.ID)

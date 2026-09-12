@@ -89,14 +89,31 @@ func (s *Server) hydrateRelationTargets(r *http.Request, workspaceID string, ite
 		if !ok {
 			continue
 		}
-		out := make(map[string]models.RelationTarget, len(perField))
-		for key, target := range perField {
+		out := make(map[string]models.RelationTargetSet, len(perField))
+		// The visibility redaction is PER TARGET, so it applies element-wise to
+		// a `multi_relation` list (U4). A list where one element is visible and
+		// another is not must redact only the second — redacting the whole list
+		// would withhold what the caller may see, and redacting none would
+		// disclose what they may not.
+		redact := func(target models.RelationTarget) models.RelationTarget {
 			if target.Ref != "" && !visible(target.ID) {
 				// Resolved, but not for these eyes. Keep the id — the value IS
 				// stored — and drop what would disclose the target.
-				target = models.RelationTarget{ID: target.ID}
+				return models.RelationTarget{ID: target.ID}
 			}
-			out[key] = target
+			return target
+		}
+		for key, set := range perField {
+			switch {
+			case set.List != nil:
+				list := make([]models.RelationTarget, len(set.List))
+				for j, target := range set.List {
+					list[j] = redact(target)
+				}
+				out[key] = models.NewRelationTargetList(list)
+			case set.One != nil:
+				out[key] = models.NewRelationTargetSet(redact(*set.One))
+			}
 		}
 		items[i].RelationTargets = out
 	}

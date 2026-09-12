@@ -343,6 +343,76 @@ func relationArrayElements(raw any) ([]string, bool) {
 	}
 }
 
+// relationValueShapeIsValid reports whether raw has the shape the field's TYPE
+// requires: a string for `relation`, an array of strings for `multi_relation`.
+//
+// The three `invalid_shape` sites below all asked `_, isStr := raw.(string)`,
+// which is the right question for exactly one of the two types. Asked of a
+// `multi_relation`, it calls every legitimate array malformed — and since those
+// sites DELETE what they judge malformed, the answer decides whether a valid
+// value survives.
+func relationValueShapeIsValid(def models.FieldDef, raw any) bool {
+	if def.IsMultiRelation() {
+		_, ok := relationArrayElements(raw)
+		return ok
+	}
+	_, ok := raw.(string)
+	return ok
+}
+
+// relationValueIsCleared reports whether raw is the "no referent" form: an
+// empty/whitespace string for `relation`, or an array with no non-blank element
+// for `multi_relation` (`[]` included).
+//
+// The origin split skips a cleared value so it lands in no bucket and is
+// therefore neither refused nor reported as a drop the user cannot act on. An
+// array had to join that rule explicitly: without it `[]` would be bucketed as
+// a referent, resolve to nothing, and be reported as a drop of a value the
+// caller deliberately emptied.
+func relationValueIsCleared(def models.FieldDef, raw any) bool {
+	if def.IsMultiRelation() {
+		elems, ok := relationArrayElements(raw)
+		if !ok {
+			return false
+		}
+		for _, e := range elems {
+			if strings.TrimSpace(e) != "" {
+				return false
+			}
+		}
+		return true
+	}
+	str, isStr := raw.(string)
+	return isStr && strings.TrimSpace(str) == ""
+}
+
+// relationIssueValue picks the value a FIELD-level issue reports for raw.
+//
+// For a `multi_relation` that is the first non-blank element: the issue is about
+// the whole field, and a message naming nothing concrete is harder to act on
+// than one naming a member of the list. Returns "" when there is nothing to
+// name, which reads as "this field" rather than as a value.
+//
+// A SCALAR value is returned UNTRIMMED, which is not an oversight. The call
+// site this replaced read `raw.(string)` and reported it verbatim, and BUG-2870
+// settled that a caller's value bytes are carried as sent — so trimming here
+// would quietly change what an existing scalar drop reports, a behaviour change
+// belonging to no row of this table. The multi case trims per element because
+// it is choosing WHICH element to name, not reporting one it was handed.
+func relationIssueValue(def models.FieldDef, raw any) string {
+	if def.IsMultiRelation() {
+		elems, _ := relationArrayElements(raw)
+		for _, e := range elems {
+			if strings.TrimSpace(e) != "" {
+				return e
+			}
+		}
+		return ""
+	}
+	str, _ := raw.(string)
+	return str
+}
+
 // resolveMultiRelationField resolves every element of one `multi_relation`
 // value, canonicalising the stored array in place (PLAN-2857 U4).
 //
@@ -968,8 +1038,17 @@ func (s *Store) itemByRefQ(q Queryer, workspaceID, prefix string, number int) (*
 // DECLARES, carried together so hydration can check the second against the
 // first without re-walking the schemas.
 type relationWant struct {
-	value      string
+	// values holds the stored value(s) IN ORDER. A scalar `relation` has
+	// exactly one; a `multi_relation` has one per array element, INCLUDING any
+	// element that names nothing, so a position in the hydrated list lines up
+	// with the same position in the stored array (PLAN-2857 U4).
+	values     []string
 	targetSlug string
+	// multi distinguishes a one-element LIST from a SCALAR. Without it a
+	// `multi_relation` holding one reference would marshal as a bare object and
+	// a consumer indexing the list would break on exactly the items that have
+	// a single target — the least likely case to appear in anyone's fixture.
+	multi bool
 }
 
 // RelationTargetNotPortable — a carried relation value that cannot cross a
@@ -1105,7 +1184,7 @@ func (s *Store) MigrateRelationReferentsQ(
 		RelationOriginDestinationDefault: {},
 	}
 	for _, def := range schema.Fields {
-		if def.Type != "relation" {
+		if !def.IsRelation() {
 			continue
 		}
 		raw, exists := fieldMap[def.Key]
@@ -1114,8 +1193,10 @@ func (s *Store) MigrateRelationReferentsQ(
 		}
 		// An empty value is a cleared relation, not a referent. Skipping it
 		// here keeps it out of every bucket, so it is neither refused nor
-		// reported as a drop the user cannot act on.
-		if str, isStr := raw.(string); isStr && strings.TrimSpace(str) == "" {
+		// reported as a drop the user cannot act on. For a `multi_relation`
+		// that includes `[]` and an array of blanks — see
+		// relationValueIsCleared.
+		if relationValueIsCleared(def, raw) {
 			continue
 		}
 		switch {
@@ -1192,14 +1273,14 @@ func (s *Store) MigrateRelationReferentsQ(
 		// by a request detail with nothing to do with it. Dropping here makes
 		// the two paths agree BY CONSTRUCTION rather than by argument.
 		for _, def := range schema.Fields {
-			if def.Type != "relation" {
+			if !def.IsRelation() {
 				continue
 			}
 			raw, exists := defaults[def.Key]
 			if !exists {
 				continue
 			}
-			if _, isStr := raw.(string); isStr {
+			if relationValueShapeIsValid(def, raw) {
 				continue
 			}
 			dropped = append(dropped, RelationIssue{
@@ -1244,14 +1325,14 @@ func (s *Store) MigrateRelationReferentsQ(
 	// default branch above uses, and that ResolveLateRelationDefaultsQ has
 	// always used — the three now agree.
 	for _, def := range schema.Fields {
-		if def.Type != "relation" {
+		if !def.IsRelation() {
 			continue
 		}
 		raw, exists := carried[def.Key]
 		if !exists {
 			continue
 		}
-		if _, isStr := raw.(string); isStr {
+		if relationValueShapeIsValid(def, raw) {
 			continue
 		}
 		dropped = append(dropped, RelationIssue{
@@ -1264,24 +1345,28 @@ func (s *Store) MigrateRelationReferentsQ(
 	case RelationCarryCrossWorkspace:
 		// No lookup: a source-workspace id cannot mean anything here.
 		for _, def := range schema.Fields {
-			if def.Type != "relation" {
+			if !def.IsRelation() {
 				continue
 			}
 			raw, exists := carried[def.Key]
 			if !exists {
 				continue
 			}
-			value, isStr := raw.(string)
-			if !isStr {
+			if !relationValueShapeIsValid(def, raw) {
 				// Unreachable: the loop above the mode switch already dropped
-				// every non-string carried value, in BOTH modes. Kept as a
-				// type assertion rather than removed, so this branch cannot
-				// silently start treating a non-string as a ref if that loop
-				// is ever narrowed. Round 6 established that the two modes
+				// every mis-shaped carried value, in BOTH modes. Kept as a
+				// shape check rather than removed, so this branch cannot
+				// silently start treating a malformed value as a ref if that
+				// loop is ever narrowed. Round 6 established that the two modes
 				// must not disagree about a malformed value; they now agree
 				// by construction, above.
 				continue
 			}
+			// ONE drop for the whole field, never per element: the ruling is
+			// that a cross-workspace carry drops the value WHOLE, so an
+			// element count is not something the destination should learn and
+			// an import can never change it.
+			value := relationIssueValue(def, raw)
 			dropped = append(dropped, RelationIssue{
 				Key: def.Key, Value: value, Target: def.Collection, Reason: RelationTargetNotPortable,
 			})
@@ -1681,8 +1766,8 @@ func (s *Store) HydrateRelationTargetsQ(
 	workspaceID string,
 	items []models.Item,
 	schemas map[string]models.CollectionSchema,
-) (map[string]map[string]models.RelationTarget, error) {
-	// item ID -> field key -> the stored value and the collection its field
+) (map[string]map[string]models.RelationTargetSet, error) {
+	// item ID -> field key -> the stored value(s) and the collection its field
 	// DECLARES as the target.
 	perItem := map[string]map[string]relationWant{}
 	wanted := map[string]struct{}{}
@@ -1701,37 +1786,55 @@ func (s *Store) HydrateRelationTargetsQ(
 			}
 		}
 		for _, def := range schema.Fields {
-			// SCALAR ONLY, deliberately — this predicate is NOT widened to
-			// IsRelation (U4). The body below assumes one value per field:
-			// `perItem[item][key]` holds a single `relationWant`, so there is
-			// nowhere to put a second target, and `raw.(string)` skips an array
-			// silently. Widening the predicate here would read as "multi
-			// handled" while hydrating nothing.
-			//
-			// Hydrating a `multi_relation` needs a WIRE-SHAPE decision first —
-			// whether `relation_targets[key]` becomes a list, or gains a
-			// parallel key — which is a v0.31 contract change, not a predicate
-			// edit. Tracked as an OPEN row on TASK-2999's population table.
-			if def.Type != "relation" {
+			if !def.IsRelation() {
 				continue
 			}
 			raw, exists := fieldMap[def.Key]
 			if !exists || raw == nil {
 				continue
 			}
-			value, isStr := raw.(string)
-			if !isStr {
+
+			var values []string
+			if def.IsMultiRelation() {
+				elems, ok := relationArrayElements(raw)
+				if !ok {
+					// Not an array of strings. Hydration declines to be the
+					// second voice on a shape every write door refuses.
+					continue
+				}
+				// EVERY element, blanks included, so position is preserved. A
+				// blank cannot name anything and will hydrate ID-only, which is
+				// the same honest shape a dangling value gets — and keeping the
+				// position is what lets a consumer line the list up against the
+				// stored array. Dropping it would silently shorten the list for
+				// exactly the legacy rows that need explaining.
+				values = elems
+			} else {
+				value, isStr := raw.(string)
+				if !isStr {
+					continue
+				}
+				value = strings.TrimSpace(value)
+				if value == "" {
+					continue
+				}
+				values = []string{value}
+			}
+			if len(values) == 0 && !def.IsMultiRelation() {
 				continue
 			}
-			value = strings.TrimSpace(value)
-			if value == "" {
-				continue
-			}
+
 			if perItem[items[i].ID] == nil {
 				perItem[items[i].ID] = map[string]relationWant{}
 			}
-			perItem[items[i].ID][def.Key] = relationWant{value: value, targetSlug: def.Collection}
-			wanted[value] = struct{}{}
+			perItem[items[i].ID][def.Key] = relationWant{
+				values: values, targetSlug: def.Collection, multi: def.IsMultiRelation(),
+			}
+			for _, v := range values {
+				if v = strings.TrimSpace(v); v != "" {
+					wanted[v] = struct{}{}
+				}
+			}
 		}
 	}
 	if len(wanted) == 0 {
@@ -1802,40 +1905,48 @@ func (s *Store) HydrateRelationTargetsQ(
 	// Declared target slug -> collection id, resolved once per distinct slug.
 	declaredIDs := map[string]string{}
 
-	out := map[string]map[string]models.RelationTarget{}
+	out := map[string]map[string]models.RelationTargetSet{}
 	for itemID, fields := range perItem {
 		for key, want := range fields {
-			value := want.value
-			target, ok := resolved[value]
-			if !ok {
-				// Dangling: the stored value names nothing live. ID-only, so
-				// the read stays honest instead of erroring or pretending.
-				target = models.RelationTarget{ID: value}
-			} else if want.targetSlug != "" {
-				// THE VALUE MUST LIVE WHERE THE FIELD SAYS IT DOES. The write
-				// side refuses a relation pointing outside the declared
-				// collection, but legacy and corrupt rows predate that, and
-				// rendering one as `{ref, title}` presents a Task as though it
-				// were the Colour the field promised. ID-only is the honest
-				// shape — the same one a dangling value gets, for the same
-				// reason (codex round 7).
-				declaredID, known := declaredIDs[want.targetSlug]
-				if !known {
-					var derr error
-					declaredID, derr = s.collectionIDBySlugQ(q, workspaceID, want.targetSlug)
-					if derr != nil {
-						return nil, derr
-					}
-					declaredIDs[want.targetSlug] = declaredID
-				}
-				if declaredID == "" || resolvedIn[value] != declaredID {
+			hydrated := make([]models.RelationTarget, 0, len(want.values))
+			for _, value := range want.values {
+				value := strings.TrimSpace(value)
+				target, ok := resolved[value]
+				if !ok {
+					// Dangling: the stored value names nothing live. ID-only, so
+					// the read stays honest instead of erroring or pretending.
 					target = models.RelationTarget{ID: value}
+				} else if want.targetSlug != "" {
+					// THE VALUE MUST LIVE WHERE THE FIELD SAYS IT DOES. The write
+					// side refuses a relation pointing outside the declared
+					// collection, but legacy and corrupt rows predate that, and
+					// rendering one as `{ref, title}` presents a Task as though it
+					// were the Colour the field promised. ID-only is the honest
+					// shape — the same one a dangling value gets, for the same
+					// reason (codex round 7).
+					declaredID, known := declaredIDs[want.targetSlug]
+					if !known {
+						var derr error
+						declaredID, derr = s.collectionIDBySlugQ(q, workspaceID, want.targetSlug)
+						if derr != nil {
+							return nil, derr
+						}
+						declaredIDs[want.targetSlug] = declaredID
+					}
+					if declaredID == "" || resolvedIn[value] != declaredID {
+						target = models.RelationTarget{ID: value}
+					}
 				}
+				hydrated = append(hydrated, target)
 			}
 			if out[itemID] == nil {
-				out[itemID] = map[string]models.RelationTarget{}
+				out[itemID] = map[string]models.RelationTargetSet{}
 			}
-			out[itemID][key] = target
+			if want.multi {
+				out[itemID][key] = models.NewRelationTargetList(hydrated)
+			} else if len(hydrated) == 1 {
+				out[itemID][key] = models.NewRelationTargetSet(hydrated[0])
+			}
 		}
 	}
 	return out, nil
