@@ -267,6 +267,49 @@ export function relationLaneAcceptsDrop(lane: Pick<RelationLane, 'state'>): bool
  * Elements are trimmed individually, on the same reasoning as the scalar case:
  * there is nothing to migrate, only old rows to read correctly.
  */
+/**
+ * Why a view may NOT group by this field, or null when it may (PLAN-2857 U4).
+ *
+ * Two refusals, deliberately distinguished, because they tell a user different
+ * things and only one of them is fixable by editing the schema:
+ *
+ *   - `no_target` — a `relation` (or `multi_relation`) that declares no target
+ *     collection. Half-written or legacy. Nothing can resolve its values, so
+ *     there is nothing to label lanes with. Fixable: declare the target.
+ *   - `multi_valued` — a `multi_relation`, whatever it declares. Refused by lead
+ *     ruling, not by limitation: `bucketByColumn` puts every item in EXACTLY ONE
+ *     lane (U7's proving row asserts it by placing six items and counting), and
+ *     an item with three references belongs to three. The alternatives were to
+ *     render the item once per target — which makes a drag between lanes mean
+ *     something undefined (add? move? replace?) — or to group by the FIRST
+ *     element, which silently answers a different question than the user asked.
+ *     Tracked as IDEA-3034 if the multi-lane rendering is ever wanted.
+ *
+ * The view falls back to UNGROUPED and surfaces the reason. It must not fall
+ * back to Uncategorized: that reads as "none of these items has a value", which
+ * is false and unactionable.
+ */
+export type RelationGroupingRefusal = 'no_target' | 'multi_valued';
+
+export function relationGroupingRefusal(
+	field: { type?: string; collection?: string } | null | undefined,
+): RelationGroupingRefusal | null {
+	if (!field) return null;
+	if (field.type === 'multi_relation') return 'multi_valued';
+	if (field.type === 'relation' && !field.collection) return 'no_target';
+	return null;
+}
+
+/** The sentence a view shows when grouping is refused. */
+export function relationGroupingRefusalMessage(reason: RelationGroupingRefusal): string {
+	switch (reason) {
+		case 'multi_valued':
+			return 'This field can hold several references, so an item would belong to more than one group. Showing everything ungrouped.';
+		case 'no_target':
+			return 'This field does not say which collection it links to, so its values cannot be resolved. Showing everything ungrouped.';
+	}
+}
+
 export function relationFilterMatches(stored: unknown, filterValue: string): boolean {
 	const wanted = filterValue.trim();
 	if (Array.isArray(stored)) {

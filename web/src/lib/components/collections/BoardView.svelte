@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { relationGroupingRefusal, relationGroupingRefusalMessage } from '$lib/collections/relationGroups';
 	import type { Item, Collection } from '$lib/types';
 	import { parseSchema, parseFields } from '$lib/types';
 	import { itemComparator, type SortMode } from '$lib/collections/itemSort';
@@ -215,6 +216,20 @@
 	// ANYWHERE in the workspace and label lanes with whatever it found. The
 	// filter UI already requires it; the board did not.
 	let isRelationGroup = $derived(field?.type === 'relation' && !!field?.collection);
+	/**
+	 * Why grouping is refused for this field, or null (U4).
+	 *
+	 * A `multi_relation` is refused by lead ruling — one item belongs to as many
+	 * lanes as it has references and `bucketByColumn`'s invariant is exactly one
+	 * — and a relation with no declared target for the reason above.
+	 *
+	 * The board cannot be "ungrouped" the way the list can: a board IS lanes. So
+	 * its fallback is the single UNCATEGORIZED lane it already produced for this
+	 * case — what changes is that it no longer does so SILENTLY. An
+	 * Uncategorized lane with no explanation reads as "none of these items has a
+	 * value", which is false and unactionable.
+	 */
+	let groupingRefusal = $derived(relationGroupingRefusal(field));
 	let knownCollectionSlugs = $derived(
 		new Set(collectionStore.collections.map((c) => c.slug)),
 	);
@@ -598,6 +613,12 @@
 {#if items.length === 0}
 	<EmptyState {collection} {wsSlug} {oncreate} />
 {:else}
+{#if groupingRefusal}
+	<p class="grouping-refused" role="status">
+		<strong>Not grouped by {field?.label || groupField}.</strong>
+		{relationGroupingRefusalMessage(groupingRefusal)}
+	</p>
+{/if}
 <div class="board-view">
 	{#each renderColumns as colValue (colValue)}
 		{@const colItems = columnData[colValue] ?? []}
@@ -783,6 +804,19 @@
 {/if}
 
 <style>
+	/* U4: the grouping-refused notice, matching ListView's. Plain and inline
+	   rather than a toast — it describes a standing property of the view's
+	   configuration, not an event, so it must survive a reload. */
+	.grouping-refused {
+		margin: 0 0 0.75rem;
+		padding: 0.5rem 0.75rem;
+		border-radius: 6px;
+		background: var(--surface-2, rgba(127, 127, 127, 0.1));
+		color: var(--text-2, inherit);
+		font-size: 0.85rem;
+		line-height: 1.4;
+	}
+
 	.board-view {
 		display: flex;
 		gap: var(--space-4);
