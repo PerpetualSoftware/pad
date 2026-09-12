@@ -30,11 +30,30 @@ describe('handleGroupReorder', () => {
 		expect(start, 'handleGroupReorder was renamed or removed').toBeGreaterThan(-1);
 		const body = SRC.slice(start, SRC.indexOf('\n\t}', start));
 
-		const guard = body.indexOf("type === 'relation'");
+		// REPOINTED IN U4, and the repointing is itself the lesson. This read
+		// for the literal `type === 'relation'`; U4 replaced that with a call to
+		// the shared `isRelationType` predicate so the guard covers
+		// `multi_relation` too — a STRONGER guard — and this test went red.
+		//
+		// A source guard reading for a SPELLING fails whenever the code is
+		// improved, which is the cost of the technique. So it now reads for the
+		// predicate CALL rather than for either literal: that is the only form
+		// the guard can take while covering both relation types, and a future
+		// third type joins it without touching this file.
+		const guard = body.indexOf('isRelationType(');
 		const write = body.indexOf('.options = newOrder');
-		expect(guard, 'the relation guard is gone').toBeGreaterThan(-1);
+		expect(
+			guard,
+			'the relation guard is gone — or it stopped using isRelationType, in which case check it still covers multi_relation before re-pointing this',
+		).toBeGreaterThan(-1);
 		expect(write, 're-point this guard: the schema write moved').toBeGreaterThan(-1);
 		expect(guard, 'the write happens before the guard').toBeLessThan(write);
+
+		// The guard must read the FIELD BEING REORDERED, not some other field.
+		// Without this the predicate call could be about anything at all.
+		expect(body, 'the guard does not test the reordered field').toContain(
+			'isRelationType(s.fields[idx].type)',
+		);
 	});
 
 	it('still writes lane order for an ordinary field', () => {

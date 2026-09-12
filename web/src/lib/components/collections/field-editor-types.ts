@@ -67,7 +67,12 @@ export const FIELD_TYPES: FieldDef['type'][] = [
 	'date',
 	'checkbox',
 	'url',
-	'relation'
+	'relation',
+	// U4. Offered in the schema editor deliberately: a type the API accepts and
+	// the editor cannot declare is a half-shipped surface — the only way to get
+	// one would be the CLI's `fields` DSL or a hand-written schema, which is not
+	// a feature, it is a gap with a workaround.
+	'multi_relation'
 ];
 
 /**
