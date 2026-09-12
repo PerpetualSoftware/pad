@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { isRelationType } from '$lib/items/relationFieldTypes';
 	import { api } from '$lib/api/client';
 	import type { CollectionCreate, FieldDef, CollectionSettings, QuickAction } from '$lib/types';
 	import { COLLECTION_TEMPLATES, type CollectionTemplate } from './collection-templates';
@@ -326,7 +327,12 @@
 					if (f.required) def.required = true;
 					if (f.computed) def.computed = true;
 					if (f.type === 'number' && f.suffix) def.suffix = f.suffix;
-					if (f.type === 'relation' && f.collection) def.collection = f.collection;
+					// BOTH relation types (U4): the target is part of the DECLARATION,
+					// not of the value's cardinality. Dropped here, the field saves
+					// with no target and every later write to it is refused with
+					// `target_missing` — silently, from the user's point of view,
+					// since the editor showed them a target they had chosen.
+					if (isRelationType(f.type) && f.collection) def.collection = f.collection;
 					// Coerce default to match the active type. This catches
 					// both type-switch drift (boolean default left on a text
 					// field) and select whitespace drift (default raw text not

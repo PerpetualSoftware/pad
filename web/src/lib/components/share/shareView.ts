@@ -15,6 +15,7 @@
 // mirror the in-app helpers so a shared kanban looks like the owner's kanban.
 
 import type { FieldDef } from '$lib/types';
+import { isRelationType } from '$lib/items/relationFieldTypes';
 import { UNPARENTED_FILTER_FIELD } from '$lib/collections/unparentedFilter';
 
 // Re-exported so existing/future imports of `UNPARENTED_FILTER_FIELD` from
@@ -302,7 +303,12 @@ export function resolveGroupField(collection: PublicCollection): string {
  */
 export function isPublicGroupable(collection: PublicCollection, key: string): boolean {
 	const field = findField(collection.fields, key);
-	return !!field && field.type !== 'relation';
+	// BOTH relation types (U4). A share payload carries field VALUES with no
+	// index behind them, which is why grouping by a relation is refused here at
+	// all — and a `multi_relation` is strictly worse, since each value is an
+	// ARRAY of ids. Left out, a shared view grouped by one would render one
+	// group per stringified array.
+	return !!field && !isRelationType(field.type);
 }
 
 // ── Presentation helpers (mirror the in-app vocabularies) ───────────────────

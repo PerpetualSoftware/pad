@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { isRelationType } from '$lib/items/relationFieldTypes';
 	import { api, isConflictOrNotFound } from '$lib/api/client';
 	import type { Collection, CollectionUpdate, CollectionSettings, FieldDef, FieldMigration, QuickAction } from '$lib/types';
 	import { parseSchema, parseSettings } from '$lib/types';
@@ -515,7 +516,9 @@
 				// into the saved schema.
 				if (f.required) def.required = true;
 				if (f.computed) def.computed = true;
-				if (f.type === 'relation' && f.collection) def.collection = f.collection;
+				// BOTH relation types (U4) — see CreateCollectionModal: the target is
+				// part of the DECLARATION, not of the value's cardinality.
+				if (isRelationType(f.type) && f.collection) def.collection = f.collection;
 				if (f.type === 'number' && f.suffix) def.suffix = f.suffix;
 				// Preserve opaque metadata. The Edit modal doesn't expose
 				// pattern / unique_scope yet, but a seeded schema (e.g.
@@ -592,7 +595,9 @@
 					if (f.required) def.required = true;
 					if (f.computed) def.computed = true;
 					if (f.type === 'number' && f.suffix) def.suffix = f.suffix;
-					if (f.type === 'relation' && f.collection) def.collection = f.collection;
+					// BOTH relation types (U4) — see CreateCollectionModal: the target is
+					// part of the DECLARATION, not of the value's cardinality.
+					if (isRelationType(f.type) && f.collection) def.collection = f.collection;
 					// Coerce default to the active type (and normalize select
 					// defaults against the normalized option set). Pass the
 					// full opts array (including []) so defaults are dropped

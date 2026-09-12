@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { isRelationType } from '$lib/items/relationFieldTypes';
 	import { page, navigating } from '$app/state';
 	import { browser } from '$app/environment';
 	import { goto, beforeNavigate, afterNavigate } from '$app/navigation';
@@ -1318,7 +1319,7 @@
 
 	/** Schema keys whose filter value names an item rather than an option. */
 	let relationFilterKeys = $derived(
-		new Set((schema?.fields ?? []).filter((f) => f.type === 'relation').map((f) => f.key)),
+		new Set((schema?.fields ?? []).filter((f) => isRelationType(f.type)).map((f) => f.key)),
 	);
 
 	let filteredItems = $derived.by(() => {
@@ -1800,7 +1801,10 @@
 		// nothing should reach this; the guard is here because this is the
 		// DESTRUCTIVE end, and a guard at the affordance protects only the
 		// affordances somebody remembered.
-		if (s.fields[idx].type === 'relation') return;
+		// BOTH relation types (U4). This is the DESTRUCTIVE end — it writes item
+		// ids into the schema as `options` — so it must refuse a multi_relation
+		// too, whose lane values are ARRAYS of ids rather than single ones.
+		if (isRelationType(s.fields[idx].type)) return;
 		s.fields[idx].options = newOrder;
 		const schemaStr = JSON.stringify(s);
 

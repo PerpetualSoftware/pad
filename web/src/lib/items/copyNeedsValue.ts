@@ -1,4 +1,5 @@
 import type { ItemCopyPreflightNeedsValue } from '$lib/types';
+import { isRelationType } from '$lib/items/relationFieldTypes';
 
 /**
  * Types the copy dialog can safely collect a value for — the set `FieldEditor`
@@ -40,7 +41,7 @@ export const COLLECTABLE_TYPES = new Set([
  */
 export function isCollectable(row: ItemCopyPreflightNeedsValue): boolean {
 	const type = row.type ?? 'text';
-	if (type === 'relation') {
+	if (isRelationType(type)) {
 		if (!row.collection) return false;
 		// IDEA-2899. Naming a target is not having one: the slug can name a
 		// collection that has been deleted, or one this caller cannot read.
@@ -87,7 +88,7 @@ export function uncollectableReason(
 	// A relation naming a target the caller cannot use — as opposed to one
 	// naming no target at all, which is the TASK-2869 case and stays a
 	// type-shaped failure: there is nothing to point the user at.
-	if (type === 'relation' && row.collection && row.collection_unavailable === true) {
+	if (isRelationType(type) && row.collection && row.collection_unavailable === true) {
 		return 'unavailable_target';
 	}
 	return 'type';

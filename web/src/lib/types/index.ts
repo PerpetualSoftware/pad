@@ -369,7 +369,7 @@ export interface WorkspaceTemplate {
 export interface FieldDef {
 	key: string;
 	label: string;
-	type: 'text' | 'number' | 'select' | 'multi_select' | 'date' | 'checkbox' | 'url' | 'relation' | 'json';
+	type: 'text' | 'number' | 'select' | 'multi_select' | 'date' | 'checkbox' | 'url' | 'relation' | 'multi_relation' | 'json';
 	options?: string[];
 	terminal_options?: string[];
 	default?: any;
