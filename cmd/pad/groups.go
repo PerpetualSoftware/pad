@@ -130,6 +130,8 @@ func itemCmd() *cobra.Command {
 		unremindCmd(),
 		noteCmd(),
 		decideCmd(),
+		itemClaimCmd(),
+		itemReleaseCmd(),
 		blocksCmd(),
 		blockedByCmd(),
 		depsCmd(),
