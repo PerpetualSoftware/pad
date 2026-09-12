@@ -391,7 +391,7 @@ func (s *Server) requireShareLinkTargetVisible(w http.ResponseWriter, r *http.Re
 // link. TestMovedTo_ShareLinkNeverCarriesPointer pins both the key set and
 // that specific omission.
 func publicShareItemDTO(item *models.Item) map[string]interface{} {
-	return map[string]interface{}{
+	dto := map[string]interface{}{
 		"title":           item.Title,
 		"content":         item.Content,
 		"fields":          item.Fields,
@@ -399,6 +399,19 @@ func publicShareItemDTO(item *models.Item) map[string]interface{} {
 		"collection_name": item.CollectionName,
 		"collection_icon": item.CollectionIcon,
 	}
+	// BUG-3000. This DTO is an explicit allow-list, so it does NOT inherit
+	// models.Item's staleness marker the way every struct-serialising door does —
+	// and a public share is the door whose reader is LEAST able to notice on their
+	// own: an anonymous viewer has no editor, no op-log, and nothing to compare
+	// against.
+	//
+	// Added only when set, which keeps the key set byte-identical in the common
+	// case — the property TestMovedTo_ShareLinkNeverCarriesPointer pins, and which
+	// this must not disturb.
+	if item.ContentState != "" {
+		dto["content_state"] = item.ContentState
+	}
+	return dto
 }
 
 // handleResolveShareLink is the /s/{token} route. It resolves a share link

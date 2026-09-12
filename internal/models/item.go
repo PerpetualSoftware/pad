@@ -181,13 +181,36 @@ func ReservedItemFieldKeys() []string {
 }
 
 type Item struct {
-	ID             string     `json:"id"`
-	WorkspaceID    string     `json:"workspace_id"`
-	CollectionID   string     `json:"collection_id"`
-	Title          string     `json:"title"`
-	Slug           string     `json:"slug"`
-	Ref            string     `json:"ref,omitempty"` // computed: e.g. "TASK-5", "BUG-8"
-	Content        string     `json:"content"`
+	ID           string `json:"id"`
+	WorkspaceID  string `json:"workspace_id"`
+	CollectionID string `json:"collection_id"`
+	Title        string `json:"title"`
+	Slug         string `json:"slug"`
+	Ref          string `json:"ref,omitempty"` // computed: e.g. "TASK-5", "BUG-8"
+	Content      string `json:"content"`
+
+	// ContentState reports that the `Content` above is known to be BEHIND the
+	// item's live collaborative document (BUG-3000). Empty — and so omitted —
+	// whenever the row is current, which is the overwhelmingly common case, so a
+	// consumer that does not know this field sees byte-identical responses.
+	//
+	// It takes the same values as ItemWriteWarnings.ContentOutcome, deliberately:
+	// a caller should have ONE story about where content is, whether it learned it
+	// from a write response or from a read. The name differs because a write
+	// warning describes what a REQUEST did, while this describes what the ROW is.
+	//
+	// The predicate is "the op-log holds a row above items.content_flushed_op_log_id",
+	// i.e. the document is ahead of the row. That is deliberately broader than "an
+	// applier-path API write is pending flush": it also covers a user typing in an
+	// open tab whose edits have not flushed. Both serve stale content, the row does
+	// not record WHY the op-log is ahead, and the narrow reading is therefore not
+	// expressible — see the BUG-3000 trail.
+	//
+	// It is emitted ONLY where a real `content` value is, and is built alongside
+	// that column for exactly that reason: a query selecting an empty-string literal
+	// for content must not claim its empty body is stale.
+	ContentState string `json:"content_state,omitempty"`
+
 	Fields         string     `json:"fields"` // JSON string
 	Tags           string     `json:"tags"`   // JSON array string
 	Pinned         bool       `json:"pinned"`
