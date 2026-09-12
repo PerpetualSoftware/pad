@@ -35,10 +35,15 @@ type ItemSummary struct {
 	Tags           json.RawMessage `json:"tags,omitempty"`
 	Pinned         bool            `json:"pinned,omitempty"`
 	ContentPreview string          `json:"content_preview,omitempty"`
-	ParentRef      string          `json:"parent_ref,omitempty"`
-	AssignedUser   string          `json:"assigned_user,omitempty"`
-	AgentRole      string          `json:"agent_role,omitempty"`
-	HasChildren    bool            `json:"has_children,omitempty"`
+	// ContentState rides the PREVIEW for the same reason it rides the full body
+	// (BUG-3000): a preview is content, so a stale row yields a stale preview and
+	// a consumer reading only this shape would otherwise have no signal at all.
+	// Same values as models.Item.ContentState; omitted when the row is current.
+	ContentState string `json:"content_state,omitempty"`
+	ParentRef    string `json:"parent_ref,omitempty"`
+	AssignedUser string `json:"assigned_user,omitempty"`
+	AgentRole    string `json:"agent_role,omitempty"`
+	HasChildren  bool   `json:"has_children,omitempty"`
 
 	// RelationTargets carries the hydrated `relation` values (PLAN-2857 U6).
 	//
@@ -125,6 +130,7 @@ func ToItemSummary(item models.Item) ItemSummary {
 		Tags:            rawJSONOrNil(item.Tags),
 		Pinned:          item.Pinned,
 		ContentPreview:  contentPreview(item.Content),
+		ContentState:    item.ContentState,
 		ParentRef:       item.ParentRef,
 		AssignedUser:    item.AssignedUserName,
 		AgentRole:       item.AgentRoleSlug,

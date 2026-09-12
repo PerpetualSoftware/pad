@@ -758,6 +758,7 @@ func showCmd() *cobra.Command {
 				// it captures, `cat` included, before and after this change.)
 				// The human-facing surface is the default table format
 				// below, which still ends the body with a newline.
+				warnContentStale(item)
 				fmt.Print(item.Content)
 				return nil
 			}
@@ -792,6 +793,7 @@ func showCmd() *cobra.Command {
 			}
 
 			if item.Content != "" {
+				warnContentStale(item)
 				fmt.Println(item.Content)
 			}
 
@@ -3823,6 +3825,28 @@ func warnUndeclaredFields(item *models.Item) {
 		strings.Join(item.Warnings.UndeclaredFields, ", "))
 }
 
+// warnContentStale prints one line to STDERR when a READ served a body the server
+// knows is behind the item's live collaborative document (BUG-3000).
+//
+// The write-side twin above tells a caller that ITS OWN write has not reached the
+// row. This one is the other half, and it fires for a caller who wrote nothing: the
+// row can be behind because someone else's tab holds unflushed edits, and a read has
+// no way to notice that from the content alone.
+//
+// Stderr for the same reason as every other warning here — `--format json` and the
+// raw-content dump are both piped, and a line on stdout would corrupt them. That
+// matters more on this path than on the write path, because `pad item show
+// --format markdown` exists precisely to be redirected into a file.
+func warnContentStale(item *models.Item) {
+	if item == nil || item.ContentState != models.ContentOutcomeAppliedPendingFlush {
+		return
+	}
+	fmt.Fprintln(os.Stderr, "warning: this item's stored content is behind its live collaborative "+
+		"document — an editor holds edits that have not been written back yet, so what follows is "+
+		"the previous content. It catches up when a tab next flushes the item, and nothing on the "+
+		"server forces that to happen.")
+}
+
 // warnContentPendingFlush prints one line to STDERR when a content write reached
 // the collaborative document but not yet items.content (BUG-2995).
 //
@@ -3835,9 +3859,13 @@ func warnUndeclaredFields(item *models.Item) {
 // Stderr for warnUndeclaredFields's reason: --format json output is piped into
 // scripts and a warning on stdout would corrupt the JSON they parse.
 //
-// It deliberately states no duration. It is not established that the flush
-// always lands — see BUG-3000 — so a number here would be a claim this command
-// cannot support.
+// It deliberately states no duration, and BUG-3000's day-64 measurement is why
+// that must stay: the flush is NOT guaranteed to land at all. Nothing server-side
+// moves applier content into items.content — the op-log GC's flush-coverage guard
+// deliberately retains those rows rather than flushing them — so the row catches up
+// only when a tab next opens the item. Any number here would be a claim this
+// command cannot support. (This comment previously said the question was "not
+// established"; it now is.)
 func warnContentPendingFlush(item *models.Item) {
 	if item == nil || item.Warnings == nil {
 		return

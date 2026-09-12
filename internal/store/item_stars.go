@@ -95,7 +95,7 @@ func (s *Store) AreItemsStarred(userID string, itemIDs []string) (map[string]boo
 // If includeTerminal is false, items in terminal statuses are excluded.
 func (s *Store) ListStarredItems(userID, workspaceID string, includeTerminal bool) ([]models.Item, error) {
 	query := `
-		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
+		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, ` + contentStateSQL + `, i.fields, i.tags,
 		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 		       i.created_by, i.last_modified_by, i.source,
 		       i.item_number, i.seq, i.created_at, i.updated_at,

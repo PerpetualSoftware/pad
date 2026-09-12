@@ -655,6 +655,53 @@ func (s *Store) getItemTx(tx *sql.Tx, id string) (*models.Item, error) {
 // getItemScanQ is the one item-row scan behind GetItem, getItemTx and
 // GetItemIncludeDeleted — identical SELECT and hydration, differing only in
 // executor and in whether soft-deleted rows are visible. (nil, nil) on no row.
+// contentStateSQL is the SELECT-list expression behind models.Item.ContentState
+// (BUG-3000): it reports that items.content is BEHIND the item's live
+// collaborative document.
+//
+// EXISTS, not MAX. The op-log's (item_id, id) index (migration 050) makes this a
+// seek that stops at the FIRST qualifying row, where the sweeper's
+// ListDormantOpLogItemsBefore has to aggregate MAX(u.id) across the whole per-item
+// range. Same index, different cost class — which is why the sweeper's shape is the
+// wrong precedent to copy here even though it is the obvious one. That distinction
+// is what makes this affordable on a LIST, where an aggregate would not be.
+//
+// COALESCE(..., 0) treats a NULL watermark — never flushed — as "everything in the
+// op-log is unflushed", which is what it means: ids are positive.
+//
+// It requires the items table aliased as `i`, which every query using it already
+// does. It is spliced ONLY where a real content column is selected; see
+// models.Item.ContentState for why a query selecting an empty-string literal for
+// content must not carry it.
+//
+// RECEIPT (BUG-3000, day 64). ListItems over 200 items, SQLite, best-of-5 per shape,
+// measured WITH the predicate and again with it replaced by an empty-string literal
+// — the counterfactual, because a one-armed timing cannot attribute cost:
+//
+//	op-log rows   with        without
+//	0             2.44ms      3.58ms
+//	2,000         4.00ms      2.86ms
+//	20,000        3.81ms      3.27ms
+//
+// The arms are INDISTINGUISHABLE: they overlap, and at 0 rows the arm without the
+// predicate was the slower one. Run-to-run variance (~1.5ms) exceeds any systematic
+// difference, so the honest statement is that the cost is BELOW THE NOISE FLOOR at
+// this scale — not that it is zero.
+//
+// What the measurement does NOT cover, and where it would be worth redoing: SQLite
+// rather than Postgres; per-item op-logs far beyond 100 rows (the EXISTS stops at
+// the first qualifying row, so depth should not matter, but that is the argument
+// rather than the measurement); a store under concurrent load; and lists far larger
+// than 200 items.
+//
+// Error direction is benign either way: the predicate is read-only and its only
+// consequence is an extra index seek per row.
+const contentStateSQL = `CASE WHEN EXISTS (
+			SELECT 1 FROM item_yjs_updates u
+			WHERE u.item_id = i.id
+			  AND u.id > COALESCE(i.content_flushed_op_log_id, 0)
+		) THEN 'applied_pending_flush' ELSE '' END`
+
 func (s *Store) getItemScanQ(q Queryer, id string, includeDeleted bool) (*models.Item, error) {
 	var item models.Item
 	var createdAt, updatedAt string
@@ -662,7 +709,7 @@ func (s *Store) getItemScanQ(q Queryer, id string, includeDeleted bool) (*models
 	var pinned bool
 
 	query := `
-		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
+		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, ` + contentStateSQL + `, i.fields, i.tags,
 		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 		       i.created_by, i.last_modified_by, i.source,
 		       i.item_number, i.seq, i.created_at, i.updated_at, i.deleted_at,
@@ -679,7 +726,7 @@ func (s *Store) getItemScanQ(q Queryer, id string, includeDeleted bool) (*models
 	}
 	err := q.QueryRow(s.q(query), id).Scan(
 		&item.ID, &item.WorkspaceID, &item.CollectionID, &item.Title, &item.Slug,
-		&item.Content, &item.Fields, &item.Tags,
+		&item.Content, &item.ContentState, &item.Fields, &item.Tags,
 		&pinned, &item.SortOrder, &item.ParentID, &item.AssignedUserID, &item.AgentRoleID, &item.RoleSortOrder,
 		&item.CreatedBy, &item.LastModifiedBy, &item.Source,
 		&item.ItemNumber, &item.Seq, &createdAt, &updatedAt, &deletedAt,
@@ -828,7 +875,7 @@ func (s *Store) ResolveItemIncludeDeleted(workspaceID, slugOrRef string) (*model
 		var pinned bool
 
 		err := s.db.QueryRow(s.q(`
-			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
+			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, `+contentStateSQL+`, i.fields, i.tags,
 			       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 			       i.created_by, i.last_modified_by, i.source,
 			       i.item_number, i.seq, i.created_at, i.updated_at, i.deleted_at,
@@ -842,7 +889,7 @@ func (s *Store) ResolveItemIncludeDeleted(workspaceID, slugOrRef string) (*model
 			WHERE i.workspace_id = ? AND c.prefix = ? AND i.item_number = ?
 		`), workspaceID, prefix, number).Scan(
 			&item.ID, &item.WorkspaceID, &item.CollectionID, &item.Title, &item.Slug,
-			&item.Content, &item.Fields, &item.Tags,
+			&item.Content, &item.ContentState, &item.Fields, &item.Tags,
 			&pinned, &item.SortOrder, &item.ParentID, &item.AssignedUserID, &item.AgentRoleID, &item.RoleSortOrder,
 			&item.CreatedBy, &item.LastModifiedBy, &item.Source,
 			&item.ItemNumber, &item.Seq, &createdAt, &updatedAt, &deletedAt,
@@ -986,6 +1033,10 @@ func (s *Store) GetItemsByIDsIncludeDeleted(ids []string) (map[string]*models.It
 		args[i] = id
 	}
 	rows, err := s.db.Query(s.q(fmt.Sprintf(`
+		-- BUG-3000: NO contentStateSQL here. This query selects '' for content
+		-- (dashboard batching needs the metadata, not the body), and a staleness marker
+		-- on an empty body would be a false signal about content this query never
+		-- returns. The marker is spliced only where a real content column is.
 		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, '', i.fields, i.tags,
 		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 		       i.created_by, i.last_modified_by, i.source,
@@ -1041,7 +1092,7 @@ func (s *Store) GetItemBySlugIncludeDeleted(workspaceID, slug string) (*models.I
 	var pinned bool
 
 	err := s.db.QueryRow(s.q(`
-		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
+		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, `+contentStateSQL+`, i.fields, i.tags,
 		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 		       i.created_by, i.last_modified_by, i.source,
 		       i.item_number, i.seq, i.created_at, i.updated_at, i.deleted_at,
@@ -1055,7 +1106,7 @@ func (s *Store) GetItemBySlugIncludeDeleted(workspaceID, slug string) (*models.I
 		WHERE i.workspace_id = ? AND i.slug = ?
 	`), workspaceID, slug).Scan(
 		&item.ID, &item.WorkspaceID, &item.CollectionID, &item.Title, &item.Slug,
-		&item.Content, &item.Fields, &item.Tags,
+		&item.Content, &item.ContentState, &item.Fields, &item.Tags,
 		&pinned, &item.SortOrder, &item.ParentID, &item.AssignedUserID, &item.AgentRoleID, &item.RoleSortOrder,
 		&item.CreatedBy, &item.LastModifiedBy, &item.Source,
 		&item.ItemNumber, &item.Seq, &createdAt, &updatedAt, &deletedAt,
@@ -1099,11 +1150,16 @@ func (s *Store) ListItems(workspaceID string, params models.ItemListParams) ([]m
 	// item's full markdown. scanItems still scans the same column count;
 	// item.Content just comes back empty (BUG-2002).
 	contentCol := "i.content"
+	// The marker tracks the CONTENT column, not the row (BUG-3000). When this
+	// query is asked to omit the body, it must not claim the omitted body is
+	// stale — so the two are set together and can never disagree.
+	stateCol := contentStateSQL
 	if params.NoContent {
 		contentCol = "''"
+		stateCol = "''"
 	}
 	query := `
-		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, ` + contentCol + `, i.fields, i.tags,
+		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, ` + contentCol + `, ` + stateCol + `, i.fields, i.tags,
 		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 		       i.created_by, i.last_modified_by, i.source,
 		       i.item_number, i.seq, i.created_at, i.updated_at,
@@ -1854,7 +1910,7 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 		ftsRank = s.dialect.FTSRank("i", "search_vector")
 
 		query = fmt.Sprintf(`
-			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
+			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, `+contentStateSQL+`, i.fields, i.tags,
 			       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 			       i.created_by, i.last_modified_by, i.source,
 			       i.item_number, i.seq, i.created_at, i.updated_at,
@@ -1880,7 +1936,7 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 		ftsRank = s.dialect.FTSRank("items_fts", "search_vector")
 
 		query = fmt.Sprintf(`
-			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
+			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, `+contentStateSQL+`, i.fields, i.tags,
 			       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 			       i.created_by, i.last_modified_by, i.source,
 			       i.item_number, i.seq, i.created_at, i.updated_at,
@@ -3116,7 +3172,7 @@ func (s *Store) SearchItems(workspaceID, query string) ([]ItemSearchResult, erro
 		ftsRank := s.dialect.FTSRank("i", "search_vector")
 
 		sqlQuery = fmt.Sprintf(`
-			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
+			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, `+contentStateSQL+`, i.fields, i.tags,
 			       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 			       i.created_by, i.last_modified_by, i.source,
 			       i.item_number, i.seq, i.created_at, i.updated_at,
@@ -3144,7 +3200,7 @@ func (s *Store) SearchItems(workspaceID, query string) ([]ItemSearchResult, erro
 		ftsRank := s.dialect.FTSRank("items_fts", "search_vector")
 
 		sqlQuery = fmt.Sprintf(`
-			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
+			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, `+contentStateSQL+`, i.fields, i.tags,
 			       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 			       i.created_by, i.last_modified_by, i.source,
 			       i.item_number, i.seq, i.created_at, i.updated_at,
@@ -3190,7 +3246,7 @@ func (s *Store) SearchItems(workspaceID, query string) ([]ItemSearchResult, erro
 		var pinned bool
 		if err := rows.Scan(
 			&r.Item.ID, &r.Item.WorkspaceID, &r.Item.CollectionID, &r.Item.Title, &r.Item.Slug,
-			&r.Item.Content, &r.Item.Fields, &r.Item.Tags,
+			&r.Item.Content, &r.Item.ContentState, &r.Item.Fields, &r.Item.Tags,
 			&pinned, &r.Item.SortOrder, &r.Item.ParentID, &r.Item.AssignedUserID, &r.Item.AgentRoleID, &r.Item.RoleSortOrder,
 			&r.Item.CreatedBy, &r.Item.LastModifiedBy,
 			&r.Item.Source, &r.Item.ItemNumber, &r.Item.Seq, &createdAt, &updatedAt,
@@ -4622,7 +4678,7 @@ type childQueryer interface {
 
 func (s *Store) getChildItems(q childQueryer, parentItemID string) ([]models.Item, error) {
 	rows, err := q.Query(s.q(fmt.Sprintf(`
-		SELECT DISTINCT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
+		SELECT DISTINCT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, `+contentStateSQL+`, i.fields, i.tags,
 		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 		       i.created_by, i.last_modified_by, i.source,
 		       i.item_number, i.seq, i.created_at, i.updated_at,
@@ -5309,7 +5365,7 @@ func scanItems(rows *sql.Rows) ([]models.Item, error) {
 		var pinned bool
 		if err := rows.Scan(
 			&item.ID, &item.WorkspaceID, &item.CollectionID, &item.Title, &item.Slug,
-			&item.Content, &item.Fields, &item.Tags,
+			&item.Content, &item.ContentState, &item.Fields, &item.Tags,
 			&pinned, &item.SortOrder, &item.ParentID, &item.AssignedUserID, &item.AgentRoleID, &item.RoleSortOrder,
 			&item.CreatedBy, &item.LastModifiedBy, &item.Source,
 			&item.ItemNumber, &item.Seq, &createdAt, &updatedAt,
@@ -5367,7 +5423,11 @@ func (s *Store) ItemsModifiedSince(workspaceID string, since time.Time) (updated
 	// Fetch updated items: active items modified since the timestamp,
 	// PLUS items archived since the timestamp (so archived views can update).
 	query := s.q(`
-		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
+		-- BUG-3000: NO contentStateSQL here. This query selects '' for content
+		-- (child batching needs the metadata, not the body), and a staleness marker
+		-- on an empty body would be a false signal about content this query never
+		-- returns. The marker is spliced only where a real content column is.
+		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, ` + contentStateSQL + `, i.fields, i.tags,
 		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 		       i.created_by, i.last_modified_by, i.source,
 		       i.item_number, i.seq, i.created_at, i.updated_at,
