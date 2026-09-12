@@ -1371,7 +1371,7 @@ func (s *Store) MigrateRelationReferentsQ(
 func RelationKeysPresent(schema models.CollectionSchema, fieldMap map[string]any) map[string]bool {
 	out := map[string]bool{}
 	for _, def := range schema.Fields {
-		if def.Type != "relation" {
+		if !def.IsRelation() {
 			continue
 		}
 		if v, exists := fieldMap[def.Key]; exists && v != nil {
@@ -1701,6 +1701,17 @@ func (s *Store) HydrateRelationTargetsQ(
 			}
 		}
 		for _, def := range schema.Fields {
+			// SCALAR ONLY, deliberately — this predicate is NOT widened to
+			// IsRelation (U4). The body below assumes one value per field:
+			// `perItem[item][key]` holds a single `relationWant`, so there is
+			// nowhere to put a second target, and `raw.(string)` skips an array
+			// silently. Widening the predicate here would read as "multi
+			// handled" while hydrating nothing.
+			//
+			// Hydrating a `multi_relation` needs a WIRE-SHAPE decision first —
+			// whether `relation_targets[key]` becomes a list, or gains a
+			// parallel key — which is a v0.31 contract change, not a predicate
+			// edit. Tracked as an OPEN row on TASK-2999's population table.
 			if def.Type != "relation" {
 				continue
 			}
