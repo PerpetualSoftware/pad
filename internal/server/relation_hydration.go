@@ -126,7 +126,7 @@ func (s *Server) relationSchemasForWorkspace(workspaceID string) (map[string]mod
 			continue
 		}
 		for _, def := range schema.Fields {
-			if def.Type == "relation" {
+			if def.IsRelation() {
 				out[colls[i].ID] = schema
 				break
 			}
