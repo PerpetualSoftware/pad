@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { relationGroupingRefusal, relationGroupingRefusalMessage } from '$lib/collections/relationGroups';
 	import type { Item, Collection } from '$lib/types';
 	import { parseSchema, parseFields } from '$lib/types';
 	import { itemComparator, type SortMode } from '$lib/collections/itemSort';
@@ -112,6 +113,16 @@
 	// chip vocabulary for the label.
 	let isRelationGroup = $derived(field?.type === 'relation' && !!field?.collection);
 	/**
+	 * Why grouping is refused for this field, or null (U4).
+	 *
+	 * Replaces `relationWithoutTarget`, which covered one of the two reasons.
+	 * A `multi_relation` joins it by lead ruling: one item belongs to as many
+	 * lanes as it has references, and `bucketByColumn`'s invariant is exactly
+	 * one. See relationGroupingRefusal for the alternatives and why both were
+	 * rejected.
+	 */
+	let groupingRefusal = $derived(relationGroupingRefusal(field));
+	/**
 	 * A relation field with no declared target (legacy or half-written) is not
 	 * groupable AT ALL here (codex round 5).
 	 *
@@ -121,7 +132,7 @@
 	 * two siblings disagreeing about a malformed field, with the list landing
 	 * on the one outcome this whole unit exists to prevent.
 	 */
-	let relationWithoutTarget = $derived(field?.type === 'relation' && !field?.collection);
+	let relationWithoutTarget = $derived(groupingRefusal !== null);
 	let knownCollectionSlugs = $derived(
 		new Set(collectionStore.collections.map((c) => c.slug)),
 	);
@@ -364,6 +375,19 @@
 {#if items.length === 0}
 	<EmptyState {collection} {wsSlug} {oncreate} />
 {:else}
+	<!--
+		GROUPING REFUSED — say so (U4). The view falls back to ungrouped, and
+		silence there reads as "nobody set a grouping", or worse, the single
+		Uncategorized lane reads as "none of these items has a value". Both are
+		false and neither is actionable; the sentence names the field and what to
+		do about it.
+	-->
+	{#if groupingRefusal}
+		<p class="grouping-refused" role="status">
+			<strong>Not grouped by {field?.label || groupField}.</strong>
+			{relationGroupingRefusalMessage(groupingRefusal)}
+		</p>
+	{/if}
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<div
 		class="list-view"
@@ -491,6 +515,19 @@
 {/if}
 
 <style>
+	/* U4: the grouping-refused notice. Deliberately plain and inline rather
+	   than a dismissible toast — it describes a standing property of the view's
+	   configuration, not an event, so it must still be there on reload. */
+	.grouping-refused {
+		margin: 0 0 0.75rem;
+		padding: 0.5rem 0.75rem;
+		border-radius: 6px;
+		background: var(--surface-2, rgba(127, 127, 127, 0.1));
+		color: var(--text-2, inherit);
+		font-size: 0.85rem;
+		line-height: 1.4;
+	}
+
 	.list-view {
 		display: flex;
 		flex-direction: column;

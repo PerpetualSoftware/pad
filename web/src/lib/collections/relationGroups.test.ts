@@ -10,6 +10,8 @@ import {
 	relationLaneAriaName,
 	relationLaneValueFor,
 	relationLanes,
+	relationGroupingRefusal,
+	relationGroupingRefusalMessage
 } from './relationGroups';
 
 /**
@@ -370,5 +372,52 @@ describe('relationFilterMatches and multi_relation arrays (U4)', () => {
 		expect(relationFilterMatches('id-blue', RED)).toBe(false);
 		expect(relationFilterMatches(null, RED)).toBe(false);
 		expect(relationFilterMatches(undefined, RED)).toBe(false);
+	});
+});
+
+describe('relationGroupingRefusal (U4)', () => {
+	it('refuses a multi_relation WHATEVER it declares', () => {
+		// One item belongs to as many lanes as it has references, and
+		// bucketByColumn's invariant is exactly one. Declaring a target does not
+		// change that, which is why this refusal is not the no_target one.
+		expect(relationGroupingRefusal({ type: 'multi_relation', collection: 'colors' })).toBe(
+			'multi_valued'
+		);
+		expect(relationGroupingRefusal({ type: 'multi_relation' })).toBe('multi_valued');
+	});
+
+	it('refuses a relation with NO declared target, and distinguishes the reason', () => {
+		// Two reasons, because they tell a user different things and only one is
+		// fixable by editing the schema.
+		expect(relationGroupingRefusal({ type: 'relation' })).toBe('no_target');
+		expect(relationGroupingRefusal({ type: 'relation', collection: '' })).toBe('no_target');
+	});
+
+	it('ALLOWS a relation that declares its target — the control', () => {
+		// Without this leg a helper that refused everything would pass the two
+		// tests above and silently un-group every relation board U7 shipped.
+		expect(relationGroupingRefusal({ type: 'relation', collection: 'colors' })).toBeNull();
+	});
+
+	it('ALLOWS every ordinary field type — the second control', () => {
+		for (const type of ['select', 'multi_select', 'text', 'date', 'number', 'checkbox']) {
+			expect(relationGroupingRefusal({ type }), type).toBeNull();
+		}
+		expect(relationGroupingRefusal(null)).toBeNull();
+		expect(relationGroupingRefusal(undefined)).toBeNull();
+	});
+
+	it('has a sentence for every refusal reason', () => {
+		// The view renders this; a missing case would reach a user as `undefined`.
+		for (const reason of ['multi_valued', 'no_target'] as const) {
+			const msg = relationGroupingRefusalMessage(reason);
+			expect(msg, reason).toBeTruthy();
+			expect(msg, reason).toContain('ungrouped');
+		}
+		// The two sentences must DIFFER — one message for two reasons would make
+		// the distinction the type draws invisible to the person reading it.
+		expect(relationGroupingRefusalMessage('multi_valued')).not.toBe(
+			relationGroupingRefusalMessage('no_target')
+		);
 	});
 });
