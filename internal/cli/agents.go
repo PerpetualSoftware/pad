@@ -82,6 +82,68 @@ var SupportedTools = []AgentTool{
 	},
 }
 
+// agentsSkillBody is the eager dispatcher installed for tools that share the
+// .agents skill format. The full, canonical guide stays embedded in Pad and is
+// available by topic through `pad agent guide`; repeating it here would charge
+// Cursor and Codex for reference material on every skill load.
+const agentsSkillBody = `# Pad — Talk to Your Project
+
+Use Pad when the user discusses project work: issues, tasks, plans, ideas,
+progress, dependencies, conventions, roles, standups, or retrospectives.
+
+## Start every invocation
+
+Run ` + "`pad bootstrap --format json`" + ` before acting. It returns the workspace,
+user, collections and schemas, always-on conventions, convention index, roles,
+playbooks, dashboard, and recent activity in one call.
+
+- If ` + "`pad`" + ` is missing, ask the user to install it or add it to PATH.
+- If bootstrap fails, run ` + "`pad agent guide context-loading`" + ` and follow that
+  section. Never initialize authentication blindly.
+- Follow every body in ` + "`conventions`" + `. Before meaningful work, inspect
+  ` + "`convention_index`" + ` and load bodies for the matching trigger.
+- If ` + "`needs_onboarding`" + ` is true, offer setup and wait for consent.
+- If roles exist and none was chosen in this conversation, ask once; do not block
+  if the user declines.
+
+## Act safely
+
+- Use issue IDs such as ` + "`TASK-5`" + `, never slugs.
+- Read an item before updating it. Send only changed fields and include a comment
+  with status changes.
+- Read collection schemas instead of guessing field names or terminal statuses.
+- Confirm each mutation from the returned object before saying it succeeded.
+- Use active playbooks when intent or an invocation slug matches; never run draft
+  or deprecated playbooks unless the user explicitly asks.
+- Prefer summary reads and bounded lists. Fetch full bodies only when needed.
+
+## Common commands
+
+` + "```bash" + `
+pad project dashboard --format json
+pad item show TASK-5 --format json
+pad item list [collection] --format json
+pad item create <collection> "Title" [flags]
+pad item update TASK-5 [flags]
+pad item comment TASK-5 -m "Message"
+pad playbook list --format json
+pad playbook show <slug> --format markdown
+` + "```" + `
+
+Use ` + "`pad <group> <command> --help`" + ` for exact flags.
+
+## Load details only when needed
+
+` + "```bash" + `
+pad agent guide                         # list available topics
+pad agent guide items                   # item commands and contracts
+pad agent guide before-performing-work  # convention routing
+pad agent guide role-awareness          # role behavior
+pad agent guide multi-step-workflows    # planning, ideation, retro, onboarding
+pad agent guide all                     # explicit full reference
+` + "```" + `
+`
+
 // ResolveTool finds an AgentTool by name or alias. Returns nil if not found.
 func ResolveTool(nameOrAlias string) *AgentTool {
 	lower := strings.ToLower(nameOrAlias)
@@ -206,15 +268,15 @@ func FormatForTool(tool AgentTool, embeddedContent []byte) []byte {
 		return embeddedContent
 
 	case "agents":
-		// Codex/Cursor/Windsurf/OpenCode use name + description frontmatter
-		body := StripFrontmatter(embeddedContent)
+		// Codex/Cursor/Windsurf/OpenCode use a compact eager dispatcher.
+		// Detailed guidance remains available through `pad agent guide`.
 		fm := `---
 name: pad
 description: "Talk to your project. Natural-language project management — create items, check status, create plans, brainstorm ideas, and more."
 ---
 
 `
-		return append([]byte(fm), body...)
+		return []byte(fm + agentsSkillBody)
 
 	case "copilot":
 		// GitHub Copilot uses applyTo frontmatter
