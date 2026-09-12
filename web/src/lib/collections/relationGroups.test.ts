@@ -317,12 +317,58 @@ describe('relationFilterMatches (codex round 2)', () => {
 		expect(relationFilterMatches('', 'red')).toBe(false);
 	});
 
-	it('refuses a non-string, including the multi_relation ARRAY shape', () => {
-		// U4 stores an array, and no amount of trimming makes `===` match one.
-		// Matching an array is that unit's to define; guessing here would fix
-		// half of it in a way U4 would have to undo.
-		expect(relationFilterMatches(['red'], 'red')).toBe(false);
+	it('refuses a value that is neither a string nor an array', () => {
+		// REWRITTEN IN U4. This test used to assert that an ARRAY matched
+		// NOTHING, and said why: U7 deferred array matching to U4 rather than
+		// guess at it. U4 has now defined it as MEMBERSHIP, so that assertion
+		// states the opposite of the shipped behaviour and is replaced rather
+		// than deleted — the deferral was real, and the record of it belongs in
+		// the U4 block below, which is where the array legs now live.
 		expect(relationFilterMatches(null, 'red')).toBe(false);
+		expect(relationFilterMatches(undefined, 'red')).toBe(false);
 		expect(relationFilterMatches(42, 'red')).toBe(false);
+		expect(relationFilterMatches({ id: 'red' }, 'red')).toBe(false);
+	});
+});
+
+describe('relationFilterMatches and multi_relation arrays (U4)', () => {
+	const RED = 'id-red';
+
+	it('matches when the ARRAY CONTAINS the target, at any position', () => {
+		// Membership, not position: equality against the whole array would match
+		// nothing ever, which is the filter that silently returns empty.
+		expect(relationFilterMatches([RED], RED)).toBe(true);
+		expect(relationFilterMatches(['id-blue', RED], RED)).toBe(true);
+		expect(relationFilterMatches([RED, 'id-blue'], RED)).toBe(true);
+	});
+
+	it('does NOT match when the array lacks the target', () => {
+		expect(relationFilterMatches(['id-blue'], RED)).toBe(false);
+		expect(relationFilterMatches([], RED)).toBe(false);
+	});
+
+	it('trims each element, as the scalar case trims its one value', () => {
+		// Legacy rows predate the write-side refusal of padded values, and the
+		// reason trimming exists at all is that the board lane and the filter
+		// must give one answer about one value.
+		expect(relationFilterMatches([' id-blue ', '  ' + RED], RED)).toBe(true);
+		expect(relationFilterMatches([RED], '  ' + RED + ' ')).toBe(true);
+	});
+
+	it('ignores non-string elements rather than throwing', () => {
+		// A corrupt blob must not take out the whole view. The element is not a
+		// reference, so it cannot match; the others still can.
+		expect(relationFilterMatches([7, RED], RED)).toBe(true);
+		expect(relationFilterMatches([{ id: RED }], RED)).toBe(false);
+	});
+
+	it('STILL handles the scalar case — the control', () => {
+		// Without this leg, a change that only ever looked at arrays would pass
+		// everything above and break every existing relation filter.
+		expect(relationFilterMatches(RED, RED)).toBe(true);
+		expect(relationFilterMatches(' ' + RED + ' ', RED)).toBe(true);
+		expect(relationFilterMatches('id-blue', RED)).toBe(false);
+		expect(relationFilterMatches(null, RED)).toBe(false);
+		expect(relationFilterMatches(undefined, RED)).toBe(false);
 	});
 });

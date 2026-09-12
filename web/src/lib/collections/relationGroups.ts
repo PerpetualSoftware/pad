@@ -254,12 +254,24 @@ export function relationLaneAcceptsDrop(lane: Pick<RelationLane, 'state'>): bool
  * path has refused padded values since TASK-2878, so there is nothing new to
  * clean up and nothing to migrate — only old rows to read correctly.
  *
- * Scalar only, deliberately. `multi_relation` (U4) stores an ARRAY and no
- * amount of trimming makes `===` match one; matching an array is that unit's
- * to define, and guessing here would fix half of it in a way U4 would have to
- * undo.
+ * ARRAY VALUES ARE MEMBERSHIP (U4, which this comment previously deferred to).
+ * A `multi_relation` stores an ordered list, and the only reading of "filter by
+ * this target" that is true of a list is "the list CONTAINS it" — equality
+ * against the whole array would match nothing, ever, which is why U7 refused to
+ * guess rather than shipping a filter that silently returned empty.
+ *
+ * Membership, not position: an item whose second reference is Red matches a
+ * filter for Red. Order is part of the stored VALUE (it round-trips, and the
+ * reverse index keeps it in `ordinal`) but it is not part of this question.
+ *
+ * Elements are trimmed individually, on the same reasoning as the scalar case:
+ * there is nothing to migrate, only old rows to read correctly.
  */
 export function relationFilterMatches(stored: unknown, filterValue: string): boolean {
+	const wanted = filterValue.trim();
+	if (Array.isArray(stored)) {
+		return stored.some((e) => typeof e === 'string' && e.trim() === wanted);
+	}
 	if (typeof stored !== 'string') return false;
-	return stored.trim() === filterValue.trim();
+	return stored.trim() === wanted;
 }
