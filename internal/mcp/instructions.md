@@ -45,6 +45,8 @@ Read these directly when you need workspace state:
 
 Resources support host-side prefetch — if the host can fetch them once at session start, you don't pay per turn.
 
+Load the bootstrap resource once per workspace and reuse its collections, conventions, roles, and playbook metadata. Refresh it after switching workspaces, after changing those configuration surfaces, when Pad reports stale schema/context, or when the user asks. For changing work state, read the affected item or use a targeted project tool instead of fetching the whole bootstrap again.
+
 ## Workspace context
 
 Every action that operates within a workspace accepts an optional `workspace` parameter. Resolution order:

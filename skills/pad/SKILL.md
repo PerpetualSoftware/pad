@@ -21,11 +21,13 @@ There is **one entry point**: the user talks to you about their project, and you
 
 ## Context Loading
 
-On every invocation of this skill — however the user's surface reached it — start by loading workspace context with a single call:
+Before the first Pad action in a conversation, load workspace context with a single call:
 
 ```bash
 pad bootstrap --format json   # one round-trip: workspace + user + collections + always-on conventions + roles + playbook metadata + dashboard + recent activity
 ```
+
+Reuse that bootstrap context for later Pad turns in the same workspace. Refresh it only after switching workspaces, after changing collections/conventions/roles/playbooks, when Pad reports stale schema or context, or when the user explicitly asks for a refresh. Ordinary item changes make the snapshot's dashboard stale, but do not require another full bootstrap — read the affected item or run the targeted project query instead. Do not rerun bootstrap merely because the skill was invoked again.
 
 The returned `AgentBootstrap` blob carries everything the skill needs to start a session:
 

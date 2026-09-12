@@ -190,6 +190,14 @@ func TestServer_GracefulShutdownOnContextCancel(t *testing.T) {
 // the wiring stays in one place.
 func runHandshake(t *testing.T, srv *Server) (*mcp.InitializeResult, func()) {
 	t.Helper()
+	_, res, cleanup := runClientSession(t, srv)
+	return res, cleanup
+}
+
+// runClientSession returns the initialized client as well as the handshake
+// result so tests can inspect later protocol responses on the same session.
+func runClientSession(t *testing.T, srv *Server) (*client.Client, *mcp.InitializeResult, func()) {
+	t.Helper()
 
 	serverIn, clientOut := io.Pipe()
 	clientIn, serverOut := io.Pipe()
@@ -238,5 +246,5 @@ func runHandshake(t *testing.T, srv *Server) (*mcp.InitializeResult, func()) {
 		_ = serverOut.Close()
 		wg.Wait()
 	}
-	return res, cleanup
+	return c, res, cleanup
 }
