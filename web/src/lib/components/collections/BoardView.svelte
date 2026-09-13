@@ -699,7 +699,16 @@
 					     UNCATEGORIZED lane hides "add" (creating an explicitly
 					     uncategorized item makes no sense) but keeps the bulk
 					     ⋯ menu — "move/tag/assign all" is useful for triage. -->
-					{#if onCreateInColumn && !isUncategorized && !isRelationGroup}
+					<!--
+						AND NOT WHEN GROUPING IS REFUSED (codex round 7). A
+						multi_relation that retained `options` produces NAMED
+						lanes, so neither `isUncategorized` nor `isRelationGroup`
+						withheld this: creating in one sent the lane string as
+						the relation value, which the write door refuses. Same
+						class as the drag and the status chip — every affordance
+						that writes the GROUP VALUE has to ask the refusal.
+					-->
+					{#if onCreateInColumn && !isUncategorized && !isRelationGroup && !groupingRefusal}
 						<button
 							class="lane-btn lane-add-btn"
 							title="Add item to {formatLabel(colValue).toLowerCase()}"
@@ -732,7 +741,7 @@
 									laneSort={laneSortOverrides[colValue]}
 									onSetLaneSort={(m) => setLaneSort(colValue, m)}
 									onClose={closeMenu}
-									onAddItem={onCreateInColumn && !isUncategorized && !isRelationGroup
+									onAddItem={onCreateInColumn && !isUncategorized && !isRelationGroup && !groupingRefusal
 										? () => openDraft(colValue)
 										: undefined}
 									onArchive={onArchiveColumn ? () => onArchiveColumn?.(colItems) : undefined}

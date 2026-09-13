@@ -150,3 +150,46 @@ func TestCoerceFields_ScalarRelationStillTakesABareString(t *testing.T) {
 		t.Errorf("owner = %#v, want the bare string", out["owner"])
 	}
 }
+
+// The NIL spelling (codex round 7). On a full write the traversal treats a
+// present-but-nil key as absent for required-ness and defaults, but does not
+// REMOVE it — so `{"members": null}` was stored: a third representation of "no
+// targets", which is exactly what the one-spelling rule exists to prevent.
+func TestNilMultiRelation_FullWriteBecomesAnAbsentKey(t *testing.T) {
+	fields := map[string]any{"members": nil}
+	if err := ValidateFields(fields, multiSchema(false)); err != nil {
+		t.Fatalf("nil on an optional field is not an error: %v", err)
+	}
+	if _, present := fields["members"]; present {
+		t.Errorf("members survived as %#v; absent, [] and null must not be three ways to say the same thing", fields["members"])
+	}
+}
+
+func TestNilMultiRelation_PartialWriteKeepsTheDeletionSentinel(t *testing.T) {
+	// nil is the spelling a PATCH normalises TO — removing it would turn a
+	// clear into a no-op, which is the same trap the empty-list rule has.
+	patch := map[string]any{"members": nil}
+	if err := ValidatePartialFields(patch, multiSchema(false)); err != nil {
+		t.Fatalf("clearing via nil is allowed: %v", err)
+	}
+	val, present := patch["members"]
+	if !present || val != nil {
+		t.Errorf("patch holds %#v (present=%v), want the nil sentinel kept", val, present)
+	}
+}
+
+func TestNilMultiRelation_ControlANilSCALARRelationIsUntouched(t *testing.T) {
+	// Scoped to the list type. A nil on any other field is pre-existing
+	// behaviour with its own consumers, and widening the rule to reach it would
+	// be this fix leaking.
+	schema := models.CollectionSchema{Fields: []models.FieldDef{
+		{Key: "owner", Type: "relation", Collection: "people"},
+	}}
+	fields := map[string]any{"owner": nil}
+	if err := ValidateFields(fields, schema); err != nil {
+		t.Fatalf("nil on an optional scalar relation is not an error: %v", err)
+	}
+	if _, present := fields["owner"]; !present {
+		t.Error("a nil scalar relation was deleted; the one-spelling rule belongs to multi_relation")
+	}
+}

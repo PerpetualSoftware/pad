@@ -652,6 +652,73 @@ describe('a REFUSED grouping must not write a group value (U4, codex round 1 P5)
 		expect(screen.container.querySelector('[title="Click to cycle status"]')).toBeNull();
 	});
 
+	it('offers no lane create control, which would send the lane string as the value', () => {
+		// The third affordance in the class, after the drag and the status chip
+		// (codex round 7). A multi_relation that RETAINED options produces NAMED
+		// lanes, so neither `isUncategorized` nor `isRelationGroup` withheld the
+		// lane "+": creating there sent the lane string as the relation value.
+		// Every affordance that writes the GROUP VALUE has to ask the refusal.
+		const coll = collection();
+		coll.schema = JSON.stringify({
+			fields: [
+				{
+					key: 'car_color',
+					label: 'Colour',
+					type: 'multi_relation',
+					collection: 'colors',
+					options: ['old-a', 'old-b'],
+				},
+			],
+		});
+		const screen = render(BoardView, {
+			props: {
+				items: [item('car-1', 'id-red')],
+				collection: coll,
+				wsSlug: 'ws',
+				groupField: 'car_color',
+				onStatusChange: vi.fn(),
+				onCreateInColumn: vi.fn(),
+			} as never,
+		});
+
+		// PRECONDITIONS: refused, and the named lanes really are rendered — so
+		// "no + button" is not "no lanes".
+		expect(screen.container.textContent).toContain('more than one group');
+		expect(screen.container.querySelectorAll('.kanban-column').length).toBeGreaterThan(1);
+		const plus = [...screen.container.querySelectorAll('.kanban-column button')].filter(
+			(b) => (b.textContent ?? '').trim() === '+',
+		);
+		expect(plus).toHaveLength(0);
+	});
+
+	it('CONTROL: an ordinary board still offers the lane create control', () => {
+		// Withholding it everywhere would remove a working affordance from every
+		// board on the instance.
+		const coll = collection();
+		coll.schema = JSON.stringify({
+			fields: [{ key: 'status', label: 'Status', type: 'select', options: ['open', 'done'] }],
+		});
+		const withStatus = (id: string) =>
+			({
+				...item(id),
+				fields: JSON.stringify({ status: 'open' }),
+			}) as Item;
+		const screen = render(BoardView, {
+			props: {
+				items: [withStatus('car-1')],
+				collection: coll,
+				wsSlug: 'ws',
+				groupField: 'status',
+				onStatusChange: vi.fn(),
+				onCreateInColumn: vi.fn(),
+			} as never,
+		});
+		const plus = [...screen.container.querySelectorAll('.kanban-column button')].filter(
+			(b) => (b.textContent ?? '').trim() === '+',
+		);
+		expect(plus.length).toBeGreaterThan(0);
+	});
+
 	it('gates the group write on groupingRefusal, not on the value comparison alone', () => {
 		// A SOURCE guard, for the same reason its drag sibling above is one:
 		// driving svelte-dnd-action's finalize through jsdom costs more setup

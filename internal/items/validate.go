@@ -201,7 +201,24 @@ func normalizeEmptyRelationLists(fields map[string]any, schema models.Collection
 			continue
 		}
 		val, exists := fields[def.Key]
-		if !exists || !IsEmptyRelationList(def, val) {
+		if !exists {
+			continue
+		}
+		// NIL IS THE OTHER SPELLING (codex round 7). On a FULL write the
+		// traversal below treats a present-but-nil key as absent for the
+		// purposes of required-ness and defaults — but it does not REMOVE it,
+		// so `{"members": null}` was stored: a third representation of "no
+		// targets" beside the absent key and the empty list, which is the exact
+		// thing this rule exists to prevent. On a PARTIAL write nil already
+		// means "delete this key" and is the spelling being normalised TO, so
+		// it is left alone.
+		if val == nil {
+			if !partial && def.IsMultiRelation() {
+				delete(fields, def.Key)
+			}
+			continue
+		}
+		if !IsEmptyRelationList(def, val) {
 			continue
 		}
 		if partial {

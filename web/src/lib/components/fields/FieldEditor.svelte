@@ -109,6 +109,20 @@ handlers — onchange is never called.
 	let relationValues = $derived.by((): string[] => {
 		if (!isRelation) return [];
 		if (isMultiRelation) {
+			// THE LAST LIST WE SENT WINS OVER THE PROP WHILE A WRITE IS IN
+			// FLIGHT (codex round 7). `value` only catches up after the server
+			// round trip, so two quick edits both derived from it: remove A then
+			// B from [A,B,C] sent [B,C] and then [A,C], and the second write
+			// puts A back. Every edit below is a WHOLE-LIST write computed from
+			// the current list, which makes a stale base a lost update rather
+			// than a harmless recompute — the scalar path has no equivalent
+			// exposure because its writes are replacements, not edits.
+			//
+			// Cleared as soon as the prop AGREES with what we sent (below), so a
+			// change arriving from anywhere else — SSE, another tab, the parent's
+			// 409 refetch-and-retry — takes over the moment it lands. This holds
+			// a value forward; it does not own it.
+			if (pendingRelation && pendingRelation.identity === relationIdentity) return pendingRelation.list;
 			if (!Array.isArray(value)) return [];
 			return value
 				.map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
@@ -116,6 +130,59 @@ handlers — onchange is never called.
 		}
 		const raw = typeof value === 'string' ? value.trim() : '';
 		return raw ? [raw] : [];
+	});
+
+	/**
+	 * What this component is resolving against: the workspace and the field's
+	 * declared target. A held list belongs to ONE of these and to no other.
+	 */
+	let relationIdentity = $derived(`${wsSlug ?? ''}\u0000${field.key}\u0000${field.collection ?? ''}`);
+
+	/**
+	 * The list this component last SENT, held until `value` reflects it, STAMPED
+	 * with the identity it was sent for.
+	 *
+	 * The stamp is the fence, and it is structural on purpose. My first version
+	 * cleared the hold from an `$effect` that read `wsSlug` and `field.key`
+	 * directly — which re-runs on every prop assignment, equal or not, so an
+	 * ordinary parent re-render mid-write released the hold and the stale prop
+	 * came back as the base. The fix worked only in a test whose two clicks had
+	 * nothing in between. Comparing a stamp asks the question the fence is for
+	 * ("is this still the same item?") instead of a question that happens to
+	 * correlate with it ("did anything re-render?").
+	 *
+	 * `$state` rather than a plain `let` (CONVE-1688's split): `relationValues`
+	 * reads it, so it belongs in the effect graph.
+	 */
+	let pendingRelation = $state<{ identity: string; list: string[] } | null>(null);
+
+	/**
+	 * Send a whole-list write and remember it as the base for the next edit.
+	 *
+	 * ONE function, because every list mutation is "compute the new list, send
+	 * it" and a second copy is how one of them ends up basing itself on the
+	 * prop again.
+	 */
+	function writeRelationList(next: string[]) {
+		pendingRelation = { identity: relationIdentity, list: next };
+		onchange(next);
+	}
+
+	// Release the hold as soon as the prop agrees. Comparing CONTENT, not array
+	// identity: the value comes back through JSON, so it is never the same array
+	// we sent. A prop that disagrees is still stale — keep holding. A change
+	// arriving from ELSEWHERE while we hold is the case this cannot distinguish,
+	// and it resolves itself: the next agreement releases, and until then the
+	// user is editing the list they last acted on, which is the one on screen.
+	$effect(() => {
+		const pending = pendingRelation;
+		if (!pending) return;
+		const incoming = Array.isArray(value)
+			? value.map((e) => (typeof e === 'string' ? e.trim() : '')).filter((e) => e !== '')
+			: [];
+		if (incoming.length === pending.list.length && incoming.every((e, i) => e === pending.list[i])) {
+			pendingRelation = null;
+		}
 	});
 
 	/**
@@ -236,7 +303,7 @@ handlers — onchange is never called.
 			onchange(id);
 			return;
 		}
-		onchange([...relationValues, id]);
+		writeRelationList([...relationValues, id]);
 	}
 
 	/**
@@ -252,7 +319,7 @@ handlers — onchange is never called.
 	 */
 	function removeRelationAt(index: number) {
 		relationWrite++;
-		onchange(relationValues.filter((_, i) => i !== index));
+		writeRelationList(relationValues.filter((_, i) => i !== index));
 	}
 
 	// Backing out is a decision, so it supersedes an in-flight create exactly as

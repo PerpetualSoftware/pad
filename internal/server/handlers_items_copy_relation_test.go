@@ -1455,6 +1455,22 @@ func TestCopyPreflight_AnEmptyMultiRelationOverrideIsNotReportedAsYourValue(t *t
 		t.Fatalf("UpdateCollection(collB): %v", err)
 	}
 
+	// THE STRING SPELLING TOO (codex round 7): a `"[]"` override is a string
+	// until `CoerceFields` runs, so a check placed in the override loop — where
+	// round 6 put it — cannot see it. The sweep now runs after coercion.
+	for _, override := range []any{[]any{}, "[]"} {
+		body := f.baseBody()
+		body["field_overrides"] = map[string]any{"owner_ref": override}
+		pre := f.ok(body)
+		row := carriedRowFor(pre, "owner_ref")
+		if row == nil {
+			t.Fatalf("override %#v: no carried row for owner_ref: %+v", override, pre.Fields)
+		}
+		if got := row.From; got == "override" {
+			t.Errorf("override %#v: from = %q; the caller sent an EMPTY list, so what the preflight describes is the destination's default", override, got)
+		}
+	}
+
 	body := f.baseBody()
 	body["field_overrides"] = map[string]any{"owner_ref": []any{}}
 	pre := f.ok(body)
@@ -1507,4 +1523,35 @@ func carriedRowFor(pre ItemCopyPreflight, key string) *ItemCopyPreflightCarried 
 		}
 	}
 	return nil
+}
+
+// A CARRIED empty list must not leave the preflight calling the destination
+// default "migrated" (PLAN-2857 U4, codex round 7).
+//
+// Same mechanism as the override case and a different origin, which is why the
+// fix is one sweep over the coerced map rather than a branch in the override
+// loop: that loop never sees a carried value at all.
+func TestCopyPreflight_ACarriedEmptyMultiRelationIsNotReportedAsMigrated(t *testing.T) {
+	f := newCopyRelationFixtureWith(t, noDestDefault, nil, true)
+
+	schema := fmt.Sprintf(`{"fields":[
+		{"key":"status","label":"Status","type":"select","options":["open","done"],"required":true},
+		{"key":"owner_ref","label":"Owner","type":"multi_relation","collection":%q,"default":[%q]}
+	]}`, f.targetsB.Slug, f.targetB.ID)
+	if _, err := f.srv.store.UpdateCollection(f.collB.ID, models.CollectionUpdate{Schema: &schema}); err != nil {
+		t.Fatalf("UpdateCollection(collB): %v", err)
+	}
+	// The SOURCE item carries an empty list for that key.
+	sourceFields := `{"status":"open","owner_ref":[]}`
+	if _, err := f.srv.store.UpdateItem(f.source.ID, models.ItemUpdate{Fields: &sourceFields}); err != nil {
+		t.Fatalf("UpdateItem(source): %v", err)
+	}
+
+	row := carriedRowFor(f.ok(f.baseBody()), "owner_ref")
+	if row == nil {
+		t.Fatalf("no carried row for owner_ref")
+	}
+	if got := row.From; got == "migrated" {
+		t.Errorf("from = %q; the source carried an EMPTY list, which normalisation removes — what survives is the destination default", got)
+	}
 }

@@ -760,19 +760,14 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	overridden := make(map[string]bool, len(input.FieldOverrides))
 	for k, v := range input.FieldOverrides {
 		overridden[k] = true
-		if v == nil || items.IsEmptyRelationList(targetDefs[k], v) {
+		if v == nil {
 			// An explicit null means "leave this unset" — drop it so the
 			// validator sees a genuinely absent key (and re-reports it as
 			// needs_value if the destination requires it).
 			//
-			// An EMPTY `multi_relation` list is the same statement in the other
-			// spelling (U4): `items.normalizeEmptyRelationLists` is about to
-			// remove it, and validation then injects the destination default in
-			// its place. Leaving `origin[k] = "override"` made the preflight
-			// label that default "your value" — a value the caller never sent,
-			// attributed to them, on the one surface whose entire job is to
-			// predict what the copy will do (codex round 6). Same branch,
-			// because the two spellings have the same consequence here.
+			// The EMPTY-LIST spelling is handled after coercion instead — see
+			// `dropEmptyRelationOrigins` below. It cannot be decided here,
+			// because `"[]"` is a string until `CoerceFields` runs.
 			delete(final, k)
 			delete(origin, k)
 			continue
@@ -788,6 +783,22 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	// preflight exists to PREDICT what the copy does, so a coercion on one
 	// side only would make it report a field as failing that the copy accepts.
 	final = items.CoerceFields(final, items.SchemaForMigratedFields(targetSchema))
+	// EVERY SPELLING OF "NO TARGETS", in one place and AFTER coercion (codex
+	// round 7). An empty `multi_relation` list is about to be removed by
+	// `normalizeEmptyRelationLists`, and validation then injects the
+	// destination default in its place — so whatever `origin` says about the
+	// removed value would be said about the default instead. On the one surface
+	// whose job is to predict what the copy will do, that attributes a value to
+	// someone who never sent it.
+	//
+	// HERE rather than in the override loop above, which is where round 6 put
+	// it and why round 7 found three more ways in. That loop sees the caller's
+	// RAW bytes: `"[]"` is still a string there and becomes an empty list only
+	// once `CoerceFields` has run. And it sees only OVERRIDES, so a carried
+	// empty list kept `from: "migrated"` by the same mechanism. One sweep over
+	// the coerced map covers the override, the carried value and both string
+	// spellings, because by this line they are all the same value.
+	dropEmptyRelationOrigins(final, origin, items.SchemaForMigratedFields(targetSchema))
 	// Relation referents (TASK-2878), through the SAME store function the
 	// mutating copy calls — which is the whole reason that function is in
 	// `store` rather than beside either caller. This endpoint and
@@ -1613,4 +1624,22 @@ func reservedFieldPatchMessage(keys []string, currentFields string) string {
 			" repairing it takes a full `fields` write, which no CLI flag exposes today.")
 	}
 	return b.String()
+}
+
+// dropEmptyRelationOrigins removes every key holding the EMPTY-LIST spelling of
+// "no targets" from both the value map and the provenance map.
+//
+// Both, and that is the point: leaving the value would keep a spelling the write
+// doors normalise away, and leaving the origin would describe the destination
+// default that replaces it as though the caller or the source item had supplied
+// it.
+func dropEmptyRelationOrigins(final map[string]any, origin map[string]string, schema models.CollectionSchema) {
+	for _, def := range schema.Fields {
+		v, exists := final[def.Key]
+		if !exists || !items.IsEmptyRelationList(def, v) {
+			continue
+		}
+		delete(final, def.Key)
+		delete(origin, def.Key)
+	}
 }

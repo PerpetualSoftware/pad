@@ -403,3 +403,120 @@ describe('multi_relation — the gate is the same gate', () => {
 		expect(buttons(/Remove|\+\s*Add/)).toHaveLength(0);
 	});
 });
+
+describe('multi_relation — two edits before the first save lands', () => {
+	const editable = { field: multi, wsSlug: 'ws', username: 'dave' } as const;
+
+	it('bases the second edit on what was SENT, not on the stale prop', async () => {
+		// codex round 7, P1, in my own W7 code. `value` only catches up after the
+		// server round trip, so two quick removes both derived from it: remove
+		// Grace then Red from [Grace,Red,Blue] sent [Red,Blue] and then
+		// [Grace,Blue] — and the parent's 409 refetch-and-retry can persist the
+		// second, putting Grace back. Every list edit is a WHOLE-LIST write, so a
+		// stale base is a lost update rather than a harmless recompute.
+		const onchange = vi.fn();
+		render(FieldEditor, { props: { ...editable, value: [GREEN.id, RED.id, BLUE.id], onchange } });
+		await tick();
+
+		const removes = buttons(/^\s*Remove\s*$/);
+		expect(removes).toHaveLength(3);
+		await fireEvent.click(removes[0]);
+		await tick();
+		// The prop has NOT been updated — that is the whole point: the parent is
+		// still waiting on the server.
+		await fireEvent.click(buttons(/^\s*Remove\s*$/)[0]);
+
+		expect(onchange).toHaveBeenCalledTimes(2);
+		expect(onchange.mock.calls[0][0]).toEqual([RED.id, BLUE.id]);
+		expect(onchange.mock.calls[1][0]).toEqual([BLUE.id]);
+	});
+
+	it('CONTROL: a single edit still reads the prop', async () => {
+		// Without this, holding a stale list forever would satisfy the leg above
+		// while ignoring every value the server ever returns.
+		const onchange = vi.fn();
+		render(FieldEditor, { props: { ...editable, value: [GREEN.id, RED.id], onchange } });
+		await tick();
+		await fireEvent.click(buttons(/^\s*Remove\s*$/)[0]);
+		expect(onchange.mock.calls[0][0]).toEqual([RED.id]);
+	});
+
+	it('lets a change from elsewhere take over once the prop agrees', async () => {
+		// The hold is released by CONTENT agreement, so an SSE update or the
+		// parent's retry is authoritative the moment it lands. A hold that
+		// outlived its own write would make this component the owner of the
+		// value, which it is not.
+		const onchange = vi.fn();
+		const { rerender } = render(FieldEditor, {
+			props: { ...editable, value: [GREEN.id, RED.id, BLUE.id], onchange },
+		});
+		await tick();
+		await fireEvent.click(buttons(/^\s*Remove\s*$/)[0]);
+		expect(onchange.mock.calls[0][0]).toEqual([RED.id, BLUE.id]);
+
+		// The server confirms that write, and then something else ADDS a row —
+		// an SSE update, another tab, the parent's 409 refetch-and-retry.
+		await rerender({ ...editable, value: [RED.id, BLUE.id], onchange });
+		await tick();
+		await rerender({ ...editable, value: [RED.id, BLUE.id, GREEN.id], onchange });
+		await tick();
+
+		// The new row has to be VISIBLE, or the hold is still in force and this
+		// leg is measuring the held list rather than the prop. My first version
+		// changed the value to a list of the same LENGTH, so a held list and the
+		// new one produced the identical answer and the never-release mutant
+		// survived.
+		expect([...document.querySelectorAll('.relation-title')].map((n) => n.textContent))
+			.toEqual(['Red', 'Blue', 'Green']);
+
+		await fireEvent.click(buttons(/^\s*Remove\s*$/)[0]);
+		expect(onchange.mock.calls[1][0]).toEqual([BLUE.id, GREEN.id]);
+	});
+
+	it('drops the held list when the component is reused for a different item', async () => {
+		// `ItemDetail` keys its fields section on the item SLUG ONLY, so
+		// switching workspaces to an item carrying the same ref reuses this
+		// instance and never destroys it — the RETARGETED hazard the inline
+		// create already fences. A held list surviving that would become the
+		// base for an edit on a different row.
+		const onchange = vi.fn();
+		const { rerender } = render(FieldEditor, {
+			props: { ...editable, value: [GREEN.id, RED.id, BLUE.id], onchange },
+		});
+		await tick();
+		await fireEvent.click(buttons(/^\s*Remove\s*$/)[0]);
+		expect(onchange.mock.calls[0][0]).toEqual([RED.id, BLUE.id]);
+
+		// Same instance, different workspace, an item whose value is its own.
+		await rerender({ field: multi, wsSlug: 'other-ws', username: 'dave', value: [BLUE.id, RED.id], onchange });
+		await tick();
+		await fireEvent.click(buttons(/^\s*Remove\s*$/)[0]);
+		expect(onchange.mock.calls[1][0]).toEqual([RED.id]);
+	});
+});
+
+describe('multi_relation — the hold survives an ordinary re-render', () => {
+	const editable = { field: multi, wsSlug: 'ws', username: 'dave' } as const;
+
+	it('keeps the sent list as the base when the parent re-renders mid-write', async () => {
+		// THE LEG THAT SAYS THE FIX WORKS OUTSIDE A TEST. The parent re-renders
+		// for all sorts of reasons while a write is in flight, and if that
+		// released the hold the stale prop would come back as the base — the
+		// original defect, reachable by a different route, and invisible to a
+		// test whose two clicks happen with nothing in between.
+		const onchange = vi.fn();
+		const { rerender } = render(FieldEditor, {
+			props: { ...editable, value: [GREEN.id, RED.id, BLUE.id], onchange },
+		});
+		await tick();
+		await fireEvent.click(buttons(/^\s*Remove\s*$/)[0]);
+		expect(onchange.mock.calls[0][0]).toEqual([RED.id, BLUE.id]);
+
+		// Same props, same stale value — the server has not answered yet.
+		await rerender({ ...editable, value: [GREEN.id, RED.id, BLUE.id], onchange });
+		await tick();
+
+		await fireEvent.click(buttons(/^\s*Remove\s*$/)[0]);
+		expect(onchange.mock.calls[1][0]).toEqual([BLUE.id]);
+	});
+});
