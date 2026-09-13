@@ -143,3 +143,72 @@ func TestFieldsPatchFromMerge(t *testing.T) {
 		})
 	}
 }
+
+// An unreadable stored blob is REFUSED, not silently discarded — and the state
+// it guards is UNREACHABLE through any door, which is why this is a unit test of
+// the arm rather than a fixture with a broken row in the database.
+//
+// Codex round 3 read the diff correctly: before this unit, the door ignored the
+// unmarshal error, so the decoded map stayed empty, the caller's changes were
+// written over the top, and the unreadable bytes were replaced with a valid
+// blob. The patch conversion turned that silent repair into a store-level
+// failure. Two things were then measured rather than assumed:
+//
+//  1. THE STATE CANNOT EXIST. Postgres stores items.fields as `jsonb`
+//     (pgmigrations/035_items_jsonb_not_null.sql), so malformed text is refused
+//     by the column type. SQLite stores it as TEXT, but the partial UNIQUE index
+//     over json_extract(fields, '$.invocation_slug') errors on a row whose
+//     fields fails json_valid — migration 056's own comment says so, and an
+//     attempt to inject one in this test failed with `SQL logic error: malformed
+//     JSON (1)`. Migration 056 also backfilled every pre-existing bad row to
+//     '{}'. So the "repair path" codex identified as lost could never fire.
+//  2. THE REPAIR WAS NOT WORTH KEEPING ANYWAY. It destroyed the unreadable
+//     bytes, which is the opposite of the room's standing answer for unreadable
+//     stored state (BUG-2627 part 3, BUG-2675's `stored_state_unreadable`): the
+//     raw bytes are the only thing a human could repair from.
+//
+// So the arm stays as a defensive refusal with an honest, retry-hostile code,
+// and this test drives it the only way it is reachable — by handing the door a
+// snapshot whose Fields do not parse. It does NOT assert anything about a row,
+// because no row can be in this state.
+func TestBulkFieldUpdate_RefusesAnUnreadableFieldsSnapshot(t *testing.T) {
+	srv := testServer(t)
+	wsSlug := createWSWithCollections(t, srv)
+	item := createTaskWithFields(t, srv, wsSlug, "Unreadable snapshot", `{"status":"open"}`)
+
+	ws, err := srv.store.GetWorkspaceBySlug(wsSlug)
+	if err != nil || ws == nil {
+		t.Fatalf("load workspace %q: %v", wsSlug, err)
+	}
+
+	stale, err := srv.store.GetItem(item.ID)
+	if err != nil || stale == nil {
+		t.Fatalf("re-read the item: %v", err)
+	}
+	const brokenBlob = `{"status":"open",`
+	// Premise: the fixture really is unreadable.
+	if json.Valid([]byte(brokenBlob)) {
+		t.Fatalf("premise failed: %q parses", brokenBlob)
+	}
+	stale.Fields = brokenBlob
+
+	req := httptest.NewRequest("POST", "/api/v1/workspaces/"+wsSlug+"/items/bulk", nil)
+	var dropped []string
+	_, opErr := srv.bulkFieldUpdate(req, ws.ID, stale, map[string]any{"status": "done"},
+		true, nil, "user", "web", "", &dropped)
+	if opErr == nil {
+		t.Fatal("expected a refusal for an unreadable fields snapshot, got success")
+	}
+	if opErr.code != storedStateUnreadableCode {
+		t.Errorf("code = %q, want %q (a caller must be able to tell this is not retryable)", opErr.code, storedStateUnreadableCode)
+	}
+
+	// Nothing was written: the real row still holds the status it held. (Compared
+	// by field rather than against a literal blob — create injects schema
+	// defaults, so the stored blob carries more than the two keys seeded above.)
+	// The pre-BUG-3049 door would have written status=done here.
+	after := decodeItemFields(t, mustGetItemFields(t, srv, item.ID))
+	if after["status"] != "open" {
+		t.Errorf("the refused write touched the row: status=%v want open", after["status"])
+	}
+}

@@ -17,6 +17,15 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
+// storedStateUnreadableCode mirrors internal/cli.StoredStateUnreadableCode
+// (BUG-2675) as a literal rather than importing it. internal/server does not
+// import internal/cli — a layering choice two other files state explicitly
+// (internal/cli/client_items_copy.go's mirror note, and itemRefOrSlug's
+// "avoids pulling internal/cli into the server package for one helper") — and
+// one error code is not worth falsifying it. internal/mcp/errors.go carries the
+// same string for the same reason.
+const storedStateUnreadableCode = "stored_state_unreadable"
+
 // maxBulkItems caps how many items a single bulk request may touch.
 // The lane-header bulk actions (TASK-1668) operate on a whole filtered
 // lane, which is realistically tens of items; the cap is a guardrail
@@ -507,7 +516,26 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 
 	fieldMap := make(map[string]any)
 	if item.Fields != "" && item.Fields != "{}" {
-		_ = json.Unmarshal([]byte(item.Fields), &fieldMap)
+		// REFUSE an unreadable stored blob rather than discard it (BUG-3049,
+		// codex round 3). This unmarshal error used to be ignored: the map
+		// stayed empty, the caller's changes were written over the top, and the
+		// unreadable bytes were GONE — a bulk status move silently destroyed
+		// whatever the row held. That is the repair path codex correctly
+		// identified as lost, and it is not one worth keeping: the room's
+		// standing answer for unreadable stored state is to refuse and say so
+		// (BUG-2627 part 3, BUG-2675's `stored_state_unreadable`), because the
+		// raw bytes are still there for a human to repair and a write that
+		// throws them away cannot be undone.
+		//
+		// Refused per ITEM, not per batch, so one broken row fails on its own
+		// and the other rows in the request still apply.
+		if err := json.Unmarshal([]byte(item.Fields), &fieldMap); err != nil {
+			return nil, &bulkOpError{
+				code: storedStateUnreadableCode,
+				message: "this item's stored fields are not valid JSON, so a field update cannot be merged onto them. " +
+					"Repair the item's fields first (pad item show, then a full `fields` write); retrying this request will fail identically.",
+			}
+		}
 	}
 	// The item's own stored values, before the caller's changes merge in. Held
 	// separately because "carried" and "supplied" get different treatment
