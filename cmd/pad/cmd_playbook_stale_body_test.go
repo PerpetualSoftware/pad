@@ -494,7 +494,17 @@ func TestPlaybookListWarnsOnlyAboutStaleSummaries(t *testing.T) {
 // a single stale row cannot tell a correct renderer from one that names every
 // ref or only the first.
 func TestSnippetRenderersWarnAboutStaleSources(t *testing.T) {
-	const staleRef, currentRef = "TASK-2", "TASK-1"
+	// THREE stale rows separated by current ones. An earlier draft had one
+	// stale row while its comment claimed interleaving — the same gap this unit
+	// had already fixed for summaries, reintroduced one test later, and a
+	// renderer reporting only the first stale source passed it (codex round 3).
+	staleRefs := []string{"TASK-2", "TASK-4"}
+	currentRefs := []string{"TASK-1", "TASK-3", "TASK-5"}
+	isStale := map[string]bool{}
+	for _, r := range staleRefs {
+		isStale[r] = true
+	}
+	allRefs := []string{"TASK-1", "TASK-2", "TASK-3", "TASK-4", "TASK-5"}
 
 	serve := func(t *testing.T, markStale bool) {
 		t.Helper()
@@ -503,7 +513,7 @@ func TestSnippetRenderersWarnAboutStaleSources(t *testing.T) {
 				"id": ref, "ref": ref, "title": title, "slug": strings.ToLower(ref),
 				"collection_name": "Tasks", "collection_icon": "✓", "content": "body",
 			}
-			if markStale && ref == staleRef {
+			if markStale && isStale[ref] {
 				m["content_state"] = models.ContentOutcomeAppliedPendingFlush
 			}
 			return m
@@ -513,19 +523,22 @@ func TestSnippetRenderersWarnAboutStaleSources(t *testing.T) {
 				"source_item_id": ref, "source_ref": ref, "source_title": title,
 				"source_collection_slug": "tasks", "snippet": "…a snippet from " + ref + "…",
 			}
-			if markStale && ref == staleRef {
+			if markStale && isStale[ref] {
 				m["content_state"] = models.ContentOutcomeAppliedPendingFlush
 			}
 			return m
 		}
 		mux := http.NewServeMux()
 		mux.HandleFunc("/api/v1/search", func(w http.ResponseWriter, r *http.Request) {
+			results := make([]map[string]any, 0, len(allRefs))
+			for _, ref := range allRefs {
+				results = append(results, map[string]any{
+					"item":    item(ref, ref),
+					"snippet": "…a snippet from " + ref + "…",
+				})
+			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"results": []map[string]any{
-					{"item": item(currentRef, "One"), "snippet": "…a snippet from " + currentRef + "…"},
-					{"item": item(staleRef, "Two"), "snippet": "…a snippet from " + staleRef + "…"},
-				},
-				"total": 2, "limit": 20, "offset": 0,
+				"results": results, "total": len(results), "limit": 20, "offset": 0,
 			})
 		})
 		mux.HandleFunc("/api/v1/workspaces/ws/items/TASK-9", func(w http.ResponseWriter, r *http.Request) {
@@ -534,9 +547,11 @@ func TestSnippetRenderersWarnAboutStaleSources(t *testing.T) {
 		// The CLI resolves the ref to an item first and builds the backlinks URL
 		// from its SLUG, so the fixture has to serve the slug path.
 		mux.HandleFunc("/api/v1/workspaces/ws/items/task-9/backlinks", func(w http.ResponseWriter, r *http.Request) {
-			_ = json.NewEncoder(w).Encode([]map[string]any{
-				backlink(currentRef, "One"), backlink(staleRef, "Two"),
-			})
+			bls := make([]map[string]any, 0, len(allRefs))
+			for _, ref := range allRefs {
+				bls = append(bls, backlink(ref, ref))
+			}
+			_ = json.NewEncoder(w).Encode(bls)
 		})
 		srv := httptest.NewServer(mux)
 		t.Cleanup(srv.Close)
@@ -565,11 +580,11 @@ func TestSnippetRenderersWarnAboutStaleSources(t *testing.T) {
 	}{
 		"item search": {
 			mk:      func() (*cobra.Command, []string) { return searchCmd(), []string{"snippet"} },
-			present: []string{"a snippet from " + currentRef, "a snippet from " + staleRef},
+			present: []string{"a snippet from TASK-1", "a snippet from TASK-4"},
 		},
 		"item backlinks": {
 			mk:      func() (*cobra.Command, []string) { return backlinksCmd(), []string{"TASK-9"} },
-			present: []string{currentRef + " One", staleRef + " Two"},
+			present: []string{"TASK-1 TASK-1", "TASK-4 TASK-4"},
 		},
 	}
 
@@ -613,11 +628,17 @@ func TestSnippetRenderersWarnAboutStaleSources(t *testing.T) {
 			if lines != 1 {
 				t.Errorf("got %d warning lines, want exactly 1:\n%s", lines, stderr)
 			}
-			if !strings.Contains(stderr, staleRef) {
-				t.Errorf("the warning does not name the stale source %s:\n%s", staleRef, stderr)
+			// The COMPLETE stale set — a renderer naming only the first passes
+			// any single-ref assertion.
+			for _, ref := range staleRefs {
+				if !strings.Contains(stderr, ref) {
+					t.Errorf("the warning omits stale source %s:\n%s", ref, stderr)
+				}
 			}
-			if strings.Contains(stderr, currentRef) {
-				t.Errorf("the warning names %s, whose body is current:\n%s", currentRef, stderr)
+			for _, ref := range currentRefs {
+				if strings.Contains(stderr, ref) {
+					t.Errorf("the warning names %s, whose body is current:\n%s", ref, stderr)
+				}
 			}
 			if strings.Contains(stdout, "behind its live collaborative") {
 				t.Errorf("the warning landed on STDOUT, corrupting a piped listing:\n%s", stdout)

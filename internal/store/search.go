@@ -197,6 +197,17 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 				r.Item.UpdatedAt = parseTime(updatedAt)
 				hydrateItemComputedMetadata(&r.Item)
 				r.Item.Content = ""
+				// ...and with it the staleness marker (BUG-3033). This result
+				// carries NO body-derived text at all: the snippet below is the
+				// TITLE, which the collaborative document does not hold. Keeping
+				// the body's marker here would make a renderer describe a title
+				// as derived from a stale body — which it did, until codex round
+				// 3 reproduced it through the store and the CLI.
+				//
+				// The FTS path further down does the opposite and deliberately:
+				// there the snippet IS cut from the body, so the marker is true
+				// and load-bearing even though Content itself is cleared.
+				r.Item.ContentState = ""
 				r.Snippet = r.Item.Title
 				r.Rank = -1000 // Best possible rank so it sorts first
 				results = append(results, r)
@@ -308,6 +319,17 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 				r.Item.UpdatedAt = parseTime(updatedAt)
 				hydrateItemComputedMetadata(&r.Item)
 				r.Item.Content = ""
+				// ...and with it the staleness marker (BUG-3033). This result
+				// carries NO body-derived text at all: the snippet below is the
+				// TITLE, which the collaborative document does not hold. Keeping
+				// the body's marker here would make a renderer describe a title
+				// as derived from a stale body — which it did, until codex round
+				// 3 reproduced it through the store and the CLI.
+				//
+				// The FTS path further down does the opposite and deliberately:
+				// there the snippet IS cut from the body, so the marker is true
+				// and load-bearing even though Content itself is cleared.
+				r.Item.ContentState = ""
 				r.Snippet = r.Item.Title
 				r.Rank = -1000 // Best possible rank so it sorts first
 				results = append(results, r)
@@ -595,6 +617,10 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 		r.Item.UpdatedAt = parseTime(updatedAt)
 		hydrateItemComputedMetadata(&r.Item)
 		r.Item.Content = ""
+		// ContentState deliberately SURVIVES here, unlike on the two direct-ref
+		// paths above (BUG-3033). The body is dropped to keep the payload small,
+		// but r.Snippet on this path is cut FROM that body by FTSSnippet, so the
+		// marker still qualifies text this result actually serves.
 		results = append(results, r)
 	}
 	if err := rows.Err(); err != nil {
