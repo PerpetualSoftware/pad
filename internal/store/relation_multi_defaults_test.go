@@ -645,3 +645,43 @@ func TestMigrateMultiRelation_ControlAWellFormedCarriedListSurvives(t *testing.T
 		t.Errorf("color = %#v, want the carried reference kept", fields["color"])
 	}
 }
+
+// A default's shape must not depend on which door's coercion has run (codex
+// round 8). `CoerceFields` runs BEFORE `ValidateFields` injects a default, so an
+// injected one is uncoerced at the create door and coerced at the migrate door —
+// and a default written as the JSON TEXT `["<id>"]` was stored by one path and
+// dropped as invalid_shape by the other.
+func TestLateMultiRelationDefault_AJSONStringDefaultIsJudgedOnItsCoercedForm(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ws, _, _, red := relationFixture(t, s)
+	raw := `["` + red.ID + `"]`
+	schema := multiDefaultSchema(raw, false)
+
+	fields := map[string]any{"color": raw}
+	_, dropped, err := s.MigrateRelationReferents(nil, ws.ID, schema, fields, nil, nil, RelationCarryMode(0))
+	if err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if len(dropped) != 0 {
+		t.Fatalf("dropped = %+v; the same default is ACCEPTED by the path that coerces first, and a shape answer must not be chosen by the route", dropped)
+	}
+}
+
+func TestLateMultiRelationDefault_ControlAJSONStringDefaultThatIsNotAListIsStillDropped(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ws, _, _, _ := relationFixture(t, s)
+	// Coercing before judging must not become accepting everything: text that
+	// parses to a NUMBER is still not a list.
+	schema := multiDefaultSchema("42", false)
+
+	fields := map[string]any{"color": "42"}
+	_, dropped, err := s.MigrateRelationReferents(nil, ws.ID, schema, fields, nil, nil, RelationCarryMode(0))
+	if err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if len(dropped) != 1 || dropped[0].Reason != RelationTargetInvalidShape {
+		t.Errorf("dropped = %+v, want one invalid_shape", dropped)
+	}
+}

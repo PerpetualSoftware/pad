@@ -1636,7 +1636,16 @@ func reservedFieldPatchMessage(keys []string, currentFields string) string {
 func dropEmptyRelationOrigins(final map[string]any, origin map[string]string, schema models.CollectionSchema) {
 	for _, def := range schema.Fields {
 		v, exists := final[def.Key]
-		if !exists || !items.IsEmptyRelationList(def, v) {
+		if !exists {
+			continue
+		}
+		// NIL COUNTS TOO (codex round 8). `CoerceFields` JSON-parses a
+		// multi_relation string, so the override `"null"` arrives here as a nil
+		// — a spelling of "no targets" that `IsEmptyRelationList` deliberately
+		// does not claim, since nil is the PATCH path's deletion sentinel and
+		// that rule belongs to the validators. Here the question is only "will
+		// this value survive to be described", and a nil will not.
+		if !(v == nil && def.IsMultiRelation()) && !items.IsEmptyRelationList(def, v) {
 			continue
 		}
 		delete(final, def.Key)

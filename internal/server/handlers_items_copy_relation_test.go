@@ -1458,7 +1458,9 @@ func TestCopyPreflight_AnEmptyMultiRelationOverrideIsNotReportedAsYourValue(t *t
 	// THE STRING SPELLING TOO (codex round 7): a `"[]"` override is a string
 	// until `CoerceFields` runs, so a check placed in the override loop — where
 	// round 6 put it — cannot see it. The sweep now runs after coercion.
-	for _, override := range []any{[]any{}, "[]"} {
+	// The NIL spelling too (codex round 8): `CoerceFields` JSON-parses a
+	// multi_relation string, so `"null"` arrives at the sweep as a nil.
+	for _, override := range []any{[]any{}, "[]", "null"} {
 		body := f.baseBody()
 		body["field_overrides"] = map[string]any{"owner_ref": override}
 		pre := f.ok(body)
@@ -1553,5 +1555,36 @@ func TestCopyPreflight_ACarriedEmptyMultiRelationIsNotReportedAsMigrated(t *test
 	}
 	if got := row.From; got == "migrated" {
 		t.Errorf("from = %q; the source carried an EMPTY list, which normalisation removes — what survives is the destination default", got)
+	}
+}
+
+// CONTROL for the sweep's NIL arm, which is scoped to multi_relation and must
+// stay that way (a mutant dropping every coerced nil survived without this).
+//
+// `CoerceFields` JSON-parses a `json` field too, so the override `"null"`
+// arrives at the sweep as a nil there as well — and for that type nil is a
+// LEGITIMATE STORED VALUE, not a spelling of absence. Dropping it would discard
+// the caller's own value and mislabel whatever replaced it.
+func TestCopyPreflight_ACoercedNullOnAJSONFieldIsStillTheCallersValue(t *testing.T) {
+	f := newCopyRelationFixtureWith(t, noDestDefault, nil, true)
+
+	schema := `{"fields":[
+		{"key":"status","label":"Status","type":"select","options":["open","done"],"required":true},
+		{"key":"payload","label":"Payload","type":"json"}
+	]}`
+	if _, err := f.srv.store.UpdateCollection(f.collB.ID, models.CollectionUpdate{Schema: &schema}); err != nil {
+		t.Fatalf("UpdateCollection(collB): %v", err)
+	}
+
+	body := f.baseBody()
+	body["field_overrides"] = map[string]any{"payload": "null"}
+	pre := f.ok(body)
+
+	row := carriedRowFor(pre, "payload")
+	if row == nil {
+		t.Fatalf("the json override produced no carried row: %+v", pre.Fields)
+	}
+	if row.From != "override" {
+		t.Errorf("from = %q, want \"override\" — a json null is a value the caller supplied, not an absent key", row.From)
 	}
 }

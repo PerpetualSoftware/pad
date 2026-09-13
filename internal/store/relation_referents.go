@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/PerpetualSoftware/pad/internal/items"
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
@@ -385,10 +386,28 @@ func relationArrayElements(raw any) ([]string, bool) {
 // here, rather than surviving into a refusal nobody can act on.
 func relationDroppableShapeIsUsable(def models.FieldDef, raw any) bool {
 	if def.IsMultiRelation() {
-		_, ok := relationDefaultList(raw)
+		_, ok := relationDefaultList(coerceRelationValue(def, raw))
 		return ok
 	}
 	return relationValueShapeIsValid(def, raw)
+}
+
+// coerceRelationValue puts one value through the SAME coercion the write doors
+// apply, so a shape judgement does not depend on whether the caller's door had
+// already coerced.
+//
+// A schema DEFAULT is what makes this necessary (codex round 8). `CoerceFields`
+// runs BEFORE `ValidateFields` injects a default, so an injected one is
+// uncoerced at the create door and coerced at the migrate door, where the copy
+// coerces after merging. A default written as the JSON TEXT `["<id>"]` was
+// therefore stored by one path and dropped as `invalid_shape` by the other —
+// the same schema, the same value, two answers chosen by the route.
+//
+// Calls the real function rather than re-deriving it: a second copy of "what
+// counts as a list" is the drift this file has already paid for twice.
+func coerceRelationValue(def models.FieldDef, raw any) any {
+	out := items.CoerceFields(map[string]any{def.Key: raw}, models.CollectionSchema{Fields: []models.FieldDef{def}})
+	return out[def.Key]
 }
 
 func relationValueShapeIsValid(def models.FieldDef, raw any) bool {
