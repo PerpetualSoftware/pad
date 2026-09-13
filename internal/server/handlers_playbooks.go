@@ -27,14 +27,31 @@ import (
 // didn't supply (so the agent can prompt the user instead of failing
 // the call outright).
 type PlaybookRunResponse struct {
-	Ref       string                    `json:"ref"`
-	Slug      string                    `json:"slug"`
-	Title     string                    `json:"title"`
-	Status    string                    `json:"status"`
-	Body      string                    `json:"body"`
-	Arguments []PlaybookArgumentSpec    `json:"arguments"`
-	BoundArgs map[string]any            `json:"bound_args"`
-	Unbound   []PlaybookUnboundArgument `json:"unbound,omitempty"`
+	Ref    string `json:"ref"`
+	Slug   string `json:"slug"`
+	Title  string `json:"title"`
+	Status string `json:"status"`
+	Body   string `json:"body"`
+	// ContentState marks `Body` above as one the server knows is BEHIND the
+	// playbook item's live collaborative document (BUG-3033, the read-door half
+	// of BUG-3000). Same values and the same meaning as models.Item.ContentState;
+	// omitted whenever the row is current, so a consumer that does not know the
+	// field sees byte-identical responses.
+	//
+	// This response does not serialise models.Item — it hoists four of its
+	// values into a hand-built shape — so it inherits nothing, which is why the
+	// field is repeated here rather than arriving for free. Its sibling
+	// PlaybookShowResponse DOES embed *models.Item and therefore does get it for
+	// free; TestPlaybookShowInheritsTheContentStateMarker pins that so the two
+	// doors cannot silently diverge.
+	//
+	// It matters more on this door than on an ordinary read: a playbook body is
+	// EXECUTED. A stale one is an agent running superseded steps, which is a
+	// different kind of wrong from a stale document somebody reads.
+	ContentState string                    `json:"content_state,omitempty"`
+	Arguments    []PlaybookArgumentSpec    `json:"arguments"`
+	BoundArgs    map[string]any            `json:"bound_args"`
+	Unbound      []PlaybookUnboundArgument `json:"unbound,omitempty"`
 }
 
 // PlaybookShowResponse is the result of `GET /workspaces/{ws}/playbooks/{ref}`.
@@ -251,14 +268,15 @@ func (s *Server) handleRunPlaybook(w http.ResponseWriter, r *http.Request) {
 	bound, unbound := bindPlaybookArgs(specs, supplied)
 
 	writeJSON(w, http.StatusOK, PlaybookRunResponse{
-		Ref:       item.Ref,
-		Slug:      item.Slug,
-		Title:     item.Title,
-		Status:    status,
-		Body:      item.Content,
-		Arguments: specs,
-		BoundArgs: bound,
-		Unbound:   unbound,
+		Ref:          item.Ref,
+		Slug:         item.Slug,
+		Title:        item.Title,
+		Status:       status,
+		Body:         item.Content,
+		ContentState: item.ContentState,
+		Arguments:    specs,
+		BoundArgs:    bound,
+		Unbound:      unbound,
 	})
 }
 

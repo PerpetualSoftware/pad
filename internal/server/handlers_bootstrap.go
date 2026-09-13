@@ -288,12 +288,27 @@ type AgentBootstrapUser struct {
 // `slug` was dropped in PLAN-1410 / TASK-1413: the agent addresses
 // items by `ref` (CONVE-N) — slug was dead weight.
 type AgentBootstrapConvention struct {
-	Ref      string `json:"ref"`
-	Title    string `json:"title"`
-	Content  string `json:"content"`
-	Priority string `json:"priority,omitempty"`
-	Scope    string `json:"scope,omitempty"`
-	Trigger  string `json:"trigger,omitempty"`
+	Ref     string `json:"ref"`
+	Title   string `json:"title"`
+	Content string `json:"content"`
+	// ContentState marks `Content` above as a body the server knows is BEHIND the
+	// convention item's live collaborative document (BUG-3033, the read-door half
+	// of BUG-3000). Same values as models.Item.ContentState; omitted when the row
+	// is current.
+	//
+	// This projection is hand-built rather than a serialised models.Item, so it
+	// inherits nothing — the field is here because the payload it belongs to is
+	// the one an agent loads its MUST-FOLLOW RULES from. A stale convention is a
+	// rule an agent obeys after it changed, which is the same class of harm as a
+	// stale playbook body and unlike a stale document nobody acts on.
+	//
+	// omitempty is doing real work here beyond wire compatibility: PLAN-1410 cut
+	// this blob by ~40% on purpose, and a key that appears only when a body is
+	// actually stale costs that effort nothing in the common case.
+	ContentState string `json:"content_state,omitempty"`
+	Priority     string `json:"priority,omitempty"`
+	Scope        string `json:"scope,omitempty"`
+	Trigger      string `json:"trigger,omitempty"`
 }
 
 // AgentBootstrapConventionMeta is the lightweight, body-less convention
@@ -733,12 +748,13 @@ func projectBootstrapConventions(items []models.Item) []AgentBootstrapConvention
 			return ""
 		}
 		out = append(out, AgentBootstrapConvention{
-			Ref:      it.Ref,
-			Title:    it.Title,
-			Content:  it.Content,
-			Priority: strField("priority"),
-			Scope:    strField("scope"),
-			Trigger:  strField("trigger"),
+			Ref:          it.Ref,
+			Title:        it.Title,
+			Content:      it.Content,
+			ContentState: it.ContentState,
+			Priority:     strField("priority"),
+			Scope:        strField("scope"),
+			Trigger:      strField("trigger"),
 		})
 	}
 	sort.SliceStable(out, func(i, j int) bool {
@@ -841,10 +857,23 @@ type BootstrapIncludeGroup struct {
 // BootstrapIncludeItem is the generic item projection for a declared payload.
 // Content is present only for a bodies-mode declaration.
 type BootstrapIncludeItem struct {
-	Ref     string            `json:"ref"`
-	Title   string            `json:"title"`
-	Content string            `json:"content,omitempty"`
-	Fields  map[string]string `json:"fields,omitempty"`
+	Ref     string `json:"ref"`
+	Title   string `json:"title"`
+	Content string `json:"content,omitempty"`
+	// ContentState marks `Content` above as a body the server knows is BEHIND the
+	// item's live collaborative document (BUG-3033). Set only in bodies mode,
+	// alongside Content and under the same condition — a metadata-mode group
+	// carries no body, and a marker on an absent body would be a claim about
+	// something this group does not serve.
+	//
+	// This door is not one of the four BUG-3033 names; it was found by that
+	// unit's sweep and folded in under CONVE-18. It is the generic, declaration
+	// driven half of the same handler that builds AgentBootstrapConvention: any
+	// collection can declare a bodies-mode payload, so the set of item bodies
+	// reaching an agent through here is open-ended in a way the conventions
+	// payload is not.
+	ContentState string            `json:"content_state,omitempty"`
+	Fields       map[string]string `json:"fields,omitempty"`
 }
 
 // traitedFromModelCollections wraps collections.TraitedFromCollections for
@@ -921,6 +950,13 @@ func (s *Server) collectGenericBootstrapIncludes(workspaceID string, traited []c
 				entry := BootstrapIncludeItem{Ref: it.Ref, Title: it.Title}
 				if wantBodies {
 					entry.Content = it.Content
+					// Inside the same guard as Content, deliberately. The store
+					// already leaves ContentState empty when NoContent selects an
+					// empty-string literal for content, so this is belt and braces
+					// — but it keeps the invariant ("the marker is emitted only
+					// where a real body is") readable at THIS site rather than
+					// resting on a property of a query three packages away.
+					entry.ContentState = it.ContentState
 				}
 				// Structured fields are flattened to strings: an agent reads
 				// them to route, not to compute, and a stable string map is

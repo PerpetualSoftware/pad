@@ -13,6 +13,8 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // MIME types reported in the read response. Stable across versions —
@@ -389,6 +391,27 @@ func formatItemAsMarkdown(jsonBlob string) (string, error) {
 			}
 			b.WriteString("\n")
 		}
+	}
+
+	// Staleness marker (BUG-3033). `item show --format json` carries
+	// content_state since BUG-3000, and this formatter composes its own
+	// markdown, so without this the field is fetched and then dropped on
+	// the way out — the resource hands an agent a stale body with the one
+	// signal that says so removed. The CLI's stderr warning does not cover
+	// it either: ExecResourceFetcher reads stdout and does not surface
+	// stderr from a command that SUCCEEDED.
+	//
+	// Placed here, immediately before the body, rather than with the
+	// metadata above: it qualifies the body specifically, and an agent
+	// reading top-down meets it in the sentence before the text it is
+	// about. The literal state token is included so the line is greppable
+	// by the same name the JSON field uses, not only readable as prose.
+	if state, _ := item["content_state"].(string); state == models.ContentOutcomeAppliedPendingFlush {
+		fmt.Fprintf(&b, "> **Stale body** (`content_state: %s`) — this item's stored content is "+
+			"behind its live collaborative document. An editor holds edits that have not been "+
+			"written back, so the body below is the previous content. It catches up when a tab "+
+			"next flushes the item, and nothing on the server forces that to happen.\n\n",
+			models.ContentOutcomeAppliedPendingFlush)
 	}
 
 	// Body. Pad items often have rich markdown here already; pass

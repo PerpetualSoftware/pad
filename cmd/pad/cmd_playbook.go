@@ -3,10 +3,12 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 
 	"github.com/PerpetualSoftware/pad/internal/cli"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // playbookCmd is the `pad playbook` command group for the first-class
@@ -112,10 +114,23 @@ func playbookShowCmd() *cobra.Command {
 				Title   string `json:"title"`
 				Content string `json:"content"`
 				Fields  string `json:"fields"`
+				// BUG-3033. The server marks a body it knows is behind the item's
+				// live collaborative document, but this command decodes a narrow
+				// struct of its own and prints only the body — so without this key
+				// the marker reaches the wire and never reaches the reader. That is
+				// the same gap BUG-3033 describes for the MCP item resource, which
+				// re-renders `item show --format json` through a formatter that
+				// drops the field.
+				//
+				// It matters most here: an agent loads a playbook body in order to
+				// EXECUTE it, so a stale one is superseded steps being run, not a
+				// stale page being read.
+				ContentState string `json:"content_state"`
 			}
 			if err := json.Unmarshal(raw, &item); err != nil {
 				return fmt.Errorf("decode playbook: %w", err)
 			}
+			warnPlaybookBodyStale(item.ContentState)
 			fmt.Printf("# %s: %s\n\n", item.Ref, item.Title)
 			if item.Content != "" {
 				fmt.Println(item.Content)
@@ -182,10 +197,14 @@ and run it anyway.`,
 				Unbound   []struct {
 					Name string `json:"name"`
 				} `json:"unbound"`
+				// BUG-3033 — see the sibling in playbookShowCmd. Same reason, and
+				// this is the door an agent actually invokes to run something.
+				ContentState string `json:"content_state"`
 			}
 			if err := json.Unmarshal(raw, &resp); err != nil {
 				return fmt.Errorf("decode run response: %w", err)
 			}
+			warnPlaybookBodyStale(resp.ContentState)
 			fmt.Printf("# %s: %s\n\n", resp.Ref, resp.Title)
 			if len(resp.BoundArgs) > 0 {
 				fmt.Println("## Bound arguments")
@@ -209,6 +228,34 @@ and run it anyway.`,
 	cmd.Flags().BoolVar(&allowDraft, "allow-draft", false,
 		"Run a playbook even if its status isn't \"active\" (the draft gate escape hatch)")
 	return cmd
+}
+
+// warnPlaybookBodyStale prints one line to STDERR when a playbook body this
+// command is about to print is one the server knows is BEHIND the item's live
+// collaborative document (BUG-3033).
+//
+// It takes the raw state string rather than a *models.Item because both callers
+// decode narrow anonymous structs of their own — `playbook show` reads an item
+// shape, `playbook run` reads a run-response shape — and neither has an item to
+// hand. The string is the whole contract, so one helper serves both and the two
+// doors cannot drift into different wording.
+//
+// Why the wording differs from cmd_item.go's warnContentStale, which says the
+// same thing about an ordinary item: this body is about to be EXECUTED. The
+// consequence a reader needs is "the steps below may be superseded", not "the
+// text below may be old", and the line says so.
+//
+// Stderr for the reason every warning in this CLI is on stderr: `--format json`
+// is piped into scripts, and the markdown form of both commands exists to be
+// redirected into a file. This one is never in that stream.
+func warnPlaybookBodyStale(contentState string) {
+	if contentState != models.ContentOutcomeAppliedPendingFlush {
+		return
+	}
+	fmt.Fprintln(os.Stderr, "warning: this playbook's stored body is behind its live collaborative "+
+		"document — an editor holds edits that have not been written back yet, so the steps below "+
+		"may be superseded. The body catches up when a tab next flushes the item, and nothing on "+
+		"the server forces that to happen.")
 }
 
 // --- bootstrap ---
