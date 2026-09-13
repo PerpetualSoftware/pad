@@ -636,40 +636,21 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 	if err := s.checkUniqueFields(workspaceID, item.CollectionID, item.ID, schema, fieldMap); err != nil {
 		return nil, &bulkOpError{message: err.Error(), code: "conflict"}
 	}
+	// Which keys autoPopulateDates ADDED, as opposed to keys the caller set or
+	// the item already carried. Needed below: an auto-date is an "only if still
+	// empty" intent, and that decision was made against a snapshot read outside
+	// the write transaction (codex round 4).
+	beforeAuto := make(map[string]any, len(fieldMap))
+	for k, v := range fieldMap {
+		beforeAuto[k] = v
+	}
 	autoPopulateDates(fieldMap, item.Fields, schema)
-
-	var precheck func(tx *sql.Tx, existing *models.Item) error
-	if !force {
-		var settings models.CollectionSettings
-		if coll.Settings != "" {
-			_ = json.Unmarshal([]byte(coll.Settings), &settings)
-		}
-		guestFull, guestGranted, gerr := s.guestResourceFilter(r, workspaceID)
-		if gerr != nil {
-			return nil, &bulkOpError{message: gerr.Error()}
-		}
-		gctx := openChildrenGuardContext{
-			r:                    r,
-			workspaceID:          workspaceID,
-			itemID:               item.ID,
-			parentSchema:         schema,
-			parentSettings:       settings,
-			newFieldMap:          fieldMap,
-			visibleCollectionIDs: visibleIDs,
-			guestFullCollIDs:     guestFull,
-			guestGrantedItemIDs:  guestGranted,
-		}
-		precheck = func(tx *sql.Tx, existing *models.Item) error {
-			txCtx := gctx
-			txCtx.currentFieldsJS = existing.Fields
-			details, derr := s.runOpenChildrenGuard(tx, txCtx)
-			if derr != nil {
-				return derr
+	autoDateKeys := make([]string, 0, 2)
+	for k, v := range fieldMap {
+		if old, had := beforeAuto[k]; !had || !reflect.DeepEqual(old, v) {
+			if _, isChange := changes[k]; !isChange {
+				autoDateKeys = append(autoDateKeys, k)
 			}
-			if details != nil {
-				return &openChildrenGuardError{details: details}
-			}
-			return nil
 		}
 	}
 
@@ -687,6 +668,10 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 	// mergeFieldsPatch removes). What it no longer carries is keys this
 	// operation did not touch at all.
 	//
+	// The auto-date stamps are the one entry in that list whose inclusion is
+	// re-decided UNDER THE LOCK, in the precheck below: they express "only if
+	// still empty", and emptiness was read outside the transaction.
+	//
 	// Residual, stated rather than hidden: a carried value whose only change is
 	// CoerceFields normalising its type (stored `"3"` on a number field
 	// becoming `3`) differs from the stored value and is therefore still in the
@@ -694,6 +679,78 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 	// it is not a regression — it is the part of the window this fix does not
 	// close, and it closes for good when the stored value is already canonical.
 	patch := fieldsPatchFromMerge(storedFields, fieldMap)
+
+	var precheck func(tx *sql.Tx, existing *models.Item) error
+	{
+		var settings models.CollectionSettings
+		if coll.Settings != "" {
+			_ = json.Unmarshal([]byte(coll.Settings), &settings)
+		}
+		var gctx openChildrenGuardContext
+		if !force {
+			guestFull, guestGranted, gerr := s.guestResourceFilter(r, workspaceID)
+			if gerr != nil {
+				return nil, &bulkOpError{message: gerr.Error()}
+			}
+			gctx = openChildrenGuardContext{
+				r:                    r,
+				workspaceID:          workspaceID,
+				itemID:               item.ID,
+				parentSchema:         schema,
+				parentSettings:       settings,
+				newFieldMap:          fieldMap,
+				visibleCollectionIDs: visibleIDs,
+				guestFullCollIDs:     guestFull,
+				guestGrantedItemIDs:  guestGranted,
+			}
+		}
+		// The precheck is installed UNCONDITIONALLY now, because it carries two
+		// jobs and only one of them is the guard. It runs inside the write
+		// transaction, before the store merges the patch (see
+		// store.UpdateItem's ordering), which is the only place an "only if
+		// still empty" decision can be made truthfully.
+		precheck = func(tx *sql.Tx, existing *models.Item) error {
+			// JOB 1 (BUG-3049, codex round 4): re-decide each AUTO-POPULATED
+			// date against the LOCKED row. autoPopulateDates fills start_date /
+			// end_date only when the value is empty, and it read a snapshot from
+			// outside this transaction — so a concurrent writer who set the date
+			// in between would have had it replaced by today's. Nobody in this
+			// request typed that value, so the concurrent one wins: the key is
+			// dropped from the patch. A date the CALLER supplied is not in
+			// autoDateKeys and is untouched by this.
+			if len(autoDateKeys) > 0 {
+				locked := map[string]any{}
+				if existing.Fields != "" && existing.Fields != "{}" {
+					if err := json.Unmarshal([]byte(existing.Fields), &locked); err != nil {
+						// Unreadable under the lock: the merge itself will
+						// refuse, so leave the patch alone rather than guess.
+						return nil
+					}
+				}
+				for _, k := range autoDateKeys {
+					if cur, ok := locked[k].(string); ok && cur != "" {
+						delete(patch, k)
+					}
+				}
+			}
+			if force {
+				return nil
+			}
+			// JOB 2: the open-children guard, as before, against the same
+			// in-tx snapshot the UPDATE will write.
+			txCtx := gctx
+			txCtx.currentFieldsJS = existing.Fields
+			details, derr := s.runOpenChildrenGuard(tx, txCtx)
+			if derr != nil {
+				return derr
+			}
+			if details != nil {
+				return &openChildrenGuardError{details: details}
+			}
+			return nil
+		}
+	}
+
 	input := models.ItemUpdate{
 		FieldsPatch:    patch,
 		LastModifiedBy: actor,

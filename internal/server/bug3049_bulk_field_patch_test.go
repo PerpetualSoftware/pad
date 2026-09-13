@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"testing"
+
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // BUG-3049 — the REST bulk field ops must not revert a field they do not name.
@@ -210,5 +212,92 @@ func TestBulkFieldUpdate_RefusesAnUnreadableFieldsSnapshot(t *testing.T) {
 	after := decodeItemFields(t, mustGetItemFields(t, srv, item.ID))
 	if after["status"] != "open" {
 		t.Errorf("the refused write touched the row: status=%v want open", after["status"])
+	}
+}
+
+// An AUTO-POPULATED date must not overwrite one a concurrent writer set
+// (codex round 4).
+//
+// autoPopulateDates stamps start_date / end_date on a status transition, but
+// only when the value is empty — and it read a snapshot from outside the write
+// transaction. So the emptiness it saw could be stale, and the stamp would land
+// on top of a value somebody else had just written. Nobody in the bulk request
+// typed that date, so the concurrent value wins: the key is dropped from the
+// patch inside the precheck, which runs under the row lock before the merge.
+//
+// The caller-supplied case is deliberately NOT affected: a date in `changes` is
+// an explicit write and stays in the patch.
+func TestBulkFieldUpdate_AutoDateDoesNotOverwriteAConcurrentDate(t *testing.T) {
+	srv := testServer(t)
+	wsSlug := createWSWithCollections(t, srv)
+
+	// A collection shaped like the scrum template's Sprints: a status select
+	// with a terminal option plus the two date fields autoPopulateDates knows.
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+wsSlug+"/collections", map[string]interface{}{
+		"name": "Dated",
+		"schema": `{"fields":[
+			{"key":"status","type":"select","options":["planning","active","completed"],"terminal_options":["completed"],"default":"planning","required":true},
+			{"key":"start_date","type":"date"},
+			{"key":"end_date","type":"date"}
+		]}`,
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create collection: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var coll models.Collection
+	parseJSON(t, rr, &coll)
+
+	rr = doRequest(srv, "POST", "/api/v1/workspaces/"+wsSlug+"/collections/"+coll.Slug+"/items", map[string]interface{}{
+		"title":  "Dated item",
+		"fields": `{"status":"planning"}`,
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create item: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var item models.Item
+	parseJSON(t, rr, &item)
+
+	ws, err := srv.store.GetWorkspaceBySlug(wsSlug)
+	if err != nil || ws == nil {
+		t.Fatalf("load workspace: %v", err)
+	}
+	stale, err := srv.store.GetItem(item.ID)
+	if err != nil || stale == nil {
+		t.Fatalf("load item snapshot: %v", err)
+	}
+	// Premise: the snapshot the door will reason from has NO end_date, which is
+	// the condition under which autoPopulateDates stamps one.
+	if got := decodeItemFields(t, stale.Fields)["end_date"]; got != nil && got != "" {
+		t.Fatalf("premise failed: the snapshot already carries an end_date: %v", got)
+	}
+
+	const concurrentDate = "2026-01-01"
+	rr = doRequest(srv, "PATCH", "/api/v1/workspaces/"+wsSlug+"/items/"+item.Slug, map[string]interface{}{
+		"fields_patch": map[string]interface{}{"end_date": concurrentDate},
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("concurrent date write: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if got := decodeItemFields(t, mustGetItemFields(t, srv, item.ID))["end_date"]; got != concurrentDate {
+		t.Fatalf("premise failed: the concurrent date did not land, end_date=%v", got)
+	}
+
+	req := httptest.NewRequest("POST", "/api/v1/workspaces/"+wsSlug+"/items/bulk", nil)
+	var dropped []string
+	updated, opErr := srv.bulkFieldUpdate(req, ws.ID, stale, map[string]any{"status": "completed"},
+		true, nil, "user", "web", "", &dropped)
+	if opErr != nil {
+		t.Fatalf("bulkFieldUpdate: %v", opErr.message)
+	}
+	fields := decodeItemFields(t, updated.Fields)
+
+	// Premise: the transition this test needs actually happened, so the stamp
+	// was genuinely in play.
+	if fields["status"] != "completed" {
+		t.Fatalf("the bulk op did not apply its own change: status=%v", fields["status"])
+	}
+	if fields["end_date"] != concurrentDate {
+		t.Errorf("BUG-3049: the auto-populated end_date overwrote a concurrent one: got %v want %s",
+			fields["end_date"], concurrentDate)
 	}
 }
