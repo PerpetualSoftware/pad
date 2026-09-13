@@ -196,6 +196,11 @@
 		if (relationWithoutTarget) return [''];
 		if (isRelationGroup) {
 			const lanes = relationLaneList.map((lane) => lane.value);
+			// `isUngrouped` rather than `!`: EQUIVALENT here, since `groupValueFor`
+			// always returns a string and no test can tell them apart (E6 on the
+			// BUG-3053 trail). Spelled this way because the difference is only ever
+			// invisible while every caller normalises first — which is the exact
+			// assumption that stopped holding and produced this bug.
 			const hasEmpty = items.some((i) => isUngrouped(groupValueFor(i)));
 			return hasEmpty ? [...lanes, ''] : lanes;
 		}
@@ -346,9 +351,16 @@
 				// TRIMMED, like every other comparison against a stored relation
 				// value: an item holding `" id-red "` is already in this group,
 				// and a raw `!==` would fire a pointless write for it.
+				// NORMALISED on both sides (BUG-3053). `groupName` is a lane key, so
+				// comparing it against the RAW field value makes an item already in
+				// its own lane look like it moved: `0 !== '0'` and
+				// `false !== 'false'`, and the "move" then writes the STRING '0'
+				// into a number field. Unreachable before this fix only because the
+				// item was dropped from the view and could not be dragged at all —
+				// which is why it arrives with the fix rather than before it.
 				const current = isRelationGroup
 					? relationLaneValueFor(originalItem, groupField, resolveRelation)
-					: (fields[groupField] ?? '');
+					: laneValue(fields[groupField]);
 				// A REFUSED grouping has no group value to change, so a drop in
 				// its fallback lane is a REORDER and nothing else — the same
 				// guard BoardView carries, and this view needed it too (codex

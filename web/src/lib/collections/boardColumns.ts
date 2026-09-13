@@ -21,8 +21,14 @@ export const UNCATEGORIZED = '';
  *
  * ABSENT is `undefined`, `null` and `''`, and nothing else. `0` and `false`
  * normalise to `'0'` and `'false'` — ordinary lane keys — because they are
- * ordinary VALUES: a score of zero, an unticked checkbox. Arrays and objects
- * stringify and simply won't match a known option, landing in UNCATEGORIZED.
+ * ordinary VALUES: a score of zero, an unticked checkbox.
+ *
+ * Arrays and objects stringify (`'a,b'`, `'[object Object]'`). They are NOT
+ * guaranteed to miss every declared option, which an earlier version of this
+ * comment claimed: a board option whose text equals the stringification would
+ * match it, and a view that DISCOVERS its lanes mints a lane named after it
+ * either way. What is guaranteed is that they stay visible, which is this
+ * helper's job; rendering a structured value legibly is not.
  *
  * EXPORTED, and the export is the point (BUG-3053). ListView had its own
  * inlined version of this question and got a different answer in each of its

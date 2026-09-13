@@ -72,7 +72,11 @@ function item(id: string, fields: Record<string, unknown>): Item {
 	} as unknown as Item;
 }
 
-function renderList(items: Item[], groupField: string) {
+function renderList(
+	items: Item[],
+	groupField: string,
+	onStatusChange: (item: Item, value: string) => void = vi.fn(),
+) {
 	return render(ListView, {
 		props: {
 			items,
@@ -80,7 +84,8 @@ function renderList(items: Item[], groupField: string) {
 			wsSlug: 'ws',
 			groupField,
 			statusOptions: ['open', 'done'],
-			onStatusChange: vi.fn(),
+			canEdit: true,
+			onStatusChange,
 		} as never,
 	});
 }
@@ -152,6 +157,90 @@ describe('an item whose group value is 0 or false still appears (BUG-3053)', () 
 		);
 		expect(groupTitles(container), 'no lane should be minted for an absent value').not.toContain(
 			'null',
+		);
+	});
+});
+
+describe('dropping an item back into its own lane (codex round 1, finding 1)', () => {
+	// Reachable only BECAUSE of this fix: before it, the 0-scored item was not
+	// rendered at all, so it could not be dragged. `groupName` is a normalised
+	// lane key and the handler compared it against the RAW field value, so
+	// `0 !== '0'` read as a move and would have written the STRING '0' into a
+	// number field.
+	//
+	// svelte-dnd-action dispatches a `finalize` CustomEvent and the component
+	// binds `onfinalize` as a plain DOM handler, so the drop can be driven
+	// directly without simulating pointer input.
+	function finalizeOn(
+		container: HTMLElement,
+		laneIndex: number,
+		items: Item[],
+		movedId: string,
+	) {
+		const zones = container.querySelectorAll('.group-items');
+		const zone = zones[laneIndex];
+		expect(zone, 'precondition: the lane must be rendered and expanded').toBeTruthy();
+		zone.dispatchEvent(
+			new CustomEvent('finalize', {
+				// `droppedIntoZone` is the library's own TRIGGERS.DROPPED_INTO_ZONE,
+				// and the id names the item that MOVED — not the first in the list.
+				// Getting that wrong makes the handler find no `originalItem` and
+				// skip the comparison entirely, which is a green that measures
+				// nothing.
+				detail: { items, info: { trigger: 'droppedIntoZone', id: movedId } },
+			}),
+		);
+	}
+
+	it('does not rewrite a number field when the item did not change lane', async () => {
+		const onStatusChange = vi.fn();
+		const zero = item('car-zero', { score: 0 });
+		const { container } = renderList([zero], 'score', onStatusChange);
+
+		// Precondition: exactly one lane, and it is the 0 lane — so the drop below
+		// really is a same-lane drop rather than a move we failed to notice.
+		expect(groupTitles(container)).toEqual(['0']);
+
+		finalizeOn(container, 0, [zero], 'car-zero');
+		await Promise.resolve();
+
+		expect(
+			onStatusChange,
+			'the item is already in the 0 lane; nothing changed, so nothing should be written',
+		).not.toHaveBeenCalled();
+	});
+
+	it('does not rewrite a checkbox field when the item did not change lane', async () => {
+		const onStatusChange = vi.fn();
+		const no = item('car-no', { shipped: false });
+		const { container } = renderList([no], 'shipped', onStatusChange);
+
+		expect(groupTitles(container)).toEqual(['False']);
+
+		finalizeOn(container, 0, [no], 'car-no');
+		await Promise.resolve();
+
+		expect(onStatusChange).not.toHaveBeenCalled();
+	});
+
+	it('STILL writes when the item really did change lane', async () => {
+		// The counterfactual: without it the two assertions above would pass on an
+		// implementation that never calls onStatusChange at all.
+		const onStatusChange = vi.fn();
+		const zero = item('car-zero', { score: 0 });
+		const five = item('car-five', { score: 5 });
+		const { container } = renderList([zero, five], 'score', onStatusChange);
+
+		const titles = groupTitles(container);
+		expect(titles).toEqual(['0', '5']);
+
+		// Drop the 5-scored item into the 0 lane.
+		finalizeOn(container, 0, [zero, five], 'car-five');
+		await Promise.resolve();
+
+		expect(onStatusChange).toHaveBeenCalledWith(
+			expect.objectContaining({ id: 'car-five' }),
+			'0',
 		);
 	});
 });

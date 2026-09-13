@@ -6,6 +6,7 @@ import {
 	parsePublicItem,
 	resolveGroupField,
 	isPublicGroupable,
+	groupItems,
 } from './shareView';
 
 function item(fields: Record<string, unknown>) {
@@ -153,5 +154,47 @@ describe('isPublicGroupable (TASK-2998, codex round 2)', () => {
 		const c = coll([{ key: 'phase', type: 'select' }]);
 		expect(isPublicGroupable(c, 'phase')).toBe(true);
 		expect(isPublicGroupable(c, 'nope')).toBe(false);
+	});
+});
+
+// BUG-3053. The public board and list group through `groupItems`, which carried
+// its own inlined copy of "normalise, then ask whether it is empty" — the same
+// question ListView got wrong by asking it of the RAW value in one of its two
+// passes. This copy was correct, but only because it stringified first, and
+// nothing tested the case that distinguishes the two orders.
+describe('groupItems with falsy-but-present values', () => {
+	const zero = () => item({ score: 0 });
+	const five = () => item({ score: 5 });
+	const none = () => item({});
+
+	it('gives 0 its own group rather than calling it ungrouped', () => {
+		const groups = groupItems([zero(), five()], 'score', []);
+		const byValue = Object.fromEntries(groups.map((g) => [g.value, g.items.length]));
+		expect(byValue['0']).toBe(1);
+		expect(byValue['5']).toBe(1);
+		expect(byValue['']).toBeUndefined();
+	});
+
+	it('gives false its own group', () => {
+		const groups = groupItems([item({ shipped: false }), item({ shipped: true })], 'shipped', []);
+		const values = groups.map((g) => g.value);
+		expect(values).toContain('false');
+		expect(values).toContain('true');
+		expect(values).not.toContain('');
+	});
+
+	it('still groups a genuinely absent value as ungrouped', () => {
+		// The counterfactual for the two above: without it they would pass on an
+		// implementation that never produces an ungrouped bucket at all.
+		const groups = groupItems([none(), zero()], 'score', []);
+		const byValue = Object.fromEntries(groups.map((g) => [g.value, g.items.length]));
+		expect(byValue['']).toBe(1);
+		expect(byValue['0']).toBe(1);
+	});
+
+	it('keeps every item somewhere, whatever its value', () => {
+		const items = [zero(), five(), none(), item({ score: null }), item({ score: '' })];
+		const total = groupItems(items, 'score', []).reduce((n, g) => n + g.items.length, 0);
+		expect(total).toBe(items.length);
 	});
 });
