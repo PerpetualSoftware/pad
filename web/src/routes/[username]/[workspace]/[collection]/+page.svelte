@@ -1667,9 +1667,13 @@
 
 	async function handleStatusChange(item: Item, newValue: string) {
 		if (!wsSlug) return;
-		const fields = parseFields(item);
-		fields[groupField] = newValue;
-		const fieldsPayload = JSON.stringify(fields);
+		// BUG-3049: patch ONLY the group field. This used to read the item's
+		// fields, set one key and send the whole blob back as a full replace,
+		// so a concurrent field edit landing between the read and the write was
+		// reverted. `fields_patch` merges per key under the row lock
+		// (internal/store/items.go::mergeFieldsPatch), so no other field is
+		// reachable by this write at all.
+		const fieldsPatch = { [groupField]: newValue };
 		const ws = wsSlug;
 		const parentRef = formatItemRef(item) ?? item.slug;
 
@@ -1682,7 +1686,7 @@
 		let epoch = localIndex.scopeEpochFor(ws);
 		const doUpdate = (force: boolean) => {
 			epoch = localIndex.scopeEpochFor(ws);
-			return api.items.update(ws, item.id, { fields: fieldsPayload, ...(force ? { force: true } : {}) });
+			return api.items.update(ws, item.id, { fields_patch: fieldsPatch, ...(force ? { force: true } : {}) });
 		};
 
 		try {

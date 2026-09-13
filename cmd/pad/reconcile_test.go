@@ -102,8 +102,14 @@ func TestNeedsPRMetadataRefresh(t *testing.T) {
 	}
 }
 
-func TestMergeGitHubPRIntoFieldsPreservesOtherFields(t *testing.T) {
-	fields, err := mergeGitHubPRIntoFields(`{"status":"open","priority":"high"}`, &GitHubPR{
+// BUG-3049: the reconcile write names ONE key. The predecessor of this test
+// asserted that a full-blob merge PRESERVED unrelated fields, which was true of
+// the blob it built and false of the row it landed on — anything written between
+// the item read and the write was reverted. The property that actually holds is
+// that the patch contains github_pr and nothing else, so no other field is
+// reachable by this write.
+func TestGitHubPRFieldPatchNamesOnlyGitHubPR(t *testing.T) {
+	patch := gitHubPRFieldPatch(&GitHubPR{
 		Number:    41,
 		URL:       "https://github.com/PerpetualSoftware/pad/pull/41",
 		Title:     "PR",
@@ -112,13 +118,14 @@ func TestMergeGitHubPRIntoFieldsPreservesOtherFields(t *testing.T) {
 		Repo:      "PerpetualSoftware/pad",
 		UpdatedAt: "2026-04-02T15:05:00Z",
 	})
-	if err != nil {
-		t.Fatalf("mergeGitHubPRIntoFields error: %v", err)
+	if len(patch) != 1 {
+		t.Fatalf("expected a single-key patch, got %d keys: %v", len(patch), patch)
 	}
-	if !strings.Contains(fields, `"priority":"high"`) {
-		t.Fatalf("expected merged fields to preserve unrelated data, got %s", fields)
+	pr, ok := patch["github_pr"].(GitHubPR)
+	if !ok {
+		t.Fatalf("expected patch[\"github_pr\"] to carry a GitHubPR, got %T", patch["github_pr"])
 	}
-	if !strings.Contains(fields, `"github_pr"`) {
-		t.Fatalf("expected merged fields to contain github_pr payload, got %s", fields)
+	if pr.Number != 41 || pr.State != "MERGED" {
+		t.Fatalf("patch carries the wrong PR: %+v", pr)
 	}
 }

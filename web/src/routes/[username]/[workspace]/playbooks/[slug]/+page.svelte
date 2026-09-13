@@ -184,35 +184,36 @@
 		if (!item) return;
 		saving = true;
 		try {
-			// Start from the loaded fields so unknown/custom keys (workspace-
-			// added schema fields, future metadata) survive the round-trip.
-			// api.items.update replaces the whole fields blob, so rebuilding
-			// from scratch would silently drop everything we don't render
-			// (Codex round 3 P2).
-			const fieldsObj: Record<string, unknown> = { ...parseFields(item) };
-			fieldsObj.status = status;
-			fieldsObj.trigger = trigger;
-			fieldsObj.scope = scope;
-			// `arguments` goes in as a JSON VALUE (array of objects), not a
-			// stringified array — the server stores it as a `json` field.
-			// argumentsToJSON returns a string, so we parse it back to a
-			// value before stuffing it into fieldsObj. This matches the
-			// canonical shape in internal/collections/templates_startup_ship.go.
-			fieldsObj.arguments = JSON.parse(argumentsToJSON(args));
+			// BUG-3049: name the five keys this editor owns and send nothing
+			// else. The previous shape spread `parseFields(item)` and replaced
+			// the whole blob — which preserved unknown keys as they stood at
+			// LOAD time (Codex round 3 P2's concern) and therefore reverted any
+			// field written by anyone else while the editor was open, including
+			// a status toggle from the playbooks list page. A patch preserves
+			// unknown keys by not naming them, which is the same protection
+			// without the revert.
+			const fieldsPatch: Record<string, unknown> = {
+				status,
+				trigger,
+				scope,
+				// `arguments` goes in as a JSON VALUE (array of objects), not a
+				// stringified array — the server stores it as a `json` field.
+				// argumentsToJSON returns a string, so we parse it back to a
+				// value. This matches the canonical shape in
+				// internal/collections/templates_startup_ship.go.
+				arguments: JSON.parse(argumentsToJSON(args))
+			};
 			// Set or clear invocation_slug. Empty user input clears the field
 			// (the user removed the slug); a non-empty value sets it. Storing
-			// `""` would still hit the unique-index, so we delete the key
-			// entirely on clear.
+			// `""` would still hit the unique-index, so the clear is a NULL,
+			// which internal/store/items.go::mergeFieldsPatch removes from the
+			// stored blob — the patch-path equivalent of deleting the key.
 			const trimmedSlug = invocationSlug.trim();
-			if (trimmedSlug) {
-				fieldsObj.invocation_slug = trimmedSlug;
-			} else {
-				delete fieldsObj.invocation_slug;
-			}
+			fieldsPatch.invocation_slug = trimmedSlug ? trimmedSlug : null;
 			await api.items.update(wsSlug, item.slug, {
 				title: title.trim(),
 				content: bodyContent,
-				fields: JSON.stringify(fieldsObj)
+				fields_patch: fieldsPatch
 			});
 			toastStore.show('Playbook saved', 'success');
 			goto(`/${username}/${wsSlug}/playbooks`);

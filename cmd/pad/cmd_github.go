@@ -184,34 +184,27 @@ Examples:
 				return fmt.Errorf("item %q not found: %w", itemRef, err)
 			}
 
-			// Step 5: Update item fields with PR data
-			var fieldsMap map[string]interface{}
-			if item.Fields != "" && item.Fields != "{}" {
-				if err := json.Unmarshal([]byte(item.Fields), &fieldsMap); err != nil {
-					fieldsMap = make(map[string]interface{})
-				}
-			} else {
-				fieldsMap = make(map[string]interface{})
-			}
-
-			fieldsMap["github_pr"] = GitHubPR{
-				Number:    pr.Number,
-				URL:       pr.URL,
-				Title:     pr.Title,
-				State:     pr.State,
-				Branch:    pr.Branch,
-				Repo:      pr.Repo,
-				UpdatedAt: pr.UpdatedAt,
-			}
-
-			fieldsJSON, err := json.Marshal(fieldsMap)
-			if err != nil {
-				return fmt.Errorf("failed to marshal fields: %w", err)
-			}
-			fields := string(fieldsJSON)
-
+			// Step 5: write the PR onto the item as a one-key PATCH.
+			//
+			// BUG-3049: this used to decode the item's whole `fields` blob,
+			// add `github_pr`, and PATCH the blob back — so anything written to
+			// the item between the GetItem above and this write was reverted.
+			// A patch names only `github_pr`, and the server merges it under the
+			// row lock. `github_pr` is the one reserved metadata key that
+			// fields_patch accepts (items.PatchRefusedFieldKeysIn, BUG-2627
+			// part 2), precisely because this door is its sanctioned writer.
 			_, err = client.UpdateItem(ws, item.Slug, models.ItemUpdate{
-				Fields: &fields,
+				FieldsPatch: map[string]interface{}{
+					"github_pr": GitHubPR{
+						Number:    pr.Number,
+						URL:       pr.URL,
+						Title:     pr.Title,
+						State:     pr.State,
+						Branch:    pr.Branch,
+						Repo:      pr.Repo,
+						UpdatedAt: pr.UpdatedAt,
+					},
+				},
 			})
 			if err != nil {
 				return fmt.Errorf("failed to update item: %w", err)
@@ -352,12 +345,12 @@ func githubUnlinkCmd() *cobra.Command {
 				return fmt.Errorf("item %q has no linked PR", args[0])
 			}
 
-			delete(fieldsMap, "github_pr")
-			fieldsJSON, _ := json.Marshal(fieldsMap)
-			fields := string(fieldsJSON)
-
+			// BUG-3049: delete the one key, not rewrite the blob. A nil value
+			// in fields_patch is a DELETE (store.mergeFieldsPatch), so the
+			// unlink no longer reverts concurrent writes to other fields. The
+			// decode above stays: it is how "has no linked PR" is detected.
 			_, err = client.UpdateItem(ws, item.Slug, models.ItemUpdate{
-				Fields: &fields,
+				FieldsPatch: map[string]interface{}{"github_pr": nil},
 			})
 			if err != nil {
 				return err

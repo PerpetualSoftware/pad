@@ -3626,31 +3626,30 @@ Examples:
 					continue
 				}
 
-				// Build field updates by merging with existing
-				existingFields := make(map[string]interface{})
-				if item.Fields != "" && item.Fields != "{}" {
-					json.Unmarshal([]byte(item.Fields), &existingFields)
-				}
-
+				// BUG-3049: patch the keys this command sets, nothing else.
+				// It used to decode the item's stored blob, set status and/or
+				// priority on the decoded map, and PATCH the whole blob back —
+				// one GET and one write per row, so any field written between
+				// them was reverted. With N rows the window is N round-trips
+				// long. The GetItem above stays: `item` supplies the ref for the
+				// result row.
 				var changeParts []string
 				applied := map[string]any{}
+				patch := map[string]interface{}{}
 				if status != "" {
-					existingFields["status"] = status
+					patch["status"] = status
 					changeParts = append(changeParts, status)
 					applied["status"] = status
 				}
 				if priority != "" {
-					existingFields["priority"] = priority
+					patch["priority"] = priority
 					changeParts = append(changeParts, priority)
 					applied["priority"] = priority
 				}
 
-				fieldsJSON, _ := json.Marshal(existingFields)
-				fieldsStr := string(fieldsJSON)
-
 				input := models.ItemUpdate{
-					Fields: &fieldsStr,
-					Force:  force,
+					FieldsPatch: patch,
+					Force:       force,
 				}
 
 				_, err = client.UpdateItem(ws, slug, input)

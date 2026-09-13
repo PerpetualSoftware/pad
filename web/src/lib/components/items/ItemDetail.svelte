@@ -3263,15 +3263,17 @@
 	// both at validate time and at chip-render time. (Per Codex review
 	// round 5 finding #2.)
 	//
-	// Race mitigation: a concurrent updateField call to the same item
-	// would, in the legacy pattern, race against our PATCH because both
-	// send the FULL fields blob. To minimize the window we re-fetch the
-	// item right before the PATCH and merge our keys onto the freshest
-	// server snapshot. The window is still non-zero (between fetch and
-	// patch-land), and the same race exists in the project's existing
-	// updateField path — IDEA-1480 tracks a server-side partial-fields
-	// update that would close it system-wide. (Per Codex review round 5
-	// finding #1.)
+	// Race: this used to send the FULL fields blob, merged onto a
+	// snapshot re-fetched immediately before the PATCH. A re-read
+	// narrows the window and cannot close it, so a concurrent field
+	// edit landing inside it was reverted (BUG-3049). The write is now
+	// a `fields_patch` of exactly the two keys this function owns —
+	// the server merges per key, so no other field can be reverted
+	// regardless of timing, and the re-fetch is gone with the blob it
+	// existed to build. No `expected_updated_at`: there is nothing to
+	// guard, since a concurrent write to these two keys does not exist
+	// (nothing else writes them) and the token could not discriminate
+	// one inside the same second anyway (BUG-3037).
 	//
 	// Item identity is captured before the await so a navigation
 	// during the in-flight PATCH cannot stamp the WRONG item with
@@ -3286,24 +3288,16 @@
 		// re-shown item (Codex).
 		const gen = loadGeneration;
 		try {
-			// Re-fetch to get the latest fields snapshot from the server,
-			// then merge our two keys. This narrows but does not fully
-			// close the race against concurrent field edits.
-			const latest = await api.items.get(targetWs, targetItem.id);
-			if (switchedAway(targetItem, gen)) return;
 			// HT-2176 Option A (TASK-2172): NO peeking recheck. New imports are
 			// blocked at the trigger (refreshFromSource / handleImportInserted gate
 			// on `mutationsEnabled`); this only ever runs as the automatic
 			// continuation of an import the user STARTED before the pane opened, so
 			// it completes normally (stamping the master's own pre-pane content).
-			const latestFields = parseFields(latest);
-			const merged = {
-				...latestFields,
-				pad_source_url: meta.source_url,
-				pad_imported_at: meta.fetched_at
-			};
 			const fresh = await api.items.update(targetWs, targetItem.id, {
-				fields: JSON.stringify(merged)
+				fields_patch: {
+					pad_source_url: meta.source_url,
+					pad_imported_at: meta.fetched_at
+				}
 			});
 			if (switchedAway(targetItem, gen)) return;
 			item = withInflightTags(fresh);

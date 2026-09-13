@@ -188,6 +188,40 @@ function buildFieldsJSON(args: Record<string, unknown>): string | undefined {
 	return JSON.stringify(fields);
 }
 
+/**
+ * The UPDATE counterpart of buildFieldsJSON: the same flat params, returned as
+ * an OBJECT for `fields_patch` instead of a JSON string for `fields`.
+ *
+ * BUG-3055 / BUG-3049. `fields` is a full REPLACE server-side
+ * (internal/server/handlers_items.go: "`fields` (full replace) and
+ * `fields_patch` (field-level merge)"), and this dispatcher never reads the
+ * item — so sending the caller's named keys as `fields` DELETED every stored
+ * field the caller did not mention. `pad_item update status=done` on an item
+ * with a priority dropped the priority, with no concurrency involved. The CLI's
+ * same verb has always lowered `--field` into FieldsPatch
+ * (cmd/pad/cmd_item.go), so this also makes one tool name mean one thing on
+ * both surfaces.
+ *
+ * `parent` stays in the key list: the server's fields_patch path runs
+ * extractParentLink over the patch, so a parent write keeps working through
+ * item_links exactly as it did on the full-blob path.
+ *
+ * A caller naming `implementation_notes` / `decision_log` / `convention` now
+ * gets a refusal (items.PatchRefusedFieldKeysIn, BUG-2627 part 2) instead of
+ * the silent undecodable-blob write the old shape performed — the intended
+ * behaviour on both counts.
+ */
+function buildFieldsPatch(args: Record<string, unknown>): Record<string, unknown> | undefined {
+	const fields: Record<string, unknown> = {};
+	for (const key of ['status', 'priority', 'category', 'parent']) {
+		const v = str(args, key);
+		if (v !== undefined) fields[key] = v;
+	}
+	Object.assign(fields, parseFieldKVP(args));
+	if (Object.keys(fields).length === 0) return undefined;
+	return fields;
+}
+
 /** Tags: the catalog passes a JSON array of strings; ItemCreate/ItemUpdate
  *  store the canonical JSON-encoded string form. */
 function buildTagsJSON(args: Record<string, unknown>): string | undefined {
@@ -428,8 +462,9 @@ const HANDLERS: Record<string, Handler> = {
 		if (title !== undefined) data.title = title;
 		const content = str(args, 'content');
 		if (content !== undefined) data.content = content;
-		const fields = buildFieldsJSON(args);
-		if (fields !== undefined) data.fields = fields;
+		// Field-level merge, never a full replace (BUG-3055).
+		const fieldsPatch = buildFieldsPatch(args);
+		if (fieldsPatch !== undefined) data.fields_patch = fieldsPatch;
 		const tags = buildTagsJSON(args);
 		if (tags !== undefined) data.tags = tags;
 		const comment = str(args, 'comment');

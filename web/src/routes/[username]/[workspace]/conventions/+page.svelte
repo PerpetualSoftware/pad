@@ -224,7 +224,12 @@
 		conventions = [...conventions];
 
 		try {
-			await api.items.update(workspace, item.slug, { fields: JSON.stringify(fields) });
+			// BUG-3049: patch the one key this toggle owns. The optimistic
+			// update above still writes the whole local blob (it is local
+			// state, reverted on failure); only the WIRE shape changes, so a
+			// concurrent edit to another field cannot be reverted by this
+			// write.
+			await api.items.update(workspace, item.slug, { fields_patch: { status: newStatus } });
 			toastStore.show(wasActive ? 'Convention disabled' : 'Convention enabled', 'success');
 		} catch {
 			// Revert
@@ -404,7 +409,10 @@
 			fields.status = targetStatus;
 			item.fields = JSON.stringify(fields);
 			try {
-				await api.items.update(workspace, item.slug, { fields: JSON.stringify(fields) });
+				// BUG-3049: status-only patch, per row. Same reasoning as
+				// toggleStatus above — the local blob write is optimistic UI
+				// state, the wire write names only the key it owns.
+				await api.items.update(workspace, item.slug, { fields_patch: { status: targetStatus } });
 			} catch { /* individual failures won't block the rest */ }
 		}
 		conventions = [...conventions];

@@ -204,11 +204,9 @@ func reconcileItem(client *cli.Client, ws string, item *models.Item, apply bool)
 	result.Findings = buildReconcileFindings(item, livePR, prErr, branchExists, branchErr)
 
 	if apply && livePR != nil && needsPRMetadataRefresh(item, livePR) {
-		fields, err := mergeGitHubPRIntoFields(item.Fields, livePR)
-		if err != nil {
-			return nil, err
-		}
-		updatedItem, err := client.UpdateItem(ws, item.Slug, models.ItemUpdate{Fields: &fields})
+		updatedItem, err := client.UpdateItem(ws, item.Slug, models.ItemUpdate{
+			FieldsPatch: gitHubPRFieldPatch(livePR),
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -383,27 +381,25 @@ func needsPRMetadataRefresh(item *models.Item, livePR *GitHubPR) bool {
 	return stored.UpdatedAt != livePR.UpdatedAt
 }
 
-func mergeGitHubPRIntoFields(fieldsJSON string, livePR *GitHubPR) (string, error) {
-	fields := map[string]any{}
-	if strings.TrimSpace(fieldsJSON) != "" && strings.TrimSpace(fieldsJSON) != "{}" {
-		if err := json.Unmarshal([]byte(fieldsJSON), &fields); err != nil {
-			return "", fmt.Errorf("parse item fields: %w", err)
-		}
+// gitHubPRFieldPatch returns the one-key field patch that refreshes an item's
+// stored PR metadata.
+//
+// BUG-3049: this replaces mergeGitHubPRIntoFields, which decoded the item's
+// whole `fields` blob, set `github_pr`, and returned the blob for a full
+// replace. The item was read before a `gh` API call, so the window between the
+// read and the write was as wide as that call — and any field written inside it
+// was reverted. Naming one key removes the window instead of narrowing it, and
+// removes the need to parse (or be able to parse) the rest of the blob at all.
+func gitHubPRFieldPatch(livePR *GitHubPR) map[string]any {
+	return map[string]any{
+		"github_pr": GitHubPR{
+			Number:    livePR.Number,
+			URL:       livePR.URL,
+			Title:     livePR.Title,
+			State:     livePR.State,
+			Branch:    livePR.Branch,
+			Repo:      livePR.Repo,
+			UpdatedAt: livePR.UpdatedAt,
+		},
 	}
-
-	fields["github_pr"] = GitHubPR{
-		Number:    livePR.Number,
-		URL:       livePR.URL,
-		Title:     livePR.Title,
-		State:     livePR.State,
-		Branch:    livePR.Branch,
-		Repo:      livePR.Repo,
-		UpdatedAt: livePR.UpdatedAt,
-	}
-
-	payload, err := json.Marshal(fields)
-	if err != nil {
-		return "", fmt.Errorf("marshal item fields: %w", err)
-	}
-	return string(payload), nil
 }

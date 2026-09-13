@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"reflect"
 	"strings"
 
 	"github.com/google/uuid"
@@ -644,13 +645,29 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 		}
 	}
 
-	fieldsJSON, err := json.Marshal(fieldMap)
-	if err != nil {
-		return nil, &bulkOpError{message: "failed to marshal fields"}
-	}
-	fieldsStr := string(fieldsJSON)
+	// BUG-3049: send a field-level PATCH, not the whole blob. `fieldMap` is the
+	// item's stored fields (read at the top of this function, OUTSIDE the write
+	// transaction) merged with this operation's changes, so writing it as
+	// `Fields` reverted any concurrent write that landed in between — a bulk
+	// status move on ten items could undo ten unrelated single-field edits.
+	//
+	// The patch is the DIFF of this pipeline's own output against the stored
+	// values, so it still carries everything this operation legitimately
+	// changes beyond `changes` itself: schema defaults ValidateFields injected,
+	// canonicalised relation refs, autoPopulateDates' completion stamps, and
+	// keys the relation passes DROPPED (carried as an explicit nil, which
+	// mergeFieldsPatch removes). What it no longer carries is keys this
+	// operation did not touch at all.
+	//
+	// Residual, stated rather than hidden: a carried value whose only change is
+	// CoerceFields normalising its type (stored `"3"` on a number field
+	// becoming `3`) differs from the stored value and is therefore still in the
+	// patch. That reproduces exactly what the blob write did to such a key, so
+	// it is not a regression — it is the part of the window this fix does not
+	// close, and it closes for good when the stored value is already canonical.
+	patch := fieldsPatchFromMerge(storedFields, fieldMap)
 	input := models.ItemUpdate{
-		Fields:         &fieldsStr,
+		FieldsPatch:    patch,
 		LastModifiedBy: actor,
 		Source:         source,
 	}
@@ -1102,4 +1119,34 @@ func requiredErrorsUnsatisfiedBy(errs []string, supplied map[string]any) []strin
 		out = append(out, e)
 	}
 	return out
+}
+
+// fieldsPatchFromMerge returns the field-level patch that turns `stored` into
+// `merged`: every key whose value differs (added or changed), plus an explicit
+// nil for every key `stored` had and `merged` does not, which
+// store.mergeFieldsPatch treats as a delete.
+//
+// BUG-3049. The point is what it OMITS: a key present in both with an equal
+// value is left out entirely, so a write built from a snapshot read outside the
+// write transaction can no longer revert a concurrent change to a key it never
+// meant to touch.
+//
+// Equality is reflect.DeepEqual over the decoded JSON values. Two values that
+// are semantically equal but decode differently (a number stored as a string,
+// then coerced) compare unequal and stay in the patch — see the call site's
+// note on that residual.
+func fieldsPatchFromMerge(stored, merged map[string]any) map[string]any {
+	patch := make(map[string]any, len(merged))
+	for k, v := range merged {
+		if old, ok := stored[k]; ok && reflect.DeepEqual(old, v) {
+			continue
+		}
+		patch[k] = v
+	}
+	for k := range stored {
+		if _, ok := merged[k]; !ok {
+			patch[k] = nil
+		}
+	}
+	return patch
 }
