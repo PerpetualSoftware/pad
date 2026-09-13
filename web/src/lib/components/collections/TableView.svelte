@@ -4,7 +4,7 @@
 	import { itemComparator, type SortMode } from '$lib/collections/itemSort';
 	import { reorderGroup, disabledDirections, type ReorderDirection } from '$lib/collections/reorder';
 	import { page } from '$app/state';
-	import { statusColor, priorityColor, hasCanonicalStatus, formatFieldLabel as formatLabel } from '$lib/utils/fieldColors';
+	import { statusColor, canonicalValueColor, formatFieldLabel as formatLabel } from '$lib/utils/fieldColors';
 	import Chip from '$lib/components/common/Chip.svelte';
 	import EmptyState from '../common/EmptyState.svelte';
 	import ItemActionsMenu from './ItemActionsMenu.svelte';
@@ -162,17 +162,6 @@
 		onStatusChange(item, next);
 	}
 
-	/** FieldEditor's canonical-value resolution: canonical statuses + the four
-	 *  priorities get the fieldColors palette; unknown values return null so
-	 *  the cell renders as plain text instead of a chip. */
-	function selectValueColor(val: string): string | null {
-		if (hasCanonicalStatus(val)) return statusColor(val);
-		const p = val?.toLowerCase();
-		if (p === 'critical' || p === 'high' || p === 'medium' || p === 'low') {
-			return priorityColor(val);
-		}
-		return null;
-	}
 
 	function relativeTime(dateStr: string): string {
 		const now = Date.now();
@@ -270,7 +259,24 @@
 				</div>
 				{#each visibleFields as field (field.key)}
 					<div class="table-cell" role="cell">
-						{#if field.key === 'status' && field.options && onStatusChange}
+						<!--
+							SHAPE, not truthiness (BUG-3041): `field.options` survives a
+							retype in the schema editor, so a `status` that is now a
+							`multi_relation` still takes this arm, with an ARRAY as its
+							value. The chip used to render it and the row threw. A
+							non-string falls through to the plain-text arm, which is
+							honest about holding something this chip cannot describe.
+
+							ABSENT is admitted alongside a string, and that is not
+							sloppiness — it is the affordance this arm exists for. With
+							no status stored, the chip renders empty and CLICKING IT sets
+							the first option, which is how a row gets its first status.
+							The first version of this gate required a string outright and
+							silently removed that setter, making `{}` and `{status:''}`
+							behave differently for no reason a user could see (found by
+							the enumeration round, which reproduced the difference).
+						-->
+						{#if field.key === 'status' && field.options && onStatusChange && (fields[field.key] == null || typeof fields[field.key] === 'string')}
 							<Chip
 								size="sm"
 								color={statusColor(fields[field.key] ?? '')}
@@ -281,7 +287,7 @@
 								{formatLabel(fields[field.key] ?? '')}
 							</Chip>
 						{:else if field.options && typeof fields[field.key] === 'string' && fields[field.key]}
-							{@const chipColor = selectValueColor(fields[field.key])}
+							{@const chipColor = canonicalValueColor(fields[field.key])}
 							{#if chipColor}
 								<Chip size="sm" color={chipColor}>{formatLabel(fields[field.key])}</Chip>
 							{:else}

@@ -775,6 +775,94 @@ describe('a REFUSED grouping must not write a group value (U4, codex round 1 P5)
 		expect(plus).toHaveLength(0);
 	});
 
+	it('RENDERS a card whose status is a list, instead of throwing (BUG-3041)', () => {
+		// The crash this fixture used to be written AROUND. The leg below still
+		// says "the item's status is ABSENT on purpose: a card carrying an ARRAY
+		// there trips scalar status formatting and the board throws before
+		// rendering" — that was true when it was written and is what BUG-3041
+		// filed. This leg is the same schema WITH the array present.
+		//
+		// `status` and `priority` are conventional key names, not reserved ones,
+		// so the schema editor will type them however it likes and nothing
+		// rewrites the values already stored. The board correctly refuses to
+		// GROUP by such a field; it then threw while drawing the card's chip,
+		// which is a rendering contract and not a grouping one.
+		const coll = collection();
+		coll.schema = JSON.stringify({
+			fields: [
+				{
+					key: 'status',
+					label: 'Status',
+					type: 'multi_relation',
+					collection: 'colors',
+					options: ['old-a', 'old-b'],
+				},
+				{ key: 'priority', label: 'Priority', type: 'multi_relation', collection: 'colors' },
+			],
+		});
+		const listy = (id: string) =>
+			({
+				...item(id),
+				fields: JSON.stringify({ status: ['id-red', 'id-blue'], priority: ['id-green'] }),
+			}) as Item;
+
+		const screen = render(BoardView, {
+			props: {
+				items: [listy('car-1')],
+				collection: coll,
+				wsSlug: 'ws',
+				groupField: 'status',
+				onStatusChange: vi.fn(),
+			} as never,
+		});
+
+		// The card is THERE — the point is that the board draws rather than dies.
+		expect([...screen.container.querySelectorAll('.card-title')].map((e) => e.textContent?.trim()))
+			.toEqual(['car-1']);
+		expect(screen.container.textContent).toContain('more than one group');
+
+		// And no chip, rather than an empty one: a chip that formats nothing
+		// describes nothing. Both keys are covered, since `priority` reaches the
+		// same helpers by a different branch.
+		expect(screen.container.querySelectorAll('.item-card .chip')).toHaveLength(0);
+		// The raw ids must not leak out through a stringified array either.
+		expect(screen.container.textContent).not.toContain('id-red');
+	});
+
+	it('CONTROL: ordinary string status AND priority still render their chips', () => {
+		// Without this, withholding the chip for EVERY value would satisfy the
+		// leg above, and the boards that work today would quietly lose their
+		// chips. PRIORITY is here because the first version of this control
+		// covered status alone — and the enumeration round showed that deleting
+		// every ItemCard priority chip left the whole suite green (d4). Each
+		// gate needs a leg that fails when it is removed.
+		const coll = collection();
+		coll.schema = JSON.stringify({
+			fields: [
+				{ key: 'status', label: 'Status', type: 'select', options: ['open', 'done'] },
+				{ key: 'priority', label: 'Priority', type: 'select', options: ['high', 'low'] },
+			],
+		});
+		const withBoth = (id: string) =>
+			({ ...item(id), fields: JSON.stringify({ status: 'in_progress', priority: 'high' }) }) as Item;
+
+		const screen = render(BoardView, {
+			props: {
+				items: [withBoth('car-1')],
+				collection: coll,
+				wsSlug: 'ws',
+				groupField: 'status',
+				onStatusChange: vi.fn(),
+			} as never,
+		});
+
+		const chips = [...screen.container.querySelectorAll('.item-card .chip')].map((c) =>
+			(c.textContent ?? '').trim(),
+		);
+		expect(chips).toContain('In Progress');
+		expect(chips).toContain('High');
+	});
+
 	it('offers no bulk "Move all to" either — the FIFTH group-writing affordance', async () => {
 		// Round 8 enumeration. Round 7 enumerated four affordances that write the
 		// group value and this was not among them: the lane menu reads

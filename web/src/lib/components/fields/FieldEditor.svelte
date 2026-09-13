@@ -29,7 +29,7 @@ handlers — onchange is never called.
 	import { shouldOpenInPane } from '$lib/components/collections/itemCardClick';
 	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
 	import { viewport } from '$lib/stores/breakpoint.svelte';
-	import { statusColor, priorityColor, hasCanonicalStatus, formatFieldLabel as formatLabel } from '$lib/utils/fieldColors';
+	import { canonicalValueColor, formatFieldLabel as formatLabel } from '$lib/utils/fieldColors';
 
 	interface Props {
 		field: FieldDef;
@@ -649,16 +649,9 @@ handlers — onchange is never called.
 	let triggerEl: HTMLButtonElement | undefined = $state(undefined);
 	let dropdownEl: HTMLDivElement | undefined = $state(undefined);
 
-	/** Canonical palette from $lib/utils/fieldColors; priorities colored too.
-	 *  Returns null for unrecognized values so the color dot is suppressed. */
-	function getStatusColor(val: string): string | null {
-		if (hasCanonicalStatus(val)) return statusColor(val);
-		const p = val?.toLowerCase();
-		if (p === 'critical' || p === 'high' || p === 'medium' || p === 'low') {
-			return priorityColor(val);
-		}
-		return null;
-	}
+	/** The canonical palette lives in `$lib/utils/fieldColors`; this used to be
+	 *  a third copy of `canonicalValueColor` and is now an alias (BUG-3041). */
+	const getStatusColor = canonicalValueColor;
 
 	function toggleDropdown() {
 		dropdownOpen = !dropdownOpen;
