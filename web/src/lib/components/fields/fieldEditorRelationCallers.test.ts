@@ -38,12 +38,16 @@ describe('ItemDetail gives FieldEditor the relation link context', () => {
 	});
 
 	it('passes the item id — the fence for the typed path\'s echo check (BUG-3039)', () => {
-		// This pane RETARGETS the editor instead of remounting it, so it is the
-		// one caller that can hand the same component a different row. Without
-		// the id the editor cannot tell "our write came home" from "we are now
-		// looking at something else", and the two want opposite answers. Asserted
-		// here because it is a fact about the MOUNT, invisible to any render test
-		// of FieldEditor itself (CONVE-19).
+		// The id fences the typed path's echo check — "did `value` change because
+		// OUR write came home?", which the value alone cannot answer.
+		//
+		// It is NOT load-bearing here, and an earlier version of this comment
+		// said the opposite: this pane wraps its fields in `{#key itemSlug}`, so
+		// an item switch destroys the editor rather than retargeting it. The
+		// assertion stays because FieldEditor cannot see that containment from
+		// inside itself, so passing the id is what keeps the question answerable
+		// if the key ever goes. Asserted here rather than in a render test
+		// because it is a fact about the MOUNT (CONVE-19).
 		expect(tag).toMatch(/itemId=\{item\?\.id\}/);
 	});
 });
