@@ -13,6 +13,8 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // MIME types reported in the read response. Stable across versions —
@@ -342,7 +344,15 @@ func (r *resources) readItem(ctx context.Context, req mcp.ReadResourceRequest) (
 // formatItemAsMarkdown turns the JSON body returned by
 // `pad item show --format json` into a self-contained markdown
 // document: heading with ref + title, sorted metadata fields,
-// optional parent link, then the item's body content.
+// optional parent link, a staleness marker when the server reports one,
+// then the item's body content.
+//
+// The marker (BUG-3033) appears ONLY for content_state's one defined
+// value, and only immediately above the body it qualifies. An
+// unrecognised value renders nothing: the vocabulary is shared with the
+// write side's content_outcome and is expected to grow, and rendering
+// an unknown value as this specific claim about a live editor would be
+// worse than staying silent.
 //
 // Map-key iteration is sorted so the output is stable for tests.
 func formatItemAsMarkdown(jsonBlob string) (string, error) {
@@ -389,6 +399,27 @@ func formatItemAsMarkdown(jsonBlob string) (string, error) {
 			}
 			b.WriteString("\n")
 		}
+	}
+
+	// Staleness marker (BUG-3033). `item show --format json` carries
+	// content_state since BUG-3000, and this formatter composes its own
+	// markdown, so without this the field is fetched and then dropped on
+	// the way out — the resource hands an agent a stale body with the one
+	// signal that says so removed. The CLI's stderr warning does not cover
+	// it either: ExecResourceFetcher reads stdout and does not surface
+	// stderr from a command that SUCCEEDED.
+	//
+	// Placed here, immediately before the body, rather than with the
+	// metadata above: it qualifies the body specifically, and an agent
+	// reading top-down meets it in the sentence before the text it is
+	// about. The literal state token is included so the line is greppable
+	// by the same name the JSON field uses, not only readable as prose.
+	if state, _ := item["content_state"].(string); state == models.ContentOutcomeAppliedPendingFlush {
+		fmt.Fprintf(&b, "> **Stale body** (`content_state: %s`) — this item's stored content is "+
+			"behind its live collaborative document. An editor holds edits that have not been "+
+			"written back, so the body below is the previous content. It catches up when a tab "+
+			"next flushes the item, and nothing on the server forces that to happen.\n\n",
+			models.ContentOutcomeAppliedPendingFlush)
 	}
 
 	// Body. Pad items often have rich markdown here already; pass

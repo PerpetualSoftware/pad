@@ -35,6 +35,22 @@ type Backlink struct {
 	// spaces. Empty when the source item has no body.
 	Snippet string `json:"snippet"`
 
+	// ContentState marks `Snippet` above as taken from a body the server knows
+	// is BEHIND the source item's live collaborative document (BUG-3033). Same
+	// values as models.Item.ContentState, omitted when the source row is
+	// current.
+	//
+	// A snippet is a window onto the body, not metadata about it, so a stale
+	// body makes a stale snippet — the same reasoning that put the marker on
+	// cli.ItemSummary.ContentPreview and on a playbook's summary. It is set
+	// only when a snippet was actually produced: an empty body yields no
+	// snippet and therefore no claim about one.
+	//
+	// It describes the SOURCE item of the link, never the target the caller
+	// asked about. A backlink list can mix marked and unmarked rows for that
+	// reason, and each row's marker is about the row.
+	ContentState string `json:"content_state,omitempty"`
+
 	// DisplayText is the [[X|Display]] override the link author
 	// supplied, nil when the link was a bare `[[X]]` (no pipe).
 	// A non-nil pointer to "" represents the editor-distinct case

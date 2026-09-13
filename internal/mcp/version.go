@@ -1081,6 +1081,48 @@ const CmdhelpVersion = "0.1"
 //     partially, and reports it once through the same
 //     `warnings.dropped_fields` channel BUG-2674 established — so an
 //     import can never change an element count.
+//
+//   - POST-0.33, NO BUMP — BUG-3000 / BUG-3033, the READ half of the
+//     BUG-2995 entry above.
+//
+//     Authored against 0.31 and rebased over U4's 0.33 bump, which is
+//     why it is filed here rather than beside its sibling: it needed no
+//     bump then and needs none now, and nothing in 0.33 touches it. The
+//     two changes are independent — `multi_relation` is a field TYPE,
+//     this is a row PROPERTY on every item.
+//
+//     A read that serves a body the server knows is
+//     behind the item's live collaborative document now says so, via
+//     an additive omitempty `content_state` carrying the SAME value
+//     vocabulary as `warnings.content_outcome`. A distinct name
+//     because a write warning describes what a REQUEST did and this
+//     describes what the ROW is; the shared vocabulary so an agent
+//     that learned the word from a write response recognises it on a
+//     read without a second lesson.
+//
+//     BUG-3000 put it on models.Item, so every MCP surface that
+//     serialises the struct — `pad_item` get, `pad_item` list with
+//     full=true, the summary projection's preview — inherited it and
+//     needed no entry here. BUG-3033 is why there is one: the doors
+//     that build their OWN shape inherited nothing, and two of them
+//     are on this surface. `pad_playbook` run responses gain the
+//     field, and the `pad://workspace/{ws}/items/{ref}` RESOURCE gains
+//     a line of markdown above the body, because a text resource has
+//     no additive key to carry.
+//
+//     The resource line is the one an integrator should read twice: a
+//     consumer diffing that markdown byte-for-byte sees a new block
+//     when — and only when — the body it is about is stale. That is a
+//     changed VALUE on one path, the BUG-2304 disposition the entry
+//     above argues at length, not 0.9's field removal. Nothing is
+//     dropped or retyped, and a current item renders exactly as before.
+//
+//     What a consumer should do with it is the same on both halves:
+//     re-read later. The marker means the op-log is ahead of the row,
+//     not that a write failed, and nothing server-side ever moves that
+//     content into the row — so no surface here states a duration for
+//     this one either, and it is not a promise that the row will catch
+//     up at all.
 const ToolSurfaceVersion = "0.33"
 
 // MetaVersionURI is the canonical URI of the queryable version document.

@@ -119,9 +119,14 @@ func (s *Server) handleExportItemArtifact(w http.ResponseWriter, r *http.Request
 		Fields:        fields,
 		Body:          item.Content,
 		Provenance: artifact.Provenance{
-			Workspace:     ws.Slug,
-			ExportedAt:    time.Now().UTC().Format(time.RFC3339),
-			Author:        author,
+			Workspace:  ws.Slug,
+			ExportedAt: time.Now().UTC().Format(time.RFC3339),
+			Author:     author,
+			// BUG-3033. The artifact is TEXT, so unlike a JSON door there is no
+			// struct to inherit models.Item's marker from — it has to be written
+			// into the format. See Provenance.ContentState for why this block and
+			// why no format_version bump.
+			ContentState:  item.ContentState,
 			FormatVersion: artifact.FormatVersion,
 		},
 	}

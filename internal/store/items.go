@@ -693,11 +693,22 @@ func (s *Store) getItemTx(tx *sql.Tx, id string) (*models.Item, error) {
 //
 // Error direction is benign either way: the predicate is read-only and its only
 // consequence is an extra index seek per row.
-const contentStateSQL = `CASE WHEN EXISTS (
+var contentStateSQL = contentStateSQLFor("i")
+
+// contentStateSQLFor is contentStateSQL for a query that aliases the items table
+// as something other than `i` — the backlink queries call it `s`, since the row
+// they describe is the SOURCE item of a link (BUG-3033).
+//
+// A function rather than a second copy: two hand-maintained spellings of this
+// predicate would be two chances to drift, and a predicate that disagreed with
+// itself between doors is the shape of the defect this whole family is about.
+func contentStateSQLFor(alias string) string {
+	return `CASE WHEN EXISTS (
 			SELECT 1 FROM item_yjs_updates u
-			WHERE u.item_id = i.id
-			  AND u.id > COALESCE(i.content_flushed_op_log_id, 0)
+			WHERE u.item_id = ` + alias + `.id
+			  AND u.id > COALESCE(` + alias + `.content_flushed_op_log_id, 0)
 		) THEN 'applied_pending_flush' ELSE '' END`
+}
 
 // getItemScanQ is the one item-row scan behind GetItem, getItemTx and
 // GetItemIncludeDeleted — identical SELECT and hydration, differing only in

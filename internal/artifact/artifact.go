@@ -39,6 +39,36 @@ type Provenance struct {
 	ExportedAt    string `yaml:"exported_at"`
 	Author        string `yaml:"author"`
 	FormatVersion int    `yaml:"format_version"`
+	// ContentState records that the BODY of this artifact was one the server
+	// knew to be BEHIND the item's live collaborative document at export time
+	// (BUG-3033 / BUG-3000). Same values as models.Item.ContentState, named the
+	// same on purpose: a reader who learned the word from an API response should
+	// not need a second lesson to read it here.
+	//
+	// It belongs in provenance rather than beside `title`, because it is a fact
+	// about THIS EXPORT and not about the item — re-export the same item after a
+	// flush and the key is gone, while nothing about the playbook or convention
+	// itself changed.
+	//
+	// Additive and omitempty, with NO format_version bump, and the two lines
+	// that make that safe are worth naming since a future key will face the same
+	// question. Decode uses a plain yaml.Unmarshal with no KnownFields, so an
+	// older binary reading a newer artifact IGNORES this key rather than
+	// failing; and decode.go compares format_version with EXACT equality against
+	// the constant, so bumping it would reject artifacts in BOTH directions for
+	// what is only an added optional key. A current item's bytes are therefore
+	// byte-identical to what this package emitted before — and that claim has an
+	// instrument older than this change: testdata/*.golden.md pin the encoded
+	// bytes exactly, and they were not touched to land this key.
+	//
+	// What it does NOT do: stop the import. A stale body imported into another
+	// workspace becomes canonical there, in a workspace whose op-log never held
+	// the real content and so can never catch up — that is BUG-3032's open
+	// decision (signal / refuse / accept) for the bundle format. This key is the
+	// cheapest of those three on this format, and forecloses neither of the
+	// others: if that unit rules refuse-or-warn for portable formats, this door
+	// joins the ruling and this marker is what makes the check possible.
+	ContentState string `yaml:"content_state,omitempty"`
 }
 
 // Artifact is a decoded export of one playbook or convention item.

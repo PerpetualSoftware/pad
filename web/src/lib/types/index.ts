@@ -1403,6 +1403,22 @@ export interface Backlink {
 	source_collection_slug: string;
 	source_collection_icon: string;
 	snippet: string;
+	/**
+	 * Set when the SOURCE item's stored body is behind its live collaborative
+	 * document, so `snippet` above is cut from text that has moved on
+	 * (BUG-3033). Same values as `Item.content_state`; omitted when the source
+	 * row is current, which is the common case.
+	 *
+	 * It describes the SOURCE of each link, never the item the panel is about,
+	 * so a list can mix marked and unmarked rows.
+	 *
+	 * NOTE: the API carries this; no browser surface RENDERS it yet. Where a
+	 * stale marker belongs in a backlinks panel or a command-palette result is
+	 * a UI decision rather than a field copy, tracked as BUG-3050. This
+	 * declaration exists so a consumer can see the field rather than discover
+	 * it in a network tab.
+	 */
+	content_state?: 'applied_pending_flush';
 	updated_at: string;
 	/**
 	 * Optional `[[X|display]]` override. `null` (omitted from JSON) when

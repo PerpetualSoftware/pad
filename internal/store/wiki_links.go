@@ -1148,7 +1148,7 @@ func (s *Store) GetBacklinks(targetItemID, workspaceID string, limit, offset int
 
 	rows, err := s.db.Query(s.q(`
 		SELECT s.id, c.prefix, s.item_number, s.title, c.slug, c.icon,
-		       s.content, wl.position, wl.display_text, s.updated_at
+		       s.content, `+contentStateSQLFor("s")+`, wl.position, wl.display_text, s.updated_at
 		FROM item_wiki_links wl
 		JOIN items s       ON s.id = wl.source_item_id
 		JOIN collections c ON c.id = s.collection_id
@@ -1167,13 +1167,21 @@ func (s *Store) GetBacklinks(targetItemID, workspaceID string, limit, offset int
 	var out []models.Backlink
 	for rows.Next() {
 		var (
-			sourceID, prefix, title, collSlug, collIcon, content, updatedAt string
-			itemNumber                                                      int
-			position                                                        int
-			displayText                                                     sql.NullString
+			sourceID, prefix, title, collSlug, collIcon, content, contentState, updatedAt string
+			itemNumber                                                                    int
+			position                                                                      int
+			displayText                                                                   sql.NullString
 		)
-		if err := rows.Scan(&sourceID, &prefix, &itemNumber, &title, &collSlug, &collIcon, &content, &position, &displayText, &updatedAt); err != nil {
+		if err := rows.Scan(&sourceID, &prefix, &itemNumber, &title, &collSlug, &collIcon, &content, &contentState, &position, &displayText, &updatedAt); err != nil {
 			return nil, fmt.Errorf("scan backlink row: %w", err)
+		}
+		// The marker rides the SNIPPET, so it is set only when there is one
+		// (BUG-3033): a source item with an empty body produces no snippet and
+		// makes no claim about one.
+		snippet := snippetAround(content, position)
+		snippetState := ""
+		if snippet != "" {
+			snippetState = contentState
 		}
 		bl := models.Backlink{
 			SourceItemID:         sourceID,
@@ -1181,7 +1189,8 @@ func (s *Store) GetBacklinks(targetItemID, workspaceID string, limit, offset int
 			SourceTitle:          title,
 			SourceCollectionSlug: collSlug,
 			SourceCollectionIcon: collIcon,
-			Snippet:              snippetAround(content, position),
+			Snippet:              snippet,
+			ContentState:         snippetState,
 			UpdatedAt:            updatedAt,
 		}
 		if displayText.Valid {
@@ -1527,7 +1536,7 @@ func (s *Store) queryCrossWorkspaceBacklinksForWorkspace(
 
 	rows, err := s.db.Query(s.q(`
 		SELECT s.id, c.prefix, s.item_number, s.title, c.slug, c.icon,
-		       s.content, wl.position, wl.display_text, s.updated_at
+		       s.content, `+contentStateSQLFor("s")+`, wl.position, wl.display_text, s.updated_at
 		FROM item_wiki_links wl
 		JOIN items s       ON s.id = wl.source_item_id
 		JOIN collections c ON c.id = s.collection_id
@@ -1547,13 +1556,21 @@ func (s *Store) queryCrossWorkspaceBacklinksForWorkspace(
 	var out []models.Backlink
 	for rows.Next() {
 		var (
-			sourceID, prefix, title, collSlug, collIcon, content, updatedAt string
-			itemNumber                                                      int
-			position                                                        int
-			displayText                                                     sql.NullString
+			sourceID, prefix, title, collSlug, collIcon, content, contentState, updatedAt string
+			itemNumber                                                                    int
+			position                                                                      int
+			displayText                                                                   sql.NullString
 		)
-		if err := rows.Scan(&sourceID, &prefix, &itemNumber, &title, &collSlug, &collIcon, &content, &position, &displayText, &updatedAt); err != nil {
+		if err := rows.Scan(&sourceID, &prefix, &itemNumber, &title, &collSlug, &collIcon, &content, &contentState, &position, &displayText, &updatedAt); err != nil {
 			return nil, fmt.Errorf("scan cross-ws backlink row: %w", err)
+		}
+		// The marker rides the SNIPPET, so it is set only when there is one
+		// (BUG-3033): a source item with an empty body produces no snippet and
+		// makes no claim about one.
+		snippet := snippetAround(content, position)
+		snippetState := ""
+		if snippet != "" {
+			snippetState = contentState
 		}
 		bl := models.Backlink{
 			SourceItemID:         sourceID,
@@ -1561,7 +1578,8 @@ func (s *Store) queryCrossWorkspaceBacklinksForWorkspace(
 			SourceTitle:          title,
 			SourceCollectionSlug: collSlug,
 			SourceCollectionIcon: collIcon,
-			Snippet:              snippetAround(content, position),
+			Snippet:              snippet,
+			ContentState:         snippetState,
 			UpdatedAt:            updatedAt,
 			SourceWorkspaceSlug:  sourceWs.Slug,
 		}

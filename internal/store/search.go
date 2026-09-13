@@ -197,6 +197,17 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 				r.Item.UpdatedAt = parseTime(updatedAt)
 				hydrateItemComputedMetadata(&r.Item)
 				r.Item.Content = ""
+				// ...and with it the staleness marker (BUG-3033). This result
+				// carries NO body-derived text at all: the snippet below is the
+				// TITLE, which the collaborative document does not hold. Keeping
+				// the body's marker here would make a renderer describe a title
+				// as derived from a stale body — which it did, until codex round
+				// 3 reproduced it through the store and the CLI.
+				//
+				// The FTS path further down does the opposite and deliberately:
+				// there the snippet IS cut from the body, so the marker is true
+				// and load-bearing even though Content itself is cleared.
+				r.Item.ContentState = ""
 				r.Snippet = r.Item.Title
 				r.Rank = -1000 // Best possible rank so it sorts first
 				results = append(results, r)
@@ -308,6 +319,17 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 				r.Item.UpdatedAt = parseTime(updatedAt)
 				hydrateItemComputedMetadata(&r.Item)
 				r.Item.Content = ""
+				// ...and with it the staleness marker (BUG-3033). This result
+				// carries NO body-derived text at all: the snippet below is the
+				// TITLE, which the collaborative document does not hold. Keeping
+				// the body's marker here would make a renderer describe a title
+				// as derived from a stale body — which it did, until codex round
+				// 3 reproduced it through the store and the CLI.
+				//
+				// The FTS path further down does the opposite and deliberately:
+				// there the snippet IS cut from the body, so the marker is true
+				// and load-bearing even though Content itself is cleared.
+				r.Item.ContentState = ""
 				r.Snippet = r.Item.Title
 				r.Rank = -1000 // Best possible rank so it sorts first
 				results = append(results, r)
@@ -595,6 +617,19 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 		r.Item.UpdatedAt = parseTime(updatedAt)
 		hydrateItemComputedMetadata(&r.Item)
 		r.Item.Content = ""
+		// ContentState deliberately SURVIVES here, unlike on the two direct-ref
+		// paths above (BUG-3033). The body is dropped to keep the payload small,
+		// but r.Snippet on this path is normally cut FROM that body by
+		// FTSSnippet, so the marker qualifies text this result serves.
+		//
+		// NOT always, and the earlier wording claimed otherwise: an FTS TITLE
+		// match on an item with an empty body returns an empty snippet and an
+		// empty content while still carrying the marker (codex round 4). That
+		// case predates this change and is not wrong in itself — the row really
+		// is behind its live document — but it is the marker describing the ROW
+		// rather than any served text, which is the one thing the sentence above
+		// must not be read as promising. cli.ItemSummary has the analogous case
+		// when content_preview is omitted.
 		results = append(results, r)
 	}
 	if err := rows.Err(); err != nil {
