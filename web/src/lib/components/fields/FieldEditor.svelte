@@ -19,6 +19,7 @@ handlers — onchange is never called.
 	import { formatItemRef, type FieldDef, type ItemIndexRow, type PaneTarget } from '$lib/types';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import { narrowRelationRow } from '$lib/collections/relationGroups';
+	import { isMultiRelationType, isRelationType } from '$lib/items/relationFieldTypes';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
@@ -77,7 +78,45 @@ handlers — onchange is never called.
 	// that holds soft-deleted rows alongside live ones (`getByCollection`
 	// filters them out by default rather than dropping them), so a dangling
 	// target is a row carrying `deleted_at`. No fetch, and no loading state.
-	let isRelation = $derived(field.type === 'relation');
+	let isRelation = $derived(isRelationType(field.type));
+
+	/**
+	 * The VALUE-level question, and it is a different one from `isRelation`
+	 * (see `relationFieldTypes`): a `multi_relation` holds an ORDERED LIST of
+	 * references where a `relation` holds one. Everything below that reads or
+	 * writes a value has to ask it; everything that asks "does this field name
+	 * other items at all" asks `isRelation`.
+	 */
+	let isMultiRelation = $derived(isMultiRelationType(field.type));
+
+	/**
+	 * The field's references as raw strings, in order.
+	 *
+	 * ONE element for a scalar `relation`, N for a `multi_relation`, none when
+	 * the field is empty — so every render path below is driven by a list and
+	 * the scalar case is the one-element case rather than a second code path.
+	 * That is the whole shape of U4's web half: the resolution, chip and link
+	 * logic is parameterised by ONE raw reference, and the two types differ
+	 * only in how many of those there are and what a new choice does to them.
+	 *
+	 * Blank and non-string elements are dropped rather than rendered. The write
+	 * doors refuse both outright (`internal/items/validate.go`, the
+	 * multi_relation arm — an empty element is an error, not a skip, precisely
+	 * so an ordered list's length cannot depend on which elements were blank),
+	 * so this is defence against a value no door will accept, not a policy of
+	 * its own.
+	 */
+	let relationValues = $derived.by((): string[] => {
+		if (!isRelation) return [];
+		if (isMultiRelation) {
+			if (!Array.isArray(value)) return [];
+			return value
+				.map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
+				.filter((entry) => entry !== '');
+		}
+		const raw = typeof value === 'string' ? value.trim() : '';
+		return raw ? [raw] : [];
+	});
 
 	/**
 	 * Whether the field's declared target still names a live collection.
@@ -111,10 +150,18 @@ handlers — onchange is never called.
 	let relationEditable = $derived(
 		isRelation && !!wsSlug && !!field.collection && relationTarget !== 'stale',
 	);
-	let relationRow = $derived.by((): ItemIndexRow | null => {
+	//
+	// FUNCTIONS OF ONE RAW REFERENCE, not of `value` (U4/W7). These four used
+	// to be `$derived` values closing over the scalar `value`; a
+	// `multi_relation` needs every one of them answered per ELEMENT, and a
+	// second copy taking a parameter is how the two types drift apart. So the
+	// parameterised form is the only implementation and the scalar path below
+	// calls it with its single element — which is also why the existing scalar
+	// render tests are the instrument that this refactor moved nothing.
+	function relationRowFor(raw: string): ItemIndexRow | null {
 		if (!isRelation || !wsSlug) return null;
-		const raw = typeof value === 'string' ? value.trim() : '';
-		if (!raw) return null;
+		const ref = raw.trim();
+		if (!ref) return null;
 		// ONE IMPLEMENTATION OF THE TWO NARROWINGS (TASK-2998). They were worked
 		// out here and duplicated into `relationGroups` when the board needed
 		// them; TASK-2996 has merged without touching this file, so the fork is
@@ -127,35 +174,37 @@ handlers — onchange is never called.
 		// from that same list, so the helper's own guard covers the stale and
 		// unknown cases this branch used to name.
 		return narrowRelationRow(
-			localIndex.findByIdOrSlug(wsSlug, raw),
-			raw,
+			localIndex.findByIdOrSlug(wsSlug, ref),
+			ref,
 			field.collection,
 			knownCollectionSlugs,
 		);
-	});
-	let relationState = $derived.by((): 'empty' | 'live' | 'deleted' | 'unresolved' => {
+	}
+	function relationStateFor(raw: string): 'empty' | 'live' | 'deleted' | 'unresolved' {
 		if (!isRelation) return 'empty';
-		const raw = typeof value === 'string' ? value.trim() : '';
-		if (!raw) return 'empty';
-		if (!relationRow) return 'unresolved';
-		return relationRow.deleted_at ? 'deleted' : 'live';
-	});
-	let relationRef = $derived(relationRow ? formatItemRef(relationRow) : null);
-	let relationHref = $derived.by(() => {
-		if (!relationRow || !wsSlug || !username) return null;
-		const seg = relationRef ?? relationRow.slug;
-		if (!relationRow.collection_slug || !seg) return null;
-		return `/${username}/${wsSlug}/${relationRow.collection_slug}/${seg}`;
-	});
+		if (!raw.trim()) return 'empty';
+		const row = relationRowFor(raw);
+		if (!row) return 'unresolved';
+		return row.deleted_at ? 'deleted' : 'live';
+	}
+	function relationRefFor(row: ItemIndexRow | null): string | null {
+		return row ? formatItemRef(row) : null;
+	}
+	function relationHrefFor(row: ItemIndexRow | null): string | null {
+		if (!row || !wsSlug || !username) return null;
+		const seg = relationRefFor(row) ?? row.slug;
+		if (!row.collection_slug || !seg) return null;
+		return `/${username}/${wsSlug}/${row.collection_slug}/${seg}`;
+	}
 
-	function handleRelationClick(e: MouseEvent) {
-		if (!relationRow || !shouldOpenInPane(e, !!onOpenTarget)) return;
+	function handleRelationClick(e: MouseEvent, row: ItemIndexRow) {
+		if (!shouldOpenInPane(e, !!onOpenTarget)) return;
 		e.preventDefault();
 		onOpenTarget?.({
-			ref: relationRef ?? undefined,
-			slug: relationRow.slug,
-			href: relationHref ?? undefined,
-			collectionSlug: relationRow.collection_slug,
+			ref: relationRefFor(row) ?? undefined,
+			slug: row.slug,
+			href: relationHrefFor(row) ?? undefined,
+			collectionSlug: row.collection_slug,
 		});
 	}
 
@@ -170,7 +219,40 @@ handlers — onchange is never called.
 	function pickRelation(row: ItemIndexRow) {
 		relationWrite++;
 		editingRelation = false;
-		onchange(row.id);
+		commitPicked(row.id);
+	}
+
+	/**
+	 * Write one chosen id into the field, in whichever shape the field takes.
+	 *
+	 * REPLACE for a `relation`, APPEND for a `multi_relation` — that is the
+	 * entire difference between the types at the write end, and it lives in one
+	 * function because BOTH ways of choosing (the picker and the inline create)
+	 * land here. Two copies of "what choosing means" is how the create path
+	 * ends up replacing a list the picker path appends to.
+	 */
+	function commitPicked(id: string) {
+		if (!isMultiRelation) {
+			onchange(id);
+			return;
+		}
+		onchange([...relationValues, id]);
+	}
+
+	/**
+	 * Drop one element, by POSITION rather than by value — the list is ordered
+	 * and the user pointed at a row, not at an id.
+	 *
+	 * The last removal writes `[]`, not an absent key: an empty array is a
+	 * valid shape meaning "no targets", and normalising it to absence is the
+	 * WRITE DOOR's job (`internal/items/validate.go`, the multi_relation arm,
+	 * which spells out why the shape check cannot be the one to decide it).
+	 * Guessing at absence here would be this component answering a question the
+	 * server already answers, in a second place.
+	 */
+	function removeRelationAt(index: number) {
+		relationWrite++;
+		onchange(relationValues.filter((_, i) => i !== index));
 	}
 
 	// Backing out is a decision, so it supersedes an in-flight create exactly as
@@ -338,7 +420,7 @@ handlers — onchange is never called.
 			if (indexStillOurs()) localIndex.upsert(ws, item, epoch);
 			if (!stillWaiting()) return;
 			editingRelation = false;
-			onchange(item.id);
+			commitPicked(item.id);
 		} catch (e: any) {
 			// The SAME predicate as the success path, not a copy of some of it
 			// (codex rounds 4 and 6). A create the user escaped out of, or one
@@ -613,33 +695,41 @@ handlers — onchange is never called.
 
 <svelte:window onclick={handleWindowClick} />
 
-{#snippet relationChip()}
+{#snippet relationChip(raw: string)}
 	<!--
-		One chip, four states. The invariant across all of them: a raw item ID
-		never reaches the user. Before this branch existed, the readonly arm was
-		`{value ?? '—'}`, which rendered the UUID verbatim.
+		One chip for ONE reference, four states. The invariant across all of
+		them: a raw item ID never reaches the user. Before this branch existed,
+		the readonly arm was `{value ?? '—'}`, which rendered the UUID verbatim.
+
+		Takes the reference as a parameter rather than closing over `value` so
+		a `multi_relation` renders N of these with no second chip
+		implementation (U4/W7).
 	-->
-	{#if relationState === 'empty'}
+	{@const row = relationRowFor(raw)}
+	{@const state = relationStateFor(raw)}
+	{@const ref = relationRefFor(row)}
+	{@const href = relationHrefFor(row)}
+	{#if state === 'empty'}
 		<span class="relation-empty">—</span>
-	{:else if relationState === 'live' && relationHref}
+	{:else if state === 'live' && href && row}
 		<a
 			class="relation-chip link-target"
-			href={relationHref}
-			onclick={handleRelationClick}
+			{href}
+			onclick={(e) => handleRelationClick(e, row)}
 		>
-			{#if relationRef}<span class="relation-ref">{relationRef}</span>{/if}
-			<span class="relation-title">{relationRow?.title}</span>
+			{#if ref}<span class="relation-ref">{ref}</span>{/if}
+			<span class="relation-title">{row.title}</span>
 		</a>
-	{:else if relationState === 'live'}
+	{:else if state === 'live'}
 		<!-- Resolved, but no route to build (no `username`): still never the id. -->
 		<span class="relation-chip">
-			{#if relationRef}<span class="relation-ref">{relationRef}</span>{/if}
-			<span class="relation-title">{relationRow?.title}</span>
+			{#if ref}<span class="relation-ref">{ref}</span>{/if}
+			<span class="relation-title">{row?.title}</span>
 		</span>
-	{:else if relationState === 'deleted'}
+	{:else if state === 'deleted'}
 		<span class="relation-chip is-deleted" title="This item has been deleted.">
-			{#if relationRef}<span class="relation-ref">{relationRef}</span>{/if}
-			<span class="relation-title">{relationRow?.title}</span>
+			{#if ref}<span class="relation-ref">{ref}</span>{/if}
+			<span class="relation-title">{row?.title}</span>
 			<span class="relation-note">(deleted)</span>
 		</span>
 	{:else}
@@ -652,6 +742,27 @@ handlers — onchange is never called.
 		<span class="relation-chip is-unresolved" title="This value does not match any item in this workspace.">
 			<span class="relation-note">Unresolved reference</span>
 		</span>
+	{/if}
+{/snippet}
+
+{#snippet relationChips()}
+	<!--
+		The field's whole value, read-only: one chip for a `relation`, N in
+		order for a `multi_relation`, an em-dash for either when empty. The
+		em-dash is rendered HERE rather than left to the chip's own empty arm so
+		an empty LIST says the same thing an empty scalar does — a list of zero
+		chips would otherwise render as nothing at all.
+	-->
+	{#if relationValues.length === 0}
+		<span class="relation-empty">—</span>
+	{:else if isMultiRelation}
+		<span class="relation-chips">
+			{#each relationValues as raw, i (raw + '@' + i)}
+				{@render relationChip(raw)}
+			{/each}
+		</span>
+	{:else}
+		{@render relationChip(relationValues[0])}
 	{/if}
 {/snippet}
 
@@ -695,7 +806,7 @@ handlers — onchange is never called.
 			<span>{value === undefined || value === null ? '—' : JSON.stringify(value)}</span>
 		</div>
 	{:else if isRelation}
-		<div class="readonly-display">{@render relationChip()}</div>
+		<div class="readonly-display">{@render relationChips()}</div>
 	{:else}
 		<div class="readonly-display">
 			<span>{value ?? '—'}</span>
@@ -908,9 +1019,77 @@ handlers — onchange is never called.
 
 {:else if isRelation && relationEditable}
 	<div class="relation-editor">
-		{#if relationState !== 'empty' && !editingRelation}
+		{#if isMultiRelation}
+			<!--
+				A LIST, so the affordances are per-ELEMENT (Remove) plus one for
+				the list (Add). The scalar's Change/Clear pair does not
+				translate: "Change" would have to mean "replace everything",
+				which is not what a user pointing at one chip is asking for.
+
+				The picker's open/closed rule is the SCALAR'S, deliberately
+				unchanged — open when the field is empty or when the user asked
+				for it, closed once a choice lands. An empty list auto-opening
+				is the same trade the scalar comment above `editingRelation`
+				argues for: nothing to show means nothing to show INSTEAD of a
+				search box.
+			-->
+			{#each relationValues as raw, i (raw + '@' + i)}
+				<div class="relation-row">
+					{@render relationChip(raw)}
+					<button
+						type="button"
+						class="relation-action"
+						onclick={() => removeRelationAt(i)}
+					>
+						Remove
+					</button>
+				</div>
+			{/each}
+			<!--
+				DUPLICATE PREVENTION, in its entirety: the picker is told to hide
+				what the field already references, so the click the server would
+				refuse is never offered. The server REFUSES a duplicate
+				(`RelationTargetDuplicate`) rather than de-duplicating, so that
+				refusal — not a silent one-copy write — is what stands behind
+				this if the exclusion is ever dropped.
+
+				The exclusion set is the RAW stored elements, and that is
+				sufficient rather than lazy: the write door canonicalises every
+				relation value to its target's UUID (`ResolveRelationReferents`),
+				so a stored element IS the id even when the caller typed a ref or
+				a title. Excluding raw strings therefore also covers the element
+				`localIndex` cannot resolve — the one whose target the picker can
+				still offer, because while the index is cold it searches the
+				SERVER, over rows that were never in the index.
+
+				A resolved-id set was written alongside this and removed: with
+				canonicalisation it is the same set, and no mutant could tell the
+				two apart. If stored elements ever stop being canonical ids, THIS
+				is the line that stops being sufficient.
+			-->
+			{#if editingRelation || relationValues.length === 0}
+				<ItemPicker
+					wsSlug={wsSlug!}
+					collection={field.collection}
+					label={ariaLabel ?? `Search ${field.label || field.key}`}
+					placeholder="Search…"
+					autofocus={editingRelation}
+					excludeIds={relationValues}
+					onselect={pickRelation}
+					oncreate={canCreateInTarget ? createRelationTarget : undefined}
+					createLabel={targetCollection?.name}
+					oncancel={relationValues.length === 0 ? undefined : cancelRelationEdit}
+				/>
+			{:else}
+				<div class="relation-row">
+					<button type="button" class="relation-action" onclick={() => (editingRelation = true)}>
+						+ Add
+					</button>
+				</div>
+			{/if}
+		{:else if relationValues.length > 0 && !editingRelation}
 			<div class="relation-row">
-				{@render relationChip()}
+				{@render relationChip(relationValues[0])}
 				<button type="button" class="relation-action" onclick={() => (editingRelation = true)}>
 					Change
 				</button>
@@ -926,7 +1105,7 @@ handlers — onchange is never called.
 				onselect={pickRelation}
 				oncreate={canCreateInTarget ? createRelationTarget : undefined}
 				createLabel={targetCollection?.name}
-				oncancel={relationState === 'empty' ? undefined : cancelRelationEdit}
+				oncancel={relationValues.length === 0 ? undefined : cancelRelationEdit}
 			/>
 		{/if}
 	</div>
@@ -939,7 +1118,7 @@ handlers — onchange is never called.
 		look authoritative. Read-only is the honest state until TASK-2869.
 	-->
 	<div class="readonly-display" title="This relation can't be set from here yet.">
-		{@render relationChip()}
+		{@render relationChips()}
 	</div>
 
 {:else if field.type === 'json'}
@@ -1064,6 +1243,16 @@ handlers — onchange is never called.
 
 	.relation-empty {
 		color: var(--text-muted);
+	}
+
+	/* A read-only multi_relation is N chips on one line, wrapping — the
+	   editable form gets a row each because each row carries its own Remove. */
+	.relation-chips {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: var(--space-2);
+		min-width: 0;
 	}
 
 	/* ── Shared input styles ──────────────────────────────────────────── */
