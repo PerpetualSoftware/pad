@@ -313,6 +313,23 @@ func (s *Store) ResolveRelationReferentsQ(
 	return issues, nil
 }
 
+// THREE READERS OF ONE SHAPE, and they are three because they answer three
+// different questions. Picking the wrong one is what codex rounds 2 and 3 found,
+// twice, so the map lives here where the first of them is defined:
+//
+//   - `relationArrayElements` — IS THIS AN ARRAY OF STRINGS? The general shape
+//     question. Blanks are elements like any other; the caller decides.
+//   - `relationDefaultList` — IS THIS A USABLE DEFAULT? The above plus "no blank
+//     elements", because a default is dropped rather than refused, so an element
+//     nobody can resolve makes the whole default unusable.
+//   - `relationListShape` — IS THIS AN ARRAY AT ALL, AND HOW LONG? Deliberately
+//     admits non-string elements: a caller's malformed array is still a value
+//     they supplied, and only an EMPTY one is the absent spelling.
+//
+// A fourth reader in `internal/items` (`normalizeEmptyRelationLists`) asks the
+// length question on the far side of the package boundary. If a fifth is ever
+// wanted, the question it asks belongs in this list before the code is written.
+//
 // relationArrayElements returns a `multi_relation` value's elements as a
 // []string, or ok=false when the stored value is not an array of strings.
 //
@@ -1520,20 +1537,14 @@ func (s *Store) MigrateRelationReferentsQ(
 // depend on which elements were malformed). A default is held to the same
 // shape; it differs only in disposition, being dropped rather than refused.
 func relationDefaultList(raw any) ([]string, bool) {
-	var out []string
-	switch v := raw.(type) {
-	case []any:
-		out = make([]string, len(v))
-		for i, e := range v {
-			str, isStr := e.(string)
-			if !isStr {
-				return nil, false
-			}
-			out[i] = str
-		}
-	case []string:
-		out = append([]string(nil), v...)
-	default:
+	// Built ON `relationArrayElements` rather than beside it. The first version
+	// was a second parser with the same two cases, which is how three readers of
+	// one shape ended up answering three different questions and rounds 2 and 3
+	// found the wrong one being asked in the wrong place. What this adds over
+	// the general reader is exactly one rule — no blank elements — and saying so
+	// in one line is the whole point.
+	out, ok := relationArrayElements(raw)
+	if !ok {
 		return nil, false
 	}
 	for _, e := range out {
