@@ -739,14 +739,25 @@ describe('multi_relation — what the round-8 enumeration found in the round-8 f
 		const onchange = vi.fn(() => {
 			throw new Error('consumer blew up');
 		});
-		render(FieldEditor, { props: { ...editable, value: [GREEN.id, RED.id, BLUE.id], onchange } });
-		await tick();
-
-		// The component RETHROWS (the error is the consumer's to report, not ours
-		// to swallow); where it surfaces from a Svelte event handler is the
-		// harness's business and is deliberately not asserted here.
-		await fireEvent.click(buttons(/^\s*Remove\s*$/)[0]);
-		await settle();
+		// The component RETHROWS — the error is the consumer's to report, not
+		// ours to swallow — and a throw escaping a DOM event handler surfaces as
+		// an UNCAUGHT ERROR on the window, in jsdom exactly as in a browser.
+		// vitest counts that as a run-level error and EXITS NON-ZERO even with
+		// every test passing, so this leg has to acknowledge the error it is
+		// deliberately provoking. Scoped to this one message and removed after,
+		// so a genuine uncaught error anywhere else still fails the run.
+		const swallow = (e: ErrorEvent) => {
+			if (e.message?.includes('consumer blew up')) e.preventDefault();
+		};
+		window.addEventListener('error', swallow);
+		try {
+			render(FieldEditor, { props: { ...editable, value: [GREEN.id, RED.id, BLUE.id], onchange } });
+			await tick();
+			await fireEvent.click(buttons(/^\s*Remove\s*$/)[0]);
+			await settle();
+		} finally {
+			window.removeEventListener('error', swallow);
+		}
 
 		// PRECONDITION: it really was called, so "no hold" is not "no write".
 		expect(onchange).toHaveBeenCalledTimes(1);
