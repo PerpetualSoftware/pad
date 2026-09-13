@@ -60,7 +60,7 @@ func TestBulkFieldUpdate_DoesNotRevertAConcurrentWriteToAnotherField(t *testing.
 	req := httptest.NewRequest("POST", "/api/v1/workspaces/"+wsSlug+"/items/bulk", nil)
 	var dropped []string
 	updated, opErr := srv.bulkFieldUpdate(req, ws.ID, stale, map[string]any{"status": "done"},
-		true /* force: skip the open-children precheck, which is not what this test is about */,
+		true, /* force: skip the open-children precheck, which is not what this test is about */
 		nil, "user", "web", "", &dropped)
 	if opErr != nil {
 		t.Fatalf("bulkFieldUpdate: %v", opErr.message)
