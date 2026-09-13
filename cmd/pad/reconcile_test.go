@@ -1,7 +1,6 @@
 package main
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
