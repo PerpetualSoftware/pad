@@ -73,9 +73,29 @@ handlers — onchange is never called.
 		wsSlug?: string;
 		username?: string;
 		onOpenTarget?: (target: PaneTarget) => void;
+		/**
+		 * The row this editor is currently pointed at, when the mounting view has
+		 * one and can RETARGET without remounting — which the item pane does: it
+		 * reuses these components across an item switch, so the only thing that
+		 * changes is the props.
+		 *
+		 * It is the fence for the typed path's echo check (BUG-3039). That check
+		 * asks "did `value` change because OUR write came home?", and the answer
+		 * cannot be read from the value alone, because the NEXT item's value can
+		 * equal what we just sent for this one. Without an id this component
+		 * cannot see a retarget at all. A caller that omits it still gets the echo
+		 * check — it has nothing to retarget between, so "same subject?" answers
+		 * true rather than answering nothing — and simply has no retarget
+		 * detection, which costs it nothing it can reach.
+		 *
+		 * Deliberately not folded into `relationIdentity`, which fences a
+		 * different thing (the workspace and target collection a resolved chip
+		 * belongs to) and is asked on a path with no debounce.
+		 */
+		itemId?: string;
 	}
 
-	let { field, value, onchange, readonly = false, ariaLabel, wsSlug, username = '', onOpenTarget }: Props = $props();
+	let { field, value, onchange, readonly = false, ariaLabel, wsSlug, username = '', onOpenTarget, itemId }: Props = $props();
 
 	// ── Relation resolution ───────────────────────────────────────────────
 	//
@@ -737,6 +757,75 @@ handlers — onchange is never called.
 	// debounce can fire. Per Codex review round 4 [P1].
 	let hasPending = false;
 
+	/**
+	 * What the typed path last SENT, stamped with the item it was sent for, and
+	 * held until it comes home (BUG-3039).
+	 *
+	 * The value-track effect below has to tell "`value` changed because our own
+	 * write landed" from "`value` changed because someone else wrote". Those want
+	 * opposite answers — keep the newer keystrokes, or drop them — and the effect
+	 * used to treat every change as the second, so a response to keystroke N
+	 * deleted keystroke N+1 before it was ever sent.
+	 *
+	 * A plain `let`, not `$state`, for the reason `hasPending` is: the effect
+	 * reads it, and making it reactive would have the effect retrigger itself.
+	 *
+	 * The stamp is the ITEM, not the text, because the text cannot answer the
+	 * question: the next item's value can equal what we just sent for this one,
+	 * and flushing then would write this item's typing onto that one (the Codex
+	 * round 3 [P1] the effect was originally built for).
+	 *
+	 * If the echo never arrives — a write the server refuses — this stays set,
+	 * and a later outside change that happens to equal our last send is read as
+	 * the echo. The cost is bounded and points the safe way: we keep the user's
+	 * own pending keystrokes instead of dropping them for a value equal to one
+	 * they already caused. The relation hold needed a second release signal for
+	 * its version of this (round 8, R8-2) because there a stuck hold pinned a
+	 * REJECTED list on screen; nothing is pinned here.
+	 */
+	let awaitingEcho: { itemId: string | undefined; sent: any } | null = null;
+
+	/**
+	 * The text this field is showing while it owns a typed edit the prop has not
+	 * caught up with — the display half of BUG-3039.
+	 *
+	 * Keeping the WRITE was not enough. `value={value ?? ''}` is a one-way
+	 * binding, so Svelte re-applies the prop to the DOM input on every change:
+	 * the earlier keystroke's echo put `a` back in a box the user had typed `ab`
+	 * into, and the character was gone from the screen whether or not the later
+	 * write eventually landed.
+	 *
+	 * This is the same shape as `relationValues`' hold — the last thing WE sent
+	 * wins over the prop until the round trip catches up — asked here for one
+	 * string instead of a list.
+	 *
+	 * `$state` because the template reads it, and safe as `$state` for the reason
+	 * `hasPending` is NOT: the value-track effect never reads this, so writing it
+	 * cannot retrigger the effect. Holding the raw typed STRING rather than the
+	 * parsed value keeps a half-typed number (`1.`, `-`) on screen.
+	 */
+	let typedDisplay = $state<string | null>(null);
+
+	/**
+	 * Equality as this component means it: the pane stores an empty text field as
+	 * `null` and re-props it as `null`, while the input reports `''`.
+	 *
+	 * Strict otherwise, including across types — if a round trip returns `5` as
+	 * `'5'` the echo simply is not recognised and the effect falls back to
+	 * dropping the pending edit, which is the direction that was already the
+	 * behaviour for everything.
+	 */
+	function sameTypedValue(a: unknown, b: unknown): boolean {
+		const norm = (v: unknown) => (v === null || v === undefined ? '' : v);
+		return norm(a) === norm(b);
+	}
+
+	/** Send a typed value, recording it as the echo we are now waiting for. */
+	function sendTyped(v: any) {
+		awaitingEcho = { itemId, sent: v };
+		onchange(v);
+	}
+
 	function scheduleSave(next: any) {
 		pendingValue = next;
 		hasPending = true;
@@ -746,7 +835,7 @@ handlers — onchange is never called.
 			const v = pendingValue;
 			pendingValue = undefined;
 			hasPending = false;
-			onchange(v);
+			sendTyped(v);
 		}, TYPING_DEBOUNCE_MS);
 	}
 
@@ -757,7 +846,7 @@ handlers — onchange is never called.
 		const v = pendingValue;
 		pendingValue = undefined;
 		hasPending = false;
-		onchange(v);
+		sendTyped(v);
 	}
 
 	// Cleanup on unmount: drop any pending typed save. We deliberately
@@ -783,6 +872,8 @@ handlers — onchange is never called.
 				pendingValue = undefined;
 				hasPending = false;
 			}
+			awaitingEcho = null;
+			typedDisplay = null;
 		};
 	});
 
@@ -805,27 +896,71 @@ handlers — onchange is never called.
 	// navigates within 500ms. Acceptable — they actively navigated, and
 	// blur (the usual way to leave an input) already flushes eagerly.
 	//
-	// We don't need to distinguish "our save echoing back" from
-	// "external update" because the timer callback clears `hasPending`
-	// BEFORE calling onchange, so by the time this $effect runs in
-	// response to our own save's echo, hasPending is already false.
+	// It DOES need to distinguish "our save echoing back" from "external update",
+	// and the comment that used to stand here said otherwise (BUG-3039). Its
+	// reasoning — the timer callback clears `hasPending` before calling onchange,
+	// so by the time the echo arrives `hasPending` is already false — holds only
+	// while no NEW typing starts between the send and the echo. That window is a
+	// 500ms debounce plus a network round trip, which is to say it is the window
+	// a person types in: keystroke N's response then cancelled keystroke N+1
+	// before it was ever sent, and took it off the screen too.
+	//
+	// Three cases, and the first two are the ones the original guard exists for:
+	//
+	//   - the ITEM changed — the pane retargeted this component at another row,
+	//     so the pending text belongs to a row we have left. Dropped, and
+	//     `itemId` is tracked so this fires even when the two rows' values are
+	//     EQUAL, which is a change of subject the value alone cannot show.
+	//   - `value` changed to something we did not send — SSE, a collab peer, the
+	//     parent's 409 refetch. Theirs is newer than our unsent edit. Dropped.
+	//   - `value` changed to exactly what we last sent for THIS item — our own
+	//     write coming home. Kept: the newer keystrokes are the user's current
+	//     intent, and nothing has contradicted them.
 	$effect(() => {
 		void value; // track dependency
-		if (hasPending) {
-			clearTimeout(typingTimer);
-			typingTimer = undefined;
-			pendingValue = undefined;
-			hasPending = false;
+		// …and the retarget. MEASURED AS REDUNDANT TODAY, kept deliberately: in this
+		// Svelte version an effect re-runs on every assignment of a prop it reads,
+		// equal or not (the same behaviour round 8 hit as a HAZARD above — an
+		// ordinary parent re-render released the relation hold), so reassigning
+		// `value` already re-runs this on a retarget even when the two rows hold
+		// the same text. No test can distinguish this line, and removing it
+		// survives the matrix (D3 on the BUG-3039 trail). It stays because the
+		// logic genuinely depends on `itemId` and this declares that, rather than
+		// resting correctness on an incidental re-run that a future equality
+		// short-circuit would remove silently.
+		void itemId;
+		if (!hasPending) {
+			// Nothing of ours is outstanding, so the prop is the truth again.
+			awaitingEcho = null;
+			typedDisplay = null;
+			return;
 		}
+		if (awaitingEcho && awaitingEcho.itemId === itemId && sameTypedValue(awaitingEcho.sent, value)) {
+			// Consumed: an echo answers for exactly one write, so a LATER outside
+			// change equal to the same text is an outside change and drops as one.
+			awaitingEcho = null;
+			return;
+		}
+		clearTimeout(typingTimer);
+		typingTimer = undefined;
+		pendingValue = undefined;
+		hasPending = false;
+		awaitingEcho = null;
+		typedDisplay = null;
 	});
 
 	function handleTextInput(e: Event) {
 		const target = e.target as HTMLInputElement;
+		typedDisplay = target.value;
 		scheduleSave(target.value);
 	}
 
 	function handleNumberInput(e: Event) {
 		const target = e.target as HTMLInputElement;
+		// Recorded even when the text does not parse: `1.` and `-` are on their
+		// way to a number and must not be rewritten under the cursor. Nothing is
+		// SENT for them, which is unchanged.
+		typedDisplay = target.value;
 		if (target.value === '') { scheduleSave(null); return; }
 		const num = Number(target.value);
 		if (!isNaN(num)) scheduleSave(num);
@@ -842,7 +977,8 @@ handlers — onchange is never called.
 		typingTimer = undefined;
 		pendingValue = undefined;
 		hasPending = false;
-		onchange(base + delta);
+		typedDisplay = String(base + delta);
+		sendTyped(base + delta);
 	}
 
 	function handleDateInput(e: Event) {
@@ -1139,7 +1275,7 @@ handlers — onchange is never called.
 			type="text"
 			aria-label={ariaLabel}
 			inputmode="numeric"
-			value={value ?? ''}
+			value={typedDisplay ?? value ?? ''}
 			oninput={handleNumberInput}
 			onblur={flushPendingSave}
 			placeholder="—"
@@ -1169,7 +1305,7 @@ handlers — onchange is never called.
 			class="field-input url-input"
 			type="url"
 			aria-label={ariaLabel}
-			value={value ?? ''}
+			value={typedDisplay ?? value ?? ''}
 			oninput={handleTextInput}
 			onblur={flushPendingSave}
 			placeholder="https://..."
@@ -1310,7 +1446,7 @@ handlers — onchange is never called.
 		class="field-input"
 		type="text"
 		aria-label={ariaLabel}
-		value={value ?? ''}
+		value={typedDisplay ?? value ?? ''}
 		oninput={handleTextInput}
 		onblur={flushPendingSave}
 	/>

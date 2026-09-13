@@ -36,6 +36,16 @@ describe('ItemDetail gives FieldEditor the relation link context', () => {
 	it('wires the pane-open target so the chip peeks like every other item link', () => {
 		expect(tag).toMatch(/onOpenTarget=\{paneOpenTarget\}/);
 	});
+
+	it('passes the item id — the fence for the typed path\'s echo check (BUG-3039)', () => {
+		// This pane RETARGETS the editor instead of remounting it, so it is the
+		// one caller that can hand the same component a different row. Without
+		// the id the editor cannot tell "our write came home" from "we are now
+		// looking at something else", and the two want opposite answers. Asserted
+		// here because it is a fact about the MOUNT, invisible to any render test
+		// of FieldEditor itself (CONVE-19).
+		expect(tag).toMatch(/itemId=\{item\?\.id\}/);
+	});
 });
 
 describe('CopyItemDialog is now on the EDITABLE side of the gate (TASK-2869 / U2b)', () => {
