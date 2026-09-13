@@ -2986,6 +2986,13 @@
 				try {
 					forced = await confirmOpenChildrenOrThrow(e, parentRef, () => {
 						if (!stillCurrent()) throw new Error('switched away');
+						// The dialog can sit open for as long as the user takes,
+						// and this callback SENDS. Checking supersession only
+						// after it returns suppresses the display of a write that
+						// has already gone to the server — the retry guard's own
+						// rule, at the one door that reaches the network without
+						// passing through it.
+						if (fieldWrites.superseded(ticket)) throw new Error('superseded');
 						return submitWithOCC(true);
 					});
 				} catch (retryErr) {
@@ -3006,8 +3013,14 @@
 				// Switched items while the confirm modal was up — complete
 				// silently rather than stamping A's result onto B.
 				if (!stillCurrent() || !item) return;
-				if (fieldWrites.superseded(ticket)) return;
 				if (forced) {
+					// Gated on CLAIM alone, never on supersession. A forced write
+					// that SUCCEEDED has changed the row, and the newer write may
+					// have failed without writing anything — discarding this
+					// response on the strength of a dispatch would then leave the
+					// server holding the confirmed value and the pane showing the
+					// old one, with nothing left to correct it. `claim` asks the
+					// question that matters: has anything newer actually written?
 					if (!fieldWrites.claim(ticket)) return;
 					item = withInflightTags(forced);
 					showSaved();
@@ -3019,8 +3032,15 @@
 				// the in-flight save indicator. Force `item` to a fresh
 				// reference so child components re-prop unambiguously
 				// even if they cache by identity.
-				if (!fieldWrites.claim(ticket)) return;
-				saveStatus = 'idle';
+				// NO claim here, and the reason is worth stating because the
+				// first version of this change had one. Declining writes NOTHING
+				// to the server: this re-props the client value it already had.
+				// Claiming advanced the applied mark all the same, so a write
+				// that had genuinely COMMITTED and was still in flight lost its
+				// claim on return — server changed, pane showing the old value,
+				// and nothing left to correct it. A branch that asserts no new
+				// server truth must not take the mark for one.
+				if (!fieldWrites.superseded(ticket)) saveStatus = 'idle';
 				item = { ...item };
 				toastStore.show('Status change cancelled', 'info');
 				return;

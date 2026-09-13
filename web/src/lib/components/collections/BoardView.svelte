@@ -781,7 +781,15 @@
 										? () => openDraft(colValue)
 										: undefined}
 									onArchive={onArchiveColumn ? () => onArchiveColumn?.(colItems) : undefined}
-									onMove={onMoveColumn ? (status) => onMoveColumn?.(colItems, status) : undefined}
+									onMove={/* The FIFTH affordance that writes the group value —
+										round 7 enumerated four and missed this one (round 8).
+										It offers `statusField.options` as destinations, so a
+										`status` field retyped to `multi_relation` with its
+										options retained offers lanes that do not exist and
+										sends a SCALAR into a list field. */
+									onMoveColumn && !isRelationGroup && !groupingRefusal
+										? (status) => onMoveColumn?.(colItems, status)
+										: undefined}
 									onTag={onTagColumn ? (tag) => onTagColumn?.(colItems, tag) : undefined}
 									onUntag={onUntagColumn ? (tag) => onUntagColumn?.(colItems, tag) : undefined}
 									onSetPriority={onSetPriorityColumn ? (p) => onSetPriorityColumn?.(colItems, p) : undefined}

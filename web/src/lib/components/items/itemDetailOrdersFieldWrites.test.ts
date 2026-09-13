@@ -112,4 +112,84 @@ describe('ItemDetail field writes are ordered', () => {
 			expect(between, `await between claim and ${where}`).not.toMatch(/\bawait\b/);
 		}
 	});
+
+	it('every claim is a GATE — the answer is acted on, never discarded', () => {
+		// Round 8 enumeration. The leg above matched `fieldWrites.claim(ticket)`
+		// anywhere, so replacing `if (!fieldWrites.claim(ticket)) return;` with a
+		// bare `fieldWrites.claim(ticket);` kept the proximity and no-await
+		// assertions green while every response was assigned regardless of the
+		// answer. A call whose result nothing reads is not a guard.
+		const calls = [...UPDATE_FIELD.matchAll(/fieldWrites\.claim\(ticket\)/g)];
+		expect(calls.length).toBeGreaterThan(0);
+		for (const m of calls) {
+			const line = UPDATE_FIELD.slice(
+				UPDATE_FIELD.lastIndexOf('\n', m.index ?? 0) + 1,
+				UPDATE_FIELD.indexOf('\n', m.index ?? 0),
+			).trim();
+			expect(line, `claim result discarded: ${line}`).toBe('if (!fieldWrites.claim(ticket)) return;');
+		}
+	});
+
+	it('the forced-write success is gated on CLAIM and never on supersession', () => {
+		// Round 8 enumeration, and a defect this unit's own first version
+		// introduced. A forced write that SUCCEEDED has changed the row; if the
+		// newer write then failed without writing, returning on supersession
+		// leaves the server holding the confirmed value and the pane showing the
+		// old one, with nothing left to correct it. `claim` asks whether anything
+		// newer actually WROTE, which is the question that matters here.
+		// Bounded at the branch's own `showSaved()`, not at the next landmark:
+		// the DECLINED branch below it legitimately mentions supersession (for
+		// the save indicator), and a slice running into it reports that as a
+		// violation here.
+		// The window starts where the dialog RETURNS, not at `if (forced) {`:
+		// a supersession check placed just above that line returns before the
+		// forced branch is ever reached, which is the defect itself. A slice
+		// anchored on the branch would miss it — measured, it survived.
+		const windowAt = UPDATE_FIELD.indexOf('if (!stillCurrent() || !item) return;');
+		const forcedAt = UPDATE_FIELD.indexOf('if (forced) {', windowAt);
+		const savedAt = UPDATE_FIELD.indexOf('showSaved();', forcedAt);
+		expect(windowAt).toBeGreaterThan(-1);
+		expect(forcedAt).toBeGreaterThan(windowAt);
+		expect(savedAt).toBeGreaterThan(forcedAt);
+		const forcedBranch = UPDATE_FIELD.slice(windowAt, savedAt);
+		expect(forcedBranch).toContain('if (!fieldWrites.claim(ticket)) return;');
+		expect(forcedBranch).not.toMatch(/fieldWrites\.superseded\(ticket\)/);
+	});
+
+	it('the DECLINED branch takes no claim — it writes no server truth', () => {
+		// The other half of the same defect. Declining writes nothing: it re-props
+		// the client value it already had. Claiming advanced the applied mark all
+		// the same, so a write that had genuinely COMMITTED and was still in
+		// flight lost its claim on return. A branch that asserts no new server
+		// truth must not take the mark for one.
+		const declined = UPDATE_FIELD.slice(
+			UPDATE_FIELD.indexOf('if (forced) {'),
+			UPDATE_FIELD.indexOf('BUG-2273: OCC retries were exhausted') > -1
+				? UPDATE_FIELD.indexOf('if (isUpdateConflictError(e)) {')
+				: UPDATE_FIELD.length,
+		);
+		const afterForced = declined.slice(declined.indexOf('toastStore.show(\'Status change cancelled\''));
+		expect(declined).toContain("toastStore.show('Status change cancelled'");
+		// Between the end of the forced branch and the cancel toast there is no
+		// claim — only the saveStatus guard.
+		const cancelAt = declined.indexOf("toastStore.show('Status change cancelled'");
+		const declinedBody = declined.slice(declined.indexOf('}', declined.indexOf('showSaved();')), cancelAt);
+		expect(declinedBody).not.toContain('fieldWrites.claim(ticket)');
+		expect(afterForced.length).toBeGreaterThan(0);
+	});
+
+	it('the confirm callback asks about supersession BEFORE it sends', () => {
+		// The dialog can sit open for as long as the user takes, and this
+		// callback SENDS. Checking only after it returns suppresses the DISPLAY
+		// of a write that has already reached the server (round 8 enumeration).
+		const callback = UPDATE_FIELD.slice(
+			UPDATE_FIELD.indexOf('confirmOpenChildrenOrThrow('),
+			UPDATE_FIELD.indexOf('} catch (retryErr) {'),
+		);
+		const guardAt = callback.indexOf('fieldWrites.superseded(ticket)');
+		const sendAt = callback.indexOf('submitWithOCC(true)');
+		expect(guardAt).toBeGreaterThan(-1);
+		expect(sendAt).toBeGreaterThan(-1);
+		expect(guardAt).toBeLessThan(sendAt);
+	});
 });

@@ -661,3 +661,120 @@ describe('multi_relation — the hold ends when the write does, not only when it
 		expect(onchange.mock.calls[1][0]).toEqual([BLUE.id]);
 	});
 });
+
+describe('multi_relation — what the round-8 enumeration found in the round-8 fix', () => {
+	const editable = { field: multi, wsSlug: 'ws', username: 'dave' } as const;
+
+	async function settle() {
+		await tick();
+		await tick();
+		await tick();
+	}
+	const titles = () => [...document.querySelectorAll('.relation-title')].map((n) => n.textContent);
+
+	it('prop AGREEMENT does not release a write that reports its own settlement', async () => {
+		// Remove C, then add C straight back. The second write is holding
+		// [Green,Red,Blue] — which EQUALS the prop nobody has changed yet, so the
+		// agreement effect read it as "the server confirmed us" and released
+		// mid-write. The first write's answer then arrived as [Green,Red] and
+		// became the base, and the next removal sent a list with C missing.
+		//
+		// Agreement is a coincidence test; settlement is the answer. Whichever
+		// one is available, only one of them may own the release.
+		const gates: Array<() => void> = [];
+		// Each write answers when its gate is opened, and answering ALSO lands
+		// its own list on the prop — which is what the pane does, and what makes
+		// this leg discriminate. An earlier version left the prop alone; with it
+		// untouched, a released hold and a held one produce the same next write,
+		// so the guard's mutant survived.
+		const onchange = vi.fn(
+			(v: string[]) =>
+				new Promise<void>((resolve) => {
+					gates.push(() => {
+						rerender({ ...editable, value: v, onchange });
+						resolve();
+					});
+				}),
+		);
+		const { rerender } = render(FieldEditor, {
+			props: { ...editable, value: [GREEN.id, RED.id, BLUE.id], onchange },
+		});
+		await tick();
+
+		// Remove Blue → [Green,Red] sent.
+		await fireEvent.click(buttons(/^\s*Remove\s*$/)[2]);
+		await tick();
+		expect(onchange.mock.calls[0][0]).toEqual([GREEN.id, RED.id]);
+
+		// Add Blue back → [Green,Red,Blue] sent, which equals the untouched prop.
+		await fireEvent.click(buttons(/\+\s*Add/)[0]);
+		await tick();
+		const blueRow = [...document.querySelectorAll('button')].find((b) =>
+			(b.textContent ?? '').includes('Blue'),
+		);
+		expect(blueRow, 'the picker offered no Blue row to choose').toBeTruthy();
+		await fireEvent.click(blueRow!);
+		await tick();
+		expect(onchange.mock.calls[1][0]).toEqual([GREEN.id, RED.id, BLUE.id]);
+
+		// PRECONDITION: both writes are outstanding and the screen shows the
+		// second one's list.
+		expect(titles()).toEqual(['Green', 'Red', 'Blue']);
+
+		// The FIRST write answers, putting ITS list — [Green,Red] — on the prop.
+		gates[0]();
+		await settle();
+
+		// The hold must still be the SECOND write's, so the screen keeps showing
+		// Blue and the next edit bases on the list the user is looking at.
+		expect(titles()).toEqual(['Green', 'Red', 'Blue']);
+		await fireEvent.click(buttons(/^\s*Remove\s*$/)[0]);
+		expect(onchange.mock.calls[2][0]).toEqual([RED.id, BLUE.id]);
+	});
+
+	it('a consumer that throws SYNCHRONOUSLY does not strand the hold', async () => {
+		// The settlement handler is installed AFTER `onchange` returns, so a
+		// consumer that throws on the way out armed a hold nothing could ever
+		// release — and every later edit took the abandoned list as its base.
+		const onchange = vi.fn(() => {
+			throw new Error('consumer blew up');
+		});
+		render(FieldEditor, { props: { ...editable, value: [GREEN.id, RED.id, BLUE.id], onchange } });
+		await tick();
+
+		// The component RETHROWS (the error is the consumer's to report, not ours
+		// to swallow); where it surfaces from a Svelte event handler is the
+		// harness's business and is deliberately not asserted here.
+		await fireEvent.click(buttons(/^\s*Remove\s*$/)[0]);
+		await settle();
+
+		// PRECONDITION: it really was called, so "no hold" is not "no write".
+		expect(onchange).toHaveBeenCalledTimes(1);
+		// The prop never changed, and with no hold the field shows it again.
+		expect(titles()).toEqual(['Green', 'Red', 'Blue']);
+	});
+
+	it('a RETARGETED editor does not have its hold cleared by the new value', async () => {
+		// The agreement effect compared CONTENT and not identity, so an editor
+		// reused for another item whose value happened to equal the held list
+		// cleared a hold that was never about this field. The stamp exists for
+		// exactly this question and the effect was not asking it.
+		const onchange = vi.fn();
+		const { rerender } = render(FieldEditor, {
+			props: { ...editable, value: [GREEN.id, RED.id, BLUE.id], onchange },
+		});
+		await tick();
+		await fireEvent.click(buttons(/^\s*Remove\s*$/)[0]);
+		expect(onchange.mock.calls[0][0]).toEqual([RED.id, BLUE.id]);
+
+		// Same instance, different workspace, and the new item's value is the
+		// list the OLD workspace's hold is carrying.
+		await rerender({ field: multi, wsSlug: 'other-ws', username: 'dave', value: [RED.id, BLUE.id], onchange });
+		await tick();
+		// Back again. The old hold must still be in force — it was never
+		// confirmed by anything.
+		await rerender({ ...editable, value: [GREEN.id, RED.id, BLUE.id], onchange });
+		await tick();
+		expect(titles()).toEqual(['Red', 'Blue']);
+	});
+});

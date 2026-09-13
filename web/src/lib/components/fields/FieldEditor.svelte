@@ -176,7 +176,22 @@ handlers — onchange is never called.
 	 * `$state` rather than a plain `let` (CONVE-1688's split): `relationValues`
 	 * reads it, so it belongs in the effect graph.
 	 */
-	let pendingRelation = $state<{ identity: string; list: string[] } | null>(null);
+	let pendingRelation = $state<{
+		identity: string;
+		list: string[];
+		/**
+		 * True when the consumer gave a settlement signal, which then OWNS the
+		 * release and prop agreement must keep out of it.
+		 *
+		 * Agreement is a coincidence test, not an answer: remove C from
+		 * [A,B,C] and add it straight back, and the second write is holding
+		 * [A,B,C] — equal to the prop nobody has changed yet. The effect below
+		 * read that as "the server confirmed us", released mid-write, and the
+		 * FIRST write's response then arrived as [A,B] and became the base. C
+		 * was lost by the mechanism built to stop exactly that.
+		 */
+		tracked: boolean;
+	} | null>(null);
 
 	/**
 	 * Tickets for the hold, so the SETTLEMENT of an older write cannot release a
@@ -209,8 +224,21 @@ handlers — onchange is never called.
 	function writeRelationList(next: string[]) {
 		const identity = relationIdentity;
 		const ticket = holdOrder.take(identity);
-		pendingRelation = { identity, list: next };
-		const outcome = onchange(next);
+		let outcome: void | Promise<void>;
+		try {
+			pendingRelation = { identity, list: next, tracked: false };
+			outcome = onchange(next);
+		} catch (err) {
+			// A consumer that throws SYNCHRONOUSLY never reaches the settlement
+			// path below, so the hold it just armed would stand forever and
+			// every later edit would base on the abandoned list. Release and
+			// rethrow: the throw is the consumer's to report, the stranded hold
+			// was ours.
+			if (pendingRelation?.identity === identity && !holdOrder.superseded(ticket)) {
+				pendingRelation = null;
+			}
+			throw err;
+		}
 		// A consumer that returns nothing has told us nothing, and the hold falls
 		// back to prop agreement (below). One that returns a promise is telling
 		// us when its write SETTLED, which is the question the hold is actually
@@ -219,6 +247,8 @@ handlers — onchange is never called.
 		// rejected list on screen forever and ignored every later server value.
 		const settlement = settlementOf(outcome);
 		if (!settlement) return;
+		// Settlement owns the release from here — see `tracked`.
+		pendingRelation = { identity, list: next, tracked: true };
 		void (async () => {
 			try {
 				await settlement;
@@ -255,6 +285,11 @@ handlers — onchange is never called.
 	$effect(() => {
 		const pending = pendingRelation;
 		if (!pending) return;
+		// Not for a write that reports its own settlement, and not for a hold
+		// belonging to a DIFFERENT identity: a retargeted editor whose new value
+		// happens to equal the old one's held list would otherwise clear a hold
+		// that was never about this field.
+		if (pending.tracked || pending.identity !== relationIdentity) return;
 		const incoming = Array.isArray(value)
 			? value.map((e) => (typeof e === 'string' ? e.trim() : '')).filter((e) => e !== '')
 			: [];

@@ -31,8 +31,13 @@ class FakeRow {
 	value: string[] = ['A', 'B', 'C'];
 	updated_at = 't0';
 	private n = 0;
+	/** The last conflict thrown, so a test can assert the SAME object came back. */
+	lastConflict: Conflict | null = null;
 	patch(expected: string, next: string[]): Row {
-		if (expected !== this.updated_at) throw new Conflict('update_conflict');
+		if (expected !== this.updated_at) {
+			this.lastConflict = new Conflict('update_conflict');
+			throw this.lastConflict;
+		}
 		this.value = [...next];
 		this.updated_at = `t${++this.n}`;
 		return this.read();
@@ -155,10 +160,13 @@ describe('submitOrderedOCC — the retry never replays a superseded body', () =>
 
 		expect(row.value).toEqual(['C']);
 		expect(outcome.ok).toBe(false);
-		// It fails with the CONFLICT it was given, not a synthesised error: the
-		// caller tells a superseded write apart by asking the same question this
-		// did, and dressing it up as something else would make that impossible.
-		expect(outcome.ok === false && outcome.e).toBeInstanceOf(Conflict);
+		// It fails with the CONFLICT it was given — the same object, not merely
+		// something of the same class. The caller tells a superseded write apart
+		// by asking the question this asked, and a synthesised error of the
+		// right shape would satisfy an `instanceof` while losing whatever the
+		// server said (round 8 enumeration: these assertions checked class and
+		// message, so swapping in a different Conflict stayed green).
+		expect(outcome.ok === false && outcome.e).toBe(row.lastConflict);
 	});
 
 	it('NEGATIVE CONTROL: with no supersession question at all, A comes back', async () => {
@@ -201,6 +209,14 @@ describe('submitOrderedOCC — the retry never replays a superseded body', () =>
 		// The other half of the control pair: the guard must not have turned the
 		// OCC retry off. Somebody ELSE moves the row, and this write re-applies
 		// its own value against the fresh one, which is BUG-2273 working.
+		//
+		// AND IT DESCRIBES A KNOWN LOSS, deliberately. The third party added D;
+		// the retry re-sends the list it computed BEFORE that, so D disappears
+		// although the local gesture only removed A. This leg asserts what the
+		// code does, not what it should do — closing that needs the retry to
+		// re-apply the GESTURE to the fresh list rather than replay its result,
+		// which is a write-contract change and is filed as BUG-3038. Invert this
+		// assertion when that lands; it is not an endorsement.
 		const row = new FakeRow();
 		const order = new WriteOrder();
 		const ticket = order.take(TARGET);
@@ -277,6 +293,47 @@ describe('submitOrderedOCC — the retry never replays a superseded body', () =>
 		expect(sends).toBe(3); // the first send plus two retries
 	});
 
+	it('does not RE-SEND once the view moves on DURING the refetch', async () => {
+		// Round 8 enumeration, reproduced. The post-refetch check asked only
+		// about supersession, so switching items while the GET was in flight
+		// still produced another PATCH at the item the pane had just left —
+		// invisible, because the caller then discards the response, and landing
+		// on the row all the same.
+		//
+		// This is the transition the leg below cannot see: there `stillCurrent`
+		// is false from the start, so the retry never begins.
+		const row = new FakeRow();
+		const order = new WriteOrder();
+		const ticket = order.take(TARGET);
+		row.patch('t0', ['A', 'B', 'C', 'D']); // a third party moved it first
+		let current = true;
+		let sends = 0;
+
+		await expect(
+			submitOrderedOCC<Row>({
+				order,
+				ticket,
+				maxRetries: 2,
+				initialExpected: 't0',
+				send: (expected) => {
+					sends++;
+					return Promise.resolve(row.patch(expected, ['B', 'C']));
+				},
+				refetch: () => {
+					current = false; // the user opens another item, right here
+					return Promise.resolve(row.read());
+				},
+				isConflict,
+				stillCurrent: () => current
+			})
+		).rejects.toBeInstanceOf(Conflict);
+
+		// PRECONDITION: the first send really happened, so "one send" is a
+		// refusal to RETRY rather than a refusal to start.
+		expect(sends).toBe(1);
+		expect(row.value).toEqual(['A', 'B', 'C', 'D']);
+	});
+
 	it('does not retry once the view has moved on', async () => {
 		const row = new FakeRow();
 		const order = new WriteOrder();
@@ -303,6 +360,9 @@ describe('submitOrderedOCC — the retry never replays a superseded body', () =>
 		const order = new WriteOrder();
 		const ticket = order.take(TARGET);
 		const refetch = vi.fn(() => Promise.resolve({ value: [], updated_at: 't9' }));
+		// By IDENTITY: `rejects.toThrow('network')` passes against any error
+		// carrying that word, including one this function made up.
+		const failure = new Error('network');
 
 		await expect(
 			submitOrderedOCC<Row>({
@@ -310,12 +370,12 @@ describe('submitOrderedOCC — the retry never replays a superseded body', () =>
 				ticket,
 				maxRetries: 2,
 				initialExpected: 't0',
-				send: () => Promise.reject(new Error('network')),
+				send: () => Promise.reject(failure),
 				refetch,
 				isConflict,
 				stillCurrent: () => true
 			})
-		).rejects.toThrow('network');
+		).rejects.toBe(failure);
 
 		expect(refetch).not.toHaveBeenCalled();
 	});

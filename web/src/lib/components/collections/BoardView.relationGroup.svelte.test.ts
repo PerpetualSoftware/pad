@@ -775,6 +775,68 @@ describe('a REFUSED grouping must not write a group value (U4, codex round 1 P5)
 		expect(plus).toHaveLength(0);
 	});
 
+	it('offers no bulk "Move all to" either — the FIFTH group-writing affordance', async () => {
+		// Round 8 enumeration. Round 7 enumerated four affordances that write the
+		// group value and this was not among them: the lane menu reads
+		// `statusField.options` and offers them as destinations, so a `status`
+		// field retyped to `multi_relation` with its options retained offers
+		// named lanes that no longer exist and calls `onMoveColumn` with a
+		// SCALAR — a write the server refuses for a list-shaped field.
+		//
+		// The item's status is ABSENT on purpose: a card carrying an ARRAY there
+		// trips scalar status formatting and the board throws before rendering,
+		// which is its own finding and not this one.
+		const coll = collection();
+		coll.schema = JSON.stringify({
+			fields: [
+				{
+					key: 'status',
+					label: 'Status',
+					type: 'multi_relation',
+					collection: 'colors',
+					options: ['old-a', 'old-b'],
+				},
+			],
+		});
+		const onMoveColumn = vi.fn();
+		const screen = render(BoardView, {
+			props: {
+				items: [{ ...item('car-1'), fields: JSON.stringify({}) } as Item],
+				collection: coll,
+				wsSlug: 'ws',
+				groupField: 'status',
+				onStatusChange: vi.fn(),
+				onMoveColumn,
+				// Supplied so the menu has an entry that is NOT gated on the
+				// refusal — the control that proves it opened.
+				onTagColumn: vi.fn(),
+			} as never,
+		});
+
+		// PRECONDITIONS: refused, one lane, one card, and the lane menu really is
+		// reachable — so "no Move all to" is not "no menu".
+		expect(screen.container.textContent).toContain('more than one group');
+		expect(screen.container.querySelectorAll('.kanban-column')).toHaveLength(1);
+		expect(screen.container.querySelectorAll('.item-card')).toHaveLength(1);
+		const menuButton = [...screen.container.querySelectorAll('button')].find(
+			(b) => (b.textContent ?? '').trim() === '\u22ef',
+		) as HTMLButtonElement | undefined;
+		expect(menuButton, 'no lane actions menu trigger — re-point this test').toBeTruthy();
+		menuButton!.click();
+		await tick();
+		await tick();
+
+		// PRECONDITION FOR THE ABSENCE: the menu really opened. Without this the
+		// leg passes against a menu that never rendered, which is how its first
+		// version stayed green with the gate deleted. "Tag all" is present for
+		// every lane and is not gated on the refusal.
+		const menuEntries = [...document.querySelectorAll('button')].map((b) => (b.textContent ?? '').trim());
+		expect(menuEntries.some((t) => t.includes('Tag all'))).toBe(true);
+
+		expect(menuEntries.filter((t) => t.includes('Move all to'))).toHaveLength(0);
+		expect(onMoveColumn).not.toHaveBeenCalled();
+	});
+
 	it('CONTROL: an ordinary board still offers the lane create control', () => {
 		// Withholding it everywhere would remove a working affordance from every
 		// board on the instance.
