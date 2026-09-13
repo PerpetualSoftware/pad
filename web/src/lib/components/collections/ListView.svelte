@@ -3,6 +3,7 @@
 	import type { Item, Collection } from '$lib/types';
 	import { parseSchema, parseFields } from '$lib/types';
 	import { itemComparator, type SortMode } from '$lib/collections/itemSort';
+	import { formatLaneLabel, isUngrouped, laneValue } from '$lib/collections/boardColumns';
 	import { reorderGroup, disabledDirections, type ReorderDirection } from '$lib/collections/reorder';
 	import {
 		narrowRelationRow,
@@ -160,11 +161,30 @@
 	// showed the right options and sent them to the wrong field — the same
 	// defect as the board's, arriving from the opposite direction.
 
-	/** The value an item is grouped under — sentinel-folded for a relation. */
+	/**
+	 * The value an item is grouped under — sentinel-folded for a relation.
+	 *
+	 * Normalised through the board's `laneValue` (BUG-3053) rather than cast with
+	 * `as string`, which was a lie for every non-string field: a number field
+	 * returned a NUMBER, and the two places that consumed it disagreed about what
+	 * to do with it. Bucketing coerced it to an object key (`'0'`) while the lane
+	 * list tested it for FALSINESS and filed it as ungrouped, so an item scoring
+	 * zero went into a bucket no lane pointed at and disappeared from the view.
+	 *
+	 * NO TEST DISTINGUISHES the `laneValue` call here from leaving the cast in
+	 * place (E5 and E6 on the BUG-3053 trail, both survive). That is true and it
+	 * is not a reason to drop it: `isUngrouped` now normalises at its own door, so
+	 * the DROP cannot come back either way, and what remains is JS object-key
+	 * coercion silently agreeing that `result[0]` and `result['0']` are the same
+	 * bucket. Normalising here is what makes this function's declared return type
+	 * true and keeps the conversion at ONE point — rather than resting on a
+	 * coincidence of key coercion plus every downstream consumer remembering to
+	 * normalise, which is the arrangement that produced this bug.
+	 */
 	function groupValueFor(item: Item): string {
 		if (relationWithoutTarget) return '';
 		if (isRelationGroup) return relationLaneValueFor(item, groupField, resolveRelation);
-		return (parseFields(item)[groupField] ?? '') as string;
+		return laneValue(parseFields(item)[groupField]);
 	}
 	let groupOptions = $derived(field?.options ?? []);
 
@@ -176,16 +196,19 @@
 		if (relationWithoutTarget) return [''];
 		if (isRelationGroup) {
 			const lanes = relationLaneList.map((lane) => lane.value);
-			const hasEmpty = items.some((i) => groupValueFor(i) === '');
+			const hasEmpty = items.some((i) => isUngrouped(groupValueFor(i)));
 			return hasEmpty ? [...lanes, ''] : lanes;
 		}
 		const known = new Set(groupOptions);
 		const extra: string[] = [];
 		let hasUngrouped = false;
 		for (const item of items) {
-			const fields = parseFields(item);
-			const value = fields[groupField] ?? '';
-			if (!value) {
+			// The SAME function the bucketing pass uses, and the same emptiness
+			// question (BUG-3053). This pass used to read the raw field itself and
+			// ask `!value`, which put `0` and `false` in the ungrouped lane while
+			// the bucketer filed them under `'0'` and `'false'`.
+			const value = groupValueFor(item);
+			if (isUngrouped(value)) {
 				hasUngrouped = true;
 			} else if (!known.has(value)) {
 				known.add(value);
@@ -373,10 +396,6 @@
 		}
 	}
 
-	function formatLabel(value: string): string {
-		if (!value) return 'Uncategorized';
-		return value.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
-	}
 </script>
 
 {#if items.length === 0}
@@ -441,7 +460,7 @@
 						>{/if}{relationLaneByValue.get(groupName)
 							? (relationLaneByValue.get(groupName)?.title ??
 								relationLaneByValue.get(groupName)?.label)
-							: formatLabel(groupName)}
+							: formatLaneLabel(groupName)}
 						{#if relationLaneByValue.get(groupName)?.state === 'deleted'}<span
 								class="group-note"
 								title="This item has been deleted.">(deleted)</span
@@ -463,7 +482,7 @@
 							{:else}
 								<button
 									class="archive-group-btn"
-									title="Archive all {formatLabel(groupName).toLowerCase()} items"
+									title="Archive all {formatLaneLabel(groupName).toLowerCase()} items"
 									onclick={(e) => { e.stopPropagation(); confirmArchiveGroup = groupName; }}
 								>&#128451;</button>
 							{/if}
@@ -512,7 +531,7 @@
 							</div>
 						{/each}
 						{#if grpItems.length === 0}
-							<div class="group-empty">No {formatLabel(groupName).toLowerCase()} items</div>
+							<div class="group-empty">No {formatLaneLabel(groupName).toLowerCase()} items</div>
 						{/if}
 					</div>
 				{/if}

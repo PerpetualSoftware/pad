@@ -4,7 +4,7 @@
 	import { parseSchema, parseFields } from '$lib/types';
 	import { itemComparator, type SortMode } from '$lib/collections/itemSort';
 	import { reorderGroup, disabledDirections, adjacentColumn, type ReorderDirection } from '$lib/collections/reorder';
-	import { bucketByColumn, UNCATEGORIZED } from '$lib/collections/boardColumns';
+	import { bucketByColumn, formatLaneLabel, UNCATEGORIZED } from '$lib/collections/boardColumns';
 	import {
 		narrowRelationRow,
 		relationLaneAcceptsDrop,
@@ -588,10 +588,6 @@
 		}
 	}
 
-	function formatLabel(value: string): string {
-		if (!value) return 'Uncategorized';
-		return value.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
-	}
 
 	// Menu-driven reorder (IDEA-1898), lane-relative — the non-drag
 	// counterpart for touch (board drag is disabled on mobile) and long
@@ -686,7 +682,7 @@
 		{@const colItems = columnData[colValue] ?? []}
 		{@const isUncategorized = colValue === UNCATEGORIZED}
 		{@const relLane = relationLaneByValue.get(colValue)}
-		{@const laneName = relLane ? (relLane.title ?? relLane.label) : formatLabel(colValue)}
+		{@const laneName = relLane ? (relLane.title ?? relLane.label) : formatLaneLabel(colValue)}
 		{@const laneRef = relLane?.ref ?? null}
 		<!--
 			A relation lane is NOT column-draggable and offers no "+". Its order
@@ -702,7 +698,7 @@
 			class:dragging-source={draggedColumn === colValue}
 			class:uncategorized-column={isUncategorized}
 			role="group"
-			aria-label="{relationLaneAriaName(relLane, formatLabel(colValue))} column"
+			aria-label="{relationLaneAriaName(relLane, formatLaneLabel(colValue))} column"
 			ondragover={(e) => handleColumnDragOver(e, colValue)}
 			ondragleave={handleColumnDragLeave}
 			ondrop={(e) => handleColumnDrop(e, colValue)}
@@ -747,8 +743,8 @@
 					{#if onCreateInColumn && !isUncategorized && !isRelationGroup && !groupingRefusal}
 						<button
 							class="lane-btn lane-add-btn"
-							title="Add item to {formatLabel(colValue).toLowerCase()}"
-							aria-label="Add item to {formatLabel(colValue)}"
+							title="Add item to {formatLaneLabel(colValue).toLowerCase()}"
+							aria-label="Add item to {formatLaneLabel(colValue)}"
 							onclick={() => openDraft(colValue)}
 						>+</button>
 					{/if}
@@ -759,7 +755,7 @@
 							<button
 								class="lane-btn lane-menu-btn"
 								title="Lane actions"
-								aria-label="{relationLaneAriaName(relLane, formatLabel(colValue))} lane actions"
+								aria-label="{relationLaneAriaName(relLane, formatLaneLabel(colValue))} lane actions"
 								aria-haspopup="menu"
 								aria-expanded={openMenuColumn === colValue}
 								onclick={(e) => { e.stopPropagation(); toggleMenu(colValue); }}
@@ -874,7 +870,7 @@
 					</div>
 				{/each}
 				{#if colItems.length === 0 && !isDragging}
-					<div class="column-empty">No {formatLabel(colValue).toLowerCase()} items</div>
+					<div class="column-empty">No {formatLaneLabel(colValue).toLowerCase()} items</div>
 				{/if}
 			</div>
 		</div>
