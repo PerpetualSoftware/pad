@@ -10,6 +10,8 @@ import {
 	relationLaneAriaName,
 	relationLaneValueFor,
 	relationLanes,
+	relationGroupingRefusal,
+	relationGroupingRefusalMessage
 } from './relationGroups';
 
 /**
@@ -317,12 +319,105 @@ describe('relationFilterMatches (codex round 2)', () => {
 		expect(relationFilterMatches('', 'red')).toBe(false);
 	});
 
-	it('refuses a non-string, including the multi_relation ARRAY shape', () => {
-		// U4 stores an array, and no amount of trimming makes `===` match one.
-		// Matching an array is that unit's to define; guessing here would fix
-		// half of it in a way U4 would have to undo.
-		expect(relationFilterMatches(['red'], 'red')).toBe(false);
+	it('refuses a value that is neither a string nor an array', () => {
+		// REWRITTEN IN U4. This test used to assert that an ARRAY matched
+		// NOTHING, and said why: U7 deferred array matching to U4 rather than
+		// guess at it. U4 has now defined it as MEMBERSHIP, so that assertion
+		// states the opposite of the shipped behaviour and is replaced rather
+		// than deleted — the deferral was real, and the record of it belongs in
+		// the U4 block below, which is where the array legs now live.
 		expect(relationFilterMatches(null, 'red')).toBe(false);
+		expect(relationFilterMatches(undefined, 'red')).toBe(false);
 		expect(relationFilterMatches(42, 'red')).toBe(false);
+		expect(relationFilterMatches({ id: 'red' }, 'red')).toBe(false);
+	});
+});
+
+describe('relationFilterMatches and multi_relation arrays (U4)', () => {
+	const RED = 'id-red';
+
+	it('matches when the ARRAY CONTAINS the target, at any position', () => {
+		// Membership, not position: equality against the whole array would match
+		// nothing ever, which is the filter that silently returns empty.
+		expect(relationFilterMatches([RED], RED)).toBe(true);
+		expect(relationFilterMatches(['id-blue', RED], RED)).toBe(true);
+		expect(relationFilterMatches([RED, 'id-blue'], RED)).toBe(true);
+	});
+
+	it('does NOT match when the array lacks the target', () => {
+		expect(relationFilterMatches(['id-blue'], RED)).toBe(false);
+		expect(relationFilterMatches([], RED)).toBe(false);
+	});
+
+	it('trims each element, as the scalar case trims its one value', () => {
+		// Legacy rows predate the write-side refusal of padded values, and the
+		// reason trimming exists at all is that the board lane and the filter
+		// must give one answer about one value.
+		expect(relationFilterMatches([' id-blue ', '  ' + RED], RED)).toBe(true);
+		expect(relationFilterMatches([RED], '  ' + RED + ' ')).toBe(true);
+	});
+
+	it('ignores non-string elements rather than throwing', () => {
+		// A corrupt blob must not take out the whole view. The element is not a
+		// reference, so it cannot match; the others still can.
+		expect(relationFilterMatches([7, RED], RED)).toBe(true);
+		expect(relationFilterMatches([{ id: RED }], RED)).toBe(false);
+	});
+
+	it('STILL handles the scalar case — the control', () => {
+		// Without this leg, a change that only ever looked at arrays would pass
+		// everything above and break every existing relation filter.
+		expect(relationFilterMatches(RED, RED)).toBe(true);
+		expect(relationFilterMatches(' ' + RED + ' ', RED)).toBe(true);
+		expect(relationFilterMatches('id-blue', RED)).toBe(false);
+		expect(relationFilterMatches(null, RED)).toBe(false);
+		expect(relationFilterMatches(undefined, RED)).toBe(false);
+	});
+});
+
+describe('relationGroupingRefusal (U4)', () => {
+	it('refuses a multi_relation WHATEVER it declares', () => {
+		// One item belongs to as many lanes as it has references, and
+		// bucketByColumn's invariant is exactly one. Declaring a target does not
+		// change that, which is why this refusal is not the no_target one.
+		expect(relationGroupingRefusal({ type: 'multi_relation', collection: 'colors' })).toBe(
+			'multi_valued'
+		);
+		expect(relationGroupingRefusal({ type: 'multi_relation' })).toBe('multi_valued');
+	});
+
+	it('refuses a relation with NO declared target, and distinguishes the reason', () => {
+		// Two reasons, because they tell a user different things and only one is
+		// fixable by editing the schema.
+		expect(relationGroupingRefusal({ type: 'relation' })).toBe('no_target');
+		expect(relationGroupingRefusal({ type: 'relation', collection: '' })).toBe('no_target');
+	});
+
+	it('ALLOWS a relation that declares its target — the control', () => {
+		// Without this leg a helper that refused everything would pass the two
+		// tests above and silently un-group every relation board U7 shipped.
+		expect(relationGroupingRefusal({ type: 'relation', collection: 'colors' })).toBeNull();
+	});
+
+	it('ALLOWS every ordinary field type — the second control', () => {
+		for (const type of ['select', 'multi_select', 'text', 'date', 'number', 'checkbox']) {
+			expect(relationGroupingRefusal({ type }), type).toBeNull();
+		}
+		expect(relationGroupingRefusal(null)).toBeNull();
+		expect(relationGroupingRefusal(undefined)).toBeNull();
+	});
+
+	it('has a sentence for every refusal reason', () => {
+		// The view renders this; a missing case would reach a user as `undefined`.
+		for (const reason of ['multi_valued', 'no_target'] as const) {
+			const msg = relationGroupingRefusalMessage(reason);
+			expect(msg, reason).toBeTruthy();
+			expect(msg, reason).toContain('ungrouped');
+		}
+		// The two sentences must DIFFER — one message for two reasons would make
+		// the distinction the type draws invisible to the person reading it.
+		expect(relationGroupingRefusalMessage('multi_valued')).not.toBe(
+			relationGroupingRefusalMessage('no_target')
+		);
 	});
 });

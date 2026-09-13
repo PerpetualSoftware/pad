@@ -138,7 +138,12 @@ func parseFieldFlag(schema models.CollectionSchema, key, raw string) any {
 			continue
 		}
 		switch def.Type {
-		case "json", "multi_select":
+		// `multi_relation` parses as JSON for the reason `items.coerceValue`
+		// states: a `--field k=v` token is text, and a JSON array is the only
+		// way to write an ordered list in one. The two sites are kept in step
+		// by hand because this one runs before the request exists; a change to
+		// either owes the other.
+		case "json", "multi_select", "multi_relation":
 			var v any
 			if err := json.Unmarshal([]byte(raw), &v); err == nil {
 				return v
@@ -159,7 +164,10 @@ func parseFieldFlag(schema models.CollectionSchema, key, raw string) any {
 				return b
 			}
 		}
-		// All other types (text, url, select, date, relation) — string is correct.
+		// All other types (text, url, select, date, scalar relation) — string
+		// is correct. NOT multi_relation, which is handled above: this line
+		// used to name "relation" flatly and was false the moment a second
+		// relation type existed.
 		return raw
 	}
 	// Unknown field — let the server decide.
@@ -783,8 +791,10 @@ func showCmd() *cobra.Command {
 						// lookup — and it falls back to the raw value when the
 						// field is not a relation or was not hydrated.
 						if target, ok := item.RelationTargets[k]; ok {
-							fmt.Printf("%-12s %s\n", k+":", cli.RenderRelationValue(target))
-							continue
+							if rendered := cli.RenderRelationTargets(target); rendered != "" {
+								fmt.Printf("%-12s %s\n", k+":", rendered)
+								continue
+							}
 						}
 						fmt.Printf("%-12s %v\n", k+":", v)
 					}

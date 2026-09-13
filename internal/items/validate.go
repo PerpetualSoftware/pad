@@ -90,7 +90,13 @@ func ValidateFields(fields map[string]any, schema models.CollectionSchema) error
 // ValidateFieldsDetailed is ValidateFields with per-field attribution:
 // it returns one FieldIssue per failure instead of a joined error, and
 // applies schema defaults to `fields` in place exactly as ValidateFields
-// does (the mutation is the same traversal, not a second pass).
+// does (that mutation is the same traversal, not a second pass).
+//
+// It runs ONE mutation before the traversal: `normalizeEmptyRelationLists`,
+// which turns an empty `multi_relation` array into an absent key so that the
+// required-field branch below refuses it without needing to know the type. It
+// is stated here because a reader who has just been told the mutation is the
+// traversal would otherwise be surprised by it.
 //
 // Issues come back in SCHEMA ORDER, which makes the result deterministic
 // for a given (fields, schema) pair — repeated calls with equal input
@@ -103,6 +109,8 @@ func ValidateFields(fields map[string]any, schema models.CollectionSchema) error
 // keep using ValidateFields.
 func ValidateFieldsDetailed(fields map[string]any, schema models.CollectionSchema) []FieldIssue {
 	var issues []FieldIssue
+
+	normalizeEmptyRelationLists(fields, schema, false)
 
 	for _, def := range schema.Fields {
 		val, exists := fields[def.Key]
@@ -140,6 +148,87 @@ func ValidateFieldsDetailed(fields map[string]any, schema models.CollectionSchem
 	return issues
 }
 
+// normalizeEmptyRelationLists rewrites an EMPTY `multi_relation` array into
+// whichever spelling of "no targets" the caller's write shape already has
+// (PLAN-2857 U4, lead ruling day 64 on codex round 1's P17).
+//
+// ONE SITE, deliberately, and it is the reason this lives here rather than in
+// the doors: the defect codex round 1 found was a whole CLASS of per-door type
+// dispatch, and a normalisation implemented per door would be the same class
+// again. Every write reaches one of these two validators.
+//
+// TWO SPELLINGS, because the two shapes mean different things by an absent key:
+//
+//   - FULL write (partial=false): absent means "this field has no value", so
+//     `[]` becomes an ABSENT KEY and the ordinary required-field machinery
+//     below refuses it for a required field with no default. Nothing here
+//     needs to know what `required` means.
+//   - PARTIAL write (partial=true): absent means "leave this key ALONE", so
+//     deleting would turn a clear into a no-op — the caller asked to empty the
+//     field and the field would keep its contents. `[]` becomes the patch
+//     path's explicit deletion sentinel (nil), which `ValidatePartialFields`
+//     already refuses for a required key.
+//
+// Only the EMPTY array is touched. A non-empty one is a value, and its elements
+// are the resolver's business.
+// IsEmptyRelationList reports whether val is the EMPTY-LIST spelling of "no
+// targets" for def — the value `normalizeEmptyRelationLists` rewrites.
+//
+// Exported because the copy PREFLIGHT has to ask the same question before this
+// package runs: it records where each value came from, and an empty list is
+// about to stop being the caller's value, so a preflight that records it as an
+// override labels the injected default "your value" (codex round 6). One rule,
+// asked in two places, rather than two spellings of it.
+func IsEmptyRelationList(def models.FieldDef, val any) bool {
+	if !def.IsMultiRelation() || val == nil {
+		return false
+	}
+	switch v := val.(type) {
+	case []any:
+		return len(v) == 0
+	case []string:
+		return len(v) == 0
+	}
+	return false
+}
+
+func normalizeEmptyRelationLists(fields map[string]any, schema models.CollectionSchema, partial bool) {
+	if len(fields) == 0 {
+		return
+	}
+	for _, def := range schema.Fields {
+		if !def.IsMultiRelation() {
+			continue
+		}
+		val, exists := fields[def.Key]
+		if !exists {
+			continue
+		}
+		// NIL IS THE OTHER SPELLING (codex round 7). On a FULL write the
+		// traversal below treats a present-but-nil key as absent for the
+		// purposes of required-ness and defaults — but it does not REMOVE it,
+		// so `{"members": null}` was stored: a third representation of "no
+		// targets" beside the absent key and the empty list, which is the exact
+		// thing this rule exists to prevent. On a PARTIAL write nil already
+		// means "delete this key" and is the spelling being normalised TO, so
+		// it is left alone.
+		if val == nil {
+			if !partial && def.IsMultiRelation() {
+				delete(fields, def.Key)
+			}
+			continue
+		}
+		if !IsEmptyRelationList(def, val) {
+			continue
+		}
+		if partial {
+			fields[def.Key] = nil
+			continue
+		}
+		delete(fields, def.Key)
+	}
+}
+
 // ValidatePartialFields validates ONLY the keys present in `patch` against
 // the schema (TASK-2022, field-level PATCH / IDEA-1480). Unlike
 // ValidateFields it does NOT enforce required-field presence and does NOT
@@ -151,6 +240,7 @@ func ValidateFieldsDetailed(fields map[string]any, schema models.CollectionSchem
 // A nil value marks a key for DELETION (see store.mergeFieldsPatch); those
 // are skipped here since there's no value to type-check.
 func ValidatePartialFields(patch map[string]any, schema models.CollectionSchema) error {
+	normalizeEmptyRelationLists(patch, schema, true)
 	// Index declared fields by key for O(1) lookup.
 	defByKey := make(map[string]models.FieldDef, len(schema.Fields))
 	for _, def := range schema.Fields {
@@ -275,6 +365,56 @@ func validateFieldType(def models.FieldDef, val any) error {
 	case "relation":
 		if _, ok := val.(string); !ok {
 			return fmt.Errorf("field %q must be a string (item ID)", def.Key)
+		}
+	case "multi_relation":
+		// PLAN-2857 U4. SHAPE ONLY — this package is DB-free, so whether an
+		// element names a live item is `ResolveRelationReferentsQ`'s question,
+		// exactly as it is for a scalar `relation`.
+		//
+		// Two rules that differ from the scalar case, both ruled day 64 as NEW
+		// rules rather than inherited ones (see BUG-3028 for why there was
+		// nothing coherent to inherit):
+		//
+		//   * an EMPTY or WHITESPACE-ONLY element is REFUSED here, where the
+		//     scalar resolver merely skips such a value. Skipping is how a
+		//     scalar relation ended up with three stored spellings for "no
+		//     target"; inside an array it would also silently change the
+		//     element count, and an ORDERED list whose length depends on which
+		//     elements were blank is not a list anyone can reason about.
+		//   * `[]` is ACCEPTED as a shape and means "no targets". It never
+		//     reaches this arm from either validator, because
+		//     `normalizeEmptyRelationLists` has already rewritten it into the
+		//     write shape's own spelling of none — an absent key on a full
+		//     write, the nil deletion sentinel on a partial one. The rule used
+		//     to say this was "the write door's job"; no door did it, which is
+		//     what codex round 1 found, and the lead's ruling put it at the one
+		//     entry every door passes through instead. The arm still accepts
+		//     the shape: a caller reaching `validateFieldType` directly (the
+		//     tests do) gets the honest answer that an empty list is legal.
+		//     Refusing it here would leave a caller no way to clear the field.
+		//
+		// `[]string` is accepted alongside `[]any` for the same reason
+		// multi_select accepts both: a Go caller that never round-tripped
+		// through JSON has the typed slice.
+		switch v := val.(type) {
+		case []any:
+			for i, entry := range v {
+				sv, ok := entry.(string)
+				if !ok {
+					return fmt.Errorf("field %q element %d must be a string (item ID, ref, or exact title)", def.Key, i)
+				}
+				if strings.TrimSpace(sv) == "" {
+					return fmt.Errorf("field %q element %d is empty; remove it rather than sending a blank reference", def.Key, i)
+				}
+			}
+		case []string:
+			for i, sv := range v {
+				if strings.TrimSpace(sv) == "" {
+					return fmt.Errorf("field %q element %d is empty; remove it rather than sending a blank reference", def.Key, i)
+				}
+			}
+		default:
+			return fmt.Errorf("field %q must be an array of strings (item IDs, refs, or exact titles)", def.Key)
 		}
 	case "json":
 		// Accept only structured JSON values (object, array, null). Raw

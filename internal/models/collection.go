@@ -9,7 +9,7 @@ import (
 type FieldDef struct {
 	Key             string   `json:"key"`
 	Label           string   `json:"label"`
-	Type            string   `json:"type"` // text, number, select, multi_select, date, checkbox, url, relation, json
+	Type            string   `json:"type"` // text, number, select, multi_select, date, checkbox, url, relation, multi_relation, json
 	Options         []string `json:"options,omitempty"`
 	TerminalOptions []string `json:"terminal_options,omitempty"` // for select fields: which options represent a terminal/finalized state
 	Default         any      `json:"default,omitempty"`
@@ -19,6 +19,40 @@ type FieldDef struct {
 	Suffix          string   `json:"suffix,omitempty"`       // for number type display
 	Pattern         string   `json:"pattern,omitempty"`      // optional ECMAScript-style regex applied to text values; empty = no pattern check
 	UniqueScope     string   `json:"unique_scope,omitempty"` // "workspace_collection" enforces uniqueness within a collection (non-empty values only); empty = no uniqueness
+}
+
+// RelationFieldTypes is every field type whose VALUE names other items
+// (PLAN-2857 U4).
+//
+// It exists to be enumerated rather than grepped. Before U4 the only such type
+// was the literal "relation", written out at ~20 sites across 8 Go files with
+// no constant behind it, so "which code decides relation behaviour?" was a
+// question only a string search could answer — and the answer was wrong the
+// moment a second relation type existed. A third one joins here and the field-
+// level predicates below come along with it.
+//
+// NOT every one of those sites is a field-level predicate: the ones that walk
+// VALUES (migration, default resolution) have to decide array handling for
+// themselves, and widening them with IsRelation alone would silently treat an
+// array as a scalar. Those sites name their types explicitly on purpose.
+func RelationFieldTypes() []string {
+	return []string{"relation", "multi_relation"}
+}
+
+// IsRelation reports whether this field's value names other items — a single
+// one for "relation", an ordered list for "multi_relation".
+//
+// Use it for FIELD-level questions: does this field have a target collection,
+// should it be hydrated, does a rename touch it. For VALUE-level work, ask
+// IsMultiRelation too, because the shapes differ.
+func (fd FieldDef) IsRelation() bool {
+	return fd.Type == "relation" || fd.Type == "multi_relation"
+}
+
+// IsMultiRelation reports whether this field's value is an ORDERED LIST of
+// references rather than a single one.
+func (fd FieldDef) IsMultiRelation() bool {
+	return fd.Type == "multi_relation"
 }
 
 type CollectionSchema struct {

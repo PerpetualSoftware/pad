@@ -6,7 +6,7 @@ Pad is a project tracker for developers and AI agents — issues (TASK, BUG), pl
 
 If the user is asking general code questions with no project-management thread, you don't need this server.
 
-## Tool surface (v0.31)
+## Tool surface (v0.33)
 
 Ten resource × action tools, plus `pad_set_workspace` (which takes a `workspace` slug only — no action enum). Eleven tools total.
 
@@ -17,6 +17,19 @@ Inputs are validated strictly: an undeclared top-level key is rejected with a st
 **Relation fields (v0.31).** A `relation` value may be a UUID, an issue ref (`COLO-3`), or the target item's EXACT TITLE — in that order, so an item literally titled `COLO-3` is unreachable by title while the ref resolves. Title matching is scoped to the collection the field declares: a title that is unique only workspace-wide is REFUSED, naming the collection searched, and a title matching two or more items inside the declared collection is refused as `ambiguous` rather than `not_found` — it matched too much, not too little. Only items YOU can see count towards any of that, so a match you have no access to never changes your answer.
 
 Reads carry a `relation_targets` member beside `fields`: field key → `{id, ref, title}`, so you can render a relation without a request per value. `fields` still holds the canonical id, which is what you write back. An entry with an `id` and NO `ref`/`title` means the target is gone **or** you may not see it — the two are deliberately indistinguishable, so do not render it as either "deleted" or "hidden"; "unavailable" is the honest word.
+
+**`multi_relation` fields (v0.33).** A field declared `multi_relation` holds an ORDERED LIST of references — `["<uuid>", "COLO-3", "Red"]` — and every element resolves through the same UUID → ref → exact-title ladder, with the same collection scoping. Declare one through the `fields` DSL as `owners:multi_relation:people`: the third part is the TARGET COLLECTION, and omitting it is refused at parse time rather than building a field no write can ever satisfy.
+
+Four rules differ from a scalar `relation`, and none of them is guessable from the scalar behaviour:
+
+- **There is exactly one stored form for "no references": the key ABSENT.** Send `[]` and the write normalises it to that. A `required` `multi_relation` means at least one element that RESOLVED, so `[]` and an absent key both refuse.
+- **An empty or whitespace-only ELEMENT is refused**, naming its index — it is not skipped the way an empty scalar value is. Remove the element rather than blanking it.
+- **Order is part of the value.** `["a","b"]` and `["b","a"]` are different values, and a write preserves the order you sent.
+- **Duplicates are refused**, with reason `duplicate_referent`, naming the SECOND occurrence. Two elements can be different strings naming one item — a UUID and a ref, a ref and a title — so this is decided after resolution, and the two forms you sent may look nothing alike.
+
+If ANY element fails, the whole write is refused and nothing is stored — never a partial list. On a cross-workspace copy the value is dropped WHOLE and reported once in `warnings.dropped_fields`, so an import can never change an element count.
+
+In `relation_targets`, a `multi_relation` key carries a JSON **ARRAY** of the same `{id, ref, title}` objects, in stored order and one per stored element — including an `id`-only entry for an element that names nothing, so a position in the list lines up with the same position in `fields`. A scalar key is unchanged: still a single object, byte-identical to v0.31. Decide which shape to expect from the field's declared type, not by probing.
 
 - `pad_workspace` — Workspaces: list / members / invite / storage / audit-log / create / claim / deleted / restore.
 - `pad_collection` — Collections: list / create / update / delete.

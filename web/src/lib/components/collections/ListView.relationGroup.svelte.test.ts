@@ -242,3 +242,101 @@ describe('a relation field with no declared target, in the list', () => {
 		expect(groups(screen)[0].ref).toBeNull();
 	});
 });
+
+describe('a REFUSED grouping in the list must not write a group value (U4, codex round 5)', () => {
+	/**
+	 * The SAME pair of defects BoardView had, in the other view — which is the
+	 * point worth keeping. Round 1 of this review was one class of missed
+	 * surface (every site dispatching on field type); this is a second one
+	 * (every VIEW implementing grouping), and I fixed the board alone before
+	 * the review asked about the list. A behaviour's surface count is a number,
+	 * and numbers get enumerated.
+	 *
+	 * The full population is {BoardView, ListView} x {drag, status chip}.
+	 * TableView implements neither: it has no grouping, and its chip is gated
+	 * on `field.key === 'status' && field.options`, which a multi_relation has
+	 * no way to satisfy.
+	 */
+	const MULTI_FIELDS = [
+		{ key: 'car_color', label: 'Colour', type: 'multi_relation', collection: 'colors' },
+		{ key: 'status', label: 'Status', type: 'select', options: ['open', 'done'] },
+	];
+	const SRC = readFileSync(resolve(__dirname, './ListView.svelte'), 'utf8').replace(
+		/^[ \t]*\/\/.*$/gm,
+		'',
+	);
+
+	it('renders the refusal and still shows the rows', () => {
+		// PRECONDITION for both legs below: this configuration reaches the view
+		// and says why it cannot group.
+		const screen = render(ListView, {
+			props: {
+				items: [item('car-1', 'id-red')],
+				collection: collection(MULTI_FIELDS),
+				wsSlug: 'ws',
+				groupField: 'car_color',
+				onStatusChange: vi.fn(),
+			} as never,
+		});
+		expect(screen.container.textContent).toContain('more than one group');
+		expect(screen.container.querySelectorAll('.item-card, .list-row').length).toBeGreaterThan(0);
+	});
+
+	it('withholds the status chip, which would write a lane string into a LIST', () => {
+		// `statusOptions` is a PROP of this view, not something it derives from
+		// the collection — so without passing it the chip never renders, the
+		// assertion holds against any build, and the leg proves nothing. My
+		// first version omitted it; the CONTROL below is what caught that, which
+		// is the entire reason a control is written before the result is
+		// believed.
+		const withStatus = (id: string, color: string) =>
+			({
+				...item(id, color),
+				fields: JSON.stringify({ car_color: [color], status: 'open' }),
+			}) as Item;
+		const screen = render(ListView, {
+			props: {
+				items: [withStatus('car-1', 'id-red')],
+				collection: collection(MULTI_FIELDS),
+				wsSlug: 'ws',
+				groupField: 'car_color',
+				statusOptions: ['open', 'done'],
+				onStatusChange: vi.fn(),
+			} as never,
+		});
+		expect(screen.container.textContent).toContain('more than one group');
+		expect(screen.container.querySelector('[title="Click to cycle status"]')).toBeNull();
+	});
+
+	it('CONTROL: an ordinary grouped list still offers status cycling', () => {
+		// Withholding it everywhere would remove a working affordance from every
+		// list on the instance, which is worse than the defect.
+		const withStatus = (id: string) =>
+			({ ...item(id), fields: JSON.stringify({ status: 'open' }) }) as Item;
+		const screen = render(ListView, {
+			props: {
+				items: [withStatus('car-1')],
+				collection: collection([{ key: 'status', label: 'Status', type: 'select', options: ['open', 'done'] }]),
+				wsSlug: 'ws',
+				groupField: 'status',
+				statusOptions: ['open', 'done'],
+				onStatusChange: vi.fn(),
+			} as never,
+		});
+		expect(screen.container.querySelector('[title="Click to cycle status"]')).not.toBeNull();
+	});
+
+	it('gates the drop write on groupingRefusal', () => {
+		// A SOURCE guard, matching this file's existing technique for the drop
+		// path and for the same reason: driving svelte-dnd-action's finalize
+		// through jsdom costs more than the structural property is worth.
+		const start = SRC.indexOf('function handleGroupFinalize(');
+		expect(start, 'handleGroupFinalize not found — re-point this guard').toBeGreaterThan(-1);
+		const write = SRC.indexOf('await onStatusChange(', start);
+		expect(write).toBeGreaterThan(-1);
+		const guard = SRC.lastIndexOf('groupingRefusal', write);
+		expect(guard, 'the drop handler never consults groupingRefusal before writing').toBeGreaterThan(start);
+		expect(SRC.slice(guard, write)).toContain('current !== groupName');
+		expect(SRC.slice(Math.max(0, guard - 8), guard)).toContain('!');
+	});
+});

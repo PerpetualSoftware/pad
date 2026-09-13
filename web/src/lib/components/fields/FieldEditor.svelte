@@ -15,10 +15,12 @@ visual language as the editor but with no inputs, dropdowns, or mutation
 handlers — onchange is never called.
 -->
 <script lang="ts">
-	import { onDestroy } from 'svelte';
+	import { onDestroy, tick } from 'svelte';
 	import { formatItemRef, type FieldDef, type ItemIndexRow, type PaneTarget } from '$lib/types';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import { narrowRelationRow } from '$lib/collections/relationGroups';
+	import { isMultiRelationType, isRelationType } from '$lib/items/relationFieldTypes';
+	import { WriteOrder } from '$lib/items/fieldWriteOrder';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
@@ -32,7 +34,18 @@ handlers — onchange is never called.
 	interface Props {
 		field: FieldDef;
 		value: any;
-		onchange: (value: any) => void;
+		/**
+		 * Write the new value.
+		 *
+		 * A consumer MAY return something awaitable, and the multi_relation hold
+		 * below treats that as the write's settlement signal — success or
+		 * failure alike, since either way the write is no longer outstanding.
+		 * Returning nothing is still supported and leaves the hold released by
+		 * prop agreement alone; that is weaker (a REFUSED write never agrees, so
+		 * the hold outlives it), not wrong, and it is what the consumers with no
+		 * server behind them do.
+		 */
+		onchange: (value: any) => void | Promise<void>;
 		readonly?: boolean;
 		/**
 		 * Accessible name for the rendered control. Optional: on the item
@@ -77,7 +90,213 @@ handlers — onchange is never called.
 	// that holds soft-deleted rows alongside live ones (`getByCollection`
 	// filters them out by default rather than dropping them), so a dangling
 	// target is a row carrying `deleted_at`. No fetch, and no loading state.
-	let isRelation = $derived(field.type === 'relation');
+	let isRelation = $derived(isRelationType(field.type));
+
+	/**
+	 * The VALUE-level question, and it is a different one from `isRelation`
+	 * (see `relationFieldTypes`): a `multi_relation` holds an ORDERED LIST of
+	 * references where a `relation` holds one. Everything below that reads or
+	 * writes a value has to ask it; everything that asks "does this field name
+	 * other items at all" asks `isRelation`.
+	 */
+	let isMultiRelation = $derived(isMultiRelationType(field.type));
+
+	/**
+	 * The field's references as raw strings, in order.
+	 *
+	 * ONE element for a scalar `relation`, N for a `multi_relation`, none when
+	 * the field is empty — so every render path below is driven by a list and
+	 * the scalar case is the one-element case rather than a second code path.
+	 * That is the whole shape of U4's web half: the resolution, chip and link
+	 * logic is parameterised by ONE raw reference, and the two types differ
+	 * only in how many of those there are and what a new choice does to them.
+	 *
+	 * Blank and non-string elements are dropped rather than rendered. The write
+	 * doors refuse both outright (`internal/items/validate.go`, the
+	 * multi_relation arm — an empty element is an error, not a skip, precisely
+	 * so an ordered list's length cannot depend on which elements were blank),
+	 * so this is defence against a value no door will accept, not a policy of
+	 * its own.
+	 */
+	let relationValues = $derived.by((): string[] => {
+		if (!isRelation) return [];
+		if (isMultiRelation) {
+			// THE LAST LIST WE SENT WINS OVER THE PROP WHILE A WRITE IS IN
+			// FLIGHT (codex round 7). `value` only catches up after the server
+			// round trip, so two quick edits both derived from it: remove A then
+			// B from [A,B,C] sent [B,C] and then [A,C], and the second write
+			// puts A back. Every edit below is a WHOLE-LIST write computed from
+			// the current list, which makes a stale base a lost update rather
+			// than a harmless recompute — the scalar path has no equivalent
+			// exposure because its writes are replacements, not edits.
+			//
+			// Cleared when the write is OVER — whichever of two signals arrives:
+			// the prop agreeing with what we sent, or (for a consumer that
+			// returns something awaitable) that write settling, success or
+			// failure. Agreement alone was not enough, because a REFUSED write
+			// never agrees and the hold outlived it forever (round 8, R8-2). So a
+			// change arriving from anywhere else — SSE, another tab, the parent's
+			// 409 refetch-and-retry — takes over the moment it lands. This holds
+			// a value forward; it does not own it.
+			if (pendingRelation && pendingRelation.identity === relationIdentity) return pendingRelation.list;
+			if (!Array.isArray(value)) return [];
+			return value
+				.map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
+				.filter((entry) => entry !== '');
+		}
+		const raw = typeof value === 'string' ? value.trim() : '';
+		return raw ? [raw] : [];
+	});
+
+	/**
+	 * What this component is resolving against: the workspace and the field's
+	 * declared target. A held list belongs to ONE of these and to no other.
+	 */
+	let relationIdentity = $derived(`${wsSlug ?? ''}\u0000${field.key}\u0000${field.collection ?? ''}`);
+
+	/**
+	 * The list this component last SENT, held until that write is OVER, STAMPED
+	 * with the identity it was sent for.
+	 *
+	 * "Over" is two signals, not one: `value` reflecting what we sent, or the
+	 * consumer's own settlement when it gives one. The second was added in round
+	 * 8 (R8-2) because the first cannot answer for a write the server REFUSES —
+	 * that value never comes back, so the hold kept a rejected list on screen
+	 * and ignored every later server value.
+	 *
+	 * The stamp is the fence, and it is structural on purpose. My first version
+	 * cleared the hold from an `$effect` that read `wsSlug` and `field.key`
+	 * directly — which re-runs on every prop assignment, equal or not, so an
+	 * ordinary parent re-render mid-write released the hold and the stale prop
+	 * came back as the base. The fix worked only in a test whose two clicks had
+	 * nothing in between. Comparing a stamp asks the question the fence is for
+	 * ("is this still the same item?") instead of a question that happens to
+	 * correlate with it ("did anything re-render?").
+	 *
+	 * `$state` rather than a plain `let` (CONVE-1688's split): `relationValues`
+	 * reads it, so it belongs in the effect graph.
+	 */
+	let pendingRelation = $state<{
+		identity: string;
+		list: string[];
+		/**
+		 * True when the consumer gave a settlement signal, which then OWNS the
+		 * release and prop agreement must keep out of it.
+		 *
+		 * Agreement is a coincidence test, not an answer: remove C from
+		 * [A,B,C] and add it straight back, and the second write is holding
+		 * [A,B,C] — equal to the prop nobody has changed yet. The effect below
+		 * read that as "the server confirmed us", released mid-write, and the
+		 * FIRST write's response then arrived as [A,B] and became the base. C
+		 * was lost by the mechanism built to stop exactly that.
+		 */
+		tracked: boolean;
+	} | null>(null);
+
+	/**
+	 * Tickets for the hold, so the SETTLEMENT of an older write cannot release a
+	 * newer one's hold. Same class the item pane orders its field writes with
+	 * (`$lib/items/fieldWriteOrder`) — one model, asked in two places, because
+	 * the hold and the pane's 409 retry are two halves of one question about
+	 * which whole-list write is current (codex round 8, R8-1 / R8-2).
+	 *
+	 * Keyed by `relationIdentity`, so a retarget starts its own sequence.
+	 */
+	const holdOrder = new WriteOrder();
+
+	/**
+	 * The consumer's return value as a settlement signal, or null when it gave
+	 * none. Duck-typed on `then` rather than `instanceof Promise` so an async
+	 * handler wrapped by a test double or a framework thenable still counts.
+	 */
+	function settlementOf(outcome: unknown): Promise<unknown> | null {
+		const thenable = outcome as { then?: unknown } | null | undefined;
+		return typeof thenable?.then === 'function' ? (outcome as Promise<unknown>) : null;
+	}
+
+	/**
+	 * Send a whole-list write and remember it as the base for the next edit.
+	 *
+	 * ONE function, because every list mutation is "compute the new list, send
+	 * it" and a second copy is how one of them ends up basing itself on the
+	 * prop again.
+	 */
+	function writeRelationList(next: string[]) {
+		const identity = relationIdentity;
+		const ticket = holdOrder.take(identity);
+		let outcome: void | Promise<void>;
+		try {
+			pendingRelation = { identity, list: next, tracked: false };
+			outcome = onchange(next);
+		} catch (err) {
+			// A consumer that throws SYNCHRONOUSLY never reaches the settlement
+			// path below, so the hold it just armed would stand forever and
+			// every later edit would base on the abandoned list. Release and
+			// rethrow: the throw is the consumer's to report, the stranded hold
+			// was ours.
+			if (pendingRelation?.identity === identity && !holdOrder.superseded(ticket)) {
+				pendingRelation = null;
+			}
+			throw err;
+		}
+		// A consumer that returns nothing has told us nothing, and the hold falls
+		// back to prop agreement (below). One that returns a promise is telling
+		// us when its write SETTLED, which is the question the hold is actually
+		// asking — agreement answers it only for writes that succeed, so a
+		// REFUSED write (a required field cleared, a validation error) left the
+		// rejected list on screen forever and ignored every later server value.
+		const settlement = settlementOf(outcome);
+		if (!settlement) return;
+		// Settlement owns the release from here — see `tracked`.
+		pendingRelation = { identity, list: next, tracked: true };
+		void (async () => {
+			try {
+				await settlement;
+			} catch {
+				// Settled is settled. The consumer owns error reporting — the
+				// only thing that changes here is that we stop holding, which is
+				// as true of a failure as of a success.
+			}
+			// Flush before releasing, for a consumer that RESOLVES BEFORE IT
+			// ASSIGNS. `ItemDetail` assigns first, so nothing can currently
+			// observe this line and no test kills it — stated rather than
+			// dressed up as tested, because a mutant removing it survives the
+			// whole file. It is kept, unlike W7's duplicate guard, because that
+			// guard was unreachable BY CONSTRUCTION while this one is reachable
+			// by a consumer shape the signature permits: `Promise<void>` says
+			// when the write ended, never when the value landed. Releasing ahead
+			// of the assignment would show the pre-write list and hand an edit
+			// started in that window the stale base — the round-7 defect again.
+			await tick();
+			if (holdOrder.superseded(ticket)) return;
+			if (pendingRelation?.identity !== identity) return;
+			pendingRelation = null;
+		})();
+	}
+
+	// Release the hold as soon as the prop agrees — the FIRST of the two release
+	// signals, and the only one for a consumer that answers nothing. Comparing
+	// CONTENT, not array identity: the value comes back through JSON, so it is
+	// never the same array we sent. A prop that disagrees is still stale — keep
+	// holding, unless the write itself has settled (`writeRelationList`). A change
+	// arriving from ELSEWHERE while we hold is the case this cannot distinguish,
+	// and it resolves itself: the next agreement releases, and until then the
+	// user is editing the list they last acted on, which is the one on screen.
+	$effect(() => {
+		const pending = pendingRelation;
+		if (!pending) return;
+		// Not for a write that reports its own settlement, and not for a hold
+		// belonging to a DIFFERENT identity: a retargeted editor whose new value
+		// happens to equal the old one's held list would otherwise clear a hold
+		// that was never about this field.
+		if (pending.tracked || pending.identity !== relationIdentity) return;
+		const incoming = Array.isArray(value)
+			? value.map((e) => (typeof e === 'string' ? e.trim() : '')).filter((e) => e !== '')
+			: [];
+		if (incoming.length === pending.list.length && incoming.every((e, i) => e === pending.list[i])) {
+			pendingRelation = null;
+		}
+	});
 
 	/**
 	 * Whether the field's declared target still names a live collection.
@@ -111,10 +330,18 @@ handlers — onchange is never called.
 	let relationEditable = $derived(
 		isRelation && !!wsSlug && !!field.collection && relationTarget !== 'stale',
 	);
-	let relationRow = $derived.by((): ItemIndexRow | null => {
+	//
+	// FUNCTIONS OF ONE RAW REFERENCE, not of `value` (U4/W7). These four used
+	// to be `$derived` values closing over the scalar `value`; a
+	// `multi_relation` needs every one of them answered per ELEMENT, and a
+	// second copy taking a parameter is how the two types drift apart. So the
+	// parameterised form is the only implementation and the scalar path below
+	// calls it with its single element — which is also why the existing scalar
+	// render tests are the instrument that this refactor moved nothing.
+	function relationRowFor(raw: string): ItemIndexRow | null {
 		if (!isRelation || !wsSlug) return null;
-		const raw = typeof value === 'string' ? value.trim() : '';
-		if (!raw) return null;
+		const ref = raw.trim();
+		if (!ref) return null;
 		// ONE IMPLEMENTATION OF THE TWO NARROWINGS (TASK-2998). They were worked
 		// out here and duplicated into `relationGroups` when the board needed
 		// them; TASK-2996 has merged without touching this file, so the fork is
@@ -127,35 +354,37 @@ handlers — onchange is never called.
 		// from that same list, so the helper's own guard covers the stale and
 		// unknown cases this branch used to name.
 		return narrowRelationRow(
-			localIndex.findByIdOrSlug(wsSlug, raw),
-			raw,
+			localIndex.findByIdOrSlug(wsSlug, ref),
+			ref,
 			field.collection,
 			knownCollectionSlugs,
 		);
-	});
-	let relationState = $derived.by((): 'empty' | 'live' | 'deleted' | 'unresolved' => {
+	}
+	function relationStateFor(raw: string): 'empty' | 'live' | 'deleted' | 'unresolved' {
 		if (!isRelation) return 'empty';
-		const raw = typeof value === 'string' ? value.trim() : '';
-		if (!raw) return 'empty';
-		if (!relationRow) return 'unresolved';
-		return relationRow.deleted_at ? 'deleted' : 'live';
-	});
-	let relationRef = $derived(relationRow ? formatItemRef(relationRow) : null);
-	let relationHref = $derived.by(() => {
-		if (!relationRow || !wsSlug || !username) return null;
-		const seg = relationRef ?? relationRow.slug;
-		if (!relationRow.collection_slug || !seg) return null;
-		return `/${username}/${wsSlug}/${relationRow.collection_slug}/${seg}`;
-	});
+		if (!raw.trim()) return 'empty';
+		const row = relationRowFor(raw);
+		if (!row) return 'unresolved';
+		return row.deleted_at ? 'deleted' : 'live';
+	}
+	function relationRefFor(row: ItemIndexRow | null): string | null {
+		return row ? formatItemRef(row) : null;
+	}
+	function relationHrefFor(row: ItemIndexRow | null): string | null {
+		if (!row || !wsSlug || !username) return null;
+		const seg = relationRefFor(row) ?? row.slug;
+		if (!row.collection_slug || !seg) return null;
+		return `/${username}/${wsSlug}/${row.collection_slug}/${seg}`;
+	}
 
-	function handleRelationClick(e: MouseEvent) {
-		if (!relationRow || !shouldOpenInPane(e, !!onOpenTarget)) return;
+	function handleRelationClick(e: MouseEvent, row: ItemIndexRow) {
+		if (!shouldOpenInPane(e, !!onOpenTarget)) return;
 		e.preventDefault();
 		onOpenTarget?.({
-			ref: relationRef ?? undefined,
-			slug: relationRow.slug,
-			href: relationHref ?? undefined,
-			collectionSlug: relationRow.collection_slug,
+			ref: relationRefFor(row) ?? undefined,
+			slug: row.slug,
+			href: relationHrefFor(row) ?? undefined,
+			collectionSlug: row.collection_slug,
 		});
 	}
 
@@ -170,7 +399,40 @@ handlers — onchange is never called.
 	function pickRelation(row: ItemIndexRow) {
 		relationWrite++;
 		editingRelation = false;
-		onchange(row.id);
+		commitPicked(row.id);
+	}
+
+	/**
+	 * Write one chosen id into the field, in whichever shape the field takes.
+	 *
+	 * REPLACE for a `relation`, APPEND for a `multi_relation` — that is the
+	 * entire difference between the types at the write end, and it lives in one
+	 * function because BOTH ways of choosing (the picker and the inline create)
+	 * land here. Two copies of "what choosing means" is how the create path
+	 * ends up replacing a list the picker path appends to.
+	 */
+	function commitPicked(id: string) {
+		if (!isMultiRelation) {
+			onchange(id);
+			return;
+		}
+		writeRelationList([...relationValues, id]);
+	}
+
+	/**
+	 * Drop one element, by POSITION rather than by value — the list is ordered
+	 * and the user pointed at a row, not at an id.
+	 *
+	 * The last removal writes `[]`, not an absent key: an empty array is a
+	 * valid shape meaning "no targets", and normalising it to absence is the
+	 * WRITE DOOR's job (`internal/items/validate.go`, the multi_relation arm,
+	 * which spells out why the shape check cannot be the one to decide it).
+	 * Guessing at absence here would be this component answering a question the
+	 * server already answers, in a second place.
+	 */
+	function removeRelationAt(index: number) {
+		relationWrite++;
+		writeRelationList(relationValues.filter((_, i) => i !== index));
 	}
 
 	// Backing out is a decision, so it supersedes an in-flight create exactly as
@@ -338,7 +600,7 @@ handlers — onchange is never called.
 			if (indexStillOurs()) localIndex.upsert(ws, item, epoch);
 			if (!stillWaiting()) return;
 			editingRelation = false;
-			onchange(item.id);
+			commitPicked(item.id);
 		} catch (e: any) {
 			// The SAME predicate as the success path, not a copy of some of it
 			// (codex rounds 4 and 6). A create the user escaped out of, or one
@@ -613,33 +875,41 @@ handlers — onchange is never called.
 
 <svelte:window onclick={handleWindowClick} />
 
-{#snippet relationChip()}
+{#snippet relationChip(raw: string)}
 	<!--
-		One chip, four states. The invariant across all of them: a raw item ID
-		never reaches the user. Before this branch existed, the readonly arm was
-		`{value ?? '—'}`, which rendered the UUID verbatim.
+		One chip for ONE reference, four states. The invariant across all of
+		them: a raw item ID never reaches the user. Before this branch existed,
+		the readonly arm was `{value ?? '—'}`, which rendered the UUID verbatim.
+
+		Takes the reference as a parameter rather than closing over `value` so
+		a `multi_relation` renders N of these with no second chip
+		implementation (U4/W7).
 	-->
-	{#if relationState === 'empty'}
+	{@const row = relationRowFor(raw)}
+	{@const state = relationStateFor(raw)}
+	{@const ref = relationRefFor(row)}
+	{@const href = relationHrefFor(row)}
+	{#if state === 'empty'}
 		<span class="relation-empty">—</span>
-	{:else if relationState === 'live' && relationHref}
+	{:else if state === 'live' && href && row}
 		<a
 			class="relation-chip link-target"
-			href={relationHref}
-			onclick={handleRelationClick}
+			{href}
+			onclick={(e) => handleRelationClick(e, row)}
 		>
-			{#if relationRef}<span class="relation-ref">{relationRef}</span>{/if}
-			<span class="relation-title">{relationRow?.title}</span>
+			{#if ref}<span class="relation-ref">{ref}</span>{/if}
+			<span class="relation-title">{row.title}</span>
 		</a>
-	{:else if relationState === 'live'}
+	{:else if state === 'live'}
 		<!-- Resolved, but no route to build (no `username`): still never the id. -->
 		<span class="relation-chip">
-			{#if relationRef}<span class="relation-ref">{relationRef}</span>{/if}
-			<span class="relation-title">{relationRow?.title}</span>
+			{#if ref}<span class="relation-ref">{ref}</span>{/if}
+			<span class="relation-title">{row?.title}</span>
 		</span>
-	{:else if relationState === 'deleted'}
+	{:else if state === 'deleted'}
 		<span class="relation-chip is-deleted" title="This item has been deleted.">
-			{#if relationRef}<span class="relation-ref">{relationRef}</span>{/if}
-			<span class="relation-title">{relationRow?.title}</span>
+			{#if ref}<span class="relation-ref">{ref}</span>{/if}
+			<span class="relation-title">{row?.title}</span>
 			<span class="relation-note">(deleted)</span>
 		</span>
 	{:else}
@@ -652,6 +922,27 @@ handlers — onchange is never called.
 		<span class="relation-chip is-unresolved" title="This value does not match any item in this workspace.">
 			<span class="relation-note">Unresolved reference</span>
 		</span>
+	{/if}
+{/snippet}
+
+{#snippet relationChips()}
+	<!--
+		The field's whole value, read-only: one chip for a `relation`, N in
+		order for a `multi_relation`, an em-dash for either when empty. The
+		em-dash is rendered HERE rather than left to the chip's own empty arm so
+		an empty LIST says the same thing an empty scalar does — a list of zero
+		chips would otherwise render as nothing at all.
+	-->
+	{#if relationValues.length === 0}
+		<span class="relation-empty">—</span>
+	{:else if isMultiRelation}
+		<span class="relation-chips">
+			{#each relationValues as raw, i (raw + '@' + i)}
+				{@render relationChip(raw)}
+			{/each}
+		</span>
+	{:else}
+		{@render relationChip(relationValues[0])}
 	{/if}
 {/snippet}
 
@@ -695,7 +986,7 @@ handlers — onchange is never called.
 			<span>{value === undefined || value === null ? '—' : JSON.stringify(value)}</span>
 		</div>
 	{:else if isRelation}
-		<div class="readonly-display">{@render relationChip()}</div>
+		<div class="readonly-display">{@render relationChips()}</div>
 	{:else}
 		<div class="readonly-display">
 			<span>{value ?? '—'}</span>
@@ -908,9 +1199,77 @@ handlers — onchange is never called.
 
 {:else if isRelation && relationEditable}
 	<div class="relation-editor">
-		{#if relationState !== 'empty' && !editingRelation}
+		{#if isMultiRelation}
+			<!--
+				A LIST, so the affordances are per-ELEMENT (Remove) plus one for
+				the list (Add). The scalar's Change/Clear pair does not
+				translate: "Change" would have to mean "replace everything",
+				which is not what a user pointing at one chip is asking for.
+
+				The picker's open/closed rule is the SCALAR'S, deliberately
+				unchanged — open when the field is empty or when the user asked
+				for it, closed once a choice lands. An empty list auto-opening
+				is the same trade the scalar comment above `editingRelation`
+				argues for: nothing to show means nothing to show INSTEAD of a
+				search box.
+			-->
+			{#each relationValues as raw, i (raw + '@' + i)}
+				<div class="relation-row">
+					{@render relationChip(raw)}
+					<button
+						type="button"
+						class="relation-action"
+						onclick={() => removeRelationAt(i)}
+					>
+						Remove
+					</button>
+				</div>
+			{/each}
+			<!--
+				DUPLICATE PREVENTION, in its entirety: the picker is told to hide
+				what the field already references, so the click the server would
+				refuse is never offered. The server REFUSES a duplicate
+				(`RelationTargetDuplicate`) rather than de-duplicating, so that
+				refusal — not a silent one-copy write — is what stands behind
+				this if the exclusion is ever dropped.
+
+				The exclusion set is the RAW stored elements, and that is
+				sufficient rather than lazy: the write door canonicalises every
+				relation value to its target's UUID (`ResolveRelationReferents`),
+				so a stored element IS the id even when the caller typed a ref or
+				a title. Excluding raw strings therefore also covers the element
+				`localIndex` cannot resolve — the one whose target the picker can
+				still offer, because while the index is cold it searches the
+				SERVER, over rows that were never in the index.
+
+				A resolved-id set was written alongside this and removed: with
+				canonicalisation it is the same set, and no mutant could tell the
+				two apart. If stored elements ever stop being canonical ids, THIS
+				is the line that stops being sufficient.
+			-->
+			{#if editingRelation || relationValues.length === 0}
+				<ItemPicker
+					wsSlug={wsSlug!}
+					collection={field.collection}
+					label={ariaLabel ?? `Search ${field.label || field.key}`}
+					placeholder="Search…"
+					autofocus={editingRelation}
+					excludeIds={relationValues}
+					onselect={pickRelation}
+					oncreate={canCreateInTarget ? createRelationTarget : undefined}
+					createLabel={targetCollection?.name}
+					oncancel={relationValues.length === 0 ? undefined : cancelRelationEdit}
+				/>
+			{:else}
+				<div class="relation-row">
+					<button type="button" class="relation-action" onclick={() => (editingRelation = true)}>
+						+ Add
+					</button>
+				</div>
+			{/if}
+		{:else if relationValues.length > 0 && !editingRelation}
 			<div class="relation-row">
-				{@render relationChip()}
+				{@render relationChip(relationValues[0])}
 				<button type="button" class="relation-action" onclick={() => (editingRelation = true)}>
 					Change
 				</button>
@@ -926,7 +1285,7 @@ handlers — onchange is never called.
 				onselect={pickRelation}
 				oncreate={canCreateInTarget ? createRelationTarget : undefined}
 				createLabel={targetCollection?.name}
-				oncancel={relationState === 'empty' ? undefined : cancelRelationEdit}
+				oncancel={relationValues.length === 0 ? undefined : cancelRelationEdit}
 			/>
 		{/if}
 	</div>
@@ -939,7 +1298,7 @@ handlers — onchange is never called.
 		look authoritative. Read-only is the honest state until TASK-2869.
 	-->
 	<div class="readonly-display" title="This relation can't be set from here yet.">
-		{@render relationChip()}
+		{@render relationChips()}
 	</div>
 
 {:else if field.type === 'json'}
@@ -1064,6 +1423,16 @@ handlers — onchange is never called.
 
 	.relation-empty {
 		color: var(--text-muted);
+	}
+
+	/* A read-only multi_relation is N chips on one line, wrapping — the
+	   editable form gets a row each because each row carries its own Remove. */
+	.relation-chips {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: var(--space-2);
+		min-width: 0;
 	}
 
 	/* ── Shared input styles ──────────────────────────────────────────── */

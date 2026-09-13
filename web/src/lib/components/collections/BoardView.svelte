@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { relationGroupingRefusal, relationGroupingRefusalMessage } from '$lib/collections/relationGroups';
 	import type { Item, Collection } from '$lib/types';
 	import { parseSchema, parseFields } from '$lib/types';
 	import { itemComparator, type SortMode } from '$lib/collections/itemSort';
@@ -215,6 +216,24 @@
 	// ANYWHERE in the workspace and label lanes with whatever it found. The
 	// filter UI already requires it; the board did not.
 	let isRelationGroup = $derived(field?.type === 'relation' && !!field?.collection);
+	/**
+	 * Why grouping is refused for this field, or null (U4).
+	 *
+	 * A `multi_relation` is refused by lead ruling — one item belongs to as many
+	 * lanes as it has references and `bucketByColumn`'s invariant is exactly one
+	 * — and a relation with no declared target for the reason above.
+	 *
+	 * The board cannot be "ungrouped" the way the list can: a board IS lanes. So
+	 * its fallback is a single UNCATEGORIZED lane — what changes is that it no
+	 * longer does so SILENTLY. An Uncategorized lane with no explanation reads
+	 * as "none of these items has a value", which is false and unactionable.
+	 *
+	 * "The lane it ALREADY produced for this case" is what this said until round
+	 * 8, and it was not true: with `options` retained through a type change the
+	 * board kept its named lanes and bucketed into them under the notice. The
+	 * refusal now drives `columns` (below) rather than only the affordances.
+	 */
+	let groupingRefusal = $derived(relationGroupingRefusal(field));
 	let knownCollectionSlugs = $derived(
 		new Set(collectionStore.collections.map((c) => c.slug)),
 	);
@@ -234,8 +253,40 @@
 	let relationLaneByValue = $derived(
 		new Map(relationLaneList.map((lane) => [lane.value, lane])),
 	);
+	/**
+	 * The board's lanes.
+	 *
+	 * NO lanes when grouping is refused (codex round 8, R8-3), which sends every
+	 * item to UNCATEGORIZED and leaves exactly one lane on screen — the single
+	 * lane the refusal notice describes.
+	 *
+	 * Round 7 gated every affordance that WRITES the group value and left the
+	 * lanes themselves reading it, so the board went on bucketing under a notice
+	 * saying it did not. That is the same false premise round 6 corrected one
+	 * derivation below: "a multi_relation declares no options" is true of the
+	 * schemas people write and enforced nowhere, so a `multi_select` retyped to
+	 * `multi_relation` keeps `options` like `["A","A,B"]` — and a lane value is
+	 * the STRINGIFIED array, which can match one. Items then landed in separate
+	 * scalar-labelled lanes underneath "Showing everything ungrouped."
+	 *
+	 * One lane rather than keeping the notice and dropping it: the notice is the
+	 * smaller change and it says something true, which is the point of it.
+	 * IDEA-3034 holds the multi-lane alternative (one lane per reference, an
+	 * item appearing in several), which is a feature rather than a repair.
+	 *
+	 * NOTHING forces the UNCATEGORIZED lane to appear here, which looks like a
+	 * gap and is not. `showUncategorized` tracks that lane's contents, and under
+	 * a refusal every item is in it — while a board with no items at all never
+	 * reaches the lanes, since `items.length === 0` renders `EmptyState` in
+	 * their place. A forcing term was written and then REMOVED after no mutant
+	 * could reach it, rather than kept with an explanation attached.
+	 */
 	let columns = $derived(
-		isRelationGroup ? relationLaneList.map((lane) => lane.value) : (field?.options ?? []),
+		groupingRefusal
+			? []
+			: isRelationGroup
+				? relationLaneList.map((lane) => lane.value)
+				: (field?.options ?? []),
 	);
 
 	// Column order state — tracks the displayed order, syncs from schema when not dragging
@@ -254,7 +305,25 @@
 	 * a field the board is not showing, which is a different feature and not
 	 * one this unit was asked for.
 	 */
-	let cardStatusOptions = $derived(isRelationGroup ? [] : columns);
+	// AND NOTHING WHEN GROUPING IS REFUSED — restored in codex round 6 after I
+	// removed it in round 5, and the reason I removed it is the part worth
+	// keeping.
+	//
+	// Round 5's mutant survived and I concluded the gate was unreachable: a
+	// refused grouping takes the `field?.options ?? []` branch of `columns`, and
+	// "a multi_relation declares no options" makes that empty, so
+	// `ItemCard.statusCyclable` (needing `statusOptions.length > 1`) is already
+	// false. Every step of that is true of the schemas anyone would WRITE, and
+	// none of it is enforced anywhere: nothing strips `options` when a field's
+	// type changes, so a `multi_select` retyped to `multi_relation` in the schema
+	// editor keeps them, `columns` is non-empty, and the chip cycles — writing a
+	// scalar into a list. A claim about schemas is not a claim about code, which
+	// is exactly what the preflight's own `collection`-on-a-select comment says
+	// about a neighbouring field.
+	//
+	// So the surviving mutant was evidence about my FIXTURE, not about the
+	// guard. The test now builds the retained-options schema and the mutant dies.
+	let cardStatusOptions = $derived(isRelationGroup || groupingRefusal ? [] : columns);
 
 	let columnOrder = $state<string[]>([]);
 
@@ -486,7 +555,15 @@
 		const currentValue = isRelationGroup
 			? relationLaneValueFor(item, groupField, resolveRelation)
 			: fields[groupField];
-		if (currentValue !== targetColumn) {
+		// A REFUSED grouping has no group value to change, so a drop inside its
+		// single fallback lane is a REORDER and nothing else (U4, codex round
+		// 1). Without this the multi_relation case took the scalar arm:
+		// `currentValue` is the stored ARRAY, `targetColumn` is a lane string,
+		// they are never equal, and every drop fired a write that would replace
+		// the list with a scalar. The server refuses it, `moveSucceeded` goes
+		// false, and the reorder is silently dropped — while the refusal notice
+		// above renders correctly the entire time, which is what hid it.
+		if (!groupingRefusal && currentValue !== targetColumn) {
 			try {
 				await onStatusChange(item, targetColumn);
 			} catch {
@@ -598,6 +675,12 @@
 {#if items.length === 0}
 	<EmptyState {collection} {wsSlug} {oncreate} />
 {:else}
+{#if groupingRefusal}
+	<p class="grouping-refused" role="status">
+		<strong>Not grouped by {field?.label || groupField}.</strong>
+		{relationGroupingRefusalMessage(groupingRefusal)}
+	</p>
+{/if}
 <div class="board-view">
 	{#each renderColumns as colValue (colValue)}
 		{@const colItems = columnData[colValue] ?? []}
@@ -652,7 +735,16 @@
 					     UNCATEGORIZED lane hides "add" (creating an explicitly
 					     uncategorized item makes no sense) but keeps the bulk
 					     ⋯ menu — "move/tag/assign all" is useful for triage. -->
-					{#if onCreateInColumn && !isUncategorized && !isRelationGroup}
+					<!--
+						AND NOT WHEN GROUPING IS REFUSED (codex round 7). A
+						multi_relation that retained `options` produces NAMED
+						lanes, so neither `isUncategorized` nor `isRelationGroup`
+						withheld this: creating in one sent the lane string as
+						the relation value, which the write door refuses. Same
+						class as the drag and the status chip — every affordance
+						that writes the GROUP VALUE has to ask the refusal.
+					-->
+					{#if onCreateInColumn && !isUncategorized && !isRelationGroup && !groupingRefusal}
 						<button
 							class="lane-btn lane-add-btn"
 							title="Add item to {formatLabel(colValue).toLowerCase()}"
@@ -685,11 +777,19 @@
 									laneSort={laneSortOverrides[colValue]}
 									onSetLaneSort={(m) => setLaneSort(colValue, m)}
 									onClose={closeMenu}
-									onAddItem={onCreateInColumn && !isUncategorized && !isRelationGroup
+									onAddItem={onCreateInColumn && !isUncategorized && !isRelationGroup && !groupingRefusal
 										? () => openDraft(colValue)
 										: undefined}
 									onArchive={onArchiveColumn ? () => onArchiveColumn?.(colItems) : undefined}
-									onMove={onMoveColumn ? (status) => onMoveColumn?.(colItems, status) : undefined}
+									onMove={/* The FIFTH affordance that writes the group value —
+										round 7 enumerated four and missed this one (round 8).
+										It offers `statusField.options` as destinations, so a
+										`status` field retyped to `multi_relation` with its
+										options retained offers lanes that do not exist and
+										sends a SCALAR into a list field. */
+									onMoveColumn && !isRelationGroup && !groupingRefusal
+										? (status) => onMoveColumn?.(colItems, status)
+										: undefined}
 									onTag={onTagColumn ? (tag) => onTagColumn?.(colItems, tag) : undefined}
 									onUntag={onUntagColumn ? (tag) => onUntagColumn?.(colItems, tag) : undefined}
 									onSetPriority={onSetPriorityColumn ? (p) => onSetPriorityColumn?.(colItems, p) : undefined}
@@ -762,7 +862,7 @@
 							compact={true}
 							focused={focusedItemId === item.id}
 							statusOptions={cardStatusOptions}
-							onStatusClick={isRelationGroup ? undefined : onStatusChange}
+							onStatusClick={isRelationGroup || groupingRefusal ? undefined : onStatusChange}
 							progress={itemProgress?.[item.id] ?? null}
 							{progressLabel}
 							onReorderItem={canReorderLane(colValue) ? (it, dir) => reorderItem(colValue, it, dir) : undefined}
@@ -783,6 +883,19 @@
 {/if}
 
 <style>
+	/* U4: the grouping-refused notice, matching ListView's. Plain and inline
+	   rather than a toast — it describes a standing property of the view's
+	   configuration, not an event, so it must survive a reload. */
+	.grouping-refused {
+		margin: 0 0 0.75rem;
+		padding: 0.5rem 0.75rem;
+		border-radius: 6px;
+		background: var(--surface-2, rgba(127, 127, 127, 0.1));
+		color: var(--text-2, inherit);
+		font-size: 0.85rem;
+		line-height: 1.4;
+	}
+
 	.board-view {
 		display: flex;
 		gap: var(--space-4);

@@ -40,7 +40,7 @@ func (s *Server) relationTargetsUnavailable(
 ) (map[string]bool, error) {
 	targets := make(map[string]bool)
 	for _, def := range schema.Fields {
-		if def.Type == "relation" && def.Collection != "" {
+		if def.IsRelation() && def.Collection != "" {
 			targets[def.Collection] = true
 		}
 	}
@@ -95,7 +95,7 @@ func (s *Server) relationTargetsUnavailable(
 // "target collection: people" beneath a select. One line, at the only place
 // that can make the documented contract true.
 func relationTargetSlug(def models.FieldDef) string {
-	if def.Type != "relation" {
+	if !def.IsRelation() {
 		return ""
 	}
 	return def.Collection

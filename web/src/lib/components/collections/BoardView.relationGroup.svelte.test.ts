@@ -563,3 +563,326 @@ describe('the MENU move whose WRITE fails', () => {
 		expect(cardsIn(screen, 'COLOR-1Red')).toEqual(['car-2']);
 	});
 });
+
+describe('a REFUSED grouping must not write a group value (U4, codex round 1 P5)', () => {
+	/**
+	 * The defect: `isRelationGroup` is `type === 'relation'`, so a
+	 * `multi_relation` board took the SCALAR arm of the drop handler.
+	 * `currentValue` was then the stored ARRAY and `targetColumn` a lane
+	 * string, which are never equal, so every drop fired
+	 * `onStatusChange(item, "<lane>")` — a write that would replace the list
+	 * with a scalar. The server refuses it, `moveSucceeded` goes false, and the
+	 * reorder is dropped. The refusal NOTICE rendered correctly throughout,
+	 * which is exactly what hid it: the view said the right sentence and then
+	 * did the wrong write.
+	 */
+	function multiCollection(): Collection {
+		const coll = collection();
+		coll.schema = JSON.stringify({
+			fields: [{ key: 'car_color', label: 'Colour', type: 'multi_relation', collection: 'colors' }],
+		});
+		return coll;
+	}
+
+	it('renders the refusal and lands every card in ONE fallback lane', () => {
+		// PRECONDITION for the guard below, and the thing that makes it about a
+		// screen that actually happens: this configuration reaches the board,
+		// says why it cannot group, and still shows the cards.
+		const screen = render(BoardView, {
+			props: {
+				items: [item('car-1', 'id-red'), item('car-2', 'id-blue')],
+				collection: multiCollection(),
+				wsSlug: 'ws',
+				groupField: 'car_color',
+				onStatusChange: vi.fn(),
+				onReorder: vi.fn(),
+			} as never,
+		});
+		expect(screen.container.textContent).toContain('more than one group');
+		expect(screen.container.querySelectorAll('.kanban-column')).toHaveLength(1);
+		expect([...screen.container.querySelectorAll('.card-title')].map((e) => e.textContent?.trim()))
+			.toEqual(['car-1', 'car-2']);
+	});
+
+	it('lands every card in ONE lane even when the schema RETAINED options', () => {
+		// codex round 8, R8-3. Round 7 gated every affordance that WRITES the
+		// group value and left the LANES reading it, so the board went on
+		// bucketing under a notice saying it did not.
+		//
+		// The fixture is the finding's own: a lane key is the STRINGIFIED array,
+		// so options carried through a type change can MATCH one. `['id-red']`
+		// and `['id-red','id-blue']` stringify to 'id-red' and 'id-red,id-blue',
+		// and with those retained as options the two cars landed in two named
+		// lanes under "Showing everything ungrouped." Empty named lanes would be
+		// wrong too, but this version makes the board disagree with its own
+		// notice about the CARDS, which is the visible defect.
+		const coll = collection();
+		coll.schema = JSON.stringify({
+			fields: [
+				{
+					key: 'car_color',
+					label: 'Colour',
+					type: 'multi_relation',
+					collection: 'colors',
+					options: ['id-red', 'id-red,id-blue'],
+				},
+			],
+		});
+		const multi = (id: string, value: string[]) =>
+			({ ...item(id), fields: JSON.stringify({ car_color: value }) }) as Item;
+
+		const screen = render(BoardView, {
+			props: {
+				items: [multi('car-1', ['id-red']), multi('car-2', ['id-red', 'id-blue'])],
+				collection: coll,
+				wsSlug: 'ws',
+				groupField: 'car_color',
+				onStatusChange: vi.fn(),
+				onReorder: vi.fn(),
+			} as never,
+		});
+
+		// PRECONDITIONS: the refusal is in force and both cards rendered, so
+		// "one lane" is neither "not refused" nor "nothing on the board".
+		expect(screen.container.textContent).toContain('more than one group');
+		expect([...screen.container.querySelectorAll('.card-title')].map((e) => e.textContent?.trim()))
+			.toEqual(['car-1', 'car-2']);
+		expect(screen.container.querySelectorAll('.kanban-column')).toHaveLength(1);
+		// And the one lane holds them BOTH — a lane count alone would pass on a
+		// board that dropped a card.
+		expect(
+			[...screen.container.querySelectorAll('.kanban-column')].map(
+				(c) => c.querySelectorAll('.item-card').length,
+			),
+		).toEqual([2]);
+	});
+
+	it('withholds the status chip even when the schema RETAINED options', () => {
+		// The fixture that makes this leg discriminate, and the whole lesson of
+		// rounds 5 and 6. Round 5's fixture had a multi_relation with no
+		// `options`, so `columns` was empty, the chip could not cycle for a
+		// reason unrelated to the guard, and the mutant reverting the guard
+		// SURVIVED. I read that as "the guard is unreachable" and removed it.
+		//
+		// Nothing strips `options` when a field's type changes. A `multi_select`
+		// retyped to `multi_relation` in the schema editor keeps them — so
+		// `columns` is non-empty, the chip cycles, and it writes a scalar into a
+		// list. "A multi_relation declares no options" was a claim about the
+		// schemas people write, never about the code.
+		//
+		// AND THIS LEG STOPPED DISCRIMINATING ITS GUARD IN ROUND 8, which is
+		// worth saying plainly given how it got here. R8-3 makes a refused
+		// grouping yield NO lanes, so `columns` is empty for a reason that has
+		// nothing to do with `cardStatusOptions` — measured, not assumed:
+		// deleting `groupingRefusal` from that derivation now leaves all 63
+		// tests in this directory green. The situation round 5 THOUGHT it was in
+		// is the situation the code is now actually in, by construction rather
+		// than by a claim about schemas.
+		//
+		// The guard stays: it is one of four affordances phrased the same way,
+		// and the drag one is NOT subsumed (its mutant still dies). What does
+		// not stay is the pretence — a leg that cannot fail is not the evidence,
+		// and the leg that goes red if R8-3 regresses is the one-lane test.
+		const coll = collection();
+		coll.schema = JSON.stringify({
+			fields: [
+				{
+					key: 'car_color',
+					label: 'Colour',
+					type: 'multi_relation',
+					collection: 'colors',
+					options: ['old-a', 'old-b'],
+				},
+				{ key: 'status', label: 'Status', type: 'select', options: ['open', 'done'] },
+			],
+		});
+		const withStatus = (id: string, color: string) =>
+			({
+				...item(id, color),
+				fields: JSON.stringify({ car_color: [color], status: 'open' }),
+			}) as Item;
+
+		const screen = render(BoardView, {
+			props: {
+				items: [withStatus('car-1', 'id-red')],
+				collection: coll,
+				wsSlug: 'ws',
+				groupField: 'car_color',
+				onStatusChange: vi.fn(),
+			} as never,
+		});
+
+		// PRECONDITIONS: the refusal is in force and the card rendered, so "no
+		// chip" is neither "not refused" nor "no card".
+		expect(screen.container.textContent).toContain('more than one group');
+		expect(screen.container.querySelectorAll('.item-card')).toHaveLength(1);
+		expect(screen.container.querySelector('[title="Click to cycle status"]')).toBeNull();
+	});
+
+	it('offers no lane create control, which would send the lane string as the value', () => {
+		// The third affordance in the class, after the drag and the status chip
+		// (codex round 7). A multi_relation that RETAINED options produced NAMED
+		// lanes, so neither `isUncategorized` nor `isRelationGroup` withheld the
+		// lane "+": creating there sent the lane string as the relation value.
+		// Every affordance that writes the GROUP VALUE has to ask the refusal.
+		//
+		// REWRITTEN IN ROUND 8, AND THIS LEG NO LONGER DISCRIMINATES ITS GUARD.
+		// Its precondition used to be `.kanban-column > 1` — the named lanes
+		// really rendered, so "no +" was not "no lanes". R8-3 removed those
+		// lanes: a refused grouping now yields the single UNCATEGORIZED lane,
+		// which withholds the "+" through `!isUncategorized` regardless of the
+		// `!groupingRefusal` gate this leg was written for. Deleting that gate
+		// leaves this green.
+		//
+		// The gate is KEPT anyway, and the reason is not defence in depth: each
+		// affordance asking the refusal directly is what made round 7's class
+		// enumerable at all, and one of the four (drag) is NOT subsumed, since a
+		// drop is gated on the refusal rather than on the lane. Keeping three of
+		// four phrased the same way is worth more than deleting two lines. What
+		// is not worth keeping is the pretence that this leg proves it: the leg
+		// that actually fails when R8-3 regresses is the one-lane test above.
+		const coll = collection();
+		coll.schema = JSON.stringify({
+			fields: [
+				{
+					key: 'car_color',
+					label: 'Colour',
+					type: 'multi_relation',
+					collection: 'colors',
+					options: ['old-a', 'old-b'],
+				},
+			],
+		});
+		const screen = render(BoardView, {
+			props: {
+				items: [item('car-1', 'id-red')],
+				collection: coll,
+				wsSlug: 'ws',
+				groupField: 'car_color',
+				onStatusChange: vi.fn(),
+				onCreateInColumn: vi.fn(),
+			} as never,
+		});
+
+		// PRECONDITIONS: refused, and a lane really is rendered — so "no +
+		// button" is not "no lanes". One lane exactly, since R8-3.
+		expect(screen.container.textContent).toContain('more than one group');
+		expect(screen.container.querySelectorAll('.kanban-column')).toHaveLength(1);
+		expect(screen.container.querySelectorAll('.item-card')).toHaveLength(1);
+		const plus = [...screen.container.querySelectorAll('.kanban-column button')].filter(
+			(b) => (b.textContent ?? '').trim() === '+',
+		);
+		expect(plus).toHaveLength(0);
+	});
+
+	it('offers no bulk "Move all to" either — the FIFTH group-writing affordance', async () => {
+		// Round 8 enumeration. Round 7 enumerated four affordances that write the
+		// group value and this was not among them: the lane menu reads
+		// `statusField.options` and offers them as destinations, so a `status`
+		// field retyped to `multi_relation` with its options retained offers
+		// named lanes that no longer exist and calls `onMoveColumn` with a
+		// SCALAR — a write the server refuses for a list-shaped field.
+		//
+		// The item's status is ABSENT on purpose: a card carrying an ARRAY there
+		// trips scalar status formatting and the board throws before rendering,
+		// which is its own finding and not this one.
+		const coll = collection();
+		coll.schema = JSON.stringify({
+			fields: [
+				{
+					key: 'status',
+					label: 'Status',
+					type: 'multi_relation',
+					collection: 'colors',
+					options: ['old-a', 'old-b'],
+				},
+			],
+		});
+		const onMoveColumn = vi.fn();
+		const screen = render(BoardView, {
+			props: {
+				items: [{ ...item('car-1'), fields: JSON.stringify({}) } as Item],
+				collection: coll,
+				wsSlug: 'ws',
+				groupField: 'status',
+				onStatusChange: vi.fn(),
+				onMoveColumn,
+				// Supplied so the menu has an entry that is NOT gated on the
+				// refusal — the control that proves it opened.
+				onTagColumn: vi.fn(),
+			} as never,
+		});
+
+		// PRECONDITIONS: refused, one lane, one card, and the lane menu really is
+		// reachable — so "no Move all to" is not "no menu".
+		expect(screen.container.textContent).toContain('more than one group');
+		expect(screen.container.querySelectorAll('.kanban-column')).toHaveLength(1);
+		expect(screen.container.querySelectorAll('.item-card')).toHaveLength(1);
+		const menuButton = [...screen.container.querySelectorAll('button')].find(
+			(b) => (b.textContent ?? '').trim() === '\u22ef',
+		) as HTMLButtonElement | undefined;
+		expect(menuButton, 'no lane actions menu trigger — re-point this test').toBeTruthy();
+		menuButton!.click();
+		await tick();
+		await tick();
+
+		// PRECONDITION FOR THE ABSENCE: the menu really opened. Without this the
+		// leg passes against a menu that never rendered, which is how its first
+		// version stayed green with the gate deleted. "Tag all" is present for
+		// every lane and is not gated on the refusal.
+		const menuEntries = [...document.querySelectorAll('button')].map((b) => (b.textContent ?? '').trim());
+		expect(menuEntries.some((t) => t.includes('Tag all'))).toBe(true);
+
+		expect(menuEntries.filter((t) => t.includes('Move all to'))).toHaveLength(0);
+		expect(onMoveColumn).not.toHaveBeenCalled();
+	});
+
+	it('CONTROL: an ordinary board still offers the lane create control', () => {
+		// Withholding it everywhere would remove a working affordance from every
+		// board on the instance.
+		const coll = collection();
+		coll.schema = JSON.stringify({
+			fields: [{ key: 'status', label: 'Status', type: 'select', options: ['open', 'done'] }],
+		});
+		const withStatus = (id: string) =>
+			({
+				...item(id),
+				fields: JSON.stringify({ status: 'open' }),
+			}) as Item;
+		const screen = render(BoardView, {
+			props: {
+				items: [withStatus('car-1')],
+				collection: coll,
+				wsSlug: 'ws',
+				groupField: 'status',
+				onStatusChange: vi.fn(),
+				onCreateInColumn: vi.fn(),
+			} as never,
+		});
+		const plus = [...screen.container.querySelectorAll('.kanban-column button')].filter(
+			(b) => (b.textContent ?? '').trim() === '+',
+		);
+		expect(plus.length).toBeGreaterThan(0);
+	});
+
+	it('gates the group write on groupingRefusal, not on the value comparison alone', () => {
+		// A SOURCE guard, for the same reason its drag sibling above is one:
+		// driving svelte-dnd-action's finalize through jsdom costs more setup
+		// than the property is worth, and the property is structural.
+		//
+		// It reads the CONDITION rather than a spelling — the assertion is that
+		// the refusal is consulted in the same `if` that gates the write, so a
+		// rewrite that keeps the behaviour keeps the guard.
+		const start = SRC.indexOf('async function handleFinalize');
+		expect(start, 'handleFinalize not found — re-point this guard').toBeGreaterThan(-1);
+		const body = SRC.slice(start, SRC.indexOf('\n\t}', SRC.indexOf('onStatusChange(', start)));
+		const write = body.indexOf('await onStatusChange(');
+		expect(write).toBeGreaterThan(-1);
+		const guard = body.lastIndexOf('groupingRefusal', write);
+		expect(guard, 'the drop handler never consults groupingRefusal before writing').toBeGreaterThan(-1);
+		const condition = body.slice(guard, write);
+		expect(condition).toContain('currentValue !== targetColumn');
+		// The refusal must NEGATE the write, not merely appear near it.
+		expect(body.slice(Math.max(0, guard - 8), guard)).toContain('!');
+	});
+});

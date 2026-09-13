@@ -1016,7 +1016,72 @@ const CmdhelpVersion = "0.1"
 //     is ever updated is not established — the flush belongs to a
 //     browser tab and BUG-3000 carries the open half — so no surface
 //     here states a duration.
-const ToolSurfaceVersion = "0.31"
+//
+//     0.33 — PLAN-2857 U4 / TASK-2999. A new `multi_relation` field type:
+//     an ORDERED LIST of references, each element resolving through the
+//     same UUID -> ref -> exact-title ladder a scalar `relation` uses.
+//
+//     0.32 IS RESERVED FOR PR #1337, which claims it and was opened
+//     first. This unit took 0.33 on a lead ruling rather than contest the
+//     number: version numbers are not scarce, and two branches claiming
+//     one means whichever merges second renumbers under merge pressure,
+//     which is when a version bump is least likely to be checked. So 0.32
+//     may be SKIPPED in this changelog if #1337 is ever abandoned — a gap
+//     is cheaper than a collision.
+//
+//     A BEHAVIOR bump on the 0.31/0.30/0.29 grounds — no tool name or
+//     action enum changed. Two halves, and they have opposite
+//     compatibility stories:
+//
+//     ADDITIVE: the type itself. A 0.31 consumer that never declares a
+//     `multi_relation` field is unaffected by every rule below, because
+//     all of them are reached only through a field whose schema says
+//     `type: "multi_relation"` — a type no existing schema can contain.
+//     `fields="owners:multi_relation:people"` takes the target collection
+//     as its third part, the same shape 0.31 gave `relation`, and a bare
+//     `owners:multi_relation` is REFUSED at parse time rather than
+//     building a field with Options=["people"] and no target, which is
+//     the unwritable field 0.31 was bumped to stop minting.
+//
+//     A READ-SHAPE CHANGE, and the reason this is a bump rather than a
+//     silent addition: `relation_targets[key]` now carries EITHER the
+//     scalar object 0.31 emitted, OR a JSON ARRAY of those objects when
+//     the key names a `multi_relation` field, in stored order. One map,
+//     not a parallel `multi_relation_targets` key — a consumer rendering
+//     "what does this field point at?" should not have to ask two
+//     questions and merge the answers, and the field's key already says
+//     which shape to expect because the consumer has the schema.
+//
+//     A SCALAR ENTRY IS BYTE-IDENTICAL to 0.31's, which is the whole
+//     compatibility claim, and a test pins it against a LITERAL rather
+//     than against another call into the same code. A consumer that
+//     parses `relation_targets` and has no `multi_relation` fields
+//     therefore sees nothing new. One that acquires such a field must
+//     handle the array; a strictly-typed client will fail to decode it,
+//     which is why this is a bump and not a no-bump.
+//
+//     Value rules, all ruled on TASK-2999's trail and all NEW rather
+//     than inherited, because scalar `relation` had nothing coherent to
+//     inherit (BUG-3028): exactly ONE stored form for "none", which is
+//     the key being ABSENT, with `[]` normalising to it at the write
+//     door; an empty or whitespace-only ELEMENT is REFUSED, not skipped
+//     the way an empty scalar is; `required` means at least one RESOLVED
+//     element; order is part of the value and duplicates are REFUSED
+//     with a new `duplicate_referent` reason.
+//
+//     `duplicate_referent` is detected AFTER resolution, which is why it
+//     is not a shape check: two elements that duplicate a target are
+//     usually DIFFERENT STRINGS — a UUID and a ref, a ref and an exact
+//     title — so nothing that cannot resolve them can see it. Refused
+//     rather than silently de-duplicated: a caller who sent one target
+//     twice either erred or believes multiplicity means something, and
+//     storing one copy answers neither honestly.
+//
+//     Cross-workspace carry drops a `multi_relation` value WHOLE, never
+//     partially, and reports it once through the same
+//     `warnings.dropped_fields` channel BUG-2674 established — so an
+//     import can never change an element count.
+const ToolSurfaceVersion = "0.33"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

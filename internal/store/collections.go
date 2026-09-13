@@ -1408,7 +1408,15 @@ func retargetRelationsInSchemaJSON(raw, oldSlug, newSlug string) (string, bool, 
 		if !ok {
 			continue
 		}
-		if t, _ := f["type"].(string); t != "relation" {
+		// BOTH relation types (U4). A `multi_relation` declares its target
+		// exactly as a `relation` does — cardinality is a property of the
+		// VALUE, not of the declaration — so a rename that skipped it would
+		// leave the field pointing at a slug that no longer names a
+		// collection. That failure is silent in the worst way: nothing errors,
+		// the schema still parses, and every subsequent write to the field is
+		// refused with `target_missing` for a rename the author never
+		// connected to it.
+		if t, _ := f["type"].(string); t != "relation" && t != "multi_relation" {
 			continue
 		}
 		if c, _ := f["collection"].(string); c != oldSlug {
