@@ -2,8 +2,18 @@ import { defineConfig } from 'vitest/config';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { realpathSync } from 'node:fs';
+import {
+	BROWSER_TEST_GLOB,
+	IDB_TEST_GLOB,
+	NODE_TEST_GLOB,
+	PROJECT_REQUIREMENTS,
+	createProjectCountReporter,
+	findUnsatisfiedProjects,
+	formatUnsatisfiedProjectsError,
+} from './src/test/vitestProjects.ts';
 
-// Two-project vitest setup (TASK-2081 / PLAN-1984):
+// Multi-project vitest setup (TASK-2081 / PLAN-1984, plus `idb` from
+// PLAN-2636 unit 1):
 //
 //  - `node`  — the existing pure-TS unit suite. Plain node environment, no
 //              Svelte plugin (fast; matches the pre-TASK-2081 behavior).
@@ -15,12 +25,14 @@ import { realpathSync } from 'node:fs';
 // (`*.test.ts`) stays on node. Keeping the node suite out of jsdom avoids
 // slowing/altering the pure-logic tests.
 //
-// The jsdom project's deps (`jsdom`, `@testing-library/svelte`,
-// `@testing-library/jest-dom`) are declared in package.json but may be absent
-// until `npm install` runs (worktrees share a read-only node_modules). When
-// they're missing we register ONLY the node project, so `npm run test` keeps
-// the existing suite green; once installed, the jsdom project activates
-// automatically and `npm run test` runs BOTH.
+// The non-`node` projects need devDependencies (`jsdom`,
+// `@testing-library/svelte`, `@testing-library/jest-dom`,
+// `@sveltejs/vite-plugin-svelte`, `fake-indexeddb`). They used to be probed with
+// `require.resolve` and the project SKIPPED when they did not resolve, which made
+// an incomplete install narrow the run instead of failing it — `npm test` exited
+// 0 having executed none of the `*.svelte.test.ts` suites. Since BUG-3045 an
+// unresolvable dependency REFUSES the run instead; see
+// `src/test/vitestProjects.ts` for the reasoning and the messages.
 
 const require = createRequire(import.meta.url);
 function canResolve(id: string): boolean {
@@ -63,32 +75,36 @@ const nodeModulesRealPath = (() => {
 	}
 })();
 
-const browserTestDepsInstalled =
-	canResolve('jsdom') &&
-	canResolve('@testing-library/svelte') &&
-	canResolve('@testing-library/jest-dom') &&
-	canResolve('@sveltejs/vite-plugin-svelte');
+// Admission check for every project that has dependencies of its own — the
+// `jsdom` project (TASK-2081) and the `idb` project (PLAN-2636 unit 1). Both
+// used to self-disable when their deps did not resolve; both now refuse, at
+// config-load time, before a single file is collected (BUG-3045).
+//
+// Module scope, so the refusal lands while the config is still being LOADED —
+// before any project is constructed and before a single test file is collected.
+// Measured: vitest reports it as a startup error ("failed to load config") and
+// exits 1; it does not fall back to a default config (BUG-3045 trail).
+const unsatisfiedProjects = findUnsatisfiedProjects(PROJECT_REQUIREMENTS, canResolve);
+if (unsatisfiedProjects.length > 0) {
+	throw new Error(formatUnsatisfiedProjectsError(unsatisfiedProjects));
+}
 
-// The `idb` project needs fake-indexeddb (PLAN-2636 unit 1). Like the jsdom
-// deps it's declared in package.json but absent in a symlinked worktree until
-// npm install runs; when it can't be resolved we register only the other
-// projects so `npm run test` stays green, and the idb suite activates
-// automatically once the dep is present (mirrors the jsdom self-disable).
-const idbTestDepInstalled = canResolve('fake-indexeddb');
-
-const BROWSER_TEST_GLOB = 'src/**/*.svelte.test.ts';
-// IDB-backed persistence tests. The `.idb.test.ts` suffix routes them to the
-// dedicated `idb` project; they must be excluded from the node project (which
-// has no indexedDB — the persistence layer would silently no-op there and the
-// test would pass vacuously) the same way the svelte glob is.
-const IDB_TEST_GLOB = 'src/**/*.idb.test.ts';
+// The three globs are declared in src/test/vitestProjects.ts alongside
+// `projectForTestFile`, so the config and the guard test that checks no test
+// file falls through every project read one declaration rather than two copies
+// (BUG-3045, codex round 1).
+//
+// IDB-backed persistence tests carry the `.idb.test.ts` suffix and must be
+// excluded from the node project (which has no indexedDB — the persistence layer
+// would silently no-op there and the test would pass vacuously) the same way the
+// svelte glob is.
 
 const nodeProject = {
 	resolve: { alias: { $lib } },
 	test: {
 		name: 'node',
 		environment: 'node',
-		include: ['src/**/*.test.ts'],
+		include: [NODE_TEST_GLOB],
 		// The jsdom / idb projects own these; they'd blow up or no-op in the
 		// plain node env.
 		exclude: [BROWSER_TEST_GLOB, IDB_TEST_GLOB],
@@ -111,17 +127,18 @@ const idbProject = {
 };
 
 export default defineConfig(async () => {
-	const projects: Record<string, unknown>[] = [nodeProject];
+	// Dynamic import because these are heavy and only the jsdom project uses them.
+	// They are guaranteed resolvable: the admission check above refused the run
+	// otherwise.
+	const { svelte } = await import('@sveltejs/vite-plugin-svelte');
+	const { svelteTesting } = await import('@testing-library/svelte/vite');
 
-	if (idbTestDepInstalled) {
-		projects.push(idbProject);
-	}
-
-	if (browserTestDepsInstalled) {
-		// Dynamic import so a missing plugin can never crash config loading.
-		const { svelte } = await import('@sveltejs/vite-plugin-svelte');
-		const { svelteTesting } = await import('@testing-library/svelte/vite');
-		projects.push({
+	// Every project is registered unconditionally (BUG-3045). A project that
+	// cannot run does not get dropped from this list — it stops the run.
+	const projects: Record<string, unknown>[] = [
+		nodeProject,
+		idbProject,
+		{
 			plugins: [svelte(), svelteTesting()],
 			resolve: {
 				alias: {
@@ -147,8 +164,19 @@ export default defineConfig(async () => {
 				include: [BROWSER_TEST_GLOB],
 				setupFiles: ['./src/test/setup-jsdom.ts'],
 			},
-		});
-	}
+		},
+	];
 
-	return { test: { projects } };
+	return {
+		test: {
+			projects,
+			// `default` is vitest's own reporter, and naming any reporter REPLACES
+			// the default list rather than adding to it, so it has to be restated
+			// here to keep the ordinary output. Measured, not assumed: with
+			// `default` dropped, a run prints this line and nothing else. The added one prints how many projects actually ran files, so
+			// a narrowed run (`--project`, or a file filter) says so in its own
+			// output rather than looking identical to a full one (BUG-3045).
+			reporters: ['default', createProjectCountReporter()],
+		},
+	};
 });
