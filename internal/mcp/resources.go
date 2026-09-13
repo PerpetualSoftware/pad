@@ -344,7 +344,15 @@ func (r *resources) readItem(ctx context.Context, req mcp.ReadResourceRequest) (
 // formatItemAsMarkdown turns the JSON body returned by
 // `pad item show --format json` into a self-contained markdown
 // document: heading with ref + title, sorted metadata fields,
-// optional parent link, then the item's body content.
+// optional parent link, a staleness marker when the server reports one,
+// then the item's body content.
+//
+// The marker (BUG-3033) appears ONLY for content_state's one defined
+// value, and only immediately above the body it qualifies. An
+// unrecognised value renders nothing: the vocabulary is shared with the
+// write side's content_outcome and is expected to grow, and rendering
+// an unknown value as this specific claim about a live editor would be
+// worse than staying silent.
 //
 // Map-key iteration is sorted so the output is stable for tests.
 func formatItemAsMarkdown(jsonBlob string) (string, error) {

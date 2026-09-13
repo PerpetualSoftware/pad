@@ -57,7 +57,9 @@ type Provenance struct {
 	// failing; and decode.go compares format_version with EXACT equality against
 	// the constant, so bumping it would reject artifacts in BOTH directions for
 	// what is only an added optional key. A current item's bytes are therefore
-	// byte-identical to what this package emitted before.
+	// byte-identical to what this package emitted before — and that claim has an
+	// instrument older than this change: testdata/*.golden.md pin the encoded
+	// bytes exactly, and they were not touched to land this key.
 	//
 	// What it does NOT do: stop the import. A stale body imported into another
 	// workspace becomes canonical there, in a workspace whose op-log never held
