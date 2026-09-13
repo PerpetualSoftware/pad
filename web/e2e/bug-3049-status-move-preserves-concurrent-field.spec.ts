@@ -44,6 +44,20 @@ test('BUG-3049: a status click does not revert a field written after page load',
 	await page.setViewportSize(DESKTOP);
 	await browserLogin(page);
 
+	// HOLD THE WINDOW OPEN, and why this is the honest setup rather than a
+	// contrivance. With SSE connected, the concurrent write below reaches this
+	// tab within milliseconds and refreshes its copy of the item, so a
+	// full-blob write would send the FRESH value and the revert would not
+	// happen. MEASURED, not assumed: with the door reverted to a full blob and
+	// SSE connected, this test's readback still passed — the defect was
+	// invisible. That is a statement about the RACE being narrow on a warm local
+	// instance, not about the write being safe: a tab whose stream is
+	// disconnected (offline, a proxy that buffers, a backgrounded tab, a dropped
+	// reconnect) holds a stale copy indefinitely, and a click inside the stream's
+	// latency does the same on a healthy one. Blocking the stream is how the
+	// window is held open deterministically.
+	await page.route('**/api/v1/events*', (route) => route.abort());
+
 	const title = `B3049 status move ${Date.now()}`;
 	const created = await request.post(
 		`/api/v1/workspaces/${fixture.workspaceSlug}/collections/tasks/items`,
@@ -90,17 +104,6 @@ test('BUG-3049: a status click does not revert a field written after page load',
 	const patchRes = await patched;
 	expect(patchRes.ok(), await patchRes.text()).toBeTruthy();
 
-	const body = JSON.parse(patchRes.request().postData() ?? '{}');
-	expect(body.fields_patch, 'the status move must send a field patch').toBeTruthy();
-	expect(
-		body.fields,
-		'the status move must not send a full fields blob (that is the defect)',
-	).toBeUndefined();
-	expect(
-		Object.keys(body.fields_patch),
-		'the patch must name only the group field',
-	).toEqual(['status']);
-
 	const after = await (
 		await request.get(`/api/v1/workspaces/${fixture.workspaceSlug}/items/${item.id}`, {
 			headers: authHeaders(fixture),
@@ -116,4 +119,20 @@ test('BUG-3049: a status click does not revert a field written after page load',
 	expect(fields.priority, 'BUG-3049: the status move reverted a field it did not name').toBe(
 		'critical',
 	);
+
+	// The MECHANISM, asserted after the outcome so that a regression is reported
+	// as the consequence first and the shape second. (Ordering matters: with the
+	// shape checked first, a mutant reverting the door fails here and never
+	// reaches the readback, so the outcome leg would never be shown able to go
+	// red — CONVE-34 applied to the test's own legs.)
+	const body = JSON.parse(patchRes.request().postData() ?? '{}');
+	expect(body.fields_patch, 'the status move must send a field patch').toBeTruthy();
+	expect(
+		body.fields,
+		'the status move must not send a full fields blob (that is the defect)',
+	).toBeUndefined();
+	expect(
+		Object.keys(body.fields_patch),
+		'the patch must name only the group field',
+	).toEqual(['status']);
 });
