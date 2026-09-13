@@ -1231,6 +1231,21 @@ func (s *Store) MigrateRelationReferentsQ(
 		// that includes `[]` and an array of blanks — see
 		// relationValueIsCleared.
 		if relationValueIsCleared(def, raw) {
+			// FOR A LIST, SKIPPING IS NOT ENOUGH: the value stays in fieldMap
+			// and the migrate doors validate AFTER resolving, so an array of
+			// blanks — reachable as a destination-schema DEFAULT, which
+			// `ValidateFields` assigns without type-checking — then failed the
+			// shape check and returned 400 on an ordinary move, while the same
+			// default on a CREATE was dropped by the late pass and the write
+			// succeeded. Same value, same schema, opposite answers (codex round
+			// 3). Deleting it applies the one spelling of none here too.
+			//
+			// Scalar values are left exactly as they were: `""` is a legal
+			// stored spelling for a cleared scalar relation and validation
+			// accepts it, so removing the key would change what a move stores.
+			if def.IsMultiRelation() {
+				delete(fieldMap, def.Key)
+			}
 			continue
 		}
 		switch {
@@ -2039,10 +2054,19 @@ func (s *Store) HydrateRelationTargetsQ(
 			}
 		}
 	}
-	if len(wanted) == 0 {
-		return nil, nil
-	}
-
+	// NO EARLY RETURN ON AN EMPTY `wanted` (codex round 3). A stored
+	// `multi_relation` holding no resolvable reference still owes its key an
+	// entry — an EMPTY LIST, which says "this field points at nothing", where
+	// an absent key says "nothing hydrated this field". Returning nil here made
+	// which of those a caller got depend on the REST OF THE BATCH: read alone
+	// the item got no entry, read beside an item carrying one reference it got
+	// `[]`, from identical stored bytes.
+	//
+	// Falling through costs nothing and duplicates nothing: the chunk loop does
+	// not execute for an empty id list, `resolved` stays empty, and the render
+	// below produces exactly the empty list for a want with no values. A
+	// special-cased render here would be a second copy of that logic, which is
+	// how the two answers would drift apart again.
 	ids := make([]string, 0, len(wanted))
 	for id := range wanted {
 		ids = append(ids, id)

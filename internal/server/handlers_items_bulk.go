@@ -549,6 +549,18 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 	// ref is canonicalised to its id exactly as at every other write door.
 	suppliedRelations := make(map[string]any, len(changes))
 	for k := range changes {
+		// GATED ON THE PROVENANCE SNAPSHOT taken above, not on presence in the
+		// post-validation map (codex round 3). `ValidateFields` injects schema
+		// defaults, and an empty `multi_relation` in `changes` is normalised to
+		// an absent key BEFORE that injection — so `fieldMap[k]` could hold a
+		// DEFAULT while `changes` still named the key, and this loop then
+		// resolved that default as though the caller had typed it. An
+		// unresolvable default must be DROPPED and reported, never refused:
+		// otherwise one bad default in a schema fails every bulk update into
+		// that collection, on a defect its author has to fix elsewhere.
+		if !relBefore[k] {
+			continue
+		}
 		if v, present := fieldMap[k]; present {
 			suppliedRelations[k] = v
 		}

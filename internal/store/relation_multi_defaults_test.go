@@ -3,6 +3,7 @@ package store
 import (
 	"testing"
 
+	"github.com/PerpetualSoftware/pad/internal/items"
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
@@ -304,4 +305,123 @@ func TestRelationKeysPresent_AnEmptyListIsNotCallerInput(t *testing.T) {
 	if !populated["color"] {
 		t.Error("a populated list stopped counting as caller input")
 	}
+}
+
+// CODEX ROUND 3. Two of the three were again in the previous round's fixes; the
+// third is a pre-existing inconsistency the empty-list rule made visible.
+
+func TestMigrateMultiRelation_ABlankDefaultIsRemovedRatherThanLeftToFailValidation(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ws, _, _, _ := relationFixture(t, s)
+	schema := multiDefaultSchema([]any{"   "}, false)
+
+	// The migrate doors validate AFTER resolving, so a value merely SKIPPED
+	// here stays in the map and fails the shape check — returning 400 on an
+	// ordinary move while the same schema default on a CREATE is dropped and
+	// the write succeeds. Same value, same schema, opposite answers.
+	fields := map[string]any{"color": []any{"   "}}
+	refusals, dropped, err := s.MigrateRelationReferents(nil, ws.ID, schema, fields, nil, nil, RelationCarryMode(0))
+	if err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if len(refusals) != 0 {
+		t.Errorf("refusals = %+v; a default is asserted by nobody and must never refuse a move", refusals)
+	}
+	if v, present := fields["color"]; present {
+		t.Errorf("color survived as %#v, so ValidateFields refuses the move on a value the caller never sent", v)
+	}
+	_ = dropped
+	// The point is the ABSENCE from the map, not the drop list: a blank list is
+	// a cleared field, and reporting a drop for a field that held nothing tells
+	// the user they lost something they never had.
+	if err := validateMigrated(t, fields, schema); err != nil {
+		t.Errorf("the migrated map still fails validation: %v", err)
+	}
+}
+
+func TestMigrateMultiRelation_ControlAScalarClearedValueIsUntouched(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ws, _, _, _ := relationFixture(t, s)
+	schema := models.CollectionSchema{Fields: []models.FieldDef{
+		{Key: "owner", Type: "relation", Collection: "colors"},
+	}}
+
+	// `""` is a legal stored spelling for a cleared SCALAR relation and
+	// validation accepts it, so removing that key would change what a move
+	// stores. The removal above is scoped to the list type on purpose.
+	fields := map[string]any{"owner": ""}
+	if _, _, err := s.MigrateRelationReferents(nil, ws.ID, schema, fields, nil, nil, RelationCarryMode(0)); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if v, present := fields["owner"]; !present || v != "" {
+		t.Errorf("owner = %#v (present=%v), want the empty string kept", v, present)
+	}
+}
+
+func TestHydrateMultiRelation_AnEmptyListDoesNotDependOnTheRestOfTheBatch(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ws, colors, _, red := relationFixture(t, s)
+	crews, err := s.CreateCollection(ws.ID, models.CollectionCreate{
+		Name:   "Crews",
+		Schema: `{"fields":[{"key":"status","type":"select","options":["open","done"],"default":"open","required":true},{"key":"color","type":"multi_relation","collection":"colors"}]}`,
+	})
+	if err != nil {
+		t.Fatalf("create crews: %v", err)
+	}
+	empty, err := s.CreateItem(ws.ID, crews.ID, models.ItemCreate{Title: "Empty", Fields: `{"color":[]}`})
+	if err != nil {
+		t.Fatalf("create empty: %v", err)
+	}
+	populated, err := s.CreateItem(ws.ID, crews.ID, models.ItemCreate{Title: "Populated", Fields: `{"color":["` + red.ID + `"]}`})
+	if err != nil {
+		t.Fatalf("create populated: %v", err)
+	}
+	_ = colors
+
+	schema := models.CollectionSchema{Fields: []models.FieldDef{
+		{Key: "status", Type: "select", Options: []string{"open", "done"}, Default: "open", Required: true},
+		{Key: "color", Type: "multi_relation", Collection: "colors"},
+	}}
+	schemas := map[string]models.CollectionSchema{crews.ID: schema}
+	alone, err := s.HydrateRelationTargetsQ(s.DB(), ws.ID, []models.Item{*empty}, schemas)
+	if err != nil {
+		t.Fatalf("hydrate alone: %v", err)
+	}
+	together, err := s.HydrateRelationTargetsQ(s.DB(), ws.ID, []models.Item{*empty, *populated}, schemas)
+	if err != nil {
+		t.Fatalf("hydrate together: %v", err)
+	}
+
+	// IDENTICAL STORED BYTES, so identical output. The early return made the
+	// answer depend on whether some OTHER item in the batch happened to carry a
+	// resolvable reference.
+	setAlone, okAlone := alone[empty.ID]["color"]
+	setTogether, okTogether := together[empty.ID]["color"]
+	if okAlone != okTogether {
+		t.Fatalf("entry present alone=%v, together=%v — the same row hydrated two ways", okAlone, okTogether)
+	}
+	if !okAlone {
+		t.Fatal("an empty list got no entry at all; absent says \"nothing hydrated this field\", which is a different and false statement")
+	}
+	if setAlone.List == nil || len(setAlone.List) != 0 {
+		t.Errorf("alone = %+v, want an empty LIST", setAlone)
+	}
+	if setTogether.List == nil || len(setTogether.List) != 0 {
+		t.Errorf("together = %+v, want an empty LIST", setTogether)
+	}
+	// CONTROL: the populated item still hydrates, so this is not a batch that
+	// silently produced nothing for everyone.
+	if got := together[populated.ID]["color"]; got.List == nil || len(got.List) != 1 || got.List[0].Title != "Red" {
+		t.Errorf("the populated item hydrated as %+v, want one Red target", got)
+	}
+}
+
+// validateMigrated runs the shape check the migrate doors run after resolving,
+// which is the step this fix exists to keep from failing.
+func validateMigrated(t *testing.T, fields map[string]any, schema models.CollectionSchema) error {
+	t.Helper()
+	return items.ValidateFields(fields, schema)
 }

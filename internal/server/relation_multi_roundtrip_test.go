@@ -252,3 +252,92 @@ func equalStrings(a, b []string) bool {
 	}
 	return true
 }
+
+// The BULK door's provenance snapshot (PLAN-2857 U4, codex round 3).
+//
+// `applyBulkOp` merges the item's stored blob with the caller's changes, coerces,
+// snapshots relation provenance, then validates — and validation INJECTS schema
+// defaults. Its relation pass then collected "the keys `changes` names, read out
+// of the post-validation map", which is a different set from "the keys the
+// caller supplied": an empty `multi_relation` in `changes` is normalised to an
+// absent key BEFORE the injection, so the map held a DEFAULT under a name the
+// caller had used, and the pass resolved that default as though it were typed.
+//
+// An unresolvable default must be DROPPED and reported, never refused —
+// otherwise one bad default in a schema fails every bulk update into that
+// collection, on a defect its author has to fix somewhere else entirely.
+func TestBulkUpdate_AnInjectedMultiRelationDefaultIsDroppedNotRefused(t *testing.T) {
+	f := newDoorFixture(t)
+	// `priority` is the vehicle because the bulk request has no arbitrary
+	// fields map: `set-priority` is a caller-named change, and a collection is
+	// free to declare that key as any type it likes.
+	crews := mustSchemaCollection(t, f.srv, f.ws.ID, "Crews", `{"fields":[
+		{"key":"status","label":"Status","type":"select","options":["open","done"]},
+		{"key":"priority","label":"Crew","type":"multi_relation","collection":"`+f.people.Slug+`","default":["PEOP-9999"]}
+	]}`)
+	it, err := f.srv.store.CreateItem(f.ws.ID, crews.ID, models.ItemCreate{
+		Title: "Night shift", Fields: `{"status":"open"}`, CreatedBy: f.owner.ID,
+	})
+	if err != nil {
+		t.Fatalf("CreateItem: %v", err)
+	}
+
+	rr := f.call(f.srv.handleBulkItems, "POST",
+		"/api/v1/workspaces/"+f.ws.Slug+"/items/bulk", nil,
+		map[string]any{"op": "set-priority", "ids": []string{it.ID}, "priority": "[]"})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("bulk set-priority: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var out bulkItemsResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
+		t.Fatalf("parse bulk response: %v: %s", err, rr.Body.String())
+	}
+	if len(out.Failed) > 0 {
+		t.Fatalf("the bulk update was REFUSED on a value nobody supplied: %+v", out.Failed)
+	}
+	// AND THE DEFAULT DID NOT LAND. A pass that dropped the refusal but stored
+	// the unresolvable default would satisfy the assertion above while leaving
+	// a dangling reference in the row.
+	stored, err := f.srv.store.GetItem(it.ID)
+	if err != nil || stored == nil {
+		t.Fatalf("GetItem: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(stored.Fields), &m); err != nil {
+		t.Fatalf("parse stored fields %q: %v", stored.Fields, err)
+	}
+	if v, present := m["priority"]; present {
+		t.Errorf("priority stored as %#v; an unresolvable default is dropped, not persisted", v)
+	}
+}
+
+// CONTROL: the same door still REFUSES a value the caller actually supplied.
+// Without this, a gate that skipped every relation key would pass the leg above
+// and silently stop checking bulk relation writes altogether.
+func TestBulkUpdate_ControlASuppliedUnresolvableValueIsStillRefused(t *testing.T) {
+	f := newDoorFixture(t)
+	crews := mustSchemaCollection(t, f.srv, f.ws.ID, "Crews", `{"fields":[
+		{"key":"status","label":"Status","type":"select","options":["open","done"]},
+		{"key":"priority","label":"Crew","type":"multi_relation","collection":"`+f.people.Slug+`"}
+	]}`)
+	it, err := f.srv.store.CreateItem(f.ws.ID, crews.ID, models.ItemCreate{
+		Title: "Day shift", Fields: `{"status":"open"}`, CreatedBy: f.owner.ID,
+	})
+	if err != nil {
+		t.Fatalf("CreateItem: %v", err)
+	}
+
+	rr := f.call(f.srv.handleBulkItems, "POST",
+		"/api/v1/workspaces/"+f.ws.Slug+"/items/bulk", nil,
+		map[string]any{"op": "set-priority", "ids": []string{it.ID}, "priority": `["PEOP-9999"]`})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("bulk set-priority: expected 200 envelope, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var out bulkItemsResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
+		t.Fatalf("parse bulk response: %v: %s", err, rr.Body.String())
+	}
+	if len(out.Failed) != 1 {
+		t.Fatalf("a supplied unresolvable reference was accepted: %+v", out)
+	}
+}
