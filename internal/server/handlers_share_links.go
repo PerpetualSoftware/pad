@@ -391,7 +391,7 @@ func (s *Server) requireShareLinkTargetVisible(w http.ResponseWriter, r *http.Re
 // link. TestMovedTo_ShareLinkNeverCarriesPointer pins both the key set and
 // that specific omission.
 func publicShareItemDTO(item *models.Item) map[string]interface{} {
-	return map[string]interface{}{
+	dto := map[string]interface{}{
 		"title":           item.Title,
 		"content":         item.Content,
 		"fields":          item.Fields,
@@ -399,6 +399,19 @@ func publicShareItemDTO(item *models.Item) map[string]interface{} {
 		"collection_name": item.CollectionName,
 		"collection_icon": item.CollectionIcon,
 	}
+	// BUG-3000. This DTO is an explicit allow-list, so it does NOT inherit
+	// models.Item's staleness marker the way every struct-serialising door does —
+	// and a public share is the door whose reader is LEAST able to notice on their
+	// own: an anonymous viewer has no editor, no op-log, and nothing to compare
+	// against.
+	//
+	// Added only when set, which keeps the key set byte-identical in the common
+	// case — the property TestMovedTo_ShareLinkNeverCarriesPointer pins, and which
+	// this must not disturb.
+	if item.ContentState != "" {
+		dto["content_state"] = item.ContentState
+	}
+	return dto
 }
 
 // handleResolveShareLink is the /s/{token} route. It resolves a share link
@@ -568,6 +581,20 @@ func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) 
 				"ref":     it.Ref,
 				"fields":  it.Fields,
 				"content": it.Content,
+			}
+			// BUG-3000, and the SAME door class as publicShareItemDTO above — this
+			// one was missed when that one was folded in. Both build an explicit
+			// allow-list, so neither inherits models.Item's staleness marker the way
+			// a struct-serialising door does, and both serve an ANONYMOUS reader who
+			// has no editor, no op-log and nothing to compare against.
+			//
+			// Set only when non-empty, exactly as its sibling: the key set stays
+			// byte-identical whenever the row is current, which is the common case.
+			//
+			// If a third allow-list over item bodies ever appears, these should
+			// become one helper rather than a third copy of this comment.
+			if it.ContentState != "" {
+				publicItem["content_state"] = it.ContentState
 			}
 			publicItems = append(publicItems, publicItem)
 		}

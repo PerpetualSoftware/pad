@@ -110,7 +110,7 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 	// and do a direct lookup first so refs are always findable.
 	if prefix, number, ok := parseItemRef(strings.TrimSpace(params.Query)); ok {
 		refQuery := `
-			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
+			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, ` + contentStateSQL + `, i.fields, i.tags,
 			       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 			       i.created_by, i.last_modified_by, i.source,
 			       i.item_number, i.seq, i.created_at, i.updated_at,
@@ -182,7 +182,7 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 				var pinned bool
 				if err := refRows.Scan(
 					&r.Item.ID, &r.Item.WorkspaceID, &r.Item.CollectionID, &r.Item.Title, &r.Item.Slug,
-					&r.Item.Content, &r.Item.Fields, &r.Item.Tags,
+					&r.Item.Content, &r.Item.ContentState, &r.Item.Fields, &r.Item.Tags,
 					&pinned, &r.Item.SortOrder, &r.Item.ParentID, &r.Item.AssignedUserID, &r.Item.AgentRoleID, &r.Item.RoleSortOrder,
 					&r.Item.CreatedBy, &r.Item.LastModifiedBy,
 					&r.Item.Source, &r.Item.ItemNumber, &r.Item.Seq, &createdAt, &updatedAt,
@@ -212,7 +212,7 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 	// Lets the search palette double as a quick "go to item N" jump. See BUG-910.
 	if number, ok := parseItemNumber(strings.TrimSpace(params.Query)); ok {
 		numQuery := `
-			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
+			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, ` + contentStateSQL + `, i.fields, i.tags,
 			       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 			       i.created_by, i.last_modified_by, i.source,
 			       i.item_number, i.seq, i.created_at, i.updated_at,
@@ -290,7 +290,7 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 				var pinned bool
 				if err := numRows.Scan(
 					&r.Item.ID, &r.Item.WorkspaceID, &r.Item.CollectionID, &r.Item.Title, &r.Item.Slug,
-					&r.Item.Content, &r.Item.Fields, &r.Item.Tags,
+					&r.Item.Content, &r.Item.ContentState, &r.Item.Fields, &r.Item.Tags,
 					&pinned, &r.Item.SortOrder, &r.Item.ParentID, &r.Item.AssignedUserID, &r.Item.AgentRoleID, &r.Item.RoleSortOrder,
 					&r.Item.CreatedBy, &r.Item.LastModifiedBy,
 					&r.Item.Source, &r.Item.ItemNumber, &r.Item.Seq, &createdAt, &updatedAt,
@@ -348,7 +348,7 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 		// (raw query + hyphen-sanitized query) for the OR-combined
 		// plainto_tsquery — see dialect.go and BUG-842.
 		query = fmt.Sprintf(`
-			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
+			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, `+contentStateSQL+`, i.fields, i.tags,
 			       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 			       i.created_by, i.last_modified_by, i.source,
 			       i.item_number, i.seq, i.created_at, i.updated_at,
@@ -378,7 +378,7 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 		ftsMatch := s.dialect.FTSMatch("items_fts", "search_vector")
 
 		query = fmt.Sprintf(`
-			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
+			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, `+contentStateSQL+`, i.fields, i.tags,
 			       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 			       i.created_by, i.last_modified_by, i.source,
 			       i.item_number, i.seq, i.created_at, i.updated_at,
@@ -575,7 +575,7 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 
 		if err := rows.Scan(
 			&r.Item.ID, &r.Item.WorkspaceID, &r.Item.CollectionID, &r.Item.Title, &r.Item.Slug,
-			&r.Item.Content, &r.Item.Fields, &r.Item.Tags,
+			&r.Item.Content, &r.Item.ContentState, &r.Item.Fields, &r.Item.Tags,
 			&pinned, &r.Item.SortOrder, &r.Item.ParentID, &r.Item.AssignedUserID, &r.Item.AgentRoleID, &r.Item.RoleSortOrder,
 			&r.Item.CreatedBy, &r.Item.LastModifiedBy,
 			&r.Item.Source, &r.Item.ItemNumber, &r.Item.Seq, &createdAt, &updatedAt,

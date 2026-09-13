@@ -152,3 +152,18 @@ func (s *Store) SetAddWorkspaceMemberCommitHookForTesting(hook func(tx *sql.Tx) 
 	s.commitAddWorkspaceMember = hook
 	return func() { s.commitAddWorkspaceMember = prev }
 }
+
+// SetItemContentFlushedOpLogIDForTesting advances items.content_flushed_op_log_id
+// directly, standing in for the collab-snapshot flush that normally moves it.
+//
+// It exists for BUG-3000's clearing leg. The marker must go AWAY once the row
+// catches up, not merely appear when it falls behind — a predicate that latched on
+// at the first op-log row would satisfy every "is it marked?" assertion and still be
+// wrong for every item that has ever been edited collaboratively. Driving a real
+// flush would need a browser; this writes the one column that flush advances.
+//
+// Production code MUST NOT call this. The "ForTesting" suffix is the grep signal.
+func (s *Store) SetItemContentFlushedOpLogIDForTesting(itemID string, opLogID int64) error {
+	_, err := s.db.Exec(s.q(`UPDATE items SET content_flushed_op_log_id = ? WHERE id = ?`), opLogID, itemID)
+	return err
+}

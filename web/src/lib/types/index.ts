@@ -641,6 +641,18 @@ export interface Item {
 	title: string;
 	slug: string;
 	content: string;
+	/**
+	 * Set when `content` above is known to be BEHIND the item's live
+	 * collaborative document (BUG-3000) — absent whenever the row is current,
+	 * which is the common case. Takes the same values as a write response's
+	 * `warnings.content_outcome`, so a caller has one story about where content
+	 * is whether it learned from a write or a read.
+	 *
+	 * The web editor rarely needs it: an open tab reads the Y.Doc, not this
+	 * field. It matters for surfaces that render `content` straight from the
+	 * API without joining the room.
+	 */
+	content_state?: 'applied_pending_flush';
 	fields: string;
 	tags: string;
 	pinned: boolean;
