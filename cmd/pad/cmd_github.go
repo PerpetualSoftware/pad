@@ -194,17 +194,7 @@ Examples:
 			// fields_patch accepts (items.PatchRefusedFieldKeysIn, BUG-2627
 			// part 2), precisely because this door is its sanctioned writer.
 			_, err = client.UpdateItem(ws, item.Slug, models.ItemUpdate{
-				FieldsPatch: map[string]interface{}{
-					"github_pr": GitHubPR{
-						Number:    pr.Number,
-						URL:       pr.URL,
-						Title:     pr.Title,
-						State:     pr.State,
-						Branch:    pr.Branch,
-						Repo:      pr.Repo,
-						UpdatedAt: pr.UpdatedAt,
-					},
-				},
+				FieldsPatch: gitHubPRFieldPatch(pr),
 			})
 			if err != nil {
 				return fmt.Errorf("failed to update item: %w", err)
