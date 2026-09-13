@@ -520,3 +520,144 @@ describe('multi_relation — the hold survives an ordinary re-render', () => {
 		expect(onchange.mock.calls[1][0]).toEqual([BLUE.id]);
 	});
 });
+
+describe('multi_relation — the hold ends when the write does, not only when it succeeds', () => {
+	const editable = { field: multi, wsSlug: 'ws', username: 'dave' } as const;
+
+	/** A consumer that answers, eventually — the shape `ItemDetail` really has. */
+	function gatedConsumer(outcome: 'resolve' | 'reject') {
+		const gates: Array<() => void> = [];
+		const onchange = vi.fn(
+			() =>
+				new Promise<void>((resolve, reject) => {
+					gates.push(() => (outcome === 'resolve' ? resolve() : reject(new Error('refused'))));
+				})
+		);
+		return { onchange, gates };
+	}
+
+	/** Let the settlement continuation and its flush run. */
+	async function settle() {
+		await tick();
+		await tick();
+		await tick();
+	}
+
+	const titles = () => [...document.querySelectorAll('.relation-title')].map((n) => n.textContent);
+
+	it('a REFUSED write stops holding, so the field shows server truth again', async () => {
+		// codex round 8, R8-2. The hold released only on prop AGREEMENT, and a
+		// write the server refuses never agrees — so a rejected clear of a
+		// required field kept showing the rejected value forever and ignored
+		// every later server value. Settlement is the question the hold is for:
+		// the write is over either way.
+		const { onchange, gates } = gatedConsumer('reject');
+		render(FieldEditor, { props: { ...editable, value: [GREEN.id, RED.id, BLUE.id], onchange } });
+		await tick();
+
+		await fireEvent.click(buttons(/^\s*Remove\s*$/)[0]);
+		expect(onchange.mock.calls[0][0]).toEqual([RED.id, BLUE.id]);
+		// Optimistic while the write is outstanding — that part is unchanged.
+		expect(titles()).toEqual(['Red', 'Blue']);
+
+		gates[0]();
+		await settle();
+
+		// The parent refused and left the value alone, so the prop is still the
+		// original list. Seeing it again is the fix; still seeing ['Red','Blue']
+		// is the defect.
+		expect(titles()).toEqual(['Green', 'Red', 'Blue']);
+		expectNoBareUuid();
+	});
+
+	it('and the NEXT edit bases on the prop again, not on the abandoned list', async () => {
+		// The release has to reach the write path, not just the render: a hold
+		// left in place would make the refused list the base for whatever the
+		// user does next.
+		const { onchange, gates } = gatedConsumer('reject');
+		render(FieldEditor, { props: { ...editable, value: [GREEN.id, RED.id, BLUE.id], onchange } });
+		await tick();
+
+		await fireEvent.click(buttons(/^\s*Remove\s*$/)[0]);
+		gates[0]();
+		await settle();
+
+		await fireEvent.click(buttons(/^\s*Remove\s*$/)[0]);
+		expect(onchange.mock.calls[1][0]).toEqual([RED.id, BLUE.id]);
+	});
+
+	it('an OLDER write settling does not release a NEWER write of the same field', async () => {
+		// The ordering half, at the hold. Two removes are outstanding; the first
+		// one's answer arrives second. Releasing on it would drop the list the
+		// user is actually looking at and hand the next edit a stale base — the
+		// round-7 defect, reintroduced through the round-8 fix.
+		const { onchange, gates } = gatedConsumer('resolve');
+		render(FieldEditor, { props: { ...editable, value: [GREEN.id, RED.id, BLUE.id], onchange } });
+		await tick();
+
+		await fireEvent.click(buttons(/^\s*Remove\s*$/)[0]);
+		await tick();
+		await fireEvent.click(buttons(/^\s*Remove\s*$/)[0]);
+		expect(onchange.mock.calls[1][0]).toEqual([BLUE.id]);
+		expect(titles()).toEqual(['Blue']);
+
+		// The FIRST write answers. The prop has not moved (the parent is still
+		// waiting on the second), so a release here would show the whole
+		// original list under a user who has removed two of it.
+		gates[0]();
+		await settle();
+		expect(titles()).toEqual(['Blue']);
+
+		// The second answers, and the hold is over.
+		gates[1]();
+		await settle();
+		expect(titles()).toEqual(['Green', 'Red', 'Blue']);
+	});
+
+	it('CONTROL: a consumer that answers nothing still holds until the prop agrees', async () => {
+		// Not every consumer has a server behind it — `CopyItemDialog` sets local
+		// state and re-props synchronously. Settlement is an OPTIONAL signal, and
+		// a consumer that gives none must keep the round-7 behaviour exactly:
+		// releasing on a write whose outcome is unknown is the lost update again.
+		const onchange = vi.fn();
+		render(FieldEditor, { props: { ...editable, value: [GREEN.id, RED.id, BLUE.id], onchange } });
+		await tick();
+
+		await fireEvent.click(buttons(/^\s*Remove\s*$/)[0]);
+		await settle();
+
+		expect(titles()).toEqual(['Red', 'Blue']);
+		await fireEvent.click(buttons(/^\s*Remove\s*$/)[0]);
+		expect(onchange.mock.calls[1][0]).toEqual([BLUE.id]);
+	});
+
+	it('CONTROL: a write that LANDS still releases onto the value the parent wrote', async () => {
+		// A CONTROL, and labelled as one after the mutation run said so: disabling
+		// the settlement path entirely leaves this leg GREEN, because a write that
+		// succeeds also makes the prop AGREE and the round-7 release fires. It is
+		// here to show the new path did not break the ordinary success, not as
+		// evidence that the new path works — the three legs above are that.
+		const gates: Array<() => void> = [];
+		let props: Record<string, unknown>;
+		const onchange = vi.fn(
+			(v: string[]) =>
+				new Promise<void>((resolve) => {
+					gates.push(() => {
+						rerender({ ...editable, value: v, onchange });
+						resolve();
+					});
+				})
+		);
+		props = { ...editable, value: [GREEN.id, RED.id, BLUE.id], onchange };
+		const { rerender } = render(FieldEditor, { props });
+		await tick();
+
+		await fireEvent.click(buttons(/^\s*Remove\s*$/)[0]);
+		gates[0]();
+		await settle();
+
+		expect(titles()).toEqual(['Red', 'Blue']);
+		await fireEvent.click(buttons(/^\s*Remove\s*$/)[0]);
+		expect(onchange.mock.calls[1][0]).toEqual([BLUE.id]);
+	});
+});

@@ -15,11 +15,12 @@ visual language as the editor but with no inputs, dropdowns, or mutation
 handlers — onchange is never called.
 -->
 <script lang="ts">
-	import { onDestroy } from 'svelte';
+	import { onDestroy, tick } from 'svelte';
 	import { formatItemRef, type FieldDef, type ItemIndexRow, type PaneTarget } from '$lib/types';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import { narrowRelationRow } from '$lib/collections/relationGroups';
 	import { isMultiRelationType, isRelationType } from '$lib/items/relationFieldTypes';
+	import { WriteOrder } from '$lib/items/fieldWriteOrder';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
@@ -33,7 +34,18 @@ handlers — onchange is never called.
 	interface Props {
 		field: FieldDef;
 		value: any;
-		onchange: (value: any) => void;
+		/**
+		 * Write the new value.
+		 *
+		 * A consumer MAY return something awaitable, and the multi_relation hold
+		 * below treats that as the write's settlement signal — success or
+		 * failure alike, since either way the write is no longer outstanding.
+		 * Returning nothing is still supported and leaves the hold released by
+		 * prop agreement alone; that is weaker (a REFUSED write never agrees, so
+		 * the hold outlives it), not wrong, and it is what the consumers with no
+		 * server behind them do.
+		 */
+		onchange: (value: any) => void | Promise<void>;
 		readonly?: boolean;
 		/**
 		 * Accessible name for the rendered control. Optional: on the item
@@ -118,7 +130,11 @@ handlers — onchange is never called.
 			// than a harmless recompute — the scalar path has no equivalent
 			// exposure because its writes are replacements, not edits.
 			//
-			// Cleared as soon as the prop AGREES with what we sent (below), so a
+			// Cleared when the write is OVER — whichever of two signals arrives:
+			// the prop agreeing with what we sent, or (for a consumer that
+			// returns something awaitable) that write settling, success or
+			// failure. Agreement alone was not enough, because a REFUSED write
+			// never agrees and the hold outlived it forever (round 8, R8-2). So a
 			// change arriving from anywhere else — SSE, another tab, the parent's
 			// 409 refetch-and-retry — takes over the moment it lands. This holds
 			// a value forward; it does not own it.
@@ -139,8 +155,14 @@ handlers — onchange is never called.
 	let relationIdentity = $derived(`${wsSlug ?? ''}\u0000${field.key}\u0000${field.collection ?? ''}`);
 
 	/**
-	 * The list this component last SENT, held until `value` reflects it, STAMPED
+	 * The list this component last SENT, held until that write is OVER, STAMPED
 	 * with the identity it was sent for.
+	 *
+	 * "Over" is two signals, not one: `value` reflecting what we sent, or the
+	 * consumer's own settlement when it gives one. The second was added in round
+	 * 8 (R8-2) because the first cannot answer for a write the server REFUSES —
+	 * that value never comes back, so the hold kept a rejected list on screen
+	 * and ignored every later server value.
 	 *
 	 * The stamp is the fence, and it is structural on purpose. My first version
 	 * cleared the hold from an `$effect` that read `wsSlug` and `field.key`
@@ -157,6 +179,27 @@ handlers — onchange is never called.
 	let pendingRelation = $state<{ identity: string; list: string[] } | null>(null);
 
 	/**
+	 * Tickets for the hold, so the SETTLEMENT of an older write cannot release a
+	 * newer one's hold. Same class the item pane orders its field writes with
+	 * (`$lib/items/fieldWriteOrder`) — one model, asked in two places, because
+	 * the hold and the pane's 409 retry are two halves of one question about
+	 * which whole-list write is current (codex round 8, R8-1 / R8-2).
+	 *
+	 * Keyed by `relationIdentity`, so a retarget starts its own sequence.
+	 */
+	const holdOrder = new WriteOrder();
+
+	/**
+	 * The consumer's return value as a settlement signal, or null when it gave
+	 * none. Duck-typed on `then` rather than `instanceof Promise` so an async
+	 * handler wrapped by a test double or a framework thenable still counts.
+	 */
+	function settlementOf(outcome: unknown): Promise<unknown> | null {
+		const thenable = outcome as { then?: unknown } | null | undefined;
+		return typeof thenable?.then === 'function' ? (outcome as Promise<unknown>) : null;
+	}
+
+	/**
 	 * Send a whole-list write and remember it as the base for the next edit.
 	 *
 	 * ONE function, because every list mutation is "compute the new list, send
@@ -164,13 +207,48 @@ handlers — onchange is never called.
 	 * prop again.
 	 */
 	function writeRelationList(next: string[]) {
-		pendingRelation = { identity: relationIdentity, list: next };
-		onchange(next);
+		const identity = relationIdentity;
+		const ticket = holdOrder.take(identity);
+		pendingRelation = { identity, list: next };
+		const outcome = onchange(next);
+		// A consumer that returns nothing has told us nothing, and the hold falls
+		// back to prop agreement (below). One that returns a promise is telling
+		// us when its write SETTLED, which is the question the hold is actually
+		// asking — agreement answers it only for writes that succeed, so a
+		// REFUSED write (a required field cleared, a validation error) left the
+		// rejected list on screen forever and ignored every later server value.
+		const settlement = settlementOf(outcome);
+		if (!settlement) return;
+		void (async () => {
+			try {
+				await settlement;
+			} catch {
+				// Settled is settled. The consumer owns error reporting — the
+				// only thing that changes here is that we stop holding, which is
+				// as true of a failure as of a success.
+			}
+			// Flush before releasing, for a consumer that RESOLVES BEFORE IT
+			// ASSIGNS. `ItemDetail` assigns first, so nothing can currently
+			// observe this line and no test kills it — stated rather than
+			// dressed up as tested, because a mutant removing it survives the
+			// whole file. It is kept, unlike W7's duplicate guard, because that
+			// guard was unreachable BY CONSTRUCTION while this one is reachable
+			// by a consumer shape the signature permits: `Promise<void>` says
+			// when the write ended, never when the value landed. Releasing ahead
+			// of the assignment would show the pre-write list and hand an edit
+			// started in that window the stale base — the round-7 defect again.
+			await tick();
+			if (holdOrder.superseded(ticket)) return;
+			if (pendingRelation?.identity !== identity) return;
+			pendingRelation = null;
+		})();
 	}
 
-	// Release the hold as soon as the prop agrees. Comparing CONTENT, not array
-	// identity: the value comes back through JSON, so it is never the same array
-	// we sent. A prop that disagrees is still stale — keep holding. A change
+	// Release the hold as soon as the prop agrees — the FIRST of the two release
+	// signals, and the only one for a consumer that answers nothing. Comparing
+	// CONTENT, not array identity: the value comes back through JSON, so it is
+	// never the same array we sent. A prop that disagrees is still stale — keep
+	// holding, unless the write itself has settled (`writeRelationList`). A change
 	// arriving from ELSEWHERE while we hold is the case this cannot distinguish,
 	// and it resolves itself: the next agreement releases, and until then the
 	// user is editing the list they last acted on, which is the one on screen.

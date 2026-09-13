@@ -3,6 +3,7 @@
 	import { tick, onMount, onDestroy, untrack } from 'svelte';
 	import { api, PadApiError, isUpdateConflictError, type ImportURLResponse } from '$lib/api/client';
 	import { confirmOpenChildrenOrThrow, isOpenChildrenError } from '$lib/items/openChildrenError';
+	import { WriteOrder, fieldWriteTarget, submitOrderedOCC } from '$lib/items/fieldWriteOrder';
 	import { marked } from 'marked';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { pushEscapeHandler, ESCAPE_PRIORITY } from '$lib/stores/escapeStack';
@@ -2860,6 +2861,20 @@
 		}
 	}
 
+	/**
+	 * Ordering for concurrent writes to ONE field of one item (PLAN-2857 U4,
+	 * codex round 8 R8-1). `stillCurrent()` below fences a write against an ITEM
+	 * SWITCH; it says nothing about two writes to the SAME field of the SAME
+	 * item, which is the whole of a `multi_relation` edit's exposure — every
+	 * chip removal sends the entire remaining list, so an older list re-sent by
+	 * the OCC retry silently resurrects the element the user just removed.
+	 *
+	 * Instance state rather than module state: two panes open on two items must
+	 * not share a counter, and a plain `let` rather than `$state` because
+	 * nothing renders it.
+	 */
+	const fieldWrites = new WriteOrder();
+
 	async function updateField(key: string, value: any) {
 		// NO freeze recheck (BUG-2263): field editing is invisible to the freeze —
 		// FieldEditor stays interactive on the peeking side (`readonly={!canEdit}`),
@@ -2887,6 +2902,9 @@
 		// switch mid-request completes silently.
 		const gen = loadGeneration;
 		const stillCurrent = () => gen === loadGeneration && item?.id === targetItem.id;
+		// Taken BEFORE the first send, so a second edit to the same field while
+		// this one is in flight is visible to every post-await branch below.
+		const ticket = fieldWrites.take(fieldWriteTarget(targetItem.id, key));
 		saveStatus = 'saving';
 
 		// One PATCH attempt: single-key merge, OCC-guarded by the caller-supplied
@@ -2909,29 +2927,48 @@
 		// 409 `update_conflict`. Because only `key` is ever in `fields_patch`, a
 		// retry re-applies THIS delta against the freshly-read row without
 		// clobbering whatever another writer changed — the whole point of BUG-2273.
-		const submitWithOCC = async (force: boolean): Promise<Item> => {
-			let expected = targetItem.updated_at;
-			for (let attempt = 0; ; attempt++) {
-				try {
-					return await doUpdate(force, expected);
-				} catch (e) {
-					if (isUpdateConflictError(e) && attempt < MAX_FIELD_OCC_RETRIES && stillCurrent()) {
-						const latest = await api.items.get(targetWs, targetItem.id);
-						lastServerItem = latest;
-						expected = latest.updated_at;
-						continue;
-					}
-					throw e;
+		//
+		// EXCEPT when the delta has itself been superseded (R8-1). "Re-apply THIS
+		// delta" is safe while the delta is a change to a value nobody else in
+		// this pane is also changing; a whole-list field breaks that premise,
+		// because the newer write is a different value for the SAME key and the
+		// retry would put back exactly what the newer write removed. So the retry
+		// asks whether a newer write for this field has been dispatched, and
+		// abandons rather than re-sending a list the user has already replaced.
+		// This is the one place a DISPATCH count is the right question: nothing
+		// here discards a response, it declines to create a new send of an old
+		// body.
+		const submitWithOCC = (force: boolean): Promise<Item> =>
+			submitOrderedOCC<Item>({
+				order: fieldWrites,
+				ticket,
+				maxRetries: MAX_FIELD_OCC_RETRIES,
+				initialExpected: targetItem.updated_at,
+				send: (expected) => doUpdate(force, expected),
+				refetch: () => api.items.get(targetWs, targetItem.id),
+				isConflict: isUpdateConflictError,
+				stillCurrent,
+				onRefetched: (latest) => {
+					lastServerItem = latest;
 				}
-			}
-		};
+			});
 
 		try {
 			const fresh = await submitWithOCC(false);
 			if (!stillCurrent()) return;
+			// Newest-wins among responses that resolve out of order: two writes
+			// to this field can be answered in either order, and the older row
+			// looks exactly as healthy as the newer one.
+			if (!fieldWrites.claim(ticket)) return;
 			item = withInflightTags(fresh);
 			showSaved();
 		} catch (e) {
+			// A newer write for this field was dispatched while this one was in
+			// flight, so this one's outcome is not the one the user is waiting
+			// on — including the 409 the retry above abandoned rather than
+			// replaying. Fail silently: the newer write owns the toast, the save
+			// indicator and the value on screen.
+			if (fieldWrites.superseded(ticket)) return;
 			// BUG-1538 / TASK-1539: same open-children-guard recovery
 			// path as the collection page's handleStatusChange. When the
 			// user is editing the done-field (status) inline on the
@@ -2955,6 +2992,11 @@
 					// The force retry itself failed (network / 500 /
 					// fresh validation error after the override).
 					if (!stillCurrent()) return;
+					// The confirm modal is an await long enough for the user to
+					// change this field again behind it, so the supersession
+					// question is re-asked here rather than inherited from the
+					// check at the top of this catch.
+					if (fieldWrites.superseded(ticket)) return;
 					saveStatus = 'idle';
 					const msg = retryErr instanceof Error ? retryErr.message : 'Failed to save';
 					console.error('Forced field update failed:', retryErr);
@@ -2964,7 +3006,9 @@
 				// Switched items while the confirm modal was up — complete
 				// silently rather than stamping A's result onto B.
 				if (!stillCurrent() || !item) return;
+				if (fieldWrites.superseded(ticket)) return;
 				if (forced) {
+					if (!fieldWrites.claim(ticket)) return;
 					item = withInflightTags(forced);
 					showSaved();
 					return;
@@ -2975,6 +3019,7 @@
 				// the in-flight save indicator. Force `item` to a fresh
 				// reference so child components re-prop unambiguously
 				// even if they cache by identity.
+				if (!fieldWrites.claim(ticket)) return;
 				saveStatus = 'idle';
 				item = { ...item };
 				toastStore.show('Status change cancelled', 'info');
@@ -2986,6 +3031,7 @@
 			// tell the user to reconcile.
 			if (isUpdateConflictError(e)) {
 				if (!stillCurrent() || !item) return;
+				if (!fieldWrites.claim(ticket)) return;
 				saveStatus = 'idle';
 				// `lastServerItem` is only ever assigned inside the submitWithOCC
 				// closure, so TS's control-flow narrows it to `null` here — the
