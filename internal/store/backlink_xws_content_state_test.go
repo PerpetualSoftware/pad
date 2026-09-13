@@ -1,6 +1,7 @@
 package store
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -49,6 +50,15 @@ func TestCrossWorkspaceBacklinkSnippetsCarryTheMarkerBothWays(t *testing.T) {
 		}
 		t.Fatalf("the cross-workspace source produced no backlink; this leg measured nothing (got %d)", len(got))
 		return models.Backlink{}
+	}
+
+	// SOURCE ISOLATION first: an unrelated item in the SOURCE workspace is made
+	// stale, and the backlink must stay unmarked. Replacing the source
+	// correlation with "any op-log row exists anywhere" passed this test without
+	// it (codex round 4).
+	unrelated := createTestItem(t, s, wsB.ID, colB.ID, "Unrelated in B", "nothing to do with the link")
+	if _, err := s.AppendYjsUpdate(unrelated.ID, []byte{4, 5, 6}, "1"); err != nil {
+		t.Fatalf("AppendYjsUpdate(unrelated): %v", err)
 	}
 
 	// ABSENCE FIRST, premise asserted: a snippet was really produced, so the
@@ -125,6 +135,31 @@ func TestDirectRefSearchResultsDoNotClaimTheirTitleIsStale(t *testing.T) {
 		t.Fatal("the direct-ref search did not return the item; this leg measured nothing")
 	}
 
+	// The NUMERIC direct-ref path, which is a SECOND code path in Store.Search
+	// with its own scan and its own clearing. Removing the marker-clearing from
+	// only that one left this test green (codex round 4), because it queried a
+	// prefixed ref and never a bare number.
+	byNumber, err := s.Search(SearchParams{WorkspaceIDs: []string{ws.ID}, Query: numericPartOf(ref)})
+	if err != nil {
+		t.Fatalf("Search(number): %v", err)
+	}
+	seen = false
+	for _, r := range byNumber.Results {
+		if r.Item.ID != item.ID {
+			continue
+		}
+		seen = true
+		if r.Snippet != item.Title {
+			t.Fatalf("premise broken: the numeric-path snippet is %q, not the title", r.Snippet)
+		}
+		if r.Item.ContentState != "" {
+			t.Errorf("a numeric-path title-only result is marked %q", r.Item.ContentState)
+		}
+	}
+	if !seen {
+		t.Fatal("the numeric search did not return the item; that leg measured nothing")
+	}
+
 	// FTS lookup over the same, still-stale item: here the snippet IS cut from
 	// the body, so the marker must SURVIVE. Without this leg the fix above could
 	// be "clear it everywhere", which would delete the signal it exists for.
@@ -138,6 +173,11 @@ func TestDirectRefSearchResultsDoNotClaimTheirTitleIsStale(t *testing.T) {
 			continue
 		}
 		seen = true
+		// PREMISE: a snippet was actually produced, or "the marker qualifies
+		// served text" is a claim about nothing (codex round 4).
+		if r.Snippet == "" {
+			t.Fatal("the FTS result carries no snippet, so the surviving marker qualifies nothing here")
+		}
 		if r.Item.ContentState != models.ContentOutcomeAppliedPendingFlush {
 			t.Errorf("an FTS result's content_state = %q, want %q — its snippet is cut from the stale body",
 				r.Item.ContentState, models.ContentOutcomeAppliedPendingFlush)
@@ -146,4 +186,14 @@ func TestDirectRefSearchResultsDoNotClaimTheirTitleIsStale(t *testing.T) {
 	if !seen {
 		t.Fatal("the FTS search did not return the item; the second leg measured nothing")
 	}
+}
+
+// numericPartOf returns the number from a "PREFIX-N" ref, which is the second
+// spelling Store.Search accepts for a direct lookup and a separate code path
+// from the prefixed one.
+func numericPartOf(ref string) string {
+	if i := strings.LastIndex(ref, "-"); i >= 0 {
+		return ref[i+1:]
+	}
+	return ref
 }

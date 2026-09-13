@@ -79,6 +79,19 @@ func TestBacklinkSnippetsCarryTheMarkerBothWays(t *testing.T) {
 				return models.Backlink{}
 			}
 
+			// SOURCE ISOLATION, before anything else. An unrelated item in the
+			// same workspace is made stale; the backlink must stay unmarked.
+			// Without this leg, replacing the source correlation with "any
+			// op-log row exists anywhere" passes every assertion below (codex
+			// round 4 ran that mutation).
+			unrelated, err := s.CreateItem(ws.ID, tasks, models.ItemCreate{Title: "Unrelated"})
+			if err != nil {
+				t.Fatalf("create unrelated: %v", err)
+			}
+			if _, err := s.AppendYjsUpdate(unrelated.ID, []byte{4, 5, 6}, "1"); err != nil {
+				t.Fatalf("AppendYjsUpdate(unrelated): %v", err)
+			}
+
 			// ABSENCE FIRST, with the premise that a snippet was actually
 			// produced — a marker on an empty snippet would be a claim about
 			// text nobody was served.

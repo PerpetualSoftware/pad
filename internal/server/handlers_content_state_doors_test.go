@@ -85,8 +85,11 @@ func TestPlaybookRunCarriesTheMarkerBothWays(t *testing.T) {
 	// The body is still served. The marker qualifies the body; it does not
 	// replace it, and a door that withheld the content would pass a
 	// presence-only assertion.
-	if body, _ := got["body"].(string); body == "" {
-		t.Error("run response carries the marker but no body; the marker is a qualifier, not a substitute")
+	// The EXACT body. "Non-empty" passes for a response that replaced the body
+	// with anything at all, which is the failure a marker must never hide
+	// (codex round 4: substituting "WRONG BODY" kept this green).
+	if body, _ := got["body"].(string); body != "Step 1: do the thing" {
+		t.Errorf("run body = %q, want the playbook's own body — the marker qualifies the text, it does not substitute for it", body)
 	}
 }
 
@@ -123,9 +126,15 @@ func TestPlaybookShowInheritsTheContentStateMarker(t *testing.T) {
 
 	makeStale(t, srv, pb.ID)
 
-	if got := show(t); got["content_state"] != models.ContentOutcomeAppliedPendingFlush {
+	got := show(t)
+	if got["content_state"] != models.ContentOutcomeAppliedPendingFlush {
 		t.Errorf("show content_state = %v, want %q — the embed that carries it has been broken",
 			got["content_state"], models.ContentOutcomeAppliedPendingFlush)
+	}
+	// The body the marker is ABOUT must still be served (codex round 4: removing
+	// it entirely left this green, since only the marker was asserted).
+	if body, _ := got["content"].(string); body != "Step 1: do the thing" {
+		t.Errorf("show content = %q, want the playbook's own body", body)
 	}
 }
 
@@ -172,8 +181,8 @@ func TestBootstrapConventionBodiesCarryTheMarkerBothWays(t *testing.T) {
 		t.Errorf("bootstrap convention content_state = %v, want %q — an agent loads a superseded rule with no signal",
 			got["content_state"], models.ContentOutcomeAppliedPendingFlush)
 	}
-	if body, _ := got["content"].(string); body == "" {
-		t.Error("the convention carries the marker but no body")
+	if body, _ := got["content"].(string); body != "The rule an agent obeys." {
+		t.Errorf("convention content = %q, want the convention's own body — a substituted rule would pass a non-empty check", body)
 	}
 }
 
@@ -252,6 +261,9 @@ func TestBootstrapGenericIncludeBodiesCarryTheMarkerBothWays(t *testing.T) {
 	if got["content_state"] != models.ContentOutcomeAppliedPendingFlush {
 		t.Errorf("bodies-mode include content_state = %v, want %q",
 			got["content_state"], models.ContentOutcomeAppliedPendingFlush)
+	}
+	if body, _ := got["content"].(string); body != "Step 1: restart it" {
+		t.Errorf("bodies-mode include content = %q, want the item's own body — removing it entirely kept this test green (codex round 4)", body)
 	}
 
 	// METADATA mode: no body is served, so no claim about a body may be made —
@@ -451,6 +463,12 @@ func TestPlaybookSummariesCarryTheMarkerBothWays(t *testing.T) {
 			t.Errorf("%s: summary content_state = %v, want %q — an agent routes on a description "+
 				"taken from a body that has moved on", door, entry["content_state"],
 				models.ContentOutcomeAppliedPendingFlush)
+		}
+		// The summary must still be THERE. Presence was asserted only BEFORE
+		// staleness, so dropping marked summaries from both doors while keeping
+		// the marker left this green (codex round 4).
+		if sum, _ := entry["summary"].(string); sum == "" {
+			t.Errorf("%s: the marked entry carries no summary; the marker qualifies the text, it does not replace it", door)
 		}
 	}
 

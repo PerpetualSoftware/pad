@@ -32,23 +32,48 @@ import (
 // gets trusted past it:
 //
 //   - CALL EXPRESSIONS whose callee names one of the derivation helpers, by
-//     bare identifier or through a package selector, anywhere in a non-test .go
-//     file under internal/ or cmd/. Position, comments and line breaks inside
-//     the call are irrelevant to the AST, which is the point.
+//     bare identifier or through a package selector, in a non-test .go file
+//     under internal/ or cmd/ — EXCEPT under node_modules, vendor, .git and
+//     testdata, which are named here because an earlier version of this comment
+//     said "anywhere" while the code skipped directories it never disclosed.
+//     Position, comments and line breaks inside the call are irrelevant to the
+//     AST, which is the point.
+//
 //   - A helper NAME used as a value rather than called — assigned to a
 //     variable, passed as an argument — is reported too, and fails closed: the
 //     call through that alias is invisible, so the reference itself is the last
-//     honest place to stop.
+//     honest place to stop. That claim was FALSE until codex round 4: a
+//     declaration whose own name was a helper had a special traversal that
+//     skipped this check entirely.
+//
 //   - It does NOT prove a listed site carries the marker. That is each door's
 //     own both-directions test. This answers a different question: has a site
 //     appeared that nobody has ruled on.
-//   - It cannot see a door built on a helper it does not know, or one that
-//     inlines the derivation without any helper at all. The helper list is the
-//     grammar it reads; the failure message therefore asks for the helper too.
-//   - It scans GO only. Browser consumers of the same fields are a separate
-//     surface with their own item (BUG-3050): the marker reaches them on the
-//     wire and the TypeScript types declare it, but where a stale badge belongs
-//     in a panel or a command palette is a UI decision, not a field copy.
+//
+//   - It cannot see a door built on a helper it does not know, one that inlines
+//     the derivation without any helper at all, or a DTO that simply copies
+//     Content into a field under another name. The helper list is the grammar
+//     it reads; the failure message therefore asks for the helper too.
+//
+//     This is a real and load-bearing limit, not a formality. Codex round 4
+//     censused 434 non-test Go files and found the marker's population is
+//     WIDER than these four helpers: the workspace export's ItemExport.Content
+//     (BUG-3032) and the cross-workspace copy's body remap are field copies
+//     this guard cannot see by construction. Counts also cannot distinguish a
+//     count-preserving move of a call to an unreviewed caller.
+//
+//     So this test's honest claim is narrow: no UNRULED USE of these four
+//     helpers. It is not a proof that every door carries the marker, and it
+//     must not be cited as one.
+//
+//   - It scans GO only. The browser surface is BUG-3050, and that item's scope
+//     is wider than "choose a badge": codex round 4 found the share-view
+//     projection and the individual-share page performing actual FIELD COPIES
+//     that DISCARD the marker before any rendering decision arises, alongside
+//     quick-action prompts, the conventions and playbook editors, and
+//     ItemDetail's editor-seed and timeline-diff strings. An earlier version of
+//     this comment described that surface as a pure rendering choice, which was
+//     inaccurate.
 func TestBodyDerivedTextSitesAreAllRuledOn(t *testing.T) {
 	// The helpers whose output is item-body text under another name. Adding one
 	// here is how this guard learns about a new shape.
@@ -106,7 +131,15 @@ func TestBodyDerivedTextSitesAreAllRuledOn(t *testing.T) {
 				return err
 			}
 			if info.IsDir() {
-				if b := info.Name(); b == "node_modules" || b == "vendor" || b == ".git" || b == "build" || b == "testdata" {
+				// Skipped, and named in the doc comment above rather than left
+				// silent: vendored/third-party trees we do not own, and
+				// `testdata`, which the go tool itself excludes from builds so
+				// nothing under it is production code. `build` was skipped too
+				// until codex round 4 reproduced a green with a real file at
+				// internal/server/build/ — a package may legitimately be named
+				// that, and the exclusion was inherited from a web/build path
+				// that is not under these roots at all.
+				if b := info.Name(); b == "node_modules" || b == "vendor" || b == ".git" || b == "testdata" {
 					return filepath.SkipDir
 				}
 				return nil
@@ -168,26 +201,20 @@ func TestBodyDerivedTextSitesAreAllRuledOn(t *testing.T) {
 				return true
 			})
 
+			// No special case for a declaration whose NAME is a helper. An
+			// earlier draft had one — it walked such a body for CallExprs and
+			// then returned false — and that shortcut was a bypass: the
+			// value-use arm below never ran inside it, so a compiling, callable
+			// `func (p ReviewProjection) PlaybookSummary() string { render :=
+			// contentPreview; return render(p.Content) }` served unmarked stale
+			// prose while this guard passed. Renaming the method made it fail,
+			// which is the tell that the guard was keying on the wrong thing.
+			//
+			// It was also redundant: notAValueUse already marks every
+			// FuncDecl.Name, so the definition's own name is not counted as a
+			// use without any special traversal.
 			ast.Inspect(file, func(n ast.Node) bool {
 				switch v := n.(type) {
-				case *ast.FuncDecl:
-					// The DEFINITION of a helper is not a use of it. Its body is
-					// still walked — a helper calling another helper counts.
-					if helpers[v.Name.Name] {
-						if v.Body != nil {
-							ast.Inspect(v.Body, func(inner ast.Node) bool {
-								if c, ok := inner.(*ast.CallExpr); ok {
-									if name := nameOf(c.Fun); name != "" {
-										key := rel + ":" + name
-										found[key]++
-										where[key] = append(where[key], fmt.Sprintf("%s:%d", rel, fset.Position(c.Lparen).Line))
-									}
-								}
-								return true
-							})
-						}
-						return false
-					}
 				case *ast.CallExpr:
 					if name := nameOf(v.Fun); name != "" {
 						key := rel + ":" + name

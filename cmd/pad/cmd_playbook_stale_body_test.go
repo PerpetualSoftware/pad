@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -446,6 +447,19 @@ func TestPlaybookListWarnsOnlyAboutStaleSummaries(t *testing.T) {
 			serve(t, true)
 			stdout, stderr = run(t, mk)
 
+			// The summaries must STILL BE RENDERED. Presence was asserted only
+			// in the absence leg, so suppressing stale summary text in both
+			// renderers while keeping the warning refs left this green (codex
+			// round 4). The warning qualifies the text; it is not a substitute.
+			for ref := range stale {
+				if !strings.Contains(stdout, ref) {
+					t.Errorf("stale %s vanished from the listing; the warning is a qualifier, not a replacement:\n%s", ref, stdout)
+				}
+			}
+			if !strings.Contains(stdout, "Does the P2 thing.") {
+				t.Errorf("the stale entry's summary text is gone from the listing:\n%s", stdout)
+			}
+
 			// EXACTLY ONE warning line. A renderer emitting one per stale row
 			// satisfies every "contains" assertion and is the thing that makes a
 			// long listing unreadable.
@@ -565,15 +579,18 @@ func TestSnippetRenderersWarnAboutStaleSources(t *testing.T) {
 	workspaceFlag, formatFlag = "ws", ""
 
 	// Each door names the tokens whose presence proves the listing really
-	// rendered, so an absence assertion cannot pass vacuously.
+	// rendered, so an absence assertion cannot pass vacuously — and for both
+	// doors those tokens are SNIPPET text, because the mutation that matters is
+	// "suppress the snippets, keep the warning" (codex round 4 ran exactly that
+	// and an earlier draft of this test stayed green).
 	//
-	// They differ, and the reason is worth recording: `item backlinks` prints
-	// its snippet through cli.Dim, and fatih/color's Printf writes to the
-	// package-level color.Output — bound to the process's ORIGINAL stdout at
-	// init — so swapping os.Stdout does not intercept it. The snippet text is
-	// therefore not assertable here; the backlink ROWS, printed with fmt.Printf,
-	// are. This changes nothing about the warning under test, which goes to
-	// os.Stderr directly.
+	// `item backlinks` prints its snippet through cli.Dim, and fatih/color's
+	// Printf writes to the package-level color.Output rather than os.Stdout, so
+	// a plain os.Stdout swap does not intercept it. An earlier draft recorded
+	// that as a limit and asserted row headings instead — which is precisely
+	// what let the suppress-snippets mutation live. The run helper below points
+	// color.Output at the swapped os.Stdout for the duration instead, so the
+	// dimmed text is captured and the premise is about the thing under test.
 	doors := map[string]struct {
 		mk      func() (*cobra.Command, []string)
 		present []string
@@ -584,7 +601,7 @@ func TestSnippetRenderersWarnAboutStaleSources(t *testing.T) {
 		},
 		"item backlinks": {
 			mk:      func() (*cobra.Command, []string) { return backlinksCmd(), []string{"TASK-9"} },
-			present: []string{"TASK-1 TASK-1", "TASK-4 TASK-4"},
+			present: []string{"a snippet from TASK-1", "a snippet from TASK-4"},
 		},
 	}
 
@@ -597,6 +614,12 @@ func TestSnippetRenderersWarnAboutStaleSources(t *testing.T) {
 				var out string
 				errOut := captureStderr(t, func() {
 					out = captureStdout(t, func() {
+						// color.Output is read at Printf time, so pointing it at
+						// the already-swapped os.Stdout captures cli.Dim output
+						// too. Restored immediately after.
+						origColorOut := color.Output
+						color.Output = os.Stdout
+						defer func() { color.Output = origColorOut }()
 						if e := cmd.Execute(); e != nil {
 							t.Fatalf("%s: %v", name, e)
 						}
@@ -619,6 +642,17 @@ func TestSnippetRenderersWarnAboutStaleSources(t *testing.T) {
 
 			serve(t, true)
 			stdout, stderr = run(t)
+
+			// The rendered text must SURVIVE the stale leg. Suppressing stale
+			// search snippets and ALL backlink snippets while keeping the
+			// warnings left this green (codex round 4), because the backlink
+			// premise checked row headings rather than snippets.
+			for _, token := range door.present {
+				if !strings.Contains(stdout, token) {
+					t.Errorf("%q vanished from the stale listing; the warning qualifies the text, it does not replace it:\n%s", token, stdout)
+				}
+			}
+
 			lines := 0
 			for _, ln := range strings.Split(stderr, "\n") {
 				if strings.Contains(ln, "behind its live collaborative") {

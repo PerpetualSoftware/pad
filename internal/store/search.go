@@ -619,8 +619,17 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 		r.Item.Content = ""
 		// ContentState deliberately SURVIVES here, unlike on the two direct-ref
 		// paths above (BUG-3033). The body is dropped to keep the payload small,
-		// but r.Snippet on this path is cut FROM that body by FTSSnippet, so the
-		// marker still qualifies text this result actually serves.
+		// but r.Snippet on this path is normally cut FROM that body by
+		// FTSSnippet, so the marker qualifies text this result serves.
+		//
+		// NOT always, and the earlier wording claimed otherwise: an FTS TITLE
+		// match on an item with an empty body returns an empty snippet and an
+		// empty content while still carrying the marker (codex round 4). That
+		// case predates this change and is not wrong in itself — the row really
+		// is behind its live document — but it is the marker describing the ROW
+		// rather than any served text, which is the one thing the sentence above
+		// must not be read as promising. cli.ItemSummary has the analogous case
+		// when content_preview is omitted.
 		results = append(results, r)
 	}
 	if err := rows.Err(); err != nil {
