@@ -88,9 +88,20 @@ function norm(value: unknown): string {
 	return typeof value === 'string' ? value.toLowerCase().replace(/-/g, '_') : '';
 }
 
-/** Canonical status → color (CSS var reference). Unknown values read muted. */
+/**
+ * Canonical status → color (CSS var reference). Unknown values read muted.
+ *
+ * `Object.hasOwn` rather than a bare index (BUG-3041, enumeration round). The
+ * map is an ordinary object literal, so `STATUS_COLORS['__proto__']` answers
+ * `Object.prototype` and `['constructor']` answers a FUNCTION — neither is a
+ * CSS value, and both are reachable from a plain string a user can type into a
+ * text field. `?? MUTED` does not catch them, because both are truthy. The
+ * signature promises a colour string; without this it returned whatever the
+ * prototype chain had.
+ */
 export function statusColor(status: unknown): string {
-	return STATUS_COLORS[norm(status)] ?? MUTED;
+	const key = norm(status);
+	return Object.hasOwn(STATUS_COLORS, key) ? STATUS_COLORS[key] : MUTED;
 }
 
 /** Canonical priority → color. Critical is orange by long-standing app
@@ -114,7 +125,10 @@ export function priorityColor(priority: unknown): string {
  *  lets schema-aware callers (shareView.fieldValueColor) fall back to
  *  terminal_options semantics for custom vocabularies. */
 export function hasCanonicalStatus(value: unknown): boolean {
-	return norm(value) in STATUS_COLORS;
+	// OWN keys only — `'__proto__' in STATUS_COLORS` is true for every object
+	// literal, so `in` answered yes for a value the palette has never heard of
+	// and every caller then took the canonical branch. See `statusColor`.
+	return Object.hasOwn(STATUS_COLORS, norm(value));
 }
 
 /**
@@ -162,11 +176,12 @@ export function columnAccentClassFor(
  * is not one this palette knows — in which case the caller renders it as plain
  * text rather than as a chip.
  *
- * ONE copy of a question that had three (BUG-3041, CONVE-35): `TableView`'s
- * `selectValueColor` and `FieldEditor`'s `getStatusColor` were character-for-
- * character the same function, each carrying its own unguarded
- * `val?.toLowerCase()`. Two of the three copies were reachable with a
- * non-string, and hardening them one at a time is how the third stays broken.
+ * ONE copy of a question that had TWO (BUG-3041, CONVE-35): `TableView`'s
+ * `selectValueColor` and `FieldEditor`'s `getStatusColor` were
+ * character-for-character the same function, each carrying its own unguarded
+ * `val?.toLowerCase()`. `norm` below is a third unguarded lowercase but NOT a
+ * third copy of this composite — a distinction the first write-up of this
+ * change got wrong, and the enumeration round corrected.
  */
 export function canonicalValueColor(value: unknown): string | null {
 	if (hasCanonicalStatus(value)) return statusColor(value);

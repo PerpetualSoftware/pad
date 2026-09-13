@@ -37,6 +37,15 @@ const NON_STRINGS: [string, unknown][] = [
 
 describe('the palette helpers do not throw on a non-string value', () => {
 	for (const [label, value] of NON_STRINGS) {
+		it(`answers a USABLE colour for ${label}`, () => {
+			// Not-throwing was the whole assertion here at first, and the
+			// enumeration round pointed out that returning `undefined`, an object,
+			// or a wrong colour would all have passed. The colour helpers always
+			// return a colour, so the honest one for an unreadable value is muted.
+			expect(statusColor(value)).toBe(MUTED);
+			expect(priorityColor(value)).toBe(MUTED);
+		});
+
 		it(`survives ${label}`, () => {
 			// Each assertion is the CALL not throwing plus a usable answer: a
 			// helper that threw would fail before any expectation ran, which is
@@ -61,14 +70,40 @@ describe('the palette helpers do not throw on a non-string value', () => {
 	}
 });
 
+/**
+ * The palette's actual values, written out.
+ *
+ * The first version of this file asserted RELATIONSHIPS — that two canonical
+ * statuses agree, that a priority equals what the shared resolver returns —
+ * and the enumeration round showed why that is not enough: forcing every
+ * priority colour to muted left every leg green, because the assertions
+ * compared the implementation against itself. A palette test has to name the
+ * colours (harness note `end-state-assertions-need-a-counterfactual`).
+ */
+const GREEN = 'var(--accent-green)';
+const AMBER = 'var(--accent-amber)';
+const BLUE = 'var(--status-blue)';
+const ORANGE = 'var(--accent-orange)';
+const GRAY = 'var(--accent-gray)';
+const MUTED = 'var(--text-muted)';
+const SECONDARY = 'var(--text-secondary)';
+
 describe('CONTROL: strings still resolve exactly as before', () => {
 	// Without these, making every helper answer '' for everything would satisfy
 	// the file above completely.
-	it('canonical statuses keep their colours', () => {
+	it('canonical statuses keep their exact colours', () => {
 		expect(hasCanonicalStatus('in_progress')).toBe(true);
 		expect(hasCanonicalStatus('in-progress')).toBe(true);
-		expect(statusColor('done')).toBe(statusColor('completed'));
-		expect(statusColor('open')).not.toBe(statusColor('done'));
+		expect(statusColor('done')).toBe(GREEN);
+		expect(statusColor('completed')).toBe(GREEN);
+		expect(statusColor('in_progress')).toBe(AMBER);
+		expect(statusColor('open')).toBe(BLUE);
+		expect(statusColor('blocked')).toBe(ORANGE);
+		expect(statusColor('cancelled')).toBe(GRAY);
+	});
+
+	it('an UNKNOWN string reads muted rather than borrowing a palette entry', () => {
+		expect(statusColor('shipped')).toBe(MUTED);
 	});
 
 	it('an unknown string is unknown, which is not the same as unreadable', () => {
@@ -80,11 +115,22 @@ describe('CONTROL: strings still resolve exactly as before', () => {
 		expect(columnAccentClassFor({ terminal_options: ['shipped'] }, 'shipped')).toBe('col-done');
 	});
 
-	it('priorities keep their colours through the shared resolver', () => {
-		expect(canonicalValueColor('critical')).toBe(priorityColor('critical'));
-		expect(canonicalValueColor('high')).toBe(priorityColor('high'));
-		expect(canonicalValueColor('Medium')).toBe(priorityColor('medium'));
-		expect(canonicalValueColor('low')).toBe(priorityColor('low'));
+	it('priorities keep their exact colours, not merely the helper\'s own answer', () => {
+		// Named values, for the reason above: comparing `canonicalValueColor` to
+		// `priorityColor` passes however wrong both of them are together.
+		expect(priorityColor('critical')).toBe(ORANGE);
+		expect(priorityColor('high')).toBe(AMBER);
+		expect(priorityColor('medium')).toBe(SECONDARY);
+		expect(priorityColor('low')).toBe(MUTED);
+		expect(canonicalValueColor('Medium')).toBe(SECONDARY);
+		expect(canonicalValueColor('critical')).toBe(ORANGE);
+	});
+
+	it('critical is ORANGE and not red — red is reserved for destructive actions', () => {
+		// A long-standing app convention that a "make it louder" edit would break
+		// without any other leg noticing.
+		expect(priorityColor('critical')).not.toContain('danger');
+		expect(priorityColor('critical')).not.toContain('error');
 	});
 
 	it('formats underscores and casing the way the chips expect', () => {
@@ -98,16 +144,42 @@ describe('CONTROL: strings still resolve exactly as before', () => {
 	});
 });
 
-describe('canonicalValueColor is the one copy of a question that had three', () => {
-	it('prefers the status palette over the priority words', () => {
-		// 'blocked' is a canonical STATUS and not a priority; if the priority arm
-		// ran first, a blocked lane would take a priority colour. The order is
-		// load-bearing and was duplicated into TableView and FieldEditor, where a
-		// future edit to one copy would have moved only that surface.
-		expect(canonicalValueColor('blocked')).toBe(statusColor('blocked'));
+describe('canonicalValueColor is the one copy of a question that had two', () => {
+	it('answers the status palette for a word in BOTH vocabularies', () => {
+		// The precedence claim, stated honestly. The two vocabularies are
+		// currently DISJOINT — no canonical status is also a priority word — so
+		// no fixture built from them can distinguish "statuses first" from
+		// "priorities first", and the leg that used 'blocked' to prove ordering
+		// proved nothing (enumeration round, d6).
+		//
+		// What CAN be pinned is the observable consequence: 'blocked' is a status
+		// and takes the status colour, 'high' is a priority and takes the
+		// priority one. If the vocabularies ever overlap, whoever adds the
+		// overlapping word owns the ordering question, and this comment is where
+		// they will find it.
+		expect(canonicalValueColor('blocked')).toBe(ORANGE);
+		expect(canonicalValueColor('high')).toBe(AMBER);
+		expect(statusColor('high')).toBe(MUTED);
 	});
 
 	it('leaves a value in neither vocabulary to plain text', () => {
 		expect(canonicalValueColor('needs-triage')).toBeNull();
 	});
+});
+
+describe('a value that happens to name an OBJECT PROPERTY is not a status', () => {
+	// `STATUS_COLORS` is an object literal, so `'__proto__' in STATUS_COLORS` is
+	// true and `STATUS_COLORS['constructor']` is a FUNCTION. Both are reachable
+	// from a plain string a user can type into a text field, and neither is a
+	// CSS value — so the helpers answered yes to a status they have never heard
+	// of and handed their callers something unusable (enumeration round, a16).
+	for (const key of ['__proto__', 'constructor', 'toString', 'hasOwnProperty', 'valueOf']) {
+		it(`treats ${key} as an ordinary unknown value`, () => {
+			expect(hasCanonicalStatus(key)).toBe(false);
+			expect(statusColor(key)).toBe(MUTED);
+			expect(typeof statusColor(key)).toBe('string');
+			expect(canonicalValueColor(key)).toBeNull();
+			expect(columnAccentClassFor({ terminal_options: [] }, key)).toBe('');
+		});
+	}
 });

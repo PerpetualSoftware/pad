@@ -829,20 +829,26 @@ describe('a REFUSED grouping must not write a group value (U4, codex round 1 P5)
 		expect(screen.container.textContent).not.toContain('id-red');
 	});
 
-	it('CONTROL: an ordinary string status still renders its chip', () => {
+	it('CONTROL: ordinary string status AND priority still render their chips', () => {
 		// Without this, withholding the chip for EVERY value would satisfy the
 		// leg above, and the boards that work today would quietly lose their
-		// status chips.
+		// chips. PRIORITY is here because the first version of this control
+		// covered status alone — and the enumeration round showed that deleting
+		// every ItemCard priority chip left the whole suite green (d4). Each
+		// gate needs a leg that fails when it is removed.
 		const coll = collection();
 		coll.schema = JSON.stringify({
-			fields: [{ key: 'status', label: 'Status', type: 'select', options: ['open', 'done'] }],
+			fields: [
+				{ key: 'status', label: 'Status', type: 'select', options: ['open', 'done'] },
+				{ key: 'priority', label: 'Priority', type: 'select', options: ['high', 'low'] },
+			],
 		});
-		const withStatus = (id: string) =>
-			({ ...item(id), fields: JSON.stringify({ status: 'in_progress' }) }) as Item;
+		const withBoth = (id: string) =>
+			({ ...item(id), fields: JSON.stringify({ status: 'in_progress', priority: 'high' }) }) as Item;
 
 		const screen = render(BoardView, {
 			props: {
-				items: [withStatus('car-1')],
+				items: [withBoth('car-1')],
 				collection: coll,
 				wsSlug: 'ws',
 				groupField: 'status',
@@ -854,6 +860,7 @@ describe('a REFUSED grouping must not write a group value (U4, codex round 1 P5)
 			(c.textContent ?? '').trim(),
 		);
 		expect(chips).toContain('In Progress');
+		expect(chips).toContain('High');
 	});
 
 	it('offers no bulk "Move all to" either — the FIFTH group-writing affordance', async () => {

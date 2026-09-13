@@ -260,15 +260,23 @@
 				{#each visibleFields as field (field.key)}
 					<div class="table-cell" role="cell">
 						<!--
-							`typeof ... === 'string'` and not merely a truthy check
-							(BUG-3041): `field.options` survives a retype in the schema
-							editor, so a `status` that is now a `multi_relation` still
-							takes this arm, with an ARRAY as its value. The chip used to
-							render it and the row threw. A non-string falls through to the
-							plain-text arm, which is honest about holding something this
-							chip cannot describe.
+							SHAPE, not truthiness (BUG-3041): `field.options` survives a
+							retype in the schema editor, so a `status` that is now a
+							`multi_relation` still takes this arm, with an ARRAY as its
+							value. The chip used to render it and the row threw. A
+							non-string falls through to the plain-text arm, which is
+							honest about holding something this chip cannot describe.
+
+							ABSENT is admitted alongside a string, and that is not
+							sloppiness — it is the affordance this arm exists for. With
+							no status stored, the chip renders empty and CLICKING IT sets
+							the first option, which is how a row gets its first status.
+							The first version of this gate required a string outright and
+							silently removed that setter, making `{}` and `{status:''}`
+							behave differently for no reason a user could see (found by
+							the enumeration round, which reproduced the difference).
 						-->
-						{#if field.key === 'status' && field.options && onStatusChange && typeof fields[field.key] === 'string'}
+						{#if field.key === 'status' && field.options && onStatusChange && (fields[field.key] == null || typeof fields[field.key] === 'string')}
 							<Chip
 								size="sm"
 								color={statusColor(fields[field.key] ?? '')}
