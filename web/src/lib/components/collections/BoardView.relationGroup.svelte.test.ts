@@ -604,6 +604,47 @@ describe('a REFUSED grouping must not write a group value (U4, codex round 1 P5)
 			.toEqual(['car-1', 'car-2']);
 	});
 
+	it('shows no status chip, because a multi_relation declares no options to cycle', () => {
+		// A STRUCTURAL PIN, and labelled as one: no mutant kills it, because the
+		// property it records is not produced by a guard. A refused grouping
+		// takes the `field?.options ?? []` branch of `columns`, and a
+		// multi_relation schema has no options — so `statusCyclable` is already
+		// false. I wrote a refusal gate here, found it unreachable, and removed
+		// it rather than ship an unfalsifiable branch.
+		//
+		// The test stays because the property is worth pinning: if a future
+		// change ever gave the fallback lane an option, the chip would come back
+		// and write a scalar into a list, and this is the leg that would say so.
+		// ListView's equivalent IS killed by a mutant — its statusOptions is a
+		// caller prop, so nothing about the refusal empties it.
+		const coll = collection();
+		coll.schema = JSON.stringify({
+			fields: [
+				{ key: 'car_color', label: 'Colour', type: 'multi_relation', collection: 'colors' },
+				{ key: 'status', label: 'Status', type: 'select', options: ['open', 'done'] },
+			],
+		});
+		const withStatus = (id: string, color: string) =>
+			({
+				...item(id, color),
+				fields: JSON.stringify({ car_color: [color], status: 'open' }),
+			}) as Item;
+
+		const screen = render(BoardView, {
+			props: {
+				items: [withStatus('car-1', 'id-red')],
+				collection: coll,
+				wsSlug: 'ws',
+				groupField: 'car_color',
+				onStatusChange: vi.fn(),
+			} as never,
+		});
+
+		expect(screen.container.textContent).toContain('more than one group');
+		expect(screen.container.querySelectorAll('.item-card')).toHaveLength(1);
+		expect(screen.container.querySelector('[title="Click to cycle status"]')).toBeNull();
+	});
+
 	it('gates the group write on groupingRefusal, not on the value comparison alone', () => {
 		// A SOURCE guard, for the same reason its drag sibling above is one:
 		// driving svelte-dnd-action's finalize through jsdom costs more setup

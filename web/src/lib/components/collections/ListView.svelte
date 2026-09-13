@@ -326,7 +326,14 @@
 				const current = isRelationGroup
 					? relationLaneValueFor(originalItem, groupField, resolveRelation)
 					: (fields[groupField] ?? '');
-				if (current !== groupName) {
+				// A REFUSED grouping has no group value to change, so a drop in
+				// its fallback lane is a REORDER and nothing else — the same
+				// guard BoardView carries, and this view needed it too (codex
+				// round 5). Fixing one view and not the other is the same
+				// surface-count mistake as the type-dispatch sweep that started
+				// this review: two views implement grouping, and a behaviour's
+				// surface count is a number that gets ENUMERATED.
+				if (!groupingRefusal && current !== groupName) {
 					await onStatusChange(originalItem, groupName);
 				}
 			}
@@ -494,8 +501,8 @@
 									{collection}
 									compact={false}
 									focused={focusedItemId === item.id}
-									statusOptions={isRelationGroup ? [] : statusOptions}
-									onStatusClick={isRelationGroup ? undefined : onStatusChange}
+									statusOptions={isRelationGroup || groupingRefusal ? [] : statusOptions}
+									onStatusClick={isRelationGroup || groupingRefusal ? undefined : onStatusChange}
 									progress={itemProgress?.[item.id] ?? null}
 									{progressLabel}
 									onReorderItem={canReorderItems ? (it, dir) => reorderItem(groupName, it, dir) : undefined}

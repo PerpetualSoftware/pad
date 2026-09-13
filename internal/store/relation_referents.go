@@ -368,16 +368,22 @@ func relationArrayElements(raw any) ([]string, bool) {
 // `multi_relation`, it calls every legitimate array malformed — and since those
 // sites DELETE what they judge malformed, the answer decides whether a valid
 // value survives.
-// relationDefaultShapeIsUsable is relationValueShapeIsValid for a value that
-// came from a schema DEFAULT.
+// relationDroppableShapeIsUsable is relationValueShapeIsValid for a value whose
+// disposition is DROP rather than REFUSE — a schema default or a carried source
+// value, neither of which anybody in the request asserted.
 //
-// Same question for a scalar; STRICTER for a list, because the two are held to
-// different standards by design. A caller's malformed array is REFUSED, so it
-// only has to be well-shaped enough for the validator to say so. A default is
-// DROPPED, and a drop is silent to the person writing the request — so any
-// element nobody can resolve makes the whole default unusable here rather than
-// surviving into a refusal nobody can act on.
-func relationDefaultShapeIsUsable(def models.FieldDef, raw any) bool {
+// Named for the disposition and not for one origin, because naming it
+// `…DefaultShapeIsUsable` is what let the CARRIED bucket keep the lenient check
+// for a round (codex round 5): the two origins share a rule and a name that
+// mentions only one of them reads as though the other is a different case.
+//
+// Same question for a scalar; STRICTER for a list, because droppable and
+// refusable values are held to different standards by design. A caller's
+// malformed array is REFUSED, so it only has to be well-shaped enough for the
+// validator to say so. A dropped one is silent to the person writing the
+// request — so any element nobody can resolve makes the whole value unusable
+// here, rather than surviving into a refusal nobody can act on.
+func relationDroppableShapeIsUsable(def models.FieldDef, raw any) bool {
 	if def.IsMultiRelation() {
 		_, ok := relationDefaultList(raw)
 		return ok
@@ -1374,7 +1380,7 @@ func (s *Store) MigrateRelationReferentsQ(
 			// migrate doors run afterwards. An optional field's copy returned
 			// 400 on a default the caller never wrote. The late-default pass
 			// has always been strict about this; these two paths exist to agree.
-			if relationDefaultShapeIsUsable(def, raw) {
+			if relationDroppableShapeIsUsable(def, raw) {
 				continue
 			}
 			dropped = append(dropped, RelationIssue{
@@ -1426,7 +1432,14 @@ func (s *Store) MigrateRelationReferentsQ(
 		if !exists {
 			continue
 		}
-		if relationValueShapeIsValid(def, raw) {
+		// STRICT, the same rule the destination-default bucket uses (codex
+		// round 5). A CARRIED value is asserted by nobody either — TASK-2878's
+		// rule is that it is dropped, never refused — so a carried
+		// `[validID, " "]` passing the lenient check meant resolution skipped
+		// the blank and the shape check afterwards REFUSED an ordinary
+		// same-workspace move on an optional field. A carried value that
+		// refuses a move is the exact outcome that rule exists to prevent.
+		if relationDroppableShapeIsUsable(def, raw) {
 			continue
 		}
 		dropped = append(dropped, RelationIssue{

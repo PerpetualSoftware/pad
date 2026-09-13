@@ -269,6 +269,21 @@
 	 * a field the board is not showing, which is a different feature and not
 	 * one this unit was asked for.
 	 */
+	// NO SECOND GATE FOR THE REFUSED CASE HERE, and the asymmetry with ListView
+	// is deliberate rather than an omission (codex round 5).
+	//
+	// I added one, then removed it on the evidence: a refused grouping takes the
+	// `field?.options ?? []` branch of `columns`, and a `multi_relation` schema
+	// declares no options — so `cardStatusOptions` is already EMPTY and
+	// `ItemCard.statusCyclable` (which needs `statusOptions.length > 1`) is
+	// already false. The gate was unreachable by construction, which is the same
+	// disposition W7's write-side duplicate guard got: an unfalsifiable branch
+	// reads as rigour and is not.
+	//
+	// ListView genuinely needs its gate because its `statusOptions` is a CALLER
+	// PROP rather than its own lanes, so nothing about the refusal empties it.
+	// Same defect, two views, one of which was already immune for a reason that
+	// had nothing to do with the fix.
 	let cardStatusOptions = $derived(isRelationGroup ? [] : columns);
 
 	let columnOrder = $state<string[]>([]);

@@ -584,3 +584,64 @@ func TestMigrateScalarRelationDefault_ANonStringDefaultIsDropped(t *testing.T) {
 		t.Errorf("color survived as %#v", v)
 	}
 }
+
+// CARRIED values, the third origin (PLAN-2857 U4, codex round 5).
+//
+// Rounds 1-4 settled SUPPLIED (refused) and DESTINATION DEFAULT (dropped) and
+// left CARRIED on the lenient check. It shares the default's disposition, not
+// the caller's: TASK-2878's rule is that a carried value is asserted by nobody,
+// so it is dropped and never refused. The helper is now named for the
+// disposition rather than for one of its two origins, because a name mentioning
+// only defaults is what let this one sit.
+func TestMigrateMultiRelation_ACarriedBlankBearingListIsDroppedNotRefused(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ws, _, _, red := relationFixture(t, s)
+	schema := multiDefaultSchema(nil, false)
+
+	// `[validID, " "]` passes the lenient shape check, resolution skips the
+	// blank, and the shape check afterwards REFUSES an ordinary same-workspace
+	// move on an optional field — the exact outcome the carried rule exists to
+	// prevent.
+	source := map[string]any{"color": []any{red.ID, "   "}}
+	fields := map[string]any{"color": []any{red.ID, "   "}}
+	refusals, dropped, err := s.MigrateRelationReferents(nil, ws.ID, schema, fields, nil, source, RelationCarryMode(0))
+	if err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if len(refusals) != 0 {
+		t.Errorf("refusals = %+v; a carried value must never refuse a move", refusals)
+	}
+	if len(dropped) != 1 || dropped[0].Reason != RelationTargetInvalidShape {
+		t.Errorf("dropped = %+v, want one invalid_shape", dropped)
+	}
+	if v, present := fields["color"]; present {
+		t.Errorf("color survived as %#v, so the shape check after this pass refuses the move", v)
+	}
+	if err := validateMigrated(t, fields, schema); err != nil {
+		t.Errorf("the migrated map still fails validation: %v", err)
+	}
+}
+
+func TestMigrateMultiRelation_ControlAWellFormedCarriedListSurvives(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ws, _, _, red := relationFixture(t, s)
+	schema := multiDefaultSchema(nil, false)
+
+	// Without this, a strict check that dropped EVERY carried list would satisfy
+	// the leg above while destroying the carry the whole rule exists to protect.
+	source := map[string]any{"color": []any{red.ID}}
+	fields := map[string]any{"color": []any{red.ID}}
+	_, dropped, err := s.MigrateRelationReferents(nil, ws.ID, schema, fields, nil, source, RelationCarryMode(0))
+	if err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if len(dropped) != 0 {
+		t.Fatalf("dropped = %+v, want none for a resolvable carried list", dropped)
+	}
+	arr, ok := fields["color"].([]any)
+	if !ok || len(arr) != 1 || arr[0] != red.ID {
+		t.Errorf("color = %#v, want the carried reference kept", fields["color"])
+	}
+}
