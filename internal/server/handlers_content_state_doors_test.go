@@ -279,9 +279,10 @@ func TestArtifactExportCarriesTheMarkerBothWays(t *testing.T) {
 	srv := testServerWithCollab(t)
 	slug := createWSWithCollections(t, srv)
 
+	const body = "Step 1: do the thing\n"
 	pb := createItem(t, srv, slug, "playbooks", map[string]interface{}{
 		"title":   "Ship something",
-		"content": "Step 1: do the thing\n",
+		"content": body,
 		"fields":  `{"status":"active","invocation_slug":"ship"}`,
 	})
 
@@ -318,19 +319,150 @@ func TestArtifactExportCarriesTheMarkerBothWays(t *testing.T) {
 		t.Errorf("decoded provenance.content_state = %q, want %q",
 			decoded.Provenance.ContentState, models.ContentOutcomeAppliedPendingFlush)
 	}
-	if decoded.Body == "" {
-		t.Error("a marked artifact decoded with an empty body")
+	// The EXACT body, not merely a non-empty one. "Non-empty" is satisfied by an
+	// export that replaced the body with unrelated text, which is the failure a
+	// marker must never be able to hide (codex round 1 P3).
+	if decoded.Body != body {
+		t.Errorf("the marked artifact's body is not what the item holds:\n got: %q\nwant: %q", decoded.Body, body)
 	}
 	if decoded.Fields["invocation_slug"] != "ship" {
 		t.Errorf("a marked artifact lost a field on decode: invocation_slug = %v", decoded.Fields["invocation_slug"])
 	}
+	// The current export must decode to the same body, so the comparison below
+	// is between two artifacts of the same item rather than two arbitrary blobs.
+	decodedCurrent, err := artifact.Decode([]byte(current))
+	if err != nil {
+		t.Fatalf("the current artifact does not decode: %v", err)
+	}
+	if decodedCurrent.Body != body {
+		t.Errorf("the current artifact's body is not what the item holds:\n got: %q\nwant: %q",
+			decodedCurrent.Body, body)
+	}
 
-	// The bodies must differ ONLY by the added provenance line. Anything else
-	// moving is a format change this unit did not intend.
-	currentLines := strings.Split(current, "\n")
-	markedLines := strings.Split(marked, "\n")
-	if len(markedLines) != len(currentLines)+1 {
-		t.Errorf("the marked artifact differs by %d lines, not 1 — something beyond the marker moved",
-			len(markedLines)-len(currentLines))
+	// Byte equality after removing the marker line and normalising the one field
+	// that legitimately differs between two exports (exported_at is a
+	// timestamp). A line-count check alone passes for any single-line change
+	// anywhere in the document, including a rewritten body.
+	normalise := func(doc string) string {
+		out := make([]string, 0, 32)
+		for _, line := range strings.Split(doc, "\n") {
+			if strings.HasPrefix(strings.TrimSpace(line), "content_state:") {
+				continue
+			}
+			if strings.HasPrefix(strings.TrimSpace(line), "exported_at:") {
+				line = "  exported_at: <normalised>"
+			}
+			out = append(out, line)
+		}
+		return strings.Join(out, "\n")
+	}
+	if got, want := normalise(marked), normalise(current); got != want {
+		t.Errorf("the two exports differ by more than the marker line:\n marked: %q\ncurrent: %q", got, want)
+	}
+	// And the marker really was the only thing removed by that normalisation —
+	// otherwise the comparison above could be passing because both sides were
+	// stripped of something.
+	if normalise(marked) == marked {
+		t.Error("normalisation removed nothing from the marked export; the comparison above proved nothing")
+	}
+}
+
+// TestPlaybookSummariesCarryTheMarkerBothWays covers the door codex round 1
+// found, which this unit's own population table missed even though the
+// precedent was already in the tree: BUG-3000 put the marker on
+// cli.ItemSummary.ContentPreview on the grounds that "a content_preview is
+// content", and a playbook `summary` is the identical shape — the body's first
+// paragraph, truncated.
+//
+// Two doors, one projection: the bootstrap blob and the dedicated /playbooks
+// endpoint both render collectPlaybookMetadata, so both are driven here. The
+// third leg is the constraint that keeps the marker honest: a playbook with no
+// summary makes no claim about one, even while its row is stale.
+func TestPlaybookSummariesCarryTheMarkerBothWays(t *testing.T) {
+	srv := testServerWithCollab(t)
+	slug := createWSWithCollections(t, srv)
+
+	withBody := createItem(t, srv, slug, "playbooks", map[string]interface{}{
+		"title":   "Ship something",
+		"content": "Ships a list of tasks end to end.",
+		"fields":  `{"status":"active","invocation_slug":"ship"}`,
+	})
+	noBody := createItem(t, srv, slug, "playbooks", map[string]interface{}{
+		"title":   "Empty one",
+		"content": "",
+		"fields":  `{"status":"active","invocation_slug":"empty"}`,
+	})
+
+	// entries reads BOTH doors and returns the raw map for `ref` from each,
+	// keyed by a label, so a key's absence is distinguishable from its zero
+	// value and neither door can ride on the other's coverage.
+	entries := func(t *testing.T, ref string) map[string]map[string]any {
+		t.Helper()
+		out := map[string]map[string]any{}
+
+		rr := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/agent/bootstrap", nil)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("bootstrap: %d: %s", rr.Code, rr.Body.String())
+		}
+		blob := decodeMap(t, rr.Body.Bytes())
+		list, _ := blob["playbooks"].([]any)
+		for _, e := range list {
+			entry, _ := e.(map[string]any)
+			if entry["ref"] == ref {
+				out["bootstrap"] = entry
+			}
+		}
+
+		rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/playbooks", nil)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("playbooks: %d: %s", rr.Code, rr.Body.String())
+		}
+		var raw []map[string]any
+		if err := json.Unmarshal(rr.Body.Bytes(), &raw); err != nil {
+			t.Fatalf("decode playbooks: %v", err)
+		}
+		for _, entry := range raw {
+			if entry["ref"] == ref {
+				out["playbooks endpoint"] = entry
+			}
+		}
+
+		if len(out) != 2 {
+			t.Fatalf("%s did not come back from both doors (got %d); this leg measured nothing", ref, len(out))
+		}
+		return out
+	}
+
+	// ABSENCE FIRST, on both doors.
+	for door, entry := range entries(t, withBody.Ref) {
+		if entry["summary"] == nil {
+			t.Fatalf("%s: premise broken — no summary was emitted, so nothing below is about a summary", door)
+		}
+		if entry["content_state"] != nil {
+			t.Fatalf("%s: a current playbook's summary is marked %v", door, entry["content_state"])
+		}
+	}
+
+	makeStale(t, srv, withBody.ID)
+	makeStale(t, srv, noBody.ID)
+
+	for door, entry := range entries(t, withBody.Ref) {
+		if entry["content_state"] != models.ContentOutcomeAppliedPendingFlush {
+			t.Errorf("%s: summary content_state = %v, want %q — an agent routes on a description "+
+				"taken from a body that has moved on", door, entry["content_state"],
+				models.ContentOutcomeAppliedPendingFlush)
+		}
+	}
+
+	// No summary, no claim — even though this item's row is just as stale.
+	for door, entry := range entries(t, noBody.Ref) {
+		if entry["summary"] != nil {
+			t.Fatalf("%s: premise broken — the empty-bodied playbook emitted a summary (%v)",
+				door, entry["summary"])
+		}
+		if entry["content_state"] != nil {
+			t.Errorf("%s: a playbook with NO summary carries content_state=%v, claiming staleness "+
+				"about something it does not serve", door, entry["content_state"])
+		}
 	}
 }

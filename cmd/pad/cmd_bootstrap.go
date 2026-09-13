@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/PerpetualSoftware/pad/internal/cli"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // bootstrapCmd returns the agent bootstrap blob — the consolidated
@@ -100,6 +101,7 @@ func printBootstrapMarkdown(raw []byte) error {
 			InvocationSlug string `json:"invocation_slug"`
 			Trigger        string `json:"trigger"`
 			Summary        string `json:"summary"`
+			ContentState   string `json:"content_state"`
 		} `json:"playbooks"`
 	}
 	if err := json.Unmarshal(raw, &b); err != nil {
@@ -158,7 +160,11 @@ func printBootstrapMarkdown(raw []byte) error {
 	fmt.Println()
 
 	fmt.Printf("## Playbooks (%d)\n", len(b.Playbooks))
+	var stalePlaybookSummaries []string
 	for _, p := range b.Playbooks {
+		if p.ContentState == models.ContentOutcomeAppliedPendingFlush {
+			stalePlaybookSummaries = append(stalePlaybookSummaries, p.Ref)
+		}
 		invocation := "—"
 		if p.InvocationSlug != "" {
 			invocation = "/pad " + p.InvocationSlug
@@ -168,6 +174,9 @@ func printBootstrapMarkdown(raw []byte) error {
 			fmt.Printf("  %s\n", p.Summary)
 		}
 	}
+	// BUG-3033 — same helper the `playbook list` renderer uses, so the two
+	// surfaces cannot word this differently.
+	warnStalePlaybookSummaries(stalePlaybookSummaries)
 	return nil
 }
 

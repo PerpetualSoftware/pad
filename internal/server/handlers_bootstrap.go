@@ -358,6 +358,23 @@ type AgentBootstrapPlaybookMeta struct {
 	// from the first non-heading non-empty paragraph of the body. Capped
 	// at ~240 chars so the bootstrap stays small.
 	Summary string `json:"summary,omitempty"`
+	// ContentState marks `Summary` above as DERIVED FROM a body the server
+	// knows is behind the item's live collaborative document (BUG-3033).
+	//
+	// A summary is not metadata about the item; it is the item's first
+	// paragraph, truncated. Calling it a summary does not change where the
+	// bytes came from, so a stale body makes a stale summary — and this is the
+	// same reasoning by which BUG-3000 put the marker on
+	// cli.ItemSummary.ContentPreview, which is the identical shape.
+	//
+	// Set only when a summary was actually emitted from a real body: no
+	// summary, no claim. Emitted alongside Summary for that reason rather than
+	// unconditionally from the row.
+	//
+	// It does NOT mean the playbook's other metadata here is stale. Trigger,
+	// status and invocation_slug come from the fields blob, which the
+	// collaborative document does not hold; only the prose can be behind.
+	ContentState string `json:"content_state,omitempty"`
 }
 
 // BootstrapDashboard is the bootstrap-side dashboard projection. It
@@ -1018,6 +1035,14 @@ func projectPlaybookMetadata(items []models.Item) []AgentBootstrapPlaybookMeta {
 				hasArgs = false
 			}
 		}
+		// The marker rides the SUMMARY, so it is set only when there is one
+		// (BUG-3033). A playbook with an empty body yields no summary and
+		// therefore makes no claim about one.
+		summary := collections.PlaybookSummary(it.Content)
+		summaryState := ""
+		if summary != "" {
+			summaryState = it.ContentState
+		}
 		out = append(out, AgentBootstrapPlaybookMeta{
 			Ref:            it.Ref,
 			Title:          it.Title,
@@ -1027,7 +1052,8 @@ func projectPlaybookMetadata(items []models.Item) []AgentBootstrapPlaybookMeta {
 			Scope:          strField("scope"),
 			Status:         strField("status"),
 			HasArguments:   hasArgs,
-			Summary:        collections.PlaybookSummary(it.Content),
+			Summary:        summary,
+			ContentState:   summaryState,
 		})
 	}
 	// Stable order: invocation_slug-bearing first (the user-facing,

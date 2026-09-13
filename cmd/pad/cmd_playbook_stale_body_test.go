@@ -230,65 +230,190 @@ func TestWarnStaleEditSeedGating(t *testing.T) {
 func TestEditWarnsBeforeLaunchingTheEditor(t *testing.T) {
 	const sentinel = "EDITOR-RAN-HERE"
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v1/workspaces/ws/items/TASK-5", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPatch {
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"id": "i1", "ref": "TASK-5", "title": "T", "slug": "t", "content": "new",
+	// Both directions at the COMMAND boundary, because the helper's own gating
+	// table cannot see a wiring error: with the call site forced to warn
+	// unconditionally, a stale-only test still passes and the marker becomes
+	// noise on every edit. Codex round 1 P3.
+	for _, tc := range []struct {
+		name         string
+		contentState string
+		wantWarning  bool
+	}{
+		{"a current row — the common case", "", false},
+		{"the value the server sends", models.ContentOutcomeAppliedPendingFlush, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var patched bool
+			mux := http.NewServeMux()
+			mux.HandleFunc("/api/v1/workspaces/ws/items/TASK-5", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodPatch {
+					patched = true
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"id": "i1", "ref": "TASK-5", "title": "T", "slug": "t", "content": "new",
+					})
+					return
+				}
+				body := map[string]any{
+					"id": "i1", "ref": "TASK-5", "title": "T", "slug": "t",
+					"content": "the previous content",
+				}
+				if tc.contentState != "" {
+					body["content_state"] = tc.contentState
+				}
+				_ = json.NewEncoder(w).Encode(body)
 			})
-			return
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"id": "i1", "ref": "TASK-5", "title": "T", "slug": "t",
-			"content":       "the previous content",
-			"content_state": models.ContentOutcomeAppliedPendingFlush,
-		})
-	})
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
+			srv := httptest.NewServer(mux)
+			t.Cleanup(srv.Close)
 
-	setTempHomeMain(t)
-	t.Setenv("PAD_URL", srv.URL)
-	t.Setenv("PAD_TOKEN", "pad_testtoken")
-	// An "editor" that announces itself on stderr and edits the file, so the
-	// command really does reach the write path rather than bailing on "No
-	// changes."
-	//
-	// A script FILE rather than an inline `sh -c ...`: OpenInEditor splits the
-	// EDITOR value on strings.Fields, which is whitespace-naive and does not
-	// honour quoting, so an inline command is torn into words and the editor
-	// exits 2. (That splitting is deliberate — it is what makes `code --wait`
-	// work — and this test is not the place to change it.)
-	editorPath := filepath.Join(t.TempDir(), "fake-editor")
-	script := "#!/bin/sh\necho " + sentinel + " >&2\necho edited >> \"$1\"\n"
-	if err := os.WriteFile(editorPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake editor: %v", err)
+			setTempHomeMain(t)
+			t.Setenv("PAD_URL", srv.URL)
+			t.Setenv("PAD_TOKEN", "pad_testtoken")
+
+			// An "editor" that announces itself on stderr and edits the file, so
+			// the command really reaches the write path rather than bailing on
+			// "No changes."
+			//
+			// A script FILE rather than an inline `sh -c ...`: OpenInEditor splits
+			// the EDITOR value on strings.Fields, which is whitespace-naive and
+			// does not honour quoting, so an inline command is torn into words and
+			// the editor exits 2. (That splitting is deliberate — it is what makes
+			// `code --wait` work — and this test is not the place to change it.)
+			editorPath := filepath.Join(t.TempDir(), "fake-editor")
+			script := "#!/bin/sh\necho " + sentinel + " >&2\necho edited >> \"$1\"\n"
+			if err := os.WriteFile(editorPath, []byte(script), 0o755); err != nil {
+				t.Fatalf("write fake editor: %v", err)
+			}
+			t.Setenv("EDITOR", editorPath)
+
+			origWS, origFormat := workspaceFlag, formatFlag
+			t.Cleanup(func() { workspaceFlag, formatFlag = origWS, origFormat })
+			workspaceFlag, formatFlag = "ws", ""
+
+			cmd := editCmd()
+			cmd.SetArgs([]string{"TASK-5"})
+			stderr := captureStderr(t, func() {
+				_ = captureStdout(t, func() {
+					if err := cmd.Execute(); err != nil {
+						t.Fatalf("item edit: %v", err)
+					}
+				})
+			})
+
+			// PREMISES, asserted before any conclusion is drawn from them. An
+			// absence assertion is vacuous if the command never got this far: the
+			// editor must have run, and the edited body must have been sent.
+			editorAt := strings.Index(stderr, sentinel)
+			if editorAt < 0 {
+				t.Fatalf("the fake editor never ran, so this case measured nothing:\n%s", stderr)
+			}
+			if !patched {
+				t.Fatalf("the edited body was never PATCHed, so this case did not exercise saving:\n%s", stderr)
+			}
+
+			warnAt := strings.Index(stderr, "behind its live collaborative")
+			if got := warnAt >= 0; got != tc.wantWarning {
+				t.Fatalf("warned=%v want=%v (stderr: %q)", got, tc.wantWarning, stderr)
+			}
+			if !tc.wantWarning {
+				return
+			}
+			// Ordering is the whole value: printed after the editor opened, the
+			// line would be read beside an "Updated TASK-5" confirmation — after
+			// the user has already edited a stale body and saved it over edits
+			// they could not see. The fake editor's stderr is wired to os.Stderr
+			// by OpenInEditor (read at call time, so captureStderr's swap catches
+			// both), which makes this an assertion about ORDER in one stream.
+			if warnAt > editorAt {
+				t.Errorf("the warning was printed AFTER the editor opened, where it cannot change anything:\n%s", stderr)
+			}
+		})
 	}
-	t.Setenv("EDITOR", editorPath)
+}
+
+// TestPlaybookListWarnsOnlyAboutStaleSummaries covers the CLI half of the
+// summary door (BUG-3033, codex round 1 P2).
+//
+// A `summary` is the body's first paragraph, truncated, so a stale body makes a
+// stale summary — and an agent routes on that description. The listing renderer
+// decodes its own narrow struct, so it inherits nothing.
+//
+// Three claims, and the third is why this drives the COMMAND rather than the
+// helper: the warning fires only when something is stale, it NAMES the stale
+// refs, and it names ONLY those. A helper test cannot see a wiring error that
+// collects every ref.
+func TestPlaybookListWarnsOnlyAboutStaleSummaries(t *testing.T) {
+	serve := func(t *testing.T, staleRef string) {
+		t.Helper()
+		mux := http.NewServeMux()
+		mux.HandleFunc("/api/v1/workspaces/ws/playbooks", func(w http.ResponseWriter, r *http.Request) {
+			mk := func(ref, title string) map[string]any {
+				e := map[string]any{
+					"ref": ref, "title": title, "slug": strings.ToLower(title),
+					"invocation_slug": strings.ToLower(title), "status": "active",
+					"summary": "Does the " + title + " thing.",
+				}
+				if ref == staleRef {
+					e["content_state"] = models.ContentOutcomeAppliedPendingFlush
+				}
+				return e
+			}
+			_ = json.NewEncoder(w).Encode([]map[string]any{mk("PLAYB-1", "Ship"), mk("PLAYB-2", "Plan")})
+		})
+		srv := httptest.NewServer(mux)
+		t.Cleanup(srv.Close)
+		setTempHomeMain(t)
+		t.Setenv("PAD_URL", srv.URL)
+		t.Setenv("PAD_TOKEN", "pad_testtoken")
+	}
 
 	origWS, origFormat := workspaceFlag, formatFlag
 	t.Cleanup(func() { workspaceFlag, formatFlag = origWS, origFormat })
-	workspaceFlag, formatFlag = "ws", ""
+	workspaceFlag, formatFlag = "ws", "markdown"
 
-	cmd := editCmd()
-	cmd.SetArgs([]string{"TASK-5"})
-	stderr := captureStderr(t, func() {
-		_ = captureStdout(t, func() {
-			if err := cmd.Execute(); err != nil {
-				t.Fatalf("item edit: %v", err)
-			}
+	run := func(t *testing.T) (stdout, stderr string) {
+		t.Helper()
+		cmd := playbookListCmd()
+		cmd.SetArgs(nil)
+		var out string
+		errOut := captureStderr(t, func() {
+			out = captureStdout(t, func() {
+				if e := cmd.Execute(); e != nil {
+					t.Fatalf("playbook list: %v", e)
+				}
+			})
 		})
-	})
+		return out, errOut
+	}
 
-	editorAt := strings.Index(stderr, sentinel)
-	if editorAt < 0 {
-		t.Fatalf("the fake editor never ran, so this test measured nothing:\n%s", stderr)
+	// ABSENCE FIRST — nothing stale, nothing said. The premise (that the listing
+	// really rendered two playbooks with summaries) is asserted first, or the
+	// silence below would be the silence of a command that printed nothing.
+	serve(t, "")
+	stdout, stderr := run(t)
+	for _, want := range []string{"PLAYB-1", "PLAYB-2", "Does the Ship thing."} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("the listing did not render %q, so the absence assertion below is vacuous:\n%s", want, stdout)
+		}
 	}
-	warnAt := strings.Index(stderr, "behind its live collaborative")
-	if warnAt < 0 {
-		t.Fatalf("no stale-seed warning was printed:\n%s", stderr)
+	if strings.Contains(stderr, "behind its live collaborative") {
+		t.Fatalf("a listing with no stale summaries warned:\n%s", stderr)
 	}
-	if warnAt > editorAt {
-		t.Errorf("the warning was printed AFTER the editor opened, where it cannot change anything:\n%s", stderr)
+
+	serve(t, "PLAYB-2")
+	stdout, stderr = run(t)
+	if !strings.Contains(stderr, "behind its live collaborative") {
+		t.Errorf("a stale summary produced no warning:\n%s", stderr)
+	}
+	if !strings.Contains(stderr, "PLAYB-2") {
+		t.Errorf("the warning does not name the stale playbook:\n%s", stderr)
+	}
+	// And ONLY it. A renderer that collected every ref would satisfy every
+	// assertion above and make the warning useless on a long list.
+	if strings.Contains(stderr, "PLAYB-1") {
+		t.Errorf("the warning names a playbook whose summary is current:\n%s", stderr)
+	}
+	// STDOUT stays clean: the listing is piped.
+	if strings.Contains(stdout, "behind its live collaborative") {
+		t.Errorf("the warning landed on STDOUT, corrupting the listing:\n%s", stdout)
 	}
 }

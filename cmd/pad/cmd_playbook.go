@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -57,6 +58,7 @@ func playbookListCmd() *cobra.Command {
 				Status         string `json:"status"`
 				HasArguments   bool   `json:"has_arguments"`
 				Summary        string `json:"summary"`
+				ContentState   string `json:"content_state"`
 			}
 			if err := json.Unmarshal(raw, &list); err != nil {
 				return fmt.Errorf("decode playbooks: %w", err)
@@ -65,7 +67,11 @@ func playbookListCmd() *cobra.Command {
 				fmt.Println("No playbooks in this workspace yet.")
 				return nil
 			}
+			var staleSummaries []string
 			for _, p := range list {
+				if p.ContentState == models.ContentOutcomeAppliedPendingFlush {
+					staleSummaries = append(staleSummaries, p.Ref)
+				}
 				slug := "—"
 				if p.InvocationSlug != "" {
 					slug = "/pad " + p.InvocationSlug
@@ -82,6 +88,7 @@ func playbookListCmd() *cobra.Command {
 				}
 				fmt.Println()
 			}
+			warnStalePlaybookSummaries(staleSummaries)
 			return nil
 		},
 	}
@@ -256,6 +263,27 @@ func warnPlaybookBodyStale(contentState string) {
 		"document — an editor holds edits that have not been written back yet, so the steps below "+
 		"may be superseded. The body catches up when a tab next flushes the item, and nothing on "+
 		"the server forces that to happen.")
+}
+
+// warnStalePlaybookSummaries prints ONE line to STDERR naming the listed
+// playbooks whose summary is derived from a body the server knows is behind its
+// live collaborative document (BUG-3033).
+//
+// One line for the whole listing rather than one per row, and it NAMES the refs:
+// a per-row marker on a long list is noise a reader learns to skip, while a
+// count alone ("3 playbooks are stale") sends them back to diff the list by
+// hand. Naming them is the shortest form that is still actionable.
+//
+// Nil or empty is the common case and prints nothing, so a listing of current
+// playbooks is byte-identical on both streams.
+func warnStalePlaybookSummaries(refs []string) {
+	if len(refs) == 0 {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "warning: the summary shown for %s is derived from a body that is behind "+
+		"its live collaborative document — an editor holds edits that have not been written back yet, "+
+		"so the description may be out of date. Load the full body with `pad playbook show <ref>` to "+
+		"see what is stored.\n", strings.Join(refs, ", "))
 }
 
 // --- bootstrap ---
