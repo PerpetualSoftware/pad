@@ -224,10 +224,14 @@
 	 * — and a relation with no declared target for the reason above.
 	 *
 	 * The board cannot be "ungrouped" the way the list can: a board IS lanes. So
-	 * its fallback is the single UNCATEGORIZED lane it already produced for this
-	 * case — what changes is that it no longer does so SILENTLY. An
-	 * Uncategorized lane with no explanation reads as "none of these items has a
-	 * value", which is false and unactionable.
+	 * its fallback is a single UNCATEGORIZED lane — what changes is that it no
+	 * longer does so SILENTLY. An Uncategorized lane with no explanation reads
+	 * as "none of these items has a value", which is false and unactionable.
+	 *
+	 * "The lane it ALREADY produced for this case" is what this said until round
+	 * 8, and it was not true: with `options` retained through a type change the
+	 * board kept its named lanes and bucketed into them under the notice. The
+	 * refusal now drives `columns` (below) rather than only the affordances.
 	 */
 	let groupingRefusal = $derived(relationGroupingRefusal(field));
 	let knownCollectionSlugs = $derived(
@@ -249,8 +253,40 @@
 	let relationLaneByValue = $derived(
 		new Map(relationLaneList.map((lane) => [lane.value, lane])),
 	);
+	/**
+	 * The board's lanes.
+	 *
+	 * NO lanes when grouping is refused (codex round 8, R8-3), which sends every
+	 * item to UNCATEGORIZED and leaves exactly one lane on screen — the single
+	 * lane the refusal notice describes.
+	 *
+	 * Round 7 gated every affordance that WRITES the group value and left the
+	 * lanes themselves reading it, so the board went on bucketing under a notice
+	 * saying it did not. That is the same false premise round 6 corrected one
+	 * derivation below: "a multi_relation declares no options" is true of the
+	 * schemas people write and enforced nowhere, so a `multi_select` retyped to
+	 * `multi_relation` keeps `options` like `["A","A,B"]` — and a lane value is
+	 * the STRINGIFIED array, which can match one. Items then landed in separate
+	 * scalar-labelled lanes underneath "Showing everything ungrouped."
+	 *
+	 * One lane rather than keeping the notice and dropping it: the notice is the
+	 * smaller change and it says something true, which is the point of it.
+	 * IDEA-3034 holds the multi-lane alternative (one lane per reference, an
+	 * item appearing in several), which is a feature rather than a repair.
+	 *
+	 * NOTHING forces the UNCATEGORIZED lane to appear here, which looks like a
+	 * gap and is not. `showUncategorized` tracks that lane's contents, and under
+	 * a refusal every item is in it — while a board with no items at all never
+	 * reaches the lanes, since `items.length === 0` renders `EmptyState` in
+	 * their place. A forcing term was written and then REMOVED after no mutant
+	 * could reach it, rather than kept with an explanation attached.
+	 */
 	let columns = $derived(
-		isRelationGroup ? relationLaneList.map((lane) => lane.value) : (field?.options ?? []),
+		groupingRefusal
+			? []
+			: isRelationGroup
+				? relationLaneList.map((lane) => lane.value)
+				: (field?.options ?? []),
 	);
 
 	// Column order state — tracks the displayed order, syncs from schema when not dragging
