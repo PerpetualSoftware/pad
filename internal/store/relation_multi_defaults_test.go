@@ -187,3 +187,121 @@ func TestRequiredRelationIssues_CoversTheMultiType(t *testing.T) {
 		t.Errorf("promoted %+v, want only the required multi_relation — the optional scalar is the control that says this filters rather than passes everything", got)
 	}
 }
+
+// CODEX ROUND 2 — all three findings were in round 1's FIXES, not in the
+// original code. Treating a correction as new code that deserves the same
+// adversarial pass is the lesson; these are its instruments.
+
+func TestLateMultiRelationDefault_NonStringElementDropsTheWholeDefault(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ws, _, _, _ := relationFixture(t, s)
+
+	// Round 1's reader mapped a non-string element to "" and the resolver SKIPS
+	// a blank element, so `default: [42]` was accepted, stored as [""] and
+	// reported to nobody. A list is ONE value: an unusable element makes the
+	// default unusable, exactly as a non-array does.
+	fields := map[string]any{"color": []any{42}}
+	dropped, err := s.ResolveLateRelationDefaults(nil, ws.ID, multiDefaultSchema([]any{42}, false), fields, map[string]bool{})
+	if err != nil {
+		t.Fatalf("late defaults: %v", err)
+	}
+	if v, present := fields["color"]; present {
+		t.Errorf("color survived as %#v, want the key gone — [\"\"] is a list of one reference to nothing", v)
+	}
+	if len(dropped) != 1 || dropped[0].Reason != RelationTargetInvalidShape {
+		t.Errorf("dropped = %+v, want one invalid_shape", dropped)
+	}
+}
+
+func TestLateMultiRelationDefault_BlankElementDropsTheWholeDefault(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ws, _, _, red := relationFixture(t, s)
+
+	// The same rule `ValidateFields` applies to a CALLER's array: a blank
+	// element is refused rather than skipped, because an ordered list whose
+	// length depends on which elements were blank is not a list. A default is
+	// held to the same shape and differs only in disposition.
+	fields := map[string]any{"color": []any{red.Ref, "   "}}
+	dropped, err := s.ResolveLateRelationDefaults(nil, ws.ID, multiDefaultSchema([]any{red.Ref, "   "}, false), fields, map[string]bool{})
+	if err != nil {
+		t.Fatalf("late defaults: %v", err)
+	}
+	if v, present := fields["color"]; present {
+		t.Errorf("color survived as %#v", v)
+	}
+	if len(dropped) != 1 || dropped[0].Reason != RelationTargetInvalidShape {
+		t.Errorf("dropped = %+v, want one invalid_shape", dropped)
+	}
+}
+
+func TestLateMultiRelationDefault_EmptyDefaultOnARequiredFieldIsReported(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ws, _, _, _ := relationFixture(t, s)
+
+	// Validation was satisfied by the PRESENCE of this default; deleting it
+	// afterwards with no issue left a required field absent and nothing to
+	// refuse it. `RequiredRelationIssues` promotes by key, so an issue is the
+	// only way the door hears about it.
+	fields := map[string]any{"color": []any{}}
+	dropped, err := s.ResolveLateRelationDefaults(nil, ws.ID, multiDefaultSchema([]any{}, true), fields, map[string]bool{})
+	if err != nil {
+		t.Fatalf("late defaults: %v", err)
+	}
+	if len(dropped) != 1 {
+		t.Fatalf("dropped = %+v, want one — an empty default cannot satisfy a required field", dropped)
+	}
+	if len(RequiredRelationIssues(multiDefaultSchema([]any{}, true), dropped)) != 1 {
+		t.Error("the issue was not promoted by RequiredRelationIssues, so no door will refuse the write")
+	}
+}
+
+func TestLateMultiRelationDefault_ControlEmptyDefaultOnAnOptionalFieldIsSilent(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ws, _, _, _ := relationFixture(t, s)
+
+	// The other half, and the reason the leg above is conditional rather than
+	// unconditional: on an optional field an empty default is a sensible way to
+	// say "starts with nothing", and a drop warning would be a false alarm on a
+	// schema doing nothing wrong.
+	fields := map[string]any{"color": []any{}}
+	dropped, err := s.ResolveLateRelationDefaults(nil, ws.ID, multiDefaultSchema([]any{}, false), fields, map[string]bool{})
+	if err != nil {
+		t.Fatalf("late defaults: %v", err)
+	}
+	if len(dropped) != 0 {
+		t.Errorf("dropped = %+v, want none", dropped)
+	}
+}
+
+func TestRelationKeysPresent_AnEmptyListIsNotCallerInput(t *testing.T) {
+	t.Parallel()
+	// The ORDER bug, and the sharpest of the three: every door captures
+	// provenance BEFORE ValidateFields runs, so this function sees the `[]` the
+	// normalisation is about to remove. Counting it as caller input marked the
+	// key "not a default"; validation then injected the schema default into the
+	// hole normalisation had made; and the late pass skipped the key on the
+	// strength of that mark. A caller sending `members: []` against
+	// `default: 42` stored 42.
+	schema := models.CollectionSchema{Fields: []models.FieldDef{
+		{Key: "color", Type: "multi_relation", Collection: "colors"},
+		{Key: "owner", Type: "relation", Collection: "people"},
+	}}
+	before := RelationKeysPresent(schema, map[string]any{"color": []any{}, "owner": ""})
+	if before["color"] {
+		t.Error("an empty list counted as caller input; the default injected in its place is then invisible to every later pass")
+	}
+	// CONTROLS. A non-empty list IS a value, and so is an empty STRING on a
+	// scalar relation — that type's empty spelling has its own meaning
+	// (BUG-3028) and this rule must not reach it.
+	if !before["owner"] {
+		t.Error("an empty scalar relation value stopped counting as caller input; that is a different type's rule")
+	}
+	populated := RelationKeysPresent(schema, map[string]any{"color": []any{"COLO-1"}})
+	if !populated["color"] {
+		t.Error("a populated list stopped counting as caller input")
+	}
+}

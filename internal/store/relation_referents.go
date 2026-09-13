@@ -1484,28 +1484,49 @@ func (s *Store) MigrateRelationReferentsQ(
 	return refusals, dropped, nil
 }
 
-// relationDefaultList reads a `multi_relation` value as a list of strings.
+// relationDefaultList reads a `multi_relation` value as a list of strings, and
+// is STRICT about the elements.
 //
-// Reports (nil, false) for anything that is not an array — which is the shape
-// an injected schema DEFAULT can be, since `ValidateFields` assigns a default
-// and skips its own type check. Non-string ELEMENTS become empty strings rather
-// than failing the whole read: every caller either skips a blank element or
-// lets the resolver refuse it, and one bad element does not make the value
-// un-listable.
+// Reports (nil, false) for anything that is not an array of non-blank strings —
+// which is the whole range of shapes an injected schema DEFAULT can be, since
+// `ValidateFields` assigns a default and skips its own type check. That is the
+// only route by which any of this reaches a row.
+//
+// STRICTNESS IS THE CORRECTION, and it is worth naming because the lenient
+// version was mine and lasted one review round. It mapped a non-string element
+// to `""` on the reasoning that one bad element should not make the value
+// un-listable — and the resolver SKIPS a blank element, so `default: [42]` was
+// accepted, stored as `[""]`, and reported to nobody. A list is one value: an
+// element nobody can resolve makes the whole default unusable, exactly as a
+// non-array does, and callers turn that into a drop the schema author can see.
+//
+// This mirrors the rule `ValidateFields` applies to a CALLER's array (an empty
+// element is refused rather than skipped, so an ordered list's length cannot
+// depend on which elements were malformed). A default is held to the same
+// shape; it differs only in disposition, being dropped rather than refused.
 func relationDefaultList(raw any) ([]string, bool) {
+	var out []string
 	switch v := raw.(type) {
 	case []any:
-		out := make([]string, len(v))
+		out = make([]string, len(v))
 		for i, e := range v {
-			if str, isStr := e.(string); isStr {
-				out[i] = str
+			str, isStr := e.(string)
+			if !isStr {
+				return nil, false
 			}
+			out[i] = str
 		}
-		return out, true
 	case []string:
-		return append([]string(nil), v...), true
+		out = append([]string(nil), v...)
+	default:
+		return nil, false
 	}
-	return nil, false
+	for _, e := range out {
+		if strings.TrimSpace(e) == "" {
+			return nil, false
+		}
+	}
+	return out, true
 }
 
 // RelationKeysPresent snapshots which relation keys a field map holds, for
@@ -1517,11 +1538,49 @@ func RelationKeysPresent(schema models.CollectionSchema, fieldMap map[string]any
 		if !def.IsRelation() {
 			continue
 		}
-		if v, exists := fieldMap[def.Key]; exists && v != nil {
-			out[def.Key] = true
+		v, exists := fieldMap[def.Key]
+		if !exists || v == nil {
+			continue
 		}
+		// AN EMPTY LIST IS NOT A VALUE, by the same rule
+		// `normalizeEmptyRelationLists` applies — and this is the ORDER that
+		// makes the rule true rather than merely stated. Every door captures
+		// provenance HERE, before `ValidateFields` runs, so this function sees
+		// the `[]` the normalisation is about to remove. Counting it as caller
+		// input marked the key as "not a default", validation then injected the
+		// schema default into the hole normalisation had made, and the
+		// late-default pass skipped the key on the strength of that mark: a
+		// caller sending `members: []` against `default: 42` stored 42 (codex
+		// round 2).
+		//
+		// Reading it as absent here is the one-site fix: the key is then a
+		// DEFAULT for every later pass, which is exactly what it became.
+		if def.IsMultiRelation() {
+			if list, isList := relationListShape(v); isList && len(list) == 0 {
+				continue
+			}
+		}
+		out[def.Key] = true
 	}
 	return out
+}
+
+// relationListShape reports whether raw is an ARRAY at all, and its length —
+// the shape question, asked without the element rules `relationDefaultList`
+// enforces. A caller's malformed array is still an array, and still a value
+// they supplied; only an EMPTY one is the absent spelling.
+func relationListShape(raw any) ([]any, bool) {
+	switch v := raw.(type) {
+	case []any:
+		return v, true
+	case []string:
+		out := make([]any, len(v))
+		for i, e := range v {
+			out[i] = e
+		}
+		return out, true
+	}
+	return nil, false
 }
 
 // ResolveLateRelationDefaults resolves relation values that appeared in
@@ -1609,6 +1668,22 @@ func (s *Store) ResolveLateRelationDefaultsQ(
 				// injected-default path from being the one route by which the
 				// other spelling reaches the blob.
 				delete(fieldMap, def.Key)
+				// ON A REQUIRED FIELD IT IS ALSO A DEFECT, and silence there was
+				// the round-2 finding: validation had just been satisfied by the
+				// presence of this default, so deleting it afterwards with no
+				// issue left a required field absent and nothing to refuse it.
+				// `RequiredRelationIssues` promotes by KEY, so an issue is the
+				// only way the door hears about it.
+				//
+				// Reported only when REQUIRED, deliberately: on an optional
+				// field an empty default is a sensible way to say "starts with
+				// nothing", and a drop warning there would be a false alarm on
+				// a schema that is doing nothing wrong.
+				if def.Required {
+					dropped = append(dropped, RelationIssue{
+						Key: def.Key, Target: def.Collection, Reason: RelationTargetInvalidShape,
+					})
+				}
 				continue
 			}
 			late[def.Key] = list
