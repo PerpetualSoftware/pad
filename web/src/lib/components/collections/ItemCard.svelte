@@ -226,7 +226,18 @@
 	</div>
 
 	<div class="card-meta">
-		{#if statusField && fields.status}
+		<!--
+			STRING-SHAPED, not merely truthy (BUG-3041). These chips render a value
+			straight out of the item's `fields` blob, and a field's declared type is
+			not a promise about what is stored: retyping `status` to a list or
+			number type in the schema editor leaves the old values in place, and a
+			non-empty array is truthy. `statusColor`/`formatLabel` no longer throw on
+			one, but an empty chip describes nothing — so the card shows no chip at
+			all, exactly as it does for an absent value. Asking about the VALUE's
+			shape rather than the FIELD's type is deliberate: a type allow-list goes
+			stale the next time a type is added, and this question does not.
+		-->
+		{#if statusField && typeof fields.status === 'string' && fields.status}
 			{#if statusCyclable}
 				<Chip
 					size="sm"
@@ -243,7 +254,7 @@
 				</Chip>
 			{/if}
 		{/if}
-		{#if priorityField && fields.priority}
+		{#if priorityField && typeof fields.priority === 'string' && fields.priority}
 			<Chip size="sm" color={priorityColor(fields.priority)}>
 				{formatLabel(fields.priority)}
 			</Chip>
