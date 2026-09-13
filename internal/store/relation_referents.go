@@ -368,6 +368,23 @@ func relationArrayElements(raw any) ([]string, bool) {
 // `multi_relation`, it calls every legitimate array malformed — and since those
 // sites DELETE what they judge malformed, the answer decides whether a valid
 // value survives.
+// relationDefaultShapeIsUsable is relationValueShapeIsValid for a value that
+// came from a schema DEFAULT.
+//
+// Same question for a scalar; STRICTER for a list, because the two are held to
+// different standards by design. A caller's malformed array is REFUSED, so it
+// only has to be well-shaped enough for the validator to say so. A default is
+// DROPPED, and a drop is silent to the person writing the request — so any
+// element nobody can resolve makes the whole default unusable here rather than
+// surviving into a refusal nobody can act on.
+func relationDefaultShapeIsUsable(def models.FieldDef, raw any) bool {
+	if def.IsMultiRelation() {
+		_, ok := relationDefaultList(raw)
+		return ok
+	}
+	return relationValueShapeIsValid(def, raw)
+}
+
 func relationValueShapeIsValid(def models.FieldDef, raw any) bool {
 	if def.IsMultiRelation() {
 		_, ok := relationArrayElements(raw)
@@ -388,16 +405,20 @@ func relationValueShapeIsValid(def models.FieldDef, raw any) bool {
 // caller deliberately emptied.
 func relationValueIsCleared(def models.FieldDef, raw any) bool {
 	if def.IsMultiRelation() {
+		// THE EMPTY LIST ONLY, and this narrowed in codex round 4. It used to
+		// count an array of BLANKS as cleared too, by analogy with the scalar
+		// `" "`. The analogy does not hold: an empty list is the agreed
+		// spelling of "no targets", while `[" "]` is a list of ONE reference
+		// that happens to be blank — a shape every write door refuses. Calling
+		// it cleared made the caller's own malformed override vanish and the
+		// move succeed, which is the opposite of refusing it.
+		//
+		// A blank-bearing DEFAULT is not refused either; it is dropped, by the
+		// strict check in the destination-default bucket. The two dispositions
+		// are the difference between a value someone asserted and one nobody
+		// did, and neither is "silently clear the field".
 		elems, ok := relationArrayElements(raw)
-		if !ok {
-			return false
-		}
-		for _, e := range elems {
-			if strings.TrimSpace(e) != "" {
-				return false
-			}
-		}
-		return true
+		return ok && len(elems) == 0
 	}
 	str, isStr := raw.(string)
 	return isStr && strings.TrimSpace(str) == ""
@@ -1346,7 +1367,14 @@ func (s *Store) MigrateRelationReferentsQ(
 			if !exists {
 				continue
 			}
-			if relationValueShapeIsValid(def, raw) {
+			// STRICT for a list (codex round 4): `relationValueShapeIsValid`
+			// asks only "is this an array of strings", so a default of
+			// `[validID, " "]` passed here, survived resolution — which skips a
+			// blank element — and was then refused by the shape check the
+			// migrate doors run afterwards. An optional field's copy returned
+			// 400 on a default the caller never wrote. The late-default pass
+			// has always been strict about this; these two paths exist to agree.
+			if relationDefaultShapeIsUsable(def, raw) {
 				continue
 			}
 			dropped = append(dropped, RelationIssue{

@@ -425,3 +425,162 @@ func validateMigrated(t *testing.T, fields map[string]any, schema models.Collect
 	t.Helper()
 	return items.ValidateFields(fields, schema)
 }
+
+// CODEX ROUND 4 — both findings were in round 3's fix. The deletion it added ran
+// BEFORE the origin split, so it treated a caller's malformed override exactly
+// like a schema's malformed default. Those get opposite dispositions on purpose.
+
+func TestMigrateMultiRelation_ASuppliedBlankOverrideIsLeftForValidationToRefuse(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ws, _, _, _ := relationFixture(t, s)
+	schema := multiDefaultSchema(nil, false)
+
+	// `[" "]` is not a cleared field — it is a list of ONE reference that
+	// happens to be blank, a shape every write door refuses. Round 3's fix
+	// counted it as cleared, so a move with `field_overrides: {"color":[" "]}`
+	// returned 200 with the field silently absent: the caller's malformed value
+	// vanished instead of being refused.
+	supplied := map[string]any{"color": []any{"   "}}
+	fields := map[string]any{"color": []any{"   "}}
+	refusals, dropped, err := s.MigrateRelationReferents(nil, ws.ID, schema, fields, supplied, nil, RelationCarryMode(0))
+	if err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if len(dropped) != 0 {
+		t.Errorf("dropped = %+v; a value the CALLER supplied is refused, never dropped", dropped)
+	}
+	if _, present := fields["color"]; !present {
+		t.Fatal("the caller's own override was deleted; nothing downstream can refuse a key that is gone, so the move succeeds with the field absent")
+	}
+	// The refusal itself comes from the shape check the migrate doors run after
+	// this pass — asserted here so the leg above is about a value that really
+	// does get refused, rather than one merely left lying around.
+	if err := validateMigrated(t, fields, schema); err == nil {
+		t.Error("the surviving value passes validation, so leaving it refuses nothing")
+	}
+	_ = refusals
+}
+
+func TestMigrateMultiRelation_AnEmptySuppliedListIsStillACLEAR(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ws, _, _, _ := relationFixture(t, s)
+	schema := multiDefaultSchema(nil, false)
+
+	// The other side of the narrowing, and the reason it is a narrowing rather
+	// than a reversal: `[]` IS the agreed spelling of "no targets", from any
+	// origin, and must still clear.
+	supplied := map[string]any{"color": []any{}}
+	fields := map[string]any{"color": []any{}}
+	if _, _, err := s.MigrateRelationReferents(nil, ws.ID, schema, fields, supplied, nil, RelationCarryMode(0)); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if v, present := fields["color"]; present {
+		t.Errorf("color survived as %#v, want the key gone", v)
+	}
+}
+
+func TestMigrateMultiRelation_AMixedBlankDefaultIsDropped(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ws, _, _, red := relationFixture(t, s)
+	schema := multiDefaultSchema([]any{red.ID, "   "}, false)
+
+	// `[validID, " "]` is not cleared (it has a real element) and it IS an array
+	// of strings, so the lenient shape check passed it, resolution skipped the
+	// blank, and the shape check afterwards refused it — a 400 on an optional
+	// field, for a default the caller never wrote. A default is dropped, and a
+	// drop has to happen while there is still something to drop.
+	fields := map[string]any{"color": []any{red.ID, "   "}}
+	refusals, dropped, err := s.MigrateRelationReferents(nil, ws.ID, schema, fields, nil, nil, RelationCarryMode(0))
+	if err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if len(refusals) != 0 {
+		t.Errorf("refusals = %+v; a destination default never refuses a copy", refusals)
+	}
+	if len(dropped) != 1 || dropped[0].Reason != RelationTargetInvalidShape {
+		t.Errorf("dropped = %+v, want one invalid_shape", dropped)
+	}
+	if v, present := fields["color"]; present {
+		t.Errorf("color survived as %#v, so the write is refused after this pass", v)
+	}
+	if err := validateMigrated(t, fields, schema); err != nil {
+		t.Errorf("the migrated map still fails validation: %v", err)
+	}
+}
+
+func TestMigrateMultiRelation_ControlAWellFormedDefaultSurvives(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ws, _, _, red := relationFixture(t, s)
+	schema := multiDefaultSchema([]any{red.ID}, false)
+
+	// Without this, a strict check that dropped EVERY list default would satisfy
+	// both legs above and quietly disable destination defaults for the type.
+	fields := map[string]any{"color": []any{red.ID}}
+	_, dropped, err := s.MigrateRelationReferents(nil, ws.ID, schema, fields, nil, nil, RelationCarryMode(0))
+	if err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if len(dropped) != 0 {
+		t.Fatalf("dropped = %+v, want none for a resolvable default", dropped)
+	}
+	arr, ok := fields["color"].([]any)
+	if !ok || len(arr) != 1 || arr[0] != red.ID {
+		t.Errorf("color = %#v, want the canonical id kept", fields["color"])
+	}
+}
+
+// The SCALAR arm of the migrate default bucket, which nothing covered.
+//
+// Found by a surviving mutant, not by reading: applying the strict list reader
+// to the scalar type as well — which would drop EVERY scalar relation default
+// on a copy or move — survived the whole `internal/store` suite. That is a
+// coverage hole older than this unit; the strict/lenient split just made it
+// visible, and a survivor is a question rather than a clearance.
+func TestMigrateScalarRelationDefault_AWellFormedDefaultSurvives(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ws, _, _, red := relationFixture(t, s)
+	schema := models.CollectionSchema{Fields: []models.FieldDef{
+		{Key: "color", Type: "relation", Collection: "colors", Default: red.ID},
+	}}
+
+	fields := map[string]any{"color": red.ID}
+	_, dropped, err := s.MigrateRelationReferents(nil, ws.ID, schema, fields, nil, nil, RelationCarryMode(0))
+	if err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if len(dropped) != 0 {
+		t.Fatalf("dropped = %+v; a resolvable scalar default must survive a move", dropped)
+	}
+	if fields["color"] != red.ID {
+		t.Errorf("color = %#v, want the canonical id kept", fields["color"])
+	}
+}
+
+func TestMigrateScalarRelationDefault_ANonStringDefaultIsDropped(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ws, _, _, _ := relationFixture(t, s)
+	schema := models.CollectionSchema{Fields: []models.FieldDef{
+		{Key: "color", Type: "relation", Collection: "colors", Default: 42},
+	}}
+
+	// The other half, so the leg above cannot be satisfied by a bucket that
+	// accepts everything. `ValidateFields` assigns a default without
+	// type-checking it, so this is the only pass between `42` and the row.
+	fields := map[string]any{"color": 42}
+	_, dropped, err := s.MigrateRelationReferents(nil, ws.ID, schema, fields, nil, nil, RelationCarryMode(0))
+	if err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if len(dropped) != 1 || dropped[0].Reason != RelationTargetInvalidShape {
+		t.Errorf("dropped = %+v, want one invalid_shape", dropped)
+	}
+	if v, present := fields["color"]; present {
+		t.Errorf("color survived as %#v", v)
+	}
+}
