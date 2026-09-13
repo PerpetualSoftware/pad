@@ -5465,6 +5465,7 @@
 									{wsSlug}
 									{username}
 									onOpenTarget={paneOpenTarget}
+									itemId={item?.id}
 								/>
 							</div>
 						</div>

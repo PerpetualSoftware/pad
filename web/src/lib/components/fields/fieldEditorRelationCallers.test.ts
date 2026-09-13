@@ -36,6 +36,20 @@ describe('ItemDetail gives FieldEditor the relation link context', () => {
 	it('wires the pane-open target so the chip peeks like every other item link', () => {
 		expect(tag).toMatch(/onOpenTarget=\{paneOpenTarget\}/);
 	});
+
+	it('passes the item id — the fence for the typed path\'s echo check (BUG-3039)', () => {
+		// The id fences the typed path's echo check — "did `value` change because
+		// OUR write came home?", which the value alone cannot answer.
+		//
+		// It is NOT load-bearing here, and an earlier version of this comment
+		// said the opposite: this pane wraps its fields in `{#key itemSlug}`, so
+		// an item switch destroys the editor rather than retargeting it. The
+		// assertion stays because FieldEditor cannot see that containment from
+		// inside itself, so passing the id is what keeps the question answerable
+		// if the key ever goes. Asserted here rather than in a render test
+		// because it is a fact about the MOUNT (CONVE-19).
+		expect(tag).toMatch(/itemId=\{item\?\.id\}/);
+	});
 });
 
 describe('CopyItemDialog is now on the EDITABLE side of the gate (TASK-2869 / U2b)', () => {

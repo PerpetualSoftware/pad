@@ -73,9 +73,33 @@ handlers — onchange is never called.
 		wsSlug?: string;
 		username?: string;
 		onOpenTarget?: (target: PaneTarget) => void;
+		/**
+		 * The row this editor is pointed at, when the mounting view has one.
+		 *
+		 * It fences the typed path's echo check (BUG-3039), which asks "did
+		 * `value` change because OUR write came home?" — a question the value
+		 * alone cannot answer, since another row's value can equal what we just
+		 * sent for this one.
+		 *
+		 * NOT LOAD-BEARING TODAY, and the comment that said otherwise was wrong.
+		 * ItemDetail mounts the fields panel inside `{#key itemSlug}`
+		 * (PLAN-2105 / TASK-2112), so an item switch DESTROYS this component
+		 * rather than retargeting it, and the pending edit dies with it. Kept
+		 * anyway, because this component cannot see its caller's structure: a
+		 * `{#key}` in another file is exactly the kind of cross-component premise
+		 * that went stale under BUG-3039's feet, and a caller that mounts this
+		 * without one would silently reopen the question. A caller that omits the
+		 * id still gets the echo check — with nothing to retarget between, "same
+		 * subject?" answers true rather than answering nothing.
+		 *
+		 * Deliberately not folded into `relationIdentity`, which fences a
+		 * different thing (the workspace and target collection a resolved chip
+		 * belongs to) and is asked on a path with no debounce.
+		 */
+		itemId?: string;
 	}
 
-	let { field, value, onchange, readonly = false, ariaLabel, wsSlug, username = '', onOpenTarget }: Props = $props();
+	let { field, value, onchange, readonly = false, ariaLabel, wsSlug, username = '', onOpenTarget, itemId }: Props = $props();
 
 	// ── Relation resolution ───────────────────────────────────────────────
 	//
@@ -737,6 +761,106 @@ handlers — onchange is never called.
 	// debounce can fire. Per Codex review round 4 [P1].
 	let hasPending = false;
 
+	/**
+	 * What the typed path last SENT, stamped with the item it was sent for, and
+	 * held until it comes home (BUG-3039).
+	 *
+	 * The value-track effect below has to tell "`value` changed because our own
+	 * write landed" from "`value` changed because someone else wrote". Those want
+	 * opposite answers — keep the newer keystrokes, or drop them — and the effect
+	 * used to treat every change as the second, so a response to keystroke N
+	 * deleted keystroke N+1 before it was ever sent.
+	 *
+	 * A plain `let`, not `$state`, for the reason `hasPending` is: the effect
+	 * reads it, and making it reactive would have the effect retrigger itself.
+	 *
+	 * The stamp is the ITEM, not the text, because the text cannot answer the
+	 * question: the next item's value can equal what we just sent for this one,
+	 * and flushing then would write this item's typing onto that one (the Codex
+	 * round 3 [P1] the effect was originally built for).
+	 *
+	 * RELEASED BY TWO SIGNALS, not one, for the reason the relation hold needed
+	 * two (round 8, R8-2): the prop agreeing with what we sent, or the consumer's
+	 * own settlement when it gives one. Agreement alone cannot answer for a write
+	 * the server REFUSES — that value never comes back, so the stamp would stand
+	 * forever and `typedDisplay` with it, pinning rejected text on screen with no
+	 * release. An earlier version of this comment claimed nothing was pinned
+	 * here. That was wrong, and it was wrong in the direction of defending the
+	 * design I had just written (codex round 1, finding 3).
+	 */
+	let awaitingEcho: { itemId: string | undefined; sent: any } | null = null;
+
+	/**
+	 * The text this field is showing while it owns a typed edit the prop has not
+	 * caught up with — the display half of BUG-3039.
+	 *
+	 * Keeping the WRITE was not enough. `value={value ?? ''}` is a one-way
+	 * binding, so Svelte re-applies the prop to the DOM input on every change:
+	 * the earlier keystroke's echo put `a` back in a box the user had typed `ab`
+	 * into, and the character was gone from the screen whether or not the later
+	 * write eventually landed.
+	 *
+	 * This is the same shape as `relationValues`' hold — the last thing WE sent
+	 * wins over the prop until the round trip catches up — asked here for one
+	 * string instead of a list.
+	 *
+	 * `$state` because the template reads it, and safe as `$state` for the reason
+	 * `hasPending` is NOT: the value-track effect never reads this, so writing it
+	 * cannot retrigger the effect. Holding the raw typed STRING rather than the
+	 * parsed value keeps a half-typed number (`1.`, `-`) on screen.
+	 */
+	let typedDisplay = $state<string | null>(null);
+
+	/**
+	 * The field-and-mode this editor is currently showing, so a SWAP of subject
+	 * clears the typed state the way a change of row does.
+	 *
+	 * `null` until the value-track effect's first run seeds it. Seeding from the
+	 * props HERE would read them at component-init and capture only their initial
+	 * values — which is what this needs, but it is also the shape svelte-check
+	 * warns about (`state_referenced_locally`), and the effect seeds it for free.
+	 */
+	let typedSubject: string | null = null;
+
+	/**
+	 * Equality as this component means it: the pane stores an empty text field as
+	 * `null` and re-props it as `null`, while the input reports `''`.
+	 *
+	 * Strict otherwise, including across types — if a round trip returns `5` as
+	 * `'5'` the echo simply is not recognised and the effect falls back to
+	 * dropping the pending edit, which is the direction that was already the
+	 * behaviour for everything.
+	 */
+	function sameTypedValue(a: unknown, b: unknown): boolean {
+		const norm = (v: unknown) => (v === null || v === undefined ? '' : v);
+		return norm(a) === norm(b);
+	}
+
+	/**
+	 * Send a typed value, recording it as the echo we are now waiting for, and
+	 * releasing that record when the consumer tells us the write is over.
+	 *
+	 * The stamp is compared by OBJECT IDENTITY, so an older write's settlement
+	 * cannot release a newer write's record — the same thing `holdOrder`'s
+	 * tickets do for the relation hold, which needs numbers because its releases
+	 * come from several places; here there is one stamp at a time and identity
+	 * says it exactly.
+	 */
+	function sendTyped(v: any) {
+		const stamp = { itemId, sent: v };
+		awaitingEcho = stamp;
+		const settled = settlementOf(onchange(v));
+		if (!settled) return;
+		const release = () => {
+			if (awaitingEcho !== stamp) return; // a newer send owns the record now
+			awaitingEcho = null;
+			// Only the DISPLAY of this write is released. Anything the user has
+			// typed since is newer than the outcome and stays on screen.
+			if (!hasPending) typedDisplay = null;
+		};
+		settled.then(release, release);
+	}
+
 	function scheduleSave(next: any) {
 		pendingValue = next;
 		hasPending = true;
@@ -746,7 +870,7 @@ handlers — onchange is never called.
 			const v = pendingValue;
 			pendingValue = undefined;
 			hasPending = false;
-			onchange(v);
+			sendTyped(v);
 		}, TYPING_DEBOUNCE_MS);
 	}
 
@@ -757,7 +881,7 @@ handlers — onchange is never called.
 		const v = pendingValue;
 		pendingValue = undefined;
 		hasPending = false;
-		onchange(v);
+		sendTyped(v);
 	}
 
 	// Cleanup on unmount: drop any pending typed save. We deliberately
@@ -783,6 +907,8 @@ handlers — onchange is never called.
 				pendingValue = undefined;
 				hasPending = false;
 			}
+			awaitingEcho = null;
+			typedDisplay = null;
 		};
 	});
 
@@ -790,42 +916,142 @@ handlers — onchange is never called.
 	// while we have a pending save. The parent could re-prop this
 	// FieldEditor mid-edit for legitimate reasons:
 	//
-	//   - Navigation to a different item within the same route reuses
-	//     the component (same schema, same field.key) with a different
-	//     item's value. Without this guard the pending value would be
-	//     flushed against the parent's `updateField`, which reads the
-	//     CURRENT `item.id` — leaking item A's edit into item B
-	//     (Codex review round 3 [P1]).
 	//   - A collab peer / SSE-driven update of the same field on the
-	//     same item also rebases the prop. The user's in-flight typed
+	//     same item rebases the prop. The user's in-flight typed
 	//     value is no longer the right answer; drop it rather than
 	//     silently overwrite the peer edit.
+	//   - The parent's own 409 refetch-and-retry does the same.
+	//
+	// STALE CLAIM REMOVED (BUG-3039, codex round 1 finding 8). This list used to
+	// lead with "Navigation to a different item within the same route reuses the
+	// component … leaking item A's edit into item B (Codex review round 3 [P1])".
+	// That was true when it was written and is not true now: PLAN-2105 /
+	// TASK-2112 later put the whole fields panel inside `{#key itemSlug}`
+	// (ItemDetail.svelte), whose own comment says the sidebar "remounts on every
+	// item switch so a stale field continuation is discarded". An item switch
+	// destroys this component; it does not re-prop it. The leak that round 3
+	// named is closed structurally, one layer up.
+	//
+	// Left standing, it cost real work: BUG-3039 was built on it, reported a
+	// second hole that does not exist, and had a ruling made on that report
+	// before the call site was read.
 	//
 	// The trade-off: a typed-but-unflushed value is lost when the user
 	// navigates within 500ms. Acceptable — they actively navigated, and
 	// blur (the usual way to leave an input) already flushes eagerly.
 	//
-	// We don't need to distinguish "our save echoing back" from
-	// "external update" because the timer callback clears `hasPending`
-	// BEFORE calling onchange, so by the time this $effect runs in
-	// response to our own save's echo, hasPending is already false.
+	// It DOES need to distinguish "our save echoing back" from "external update",
+	// and the comment that used to stand here said otherwise (BUG-3039). Its
+	// reasoning — the timer callback clears `hasPending` before calling onchange,
+	// so by the time the echo arrives `hasPending` is already false — holds only
+	// while no NEW typing starts between the send and the echo. That window is a
+	// 500ms debounce plus a network round trip, which is to say it is the window
+	// a person types in: keystroke N's response then cancelled keystroke N+1
+	// before it was ever sent, and took it off the screen too.
+	//
+	// Three cases, and the first two are the ones the original guard exists for:
+	//
+	//   - the ITEM changed — this component was pointed at another row, so the
+	//     pending text belongs to a row we have left. Dropped. Unreachable from
+	//     ItemDetail, which remounts instead (see the `itemId` prop); it is the
+	//     answer for any caller that does not.
+	//   - `value` changed to something we did not send — SSE, a collab peer, the
+	//     parent's 409 refetch. Theirs is newer than our unsent edit. Dropped.
+	//   - `value` changed to exactly what we last sent for THIS item — our own
+	//     write coming home. Kept: the newer keystrokes are the user's current
+	//     intent, and nothing has contradicted them.
 	$effect(() => {
 		void value; // track dependency
-		if (hasPending) {
+		// The SUBJECT, not just the value. A swap of the field this editor is
+		// showing, or a flip to readonly, abandons the typed edit as surely as a
+		// change of row does — and `typedDisplay` would otherwise survive the swap
+		// and paint the old text over the new field's value (codex round 1,
+		// finding 5). Read before the early returns so they are dependencies on
+		// every path.
+		const subject = `${field.key}\u0000${field.type}\u0000${readonly ? 'ro' : 'rw'}`;
+		if (subject !== typedSubject) {
+			// The FIRST run seeds `typedSubject` and takes this branch too. That is
+			// a no-op rather than a special case: effects run before the user can
+			// type, so there is never anything to clear at that point. A `seeding`
+			// guard here produced a mutant nothing could kill, which is the tell
+			// that it was deciding nothing.
+			typedSubject = subject;
 			clearTimeout(typingTimer);
 			typingTimer = undefined;
 			pendingValue = undefined;
 			hasPending = false;
+			awaitingEcho = null;
+			typedDisplay = null;
+			return;
 		}
+		// …and the retarget. NO TEST CAN DISTINGUISH THIS LINE — removing it
+		// survives the matrix (D3 on the BUG-3039 trail) — for two independent
+		// reasons, and both are worth stating because either alone would be a
+		// reason to delete it. First, in this Svelte version an effect re-runs on
+		// every assignment of a prop it reads, equal or not (the same behaviour
+		// round 8 hit as a HAZARD above), so reassigning `value` already re-runs
+		// this. Second, ItemDetail remounts rather than retargeting, so the case
+		// this covers is not reachable from the only caller that has items.
+		// It stays for the same reason the prop does: the logic depends on
+		// `itemId`, and declaring that beats resting on an incidental re-run and
+		// a `{#key}` in another file.
+		void itemId;
+		if (!hasPending) {
+			if (!awaitingEcho) {
+				// Nothing of ours is outstanding, so the prop is the truth again.
+				//
+				// This clear is UNREACHABLE today and kept as the invariant it
+				// states: `typedDisplay` is only ever meaningful while something is
+				// pending or a send is outstanding, and every path that drops
+				// `awaitingEcho` already drops it — so no test can kill removing
+				// this line (D8 on the BUG-3039 trail). It stays because it is what
+				// makes that invariant true by construction rather than by tracing
+				// five paths, and a future path that sets the display without a
+				// send would otherwise pin text with nothing to release it.
+				typedDisplay = null;
+				return;
+			}
+			if (awaitingEcho.itemId === itemId && sameTypedValue(awaitingEcho.sent, value)) {
+				// Our newest send came home.
+				awaitingEcho = null;
+				typedDisplay = null;
+				return;
+			}
+			// Our newest send is still outstanding and this is not it: an OLDER
+			// send's echo, or an outside write. Indistinguishable, and both want
+			// the same answer — keep showing what we sent, because it is later
+			// than either. Releasing here showed the older value until the newer
+			// echo arrived (codex round 1, findings 2 and 4). The settlement
+			// signal in `sendTyped` is what guarantees this ends even if our echo
+			// never comes.
+			return;
+		}
+		if (awaitingEcho && awaitingEcho.itemId === itemId && sameTypedValue(awaitingEcho.sent, value)) {
+			// Consumed: an echo answers for exactly one write, so a LATER outside
+			// change equal to the same text is an outside change and drops as one.
+			awaitingEcho = null;
+			return;
+		}
+		clearTimeout(typingTimer);
+		typingTimer = undefined;
+		pendingValue = undefined;
+		hasPending = false;
+		awaitingEcho = null;
+		typedDisplay = null;
 	});
 
 	function handleTextInput(e: Event) {
 		const target = e.target as HTMLInputElement;
+		typedDisplay = target.value;
 		scheduleSave(target.value);
 	}
 
 	function handleNumberInput(e: Event) {
 		const target = e.target as HTMLInputElement;
+		// Recorded even when the text does not parse: `1.` and `-` are on their
+		// way to a number and must not be rewritten under the cursor. Nothing is
+		// SENT for them, which is unchanged.
+		typedDisplay = target.value;
 		if (target.value === '') { scheduleSave(null); return; }
 		const num = Number(target.value);
 		if (!isNaN(num)) scheduleSave(num);
@@ -837,12 +1063,22 @@ handlers — onchange is never called.
 		// (if any) BEFORE clearing the timer — `value` is the parent
 		// prop and would lag a freshly-typed pending number until the
 		// flush round-trips back. Per Codex review round 1 [P1].
-		const base = hasPending ? Number(pendingValue) || 0 : Number(value) || 0;
+		// Three bases, most-recent-first. `value` is the parent prop and LAGS
+		// anything we have sent but not seen come home, so stepping from it turns
+		// `5` then `+1` into `oldValue + 1` and the typed 5 is gone (codex round 1,
+		// finding 1 — pre-existing, and reachable now that `awaitingEcho` records
+		// the missing middle case).
+		const base = hasPending
+			? Number(pendingValue) || 0
+			: awaitingEcho
+				? Number(awaitingEcho.sent) || 0
+				: Number(value) || 0;
 		clearTimeout(typingTimer);
 		typingTimer = undefined;
 		pendingValue = undefined;
 		hasPending = false;
-		onchange(base + delta);
+		typedDisplay = String(base + delta);
+		sendTyped(base + delta);
 	}
 
 	function handleDateInput(e: Event) {
@@ -1139,7 +1375,7 @@ handlers — onchange is never called.
 			type="text"
 			aria-label={ariaLabel}
 			inputmode="numeric"
-			value={value ?? ''}
+			value={typedDisplay ?? value ?? ''}
 			oninput={handleNumberInput}
 			onblur={flushPendingSave}
 			placeholder="—"
@@ -1169,7 +1405,7 @@ handlers — onchange is never called.
 			class="field-input url-input"
 			type="url"
 			aria-label={ariaLabel}
-			value={value ?? ''}
+			value={typedDisplay ?? value ?? ''}
 			oninput={handleTextInput}
 			onblur={flushPendingSave}
 			placeholder="https://..."
@@ -1310,7 +1546,7 @@ handlers — onchange is never called.
 		class="field-input"
 		type="text"
 		aria-label={ariaLabel}
-		value={value ?? ''}
+		value={typedDisplay ?? value ?? ''}
 		oninput={handleTextInput}
 		onblur={flushPendingSave}
 	/>
