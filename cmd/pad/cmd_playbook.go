@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -265,25 +264,17 @@ func warnPlaybookBodyStale(contentState string) {
 		"the server forces that to happen.")
 }
 
-// warnStalePlaybookSummaries prints ONE line to STDERR naming the listed
-// playbooks whose summary is derived from a body the server knows is behind its
-// live collaborative document (BUG-3033).
+// warnStalePlaybookSummaries reports the listed playbooks whose summary is
+// derived from a body the server knows is behind its live collaborative
+// document (BUG-3033).
 //
-// One line for the whole listing rather than one per row, and it NAMES the refs:
-// a per-row marker on a long list is noise a reader learns to skip, while a
-// count alone ("3 playbooks are stale") sends them back to diff the list by
-// hand. Naming them is the shortest form that is still actionable.
-//
-// Nil or empty is the common case and prints nothing, so a listing of current
-// playbooks is byte-identical on both streams.
+// A thin wrapper over the shared warnStaleDerivedText rather than its own
+// wording: a summary and a search snippet are the same kind of thing (a window
+// onto the body), and three listings phrasing that fact three ways is how a
+// reader learns to skip all three. Only the noun and the see-what-is-stored
+// command differ.
 func warnStalePlaybookSummaries(refs []string) {
-	if len(refs) == 0 {
-		return
-	}
-	fmt.Fprintf(os.Stderr, "warning: the summary shown for %s is derived from a body that is behind "+
-		"its live collaborative document — an editor holds edits that have not been written back yet, "+
-		"so the description may be out of date. Load the full body with `pad playbook show <ref>` to "+
-		"see what is stored.\n", strings.Join(refs, ", "))
+	warnStaleDerivedText("summary", refs, "`pad playbook show <ref>`")
 }
 
 // --- bootstrap ---

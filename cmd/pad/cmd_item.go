@@ -3126,6 +3126,7 @@ Examples:
 				return nil
 			}
 			fmt.Printf("Backlinks to %s\n\n", cli.Bold.Sprint(label))
+			var staleBacklinks []string
 			for _, bl := range backlinks {
 				header := bl.SourceRef + " " + bl.SourceTitle
 				if bl.SourceCollectionIcon != "" {
@@ -3134,6 +3135,12 @@ Examples:
 				fmt.Printf("%s\n", cli.Bold.Sprint(header))
 				if bl.Snippet != "" {
 					cli.Dim.Printf("  %s\n", bl.Snippet)
+					// BUG-3033 — the marker describes the SOURCE item of each
+					// link, so the refs named are source refs, not the target
+					// the caller asked about.
+					if bl.ContentState == models.ContentOutcomeAppliedPendingFlush {
+						staleBacklinks = append(staleBacklinks, bl.SourceRef)
+					}
 				}
 				if bl.DisplayText != nil {
 					// nil = no `|` in body; non-nil = `[[X|...]]`,
@@ -3144,6 +3151,7 @@ Examples:
 				}
 				fmt.Println()
 			}
+			warnStaleDerivedText("snippet", staleBacklinks, "`pad item show <ref>`")
 			return nil
 		},
 	}
@@ -3425,6 +3433,7 @@ func searchCmd() *cobra.Command {
 				return nil
 			}
 
+			var staleSnippets []string
 			for _, r := range searchResp.Results {
 				icon := r.Item.CollectionIcon
 				if icon == "" {
@@ -3433,9 +3442,27 @@ func searchCmd() *cobra.Command {
 				fmt.Printf("%s %s (%s)\n", icon, r.Item.Title, r.Item.CollectionName)
 				if r.Snippet != "" {
 					fmt.Printf("  %s\n", r.Snippet)
+					// BUG-3033. The JSON form carries the marker on the embedded
+					// item; this renderer decodes that item and prints only the
+					// snippet, so without this the signal stops here.
+					if r.Item.ContentState == models.ContentOutcomeAppliedPendingFlush {
+						// Ref first, ItemRef as the fallback: the server computes
+						// `ref` on the item it returns, but this renderer must name
+						// something actionable even from a payload that omits it,
+						// and a warning naming "" would be worse than none.
+						name := r.Item.Ref
+						if name == "" {
+							name = cli.ItemRef(r.Item)
+						}
+						if name == "" {
+							name = r.Item.Title
+						}
+						staleSnippets = append(staleSnippets, name)
+					}
 				}
 				fmt.Println()
 			}
+			warnStaleDerivedText("snippet", staleSnippets, "`pad item show <ref>`")
 
 			showing := len(searchResp.Results)
 			if showing == 0 && searchResp.Total > 0 {
@@ -3863,6 +3890,33 @@ func warnContentStale(item *models.Item) {
 		"document — an editor holds edits that have not been written back yet, so what follows is "+
 		"the previous content. It catches up when a tab next flushes the item, and nothing on the "+
 		"server forces that to happen.")
+}
+
+// warnStaleDerivedText prints ONE line to STDERR naming the items whose
+// body-DERIVED text in a listing came from a body the server knows is behind its
+// live collaborative document (BUG-3033).
+//
+// Snippets, previews and summaries are all windows onto the body rather than
+// metadata about it, so a stale body makes every one of them stale. They share
+// this renderer so the surfaces cannot word the same fact differently — three
+// listings drifting into three phrasings is how a reader learns to ignore all
+// three.
+//
+// One line for the whole listing rather than one per row, and it NAMES the
+// refs: a per-row marker on a long list is noise, while a bare count sends the
+// reader back to diff it by hand. `what` names the kind of text ("snippet",
+// "summary") and `howToSee` is the command that shows what is actually stored.
+//
+// Empty is the common case and prints nothing, so a current listing is
+// byte-identical on both streams.
+func warnStaleDerivedText(what string, refs []string, howToSee string) {
+	if len(refs) == 0 {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "warning: the %s shown for %s is derived from a body that is behind its "+
+		"live collaborative document — an editor holds edits that have not been written back yet, so "+
+		"the text may be out of date. Run %s to see what is stored.\n",
+		what, strings.Join(refs, ", "), howToSee)
 }
 
 // warnStaleEditSeed prints one line to STDERR before `pad item edit` opens the

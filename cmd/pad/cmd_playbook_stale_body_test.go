@@ -2,12 +2,15 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -243,11 +246,15 @@ func TestEditWarnsBeforeLaunchingTheEditor(t *testing.T) {
 		{"the value the server sends", models.ContentOutcomeAppliedPendingFlush, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var patched bool
+			var patchedContent *string
 			mux := http.NewServeMux()
 			mux.HandleFunc("/api/v1/workspaces/ws/items/TASK-5", func(w http.ResponseWriter, r *http.Request) {
 				if r.Method == http.MethodPatch {
-					patched = true
+					var body struct {
+						Content *string `json:"content"`
+					}
+					_ = json.NewDecoder(r.Body).Decode(&body)
+					patchedContent = body.Content
 					_ = json.NewEncoder(w).Encode(map[string]any{
 						"id": "i1", "ref": "TASK-5", "title": "T", "slug": "t", "content": "new",
 					})
@@ -306,8 +313,16 @@ func TestEditWarnsBeforeLaunchingTheEditor(t *testing.T) {
 			if editorAt < 0 {
 				t.Fatalf("the fake editor never ran, so this case measured nothing:\n%s", stderr)
 			}
-			if !patched {
-				t.Fatalf("the edited body was never PATCHed, so this case did not exercise saving:\n%s", stderr)
+			// The exact CONTENT, not merely that a PATCH occurred: an update
+			// payload stripped of its content still produces a PATCH, and this
+			// case claims to exercise saving the edited body (codex round 2 P3).
+			wantContent := "the previous content" + "edited\n"
+			if patchedContent == nil {
+				t.Fatalf("the PATCH carried no content, so this case did not exercise saving:\n%s", stderr)
+			}
+			if *patchedContent != wantContent {
+				t.Fatalf("the PATCH sent %q, want %q — the edited body is not what reached the server",
+					*patchedContent, wantContent)
 			}
 
 			warnAt := strings.Index(stderr, "behind its live collaborative")
@@ -331,33 +346,51 @@ func TestEditWarnsBeforeLaunchingTheEditor(t *testing.T) {
 }
 
 // TestPlaybookListWarnsOnlyAboutStaleSummaries covers the CLI half of the
-// summary door (BUG-3033, codex round 1 P2).
+// summary door (BUG-3033, codex round 1 P2) through BOTH renderers.
 //
 // A `summary` is the body's first paragraph, truncated, so a stale body makes a
-// stale summary — and an agent routes on that description. The listing renderer
-// decodes its own narrow struct, so it inherits nothing.
+// stale summary — and an agent routes on that description. Each renderer decodes
+// its own narrow struct, so neither inherits anything.
 //
-// Three claims, and the third is why this drives the COMMAND rather than the
-// helper: the warning fires only when something is stale, it NAMES the stale
-// refs, and it names ONLY those. A helper test cannot see a wiring error that
-// collects every ref.
+// Three stale entries INTERLEAVED with current ones, because a single stale row
+// cannot distinguish three different renderers (codex round 2 P3): one that
+// names every ref, one that names only the first, and the correct one all agree
+// when exactly one row is stale. The assertions are therefore the COMPLETE ref
+// set, the absence of the current ones, and EXACTLY ONE warning line.
 func TestPlaybookListWarnsOnlyAboutStaleSummaries(t *testing.T) {
-	serve := func(t *testing.T, staleRef string) {
+	// PLAYB-2 and PLAYB-4 stale, PLAYB-1/3/5 current — stale entries neither
+	// first nor last nor contiguous, so an off-by-one or a first-only renderer
+	// cannot pass by accident.
+	all := []string{"PLAYB-1", "PLAYB-2", "PLAYB-3", "PLAYB-4", "PLAYB-5"}
+	stale := map[string]bool{"PLAYB-2": true, "PLAYB-4": true}
+
+	serve := func(t *testing.T, markStale bool) {
 		t.Helper()
-		mux := http.NewServeMux()
-		mux.HandleFunc("/api/v1/workspaces/ws/playbooks", func(w http.ResponseWriter, r *http.Request) {
-			mk := func(ref, title string) map[string]any {
+		payload := func() []map[string]any {
+			out := make([]map[string]any, 0, len(all))
+			for i, ref := range all {
 				e := map[string]any{
-					"ref": ref, "title": title, "slug": strings.ToLower(title),
-					"invocation_slug": strings.ToLower(title), "status": "active",
-					"summary": "Does the " + title + " thing.",
+					"ref": ref, "title": fmt.Sprintf("P%d", i+1), "slug": fmt.Sprintf("p%d", i+1),
+					"invocation_slug": fmt.Sprintf("p%d", i+1), "status": "active",
+					"summary": fmt.Sprintf("Does the P%d thing.", i+1),
 				}
-				if ref == staleRef {
+				if markStale && stale[ref] {
 					e["content_state"] = models.ContentOutcomeAppliedPendingFlush
 				}
-				return e
+				out = append(out, e)
 			}
-			_ = json.NewEncoder(w).Encode([]map[string]any{mk("PLAYB-1", "Ship"), mk("PLAYB-2", "Plan")})
+			return out
+		}
+		mux := http.NewServeMux()
+		mux.HandleFunc("/api/v1/workspaces/ws/playbooks", func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode(payload())
+		})
+		mux.HandleFunc("/api/v1/workspaces/ws/agent/bootstrap", func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"workspace": map[string]any{"slug": "ws", "name": "WS"},
+				"user":      map[string]any{"name": "T", "email": "t@t"},
+				"playbooks": payload(),
+			})
 		})
 		srv := httptest.NewServer(mux)
 		t.Cleanup(srv.Close)
@@ -370,50 +403,225 @@ func TestPlaybookListWarnsOnlyAboutStaleSummaries(t *testing.T) {
 	t.Cleanup(func() { workspaceFlag, formatFlag = origWS, origFormat })
 	workspaceFlag, formatFlag = "ws", "markdown"
 
-	run := func(t *testing.T) (stdout, stderr string) {
+	// Both renderers, because the bootstrap one had no coverage at all and the
+	// two are separate decode structs in separate files.
+	renderers := map[string]func() *cobra.Command{
+		"playbook list": playbookListCmd,
+		"bootstrap":     bootstrapCmd,
+	}
+
+	run := func(t *testing.T, mk func() *cobra.Command) (stdout, stderr string) {
 		t.Helper()
-		cmd := playbookListCmd()
+		cmd := mk()
 		cmd.SetArgs(nil)
 		var out string
 		errOut := captureStderr(t, func() {
 			out = captureStdout(t, func() {
 				if e := cmd.Execute(); e != nil {
-					t.Fatalf("playbook list: %v", e)
+					t.Fatalf("execute: %v", e)
 				}
 			})
 		})
 		return out, errOut
 	}
 
-	// ABSENCE FIRST — nothing stale, nothing said. The premise (that the listing
-	// really rendered two playbooks with summaries) is asserted first, or the
-	// silence below would be the silence of a command that printed nothing.
-	serve(t, "")
-	stdout, stderr := run(t)
-	for _, want := range []string{"PLAYB-1", "PLAYB-2", "Does the Ship thing."} {
-		if !strings.Contains(stdout, want) {
-			t.Fatalf("the listing did not render %q, so the absence assertion below is vacuous:\n%s", want, stdout)
-		}
+	for name, mk := range renderers {
+		t.Run(name, func(t *testing.T) {
+			// ABSENCE FIRST, with the premise asserted so the silence below is
+			// not the silence of a command that rendered nothing.
+			serve(t, false)
+			stdout, stderr := run(t, mk)
+			for _, ref := range all {
+				if !strings.Contains(stdout, ref) {
+					t.Fatalf("the listing did not render %s, so the absence assertion is vacuous:\n%s", ref, stdout)
+				}
+			}
+			if strings.Contains(stdout, "Does the P2 thing.") == false {
+				t.Fatalf("the listing rendered no summaries, so this measures nothing:\n%s", stdout)
+			}
+			if strings.Contains(stderr, "behind its live collaborative") {
+				t.Fatalf("a listing with no stale summaries warned:\n%s", stderr)
+			}
+
+			serve(t, true)
+			stdout, stderr = run(t, mk)
+
+			// EXACTLY ONE warning line. A renderer emitting one per stale row
+			// satisfies every "contains" assertion and is the thing that makes a
+			// long listing unreadable.
+			lines := 0
+			for _, ln := range strings.Split(stderr, "\n") {
+				if strings.Contains(ln, "behind its live collaborative") {
+					lines++
+				}
+			}
+			if lines != 1 {
+				t.Errorf("got %d warning lines, want exactly 1:\n%s", lines, stderr)
+			}
+			// The COMPLETE stale set — a renderer naming only the first would
+			// pass a single-ref assertion.
+			for ref := range stale {
+				if !strings.Contains(stderr, ref) {
+					t.Errorf("the warning omits stale %s:\n%s", ref, stderr)
+				}
+			}
+			// And only those.
+			for _, ref := range all {
+				if stale[ref] {
+					continue
+				}
+				if strings.Contains(stderr, ref) {
+					t.Errorf("the warning names %s, whose summary is current:\n%s", ref, stderr)
+				}
+			}
+			// STDOUT stays clean: the listing is piped.
+			if strings.Contains(stdout, "behind its live collaborative") {
+				t.Errorf("the warning landed on STDOUT, corrupting the listing:\n%s", stdout)
+			}
+		})
 	}
-	if strings.Contains(stderr, "behind its live collaborative") {
-		t.Fatalf("a listing with no stale summaries warned:\n%s", stderr)
+}
+
+// TestSnippetRenderersWarnAboutStaleSources covers the two CLI renderers that
+// print body-derived SNIPPETS (BUG-3033, codex round 2 P2).
+//
+// `pad item search` decodes the embedded models.Item and prints only the
+// snippet; `pad item backlinks` decodes models.Backlink and prints only the
+// snippet. Both carry the marker on the wire and both dropped it here, so the
+// signal stopped at the renderer — the same shape as the playbook commands.
+//
+// Interleaved stale and current rows for the reason the summary test uses them:
+// a single stale row cannot tell a correct renderer from one that names every
+// ref or only the first.
+func TestSnippetRenderersWarnAboutStaleSources(t *testing.T) {
+	const staleRef, currentRef = "TASK-2", "TASK-1"
+
+	serve := func(t *testing.T, markStale bool) {
+		t.Helper()
+		item := func(ref, title string) map[string]any {
+			m := map[string]any{
+				"id": ref, "ref": ref, "title": title, "slug": strings.ToLower(ref),
+				"collection_name": "Tasks", "collection_icon": "✓", "content": "body",
+			}
+			if markStale && ref == staleRef {
+				m["content_state"] = models.ContentOutcomeAppliedPendingFlush
+			}
+			return m
+		}
+		backlink := func(ref, title string) map[string]any {
+			m := map[string]any{
+				"source_item_id": ref, "source_ref": ref, "source_title": title,
+				"source_collection_slug": "tasks", "snippet": "…a snippet from " + ref + "…",
+			}
+			if markStale && ref == staleRef {
+				m["content_state"] = models.ContentOutcomeAppliedPendingFlush
+			}
+			return m
+		}
+		mux := http.NewServeMux()
+		mux.HandleFunc("/api/v1/search", func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"results": []map[string]any{
+					{"item": item(currentRef, "One"), "snippet": "…a snippet from " + currentRef + "…"},
+					{"item": item(staleRef, "Two"), "snippet": "…a snippet from " + staleRef + "…"},
+				},
+				"total": 2, "limit": 20, "offset": 0,
+			})
+		})
+		mux.HandleFunc("/api/v1/workspaces/ws/items/TASK-9", func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode(item("TASK-9", "Target"))
+		})
+		// The CLI resolves the ref to an item first and builds the backlinks URL
+		// from its SLUG, so the fixture has to serve the slug path.
+		mux.HandleFunc("/api/v1/workspaces/ws/items/task-9/backlinks", func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				backlink(currentRef, "One"), backlink(staleRef, "Two"),
+			})
+		})
+		srv := httptest.NewServer(mux)
+		t.Cleanup(srv.Close)
+		setTempHomeMain(t)
+		t.Setenv("PAD_URL", srv.URL)
+		t.Setenv("PAD_TOKEN", "pad_testtoken")
 	}
 
-	serve(t, "PLAYB-2")
-	stdout, stderr = run(t)
-	if !strings.Contains(stderr, "behind its live collaborative") {
-		t.Errorf("a stale summary produced no warning:\n%s", stderr)
+	origWS, origFormat := workspaceFlag, formatFlag
+	t.Cleanup(func() { workspaceFlag, formatFlag = origWS, origFormat })
+	workspaceFlag, formatFlag = "ws", ""
+
+	// Each door names the tokens whose presence proves the listing really
+	// rendered, so an absence assertion cannot pass vacuously.
+	//
+	// They differ, and the reason is worth recording: `item backlinks` prints
+	// its snippet through cli.Dim, and fatih/color's Printf writes to the
+	// package-level color.Output — bound to the process's ORIGINAL stdout at
+	// init — so swapping os.Stdout does not intercept it. The snippet text is
+	// therefore not assertable here; the backlink ROWS, printed with fmt.Printf,
+	// are. This changes nothing about the warning under test, which goes to
+	// os.Stderr directly.
+	doors := map[string]struct {
+		mk      func() (*cobra.Command, []string)
+		present []string
+	}{
+		"item search": {
+			mk:      func() (*cobra.Command, []string) { return searchCmd(), []string{"snippet"} },
+			present: []string{"a snippet from " + currentRef, "a snippet from " + staleRef},
+		},
+		"item backlinks": {
+			mk:      func() (*cobra.Command, []string) { return backlinksCmd(), []string{"TASK-9"} },
+			present: []string{currentRef + " One", staleRef + " Two"},
+		},
 	}
-	if !strings.Contains(stderr, "PLAYB-2") {
-		t.Errorf("the warning does not name the stale playbook:\n%s", stderr)
-	}
-	// And ONLY it. A renderer that collected every ref would satisfy every
-	// assertion above and make the warning useless on a long list.
-	if strings.Contains(stderr, "PLAYB-1") {
-		t.Errorf("the warning names a playbook whose summary is current:\n%s", stderr)
-	}
-	// STDOUT stays clean: the listing is piped.
-	if strings.Contains(stdout, "behind its live collaborative") {
-		t.Errorf("the warning landed on STDOUT, corrupting the listing:\n%s", stdout)
+
+	for name, door := range doors {
+		t.Run(name, func(t *testing.T) {
+			run := func(t *testing.T) (stdout, stderr string) {
+				t.Helper()
+				cmd, args := door.mk()
+				cmd.SetArgs(args)
+				var out string
+				errOut := captureStderr(t, func() {
+					out = captureStdout(t, func() {
+						if e := cmd.Execute(); e != nil {
+							t.Fatalf("%s: %v", name, e)
+						}
+					})
+				})
+				return out, errOut
+			}
+
+			// ABSENCE FIRST, premise asserted: both snippets really rendered.
+			serve(t, false)
+			stdout, stderr := run(t)
+			for _, token := range door.present {
+				if !strings.Contains(stdout, token) {
+					t.Fatalf("the listing did not render %q, so the absence assertion is vacuous:\n%s", token, stdout)
+				}
+			}
+			if strings.Contains(stderr, "behind its live collaborative") {
+				t.Fatalf("a listing with no stale sources warned:\n%s", stderr)
+			}
+
+			serve(t, true)
+			stdout, stderr = run(t)
+			lines := 0
+			for _, ln := range strings.Split(stderr, "\n") {
+				if strings.Contains(ln, "behind its live collaborative") {
+					lines++
+				}
+			}
+			if lines != 1 {
+				t.Errorf("got %d warning lines, want exactly 1:\n%s", lines, stderr)
+			}
+			if !strings.Contains(stderr, staleRef) {
+				t.Errorf("the warning does not name the stale source %s:\n%s", staleRef, stderr)
+			}
+			if strings.Contains(stderr, currentRef) {
+				t.Errorf("the warning names %s, whose body is current:\n%s", currentRef, stderr)
+			}
+			if strings.Contains(stdout, "behind its live collaborative") {
+				t.Errorf("the warning landed on STDOUT, corrupting a piped listing:\n%s", stdout)
+			}
+		})
 	}
 }
