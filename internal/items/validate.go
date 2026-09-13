@@ -171,6 +171,27 @@ func ValidateFieldsDetailed(fields map[string]any, schema models.CollectionSchem
 //
 // Only the EMPTY array is touched. A non-empty one is a value, and its elements
 // are the resolver's business.
+// IsEmptyRelationList reports whether val is the EMPTY-LIST spelling of "no
+// targets" for def — the value `normalizeEmptyRelationLists` rewrites.
+//
+// Exported because the copy PREFLIGHT has to ask the same question before this
+// package runs: it records where each value came from, and an empty list is
+// about to stop being the caller's value, so a preflight that records it as an
+// override labels the injected default "your value" (codex round 6). One rule,
+// asked in two places, rather than two spellings of it.
+func IsEmptyRelationList(def models.FieldDef, val any) bool {
+	if !def.IsMultiRelation() || val == nil {
+		return false
+	}
+	switch v := val.(type) {
+	case []any:
+		return len(v) == 0
+	case []string:
+		return len(v) == 0
+	}
+	return false
+}
+
 func normalizeEmptyRelationLists(fields map[string]any, schema models.CollectionSchema, partial bool) {
 	if len(fields) == 0 {
 		return
@@ -180,17 +201,7 @@ func normalizeEmptyRelationLists(fields map[string]any, schema models.Collection
 			continue
 		}
 		val, exists := fields[def.Key]
-		if !exists || val == nil {
-			continue
-		}
-		empty := false
-		switch v := val.(type) {
-		case []any:
-			empty = len(v) == 0
-		case []string:
-			empty = len(v) == 0
-		}
-		if !empty {
+		if !exists || !IsEmptyRelationList(def, val) {
 			continue
 		}
 		if partial {

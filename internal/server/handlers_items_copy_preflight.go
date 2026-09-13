@@ -760,10 +760,19 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	overridden := make(map[string]bool, len(input.FieldOverrides))
 	for k, v := range input.FieldOverrides {
 		overridden[k] = true
-		if v == nil {
+		if v == nil || items.IsEmptyRelationList(targetDefs[k], v) {
 			// An explicit null means "leave this unset" — drop it so the
 			// validator sees a genuinely absent key (and re-reports it as
 			// needs_value if the destination requires it).
+			//
+			// An EMPTY `multi_relation` list is the same statement in the other
+			// spelling (U4): `items.normalizeEmptyRelationLists` is about to
+			// remove it, and validation then injects the destination default in
+			// its place. Leaving `origin[k] = "override"` made the preflight
+			// label that default "your value" — a value the caller never sent,
+			// attributed to them, on the one surface whose entire job is to
+			// predict what the copy will do (codex round 6). Same branch,
+			// because the two spellings have the same consequence here.
 			delete(final, k)
 			delete(origin, k)
 			continue

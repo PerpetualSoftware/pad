@@ -604,23 +604,28 @@ describe('a REFUSED grouping must not write a group value (U4, codex round 1 P5)
 			.toEqual(['car-1', 'car-2']);
 	});
 
-	it('shows no status chip, because a multi_relation declares no options to cycle', () => {
-		// A STRUCTURAL PIN, and labelled as one: no mutant kills it, because the
-		// property it records is not produced by a guard. A refused grouping
-		// takes the `field?.options ?? []` branch of `columns`, and a
-		// multi_relation schema has no options — so `statusCyclable` is already
-		// false. I wrote a refusal gate here, found it unreachable, and removed
-		// it rather than ship an unfalsifiable branch.
+	it('withholds the status chip even when the schema RETAINED options', () => {
+		// The fixture that makes this leg discriminate, and the whole lesson of
+		// rounds 5 and 6. Round 5's fixture had a multi_relation with no
+		// `options`, so `columns` was empty, the chip could not cycle for a
+		// reason unrelated to the guard, and the mutant reverting the guard
+		// SURVIVED. I read that as "the guard is unreachable" and removed it.
 		//
-		// The test stays because the property is worth pinning: if a future
-		// change ever gave the fallback lane an option, the chip would come back
-		// and write a scalar into a list, and this is the leg that would say so.
-		// ListView's equivalent IS killed by a mutant — its statusOptions is a
-		// caller prop, so nothing about the refusal empties it.
+		// Nothing strips `options` when a field's type changes. A `multi_select`
+		// retyped to `multi_relation` in the schema editor keeps them — so
+		// `columns` is non-empty, the chip cycles, and it writes a scalar into a
+		// list. "A multi_relation declares no options" was a claim about the
+		// schemas people write, never about the code.
 		const coll = collection();
 		coll.schema = JSON.stringify({
 			fields: [
-				{ key: 'car_color', label: 'Colour', type: 'multi_relation', collection: 'colors' },
+				{
+					key: 'car_color',
+					label: 'Colour',
+					type: 'multi_relation',
+					collection: 'colors',
+					options: ['old-a', 'old-b'],
+				},
 				{ key: 'status', label: 'Status', type: 'select', options: ['open', 'done'] },
 			],
 		});
@@ -640,6 +645,8 @@ describe('a REFUSED grouping must not write a group value (U4, codex round 1 P5)
 			} as never,
 		});
 
+		// PRECONDITIONS: the refusal is in force and the card rendered, so "no
+		// chip" is neither "not refused" nor "no card".
 		expect(screen.container.textContent).toContain('more than one group');
 		expect(screen.container.querySelectorAll('.item-card')).toHaveLength(1);
 		expect(screen.container.querySelector('[title="Click to cycle status"]')).toBeNull();

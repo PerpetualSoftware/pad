@@ -269,22 +269,25 @@
 	 * a field the board is not showing, which is a different feature and not
 	 * one this unit was asked for.
 	 */
-	// NO SECOND GATE FOR THE REFUSED CASE HERE, and the asymmetry with ListView
-	// is deliberate rather than an omission (codex round 5).
+	// AND NOTHING WHEN GROUPING IS REFUSED — restored in codex round 6 after I
+	// removed it in round 5, and the reason I removed it is the part worth
+	// keeping.
 	//
-	// I added one, then removed it on the evidence: a refused grouping takes the
-	// `field?.options ?? []` branch of `columns`, and a `multi_relation` schema
-	// declares no options — so `cardStatusOptions` is already EMPTY and
-	// `ItemCard.statusCyclable` (which needs `statusOptions.length > 1`) is
-	// already false. The gate was unreachable by construction, which is the same
-	// disposition W7's write-side duplicate guard got: an unfalsifiable branch
-	// reads as rigour and is not.
+	// Round 5's mutant survived and I concluded the gate was unreachable: a
+	// refused grouping takes the `field?.options ?? []` branch of `columns`, and
+	// "a multi_relation declares no options" makes that empty, so
+	// `ItemCard.statusCyclable` (needing `statusOptions.length > 1`) is already
+	// false. Every step of that is true of the schemas anyone would WRITE, and
+	// none of it is enforced anywhere: nothing strips `options` when a field's
+	// type changes, so a `multi_select` retyped to `multi_relation` in the schema
+	// editor keeps them, `columns` is non-empty, and the chip cycles — writing a
+	// scalar into a list. A claim about schemas is not a claim about code, which
+	// is exactly what the preflight's own `collection`-on-a-select comment says
+	// about a neighbouring field.
 	//
-	// ListView genuinely needs its gate because its `statusOptions` is a CALLER
-	// PROP rather than its own lanes, so nothing about the refusal empties it.
-	// Same defect, two views, one of which was already immune for a reason that
-	// had nothing to do with the fix.
-	let cardStatusOptions = $derived(isRelationGroup ? [] : columns);
+	// So the surviving mutant was evidence about my FIXTURE, not about the
+	// guard. The test now builds the retained-options schema and the mutant dies.
+	let cardStatusOptions = $derived(isRelationGroup || groupingRefusal ? [] : columns);
 
 	let columnOrder = $state<string[]>([]);
 
@@ -806,7 +809,7 @@
 							compact={true}
 							focused={focusedItemId === item.id}
 							statusOptions={cardStatusOptions}
-							onStatusClick={isRelationGroup ? undefined : onStatusChange}
+							onStatusClick={isRelationGroup || groupingRefusal ? undefined : onStatusChange}
 							progress={itemProgress?.[item.id] ?? null}
 							{progressLabel}
 							onReorderItem={canReorderLane(colValue) ? (it, dir) => reorderItem(colValue, it, dir) : undefined}

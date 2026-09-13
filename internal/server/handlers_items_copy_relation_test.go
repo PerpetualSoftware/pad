@@ -1432,3 +1432,79 @@ func TestCopyPreflight_MultiRelationRowCarriesTheUnavailableFlag(t *testing.T) {
 			"the dialog offers a picker that can never be filled and says nothing: %+v", gone)
 	}
 }
+
+// An empty `multi_relation` override must not leave the preflight claiming the
+// caller supplied what it then reports (PLAN-2857 U4, codex round 6).
+//
+// The preflight already treats an explicit `null` override as "leave this
+// unset": it drops the key from `final` AND from `origin`, so the destination
+// default that validation injects is reported as a default. An empty list is the
+// same statement in the other spelling — normalisation removes it, the default
+// lands in its place — and it took the other branch, so the preflight labelled
+// that default as the caller's own value. On the one surface whose entire job is
+// to predict what the copy will do, attributing a value to someone who never
+// sent it is the whole failure.
+func TestCopyPreflight_AnEmptyMultiRelationOverrideIsNotReportedAsYourValue(t *testing.T) {
+	f := newCopyRelationFixtureWith(t, noDestDefault, nil, true)
+
+	schema := fmt.Sprintf(`{"fields":[
+		{"key":"status","label":"Status","type":"select","options":["open","done"],"required":true},
+		{"key":"owner_ref","label":"Owner","type":"multi_relation","collection":%q,"default":[%q]}
+	]}`, f.targetsB.Slug, f.targetB.ID)
+	if _, err := f.srv.store.UpdateCollection(f.collB.ID, models.CollectionUpdate{Schema: &schema}); err != nil {
+		t.Fatalf("UpdateCollection(collB): %v", err)
+	}
+
+	body := f.baseBody()
+	body["field_overrides"] = map[string]any{"owner_ref": []any{}}
+	pre := f.ok(body)
+
+	row := carriedRowFor(pre, "owner_ref")
+	// The default RESOLVES in the destination, so it survives and is described
+	// in a carried row — which is what makes the `from` label observable at all.
+	// A dangling default would be reported under `dropped` and the question
+	// would not arise.
+	if row == nil {
+		t.Fatalf("no carried row for owner_ref: %+v", pre.Fields)
+	}
+	if got := row.From; got == "override" {
+		t.Errorf("origin = %q; the caller sent an EMPTY list, which normalisation removes — what the preflight is describing is the destination's default, not their value", got)
+	}
+}
+
+// CONTROL: a NON-empty override is still the caller's own value. Without this,
+// a branch that dropped every multi_relation override would satisfy the leg
+// above and silently stop the preflight reporting overrides at all.
+func TestCopyPreflight_ControlANonEmptyMultiRelationOverrideIsStillYours(t *testing.T) {
+	f := newCopyRelationFixtureWith(t, noDestDefault, nil, true)
+
+	schema := fmt.Sprintf(`{"fields":[
+		{"key":"status","label":"Status","type":"select","options":["open","done"],"required":true},
+		{"key":"owner_ref","label":"Owner","type":"multi_relation","collection":%q}
+	]}`, f.targetsB.Slug)
+	if _, err := f.srv.store.UpdateCollection(f.collB.ID, models.CollectionUpdate{Schema: &schema}); err != nil {
+		t.Fatalf("UpdateCollection(collB): %v", err)
+	}
+
+	body := f.baseBody()
+	body["field_overrides"] = map[string]any{"owner_ref": []any{f.targetB.Ref}}
+	pre := f.ok(body)
+
+	row := carriedRowFor(pre, "owner_ref")
+	if row == nil {
+		t.Fatalf("no carried row for owner_ref: %+v", pre.Fields)
+	}
+	if got := row.From; got != "override" {
+		t.Errorf("origin = %q, want \"override\" — the caller did supply this one", got)
+	}
+}
+
+// carriedRowFor finds one carried row by key, or nil.
+func carriedRowFor(pre ItemCopyPreflight, key string) *ItemCopyPreflightCarried {
+	for i := range pre.Fields.Carried {
+		if pre.Fields.Carried[i].Key == key {
+			return &pre.Fields.Carried[i]
+		}
+	}
+	return nil
+}
