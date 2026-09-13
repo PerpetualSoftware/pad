@@ -88,3 +88,116 @@ func TestContentStateReachesTheHTTPReadDoors(t *testing.T) {
 		t.Fatal("the item did not come back from the list door; that leg measured nothing")
 	}
 }
+
+// TestPublicShareDoorsCarryTheMarkerBothWays covers the two public-share doors
+// (BUG-3000), and covers them in BOTH directions on the same item.
+//
+// These two are the only item-body doors that build an explicit ALLOW-LIST rather
+// than serialising models.Item, so neither inherits the marker — and the single-item
+// one was folded in while the COLLECTION one was missed, which is the whole reason
+// this test names both. They are also the doors whose reader can least help
+// themselves: an anonymous viewer has no editor, no op-log, and nothing to compare
+// the body against.
+//
+// The absence direction is not decoration. "Only when set" is what keeps the key set
+// byte-identical for a current row, which is what the existing exact-shape pin on
+// the item DTO depends on; a marker that were always present would satisfy every
+// positive assertion here and break that instead.
+func TestPublicShareDoorsCarryTheMarkerBothWays(t *testing.T) {
+	srv := testServerWithCollab(t)
+	slug := createWSWithCollections(t, srv)
+	item := createTaskWithFields(t, srv, slug, "Shared body", `{"status":"open"}`)
+
+	ws, err := srv.store.GetWorkspaceBySlug(slug)
+	if err != nil || ws == nil {
+		t.Fatalf("get workspace: %v", err)
+	}
+	owner, err := srv.store.CreateUser(models.UserCreate{
+		Email: "share-owner@test.com", Name: "Owner", Password: "pw-owner",
+	})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	coll, err := srv.store.GetCollectionBySlug(ws.ID, "tasks")
+	if err != nil || coll == nil {
+		t.Fatalf("get collection: %v", err)
+	}
+
+	itemLink, err := srv.store.CreateShareLink(ws.ID, "item", item.ID, "view", owner.ID, nil)
+	if err != nil {
+		t.Fatalf("create item share link: %v", err)
+	}
+	collLink, err := srv.store.CreateShareLink(ws.ID, "collection", coll.ID, "view", owner.ID, nil)
+	if err != nil {
+		t.Fatalf("create collection share link: %v", err)
+	}
+
+	// itemState reads the single-item share; collState reads the shared item's row
+	// out of the collection share. Both return "" when the key is absent, which is
+	// the state the absence direction asserts.
+	itemState := func(t *testing.T) string {
+		t.Helper()
+		rr := doRequest(srv, "GET", "/api/v1/s/"+itemLink.Token, nil)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("resolve item share: %d: %s", rr.Code, rr.Body.String())
+		}
+		var resp struct {
+			Item map[string]any `json:"item"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode item share: %v", err)
+		}
+		if _, ok := resp.Item["content"]; !ok {
+			t.Fatal("the item share carried no content at all; this door measures nothing")
+		}
+		s, _ := resp.Item["content_state"].(string)
+		return s
+	}
+	collState := func(t *testing.T) string {
+		t.Helper()
+		rr := doRequest(srv, "GET", "/api/v1/s/"+collLink.Token, nil)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("resolve collection share: %d: %s", rr.Code, rr.Body.String())
+		}
+		var resp struct {
+			Items []map[string]any `json:"items"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode collection share: %v", err)
+		}
+		for _, row := range resp.Items {
+			if row["ref"] != item.Ref {
+				continue
+			}
+			if _, ok := row["content"]; !ok {
+				t.Fatal("the collection share carried no content at all; this door measures nothing")
+			}
+			s, _ := row["content_state"].(string)
+			return s
+		}
+		t.Fatalf("the collection share did not include %s; this door measured nothing", item.Ref)
+		return ""
+	}
+
+	// ABSENCE FIRST, so the presence assertions below cannot be read as an
+	// always-on marker.
+	if got := itemState(t); got != "" {
+		t.Fatalf("item share marks a current row %q", got)
+	}
+	if got := collState(t); got != "" {
+		t.Fatalf("collection share marks a current row %q", got)
+	}
+
+	// Put the document ahead of the row.
+	if _, err := srv.store.AppendYjsUpdate(item.ID, []byte{1, 2, 3}, "1"); err != nil {
+		t.Fatalf("AppendYjsUpdate: %v", err)
+	}
+
+	if got := itemState(t); got != models.ContentOutcomeAppliedPendingFlush {
+		t.Errorf("item share content_state = %q, want %q", got, models.ContentOutcomeAppliedPendingFlush)
+	}
+	if got := collState(t); got != models.ContentOutcomeAppliedPendingFlush {
+		t.Errorf("collection share content_state = %q, want %q — an anonymous viewer is served a "+
+			"stale body with no signal", got, models.ContentOutcomeAppliedPendingFlush)
+	}
+}

@@ -582,6 +582,20 @@ func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) 
 				"fields":  it.Fields,
 				"content": it.Content,
 			}
+			// BUG-3000, and the SAME door class as publicShareItemDTO above — this
+			// one was missed when that one was folded in. Both build an explicit
+			// allow-list, so neither inherits models.Item's staleness marker the way
+			// a struct-serialising door does, and both serve an ANONYMOUS reader who
+			// has no editor, no op-log and nothing to compare against.
+			//
+			// Set only when non-empty, exactly as its sibling: the key set stays
+			// byte-identical whenever the row is current, which is the common case.
+			//
+			// If a third allow-list over item bodies ever appears, these should
+			// become one helper rather than a third copy of this comment.
+			if it.ContentState != "" {
+				publicItem["content_state"] = it.ContentState
+			}
 			publicItems = append(publicItems, publicItem)
 		}
 
