@@ -1287,14 +1287,20 @@
 				// BUG-2265 (Codex P1): if the schema migration mutated item field
 				// values, THIS pane's `item` (loaded via api.items.get, NOT from
 				// the localIndex that the workspace deltaSync reconciles) may hold
-				// stale field JSON — a later full-fields save would UNDO the
-				// migration. Refetch it. Skip while mid-edit (saving/title-editing):
-				// item-level optimistic concurrency then catches a clobbering save
-				// via a 409, and refetching would clobber the editor.
-				// NOTE(BUG-2273): updateField's full-blob write lacks item-level OCC
-				// (no expected_updated_at / fields_patch — the web editor never
-				// adopted IDEA-1480/v0.14), so a mid-edit field save can still race
-				// this reconcile. The migration reconcile is best-effort until then.
+				// stale field JSON, so the pane would render pre-migration values
+				// until something reloaded it. Refetch it. Skip while mid-edit
+				// (saving/title-editing): refetching would clobber the editor.
+				//
+				// The reason this refetch was originally load-bearing is GONE, and
+				// the note that used to sit here said otherwise. It read: a later
+				// full-fields save would UNDO the migration, and updateField's
+				// full-blob write lacks item-level OCC. Both halves are now false —
+				// updateField has sent `fields_patch` + `expected_updated_at` since
+				// TASK-2022, and BUG-3049 converted the last full-blob writer in
+				// this component (source-URL stamping). No write from this pane can
+				// carry a stale field value back to the server, because no write
+				// names a key the user did not edit. What remains is a display
+				// concern, which is what this refetch now serves.
 				if (
 					event.items_changed &&
 					item &&
