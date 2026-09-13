@@ -3498,6 +3498,10 @@ Set EDITOR or VISUAL env var to choose your editor (default: vi).`,
 				return err
 			}
 
+			// BEFORE the editor opens, not after: this is the only point at which
+			// the warning can still change what the user does (BUG-3033).
+			warnStaleEditSeed(item)
+
 			edited, err := cli.OpenInEditor(cfg, item.Content, ".md")
 			if err != nil {
 				return err
@@ -3859,6 +3863,37 @@ func warnContentStale(item *models.Item) {
 		"document — an editor holds edits that have not been written back yet, so what follows is "+
 		"the previous content. It catches up when a tab next flushes the item, and nothing on the "+
 		"server forces that to happen.")
+}
+
+// warnStaleEditSeed prints one line to STDERR before `pad item edit` opens the
+// editor on a body the server knows is BEHIND the item's live collaborative
+// document (BUG-3033).
+//
+// A third wording rather than reusing warnContentStale, for the reason that one
+// exists separately from the playbook wording: the consequence differs, and the
+// consequence is the whole content of a warning. A reader of `item show` is told
+// the text may be old. An EDITOR is told something worse — this command is a
+// read-modify-write, and the body it is seeding the editor with predates edits
+// that exist. Saving sends the whole body back, so those edits are replaced by a
+// version derived from a state before them, and neither the person editing nor
+// the person whose tab holds them sees it happen.
+//
+// What this line does NOT do is stop that: it warns and proceeds. Whether the
+// command should refuse, or offer to merge, is a behaviour decision with its own
+// item (BUG-3035) rather than something to settle inside a sweep for missing
+// markers.
+//
+// It is printed BEFORE the editor is launched. Printed afterwards it would be
+// read, at best, next to a "Updated TASK-5" line — after the damage.
+func warnStaleEditSeed(item *models.Item) {
+	if item == nil || item.ContentState != models.ContentOutcomeAppliedPendingFlush {
+		return
+	}
+	fmt.Fprintln(os.Stderr, "warning: this item's stored content is behind its live collaborative "+
+		"document — an editor holds edits that have not been written back yet. You are about to edit "+
+		"the PREVIOUS content, and saving will send your whole version back, replacing those edits "+
+		"with one derived from a state before them. Open the item in a browser tab first if you need "+
+		"them.")
 }
 
 // warnContentPendingFlush prints one line to STDERR when a content write reached

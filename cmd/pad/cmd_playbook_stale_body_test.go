@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -168,5 +170,125 @@ func TestWarnPlaybookBodyStaleGating(t *testing.T) {
 				t.Errorf("the warning does not say the steps may be superseded: %q", out)
 			}
 		})
+	}
+}
+
+// TestWarnStaleEditSeedGating pins the seventh door BUG-3033's sweep found, and
+// the one whose consequence is not merely a confusing read.
+//
+// `pad item edit` is a read-modify-write over the WHOLE body: it seeds $EDITOR
+// from the row and PATCHes the entire edited text back with no concurrency
+// token. When the row is behind the live document, saving replaces edits that
+// exist and are durable with a version derived from a state before them. The
+// warning does not prevent that — BUG-3035 owns the refuse/prompt/diff decision —
+// so what this test guards is that the signal exists, fires only for the defined
+// value, and says the thing that distinguishes it from an ordinary stale read.
+func TestWarnStaleEditSeedGating(t *testing.T) {
+	cases := []struct {
+		name string
+		item *models.Item
+		want bool
+	}{
+		{"nil item", nil, false},
+		{"a current row — the common case", &models.Item{Content: "body"}, false},
+		{"some future value", &models.Item{ContentState: "some_future_value"}, false},
+		{"the value the server sends", &models.Item{
+			ContentState: models.ContentOutcomeAppliedPendingFlush,
+		}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := captureStderr(t, func() { warnStaleEditSeed(tc.item) })
+			if got := out != ""; got != tc.want {
+				t.Fatalf("warned=%v want=%v (stderr: %q)", got, tc.want, out)
+			}
+			if !tc.want {
+				return
+			}
+			// The consequence an EDITOR needs is that their save destroys
+			// something, not that their text is old. A line that only said
+			// "previous content" would read as a display quirk.
+			lower := strings.ToLower(out)
+			if !strings.Contains(lower, "saving") || !strings.Contains(lower, "replac") {
+				t.Errorf("the warning does not say a save will replace the unseen edits: %q", out)
+			}
+		})
+	}
+}
+
+// TestEditWarnsBeforeLaunchingTheEditor is the BINDING half of the test above
+// (CONVE-19), and it guards the one claim the gating table cannot: the warning
+// is printed BEFORE $EDITOR opens.
+//
+// Ordering is the whole value here. Printed afterwards the line would be read,
+// at best, beside a "Updated TASK-5" confirmation — after the user has already
+// edited a stale body and saved it over edits they could not see. So the
+// assertion is on ORDER within one stream, not on presence: the fake editor
+// writes a sentinel to its own stderr, which OpenInEditor wires to os.Stderr
+// (read at call time, so captureStderr's swap catches both), and the warning
+// must appear before it.
+func TestEditWarnsBeforeLaunchingTheEditor(t *testing.T) {
+	const sentinel = "EDITOR-RAN-HERE"
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/workspaces/ws/items/TASK-5", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPatch {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": "i1", "ref": "TASK-5", "title": "T", "slug": "t", "content": "new",
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": "i1", "ref": "TASK-5", "title": "T", "slug": "t",
+			"content":       "the previous content",
+			"content_state": models.ContentOutcomeAppliedPendingFlush,
+		})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	setTempHomeMain(t)
+	t.Setenv("PAD_URL", srv.URL)
+	t.Setenv("PAD_TOKEN", "pad_testtoken")
+	// An "editor" that announces itself on stderr and edits the file, so the
+	// command really does reach the write path rather than bailing on "No
+	// changes."
+	//
+	// A script FILE rather than an inline `sh -c ...`: OpenInEditor splits the
+	// EDITOR value on strings.Fields, which is whitespace-naive and does not
+	// honour quoting, so an inline command is torn into words and the editor
+	// exits 2. (That splitting is deliberate — it is what makes `code --wait`
+	// work — and this test is not the place to change it.)
+	editorPath := filepath.Join(t.TempDir(), "fake-editor")
+	script := "#!/bin/sh\necho " + sentinel + " >&2\necho edited >> \"$1\"\n"
+	if err := os.WriteFile(editorPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake editor: %v", err)
+	}
+	t.Setenv("EDITOR", editorPath)
+
+	origWS, origFormat := workspaceFlag, formatFlag
+	t.Cleanup(func() { workspaceFlag, formatFlag = origWS, origFormat })
+	workspaceFlag, formatFlag = "ws", ""
+
+	cmd := editCmd()
+	cmd.SetArgs([]string{"TASK-5"})
+	stderr := captureStderr(t, func() {
+		_ = captureStdout(t, func() {
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("item edit: %v", err)
+			}
+		})
+	})
+
+	editorAt := strings.Index(stderr, sentinel)
+	if editorAt < 0 {
+		t.Fatalf("the fake editor never ran, so this test measured nothing:\n%s", stderr)
+	}
+	warnAt := strings.Index(stderr, "behind its live collaborative")
+	if warnAt < 0 {
+		t.Fatalf("no stale-seed warning was printed:\n%s", stderr)
+	}
+	if warnAt > editorAt {
+		t.Errorf("the warning was printed AFTER the editor opened, where it cannot change anything:\n%s", stderr)
 	}
 }
