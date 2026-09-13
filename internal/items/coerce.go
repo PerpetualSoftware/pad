@@ -78,7 +78,14 @@ func coerceValue(def models.FieldDef, v any) any {
 		return v
 	}
 	switch def.Type {
-	case "json", "multi_select":
+	// `multi_relation` joins the JSON-parsed types (U4). Every string-carrying
+	// transport — the CLI's `--field k=v`, a form post, a query filter — hands
+	// this function the raw text, and the only way to express an ordered list
+	// in one of those is a JSON array. Without this entry `--field
+	// 'members=["PEOPL-1"]'` arrived as the STRING `["PEOPL-1"]` and the
+	// validator refused it for a shape the caller never sent, which made the
+	// type unwritable from the CLI entirely (codex round 1).
+	case "json", "multi_select", "multi_relation":
 		var parsed any
 		if err := json.Unmarshal([]byte(s), &parsed); err == nil {
 			return parsed

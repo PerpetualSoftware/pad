@@ -90,7 +90,13 @@ func ValidateFields(fields map[string]any, schema models.CollectionSchema) error
 // ValidateFieldsDetailed is ValidateFields with per-field attribution:
 // it returns one FieldIssue per failure instead of a joined error, and
 // applies schema defaults to `fields` in place exactly as ValidateFields
-// does (the mutation is the same traversal, not a second pass).
+// does (that mutation is the same traversal, not a second pass).
+//
+// It runs ONE mutation before the traversal: `normalizeEmptyRelationLists`,
+// which turns an empty `multi_relation` array into an absent key so that the
+// required-field branch below refuses it without needing to know the type. It
+// is stated here because a reader who has just been told the mutation is the
+// traversal would otherwise be surprised by it.
 //
 // Issues come back in SCHEMA ORDER, which makes the result deterministic
 // for a given (fields, schema) pair — repeated calls with equal input
@@ -103,6 +109,8 @@ func ValidateFields(fields map[string]any, schema models.CollectionSchema) error
 // keep using ValidateFields.
 func ValidateFieldsDetailed(fields map[string]any, schema models.CollectionSchema) []FieldIssue {
 	var issues []FieldIssue
+
+	normalizeEmptyRelationLists(fields, schema, false)
 
 	for _, def := range schema.Fields {
 		val, exists := fields[def.Key]
@@ -140,6 +148,59 @@ func ValidateFieldsDetailed(fields map[string]any, schema models.CollectionSchem
 	return issues
 }
 
+// normalizeEmptyRelationLists rewrites an EMPTY `multi_relation` array into
+// whichever spelling of "no targets" the caller's write shape already has
+// (PLAN-2857 U4, lead ruling day 64 on codex round 1's P17).
+//
+// ONE SITE, deliberately, and it is the reason this lives here rather than in
+// the doors: the defect codex round 1 found was a whole CLASS of per-door type
+// dispatch, and a normalisation implemented per door would be the same class
+// again. Every write reaches one of these two validators.
+//
+// TWO SPELLINGS, because the two shapes mean different things by an absent key:
+//
+//   - FULL write (partial=false): absent means "this field has no value", so
+//     `[]` becomes an ABSENT KEY and the ordinary required-field machinery
+//     below refuses it for a required field with no default. Nothing here
+//     needs to know what `required` means.
+//   - PARTIAL write (partial=true): absent means "leave this key ALONE", so
+//     deleting would turn a clear into a no-op — the caller asked to empty the
+//     field and the field would keep its contents. `[]` becomes the patch
+//     path's explicit deletion sentinel (nil), which `ValidatePartialFields`
+//     already refuses for a required key.
+//
+// Only the EMPTY array is touched. A non-empty one is a value, and its elements
+// are the resolver's business.
+func normalizeEmptyRelationLists(fields map[string]any, schema models.CollectionSchema, partial bool) {
+	if len(fields) == 0 {
+		return
+	}
+	for _, def := range schema.Fields {
+		if !def.IsMultiRelation() {
+			continue
+		}
+		val, exists := fields[def.Key]
+		if !exists || val == nil {
+			continue
+		}
+		empty := false
+		switch v := val.(type) {
+		case []any:
+			empty = len(v) == 0
+		case []string:
+			empty = len(v) == 0
+		}
+		if !empty {
+			continue
+		}
+		if partial {
+			fields[def.Key] = nil
+			continue
+		}
+		delete(fields, def.Key)
+	}
+}
+
 // ValidatePartialFields validates ONLY the keys present in `patch` against
 // the schema (TASK-2022, field-level PATCH / IDEA-1480). Unlike
 // ValidateFields it does NOT enforce required-field presence and does NOT
@@ -151,6 +212,7 @@ func ValidateFieldsDetailed(fields map[string]any, schema models.CollectionSchem
 // A nil value marks a key for DELETION (see store.mergeFieldsPatch); those
 // are skipped here since there's no value to type-check.
 func ValidatePartialFields(patch map[string]any, schema models.CollectionSchema) error {
+	normalizeEmptyRelationLists(patch, schema, true)
 	// Index declared fields by key for O(1) lookup.
 	defByKey := make(map[string]models.FieldDef, len(schema.Fields))
 	for _, def := range schema.Fields {
@@ -291,12 +353,17 @@ func validateFieldType(def models.FieldDef, val any) error {
 		//     target"; inside an array it would also silently change the
 		//     element count, and an ORDERED list whose length depends on which
 		//     elements were blank is not a list anyone can reason about.
-		//   * `[]` is ACCEPTED as a shape and means "no targets". Normalising
-		//     it to an absent key is the WRITE DOOR's job, and `required` is
-		//     enforced against RESOLVED elements in `RequiredRelationIssues`
-		//     — neither belongs to a shape check that cannot resolve anything.
-		//     Refusing `[]` here would leave a caller no way to clear the
-		//     field at all.
+		//   * `[]` is ACCEPTED as a shape and means "no targets". It never
+		//     reaches this arm from either validator, because
+		//     `normalizeEmptyRelationLists` has already rewritten it into the
+		//     write shape's own spelling of none — an absent key on a full
+		//     write, the nil deletion sentinel on a partial one. The rule used
+		//     to say this was "the write door's job"; no door did it, which is
+		//     what codex round 1 found, and the lead's ruling put it at the one
+		//     entry every door passes through instead. The arm still accepts
+		//     the shape: a caller reaching `validateFieldType` directly (the
+		//     tests do) gets the honest answer that an empty list is legal.
+		//     Refusing it here would leave a caller no way to clear the field.
 		//
 		// `[]string` is accepted alongside `[]any` for the same reason
 		// multi_select accepts both: a Go caller that never round-tripped

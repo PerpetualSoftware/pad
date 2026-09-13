@@ -93,11 +93,22 @@ func (s *Server) resolveRelationReferentsAs(
 	// Everything the store resolved is now a canonical ID in fieldMap. Check
 	// each one against the requester before it is allowed to stand.
 	for _, def := range schema.Fields {
-		if def.Type != "relation" {
+		if !def.IsRelation() {
 			continue
 		}
 		raw, exists := fieldMap[def.Key]
 		if !exists || raw == nil {
+			continue
+		}
+		if def.IsMultiRelation() {
+			// PLAN-2857 U4, lead ruling day 64: a `multi_relation` element's
+			// visibility is judged in the SHARED per-element resolver
+			// (`resolveRelationValueQ`), which now consults `canSee` on the
+			// UUID and REF rungs for BOTH types — one site, so the two shapes
+			// cannot drift. This pass's scalar arm stays as a second read that
+			// also catches a target deleted between the resolver's lookup and
+			// now; there is nothing left for it to add per element, and an
+			// array has no single `id` for it to re-read.
 			continue
 		}
 		id, isStr := raw.(string)
@@ -326,7 +337,7 @@ func (s *Server) refuseInvisibleRelationOverrides(
 	}
 	probe := make(map[string]any, len(supplied))
 	for _, def := range schema.Fields {
-		if def.Type != "relation" {
+		if !def.IsRelation() {
 			continue
 		}
 		if v, ok := supplied[def.Key]; ok && v != nil {

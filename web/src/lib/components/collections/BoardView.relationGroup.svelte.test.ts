@@ -563,3 +563,65 @@ describe('the MENU move whose WRITE fails', () => {
 		expect(cardsIn(screen, 'COLOR-1Red')).toEqual(['car-2']);
 	});
 });
+
+describe('a REFUSED grouping must not write a group value (U4, codex round 1 P5)', () => {
+	/**
+	 * The defect: `isRelationGroup` is `type === 'relation'`, so a
+	 * `multi_relation` board took the SCALAR arm of the drop handler.
+	 * `currentValue` was then the stored ARRAY and `targetColumn` a lane
+	 * string, which are never equal, so every drop fired
+	 * `onStatusChange(item, "<lane>")` — a write that would replace the list
+	 * with a scalar. The server refuses it, `moveSucceeded` goes false, and the
+	 * reorder is dropped. The refusal NOTICE rendered correctly throughout,
+	 * which is exactly what hid it: the view said the right sentence and then
+	 * did the wrong write.
+	 */
+	function multiCollection(): Collection {
+		const coll = collection();
+		coll.schema = JSON.stringify({
+			fields: [{ key: 'car_color', label: 'Colour', type: 'multi_relation', collection: 'colors' }],
+		});
+		return coll;
+	}
+
+	it('renders the refusal and lands every card in ONE fallback lane', () => {
+		// PRECONDITION for the guard below, and the thing that makes it about a
+		// screen that actually happens: this configuration reaches the board,
+		// says why it cannot group, and still shows the cards.
+		const screen = render(BoardView, {
+			props: {
+				items: [item('car-1', 'id-red'), item('car-2', 'id-blue')],
+				collection: multiCollection(),
+				wsSlug: 'ws',
+				groupField: 'car_color',
+				onStatusChange: vi.fn(),
+				onReorder: vi.fn(),
+			} as never,
+		});
+		expect(screen.container.textContent).toContain('more than one group');
+		expect(screen.container.querySelectorAll('.kanban-column')).toHaveLength(1);
+		expect([...screen.container.querySelectorAll('.card-title')].map((e) => e.textContent?.trim()))
+			.toEqual(['car-1', 'car-2']);
+	});
+
+	it('gates the group write on groupingRefusal, not on the value comparison alone', () => {
+		// A SOURCE guard, for the same reason its drag sibling above is one:
+		// driving svelte-dnd-action's finalize through jsdom costs more setup
+		// than the property is worth, and the property is structural.
+		//
+		// It reads the CONDITION rather than a spelling — the assertion is that
+		// the refusal is consulted in the same `if` that gates the write, so a
+		// rewrite that keeps the behaviour keeps the guard.
+		const start = SRC.indexOf('async function handleFinalize');
+		expect(start, 'handleFinalize not found — re-point this guard').toBeGreaterThan(-1);
+		const body = SRC.slice(start, SRC.indexOf('\n\t}', SRC.indexOf('onStatusChange(', start)));
+		const write = body.indexOf('await onStatusChange(');
+		expect(write).toBeGreaterThan(-1);
+		const guard = body.lastIndexOf('groupingRefusal', write);
+		expect(guard, 'the drop handler never consults groupingRefusal before writing').toBeGreaterThan(-1);
+		const condition = body.slice(guard, write);
+		expect(condition).toContain('currentValue !== targetColumn');
+		// The refusal must NEGATE the write, not merely appear near it.
+		expect(body.slice(Math.max(0, guard - 8), guard)).toContain('!');
+	});
+});

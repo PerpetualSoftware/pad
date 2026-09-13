@@ -33,7 +33,7 @@ func TestMultiRelation_AcceptsAnArrayOfReferences(t *testing.T) {
 	for _, val := range []any{
 		[]any{"11111111-1111-1111-1111-111111111111", "PEOP-3", "Ada Lovelace"},
 		[]string{"PEOP-3"},
-		[]any{}, // "no targets" is a legal SHAPE; the write door normalises it
+		[]any{}, // "no targets" is a legal SHAPE; normalizeEmptyRelationLists rewrites it before either validator traverses
 	} {
 		fields := map[string]any{"owners": val}
 		if err := ValidateFields(fields, multiRelationSchema(false)); err != nil {

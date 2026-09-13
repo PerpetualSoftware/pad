@@ -1017,7 +1017,7 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 				// round 2). Gating here makes the documented contract true at
 				// the only place that can make it true.
 				Collection:            relationTargetSlug(def),
-				CollectionUnavailable: def.Type == "relation" && unavailableTargets[def.Collection],
+				CollectionUnavailable: def.IsRelation() && unavailableTargets[def.Collection],
 				Required:              def.Required,
 				Reason:                reason,
 				Message:               iss.Message,

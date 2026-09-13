@@ -501,7 +501,15 @@
 		const currentValue = isRelationGroup
 			? relationLaneValueFor(item, groupField, resolveRelation)
 			: fields[groupField];
-		if (currentValue !== targetColumn) {
+		// A REFUSED grouping has no group value to change, so a drop inside its
+		// single fallback lane is a REORDER and nothing else (U4, codex round
+		// 1). Without this the multi_relation case took the scalar arm:
+		// `currentValue` is the stored ARRAY, `targetColumn` is a lane string,
+		// they are never equal, and every drop fired a write that would replace
+		// the list with a scalar. The server refuses it, `moveSucceeded` goes
+		// false, and the reorder is silently dropped — while the refusal notice
+		// above renders correctly the entire time, which is what hid it.
+		if (!groupingRefusal && currentValue !== targetColumn) {
 			try {
 				await onStatusChange(item, targetColumn);
 			} catch {

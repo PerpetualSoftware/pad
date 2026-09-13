@@ -1389,3 +1389,46 @@ func TestCopyPreflight_AnEmptyButReadableTargetIsNotReportedUnavailable(t *testi
 			row)
 	}
 }
+
+// A `multi_relation` row carries the unavailable flag too (PLAN-2857 U4, codex
+// round 1's enumeration — this site was NOT one of the five codex named).
+//
+// `CollectionUnavailable` was gated on `def.Type == "relation"`, so a
+// multi_relation aimed at a deleted collection reported `false`: the dialog
+// then offered a picker it could never fill and told the user nothing about
+// why. The flag's whole purpose is to say "this row is unfixable from in here",
+// and that is exactly as true of a list as of a single reference.
+func TestCopyPreflight_MultiRelationRowCarriesTheUnavailableFlag(t *testing.T) {
+	f := newCopyRelationFixtureWith(t, noDestDefault, nil, true)
+
+	schema := fmt.Sprintf(`{"fields":[
+		{"key":"status","label":"Status","type":"select","options":["open","done"],"required":true},
+		{"key":"owner_ref","label":"Owner","type":"multi_relation","collection":%q,"required":true}
+	]}`, f.targetsB.Slug)
+	if _, err := f.srv.store.UpdateCollection(f.collB.ID, models.CollectionUpdate{Schema: &schema}); err != nil {
+		t.Fatalf("UpdateCollection(collB): %v", err)
+	}
+
+	// CONTROL FIRST, and it is load-bearing: the assertion below is about the
+	// DELETION, and a row that reported `true` unconditionally would satisfy it
+	// while destroying the flag's meaning.
+	live := needsValueRow(f.ok(f.baseBody()), "owner_ref")
+	if live == nil {
+		t.Fatalf("the required multi_relation produced no needs_value row")
+	}
+	if live.CollectionUnavailable {
+		t.Fatalf("target %q is live and readable, yet the row reports it unavailable: %+v", f.targetsB.Slug, live)
+	}
+
+	if err := f.srv.store.DeleteCollection(f.targetsB.ID, ""); err != nil {
+		t.Fatalf("DeleteCollection(targetsB): %v", err)
+	}
+	gone := needsValueRow(f.ok(f.baseBody()), "owner_ref")
+	if gone == nil {
+		t.Fatalf("the row disappeared once its target was deleted")
+	}
+	if !gone.CollectionUnavailable {
+		t.Fatalf("a multi_relation aimed at a DELETED collection reports available; "+
+			"the dialog offers a picker that can never be filled and says nothing: %+v", gone)
+	}
+}

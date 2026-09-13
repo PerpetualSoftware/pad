@@ -586,16 +586,46 @@ func (s *Store) resolveRelationValueQ(
 			}, nil
 		}
 	}
+	// VISIBILITY ON THE UUID AND REF RUNGS (lead ruling, day 64, after codex
+	// round 1 on the U4 tip). It belongs HERE, in the one function both types
+	// resolve through, and not in the server's post-resolution pass where the
+	// scalar half used to carry it alone.
+	//
+	// What the old placement cost: that pass is gated on the field TYPE, so
+	// every element of a `multi_relation` went unjudged. An editor with no
+	// access to the target collection could submit a hidden item's ref inside
+	// an array and receive 201 with its canonical UUID — the existence oracle
+	// U1 exists to close, reopened by the array door. Gating a SECURITY check
+	// on a type is the defect; one shared site is the fix, and it is why this
+	// function was extracted in the first place.
+	//
+	// NOT_FOUND, never wrong_collection, when the requester cannot see the
+	// target — and the order matters: the collection check below produces a
+	// message naming a LIVE item, so answering it first would disclose
+	// existence to exactly the caller this check exists to keep in the dark.
+	//
+	// VisibilityChecked is now SET on both arms, which supersedes the note this
+	// comment replaced: the server's collapse re-resolved a ref-derived
+	// `wrong_collection` precisely because nothing had judged it, and it has
+	// been judged. That also closes the second lookup's TOCTOU window (filed as
+	// BUG-3012) for values that reach this rung, since there is no longer a
+	// second lookup to race — the item judged here is the item resolved here.
+	if canSee != nil {
+		visible, verr := canSee(q, workspaceID, item)
+		if verr != nil {
+			return "", nil, verr
+		}
+		if !visible {
+			return "", &RelationIssue{
+				Key: def.Key, Value: value, Target: def.Collection,
+				Reason: RelationTargetNotFound, VisibilityChecked: true,
+			}, nil
+		}
+	}
 	if item.CollectionID != targetID {
-		// VisibilityChecked is deliberately NOT set here. A ref-derived
-		// issue is re-resolvable by the server through the same ladder that
-		// produced it, so it keeps its own collapse — judging it here would
-		// silently change the ref path's behaviour (no second lookup, no
-		// TOCTOU window) inside a unit whose scope says not to touch it.
-		// That window is real and is filed as BUG-3012 rather than fixed in
-		// passing.
 		return "", &RelationIssue{
-			Key: def.Key, Value: value, Target: def.Collection, Reason: RelationTargetWrongCollection,
+			Key: def.Key, Value: value, Target: def.Collection,
+			Reason: RelationTargetWrongCollection, VisibilityChecked: canSee != nil,
 		}, nil
 	}
 	return item.ID, nil, nil
@@ -623,7 +653,11 @@ func (s *Store) ResolveRelationTarget(workspaceID, value string) (*models.Item, 
 func RequiredRelationIssues(schema models.CollectionSchema, issues []RelationIssue) []RelationIssue {
 	required := map[string]bool{}
 	for _, def := range schema.Fields {
-		if def.Type == "relation" && def.Required {
+		// BOTH relation types (U4). A `required` multi_relation whose element
+		// could not be resolved has exactly the problem this function exists
+		// for: the key survives validation and the value is dropped after it,
+		// so nothing re-checks it.
+		if def.IsRelation() && def.Required {
 			required[def.Key] = true
 		}
 	}
@@ -1450,6 +1484,30 @@ func (s *Store) MigrateRelationReferentsQ(
 	return refusals, dropped, nil
 }
 
+// relationDefaultList reads a `multi_relation` value as a list of strings.
+//
+// Reports (nil, false) for anything that is not an array — which is the shape
+// an injected schema DEFAULT can be, since `ValidateFields` assigns a default
+// and skips its own type check. Non-string ELEMENTS become empty strings rather
+// than failing the whole read: every caller either skips a blank element or
+// lets the resolver refuse it, and one bad element does not make the value
+// un-listable.
+func relationDefaultList(raw any) ([]string, bool) {
+	switch v := raw.(type) {
+	case []any:
+		out := make([]string, len(v))
+		for i, e := range v {
+			if str, isStr := e.(string); isStr {
+				out[i] = str
+			}
+		}
+		return out, true
+	case []string:
+		return append([]string(nil), v...), true
+	}
+	return nil, false
+}
+
 // RelationKeysPresent snapshots which relation keys a field map holds, for
 // callers that must tell "this value was here before validation" from "this
 // value appeared because validation injected a schema default".
@@ -1521,11 +1579,39 @@ func (s *Store) ResolveLateRelationDefaultsQ(
 	}
 	late := map[string]any{}
 	for _, def := range schema.Fields {
-		if def.Type != "relation" || before[def.Key] {
+		// BOTH relation types (U4). A gate reading `def.Type != "relation"`
+		// meant a `multi_relation` DEFAULT reached the row neither canonicalised
+		// nor shape-checked — `ValidateFields` assigns a default and skips its
+		// own type check, so this pass is the only thing standing between an
+		// injected default and the blob. A schema defaulting to `42` stored 42.
+		if !def.IsRelation() || before[def.Key] {
 			continue
 		}
 		raw, exists := fieldMap[def.Key]
 		if !exists || raw == nil {
+			continue
+		}
+		if def.IsMultiRelation() {
+			list, isList := relationDefaultList(raw)
+			if !isList {
+				// Same disposition as the scalar non-string below: a default
+				// nobody asserted, in a shape the resolver cannot use.
+				dropped = append(dropped, RelationIssue{
+					Key: def.Key, Target: def.Collection, Reason: RelationTargetInvalidShape,
+				})
+				delete(fieldMap, def.Key)
+				continue
+			}
+			if len(list) == 0 {
+				// An empty default is the one spelling of none, and by
+				// `normalizeEmptyRelationLists`'s rule that spelling is an
+				// ABSENT KEY. Deleting rather than storing `[]` keeps the
+				// injected-default path from being the one route by which the
+				// other spelling reaches the blob.
+				delete(fieldMap, def.Key)
+				continue
+			}
+			late[def.Key] = list
 			continue
 		}
 		str, isStr := raw.(string)
@@ -1698,7 +1784,48 @@ func (s *Store) DropInvisibleRelationDefaultsQ(
 	}
 	var dropped []RelationIssue
 	for _, def := range schema.Fields {
-		if def.Type != "relation" || notADefault[def.Key] {
+		// BOTH relation types (U4). This read `def.Type != "relation"`, and
+		// even past that gate the `.(string)` below fails on an array — so a
+		// `multi_relation` default was skipped TWICE, by an accident rather
+		// than by a decision. A whole-key drop is the right disposition for
+		// a list: a default is asserted by nobody, and a list silently one
+		// element shorter than its schema says is a value nobody chose.
+		if !def.IsRelation() || notADefault[def.Key] {
+			continue
+		}
+		if def.IsMultiRelation() {
+			list, isList := relationDefaultList(fieldMap[def.Key])
+			if !isList || len(list) == 0 {
+				continue
+			}
+			keep := true
+			for _, elem := range list {
+				if strings.TrimSpace(elem) == "" {
+					continue
+				}
+				item, err := s.GetItemQ(q, elem)
+				if err != nil {
+					return nil, err
+				}
+				if item == nil || item.WorkspaceID != workspaceID {
+					keep = false
+					break
+				}
+				visible, err := canSee(q, workspaceID, item)
+				if err != nil {
+					return nil, err
+				}
+				if !visible {
+					keep = false
+					break
+				}
+			}
+			if !keep {
+				dropped = append(dropped, RelationIssue{
+					Key: def.Key, Target: def.Collection, Reason: RelationTargetNotFound,
+				})
+				delete(fieldMap, def.Key)
+			}
 			continue
 		}
 		id, isStr := fieldMap[def.Key].(string)
