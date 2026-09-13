@@ -3,6 +3,9 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { realpathSync } from 'node:fs';
 import {
+	BROWSER_TEST_GLOB,
+	IDB_TEST_GLOB,
+	NODE_TEST_GLOB,
 	PROJECT_REQUIREMENTS,
 	createProjectCountReporter,
 	findUnsatisfiedProjects,
@@ -86,19 +89,22 @@ if (unsatisfiedProjects.length > 0) {
 	throw new Error(formatUnsatisfiedProjectsError(unsatisfiedProjects));
 }
 
-const BROWSER_TEST_GLOB = 'src/**/*.svelte.test.ts';
-// IDB-backed persistence tests. The `.idb.test.ts` suffix routes them to the
-// dedicated `idb` project; they must be excluded from the node project (which
-// has no indexedDB — the persistence layer would silently no-op there and the
-// test would pass vacuously) the same way the svelte glob is.
-const IDB_TEST_GLOB = 'src/**/*.idb.test.ts';
+// The three globs are declared in src/test/vitestProjects.ts alongside
+// `projectForTestFile`, so the config and the guard test that checks no test
+// file falls through every project read one declaration rather than two copies
+// (BUG-3045, codex round 1).
+//
+// IDB-backed persistence tests carry the `.idb.test.ts` suffix and must be
+// excluded from the node project (which has no indexedDB — the persistence layer
+// would silently no-op there and the test would pass vacuously) the same way the
+// svelte glob is.
 
 const nodeProject = {
 	resolve: { alias: { $lib } },
 	test: {
 		name: 'node',
 		environment: 'node',
-		include: ['src/**/*.test.ts'],
+		include: [NODE_TEST_GLOB],
 		// The jsdom / idb projects own these; they'd blow up or no-op in the
 		// plain node env.
 		exclude: [BROWSER_TEST_GLOB, IDB_TEST_GLOB],

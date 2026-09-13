@@ -1,10 +1,17 @@
+import { readdirSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import {
+	BROWSER_TEST_GLOB,
+	IDB_TEST_GLOB,
+	NODE_TEST_GLOB,
 	PROJECT_REQUIREMENTS,
+	TEST_SHAPED_FILE,
 	createProjectCountReporter,
 	findUnsatisfiedProjects,
 	formatProjectRunSummary,
 	formatUnsatisfiedProjectsError,
+	projectForTestFile,
 	type ProjectRequirement,
 } from './vitestProjects';
 
@@ -202,5 +209,132 @@ describe('createProjectCountReporter', () => {
 		reporter.onInit({ projects: [{ name: 'node' }, { name: 'idb' }, { name: 'jsdom' }] });
 		reporter.onTestRunEnd([{ project: { name: 'node' } }]);
 		expect(log.mock.calls[0][0]).toContain('1/3 ran test files');
+	});
+});
+
+describe('every test file belongs to a project', () => {
+	// BUG-3045, codex round 1 finding 3. The refusal covers a project that cannot
+	// RUN; this covers the other way the suite goes green while measuring nothing
+	// — a test file that no project's glob matches, which is never collected and
+	// never fails. Codex checked the tree at the time and found no member; that
+	// is exactly when a guard is worth adding, because the first one to appear
+	// would otherwise arrive silently.
+
+	const srcRoot = fileURLToPath(new URL('..', import.meta.url));
+
+	function testShapedFilesUnder(dir: string, prefix = ''): string[] {
+		const found: string[] = [];
+		for (const entry of readdirSync(dir, { withFileTypes: true })) {
+			const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+			if (entry.isDirectory()) {
+				found.push(...testShapedFilesUnder(`${dir}/${entry.name}`, rel));
+			} else if (TEST_SHAPED_FILE.test(entry.name)) {
+				found.push(rel);
+			}
+		}
+		return found;
+	}
+
+	it('finds the suite it is supposed to be checking', () => {
+		// The precondition. Without it every assertion below passes vacuously on an
+		// empty list — which is the failure mode this whole bug is about.
+		const files = testShapedFilesUnder(srcRoot);
+		expect(files.length).toBeGreaterThan(100);
+		expect(files).toContain('test/vitestProjects.test.ts');
+	});
+
+	it('leaves no test-shaped file unowned by any project', () => {
+		const orphans = testShapedFilesUnder(srcRoot).filter(
+			(file) => projectForTestFile(file) === null,
+		);
+		// Named, not counted: the failure has to say WHICH file never runs.
+		expect(orphans).toEqual([]);
+	});
+
+	it('routes each suffix to the project whose glob claims it', () => {
+		expect(projectForTestFile('lib/foo.test.ts')).toBe('node');
+		expect(projectForTestFile('lib/Foo.svelte.test.ts')).toBe('jsdom');
+		expect(projectForTestFile('lib/foo.idb.test.ts')).toBe('idb');
+	});
+
+	it('reports the shapes that no project runs', () => {
+		// These are test-shaped and unowned. If one of them ever becomes a real
+		// file, the orphan check above fails and names it.
+		for (const unowned of ['lib/foo.spec.ts', 'lib/foo.test.js', 'lib/Foo.test.tsx']) {
+			expect(TEST_SHAPED_FILE.test(unowned)).toBe(true);
+			expect(projectForTestFile(unowned)).toBeNull();
+		}
+	});
+
+	it('keeps the globs and the ownership function in agreement', () => {
+		// `projectForTestFile` classifies by suffix while vitest matches by glob.
+		// If a glob is edited without the function, the two silently disagree and
+		// the orphan check starts vouching for the wrong thing.
+		expect(NODE_TEST_GLOB).toBe('src/**/*.test.ts');
+		expect(BROWSER_TEST_GLOB).toBe('src/**/*.svelte.test.ts');
+		expect(IDB_TEST_GLOB).toBe('src/**/*.idb.test.ts');
+		for (const glob of [NODE_TEST_GLOB, BROWSER_TEST_GLOB, IDB_TEST_GLOB]) {
+			const suffix = glob.replace('src/**/*', '');
+			expect(projectForTestFile(`lib/x${suffix}`)).not.toBeNull();
+		}
+	});
+});
+
+describe('vitest.config.ts actually uses all of this', () => {
+	// BUG-3045, codex round 1 finding 8, and CONVE-19: every other test in this
+	// file vouches for a FUNCTION. None of them would notice if vitest.config.ts
+	// stopped calling it, went back to probing dependencies inline, or dropped a
+	// project. These assertions read the real config.
+	//
+	// Importing it re-runs its module scope, admission check included — which in a
+	// complete install passes, and in an incomplete one would fail this file the
+	// same way it fails the whole suite.
+
+	async function resolveConfig() {
+		const config = (await import('../../vitest.config')).default;
+		expect(typeof config).toBe('function');
+		return (config as (env: unknown) => Promise<Record<string, any>>)({
+			mode: 'test',
+			command: 'serve',
+		});
+	}
+
+	it('registers every project unconditionally, none dropped', async () => {
+		const resolved = await resolveConfig();
+		const names = resolved.test.projects.map((project: any) => project.test.name);
+		expect(names).toEqual(['node', 'idb', 'jsdom']);
+	});
+
+	it('registers exactly `node` plus the projects the requirements table covers', async () => {
+		// The table and the config are two lists that have to stay the same length.
+		// A project added to the config without an entry here gets no admission
+		// check and can go back to failing silently; an entry with no project is a
+		// refusal nobody can act on.
+		const resolved = await resolveConfig();
+		const registered = resolved.test.projects.map((project: any) => project.test.name).sort();
+		const checked = ['node', ...PROJECT_REQUIREMENTS.map((r) => r.project)].sort();
+		expect(registered).toEqual(checked);
+	});
+
+	it('keeps vitest\'s default reporter alongside the project-count one', async () => {
+		// Naming any reporter REPLACES the default list. Dropping `default` here
+		// would silence the ordinary pass/fail output — measured: a run so
+		// configured prints the summary line and nothing else.
+		const resolved = await resolveConfig();
+		expect(resolved.test.reporters).toHaveLength(2);
+		expect(resolved.test.reporters[0]).toBe('default');
+		expect(typeof resolved.test.reporters[1].onInit).toBe('function');
+		expect(typeof resolved.test.reporters[1].onTestRunEnd).toBe('function');
+	});
+
+	it('routes each project with the shared globs, not private copies', async () => {
+		const resolved = await resolveConfig();
+		const byName = Object.fromEntries(
+			resolved.test.projects.map((project: any) => [project.test.name, project.test]),
+		);
+		expect(byName.node.include).toEqual([NODE_TEST_GLOB]);
+		expect(byName.node.exclude).toEqual([BROWSER_TEST_GLOB, IDB_TEST_GLOB]);
+		expect(byName.idb.include).toEqual([IDB_TEST_GLOB]);
+		expect(byName.jsdom.include).toEqual([BROWSER_TEST_GLOB]);
 	});
 });

@@ -14,11 +14,28 @@
 // declared devDependency, so the only way to reach the refusal is an incomplete
 // install — which is exactly the state a green run must not be reported from.
 //
-// Deliberate narrowing is still available and is NOT refused, because it goes
-// through vitest's own `--project` filter rather than through dependency
-// resolution. That is what the summary line is for: it prints how many projects
-// actually ran, so a narrowed run says so in its own output instead of looking
-// identical to a full one.
+// The refusal is UNCONDITIONAL and happens at config load, so it precedes
+// vitest's own `--project` filter: `vitest --project node` is refused too, even
+// though the node project would have been runnable. That is deliberate but it is
+// a real cost, so state it exactly — an incomplete install is a broken state and
+// the run stops on it whatever subset was asked for. The only state the refusal
+// permits is a complete install, and in THAT state deliberate narrowing is never
+// refused.
+//
+// Narrowing a complete install is what the summary line is for: it prints how
+// many of the registered projects actually ran files, so a narrowed run says so
+// in its own output instead of looking identical to a full one.
+//
+// What the line does NOT prove, because it counts FILES:
+//  - not that any assertion executed — a file of `.skip`ped tests counts as run
+//    (vitest's own summary reports the skips);
+//  - not that a project SHOULD have had files: an idle project is printed, not
+//    failed, because a file filter legitimately idles one. `projectForTestFile`
+//    below is the guard for the accidental version of that;
+//  - nothing at all under `--reporter=<name>`, which REPLACES configured
+//    reporters, so `npm test -- --reporter=dot` prints no summary. Unavoidable
+//    from a config; the default invocations (`npm run test`, `make web-test`,
+//    `make check`, CI) all carry it.
 
 /** A test project and the packages it cannot run without. */
 export interface ProjectRequirement {
@@ -147,6 +164,48 @@ export function formatProjectRunSummary(
 		summary += `\nvitest projects: NO test files ran for: ${idle.join(', ')}`;
 	}
 	return summary;
+}
+
+// ---------------------------------------------------------------------------
+// Which project owns which file (BUG-3045, codex round 1 finding 3).
+//
+// The refusal above covers a project that cannot RUN. This covers the other way
+// the suite can be green while measuring nothing: a test file that no project's
+// include glob matches at all. Nothing fails — the file is simply never
+// collected, the other files pass, and the run exits 0. A `*.spec.ts`, a
+// `*.test.tsx`, or a `*.test.js` would land there today.
+//
+// The globs live here rather than in vitest.config.ts so that the config and the
+// guard test read the SAME declaration; a glob changed in one place without the
+// other is the drift this would otherwise miss.
+
+/** The node project's include. Excludes the two more specific globs below. */
+export const NODE_TEST_GLOB = 'src/**/*.test.ts';
+/** `.svelte.test.ts` — component + rune-module tests, jsdom project. */
+export const BROWSER_TEST_GLOB = 'src/**/*.svelte.test.ts';
+/** `.idb.test.ts` — fake-indexeddb-backed persistence tests, idb project. */
+export const IDB_TEST_GLOB = 'src/**/*.idb.test.ts';
+
+/**
+ * Files that LOOK like tests. Deliberately wider than anything the projects run
+ * — the gap between this and {@link projectForTestFile} is exactly the hole the
+ * guard test closes.
+ */
+export const TEST_SHAPED_FILE = /\.(test|spec)\.[cm]?[jt]sx?$/;
+
+/**
+ * The project that would run `relativePath`, or `null` if no project's globs
+ * match it — meaning the file exists, looks like a test, and never runs.
+ *
+ * Order matters and mirrors the config: the two specific suffixes are checked
+ * before the general one, because `.svelte.test.ts` and `.idb.test.ts` also end
+ * in `.test.ts` and the node project excludes them.
+ */
+export function projectForTestFile(relativePath: string): string | null {
+	if (relativePath.endsWith('.svelte.test.ts')) return 'jsdom';
+	if (relativePath.endsWith('.idb.test.ts')) return 'idb';
+	if (relativePath.endsWith('.test.ts')) return 'node';
+	return null;
 }
 
 /** The subset of vitest's reporter context this reporter reads. */
