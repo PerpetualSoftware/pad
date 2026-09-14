@@ -177,6 +177,45 @@ function settleIfCurrent(
 	settleMembership(userId, slug, m);
 }
 
+// Workspaces created locally that a list response may not yet know about
+// (BUG-2981).
+//
+// THE DEFECT. `loadAll` commits its list wholesale and `create` appends, and
+// the two fence themselves independently and not against each other:
+// `loadAll`'s `isLatest()` orders list calls against other LIST calls,
+// `create`'s membership token orders selection against navigation. Neither
+// pair spans this one. A list request issued BEFORE a create answers without
+// the new workspace and, committing after the append, erased it — silently,
+// and until the next full reload, because `current` is set separately and
+// survives. The symptom is a workspace that is open and usable while absent
+// from the switcher and the sidebar.
+//
+// RECONCILE RATHER THAN DISCARD. The older response is not stale in the
+// ordering sense — the server is RIGHT about what existed when it answered —
+// so the newer half is the local create, not the whole list. Dropping the
+// response instead would also throw away every other change it carried, and
+// would leave `recoverIfMissing` (which joins a run to populate an empty list)
+// with nothing.
+//
+// TERMINATION is the `seq > createSeqAtStart` half, and it is what stops this
+// from resurrecting the dead: an entry survives only a response that was
+// ISSUED before the create completed. Any later response is authoritative
+// about it, so a workspace that has since been deleted or become invisible is
+// dropped rather than re-added forever.
+//
+// THE CLASS, asked before choosing (BUG-2981, lead's framing). `workspaces`
+// has exactly three writers — this append, `loadAll`'s commit, and the
+// identity reset's clear — and `create` is the only path that mutates the
+// list LOCALLY. Import, accept-invitation, reorder, delete and restore all
+// hand the change to the server and then re-read: import and reorder
+// `await workspaceStore.loadAll()`, accept-invitation navigates, delete and
+// restore navigate. None of them can be answered by an older request, because
+// `createKeyedSingleFlight.run` ALWAYS issues and never joins — so their
+// re-read is necessarily newer than the mutation it follows. A one-member
+// class, for a structural reason rather than by luck.
+let createSeq = 0;
+let pendingCreates: { seq: number; ws: Workspace }[] = [];
+
 // The keyed single-flight loader fencing `loadAll` (TASK-2947) — the same
 // primitive `collections.svelte.ts` uses, which is the point: generation,
 // join slot and ownership-guarded cleanup had been hand-rolled in both stores
@@ -287,6 +326,9 @@ export const workspaceStore = {
 			// defect arriving through the one door the reset cannot close: the
 			// request was issued before the reset and commits after it.
 			const callUser = currentUserId();
+			// Captured before the request is issued, so it names exactly the
+			// creates the server had already seen when it answered (BUG-2981).
+			const createSeqAtStart = createSeq;
 			const list = await api.workspaces.list();
 			// WHICH RESPONSE COMMITS (TASK-2947, and a behaviour change rather
 			// than a move). Two overlapping calls used to leave the OLDER list in
@@ -298,7 +340,16 @@ export const workspaceStore = {
 			// where it closes, because the primitive owns the rule.
 			if (!isLatest()) return;
 			if (currentUserId() !== callUser) return;
-			workspaces = list;
+			// Both the prune and the reconciliation, in one pass: an entry is
+			// kept only while it is newer than this request AND absent from its
+			// answer. Assigned before the commit reads it, so the two can never
+			// disagree about which workspaces are being re-appended.
+			pendingCreates = pendingCreates.filter(
+				(c) => c.seq > createSeqAtStart && !list.some((w) => w.id === c.ws.id)
+			);
+			workspaces = pendingCreates.length
+				? [...list, ...pendingCreates.map((c) => c.ws)]
+				: list;
 		});
 	},
 
@@ -526,6 +577,10 @@ export const workspaceStore = {
 		// deliberately unspecified beyond that: with two creates in flight there
 		// is no intent to honour, and the list — the part a user would notice
 		// missing — no longer depends on the answer.
+		// RECORDED, not just appended (BUG-2981). A list request already in
+		// flight cannot contain this workspace, and its commit replaces the
+		// array — so the append alone survives only until that response lands.
+		pendingCreates = [...pendingCreates, { seq: ++createSeq, ws }];
 		workspaces = [...workspaces, ws];
 		if (membershipSeq !== entrySeq) return ws;
 		const seq = ++membershipSeq;
@@ -577,6 +632,21 @@ export const workspaceStore = {
 authStore.onIdentityChange(() => {
 	membershipSeq++;
 	workspaces = [];
+	// REDUNDANT DEFENCE, and said so rather than implied (BUG-2981). The
+	// obvious story — that without this B's next commit re-appends A's
+	// workspace — does NOT hold, and the mutation matrix is what said so:
+	// removing this line fails no test, because two other things already close
+	// the leak. A run in flight at the reset cannot commit at all
+	// (`invalidate()` below strips its `isLatest`), and any run issued AFTER
+	// the reset captures a `createSeqAtStart` at or above A's entry, so the
+	// termination rule drops it as an authoritative omission.
+	//
+	// Kept anyway, because both of those are properties of code that lives
+	// elsewhere and could be changed by someone who never reads this file, and
+	// a per-identity record surviving an identity change is the wrong shape
+	// regardless of who is currently catching it. Cheap, local, and the four
+	// lines around it are doing exactly the same job.
+	pendingCreates = [];
 	current = null;
 	currentMembership = null;
 	membershipKnown = false;
