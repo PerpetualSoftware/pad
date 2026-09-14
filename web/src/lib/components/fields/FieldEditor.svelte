@@ -19,7 +19,7 @@ handlers — onchange is never called.
 	import { formatItemRef, type FieldDef, type ItemIndexRow, type PaneTarget } from '$lib/types';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import { narrowRelationRow } from '$lib/collections/relationGroups';
-	import { isMultiRelationType, isRelationType } from '$lib/items/relationFieldTypes';
+	import { isMultiRelationType, isRelationType, relationValuesOf } from '$lib/items/relationFieldTypes';
 	import { WriteOrder } from '$lib/items/fieldWriteOrder';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
@@ -163,13 +163,13 @@ handlers — onchange is never called.
 			// 409 refetch-and-retry — takes over the moment it lands. This holds
 			// a value forward; it does not own it.
 			if (pendingRelation && pendingRelation.identity === relationIdentity) return pendingRelation.list;
-			if (!Array.isArray(value)) return [];
-			return value
-				.map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
-				.filter((entry) => entry !== '');
 		}
-		const raw = typeof value === 'string' ? value.trim() : '';
-		return raw ? [raw] : [];
+		// The SHAPE half moved to `relationValuesOf` (BUG-3016), which the table
+		// cell needs verbatim: a second copy of this normalisation shows up as a
+		// table cell and a properties chip disagreeing about one stored value.
+		// The HOLD above stays here — it is about a write this component has in
+		// flight, which no read-only surface has.
+		return relationValuesOf(field.type, value);
 	});
 
 	/**

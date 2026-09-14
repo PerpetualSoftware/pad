@@ -9,7 +9,15 @@
 	// `onactivate`).
 	import type { FieldDef } from '$lib/types';
 	import type { PublicCollection, PublicItem } from './shareView';
-	import { visibleFields, formatLabel, formatFieldValue, fieldValueColor } from './shareView';
+	import {
+		visibleFields,
+		formatLabel,
+		formatFieldValue,
+		fieldValueColor,
+		publicRelationText,
+		PUBLIC_RELATION_TITLE,
+	} from './shareView';
+	import { isRelationType } from '$lib/items/relationFieldTypes';
 	import PublicItemExpansion from './PublicItemExpansion.svelte';
 
 	interface Props {
@@ -102,7 +110,26 @@
 					{@const text = formatFieldValue(raw)}
 					{@const color = typeof raw === 'string' ? cellColor(field, raw) : undefined}
 					<div class="table-cell" role="cell">
-						{#if (field.key === 'status' || field.key === 'priority') && color && text}
+						<!--
+							A relation NEVER prints its stored value here (BUG-3016): the
+							value is an item id and this payload has no index to resolve it
+							against, so the cell says what it holds instead. See
+							`publicRelationText` for why resolving it is a visibility
+							question rather than a payload one, and IDEA-3066 for the unit
+							that would answer it.
+
+							FIRST, like the authenticated table's arm: `options` survives a
+							retype, so a `status` that is now a relation would otherwise
+							take the chip arm below and print the id as a status pill.
+						-->
+						{#if isRelationType(field.type)}
+							{@const relText = publicRelationText(field, raw)}
+							{#if relText}
+								<span class="cell-value is-placeholder" title={PUBLIC_RELATION_TITLE}>{relText}</span>
+							{:else}
+								<span class="cell-value"></span>
+							{/if}
+						{:else if (field.key === 'status' || field.key === 'priority') && color && text}
 							<!-- Tinted chip pill (Phase 3 card language); .cell-status kept
 							     as the status cell's stable hook. -->
 							<span
@@ -239,6 +266,13 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+
+	/* A value this share cannot resolve (BUG-3016) — muted and italic so it
+	   reads as a note about the cell rather than as the cell's content. */
+	.cell-value.is-placeholder {
+		color: var(--text-muted);
+		font-style: italic;
 	}
 
 	/* Status/priority as tinted chip pills — the in-app Chip primitive's `sm`

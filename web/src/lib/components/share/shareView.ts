@@ -15,7 +15,7 @@
 // mirror the in-app helpers so a shared kanban looks like the owner's kanban.
 
 import type { FieldDef } from '$lib/types';
-import { isRelationType } from '$lib/items/relationFieldTypes';
+import { isRelationType, relationValuesOf } from '$lib/items/relationFieldTypes';
 import { UNPARENTED_FILTER_FIELD } from '$lib/collections/unparentedFilter';
 
 // Re-exported so existing/future imports of `UNPARENTED_FILTER_FIELD` from
@@ -312,6 +312,60 @@ export function isPublicGroupable(collection: PublicCollection, key: string): bo
 }
 
 // ── Presentation helpers (mirror the in-app vocabularies) ───────────────────
+
+/**
+ * What a PUBLIC surface says in place of a relation VALUE (BUG-3016).
+ *
+ * A relation stores an item ID and a share payload carries field values with no
+ * index behind them, so a public renderer that prints the value shows a UUID —
+ * the same wall of raw ids the U4 grouping refusal closed on the public board
+ * and list, arriving here through a COLUMN instead of a lane. A column is not
+ * refusable the way a grouping is (hiding it silently changes what the owner
+ * chose to share), so the cell says what it holds instead: a linked item this
+ * share cannot resolve.
+ *
+ * THE PLACEHOLDER IS A BOUNDARY, NOT A SHRUG, and the boundary is a privacy one
+ * (lead ruling, BUG-3016). Hydrating ref+title into the share payload is not a
+ * payload question but a VISIBILITY question: the target may live in a
+ * collection the owner never shared, and a public viewer is anonymous, so
+ * carrying the target's name would hand them the title of an unshared item
+ * unless the share path runs the same per-target redaction U4 built for
+ * authenticated reads. That is its own unit with its own population — every
+ * share DTO that could carry a target — filed as IDEA-3066.
+ *
+ * The COUNT is deliberate and is not part of that exposure: it describes the
+ * shared item's own field, not any unshared target.
+ */
+export function publicRelationText(field: Pick<FieldDef, 'type'>, value: unknown): string {
+	if (!isRelationType(field.type)) return '';
+	const count = relationValuesOf(field.type, value).length;
+	if (count === 0) return '';
+	return count === 1 ? 'Linked item' : `${count} linked items`;
+}
+
+/** The tooltip that goes with `publicRelationText` — one sentence, one place. */
+export const PUBLIC_RELATION_TITLE =
+	'This shared view links to another item. Its name is not part of the share.';
+
+/**
+ * The value a categorical chip (status / priority) may show, or '' (BUG-3016,
+ * codex enumeration round).
+ *
+ * These surfaces read a field BY NAME and then ask the VALUE's shape — "is it a
+ * string" — which is the right question for a `multi_relation` (its value is an
+ * array, so it falls out) and the WRONG one for a scalar `relation`, whose
+ * value IS a string. A `status` retyped to `relation` therefore rendered its
+ * stored item id as a status pill, title-cased.
+ *
+ * The chip is WITHHELD rather than resolved: a share cannot resolve a target at
+ * all, and on a card the chip is a categorical summary, not the field's value.
+ * Same disposition the board and list take when their lane vocabulary no longer
+ * fits the field.
+ */
+export function categoricalChipValue(field: FieldDef | undefined, raw: unknown): string {
+	if (!field || isRelationType(field.type)) return '';
+	return typeof raw === 'string' ? raw : '';
+}
 
 /** Title-case a snake/kebab field key or value for display. */
 export function formatLabel(value: string): string {

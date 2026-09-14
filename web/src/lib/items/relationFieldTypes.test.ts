@@ -3,7 +3,8 @@ import {
 	RELATION_FIELD_TYPES,
 	isMultiRelationType,
 	isRelationType,
-	isResolvableRelation
+	isResolvableRelation,
+	relationValuesOf
 } from './relationFieldTypes';
 
 /**
@@ -80,5 +81,42 @@ describe('RELATION_FIELD_TYPES', () => {
 		for (const t of RELATION_FIELD_TYPES) {
 			expect(isRelationType(t), t).toBe(true);
 		}
+	});
+});
+
+describe('relationValuesOf', () => {
+	// The READ shape, extracted from FieldEditor under BUG-3016 so the table cell
+	// resolves the same references the properties chip does. FieldEditor keeps
+	// its write-side hold in front of this; nothing about the hold is here.
+	it('gives one element for a scalar relation and N in order for a list', () => {
+		expect(relationValuesOf('relation', 'id-red')).toEqual(['id-red']);
+		expect(relationValuesOf('multi_relation', ['id-blue', 'id-red'])).toEqual(['id-blue', 'id-red']);
+	});
+
+	it('trims, and drops blank or non-string elements', () => {
+		// The write doors refuse both outright, so this is defence against a value
+		// no door will accept — not a policy of its own.
+		expect(relationValuesOf('relation', '  id-red  ')).toEqual(['id-red']);
+		expect(relationValuesOf('relation', '   ')).toEqual([]);
+		expect(relationValuesOf('multi_relation', ['id-red', '', '  ', 7, null])).toEqual(['id-red']);
+	});
+
+	it('gives nothing for a non-relation field, whatever it holds', () => {
+		expect(relationValuesOf('text', 'id-red')).toEqual([]);
+		expect(relationValuesOf(undefined, 'id-red')).toEqual([]);
+	});
+
+	it('gives NOTHING for a scalar stored under a multi_relation', () => {
+		// The type was changed under a stored value. One arbitrary element is a
+		// worse answer than an empty cell, which at least reads as "nothing this
+		// view can show".
+		expect(relationValuesOf('multi_relation', 'id-red')).toEqual([]);
+		expect(relationValuesOf('multi_relation', null)).toEqual([]);
+	});
+
+	it('gives nothing for a LIST stored under a scalar relation', () => {
+		// The mirror case, and it must not stringify: `String(['a','b'])` is
+		// "a,b", which would render as a reference to an item named a,b.
+		expect(relationValuesOf('relation', ['id-red', 'id-blue'])).toEqual([]);
 	});
 });

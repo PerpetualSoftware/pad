@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
-	import type { Item, Collection } from '$lib/types';
+	import type { Item, Collection, FieldDef } from '$lib/types';
+	import { isRelationType } from '$lib/items/relationFieldTypes';
 	import { parseFields, parseSchema, parseTags, formatItemRef, itemUrlId } from '$lib/types';
 	import { starredStore } from '$lib/stores/starred.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
@@ -58,11 +59,29 @@
 
 	let wsSlug = $derived(page.params.workspace ?? '');
 	let username = $derived(page.params.username ?? '');
+	function chippable(f: FieldDef | undefined): FieldDef | undefined {
+		return f && !isRelationType(f.type) ? f : undefined;
+	}
+
 	let fields = $derived(parseFields(item));
 	let schema = $derived(parseSchema(collection));
 
-	let statusField = $derived(schema.fields.find((f) => f.key === 'status'));
-	let priorityField = $derived(schema.fields.find((f) => f.key === 'priority'));
+	// `chippable` asks the SCHEMA as well as the value (BUG-3016, codex
+	// enumeration round). The value test below — "is it a string" — is the right
+	// question for a `multi_relation` (an array falls out) and the WRONG one for a
+	// scalar `relation`, whose value IS a string: a `status` retyped to one
+	// rendered its stored item id as a title-cased status pill, and the chip is
+	// CLICKABLE, so cycling it wrote a status word into a relation field. Same
+	// pair of defects the table's relation arm closes, reached through the card.
+	//
+	// Withheld rather than resolved: this chip is a categorical summary, and the
+	// item's own properties panel already renders the reference properly.
+	let statusField = $derived(
+		chippable(schema.fields.find((f) => f.key === 'status')),
+	);
+	let priorityField = $derived(
+		chippable(schema.fields.find((f) => f.key === 'priority')),
+	);
 	let itemUrl = $derived(`/${username}/${wsSlug}/${collection.slug}/${itemUrlId(item)}`);
 	let itemRef = $derived(formatItemRef(item));
 	let tags = $derived(parseTags(item));

@@ -1,5 +1,9 @@
 <script lang="ts">
-	import type { Item, Collection } from '$lib/types';
+	import type { Item, Collection, FieldDef } from '$lib/types';
+	import { isRelationType, relationValuesOf } from '$lib/items/relationFieldTypes';
+	import { narrowRelationRow, relationChipFor } from '$lib/collections/relationGroups';
+	import { localIndex } from '$lib/stores/localIndex.svelte';
+	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { parseSchema, parseFields, formatItemRef, itemUrlId } from '$lib/types';
 	import { itemComparator, type SortMode } from '$lib/collections/itemSort';
 	import { reorderGroup, disabledDirections, type ReorderDirection } from '$lib/collections/reorder';
@@ -75,6 +79,30 @@
 	let resolvedUsername = $derived(page.params.username || '');
 	let schema = $derived(parseSchema(collection));
 	let visibleFields = $derived(schema.fields.filter((f) => !f.computed));
+
+	/**
+	 * Resolving a relation CELL, with the same two narrowings every other
+	 * relation surface uses (BUG-3016).
+	 *
+	 * The table was the fifth and last surface in the relation family still
+	 * printing the stored value: a relation holds an item ID, so a column showed
+	 * a UUID where the properties chip, the board lane, the list group heading
+	 * and the filter chip all show `REF · title`. It resolves through the SAME
+	 * `narrowRelationRow` those four call — id-only (never slug) and scoped to
+	 * the field's declared target collection — because a private copy of those
+	 * rules shows up as two surfaces disagreeing about what one id is called.
+	 */
+	let knownCollectionSlugs = $derived(new Set(collectionStore.collections.map((c) => c.slug)));
+	let resolveRelation = $derived((id: string, declaredCollection: string | undefined) =>
+		resolvedWsSlug
+			? narrowRelationRow(
+					localIndex.findByIdOrSlug(resolvedWsSlug, id),
+					id,
+					declaredCollection,
+					knownCollectionSlugs,
+				)
+			: null,
+	);
 
 	let sortKey = $state('');
 	let sortDir = $state<'asc' | 'desc'>('asc');
@@ -219,6 +247,42 @@
 	);
 </script>
 
+{#snippet relationCell(field: FieldDef, raw: unknown)}
+	<!--
+		A relation cell, in the chip vocabulary the rest of the app already uses
+		(BUG-3016). The invariant, the same one `FieldEditor`'s chip states: a raw
+		item ID never reaches the user. One chip for a `relation`, N in stored
+		order for a `multi_relation`, an empty cell for no value.
+
+		No link. The row's title is already the navigation affordance here, and a
+		link inside a row that itself opens the item on click is two targets for
+		one gesture — `FieldEditor` links because its chip is the only way there.
+	-->
+	{@const values = relationValuesOf(field.type, raw)}
+	{#if values.length === 0}
+		<span class="cell-value"></span>
+	{:else}
+		<span class="cell-relations">
+			{#each values as value, i (value + '@' + i)}
+				{@const chip = relationChipFor(value, (id) => resolveRelation(id, field.collection))}
+				{#if !chip}
+					<!-- Filtered above; the arm exists so a null can never fall through as blank. -->
+				{:else if chip.state === 'unresolved'}
+					<span class="cell-relation is-unresolved" title="This value does not match any item in this workspace.">
+						{chip.label}
+					</span>
+				{:else}
+					<span class="cell-relation" class:is-deleted={chip.state === 'deleted'} title={chip.state === 'deleted' ? 'This item has been deleted.' : undefined}>
+						{#if chip.ref}<span class="cell-relation-ref">{chip.ref}</span>{/if}
+						<span class="cell-relation-title">{chip.title ?? ''}</span>
+						{#if chip.state === 'deleted'}<span class="cell-relation-note">(deleted)</span>{/if}
+					</span>
+				{/if}
+			{/each}
+		</span>
+	{/if}
+{/snippet}
+
 {#if items.length === 0}
 	<EmptyState {collection} wsSlug={resolvedWsSlug} {oncreate} />
 {:else}
@@ -276,7 +340,21 @@
 							behave differently for no reason a user could see (found by
 							the enumeration round, which reproduced the difference).
 						-->
-						{#if field.key === 'status' && field.options && onStatusChange && (fields[field.key] == null || typeof fields[field.key] === 'string')}
+						<!--
+							THE RELATION ARM COMES FIRST, and that ordering is load-bearing
+							twice over (BUG-3016). `field.options` survives a retype in the
+							schema editor (BUG-3041), so a field keyed `status` that is NOW a
+							relation still satisfies the status arm's guard — its value is a
+							string — and rendered a clickable status chip whose click writes a
+							STATUS STRING into a relation field. That is the defect the board
+							and list already withhold their status chip for, arriving here
+							through the column rather than through the lane. Asking the SCHEMA
+							first answers both: the id never renders, and the setter is not
+							offered for a field it cannot write.
+						-->
+						{#if isRelationType(field.type)}
+							{@render relationCell(field, fields[field.key])}
+						{:else if field.key === 'status' && field.options && onStatusChange && (fields[field.key] == null || typeof fields[field.key] === 'string')}
 							<Chip
 								size="sm"
 								color={statusColor(fields[field.key] ?? '')}
@@ -439,6 +517,53 @@
 	.cell-value {
 		color: var(--text-secondary);
 		font-size: 0.9em;
+	}
+
+	/* Relation cells (BUG-3016). Same vocabulary as the properties chip, sized
+	   for a table cell: a single row that ellipsises rather than wrapping, so a
+	   long title cannot change the row's height. */
+	.cell-relations {
+		display: flex;
+		align-items: baseline;
+		gap: var(--space-1);
+		min-width: 0;
+		overflow: hidden;
+	}
+
+	.cell-relation {
+		display: inline-flex;
+		align-items: baseline;
+		gap: var(--space-1);
+		min-width: 0;
+		padding: 1px var(--space-2);
+		border-radius: var(--radius-sm);
+		background: var(--bg-hover);
+		color: var(--text-primary);
+		font-size: 0.85em;
+		white-space: nowrap;
+	}
+
+	.cell-relation-ref {
+		flex-shrink: 0;
+		color: var(--text-muted);
+		font-family: var(--font-mono);
+		font-size: 0.94em;
+	}
+
+	.cell-relation-title {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.cell-relation.is-deleted,
+	.cell-relation.is-unresolved {
+		color: var(--text-muted);
+	}
+
+	.cell-relation-note {
+		flex-shrink: 0;
+		font-style: italic;
 	}
 
 	/* Status + recognized select values render as Chip primitives now
