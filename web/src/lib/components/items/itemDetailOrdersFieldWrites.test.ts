@@ -60,8 +60,12 @@ describe('ItemDetail field writes are ordered', () => {
 		// runs here. A second, hand-rolled `for`/`catch` retry in this function
 		// would pass every other assertion in this file while replaying exactly
 		// the stale body R8-1 is about.
-		expect(UPDATE_FIELD).toMatch(/submitOrderedOCC<Item>\(\{/);
-		const call = UPDATE_FIELD.slice(UPDATE_FIELD.indexOf('submitOrderedOCC<Item>({'));
+		// BUG-3037 re-pointed this: the call is now `submitOrderedOCC<Item, OCCToken>`
+		// because the token is the row's `seq`, not its second-resolution
+		// `updated_at`. The generic list is matched loosely — what this leg is
+		// about is that ONE shared loop runs here, not which token it carries.
+		expect(UPDATE_FIELD).toMatch(/submitOrderedOCC<Item[^>]*>\(\{/);
+		const call = UPDATE_FIELD.slice(UPDATE_FIELD.search(/submitOrderedOCC<Item[^>]*>\(\{/));
 		expect(call.slice(0, call.indexOf('});'))).toMatch(/order: fieldWrites/);
 		expect(call.slice(0, call.indexOf('});'))).toMatch(/\bticket,/);
 		expect(UPDATE_FIELD).not.toMatch(/isUpdateConflictError\(e\)\s*&&/);

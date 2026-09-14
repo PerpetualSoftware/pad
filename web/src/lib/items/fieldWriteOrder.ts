@@ -121,21 +121,34 @@ export class WriteOrder {
  * for spellings. Here the loop can be driven directly, conflict by conflict,
  * with the interleaving that produced the lost update.
  */
-export async function submitOrderedOCC<T extends { updated_at: string }>(opts: {
+export async function submitOrderedOCC<T, TToken = string>(opts: {
 	order: WriteOrder;
 	ticket: WriteTicket;
 	/** Attempts AFTER the first, so 2 means at most three sends. */
 	maxRetries: number;
-	initialExpected: string;
-	send: (expected: string) => Promise<T>;
+	initialExpected: TToken;
+	send: (expected: TToken) => Promise<T>;
 	refetch: () => Promise<T>;
+	/**
+	 * The concurrency token carried by a freshly-read row (BUG-3037).
+	 *
+	 * This used to be hardcoded as `latest.updated_at`, which forced every
+	 * caller onto a token with ONE-SECOND resolution: two writes inside one
+	 * second both match it, so neither conflicts and the loser silently
+	 * overwrites the winner — and the retry below, which exists precisely to
+	 * re-apply a delta after a conflict, never runs because no conflict is ever
+	 * reported. Items now round-trip `seq` instead, so the extractor is the
+	 * caller's.
+	 */
+	tokenOf: (row: T) => TToken;
 	isConflict: (e: unknown) => boolean;
 	/** False once the surrounding view has moved on (an item switch). */
 	stillCurrent: () => boolean;
 	/** The freshest row seen while retrying — the caller's fallback truth. */
 	onRefetched?: (latest: T) => void;
 }): Promise<T> {
-	const { order, ticket, maxRetries, send, refetch, isConflict, stillCurrent, onRefetched } = opts;
+	const { order, ticket, maxRetries, send, refetch, isConflict, stillCurrent, onRefetched, tokenOf } =
+		opts;
 	let expected = opts.initialExpected;
 	for (let attempt = 0; ; attempt++) {
 		try {
@@ -146,7 +159,7 @@ export async function submitOrderedOCC<T extends { updated_at: string }>(opts: {
 			}
 			const latest = await refetch();
 			onRefetched?.(latest);
-			expected = latest.updated_at;
+			expected = tokenOf(latest);
 			// BOTH questions again after the refetch, not only before it: the
 			// refetch is an await, and both the newer write and the view moving
 			// on are things a click lands inside it. Asking only about

@@ -2110,9 +2110,27 @@ type UpdateConflictError struct {
 	ItemID            string
 	ExpectedUpdatedAt string
 	ActualUpdatedAt   time.Time
+
+	// ExpectedSeq / ActualSeq are set INSTEAD of the updated_at pair when the
+	// caller's token was `expected_seq` (BUG-3037). Both nil means the
+	// updated_at token is what conflicted. The handler picks the details keys
+	// off whichever pair is populated, so the wire envelope never claims a
+	// caller sent a token they did not.
+	ExpectedSeq *int64
+	ActualSeq   *int64
 }
 
 func (e *UpdateConflictError) Error() string {
+	if e.ExpectedSeq != nil {
+		actual := int64(-1)
+		if e.ActualSeq != nil {
+			actual = *e.ActualSeq
+		}
+		return fmt.Sprintf(
+			"item %s was modified by another writer (expected seq %d, actual %d)",
+			e.ItemID, *e.ExpectedSeq, actual,
+		)
+	}
 	return fmt.Sprintf(
 		"item %s was modified by another writer (expected updated_at %s, actual %s)",
 		e.ItemID, e.ExpectedUpdatedAt, e.ActualUpdatedAt.UTC().Format(time.RFC3339),
@@ -2473,7 +2491,39 @@ func (s *Store) updateItemWithParentLinkOnce(
 	// the one they read (Codex round 2). Parsed as RFC3339 and compared with
 	// time.Equal so a round-tripped `updated_at` matches regardless of
 	// zone/format.
-	if input.ExpectedUpdatedAt != "" {
+	//
+	// BUG-3037: `expected_seq` is the STRONG token and is checked FIRST, so a
+	// caller who sends both gets the verdict of the one that can actually tell
+	// two same-second writes apart. `updated_at` has one-second resolution, so
+	// it says "no conflict" for a race it cannot see; seq is bumped on every
+	// mutation of the row, under the same workspace lock this transaction
+	// holds, and cannot.
+	//
+	// Both are compared against `existing`, which is the POST-LOCK in-tx
+	// re-read installed above — not the pre-tx snapshot — so the check and the
+	// write are serialized with respect to every other writer.
+	if input.ExpectedSeq != nil {
+		if existing.Seq != *input.ExpectedSeq {
+			actual := existing.Seq
+			return nil, &UpdateConflictError{
+				ItemID:            id,
+				ExpectedUpdatedAt: input.ExpectedUpdatedAt,
+				ActualUpdatedAt:   existing.UpdatedAt,
+				ExpectedSeq:       input.ExpectedSeq,
+				ActualSeq:         &actual,
+			}
+		}
+	}
+	// SEQ DECIDES when it is present, so the timestamp check below is SKIPPED
+	// rather than also run (codex round 2). Running both was an AND, which
+	// contradicts the documented contract and can only produce a conflict the
+	// caller cannot act on: a seq that still matches means NO write has landed
+	// since the caller read the row, so a differing `updated_at` is not a
+	// concurrent write — it is a caller mixing tokens from two reads, or a
+	// client migrating from one token to the other and sending both. The strong
+	// token subsumes the weak one; enforcing the weak one on top adds no
+	// protection and takes away that migration path.
+	if input.ExpectedSeq == nil && input.ExpectedUpdatedAt != "" {
 		expected, perr := time.Parse(time.RFC3339, input.ExpectedUpdatedAt)
 		if perr != nil {
 			return nil, fmt.Errorf("invalid expected_updated_at %q: %w", input.ExpectedUpdatedAt, perr)

@@ -1694,7 +1694,10 @@ func TestFieldConflictProperty_SourcesDerivedFromTheDeclaredSchema(t *testing.T)
 		"category_filter": true, "parent_ref": true,
 
 		// Control the write without naming a field value.
-		"expected_updated_at": true, "force": true, "allow_draft": true,
+		// expected_seq joins expected_updated_at here for the same reason
+		// (BUG-3037): it is a concurrency TOKEN, not a field write, so the
+		// field-conflict machinery has nothing to say about it.
+		"expected_updated_at": true, "expected_seq": true, "force": true, "allow_draft": true,
 		"clear_parent": true, "clear_assigned_user": true, "clear_agent_role": true,
 		"artifact": true, "raw_args": true,
 

@@ -1636,8 +1636,17 @@ func (s *Store) RemapAttachmentReferencesInWorkspace(workspaceID string, oldToNe
 	}
 
 	for _, u := range updates {
-		if _, err := tx.Exec(s.q(`UPDATE items SET content = ?, fields = ? WHERE id = ?`),
-			u.content, u.fields, u.id); err != nil {
+		// BUMPS seq (BUG-3037). This write changes `content` and `fields` — the
+		// state `expected_seq` exists to protect — and its SELECT above is
+		// workspace-wide, so it can reach a row a client is holding a token for.
+		// Today its only caller is bundle import, where every row was created
+		// moments earlier in the same request and nobody holds a token; the bump
+		// is here anyway so that stays true of the CODE rather than of the caller
+		// list, which is the kind of claim that goes stale unread. The workspace
+		// seq lock this transaction already took above is the one the subquery
+		// needs, so this costs an indexed MAX(seq) per row and no new locking.
+		if _, err := tx.Exec(s.q(`UPDATE items SET content = ?, fields = ?, seq = `+nextWorkspaceSeqSubquery+` WHERE id = ?`),
+			u.content, u.fields, workspaceID, u.id); err != nil {
 			return fmt.Errorf("update item %s: %w", u.id, err)
 		}
 		// This rewrite maps `pad-attachment:` ids and cannot change a relation

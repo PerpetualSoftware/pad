@@ -469,6 +469,25 @@ const HANDLERS: Record<string, Handler> = {
 		if (tags !== undefined) data.tags = tags;
 		const comment = str(args, 'comment');
 		if (comment !== undefined) data.comment = comment;
+		// Optimistic concurrency (BUG-3037, codex round 1). This surface dropped
+		// BOTH tokens, so an agent driving the page had no way to say "only write
+		// if the item is still as I read it" — the catalog advertises the params
+		// and this dispatcher silently discarded them, which is the same shape of
+		// defect as BUG-3055 one parameter over.
+		//
+		// `expected_seq` is the strong token; `expected_updated_at` stays
+		// accepted for a caller that has not moved. A non-integer seq is
+		// REFUSED rather than rounded: 42.7 truncated to 42 is a different row
+		// state and might match, turning a malformed token into a silent accept.
+		const expectedSeq = num(args, 'expected_seq');
+		if (expectedSeq !== undefined) {
+			if (!Number.isInteger(expectedSeq)) {
+				throw new Error(`expected_seq must be a whole number, got ${expectedSeq}`);
+			}
+			data.expected_seq = expectedSeq;
+		}
+		const expectedUpdatedAt = str(args, 'expected_updated_at');
+		if (expectedUpdatedAt !== undefined) data.expected_updated_at = expectedUpdatedAt;
 		if (bool(args, 'force') === true) data.force = true;
 		const { agent_role_id, assigned_user_id } = await resolveAssignment(api, ws, args);
 		if (agent_role_id !== undefined) data.agent_role_id = agent_role_id;

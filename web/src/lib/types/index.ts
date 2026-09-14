@@ -1224,6 +1224,18 @@ export interface ItemUpdate {
 	 * last-write-wins. Mirrors `CollectionUpdate.expected_updated_at`.
 	 */
 	expected_updated_at?: string;
+	/**
+	 * The STRONG optimistic-concurrency token (BUG-3037): round-trip the `seq`
+	 * you last read. The server compares it against the row's current seq under
+	 * the write lock and answers a 409 `update_conflict` on mismatch, with
+	 * `details.conflict_type: "seq"` and `details.actual_seq` to retry with.
+	 *
+	 * Prefer this over `expected_updated_at`, which is second-resolution: two
+	 * writes inside one second both match it, so neither conflicts and the
+	 * loser's value is silently overwritten. Mutually compatible — if both are
+	 * sent, seq decides.
+	 */
+	expected_seq?: number;
 	tags?: string;
 	pinned?: boolean;
 	sort_order?: number;

@@ -4,6 +4,7 @@
 	import { api, PadApiError, isUpdateConflictError, type ImportURLResponse } from '$lib/api/client';
 	import { confirmOpenChildrenOrThrow, isOpenChildrenError } from '$lib/items/openChildrenError';
 	import { WriteOrder, fieldWriteTarget, submitOrderedOCC } from '$lib/items/fieldWriteOrder';
+	import { occTokenFor, type OCCToken } from '$lib/items/occToken';
 	import { marked } from 'marked';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { pushEscapeHandler, ESCAPE_PRIORITY } from '$lib/stores/escapeStack';
@@ -2914,11 +2915,26 @@
 		saveStatus = 'saving';
 
 		// One PATCH attempt: single-key merge, OCC-guarded by the caller-supplied
-		// updated_at. `force` overrides the open-children guard (BUG-1538).
-		const doUpdate = (force: boolean, expectedUpdatedAt: string) =>
+		// token. `force` overrides the open-children guard (BUG-1538).
+		//
+		// BUG-3037: the token is the row's `seq` when the row has one, not its
+		// `updated_at`. `updated_at` is second-resolution, so two saves inside one
+		// second both match it and NEITHER conflicts — the retry below never runs
+		// and the loser's value is silently gone. `seq` is bumped on every
+		// mutation under the server's write lock, so it discriminates them.
+		//
+		// The `updated_at` arm is not a fallback for taste: a row read from the
+		// local-first cache before this shipped has no `seq` at all, and sending
+		// `expected_seq: 0` would be refused (the server rejects a seq below 1,
+		// since it never issues one). Sending the old token is strictly better
+		// than sending none — it still catches a slow concurrent write — and the
+		// row gains a seq the next time it is read from the server.
+		const doUpdate = (force: boolean, expected: OCCToken) =>
 			api.items.update(targetWs, targetItem.id, {
 				fields_patch: patch,
-				expected_updated_at: expectedUpdatedAt,
+				...(expected.kind === 'seq'
+					? { expected_seq: expected.value }
+					: { expected_updated_at: expected.value }),
 				...(force ? { force: true } : {})
 			});
 
@@ -2945,11 +2961,12 @@
 		// here discards a response, it declines to create a new send of an old
 		// body.
 		const submitWithOCC = (force: boolean): Promise<Item> =>
-			submitOrderedOCC<Item>({
+			submitOrderedOCC<Item, OCCToken>({
 				order: fieldWrites,
 				ticket,
 				maxRetries: MAX_FIELD_OCC_RETRIES,
-				initialExpected: targetItem.updated_at,
+				initialExpected: occTokenFor(targetItem),
+				tokenOf: occTokenFor,
 				send: (expected) => doUpdate(force, expected),
 				refetch: () => api.items.get(targetWs, targetItem.id),
 				isConflict: isUpdateConflictError,

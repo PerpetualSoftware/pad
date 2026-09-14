@@ -1227,6 +1227,18 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// BUG-3037: reject an expected_seq the server could never have issued. Every
+	// item INSERT stamps MAX(seq)+1 and the backfill migrations numbered from 1,
+	// so a live row's seq is >= 1; a value below that cannot match any row and
+	// would 409 forever, which reads to a caller as "someone keeps beating me"
+	// rather than "this token is malformed". Refusing only values the server
+	// never emits keeps this from rejecting our own output.
+	if input.ExpectedSeq != nil && *input.ExpectedSeq < 1 {
+		writeError(w, http.StatusBadRequest, "bad_request",
+			"expected_seq must be a positive integer — round-trip the `seq` you last read")
+		return
+	}
+
 	// IDEA-1494: precheck closure populated below when the patch
 	// includes a fields update AND --force is NOT set. Threads into
 	// the three UpdateItem call sites that follow. nil = no guard.
