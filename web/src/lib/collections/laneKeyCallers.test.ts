@@ -163,9 +163,25 @@ describe('BUG-3057: the collection page writes a CONVERTED lane value', () => {
 	});
 
 	it('sends the CONVERTED value on the drag path, not the lane key', () => {
-		// The mutant this kills is the original line, restored.
-		expect(page).toContain('const fieldsPatch = { [groupField]: laneWrite.value };');
+		// The mutant this kills is the original line, restored. The patched key
+		// is `fieldKey` rather than `groupField` because the writer now takes its
+		// target explicitly — see the status-chip leg below.
+		expect(page).toContain('const fieldsPatch = { [fieldKey]: laneWrite.value };');
 		expect(page).not.toContain('const fieldsPatch = { [groupField]: newValue };');
+	});
+
+	it('lets the table status chip name the STATUS field, not the lane field', () => {
+		// The table has no lanes: its chip cycles the `status` schema field's
+		// options and used to send them to `groupField`, which in table view is
+		// `list_group_by`. On a table grouped by `priority`, a status click set
+		// the priority. The default argument keeps every drag caller on the lane
+		// field, so this leg is what says the table opted out of it.
+		expect(page).toContain(
+			"onStatusChange={(it, newStatus) => handleStatusChange(it, newStatus, 'status')}",
+		);
+		expect(page).toContain(
+			'async function handleStatusChange(item: Item, newValue: string, fieldKey: string = groupField)',
+		);
 	});
 
 	it('sends the CONVERTED value on the create-in-lane path, not the lane key', () => {

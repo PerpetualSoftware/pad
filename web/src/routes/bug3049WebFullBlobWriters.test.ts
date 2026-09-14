@@ -86,7 +86,7 @@ describe('BUG-3049 — browser item-field writers send a patch, not a blob', () 
 			source('./[username]/[workspace]/[collection]/+page.svelte'),
 			'async function handleStatusChange(',
 		);
-		expectPatchOnly(body, 'handleStatusChange', ['[groupField]: laneWrite.value']);
+		expectPatchOnly(body, 'handleStatusChange', ['[fieldKey]: laneWrite.value']);
 	});
 
 	it('the conventions status toggle patches only status', () => {

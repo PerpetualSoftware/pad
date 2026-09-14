@@ -1674,7 +1674,24 @@
 		searchResultRank = new Map(hits.map((h, i) => [h.id, i]));
 	});
 
-	async function handleStatusChange(item: Item, newValue: string) {
+	/**
+	 * Write one field on one item, from a lane move or from a status chip.
+	 *
+	 * `fieldKey` is EXPLICIT because two different intents arrive here and they
+	 * do not name the same field (BUG-3057, codex enumeration round). A drag
+	 * between lanes means "put this item in THIS LANE" — the group field. A
+	 * status chip means "set this item's STATUS" — the `status` field and
+	 * nothing else. With `groupField` hardcoded, the TABLE's status chip, whose
+	 * options come from the `status` schema field, wrote its value into whatever
+	 * `list_group_by` named: on a table grouped by `priority`, clicking a status
+	 * chip set the priority. Defaulting to `groupField` leaves every drag caller
+	 * unchanged.
+	 *
+	 * The same conflation exists for the status chip on a LIST/BOARD card, where
+	 * one prop serves both the drag and the chip — that needs a second callback
+	 * through those components rather than an argument here, and is BUG-3068.
+	 */
+	async function handleStatusChange(item: Item, newValue: string, fieldKey: string = groupField) {
 		if (!wsSlug) return;
 		// BUG-3049: patch ONLY the group field. This used to read the item's
 		// fields, set one key and send the whole blob back as a full replace,
@@ -1689,16 +1706,17 @@
 		// failed on any board not grouped by a string-shaped field. Convert
 		// through the declared type; see `laneWriteValue` for the measured
 		// server behaviour behind each case.
-		const laneWrite = laneWriteValue(groupFieldDef, newValue);
+		const targetFieldDef = schema?.fields.find((f) => f.key === fieldKey);
+		const laneWrite = laneWriteValue(targetFieldDef, newValue);
 		if (!laneWrite.ok) {
 			// Thrown, not swallowed: BoardView unwinds its optimistic reorder on
 			// a rejection, which is the same contract the catch below relies on.
-			const label = groupFieldDef?.label || groupField;
+			const label = targetFieldDef?.label || fieldKey;
 			const msg = laneWriteRefusalMessage(laneWrite.reason, label);
 			toastStore.show(msg, 'error');
 			throw new Error(msg);
 		}
-		const fieldsPatch = { [groupField]: laneWrite.value };
+		const fieldsPatch = { [fieldKey]: laneWrite.value };
 		const ws = wsSlug;
 		const parentRef = formatItemRef(item) ?? item.slug;
 
@@ -3590,7 +3608,7 @@
 				{collection}
 				{wsSlug}
 				{focusedItemId}
-				onStatusChange={handleStatusChange}
+				onStatusChange={(it, newStatus) => handleStatusChange(it, newStatus, 'status')}
 				onReorder={handleReorder}
 				oncreate={canEditThisCollection ? openQuickCreate : undefined}
 				{itemProgress}
