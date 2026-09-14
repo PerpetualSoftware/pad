@@ -15,7 +15,7 @@
 	// (the default), the card is an inert <div> — no interactivity is implied.
 	import type { FieldDef } from '$lib/types';
 	import type { PublicItem } from './shareView';
-	import { findField, formatLabel, fieldValueColor } from './shareView';
+	import { findField, formatLabel, fieldValueColor, categoricalChipValue } from './shareView';
 	import PublicItemExpansion from './PublicItemExpansion.svelte';
 
 	interface Props {
@@ -43,12 +43,11 @@
 
 	let statusFieldDef = $derived(findField(fields, 'status'));
 	let priorityFieldDef = $derived(findField(fields, 'priority'));
-	let status = $derived(
-		typeof item.fields.status === 'string' ? (item.fields.status as string) : ''
-	);
-	let priority = $derived(
-		typeof item.fields.priority === 'string' ? (item.fields.priority as string) : ''
-	);
+	// Asking the SCHEMA, not only the value's shape (BUG-3016): a `status`
+	// retyped to a scalar `relation` still holds a string, so the value test
+	// alone let an item id render as a status pill. See `categoricalChipValue`.
+	let status = $derived(categoricalChipValue(statusFieldDef, item.fields.status));
+	let priority = $derived(categoricalChipValue(priorityFieldDef, item.fields.priority));
 
 	function activate() {
 		if (interactive) onactivate?.(item);

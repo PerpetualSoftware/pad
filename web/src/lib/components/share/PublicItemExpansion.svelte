@@ -12,7 +12,15 @@
 	// place avoids introducing a second, divergent {@html} source.
 	import type { FieldDef } from '$lib/types';
 	import type { PublicItem } from './shareView';
-	import { visibleFields, formatLabel, formatFieldValue, fieldValueColor } from './shareView';
+	import {
+		visibleFields,
+		formatLabel,
+		formatFieldValue,
+		fieldValueColor,
+		publicRelationText,
+		PUBLIC_RELATION_TITLE,
+	} from './shareView';
+	import { isRelationType } from '$lib/items/relationFieldTypes';
 
 	interface Props {
 		item: PublicItem;
@@ -29,9 +37,20 @@
 	// Schema fields that carry a value on this item, in schema order. Computed
 	// fields are dropped (visibleFields) — they aren't part of the shared
 	// snapshot's meaningful data.
+	// A relation NEVER prints its stored value here (BUG-3016). The value is an
+	// item id and a share payload has no index behind it, so the entry says what
+	// it holds — the same placeholder the shared table renders, from the same
+	// helper. `publicRelationText` carries why resolving it is a visibility
+	// question rather than a payload one; IDEA-3066 is the unit that would.
 	let displayFields = $derived(
 		visibleFields(fields)
-			.map((f) => ({ field: f, value: formatFieldValue(item.fields[f.key]) }))
+			.map((f) => ({
+				field: f,
+				value: isRelationType(f.type)
+					? publicRelationText(f, item.fields[f.key])
+					: formatFieldValue(item.fields[f.key]),
+				placeholder: isRelationType(f.type)
+			}))
 			.filter((entry) => entry.value !== '')
 	);
 
@@ -63,11 +82,15 @@
 <div class="item-expansion" {id} role="region" aria-label="{item.title} details">
 	{#if displayFields.length > 0}
 		<dl class="expansion-fields">
-			{#each displayFields as { field, value } (field.key)}
+			{#each displayFields as { field, value, placeholder } (field.key)}
 				{@const color = colorFor(field)}
 				<div class="field-chip">
 					<dt class="field-chip-label">{field.label || formatLabel(field.key)}</dt>
-					<dd class="field-chip-value" style:color>{displayValue(field, value)}</dd>
+					{#if placeholder}
+						<dd class="field-chip-value is-placeholder" title={PUBLIC_RELATION_TITLE}>{value}</dd>
+					{:else}
+						<dd class="field-chip-value" style:color>{displayValue(field, value)}</dd>
+					{/if}
 				</div>
 			{/each}
 		</dl>
@@ -124,6 +147,13 @@
 	.field-chip-value {
 		color: var(--text-primary);
 		margin: 0;
+	}
+
+	/* A value this share cannot resolve (BUG-3016) — reads as a note about the
+	   field rather than as its content. Matches PublicTableView's cell. */
+	.field-chip-value.is-placeholder {
+		color: var(--text-muted);
+		font-style: italic;
 	}
 
 	.expansion-empty {

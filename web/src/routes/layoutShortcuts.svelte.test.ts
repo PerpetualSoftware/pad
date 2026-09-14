@@ -31,6 +31,9 @@ vi.mock('$lib/api/client', () => {
 	return {
 		api: new Proxy({}, { get: () => new Proxy({}, { get: () => never }) }),
 		setAccessRevokedHandler: () => {},
+	// BUG-2983 added this seam; the layout calls it at module scope, so a mock
+	// without it throws before any assertion runs.
+	setIdentityProvider: () => {},
 		setRateLimitHandler: () => {},
 		isPlanLimitError: () => false,
 		planLimitMessage: () => '',

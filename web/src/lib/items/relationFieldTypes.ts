@@ -53,3 +53,36 @@ export function isMultiRelationType(type: string | undefined | null): boolean {
 export function isResolvableRelation(field: Pick<FieldDef, 'type' | 'collection'> | undefined | null): boolean {
 	return !!field && isRelationType(field.type) && !!field.collection;
 }
+
+/**
+ * A relation field's references as raw strings, in order — the READ shape.
+ *
+ * ONE element for a scalar `relation`, N for a `multi_relation`, none when the
+ * field is empty, so a caller renders a list and the scalar case is the
+ * one-element case rather than a second code path. `FieldEditor` worked this
+ * out first and still owns the WRITE-side hold that sits in front of it (a list
+ * it has sent but not yet seen echoed); this is only the part that turns a
+ * stored value into references, which every read surface needs.
+ *
+ * Blank and non-string elements are DROPPED rather than rendered. The write
+ * doors refuse both outright (`internal/items/validate.go`, the multi_relation
+ * arm — an empty element is an error, not a skip, precisely so an ordered
+ * list's length cannot depend on which elements were blank), so this is
+ * defence against a value no door will accept, not a policy of its own.
+ *
+ * A NON-ARRAY value on a `multi_relation` yields NOTHING, deliberately: the
+ * type was changed under a stored scalar, and one arbitrary element is a worse
+ * answer than an empty cell, which at least reads as "this field has nothing
+ * this view can show".
+ */
+export function relationValuesOf(type: string | undefined | null, value: unknown): string[] {
+	if (!isRelationType(type)) return [];
+	if (isMultiRelationType(type)) {
+		if (!Array.isArray(value)) return [];
+		return value
+			.map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
+			.filter((entry) => entry !== '');
+	}
+	const raw = typeof value === 'string' ? value.trim() : '';
+	return raw ? [raw] : [];
+}

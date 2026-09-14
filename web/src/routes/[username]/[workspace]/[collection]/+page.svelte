@@ -8,6 +8,7 @@
 	import { parseSettings, parseFields, parseSchema, parseTags, getStatusOptions, itemUrlId, formatItemRef } from '$lib/types';
 	import { plansProgressToMap, fetchCollectionProgress } from '$lib/collections/progressMerge';
 	import { resolveRenameNavTarget, resolveSyncRenameTarget } from '$lib/collections/renameNav';
+	import { laneWriteValue, laneWriteRefusalMessage } from '$lib/collections/laneWriteValue';
 	import BoardView from '$lib/components/collections/BoardView.svelte';
 	import ListView from '$lib/components/collections/ListView.svelte';
 	import TableView from '$lib/components/collections/TableView.svelte';
@@ -1315,6 +1316,14 @@
 			: (settings?.list_group_by ?? 'status')
 	);
 
+	/**
+	 * The group field's SCHEMA entry — what a lane key has to be converted back
+	 * through before it is written (BUG-3057). `undefined` for a `board_group_by`
+	 * naming a field the schema does not declare, which `laneWriteValue` treats
+	 * as "write the key", matching the server's orphan-key handling.
+	 */
+	let groupFieldDef = $derived(schema?.fields.find((f) => f.key === groupField));
+
 	let statusOptions = $derived(collection ? getStatusOptions(collection) : []);
 
 	/** Schema keys whose filter value names an item rather than an option. */
@@ -1665,7 +1674,24 @@
 		searchResultRank = new Map(hits.map((h, i) => [h.id, i]));
 	});
 
-	async function handleStatusChange(item: Item, newValue: string) {
+	/**
+	 * Write one field on one item, from a lane move or from a status chip.
+	 *
+	 * `fieldKey` is EXPLICIT because two different intents arrive here and they
+	 * do not name the same field (BUG-3057, codex enumeration round). A drag
+	 * between lanes means "put this item in THIS LANE" — the group field. A
+	 * status chip means "set this item's STATUS" — the `status` field and
+	 * nothing else. With `groupField` hardcoded, the TABLE's status chip, whose
+	 * options come from the `status` schema field, wrote its value into whatever
+	 * `list_group_by` named: on a table grouped by `priority`, clicking a status
+	 * chip set the priority. Defaulting to `groupField` leaves every drag caller
+	 * unchanged.
+	 *
+	 * The same conflation exists for the status chip on a LIST/BOARD card, where
+	 * one prop serves both the drag and the chip — that needs a second callback
+	 * through those components rather than an argument here, and is BUG-3068.
+	 */
+	async function handleStatusChange(item: Item, newValue: string, fieldKey: string = groupField) {
 		if (!wsSlug) return;
 		// BUG-3049: patch ONLY the group field. This used to read the item's
 		// fields, set one key and send the whole blob back as a full replace,
@@ -1673,7 +1699,24 @@
 		// reverted. `fields_patch` merges per key under the row lock
 		// (internal/store/items.go::mergeFieldsPatch), so no other field is
 		// reachable by this write at all.
-		const fieldsPatch = { [groupField]: newValue };
+		// BUG-3057: a lane key is a STRING projection of the value, and assigning
+		// it straight back sent a string to a field the schema says holds
+		// something else. The server REFUSES those writes (`"0"` into a number,
+		// `"c"` into a multi_select), so a legitimate drag between lanes simply
+		// failed on any board not grouped by a string-shaped field. Convert
+		// through the declared type; see `laneWriteValue` for the measured
+		// server behaviour behind each case.
+		const targetFieldDef = schema?.fields.find((f) => f.key === fieldKey);
+		const laneWrite = laneWriteValue(targetFieldDef, newValue);
+		if (!laneWrite.ok) {
+			// Thrown, not swallowed: BoardView unwinds its optimistic reorder on
+			// a rejection, which is the same contract the catch below relies on.
+			const label = targetFieldDef?.label || fieldKey;
+			const msg = laneWriteRefusalMessage(laneWrite.reason, label);
+			toastStore.show(msg, 'error');
+			throw new Error(msg);
+		}
+		const fieldsPatch = { [fieldKey]: laneWrite.value };
 		const ws = wsSlug;
 		const parentRef = formatItemRef(item) ?? item.slug;
 
@@ -1932,8 +1975,21 @@
 				defaultFields.status = statusField.options[0];
 			}
 			// Pre-fill the lane's group field (status, or a custom
-			// board_group_by select) so the item opens in this lane.
-			defaultFields[groupField] = groupValue;
+			// board_group_by select) so the item opens in this lane — converted
+			// through the declared type, for the reason on the drag path
+			// (BUG-3057). Creating in a `0` lane of a number field used to send
+			// the string `"0"`, which the server refuses, so the create failed.
+			const laneWrite = laneWriteValue(groupFieldDef, groupValue);
+			if (!laneWrite.ok) {
+				const label = groupFieldDef?.label || groupField;
+				toastStore.show(laneWriteRefusalMessage(laneWrite.reason, label), 'error');
+				return null;
+			}
+			// A null here is the PATCH path's delete sentinel and means nothing on
+			// create — the field is simply absent from a new item.
+			if (laneWrite.value !== null) {
+				defaultFields[groupField] = laneWrite.value;
+			}
 			// Epoch before create: a brand-new id is never in the fence set,
 			// so this is the case the epoch guard exists for (BUG-2098).
 			const epoch = localIndex.scopeEpochFor(wsSlug);
@@ -3473,7 +3529,27 @@
 		</div>
 
 		<!-- Content -->
-		{#if (indexError || accessRevoked) && items.length === 0}
+		{#if accessRevoked && items.length === 0}
+			<!--
+				The workspace is not reachable by this caller (BUG-2983). Split
+				out of the generic error box below because the two need opposite
+				affordances: that one offers RETRY, and retrying this is what
+				produced the storm this fix closes.
+
+				THE WORDING IS THE RULING (lead, on the fold). A non-member and a
+				DELETED workspace are the same 404 by design — the server refuses
+				to say which, so neither may this. "Access revoked" would assert
+				the half that was deliberately withheld, and it is also wrong for
+				the commonest case, which is a link into a workspace the user was
+				never in.
+			-->
+			<div class="empty-state-box">
+				<div class="empty-icon">🔒</div>
+				<h2>This workspace isn't available</h2>
+				<p>It isn't available to you, or it no longer exists.</p>
+				<a class="empty-cta" href="/{username}">Back to your workspaces</a>
+			</div>
+		{:else if indexError && items.length === 0}
 			<!-- localIndex bootstrap failed and the cache is empty
 			     (e.g. transient /items-index failure on cold load,
 			     or auth revoked on /items-changes). Show a retry
@@ -3552,7 +3628,7 @@
 				{collection}
 				{wsSlug}
 				{focusedItemId}
-				onStatusChange={handleStatusChange}
+				onStatusChange={(it, newStatus) => handleStatusChange(it, newStatus, 'status')}
 				onReorder={handleReorder}
 				oncreate={canEditThisCollection ? openQuickCreate : undefined}
 				{itemProgress}

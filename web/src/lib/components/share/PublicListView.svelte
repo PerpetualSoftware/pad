@@ -14,7 +14,8 @@
 		groupItems,
 		formatLabel,
 		fieldValueColor,
-		isPublicGroupable
+		isPublicGroupable,
+		categoricalChipValue
 	} from './shareView';
 	import PublicItemExpansion from './PublicItemExpansion.svelte';
 
@@ -57,11 +58,14 @@
 		return groupItems(items, groupField, optionOrder);
 	});
 
+	// Asking the SCHEMA, not only the value's shape (BUG-3016): a `status`
+	// retyped to a scalar `relation` still holds a string, so the value test
+	// alone let an item id render as a status pill. See `categoricalChipValue`.
 	function statusOf(item: PublicItem): string {
-		return typeof item.fields.status === 'string' ? (item.fields.status as string) : '';
+		return categoricalChipValue(statusFieldDef, item.fields.status);
 	}
 	function priorityOf(item: PublicItem): string {
-		return typeof item.fields.priority === 'string' ? (item.fields.priority as string) : '';
+		return categoricalChipValue(priorityFieldDef, item.fields.priority);
 	}
 
 	function activate(item: PublicItem) {

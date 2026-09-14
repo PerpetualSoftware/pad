@@ -137,3 +137,62 @@ describe('no surface keeps a private copy of a lane-key helper', () => {
 		).toBe(true);
 	});
 });
+
+/**
+ * The WRITE side of the same seam (BUG-3057).
+ *
+ * BUG-3053 closed the read side — comparing a lane key against a raw value —
+ * and this file's guards are about surfaces READING through the shared helpers.
+ * The two write paths on the collection page had the mirror defect: they
+ * assigned the lane KEY back to the field, whatever its declared type, and the
+ * server refuses those writes (`"0"` into a number, `"c"` into a multi_select),
+ * so a legitimate drag or create-in-lane simply failed.
+ *
+ * Asserted at the SOURCE for the reason the guards above are: a behaviour test
+ * of `laneWriteValue` stays green if a call site stops calling it, and the
+ * call sites live in a 2000-line route component whose write paths need a
+ * board, a drag and a network mock to reach.
+ */
+describe('BUG-3057: the collection page writes a CONVERTED lane value', () => {
+	const page = read('../../routes/[username]/[workspace]/[collection]/+page.svelte');
+
+	it('imports the converter', () => {
+		expect(page).toContain("from '$lib/collections/laneWriteValue'");
+		expect(page).toContain('laneWriteValue');
+		expect(page).toContain('laneWriteRefusalMessage');
+	});
+
+	it('sends the CONVERTED value on the drag path, not the lane key', () => {
+		// The mutant this kills is the original line, restored. The patched key
+		// is `fieldKey` rather than `groupField` because the writer now takes its
+		// target explicitly — see the status-chip leg below.
+		expect(page).toContain('const fieldsPatch = { [fieldKey]: laneWrite.value };');
+		expect(page).not.toContain('const fieldsPatch = { [groupField]: newValue };');
+	});
+
+	it('lets the table status chip name the STATUS field, not the lane field', () => {
+		// The table has no lanes: its chip cycles the `status` schema field's
+		// options and used to send them to `groupField`, which in table view is
+		// `list_group_by`. On a table grouped by `priority`, a status click set
+		// the priority. The default argument keeps every drag caller on the lane
+		// field, so this leg is what says the table opted out of it.
+		expect(page).toContain(
+			"onStatusChange={(it, newStatus) => handleStatusChange(it, newStatus, 'status')}",
+		);
+		expect(page).toContain(
+			'async function handleStatusChange(item: Item, newValue: string, fieldKey: string = groupField)',
+		);
+	});
+
+	it('sends the CONVERTED value on the create-in-lane path, not the lane key', () => {
+		expect(page).toContain('laneWriteValue(groupFieldDef, groupValue)');
+		expect(page).not.toContain('defaultFields[groupField] = groupValue;');
+	});
+
+	it('resolves the group field against the SCHEMA, since the type is what converts', () => {
+		// Without this derive, both call sites would have nothing to convert
+		// through and the converter would fall into its undeclared-field arm —
+		// which writes the key, i.e. the defect, with a helper in front of it.
+		expect(page).toContain("let groupFieldDef = $derived(schema?.fields.find((f) => f.key === groupField));");
+	});
+});

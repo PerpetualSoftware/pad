@@ -11,7 +11,7 @@
 	} from '$lib/stores/identityReload.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
-	import { setAccessRevokedHandler, setRateLimitHandler } from '$lib/api/client';
+	import { setAccessRevokedHandler, setRateLimitHandler, setIdentityProvider } from '$lib/api/client';
 	import { notifyServerBusy } from '$lib/api/serverBusyToast';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import Sidebar from '$lib/components/layout/Sidebar.svelte';
@@ -86,8 +86,30 @@
 	// stale (Codex round 2 of TASK-1360). Registration lives here
 	// instead of inside client.ts to keep client.ts free of a store
 	// import that would create a circular dep.
+	// Who the API client stamps outgoing requests as (BUG-2983). Registered
+	// here, not imported there, for the reason the handler below is: client.ts
+	// importing the auth store would make a cycle.
+	setIdentityProvider(() => authStore.userId || null);
+
 	setAccessRevokedHandler((scope) => {
-		localIndex.reset(scope.workspace);
+		// BUG-2983 widened this seam from 403-only to "this workspace is not
+		// reachable", because a workspace the caller is not a member of answers
+		// 404, not 403 — so this handler never fired for the commonest case
+		// there is, and the client re-requested until the rate limiter answered.
+		//
+		// `markUnreachable` rather than a bare `reset`: reset alone leaves the
+		// next bootstrap cold, which refetches, which 404s, which resets. The
+		// mark is what makes the refusal terminal for this identity, and it is
+		// cleared on identity change.
+		// STAMPED IDENTITY, not the current one (codex round 1 P1). A 404 can
+		// land after a sign-out or a user switch; recording it against whoever is
+		// signed in now would refuse the workspace to a user who never asked and
+		// may well be a member — and the identity-change clear has already run by
+		// then, so nothing would undo it.
+		const issuedAs = scope.identity;
+		const now = authStore.userId || null;
+		if (issuedAs !== undefined && issuedAs !== now) return;
+		localIndex.markUnreachable(scope.workspace, now);
 	});
 
 	// Register the "server busy" toast for surfaced 429s (TASK-2080 /
