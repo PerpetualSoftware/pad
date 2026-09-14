@@ -33,6 +33,23 @@ function stripComments(src: string): string {
 
 const CODE = stripComments(SRC);
 
+/** The body of a top-level function, or a thrown failure.
+ *
+ * FAILS CLOSED, and that is the whole reason it exists (codex round 4 [P2]).
+ * The first version did `CODE.slice(fn, CODE.indexOf('\n\t}', fn))`, and when
+ * that indexOf finds nothing it returns -1 — so `slice(fn, -1)` scanned nearly
+ * the rest of the file and let unrelated flush/guard occurrences elsewhere in
+ * a 7,900-line component satisfy assertions about THIS function. A guard whose
+ * failure mode is to widen its own scope reports success for a source it never
+ * checked. */
+function functionBody(marker: string): string {
+	const start = CODE.indexOf(marker);
+	if (start < 0) throw new Error(`${marker} was renamed or removed — re-point this guard`);
+	const end = CODE.indexOf('\n\t}', start);
+	if (end <= start) throw new Error(`could not find the end of ${marker} — re-point this guard`);
+	return CODE.slice(start, end);
+}
+
 describe('ItemDetail teardown writes under an identity change', () => {
 	it('captures the identity epoch at LOAD and re-stamps it in loadData', () => {
 		// The comparison is only meaningful against the identity whose typing
@@ -57,9 +74,7 @@ describe('ItemDetail teardown writes under an identity change', () => {
 		// So the shape changed. There is now ONE writing function, the guard
 		// lives inside it, and the enumeration below FAILS CLOSED on a teardown
 		// listener it has not been told about.
-		const fn = CODE.indexOf('function runTeardownFlush()');
-		expect(fn, 'runTeardownFlush was renamed or removed — re-point this guard').toBeGreaterThan(-1);
-		const body = CODE.slice(fn, CODE.indexOf('\n\t}', fn));
+		const body = functionBody('function runTeardownFlush()');
 
 		const guard = body.indexOf('authStore.identityEpoch !== identityEpochAtLoad');
 		expect(guard, 'the teardown flush does not check the identity epoch').toBeGreaterThan(-1);
@@ -82,17 +97,60 @@ describe('ItemDetail teardown writes under an identity change', () => {
 		// `save` callback, pinned by the third test below. A real site, and the
 		// wrong question — the guard's question was wider than the claim resting
 		// on it, which is the failure this file exists to catch in the source.
+		// FAIL CLOSED on a teardown listener that writes without going through
+		// the guarded function. Rewritten after codex round 4 [P1]: the first
+		// version rejected two literal spellings and then only checked that
+		// `runTeardownFlush()` appeared SOMEWHERE in the block — so a new
+		// handler writing through any other call, or through an alias, passed.
+		// "No forbidden spelling is present" is a much weaker claim than "every
+		// registered handler routes through the guard", and it was the second
+		// one this test was named for.
+		//
+		// So the registrations are ENUMERATED and each handler is checked
+		// individually, with an unknown handler failing rather than being
+		// ignored.
 		const reg = CODE.indexOf("const onBeforeUnload = (event: BeforeUnloadEvent) => {");
+		expect(reg, 'the teardown listener block was restructured — re-point this guard').toBeGreaterThan(-1);
 		const regEnd = CODE.indexOf("document.removeEventListener('visibilitychange'", reg);
 		expect(regEnd, 'the teardown listener block was restructured — re-point this guard').toBeGreaterThan(reg);
 		const listeners = CODE.slice(reg, regEnd);
-		for (const direct of ['collabFlusher.flushNow', 'rawContentSaver.flushNow']) {
+
+		const registered = [...listeners.matchAll(/addEventListener\('([a-z]+)',\s*(\w+)\)/g)].map(
+			(m) => ({ event: m[1], handler: m[2] }),
+		);
+		expect(registered.length, 'no teardown registrations found — re-point this guard').toBeGreaterThan(2);
+
+		// `pageshow` is the one registration that deliberately does NOT write:
+		// it only re-arms the latch. Every other one must route through the
+		// guarded function.
+		const nonWriting = new Set(['pageshow']);
+		for (const { event, handler } of registered) {
+			const decl = `const ${handler} = `;
+			const at = listeners.indexOf(decl);
+			expect(at, `handler ${handler} for ${event} is not declared in this block`).toBeGreaterThan(-1);
+			const next = registered
+				.map((r) => listeners.indexOf(`const ${r.handler} = `))
+				.filter((i) => i > at)
+				.sort((a, b) => a - b)[0];
+			const bodyText = listeners.slice(at, next === undefined ? listeners.indexOf('window.addEventListener') : next);
+			if (nonWriting.has(event)) {
+				expect(
+					bodyText.includes('runTeardownFlush'),
+					`${event} is listed as non-writing but calls the flush`,
+				).toBe(false);
+				continue;
+			}
 			expect(
-				listeners.includes(direct),
-				`a teardown listener calls ${direct} directly instead of runTeardownFlush() — it bypasses the identity guard and the once-latch`,
-			).toBe(false);
+				bodyText,
+				`the ${event} handler does not route through runTeardownFlush() — it would bypass the identity guard and the once-latch`,
+			).toContain('runTeardownFlush()');
+			for (const direct of ['collabFlusher.flushNow', 'rawContentSaver.flushNow']) {
+				expect(
+					bodyText.includes(direct),
+					`the ${event} handler calls ${direct} directly instead of runTeardownFlush()`,
+				).toBe(false);
+			}
 		}
-		expect(listeners).toContain('runTeardownFlush()');
 	});
 
 	it('fires the teardown flush ONCE, and re-arms only on a restore', () => {
@@ -100,8 +158,7 @@ describe('ItemDetail teardown writes under an identity change', () => {
 		// events produce THREE identical PATCHes while the keepalive save is in
 		// flight, and one when it resolves between them (BUG-3030). The teardown
 		// path is fire-and-forget, so in-flight is the case that actually runs.
-		const fn = CODE.indexOf('function runTeardownFlush()');
-		const body = CODE.slice(fn, CODE.indexOf('\n\t}', fn));
+		const body = functionBody('function runTeardownFlush()');
 		expect(body).toMatch(/if\s*\(teardownFlushed\)\s*return/);
 		expect(body).toMatch(/teardownFlushed\s*=\s*true/);
 
