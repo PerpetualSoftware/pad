@@ -61,6 +61,14 @@ type ItemSummary struct {
 	RelationTargets map[string]models.RelationTargetSet `json:"relation_targets,omitempty"`
 	CreatedAt       time.Time                           `json:"created_at"`
 	UpdatedAt       time.Time                           `json:"updated_at"`
+	// Seq is the item's write token (BUG-3037). It is on the SUMMARY shape, not
+	// just the full item, because the summary is what an agent reads by default
+	// on both MCP transports and on `pad item list` since v0.9 — a token absent
+	// from the shape a caller actually reads is a token that caller cannot send,
+	// and it would fall back to `expected_updated_at`, which cannot tell two
+	// same-second writes apart. Not omitempty, for the same reason as
+	// models.Item.Seq.
+	Seq int64 `json:"seq"`
 }
 
 // contentPreviewLimit caps the content_preview at a small, agent-friendly
@@ -138,6 +146,7 @@ func ToItemSummary(item models.Item) ItemSummary {
 		RelationTargets: item.RelationTargets,
 		CreatedAt:       item.CreatedAt,
 		UpdatedAt:       item.UpdatedAt,
+		Seq:             item.Seq,
 	}
 }
 

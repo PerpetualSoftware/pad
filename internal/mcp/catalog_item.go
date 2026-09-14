@@ -274,6 +274,13 @@ var padItemSchemaParams = []ParamDef{
 	// changed since, so a coordinating agent can detect a lost-update race
 	// and re-read instead of silently clobbering another writer.
 	{Name: "expected_updated_at", Type: "string", Description: "Optimistic-concurrency guard for action=update. RFC3339 updated_at you last read; the update is rejected with code=update_conflict if the item changed since. Optional."},
+	// BUG-3037: the STRONG token, and the one an agent should reach for.
+	// `updated_at` has one-second resolution, so two writes inside one second
+	// both match it and NEITHER conflicts — an agent that reads, decides and
+	// writes quickly (which is what agents do) loses the race the token exists
+	// to catch. `seq` is bumped on every mutation of the row, is returned on
+	// every item AND every item summary, and is an integer.
+	{Name: "expected_seq", Type: "number", Description: "Optimistic-concurrency guard for action=update, PREFERRED over expected_updated_at. The `seq` you last read; the update is rejected with code=update_conflict if the item changed since. Unlike expected_updated_at it distinguishes two writes inside the same second. Optional."},
 
 	// ── Notes / decisions ──
 	{Name: "summary", Type: "string", Description: "Short note headline. Required for: note."},

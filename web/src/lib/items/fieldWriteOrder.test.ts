@@ -121,6 +121,10 @@ describe('submitOrderedOCC — the retry never replays a superseded body', () =>
 			order,
 			ticket: tickets.first,
 			maxRetries: 2,
+			// BUG-3037: the helper no longer hardcodes `updated_at` as the token — the
+			// caller names it. These tests are about ORDERING and retry, so they keep
+			// the old token and their meaning is unchanged.
+			tokenOf: (r: Row) => r.updated_at,
 			initialExpected: 't0',
 			send: (expected) => firstSend.promise.then(() => row.patch(expected, ['B', 'C'])),
 			refetch: () => firstRefetch.promise.then(() => row.read()),
@@ -137,6 +141,10 @@ describe('submitOrderedOCC — the retry never replays a superseded body', () =>
 			order,
 			ticket: tickets.second,
 			maxRetries: 2,
+			// BUG-3037: the helper no longer hardcodes `updated_at` as the token — the
+			// caller names it. These tests are about ORDERING and retry, so they keep
+			// the old token and their meaning is unchanged.
+			tokenOf: (r: Row) => r.updated_at,
 			initialExpected: 't0',
 			send: (expected) => Promise.resolve(row.patch(expected, ['C'])),
 			refetch: () => Promise.resolve(row.read()),
@@ -227,6 +235,10 @@ describe('submitOrderedOCC — the retry never replays a superseded body', () =>
 			order,
 			ticket,
 			maxRetries: 2,
+			// BUG-3037: the helper no longer hardcodes `updated_at` as the token — the
+			// caller names it. These tests are about ORDERING and retry, so they keep
+			// the old token and their meaning is unchanged.
+			tokenOf: (r: Row) => r.updated_at,
 			initialExpected: 't0',
 			send: (expected) => {
 				sends.push(expected);
@@ -253,6 +265,10 @@ describe('submitOrderedOCC — the retry never replays a superseded body', () =>
 			order,
 			ticket,
 			maxRetries: 2,
+			// BUG-3037: the helper no longer hardcodes `updated_at` as the token — the
+			// caller names it. These tests are about ORDERING and retry, so they keep
+			// the old token and their meaning is unchanged.
+			tokenOf: (r: Row) => r.updated_at,
 			initialExpected: 't0',
 			send: (expected) => Promise.resolve(row.patch(expected, ['B', 'C'])),
 			refetch: () => Promise.resolve(row.read()),
@@ -277,6 +293,10 @@ describe('submitOrderedOCC — the retry never replays a superseded body', () =>
 				order,
 				ticket,
 				maxRetries: 2,
+				// BUG-3037: the helper no longer hardcodes `updated_at` as the token — the
+				// caller names it. These tests are about ORDERING and retry, so they keep
+				// the old token and their meaning is unchanged.
+				tokenOf: (r: Row) => r.updated_at,
 				initialExpected: 'stale-0',
 				send: (expected) => {
 					sends++;
@@ -314,6 +334,10 @@ describe('submitOrderedOCC — the retry never replays a superseded body', () =>
 				order,
 				ticket,
 				maxRetries: 2,
+				// BUG-3037: the helper no longer hardcodes `updated_at` as the token — the
+				// caller names it. These tests are about ORDERING and retry, so they keep
+				// the old token and their meaning is unchanged.
+				tokenOf: (r: Row) => r.updated_at,
 				initialExpected: 't0',
 				send: (expected) => {
 					sends++;
@@ -345,6 +369,10 @@ describe('submitOrderedOCC — the retry never replays a superseded body', () =>
 				order,
 				ticket,
 				maxRetries: 2,
+				// BUG-3037: the helper no longer hardcodes `updated_at` as the token — the
+				// caller names it. These tests are about ORDERING and retry, so they keep
+				// the old token and their meaning is unchanged.
+				tokenOf: (r: Row) => r.updated_at,
 				initialExpected: 'stale',
 				send: (expected) => Promise.resolve(row.patch(expected, ['B', 'C'])),
 				refetch,
@@ -369,6 +397,10 @@ describe('submitOrderedOCC — the retry never replays a superseded body', () =>
 				order,
 				ticket,
 				maxRetries: 2,
+				// BUG-3037: the helper no longer hardcodes `updated_at` as the token — the
+				// caller names it. These tests are about ORDERING and retry, so they keep
+				// the old token and their meaning is unchanged.
+				tokenOf: (r: Row) => r.updated_at,
 				initialExpected: 't0',
 				send: () => Promise.reject(failure),
 				refetch,
@@ -395,6 +427,10 @@ describe('submitOrderedOCC — the retry never replays a superseded body', () =>
 				order,
 				ticket,
 				maxRetries: 2,
+				// BUG-3037: the helper no longer hardcodes `updated_at` as the token — the
+				// caller names it. These tests are about ORDERING and retry, so they keep
+				// the old token and their meaning is unchanged.
+				tokenOf: (r: Row) => r.updated_at,
 				initialExpected: 't0',
 				send: (expected) => {
 					sends++;

@@ -317,7 +317,44 @@ func writeOpenChildrenError(w http.ResponseWriter, parentRef string, details *op
 // (e.g. "TASK-5"). The details carry both timestamps so a client can decide
 // whether to re-read + retry or surface the collision to the user.
 func writeUpdateConflictError(w http.ResponseWriter, ref string, conflict *store.UpdateConflictError) {
+	// BUG-3037: when the SEQ token is the one that conflicted, the envelope
+	// carries the seq pair INSTEAD of the timestamp pair. Echoing
+	// `expected_updated_at: ""` next to a seq conflict would tell the caller
+	// they sent a token they did not, and a client retrying on
+	// `actual_updated_at` would re-send the weak token that cannot see the race
+	// it just lost.
+	if conflict.ExpectedSeq != nil {
+		writeUpdateConflictSeqEnvelope(w, ref, *conflict.ExpectedSeq, conflict.ActualSeq)
+		return
+	}
 	writeUpdateConflictEnvelope(w, ref, conflict.ExpectedUpdatedAt, conflict.ActualUpdatedAt)
+}
+
+// writeUpdateConflictSeqEnvelope is the seq-token form of the same
+// pad-structured-error/v1 `update_conflict` envelope (BUG-3037). Same status,
+// same code, same message — only the two details keys differ, so a client that
+// branches on `code` needs no change and one that reads the details learns
+// which token to retry with.
+func writeUpdateConflictSeqEnvelope(w http.ResponseWriter, ref string, expectedSeq int64, actualSeq *int64) {
+	details := map[string]any{
+		"ref":           ref,
+		"expected_seq":  expectedSeq,
+		"conflict_type": "seq",
+	}
+	// actual_seq is what the caller retries WITH, so it is omitted rather than
+	// guessed when the store could not report it.
+	if actualSeq != nil {
+		details["actual_seq"] = *actualSeq
+	}
+	writeJSON(w, http.StatusConflict, map[string]any{
+		"error": map[string]any{
+			"code": "update_conflict",
+			"message": fmt.Sprintf(
+				"%s was modified by another writer since you last read it; re-read and retry.",
+				ref),
+			"details": details,
+		},
+	})
 }
 
 // writeUpdateConflictEnvelope is the shared writer for the

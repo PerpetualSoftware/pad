@@ -1017,6 +1017,42 @@ const CmdhelpVersion = "0.1"
 //     browser tab and BUG-3000 carries the open half — so no surface
 //     here states a duration.
 //
+//     0.34 — BUG-3037. `pad_item` gains an `expected_seq` param on
+//     `action: update`: the STRONG optimistic-concurrency token, preferred
+//     over `expected_updated_at`.
+//
+//     ADDITIVE — no tool name, action enum or existing param shape changed,
+//     and `expected_updated_at` still works exactly as it did. Same
+//     disposition as 0.13 / 0.11 / 0.8, which likewise wired an existing
+//     server capability onto the catalog. A 0.33 consumer that never sends
+//     `expected_seq` is unaffected.
+//
+//     WHY IT IS NEEDED RATHER THAN NICE: `updated_at` is stored at
+//     ONE-SECOND resolution, so two writes to a row inside one second both
+//     match the token and NEITHER conflicts — the loser is accepted and
+//     silently overwrites the winner, with both callers seeing success. That
+//     is precisely the shape of agent traffic (read, decide, write, fast),
+//     so the token an agent was offered could not refuse the race it exists
+//     to refuse. `seq` is bumped on every mutation of the row under the
+//     server's write lock, and is an integer, so it can.
+//
+//     Raising `updated_at`'s resolution instead was measured and REJECTED:
+//     the column is TEXT on both dialects and is compared LEXICALLY in SQL
+//     (the since-cursor read plus eight ORDER BY sites), and Go's
+//     RFC3339Nano omits trailing zeros, so a sub-second value sorts BEFORE a
+//     whole-second value of the same second and a cursor would start
+//     skipping rows.
+//
+//     The read side is what makes the token reachable: `seq` is now
+//     serialised without `omitempty` on `models.Item` AND added to the item
+//     SUMMARY shape (`cli.ItemSummary`), which is what `pad_item.list`
+//     returns by default since 0.9. A token absent from the shape a caller
+//     reads is a token that caller cannot send.
+//
+//     A value below 1 is refused at the HTTP boundary with a 400 rather than
+//     a 409: the server never issues a seq below 1, so such a value is a
+//     caller bug, and a 409 would read as contention that never clears.
+//
 //     0.33 — PLAN-2857 U4 / TASK-2999. A new `multi_relation` field type:
 //     an ORDERED LIST of references, each element resolving through the
 //     same UUID -> ref -> exact-title ladder a scalar `relation` uses.
@@ -1123,7 +1159,7 @@ const CmdhelpVersion = "0.1"
 //     content into the row — so no surface here states a duration for
 //     this one either, and it is not a promise that the row will catch
 //     up at all.
-const ToolSurfaceVersion = "0.33"
+const ToolSurfaceVersion = "0.34"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

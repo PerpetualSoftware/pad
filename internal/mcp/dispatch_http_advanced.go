@@ -425,6 +425,20 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 	if v, ok := input["expected_updated_at"].(string); ok && v != "" {
 		payload["expected_updated_at"] = v
 	}
+	// BUG-3037: the seq token. JSON numbers arrive as float64 on this path; it
+	// is forwarded as an integer so the server sees the same value the CLI flag
+	// produces. A zero or negative value is forwarded as-is and refused at the
+	// boundary with a 400 — the server never issues a seq below 1, so sending
+	// one is a caller bug and saying so beats a 409 loop that reads as
+	// contention.
+	switch v := input["expected_seq"].(type) {
+	case float64:
+		payload["expected_seq"] = int64(v)
+	case int64:
+		payload["expected_seq"] = v
+	case int:
+		payload["expected_seq"] = int64(v)
+	}
 
 	// Field-level PATCH (TASK-2022). Send ONLY the changed keys as
 	// `fields_patch`; the server shallow-merges them onto the item's current

@@ -1031,6 +1031,7 @@ func updateCmd() *cobra.Command {
 		force             bool
 		sortOrder         int
 		expectedUpdatedAt string
+		expectedSeq       int64
 		clearAssignedUser bool
 		clearAgentRole    bool
 		clearParent       bool
@@ -1141,6 +1142,13 @@ Examples:
 			}
 			if expectedUpdatedAt != "" {
 				input.ExpectedUpdatedAt = expectedUpdatedAt
+			}
+			// BUG-3037: the strong token. `updated_at` is second-resolution, so
+			// two writes inside one second both match it and neither conflicts —
+			// `--expected-updated-at` cannot refuse the race it exists to refuse.
+			// `seq` is bumped on every mutation of the row, so it can.
+			if expectedSeq != 0 {
+				input.ExpectedSeq = &expectedSeq
 			}
 
 			// Build a FIELD-LEVEL patch carrying ONLY the keys this command
@@ -1399,6 +1407,7 @@ Examples:
 	cmd.Flags().StringVar(&comment, "comment", "", "attach a comment explaining this update (e.g. why status changed)")
 	cmd.Flags().BoolVar(&force, "force", false, "override the open-children guard (allow marking the item terminal even if children are non-terminal)")
 	cmd.Flags().StringVar(&expectedUpdatedAt, "expected-updated-at", "", "optimistic concurrency: RFC3339 updated_at you last read; the update is rejected with a conflict (exit non-zero) if the item changed since")
+	cmd.Flags().Int64Var(&expectedSeq, "expected-seq", 0, "optimistic concurrency (preferred): the `seq` you last read; rejected with a conflict if the item changed since. Unlike --expected-updated-at this distinguishes two writes inside the same second (BUG-3037)")
 	// UPDATE ONLY, and deliberately asymmetric with `item create` — do NOT
 	// "complete" the pair by adding these there (IDEA-2584 ruling). Clearing
 	// at create is a request to not-set something that was never set: the

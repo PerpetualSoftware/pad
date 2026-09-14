@@ -315,7 +315,13 @@ type Item struct {
 	// `?since=<seq>` deltas to resume. Robust against clock-skew /
 	// same-millisecond-write / NTP-step correctness holes that an
 	// `updated_at` watermark would carry.
-	Seq int64 `json:"seq,omitempty"`
+	// SERIALISED ALWAYS, no omitempty (BUG-3037): seq is now a write token a
+	// client round-trips as `expected_seq`, so a value the server declines to
+	// send is a token the client cannot return. A live row's seq is >= 1, so
+	// dropping omitempty changes no real payload — it removes the case where a
+	// 0 would vanish and be read as "this item has no seq" by a client that
+	// then silently writes without a token.
+	Seq int64 `json:"seq"`
 
 	// Populated by joins (not stored)
 	AssignedUserName  string `json:"assigned_user_name,omitempty"`
@@ -1163,6 +1169,30 @@ type ItemUpdate struct {
 	// code "update_conflict"). Empty = no check (last-writer-wins, the
 	// historical default). Round-trip the `updated_at` you last read.
 	ExpectedUpdatedAt string `json:"expected_updated_at,omitempty"`
+
+	// ExpectedSeq, when non-nil, is the STRONG optimistic-concurrency token
+	// (BUG-3037). Round-trip the `seq` you last read; UpdateItem compares it
+	// against the row's current seq under the write lock and returns
+	// *store.UpdateConflictError on mismatch, exactly as ExpectedUpdatedAt
+	// does.
+	//
+	// Why a second token rather than a finer ExpectedUpdatedAt: `updated_at`
+	// has ONE-SECOND resolution, so two writes inside one second both match it
+	// and NEITHER conflicts — the loser is accepted and silently overwrites the
+	// winner. Raising that column's resolution is not available: it is TEXT on
+	// both dialects and is compared LEXICALLY in SQL (`WHERE updated_at >= ?`
+	// on the since-cursor read, plus eight `ORDER BY` sites), and Go's
+	// RFC3339Nano omits trailing zeros, so `…:11.5Z` sorts BEFORE `…:11Z` and a
+	// cursor would start skipping rows. `seq` has none of those problems: it is
+	// an integer, already stamped on every mutation under the workspace seq
+	// lock, and already returned to clients.
+	//
+	// A POINTER, deliberately: absent means "no token" (last-writer-wins, the
+	// historical default), and that must stay distinguishable from a caller who
+	// sends 0. A live row's seq is always >= 1 — every INSERT stamps
+	// MAX(seq)+1 and the backfill migrations numbered from 1 — so a sent 0
+	// never matches and is a conflict rather than a bypass.
+	ExpectedSeq *int64 `json:"expected_seq,omitempty"`
 }
 
 // ErrInvalidFieldsType / ErrInvalidTagsType are returned by
