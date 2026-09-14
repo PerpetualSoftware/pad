@@ -4,6 +4,7 @@
 	import { narrowRelationRow, relationChipFor } from '$lib/collections/relationGroups';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
+	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { parseSchema, parseFields, formatItemRef, itemUrlId } from '$lib/types';
 	import { itemComparator, type SortMode } from '$lib/collections/itemSort';
 	import { reorderGroup, disabledDirections, type ReorderDirection } from '$lib/collections/reorder';
@@ -176,11 +177,43 @@
 	let pulsingId = $state<string | null>(null);
 	let pulseSeq = 0;
 
+	/**
+	 * THE PERMISSION AND OPTIONS-LENGTH QUESTIONS ARE ASKED AT THE RENDER GATE,
+	 * not here, and that is deliberate after round 5 measured the alternative.
+	 *
+	 * Round 4 asked them in both places. The round-5 pass pointed out that the
+	 * render gate makes the inner copies unreachable through any click, and the
+	 * mutants confirmed it: deleting either inner guard left all 12 legs in this
+	 * file green. Two guards for one question, one of them untestable, is exactly
+	 * the arrangement this file's own history records as how a live guard came to
+	 * be deleted on the strength of a surviving mutant — so the unreachable
+	 * copies are gone rather than kept as defence in depth that nothing can
+	 * verify.
+	 *
+	 * The stale-value guard below STAYS inside, because it is the one question
+	 * the render gate cannot ask: whether the stored value is on the list is a
+	 * property of the value, not of the column. It dies to its own mutant.
+	 */
 	function cycleStatus(item: Item, options: string[]) {
 		if (!onStatusChange) return;
 		const fields = parseFields(item);
 		const current = fields.status ?? '';
 		const idx = options.indexOf(current);
+		// A STORED STATUS THE SCHEMA NO LONGER DECLARES IS NOT A CYCLE POSITION
+		// (BUG-3068 round 3). `indexOf` answers -1 for it and -1 + 1 is 0, so the
+		// click silently rewrote a stale or hand-written value to the FIRST
+		// option — and the table, unlike the card, pulses and writes it, so it
+		// even looks like it worked.
+		//
+		// NARROWER THAN THE CARD'S GUARD, deliberately. `ItemCard` never offers
+		// the chip for an absent status at all (`statusCyclable` requires
+		// `!!fields.status`), so there -1 can only mean "stale". This chip renders
+		// for an ABSENT status too — the render gate admits `fields.status ==
+		// null` — and landing on `options[0]` is what SETTING the first status
+		// means there. So only a non-empty value that is off the list is refused;
+		// blanking the guard to `idx < 0` would take away the table's only way to
+		// give an item its first status.
+		if (current !== '' && idx < 0) return;
 		const next = options[(idx + 1) % options.length];
 		pulsingId = item.id;
 		const seq = ++pulseSeq;
@@ -354,7 +387,7 @@
 						-->
 						{#if isRelationType(field.type)}
 							{@render relationCell(field, fields[field.key])}
-						{:else if field.key === 'status' && field.options && onStatusChange && (fields[field.key] == null || typeof fields[field.key] === 'string')}
+						{:else if field.key === 'status' && field.options?.length && onStatusChange && workspaceStore.canEditItem(item) && (fields[field.key] == null || typeof fields[field.key] === 'string')}
 							<Chip
 								size="sm"
 								color={statusColor(fields[field.key] ?? '')}

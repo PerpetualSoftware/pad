@@ -28,6 +28,21 @@
 		groupField?: string;
 		focusedItemId?: string | null;
 		statusOptions?: string[];
+		/**
+		 * A DROP BETWEEN GROUPS — "put this item in this lane", which names the
+		 * GROUP field. Distinct from `onStatusChange` below, which names `status`,
+		 * and the two were one prop until BUG-3068: this component passed its
+		 * single `onStatusChange` to BOTH the drop handler and the card's status
+		 * chip, so on a list grouped by anything but `status` a chip click sent a
+		 * status word to the group field.
+		 */
+		onLaneChange?: (item: Item, laneValue: string) => void | Promise<void>;
+		/**
+		 * A STATUS CHIP CLICK — names the `status` field and nothing else, at every
+		 * grouping. `ItemCard`'s chip has always meant exactly this (it renders
+		 * `fields.status` and cycles `statusOptions`); what it lacked was a caller
+		 * that agreed.
+		 */
 		onStatusChange?: (item: Item, newStatus: string) => void | Promise<void>;
 		onReorder?: (updates: { slug: string; sort_order: number }[]) => void;
 		onArchiveGroup?: (items: Item[]) => void;
@@ -36,11 +51,19 @@
 		itemProgress?: Record<string, { total: number; done: number }>;
 		progressLabel?: string;
 		/**
-		 * canEdit gates drag-to-reorder, drag-to-status-change, and the
-		 * archive-group button. Default true preserves existing behavior in
+		 * canEdit gates drag-to-reorder and drag-to-lane-change (the drop that
+		 * writes the GROUP field). Default true preserves existing behavior in
 		 * call sites that don't pass it. Pass `workspaceStore.canEditCollection(collection.id)`
 		 * (PLAN-1100 / TASK-1106) — the gate is collection-level because
 		 * svelte-dnd-action only supports zone-level dragDisabled.
+		 *
+		 * NOT the status CHIP, which is gated per ITEM inside `ItemCard` on
+		 * `canEditItem` (BUG-3068 round 2). The distinction is load-bearing rather
+		 * than pedantic: this flag is `canEditCollection`, item grants
+		 * deliberately do not promote to collection-level write, and gating the
+		 * chip here withheld it from a guest whose per-item grant the server would
+		 * have honoured. A DRAG is still gated here — svelte-dnd-action disables a
+		 * whole zone, so it has no per-item answer to give.
 		 *
 		 * Per-item gating (e.g. a guest with `ItemGrant.edit` on a single
 		 * item dragging just that one card) would require switching to
@@ -81,6 +104,7 @@
 		groupField = 'status',
 		focusedItemId = null,
 		statusOptions,
+		onLaneChange,
 		onStatusChange,
 		onReorder,
 		onArchiveGroup,
@@ -153,13 +177,18 @@
 	let relationLaneByValue = $derived(
 		new Map(relationLaneList.map((lane) => [lane.value, lane])),
 	);
-	// THE STATUS CHIP IS WITHHELD ON A RELATION-GROUPED LIST, for the reason the
-	// board withholds it: `onStatusChange` writes what it receives into
-	// `fields[groupField]`, so a status click on a list grouped by a relation
-	// wrote a STATUS STRING into the relation field. This component takes real
-	// `statusOptions` as a prop rather than reusing its lanes, so the chip
-	// showed the right options and sent them to the wrong field — the same
-	// defect as the board's, arriving from the opposite direction.
+	// THE STATUS CHIP IS NO LONGER WITHHELD ON A RELATION-GROUPED LIST (BUG-3068).
+	// It used to be, because the single `onStatusChange` prop wrote what it
+	// received into `fields[groupField]`, so a status click on a list grouped by
+	// a relation wrote a STATUS STRING into the relation field. The chip showed
+	// the right options — this component takes real `statusOptions` as a prop
+	// rather than reusing its lanes — and sent them to the wrong field.
+	//
+	// The withholding was the narrow answer to that: correct, and it left the
+	// chip missing on every relation-grouped list. The lane write is now a
+	// separate prop, so the chip's callback names `status` at every grouping and
+	// the group field is not reachable from it at all. Nothing about a relation
+	// lane makes an item's status unwritable, so nothing withholds it.
 
 	/**
 	 * The value an item is grouped under — sentinel-folded for a relation.
@@ -346,7 +375,7 @@
 				groupData = propGroupData;
 				return;
 			}
-			if (originalItem && onStatusChange) {
+			if (originalItem && onLaneChange) {
 				const fields = parseFields(originalItem);
 				// TRIMMED, like every other comparison against a stored relation
 				// value: an item holding `" id-red "` is already in this group,
@@ -369,7 +398,7 @@
 				// this review: two views implement grouping, and a behaviour's
 				// surface count is a number that gets ENUMERATED.
 				if (!groupingRefusal && current !== groupName) {
-					await onStatusChange(originalItem, groupName);
+					await onLaneChange(originalItem, groupName);
 				}
 			}
 		}
@@ -532,8 +561,8 @@
 									{collection}
 									compact={false}
 									focused={focusedItemId === item.id}
-									statusOptions={isRelationGroup || groupingRefusal ? [] : statusOptions}
-									onStatusClick={isRelationGroup || groupingRefusal ? undefined : onStatusChange}
+									{statusOptions}
+									onStatusClick={onStatusChange}
 									progress={itemProgress?.[item.id] ?? null}
 									{progressLabel}
 									onReorderItem={canReorderItems ? (it, dir) => reorderItem(groupName, it, dir) : undefined}

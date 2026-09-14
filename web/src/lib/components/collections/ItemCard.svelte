@@ -5,6 +5,7 @@
 	import { isRelationType } from '$lib/items/relationFieldTypes';
 	import { parseFields, parseSchema, parseTags, formatItemRef, itemUrlId } from '$lib/types';
 	import { starredStore } from '$lib/stores/starred.svelte';
+	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
 	import { relativeTime } from '$lib/utils/markdown';
 	import { statusColor, priorityColor, formatFieldLabel as formatLabel } from '$lib/utils/fieldColors';
@@ -105,8 +106,33 @@
 	}
 	let starred = $derived(starredStore.isStarred(item.id));
 
+	/**
+	 * GATED PER ITEM, not per collection (BUG-3068 round 2).
+	 *
+	 * Nothing gated the chip on permission at all before this: a read-only
+	 * viewer was offered a clickable chip whose write the server refused. That
+	 * was PRE-EXISTING — measured against 9e121bde on an ordinary status-grouped
+	 * list — and it is fixed here because BUG-3068 un-withheld the chip on
+	 * relation- and refusal-grouped views, which were immune only by accident.
+	 *
+	 * The first attempt gated it in the two views on their `canEdit` prop, which
+	 * is `canEditCollection` — and that is the WRONG QUESTION for this write.
+	 * Item grants deliberately do not promote to collection-level write, so a
+	 * guest holding `ItemGrant.edit` on one visible item has `canEdit === false`
+	 * and would have lost a chip the server would have honoured. `canEditItem`'s
+	 * own doc names `status` among the affordances it governs; this is that
+	 * helper's case. The store exposes it anywhere, so this is the natural place
+	 * rather than the only possible one — it is where the chip and the item both
+	 * are, and the views hold a collection-level flag instead.
+	 *
+	 * A component with no membership loaded answers false, which is the safe
+	 * direction: the affordance is withheld, never the information. The status
+	 * is still rendered as a static chip below.
+	 */
+	let statusWritable = $derived(workspaceStore.canEditItem(item));
+
 	let statusCyclable = $derived(
-		!!onStatusClick && !!statusOptions && statusOptions.length > 1 && !!fields.status
+		statusWritable && !!onStatusClick && !!statusOptions && statusOptions.length > 1 && !!fields.status
 	);
 
 	let pullRequest = $derived(item.code_context?.pull_request);
@@ -136,6 +162,15 @@
 		e.stopPropagation();
 		if (!statusOptions || !onStatusClick || !fields.status) return;
 		const currentIndex = statusOptions.indexOf(fields.status);
+		// A STORED STATUS THE SCHEMA NO LONGER DECLARES IS NOT A CYCLE POSITION
+		// (BUG-3068 round 2). `indexOf` answers -1 for it, and -1 + 1 is 0, so a
+		// click silently rewrote a stale or hand-written value to the FIRST
+		// option — indistinguishable to the user from advancing one step, and a
+		// second instance of the exact arithmetic this unit fixed on the board,
+		// arriving from the VALUE side rather than the options side. There is no
+		// honest "next" from a position that is not on the list, so the click is
+		// a no-op and the item keeps the value someone stored.
+		if (currentIndex < 0) return;
 		const nextIndex = (currentIndex + 1) % statusOptions.length;
 		const nextStatus = statusOptions[nextIndex];
 

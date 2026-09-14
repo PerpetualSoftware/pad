@@ -3598,7 +3598,8 @@
 				{wsSlug}
 				{groupField}
 				{focusedItemId}
-				onStatusChange={handleStatusChange}
+				onLaneChange={handleStatusChange}
+				onStatusChange={(it, newStatus) => handleStatusChange(it, newStatus, 'status')}
 				onReorder={handleReorder}
 				onArchiveColumn={canBulkEdit ? handleBulkArchive : undefined}
 				onGroupReorder={handleGroupReorder}
@@ -3646,7 +3647,8 @@
 				{groupField}
 				{focusedItemId}
 				{statusOptions}
-				onStatusChange={handleStatusChange}
+				onLaneChange={handleStatusChange}
+				onStatusChange={(it, newStatus) => handleStatusChange(it, newStatus, 'status')}
 				onReorder={handleReorder}
 				onArchiveGroup={canBulkEdit ? handleBulkArchive : undefined}
 				onGroupReorder={handleGroupReorder}

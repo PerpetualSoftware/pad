@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { render, cleanup } from '@testing-library/svelte';
+import { render, cleanup, fireEvent } from '@testing-library/svelte';
 import type { Collection, Item, ItemIndexRow } from '$lib/types';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -95,6 +95,7 @@ function renderList(items: Item[], fields: unknown[] = RELATION_FIELDS, groupFie
 			wsSlug: 'ws',
 			groupField,
 			statusOptions: ['open', 'done'],
+			onLaneChange: vi.fn(),
 			onStatusChange: vi.fn(),
 		} as never,
 	});
@@ -115,6 +116,15 @@ const groups = (screen: { container: HTMLElement }) =>
 			.join('')
 			.trim(),
 	}));
+vi.mock('$lib/stores/workspace.svelte', () => ({
+	// BUG-3068 round 2 moved the chip's permission gate into `ItemCard`, where the
+	// per-item answer lives (`canEditItem`, not the views' collection-level
+	// `canEdit` prop). A suite that renders a CLICKABLE chip therefore has to say
+	// who is looking; with no membership the store answers false and the chip is
+	// correctly withheld. Permission-specific legs live in
+	// `chipWritesStatus.svelte.test.ts`, which drives this per test.
+	workspaceStore: { canEditItem: () => true },
+}));
 
 afterEach(() => {
 	cleanup();
@@ -135,15 +145,41 @@ describe('ListView grouped by a relation field', () => {
 		expect(screen.container.innerHTML).not.toContain(DANGLING);
 	});
 
-	it('does not turn the status chip into a relation setter', () => {
-		// `onStatusChange` writes what it receives into `fields[groupField]`, so
-		// on a relation-grouped list the chip sent a STATUS STRING to the
-		// relation field — the same defect the board had, arriving from the
-		// opposite direction: here the options were right and the target wrong.
-		const screen = renderList([item('car-1', 'id-red')]);
-		// PRECONDITION: a card rendered, so "no chip" is not "no card".
-		expect(screen.container.querySelectorAll('.item-card').length).toBeGreaterThan(0);
-		expect(screen.container.querySelector('[title="Click to cycle status"]')).toBeNull();
+	it('does not turn the status chip into a relation setter', async () => {
+		// THE ASSERTION CHANGED SHAPE AND THE INTENT DID NOT (BUG-3068). The chip
+		// used to be WITHHELD here, because one prop carried both the drop write
+		// and the chip write, so a chip click on a relation-grouped list sent a
+		// STATUS STRING to the relation field. The two writes are separate props
+		// now, so the chip renders and the relation field is not reachable from
+		// it at all — which is a stronger statement than the absence was, and the
+		// only one that distinguishes "the chip is safe" from "the chip is gone".
+		const withStatus = {
+			...item('car-1', 'id-red'),
+			fields: JSON.stringify({ car_color: 'id-red', status: 'open' }),
+		} as Item;
+		const onLaneChange = vi.fn();
+		const onStatusChange = vi.fn();
+		const screen = render(ListView, {
+			props: {
+				items: [withStatus],
+				collection: collection(RELATION_FIELDS),
+				wsSlug: 'ws',
+				groupField: 'car_color',
+				statusOptions: ['open', 'done'],
+				onLaneChange,
+				onStatusChange,
+			} as never,
+		});
+		const chip = screen.container.querySelector('[title="Click to cycle status"]');
+		expect(chip, 'the chip is withheld again — it is the only status affordance on a card').not.toBeNull();
+
+		await fireEvent.click(chip as HTMLElement);
+
+		// The write names `status`, carries a STATUS value, and the lane writer
+		// — the only callback that could reach `car_color` — never fires.
+		expect(onStatusChange).toHaveBeenCalledTimes(1);
+		expect(onStatusChange.mock.calls[0][1]).toBe('done');
+		expect(onLaneChange).not.toHaveBeenCalled();
 	});
 
 	it('STILL groups and cycles status on an ordinary field — the counterfactual', () => {
@@ -200,7 +236,10 @@ describe('a rejected drop in the list', () => {
 		const body = SRC2.slice(start, SRC2.indexOf('\n\t}', start));
 
 		const refuse = body.indexOf('if (!dropAllowed)');
-		const statusWrite = body.indexOf('onStatusChange(');
+		// THE LANE WRITER, which is what a drop performs. It was spelled
+		// `onStatusChange` until BUG-3068 split the chip's write out of it; this
+		// guard has always been about the DROP, so it follows the drop's prop.
+		const statusWrite = body.indexOf('onLaneChange(');
 		const reorderWrite = body.indexOf('onReorder(');
 		expect(refuse, 'the refusal is gone').toBeGreaterThan(-1);
 		expect(refuse).toBeLessThan(statusWrite);
@@ -282,18 +321,24 @@ describe('a REFUSED grouping in the list must not write a group value (U4, codex
 		expect(screen.container.querySelectorAll('.item-card, .list-row').length).toBeGreaterThan(0);
 	});
 
-	it('withholds the status chip, which would write a lane string into a LIST', () => {
+	it('offers the status chip and writes STATUS with it, never the refused group field', async () => {
+		// WITHHELD BEFORE BUG-3068, for the reason the original leg gave: one
+		// prop served both writes, so the chip could only reach `fields[groupField]`
+		// — a multi_relation here, which a status string would have replaced with
+		// a scalar. The chip's write is its own prop now, so the refused group
+		// field is unreachable from it and there is nothing left to withhold.
+		//
 		// `statusOptions` is a PROP of this view, not something it derives from
-		// the collection — so without passing it the chip never renders, the
-		// assertion holds against any build, and the leg proves nothing. My
-		// first version omitted it; the CONTROL below is what caught that, which
-		// is the entire reason a control is written before the result is
-		// believed.
+		// the collection — so it must be passed or the chip never renders. That
+		// mattered when this leg asserted ABSENCE (it would have held against any
+		// build); it is self-evident now that the leg asserts a click.
 		const withStatus = (id: string, color: string) =>
 			({
 				...item(id, color),
 				fields: JSON.stringify({ car_color: [color], status: 'open' }),
 			}) as Item;
+		const onLaneChange = vi.fn();
+		const onStatusChange = vi.fn();
 		const screen = render(ListView, {
 			props: {
 				items: [withStatus('car-1', 'id-red')],
@@ -301,11 +346,21 @@ describe('a REFUSED grouping in the list must not write a group value (U4, codex
 				wsSlug: 'ws',
 				groupField: 'car_color',
 				statusOptions: ['open', 'done'],
-				onStatusChange: vi.fn(),
+				onLaneChange,
+				onStatusChange,
 			} as never,
 		});
+		// PRECONDITION: this really is the refusing configuration, so the leg is
+		// about a refused grouping rather than about an ordinary one.
 		expect(screen.container.textContent).toContain('more than one group');
-		expect(screen.container.querySelector('[title="Click to cycle status"]')).toBeNull();
+
+		const chip = screen.container.querySelector('[title="Click to cycle status"]');
+		expect(chip).not.toBeNull();
+		await fireEvent.click(chip as HTMLElement);
+
+		expect(onStatusChange).toHaveBeenCalledTimes(1);
+		expect(onStatusChange.mock.calls[0][1]).toBe('done');
+		expect(onLaneChange).not.toHaveBeenCalled();
 	});
 
 	it('CONTROL: an ordinary grouped list still offers status cycling', () => {
@@ -332,8 +387,8 @@ describe('a REFUSED grouping in the list must not write a group value (U4, codex
 		// through jsdom costs more than the structural property is worth.
 		const start = SRC.indexOf('function handleGroupFinalize(');
 		expect(start, 'handleGroupFinalize not found — re-point this guard').toBeGreaterThan(-1);
-		const write = SRC.indexOf('await onStatusChange(', start);
-		expect(write).toBeGreaterThan(-1);
+		const write = SRC.indexOf('await onLaneChange(', start);
+		expect(write, 'the drop no longer writes through onLaneChange').toBeGreaterThan(-1);
 		const guard = SRC.lastIndexOf('groupingRefusal', write);
 		expect(guard, 'the drop handler never consults groupingRefusal before writing').toBeGreaterThan(start);
 		expect(SRC.slice(guard, write)).toContain('current !== groupName');

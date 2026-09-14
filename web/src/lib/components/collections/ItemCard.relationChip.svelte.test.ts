@@ -16,6 +16,15 @@ import type { Collection, Item } from '$lib/types';
 
 vi.mock('$app/state', () => ({ page: { params: { username: 'u', workspace: 'ws' }, url: new URL('http://x/') } }));
 vi.mock('$app/navigation', () => ({ goto: vi.fn() }));
+vi.mock('$lib/stores/workspace.svelte', () => ({
+	// BUG-3068 round 2 moved the chip's permission gate into `ItemCard`, where the
+	// per-item answer lives (`canEditItem`, not the views' collection-level
+	// `canEdit` prop). A suite that renders a CLICKABLE chip therefore has to say
+	// who is looking; with no membership the store answers false and the chip is
+	// correctly withheld. Permission-specific legs live in
+	// `chipWritesStatus.svelte.test.ts`, which drives this per test.
+	workspaceStore: { canEditItem: () => true },
+}));
 
 import ItemCard from './ItemCard.svelte';
 
@@ -89,7 +98,15 @@ describe('a status/priority field retyped to a relation', () => {
 				onStatusClick,
 			} as never,
 		});
-		for (const el of [...screen.container.querySelectorAll('.chip, button, [role="button"]')]) {
+		// PRECONDITIONS (BUG-3068 round 4). Without these the leg passes when the
+		// card fails to render at all, or renders nothing clickable: an empty loop
+		// followed by `not.toHaveBeenCalled()` asserts nothing about the guard.
+		// The card always has other controls (star, ⋮, the ref copy), so a
+		// non-empty loop is a real claim rather than a formality.
+		expect(screen.container.querySelectorAll('.item-card')).toHaveLength(1);
+		const clickables = [...screen.container.querySelectorAll('.chip, button, [role="button"]')];
+		expect(clickables.length, 'nothing was clicked, so nothing was tested').toBeGreaterThan(0);
+		for (const el of clickables) {
 			(el as HTMLElement).click();
 		}
 		expect(onStatusClick).not.toHaveBeenCalled();

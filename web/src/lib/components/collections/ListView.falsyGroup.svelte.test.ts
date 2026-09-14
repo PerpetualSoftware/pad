@@ -75,7 +75,10 @@ function item(id: string, fields: Record<string, unknown>): Item {
 function renderList(
 	items: Item[],
 	groupField: string,
-	onStatusChange: (item: Item, value: string) => void = vi.fn(),
+	// THE LANE WRITER (BUG-3068 renamed it from `onStatusChange`). Every leg in
+	// this file is about a DROP, so every one of them binds here; the chip's
+	// write is a different prop and is covered in the relation-group files.
+	onLaneChange: (item: Item, value: string) => void = vi.fn(),
 ) {
 	return render(ListView, {
 		props: {
@@ -85,7 +88,7 @@ function renderList(
 			groupField,
 			statusOptions: ['open', 'done'],
 			canEdit: true,
-			onStatusChange,
+			onLaneChange,
 		} as never,
 	});
 }
@@ -193,9 +196,9 @@ describe('dropping an item back into its own lane (codex round 1, finding 1)', (
 	}
 
 	it('does not rewrite a number field when the item did not change lane', async () => {
-		const onStatusChange = vi.fn();
+		const onLaneChange = vi.fn();
 		const zero = item('car-zero', { score: 0 });
-		const { container } = renderList([zero], 'score', onStatusChange);
+		const { container } = renderList([zero], 'score', onLaneChange);
 
 		// Precondition: exactly one lane, and it is the 0 lane — so the drop below
 		// really is a same-lane drop rather than a move we failed to notice.
@@ -205,31 +208,31 @@ describe('dropping an item back into its own lane (codex round 1, finding 1)', (
 		await Promise.resolve();
 
 		expect(
-			onStatusChange,
+			onLaneChange,
 			'the item is already in the 0 lane; nothing changed, so nothing should be written',
 		).not.toHaveBeenCalled();
 	});
 
 	it('does not rewrite a checkbox field when the item did not change lane', async () => {
-		const onStatusChange = vi.fn();
+		const onLaneChange = vi.fn();
 		const no = item('car-no', { shipped: false });
-		const { container } = renderList([no], 'shipped', onStatusChange);
+		const { container } = renderList([no], 'shipped', onLaneChange);
 
 		expect(groupTitles(container)).toEqual(['False']);
 
 		finalizeOn(container, 0, [no], 'car-no');
 		await Promise.resolve();
 
-		expect(onStatusChange).not.toHaveBeenCalled();
+		expect(onLaneChange).not.toHaveBeenCalled();
 	});
 
 	it('STILL writes when the item really did change lane', async () => {
 		// The counterfactual: without it the two assertions above would pass on an
-		// implementation that never calls onStatusChange at all.
-		const onStatusChange = vi.fn();
+		// implementation that never calls onLaneChange at all.
+		const onLaneChange = vi.fn();
 		const zero = item('car-zero', { score: 0 });
 		const five = item('car-five', { score: 5 });
-		const { container } = renderList([zero, five], 'score', onStatusChange);
+		const { container } = renderList([zero, five], 'score', onLaneChange);
 
 		const titles = groupTitles(container);
 		expect(titles).toEqual(['0', '5']);
@@ -238,7 +241,7 @@ describe('dropping an item back into its own lane (codex round 1, finding 1)', (
 		finalizeOn(container, 0, [zero, five], 'car-five');
 		await Promise.resolve();
 
-		expect(onStatusChange).toHaveBeenCalledWith(
+		expect(onLaneChange).toHaveBeenCalledWith(
 			expect.objectContaining({ id: 'car-five' }),
 			'0',
 		);

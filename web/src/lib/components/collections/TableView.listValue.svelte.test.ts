@@ -22,10 +22,21 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
 import type { Collection, Item } from '$lib/types';
 
+let tableCanEditItem = true;
+vi.mock('$lib/stores/workspace.svelte', () => ({
+	// BUG-3068 round 4 gave the table's status chip the same per-item permission
+	// gate the card has (`canEditItem`). A suite that renders a CLICKABLE chip has
+	// to say who is looking; with no membership the store answers false and the
+	// chip is correctly withheld. The permission legs themselves drive this per
+	// test — see the read-only describe in this file.
+	workspaceStore: { canEditItem: () => tableCanEditItem },
+}));
+
 import TableView from './TableView.svelte';
 
 afterEach(() => {
 	cleanup();
+	tableCanEditItem = true;
 });
 
 function collection(fields: unknown[]): Collection {
@@ -118,7 +129,13 @@ describe('a status field holding a LIST', () => {
 			} as never,
 		});
 
+		// PRECONDITIONS (BUG-3068 round 4): the row rendered and the loop below is
+		// non-empty. Without them an unrendered table passes this leg, and the
+		// comment above ("clicks every control in the row") would be describing a
+		// loop that never ran.
+		expect(screen.container.querySelectorAll('.table-row:not(.table-header)').length).toBeGreaterThan(0);
 		const clickables = [...screen.container.querySelectorAll('.table-cell [role="button"], .table-cell button, .table-cell .chip')];
+		expect(clickables.length, 'nothing was clicked, so nothing was tested').toBeGreaterThan(0);
 		for (const el of clickables) (el as HTMLElement).click();
 		expect(onStatusChange).not.toHaveBeenCalled();
 	});
@@ -242,5 +259,111 @@ describe('a status field holding a LIST', () => {
 		// stored element, and never the id.
 		expect(screen.container.querySelectorAll('.cell-relation')).toHaveLength(1);
 		expect(screen.container.textContent).not.toContain('id-red');
+	});
+});
+
+describe('a stored status the schema no longer declares (BUG-3068 round 3)', () => {
+	// THE TABLE'S INSTANCE OF THE SAME -1 ARITHMETIC the card was guarded for in
+	// round 2 — found by asking for the population rather than fixing the
+	// reviewer's one example. `options.indexOf(current)` answers -1 for a stale
+	// or hand-written status, -1 + 1 is 0, and this chip PULSES and writes, so
+	// the silent rewrite to the first option even looks like it worked.
+	//
+	// The two legs below are the whole point of the guard's shape: the table
+	// renders its chip for an ABSENT status as well, where landing on option
+	// zero is what setting a first status means. A blanket `idx < 0` guard would
+	// pass the first leg and break the second.
+	const ordinary = collection([
+		{ key: 'status', label: 'Status', type: 'select', options: ['open', 'in_progress'] },
+	]);
+
+	it('does not rewrite a stale status to the first option', () => {
+		const onStatusChange = vi.fn();
+		const screen = render(TableView, {
+			props: {
+				items: [item('car-1', { status: 'retired_status' })],
+				collection: ordinary,
+				onStatusChange,
+			} as never,
+		});
+		const chip = screen.container.querySelector('[title="Click to cycle status"]');
+		expect(chip, 'no chip rendered — this leg cannot discriminate').not.toBeNull();
+		(chip as HTMLElement).click();
+		expect(
+			onStatusChange,
+			'a value that is not on the list has no next value',
+		).not.toHaveBeenCalled();
+	});
+
+	it('STILL sets the first option when the status is absent', () => {
+		// The sibling case the guard must not catch, and the counterfactual for
+		// the leg above: without it, a chip that never writes passes that one.
+		const onStatusChange = vi.fn();
+		const screen = render(TableView, {
+			props: { items: [item('car-2', {})], collection: ordinary, onStatusChange } as never,
+		});
+		const chip = screen.container.querySelector('[title="Click to cycle status"]');
+		expect(chip).not.toBeNull();
+		(chip as HTMLElement).click();
+		expect(onStatusChange).toHaveBeenCalledTimes(1);
+		expect(onStatusChange.mock.calls[0][1]).toBe('open');
+	});
+});
+
+describe('the table chip asks the same permission question as the card (BUG-3068 round 4)', () => {
+	// THE CONVERGENCE FAILURE ROUND 4 FOUND. Round 2 gated the chip inside
+	// `ItemCard`, which covers the list and the board — but the table renders its
+	// OWN chip, so it went on offering a read-only viewer a control whose write
+	// the server refuses. Three surfaces, one class, and the branch claimed
+	// "every permission level" while one of them never asked.
+	const ordinaryColl = collection([
+		{ key: 'status', label: 'Status', type: 'select', options: ['open', 'in_progress'] },
+	]);
+
+	it('withholds the clickable chip from a viewer who cannot edit the item', () => {
+		tableCanEditItem = false;
+		const screen = render(TableView, {
+			props: {
+				items: [item('car-1', { status: 'open' })],
+				collection: ordinaryColl,
+				onStatusChange: vi.fn(),
+			} as never,
+		});
+		// PRECONDITION: the row rendered, so "no chip" is not "no row".
+		expect(screen.container.querySelectorAll('.table-row:not(.table-header)').length).toBeGreaterThan(0);
+		expect(screen.container.querySelector('[title="Click to cycle status"]')).toBeNull();
+		// CONTROL: the status is still SHOWN. The affordance is withheld, not the
+		// information.
+		expect(screen.container.textContent).toContain('Open');
+	});
+
+	it('CONTROL: an editor still gets it', () => {
+		tableCanEditItem = true;
+		const screen = render(TableView, {
+			props: {
+				items: [item('car-1', { status: 'open' })],
+				collection: ordinaryColl,
+				onStatusChange: vi.fn(),
+			} as never,
+		});
+		expect(screen.container.querySelector('[title="Click to cycle status"]')).not.toBeNull();
+	});
+
+	it('offers no setter for a status field declaring NO options', () => {
+		// `field.options` was tested for TRUTHINESS, and `[]` is truthy — so the
+		// chip rendered, `(idx + 1) % 0` was NaN, `options[NaN]` was undefined,
+		// and the writer was called with `undefined`. A status chip that writes
+		// something which is not a status contradicts the whole branch.
+		const onStatusChange = vi.fn();
+		const screen = render(TableView, {
+			props: {
+				items: [item('car-1', { status: 'open' })],
+				collection: collection([{ key: 'status', label: 'Status', type: 'select', options: [] }]),
+				onStatusChange,
+			} as never,
+		});
+		expect(screen.container.querySelectorAll('.table-row:not(.table-header)').length).toBeGreaterThan(0);
+		expect(screen.container.querySelector('[title="Click to cycle status"]')).toBeNull();
+		expect(onStatusChange).not.toHaveBeenCalled();
 	});
 });
