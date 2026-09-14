@@ -1243,18 +1243,56 @@ func auditLogCmd() *cobra.Command {
 // already claimed unparseable values were dropped. The comment was the
 // specification and the code did not meet it; a response header is attacker- or
 // middlebox-influenced input, not a trusted field.
+//
+// STRICTER THAN strconv.Atoi ALONE, so that this and the web client suppress and
+// display exactly the same set of values (codex round 4 P2). Atoi diverged from
+// the browser in three ways, and in each the browser was the stricter one, so the
+// fix tightens here rather than loosening there — the server writes this header
+// with strconv.Itoa, which emits none of these forms, so nothing legitimate is
+// refused:
+//
+//   - Atoi accepts a leading `+`; the web's regex does not.
+//   - Atoi accepts up to MaxInt64, while JS silently rounds past 2^53-1. The
+//     value is a count of items in ONE workspace, so anything near either bound
+//     is a malformed header rather than a fact.
+//   - Header.Get returns the FIRST of a repeated header, so `["2","3"]` printed
+//     `2`, while the browser's Headers.get joins them as `"2, 3"` and the web
+//     refused. A repeated header is malformed — the server sets exactly one — so
+//     refusing is the honest reading and it is also what the browser already did.
 func staleBodyImportCount(header http.Header) string {
 	if header == nil {
 		return ""
 	}
-	n, err := strconv.Atoi(header.Get(server.StaleBodyImportHeader))
-	if err != nil || n <= 0 {
+	// Values, not Get: a repeated header must be refused rather than resolved to
+	// whichever copy happens to be first.
+	vals := header.Values(server.StaleBodyImportHeader)
+	if len(vals) != 1 {
+		return ""
+	}
+	v := vals[0]
+	// Decimal digits only, matching the web client's gate exactly.
+	for _, r := range v {
+		if r < '0' || r > '9' {
+			return ""
+		}
+	}
+	if v == "" {
+		return ""
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || n <= 0 || n > maxSafeJSInteger {
 		return ""
 	}
 	// Re-rendered from the parsed integer, never echoed: that is what keeps a
-	// value like "007" or " 7 " from reaching the operator's terminal as-is.
-	return strconv.Itoa(n)
+	// value like "007" from reaching the operator's terminal as-is.
+	return strconv.FormatInt(n, 10)
 }
+
+// maxSafeJSInteger is 2^53-1, the largest integer a browser's Number can hold
+// exactly. It bounds the header count here ONLY so the Go and JavaScript readers
+// of the same header agree on which values are acceptable; it is not a fact about
+// items. See staleBodyImportCount.
+const maxSafeJSInteger = 9007199254740991
 
 func repairedNULCount(header http.Header) string {
 	if header == nil {

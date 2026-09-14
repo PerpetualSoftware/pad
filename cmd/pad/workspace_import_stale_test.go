@@ -50,12 +50,43 @@ func TestStaleBodyImportCountSpeaksOnlyWhenThereIsSomethingToSay(t *testing.T) {
 		// Parsed and RE-RENDERED, never echoed, so a value that parses but is
 		// spelled oddly reaches the terminal in one canonical form.
 		{"leading zeros are normalised", staleHeader("007"), "7"},
+		// The three divergences from the web client, each one where strconv.Atoi
+		// alone was the LOOSER reader (codex round 4 P2). Atoi accepts a leading
+		// sign and anything up to MaxInt64; the browser's regex accepts neither,
+		// and the server writes this header with Itoa, which emits neither.
+		{"leading plus", staleHeader("+7"), ""},
+		{"above 2^53-1, which JS cannot hold exactly", staleHeader("9007199254740992"), ""},
+		{"MaxInt64", staleHeader("9223372036854775807"), ""},
+		{"2^53-1 exactly is still a fact both sides can hold", staleHeader("9007199254740991"), "9007199254740991"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := staleBodyImportCount(tc.header); got != tc.want {
 				t.Errorf("staleBodyImportCount = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// A REPEATED header is refused rather than resolved to its first value
+// (codex round 4 P2). Header.Get would have returned "2" here while the browser's
+// Headers.get joins the values as "2, 3" and refuses — so the same response
+// produced a count on one surface and silence on the other. The server sets this
+// header exactly once, so two values mean something rewrote it.
+func TestStaleBodyImportCountRefusesARepeatedHeader(t *testing.T) {
+	h := http.Header{}
+	h.Add(server.StaleBodyImportHeader, "2")
+	h.Add(server.StaleBodyImportHeader, "3")
+	if got := staleBodyImportCount(h); got != "" {
+		t.Errorf("staleBodyImportCount = %q for a repeated header, want \"\" — printing the first "+
+			"of two values reports a count the browser's reader of the same response suppresses", got)
+	}
+
+	// The CONTROL: one value of the same shape must still be reported, or this
+	// test would pass against a function that refuses everything.
+	one := http.Header{}
+	one.Add(server.StaleBodyImportHeader, "2")
+	if got := staleBodyImportCount(one); got != "2" {
+		t.Errorf("staleBodyImportCount = %q for a single-valued header, want %q", got, "2")
 	}
 }
 

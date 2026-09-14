@@ -649,7 +649,8 @@ Steps:
 	cmd.Flags().StringVar(&fromPath, "from", "", "SQLite database path (default: server-resolved — PAD_DB_PATH > PAD_DATA_DIR/pad.db > ~/.pad/pad.db)")
 	cmd.Flags().StringVar(&toURL, "to", "", "PostgreSQL connection URL (default: PAD_DATABASE_URL)")
 	cmd.Flags().BoolVar(&forceLiveServer, "force", false,
-		"migrate even though a Pad server appears to be running (an edit made during the migration may be lost)")
+		"migrate even though a Pad server appears to be running, OR the config needed to check for one "+
+			"could not be read (an edit made during the migration may be lost)")
 	cmd.Flags().BoolVar(&discardUnflushedEdits, "discard-unflushed-edits", false,
 		"migrate even though some items have edits only in the collaborative op-log, permanently losing them")
 

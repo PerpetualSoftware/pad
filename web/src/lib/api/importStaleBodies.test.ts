@@ -49,7 +49,19 @@ describe('importBundle stale-body header', () => {
 		// Each of these is a value `Number()` alone would have accepted, and the
 		// CLI suppresses: the divergence itself is the defect, because an
 		// operator comparing the two surfaces would see different facts.
-		for (const v of ['abc', '-1', 'NaN', '2.5', ' 7 ', '7e0', '0x7', '+7', '1e309', '9007199254740993']) {
+		for (const v of [
+			'abc', '-1', 'NaN', '2.5', ' 7 ', '7e0', '0x7', '+7', '1e309', '9007199254740993',
+			// A repeated header: Headers.get joins the values, and the Go side
+			// refuses on len(Values) != 1 rather than reporting the first
+			// (codex round 4 P2). The same response must say the same thing on
+			// both surfaces.
+			'2, 3',
+			// An internal NUL, and the two values either side of the 2^53-1
+			// ceiling both readers share.
+			'2\u00003',
+			'9007199254740992',
+			'9223372036854775807'
+		]) {
 			mockImportOnce(v);
 			const ws = await api.workspaces.importBundle(file);
 			expect(ws.stale_bodies, `header ${JSON.stringify(v)} must be suppressed`).toBeUndefined();
@@ -60,6 +72,14 @@ describe('importBundle stale-body header', () => {
 		mockImportOnce('007');
 		const ws = await api.workspaces.importBundle(file);
 		expect(ws.stale_bodies).toBe(7);
+	});
+
+	it('accepts 2^53-1 exactly, the largest value both readers hold', async () => {
+		// The boundary itself, so the ceiling above is a bound rather than an
+		// off-by-one: the rejected cases are ABOVE this, not at it.
+		mockImportOnce('9007199254740991');
+		const ws = await api.workspaces.importBundle(file);
+		expect(ws.stale_bodies).toBe(9007199254740991);
 	});
 
 	it('still returns the workspace itself', async () => {
