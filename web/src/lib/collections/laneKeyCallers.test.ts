@@ -170,15 +170,32 @@ describe('BUG-3057: the collection page writes a CONVERTED lane value', () => {
 		expect(page).not.toContain('const fieldsPatch = { [groupField]: newValue };');
 	});
 
-	it('lets the table status chip name the STATUS field, not the lane field', () => {
+	it('lets EVERY status chip name the STATUS field, not the lane field', () => {
 		// The table has no lanes: its chip cycles the `status` schema field's
 		// options and used to send them to `groupField`, which in table view is
 		// `list_group_by`. On a table grouped by `priority`, a status click set
-		// the priority. The default argument keeps every drag caller on the lane
-		// field, so this leg is what says the table opted out of it.
-		expect(page).toContain(
-			"onStatusChange={(it, newStatus) => handleStatusChange(it, newStatus, 'status')}",
-		);
+		// the priority (BUG-3057). The list and the board had the same defect
+		// through a shared prop, fixed in BUG-3068 by splitting the drop's writer
+		// (`onLaneChange`) from the chip's (`onStatusChange`).
+		//
+		// COUNTING IS LOAD-BEARING HERE. This leg was a single `toContain` of the
+		// table's line, and BUG-3068 made two more sites carry that exact string
+		// — so it would have gone on passing if either of the new ones had been
+		// wired wrongly, or if the table's had been deleted while a new one
+		// remained. A `toContain` cannot tell one occurrence from three.
+		const statusNamed =
+			"onStatusChange={(it, newStatus) => handleStatusChange(it, newStatus, 'status')}";
+		const occurrences = page.split(statusNamed).length - 1;
+		expect(
+			occurrences,
+			'expected exactly three chip call sites naming status: BoardView, TableView, ListView',
+		).toBe(3);
+
+		// And each of the two LANE writers still targets the group field, which is
+		// what the default argument is for. If a view lost its lane writer the
+		// drop would silently start writing `status`.
+		expect(page.split('onLaneChange={handleStatusChange}').length - 1).toBe(2);
+
 		expect(page).toContain(
 			'async function handleStatusChange(item: Item, newValue: string, fieldKey: string = groupField)',
 		);

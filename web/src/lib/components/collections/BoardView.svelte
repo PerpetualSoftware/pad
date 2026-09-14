@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { relationGroupingRefusal, relationGroupingRefusalMessage } from '$lib/collections/relationGroups';
 	import type { Item, Collection } from '$lib/types';
-	import { parseSchema, parseFields } from '$lib/types';
+	import { getStatusOptions, parseSchema, parseFields } from '$lib/types';
 	import { itemComparator, type SortMode } from '$lib/collections/itemSort';
 	import { reorderGroup, disabledDirections, adjacentColumn, type ReorderDirection } from '$lib/collections/reorder';
 	import {
@@ -35,7 +35,22 @@
 		wsSlug?: string;
 		groupField?: string;
 		focusedItemId?: string | null;
-		onStatusChange: (item: Item, newStatus: string) => void | Promise<void>;
+		/**
+		 * A DROP INTO A LANE — "put this item in this lane", which names the GROUP
+		 * field. Distinct from `onStatusChange` below, which names `status`. They
+		 * were one prop until BUG-3068: this component passed its single
+		 * `onStatusChange` to BOTH the drop handler and the card's status chip, so
+		 * on a board grouped by anything but `status` a chip click wrote into the
+		 * group field.
+		 */
+		onLaneChange: (item: Item, laneValue: string) => void | Promise<void>;
+		/**
+		 * A STATUS CHIP CLICK — names the `status` field and nothing else, at every
+		 * grouping. Optional, unlike the lane writer: a board without one simply
+		 * shows a static chip, which is what every non-collection consumer of
+		 * `ItemCard` already does.
+		 */
+		onStatusChange?: (item: Item, newStatus: string) => void | Promise<void>;
 		onReorder?: (updates: { slug: string; sort_order: number }[]) => void;
 		onArchiveColumn?: (items: Item[]) => void;
 		onGroupReorder?: (newOrder: string[]) => void;
@@ -117,7 +132,7 @@
 		onColumnsRendered?: (columns: { value: string; items: Item[] }[]) => void;
 	}
 
-	let { items, collection, wsSlug = '', groupField = 'status', focusedItemId = null, onStatusChange, onReorder, onArchiveColumn, onGroupReorder, oncreate, onCreateInColumn, onMoveColumn, onTagColumn, onUntagColumn, onSetPriorityColumn, onAssignColumn, members = [], tagSuggestions = [], filtered = false, itemProgress, progressLabel = 'tasks', canEdit = true, preserveOrder = false, sortMode = 'manual', draftText = $bindable({}), draftOpen = $bindable({}), onItemOpen, onColumnsRendered }: Props = $props();
+	let { items, collection, wsSlug = '', groupField = 'status', focusedItemId = null, onLaneChange, onStatusChange, onReorder, onArchiveColumn, onGroupReorder, oncreate, onCreateInColumn, onMoveColumn, onTagColumn, onUntagColumn, onSetPriorityColumn, onAssignColumn, members = [], tagSuggestions = [], filtered = false, itemProgress, progressLabel = 'tasks', canEdit = true, preserveOrder = false, sortMode = 'manual', draftText = $bindable({}), draftOpen = $bindable({}), onItemOpen, onColumnsRendered }: Props = $props();
 
 	// Local — disables the draft card while its Enter-create is in flight.
 	let savingDraft = $state(false);
@@ -296,39 +311,50 @@
 
 	// Column order state — tracks the displayed order, syncs from schema when not dragging
 	/**
-	 * What a CARD's status chip cycles through — the board's lanes for every
-	 * ordinary grouping, and nothing at all when the lanes are relation targets
-	 * (codex round 3, P1).
+	 * What a CARD's status chip cycles through: the `status` field's DECLARED
+	 * OPTIONS, at every grouping, read from the schema rather than from the
+	 * board's lanes.
 	 *
-	 * `statusOptions={columns}` was fine while a lane value was always a status
-	 * option. Under relation grouping the lanes are ITEM IDS, and the parent's
-	 * handler writes whatever it receives into `fields[groupField]` — so a
-	 * click on the status chip set the card's RELATION, cycling through target
-	 * ids and able to land on the deleted or unresolved lane, which the write
-	 * path then refuses. The chip is withheld rather than repointed at the real
-	 * status field: a status chip on a relation-grouped board would be cycling
-	 * a field the board is not showing, which is a different feature and not
-	 * one this unit was asked for.
+	 * It was `columns` — the lanes — and that was only ever right when the board
+	 * was grouped BY status, where the two are the same array (`columns` is
+	 * `field?.options` and `field` IS status). Grouped by anything else it
+	 * produced a defect that does NOT look like the list's version of BUG-3068,
+	 * which is why it needs saying: `ItemCard` cycles
+	 * `statusOptions.indexOf(fields.status)`, so on a board grouped by `priority`
+	 * the item's STATUS was looked up in a list of PRIORITIES, missed, and
+	 * returned -1 — making the next index 0 unconditionally. Every chip click
+	 * therefore jumped the card to the FIRST LANE from wherever it was, while the
+	 * chip's label went on showing the status it was not changing. The write was
+	 * type-coherent (a lane value into the field those lanes come from), so
+	 * BUG-3057's conversion accepted it and nothing was toasted.
+	 *
+	 * The relation and refusal arms no longer empty this. They existed because
+	 * the chip's callback wrote `fields[groupField]`, and this file's previous
+	 * comment named the alternative it was declining — repointing the chip at the
+	 * real status field, "a different feature and not one this unit was asked
+	 * for". BUG-3068 is that unit: the chip's callback is now a separate prop
+	 * naming `status`, the group field is unreachable from it, and a relation
+	 * lane says nothing about whether an item's status can be written.
+	 *
+	 * THE RETAINED-OPTIONS HAZARD the round-6 note recorded is still real and is
+	 * NOT closed by this line — reading the status field instead of the group
+	 * field only moves it when the two differ, and a board grouped BY a `status`
+	 * that was retyped keeps them the same field, stale `options` and all. What
+	 * closes it is one layer down, in `ItemCard`, and it is TWO guards rather
+	 * than one, each reachable on its own (both mutation-checked from
+	 * `chipWritesStatus.svelte.test.ts`):
+	 *
+	 *   - the VALUE-shape test (`typeof fields.status === 'string'`) withholds a
+	 *     retyped field whose stored value is a LIST — a `multi_select` status,
+	 *     which no field-type test would catch since it is not a relation;
+	 *   - `chippable` withholds a field whose declared TYPE is a relation
+	 *     (BUG-3016) — the case the value test cannot see, because a scalar
+	 *     relation's value IS a string.
+	 *
+	 * Named here rather than re-guarded: a third guard for the same hazard is how
+	 * the round-5 mutant came to survive its own test.
 	 */
-	// AND NOTHING WHEN GROUPING IS REFUSED — restored in codex round 6 after I
-	// removed it in round 5, and the reason I removed it is the part worth
-	// keeping.
-	//
-	// Round 5's mutant survived and I concluded the gate was unreachable: a
-	// refused grouping takes the `field?.options ?? []` branch of `columns`, and
-	// "a multi_relation declares no options" makes that empty, so
-	// `ItemCard.statusCyclable` (needing `statusOptions.length > 1`) is already
-	// false. Every step of that is true of the schemas anyone would WRITE, and
-	// none of it is enforced anywhere: nothing strips `options` when a field's
-	// type changes, so a `multi_select` retyped to `multi_relation` in the schema
-	// editor keeps them, `columns` is non-empty, and the chip cycles — writing a
-	// scalar into a list. A claim about schemas is not a claim about code, which
-	// is exactly what the preflight's own `collection`-on-a-select comment says
-	// about a neighbouring field.
-	//
-	// So the surviving mutant was evidence about my FIXTURE, not about the
-	// guard. The test now builds the retained-options schema and the mutant dies.
-	let cardStatusOptions = $derived(isRelationGroup || groupingRefusal ? [] : columns);
+	let cardStatusOptions = $derived(getStatusOptions(collection));
 
 	let columnOrder = $state<string[]>([]);
 
@@ -579,7 +605,7 @@
 		// above renders correctly the entire time, which is what hid it.
 		if (!groupingRefusal && currentValue !== targetColumn) {
 			try {
-				await onStatusChange(item, targetColumn);
+				await onLaneChange(item, targetColumn);
 			} catch {
 				moveSucceeded = false;
 			}
@@ -872,7 +898,7 @@
 							compact={true}
 							focused={focusedItemId === item.id}
 							statusOptions={cardStatusOptions}
-							onStatusClick={isRelationGroup || groupingRefusal ? undefined : onStatusChange}
+							onStatusClick={onStatusChange}
 							progress={itemProgress?.[item.id] ?? null}
 							{progressLabel}
 							onReorderItem={canReorderLane(colValue) ? (it, dir) => reorderItem(colValue, it, dir) : undefined}

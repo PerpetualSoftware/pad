@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { render, cleanup } from '@testing-library/svelte';
+import { render, cleanup, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import type { Collection, Item, ItemIndexRow } from '$lib/types';
 import { readFileSync } from 'node:fs';
@@ -107,6 +107,7 @@ function renderBoard(items: Item[]) {
 			collection: collection(),
 			wsSlug: 'ws',
 			groupField: 'car_color',
+			onLaneChange: vi.fn(),
 			onStatusChange: vi.fn(),
 		} as never,
 	});
@@ -183,16 +184,24 @@ describe('BoardView grouped by a relation field', () => {
 		expect(cardsByLane(screen)['COLOR-1Red']).toBe(2);
 	});
 
-	it('does not turn the card\'s status chip into a RELATION setter', () => {
-		// codex round 3, P1. Cards were handed `statusOptions={columns}`, which
-		// is fine while a lane value is a status option — under relation
-		// grouping the lanes are ITEM IDS, and the parent handler writes what it
-		// receives into `fields[groupField]`. So a click on the status chip set
-		// the card's relation, cycling through target ids and able to land on
-		// the deleted or unresolved lane, which the write path then refuses.
+	it('does not turn the card\'s status chip into a RELATION setter', async () => {
+		// codex round 3, P1, and BUG-3068 changed the ANSWER without changing the
+		// question. Cards were handed `statusOptions={columns}` — fine while a
+		// lane value is a status option, but under relation grouping the lanes
+		// are ITEM IDS and the parent handler wrote what it received into
+		// `fields[groupField]`, so a chip click set the card's relation and could
+		// land on the deleted or unresolved lane.
+		//
+		// Round 3 answered by WITHHOLDING the chip. The options now come from the
+		// `status` field's own schema and the write goes through a prop that
+		// names `status`, so neither half of that defect is reachable and the
+		// chip is offered. Asserting the click is strictly stronger than
+		// asserting the absence was: absence also held for a board that had
+		// simply lost its chip.
+		//
 		// The collection needs a STATUS field as well as the relation, or the
-		// card renders no status chip for an unrelated reason and the test
-		// cannot discriminate. Measured: without it the mutant survived.
+		// card renders no status chip for an unrelated reason and the test cannot
+		// discriminate. Measured: without it the round-3 mutant survived.
 		const coll = collection();
 		coll.schema = JSON.stringify({
 			fields: [
@@ -206,19 +215,30 @@ describe('BoardView grouped by a relation field', () => {
 				fields: JSON.stringify({ car_color: color, status: 'open' }),
 			}) as Item;
 
+		const onLaneChange = vi.fn();
+		const onStatusChange = vi.fn();
 		const screen = render(BoardView, {
 			props: {
 				items: [withStatus('car-1', 'id-red'), withStatus('car-2', 'id-blue')],
 				collection: coll,
 				wsSlug: 'ws',
 				groupField: 'car_color',
-				onStatusChange: vi.fn(),
+				onLaneChange,
+				onStatusChange,
 			} as never,
 		});
 
-		// PRECONDITION: the cards rendered, so "no chip" is not "no card".
 		expect(screen.container.querySelectorAll('.item-card')).toHaveLength(2);
-		expect(screen.container.querySelector('[title="Click to cycle status"]')).toBeNull();
+		const chip = screen.container.querySelector('[title="Click to cycle status"]');
+		expect(chip, 'the chip is withheld again — repointing it was the whole unit').not.toBeNull();
+
+		await fireEvent.click(chip as HTMLElement);
+
+		// A STATUS value through the status prop. Not a lane id, and not through
+		// the lane writer — which is the only callback that reaches `car_color`.
+		expect(onStatusChange).toHaveBeenCalledTimes(1);
+		expect(onStatusChange.mock.calls[0][1]).toBe('done');
+		expect(onLaneChange).not.toHaveBeenCalled();
 	});
 
 	it('STILL offers status cycling on an ordinary board — the counterfactual', () => {
@@ -344,17 +364,19 @@ describe('the drop gate on a relation lane', () => {
 		const restore = body.indexOf('columnData =');
 		expect(restore, 'the refused drop is not reverted').toBeGreaterThan(-1);
 		expect(restore).toBeGreaterThan(gate);
-		expect(restore).toBeLessThan(body.indexOf('onStatusChange('));
-		expect(body.slice(restore, body.indexOf('onStatusChange('))).toContain('propColumnData');
+		// THE LANE WRITER, spelled `onStatusChange` until BUG-3068 split the chip's
+		// write out of it. This guard has always been about the DROP.
+		expect(restore).toBeLessThan(body.indexOf('onLaneChange('));
+		expect(body.slice(restore, body.indexOf('onLaneChange('))).toContain('propColumnData');
 	});
 
-	it('consults relationLaneAcceptsDrop BEFORE calling onStatusChange', () => {
+	it('consults relationLaneAcceptsDrop BEFORE calling onLaneChange', () => {
 		const start = SRC.indexOf('async function commitColumnMove(');
 		expect(start, 'commitColumnMove was renamed or removed').toBeGreaterThan(-1);
 		const body = SRC.slice(start, SRC.indexOf('\n\t}', start));
 
 		const gate = body.indexOf('relationLaneAcceptsDrop');
-		const write = body.indexOf('onStatusChange(');
+		const write = body.indexOf('onLaneChange(');
 		expect(gate, 'the relation drop gate is gone').toBeGreaterThan(-1);
 		expect(write).toBeGreaterThan(-1);
 		expect(gate, 'the write happens before the gate').toBeLessThan(write);
@@ -370,7 +392,7 @@ describe('the drop gate on a relation lane', () => {
 		const body = SRC.slice(start, SRC.indexOf('\n\t}', start));
 		const gate = body.indexOf('if (isRelationGroup)');
 		const refuse = body.indexOf('relationLaneAcceptsDrop');
-		const write = body.indexOf('onStatusChange(');
+		const write = body.indexOf('onLaneChange(');
 		expect(gate).toBeGreaterThan(-1);
 		expect(refuse).toBeGreaterThan(gate);
 		expect(refuse).toBeLessThan(write);
@@ -439,14 +461,18 @@ describe('the MENU move into a refused relation lane', () => {
 	};
 
 	it('leaves the card where it was', async () => {
-		const onStatusChange = vi.fn();
+		// A MENU MOVE IS A LANE MOVE, so it binds to `onLaneChange` — the prop the
+		// drop path uses, called `onStatusChange` until BUG-3068 separated the
+		// chip's write from it.
+		const onLaneChange = vi.fn();
 		const screen = render(BoardView, {
 			props: {
 				items: [item('car-1', 'id-red'), item('car-2', 'id-gone')],
 				collection: collection(),
 				wsSlug: 'ws',
 				groupField: 'car_color',
-				onStatusChange,
+				onLaneChange,
+				onStatusChange: vi.fn(),
 				onReorder: vi.fn(),
 			} as never,
 		});
@@ -476,7 +502,7 @@ describe('the MENU move into a refused relation lane', () => {
 		await tick();
 
 		// The write was refused AND the board did not keep the card there.
-		expect(onStatusChange).not.toHaveBeenCalled();
+		expect(onLaneChange).not.toHaveBeenCalled();
 		expect(cardsIn(screen, 'COLOR-1Red')).toEqual(['car-1']);
 		expect(cardsIn(screen, 'COLOR-9Gone(deleted)')).toEqual(['car-2']);
 	});
@@ -490,7 +516,7 @@ describe('the MENU move whose WRITE fails', () => {
 	 * `$derived.by` VALUE into `columnData`, so `moveItem`'s
 	 * `columnData[col] = …` writes THROUGH to the derived cache — round 6
 	 * against the refusal exit, round 7 against this one, the failure exit
-	 * where `onStatusChange` rejects and the restore rests on
+	 * where the lane write rejects and the restore rests on
 	 * `dropCooldown = false` alone.
 	 *
 	 * The premise does not hold. A probe over exactly that shape — a
@@ -520,15 +546,18 @@ describe('the MENU move whose WRITE fails', () => {
 		return null;
 	};
 
-	it('puts the card back when onStatusChange rejects', async () => {
-		const onStatusChange = vi.fn().mockRejectedValue(new Error('nope'));
+	it('puts the card back when onLaneChange rejects', async () => {
+		// A menu move writes the LANE, so the rejecting mock goes on the lane
+		// writer (`onStatusChange` until BUG-3068 split the chip's write out).
+		const onLaneChange = vi.fn().mockRejectedValue(new Error('nope'));
 		const screen = render(BoardView, {
 			props: {
 				items: [item('car-1', 'id-blue'), item('car-2', 'id-red')],
 				collection: collection(),
 				wsSlug: 'ws',
 				groupField: 'car_color',
-				onStatusChange,
+				onLaneChange,
+				onStatusChange: vi.fn(),
 				onReorder: vi.fn(),
 			} as never,
 		});
@@ -556,7 +585,7 @@ describe('the MENU move whose WRITE fails', () => {
 
 		// PRECONDITION for the assertion below: the write was ATTEMPTED and
 		// failed. Without this, a board that never moved the card would pass.
-		expect(onStatusChange).toHaveBeenCalledTimes(1);
+		expect(onLaneChange).toHaveBeenCalledTimes(1);
 
 		// The write failed, so the board must show the state it started in.
 		expect(cardsIn(screen, 'COLOR-2Blue')).toEqual(['car-1']);
@@ -657,32 +686,26 @@ describe('a REFUSED grouping must not write a group value (U4, codex round 1 P5)
 		).toEqual([2]);
 	});
 
-	it('withholds the status chip even when the schema RETAINED options', () => {
-		// The fixture that makes this leg discriminate, and the whole lesson of
-		// rounds 5 and 6. Round 5's fixture had a multi_relation with no
-		// `options`, so `columns` was empty, the chip could not cycle for a
-		// reason unrelated to the guard, and the mutant reverting the guard
-		// SURVIVED. I read that as "the guard is unreachable" and removed it.
+	it('offers the status chip under a refused grouping, and it writes STATUS', async () => {
+		// THIS LEG ASSERTED THE OPPOSITE UNTIL BUG-3068, and the reversal is the
+		// fix rather than a weakening. What the chip could reach is what changed:
+		// it used to write through the same prop the drop used, so under a
+		// refused grouping a click sent a scalar into a `multi_relation`. Its
+		// write is a separate prop naming `status` now, and its OPTIONS come from
+		// the `status` field's schema rather than from the board's lanes, so
+		// neither the group field nor a lane value is reachable from the chip at
+		// all. Nothing is left for the refusal to protect here.
 		//
-		// Nothing strips `options` when a field's type changes. A `multi_select`
-		// retyped to `multi_relation` in the schema editor keeps them — so
-		// `columns` is non-empty, the chip cycles, and it writes a scalar into a
-		// list. "A multi_relation declares no options" was a claim about the
-		// schemas people write, never about the code.
+		// The fixture is kept exactly as rounds 5 and 6 left it, because its
+		// lesson outlives the guard it was built for: a `multi_select` retyped to
+		// `multi_relation` KEEPS its `options` — nothing strips them — so a leg
+		// written against an optionless multi_relation passes for a reason that
+		// has nothing to do with the code under test. Round 5 read that survival
+		// as "the guard is unreachable" and deleted a live guard.
 		//
-		// AND THIS LEG STOPPED DISCRIMINATING ITS GUARD IN ROUND 8, which is
-		// worth saying plainly given how it got here. R8-3 makes a refused
-		// grouping yield NO lanes, so `columns` is empty for a reason that has
-		// nothing to do with `cardStatusOptions` — measured, not assumed:
-		// deleting `groupingRefusal` from that derivation now leaves all 63
-		// tests in this directory green. The situation round 5 THOUGHT it was in
-		// is the situation the code is now actually in, by construction rather
-		// than by a claim about schemas.
-		//
-		// The guard stays: it is one of four affordances phrased the same way,
-		// and the drag one is NOT subsumed (its mutant still dies). What does
-		// not stay is the pretence — a leg that cannot fail is not the evidence,
-		// and the leg that goes red if R8-3 regresses is the one-lane test.
+		// It now discriminates by CLICKING rather than by counting: a build that
+		// routed the chip back through the lane writer fails on the last
+		// assertion, and one that lost the chip fails on the first.
 		const coll = collection();
 		coll.schema = JSON.stringify({
 			fields: [
@@ -702,21 +725,34 @@ describe('a REFUSED grouping must not write a group value (U4, codex round 1 P5)
 				fields: JSON.stringify({ car_color: [color], status: 'open' }),
 			}) as Item;
 
+		const onLaneChange = vi.fn();
+		const onStatusChange = vi.fn();
 		const screen = render(BoardView, {
 			props: {
 				items: [withStatus('car-1', 'id-red')],
 				collection: coll,
 				wsSlug: 'ws',
 				groupField: 'car_color',
-				onStatusChange: vi.fn(),
+				onLaneChange,
+				onStatusChange,
 			} as never,
 		});
 
-		// PRECONDITIONS: the refusal is in force and the card rendered, so "no
-		// chip" is neither "not refused" nor "no card".
+		// PRECONDITIONS: the refusal is in force and the card rendered, so the
+		// chip below is a chip on a REFUSED grouping rather than on an ordinary
+		// one.
 		expect(screen.container.textContent).toContain('more than one group');
 		expect(screen.container.querySelectorAll('.item-card')).toHaveLength(1);
-		expect(screen.container.querySelector('[title="Click to cycle status"]')).toBeNull();
+
+		const chip = screen.container.querySelector('[title="Click to cycle status"]');
+		expect(chip, 'the chip is withheld again').not.toBeNull();
+		await fireEvent.click(chip as HTMLElement);
+
+		expect(onStatusChange).toHaveBeenCalledTimes(1);
+		expect(onStatusChange.mock.calls[0][1]).toBe('done');
+		expect(onLaneChange).not.toHaveBeenCalled();
+		// And the retained lane options are NOT what the chip cycled.
+		expect(onStatusChange.mock.calls[0][1]).not.toBe('old-a');
 	});
 
 	it('offers no lane create control, which would send the lane string as the value', () => {
@@ -963,9 +999,11 @@ describe('a REFUSED grouping must not write a group value (U4, codex round 1 P5)
 		// rewrite that keeps the behaviour keeps the guard.
 		const start = SRC.indexOf('async function handleFinalize');
 		expect(start, 'handleFinalize not found — re-point this guard').toBeGreaterThan(-1);
-		const body = SRC.slice(start, SRC.indexOf('\n\t}', SRC.indexOf('onStatusChange(', start)));
-		const write = body.indexOf('await onStatusChange(');
-		expect(write).toBeGreaterThan(-1);
+		// THE LANE WRITER — spelled `onStatusChange` until BUG-3068; the drop has
+		// always written the group field, and this guard has always been about it.
+		const body = SRC.slice(start, SRC.indexOf('\n\t}', SRC.indexOf('onLaneChange(', start)));
+		const write = body.indexOf('await onLaneChange(');
+		expect(write, 'the drop no longer writes through onLaneChange').toBeGreaterThan(-1);
 		const guard = body.lastIndexOf('groupingRefusal', write);
 		expect(guard, 'the drop handler never consults groupingRefusal before writing').toBeGreaterThan(-1);
 		const condition = body.slice(guard, write);

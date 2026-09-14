@@ -73,7 +73,9 @@ function item(id: string, fields: Record<string, unknown>): Item {
 function renderBoard(
 	items: Item[],
 	groupField: string,
-	onStatusChange: (item: Item, value: string) => void,
+	// THE LANE WRITER (BUG-3068 renamed it from `onStatusChange`). Every leg in
+	// this file is about a DROP; the chip's write is a different prop now.
+	onLaneChange: (item: Item, value: string) => void,
 ) {
 	return render(BoardView, {
 		props: {
@@ -82,7 +84,7 @@ function renderBoard(
 			wsSlug: 'ws',
 			groupField,
 			canEdit: true,
-			onStatusChange,
+			onLaneChange,
 		} as never,
 	});
 }
@@ -115,9 +117,9 @@ afterEach(() => cleanup());
 
 describe('dropping a card back into its own lane writes nothing (BUG-3053)', () => {
 	it('does not rewrite a number field when the card did not change lane', async () => {
-		const onStatusChange = vi.fn();
+		const onLaneChange = vi.fn();
 		const zero = item('car-zero', { score: 0 });
-		const { container } = renderBoard([zero], 'score', onStatusChange);
+		const { container } = renderBoard([zero], 'score', onLaneChange);
 
 		// Precondition, and the thing that makes this different from the list: the
 		// card IS on the board, in the '0' lane, today.
@@ -128,15 +130,15 @@ describe('dropping a card back into its own lane writes nothing (BUG-3053)', () 
 		await Promise.resolve();
 
 		expect(
-			onStatusChange,
+			onLaneChange,
 			'already in the 0 lane; nothing moved, so nothing should be written',
 		).not.toHaveBeenCalled();
 	});
 
 	it('does not rewrite a checkbox field when the card did not change lane', async () => {
-		const onStatusChange = vi.fn();
+		const onLaneChange = vi.fn();
 		const no = item('car-no', { shipped: false });
-		const { container } = renderBoard([no], 'shipped', onStatusChange);
+		const { container } = renderBoard([no], 'shipped', onLaneChange);
 
 		const titles = laneTitles(container);
 		expect(titles).toContain('False');
@@ -144,17 +146,17 @@ describe('dropping a card back into its own lane writes nothing (BUG-3053)', () 
 		finalizeOnLane(container, titles.indexOf('False'), [no], 'car-no');
 		await Promise.resolve();
 
-		expect(onStatusChange).not.toHaveBeenCalled();
+		expect(onLaneChange).not.toHaveBeenCalled();
 	});
 
 	it('STILL writes when the card really did change lane', async () => {
 		// The counterfactual. Without it the two assertions above pass on an
-		// implementation that never calls onStatusChange at all — which is exactly
+		// implementation that never calls onLaneChange at all — which is exactly
 		// how two legs in the ListView half of this unit came to measure nothing.
-		const onStatusChange = vi.fn();
+		const onLaneChange = vi.fn();
 		const zero = item('car-zero', { score: 0 });
 		const five = item('car-five', { score: 5 });
-		const { container } = renderBoard([zero, five], 'score', onStatusChange);
+		const { container } = renderBoard([zero, five], 'score', onLaneChange);
 
 		const titles = laneTitles(container);
 		expect(titles).toContain('0');
@@ -164,6 +166,6 @@ describe('dropping a card back into its own lane writes nothing (BUG-3053)', () 
 		finalizeOnLane(container, titles.indexOf('0'), [zero, five], 'car-five');
 		await Promise.resolve();
 
-		expect(onStatusChange).toHaveBeenCalledWith(expect.objectContaining({ id: 'car-five' }), '0');
+		expect(onLaneChange).toHaveBeenCalledWith(expect.objectContaining({ id: 'car-five' }), '0');
 	});
 });
