@@ -87,7 +87,16 @@
 	// instead of inside client.ts to keep client.ts free of a store
 	// import that would create a circular dep.
 	setAccessRevokedHandler((scope) => {
-		localIndex.reset(scope.workspace);
+		// BUG-2983 widened this seam from 403-only to "this workspace is not
+		// reachable", because a workspace the caller is not a member of answers
+		// 404, not 403 — so this handler never fired for the commonest case
+		// there is, and the client re-requested until the rate limiter answered.
+		//
+		// `markUnreachable` rather than a bare `reset`: reset alone leaves the
+		// next bootstrap cold, which refetches, which 404s, which resets. The
+		// mark is what makes the refusal terminal for this identity, and it is
+		// cleared on identity change.
+		localIndex.markUnreachable(scope.workspace, authStore.userId || null);
 	});
 
 	// Register the "server busy" toast for surfaced 429s (TASK-2080 /

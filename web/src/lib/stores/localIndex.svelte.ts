@@ -251,6 +251,30 @@ class WorkspaceState {
 // per-field reactivity via the class-field $state runes above.
 const workspaces = new SvelteMap<string, WorkspaceState>();
 
+/**
+ * Workspaces this identity has been told it cannot reach (BUG-2983).
+ *
+ * A PLAIN Set, deliberately not a `SvelteSet`, and that is the fix rather than
+ * an implementation detail. The storm was a feedback loop: `bootstrap`'s
+ * synchronous prefix READS reactive state and WRITES it, and it runs inside the
+ * calling `$effect`'s tracking scope, so every write re-fired the effect, which
+ * called `bootstrap`, which wrote again — measured at one request per tick,
+ * unbounded. A reactive terminal flag would keep that loop running at full
+ * speed with the network removed: the same spin, now invisible. This Set is
+ * read by an early return placed BEFORE any state write and registers no
+ * dependency, so the effect settles after the one pass that marks it.
+ *
+ * Keyed by IDENTITY as well as slug, because "you cannot reach this" is a fact
+ * about a (user, workspace) pair: signing in as someone who IS a member must
+ * not inherit the refusal. `identityChanged` clears the whole set for the same
+ * reason.
+ */
+const unreachable = new Set<string>();
+
+function unreachableKey(ws: string, userId: string | null): string {
+	return `${userId ?? 'anon'}\u0000${ws}`;
+}
+
 // In-flight bootstrap promises live outside the reactive state — there
 // is no reason to proxy a Promise, and keeping it separate makes the
 // reactive-vs-internal split explicit.
@@ -1046,6 +1070,23 @@ export const localIndex = {
 		ws: string,
 		opts: { userId: string | null },
 	): Promise<void> {
+		// TERMINAL REFUSAL, CHECKED FIRST AND WRITING NOTHING (BUG-2983).
+		//
+		// Position is the fix. Everything below this line reads reactive state
+		// and then writes it, and `bootstrap` runs inside the calling `$effect`'s
+		// tracking scope (it is called before `loadData`'s first `await`), so
+		// each write re-fires the effect, which calls `bootstrap` again. On a
+		// SUCCESSFUL load that converges — the next pass hits the `'ready'`
+		// early return before any fetch — but a failure lands on `'error'`, which
+		// is not an early-return state, so every pass refetched. Measured at one
+		// `/items-index` request per tick until the rate limiter answered.
+		//
+		// This return reads a PLAIN Set and writes nothing, so the pass that
+		// marks the workspace is the last one that does anything: no write, no
+		// invalidation, no re-fire. A reactive flag here, or a write in this
+		// branch, would leave the loop spinning with the network removed.
+		if (unreachable.has(unreachableKey(ws, opts.userId))) return;
+
 		// User-mismatch reset BEFORE the early-return checks. Otherwise
 		// a different user signing into the same browser would inherit
 		// the previous user's `ready` state and in-flight promise
@@ -2302,7 +2343,40 @@ export const localIndex = {
 	 * holds is per-user: rows the previous user could see, their cursor, their
 	 * access epoch. A tab that visited two workspaces kept the other one.
 	 */
+	/**
+	 * Record that this identity cannot reach `ws`, and purge what it cached
+	 * (BUG-2983). The reaction to a workspace-scoped 404 or 403 — see
+	 * `AccessRevokedScope` in the API client, which fires both at one seam.
+	 *
+	 * The mark goes down BEFORE the purge: `reset` deletes the workspace's state
+	 * entry, which is a reactive write, so it re-fires the calling effect one
+	 * last time. That pass must find the mark already in place, or it refetches
+	 * and the loop this closes reopens through its own cleanup.
+	 */
+	markUnreachable(ws: string, userId: string | null): void {
+		unreachable.add(unreachableKey(ws, userId));
+		// The REACTIVE mirror, and the two sets are deliberately not one.
+		// `unreachable` is the terminal GATE and must not be reactive, or the
+		// early return re-fires the effect it exists to stop. `accessRevoked` is
+		// what the UI reads, so it has to be. One write each, on the same pass:
+		// the reactive one costs exactly one more effect run, which then hits the
+		// gate and writes nothing.
+		accessRevoked.add(ws);
+		localIndex.reset(ws);
+	},
+
+	/** Has this identity been refused `ws`? Non-reactive by design. */
+	isUnreachable(ws: string, userId: string | null): boolean {
+		return unreachable.has(unreachableKey(ws, userId));
+	},
+
 	resetAll(): void {
+		// A refusal belongs to the (user, workspace) pair, so a new identity
+		// starts clean — signing in as someone who IS a member must not inherit
+		// the previous user's refusal. Cleared wholesale rather than per key
+		// because `resetAll` IS the identity-change hook (see the subscription
+		// at the bottom of this file).
+		unreachable.clear();
 		for (const ws of [...workspaces.keys()]) {
 			localIndex.reset(ws);
 		}

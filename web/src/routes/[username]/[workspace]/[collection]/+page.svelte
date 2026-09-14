@@ -3473,7 +3473,27 @@
 		</div>
 
 		<!-- Content -->
-		{#if (indexError || accessRevoked) && items.length === 0}
+		{#if accessRevoked && items.length === 0}
+			<!--
+				The workspace is not reachable by this caller (BUG-2983). Split
+				out of the generic error box below because the two need opposite
+				affordances: that one offers RETRY, and retrying this is what
+				produced the storm this fix closes.
+
+				THE WORDING IS THE RULING (lead, on the fold). A non-member and a
+				DELETED workspace are the same 404 by design — the server refuses
+				to say which, so neither may this. "Access revoked" would assert
+				the half that was deliberately withheld, and it is also wrong for
+				the commonest case, which is a link into a workspace the user was
+				never in.
+			-->
+			<div class="empty-state-box">
+				<div class="empty-icon">🔒</div>
+				<h2>This workspace isn't available</h2>
+				<p>It isn't available to you, or it no longer exists.</p>
+				<a class="empty-cta" href="/{username}">Back to your workspaces</a>
+			</div>
+		{:else if indexError && items.length === 0}
 			<!-- localIndex bootstrap failed and the cache is empty
 			     (e.g. transient /items-index failure on cold load,
 			     or auth revoked on /items-changes). Show a retry
