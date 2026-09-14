@@ -1147,7 +1147,15 @@ Examples:
 			// two writes inside one second both match it and neither conflicts —
 			// `--expected-updated-at` cannot refuse the race it exists to refuse.
 			// `seq` is bumped on every mutation of the row, so it can.
-			if expectedSeq != 0 {
+			//
+			// PRESENCE, not value (codex round 3). `0` is the flag's zero value
+			// AND a value a user can type, so `if expectedSeq != 0` silently
+			// DROPPED `--expected-seq 0` and sent an unguarded write — the one
+			// outcome a caller asking for a guard must never get. `Changed` is
+			// the only thing that distinguishes them, and forwarding the 0 lets
+			// the server answer with its 400 instead of this door inventing a
+			// different verdict.
+			if cmd.Flags().Changed("expected-seq") {
 				input.ExpectedSeq = &expectedSeq
 			}
 
