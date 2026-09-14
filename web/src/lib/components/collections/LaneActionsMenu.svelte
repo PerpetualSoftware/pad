@@ -2,6 +2,7 @@
 	import type { Item, Collection } from '$lib/types';
 	import { parseSchema } from '$lib/types';
 	import { SORT_OPTIONS, priorityField, type SortMode } from '$lib/collections/itemSort';
+	import { laneKeyIsBulkMovable } from '$lib/collections/laneWriteValue';
 
 	interface Props {
 		/** The lane's CURRENTLY-FILTERED items — every action operates on these. */
@@ -74,9 +75,20 @@
 
 	// Move targets = the other lanes. Only offered when the board groups by
 	// status, since the bulk `move` op sets the status field (TASK-1668).
+	//
+	// BUG-3074: `options` SURVIVES a retype, so the option list alone does not
+	// say the field can still hold one of its own options. A `status` retyped to
+	// `multi_select` kept offering named destinations and sent a scalar into a
+	// list field, which the server then refused once per item — an affordance
+	// promising a write that could not land. Ask the declared type instead, via
+	// the same converter the drag and quick-create paths use. An empty result
+	// withholds the entry through the `moveTargets.length > 0` guard below, so
+	// there is no second gate to keep in step with this one.
 	let moveTargets = $derived(
 		groupField === 'status'
-			? (statusField?.options ?? []).filter((o) => o !== groupValue)
+			? (statusField?.options ?? []).filter(
+					(o) => o !== groupValue && laneKeyIsBulkMovable(statusField, o)
+				)
 			: []
 	);
 	let priorityOptions = $derived(priorityFieldDef?.options ?? []);
