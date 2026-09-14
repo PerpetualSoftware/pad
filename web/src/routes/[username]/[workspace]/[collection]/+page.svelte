@@ -8,6 +8,7 @@
 	import { parseSettings, parseFields, parseSchema, parseTags, getStatusOptions, itemUrlId, formatItemRef } from '$lib/types';
 	import { plansProgressToMap, fetchCollectionProgress } from '$lib/collections/progressMerge';
 	import { resolveRenameNavTarget, resolveSyncRenameTarget } from '$lib/collections/renameNav';
+	import { laneWriteValue, laneWriteRefusalMessage } from '$lib/collections/laneWriteValue';
 	import BoardView from '$lib/components/collections/BoardView.svelte';
 	import ListView from '$lib/components/collections/ListView.svelte';
 	import TableView from '$lib/components/collections/TableView.svelte';
@@ -1315,6 +1316,14 @@
 			: (settings?.list_group_by ?? 'status')
 	);
 
+	/**
+	 * The group field's SCHEMA entry — what a lane key has to be converted back
+	 * through before it is written (BUG-3057). `undefined` for a `board_group_by`
+	 * naming a field the schema does not declare, which `laneWriteValue` treats
+	 * as "write the key", matching the server's orphan-key handling.
+	 */
+	let groupFieldDef = $derived(schema?.fields.find((f) => f.key === groupField));
+
 	let statusOptions = $derived(collection ? getStatusOptions(collection) : []);
 
 	/** Schema keys whose filter value names an item rather than an option. */
@@ -1673,7 +1682,23 @@
 		// reverted. `fields_patch` merges per key under the row lock
 		// (internal/store/items.go::mergeFieldsPatch), so no other field is
 		// reachable by this write at all.
-		const fieldsPatch = { [groupField]: newValue };
+		// BUG-3057: a lane key is a STRING projection of the value, and assigning
+		// it straight back sent a string to a field the schema says holds
+		// something else. The server REFUSES those writes (`"0"` into a number,
+		// `"c"` into a multi_select), so a legitimate drag between lanes simply
+		// failed on any board not grouped by a string-shaped field. Convert
+		// through the declared type; see `laneWriteValue` for the measured
+		// server behaviour behind each case.
+		const laneWrite = laneWriteValue(groupFieldDef, newValue);
+		if (!laneWrite.ok) {
+			// Thrown, not swallowed: BoardView unwinds its optimistic reorder on
+			// a rejection, which is the same contract the catch below relies on.
+			const label = groupFieldDef?.label || groupField;
+			const msg = laneWriteRefusalMessage(laneWrite.reason, label);
+			toastStore.show(msg, 'error');
+			throw new Error(msg);
+		}
+		const fieldsPatch = { [groupField]: laneWrite.value };
 		const ws = wsSlug;
 		const parentRef = formatItemRef(item) ?? item.slug;
 
@@ -1932,8 +1957,21 @@
 				defaultFields.status = statusField.options[0];
 			}
 			// Pre-fill the lane's group field (status, or a custom
-			// board_group_by select) so the item opens in this lane.
-			defaultFields[groupField] = groupValue;
+			// board_group_by select) so the item opens in this lane — converted
+			// through the declared type, for the reason on the drag path
+			// (BUG-3057). Creating in a `0` lane of a number field used to send
+			// the string `"0"`, which the server refuses, so the create failed.
+			const laneWrite = laneWriteValue(groupFieldDef, groupValue);
+			if (!laneWrite.ok) {
+				const label = groupFieldDef?.label || groupField;
+				toastStore.show(laneWriteRefusalMessage(laneWrite.reason, label), 'error');
+				return null;
+			}
+			// A null here is the PATCH path's delete sentinel and means nothing on
+			// create — the field is simply absent from a new item.
+			if (laneWrite.value !== null) {
+				defaultFields[groupField] = laneWrite.value;
+			}
 			// Epoch before create: a brand-new id is never in the fence set,
 			// so this is the case the epoch guard exists for (BUG-2098).
 			const epoch = localIndex.scopeEpochFor(wsSlug);
