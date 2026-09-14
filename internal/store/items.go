@@ -780,6 +780,16 @@ func (s *Store) GetItemBySlug(workspaceID, slug string) (*models.Item, error) {
 // and falls back to a number-only lookup. This allows old refs to still resolve
 // after an item has been moved to a different collection (e.g. PLAN-42 still
 // finds the item even after it became TASK-42).
+//
+// THE RELATION RUNG NO LONGER SHARES THIS FALLBACK (BUG-3082). `itemByRefQ` in
+// relation_referents.go takes the number-only lookup only when the written
+// prefix names no LIVE collection in the workspace. The two diverge because
+// they answer to different consequences: here a ref is a caller NAVIGATING, and
+// landing on the moved item is the helpful answer; there it is a value being
+// STORED into a typed field, where resolving CONVE-1 to whatever holds number 1
+// writes a referent nobody asked for and nothing above it objects. Do not
+// "restore consistency" by copying either behaviour onto the other without
+// reading that rationale.
 func (s *Store) GetItemByRef(workspaceID, prefix string, number int) (*models.Item, error) {
 	var id string
 	// Try exact prefix + number match first
