@@ -17,6 +17,65 @@
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
 
+	/**
+	 * BUG-3006: the page's identity fence.
+	 *
+	 * Every handler here is its own async function with its own awaits and its
+	 * own toast, and the BUG-2991 fix fences only the LOAD effect — so after a
+	 * logout/login an in-flight or still-clickable handler could report the
+	 * previous session's result to whoever is signed in now, commit it into the
+	 * settings UI, or act on intent captured for a different account.
+	 *
+	 * TWO CAPTURES, because there are two different questions and one of them
+	 * cannot be answered by the other (codex round 1 [High]):
+	 *
+	 *   `identityHeld(captured)` — "has the identity moved since THIS WORK
+	 *   started?" Each handler captures at ENTRY, before its first await, and
+	 *   passes that value. An earlier version compared against the page's load
+	 *   epoch instead, which is wrong in a reachable way: an identity change
+	 *   fires the page's own load effect, `load()` RE-STAMPS the load epoch to
+	 *   the new value, and an older in-flight mutation then compared new
+	 *   against new and committed. The handler's own entry is the only capture
+	 *   that cannot be re-stamped underneath it.
+	 *
+	 *   `pageIdentityHeld()` — "does this PAGE still belong to the signed-in
+	 *   user?" For a control that is still clickable because it was rendered
+	 *   from the previous session's data, the intent was formed at LOAD, and by
+	 *   the time the click arrives the epoch has already moved — so an entry
+	 *   capture is the current epoch and cannot detect it. The markup's
+	 *   copy-link button is that shape.
+	 *
+	 * COMMIT POINT, not entry: the check belongs immediately before anything
+	 * that writes page state, writes a store, shows a toast, navigates, or
+	 * touches the clipboard — and AFTER EACH await, not once per handler, since
+	 * an identity can change during the second await as easily as the first.
+	 *
+	 * Neither is a navigation fence, and neither replaces `loadGen` /
+	 * `collectionsGen`. Those answer "which workspace does this answer
+	 * describe"; these answer "who asked". A workspace switch under one identity
+	 * leaves the epoch alone, and a re-login on one workspace leaves the
+	 * generations alone. Both, or neither is covered — `authStore.identityFence`
+	 * makes the same point one layer down.
+	 *
+	 * The delete-workspace Undo toast uses NEITHER, because it outlives the
+	 * page: it captures its own epoch at delete time and compares at click time.
+	 * See `handleDeleteWorkspace`.
+	 */
+	let identityEpochAtLoad = authStore.identityEpoch;
+
+	/** The epoch as of now — captured at a handler's entry, before its awaits. */
+	function captureIdentity(): number {
+		return authStore.identityEpoch;
+	}
+
+	function identityHeld(captured: number): boolean {
+		return authStore.identityEpoch === captured;
+	}
+
+	function pageIdentityHeld(): boolean {
+		return authStore.identityEpoch === identityEpochAtLoad;
+	}
+
 	let wsSlug = $derived(page.params.workspace ?? '');
 	let username = $derived(page.params.username ?? '');
 	/**
@@ -253,11 +312,18 @@
 	let loadGen = 0;
 	async function refreshCollections(ws: string) {
 		if (!ws) return;
+		// Captured at ENTRY, before any await: the only epoch that cannot be
+		// re-stamped by a concurrent load (codex round 1).
+		const epochAtEntry = captureIdentity();
 		const gen = ++collectionsGen;
 		try {
 			const fresh = await api.collections.list(ws);
-			// Drop if a newer write superseded us OR the workspace changed.
+			// Drop if a newer write superseded us, the workspace changed, OR the
+			// signed-in identity moved. The first two are the same navigation
+			// question asked two ways; the third is a different question and
+			// neither of the others answers it.
 			if (gen !== collectionsGen || ws !== wsSlug) return;
+			if (!identityHeld(epochAtEntry)) return;
 			collections = fresh;
 			// If the edit modal is open, feed it the refreshed object for the
 			// SAME id so a concurrent rename updates its `collection` prop and
@@ -304,6 +370,12 @@
 		// collectionsGen so it doesn't revert a fresher SSE refresh.
 		const myLoad = ++loadGen;
 		const myColl = ++collectionsGen;
+		// RE-STAMPED HERE, before any await, exactly as ItemDetail's loadData
+		// does: the epoch that matters is the one current when this page's data
+		// was loaded, not the one current when the module first evaluated. A
+		// route component that survives an identity change without remounting
+		// would otherwise keep comparing against a stale epoch for ever.
+		identityEpochAtLoad = authStore.identityEpoch;
 		try {
 			await workspaceStore.setCurrent(slug);
 			if (myLoad !== loadGen) return;
@@ -327,15 +399,29 @@
 	}
 	async function saveName() {
 		if (!wsName.trim() || savingName) return;
+		// Captured at ENTRY, before any await: the only epoch that cannot be
+		// re-stamped by a concurrent load (codex round 1).
+		const epochAtEntry = captureIdentity();
 		savingName = true;
 		nameStatus = 'idle';
 		try {
 			await api.workspaces.update(wsSlug, { name: wsName.trim() });
+			if (!identityHeld(epochAtEntry)) return;
 			nameStatus = 'saved';
-			setTimeout(() => (nameStatus = 'idle'), 2000);
+			// The TIMER is its own commit point. It fires two seconds after the
+			// await returned, so a check at the await tells you nothing about
+			// who is signed in when this runs.
+			setTimeout(() => {
+				if (!identityHeld(epochAtEntry)) return;
+				nameStatus = 'idle';
+			}, 2000);
 		} catch {
+			if (!identityHeld(epochAtEntry)) return;
 			nameStatus = 'error';
 		} finally {
+			// `savingName` is the button's own disabled flag, not a report about
+			// the request — leaving it stuck true would strand the new user's
+			// UI, so it is cleared unfenced on purpose.
 			savingName = false;
 		}
 	}
@@ -369,6 +455,9 @@
 
 	async function saveContext() {
 		if (savingContext) return;
+		// Captured at ENTRY, before any await: the only epoch that cannot be
+		// re-stamped by a concurrent load (codex round 1).
+		const epochAtEntry = captureIdentity();
 		contextError = '';
 		contextStatus = 'idle';
 
@@ -396,13 +485,21 @@
 					settings: stripContextFromSettings(workspaceStore.current?.settings)
 				});
 
+			// CHECKED AFTER THE FIRST AWAIT AND BEFORE THE SECOND: setCurrent
+			// writes a SHARED store, so committing it under a changed identity
+			// pushes the previous session's workspace into the new one's app,
+			// not merely into this page.
+			if (!identityHeld(epochAtEntry)) return;
 			await workspaceStore.setCurrent(updated);
+			if (!identityHeld(epochAtEntry)) return;
 			contextEditor = formatContextEditor(updated.context);
 			contextStatus = 'saved';
 			setTimeout(() => {
+				if (!identityHeld(epochAtEntry)) return;
 				if (contextStatus === 'saved') contextStatus = 'idle';
 			}, 2000);
 		} catch (err: unknown) {
+			if (!identityHeld(epochAtEntry)) return;
 			contextError = err instanceof Error ? err.message : 'Failed to save workspace context';
 			contextStatus = 'error';
 		} finally {
@@ -415,21 +512,39 @@
 		localStorage.setItem('pad-theme', theme);
 	}
 	async function handleCollectionCreated() {
+		// Captured at ENTRY, before any await: the only epoch that cannot be
+		// re-stamped by a concurrent load (codex round 1).
+		const epochAtEntry = captureIdentity();
 		await refreshCollections(wsSlug);
+		// refreshCollections fences its OWN commit; this one is for the two
+		// writes below it, which are this function's and not its callee's.
+		if (!identityHeld(epochAtEntry)) return;
 		collectionStore.loadCollections(wsSlug);
 		showCreateModal = false;
 	}
 	async function handleCollectionUpdated() {
+		// Captured at ENTRY, before any await: the only epoch that cannot be
+		// re-stamped by a concurrent load (codex round 1).
+		const epochAtEntry = captureIdentity();
 		editingCollection = null;
 		await refreshCollections(wsSlug);
+		if (!identityHeld(epochAtEntry)) return;
 		collectionStore.loadCollections(wsSlug);
 	}
 	async function handleInvite() {
 		if (!inviteEmail.trim() || inviting) return;
+		// Captured at ENTRY, before any await: the only epoch that cannot be
+		// re-stamped by a concurrent load (codex round 1).
+		const epochAtEntry = captureIdentity();
 		inviting = true;
 		inviteResult = null;
 		try {
 			const result = await api.members.invite(wsSlug, inviteEmail.trim(), inviteRole);
+			// FIRST of two awaits. Everything below writes the page, and one
+			// branch writes the CLIPBOARD — a side effect that leaves the page
+			// entirely and would hand the new user a join link minted for the
+			// previous one.
+			if (!identityHeld(epochAtEntry)) return;
 			if (result.added) {
 				inviteResult = { message: `Added ${result.name || result.email} as ${result.role}`, type: 'success' };
 			} else if (result.join_url) {
@@ -442,9 +557,13 @@
 			inviteRole = 'editor';
 			// Reload members
 			const memberData = await api.members.list(wsSlug);
+			// SECOND await, checked again: an identity can change during it as
+			// easily as during the first, and this commit is member state.
+			if (!identityHeld(epochAtEntry)) return;
 			members = memberData.members ?? [];
 			invitations = memberData.invitations ?? [];
 		} catch (err: unknown) {
+			if (!identityHeld(epochAtEntry)) return;
 			if (isPlanLimitError(err)) {
 				toastStore.show(planLimitMessage(err) + ' Upgrade to Pro', 'error', 6000, '/console/billing');
 			} else {
@@ -457,32 +576,51 @@
 
 	async function handleRemoveMember(userId: string, name: string) {
 		if (!confirm(`Remove ${name} from this workspace?`)) return;
+		// Captured at ENTRY, before any await: the only epoch that cannot be
+		// re-stamped by a concurrent load (codex round 1).
+		const epochAtEntry = captureIdentity();
 		try {
 			await api.members.remove(wsSlug, userId);
+			if (!identityHeld(epochAtEntry)) return;
 			members = members.filter(m => m.user_id !== userId);
 			toastStore.show(`Removed ${name}`, 'success');
 		} catch {
+			// The FAILURE report is fenced too. A toast naming another
+			// workspace's member is the half the server cannot bound: the
+			// request is refused for the new user, and the message still
+			// reaches them.
+			if (!identityHeld(epochAtEntry)) return;
 			toastStore.show('Failed to remove member', 'error');
 		}
 	}
 
 	async function handleCancelInvitation(invId: string, email: string) {
 		if (!confirm(`Cancel invitation for ${email}?`)) return;
+		// Captured at ENTRY, before any await: the only epoch that cannot be
+		// re-stamped by a concurrent load (codex round 1).
+		const epochAtEntry = captureIdentity();
 		try {
 			await api.members.cancelInvitation(wsSlug, invId);
+			if (!identityHeld(epochAtEntry)) return;
 			invitations = invitations.filter(i => i.id !== invId);
 			toastStore.show(`Invitation cancelled for ${email}`, 'success');
 		} catch {
+			if (!identityHeld(epochAtEntry)) return;
 			toastStore.show('Failed to cancel invitation', 'error');
 		}
 	}
 
 	async function handleChangeRole(userId: string, newRole: string) {
+		// Captured at ENTRY, before any await: the only epoch that cannot be
+		// re-stamped by a concurrent load (codex round 1).
+		const epochAtEntry = captureIdentity();
 		try {
 			await api.members.updateRole(wsSlug, userId, newRole);
+			if (!identityHeld(epochAtEntry)) return;
 			members = members.map(m => m.user_id === userId ? { ...m, role: newRole } : m);
 			toastStore.show('Role updated', 'success');
 		} catch {
+			if (!identityHeld(epochAtEntry)) return;
 			toastStore.show('Failed to update role', 'error');
 		}
 	}
@@ -491,6 +629,9 @@
 	let systemCollections = $derived(collections.filter(c => c.is_system));
 
 	async function toggleAccessPanel(userId: string) {
+		// Captured at ENTRY, before any await: the only epoch that cannot be
+		// re-stamped by a concurrent load (codex round 1).
+		const epochAtEntry = captureIdentity();
 		if (expandedAccessUserId === userId) {
 			expandedAccessUserId = null;
 			return;
@@ -501,9 +642,14 @@
 		accessCollectionIds = [];
 		try {
 			const data = await api.members.getMemberCollectionAccess(wsSlug, userId);
+			// A READ, and it still commits: this paints one member's access
+			// rights into the panel. Under a changed identity that is the
+			// previous session's answer rendered to whoever is signed in now.
+			if (!identityHeld(epochAtEntry)) return;
 			accessMode = data.collection_access === 'specific' ? 'specific' : 'all';
 			accessCollectionIds = data.collection_ids ?? [];
 		} catch {
+			if (!identityHeld(epochAtEntry)) return;
 			accessMode = 'all';
 			accessCollectionIds = [];
 		} finally {
@@ -521,6 +667,9 @@
 
 	async function saveCollectionAccess() {
 		if (!expandedAccessUserId || accessSaving) return;
+		// Captured at ENTRY, before any await: the only epoch that cannot be
+		// re-stamped by a concurrent load (codex round 1).
+		const epochAtEntry = captureIdentity();
 		accessSaving = true;
 		const userId = expandedAccessUserId;
 		const prevMode = accessMode;
@@ -532,11 +681,16 @@
 				accessMode,
 				accessMode === 'specific' ? accessCollectionIds : []
 			);
+			if (!identityHeld(epochAtEntry)) return;
 			accessMode = result.collection_access === 'specific' ? 'specific' : 'all';
 			accessCollectionIds = result.collection_ids ?? [];
 			toastStore.show('Collection access updated', 'success');
 		} catch {
-			// Revert on error
+			// The REVERT is a commit like any other, and a worse one to leave
+			// unfenced: `prevMode` / `prevIds` were captured before the await,
+			// under the PREVIOUS identity, so restoring them writes one
+			// session's view of another member's access into the new session.
+			if (!identityHeld(epochAtEntry)) return;
 			accessMode = prevMode;
 			accessCollectionIds = prevIds;
 			toastStore.show('Failed to update collection access', 'error');
@@ -559,31 +713,64 @@
 		const deletedSlug = wsSlug;
 		const deletedName = wsName;
 		const owner = username;
+		// CAPTURED AT DELETE TIME, which is this handler's entry, and used for
+		// both halves — this handler's own continuation and the toast callback
+		// it hands out. The callback outlives the PAGE,
+		// so it cannot use `pageIdentityHeld` — that reads a variable whose page
+		// may be gone, and re-stamped by a later load if it is not — and it
+		// cannot use the page epoch for the same reason. It carries this value
+		// with it, exactly as it carries slug/name/owner.
+		const epochAtDelete = captureIdentity();
 		deleting = true;
 		try {
 			await api.workspaces.delete(deletedSlug);
+			if (!identityHeld(epochAtDelete)) return;
 			// Longer duration + inline Undo so the user has time to reverse a
 			// mistaken delete. The toast store is global, so this survives the
 			// post-delete redirect to /console. Undo restores the soft-deleted
 			// workspace (still inside its 30-day purge window).
 			toastStore.show(`Workspace "${deletedName}" deleted`, 'success', 12000, undefined, {
 				label: 'Undo',
-				onAction: () => undoDeleteWorkspace(deletedSlug, deletedName, owner)
+				onAction: () => {
+					// CHECKED AT CLICK TIME, against the epoch captured at
+					// delete time. This is the worst case in BUG-3006: the
+					// toast survives the goto below, so without this a
+					// different signed-in user can click A's Undo, restore A's
+					// workspace if they happen to have rights there, and be
+					// navigated to A's owner URL — and even when the server
+					// refuses, they are shown the workspace's name.
+					if (authStore.identityEpoch !== epochAtDelete) return;
+					undoDeleteWorkspace(deletedSlug, deletedName, owner, epochAtDelete);
+				}
 			});
 			goto('/console');
 		} catch {
+			if (!identityHeld(epochAtDelete)) return;
 			toastStore.show('Failed to delete workspace', 'error');
 			deleting = false;
 		}
 	}
 
-	async function undoDeleteWorkspace(slug: string, name: string, owner: string) {
+	/**
+	 * `epochAtDelete` is REQUIRED and is captured by the caller, not here: this
+	 * function runs when the Undo toast is clicked, which may be minutes after
+	 * the delete and in a different page. Capturing at ITS entry would capture
+	 * the clicker's identity and compare it with itself. An earlier version made
+	 * the parameter optional "for a future non-toast caller", which is a default
+	 * that silently disables the check for whoever forgets it.
+	 */
+	async function undoDeleteWorkspace(slug: string, name: string, owner: string, epochAtDelete: number) {
+		// The click-time check in the toast's onAction is the gate; this is the
+		// check AFTER the await, because the identity can move between the click
+		// and the response.
 		try {
 			const restored = await api.workspaces.restore(slug);
+			if (!identityHeld(epochAtDelete)) return;
 			toastStore.show(`Workspace "${restored.name || name}" restored`, 'success');
 			// Navigate back into the freshly restored workspace to confirm it.
 			goto(`/${owner}/${restored.slug || slug}`);
 		} catch {
+			if (!identityHeld(epochAtDelete)) return;
 			toastStore.show(`Failed to restore "${name}"`, 'error');
 		}
 	}
@@ -860,7 +1047,7 @@
 								<span class="inv-email">{inv.email}</span>
 								<Chip color="var(--accent-gray)">{inv.role}</Chip>
 								{#if inv.join_url || inv.code}
-									<button class="btn btn-small copy-link-btn" onclick={async () => { const url = inv.join_url || `${window.location.origin}/join/${inv.code}`; const ok = await copyToClipboard(url); toastStore.show(ok ? 'Link copied!' : 'Failed to copy link', ok ? 'success' : 'error'); }}>
+									<button class="btn btn-small copy-link-btn" onclick={async () => { if (!pageIdentityHeld()) return; const url = inv.join_url || `${window.location.origin}/join/${inv.code}`; const ok = await copyToClipboard(url); if (!pageIdentityHeld()) return; toastStore.show(ok ? 'Link copied!' : 'Failed to copy link', ok ? 'success' : 'error'); }}>
 										Copy invite link
 									</button>
 								{:else}
