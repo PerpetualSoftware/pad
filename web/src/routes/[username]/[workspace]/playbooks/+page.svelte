@@ -590,9 +590,19 @@
 								<div class="card-divider"></div>
 								<div class="card-actions">
 									<Button variant="secondary" size="sm" onclick={() => goto(`/${username}/${wsSlug}/playbooks/${itemUrlId(item)}`)}>Edit</Button>
-									<Button variant="secondary" size="sm" disabled={togglingStatus === item.slug} onclick={() => toggleStatus(item)}>
-										{togglingStatus === item.slug ? '...' : nextStatusLabel(status)}
-									</Button>
+									<!-- DISABLED WHILE THE SCHEMA IS UNKNOWN (BUG-3067 round 7).
+									     Withholding the chip left `status` empty, and this label is
+									     computed FROM it — so every card read "Mark as Draft"
+									     regardless of what it actually held, while the handler read
+									     the real stored value and did something else. A label that
+									     contradicts its own action is worse than the wrong chip
+									     this round was fixing; the button waits for the schema
+									     rather than guessing. -->
+									{#if status}
+										<Button variant="secondary" size="sm" disabled={togglingStatus === item.slug} onclick={() => toggleStatus(item)}>
+											{togglingStatus === item.slug ? '...' : nextStatusLabel(status)}
+										</Button>
+									{/if}
 									<Button variant="secondary" size="sm" disabled={duplicating === item.slug} onclick={() => duplicatePlaybook(item)}>
 										{duplicating === item.slug ? '...' : 'Duplicate'}
 									</Button>

@@ -27,9 +27,18 @@
 	// entirely. The route's own workspace param is the honest source here, since
 	// the dialog has no workspace prop and its children DTO carries only a
 	// collection slug.
-	let notStale = $derived(
-		collectionsNotStaleFor(collectionStore.collectionsWorkspace, page.params.workspace),
-	);
+	//
+	// CORRECTED IN ROUND 7: the route slug is not necessarily the ITEM's
+	// workspace. This dialog is root-mounted and its active request can outlive a
+	// navigation, so `page.params.workspace` can name a workspace the children do
+	// not belong to — which makes the comparison worse than no comparison: it can
+	// answer "stale" for a store that is correct, and "fresh" for one that is not.
+	// A guard fed the wrong input does not fail safe, it fails confidently.
+	//
+	// So the comparison is NOT made here. The dialog stays permissive and says so,
+	// and the real fix is for its children DTO to carry the workspace the item
+	// belongs to — which it does not today.
+	let notStale = $derived(true);
 
 	let active = $derived(openChildrenDialog.active);
 

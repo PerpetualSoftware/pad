@@ -3,8 +3,11 @@
 // The chips answer a retyped `status`/`priority` by WITHHOLDING the value. A
 // prompt variable cannot: `{status}` has to become something, and a blank is a
 // lie of a different kind. The ruling matches what #1352 did for chips —
-// resolve to the target's TITLE, fall back to its REF when the row cannot be
-// resolved, never emit the raw id.
+// resolve to the target's TITLE, fall back to its REF, never emit the raw id.
+// The FALLBACK IS FOR A RESOLVED ROW WITH NO TITLE — an earlier version of this
+// comment said "when the row cannot be resolved", which the code cannot do and
+// the legs below show it does not: a ref is built from the row, so an id that
+// resolves to nothing has no ref to fall back to and yields empty.
 //
 // The second half of the ruling is structural: `QuickActionsMenu` and
 // `quick-action-preview` held byte-identical copies of this substitution, and
