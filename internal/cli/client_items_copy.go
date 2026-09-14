@@ -252,6 +252,11 @@ type ItemCopyResultWarnings struct {
 	AttachmentCount      int      `json:"attachment_count"`
 	AttachmentBytes      int64    `json:"attachment_bytes"`
 	UnresolvableRefCount int      `json:"unresolvable_ref_count"`
+
+	// SourceContentState says the body this copy carried was behind the
+	// source item's live collaborative document (BUG-3032). Omitted by the
+	// server when the source row was current.
+	SourceContentState string `json:"source_content_state,omitempty"`
 }
 
 // ItemCopyResult is the mutating copy's 201 response.

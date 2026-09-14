@@ -17,6 +17,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/cli"
 	"github.com/PerpetualSoftware/pad/internal/config"
 
+	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
@@ -371,6 +372,7 @@ WARNING: This will overwrite the current database contents.`,
 func dbMigrateToPgCmd() *cobra.Command {
 	var fromPath string
 	var toURL string
+	var discardUnflushedEdits bool
 
 	cmd := &cobra.Command{
 		Use:   "migrate-to-pg",
@@ -457,6 +459,56 @@ Steps:
 			}
 			fmt.Fprintln(os.Stderr)
 
+			// BUG-3032: refuse the migration while any item's stored body is
+			// BEHIND its live collaborative document.
+			//
+			// This gate exists here and nowhere else because this is the only
+			// door that ABANDONS its source database. The bundle carries no
+			// op-log — models.WorkspaceExport enumerates its sections and
+			// item_yjs_updates is not among them — and ImportWorkspace writes
+			// ItemExport.Content back as the destination's canonical content.
+			// Everywhere else a stale body is merely served late and the real
+			// text stays reachable: the two HTTP export/import doors leave the
+			// source workspace in place, a cross-workspace copy leaves the
+			// source item untouched, and `pad db backup` / `pad db restore`
+			// don't come through here at all (VACUUM INTO / pg_dump copy the
+			// whole database, op-log included). After this command the operator
+			// switches to Postgres and the SQLite file stops being read, so the
+			// same staleness is permanent loss.
+			//
+			// THE CHECK COVERS EVERY WORKSPACE BEFORE THE FIRST IMPORT, so the
+			// refusal can truthfully say nothing has been migrated — the same
+			// promise the NUL-suspect gate above makes. It is one indexed EXISTS
+			// per item rather than a scan of pre-built bundles, which would mean
+			// holding every workspace in memory to read one field.
+			//
+			// The remedy is the only one there is: a browser tab. No Go code in
+			// this repo can decode a Yjs update payload (the dumb-relay design),
+			// so nothing server-side can move op-log content into items.content
+			// — and the two server-side paths that touch the op-log,
+			// PruneAndApply and ForceRefreshRoom, write CALLER-supplied content
+			// and prune, which would DISCARD exactly these edits. That is why
+			// the escape hatch is named for what it does to the data.
+			pendingByWorkspace := map[string][]store.PendingFlushItem{}
+			pendingTotal := 0
+			for _, ws := range workspaces {
+				pending, err := srcStore.ListItemsPendingContentFlush(ws.ID)
+				if err != nil {
+					return fmt.Errorf("check for unflushed edits in %s: %w", ws.Slug, err)
+				}
+				if len(pending) > 0 {
+					pendingByWorkspace[ws.Slug] = pending
+					pendingTotal += len(pending)
+				}
+			}
+			report, err := gateUnflushedEdits(workspaces, pendingByWorkspace, pendingTotal, discardUnflushedEdits)
+			if report != "" {
+				fmt.Fprint(os.Stderr, report)
+			}
+			if err != nil {
+				return err
+			}
+
 			migrated := 0
 			for _, ws := range workspaces {
 				fmt.Fprintf(os.Stderr, "Migrating workspace: %s...\n", ws.Name)
@@ -500,8 +552,61 @@ Steps:
 
 	cmd.Flags().StringVar(&fromPath, "from", "", "SQLite database path (default: server-resolved — PAD_DB_PATH > PAD_DATA_DIR/pad.db > ~/.pad/pad.db)")
 	cmd.Flags().StringVar(&toURL, "to", "", "PostgreSQL connection URL (default: PAD_DATABASE_URL)")
+	cmd.Flags().BoolVar(&discardUnflushedEdits, "discard-unflushed-edits", false,
+		"migrate even though some items have edits only in the collaborative op-log, permanently losing them")
 
 	return cmd
+}
+
+// gateUnflushedEdits decides whether a SQLite→PostgreSQL migration may proceed
+// when some items' stored bodies are BEHIND their live collaborative documents
+// (BUG-3032), and renders the operator-facing detail block either way.
+//
+// Separated from the command's RunE, and the reason is the NUL gate next door:
+// its logic is reachable from a test without two live databases, which is why
+// its refusal wording and its exit-status arithmetic both have coverage. A gate
+// whose only entry point is a cobra RunE that opens two stores from the
+// environment is a gate whose message nobody checks until an operator reads it
+// during a migration they cannot retry.
+//
+// Returns (report, nil) to proceed — report non-empty only under the discard
+// flag, carrying the WARNING banner so the loss lands on the terminal record
+// rather than being implied by a flag name in shell history — and ("", err) to
+// refuse, with the detail block inside the error so the caller cannot print a
+// refusal without its reason. `workspaces` supplies the ORDER and the display
+// names; a workspace with no pending items contributes nothing.
+func gateUnflushedEdits(workspaces []models.Workspace, pending map[string][]store.PendingFlushItem, total int, discard bool) (string, error) {
+	if total == 0 {
+		return "", nil
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "\n%d item(s) have edits that exist only in the collaborative op-log,\n", total)
+	fmt.Fprint(&b, "which this migration does NOT carry. Their bodies would arrive in PostgreSQL\n")
+	fmt.Fprint(&b, "as they stand in SQLite now — missing those edits — and the SQLite database\n")
+	fmt.Fprint(&b, "holding the real text is abandoned after this command.\n\n")
+	for _, ws := range workspaces {
+		items := pending[ws.Slug]
+		if len(items) == 0 {
+			continue
+		}
+		fmt.Fprintf(&b, "  %s (%s):\n", ws.Name, ws.Slug)
+		for _, it := range items {
+			fmt.Fprintf(&b, "    %-12s %s\n", it.Ref, it.Title)
+		}
+	}
+	// The only remedy there is. No Go code in this repo can decode a Yjs update
+	// payload (the dumb-relay design), so nothing server-side can move op-log
+	// content into items.content — and the two server-side paths that touch the
+	// op-log, PruneAndApply and ForceRefreshRoom, write CALLER-supplied content
+	// and prune, which would DISCARD exactly these edits.
+	fmt.Fprint(&b, "\nOpen each of those items in the web UI so the tab flushes its pending edits\n")
+	fmt.Fprint(&b, "into the database, then re-run this command. To migrate anyway and lose those\n")
+	fmt.Fprint(&b, "edits, re-run with --discard-unflushed-edits.\n")
+
+	if !discard {
+		return "", fmt.Errorf("%s\n%d item(s) carry unflushed edits; nothing has been migrated", b.String(), total)
+	}
+	return "WARNING: --discard-unflushed-edits was given, so these edits will be LOST:\n" + b.String() + "\n", nil
 }
 
 // maskPassword replaces the password in a PostgreSQL URL for safe display.

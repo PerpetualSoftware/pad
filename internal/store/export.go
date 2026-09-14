@@ -1252,3 +1252,53 @@ func hasDigit(s string) bool {
 	}
 	return false
 }
+
+// PendingFlushItem names one item whose stored body is BEHIND its live
+// collaborative document, for the migration gate in `pad db migrate-to-pg`
+// (BUG-3032).
+type PendingFlushItem struct {
+	Ref   string
+	Title string
+}
+
+// ListItemsPendingContentFlush returns the workspace's items whose op-log holds
+// updates above items.content_flushed_op_log_id — the same predicate
+// contentStateSQL evaluates, reached through the same helper so the gate and the
+// bundle's own marker cannot disagree about which rows are stale. Two
+// hand-written spellings of it would be two chances to drift, and a gate that
+// refused a different set than the bundle marks would be worse than no gate.
+//
+// Why a query rather than a scan of an already-built bundle: the migration's
+// refusal has to be able to say "nothing has been migrated", which means the
+// check must cover EVERY workspace before the first import runs. Exporting them
+// all up front to scan them would hold every workspace in memory at once; this
+// is one indexed EXISTS per item (idx_yjs_updates_item_id covers it) and leaves
+// the migration's export-then-import-per-workspace shape alone.
+//
+// Ordered by ref so a refusal message is stable between runs.
+func (s *Store) ListItemsPendingContentFlush(workspaceID string) ([]PendingFlushItem, error) {
+	rows, err := s.db.Query(s.q(`
+		SELECT c.prefix, COALESCE(i.item_number, 0), i.title
+		FROM items i
+		JOIN collections c ON c.id = i.collection_id
+		WHERE i.workspace_id = ? AND i.deleted_at IS NULL
+		  AND `+contentStateSQL+` <> ''
+		ORDER BY c.prefix, i.item_number`), workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("list items pending content flush: %w", err)
+	}
+	defer rows.Close()
+	var out []PendingFlushItem
+	for rows.Next() {
+		var prefix, title string
+		var number int
+		if err := rows.Scan(&prefix, &number, &title); err != nil {
+			return nil, fmt.Errorf("scan item pending content flush: %w", err)
+		}
+		out = append(out, PendingFlushItem{Ref: fmt.Sprintf("%s-%d", prefix, number), Title: title})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}

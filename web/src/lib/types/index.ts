@@ -1102,6 +1102,16 @@ export interface ItemCopyResultWarnings {
 	attachment_count: number;
 	attachment_bytes: number;
 	unresolvable_ref_count: number;
+	/**
+	 * Present only when the body this copy carried was BEHIND the source item's
+	 * live collaborative document (BUG-3032). Takes the one value
+	 * `Item.content_state` takes; absent when the source row was current.
+	 *
+	 * A warning, not a refusal: a copy leaves the source untouched, so the real
+	 * text is still in the source workspace's op-log and the remedy is to copy
+	 * again once a tab has flushed it.
+	 */
+	source_content_state?: string;
 }
 
 /** The 201 response. */

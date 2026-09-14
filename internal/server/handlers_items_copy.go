@@ -275,6 +275,25 @@ type ItemCopyResultWarnings struct {
 	// to nothing under the source workspace's scope (DR-11a). Not cloned,
 	// never fatal; the copy renders exactly as broken as the source did.
 	UnresolvableRefCount int `json:"unresolvable_ref_count"`
+
+	// SourceContentState says the body this copy carried was BEHIND the
+	// source item's live collaborative document (BUG-3032 / BUG-3000). Takes
+	// the one value models.Item.ContentState takes, and is omitted entirely
+	// when the source row was current — so a clean copy's response is
+	// byte-identical to one produced before this field existed.
+	//
+	// WARNED, not refused, and the asymmetry with `pad db migrate-to-pg` —
+	// which refuses — is the whole reason this item exists as a separate
+	// decision: a copy leaves the SOURCE untouched, so the real content is
+	// still reachable in workspace A's op-log and the remedy is to copy
+	// again once a tab has flushed. The migration abandons its source
+	// database, where the same staleness is permanent data loss.
+	//
+	// Costs nothing to compute: CrossWorkspaceCopyResult.Source is the
+	// source item re-read UNDER LOCK via getItemTx, which runs
+	// contentStateSQL, so this value was already in hand and was being
+	// discarded.
+	SourceContentState string `json:"source_content_state,omitempty"`
 }
 
 // copyPreCheckDenial is an authorization refusal from the IN-TRANSACTION
@@ -465,6 +484,12 @@ func (s *Server) handleCopyItem(w http.ResponseWriter, r *http.Request) {
 			AttachmentCount:      res.AttachmentsCopied,
 			AttachmentBytes:      res.BytesCopied,
 			UnresolvableRefCount: len(res.UnresolvableRefs),
+			// res.Source is the under-lock re-read, NOT the caller's
+			// pre-transaction copy — the same reason every collection fact
+			// above comes from res. A pre-transaction read could say
+			// "current" about a row that an applier write moved ahead
+			// before the copy read it.
+			SourceContentState: res.Source.ContentState,
 		},
 	}
 	if res.SourceSeq != nil {
