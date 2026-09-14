@@ -941,16 +941,26 @@ export const api = {
 			// field stays undefined rather than 0, so a caller can render on
 			// presence without treating a clean import as a fact worth showing.
 			//
-			// A POSITIVE INTEGER is required, not merely a finite number (the
-			// same fix as the CLI's staleBodyImportCount, codex round 2 P2). A
-			// response header is middlebox- and attacker-influenced input, and
-			// `Number()` is lenient in ways that reach the toast: it trims, so
-			// `" 7 "` becomes 7, and it accepts decimals, so `"2.5"` would render
-			// as "2.5 items".
+			// A POSITIVE DECIMAL INTEGER is required, spelled the one way Go's
+			// strconv.Atoi accepts it (codex rounds 2 P2 and 3 P2). A response
+			// header is middlebox- and attacker-influenced input, and `Number()`
+			// is lenient in ways that reach the toast and that the CLI rejects:
+			// it trims (`" 7 "`), takes decimals (`"2.5"`), exponent notation
+			// (`"7e0"` → 7), hex (`"0x7"` → 7), and silently rounds integers past
+			// 2^53. The regex is therefore the gate and Number() only converts
+			// what it already admitted — so the two transports suppress and
+			// display exactly the same set of values.
+			//
+			// MAX_SAFE_INTEGER bounds it because Atoi refuses an oversized int
+			// and JS would quietly round one; the count is of items in one
+			// workspace, so any value near that bound is a malformed header
+			// rather than a fact.
 			const raw = resp.headers.get('X-Pad-Import-Stale-Bodies');
-			const n = raw === null ? NaN : Number(raw);
-			if (Number.isInteger(n) && n > 0 && raw!.trim() === raw) {
-				return { ...ws, stale_bodies: n };
+			if (raw !== null && /^[0-9]+$/.test(raw)) {
+				const n = Number(raw);
+				if (n > 0 && n <= Number.MAX_SAFE_INTEGER) {
+					return { ...ws, stale_bodies: n };
+				}
 			}
 			return ws;
 		}

@@ -434,12 +434,26 @@ Steps:
 			// remaining protection and the window is narrowed rather than gone.
 			cfg, cfgErr := config.Load()
 			if cfgErr != nil {
-				// NOT silent. A check that did not run must not read as a check
-				// that passed: the operator is told the appender question was
-				// never asked, so "no refusal" cannot be mistaken for "no server".
+				// FAIL CLOSED (codex round 3 P1). The previous version warned and
+				// proceeded, on the reasoning that an unrelated config problem
+				// should not block a migration. That gets the direction backwards
+				// for this particular gate: its entire job is to establish that
+				// nothing can append, and a config it cannot read is a gate that
+				// cannot establish anything. Disclosure is not safety — a warning
+				// on a terminal nobody is reading still ends with the migration
+				// running against a live server.
+				//
+				// --force is the escape and already exists, so this is not a dead
+				// end for an operator with a broken config who knows the server is
+				// down.
+				if !forceLiveServer {
+					return fmt.Errorf("could not load config to check for a running Pad server (%w) — "+
+						"stop the server and re-run with --force if you know it is down. An edit made while "+
+						"this migration reads the database is not carried (the bundle has no op-log) and the "+
+						"SQLite file holding it is abandoned afterwards", cfgErr)
+				}
 				fmt.Fprintf(os.Stderr, "WARNING: could not load config (%v), so the running-server check was "+
-					"SKIPPED. Stop the Pad server before migrating; an edit made in a browser tab during this "+
-					"migration may not reach PostgreSQL.\n", cfgErr)
+					"SKIPPED; proceeding because --force was given.\n", cfgErr)
 			} else if cli.IsServerRunning(cfg) {
 				if !forceLiveServer {
 					return fmt.Errorf("the Pad server appears to be running at %s:%d — stop it first "+
