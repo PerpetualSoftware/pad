@@ -13,6 +13,11 @@ import { Extension } from '@tiptap/core';
 import type { Editor } from '@tiptap/core';
 import { Plugin, PluginKey } from '@tiptap/pm/state';
 import type { EditorView } from '@tiptap/pm/view';
+// The SHARED arbitration helper, never a raw lease query — the contract
+// TASK-2430 set for all seven global owners it taught to stand down. This
+// plugin was deferred from that task ("svelte-dnd-action + editor block-drag
+// global gestures") and is the last of them; BUG-2453 is that deferral.
+import { isBlockedByModal } from '$lib/a11y/viewerBackdrop';
 // Side-effect imports to register tiptap command-type augmentations on
 // `@tiptap/core`'s `ChainedCommands` interface in this file's compilation
 // context. Required since TS 6 stopped propagating module augmentations
@@ -825,6 +830,66 @@ export const BlockDragHandle = Extension.create({
 					let mouseDownOnHandle = false;
 					let mouseStartY = 0;
 
+					/**
+					 * Should this plugin's WINDOW-level listeners stand down? (BUG-2453)
+					 *
+					 * The owner is the editor surface asking to act — `editorView.dom` —
+					 * never `event.target`, which during a straddling gesture is
+					 * whatever the pointer happens to be over. A viewer portaled to
+					 * `<body>` does not contain the editor, so the helper answers true
+					 * and these handlers decline.
+					 *
+					 * Returns FALSE on an empty lease stack, so with no viewer open
+					 * every path below behaves exactly as it did before — which is the
+					 * property the empty-stack legs of the test pin.
+					 */
+					function dragBlocked(): boolean {
+						return isBlockedByModal(editorView.dom);
+					}
+
+					/**
+					 * Tear a block gesture down mid-flight (BUG-2453).
+					 *
+					 * ABORT RATHER THAN EARLY-RETURN, the same choice `ItemGraph`'s
+					 * `abortPan` makes for its captured pan. An early return alone
+					 * leaves `dragging` latched, the block at 20% opacity, the ghost
+					 * under the user's cursor and `pointerEvents: none` on the editor
+					 * — a half-drag frozen onto a surface that is now behind a viewer,
+					 * with nothing left to deliver the event that would have ended it.
+					 *
+					 * `cancelDrag` is the existing teardown and is what makes this a
+					 * small change: it restores every visual and, unlike `endDrag`,
+					 * never calls `executeMove`. Aborting therefore cannot commit the
+					 * reorder — which is the actual defect here, since the drop landed
+					 * in a document the user could not see.
+					 *
+					 * `mouseDownOnHandle` is cleared HERE because it is the one piece
+					 * of gesture state `cancelDrag` does not own — it describes a
+					 * mouse press that has not become a drag yet, and leaving it set
+					 * would let the first mouseup after the viewer closes open a menu
+					 * for a pointer-down the user has long forgotten. (`pendingDrag`,
+					 * its touch counterpart, IS cleared by `cancelDrag`, so it is not
+					 * repeated here.)
+					 *
+					 * `activeBlock` is nulled to match `endDrag`, which does the same
+					 * as its last act. This is CONSISTENCY, not a defect being closed:
+					 * no path was found that acts on a stale `activeBlock` after an
+					 * abort, because every consumer either re-derives it (`update`,
+					 * the wrapper `mousemove`) or is reached only through a flag this
+					 * function has just cleared. Left populated it would still be a
+					 * teardown that ends in a different state depending on which door
+					 * it came through, which is how the next such path becomes a bug.
+					 */
+					function abortDrag() {
+						mouseDownOnHandle = false;
+						cancelDrag();
+						activeBlock = null;
+						// Matches `endDrag`'s own last act. The handle is invisible
+						// behind the viewer either way; hiding it means the editor is
+						// not left mid-hover when the viewer closes.
+						hideHandle();
+					}
+
 					handle.addEventListener('mousedown', (e) => {
 						e.preventDefault();
 						e.stopPropagation();
@@ -833,6 +898,14 @@ export const BlockDragHandle = Extension.create({
 					});
 
 					function onMouseMoveGlobal(e: MouseEvent) {
+						// STRADDLE GATE (BUG-2453) — the press may have landed before
+						// the viewer opened. Guarded ABOVE the threshold check, so a
+						// press that has not yet become a drag cannot become one while
+						// something is in front of the editor.
+						if (dragBlocked()) {
+							if (dragging || mouseDownOnHandle) abortDrag();
+							return;
+						}
 						if (mouseDownOnHandle && !dragging) {
 							if (Math.abs(e.clientY - mouseStartY) > 5) {
 								mouseDownOnHandle = false;
@@ -845,6 +918,16 @@ export const BlockDragHandle = Extension.create({
 					}
 
 					function onMouseUpGlobal(e: MouseEvent) {
+						// STRADDLE GATE (BUG-2453), above the click branch and not
+						// inside the `dragging` one. This handler has TWO jobs: it ends
+						// a drag, and on a press that never moved it opens the block
+						// menu. A guard placed inside the drag arm would still let a
+						// mouseup released over a frontmost viewer pop a menu open on
+						// the inert editor beneath it.
+						if (dragBlocked()) {
+							if (dragging || mouseDownOnHandle) abortDrag();
+							return;
+						}
 						if (mouseDownOnHandle && !dragging) {
 							// It was a click — open menu
 							mouseDownOnHandle = false;
@@ -868,6 +951,14 @@ export const BlockDragHandle = Extension.create({
 					}, { passive: false });
 
 					function onTouchMove(e: TouchEvent) {
+						// STRADDLE GATE (BUG-2453). Above the `preventDefault()` below:
+						// while a viewer is in front the touch belongs to it — swallowing
+						// the move here would break scrolling inside the thing the user
+						// is actually looking at.
+						if (dragBlocked()) {
+							if (dragging || pendingDrag) abortDrag();
+							return;
+						}
 						const touchY = e.touches[0].clientY;
 						if (pendingDrag && !dragging) {
 							if (Math.abs(touchY - pendingTouchY) > 8) {
@@ -883,6 +974,13 @@ export const BlockDragHandle = Extension.create({
 					}
 
 					function onTouchEnd(e: TouchEvent) {
+						// STRADDLE GATE (BUG-2453) — the tap-opens-menu branch below is
+						// this handler's version of the mouseup one, and needs the same
+						// gate for the same reason.
+						if (dragBlocked()) {
+							if (dragging || pendingDrag) abortDrag();
+							return;
+						}
 						if (pendingDrag) {
 							// Tap on handle → open menu
 							pendingDrag = false;
