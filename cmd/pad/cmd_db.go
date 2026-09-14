@@ -522,29 +522,37 @@ Steps:
 			// ONE SNAPSHOT ACROSS THE WHOLE MIGRATION (BUG-3072).
 			//
 			// Every read below runs on this transaction: the workspace list,
-			// the unflushed-edits gate, and every workspace's export. Two
-			// things come from that, and only the first was ever the stated
-			// goal.
+			// the unflushed-edits gate, and every workspace's export. It is
+			// opened BEFORE the gate and released only after the last import,
+			// so the whole command is one instant.
 			//
-			// The bundle becomes internally consistent. ExportWorkspace used
-			// to issue six pooled queries with nothing enclosing them, so a
-			// concurrent writer could land between any two SECTIONS and
-			// produce a bundle that disagrees with itself — an item naming a
-			// collection captured before it existed, a link whose endpoint
-			// arrived after the items section was read. That predates
-			// BUG-3032 entirely and no amount of re-checking closes it.
+			// WHAT THE TRANSACTION BUYS is that nothing can commit underneath
+			// it. SQLite has one write lock and `_txlock=immediate` takes it
+			// here, on Begin — measured on BUG-3072: another handle's write
+			// stays blocked for as long as this is held and lands only after
+			// the commit. That is what makes the bundle internally consistent,
+			// and it is a real defect closed rather than a tidy-up:
+			// ExportWorkspace used to issue six pooled queries with nothing
+			// enclosing them, so a concurrent writer could land between any two
+			// SECTIONS and produce a bundle that disagrees with itself — an
+			// item naming a collection captured before it existed, a link whose
+			// endpoint arrived after the items section was read. It is also why
+			// the gate below can no longer measure a different instant than the
+			// bundles it is gating.
 			//
-			// And the gate stops measuring a different instant than the thing
-			// it gates. A pre-pass on the pool answers about the moment it
-			// ran; the export answers about another. Inside one transaction
-			// they are the same moment by construction.
+			// The *Q read variants are used throughout for a narrower reason,
+			// stated where they are defined: while ONE transaction spans the
+			// whole run the pool would answer identically, so threading the
+			// executor is what stops that from being load-bearing. Split this
+			// transaction and pooled reads diverge silently; transaction-scoped
+			// ones do not.
 			//
-			// THE SNAPSHOT IS NOT WHAT STOPS A CONCURRENT APPEND. Measured on
-			// BUG-3072: busy_timeout belongs to the APPENDER's connection, so
-			// holding this lock DEFERS that write rather than refusing it, and
-			// the deferred write then lands in the file this command is about
-			// to abandon. What refuses it is the marker installed below,
-			// published by this transaction's COMMIT.
+			// THE SNAPSHOT IS NOT WHAT STOPS A CONCURRENT APPEND FROM BEING
+			// LOST. Measured on BUG-3072: busy_timeout belongs to the
+			// APPENDER's connection, so holding this lock DEFERS that write
+			// rather than refusing it, and the deferred write then lands in the
+			// file this command is about to abandon. What refuses it is the
+			// marker installed below, published by this transaction's COMMIT.
 			//
 			// A rollback anywhere before that commit leaves the source
 			// completely untouched and the command re-runnable.

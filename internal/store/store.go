@@ -235,22 +235,26 @@ func (s *Store) DB() *sql.DB { return s.db }
 // read snapshot for everything run on it (BUG-3072).
 //
 // The DSN carries `_txlock=immediate`, so this is a BEGIN IMMEDIATE: it takes
-// the write lock up front rather than on first write. Two things follow, and
-// callers want both. It EXCLUDES other writers for the duration — subject to
-// the measurement on BUG-3072: another connection with its own busy_timeout is
-// DEFERRED, not refused, so exclusion alone never made a concurrent write fail.
-// And every read issued ON THIS TRANSACTION sees one instant.
+// the write lock on Begin rather than on first write. MEASURED, because the
+// whole design leans on it: with this transaction held, another handle's
+// CreateItem blocked for the full 1.5s it was observed and completed only
+// after the commit. SQLite has ONE write lock, so while this is open no other
+// connection can COMMIT anything.
 //
-// The second is the part that is easy to get wrong, because getting it wrong
-// costs nothing visible. Reads issued on the POOL while this transaction is
-// held do not deadlock — the pool is 16 connections deep — and in WAL mode
-// each of those connections takes its OWN snapshot. So a caller that opens
-// this and then calls the non-Q form of a read has a transaction that excludes
-// writers and a read that is not in it, and nothing anywhere reports that.
-// Pass the returned *sql.Tx to the *Q variants.
+// THAT EXCLUSION IS WHAT MAKES A BUNDLE CONSISTENT — not the executor the
+// reads use. Reads issued on the POOL while this is held do not deadlock (the
+// pool is 16 deep) and, measured against the same probe, see exactly what the
+// transaction sees, because nothing can change underneath either of them.
 //
-// SQLite-specific in its guarantees; it is a plain Begin on Postgres, where
-// the pool has no such single-writer property.
+// So passing the returned *sql.Tx to the *Q read variants is not what buys
+// correctness today; it is what stops correctness from depending on an
+// argument about lock exclusion that holds only while ONE transaction spans
+// the whole run. Split it per workspace, or commit in the middle, and pooled
+// reads start diverging silently while transaction-scoped reads stay right.
+//
+// SQLite-specific in all of the above. On Postgres this is a plain Begin and
+// the pool has no single-writer property at all, so there the executor is the
+// only thing that makes a read part of the snapshot.
 func (s *Store) BeginSnapshot() (*sql.Tx, error) { return s.db.Begin() }
 
 // New creates a Store backed by SQLite at the given path.

@@ -384,3 +384,91 @@ func TestMigratedRefusalTablesAllExist(t *testing.T) {
 		}
 	}
 }
+
+// TestHeldSnapshotBlocksOtherWritersRatherThanLettingThemThrough pins the
+// SQLite property the migration's consistency actually rests on.
+//
+// IT EXISTS BECAUSE I GOT THE REASON WRONG. The design was argued on "pooled
+// reads take their own WAL snapshots, so a bundle's sections can disagree even
+// under a held transaction" — which is true with NO transaction held and false
+// for the migration, which holds BEGIN IMMEDIATE across its whole run. SQLite
+// has one write lock, so while that is held nothing else can commit and a
+// pooled read sees exactly what the transaction sees. Measuring that is what
+// corrected the claim, so it is measured here rather than asserted in a
+// comment nobody can falsify.
+//
+// What it therefore protects: if this ever goes green-with-a-writer-completing
+// — the transaction stopped being IMMEDIATE, or stopped spanning the run — the
+// bundle's consistency argument has changed underneath the code that relies on
+// it, and the *Q threading becomes load-bearing rather than belt-and-braces.
+func TestHeldSnapshotBlocksOtherWritersRatherThanLettingThemThrough(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "snapshot.db")
+	a, err := New(path)
+	if err != nil {
+		t.Fatalf("open A: %v", err)
+	}
+	defer a.Close()
+	ws := createTestWorkspace(t, a, "Snap")
+	col := createTestCollection(t, a, ws.ID, "Tasks")
+	createTestItem(t, a, ws.ID, col.ID, "first", "")
+
+	b, err := New(path)
+	if err != nil {
+		t.Fatalf("open B: %v", err)
+	}
+	defer b.Close()
+
+	count := func(q Queryer) int {
+		t.Helper()
+		var n int
+		if err := q.QueryRow(`SELECT COUNT(*) FROM items WHERE workspace_id = ?`, ws.ID).Scan(&n); err != nil {
+			t.Fatalf("count: %v", err)
+		}
+		return n
+	}
+
+	tx, err := a.BeginSnapshot()
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	before := count(tx)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := b.CreateItem(ws.ID, col.ID, models.ItemCreate{Title: "second", Fields: `{"status":"open"}`})
+		done <- err
+	}()
+
+	// Long relative to any single export query, so a writer that COULD get
+	// through would have.
+	time.Sleep(750 * time.Millisecond)
+
+	select {
+	case err := <-done:
+		t.Fatalf("a second handle COMMITTED while the migration snapshot was held (err=%v) — "+
+			"the bundle's consistency no longer follows from holding the write lock", err)
+	default:
+	}
+
+	if got := count(tx); got != before {
+		t.Errorf("the transaction's own view moved from %d to %d", before, got)
+	}
+	// The pool, deliberately: this is the leg that corrected the design's
+	// stated reason. It must agree with the transaction.
+	if got := count(a.db); got != before {
+		t.Errorf("a POOLED read saw %d where the transaction sees %d — pooled reads CAN "+
+			"diverge under a held snapshot after all, which makes the *Q threading "+
+			"load-bearing rather than belt-and-braces", got, before)
+	}
+
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("the blocked writer must SUCCEED once the lock is released, or this test "+
+			"is measuring a failed write rather than a deferred one: %v", err)
+	}
+	if got := count(a.db); got != before+1 {
+		t.Errorf("after the commit the write should be visible: got %d, want %d", got, before+1)
+	}
+}

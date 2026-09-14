@@ -135,19 +135,29 @@ func (s *Store) ExportWorkspace(slug string) (*models.WorkspaceExport, error) {
 	return s.ExportWorkspaceQ(s.db, slug)
 }
 
-// ExportWorkspaceQ is ExportWorkspace against a caller-supplied executor.
+// ExportWorkspaceQ is ExportWorkspace against a caller-supplied executor, so
+// every section of a bundle can be read inside one transaction (BUG-3072).
 //
-// THE EXECUTOR IS THE WHOLE POINT, and the reason is not the one the *Q shape
-// usually carries. Elsewhere in this package a *Q variant exists to keep a
-// pool read from deadlocking against a held transaction (BUG-2778); here the
-// pool is 16 connections deep, so passing s.db while a write transaction is
-// held does not deadlock — it WORKS, and silently produces the wrong answer.
-// SQLite in WAL mode gives every connection its OWN read snapshot, so the six
-// sections below would each see a different instant and a bundle could name a
-// collection it does not contain, or carry a link whose endpoint arrived after
-// the items section was read (BUG-3072). Passing a single *sql.Tx is what
-// makes the bundle one snapshot; passing the pool is the documented, lossy
-// shape the two HTTP export doors still use.
+// WHAT THE EXECUTOR ACTUALLY BUYS, corrected after measuring. The obvious
+// story — that pooled reads take their own WAL snapshots, so the six sections
+// below could disagree — is true of an export running with NO transaction held
+// and FALSE of the migration, which is the caller this was written for. That
+// caller holds a BEGIN IMMEDIATE across its whole run, and SQLite has one
+// write lock, so nothing else can commit while it does: measured, a concurrent
+// writer stays blocked for the duration and a pooled read sees exactly what
+// the transaction sees.
+//
+// What passing a *sql.Tx buys is therefore not today's correctness but its
+// GROUNDS. Consistency becomes a property of this transaction rather than of
+// an exclusion argument that holds only while one transaction spans the entire
+// command. Split that transaction per workspace, commit in the middle, or run
+// this against a Postgres source where the pool has no single-writer property,
+// and pooled reads begin to disagree with each other silently while
+// transaction-scoped reads stay correct.
+//
+// The pool remains a legitimate executor and is what ExportWorkspace passes:
+// the two HTTP export doors hold no transaction and accept that their sections
+// can disagree under concurrency, which is pre-existing and out of scope here.
 func (s *Store) ExportWorkspaceQ(q Queryer, slug string) (*models.WorkspaceExport, error) {
 	ws, err := s.getWorkspaceBySlugQ(q, slug)
 	if err != nil {
