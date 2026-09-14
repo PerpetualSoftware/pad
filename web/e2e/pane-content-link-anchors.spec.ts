@@ -278,18 +278,174 @@ async function ctrlClickForPopup(page: Page, target: Locator, label: string) {
 	const onPopup = () => nav.push('popup event');
 	page.on('framenavigated', onFrameNav);
 	page.on('popup', onPopup);
+
+	// ROUND 7 — CDP, the lead's named next step, plus the geometry probe that the
+	// round-6 control anchor implies.
+	//
+	// What round 6 settled: a bare anchor injected INSIDE the pane opens a tab in
+	// the same window, at the same instant the app's anchor does not. So popup
+	// CREATION works, the window has a usable user gesture, and the pane subtree
+	// is fine. Whatever this is, it is specific to reaching THAT element.
+	//
+	// The control was `position:fixed` at 0,0 — immune to reflow — which makes a
+	// LAYOUT SHIFT between Playwright's actionability hit-test and its event
+	// dispatch the candidate that fits every fact at once: it would explain the
+	// control always working, the retry working once layout settled, and the
+	// absence of any event on the anchor (the click landed on something else).
+	//
+	// Two probes, because they answer different halves:
+	//   - CDP `Page.windowOpen` / `Page.frameRequestedNavigation` say whether
+	//     Chromium began an activation AT ALL. Nothing means the activation never
+	//     started, rather than started and got lost.
+	//   - the geometry record says whether the click COORDINATES were still over
+	//     the anchor when the event was dispatched.
+	const cdp: string[] = [];
+	let cdpSession: import('@playwright/test').CDPSession | null = null;
+	try {
+		cdpSession = await page.context().newCDPSession(page);
+		await cdpSession.send('Page.enable');
+		cdpSession.on('Page.windowOpen', (e: { url?: string }) =>
+			cdp.push(`Page.windowOpen ${e?.url ?? ''}`),
+		);
+		cdpSession.on('Page.frameRequestedNavigation', (e: { url?: string; reason?: string }) =>
+			cdp.push(`frameRequestedNavigation ${e?.reason ?? ''} ${e?.url ?? ''}`),
+		);
+	} catch (err) {
+		cdp.push(`CDP unavailable: ${String(err)}`);
+	}
+
+	// ROUND 8 — the BROWSER-level Target domain, because round 7 answered its
+	// question and moved the gap.
+	//
+	// Round 7 found `Page.frameRequestedNavigation` with reason `anchorClick` and
+	// the CORRECT url on the FAILING click, and identical geometry before and
+	// after it. So Chromium accepted the click, resolved the anchor and requested
+	// the navigation: activation is NOT suppressed, and the click is not landing
+	// on the wrong element. Both readings this instrument was built to separate
+	// are refuted, and the failing click is indistinguishable from the succeeding
+	// retry at the Page domain — all three lines are the same event.
+	//
+	// What is left is everything AFTER the request: was a target created and did
+	// Playwright fail to observe it, or was no target ever created? The Page
+	// domain cannot see that; the browser-level Target domain can.
+	const targets: string[] = [];
+	let browserSession: import('@playwright/test').CDPSession | null = null;
+	try {
+		const browser = page.context().browser();
+		if (browser) {
+			browserSession = await browser.newBrowserCDPSession();
+			// The targetId on BOTH ends, because round 8's first cut logged it only
+			// on destroy and so could not say WHICH target was torn down — the
+			// control anchor's tab and the failing click's were indistinguishable
+			// in the log. And `targetInfoChanged` with the url, because "a tab was
+			// created" and "a tab was created AND navigated" are different
+			// findings: the first is a harness that missed a real page, the second
+			// is a user staring at a blank tab.
+			const short = (id?: string) => (id ? id.slice(0, 8) : '?');
+			browserSession.on(
+				'Target.targetCreated',
+				(e: { targetInfo?: { type?: string; url?: string; targetId?: string } }) =>
+					targets.push(
+						`created[${short(e?.targetInfo?.targetId)}] ${e?.targetInfo?.type ?? '?'} url=${JSON.stringify(e?.targetInfo?.url ?? '')}`,
+					),
+			);
+			browserSession.on(
+				'Target.targetInfoChanged',
+				(e: { targetInfo?: { type?: string; url?: string; targetId?: string } }) => {
+					if (e?.targetInfo?.type !== 'page') return;
+					targets.push(
+						`changed[${short(e?.targetInfo?.targetId)}] url=${JSON.stringify(e?.targetInfo?.url ?? '')}`,
+					);
+				},
+			);
+			browserSession.on('Target.targetDestroyed', (e: { targetId?: string }) =>
+				targets.push(`destroyed[${short(e?.targetId)}]`),
+			);
+			await browserSession.send('Target.setDiscoverTargets', { discover: true });
+		} else {
+			targets.push('no browser handle');
+		}
+	} catch (err) {
+		targets.push(`Target domain unavailable: ${String(err)}`);
+	}
+
+	// Geometry AT the moment of the click: the box Playwright will aim at, and
+	// what the document says is actually painted at that point.
+	const geometryFor = async (when: string) => {
+		const box = await target.boundingBox().catch(() => null);
+		if (!box) return `${when}: no box`;
+		const cx = Math.round(box.x + box.width / 2);
+		const cy = Math.round(box.y + box.height / 2);
+		const hit = await page
+			.evaluate(
+				({ x, y }) => {
+					const el = document.elementFromPoint(x, y) as HTMLElement | null;
+					if (!el) return 'nothing';
+					const a = el.closest('a');
+					return [
+						el.tagName.toLowerCase(),
+						el.className ? `.${String(el.className).split(/\s+/)[0]}` : '',
+						a ? ` inAnchor[href=${a.getAttribute('href')}]` : ' NOT-IN-ANCHOR',
+					].join('');
+				},
+				{ x: cx, y: cy },
+			)
+			.catch((e) => `evaluate failed: ${String(e)}`);
+		return `${when}: box=${cx},${cy} ${Math.round(box.width)}x${Math.round(box.height)} hit=${hit}`;
+	};
+	const geometry: string[] = [await geometryFor('before click')];
 	const stateAtClick = await page.evaluate(() => ({
 		readyState: document.readyState,
 		visibility: document.visibilityState,
 		hasFocus: document.hasFocus(),
 		url: location.href,
 	}));
+	// ELAPSED, because round 9's inventory cannot be read without it. "The page
+	// is not in context.pages()" means one thing if the wait burned its full
+	// timeout and the opposite if the promise failed fast — in the second case
+	// the inventory is simply taken too early, and the rival explains the same
+	// observation. `.catch(() => null)` hides which happened, so time it.
+	const waitStarted = Date.now();
+	let waitOutcome = 'resolved';
 	const popupPromise = page
 		.context()
 		.waitForEvent('page', { timeout: 20_000 })
-		.catch(() => null);
+		.catch((e) => {
+			waitOutcome = `rejected: ${String(e).slice(0, 120)}`;
+			return null;
+		});
 	await target.click({ modifiers: ['ControlOrMeta'] });
 	let popup = await popupPromise;
+	geometry.push(await geometryFor('after click'));
+
+	// ROUND 9 — the page INVENTORY, because round 8 removed the app from the
+	// picture entirely.
+	//
+	// Round 8's Target log shows the failing click's tab being created AND
+	// navigated to the correct url (`created[X] url=""` then `changed[X]
+	// url=<target>`), while `waitForEvent('page')` sat out its full 20s timeout.
+	// So the click worked, the popup opened, the navigation committed — and
+	// Playwright did not report the page.
+	//
+	// Two readings remain and this separates them: if the navigated target is
+	// absent from `context.pages()`, the page landed in a context this test never
+	// observes, which is a Playwright/Chromium attachment question. If it IS in
+	// `context.pages()`, the page arrived and only the EVENT was missed, which
+	// makes the fix `context.pages()` polling rather than `waitForEvent`.
+	const waitElapsedMs = Date.now() - waitStarted;
+	const inventory = page
+		.context()
+		.pages()
+		.map((p) => p.url());
+	// And again after a further settle, so "absent" can be told from "not yet".
+	let inventoryLate: string[] = [];
+	if (!popup) {
+		await page.waitForTimeout(2_000).catch(() => {});
+		inventoryLate = page
+			.context()
+			.pages()
+			.map((p) => p.url());
+	}
 	// ROUND 4. Everything a link activation needs was present and Chromium did
 	// nothing: complete/visible/focused page, a real href, ctrl+button 0, the
 	// SAME anchor node at mousedown and mouseup, `defaultPrevented` false, and
@@ -341,13 +497,22 @@ async function ctrlClickForPopup(page: Page, target: Locator, label: string) {
 	}
 	page.off('framenavigated', onFrameNav);
 	page.off('popup', onPopup);
+	if (cdpSession) await cdpSession.detach().catch(() => {});
+	if (browserSession) await browserSession.detach().catch(() => {});
 	if (popup && retries.length) {
 		// Not a pass. A retry that works says the first click landed in a window
 		// where activation was suppressed, which is the finding — so fail
 		// LOUDLY with it rather than swallowing it as a flake.
 		throw new Error(
 			`BUG-2993 FALSIFIER [${label}]: first ctrl-click produced no popup, a RETRY did.\n` +
-				`  retries: ${JSON.stringify(retries)}\n` +
+				`  retries:  ${JSON.stringify(retries)}\n` +
+				`  cdp:      ${JSON.stringify(cdp)}\n` +
+				`  targets:  ${JSON.stringify(targets)}\n` +
+				`  wait: ${waitElapsedMs}ms outcome=${waitOutcome}\n` +
+				`  inventory(after wait): ${JSON.stringify(inventory)}\n` +
+				`  inventory(+2s):        ${JSON.stringify(inventoryLate)}\n` +
+				`  inventory(now):        ${JSON.stringify(page.context().pages().map((p) => p.url()))}\n` +
+				`  geometry: ${JSON.stringify(geometry)}\n` +
 				`  state at first click: ${JSON.stringify(stateAtClick)}\n` +
 				`  probe: ${await readCtrlClickProbe(page)}`,
 		);
@@ -361,6 +526,12 @@ async function ctrlClickForPopup(page: Page, target: Locator, label: string) {
 				`  pages in context:  ${page.context().pages().length}\n` +
 				`  state at click:    ${JSON.stringify(stateAtClick)}\n` +
 				`  nav events:        ${JSON.stringify(nav)}\n` +
+				`  cdp:               ${JSON.stringify(cdp)}\n` +
+				`  targets:           ${JSON.stringify(targets)}\n` +
+				`  wait:              ${waitElapsedMs}ms outcome=${waitOutcome}\n` +
+				`  inventory(after wait): ${JSON.stringify(inventory)}\n` +
+				`  inventory(+2s):        ${JSON.stringify(inventoryLate)}\n` +
+				`  geometry:          ${JSON.stringify(geometry)}\n` +
 				`  retries:           ${JSON.stringify(retries)}\n` +
 				`  url now:           ${page.url()}\n` +
 				`  probe:             ${await readCtrlClickProbe(page)}`,
