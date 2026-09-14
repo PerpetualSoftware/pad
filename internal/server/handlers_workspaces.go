@@ -428,22 +428,30 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 
 	// Seed collections for the new workspace using the requested template
 	if err := s.store.SeedCollectionsFromTemplate(ws.ID, input.Template); err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "Workspace created but failed to seed collections: "+err.Error())
+		// COMPENSATE HERE TOO (BUG-2715, codex round 4). This step's failure
+		// produced the same husk as the owner step's — a live, ownerless,
+		// unseeded workspace still holding its slug, so the retry landed on
+		// `name-2` — and the old message said so out loud ("Workspace created
+		// but failed to seed collections") while leaving the caller nothing they
+		// could use or remove. Compensating only the owner step would have left
+		// the invariant true of one failure point and false of its neighbour.
+		userID := currentUserID(r)
+		if rerr := s.removeUnusableWorkspace("create workspace (seed)", ws.ID, ws.Slug, userID, err); rerr != nil {
+			slog.Error("workspace seeding failed and the workspace could not be removed",
+				"workspace_id", ws.ID, "workspace_slug", ws.Slug, "error", rerr)
+		}
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to seed collections: "+err.Error())
 		return
 	}
 
-	// Add the creator as workspace owner.
-	//
-	// The error is still not fatal here (changing that is BUG-2715 — a failure
-	// leaves an OWNERLESS workspace and a 201), but it is no longer discarded
-	// silently. TASK-2658 gave AddWorkspaceMember a second way to fail: it now
-	// writes member.joined transactionally, so an outbox failure rolls the
-	// membership back too. Widening a swallowed error without at least making
-	// it visible is how a new failure mode goes unnoticed for a year.
+	// Add the creator as workspace owner. FATAL as of BUG-2715: a workspace
+	// nobody can administer is worse than no workspace, so the door answers
+	// with a usable workspace or with nothing. See addOwnerOrCompensate for the
+	// reconcile-before-destroying rule and for the crash window this carries.
 	if userID := currentUserID(r); userID != "" {
-		if err := s.store.AddWorkspaceMember(ws.ID, userID, "owner"); err != nil {
-			slog.Error("workspace created but creator was not added as owner",
-				"workspace_id", ws.ID, "user_id", userID, "error", err)
+		if err := s.addOwnerOrCompensate("create workspace", ws.ID, ws.Slug, userID); err != nil {
+			writeInternalError(w, err)
+			return
 		}
 	}
 
@@ -924,13 +932,12 @@ func (s *Server) handleImportWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Add the importer as workspace owner (mirrors handleCreateWorkspace).
-	// Same posture as that path: not fatal (BUG-2715), but not discarded —
-	// an import that silently fails here returns 201 for a workspace nobody
-	// can administer.
+	// Same posture as that path, which is now FATAL (BUG-2715): an import that
+	// fails here used to return 201 for a workspace nobody could administer.
 	if userID != "" {
-		if err := s.store.AddWorkspaceMember(ws.ID, userID, "owner"); err != nil {
-			slog.Error("workspace imported but importer was not added as owner",
-				"workspace_id", ws.ID, "user_id", userID, "error", err)
+		if err := s.addOwnerOrCompensate("import workspace", ws.ID, ws.Slug, userID); err != nil {
+			writeInternalError(w, err)
+			return
 		}
 	}
 
