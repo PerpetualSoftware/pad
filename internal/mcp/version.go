@@ -1017,6 +1017,45 @@ const CmdhelpVersion = "0.1"
 //     browser tab and BUG-3000 carries the open half — so no surface
 //     here states a duration.
 //
+//     0.36 — BUG-3082. A REF-SHAPED `relation` value no longer falls
+//     back to matching by item NUMBER when its prefix names a collection
+//     that is live in the workspace. Such a value is now `not_found`.
+//
+//     BEHAVIOR bump on the 0.35 / 0.30 / 0.29 / 0.16 grounds — no tool
+//     name, action enum or param shape changed, but a write door refuses
+//     a value it used to accept. Closest precedent is 0.29, which this
+//     finishes: that entry closed free-text corruption ("red" resolving
+//     to whatever is slugged red today) and left the same corruption
+//     open for anything shaped like a ref, which is the spelling the
+//     docs tell callers to prefer.
+//
+//     What it closes. Item numbers are workspace-unique and sequential
+//     ACROSS collections, so `CONVE-1` and `SECRE-1` are never both
+//     real. The resolver's fallback dropped the prefix and matched on
+//     the number alone, and the item it found was usually inside the
+//     field's declared collection — so the wrong-collection check above
+//     it passed and NOTHING was raised. A caller wrote `CONVE-1`, the
+//     item stored a different item's UUID, and the write answered 201
+//     with the substitution visible only in `relation_targets`.
+//
+//     What it PRESERVES, which is why the predicate is about the prefix
+//     rather than the item: a collection RENAME changes its prefix, and
+//     a relation already written as the old ref has to keep resolving
+//     (BUG-2873). That ref's prefix names nothing afterwards, so the
+//     fallback still fires for it. A prefix that IS live and simply has
+//     no item at that number is the caller naming a real collection that
+//     does not contain what they said, and is refused.
+//
+//     RESIDUAL, stated because it is not closed: a ref pasted from
+//     ANOTHER workspace whose prefix also names no collection here still
+//     resolves by number. Nothing in the value distinguishes it from a
+//     rename's leftover, so closing it would cost the case the fallback
+//     exists for. Pinned by a test rather than left implied.
+//
+//     No escape hatch, for 0.29's reason. Out of scope and unchanged:
+//     `GetItemByRef`, the navigational read path, where landing on the
+//     moved item is the helpful answer.
+//
 //     0.35 — BUG-3079. An injected schema DEFAULT now takes the same
 //     `validateFieldType` check a caller-supplied value takes. A default
 //     that fails it is DISCARDED and named in `warnings.dropped_fields`
@@ -1192,7 +1231,7 @@ const CmdhelpVersion = "0.1"
 //     content into the row — so no surface here states a duration for
 //     this one either, and it is not a promise that the row will catch
 //     up at all.
-const ToolSurfaceVersion = "0.35"
+const ToolSurfaceVersion = "0.36"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

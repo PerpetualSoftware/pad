@@ -847,3 +847,59 @@ func TestImportWorkspace_DoesNotMintIDsForOrphanRelationReferents(t *testing.T) 
 		t.Fatalf("import rewrote an orphan-pointing relation value to %v — an id that names no row in any workspace — want it carried verbatim as %q", got, orphanColorID)
 	}
 }
+
+// BUG-3082, at the STORE level. The server-layer test that drives this through
+// a real write door lives in internal/server, and `internal/server`'s test
+// harness is hardwired to SQLite — so this is the leg that runs the new SQL on
+// BOTH dialects under `make test-pg`. The predicate is a second query against
+// `collections`, so a dialect difference is a real risk and not a hypothetical.
+//
+// The rule: a ref-shaped relation value falls back to matching by item NUMBER
+// only when its prefix names NO live collection in the workspace. Item numbers
+// are workspace-unique and sequential ACROSS collections, so `CARS-1` and
+// `COLO-1` are never both real — and unconditionally, the fallback answered the
+// wrong one of the two without raising anything.
+func TestResolveRelationReferents_RefDoesNotFallBackAcrossALivePrefix(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ws, colors, cars, red := relationFixture(t, s)
+
+	// `red` is the only item, so it holds the workspace's item number 1 and its
+	// ref is COLO-1. CARS-1 therefore names a LIVE collection that holds no
+	// such item — and with the prefix discarded it would resolve to `red`,
+	// which sits in the collection the field declares, so nothing further would
+	// object.
+	refInALiveCollection := cars.Prefix + "-" + strings.TrimPrefix(red.Ref, colors.Prefix+"-")
+	fields := map[string]any{"color": refInALiveCollection}
+	issues, err := s.ResolveRelationReferents(ws.ID, u1RelationSchema("colors"), fields, nil)
+	if err != nil {
+		t.Fatalf("ResolveRelationReferents: %v", err)
+	}
+	if len(issues) != 1 || issues[0].Reason != RelationTargetNotFound {
+		t.Fatalf("expected one not_found issue for %q, got %+v (stored %v). "+
+			"Resolving it by number would silently point the field at %s (%s)",
+			refInALiveCollection, issues, fields["color"], red.Ref, red.Title)
+	}
+	if got := fields["color"]; got != refInALiveCollection {
+		t.Fatalf("an unresolvable ref must be left as the caller wrote it, got %v", got)
+	}
+
+	// THE CASE THE FALLBACK EXISTS FOR (BUG-2873): rename the target
+	// collection's prefix and the ref a caller already wrote down must still
+	// resolve, because its prefix now names nothing.
+	renamed := "VAULT"
+	if _, err := s.UpdateCollection(colors.ID, models.CollectionUpdate{Prefix: &renamed}); err != nil {
+		t.Fatalf("UpdateCollection(prefix): %v", err)
+	}
+	stale := map[string]any{"color": red.Ref}
+	issues, err = s.ResolveRelationReferents(ws.ID, u1RelationSchema("colors"), stale, nil)
+	if err != nil {
+		t.Fatalf("ResolveRelationReferents(after rename): %v", err)
+	}
+	if len(issues) != 0 {
+		t.Fatalf("a ref left behind by a prefix rename must still resolve, got %+v", issues)
+	}
+	if stale["color"] != red.ID {
+		t.Fatalf("after rename: canonicalised to %v, want %s", stale["color"], red.ID)
+	}
+}

@@ -22,11 +22,28 @@ import (
 // no prior truth, and exempting it would let a crafted title resolve to a UUID
 // the importer cannot see but can then read straight back off their own item.
 //
-// The reasoning is sound and the path does not exist. An artifact's frontmatter
-// carries a FIXED ALLOW-LIST of field keys per kind, and anything else is
-// dropped at DECODE, before any relation code runs — so no relation value can
-// ride in an artifact, whatever the destination collection's schema has been
-// reshaped to.
+// The reasoning is sound, and the path is narrower than it looks. An artifact's
+// frontmatter carries a FIXED ALLOW-LIST of field keys per kind, and anything
+// else is dropped at DECODE, before any relation code runs — which is what this
+// test pins, with `owner_ref` as the undeclared key.
+//
+// CORRECTION (BUG-3082, day 67). This comment used to end "so no relation value
+// can ride in an artifact, whatever the destination collection's schema has been
+// reshaped to", and that second half is FALSE. The allow-list filters KEYS, not
+// types: a key the kind DOES declare — `role` for a convention, `scope` for a
+// playbook — rides in whatever the destination schema says it means, so
+// retyping one as a relation puts a relation value through this door. Measured,
+// and now pinned by TestImportArtifactCarriesAndReportsUnresolvableRelations.
+//
+// What that costs the reasoning above is less than it appears, and the
+// difference is worth stating because the next reader will ask. The carry
+// posture never canonicalises a value it could not resolve — an unresolvable
+// one is stored exactly as the artifact wrote it and named in the response
+// warnings — so the crafted-title case does not hand back a UUID; it hands back
+// the caller's own string. The visibility predicate is passed on this door like
+// any other (`resolveRelationReferents` → `relationVisibility`). Neither claim
+// is a measurement of the INVISIBLE-target case specifically, which needs a
+// second principal and is not covered by either test.
 //
 // I wrote the ruled test first and it passed while asserting nothing: the field
 // never arrived, so the leg could not tell the visibility rule from its own

@@ -1100,11 +1100,39 @@ func (s *Store) collectionIDBySlugQ(q Queryer, workspaceID, slug string) (string
 	return id, nil
 }
 
-// itemByRefQ is GetItemByRef on a caller-supplied executor. It keeps that
-// helper's FALLBACK — item numbers are workspace-unique, so a ref whose prefix
-// no longer matches still resolves by number — because a relation written as
-// COLO-3 must keep resolving after the target's collection is renamed, which
-// is precisely what BUG-2873 made possible.
+// itemByRefQ is GetItemByRef on a caller-supplied executor, for the RELATION
+// rung only — `resolveRelationTargetQ` is its one caller, and GetItemByRef's
+// own read path is untouched by everything below.
+//
+// It keeps that helper's by-NUMBER fallback, but only for the case the
+// fallback exists to serve. The fallback is there because item numbers are
+// workspace-unique, so a relation written as COLO-3 must keep resolving after
+// the target's collection is RENAMED and its prefix changes — which is
+// precisely what BUG-2873 made possible.
+//
+// BUG-3082: unconditional, that fallback answered a question nobody asked. A
+// ref whose prefix names no collection at all — a typo, or a ref pasted out of
+// another workspace — fell through to `WHERE item_number = ?` with the prefix
+// DISCARDED, and resolved to whatever item happened to hold that number. The
+// retargeted item is usually inside the field's declared collection, so the
+// `item.CollectionID != targetID` check above it passed and NOTHING was
+// raised: a caller wrote CONVE-1, the item stored SECRE-1's UUID, and the
+// write answered 201. That is the corruption PLAN-2857 U1 closed for free text
+// ("red" resolving to whatever is slugged red today), still open for anything
+// ref-SHAPED — which is the spelling the docs tell people to prefer.
+//
+// THE DISCRIMINATOR IS THE PREFIX, NOT THE ITEM (lead ruling, day 67). The
+// fallback fires only when the written prefix names NO current collection in
+// the workspace, because that is what a rename leaves behind. A prefix that IS
+// live and simply has no item at that number is `not_found` — the collection
+// exists, the caller named it, and it does not contain what they said.
+//
+// RESIDUAL, stated because it is not closed and a reader should not infer that
+// it is: a ref pasted from ANOTHER workspace whose prefix also names no
+// collection HERE still resolves by number. Nothing in the value distinguishes
+// it from the rename case — both are a live number under a prefix this
+// workspace does not have — so closing it would cost the rename case the
+// fallback exists for. Pinned by a test rather than left implied.
 func (s *Store) itemByRefQ(q Queryer, workspaceID, prefix string, number int) (*models.Item, error) {
 	var id string
 	err := q.QueryRow(s.q(`
@@ -1118,11 +1146,64 @@ func (s *Store) itemByRefQ(q Queryer, workspaceID, prefix string, number int) (*
 	if err != sql.ErrNoRows {
 		return nil, fmt.Errorf("item by ref: %w", err)
 	}
+	// ONE STATEMENT, not a probe followed by a lookup (codex round 1). Asking
+	// "is this prefix live" and then "what holds this number" as two reads
+	// leaves a window where a collection is created or deleted between them,
+	// and under READ COMMITTED each read sees a different database: the probe
+	// says absent, the lookup then resolves a ref that by the time it lands is
+	// a ref into a live collection. The `NOT EXISTS` makes the two questions
+	// one read, so the answer is always about a single state.
+	//
+	// The prefix is compared RAW against `collections.prefix`, exactly as the
+	// ref-matched query above compares it — `parseItemRef` upper-cases what it
+	// returns, so the two agree by construction rather than by a second rule
+	// kept in step by hand.
+	//
+	// A SOFT-DELETED collection counts as absent HERE, in this predicate,
+	// deliberately: its prefix is no longer in use and its items' refs are
+	// precisely the leftovers this fallback exists to keep resolving. That is
+	// a claim about THIS query only. The ref-matched query above does not
+	// filter on the collection's own `deleted_at` — it never did — so an item
+	// whose collection was soft-deleted can still match there and never reach
+	// this predicate at all. Left alone rather than "made consistent", because
+	// it cannot produce the retarget this function is about: a field declaring
+	// that collection resolves no target id (collectionIDBySlugQ requires a
+	// LIVE collection) and the write is refused `target_missing`, and a field
+	// declaring a live one refuses on the collection check downstream. Pinned
+	// by a test rather than left as reasoning.
+	//
+	// THE WINDOW THAT REMAINS is between the ref-matched query above and this
+	// one, and it is NOT symmetric — an earlier version of this comment said
+	// it was, and codex round 2 was right that the claim is false in one
+	// direction:
+	//
+	//   - A collection DISAPPEARING between the two reads makes this resolve by
+	//     number, which is the right answer for the newer state.
+	//   - A collection appearing — or being RENAMED to this prefix — makes this
+	//     return nothing, and the newer state would have resolved that ref
+	//     EXACTLY. So the answer is stale, not correct-for-either-state.
+	//
+	// It stays because the stale answer is `not_found`: a refusal the caller
+	// can see and retry, never a value silently bound to the wrong item, which
+	// is the failure this whole function exists to stop. Closing it properly
+	// means one statement for all three rungs or a snapshot across them, and
+	// neither is worth taking here for a window whose worst outcome is a
+	// retryable refusal.
 	err = q.QueryRow(s.q(`
 		SELECT id FROM items
 		WHERE workspace_id = ? AND item_number = ? AND deleted_at IS NULL
-	`), workspaceID, number).Scan(&id)
+		  AND NOT EXISTS (
+		      SELECT 1 FROM collections
+		      WHERE workspace_id = ? AND prefix = ? AND deleted_at IS NULL
+		  )
+	`), workspaceID, number, workspaceID, prefix).Scan(&id)
 	if err == sql.ErrNoRows {
+		// Either nothing holds that number, or the prefix names a collection
+		// that exists right now — in which case this ref is not a rename's
+		// leftover but a ref into a real collection that holds no such item,
+		// and answering it by number would hand back an item from somewhere
+		// else entirely. The two are not distinguished because neither
+		// resolves.
 		return nil, nil
 	}
 	if err != nil {
