@@ -130,7 +130,8 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 	// different answers is how one of them keeps being forgotten.
 	repair := &nulRepairTally{Enabled: wantsNULRepair(r)}
 
-	ws, err := s.importBundle(r.Context(), gz, newName, mint, repair)
+	staleBodies := &staleBodyTally{}
+	ws, err := s.importBundle(r.Context(), gz, newName, mint, repair, staleBodies)
 	if err != nil {
 		// Errors from importBundle are already shaped with status hints —
 		// surface as 400 unless the underlying error wraps an http hint.
@@ -190,7 +191,12 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 				"workspace_id", ws.ID, "user_id", mint.OwnerID, "error", err)
 		}
 	}
+	if staleBodies.Count > 0 {
+		slog.Info("bundle import carried item bodies that were behind their live collaborative documents",
+			"workspace_id", ws.ID, "stale_bodies", staleBodies.Count)
+	}
 	repair.SetHeader(w)
+	staleBodies.SetHeader(w)
 	writeJSON(w, http.StatusCreated, ws)
 }
 
@@ -213,7 +219,7 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 // Split out from the handler so tests can drive it with a tar.Reader
 // over an in-memory bundle and assert on the resulting state without
 // a live HTTP server.
-func (s *Server) importBundle(ctx context.Context, r io.Reader, newName string, mint workspaceMintAuth, repair *nulRepairTally) (*models.Workspace, error) {
+func (s *Server) importBundle(ctx context.Context, r io.Reader, newName string, mint workspaceMintAuth, repair *nulRepairTally, staleBodies *staleBodyTally) (*models.Workspace, error) {
 	// The bundle door is the SECOND body shape behind the import route, and
 	// it mints through the same store call, so it takes the same mint
 	// context the JSON path does rather than re-deriving owner and source
@@ -320,6 +326,9 @@ func (s *Server) importBundle(ctx context.Context, r io.Reader, newName string, 
 					message: "Bundle pad-export.json is not importable: " + verr.Error(),
 				}
 			}
+			// BUG-3032: read the bundle's own stale-body marker while `export`
+			// is still the thing the exporter wrote.
+			staleBodies.Observe(&export)
 			ws, err = s.store.ImportWorkspace(&export, newName, ownerID, mint.Source)
 			if err != nil {
 				// A refusal about the bundle the caller supplied gets this
