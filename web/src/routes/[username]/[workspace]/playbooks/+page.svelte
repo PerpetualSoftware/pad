@@ -4,7 +4,7 @@
 	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
 	import { parseFields, parseSchema, itemUrlId, type Collection, type Item } from '$lib/types';
 	import { collectionStore } from '$lib/stores/collections.svelte';
-	import { categoricalValueForSlug } from '$lib/collections/categoricalFieldValue';
+	import { collectionsNotStaleFor, categoricalValueForSlug } from '$lib/collections/categoricalFieldValue';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import { exportAndDownloadArtifact, importArtifactFile } from '$lib/utils/artifacts';
@@ -517,7 +517,7 @@
 					     on the assumption that a system schema was immutable, and
 					     then filed that assumption without checking it; the review
 					     round found it. -->
-					{@const declaredStatus = categoricalValueForSlug(collectionStore.collections, 'playbooks', 'status', fields.status, collectionStore.collectionsAreFreshFor(wsSlug))}
+					{@const declaredStatus = categoricalValueForSlug(collectionStore.collections, 'playbooks', 'status', fields.status, collectionsNotStaleFor(collectionStore.collectionsWorkspace, wsSlug))}
 					{@const status = declaredStatus || 'draft'}
 					{@const trigger = fields.trigger ?? 'manual'}
 					{@const scope = fields.scope ?? 'all'}

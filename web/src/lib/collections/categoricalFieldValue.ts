@@ -33,18 +33,31 @@ import { categoricalChipValue } from '$lib/components/share/shareView';
  * with the wrong workspace's type, in either direction: printing an id, or
  * withholding a perfectly good value.
  *
- * `fresh` is the store's own `collectionsAreFreshFor(wsSlug)`. Passing false
- * makes this answer undefined, which the caller renders as nothing — the same
- * fail-closed direction as an unloaded store, and for the same reason: a chip
- * that is briefly missing is recoverable, a printed id is the bug.
+ * `notStale` asks the NARROWER question, and the difference is a regression I
+ * shipped and the review round caught. The first version took the store's
+ * `collectionsAreFreshFor(wsSlug)`, which is false in TWO different situations:
+ * the collections belong to another workspace, and the store has not been
+ * stamped for any workspace yet. Only the first is a reason to withhold.
+ *
+ * The second is routine — `playbooks` and the dashboard both fetch collections
+ * into PAGE-LOCAL state and never stamp the shared store, so the stamp is set by
+ * the workspace layout and not by them. Treating unstamped as stale therefore
+ * blanked every status pill on those pages until the layout's load landed, and
+ * permanently if it failed while their own fetch succeeded. Withholding a value
+ * for a load nobody is waiting on is not fail-closed, it is just wrong.
+ *
+ * So: withhold only when the store says it holds ANOTHER workspace's
+ * collections. Unstamped falls through to the lookup, which answers undefined
+ * for an empty array anyway — the unloaded case was already covered by the data,
+ * never by this flag.
  */
 export function fieldDefFor(
 	collections: Collection[],
 	collectionSlug: string | undefined,
 	key: string,
-	fresh = true,
+	notStale = true,
 ): FieldDef | undefined {
-	if (!fresh) return undefined;
+	if (!notStale) return undefined;
 	if (!collectionSlug) return undefined;
 	const coll = collections.find((c) => c.slug === collectionSlug);
 	if (!coll) return undefined;
@@ -63,9 +76,9 @@ export function categoricalValueForSlug(
 	collectionSlug: string | undefined,
 	key: string,
 	raw: unknown,
-	fresh = true,
+	notStale = true,
 ): string {
-	return categoricalChipValue(fieldDefFor(collections, collectionSlug, key, fresh), raw);
+	return categoricalChipValue(fieldDefFor(collections, collectionSlug, key, notStale), raw);
 }
 
 /**
@@ -91,7 +104,26 @@ export function categoricalValueFor(
 	item: Pick<Item, 'collection_slug'> & { fields?: unknown },
 	key: string,
 	raw: unknown,
-	fresh = true,
+	notStale = true,
 ): string {
-	return categoricalValueForSlug(collections, item.collection_slug, key, raw, fresh);
+	return categoricalValueForSlug(collections, item.collection_slug, key, raw, notStale);
+}
+
+/**
+ * "The loaded collections are NOT known to belong to a different workspace."
+ *
+ * The one spelling of the staleness question, so the six call sites cannot
+ * drift into asking two different ones — which is exactly what happened between
+ * this and `collectionsAreFreshFor`, whose extra `null` case blanked two pages.
+ *
+ * `stampedWorkspace` is `collectionStore.collectionsWorkspace`: the slug the
+ * current array was loaded for, or null when no load has completed.
+ */
+export function collectionsNotStaleFor(
+	stampedWorkspace: string | null,
+	wsSlug: string | undefined,
+): boolean {
+	if (stampedWorkspace === null) return true;
+	if (!wsSlug) return true;
+	return stampedWorkspace === wsSlug;
 }

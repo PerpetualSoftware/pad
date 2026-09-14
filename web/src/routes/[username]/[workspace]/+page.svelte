@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { categoricalValueFor, categoricalValueForSlug } from '$lib/collections/categoricalFieldValue';
+	import { collectionsNotStaleFor, categoricalValueFor, categoricalValueForSlug } from '$lib/collections/categoricalFieldValue';
 	import { page } from '$app/state';
 	import { onMount, onDestroy, untrack } from 'svelte';
 	import { browser } from '$app/environment';
@@ -26,7 +26,7 @@
 	// global array that retains the previous workspace's while the next load is in
 	// flight (BUG-1461). Asking here rather than inside the helper keeps the
 	// helper pure and puts the workspace question where the workspace is known.
-	let collectionsFresh = $derived(collectionStore.collectionsAreFreshFor(wsSlug));
+	let collectionsFresh = $derived(collectionsNotStaleFor(collectionStore.collectionsWorkspace, wsSlug));
 	let username = $derived(page.params.username ?? '');
 
 	let loading = $state(true);

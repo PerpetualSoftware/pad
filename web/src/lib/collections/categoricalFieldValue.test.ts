@@ -7,7 +7,12 @@
 // these are the ones that read by NAME with no schema.
 import { describe, it, expect } from 'vitest';
 import type { Collection } from '$lib/types';
-import { categoricalValueFor, categoricalValueForSlug, fieldDefFor } from './categoricalFieldValue';
+import {
+	categoricalValueFor,
+	categoricalValueForSlug,
+	collectionsNotStaleFor,
+	fieldDefFor,
+} from './categoricalFieldValue';
 
 function collection(slug: string, fields: unknown[]): Collection {
 	return {
@@ -139,5 +144,41 @@ describe('categoricalValueForSlug', () => {
 	it('answers identically to the item form for the same collection', () => {
 		expect(categoricalValueForSlug(ALL, 'tasks', 'status', 'open')).toBe('open');
 		expect(categoricalValueForSlug(ALL, 'cars', 'status', ID)).toBe('');
+	});
+});
+
+describe('collectionsNotStaleFor — the narrower question', () => {
+	// THE REGRESSION THIS REPLACED, pinned so it cannot come back. The first
+	// version asked the store's `collectionsAreFreshFor`, which is false in TWO
+	// situations: the array belongs to another workspace, and no load has been
+	// stamped at all. Only the first is a reason to withhold a value.
+	//
+	// The second is routine — `playbooks` and the dashboard fetch collections
+	// into PAGE-LOCAL state and never stamp the shared store, so the stamp comes
+	// from the workspace layout. Treating unstamped as stale blanked every status
+	// pill on those pages until the layout's load landed, and permanently if it
+	// failed while their own fetch succeeded.
+	it('is TRUE when nothing has been stamped yet — the case that caused the blanking', () => {
+		expect(collectionsNotStaleFor(null, 'ws-a')).toBe(true);
+	});
+
+	it('is FALSE only when the stamp names a different workspace', () => {
+		expect(collectionsNotStaleFor('ws-b', 'ws-a')).toBe(false);
+	});
+
+	it('is TRUE when the stamp matches', () => {
+		expect(collectionsNotStaleFor('ws-a', 'ws-a')).toBe(true);
+	});
+
+	it('is TRUE when the caller has no workspace slug to compare', () => {
+		// A surface with no workspace in hand must not be blanked; it falls back
+		// to the lookup, which answers undefined for an unloaded array anyway.
+		expect(collectionsNotStaleFor('ws-b', undefined)).toBe(true);
+	});
+
+	it('CONTROL: an unstamped store still yields nothing when the array is empty', () => {
+		// The unloaded case was always covered by the DATA, never by this flag —
+		// which is the argument for narrowing the flag rather than widening it.
+		expect(categoricalValueFor([], { collection_slug: 'tasks' } as never, 'status', 'open')).toBe('');
 	});
 });

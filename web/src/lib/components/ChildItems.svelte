@@ -9,7 +9,7 @@
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import type { Item, Collection, PaneTarget } from '$lib/types';
 	import { parseFields, parseSchema, formatItemRef } from '$lib/types';
-	import { categoricalValueFor } from '$lib/collections/categoricalFieldValue';
+	import { collectionsNotStaleFor, categoricalValueFor } from '$lib/collections/categoricalFieldValue';
 	import { dndzone, TRIGGERS, SHADOW_ITEM_MARKER_PROPERTY_NAME } from 'svelte-dnd-action';
 	import type { DndEvent } from 'svelte-dnd-action';
 	import {
@@ -871,7 +871,7 @@
 						     already had `collectionStore` and `parseSchema` for the
 						     collection PICKER; what it lacked was asking them about the
 						     row it was drawing. -->
-						{@const priority = categoricalValueFor(collectionStore.collections, child, 'priority', fields.priority, collectionStore.collectionsAreFreshFor(wsSlug))}
+						{@const priority = categoricalValueFor(collectionStore.collections, child, 'priority', fields.priority, collectionsNotStaleFor(collectionStore.collectionsWorkspace, wsSlug))}
 						{@const isDone = terminal.includes(fields.status)}
 						{@const isExpanded = expandedIds.has(child.id)}
 						{@const canExpand = child.has_children}
@@ -927,6 +927,13 @@
 		<ul class="print-child-list">
 			{#each children as child (child.id)}
 				{@const childFields = parseFields(child)}
+				<!-- THE SECOND RENDERER IN THIS FILE, and the reason the review round
+				     found it rather than I did: fixing "ChildItems" is not fixing a
+				     FILE, it is fixing each place the file draws a value. The print
+				     view draws `status` where the interactive rows draw `priority`,
+				     so a sweep that stopped at the first hit in each file missed it
+				     (BUG-3067 round 3). -->
+				{@const printStatus = categoricalValueFor(collectionStore.collections, child, 'status', childFields.status, collectionsNotStaleFor(collectionStore.collectionsWorkspace, wsSlug))}
 				{@const isDone = terminal.includes(childFields.status)}
 				<li class="print-child-row" class:done={isDone}>
 					<span class="print-check">{isDone ? '[x]' : '[ ]'}</span>
@@ -934,8 +941,8 @@
 						<span class="print-child-ref">{formatItemRef(child)}</span>
 					{/if}
 					<span class="print-child-title">{child.title}</span>
-					{#if childFields.status}
-						<span class="print-child-status">({formatLabel(childFields.status)})</span>
+					{#if printStatus}
+						<span class="print-child-status">({formatLabel(printStatus)})</span>
 					{/if}
 				</li>
 			{/each}

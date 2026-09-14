@@ -3,7 +3,7 @@
 	import type { Item, PaneTarget } from '$lib/types';
 	import { parseFields, formatItemRef } from '$lib/types';
 	import { collectionStore } from '$lib/stores/collections.svelte';
-	import { categoricalValueFor } from '$lib/collections/categoricalFieldValue';
+	import { collectionsNotStaleFor, categoricalValueFor } from '$lib/collections/categoricalFieldValue';
 	import { shouldOpenInPane } from './collections/itemCardClick';
 
 	interface Props {
@@ -86,7 +86,7 @@
 			     note in ChildItems. No prop threading was needed: `collectionStore`
 			     is a singleton and the row already carries its `collection_slug`,
 			     which is why this site turned out to be the cheap half after all. -->
-			{@const priority = categoricalValueFor(collectionStore.collections, child, 'priority', fields.priority, collectionStore.collectionsAreFreshFor(wsSlug))}
+			{@const priority = categoricalValueFor(collectionStore.collections, child, 'priority', fields.priority, collectionsNotStaleFor(collectionStore.collectionsWorkspace, wsSlug))}
 			{@const isDone = terminal.includes(fields.status)}
 			{@const isExpanded = expandedIds.has(child.id)}
 			{@const canExpand = child.has_children && depth < maxDepth}

@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { collectionStore } from '$lib/stores/collections.svelte';
+	import { categoricalValueForSlug } from '$lib/collections/categoricalFieldValue';
 	// BUG-1538 / TASK-1539 — Confirm dialog that surfaces the server's
 	// `open_children` 409 guard (IDEA-1494) in the web UI. Mounted once
 	// from +layout.svelte; driven by the openChildrenDialog singleton
@@ -83,6 +85,13 @@
 						</div>
 						<ul class="child-list">
 							{#each active.details.open_children as child (child.ref)}
+								<!-- I FILED THIS AS UNFIXABLE CLIENT-SIDE, claiming the DTO
+								     carried no collection identifier. It carries
+								     `collection_slug` — the link two lines below is built from
+								     it. The claim was about a shape I had not opened, in an
+								     item whose whole history is enumeration claims that were
+								     not checked (BUG-3067 round 3). -->
+								{@const childStatus = categoricalValueForSlug(collectionStore.collections, child.collection_slug, 'status', child.status)}
 								<li class="child-row">
 									{#if canLink}
 										<a
@@ -97,7 +106,7 @@
 										<span class="child-ref">{child.ref}</span>
 									{/if}
 									<span class="child-title">{child.title}</span>
-									<span class="child-status">{child.status}</span>
+									{#if childStatus}<span class="child-status">{childStatus}</span>{/if}
 								</li>
 							{/each}
 						</ul>

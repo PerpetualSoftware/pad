@@ -56,6 +56,20 @@ const SURFACES = [
 		keys: ['status', 'priority'],
 	},
 	{ name: 'ItemGraph', src: '../components/graph/ItemGraph.svelte', keys: ['status'] },
+	// ROUND 3. `OpenChildrenDialog` I had filed as unfixable client-side on the
+	// claim that its DTO carried no collection identifier — it carries
+	// `collection_slug`, and the link beside the status is built from it.
+	{ name: 'OpenChildrenDialog', src: '../components/OpenChildrenDialog.svelte', keys: ['status'] },
+];
+
+/**
+ * `ChildItems` draws TWICE — interactive rows and a print list — and the second
+ * renderer was missed by two passes because both were looking for the first hit
+ * per FILE. The guard's unit is a RENDERER, not a file, so this row names the
+ * second one explicitly rather than trusting the file-level row above to cover it.
+ */
+const SECOND_RENDERERS = [
+	{ name: 'ChildItems print list', src: '../components/ChildItems.svelte', marker: 'printStatus' },
 ];
 
 describe('every schema-less by-name reader routes through the shared question', () => {
@@ -111,4 +125,15 @@ describe('every schema-less by-name reader routes through the shared question', 
 		expect(helper).toContain('categoricalChipValue');
 		expect(helper).toContain('parseSchema');
 	});
+});
+
+describe('a file is not a renderer', () => {
+	for (const r of SECOND_RENDERERS) {
+		it(`${r.name} has its own guarded value`, () => {
+			// Not just "the file imports the helper" — the file-level leg above
+			// already passes on the strength of the OTHER renderer, which is
+			// exactly how this one stayed unguarded through two passes.
+			expect(code(r.src)).toContain(r.marker);
+		});
+	}
 });
