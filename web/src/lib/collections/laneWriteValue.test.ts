@@ -59,10 +59,57 @@ describe('laneWriteValue', () => {
 		expect(laneWriteValue(f('checkbox'), 'yes')).toEqual({ ok: false, reason: 'not_a_boolean' });
 	});
 
-	it('gives a multi_select field a one-element ARRAY, and an empty one to clear', () => {
-		// The picker OFFERS multi_select, so this is reachable with no retype.
-		expect(laneWriteValue(f('multi_select'), 'c')).toEqual({ ok: true, value: ['c'] });
-		expect(laneWriteValue(f('multi_select'), '')).toEqual({ ok: true, value: [] });
+	describe('multi_select — a lane is a COMBINATION, so the write inverts the projection', () => {
+		// The picker OFFERS multi_select, so all of this is reachable with no
+		// retype. `laneValue(['a','b'])` is `'a,b'` and ListView mints a lane per
+		// distinct value, so an `a,b` lane really exists on a grouped list
+		// (measured; the board seeds lanes from options, so that item sits in
+		// UNCATEGORIZED there instead).
+		const tags = f('multi_select', { options: ['a', 'b', 'c'] });
+
+		it('writes BOTH tags for a two-tag lane', () => {
+			// The defect this leg exists for: wrapping the key wrote the single
+			// tag `"a,b"`, which is not an option and not a tag anyone has.
+			expect(laneWriteValue(tags, 'a,b')).toEqual({ ok: true, value: ['a', 'b'] });
+		});
+
+		it('CONTROL: a single-tag lane still writes one tag', () => {
+			// Without this, "always split on comma" and "always wrap" both pass
+			// the leg above for the wrong reason on one side or the other.
+			expect(laneWriteValue(tags, 'c')).toEqual({ ok: true, value: ['c'] });
+		});
+
+		it('does not TEAR an option that contains a comma', () => {
+			// Rule 1 (the key IS an option) before rule 2 (every part is an
+			// option). A blind split would write two tags that do not exist.
+			const commas = f('multi_select', { options: ['a,b', 'c'] });
+			expect(laneWriteValue(commas, 'a,b')).toEqual({ ok: true, value: ['a,b'] });
+		});
+
+		it('prefers the REAL option when the lane is genuinely ambiguous', () => {
+			// Options `['a,b','a','b']` make the lane `a,b` unreadable in
+			// principle — the projection is lossy — so the tie-break is stated
+			// rather than left to whichever rule runs first: the reading that
+			// names an option that EXISTS wins.
+			const ambiguous = f('multi_select', { options: ['a,b', 'a', 'b'] });
+			expect(laneWriteValue(ambiguous, 'a,b')).toEqual({ ok: true, value: ['a,b'] });
+		});
+
+		it('splits when the field declares NO options', () => {
+			// Nothing to check a part against, and splitting is the plain inverse
+			// of the join that made the lane.
+			expect(laneWriteValue(f('multi_select'), 'a,b')).toEqual({ ok: true, value: ['a', 'b'] });
+		});
+
+		it('keeps an unrecognised lane whole', () => {
+			// A lane minted from a value that is not in the vocabulary at all:
+			// the honest write is the value the lane was named for.
+			expect(laneWriteValue(tags, 'legacy,x')).toEqual({ ok: true, value: ['legacy,x'] });
+		});
+
+		it('clears with an empty array', () => {
+			expect(laneWriteValue(tags, '')).toEqual({ ok: true, value: [] });
+		});
 	});
 
 	it('writes the key for a field the schema does not declare', () => {

@@ -81,14 +81,41 @@ export function laneWriteValue(field: FieldDef | undefined | null, laneKey: stri
 			return { ok: false, reason: 'not_a_boolean' };
 		}
 		case 'multi_select': {
-			// ONE element, not a merge. A multi_select board's lanes come from
-			// the field's options, so an item with two tags matches no lane and
-			// already sits in UNCATEGORIZED; dropping it into a lane is the user
-			// saying the item belongs THERE. Replacing the list is lossy for
-			// that item, and it is what the gesture means — the alternative is
-			// to refuse the drop, which is a product decision and not this
-			// module's to take silently.
+			// A LANE IS A COMBINATION, so the write is the combination — which
+			// makes this the one arm that has to INVERT the projection rather
+			// than wrap the key.
+			//
+			// `laneValue(['a','b'])` is `'a,b'`, and ListView MINTS a lane for
+			// every distinct value it finds, so a list grouped by a multi_select
+			// really does show an `a,b` lane (measured; the board instead seeds
+			// its lanes from the field's options, so the same item lands in
+			// UNCATEGORIZED there). Dropping onto that lane means "give this item
+			// that lane's tags". Wrapping the key would have written the single
+			// tag `"a,b"`, which is not an option and not a tag anyone has.
+			//
+			// Resolved against the DECLARED OPTIONS rather than split blindly,
+			// so an option that CONTAINS a comma is not torn in half:
+			//   1. the key IS an option        -> that one option
+			//   2. every comma-part is an option -> those options, in lane order
+			//   3. no options declared         -> split, the plain inverse of the
+			//      join, since there is no vocabulary to check against
+			//   4. otherwise                   -> the key as a single value, which
+			//      is what a lane minted from an undeclared value means
+			//
+			// Rule 1 before rule 2 is a deliberate tie-break: with options
+			// `['a,b','a','b']` the lane `a,b` is genuinely ambiguous — the
+			// projection is lossy — and the reading that names a REAL option beats
+			// the one that reconstructs two.
 			if (laneKey === UNCATEGORIZED) return { ok: true, value: [] };
+			const options = field.options ?? [];
+			if (options.length === 0) {
+				return { ok: true, value: laneKey.split(',').filter((p) => p !== '') };
+			}
+			if (options.includes(laneKey)) return { ok: true, value: [laneKey] };
+			const parts = laneKey.split(',');
+			if (parts.length > 1 && parts.every((p) => options.includes(p))) {
+				return { ok: true, value: parts };
+			}
 			return { ok: true, value: [laneKey] };
 		}
 		default:

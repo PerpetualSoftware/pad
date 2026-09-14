@@ -46,6 +46,12 @@ func TestLaneKeyWrites_BUG3057(t *testing.T) {
 		{"checkbox gets a bool", map[string]any{"shipped": false}, ""},
 		{"checkbox cleared by the delete sentinel", map[string]any{"shipped": nil}, ""},
 		{"multi_select gets a one-element array", map[string]any{"tags": []any{"c"}}, ""},
+		// A lane is a COMBINATION, so a two-tag lane writes two tags — and both
+		// have to be declared options or this arm refuses, which is exactly why
+		// the web side resolves the lane key against the options rather than
+		// splitting it blindly.
+		{"multi_select gets a two-element array", map[string]any{"tags": []any{"a", "b"}}, ""},
+		{"multi_select given the JOINED lane key as one tag", map[string]any{"tags": []any{"a,b"}}, "not in allowed options"},
 		{"multi_select cleared by an empty array", map[string]any{"tags": []any{}}, ""},
 
 		// The case that was never broken, pinned so a conversion applied to
