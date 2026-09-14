@@ -169,3 +169,87 @@ func TestListItemsPendingContentFlushNamesOnlyStaleItems(t *testing.T) {
 		})
 	}
 }
+
+// The gate and the bundle must agree about WHICH rows are stale, or the
+// migration passes while the bundle it is about to write carries a stale body.
+// They are two different queries over the same predicate, so the agreement is a
+// property to assert rather than a thing to read off the source — and the
+// divergence is not hypothetical: the export's items query does not join
+// collections at all, so any collection-liveness or collection-existence clause
+// on the gate's side silently shrinks its population.
+func TestGatePopulationEqualsTheBundlesMarkedPopulation(t *testing.T) {
+	for _, backend := range []struct {
+		name string
+		open func(*testing.T) *store.Store
+	}{
+		{"SQLite", storetest.NewSQLite},
+		{"Postgres", storetest.NewPostgres}, // skips unless PAD_TEST_POSTGRES_URL is set
+	} {
+		t.Run(backend.name, func(t *testing.T) {
+			s := backend.open(t)
+			wsID, collID, stale := seedStaleItem(t, s)
+
+			// A SOFT-DELETED collection holding a stale item. DeleteCollection
+			// soft-deletes the collection row alone; its items stay live and stay
+			// exported (BUG-2884), so the gate has to name this one too. This is
+			// the reachable half of the divergence — an item orphaned from a
+			// missing collection row is the other, and is why the gate LEFT joins.
+			doomed, err := s.CreateCollection(wsID, models.CollectionCreate{Name: "Doomed"})
+			if err != nil {
+				t.Fatalf("CreateCollection: %v", err)
+			}
+			inDoomed, err := s.CreateItem(wsID, doomed.ID, models.ItemCreate{Title: "In a deleted collection", Content: "x"})
+			if err != nil {
+				t.Fatalf("CreateItem(doomed): %v", err)
+			}
+			// A live item that never goes stale, so neither side can pass by
+			// returning everything.
+			if _, err := s.CreateItem(wsID, collID, models.ItemCreate{Title: "Current", Content: "fine"}); err != nil {
+				t.Fatalf("CreateItem(current): %v", err)
+			}
+			for _, id := range []string{stale.ID, inDoomed.ID} {
+				if _, err := s.AppendYjsUpdate(id, []byte{1, 2, 3}, "1"); err != nil {
+					t.Fatalf("AppendYjsUpdate(%s): %v", id, err)
+				}
+			}
+			// Empty expectedUpdatedAt skips the optimistic-concurrency check, as
+			// every other store test that soft-deletes a collection does.
+			if err := s.DeleteCollection(doomed.ID, ""); err != nil {
+				t.Fatalf("DeleteCollection: %v", err)
+			}
+
+			exp, err := s.ExportWorkspace("cs")
+			if err != nil {
+				t.Fatalf("ExportWorkspace: %v", err)
+			}
+			marked := map[string]bool{}
+			for _, it := range exp.Items {
+				if it.ContentState != "" {
+					marked[it.ID] = true
+				}
+			}
+			// The precondition: without it, both sides being EMPTY would pass.
+			if len(marked) != 2 {
+				t.Fatalf("the bundle marked %d items, want 2 (%v) — the fixture is not exercising "+
+					"the property", len(marked), marked)
+			}
+
+			pending, err := s.ListItemsPendingContentFlush(wsID)
+			if err != nil {
+				t.Fatalf("ListItemsPendingContentFlush: %v", err)
+			}
+			if len(pending) != len(marked) {
+				t.Errorf("the gate names %d item(s) %+v but the bundle marks %d — the migration "+
+					"would pass while writing a stale body",
+					len(pending), pending, len(marked))
+			}
+			// Every named ref must be non-empty and actionable: the refusal's
+			// whole job is to tell an operator what to open.
+			for _, p := range pending {
+				if p.Ref == "" {
+					t.Errorf("the gate named an item with an empty ref: %+v", p)
+				}
+			}
+		})
+	}
+}

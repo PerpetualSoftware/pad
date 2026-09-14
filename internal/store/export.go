@@ -1275,27 +1275,52 @@ type PendingFlushItem struct {
 // is one indexed EXISTS per item (idx_yjs_updates_item_id covers it) and leaves
 // the migration's export-then-import-per-workspace shape alone.
 //
+// The collection join is a LEFT join, and that is the load-bearing detail rather
+// than defensiveness. This gate's population MUST equal the bundle's, or the
+// migration passes while the bundle it is about to write carries a stale body.
+// The export's items query does not join collections at all, so an INNER join
+// here would silently drop any item whose collection row is missing — and that
+// is reachable on precisely the databases this command runs against: items.collection_id
+// is `NOT NULL REFERENCES collections(id)`, but store.New's note records that FK
+// enforcement used to be applied to only ONE pool member, so a historically
+// written SQLite file "may" carry latent integrity violations. A legacy SQLite
+// file is what `migrate-to-pg` exists for. Rather than argue the orphan is
+// unreachable, the two queries are made unable to disagree.
+//
+// Soft-deleted collections need no clause for the same reason: DeleteCollection
+// soft-deletes the collection row alone and its items stay live and stay
+// exported (BUG-2884), and nothing here filters on the collection's deleted_at,
+// so those items are named too.
+//
+// An orphan therefore still gets NAMED, by slug rather than by a ref it cannot
+// have — the refusal's whole job is to tell the operator what to open, and
+// "PREFIX-0" would send them looking for something that does not exist.
+//
 // Ordered by ref so a refusal message is stable between runs.
 func (s *Store) ListItemsPendingContentFlush(workspaceID string) ([]PendingFlushItem, error) {
 	rows, err := s.db.Query(s.q(`
-		SELECT c.prefix, COALESCE(i.item_number, 0), i.title
+		SELECT COALESCE(c.prefix, ''), COALESCE(i.item_number, 0), i.title, i.slug
 		FROM items i
-		JOIN collections c ON c.id = i.collection_id
+		LEFT JOIN collections c ON c.id = i.collection_id
 		WHERE i.workspace_id = ? AND i.deleted_at IS NULL
 		  AND `+contentStateSQL+` <> ''
-		ORDER BY c.prefix, i.item_number`), workspaceID)
+		ORDER BY COALESCE(c.prefix, ''), i.item_number`), workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("list items pending content flush: %w", err)
 	}
 	defer rows.Close()
 	var out []PendingFlushItem
 	for rows.Next() {
-		var prefix, title string
+		var prefix, title, slug string
 		var number int
-		if err := rows.Scan(&prefix, &number, &title); err != nil {
+		if err := rows.Scan(&prefix, &number, &title, &slug); err != nil {
 			return nil, fmt.Errorf("scan item pending content flush: %w", err)
 		}
-		out = append(out, PendingFlushItem{Ref: fmt.Sprintf("%s-%d", prefix, number), Title: title})
+		ref := slug
+		if prefix != "" {
+			ref = fmt.Sprintf("%s-%d", prefix, number)
+		}
+		out = append(out, PendingFlushItem{Ref: ref, Title: title})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
