@@ -244,3 +244,51 @@ describe('a status field holding a LIST', () => {
 		expect(screen.container.textContent).not.toContain('id-red');
 	});
 });
+
+describe('a stored status the schema no longer declares (BUG-3068 round 3)', () => {
+	// THE TABLE'S INSTANCE OF THE SAME -1 ARITHMETIC the card was guarded for in
+	// round 2 — found by asking for the population rather than fixing the
+	// reviewer's one example. `options.indexOf(current)` answers -1 for a stale
+	// or hand-written status, -1 + 1 is 0, and this chip PULSES and writes, so
+	// the silent rewrite to the first option even looks like it worked.
+	//
+	// The two legs below are the whole point of the guard's shape: the table
+	// renders its chip for an ABSENT status as well, where landing on option
+	// zero is what setting a first status means. A blanket `idx < 0` guard would
+	// pass the first leg and break the second.
+	const ordinary = collection([
+		{ key: 'status', label: 'Status', type: 'select', options: ['open', 'in_progress'] },
+	]);
+
+	it('does not rewrite a stale status to the first option', () => {
+		const onStatusChange = vi.fn();
+		const screen = render(TableView, {
+			props: {
+				items: [item('car-1', { status: 'retired_status' })],
+				collection: ordinary,
+				onStatusChange,
+			} as never,
+		});
+		const chip = screen.container.querySelector('[title="Click to cycle status"]');
+		expect(chip, 'no chip rendered — this leg cannot discriminate').not.toBeNull();
+		(chip as HTMLElement).click();
+		expect(
+			onStatusChange,
+			'a value that is not on the list has no next value',
+		).not.toHaveBeenCalled();
+	});
+
+	it('STILL sets the first option when the status is absent', () => {
+		// The sibling case the guard must not catch, and the counterfactual for
+		// the leg above: without it, a chip that never writes passes that one.
+		const onStatusChange = vi.fn();
+		const screen = render(TableView, {
+			props: { items: [item('car-2', {})], collection: ordinary, onStatusChange } as never,
+		});
+		const chip = screen.container.querySelector('[title="Click to cycle status"]');
+		expect(chip).not.toBeNull();
+		(chip as HTMLElement).click();
+		expect(onStatusChange).toHaveBeenCalledTimes(1);
+		expect(onStatusChange.mock.calls[0][1]).toBe('open');
+	});
+});

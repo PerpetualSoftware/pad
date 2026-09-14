@@ -181,6 +181,21 @@
 		const fields = parseFields(item);
 		const current = fields.status ?? '';
 		const idx = options.indexOf(current);
+		// A STORED STATUS THE SCHEMA NO LONGER DECLARES IS NOT A CYCLE POSITION
+		// (BUG-3068 round 3). `indexOf` answers -1 for it and -1 + 1 is 0, so the
+		// click silently rewrote a stale or hand-written value to the FIRST
+		// option — and the table, unlike the card, pulses and writes it, so it
+		// even looks like it worked.
+		//
+		// NARROWER THAN THE CARD'S GUARD, deliberately. `ItemCard` never offers
+		// the chip for an absent status at all (`statusCyclable` requires
+		// `!!fields.status`), so there -1 can only mean "stale". This chip renders
+		// for an ABSENT status too — the render gate admits `fields.status ==
+		// null` — and landing on `options[0]` is what SETTING the first status
+		// means there. So only a non-empty value that is off the list is refused;
+		// blanking the guard to `idx < 0` would take away the table's only way to
+		// give an item its first status.
+		if (current !== '' && idx < 0) return;
 		const next = options[(idx + 1) % options.length];
 		pulsingId = item.id;
 		const seq = ++pulseSeq;

@@ -51,11 +51,19 @@
 		itemProgress?: Record<string, { total: number; done: number }>;
 		progressLabel?: string;
 		/**
-		 * canEdit gates drag-to-reorder, drag-to-status-change, and the
-		 * archive-group button. Default true preserves existing behavior in
+		 * canEdit gates drag-to-reorder and drag-to-lane-change (the drop that
+		 * writes the GROUP field). Default true preserves existing behavior in
 		 * call sites that don't pass it. Pass `workspaceStore.canEditCollection(collection.id)`
 		 * (PLAN-1100 / TASK-1106) — the gate is collection-level because
 		 * svelte-dnd-action only supports zone-level dragDisabled.
+		 *
+		 * NOT the status CHIP, which is gated per ITEM inside `ItemCard` on
+		 * `canEditItem` (BUG-3068 round 2). The distinction is load-bearing rather
+		 * than pedantic: this flag is `canEditCollection`, item grants
+		 * deliberately do not promote to collection-level write, and gating the
+		 * chip here withheld it from a guest whose per-item grant the server would
+		 * have honoured. A DRAG is still gated here — svelte-dnd-action disables a
+		 * whole zone, so it has no per-item answer to give.
 		 *
 		 * Per-item gating (e.g. a guest with `ItemGrant.edit` on a single
 		 * item dragging just that one card) would require switching to

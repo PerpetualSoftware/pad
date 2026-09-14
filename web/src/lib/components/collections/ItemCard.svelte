@@ -121,8 +121,9 @@
 	 * guest holding `ItemGrant.edit` on one visible item has `canEdit === false`
 	 * and would have lost a chip the server would have honoured. `canEditItem`'s
 	 * own doc names `status` among the affordances it governs; this is that
-	 * helper's case, and asking it here — where the chip is, with the item in
-	 * hand — is also the only place the per-item answer exists.
+	 * helper's case. The store exposes it anywhere, so this is the natural place
+	 * rather than the only possible one — it is where the chip and the item both
+	 * are, and the views hold a collection-level flag instead.
 	 *
 	 * A component with no membership loaded answers false, which is the safe
 	 * direction: the affordance is withheld, never the information. The status

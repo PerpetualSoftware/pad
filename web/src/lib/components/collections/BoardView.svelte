@@ -95,9 +95,15 @@
 		itemProgress?: Record<string, { total: number; done: number }>;
 		progressLabel?: string;
 		/**
-		 * canEdit gates drag-to-reorder, drag-to-status-change, column
-		 * reordering, and the archive-column button. See ListView.svelte
-		 * for the rationale (zone-level gate; per-item is a follow-up).
+		 * canEdit gates drag-to-reorder, drag-to-lane-change (the drop that writes
+		 * the GROUP field), and column reordering. See ListView.svelte for the
+		 * rationale (zone-level gate).
+		 *
+		 * NOT the status CHIP, which is gated per ITEM inside `ItemCard` on
+		 * `canEditItem` (BUG-3068 round 2) — this flag is `canEditCollection`, and
+		 * item grants deliberately do not promote to it, so gating the chip here
+		 * withheld it from a guest the server would have honoured.
+		 *
 		 * Default true preserves behavior in callers that don't pass it.
 		 */
 		canEdit?: boolean;
