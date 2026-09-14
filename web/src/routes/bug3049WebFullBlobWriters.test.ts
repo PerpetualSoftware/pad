@@ -75,11 +75,18 @@ describe('BUG-3049 — browser item-field writers send a patch, not a blob', () 
 	});
 
 	it('the collection page status move patches only the group field', () => {
+		// The patched KEY is what this leg is about, and it is unchanged. The
+		// VALUE spelling moved under BUG-3057: the lane key is now converted
+		// through the field's declared type before it is written, because
+		// assigning the raw key sent a string to a number / checkbox /
+		// multi_select field and the server refuses those writes. `laneWrite`
+		// IS `newValue` converted, so "patches only the group field" holds
+		// exactly as before — only the literal this guard anchors on changed.
 		const body = functionBody(
 			source('./[username]/[workspace]/[collection]/+page.svelte'),
 			'async function handleStatusChange(',
 		);
-		expectPatchOnly(body, 'handleStatusChange', ['[groupField]: newValue']);
+		expectPatchOnly(body, 'handleStatusChange', ['[fieldKey]: laneWrite.value']);
 	});
 
 	it('the conventions status toggle patches only status', () => {
