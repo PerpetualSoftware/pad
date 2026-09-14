@@ -5,6 +5,7 @@
 	import { statusColor } from '$lib/utils/fieldColors';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
+	import { categoricalValueFor } from '$lib/collections/categoricalFieldValue';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import { localSearch, parseSearchQuery, parseGoToTarget } from '$lib/stores/localSearch.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
@@ -791,10 +792,22 @@
 
 	function renderResultCard(r: AugmentedSearchResult, i: number): { ref: string | null; status: string | undefined; priority: string | undefined } {
 		void i;
+		// ASKED OF EACH RESULT'S OWN COLLECTION (BUG-3067). The palette searches
+		// across every collection, so the declared type of `status`/`priority` is
+		// a per-RESULT question — and reading them by name with no schema printed
+		// a stored item id as a title-cased pill whenever either field had been
+		// retyped to a relation, exactly as the cards did before BUG-3016.
+		//
+		// This was the cheap half of the class all along: the file already looks a
+		// result's collection up by slug in two other places.
 		return {
 			ref: formatItemRef(r.item),
-			status: getFieldValue(r.item, 'status'),
-			priority: getFieldValue(r.item, 'priority')
+			status:
+				categoricalValueFor(collectionStore.collections, r.item, 'status', getFieldValue(r.item, 'status')) ||
+				undefined,
+			priority:
+				categoricalValueFor(collectionStore.collections, r.item, 'priority', getFieldValue(r.item, 'priority')) ||
+				undefined
 		};
 	}
 

@@ -1,5 +1,7 @@
-import type { Collection, Item } from '$lib/types';
+import type { Collection, Item, ItemIndexRow } from '$lib/types';
 import { formatItemRef, parseFields } from '$lib/types';
+import { fieldDefFor } from '$lib/collections/categoricalFieldValue';
+import { isRelationType, relationValuesOf } from '$lib/items/relationFieldTypes';
 
 /**
  * The set of template variables the QuickActionsMenu substitutes at
@@ -24,6 +26,52 @@ export type TemplateVariable = (typeof TEMPLATE_VARIABLES)[number];
 const TEMPLATE_VARIABLE_SET: ReadonlySet<string> = new Set(TEMPLATE_VARIABLES);
 
 export type PreviewContext = Record<TemplateVariable, string>;
+
+/**
+ * THE ONE SUBSTITUTION for a categorical template variable (BUG-3067, lead
+ * ruling on the trail).
+ *
+ * A `status` or `priority` retyped to a relation stores an item id, and both
+ * this module and `QuickActionsMenu` pasted that id straight into a prompt the
+ * user then hands to an agent. The chips answer this by WITHHOLDING; a prompt
+ * variable cannot — `{status}` has to become something, and a blank is a lie of
+ * a different kind.
+ *
+ * So the ruling, matching what #1352 did for chips: resolve to the target's
+ * TITLE, fall back to its REF, and never emit the raw id. A list joins with ', '.
+ *
+ * THE FALLBACK IS FOR A ROW WITH NO TITLE, not for a row that does not resolve,
+ * and an earlier version of this comment said the latter — which is not a thing
+ * this function can do. A ref is built FROM the row (its collection prefix and
+ * item number); an id the index cannot resolve yields no row and therefore no
+ * ref, so there is nothing to fall back to. Such a value yields the empty string
+ * because nothing true is left to say about it, which is the one case the
+ * ruling's "never empty by choice" does not reach.
+ *
+ * It lives HERE, and `QuickActionsMenu` imports it, because the two were one
+ * site with two implementations: this module's own doc says it MIRRORS the
+ * menu so the preview shows what copying produces, and two mirrors drift.
+ */
+export function categoricalTemplateValue(
+	collection: Collection | undefined,
+	key: string,
+	raw: unknown,
+	resolve: (id: string) => ItemIndexRow | null | undefined,
+): string {
+	const field = collection ? fieldDefFor([collection], collection.slug, key) : undefined;
+	if (!field || !isRelationType(field.type)) {
+		return raw === null || raw === undefined ? '' : String(raw);
+	}
+	const ids = relationValuesOf(field.type, raw);
+	const labels: string[] = [];
+	for (const id of ids) {
+		const row = resolve(id);
+		if (!row) continue;
+		labels.push(row.title || formatItemRef(row) || '');
+	}
+	return labels.filter(Boolean).join(', ');
+}
+
 
 /**
  * Reshape an item-scope preview context into a collection-scope one by
@@ -74,13 +122,17 @@ export function placeholderContext(collectionName: string): PreviewContext {
  * substitution logic in QuickActionsMenu.svelte so the preview is a true
  * representation of what copying the prompt would produce.
  */
-export function contextFromItem(item: Item, collection: Collection): PreviewContext {
+export function contextFromItem(
+	item: Item,
+	collection: Collection,
+	resolve: (id: string) => ItemIndexRow | null | undefined = () => null,
+): PreviewContext {
 	const fields = parseFields(item);
 	return {
 		ref: formatItemRef(item) ?? '',
 		title: item.title ?? '',
-		status: String(fields['status'] ?? ''),
-		priority: String(fields['priority'] ?? ''),
+		status: categoricalTemplateValue(collection, 'status', fields['status'], resolve),
+		priority: categoricalTemplateValue(collection, 'priority', fields['priority'], resolve),
 		collection: collection.name,
 		content: item.content ? item.content.slice(0, 200) : '',
 		fields: Object.entries(fields)

@@ -14,6 +14,8 @@
 
 	import { onMount, untrack } from 'svelte';
 	import { api } from '$lib/api/client';
+	import { collectionStore } from '$lib/stores/collections.svelte';
+	import { categoricalValueForSlug, collectionsNotStaleFor } from '$lib/collections/categoricalFieldValue';
 	import type { GraphEdge, GraphNode, GraphResponse, PaneTarget } from '$lib/types';
 	import { createCollectionColorMap } from '$lib/graph/palette';
 	import { sseService, type ItemEvent } from '$lib/services/sse.svelte';
@@ -899,6 +901,10 @@
 		<!-- Node detail panel (single-click selection). -->
 		{#if selectedNode}
 			{@const sel = selectedNode}
+			<!-- The node is a server projection carrying no schema, but it carries
+			     its collection slug, which is all the question needs (BUG-3067): a
+			     `status` retyped to a relation printed its stored id in this panel. -->
+			{@const selStatus = categoricalValueForSlug(collectionStore.collections, sel.collection, 'status', sel.status, collectionsNotStaleFor(collectionStore.collectionsWorkspace, workspace))}
 			<div class="detail-card" role="group" aria-label="Item details">
 				<div class="detail-head">
 					<span class="detail-ref">{sel.ref}</span>
@@ -912,7 +918,7 @@
 				<p class="detail-title">{sel.title}</p>
 				<div class="detail-meta">
 					<span class="detail-chip" style:background-color="color-mix(in srgb, {sel.color} 22%, transparent)" style:border-color={sel.color}>{sel.collection}</span>
-					{#if sel.status}<span class="detail-stat">{sel.status}</span>{/if}
+					{#if selStatus}<span class="detail-stat">{selStatus}</span>{/if}
 					{#if sel.isTerminal}<span class="detail-stat done">✓ done</span>{/if}
 					{#if sel.childCount > 0}
 						<span class="detail-stat">{sel.childCount} child{sel.childCount === 1 ? '' : 'ren'}</span>

@@ -2,6 +2,8 @@
 	import { api } from '$lib/api/client';
 	import type { Item, PaneTarget } from '$lib/types';
 	import { parseFields, formatItemRef } from '$lib/types';
+	import { collectionStore } from '$lib/stores/collections.svelte';
+	import { collectionsNotStaleFor, categoricalValueFor } from '$lib/collections/categoricalFieldValue';
 	import { shouldOpenInPane } from './collections/itemCardClick';
 
 	interface Props {
@@ -80,6 +82,11 @@
 		</div>
 		{#each children as child (child.id)}
 			{@const fields = parseFields(child)}
+			<!-- Per CHILD, from the child's own collection (BUG-3067) — see the
+			     note in ChildItems. No prop threading was needed: `collectionStore`
+			     is a singleton and the row already carries its `collection_slug`,
+			     which is why this site turned out to be the cheap half after all. -->
+			{@const priority = categoricalValueFor(collectionStore.collections, child, 'priority', fields.priority, collectionsNotStaleFor(collectionStore.collectionsWorkspace, wsSlug))}
 			{@const isDone = terminal.includes(fields.status)}
 			{@const isExpanded = expandedIds.has(child.id)}
 			{@const canExpand = child.has_children && depth < maxDepth}
@@ -96,13 +103,13 @@
 						<span class="nested-ref">{formatItemRef(child) ?? ''}</span>
 						<span class="nested-title" class:done={isDone}>{child.title}</span>
 					</a>
-					{#if fields.priority}
+					{#if priority}
 						<span
 							class="nested-priority"
-							class:high={fields.priority === 'high'}
-							class:critical={fields.priority === 'critical'}
+							class:high={priority === 'high'}
+							class:critical={priority === 'critical'}
 						>
-							{fields.priority}
+							{priority}
 						</span>
 					{/if}
 				</div>

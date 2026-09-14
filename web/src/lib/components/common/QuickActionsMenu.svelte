@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { localIndex } from '$lib/stores/localIndex.svelte';
+	import { categoricalTemplateValue } from '$lib/utils/quick-action-preview';
 	import { tick, untrack } from 'svelte';
 	import type { QuickAction, Item, Collection } from '$lib/types';
 	import { parseFields, formatItemRef, parseSettings } from '$lib/types';
@@ -71,6 +73,8 @@
 
 	let filtered = $derived(actions.filter((a) => a.scope === scope));
 
+	const resolveRow = (id: string) => localIndex.findByIdOrSlug(wsSlug, id);
+
 	function resolvePrompt(action: QuickAction): string {
 		let prompt = action.prompt;
 		const fields = item ? parseFields(item) : {};
@@ -78,8 +82,19 @@
 		const vars: Record<string, string> = {
 			ref: item ? formatItemRef(item) ?? '' : '',
 			title: item?.title ?? '',
-			status: item ? String(fields['status'] ?? '') : '',
-			priority: item ? String(fields['priority'] ?? '') : '',
+			// ONE IMPLEMENTATION, imported rather than mirrored (BUG-3067, lead
+			// ruling). A `status`/`priority` retyped to a relation stores an item
+			// id, and this pasted it straight into a prompt handed to an agent.
+			// The chips answer by withholding; a prompt variable cannot, so it
+			// resolves to the target's TITLE with its REF as the fallback.
+			//
+			// This file and `quick-action-preview.ts` held byte-identical copies of
+			// the substitution, and that module's own doc says it MIRRORS this one
+			// so the preview shows what copying produces. Two mirrors drift; the
+			// preview existing to match makes the drift invisible until someone
+			// compares them.
+			status: item ? categoricalTemplateValue(collection, 'status', fields['status'], resolveRow) : '',
+			priority: item ? categoricalTemplateValue(collection, 'priority', fields['priority'], resolveRow) : '',
 			collection: collection.name,
 			content: item?.content ? item.content.slice(0, 200) : '',
 			fields: Object.entries(fields)

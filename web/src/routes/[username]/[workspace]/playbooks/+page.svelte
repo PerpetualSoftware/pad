@@ -3,6 +3,12 @@
 	import { goto } from '$app/navigation';
 	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
 	import { parseFields, parseSchema, itemUrlId, type Collection, type Item } from '$lib/types';
+	import { collectionStore } from '$lib/stores/collections.svelte';
+	import {
+		categoricalValueFor,
+		categoricalValueForField,
+		fieldDefFor,
+	} from '$lib/collections/categoricalFieldValue';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import { exportAndDownloadArtifact, importArtifactFile } from '$lib/utils/artifacts';
@@ -172,6 +178,25 @@
 		return [...known, ...Array.from(discovered).sort((a, b) => a.localeCompare(b))];
 	});
 
+	/**
+	 * The declared status FIELD, resolved once (BUG-3067 round 9).
+	 *
+	 * `declaredStatusOf` used to call the helper inside the sort comparator,
+	 * which reparses the collection's schema JSON on every comparison — O(n log n)
+	 * parses of the same string to answer one question about the schema. The
+	 * question is per-COLLECTION, not per-row, so it is asked once here.
+	 */
+	let statusFieldDef = $derived(
+		playbooksCollection
+			? fieldDefFor([playbooksCollection], playbooksCollection.slug, 'status')
+			: undefined,
+	);
+
+	/** The declared status for sorting — the same question the cards ask. */
+	function declaredStatusOf(fields: Record<string, unknown>): string {
+		return categoricalValueForField(statusFieldDef, fields.status);
+	}
+
 	let sorted = $derived.by(() => {
 		let items = [...playbooks];
 		if (searchQuery) {
@@ -186,7 +211,12 @@
 		}
 		return items.sort((a, b) => {
 			const fa = parseFields(a), fb = parseFields(b);
-			const sa = STATUS_ORDER[fa.status] ?? 1, sb = STATUS_ORDER[fb.status] ?? 1;
+			// SORTED ON THE DECLARED VALUE, not the raw one (BUG-3067 round 8). A
+			// retyped status stores an item id, which is not an order key —
+			// `STATUS_ORDER` misses it and every such row collapses to the same
+			// default rank. Withholding the chip fixed what the row SHOWED and left
+			// what it was sorted BY, which is the same value wearing a different hat.
+			const sa = STATUS_ORDER[declaredStatusOf(fa)] ?? 1, sb = STATUS_ORDER[declaredStatusOf(fb)] ?? 1;
 			if (sa !== sb) return sa - sb;
 			const ta = fa.trigger ?? '', tb = fb.trigger ?? '';
 			if (ta !== tb) return ta.localeCompare(tb);
@@ -505,7 +535,47 @@
 			<div class="cards">
 				{#each sorted as item (item.id)}
 					{@const fields = parseFields(item)}
-					{@const status = fields.status ?? 'draft'}
+					<!-- ASKED OF THE PLAYBOOKS COLLECTION'S OWN SCHEMA (BUG-3067). A
+					     SYSTEM collection is not an exempt one: nothing in
+					     `handleUpdateCollection` refuses a schema edit for
+					     `is_system`, so `status` here can be retyped to a relation
+					     exactly as on any user collection — and this page printed the
+					     stored value through `statusLabel`, and keyed its card
+					     styling off it. I had classified this site as a non-member on
+					     the assumption that a system schema was immutable, and filed
+					     that assumption without checking it; a review round found it.
+
+					     RESOLVED FROM `playbooksCollection`, the object this page
+					     already fetched under its own stale-response guard, rather
+					     than from the shared store. Two things fall out for free: the
+					     staleness question does not arise, because the fetch is
+					     already workspace-guarded; and the lookup uses that object's
+					     OWN slug, so it survives a rename of the playbooks collection
+					     where a hardcoded `'playbooks'` literal would not. The rest
+					     of this page still addresses the collection by literal, so
+					     the page as a whole does not yet survive that rename — this
+					     read simply stops adding to the problem. -->
+					{@const declaredStatus = categoricalValueFor(playbooksCollection ? [playbooksCollection] : [], { collection_slug: playbooksCollection?.slug }, 'status', fields.status)}
+					<!-- "NO SCHEMA YET" IS NOT "DRAFT" (BUG-3067 round 5). The two
+					     loaders are independent — `loadPlaybooks` clears `loading` on
+					     its own — so cards render while `playbooksCollection` is still
+					     null, which the helper answers with ''. Falling through to the
+					     `?? 'draft'` default then reported every card as Draft, which
+					     is a MISREPORT rather than a missing chip: it names a status
+					     the item may not have. Reachable on first load, on a slow
+					     schema fetch, and permanently if that fetch fails.
+					     MY FIRST ANSWER WAS TO STAND THE RAW VALUE IN while the schema
+					     was unknown, on the reasoning that it is what the page showed
+					     before this unit. That reintroduced the defect for the
+					     duration of the window it was meant to fix: a retyped status
+					     IS an id, so the raw value is the id, printed. Worse than the
+					     Draft misreport it replaced, and the review round said so.
+
+					     The honest answer for an unknown schema is to claim nothing:
+					     no status chip and no draft/deprecated styling until the
+					     schema lands. The card still renders, with its title, trigger
+					     and steps — the affordance is withheld, not the row. -->
+					{@const status = playbooksCollection ? declaredStatus : ''}
 					{@const trigger = fields.trigger ?? 'manual'}
 					{@const scope = fields.scope ?? 'all'}
 					{@const steps = countSteps(item.content)}
@@ -514,7 +584,7 @@
 						<button class="card-header" onclick={() => toggleExpand(item.id)} aria-expanded={isExpanded}>
 							<div class="card-title-row">
 								<span class="card-title" class:deprecated-title={status === 'deprecated'}>{item.title}</span>
-								<Chip size="sm" color={statusColor(status)}>{statusLabel(status)}</Chip>
+								{#if status}<Chip size="sm" color={statusColor(status)}>{statusLabel(status)}</Chip>{/if}
 							</div>
 							<div class="card-meta">
 								<Chip size="sm" color="var(--status-blue)">{trigger}</Chip>
@@ -548,9 +618,19 @@
 								<div class="card-divider"></div>
 								<div class="card-actions">
 									<Button variant="secondary" size="sm" onclick={() => goto(`/${username}/${wsSlug}/playbooks/${itemUrlId(item)}`)}>Edit</Button>
-									<Button variant="secondary" size="sm" disabled={togglingStatus === item.slug} onclick={() => toggleStatus(item)}>
-										{togglingStatus === item.slug ? '...' : nextStatusLabel(status)}
-									</Button>
+									<!-- DISABLED WHILE THE SCHEMA IS UNKNOWN (BUG-3067 round 7).
+									     Withholding the chip left `status` empty, and this label is
+									     computed FROM it — so every card read "Mark as Draft"
+									     regardless of what it actually held, while the handler read
+									     the real stored value and did something else. A label that
+									     contradicts its own action is worse than the wrong chip
+									     this round was fixing; the button waits for the schema
+									     rather than guessing. -->
+									{#if status}
+										<Button variant="secondary" size="sm" disabled={togglingStatus === item.slug} onclick={() => toggleStatus(item)}>
+											{togglingStatus === item.slug ? '...' : nextStatusLabel(status)}
+										</Button>
+									{/if}
 									<Button variant="secondary" size="sm" disabled={duplicating === item.slug} onclick={() => duplicatePlaybook(item)}>
 										{duplicating === item.slug ? '...' : 'Duplicate'}
 									</Button>

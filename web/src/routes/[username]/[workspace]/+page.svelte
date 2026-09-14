@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { categoricalValueFor } from '$lib/collections/categoricalFieldValue';
 	import { page } from '$app/state';
 	import { onMount, onDestroy, untrack } from 'svelte';
 	import { browser } from '$app/environment';
@@ -515,6 +516,14 @@
 				</div>
 				<div class="active-grid">
 					{#each dashboard.active_items as item (item.slug)}
+						<!-- TWO RENDERERS, one defect. Both values are server projections
+						     read BY NAME (`extractFieldValue`), so a retyped field arrives as
+						     a stored item id (BUG-3067). The row carries its collection slug,
+						     so the declared type is answerable here. This pair appears twice
+						     on the page — active cards and starred cards — which is why the
+						     enumeration is a grep and not a reading. -->
+						{@const cardStatus = categoricalValueFor(collections, item, 'status', item.status)}
+						{@const cardPriority = categoricalValueFor(collections, item, 'priority', item.priority)}
 						<a href="/{username}/{wsSlug}/{item.collection_slug}/{item.slug}" class="active-card" class:just-created={justCreatedSlugs.has(item.slug)}>
 							{#if justCreatedSlugs.has(item.slug)}
 								<span class="just-created-badge">✨ your agent just created this</span>
@@ -527,11 +536,13 @@
 							</div>
 							<div class="active-title">{item.title}</div>
 							<div class="active-card-bottom">
-								<span class="status-pill" style="background: color-mix(in srgb, {statusColor(item.status)} 15%, transparent); color: {statusColor(item.status)};">
-									{item.status.replace(/-/g, ' ')}
-								</span>
-								{#if item.priority}
-									<span class="active-priority" style="--chip-c: {priorityColor(item.priority)};">{item.priority}</span>
+								{#if cardStatus}
+									<span class="status-pill" style="background: color-mix(in srgb, {statusColor(cardStatus)} 15%, transparent); color: {statusColor(cardStatus)};">
+										{cardStatus.replace(/-/g, ' ')}
+									</span>
+								{/if}
+								{#if cardPriority}
+									<span class="active-priority" style="--chip-c: {priorityColor(cardPriority)};">{cardPriority}</span>
 								{/if}
 								<span class="active-time" title={new Date(item.updated_at).toLocaleString()}>{relativeTime(item.updated_at)}</span>
 							</div>
@@ -551,6 +562,14 @@
 				</div>
 				<div class="active-grid">
 					{#each dashboard.starred_items as item (item.slug)}
+						<!-- TWO RENDERERS, one defect. Both values are server projections
+						     read BY NAME (`extractFieldValue`), so a retyped field arrives as
+						     a stored item id (BUG-3067). The row carries its collection slug,
+						     so the declared type is answerable here. This pair appears twice
+						     on the page — active cards and starred cards — which is why the
+						     enumeration is a grep and not a reading. -->
+						{@const cardStatus = categoricalValueFor(collections, item, 'status', item.status)}
+						{@const cardPriority = categoricalValueFor(collections, item, 'priority', item.priority)}
 						<a href="/{username}/{wsSlug}/{item.collection_slug}/{item.slug}" class="active-card">
 							<div class="active-card-top">
 								{#if item.item_ref}
@@ -560,11 +579,13 @@
 							</div>
 							<div class="active-title">{item.title}</div>
 							<div class="active-card-bottom">
-								<span class="status-pill" style="background: color-mix(in srgb, {statusColor(item.status)} 15%, transparent); color: {statusColor(item.status)};">
-									{item.status.replace(/-/g, ' ')}
-								</span>
-								{#if item.priority}
-									<span class="active-priority" style="--chip-c: {priorityColor(item.priority)};">{item.priority}</span>
+								{#if cardStatus}
+									<span class="status-pill" style="background: color-mix(in srgb, {statusColor(cardStatus)} 15%, transparent); color: {statusColor(cardStatus)};">
+										{cardStatus.replace(/-/g, ' ')}
+									</span>
+								{/if}
+								{#if cardPriority}
+									<span class="active-priority" style="--chip-c: {priorityColor(cardPriority)};">{cardPriority}</span>
 								{/if}
 							</div>
 						</a>

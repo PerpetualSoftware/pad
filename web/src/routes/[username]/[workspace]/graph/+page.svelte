@@ -1326,6 +1326,7 @@
 	<!-- Focus-mode detail card (slides in from the right when a node is selected). -->
 	{#if selectedNode}
 		<DetailCard
+			{wsSlug}
 			node={selectedNode}
 			color={colorForCollection(selectedNode.collection)}
 			item={selectedItem}

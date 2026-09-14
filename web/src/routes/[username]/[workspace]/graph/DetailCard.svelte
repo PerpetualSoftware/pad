@@ -8,6 +8,12 @@
 	// (backdrop-blur, color-mix surfaces) so the focus layer reads as the same UI.
 	import { relativeTime } from '$lib/utils/markdown';
 	import type { Item } from '$lib/types';
+	import { collectionStore } from '$lib/stores/collections.svelte';
+	import {
+		categoricalValueFor,
+		categoricalValueForSlug,
+		collectionsNotStaleFor,
+	} from '$lib/collections/categoricalFieldValue';
 
 	// The selected node's renderer-facing shape (a subset of the page's GraphNode3D).
 	// Kept structural so the page can pass its mapped node straight through.
@@ -23,6 +29,7 @@
 
 	let {
 		node,
+		wsSlug,
 		color,
 		item,
 		itemLoading,
@@ -34,6 +41,16 @@
 		onclose
 	}: {
 		node: SelectedNode;
+		/**
+		 * THREADED RATHER THAN ARGUED (BUG-3067 round 5, lead ruling). The
+		 * permissive staleness default was allowed to stand only on a grep showing
+		 * every mount site sits under the `[workspace]` layout that stamps the
+		 * collection store. This component has exactly one mount site — the graph
+		 * page, which does — so the argument held; the slug is threaded anyway
+		 * because a prop is checkable and an argument about mount sites goes stale
+		 * the first time someone mounts it somewhere else.
+		 */
+		wsSlug: string;
 		/** collection color (hex) — shared with the node's renderer color. */
 		color: string;
 		/** full item, fetched lazily by the page; null until it arrives. */
@@ -75,8 +92,23 @@
 		}
 	});
 
+	// ASKED OF THE ITEM'S OWN COLLECTION (BUG-3067). `typeof … === 'string'` is
+	// the right question for a LIST-typed field and the wrong one for a scalar
+	// `relation`, whose value IS a string — so a retyped `priority` printed its
+	// stored item id here, exactly as it did on the cards before BUG-3016.
+	const notStale = $derived(collectionsNotStaleFor(collectionStore.collectionsWorkspace, wsSlug));
+
 	const priority = $derived(
-		typeof fields.priority === 'string' && fields.priority ? fields.priority : null
+		item ? categoricalValueFor(collectionStore.collections, item, 'priority', fields.priority, notStale) || null : null
+	);
+
+	// The STATUS pill comes from the graph NODE rather than from the fetched
+	// item, and the node is a server projection that carries no schema — but it
+	// does carry the item's collection slug, which is all the question needs. It
+	// renders before `item` lands, so it is resolved from the node rather than
+	// waiting for the fetch.
+	const nodeStatus = $derived(
+		categoricalValueForSlug(collectionStore.collections, node.collection, 'status', node.status, notStale),
 	);
 	const assignee = $derived(item?.assigned_user_name ?? null);
 </script>
@@ -92,8 +124,8 @@
 	<h2 class="title">{node.title}</h2>
 
 	<div class="pills">
-		{#if node.status}
-			<span class="pill" class:terminal={node.is_terminal}>{node.status}</span>
+		{#if nodeStatus}
+			<span class="pill" class:terminal={node.is_terminal}>{nodeStatus}</span>
 		{/if}
 		{#if node.child_count > 0}
 			<span class="meta">{node.child_count} {node.child_count === 1 ? 'child' : 'children'}</span>
