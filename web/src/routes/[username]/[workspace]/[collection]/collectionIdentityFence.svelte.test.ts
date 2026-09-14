@@ -223,18 +223,32 @@ vi.mock('$lib/stores/workspace.svelte', () => ({
  */
 const auth = vi.hoisted(() => {
 	let epoch = 0;
+	// The fake dispatches listeners, because the repair's whole point is what a
+	// listener does. Order matches the real store's contract: the epoch is
+	// bumped BEFORE listeners run, so a load started from one re-stamps to the
+	// NEW value — which is exactly what makes recovery possible.
+	const listeners: Array<(previousUserId: string) => void> = [];
 	return {
+		notifyIdentityChange(previousUserId = 'u0') {
+			for (const fn of [...listeners]) fn(previousUserId);
+		},
 		get identityEpoch() { return epoch; },
 		get userId() { return 'u1'; },
 		get user() { return { id: 'u1', name: 'A', email: 'a@example.com' }; },
 		get session() { return { user: { id: 'u1' } }; },
 		bumpEpoch() { epoch++; },
-		resetEpoch() { epoch = 0; },
+		resetEpoch() { epoch = 0; listeners.length = 0; },
 		identityFence() {
 			const captured = epoch;
 			return () => epoch === captured;
 		},
-		onIdentityChange() { return () => {}; },
+		onIdentityChange(fn: (previousUserId: string) => void) {
+			listeners.push(fn);
+			return () => {
+				const i = listeners.indexOf(fn);
+				if (i >= 0) listeners.splice(i, 1);
+			};
+		},
 		clear() {},
 	};
 });
@@ -428,6 +442,59 @@ describe('the collection page stops a commit when the identity moves mid-flight'
 				collectionGets.length,
 				"the page fetched the previous session's collection after the identity had already moved"
 			).toBe(before);
+		})();
+	});
+
+	it('RECOVERS after a sign-in: the page re-loads and the subscriptions resume', () => {
+		// THE REPAIR (BUG-3084, codex P1). Without it the fence is a one-way
+		// door: `identityEpochAtLoad` is re-stamped only by the page load, that
+		// load is driven by a ROUTE-keyed effect, and `routes/+layout.svelte`
+		// does not reload the tab on an anonymous -> signed-in transition. So
+		// the page keeps a stale epoch and every `pageIdentityHeld()` is false
+		// FOR EVER — the SSE and sync callbacks go inert and never come back.
+		//
+		// This drives the real sequence rather than the epoch alone: bump, THEN
+		// notify, which is the order `notifyIdentityChange` uses and the reason
+		// a load started from a listener re-stamps to the new value.
+		return (async () => {
+			await mountPage();
+
+			// Sign in: the epoch moves and listeners run.
+			flipIdentity();
+			auth.notifyIdentityChange('');
+
+			// The listener re-loads, which is what re-stamps the epoch.
+			const reload = await waitFor(() => {
+				if (collectionGets.length < 2) throw new Error('the identity change did not re-load the page');
+				return collectionGets[1]!;
+			});
+			// And it CLEARED first: the previous user's collection is not still
+			// on screen while the new one is being fetched (codex [P1]). Asserted
+			// at this point deliberately — after the listener ran, before the
+			// reload resolves, which is the whole window in question.
+			expect(
+				findPropsObject()?.collection ?? null,
+				"the previous user's collection stayed rendered for the length of the re-load"
+			).toBeNull();
+			reload.resolve({ ...COLLECTION });
+			await tick();
+
+			// And the subscription callback works again. Without the repair this
+			// fetch never happens: `pageIdentityHeld()` is still comparing
+			// against the pre-sign-in epoch and returns at the first line.
+			const before = collectionGets.length;
+			const cb = sseHandlers[0]!({ type: 'collection_updated', collection_id: 'c1', collection: 'tasks' });
+			const refresh = await waitFor(() => {
+				if (collectionGets.length <= before) {
+					throw new Error('the SSE callback is still inert after the sign-in');
+				}
+				return collectionGets[collectionGets.length - 1]!;
+			});
+			refresh.resolve({ ...COLLECTION, name: 'Renamed' });
+			await cb;
+			await waitFor(() => {
+				expect((findPropsObject()!.collection as { name: string }).name).toBe('Renamed');
+			});
 		})();
 	});
 
