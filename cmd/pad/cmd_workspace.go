@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -1227,22 +1228,32 @@ func auditLogCmd() *cobra.Command {
 // printing "0" there would tell the operator the export was clean when in fact
 // nothing was even asked.
 // staleBodyImportCount returns the stale-body count the server reported, or ""
-// when there is nothing to say — no headers, no header, or a zero count.
+// when there is nothing to say — no headers, no header, a zero count, or a value
+// that is not a positive integer.
 //
 // Deliberately NOT the "unknown (...)" treatment repairedNULCount gives a
 // missing header. That helper answers a question the operator ASKED by passing a
 // flag, so silence there needs explaining. This one is unsolicited: an older
 // server that never sets the header has nothing to report, and printing
 // "unknown" would invent an open question on every import against one.
+//
+// It PARSES rather than passing the value through (codex round 2 P2). The
+// earlier version returned any non-"0" string, so `abc`, `-1` or `NaN` — a
+// malformed or proxy-injected header — printed as a count, while this comment
+// already claimed unparseable values were dropped. The comment was the
+// specification and the code did not meet it; a response header is attacker- or
+// middlebox-influenced input, not a trusted field.
 func staleBodyImportCount(header http.Header) string {
 	if header == nil {
 		return ""
 	}
-	v := header.Get(server.StaleBodyImportHeader)
-	if v == "" || v == "0" {
+	n, err := strconv.Atoi(header.Get(server.StaleBodyImportHeader))
+	if err != nil || n <= 0 {
 		return ""
 	}
-	return v
+	// Re-rendered from the parsed integer, never echoed: that is what keeps a
+	// value like "007" or " 7 " from reaching the operator's terminal as-is.
+	return strconv.Itoa(n)
 }
 
 func repairedNULCount(header http.Header) string {

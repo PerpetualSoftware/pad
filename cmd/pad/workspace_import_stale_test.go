@@ -37,6 +37,19 @@ func TestStaleBodyImportCountSpeaksOnlyWhenThereIsSomethingToSay(t *testing.T) {
 		{"empty value", staleHeader(""), ""},
 		{"a real count", staleHeader("2"), "2"},
 		{"one", staleHeader("1"), "1"},
+		// A response header is middlebox- and attacker-influenced input, not a
+		// trusted field. The earlier version returned any non-"0" string, so each
+		// of these printed as a count while the doc comment claimed they did not
+		// (codex round 2 P2).
+		{"not a number", staleHeader("abc"), ""},
+		{"negative", staleHeader("-1"), ""},
+		{"NaN", staleHeader("NaN"), ""},
+		{"float", staleHeader("2.5"), ""},
+		{"a count with padding", staleHeader(" 7 "), ""},
+		{"injected trailer", staleHeader("2; drop"), ""},
+		// Parsed and RE-RENDERED, never echoed, so a value that parses but is
+		// spelled oddly reaches the terminal in one canonical form.
+		{"leading zeros are normalised", staleHeader("007"), "7"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := staleBodyImportCount(tc.header); got != tc.want {

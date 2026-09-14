@@ -940,9 +940,16 @@ export const api = {
 			// Absent, unparseable or zero all mean "nothing to report": the
 			// field stays undefined rather than 0, so a caller can render on
 			// presence without treating a clean import as a fact worth showing.
+			//
+			// A POSITIVE INTEGER is required, not merely a finite number (the
+			// same fix as the CLI's staleBodyImportCount, codex round 2 P2). A
+			// response header is middlebox- and attacker-influenced input, and
+			// `Number()` is lenient in ways that reach the toast: it trims, so
+			// `" 7 "` becomes 7, and it accepts decimals, so `"2.5"` would render
+			// as "2.5 items".
 			const raw = resp.headers.get('X-Pad-Import-Stale-Bodies');
 			const n = raw === null ? NaN : Number(raw);
-			if (Number.isFinite(n) && n > 0) {
+			if (Number.isInteger(n) && n > 0 && raw!.trim() === raw) {
 				return { ...ws, stale_bodies: n };
 			}
 			return ws;

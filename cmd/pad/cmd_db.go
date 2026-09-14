@@ -373,6 +373,7 @@ func dbMigrateToPgCmd() *cobra.Command {
 	var fromPath string
 	var toURL string
 	var discardUnflushedEdits bool
+	var forceLiveServer bool
 
 	cmd := &cobra.Command{
 		Use:   "migrate-to-pg",
@@ -400,6 +401,40 @@ Steps:
 			}
 			if _, err := os.Stat(fromPath); os.IsNotExist(err) {
 				return fmt.Errorf("SQLite database not found: %s", fromPath)
+			}
+
+			// BUG-3032, codex round 2 P1: REMOVE THE APPENDER rather than race it.
+			//
+			// Round 1's post-export bundle check narrowed the TOCTOU window from
+			// "pre-pass → export" to "export → import". Round 2 was right that
+			// narrowing is not closing: the source read and the destination write
+			// are in two different databases, so no transaction can span them and
+			// no amount of re-checking makes them atomic.
+			//
+			// What CAN be made atomic is nothing-can-append. The only thing that
+			// appends to the op-log is a live server with a client attached, and
+			// `pad db restore` already refuses for the same structural reason (a
+			// running WAL checkpointer). docs/backup.md step 3 is "Stop the
+			// server"; this enforces the step the docs already ask for, and with
+			// the server down the window does not exist rather than being small.
+			//
+			// The probe is a heuristic, exactly as it is for restore: it asks
+			// whether SOMETHING healthy answers on the configured host/port, not
+			// whether that something is serving THIS database. Hence --force,
+			// mirroring restore's, so a false positive is not a dead end. Under
+			// --force the window is narrowed-not-closed again, and the two later
+			// gates are what remain.
+			if cfg, cfgErr := config.Load(); cfgErr == nil && cli.IsServerRunning(cfg) {
+				if !forceLiveServer {
+					return fmt.Errorf("the Pad server appears to be running at %s:%d — stop it first "+
+						"('pad server stop') so nothing can append collaborative edits while this migration "+
+						"reads the database, or re-run with --force to override. An edit landing mid-migration "+
+						"is not carried (the bundle has no op-log) and the SQLite file holding it is abandoned "+
+						"after this command", cfg.Host, cfg.Port)
+				}
+				fmt.Fprintf(os.Stderr, "WARNING: the Pad server appears to be running at %s:%d; migrating anyway "+
+					"because --force was given. An edit made in a browser tab during this migration may not "+
+					"reach PostgreSQL.\n", cfg.Host, cfg.Port)
 			}
 
 			if toURL == "" {
@@ -577,6 +612,8 @@ Steps:
 
 	cmd.Flags().StringVar(&fromPath, "from", "", "SQLite database path (default: server-resolved — PAD_DB_PATH > PAD_DATA_DIR/pad.db > ~/.pad/pad.db)")
 	cmd.Flags().StringVar(&toURL, "to", "", "PostgreSQL connection URL (default: PAD_DATABASE_URL)")
+	cmd.Flags().BoolVar(&forceLiveServer, "force", false,
+		"migrate even though a Pad server appears to be running (an edit made during the migration may be lost)")
 	cmd.Flags().BoolVar(&discardUnflushedEdits, "discard-unflushed-edits", false,
 		"migrate even though some items have edits only in the collaborative op-log, permanently losing them")
 

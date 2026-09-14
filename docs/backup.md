@@ -157,6 +157,30 @@ PAD_DB_DRIVER=postgres PAD_DATABASE_URL="postgres://pad:secret@localhost:5432/pa
   only in the collaborative op-log, and that log does not travel — so the
   migration refuses to run while any item is in that state (see below).
 
+### Stop the server first — the migration enforces it
+
+`pad db migrate-to-pg` refuses to run while a Pad server answers on the
+configured host and port:
+
+```
+the Pad server appears to be running at 127.0.0.1:7777 — stop it first
+('pad server stop') so nothing can append collaborative edits while this
+migration reads the database, or re-run with --force to override.
+```
+
+This is step 3 of the procedure above, enforced rather than merely documented.
+The reason is not the WAL (that is `pad db restore`'s reason) but the op-log: a
+live server is the only thing that can append a collaborative edit, and the
+source read and the destination write live in two different databases, so no
+transaction can span them. With the server stopped, an edit cannot land
+mid-migration at all; with it running, no amount of re-checking makes the two
+atomic.
+
+Like `pad db restore`'s equivalent check, the probe asks whether *something*
+healthy answers on that host and port, not whether it is serving this particular
+database — so `--force` exists for the false positive. Under `--force` the two
+checks below are what remain.
+
 ### Unflushed collaborative edits
 
 `pad db migrate-to-pg` **refuses** if any item's stored body is behind its live
@@ -176,6 +200,13 @@ into the database, then re-run this command. ...
 
 The check covers every workspace *before* the first import runs, so a refusal
 always means nothing has been migrated.
+
+A second check runs on each bundle *after* it is exported and *before* it is
+imported, because the pre-flight reads the database at one instant and the export
+reads it at another. If an edit lands in between — only possible under `--force`,
+since otherwise no server is running to make one — that workspace is refused too.
+That refusal does **not** claim nothing has been migrated: earlier workspaces in
+the run are already in PostgreSQL, and it says so with the count.
 
 Opening the item in the web UI is the only remedy, and that is structural rather
 than an omission: Pad's collaboration server is a dumb relay that stores opaque
