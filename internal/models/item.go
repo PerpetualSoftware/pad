@@ -67,15 +67,28 @@ var reservedItemFieldKeys = map[string]struct{}{
 // would have broken read-modify-write on items nobody edited wrongly — but a
 // typo and a deliberate extra field are indistinguishable once stored, so the
 // write says which keys it did not recognize instead of staying silent.
-// DroppedFields lists schema-declared keys the write DISCARDED. Today that is
-// one case (TASK-2878): a relation field whose destination-schema DEFAULT is
-// not a reference at all. `ValidateFields` assigns a default and `continue`s
-// past its own type check, so an injected default is the only route by which a
-// non-string reaches a relation field unchallenged — a value the caller
-// supplied is type-checked and refused like any other. Dropping rather than
-// refusing, because nobody in the request typed it and refusing would make
-// every write into that collection fail on a schema defect its author must fix
-// elsewhere. Additive and omitempty, so a clean write is byte-identical.
+// DroppedFields lists schema-declared keys the write DISCARDED, in ONE
+// disposition covering two passes.
+//
+// The general case (BUG-3079): an injected schema DEFAULT that fails the same
+// `validateFieldType` a supplied value takes. It used to be assigned and
+// `continue`d past that check, so the same bytes were refused through one door
+// and stored through the other, decided only by who put them there.
+//
+// The relation case (TASK-2878) is narrower and still has its own pass, because
+// "is this a string" and "does this string name a live, visible item" are
+// different questions and only the first can be answered in the DB-free
+// validator. NOTE for anyone reading that unit's prose: it says an injected
+// default is the only route by which a non-string reaches a relation field.
+// That was true when written and is no longer — BUG-3079 closed the shape half
+// at the validator, so what arrives at the relation pass is already a string.
+//
+// Dropping rather than refusing, in both cases, because nobody in the request
+// typed the value and refusing would make every write into that collection fail
+// on a schema defect its author must fix elsewhere. The exception is a REQUIRED
+// field, where dropping leaves it absent and the write is refused as required —
+// naming the default as the cause. Additive and omitempty, so a clean write is
+// byte-identical.
 // UnresolvedRelations lists relation keys whose value was STORED without
 // resolving to a live item. Only an IMPORT produces these: Dave's ruling
 // (day 57) is that import must carry junk relation values rather than refuse

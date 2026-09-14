@@ -809,7 +809,11 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 	// blob unchallenged — the same hole the migrate doors had, by the same
 	// route, and closed with the same pass.
 	relBefore := store.RelationKeysPresent(schema, fieldMap)
-	if err := items.ValidateFields(fieldMap, schema); err != nil {
+	// BUG-3079: a default that fails its own type check is DISCARDED and
+	// reported, not stored. The list joins the relation drops below in the one
+	// `warnings.dropped_fields` channel — they are the same event to a caller.
+	err, defaultDrops := items.ValidateFieldsWithDrops(fieldMap, schema)
+	if err != nil {
 		return nil, &itemCreateError{http.StatusBadRequest, "validation_error", err.Error()}
 	}
 	// Referent validation for relation values (TASK-2878). AFTER the shape
@@ -821,6 +825,7 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 	if relErr != nil {
 		return nil, &itemCreateError{http.StatusInternalServerError, "internal_error", "Failed to resolve relation references"}
 	}
+	droppedDefaults = append(defaultDrops, droppedDefaults...)
 	var unresolved []string
 	if len(relRefusals) > 0 {
 		if posture == relationsRefuse {
@@ -1304,10 +1309,13 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		// Snapshot before validation injects untyped schema defaults — see
 		// createItemChecked for the route (codex round 7).
 		relBefore := store.RelationKeysPresent(schema, fieldMap)
-		if err := items.ValidateFields(fieldMap, schema); err != nil {
-			writeError(w, http.StatusBadRequest, "validation_error", err.Error())
+		// BUG-3079 — see the create door for the rule.
+		verr, defaultDrops := items.ValidateFieldsWithDrops(fieldMap, schema)
+		if verr != nil {
+			writeError(w, http.StatusBadRequest, "validation_error", verr.Error())
 			return
 		}
+		droppedDefaults = append(droppedDefaults, defaultDrops...)
 		// Referent validation for relation values (TASK-2878) — the same four
 		// steps the create door runs; see resolveRelationsForWrite.
 		relRefusals, writeDropped, relErr := s.resolveRelationsForWrite(

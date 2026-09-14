@@ -76,15 +76,27 @@ type FieldIssue struct {
 // into the historical single-error string. Both share one traversal so the
 // two surfaces can never disagree about what is valid.
 func ValidateFields(fields map[string]any, schema models.CollectionSchema) error {
-	issues := ValidateFieldsDetailed(fields, schema)
+	err, _ := ValidateFieldsWithDrops(fields, schema)
+	return err
+}
+
+// ValidateFieldsWithDrops is ValidateFields plus the discarded-default list
+// (BUG-3079). For a door that has a `warnings.dropped_fields` channel; a door
+// without one keeps calling ValidateFields, which discards the list rather than
+// storing the value.
+func ValidateFieldsWithDrops(
+	fields map[string]any,
+	schema models.CollectionSchema,
+) (error, []string) {
+	issues, dropped := ValidateFieldsDetailedWithDrops(fields, schema)
 	if len(issues) == 0 {
-		return nil
+		return nil, dropped
 	}
 	errs := make([]string, 0, len(issues))
 	for _, iss := range issues {
 		errs = append(errs, iss.Message)
 	}
-	return fmt.Errorf("field validation failed: %s", strings.Join(errs, "; "))
+	return fmt.Errorf("field validation failed: %s", strings.Join(errs, "; ")), dropped
 }
 
 // ValidateFieldsDetailed is ValidateFields with per-field attribution:
@@ -108,8 +120,46 @@ func ValidateFields(fields map[string]any, schema models.CollectionSchema) error
 // A nil return means valid. Callers that only need the boolean should
 // keep using ValidateFields.
 func ValidateFieldsDetailed(fields map[string]any, schema models.CollectionSchema) []FieldIssue {
-	var issues []FieldIssue
+	issues, _ := ValidateFieldsDetailedWithDrops(fields, schema)
+	return issues
+}
 
+// ValidateFieldsDetailedWithDrops is ValidateFieldsDetailed plus the list of
+// schema-declared keys whose INJECTED DEFAULT was discarded (BUG-3079).
+//
+// THE DEFECT THIS CLOSES. A default used to be assigned and `continue`d past
+// `validateFieldType`, so the same bytes were refused through one door and
+// stored through the other, decided only by who put them there:
+//
+//	POST .../items {"fields":"{\"status\":\"open\"}"} -> 400 must be an array of strings
+//	POST .../items {"fields":"{}"}                    -> 201 stored {"status":"open"}
+//
+// on a `status` retyped to `multi_select` whose scalar default survived the
+// retype. The second stored a scalar in a list field, and defending against
+// exactly that is what BUG-3016, BUG-3057, BUG-3067, BUG-3068 and BUG-3074 have
+// each been doing one surface at a time.
+//
+// DROP RATHER THAN REFUSE, ruled on the BUG-3079 trail. Nobody in the request
+// typed the value, and refusing would make a whole collection uncreatable —
+// through surfaces that never mention the field — over a schema defect its
+// author has to fix elsewhere. It is the disposition TASK-2878 already chose
+// for the one case that had its own pass, now applied to every type.
+//
+// A REQUIRED FIELD IS THE EXCEPTION, and it is not a softening of the rule but
+// the same rule finishing its sentence: dropping leaves the field absent, and
+// an absent required field is precisely what IssueRequired reports. The message
+// names the default as the cause, because "field is required" pointing at a
+// request that never mentioned the field sends its reader to the wrong place.
+//
+// WHY A SECOND FUNCTION rather than a wider return on the existing one: eight
+// call sites take the current shape and only the doors with a warnings channel
+// can do anything with a drop list. The rest keep calling the wrapper above,
+// which is honest for them — a preflight and a probe have nowhere to report it
+// — and none of them stores the discarded value either way.
+func ValidateFieldsDetailedWithDrops(
+	fields map[string]any,
+	schema models.CollectionSchema,
+) (issues []FieldIssue, droppedDefaults []string) {
 	normalizeEmptyRelationLists(fields, schema, false)
 
 	for _, def := range schema.Fields {
@@ -117,21 +167,39 @@ func ValidateFieldsDetailed(fields map[string]any, schema models.CollectionSchem
 
 		// Apply default if field is missing and a default is defined
 		if !exists || val == nil {
-			if def.Required {
-				if def.Default != nil {
-					fields[def.Key] = def.Default
-					continue
+			if def.Default == nil {
+				if def.Required {
+					issues = append(issues, FieldIssue{
+						Key:     def.Key,
+						Kind:    IssueRequired,
+						Message: fmt.Sprintf("field %q is required", def.Key),
+					})
 				}
-				issues = append(issues, FieldIssue{
-					Key:     def.Key,
-					Kind:    IssueRequired,
-					Message: fmt.Sprintf("field %q is required", def.Key),
-				})
 				continue
 			}
-			if def.Default != nil {
-				fields[def.Key] = def.Default
+
+			// The injected default takes the SAME check a supplied value
+			// takes. Deliberately the same call, not a parallel one: a
+			// second implementation is how the two came to disagree.
+			if err := validateFieldType(def, def.Default); err != nil {
+				// Leave the key ABSENT rather than storing a value the
+				// schema's own rules reject. `delete` rather than skipping
+				// the assignment because the key can be present-and-nil
+				// here, which downstream reads as a stored null.
+				delete(fields, def.Key)
+				droppedDefaults = append(droppedDefaults, def.Key)
+				if def.Required {
+					issues = append(issues, FieldIssue{
+						Key:  def.Key,
+						Kind: IssueRequired,
+						Message: fmt.Sprintf(
+							"field %q is required and its schema default was discarded: %s",
+							def.Key, err.Error()),
+					})
+				}
+				continue
 			}
+			fields[def.Key] = def.Default
 			continue
 		}
 
@@ -145,7 +213,7 @@ func ValidateFieldsDetailed(fields map[string]any, schema models.CollectionSchem
 		}
 	}
 
-	return issues
+	return issues, droppedDefaults
 }
 
 // normalizeEmptyRelationLists rewrites an EMPTY `multi_relation` array into

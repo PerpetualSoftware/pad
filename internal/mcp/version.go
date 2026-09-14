@@ -916,11 +916,11 @@ const CmdhelpVersion = "0.1"
 //
 //     Item write responses may additionally carry
 //     `warnings.dropped_fields`, naming schema-declared keys the write
-//     DISCARDED. Today that is one case: a relation field whose schema
-//     DEFAULT is not a reference at all. `ValidateFields` assigns a
-//     default and skips its own type check, so an injected default is
-//     the only route by which a non-string reaches a relation field —
-//     a caller-supplied one is type-checked and refused. Dropped
+//     DISCARDED. At 0.29 that was one case: a relation field whose
+//     schema DEFAULT is not a reference at all, reaching the blob
+//     because `ValidateFields` assigned a default and skipped its own
+//     type check. 0.35 generalised the cause and the case — see that
+//     entry — so this key can now name a field of any type. Dropped
 //     rather than refused because nobody in the request typed it, and
 //     refusing would make every write into that collection fail on a
 //     schema defect its author must fix elsewhere. Additive and
@@ -1016,6 +1016,39 @@ const CmdhelpVersion = "0.1"
 //     is ever updated is not established — the flush belongs to a
 //     browser tab and BUG-3000 carries the open half — so no surface
 //     here states a duration.
+//
+//     0.35 — BUG-3079. An injected schema DEFAULT now takes the same
+//     `validateFieldType` check a caller-supplied value takes. A default
+//     that fails it is DISCARDED and named in `warnings.dropped_fields`
+//     instead of being stored.
+//
+//     BEHAVIOR bump on the 0.30 / 0.29 / 0.16 grounds — no tool name,
+//     action enum or param shape changed, but a write door now stores
+//     something different from what it stored before. Unlike 0.29, which
+//     turned an accepted value into a refusal, this turns a stored value
+//     into a reported drop: a create that used to land WITH a bad field
+//     still lands, without it.
+//
+//     What it closes is two doors disagreeing about one value. The same
+//     bytes were refused when supplied and stored when injected, decided
+//     only by who put them there — so a `status` retyped to `multi_select`
+//     whose scalar default survived answered 400 to
+//     `{"status":"open"}` and 201 to `{}`, storing `{"status":"open"}`.
+//     A scalar in a list field is what BUG-3016, BUG-3057, BUG-3067,
+//     BUG-3068 and BUG-3074 have each been defending one surface against.
+//
+//     No escape hatch, for 0.29's reason: there is no legitimate call
+//     this changes, only calls whose two readings the server used to
+//     choose between silently. A consumer that reads `dropped_fields`
+//     already handles the shape; one that ignores it sees a field it
+//     never asked for stop appearing.
+//
+//     ONE EXCEPTION, and it is the rule finishing its sentence rather
+//     than a carve-out: dropping leaves a REQUIRED field absent, which is
+//     exactly what the required check reports, so such a write is refused
+//     — with a message naming the default as the cause, because a bare
+//     "field is required" points its reader at a request that never
+//     mentioned the field.
 //
 //     0.34 — BUG-3037. `pad_item` gains an `expected_seq` param on
 //     `action: update`: the STRONG optimistic-concurrency token, preferred
@@ -1159,7 +1192,7 @@ const CmdhelpVersion = "0.1"
 //     content into the row — so no surface here states a duration for
 //     this one either, and it is not a promise that the row will catch
 //     up at all.
-const ToolSurfaceVersion = "0.34"
+const ToolSurfaceVersion = "0.35"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a
