@@ -8,9 +8,16 @@
 // function`, killing the whole table), and the chip it was drawing is CLICKABLE
 // — cycling it writes a scalar into a list field, which the server refuses.
 //
-// So this is not only a rendering repair. The plain-text arm shows the value
-// and offers no write, which is the honest state for something the chip cannot
-// describe.
+// So this is not only a rendering repair. The arm that catches it offers no
+// write, which is the honest state for something the chip cannot describe.
+//
+// SUPERSEDED IN PART BY BUG-3016, which is why two legs below assert a chip
+// vocabulary rather than the stored text: this file's original "shows the value"
+// was written when the table could not resolve a relation at all. It can now, so
+// the relation arm comes first and an id never renders. What survives unchanged
+// is the part this file is actually about — a retyped field keeps its `options`,
+// the row must not throw, and no clickable status chip may be offered for a
+// field a status write would corrupt.
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
 import type { Collection, Item } from '$lib/types';
@@ -82,7 +89,19 @@ describe('a status field holding a LIST', () => {
 		// The cell still SHOWS something — a fix that deleted the offending value,
 		// or every non-string cell, would satisfy "no chip" while losing the data
 		// (enumeration round, d2).
-		expect(screen.container.querySelector('.cell-value')?.textContent).toContain('id-red');
+		//
+		// WHAT it shows changed under BUG-3016, and this leg's original assertion
+		// (`.cell-value` contains `id-red`) is now the defect it was written
+		// beside. When BUG-3041 landed, nothing in this component could resolve a
+		// relation, so printing the stored value was the honest fallback. The
+		// table resolves now, so an unresolvable reference says so and the ID NEVER
+		// REACHES THE USER — the invariant the whole relation family exists for.
+		// The leg keeps its purpose (the value is not silently dropped) and gets
+		// the new vocabulary.
+		const cells = [...screen.container.querySelectorAll('.cell-relation')];
+		expect(cells, 'the value vanished instead of rendering').toHaveLength(2);
+		expect(screen.container.textContent).not.toContain('id-red');
+		expect(cells[0].textContent).toContain('Unresolved reference');
 	});
 
 	it('and offers no WRITE either — the withheld chip is the point, not its styling', () => {
@@ -219,6 +238,9 @@ describe('a status field holding a LIST', () => {
 
 		expect(screen.container.textContent).toContain('car-1');
 		expect(chips(screen.container)).toHaveLength(0);
-		expect(screen.container.querySelector('.cell-value')?.textContent).toContain('id-red');
+		// Same supersession as the status column above (BUG-3016): one chip per
+		// stored element, and never the id.
+		expect(screen.container.querySelectorAll('.cell-relation')).toHaveLength(1);
+		expect(screen.container.textContent).not.toContain('id-red');
 	});
 });
