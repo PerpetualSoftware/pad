@@ -559,7 +559,7 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 	relBefore := store.RelationKeysPresent(schema, fieldMap)
 	// BUG-3079: a default failing its own type check is DISCARDED and reported
 	// through the same out-parameter the relation drops below already use.
-	err, defaultDrops := items.ValidateFieldsWithDrops(fieldMap, schema)
+	defaultDrops, err := items.ValidateFieldsWithDrops(fieldMap, schema)
 	if err != nil {
 		return nil, &bulkOpError{message: err.Error(), code: "validation_error"}
 	}

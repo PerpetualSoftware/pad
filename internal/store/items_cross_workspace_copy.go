@@ -1174,7 +1174,7 @@ func (s *Store) migrateCopyFields(q Queryer, destWorkspaceID, sourceFieldsJSON, 
 	// Snapshotting before the pass would treat that key as already examined
 	// and skip it, which is the arrangement that hid it.
 	relBefore := RelationKeysPresent(items.SchemaForMigratedFields(targetSchema), migrated.Fields)
-	verr, defaultDrops := items.ValidateFieldsWithDrops(
+	defaultDrops, verr := items.ValidateFieldsWithDrops(
 		migrated.Fields, items.SchemaForMigratedFields(targetSchema))
 	if verr != nil {
 		return nil, nil, &FieldValidationError{Err: verr}

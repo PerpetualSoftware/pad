@@ -812,7 +812,7 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 	// BUG-3079: a default that fails its own type check is DISCARDED and
 	// reported, not stored. The list joins the relation drops below in the one
 	// `warnings.dropped_fields` channel — they are the same event to a caller.
-	err, defaultDrops := items.ValidateFieldsWithDrops(fieldMap, schema)
+	defaultDrops, err := items.ValidateFieldsWithDrops(fieldMap, schema)
 	if err != nil {
 		return nil, &itemCreateError{http.StatusBadRequest, "validation_error", err.Error()}
 	}
@@ -1310,7 +1310,7 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		// createItemChecked for the route (codex round 7).
 		relBefore := store.RelationKeysPresent(schema, fieldMap)
 		// BUG-3079 — see the create door for the rule.
-		verr, defaultDrops := items.ValidateFieldsWithDrops(fieldMap, schema)
+		defaultDrops, verr := items.ValidateFieldsWithDrops(fieldMap, schema)
 		if verr != nil {
 			writeError(w, http.StatusBadRequest, "validation_error", verr.Error())
 			return

@@ -194,7 +194,7 @@ func TestBUG3079_WrapperSurfacesAgree(t *testing.T) {
 	schema := multiSelectStatus("open")
 
 	a := map[string]any{}
-	errA, droppedA := ValidateFieldsWithDrops(a, schema)
+	droppedA, errA := ValidateFieldsWithDrops(a, schema)
 	b := map[string]any{}
 	errB := ValidateFields(b, schema)
 	c := map[string]any{}

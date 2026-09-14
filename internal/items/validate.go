@@ -76,7 +76,7 @@ type FieldIssue struct {
 // into the historical single-error string. Both share one traversal so the
 // two surfaces can never disagree about what is valid.
 func ValidateFields(fields map[string]any, schema models.CollectionSchema) error {
-	err, _ := ValidateFieldsWithDrops(fields, schema)
+	_, err := ValidateFieldsWithDrops(fields, schema)
 	return err
 }
 
@@ -87,16 +87,16 @@ func ValidateFields(fields map[string]any, schema models.CollectionSchema) error
 func ValidateFieldsWithDrops(
 	fields map[string]any,
 	schema models.CollectionSchema,
-) (error, []string) {
+) ([]string, error) {
 	issues, dropped := ValidateFieldsDetailedWithDrops(fields, schema)
 	if len(issues) == 0 {
-		return nil, dropped
+		return dropped, nil
 	}
 	errs := make([]string, 0, len(issues))
 	for _, iss := range issues {
 		errs = append(errs, iss.Message)
 	}
-	return fmt.Errorf("field validation failed: %s", strings.Join(errs, "; ")), dropped
+	return dropped, fmt.Errorf("field validation failed: %s", strings.Join(errs, "; "))
 }
 
 // ValidateFieldsDetailed is ValidateFields with per-field attribution:
