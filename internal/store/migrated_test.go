@@ -472,3 +472,70 @@ func TestHeldSnapshotBlocksOtherWritersRatherThanLettingThemThrough(t *testing.T
 		t.Errorf("after the commit the write should be visible: got %d, want %d", got, before+1)
 	}
 }
+
+// TestMigratedMarkerCannotBeDisarmedOrSwallowed covers the two arms of
+// migratedRemedyIfMarked that no other test reaches, and that both fail in the
+// same direction: reporting "not migrated" for a database that is.
+func TestMigratedMarkerCannotBeDisarmedOrSwallowed(t *testing.T) {
+	t.Run("an emptied marker table still refuses", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "emptied.db")
+		s, err := New(path)
+		if err != nil {
+			t.Fatalf("open: %v", err)
+		}
+		tx, err := s.BeginSnapshot()
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		if err := s.MarkMigratedTx(tx, "postgres://pg.example/pad"); err != nil {
+			t.Fatalf("MarkMigratedTx: %v", err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatalf("commit: %v", err)
+		}
+
+		// The marker table is not in the trigger population — the migration
+		// writes it — so this DELETE succeeds. It must not disarm anything: a
+		// marker that a single DELETE turns off is not a marker, and the file
+		// is still the abandoned one.
+		if _, err := s.db.Exec(`DELETE FROM ` + migratedMarkerTable); err != nil {
+			t.Fatalf("empty the marker table: %v", err)
+		}
+		remedy, err := migratedRemedyIfMarked(s.db)
+		if err != nil {
+			t.Fatalf("marker check: %v", err)
+		}
+		if remedy == "" {
+			t.Fatal("emptying the marker table disarmed the refusal")
+		}
+		s.Close()
+
+		if reopened, err := New(path); err == nil {
+			reopened.Close()
+			t.Fatal("New() opened a database whose marker row had been deleted")
+		}
+	})
+
+	t.Run("a read failure is an error, never 'not migrated'", func(t *testing.T) {
+		// Folding a transient read failure into "unmarked" would open a
+		// migrated file with its marker un-consulted — the one outcome this
+		// whole layer exists to prevent, and the nulTriggerMigrationApplied
+		// posture. A closed pool is the cheapest way to make the read fail.
+		path := filepath.Join(t.TempDir(), "unreadable.db")
+		s, err := New(path)
+		if err != nil {
+			t.Fatalf("open: %v", err)
+		}
+		db := s.db
+		s.Close()
+		if err := db.Close(); err != nil {
+			t.Fatalf("close pool: %v", err)
+		}
+
+		remedy, err := migratedRemedyIfMarked(db)
+		if err == nil {
+			t.Fatalf("a failed marker read returned remedy=%q and NO error, so a database "+
+				"that cannot be checked reads as safe to open", remedy)
+		}
+	})
+}
