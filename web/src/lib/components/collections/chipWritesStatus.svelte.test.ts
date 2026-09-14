@@ -26,7 +26,7 @@
 //     type-coherent, so BUG-3057's conversion accepted it silently.
 //
 // WHICH LEGS ACTUALLY DISCRIMINATE, measured against the unfixed tree (the
-// components restored from 9e121bde with this file unchanged): 3 of the 8 go red.
+// components restored from 9e121bde with this file unchanged): 3 of the legs go red.
 //
 //   RED   the board's `cycles the STATUS field options` leg — `expected 'low' to
 //         be 'done'`, i.e. the chip wrote the first LANE, which is the -1 defect
@@ -427,4 +427,50 @@ describe('a status field that is not a status at all', () => {
 		expect(screen.container.querySelector('[title="Click to cycle status"]')).toBeNull();
 		expect(screen.container.textContent).not.toContain('Id Red');
 	});
+});
+
+describe('a read-only viewer gets no clickable chip', () => {
+	// NOT A BUG-3068 REGRESSION, and the distinction is the reason this is here
+	// rather than filed separately. Nothing has ever gated the chip on `canEdit`
+	// — `ItemCard` does not take the prop — so an ordinary status-grouped list
+	// offered a read-only viewer a clickable chip long before this unit.
+	// Measured: this leg fails identically against 9e121bde with
+	// `groupField: 'status'`.
+	//
+	// It is fixed HERE because BUG-3068 un-withheld the chip on relation- and
+	// refusal-grouped views, which were immune to the defect only by accident;
+	// shipping the un-withholding alone would have widened a live defect into
+	// two more configurations. Both views' own `canEdit` prop docs already
+	// claimed to cover "drag-to-status-change", so this is the documented
+	// contract being made true rather than a new rule.
+	const cases = [
+		['list', ListView, 'priority'],
+		['list', ListView, 'status'],
+		['board', BoardView, 'priority'],
+		['board', BoardView, 'status'],
+	] as const;
+
+	for (const [label, Component, groupField] of cases) {
+		it(`${label} grouped by ${groupField}: chip is not clickable`, () => {
+			const screen = render(Component as never, {
+				props: {
+					items: [item('car-1')],
+					collection: collection(),
+					wsSlug: 'ws',
+					groupField,
+					statusOptions: STATUSES,
+					canEdit: false,
+					onLaneChange: vi.fn(),
+					onStatusChange: vi.fn(),
+				} as never,
+			});
+			// PRECONDITION: the card rendered, so "no clickable chip" is not "no card".
+			expect(screen.container.querySelectorAll('.item-card')).toHaveLength(1);
+			expect(screen.container.querySelector('[title="Click to cycle status"]')).toBeNull();
+			// CONTROL: the status is still SHOWN, just not cyclable — withholding
+			// the information rather than the affordance would be a different and
+			// worse change.
+			expect(screen.container.textContent).toContain('In Progress');
+		});
+	}
 });
