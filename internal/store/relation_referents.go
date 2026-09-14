@@ -1579,10 +1579,15 @@ func (s *Store) MigrateRelationReferentsQ(
 // relationDefaultList reads a `multi_relation` value as a list of strings, and
 // is STRICT about the elements.
 //
-// Reports (nil, false) for anything that is not an array of non-blank strings —
-// which is the whole range of shapes an injected schema DEFAULT can be, since
-// `ValidateFields` assigns a default and skips its own type check. That is the
-// only route by which any of this reaches a row.
+// Reports (nil, false) for anything that is not an array of non-blank strings.
+//
+// PREMISE CHANGED (BUG-3079): this used to say an injected default could be any
+// shape at all, because `ValidateFields` assigned one and skipped its own type
+// check. It no longer skips it, so a default reaching here has already passed
+// the array-of-strings shape check. The strictness below is KEPT rather than
+// relaxed — it is the only guard for this shape on the paths that do not run
+// the validator first, and a guard whose caller happens to be covered is not
+// the same as a guard that is unnecessary.
 //
 // STRICTNESS IS THE CORRECTION, and it is worth naming because the lenient
 // version was mine and lasted one review round. It mapped a non-string element
@@ -1726,9 +1731,14 @@ func (s *Store) ResolveLateRelationDefaultsQ(
 	for _, def := range schema.Fields {
 		// BOTH relation types (U4). A gate reading `def.Type != "relation"`
 		// meant a `multi_relation` DEFAULT reached the row neither canonicalised
-		// nor shape-checked — `ValidateFields` assigns a default and skips its
-		// own type check, so this pass is the only thing standing between an
-		// injected default and the blob. A schema defaulting to `42` stored 42.
+		// nor shape-checked. A schema defaulting to `42` stored 42.
+		//
+		// BUG-3079 took the SHAPE half of that: the validator now runs the same
+		// type check on an injected default that it runs on a supplied value, so
+		// `42` is dropped before it gets here. This pass keeps the half only it
+		// can do — whether a shape-valid string names a live, visible item in
+		// the declared collection — which is a question the DB-free validator
+		// cannot ask.
 		if !def.IsRelation() || before[def.Key] {
 			continue
 		}

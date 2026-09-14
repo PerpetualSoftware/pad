@@ -854,7 +854,7 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	// `origin` loses its entry for the same reason: if a default does
 	// re-populate the key, its origin is the destination's default, not the
 	// source value that was just discarded.
-	// The CARRIED drops reach the caller too — `relationDropReason` below is
+	// The CARRIED drops reach the caller too — `dropReasonByKey` below is
 	// rendered straight into `fields.dropped[].reason` — so they owe the same
 	// visibility collapse the late-default drops get a few lines down.
 	// `wrong_collection` is the reason that names a LIVE item, so without
@@ -869,10 +869,10 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 		writeInternalError(w, fmt.Errorf("copy preflight: carried relation visibility: %w", cerr))
 		return
 	}
-	relationDropReason := make(map[string]string, len(relDropped))
+	dropReasonByKey := make(map[string]string, len(relDropped))
 	for _, ri := range relDropped {
 		migrated.Dropped = append(migrated.Dropped, ri.Key)
-		relationDropReason[ri.Key] = string(ri.Reason)
+		dropReasonByKey[ri.Key] = string(ri.Reason)
 		delete(origin, ri.Key)
 	}
 	// Snapshot AFTER the pass above and BEFORE validation: what this needs to
@@ -881,7 +881,29 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	// Snapshotting before the pass would treat that key as already examined
 	// and skip it, which is the arrangement that hid it.
 	relBefore := store.RelationKeysPresent(items.SchemaForMigratedFields(targetSchema), final)
-	issues := items.ValidateFieldsDetailed(final, items.SchemaForMigratedFields(targetSchema))
+	issues, defaultDrops := items.ValidateFieldsDetailedWithDrops(
+		final, items.SchemaForMigratedFields(targetSchema))
+	// Defaults the VALIDATOR discarded for failing their own type check
+	// (BUG-3079). Before that change every malformed default reached the late
+	// relation pass below and was reported from there; now a shape failure is
+	// caught one step earlier, and a drop nothing reports is the DR-6
+	// divergence — the preview would say a field carries while the copy, which
+	// runs the identical validator, drops it.
+	//
+	// `invalid_shape` rather than a new reason: it is the same statement the
+	// relation pass makes with the same words — the value is not the shape this
+	// field holds — and a second spelling for one fact is how the two passes
+	// would start disagreeing about it. This is also why the map above is no
+	// longer named for relations: it answers "why was this key dropped", and
+	// relations are now one of two sources rather than the only one.
+	for _, key := range defaultDrops {
+		if _, already := dropReasonByKey[key]; already {
+			continue
+		}
+		migrated.Dropped = append(migrated.Dropped, key)
+		dropReasonByKey[key] = string(store.RelationTargetInvalidShape)
+		delete(origin, key)
+	}
 	// Relation defaults ValidateFieldsDetailed just injected (codex round 2).
 	// The copy runs the identical pass at the same point; a preview that
 	// reported an unresolved default as carrying while the copy dropped it
@@ -937,7 +959,7 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	}
 	for _, ri := range append(lateDropped, invisibleDefaults...) {
 		migrated.Dropped = append(migrated.Dropped, ri.Key)
-		relationDropReason[ri.Key] = string(ri.Reason)
+		dropReasonByKey[ri.Key] = string(ri.Reason)
 		delete(origin, ri.Key)
 	}
 
@@ -1104,12 +1126,12 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 		// within a workspace — because the generic no_target_field is simply
 		// false here: the destination DOES declare the key, and reporting a
 		// missing field would send the reader to fix a schema that is fine.
-		if relReason, isRelation := relationDropReason[key]; isRelation {
+		if reasonForKey, known := dropReasonByKey[key]; known {
 			if def, exists := targetDefs[key]; exists && def.Label != "" {
 				label = def.Label
 			}
 			resp.Fields.Dropped = append(resp.Fields.Dropped, ItemCopyPreflightDropped{
-				Key: key, Label: label, Kind: "field", Reason: relReason,
+				Key: key, Label: label, Kind: "field", Reason: reasonForKey,
 			})
 			continue
 		}

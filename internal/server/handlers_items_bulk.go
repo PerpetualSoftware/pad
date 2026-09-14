@@ -557,8 +557,14 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 	// never checked against its target collection (codex round 3). The same
 	// late-arrival the migrate doors hit, reached by a different route.
 	relBefore := store.RelationKeysPresent(schema, fieldMap)
-	if err := items.ValidateFields(fieldMap, schema); err != nil {
+	// BUG-3079: a default failing its own type check is DISCARDED and reported
+	// through the same out-parameter the relation drops below already use.
+	defaultDrops, err := items.ValidateFieldsWithDrops(fieldMap, schema)
+	if err != nil {
 		return nil, &bulkOpError{message: err.Error(), code: "validation_error"}
+	}
+	if droppedFields != nil && len(defaultDrops) > 0 {
+		*droppedFields = append(*droppedFields, defaultDrops...)
 	}
 	// Referent validation for relation values (TASK-2878). Refuses like any
 	// other write — per item, so one bad referent fails its own item and not

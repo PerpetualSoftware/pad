@@ -1174,9 +1174,18 @@ func (s *Store) migrateCopyFields(q Queryer, destWorkspaceID, sourceFieldsJSON, 
 	// Snapshotting before the pass would treat that key as already examined
 	// and skip it, which is the arrangement that hid it.
 	relBefore := RelationKeysPresent(items.SchemaForMigratedFields(targetSchema), migrated.Fields)
-	if err := items.ValidateFields(migrated.Fields, items.SchemaForMigratedFields(targetSchema)); err != nil {
-		return nil, nil, &FieldValidationError{Err: err}
+	defaultDrops, verr := items.ValidateFieldsWithDrops(
+		migrated.Fields, items.SchemaForMigratedFields(targetSchema))
+	if verr != nil {
+		return nil, nil, &FieldValidationError{Err: verr}
 	}
+	// Defaults the validator discarded for failing their own type check
+	// (BUG-3079). Recorded here for the same reason the preflight records
+	// them: DR-6 says the preview and the copy answer identically, and the
+	// preview reports these. A drop the copy makes and does not report is the
+	// divergence that rule exists to prevent, in the direction that is harder
+	// to notice — the field is simply not there afterwards.
+	migrated.Dropped = append(migrated.Dropped, defaultDrops...)
 	// Relation defaults ValidateFields just injected, which the pass above
 	// could not have seen (codex round 2).
 	lateDropped, lateErr := s.ResolveLateRelationDefaultsQ(q, canSee, destWorkspaceID,
