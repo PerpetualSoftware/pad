@@ -714,8 +714,27 @@
 				mode="anchored"
 				ariaLabel="User menu"
 				suppressOutside={() => isDragging || dragArmed}
+				bodyScroll
 			>
+				<!--
+					SIGN OUT IS PINNED; everything above it scrolls (BUG-2985).
+
+					The panel caps at 340px and used to be the scroller, so this
+					menu — 393px of content — ended at the cap with a clean edge,
+					no scrollbar (overlay scrollbars show nothing until you
+					scroll) and no cue. "Connect a project…" and "Sign out" were
+					below the cut: the menu looked complete and the reporter
+					concluded there was no sign-out at all. Measured before the
+					fix at client height 338 with Sign out rendering at y=409.
+
+					Making the menu shorter would only move the cliff — Billing
+					(cloud), Admin and the Resources block all come and go — so
+					the account action is kept OUT of the scrolling region
+					instead. The middle grows and scrolls; the divider and Sign
+					out are always on screen.
+				-->
 				<div class="user-dropdown">
+					<div class="user-dropdown-body">
 					<div class="user-info">
 						<span class="user-dropdown-name">{authStore.user?.name}</span>
 						<span class="user-dropdown-email">{authStore.user?.email}</span>
@@ -772,6 +791,7 @@
 							Connect a project…
 						</MenuItem>
 					{/if}
+					</div>
 					<div class="dropdown-divider"></div>
 					<MenuItem danger onclick={handleLogout}>Sign out</MenuItem>
 				</div>
@@ -1528,6 +1548,25 @@
 	/* Panel skin/positioning now lives in the Menu primitive. The
 	   .user-dropdown class survives markup-side as a styling hook for
 	   UserMenuResources' :global(.user-dropdown) rules. */
+
+	/* BUG-2985: the panel no longer scrolls (Menu's `bodyScroll`), so this
+	   column does — the body takes the space that is left and Sign out keeps
+	   its own, whatever the body holds. `min-height: 0` is load-bearing: a
+	   flex item's default `min-height: auto` refuses to shrink below its
+	   content, so without it the body would push the pinned row back out of
+	   the panel and restore the bug with extra steps. */
+	.user-dropdown {
+		display: flex;
+		flex-direction: column;
+		min-height: 0;
+		max-height: 100%;
+	}
+
+	.user-dropdown-body {
+		flex: 1 1 auto;
+		min-height: 0;
+		overflow-y: auto;
+	}
 
 	.user-info {
 		padding: var(--space-3) var(--space-4);

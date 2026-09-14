@@ -36,6 +36,21 @@
 		 *  Forwarded to BottomSheet in `sheetOnMobile` mode, which owns focus
 		 *  there. PLAN-2326 DR-8. */
 		focusKey?: string | number;
+		/**
+		 * Let the CONSUMER own scrolling instead of the panel (BUG-2985).
+		 *
+		 * The panel caps itself at 340px and scrolls, which silently truncates
+		 * any menu taller than that: the panel's bottom edge looks like the end
+		 * of the menu, and overlay scrollbars mean there is no cue at all. The
+		 * user menu lost its "Sign out" that way — measured at 393px of content
+		 * in a 338px client box, with Sign out rendering at y=409 and the box
+		 * ending at 384.
+		 *
+		 * With this set, the panel keeps its cap but does NOT scroll; the
+		 * consumer lays out a scrolling body and whatever must stay visible
+		 * beside it. Opt-in, so every other menu keeps today's behaviour.
+		 */
+		bodyScroll?: boolean;
 		/** Return true to suppress outside-close for this event (e.g. while
 		 *  a drag interaction is in flight — cf. TopBar pill drags). */
 		suppressOutside?: () => boolean;
@@ -55,6 +70,7 @@
 		exempt,
 		suppressOutside,
 		focusKey,
+		bodyScroll = false,
 		children
 	}: Props = $props();
 
@@ -193,7 +209,7 @@
 {:else if open}
 	{#if mode === 'portal'}
 		<div
-			class="menu-panel portal"
+			class="menu-panel portal" class:body-scroll={bodyScroll}
 			style:top="{coords.top}px"
 			style:left="{coords.left}px"
 			style:width="{width}px"
@@ -211,6 +227,7 @@
 		<div
 			class="menu-panel anchored"
 			class:align-left={align === 'left'}
+			class:body-scroll={bodyScroll}
 			role="menu"
 			aria-label={ariaLabel}
 			tabindex="-1"
@@ -234,6 +251,20 @@
 		max-height: 340px;
 		overflow-y: auto;
 		z-index: 200;
+	}
+
+	/*
+	 * The consumer scrolls its own body instead (BUG-2985). The cap STAYS — it
+	 * is what keeps a menu from running off a short viewport — but the panel
+	 * stops being the scroller, so a consumer can keep a footer visible while
+	 * the middle scrolls. `overflow: hidden` rather than `visible`: content
+	 * must still be clipped to the panel, or a too-tall menu would paint over
+	 * the page with no way to reach the rest.
+	 */
+	.menu-panel.body-scroll {
+		overflow: hidden;
+		display: flex;
+		flex-direction: column;
 	}
 
 	.anchored {
