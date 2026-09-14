@@ -4,10 +4,18 @@
 // Why source-level rather than behavioural: these surfaces are a class, and
 // the claim worth pinning is a property of the POPULATION, not of any one
 // render. `categoricalFieldValue.test.ts` proves the question is answered
-// correctly; the per-surface render tests prove two of the surfaces call it.
-// This proves that NO surface in the class answers it privately — which is the
-// failure mode the class already has a history of, having been enumerated three
-// times with a different scope each time (see the BUG-3067 trail).
+// correctly. `detailCardRetypedField.svelte.test.ts` is the ONLY place a real
+// component is mounted, and `categoricalRenderers.svelte.test.ts` drives the
+// shared helper across every renderer's shape rather than mounting them — it
+// says so itself. Every other renderer has source-level coverage only.
+//
+// What THIS file proves is narrower than it may read: that no surface IN ITS
+// OWN LIST answers the question privately. Not the whole class — it does not
+// sweep server projections, print markup, share routes or prompt substitution,
+// and it cannot tell an imported helper that is called from one that is
+// ignored. It is the enumeration made checkable, which matters for a class
+// whose membership has been revised on four separate occasions (see the
+// BUG-3067 trail), and it is not a proof of correctness at any site.
 //
 // Same technique and the same reason as `laneKeyCallers.test.ts`: a mutant that
 // re-inlines a correct private copy is invisible to every behavioural assertion

@@ -65,6 +65,23 @@ export function fieldDefFor(
 }
 
 /**
+ * The categorical value for a field whose `FieldDef` the caller ALREADY HOLDS.
+ *
+ * For a caller that must resolve the field once and reuse it — a sort
+ * comparator, say, where going through a slug lookup would reparse the
+ * collection's schema JSON on every comparison. `fieldDefFor` above resolves it;
+ * this answers with it.
+ *
+ * It exists because the alternative was reaching past this module to
+ * `categoricalChipValue`, which the source guard forbids for exactly the reason
+ * it caught that attempt: a bypass is how a shared question acquires a second
+ * answer. The guard was right and the module was missing a door.
+ */
+export function categoricalValueForField(field: FieldDef | undefined, raw: unknown): string {
+	return categoricalChipValue(field, raw);
+}
+
+/**
  * The categorical value for a field named on a COLLECTION SLUG rather than on an
  * item — for a surface holding a server projection (the graph node) instead of a
  * full `Item`. Same question, same module: `graph/DetailCard` reached for

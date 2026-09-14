@@ -4,7 +4,11 @@
 	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
 	import { parseFields, parseSchema, itemUrlId, type Collection, type Item } from '$lib/types';
 	import { collectionStore } from '$lib/stores/collections.svelte';
-	import { categoricalValueFor } from '$lib/collections/categoricalFieldValue';
+	import {
+		categoricalValueFor,
+		categoricalValueForField,
+		fieldDefFor,
+	} from '$lib/collections/categoricalFieldValue';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import { exportAndDownloadArtifact, importArtifactFile } from '$lib/utils/artifacts';
@@ -174,14 +178,23 @@
 		return [...known, ...Array.from(discovered).sort((a, b) => a.localeCompare(b))];
 	});
 
+	/**
+	 * The declared status FIELD, resolved once (BUG-3067 round 9).
+	 *
+	 * `declaredStatusOf` used to call the helper inside the sort comparator,
+	 * which reparses the collection's schema JSON on every comparison — O(n log n)
+	 * parses of the same string to answer one question about the schema. The
+	 * question is per-COLLECTION, not per-row, so it is asked once here.
+	 */
+	let statusFieldDef = $derived(
+		playbooksCollection
+			? fieldDefFor([playbooksCollection], playbooksCollection.slug, 'status')
+			: undefined,
+	);
+
 	/** The declared status for sorting — the same question the cards ask. */
 	function declaredStatusOf(fields: Record<string, unknown>): string {
-		return categoricalValueFor(
-			playbooksCollection ? [playbooksCollection] : [],
-			{ collection_slug: playbooksCollection?.slug },
-			'status',
-			fields.status,
-		);
+		return categoricalValueForField(statusFieldDef, fields.status);
 	}
 
 	let sorted = $derived.by(() => {
