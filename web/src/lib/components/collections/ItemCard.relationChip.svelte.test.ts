@@ -98,7 +98,15 @@ describe('a status/priority field retyped to a relation', () => {
 				onStatusClick,
 			} as never,
 		});
-		for (const el of [...screen.container.querySelectorAll('.chip, button, [role="button"]')]) {
+		// PRECONDITIONS (BUG-3068 round 4). Without these the leg passes when the
+		// card fails to render at all, or renders nothing clickable: an empty loop
+		// followed by `not.toHaveBeenCalled()` asserts nothing about the guard.
+		// The card always has other controls (star, ⋮, the ref copy), so a
+		// non-empty loop is a real claim rather than a formality.
+		expect(screen.container.querySelectorAll('.item-card')).toHaveLength(1);
+		const clickables = [...screen.container.querySelectorAll('.chip, button, [role="button"]')];
+		expect(clickables.length, 'nothing was clicked, so nothing was tested').toBeGreaterThan(0);
+		for (const el of clickables) {
 			(el as HTMLElement).click();
 		}
 		expect(onStatusClick).not.toHaveBeenCalled();

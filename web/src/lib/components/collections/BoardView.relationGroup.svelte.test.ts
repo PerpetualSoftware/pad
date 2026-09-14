@@ -428,10 +428,16 @@ describe('a relation field with no declared target collection', () => {
 				collection: coll,
 				wsSlug: 'ws',
 				groupField: 'car_color',
+				onLaneChange: vi.fn(),
 				onStatusChange: vi.fn(),
 			} as never,
 		});
 
+		// PRECONDITIONS (BUG-3068 round 4): the board rendered, with a lane and the
+		// card in it. Without them "no `.lane-ref`" is also what an unrendered
+		// board looks like, and the leg would pass for the wrong reason.
+		expect(screen.container.querySelectorAll('.kanban-column').length).toBeGreaterThan(0);
+		expect(screen.container.querySelectorAll('.item-card')).toHaveLength(1);
 		// No lane resolved from the workspace-wide index — the ref is the tell.
 		expect(screen.container.querySelector('.lane-ref')).toBeNull();
 	});

@@ -4,6 +4,7 @@
 	import { narrowRelationRow, relationChipFor } from '$lib/collections/relationGroups';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
+	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { parseSchema, parseFields, formatItemRef, itemUrlId } from '$lib/types';
 	import { itemComparator, type SortMode } from '$lib/collections/itemSort';
 	import { reorderGroup, disabledDirections, type ReorderDirection } from '$lib/collections/reorder';
@@ -176,8 +177,27 @@
 	let pulsingId = $state<string | null>(null);
 	let pulseSeq = 0;
 
+	/**
+	 * THE TABLE ASKS THE SAME PERMISSION QUESTION AS THE CARD, per ITEM
+	 * (BUG-3068 round 4). This chip is a separate implementation from
+	 * `ItemCard`'s — the table renders its own — so gating the card's covered
+	 * list and board and left this surface offering a read-only viewer a chip
+	 * whose write the server refuses. Three surfaces, one class; the branch
+	 * claimed "every permission level" while one of them did not ask at all.
+	 *
+	 * `canEditItem` rather than the `canEdit` prop for the reason round 2
+	 * established: `canEdit` is collection-level, and a guest holding an item
+	 * grant must keep an affordance the server will honour.
+	 */
 	function cycleStatus(item: Item, options: string[]) {
 		if (!onStatusChange) return;
+		if (!workspaceStore.canEditItem(item)) return;
+		// AN EMPTY OPTION LIST HAS NO NEXT VALUE. The render gate now requires a
+		// non-empty list, so this is the second door on the same hazard rather
+		// than the only one: `(idx + 1) % 0` is NaN, `options[NaN]` is undefined,
+		// and the writer was called with `undefined` — a "status chip" writing
+		// something that is not a status (round 4).
+		if (options.length === 0) return;
 		const fields = parseFields(item);
 		const current = fields.status ?? '';
 		const idx = options.indexOf(current);
@@ -369,7 +389,7 @@
 						-->
 						{#if isRelationType(field.type)}
 							{@render relationCell(field, fields[field.key])}
-						{:else if field.key === 'status' && field.options && onStatusChange && (fields[field.key] == null || typeof fields[field.key] === 'string')}
+						{:else if field.key === 'status' && field.options?.length && onStatusChange && workspaceStore.canEditItem(item) && (fields[field.key] == null || typeof fields[field.key] === 'string')}
 							<Chip
 								size="sm"
 								color={statusColor(fields[field.key] ?? '')}
