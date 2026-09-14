@@ -1197,6 +1197,13 @@ export interface ItemCreate {
 export interface ItemUpdate {
 	title?: string;
 	content?: string;
+	/**
+	 * FULL REPLACE of the stored fields blob. On an UPDATE this is almost never
+	 * what a client wants: it reverts every key the caller did not include,
+	 * including ones written after the caller read the item (BUG-3049 converted
+	 * twelve such writers). Use `fields_patch` below for an update and keep
+	 * `fields` for a CREATE, where there is no prior state to revert.
+	 */
 	fields?: string;
 	/**
 	 * Field-level SHALLOW merge (IDEA-1480 / TASK-2022): only the keys present
