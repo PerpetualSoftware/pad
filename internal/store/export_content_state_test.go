@@ -107,3 +107,65 @@ func TestExportWorkspaceMarksOnlyItemsWhoseDocumentIsAhead(t *testing.T) {
 		})
 	}
 }
+
+// ListItemsPendingContentFlush is the migration gate's half of the same
+// predicate the bundle marker uses, and it exists as a separate query, so it
+// gets its own control leg: a gate that listed every item would refuse every
+// migration, and a gate that listed none would refuse nothing.
+func TestListItemsPendingContentFlushNamesOnlyStaleItems(t *testing.T) {
+	for _, backend := range []struct {
+		name string
+		open func(*testing.T) *store.Store
+	}{
+		{"SQLite", storetest.NewSQLite},
+		{"Postgres", storetest.NewPostgres}, // skips unless PAD_TEST_POSTGRES_URL is set
+	} {
+		t.Run(backend.name, func(t *testing.T) {
+			s := backend.open(t)
+			wsID, collID, item := seedStaleItem(t, s)
+
+			// A second item that stays current throughout, so the stale-item
+			// assertion below cannot be satisfied by a query that returns the
+			// whole collection.
+			current, err := s.CreateItem(wsID, collID, models.ItemCreate{Title: "Current", Content: "fine"})
+			if err != nil {
+				t.Fatalf("CreateItem: %v", err)
+			}
+
+			// CONTROL: nothing pending yet.
+			pending, err := s.ListItemsPendingContentFlush(wsID)
+			if err != nil {
+				t.Fatalf("ListItemsPendingContentFlush: %v", err)
+			}
+			if len(pending) != 0 {
+				t.Fatalf("a workspace with no op-log rows reports %d pending item(s): %+v — the gate "+
+					"would refuse every migration and the assertion below would prove nothing",
+					len(pending), pending)
+			}
+
+			if _, err := s.AppendYjsUpdate(item.ID, []byte{1, 2, 3}, "1"); err != nil {
+				t.Fatalf("AppendYjsUpdate: %v", err)
+			}
+
+			pending, err = s.ListItemsPendingContentFlush(wsID)
+			if err != nil {
+				t.Fatalf("ListItemsPendingContentFlush: %v", err)
+			}
+			if len(pending) != 1 {
+				t.Fatalf("want exactly the one stale item, got %d: %+v", len(pending), pending)
+			}
+			// The REF is what the refusal message asks the operator to open, so a
+			// wrong or empty one makes the refusal unactionable.
+			if pending[0].Ref != item.Ref {
+				t.Errorf("pending ref = %q, want %q — this is the string the migration's refusal "+
+					"tells an operator to open", pending[0].Ref, item.Ref)
+			}
+			if pending[0].Title != item.Title {
+				t.Errorf("pending title = %q, want %q", pending[0].Title, item.Title)
+			}
+			if pending[0].Ref == current.Ref {
+				t.Errorf("the gate named the CURRENT item %q", current.Ref)
+			}
+		})
+	}
+}
