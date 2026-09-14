@@ -271,11 +271,72 @@ function planLimitMessage(err: PadApiError): string {
  * round 2 (Codex P1 each) — both got the scope wrong; this is the
  * conservative fix.
  */
-export type AccessRevokedScope = { kind: 'workspace'; workspace: string };
+/**
+ * Why the workspace became unreachable (BUG-2983).
+ *
+ * `forbidden` is the original 403 case: membership exists in some form and
+ * something narrower denied the read.
+ *
+ * `gone` is a 404 on a workspace-scoped path that carries NO sub-resource
+ * identifier, which the server can only answer that way when the WORKSPACE
+ * itself did not resolve — `RequireWorkspaceAccess` resolves through
+ * `GetWorkspacesBySlugForUser`, so a non-member and a deleted workspace are
+ * the same 404 by design (the existence-oracle posture: a non-member must not
+ * be able to tell "exists but forbidden" from "does not exist").
+ *
+ * Both mean STOP ASKING AND PURGE, which is why they share one seam. They are
+ * still distinguished here because the two must not be WORDED alike: the
+ * server deliberately refuses to say which of the two happened, so the user is
+ * told the workspace is not available to them or no longer exists — never that
+ * access was "revoked", which asserts the half the server withheld.
+ */
+export type AccessRevokedReason = 'forbidden' | 'gone';
+
+export type AccessRevokedScope = {
+	kind: 'workspace';
+	workspace: string;
+	/** Optional for compatibility with handlers written before BUG-2983. */
+	reason?: AccessRevokedReason;
+	/**
+	 * WHO the request was issued as, captured before it left (codex round 1 P1).
+	 *
+	 * A refusal is a fact about a (user, workspace) pair, and a response can
+	 * outlive the identity that asked: sign out, or switch users, while a
+	 * request is in flight and the 404 lands when someone else is signed in.
+	 * Recording it against whoever is signed in AT RESPONSE TIME would refuse a
+	 * workspace to a user who may well be a member of it, permanently — the
+	 * identity-change clear has already run by then.
+	 *
+	 * `undefined` when no provider is registered (tests, SSR).
+	 */
+	identity?: string | null;
+};
 
 type AccessRevokedHandler = (scope: AccessRevokedScope) => void;
 
 let accessRevokedHandler: AccessRevokedHandler | null = null;
+
+/**
+ * Supplies the signed-in user id, registered by the app at startup.
+ *
+ * A callback rather than a store import for the reason `setAccessRevokedHandler`
+ * is one: importing the auth store here would make a cycle.
+ */
+let identityProvider: (() => string | null) | null = null;
+
+/** Register the identity source used to stamp requests (BUG-2983). */
+export function setIdentityProvider(provider: (() => string | null) | null): void {
+	identityProvider = provider;
+}
+
+function currentIdentity(): string | null | undefined {
+	if (!identityProvider) return undefined;
+	try {
+		return identityProvider();
+	} catch {
+		return undefined;
+	}
+}
 
 /**
  * Register a single callback fired when the API client sees a 403
@@ -393,14 +454,69 @@ function parseAccessRevokedScope(path: string): AccessRevokedScope | null {
 }
 
 /**
+ * Workspace-level reads whose 404 can only be the workspace itself.
+ *
+ * `items-index` / `items-changes` are the local index's own loads; `items` and
+ * `collections` are the list endpoints. None of them names a second thing that
+ * could be missing.
+ */
+const WORKSPACE_LEVEL_READS = new Set(['items-index', 'items-changes', 'items', 'collections']);
+
+/**
+ * The workspace a 404 proves unreachable, or null (BUG-2983).
+ *
+ * DELIBERATELY NARROWER than `parseAccessRevokedScope`, and the difference is
+ * the whole correctness of folding 404 into that seam. That parser accepts
+ * `/workspaces/{ws}/items/{ref}`, which is right for a 403 — a read the caller
+ * was refused — and WRONG for a 404, where the missing thing is far more often
+ * the ITEM: a deleted ref, a stale link, a typo. Purging a workspace the caller
+ * can read perfectly well, because one item is gone, would be a much worse bug
+ * than the storm this fixes.
+ *
+ * So: only paths with NO sub-resource identifier qualify —
+ * `/workspaces/{ws}` and `/workspaces/{ws}/{endpoint}`. On those the only
+ * `not_found` the server can produce is `RequireWorkspaceAccess`'s, because
+ * there is no second thing to be missing.
+ *
+ * KEYED ON REQUEST SHAPE, NOT ON THE ERROR BODY, and that is a stopgap rather
+ * than a preference: the workspace 404 and an item 404 both carry
+ * `code: "not_found"` today, so the body cannot separate them. A distinct
+ * server-side code is filed as BUG-3069; when it exists, this should key on it
+ * and the shape rule becomes a fallback.
+ */
+function parseWorkspaceGoneScope(path: string): AccessRevokedScope | null {
+	let stripped = path.startsWith(BASE) ? path.slice(BASE.length) : path;
+	const qIdx = stripped.indexOf('?');
+	if (qIdx >= 0) stripped = stripped.slice(0, qIdx);
+	if (stripped.startsWith('/')) stripped = stripped.slice(1);
+	const parts = stripped.split('/');
+	if (parts[0] !== 'workspaces' || !parts[1]) return null;
+	// `/workspaces/{ws}` (2) or `/workspaces/{ws}/{endpoint}` (3). Anything
+	// longer names a sub-resource that can itself be missing.
+	if (parts.length > 3) return null;
+	// AN ALLOW-LIST, not "depth 3 is safe" (codex round 1 P2). Depth alone was
+	// too broad: a workspace-level endpoint may have its OWN not_found — a
+	// singleton that has never been created, a feature-gated route — and one
+	// such endpoint answering 404 would purge a workspace the caller reads
+	// fine. These four are the local-first read model's own loads, and the only
+	// `not_found` any of them can produce is the workspace's. Same posture as
+	// `parseAccessRevokedScope`'s whitelist, and the same reason: the seam is
+	// destructive, so it opts endpoints IN.
+	if (parts.length === 3 && !WORKSPACE_LEVEL_READS.has(parts[2])) return null;
+	return { kind: 'workspace', workspace: parts[1], reason: 'gone' };
+}
+
+/**
  * Fire the registered access-revoked handler for a 403 response. The
  * handler is called best-effort — its failures are swallowed so the
  * caller still sees a clean PadApiError. Public for testing.
  */
-function notifyAccessRevoked(path: string): void {
+function notifyAccessRevoked(path: string, issuedAs: string | null | undefined): void {
 	if (!accessRevokedHandler) return;
 	const scope = parseAccessRevokedScope(path);
 	if (!scope) return;
+	scope.reason = 'forbidden';
+	scope.identity = issuedAs;
 	try {
 		accessRevokedHandler(scope);
 	} catch (err) {
@@ -457,6 +573,13 @@ async function request<T>(
 	rateLimitRetried = false,
 ): Promise<T> {
 	const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+
+	// WHO is asking, captured BEFORE the request leaves (BUG-2983, codex round 1
+	// P1). A response can outlive the identity that asked — a sign-out or user
+	// switch mid-flight — and a refusal recorded against whoever is signed in at
+	// RESPONSE time would lock a workspace away from a user who may be a member
+	// of it, permanently, since the identity-change clear has already run.
+	const issuedAs = currentIdentity();
 
 	// Attach CSRF token for state-changing requests
 	const method = options?.method?.toUpperCase();
@@ -536,7 +659,39 @@ async function request<T>(
 		// `method` is already uppercased above; undefined means GET
 		// (the fetch default).
 		if (method === undefined || method === 'GET' || method === 'HEAD') {
-			notifyAccessRevoked(path);
+			notifyAccessRevoked(path, issuedAs);
+		}
+	}
+	if (resp.status === 404) {
+		// A workspace that does not resolve is answered 404, not 403 (BUG-2983).
+		// `RequireWorkspaceAccess` resolves through `GetWorkspacesBySlugForUser`,
+		// so a non-member gets the same not_found a deleted workspace does — the
+		// existence-oracle posture. That means the 403 seam above, and every
+		// 401/403 branch in `localIndex`, is UNREACHABLE for the commonest case
+		// there is: following a link into someone else's workspace.
+		//
+		// Left unhandled, the caller asked again. And again: `bootstrap` records
+		// the failure as `bootstrapState = 'error'` but only early-returns on
+		// `'ready'`, and its synchronous prefix both READS and WRITES that
+		// `$state` inside the calling `$effect`'s tracking scope — so each write
+		// re-fired the effect, which refetched, which wrote again. Measured at
+		// one request per tick, unbounded, until the rate limiter answered 429
+		// (which the client then politely retried once, adding to the pile).
+		//
+		// Same seam as the 403 for the same reason: both mean STOP ASKING AND
+		// PURGE. Narrower path rule, because a 404 is usually about the ITEM —
+		// see `parseWorkspaceGoneScope`.
+		if (method === undefined || method === 'GET' || method === 'HEAD') {
+			const scope = parseWorkspaceGoneScope(path);
+			if (scope) scope.identity = issuedAs;
+			if (scope && accessRevokedHandler) {
+				try {
+					accessRevokedHandler(scope);
+				} catch (err) {
+					// eslint-disable-next-line no-console
+					console.warn('access-revoked handler threw', err);
+				}
+			}
 		}
 	}
 	if (resp.status === 429) {
