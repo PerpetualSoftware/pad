@@ -116,6 +116,15 @@ const groups = (screen: { container: HTMLElement }) =>
 			.join('')
 			.trim(),
 	}));
+vi.mock('$lib/stores/workspace.svelte', () => ({
+	// BUG-3068 round 2 moved the chip's permission gate into `ItemCard`, where the
+	// per-item answer lives (`canEditItem`, not the views' collection-level
+	// `canEdit` prop). A suite that renders a CLICKABLE chip therefore has to say
+	// who is looking; with no membership the store answers false and the chip is
+	// correctly withheld. Permission-specific legs live in
+	// `chipWritesStatus.svelte.test.ts`, which drives this per test.
+	workspaceStore: { canEditItem: () => true },
+}));
 
 afterEach(() => {
 	cleanup();

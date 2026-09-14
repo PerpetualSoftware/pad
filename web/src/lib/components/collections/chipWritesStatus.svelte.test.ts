@@ -55,6 +55,18 @@ vi.mock('$lib/stores/collections.svelte', () => ({
 	collectionStore: { collections: [{ slug: 'cars' }] },
 }));
 
+/**
+ * The chip's permission gate is PER ITEM and lives in `ItemCard`
+ * (`workspaceStore.canEditItem`) — see the read-only describe at the bottom of
+ * this file for why it is not the views' collection-level `canEdit` prop. Every
+ * other leg here is about routing, not permission, so the default is an editor
+ * and only that describe flips it.
+ */
+let canEditItem = true;
+vi.mock('$lib/stores/workspace.svelte', () => ({
+	workspaceStore: { canEditItem: () => canEditItem },
+}));
+
 import ListView from './ListView.svelte';
 import BoardView from './BoardView.svelte';
 
@@ -115,6 +127,7 @@ function item(id: string, priority = 'high'): Item {
 
 afterEach(() => {
 	cleanup();
+	canEditItem = true;
 });
 
 function chipIn(container: HTMLElement): HTMLElement {
@@ -430,19 +443,23 @@ describe('a status field that is not a status at all', () => {
 });
 
 describe('a read-only viewer gets no clickable chip', () => {
-	// NOT A BUG-3068 REGRESSION, and the distinction is the reason this is here
-	// rather than filed separately. Nothing has ever gated the chip on `canEdit`
-	// — `ItemCard` does not take the prop — so an ordinary status-grouped list
-	// offered a read-only viewer a clickable chip long before this unit.
-	// Measured: this leg fails identically against 9e121bde with
-	// `groupField: 'status'`.
+	// NOT A BUG-3068 REGRESSION, and the distinction is why this is here rather
+	// than filed separately. Nothing gated the chip on permission at all —
+	// `ItemCard` did not ask — so an ordinary status-grouped list offered a
+	// read-only viewer a clickable chip whose write the server refused. Measured:
+	// this leg fails identically against 9e121bde with `groupField: 'status'`.
 	//
 	// It is fixed HERE because BUG-3068 un-withheld the chip on relation- and
-	// refusal-grouped views, which were immune to the defect only by accident;
-	// shipping the un-withholding alone would have widened a live defect into
-	// two more configurations. Both views' own `canEdit` prop docs already
-	// claimed to cover "drag-to-status-change", so this is the documented
-	// contract being made true rather than a new rule.
+	// refusal-grouped views, which were immune only by accident; shipping that
+	// alone would have widened a live defect into two more configurations.
+	//
+	// THE GATE IS `canEditItem`, NOT the views' `canEdit` PROP, and the first
+	// attempt got that wrong. `canEdit` is `canEditCollection`, and item grants
+	// deliberately do not promote to collection-level write — so a guest holding
+	// `ItemGrant.edit` on one visible item has `canEdit === false` and would have
+	// lost a chip the server WOULD have honoured. Gating collection-wide on a
+	// per-item write trades one wrong answer for another; `canEditItem`'s own doc
+	// names `status` among the affordances it governs.
 	const cases = [
 		['list', ListView, 'priority'],
 		['list', ListView, 'status'],
@@ -452,6 +469,7 @@ describe('a read-only viewer gets no clickable chip', () => {
 
 	for (const [label, Component, groupField] of cases) {
 		it(`${label} grouped by ${groupField}: chip is not clickable`, () => {
+			canEditItem = false;
 			const screen = render(Component as never, {
 				props: {
 					items: [item('car-1')],
@@ -459,7 +477,6 @@ describe('a read-only viewer gets no clickable chip', () => {
 					wsSlug: 'ws',
 					groupField,
 					statusOptions: STATUSES,
-					canEdit: false,
 					onLaneChange: vi.fn(),
 					onStatusChange: vi.fn(),
 				} as never,
@@ -473,4 +490,90 @@ describe('a read-only viewer gets no clickable chip', () => {
 			expect(screen.container.textContent).toContain('In Progress');
 		});
 	}
+
+	it('the views\' collection-level canEdit prop does NOT withhold it', async () => {
+		// THE REGRESSION THE FIRST ATTEMPT SHIPPED, pinned so it cannot come back.
+		// A guest with a per-item edit grant sees `canEdit === false` on the view
+		// and must still get the chip, because the server will honour the write.
+		canEditItem = true;
+		const onStatusChange = vi.fn();
+		const screen = render(ListView, {
+			props: {
+				items: [item('car-1')],
+				collection: collection(),
+				wsSlug: 'ws',
+				groupField: 'priority',
+				statusOptions: STATUSES,
+				canEdit: false,
+				onLaneChange: vi.fn(),
+				onStatusChange,
+			} as never,
+		});
+
+		const chip = screen.container.querySelector('[title="Click to cycle status"]');
+		expect(chip, 'a per-item-granted editor lost the chip to a collection-level gate').not.toBeNull();
+		await fireEvent.click(chip as HTMLElement);
+		expect(onStatusChange).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe('a stored status the schema no longer declares', () => {
+	// THE SAME -1 ARITHMETIC THIS UNIT FIXED ON THE BOARD, arriving from the
+	// other side. The board's version was wrong OPTIONS; this is a wrong VALUE:
+	// `statusOptions.indexOf(fields.status)` answers -1 for a stale or
+	// hand-written status, and -1 + 1 is 0, so a click rewrote it to the FIRST
+	// option while looking to the user like a single step forward.
+	//
+	// Pre-existing on the list (it always used schema options) and now reachable
+	// in more configurations, since relation/refusal grouping no longer withholds
+	// the chip. Found by the round-2 adversarial pass, not by me.
+	it('is not cycled to the first option by a click', async () => {
+		const stale = {
+			...item('car-1'),
+			fields: JSON.stringify({ status: 'retired_status', priority: 'high' }),
+		} as Item;
+		const onStatusChange = vi.fn();
+		const screen = render(ListView, {
+			props: {
+				items: [stale],
+				collection: collection(),
+				wsSlug: 'ws',
+				groupField: 'priority',
+				statusOptions: STATUSES,
+				onLaneChange: vi.fn(),
+				onStatusChange,
+			} as never,
+		});
+
+		// PRECONDITION: the chip rendered and is clickable, so a no-op write is
+		// not "no chip to click".
+		const chip = screen.container.querySelector('[title="Click to cycle status"]');
+		expect(chip).not.toBeNull();
+
+		await fireEvent.click(chip as HTMLElement);
+
+		expect(
+			onStatusChange,
+			'a value that is not on the list has no next value; writing the first one is a silent rewrite',
+		).not.toHaveBeenCalled();
+	});
+
+	it('CONTROL: a declared status still cycles', async () => {
+		// Without this, a chip that never writes at all satisfies the leg above.
+		const onStatusChange = vi.fn();
+		const screen = render(ListView, {
+			props: {
+				items: [item('car-1')],
+				collection: collection(),
+				wsSlug: 'ws',
+				groupField: 'priority',
+				statusOptions: STATUSES,
+				onLaneChange: vi.fn(),
+				onStatusChange,
+			} as never,
+		});
+		await fireEvent.click(chipIn(screen.container));
+		expect(onStatusChange).toHaveBeenCalledTimes(1);
+		expect(onStatusChange.mock.calls[0][1]).toBe('done');
+	});
 });

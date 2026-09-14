@@ -110,23 +110,6 @@
 		onItemOpen
 	}: Props = $props();
 
-	/**
-	 * The chip's writer, GATED ON canEdit — which this component's own `canEdit`
-	 * prop doc has always claimed to cover ("drag-to-status-change") and did not:
-	 * nothing gated the CHIP, and `ItemCard` takes no `canEdit` at all, so a
-	 * read-only viewer got a clickable chip whose write the server then refused.
-	 *
-	 * PRE-EXISTING rather than a BUG-3068 regression — measured against 9e121bde,
-	 * where an ordinary status-grouped list does the same. It is fixed HERE
-	 * because BUG-3068 un-withheld the chip on relation- and refusal-grouped
-	 * views, which were immune only by accident; shipping that alone would have
-	 * widened a live defect into two more configurations.
-	 *
-	 * The status stays VISIBLE either way. What is withheld is the affordance,
-	 * not the information.
-	 */
-	let chipWriter = $derived(canEdit ? onStatusChange : undefined);
-
 	let confirmArchiveGroup = $state<string | null>(null);
 
 	const flipDurationMs = 200;
@@ -571,7 +554,7 @@
 									compact={false}
 									focused={focusedItemId === item.id}
 									{statusOptions}
-									onStatusClick={chipWriter}
+									onStatusClick={onStatusChange}
 									progress={itemProgress?.[item.id] ?? null}
 									{progressLabel}
 									onReorderItem={canReorderItems ? (it, dir) => reorderItem(groupName, it, dir) : undefined}

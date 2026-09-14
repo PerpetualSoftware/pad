@@ -134,23 +134,6 @@
 
 	let { items, collection, wsSlug = '', groupField = 'status', focusedItemId = null, onLaneChange, onStatusChange, onReorder, onArchiveColumn, onGroupReorder, oncreate, onCreateInColumn, onMoveColumn, onTagColumn, onUntagColumn, onSetPriorityColumn, onAssignColumn, members = [], tagSuggestions = [], filtered = false, itemProgress, progressLabel = 'tasks', canEdit = true, preserveOrder = false, sortMode = 'manual', draftText = $bindable({}), draftOpen = $bindable({}), onItemOpen, onColumnsRendered }: Props = $props();
 
-	/**
-	 * The chip's writer, GATED ON canEdit — which this component's own `canEdit`
-	 * prop doc has always claimed to cover ("drag-to-status-change") and did not:
-	 * nothing gated the CHIP, and `ItemCard` takes no `canEdit` at all, so a
-	 * read-only viewer got a clickable chip whose write the server then refused.
-	 *
-	 * PRE-EXISTING rather than a BUG-3068 regression — measured against 9e121bde,
-	 * where an ordinary status-grouped list does the same. It is fixed HERE
-	 * because BUG-3068 un-withheld the chip on relation- and refusal-grouped
-	 * views, which were immune only by accident; shipping that alone would have
-	 * widened a live defect into two more configurations.
-	 *
-	 * The status stays VISIBLE either way. What is withheld is the affordance,
-	 * not the information.
-	 */
-	let chipWriter = $derived(canEdit ? onStatusChange : undefined);
-
 	// Local — disables the draft card while its Enter-create is in flight.
 	let savingDraft = $state(false);
 
@@ -338,12 +321,15 @@
 	 * produced a defect that does NOT look like the list's version of BUG-3068,
 	 * which is why it needs saying: `ItemCard` cycles
 	 * `statusOptions.indexOf(fields.status)`, so on a board grouped by `priority`
-	 * the item's STATUS was looked up in a list of PRIORITIES, missed, and
-	 * returned -1 — making the next index 0 unconditionally. Every chip click
-	 * therefore jumped the card to the FIRST LANE from wherever it was, while the
-	 * chip's label went on showing the status it was not changing. The write was
-	 * type-coherent (a lane value into the field those lanes come from), so
-	 * BUG-3057's conversion accepted it and nothing was toasted.
+	 * the item's STATUS was looked up in a list of PRIORITIES and normally missed,
+	 * returning -1 and making the next index 0 — so the click jumped the card to
+	 * the FIRST LANE from wherever it was, while the chip's label went on showing
+	 * the status it was not changing. NOT every click: a status that happened to
+	 * equal one of the lane values was found, and cycled within the lane
+	 * vocabulary instead, which is wrong differently rather than less. The write
+	 * was type-coherent either way (a lane value into the field those lanes come
+	 * from), so BUG-3057's conversion accepted it and the user got a SUCCESS
+	 * toast — the absent signal was an error, not a toast.
 	 *
 	 * The relation and refusal arms no longer empty this. They existed because
 	 * the chip's callback wrote `fields[groupField]`, and this file's previous
@@ -915,7 +901,7 @@
 							compact={true}
 							focused={focusedItemId === item.id}
 							statusOptions={cardStatusOptions}
-							onStatusClick={chipWriter}
+							onStatusClick={onStatusChange}
 							progress={itemProgress?.[item.id] ?? null}
 							{progressLabel}
 							onReorderItem={canReorderLane(colValue) ? (it, dir) => reorderItem(colValue, it, dir) : undefined}
