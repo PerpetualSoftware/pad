@@ -1105,6 +1105,17 @@ Format is detected by file extension. Override workspace name with --name.`,
 				fmt.Printf("  Values repaired (each NUL replaced with U+FFFD): %s\n",
 					repairedNULCount(header))
 			}
+			// BUG-3032, codex round 1 P2: the server reports this count as a
+			// RESPONSE HEADER, and a header nobody prints is a signal that does
+			// not exist. Unconditional, unlike the NUL line above: that one is
+			// gated on a flag the operator passed, whereas this one tells them
+			// something about the bundle they had no way to know and did not ask
+			// about. Printed only when non-zero, so a clean import's output is
+			// unchanged.
+			if n := staleBodyImportCount(header); n != "" {
+				fmt.Printf("  Bodies that were already behind their live editor when this bundle\n")
+				fmt.Printf("  was exported (imported as-is, not lost — see docs/backup.md): %s\n", n)
+			}
 			return nil
 		},
 	}
@@ -1215,6 +1226,25 @@ func auditLogCmd() *cobra.Command {
 // than this flag ignores the query parameter entirely and imports strictly, so
 // printing "0" there would tell the operator the export was clean when in fact
 // nothing was even asked.
+// staleBodyImportCount returns the stale-body count the server reported, or ""
+// when there is nothing to say — no headers, no header, or a zero count.
+//
+// Deliberately NOT the "unknown (...)" treatment repairedNULCount gives a
+// missing header. That helper answers a question the operator ASKED by passing a
+// flag, so silence there needs explaining. This one is unsolicited: an older
+// server that never sets the header has nothing to report, and printing
+// "unknown" would invent an open question on every import against one.
+func staleBodyImportCount(header http.Header) string {
+	if header == nil {
+		return ""
+	}
+	v := header.Get(server.StaleBodyImportHeader)
+	if v == "" || v == "0" {
+		return ""
+	}
+	return v
+}
+
 func repairedNULCount(header http.Header) string {
 	if header == nil {
 		return "unknown (no response headers)"

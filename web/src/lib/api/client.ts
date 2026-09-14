@@ -903,7 +903,15 @@ export const api = {
 		// so we explicitly set application/gzip and POST the raw File body
 		// rather than going through the JSON-encoding `request` helper.
 		// Mirrors the CLI's `pad workspace import <bundle.tar.gz>` flow.
-		importBundle: async (file: File, name?: string): Promise<Workspace> => {
+		// BUG-3032: the stale-body count comes back as a RESPONSE HEADER, so it
+		// is returned alongside the workspace rather than inside it. An
+		// intersection type rather than a new shape: every existing caller reads
+		// Workspace fields and is unaffected, and a server that does not set the
+		// header simply leaves the field undefined.
+		importBundle: async (
+			file: File,
+			name?: string
+		): Promise<Workspace & { stale_bodies?: number }> => {
 			const headers: Record<string, string> = { 'Content-Type': 'application/gzip' };
 			const csrf = getCSRFToken();
 			if (csrf) headers['X-CSRF-Token'] = csrf;
@@ -928,7 +936,16 @@ export const api = {
 				if (body?.error) throw new PadApiError(body.error);
 				throw new Error(`API error: ${resp.status}`);
 			}
-			return resp.json();
+			const ws = (await resp.json()) as Workspace;
+			// Absent, unparseable or zero all mean "nothing to report": the
+			// field stays undefined rather than 0, so a caller can render on
+			// presence without treating a clean import as a fact worth showing.
+			const raw = resp.headers.get('X-Pad-Import-Stale-Bodies');
+			const n = raw === null ? NaN : Number(raw);
+			if (Number.isFinite(n) && n > 0) {
+				return { ...ws, stale_bodies: n };
+			}
+			return ws;
 		}
 	},
 

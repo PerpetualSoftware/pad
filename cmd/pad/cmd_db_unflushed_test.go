@@ -101,3 +101,78 @@ func TestGateUnflushedEditsUnderTheFlagProceedsButRecordsTheLoss(t *testing.T) {
 		}
 	}
 }
+
+// staleBundleItems is the codex-round-1 P1 fix: the pre-pass reads the database
+// at one instant and ExportWorkspace reads it at another, so the bundle about to
+// be written is the only artifact whose staleness can be checked without a
+// window. These pin the two things the refusal depends on — that it fires on
+// exactly the marked items, and that every one it names is openable.
+func TestStaleBundleItemsNamesOnlyMarkedItems(t *testing.T) {
+	bundle := &models.WorkspaceExport{
+		Collections: []models.CollectionExport{{ID: "c1", Prefix: "TASK"}},
+		Items: []models.ItemExport{
+			{ID: "i1", CollectionID: "c1", ItemNumber: 7, Title: "stale one", Slug: "stale-one",
+				ContentState: models.ContentOutcomeAppliedPendingFlush},
+			{ID: "i2", CollectionID: "c1", ItemNumber: 8, Title: "current", Slug: "current"},
+			{ID: "i3", CollectionID: "c1", ItemNumber: 9, Title: "stale two", Slug: "stale-two",
+				ContentState: models.ContentOutcomeAppliedPendingFlush},
+		},
+	}
+
+	got := staleBundleItems(bundle)
+	if len(got) != 2 {
+		t.Fatalf("named %d item(s) %+v, want the 2 marked ones — a check that returns everything "+
+			"refuses every migration, and one that returns nothing refuses none", len(got), got)
+	}
+	if got[0].Ref != "TASK-7" || got[1].Ref != "TASK-9" {
+		t.Errorf("refs = %q, %q; want TASK-7, TASK-9", got[0].Ref, got[1].Ref)
+	}
+	if got[0].Title != "stale one" {
+		t.Errorf("title = %q, want %q", got[0].Title, "stale one")
+	}
+
+	// CONTROL: a bundle with nothing marked must not fire. Without this the
+	// assertion above passes for a function that ignores ContentState entirely
+	// and simply returns the first two items.
+	clean := &models.WorkspaceExport{
+		Collections: []models.CollectionExport{{ID: "c1", Prefix: "TASK"}},
+		Items: []models.ItemExport{
+			{ID: "i1", CollectionID: "c1", ItemNumber: 7, Title: "a", Slug: "a"},
+			{ID: "i2", CollectionID: "c1", ItemNumber: 8, Title: "b", Slug: "b"},
+		},
+	}
+	if got := staleBundleItems(clean); len(got) != 0 {
+		t.Errorf("a bundle with nothing marked named %+v", got)
+	}
+	if got := staleBundleItems(nil); got != nil {
+		t.Errorf("a nil bundle named %+v", got)
+	}
+}
+
+func TestStaleBundleItemsFallsBackToTheSlugWhenNoRefCanBeBuilt(t *testing.T) {
+	// An item whose collection is not in the bundle, and one with no item
+	// number. A refusal exists to tell an operator what to OPEN, so a
+	// fabricated "PREFIX-0" — or an empty ref — sends them looking for
+	// something that does not exist.
+	bundle := &models.WorkspaceExport{
+		Collections: []models.CollectionExport{{ID: "c1", Prefix: "TASK"}},
+		Items: []models.ItemExport{
+			{ID: "i1", CollectionID: "missing", ItemNumber: 3, Title: "orphan", Slug: "orphan-slug",
+				ContentState: models.ContentOutcomeAppliedPendingFlush},
+			{ID: "i2", CollectionID: "c1", ItemNumber: 0, Title: "no number", Slug: "no-number-slug",
+				ContentState: models.ContentOutcomeAppliedPendingFlush},
+		},
+	}
+	got := staleBundleItems(bundle)
+	if len(got) != 2 {
+		t.Fatalf("named %d, want 2: %+v", len(got), got)
+	}
+	for _, it := range got {
+		if it.Ref == "" || strings.Contains(it.Ref, "-0") {
+			t.Errorf("unopenable ref %q for %q — want the slug when no real ref exists", it.Ref, it.Title)
+		}
+	}
+	if got[0].Ref != "orphan-slug" || got[1].Ref != "no-number-slug" {
+		t.Errorf("refs = %q, %q; want the slugs", got[0].Ref, got[1].Ref)
+	}
+}

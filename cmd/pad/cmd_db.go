@@ -519,6 +519,48 @@ Steps:
 					continue
 				}
 
+				// BUG-3032, codex round 1 P1: the pre-pass above closes the
+				// all-or-nothing question, not the TOCTOU one. It reads the
+				// database at one instant; `ExportWorkspace` reads it at
+				// another, and a tab can append to the op-log in between — so a
+				// bundle can carry `content_state` on an item the pre-pass saw
+				// as current, and without this check the migration would import
+				// that body and then abandon the only copy of the real text.
+				//
+				// The check is on the BUNDLE rather than on the database, which
+				// is the point: the bundle is the artifact about to be written,
+				// its marker was evaluated against the row it actually
+				// serialised, and no window separates the two. That makes the
+				// guarantee exact for the bytes that move, where the pre-pass
+				// can only ever be exact for the moment it ran.
+				//
+				// It costs nothing — the marker is already in hand — and in the
+				// intended procedure (docs/backup.md: stop the server, then
+				// migrate) it can never fire, because nothing is appending. It
+				// exists for the operator who did not stop the server, which
+				// nothing enforces.
+				if lateStale := staleBundleItems(data); len(lateStale) > 0 {
+					fmt.Fprintf(os.Stderr, "\n%d item(s) in %s became stale between the pre-flight check and the\n",
+						len(lateStale), ws.Slug)
+					fmt.Fprint(os.Stderr, "export — an editor appended to the collaborative op-log while this command\n")
+					fmt.Fprint(os.Stderr, "was running. Refusing to migrate a body whose real text this migration\n")
+					fmt.Fprint(os.Stderr, "would then abandon:\n\n")
+					for _, it := range lateStale {
+						fmt.Fprintf(os.Stderr, "    %-12s %s\n", it.Ref, it.Title)
+					}
+					fmt.Fprint(os.Stderr, "\nStop the Pad server before migrating (docs/backup.md), then re-run.\n")
+					// NOT the pre-pass's promise: earlier workspaces in this
+					// loop are already in PostgreSQL, and saying "nothing has
+					// been migrated" here would be false.
+					if migrated > 0 {
+						fmt.Fprintf(os.Stderr, "%d workspace(s) were already migrated before this refusal; "+
+							"the destination is PARTIALLY populated.\n", migrated)
+					} else {
+						fmt.Fprint(os.Stderr, "Nothing has been migrated.\n")
+					}
+					return fmt.Errorf("%s: %d item(s) became stale during the migration; refused", ws.Slug, len(lateStale))
+				}
+
 				stats := fmt.Sprintf("%d collections, %d items, %d comments",
 					len(data.Collections), len(data.Items), len(data.Comments))
 
@@ -556,6 +598,40 @@ Steps:
 		"migrate even though some items have edits only in the collaborative op-log, permanently losing them")
 
 	return cmd
+}
+
+// staleBundleItems names the items in a built bundle whose bodies the exporter
+// marked as behind their live collaborative documents (BUG-3032).
+//
+// It reads the bundle's OWN marker rather than re-querying, which is what makes
+// it a TOCTOU fix rather than a second race: the marker was evaluated in the
+// same SELECT that read the body, so bundle and marker cannot disagree, and
+// there is no instant between them for an editor to slip into.
+//
+// Ref falls back to the slug when the bundle carries no collection prefix for
+// the item, on the same reasoning as ListItemsPendingContentFlush: a refusal
+// exists to tell an operator what to open, and a fabricated "PREFIX-0" sends
+// them looking for something that does not exist.
+func staleBundleItems(data *models.WorkspaceExport) []store.PendingFlushItem {
+	if data == nil {
+		return nil
+	}
+	prefix := map[string]string{}
+	for _, c := range data.Collections {
+		prefix[c.ID] = c.Prefix
+	}
+	var out []store.PendingFlushItem
+	for _, it := range data.Items {
+		if it.ContentState == "" {
+			continue
+		}
+		ref := it.Slug
+		if p := prefix[it.CollectionID]; p != "" && it.ItemNumber > 0 {
+			ref = fmt.Sprintf("%s-%d", p, it.ItemNumber)
+		}
+		out = append(out, store.PendingFlushItem{Ref: ref, Title: it.Title})
+	}
+	return out
 }
 
 // gateUnflushedEdits decides whether a SQLite→PostgreSQL migration may proceed
