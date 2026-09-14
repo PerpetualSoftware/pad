@@ -4,7 +4,7 @@
 	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
 	import { parseFields, parseSchema, itemUrlId, type Collection, type Item } from '$lib/types';
 	import { collectionStore } from '$lib/stores/collections.svelte';
-	import { collectionsNotStaleFor, categoricalValueForSlug } from '$lib/collections/categoricalFieldValue';
+	import { categoricalValueFor } from '$lib/collections/categoricalFieldValue';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import { exportAndDownloadArtifact, importArtifactFile } from '$lib/utils/artifacts';
@@ -513,11 +513,21 @@
 					     `is_system`, so `status` here can be retyped to a relation
 					     exactly as on any user collection — and this page printed the
 					     stored value through `statusLabel`, and keyed its card
-					     styling off it. I had classified this site as a non-member
-					     on the assumption that a system schema was immutable, and
-					     then filed that assumption without checking it; the review
-					     round found it. -->
-					{@const declaredStatus = categoricalValueForSlug(collectionStore.collections, 'playbooks', 'status', fields.status, collectionsNotStaleFor(collectionStore.collectionsWorkspace, wsSlug))}
+					     styling off it. I had classified this site as a non-member on
+					     the assumption that a system schema was immutable, and filed
+					     that assumption without checking it; a review round found it.
+
+					     RESOLVED FROM `playbooksCollection`, the object this page
+					     already fetched under its own stale-response guard, rather
+					     than from the shared store. Two things fall out for free: the
+					     staleness question does not arise, because the fetch is
+					     already workspace-guarded; and the lookup uses that object's
+					     OWN slug, so it survives a rename of the playbooks collection
+					     where a hardcoded `'playbooks'` literal would not. The rest
+					     of this page still addresses the collection by literal, so
+					     the page as a whole does not yet survive that rename — this
+					     read simply stops adding to the problem. -->
+					{@const declaredStatus = categoricalValueFor(playbooksCollection ? [playbooksCollection] : [], { collection_slug: playbooksCollection?.slug }, 'status', fields.status)}
 					{@const status = declaredStatus || 'draft'}
 					{@const trigger = fields.trigger ?? 'manual'}
 					{@const scope = fields.scope ?? 'all'}

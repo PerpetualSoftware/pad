@@ -137,3 +137,26 @@ describe('a file is not a renderer', () => {
 		});
 	}
 });
+
+describe('the prompt substitution has ONE implementation, not two mirrors', () => {
+	// The structural half of the lead's ruling (BUG-3067). `QuickActionsMenu` and
+	// `quick-action-preview` held byte-identical copies of this substitution, and
+	// the preview module's own doc says it MIRRORS the menu so the preview shows
+	// what copying produces — which is exactly what makes a drift between them
+	// invisible: the artifact that would reveal the difference is the one built
+	// to match.
+	it('QuickActionsMenu imports the substitution rather than repeating it', () => {
+		const menu = code('../components/common/QuickActionsMenu.svelte');
+		expect(menu).toContain('categoricalTemplateValue');
+		// The spelling the copy had. Its absence is the claim.
+		expect(menu).not.toContain("String(fields['status']");
+		expect(menu).not.toContain("String(fields['priority']");
+	});
+
+	it('the preview builds its context through the same function', () => {
+		const preview = code('../utils/quick-action-preview.ts');
+		expect(preview).toContain('categoricalTemplateValue');
+		expect(preview).not.toContain("String(fields['status']");
+		expect(preview).not.toContain("String(fields['priority']");
+	});
+});

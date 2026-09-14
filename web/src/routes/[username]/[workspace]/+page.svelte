@@ -22,11 +22,6 @@
 	import type { DashboardResponse, Collection } from '$lib/types';
 
 	let wsSlug = $derived(page.params.workspace ?? '');
-	// A collection SLUG is only unique within a workspace, and the store keeps one
-	// global array that retains the previous workspace's while the next load is in
-	// flight (BUG-1461). Asking here rather than inside the helper keeps the
-	// helper pure and puts the workspace question where the workspace is known.
-	let collectionsFresh = $derived(collectionsNotStaleFor(collectionStore.collectionsWorkspace, wsSlug));
 	let username = $derived(page.params.username ?? '');
 
 	let loading = $state(true);
@@ -527,8 +522,8 @@
 						     so the declared type is answerable here. This pair appears twice
 						     on the page — active cards and starred cards — which is why the
 						     enumeration is a grep and not a reading. -->
-						{@const cardStatus = categoricalValueFor(collectionStore.collections, item, 'status', item.status, collectionsFresh)}
-						{@const cardPriority = categoricalValueFor(collectionStore.collections, item, 'priority', item.priority, collectionsFresh)}
+						{@const cardStatus = categoricalValueFor(collections, item, 'status', item.status)}
+						{@const cardPriority = categoricalValueFor(collections, item, 'priority', item.priority)}
 						<a href="/{username}/{wsSlug}/{item.collection_slug}/{item.slug}" class="active-card" class:just-created={justCreatedSlugs.has(item.slug)}>
 							{#if justCreatedSlugs.has(item.slug)}
 								<span class="just-created-badge">✨ your agent just created this</span>
@@ -573,8 +568,8 @@
 						     so the declared type is answerable here. This pair appears twice
 						     on the page — active cards and starred cards — which is why the
 						     enumeration is a grep and not a reading. -->
-						{@const cardStatus = categoricalValueFor(collectionStore.collections, item, 'status', item.status, collectionsFresh)}
-						{@const cardPriority = categoricalValueFor(collectionStore.collections, item, 'priority', item.priority, collectionsFresh)}
+						{@const cardStatus = categoricalValueFor(collections, item, 'status', item.status)}
+						{@const cardPriority = categoricalValueFor(collections, item, 'priority', item.priority)}
 						<a href="/{username}/{wsSlug}/{item.collection_slug}/{item.slug}" class="active-card">
 							<div class="active-card-top">
 								{#if item.item_ref}
