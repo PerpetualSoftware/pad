@@ -539,3 +539,65 @@ func TestMigratedMarkerCannotBeDisarmedOrSwallowed(t *testing.T) {
 		}
 	})
 }
+
+// TestMigratedRemedyReadsTheMarkerIndependently covers the accessor the
+// command uses to resolve a FAILED COMMIT, where it cannot know whether its
+// own marker landed.
+//
+// The property that matters is that it reads the POOL, not the transaction: a
+// marker it can see from a different connection is durably committed, which is
+// the whole basis for the command answering "it did land" rather than guessing.
+// Stated boundary (CONVE-30): this covers the ACCESSOR. The command's
+// three-way branch on top of it is not driven by a test, because inducing a
+// failing SQLite COMMIT from Go is not something this suite can do honestly.
+func TestMigratedRemedyReadsTheMarkerIndependently(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "accessor.db")
+	s, err := New(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	remedy, err := s.MigratedRemedy()
+	if err != nil {
+		t.Fatalf("unmarked check: %v", err)
+	}
+	if remedy != "" {
+		t.Fatalf("an unmarked database reported a remedy: %q", remedy)
+	}
+
+	tx, err := s.BeginSnapshot()
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if err := s.MarkMigratedTx(tx, "postgres://pg.example/pad"); err != nil {
+		t.Fatalf("MarkMigratedTx: %v", err)
+	}
+
+	// BEFORE the commit: the marker exists only inside the transaction, so a
+	// pool read must NOT see it. This is the leg that makes a post-commit
+	// sighting mean "durably committed" rather than "written somewhere".
+	uncommitted, err := s.MigratedRemedy()
+	if err != nil {
+		t.Fatalf("mid-transaction check: %v", err)
+	}
+	if uncommitted != "" {
+		t.Fatalf("a pool read saw an UNCOMMITTED marker (%q), so seeing one after a failed "+
+			"commit would not prove the commit landed", uncommitted)
+	}
+
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	committed, err := s.MigratedRemedy()
+	if err != nil {
+		t.Fatalf("post-commit check: %v", err)
+	}
+	if committed == "" {
+		t.Fatal("a committed marker was not visible on the pool, so the command could never " +
+			"tell a landed commit from a lost one")
+	}
+	if !strings.Contains(committed, "postgres://pg.example/pad") {
+		t.Errorf("the remedy does not name the destination: %q", committed)
+	}
+}

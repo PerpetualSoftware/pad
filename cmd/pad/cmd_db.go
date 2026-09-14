@@ -724,10 +724,45 @@ Steps:
 					"but PostgreSQL is now fully populated)", fromPath, err)
 			}
 			if err := snapshot.Commit(); err != nil {
-				return fmt.Errorf("commit migration snapshot on %s: %w (the SQLite database is unchanged, "+
-					"but PostgreSQL is now fully populated)", fromPath, err)
+				// A FAILED COMMIT HAS AN OUTCOME THIS CODE DOES NOT KNOW, and
+				// every other failure message in this command can honestly
+				// promise the source is unchanged because a rollback undoes
+				// the work. This one cannot: the transaction is finished
+				// either way, and the deferred Rollback cannot undo a commit
+				// that did land. Asserting "unchanged" here would be the exact
+				// failure this whole unit exists to remove — telling an
+				// operator something about a one-shot irreversible command
+				// that nobody measured.
+				//
+				// So it is MEASURED. The marker is the observable, and reading
+				// it on the pool — a different connection from the dead
+				// transaction — distinguishes the three real outcomes. Only
+				// the third is genuinely unknown, and it says so rather than
+				// picking the comfortable answer.
+				committed = true // the tx is finished; the deferred rollback has nothing to do
+				remedy, checkErr := srcStore.MigratedRemedy()
+				switch {
+				case checkErr != nil:
+					return fmt.Errorf("commit migration snapshot on %s: %w — and re-reading the marker "+
+						"afterwards ALSO failed (%v), so whether the commit landed is UNKNOWN. PostgreSQL "+
+						"is fully populated. Do NOT re-run until you check: `pad server start` against %s "+
+						"either works (the commit did not land) or refuses naming PostgreSQL (it did)",
+						fromPath, err, checkErr, fromPath)
+				case remedy != "":
+					// The commit landed despite the error. Everything the
+					// operator asked for has happened, so reporting failure
+					// would send them to re-run a migration that is complete.
+					fmt.Fprintf(os.Stderr, "WARNING: committing the migration snapshot on %s reported an "+
+						"error (%v), but the marker is present, so the commit DID land. The migration is "+
+						"COMPLETE — do not re-run it.\n", fromPath, err)
+				default:
+					return fmt.Errorf("commit migration snapshot on %s: %w (verified: the marker is absent, "+
+						"so the SQLite database is unchanged — but PostgreSQL is now fully populated, so "+
+						"drop and recreate it before re-running)", fromPath, err)
+				}
+			} else {
+				committed = true
 			}
-			committed = true
 
 			fmt.Fprintf(os.Stderr, "\nMigration complete: %d/%d workspace(s) migrated.\n", migrated, len(workspaces))
 			fmt.Fprintf(os.Stderr, "%s is now marked as migrated and will refuse writes and refuse to be opened.\n", fromPath)

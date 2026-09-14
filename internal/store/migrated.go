@@ -252,6 +252,22 @@ func (s *Store) MarkMigratedTx(tx *sql.Tx, destination string) error {
 	return nil
 }
 
+// MigratedRemedy reports the stored remedy when this database has been marked
+// as migrated, and "" when it has not.
+//
+// Exported for ONE caller and one question: after a COMMIT returns an error,
+// the migration cannot know whether its marker landed, and the deferred
+// Rollback cannot undo a commit that did. The marker is the observable, so the
+// command READS it instead of asserting an outcome. It runs on the POOL — a
+// different connection from the finished transaction — so a marker it can see
+// is durably committed.
+func (s *Store) MigratedRemedy() (string, error) {
+	if s.dialect.Driver() != DriverSQLite {
+		return "", nil
+	}
+	return migratedRemedyIfMarked(s.db)
+}
+
 // migratedRemedyIfMarked reports the stored remedy when this database has been
 // migrated, and "" when it has not.
 //
