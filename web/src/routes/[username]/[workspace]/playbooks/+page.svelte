@@ -3,6 +3,8 @@
 	import { goto } from '$app/navigation';
 	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
 	import { parseFields, parseSchema, itemUrlId, type Collection, type Item } from '$lib/types';
+	import { collectionStore } from '$lib/stores/collections.svelte';
+	import { categoricalValueForSlug } from '$lib/collections/categoricalFieldValue';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import { exportAndDownloadArtifact, importArtifactFile } from '$lib/utils/artifacts';
@@ -505,7 +507,18 @@
 			<div class="cards">
 				{#each sorted as item (item.id)}
 					{@const fields = parseFields(item)}
-					{@const status = fields.status ?? 'draft'}
+					<!-- ASKED OF THE PLAYBOOKS COLLECTION'S OWN SCHEMA (BUG-3067). A
+					     SYSTEM collection is not an exempt one: nothing in
+					     `handleUpdateCollection` refuses a schema edit for
+					     `is_system`, so `status` here can be retyped to a relation
+					     exactly as on any user collection — and this page printed the
+					     stored value through `statusLabel`, and keyed its card
+					     styling off it. I had classified this site as a non-member
+					     on the assumption that a system schema was immutable, and
+					     then filed that assumption without checking it; the review
+					     round found it. -->
+					{@const declaredStatus = categoricalValueForSlug(collectionStore.collections, 'playbooks', 'status', fields.status)}
+					{@const status = declaredStatus || 'draft'}
 					{@const trigger = fields.trigger ?? 'manual'}
 					{@const scope = fields.scope ?? 'all'}
 					{@const steps = countSteps(item.content)}

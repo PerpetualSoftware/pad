@@ -22,16 +22,50 @@ import type { Collection, FieldDef, Item } from '$lib/types';
 import { parseSchema } from '$lib/types';
 import { categoricalChipValue } from '$lib/components/share/shareView';
 
-/** The declared field, or undefined when the collection or field is unknown. */
+/**
+ * The declared field, or undefined when the collection or field is unknown.
+ *
+ * A SLUG IS ONLY UNIQUE WITHIN A WORKSPACE, and `collectionStore.collections` is
+ * a single global slot that deliberately retains the PREVIOUS workspace's array
+ * while the next load is in flight (the store says so itself, from BUG-1461).
+ * Two workspaces can hold a `tasks` whose `priority` is a select in one and a
+ * relation in the other — so a slug-only lookup during that window can answer
+ * with the wrong workspace's type, in either direction: printing an id, or
+ * withholding a perfectly good value.
+ *
+ * `fresh` is the store's own `collectionsAreFreshFor(wsSlug)`. Passing false
+ * makes this answer undefined, which the caller renders as nothing — the same
+ * fail-closed direction as an unloaded store, and for the same reason: a chip
+ * that is briefly missing is recoverable, a printed id is the bug.
+ */
 export function fieldDefFor(
 	collections: Collection[],
 	collectionSlug: string | undefined,
 	key: string,
+	fresh = true,
 ): FieldDef | undefined {
+	if (!fresh) return undefined;
 	if (!collectionSlug) return undefined;
 	const coll = collections.find((c) => c.slug === collectionSlug);
 	if (!coll) return undefined;
 	return parseSchema(coll).fields.find((f) => f.key === key);
+}
+
+/**
+ * The categorical value for a field named on a COLLECTION SLUG rather than on an
+ * item — for a surface holding a server projection (the graph node) instead of a
+ * full `Item`. Same question, same module: `graph/DetailCard` reached for
+ * `categoricalChipValue` directly before this existed, which made the claim
+ * "every surface routes through one helper" false by one call.
+ */
+export function categoricalValueForSlug(
+	collections: Collection[],
+	collectionSlug: string | undefined,
+	key: string,
+	raw: unknown,
+	fresh = true,
+): string {
+	return categoricalChipValue(fieldDefFor(collections, collectionSlug, key, fresh), raw);
 }
 
 /**
@@ -43,6 +77,7 @@ export function fieldDefFor(
  *  - the field is a relation type, so the stored string is an id (the defect);
  *  - the stored value is not a string (a list-typed field, a number);
  *  - the field is not declared;
+ *  - the collections belong to a DIFFERENT workspace (see `fieldDefFor`);
  *  - THE COLLECTION IS NOT LOADED YET, which is the one that is not an error.
  *
  * That last case makes this FAIL CLOSED while `collectionStore` is still
@@ -56,6 +91,7 @@ export function categoricalValueFor(
 	item: Pick<Item, 'collection_slug'> & { fields?: unknown },
 	key: string,
 	raw: unknown,
+	fresh = true,
 ): string {
-	return categoricalChipValue(fieldDefFor(collections, item.collection_slug, key), raw);
+	return categoricalValueForSlug(collections, item.collection_slug, key, raw, fresh);
 }

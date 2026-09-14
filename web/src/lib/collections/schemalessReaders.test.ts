@@ -34,17 +34,37 @@ const SURFACES = [
 		src: '../../routes/[username]/[workspace]/graph/DetailCard.svelte',
 		keys: ['status', 'priority'],
 	},
+	// ADDED AFTER THE REVIEW ROUND FOUND IT (BUG-3067). I had classified this
+	// page as a non-member because `playbooks` is a SYSTEM collection and I
+	// assumed its schema could not be retyped — an assumption I wrote down as a
+	// reason and never checked. `handleUpdateCollection` has no `is_system` gate
+	// on schema edits, so it is a member like any other. The list is data now, so
+	// a missed surface is a missing ROW rather than a silent absence.
+	{
+		name: 'playbooks page',
+		src: '../../routes/[username]/[workspace]/playbooks/+page.svelte',
+		keys: ['status'],
+	},
 ];
 
 describe('every schema-less by-name reader routes through the shared question', () => {
 	for (const s of SURFACES) {
 		it(`${s.name} imports the shared helper`, () => {
+			// ONE MODULE, not "either of two". The first version of this leg also
+			// accepted an import from `shareView`, the lower-level helper — which
+			// let a surface bypass the shared question while satisfying the guard,
+			// and `graph/DetailCard` was doing exactly that for its `status` read
+			// when the review round pointed it out. The bypass is the thing this
+			// leg exists to prevent, so it cannot be an accepted spelling.
 			const body = code(s.src);
 			expect(
-				/from '\$lib\/collections\/categoricalFieldValue'/.test(body) ||
-					/from '\$lib\/components\/share\/shareView'/.test(body),
-				`${s.name} answers the categorical question privately`,
+				/from '\$lib\/collections\/categoricalFieldValue'/.test(body),
+				`${s.name} does not import the shared helper`,
 			).toBe(true);
+			expect(
+				/categoricalChipValue/.test(body),
+				`${s.name} reaches past the shared helper to its lower-level dependency`,
+			).toBe(false);
 		});
 
 		it(`${s.name} renders no raw by-name read of ${s.keys.join('/')}`, () => {

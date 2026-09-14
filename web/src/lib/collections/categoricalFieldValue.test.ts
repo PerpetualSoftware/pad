@@ -7,7 +7,7 @@
 // these are the ones that read by NAME with no schema.
 import { describe, it, expect } from 'vitest';
 import type { Collection } from '$lib/types';
-import { categoricalValueFor, fieldDefFor } from './categoricalFieldValue';
+import { categoricalValueFor, categoricalValueForSlug, fieldDefFor } from './categoricalFieldValue';
 
 function collection(slug: string, fields: unknown[]): Collection {
 	return {
@@ -98,5 +98,46 @@ describe('categoricalValueFor', () => {
 		// status option, while still printing an id stored in a relation field
 		// whose target happened to have a short id.
 		expect(categoricalValueFor(ALL, item('tasks'), 'status', ID)).toBe(ID);
+	});
+});
+
+describe('a slug is only unique within a workspace', () => {
+	// THE CROSS-WORKSPACE HAZARD, found by the review round. `collectionStore`
+	// keeps ONE global array and deliberately retains the previous workspace's
+	// collections while the next load is in flight (the store documents this,
+	// from BUG-1461). Two workspaces can both have a `tasks` whose `priority` is
+	// a select in one and a relation in the other, so during that window a
+	// slug-only lookup can answer with the wrong workspace's TYPE — in either
+	// direction, printing an id or withholding a good value.
+	const item = (slug: string) => ({ collection_slug: slug }) as never;
+
+	it('answers nothing when the loaded collections are not this workspace\'s', () => {
+		expect(categoricalValueFor(ALL, item('tasks'), 'status', 'open', false)).toBe('');
+		expect(fieldDefFor(ALL, 'tasks', 'status', false)).toBeUndefined();
+	});
+
+	it('CONTROL: the same call answers normally when they are', () => {
+		// Without this, a helper hard-wired to return '' would pass the leg above
+		// and blank every chip in the app.
+		expect(categoricalValueFor(ALL, item('tasks'), 'status', 'open', true)).toBe('open');
+	});
+
+	it('defaults to fresh, so a caller that cannot answer the question is not silently blanked', () => {
+		// The default is deliberate and worth pinning: a surface with no workspace
+		// slug in hand still works, and the stale window is the caller's to close
+		// where it can. Changing this default would blank every call site that
+		// omits the argument.
+		expect(categoricalValueFor(ALL, item('tasks'), 'status', 'open')).toBe('open');
+	});
+});
+
+describe('categoricalValueForSlug', () => {
+	// The entry point for a surface holding a server projection rather than an
+	// Item — the graph node. Same question, same module; it existed as a direct
+	// `categoricalChipValue` call until the review round pointed out that made
+	// "every surface routes through one helper" false by exactly one call.
+	it('answers identically to the item form for the same collection', () => {
+		expect(categoricalValueForSlug(ALL, 'tasks', 'status', 'open')).toBe('open');
+		expect(categoricalValueForSlug(ALL, 'cars', 'status', ID)).toBe('');
 	});
 });

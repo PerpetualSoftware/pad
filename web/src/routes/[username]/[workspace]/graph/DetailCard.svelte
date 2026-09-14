@@ -9,8 +9,7 @@
 	import { relativeTime } from '$lib/utils/markdown';
 	import type { Item } from '$lib/types';
 	import { collectionStore } from '$lib/stores/collections.svelte';
-	import { categoricalValueFor, fieldDefFor } from '$lib/collections/categoricalFieldValue';
-	import { categoricalChipValue } from '$lib/components/share/shareView';
+	import { categoricalValueFor, categoricalValueForSlug } from '$lib/collections/categoricalFieldValue';
 
 	// The selected node's renderer-facing shape (a subset of the page's GraphNode3D).
 	// Kept structural so the page can pass its mapped node straight through.
@@ -92,7 +91,7 @@
 	// renders before `item` lands, so it is resolved from the node rather than
 	// waiting for the fetch.
 	const nodeStatus = $derived(
-		categoricalChipValue(fieldDefFor(collectionStore.collections, node.collection, 'status'), node.status),
+		categoricalValueForSlug(collectionStore.collections, node.collection, 'status', node.status),
 	);
 	const assignee = $derived(item?.assigned_user_name ?? null);
 </script>
