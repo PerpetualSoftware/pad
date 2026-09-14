@@ -178,8 +178,13 @@ atomic.
 
 Like `pad db restore`'s equivalent check, the probe asks whether *something*
 healthy answers on that host and port, not whether it is serving this particular
-database — so `--force` exists for the false positive. Under `--force` the two
-checks below are what remain.
+database — so `--force` exists for the false positive. It also cannot see a second
+server on a *different* port against the same SQLite file. So the guarantee is
+"no reachable server at the configured address", not "nothing can possibly
+append"; under `--force`, or against a server the probe cannot see, the two
+checks below are what remain. If the config cannot be loaded at all the check is
+skipped and says so on the terminal, so a run with no refusal is never silently
+an unchecked one.
 
 ### Unflushed collaborative edits
 

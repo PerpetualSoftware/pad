@@ -411,20 +411,36 @@ Steps:
 			// are in two different databases, so no transaction can span them and
 			// no amount of re-checking makes them atomic.
 			//
-			// What CAN be made atomic is nothing-can-append. The only thing that
-			// appends to the op-log is a live server with a client attached, and
-			// `pad db restore` already refuses for the same structural reason (a
-			// running WAL checkpointer). docs/backup.md step 3 is "Stop the
-			// server"; this enforces the step the docs already ask for, and with
-			// the server down the window does not exist rather than being small.
+			// What CAN be removed is the appender. `item_yjs_updates` has exactly
+			// ONE non-test writer in this codebase — `internal/collab/room.go`'s
+			// readLoop, reached only through the collab WebSocket — so an append
+			// requires a live HTTP server with a client attached. (Nothing lowers
+			// `content_flushed_op_log_id` either, so a row cannot become stale by
+			// the watermark regressing; and a prune only ever makes a row less
+			// stale.) `pad db restore` already refuses on the same structural
+			// ground, for the WAL rather than the op-log, and docs/backup.md step
+			// 3 is already "Stop the server" — this enforces the step the docs
+			// ask for.
 			//
-			// The probe is a heuristic, exactly as it is for restore: it asks
-			// whether SOMETHING healthy answers on the configured host/port, not
-			// whether that something is serving THIS database. Hence --force,
-			// mirroring restore's, so a false positive is not a dead end. Under
-			// --force the window is narrowed-not-closed again, and the two later
-			// gates are what remain.
-			if cfg, cfgErr := config.Load(); cfgErr == nil && cli.IsServerRunning(cfg) {
+			// THE CLAIM IS DELIBERATELY NOT "the window cannot exist". The probe
+			// asks whether something healthy answers at the CONFIGURED host and
+			// port; it cannot see a second server on another port against this
+			// same SQLite file, and it does not verify that what answered is
+			// serving this database at all. So: no reachable server at the
+			// configured address, which is the honest scope. That imprecision cuts
+			// both ways, which is why --force exists (mirroring restore's) and why
+			// the pre-pass and the post-export bundle check both stay — under
+			// --force, or against a server this probe cannot see, they are the
+			// remaining protection and the window is narrowed rather than gone.
+			cfg, cfgErr := config.Load()
+			if cfgErr != nil {
+				// NOT silent. A check that did not run must not read as a check
+				// that passed: the operator is told the appender question was
+				// never asked, so "no refusal" cannot be mistaken for "no server".
+				fmt.Fprintf(os.Stderr, "WARNING: could not load config (%v), so the running-server check was "+
+					"SKIPPED. Stop the Pad server before migrating; an edit made in a browser tab during this "+
+					"migration may not reach PostgreSQL.\n", cfgErr)
+			} else if cli.IsServerRunning(cfg) {
 				if !forceLiveServer {
 					return fmt.Errorf("the Pad server appears to be running at %s:%d — stop it first "+
 						"('pad server stop') so nothing can append collaborative edits while this migration "+
