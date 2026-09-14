@@ -250,7 +250,11 @@
 		togglingStatus = item.slug;
 		try {
 			fields.status = next;
-			const updated = await api.items.update(wsSlug, item.slug, { fields: JSON.stringify(fields) });
+			// BUG-3049: patch only `status`. The full-blob form reverted any
+			// concurrent field edit (including one from the playbook editor,
+			// which writes five keys) that landed between this row's read and
+			// this write.
+			const updated = await api.items.update(wsSlug, item.slug, { fields_patch: { status: next } });
 			const idx = playbooks.findIndex(p => p.id === item.id);
 			if (idx !== -1) playbooks[idx] = updated;
 			toastStore.show(`Status changed to ${next}`, 'success');

@@ -252,7 +252,12 @@ describe('dispatch — pad_item writes', () => {
 		expect(data.fields).toBeUndefined();
 	});
 
-	it('update forwards status into fields + the audit comment + force', async () => {
+	// BUG-3055: this asserted `fields` — a FULL REPLACE — which is the defect,
+	// not the contract. An update sends `fields_patch`, so the keys the caller
+	// did not name are left alone. The outcome that shape produces is pinned
+	// behaviourally in bug3055FieldsFullReplace.test.ts; this leg keeps watch on
+	// the payload the dispatcher builds.
+	it('update forwards status as a field PATCH + the audit comment + force', async () => {
 		const api = mockApi();
 		await run(api, 'pad_item', {
 			action: 'update',
@@ -262,7 +267,8 @@ describe('dispatch — pad_item writes', () => {
 			force: true,
 		});
 		const data = (api.items.update.mock.calls[0] as unknown as [string, string, any])[2];
-		expect(JSON.parse(data.fields)).toEqual({ status: 'done' });
+		expect(data.fields_patch).toEqual({ status: 'done' });
+		expect(data.fields, 'an update must never send a full fields blob').toBeUndefined();
 		expect(data.comment).toBe('shipped');
 		expect(data.force).toBe(true);
 	});

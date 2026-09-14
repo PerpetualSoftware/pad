@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"reflect"
 	"strings"
 
 	"github.com/google/uuid"
@@ -15,6 +16,15 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
+
+// storedStateUnreadableCode mirrors internal/cli.StoredStateUnreadableCode
+// (BUG-2675) as a literal rather than importing it. internal/server does not
+// import internal/cli — a layering choice two other files state explicitly
+// (internal/cli/client_items_copy.go's mirror note, and itemRefOrSlug's
+// "avoids pulling internal/cli into the server package for one helper") — and
+// one error code is not worth falsifying it. internal/mcp/errors.go carries the
+// same string for the same reason.
+const storedStateUnreadableCode = "stored_state_unreadable"
 
 // maxBulkItems caps how many items a single bulk request may touch.
 // The lane-header bulk actions (TASK-1668) operate on a whole filtered
@@ -506,7 +516,26 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 
 	fieldMap := make(map[string]any)
 	if item.Fields != "" && item.Fields != "{}" {
-		_ = json.Unmarshal([]byte(item.Fields), &fieldMap)
+		// REFUSE an unreadable stored blob rather than discard it (BUG-3049,
+		// codex round 3). This unmarshal error used to be ignored: the map
+		// stayed empty, the caller's changes were written over the top, and the
+		// unreadable bytes were GONE — a bulk status move silently destroyed
+		// whatever the row held. That is the repair path codex correctly
+		// identified as lost, and it is not one worth keeping: the room's
+		// standing answer for unreadable stored state is to refuse and say so
+		// (BUG-2627 part 3, BUG-2675's `stored_state_unreadable`), because the
+		// raw bytes are still there for a human to repair and a write that
+		// throws them away cannot be undone.
+		//
+		// Refused per ITEM, not per batch, so one broken row fails on its own
+		// and the other rows in the request still apply.
+		if err := json.Unmarshal([]byte(item.Fields), &fieldMap); err != nil {
+			return nil, &bulkOpError{
+				code: storedStateUnreadableCode,
+				message: "this item's stored fields are not valid JSON, so a field update cannot be merged onto them. " +
+					"Repair the item's fields first (pad item show, then a full `fields` write); retrying this request will fail identically.",
+			}
+		}
 	}
 	// The item's own stored values, before the caller's changes merge in. Held
 	// separately because "carried" and "supplied" get different treatment
@@ -607,30 +636,108 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 	if err := s.checkUniqueFields(workspaceID, item.CollectionID, item.ID, schema, fieldMap); err != nil {
 		return nil, &bulkOpError{message: err.Error(), code: "conflict"}
 	}
+	// Which keys autoPopulateDates ADDED, as opposed to keys the caller set or
+	// the item already carried. Needed below: an auto-date is an "only if still
+	// empty" intent, and that decision was made against a snapshot read outside
+	// the write transaction (codex round 4).
+	beforeAuto := make(map[string]any, len(fieldMap))
+	for k, v := range fieldMap {
+		beforeAuto[k] = v
+	}
 	autoPopulateDates(fieldMap, item.Fields, schema)
+	autoDateKeys := make([]string, 0, 2)
+	for k, v := range fieldMap {
+		if old, had := beforeAuto[k]; !had || !reflect.DeepEqual(old, v) {
+			if _, isChange := changes[k]; !isChange {
+				autoDateKeys = append(autoDateKeys, k)
+			}
+		}
+	}
+
+	// BUG-3049: send a field-level PATCH, not the whole blob. `fieldMap` is the
+	// item's stored fields (read at the top of this function, OUTSIDE the write
+	// transaction) merged with this operation's changes, so writing it as
+	// `Fields` reverted any concurrent write that landed in between — a bulk
+	// status move on ten items could undo ten unrelated single-field edits.
+	//
+	// The patch is the DIFF of this pipeline's own output against the stored
+	// values, so it still carries everything this operation legitimately
+	// changes beyond `changes` itself: schema defaults ValidateFields injected,
+	// canonicalised relation refs, autoPopulateDates' completion stamps, and
+	// keys the relation passes DROPPED (carried as an explicit nil, which
+	// mergeFieldsPatch removes). What it no longer carries is keys this
+	// operation did not touch at all.
+	//
+	// The auto-date stamps are the one entry in that list whose inclusion is
+	// re-decided UNDER THE LOCK, in the precheck below: they express "only if
+	// still empty", and emptiness was read outside the transaction.
+	//
+	// Residual, stated rather than hidden: a carried value whose only change is
+	// CoerceFields normalising its type (stored `"3"` on a number field
+	// becoming `3`) differs from the stored value and is therefore still in the
+	// patch. That reproduces exactly what the blob write did to such a key, so
+	// it is not a regression — it is the part of the window this fix does not
+	// close, and it closes for good when the stored value is already canonical.
+	patch := fieldsPatchFromMerge(storedFields, fieldMap)
 
 	var precheck func(tx *sql.Tx, existing *models.Item) error
-	if !force {
+	{
 		var settings models.CollectionSettings
 		if coll.Settings != "" {
 			_ = json.Unmarshal([]byte(coll.Settings), &settings)
 		}
-		guestFull, guestGranted, gerr := s.guestResourceFilter(r, workspaceID)
-		if gerr != nil {
-			return nil, &bulkOpError{message: gerr.Error()}
+		var gctx openChildrenGuardContext
+		if !force {
+			guestFull, guestGranted, gerr := s.guestResourceFilter(r, workspaceID)
+			if gerr != nil {
+				return nil, &bulkOpError{message: gerr.Error()}
+			}
+			gctx = openChildrenGuardContext{
+				r:                    r,
+				workspaceID:          workspaceID,
+				itemID:               item.ID,
+				parentSchema:         schema,
+				parentSettings:       settings,
+				newFieldMap:          fieldMap,
+				visibleCollectionIDs: visibleIDs,
+				guestFullCollIDs:     guestFull,
+				guestGrantedItemIDs:  guestGranted,
+			}
 		}
-		gctx := openChildrenGuardContext{
-			r:                    r,
-			workspaceID:          workspaceID,
-			itemID:               item.ID,
-			parentSchema:         schema,
-			parentSettings:       settings,
-			newFieldMap:          fieldMap,
-			visibleCollectionIDs: visibleIDs,
-			guestFullCollIDs:     guestFull,
-			guestGrantedItemIDs:  guestGranted,
-		}
+		// The precheck is installed UNCONDITIONALLY now, because it carries two
+		// jobs and only one of them is the guard. It runs inside the write
+		// transaction, before the store merges the patch (see
+		// store.UpdateItem's ordering), which is the only place an "only if
+		// still empty" decision can be made truthfully.
 		precheck = func(tx *sql.Tx, existing *models.Item) error {
+			// JOB 1 (BUG-3049, codex round 4): re-decide each AUTO-POPULATED
+			// date against the LOCKED row. autoPopulateDates fills start_date /
+			// end_date only when the value is empty, and it read a snapshot from
+			// outside this transaction — so a concurrent writer who set the date
+			// in between would have had it replaced by today's. Nobody in this
+			// request typed that value, so the concurrent one wins: the key is
+			// dropped from the patch. A date the CALLER supplied is not in
+			// autoDateKeys and is untouched by this.
+			if len(autoDateKeys) > 0 {
+				locked := map[string]any{}
+				if existing.Fields != "" && existing.Fields != "{}" {
+					if err := json.Unmarshal([]byte(existing.Fields), &locked); err != nil {
+						// Unreadable under the lock: the merge itself will
+						// refuse, so leave the patch alone rather than guess.
+						return nil
+					}
+				}
+				for _, k := range autoDateKeys {
+					if cur, ok := locked[k].(string); ok && cur != "" {
+						delete(patch, k)
+					}
+				}
+			}
+			if force {
+				return nil
+			}
+			// JOB 2: the open-children guard, as before, against the same
+			// in-tx snapshot the UPDATE will write.
 			txCtx := gctx
 			txCtx.currentFieldsJS = existing.Fields
 			details, derr := s.runOpenChildrenGuard(tx, txCtx)
@@ -644,13 +751,8 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 		}
 	}
 
-	fieldsJSON, err := json.Marshal(fieldMap)
-	if err != nil {
-		return nil, &bulkOpError{message: "failed to marshal fields"}
-	}
-	fieldsStr := string(fieldsJSON)
 	input := models.ItemUpdate{
-		Fields:         &fieldsStr,
+		FieldsPatch:    patch,
 		LastModifiedBy: actor,
 		Source:         source,
 	}
@@ -1102,4 +1204,34 @@ func requiredErrorsUnsatisfiedBy(errs []string, supplied map[string]any) []strin
 		out = append(out, e)
 	}
 	return out
+}
+
+// fieldsPatchFromMerge returns the field-level patch that turns `stored` into
+// `merged`: every key whose value differs (added or changed), plus an explicit
+// nil for every key `stored` had and `merged` does not, which
+// store.mergeFieldsPatch treats as a delete.
+//
+// BUG-3049. The point is what it OMITS: a key present in both with an equal
+// value is left out entirely, so a write built from a snapshot read outside the
+// write transaction can no longer revert a concurrent change to a key it never
+// meant to touch.
+//
+// Equality is reflect.DeepEqual over the decoded JSON values. Two values that
+// are semantically equal but decode differently (a number stored as a string,
+// then coerced) compare unequal and stay in the patch — see the call site's
+// note on that residual.
+func fieldsPatchFromMerge(stored, merged map[string]any) map[string]any {
+	patch := make(map[string]any, len(merged))
+	for k, v := range merged {
+		if old, ok := stored[k]; ok && reflect.DeepEqual(old, v) {
+			continue
+		}
+		patch[k] = v
+	}
+	for k := range stored {
+		if _, ok := merged[k]; !ok {
+			patch[k] = nil
+		}
+	}
+	return patch
 }
