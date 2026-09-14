@@ -1512,6 +1512,18 @@ type UpdateConflictDetails struct {
 	Ref               string `json:"ref"`
 	ExpectedUpdatedAt string `json:"expected_updated_at"`
 	ActualUpdatedAt   string `json:"actual_updated_at"`
+
+	// BUG-3037 (codex round 4): a conflict on the SEQ token carries these
+	// instead of the timestamp pair, and `ConflictType` is "seq". Without them
+	// a seq conflict printed two empty timestamps and told the caller to retry
+	// with "the current timestamp" — advice for a token they did not send, and
+	// the actual token they need dropped on the floor.
+	//
+	// Pointers so ABSENT and ZERO stay distinguishable: a seq is never 0 on a
+	// live row, so a 0 here would mean the server did not report one.
+	ExpectedSeq  *int64 `json:"expected_seq,omitempty"`
+	ActualSeq    *int64 `json:"actual_seq,omitempty"`
+	ConflictType string `json:"conflict_type,omitempty"`
 }
 
 // AsUpdateConflict returns the parsed conflict details when this APIError
@@ -1548,6 +1560,22 @@ func WriteUpdateConflictError(w io.Writer, apiErr *APIError, uc *UpdateConflictD
 		fmt.Fprintln(w, StructuredErrorMarker+string(data))
 	}
 	fmt.Fprintln(w, apiErr.Message)
+	// Print the token the caller ACTUALLY SENT, and name it (BUG-3037). The
+	// retry line is part of the contract here: telling someone who sent
+	// `--expected-seq` to retry with a timestamp sends them to the weaker token,
+	// which is how this bug got its foothold in the first place.
+	if uc.ConflictType == "seq" || uc.ExpectedSeq != nil {
+		if uc.ExpectedSeq != nil {
+			fmt.Fprintf(w, "  expected seq: %d\n", *uc.ExpectedSeq)
+		}
+		if uc.ActualSeq != nil {
+			fmt.Fprintf(w, "  actual seq:   %d\n", *uc.ActualSeq)
+			fmt.Fprintf(w, "Re-read the item (pad item show) and retry with --expected-seq %d.\n", *uc.ActualSeq)
+			return
+		}
+		fmt.Fprintln(w, "Re-read the item (pad item show) and retry with the current seq.")
+		return
+	}
 	fmt.Fprintf(w, "  expected updated_at: %s\n", uc.ExpectedUpdatedAt)
 	fmt.Fprintf(w, "  actual updated_at:   %s\n", uc.ActualUpdatedAt)
 	fmt.Fprintln(w, "Re-read the item (pad item show) and retry with the current timestamp.")
