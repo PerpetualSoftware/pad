@@ -18,6 +18,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
 import PublicTableView from './PublicTableView.svelte';
 import PublicItemExpansion from './PublicItemExpansion.svelte';
+import PublicItemCard from './PublicItemCard.svelte';
+import PublicListView from './PublicListView.svelte';
 import type { PublicCollection, PublicItem } from './shareView';
 
 const RELATION_ID = 'f47ac10b-58cc-4372-a567-0e02b2c3d479';
@@ -106,5 +108,55 @@ describe('PublicItemExpansion', () => {
 		});
 		expect(screen.container.textContent).toContain(RELATION_ID);
 		expect(screen.container.textContent).not.toContain('Linked item');
+	});
+});
+
+describe('a status/priority field retyped to a relation on a public card', () => {
+	// The card surfaces read these two BY NAME and then test the VALUE's shape.
+	// That is the right question for a `multi_relation` and the wrong one for a
+	// scalar `relation`, whose value is a string — so the id rendered as a
+	// title-cased pill. Withheld rather than placeholdered: the pill is a
+	// categorical summary, and "Linked item" is not a status.
+	const retyped = collection([{ key: 'status', label: 'Status', type: 'relation' }]);
+	const ordinary = collection([{ key: 'status', label: 'Status', type: 'select' }]);
+
+	it('PublicItemCard shows no pill and never the id', () => {
+		// ASSERTED AS THE ABSENCE OF THE PILL, not of the id STRING. `formatLabel`
+		// replaces `-` with spaces and title-cases, so a rendered uuid reaches the
+		// DOM as "F47ac10b 58cc …" and `not.toContain(RELATION_ID)` passes while
+		// the id is on screen — verified: that form of this leg SURVIVED a mutation
+		// that removed the guard. The element check goes red on the same mutant.
+		const screen = render(PublicItemCard, {
+			props: { item: item({ status: RELATION_ID }), fields: (retyped as unknown as { fields: unknown[] }).fields } as never,
+		});
+		expect(screen.container.textContent).toContain('Car One');
+		expect(screen.container.querySelectorAll('.meta-status')).toHaveLength(0);
+		expect(screen.container.textContent).not.toContain('F47ac10b');
+	});
+
+	it('CONTROL: PublicItemCard still shows an ordinary status', () => {
+		const screen = render(PublicItemCard, {
+			props: { item: item({ status: 'open' }), fields: (ordinary as unknown as { fields: unknown[] }).fields } as never,
+		});
+		expect(screen.container.querySelectorAll('.meta-status')).toHaveLength(1);
+		expect(screen.container.textContent).toContain('Open');
+	});
+
+	it('PublicListView shows no row pill and never the id', () => {
+		// Same instrument correction as the card leg above.
+		const screen = render(PublicListView, {
+			props: { collection: retyped, items: [item({ status: RELATION_ID })] } as never,
+		});
+		expect(screen.container.textContent).toContain('Car One');
+		expect(screen.container.querySelectorAll('.row-status')).toHaveLength(0);
+		expect(screen.container.textContent).not.toContain('F47ac10b');
+	});
+
+	it('CONTROL: PublicListView still shows an ordinary status', () => {
+		const screen = render(PublicListView, {
+			props: { collection: ordinary, items: [item({ status: 'open' })] } as never,
+		});
+		expect(screen.container.querySelectorAll('.row-status')).toHaveLength(1);
+		expect(screen.container.textContent).toContain('Open');
 	});
 });

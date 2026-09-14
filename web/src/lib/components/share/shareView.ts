@@ -347,6 +347,26 @@ export function publicRelationText(field: Pick<FieldDef, 'type'>, value: unknown
 export const PUBLIC_RELATION_TITLE =
 	'This shared view links to another item. Its name is not part of the share.';
 
+/**
+ * The value a categorical chip (status / priority) may show, or '' (BUG-3016,
+ * codex enumeration round).
+ *
+ * These surfaces read a field BY NAME and then ask the VALUE's shape — "is it a
+ * string" — which is the right question for a `multi_relation` (its value is an
+ * array, so it falls out) and the WRONG one for a scalar `relation`, whose
+ * value IS a string. A `status` retyped to `relation` therefore rendered its
+ * stored item id as a status pill, title-cased.
+ *
+ * The chip is WITHHELD rather than resolved: a share cannot resolve a target at
+ * all, and on a card the chip is a categorical summary, not the field's value.
+ * Same disposition the board and list take when their lane vocabulary no longer
+ * fits the field.
+ */
+export function categoricalChipValue(field: FieldDef | undefined, raw: unknown): string {
+	if (!field || isRelationType(field.type)) return '';
+	return typeof raw === 'string' ? raw : '';
+}
+
 /** Title-case a snake/kebab field key or value for display. */
 export function formatLabel(value: string): string {
 	return value.replace(/[_-]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
