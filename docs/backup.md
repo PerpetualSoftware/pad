@@ -152,6 +152,48 @@ PAD_DB_DRIVER=postgres PAD_DATABASE_URL="postgres://pad:secret@localhost:5432/pa
 - User accounts and sessions (re-create with `pad auth setup`)
 - Platform settings (reconfigure in admin panel)
 - Activity/audit log (starts fresh)
+- **The collaborative edit log.** Item bodies are migrated as they stand in the
+  `items` table. Edits made in a browser tab that has not yet flushed them live
+  only in the collaborative op-log, and that log does not travel — so the
+  migration refuses to run while any item is in that state (see below).
+
+### Unflushed collaborative edits
+
+`pad db migrate-to-pg` **refuses** if any item's stored body is behind its live
+collaborative document, and names the items:
+
+```
+2 item(s) have edits that exist only in the collaborative op-log,
+which this migration does NOT carry. ...
+
+  Beta (beta):
+    TASK-7       half-typed body
+    TASK-9       another one
+
+Open each of those items in the web UI so the tab flushes its pending edits
+into the database, then re-run this command. ...
+```
+
+The check covers every workspace *before* the first import runs, so a refusal
+always means nothing has been migrated.
+
+Opening the item in the web UI is the only remedy, and that is structural rather
+than an omission: Pad's collaboration server is a dumb relay that stores opaque
+Yjs updates without parsing them, so nothing server-side can turn those updates
+back into markdown — only a client can. This is also why the escape hatch is
+named for what it does to the data:
+
+```bash
+pad db migrate-to-pg --discard-unflushed-edits
+```
+
+That migrates anyway and **permanently loses those edits**, printing the same
+list as a warning so the loss is on the terminal record. Every other route is
+safer than this one and needs no flag: `pad db backup` / `pad db restore` copy
+the whole database (`VACUUM INTO` / `pg_dump`), op-log included, and the
+application-level export/import below leaves the source database in place, so a
+stale body there can be re-exported once a tab has flushed. The migration is the
+only operation that abandons its source.
 
 ## Application-Level Export/Import
 
@@ -176,6 +218,34 @@ references such as `[[TASK-2]]` pointing to the same task after restoration or
 SQLite→PostgreSQL migration. Legacy archives with duplicate, missing, or invalid
 numbers retain the sequential-renumbering fallback; references in those archives
 may need manual repair.
+
+### Bodies that were stale when the bundle was written
+
+An export is a snapshot of the `items` table, and a browser tab can hold edits
+that have not yet flushed into it. Such an item is exported with the body the
+table holds plus a marker:
+
+```json
+{ "id": "...", "content": "the stored body", "content_state": "applied_pending_flush" }
+```
+
+The key is present only for affected items, so a bundle from a workspace with
+nothing pending is byte-identical to one produced before the marker existed, and
+older binaries ignore it (no bundle decoder rejects unknown keys). On import the
+count comes back as a response header:
+
+```
+X-Pad-Import-Stale-Bodies: 2
+```
+
+The import **accepts** those items — refusing would make a backup unrestorable
+for a reason nobody can fix from the destination — and the destination rows are
+NOT themselves marked, because nothing in the destination is ahead of them. The
+header is a provenance note: those bodies were already behind their source's live
+document when the bundle was cut. The source workspace still has the real text in
+its op-log, so re-exporting after a tab has flushed produces a clean bundle. The
+one case where that is not true is `pad db migrate-to-pg`, which is why that
+command refuses instead of warning.
 
 ### One case where an export is not importable
 
