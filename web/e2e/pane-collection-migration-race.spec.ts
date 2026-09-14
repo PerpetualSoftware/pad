@@ -333,7 +333,16 @@ test('a collection migration completing after a rapid A->B pane switch refreshes
 		'the migrated status must NOT be in the patch (structurally un-clobberable)',
 	).toBeUndefined();
 	expect(patchBody.fields, 'no full fields blob is sent alongside fields_patch').toBeUndefined();
-	expect(patchBody.expected_updated_at, 'the field write is OCC-guarded').toBeTruthy();
+	// BUG-3037: the OCC token is now the row's `seq`, not its `updated_at`.
+	// This leg used to assert `expected_updated_at` was truthy, which was right
+	// then and is the DEFECT now: `updated_at` is second-resolution, so two
+	// writes inside one second both match it and neither conflicts. A live row
+	// always has a seq, so the pane's cached-row fallback is not in play here.
+	expect(patchBody.expected_seq, 'the field write is OCC-guarded by seq').toBeGreaterThan(0);
+	expect(
+		patchBody.expected_updated_at,
+		'the pane sent the weak token for a row that has a seq',
+	).toBeUndefined();
 
 	// Belt-and-suspenders: read B back from the server and confirm neither
 	// value was clobbered by the round-trip.
