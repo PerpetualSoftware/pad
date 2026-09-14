@@ -432,6 +432,12 @@ Steps:
 			// the pre-pass and the post-export bundle check both stay — under
 			// --force, or against a server this probe cannot see, they are the
 			// remaining protection and the window is narrowed rather than gone.
+			//
+			// The residual is tracked as BUG-3072, which also records why it is
+			// wider than bodies: this probe asks about an ADDRESS when the real
+			// question is about a FILE, and a second server on another port — or
+			// any other caller of the exported Store.AppendYjsUpdate — is outside
+			// what it can answer.
 			cfg, cfgErr := config.Load()
 			if cfgErr != nil {
 				// FAIL CLOSED (codex round 3 P1). The previous version warned and

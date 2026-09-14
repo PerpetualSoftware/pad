@@ -183,8 +183,11 @@ server on a *different* port against the same SQLite file. So the guarantee is
 "no reachable server at the configured address", not "nothing can possibly
 append"; under `--force`, or against a server the probe cannot see, the two
 checks below are what remain. If the config cannot be loaded at all the check is
-skipped and says so on the terminal, so a run with no refusal is never silently
-an unchecked one.
+skipped and refuses unless `--force` is given, so a run that reaches the copy
+has either answered the question or been told to ignore it.
+
+The remaining gap — another process attached to the same database file that no
+address probe can see — is tracked as BUG-3072.
 
 ### Unflushed collaborative edits
 
