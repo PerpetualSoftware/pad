@@ -14,7 +14,7 @@
 // purging a workspace the caller can read perfectly well would be a far worse
 // bug than the storm this fixes.
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { api, setAccessRevokedHandler, type AccessRevokedScope } from './client';
+import { api, setAccessRevokedHandler, setIdentityProvider, type AccessRevokedScope } from './client';
 
 function mockFetchStatus(status: number, body: unknown = { error: { code: 'not_found', message: 'x' } }) {
 	vi.stubGlobal(
@@ -36,6 +36,7 @@ function capture(): AccessRevokedScope[] {
 
 afterEach(() => {
 	setAccessRevokedHandler(null);
+	setIdentityProvider(null);
 	vi.unstubAllGlobals();
 	vi.restoreAllMocks();
 });
@@ -94,5 +95,61 @@ describe('the 403 half is unchanged', () => {
 		mockFetchStatus(403, { error: { code: 'forbidden', message: 'x' } });
 		await expect(api.items.get('secret', 'PLAN-625')).rejects.toThrow();
 		expect(seen.map((s) => s.reason)).toEqual(['forbidden']);
+	});
+});
+
+describe('the allow-list (codex round 1 P2)', () => {
+	// Depth alone was too broad. A workspace-level endpoint may have its OWN
+	// not_found — a singleton never created, a feature-gated route — and one of
+	// those answering 404 would purge a workspace the caller reads fine. The
+	// seam is destructive, so endpoints opt IN.
+	it('does NOT fire for a workspace-level endpoint outside the list', async () => {
+		const seen = capture();
+		mockFetchStatus(404);
+		await expect(api.dashboard.get('ghost')).rejects.toThrow();
+		expect(seen).toEqual([]);
+	});
+
+	it('CONTROL: the four listed reads still fire', async () => {
+		// Without this, an empty allow-list would satisfy the leg above.
+		const seen = capture();
+		mockFetchStatus(404);
+		await expect(api.items.listIndex('ghost', { includeArchived: true })).rejects.toThrow();
+		expect(seen.map((s) => s.workspace)).toEqual(['ghost']);
+	});
+});
+
+describe('the request is stamped with WHO asked (codex round 1 P1)', () => {
+	// A response can outlive the identity that asked — sign out or switch users
+	// mid-flight. The scope carries the identity captured BEFORE the request
+	// left, so the handler can refuse to record a refusal against someone who
+	// never asked (and whose identity-change clear has already run).
+	it('carries the identity the provider reported at issue time', async () => {
+		const seen = capture();
+		let who: string | null = 'user-a';
+		setIdentityProvider(() => who);
+		mockFetchStatus(404);
+		const inflight = api.items.listIndex('ghost', { includeArchived: true });
+		// The switch happens while the request is in flight.
+		who = 'user-b';
+		await expect(inflight).rejects.toThrow();
+		expect(seen[0].identity).toBe('user-a');
+	});
+
+	it('leaves identity undefined when no provider is registered', async () => {
+		// SSR and tests. `undefined` means "unknown", which the handler treats as
+		// "do not second-guess" rather than as anonymous.
+		const seen = capture();
+		mockFetchStatus(404);
+		await expect(api.items.listIndex('ghost', { includeArchived: true })).rejects.toThrow();
+		expect(seen[0].identity).toBeUndefined();
+	});
+
+	it('stamps the 403 path too', async () => {
+		const seen = capture();
+		setIdentityProvider(() => 'user-a');
+		mockFetchStatus(403, { error: { code: 'forbidden', message: 'x' } });
+		await expect(api.items.listIndex('secret', { includeArchived: true })).rejects.toThrow();
+		expect(seen[0]).toMatchObject({ reason: 'forbidden', identity: 'user-a' });
 	});
 });

@@ -297,11 +297,46 @@ export type AccessRevokedScope = {
 	workspace: string;
 	/** Optional for compatibility with handlers written before BUG-2983. */
 	reason?: AccessRevokedReason;
+	/**
+	 * WHO the request was issued as, captured before it left (codex round 1 P1).
+	 *
+	 * A refusal is a fact about a (user, workspace) pair, and a response can
+	 * outlive the identity that asked: sign out, or switch users, while a
+	 * request is in flight and the 404 lands when someone else is signed in.
+	 * Recording it against whoever is signed in AT RESPONSE TIME would refuse a
+	 * workspace to a user who may well be a member of it, permanently — the
+	 * identity-change clear has already run by then.
+	 *
+	 * `undefined` when no provider is registered (tests, SSR).
+	 */
+	identity?: string | null;
 };
 
 type AccessRevokedHandler = (scope: AccessRevokedScope) => void;
 
 let accessRevokedHandler: AccessRevokedHandler | null = null;
+
+/**
+ * Supplies the signed-in user id, registered by the app at startup.
+ *
+ * A callback rather than a store import for the reason `setAccessRevokedHandler`
+ * is one: importing the auth store here would make a cycle.
+ */
+let identityProvider: (() => string | null) | null = null;
+
+/** Register the identity source used to stamp requests (BUG-2983). */
+export function setIdentityProvider(provider: (() => string | null) | null): void {
+	identityProvider = provider;
+}
+
+function currentIdentity(): string | null | undefined {
+	if (!identityProvider) return undefined;
+	try {
+		return identityProvider();
+	} catch {
+		return undefined;
+	}
+}
 
 /**
  * Register a single callback fired when the API client sees a 403
@@ -419,6 +454,15 @@ function parseAccessRevokedScope(path: string): AccessRevokedScope | null {
 }
 
 /**
+ * Workspace-level reads whose 404 can only be the workspace itself.
+ *
+ * `items-index` / `items-changes` are the local index's own loads; `items` and
+ * `collections` are the list endpoints. None of them names a second thing that
+ * could be missing.
+ */
+const WORKSPACE_LEVEL_READS = new Set(['items-index', 'items-changes', 'items', 'collections']);
+
+/**
  * The workspace a 404 proves unreachable, or null (BUG-2983).
  *
  * DELIBERATELY NARROWER than `parseAccessRevokedScope`, and the difference is
@@ -450,6 +494,15 @@ function parseWorkspaceGoneScope(path: string): AccessRevokedScope | null {
 	// `/workspaces/{ws}` (2) or `/workspaces/{ws}/{endpoint}` (3). Anything
 	// longer names a sub-resource that can itself be missing.
 	if (parts.length > 3) return null;
+	// AN ALLOW-LIST, not "depth 3 is safe" (codex round 1 P2). Depth alone was
+	// too broad: a workspace-level endpoint may have its OWN not_found — a
+	// singleton that has never been created, a feature-gated route — and one
+	// such endpoint answering 404 would purge a workspace the caller reads
+	// fine. These four are the local-first read model's own loads, and the only
+	// `not_found` any of them can produce is the workspace's. Same posture as
+	// `parseAccessRevokedScope`'s whitelist, and the same reason: the seam is
+	// destructive, so it opts endpoints IN.
+	if (parts.length === 3 && !WORKSPACE_LEVEL_READS.has(parts[2])) return null;
 	return { kind: 'workspace', workspace: parts[1], reason: 'gone' };
 }
 
@@ -458,11 +511,12 @@ function parseWorkspaceGoneScope(path: string): AccessRevokedScope | null {
  * handler is called best-effort — its failures are swallowed so the
  * caller still sees a clean PadApiError. Public for testing.
  */
-function notifyAccessRevoked(path: string): void {
+function notifyAccessRevoked(path: string, issuedAs: string | null | undefined): void {
 	if (!accessRevokedHandler) return;
 	const scope = parseAccessRevokedScope(path);
 	if (!scope) return;
 	scope.reason = 'forbidden';
+	scope.identity = issuedAs;
 	try {
 		accessRevokedHandler(scope);
 	} catch (err) {
@@ -519,6 +573,13 @@ async function request<T>(
 	rateLimitRetried = false,
 ): Promise<T> {
 	const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+
+	// WHO is asking, captured BEFORE the request leaves (BUG-2983, codex round 1
+	// P1). A response can outlive the identity that asked — a sign-out or user
+	// switch mid-flight — and a refusal recorded against whoever is signed in at
+	// RESPONSE time would lock a workspace away from a user who may be a member
+	// of it, permanently, since the identity-change clear has already run.
+	const issuedAs = currentIdentity();
 
 	// Attach CSRF token for state-changing requests
 	const method = options?.method?.toUpperCase();
@@ -598,7 +659,7 @@ async function request<T>(
 		// `method` is already uppercased above; undefined means GET
 		// (the fetch default).
 		if (method === undefined || method === 'GET' || method === 'HEAD') {
-			notifyAccessRevoked(path);
+			notifyAccessRevoked(path, issuedAs);
 		}
 	}
 	if (resp.status === 404) {
@@ -622,6 +683,7 @@ async function request<T>(
 		// see `parseWorkspaceGoneScope`.
 		if (method === undefined || method === 'GET' || method === 'HEAD') {
 			const scope = parseWorkspaceGoneScope(path);
+			if (scope) scope.identity = issuedAs;
 			if (scope && accessRevokedHandler) {
 				try {
 					accessRevokedHandler(scope);

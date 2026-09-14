@@ -29,6 +29,9 @@ const api = vi.hoisted(() => ({
 vi.mock('$lib/api/client', () => ({
 	api,
 	setAccessRevokedHandler: () => {},
+	// BUG-2983 added this seam; the layout calls it at module scope, so a mock
+	// without it throws before any assertion runs.
+	setIdentityProvider: () => {},
 	setRateLimitHandler: () => {},
 	isPlanLimitError: () => false,
 	planLimitMessage: () => '',
