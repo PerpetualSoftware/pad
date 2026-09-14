@@ -536,11 +536,18 @@
 					     is a MISREPORT rather than a missing chip: it names a status
 					     the item may not have. Reachable on first load, on a slow
 					     schema fetch, and permanently if that fetch fails.
-					     So: the raw stored value stands in while the schema is
-					     unknown (it is what the page showed before this unit, and it
-					     is right for every non-retyped workspace), and the declared
-					     answer takes over the moment the schema lands. -->
-					{@const status = playbooksCollection ? declaredStatus : (typeof fields.status === 'string' ? fields.status : '') || 'draft'}
+					     MY FIRST ANSWER WAS TO STAND THE RAW VALUE IN while the schema
+					     was unknown, on the reasoning that it is what the page showed
+					     before this unit. That reintroduced the defect for the
+					     duration of the window it was meant to fix: a retyped status
+					     IS an id, so the raw value is the id, printed. Worse than the
+					     Draft misreport it replaced, and the review round said so.
+
+					     The honest answer for an unknown schema is to claim nothing:
+					     no status chip and no draft/deprecated styling until the
+					     schema lands. The card still renders, with its title, trigger
+					     and steps — the affordance is withheld, not the row. -->
+					{@const status = playbooksCollection ? declaredStatus : ''}
 					{@const trigger = fields.trigger ?? 'manual'}
 					{@const scope = fields.scope ?? 'all'}
 					{@const steps = countSteps(item.content)}
@@ -549,7 +556,7 @@
 						<button class="card-header" onclick={() => toggleExpand(item.id)} aria-expanded={isExpanded}>
 							<div class="card-title-row">
 								<span class="card-title" class:deprecated-title={status === 'deprecated'}>{item.title}</span>
-								<Chip size="sm" color={statusColor(status)}>{statusLabel(status)}</Chip>
+								{#if status}<Chip size="sm" color={statusColor(status)}>{statusLabel(status)}</Chip>{/if}
 							</div>
 							<div class="card-meta">
 								<Chip size="sm" color="var(--status-blue)">{trigger}</Chip>

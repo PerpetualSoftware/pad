@@ -10,7 +10,7 @@
  * times before the population held still (see the BUG-3067 trail).
  *
  * It lives in ONE module because that is the lesson of the last enumeration
- * round rather than a style preference: five call sites asking the same question
+ * round rather than a style preference: the call sites asking the same question
  * in five spellings is how the question comes to have five answers, which is the
  * arrangement `laneKeyCallers.test.ts` exists to prevent for lane keys.
  *
@@ -112,7 +112,7 @@ export function categoricalValueFor(
 /**
  * "The loaded collections are NOT known to belong to a different workspace."
  *
- * The one spelling of the staleness question, so the six call sites cannot
+ * The one spelling of the staleness question, so its call sites cannot
  * drift into asking two different ones — which is exactly what happened between
  * this and `collectionsAreFreshFor`, whose extra `null` case blanked two pages.
  *
@@ -120,10 +120,17 @@ export function categoricalValueFor(
  * current array was loaded for, or null when no load has completed.
  */
 export function collectionsNotStaleFor(
-	stampedWorkspace: string | null,
+	stampedWorkspace: string | null | undefined,
 	wsSlug: string | undefined,
 ): boolean {
-	if (stampedWorkspace === null) return true;
+	// NULL AND UNDEFINED BOTH MEAN "NOTHING STAMPED", and the first version
+	// compared against `null` alone. The store's own field is typed `string |
+	// null`, so that read as safe — but a `===` against one of two empty
+	// spellings is a guard that depends on which empty it is handed, and an
+	// `undefined` fell through to the comparison and answered STALE for every
+	// workspace. A control leg in the DetailCard test caught it the moment that
+	// test started passing a real `wsSlug`.
+	if (stampedWorkspace == null) return true;
 	if (!wsSlug) return true;
 	return stampedWorkspace === wsSlug;
 }

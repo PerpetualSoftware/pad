@@ -13,10 +13,17 @@ import type { Collection, Item } from '$lib/types';
 const ID = 'f47ac10b-58cc-4372-a567-0e02b2c3d479';
 
 let collections: Collection[] = [];
+let stampedWorkspace: string | null = 'ws';
 vi.mock('$lib/stores/collections.svelte', () => ({
 	collectionStore: {
 		get collections() {
 			return collections;
+		},
+		// The stamp the component compares its `wsSlug` against. Supplied so these
+		// legs exercise the SAME staleness path production takes; without it the
+		// mock answered undefined and every leg ran the permissive branch.
+		get collectionsWorkspace() {
+			return stampedWorkspace;
 		},
 	},
 }));
@@ -52,6 +59,11 @@ function renderCard(collSlug: string, storedStatus: string, storedPriority: stri
 				ref: 'CAR-1', title: 'An item', collection: collSlug, status: storedStatus,
 				is_terminal: false, child_count: 0, updated_at: '2026-01-01T00:00:00Z',
 			},
+			// THE REQUIRED PROP, passed rather than left to `as never` (round 6).
+			// Omitting it type-checked because of the cast and silently exercised
+			// the permissive staleness path — a test of a branch the component
+			// no longer takes in production.
+			wsSlug: 'ws',
 			color: '#888', item, itemLoading: false,
 			blockedBy: [], blocksCount: 0, chainDepth: 0,
 			onjump: vi.fn(), onopen: vi.fn(), onclose: vi.fn(),
@@ -62,6 +74,7 @@ function renderCard(collSlug: string, storedStatus: string, storedPriority: stri
 afterEach(() => {
 	cleanup();
 	collections = [];
+	stampedWorkspace = 'ws';
 });
 
 describe('the graph detail card and a retyped field', () => {

@@ -182,3 +182,24 @@ describe('collectionsNotStaleFor — the narrower question', () => {
 		expect(categoricalValueFor([], { collection_slug: 'tasks' } as never, 'status', 'open')).toBe('');
 	});
 });
+
+describe('collectionsNotStaleFor treats both empty spellings alike', () => {
+	// The hole a control leg caught the moment the DetailCard test started
+	// passing a real `wsSlug`: the first version compared against `null` only, so
+	// an `undefined` stamp fell through to the equality and answered STALE for
+	// every workspace — blanking every chip on a surface whose store mock, or
+	// future store, happened to spell "nothing loaded" the other way.
+	it('undefined is not stale', () => {
+		expect(collectionsNotStaleFor(undefined, 'ws-a')).toBe(true);
+	});
+
+	it('null is not stale', () => {
+		expect(collectionsNotStaleFor(null, 'ws-a')).toBe(true);
+	});
+
+	it('CONTROL: a real mismatch is still stale', () => {
+		// Without this, a guard that returned true unconditionally would satisfy
+		// both legs above and the staleness check would be decoration.
+		expect(collectionsNotStaleFor('ws-b', 'ws-a')).toBe(false);
+	});
+});

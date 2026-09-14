@@ -1,7 +1,7 @@
 // BUG-3067 — SOURCE-level guard that every by-name `status`/`priority` reader
 // asks the schema, and that there is ONE implementation of the question.
 //
-// Why source-level rather than behavioural: the five surfaces are a class, and
+// Why source-level rather than behavioural: these surfaces are a class, and
 // the claim worth pinning is a property of the POPULATION, not of any one
 // render. `categoricalFieldValue.test.ts` proves the question is answered
 // correctly; the per-surface render tests prove two of the surfaces call it.
