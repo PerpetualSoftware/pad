@@ -9,7 +9,11 @@
 	import { relativeTime } from '$lib/utils/markdown';
 	import type { Item } from '$lib/types';
 	import { collectionStore } from '$lib/stores/collections.svelte';
-	import { categoricalValueFor, categoricalValueForSlug } from '$lib/collections/categoricalFieldValue';
+	import {
+		categoricalValueFor,
+		categoricalValueForSlug,
+		collectionsNotStaleFor,
+	} from '$lib/collections/categoricalFieldValue';
 
 	// The selected node's renderer-facing shape (a subset of the page's GraphNode3D).
 	// Kept structural so the page can pass its mapped node straight through.
@@ -25,6 +29,7 @@
 
 	let {
 		node,
+		wsSlug,
 		color,
 		item,
 		itemLoading,
@@ -36,6 +41,16 @@
 		onclose
 	}: {
 		node: SelectedNode;
+		/**
+		 * THREADED RATHER THAN ARGUED (BUG-3067 round 5, lead ruling). The
+		 * permissive staleness default was allowed to stand only on a grep showing
+		 * every mount site sits under the `[workspace]` layout that stamps the
+		 * collection store. This component has exactly one mount site — the graph
+		 * page, which does — so the argument held; the slug is threaded anyway
+		 * because a prop is checkable and an argument about mount sites goes stale
+		 * the first time someone mounts it somewhere else.
+		 */
+		wsSlug: string;
 		/** collection color (hex) — shared with the node's renderer color. */
 		color: string;
 		/** full item, fetched lazily by the page; null until it arrives. */
@@ -81,8 +96,10 @@
 	// the right question for a LIST-typed field and the wrong one for a scalar
 	// `relation`, whose value IS a string — so a retyped `priority` printed its
 	// stored item id here, exactly as it did on the cards before BUG-3016.
+	const notStale = $derived(collectionsNotStaleFor(collectionStore.collectionsWorkspace, wsSlug));
+
 	const priority = $derived(
-		item ? categoricalValueFor(collectionStore.collections, item, 'priority', fields.priority) || null : null
+		item ? categoricalValueFor(collectionStore.collections, item, 'priority', fields.priority, notStale) || null : null
 	);
 
 	// The STATUS pill comes from the graph NODE rather than from the fetched
@@ -91,7 +108,7 @@
 	// renders before `item` lands, so it is resolved from the node rather than
 	// waiting for the fetch.
 	const nodeStatus = $derived(
-		categoricalValueForSlug(collectionStore.collections, node.collection, 'status', node.status),
+		categoricalValueForSlug(collectionStore.collections, node.collection, 'status', node.status, notStale),
 	);
 	const assignee = $derived(item?.assigned_user_name ?? null);
 </script>

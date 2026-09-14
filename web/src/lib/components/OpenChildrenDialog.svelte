@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { collectionStore } from '$lib/stores/collections.svelte';
-	import { categoricalValueForSlug } from '$lib/collections/categoricalFieldValue';
+	import { categoricalValueForSlug, collectionsNotStaleFor } from '$lib/collections/categoricalFieldValue';
 	// BUG-1538 / TASK-1539 — Confirm dialog that surfaces the server's
 	// `open_children` 409 guard (IDEA-1494) in the web UI. Mounted once
 	// from +layout.svelte; driven by the openChildrenDialog singleton
@@ -18,6 +18,18 @@
 	import { openChildrenDialog } from '$lib/stores/openChildrenDialog.svelte';
 	import Modal from '$lib/components/common/Modal.svelte';
 	import Button from '$lib/components/common/Button.svelte';
+
+	// THE MOUNT-SITE ARGUMENT DOES NOT COVER THIS ONE (BUG-3067 round 5, lead
+	// ruling). The permissive staleness default was allowed to stand only where a
+	// grep shows every mount site sits under the `[workspace]` layout that stamps
+	// the collection store. This dialog is mounted TWICE in the ROOT layout, so it
+	// can be on screen with the store holding another workspace's collections
+	// entirely. The route's own workspace param is the honest source here, since
+	// the dialog has no workspace prop and its children DTO carries only a
+	// collection slug.
+	let notStale = $derived(
+		collectionsNotStaleFor(collectionStore.collectionsWorkspace, page.params.workspace),
+	);
 
 	let active = $derived(openChildrenDialog.active);
 
@@ -91,7 +103,7 @@
 								     it. The claim was about a shape I had not opened, in an
 								     item whose whole history is enumeration claims that were
 								     not checked (BUG-3067 round 3). -->
-								{@const childStatus = categoricalValueForSlug(collectionStore.collections, child.collection_slug, 'status', child.status)}
+								{@const childStatus = categoricalValueForSlug(collectionStore.collections, child.collection_slug, 'status', child.status, notStale)}
 								<li class="child-row">
 									{#if canLink}
 										<a

@@ -528,7 +528,19 @@
 					     the page as a whole does not yet survive that rename — this
 					     read simply stops adding to the problem. -->
 					{@const declaredStatus = categoricalValueFor(playbooksCollection ? [playbooksCollection] : [], { collection_slug: playbooksCollection?.slug }, 'status', fields.status)}
-					{@const status = declaredStatus || 'draft'}
+					<!-- "NO SCHEMA YET" IS NOT "DRAFT" (BUG-3067 round 5). The two
+					     loaders are independent — `loadPlaybooks` clears `loading` on
+					     its own — so cards render while `playbooksCollection` is still
+					     null, which the helper answers with ''. Falling through to the
+					     `?? 'draft'` default then reported every card as Draft, which
+					     is a MISREPORT rather than a missing chip: it names a status
+					     the item may not have. Reachable on first load, on a slow
+					     schema fetch, and permanently if that fetch fails.
+					     So: the raw stored value stands in while the schema is
+					     unknown (it is what the page showed before this unit, and it
+					     is right for every non-retyped workspace), and the declared
+					     answer takes over the moment the schema lands. -->
+					{@const status = playbooksCollection ? declaredStatus : (typeof fields.status === 'string' ? fields.status : '') || 'draft'}
 					{@const trigger = fields.trigger ?? 'manual'}
 					{@const scope = fields.scope ?? 'all'}
 					{@const steps = countSteps(item.content)}

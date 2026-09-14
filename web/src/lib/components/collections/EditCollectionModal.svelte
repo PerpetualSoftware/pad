@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import { isRelationType } from '$lib/items/relationFieldTypes';
 	import { api, isConflictOrNotFound } from '$lib/api/client';
 	import type { Collection, CollectionUpdate, CollectionSettings, FieldDef, FieldMigration, QuickAction } from '$lib/types';
@@ -231,7 +232,13 @@
 				limit: 1
 			});
 			if (items && items.length > 0) {
-				previewContext = contextFromItem(items[0], collection);
+				// WITH A RESOLVER (BUG-3067 round 5). `contextFromItem` defaults it
+				// to one that resolves nothing, so this preview rendered every
+				// relation-valued `{status}`/`{priority}` as empty — quietly
+				// disagreeing with the menu it exists to mirror.
+				previewContext = contextFromItem(items[0], collection, (id) =>
+					localIndex.findByIdOrSlug(wsSlug, id),
+				);
 				return;
 			}
 		} catch {

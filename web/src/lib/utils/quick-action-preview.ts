@@ -38,9 +38,15 @@ export type PreviewContext = Record<TemplateVariable, string>;
  * a different kind.
  *
  * So the ruling, matching what #1352 did for chips: resolve to the target's
- * TITLE, fall back to its REF when the index cannot resolve the row, and never
- * emit the raw id. A list joins with ', '. An unresolvable id yields the empty
- * string only because there is nothing true left to say — not as a choice.
+ * TITLE, fall back to its REF, and never emit the raw id. A list joins with ', '.
+ *
+ * THE FALLBACK IS FOR A ROW WITH NO TITLE, not for a row that does not resolve,
+ * and an earlier version of this comment said the latter — which is not a thing
+ * this function can do. A ref is built FROM the row (its collection prefix and
+ * item number); an id the index cannot resolve yields no row and therefore no
+ * ref, so there is nothing to fall back to. Such a value yields the empty string
+ * because nothing true is left to say about it, which is the one case the
+ * ruling's "never empty by choice" does not reach.
  *
  * It lives HERE, and `QuickActionsMenu` imports it, because the two were one
  * site with two implementations: this module's own doc says it MIRRORS the
