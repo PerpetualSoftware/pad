@@ -8,6 +8,9 @@
 	// (backdrop-blur, color-mix surfaces) so the focus layer reads as the same UI.
 	import { relativeTime } from '$lib/utils/markdown';
 	import type { Item } from '$lib/types';
+	import { collectionStore } from '$lib/stores/collections.svelte';
+	import { categoricalValueFor, fieldDefFor } from '$lib/collections/categoricalFieldValue';
+	import { categoricalChipValue } from '$lib/components/share/shareView';
 
 	// The selected node's renderer-facing shape (a subset of the page's GraphNode3D).
 	// Kept structural so the page can pass its mapped node straight through.
@@ -75,8 +78,21 @@
 		}
 	});
 
+	// ASKED OF THE ITEM'S OWN COLLECTION (BUG-3067). `typeof … === 'string'` is
+	// the right question for a LIST-typed field and the wrong one for a scalar
+	// `relation`, whose value IS a string — so a retyped `priority` printed its
+	// stored item id here, exactly as it did on the cards before BUG-3016.
 	const priority = $derived(
-		typeof fields.priority === 'string' && fields.priority ? fields.priority : null
+		item ? categoricalValueFor(collectionStore.collections, item, 'priority', fields.priority) || null : null
+	);
+
+	// The STATUS pill comes from the graph NODE rather than from the fetched
+	// item, and the node is a server projection that carries no schema — but it
+	// does carry the item's collection slug, which is all the question needs. It
+	// renders before `item` lands, so it is resolved from the node rather than
+	// waiting for the fetch.
+	const nodeStatus = $derived(
+		categoricalChipValue(fieldDefFor(collectionStore.collections, node.collection, 'status'), node.status),
 	);
 	const assignee = $derived(item?.assigned_user_name ?? null);
 </script>
@@ -92,8 +108,8 @@
 	<h2 class="title">{node.title}</h2>
 
 	<div class="pills">
-		{#if node.status}
-			<span class="pill" class:terminal={node.is_terminal}>{node.status}</span>
+		{#if nodeStatus}
+			<span class="pill" class:terminal={node.is_terminal}>{nodeStatus}</span>
 		{/if}
 		{#if node.child_count > 0}
 			<span class="meta">{node.child_count} {node.child_count === 1 ? 'child' : 'children'}</span>
