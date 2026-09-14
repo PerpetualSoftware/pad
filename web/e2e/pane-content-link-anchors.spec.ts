@@ -1,6 +1,9 @@
 import { test, expect } from './fixtures';
 import { browserLogin, seedDoc } from './lib/collab-helpers';
-import type { APIRequestContext, Page } from '@playwright/test';
+import type { APIRequestContext, Locator, Page } from '@playwright/test';
+
+/** The slice of CDP's `Target.TargetInfo` this spec reads. */
+type TargetInfo = { targetId: string; type?: string; url?: string };
 import type { SuiteFixture } from './fixtures';
 
 /**
@@ -113,14 +116,99 @@ async function itemRef(
 	return `${item.collection_prefix}-${item.item_number}`;
 }
 
-/** Wait for a ctrl/cmd-clicked popup to actually navigate to the full-page
- *  item route ending in `idSegment` (a ref OR a slug — hrefs are built with
- *  whichever the surface prefers; `ChildItems` uses slugs, relationships and
- *  the graph use refs). Chromium briefly reports the new tab's url() as
- *  "about:blank" before the real navigation commits, so `waitForLoadState`
- *  alone can race it — wait on the URL itself instead. */
-async function waitForItemPopup(popup: Page, idSegment: string): Promise<void> {
-	await popup.waitForURL((url) => url.pathname.endsWith(`/docs/${idSegment}`));
+/**
+ * Ctrl/cmd-click `target` and assert a new tab opened at the full-page item
+ * route ending in `idSegment` (a ref OR a slug — hrefs are built with whichever
+ * the surface prefers; `ChildItems` uses slugs, relationships and the graph use
+ * refs).
+ *
+ * OBSERVED THROUGH CDP, NOT THROUGH `BrowserContext`'s `page` EVENT (BUG-2993).
+ *
+ * The obvious spelling — `Promise.all([context.waitForEvent('page'), click()])`
+ * — fails about one run in three, and for a reason that took four instrumented
+ * rounds over 61 runs to pin down: **the tab really opens**. Chromium accepts
+ * the click (`Page.frameRequestedNavigation`, reason `anchorClick`, correct
+ * url), creates a page target, navigates it to that url and keeps it — and
+ * Playwright's BrowserContext never adopts that target, never emits `page`, and
+ * never lists it in `context.pages()`. Measured at 22 seconds after the click
+ * with the target alive: `context.pages()` still held one page, and the
+ * `waitForEvent` had burned its full timeout.
+ *
+ * So the property under test — "a ctrl-click opens a new tab at the item's
+ * url" — was being asserted through a channel that does not reliably report it,
+ * and every run it dropped was a run where the product did the right thing.
+ *
+ * THE ONE THING THAT DOES NOT WORK, and it is the first thing anyone reaches
+ * for: polling `context.pages()`. The page never enters that list at all. The
+ * signal that fired in all 19 recorded failures is the browser-level Target
+ * domain, which is what this uses.
+ *
+ * Instrument and full evidence: branch `bug-2993-ctrl-click-popup` (not for
+ * merge) and the BUG-2993 trail.
+ */
+async function ctrlClickOpensItemTab(
+	page: Page,
+	target: Locator,
+	idSegment: string,
+): Promise<void> {
+	// CHEAP LEG FIRST: the anchor contract. If the href is wrong there is no
+	// point opening anything, and this failure names the defect directly instead
+	// of reporting it as a missing tab.
+	const href = await target.getAttribute('href');
+	expect(href, 'the clicked element must be a real anchor with an href').toBeTruthy();
+	expect(href!.endsWith(`/docs/${idSegment}`), `href ${href} should end with /docs/${idSegment}`).toBe(
+		true,
+	);
+
+	const browser = page.context().browser();
+	if (!browser) throw new Error('no browser handle: cannot observe targets');
+	const session = await browser.newBrowserCDPSession();
+	try {
+		// Ids present BEFORE the click, so the tab we assert on is demonstrably a
+		// new one. `setDiscoverTargets` replays the existing targets as
+		// `targetCreated`, which is what makes this snapshot possible.
+		const preexisting = new Set<string>();
+		const urls = new Map<string, string>();
+		const isPage = (t?: { type?: string }) => t?.type === 'page';
+		session.on('Target.targetCreated', (e: { targetInfo?: TargetInfo }) => {
+			if (!isPage(e.targetInfo)) return;
+			urls.set(e.targetInfo!.targetId, e.targetInfo!.url ?? '');
+		});
+		session.on('Target.targetInfoChanged', (e: { targetInfo?: TargetInfo }) => {
+			if (!isPage(e.targetInfo)) return;
+			urls.set(e.targetInfo!.targetId, e.targetInfo!.url ?? '');
+		});
+		await session.send('Target.setDiscoverTargets', { discover: true });
+		// The replay is synchronous-ish but not guaranteed; let it drain before
+		// treating `urls` as the "before" picture.
+		await page.waitForTimeout(100);
+		for (const id of urls.keys()) preexisting.add(id);
+
+		await target.click({ modifiers: ['ControlOrMeta'] });
+
+		const deadline = Date.now() + 20_000;
+		let opened: string | undefined;
+		while (!opened && Date.now() < deadline) {
+			for (const [id, url] of urls) {
+				if (preexisting.has(id)) continue;
+				if (new URL(url, 'http://x').pathname.endsWith(`/docs/${idSegment}`)) {
+					opened = id;
+					break;
+				}
+			}
+			if (!opened) await page.waitForTimeout(100);
+		}
+		expect(
+			opened,
+			`no NEW page target reached /docs/${idSegment} within 20s. ` +
+				`targets seen: ${JSON.stringify([...urls].filter(([id]) => !preexisting.has(id)))}`,
+		).toBeTruthy();
+
+		// Close it through CDP too — there is no Playwright `Page` for it to close.
+		await session.send('Target.closeTarget', { targetId: opened! }).catch(() => {});
+	} finally {
+		await session.detach().catch(() => {});
+	}
 }
 
 /** Locate an `.item-card` by its OWN title, scoped to `.card-title` — NOT a
@@ -182,12 +270,7 @@ test.describe('content-link anchor interception (PLAN-2154 / TASK-2159)', () => 
 		// The pane retarget reset the tab to Details — re-activate Relationships.
 		await pane.getByRole('tab', { name: 'Relationships' }).click();
 		await expect(childRow).toBeVisible();
-		const [popup] = await Promise.all([
-			page.context().waitForEvent('page'),
-			childRow.click({ modifiers: ['ControlOrMeta'] }),
-		]);
-		await waitForItemPopup(popup, child.slug);
-		await popup.close();
+		await ctrlClickOpensItemTab(page, childRow, child.slug);
 		expect(openItemParam(page)).toBe(new URL(paneUrlAtParent).searchParams.get('item'));
 	});
 
@@ -226,12 +309,7 @@ test.describe('content-link anchor interception (PLAN-2154 / TASK-2159)', () => 
 		// The pane retarget reset the tab to Details — re-activate Relationships.
 		await pane.getByRole('tab', { name: 'Relationships' }).click();
 		await expect(relLink).toBeVisible();
-		const [popup] = await Promise.all([
-			page.context().waitForEvent('page'),
-			relLink.click({ modifiers: ['ControlOrMeta'] }),
-		]);
-		await waitForItemPopup(popup, bRef);
-		await popup.close();
+		await ctrlClickOpensItemTab(page, relLink, bRef);
 		expect(openItemParam(page)).toBe(new URL(paneUrlAtA).searchParams.get('item'));
 	});
 
@@ -305,12 +383,7 @@ test.describe('content-link anchor interception (PLAN-2154 / TASK-2159)', () => 
 		// same-item guard, dropping the click entirely).
 		const openBtn = drawer.locator('.controls .open-btn', { hasText: 'Open' });
 		await expect(openBtn).toBeVisible();
-		const [popup] = await Promise.all([
-			page.context().waitForEvent('page'),
-			openBtn.click({ modifiers: ['ControlOrMeta'] }),
-		]);
-		await waitForItemPopup(popup, parentRef);
-		await popup.close();
+		await ctrlClickOpensItemTab(page, openBtn, parentRef);
 		// The pane itself never navigated away.
 		expect(openItemParam(page)).toBe(new URL(paneUrlAtParent).searchParams.get('item'));
 	});
