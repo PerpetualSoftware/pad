@@ -144,6 +144,80 @@
 	let searchResultRank = $state<Map<string, number> | null>(null);
 	let searchTimeout: ReturnType<typeof setTimeout>;
 
+	/**
+	 * BUG-3084: the page's signed-in-identity fence.
+	 *
+	 * Every commit point here is its own async unit with its own awaits, its
+	 * own toast and, in several cases, its own navigation — and NOTHING on this
+	 * page relates them to who is signed in. The page needs this even though
+	 * `routes/+layout.svelte` reloads the tab on an identity change, because
+	 * that reload is CONDITIONAL and this page sits in every window it leaves
+	 * open:
+	 *
+	 *   - `'' -> user` (sign-IN from anonymous) returns early with NO reload and
+	 *     no clear, so an in-flight handler here runs to completion and commits
+	 *     under the new identity;
+	 *   - `user -> ''` (sign-out) clears persistent state but does not reload,
+	 *     because a reload aborts the sign-out sites' own navigation;
+	 *   - `user -> user` (swap) reloads, leaving the pre-reload window the
+	 *     workspace layout's SSE-disconnect comment already names.
+	 *
+	 * TWO CAPTURES, because there are two questions and neither answers the
+	 * other (BUG-3006 / #1370, codex round 1 [High]):
+	 *
+	 *   `identityHeld(captured)` — "has the identity moved since THIS WORK
+	 *   started?" Captured at a handler's ENTRY, before its first await. An
+	 *   earlier version of that fix compared against the page's load epoch
+	 *   instead, which is defeated in a reachable way: an identity change fires
+	 *   the page's own load, `loadCollection` RE-STAMPS the load epoch to the
+	 *   new value, and an older in-flight mutation then compares new against
+	 *   new and commits.
+	 *
+	 *   `pageIdentityHeld()` — "does this PAGE still belong to the signed-in
+	 *   user?" The right question for work whose arrival is ITSELF after the
+	 *   change: the SSE and sync subscription callbacks below fire when the
+	 *   server says so, and a capture taken at their entry is already the new
+	 *   epoch and can detect nothing.
+	 *
+	 * COMMIT POINT, not entry: the check belongs immediately before anything
+	 * that writes page state, writes a shared store, shows a toast, navigates,
+	 * or writes localStorage — and AFTER EACH await, since an identity can move
+	 * during the second as easily as the first.
+	 *
+	 * NEITHER REPLACES THE ROUTE GUARDS, and the route guards do not replace
+	 * these. `loadSeq` / `collectionGen` / `renameNav` / the `ws !== wsSlug`
+	 * snapshots ask WHICH ROUTE an answer describes; `localIndex.upsert`'s
+	 * `sinceEpoch` / `fencedIds` / `movedOutFloor` refusals ask which PROJECTION
+	 * SCOPE a row belongs to, and that store's own comment says all three are
+	 * session-local and move only on this tab's resync. A workspace switch under
+	 * one identity leaves the epoch alone; a re-login on one workspace leaves the
+	 * generations alone. `authStore.identityFence` makes the same point one
+	 * layer down.
+	 *
+	 * Note for the reader who greps this file: `reconcileRouteCollectionSlug`
+	 * and `handleGroupReorder` carry older comments that say "capture identity
+	 * before the await" and mean the ROUTE's identity. Comments added by this
+	 * unit say "signed-in identity" wherever they mean this one.
+	 *
+	 * The bulk Undo toast uses NEITHER helper's page state, because it outlives
+	 * the page: `runBulkOn` takes its epoch from the CALLER at issue time. See
+	 * `runBulkOn`.
+	 */
+	let identityEpochAtLoad = authStore.identityEpoch;
+
+	/** The epoch as of now — captured at a handler's entry, before its awaits. */
+	function captureIdentity(): number {
+		return authStore.identityEpoch;
+	}
+
+	function identityHeld(captured: number): boolean {
+		return authStore.identityEpoch === captured;
+	}
+
+	function pageIdentityHeld(): boolean {
+		return authStore.identityEpoch === identityEpochAtLoad;
+	}
+
 	let wsSlug = $derived(page.params.workspace ?? '');
 	let username = $derived(page.params.username ?? '');
 	let collSlug = $derived(page.params.collection ?? '');
@@ -435,6 +509,10 @@
 	$effect(() => {
 		if (!wsSlug) return;
 		const uid = authStore.userId || null;
+		// The effect re-runs on an identity change (it reads `authStore.userId`),
+		// so the capture is the CURRENT one and the fence stops the PREVIOUS
+		// run's continuation, not this one (BUG-3084).
+		const epochAtEntry = captureIdentity();
 		(async () => {
 			try {
 				await localIndex.bootstrap(wsSlug, { userId: uid });
@@ -444,6 +522,12 @@
 				// redirect/purge is handled by the API client +
 				// TASK-1360.
 			}
+			// OUTSIDE the try, and before the call rather than after it
+			// (BUG-3084). Inside, a bootstrap REJECTION skips the check and
+			// reaches the reconcile anyway — the catch swallows by design. And
+			// after the call it would be dead code: `deltaSync` is the commit,
+			// so a check that follows it guards nothing.
+			if (!identityHeld(epochAtEntry)) return;
 			// Catch up any deltas missed while the user was on a
 			// different page within the same workspace.
 			await deltaSync(wsSlug);
@@ -857,6 +941,16 @@
 		const coll = collSlug;
 
 		unsubscribeSSE = sseService.onItemEvent(async (event) => {
+			// `pageIdentityHeld()`, not an entry capture (BUG-3084). This
+			// callback ARRIVES when the server says so, which in the case that
+			// matters is after the identity already moved — an entry capture
+			// would be the new epoch and could detect nothing. The question
+			// here is whether the page this subscription was opened for still
+			// belongs to whoever is signed in. The layout disconnects SSE on an
+			// identity change, which narrows the window but does not close it:
+			// an event already dispatched into this callback is past that point.
+			if (!pageIdentityHeld()) return;
+			const epochAtEntry = captureIdentity();
 			// BUG-2265 sibling broadcast: another client changed THIS
 			// collection's settings/schema. Refresh the page's own
 			// `collection` snapshot so its list-header quick actions / edit
@@ -919,6 +1013,8 @@
 					// Drop if a newer collection write superseded us or the route
 					// moved on while fetching.
 					if (collGen !== collectionGen || collSlug !== coll) return;
+					// Or the signed-in identity moved during the fetch (BUG-3084).
+					if (!identityHeld(epochAtEntry)) return;
 					collection = fresh;
 				} catch {
 					// Best-effort; the next save will 409 and self-heal.
@@ -969,6 +1065,9 @@
 	onMount(() => {
 		installPaneTestHook();
 		unsubscribeSync = syncService.onSync(async (result) => {
+			// Same shape and same reason as the SSE callback above (BUG-3084).
+			if (!pageIdentityHeld()) return;
+			const epochAtEntry = captureIdentity();
 			if (!wsSlug || !collSlug) return;
 			// A result names the workspace it was SYNCED FOR (TASK-2921). Every
 			// subscriber compares — the field's own doc says so, and four of the
@@ -980,6 +1079,7 @@
 			// reconcile's outcome, so it went with it. What stays here is what is
 			// genuinely this route's.
 			await refreshProgress(wsSlug, collSlug, items);
+			if (!identityHeld(epochAtEntry)) return;
 			// BUG-2601: renames only travel over the collection_updated
 			// SSE; a missed event strands this route on the dead slug and
 			// NOTHING above notices — /changes says nothing about
@@ -1023,6 +1123,10 @@
 	 * flight, nothing loaded).
 	 */
 	async function reconcileRouteCollectionSlug() {
+		// SIGNED-IN identity, captured at entry. Distinct from the route capture
+		// immediately below, whose comment says "identity" and means the route's
+		// (BUG-3084).
+		const epochAtEntry = captureIdentity();
 		// Capture identity BEFORE the await (no {#key} on this route — a
 		// switch mid-await must not navigate the wrong collection).
 		const ws = wsSlug;
@@ -1035,6 +1139,10 @@
 			// Route or snapshot moved while the list was in flight — a
 			// heal computed for the old identity must not fire now.
 			if (ws !== wsSlug || slug !== collSlug) return;
+			// And the SIGNED-IN identity moved: this heal would navigate the new
+			// user to a collection the previous one was looking at, retag their
+			// cached rows and refresh their sidebar (BUG-3084).
+			if (!identityHeld(epochAtEntry)) return;
 			if (collection?.id !== baseId) return;
 			const target = resolveSyncRenameTarget({
 				collectionId: baseId,
@@ -1092,6 +1200,7 @@
 	 * stale local cache (Codex P2 round 1 of TASK-1357).
 	 */
 	async function deltaSync(ws: string): Promise<boolean> {
+		const epochAtEntry = captureIdentity();
 		try {
 			// The reconcile itself is the STORE's (TASK-2921). This page used
 			// to carry its own copy of the loop — token discipline, both scope
@@ -1104,7 +1213,12 @@
 			// `false` means the loop hit its page cap without catching up —
 			// pretend success at the page level so we don't thrash, but tell the
 			// caller it wasn't a clean catch-up.
-			return await localIndex.reconcile(ws);
+			const caughtUp = await localIndex.reconcile(ws);
+			// `false` is the honest answer when the signed-in identity moved
+			// mid-reconcile: it means "not a clean catch-up", and an answer
+			// fetched for someone else is not one (BUG-3084).
+			if (!identityHeld(epochAtEntry)) return false;
+			return caughtUp;
 		} catch {
 			// 401 (session expired) / 403 (access revoked) mean the cache is no
 			// longer ours to display, and BOTH the purge and the resulting
@@ -1125,8 +1239,10 @@
 	}
 
 	async function refreshProgress(ws: string, coll: string, itemList: typeof items) {
+		const epochAtEntry = captureIdentity();
 		if (coll === 'plans') {
 			const progress = await api.items.plansProgress(ws).catch(() => []);
+			if (!identityHeld(epochAtEntry)) return;
 			itemProgress = plansProgressToMap(progress);
 			progressLabel = 'tasks';
 		} else {
@@ -1134,7 +1250,9 @@
 			// children) per item; fall back to markdown-checkbox progress for
 			// items with none (BUG-1509). `showArchived` keeps badges on
 			// archived items (PR #491 [P2]). Shared fetch+merge (TASK-2029).
-			itemProgress = await fetchCollectionProgress(ws, coll, { includeArchived: showArchived });
+			const map = await fetchCollectionProgress(ws, coll, { includeArchived: showArchived });
+			if (!identityHeld(epochAtEntry)) return;
+			itemProgress = map;
 		}
 	}
 
@@ -1175,6 +1293,14 @@
 		// Cleared per load: a successful fetch must not leave the previous
 		// load's degraded banner up (TASK-2946).
 		metaFromCache = false;
+		// RE-STAMPED HERE, before any await: the epoch that matters is the one
+		// current when THIS page's data was loaded, not the one current when the
+		// module first evaluated. A route component that survives an identity
+		// change without remounting — which, per the fence's header comment, is
+		// every sign-in from anonymous — would otherwise compare against a dead
+		// epoch for the rest of its life (BUG-3084).
+		identityEpochAtLoad = authStore.identityEpoch;
+		const epochAtEntry = identityEpochAtLoad;
 		try {
 			// Items now flow through localIndex (the `items` $derived
 			// above reads `getByCollection`). We still fetch the
@@ -1190,6 +1316,9 @@
 			// A newer load started while this one was in flight — drop
 			// this result so it can't overwrite the current route's state.
 			if (seq !== loadSeq) return;
+			// A different question: this metadata was fetched for whoever was
+			// signed in when the load started (BUG-3084).
+			if (!identityHeld(epochAtEntry)) return;
 			// Gate the collection SNAPSHOT on the unified generation: a newer
 			// SSE refresh (which bumps collectionGen but not loadSeq) may have
 			// landed fresher data since this load began — don't revert it. The
@@ -1206,12 +1335,17 @@
 				try {
 					const progress = await api.items.plansProgress(ws);
 					if (seq !== loadSeq) return;
+					if (!identityHeld(epochAtEntry)) return;
 					itemProgress = plansProgressToMap(progress);
 					progressLabel = 'tasks';
 				} catch {
 					// Don't clear a newer load's progress badges if this
 					// stale load's progress fetch rejected (Codex round 5).
 					if (seq !== loadSeq) return;
+					// Nor the badges of a DIFFERENT USER: a rejection is a
+					// commit too, and `seq` says nothing about who asked
+					// (BUG-3084, codex round 2).
+					if (!identityHeld(epochAtEntry)) return;
 					itemProgress = {};
 				}
 			} else {
@@ -1223,12 +1357,17 @@
 				try {
 					const map = await fetchCollectionProgress(ws, coll, { includeArchived });
 					if (seq !== loadSeq) return;
+					if (!identityHeld(epochAtEntry)) return;
 					itemProgress = map;
 					progressLabel = 'done';
 				} catch {
 					// Don't clear a newer load's progress badges if this
 					// stale load's progress fetch rejected (Codex round 5).
 					if (seq !== loadSeq) return;
+					// Nor the badges of a DIFFERENT USER: a rejection is a
+					// commit too, and `seq` says nothing about who asked
+					// (BUG-3084, codex round 2).
+					if (!identityHeld(epochAtEntry)) return;
 					itemProgress = {};
 				}
 			}
@@ -1242,6 +1381,7 @@
 			// don't apply this (stale) collection's view/sort/filter state
 			// over the current route's (Codex round 4).
 			if (seq !== loadSeq) return;
+			if (!identityHeld(epochAtEntry)) return;
 			// Set view mode: URL param > localStorage > collection default
 			const settings = parseSettings(collData);
 			const defaultMode = (['board', 'list', 'table'].includes(settings.default_view))
@@ -1256,6 +1396,9 @@
 			// Superseded by a newer load — don't clobber the current
 			// route's state with this stale failure.
 			if (seq !== loadSeq) return;
+			// A failure fetched under the previous identity is not this user's
+			// error to be shown (BUG-3084).
+			if (!identityHeld(epochAtEntry)) return;
 			// Distinguish a genuine not-found from a transient failure
 			// (BUG-2025). Only a real 404 (`not_found`) collapses to the
 			// terminal "Collection not found" empty state; a network
@@ -1290,6 +1433,10 @@
 				// for rows, and it would arrive here through a second door.
 				const cached = await collectionStore.cachedCollection(ws, coll);
 				if (seq !== loadSeq) return;
+				// The cache is scoped to the durable rows' epoch, not to the
+				// signed-in user; rendering it after an identity change would
+				// show the previous user's collection to the new one (BUG-3084).
+				if (!identityHeld(epochAtEntry)) return;
 				if (cached && collGen === collectionGen) {
 					collection = cached;
 					metaError = null;
@@ -1304,6 +1451,10 @@
 		} finally {
 			// Only the latest load owns the loading flag — a superseded
 			// load must not flip it false out from under the current one.
+			// NOT identity-fenced, deliberately: this is the one write that must
+			// happen on every exit path. A load abandoned by the fence above
+			// leaves the spinner up for ever if this is skipped, and the flag
+			// discloses nothing about either user (BUG-3084).
 			if (seq === loadSeq) metaLoading = false;
 		}
 	}
@@ -1620,7 +1771,12 @@
 			// renders while the network response is pending.
 			searchResultRank = null;
 			const snapshotQuery = trimmed;
+			// Fenced INSIDE the timer body, not at the effect: 200ms separates
+			// the two, and a check at the effect says nothing about who is
+			// signed in when this fires (BUG-3084).
+			const epochAtSchedule = captureIdentity();
 			searchTimeout = setTimeout(async () => {
+				if (!identityHeld(epochAtSchedule)) return;
 				try {
 					const resp = await api.search(bodyQuery, {
 						workspace: snapshotWs,
@@ -1637,11 +1793,13 @@
 					) {
 						return;
 					}
+					if (!identityHeld(epochAtSchedule)) return;
 					searchResultRank = new Map(
 						resp.results.map((r, i) => [r.item.id, i]),
 					);
 				} catch {
 					if (
+						identityHeld(epochAtSchedule) &&
 						searchQuery.trim() === snapshotQuery &&
 						wsSlug === snapshotWs &&
 						collSlug === snapshotColl
@@ -1694,6 +1852,7 @@
 	 */
 	async function handleStatusChange(item: Item, newValue: string, fieldKey: string = groupField) {
 		if (!wsSlug) return;
+		const epochAtEntry = captureIdentity();
 		// BUG-3049: patch ONLY the group field. This used to read the item's
 		// fields, set one key and send the whole blob back as a full replace,
 		// so a concurrent field edit landing between the read and the write was
@@ -1735,6 +1894,11 @@
 
 		try {
 			const updated = await doUpdate(false);
+			// The `epoch` above is the PROJECTION scope, not the signed-in
+			// identity: `localIndex.upsert`'s own comment says its three
+			// refusals bump only on this tab's resync, so none of them moves
+			// when the user changes (BUG-3084).
+			if (!identityHeld(epochAtEntry)) return;
 			// Push the canonical post-update row into the local index;
 			// the `items` derived view re-renders automatically.
 			localIndex.upsert(ws, updated, epoch);
@@ -1756,10 +1920,18 @@
 					// distinctly from the original guard.
 					const msg = retryErr instanceof Error ? retryErr.message : 'Failed to update status';
 					console.error('Forced status update failed:', retryErr);
-					toastStore.show(msg, 'error');
+					// The failure toast is fenced too: the request was refused
+					// FOR THE NEW USER and the message still reaches them
+					// otherwise. The throw is not — BoardView must unwind its
+					// optimistic reorder either way (BUG-3084).
+					if (identityHeld(epochAtEntry)) toastStore.show(msg, 'error');
 					throw retryErr;
 				}
 				if (forced) {
+					// The force-retry sits behind a USER CONFIRMATION, so its
+					// window is the widest on this page — seconds, not the
+					// round-trip (BUG-3084).
+					if (!identityHeld(epochAtEntry)) return;
 					localIndex.upsert(ws, forced, epoch);
 					toastStore.show(`Moved to ${formatLabel(newValue)}`, 'success');
 					return;
@@ -1768,18 +1940,19 @@
 				// is an intentional no-op, not a failure. Re-throw so
 				// the BoardView drag-handler can unwind its optimistic
 				// reorder.
-				toastStore.show('Status change cancelled', 'info');
+				if (identityHeld(epochAtEntry)) toastStore.show('Status change cancelled', 'info');
 				throw e;
 			}
 			// Any other failure mode — network, validation, 500, etc.
 			console.error('Failed to update item:', e);
-			toastStore.show('Failed to update status', 'error');
+			if (identityHeld(epochAtEntry)) toastStore.show('Failed to update status', 'error');
 			throw e; // Re-throw so BoardView knows the move failed
 		}
 	}
 
 	async function handleReorder(updates: { slug: string; sort_order: number }[]) {
 		if (!wsSlug) return;
+		const epochAtEntry = captureIdentity();
 		// Only persist items whose sort_order actually changed
 		const dirty: { id: string; sort_order: number }[] = [];
 		for (const { slug, sort_order } of updates) {
@@ -1817,6 +1990,10 @@
 				// they need no guard.
 				const epoch = localIndex.scopeEpochFor(wsSlug);
 				const updated = await api.items.update(wsSlug, id, { sort_order });
+				// PER-ITERATION, like the scope epoch beside it: the loop is
+				// sequential and an identity change mid-loop must stop the
+				// remaining settles, not just the current one (BUG-3084).
+				if (!identityHeld(epochAtEntry)) return;
 				localIndex.upsert(wsSlug, updated, epoch);
 			}
 		} catch (e) {
@@ -1826,6 +2003,10 @@
 
 	async function handleGroupReorder(newOrder: string[]) {
 		if (!wsSlug || !collSlug || !collection) return;
+		// SIGNED-IN identity, captured at entry — distinct from the route
+		// capture below, whose comment says "identity" and means the route's
+		// (BUG-3084).
+		const epochAtEntry = captureIdentity();
 		// Capture identity + base snapshot BEFORE the await (no {#key} on this
 		// route — a switch mid-await must not write the wrong collection).
 		const ws = wsSlug;
@@ -1864,6 +2045,7 @@
 				expected_updated_at: base.updated_at
 			});
 			if (collGen !== collectionGen || ws !== wsSlug || slug !== collSlug) return;
+			if (!identityHeld(epochAtEntry)) return;
 			collection = updated;
 		} catch (err) {
 			// A concurrent change defeats our slug-targeted write via a 409
@@ -1878,6 +2060,7 @@
 				try {
 					const list = await api.collections.list(ws);
 					const fresh = list.find((c) => c.id === base.id);
+					if (!identityHeld(epochAtEntry)) return;
 					if (fresh && collGen === collectionGen && ws === wsSlug && slug === collSlug) {
 						collection = fresh;
 						// BUG-2272: a 404 here means a RENAME (not just a concurrent
@@ -1899,10 +2082,12 @@
 				} catch {
 					// Best-effort reseed.
 				}
-				toastStore.show('Columns changed elsewhere — please reorder again', 'error');
+				if (identityHeld(epochAtEntry)) {
+					toastStore.show('Columns changed elsewhere — please reorder again', 'error');
+				}
 				return;
 			}
-			toastStore.show('Failed to save column order', 'error');
+			if (identityHeld(epochAtEntry)) toastStore.show('Failed to save column order', 'error');
 		}
 	}
 
@@ -1913,6 +2098,7 @@
 
 	async function createNewItem() {
 		if (!wsSlug || !collSlug || creatingNew) return;
+		const epochAtEntry = captureIdentity();
 		creatingNew = true;
 		try {
 			// BUG-3078: the status default goes through the declared type.
@@ -1923,14 +2109,21 @@
 				fields: JSON.stringify(defaultFields),
 				source: 'web'
 			});
+			// The item was created for the previous user; navigating the new one
+			// into it is the disclosure, and it happens whether or not the
+			// server would let them read it (BUG-3084).
+			if (!identityHeld(epochAtEntry)) return;
 			goto(`/${username}/${wsSlug}/${collSlug}/${itemUrlId(item)}?new=1`);
 		} catch (err: any) {
+			if (!identityHeld(epochAtEntry)) return;
 			if (isPlanLimitError(err)) {
 				toastStore.show(planLimitMessage(err) + ' Upgrade to Pro', 'error', 6000, '/console/billing');
 			} else {
 				toastStore.show(err?.message || 'Failed to create item', 'error');
 			}
 		} finally {
+			// NOT fenced: a busy flag left true disables the affordance for ever
+			// on a page that did not remount, and it discloses nothing.
 			creatingNew = false;
 		}
 	}
@@ -1964,6 +2157,7 @@
 		if (!wsSlug || !collSlug) return null;
 		const trimmed = title.trim();
 		if (!trimmed) return null;
+		const epochAtEntry = captureIdentity();
 		try {
 			// BUG-3078: the status default goes through the declared type.
 			const defaultFields: Record<string, any> = createDefaultFields(collection);
@@ -1992,6 +2186,11 @@
 				fields: JSON.stringify(defaultFields),
 				source: 'web'
 			});
+			// The signed-in identity, not the projection scope the `epoch`
+			// beside it names (BUG-3084). Returning null rather than the item
+			// so `leaveSaveAll`'s loop, its only other caller, does not clear a
+			// draft on the strength of a create it must not commit.
+			if (!identityHeld(epochAtEntry)) return null;
 			localIndex.upsert(wsSlug, item, epoch);
 			// Desktop reveal only — `openItemPane` is the same entry point a
 			// plain left-click on an existing card uses, so a created card and
@@ -2001,10 +2200,15 @@
 			}
 			return item;
 		} catch (err: any) {
-			if (isPlanLimitError(err)) {
-				toastStore.show(planLimitMessage(err) + ' Upgrade to Pro', 'error', 6000, '/console/billing');
-			} else {
-				toastStore.show(err?.message || 'Failed to create item', 'error');
+			// The toast is fenced; the THROW is not — `leaveSaveAll` and the
+			// board's column composer both rely on it to stop and keep the
+			// user's unsaved text (BUG-3084).
+			if (identityHeld(epochAtEntry)) {
+				if (isPlanLimitError(err)) {
+					toastStore.show(planLimitMessage(err) + ' Upgrade to Pro', 'error', 6000, '/console/billing');
+				} else {
+					toastStore.show(err?.message || 'Failed to create item', 'error');
+				}
 			}
 			throw err;
 		}
@@ -2052,7 +2256,19 @@
 				history.go(popDelta);
 				// popstate has no completion promise — reset the bypass
 				// once the navigation has settled.
-				setTimeout(() => { bypassNavGuard = false; }, 0);
+				//
+				// FENCED even at zero delay (BUG-3084). "0ms is too short for an
+				// identity to move" is a claim about a race, and the only
+				// argument for it is that the window looks small — `setTimeout(…,
+				// 0)` still yields to the task queue, and the identity change
+				// this fences is a store write that can be queued ahead of it.
+				// The check costs one comparison; the claim would cost a
+				// measurement nobody has made.
+				const epochAtSchedule = captureIdentity();
+				setTimeout(() => {
+					if (!identityHeld(epochAtSchedule)) return;
+					bypassNavGuard = false;
+				}, 0);
 			} else {
 				goto(url).finally(() => { bypassNavGuard = false; });
 			}
@@ -2069,6 +2285,7 @@
 
 	async function leaveSaveAll() {
 		if (savingDrafts) return;
+		const epochAtEntry = captureIdentity();
 		savingDrafts = true;
 		try {
 			// Clear EACH draft as its create succeeds (not all at the end),
@@ -2078,6 +2295,14 @@
 				const title = text.trim();
 				if (!title) continue;
 				await quickCreateInColumn(col, title, false);
+				// Per iteration, and BEFORE the draft is cleared: the callee
+				// returns null rather than committing once the identity has
+				// moved, so clearing here would discard the user's text on the
+				// strength of a create that did not land (BUG-3084).
+				if (!identityHeld(epochAtEntry)) {
+					savingDrafts = false;
+					return;
+				}
 				delete draftText[col];
 				delete draftOpen[col];
 			}
@@ -2088,6 +2313,9 @@
 			return;
 		}
 		savingDrafts = false;
+		// The pending navigation was the PREVIOUS user's intent, formed when
+		// they tried to leave the page (BUG-3084).
+		if (!identityHeld(epochAtEntry)) return;
 		runPendingNav();
 	}
 
@@ -2105,6 +2333,7 @@
 	async function quickCreate() {
 		const title = quickCreateTitle.trim();
 		if (!title || !wsSlug || !collSlug || creatingNew) return;
+		const epochAtEntry = captureIdentity();
 		creatingNew = true;
 		try {
 			// BUG-3078: the status default goes through the declared type.
@@ -2117,16 +2346,19 @@
 				fields: JSON.stringify(defaultFields),
 				source: 'web'
 			});
+			if (!identityHeld(epochAtEntry)) return;
 			localIndex.upsert(wsSlug, item, epoch);
 			quickCreateTitle = '';
 			toastStore.show(`Created "${title}"`, 'success');
 		} catch (err: any) {
+			if (!identityHeld(epochAtEntry)) return;
 			if (isPlanLimitError(err)) {
 				toastStore.show(planLimitMessage(err) + ' Upgrade to Pro', 'error', 6000, '/console/billing');
 			} else {
 				toastStore.show(err?.message || 'Failed to create item', 'error');
 			}
 		} finally {
+			// NOT fenced, for the reason on createNewItem's own busy flag.
 			creatingNew = false;
 		}
 	}
@@ -2299,8 +2531,12 @@
 		if (!targetId) return;
 
 		cancelPaneFollow();
+		// Captured at SCHEDULE time — the keypress is the intent, and the commit
+		// is a `replaceState` navigation ~140ms later (BUG-3084).
+		const epochAtSchedule = captureIdentity();
 		paneFollowTimer = setTimeout(() => {
 			paneFollowTimer = null;
+			if (!identityHeld(epochAtSchedule)) return;
 			// Re-check: the pane may have closed OR drilled during the debounce
 			// window (R14 fence-on-continuation).
 			if (!openItemRef) return;
@@ -2661,6 +2897,11 @@
 		opts?: { undo?: (okIds: string[]) => void }
 	): Promise<string[]> {
 		if (!ws || req.ids.length === 0) return [];
+		// Captured at entry and used for BOTH questions this function has. Its
+		// own awaits compare against it in the ordinary way; the Undo toast
+		// below compares against it at CLICK time, which may be a minute later
+		// and on another page (BUG-3084).
+		const epochAtEntry = captureIdentity();
 		const okIds: string[] = [];
 		let errMsg = '';
 		// A thrown chunk (network / auth / 4xx) stops further chunks but
@@ -2672,6 +2913,9 @@
 			const chunk = req.ids.slice(i, i + BULK_CHUNK);
 			try {
 				const res = await api.items.bulk(ws, { ...req, ids: chunk });
+				// Per chunk: an identity change mid-loop must stop the remaining
+				// chunks, not merely the reporting at the end (BUG-3084).
+				if (!identityHeld(epochAtEntry)) return okIds;
 				for (const u of res.updated) okIds.push(u.id);
 			} catch (e: any) {
 				errMsg = e?.message || '';
@@ -2687,11 +2931,27 @@
 		// — soften the toast (matches the old archive flow, Codex P3 round 2
 		// of TASK-1357).
 		const synced = ok > 0 ? await deltaSync(ws) : true;
+		// Everything below writes the GLOBAL toast store, which outlives this
+		// page entirely. A result computed for the previous user must not be
+		// reported to whoever is signed in now (BUG-3084).
+		if (!identityHeld(epochAtEntry)) return okIds;
 		// Attach an Undo button only when the action succeeded and the
 		// caller supplied an undo (archive / move — the destructive ops).
+		// THE WORST CASE ON THIS PAGE, and the reason `epochAtEntry` is captured
+		// at entry rather than at any commit: this callback is handed to the
+		// global toast store and deliberately outlives the page. Without the
+		// check, B can click A's Undo and re-archive or move A's items — and
+		// when the server refuses, B is still shown the count (BUG-3084; the
+		// same shape as #1370's delete-workspace Undo).
 		const undoAction =
 			ok > 0 && opts?.undo
-				? { label: 'Undo', onAction: () => opts.undo?.(okIds) }
+				? {
+						label: 'Undo',
+						onAction: () => {
+							if (!identityHeld(epochAtEntry)) return;
+							opts.undo?.(okIds);
+						},
+					}
 				: undefined;
 		const dwell = undoAction ? UNDO_TOAST_MS : undefined;
 		if (ok === 0) {
@@ -2764,12 +3024,17 @@
 
 	async function handleRestore(item: Item) {
 		if (!wsSlug) return;
+		const epochAtEntry = captureIdentity();
 		const epoch = localIndex.scopeEpochFor(wsSlug);
 		try {
 			const restored = await api.items.restore(wsSlug, item.id);
+			if (!identityHeld(epochAtEntry)) return;
 			localIndex.upsert(wsSlug, restored, epoch);
+			// The title is the disclosure: the toast names an item from the
+			// previous user's workspace view (BUG-3084).
 			toastStore.show(`Restored "${item.title}"`, 'success');
 		} catch {
+			if (!identityHeld(epochAtEntry)) return;
 			toastStore.show('Failed to restore item', 'error');
 		}
 	}
@@ -3032,6 +3297,7 @@
 	async function saveCurrentView() {
 		const name = saveViewName.trim();
 		if (!name || !wsSlug || !collSlug || savingView) return;
+		const epochAtEntry = captureIdentity();
 		savingView = true;
 		try {
 			const config = buildViewConfig();
@@ -3040,22 +3306,30 @@
 				view_type: viewMode,
 				config: JSON.stringify(config)
 			});
+			if (!identityHeld(epochAtEntry)) return;
 			savedViews = [...savedViews, view];
 			activeViewId = view.id;
 			saveViewOpen = false;
 			saveViewName = '';
 			toastStore.show(`Saved view "${name}"`, 'success');
 		} catch {
+			if (!identityHeld(epochAtEntry)) return;
 			toastStore.show('Failed to save view', 'error');
 		} finally {
+			// NOT fenced, for the reason on createNewItem's busy flag.
 			savingView = false;
 		}
 	}
 
 	async function deleteView(viewId: string, viewName: string) {
 		if (!wsSlug || !collSlug) return;
+		const epochAtEntry = captureIdentity();
 		try {
 			await api.views.delete(wsSlug, collSlug, viewId);
+			// `writeDefaultViewId` below writes LOCALSTORAGE, which no reload
+			// drops — the one commit on this page that survives the mechanism
+			// BUG-3005 put in place (BUG-3084).
+			if (!identityHeld(epochAtEntry)) return;
 			savedViews = savedViews.filter((v) => v.id !== viewId);
 			if (activeViewId === viewId) {
 				clearActiveView();
@@ -3070,6 +3344,7 @@
 			}
 			toastStore.show(`Deleted view "${viewName}"`, 'success');
 		} catch {
+			if (!identityHeld(epochAtEntry)) return;
 			toastStore.show('Failed to delete view', 'error');
 		}
 	}

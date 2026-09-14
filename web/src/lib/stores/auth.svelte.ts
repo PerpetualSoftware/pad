@@ -106,11 +106,23 @@ let identityEstablished = false;
 // through `load()` moves the identity without touching `generation`, so
 // `generation` cannot serve as the epoch — it would miss the swap.
 // `$state`, unlike `generation` and `notifiedUserId` beside it, because this
-// one is READ FROM A TEMPLATE: the workspace layout keys its leaf-page block on
-// it (`{#key authStore.identityEpoch}`) to remount route components whose own
-// state is not identity-scoped. A plain `let` is invisible to the template and
-// the block never re-runs — which is exactly how the first version of that
-// remount shipped, silently, until a test counted mounts (codex round 2).
+// one may be READ FROM A TEMPLATE: a plain `let` is invisible to the template
+// and a block keyed on it never re-runs — which is exactly how the first
+// version of the remount this comment used to describe shipped, silently, until
+// a test counted mounts (codex round 2).
+//
+// CORRECTED (BUG-3084): that remount no longer exists. This comment said the
+// workspace layout keys its leaf-page block on this value
+// (`{#key authStore.identityEpoch}`) to re-create route components whose state
+// is not identity-scoped. BUG-3005 (#1325) replaced that with a FULL PAGE
+// RELOAD in `routes/+layout.svelte`, and no `{#key}` on this value survives
+// anywhere in the tree. The distinction matters to anyone deciding whether a
+// route needs a fence of its own, because the reload is CONDITIONAL — it does
+// not fire on a sign-IN from anonymous, and does not fire on sign-out (both
+// sign-out sites navigate away themselves) — so a route component can outlive
+// an identity change with in-flight work. `$state` stays: nothing reads this
+// from a template TODAY, and the next thing that does must not have to
+// rediscover why a plain `let` would be silently wrong.
 let identityEpoch = $state(0);
 
 function notifyIdentityChange() {
