@@ -231,6 +231,32 @@ func (s *Store) D() Dialect { return s.dialect }
 // DB returns the underlying *sql.DB (for use in migrations/testing).
 func (s *Store) DB() *sql.DB { return s.db }
 
+// BeginSnapshot opens a transaction that is both the write lock and a single
+// read snapshot for everything run on it (BUG-3072).
+//
+// The DSN carries `_txlock=immediate`, so this is a BEGIN IMMEDIATE: it takes
+// the write lock on Begin rather than on first write. MEASURED, because the
+// whole design leans on it: with this transaction held, another handle's
+// CreateItem blocked for the full 1.5s it was observed and completed only
+// after the commit. SQLite has ONE write lock, so while this is open no other
+// connection can COMMIT anything.
+//
+// THAT EXCLUSION IS WHAT MAKES A BUNDLE CONSISTENT — not the executor the
+// reads use. Reads issued on the POOL while this is held do not deadlock (the
+// pool is 16 deep) and, measured against the same probe, see exactly what the
+// transaction sees, because nothing can change underneath either of them.
+//
+// So passing the returned *sql.Tx to the *Q read variants is not what buys
+// correctness today; it is what stops correctness from depending on an
+// argument about lock exclusion that holds only while ONE transaction spans
+// the whole run. Split it per workspace, or commit in the middle, and pooled
+// reads start diverging silently while transaction-scoped reads stay right.
+//
+// SQLite-specific in all of the above. On Postgres this is a plain Begin and
+// the pool has no single-writer property at all, so there the executor is the
+// only thing that makes a read part of the snapshot.
+func (s *Store) BeginSnapshot() (*sql.Tx, error) { return s.db.Begin() }
+
 // New creates a Store backed by SQLite at the given path.
 //
 // The DSN is configured for safe concurrent use under Go's connection pool:
@@ -306,6 +332,31 @@ func New(dbPath string) (*Store, error) {
 	db, err := sql.Open(guardedSQLiteDriver, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
+	}
+
+	// REFUSE A DATABASE THAT HAS BEEN MIGRATED TO POSTGRES (BUG-3072).
+	//
+	// THIS IS FIRST, and the ordering is load-bearing rather than tidy.
+	// Everything below it WRITES: the WAL pragma touches the header, migrate()
+	// runs DDL and rebuild migrations that INSERT into protected tables, and
+	// the three backfills after it write collections.prefix,
+	// workspaces.owner_id and users.username. Run any of them against a marked
+	// file and the open either trips the refusal triggers — surfacing as a
+	// migration failure rather than the remedy — or quietly mutates a file this
+	// function is about to declare abandoned.
+	//
+	// This covers every opener by construction: the three non-test callers of
+	// New (the migration's own source, `pad db nul`, and `pad server start`)
+	// all arrive here. It deliberately does NOT cover `pad db backup`, which
+	// opens its own connection and runs VACUUM INTO — a marked file stays
+	// backup-able, copyable and readable by sqlite3, which is the point of
+	// refusing WRITES rather than access.
+	if remedy, merr := migratedRemedyIfMarked(db); merr != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("check whether %s was migrated: %w", dbPath, merr)
+	} else if remedy != "" {
+		_ = db.Close()
+		return nil, fmt.Errorf("refusing to open %s: %s", dbPath, remedy)
 	}
 
 	// Enable WAL mode (database-level: persists across connections).

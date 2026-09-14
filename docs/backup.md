@@ -186,8 +186,43 @@ checks below are what remain. If the config cannot be loaded at all the check is
 skipped and refuses unless `--force` is given, so a run that reaches the copy
 has either answered the question or been told to ignore it.
 
-The remaining gap — another process attached to the same database file that no
-address probe can see — is tracked as BUG-3072.
+That gap — another process attached to the same database file that no address
+probe can see — is closed from the other end by the marker below (BUG-3072).
+The address probe stays as the cheap early refusal; neither door claims to be
+complete on its own.
+
+### The source database is marked when the migration succeeds
+
+A successful `pad db migrate-to-pg` is the only command in Pad that ABANDONS
+its source: afterwards you point the server at PostgreSQL and the SQLite file
+stops being read. So when every workspace has been imported, and inside the
+same transaction the migration held over the whole run, it marks the SQLite
+file as migrated. From that moment:
+
+- **The file refuses to be opened by `pad`.** `pad server start` and `pad db
+  nul` against it fail with a message naming the PostgreSQL database the data
+  went to.
+- **Any handle that is still open refuses writes**, on any port, in any
+  process, from any binary. This is the case that matters: a browser tab
+  editing an item holds a connection that the migration's write lock only
+  DEFERS — SQLite's `busy_timeout` belongs to the appender's connection, not to
+  ours, so without the marker that edit would simply land a few seconds later,
+  in the file you are about to abandon, and nothing would say so. With it, the
+  write fails and the server logs the refusal.
+- **Reads still work.** `pad db backup` does not go through the refusal (it
+  opens its own connection and runs `VACUUM INTO`), and `sqlite3`, `cp` and any
+  other tool are unaffected. The file is abandoned, not corrupt — take a copy
+  before you delete it.
+
+A migration that fails part-way does NOT mark the source: the transaction rolls
+back and the SQLite database is left exactly as it was, so you can fix the
+problem and re-run. The destination may be partially populated in that case —
+no transaction spans two databases — and the error says so; drop and recreate
+the PostgreSQL database before re-running.
+
+Because the marker is permanent, a migration cannot be re-run against a file it
+has already migrated. That is deliberate: the second run would copy a database
+that has been frozen since the first.
 
 ### Unflushed collaborative edits
 

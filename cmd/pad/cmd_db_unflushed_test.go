@@ -185,7 +185,7 @@ func TestGateLateStaleTellsTheTruthAboutWhatWasAlreadyMigrated(t *testing.T) {
 	stale := []store.PendingFlushItem{{Ref: "TASK-7", Title: "half-typed"}}
 
 	t.Run("nothing migrated yet keeps the pre-pass promise", func(t *testing.T) {
-		report, err := gateLateStale("beta", stale, 0)
+		report, err := gateLateStale("beta", stale, 0, false)
 		if err == nil {
 			t.Fatal("the gate permitted a migration that would have abandoned the only copy")
 		}
@@ -198,7 +198,7 @@ func TestGateLateStaleTellsTheTruthAboutWhatWasAlreadyMigrated(t *testing.T) {
 	})
 
 	t.Run("mid-loop says PARTIALLY populated instead", func(t *testing.T) {
-		report, err := gateLateStale("beta", stale, 3)
+		report, err := gateLateStale("beta", stale, 3, false)
 		if err == nil {
 			t.Fatal("the gate permitted the migration")
 		}
@@ -218,7 +218,7 @@ func TestGateLateStaleTellsTheTruthAboutWhatWasAlreadyMigrated(t *testing.T) {
 	t.Run("a clean bundle is not gated", func(t *testing.T) {
 		// CONTROL: without it, a gate that refused unconditionally would satisfy
 		// both cases above.
-		report, err := gateLateStale("beta", nil, 3)
+		report, err := gateLateStale("beta", nil, 3, false)
 		if err != nil {
 			t.Errorf("a bundle with nothing marked was refused: %v", err)
 		}
@@ -228,8 +228,13 @@ func TestGateLateStaleTellsTheTruthAboutWhatWasAlreadyMigrated(t *testing.T) {
 	})
 
 	t.Run("the refusal names the items and the remedy", func(t *testing.T) {
-		report, _ := gateLateStale("beta", stale, 0)
-		for _, want := range []string{"TASK-7", "half-typed", "beta", "Stop the Pad server"} {
+		report, _ := gateLateStale("beta", stale, 0, false)
+		// "Stop the Pad server" was the remedy while this was a TOCTOU gate.
+		// BUG-3072 put the pre-pass and the export inside one snapshot, so a
+		// concurrent editor can no longer be the cause and telling the operator
+		// to stop a server would point them at the wrong thing. The gate is now
+		// an invariant check and asks to be reported instead.
+		for _, want := range []string{"TASK-7", "half-typed", "beta", "Please report this"} {
 			if !strings.Contains(report, want) {
 				t.Errorf("report does not contain %q:\n%s", want, report)
 			}

@@ -13,6 +13,15 @@ import (
 // pre-auth/fresh-install bootstrap. End-user workspace switchers should
 // call GetUserWorkspaces instead, which scopes to the user's memberships.
 func (s *Store) ListWorkspaces() ([]models.Workspace, error) {
+	return s.ListWorkspacesQ(s.db)
+}
+
+// ListWorkspacesQ is ListWorkspaces against a caller-supplied executor, so a
+// migration's gate can read the workspace list inside the same snapshot
+// transaction its exports run in (BUG-3072). Reading the pool here instead
+// would answer from a different instant than the bundles it is gating, with
+// nothing failing to show it.
+func (s *Store) ListWorkspacesQ(q Queryer) ([]models.Workspace, error) {
 	// BUG-1481: workspaces.updated_at only moves when the workspace row
 	// itself changes (rename, settings, members) — it does NOT reflect
 	// item activity inside the workspace. We surface the latter via
@@ -21,7 +30,7 @@ func (s *Store) ListWorkspaces() ([]models.Workspace, error) {
 	// "where is work happening?" rather than "when was this row last
 	// renamed?". Done in two steps (scalar subquery + Go-side max) to
 	// stay portable across SQLite (no GREATEST) and Postgres.
-	rows, err := s.db.Query(s.q(`
+	rows, err := q.Query(s.q(`
 		SELECT w.id, w.name, w.slug, w.owner_id, COALESCE(ou.username, ''), w.description, w.settings, w.source, w.created_at, w.updated_at,
 		       (SELECT MAX(i.updated_at) FROM items i WHERE i.workspace_id = w.id AND i.deleted_at IS NULL)
 		FROM workspaces w

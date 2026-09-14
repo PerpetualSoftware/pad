@@ -433,11 +433,17 @@ Steps:
 			// --force, or against a server this probe cannot see, they are the
 			// remaining protection and the window is narrowed rather than gone.
 			//
-			// The residual is tracked as BUG-3072, which also records why it is
-			// wider than bodies: this probe asks about an ADDRESS when the real
-			// question is about a FILE, and a second server on another port — or
-			// any other caller of the exported Store.AppendYjsUpdate — is outside
-			// what it can answer.
+			// The residual was tracked as BUG-3072 and is now closed from the
+			// OTHER END rather than here: this probe still asks about an
+			// ADDRESS when the real question is about a FILE, and it still
+			// cannot see a second server on another port or any other caller of
+			// the exported Store.AppendYjsUpdate. What changed is that a
+			// successful migration MARKS the source (MarkMigratedTx below), so
+			// such a writer is refused by the database itself instead of
+			// succeeding into a file nothing will read again. This probe
+			// remains as the cheap EARLY refusal — it fails before any work is
+			// done, and its message tells an operator to do the one thing that
+			// makes the whole question moot.
 			cfg, cfgErr := config.Load()
 			if cfgErr != nil {
 				// FAIL CLOSED (codex round 3 P1). The previous version warned and
@@ -513,8 +519,56 @@ Steps:
 				return err
 			}
 
+			// ONE SNAPSHOT ACROSS THE WHOLE MIGRATION (BUG-3072).
+			//
+			// Every read below runs on this transaction: the workspace list,
+			// the unflushed-edits gate, and every workspace's export. It is
+			// opened BEFORE the gate and released only after the last import,
+			// so the whole command is one instant.
+			//
+			// WHAT THE TRANSACTION BUYS is that nothing can commit underneath
+			// it. SQLite has one write lock and `_txlock=immediate` takes it
+			// here, on Begin — measured on BUG-3072: another handle's write
+			// stays blocked for as long as this is held and lands only after
+			// the commit. That is what makes the bundle internally consistent,
+			// and it is a real defect closed rather than a tidy-up:
+			// ExportWorkspace used to issue six pooled queries with nothing
+			// enclosing them, so a concurrent writer could land between any two
+			// SECTIONS and produce a bundle that disagrees with itself — an
+			// item naming a collection captured before it existed, a link whose
+			// endpoint arrived after the items section was read. It is also why
+			// the gate below can no longer measure a different instant than the
+			// bundles it is gating.
+			//
+			// The *Q read variants are used throughout for a narrower reason,
+			// stated where they are defined: while ONE transaction spans the
+			// whole run the pool would answer identically, so threading the
+			// executor is what stops that from being load-bearing. Split this
+			// transaction and pooled reads diverge silently; transaction-scoped
+			// ones do not.
+			//
+			// THE SNAPSHOT IS NOT WHAT STOPS A CONCURRENT APPEND FROM BEING
+			// LOST. Measured on BUG-3072: busy_timeout belongs to the
+			// APPENDER's connection, so holding this lock DEFERS that write
+			// rather than refusing it, and the deferred write then lands in the
+			// file this command is about to abandon. What refuses it is the
+			// marker installed below, published by this transaction's COMMIT.
+			//
+			// A rollback anywhere before that commit leaves the source
+			// completely untouched and the command re-runnable.
+			snapshot, err := srcStore.BeginSnapshot()
+			if err != nil {
+				return fmt.Errorf("open migration snapshot on %s: %w", fromPath, err)
+			}
+			committed := false
+			defer func() {
+				if !committed {
+					_ = snapshot.Rollback()
+				}
+			}()
+
 			// List workspaces from source
-			workspaces, err := srcStore.ListWorkspaces()
+			workspaces, err := srcStore.ListWorkspacesQ(snapshot)
 			if err != nil {
 				return fmt.Errorf("list workspaces: %w", err)
 			}
@@ -563,7 +617,7 @@ Steps:
 			pendingByWorkspace := map[string][]store.PendingFlushItem{}
 			pendingTotal := 0
 			for _, ws := range workspaces {
-				pending, err := srcStore.ListItemsPendingContentFlush(ws.ID)
+				pending, err := srcStore.ListItemsPendingContentFlushQ(snapshot, ws.ID)
 				if err != nil {
 					return fmt.Errorf("check for unflushed edits in %s: %w", ws.Slug, err)
 				}
@@ -584,10 +638,20 @@ Steps:
 			for _, ws := range workspaces {
 				fmt.Fprintf(os.Stderr, "Migrating workspace: %s...\n", ws.Name)
 
-				data, err := srcStore.ExportWorkspace(ws.Slug)
+				// A FAILURE HERE IS FATAL, where it used to `continue`
+				// (BUG-3072).
+				//
+				// Skipping was defensible while the command's only effect was
+				// on the DESTINATION: a workspace that failed to copy simply
+				// was not there, the exit status said so, and the source was
+				// untouched. It stops being defensible the moment success
+				// MARKS the source as abandoned. A partial run must leave the
+				// source unmarked and fully usable, so there is exactly one
+				// outcome in which the marker goes on: every workspace
+				// migrated. Anything else rolls the snapshot back.
+				data, err := srcStore.ExportWorkspaceQ(snapshot, ws.Slug)
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "  ERROR exporting %s: %v (skipping)\n", ws.Slug, err)
-					continue
+					return fmt.Errorf("export %s: %w (nothing has been marked; the SQLite database is unchanged)", ws.Slug, err)
 				}
 
 				// BUG-3032, codex round 1 P1: the pre-pass above closes the
@@ -610,7 +674,7 @@ Steps:
 				// migrate) it can never fire, because nothing is appending. It
 				// exists for the operator who did not stop the server, which
 				// nothing enforces.
-				if report, err := gateLateStale(ws.Slug, staleBundleItems(data), migrated); err != nil {
+				if report, err := gateLateStale(ws.Slug, staleBundleItems(data), migrated, discardUnflushedEdits); err != nil {
 					fmt.Fprint(os.Stderr, report)
 					return err
 				}
@@ -621,20 +685,87 @@ Steps:
 				// Empty source: this is an operator-run copy of an existing
 				// workspace, not a creation surface, and inventing "cli"
 				// here would relabel every migrated workspace's origin.
+				// Fatal for the same reason the export is (BUG-3072). The
+				// DESTINATION is left partially populated by a mid-loop
+				// failure — that is pre-existing, there is no transaction
+				// spanning two databases, and this unit does not change it.
+				// What this unit does guarantee is the half it can: the
+				// SOURCE is unmarked, so the operator still has a working
+				// database to re-run from.
 				if _, err := dstStore.ImportWorkspace(data, "", "", ""); err != nil {
-					fmt.Fprintf(os.Stderr, "  ERROR importing %s: %v (skipping)\n", ws.Slug, err)
-					continue
+					return fmt.Errorf("import %s: %w (nothing has been marked; the SQLite database is unchanged, "+
+						"but PostgreSQL is now PARTIALLY populated — drop and recreate it before re-running)", ws.Slug, err)
 				}
 
 				fmt.Fprintf(os.Stderr, "  OK: %s\n", stats)
 				migrated++
 			}
 
-			fmt.Fprintf(os.Stderr, "\nMigration complete: %d/%d workspace(s) migrated.\n", migrated, len(workspaces))
-			if migrated < len(workspaces) {
-				fmt.Fprintln(os.Stderr, "Some workspaces failed — check the errors above.")
-				return fmt.Errorf("%d workspace(s) failed to migrate", len(workspaces)-migrated)
+			// Every workspace landed, so this is the one path that marks the
+			// source (BUG-3072). The two arms above return on any failure, so
+			// `migrated < len(workspaces)` is now unreachable here — the check
+			// that used to live at this spot said "some workspaces failed",
+			// which can no longer be true of a run that reaches this line.
+			//
+			// The order is: mark INSIDE the snapshot, then commit. The commit
+			// publishes the refusal triggers and releases the write lock in
+			// one step, which is the only ordering in which an appender that
+			// has been waiting out its busy_timeout cannot slip between the
+			// lock going away and the refusal existing. Measured on BUG-3072:
+			// that append then returns SQLITE_CONSTRAINT_TRIGGER naming the
+			// migration, where before it returned nil.
+			//
+			// maskPassword, not toURL: this string is WRITTEN INTO the
+			// database and rendered in every refusal message thereafter, so a
+			// password in the connection URL would be persisted in the clear
+			// and printed to anyone who trips a trigger.
+			if err := srcStore.MarkMigratedTx(snapshot, maskPassword(toURL)); err != nil {
+				return fmt.Errorf("mark %s as migrated: %w (nothing has been marked; the SQLite database is unchanged, "+
+					"but PostgreSQL is now fully populated)", fromPath, err)
 			}
+			if err := snapshot.Commit(); err != nil {
+				// A FAILED COMMIT HAS AN OUTCOME THIS CODE DOES NOT KNOW, and
+				// every other failure message in this command can honestly
+				// promise the source is unchanged because a rollback undoes
+				// the work. This one cannot: the transaction is finished
+				// either way, and the deferred Rollback cannot undo a commit
+				// that did land. Asserting "unchanged" here would be the exact
+				// failure this whole unit exists to remove — telling an
+				// operator something about a one-shot irreversible command
+				// that nobody measured.
+				//
+				// So it is MEASURED. The marker is the observable, and reading
+				// it on the pool — a different connection from the dead
+				// transaction — distinguishes the three real outcomes. Only
+				// the third is genuinely unknown, and it says so rather than
+				// picking the comfortable answer.
+				committed = true // the tx is finished; the deferred rollback has nothing to do
+				remedy, checkErr := srcStore.MigratedRemedy()
+				switch {
+				case checkErr != nil:
+					return fmt.Errorf("commit migration snapshot on %s: %w — and re-reading the marker "+
+						"afterwards ALSO failed (%v), so whether the commit landed is UNKNOWN. PostgreSQL "+
+						"is fully populated. Do NOT re-run until you check: `pad server start` against %s "+
+						"either works (the commit did not land) or refuses naming PostgreSQL (it did)",
+						fromPath, err, checkErr, fromPath)
+				case remedy != "":
+					// The commit landed despite the error. Everything the
+					// operator asked for has happened, so reporting failure
+					// would send them to re-run a migration that is complete.
+					fmt.Fprintf(os.Stderr, "WARNING: committing the migration snapshot on %s reported an "+
+						"error (%v), but the marker is present, so the commit DID land. The migration is "+
+						"COMPLETE — do not re-run it.\n", fromPath, err)
+				default:
+					return fmt.Errorf("commit migration snapshot on %s: %w (verified: the marker is absent, "+
+						"so the SQLite database is unchanged — but PostgreSQL is now fully populated, so "+
+						"drop and recreate it before re-running)", fromPath, err)
+				}
+			} else {
+				committed = true
+			}
+
+			fmt.Fprintf(os.Stderr, "\nMigration complete: %d/%d workspace(s) migrated.\n", migrated, len(workspaces))
+			fmt.Fprintf(os.Stderr, "%s is now marked as migrated and will refuse writes and refuse to be opened.\n", fromPath)
 
 			fmt.Fprintln(os.Stderr, "\nNext steps:")
 			fmt.Fprintln(os.Stderr, "  1. Set PAD_DB_DRIVER=postgres and PAD_DATABASE_URL in your environment")
@@ -657,40 +788,74 @@ Steps:
 	return cmd
 }
 
-// gateLateStale refuses a migration when the BUNDLE about to be imported carries
-// bodies the exporter marked as stale, and renders the operator-facing message
-// (BUG-3032, codex round 1 P1).
+// gateLateStale is the invariant check on a built bundle: no item the bundle
+// carries may be marked as behind its live collaborative document (BUG-3032,
+// reshaped by BUG-3072 and BUG-3077).
+//
+// WHAT IT USED TO BE, AND WHY THAT CHANGED. It was written as a TOCTOU gate:
+// the pre-pass read the database at one instant, ExportWorkspace read it at
+// another, and an editor could append between the two. BUG-3072 put the
+// pre-pass and every export inside ONE snapshot transaction, so those two
+// reads are now the same instant by construction and no editor can slip
+// between them. The race it was built for cannot occur any more.
+//
+// SO ITS MESSAGE HAD TO CHANGE, not just its plumbing. Telling an operator
+// that "an editor appended while this command was running" is now telling them
+// something that cannot have happened, and sending them to stop a server that
+// is not the problem. If this fires with discard=false, the pre-pass passed
+// these items and the bundle then read them stale INSIDE one snapshot — which
+// is a defect in this command, not an operator error, and the message says so
+// and asks for it to be filed.
+//
+// `discard` is BUG-3077, and without it the gate made
+// `--discard-unflushed-edits` unreachable: the pre-pass returns (warning, nil)
+// under that flag, nothing flushes those items in between, so the bundle still
+// carries the marker on exactly them and this refused what the operator had
+// just been shown and had just approved. The flag worked only when there was
+// nothing to discard — and the unflushed-edits refusal names it as the only
+// way out, so an operator whose edits were in a tab that is now gone was
+// pointed at a door that was nailed shut.
 //
 // Separated from the command's RunE for the reason gateUnflushedEdits is: the
-// wording is the whole product here, and a message reachable only by running two
-// live databases is a message nobody checks until an operator hits it during a
-// migration they cannot retry.
+// wording is the whole product here, and a message reachable only by running
+// two live databases is a message nobody checks until an operator hits it
+// during a migration they cannot retry.
 //
-// `migratedSoFar` is what makes this message different from the pre-pass's. The
-// pre-pass runs before the first import and can promise nothing has been
-// migrated; this fires mid-loop, so earlier workspaces are already in PostgreSQL
-// and claiming otherwise would be false. It says PARTIALLY populated instead,
-// and only falls back to the pre-pass's promise when the count is genuinely 0.
-func gateLateStale(wsSlug string, stale []store.PendingFlushItem, migratedSoFar int) (string, error) {
+// `migratedSoFar` is what makes this message different from the pre-pass's.
+// The pre-pass runs before the first import and can promise nothing has been
+// migrated; this fires mid-loop, so earlier workspaces are already in
+// PostgreSQL and claiming otherwise would be false. It says PARTIALLY
+// populated instead — still true of the Postgres side, which BUG-3072's
+// source-side snapshot does not span — and only falls back to the pre-pass's
+// promise when the count is genuinely 0.
+func gateLateStale(wsSlug string, stale []store.PendingFlushItem, migratedSoFar int, discard bool) (string, error) {
 	if len(stale) == 0 {
 		return "", nil
 	}
+	// The operator was shown these items by the pre-pass and chose to lose
+	// them. Re-refusing here would be the command changing its mind about a
+	// decision it already took the operator's answer on.
+	if discard {
+		return "", nil
+	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "\n%d item(s) in %s became stale between the pre-flight check and the\n", len(stale), wsSlug)
-	fmt.Fprint(&b, "export — an editor appended to the collaborative op-log while this command\n")
-	fmt.Fprint(&b, "was running. Refusing to migrate a body whose real text this migration\n")
-	fmt.Fprint(&b, "would then abandon:\n\n")
+	fmt.Fprintf(&b, "\nINTERNAL: %d item(s) in %s passed the pre-flight check and then read as\n", len(stale), wsSlug)
+	fmt.Fprint(&b, "stale in the exported bundle. Both reads run inside one snapshot transaction,\n")
+	fmt.Fprint(&b, "so this cannot be an editor appending mid-migration — it is a defect in\n")
+	fmt.Fprint(&b, "migrate-to-pg. Refusing rather than migrating a body whose real text this\n")
+	fmt.Fprint(&b, "migration would then abandon:\n\n")
 	for _, it := range stale {
 		fmt.Fprintf(&b, "    %-12s %s\n", it.Ref, it.Title)
 	}
-	fmt.Fprint(&b, "\nStop the Pad server before migrating (docs/backup.md), then re-run.\n")
+	fmt.Fprint(&b, "\nPlease report this, with the refs above (BUG-3072 / BUG-3077 for context).\n")
 	if migratedSoFar > 0 {
 		fmt.Fprintf(&b, "%d workspace(s) were already migrated before this refusal; the destination is "+
 			"PARTIALLY populated.\n", migratedSoFar)
 	} else {
 		fmt.Fprint(&b, "Nothing has been migrated.\n")
 	}
-	return b.String(), fmt.Errorf("%s: %d item(s) became stale during the migration; refused", wsSlug, len(stale))
+	fmt.Fprintf(&b, "The SQLite database at the source is UNCHANGED and has NOT been marked as migrated.\n")
+	return b.String(), fmt.Errorf("%s: %d item(s) read as stale inside the migration snapshot; refused", wsSlug, len(stale))
 }
 
 // staleBundleItems names the items in a built bundle whose bodies the exporter
