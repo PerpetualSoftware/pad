@@ -187,11 +187,19 @@ func (s *Store) ExportWorkspace(slug string) (*models.WorkspaceExport, error) {
 	}
 
 	// Items
+	//
+	// The `i` alias exists only so contentStateSQL can be spliced in (BUG-3032).
+	// The predicate marks a row whose body is BEHIND the item's live
+	// collaborative document; it rides in the SAME SELECT as `content` so the
+	// mark and the body it describes always come from one row. (Export runs a
+	// sequence of pooled queries with no enclosing transaction, so separate
+	// SECTIONS of a bundle can already disagree under concurrency — pre-existing,
+	// and per-row consistency is the only consistency this mark claims.)
 	itemRows, err := s.db.Query(s.q(`
-		SELECT id, collection_id, title, slug, content, fields, tags, pinned, sort_order,
-		       COALESCE(parent_id, ''), created_by, last_modified_by, source, COALESCE(item_number, 0), created_at, updated_at
-		FROM items WHERE workspace_id = ? AND deleted_at IS NULL
-		ORDER BY created_at, id`), ws.ID)
+		SELECT i.id, i.collection_id, i.title, i.slug, i.content, `+contentStateSQL+`, i.fields, i.tags, i.pinned, i.sort_order,
+		       COALESCE(i.parent_id, ''), i.created_by, i.last_modified_by, i.source, COALESCE(i.item_number, 0), i.created_at, i.updated_at
+		FROM items i WHERE i.workspace_id = ? AND i.deleted_at IS NULL
+		ORDER BY i.created_at, i.id`), ws.ID)
 	if err != nil {
 		return nil, fmt.Errorf("export items: %w", err)
 	}
@@ -199,7 +207,7 @@ func (s *Store) ExportWorkspace(slug string) (*models.WorkspaceExport, error) {
 	for itemRows.Next() {
 		var it models.ItemExport
 		var pinned bool
-		if err := itemRows.Scan(&it.ID, &it.CollectionID, &it.Title, &it.Slug, &it.Content, &it.Fields, &it.Tags, &pinned, &it.SortOrder, &it.ParentID, &it.CreatedBy, &it.LastModifiedBy, &it.Source, &it.ItemNumber, &it.CreatedAt, &it.UpdatedAt); err != nil {
+		if err := itemRows.Scan(&it.ID, &it.CollectionID, &it.Title, &it.Slug, &it.Content, &it.ContentState, &it.Fields, &it.Tags, &pinned, &it.SortOrder, &it.ParentID, &it.CreatedBy, &it.LastModifiedBy, &it.Source, &it.ItemNumber, &it.CreatedAt, &it.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan item: %w", err)
 		}
 		it.Pinned = pinned

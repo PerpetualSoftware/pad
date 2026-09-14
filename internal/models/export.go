@@ -133,11 +133,31 @@ type CollectionExport struct {
 
 // ItemExport holds an item's data for export.
 type ItemExport struct {
-	ID             string `json:"id"`
-	CollectionID   string `json:"collection_id"`
-	Title          string `json:"title"`
-	Slug           string `json:"slug"`
-	Content        string `json:"content"`
+	ID           string `json:"id"`
+	CollectionID string `json:"collection_id"`
+	Title        string `json:"title"`
+	Slug         string `json:"slug"`
+	Content      string `json:"content"`
+	// ContentState records that CONTENT above was behind the item's live
+	// collaborative document when the bundle was written (BUG-3032 / BUG-3000).
+	// Same values as models.Item.ContentState, named the same, and empty for
+	// every item whose row is current — so a bundle from a workspace with
+	// nothing pending is byte-identical to one produced before this field
+	// existed.
+	//
+	// Additive with NO WorkspaceExport.Version bump, deliberately: no bundle
+	// decode path sets DisallowUnknownFields, so an older binary ignores this
+	// key, while ImportWorkspace compares `data.Version != 1` with EXACT
+	// equality — a bump would reject bundles in BOTH directions for an added
+	// optional key.
+	//
+	// Why the bundle needs its own marker rather than inheriting one: this is
+	// not a late read. WorkspaceExport carries no op-log, and ImportWorkspace
+	// writes Content back as the destination's canonical content, so on
+	// `pad db migrate-to-pg` — export piped into import across two databases,
+	// after which the source is abandoned — an unflushed body becomes the only
+	// copy. The marker is what lets that door refuse; it is not a repair.
+	ContentState   string `json:"content_state,omitempty"`
 	Fields         string `json:"fields"`
 	Tags           string `json:"tags"`
 	Pinned         bool   `json:"pinned"`
