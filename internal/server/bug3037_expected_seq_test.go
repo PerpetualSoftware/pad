@@ -2,8 +2,10 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -37,39 +39,67 @@ func conflictDetails(t *testing.T, body []byte) map[string]any {
 	return env.Error.Details
 }
 
-// TestExpectedUpdatedAt_CannotSeeASameSecondRace is the REPRODUCTION. It asserts
-// the defective behaviour on purpose: with the weak token, the second write is
-// accepted and the first writer's value is gone. If this ever starts failing,
-// `updated_at` resolution changed and BUG-3037's premise needs re-reading —
-// which is why it asserts rather than skips.
+// TestExpectedUpdatedAt_CannotSeeASameSecondRace is the REPRODUCTION, and it is
+// written to be deterministic about a race with the wall clock.
+//
+// The defect needs BOTH writes inside one wall-clock second. A first draft just
+// did two writes and asserted the second was accepted; it passed locally and
+// failed in the full suite, where the pair happened to straddle 01:36:32 →
+// 01:36:33 and the weak token correctly conflicted. That is the test being
+// wrong, not the bug being absent — so this version establishes the premise
+// (the stored token really is second-resolution), then RETRIES until it gets a
+// same-second pair, and reports honestly if it never does rather than passing on
+// a straddle.
 func TestExpectedUpdatedAt_CannotSeeASameSecondRace(t *testing.T) {
 	srv := testServer(t)
 	ws := createWSWithCollections(t, srv)
-	item := createTaskWithFields(t, srv, ws, "Same-second race", `{"status":"open","priority":"high"}`)
 
-	// Both writers read the SAME row and hold the SAME token.
-	token := item.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z07:00")
-
-	first := doRequest(srv, "PATCH", "/api/v1/workspaces/"+ws+"/items/"+item.Slug, map[string]any{
-		"fields_patch":        map[string]any{"priority": "low"},
-		"expected_updated_at": token,
-	})
-	if first.Code != http.StatusOK {
-		t.Fatalf("first write: expected 200, got %d: %s", first.Code, first.Body.String())
+	// PREMISE, asserted rather than assumed: items.updated_at is stored at
+	// one-second resolution. Everything below follows from this, and if it ever
+	// changes this is the line that should fail first.
+	probe := createTaskWithFields(t, srv, ws, "Resolution probe", `{"status":"open"}`)
+	if probe.UpdatedAt.Nanosecond() != 0 {
+		t.Fatalf("BUG-3037's premise has changed: updated_at now carries sub-second precision (%s). "+
+			"Re-read the bug — the lexical-ordering argument against that change is on its trail.",
+			probe.UpdatedAt.Format(time.RFC3339Nano))
 	}
-	second := doRequest(srv, "PATCH", "/api/v1/workspaces/"+ws+"/items/"+item.Slug, map[string]any{
-		"fields_patch":        map[string]any{"priority": "critical"},
-		"expected_updated_at": token,
-	})
 
-	// THE DEFECT: the second writer held a token the first write already
-	// invalidated, and the server accepted it anyway, because both writes landed
-	// inside the same wall-clock second.
-	if second.Code != http.StatusOK {
-		t.Fatalf("BUG-3037's premise has changed: the weak token refused a same-second write (%d: %s). "+
-			"If updated_at is now sub-second, re-read the bug — the lexical-ordering argument against that change is on its trail.",
-			second.Code, second.Body.String())
+	const attempts = 25
+	for i := 0; i < attempts; i++ {
+		item := createTaskWithFields(t, srv, ws,
+			fmt.Sprintf("Same-second race %d", i), `{"status":"open","priority":"high"}`)
+		token := item.UpdatedAt.UTC().Format(time.RFC3339)
+
+		first := doRequest(srv, "PATCH", "/api/v1/workspaces/"+ws+"/items/"+item.Slug, map[string]any{
+			"fields_patch":        map[string]any{"priority": "low"},
+			"expected_updated_at": token,
+		})
+		if first.Code != http.StatusOK {
+			t.Fatalf("first write: expected 200, got %d: %s", first.Code, first.Body.String())
+		}
+		var afterFirst models.Item
+		parseJSON(t, first, &afterFirst)
+		if !afterFirst.UpdatedAt.Truncate(time.Second).Equal(item.UpdatedAt.Truncate(time.Second)) {
+			// The pair straddled a second boundary: this attempt says nothing
+			// about the defect either way. Try again.
+			continue
+		}
+
+		second := doRequest(srv, "PATCH", "/api/v1/workspaces/"+ws+"/items/"+item.Slug, map[string]any{
+			"fields_patch":        map[string]any{"priority": "critical"},
+			"expected_updated_at": token,
+		})
+		// THE DEFECT: the second writer held a token the first write already
+		// invalidated, and both writes landed in the same second, so the token
+		// still matched and the server accepted it.
+		if second.Code != http.StatusOK {
+			t.Fatalf("BUG-3037's premise has changed: the weak token refused a same-second write (%d: %s)",
+				second.Code, second.Body.String())
+		}
+		return
 	}
+	t.Fatalf("no attempt in %d landed two writes inside one second — this test could not exercise the defect; "+
+		"if the box is this slow the result is inconclusive rather than green", attempts)
 }
 
 // TestExpectedSeq_RefusesASameSecondRace is the FIX: the identical race, with
