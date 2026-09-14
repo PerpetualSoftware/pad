@@ -231,6 +231,28 @@ func (s *Store) D() Dialect { return s.dialect }
 // DB returns the underlying *sql.DB (for use in migrations/testing).
 func (s *Store) DB() *sql.DB { return s.db }
 
+// BeginSnapshot opens a transaction that is both the write lock and a single
+// read snapshot for everything run on it (BUG-3072).
+//
+// The DSN carries `_txlock=immediate`, so this is a BEGIN IMMEDIATE: it takes
+// the write lock up front rather than on first write. Two things follow, and
+// callers want both. It EXCLUDES other writers for the duration — subject to
+// the measurement on BUG-3072: another connection with its own busy_timeout is
+// DEFERRED, not refused, so exclusion alone never made a concurrent write fail.
+// And every read issued ON THIS TRANSACTION sees one instant.
+//
+// The second is the part that is easy to get wrong, because getting it wrong
+// costs nothing visible. Reads issued on the POOL while this transaction is
+// held do not deadlock — the pool is 16 connections deep — and in WAL mode
+// each of those connections takes its OWN snapshot. So a caller that opens
+// this and then calls the non-Q form of a read has a transaction that excludes
+// writers and a read that is not in it, and nothing anywhere reports that.
+// Pass the returned *sql.Tx to the *Q variants.
+//
+// SQLite-specific in its guarantees; it is a plain Begin on Postgres, where
+// the pool has no such single-writer property.
+func (s *Store) BeginSnapshot() (*sql.Tx, error) { return s.db.Begin() }
+
 // New creates a Store backed by SQLite at the given path.
 //
 // The DSN is configured for safe concurrent use under Go's connection pool:
@@ -306,6 +328,31 @@ func New(dbPath string) (*Store, error) {
 	db, err := sql.Open(guardedSQLiteDriver, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
+	}
+
+	// REFUSE A DATABASE THAT HAS BEEN MIGRATED TO POSTGRES (BUG-3072).
+	//
+	// THIS IS FIRST, and the ordering is load-bearing rather than tidy.
+	// Everything below it WRITES: the WAL pragma touches the header, migrate()
+	// runs DDL and rebuild migrations that INSERT into protected tables, and
+	// the three backfills after it write collections.prefix,
+	// workspaces.owner_id and users.username. Run any of them against a marked
+	// file and the open either trips the refusal triggers — surfacing as a
+	// migration failure rather than the remedy — or quietly mutates a file this
+	// function is about to declare abandoned.
+	//
+	// This covers every opener by construction: the three non-test callers of
+	// New (the migration's own source, `pad db nul`, and `pad server start`)
+	// all arrive here. It deliberately does NOT cover `pad db backup`, which
+	// opens its own connection and runs VACUUM INTO — a marked file stays
+	// backup-able, copyable and readable by sqlite3, which is the point of
+	// refusing WRITES rather than access.
+	if remedy, merr := migratedRemedyIfMarked(db); merr != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("check whether %s was migrated: %w", dbPath, merr)
+	} else if remedy != "" {
+		_ = db.Close()
+		return nil, fmt.Errorf("refusing to open %s: %s", dbPath, remedy)
 	}
 
 	// Enable WAL mode (database-level: persists across connections).

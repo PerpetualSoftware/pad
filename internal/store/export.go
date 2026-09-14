@@ -127,8 +127,29 @@ func importCoercedSlug(raw string) (string, bool) {
 }
 
 // ExportWorkspace exports all data for a workspace into a portable format.
+//
+// It reads the POOL, so each of its sections takes its own snapshot and a
+// concurrent writer can land between any two of them. Callers that need one
+// consistent bundle pass a transaction to ExportWorkspaceQ instead.
 func (s *Store) ExportWorkspace(slug string) (*models.WorkspaceExport, error) {
-	ws, err := s.GetWorkspaceBySlug(slug)
+	return s.ExportWorkspaceQ(s.db, slug)
+}
+
+// ExportWorkspaceQ is ExportWorkspace against a caller-supplied executor.
+//
+// THE EXECUTOR IS THE WHOLE POINT, and the reason is not the one the *Q shape
+// usually carries. Elsewhere in this package a *Q variant exists to keep a
+// pool read from deadlocking against a held transaction (BUG-2778); here the
+// pool is 16 connections deep, so passing s.db while a write transaction is
+// held does not deadlock — it WORKS, and silently produces the wrong answer.
+// SQLite in WAL mode gives every connection its OWN read snapshot, so the six
+// sections below would each see a different instant and a bundle could name a
+// collection it does not contain, or carry a link whose endpoint arrived after
+// the items section was read (BUG-3072). Passing a single *sql.Tx is what
+// makes the bundle one snapshot; passing the pool is the documented, lossy
+// shape the two HTTP export doors still use.
+func (s *Store) ExportWorkspaceQ(q Queryer, slug string) (*models.WorkspaceExport, error) {
+	ws, err := s.getWorkspaceBySlugQ(q, slug)
 	if err != nil {
 		return nil, fmt.Errorf("workspace lookup: %w", err)
 	}
@@ -164,7 +185,7 @@ func (s *Store) ExportWorkspace(slug string) (*models.WorkspaceExport, error) {
 	// into ImportWorkspace (cmd/pad/cmd_db.go), so dropping those items would
 	// silently DELETE live, addressable rows during a SQLite→Postgres
 	// migration: a worse defect than the lossy backup it would fix.
-	rows, err := s.db.Query(s.q(`
+	rows, err := q.Query(s.q(`
 		SELECT id, name, slug, icon, description, schema, settings, traits, prefix, sort_order, is_default, is_system, created_at, updated_at, COALESCE(deleted_at, '')
 		FROM collections WHERE workspace_id = ?
 		ORDER BY sort_order, name`), ws.ID)
@@ -195,7 +216,7 @@ func (s *Store) ExportWorkspace(slug string) (*models.WorkspaceExport, error) {
 	// sequence of pooled queries with no enclosing transaction, so separate
 	// SECTIONS of a bundle can already disagree under concurrency — pre-existing,
 	// and per-row consistency is the only consistency this mark claims.)
-	itemRows, err := s.db.Query(s.q(`
+	itemRows, err := q.Query(s.q(`
 		SELECT i.id, i.collection_id, i.title, i.slug, i.content, `+contentStateSQL+`, i.fields, i.tags, i.pinned, i.sort_order,
 		       COALESCE(i.parent_id, ''), i.created_by, i.last_modified_by, i.source, COALESCE(i.item_number, 0), i.created_at, i.updated_at
 		FROM items i WHERE i.workspace_id = ? AND i.deleted_at IS NULL
@@ -218,7 +239,7 @@ func (s *Store) ExportWorkspace(slug string) (*models.WorkspaceExport, error) {
 	}
 
 	// Comments
-	commentRows, err := s.db.Query(s.q(`
+	commentRows, err := q.Query(s.q(`
 		SELECT c.id, c.item_id, c.author, c.body, c.created_by, c.source, c.created_at, c.updated_at
 		FROM comments c
 		JOIN items i ON c.item_id = i.id
@@ -246,7 +267,7 @@ func (s *Store) ExportWorkspace(slug string) (*models.WorkspaceExport, error) {
 	// raw graph so that re-importing into a workspace where the deleted items
 	// are restored preserves the original relationships. The import path
 	// already silently skips links whose endpoints are missing entirely.
-	linkRows, err := s.db.Query(s.q(`
+	linkRows, err := q.Query(s.q(`
 		SELECT id, source_id, target_id, link_type, created_by, created_at
 		FROM item_links WHERE workspace_id = ?
 		ORDER BY created_at`), ws.ID)
@@ -280,7 +301,7 @@ func (s *Store) ExportWorkspace(slug string) (*models.WorkspaceExport, error) {
 	// item_links can carry soft-deleted endpoints because a link is a row
 	// ABOUT two items and the graph is worth round-tripping raw; a reminder
 	// whose item is absent is not a relationship, it is a dangling schedule.
-	reminderRows, err := s.db.Query(s.q(`
+	reminderRows, err := q.Query(s.q(`
 		SELECT r.item_id, r.remind_at, COALESCE(r.fired_at, ''), COALESCE(r.acked_at, ''), r.created_at, r.updated_at
 		FROM item_reminders r
 		JOIN items i ON i.id = r.item_id AND i.workspace_id = r.workspace_id
@@ -302,7 +323,7 @@ func (s *Store) ExportWorkspace(slug string) (*models.WorkspaceExport, error) {
 	}
 
 	// Item versions
-	versionRows, err := s.db.Query(s.q(`
+	versionRows, err := q.Query(s.q(`
 		SELECT v.id, v.item_id, v.content, v.change_summary, v.created_by, v.source, v.is_diff, v.created_at
 		FROM item_versions v
 		JOIN items i ON v.item_id = i.id
@@ -1298,7 +1319,17 @@ type PendingFlushItem struct {
 //
 // Ordered by ref so a refusal message is stable between runs.
 func (s *Store) ListItemsPendingContentFlush(workspaceID string) ([]PendingFlushItem, error) {
-	rows, err := s.db.Query(s.q(`
+	return s.ListItemsPendingContentFlushQ(s.db, workspaceID)
+}
+
+// ListItemsPendingContentFlushQ is ListItemsPendingContentFlush against a
+// caller-supplied executor, so the migration's unflushed-edits gate reads the
+// same snapshot the bundles are exported from (BUG-3072). A gate that reads
+// the pool answers about a different instant than the export it guards, which
+// is the gap BUG-3032's post-export bundle check exists to cover and this
+// removes rather than narrows.
+func (s *Store) ListItemsPendingContentFlushQ(q Queryer, workspaceID string) ([]PendingFlushItem, error) {
+	rows, err := q.Query(s.q(`
 		SELECT COALESCE(c.prefix, ''), COALESCE(i.item_number, 0), i.title, i.slug
 		FROM items i
 		LEFT JOIN collections c ON c.id = i.collection_id
