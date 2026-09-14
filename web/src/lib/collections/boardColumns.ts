@@ -18,13 +18,47 @@ export const UNCATEGORIZED = '';
 
 /**
  * Normalise a raw field value to the string lane key it groups under.
- * Non-strings coerce (a lone `null`/`undefined` → ''); arrays/objects
- * stringify and simply won't match a known option, landing in UNCATEGORIZED.
+ *
+ * ABSENT is `undefined`, `null` and `''`, and nothing else. `0` and `false`
+ * normalise to `'0'` and `'false'` — ordinary lane keys — because they are
+ * ordinary VALUES: a score of zero, an unticked checkbox.
+ *
+ * Arrays and objects stringify (`'a,b'`, `'[object Object]'`). They are NOT
+ * guaranteed to miss every declared option, which an earlier version of this
+ * comment claimed: a board option whose text equals the stringification would
+ * match it, and a view that DISCOVERS its lanes mints a lane named after it
+ * either way. What is guaranteed is that they stay visible, which is this
+ * helper's job; rendering a structured value legibly is not.
+ *
+ * EXPORTED, and the export is the point (BUG-3053). ListView had its own
+ * inlined version of this question and got a different answer in each of its
+ * two passes — it decided "has a group" by FALSINESS while bucketing under the
+ * stringified value, so an item scoring 0 was filed under `'0'` and no lane
+ * pointed there. It vanished. One predicate, read by every view that groups,
+ * is what stops the two halves drifting apart again.
  */
-function laneValue(raw: unknown): string {
+export function laneValue(raw: unknown): string {
 	if (typeof raw === 'string') return raw;
 	if (raw == null) return '';
 	return String(raw);
+}
+
+/**
+ * Does this item have no value for the group field?
+ *
+ * The emptiness test the falsiness test was standing in for. Takes a RAW value
+ * or an already-normalised lane key and normalises either way, so the answer
+ * cannot depend on whether the caller stringified first — which is precisely
+ * what went wrong: one pass asked the question of the raw `0` and the other of
+ * the string `'0'`, and they disagreed.
+ *
+ * Accepting `unknown` rather than `string` is the load-bearing part. With a
+ * `string` parameter, `!value` and `value === ''` are the same function and the
+ * strict form is decoration; with a raw value reaching it they are opposites,
+ * and this is the door a raw value arrives at.
+ */
+export function isUngrouped(value: unknown): boolean {
+	return laneValue(value) === UNCATEGORIZED;
 }
 
 /**
@@ -64,4 +98,23 @@ export function bucketByColumn(
 		}
 	}
 	return result;
+}
+
+/**
+ * The heading a lane shows for its key.
+ *
+ * ONE copy, read by both grouped views (BUG-3053). ListView and BoardView each
+ * carried a byte-identical private version, and each contained its own
+ * falsiness test for "no value" — the same conflation this bug is about, one
+ * step further downstream, where it would have labelled a `0` lane
+ * "Uncategorized" the moment a caller handed it an unnormalised value.
+ *
+ * Normalises its input for the same reason `isUngrouped` does, so a raw `0`
+ * arriving here is titled `0` rather than throwing on `.replace` or being
+ * labelled Uncategorized.
+ */
+export function formatLaneLabel(value: unknown): string {
+	const laneKey = laneValue(value);
+	if (isUngrouped(laneKey)) return 'Uncategorized';
+	return laneKey.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }

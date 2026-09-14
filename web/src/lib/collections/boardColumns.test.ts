@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import type { Item } from '$lib/types';
-import { bucketByColumn, UNCATEGORIZED } from './boardColumns';
+import {
+	bucketByColumn,
+	formatLaneLabel,
+	isUngrouped,
+	laneValue,
+	UNCATEGORIZED,
+} from './boardColumns';
 
 // Minimal Item-shaped fixture — bucketByColumn only reads `.fields` (via
 // parseFields, which JSON.parses it) and `.id`.
@@ -68,5 +74,100 @@ describe('bucketByColumn', () => {
 		const result = bucketByColumn(items, 'impact', ['low', 'medium', 'high']);
 		expect(result['high'].map((i) => i.id)).toEqual(['a']);
 		expect(result[UNCATEGORIZED].map((i) => i.id)).toEqual(['b']);
+	});
+});
+
+// BUG-3053. These three were private or duplicated before, which is how the two
+// grouped views came to answer "does this item have a group value?" differently:
+// ListView tested the RAW value for falsiness while bucketing under the
+// STRINGIFIED one, so an item scoring 0 was filed under '0' with no lane
+// pointing there and vanished from the view entirely.
+
+describe('laneValue', () => {
+	it('treats only absent, null and empty string as no value', () => {
+		expect(laneValue(undefined)).toBe('');
+		expect(laneValue(null)).toBe('');
+		expect(laneValue('')).toBe('');
+	});
+
+	it('gives 0 and false their own keys — they are VALUES, not absences', () => {
+		// The whole bug in two lines. Both are falsy and neither is empty.
+		expect(laneValue(0)).toBe('0');
+		expect(laneValue(false)).toBe('false');
+	});
+
+	it('passes a string through unchanged, including one that looks falsy', () => {
+		expect(laneValue('open')).toBe('open');
+		expect(laneValue('0')).toBe('0');
+	});
+
+	it('stringifies anything else so it simply fails to match a known option', () => {
+		expect(laneValue(12)).toBe('12');
+		expect(laneValue(true)).toBe('true');
+		expect(laneValue(['a', 'b'])).toBe('a,b');
+	});
+});
+
+describe('isUngrouped', () => {
+	it('is true for the empty key and nothing else', () => {
+		expect(isUngrouped(UNCATEGORIZED)).toBe(true);
+		expect(isUngrouped('')).toBe(true);
+		expect(isUngrouped('0')).toBe(false);
+		expect(isUngrouped('false')).toBe(false);
+	});
+
+	it('answers for a RAW value, which is the door the bug came through', () => {
+		// With a `string` parameter, `!value` and `value === ''` are the same
+		// function and the strict form is decoration — a mutant swapping them
+		// cannot be killed. The difference only exists for a raw value, and a raw
+		// value reaching this door is exactly what happened.
+		expect(isUngrouped(0 as unknown as string)).toBe(false);
+		expect(isUngrouped(false as unknown as string)).toBe(false);
+		expect(isUngrouped(null as unknown as string)).toBe(true);
+		expect(isUngrouped(undefined as unknown as string)).toBe(true);
+	});
+
+	it('composes with laneValue to answer the question both passes ask', () => {
+		expect(isUngrouped(laneValue(0))).toBe(false);
+		expect(isUngrouped(laneValue(false))).toBe(false);
+		expect(isUngrouped(laneValue(null))).toBe(true);
+		expect(isUngrouped(laneValue(''))).toBe(true);
+	});
+});
+
+describe('formatLaneLabel', () => {
+	it('titles a 0 lane as 0, not as Uncategorized', () => {
+		expect(formatLaneLabel(laneValue(0))).toBe('0');
+		expect(formatLaneLabel(laneValue(false))).toBe('False');
+	});
+
+	it('titles a RAW 0 rather than throwing or calling it Uncategorized', () => {
+		expect(formatLaneLabel(0 as unknown as string)).toBe('0');
+		expect(formatLaneLabel(false as unknown as string)).toBe('False');
+		expect(formatLaneLabel(null as unknown as string)).toBe('Uncategorized');
+	});
+
+	it('calls a genuinely empty lane Uncategorized', () => {
+		expect(formatLaneLabel(UNCATEGORIZED)).toBe('Uncategorized');
+	});
+
+	it('humanises an underscored option the way both views always did', () => {
+		expect(formatLaneLabel('in_progress')).toBe('In Progress');
+	});
+});
+
+describe('bucketByColumn with falsy-but-present values', () => {
+	it('keeps a 0-valued item visible rather than dropping it', () => {
+		// The board was never the DROP — `laneValue` stringifies before the
+		// truthiness test, so '0' is truthy — but pin it, because this is the
+		// behaviour ListView now shares and a change here would move both.
+		const result = bucketByColumn([item('a', { score: 0 })], 'score', ['0']);
+		expect(result['0'].map((i) => i.id)).toEqual(['a']);
+		expect(result[UNCATEGORIZED]).toEqual([]);
+	});
+
+	it('files a 0 with no matching column under Uncategorized, still visible', () => {
+		const result = bucketByColumn([item('a', { score: 0 })], 'score', columns);
+		expect(result[UNCATEGORIZED].map((i) => i.id)).toEqual(['a']);
 	});
 });

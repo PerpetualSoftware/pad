@@ -363,6 +363,7 @@ export function fieldValueColor(field: FieldDef | undefined, value: string): str
  *  $lib/utils/fieldColors (neutral module); re-exported here so the
  *  public-share import surface is unchanged. */
 export { columnAccentClassFor } from '$lib/utils/fieldColors';
+import { isUngrouped, laneValue } from '$lib/collections/boardColumns';
 
 
 /** Group `items` by `groupField` value, in option order with any extra values
@@ -379,9 +380,14 @@ export function groupItems(
 	const extras: string[] = [];
 	let hasUngrouped = false;
 	for (const item of items) {
-		const raw = item.fields[groupField];
-		const value = typeof raw === 'string' ? raw : raw == null ? '' : String(raw);
-		if (!value) {
+		// The SAME normalise-then-ask pair the in-app views use (BUG-3053). This
+		// function carried its own inlined copy of both, and it was correct — but
+		// only because it stringified BEFORE testing, which is exactly the step
+		// ListView skipped in one of its two passes. A third private copy of a
+		// question two views had already answered differently is how that happens
+		// again, so it reads the shared one now.
+		const value = laneValue(item.fields[groupField]);
+		if (isUngrouped(value)) {
 			hasUngrouped = true;
 			if (!buckets.has('')) buckets.set('', []);
 			buckets.get('')!.push(item);

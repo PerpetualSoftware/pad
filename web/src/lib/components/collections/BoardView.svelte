@@ -4,7 +4,12 @@
 	import { parseSchema, parseFields } from '$lib/types';
 	import { itemComparator, type SortMode } from '$lib/collections/itemSort';
 	import { reorderGroup, disabledDirections, adjacentColumn, type ReorderDirection } from '$lib/collections/reorder';
-	import { bucketByColumn, UNCATEGORIZED } from '$lib/collections/boardColumns';
+	import {
+		bucketByColumn,
+		formatLaneLabel,
+		laneValue,
+		UNCATEGORIZED,
+	} from '$lib/collections/boardColumns';
 	import {
 		narrowRelationRow,
 		relationLaneAcceptsDrop,
@@ -552,9 +557,18 @@
 		// legacy value of `" id-red "` is ALREADY in the `id-red` lane, and a
 		// raw `!==` fired a pointless write for it — the same asymmetry between
 		// these two views, in the other direction this time.
+		// NORMALISED on both sides (BUG-3053, lead review of PR #1348). The raw
+		// field value against a lane STRING makes an item already in its own lane
+		// look like it moved: `0 !== '0'`, `false !== 'false'`, and the "move"
+		// then writes the string '0' into a number field.
+		//
+		// LIVE ON MAIN, unlike ListView's copy of this: `bucketByColumn` already
+		// normalised, so a 0-scored item has always been visible in lane '0' here
+		// and has always been draggable. The list's version of this line was
+		// unreachable until the item stopped being dropped from the view.
 		const currentValue = isRelationGroup
 			? relationLaneValueFor(item, groupField, resolveRelation)
-			: fields[groupField];
+			: laneValue(fields[groupField]);
 		// A REFUSED grouping has no group value to change, so a drop inside its
 		// single fallback lane is a REORDER and nothing else (U4, codex round
 		// 1). Without this the multi_relation case took the scalar arm:
@@ -588,10 +602,6 @@
 		}
 	}
 
-	function formatLabel(value: string): string {
-		if (!value) return 'Uncategorized';
-		return value.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
-	}
 
 	// Menu-driven reorder (IDEA-1898), lane-relative — the non-drag
 	// counterpart for touch (board drag is disabled on mobile) and long
@@ -686,7 +696,7 @@
 		{@const colItems = columnData[colValue] ?? []}
 		{@const isUncategorized = colValue === UNCATEGORIZED}
 		{@const relLane = relationLaneByValue.get(colValue)}
-		{@const laneName = relLane ? (relLane.title ?? relLane.label) : formatLabel(colValue)}
+		{@const laneName = relLane ? (relLane.title ?? relLane.label) : formatLaneLabel(colValue)}
 		{@const laneRef = relLane?.ref ?? null}
 		<!--
 			A relation lane is NOT column-draggable and offers no "+". Its order
@@ -702,7 +712,7 @@
 			class:dragging-source={draggedColumn === colValue}
 			class:uncategorized-column={isUncategorized}
 			role="group"
-			aria-label="{relationLaneAriaName(relLane, formatLabel(colValue))} column"
+			aria-label="{relationLaneAriaName(relLane, formatLaneLabel(colValue))} column"
 			ondragover={(e) => handleColumnDragOver(e, colValue)}
 			ondragleave={handleColumnDragLeave}
 			ondrop={(e) => handleColumnDrop(e, colValue)}
@@ -747,8 +757,8 @@
 					{#if onCreateInColumn && !isUncategorized && !isRelationGroup && !groupingRefusal}
 						<button
 							class="lane-btn lane-add-btn"
-							title="Add item to {formatLabel(colValue).toLowerCase()}"
-							aria-label="Add item to {formatLabel(colValue)}"
+							title="Add item to {formatLaneLabel(colValue).toLowerCase()}"
+							aria-label="Add item to {formatLaneLabel(colValue)}"
 							onclick={() => openDraft(colValue)}
 						>+</button>
 					{/if}
@@ -759,7 +769,7 @@
 							<button
 								class="lane-btn lane-menu-btn"
 								title="Lane actions"
-								aria-label="{relationLaneAriaName(relLane, formatLabel(colValue))} lane actions"
+								aria-label="{relationLaneAriaName(relLane, formatLaneLabel(colValue))} lane actions"
 								aria-haspopup="menu"
 								aria-expanded={openMenuColumn === colValue}
 								onclick={(e) => { e.stopPropagation(); toggleMenu(colValue); }}
@@ -874,7 +884,7 @@
 					</div>
 				{/each}
 				{#if colItems.length === 0 && !isDragging}
-					<div class="column-empty">No {formatLabel(colValue).toLowerCase()} items</div>
+					<div class="column-empty">No {formatLaneLabel(colValue).toLowerCase()} items</div>
 				{/if}
 			</div>
 		</div>
