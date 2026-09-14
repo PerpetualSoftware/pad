@@ -4,7 +4,12 @@
 	import { parseSchema, parseFields } from '$lib/types';
 	import { itemComparator, type SortMode } from '$lib/collections/itemSort';
 	import { reorderGroup, disabledDirections, adjacentColumn, type ReorderDirection } from '$lib/collections/reorder';
-	import { bucketByColumn, formatLaneLabel, UNCATEGORIZED } from '$lib/collections/boardColumns';
+	import {
+		bucketByColumn,
+		formatLaneLabel,
+		laneValue,
+		UNCATEGORIZED,
+	} from '$lib/collections/boardColumns';
 	import {
 		narrowRelationRow,
 		relationLaneAcceptsDrop,
@@ -552,9 +557,18 @@
 		// legacy value of `" id-red "` is ALREADY in the `id-red` lane, and a
 		// raw `!==` fired a pointless write for it — the same asymmetry between
 		// these two views, in the other direction this time.
+		// NORMALISED on both sides (BUG-3053, lead review of PR #1348). The raw
+		// field value against a lane STRING makes an item already in its own lane
+		// look like it moved: `0 !== '0'`, `false !== 'false'`, and the "move"
+		// then writes the string '0' into a number field.
+		//
+		// LIVE ON MAIN, unlike ListView's copy of this: `bucketByColumn` already
+		// normalised, so a 0-scored item has always been visible in lane '0' here
+		// and has always been draggable. The list's version of this line was
+		// unreachable until the item stopped being dropped from the view.
 		const currentValue = isRelationGroup
 			? relationLaneValueFor(item, groupField, resolveRelation)
-			: fields[groupField];
+			: laneValue(fields[groupField]);
 		// A REFUSED grouping has no group value to change, so a drop inside its
 		// single fallback lane is a REORDER and nothing else (U4, codex round
 		// 1). Without this the multi_relation case took the scalar arm:

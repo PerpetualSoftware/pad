@@ -53,18 +53,43 @@ const SURFACES: { name: string; source: string; uses: string[]; forbidden: strin
 	},
 ];
 
+/**
+ * The whole import STATEMENT, not the line the path sits on.
+ *
+ * The first version of this read a single line and asked whether it contained
+ * each name — which worked until a surface's import grew past the line length
+ * and Prettier-style formatting split it, at which point the matched line was
+ * `} from '$lib/collections/boardColumns';` and contained no names at all. The
+ * guard went red on an unmutated tree and "killed" an unrelated mutant while it
+ * was there. An instrument keyed on formatting measures the formatting.
+ */
+function boardColumnsImport(source: string): string | null {
+	const m = source.match(/import\s*\{([\s\S]*?)\}\s*from\s*'\$lib\/collections\/boardColumns'/);
+	return m ? m[1] : null;
+}
+
 describe('every grouped surface imports the shared lane-key helpers', () => {
 	for (const surface of SURFACES) {
 		it(`${surface.name} imports what it uses from boardColumns`, () => {
-			const importLine = surface.source
-				.split('\n')
-				.find((l) => l.includes("from '$lib/collections/boardColumns'"));
-			expect(importLine, `${surface.name} should import from boardColumns`).toBeTruthy();
+			const names = boardColumnsImport(surface.source);
+			expect(names, `${surface.name} should import from boardColumns`).toBeTruthy();
 			for (const name of surface.uses) {
-				expect(importLine, `${surface.name} should import ${name}`).toContain(name);
+				expect(names, `${surface.name} should import ${name}`).toContain(name);
 			}
 		});
 	}
+
+	it('reads a MULTI-LINE import too', () => {
+		// Control: the shape that broke the first version.
+		const multi = [
+			'\timport {',
+			'\t\tbucketByColumn,',
+			'\t\tformatLaneLabel,',
+			"\t} from '$lib/collections/boardColumns';",
+		].join('\n');
+		expect(boardColumnsImport(multi)).toContain('formatLaneLabel');
+		expect(boardColumnsImport('nothing here')).toBeNull();
+	});
 });
 
 describe('no surface keeps a private copy of a lane-key helper', () => {
@@ -83,10 +108,12 @@ describe('no surface keeps a private copy of a lane-key helper', () => {
 	};
 
 	for (const surface of SURFACES) {
-		const body = surface.source
-			.split('\n')
-			.filter((l) => !l.includes("from '$lib/collections/boardColumns'"))
-			.join('\n');
+		// Strip the whole import statement, so importing a shared name never reads
+		// as redefining it — for a one-line or a wrapped import alike.
+		const body = surface.source.replace(
+			/import\s*\{[\s\S]*?\}\s*from\s*'\$lib\/collections\/boardColumns';/,
+			'',
+		);
 
 		for (const key of surface.forbidden) {
 			const { pattern, what } = PATTERNS[key];
