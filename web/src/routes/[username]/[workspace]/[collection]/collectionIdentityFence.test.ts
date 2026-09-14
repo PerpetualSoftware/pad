@@ -82,6 +82,71 @@ describe('the collection page fences every async commit point', () => {
 		expect(beforeFirstAwait).toContain('identityEpochAtLoad = authStore.identityEpoch');
 	});
 
+	it('re-loads on an identity change, so pageIdentityHeld() can recover', () => {
+		// WITHOUT THIS THE FENCE IS A ONE-WAY DOOR (BUG-3084 repair, codex P1).
+		// `identityEpochAtLoad` is re-stamped only by the page load, and that
+		// load is driven by a ROUTE-keyed effect. `routes/+layout.svelte` does
+		// not reload the tab on an anonymous -> signed-in transition, so without
+		// a subscription the page keeps a stale epoch and every
+		// `pageIdentityHeld()` is false for ever — the subscription callbacks
+		// this fence protects go silently inert and never recover.
+		//
+		// Asserted in the SOURCE guard rather than only behaviourally because
+		// this is a property every surface in the family owes, and the guard is
+		// what surfaces 3-7 will copy.
+		expect(
+			CODE,
+			'the page does not subscribe to authStore.onIdentityChange, so a stale load epoch is never ' +
+				'refreshed and pageIdentityHeld() refuses for ever after a sign-in'
+		).toMatch(/authStore\.onIdentityChange\(/);
+		// And the subscription must actually re-run the load — a listener that
+		// merely clears state would leave the epoch stale, which is the defect
+		// wearing a different shape.
+		const sub = CODE.slice(CODE.indexOf('authStore.onIdentityChange('));
+		expect(
+			sub.slice(0, sub.indexOf('});')),
+			'the identity-change listener does not re-run loadCollection, so the load epoch stays stale'
+		).toMatch(/loadCollection\(/);
+		// Unsubscribed, or it outlives the page it re-loads.
+		expect(CODE).toMatch(/onDestroy\(stopIdentityReload\)/);
+	});
+
+	it('fences the SYNCHRONOUS commit points the await-based rules cannot see', () => {
+		// A population neither instrument reaches: a function with NO await that
+		// still replays intent formed earlier. `leaveDiscard` runs when the
+		// unsaved-draft dialog is answered and replays `pendingNav`, which was
+		// created when the PREVIOUS user tried to leave the page — so after an
+		// identity change it navigates the new user to the previous user's
+		// destination.
+		//
+		// The item's body predicted this shape exists ("commit points with NO
+		// await at all") and said it is found by reading. It was found by a
+		// reviewer instead, which is the same thing arriving later. Named
+		// explicitly rather than enumerated, because "every synchronous function
+		// that might replay captured intent" is not a set a grep can produce —
+		// and a rule that cannot enumerate its population should not pretend to.
+		const discard = CODE.slice(CODE.indexOf('function leaveDiscard()'));
+		expect(
+			discard.slice(0, discard.indexOf('\n\t}')),
+			'leaveDiscard replays pendingNav without checking the identity, so a dialog answered after ' +
+				"a sign-in navigates the new user to the previous user's destination"
+		).toMatch(/pageIdentityHeld\(\)/);
+	});
+
+	it('clears the previous identity\'s page state before re-loading', () => {
+		// The re-load is a round-trip, and `loadCollection` leaves the current
+		// collection, views and progress on screen for its whole duration. The
+		// fences stop stale async COMMITS; they say nothing about state already
+		// rendered, so without this the previous user's private collection stays
+		// visible across a sign-out (codex [P1]).
+		const sub = CODE.slice(CODE.indexOf('authStore.onIdentityChange('));
+		const body = sub.slice(0, sub.indexOf('});'));
+		expect(body, 'the identity-change listener re-loads without clearing what is on screen')
+			.toMatch(/collection = null/);
+		// And the clear must come BEFORE the load, or it is decoration.
+		expect(body.indexOf('collection = null')).toBeLessThan(body.indexOf('loadCollection('));
+	});
+
 	it('enumerates the population it claims to cover', () => {
 		// COUNTS ARE ASSERTED so a new member cannot arrive unnoticed: an added
 		// handler, arrow, callback or timer fails HERE and has to be looked at

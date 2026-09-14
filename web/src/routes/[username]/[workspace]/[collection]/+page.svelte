@@ -852,6 +852,54 @@
 		}
 	}
 
+	/**
+	 * RE-LOAD ON AN IDENTITY CHANGE (BUG-3084, repair).
+	 *
+	 * `pageIdentityHeld()` compares against `identityEpochAtLoad`, and only
+	 * `loadCollection` re-stamps it. The effect below runs it on a ROUTE change
+	 * — `wsSlug` / `collSlug` / `showArchived` — and never because the identity
+	 * moved. `routes/+layout.svelte` deliberately does NOT reload the tab on an
+	 * anonymous -> signed-in transition, so this page stays mounted with a
+	 * stale epoch and every `pageIdentityHeld()` is false FOR EVER: the SSE and
+	 * sync subscription callbacks go silently inert and never recover. An
+	 * anonymous viewer on a public collection who signs in stops receiving live
+	 * updates and rename healing, with nothing on screen to say so.
+	 *
+	 * The stale-data condition the fence detects therefore has to be RESOLVED
+	 * rather than refused indefinitely. Re-loading re-stamps the epoch and
+	 * replaces the previous session's view with this one's, which is the state
+	 * the fence existed to stop being shown.
+	 *
+	 * SAFE ORDER, by the store's contract rather than by luck: the epoch is
+	 * bumped BEFORE listeners run (`notifyIdentityChange`), whose own comment
+	 * places the obligation on a listener to load for the identity signed in
+	 * NOW rather than re-issue anything captured earlier. `loadCollection` here
+	 * reads the LIVE route values and captures nothing, so it satisfies that.
+	 *
+	 * Not needed by the settings page (#1370), whose load effect is keyed on
+	 * `${sessionUserId}\n${wsSlug}` and so re-runs on an identity change by
+	 * itself — checked rather than assumed.
+	 */
+	const stopIdentityReload = authStore.onIdentityChange(() => {
+		// CLEARED FIRST, then re-loaded (codex [P1]). `loadCollection` leaves
+		// the current `collection`, saved views and progress on screen while it
+		// awaits, so re-loading alone would keep the previous user's private
+		// collection VISIBLE for the length of a round-trip. The fences stop
+		// stale async commits; they say nothing about state already rendered.
+		//
+		// `items` is derived from `localIndex`, whose own identity listener
+		// drops the previous user's rows, so it is not cleared here.
+		collection = null;
+		savedViews = [];
+		activeViewId = null;
+		itemProgress = {};
+		workspaceMembers = [];
+		metaError = null;
+		metaFromCache = false;
+		if (wsSlug && collSlug) loadCollection(wsSlug, collSlug, showArchived);
+	});
+	onDestroy(stopIdentityReload);
+
 	$effect(() => {
 		if (wsSlug && collSlug) loadCollection(wsSlug, collSlug, showArchived);
 	});
@@ -2322,6 +2370,27 @@
 	function leaveDiscard() {
 		draftText = {};
 		draftOpen = {};
+		// `pageIdentityHeld()`, and NOT an entry capture, for the reason the
+		// fence's header gives: `pendingNav` was formed when the PREVIOUS user
+		// tried to leave, and this function runs when the dialog is answered,
+		// which may be after the identity moved. An entry capture taken here is
+		// already the new epoch and detects nothing (BUG-3084, codex).
+		//
+		// The drafts are still discarded — they belong to the previous session
+		// and clearing them is the safe direction — but the NAVIGATION is not
+		// replayed, because it would send the new user to the previous user's
+		// destination.
+		//
+		// A commit point with NO AWAIT, which is a population neither the
+		// function-level enumeration nor the await-counting rules can see. The
+		// item's own body warned this shape exists and is found by reading; it
+		// was found by a reviewer instead, which is the same thing arriving
+		// later.
+		if (!pageIdentityHeld()) {
+			pendingNav = null;
+			showLeaveDialog = false;
+			return;
+		}
 		runPendingNav();
 	}
 
