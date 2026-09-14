@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { collectionStore } from '$lib/stores/collections.svelte';
-	import { categoricalValueForSlug, collectionsNotStaleFor } from '$lib/collections/categoricalFieldValue';
+	import { categoricalValueForSlug } from '$lib/collections/categoricalFieldValue';
 	// BUG-1538 / TASK-1539 — Confirm dialog that surfaces the server's
 	// `open_children` 409 guard (IDEA-1494) in the web UI. Mounted once
 	// from +layout.svelte; driven by the openChildrenDialog singleton
@@ -19,26 +19,25 @@
 	import Modal from '$lib/components/common/Modal.svelte';
 	import Button from '$lib/components/common/Button.svelte';
 
-	// THE MOUNT-SITE ARGUMENT DOES NOT COVER THIS ONE (BUG-3067 round 5, lead
-	// ruling). The permissive staleness default was allowed to stand only where a
-	// grep shows every mount site sits under the `[workspace]` layout that stamps
-	// the collection store. This dialog is mounted TWICE in the ROOT layout, so it
-	// can be on screen with the store holding another workspace's collections
-	// entirely. The route's own workspace param is the honest source here, since
-	// the dialog has no workspace prop and its children DTO carries only a
-	// collection slug.
+	// NO STALENESS COMPARISON IS MADE HERE, and that is a decision rather than an
+	// omission (BUG-3067, rounds 5-8).
 	//
-	// CORRECTED IN ROUND 7: the route slug is not necessarily the ITEM's
-	// workspace. This dialog is root-mounted and its active request can outlive a
-	// navigation, so `page.params.workspace` can name a workspace the children do
-	// not belong to — which makes the comparison worse than no comparison: it can
-	// answer "stale" for a store that is correct, and "fresh" for one that is not.
-	// A guard fed the wrong input does not fail safe, it fails confidently.
+	// The permissive default was allowed to stand only where a grep shows every
+	// mount site sits under the `[workspace]` layout that stamps the collection
+	// store. This dialog FAILS that test — it is mounted twice in the ROOT layout.
+	// So round 5 gave it the route's workspace param, and round 7 established that
+	// the param can be WRONG: the dialog's request can outlive a navigation, so the
+	// route may name a workspace its children do not belong to. A guard fed the
+	// wrong input does not fail safe; it answers "stale" for a correct store and
+	// "fresh" for a wrong one, confidently either way.
 	//
-	// So the comparison is NOT made here. The dialog stays permissive and says so,
-	// and the real fix is for its children DTO to carry the workspace the item
-	// belongs to — which it does not today.
-	let notStale = $derived(true);
+	// The children DTO carries each child's `collection_slug` — the link beside the
+	// status is built from it — but NOT the workspace the item lives in, which is
+	// the one thing this comparison would need. So the comparison is not made, and
+	// the residual risk is stated rather than hidden: the value is still
+	// type-checked against whatever schema is loaded, so the failure mode under a
+	// same-slug collision between two workspaces is a withheld or shown chip, not
+	// a printed id — which is the thing this unit exists to prevent.
 
 	let active = $derived(openChildrenDialog.active);
 
@@ -112,7 +111,7 @@
 								     it. The claim was about a shape I had not opened, in an
 								     item whose whole history is enumeration claims that were
 								     not checked (BUG-3067 round 3). -->
-								{@const childStatus = categoricalValueForSlug(collectionStore.collections, child.collection_slug, 'status', child.status, notStale)}
+								{@const childStatus = categoricalValueForSlug(collectionStore.collections, child.collection_slug, 'status', child.status)}
 								<li class="child-row">
 									{#if canLink}
 										<a

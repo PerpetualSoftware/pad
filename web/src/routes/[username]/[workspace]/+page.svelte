@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { collectionsNotStaleFor, categoricalValueFor, categoricalValueForSlug } from '$lib/collections/categoricalFieldValue';
+	import { categoricalValueFor } from '$lib/collections/categoricalFieldValue';
 	import { page } from '$app/state';
 	import { onMount, onDestroy, untrack } from 'svelte';
 	import { browser } from '$app/environment';

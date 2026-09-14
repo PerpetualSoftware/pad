@@ -174,6 +174,16 @@
 		return [...known, ...Array.from(discovered).sort((a, b) => a.localeCompare(b))];
 	});
 
+	/** The declared status for sorting — the same question the cards ask. */
+	function declaredStatusOf(fields: Record<string, unknown>): string {
+		return categoricalValueFor(
+			playbooksCollection ? [playbooksCollection] : [],
+			{ collection_slug: playbooksCollection?.slug },
+			'status',
+			fields.status,
+		);
+	}
+
 	let sorted = $derived.by(() => {
 		let items = [...playbooks];
 		if (searchQuery) {
@@ -188,7 +198,12 @@
 		}
 		return items.sort((a, b) => {
 			const fa = parseFields(a), fb = parseFields(b);
-			const sa = STATUS_ORDER[fa.status] ?? 1, sb = STATUS_ORDER[fb.status] ?? 1;
+			// SORTED ON THE DECLARED VALUE, not the raw one (BUG-3067 round 8). A
+			// retyped status stores an item id, which is not an order key —
+			// `STATUS_ORDER` misses it and every such row collapses to the same
+			// default rank. Withholding the chip fixed what the row SHOWED and left
+			// what it was sorted BY, which is the same value wearing a different hat.
+			const sa = STATUS_ORDER[declaredStatusOf(fa)] ?? 1, sb = STATUS_ORDER[declaredStatusOf(fb)] ?? 1;
 			if (sa !== sb) return sa - sb;
 			const ta = fa.trigger ?? '', tb = fb.trigger ?? '';
 			if (ta !== tb) return ta.localeCompare(tb);
