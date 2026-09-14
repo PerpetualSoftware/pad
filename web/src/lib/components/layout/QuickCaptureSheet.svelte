@@ -19,7 +19,8 @@
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
-	import { parseSchema, parseSettings, itemUrlId, isAgentCollection } from '$lib/types';
+	import { parseSettings, itemUrlId, isAgentCollection } from '$lib/types';
+	import { createDefaultFields } from '$lib/collections/createDefaults';
 	import DockedSheet from '$lib/components/layout/DockedSheet.svelte';
 
 	let {
@@ -68,13 +69,9 @@
 		submitting = true;
 		const t = title.trim();
 		try {
-			const schema = parseSchema(coll);
 			const settings = parseSettings(coll);
-			const defaultFields: Record<string, any> = {};
-			const statusField = schema.fields.find((f) => f.key === 'status');
-			if (statusField?.options?.length) {
-				defaultFields.status = statusField.options[0];
-			}
+			// BUG-3078: the status default goes through the declared type.
+			const defaultFields: Record<string, any> = createDefaultFields(coll);
 			const item = await api.items.create(wsSlug, coll.slug, {
 				title: t,
 				content: settings.content_template || '',

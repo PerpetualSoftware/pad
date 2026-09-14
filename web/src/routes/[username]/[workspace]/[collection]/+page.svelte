@@ -9,6 +9,7 @@
 	import { plansProgressToMap, fetchCollectionProgress } from '$lib/collections/progressMerge';
 	import { resolveRenameNavTarget, resolveSyncRenameTarget } from '$lib/collections/renameNav';
 	import { laneWriteValue, laneWriteRefusalMessage } from '$lib/collections/laneWriteValue';
+	import { createDefaultFields } from '$lib/collections/createDefaults';
 	import BoardView from '$lib/components/collections/BoardView.svelte';
 	import ListView from '$lib/components/collections/ListView.svelte';
 	import TableView from '$lib/components/collections/TableView.svelte';
@@ -1914,12 +1915,8 @@
 		if (!wsSlug || !collSlug || creatingNew) return;
 		creatingNew = true;
 		try {
-			const schema = collection ? parseSchema(collection) : { fields: [] };
-			const defaultFields: Record<string, any> = {};
-			const statusField = schema.fields.find(f => f.key === 'status');
-			if (statusField?.options?.length) {
-				defaultFields.status = statusField.options[0];
-			}
+			// BUG-3078: the status default goes through the declared type.
+			const defaultFields: Record<string, any> = createDefaultFields(collection);
 			const item = await api.items.create(wsSlug, collSlug, {
 				title: 'Untitled',
 				content: '',
@@ -1968,12 +1965,8 @@
 		const trimmed = title.trim();
 		if (!trimmed) return null;
 		try {
-			const schema = collection ? parseSchema(collection) : { fields: [] };
-			const defaultFields: Record<string, any> = {};
-			const statusField = schema.fields.find((f) => f.key === 'status');
-			if (statusField?.options?.length) {
-				defaultFields.status = statusField.options[0];
-			}
+			// BUG-3078: the status default goes through the declared type.
+			const defaultFields: Record<string, any> = createDefaultFields(collection);
 			// Pre-fill the lane's group field (status, or a custom
 			// board_group_by select) so the item opens in this lane — converted
 			// through the declared type, for the reason on the drag path
@@ -2114,12 +2107,8 @@
 		if (!title || !wsSlug || !collSlug || creatingNew) return;
 		creatingNew = true;
 		try {
-			const schema = collection ? parseSchema(collection) : { fields: [] };
-			const defaultFields: Record<string, any> = {};
-			const statusField = schema.fields.find(f => f.key === 'status');
-			if (statusField?.options?.length) {
-				defaultFields.status = statusField.options[0];
-			}
+			// BUG-3078: the status default goes through the declared type.
+			const defaultFields: Record<string, any> = createDefaultFields(collection);
 			// Epoch before create: brand-new id, never fenced (BUG-2098).
 			const epoch = localIndex.scopeEpochFor(wsSlug);
 			const item = await api.items.create(wsSlug, collSlug, {
