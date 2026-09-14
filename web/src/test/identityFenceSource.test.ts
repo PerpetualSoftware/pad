@@ -9,7 +9,7 @@
 // including the two shapes that have broken brace matchers in this repo
 // before: a brace inside a string literal, and a template interpolation.
 import { describe, it, expect } from 'vitest';
-import { matchBrace, matchDelimiter, readFenceSource, stripComments } from './identityFenceSource';
+import { matchBrace, matchDelimiter, readFenceSource, stripComments, withoutCatchArms } from './identityFenceSource';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -158,5 +158,53 @@ describe('asyncFunctions delimiting', () => {
 		const timers = src.deferredTimers();
 		expect(timers).toHaveLength(1);
 		expect(timers[0].body).not.toContain('MARKER');
+	});
+});
+
+describe('withoutCatchArms', () => {
+	it('removes a catch arm and keeps everything else', () => {
+		const body = 'A try { B } catch (e) { HIDDEN } C';
+		const out = withoutCatchArms(body);
+		expect(out).not.toContain('HIDDEN');
+		expect(out).toContain('A');
+		expect(out).toContain('B');
+		expect(out).toContain('C');
+	});
+
+	it('keeps a commit that follows the try/catch', () => {
+		// The false positive the narrower `slice(firstAwait, indexOf("} catch"))`
+		// form produces: `handleLaneDrop` on the roles board awaits inside its
+		// try, commits AFTER the whole try/catch, and is correct — but the
+		// narrow window ends at `} catch` and never sees the check.
+		const body = 'try { await go(); } catch (e) { log(e); } if (!identityHeld(x)) return; commit();';
+		expect(withoutCatchArms(body)).toContain('identityHeld(x)');
+	});
+
+	it('keeps an await that lives in a NESTED try inside an outer catch out of the success path', () => {
+		// The other false positive, from balancing arms separately:
+		// `handleStatusChange` on the collection page has its retry-await inside
+		// a nested try within the outer catch. Excising arms removes the whole
+		// outer catch, nested block included, so the success path does not
+		// inherit an await only a failure reaches.
+		const body = 'try { await a(); if (!identityHeld(x)) return; } catch (e) { try { await retry(); } catch (f) { log(f); } }';
+		const out = withoutCatchArms(body);
+		expect(out).not.toContain('retry()');
+		expect(out).toContain('await a()');
+	});
+
+	it('handles several catch arms', () => {
+		const body = 'try { A } catch { X1 } try { B } catch { X2 } C';
+		const out = withoutCatchArms(body);
+		expect(out).not.toContain('X1');
+		expect(out).not.toContain('X2');
+		expect(out).toContain('C');
+	});
+
+	it('is a no-op on a body with no catch', () => {
+		expect(withoutCatchArms('A B C')).toBe('A B C');
+	});
+
+	it('throws rather than guessing when an arm cannot be delimited', () => {
+		expect(() => withoutCatchArms('try { A } catch (e) { unterminated')).toThrow(/re-point this guard/);
 	});
 });
