@@ -176,3 +176,63 @@ func TestStaleBundleItemsFallsBackToTheSlugWhenNoRefCanBeBuilt(t *testing.T) {
 		t.Errorf("refs = %q, %q; want the slugs", got[0].Ref, got[1].Ref)
 	}
 }
+
+// gateLateStale's message differs from the pre-pass's in exactly one way that
+// matters, and it is the one a test has to hold: the pre-pass runs before the
+// first import and can promise nothing has been migrated, while this fires
+// mid-loop, where earlier workspaces are already in PostgreSQL.
+func TestGateLateStaleTellsTheTruthAboutWhatWasAlreadyMigrated(t *testing.T) {
+	stale := []store.PendingFlushItem{{Ref: "TASK-7", Title: "half-typed"}}
+
+	t.Run("nothing migrated yet keeps the pre-pass promise", func(t *testing.T) {
+		report, err := gateLateStale("beta", stale, 0)
+		if err == nil {
+			t.Fatal("the gate permitted a migration that would have abandoned the only copy")
+		}
+		if !strings.Contains(report, "Nothing has been migrated.") {
+			t.Errorf("report does not promise nothing was migrated:\n%s", report)
+		}
+		if strings.Contains(report, "PARTIALLY") {
+			t.Errorf("report claims a partial migration when none had happened:\n%s", report)
+		}
+	})
+
+	t.Run("mid-loop says PARTIALLY populated instead", func(t *testing.T) {
+		report, err := gateLateStale("beta", stale, 3)
+		if err == nil {
+			t.Fatal("the gate permitted the migration")
+		}
+		if !strings.Contains(report, "PARTIALLY populated") {
+			t.Errorf("report does not disclose the partial state:\n%s", report)
+		}
+		if !strings.Contains(report, "3 workspace(s) were already migrated") {
+			t.Errorf("report does not say HOW MANY were already migrated:\n%s", report)
+		}
+		// The pre-pass's promise would be a lie here, and this is the assertion
+		// that catches a copy-paste of the other gate's wording.
+		if strings.Contains(report, "Nothing has been migrated.") {
+			t.Errorf("report claims nothing was migrated after 3 workspaces already were:\n%s", report)
+		}
+	})
+
+	t.Run("a clean bundle is not gated", func(t *testing.T) {
+		// CONTROL: without it, a gate that refused unconditionally would satisfy
+		// both cases above.
+		report, err := gateLateStale("beta", nil, 3)
+		if err != nil {
+			t.Errorf("a bundle with nothing marked was refused: %v", err)
+		}
+		if report != "" {
+			t.Errorf("a clean bundle printed %q", report)
+		}
+	})
+
+	t.Run("the refusal names the items and the remedy", func(t *testing.T) {
+		report, _ := gateLateStale("beta", stale, 0)
+		for _, want := range []string{"TASK-7", "half-typed", "beta", "Stop the Pad server"} {
+			if !strings.Contains(report, want) {
+				t.Errorf("report does not contain %q:\n%s", want, report)
+			}
+		}
+	})
+}

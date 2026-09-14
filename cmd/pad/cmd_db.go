@@ -539,26 +539,9 @@ Steps:
 				// migrate) it can never fire, because nothing is appending. It
 				// exists for the operator who did not stop the server, which
 				// nothing enforces.
-				if lateStale := staleBundleItems(data); len(lateStale) > 0 {
-					fmt.Fprintf(os.Stderr, "\n%d item(s) in %s became stale between the pre-flight check and the\n",
-						len(lateStale), ws.Slug)
-					fmt.Fprint(os.Stderr, "export — an editor appended to the collaborative op-log while this command\n")
-					fmt.Fprint(os.Stderr, "was running. Refusing to migrate a body whose real text this migration\n")
-					fmt.Fprint(os.Stderr, "would then abandon:\n\n")
-					for _, it := range lateStale {
-						fmt.Fprintf(os.Stderr, "    %-12s %s\n", it.Ref, it.Title)
-					}
-					fmt.Fprint(os.Stderr, "\nStop the Pad server before migrating (docs/backup.md), then re-run.\n")
-					// NOT the pre-pass's promise: earlier workspaces in this
-					// loop are already in PostgreSQL, and saying "nothing has
-					// been migrated" here would be false.
-					if migrated > 0 {
-						fmt.Fprintf(os.Stderr, "%d workspace(s) were already migrated before this refusal; "+
-							"the destination is PARTIALLY populated.\n", migrated)
-					} else {
-						fmt.Fprint(os.Stderr, "Nothing has been migrated.\n")
-					}
-					return fmt.Errorf("%s: %d item(s) became stale during the migration; refused", ws.Slug, len(lateStale))
+				if report, err := gateLateStale(ws.Slug, staleBundleItems(data), migrated); err != nil {
+					fmt.Fprint(os.Stderr, report)
+					return err
 				}
 
 				stats := fmt.Sprintf("%d collections, %d items, %d comments",
@@ -598,6 +581,42 @@ Steps:
 		"migrate even though some items have edits only in the collaborative op-log, permanently losing them")
 
 	return cmd
+}
+
+// gateLateStale refuses a migration when the BUNDLE about to be imported carries
+// bodies the exporter marked as stale, and renders the operator-facing message
+// (BUG-3032, codex round 1 P1).
+//
+// Separated from the command's RunE for the reason gateUnflushedEdits is: the
+// wording is the whole product here, and a message reachable only by running two
+// live databases is a message nobody checks until an operator hits it during a
+// migration they cannot retry.
+//
+// `migratedSoFar` is what makes this message different from the pre-pass's. The
+// pre-pass runs before the first import and can promise nothing has been
+// migrated; this fires mid-loop, so earlier workspaces are already in PostgreSQL
+// and claiming otherwise would be false. It says PARTIALLY populated instead,
+// and only falls back to the pre-pass's promise when the count is genuinely 0.
+func gateLateStale(wsSlug string, stale []store.PendingFlushItem, migratedSoFar int) (string, error) {
+	if len(stale) == 0 {
+		return "", nil
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "\n%d item(s) in %s became stale between the pre-flight check and the\n", len(stale), wsSlug)
+	fmt.Fprint(&b, "export — an editor appended to the collaborative op-log while this command\n")
+	fmt.Fprint(&b, "was running. Refusing to migrate a body whose real text this migration\n")
+	fmt.Fprint(&b, "would then abandon:\n\n")
+	for _, it := range stale {
+		fmt.Fprintf(&b, "    %-12s %s\n", it.Ref, it.Title)
+	}
+	fmt.Fprint(&b, "\nStop the Pad server before migrating (docs/backup.md), then re-run.\n")
+	if migratedSoFar > 0 {
+		fmt.Fprintf(&b, "%d workspace(s) were already migrated before this refusal; the destination is "+
+			"PARTIALLY populated.\n", migratedSoFar)
+	} else {
+		fmt.Fprint(&b, "Nothing has been migrated.\n")
+	}
+	return b.String(), fmt.Errorf("%s: %d item(s) became stale during the migration; refused", wsSlug, len(stale))
 }
 
 // staleBundleItems names the items in a built bundle whose bodies the exporter
