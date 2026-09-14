@@ -900,6 +900,12 @@ func (s *Server) handleImportWorkspace(w http.ResponseWriter, r *http.Request) {
 	// an imported workspace is attributed the same way a created one is
 	// (BUG-1557 — import previously got no source at all).
 	userID := mint.OwnerID
+	// BUG-3032: read the bundle's stale-body marker BEFORE the import, while
+	// `data` is still the thing the exporter wrote. Nothing after this point can
+	// recover the fact — the destination has no op-log to evaluate against.
+	staleBodies := &staleBodyTally{}
+	staleBodies.Observe(&data)
+
 	ws, err := s.store.ImportWorkspace(&data, newName, userID, mint.Source)
 	if err != nil {
 		// A refusal about the EXPORT the caller supplied is a 400, not a 500
@@ -932,6 +938,11 @@ func (s *Server) handleImportWorkspace(w http.ResponseWriter, r *http.Request) {
 		slog.Info("workspace import repaired NUL escapes on the operator's instruction",
 			"workspace_id", ws.ID, "replaced", repair.Replaced)
 	}
+	if staleBodies.Count > 0 {
+		slog.Info("workspace import carried item bodies that were behind their live collaborative documents",
+			"workspace_id", ws.ID, "stale_bodies", staleBodies.Count)
+	}
 	repair.SetHeader(w)
+	staleBodies.SetHeader(w)
 	writeJSON(w, http.StatusCreated, ws)
 }

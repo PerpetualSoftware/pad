@@ -63,11 +63,18 @@ type Provenance struct {
 	//
 	// What it does NOT do: stop the import. A stale body imported into another
 	// workspace becomes canonical there, in a workspace whose op-log never held
-	// the real content and so can never catch up — that is BUG-3032's open
-	// decision (signal / refuse / accept) for the bundle format. This key is the
-	// cheapest of those three on this format, and forecloses neither of the
-	// others: if that unit rules refuse-or-warn for portable formats, this door
-	// joins the ruling and this marker is what makes the check possible.
+	// the real content and so can never catch up.
+	//
+	// BUG-3032 HAS NOW RULED on that, and this door keeps exactly the behaviour
+	// above — the conditional in the previous version of this comment is
+	// discharged, not still pending. That unit found the axis is not "portable
+	// format vs read" but WHETHER THE SOURCE SURVIVES: every door whose source
+	// database stays readable signals (this one, the workspace bundle, the
+	// cross-workspace copy), because the real text is still reachable and the
+	// remedy is to export or copy again once a tab has flushed. The single door
+	// that refuses is `pad db migrate-to-pg`, which abandons its source database
+	// and is therefore the only place the staleness is permanent — and it is a
+	// COMMAND, not a format, so nothing here changes.
 	ContentState string `yaml:"content_state,omitempty"`
 }
 

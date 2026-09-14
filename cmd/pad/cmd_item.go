@@ -2562,6 +2562,13 @@ func renderItemCopyResult(out io.Writer, r *cli.ItemCopyResult) error {
 	fmt.Fprintf(w, "  %-32s %s\n", "agent role dropped", yesNo(warn.DroppedAgentRole))
 	fmt.Fprintf(w, "  %-32s %s\n", "attachments cloned", itemCopyAttachmentSummary(warn.AttachmentCount, warn.AttachmentBytes))
 	fmt.Fprintf(w, "  %-32s %d\n", "unresolvable attachment refs", warn.UnresolvableRefCount)
+	// BUG-3032: the body that was copied was behind the source item's live
+	// collaborative document. A WARNING rather than a refusal, because the
+	// source survives a copy — the real text is still in workspace A's
+	// op-log, so the remedy is to copy again once a tab has flushed it.
+	// Printed as its own row rather than folded into the summary line so it
+	// cannot be mistaken for an attachment problem.
+	fmt.Fprintf(w, "  %-32s %s\n", "source body behind live document", yesNo(warn.SourceContentState != ""))
 	return w.err
 }
 

@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -1105,6 +1106,17 @@ Format is detected by file extension. Override workspace name with --name.`,
 				fmt.Printf("  Values repaired (each NUL replaced with U+FFFD): %s\n",
 					repairedNULCount(header))
 			}
+			// BUG-3032, codex round 1 P2: the server reports this count as a
+			// RESPONSE HEADER, and a header nobody prints is a signal that does
+			// not exist. Unconditional, unlike the NUL line above: that one is
+			// gated on a flag the operator passed, whereas this one tells them
+			// something about the bundle they had no way to know and did not ask
+			// about. Printed only when non-zero, so a clean import's output is
+			// unchanged.
+			if n := staleBodyImportCount(header); n != "" {
+				fmt.Printf("  Bodies that were already behind their live editor when this bundle\n")
+				fmt.Printf("  was exported (imported as-is, not lost — see docs/backup.md): %s\n", n)
+			}
 			return nil
 		},
 	}
@@ -1215,6 +1227,80 @@ func auditLogCmd() *cobra.Command {
 // than this flag ignores the query parameter entirely and imports strictly, so
 // printing "0" there would tell the operator the export was clean when in fact
 // nothing was even asked.
+// staleBodyImportCount returns the stale-body count the server reported, or ""
+// when there is nothing to say — no headers, no header, a zero count, or a value
+// that is not a positive integer.
+//
+// Deliberately NOT the "unknown (...)" treatment repairedNULCount gives a
+// missing header. That helper answers a question the operator ASKED by passing a
+// flag, so silence there needs explaining. This one is unsolicited: an older
+// server that never sets the header has nothing to report, and printing
+// "unknown" would invent an open question on every import against one.
+//
+// It PARSES rather than passing the value through (codex round 2 P2). The
+// earlier version returned any non-"0" string, so `abc`, `-1` or `NaN` — a
+// malformed or proxy-injected header — printed as a count, while this comment
+// already claimed unparseable values were dropped. The comment was the
+// specification and the code did not meet it; a response header is attacker- or
+// middlebox-influenced input, not a trusted field.
+//
+// STRICTER THAN strconv.Atoi ALONE, so that this and the web client suppress and
+// display exactly the same set of values (codex round 4 P2). Atoi diverged from
+// the browser in three ways, and in each the browser was the stricter one, so the
+// fix tightens here rather than loosening there — the server writes this header
+// with strconv.Itoa, which emits none of these forms, so nothing legitimate is
+// refused:
+//
+//   - Atoi accepts a leading `+`; the web's regex does not.
+//   - Atoi accepts up to MaxInt64, while JS silently rounds past 2^53-1. The
+//     value is a count of items in ONE workspace, so anything near either bound
+//     is a malformed header rather than a fact.
+//   - Header.Get returns the FIRST of a repeated header, so `["2","3"]` printed
+//     `2`, while the browser's Headers.get joins them as `"2, 3"` and the web
+//     refused. A repeated header is malformed — the server sets exactly one — so
+//     refusing is the honest reading and it is also what the browser already did.
+func staleBodyImportCount(header http.Header) string {
+	if header == nil {
+		return ""
+	}
+	// Values, not Get: a repeated header must be refused rather than resolved to
+	// whichever copy happens to be first.
+	vals := header.Values(server.StaleBodyImportHeader)
+	if len(vals) != 1 {
+		return ""
+	}
+	v := vals[0]
+	// Decimal digits only, matching the web client's gate exactly.
+	for _, r := range v {
+		if r < '0' || r > '9' {
+			return ""
+		}
+	}
+	if v == "" {
+		return ""
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || n <= 0 || n > maxSafeJSInteger {
+		return ""
+	}
+	// Re-rendered from the parsed integer, never echoed: that is what keeps a
+	// value like "007" from reaching the operator's terminal as-is.
+	return strconv.FormatInt(n, 10)
+}
+
+// maxSafeJSInteger is 2^53-1, JavaScript's Number.MAX_SAFE_INTEGER: the largest
+// integer below which EVERY integer is exactly representable as a float64.
+//
+// Not "the largest integer a Number can hold exactly" — larger ones can be, 2^54
+// among them (codex round 5 nit). What fails above this bound is that integers
+// stop being CONTIGUOUSLY representable, so a value there can round to a
+// different one and two adjacent counts become indistinguishable.
+//
+// It bounds the header count here ONLY so the Go and JavaScript readers of the
+// same header agree on which values are acceptable; it is not a fact about items.
+// See staleBodyImportCount.
+const maxSafeJSInteger = 9007199254740991
+
 func repairedNULCount(header http.Header) string {
 	if header == nil {
 		return "unknown (no response headers)"

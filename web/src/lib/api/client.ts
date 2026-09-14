@@ -1058,7 +1058,15 @@ export const api = {
 		// so we explicitly set application/gzip and POST the raw File body
 		// rather than going through the JSON-encoding `request` helper.
 		// Mirrors the CLI's `pad workspace import <bundle.tar.gz>` flow.
-		importBundle: async (file: File, name?: string): Promise<Workspace> => {
+		// BUG-3032: the stale-body count comes back as a RESPONSE HEADER, so it
+		// is returned alongside the workspace rather than inside it. An
+		// intersection type rather than a new shape: every existing caller reads
+		// Workspace fields and is unaffected, and a server that does not set the
+		// header simply leaves the field undefined.
+		importBundle: async (
+			file: File,
+			name?: string
+		): Promise<Workspace & { stale_bodies?: number }> => {
 			const headers: Record<string, string> = { 'Content-Type': 'application/gzip' };
 			const csrf = getCSRFToken();
 			if (csrf) headers['X-CSRF-Token'] = csrf;
@@ -1083,7 +1091,37 @@ export const api = {
 				if (body?.error) throw new PadApiError(body.error);
 				throw new Error(`API error: ${resp.status}`);
 			}
-			return resp.json();
+			const ws = (await resp.json()) as Workspace;
+			// Absent, unparseable or zero all mean "nothing to report": the
+			// field stays undefined rather than 0, so a caller can render on
+			// presence without treating a clean import as a fact worth showing.
+			//
+			// A POSITIVE DECIMAL INTEGER is required, spelled the one way the CLI's
+			// staleBodyImportCount accepts it (codex rounds 2 P2, 3 P2, 4 P2 and
+			// the round-5 nit). NOT "the one way strconv.Atoi accepts it": Atoi is
+			// LOOSER than both readers, and the Go side deliberately rejects three
+			// forms it would take — a leading `+`, values above 2^53-1, and a
+			// repeated header — so that the two agree exactly. A response
+			// header is middlebox- and attacker-influenced input, and `Number()`
+			// is lenient in ways that reach the toast and that the CLI rejects:
+			// it trims (`" 7 "`), takes decimals (`"2.5"`), exponent notation
+			// (`"7e0"` → 7), hex (`"0x7"` → 7), and silently rounds integers past
+			// 2^53. The regex is therefore the gate and Number() only converts
+			// what it already admitted — so the two transports suppress and
+			// display exactly the same set of values.
+			//
+			// MAX_SAFE_INTEGER bounds it because Atoi refuses an oversized int
+			// and JS would quietly round one; the count is of items in one
+			// workspace, so any value near that bound is a malformed header
+			// rather than a fact.
+			const raw = resp.headers.get('X-Pad-Import-Stale-Bodies');
+			if (raw !== null && /^[0-9]+$/.test(raw)) {
+				const n = Number(raw);
+				if (n > 0 && n <= Number.MAX_SAFE_INTEGER) {
+					return { ...ws, stale_bodies: n };
+				}
+			}
+			return ws;
 		}
 	},
 

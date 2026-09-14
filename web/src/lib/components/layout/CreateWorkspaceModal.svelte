@@ -285,7 +285,19 @@
 			// modal so opening the Connect modal post-import isn't surprising.
 			onWorkspaceCreated?.(ws);
 			close();
-			toastStore.show(`Imported workspace "${ws.name}"`, 'success');
+			// BUG-3032: some bodies in the bundle were already behind their live
+			// editor when it was exported. Said in the SUCCESS toast, because
+			// that is what it is — the items imported, nothing was lost — and
+			// only when there were any, so a clean import's toast is unchanged.
+			if (ws.stale_bodies) {
+				toastStore.show(
+					`Imported workspace "${ws.name}" — ${ws.stale_bodies} item${ws.stale_bodies === 1 ? '' : 's'} ` +
+						`arrived with the body the export captured, which was already behind its live editor`,
+					'success'
+				);
+			} else {
+				toastStore.show(`Imported workspace "${ws.name}"`, 'success');
+			}
 			goto(`/${ws.owner_username}/${ws.slug}`);
 		} catch (err) {
 			// The FAILURE path needs the same fence (codex round 7). An import

@@ -187,11 +187,19 @@ func (s *Store) ExportWorkspace(slug string) (*models.WorkspaceExport, error) {
 	}
 
 	// Items
+	//
+	// The `i` alias exists only so contentStateSQL can be spliced in (BUG-3032).
+	// The predicate marks a row whose body is BEHIND the item's live
+	// collaborative document; it rides in the SAME SELECT as `content` so the
+	// mark and the body it describes always come from one row. (Export runs a
+	// sequence of pooled queries with no enclosing transaction, so separate
+	// SECTIONS of a bundle can already disagree under concurrency — pre-existing,
+	// and per-row consistency is the only consistency this mark claims.)
 	itemRows, err := s.db.Query(s.q(`
-		SELECT id, collection_id, title, slug, content, fields, tags, pinned, sort_order,
-		       COALESCE(parent_id, ''), created_by, last_modified_by, source, COALESCE(item_number, 0), created_at, updated_at
-		FROM items WHERE workspace_id = ? AND deleted_at IS NULL
-		ORDER BY created_at, id`), ws.ID)
+		SELECT i.id, i.collection_id, i.title, i.slug, i.content, `+contentStateSQL+`, i.fields, i.tags, i.pinned, i.sort_order,
+		       COALESCE(i.parent_id, ''), i.created_by, i.last_modified_by, i.source, COALESCE(i.item_number, 0), i.created_at, i.updated_at
+		FROM items i WHERE i.workspace_id = ? AND i.deleted_at IS NULL
+		ORDER BY i.created_at, i.id`), ws.ID)
 	if err != nil {
 		return nil, fmt.Errorf("export items: %w", err)
 	}
@@ -199,7 +207,7 @@ func (s *Store) ExportWorkspace(slug string) (*models.WorkspaceExport, error) {
 	for itemRows.Next() {
 		var it models.ItemExport
 		var pinned bool
-		if err := itemRows.Scan(&it.ID, &it.CollectionID, &it.Title, &it.Slug, &it.Content, &it.Fields, &it.Tags, &pinned, &it.SortOrder, &it.ParentID, &it.CreatedBy, &it.LastModifiedBy, &it.Source, &it.ItemNumber, &it.CreatedAt, &it.UpdatedAt); err != nil {
+		if err := itemRows.Scan(&it.ID, &it.CollectionID, &it.Title, &it.Slug, &it.Content, &it.ContentState, &it.Fields, &it.Tags, &pinned, &it.SortOrder, &it.ParentID, &it.CreatedBy, &it.LastModifiedBy, &it.Source, &it.ItemNumber, &it.CreatedAt, &it.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan item: %w", err)
 		}
 		it.Pinned = pinned
@@ -1243,4 +1251,79 @@ func hasDigit(s string) bool {
 		}
 	}
 	return false
+}
+
+// PendingFlushItem names one item whose stored body is BEHIND its live
+// collaborative document, for the migration gate in `pad db migrate-to-pg`
+// (BUG-3032).
+type PendingFlushItem struct {
+	Ref   string
+	Title string
+}
+
+// ListItemsPendingContentFlush returns the workspace's items whose op-log holds
+// updates above items.content_flushed_op_log_id — the same predicate
+// contentStateSQL evaluates, reached through the same helper so the gate and the
+// bundle's own marker cannot disagree about which rows are stale. Two
+// hand-written spellings of it would be two chances to drift, and a gate that
+// refused a different set than the bundle marks would be worse than no gate.
+//
+// Why a query rather than a scan of an already-built bundle: the migration's
+// refusal has to be able to say "nothing has been migrated", which means the
+// check must cover EVERY workspace before the first import runs. Exporting them
+// all up front to scan them would hold every workspace in memory at once; this
+// is one indexed EXISTS per item (idx_yjs_updates_item_id covers it) and leaves
+// the migration's export-then-import-per-workspace shape alone.
+//
+// The collection join is a LEFT join, and that is the load-bearing detail rather
+// than defensiveness. This gate's population MUST equal the bundle's, or the
+// migration passes while the bundle it is about to write carries a stale body.
+// The export's items query does not join collections at all, so an INNER join
+// here would silently drop any item whose collection row is missing — and that
+// is reachable on precisely the databases this command runs against: items.collection_id
+// is `NOT NULL REFERENCES collections(id)`, but store.New's note records that FK
+// enforcement used to be applied to only ONE pool member, so a historically
+// written SQLite file "may" carry latent integrity violations. A legacy SQLite
+// file is what `migrate-to-pg` exists for. Rather than argue the orphan is
+// unreachable, the two queries are made unable to disagree.
+//
+// Soft-deleted collections need no clause for the same reason: DeleteCollection
+// soft-deletes the collection row alone and its items stay live and stay
+// exported (BUG-2884), and nothing here filters on the collection's deleted_at,
+// so those items are named too.
+//
+// An orphan therefore still gets NAMED, by slug rather than by a ref it cannot
+// have — the refusal's whole job is to tell the operator what to open, and
+// "PREFIX-0" would send them looking for something that does not exist.
+//
+// Ordered by ref so a refusal message is stable between runs.
+func (s *Store) ListItemsPendingContentFlush(workspaceID string) ([]PendingFlushItem, error) {
+	rows, err := s.db.Query(s.q(`
+		SELECT COALESCE(c.prefix, ''), COALESCE(i.item_number, 0), i.title, i.slug
+		FROM items i
+		LEFT JOIN collections c ON c.id = i.collection_id
+		WHERE i.workspace_id = ? AND i.deleted_at IS NULL
+		  AND `+contentStateSQL+` <> ''
+		ORDER BY COALESCE(c.prefix, ''), i.item_number`), workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("list items pending content flush: %w", err)
+	}
+	defer rows.Close()
+	var out []PendingFlushItem
+	for rows.Next() {
+		var prefix, title, slug string
+		var number int
+		if err := rows.Scan(&prefix, &number, &title, &slug); err != nil {
+			return nil, fmt.Errorf("scan item pending content flush: %w", err)
+		}
+		ref := slug
+		if prefix != "" {
+			ref = fmt.Sprintf("%s-%d", prefix, number)
+		}
+		out = append(out, PendingFlushItem{Ref: ref, Title: title})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }

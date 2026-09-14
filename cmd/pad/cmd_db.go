@@ -17,6 +17,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/cli"
 	"github.com/PerpetualSoftware/pad/internal/config"
 
+	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
@@ -371,6 +372,8 @@ WARNING: This will overwrite the current database contents.`,
 func dbMigrateToPgCmd() *cobra.Command {
 	var fromPath string
 	var toURL string
+	var discardUnflushedEdits bool
+	var forceLiveServer bool
 
 	cmd := &cobra.Command{
 		Use:   "migrate-to-pg",
@@ -398,6 +401,76 @@ Steps:
 			}
 			if _, err := os.Stat(fromPath); os.IsNotExist(err) {
 				return fmt.Errorf("SQLite database not found: %s", fromPath)
+			}
+
+			// BUG-3032, codex round 2 P1: REMOVE THE APPENDER rather than race it.
+			//
+			// Round 1's post-export bundle check narrowed the TOCTOU window from
+			// "pre-pass → export" to "export → import". Round 2 was right that
+			// narrowing is not closing: the source read and the destination write
+			// are in two different databases, so no transaction can span them and
+			// no amount of re-checking makes them atomic.
+			//
+			// What CAN be removed is the appender. `item_yjs_updates` has exactly
+			// ONE non-test writer in this codebase — `internal/collab/room.go`'s
+			// readLoop, reached only through the collab WebSocket — so an append
+			// requires a live HTTP server with a client attached. (Nothing lowers
+			// `content_flushed_op_log_id` either, so a row cannot become stale by
+			// the watermark regressing; and a prune only ever makes a row less
+			// stale.) `pad db restore` already refuses on the same structural
+			// ground, for the WAL rather than the op-log, and docs/backup.md step
+			// 3 is already "Stop the server" — this enforces the step the docs
+			// ask for.
+			//
+			// THE CLAIM IS DELIBERATELY NOT "the window cannot exist". The probe
+			// asks whether something healthy answers at the CONFIGURED host and
+			// port; it cannot see a second server on another port against this
+			// same SQLite file, and it does not verify that what answered is
+			// serving this database at all. So: no reachable server at the
+			// configured address, which is the honest scope. That imprecision cuts
+			// both ways, which is why --force exists (mirroring restore's) and why
+			// the pre-pass and the post-export bundle check both stay — under
+			// --force, or against a server this probe cannot see, they are the
+			// remaining protection and the window is narrowed rather than gone.
+			//
+			// The residual is tracked as BUG-3072, which also records why it is
+			// wider than bodies: this probe asks about an ADDRESS when the real
+			// question is about a FILE, and a second server on another port — or
+			// any other caller of the exported Store.AppendYjsUpdate — is outside
+			// what it can answer.
+			cfg, cfgErr := config.Load()
+			if cfgErr != nil {
+				// FAIL CLOSED (codex round 3 P1). The previous version warned and
+				// proceeded, on the reasoning that an unrelated config problem
+				// should not block a migration. That gets the direction backwards
+				// for this particular gate: its entire job is to establish that
+				// nothing can append, and a config it cannot read is a gate that
+				// cannot establish anything. Disclosure is not safety — a warning
+				// on a terminal nobody is reading still ends with the migration
+				// running against a live server.
+				//
+				// --force is the escape and already exists, so this is not a dead
+				// end for an operator with a broken config who knows the server is
+				// down.
+				if !forceLiveServer {
+					return fmt.Errorf("could not load config to check for a running Pad server (%w) — "+
+						"stop the server and re-run with --force if you know it is down. An edit made while "+
+						"this migration reads the database is not carried (the bundle has no op-log) and the "+
+						"SQLite file holding it is abandoned afterwards", cfgErr)
+				}
+				fmt.Fprintf(os.Stderr, "WARNING: could not load config (%v), so the running-server check was "+
+					"SKIPPED; proceeding because --force was given.\n", cfgErr)
+			} else if cli.IsServerRunning(cfg) {
+				if !forceLiveServer {
+					return fmt.Errorf("the Pad server appears to be running at %s:%d — stop it first "+
+						"('pad server stop') so nothing can append collaborative edits while this migration "+
+						"reads the database, or re-run with --force to override. An edit landing mid-migration "+
+						"is not carried (the bundle has no op-log) and the SQLite file holding it is abandoned "+
+						"after this command", cfg.Host, cfg.Port)
+				}
+				fmt.Fprintf(os.Stderr, "WARNING: the Pad server appears to be running at %s:%d; migrating anyway "+
+					"because --force was given. An edit made in a browser tab during this migration may not "+
+					"reach PostgreSQL.\n", cfg.Host, cfg.Port)
 			}
 
 			if toURL == "" {
@@ -457,6 +530,56 @@ Steps:
 			}
 			fmt.Fprintln(os.Stderr)
 
+			// BUG-3032: refuse the migration while any item's stored body is
+			// BEHIND its live collaborative document.
+			//
+			// This gate exists here and nowhere else because this is the only
+			// door that ABANDONS its source database. The bundle carries no
+			// op-log — models.WorkspaceExport enumerates its sections and
+			// item_yjs_updates is not among them — and ImportWorkspace writes
+			// ItemExport.Content back as the destination's canonical content.
+			// Everywhere else a stale body is merely served late and the real
+			// text stays reachable: the two HTTP export/import doors leave the
+			// source workspace in place, a cross-workspace copy leaves the
+			// source item untouched, and `pad db backup` / `pad db restore`
+			// don't come through here at all (VACUUM INTO / pg_dump copy the
+			// whole database, op-log included). After this command the operator
+			// switches to Postgres and the SQLite file stops being read, so the
+			// same staleness is permanent loss.
+			//
+			// THE CHECK COVERS EVERY WORKSPACE BEFORE THE FIRST IMPORT, so the
+			// refusal can truthfully say nothing has been migrated — the same
+			// promise the NUL-suspect gate above makes. It is one indexed EXISTS
+			// per item rather than a scan of pre-built bundles, which would mean
+			// holding every workspace in memory to read one field.
+			//
+			// The remedy is the only one there is: a browser tab. No Go code in
+			// this repo can decode a Yjs update payload (the dumb-relay design),
+			// so nothing server-side can move op-log content into items.content
+			// — and the two server-side paths that touch the op-log,
+			// PruneAndApply and ForceRefreshRoom, write CALLER-supplied content
+			// and prune, which would DISCARD exactly these edits. That is why
+			// the escape hatch is named for what it does to the data.
+			pendingByWorkspace := map[string][]store.PendingFlushItem{}
+			pendingTotal := 0
+			for _, ws := range workspaces {
+				pending, err := srcStore.ListItemsPendingContentFlush(ws.ID)
+				if err != nil {
+					return fmt.Errorf("check for unflushed edits in %s: %w", ws.Slug, err)
+				}
+				if len(pending) > 0 {
+					pendingByWorkspace[ws.Slug] = pending
+					pendingTotal += len(pending)
+				}
+			}
+			report, err := gateUnflushedEdits(workspaces, pendingByWorkspace, pendingTotal, discardUnflushedEdits)
+			if report != "" {
+				fmt.Fprint(os.Stderr, report)
+			}
+			if err != nil {
+				return err
+			}
+
 			migrated := 0
 			for _, ws := range workspaces {
 				fmt.Fprintf(os.Stderr, "Migrating workspace: %s...\n", ws.Name)
@@ -465,6 +588,31 @@ Steps:
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "  ERROR exporting %s: %v (skipping)\n", ws.Slug, err)
 					continue
+				}
+
+				// BUG-3032, codex round 1 P1: the pre-pass above closes the
+				// all-or-nothing question, not the TOCTOU one. It reads the
+				// database at one instant; `ExportWorkspace` reads it at
+				// another, and a tab can append to the op-log in between — so a
+				// bundle can carry `content_state` on an item the pre-pass saw
+				// as current, and without this check the migration would import
+				// that body and then abandon the only copy of the real text.
+				//
+				// The check is on the BUNDLE rather than on the database, which
+				// is the point: the bundle is the artifact about to be written,
+				// its marker was evaluated against the row it actually
+				// serialised, and no window separates the two. That makes the
+				// guarantee exact for the bytes that move, where the pre-pass
+				// can only ever be exact for the moment it ran.
+				//
+				// It costs nothing — the marker is already in hand — and in the
+				// intended procedure (docs/backup.md: stop the server, then
+				// migrate) it can never fire, because nothing is appending. It
+				// exists for the operator who did not stop the server, which
+				// nothing enforces.
+				if report, err := gateLateStale(ws.Slug, staleBundleItems(data), migrated); err != nil {
+					fmt.Fprint(os.Stderr, report)
+					return err
 				}
 
 				stats := fmt.Sprintf("%d collections, %d items, %d comments",
@@ -500,8 +648,134 @@ Steps:
 
 	cmd.Flags().StringVar(&fromPath, "from", "", "SQLite database path (default: server-resolved — PAD_DB_PATH > PAD_DATA_DIR/pad.db > ~/.pad/pad.db)")
 	cmd.Flags().StringVar(&toURL, "to", "", "PostgreSQL connection URL (default: PAD_DATABASE_URL)")
+	cmd.Flags().BoolVar(&forceLiveServer, "force", false,
+		"migrate even though a Pad server appears to be running, OR the config needed to check for one "+
+			"could not be read (an edit made during the migration may be lost)")
+	cmd.Flags().BoolVar(&discardUnflushedEdits, "discard-unflushed-edits", false,
+		"migrate even though some items have edits only in the collaborative op-log, permanently losing them")
 
 	return cmd
+}
+
+// gateLateStale refuses a migration when the BUNDLE about to be imported carries
+// bodies the exporter marked as stale, and renders the operator-facing message
+// (BUG-3032, codex round 1 P1).
+//
+// Separated from the command's RunE for the reason gateUnflushedEdits is: the
+// wording is the whole product here, and a message reachable only by running two
+// live databases is a message nobody checks until an operator hits it during a
+// migration they cannot retry.
+//
+// `migratedSoFar` is what makes this message different from the pre-pass's. The
+// pre-pass runs before the first import and can promise nothing has been
+// migrated; this fires mid-loop, so earlier workspaces are already in PostgreSQL
+// and claiming otherwise would be false. It says PARTIALLY populated instead,
+// and only falls back to the pre-pass's promise when the count is genuinely 0.
+func gateLateStale(wsSlug string, stale []store.PendingFlushItem, migratedSoFar int) (string, error) {
+	if len(stale) == 0 {
+		return "", nil
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "\n%d item(s) in %s became stale between the pre-flight check and the\n", len(stale), wsSlug)
+	fmt.Fprint(&b, "export — an editor appended to the collaborative op-log while this command\n")
+	fmt.Fprint(&b, "was running. Refusing to migrate a body whose real text this migration\n")
+	fmt.Fprint(&b, "would then abandon:\n\n")
+	for _, it := range stale {
+		fmt.Fprintf(&b, "    %-12s %s\n", it.Ref, it.Title)
+	}
+	fmt.Fprint(&b, "\nStop the Pad server before migrating (docs/backup.md), then re-run.\n")
+	if migratedSoFar > 0 {
+		fmt.Fprintf(&b, "%d workspace(s) were already migrated before this refusal; the destination is "+
+			"PARTIALLY populated.\n", migratedSoFar)
+	} else {
+		fmt.Fprint(&b, "Nothing has been migrated.\n")
+	}
+	return b.String(), fmt.Errorf("%s: %d item(s) became stale during the migration; refused", wsSlug, len(stale))
+}
+
+// staleBundleItems names the items in a built bundle whose bodies the exporter
+// marked as behind their live collaborative documents (BUG-3032).
+//
+// It reads the bundle's OWN marker rather than re-querying, which is what makes
+// it a TOCTOU fix rather than a second race: the marker was evaluated in the
+// same SELECT that read the body, so bundle and marker cannot disagree, and
+// there is no instant between them for an editor to slip into.
+//
+// Ref falls back to the slug when the bundle carries no collection prefix for
+// the item, on the same reasoning as ListItemsPendingContentFlush: a refusal
+// exists to tell an operator what to open, and a fabricated "PREFIX-0" sends
+// them looking for something that does not exist.
+func staleBundleItems(data *models.WorkspaceExport) []store.PendingFlushItem {
+	if data == nil {
+		return nil
+	}
+	prefix := map[string]string{}
+	for _, c := range data.Collections {
+		prefix[c.ID] = c.Prefix
+	}
+	var out []store.PendingFlushItem
+	for _, it := range data.Items {
+		if it.ContentState == "" {
+			continue
+		}
+		ref := it.Slug
+		if p := prefix[it.CollectionID]; p != "" && it.ItemNumber > 0 {
+			ref = fmt.Sprintf("%s-%d", p, it.ItemNumber)
+		}
+		out = append(out, store.PendingFlushItem{Ref: ref, Title: it.Title})
+	}
+	return out
+}
+
+// gateUnflushedEdits decides whether a SQLite→PostgreSQL migration may proceed
+// when some items' stored bodies are BEHIND their live collaborative documents
+// (BUG-3032), and renders the operator-facing detail block either way.
+//
+// Separated from the command's RunE, and the reason is the NUL gate next door:
+// its logic is reachable from a test without two live databases, which is why
+// its refusal wording and its exit-status arithmetic both have coverage. A gate
+// whose only entry point is a cobra RunE that opens two stores from the
+// environment is a gate whose message nobody checks until an operator reads it
+// during a migration they cannot retry.
+//
+// Returns (report, nil) to proceed — report non-empty only under the discard
+// flag, carrying the WARNING banner so the loss lands on the terminal record
+// rather than being implied by a flag name in shell history — and ("", err) to
+// refuse, with the detail block inside the error so the caller cannot print a
+// refusal without its reason. `workspaces` supplies the ORDER and the display
+// names; a workspace with no pending items contributes nothing.
+func gateUnflushedEdits(workspaces []models.Workspace, pending map[string][]store.PendingFlushItem, total int, discard bool) (string, error) {
+	if total == 0 {
+		return "", nil
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "\n%d item(s) have edits that exist only in the collaborative op-log,\n", total)
+	fmt.Fprint(&b, "which this migration does NOT carry. Their bodies would arrive in PostgreSQL\n")
+	fmt.Fprint(&b, "as they stand in SQLite now — missing those edits — and the SQLite database\n")
+	fmt.Fprint(&b, "holding the real text is abandoned after this command.\n\n")
+	for _, ws := range workspaces {
+		items := pending[ws.Slug]
+		if len(items) == 0 {
+			continue
+		}
+		fmt.Fprintf(&b, "  %s (%s):\n", ws.Name, ws.Slug)
+		for _, it := range items {
+			fmt.Fprintf(&b, "    %-12s %s\n", it.Ref, it.Title)
+		}
+	}
+	// The only remedy there is. No Go code in this repo can decode a Yjs update
+	// payload (the dumb-relay design), so nothing server-side can move op-log
+	// content into items.content — and the two server-side paths that touch the
+	// op-log, PruneAndApply and ForceRefreshRoom, write CALLER-supplied content
+	// and prune, which would DISCARD exactly these edits.
+	fmt.Fprint(&b, "\nOpen each of those items in the web UI so the tab flushes its pending edits\n")
+	fmt.Fprint(&b, "into the database, then re-run this command. To migrate anyway and lose those\n")
+	fmt.Fprint(&b, "edits, re-run with --discard-unflushed-edits.\n")
+
+	if !discard {
+		return "", fmt.Errorf("%s\n%d item(s) carry unflushed edits; nothing has been migrated", b.String(), total)
+	}
+	return "WARNING: --discard-unflushed-edits was given, so these edits will be LOST:\n" + b.String() + "\n", nil
 }
 
 // maskPassword replaces the password in a PostgreSQL URL for safe display.

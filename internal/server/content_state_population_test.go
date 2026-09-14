@@ -58,9 +58,16 @@ import (
 //     This is a real and load-bearing limit, not a formality. Codex round 4
 //     censused 434 non-test Go files and found the marker's population is
 //     WIDER than these four helpers: the workspace export's ItemExport.Content
-//     (BUG-3032) and the cross-workspace copy's body remap are field copies
-//     this guard cannot see by construction. Counts also cannot distinguish a
+//     and the cross-workspace copy's body remap are field copies this guard
+//     cannot see by construction. Counts also cannot distinguish a
 //     count-preserving move of a call to an unreviewed caller.
+//
+//     Those two named doors are CLOSED now (BUG-3032: ItemExport gained
+//     content_state, and the copy result reports the source item's state), and
+//     that changes NOTHING about this guard's blindness to them — it is the
+//     same structural limit, and the two holes it was able to name being filled
+//     is precisely the reason not to read a green here as coverage. The next
+//     field copy of a body will be just as invisible as these two were.
 //
 //     So this test's honest claim is narrow: no UNRULED USE of these four
 //     helpers. It is not a proof that every door carries the marker, and it
