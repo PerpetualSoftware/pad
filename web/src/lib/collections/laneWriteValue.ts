@@ -132,3 +132,38 @@ export function laneWriteRefusalMessage(reason: LaneWriteRefusal, fieldLabel: st
 		? `Can't move: ${fieldLabel} holds a number and this lane isn't one`
 		: `Can't move: ${fieldLabel} holds a checkbox and this lane isn't true or false`;
 }
+
+/**
+ * May the board lane menu offer `laneKey` as a bulk "Move all to" destination?
+ * (BUG-3074.)
+ *
+ * The bulk endpoint's `move` verb carries its destination as `Status string`
+ * (`internal/server/handlers_items_bulk.go`), so the ONLY writes it can express
+ * are the ones `laneWriteValue` resolves to a string. That is the question this
+ * asks, and it is asked through `laneWriteValue` rather than against a type list
+ * so the menu cannot drift from the drag and quick-create paths — the drift
+ * `laneKeyCallers.test.ts` exists to prevent for the key itself.
+ *
+ * Two shapes are refused, and they fail differently on the way in:
+ *
+ *   * `number` / `checkbox` — `laneWriteValue` already refuses these outright.
+ *     Reachable because a retype does NOT strip the field's `options`, so a
+ *     `status` retyped away from `select` keeps offering its old lanes. The
+ *     `moveTargets.length > 0` guard covers a field that never had options and
+ *     covers nothing at all for one that did.
+ *   * `multi_select` — `laneWriteValue` SUCCEEDS here and returns an array, so
+ *     the refusal is not its refusal but this one: an array cannot ride a
+ *     `string` field. Withheld rather than converted, and that is a semantic
+ *     call rather than a plumbing one. "Move all to X" has no honest meaning on
+ *     a multi-valued field: an item can sit in several lanes at once, so the
+ *     verb would have to choose between REPLACING the whole list and swapping
+ *     one element, and the menu has no way to say which it did. A grouping
+ *     refusal is what a `multi_relation` gets for the same reason.
+ *
+ * `select` and the string-shaped types (`text`, `url`, `date`, `json`) pass, as
+ * does an UNDECLARED field, which `laneWriteValue` documents as writing the key.
+ */
+export function laneKeyIsBulkMovable(field: FieldDef | undefined | null, laneKey: string): boolean {
+	const write = laneWriteValue(field, laneKey);
+	return write.ok && typeof write.value === 'string';
+}

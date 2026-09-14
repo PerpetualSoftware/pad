@@ -6,7 +6,7 @@
 // from its end (TestLaneKeyWrites_BUG3057), so the two cannot drift into a
 // state where this module is "correct" against a validator that has moved.
 import { describe, it, expect } from 'vitest';
-import { laneWriteValue, laneWriteRefusalMessage } from './laneWriteValue';
+import { laneWriteValue, laneWriteRefusalMessage, laneKeyIsBulkMovable } from './laneWriteValue';
 import type { FieldDef } from '$lib/types';
 
 const f = (type: string, over: Partial<FieldDef> = {}): FieldDef =>
@@ -122,5 +122,51 @@ describe('laneWriteValue', () => {
 	it('names the field in a refusal message', () => {
 		expect(laneWriteRefusalMessage('not_a_number', 'Score')).toContain('Score');
 		expect(laneWriteRefusalMessage('not_a_boolean', 'Shipped')).toContain('Shipped');
+	});
+});
+
+describe('laneKeyIsBulkMovable (BUG-3074)', () => {
+	// The predicate behind the board lane menu's "Move all to" destinations.
+	// The bulk endpoint carries its destination as `Status string`, so the only
+	// writes it can express are the ones that resolve to a string.
+	const sf = (type: string, options?: string[]) =>
+		({ key: 'status', type, options }) as unknown as FieldDef;
+
+	it('allows a select — the type the menu was written for', () => {
+		expect(laneKeyIsBulkMovable(sf('select', ['open', 'done']), 'done')).toBe(true);
+	});
+
+	it('allows the other string-shaped types', () => {
+		for (const t of ['text', 'url', 'date', 'json']) {
+			expect(laneKeyIsBulkMovable(sf(t, ['done']), 'done'), t).toBe(true);
+		}
+	});
+
+	it('allows an undeclared field, matching laneWriteValue', () => {
+		expect(laneKeyIsBulkMovable(undefined, 'done')).toBe(true);
+	});
+
+	it('refuses multi_select even though laneWriteValue ACCEPTS it', () => {
+		// The distinction this predicate exists to draw: `laneWriteValue` is
+		// happy to produce `['done']`, and that is a legal write through the
+		// per-key patch path. It is the bulk `move` verb's scalar `status` that
+		// cannot carry it — so the refusal belongs here, not there.
+		const field = sf('multi_select', ['open', 'done']);
+		const write = laneWriteValue(field, 'done');
+		expect(write.ok).toBe(true);
+		expect(Array.isArray((write as { value: unknown }).value)).toBe(true);
+		expect(laneKeyIsBulkMovable(field, 'done')).toBe(false);
+	});
+
+	it('refuses number and checkbox, which laneWriteValue already refuses', () => {
+		expect(laneKeyIsBulkMovable(sf('number', ['open', 'done']), 'done')).toBe(false);
+		expect(laneKeyIsBulkMovable(sf('checkbox', ['open', 'done']), 'done')).toBe(false);
+	});
+
+	it('refuses a stale option on a retyped field — the reachability the fix turns on', () => {
+		// `options` is not stripped by a retype, so this is exactly the input
+		// the menu had in hand: a list of real-looking destinations on a field
+		// that can no longer hold any of them.
+		expect(laneKeyIsBulkMovable(sf('number', ['open', 'done', 'blocked']), 'blocked')).toBe(false);
 	});
 });
