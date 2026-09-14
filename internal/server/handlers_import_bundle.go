@@ -182,13 +182,14 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Mirror the JSON-import path's owner-attachment so the workspace
-	// shows up under the importer's account — including its error posture:
-	// not fatal (BUG-2715), but not discarded either.
+	// Mirror the JSON-import path's owner-attachment so the workspace shows up
+	// under the importer's account — including its error posture, now FATAL
+	// (BUG-2715): a bundle that imports into a workspace nobody can administer
+	// is not a successful import.
 	if mint.OwnerID != "" {
-		if err := s.store.AddWorkspaceMember(ws.ID, mint.OwnerID, "owner"); err != nil {
-			slog.Error("bundle imported but importer was not added as owner",
-				"workspace_id", ws.ID, "user_id", mint.OwnerID, "error", err)
+		if err := s.addOwnerOrCompensate("import bundle", ws.ID, ws.Slug, mint.OwnerID); err != nil {
+			writeInternalError(w, err)
+			return
 		}
 	}
 	if staleBodies.Count > 0 {

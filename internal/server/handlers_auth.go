@@ -653,15 +653,108 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	// If registering via invitation, automatically add the user to the
 	// workspace and mark the invitation as accepted.
 	if invitation != nil {
-		// Not fatal (see BUG-2715), but no longer silent: TASK-2658 made
-		// AddWorkspaceMember transactional, so it can now fail for a reason
-		// unrelated to the membership row itself — and the invitation is
-		// consumed on the next line either way.
-		if err := s.store.AddWorkspaceMember(invitation.WorkspaceID, user.ID, invitation.Role); err != nil {
-			slog.Error("invitation accepted but member was not added",
-				"workspace_id", invitation.WorkspaceID, "user_id", user.ID, "error", err)
+		// THE MEMBERSHIP WRITE IS FATAL, AND THE ORDER IS THE FIX (BUG-2715).
+		//
+		// (The ACCEPT below is deliberately not fatal; the reason is with it.
+		// An earlier revision of this line said "both writes are fatal", which
+		// its own neighbour contradicted.)
+		//
+		// The membership write's error was discarded and the invitation was
+		// consumed on the next line regardless, so a failure burned the code
+		// AND left the user with no access — unrecoverable without an admin,
+		// because the invitation cannot be redeemed twice.
+		//
+		// Refusing the registration leaves the invitation OPEN, which is the
+		// recoverable state: the user retries with the same code. That is the
+		// whole reason the membership goes first and the accept second.
+		//
+		// This is not a new posture — it is making two doors agree.
+		// handleAcceptInvitation (handlers_members.go) is the authenticated
+		// counterpart and has always done exactly this: membership fatal, then
+		// accept fatal, in this order. This door was the one that diverged.
+		if addErr := s.store.AddWorkspaceMember(invitation.WorkspaceID, user.ID, invitation.Role); addErr != nil {
+			// RECONCILE BEFORE DESTROYING — here too (codex round 2).
+			//
+			// Round 1 added a DeleteUser rollback here and got the ORDER of
+			// reasoning wrong: AddWorkspaceMember returns the raw tx.Commit()
+			// error, so a lost acknowledgement LANDS THE MEMBERSHIP and reports
+			// failure. Deleting the account on that error destroys a signup that
+			// actually succeeded — the BUG-3026 shape, reintroduced forty lines
+			// from the helper written to prevent it, by a fix for a different
+			// finding in the same unit.
+			//
+			// So ask what the row says before touching anything.
+			// Through the same seam the helper uses, so both arms of this
+			// reconcile are reachable from a test. A branch that decides
+			// whether to delete an account should not be the one branch no
+			// instrument can drive.
+			membershipCheck := s.store.GetWorkspaceMember
+			if s.membershipCheck != nil {
+				membershipCheck = s.membershipCheck
+			}
+			member, cerr := membershipCheck(invitation.WorkspaceID, user.ID)
+			switch {
+			case cerr != nil:
+				// UNREADABLE — cannot tell an ack-lost success from a genuine
+				// failure. KEEP the account: deleting on an unknown state is the
+				// unrecoverable direction, and an account whose membership may
+				// exist is recoverable by an admin. Still refuse, because we
+				// cannot claim the signup worked.
+				slog.Error("invitation signup: the membership write failed and the membership read also failed; "+
+					"KEEPING the account because its state is unknown",
+					"workspace_id", invitation.WorkspaceID, "user_id", user.ID,
+					"error", addErr, "check_error", cerr)
+				writeInternalError(w, addErr)
+				return
+			case member != nil:
+				// LANDED despite the reported error. The user HAS access, so the
+				// signup succeeded and the only thing left is the bookkeeping
+				// below. Falling through is the honest outcome; refusing here
+				// would delete a working account.
+				slog.Warn("invitation signup: the membership write reported an error but the row is present; "+
+					"reconciled to success",
+					"workspace_id", invitation.WorkspaceID, "user_id", user.ID, "error", addErr)
+			default:
+				// ABSENT — no membership. Refuse, and roll the account back so
+				// the retry this refusal exists to permit actually exists:
+				// leaving the invitation open is only half a recoverable state,
+				// because the account holds the email and the retry would meet a
+				// duplicate-email conflict. Same precedent as the
+				// verification-token rollback above.
+				slog.Error("invitation signup: member was not added; rolling back the account and leaving the "+
+					"invitation redeemable",
+					"workspace_id", invitation.WorkspaceID, "user_id", user.ID, "error", addErr)
+				if derr := s.store.DeleteUser(user.ID); derr != nil {
+					slog.Error("invitation signup: failed to roll back the account; the email is held by an "+
+						"account with no workspace access",
+						"user_id", user.ID, "error", derr)
+				}
+				writeInternalError(w, addErr)
+				return
+			}
 		}
-		_ = s.store.AcceptInvitation(invitation.ID)
+		if err := s.store.AcceptInvitation(invitation.ID); err != nil {
+			// The membership LANDED, so the user has access and the only
+			// casualty is the invitation row still reading unaccepted. Refusing
+			// here would report failure for a registration that succeeded, and
+			// a retry would then hit the duplicate-email path. An invitation
+			// that stays open alongside a membership that exists is the benign
+			// direction of this pair — the accept is bookkeeping, the
+			// membership is the access.
+			//
+			// DELIBERATE DIVERGENCE from handleAcceptInvitation, which treats
+			// this same error as fatal. There the caller is an EXISTING,
+			// authenticated user, so a 500 is cleanly retryable. Here the
+			// account was created moments ago by this very request: refusing
+			// now would report failure for a registration that succeeded, and
+			// the retry would land on the duplicate-email path with no way
+			// forward. The ORDER is shared with that door, which is what the
+			// ruling specified; the second write's disposition differs because
+			// the rollback cost does.
+			slog.Error("invitation signup: member added but the invitation was not marked accepted",
+				"workspace_id", invitation.WorkspaceID, "user_id", user.ID,
+				"invitation_id", invitation.ID, "error", err)
+		}
 	}
 
 	// Cloud self-serve signup: mint + send the email-verification link. The
