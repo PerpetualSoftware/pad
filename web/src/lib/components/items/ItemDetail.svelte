@@ -2613,56 +2613,144 @@
 		};
 	});
 
-	// beforeunload: same flush as $effect cleanup, but routed
-	// through the page lifecycle so navigation off-site (close tab,
-	// reload, follow external link) lands the markdown snapshot
-	// before the WS dies. fetch keepalive: true is the modern
-	// equivalent of sendBeacon for non-POST requests; supports up to
-	// ~64KB body which dwarfs typical markdown items.
+	// TEARDOWN FLUSH ON THE EVENTS A SUSPENDED TAB ACTUALLY DELIVERS (BUG-3030).
+	//
+	// This used to be registered on `beforeunload` alone. That is the event
+	// LEAST likely to fire on the platforms that lose data: mobile
+	// backgrounding, tab discard under memory pressure, and bfcache navigation
+	// can all end a page without it. The file next door already compensates for
+	// exactly that behaviour — wsProvider's reconnect logic exists because "iOS
+	// Safari (and other mobile suspends) can silently kill the WS transport" —
+	// so one module was recovering from suspension while this one depended on
+	// an event suspension skips. The last tab could close with items.content
+	// still behind the op-log, which is BUG-3000's stale window arriving
+	// through ordinary use rather than through a crash.
+	//
+	// WHAT IS MEASURED HERE AND WHAT IS NOT. Measured, in jsdom: that each of
+	// these events routes through the one guarded flush, that it fires ONCE per
+	// teardown, and that a restore re-arms it. NOT measured by anything in this
+	// repo: the web-platform claim underneath — that `beforeunload` is
+	// unreliable on mobile and these are the events that survive. That is
+	// asserted from the platform's documented lifecycle, not from a run against
+	// a device. So the honest claim is "the flush now also runs on the events a
+	// suspended tab does deliver", not "this fixes mobile".
+	//
+	// `beforeunload` STAYS rather than being replaced, and the reason is the
+	// PROMPT, not preference: it is the only one of these that can raise the
+	// native unsaved-changes dialog via preventDefault(). Dropping it to buy
+	// bfcache eligibility would trade a user-visible protection for a benefit
+	// this unit cannot measure.
+	let teardownFlushed = false;
+
+	// ONE function, called by every entry point, rather than the same guard
+	// copied into each handler — three copies of a guard is how the third ends
+	// up missing it, and a source guard cannot see the copy that was never
+	// written.
+	function runTeardownFlush(): void {
+		// ONCE PER TEARDOWN, and this latch is load-bearing rather than tidy.
+		// MEASURED (BUG-3030): three lifecycle events produce THREE identical
+		// PATCHes when the save is still in flight, and only one when it
+		// resolves between them. The flusher's dedupe compares against
+		// `lastFlushedContent`, which is seeded only from a RESOLVED save — and
+		// the teardown path is deliberately fire-and-forget under keepalive, so
+		// on a real teardown it has not resolved. A desktop tab close fires
+		// visibilitychange→hidden, pagehide AND beforeunload, so without this
+		// the dedupe absorbs nothing precisely where it is needed.
+		if (teardownFlushed) return;
+		// The same discard rule as the $effect cleanup and the raw saver
+		// (BUG-3005): a teardown write after an identity change carries the
+		// wrong user's cookie, and both paths below use `keepalive`, a request
+		// built to outlive the page. Guarding here covers every entry point by
+		// construction.
+		if (authStore.identityEpoch !== identityEpochAtLoad) return;
+		teardownFlushed = true;
+
+		// Collab path: flush the live Y.Doc snapshot.
+		const ctx = activeCollabContext;
+		if (ctx) collabFlusher.flushNow(ctx, true);
+
+		// Raw-markdown path (BUG-2024). The saver's pending markdown is the
+		// exact debounced-but-unsaved edit; when dirty there is up to ~1.2s of
+		// typing the collab flush above never sees. flushNow cancels the queued
+		// debounce (so it can't fire a second, older-content PATCH) and fires an
+		// immediate keepalive PATCH that survives page teardown.
+		if (rawContentSaver.dirty && item) {
+			rawContentSaver.flushNow({ keepalive: true });
+		}
+	}
+
 	$effect(() => {
 		if (typeof window === 'undefined') return;
 		const onBeforeUnload = (event: BeforeUnloadEvent) => {
 			// WHEN THE IDENTITY MOVED, THIS HANDLER DOES NOTHING AT ALL
-			// (BUG-3005, codex round 4). Two separate defects, both created by
-			// the fix that reloads the tab on an identity change:
-			//
-			//   - it FLUSHES. Both paths below persist editor content with
-			//     `keepalive`, and the unload they run in is the identity
-			//     reload's own — so A's Y.Doc snapshot and A's pending markdown
-			//     would be PATCHed carrying B's cookie. The raw saver has its
-			//     own guard; the collab flush did not, and my grep for
-			//     `keepalive: true` missed it because it takes the flag
-			//     positionally. Guarding here covers both by construction.
-			//   - it PROMPTS. `preventDefault()` on a dirty editor raises the
-			//     native "unsaved changes" dialog, and "Stay" CANCELS the
-			//     reload — leaving B in A's page shell with the stores already
-			//     cleared and no remount left to rebuild it. The prompt exists
-			//     to protect the author's unsaved work, and after an identity
-			//     change the author is not the one sitting here.
+			// (BUG-3005, codex round 4). `runTeardownFlush` carries the same
+			// check for the WRITE half; this one is not redundant with it,
+			// because it guards a second and different thing: the PROMPT.
+			// `preventDefault()` on a dirty editor raises the native "unsaved
+			// changes" dialog, and "Stay" CANCELS an identity reload — leaving
+			// the new user in the previous user's page shell with the stores
+			// already cleared and no remount left to rebuild it. The prompt
+			// protects the author's unsaved work, and after an identity change
+			// the author is not the one sitting here.
 			if (authStore.identityEpoch !== identityEpochAtLoad) return;
 
-			// Collab path: flush the live Y.Doc snapshot (unchanged).
-			const ctx = activeCollabContext;
-			if (ctx) collabFlusher.flushNow(ctx, true);
+			runTeardownFlush();
 
-			// Raw-markdown path (BUG-2024). The saver's pending markdown is
-			// the exact debounced-but-unsaved edit; when dirty there is up
-			// to ~1.2s of typing the collab flush above never sees. Only
-			// when actually dirty — never warn on a clean page. flushNow
-			// cancels the queued debounce (so it can't fire a second,
-			// older-content PATCH) and fires an immediate keepalive PATCH
-			// that survives page teardown. The saver's `save` callback
-			// clears the dirty state once it lands (covers the user
-			// cancelling the navigation via "Stay"). See rawContentSaver.
+			// The prompt is decided INDEPENDENTLY of the latch. If an earlier
+			// pagehide already flushed, `dirty` is still true — the saver clears
+			// it only when the PATCH lands — so the user is still warned about
+			// work that has not been confirmed saved. Tying the prompt to the
+			// latch would silently stop warning whenever a visibilitychange
+			// happened to fire first.
 			if (rawContentSaver.dirty && item) {
-				rawContentSaver.flushNow({ keepalive: true });
-				// Native "unsaved changes" prompt.
 				event.preventDefault();
 				event.returnValue = '';
 			}
+
+			// RE-ARM IF THE PAGE SURVIVES THIS (codex round 2).
+			//
+			// `beforeunload` is the one teardown event that can be CANCELLED:
+			// preventDefault raises the native dialog and "Stay" leaves the page
+			// alive, visible, and never firing `pageshow` or `visibilitychange`
+			// — so neither re-arm above can reach it. Without this the latch
+			// stays true for the rest of the page's life, and every later edit
+			// and every later close flushes NOTHING. That is a worse data loss
+			// than the one this whole change exists to fix, reachable by the
+			// ordinary act of changing your mind about closing a tab.
+			//
+			// A macrotask is the discriminator, and it needs no guess about
+			// which choice the user made: if the navigation proceeds the page is
+			// gone and this never runs; if it was cancelled the event loop keeps
+			// turning and the latch re-arms. Re-arming is safe either way — the
+			// flush already dispatched, and a second teardown SHOULD flush
+			// again, because by then the content may have changed.
+			setTimeout(() => {
+				teardownFlushed = false;
+			}, 0);
+		};
+		// The two events a suspended or discarded tab actually delivers.
+		const onPageHide = () => runTeardownFlush();
+		const onVisibilityChange = () => {
+			if (document.visibilityState === 'hidden') runTeardownFlush();
+			else teardownFlushed = false;
+		};
+		// A page restored from bfcache is alive again and will be torn down
+		// again later, so the latch must re-arm or that second teardown flushes
+		// nothing. `pageshow` covers the bfcache restore; the visible branch
+		// above covers a tab the user simply switched back to.
+		const onPageShow = () => {
+			teardownFlushed = false;
 		};
 		window.addEventListener('beforeunload', onBeforeUnload);
-		return () => window.removeEventListener('beforeunload', onBeforeUnload);
+		window.addEventListener('pagehide', onPageHide);
+		window.addEventListener('pageshow', onPageShow);
+		document.addEventListener('visibilitychange', onVisibilityChange);
+		return () => {
+			window.removeEventListener('beforeunload', onBeforeUnload);
+			window.removeEventListener('pagehide', onPageHide);
+			window.removeEventListener('pageshow', onPageShow);
+			document.removeEventListener('visibilitychange', onVisibilityChange);
+		};
 	});
 
 	// Lazy seed (TASK-1261 / PLAN-1248). When a fresh collab session

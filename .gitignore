@@ -6,6 +6,13 @@
 
 # Web build output
 web/build/
+# Both, deliberately. Only web/node_modules/ was listed, because that is the
+# only one a correct invocation creates — but running vitest from the REPO ROOT
+# instead of web/ makes a root-level node_modules/ with a vitest cache in it,
+# and an unignored one is then swept up by the next `git add -A`. That happened
+# on BUG-3030 and a codex round is what caught it. Ignoring the path costs
+# nothing and removes the surface rather than relying on remembering.
+/node_modules/
 web/node_modules/
 web/.svelte-kit/
 
