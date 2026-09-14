@@ -178,26 +178,24 @@
 	let pulseSeq = 0;
 
 	/**
-	 * THE TABLE ASKS THE SAME PERMISSION QUESTION AS THE CARD, per ITEM
-	 * (BUG-3068 round 4). This chip is a separate implementation from
-	 * `ItemCard`'s — the table renders its own — so gating the card's covered
-	 * list and board and left this surface offering a read-only viewer a chip
-	 * whose write the server refuses. Three surfaces, one class; the branch
-	 * claimed "every permission level" while one of them did not ask at all.
+	 * THE PERMISSION AND OPTIONS-LENGTH QUESTIONS ARE ASKED AT THE RENDER GATE,
+	 * not here, and that is deliberate after round 5 measured the alternative.
 	 *
-	 * `canEditItem` rather than the `canEdit` prop for the reason round 2
-	 * established: `canEdit` is collection-level, and a guest holding an item
-	 * grant must keep an affordance the server will honour.
+	 * Round 4 asked them in both places. The round-5 pass pointed out that the
+	 * render gate makes the inner copies unreachable through any click, and the
+	 * mutants confirmed it: deleting either inner guard left all 12 legs in this
+	 * file green. Two guards for one question, one of them untestable, is exactly
+	 * the arrangement this file's own history records as how a live guard came to
+	 * be deleted on the strength of a surviving mutant — so the unreachable
+	 * copies are gone rather than kept as defence in depth that nothing can
+	 * verify.
+	 *
+	 * The stale-value guard below STAYS inside, because it is the one question
+	 * the render gate cannot ask: whether the stored value is on the list is a
+	 * property of the value, not of the column. It dies to its own mutant.
 	 */
 	function cycleStatus(item: Item, options: string[]) {
 		if (!onStatusChange) return;
-		if (!workspaceStore.canEditItem(item)) return;
-		// AN EMPTY OPTION LIST HAS NO NEXT VALUE. The render gate now requires a
-		// non-empty list, so this is the second door on the same hazard rather
-		// than the only one: `(idx + 1) % 0` is NaN, `options[NaN]` is undefined,
-		// and the writer was called with `undefined` — a "status chip" writing
-		// something that is not a status (round 4).
-		if (options.length === 0) return;
 		const fields = parseFields(item);
 		const current = fields.status ?? '';
 		const idx = options.indexOf(current);
