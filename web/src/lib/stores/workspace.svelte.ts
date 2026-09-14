@@ -213,6 +213,16 @@ function settleIfCurrent(
 // `createKeyedSingleFlight.run` ALWAYS issues and never joins — so their
 // re-read is necessarily newer than the mutation it follows. A one-member
 // class, for a structural reason rather than by luck.
+//
+// WHICH MAKES `run` ALWAYS ISSUING A LOAD-BEARING PROPERTY OF THIS FIX, not
+// just of that primitive. `singleFlight.ts` calls it "a property to preserve
+// rather than an inconsistency to tidy away" for its own reasons; here is one
+// more. The day `run` coalesces — joins an in-flight request instead of
+// issuing — import and reorder JOIN THIS CLASS: their post-write `loadAll()`
+// would be answered by a request that predates the write, and both would need
+// the same reconciliation `create` gets below. Anyone making that change
+// should widen this record rather than discover the two sites one bug at a
+// time.
 let createSeq = 0;
 let pendingCreates: { seq: number; ws: Workspace }[] = [];
 
