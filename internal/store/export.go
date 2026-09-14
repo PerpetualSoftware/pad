@@ -212,10 +212,13 @@ func (s *Store) ExportWorkspaceQ(q Queryer, slug string) (*models.WorkspaceExpor
 	// The `i` alias exists only so contentStateSQL can be spliced in (BUG-3032).
 	// The predicate marks a row whose body is BEHIND the item's live
 	// collaborative document; it rides in the SAME SELECT as `content` so the
-	// mark and the body it describes always come from one row. (Export runs a
-	// sequence of pooled queries with no enclosing transaction, so separate
-	// SECTIONS of a bundle can already disagree under concurrency — pre-existing,
-	// and per-row consistency is the only consistency this mark claims.)
+	// mark and the body it describes always come from one row — which is the
+	// only consistency this mark itself claims. Whether the bundle's separate
+	// SECTIONS agree with each other is a property of the EXECUTOR, not of this
+	// SELECT: on the pool they can disagree under concurrency (each connection
+	// takes its own WAL snapshot), and inside one transaction they cannot.
+	// BUG-3072 gave the migration the transaction for exactly that reason; the
+	// two HTTP export doors still pass the pool.
 	itemRows, err := q.Query(s.q(`
 		SELECT i.id, i.collection_id, i.title, i.slug, i.content, `+contentStateSQL+`, i.fields, i.tags, i.pinned, i.sort_order,
 		       COALESCE(i.parent_id, ''), i.created_by, i.last_modified_by, i.source, COALESCE(i.item_number, 0), i.created_at, i.updated_at

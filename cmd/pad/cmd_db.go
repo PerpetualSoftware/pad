@@ -433,11 +433,17 @@ Steps:
 			// --force, or against a server this probe cannot see, they are the
 			// remaining protection and the window is narrowed rather than gone.
 			//
-			// The residual is tracked as BUG-3072, which also records why it is
-			// wider than bodies: this probe asks about an ADDRESS when the real
-			// question is about a FILE, and a second server on another port — or
-			// any other caller of the exported Store.AppendYjsUpdate — is outside
-			// what it can answer.
+			// The residual was tracked as BUG-3072 and is now closed from the
+			// OTHER END rather than here: this probe still asks about an
+			// ADDRESS when the real question is about a FILE, and it still
+			// cannot see a second server on another port or any other caller of
+			// the exported Store.AppendYjsUpdate. What changed is that a
+			// successful migration MARKS the source (MarkMigratedTx below), so
+			// such a writer is refused by the database itself instead of
+			// succeeding into a file nothing will read again. This probe
+			// remains as the cheap EARLY refusal — it fails before any work is
+			// done, and its message tells an operator to do the one thing that
+			// makes the whole question moot.
 			cfg, cfgErr := config.Load()
 			if cfgErr != nil {
 				// FAIL CLOSED (codex round 3 P1). The previous version warned and
