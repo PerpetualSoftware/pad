@@ -81,4 +81,41 @@ describe('collab flush dedupe on the teardown path', () => {
 		expect(saves.length, 'the dedupe should collapse resolved repeats to one PATCH').toBe(1);
 		expect(flusher.lastFlushed).toBe(EDITED);
 	});
+
+	it('writes NOTHING when a teardown fires with nothing changed', async () => {
+		// BUG-3030 adds two more events that can fire a teardown flush, and the
+		// commonest one by far is a user backgrounding a tab they only READ.
+		// If merely hiding a tab wrote content, the fix would turn every glance
+		// at an item into a version and a bumped updated_at.
+		//
+		// The baseline arm is what prevents it: before any flush this session,
+		// `lastFlushedContent` is null and the compare falls back to
+		// `ctx.baseline` — the content as loaded — so an unedited document
+		// dedupes without a PATCH. A real edit changes `toSave` and still goes.
+		const saves: string[] = [];
+		const config: CollabFlusherConfig = {
+			idleMs: 1000,
+			isRecovering: () => false,
+			normalize: (m) => m,
+			serialize: (m) => m,
+			// The editor holds exactly what was loaded — nothing was typed.
+			readEditorMarkdown: () => 'ORIGINAL',
+			isActiveItem: () => true,
+			save: async (input) => {
+				saves.push(input.toSave);
+				return 'flushed';
+			},
+		};
+		const flusher = createCollabFlusher(config);
+
+		expect(await flusher.flush(ctx, 'ORIGINAL', true)).toBe('deduped');
+		flusher.flushNow(ctx, true);
+		await Promise.resolve();
+		expect(saves, 'hiding a tab nobody edited wrote content').toEqual([]);
+
+		// PRECONDITION, so the assertion above cannot pass by the harness never
+		// being able to write at all.
+		expect(await flusher.flush(ctx, 'EDITED', true)).toBe('flushed');
+		expect(saves).toEqual(['EDITED']);
+	});
 });
