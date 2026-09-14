@@ -941,8 +941,12 @@ export const api = {
 			// field stays undefined rather than 0, so a caller can render on
 			// presence without treating a clean import as a fact worth showing.
 			//
-			// A POSITIVE DECIMAL INTEGER is required, spelled the one way Go's
-			// strconv.Atoi accepts it (codex rounds 2 P2 and 3 P2). A response
+			// A POSITIVE DECIMAL INTEGER is required, spelled the one way the CLI's
+			// staleBodyImportCount accepts it (codex rounds 2 P2, 3 P2, 4 P2 and
+			// the round-5 nit). NOT "the one way strconv.Atoi accepts it": Atoi is
+			// LOOSER than both readers, and the Go side deliberately rejects three
+			// forms it would take — a leading `+`, values above 2^53-1, and a
+			// repeated header — so that the two agree exactly. A response
 			// header is middlebox- and attacker-influenced input, and `Number()`
 			// is lenient in ways that reach the toast and that the CLI rejects:
 			// it trims (`" 7 "`), takes decimals (`"2.5"`), exponent notation

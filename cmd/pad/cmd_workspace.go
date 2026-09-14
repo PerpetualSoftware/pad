@@ -1288,10 +1288,17 @@ func staleBodyImportCount(header http.Header) string {
 	return strconv.FormatInt(n, 10)
 }
 
-// maxSafeJSInteger is 2^53-1, the largest integer a browser's Number can hold
-// exactly. It bounds the header count here ONLY so the Go and JavaScript readers
-// of the same header agree on which values are acceptable; it is not a fact about
-// items. See staleBodyImportCount.
+// maxSafeJSInteger is 2^53-1, JavaScript's Number.MAX_SAFE_INTEGER: the largest
+// integer below which EVERY integer is exactly representable as a float64.
+//
+// Not "the largest integer a Number can hold exactly" — larger ones can be, 2^54
+// among them (codex round 5 nit). What fails above this bound is that integers
+// stop being CONTIGUOUSLY representable, so a value there can round to a
+// different one and two adjacent counts become indistinguishable.
+//
+// It bounds the header count here ONLY so the Go and JavaScript readers of the
+// same header agree on which values are acceptable; it is not a fact about items.
+// See staleBodyImportCount.
 const maxSafeJSInteger = 9007199254740991
 
 func repairedNULCount(header http.Header) string {
