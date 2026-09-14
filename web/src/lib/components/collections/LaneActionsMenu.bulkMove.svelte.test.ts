@@ -20,11 +20,14 @@ import LaneActionsMenu from './LaneActionsMenu.svelte';
  * The claim this file makes is the BINDING — that the entry a user can click is
  * the one the type check reached.
  *
- * The pre-existing `moveTargets.length > 0` guard is why every negative case
- * below carries a POSITIVE control in the same shape: a field with no options
- * withholds the entry for a reason that has nothing to do with this fix, so a
- * test that only asserted absence would pass on the unfixed tree for half the
- * cases and prove nothing for the other half.
+ * WHY EVERY NEGATIVE CASE HERE USES A FIELD THAT HAS OPTIONS, and pairs with a
+ * positive control. The pre-existing `moveTargets.length > 0` guard withholds
+ * the entry for a field with NO options, and it does so on the unfixed tree
+ * too — so an absence assertion written over such a field passes either way and
+ * discriminates nothing. Every negative below therefore gives the field a full
+ * option list, which is the input the unfixed code actually offers, and the
+ * controls in the same shape pin that the fix withholds on the TYPE rather than
+ * withholding everything.
  */
 
 vi.mock('$lib/stores/workspace.svelte', () => ({

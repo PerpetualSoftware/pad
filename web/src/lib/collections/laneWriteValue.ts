@@ -141,8 +141,11 @@ export function laneWriteRefusalMessage(reason: LaneWriteRefusal, fieldLabel: st
  * (`internal/server/handlers_items_bulk.go`), so the ONLY writes it can express
  * are the ones `laneWriteValue` resolves to a string. That is the question this
  * asks, and it is asked through `laneWriteValue` rather than against a type list
- * so the menu cannot drift from the drag and quick-create paths — the drift
- * `laneKeyCallers.test.ts` exists to prevent for the key itself.
+ * so that the menu cannot drift from the drag and quick-create paths. That drift
+ * is a real failure mode rather than a hypothetical one: `laneKeyCallers.test.ts`
+ * exists because the same question about a lane KEY had already grown four
+ * private spellings across three surfaces, which had drifted to different
+ * answers.
  *
  * Two shapes are refused, and they fail differently on the way in:
  *
