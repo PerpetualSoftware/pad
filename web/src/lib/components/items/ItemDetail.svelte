@@ -2706,6 +2706,27 @@
 				event.preventDefault();
 				event.returnValue = '';
 			}
+
+			// RE-ARM IF THE PAGE SURVIVES THIS (codex round 2).
+			//
+			// `beforeunload` is the one teardown event that can be CANCELLED:
+			// preventDefault raises the native dialog and "Stay" leaves the page
+			// alive, visible, and never firing `pageshow` or `visibilitychange`
+			// — so neither re-arm above can reach it. Without this the latch
+			// stays true for the rest of the page's life, and every later edit
+			// and every later close flushes NOTHING. That is a worse data loss
+			// than the one this whole change exists to fix, reachable by the
+			// ordinary act of changing your mind about closing a tab.
+			//
+			// A macrotask is the discriminator, and it needs no guess about
+			// which choice the user made: if the navigation proceeds the page is
+			// gone and this never runs; if it was cancelled the event loop keeps
+			// turning and the latch re-arms. Re-arming is safe either way — the
+			// flush already dispatched, and a second teardown SHOULD flush
+			// again, because by then the content may have changed.
+			setTimeout(() => {
+				teardownFlushed = false;
+			}, 0);
 		};
 		// The two events a suspended or discarded tab actually delivers.
 		const onPageHide = () => runTeardownFlush();

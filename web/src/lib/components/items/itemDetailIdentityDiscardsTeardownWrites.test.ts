@@ -111,6 +111,25 @@ describe('ItemDetail teardown writes under an identity change', () => {
 		expect(CODE).toMatch(/else\s+teardownFlushed\s*=\s*false/);
 	});
 
+	it('re-arms the latch when a cancelled beforeunload leaves the page alive', () => {
+		// "Stay" on the native dialog cancels the navigation: the page stays
+		// visible and fires neither `pageshow` nor `visibilitychange`, so
+		// neither of the other re-arms can reach it. A latch left set there
+		// silently swallows every later teardown flush for the life of the page
+		// — a worse loss than the one this change fixes, reached by the ordinary
+		// act of changing your mind about closing a tab (codex round 2).
+		const start = CODE.indexOf('const onBeforeUnload = (event: BeforeUnloadEvent) => {');
+		const end = CODE.indexOf('const onPageHide', start);
+		expect(end, 'the listener block was restructured — re-point this guard').toBeGreaterThan(start);
+		const handler = CODE.slice(start, end);
+		expect(
+			handler,
+			'beforeunload does not re-arm the latch, so a cancelled unload leaves it set forever',
+		).toMatch(/setTimeout\(\s*\(\)\s*=>\s*\{\s*teardownFlushed\s*=\s*false;?\s*\}\s*,\s*0\s*\)/);
+		// AFTER the flush, or it defeats the latch it is meant to release.
+		expect(handler.indexOf('setTimeout')).toBeGreaterThan(handler.indexOf('runTeardownFlush()'));
+	});
+
 	it('registers the flush on the events a suspended tab delivers', () => {
 		// beforeunload alone is the defect (BUG-3030). It is kept — it is the
 		// only one that can raise the unsaved-changes prompt — but it is no
