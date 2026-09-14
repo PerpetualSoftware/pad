@@ -1,7 +1,8 @@
 <script lang="ts">
 	import type { Editor } from '@tiptap/core';
 	import type { Collection, Item } from '$lib/types';
-	import { parseSchema, isAgentCollection } from '$lib/types';
+	import { isAgentCollection } from '$lib/types';
+	import { createDefaultFields } from '$lib/collections/createDefaults';
 	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
@@ -178,15 +179,9 @@
 		errorMsg = '';
 	}
 
+	// BUG-3078: the status default goes through the declared type.
 	function getDefaultFields(collection: Collection): Record<string, any> {
-		const schema = parseSchema(collection);
-		const fields: Record<string, any> = {};
-		for (const field of schema.fields) {
-			if (field.key === 'status' && field.options && field.options.length > 0) {
-				fields.status = field.options[0];
-			}
-		}
-		return fields;
+		return createDefaultFields(collection);
 	}
 
 	async function handleCreate() {
