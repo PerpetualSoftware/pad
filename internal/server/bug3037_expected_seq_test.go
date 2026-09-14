@@ -204,3 +204,40 @@ func TestExpectedSeq_BelowOneIsABadRequest(t *testing.T) {
 		}
 	}
 }
+
+// When BOTH tokens are sent, SEQ DECIDES (codex round 2).
+//
+// A seq that still matches means no write has landed since the caller read the
+// row, so a differing `updated_at` cannot be a concurrent write — it is a caller
+// mixing tokens from two reads, or a client migrating between tokens and sending
+// both. Enforcing the weak token on top of a satisfied strong one adds no
+// protection and breaks that migration path.
+func TestExpectedSeq_DecidesWhenBothTokensAreSent(t *testing.T) {
+	srv := testServer(t)
+	ws := createWSWithCollections(t, srv)
+	item := createTaskWithFields(t, srv, ws, "Both tokens", `{"status":"open"}`)
+
+	// A deliberately STALE timestamp alongside the CURRENT seq.
+	stale := item.UpdatedAt.Add(-time.Hour).UTC().Format(time.RFC3339)
+	rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+ws+"/items/"+item.Slug, map[string]any{
+		"fields_patch":        map[string]any{"status": "done"},
+		"expected_seq":        item.Seq,
+		"expected_updated_at": stale,
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("seq was current but the stale timestamp still refused the write: %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// The converse, so this is not just "the timestamp is ignored": a STALE seq
+	// with a CURRENT timestamp is still refused.
+	var afterFirst models.Item
+	parseJSON(t, rr, &afterFirst)
+	rr2 := doRequest(srv, "PATCH", "/api/v1/workspaces/"+ws+"/items/"+item.Slug, map[string]any{
+		"fields_patch":        map[string]any{"status": "open"},
+		"expected_seq":        item.Seq,
+		"expected_updated_at": afterFirst.UpdatedAt.UTC().Format(time.RFC3339),
+	})
+	if rr2.Code != http.StatusConflict {
+		t.Fatalf("a stale seq was accepted because the timestamp was current: %d: %s", rr2.Code, rr2.Body.String())
+	}
+}

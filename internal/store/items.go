@@ -2514,7 +2514,16 @@ func (s *Store) updateItemWithParentLinkOnce(
 			}
 		}
 	}
-	if input.ExpectedUpdatedAt != "" {
+	// SEQ DECIDES when it is present, so the timestamp check below is SKIPPED
+	// rather than also run (codex round 2). Running both was an AND, which
+	// contradicts the documented contract and can only produce a conflict the
+	// caller cannot act on: a seq that still matches means NO write has landed
+	// since the caller read the row, so a differing `updated_at` is not a
+	// concurrent write — it is a caller mixing tokens from two reads, or a
+	// client migrating from one token to the other and sending both. The strong
+	// token subsumes the weak one; enforcing the weak one on top adds no
+	// protection and takes away that migration path.
+	if input.ExpectedSeq == nil && input.ExpectedUpdatedAt != "" {
 		expected, perr := time.Parse(time.RFC3339, input.ExpectedUpdatedAt)
 		if perr != nil {
 			return nil, fmt.Errorf("invalid expected_updated_at %q: %w", input.ExpectedUpdatedAt, perr)
