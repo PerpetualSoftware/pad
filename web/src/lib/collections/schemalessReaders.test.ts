@@ -45,6 +45,17 @@ const SURFACES = [
 		src: '../../routes/[username]/[workspace]/playbooks/+page.svelte',
 		keys: ['status'],
 	},
+	// ROUND 2 found three more, two of which are fixed here. Both render SERVER
+	// PROJECTIONS — values the server itself obtained by name — which is why a
+	// sweep for client-side `parseFields` reads kept missing them, and why the
+	// class is stated as "a value obtained by name" rather than "a value read
+	// from the fields blob".
+	{
+		name: 'dashboard cards',
+		src: '../../routes/[username]/[workspace]/+page.svelte',
+		keys: ['status', 'priority'],
+	},
+	{ name: 'ItemGraph', src: '../components/graph/ItemGraph.svelte', keys: ['status'] },
 ];
 
 describe('every schema-less by-name reader routes through the shared question', () => {

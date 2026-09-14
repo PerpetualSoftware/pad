@@ -871,7 +871,7 @@
 						     already had `collectionStore` and `parseSchema` for the
 						     collection PICKER; what it lacked was asking them about the
 						     row it was drawing. -->
-						{@const priority = categoricalValueFor(collectionStore.collections, child, 'priority', fields.priority)}
+						{@const priority = categoricalValueFor(collectionStore.collections, child, 'priority', fields.priority, collectionStore.collectionsAreFreshFor(wsSlug))}
 						{@const isDone = terminal.includes(fields.status)}
 						{@const isExpanded = expandedIds.has(child.id)}
 						{@const canExpand = child.has_children}

@@ -517,7 +517,7 @@
 					     on the assumption that a system schema was immutable, and
 					     then filed that assumption without checking it; the review
 					     round found it. -->
-					{@const declaredStatus = categoricalValueForSlug(collectionStore.collections, 'playbooks', 'status', fields.status)}
+					{@const declaredStatus = categoricalValueForSlug(collectionStore.collections, 'playbooks', 'status', fields.status, collectionStore.collectionsAreFreshFor(wsSlug))}
 					{@const status = declaredStatus || 'draft'}
 					{@const trigger = fields.trigger ?? 'manual'}
 					{@const scope = fields.scope ?? 'all'}
