@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -431,13 +432,12 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 	// boundary with a 400 — the server never issues a seq below 1, so sending
 	// one is a caller bug and saying so beats a 409 loop that reads as
 	// contention.
-	switch v := input["expected_seq"].(type) {
-	case float64:
-		payload["expected_seq"] = int64(v)
-	case int64:
-		payload["expected_seq"] = v
-	case int:
-		payload["expected_seq"] = int64(v)
+	seq, hasSeq, seqErr := itemExpectedSeqParam(input)
+	if seqErr != nil {
+		return nil, seqErr
+	}
+	if hasSeq {
+		payload["expected_seq"] = seq
 	}
 
 	// Field-level PATCH (TASK-2022). Send ONLY the changed keys as
@@ -778,4 +778,32 @@ func (d *HTTPHandlerDispatcher) maybeInjectWorkspace(
 	}
 	out["workspace"] = workspaces[0].Slug
 	return out
+}
+
+// itemExpectedSeqParam reads the BUG-3037 optimistic-concurrency token off an
+// MCP input map, as an integer.
+//
+// It REFUSES a fractional value rather than truncating it (codex round 1).
+// int64(42.7) is 42 — a DIFFERENT row state, and one that may well be the
+// current one, so truncation turns a malformed token into a silent ACCEPT: the
+// exact failure this token exists to remove, reintroduced by a coercion. JSON
+// numbers arrive as float64 on this transport, so the whole-number check is the
+// only thing standing between "the caller sent nonsense" and "the write went
+// through as if they had not".
+//
+// A free function so it can be driven directly: the dispatcher method around it
+// needs a live handler chain.
+func itemExpectedSeqParam(input map[string]any) (int64, bool, error) {
+	switch v := input["expected_seq"].(type) {
+	case float64:
+		if v != math.Trunc(v) {
+			return 0, false, fmt.Errorf("expected_seq must be a whole number, got %v", v)
+		}
+		return int64(v), true, nil
+	case int64:
+		return v, true, nil
+	case int:
+		return int64(v), true, nil
+	}
+	return 0, false, nil
 }

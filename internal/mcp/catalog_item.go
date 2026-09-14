@@ -325,14 +325,18 @@ Actions:
                   you sent, since the markdown round-trips through the editor, so compare
                   on meaning rather than bytes.
                   Optional: title, status, priority, content, role, assign, parent, comment, tags,
-                  field, fields, expected_updated_at.
+                  field, fields, expected_seq, expected_updated_at.
                   Same placement rules as create. Field updates are applied as a
                   field-level MERGE server-side (only the keys you set change; the
                   rest are preserved), so concurrent single-field updates no longer
-                  clobber each other. Pass expected_updated_at (the updated_at you
-                  last read) to make the update fail with code=update_conflict if
-                  the item changed since — optimistic concurrency for coordinating
-                  agents.
+                  clobber each other. Pass expected_seq (the seq you last read — it is
+                  on every item AND every list summary) to make the update fail with
+                  code=update_conflict if the item changed since; the error details
+                  carry actual_seq to retry with. PREFER IT over expected_updated_at,
+                  which is stored at one-second resolution: two writes inside one
+                  second both match that token, so neither conflicts and the loser
+                  silently overwrites the winner (BUG-3037). Optimistic concurrency
+                  for coordinating agents.
   delete        — Archive an item.
                   Required: ref.
   restore       — Un-archive (restore) a soft-deleted item by ref.
