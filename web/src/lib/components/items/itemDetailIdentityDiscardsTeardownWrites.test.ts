@@ -58,7 +58,12 @@ describe('ItemDetail teardown writes under an identity change', () => {
 		expect(CODE).toMatch(/let\s+identityEpochAtLoad\s*=\s*authStore\.identityEpoch/);
 		const loadData = CODE.slice(CODE.indexOf('async function loadData()'));
 		const upToFirstAwait = loadData.slice(0, loadData.indexOf('await'));
-		expect(upToFirstAwait).toContain('identityEpochAtLoad = authStore.identityEpoch');
+		// Read through `untrack` since BUG-3084 checkpoint 33 — a tracked read
+		// made the route effect re-run on every identity change. Either
+		// spelling is a re-stamp; the property pinned here is its position.
+		expect(upToFirstAwait).toMatch(
+			/identityEpochAtLoad\s*=\s*untrack\(\(\)\s*=>\s*authStore\.identityEpoch\)/
+		);
 	});
 
 	it('routes every teardown write through the one guarded function', () => {

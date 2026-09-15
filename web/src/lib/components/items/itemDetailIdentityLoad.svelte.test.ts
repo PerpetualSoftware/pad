@@ -62,7 +62,8 @@ vi.mock('$lib/collab/wsProvider.svelte', () => ({
 }));
 
 const COLL = vi.hoisted(() => ({
-	id: 'c1', slug: 'tasks', name: 'Tasks', prefix: 'TASK', schema: '{"fields":[]}', settings: '{}',
+	id: 'c1', slug: 'tasks', name: 'Tasks', prefix: 'TASK',
+	schema: '{"fields":[{"key":"estimate","label":"Estimate","type":"text"}]}', settings: '{}',
 }));
 function itemFor(slug: string) {
 	return {
@@ -197,6 +198,19 @@ afterEach(() => {
 	cleanup();
 });
 
+type Deferred = { resolve: (v: unknown) => void; reject: (e: unknown) => void };
+function deferNext(fn: (...args: never[]) => unknown): Deferred[] {
+	const sink: Deferred[] = [];
+	vi.mocked(fn as (...a: unknown[]) => unknown).mockImplementationOnce(
+		() => new Promise((resolve, reject) => sink.push({ resolve, reject }))
+	);
+	return sink;
+}
+
+async function loaded(r: ReturnType<typeof mount>) {
+	await waitFor(() => expect(r.container.textContent).toContain('Item i1'));
+}
+
 describe('an identity change reloads ItemDetail', () => {
 	it('re-runs the load when the identity moves (the precondition every leg below needs)', async () => {
 		const r = mount();
@@ -205,6 +219,98 @@ describe('an identity change reloads ItemDetail', () => {
 		auth.moveIdentity();
 		await settle();
 		await waitFor(() => expect(itemGets()).toBe(before + 1));
+	});
+
+	it('loads EXACTLY once per identity move — the listener, not also a tracked read in the effect', async () => {
+		const r = mount();
+		await loaded(r);
+		const before = itemGets();
+		auth.moveIdentity();
+		await settle();
+		await new Promise((res) => setTimeout(res, 20));
+		await settle();
+		expect(itemGets()).toBe(before + 1);
+	});
+
+	it('lands in the error state, not a throw or a stuck spinner, when the item is gone for the new identity', async () => {
+		const r = mount();
+		await loaded(r);
+		vi.mocked(api.items.get).mockImplementationOnce(async () => {
+			throw new Error('item not visible to this identity');
+		});
+		auth.moveIdentity();
+		await settle();
+		await waitFor(() => expect(r.container.textContent).toContain('item not visible to this identity'));
+		expect(r.container.textContent).not.toContain('Item i1');
+	});
+});
+
+describe('continuations started under the previous identity do not commit', () => {
+	function fieldEditor(): Record<string, unknown> {
+		const p = stubs().filter((s) => typeof s.onchange === 'function' && s.field).at(-1);
+		if (!p) throw new Error('no FieldEditor mounted — the schema field did not render');
+		return p;
+	}
+	function tagInput(): Record<string, unknown> {
+		const p = stubs().filter((s) => typeof s.onchange === 'function' && 'suggestions' in s).at(-1);
+		if (!p) throw new Error('no TagInput mounted');
+		return p;
+	}
+
+	async function fieldWriteRace(moveIdentity: boolean) {
+		const r = mount();
+		await loaded(r);
+		const pending = deferNext(api.items.update);
+		(fieldEditor().onchange as (v: unknown) => void)('5');
+		await waitFor(() => expect(pending.length).toBe(1));
+		if (moveIdentity) {
+			auth.moveIdentity();
+			await settle();
+			await waitFor(() => expect(r.container.textContent).toContain('Item i1'));
+		}
+		pending[0]!.resolve({ ...itemFor('i1'), title: 'echo from the field write' });
+		await settle();
+		return r;
+	}
+
+	it('REFUSAL (generation fence, closed by the listener\'s load): a field write\'s echo does not commit', async () => {
+		const r = await fieldWriteRace(true);
+		await new Promise((res) => setTimeout(res, 20));
+		expect(r.container.textContent).not.toContain('echo from the field write');
+	});
+
+	it('CONTROL: the same echo commits under an unchanged identity', async () => {
+		const r = await fieldWriteRace(false);
+		await waitFor(() => expect(r.container.textContent).toContain('echo from the field write'));
+	});
+
+	async function tagDrainRace(moveIdentity: boolean) {
+		const r = mount();
+		await loaded(r);
+		const first = deferNext(api.items.update);
+		(tagInput().onchange as (t: string[]) => void)(['a']);
+		await waitFor(() => expect(first.length).toBe(1));
+		// Queued behind the in-flight batch, typed by the same user.
+		(tagInput().onchange as (t: string[]) => void)(['a', 'b']);
+		if (moveIdentity) {
+			auth.moveIdentity();
+			await settle();
+		}
+		first[0]!.resolve({ ...itemFor('i1'), tags: '["a"]' });
+		await settle();
+		await new Promise((res) => setTimeout(res, 20));
+		return vi
+			.mocked(api.items.update)
+			.mock.calls.filter((c) => c[2] && 'tags' in (c[2] as object))
+			.map((c) => (c[2] as { tags: string }).tags);
+	}
+
+	it('REFUSAL (explicit fence, flushTagSaver): the queued batch is not sent on the new identity', async () => {
+		expect(await tagDrainRace(true)).toEqual(['["a"]']);
+	});
+
+	it('CONTROL: the queued batch IS sent under an unchanged identity', async () => {
+		expect(await tagDrainRace(false)).toEqual(['["a"]', '["a","b"]']);
 	});
 });
 

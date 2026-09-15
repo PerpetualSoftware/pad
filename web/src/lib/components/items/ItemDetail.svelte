@@ -366,6 +366,24 @@
 		return gen !== loadGeneration || item?.id !== targetItem.id;
 	}
 
+	// The identity fence, for the commit points NO generation reaches (BUG-3084
+	// checkpoint 32). Everything `switchedAway` and the item/collection
+	// generations guard is already refused on an identity change, because the
+	// identity listener below runs `loadData`, which bumps all three. These two
+	// exist only for the sites whose staleness checks are keyed on something an
+	// identity change does not move — an item id, a workspace slug, a route.
+	//
+	// NOT `identityEpochAtLoad`. That one answers "whose typing is in the
+	// editor" and is re-stamped by a load; these answer "is the identity that
+	// STARTED this handler still signed in", captured at the handler's entry.
+	function captureIdentity(): number {
+		return authStore.identityEpoch;
+	}
+
+	function identityHeld(captured: number): boolean {
+		return authStore.identityEpoch === captured;
+	}
+
 	// The `onOpenTarget` seam's same-item guard (PLAN-2154 / TASK-2158). Every
 	// content-link interceptor calls `fireOpenTarget(target)` instead of
 	// `onOpenTarget?.(target)` directly — the TASK-2159 anchor surfaces
@@ -471,6 +489,10 @@
 		const snap = collection;
 		const believed = effectiveCollSlug;
 		if (!ws || !routeColl || !itemRef || !snap) return;
+		// Every check below is keyed on the route and the collection id, which a
+		// same-item reload after an identity change leaves equal (BUG-3084): the
+		// previous identity's collection list would retag the index and navigate.
+		const identity = captureIdentity();
 		// Fence captured BEFORE the await (codex round 4 P1 — bumping after
 		// it made the check tautological): a newer collection write during
 		// the list fetch supersedes this heal's snapshot refresh.
@@ -481,6 +503,7 @@
 			// (destroyed), the route or snapshot may have moved — a stale
 			// continuation must not retag, refresh, or goto (round 4 P1).
 			if (destroyed) return;
+			if (!identityHeld(identity)) return;
 			if (ws !== wsSlug || routeColl !== collSlug || itemRef !== itemSlug) return;
 			if (!collection || collection.id !== snap.id) return;
 			const target = resolveSyncRenameTarget({
@@ -1068,6 +1091,31 @@
 			loadData();
 		}
 	});
+
+	// AN IDENTITY CHANGE IS A LOAD on this surface (BUG-3084 checkpoints 32-33,
+	// lead ruling). `loadData` bumps the load, item and collection generations,
+	// so every continuation fenced by `switchedAway` or a generation check is
+	// refused by construction, and it resets the transient page state — and it
+	// is the recovery: the item reloads for whoever is signed in now, so the pane
+	// keeps working instead of latching.
+	//
+	// Fires on every transition `notifyIdentityChange` reports: a sign-in from
+	// anonymous (which does not reload the tab), a sign-out (whose own
+	// navigation tears this down, after the pre-navigation window), and a swap
+	// (which reloads the tab, after the pre-reload window). Without a route
+	// there is nothing to load. With the item no longer visible — a sign-out on
+	// a private item — the load lands in its error state like any failed load.
+	//
+	// EXPLICIT, not a side effect of a tracked read: the epoch read in
+	// `loadData` used to make the effect above depend on it, which reloaded by
+	// accident and would reload TWICE beside this listener. It is untracked
+	// there now, and the guard holds both halves.
+	const stopIdentityLoad = authStore.onIdentityChange(() => {
+		if (!(wsSlug && collSlug && itemSlug)) return;
+		loadData();
+		void loadTagSuggestions(wsSlug);
+	});
+	onDestroy(stopIdentityLoad);
 
 	// Surface the item's ref (e.g. IDEA-592) in the browser tab title.
 	// Clear the section so the format reads "{REF} · {Workspace} · Pad".
@@ -1687,7 +1735,12 @@
 		// identity change PATCHed the previous user's pending draft under the
 		// new user's cookie. Still before the first await, so every
 		// continuation of this load sees the new stamp.
-		identityEpochAtLoad = authStore.identityEpoch;
+		//
+		// UNTRACKED: `loadData` runs inside the route effect up to its first
+		// await, and a tracked read here made that effect re-run on every
+		// identity change (BUG-3084 checkpoint 33). The identity listener is
+		// the one mechanism that reloads on an identity change.
+		identityEpochAtLoad = untrack(() => authStore.identityEpoch);
 		// Reset raw mode on an actual item-switch (TASK-2124 decision #1). rawMode
 		// is a per-item view choice, not a session-wide one: without this,
 		// switching A→B while A is in raw-markdown mode carries raw into B. Two
@@ -3210,6 +3263,11 @@
 		desired: string[]; // latest desired set (in-flight OR pending) for reload reapply
 		running: boolean;
 		confirmed: string; // last server-acknowledged tags JSON (revert target)
+		// The identity this burst was typed under (BUG-3084). A same-item reload
+		// after an identity change passes every item-id check below, so the
+		// drain would otherwise send the previous user's queued tags on the new
+		// cookie and commit the echo.
+		epoch: number;
 	};
 	// Keyed by item id so each item's in-flight saver stays discoverable across
 	// navigation — navigating away from A and back must find A's running saver
@@ -3228,7 +3286,10 @@
 		// start a fresh one. The currently-displayed item is the only one whose
 		// tags can be edited, so targetItem.id keys the right saver.
 		const existing = tagSavers.get(targetItem.id);
-		if (existing && existing.running) {
+		// Coalesce only into a burst typed under THIS identity: a running saver
+		// from before an identity change is draining towards a refusal, and
+		// handing it this edit would drop it with that burst.
+		if (existing && existing.running && existing.epoch === captureIdentity()) {
 			existing.pending = newTags;
 			existing.desired = newTags;
 			return;
@@ -3239,7 +3300,8 @@
 			pending: newTags,
 			desired: newTags,
 			running: false,
-			confirmed: targetItem.tags // confirmed baseline captured at burst start
+			confirmed: targetItem.tags, // confirmed baseline captured at burst start
+			epoch: captureIdentity()
 		};
 		tagSavers.set(targetItem.id, saver);
 		void flushTagSaver(saver);
@@ -3254,11 +3316,21 @@
 				// to the freeze (TagInput stays interactive via `readonly={!canEdit}`)
 				// and a tag write is a side-independent single-item REST PATCH, so it
 				// runs from either side; `updateTags` gates on canEdit (permission).
+				// Before EACH send, not once: the drain can outlive an identity
+				// change between two batches.
+				if (!identityHeld(saver.epoch)) {
+					saver.pending = null;
+					return;
+				}
 				const toSave = saver.pending;
 				saver.pending = null;
 				const fresh = await api.items.update(saver.ws, saver.itemId, {
 					tags: JSON.stringify(toSave)
 				});
+				if (!identityHeld(saver.epoch)) {
+					saver.pending = null;
+					return;
+				}
 				saver.confirmed = fresh.tags;
 				// Reconcile the UI to server truth only when nothing newer is
 				// queued (avoids flicker) and we're still on this item. Route
@@ -3276,6 +3348,7 @@
 		} catch (e) {
 			console.error('Failed to save tags:', e);
 			saver.pending = null;
+			if (!identityHeld(saver.epoch)) return;
 			if (item && item.id === saver.itemId) {
 				// Revert to the last server-confirmed tags, not the optimistic set.
 				item = { ...item, tags: saver.confirmed };
@@ -3354,21 +3427,28 @@
 	// the item-load path per the Svelte 5 effect-splitting convention.
 	async function loadTagSuggestions(ws: string) {
 		if (!ws) return;
+		// Keyed on the workspace alone below, which an identity change does not
+		// move (BUG-3084): the previous user's tag vocabulary would land in the
+		// new user's autocomplete. The identity listener re-runs this.
+		const identity = captureIdentity();
 		try {
 			const all = await api.tags.list(ws);
 			// Drop stale results: if the workspace changed while this request
 			// was in flight (page instance reused across navigation, or a
 			// post-save reload for a now-previous workspace), don't overwrite
 			// the current workspace's suggestions. Per Codex PR #659 round 2.
-			if (ws !== wsSlug) return;
+			if (ws !== wsSlug || !identityHeld(identity)) return;
 			tagSuggestions = all.map((t) => t.tag);
 		} catch {
-			if (ws === wsSlug) tagSuggestions = [];
+			if (ws === wsSlug && identityHeld(identity)) tagSuggestions = [];
 		}
 	}
 
 	$effect(() => {
-		loadTagSuggestions(wsSlug);
+		// `wsSlug` is the dependency; the entry capture inside is not, or this
+		// effect would re-run on every identity change beside the listener.
+		const ws = wsSlug;
+		untrack(() => loadTagSuggestions(ws));
 	});
 
 	// stampSourceUrl writes the pad_source_url + pad_imported_at orphan
@@ -4315,6 +4395,9 @@
 		// destroyed), a viewer (no provider/editor), or the editor isn't mounted.
 		// In every such case items.content is already canonical, so no-op.
 		if (!collabProvider || !editorInstance || editorInstance.isDestroyed || !item) return;
+		// Its only post-await commit is a toast, and nothing else here moves on an
+		// identity change (BUG-3084): the warning would reach whoever signed in.
+		const identity = captureIdentity();
 		// Flush against the context the connected provider was minted with (captured
 		// at $effect-body time, NOT live route state), so the PATCH is self-routing
 		// and can never cross-write another item. Switch-safety: activeCollabContext
@@ -4355,7 +4438,7 @@
 		// forceRefreshInFlight flipped (content IS in items.content + the
 		// undo-point) — so warning on 'skipped' would mis-fire on ordinary
 		// restores. The restore itself is never blocked (the caller proceeds).
-		if (result === 'failed') {
+		if (result === 'failed' && identityHeld(identity)) {
 			toastStore.show(
 				'Your most recent edits may not be included in the restore point.',
 				'error',
