@@ -554,6 +554,34 @@ export function trackedEpochReadDetails(
  * phantom — so the search is now the same literal-aware walk the statement
  * scanner uses, from the outside in.
  *
+ * THE POPULATION TABLE (CONVE-35: five review rounds each found new members
+ * of one class — grammar the scanner had not been told about — so the class
+ * is written down and reviewed as a table rather than found one round at a
+ * time). What this scanner READS, and what it REFUSES:
+ *
+ *   read    `let a = $state(…)`, typed, generic, multi-line annotation,
+ *           object type with `;` inside, multi-binding, parenthesised
+ *           initialiser, `$state.raw`, type-argument list on the call (with
+ *           whitespace/newlines, nested generics), unspaced comparison,
+ *           regex literal (statement-level, arrow-returned), string and
+ *           template literal (interpolation bodies WALKED), ASI boundary
+ *           (newline + statement keyword, enclosing closer), `let` nested in
+ *           an initialiser's function body, destructuring pattern (walked)
+ *   refused `$state` behind a destructuring pattern; an unterminated bracket
+ *           or literal; an unreadable binding name
+ *   not     the parts of the grammar that need a parser: a regex literal
+ *   read    after an unlisted operator, `let` as a plain identifier at a
+ *           statement start (`let = 1` is not valid TS anyway), and any
+ *           statement form beyond `let` (`const`/`var` are never `$state`
+ *           declarations by the compiler's own rule).
+ *
+ * The receipt that bounds the claim: on every page in the family the legacy
+ * regex and this scanner agree exactly (library 9, roles 22, collection 49),
+ * except on the dashboard, where they differ by precisely the swap that
+ * motivated the hoist. Every row in the table above came from a constructed
+ * shape, none from a page; the table is the population the guard covers, and
+ * a shape outside it is a fixture to add, not a silent miss.
+ *
  * FAILS CLOSED: a bracket or literal that never closes throws rather than
  * being skipped, since skipping narrows the population silently.
  */
@@ -583,7 +611,9 @@ function skipStringLiteral(code: string, i: number, out: string[]): number {
 function skipRegexLiteral(code: string, i: number): number {
 	const prev = code.slice(0, i).replace(/\s+$/, '');
 	const last = prev.slice(-1);
-	const isRegexStart = prev === '' || '(,=:[!&|?{};+-*%~^'.includes(last) ||
+	// `=>` ends in `>`, which the character rule reads as a comparison; an
+	// arrow returning a regex is a regex (codex round 5).
+	const isRegexStart = prev === '' || '(,=:[!&|?{};+-*%~^'.includes(last) || prev.endsWith('=>') ||
 		/\b(return|typeof|case|in|of|new|delete|void|instanceof)$/.test(prev);
 	if (!isRegexStart) return -1;
 	let inClass = false;
@@ -644,8 +674,11 @@ function closesAsTypeArguments(code: string, i: number): boolean {
 		if (c === '<') depth++;
 		else if (c === '>') {
 			depth--;
-			if (depth === 0) return code[k + 1] === '(';
-		} else if (c === ';' || c === '\n' || c === '(' || c === ')') return false;
+			// Whitespace — a newline included — may sit between the `>` and its
+			// call paren, and newlines may sit inside the arguments (codex round
+			// 5); only a terminator or a paren before the match says "comparison".
+			if (depth === 0) return /^\s*\(/.test(code.slice(k + 1));
+		} else if (c === ';' || c === '(' || c === ')') return false;
 	}
 	return false;
 }
@@ -691,8 +724,10 @@ function readLetStatement(code: string, from: number, out: string[], STATEMENT_S
 				// DESCEND, do not merely skip (codex round 3): the regex this
 				// replaces enumerated a `let` at ANY depth, so a factory-owned
 				// `let hidden = $state(1)` inside an initialiser's function body
-				// was in the population before and must stay in it.
-				for (const nested of stateDeclarations(code.slice(i + 1, close))) out.push(nested);
+				// was in the population before and must stay in it. ONLY the
+				// initialiser's brackets: a type annotation's braces hold type
+				// members, and a member may be NAMED `let` (codex round 5).
+				if (initAt !== -1) for (const nested of stateDeclarations(code.slice(i + 1, close))) out.push(nested);
 				i = close;
 				continue;
 			}

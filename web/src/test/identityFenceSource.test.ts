@@ -456,6 +456,21 @@ describe('stateDeclarations enumerates the $state population by STATEMENT', () =
 		expect(stateDeclarations('\tlet data = $state<Map<Map<string, number>, 1 | 2>>(new Map()), b = $state(0);')).toEqual(['data', 'b']);
 	});
 
+	// Round 5's three shapes.
+	it('whitespace and newlines inside and after a type-argument list are fine', () => {
+		expect(stateDeclarations('\tlet data = $state<Map<string, 1 | 2>> (new Map());')).toEqual(['data']);
+		expect(stateDeclarations('\tlet data = $state<\n\t\tMap<string, number>\n\t>(new Map()), b = $state(0);')).toEqual(['data', 'b']);
+	});
+
+	it('an arrow returning a regex literal is a regex, not code', () => {
+		expect(stateDeclarations("\tconst re = () => /{let fake = $state(0);}/;\n\tlet real = $state(1);")).toEqual(['real']);
+		expect(stateDeclarations("\tconst re = () => /'/;\n\tlet real = $state(1);")).toEqual(['real']);
+	});
+
+	it('a type member named `let` inside an annotation is not a declaration', () => {
+		expect(stateDeclarations('\tlet ordinary: { let (): number }; let hidden = $state(0);')).toEqual(['hidden']);
+	});
+
 	it('walks a destructuring let and refuses one backed by $state', () => {
 		expect(stateDeclarations('\tlet { a, b } = props;\n\tlet c = $state(1);')).toEqual(['c']);
 		expect(() => stateDeclarations('\tlet [x] = $state([1]);')).toThrow(/destructuring/);
