@@ -384,6 +384,18 @@
 		return authStore.identityEpoch === captured;
 	}
 
+	// Bumped by the identity listener. Children that call back into this
+	// component after their own awaits are mounted inside `{#key identityKey}`
+	// with `{@const handedDown = identityKey}`, and each such callback refuses
+	// when `handedDown !== identityKey` (BUG-3084 checkpoint 36, lead ruling).
+	// The `{@const}` FREEZES there because the key remounts the block on exactly
+	// the change the check guards — measured for a callback fired after an await
+	// from a destroyed instance. BUG-2129's "a template snapshot does not freeze"
+	// is about a block that is NOT remounted, where the prop getter re-reads it.
+	// The remount is also the children's recovery: they reload for the new
+	// identity. The requests those children issue THEMSELVES are BUG-3095.
+	let identityKey = $state(0);
+
 	// The `onOpenTarget` seam's same-item guard (PLAN-2154 / TASK-2158). Every
 	// content-link interceptor calls `fireOpenTarget(target)` instead of
 	// `onOpenTarget?.(target)` directly — the TASK-2159 anchor surfaces
@@ -1118,6 +1130,7 @@
 		cachedMembersWs = null;
 		cachedRoles = null;
 		cachedRolesWs = null;
+		identityKey++;
 		loadData();
 		void loadTagSuggestions(wsSlug);
 	});
@@ -3795,7 +3808,7 @@
 	// flushes still PATCH the OLD item's URL with its OLD markdown,
 	// so we never cross-write one item's content into another. Per
 	// Codex review round 1.
-	let activeCollabContext: CollabFlushContext | null = null;
+	let activeCollabContext: (CollabFlushContext & { identityEpoch: number }) | null = null;
 
 	// Provider we've already attempted the lazy seed against. Reset
 	// implicitly when collabProvider is replaced (the new provider
@@ -5347,6 +5360,8 @@
 				     oncollectionupdated into this persistent parent (see the
 				     switch-safety note on the callback). -->
 				{#key itemSlug}
+					{#key identityKey}
+					{@const handedDown = identityKey}
 					<QuickActionsMenu
 						actions={quickActions}
 						{item}
@@ -5359,6 +5374,7 @@
 							editCollectionOpen = true;
 						}}
 						oncollectionupdated={(updated) => {
+							if (handedDown !== identityKey) return;
 							// Switch-safety note (BUG-2280 — investigated, NOT a live
 							// bug; do NOT add a template-side {@const keyedSlug =
 							// itemSlug} "snapshot" fence here). A quick-action save can
@@ -5371,10 +5387,13 @@
 							//      switch: a destroyed instance's `collection` prop reads
 							//      the LIVE parent value (B's collection), not a frozen
 							//      A — so the guard fails and oncollectionupdated is
-							//      never invoked. (A {@const} snapshot would NOT freeze
-							//      in Svelte 5 — it's a lazily-pulled derived that reads
-							//      the current itemSlug — so a keyedSlug fence here is a
-							//      no-op: the literal BUG-2129 trap. Verified empirically.)
+							//      never invoked. (This note said a {@const} snapshot
+							//      would NOT freeze in Svelte 5. That holds for a block
+							//      that is not remounted; inside a {#key} that remounts on
+							//      the change being guarded it DOES freeze, measured for a
+							//      destroyed instance's post-await callback — BUG-3084,
+							//      which gates this callback on `handedDown` for that
+							//      reason. The slug reasoning below is unchanged.)
 							//   2. On a SAME-collection switch the callback DOES fire,
 							//      but `updated` is that same collection, so assigning it
 							//      is correct; and loadData's collection write
@@ -5388,6 +5407,7 @@
 							adoptCollection(updated, ++collectionGen);
 						}}
 					/>
+					{/key}
 				{/key}
 			{/if}
 			{#if childTotal > 0}
@@ -6221,6 +6241,8 @@
 			     the load window took a deliberate click. It is now on the tab you
 			     land on. -->
 			<div id="item-comments" class="timeline-section">
+				{#key identityKey}
+				{@const handedDown = identityKey}
 				<ItemTimeline
 					bind:this={timelineRef}
 					bind:feed={timelineFeed}
@@ -6229,7 +6251,7 @@
 					{itemSlug}
 					currentContent={item.content ?? ''}
 					items={localIndex.getAll(wsSlug)}
-					onRestore={handleVersionRestore}
+					onRestore={(updated) => { if (handedDown !== identityKey) return; handleVersionRestore(updated); }}
 					flushBeforeRestore={flushCollabBeforeRestore}
 					itemId={itemMatchesRef ? item.id : undefined}
 					hostToken={attachmentHostToken}
@@ -6241,6 +6263,7 @@
 					title="Comments"
 					emptyLabel="No comments yet."
 				/>
+				{/key}
 			</div>
 		{/key}
 		</div><!-- /tab-panel Details -->
@@ -6358,7 +6381,10 @@
 				     REST ops, so they stay live on the peeking side. `frozen={false}`
 				     also stops the dndzone from re-initing on activePane flips — removing
 				     a source of drill-click swallowing. -->
-				<ChildItems {wsSlug} {username} {itemSlug} itemId={item.id} parentFields={fields} terminalStatuses={childTerminalStatuses} onChildrenChange={(children) => { if (keyedSlug !== itemSlug) return; handleChildrenChange(children); }} {canEdit} frozen={false} selfDirty={localDirty} selfLastSaveTime={localLastSaveTime} onOpenTarget={paneOpenTarget} />
+				{#key identityKey}
+				{@const handedDown = identityKey}
+				<ChildItems {wsSlug} {username} {itemSlug} itemId={item.id} parentFields={fields} terminalStatuses={childTerminalStatuses} onChildrenChange={(children) => { if (keyedSlug !== itemSlug || handedDown !== identityKey) return; handleChildrenChange(children); }} {canEdit} frozen={false} selfDirty={localDirty} selfLastSaveTime={localLastSaveTime} onOpenTarget={paneOpenTarget} />
+				{/key}
 			</div>
 		{/if}
 
@@ -6374,13 +6400,16 @@
 		-->
 		{#if item}
 			<div id="item-backlinks">
+				{#key identityKey}
+				{@const handedDown = identityKey}
 				<BacklinksPanel
 					{wsSlug}
 					{username}
 					{itemSlug}
 					itemId={item.id}
-					onCountChange={(n) => { if (keyedSlug !== itemSlug) return; backlinksCount = n; }}
+					onCountChange={(n) => { if (keyedSlug !== itemSlug || handedDown !== identityKey) return; backlinksCount = n; }}
 				/>
+				{/key}
 			</div>
 			<!--
 				Referenced-by panel (PLAN-2857 U5). Sits beside the
@@ -6448,6 +6477,8 @@
 				{@const kinds: readonly string[] =
 					activeTab === 'versions' ? VERSION_KINDS : CHANGE_KINDS}
 				{@const shown = timelineFeed.entries.filter((e) => kinds.includes(e.kind))}
+				{#key identityKey}
+				{@const handedDown = identityKey}
 				<TimelineEntryList
 					entries={shown}
 					showEmpty={shown.length === 0 &&
@@ -6461,10 +6492,11 @@
 					currentContent={item.content ?? ''}
 					items={localIndex.getAll(wsSlug)}
 					hostToken={attachmentHostToken}
-					onRestore={handleVersionRestore}
+					onRestore={(updated) => { if (handedDown !== identityKey) return; handleVersionRestore(updated); }}
 					flushBeforeRestore={flushCollabBeforeRestore}
 					restoreFrozen={peeking}
 				/>
+				{/key}
 				<!-- Pagination belongs to the ONE feed, so this asks the OWNER for
 				     the next page. Without it these tabs could show older entries
 				     only by visiting Details and paging there. -->
@@ -6496,6 +6528,8 @@
 			mounted and driven by its `open` prop (its consumer contract).
 		-->
 		{#key itemSlug}
+			{#key identityKey}
+			{@const handedDown = identityKey}
 			<CopyItemDialog
 				open={copyDialogOpen}
 				onclose={closeCopyDialog}
@@ -6505,9 +6539,13 @@
 				sourceRef={formatItemRef(item) || item.slug}
 				sourceUnavailable={isArchived}
 				flushContent={flushContentBeforeCopy}
-				onmove={handleMove}
-				oncopied={handleCopied}
+				onmove={(targetSlug, fieldOverrides) =>
+					handedDown !== identityKey
+						? Promise.resolve({ status: 'cancelled' as const })
+						: handleMove(targetSlug, fieldOverrides)}
+				oncopied={(result) => { if (handedDown !== identityKey) return; void handleCopied(result); }}
 			/>
+			{/key}
 		{/key}
 	{/if}
 
@@ -6611,8 +6649,12 @@
 		     EditCollectionModal echoes back rather than us trying to freeze
 		     anything on this side (see its Props.onupdated doc comment: a
 		     template-side {@const}/closure "snapshot" doesn't actually
-		     freeze in Svelte 5 — BUG-2129). -->
+		     freeze in Svelte 5 — BUG-2129 — when the block is NOT remounted;
+		     the `handedDown` identity gate below freezes because its own
+		     {#key identityKey} remounts on the change it guards, BUG-3084). -->
 		{#key itemSlug}
+		{#key identityKey}
+		{@const handedDown = identityKey}
 		<EditCollectionModal
 			bind:open={editCollectionOpen}
 			{collection}
@@ -6629,6 +6671,7 @@
 				// visibly affecting whatever the user has since navigated
 				// to (Codex PR review).
 				if (destroyed) return;
+				if (handedDown !== identityKey) return;
 				if (!editedCollectionId || !editedCollectionSlug || !editedWsSlug) return;
 				// Collection slugs are workspace-scoped (two workspaces can
 				// both have a "docs" collection) — guard against a reused
@@ -6739,6 +6782,7 @@
 				editCollectionSection = undefined;
 			}}
 		/>
+		{/key}
 		{/key}
 	{/if}
 {/if}

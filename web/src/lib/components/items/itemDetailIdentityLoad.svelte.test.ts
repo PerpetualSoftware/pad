@@ -340,6 +340,41 @@ describe('state a load reuses is not carried across identities', () => {
 	});
 });
 
+describe('a child instance mounted under the previous identity cannot commit through its callback prop', () => {
+	/**
+	 * The parent side of class C (BUG-3084 checkpoint 36, lead ruling): a child
+	 * keeps running after the parent moves on, and its promise calls back into
+	 * the parent. The callback is gated on the identity key the child was
+	 * HANDED DOWN under — a `{@const}` inside a `{#key identityKey}` block, which
+	 * freezes because the identity change remounts the block.
+	 */
+	function backlinks(): Array<Record<string, unknown>> {
+		return stubs().filter((s) => typeof s.onCountChange === 'function');
+	}
+
+	async function countFrom(which: 'old' | 'new') {
+		const r = mount();
+		await loaded(r);
+		const old = backlinks().at(-1)!;
+		auth.moveIdentity();
+		await settle();
+		await loaded(r);
+		const fresh = backlinks().at(-1)!;
+		expect(fresh, 'the child was not remounted by the identity change').not.toBe(old);
+		((which === 'old' ? old : fresh).onCountChange as (n: number) => void)(7);
+		await settle();
+		return r.container.textContent ?? '';
+	}
+
+	it('REFUSAL: the previous identity\'s instance reporting a count is ignored', async () => {
+		expect(await countFrom('old')).not.toContain('📎 7');
+	});
+
+	it('CONTROL: the remounted instance reporting the same count lands', async () => {
+		expect(await countFrom('new')).toContain('📎 7');
+	});
+});
+
 describe('continuations started under the previous identity do not commit', () => {
 	function fieldEditor(): Record<string, unknown> {
 		const p = stubs().filter((s) => typeof s.onchange === 'function' && s.field).at(-1);
