@@ -1117,6 +1117,16 @@ func (s *Store) SeedCollectionsFromTemplate(workspaceID string, templateName str
 		}
 	}
 
+	// Routed through the seam so a test can make this seed fail on a fresh
+	// workspace, which nothing else in the tree can do (BUG-3087). Nil in
+	// production. Placed here — collections exist, no items yet — so the
+	// injected failure has the partial-init shape a real one would.
+	if s.failSeedCollections != nil {
+		if err := s.failSeedCollections(workspaceID, templateName); err != nil {
+			return err
+		}
+	}
+
 	// existingTitles caches the set of item titles already present in a
 	// collection so repeated seed calls against the same collection don't
 	// re-query. Lazily populated on first use per slug.
