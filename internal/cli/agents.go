@@ -112,6 +112,7 @@ playbooks, dashboard, and recent activity in one call.
 - Read an item before updating it. Send only changed fields and include a comment
   with status changes.
 - Read collection schemas instead of guessing field names or terminal statuses.
+- Never read ` + "`~/.pad/attachments/`" + ` directly. Always use ` + "`pad attachment`" + `.
 - Confirm each mutation from the returned object before saying it succeeded.
 - Use active playbooks when intent or an invocation slug matches; never run draft
   or deprecated playbooks unless the user explicitly asks.
@@ -125,7 +126,7 @@ pad item show TASK-5 --format json
 pad item list [collection] --format json
 pad item create <collection> "Title" [flags]
 pad item update TASK-5 [flags]
-pad item comment TASK-5 -m "Message"
+pad item comment TASK-5 "Message"
 pad playbook list --format json
 pad playbook show <slug> --format markdown
 ` + "```" + `

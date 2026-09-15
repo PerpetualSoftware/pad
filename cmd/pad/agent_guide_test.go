@@ -1,8 +1,12 @@
 package main
 
 import (
+	"regexp"
 	"strings"
 	"testing"
+
+	pad "github.com/PerpetualSoftware/pad"
+	"github.com/PerpetualSoftware/pad/internal/cli"
 )
 
 const guideFixture = `# Pad
@@ -43,5 +47,25 @@ func TestAgentGuideSectionIncludesChildrenOnly(t *testing.T) {
 func TestAgentGuideSectionRejectsUnknownTopic(t *testing.T) {
 	if _, ok := agentGuideSection(guideFixture, "missing"); ok {
 		t.Fatal("unknown topic resolved")
+	}
+}
+
+func TestAgentDispatcherGuideTopicsResolve(t *testing.T) {
+	dispatcher := cli.FormatForTool(*cli.ResolveTool("agents"), pad.PadSkill)
+	guide := string(cli.StripFrontmatter(pad.PadSkill))
+	matches := regexp.MustCompile(`pad agent guide ([a-z0-9][a-z0-9-]*)`).FindAllSubmatch(dispatcher, -1)
+	seen := map[string]bool{}
+	for _, match := range matches {
+		topic := string(match[1])
+		if topic == "all" || seen[topic] {
+			continue
+		}
+		seen[topic] = true
+		if _, ok := agentGuideSection(guide, topic); !ok {
+			t.Errorf("dispatcher guide topic %q does not resolve", topic)
+		}
+	}
+	if len(seen) == 0 {
+		t.Fatal("dispatcher contains no guide topics")
 	}
 }
