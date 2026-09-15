@@ -440,6 +440,22 @@ describe('stateDeclarations enumerates the $state population by STATEMENT', () =
 		expect(stateDeclarations('\tlet x = foo(() => { let inner = $state(0); return inner; });')).toEqual(['inner']);
 	});
 
+	// Round 4's three shapes.
+	it('a template interpolation body is code and is walked', () => {
+		const code = ['\tconst tpl = `${(() => {', '\t\tlet hidden = $state(1);', '\t\treturn hidden;', '\t})()}`;', '\tlet top = $state(2);'].join('\n');
+		expect(stateDeclarations(code)).toEqual(['hidden', 'top']);
+	});
+
+	it("an enclosing block's closer ends an unsemicolonised binding", () => {
+		expect(stateDeclarations('\tfunction f() { let ordinary = 0 } let hidden = $state(1);')).toEqual(['hidden']);
+		expect(stateDeclarations('\tfoo(() => { let inner = $state(0) }); let after = $state(1);')).toEqual(['inner', 'after']);
+	});
+
+	it('nested type arguments keep their depth', () => {
+		expect(stateDeclarations('\tlet data = $state<Map<Map<string, number>, 1 | 2>>(new Map());')).toEqual(['data']);
+		expect(stateDeclarations('\tlet data = $state<Map<Map<string, number>, 1 | 2>>(new Map()), b = $state(0);')).toEqual(['data', 'b']);
+	});
+
 	it('walks a destructuring let and refuses one backed by $state', () => {
 		expect(stateDeclarations('\tlet { a, b } = props;\n\tlet c = $state(1);')).toEqual(['c']);
 		expect(() => stateDeclarations('\tlet [x] = $state([1]);')).toThrow(/destructuring/);

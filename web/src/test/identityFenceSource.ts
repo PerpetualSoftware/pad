@@ -557,8 +557,12 @@ export function trackedEpochReadDetails(
  * FAILS CLOSED: a bracket or literal that never closes throws rather than
  * being skipped, since skipping narrows the population silently.
  */
-/** Index just past the string or template literal opening at `i`, or -1. */
-function skipStringLiteral(code: string, i: number): number {
+/**
+ * Index just past the string or template literal opening at `i`, or -1.
+ * A template's `${…}` bodies are CODE, not text (codex round 4): they are
+ * walked for declarations rather than skipped with the literal around them.
+ */
+function skipStringLiteral(code: string, i: number, out: string[]): number {
 	const q = code[i]!;
 	for (let k = i + 1; k < code.length; k++) {
 		const c = code[k]!;
@@ -566,6 +570,7 @@ function skipStringLiteral(code: string, i: number): number {
 		if (q === '`' && c === '$' && code[k + 1] === '{') {
 			const close = matchBrace(code, k + 1);
 			if (close === -1) return -1;
+			for (const nested of stateDeclarations(code.slice(k + 2, close))) out.push(nested);
 			k = close;
 			continue;
 		}
@@ -605,7 +610,7 @@ export function stateDeclarations(code: string): string[] {
 	while (i < code.length) {
 		const c = code[i]!;
 		if (c === '"' || c === "'" || c === '`') {
-			const past = skipStringLiteral(code, i);
+			const past = skipStringLiteral(code, i, out);
 			if (past === -1) throw new Error(`unterminated string literal at offset ${i} — re-point this guard rather than widening it`);
 			i = past;
 			continue;
@@ -671,7 +676,7 @@ function readLetStatement(code: string, from: number, out: string[], STATEMENT_S
 		for (; i < code.length; i++) {
 			const c = code[i]!;
 			if (c === '"' || c === "'" || c === '`') {
-				const past = skipStringLiteral(code, i);
+				const past = skipStringLiteral(code, i, out);
 				if (past === -1) throw new Error(`unterminated string in the statement declaring \`${name}\` — re-point this guard rather than widening it`);
 				i = past - 1;
 				continue;
@@ -698,12 +703,16 @@ function readLetStatement(code: string, from: number, out: string[], STATEMENT_S
 			// round 2) — otherwise it is a comparison, spaced or not (`1<2`,
 			// codex round 3), and is left alone.
 			if (c === '=' && code[i + 1] === '>') { i++; continue; }
-			if (c === '<' && initAt === -1) { angle++; continue; }
-			if (c === '<' && angle === 0 && closesAsTypeArguments(code, i)) { angle++; continue; }
+			if (c === '<' && (initAt === -1 || angle > 0)) { angle++; continue; }
+			if (c === '<' && closesAsTypeArguments(code, i)) { angle++; continue; }
 			if (c === '>' && angle > 0) { angle--; continue; }
 			if (initAt === -1 && c === '=' && angle === 0 && code[i + 1] !== '=') { initAt = i + 1; continue; }
 			if (angle > 0) continue;
 			if (c === ';') { endAt = i; break; }
+			// A closer the statement did not open belongs to the ENCLOSING block
+			// and ends the statement without a semicolon (codex round 4:
+			// `function f() { let ordinary = 0 } let hidden = $state(1);`).
+			if (c === '}' || c === ')' || c === ']') { endAt = i; break; }
 			if (c === ',') { endAt = i; nextBinding = true; break; }
 			if (c === '\n') {
 				const initSoFar = initAt === -1 ? null : code.slice(initAt, i).trim();
