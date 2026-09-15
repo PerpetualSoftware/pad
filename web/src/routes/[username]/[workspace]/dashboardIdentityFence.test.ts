@@ -102,33 +102,81 @@ describe('the dashboard fences every async commit point', () => {
 		expect(src.effectBlocks(), 'an $effect arrived or left — disposition it below').toHaveLength(7);
 	});
 
-	it('enumerates every caller of load(), which is where the fence lives', () => {
+	it('enumerates every caller of load(), and holds each to writing nothing beside the call', () => {
 		// The one assertion this page needs that the family's shape does not
 		// give it. The fence is inside `load()`; every path funnels into it. A
-		// NEW caller that also writes state beside the call is a commit point
-		// no other rule here can see, so the callers are counted and each is
-		// named with what it may do.
-		const calls = [...CODE.matchAll(/\bload\((wsSlug|slug)[^)]*\)/g)].map((m) => ({
-			index: m.index ?? 0,
-			text: m[0],
-		}));
-		// The declaration is `async function load(slug` and does not match the
-		// argument shapes above; the recursive-looking `load(slug` inside the
-		// body would, so exclude anything inside load's own body.
+		// caller that ALSO commits beside the call — or issues its own request
+		// and commits on its continuation — is a commit point no other rule
+		// here can see. Codex round 2 constructed exactly that: an extra
+		// `api.dashboard.get(wsSlug).then((dash) => { dashboard = dash; })`
+		// beside Retry's `load(wsSlug)` passed the earlier version of this rule,
+		// which only COUNTED the calls, and painted the previous user's board
+		// over the new one. So each caller's BODY is delimited and inspected,
+		// not merely its call counted.
+		//
+		// Each site names the writes it is allowed: the keyed effect drops the
+		// board before it reloads (that IS its job, asserted separately), the
+		// create-modal callback closes the modal synchronously under the
+		// current epoch before it delegates. Everything else writes nothing.
+		const NO_REQUEST = /\bapi\.|\.then\s*\(|\bawait\b|\basync\b|\bfetch\s*\(/;
+		const ASSIGN = /\b([A-Za-z_$][\w$]*)\s*=(?!=)/g;
 		const declAt = CODE.indexOf('async function load(');
 		const declEnd = matchBrace(CODE, CODE.indexOf('{', declAt));
-		const sites = calls.filter((c) => c.index < declAt || c.index > declEnd);
-		expect(
-			sites.map((s) => s.text),
-			'the set of load() callers changed — add the new one to the list below with what it may ' +
-				'write beside the call, or remove the one that left'
-		).toEqual([
-			'load(wsSlug)', // the keyed load effect
-			'load(wsSlug, true)', // the 30 s poll
-			'load(wsSlug, true)', // the sync-subscription callback
-			'load(wsSlug)', // the Retry button
-			'load(wsSlug, true)', // CreateCollectionModal oncreated
-		]);
+
+		/** The `{…}` body of a markup attribute like `onclick={…}` or `oncreated={…}`. */
+		function attributeBody(attr: string, near: string): string {
+			const anchor = CODE.indexOf(near);
+			expect(anchor, `${near} left the markup — re-point this guard`).toBeGreaterThan(-1);
+			const at = CODE.lastIndexOf(`${attr}={`, anchor);
+			expect(at, `${attr}={ not found before ${near} — re-point this guard`).toBeGreaterThan(-1);
+			const open = at + attr.length + 1;
+			const close = matchBrace(CODE, open);
+			if (close === -1) throw new Error(`could not delimit ${attr} — re-point this guard`);
+			return CODE.slice(open, close + 1);
+		}
+
+		const SITES: Array<{ name: string; body: string; call: RegExp; allowedWrites: string[] }> = [
+			{
+				name: 'the keyed load effect',
+				body: loadEffect(),
+				call: /\bload\(wsSlug\)/,
+				allowedWrites: ['dashboard', 'dashboardSlug', 'collections', 'dashError', 'onboardingTrack', 'justCreatedSlugs', 'lastLoadKey'],
+			},
+			{ name: 'the 30 s poll', body: src.deferredTimers()[0]?.body ?? '', call: /\bload\(wsSlug, true\)/, allowedWrites: [] },
+			{ name: 'the sync-subscription callback', body: syncCallbackBody(), call: /\bload\(wsSlug, true\)/, allowedWrites: [] },
+			{ name: 'the Retry button', body: attributeBody('onclick', '>Retry</Button>'), call: /\bload\(wsSlug\)/, allowedWrites: [] },
+			{
+				name: 'CreateCollectionModal oncreated',
+				body: attributeBody('oncreated', 'onclose={() => { showCreateCollection = false; }}'),
+				call: /\bload\(wsSlug, true\)/,
+				allowedWrites: ['showCreateCollection'],
+			},
+		];
+
+		const offenders: string[] = [];
+		for (const site of SITES) {
+			expect(site.body, `${site.name} has no body — re-point this guard`).not.toBe('');
+			if (!site.call.test(site.body)) offenders.push(`${site.name}: no longer delegates to load()`);
+			if (NO_REQUEST.test(site.body)) {
+				offenders.push(`${site.name}: issues its own request or continuation beside load() — a commit ` +
+					'point the fence inside load() never sees');
+			}
+			for (const m of site.body.matchAll(ASSIGN)) {
+				const name = m[1]!;
+				// A `const x = …` / `let x = …` is a local, not a commit.
+				if (/\b(const|let)\s+$/.test(site.body.slice(Math.max(0, (m.index ?? 0) - 6), m.index))) continue;
+				if (site.allowedWrites.includes(name)) continue;
+				offenders.push(`${site.name}: writes \`${name}\` beside its load() call`);
+			}
+		}
+		expect(offenders, 'these load() callers commit beside the call, outside the fence').toEqual([]);
+
+		// AND THE SET IS CLOSED: every load() call outside load's own body must
+		// be one of the sites above, so a sixth caller cannot arrive uninspected.
+		const calls = [...CODE.matchAll(/\bload\((wsSlug|slug)[^)]*\)/g)]
+			.map((m) => m.index ?? 0)
+			.filter((i) => i < declAt || i > declEnd);
+		expect(calls.length, 'the number of load() callers changed — add the new site to SITES above').toBe(SITES.length);
 	});
 
 	it('captures the identity at ENTRY, before the first await', () => {

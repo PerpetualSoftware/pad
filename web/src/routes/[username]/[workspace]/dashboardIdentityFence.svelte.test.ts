@@ -403,6 +403,35 @@ describe('the dashboard stops a commit when the identity moves mid-flight', () =
 		await spin(() => shown('Polled again'), 'the poll stopped painting after the identity change');
 	});
 
+	it("Retry's load, overtaken by an identity change, does not paint over the new user's board", async () => {
+		// Codex round 2's probe, kept as a driven leg: Retry issues a load, the
+		// identity moves and the keyed effect reloads for the new user, and THEN
+		// the Retry load resolves with the previous user's board. Retry
+		// delegates to load(), so both the fence and the sequence token refuse
+		// it; the source guard holds Retry to delegating and nothing else.
+		page.params = { username: 'dave', workspace: 'ws' };
+		page.url = new URL('http://localhost/dave/ws');
+		render(DashboardPage);
+		const first = await nextDashboardCall(0);
+		first.reject(new Error('boom'));
+		await spin(() => document.querySelector('.dash-error') !== null, 'CONTROL: the Retry state never rendered');
+		const retry = [...document.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Retry');
+		expect(retry, 'no Retry button — nothing to click').toBeDefined();
+		retry!.click();
+		const retried = await nextDashboardCall(1);
+
+		signInAs('u2');
+		const reload = await nextDashboardCall(2);
+		reload.resolve(board('New board'));
+		await spin(() => shown('New board'), 'the reload for the new user never painted');
+
+		retried.resolve(board('Stale board'));
+		await tick();
+		await tick();
+		expect(shown('Stale board'), "Retry's load painted the previous user's board over the new one").toBe(false);
+		expect(shown('New board')).toBe(true);
+	});
+
 	it('the identity change closes a modal the previous session opened', async () => {
 		// The Connect modal mints a claim code for the signed-in user; one left
 		// open across a sign-in hands the previous user's code to whoever is
