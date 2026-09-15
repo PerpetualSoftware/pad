@@ -204,10 +204,14 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 			if oerr := s.addOwnerOrCompensate("import bundle (partial)", ws.ID, ws.Slug, mint.OwnerID); oerr != nil {
 				slog.Error("import: partial workspace could not be attached to the importer",
 					"workspace_id", ws.ID, "workspace_slug", ws.Slug, "user_id", mint.OwnerID, "error", oerr)
+				// Existence is all a read can establish: on the helper's KEEP
+				// arms the row may carry an ack-lost owner row or a non-owner
+				// membership that still permits reading (codex round 2), so
+				// the message says ownership is unconfirmed, not unreachable.
 				if live, lerr := s.store.GetWorkspaceBySlug(ws.Slug); lerr == nil && live == nil {
 					msg += "; the partial workspace could not be attached to your account and was removed"
 				} else {
-					msg += "; the partial workspace could not be attached to your account and is not reachable — see the server log"
+					msg += fmt.Sprintf("; the partial workspace %q still exists but your ownership of it could not be confirmed — see the server log", ws.Slug)
 				}
 			} else {
 				msg += fmt.Sprintf("; the partial workspace %q was kept and is yours to inspect or delete", ws.Slug)

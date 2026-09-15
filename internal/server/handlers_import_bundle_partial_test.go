@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
@@ -157,5 +158,54 @@ func keepPathOwnerAddFailureRemoves(t *testing.T, driver store.DriverType) {
 	}
 	if mine, _ := dest.store.GetUserWorkspaces(u.ID); len(mine) != 0 {
 		t.Errorf("importer has %d workspace(s) after a removed partial; want 0", len(mine))
+	}
+}
+
+// --- (c)/(d) helper KEEP arms: the row exists, ownership unconfirmed --------
+//
+// addOwnerOrCompensate keeps the workspace on two of its error arms — the
+// membership read failed (an ack-lost commit may have landed the owner row),
+// or a row exists with a non-owner role (which still permits reading). A read
+// of the row cannot tell reachable from not, so the message must claim only
+// existence and unconfirmed ownership (codex round 2 on #1386).
+
+func TestImportBundle_KeepPath_UnreadableMembershipSaysUnconfirmed(t *testing.T) {
+	keepPathHelperKeepArm(t, "Unread", func(string, string) (*models.WorkspaceMember, error) {
+		return nil, errSimMemberAckLoss
+	})
+}
+
+func TestImportBundle_KeepPath_WrongRoleMembershipSaysUnconfirmed(t *testing.T) {
+	keepPathHelperKeepArm(t, "Viewer", func(workspaceID, userID string) (*models.WorkspaceMember, error) {
+		return &models.WorkspaceMember{WorkspaceID: workspaceID, UserID: userID, Role: "viewer"}, nil
+	})
+}
+
+func keepPathHelperKeepArm(t *testing.T, name string, check func(string, string) (*models.WorkspaceMember, error)) {
+	bundle := withUndecodableManifest(t, realBundleWithBlob(t))
+	dest := attachmentsServerOn(t, store.DriverSQLite)
+	_, tok := memberImporter(t, dest)
+
+	restore := dest.store.SetAddWorkspaceMemberCommitHookForTesting(func(tx *sql.Tx) error {
+		_ = tx.Rollback()
+		return errSimMemberAckLoss
+	})
+	t.Cleanup(restore)
+	dest.membershipCheck = check
+	t.Cleanup(func() { dest.membershipCheck = nil })
+
+	rr := importAs(dest, name, bundle, tok)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "still exists") || !strings.Contains(body, "could not be confirmed") {
+		t.Errorf("a KEEP arm must say the workspace exists and ownership is unconfirmed, got: %s", body)
+	}
+	if strings.Contains(body, "was removed") || strings.Contains(body, "was kept and is yours") || strings.Contains(body, "not reachable") {
+		t.Errorf("message claims an outcome the read cannot establish: %s", body)
+	}
+	if live, _ := dest.store.GetWorkspaceBySlug(name); live == nil {
+		t.Errorf("the helper's KEEP arm must leave the workspace live")
 	}
 }
