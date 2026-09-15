@@ -111,33 +111,23 @@ func (s *Server) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 		input.Source = source
 	}
 
-	// Log activity first so we can link the comment to the activity record.
-	// This prevents duplicate timeline entries (one for the comment, one for the activity).
-	// Only set ActivityID on success — comments.activity_id has a FK
-	// constraint. The guard used to be load-bearing for a second reason:
-	// CreateActivity returned an id even on insert failure. It no longer
-	// does (BUG-2779 made an empty id part of the contract for every error
-	// path), so this check is now belt on top of that contract rather than
-	// the only thing between a failed write and a dangling FK. Kept because
-	// it costs nothing and expresses the caller's own requirement.
-	//
-	// THE ORDER IS FORCED, and it leaves a window: the activity commits in its
-	// own transaction before CreateComment runs, so any CreateComment failure
-	// leaves an orphan "commented" activity with no comment behind it. It
-	// cannot simply be reordered — the comment carries the activity's id, so
-	// the activity has to exist first. Pre-existing (a unique violation or DB
-	// error always could), widened slightly by TASK-2658 giving CreateComment
-	// one more way to fail. Tracked as BUG-2716; closing it needs a store-level
-	// call that writes both rows in one transaction.
-	if activityID, err := s.logActivityWithMetaReturningID(workspaceID, item.ID, "commented", r, ""); err == nil && activityID != "" {
-		input.ActivityID = activityID
-	}
-
-	comment, err := s.store.CreateComment(workspaceID, item.ID, currentUserID(r), input)
+	// The "commented" activity and the comment that links to it commit in ONE
+	// transaction (BUG-2716). The order inside is still forced — the comment
+	// carries the activity's id, so the activity row is written first — but
+	// a failed comment now takes the activity with it instead of leaving an
+	// orphan "commented" entry on the timeline. The activity is the carrier
+	// of the writing agent's name and the timeline's dedupe key (one entry
+	// for the comment, not two), which is why it is written at all.
+	comment, err := s.store.CreateCommentWithActivity(workspaceID, item.ID, currentUserID(r),
+		s.activityForRequest(workspaceID, item.ID, "commented", r, ""), input)
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
+	// A committed comment is a user write (PLAN-1542 / TASK-1543). Done after
+	// the commit rather than inside the activity helper, so a failed comment
+	// is not counted as one.
+	s.store.TouchUserWrite(r.Context(), currentUserID(r))
 
 	// Publish SSE event
 	s.publishCommentEvent(sseCommentCreated, workspaceID, item.ID, comment.ID, item.Title, item.CollectionSlug, actor, source)
@@ -344,27 +334,20 @@ func (s *Server) handleCreateReply(w http.ResponseWriter, r *http.Request) {
 	}
 	input.ParentID = commentID
 
-	// Log the `commented` activity and link it, exactly as handleCreateComment
-	// does for a top-level comment. Until TASK-2760 replies emitted no
-	// activity row, which was harmless while the row was only a feed entry —
-	// but the activity is the ONLY carrier of the writing agent's name
-	// (agentMeta stamps X-Pad-Agent into its metadata), and the comment list
-	// queries read the name through this link. A reply with no linked
-	// activity therefore rendered under a generic "Agent" chip no matter what
-	// the client sent. The timeline still shows one card per reply: it
-	// suppresses every activity a fetched comment links to, replies included.
-	// Same forced ordering and the same BUG-2716 orphan window as the
-	// top-level path. This helper also bumps last_write_at (PLAN-1542 /
-	// TASK-1543), which the explicit TouchUserWrite here used to do.
-	if activityID, err := s.logActivityWithMetaReturningID(workspaceID, parentComment.ItemID, "commented", r, ""); err == nil && activityID != "" {
-		input.ActivityID = activityID
-	}
-
-	comment, err := s.store.CreateComment(workspaceID, parentComment.ItemID, currentUserID(r), input)
+	// The `commented` activity and the reply commit in ONE transaction,
+	// exactly as handleCreateComment (BUG-2716). A reply used to be logged
+	// without an activity row, which was harmless while the row was only a
+	// feed entry — but the activity is the ONLY carrier of the writing
+	// agent's name (TASK-2760), so a reply without one rendered under a
+	// generic "Agent" chip. The timeline suppresses every activity a fetched
+	// comment links to, replies included, so this adds no duplicate entry.
+	comment, err := s.store.CreateCommentWithActivity(workspaceID, parentComment.ItemID, currentUserID(r),
+		s.activityForRequest(workspaceID, parentComment.ItemID, "commented", r, ""), input)
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
+	s.store.TouchUserWrite(r.Context(), currentUserID(r))
 
 	// Resolve the item's collection slug for SSE filtering
 	replyCollSlug := ""

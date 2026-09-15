@@ -16,6 +16,67 @@ import (
 // the caller passes it explicitly rather than via the request body so it
 // can't be spoofed.
 func (s *Store) CreateComment(workspaceID, itemID, userID string, input models.CommentCreate) (*models.Comment, error) {
+	// Transactional so the pad-attachment: reference stamp (BUG-2415)
+	// commits atomically with the body that carries the reference —
+	// the orphan-GC claim must never observe one without the other.
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("begin comment tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	id, err := s.createCommentTx(tx, workspaceID, itemID, userID, input)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit comment: %w", err)
+	}
+	return s.GetComment(id)
+}
+
+// CreateCommentWithActivity writes the activity row a comment links to AND
+// the comment in ONE transaction, so both commit or neither does (BUG-2716).
+//
+// The order inside is forced — comments.activity_id carries a foreign key, so
+// the activity must exist before the comment can reference it — and that is
+// exactly why the two could not simply be reordered at the call sites: the
+// activity used to commit on its own first, and a comment failure left an
+// orphan "commented" entry on the timeline with nothing behind it. Here a
+// failed comment INSERT (or outbox emit) rolls the activity back with it.
+//
+// The activity is inserted plainly, never debounced: the callers are the two
+// "commented" sites, and the debounce only ever applies to "updated". The
+// item-update-with-comment site is deliberately NOT a caller — its "updated"
+// activity records a write that has already committed and must survive a
+// comment failure, so its current two-step order is the correct one there.
+func (s *Store) CreateCommentWithActivity(workspaceID, itemID, userID string, activity models.Activity, input models.CommentCreate) (*models.Comment, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("begin comment tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	activityID, err := s.createActivityQ(tx, activity)
+	if err != nil {
+		return nil, fmt.Errorf("insert activity for comment: %w", err)
+	}
+	input.ActivityID = activityID
+
+	id, err := s.createCommentTx(tx, workspaceID, itemID, userID, input)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit comment: %w", err)
+	}
+	return s.GetComment(id)
+}
+
+// createCommentTx is the body of CreateComment against a caller's
+// transaction: stamp, INSERT, read back, emit. It returns the new id and
+// leaves the commit to the caller.
+func (s *Store) createCommentTx(tx *sql.Tx, workspaceID, itemID, userID string, input models.CommentCreate) (string, error) {
 	id := newID()
 	ts := now()
 
@@ -32,28 +93,29 @@ func (s *Store) CreateComment(workspaceID, itemID, userID string, input models.C
 		author = createdBy
 	}
 
-	// Transactional so the pad-attachment: reference stamp (BUG-2415)
-	// commits atomically with the body that carries the reference —
-	// the orphan-GC claim must never observe one without the other.
-	tx, err := s.db.Begin()
-	if err != nil {
-		return nil, fmt.Errorf("begin comment tx: %w", err)
-	}
-	defer tx.Rollback()
-
 	// Stamp BEFORE the INSERT — see the ORDERING note on
 	// stampAttachmentRefsTx (BUG-2415, codex round 3).
 	if err := stampAttachmentRefsTx(tx, s, workspaceID, input.Body); err != nil {
-		return nil, err
+		return "", err
 	}
-	_, err = tx.Exec(s.q(`
+	// Routed through the seam so a test can make the comment INSERT fail
+	// after the activity row is in the same transaction (BUG-2716). Nil in
+	// production. Placed at the INSERT rather than the commit because the
+	// property under test is that a failed COMMENT write takes the activity
+	// with it, on every path that writes one.
+	if s.failCommentInsert != nil {
+		if err := s.failCommentInsert(input); err != nil {
+			return "", fmt.Errorf("insert comment: %w", err)
+		}
+	}
+	_, err := tx.Exec(s.q(`
 		INSERT INTO comments (id, item_id, workspace_id, author, user_id, body, created_by, source, activity_id, parent_id, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		id, itemID, workspaceID, author, nilIfEmpty(userID), input.Body, createdBy, source,
 		nilIfEmpty(input.ActivityID), nilIfEmpty(input.ParentID), ts, ts,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("insert comment: %w", err)
+		return "", fmt.Errorf("insert comment: %w", err)
 	}
 
 	// The choke point (SPEC-3 / TASK-2658): comment.created commits with the
@@ -61,17 +123,12 @@ func (s *Store) CreateComment(workspaceID, itemID, userID string, input models.C
 	// rather than the caller's input.
 	created, err := s.getCommentQ(tx, id)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	if err := s.emitCommentEventTx(tx, kernelevents.CommentCreated, created); err != nil {
-		return nil, err
+		return "", err
 	}
-
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit comment: %w", err)
-	}
-
-	return s.GetComment(id)
+	return id, nil
 }
 
 // UpdateComment replaces a comment's body and bumps updated_at. The

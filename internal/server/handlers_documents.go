@@ -410,21 +410,29 @@ func (s *Server) logActivityWithMeta(workspaceID, documentID, action string, r *
 
 // logActivityWithMetaReturningID is like logActivityWithMeta but returns the activity ID.
 // The ID is either newly created or the coalesced existing activity's ID (for debounced updates).
-func (s *Server) logActivityWithMetaReturningID(workspaceID, documentID, action string, r *http.Request, metadata string) (string, error) {
+// activityForRequest builds the activity row a handler would log for this
+// request — actor, source, agent metadata, user, ip, user agent — without
+// writing it. logActivityWithMetaReturningID writes it debounced; the two
+// "commented" sites hand it to CreateCommentWithActivity so it commits in the
+// same transaction as the comment that links to it (BUG-2716).
+func (s *Server) activityForRequest(workspaceID, documentID, action string, r *http.Request, metadata string) models.Activity {
 	actor, source := actorFromRequest(r)
-	metadata = agentMeta(r, metadata)
-	uid := currentUserID(r)
-	id, err := s.store.CreateActivityDebounced(models.Activity{
+	return models.Activity{
 		WorkspaceID: workspaceID,
 		DocumentID:  documentID,
 		Action:      action,
 		Actor:       actor,
 		Source:      source,
-		Metadata:    metadata,
-		UserID:      uid,
+		Metadata:    agentMeta(r, metadata),
+		UserID:      currentUserID(r),
 		IPAddress:   clientIP(r),
 		UserAgent:   requestUserAgent(r),
-	})
+	}
+}
+
+func (s *Server) logActivityWithMetaReturningID(workspaceID, documentID, action string, r *http.Request, metadata string) (string, error) {
+	uid := currentUserID(r)
+	id, err := s.store.CreateActivityDebounced(s.activityForRequest(workspaceID, documentID, action, r, metadata))
 	// Bump last_write_at on the actor. Every action that flows through this
 	// helper (created/updated/archived/restored/moved/commented) is a write.
 	// PLAN-1542 / TASK-1543. TouchUserWrite is throttled + no-ops on empty
