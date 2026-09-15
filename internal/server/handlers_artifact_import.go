@@ -138,7 +138,7 @@ func (s *Server) handleImportArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var schema models.CollectionSchema
-	if err := json.Unmarshal([]byte(coll.Schema), &schema); err != nil {
+	if err := models.UnmarshalItemFieldSchema([]byte(coll.Schema), &schema); err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to parse collection schema")
 		return
 	}

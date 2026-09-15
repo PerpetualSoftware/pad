@@ -1,7 +1,6 @@
 package server
 
 import (
-	"encoding/json"
 	"net/http"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -137,7 +136,7 @@ func (s *Server) relationSchemasForWorkspace(workspaceID string) (map[string]mod
 			continue
 		}
 		var schema models.CollectionSchema
-		if err := json.Unmarshal([]byte(colls[i].Schema), &schema); err != nil {
+		if err := models.UnmarshalItemFieldSchema([]byte(colls[i].Schema), &schema); err != nil {
 			// A schema that will not parse is a different defect, reported
 			// elsewhere; hydration declines to be the second voice.
 			continue

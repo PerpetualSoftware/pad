@@ -93,7 +93,7 @@ func doneFieldKeyFromCollection(col *models.Collection) string {
 // (e.g. an in-tx read) resolve the key without a models.Collection.
 func doneFieldKeyFromSchemaJSON(schemaJSON, settingsJSON string) string {
 	var schema models.CollectionSchema
-	if err := json.Unmarshal([]byte(schemaJSON), &schema); err != nil {
+	if err := models.UnmarshalItemFieldSchema([]byte(schemaJSON), &schema); err != nil {
 		return "status"
 	}
 	var settings models.CollectionSettings

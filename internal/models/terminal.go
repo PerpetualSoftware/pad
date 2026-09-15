@@ -142,7 +142,7 @@ func CollectionCompletedWorkValues(schemaJSON, settingsJSON string) (fieldKey st
 	var schema CollectionSchema
 	var settings CollectionSettings
 	if schemaJSON != "" {
-		_ = json.Unmarshal([]byte(schemaJSON), &schema)
+		_ = UnmarshalItemFieldSchema([]byte(schemaJSON), &schema)
 	}
 	if settingsJSON != "" {
 		_ = json.Unmarshal([]byte(settingsJSON), &settings)

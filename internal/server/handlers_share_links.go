@@ -624,7 +624,7 @@ func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) 
 		}
 		if s := strings.TrimSpace(coll.Schema); s != "" {
 			var schema models.CollectionSchema
-			if err := json.Unmarshal([]byte(s), &schema); err == nil {
+			if err := models.UnmarshalItemFieldSchema([]byte(s), &schema); err == nil {
 				publicCollection["schema"] = schema
 			}
 		}

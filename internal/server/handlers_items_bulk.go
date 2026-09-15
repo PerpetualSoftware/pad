@@ -510,7 +510,7 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 		return nil, &bulkOpError{message: "failed to load collection"}
 	}
 	var schema models.CollectionSchema
-	if err := json.Unmarshal([]byte(coll.Schema), &schema); err != nil {
+	if err := models.UnmarshalItemFieldSchema([]byte(coll.Schema), &schema); err != nil {
 		return nil, &bulkOpError{message: "failed to parse collection schema"}
 	}
 

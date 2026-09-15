@@ -263,7 +263,7 @@ func buildDoneContextMap(collections []models.Collection) map[string]doneContext
 		// Best-effort parse: a malformed schema or settings just leaves
 		// the corresponding sub-struct zero-valued — the dashboard
 		// continues to function with reduced done-detection fidelity.
-		_ = json.Unmarshal([]byte(c.Schema), &ctx.schema)
+		_ = models.UnmarshalItemFieldSchema([]byte(c.Schema), &ctx.schema)
 		if c.Settings != "" {
 			_ = json.Unmarshal([]byte(c.Settings), &ctx.settings)
 		}

@@ -666,7 +666,7 @@ func (s *Store) resolveReportCollections(workspaceID string, opts ReportOptions)
 		// Parse failures fall back to status + default terminals, matching
 		// scanCollectionDoneFilters' tolerance.
 		if c.Schema != "" {
-			_ = json.Unmarshal([]byte(c.Schema), &schema)
+			_ = models.UnmarshalItemFieldSchema([]byte(c.Schema), &schema)
 		}
 		if c.Settings != "" {
 			_ = json.Unmarshal([]byte(c.Settings), &settings)

@@ -257,6 +257,12 @@ func StillDropped(dropped []string, finalFields map[string]any) []string {
 // every move and copy for a collection whose only sin is a field name someone
 // was once allowed to pick.
 //
+// The strip itself now lives in models.SchemaWithoutReservedFields, which
+// BUG-2685 made the one predicate for every consumer that reasons about an
+// ITEM's fields rather than only for migration's output. This name stays
+// because its CALLERS are about migration and its doc is where the
+// migration-specific reasoning above belongs; there is one implementation.
+//
 // Returns schema unchanged (no copy) when it declares no reserved key, which is
 // every collection that has not been grandfathered — so the returned Fields
 // slice may ALIAS the caller's. That is deliberate: this is called on a hot
@@ -265,24 +271,5 @@ func StillDropped(dropped []string, finalFields map[string]any) []string {
 // read-only — treat the result as immutable. Every current caller passes it
 // straight to a validator or an enumeration and none mutates it.
 func SchemaForMigratedFields(schema models.CollectionSchema) models.CollectionSchema {
-	var reserved bool
-	for _, f := range schema.Fields {
-		if models.IsReservedItemField(f.Key) {
-			reserved = true
-			break
-		}
-	}
-	if !reserved {
-		return schema
-	}
-
-	out := schema
-	out.Fields = make([]models.FieldDef, 0, len(schema.Fields))
-	for _, f := range schema.Fields {
-		if models.IsReservedItemField(f.Key) {
-			continue
-		}
-		out.Fields = append(out.Fields, f)
-	}
-	return out
+	return models.SchemaWithoutReservedFields(schema)
 }

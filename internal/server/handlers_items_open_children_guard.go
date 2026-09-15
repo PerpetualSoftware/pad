@@ -212,7 +212,7 @@ func (s *Server) runOpenChildrenGuard(tx *sql.Tx, ctx openChildrenGuardContext) 
 			// inside the item-update tx, and a pool read from here needs a
 			// second connection while that tx holds the first.
 			if coll, cerr := s.store.GetCollectionAnyStateTx(tx, child.CollectionID); cerr == nil && coll != nil {
-				_ = json.Unmarshal([]byte(coll.Schema), &dc.schema)
+				_ = models.UnmarshalItemFieldSchema([]byte(coll.Schema), &dc.schema)
 				if coll.Settings != "" {
 					_ = json.Unmarshal([]byte(coll.Settings), &dc.settings)
 				}

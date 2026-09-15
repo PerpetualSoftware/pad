@@ -187,7 +187,7 @@ func (s *Store) buildCollectionDoneContextMap(workspaceID string) (map[string]co
 			return nil, err
 		}
 		var ctx collectionDoneContext
-		if err := json.Unmarshal([]byte(rawSchema), &ctx.schema); err != nil {
+		if err := models.UnmarshalItemFieldSchema([]byte(rawSchema), &ctx.schema); err != nil {
 			// Don't drop the entry entirely — we still want an empty
 			// context so the membership test falls back to defaults
 			// rather than silently treating the item as non-terminal.
