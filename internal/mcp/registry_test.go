@@ -120,6 +120,7 @@ func TestRegister_ValidatesRequiredOptions(t *testing.T) {
 		{"missing Doc", RegistryOptions{Workspace: state, Dispatcher: disp}, "Doc"},
 		{"missing Workspace", RegistryOptions{Doc: doc, Dispatcher: disp}, "Workspace"},
 		{"missing Dispatcher", RegistryOptions{Doc: doc, Workspace: state}, "Dispatcher"},
+		{"conflicting result modes", RegistryOptions{Doc: doc, Workspace: state, Dispatcher: disp, StructuredOnly: true, TextOnly: true}, "mutually exclusive"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
