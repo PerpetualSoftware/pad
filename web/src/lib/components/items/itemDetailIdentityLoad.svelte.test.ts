@@ -95,7 +95,16 @@ vi.mock('$lib/services/sse.svelte', () => ({
 		get connected() { return true; }, get state() { return 'open'; },
 	},
 }));
-vi.mock('$lib/services/sync.svelte', () => ({ syncService: { onSync: () => () => {}, markSynced: vi.fn() } }));
+const syncCallbacks = vi.hoisted(() => [] as Array<(result: unknown) => unknown>);
+vi.mock('$lib/services/sync.svelte', () => ({
+	syncService: {
+		onSync: (fn: (result: unknown) => unknown) => {
+			syncCallbacks.push(fn);
+			return () => {};
+		},
+		markSynced: vi.fn(),
+	},
+}));
 vi.mock('$lib/stores/localIndex.svelte', () => ({
 	localIndex: { bootstrap: vi.fn(async () => {}), getAll: () => [], retagCollection: vi.fn() },
 }));
@@ -125,6 +134,10 @@ const auth = vi.hoisted(() => {
 			else fallback++;
 			for (const fn of [...listeners]) fn(previousUserId);
 		},
+		identityFence() {
+			const captured = getEpoch();
+			return () => getEpoch() === captured;
+		},
 		onIdentityChange(fn: (previousUserId: string) => void) {
 			listeners.push(fn);
 			return () => {
@@ -138,6 +151,7 @@ const auth = vi.hoisted(() => {
 vi.mock('$lib/stores/auth.svelte', () => ({ authStore: auth }));
 
 import { api } from '$lib/api/client';
+import { localIndex } from '$lib/stores/localIndex.svelte';
 import ItemDetail from './ItemDetail.svelte';
 
 type Props = Record<string, unknown>;
@@ -192,6 +206,9 @@ beforeEach(() => {
 	bindReactiveEpoch(auth.__hook);
 	vi.mocked(api.items.get).mockClear();
 	vi.mocked(api.items.update).mockClear();
+	vi.mocked(api.tags.list).mockClear();
+	vi.mocked(localIndex.retagCollection).mockClear();
+	syncCallbacks.length = 0;
 });
 
 afterEach(() => {
@@ -311,6 +328,76 @@ describe('continuations started under the previous identity do not commit', () =
 
 	it('CONTROL: the queued batch IS sent under an unchanged identity', async () => {
 		expect(await tagDrainRace(false)).toEqual(['["a"]', '["a","b"]']);
+	});
+
+	/**
+	 * The previous identity's tag vocabulary, resolved late. Captured by
+	 * holding every `tags.list` open: the mount's own call and the listener's
+	 * re-run each get their own deferred, so the leg can resolve the OLD one
+	 * last and still tell the two apart.
+	 */
+	async function suggestionsRace(moveIdentity: boolean) {
+		const calls: Deferred[] = [];
+		vi.mocked(api.tags.list).mockImplementation(
+			() => new Promise((resolve, reject) => calls.push({ resolve, reject }))
+		);
+		try {
+			const r = mount();
+			await loaded(r);
+			await waitFor(() => expect(calls.length).toBeGreaterThanOrEqual(1));
+			const old = calls[0]!;
+			if (moveIdentity) {
+				auth.moveIdentity();
+				await settle();
+				await waitFor(() => expect(calls.length).toBe(2));
+				calls[1]!.resolve([{ tag: 'current-user-tag' }]);
+				await settle();
+			}
+			old.resolve([{ tag: 'previous-user-tag' }]);
+			await settle();
+			return tagInput().suggestions as string[];
+		} finally {
+			vi.mocked(api.tags.list).mockImplementation(async () => []);
+		}
+	}
+
+	it('REFUSAL (explicit fence, loadTagSuggestions) + RECOVERY: the old vocabulary never lands, the re-run does', async () => {
+		expect(await suggestionsRace(true)).toEqual(['current-user-tag']);
+	});
+
+	it('CONTROL: the same vocabulary lands under an unchanged identity', async () => {
+		expect(await suggestionsRace(false)).toEqual(['previous-user-tag']);
+	});
+
+	/**
+	 * A sync result drives `reconcileCollectionSegment`, whose collection list
+	 * names the loaded collection under a NEW slug — the rename heal, which
+	 * retags the local index before it navigates.
+	 */
+	async function reconcileRace(moveIdentity: boolean) {
+		const r = mount();
+		await loaded(r);
+		const lists = deferNext(api.collections.list);
+		const cb = syncCallbacks.at(-1);
+		if (!cb) throw new Error('no sync subscription');
+		const settled = cb({ workspace: 'ws', type: 'caught_up' });
+		await waitFor(() => expect(lists.length).toBe(1));
+		if (moveIdentity) {
+			auth.moveIdentity();
+			await settle();
+		}
+		lists[0]!.resolve([{ ...COLL, slug: 'renamed' }]);
+		await settled;
+		await settle();
+		return vi.mocked(localIndex.retagCollection).mock.calls.length;
+	}
+
+	it('REFUSAL (explicit fence, reconcileCollectionSegment): the previous identity\'s list does not retag', async () => {
+		expect(await reconcileRace(true)).toBe(0);
+	});
+
+	it('CONTROL: the same list retags under an unchanged identity', async () => {
+		expect(await reconcileRace(false)).toBe(1);
 	});
 });
 
