@@ -153,6 +153,7 @@ var padItemSchemaParams = []ParamDef{
 	{Name: "collection", Type: "string", Description: "Collection slug (e.g. \"tasks\", \"ideas\"). Required for: create. Optional filter for: list."},
 	{Name: "title", Type: "string", Description: "Item title. Required for: create. Optional rename for: update."},
 	{Name: "content", Type: "string", Description: "Markdown body. Optional for: create, update."},
+	{Name: "agent", Type: "bool", Description: "For action=get, return the full item body and meaningful work metadata as compact JSON while omitting internal UUIDs and duplicate join fields. Prefer this for Cursor and Codex reads."},
 
 	// ── Artifact export / import ── (Phase 5)
 	// `artifact`: the full portable artifact text (YAML frontmatter +
