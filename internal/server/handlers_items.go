@@ -2110,8 +2110,11 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	// created_at the comment will then sit against. It can no longer overlay a
 	// DIFFERENT agent's stamp: since BUG-2763 the debounce refuses to coalesce
 	// across writer identities, so whatever merges here declares the same name
-	// this comment will carry. Same non-atomic window as BUG-2716, which is
-	// where the one-transaction fix is tracked.
+	// this comment will carry. Same window BUG-2716 closed for the two
+	// "commented" sites; here it stays open, deliberately NOT
+	// CreateCommentWithActivity (lead-ruled): this "updated" activity records
+	// a write that has already committed and must survive a comment failure,
+	// so the two-step order here is the correct one.
 	if input.Comment != nil && strings.TrimSpace(*input.Comment) != "" {
 		commentInput := models.CommentCreate{
 			Body:       strings.TrimSpace(*input.Comment),

@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"github.com/PerpetualSoftware/pad/internal/models"
 	"strings"
 )
 
@@ -171,6 +172,23 @@ func (s *Store) SetSeedCollectionsFailureHookForTesting(hook func(workspaceID, t
 	prev := s.failSeedCollections
 	s.failSeedCollections = hook
 	return func() { s.failSeedCollections = prev }
+}
+
+// SetCommentInsertFailureHookForTesting makes the comment INSERT inside
+// CreateComment / CreateCommentWithActivity return hook's error, for the
+// lifetime of the returned restore function. A hook returning nil is a no-op.
+//
+// It exists for BUG-2716: the two "commented" call sites used to commit the
+// activity row on its own and then write the comment, so a comment failure
+// left an orphan timeline entry. Against the pre-fix code this hook leaves the
+// activity row behind; against the fix it takes the activity with it.
+//
+// Production code MUST NOT call this. The "ForTesting" suffix is the grep
+// signal. Set it only while no other request is in flight against this Store.
+func (s *Store) SetCommentInsertFailureHookForTesting(hook func(input models.CommentCreate) error) (restore func()) {
+	prev := s.failCommentInsert
+	s.failCommentInsert = hook
+	return func() { s.failCommentInsert = prev }
 }
 
 // SetItemContentFlushedOpLogIDForTesting advances items.content_flushed_op_log_id

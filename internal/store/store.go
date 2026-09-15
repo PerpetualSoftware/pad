@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/collections"
+	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/google/uuid"
 	_ "github.com/jackc/pgx/v5/stdlib" // PostgreSQL driver
 	_ "modernc.org/sqlite"
@@ -153,6 +154,13 @@ type Store struct {
 	// items are seeded, so the failure lands on the partial-init shape the
 	// seeder's own comment describes ("DB error after some items were seeded").
 	failSeedCollections func(workspaceID, templateName string) error
+
+	// failCommentInsert is a TEST-ONLY seam, nil in production, for BUG-2716:
+	// makes the comment INSERT fail inside createCommentTx, so a test can show
+	// that the activity row written in the same transaction rolls back with
+	// it. Nothing else fails a comment write on a fresh item without breaking
+	// the store around it.
+	failCommentInsert func(input models.CommentCreate) error
 
 	// afterDocumentPreLockRead is a TEST-ONLY seam, nil in production. When
 	// set, UpdateDocument calls it after its pre-transaction read and before

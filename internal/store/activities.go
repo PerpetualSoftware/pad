@@ -63,13 +63,20 @@ const ActivityDebounceCooldown = 5 * time.Minute
 const maxDebounceCandidates = 10
 
 func (s *Store) CreateActivity(a models.Activity) (string, error) {
+	return s.createActivityQ(s.db, a)
+}
+
+// createActivityQ is CreateActivity against an executor, so a caller that
+// must commit the activity row together with the row that references it
+// (comments.activity_id, BUG-2716) can run it inside its own transaction.
+func (s *Store) createActivityQ(q execQueryer, a models.Activity) (string, error) {
 	a.ID = newID()
 	if a.Metadata == "" {
 		a.Metadata = "{}"
 	}
 	ts := now()
 
-	_, err := s.db.Exec(s.q(`
+	_, err := q.Exec(s.q(`
 		INSERT INTO activities (id, workspace_id, document_id, action, actor, source, metadata, user_id, ip_address, user_agent, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`), a.ID, nilIfEmpty(a.WorkspaceID), nilIfEmpty(a.DocumentID), a.Action, a.Actor, a.Source, a.Metadata, nilIfEmpty(a.UserID), nilIfEmpty(a.IPAddress), nilIfEmpty(a.UserAgent), ts)
@@ -128,7 +135,10 @@ func (s *Store) CreateActivityDebounced(a models.Activity) (string, error) {
 	// before the link is VISIBLE to it — the comment row is written in its
 	// own transaction, so on Postgres a link committing while this UPDATE's
 	// snapshot is already open is missed exactly as an unwritten one is.
-	// Closing that needs both rows in one transaction: BUG-2716.
+	// Closing that needs both rows in one transaction, which the two
+	// "commented" sites now do (BUG-2716, CreateCommentWithActivity); the
+	// "updated" site keeps its two steps by ruling, since its activity
+	// records a write that already committed.
 	//
 	// THE WRITER, NOT THE ACCOUNT (BUG-2763). One account is shared by the
 	// human and by every agent authenticating as them, so user_id does not
