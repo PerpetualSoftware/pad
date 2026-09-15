@@ -152,6 +152,17 @@ function holdsPerAwait(label: string, body: string) {
 	const after = success.slice(success.search(/\bawait\b/));
 	const fences = (after.match(ANY_FENCE) ?? []).length;
 	expect(fences, `${label}: ${awaits} awaits on its success path but ${fences} fence checks after the first — a continuation commits unguarded`).toBeGreaterThanOrEqual(awaits);
+	// POSITIONAL, not only counted (the restore follow-up GET, codex round 1 on
+	// #1387): a `finally` arm's check satisfies the count while the continuation
+	// between two awaits issues its next request unchecked. Between every pair
+	// of consecutive awaits on the success path there must be a fence.
+	const segments = success.split(/\bawait\b/).slice(1, -1);
+	segments.forEach((seg, i) => {
+		expect(
+			(seg.match(ANY_FENCE) ?? []).length,
+			`${label}: no fence between await ${i + 1} and await ${i + 2} on its success path — the next request goes out unchecked`
+		).toBeGreaterThan(0);
+	});
 }
 
 function holdsDisposition(label: string, body: string, d: Disposition) {
@@ -290,6 +301,20 @@ describe('ItemDetail: an identity change is a load', () => {
 		const effects = src.effectBlocks().filter((b) => /loadTagSuggestions\(/.test(b.body));
 		expect(effects.length).toBe(1);
 		expect(effects[0]!.body).toMatch(/untrack\(\(\) => loadTagSuggestions\(ws\)\)/);
+	});
+
+	it('the listener clears the workspace-keyed member and role caches before its load', () => {
+		const at = SCRIPT.indexOf('authStore.onIdentityChange(');
+		const body = SCRIPT.slice(at, SCRIPT.indexOf('onDestroy(stopIdentityLoad)'));
+		for (const name of ['cachedMembers', 'cachedMembersWs', 'cachedRoles', 'cachedRolesWs']) {
+			expect(body, `the listener no longer clears ${name}, so the load reuses the previous identity's list`).toMatch(new RegExp(`\\b${name} = null;`));
+			expect(body.indexOf(`${name} = null;`)).toBeLessThan(body.indexOf('loadData()'));
+		}
+	});
+
+	it('the in-flight tag overlay applies only a burst of the current identity', () => {
+		const fn = SCRIPT.slice(SCRIPT.indexOf('function withInflightTags('), SCRIPT.indexOf('function adoptServerItem('));
+		expect(fn).toMatch(/saver\.epoch === untrack\(\(\) => captureIdentity\(\)\)/);
 	});
 
 	it('the tag burst records its identity, and a new edit coalesces only into a burst of the current identity', () => {

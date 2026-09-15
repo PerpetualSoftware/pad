@@ -472,6 +472,40 @@ describe('continuations started under the previous identity do not commit', () =
 		expect(sent).toEqual(['["a"]', '["x"]']);
 	});
 
+	/**
+	 * A burst's pending tags overlay every server snapshot of that item while it
+	 * runs (`withInflightTags`). The load a moved identity runs is such a
+	 * snapshot, so without an identity check it rendered the previous user's
+	 * pending tags. The control reloads the same item under the SAME identity —
+	 * away and back — and sees the overlay applied, which is what it is for.
+	 */
+	async function overlayRace(moveIdentity: boolean) {
+		const r = mount();
+		await loaded(r);
+		const pending = deferNext(api.items.update);
+		(tagInput().onchange as (t: string[]) => void)(['OLD TAG']);
+		await waitFor(() => expect(pending.length).toBe(1));
+		if (moveIdentity) {
+			auth.moveIdentity();
+			await settle();
+		} else {
+			await r.rerender({ username: 'u', wsSlug: 'ws', collSlug: 'tasks', ref: 'i2' });
+			await waitFor(() => expect(r.container.textContent).toContain('Item i2'));
+			await r.rerender({ username: 'u', wsSlug: 'ws', collSlug: 'tasks', ref: 'i1' });
+		}
+		await loaded(r);
+		await settle();
+		return tagInput().tags as string[];
+	}
+
+	it('REFUSAL: the load a moved identity runs does not overlay the previous identity\'s pending tags', async () => {
+		expect(await overlayRace(true)).not.toContain('OLD TAG');
+	});
+
+	it('CONTROL: a same-identity reload of the item does overlay the running burst', async () => {
+		expect(await overlayRace(false)).toContain('OLD TAG');
+	});
+
 	async function suggestionsRace(moveIdentity: boolean, oldOutcome: 'resolve' | 'reject' = 'resolve') {
 		const calls: Deferred[] = [];
 		vi.mocked(api.tags.list).mockImplementation(
