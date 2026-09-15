@@ -187,6 +187,7 @@ func agentCmd() *cobra.Command {
 	}
 	cmd.AddCommand(
 		installCmd(),
+		agentGuideCmd(),
 		agentUpdateCmd(),
 		agentStatusCmd(),
 	)

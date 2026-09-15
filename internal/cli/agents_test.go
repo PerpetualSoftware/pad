@@ -101,7 +101,7 @@ Body content here.
 		}
 	})
 
-	t.Run("agents has name+description frontmatter", func(t *testing.T) {
+	t.Run("agents has compact dispatcher", func(t *testing.T) {
 		tool := *ResolveTool("agents")
 		got := string(FormatForTool(tool, embedded))
 		if got[:4] != "---\n" {
@@ -116,8 +116,11 @@ Body content here.
 		if contains(got, "allowed-tools") {
 			t.Error("Agents format should NOT contain allowed-tools")
 		}
-		if !contains(got, "# Pad Skill") {
-			t.Error("Agents format should contain body")
+		if !contains(got, "pad agent guide") {
+			t.Error("Agents format should point to on-demand guidance")
+		}
+		if contains(got, "Body content here") {
+			t.Error("Agents format should not eagerly copy the full embedded guide")
 		}
 	})
 
