@@ -228,7 +228,7 @@ describe('ItemDetail teardown writes under an identity change', () => {
 		// on the same identity change. My own grep for `keepalive: true` missed
 		// it, because this one passes the flag positionally.
 		expect(CODE).toMatch(
-			/const\s+identityHeld\s*=\s*authStore\.identityEpoch\s*===\s*identityEpochAtLoad/,
+			/const\s+identityHeld\s*=\s*authStore\.identityEpoch\s*===\s*ctx\.identityEpoch/,
 		);
 		expect(CODE).toMatch(/if\s*\(!rawMode\s*&&\s*!skipFlush\s*&&\s*identityHeld\)/);
 	});

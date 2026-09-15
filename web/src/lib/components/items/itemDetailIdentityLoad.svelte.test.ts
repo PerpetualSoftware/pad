@@ -47,10 +47,11 @@ vi.mock('$lib/components/attachments/AttachmentSurfaceHost.svelte', () => import
 // soon as an editable item loads, so refusing construction turned every mount
 // into uncaught effect errors; this one never connects, never syncs, and is
 // only here so the component's own script can run around it.
+const collab = vi.hoisted(() => ({ synced: false }));
 vi.mock('$lib/collab/wsProvider.svelte', () => ({
 	CollabProvider: class {
 		state = 'connecting';
-		synced = false;
+		synced = collab.synced;
 		lastOpLogID = undefined;
 		itemID: string;
 		awareness = { setLocalStateField() {}, on() {}, off() {}, getStates: () => new Map() };
@@ -78,6 +79,7 @@ vi.mock('$lib/api/client', () => ({
 		items: {
 			get: vi.fn(async (_ws: string, slug: string) => itemFor(slug)),
 			update: vi.fn(async (_ws: string, id: string) => itemFor(id)),
+			flushCollabContent: vi.fn(async (_ws: string, id: string) => itemFor(id)),
 			progress: vi.fn(async () => ({ total: 0, done: 0, percentage: 0 })),
 		},
 		collections: { get: vi.fn(async () => COLL), list: vi.fn(async () => [COLL]) },
@@ -206,6 +208,9 @@ beforeEach(() => {
 	bindReactiveEpoch(auth.__hook);
 	vi.mocked(api.items.get).mockClear();
 	vi.mocked(api.items.update).mockClear();
+	vi.mocked(api.items.flushCollabContent).mockClear();
+	vi.mocked(api.members.list).mockClear();
+	collab.synced = false;
 	vi.mocked(api.tags.list).mockClear();
 	vi.mocked(localIndex.retagCollection).mockClear();
 	syncCallbacks.length = 0;
@@ -259,6 +264,79 @@ describe('an identity change reloads ItemDetail', () => {
 		await settle();
 		await waitFor(() => expect(r.container.textContent).toContain('item not visible to this identity'));
 		expect(r.container.textContent).not.toContain('Item i1');
+	});
+});
+
+describe('the previous identity\'s RICH draft is not flushed on teardown (live on main, like the raw one)', () => {
+	/**
+	 * Mounts the rich editor: a provider that reports synced, and a fake
+	 * editor handed back through the Editor stub's `onEditor` — the seam the
+	 * real Editor uses. Its markdown differs from the loaded body, so a flush
+	 * is not deduped away.
+	 */
+	async function withRichDraft(r: ReturnType<typeof mount>, draft: string) {
+		await loaded(r);
+		const editorProps = await waitFor(() => {
+			const p = stubs().find((s) => typeof s.onEditor === 'function');
+			if (!p) throw new Error('the rich editor did not mount');
+			return p;
+		});
+		(editorProps.onEditor as (e: unknown) => void)({
+			isDestroyed: false,
+			isEditable: true,
+			storage: { markdown: { getMarkdown: () => draft } },
+			commands: { setContent() {}, focus() {} },
+			on() {},
+			off() {},
+		});
+		await settle();
+	}
+
+	function richFlushes(): unknown[] {
+		return vi.mocked(api.items.flushCollabContent).mock.calls.map((c) => c[2]);
+	}
+
+	it('REFUSAL: a pagehide after an identity change does not PATCH the old context\'s markdown', async () => {
+		collab.synced = true;
+		const r = mount();
+		await withRichDraft(r, 'OLD RICH DRAFT');
+		auth.moveIdentity();
+		await settle();
+		await loaded(r);
+		window.dispatchEvent(new Event('pagehide'));
+		await settle();
+		expect(richFlushes()).not.toContain('OLD RICH DRAFT');
+	});
+
+	it('CONTROL: the same pagehide under an unchanged identity DOES flush it', async () => {
+		collab.synced = true;
+		const r = mount();
+		await withRichDraft(r, 'OLD RICH DRAFT');
+		window.dispatchEvent(new Event('pagehide'));
+		await settle();
+		await waitFor(() => expect(richFlushes()).toContain('OLD RICH DRAFT'));
+	});
+});
+
+describe('state a load reuses is not carried across identities', () => {
+	it('the member list is REFETCHED for the new identity, not served from the previous identity\'s cache', async () => {
+		const r = mount();
+		await loaded(r);
+		await waitFor(() => expect(vi.mocked(api.members.list).mock.calls.length).toBe(1));
+		auth.moveIdentity();
+		await settle();
+		await loaded(r);
+		await waitFor(() => expect(vi.mocked(api.members.list).mock.calls.length).toBe(2));
+	});
+
+	it('CONTROL: a same-identity reload of the same workspace serves the cache', async () => {
+		const r = mount();
+		await loaded(r);
+		await waitFor(() => expect(vi.mocked(api.members.list).mock.calls.length).toBe(1));
+		await r.rerender({ username: 'u', wsSlug: 'ws', collSlug: 'tasks', ref: 'i2' });
+		await waitFor(() => expect(r.container.textContent).toContain('Item i2'));
+		await settle();
+		expect(vi.mocked(api.members.list).mock.calls.length).toBe(1);
 	});
 });
 
