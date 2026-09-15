@@ -47,7 +47,7 @@ vi.mock('$lib/components/attachments/AttachmentSurfaceHost.svelte', () => import
 // soon as an editable item loads, so refusing construction turned every mount
 // into uncaught effect errors; this one never connects, never syncs, and is
 // only here so the component's own script can run around it.
-const collab = vi.hoisted(() => ({ synced: false }));
+const collab = vi.hoisted(() => ({ synced: false, constructed: 0, destroyed: 0 }));
 vi.mock('$lib/collab/wsProvider.svelte', () => ({
 	CollabProvider: class {
 		state = 'connecting';
@@ -57,8 +57,11 @@ vi.mock('$lib/collab/wsProvider.svelte', () => ({
 		awareness = { setLocalStateField() {}, on() {}, off() {}, getStates: () => new Map() };
 		constructor(itemId: string) {
 			this.itemID = itemId;
+			collab.constructed++;
 		}
-		destroy() {}
+		destroy() {
+			collab.destroyed++;
+		}
 	},
 }));
 
@@ -211,6 +214,8 @@ beforeEach(() => {
 	vi.mocked(api.items.flushCollabContent).mockClear();
 	vi.mocked(api.members.list).mockClear();
 	collab.synced = false;
+	collab.constructed = 0;
+	collab.destroyed = 0;
 	vi.mocked(api.tags.list).mockClear();
 	vi.mocked(localIndex.retagCollection).mockClear();
 	syncCallbacks.length = 0;
@@ -315,6 +320,29 @@ describe('the previous identity\'s RICH draft is not flushed on teardown (live o
 		window.dispatchEvent(new Event('pagehide'));
 		await settle();
 		await waitFor(() => expect(richFlushes()).toContain('OLD RICH DRAFT'));
+	});
+});
+
+describe('the collab provider belongs to one identity (codex round 2)', () => {
+	it('an identity change destroys the previous identity\'s provider and mints a new one', async () => {
+		const r = mount();
+		await loaded(r);
+		await waitFor(() => expect(collab.constructed).toBe(1));
+		auth.moveIdentity();
+		await settle();
+		await loaded(r);
+		await waitFor(() => expect(collab.constructed).toBe(2));
+		expect(collab.destroyed).toBe(1);
+	});
+
+	it('CONTROL: the same provider is kept while the identity holds', async () => {
+		const r = mount();
+		await loaded(r);
+		await waitFor(() => expect(collab.constructed).toBe(1));
+		await settle();
+		await new Promise((res) => setTimeout(res, 20));
+		expect(collab.constructed).toBe(1);
+		expect(collab.destroyed).toBe(0);
 	});
 });
 
