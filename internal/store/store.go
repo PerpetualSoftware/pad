@@ -141,6 +141,19 @@ type Store struct {
 	// existing ghost-user FK test covers).
 	commitAddWorkspaceMember func(tx *sql.Tx) error
 
+	// failSeedCollections is a TEST-ONLY seam, nil in production. Same shape and
+	// same reason as the two commit hooks above, for BUG-3087: the cloud
+	// auto-create door must REMOVE a workspace whose template seed failed, and
+	// nothing in the tree can make SeedCollectionsFromTemplate fail on a fresh
+	// workspace without also breaking the store around it — the collection
+	// prefix is not unique, a held trait declaration is SKIPPED rather than
+	// refused, and a closed database fails the removal too.
+	//
+	// Consulted once, after the template's collections exist and before its
+	// items are seeded, so the failure lands on the partial-init shape the
+	// seeder's own comment describes ("DB error after some items were seeded").
+	failSeedCollections func(workspaceID, templateName string) error
+
 	// afterDocumentPreLockRead is a TEST-ONLY seam, nil in production. When
 	// set, UpdateDocument calls it after its pre-transaction read and before
 	// it opens the transaction that takes the rename lock (BUG-2778) — the

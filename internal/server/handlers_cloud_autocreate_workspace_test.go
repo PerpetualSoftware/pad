@@ -61,12 +61,12 @@ func TestAutoCreateWorkspace_MemberAddFailure_CleansUpAndLogsLoudly(t *testing.T
 
 // TestAutoCreateWorkspace_DeleteWorkspace_NoRowsIsAReportableError pins the
 // store-layer contract that autoCreateWorkspace's compensating cleanup
-// depends on: Store.DeleteWorkspace returns a non-nil error (rather than a
-// silent no-op) when the slug doesn't exist or is already soft-deleted.
-// That's what makes the "cleanup also failed" branch in autoCreateWorkspace
-// (the one that logs "manual intervention required" instead of the plain
-// success message) reachable and distinguishable from the happy-cleanup
-// case exercised above. End-to-end coverage of that double-failure branch
+// depends on — since BUG-3087 through removeUnusableWorkspace, which both of
+// its failure points now call: Store.DeleteWorkspace returns a non-nil error
+// (rather than a silent no-op) when the slug doesn't exist or is already
+// soft-deleted. That's what makes the helper's "failed to soft-delete the
+// workspace; manual intervention required" branch reachable and
+// distinguishable from the happy-cleanup case exercised above. End-to-end coverage of that double-failure branch
 // (member-add fails on retry AND the compensating delete fails) would
 // require racing a delete against autoCreateWorkspace's own delete call, or
 // a production test-seam — deliberately not added per the TASK-1932 plan —

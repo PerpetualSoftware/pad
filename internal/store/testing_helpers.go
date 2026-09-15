@@ -153,6 +153,26 @@ func (s *Store) SetAddWorkspaceMemberCommitHookForTesting(hook func(tx *sql.Tx) 
 	return func() { s.commitAddWorkspaceMember = prev }
 }
 
+// SetSeedCollectionsFailureHookForTesting makes SeedCollectionsFromTemplate
+// return hook's error, once the template's collections exist and before any of
+// its items are seeded, for the lifetime of the returned restore function. A hook
+// returning nil is a no-op and the seed proceeds.
+//
+// It exists for BUG-3087. The cloud auto-create door used to log a seed failure
+// and report the signup a success, leaving a workspace with collections and no
+// starter pack that the product then described as brand-new; it now removes the
+// workspace. Nothing else reproduces a seed failure on a fresh workspace: a
+// duplicate prefix is allowed, a held trait declaration is skipped, and a broken
+// database breaks the removal under test too.
+//
+// Production code MUST NOT call this. The "ForTesting" suffix is the grep signal.
+// Set it only while no other request is in flight against this Store.
+func (s *Store) SetSeedCollectionsFailureHookForTesting(hook func(workspaceID, templateName string) error) (restore func()) {
+	prev := s.failSeedCollections
+	s.failSeedCollections = hook
+	return func() { s.failSeedCollections = prev }
+}
+
 // SetItemContentFlushedOpLogIDForTesting advances items.content_flushed_op_log_id
 // directly, standing in for the collab-snapshot flush that normally moves it.
 //

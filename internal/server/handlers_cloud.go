@@ -1189,7 +1189,17 @@ func writeError2(w http.ResponseWriter, status int, code, message string, detail
 
 // autoCreateWorkspace creates a default workspace for a new user in cloud mode.
 // Called after user creation in register, bootstrap, and oauth-login handlers.
-// No-op in self-hosted mode. Errors are logged but don't fail the signup.
+// No-op in self-hosted mode.
+//
+// Errors never fail the SIGNUP — by the time this runs the user row, the session
+// and (self-serve) the verification email all exist, and a 5xx here would 409 on
+// retry for an error that was never about the account. What an error does fail
+// is the WORKSPACE: this door answers "a usable workspace or nothing" (BUG-2715's
+// property, BUG-3087 on this door), so a workspace that cannot be seeded or
+// cannot be administered is removed rather than left behind, and the user lands
+// on the console's empty state. Nothing re-runs this for an account with zero
+// workspaces, which is why "log and continue" was not an option: the partial
+// workspace was permanent, and the product described it as brand-new.
 func (s *Server) autoCreateWorkspace(user *models.User) {
 	if !s.cloudMode {
 		return
@@ -1208,8 +1218,25 @@ func (s *Server) autoCreateWorkspace(user *models.User) {
 	// Seed default collections with the startup starter pack. Cloud signups
 	// are implicit workspace creations, so they should get the same curated
 	// starter conventions/playbooks that `pad init` produces.
+	//
+	// A seed failure REMOVES the workspace (BUG-3087). Nothing re-seeds it later
+	// — the store's zero-collection rescue has no callers, and the seeder's
+	// idempotent retry has no door — so keeping it meant a workspace the
+	// dashboard and the agent bootstrap both flagged needs_onboarding, whose
+	// onboard playbook did not exist. No retry: the seeder is idempotent and a
+	// retry would be safe, but the creation door does not retry its seed either.
+	//
+	// The helper's other-members guard is trivially satisfied here — the owner
+	// row is added BELOW, so at this point no member row can exist — and the
+	// guard is not load-bearing on this path. It is called through the helper
+	// anyway so every door removes a workspace the same way: soft delete (frees
+	// the slug) THEN purge (so the row never surfaces as restorable — see the
+	// helper's comment for why a soft delete alone is not "nothing").
 	if err := s.store.SeedCollectionsFromTemplate(ws.ID, "startup"); err != nil {
-		slog.Warn("auto-create workspace: failed to seed collections", "workspace_id", ws.ID, "error", err)
+		slog.Error("auto-create workspace: failed to seed collections; the workspace is unusable and is being removed",
+			"workspace_id", ws.ID, "workspace_slug", ws.Slug, "user_id", user.ID, "error", err)
+		_ = s.removeUnusableWorkspace("cloud auto-create", ws.ID, ws.Slug, user.ID, err)
+		return
 	}
 
 	// Add user as owner. This is not optional bookkeeping: without a
@@ -1263,12 +1290,17 @@ func (s *Server) autoCreateWorkspace(user *models.User) {
 			case member == nil:
 				// ABSENT — the original behaviour, now reached only when the row
 				// genuinely is not there and the workspace really is unreachable.
-				slog.Error("auto-create workspace: add owner member failed after retry; deleting orphaned workspace",
+				//
+				// The removal is the shared soft-delete-plus-purge (BUG-3087). A
+				// bare DeleteWorkspace left a husk: ListDeletedWorkspaces is scoped
+				// by owner_id, not membership, so the row sat in the user's
+				// deleted-workspaces list, and restoring it returned a workspace
+				// with no member row — 403 on every read and on the delete. The
+				// helper also refuses to remove a workspace that has acquired
+				// other members, which this arm never checked.
+				slog.Error("auto-create workspace: add owner member failed after retry; the workspace is unusable and is being removed",
 					"workspace_id", ws.ID, "workspace_slug", ws.Slug, "user_id", user.ID, "error", err)
-				if delErr := s.store.DeleteWorkspace(ws.Slug); delErr != nil {
-					slog.Error("auto-create workspace: failed to clean up orphaned workspace; manual intervention required",
-						"workspace_id", ws.ID, "workspace_slug", ws.Slug, "user_id", user.ID, "error", delErr)
-				}
+				_ = s.removeUnusableWorkspace("cloud auto-create", ws.ID, ws.Slug, user.ID, err)
 				return
 			// The literal matches the AddWorkspaceMember call above and every other
 			// role comparison in this package; there is no shared constant.
