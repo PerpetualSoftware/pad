@@ -3316,17 +3316,17 @@
 				// to the freeze (TagInput stays interactive via `readonly={!canEdit}`)
 				// and a tag write is a side-independent single-item REST PATCH, so it
 				// runs from either side; `updateTags` gates on canEdit (permission).
-				// Before EACH send, not once: the drain can outlive an identity
-				// change between two batches.
-				if (!identityHeld(saver.epoch)) {
-					saver.pending = null;
-					return;
-				}
 				const toSave = saver.pending;
 				saver.pending = null;
 				const fresh = await api.items.update(saver.ws, saver.itemId, {
 					tags: JSON.stringify(toSave)
 				});
+				// After the await and before BOTH the commit and the next send: a
+				// second batch is only ever sent from here, with no await between
+				// this check and it, so one check covers every send after the first
+				// (and the first is issued synchronously by the handler that
+				// captured the identity). A check at the top of the loop was
+				// written first and could never fire (BUG-3084 mutation matrix).
 				if (!identityHeld(saver.epoch)) {
 					saver.pending = null;
 					return;
