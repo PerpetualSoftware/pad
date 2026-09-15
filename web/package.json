@@ -20,7 +20,7 @@
 		"audit:ci": "node scripts/ci-audit.mjs"
 	},
 	"devDependencies": {
-		"@playwright/test": "^1.62.1",
+		"@playwright/test": "^1.63.0",
 		"@sveltejs/adapter-auto": "^7.0.1",
 		"@sveltejs/adapter-static": "^3.0.10",
 		"@sveltejs/kit": "^2.70.3",
@@ -31,11 +31,11 @@
 		"@types/qrcode": "^1.5.6",
 		"fake-indexeddb": "6.2.5",
 		"jsdom": "^29.1.1",
-		"marked": "^18.0.11",
+		"marked": "^18.0.12",
 		"svelte": "^5.57.0",
 		"svelte-check": "^4.7.6",
 		"typescript": "^6.0.3",
-		"vite": "^8.2.2",
+		"vite": "^8.3.0",
 		"vitest": "5.0.0"
 	},
 	"overrides": {
@@ -65,7 +65,7 @@
 		"3d-force-graph": "1.80.0",
 		"d3-scale": "4.0.2",
 		"diff": "^9.0.0",
-		"dompurify": "^3.4.14",
+		"dompurify": "^3.4.15",
 		"idb": "^8.0.3",
 		"layercake": "10.0.3",
 		"lowlight": "^3.3.0",
