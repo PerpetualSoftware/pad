@@ -298,6 +298,64 @@ describe('ItemDetail: an identity change is a load', () => {
 	});
 });
 
+describe('ItemDetail: children calling back after their own awaits (class C, parent side)', () => {
+	/**
+	 * Every child that commits into this component through a callback prop after
+	 * its own await, and the props that commit. Each is mounted inside
+	 * `{#key identityKey}` with `{@const handedDown = identityKey}`, and each
+	 * listed prop refuses on `handedDown !== identityKey`. The child's OWN
+	 * requests are BUG-3095, not this table.
+	 */
+	const CALLBACK_CHILDREN: Record<string, string[]> = {
+		ItemTimeline: ['onRestore'],
+		TimelineEntryList: ['onRestore'],
+		QuickActionsMenu: ['oncollectionupdated'],
+		ChildItems: ['onChildrenChange'],
+		BacklinksPanel: ['onCountChange'],
+		EditCollectionModal: ['onupdated'],
+		CopyItemDialog: ['onmove', 'oncopied'],
+	};
+
+	it('the listener bumps the identity key', () => {
+		const at = SCRIPT.indexOf('authStore.onIdentityChange(');
+		expect(SCRIPT.slice(at, SCRIPT.indexOf('onDestroy(stopIdentityLoad)'))).toMatch(/identityKey\+\+/);
+	});
+
+	/** Markup with HTML comments removed: the notes beside these tags name them. */
+	const MARKUP = src.markup.replace(/<!--[\s\S]*?-->/g, (c) => ' '.repeat(c.length));
+
+	it('every listed child is mounted under the handed-down identity key, and every listed prop refuses on it', () => {
+		const M = MARKUP;
+		for (const [tag, props] of Object.entries(CALLBACK_CHILDREN)) {
+			const starts = [...M.matchAll(new RegExp(`<${tag}\\b`, 'g'))].map((m) => m.index!);
+			expect(starts.length, `<${tag}> is mounted ${starts.length} times — re-point this table`).toBe(1);
+			const at = starts[0]!;
+			const lead = M.slice(Math.max(0, at - 120), at);
+			expect(lead, `<${tag}> is not inside {#key identityKey}`).toMatch(/\{#key identityKey\}\s*\{@const handedDown = identityKey\}\s*$/);
+			const tagText = M.slice(at, M.indexOf('/>', at));
+			for (const prop of props) {
+				const p = tagText.indexOf(`${prop}=`);
+				expect(p, `<${tag}> no longer passes ${prop}`).toBeGreaterThan(-1);
+				const next = tagText.slice(p + prop.length + 1).search(/\n\t*[a-zA-Z]+=\{|\s\/?>?$/);
+				const value = tagText.slice(p, next === -1 ? undefined : p + prop.length + 1 + next);
+				expect(value, `<${tag}> ${prop} does not refuse on handedDown`).toMatch(/handedDown !== identityKey/);
+			}
+		}
+	});
+
+	it('no other child tag passes a callback that commits after its own await without a table row', () => {
+		// The probe that built the table (BUG-3084 checkpoint 36, class C) listed
+		// every capitalised tag with an `on*=` prop; the rest are synchronous
+		// (FieldEditor, TagInput, editors, menus, ContentError, pickers) or
+		// already epoch-aware (EditorBubbleMenu). A new child tag with a callback
+		// prop must be read and either added above or added here with its reason.
+		const SYNC_OR_AWARE = new Set(['FieldEditor', 'TagInput', 'RawMarkdownEditor', 'Editor', 'Menu', 'MenuItem', 'ContentError', 'EditorLinkPopover', 'Graph', 'ItemPicker', 'EditorBubbleMenu', 'PushToAgentDialog']);
+		const tags = new Set([...MARKUP.matchAll(/<([A-Z]\w+)\b[^>]*?\bon[a-zA-Z]+=\{/gs)].map((m) => m[1]!));
+		const unknown = [...tags].filter((t) => !(t in CALLBACK_CHILDREN) && !SYNC_OR_AWARE.has(t));
+		expect(unknown).toEqual([]);
+	});
+});
+
 describe('ItemDetail: epoch reads in reactive scopes', () => {
 	/**
 	 * The two reads BUG-3005 put in effects, each exempted by TOKEN and by
