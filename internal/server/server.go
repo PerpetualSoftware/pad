@@ -268,6 +268,16 @@ type Server struct {
 	// release-vs-reload of the same hash.
 	inFlightHashesMu sync.Mutex
 	inFlightHashes   map[string]int64
+	// workspaceReclaimMu serializes every reclaim-blobs-then-purge sequence in
+	// this process: the retention sweeper's per-candidate step and
+	// removeUnusableWorkspace's (BUG-3094, codex round 1 P2). The reclaimer's
+	// dedupe guard counts OTHER workspaces' rows for a storage_key and skips the
+	// delete when any exist, which is correct only if no two sequences
+	// interleave — two rejected imports carrying the same blob would each see
+	// the other's rows, both skip the delete, and both purge, leaving a blob no
+	// row can ever find. The sweeper used to be the only caller and ran as one
+	// goroutine; the door made it two. Held across list → reclaim → purge.
+	workspaceReclaimMu sync.Mutex
 
 	// rowlessNoListerOnce gates the once-per-process notice that a
 	// registered attachment backend lacks the Lister capability, leaving

@@ -1,8 +1,11 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
+
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // addOwnerOrCompensate adds userID as the owner of a workspace that was just
@@ -150,6 +153,28 @@ func (s *Server) addOwnerOrCompensate(door, workspaceID, workspaceSlug, userID s
 // A member added between the list returning empty and the purge is destroyed
 // with the workspace. Bounded by a workspace id nobody outside this request has
 // seen yet; only the single-transaction form closes it.
+//
+// BLOBS COME BEFORE THE PURGE (BUG-3094). PurgeWorkspaceData hard-deletes the
+// workspace's attachment rows and, by its own contract, never touches bytes —
+// and the orphan GC discovers reclaimable blobs THROUGH tombstoned rows
+// (OrphanedAttachments: deleted_at IS NOT NULL). So a purge that runs while
+// blobs exist deletes the only record that anything will ever reclaim them.
+// The three auto-create doors never carry a blob, which is why this did not
+// fire there; the bundle-import rollback fires after blobs were rehydrated.
+// The order is the retention sweeper's own: list the attachments, reclaim
+// every blob with reclaimWorkspaceBlobs (dedupe-aware and in-flight-aware),
+// and purge only when that returns true. When it returns false — a transient
+// backend or count error, or an upload of the same content in flight — this
+// STOPS after the soft delete: the tombstoned rows plus the soft-deleted
+// workspace are exactly what the sweeper consumes after the grace window,
+// with the same ordering. The row is then restorable until that sweep, which
+// is logged at Error, and the caller's contract is unchanged: soft-deleted
+// and pending the sweep counts as gone, as it always has.
+//
+// Single-instance assumption, carried from the reclaimer: two server
+// PROCESSES reclaiming concurrently could both observe the other's row and
+// both skip a shared blob's delete, orphaning it — the same cross-process
+// limitation the orphan GC has. Deferred with multi-instance support.
 func (s *Server) removeUnusableWorkspace(door, workspaceID, workspaceSlug, userID string, cause error) error {
 	// Absence of ONE member is not absence of all of them — the two questions
 	// BUG-3026 separated. Deleting on the first would remove a workspace
@@ -175,7 +200,41 @@ func (s *Server) removeUnusableWorkspace(door, workspaceID, workspaceSlug, userI
 	if delErr := s.store.DeleteWorkspace(workspaceSlug); delErr != nil {
 		slog.Error(door+": failed to soft-delete the workspace; manual intervention required",
 			"workspace_id", workspaceID, "workspace_slug", workspaceSlug, "user_id", userID, "error", delErr)
-	} else if purgeErr := s.store.PurgeWorkspaceData(workspaceID); purgeErr != nil {
+		return nil
+	}
+
+	// Soft-deleted. Everything from here leaves the workspace GONE from the
+	// caller's point of view; what varies is whether the purge runs now or
+	// is left to the retention sweeper, and every branch that leaves it says
+	// so in one sentence: restorable until the retention sweep.
+	// One reclaim-then-purge at a time in this process, shared with the
+	// sweeper — see workspaceReclaimMu. Taken before the LIST so another
+	// sequence cannot purge the rows this one's dedupe guard is about to count.
+	s.workspaceReclaimMu.Lock()
+	defer s.workspaceReclaimMu.Unlock()
+	blobs, blobErr := s.store.WorkspaceAttachmentBlobs(workspaceID)
+	if blobErr != nil {
+		slog.Error(door+": workspace soft-deleted but its attachments could not be listed, so it was not purged; "+
+			"it will appear as restorable until the retention sweep",
+			"workspace_id", workspaceID, "workspace_slug", workspaceSlug, "user_id", userID, "error", blobErr)
+		return nil
+	}
+	if len(blobs) > 0 {
+		// context.Background rather than a request context: this is a
+		// compensation for a request that has already failed, and a client
+		// that disconnects mid-way must not turn a reclaim into a leak.
+		var res workspacePurgeResult
+		if s.attachments == nil || !s.reclaimWorkspaceBlobs(context.Background(),
+			store.WorkspacePurgeCandidate{ID: workspaceID, Slug: workspaceSlug}, blobs, &res) {
+			slog.Error(door+": workspace soft-deleted but its attachment blobs could not all be reclaimed now, "+
+				"so it was not purged; the tombstoned rows keep the blobs discoverable and it will appear as "+
+				"restorable until the retention sweep",
+				"workspace_id", workspaceID, "workspace_slug", workspaceSlug, "user_id", userID,
+				"attachments", len(blobs), "blobs_reclaimed", res.BlobsReclaimed)
+			return nil
+		}
+	}
+	if purgeErr := s.store.PurgeWorkspaceData(workspaceID); purgeErr != nil {
 		// Soft-deleted but not purged: the slug is free and the door refuses, so
 		// the caller is not harmed — but the row sits in the creator's
 		// deleted-workspaces list until the retention sweeper reaches it.

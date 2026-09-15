@@ -229,35 +229,50 @@ func (s *Server) runWorkspacePurgeSweep(ctx context.Context, cutoff time.Time) (
 			return res, err
 		}
 
-		blobs, err := s.store.WorkspaceAttachmentBlobs(c.ID)
-		if err != nil {
-			slog.Warn("workspace purge: load attachment blobs failed",
-				"workspace_id", c.ID, "slug", c.Slug, "error", err)
+		if s.purgeCandidate(ctx, c, res) {
+			res.Purged++
+		} else {
 			res.Skipped++
-			continue
 		}
-
-		// Reclaim blobs FIRST. If anything can't be reclaimed this tick,
-		// defer the whole workspace (leave its rows so it's retried) —
-		// this is what keeps a transient backend failure from orphaning a
-		// blob the DB no longer references.
-		if !s.reclaimWorkspaceBlobs(ctx, c, blobs, res) {
-			res.Skipped++
-			continue
-		}
-
-		// Every blob is gone (or still shared by another workspace) — now
-		// it's safe to remove the DB rows.
-		if err := s.store.PurgeWorkspaceData(c.ID); err != nil {
-			slog.Warn("workspace purge: cascade delete failed",
-				"workspace_id", c.ID, "slug", c.Slug, "error", err)
-			res.Skipped++
-			continue
-		}
-		res.Purged++
 	}
 
 	return res, nil
+}
+
+// purgeCandidate runs one candidate's list → reclaim → purge sequence under
+// workspaceReclaimMu and reports whether the workspace was purged. The lock
+// is shared with removeUnusableWorkspace (BUG-3094): reclaimWorkspaceBlobs's
+// dedupe guard counts OTHER workspaces' rows and skips a shared blob's delete
+// on the strength of them, which is sound only while no second sequence can
+// purge those rows in between — the sweeper was the only caller and ran as
+// one goroutine until a request door started removing workspaces with blobs.
+func (s *Server) purgeCandidate(ctx context.Context, c store.WorkspacePurgeCandidate, res *workspacePurgeResult) bool {
+	s.workspaceReclaimMu.Lock()
+	defer s.workspaceReclaimMu.Unlock()
+
+	blobs, err := s.store.WorkspaceAttachmentBlobs(c.ID)
+	if err != nil {
+		slog.Warn("workspace purge: load attachment blobs failed",
+			"workspace_id", c.ID, "slug", c.Slug, "error", err)
+		return false
+	}
+
+	// Reclaim blobs FIRST. If anything can't be reclaimed this tick,
+	// defer the whole workspace (leave its rows so it's retried) —
+	// this is what keeps a transient backend failure from orphaning a
+	// blob the DB no longer references.
+	if !s.reclaimWorkspaceBlobs(ctx, c, blobs, res) {
+		return false
+	}
+
+	// Every blob is gone (or still shared by another workspace) — now
+	// it's safe to remove the DB rows.
+	if err := s.store.PurgeWorkspaceData(c.ID); err != nil {
+		slog.Warn("workspace purge: cascade delete failed",
+			"workspace_id", c.ID, "slug", c.Slug, "error", err)
+		return false
+	}
+	return true
 }
 
 // reclaimWorkspaceBlobs deletes every physical blob owned solely by
