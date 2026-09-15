@@ -212,6 +212,15 @@ func jsonNameIsFields(name, tag string) bool {
 	return strings.EqualFold(name, "fields")
 }
 
+// modulePath is this repository's Go module path. A package outside it is a
+// dependency, whatever directory its files happen to sit in.
+const modulePath = "github.com/PerpetualSoftware/pad"
+
+// insideModule reports whether a package path belongs to this module.
+func insideModule(pkgPath string) bool {
+	return pkgPath == modulePath || strings.HasPrefix(pkgPath, modulePath+"/")
+}
+
 // isVendored reports whether a repo-relative path lies under any vendor/
 // directory. Checked per SEGMENT rather than as a prefix, so a nested vendor
 // tree is excluded too and a legitimate path like `internal/vendorimport.go` is
@@ -307,6 +316,28 @@ func collectSchemaDecodes(t *testing.T, dir string, patterns ...string) []decode
 	seen := map[string]bool{}
 	packages.Visit(pkgs, nil, func(p *packages.Package) {
 		if p.TypesInfo == nil {
+			return
+		}
+		// SCOPE BY MODULE PATH. packages.Visit walks the whole DEPENDENCY
+		// GRAPH, not just the packages matched by the pattern — which is
+		// invisible in an ordinary checkout, where a dependency's files live in
+		// the module cache OUTSIDE the root and the relative-path check below
+		// discards them. In a VENDORED tree they live under <root>/vendor, so
+		// that check passes and every dependency's own decode is enumerated:
+		// the Nix job builds vendored and found 57 sites where this tree has
+		// 20. The module path is the exact predicate.
+		//
+		// MEASURED, so the comment does not overclaim: with a vendored tree,
+		// this check alone and the vendor-segment check below alone EACH
+		// suffice — removing either one leaves the guard green, so neither is
+		// individually load-bearing today and no mutant dies alone. Both are
+		// kept because they answer different questions: the module path is
+		// about PROVENANCE (a dependency is not ours to classify, wherever its
+		// files sit), the vendor segment is about LOCATION and is the one case
+		// module scoping cannot cover — a vendored copy of THIS module's own
+		// path. That case is not constructed here; it is why the cheaper check
+		// stays rather than a claim that it fires today.
+		if !insideModule(p.PkgPath) {
 			return
 		}
 		for _, f := range p.Syntax {
@@ -606,5 +637,61 @@ func TestGuardResolvesEveryDestinationShape(t *testing.T) {
 		}
 		t.Errorf("fixture yielded %d raw decode sites, expected 23:\n  %s",
 			len(sites), strings.Join(lines, "\n  "))
+	}
+}
+
+// TestGuardScopesToThisModule pins the two path predicates and, more
+// importantly, the INVARIANT on the guard's output: nothing it enumerates may
+// come from outside this module or from a vendor tree.
+//
+// The invariant is the part that matters. The predicates are easy to get right
+// and easy to stop calling; the output assertion fails either way, and it is
+// the assertion that was false before this fix — with a vendored tree the guard
+// enumerated 57 sites, 37 of them dependencies' own decodes.
+func TestGuardScopesToThisModule(t *testing.T) {
+	for _, tc := range []struct {
+		pkgPath string
+		want    bool
+	}{
+		{"github.com/PerpetualSoftware/pad", true},
+		{"github.com/PerpetualSoftware/pad/internal/models", true},
+		{"github.com/PerpetualSoftware/pad/internal/models/testdata/decodeshapes", true},
+		{"github.com/gogo/protobuf/jsonpb", false},
+		{"go.opentelemetry.io/otel/baggage", false},
+		{"encoding/json", false},
+		// A path that merely STARTS with the module path but is a different
+		// module — the reason the check is not a bare HasPrefix.
+		{"github.com/PerpetualSoftware/pad-web/internal/models", false},
+	} {
+		if got := insideModule(tc.pkgPath); got != tc.want {
+			t.Errorf("insideModule(%q) = %v, want %v", tc.pkgPath, got, tc.want)
+		}
+	}
+
+	for _, tc := range []struct {
+		rel  string
+		want bool
+	}{
+		{"vendor/github.com/gogo/protobuf/jsonpb/jsonpb.go", true},
+		{"internal/models/vendor/x/y.go", true},
+		{"internal/models/item.go", false},
+		// NOT vendored: the segment test is why, and a prefix test would get
+		// this wrong.
+		{"internal/vendorimport.go", false},
+		{"internal/vendors/list.go", false},
+	} {
+		if got := isVendored(tc.rel); got != tc.want {
+			t.Errorf("isVendored(%q) = %v, want %v", tc.rel, got, tc.want)
+		}
+	}
+
+	// THE INVARIANT, asserted on real output rather than on the predicates.
+	for _, s := range collectSchemaDecodes(t, repoRoot(t)) {
+		if isVendored(s.path) {
+			t.Errorf("the guard enumerated a VENDORED site: %s:%d — a dependency's decode is not ours to classify", s.path, s.line)
+		}
+		if strings.HasPrefix(s.path, "..") || filepath.IsAbs(s.path) {
+			t.Errorf("the guard enumerated a site outside the tree: %s:%d", s.path, s.line)
+		}
 	}
 }
