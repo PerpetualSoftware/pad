@@ -409,6 +409,24 @@ describe('stateDeclarations enumerates the $state population by STATEMENT', () =
 		expect(stateDeclarations('\tlet d =\n\t\t$state(4);')).toEqual(['d']);
 	});
 
+	// Round 2's three shapes.
+	it('a type-argument list on the initialiser does not split the bindings', () => {
+		expect(stateDeclarations('\tlet data = $state<Record<string, number>>({}), hidden = $state(1);')).toEqual(['data', 'hidden']);
+		expect(stateDeclarations('\tlet a = 1 < 2, b = $state(1);')).toEqual(['b']);
+	});
+
+	it('a parenthesised initialiser is still that initialiser', () => {
+		expect(stateDeclarations('\tlet data = ($state(1));\n\tlet raw = ($state.raw([]));')).toEqual(['data', 'raw']);
+	});
+
+	it('a `let` inside a template literal is not a declaration', () => {
+		const code = ['\tconst tpl = `x', '\tlet fake = $state(1);', '\t`;', '\tlet real = $state(2);'].join('\n');
+		expect(stateDeclarations(code)).toEqual(['real']);
+		const withInterp = ['\tconst tpl = `${ `inner` }', '\tlet fake = $state(1);`;', '\tlet real = $state(2);'].join('\n');
+		expect(stateDeclarations(withInterp)).toEqual(['real']);
+		expect(stateDeclarations("\tconst s = 'no\\nlet fake = $state(1);';\n\tlet real = $state(2);")).toEqual(['real']);
+	});
+
 	it('walks a destructuring let and refuses one backed by $state', () => {
 		expect(stateDeclarations('\tlet { a, b } = props;\n\tlet c = $state(1);')).toEqual(['c']);
 		expect(() => stateDeclarations('\tlet [x] = $state([1]);')).toThrow(/destructuring/);

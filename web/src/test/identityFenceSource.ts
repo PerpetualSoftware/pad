@@ -546,105 +546,158 @@ export function trackedEpochReadDetails(
  *     shape automatic semicolon insertion produces, which without this rule
  *     recreated the very wrong-name bug the hoist exists to close.
  *
- * FAILS CLOSED: a bracket that never closes throws rather than being skipped,
- * since skipping narrows the population silently.
+ *
+ * Round 2 added three more: a type-ARGUMENT list on the initialiser
+ * (`$state<Record<string, number>>({}), hidden = …`) whose comma is not a
+ * binding separator; a parenthesised initialiser `($state(1))`; and the
+ * outer search finding a `let` INSIDE A TEMPLATE LITERAL and enumerating a
+ * phantom — so the search is now the same literal-aware walk the statement
+ * scanner uses, from the outside in.
+ *
+ * FAILS CLOSED: a bracket or literal that never closes throws rather than
+ * being skipped, since skipping narrows the population silently.
  */
+/** Index just past the string or template literal opening at `i`, or -1. */
+function skipStringLiteral(code: string, i: number): number {
+	const q = code[i]!;
+	for (let k = i + 1; k < code.length; k++) {
+		const c = code[k]!;
+		if (c === '\\') { k++; continue; }
+		if (q === '`' && c === '$' && code[k + 1] === '{') {
+			const close = matchBrace(code, k + 1);
+			if (close === -1) return -1;
+			k = close;
+			continue;
+		}
+		if (c === q) return k + 1;
+	}
+	return -1;
+}
+
+/** Index just past a regex literal opening at `i`, or -1 when `/` is not one. */
+function skipRegexLiteral(code: string, i: number): number {
+	const prev = code.slice(0, i).replace(/\s+$/, '');
+	const last = prev.slice(-1);
+	const isRegexStart = prev === '' || '(,=:[!&|?{};+-*%~^'.includes(last) ||
+		/\b(return|typeof|case|in|of|new|delete|void|instanceof)$/.test(prev);
+	if (!isRegexStart) return -1;
+	let inClass = false;
+	for (let k = i + 1; k < code.length; k++) {
+		const c = code[k];
+		if (c === '\\') { k++; continue; }
+		if (c === '[') { inClass = true; continue; }
+		if (c === ']') { inClass = false; continue; }
+		if (c === '\n') return -1;
+		if (c === '/' && !inClass) return k + 1;
+	}
+	return -1;
+}
+
 export function stateDeclarations(code: string): string[] {
 	const out: string[] = [];
 	const STATEMENT_START = /^[ \t]*(let|const|var|function|export|import|class|if|for|while|return|switch|try|\$effect|\$derived|\$inspect|onMount|onDestroy)\b/;
-	const re = /(^|[;{}\n])[ \t]*let\s+/g;
-	let m: RegExpExecArray | null;
-	while ((m = re.exec(code)) !== null) {
-		let i = m.index + m[0].length;
-		// One `let`, one or more bindings.
-		while (true) {
-			let name: string;
-			if (code[i] === '{' || code[i] === '[') {
-				// A destructuring pattern has no single name; it is walked so the
-				// statement is delimited, and refused only if it turns out to be
-				// backed by $state, which no page in the family writes.
-				const close = matchDelimiter(code, i, code[i]!, code[i] === '{' ? '}' : ']');
-				if (close === -1) throw new Error(`could not delimit a destructuring pattern at offset ${i} — re-point this guard rather than widening it`);
-				name = '(destructured)';
-				i = close + 1;
-			} else {
-				const nameMatch = /^[A-Za-z_$][\w$]*/.exec(code.slice(i));
-				if (!nameMatch) throw new Error(`could not read the name declared by a \`let\` at offset ${i} — re-point this guard rather than widening it`);
-				name = nameMatch[0];
-				i += name.length;
-			}
-			let angle = 0;
-			let initAt = -1;
-			let endAt = -1;
-			let nextBinding = false;
-			for (; i < code.length; i++) {
-				const c = code[i]!;
-				if (c === '"' || c === "'" || c === '`') {
-					let k = i + 1;
-					for (; k < code.length; k++) {
-						if (code[k] === '\\') { k++; continue; }
-						if (code[k] === c) break;
-					}
-					if (k >= code.length) throw new Error(`unterminated string in the statement declaring \`${name}\` — re-point this guard rather than widening it`);
-					i = k;
-					continue;
-				}
-				if (c === '/') {
-					const prev = code.slice(0, i).replace(/\s+$/, '');
-					const last = prev.slice(-1);
-					const isRegexStart = prev === '' || '(,=:[!&|?{};+-*%~^'.includes(last) ||
-						/\b(return|typeof|case|in|of|new|delete|void|instanceof)$/.test(prev);
-					if (isRegexStart) {
-						let k = i + 1;
-						let inClass = false;
-						for (; k < code.length; k++) {
-							const d = code[k];
-							if (d === '\\') { k++; continue; }
-							if (d === '[') { inClass = true; continue; }
-							if (d === ']') { inClass = false; continue; }
-							if (d === '\n') break;
-							if (d === '/' && !inClass) break;
-						}
-						if (k < code.length && code[k] === '/') { i = k; continue; }
-					}
-				}
-				if (c === '{' || c === '(' || c === '[') {
-					const close = matchDelimiter(code, i, c, c === '{' ? '}' : c === '(' ? ')' : ']');
-					if (close === -1) throw new Error(`could not delimit a bracket in the statement declaring \`${name}\` — re-point this guard rather than widening it`);
-					i = close;
-					continue;
-				}
-				if (initAt === -1) {
-					if (c === '=' && code[i + 1] === '>') { i++; continue; }
-					if (c === '<') { angle++; continue; }
-					if (c === '>') { angle--; continue; }
-					if (c === '=' && angle === 0 && code[i + 1] !== '=') { initAt = i + 1; continue; }
-				}
-				if (c === ';') { endAt = i; break; }
-				// A comma in TYPE position (`Map<string, number>`) is part of the
-				// annotation; at angle depth zero it starts the next binding.
-				if (c === ',' && angle === 0) { endAt = i; nextBinding = true; break; }
-				if (c === '\n') {
-					const initSoFar = initAt === -1 ? null : code.slice(initAt, i).trim();
-					if ((initSoFar === null || initSoFar !== '') && STATEMENT_START.test(code.slice(i + 1))) {
-						endAt = i;
-						break;
-					}
-				}
-			}
-			if (endAt === -1) endAt = code.length; // end of input terminates the last statement
-			const isState = initAt !== -1 && /^\s*\$state\b/.test(code.slice(initAt, endAt));
-			if (isState && name === '(destructured)') throw new Error('a destructuring pattern backed by $state is not read by this guard — name the binding or teach the shape');
-			if (isState) out.push(name);
-			i = endAt + 1;
-			if (!nextBinding) break;
-			i += /^\s*/.exec(code.slice(i))![0].length;
+
+	// ONE WALK over the code, literal-aware from the outside in (codex round 2
+	// on the hoist): a regex that searched for `let` found one INSIDE a template
+	// literal and enumerated a phantom declaration, so the search itself has to
+	// skip what the statement scanner skips.
+	let i = 0;
+	while (i < code.length) {
+		const c = code[i]!;
+		if (c === '"' || c === "'" || c === '`') {
+			const past = skipStringLiteral(code, i);
+			if (past === -1) throw new Error(`unterminated string literal at offset ${i} — re-point this guard rather than widening it`);
+			i = past;
+			continue;
 		}
-		// Resume AT the terminator, so a newline or `;` that ended this statement
-		// can also open the next one (automatic semicolon insertion relies on it).
-		re.lastIndex = Math.max(m.index + 1, i - 1);
+		if (c === '/') {
+			const past = skipRegexLiteral(code, i);
+			if (past !== -1) { i = past; continue; }
+		}
+		if (c === 'l' && /^let\s/.test(code.slice(i, i + 4))) {
+			const before = code.slice(0, i).replace(/[ \t]+$/, '');
+			const atStatementStart = before === '' || /[;{}\n]$/.test(before);
+			if (atStatementStart) {
+				i = readLetStatement(code, i + 3, out, STATEMENT_START);
+				continue;
+			}
+		}
+		i++;
 	}
 	return out;
+}
+
+/** Parse the bindings of one `let` whose keyword ends at `from`; return the index past its terminator. */
+function readLetStatement(code: string, from: number, out: string[], STATEMENT_START: RegExp): number {
+	let i = from + /^\s*/.exec(code.slice(from))![0].length;
+	while (true) {
+		let name: string;
+		if (code[i] === '{' || code[i] === '[') {
+			// A destructuring pattern has no single name; it is walked so the
+			// statement is delimited, and refused only if it turns out to be
+			// backed by $state, which no page in the family writes.
+			const close = matchDelimiter(code, i, code[i]!, code[i] === '{' ? '}' : ']');
+			if (close === -1) throw new Error(`could not delimit a destructuring pattern at offset ${i} — re-point this guard rather than widening it`);
+			name = '(destructured)';
+			i = close + 1;
+		} else {
+			const nameMatch = /^[A-Za-z_$][\w$]*/.exec(code.slice(i));
+			if (!nameMatch) throw new Error(`could not read the name declared by a \`let\` at offset ${i} — re-point this guard rather than widening it`);
+			name = nameMatch[0];
+			i += name.length;
+		}
+		let angle = 0;
+		let initAt = -1;
+		let endAt = -1;
+		let nextBinding = false;
+		for (; i < code.length; i++) {
+			const c = code[i]!;
+			if (c === '"' || c === "'" || c === '`') {
+				const past = skipStringLiteral(code, i);
+				if (past === -1) throw new Error(`unterminated string in the statement declaring \`${name}\` — re-point this guard rather than widening it`);
+				i = past - 1;
+				continue;
+			}
+			if (c === '/') {
+				const past = skipRegexLiteral(code, i);
+				if (past !== -1) { i = past - 1; continue; }
+			}
+			if (c === '{' || c === '(' || c === '[') {
+				const close = matchDelimiter(code, i, c, c === '{' ? '}' : c === '(' ? ')' : ']');
+				if (close === -1) throw new Error(`could not delimit a bracket in the statement declaring \`${name}\` — re-point this guard rather than widening it`);
+				i = close;
+				continue;
+			}
+			// ANGLE BRACKETS. In type position every `<` opens a type. After the
+			// initialiser starts, a `<` that directly follows an identifier is a
+			// type-ARGUMENT list (`$state<Record<string, number>>({})`, codex
+			// round 2) and its commas are not binding separators; a spaced `<` is
+			// a comparison and is left alone.
+			if (c === '=' && code[i + 1] === '>') { i++; continue; }
+			if (c === '<' && (initAt === -1 || /[\w$]/.test(code[i - 1] ?? ''))) { angle++; continue; }
+			if (c === '>' && angle > 0) { angle--; continue; }
+			if (initAt === -1 && c === '=' && angle === 0 && code[i + 1] !== '=') { initAt = i + 1; continue; }
+			if (angle > 0) continue;
+			if (c === ';') { endAt = i; break; }
+			if (c === ',') { endAt = i; nextBinding = true; break; }
+			if (c === '\n') {
+				const initSoFar = initAt === -1 ? null : code.slice(initAt, i).trim();
+				if ((initSoFar === null || initSoFar !== '') && STATEMENT_START.test(code.slice(i + 1))) {
+					endAt = i;
+					break;
+				}
+			}
+		}
+		if (endAt === -1) endAt = code.length; // end of input terminates the last statement
+		// A parenthesised initialiser (`($state(1))`) is still that initialiser
+		// (codex round 2).
+		const isState = initAt !== -1 && /^[\s(]*\$state\b/.test(code.slice(initAt, endAt));
+		if (isState && name === '(destructured)') throw new Error('a destructuring pattern backed by $state is not read by this guard — name the binding or teach the shape');
+		if (isState) out.push(name);
+		if (!nextBinding) return endAt; // the terminator itself may open the next statement
+		i = endAt + 1;
+		i += /^\s*/.exec(code.slice(i))![0].length;
+	}
 }
 
 export function readFenceSource(url: URL): FenceSource {
