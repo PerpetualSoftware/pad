@@ -32,6 +32,7 @@ import { describe, it, expect } from 'vitest';
 import {
 	readFenceSource,
 	trackedEpochReadDetails,
+	withoutCatchArms,
 	type EnumeratedBlock,
 } from '../../../test/identityFenceSource';
 
@@ -43,11 +44,19 @@ type Disposition =
 	| { kind: 'identity'; why: string; capturedBy?: { caller: string; field: string } }
 	| { kind: 'none'; why: string };
 
-/** Tokens that name a generation `loadData` bumps, or a helper built on one. */
-const GENERATION = /switchedAway\(|[!=]==\s*loadGeneration|loadGeneration\s*[!=]==|[!=]==\s*itemGen|itemGen\s*[!=]==|adoptCollection\(|stillCurrent\(\)|stillOnSource\(\)/;
+/**
+ * Tokens that name a generation `loadData` bumps, or a helper built on one.
+ *
+ * NOT `adoptCollection(`: `shouldAdoptCollection` deliberately accepts a STALE
+ * generation when it corrects the shown collection to the live item's, so it
+ * is not a fence against an identity change (codex round 1 on #1387).
+ */
+const GENERATION = /switchedAway\(|[!=]==\s*loadGeneration|loadGeneration\s*[!=]==|[!=]==\s*itemGen|itemGen\s*[!=]==|stillCurrent\(\)|stillOnSource\(\)|isForegroundCurrent\(\)/g;
+/** Either kind of fence, for the per-await count. */
+const ANY_FENCE = new RegExp(`${GENERATION.source}|identityHeld\\(`, 'g');
 
 const ASYNC_FUNCTIONS: Record<string, Disposition> = {
-	adoptOrConvergeToLiveCollection: { kind: 'generation', why: 'myGen against loadGeneration, then adoptCollection on collectionGen' },
+	adoptOrConvergeToLiveCollection: { kind: 'generation', why: 'myGen against loadGeneration before adoptCollection' },
 	reconcileCollectionSegment: { kind: 'identity', why: 'keyed on route + collection id, which a same-item reload leaves equal; retags and navigates' },
 	jumpToSection: { kind: 'none', why: 'switches this instance\'s tab and scrolls; no data, nothing an identity owns' },
 	ensureGraphComp: { kind: 'none', why: 'lazy-imports a component module' },
@@ -63,13 +72,13 @@ const ASYNC_FUNCTIONS: Record<string, Disposition> = {
 		// captured; the drain compares against the burst's record of it.
 		capturedBy: { caller: 'updateTags', field: 'saver.epoch' },
 	},
-	refreshCollectionIfMoved: { kind: 'generation', why: 'adoptCollection on collectionGen' },
+	refreshCollectionIfMoved: { kind: 'generation', why: 'gen against loadGeneration beside adoptCollection, which accepts a stale generation by design' },
 	loadTagSuggestions: { kind: 'identity', why: 'keyed on the workspace slug alone; the listener re-runs it' },
 	stampSourceUrl: { kind: 'generation', why: 'switchedAway on both arms' },
 	refreshFromSource: { kind: 'generation', why: 'switchedAway on every arm' },
 	updateAssignedUser: { kind: 'generation', why: 'gen !== loadGeneration on both arms' },
 	updateAgentRole: { kind: 'generation', why: 'gen !== loadGeneration on both arms' },
-	flushRawIfPending: { kind: 'generation', why: 'genAtFlush against loadGeneration after each PATCH' },
+	flushRawIfPending: { kind: 'generation', why: 'genAtFlush against loadGeneration after each PATCH; its other await is the re-entrancy waiter, which returns state and commits nothing' },
 	refreshLinksPreservingOnFailure: { kind: 'none', why: 'returns a value; both callers gate their commit on itemGen' },
 	flushCollabBeforeRestore: { kind: 'identity', why: 'its only post-await commit is a toast, and nothing it checks moves on an identity change' },
 	closeCopyDialog: { kind: 'none', why: 'awaits a tick to restore focus after closing synchronously' },
@@ -95,8 +104,8 @@ interface SignedDisposition {
 }
 
 const NESTED_CALLBACKS: SignedDisposition[] = [
-	{ signature: /event\.type === 'collection_updated'/, disposition: { kind: 'generation', why: 'SSE: adoptCollection on collectionGen, item branches on itemGen' } },
-	{ signature: /result\.type === 'caught_up'/, disposition: { kind: 'generation', why: 'sync: item branches on itemGen; its awaited reconcileCollectionSegment carries its own identity fence' } },
+	{ signature: /event\.type === 'collection_updated'/, disposition: { kind: 'generation', why: 'SSE: callbackGen (captured at entry) after the collection fetch, item branches on itemGen captured after it' } },
+	{ signature: /result\.type === 'caught_up'/, disposition: { kind: 'generation', why: 'sync: callbackGen after the awaited reconciliation, item branches on itemGen captured after it' } },
 	{ signature: /flushCollabContent\(/, disposition: { kind: 'generation', why: 'collab save: UI feedback gated on genAtFlush against loadGeneration' } },
 ];
 
@@ -120,11 +129,37 @@ function firstAwait(body: string, label: string): number {
 	return at;
 }
 
+/**
+ * Handlers whose success path has more awaits than fence checks for a reason
+ * that is not a defect. Named, with the reason, so an addition is a decision.
+ */
+const PER_AWAIT_EXEMPT: Record<string, string> = {
+	'flushRawIfPending()': 'the re-entrancy waiter `await new Promise(setTimeout 50)` returns pending state and commits nothing',
+};
+
+/**
+ * COUNTED, not merely present (codex round 1 on #1387): removing only
+ * `saveTitle`'s SUCCESS-arm check passed a presence rule, because the catch
+ * arm's token satisfied it. The success path (catch arms excised) must carry at
+ * least one fence per await. A LOWER BOUND, not a proof of position — the
+ * mount suite's legs are the other half.
+ */
+function holdsPerAwait(label: string, body: string) {
+	if (label in PER_AWAIT_EXEMPT) return;
+	const success = withoutCatchArms(body);
+	const awaits = (success.match(/\bawait\b/g) ?? []).length;
+	if (awaits === 0) return;
+	const after = success.slice(success.search(/\bawait\b/));
+	const fences = (after.match(ANY_FENCE) ?? []).length;
+	expect(fences, `${label}: ${awaits} awaits on its success path but ${fences} fence checks after the first — a continuation commits unguarded`).toBeGreaterThanOrEqual(awaits);
+}
+
 function holdsDisposition(label: string, body: string, d: Disposition) {
+	if (d.kind !== 'none') holdsPerAwait(label, body);
 	const at = firstAwait(body, label);
 	const after = body.slice(at);
 	if (d.kind === 'generation') {
-		expect(GENERATION.test(after), `${label}: dispositioned GENERATION (${d.why}) but no generation check follows its first await`).toBe(true);
+		expect(after.match(GENERATION)?.length ?? 0, `${label}: dispositioned GENERATION (${d.why}) but no generation check follows its first await`).toBeGreaterThan(0);
 	} else if (d.kind === 'identity' && d.capturedBy) {
 		const field = d.capturedBy.field.replace('.', '\\.');
 		expect(after, `${label}: dispositioned IDENTITY via ${d.capturedBy.field} but never checks it after its first await`).toMatch(
@@ -194,7 +229,7 @@ describe('ItemDetail: the population is closed and every member is dispositioned
 		for (const block of blocks) {
 			const row = TIMERS.find((r) => r.signature.test(block.body.trim()))!;
 			if (row.disposition.kind === 'generation') {
-				expect(GENERATION.test(block.body), `${block.label}: dispositioned GENERATION (${row.disposition.why}) with no generation check`).toBe(true);
+				expect(block.body.match(GENERATION)?.length ?? 0, `${block.label}: dispositioned GENERATION (${row.disposition.why}) with no generation check`).toBeGreaterThan(0);
 			}
 		}
 	});
@@ -302,7 +337,17 @@ describe('ItemDetail: epoch reads in reactive scopes', () => {
 		expect([...used].sort(), 'an exemption no longer matches anything — delete it rather than leave it open').toEqual([0, 1]);
 	});
 
-	it('the page-load epoch is mentioned at exactly its six known sites', () => {
-		expect(SCRIPT.match(/identityEpochAtLoad/g)?.length).toBe(6);
+	it('the page-load epoch is mentioned at exactly its five known sites', () => {
+		// Declaration, the loadData re-stamp, runTeardownFlush's guard, the
+		// beforeunload handler, the raw saver's discard. The collab cleanup and
+		// the rich teardown flush compare against the CONTEXT's mint-time epoch
+		// instead (codex round 1 on #1387), because a load re-stamps this one.
+		expect(SCRIPT.match(/identityEpochAtLoad/g)?.length).toBe(5);
+	});
+
+	it('the collab context carries its mint-time identity, and both rich teardown flushes compare against it', () => {
+		expect(SCRIPT).toMatch(/identityEpoch:\s*untrack\(\(\)\s*=>\s*authStore\.identityEpoch\)/);
+		expect(SCRIPT).toMatch(/const identityHeld = authStore\.identityEpoch === ctx\.identityEpoch;/);
+		expect(SCRIPT).toMatch(/if \(ctx && ctx\.identityEpoch === authStore\.identityEpoch\) collabFlusher\.flushNow\(ctx, true\)/);
 	});
 });

@@ -2443,11 +2443,25 @@
 		// item.content — that falls through safely to the baseline
 		// compare, and its visible symptom (a re-float) is covered by the
 		// Manual-comparator tiebreak below.
-		const ctx: { wsSlug: string; itemId: string; baseline: string; seedMd: string | null } = {
+		const ctx: {
+			wsSlug: string;
+			itemId: string;
+			baseline: string;
+			seedMd: string | null;
+			identityEpoch: number;
+		} = {
 			wsSlug,
 			itemId,
 			baseline,
 			seedMd,
+			// The identity this editor's Y.Doc is typed under, fixed for the
+			// context's life (BUG-3084 codex round 1). NOT `identityEpochAtLoad`:
+			// a load re-stamps that, and the identity listener runs a load, so a
+			// context minted before an identity change would read as the new
+			// user's and its teardown flush would PATCH the previous user's rich
+			// draft on the new cookie. Read untracked — this runs in the collab
+			// effect, and the effect must not re-run on an identity change.
+			identityEpoch: untrack(() => authStore.identityEpoch),
 		};
 		activeCollabContext = ctx;
 
@@ -2675,7 +2689,7 @@
 			// saver (BUG-3005): this cleanup also runs on an identity change,
 			// and a Y.Doc snapshot written then carries the wrong user's
 			// cookie.
-			const identityHeld = authStore.identityEpoch === identityEpochAtLoad;
+			const identityHeld = authStore.identityEpoch === ctx.identityEpoch;
 			if (!rawMode && !skipFlush && identityHeld) {
 				collabFlusher.flushNow(ctx, true);
 			}
@@ -2747,8 +2761,10 @@
 		teardownFlushed = true;
 
 		// Collab path: flush the live Y.Doc snapshot.
+		// The rich flush is held to the identity its context was minted under,
+		// which the load re-stamp above does not move (BUG-3084 codex round 1).
 		const ctx = activeCollabContext;
-		if (ctx) collabFlusher.flushNow(ctx, true);
+		if (ctx && ctx.identityEpoch === authStore.identityEpoch) collabFlusher.flushNow(ctx, true);
 
 		// Raw-markdown path (BUG-2024). The saver's pending markdown is the
 		// exact debounced-but-unsaved edit; when dirty there is up to ~1.2s of
