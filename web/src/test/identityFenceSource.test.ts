@@ -9,7 +9,7 @@
 // including the two shapes that have broken brace matchers in this repo
 // before: a brace inside a string literal, and a template interpolation.
 import { describe, it, expect } from 'vitest';
-import { matchBrace, matchDelimiter, readFenceSource, stripComments, withoutCatchArms, untrackedSpans, trackedEpochReads } from './identityFenceSource';
+import { matchBrace, matchDelimiter, readFenceSource, stripComments, withoutCatchArms, untrackedSpans, trackedEpochReads, stateDeclarations } from './identityFenceSource';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -320,5 +320,166 @@ describe('matchBrace understands regex literals', () => {
 	it('still treats division as division', () => {
 		const code = '{ const r = a / b; const s = c / d; }';
 		expect(matchBrace(code, 0)).toBe(code.length - 1);
+	});
+});
+
+describe('stateDeclarations enumerates the $state population by STATEMENT', () => {
+	// The regex every page guard used to carry, kept here as the CONTROL: each
+	// fixture below states what the regex answered, so the case that motivated
+	// the hoist stays red on the old instrument rather than being described.
+	const LEGACY = /^\s*let\s+(\w+)\s*(?::[^=]*)?=\s*\$state/gm;
+	const legacy = (code: string) => [...code.matchAll(LEGACY)].map((m) => m[1]!);
+
+	it('reads plain, typed and generic declarations, in order', () => {
+		const code = [
+			'\tlet loading = $state(true);',
+			'\tlet dashboard = $state<DashboardResponse | null>(null);',
+			'\tlet tags: string[] = $state([]);',
+			'\tlet plain = 3;',
+			'\tlet derived = $derived(x);',
+		].join('\n');
+		expect(stateDeclarations(code)).toEqual(['loading', 'dashboard', 'tags']);
+		expect(legacy(code)).toEqual(['loading', 'dashboard', 'tags']);
+	});
+
+	it('an uninitialised typed let ABOVE a $state line does not swallow it (BUG-3084 M12)', () => {
+		// The dashboard page's own shape. The legacy regex let the annotation
+		// run across the newline into the next statement: ONE match, named
+		// after the wrong variable, and the real $state never enumerated.
+		const code = [
+			'\tlet pollTimer: ReturnType<typeof setInterval> | undefined;',
+			'\tlet onboardingDismissed = $state(false);',
+		].join('\n');
+		expect(stateDeclarations(code)).toEqual(['onboardingDismissed']);
+		expect(legacy(code), 'the control: the legacy regex is wrong here, and must stay wrong').toEqual(['pollTimer']);
+	});
+
+	it('a genuine annotation spanning lines is still found (the [^=\\n] fix would miss it)', () => {
+		const code = ['\tlet m: Map<', '\t\tstring,', '\t\tnumber', '\t> = $state(new Map());'].join('\n');
+		expect(stateDeclarations(code)).toEqual(['m']);
+		const narrowFix = [...code.matchAll(/^\s*let\s+(\w+)\s*(?::[^=\n]*)?=\s*\$state/gm)].map((m) => m[1]!);
+		expect(narrowFix, "the surface-4 guard's own fix: closes the adjacency case, opens this one").toEqual([]);
+	});
+
+	it('an object type with semicolons inside its braces does not end the statement early', () => {
+		const code = '\tlet track: { slug: string; onboarding: boolean } | null = $state(null);\n\tlet other = 1;';
+		expect(stateDeclarations(code)).toEqual(['track']);
+	});
+
+	it('a semicolon inside a string in the initialiser does not end the statement early', () => {
+		const code = "\tlet s = $state('a;b');\n\tlet n = 1;";
+		expect(stateDeclarations(code)).toEqual(['s']);
+	});
+
+	it('does not match `let` inside an identifier or a $state that is not the initialiser', () => {
+		const code = ['\tlet outlet = 1;', '\tlet x = foo($state(1));', '\tconst y = $state(2);'].join('\n');
+		expect(stateDeclarations(code)).toEqual([]);
+	});
+
+	it('end of input terminates the last statement; an unclosed bracket throws', () => {
+		expect(stateDeclarations('\tlet a = $state(1)')).toEqual(['a']);
+		expect(() => stateDeclarations('\tlet a = $state((1')).toThrow(/could not delimit/);
+	});
+
+	// The four shapes codex built against the first scanner (round 1 on the
+	// hoist), each accepted by the compiler and each read wrong by a depth
+	// counter that did not know the grammar.
+	it('a regex literal containing a brace does not swallow the declarations after it', () => {
+		const code = ['\tlet open = /{/;', '\tlet hidden = $state(1);', '\tlet close = /}/;'].join('\n');
+		expect(stateDeclarations(code)).toEqual(['hidden']);
+	});
+
+	it('every binding of a multi-binding let is inspected', () => {
+		expect(stateDeclarations('\tlet visible = $state(0), hidden = $state(1);')).toEqual(['visible', 'hidden']);
+		expect(stateDeclarations('\tlet total = 0, done = 0;')).toEqual([]);
+		expect(stateDeclarations('\tlet a = 0, b = $state(1), c: number = 2;')).toEqual(['b']);
+	});
+
+	it('a generic type default is not mistaken for the initialiser', () => {
+		const code = '\tlet callback: <T = string>(value: T) => T = $state((value) => value);';
+		expect(stateDeclarations(code)).toEqual(['callback']);
+	});
+
+	it('automatic semicolon insertion still ends the statement (the wrong-name bug, one costume over)', () => {
+		const code = ['\tlet timer: number | undefined', '\tlet hidden = $state(1);'].join('\n');
+		expect(stateDeclarations(code)).toEqual(['hidden']);
+		const asiInit = ['\tlet a = 1', '\tlet b = $state(2)', '\tconst c = 3'].join('\n');
+		expect(stateDeclarations(asiInit)).toEqual(['b']);
+		// But a newline INSIDE an initialiser that has not started yet is not a boundary.
+		expect(stateDeclarations('\tlet d =\n\t\t$state(4);')).toEqual(['d']);
+	});
+
+	// Round 2's three shapes.
+	it('a type-argument list on the initialiser does not split the bindings', () => {
+		expect(stateDeclarations('\tlet data = $state<Record<string, number>>({}), hidden = $state(1);')).toEqual(['data', 'hidden']);
+		expect(stateDeclarations('\tlet a = 1 < 2, b = $state(1);')).toEqual(['b']);
+	});
+
+	it('a parenthesised initialiser is still that initialiser', () => {
+		expect(stateDeclarations('\tlet data = ($state(1));\n\tlet raw = ($state.raw([]));')).toEqual(['data', 'raw']);
+	});
+
+	it('a `let` inside a template literal is not a declaration', () => {
+		const code = ['\tconst tpl = `x', '\tlet fake = $state(1);', '\t`;', '\tlet real = $state(2);'].join('\n');
+		expect(stateDeclarations(code)).toEqual(['real']);
+		const withInterp = ['\tconst tpl = `${ `inner` }', '\tlet fake = $state(1);`;', '\tlet real = $state(2);'].join('\n');
+		expect(stateDeclarations(withInterp)).toEqual(['real']);
+		expect(stateDeclarations("\tconst s = 'no\\nlet fake = $state(1);';\n\tlet real = $state(2);")).toEqual(['real']);
+	});
+
+	// Round 3's two shapes.
+	it('an unspaced comparison is not a type-argument list', () => {
+		expect(stateDeclarations('\tlet a = 1<2;\n\tlet hidden = $state(1);')).toEqual(['hidden']);
+		expect(stateDeclarations('\tlet a = x<y, b = $state(1);')).toEqual(['b']);
+		expect(stateDeclarations('\tlet a = $state<Map<string, number>>(new Map()), b = $state(1);')).toEqual(['a', 'b']);
+	});
+
+	it("a let nested in an initialiser's function body is still enumerated, as the regex did", () => {
+		const code = ['\tlet make = () => {', '\t\tlet hidden = $state(1);', '\t\treturn hidden;', '\t};', '\tlet top = $state(2);'].join('\n');
+		expect(stateDeclarations(code)).toEqual(['hidden', 'top']);
+		expect(stateDeclarations('\tlet x = foo(() => { let inner = $state(0); return inner; });')).toEqual(['inner']);
+	});
+
+	// Round 4's three shapes.
+	it('a template interpolation body is code and is walked', () => {
+		const code = ['\tconst tpl = `${(() => {', '\t\tlet hidden = $state(1);', '\t\treturn hidden;', '\t})()}`;', '\tlet top = $state(2);'].join('\n');
+		expect(stateDeclarations(code)).toEqual(['hidden', 'top']);
+	});
+
+	it("an enclosing block's closer ends an unsemicolonised binding", () => {
+		expect(stateDeclarations('\tfunction f() { let ordinary = 0 } let hidden = $state(1);')).toEqual(['hidden']);
+		expect(stateDeclarations('\tfoo(() => { let inner = $state(0) }); let after = $state(1);')).toEqual(['inner', 'after']);
+	});
+
+	it('nested type arguments keep their depth', () => {
+		expect(stateDeclarations('\tlet data = $state<Map<Map<string, number>, 1 | 2>>(new Map());')).toEqual(['data']);
+		expect(stateDeclarations('\tlet data = $state<Map<Map<string, number>, 1 | 2>>(new Map()), b = $state(0);')).toEqual(['data', 'b']);
+	});
+
+	// Round 5's three shapes.
+	it('whitespace and newlines inside and after a type-argument list are fine', () => {
+		expect(stateDeclarations('\tlet data = $state<Map<string, 1 | 2>> (new Map());')).toEqual(['data']);
+		expect(stateDeclarations('\tlet data = $state<\n\t\tMap<string, number>\n\t>(new Map()), b = $state(0);')).toEqual(['data', 'b']);
+	});
+
+	it('an arrow returning a regex literal is a regex, not code', () => {
+		expect(stateDeclarations("\tconst re = () => /{let fake = $state(0);}/;\n\tlet real = $state(1);")).toEqual(['real']);
+		expect(stateDeclarations("\tconst re = () => /'/;\n\tlet real = $state(1);")).toEqual(['real']);
+	});
+
+	it('a type member named `let` inside an annotation is not a declaration', () => {
+		expect(stateDeclarations('\tlet ordinary: { let (): number }; let hidden = $state(0);')).toEqual(['hidden']);
+	});
+
+	it('walks a destructuring let and refuses one backed by $state', () => {
+		expect(stateDeclarations('\tlet { a, b } = props;\n\tlet c = $state(1);')).toEqual(['c']);
+		expect(() => stateDeclarations('\tlet [x] = $state([1]);')).toThrow(/destructuring/);
+	});
+
+	it('is exposed on FenceSource and reads the script block', () => {
+		const dir = mkdtempSync(join(tmpdir(), 'fence-'));
+		const file = join(dir, 'page.svelte');
+		writeFileSync(file, '<script lang="ts">\n\tlet a: T | undefined;\n\tlet b = $state(0);\n</script>\n<p>{b}</p>\n');
+		expect(readFenceSource(pathToFileURL(file)).stateDeclarations()).toEqual(['b']);
 	});
 });

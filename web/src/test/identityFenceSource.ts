@@ -138,6 +138,14 @@ export interface FenceSource {
 	 * moment it needed to stay put.
 	 */
 	effectBlocks(): EnumeratedBlock[];
+	/**
+	 * The names of every `let … = $state(…)` declaration in the script, in
+	 * order. The population the transient-state disposition tables are held
+	 * against: a guard that enumerates these itself with a regex has already
+	 * been wrong once (`stateDeclarations` below says how), so the four page
+	 * guards read this instead.
+	 */
+	stateDeclarations(): string[];
 }
 
 /**
@@ -490,6 +498,277 @@ export function trackedEpochReadDetails(
 	return out;
 }
 
+/**
+ * Every `let NAME[: Type] = $state(...)` declaration in `code`, by name.
+ *
+ * STATEMENT-AWARE, not a line regex — and the difference is the whole reason
+ * this lives in the core (BUG-3084 surface 4, mutation M12). Four page guards
+ * carried `let\s+(\w+)\s*(?::[^=]*)?=\s*\$state` with the `m` flag. The
+ * negated class in the optional type annotation admits `\n`, so on
+ *
+ *     let pollTimer: ReturnType<typeof setInterval> | undefined;
+ *     let onboardingDismissed = $state(false);
+ *
+ * it matched ONE declaration named `pollTimer` — the annotation ran across the
+ * line break into the next statement's `= $state` — and `onboardingDismissed`
+ * was never enumerated. The guard went red for a name that is not `$state`
+ * while the real one was silently absent: a red instrument, for the wrong
+ * reason, hiding the hole it had. Three sibling guards had the same regex and
+ * no adjacent pair to trigger it, which is a hole that has not fired yet, not
+ * an absence of one.
+ *
+ * A fix of `[^=\n]` closes that case and opens the opposite one: a genuine
+ * annotation that spans lines (`let m: Map<\n string,\n number\n> = $state(…)`)
+ * would then be skipped. So this walks each `let` STATEMENT instead: from the
+ * name to the first `;` at bracket depth zero, and asks whether that statement
+ * initialises with `$state`. An object type with `;` inside its braces, a
+ * generic across lines, and an uninitialised typed `let` beside a `$state`
+ * line all come out right, and the core's own suite drives each of them —
+ * with the legacy regex run on the same fixture as the control that goes red.
+ *
+ * WHAT A STATEMENT IS, here (codex round 1 on the hoist built four shapes
+ * the first scanner got wrong, every one accepted by the compiler):
+ *   - brackets are skipped with `matchDelimiter`, which already understands
+ *     strings, template interpolations and REGEX LITERALS — a hand-rolled
+ *     depth counter read `let open = /{/;` as an open brace and swallowed
+ *     every declaration after it;
+ *   - a regex literal at statement level uses the same previous-significant-
+ *     character rule `matchDelimiter` uses, so `/[;]/` does not end a statement;
+ *   - a `,` at depth zero starts the NEXT BINDING of the same `let`, so
+ *     `let a = $state(0), b = $state(1)` yields both (the codebase writes
+ *     `let total = 0, done = 0;`, so refusing the form was not an option);
+ *   - `<…>` is tracked ONLY in type position, so a generic default
+ *     (`<T = string>`) is not mistaken for the initialiser, and `=>` is one
+ *     token there;
+ *   - a statement ends at `;`, at end of input, or at a NEWLINE FOLLOWED BY A
+ *     STATEMENT KEYWORD (`let`, `const`, `function`, `$effect`, …) when the
+ *     binding is either uninitialised or already has initialiser text — the
+ *     shape automatic semicolon insertion produces, which without this rule
+ *     recreated the very wrong-name bug the hoist exists to close.
+ *
+ *
+ * Round 2 added three more: a type-ARGUMENT list on the initialiser
+ * (`$state<Record<string, number>>({}), hidden = …`) whose comma is not a
+ * binding separator; a parenthesised initialiser `($state(1))`; and the
+ * outer search finding a `let` INSIDE A TEMPLATE LITERAL and enumerating a
+ * phantom — so the search is now the same literal-aware walk the statement
+ * scanner uses, from the outside in.
+ *
+ * THE POPULATION TABLE (CONVE-35: five review rounds each found new members
+ * of one class — grammar the scanner had not been told about — so the class
+ * is written down and reviewed as a table rather than found one round at a
+ * time). What this scanner READS, and what it REFUSES:
+ *
+ *   read    `let a = $state(…)`, typed, generic, multi-line annotation,
+ *           object type with `;` inside, multi-binding, parenthesised
+ *           initialiser, `$state.raw`, type-argument list on the call (with
+ *           whitespace/newlines, nested generics), unspaced comparison,
+ *           regex literal (statement-level, arrow-returned), string and
+ *           template literal (interpolation bodies WALKED), ASI boundary
+ *           (newline + statement keyword, enclosing closer), `let` nested in
+ *           an initialiser's function body, destructuring pattern (walked)
+ *   refused `$state` behind a destructuring pattern; an unterminated bracket
+ *           or literal; an unreadable binding name
+ *   not     the parts of the grammar that need a parser: a regex literal
+ *   read    after an unlisted operator, `let` as a plain identifier at a
+ *           statement start (`let = 1` is not valid TS anyway), and any
+ *           statement form beyond `let` (`const`/`var` are never `$state`
+ *           declarations by the compiler's own rule).
+ *
+ * The receipt that bounds the claim: on every page in the family the legacy
+ * regex and this scanner agree exactly (library 9, roles 22, collection 49),
+ * except on the dashboard, where they differ by precisely the swap that
+ * motivated the hoist. Every row in the table above came from a constructed
+ * shape, none from a page; the table is the population the guard covers, and
+ * a shape outside it is a fixture to add, not a silent miss.
+ *
+ * FAILS CLOSED: a bracket or literal that never closes throws rather than
+ * being skipped, since skipping narrows the population silently.
+ */
+/**
+ * Index just past the string or template literal opening at `i`, or -1.
+ * A template's `${…}` bodies are CODE, not text (codex round 4): they are
+ * walked for declarations rather than skipped with the literal around them.
+ */
+function skipStringLiteral(code: string, i: number, out: string[]): number {
+	const q = code[i]!;
+	for (let k = i + 1; k < code.length; k++) {
+		const c = code[k]!;
+		if (c === '\\') { k++; continue; }
+		if (q === '`' && c === '$' && code[k + 1] === '{') {
+			const close = matchBrace(code, k + 1);
+			if (close === -1) return -1;
+			for (const nested of stateDeclarations(code.slice(k + 2, close))) out.push(nested);
+			k = close;
+			continue;
+		}
+		if (c === q) return k + 1;
+	}
+	return -1;
+}
+
+/** Index just past a regex literal opening at `i`, or -1 when `/` is not one. */
+function skipRegexLiteral(code: string, i: number): number {
+	const prev = code.slice(0, i).replace(/\s+$/, '');
+	const last = prev.slice(-1);
+	// `=>` ends in `>`, which the character rule reads as a comparison; an
+	// arrow returning a regex is a regex (codex round 5).
+	const isRegexStart = prev === '' || '(,=:[!&|?{};+-*%~^'.includes(last) || prev.endsWith('=>') ||
+		/\b(return|typeof|case|in|of|new|delete|void|instanceof)$/.test(prev);
+	if (!isRegexStart) return -1;
+	let inClass = false;
+	for (let k = i + 1; k < code.length; k++) {
+		const c = code[k];
+		if (c === '\\') { k++; continue; }
+		if (c === '[') { inClass = true; continue; }
+		if (c === ']') { inClass = false; continue; }
+		if (c === '\n') return -1;
+		if (c === '/' && !inClass) return k + 1;
+	}
+	return -1;
+}
+
+export function stateDeclarations(code: string): string[] {
+	const out: string[] = [];
+	const STATEMENT_START = /^[ \t]*(let|const|var|function|export|import|class|if|for|while|return|switch|try|\$effect|\$derived|\$inspect|onMount|onDestroy)\b/;
+
+	// ONE WALK over the code, literal-aware from the outside in (codex round 2
+	// on the hoist): a regex that searched for `let` found one INSIDE a template
+	// literal and enumerated a phantom declaration, so the search itself has to
+	// skip what the statement scanner skips.
+	let i = 0;
+	while (i < code.length) {
+		const c = code[i]!;
+		if (c === '"' || c === "'" || c === '`') {
+			const past = skipStringLiteral(code, i, out);
+			if (past === -1) throw new Error(`unterminated string literal at offset ${i} — re-point this guard rather than widening it`);
+			i = past;
+			continue;
+		}
+		if (c === '/') {
+			const past = skipRegexLiteral(code, i);
+			if (past !== -1) { i = past; continue; }
+		}
+		if (c === 'l' && /^let\s/.test(code.slice(i, i + 4))) {
+			const before = code.slice(0, i).replace(/[ \t]+$/, '');
+			const atStatementStart = before === '' || /[;{}\n]$/.test(before);
+			if (atStatementStart) {
+				i = readLetStatement(code, i + 3, out, STATEMENT_START);
+				continue;
+			}
+		}
+		i++;
+	}
+	return out;
+}
+
+/**
+ * Whether the `<` at `i` opens a type-argument list, decided by what follows
+ * its matching `>`: a call paren. A `<` whose match never comes before the
+ * statement could end, or is followed by anything else, is a comparison.
+ */
+function closesAsTypeArguments(code: string, i: number): boolean {
+	let depth = 0;
+	for (let k = i; k < code.length; k++) {
+		const c = code[k]!;
+		if (c === '<') depth++;
+		else if (c === '>') {
+			depth--;
+			// Whitespace — a newline included — may sit between the `>` and its
+			// call paren, and newlines may sit inside the arguments (codex round
+			// 5); only a terminator or a paren before the match says "comparison".
+			if (depth === 0) return /^\s*\(/.test(code.slice(k + 1));
+		} else if (c === ';' || c === '(' || c === ')') return false;
+	}
+	return false;
+}
+
+/** Parse the bindings of one `let` whose keyword ends at `from`; return the index past its terminator. */
+function readLetStatement(code: string, from: number, out: string[], STATEMENT_START: RegExp): number {
+	let i = from + /^\s*/.exec(code.slice(from))![0].length;
+	while (true) {
+		let name: string;
+		if (code[i] === '{' || code[i] === '[') {
+			// A destructuring pattern has no single name; it is walked so the
+			// statement is delimited, and refused only if it turns out to be
+			// backed by $state, which no page in the family writes.
+			const close = matchDelimiter(code, i, code[i]!, code[i] === '{' ? '}' : ']');
+			if (close === -1) throw new Error(`could not delimit a destructuring pattern at offset ${i} — re-point this guard rather than widening it`);
+			name = '(destructured)';
+			i = close + 1;
+		} else {
+			const nameMatch = /^[A-Za-z_$][\w$]*/.exec(code.slice(i));
+			if (!nameMatch) throw new Error(`could not read the name declared by a \`let\` at offset ${i} — re-point this guard rather than widening it`);
+			name = nameMatch[0];
+			i += name.length;
+		}
+		let angle = 0;
+		let initAt = -1;
+		let endAt = -1;
+		let nextBinding = false;
+		for (; i < code.length; i++) {
+			const c = code[i]!;
+			if (c === '"' || c === "'" || c === '`') {
+				const past = skipStringLiteral(code, i, out);
+				if (past === -1) throw new Error(`unterminated string in the statement declaring \`${name}\` — re-point this guard rather than widening it`);
+				i = past - 1;
+				continue;
+			}
+			if (c === '/') {
+				const past = skipRegexLiteral(code, i);
+				if (past !== -1) { i = past - 1; continue; }
+			}
+			if (c === '{' || c === '(' || c === '[') {
+				const close = matchDelimiter(code, i, c, c === '{' ? '}' : c === '(' ? ')' : ']');
+				if (close === -1) throw new Error(`could not delimit a bracket in the statement declaring \`${name}\` — re-point this guard rather than widening it`);
+				// DESCEND, do not merely skip (codex round 3): the regex this
+				// replaces enumerated a `let` at ANY depth, so a factory-owned
+				// `let hidden = $state(1)` inside an initialiser's function body
+				// was in the population before and must stay in it. ONLY the
+				// initialiser's brackets: a type annotation's braces hold type
+				// members, and a member may be NAMED `let` (codex round 5).
+				if (initAt !== -1) for (const nested of stateDeclarations(code.slice(i + 1, close))) out.push(nested);
+				i = close;
+				continue;
+			}
+			// ANGLE BRACKETS. In type position every `<` opens a type. After the
+			// initialiser starts, a `<` is a type-ARGUMENT list only if it
+			// closes with a `>` that is immediately followed by `(` — the call
+			// it parameterises (`$state<Record<string, number>>({})`, codex
+			// round 2) — otherwise it is a comparison, spaced or not (`1<2`,
+			// codex round 3), and is left alone.
+			if (c === '=' && code[i + 1] === '>') { i++; continue; }
+			if (c === '<' && (initAt === -1 || angle > 0)) { angle++; continue; }
+			if (c === '<' && closesAsTypeArguments(code, i)) { angle++; continue; }
+			if (c === '>' && angle > 0) { angle--; continue; }
+			if (initAt === -1 && c === '=' && angle === 0 && code[i + 1] !== '=') { initAt = i + 1; continue; }
+			if (angle > 0) continue;
+			if (c === ';') { endAt = i; break; }
+			// A closer the statement did not open belongs to the ENCLOSING block
+			// and ends the statement without a semicolon (codex round 4:
+			// `function f() { let ordinary = 0 } let hidden = $state(1);`).
+			if (c === '}' || c === ')' || c === ']') { endAt = i; break; }
+			if (c === ',') { endAt = i; nextBinding = true; break; }
+			if (c === '\n') {
+				const initSoFar = initAt === -1 ? null : code.slice(initAt, i).trim();
+				if ((initSoFar === null || initSoFar !== '') && STATEMENT_START.test(code.slice(i + 1))) {
+					endAt = i;
+					break;
+				}
+			}
+		}
+		if (endAt === -1) endAt = code.length; // end of input terminates the last statement
+		// A parenthesised initialiser (`($state(1))`) is still that initialiser
+		// (codex round 2).
+		const isState = initAt !== -1 && /^[\s(]*\$state\b/.test(code.slice(initAt, endAt));
+		if (isState && name === '(destructured)') throw new Error('a destructuring pattern backed by $state is not read by this guard — name the binding or teach the shape');
+		if (isState) out.push(name);
+		if (!nextBinding) return endAt; // the terminator itself may open the next statement
+		i = endAt + 1;
+		i += /^\s*/.exec(code.slice(i))![0].length;
+	}
+}
+
 export function readFenceSource(url: URL): FenceSource {
 	const raw = readFileSync(url, 'utf8');
 	const code = stripComments(raw);
@@ -600,6 +879,9 @@ export function readFenceSource(url: URL): FenceSource {
 				out.push({ label, body: call.slice(brace + 1, end), index: m.index });
 			}
 			return out;
+		},
+		stateDeclarations(): string[] {
+			return stateDeclarations(script);
 		},
 		deferredTimers(): EnumeratedBlock[] {
 			const out: EnumeratedBlock[] = [];
