@@ -627,6 +627,24 @@ export function stateDeclarations(code: string): string[] {
 	return out;
 }
 
+/**
+ * Whether the `<` at `i` opens a type-argument list, decided by what follows
+ * its matching `>`: a call paren. A `<` whose match never comes before the
+ * statement could end, or is followed by anything else, is a comparison.
+ */
+function closesAsTypeArguments(code: string, i: number): boolean {
+	let depth = 0;
+	for (let k = i; k < code.length; k++) {
+		const c = code[k]!;
+		if (c === '<') depth++;
+		else if (c === '>') {
+			depth--;
+			if (depth === 0) return code[k + 1] === '(';
+		} else if (c === ';' || c === '\n' || c === '(' || c === ')') return false;
+	}
+	return false;
+}
+
 /** Parse the bindings of one `let` whose keyword ends at `from`; return the index past its terminator. */
 function readLetStatement(code: string, from: number, out: string[], STATEMENT_START: RegExp): number {
 	let i = from + /^\s*/.exec(code.slice(from))![0].length;
@@ -665,16 +683,23 @@ function readLetStatement(code: string, from: number, out: string[], STATEMENT_S
 			if (c === '{' || c === '(' || c === '[') {
 				const close = matchDelimiter(code, i, c, c === '{' ? '}' : c === '(' ? ')' : ']');
 				if (close === -1) throw new Error(`could not delimit a bracket in the statement declaring \`${name}\` — re-point this guard rather than widening it`);
+				// DESCEND, do not merely skip (codex round 3): the regex this
+				// replaces enumerated a `let` at ANY depth, so a factory-owned
+				// `let hidden = $state(1)` inside an initialiser's function body
+				// was in the population before and must stay in it.
+				for (const nested of stateDeclarations(code.slice(i + 1, close))) out.push(nested);
 				i = close;
 				continue;
 			}
 			// ANGLE BRACKETS. In type position every `<` opens a type. After the
-			// initialiser starts, a `<` that directly follows an identifier is a
-			// type-ARGUMENT list (`$state<Record<string, number>>({})`, codex
-			// round 2) and its commas are not binding separators; a spaced `<` is
-			// a comparison and is left alone.
+			// initialiser starts, a `<` is a type-ARGUMENT list only if it
+			// closes with a `>` that is immediately followed by `(` — the call
+			// it parameterises (`$state<Record<string, number>>({})`, codex
+			// round 2) — otherwise it is a comparison, spaced or not (`1<2`,
+			// codex round 3), and is left alone.
 			if (c === '=' && code[i + 1] === '>') { i++; continue; }
-			if (c === '<' && (initAt === -1 || /[\w$]/.test(code[i - 1] ?? ''))) { angle++; continue; }
+			if (c === '<' && initAt === -1) { angle++; continue; }
+			if (c === '<' && angle === 0 && closesAsTypeArguments(code, i)) { angle++; continue; }
 			if (c === '>' && angle > 0) { angle--; continue; }
 			if (initAt === -1 && c === '=' && angle === 0 && code[i + 1] !== '=') { initAt = i + 1; continue; }
 			if (angle > 0) continue;

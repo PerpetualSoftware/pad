@@ -427,6 +427,19 @@ describe('stateDeclarations enumerates the $state population by STATEMENT', () =
 		expect(stateDeclarations("\tconst s = 'no\\nlet fake = $state(1);';\n\tlet real = $state(2);")).toEqual(['real']);
 	});
 
+	// Round 3's two shapes.
+	it('an unspaced comparison is not a type-argument list', () => {
+		expect(stateDeclarations('\tlet a = 1<2;\n\tlet hidden = $state(1);')).toEqual(['hidden']);
+		expect(stateDeclarations('\tlet a = x<y, b = $state(1);')).toEqual(['b']);
+		expect(stateDeclarations('\tlet a = $state<Map<string, number>>(new Map()), b = $state(1);')).toEqual(['a', 'b']);
+	});
+
+	it("a let nested in an initialiser's function body is still enumerated, as the regex did", () => {
+		const code = ['\tlet make = () => {', '\t\tlet hidden = $state(1);', '\t\treturn hidden;', '\t};', '\tlet top = $state(2);'].join('\n');
+		expect(stateDeclarations(code)).toEqual(['hidden', 'top']);
+		expect(stateDeclarations('\tlet x = foo(() => { let inner = $state(0); return inner; });')).toEqual(['inner']);
+	});
+
 	it('walks a destructuring let and refuses one backed by $state', () => {
 		expect(stateDeclarations('\tlet { a, b } = props;\n\tlet c = $state(1);')).toEqual(['c']);
 		expect(() => stateDeclarations('\tlet [x] = $state([1]);')).toThrow(/destructuring/);
