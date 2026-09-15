@@ -376,8 +376,42 @@ describe('stateDeclarations enumerates the $state population by STATEMENT', () =
 		expect(stateDeclarations(code)).toEqual([]);
 	});
 
-	it('throws rather than skipping when a declaration never terminates', () => {
-		expect(() => stateDeclarations('\tlet a = $state(1)')).toThrow(/could not find the end/);
+	it('end of input terminates the last statement; an unclosed bracket throws', () => {
+		expect(stateDeclarations('\tlet a = $state(1)')).toEqual(['a']);
+		expect(() => stateDeclarations('\tlet a = $state((1')).toThrow(/could not delimit/);
+	});
+
+	// The four shapes codex built against the first scanner (round 1 on the
+	// hoist), each accepted by the compiler and each read wrong by a depth
+	// counter that did not know the grammar.
+	it('a regex literal containing a brace does not swallow the declarations after it', () => {
+		const code = ['\tlet open = /{/;', '\tlet hidden = $state(1);', '\tlet close = /}/;'].join('\n');
+		expect(stateDeclarations(code)).toEqual(['hidden']);
+	});
+
+	it('every binding of a multi-binding let is inspected', () => {
+		expect(stateDeclarations('\tlet visible = $state(0), hidden = $state(1);')).toEqual(['visible', 'hidden']);
+		expect(stateDeclarations('\tlet total = 0, done = 0;')).toEqual([]);
+		expect(stateDeclarations('\tlet a = 0, b = $state(1), c: number = 2;')).toEqual(['b']);
+	});
+
+	it('a generic type default is not mistaken for the initialiser', () => {
+		const code = '\tlet callback: <T = string>(value: T) => T = $state((value) => value);';
+		expect(stateDeclarations(code)).toEqual(['callback']);
+	});
+
+	it('automatic semicolon insertion still ends the statement (the wrong-name bug, one costume over)', () => {
+		const code = ['\tlet timer: number | undefined', '\tlet hidden = $state(1);'].join('\n');
+		expect(stateDeclarations(code)).toEqual(['hidden']);
+		const asiInit = ['\tlet a = 1', '\tlet b = $state(2)', '\tconst c = 3'].join('\n');
+		expect(stateDeclarations(asiInit)).toEqual(['b']);
+		// But a newline INSIDE an initialiser that has not started yet is not a boundary.
+		expect(stateDeclarations('\tlet d =\n\t\t$state(4);')).toEqual(['d']);
+	});
+
+	it('walks a destructuring let and refuses one backed by $state', () => {
+		expect(stateDeclarations('\tlet { a, b } = props;\n\tlet c = $state(1);')).toEqual(['c']);
+		expect(() => stateDeclarations('\tlet [x] = $state([1]);')).toThrow(/destructuring/);
 	});
 
 	it('is exposed on FenceSource and reads the script block', () => {
