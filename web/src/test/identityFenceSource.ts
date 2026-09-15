@@ -95,6 +95,19 @@ export interface FenceSource {
 	nestedAsyncCallbacks(): EnumeratedBlock[];
 	/** `setTimeout(` / `setInterval(` callback bodies, async or not. */
 	deferredTimers(): EnumeratedBlock[];
+	/**
+	 * Every `$effect(...)` body on the page.
+	 *
+	 * The population no other enumerator reaches, and the one BUG-3084 found
+	 * last and hardest. A reactive effect that READS the identity epoch takes a
+	 * DEPENDENCY on it, so an identity change re-runs the effect — which on the
+	 * collection page re-armed a debounce with the previous user's typed text
+	 * and captured the NEW epoch, so the fence inside the timer passed and the
+	 * old query went to the server under the new identity. The guard was not
+	 * missing and did not fail; it was RE-CREATED by the framework at the one
+	 * moment it needed to stay put.
+	 */
+	effectBlocks(): EnumeratedBlock[];
 }
 
 /**
@@ -158,6 +171,34 @@ export function matchDelimiter(code: string, openIndex: number, open: string, cl
 			continue;
 		}
 		if (ch === "'" || ch === '"' || ch === '`') { quote = ch; continue; }
+		// REGEX LITERALS (codex round 3 [P2]). A `}` inside one — `const p = /}/;`
+		// — otherwise closes the block early and every read after it vanishes,
+		// silently, with the block still counted. Comments are stripped before
+		// this runs, so a `/` here is either division or a regex start; the
+		// distinction is the standard one, made on the previous significant
+		// character. Handled rather than refused, because the codebase uses
+		// regex literals and a guard must cover the grammar actually in use.
+		if (ch === '/') {
+			const prev = code.slice(0, i).replace(/\s+$/, '');
+			const last = prev.slice(-1);
+			const isRegexStart =
+				prev === '' ||
+				'(,=:[!&|?{};+-*%~^'.includes(last) ||
+				/\b(return|typeof|case|in|of|new|delete|void|instanceof)$/.test(prev);
+			if (isRegexStart) {
+				let k = i + 1;
+				let inClass = false;
+				for (; k < code.length; k++) {
+					const c = code[k];
+					if (c === '\\') { k++; continue; }
+					if (c === '[') { inClass = true; continue; }
+					if (c === ']') { inClass = false; continue; }
+					if (c === '\n') break; // not a regex after all — leave it alone
+					if (c === '/' && !inClass) { i = k; break; }
+				}
+				if (k < code.length && code[k] === '/') continue;
+			}
+		}
 		if (ch === '{') {
 			braces++;
 			if (open === '{') depth++;
@@ -303,6 +344,122 @@ export function withoutCatchArms(block: string): string {
 	}
 }
 
+/**
+ * The character ranges covered by `untrack(...)` calls in `block`.
+ *
+ * An exemption must apply to a particular READ, not to any block that merely
+ * contains an `untrack` somewhere. The first version of the effect-dependency
+ * rule tested for `untrack(` anywhere in the effect, so
+ * `const e = captureIdentity(); untrack(() => unrelatedWork());` passed with the
+ * capture still tracked (codex round 1 [P2]).
+ *
+ * This REPLACES a `syncBodyOnly()` helper that stripped every nested function
+ * body on the premise that a read inside one is not tracked. That premise is
+ * FALSE: an IIFE, a `forEach` callback, a Promise executor, and everything
+ * before an async function's first await all run synchronously, and Svelte
+ * tracks reads through ordinary calls. The helper therefore HID real
+ * dependencies — a fail-open inside the instrument built to catch fail-opens.
+ * What is genuinely deferred (a subscription callback, a timer) is now named in
+ * each page's disposition table, where the claim is visible and arguable rather
+ * than buried in a regex.
+ *
+ * FAILS CLOSED: an `untrack(` whose parentheses cannot be matched throws rather
+ * than being skipped, since skipping narrows the exempt region silently.
+ */
+export function untrackedSpans(block: string): Array<[number, number]> {
+	const out: Array<[number, number]> = [];
+	const re = /\buntrack\s*\(/g;
+	let m: RegExpExecArray | null;
+	while ((m = re.exec(block)) !== null) {
+		const open = block.indexOf('(', m.index);
+		const close = matchDelimiter(block, open, '(', ')');
+		if (close === -1) {
+			throw new Error(
+				'could not delimit an untrack(...) call — re-point this guard rather than widening it'
+			);
+		}
+		// THE CALLBACK BODY, not the whole call (codex round 2 [P2]).
+		// `untrack((captureIdentity(), () => {}))` evaluates that capture while
+		// building the argument — BEFORE untrack disables tracking — so the read
+		// is tracked and exempting the call's whole span hides it. A compiled
+		// probe confirmed the effect re-runs on an epoch bump.
+		//
+		// Only a call whose argument is IMMEDIATELY a brace-bodied arrow is
+		// understood; anything else throws rather than being guessed at.
+		const inner = block.slice(open + 1, close);
+		const arrow = inner.indexOf('=>');
+		// The argument must be a BARE `()` arrow — expression- or brace-bodied,
+		// both of which the codebase uses. Anything before the arrow is argument
+		// construction and is NOT exempt.
+		if (arrow === -1 || inner.slice(0, arrow).trim() !== '()') {
+			throw new Error(
+				'untrack(...) is not called with a plain `() => …` callback — this guard does not read ' +
+					'that form, and treating the whole call as exempt would hide a read evaluated while ' +
+					'building the argument. Teach it the shape rather than widening it.'
+			);
+		}
+		out.push([open + 1 + arrow, close]);
+		re.lastIndex = close;
+	}
+	return out;
+}
+
+/** Reads of the identity epoch, by the four spellings the family uses. */
+export const EPOCH_READ =
+	/captureIdentity\s*\(|authStore\s*\.\s*identityEpoch|pageIdentityHeld\s*\(|identityHeld\s*\(/g;
+
+/**
+ * Every epoch read in `block` that is NOT lexically inside an `untrack(...)`.
+ *
+ * Returns the matched text with a little surrounding context, so a guard's
+ * failure message can name WHICH read rather than only the block.
+ *
+ * Deliberately makes no attempt to decide whether a read is deferred. That
+ * judgement killed the previous helper: "inside a nested function" is not the
+ * same as "runs later", and guessing produced silent passes. A read that really
+ * is deferred — a subscription callback, a timer — is named in the calling
+ * page's disposition table, where the claim can be read and argued with.
+ */
+export function trackedEpochReads(block: string): string[] {
+	const spans = untrackedSpans(block);
+	const out: string[] = [];
+	const re = new RegExp(EPOCH_READ.source, 'g');
+	let m: RegExpExecArray | null;
+	while ((m = re.exec(block)) !== null) {
+		const at = m.index;
+		if (spans.some(([a, b]) => at >= a && at <= b)) continue;
+		out.push(block.slice(Math.max(0, at - 60), at + m[0].length).replace(/\s+/g, ' ').trim());
+	}
+	return out;
+}
+
+/**
+ * The same reads, as `{ token, context }`.
+ *
+ * A disposition must be able to say WHICH reads it covers, not merely which
+ * effect. Exempting a whole effect let the `searchTimeout = setTimeout` entry
+ * skip the synchronous capture that WAS this unit's defect — removing its
+ * `untrack` produced zero offenders (codex round 2 [P2]).
+ */
+export function trackedEpochReadDetails(
+	block: string
+): Array<{ token: string; context: string; index: number }> {
+	const spans = untrackedSpans(block);
+	const out: Array<{ token: string; context: string; index: number }> = [];
+	const re = new RegExp(EPOCH_READ.source, 'g');
+	let m: RegExpExecArray | null;
+	while ((m = re.exec(block)) !== null) {
+		const at = m.index;
+		if (spans.some(([a, b]) => at >= a && at <= b)) continue;
+		out.push({
+			token: m[0].replace(/\s+/g, ''),
+			context: block.slice(Math.max(0, at - 60), at + m[0].length).replace(/\s+/g, ' ').trim(),
+			index: at,
+		});
+	}
+	return out;
+}
+
 export function readFenceSource(url: URL): FenceSource {
 	const raw = readFileSync(url, 'utf8');
 	const code = stripComments(raw);
@@ -359,6 +516,58 @@ export function readFenceSource(url: URL): FenceSource {
 			while ((m = re.exec(script)) !== null) {
 				const label = `nested async callback at offset ${m.index}`;
 				out.push({ label, body: delimit(script, m.index, label), index: m.index });
+			}
+			return out;
+		},
+		effectBlocks(): EnumeratedBlock[] {
+			const out: EnumeratedBlock[] = [];
+			// `$effect(` and `$effect.pre(` — NOT `$effect.root(`, which creates a
+			// scope rather than a tracked reaction. Enumerated by construction so
+			// a new effect cannot arrive unseen.
+			const re = /\$effect(?:\.pre)?\s*\(/g;
+			let m: RegExpExecArray | null;
+			while ((m = re.exec(script)) !== null) {
+				const label = `$effect at offset ${m.index}`;
+				const openParen = script.indexOf('(', m.index);
+				const closeParen = matchDelimiter(script, openParen, '(', ')');
+				if (closeParen === -1) {
+					throw new Error(`could not delimit ${label} — re-point this guard rather than widening it`);
+				}
+				// The INNER body of a BRACE-BODIED ARROW, and nothing else.
+				//
+				// FAILS CLOSED on every other form (codex round 1 [P2]). Taking
+				// "the first `{` after the call" mis-delimits an expression-bodied
+				// arrow — `$effect(() => (captureIdentity(), setTimeout(() => {}, 200)))`
+				// returns the TIMER's empty body, so a rule reading it sees no
+				// epoch access and passes. Destructured parameter defaults do the
+				// same. An enumerator that returns the wrong span is worse than
+				// one that refuses: a refusal is visible in red, a wrong span is
+				// a silent pass.
+				const call = script.slice(m.index, closeParen + 1);
+				const argStart = call.indexOf('(') + 1;
+				const arrow = call.indexOf('=>');
+				const brace = call.indexOf('{');
+				// The argument must be a BARE `() => { … }`. A parameter default
+				// that is itself an arrow — `$effect((unused = () => {}) => …)` —
+				// otherwise lands the scanner on the default's body and returns
+				// an empty one, reporting no reads at all (codex round 2 [P2]).
+				if (
+					arrow === -1 ||
+					brace === -1 ||
+					brace < arrow ||
+					call.slice(argStart, arrow).trim() !== '()' ||
+					call.slice(arrow + 2, brace).trim() !== ''
+				) {
+					throw new Error(
+						`${label} is not a brace-bodied arrow — this guard does not read that form. ` +
+							'Teach it the shape rather than accepting a body it may have mis-delimited.'
+					);
+				}
+				const end = matchBrace(call, brace);
+				if (end === -1) {
+					throw new Error(`could not delimit ${label}'s body — re-point this guard rather than widening it`);
+				}
+				out.push({ label, body: call.slice(brace + 1, end), index: m.index });
 			}
 			return out;
 		},

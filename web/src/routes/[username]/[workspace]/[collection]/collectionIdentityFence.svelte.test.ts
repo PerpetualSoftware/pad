@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { cleanup, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
+import { bindReactiveEpoch, isEpochReactive } from '../../../../test/identityEpochMock.svelte';
 
 /**
  * BUG-3084 surface 1 — the BEHAVIOURAL half. `collectionIdentityFence.test.ts`
@@ -84,6 +85,28 @@ const deferredBulk = vi.hoisted(() => [] as Array<{ resolve: (v: unknown) => voi
 const deferredUpdate = vi.hoisted(() => [] as Array<{ resolve: (v: unknown) => void; reject: (e: unknown) => void }>);
 const upserts = vi.hoisted(() => [] as unknown[]);
 const sseHandlers = vi.hoisted(() => [] as Array<(e: unknown) => unknown>);
+const gotos = vi.hoisted(() => [] as string[]);
+// `goto` MOVES `page.url` here, unlike the shared no-op mock.
+//
+// Same lesson as the epoch double one level down (codex round 1 [P1]): a mock
+// that models a dependency's SHAPE but not the behaviour the code depends on
+// turns the assertion into a tautology. The per-session reset deletes `?q=` so
+// that `loadUrlFilters()` — which the identity reload calls on success — has
+// nothing to restore. Against a no-op `goto`, the URL never changes, the query
+// comes back, and a leg asserting the end state passes only because the reload
+// never completed.
+vi.mock('$app/navigation', async (importOriginal) => {
+	const actual = (await importOriginal()) as Record<string, unknown>;
+	const { page } = (await import('$app/state')) as { page: { url: URL } };
+	return {
+		...actual,
+		goto: vi.fn(async (url: string | URL) => {
+			gotos.push(String(url));
+			page.url = new URL(String(url), page.url);
+		}),
+	};
+});
+
 const collectionGets = vi.hoisted(() => [] as Array<{ resolve: (v: unknown) => void }>);
 
 /**
@@ -222,7 +245,25 @@ vi.mock('$lib/stores/workspace.svelte', () => ({
  * `flipIdentity` below is what said so.
  */
 const auth = vi.hoisted(() => {
-	let epoch = 0;
+	// The epoch is read through a late-bound hook so it can be backed by a REAL
+	// `$state` signal (installed below, after the imports). `vi.hoisted` runs
+	// before the Svelte runtime is initialised, so `$state` cannot be declared
+	// in here — but a module-scope signal can be, and the hook lets this object
+	// delegate to it.
+	//
+	// Why it matters (BUG-3084, the double-load unit): the real store's
+	// `identityEpoch` is `$state`, so reading it inside an `$effect` creates a
+	// DEPENDENCY. A plain closure variable models the store's values correctly
+	// and its reactivity not at all, so a test asking "did this effect re-run
+	// when the identity moved?" passes against the defect. That is how the
+	// double load survived here while being found on the library page.
+	const hook = { read: null as null | (() => number), write: null as null | ((n: number) => void) };
+	let fallback = 0;
+	const getEpoch = () => (hook.read ? hook.read() : fallback);
+	const setEpoch = (n: number) => {
+		if (hook.write) hook.write(n);
+		else fallback = n;
+	};
 	// The fake dispatches listeners, because the repair's whole point is what a
 	// listener does. Order matches the real store's contract: the epoch is
 	// bumped BEFORE listeners run, so a load started from one re-stamps to the
@@ -232,15 +273,16 @@ const auth = vi.hoisted(() => {
 		notifyIdentityChange(previousUserId = 'u0') {
 			for (const fn of [...listeners]) fn(previousUserId);
 		},
-		get identityEpoch() { return epoch; },
+		__hook: hook,
+		get identityEpoch() { return getEpoch(); },
 		get userId() { return 'u1'; },
 		get user() { return { id: 'u1', name: 'A', email: 'a@example.com' }; },
 		get session() { return { user: { id: 'u1' } }; },
-		bumpEpoch() { epoch++; },
-		resetEpoch() { epoch = 0; listeners.length = 0; },
+		bumpEpoch() { setEpoch(getEpoch() + 1); },
+		resetEpoch() { setEpoch(0); listeners.length = 0; },
 		identityFence() {
-			const captured = epoch;
-			return () => epoch === captured;
+			const captured = getEpoch();
+			return () => getEpoch() === captured;
 		},
 		onIdentityChange(fn: (previousUserId: string) => void) {
 			listeners.push(fn);
@@ -264,6 +306,7 @@ vi.mock('$lib/stores/collections.svelte', () => ({
 }));
 
 import { page } from '$app/state';
+import { goto } from '$app/navigation';
 import { api } from '$lib/api/client';
 import CollectionPage from './+page.svelte';
 
@@ -280,6 +323,18 @@ async function waitForBulk(index: number) {
 		return deferredBulk[index]!;
 	});
 }
+/**
+ * The props OBJECT carrying `onSearchChange` — the filter bar's. `findProp`
+ * below returns functions only, so a VALUE prop such as `searchQuery` is
+ * invisible to it; that is not a quirk to work around silently but the reason
+ * this helper exists and says so.
+ */
+function searchBarProps(): Record<string, unknown> | undefined {
+	return stubProps().find((p) => typeof (p as Record<string, unknown>).onSearchChange === 'function') as
+		| Record<string, unknown>
+		| undefined;
+}
+
 function findProp<T>(name: string): T | undefined {
 	for (const p of stubProps()) {
 		if (typeof p[name] === 'function') return p[name] as T;
@@ -294,6 +349,11 @@ function findProp<T>(name: string): T | undefined {
  * NOTHING (#1370 learned this the hard way, and its own guard on the bump is
  * what caught it). So every flip here asserts the epoch actually moved.
  */
+// The reactive backing for `auth.identityEpoch`, from the family helper. See
+// its header for why a non-reactive double turns every "did this effect
+// re-run?" assertion into "does this compile?".
+bindReactiveEpoch(auth.__hook);
+
 function flipIdentity(): void {
 	const before = auth.identityEpoch;
 	auth.bumpEpoch();
@@ -339,6 +399,24 @@ async function mountPage() {
 }
 
 describe('the collection page stops a commit when the identity moves mid-flight', () => {
+	it('PRECONDITION: the faked identity epoch is reactive', () => {
+		// Without this the suite runs, passes, and measures nothing about
+		// re-running — which is how the search-effect defect survived every
+		// instrument on this page (BUG-3084 checkpoint 18).
+		expect(
+			// The MOCK's own getter and bump, not the module signal: the first
+			// version of this helper read its own state and returned true with
+			// both hooks disconnected, so every leg below passed against the
+			// non-reactive double it exists to detect (codex round 1 [P2]).
+			isEpochReactive(
+				() => auth.identityEpoch,
+				() => auth.bumpEpoch()
+			),
+			'the mocked identityEpoch is not reactive: every "did this effect re-run?" assertion in ' +
+				'this file is measuring whether the code compiles'
+		).toBe(true);
+	});
+
 	beforeEach(() => {
 		auth.resetEpoch();
 	});
@@ -560,6 +638,159 @@ describe('the collection page stops a commit when the identity moves mid-flight'
 		onSearchChange('body:foo');
 		await vi.advanceTimersByTimeAsync(250);
 		expect(vi.mocked(api.search).mock.calls.length).toBe(1);
+	});
+
+	it('the identity-change listener clears the previous session\'s search text', async () => {
+		// DRIVEN, not asserted about (the refusal-vs-absence rule in the shared
+		// core's header). The source guard proves `resetPerSessionState()`
+		// contains the clear; only this proves the listener reaches it and the
+		// page actually forgets what the previous user typed.
+		//
+		// It matters beyond tidiness: `searchQuery` is synced to the URL, so an
+		// inherited query is the previous session's text sitting in the address
+		// bar of whoever signs in next.
+		await mountPage();
+		searchOpeners[0]!();
+		await tick();
+		const onSearchChange = await waitFor(() => {
+			const fn = findProp<(q: string) => void>('onSearchChange');
+			if (!fn) throw new Error('filter bar not rendered yet');
+			return fn;
+		});
+		onSearchChange('body:secret');
+		await tick();
+		expect(
+			searchBarProps()?.searchQuery,
+			'the query never reached the filter bar — this leg would measure nothing'
+		).toBe('body:secret');
+
+		// The query is in the ADDRESS too, which is the half the first version of
+		// this leg could not see (codex round 1 [P1]).
+		page.url = new URL(`${page.url.origin}${page.url.pathname}?q=body%3Asecret`);
+		expect(page.url.searchParams.get('q'), 'precondition: the query is in the URL').toBe('body:secret');
+
+		flipIdentity();
+		auth.notifyIdentityChange('u0');
+		await tick();
+		await tick();
+
+		// Asserted on the ADDRESS, not on a goto COUNT. The count coupled this
+		// leg to the page's own URL-sync effect, which the faithful `goto` mock
+		// makes reactive — so it could pass or fail for reasons that have
+		// nothing to do with the reset. What the fix owes is that `q` is gone.
+		expect(
+			page.url.searchParams.get('q'),
+			"the previous session's query is still in the address bar"
+		).toBeNull();
+
+		// AND it must survive the reload completing. `loadUrlFilters()` runs on
+		// the reload's success path and restores `q` from the URL — so a leg
+		// that stops before the reload lands measures nothing about the defect.
+		const reload = await waitFor(() => {
+			if (collectionGets.length < 2) throw new Error('the identity change did not re-load');
+			return collectionGets[collectionGets.length - 1]!;
+		});
+		reload.resolve({ id: 'c1', slug: 'tasks', name: 'Tasks', schema: '{}', settings: '{}' });
+		await tick();
+		await tick();
+
+		expect(
+			searchBarProps()?.searchQuery,
+			"the reload restored the previous session's query from the URL after the reset cleared it"
+		).toBe('');
+	});
+
+	it('the reload does not restore the query even when the address rewrite has not landed', async () => {
+		// ISOLATES THE LATCH from the URL rewrite. Both mechanisms clear the
+		// query, and in this harness `goto` resolves immediately, so the rewrite
+		// always wins and the latch is never exercised — a mutant deleting it
+		// SURVIVED the whole suite. In a browser the ordering is not guaranteed:
+		// the rewrite races the page's own URL-sync effect, which is why the
+		// deterministic mechanism exists at all.
+		//
+		// So this leg suppresses the rewrite and asserts the query still does
+		// not come back. Without it, the latch is code no instrument can speak
+		// for — which is the thing this whole unit exists to stop shipping.
+		await mountPage();
+		searchOpeners[0]!();
+		await tick();
+		const onSearchChange = await waitFor(() => {
+			const fn = findProp<(q: string) => void>('onSearchChange');
+			if (!fn) throw new Error('filter bar not rendered yet');
+			return fn;
+		});
+		onSearchChange('body:secret');
+		await tick();
+		page.url = new URL(`${page.url.origin}${page.url.pathname}?q=body%3Asecret`);
+
+		// The rewrite lands nowhere: `goto` records the call and leaves the URL
+		// exactly as it is, which is the state a real navigation has not reached.
+		vi.mocked(goto).mockImplementationOnce(async () => {});
+
+		flipIdentity();
+		auth.notifyIdentityChange('u0');
+		await tick();
+		await tick();
+
+		expect(
+			page.url.searchParams.get('q'),
+			'precondition: this leg is about the case where the address still carries the query'
+		).toBe('body:secret');
+
+		const reload = await waitFor(() => {
+			if (collectionGets.length < 2) throw new Error('the identity change did not re-load');
+			return collectionGets[collectionGets.length - 1]!;
+		});
+		reload.resolve({ id: 'c1', slug: 'tasks', name: 'Tasks', schema: '{}', settings: '{}' });
+		await tick();
+		await tick();
+
+		expect(
+			searchBarProps()?.searchQuery,
+			"the reload restored the previous session's query from an address the rewrite had not " +
+				'reached yet — the case the latch exists for'
+		).toBe('');
+	});
+
+	it("a query the NEW user navigates to is honoured, not swallowed by the latch", async () => {
+		// The latch suppresses ONE value — the one belonging to the session that
+		// ended — not "the next load" (codex round 2 [P2]). A bare flag was
+		// consumed by whichever load ran next, including a navigation the new
+		// user makes to a different `?q=` link, whose query was then discarded
+		// although it was theirs.
+		await mountPage();
+		searchOpeners[0]!();
+		await tick();
+		const onSearchChange = await waitFor(() => {
+			const fn = findProp<(q: string) => void>('onSearchChange');
+			if (!fn) throw new Error('filter bar not rendered yet');
+			return fn;
+		});
+		onSearchChange('body:secret');
+		await tick();
+		page.url = new URL(`${page.url.origin}${page.url.pathname}?q=body%3Asecret`);
+
+		vi.mocked(goto).mockImplementationOnce(async () => {});
+		flipIdentity();
+		auth.notifyIdentityChange('u0');
+		await tick();
+
+		// The new user goes somewhere with a query of their own BEFORE the
+		// identity reload lands.
+		page.url = new URL(`${page.url.origin}${page.url.pathname}?q=body%3Amine`);
+
+		const reload = await waitFor(() => {
+			if (collectionGets.length < 2) throw new Error('the identity change did not re-load');
+			return collectionGets[collectionGets.length - 1]!;
+		});
+		reload.resolve({ id: 'c1', slug: 'tasks', name: 'Tasks', schema: '{}', settings: '{}' });
+		await tick();
+		await tick();
+
+		expect(
+			searchBarProps()?.searchQuery,
+			"the new user's own query was swallowed by a latch meant for the previous session's"
+		).toBe('body:mine');
 	});
 
 	it('the debounced body search does not fire after an identity move', async () => {

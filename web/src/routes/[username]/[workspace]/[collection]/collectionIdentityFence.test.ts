@@ -39,7 +39,7 @@
 // after the commit it guards all pass here. That is the behavioural suite's
 // job, and the division is deliberate.
 import { describe, it, expect } from 'vitest';
-import { readFenceSource, withoutCatchArms } from '../../../../test/identityFenceSource';
+import { readFenceSource, withoutCatchArms, trackedEpochReadDetails } from '../../../../test/identityFenceSource';
 
 const src = readFenceSource(new URL('./+page.svelte', import.meta.url));
 const CODE = src.code;
@@ -145,6 +145,234 @@ describe('the collection page fences every async commit point', () => {
 			.toMatch(/collection = null/);
 		// And the clear must come BEFORE the load, or it is decoration.
 		expect(body.indexOf('collection = null')).toBeLessThan(body.indexOf('loadCollection('));
+	});
+
+	it('no $effect depends on the identity epoch without saying so', () => {
+		// THE POPULATION NO OTHER RULE REACHES, and the one this family found
+		// last and hardest (BUG-3084 checkpoint 18).
+		//
+		// `authStore.identityEpoch` is `$state`. An `$effect` that reads it
+		// SYNCHRONOUSLY takes a DEPENDENCY on it, so an identity change re-runs
+		// that effect. On this page that re-ran the search dispatch, which
+		// `clearTimeout`s its armed debounce and arms a new one — still reading
+		// `searchQuery`, the PREVIOUS user's typed text — while capturing the
+		// NEW epoch. The fence inside the timer then passed, because the epoch
+		// it captured was current, and the old query went to the server under
+		// the new identity. The guard did not fail; it was RE-CREATED by the
+		// framework at the one moment it needed to stay put.
+		//
+		// SYNCHRONOUS is the whole predicate. A read inside a nested callback —
+		// the SSE subscription's `pageIdentityHeld()`, for instance — happens
+		// when the event arrives, outside the reactive scope, and creates no
+		// dependency. A rule that greps the effect's text flags it anyway, and
+		// the one site that matters then hides among false positives. Hence
+		// `syncBodyOnly`.
+		//
+		// NOT a blanket ban, which is the correction this rule owes its first
+		// reading: two of this family's three tracked reads WANT the dependency.
+		// So each is dispositioned by name, and an undispositioned one fails.
+		// KEYED ON A MARKER IN THE SYNCHRONOUS BODY, which is where the rule
+		// looks — the first spelling keyed on `localIndex.bootstrap`, which sits
+		// inside the effect's async IIFE and is therefore stripped before the
+		// rule ever sees it. The marker below is also the honest one: this
+		// effect reads `authStore.userId` deliberately, and that read alone
+		// already makes it re-run on an identity change, so the epoch read adds
+		// no dependency it did not already have.
+		// DISPOSITIONED PER EFFECT, and each entry names WHICH READS it covers.
+		//
+		// Exempting a whole effect was wrong and hid this unit's own defect: the
+		// search entry skipped the synchronous capture along with the timer's
+		// reads, so removing that capture's `untrack` produced ZERO offenders
+		// (codex round 2 [P2]). An entry now lists the read tokens it vouches
+		// for, and any other read in that effect is an offender.
+		const INTENDED_DEPENDENCY: Record<string, { allowedReads: string[]; why: string; afterMarker?: string }> = {
+			'localIndex.bootstrap': {
+				allowedReads: ['captureIdentity(', 'identityHeld('],
+				why:
+					'the bootstrap/deltaSync effect re-runs on an identity change BY DESIGN — it reads ' +
+					'authStore.userId synchronously and on purpose, so the capture is the CURRENT one ' +
+					'and its fences stop the PREVIOUS run\'s continuation.',
+			},
+			'sseService.onItemEvent': {
+				afterMarker: 'sseService.onItemEvent',
+				allowedReads: ['pageIdentityHeld(', 'identityHeld(', 'captureIdentity('],
+				why:
+					'every epoch read in this effect is inside the SUBSCRIPTION CALLBACK, which runs ' +
+					'when an event arrives — outside the reactive scope, creating no dependency. The ' +
+					'broad allowance is safe only because the effect has NO epoch read before it ' +
+					'subscribes, which the assertion below checks directly rather than assuming.',
+			},
+			'searchTimeout = setTimeout': {
+				afterMarker: 'searchTimeout = setTimeout',
+				allowedReads: ['identityHeld('],
+				why:
+					'the remaining reads are inside the 200ms TIMER callback, which runs long after ' +
+					'the effect. The schedule-time CAPTURE is deliberately NOT allowed here — it ran ' +
+					'synchronously and was this unit\'s defect, so it must stay untracked at the read ' +
+					'rather than be exempted by its effect\'s disposition.',
+			},
+		};
+
+		const offenders: string[] = [];
+		for (const block of src.effectBlocks()) {
+			const entry = Object.entries(INTENDED_DEPENDENCY).find(([k]) => block.body.includes(k));
+			// PER READ, not per block: testing for `untrack(` anywhere in the
+			// effect exempted `const e = captureIdentity(); untrack(() => x());`.
+			// POSITIONAL as well as by token (codex round 3 [P2]). Without the
+			// marker, an entry written for reads inside a timer covered a read
+			// added SYNCHRONOUSLY beside the untracked capture — which puts the
+			// dependency straight back while the rule reports nothing.
+			const markerAt = entry?.[1].afterMarker ? block.body.indexOf(entry[1].afterMarker) : -1;
+			for (const read of trackedEpochReadDetails(block.body)) {
+				const positionOk = markerAt === -1 || read.index > markerAt;
+				if (entry && positionOk && entry[1].allowedReads.some((t) => read.token.startsWith(t))) {
+					continue;
+				}
+				offenders.push(`${block.label}: ...${read.context}`);
+			}
+		}
+		expect(
+			offenders,
+			'these $effects read the identity epoch without untracking THAT READ and without their ' +
+				'effect\'s disposition vouching for THAT read. Each therefore re-runs on an identity ' +
+				'change, re-creating whatever it armed — under the new epoch, over the previous ' +
+				'user\'s state.'
+		).toEqual([]);
+
+		expect(
+			src.effectBlocks().length,
+			'no $effect found — re-point this guard rather than reading its silence as compliance'
+		).toBeGreaterThan(0);
+
+		// The SSE entry allows every read token, which is only defensible while
+		// the effect reads nothing before it subscribes. Checked, not assumed:
+		// a read added to the synchronous prefix would otherwise inherit the
+		// callback's exemption and re-run the subscription on every identity
+		// change (codex round 2 [P2]).
+		const sse = src.effectBlocks().find((b) => b.body.includes('sseService.onItemEvent'));
+		expect(sse, 'the SSE effect was not found — re-point this guard').toBeDefined();
+		const beforeSubscribe = sse!.body.slice(0, sse!.body.indexOf('sseService.onItemEvent'));
+		expect(
+			trackedEpochReadDetails(beforeSubscribe),
+			'the SSE effect now reads the identity epoch BEFORE subscribing, so it takes a dependency ' +
+				'and re-subscribes on every identity change — and its disposition, written for reads ' +
+				'inside the callback, would silently cover it'
+		).toEqual([]);
+	});
+
+	it('the identity-change listener clears every piece of per-session state', () => {
+		// ENUMERATED against the file's own `$state` declarations (CONVE-35), so
+		// a new piece of typed input or open dialog cannot arrive undispositioned.
+		const reset = CODE.slice(CODE.indexOf('function resetPerSessionState()'));
+		const resetBody = reset.slice(0, reset.indexOf('\n\t}'));
+		expect(resetBody.length, 'resetPerSessionState() not found — re-point this guard').toBeGreaterThan(50);
+
+		const sub = CODE.slice(CODE.indexOf('authStore.onIdentityChange('));
+		const listener = sub.slice(0, sub.indexOf('\t});'));
+		expect(
+			listener,
+			'the identity-change listener does not reset per-session state'
+		).toMatch(/resetPerSessionState\(\)/);
+
+		// Cleared by the listener directly (page DATA the reload replaces).
+		const CLEARED_AS_DATA = [
+			'collection', 'savedViews', 'activeViewId', 'itemProgress',
+			'workspaceMembers', 'metaError', 'metaFromCache',
+		];
+		const NOT_PER_SESSION: Record<string, string> = {
+			metaLoading: 'owned by loadCollection',
+			progressLabel: 'replaced by the reload',
+			boardColumns: 'derived from the item list the reload replaces',
+			defaultViewId: 're-read from localStorage on render',
+			// CORRECTED (codex round 1 [P3]): the previous justification said
+			// "reset by the load it gates", and `loadCollection` never resets it
+			// — only the route effect does. On a SAME-ROUTE identity reload the
+			// flag therefore stayed true and the new user's default view was
+			// never applied. It is reset in `resetPerSessionState()` now, so
+			// this entry is gone rather than re-argued.
+
+			urlFiltersLoaded: 'reset by the route change it gates',
+			searchInputEl: 'DOM binding — Svelte clears it on unmount',
+			saveViewInput: 'DOM binding',
+			quickCreateInput: 'DOM binding',
+			paneHostEl: 'DOM binding',
+			viewMenuTrigger: 'DOM binding',
+			sortMenuTrigger: 'DOM binding',
+			collMenuTrigger: 'DOM binding',
+			paneMintRef: 'derived from the URL, which the identity change does not move',
+			// URL-DERIVED, and deliberately kept: the address is the same page
+			// for whoever is looking at it, so these are not the previous
+			// SESSION's state. `unparentedFilter`'s own comment already says a
+			// restricted caller's carried-over intent filters nothing.
+			viewMode: 'URL/preference — belongs to the address, not the session',
+			sortMode: 'URL/preference',
+			showArchived: 'URL/preference',
+			activeFilters: 'URL-derived',
+			selectedTags: 'URL-derived',
+			unparentedFilter: 'URL-derived, and gated against a restricted caller already',
+		};
+
+		const declared = [...CODE.matchAll(/^\s*let\s+(\w+)\s*(?::[^=]*)?=\s*\$state/gm)].map((m) => m[1]!);
+		expect(declared.length, 'no $state declarations found — re-point this guard').toBeGreaterThan(40);
+
+		const undispositioned = declared.filter(
+			(n) =>
+				!(n in NOT_PER_SESSION) &&
+				!CLEARED_AS_DATA.includes(n) &&
+				!new RegExp(`\\b${n}\\s*=`).test(resetBody)
+		);
+		expect(
+			undispositioned,
+			'these $state values are neither page data, nor reset on an identity change, nor named ' +
+				'as something that legitimately survives one. Each may be the previous user\'s typed ' +
+				'input or open dialog inherited by whoever signs in next: decide which, and either ' +
+				'clear it or name it here.'
+		).toEqual([]);
+
+		// The two this unit exists for, asserted by name so a refactor that
+		// renames the reset cannot quietly drop them.
+		expect(resetBody, "the previous user's search text is inherited").toMatch(/searchQuery = ''/);
+		expect(
+			resetBody,
+			"the previous identity's search RESULTS stay rendered — nothing else clears them once the " +
+				'search effect no longer re-runs on an identity change'
+		).toMatch(/searchResultRank = null/);
+	});
+
+	it('a stale continuation does not release the new identity\'s busy flags', () => {
+		// The REVERSAL the roles board made in its round 4, applied here (codex
+		// round 1 [P2]). These releases were unconditional on the grounds that a
+		// busy flag left true disables its affordance for ever. That held while
+		// nothing else cleared them; `resetPerSessionState()` now does, on every
+		// identity change, synchronously and before any stale continuation can
+		// resume. So clearing again from a previous-identity continuation can
+		// only release a gate the NEW user's own in-flight operation holds,
+		// letting them submit twice.
+		//
+		// Named per flag rather than derived, because "which check governs this
+		// statement" is not a question a regex answers — the same reason the
+		// library page names its two `finally` arms (mutant L6 there).
+		const BUSY_FLAGS = ['creatingNew', 'savingView', 'savingDrafts'];
+		const resetStart = CODE.indexOf('function resetPerSessionState()');
+		expect(resetStart, 'resetPerSessionState() not found — re-point this guard').toBeGreaterThan(-1);
+		const resetEnd = CODE.indexOf('\n\t}', resetStart);
+		const unfenced: string[] = [];
+		for (const flag of BUSY_FLAGS) {
+			const re = new RegExp(`(.{0,70})\\b${flag} = false;`, 'g');
+			let m: RegExpExecArray | null;
+			while ((m = re.exec(CODE)) !== null) {
+				// Inside `resetPerSessionState()` these are unconditional by
+				// design — that function IS the identity change.
+				if (m.index > resetStart && m.index < resetEnd) continue;
+				if (/identityHeld\(/.test(m[1]!)) continue;
+				unfenced.push(`${flag}: ...${m[1]!.replace(/\s+/g, ' ').trim().slice(-60)}`);
+			}
+		}
+		expect(
+			unfenced,
+			'these busy-flag releases are unconditional, so a request issued by the PREVIOUS identity ' +
+				"releases a gate the NEW user's own in-flight operation is holding"
+		).toEqual([]);
 	});
 
 	it('enumerates the population it claims to cover', () => {

@@ -3,6 +3,7 @@ import { cleanup, render, screen, waitFor } from '@testing-library/svelte';
 import { flushSync, tick } from 'svelte';
 import { page } from '$app/state';
 import SettingsPage from './+page.svelte';
+import { bindReactiveEpoch, isEpochReactive } from '../../../../test/identityEpochMock.svelte';
 
 
 /**
@@ -144,15 +145,26 @@ vi.mock('$app/navigation', () => ({
  * commit could be attempted.
  */
 const auth = vi.hoisted(() => {
-	let epoch = 0;
+	// Epoch read through a late-bound hook so it can be backed by the family's
+	// REAL `$state` signal (bound below). See `identityEpochMock.svelte.ts`:
+	// a non-reactive double turns every "did this effect re-run?" assertion
+	// into "does this compile?" (BUG-3084 checkpoint 18).
+	const hook = { read: null as null | (() => number), write: null as null | ((n: number) => void) };
+	let fallback = 0;
+	const getEpoch = () => (hook.read ? hook.read() : fallback);
+	const setEpoch = (n: number) => {
+		if (hook.write) hook.write(n);
+		else fallback = n;
+	};
 	return {
-		get identityEpoch() { return epoch; },
+		__hook: hook,
+		get identityEpoch() { return getEpoch(); },
 		get userId() { return 'u1'; },
-		bumpEpoch() { epoch++; },
-		resetEpoch() { epoch = 0; },
+		bumpEpoch() { setEpoch(getEpoch() + 1); },
+		resetEpoch() { setEpoch(0); },
 		identityFence() {
-			const captured = epoch;
-			return () => epoch === captured;
+			const captured = getEpoch();
+			return () => getEpoch() === captured;
 		},
 		onIdentityChange() { return () => {}; },
 		clear() {},
@@ -178,7 +190,24 @@ function flipIdentity() {
 	expect(auth.identityEpoch).toBeGreaterThan(before);
 }
 
+bindReactiveEpoch(auth.__hook);
+
 describe('BUG-3006: settings commits are fenced on the signed-in identity', () => {
+	it('PRECONDITION: the faked identity epoch is reactive', () => {
+		expect(
+			// The MOCK's own getter and bump, not the module signal: the first
+			// version of this helper read its own state and returned true with
+			// both hooks disconnected, so every leg below passed against the
+			// non-reactive double it exists to detect (codex round 1 [P2]).
+			isEpochReactive(
+				() => auth.identityEpoch,
+				() => auth.bumpEpoch()
+			),
+			'the mocked identityEpoch is not reactive: every "did this effect re-run?" assertion in ' +
+				'this file is measuring whether the code compiles'
+		).toBe(true);
+	});
+
 	beforeEach(() => {
 		meCalls.length = 0;
 		removeCalls.length = 0;

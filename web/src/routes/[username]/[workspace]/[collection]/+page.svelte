@@ -21,7 +21,7 @@
 	import MenuItem from '$lib/components/common/MenuItem.svelte';
 	import { viewport } from '$lib/stores/breakpoint.svelte';
 	import SSEStatusIndicator from '$lib/components/SSEStatusIndicator.svelte';
-	import { onDestroy, onMount } from 'svelte';
+	import { onDestroy, onMount, untrack } from 'svelte';
 	import { sseService } from '$lib/services/sse.svelte';
 	import { syncService } from '$lib/services/sync.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
@@ -801,8 +801,17 @@
 
 
 	// Read filters from URL on load
+	// Set by `resetPerSessionState()` to the query belonging to the session that
+	// just ended, and consumed by the next `loadUrlFilters()`. The
+	// identity-change reload must not restore that query from an address the
+	// rewrite has not reached yet — but a query the NEW user navigates to must
+	// survive, which is why this holds the value rather than a flag.
+	let skipUrlQueryValue: string | null = null;
+
 	function loadUrlFilters() {
 		const url = new URL(page.url);
+		const skipQuery = skipUrlQueryValue;
+		skipUrlQueryValue = null;
 		const filters: Record<string, string> = {};
 		// Reset tags (and the unparented intent) up-front so navigating to a
 		// collection whose URL has no `tags`/`$unparented` param clears any
@@ -824,7 +833,10 @@
 			if (k === 'view' && (v === 'list' || v === 'board')) {
 				viewMode = v;
 			} else if (k === 'q') {
-				searchQuery = v;
+				// Skipped exactly once after an identity change, and only for
+				// the value that belonged to the session which just ended — a
+				// different query is the new user's own and is honoured.
+				if (v !== skipQuery) searchQuery = v;
 			} else if (k === 'tags') {
 				selectedTags = v.split(',').map((t) => t.trim()).filter(Boolean);
 			} else if (!knownParams.has(k)) {
@@ -880,7 +892,107 @@
 	 * `${sessionUserId}\n${wsSlug}` and so re-runs on an identity change by
 	 * itself — checked rather than assumed.
 	 */
+	/**
+	 * Every piece of state on this page that carries the PREVIOUS USER'S INPUT
+	 * OR INTENT — something they typed, opened, or started and nobody else
+	 * should inherit. Distinct from the page's DATA (which the reload replaces),
+	 * from URL-DERIVED view state (which belongs to the address, not the
+	 * session), and from DOM refs.
+	 *
+	 * Enumerated rather than sampled, and the source guard holds this list
+	 * against the file's own `$state` declarations so a new piece cannot arrive
+	 * undispositioned (CONVE-35; the roles board needed two review rounds to
+	 * learn this and it is carried here rather than re-learned).
+	 */
+	function resetPerSessionState() {
+		// THE QUERY MUST NOT COME BACK, and clearing the variable alone does not
+		// achieve that (codex round 1 [P1]). `searchQuery` is restored from
+		// `?q=` by `loadUrlFilters()`, which the reload below calls on success —
+		// so the clear is undone a round-trip later and the restored query is
+		// then dispatched under the NEW epoch. Codex reproduced
+		// `api.search('secret', …)` completing after the identity reload.
+		//
+		// TWO mechanisms, deliberately, because they fail differently:
+		//
+		//   1. A LATCH consumed by the next `loadUrlFilters()`. Deterministic —
+		//      it does not depend on when a navigation lands. The first fix was
+		//      the URL rewrite alone and it RACED the page's own URL-sync
+		//      effect: both write the address, and which lands first is timing.
+		//   2. The URL rewrite, so the previous session's query does not sit in
+		//      the next user's address bar. Best-effort by nature; (1) is what
+		//      makes the behaviour correct regardless of ordering.
+		// Scoped to the VALUE, not to "the next load" (codex round 2 [P2]).
+		// A bare boolean is consumed by whichever load runs next — including a
+		// navigation the NEW user makes to another collection's `?q=` link,
+		// whose query is then discarded although it is theirs. Recording the
+		// string means only the previous session's own query is suppressed.
+		skipUrlQueryValue = page.url.searchParams.get('q');
+		if (browser) {
+			const url = new URL(page.url);
+			if (url.searchParams.has('q')) {
+				url.searchParams.delete('q');
+				void goto(url.pathname + url.search, {
+					replaceState: true,
+					noScroll: true,
+					keepFocus: true,
+					// PRESERVED (codex round 2 [P2]). Omitting it lets SvelteKit
+					// default the history state to `{}`, losing `paneDepth` and
+					// `paneOwned` — after which closing a drilled pane takes the
+					// replace-delete path instead of unwinding, and Back can
+					// reopen earlier pane entries. `updateUrlFilters` preserves
+					// it for exactly this reason; this rewrite must too.
+					state: currentPaneState(),
+				});
+			}
+		}
+		// Typed input.
+		searchQuery = '';
+		searchResultRank = null;
+		quickCreateTitle = '';
+		saveViewName = '';
+		draftText = {};
+		// Open intent — dialogs, sheets and menus the previous user opened.
+		quickCreateOpen = false;
+		creatingNew = false;
+		saveViewOpen = false;
+		savingView = false;
+		shareDialogOpen = false;
+		editCollectionOpen = false;
+		editCollectionSection = undefined;
+		filtersOpen = false;
+		viewSheetOpen = false;
+		viewMenuOpen = false;
+		sortMenuOpen = false;
+		collMenuOpen = false;
+		draftOpen = {};
+		savingDrafts = false;
+		// Navigation intent formed by the previous user. `leaveDiscard` already
+		// refuses to REPLAY this after an identity change; clearing it here
+		// means the new user never sees the dialog at all.
+		pendingNav = null;
+		showLeaveDialog = false;
+		// Keyboard focus into a list that is about to be replaced.
+		focusedIndex = -1;
+		// The default-view gate. `loadCollection` does not reset it — only the
+		// route effect does — so on a same-route identity reload it stayed true
+		// and the NEW user's default view was never applied (codex round 1 [P3]).
+		defaultViewApplied = false;
+	}
+
 	const stopIdentityReload = authStore.onIdentityChange(() => {
+		// The previous user's typed input and open dialogs, cleared alongside
+		// the page data below (BUG-3084). `searchResultRank` is the sharp one:
+		// it holds item ids ranked by a query the PREVIOUS identity ran, and
+		// once the search effect stopped re-running on an identity change —
+		// which is the defect this unit fixes — nothing else cleared it, so
+		// those results stayed rendered for whoever signed in next.
+		//
+		// KNOWN CONSEQUENCE, stated because it is visible: `searchQuery` is
+		// synced to the URL, so clearing it rewrites the address on an identity
+		// change. That is deliberate — a query string is a thing a person typed,
+		// and inheriting it silently is what this clears — but it is a
+		// behaviour change and not merely a tidy-up.
+		resetPerSessionState();
 		// CLEARED FIRST, then re-loaded (codex [P1]). `loadCollection` leaves
 		// the current `collection`, saved views and progress on screen while it
 		// awaits, so re-loading alone would keep the previous user's private
@@ -901,7 +1013,26 @@
 	onDestroy(stopIdentityReload);
 
 	$effect(() => {
-		if (wsSlug && collSlug) loadCollection(wsSlug, collSlug, showArchived);
+		// UNTRACKED (BUG-3084). `loadCollection` reads `authStore.identityEpoch`
+		// synchronously — it re-stamps `identityEpochAtLoad` from it before its
+		// first await — so without this the effect takes a dependency on the
+		// EPOCH and re-runs on every identity change, on top of the
+		// `onIdentityChange` listener above that exists to re-load for exactly
+		// that event. Two loads, every request issued twice.
+		//
+		// Nothing renders incorrectly: the fences and the listener's clear make
+		// the loser harmless. It is waste, and the kind that reads as a mystery
+		// in a network log rather than as a bug anyone would file.
+		//
+		// The keys this effect is FOR are named explicitly and read OUTSIDE the
+		// untracked region, so it still re-runs on a workspace, collection or
+		// archived-filter change. Naming them is what makes the suppression
+		// targeted rather than a blanket silencing — the same shape settings
+		// (#1370) uses, and the library page (#1378).
+		const ws = wsSlug;
+		const coll = collSlug;
+		const archived = showArchived;
+		if (ws && coll) untrack(() => loadCollection(ws, coll, archived));
 	});
 
 	// ── Scroll position persistence (TASK-755 → BUG-1425) ──────────────
@@ -1822,7 +1953,24 @@
 			// Fenced INSIDE the timer body, not at the effect: 200ms separates
 			// the two, and a check at the effect says nothing about who is
 			// signed in when this fires (BUG-3084).
-			const epochAtSchedule = captureIdentity();
+			//
+			// UNTRACKED, and this is the whole bug rather than a tidy-up
+			// (BUG-3084 checkpoint 18). `captureIdentity()` reads
+			// `authStore.identityEpoch`, which is `$state`, so reading it HERE —
+			// synchronously inside the effect — made this effect depend on the
+			// epoch. An identity change then re-ran the effect, which
+			// `clearTimeout`s the armed timer and arms a new one still reading
+			// `searchQuery` (the PREVIOUS user's typed text) while capturing the
+			// NEW epoch. 200ms later the fence below passed, because the epoch it
+			// captured was current, and the previous session's query went to the
+			// server under the new identity with its results rendered.
+			//
+			// The fence never failed. It was RE-CREATED by the framework at the
+			// one moment it needed to stay put — so the fix is to stop the
+			// dependency, not to strengthen the check. Untracking keeps exactly
+			// what this line is for ("the epoch when this query was scheduled")
+			// and removes the re-arm.
+			const epochAtSchedule = untrack(() => captureIdentity());
 			searchTimeout = setTimeout(async () => {
 				if (!identityHeld(epochAtSchedule)) return;
 				try {
@@ -2170,9 +2318,17 @@
 				toastStore.show(err?.message || 'Failed to create item', 'error');
 			}
 		} finally {
-			// NOT fenced: a busy flag left true disables the affordance for ever
-			// on a page that did not remount, and it discloses nothing.
-			creatingNew = false;
+			// FENCED, and the reasoning has REVERSED (codex round 1 [P2]).
+			//
+			// It was unconditional on the grounds that a busy flag left true
+			// disables the affordance for ever on a page that did not remount.
+			// That held while nothing else cleared it. `resetPerSessionState()`
+			// now clears it on every identity change — synchronously, before any
+			// stale continuation can resume — so the latch it guarded against is
+			// closed elsewhere, and clearing here can only release a gate the NEW
+			// user's own in-flight operation is holding, letting them submit
+			// twice. Same rule as the roles board's lost-identity exits.
+			if (identityHeld(epochAtEntry)) creatingNew = false;
 		}
 	}
 
@@ -2348,7 +2504,12 @@
 				// moved, so clearing here would discard the user's text on the
 				// strength of a create that did not land (BUG-3084).
 				if (!identityHeld(epochAtEntry)) {
-					savingDrafts = false;
+					// WRITES NOTHING. A continuation that has lost the identity
+					// may not touch shared interaction state — `resetPerSessionState()`
+					// already cleared this flag, synchronously, before this
+					// resumed, so clearing it again can only release a gate the
+					// NEW user is holding. Same reversal as the roles board's
+					// lost-identity exits (codex round 1 [P2]).
 					return;
 				}
 				delete draftText[col];
@@ -2357,10 +2518,12 @@
 		} catch {
 			// A create failed (already toasted) — keep the dialog open with
 			// the still-unsaved drafts so the user can retry or discard.
-			savingDrafts = false;
+			// See the note on createNewItem's busy flag (codex round 1 [P2]).
+			if (identityHeld(epochAtEntry)) savingDrafts = false;
 			return;
 		}
-		savingDrafts = false;
+		// See the note on createNewItem's busy flag (codex round 1 [P2]).
+		if (identityHeld(epochAtEntry)) savingDrafts = false;
 		// The pending navigation was the PREVIOUS user's intent, formed when
 		// they tried to leave the page (BUG-3084).
 		if (!identityHeld(epochAtEntry)) return;
@@ -2427,8 +2590,8 @@
 				toastStore.show(err?.message || 'Failed to create item', 'error');
 			}
 		} finally {
-			// NOT fenced, for the reason on createNewItem's own busy flag.
-			creatingNew = false;
+			// See the note on createNewItem's busy flag.
+			if (identityHeld(epochAtEntry)) creatingNew = false;
 		}
 	}
 
@@ -3385,8 +3548,8 @@
 			if (!identityHeld(epochAtEntry)) return;
 			toastStore.show('Failed to save view', 'error');
 		} finally {
-			// NOT fenced, for the reason on createNewItem's busy flag.
-			savingView = false;
+			// See the note on createNewItem's busy flag.
+			if (identityHeld(epochAtEntry)) savingView = false;
 		}
 	}
 
