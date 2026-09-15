@@ -216,6 +216,58 @@ function delimitDeclaration(code: string, openIndex: number, label: string): str
 	return code.slice(openIndex, end + 1);
 }
 
+/**
+ * The block with every `catch` ARM's body removed, so a question about the
+ * SUCCESS path cannot be answered by a check that only a failure would reach.
+ *
+ * Needed because the obvious spellings of that question are both wrong.
+ * Splitting the body at `} catch` reports CORRECT code as unguarded whenever a
+ * handler commits after its try/catch rather than inside it (`handleLaneDrop`
+ * on the roles board does exactly that), and balancing every arm separately
+ * reports correct code too when an await lives in a NESTED try inside an outer
+ * catch (`handleStatusChange` on the collection page). Both were tried; both
+ * flagged working handlers, and an instrument that reports correct code gets
+ * silenced while a documented blind spot does not.
+ *
+ * Excising the arms answers the question directly: what remains is every path
+ * a request that SUCCEEDS can take, and a check found there is one such a
+ * request actually reaches.
+ */
+export function withoutCatchArms(block: string): string {
+	// FAILS CLOSED on any catch it cannot delimit (codex round 5 [P2]). The
+	// first version treated `}catch` — or a catch whose brace it could not find
+	// — as "there is no catch arm", so the success-path guard would go on to
+	// scan FAILURE code and could pass an unfenced success path. A guard that
+	// answers the wrong question on an input it does not recognise is worse than
+	// one that refuses, because the refusal is visible and the wrong answer is
+	// not. The refusal message asks to be taught rather than widened.
+	const CATCH = /\}\s*catch\b/g;
+	let out = '';
+	let i = 0;
+	while (true) {
+		CATCH.lastIndex = i;
+		const m = CATCH.exec(block);
+		if (m === null) {
+			out += block.slice(i);
+			return out;
+		}
+		const at = m.index;
+		const brace = block.indexOf('{', at + m[0].length);
+		if (brace === -1) {
+			throw new Error(
+				'found a catch clause with no opening brace — this guard does not understand the ' +
+					'grammar in use; re-point it rather than widening it'
+			);
+		}
+		const end = matchBrace(block, brace);
+		if (end === -1) {
+			throw new Error('could not delimit a catch arm — re-point this guard rather than widening it');
+		}
+		out += block.slice(i, at);
+		i = end + 1;
+	}
+}
+
 export function readFenceSource(url: URL): FenceSource {
 	const raw = readFileSync(url, 'utf8');
 	const code = stripComments(raw);
@@ -237,6 +289,24 @@ export function readFenceSource(url: URL): FenceSource {
 			let m: RegExpExecArray | null;
 			while ((m = re.exec(script)) !== null) {
 				out.set(m[1], delimitDeclaration(script, m.index, `${m[1]}()`));
+			}
+			// FAILS CLOSED when the tab-indented shape above stops describing the
+			// file (codex round 5 [P2]). The enumeration is what every population
+			// assertion is built on, so a declaration it silently skips is a
+			// handler no rule applies to — and the skip is invisible, because a
+			// smaller map makes every "these are missing a fence" list SHORTER.
+			// A loose count of the word `async function` is the cross-check: it
+			// over-counts nested ones, so it can only ever be >= the strict
+			// count, and a strict count BELOW it means a top-level declaration
+			// was written in a shape this enumerator does not read.
+			const loose = (script.match(/\basync function \w+\s*\(/g) ?? []).length;
+			const nested = (script.match(/[^\n]\s+async function \w+\s*\(/g) ?? []).length;
+			if (out.size < loose - nested) {
+				throw new Error(
+					`asyncFunctions() enumerated ${out.size} declarations but the file contains at least ` +
+						`${loose - nested} written at top level. One is in a shape this guard does not ` +
+						`read — teach it the shape rather than accepting the short list.`
+				);
 			}
 			return out;
 		},

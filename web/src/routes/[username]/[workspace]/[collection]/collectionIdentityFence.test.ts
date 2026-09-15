@@ -39,7 +39,7 @@
 // after the commit it guards all pass here. That is the behavioural suite's
 // job, and the division is deliberate.
 import { describe, it, expect } from 'vitest';
-import { readFenceSource } from '../../../../test/identityFenceSource';
+import { readFenceSource, withoutCatchArms } from '../../../../test/identityFenceSource';
 
 const src = readFenceSource(new URL('./+page.svelte', import.meta.url));
 const CODE = src.code;
@@ -237,13 +237,18 @@ describe('the collection page fences every async commit point', () => {
 		// that reports correct code is worse than one with a known blind spot,
 		// because the blind spot can be written down and a false alarm gets
 		// silenced.
+		// WINDOW WIDENED (BUG-3084 surface 2): the body with every CATCH ARM
+		// EXCISED, not the text before the first `} catch`. The narrower form
+		// shipped here first and reports correct code as unguarded whenever a
+		// handler commits AFTER its try/catch rather than inside it — which the
+		// roles board's `handleLaneDrop` does. Changed in both guards at once so
+		// the family does not carry two answers to one question.
 		const unguarded: string[] = [];
 		for (const [name, body] of src.asyncFunctions()) {
-			const firstAwait = body.indexOf('await ');
+			const successOnly = withoutCatchArms(body);
+			const firstAwait = successOnly.indexOf('await ');
 			if (firstAwait === -1) continue;
-			const catchAt = body.indexOf('} catch');
-			const successPath = body.slice(firstAwait, catchAt === -1 ? body.length : catchAt);
-			if (!/identityHeld\(|pageIdentityHeld\(\)/.test(successPath)) {
+			if (!/identityHeld\(|pageIdentityHeld\(\)/.test(successOnly.slice(firstAwait))) {
 				unguarded.push(name);
 			}
 		}
