@@ -268,22 +268,29 @@ describe('the dashboard fences every async commit point', () => {
 		// `load()` captures the identity SYNCHRONOUSLY before its first await.
 		// Svelte tracks reads through ordinary calls, so an effect that called
 		// it tracked would depend on the epoch and re-run on every identity
-		// change — on top of the reload this same effect already performs for
-		// that event through `sessionUserId`. The core cannot see through the
-		// call; this rule says what it cannot.
+		// change. The core cannot see through the call; this rule says what it
+		// cannot.
+		//
+		// HONEST ABOUT THE CONSEQUENCE ON THIS PAGE (mutation M6): the effect's
+		// own `lastLoadKey` check returns early on a re-run whose key has not
+		// moved, so a tracked call here produces a spurious RE-RUN and not the
+		// library's double load. The behavioural suite therefore cannot see this
+		// mutant, and this rule is the family's hygiene — keep the effect's
+		// dependency set what its key says it is — rather than a defect fix. It
+		// becomes the fix the day someone removes or reorders that early return.
 		//
 		// POSITIONAL: the call's index must fall inside an untracked span, not
 		// merely share a block with one (the codex round-1 and round-3 defeats
 		// on the collection page, both walked through a per-block check).
 		const body = loadEffect();
 		const spans = untrackedSpans(body);
-		expect(spans.length, 'the load effect has no untrack — every load is issued twice').toBeGreaterThan(0);
+		expect(spans.length, 'the load effect has no untrack — it depends on everything load() reads synchronously').toBeGreaterThan(0);
 		const at = body.search(/\bload\(wsSlug\)/);
 		expect(at, 'the load effect no longer calls load(wsSlug) — re-point this guard').toBeGreaterThan(-1);
 		expect(
 			spans.some(([a, b]) => at >= a && at <= b),
 			'load(wsSlug) is called OUTSIDE the untrack callback, so the effect takes a dependency on ' +
-				'the epoch through the synchronous entry capture'
+				'the epoch through the synchronous entry capture and re-runs on every identity change'
 		).toBe(true);
 	});
 
