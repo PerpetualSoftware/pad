@@ -336,7 +336,30 @@ describe('continuations started under the previous identity do not commit', () =
 	 * re-run each get their own deferred, so the leg can resolve the OLD one
 	 * last and still tell the two apart.
 	 */
-	async function suggestionsRace(moveIdentity: boolean) {
+	it('a tag edit typed by the NEW identity is sent, not folded into the previous identity\'s burst', async () => {
+		const r = mount();
+		await loaded(r);
+		const first = deferNext(api.items.update);
+		(tagInput().onchange as (t: string[]) => void)(['a']);
+		await waitFor(() => expect(first.length).toBe(1));
+		auth.moveIdentity();
+		await settle();
+		await loaded(r);
+		// Still in flight: the previous identity's burst is running. An edit
+		// coalesced into it would be dropped by that burst's refusal.
+		(tagInput().onchange as (t: string[]) => void)(['x']);
+		await settle();
+		first[0]!.resolve({ ...itemFor('i1'), tags: '["a"]' });
+		await settle();
+		await new Promise((res) => setTimeout(res, 20));
+		const sent = vi
+			.mocked(api.items.update)
+			.mock.calls.filter((c) => c[2] && 'tags' in (c[2] as object))
+			.map((c) => (c[2] as { tags: string }).tags);
+		expect(sent).toEqual(['["a"]', '["x"]']);
+	});
+
+	async function suggestionsRace(moveIdentity: boolean, oldOutcome: 'resolve' | 'reject' = 'resolve') {
 		const calls: Deferred[] = [];
 		vi.mocked(api.tags.list).mockImplementation(
 			() => new Promise((resolve, reject) => calls.push({ resolve, reject }))
@@ -353,7 +376,8 @@ describe('continuations started under the previous identity do not commit', () =
 				calls[1]!.resolve([{ tag: 'current-user-tag' }]);
 				await settle();
 			}
-			old.resolve([{ tag: 'previous-user-tag' }]);
+			if (oldOutcome === 'resolve') old.resolve([{ tag: 'previous-user-tag' }]);
+			else old.reject(new Error('previous identity lost access'));
 			await settle();
 			return tagInput().suggestions as string[];
 		} finally {
@@ -367,6 +391,14 @@ describe('continuations started under the previous identity do not commit', () =
 
 	it('CONTROL: the same vocabulary lands under an unchanged identity', async () => {
 		expect(await suggestionsRace(false)).toEqual(['previous-user-tag']);
+	});
+
+	it('REFUSAL (failure arm): the previous identity\'s failed request does not clear the recovered vocabulary', async () => {
+		expect(await suggestionsRace(true, 'reject')).toEqual(['current-user-tag']);
+	});
+
+	it('CONTROL: a failed request clears the vocabulary under an unchanged identity', async () => {
+		expect(await suggestionsRace(false, 'reject')).toEqual([]);
 	});
 
 	/**
