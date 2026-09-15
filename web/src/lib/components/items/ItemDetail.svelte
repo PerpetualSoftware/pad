@@ -1610,10 +1610,6 @@
 
 	async function loadData() {
 		const myGen = ++loadGeneration;
-		// Re-stamp the identity this editor's contents belong to (BUG-3005). A
-		// load is where the contents are replaced, so it is where the claim
-		// "this markdown was typed by the current user" becomes true again.
-		identityEpochAtLoad = authStore.identityEpoch;
 		// The item whose links `itemLinks` currently describes, captured BEFORE
 		// this load can replace `item`. `loadData` is not only a first load or a
 		// switch: the edit-collection handler calls it for a SAME-item reload
@@ -1679,6 +1675,19 @@
 		// stale queued markdown from item A can't PATCH into item B.
 		rawContentSaver.cancel();
 		rawContentSaver.clearPending();
+		// Re-stamp the identity this editor's contents belong to (BUG-3005). A
+		// load is where the contents are replaced, so it is where the claim
+		// "this markdown was typed by the current user" becomes true again.
+		//
+		// AFTER the flush and the clear above, never before them (BUG-3084
+		// checkpoints 32-33). The keepalive flush persists markdown typed under
+		// the identity of the PREVIOUS load, and the saver's `save` refuses it
+		// when `identityEpoch !== identityEpochAtLoad`. Re-stamping first made
+		// those two equal before the check ran, so a load triggered by an
+		// identity change PATCHed the previous user's pending draft under the
+		// new user's cookie. Still before the first await, so every
+		// continuation of this load sees the new stamp.
+		identityEpochAtLoad = authStore.identityEpoch;
 		// Reset raw mode on an actual item-switch (TASK-2124 decision #1). rawMode
 		// is a per-item view choice, not a session-wide one: without this,
 		// switching A→B while A is in raw-markdown mode carries raw into B. Two
