@@ -9,7 +9,7 @@
 // including the two shapes that have broken brace matchers in this repo
 // before: a brace inside a string literal, and a template interpolation.
 import { describe, it, expect } from 'vitest';
-import { matchBrace, matchDelimiter, readFenceSource, stripComments, withoutCatchArms, untrackedSpans, trackedEpochReads } from './identityFenceSource';
+import { matchBrace, matchDelimiter, readFenceSource, stripComments, withoutCatchArms, untrackedSpans, trackedEpochReads, stateDeclarations } from './identityFenceSource';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -320,5 +320,70 @@ describe('matchBrace understands regex literals', () => {
 	it('still treats division as division', () => {
 		const code = '{ const r = a / b; const s = c / d; }';
 		expect(matchBrace(code, 0)).toBe(code.length - 1);
+	});
+});
+
+describe('stateDeclarations enumerates the $state population by STATEMENT', () => {
+	// The regex every page guard used to carry, kept here as the CONTROL: each
+	// fixture below states what the regex answered, so the case that motivated
+	// the hoist stays red on the old instrument rather than being described.
+	const LEGACY = /^\s*let\s+(\w+)\s*(?::[^=]*)?=\s*\$state/gm;
+	const legacy = (code: string) => [...code.matchAll(LEGACY)].map((m) => m[1]!);
+
+	it('reads plain, typed and generic declarations, in order', () => {
+		const code = [
+			'\tlet loading = $state(true);',
+			'\tlet dashboard = $state<DashboardResponse | null>(null);',
+			'\tlet tags: string[] = $state([]);',
+			'\tlet plain = 3;',
+			'\tlet derived = $derived(x);',
+		].join('\n');
+		expect(stateDeclarations(code)).toEqual(['loading', 'dashboard', 'tags']);
+		expect(legacy(code)).toEqual(['loading', 'dashboard', 'tags']);
+	});
+
+	it('an uninitialised typed let ABOVE a $state line does not swallow it (BUG-3084 M12)', () => {
+		// The dashboard page's own shape. The legacy regex let the annotation
+		// run across the newline into the next statement: ONE match, named
+		// after the wrong variable, and the real $state never enumerated.
+		const code = [
+			'\tlet pollTimer: ReturnType<typeof setInterval> | undefined;',
+			'\tlet onboardingDismissed = $state(false);',
+		].join('\n');
+		expect(stateDeclarations(code)).toEqual(['onboardingDismissed']);
+		expect(legacy(code), 'the control: the legacy regex is wrong here, and must stay wrong').toEqual(['pollTimer']);
+	});
+
+	it('a genuine annotation spanning lines is still found (the [^=\\n] fix would miss it)', () => {
+		const code = ['\tlet m: Map<', '\t\tstring,', '\t\tnumber', '\t> = $state(new Map());'].join('\n');
+		expect(stateDeclarations(code)).toEqual(['m']);
+		const narrowFix = [...code.matchAll(/^\s*let\s+(\w+)\s*(?::[^=\n]*)?=\s*\$state/gm)].map((m) => m[1]!);
+		expect(narrowFix, "the surface-4 guard's own fix: closes the adjacency case, opens this one").toEqual([]);
+	});
+
+	it('an object type with semicolons inside its braces does not end the statement early', () => {
+		const code = '\tlet track: { slug: string; onboarding: boolean } | null = $state(null);\n\tlet other = 1;';
+		expect(stateDeclarations(code)).toEqual(['track']);
+	});
+
+	it('a semicolon inside a string in the initialiser does not end the statement early', () => {
+		const code = "\tlet s = $state('a;b');\n\tlet n = 1;";
+		expect(stateDeclarations(code)).toEqual(['s']);
+	});
+
+	it('does not match `let` inside an identifier or a $state that is not the initialiser', () => {
+		const code = ['\tlet outlet = 1;', '\tlet x = foo($state(1));', '\tconst y = $state(2);'].join('\n');
+		expect(stateDeclarations(code)).toEqual([]);
+	});
+
+	it('throws rather than skipping when a declaration never terminates', () => {
+		expect(() => stateDeclarations('\tlet a = $state(1)')).toThrow(/could not find the end/);
+	});
+
+	it('is exposed on FenceSource and reads the script block', () => {
+		const dir = mkdtempSync(join(tmpdir(), 'fence-'));
+		const file = join(dir, 'page.svelte');
+		writeFileSync(file, '<script lang="ts">\n\tlet a: T | undefined;\n\tlet b = $state(0);\n</script>\n<p>{b}</p>\n');
+		expect(readFenceSource(pathToFileURL(file)).stateDeclarations()).toEqual(['b']);
 	});
 });

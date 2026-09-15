@@ -138,6 +138,14 @@ export interface FenceSource {
 	 * moment it needed to stay put.
 	 */
 	effectBlocks(): EnumeratedBlock[];
+	/**
+	 * The names of every `let … = $state(…)` declaration in the script, in
+	 * order. The population the transient-state disposition tables are held
+	 * against: a guard that enumerates these itself with a regex has already
+	 * been wrong once (`stateDeclarations` below says how), so the four page
+	 * guards read this instead.
+	 */
+	stateDeclarations(): string[];
 }
 
 /**
@@ -490,6 +498,74 @@ export function trackedEpochReadDetails(
 	return out;
 }
 
+/**
+ * Every `let NAME[: Type] = $state(...)` declaration in `code`, by name.
+ *
+ * STATEMENT-AWARE, not a line regex — and the difference is the whole reason
+ * this lives in the core (BUG-3084 surface 4, mutation M12). Four page guards
+ * carried `let\s+(\w+)\s*(?::[^=]*)?=\s*\$state` with the `m` flag. The
+ * negated class in the optional type annotation admits `\n`, so on
+ *
+ *     let pollTimer: ReturnType<typeof setInterval> | undefined;
+ *     let onboardingDismissed = $state(false);
+ *
+ * it matched ONE declaration named `pollTimer` — the annotation ran across the
+ * line break into the next statement's `= $state` — and `onboardingDismissed`
+ * was never enumerated. The guard went red for a name that is not `$state`
+ * while the real one was silently absent: a red instrument, for the wrong
+ * reason, hiding the hole it had. Three sibling guards had the same regex and
+ * no adjacent pair to trigger it, which is a hole that has not fired yet, not
+ * an absence of one.
+ *
+ * A fix of `[^=\n]` closes that case and opens the opposite one: a genuine
+ * annotation that spans lines (`let m: Map<\n string,\n number\n> = $state(…)`)
+ * would then be skipped. So this walks each `let` STATEMENT instead: from the
+ * name to the first `;` at bracket depth zero, and asks whether that statement
+ * initialises with `$state`. An object type with `;` inside its braces, a
+ * generic across lines, and an uninitialised typed `let` beside a `$state`
+ * line all come out right, and the core's own suite drives each of them —
+ * with the legacy regex run on the same fixture as the control that goes red.
+ *
+ * FAILS CLOSED: a `let` whose statement never terminates throws rather than
+ * being skipped, since skipping narrows the population silently.
+ */
+export function stateDeclarations(code: string): string[] {
+	const out: string[] = [];
+	const re = /(^|[;{}\n])\s*let\s+([A-Za-z_$][\w$]*)/g;
+	let m: RegExpExecArray | null;
+	while ((m = re.exec(code)) !== null) {
+		const name = m[2]!;
+		let i = m.index + m[0].length;
+		let depth = 0;
+		let quote: string | null = null;
+		let initAt = -1;
+		let endAt = -1;
+		for (; i < code.length; i++) {
+			const c = code[i]!;
+			if (quote) {
+				if (c === '\\') { i++; continue; }
+				if (c === quote) quote = null;
+				continue;
+			}
+			if (c === '"' || c === "'" || c === '`') { quote = c; continue; }
+			if (c === '{' || c === '(' || c === '[') { depth++; continue; }
+			if (c === '}' || c === ')' || c === ']') { depth--; continue; }
+			if (depth === 0 && c === ';') { endAt = i; break; }
+			if (depth === 0 && initAt === -1 && c === '=' && code[i + 1] !== '=' && code[i + 1] !== '>') {
+				initAt = i + 1;
+			}
+		}
+		if (endAt === -1) {
+			throw new Error(
+				`could not find the end of the statement declaring \`${name}\` — re-point this guard rather than widening it`
+			);
+		}
+		if (initAt !== -1 && /^\s*\$state\b/.test(code.slice(initAt, endAt))) out.push(name);
+		re.lastIndex = endAt;
+	}
+	return out;
+}
+
 export function readFenceSource(url: URL): FenceSource {
 	const raw = readFileSync(url, 'utf8');
 	const code = stripComments(raw);
@@ -600,6 +676,9 @@ export function readFenceSource(url: URL): FenceSource {
 				out.push({ label, body: call.slice(brace + 1, end), index: m.index });
 			}
 			return out;
+		},
+		stateDeclarations(): string[] {
+			return stateDeclarations(script);
 		},
 		deferredTimers(): EnumeratedBlock[] {
 			const out: EnumeratedBlock[] = [];

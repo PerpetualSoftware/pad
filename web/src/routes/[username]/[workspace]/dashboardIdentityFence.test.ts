@@ -396,13 +396,10 @@ describe('the dashboard fences every async commit point', () => {
 				'either identity, and carries nothing about the previous session',
 		};
 
-		// The type annotation may not span a line (`[^=\n]`, not `[^=]`): with
-		// the wider class, `let pollTimer: ReturnType<…> | undefined;` on the
-		// line ABOVE a `$state` declaration matched as ONE declaration named
-		// `pollTimer`, and the `$state` on the next line was never enumerated
-		// at all — an enumeration hole that reported the wrong name and hid the
-		// right one (found when this guard first ran against this page).
-		const declared = [...CODE.matchAll(/^\s*let\s+(\w+)\s*(?::[^=\n]*)?=\s*\$state/gm)].map((m) => m[1]!);
+		// Enumerated by the core, by STATEMENT (M12): this page is the one whose
+		// `let pollTimer: … | undefined;` above a `$state` line broke the regex
+		// the family used to carry — see `stateDeclarations` for the shape.
+		const declared = src.stateDeclarations();
 		expect(declared.length, 'no $state declarations found — re-point this guard').toBeGreaterThan(5);
 
 		const undispositioned = declared.filter(

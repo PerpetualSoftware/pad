@@ -312,7 +312,11 @@ describe('the collection page fences every async commit point', () => {
 			unparentedFilter: 'URL-derived, and gated against a restricted caller already',
 		};
 
-		const declared = [...CODE.matchAll(/^\s*let\s+(\w+)\s*(?::[^=]*)?=\s*\$state/gm)].map((m) => m[1]!);
+		// Enumerated by the core, by STATEMENT (BUG-3084 M12): the regex this
+		// guard carried let a type annotation run across a newline into the
+		// next statement, so an uninitialised typed `let` above a `$state` line
+		// swallowed it. No such pair here today; the hole was real regardless.
+		const declared = src.stateDeclarations();
 		expect(declared.length, 'no $state declarations found — re-point this guard').toBeGreaterThan(40);
 
 		const undispositioned = declared.filter(
