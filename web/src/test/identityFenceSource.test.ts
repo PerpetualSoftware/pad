@@ -9,7 +9,7 @@
 // including the two shapes that have broken brace matchers in this repo
 // before: a brace inside a string literal, and a template interpolation.
 import { describe, it, expect } from 'vitest';
-import { matchBrace, matchDelimiter, readFenceSource, stripComments, withoutCatchArms } from './identityFenceSource';
+import { matchBrace, matchDelimiter, readFenceSource, stripComments, withoutCatchArms, untrackedSpans, trackedEpochReads } from './identityFenceSource';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -206,5 +206,119 @@ describe('withoutCatchArms', () => {
 
 	it('throws rather than guessing when an arm cannot be delimited', () => {
 		expect(() => withoutCatchArms('try { A } catch (e) { unterminated')).toThrow(/re-point this guard/);
+	});
+});
+
+describe('untrackedSpans', () => {
+	it('covers only the untrack call, so a read outside one is still tracked', () => {
+		const block = "const e = captureIdentity(); untrack(() => unrelated());";
+		const spans = untrackedSpans(block);
+		expect(spans).toHaveLength(1);
+		const readAt = block.indexOf('captureIdentity()');
+		expect(
+			spans.some(([a, b]) => readAt >= a && readAt <= b),
+			'the capture sits outside the untrack call and must not be exempted by it — the first ' +
+				'version of the effect rule tested for `untrack(` anywhere in the block and exempted ' +
+				'exactly this shape'
+		).toBe(false);
+	});
+
+	it('throws rather than guessing when an untrack call cannot be delimited', () => {
+		expect(() => untrackedSpans('untrack(() => {')).toThrow(/re-point this guard/);
+	});
+});
+
+describe('trackedEpochReads', () => {
+	it('reports a read outside untrack and ignores one inside it', () => {
+		const reads = trackedEpochReads(
+			'const a = captureIdentity(); untrack(() => pageIdentityHeld());'
+		);
+		expect(reads).toHaveLength(1);
+		expect(reads[0]).toContain('captureIdentity(');
+	});
+
+	it('reports a read inside a NESTED FUNCTION, because nesting is not deferral', () => {
+		// The premise that killed the previous helper: an IIFE, a forEach
+		// callback, a Promise executor and everything before an async function's
+		// first await all run SYNCHRONOUSLY, and Svelte tracks reads through
+		// ordinary calls. A rule that strips nested bodies hides real
+		// dependencies. What is genuinely deferred is named in a page's
+		// disposition table instead.
+		const reads = trackedEpochReads('(() => { captureIdentity(); })();');
+		expect(
+			reads,
+			'a read inside an immediately-invoked function is tracked, and stripping nested bodies ' +
+				'would have hidden it'
+		).toHaveLength(1);
+	});
+});
+
+describe('effectBlocks fails closed on forms it cannot read', () => {
+	function sourceWith(effect: string): URL {
+		const dir = mkdtempSync(join(tmpdir(), 'fence-'));
+		const file = join(dir, 'x.svelte');
+		writeFileSync(file, `<script lang="ts">\n\t${effect}\n</script>\n<div></div>`);
+		return pathToFileURL(file);
+	}
+
+	it('reads a brace-bodied arrow', () => {
+		const src = readFenceSource(sourceWith('$effect(() => { captureIdentity(); });'));
+		const blocks = src.effectBlocks();
+		expect(blocks).toHaveLength(1);
+		expect(trackedEpochReads(blocks[0]!.body)).toHaveLength(1);
+	});
+
+	it('REFUSES an expression-bodied arrow instead of mis-delimiting it', () => {
+		// Taking "the first `{` after the call" returns the TIMER's empty body
+		// here, so a rule reading it sees no epoch access and passes while the
+		// capture is tracked. A wrong span is a silent pass; a refusal is red.
+		const src = readFenceSource(
+			sourceWith('$effect(() => (captureIdentity(), setTimeout(() => {}, 200), undefined));')
+		);
+		expect(() => src.effectBlocks()).toThrow(/not a brace-bodied arrow/);
+	});
+});
+
+describe('untrackedSpans exempts only what actually runs untracked', () => {
+	it('does NOT exempt a read evaluated while building the argument', () => {
+		// `untrack((captureIdentity(), () => {}))` runs the capture BEFORE
+		// untrack is called, so the read is tracked. Exempting the call's whole
+		// span hid it; a compiled probe confirmed the effect re-runs on an epoch
+		// bump (codex round 2 [P2]). This form is refused rather than guessed at.
+		expect(() => trackedEpochReads('untrack((captureIdentity(), () => {}));')).toThrow(
+			/does not read that form/
+		);
+	});
+
+	it('exempts an expression-bodied callback, which is the form the codebase uses', () => {
+		expect(trackedEpochReads('untrack(() => captureIdentity());')).toHaveLength(0);
+	});
+
+	it('exempts a brace-bodied callback too', () => {
+		expect(trackedEpochReads('untrack(() => { captureIdentity(); });')).toHaveLength(0);
+	});
+});
+
+describe('epoch reads are found regardless of ordinary whitespace', () => {
+	it('matches spaced call and member forms', () => {
+		// Unchanged runtime reads with different formatting were producing zero
+		// matches, so the guard accepted them silently (codex round 2 [P3]).
+		expect(trackedEpochReads('captureIdentity ();')).toHaveLength(1);
+		expect(trackedEpochReads('const x = authStore . identityEpoch;')).toHaveLength(1);
+	});
+});
+
+describe('matchBrace understands regex literals', () => {
+	it('does not close a block at a `}` inside a regex', () => {
+		// `const p = /}/;` otherwise ends the body early and every read after it
+		// vanishes — silently, with the effect still enumerated (codex round 3).
+		const code = '{ const p = /}/; captureIdentity(); }';
+		const end = matchBrace(code, 0);
+		expect(end, 'the block was truncated at the regex literal').toBe(code.length - 1);
+	});
+
+	it('still treats division as division', () => {
+		const code = '{ const r = a / b; const s = c / d; }';
+		expect(matchBrace(code, 0)).toBe(code.length - 1);
 	});
 });

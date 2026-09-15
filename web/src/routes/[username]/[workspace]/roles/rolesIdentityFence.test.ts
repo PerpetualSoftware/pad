@@ -25,7 +25,7 @@
 // after the commit it guards all pass here — except the two specific
 // placements asserted explicitly below. That is the behavioural suite's job.
 import { describe, it, expect } from 'vitest';
-import { readFenceSource, withoutCatchArms } from '../../../../test/identityFenceSource';
+import { readFenceSource, withoutCatchArms, trackedEpochReadDetails } from '../../../../test/identityFenceSource';
 
 const src = readFenceSource(new URL('./+page.svelte', import.meta.url));
 const CODE = src.code;
@@ -468,6 +468,64 @@ describe('the roles board fences every async commit point', () => {
 			CODE,
 			'the laneData sync effect runs regardless of whether the page still holds the identity'
 		).toMatch(/if \(!isDragging && pageIdentityHeld\(\)\)/);
+	});
+
+	it('no $effect depends on the identity epoch without saying so', () => {
+		// The family rule (BUG-3084 checkpoint 18). `authStore.identityEpoch` is
+		// `$state`, so an `$effect` reading it SYNCHRONOUSLY re-runs on every
+		// identity change — which on the collection page re-armed a debounce
+		// under the new epoch with the previous user's text.
+		//
+		// A DISPOSITION TABLE, not a ban: this surface's one tracked read WANTS
+		// the dependency. `identityEpochAtLoad` was made `$state` on purpose so
+		// the laneData sync re-evaluates when the identity moves; untracking it
+		// would undo that. An undispositioned read fails.
+		// DISPOSITIONED PER EFFECT, and each entry names WHICH READS it covers.
+		//
+		// Exempting a whole effect was wrong and hid this unit's own defect: the
+		// search entry skipped the synchronous capture along with the timer's
+		// reads, so removing that capture's `untrack` produced ZERO offenders
+		// (codex round 2 [P2]). An entry now lists the read tokens it vouches
+		// for, and any other read in that effect is an offender.
+		const INTENDED_DEPENDENCY: Record<string, { allowedReads: string[]; why: string; afterMarker?: string }> = {
+			'laneData = data': {
+				allowedReads: ['pageIdentityHeld('],
+				why:
+					'the laneData sync MUST re-run when the identity moves — that is why ' +
+					'identityEpochAtLoad is $state.',
+			},
+		};
+
+		const offenders: string[] = [];
+		for (const block of src.effectBlocks()) {
+			const entry = Object.entries(INTENDED_DEPENDENCY).find(([k]) => block.body.includes(k));
+			// PER READ, not per block: testing for `untrack(` anywhere in the
+			// effect exempted `const e = captureIdentity(); untrack(() => x());`.
+			// POSITIONAL as well as by token (codex round 3 [P2]). Without the
+			// marker, an entry written for reads inside a timer covered a read
+			// added SYNCHRONOUSLY beside the untracked capture — which puts the
+			// dependency straight back while the rule reports nothing.
+			const markerAt = entry?.[1].afterMarker ? block.body.indexOf(entry[1].afterMarker) : -1;
+			for (const read of trackedEpochReadDetails(block.body)) {
+				const positionOk = markerAt === -1 || read.index > markerAt;
+				if (entry && positionOk && entry[1].allowedReads.some((t) => read.token.startsWith(t))) {
+					continue;
+				}
+				offenders.push(`${block.label}: ...${read.context}`);
+			}
+		}
+		expect(
+			offenders,
+			'these $effects read the identity epoch without untracking THAT READ and without their ' +
+				'effect\'s disposition vouching for THAT read. Each therefore re-runs on an identity ' +
+				'change, re-creating whatever it armed — under the new epoch, over the previous ' +
+				'user\'s state.'
+		).toEqual([]);
+
+		expect(
+			src.effectBlocks().length,
+			'no $effect found — re-point this guard rather than reading its silence as compliance'
+		).toBeGreaterThan(0);
 	});
 
 	it('enumerates the population it claims to cover', () => {

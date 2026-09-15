@@ -16,7 +16,7 @@
  *     owns it now (roles board, codex round 4).
  */
 import { describe, it, expect } from 'vitest';
-import { readFenceSource, withoutCatchArms } from '../../../../test/identityFenceSource';
+import { readFenceSource, withoutCatchArms, trackedEpochReadDetails } from '../../../../test/identityFenceSource';
 
 const src = readFenceSource(new URL('./+page.svelte', import.meta.url));
 const CODE = src.code;
@@ -323,6 +323,57 @@ describe('the library page fences every async commit point', () => {
 		expect(arm.indexOf('activeConventionTitles = new Set()')).toBeLessThan(
 			arm.indexOf('identityEpochAtLoad =')
 		);
+	});
+
+	it('no $effect depends on the identity epoch without saying so', () => {
+		// The family rule (BUG-3084 checkpoint 18). An `$effect` reading
+		// `authStore.identityEpoch` SYNCHRONOUSLY re-runs on every identity
+		// change, re-creating whatever it armed under the new epoch. On the
+		// collection page that re-armed a debounce with the previous user's
+		// typed text; here it produced a second load per identity change.
+		//
+		// A DISPOSITION TABLE, not a ban — two of this family's three tracked
+		// reads want the dependency. This surface's one effect is untracked, so
+		// its table is empty, which is the state that needs no argument.
+		// DISPOSITIONED PER EFFECT, and each entry names WHICH READS it covers.
+		//
+		// Exempting a whole effect was wrong and hid this unit's own defect: the
+		// search entry skipped the synchronous capture along with the timer's
+		// reads, so removing that capture's `untrack` produced ZERO offenders
+		// (codex round 2 [P2]). An entry now lists the read tokens it vouches
+		// for, and any other read in that effect is an offender.
+		const INTENDED_DEPENDENCY: Record<string, { allowedReads: string[]; why: string; afterMarker?: string }> = {};
+
+		const offenders: string[] = [];
+		for (const block of src.effectBlocks()) {
+			const entry = Object.entries(INTENDED_DEPENDENCY).find(([k]) => block.body.includes(k));
+			// PER READ, not per block: testing for `untrack(` anywhere in the
+			// effect exempted `const e = captureIdentity(); untrack(() => x());`.
+			// POSITIONAL as well as by token (codex round 3 [P2]). Without the
+			// marker, an entry written for reads inside a timer covered a read
+			// added SYNCHRONOUSLY beside the untracked capture — which puts the
+			// dependency straight back while the rule reports nothing.
+			const markerAt = entry?.[1].afterMarker ? block.body.indexOf(entry[1].afterMarker) : -1;
+			for (const read of trackedEpochReadDetails(block.body)) {
+				const positionOk = markerAt === -1 || read.index > markerAt;
+				if (entry && positionOk && entry[1].allowedReads.some((t) => read.token.startsWith(t))) {
+					continue;
+				}
+				offenders.push(`${block.label}: ...${read.context}`);
+			}
+		}
+		expect(
+			offenders,
+			'these $effects read the identity epoch without untracking THAT READ and without their ' +
+				'effect\'s disposition vouching for THAT read. Each therefore re-runs on an identity ' +
+				'change, re-creating whatever it armed — under the new epoch, over the previous ' +
+				'user\'s state.'
+		).toEqual([]);
+
+		expect(
+			src.effectBlocks().length,
+			'no $effect found — re-point this guard rather than reading its silence as compliance'
+		).toBeGreaterThan(0);
 	});
 
 	it('enumerates the population it claims to cover', () => {

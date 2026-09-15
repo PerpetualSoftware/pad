@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { cleanup, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
+import { bindReactiveEpoch, isEpochReactive } from '../../../../test/identityEpochMock.svelte';
 
 /**
  * BUG-3084 surface 2 — the BEHAVIOURAL half. `rolesIdentityFence.test.ts`
@@ -38,15 +39,27 @@ vi.mock('$lib/stores/toast.svelte', () => ({
 }));
 
 const auth = vi.hoisted(() => {
-	let epoch = 0;
+	// Epoch read through a late-bound hook so it can be backed by the family's
+	// REAL `$state` signal (bound below). See `identityEpochMock.svelte.ts`:
+	// a non-reactive double turns every "did this effect re-run?" assertion
+	// into "does this compile?", which is how a defect survived every
+	// instrument on the collection page (BUG-3084 checkpoint 18).
+	const hook = { read: null as null | (() => number), write: null as null | ((n: number) => void) };
+	let fallback = 0;
+	const getEpoch = () => (hook.read ? hook.read() : fallback);
+	const setEpoch = (n: number) => {
+		if (hook.write) hook.write(n);
+		else fallback = n;
+	};
 	return {
-		get identityEpoch() { return epoch; },
+		__hook: hook,
+		get identityEpoch() { return getEpoch(); },
 		get userId() { return 'u1'; },
 		get user() { return { id: 'u1', name: 'A', email: 'a@example.com' }; },
 		get session() { return { user: { id: 'u1' } }; },
-		bumpEpoch() { epoch++; },
-		resetEpoch() { epoch = 0; },
-		identityFence() { const c = epoch; return () => epoch === c; },
+		bumpEpoch() { setEpoch(getEpoch() + 1); },
+		resetEpoch() { setEpoch(0); },
+		identityFence() { const c = getEpoch(); return () => getEpoch() === c; },
 		// A REAL registry, not a no-op (BUG-3084 checkpoint 13). The reload leg
 		// below has to drive the page's own identity-change listener, because
 		// the window it is about only exists WHILE that reload is in flight.
@@ -157,6 +170,8 @@ async function mountPage() {
 	return r;
 }
 
+bindReactiveEpoch(auth.__hook);
+
 function flipIdentity(): void {
 	const before = auth.identityEpoch;
 	auth.bumpEpoch();
@@ -166,6 +181,21 @@ function flipIdentity(): void {
 }
 
 describe('the roles board stops a commit when the identity moves mid-flight', () => {
+	it('PRECONDITION: the faked identity epoch is reactive', () => {
+		expect(
+			// The MOCK's own getter and bump, not the module signal: the first
+			// version of this helper read its own state and returned true with
+			// both hooks disconnected, so every leg below passed against the
+			// non-reactive double it exists to detect (codex round 1 [P2]).
+			isEpochReactive(
+				() => auth.identityEpoch,
+				() => auth.bumpEpoch()
+			),
+			'the mocked identityEpoch is not reactive: every "did this effect re-run?" assertion in ' +
+				'this file is measuring whether the code compiles'
+		).toBe(true);
+	});
+
 	beforeEach(() => auth.resetEpoch());
 	afterEach(cleanup);
 
