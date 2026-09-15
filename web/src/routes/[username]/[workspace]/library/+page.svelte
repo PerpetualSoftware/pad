@@ -1,10 +1,57 @@
 <script lang="ts">
+	import { onDestroy, untrack } from 'svelte';
 	import { page } from '$app/state';
 	import { api } from '$lib/api/client';
+	import { authStore } from '$lib/stores/auth.svelte';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import Chip from '$lib/components/common/Chip.svelte';
 	import { statusColor } from '$lib/utils/fieldColors';
 	import type { LibraryCategory, LibraryConvention, PlaybookCategory, LibraryPlaybook, Item } from '$lib/types';
+
+	/**
+	 * IDENTITY FENCE — surface 3 of 7 (BUG-3084). Every async commit point on
+	 * this page is checked against the signed-in identity, so a response or a
+	 * click that lands after a sign-in or sign-out cannot commit the previous
+	 * session's data. Same shape as the collection page (#1372/#1374), settings
+	 * (#1370) and the roles board (#1375); the rules below are the family's,
+	 * carried here rather than re-derived.
+	 *
+	 * WHAT IS DIFFERENT HERE. The population is 7, not the 3 a function-level
+	 * count sees: four DEFERRED TIMERS (`setTimeout(… , 3000)` clearing the
+	 * toast) are commit points that fire long after their handler returned, and
+	 * the filed survey missed all four (BUG-3084 checkpoint 6).
+	 *
+	 * `activateConvention` / `activatePlaybook` COMPOSE A WRITE from state
+	 * chosen under the previous identity — the `convention` / `playbook` the
+	 * user clicked came from a list `loadData` fetched then. A click after an
+	 * identity change is the current epoch, so every entry capture passes; the
+	 * question that catches it is `pageIdentityHeld()`, exactly as on the roles
+	 * board's drag handlers.
+	 *
+	 * `identityHeld(captured)` takes a handler's own ENTRY capture, because
+	 * `loadData` re-stamps the page epoch and a handler comparing against that
+	 * can be defeated by a concurrent load.
+	 *
+	 * `pageIdentityHeld()` asks whether this PAGE still belongs to the
+	 * signed-in user.
+	 */
+	// `$state` for the same reason the roles board needs it: `pageIdentityHeld()`
+	// is read from an `$effect` below, and an untracked value would leave that
+	// effect with whichever answer it saw first.
+	let identityEpochAtLoad = $state(authStore.identityEpoch);
+
+	/** The epoch as of now — captured at a handler's entry, before its awaits. */
+	function captureIdentity(): number {
+		return authStore.identityEpoch;
+	}
+
+	function identityHeld(captured: number): boolean {
+		return authStore.identityEpoch === captured;
+	}
+
+	function pageIdentityHeld(): boolean {
+		return authStore.identityEpoch === identityEpochAtLoad;
+	}
 
 	let wsSlug = $derived(page.params.workspace ?? '');
 	let username = $derived(page.params.username ?? '');
@@ -54,11 +101,66 @@
 		return convention.surfaces?.join(', ') || 'all';
 	}
 
+	/**
+	 * Every piece of TRANSIENT INTERACTION STATE on this page — something a
+	 * click started and a later response or timer would finish. Distinct from
+	 * the page's DATA (the four collections `loadData` replaces) and from its
+	 * identity bookkeeping.
+	 *
+	 * The source guard holds this against the file's own `$state` declarations,
+	 * so a new piece of interaction state cannot arrive without being
+	 * dispositioned here (BUG-3084, the roles board's checkpoint-14 lesson
+	 * carried forward rather than re-learned).
+	 */
+	function resetTransientState() {
+		activatingTitle = null;
+		toast = null;
+	}
+
+	/**
+	 * RE-LOAD ON AN IDENTITY CHANGE. The `$effect` below is keyed on `wsSlug`
+	 * alone, so it does NOT re-run when the identity moves — and
+	 * `routes/+layout.svelte` deliberately does not reload on an anonymous ->
+	 * signed-in transition. Without this the page keeps a dead epoch and every
+	 * `pageIdentityHeld()` is false for ever: both activate handlers go
+	 * silently inert and never recover (#1372's regression, repaired in #1374).
+	 *
+	 * The reset runs FIRST: `activatingTitle` gates both handlers at their very
+	 * first line, so a stale value latches them shut, and `toast` would keep the
+	 * previous session's message on screen for whoever is signed in now.
+	 */
+	const stopIdentityWatch = authStore.onIdentityChange(() => {
+		resetTransientState();
+		if (wsSlug) void loadData(wsSlug);
+	});
+	onDestroy(stopIdentityWatch);
+
 	$effect(() => {
-		if (wsSlug) loadData(wsSlug);
+		// UNTRACKED (codex round 1 [P2]). `loadData` reads `authStore.identityEpoch`
+		// synchronously via `captureIdentity()` before its first await, so
+		// without this the effect takes a dependency on the epoch and re-runs
+		// when the identity moves — on top of the listener above, which already
+		// re-loads for exactly that event. Two loads, eight requests, and
+		// `loadGen` quietly discarding half of them: correct on screen, wasteful
+		// on the wire, and the kind of thing that reads as a mystery in a
+		// network log.
+		//
+		// The key this effect is FOR is the workspace. Settings (#1370) suppresses
+		// the same class the same way; naming the real key is what makes the
+		// suppression safe rather than a blanket silencing.
+		const ws = wsSlug;
+		if (ws) untrack(() => loadData(ws));
 	});
 
+	// Bumped by every `loadData()`. The identity fence and this ask different
+	// questions and neither implies the other: the fence asks whether the
+	// SIGNED-IN USER changed, this asks whether a NEWER LOAD for the same user
+	// already landed. A workspace switch produces exactly the second.
+	let loadGen = 0;
+
 	async function loadData(ws: string) {
+		const epochAtEntry = captureIdentity();
+		const myLoad = ++loadGen;
 		loading = true;
 		try {
 			const [libraryRes, playbookRes, existingConventions, existingPlaybooks] = await Promise.all([
@@ -67,47 +169,121 @@
 				api.items.listByCollection(ws, 'conventions', { all: true }).catch(() => [] as Item[]),
 				api.items.listByCollection(ws, 'playbooks', { all: true }).catch(() => [] as Item[]),
 			]);
+			if (!identityHeld(epochAtEntry)) return;
+			if (myLoad !== loadGen) return;
 			categories = libraryRes.categories;
 			playbookCategories = playbookRes.categories;
+			// THE SHARPEST READS ON THIS PAGE. These two sets are what the
+			// activate handlers consult to decide whether a library entry is
+			// already in the workspace, so a set belonging to the previous
+			// session's workspace makes the NEW user's activate button either
+			// dead or duplicating.
 			activeConventionTitles = new Set(existingConventions.map((item) => item.title));
 			activePlaybookTitles = new Set(existingPlaybooks.map((item) => item.title));
+			// RE-STAMPED HERE, AFTER the data it vouches for has landed — never
+			// before the await (BUG-3084, the roles board's checkpoint-14
+			// lesson). `pageIdentityHeld()` means "this page's DATA belongs to
+			// the signed-in user", and the activate handlers compose writes from
+			// that data. Re-stamping at the top answers yes for the whole
+			// round-trip while the four collections are still the previous
+			// session's, so the guard would vouch for data it has not replaced.
+			identityEpochAtLoad = epochAtEntry;
 		} catch {
+			if (!identityHeld(epochAtEntry)) return;
+			if (myLoad !== loadGen) return;
 			categories = [];
 			playbookCategories = [];
+			// CLEARED here too, because the re-stamp below vouches for whatever
+			// is left and a failed load replaces neither set.
+			activeConventionTitles = new Set();
+			activePlaybookTitles = new Set();
+			// RE-STAMPED ON THE ERROR PATH TOO: omitting it pins the page inert
+			// for ever on a transient network error, which is the outage #1374
+			// was opened to repair, and is the worse failure of the two.
+			identityEpochAtLoad = epochAtEntry;
 		} finally {
-			loading = false;
+			// NOT identity-fenced: this must run on every exit path or the page
+			// is pinned at its skeleton, and the flag discloses nothing about
+			// either user. GENERATION-gated though, so only the NEWEST load may
+			// declare the page loaded.
+			if (myLoad === loadGen) loading = false;
 		}
 	}
 
 	async function activateConvention(convention: LibraryConvention) {
 		if (activeConventionTitles.has(convention.title) || activatingTitle) return;
+		// BOTH QUESTIONS. `pageIdentityHeld()` first, for the reason the roles
+		// board's drag handlers need it: the convention this writes was chosen
+		// from a list `loadData` fetched under the PREVIOUS identity, and a
+		// click after the change is the current epoch, so an entry capture
+		// passes and the previous session's choice is activated into whatever
+		// workspace is on screen now.
+		if (!pageIdentityHeld()) return;
+		const epochAtEntry = captureIdentity();
 		activatingTitle = convention.title;
 		try {
 			await api.library.activate(wsSlug, convention);
+			if (!identityHeld(epochAtEntry)) return;
 			activeConventionTitles = new Set([...activeConventionTitles, convention.title]);
 			toast = `Activated: ${convention.title}`;
-			setTimeout(() => (toast = null), 3000);
+			// FENCED, and the timer is the reason this surface's population is
+			// 7 rather than 3: it commits 3 seconds after the handler returned,
+			// by which time the identity may have moved. Clearing then would
+			// wipe a toast belonging to whoever is signed in NOW. The identity
+			// listener already clears `toast`, so the stale timer has nothing
+			// legitimate left to do.
+			setTimeout(() => {
+				if (!identityHeld(epochAtEntry)) return;
+				toast = null;
+			}, 3000);
 		} catch {
+			if (!identityHeld(epochAtEntry)) return;
 			toast = `Failed to activate: ${convention.title}`;
-			setTimeout(() => (toast = null), 3000);
+			setTimeout(() => {
+				if (!identityHeld(epochAtEntry)) return;
+				toast = null;
+			}, 3000);
 		} finally {
-			activatingTitle = null;
+			// FENCED, unlike `loading` above, and the asymmetry is deliberate.
+			// `activatingTitle` is cleared by `resetTransientState()` on every
+			// identity change, so a stale continuation clearing it again can
+			// only release a gate the NEW user's own click is holding — which
+			// permits a second concurrent activation.
+			if (identityHeld(epochAtEntry)) activatingTitle = null;
 		}
 	}
 
 	async function activatePlaybook(playbook: LibraryPlaybook) {
 		if (activePlaybookTitles.has(playbook.title) || activatingTitle) return;
+		// BOTH QUESTIONS. `pageIdentityHeld()` first, for the reason the roles
+		// board's drag handlers need it: the playbook this writes was chosen
+		// from a list `loadData` fetched under the PREVIOUS identity, and a
+		// click after the change is the current epoch, so an entry capture
+		// passes and the previous session's choice is activated into whatever
+		// workspace is on screen now.
+		if (!pageIdentityHeld()) return;
+		const epochAtEntry = captureIdentity();
 		activatingTitle = playbook.title;
 		try {
 			await api.library.activatePlaybook(wsSlug, playbook);
+			if (!identityHeld(epochAtEntry)) return;
 			activePlaybookTitles = new Set([...activePlaybookTitles, playbook.title]);
 			toast = `Activated: ${playbook.title}`;
-			setTimeout(() => (toast = null), 3000);
+			// See the timer note in activateConvention.
+			setTimeout(() => {
+				if (!identityHeld(epochAtEntry)) return;
+				toast = null;
+			}, 3000);
 		} catch {
+			if (!identityHeld(epochAtEntry)) return;
 			toast = `Failed to activate: ${playbook.title}`;
-			setTimeout(() => (toast = null), 3000);
+			setTimeout(() => {
+				if (!identityHeld(epochAtEntry)) return;
+				toast = null;
+			}, 3000);
 		} finally {
-			activatingTitle = null;
+			// See the note in activateConvention.
+			if (identityHeld(epochAtEntry)) activatingTitle = null;
 		}
 	}
 

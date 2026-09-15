@@ -24,6 +24,41 @@
 // worse than one that is red.
 import { readFileSync } from 'node:fs';
 
+/**
+ * REFUSAL IS NOT ABSENCE — the rule every surface in this family has now paid
+ * for at least once, placed here so surfaces 4-7 meet it before they write
+ * their first assertion (lead's ruling, BUG-3084 day 68).
+ *
+ * Every rule in this file asks a REFUSAL question: is a fence present, is it
+ * positioned before the commit, is there one per await, does it read the right
+ * epoch. Not one of them can tell a commit that was correctly REFUSED from a
+ * commit that never existed — and the second is a defect, not a fix.
+ *
+ * What that has actually cost, three times, in three costumes:
+ *   - #1372 shipped a fence that could detect the bad state and never leave it.
+ *     Ten guard assertions, nine behavioural legs and a 10/10 mutation matrix,
+ *     and not one asked whether the page still WORKED afterwards. Every mutant
+ *     weakened a fence, so the matrix could only ever measure under-protection.
+ *   - Surface 3's deferred timers: a callback that checked the identity and
+ *     then cleared nothing satisfied the guard AND the whole behavioural suite.
+ *     "Fix the stale write by making the write never happen" was passing.
+ *   - Surface 3's `activatePlaybook`: a handler near-identical to its sibling
+ *     was vouched for by source text alone, because every leg clicked the
+ *     sibling's button. Near-identical is exactly when a source assertion feels
+ *     sufficient and is not.
+ *
+ * So a surface using this core owes, alongside its refusal rules:
+ *   1. one case that moves the identity and then KEEPS USING the page;
+ *   2. for each fenced commit, one case under an UNCHANGED identity proving the
+ *      commit still happens;
+ *   3. a driven leg per handler, not per handler SHAPE — including the failure
+ *      arms, whose code a source guard reads and nothing executes.
+ *
+ * A guard that latches into the safe state is not a safe guard; it is an outage
+ * with good intentions, and it is harder to notice than the flapping it
+ * replaced, precisely because nothing looks wrong.
+ */
+
 export interface EnumeratedBlock {
 	/** How this block is named in a failure message. */
 	label: string;
