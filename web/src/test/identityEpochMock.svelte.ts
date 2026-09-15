@@ -107,3 +107,56 @@ export function isEpochReactive(read: () => number, bump: () => void): boolean {
 	// else entirely.
 	return moved && reran;
 }
+
+/**
+ * The reactive USER ID, for surfaces whose recovery is keyed on
+ * `authStore.userId` rather than driven by an `onIdentityChange` listener
+ * (settings, the dashboard: a `(sessionUserId, wsSlug)` effect drops the data
+ * and reloads). The real getter reads the `session` `$state`, so it is a
+ * dependency; a suite whose double returns a plain variable turns "did the
+ * keyed effect re-run?" into "does this compile?" — the same failure as the
+ * epoch, one field over (BUG-3084 surface 4 found it on its first recovery
+ * leg: the reload never came, and the mock was why).
+ */
+let userIdSignal = $state('u1');
+
+export function readUserId(): string {
+	return userIdSignal;
+}
+
+export function writeUserId(next: string): void {
+	userIdSignal = next;
+}
+
+export function bindReactiveUserId(hook: {
+	readUser: null | (() => string);
+	writeUser: null | ((id: string) => void);
+}): void {
+	hook.readUser = readUserId;
+	hook.writeUser = writeUserId;
+}
+
+/**
+ * Proves the SUBJECT'S OWN userId path is reactive — same contract as
+ * `isEpochReactive`: pass the mock's getter and setter, never this module's.
+ */
+export function isUserIdReactive(read: () => string, set: (id: string) => void): boolean {
+	let runs = 0;
+	const stop = $effect.root(() => {
+		$effect(() => {
+			read();
+			runs += 1;
+		});
+	});
+	flushSync();
+	const baseline = runs;
+	const before = read();
+	set(before + '-moved');
+	flushSync();
+	const moved = read() !== before;
+	const reran = runs > baseline;
+	set(before);
+	flushSync();
+	stop();
+	return moved && reran;
+}
