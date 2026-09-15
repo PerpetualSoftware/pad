@@ -1112,6 +1112,12 @@
 	// there now, and the guard holds both halves.
 	const stopIdentityLoad = authStore.onIdentityChange(() => {
 		if (!(wsSlug && collSlug && itemSlug)) return;
+		// The member and role lists are cached per workspace, and the load below
+		// would otherwise reuse the previous identity's (BUG-3084 codex round 1).
+		cachedMembers = null;
+		cachedMembersWs = null;
+		cachedRoles = null;
+		cachedRolesWs = null;
 		loadData();
 		void loadTagSuggestions(wsSlug);
 	});
@@ -1251,6 +1257,12 @@
 		// the user's in-flight document. A proper fix needs editor-dirty-
 		// state integration; tracked separately.
 		unsubscribeSSE = sseService.onItemEvent(async (event) => {
+			// The load this event arrived under (BUG-3084 codex round 1). The
+			// collection branch awaits a fetch and then captures `itemGen` for
+			// its item refresh, so an identity change inside that fetch was
+			// invisible to the item fence; the identity listener's load bumps
+			// this, and every await below is checked against it.
+			const callbackGen = loadGeneration;
 			// BUG-2265 sibling broadcast: another ItemDetail / collection page
 			// changed THIS collection's settings/schema. This instance holds
 			// its OWN independent `collection` snapshot (the full-page pane
@@ -1319,6 +1331,7 @@
 				const collGen = ++collectionGen;
 				try {
 					const fresh = await api.collections.get(wsSlug, targetSlug);
+					if (callbackGen !== loadGeneration) return;
 					// Persistent pane host has no {#key} remount — drop if the
 					// loaded collection changed IDENTITY during the fetch (compare
 					// by stable id, not slug, so a rename still applies — Codex
@@ -1491,6 +1504,11 @@
 		});
 
 		unsubscribeSync = syncService.onSync(async (result) => {
+			// Same reason as the SSE callback's `callbackGen` (BUG-3084 codex
+			// round 1): reconciliation below is awaited, its own identity fence
+			// only stops ITSELF, and everything after it captures `itemGen`
+			// fresh and would adopt this result under whoever signed in during it.
+			const callbackGen = loadGeneration;
 			if (!wsSlug || !itemSlug || !item) return;
 			// A result names the workspace it was SYNCED FOR (TASK-2921).
 			if (result.workspace !== wsSlug) return;
@@ -1510,6 +1528,7 @@
 			// (PLAN-2154), never a goto.
 			if (!embedded) {
 				await reconcileCollectionSegment();
+				if (callbackGen !== loadGeneration) return;
 			}
 
 			if (result.type === 'caught_up') return;
@@ -3376,7 +3395,12 @@
 	// Codex PR #659 rounds 8/9.
 	function withInflightTags(next: Item): Item {
 		const saver = tagSavers.get(next.id);
-		return saver?.running ? { ...next, tags: JSON.stringify(saver.desired) } : next;
+		// Only a burst typed under the CURRENT identity owns `item.tags` (BUG-3084
+		// codex round 1): the identity listener's load would otherwise render the
+		// previous user's pending tags. Untracked because some callers run inside
+		// reactive scopes and this must not make them depend on the epoch.
+		const ours = saver?.running && saver.epoch === untrack(() => captureIdentity());
+		return ours ? { ...next, tags: JSON.stringify(saver.desired) } : next;
 	}
 
 	// Realtime-refresh convenience: applies the content-adoption rule (under
@@ -3409,8 +3433,13 @@
 		const newSlug = adopted.collection_slug;
 		if (!newSlug || !collection || collection.slug === newSlug) return;
 		const collGen = ++collectionGen;
+		// `adoptCollection` deliberately accepts a STALE generation when it
+		// corrects the shown collection to the live item's, so it is not a fence
+		// against an identity change (BUG-3084 codex round 1). This one is.
+		const gen = loadGeneration;
 		try {
 			const fresh = await api.collections.get(wsSlug, newSlug);
+			if (gen !== loadGeneration) return;
 			// adoptCollection carries BOTH fences this site pioneered
 			// (BUG-2178 codex round 2): generation order for same-collection
 			// refreshes, and the live-item semantic check — now anchored on
@@ -4630,6 +4659,10 @@
 		restoring = true;
 		try {
 			await api.items.restore(wsSlug, targetSlug);
+			// Before the follow-up GET, not only after it: a request issued
+			// after a switch or an identity change goes out on whatever cookie
+			// is current (BUG-3084 codex round 1).
+			if (switchedAway(targetItem, gen)) return;
 			const refreshed = await api.items.get(wsSlug, targetSlug);
 			if (switchedAway(targetItem, gen)) return;
 			item = withInflightTags(refreshed);
