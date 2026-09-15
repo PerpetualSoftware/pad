@@ -145,6 +145,47 @@ describe('asyncFunctions delimiting', () => {
 		expect(() => src.asyncFunctions()).toThrow(/re-point this guard/);
 	});
 
+	it('delimits a nested async arrow with a DESTRUCTURED parameter from its arrow, not from the parameter brace', () => {
+		// ItemDetail's collab `save: async ({ ws, itemId, toSave, keepalive }) => {…}`.
+		// Delimiting from `async` returned `async ({ ws, itemId, toSave, keepalive }`
+		// as the body — no awaits, no commits — and a guard row keyed on a token
+		// inside the real body matched nothing (BUG-3084, ItemDetail).
+		const src = fixture(
+			'\tconst saver = {\n' +
+			'\t\tsave: async ({ ws, itemId }) => {\n' +
+			'\t\t\tawait go(ws, itemId);\n' +
+			'\t\t\tMARKER;\n' +
+			'\t\t},\n' +
+			'\t};'
+		);
+		const nested = src.nestedAsyncCallbacks();
+		expect(nested).toHaveLength(1);
+		expect(nested[0].body, 'the body was cut short at the destructured parameter').toContain('MARKER');
+		expect(nested[0].body).toContain('await go');
+	});
+
+	it('reads an anonymous async function whose parameter type is braced', () => {
+		const src = fixture(
+			'\tconst f = async function (opts: { a: string }) {\n' +
+			'\t\tawait x(opts);\n' +
+			'\t\tMARKER;\n' +
+			'\t};'
+		);
+		const nested = src.nestedAsyncCallbacks();
+		expect(nested).toHaveLength(1);
+		expect(nested[0].body).toContain('MARKER');
+	});
+
+	it('REFUSES an expression-bodied async arrow rather than taking the next brace in the file', () => {
+		const src = fixture(
+			'\tconst f = async (x) => go(x);\n' +
+			'\tfunction unrelated() {\n' +
+			'\t\tMARKER;\n' +
+			'\t}'
+		);
+		expect(() => src.nestedAsyncCallbacks()).toThrow(/not brace-bodied/);
+	});
+
 	it('does not attribute an unrelated block to a timer with an identifier callback', () => {
 		// `setTimeout(fn, 0)` has no inline body; a naive `indexOf('{')` grabs
 		// the next block in the file and asserts against code that has nothing
