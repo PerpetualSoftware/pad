@@ -1130,6 +1130,9 @@
 		cachedMembersWs = null;
 		cachedRoles = null;
 		cachedRolesWs = null;
+		// Retire the collab context BEFORE anything re-runs its effect: its
+		// cleanup is where the old draft would be flushed.
+		if (activeCollabContext) activeCollabContext.retired = true;
 		identityKey++;
 		loadData();
 		void loadTagSuggestions(wsSlug);
@@ -1359,6 +1362,10 @@
 					// Best-effort — a stale snapshot just means the next save
 					// may 409 and self-heal via QuickActionsMenu's retry.
 				}
+				// After the try/catch, not only inside the success arm (BUG-3084
+				// codex round 2): a REJECTED collection fetch otherwise fell through
+				// into the item refresh below and adopted it under the new identity.
+				if (callbackGen !== loadGeneration) return;
 				// BUG-2265 (Codex P1): if the schema migration mutated item field
 				// values, THIS pane's `item` (loaded via api.items.get, NOT from
 				// the localIndex that the workspace deltaSync reconciles) may hold
@@ -2371,6 +2378,15 @@
 
 	$effect(() => {
 		if (!collabKey) return;
+		// The provider and its Y.Doc belong to ONE identity (BUG-3084 codex
+		// round 2). `collabKey` does not move on an identity change, so without
+		// this dependency the previous identity's provider survived the
+		// identity-triggered load: its applier and force-refresh callbacks, the
+		// idle collab save and the mode toggles all kept consuming the old
+		// document. Reading the key re-runs this effect on the change; the
+		// cleanup's flush is refused by the context's mint-time stamp, and a
+		// provider is minted for whoever is signed in now.
+		void identityKey;
 		const itemId = collabKey;
 		// Track forceRefreshNonce so a bump from the provider's
 		// onForceRefresh handler tears this effect's old provider+doc
@@ -2462,6 +2478,7 @@
 			baseline: string;
 			seedMd: string | null;
 			identityEpoch: number;
+			retired: boolean;
 		} = {
 			wsSlug,
 			itemId,
@@ -2475,6 +2492,13 @@
 			// draft on the new cookie. Read untracked — this runs in the collab
 			// effect, and the effect must not re-run on an identity change.
 			identityEpoch: untrack(() => authStore.identityEpoch),
+			// Set by the identity listener, synchronously, on the change itself.
+			// The epoch comparison alone is NOT enough for the effect cleanup:
+			// measured on a mount, the cleanup that runs in the effect flush after
+			// an identity change read the epoch's PREVIOUS value, matched the
+			// stamp, and flushed the old draft. A flag written in the listener has
+			// no such window (BUG-3084 codex round 2).
+			retired: false,
 		};
 		activeCollabContext = ctx;
 
@@ -2702,7 +2726,7 @@
 			// saver (BUG-3005): this cleanup also runs on an identity change,
 			// and a Y.Doc snapshot written then carries the wrong user's
 			// cookie.
-			const identityHeld = authStore.identityEpoch === ctx.identityEpoch;
+			const identityHeld = !ctx.retired && authStore.identityEpoch === ctx.identityEpoch;
 			if (!rawMode && !skipFlush && identityHeld) {
 				collabFlusher.flushNow(ctx, true);
 			}
@@ -2777,7 +2801,7 @@
 		// The rich flush is held to the identity its context was minted under,
 		// which the load re-stamp above does not move (BUG-3084 codex round 1).
 		const ctx = activeCollabContext;
-		if (ctx && ctx.identityEpoch === authStore.identityEpoch) collabFlusher.flushNow(ctx, true);
+		if (ctx && !ctx.retired && ctx.identityEpoch === authStore.identityEpoch) collabFlusher.flushNow(ctx, true);
 
 		// Raw-markdown path (BUG-2024). The saver's pending markdown is the
 		// exact debounced-but-unsaved edit; when dirty there is up to ~1.2s of
@@ -2944,6 +2968,9 @@
 		// emptiness AND re-check election (peer set may have
 		// changed).
 		queueMicrotask(() => {
+			// Before the editor write, not after it (BUG-3084 codex round 2): the
+			// seed belongs to the identity this context was minted under.
+			if (!ctx || ctx.retired || ctx.identityEpoch !== authStore.identityEpoch) return;
 			if (fragment.length > 0) return;
 			const peerIds2 = Array.from(collabProvider!.awareness.getStates().keys());
 			if (peerIds2.length === 0) return;
@@ -3808,7 +3835,7 @@
 	// flushes still PATCH the OLD item's URL with its OLD markdown,
 	// so we never cross-write one item's content into another. Per
 	// Codex review round 1.
-	let activeCollabContext: (CollabFlushContext & { identityEpoch: number }) | null = null;
+	let activeCollabContext: (CollabFlushContext & { identityEpoch: number; retired: boolean }) | null = null;
 
 	// Provider we've already attempted the lazy seed against. Reset
 	// implicitly when collabProvider is replaced (the new provider
@@ -6095,7 +6122,7 @@
 						read-only y-binding is deferred to TASK-1266.
 					-->
 					{#if !canEdit}
-						{#key `${item.id}:false`}
+						{#key `${item.id}:false:${identityKey}`}
 							<Editor
 								content={editorContent}
 								onUpdate={handleContentUpdate}
@@ -6153,7 +6180,7 @@
 								mutationsEnabled} below). Defaults false → editable=true,
 								byte-identical for non-host callers.
 							-->
-							{#key `${item.id}:true:${forceRefreshNonce}`}
+							{#key `${item.id}:true:${forceRefreshNonce}:${identityKey}`}
 								<Editor
 									content={editorContent}
 									onUpdate={handleContentUpdate}
@@ -6778,6 +6805,10 @@
 				void loadData();
 			}}
 			onclose={() => {
+				// Archive calls onupdated THEN onclose after its await; the second
+				// must refuse too, or the previous identity's modal closes the new
+				// one (BUG-3084 codex round 2).
+				if (handedDown !== identityKey) return;
 				editCollectionOpen = false;
 				editCollectionSection = undefined;
 			}}

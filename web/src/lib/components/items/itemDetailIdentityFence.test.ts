@@ -33,6 +33,7 @@ import {
 	readFenceSource,
 	trackedEpochReadDetails,
 	withoutCatchArms,
+	matchDelimiter,
 	type EnumeratedBlock,
 } from '../../../test/identityFenceSource';
 
@@ -156,6 +157,38 @@ function holdsPerAwait(label: string, body: string) {
 	// #1387): a `finally` arm's check satisfies the count while the continuation
 	// between two awaits issues its next request unchecked. Between every pair
 	// of consecutive awaits on the success path there must be a fence.
+	// NOTHING COMMITS BEFORE THE FENCE (codex round 2 on #1387): moving
+	// `item = …` above its existing check kept every count and every position
+	// above satisfied while the stale response landed. After each await, the text
+	// up to the first fence may not assign component state or call a committer.
+	const COMMIT = /(?:^|[;{}\n])\s*(?!const\b|let\b|var\b|return\b|if\b)[A-Za-z_$][\w$]*(?:\.[\w$]+)*\s*(?:=(?!=)|\+\+|--)|\b(?:toastStore\.show|showSaved|handleGone|goto|adoptCollection|collectionStore\.\w+|editorStore\.\w+|handleNavigateAway)\(/;
+	success.split(/\bawait\b/).slice(1).forEach((seg, i) => {
+		// The awaited EXPRESSION ends where its call chain does, not at the first
+		// newline: `await Promise.all([ a.catch((e) => { flag = true; }), … ])`
+		// spans lines, and its argument bodies are not continuations of the await.
+		let end = 0;
+		for (;;) {
+			const open = seg.slice(end).search(/[([]/);
+			if (open === -1) break;
+			const at = end + open;
+			if (end > 0 && /[;\n]/.test(seg.slice(end, at).trim())) break;
+			if (end === 0 && /[;]/.test(seg.slice(0, at))) break;
+			const close = matchDelimiter(seg, at, seg[at]!, seg[at] === '(' ? ')' : ']');
+			if (close === -1) throw new Error(`${label}: could not delimit the expression after await ${i + 1} — re-point this guard`);
+			end = close + 1;
+			if (!/^\s*\.\s*[A-Za-z_$]/.test(seg.slice(end))) break;
+		}
+		const stmtEnd = seg.slice(end).search(/[;\n]/);
+		const rest = seg.slice(stmtEnd === -1 ? seg.length : end + stmtEnd + 1);
+		const fenceAt = rest.search(new RegExp(ANY_FENCE.source));
+		const before = fenceAt === -1 ? rest : rest.slice(0, fenceAt);
+		if (fenceAt === -1 && i === (success.match(/\bawait\b/g) ?? []).length - 1) {
+			// The last await's continuation must still meet a fence before a commit.
+			expect(before, `${label}: commits after its last await with no fence at all`).not.toMatch(COMMIT);
+			return;
+		}
+		expect(before, `${label}: commits after await ${i + 1} BEFORE its fence — a stale response lands first`).not.toMatch(COMMIT);
+	});
 	const segments = success.split(/\bawait\b/).slice(1, -1);
 	segments.forEach((seg, i) => {
 		expect(
@@ -337,7 +370,7 @@ describe('ItemDetail: children calling back after their own awaits (class C, par
 		QuickActionsMenu: ['oncollectionupdated'],
 		ChildItems: ['onChildrenChange'],
 		BacklinksPanel: ['onCountChange'],
-		EditCollectionModal: ['onupdated'],
+		EditCollectionModal: ['onupdated', 'onclose'],
 		CopyItemDialog: ['onmove', 'oncopied'],
 	};
 
@@ -381,6 +414,56 @@ describe('ItemDetail: children calling back after their own awaits (class C, par
 	});
 });
 
+describe('ItemDetail: the collab provider belongs to one identity (codex round 2 on #1387)', () => {
+	it('the collab effect depends on the identity key, and the editor re-keys with it', () => {
+		const effects = src.effectBlocks().filter((b) => /new CollabProvider\(/.test(b.body));
+		expect(effects.length).toBe(1);
+		expect(effects[0]!.body).toMatch(/if \(!collabKey\) return;\s*void identityKey;/);
+		expect(src.markup).toMatch(/\{#key `\$\{item\.id\}:false:\$\{identityKey\}`\}/);
+		expect(src.markup).toMatch(/\{#key `\$\{item\.id\}:true:\$\{forceRefreshNonce\}:\$\{identityKey\}`\}/);
+	});
+
+	it('the lazy seed refuses a context minted under another identity before it writes the editor', () => {
+		const at = SCRIPT.indexOf('queueMicrotask(() => {');
+		const body = SCRIPT.slice(at, SCRIPT.indexOf('setContent(seedMd)', at));
+		expect(body).toMatch(/if \(!ctx \|\| ctx\.retired \|\| ctx\.identityEpoch !== authStore\.identityEpoch\) return;/);
+	});
+
+	it('the SSE collection refresh re-checks its generation AFTER the try/catch, so a rejection cannot fall through', () => {
+		const sse = src.nestedAsyncCallbacks().find((b) => /event\.type === 'collection_updated'/.test(b.body))!;
+		const i = sse.body.indexOf('const fresh = await api.collections.get(wsSlug, targetSlug);');
+		const itemsChanged = sse.body.indexOf('event.items_changed', i);
+		const between = sse.body.slice(i, itemsChanged);
+		expect(between.match(/callbackGen !== loadGeneration/g)?.length, 'the fence after the catch is gone').toBe(2);
+	});
+});
+
+describe('ItemDetail: deferred continuations that are not timers or async functions (class D)', () => {
+	/** Closed by count, each with its reason. */
+	const THENS: Array<{ signature: RegExp; why: string }> = [
+		{ signature: /Promise\.resolve\(\)\.then\(ensureGraphComp\)/, why: 'graph module import; identity-independent code loading (twice)' },
+		{ signature: /\.get\(refreshCtx\.wsSlug, refreshCtx\.itemId\)\s*\.then\(/, why: 'force-refresh fetch: generation + provider equality, and the provider is re-minted on an identity change' },
+		{ signature: /tick\(\)\.then\(\(\) => requestAnimationFrame/, why: 'focus after a tab switch; no data' },
+		{ signature: /\{ content: toSave \}\)\.then\(\(\) => \{/, why: 'content debounce save: switchedAway on both arms' },
+		{ signature: /\{ content: markdown \}, \{ keepalive: true \}\)\s*\.then\(/, why: 'raw keepalive save: genAtSave against loadGeneration' },
+		{ signature: /\{ content: toSave \}\)\.then\(\(updated\) => \{/, why: 'raw foreground save: genAtSave against loadGeneration' },
+	];
+
+	it('every .then continuation is dispositioned, and the count is closed', () => {
+		const sites = [...SCRIPT.matchAll(/\.then\(/g)].map((m) => SCRIPT.slice(Math.max(0, m.index! - 90), m.index! + 40));
+		expect(sites.length, 'a .then was added or removed — disposition it').toBe(7);
+		for (const site of sites) {
+			const rows = THENS.filter((r) => r.signature.test(site));
+			expect(rows.length, `unrecognised .then: ${site.replace(/\s+/g, ' ')}`).toBe(1);
+		}
+	});
+
+	it('the one queueMicrotask is the collab seed, and requestAnimationFrame appears once', () => {
+		expect(SCRIPT.match(/queueMicrotask\(/g)?.length).toBe(1);
+		expect(SCRIPT.match(/requestAnimationFrame\(/g)?.length).toBe(1);
+	});
+});
+
 describe('ItemDetail: epoch reads in reactive scopes', () => {
 	/**
 	 * The two reads BUG-3005 put in effects, each exempted by TOKEN and by
@@ -390,9 +473,14 @@ describe('ItemDetail: epoch reads in reactive scopes', () => {
 	 */
 	const EXEMPT: Array<{ context: RegExp; afterMarker: string; why: string }> = [
 		{
-			context: /const identityHeld = authStore\.identityEpoch$/,
+			context: /identityHeld = !ctx\.retired && authStore\.identityEpoch$/,
 			afterMarker: 'return () =>',
 			why: 'collab teardown flush, inside the effect\'s returned cleanup',
+		},
+		{
+			context: /ctx\.retired \|\| ctx\.identityEpoch !== authStore\.identityEpoch$/,
+			afterMarker: 'queueMicrotask(() => {',
+			why: 'the lazy seed\'s refusal, inside the microtask it defers to (codex round 2 on #1387)',
 		},
 		{
 			// The context is a fixed 60-character window, so it opens mid-token.
@@ -417,7 +505,7 @@ describe('ItemDetail: epoch reads in reactive scopes', () => {
 			}
 		}
 		expect(offenders).toEqual([]);
-		expect([...used].sort(), 'an exemption no longer matches anything — delete it rather than leave it open').toEqual([0, 1]);
+		expect([...used].sort(), 'an exemption no longer matches anything — delete it rather than leave it open').toEqual([0, 1, 2]);
 	});
 
 	it('the page-load epoch is mentioned at exactly its five known sites', () => {
@@ -430,7 +518,13 @@ describe('ItemDetail: epoch reads in reactive scopes', () => {
 
 	it('the collab context carries its mint-time identity, and both rich teardown flushes compare against it', () => {
 		expect(SCRIPT).toMatch(/identityEpoch:\s*untrack\(\(\)\s*=>\s*authStore\.identityEpoch\)/);
-		expect(SCRIPT).toMatch(/const identityHeld = authStore\.identityEpoch === ctx\.identityEpoch;/);
-		expect(SCRIPT).toMatch(/if \(ctx && ctx\.identityEpoch === authStore\.identityEpoch\) collabFlusher\.flushNow\(ctx, true\)/);
+		expect(SCRIPT).toMatch(/const identityHeld = !ctx\.retired && authStore\.identityEpoch === ctx\.identityEpoch;/);
+		expect(SCRIPT).toMatch(/if \(ctx && !ctx\.retired && ctx\.identityEpoch === authStore\.identityEpoch\) collabFlusher\.flushNow\(ctx, true\)/);
+		// The flag is what closes the effect-flush window, where the cleanup read
+		// the epoch's previous value; the listener sets it before re-running.
+		const at = SCRIPT.indexOf('authStore.onIdentityChange(');
+		const listener = SCRIPT.slice(at, SCRIPT.indexOf('onDestroy(stopIdentityLoad)'));
+		expect(listener).toMatch(/if \(activeCollabContext\) activeCollabContext\.retired = true;/);
+		expect(listener.indexOf('activeCollabContext.retired = true')).toBeLessThan(listener.indexOf('identityKey++'));
 	});
 });
