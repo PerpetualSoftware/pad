@@ -57,6 +57,36 @@ import { readFileSync } from 'node:fs';
  * A guard that latches into the safe state is not a safe guard; it is an outage
  * with good intentions, and it is harder to notice than the flapping it
  * replaced, precisely because nothing looks wrong.
+ *
+ * AN EXEMPTION IS THE MOST DANGEROUS LINE IN A GUARD — it is the one place
+ * the instrument agrees not to look (BUG-3084 checkpoint 21, the rule the
+ * collection-page fold paid for four times in three review rounds).
+ *
+ * Thirteen findings across #1379's rounds; two were defects in the page.
+ * Eleven were these guards failing OPEN, and the reviewer defeated the guard
+ * four separate times AFTER it had been fixed — every time by constructing a
+ * shape and running it, never by reading:
+ *   - a disposition that covered a whole EFFECT exempted the effect's own
+ *     defect: removing the `untrack` produced zero offenders;
+ *   - a disposition scoped by TOKEN but not by POSITION let a synchronous
+ *     `identityHeld()` beside the untracked capture restore the dependency;
+ *   - `untrack((captureIdentity(), () => {}))` evaluates its argument BEFORE
+ *     tracking is disabled, so exempting the call's whole span hid the read;
+ *   - `const p = /}/;` inside an effect ended the body at the regex's brace,
+ *     every effect still enumerated, zero offenders, page compiled.
+ *
+ * Three of the four were exemptions too WIDE, not rules too narrow. So an
+ * exemption written against this core:
+ *   1. names WHICH READ it covers (the token), never merely which block;
+ *   2. is bounded POSITIONALLY wherever its reason is positional — "inside
+ *      the timer" means AFTER the timer, and `afterMarker` says so;
+ *   3. owes a CONTROL that puts the original defect back THROUGH it — not
+ *      "the guard catches the defect" but "the guard still catches the
+ *      defect once this exemption exists beside it".
+ *
+ * The third is the one that kept being skipped, and it is the one every
+ * defeat above walked through. A guard tested only without its exemptions has
+ * been tested for a file that does not exist.
  */
 
 export interface EnumeratedBlock {

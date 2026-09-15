@@ -52,6 +52,52 @@
 	// actually changes.
 	let sessionUserId = $derived(authStore.userId);
 
+	/**
+	 * IDENTITY FENCE (BUG-3084 surface 4 of 7). Every async commit point on
+	 * this page checks that the signed-in user has not changed since the work
+	 * started, so a load that lands after a sign-in or sign-out cannot paint
+	 * the previous session's board. Same shape as settings (#1370), the
+	 * collection page (#1372/#1374), the roles board (#1375) and the library
+	 * (#1378); the rules are the family's, carried rather than re-derived.
+	 *
+	 * WHAT IS DIFFERENT HERE. The population is two — `load()` and the 30 s
+	 * poll — plus a sync-subscription callback no instrument enumerates, and
+	 * EVERY path funnels into `load()`: the poll, the sync signal, the Retry
+	 * button and the create-collection modal all delegate to it, so the fence
+	 * lives in one place and the callers are held to writing nothing else.
+	 *
+	 * This page already had the RECOVERY half before it had a fence: the load
+	 * effect below is keyed on `(sessionUserId, wsSlug)` and DROPS the data
+	 * before reloading (BUG-2991), so an identity change that reaches the effect
+	 * flush replaces the board. What it could not stop is the GAP — a
+	 * continuation queued before that flush commits the previous user's board
+	 * first, and the effect then paints over it. A fence at each commit closes
+	 * the gap; the keyed effect stays the recovery, which is why the identity
+	 * listener below deliberately does NOT reload (that would be the library's
+	 * double load, in a page that already has the single one).
+	 *
+	 * NO `identityEpochAtLoad` / `pageIdentityHeld()` on this surface, and it
+	 * is a decision rather than an omission: no handler here composes a write
+	 * from state the previous identity loaded. The two modal toggles and the
+	 * onboarding dismissal write nothing derived from the board, and the
+	 * "does this PAGE still belong to the signed-in user" question is answered
+	 * by the `(sessionUserId, wsSlug)` key rather than by a stamped epoch. A
+	 * handler that starts reading board state into a write is the moment this
+	 * surface needs the page-level helper, and the source guard names that.
+	 *
+	 * `identityHeld(captured)` takes the handler's own ENTRY capture. The
+	 * page has no stamped epoch a concurrent load could re-stamp, but the rule
+	 * is kept in the family's shape so a reader of any surface finds one form.
+	 */
+	/** The epoch as of now — captured at a handler's entry, before its awaits. */
+	function captureIdentity(): number {
+		return authStore.identityEpoch;
+	}
+
+	function identityHeld(captured: number): boolean {
+		return authStore.identityEpoch === captured;
+	}
+
 	// Scroll position restoration (BUG-1425). Dashboard renders progressively
 	// (active items, attention list, etc.) — wait for the initial dashboard
 	// fetch before applying a saved offset so the document is tall enough.
@@ -197,6 +243,50 @@
 		if (browser) localStorage.removeItem(`pad-onboarding-dismissed-${wsSlug}`);
 	}
 
+	/**
+	 * TRANSIENT INTERACTION STATE, reset on an identity change. Named in one
+	 * place so the source guard can hold it against the file's own `$state`
+	 * declarations: a new piece of interaction state cannot arrive without
+	 * being dispositioned (BUG-3084, the roles board's checkpoint-14 lesson).
+	 *
+	 * Both are modal toggles, and both modals belong to the session that opened
+	 * them. The Connect modal mints a CLAIM CODE for the signed-in user the
+	 * moment its agent tab is shown, so one left open across a sign-in would
+	 * hand the previous user's code to whoever is signed in now; the
+	 * create-collection form holds the previous user's draft. Closing is the
+	 * conservative disposition — a modal is chrome, and chrome opened under
+	 * another identity is stale.
+	 *
+	 * NOT reset here, each for a reason the guard records: the board data and
+	 * the aha-highlight track are dropped by the keyed load effect, `isOwner`
+	 * by its own keyed effect, `loading` is owned by `load()`, and
+	 * `onboardingDismissed` is a per-workspace preference in localStorage that
+	 * belongs to the BROWSER rather than to either identity.
+	 */
+	function resetTransientState() {
+		connectOpen = false;
+		showCreateCollection = false;
+	}
+
+	/**
+	 * Reset ONLY — no reload. The keyed load effect below already re-runs on
+	 * an identity change (it reads `sessionUserId`, which moves with the
+	 * epoch), drops the data and reloads; a second load from here would be the
+	 * library's double load (#1378, codex round 1) on a page that has the
+	 * single one built in.
+	 *
+	 * A listener rather than a line in that effect because the effect ALSO
+	 * fires on a workspace switch, where closing the Connect modal would race
+	 * the effect above that OPENS it for the post-create navigation
+	 * (`uiStore.connectAfterNavigateSlug`): both key on `wsSlug`, and the
+	 * consume effect is declared first, so the load effect would close what it
+	 * had just opened. The identity event is the only one this reset is for.
+	 */
+	const stopIdentityWatch = authStore.onIdentityChange(() => {
+		resetTransientState();
+	});
+	onDestroy(stopIdentityWatch);
+
 	// `load(wsSlug)` calls `workspaceStore.setCurrent(slug)`, which
 	// SYNCHRONOUSLY reads `workspaces.find(...)` before its first await.
 	// That synchronous read would otherwise establish a reactive dependency
@@ -275,15 +365,26 @@
 
 	async function load(slug: string, silent = false) {
 		const seq = ++dashLoadSeq;
+		// The fence and the sequence token ask DIFFERENT questions and neither
+		// implies the other: the token asks whether a NEWER load for the same
+		// user already landed (a workspace switch produces exactly that), the
+		// fence asks whether the SIGNED-IN USER changed. Both are checked at
+		// every commit.
+		const epochAtEntry = captureIdentity();
 		if (!silent) loading = true;
 		try {
 			await workspaceStore.setCurrent(slug);
+			// A load that has lost its identity issues no requests on its behalf:
+			// the cookie is the NEW user's, and the answer would be theirs, spent
+			// on a continuation that must discard it anyway.
+			if (!identityHeld(epochAtEntry)) return;
 			const [dash, colls] = await Promise.all([
 				api.dashboard.get(slug),
 				api.collections.list(slug)
 			]);
-			// Superseded by a newer load — drop this result.
-			if (seq !== dashLoadSeq) return;
+			// Superseded by a newer load, or issued under a previous identity —
+			// drop this result.
+			if (seq !== dashLoadSeq || !identityHeld(epochAtEntry)) return;
 			dashboard = dash;
 			dashboardSlug = slug;
 			collections = colls;
@@ -291,8 +392,11 @@
 			// dashboard renders normally rather than pinning the retry state.
 			dashError = null;
 		} catch (err) {
-			// Superseded by a newer load — don't commit this stale outcome.
-			if (seq !== dashLoadSeq) return;
+			// Superseded, or the previous session's failure — don't commit this
+			// stale outcome. The identity half matters here as much as on the
+			// success path: a Retry state belonging to the previous user is a
+			// commit, and it would be read by whoever is signed in now.
+			if (seq !== dashLoadSeq || !identityHeld(epochAtEntry)) return;
 			// A genuine not-found (nonexistent workspace → 404 `not_found`
 			// from the workspace-access middleware) is terminal, not
 			// transient — fall through to the "No dashboard data available."
@@ -317,7 +421,13 @@
 				dashError = err instanceof Error ? err : new Error('Failed to load dashboard');
 			}
 		} finally {
-			// Only the latest load owns the loading flag.
+			// Only the latest load owns the loading flag. DELIBERATELY NOT
+			// identity-gated, the library's asymmetry (#1378): a load that lost
+			// its identity has already dropped out above with the board empty,
+			// and the keyed effect's reload sets `loading` for itself. Gating
+			// this on the identity would pin the skeleton for ever on any path
+			// where that reload does not come, and a pinned skeleton is the
+			// worse failure — it is #1372's latch in a different costume.
 			if (seq === dashLoadSeq) loading = false;
 		}
 	}
