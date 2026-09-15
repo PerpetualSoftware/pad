@@ -71,8 +71,10 @@ func (s *Server) effectiveBlobMaxBytes() int64 {
 // (server.go:539) gates this endpoint when users exist on the host.
 // There is no per-workspace role check because import CREATES a new
 // workspace — there's nothing pre-existing to authorize against.
-// The importing user becomes the workspace owner via AddWorkspaceMember
-// after a successful import (mirrors handleCreateWorkspace).
+// The importing user becomes the workspace owner via addOwnerOrCompensate
+// after a successful import (mirrors handleCreateWorkspace) — and, since
+// BUG-2709, on the mid-stream KEEP path too, so a kept partial workspace is
+// reachable by the person who imported it rather than ownerless.
 //
 // Quota: per-user storage quotas are NOT enforced on import. The
 // upload handler is also warn-only in Phase 1 (see handlers_attachments.go
@@ -97,8 +99,8 @@ func (s *Server) effectiveBlobMaxBytes() int64 {
 //
 // Errors before phase 2 begins return a clean HTTP error. Errors mid-
 // rehydrate are logged with attachment_id context; the workspace is
-// kept (it has live items) and the partial attachment state is left
-// for the operator to inspect. Orphan GC will eventually reclaim any
+// kept (it has live items), attached to the importer, and the partial
+// attachment state is left for them to inspect or delete. Orphan GC will eventually reclaim any
 // blob whose row insertion failed — the upload-handler's "blob may be
 // orphan on disk" comment applies here too.
 func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Request, mint workspaceMintAuth) {
@@ -184,7 +186,38 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 			writeError(w, statusErr.status, statusErr.code, statusErr.message)
 			return
 		}
-		writeError(w, http.StatusBadRequest, "import_failed", err.Error())
+
+		// The KEEP path (TASK-896): a plain mid-stream error after
+		// pad-export.json was imported keeps the partial workspace. It used
+		// to keep it OWNERLESS (BUG-2709): the owner row was only ever added
+		// on success, so the kept workspace was live, absent from the
+		// importer's list, not restorable, 403 on read and on delete, and
+		// holding its slug — while this message told them it existed.
+		// Attach the owner now, through the FATAL helper, so the outcome is
+		// one of two the message can state truthfully: kept AND reachable,
+		// or removed by the compensation because the owner row could not be
+		// written. Which one is read from the row, not from the helper's
+		// error text. A caller with no resolved user (legacy token, fresh-
+		// install window) has nobody to attach and keeps today's answer.
+		msg := err.Error()
+		if ws != nil && mint.OwnerID != "" {
+			if oerr := s.addOwnerOrCompensate("import bundle (partial)", ws.ID, ws.Slug, mint.OwnerID); oerr != nil {
+				slog.Error("import: partial workspace could not be attached to the importer",
+					"workspace_id", ws.ID, "workspace_slug", ws.Slug, "user_id", mint.OwnerID, "error", oerr)
+				// Existence is all a read can establish: on the helper's KEEP
+				// arms the row may carry an ack-lost owner row or a non-owner
+				// membership that still permits reading (codex round 2), so
+				// the message says ownership is unconfirmed, not unreachable.
+				if live, lerr := s.store.GetWorkspaceBySlug(ws.Slug); lerr == nil && live == nil {
+					msg += "; the partial workspace could not be attached to your account and was removed"
+				} else {
+					msg += fmt.Sprintf("; the partial workspace %q still exists but your ownership of it could not be confirmed — see the server log", ws.Slug)
+				}
+			} else {
+				msg += fmt.Sprintf("; the partial workspace %q was kept and is yours to inspect or delete", ws.Slug)
+			}
+		}
+		writeError(w, http.StatusBadRequest, "import_failed", msg)
 		return
 	}
 
