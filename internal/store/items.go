@@ -4334,7 +4334,7 @@ func scanCollectionDoneFilters(rows *sql.Rows) []collectionDoneFilter {
 			continue
 		}
 		var schema models.CollectionSchema
-		if err := json.Unmarshal([]byte(schemaJSON), &schema); err != nil {
+		if err := models.UnmarshalItemFieldSchema([]byte(schemaJSON), &schema); err != nil {
 			// Malformed schema → emit a default-fallback filter so the
 			// collection's items still get evaluated against the status
 			// column + global default terminals. This matches pre-TASK-604

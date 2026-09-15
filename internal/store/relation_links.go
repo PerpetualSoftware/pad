@@ -167,7 +167,7 @@ func relationKeysFromSchemaJSON(schemaJSON string) map[string]struct{} {
 		return nil
 	}
 	var schema models.CollectionSchema
-	if err := json.Unmarshal([]byte(schemaJSON), &schema); err != nil {
+	if err := models.UnmarshalItemFieldSchema([]byte(schemaJSON), &schema); err != nil {
 		return nil
 	}
 	keys := map[string]struct{}{}
@@ -351,7 +351,7 @@ func (s *Store) GetRelationBacklinks(targetItemID, workspaceID string, limit, of
 		if !known {
 			byKey = map[string]string{}
 			var schema models.CollectionSchema
-			if json.Unmarshal([]byte(schemaJSON), &schema) == nil {
+			if models.UnmarshalItemFieldSchema([]byte(schemaJSON), &schema) == nil {
 				for _, def := range schema.Fields {
 					if def.Label != "" {
 						byKey[def.Key] = def.Label

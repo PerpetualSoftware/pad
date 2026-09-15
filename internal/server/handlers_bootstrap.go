@@ -189,11 +189,24 @@ func trimRedundantSchemaLabels(raw []byte) json.RawMessage {
 	if err := json.Unmarshal(raw, &s); err != nil {
 		return raw
 	}
+	// BUG-2685: a grandfathered reserved-key FieldDef is dropped here as well.
+	// This is the one schema decode in the tree that does NOT land in a
+	// models.CollectionSchema — bootstrapSchema is a parallel struct — which is
+	// exactly why it was missed by the pass that converted the other 23 sites,
+	// and why the guard now enumerates schema-SHAPED types rather than one
+	// named type. The bootstrap blob goes to every agent at session start, so a
+	// declaration surviving here is a declaration every agent is told to write.
+	kept := s.Fields[:0]
 	for i := range s.Fields {
+		if models.IsReservedItemField(s.Fields[i].Key) {
+			continue
+		}
 		if s.Fields[i].Label == titleCaseLabel(s.Fields[i].Key) {
 			s.Fields[i].Label = ""
 		}
+		kept = append(kept, s.Fields[i])
 	}
+	s.Fields = kept
 	out, err := json.Marshal(s)
 	if err != nil {
 		return raw

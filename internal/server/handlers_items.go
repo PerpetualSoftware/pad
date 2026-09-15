@@ -571,7 +571,7 @@ func (s *Server) handleListCollectionItems(w http.ResponseWriter, r *http.Reques
 
 	var collSchema models.CollectionSchema
 	if coll.Schema != "" {
-		_ = json.Unmarshal([]byte(coll.Schema), &collSchema)
+		_ = models.UnmarshalItemFieldSchema([]byte(coll.Schema), &collSchema)
 	}
 	if err := s.resolveParentFilter(r, workspaceID, &params, collSchema); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
@@ -675,7 +675,7 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 
 	// Parse collection schema
 	var schema models.CollectionSchema
-	if err := json.Unmarshal([]byte(coll.Schema), &schema); err != nil {
+	if err := models.UnmarshalItemFieldSchema([]byte(coll.Schema), &schema); err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to parse collection schema")
 		return
 	}
@@ -1268,7 +1268,7 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		}
 
 		var schema models.CollectionSchema
-		if err := json.Unmarshal([]byte(coll.Schema), &schema); err != nil {
+		if err := models.UnmarshalItemFieldSchema([]byte(coll.Schema), &schema); err != nil {
 			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to parse collection schema")
 			return
 		}
@@ -1448,7 +1448,7 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var schema models.CollectionSchema
-		if err := json.Unmarshal([]byte(coll.Schema), &schema); err != nil {
+		if err := models.UnmarshalItemFieldSchema([]byte(coll.Schema), &schema); err != nil {
 			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to parse collection schema")
 			return
 		}
@@ -3134,7 +3134,7 @@ func (s *Server) handleGetItemProgress(w http.ResponseWriter, r *http.Request) {
 			ctx, cached := ctxCache[child.CollectionID]
 			if !cached {
 				if coll, cerr := s.store.GetCollection(child.CollectionID); cerr == nil && coll != nil {
-					_ = json.Unmarshal([]byte(coll.Schema), &ctx.schema)
+					_ = models.UnmarshalItemFieldSchema([]byte(coll.Schema), &ctx.schema)
 					if coll.Settings != "" {
 						_ = json.Unmarshal([]byte(coll.Settings), &ctx.settings)
 					}

@@ -645,7 +645,7 @@ func (d *HTTPHandlerDispatcher) collectionSchemaShadowsParent(
 		// failed GetCollection there leaves collSchema at its zero value and
 		// --field values just stay untyped strings instead of blocking the
 		// update).
-		_ = json.Unmarshal([]byte(coll.Schema), &schema)
+		_ = models.UnmarshalItemFieldSchema([]byte(coll.Schema), &schema)
 	}
 	for _, f := range schema.Fields {
 		if f.Key == "parent" || f.Key == "plan" {

@@ -253,7 +253,7 @@ Run with --help-collections to see available collections and their status values
 			if coll, err := cli.WithCollectionAliasFallback(rawSlug, nil, func(slug string) (*models.Collection, error) {
 				return client.GetCollection(ws, slug)
 			}); err == nil {
-				_ = json.Unmarshal([]byte(coll.Schema), &collSchema)
+				_ = models.UnmarshalItemFieldSchema([]byte(coll.Schema), &collSchema)
 			}
 			for _, kv := range fieldFlags {
 				key, val, ferr := items.SplitFieldEntry(kv)
@@ -1197,7 +1197,7 @@ Examples:
 				var collSchema models.CollectionSchema
 				if item.CollectionSlug != "" {
 					if coll, err := client.GetCollection(ws, item.CollectionSlug); err == nil {
-						_ = json.Unmarshal([]byte(coll.Schema), &collSchema)
+						_ = models.UnmarshalItemFieldSchema([]byte(coll.Schema), &collSchema)
 					}
 				}
 				for _, kv := range fieldFlags {
@@ -1860,7 +1860,7 @@ Examples:
 				Schema: func(wsSlug, collSlug string) models.CollectionSchema {
 					var schema models.CollectionSchema
 					if coll, err := client.GetCollection(wsSlug, collSlug); err == nil {
-						_ = json.Unmarshal([]byte(coll.Schema), &schema)
+						_ = models.UnmarshalItemFieldSchema([]byte(coll.Schema), &schema)
 					}
 					return schema
 				},

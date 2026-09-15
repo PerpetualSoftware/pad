@@ -414,7 +414,7 @@ func (s *Store) ListCollections(workspaceID string) ([]models.Collection, error)
 	for idx := range result {
 		c := &result[idx]
 		var schema models.CollectionSchema
-		if err := json.Unmarshal([]byte(c.Schema), &schema); err != nil {
+		if err := models.UnmarshalItemFieldSchema([]byte(c.Schema), &schema); err != nil {
 			schema = models.CollectionSchema{}
 		}
 		var settings models.CollectionSettings
