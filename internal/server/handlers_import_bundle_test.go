@@ -491,6 +491,13 @@ func TestImportBundle_PathTraversalAfterExportRollsBack(t *testing.T) {
 // correct. Without the cascade, the workspace was soft-deleted but
 // the attachment rows stayed live, pinning blobs from GC.
 //
+// Since BUG-3094 the rollback goes through removeUnusableWorkspace, which
+// reclaims the blobs itself and PURGES the rows when it can, so the usual
+// end state is zero rows rather than tombstoned ones; the tombstone step
+// still runs first and is what the sweeper reads when reclaim is refused.
+// The live-row assertion below holds under both, which is why it stays.
+// The husk-and-blob contract is pinned in handlers_import_bundle_husk_test.go.
+//
 // The test builds a real export bundle (so manifest entries match
 // real blob bytes), then surgically appends a duplicate manifest.json
 // at the end. Posting that to a fresh server triggers blob
@@ -594,7 +601,7 @@ func TestImportBundle_RollbackTombstonesAttachments(t *testing.T) {
 		t.Fatalf("count live attachments: %v", err)
 	}
 	if live != 0 {
-		t.Errorf("rollback left %d live attachment rows; expected 0 (all should be tombstoned)", live)
+		t.Errorf("rollback left %d live attachment rows; expected 0 (tombstoned, or purged after reclaim)", live)
 	}
 }
 

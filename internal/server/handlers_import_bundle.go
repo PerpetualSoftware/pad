@@ -168,10 +168,16 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 				slog.Info("import: rolled back partial-workspace attachments",
 					"workspace_id", ws.ID, "rows", n)
 			}
-			if delErr := s.store.DeleteWorkspace(ws.Slug); delErr != nil {
-				slog.Warn("import: failed to roll back partial workspace after validation reject",
-					"workspace_slug", ws.Slug, "error", delErr)
-			}
+			// The removal is the shared soft-delete-plus-purge (BUG-3094). A
+			// bare DeleteWorkspace left a husk: ListDeletedWorkspaces is scoped
+			// by owner_id and the owner row is only added after success, so
+			// the rejected import sat in the importer's deleted-workspaces
+			// list and restoring it returned a workspace with no member row.
+			// The helper reclaims the rehydrated blobs before it purges (the
+			// tombstones above are what it and the sweeper fallback read) and
+			// its other-members guard is trivially satisfied here: nothing
+			// writes a member row before this point.
+			_ = s.removeUnusableWorkspace("import bundle", ws.ID, ws.Slug, mint.OwnerID, err)
 		}
 
 		if isValidationReject {
