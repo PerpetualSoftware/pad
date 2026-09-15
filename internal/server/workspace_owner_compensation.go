@@ -207,6 +207,11 @@ func (s *Server) removeUnusableWorkspace(door, workspaceID, workspaceSlug, userI
 	// caller's point of view; what varies is whether the purge runs now or
 	// is left to the retention sweeper, and every branch that leaves it says
 	// so in one sentence: restorable until the retention sweep.
+	// One reclaim-then-purge at a time in this process, shared with the
+	// sweeper — see workspaceReclaimMu. Taken before the LIST so another
+	// sequence cannot purge the rows this one's dedupe guard is about to count.
+	s.workspaceReclaimMu.Lock()
+	defer s.workspaceReclaimMu.Unlock()
 	blobs, blobErr := s.store.WorkspaceAttachmentBlobs(workspaceID)
 	if blobErr != nil {
 		slog.Error(door+": workspace soft-deleted but its attachments could not be listed, so it was not purged; "+
