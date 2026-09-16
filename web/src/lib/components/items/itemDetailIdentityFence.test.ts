@@ -305,6 +305,70 @@ describe('ItemDetail: the population is closed and every member is dispositioned
 	});
 });
 
+describe('ItemDetail: captures are taken where they mean something (round 3 hardening on #1387)', () => {
+	/**
+	 * A capture of a generation or an identity AFTER an await is tautological
+	 * unless something between that await and the capture proves the load is
+	 * still current: the capture would record the NEW load, and every fence
+	 * compared against it would pass. So a capture after an await needs a
+	 * load-generation or identity fence since the nearest await before it. The
+	 * SSE and sync callbacks' `myItemGen = itemGen` are the members that
+	 * need this today: each follows its `callbackGen` check with no await
+	 * between them.
+	 */
+	const CAPTURE = /(?<![!=<>])=\s*(?:\+\+\s*)?(?:loadGeneration|itemGen|collectionGen)\b(?!\s*[!=]==)|(?<![!=]==\s*|=>\s*)captureIdentity\(\)/g;
+	const LOAD_FENCE = /[!=]==\s*loadGeneration|loadGeneration\s*[!=]==|switchedAway\(|stillCurrent\(\)|stillOnSource\(\)|identityHeld\(/;
+
+	/**
+	 * Blocks that end in an unconditional `return;` and close before `at`:
+	 * control inside them never reaches `at`. The SSE and sync callbacks await
+	 * inside such branches TEXTUALLY before their later captures, and on the
+	 * captures' own paths no await precedes them (SSE) or the only one is
+	 * followed by `callbackGen` (sync). The grammar is this file's: a branch
+	 * that falls through ends in something other than `return;`.
+	 */
+	function deadBlocksBefore(body: string, at: number): Array<[number, number]> {
+		const out: Array<[number, number]> = [];
+		for (let i = body.indexOf('{'); i !== -1 && i < at; i = body.indexOf('{', i + 1)) {
+			const close = matchDelimiter(body, i, '{', '}');
+			if (close === -1 || close >= at) continue;
+			if (/\breturn;\s*$/.test(body.slice(i + 1, close))) out.push([i, close]);
+		}
+		return out;
+	}
+
+	it('every capture after an await follows a load or identity fence since that await', () => {
+		const blocks: Array<[string, string]> = [...src.asyncFunctions()].map(([n, b]) => [`${n}()`, b]);
+		for (const b of src.nestedAsyncCallbacks()) blocks.push([b.label, b.body]);
+		let checked = 0;
+		let skippedDead = 0;
+		for (const [label, full] of blocks) {
+			const ex = PER_AWAIT_EXCISED[label];
+			const text = ex ? full.replace(ex.statement, ' '.repeat(ex.statement.length)) : full;
+			for (const m of text.matchAll(CAPTURE)) {
+				// Mask every returning branch that closes before the capture: its
+				// awaits are not on this path, and neither are its fences.
+				let body = text;
+				for (const [o, c] of deadBlocksBefore(text, m.index!)) {
+					body = body.slice(0, o) + ' '.repeat(c - o + 1) + body.slice(c + 1);
+				}
+				const all = [...text.matchAll(/\bawait\b/g)].filter((x) => x.index! < m.index!).length;
+				const prior = [...body.matchAll(/\bawait\b/g)].map((x) => x.index!).filter((x) => x < m.index!);
+				if (prior.length < all) skippedDead++;
+				if (prior.length === 0) continue;
+				checked++;
+				const since = body.slice(prior[prior.length - 1]!, m.index!);
+				expect(since, `${label}: captures \`${m[0]}\` after an await with no load fence since it — every later check against it passes`).toMatch(LOAD_FENCE);
+			}
+		}
+		// Non-vacuity, both halves: the sync callback's two item captures follow
+		// its awaited reconciliation, and four captures sit textually after a
+		// returning branch's await.
+		expect(checked, 'no post-await capture was checked — the pattern no longer reads this file').toBeGreaterThan(0);
+		expect(skippedDead, 'no capture sat after a returning branch — re-read the dead-branch rule').toBeGreaterThan(0);
+	});
+});
+
 describe('ItemDetail: an identity change is a load', () => {
 	function listenerBody(): string {
 		const at = SCRIPT.indexOf('authStore.onIdentityChange(');
