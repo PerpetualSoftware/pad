@@ -46,7 +46,7 @@ interface Row {
 	bareAwaits?: string[];
 	/** Start the unit safe. Only with a `pin` proving why. */
 	startSafe?: boolean;
-	pin?: (src: AstSource) => string | null;
+	pin?: (src: AstSource, unit: Unit) => string | null;
 	/**
 	 * Callbacks this unit creates that may commit something, by callback key
 	 * (see `AnalyseOptions.callbacks`). Every other callback it creates starts
@@ -140,6 +140,19 @@ function clearsBeforeFirstAwait(src: AstSource, fnName: string, timer: string): 
 	return clear < firstAwait ? null : `${fnName} no longer clears ${timer} before its first await`;
 }
 
+/**
+ * Why a continuation's timer is `timer`: its deferring call must be the whole
+ * right-hand side of `timer = …` (round 5 P1-4 — a pin on the clear alone held
+ * after the callback was moved onto a timer nobody clears).
+ */
+function assignedTo(src: AstSource, unit: Unit, timer: string): string | null {
+	let ok = false;
+	walk(src.script, (n) => {
+		if (n.type === 'AssignmentExpression' && n.operator === '=' && n.right === unit.call && n.left.type === 'Identifier' && n.left.name === timer) ok = true;
+	});
+	return ok ? null : `its ${src.text(unit.call!.callee)} is not assigned to ${timer}`;
+}
+
 /** Callbacks passed to deferring calls, in the script. */
 const CONTINUATIONS: SignedRow[] = [
 	{ call: /noScroll: true, \}\)\.catch\($/, body: /./, why: 'rename heal failure: clears only the bridge object this heal installed', may: ['renameOverride'] },
@@ -158,7 +171,7 @@ const CONTINUATIONS: SignedRow[] = [
 		body: /content: toSave \}\)\.then/,
 		why: 'content debounce: loadData clears this timer before its first await, so the callback never runs across a load',
 		startSafe: true,
-		pin: (src) => clearsBeforeFirstAwait(src, 'loadData', 'contentDebounceTimer'),
+		pin: (src, unit) => clearsBeforeFirstAwait(src, 'loadData', 'contentDebounceTimer') ?? assignedTo(src, unit, 'contentDebounceTimer'),
 	},
 	{ call: /\{ content: toSave \}\)\.then\($/, body: /^\(\) =>/, why: 'content save: switchedAway' },
 	{ call: /showSaved\(\); \}\)\.catch\($/, body: /./, why: 'content save failure: switchedAway' },
@@ -243,7 +256,7 @@ export function refusals(code: string): string[] {
 		const row = rowFor.get(u);
 		if (!row) continue;
 		if (row.startSafe) {
-			const why = row.pin ? row.pin(src) : 'a row that starts safe has no pin';
+			const why = row.pin ? row.pin(src, u) : 'a row that starts safe has no pin';
 			if (why) out.push(`${unitLabel(src, u)} starts safe, but ${why}`);
 		}
 		try {
@@ -386,6 +399,14 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 			id: "R5 P1-2 a row's may does not reach a callback the unit creates",
 			subs: [["\tasync function flushTagSaver(saver: TagSaver) {\n\t\tsaver.running = true;\n", "\tasync function flushTagSaver(saver: TagSaver) {\n\t\twindow.addEventListener('focus', () => tagSavers.delete(saver.itemId));\n\t\tsaver.running = true;\n"]],
 			refuses: ['flushTagSaver()', 'callback window.addEventListener(…)', 'calls tagSavers.delete after an unfenced await'],
+		},
+		{
+			// Round 5 P1-4: the debounce row starts safe because loadData clears
+			// contentDebounceTimer; the pin must also prove this callback IS that
+			// timer's.
+			id: 'R5 E12 the debounce callback moves onto a timer loadData does not clear',
+			subs: [['\t\tcontentDebounceTimer = setTimeout(() => {\n', '\t\tlegacyContentTimer = setTimeout(() => {\n']],
+			refuses: ['starts safe, but its setTimeout is not assigned to contentDebounceTimer'],
 		},
 		{
 			// A callback allowance covers what its reason covers: the refetch may
