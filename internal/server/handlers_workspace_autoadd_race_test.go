@@ -1,7 +1,12 @@
 package server
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"net/http"
+	"sort"
+	"strings"
 	"testing"
 )
 
@@ -16,10 +21,14 @@ import (
 // the allow-list: a hook that never fires leaves "no row" true for the wrong
 // reason and "row" true for the old one.
 //
-// These run on SQLite only (testServer is SQLite-backed), where the
-// single-statement insert is atomic under the database write lock. The
-// Postgres interleavings — where a statement snapshot can go stale without any
-// lock — are pinned at the store layer in oauth_connections_autoadd_test.go.
+// What the two legs prove is narrower than "the handler is atomic". They run on
+// SQLite only (testServer is SQLite-backed) and are sequential, so they show
+// that no decision is taken BEFORE the seam. A read-then-insert added AFTER the
+// seam would pass both, since nothing can run between its statements here
+// (review round 1 on #1389 built exactly that edit, and it passed).
+// TestAutoAddCreatorConnection_HandlerMakesOnlyTheAtomicCall covers that half
+// by pinning every call the handler makes. The Postgres interleavings inside
+// the store method are pinned in internal/store/oauth_connections_autoadd_test.go.
 
 func TestAutoAddCreatorConnection_RevokedMidFlight_NotAdded(t *testing.T) {
 	e := newConsentEnv(t, true)
@@ -82,5 +91,68 @@ func TestAutoAddCreatorConnection_GrantUnchangedMidFlight_Added(t *testing.T) {
 	}
 	if !allowed {
 		t.Errorf("workspace %s is not on the allow-list of a connection that kept creation power", ws.Slug)
+	}
+}
+
+// TestAutoAddCreatorConnection_HandlerMakesOnlyTheAtomicCall pins every call
+// maybeAutoAddCreatorConnection makes, against a closed list. A sequential
+// SQLite test cannot tell "one statement" from "a read and then an insert,
+// both after the seam", so this guard is what stops the handler from taking
+// the decision itself again. It is an allow-list rather than a deny-list of
+// known readers, so wrapping a read in a new helper fails it too: the helper
+// call is not on the list.
+//
+// Parsed with go/parser, not scanned as text, so formatting, comments and
+// string literals cannot satisfy it or trip it.
+func TestAutoAddCreatorConnection_HandlerMakesOnlyTheAtomicCall(t *testing.T) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "handlers_workspaces.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse handlers_workspaces.go: %v", err)
+	}
+	var body *ast.BlockStmt
+	for _, d := range f.Decls {
+		if fd, ok := d.(*ast.FuncDecl); ok && fd.Name.Name == "maybeAutoAddCreatorConnection" && fd.Recv != nil {
+			body = fd.Body
+		}
+	}
+	if body == nil {
+		t.Fatal("maybeAutoAddCreatorConnection not found in handlers_workspaces.go")
+	}
+
+	var got []string
+	ast.Inspect(body, func(n ast.Node) bool {
+		if c, ok := n.(*ast.CallExpr); ok {
+			got = append(got, calleeName(c.Fun))
+		}
+		return true
+	})
+	sort.Strings(got)
+	want := []string{
+		"MCPTokenIdentityFromContext",
+		"r.Context",
+		"s.autoAddPreInsertHook",
+		"s.store.AddCreatedWorkspaceIfPermitted",
+		"slog.Warn",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("maybeAutoAddCreatorConnection makes calls %q, want exactly %q.\n"+
+			"The flag decision must stay inside the single store statement (BUG-2792): "+
+			"any read of the connection here reopens the window between that read and the insert.",
+			got, want)
+	}
+}
+
+// calleeName renders a call's function expression as a dotted name, or
+// "<complex>" for anything that is not a plain identifier chain (which is
+// itself off the list and so fails the guard).
+func calleeName(e ast.Expr) string {
+	switch x := e.(type) {
+	case *ast.Ident:
+		return x.Name
+	case *ast.SelectorExpr:
+		return calleeName(x.X) + "." + x.Sel.Name
+	default:
+		return "<complex>"
 	}
 }
