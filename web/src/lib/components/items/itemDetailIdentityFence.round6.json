@@ -2,6 +2,36 @@
 	"note": "Round 6 on #1387 (BUG-3084): the 38 edits the AST guard accepted at 31f3b5e9, from the reviewer probe (its written review was lost in delivery; see checkpoint 63). Deliberately defective code, kept as JSON so repo source scanners do not read it.",
 	"mutants": [
 		{
+			"id": "R6 H1 IIFE returns listener",
+			"class": 4,
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\twindow.addEventListener('focus', (() => () => {\n\t\t\t\titem = withInflightTags(updated);\n\t\t\t})());\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"saveTitle()",
+				"callback function value",
+				"assigns item after an unfenced await"
+			]
+		},
+		{
+			"id": "R6 H1b IIFE block body returns listener",
+			"class": 4,
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\twindow.addEventListener('focus', (() => {\n\t\t\t\treturn () => {\n\t\t\t\t\titem = withInflightTags(updated);\n\t\t\t\t};\n\t\t\t})());\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"saveTitle()",
+				"callback function value",
+				"assigns item after an unfenced await"
+			]
+		},
+		{
 			"id": "R6 H2 stored in callee sequence",
 			"class": 4,
 			"subs": [
@@ -77,6 +107,20 @@
 			],
 			"refuses": [
 				"shadows the trusted name loadGeneration"
+			]
+		},
+		{
+			"id": "R6 H7 untrack(loadData)",
+			"class": 5,
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tuntrack(loadData);\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"saveTitle()",
+				"calls untrack(loadData)"
 			]
 		},
 		{
@@ -176,6 +220,55 @@
 			],
 			"refuses": [
 				"tagged template"
+			]
+		},
+		{
+			"id": "R6 H17 top-level helper via conditional",
+			"class": 5,
+			"subs": [
+				[
+					"\tfunction showSaved() {\n",
+					"\tlet pendingTitleItem: Item | null = null;\n\tfunction applyPendingTitle() {\n\t\tif (pendingTitleItem) item = pendingTitleItem;\n\t}\n\n\tfunction showSaved() {\n"
+				],
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tpendingTitleItem = withInflightTags(updated);\n\t\t\twindow.addEventListener('focus', updated ? applyPendingTitle : showSaved, { once: true });\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"saveTitle()",
+				"callback applyPendingTitle",
+				"assigns item after an unfenced await"
+			]
+		},
+		{
+			"id": "R6 H36 unit helper passed with as",
+			"class": 5,
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tconst applyTitleLater = () => {\n\t\t\t\titem = withInflightTags(updated);\n\t\t\t};\n\t\t\twindow.addEventListener('focus', applyTitleLater as EventListener);\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"saveTitle()",
+				"callback applyTitleLater",
+				"assigns item after an unfenced await"
+			]
+		},
+		{
+			"id": "R6 H36b unit helper passed with !",
+			"class": 5,
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tconst applyTitleLater = () => {\n\t\t\t\titem = withInflightTags(updated);\n\t\t\t};\n\t\t\twindow.addEventListener('focus', applyTitleLater!);\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"saveTitle()",
+				"callback applyTitleLater",
+				"assigns item after an unfenced await"
 			]
 		},
 		{

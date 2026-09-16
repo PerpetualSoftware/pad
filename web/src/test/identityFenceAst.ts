@@ -1029,7 +1029,16 @@ class Analyser {
 	/** Walks an expression in evaluation order; returns `safe` after it. */
 	expr(n: Node, s: boolean): boolean {
 		switch (n.type) {
-			case 'Identifier':
+			case 'Identifier': {
+				// A helper named in a value position is handed to whoever holds the
+				// value, whatever wraps it (`as`, `!`, `?:`): walked as a callback, or
+				// inline when this value is being called right here (round 6 H17,
+				// H36).
+				const named = this.helperNamed(n);
+				if (named && this.calleeDepth > 0) this.inline(named, s, n.name);
+				else if (named) this.callback(named, n.name, this.lexicalOf(named));
+				return s;
+			}
 			case 'Literal':
 			case 'ThisExpression':
 			case 'Super':
@@ -1131,7 +1140,15 @@ class Analyser {
 				// In the callee of a call (`(f ?? ((u) => goto(u)))(url)`) the literal
 				// is invoked right here, with this state.
 				if (this.calleeDepth > 0 && !n.async) {
-					this.withLocals(this.nested(n), () => (n.body.type === 'BlockStatement' ? this.block(n.body.body, s) : this.expr(n.body, s)));
+					// Its body is ordinary code: a function it returns or stores is a
+					// value again, not something invoked here (round 6 H1).
+					const depth = this.calleeDepth;
+					this.calleeDepth = 0;
+					try {
+						this.withLocals(this.nested(n), () => (n.body.type === 'BlockStatement' ? this.block(n.body.body, s) : this.expr(n.body, s)));
+					} finally {
+						this.calleeDepth = depth;
+					}
 					return s;
 				}
 				// Any other function VALUE (returned, in an array, in a conditional):
@@ -1188,6 +1205,11 @@ class Analyser {
 				const named = this.helperNamed(a)!;
 				if (now) this.inline(named, s, a.name);
 				else this.callback(named, `${key}(…)`, this.lexicalOf(named));
+			} else if (now && !deferred && unwrap(a).type !== 'ArrowFunctionExpression' && unwrap(a).type !== 'FunctionExpression') {
+				// A synchronous callee runs whatever it is given; a value the guard
+				// cannot follow is a call to an unknown function (round 6 H7).
+				s = this.expr(a, s);
+				if (!s) this.flag(a, `calls ${key}(${collapseText(this.src, a)}) after an unfenced await`, `${key}(${collapseText(this.src, a)})`);
 			} else if (a.type === 'ObjectExpression' && !deferred) {
 				s = this.objectProperties(a, s, (prop) => `${key}({${prop}})`);
 			} else {
