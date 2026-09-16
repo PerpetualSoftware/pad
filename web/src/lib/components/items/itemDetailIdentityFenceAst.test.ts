@@ -281,6 +281,16 @@ describe('ItemDetail: every async unit is tabled, and none commits past an unfen
 	});
 });
 
+/** The sync handler's list lookup, with its element renamed to `item`. */
+const SYNC_FIND_AS_ITEM: [string, string] = [
+	'\t\t\t\tconst updated = result.changes.updated.find(i => i.id === reqItemId);\n',
+	'\t\t\t\tconst updated = result.changes.updated.find((item) => item.id === reqItemId);\n',
+];
+/** The sync handler's full-refresh fallback: fetch, fence, adopt. */
+const SYNC_REFRESH_FENCE = '\t\t\t\tif (!item || item.id !== reqItemId || myItemGen !== itemGen) return;\n';
+const SYNC_REFRESH_FENCE_AND_ADOPT = SYNC_REFRESH_FENCE + '\t\t\t\titem = adoptServerItem(updated);\n';
+const SYNC_REFRESH_FENCED = '\t\t\t\tconst updated = await api.items.get(reqWsSlug, reqItemSlug);\n' + SYNC_REFRESH_FENCE_AND_ADOPT;
+
 /** saveTitle's fence and the two commits under it: the anchor most round-5 edits rewrite. */
 const TITLE_FENCE_AND_COMMITS =
 	"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n";
@@ -383,6 +393,25 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 			id: 'R5 P1-2 the refetch callback commits beyond its allowance',
 			subs: [["\t\t\t\trefetch: () => api.items.get(targetWs, targetItem.id),\n", "\t\t\t\trefetch: () => ((saveStatus = 'saving'), api.items.get(targetWs, targetItem.id)),\n"]],
 			refuses: ['updateField()', 'callback submitOrderedOCC({refetch})', 'assigns saveStatus after an unfenced await'],
+		},
+		// Round 5 P1-3: every binding anywhere in a unit, nested functions
+		// included, made that name local for the whole unit.
+		{
+			id: 'R5 E5 a nested arrow param named item excuses an unfenced item write (adopting)',
+			subs: [SYNC_FIND_AS_ITEM, [SYNC_REFRESH_FENCED, SYNC_REFRESH_FENCED.replace(SYNC_REFRESH_FENCE_AND_ADOPT, '\t\t\t\titem = adoptServerItem(updated);\n' + SYNC_REFRESH_FENCE)]],
+			refuses: ['assigns item after an unfenced await — item = adoptServerItem(updated)'],
+		},
+		{
+			id: 'R5 E5b a nested arrow param named item excuses an unfenced item write (verbatim)',
+			subs: [SYNC_FIND_AS_ITEM, [SYNC_REFRESH_FENCED, SYNC_REFRESH_FENCED.replace(SYNC_REFRESH_FENCE_AND_ADOPT, '\t\t\t\titem = updated;\n' + SYNC_REFRESH_FENCE)]],
+			refuses: ['assigns item after an unfenced await — item = updated'],
+		},
+		{
+			// An inlined helper resolves names in ITS scopes: a caller's local that
+			// shares a name with the state the helper writes excuses nothing.
+			id: "R5 P1-3 a caller's local does not excuse the same name inside an inlined helper",
+			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tconst saveStatus = updated.title;\n\t\t\tshowSaved();\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n"]],
+			refuses: ['saveTitle()', 'showSaved() -> assigns saveStatus after an unfenced await'],
 		},
 	];
 	it('a callback allowance that names no callback the unit creates is refused', () => {

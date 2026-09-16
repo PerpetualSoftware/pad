@@ -55,10 +55,16 @@
  *    `function switchedAway(…)`) is a fence exactly when its OWN body has a
  *    polarity; a local boolean initialised from a fence is one too.
  *
+ * 5. SCOPES. Whether a write targets a local is decided by the lexical scopes
+ *    enclosing the write: the unit's chain, plus each nested function while
+ *    its body is walked. An inlined helper sees its own chain, not the
+ *    caller's (round 5 P1-3). Block scoping is flattened to the function.
+ *
  * WHAT THIS CANNOT DO. It proves that a check with the right SHAPE dominates
- * every commit; it does not prove the check reads the right item, and it
- * trusts a captured variable's name-to-declaration binding across scopes (a
- * shadowing declaration defeats it). The mount suite is the other half.
+ * every commit; it does not prove the check reads the right item. On the
+ * CHECK side it still trusts a captured variable by name, component-wide (a
+ * shadowing declaration of a capture's name defeats it). The mount suite is
+ * the other half.
  */
 import { parse } from 'svelte/compiler';
 
@@ -413,6 +419,76 @@ export function enumerateUnits(src: AstSource): { units: Unit[]; deferringCalls:
 }
 
 // ---------------------------------------------------------------------------
+// Scopes
+// ---------------------------------------------------------------------------
+
+function patternNames(p: Node, out: Set<string>) {
+	switch (p.type) {
+		case 'Identifier':
+			out.add(p.name);
+			return;
+		case 'ObjectPattern':
+			for (const prop of p.properties) patternNames(prop.type === 'RestElement' ? prop.argument : prop.value, out);
+			return;
+		case 'ArrayPattern':
+			for (const e of p.elements) if (e) patternNames(e, out);
+			return;
+		case 'AssignmentPattern':
+			patternNames(p.left, out);
+			return;
+		case 'RestElement':
+			patternNames(p.argument, out);
+			return;
+		default:
+			throw new Error(`binding pattern ${p.type} is not modelled — teach the guard rather than skip it`);
+	}
+}
+
+/**
+ * The names a function's OWN scope binds: its params, its name if it is a
+ * named expression, and every declaration in its body outside nested
+ * functions (a nested function declaration binds its name here, and nothing
+ * else). Block scoping is flattened to the function, which can only make a
+ * name local in more of the function than it is — never in another function.
+ */
+export function scopeBindings(fn: Node): Set<string> {
+	const out = new Set<string>();
+	for (const p of fn.params) patternNames(p, out);
+	if (fn.type === 'FunctionExpression' && fn.id) out.add(fn.id.name);
+	const visit = (n: Node) => {
+		if (isFn(n)) {
+			if (n.type === 'FunctionDeclaration' && n.id) out.add(n.id.name);
+			return;
+		}
+		if (n.type === 'VariableDeclarator') patternNames(n.id, out);
+		if (n.type === 'CatchClause' && n.param) patternNames(n.param, out);
+		for (const c of children(n)) visit(c);
+	};
+	visit(fn.body);
+	return out;
+}
+
+const fnAncestorCache = new WeakMap<AstSource, Map<Node, Node[]>>();
+
+/** The functions lexically enclosing `fn`, outermost first. */
+function fnAncestors(src: AstSource, fn: Node): Node[] {
+	let m = fnAncestorCache.get(src);
+	if (!m) {
+		const map = new Map<Node, Node[]>();
+		const visit = (n: Node, anc: Node[]) => {
+			if (isFn(n)) map.set(n, anc.filter(isFn));
+		};
+		walk(src.script, visit);
+		walk(src.fragment, visit);
+		fnAncestorCache.set(src, map);
+		m = map;
+	}
+	const chain = m.get(fn);
+	if (!chain) throw new Error(`function at line ${src.line(fn.start)} is not in the component`);
+	return chain;
+}
+
+// ---------------------------------------------------------------------------
 // Flow analysis
 // ---------------------------------------------------------------------------
 
@@ -459,7 +535,10 @@ class Analyser {
 
 	run(fn: Node, enclosing: Node[] = []): Violation[] {
 		this.may = this.opts.may;
-		for (const e of [...enclosing, fn]) this.declareAll(e);
+		for (const e of [...enclosing, fn]) {
+			for (const name of scopeBindings(e)) this.locals.add(name);
+			this.declareParams(e);
+		}
 		if (fn.body.type === 'BlockStatement') this.block(fn.body.body, this.opts.startSafe);
 		else this.expr(fn.body, this.opts.startSafe);
 		for (const b of this.opts.bareAwaits ?? []) {
@@ -479,22 +558,31 @@ class Analyser {
 		});
 	}
 
-	private declareAll(fn: Node) {
+	/** Every param of `fn` and of every function nested in it. */
+	private declareParams(fn: Node) {
 		walk(fn, (n) => {
-			if (n.type === 'VariableDeclarator') this.declare(n.id);
-			if (isFn(n)) for (const p of n.params) this.declare(p, true);
-			if (n.type === 'FunctionDeclaration' && n.id) this.locals.add(n.id.name);
-			if (n.type === 'CatchClause' && n.param) this.declare(n.param);
+			if (isFn(n)) for (const p of n.params) walk(p, (i) => i.type === 'Identifier' && this.params.add(i.name));
 		});
 	}
 
-	private declare(p: Node, isParam = false) {
-		walk(p, (n) => {
-			if (n.type === 'Identifier') {
-				this.locals.add(n.name);
-				if (isParam) this.params.add(n.name);
-			}
-		});
+	/**
+	 * Walks a nested function's body with `locals` as the names that resolve to
+	 * a binding of the unit rather than to component state (round 5 P1-3: a
+	 * nested arrow's `item` param used to make every `item =` in the unit
+	 * local).
+	 */
+	private withLocals<T>(locals: Set<string>, body: () => T): T {
+		const saved = this.locals;
+		this.locals = locals;
+		try {
+			return body();
+		} finally {
+			this.locals = saved;
+		}
+	}
+
+	private nested(fn: Node): Set<string> {
+		return new Set([...this.locals, ...scopeBindings(fn)]);
 	}
 
 	/** The commits the code being walked may make: the row's, or a callback's. */
@@ -522,8 +610,10 @@ class Analyser {
 		this.breaks = [];
 		this.continues = [];
 		this.path.push(`callback ${key}`);
-		if (fn.body.type === 'BlockStatement') this.block(fn.body.body, false);
-		else this.expr(fn.body, false);
+		this.withLocals(this.nested(fn), () => {
+			if (fn.body.type === 'BlockStatement') this.block(fn.body.body, false);
+			else this.expr(fn.body, false);
+		});
 		this.path.pop();
 		({ may: this.may, breaks: this.breaks, continues: this.continues } = saved);
 	}
@@ -813,7 +903,9 @@ class Analyser {
 				// run later, so it is walked from an unsafe start.
 				if (deferred || a.async) continue;
 				if (now) {
-					const inner = a.body.type === 'BlockStatement' ? this.block(a.body.body, s) : this.expr(a.body, s);
+					const inner = this.withLocals(this.nested(a), () =>
+						a.body.type === 'BlockStatement' ? this.block(a.body.body, s) : this.expr(a.body, s)
+					);
 					if (inner === false) s = false;
 				} else {
 					this.callback(a, `${key}(…)`);
@@ -835,14 +927,19 @@ class Analyser {
 		if (helper && n.type === 'CallExpression') {
 			if (this.inlining.has(helper)) return s;
 			this.inlining.add(helper);
-			const saved = new Set(this.locals);
-			this.declareAll(helper);
+			// The helper sees ITS lexical scopes, not the caller's: a caller's
+			// local that shares a name with component state the helper writes
+			// must not excuse that write.
+			const lexical = new Set<string>();
+			for (const e of [...fnAncestors(this.src, helper), helper]) for (const name of scopeBindings(e)) lexical.add(name);
+			this.declareParams(helper);
 			this.path.push(`${key}()`);
 			const body = helper.body;
-			if (body.type === 'BlockStatement') this.block(body.body, s);
-			else this.expr(body, s);
+			this.withLocals(lexical, () => {
+				if (body.type === 'BlockStatement') this.block(body.body, s);
+				else this.expr(body, s);
+			});
 			this.path.pop();
-			this.locals = saved;
 			this.inlining.delete(helper);
 			return s;
 		}
