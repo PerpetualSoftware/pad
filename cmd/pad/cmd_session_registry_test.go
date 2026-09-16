@@ -230,7 +230,7 @@ func TestSessionList_FiltersOrderAndAll(t *testing.T) {
 		t.Fatalf("--agent filter wrong: %+v", recs)
 	}
 	recs = decodeRecords(t, runSessionCmd(t, "list", "--cwd", dirB))
-	if len(recs) != 1 || recs[0].Cwd != dirB {
+	if len(recs) != 1 || recs[0].Cwd != canonicalDir(dirB) {
 		t.Fatalf("--cwd filter wrong: %+v", recs)
 	}
 	// An empty JSON list is `[]`, not null — consumers index it.

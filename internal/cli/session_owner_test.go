@@ -126,8 +126,12 @@ func TestOwnerLiveness_Pid(t *testing.T) {
 		t.Fatalf("reaped pid: got %s, want dead", got)
 	}
 	// Reused-pid leg: live pid, token that cannot match.
-	if got := OwnerLiveness(&SessionOwner{PID: os.Getpid(), ProcStart: "0"}); got != LivenessDead {
-		t.Fatalf("live pid with mismatched token: got %s, want dead (pid reuse)", got)
+	want := LivenessDead
+	if tok == "" {
+		want = LivenessUnknown
+	}
+	if got := OwnerLiveness(&SessionOwner{PID: os.Getpid(), ProcStart: "0"}); got != want {
+		t.Fatalf("live pid with mismatched token: got %s, want %s", got, want)
 	}
 }
 
@@ -165,8 +169,12 @@ func TestOwnerLiveness_Socket(t *testing.T) {
 	}
 	reused := withLivePID
 	reused.ProcStart = "0"
-	if got := OwnerLiveness(&reused); got != LivenessDead {
-		t.Fatalf("live socket + reused pid: got %s, want dead", got)
+	want := LivenessDead
+	if tok == "" {
+		want = LivenessUnknown
+	}
+	if got := OwnerLiveness(&reused); got != want {
+		t.Fatalf("live socket + reused pid: got %s, want %s", got, want)
 	}
 
 	// No identity recorded → cannot prove it is ours → dead.
