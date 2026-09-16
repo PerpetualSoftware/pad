@@ -463,8 +463,12 @@ describe('continuations started under the previous identity do not commit', () =
 		(fieldEditor().onchange as (v: unknown) => void)('5');
 		await waitFor(() => expect(pending.length).toBe(1));
 		if (moveIdentity) {
+			// The title was already on screen before the move, so it cannot show
+			// that the reload ran; the fetch count can (round 5 nit).
+			const before = itemGets();
 			auth.moveIdentity();
 			await settle();
+			await waitFor(() => expect(itemGets(), 'the reload did not run, so this leg measures nothing').toBe(before + 1));
 			await waitFor(() => expect(r.container.textContent).toContain('Item i1'));
 		}
 		pending[0]!.resolve({ ...itemFor('i1'), title: 'echo from the field write' });
