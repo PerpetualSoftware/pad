@@ -262,6 +262,10 @@ describe('ItemDetail: every async unit is tabled, and none commits past an unfen
 	});
 });
 
+/** saveTitle's fence and the two commits under it: the anchor most round-5 edits rewrite. */
+const TITLE_FENCE_AND_COMMITS =
+	"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n";
+
 describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, condition 1)', () => {
 	// Without a clean baseline every mutant is "refused" for free.
 	const BASELINE = refusals(SOURCE);
@@ -291,6 +295,23 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 				"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n",
 				"{ title: titleDraft.trim() });\n\t\t\tupdated ? await tick() : (item = withInflightTags(updated));\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n",
 			]],
+			refuses: ['saveTitle()', 'assigns item after an unfenced await'],
+		},
+		// Round 5 P1-1: a fence to the LEFT of an await in one test expression was
+		// read as holding after that await.
+		{
+			id: 'R5 E1 a fence before an await in one && test',
+			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (gen === loadGeneration && (await dialogs.confirm('Keep the new title?'))) {\n\t\t\t\titem = withInflightTags(updated);\n\t\t\t\tshowSaved();\n\t\t\t}\n"]],
+			refuses: ['saveTitle()', 'assigns item after an unfenced await'],
+		},
+		{
+			id: 'R5 E1b a fence boolean whose initialiser awaits after the fence',
+			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tconst keep = gen === loadGeneration && (await dialogs.confirm('Keep the new title?'));\n\t\t\tif (!keep) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"]],
+			refuses: ['saveTitle()', 'assigns item after an unfenced await'],
+		},
+		{
+			id: 'R5 E1c the early-return form: fence, then an await, in one || test',
+			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id || !(await dialogs.confirm('Keep the new title?'))) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"]],
 			refuses: ['saveTitle()', 'assigns item after an unfenced await'],
 		},
 	];

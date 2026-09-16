@@ -274,8 +274,14 @@ export function polarity(src: AstSource, n: Node, decls: Declarations, params: S
 		case 'LogicalExpression': {
 			const a = polarity(src, n.left, decls, params);
 			const b = polarity(src, n.right, decls, params);
-			if (n.operator === '&&') return { t: a.t || b.t, f: a.f && b.f };
-			if (n.operator === '||') return { t: a.t && b.t, f: a.f || b.f };
+			// The left operand is evaluated first. When the right one awaits, a
+			// fence on the left is stale by the time the whole expression has a
+			// value, so only the right operand's atoms survive (round 5 P1-1). On
+			// the short-circuit path no await ran, and there the left atom's own
+			// verdict is already the other half of the polarity.
+			const awaitsRight = containsAwait(n.right);
+			if (n.operator === '&&') return { t: awaitsRight ? b.t : a.t || b.t, f: a.f && b.f };
+			if (n.operator === '||') return { t: a.t && b.t, f: awaitsRight ? b.f : a.f || b.f };
 			return NONE;
 		}
 		case 'BinaryExpression': {
