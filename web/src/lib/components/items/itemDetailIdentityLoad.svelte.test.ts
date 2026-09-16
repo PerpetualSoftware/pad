@@ -313,7 +313,12 @@ describe('the previous identity\'s RICH draft is not flushed on teardown (live o
 		return vi.mocked(api.items.flushCollabContent).mock.calls.map((c) => c[2]);
 	}
 
-	it('REFUSAL: a pagehide after an identity change does not PATCH the old context\'s markdown', async () => {
+	// Pins the collab EFFECT CLEANUP that runs when the identity change
+	// re-mints the provider. By the time the pagehide below fires, the new
+	// context is active and the old editor is gone, so `runTeardownFlush` has
+	// nothing to flush either way — the leg after this one pins that path
+	// (round 4 on #1387, finding 6).
+	it('REFUSAL (effect cleanup): the re-mint after an identity change does not PATCH the old context\'s markdown', async () => {
 		collab.synced = true;
 		const r = mount();
 		await withRichDraft(r, 'OLD RICH DRAFT');
@@ -325,6 +330,21 @@ describe('the previous identity\'s RICH draft is not flushed on teardown (live o
 		expect(richFlushes()).not.toContain('OLD RICH DRAFT');
 	});
 
+	// `runTeardownFlush` itself: a pagehide in the window between the listener
+	// and the collab effect's re-run — the sign-out pre-navigation window. The
+	// listener's load has already re-stamped the page-load epoch, so the only
+	// refusal left there is the retired context.
+	it('REFUSAL (pagehide in the pre-re-run window): runTeardownFlush does not PATCH the retired context\'s markdown', async () => {
+		collab.synced = true;
+		const r = mount();
+		await withRichDraft(r, 'OLD RICH DRAFT');
+		auth.moveIdentity();
+		window.dispatchEvent(new Event('pagehide'));
+		expect(richFlushes(), 'flushed synchronously by the pagehide').not.toContain('OLD RICH DRAFT');
+		await settle();
+		expect(richFlushes()).not.toContain('OLD RICH DRAFT');
+	});
+
 	it('CONTROL: the same pagehide under an unchanged identity DOES flush it', async () => {
 		collab.synced = true;
 		const r = mount();
@@ -332,6 +352,14 @@ describe('the previous identity\'s RICH draft is not flushed on teardown (live o
 		window.dispatchEvent(new Event('pagehide'));
 		await settle();
 		await waitFor(() => expect(richFlushes()).toContain('OLD RICH DRAFT'));
+	});
+
+	it('CONTROL: the same synchronous pagehide under an unchanged identity flushes it synchronously', async () => {
+		collab.synced = true;
+		const r = mount();
+		await withRichDraft(r, 'OLD RICH DRAFT');
+		window.dispatchEvent(new Event('pagehide'));
+		expect(richFlushes()).toContain('OLD RICH DRAFT');
 	});
 });
 
