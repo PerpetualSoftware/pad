@@ -744,6 +744,9 @@ class Analyser {
 				if (n.test) s = this.expr(n.test, s);
 			}
 			if (n.type === 'ForOfStatement' || n.type === 'ForInStatement') s = this.expr(n.right, s);
+			// `for await` awaits before every iteration, and once more to find the
+			// end (round 5 P2-1).
+			if (n.type === 'ForOfStatement' && n.await) s = false;
 			let end = this.stmt(n.body, s);
 			for (const c of this.continues.pop()!) end = and(end, c);
 			if (end !== EXIT && n.update) end = this.expr(n.update, end);

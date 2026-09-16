@@ -408,6 +408,17 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 			subs: [['\t\tcontentDebounceTimer = setTimeout(() => {\n', '\t\tlegacyContentTimer = setTimeout(() => {\n']],
 			refuses: ['starts safe, but its setTimeout is not assigned to contentDebounceTimer'],
 		},
+		// Round 5 P2-1..P2-3: loop and switch flow.
+		{
+			id: 'R5 E2 a commit in a for-await body',
+			subs: [[TITLE_FENCE_AND_COMMITS, TITLE_FENCE_AND_COMMITS + "\t\t\tfor await (const t of api.items.titleStream(wsSlug, targetItem.id)) {\n\t\t\t\ttitleDraft = t;\n\t\t\t}\n"]],
+			refuses: ['saveTitle()', 'assigns titleDraft after an unfenced await'],
+		},
+		{
+			id: 'R5 P2-1 a commit after a for-await loop',
+			subs: [[TITLE_FENCE_AND_COMMITS, TITLE_FENCE_AND_COMMITS + "\t\t\tfor await (const t of api.items.titleStream(wsSlug, targetItem.id)) void t;\n\t\t\ttitleDraft = '';\n"]],
+			refuses: ['saveTitle()', "assigns titleDraft after an unfenced await — titleDraft = ''"],
+		},
 		{
 			// A callback allowance covers what its reason covers: the refetch may
 			// read, not commit.
