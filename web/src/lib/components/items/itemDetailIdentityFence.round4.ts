@@ -1,0 +1,178 @@
+/**
+ * BUG-3084 round 4 (backend: claude-agent): every edit that SURVIVED the
+ * regex guard, plus the round's KILLED controls. The lead's ruling on
+ * checkpoint 51 makes this the AST guard's acceptance test: each edit is
+ * applied to an in-memory copy of ItemDetail.svelte and the guard must refuse
+ * it. `old` must occur exactly once in the component.
+ */
+export interface GuardMutant {
+	id: string;
+	finding: string;
+	what: string;
+	old: string;
+	new: string;
+}
+
+export const ROUND4_MUTANTS: GuardMutant[] = [
+	{
+		"id": "G1",
+		"finding": "P1-2",
+		"what": "async arrow with a return-type annotation",
+		"old": "\t\tunsubscribeSSE = sseService.onItemEvent(async (event) => {",
+		"new": "\t\tconst stopPoll = syncService.onSync(async (r): Promise<void> => {\n\t\t\tconst fresh = await api.items.get(wsSlug, itemSlug);\n\t\t\titem = fresh;\n\t\t});\n\t\tunsubscribeSSE = sseService.onItemEvent(async (event) => {"
+	},
+	{
+		"id": "G2",
+		"finding": "P1-2",
+		"what": "nested named async function",
+		"old": "\t\tunsubscribeSSE = sseService.onItemEvent(async (event) => {",
+		"new": "\t\tasync function pollItem() {\n\t\t\tconst fresh = await api.items.get(wsSlug, itemSlug);\n\t\t\titem = fresh;\n\t\t}\n\t\tvoid pollItem();\n\t\tunsubscribeSSE = sseService.onItemEvent(async (event) => {"
+	},
+	{
+		"id": "G3",
+		"finding": "P1-2",
+		"what": "object-literal async method",
+		"old": "\t\tunsubscribeSSE = sseService.onItemEvent(async (event) => {",
+		"new": "\t\tconst refreshObj = {\n\t\t\tasync run() {\n\t\t\t\tconst fresh = await api.items.get(wsSlug, itemSlug);\n\t\t\t\titem = fresh;\n\t\t\t},\n\t\t};\n\t\tvoid refreshObj.run();\n\t\tunsubscribeSSE = sseService.onItemEvent(async (event) => {"
+	},
+	{
+		"id": "G11",
+		"finding": "P1-2",
+		"what": "markup `async function` handler",
+		"old": "\t\t\t\t<div class=\"editor-mode-toggle\">",
+		"new": "\t\t\t\t<div class=\"editor-mode-toggle\">\n\t\t\t\t\t<button onclick={async function () { const r = await api.items.get(wsSlug, itemSlug); item = r; }}>x</button>"
+	},
+	{
+		"id": "G12",
+		"finding": "P1-2 control",
+		"what": "markup multi-line async arrow (KILLED in round 4)",
+		"old": "\t\t\t\t<div class=\"editor-mode-toggle\">",
+		"new": "\t\t\t\t<div class=\"editor-mode-toggle\">\n\t\t\t\t\t<button onclick={\n\t\t\t\t\t\tasync () => { const r = await api.items.get(wsSlug, itemSlug); item = r; }}>x</button>"
+	},
+	{
+		"id": "G20",
+		"finding": "P1-1",
+		"what": "callback prop called before the fence",
+		"old": "\t\t\tawait api.items.delete(wsSlug, targetItem.id);",
+		"new": "\t\t\tawait api.items.delete(wsSlug, targetItem.id);\n\t\t\tonClose?.();"
+	},
+	{
+		"id": "G21",
+		"finding": "P1-1",
+		"what": "un-awaited follow-up request before the fence",
+		"old": "\t\t\tawait api.items.restore(wsSlug, targetSlug);",
+		"new": "\t\t\tawait api.items.restore(wsSlug, targetSlug);\n\t\t\tvoid api.items.get(wsSlug, targetSlug);"
+	},
+	{
+		"id": "G23",
+		"finding": "P1-1",
+		"what": "un-awaited helper call before the fence",
+		"old": "case 'item_updated': {\n\t\t\t\t\ttry {\n\t\t\t\t\t\tconst updated = await api.items.get(reqWsSlug, reqItemSlug);",
+		"new": "case 'item_updated': {\n\t\t\t\t\ttry {\n\t\t\t\t\t\tconst updated = await api.items.get(reqWsSlug, reqItemSlug);\n\t\t\t\t\t\tvoid refreshCollectionIfMoved(updated);"
+	},
+	{
+		"id": "G24",
+		"finding": "P1-1",
+		"what": "in-place array mutation before the fence",
+		"old": "\t\t\tif (switchedAway(sourceItem, gen)) return;\n\t\t\titemLinks = [...itemLinks, newLink];",
+		"new": "\t\t\titemLinks.push(newLink);\n\t\t\tif (switchedAway(sourceItem, gen)) return;"
+	},
+	{
+		"id": "G30",
+		"finding": "P1-4",
+		"what": "stillCurrent drops its generation comparison",
+		"old": "const stillCurrent = () => gen === loadGeneration && item?.id === targetItem.id;",
+		"new": "const stillCurrent = () => item?.id === targetItem.id;"
+	},
+	{
+		"id": "G31",
+		"finding": "P1-4",
+		"what": "isForegroundCurrent drops its generation comparison",
+		"old": "!keepalive && !!item && item.id === itemId && genAtFlush === loadGeneration;",
+		"new": "!keepalive && !!item && item.id === itemId;"
+	},
+	{
+		"id": "G32",
+		"finding": "P1-4",
+		"what": "stillOnSource stops calling switchedAway",
+		"old": "const stillOnSource = () => !switchedAway(sourceItem, gen);",
+		"new": "const stillOnSource = () => item?.id === sourceItem.id;"
+	},
+	{
+		"id": "G40",
+		"finding": "P1-1",
+		"what": "compound assignment after an await",
+		"old": "\t\t\tconst fresh = await submitWithOCC(false);",
+		"new": "\t\t\tconst fresh = await submitWithOCC(false);\n\t\t\tbacklinksCount += 1;"
+	},
+	{
+		"id": "G41",
+		"finding": "P1-1",
+		"what": "bracket member write after an await",
+		"old": "\t\t\tconst fresh = await submitWithOCC(false);",
+		"new": "\t\t\tconst fresh = await submitWithOCC(false);\n\t\t\tcomputedOverrides[key] = value;"
+	},
+	{
+		"id": "G42",
+		"finding": "P1-1",
+		"what": "logical assignment after an await",
+		"old": "\t\t\tconst fresh = await submitWithOCC(false);",
+		"new": "\t\t\tconst fresh = await submitWithOCC(false);\n\t\t\tworkspaceMembers ??= [];"
+	},
+	{
+		"id": "M1",
+		"finding": "P1-3",
+		"what": "content-debounce .then loses switchedAway",
+		"old": "api.items.update(wsSlug, reqItem.id, { content: toSave }).then(() => {\n\t\t\t\tif (switchedAway(reqItem, gen)) return;",
+		"new": "api.items.update(wsSlug, reqItem.id, { content: toSave }).then(() => {"
+	},
+	{
+		"id": "M2",
+		"finding": "P1-3",
+		"what": "force-refresh .then loses its generation check",
+		"old": "\t\t\t\t\t.then((fresh) => {\n\t\t\t\t\t\t// Only act if THIS provider is still the active one and\n\t\t\t\t\t\t// we haven't switched items. A pane switch already tore\n\t\t\t\t\t\t// this provider down; bumping the nonce would rebuild the\n\t\t\t\t\t\t// NEW item's provider needlessly and stamp A's content\n\t\t\t\t\t\t// into the wrong slot (PLAN-2105 / TASK-2112; Codex).\n\t\t\t\t\t\tif (collabProvider !== provider || refreshGen !== loadGeneration) return;",
+		"new": "\t\t\t\t\t.then((fresh) => {"
+	},
+	{
+		"id": "M3",
+		"finding": "P1-3 control",
+		"what": "keepalive .then loses its check (KILLED in round 4)",
+		"old": "if (item && item.id === reqItemId && genAtSave === loadGeneration && rawContentSaver.pending === markdown) {",
+		"new": "if (item && item.id === reqItemId && rawContentSaver.pending === markdown) {"
+	},
+	{
+		"id": "M4",
+		"finding": "P1-3 control",
+		"what": "raw foreground .then loses its check (KILLED in round 4)",
+		"old": "then((updated) => {\n\t\t\t\tif (!item || item.id !== reqItemId || genAtSave !== loadGeneration) return;",
+		"new": "then((updated) => {\n\t\t\t\tif (!item || item.id !== reqItemId) return;"
+	},
+	{
+		"id": "M5",
+		"finding": "P1-3 control",
+		"what": "content-debounce .catch loses its check (KILLED in round 4)",
+		"old": "\t\t\t}).catch(() => {\n\t\t\t\tif (switchedAway(reqItem, gen)) return;",
+		"new": "\t\t\t}).catch(() => {"
+	},
+	{
+		"id": "G6",
+		"finding": "nit",
+		"what": "a request added to a `none` timer",
+		"old": "\t\t\t\tstaleConnecting = true;",
+		"new": "\t\t\t\tstaleConnecting = true;\n\t\t\t\tvoid api.items.get(wsSlug, itemSlug);"
+	},
+	{
+		"id": "H2a",
+		"finding": "P2-5",
+		"what": "SSE post-catch fence moved inside the try behind a conditional return",
+		"old": "\t\t\t\t\tif (collection && collection.id === snap.id) {\n\t\t\t\t\t\tadoptCollection(fresh, collGen);\n\t\t\t\t\t}\n\t\t\t\t} catch {\n\t\t\t\t\t// Best-effort — a stale snapshot just means the next save\n\t\t\t\t\t// may 409 and self-heal via QuickActionsMenu's retry.\n\t\t\t\t}\n\t\t\t\t// After the try/catch, not only inside the success arm (BUG-3084\n\t\t\t\t// codex round 2): a REJECTED collection fetch otherwise fell through\n\t\t\t\t// into the item refresh below and adopted it under the new identity.\n\t\t\t\tif (callbackGen !== loadGeneration) return;\n",
+		"new": "\t\t\t\t\tif (collection && collection.id === snap.id) {\n\t\t\t\t\t\tadoptCollection(fresh, collGen);\n\t\t\t\t\t}\n\t\t\t\t\tif (!event.items_changed) return;\n\t\t\t\t} catch {\n\t\t\t\t\t// Best-effort — a stale snapshot just means the next save\n\t\t\t\t\t// may 409 and self-heal via QuickActionsMenu's retry.\n\t\t\t\t}\n\t\t\t\t// After the try/catch, not only inside the success arm (BUG-3084\n\t\t\t\t// codex round 2): a REJECTED collection fetch otherwise fell through\n\t\t\t\t// into the item refresh below and adopted it under the new identity.\n"
+	},
+	{
+		"id": "H2b",
+		"finding": "P2-5",
+		"what": "same, bracket spelling",
+		"old": "\t\t\t\t\tif (collection && collection.id === snap.id) {\n\t\t\t\t\t\tadoptCollection(fresh, collGen);\n\t\t\t\t\t}\n\t\t\t\t} catch {\n\t\t\t\t\t// Best-effort — a stale snapshot just means the next save\n\t\t\t\t\t// may 409 and self-heal via QuickActionsMenu's retry.\n\t\t\t\t}\n\t\t\t\t// After the try/catch, not only inside the success arm (BUG-3084\n\t\t\t\t// codex round 2): a REJECTED collection fetch otherwise fell through\n\t\t\t\t// into the item refresh below and adopted it under the new identity.\n\t\t\t\tif (callbackGen !== loadGeneration) return;\n",
+		"new": "\t\t\t\t\tif (collection && collection.id === snap.id) {\n\t\t\t\t\t\tadoptCollection(fresh, collGen);\n\t\t\t\t\t}\n\t\t\t\t\tif (!event['items_changed']) return;\n\t\t\t\t} catch {\n\t\t\t\t\t// Best-effort — a stale snapshot just means the next save\n\t\t\t\t\t// may 409 and self-heal via QuickActionsMenu's retry.\n\t\t\t\t}\n\t\t\t\t// After the try/catch, not only inside the success arm (BUG-3084\n\t\t\t\t// codex round 2): a REJECTED collection fetch otherwise fell through\n\t\t\t\t// into the item refresh below and adopted it under the new identity.\n"
+	}
+];
