@@ -248,8 +248,9 @@ func resolveMintOptions(opts []MintOption) mintOptions {
 //     committed before the lock was granted.
 //
 // pendingOwn is the number of rows THIS transaction has already inserted that
-// the count will include (1 when the check runs after the insert, as
-// ImportWorkspace does to keep the lock short; 0 when it runs before).
+// the count will include: 1 for the workspace mints, which insert first and
+// then lock (a single lock order for both, and a short hold for the import);
+// 0 for CreateAPIToken, which locks before it inserts.
 //
 // A missing owner is an error, not a pass: the caller asked for a limit and
 // there is no plan to read it from.

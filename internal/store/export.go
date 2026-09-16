@@ -1126,7 +1126,9 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 	// at the top: the owner lock it takes is held until the commit, and an
 	// import of a large bundle would otherwise hold it for the whole import.
 	// The count therefore includes this transaction's own workspace row,
-	// which is what pendingOwn=1 accounts for.
+	// which is what pendingOwn=1 accounts for. CreateWorkspace takes the same
+	// two locks in the same order (slug row, then owner), which is what keeps
+	// a concurrent create and import of one name from deadlocking.
 	if resolveMintOptions(opts).planLimit {
 		if err := s.enforceUserLimitTx(tx, ownerID, "workspaces", 1); err != nil {
 			return nil, err

@@ -20,7 +20,8 @@ import (
 // CreateAPIToken mints a user-owned token. With WithPlanLimit() the insert runs
 // in a transaction that first takes the owner lock and counts the owner's
 // tokens (enforceUserLimitTx, BUG-2808), refusing with a *PlanLimitError at the
-// limit. Every door that mints through here therefore enforces the same cap.
+// limit. Only callers that pass the option are limited; both server token
+// doors do, in cloud mode.
 func (s *Store) CreateAPIToken(userID string, input models.APITokenCreate, defaultExpiryDays, maxLifetimeDays int, opts ...MintOption) (*models.APITokenWithSecret, error) {
 	// Generate 32 random bytes → 64 hex chars
 	raw := make([]byte, 32)

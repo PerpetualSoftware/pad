@@ -89,6 +89,14 @@ type execQueryer interface {
 // With WithPlanLimit() the mint runs in its own transaction and is refused with
 // a *PlanLimitError when the owner is already at their workspaces limit,
 // counted under the owner lock (enforceUserLimitTx, BUG-2808).
+//
+// INSERT FIRST, THEN LOCK AND COUNT, the same order ImportWorkspace uses. Both
+// workspace mints must take their two locks in one order: the workspace row's
+// UNIQUE slug entry, then the owner's users row. Review round 2 on PR A found
+// the cycle the opposite order makes on Postgres: a create holding the owner
+// lock while it waits on an import's uncommitted row for the same slug, and
+// the import asking for the owner lock at its end. With one order, the create
+// waits on the slug holding nothing, and the import commits.
 func (s *Store) CreateWorkspace(input models.WorkspaceCreate, opts ...MintOption) (*models.Workspace, error) {
 	if !resolveMintOptions(opts).planLimit {
 		return s.createWorkspaceQ(s.db, input)
@@ -98,11 +106,11 @@ func (s *Store) CreateWorkspace(input models.WorkspaceCreate, opts ...MintOption
 		return nil, fmt.Errorf("create workspace: begin: %w", err)
 	}
 	defer tx.Rollback()
-	if err := s.enforceUserLimitTx(tx, input.OwnerID, "workspaces", 0); err != nil {
-		return nil, err
-	}
 	ws, err := s.createWorkspaceQ(tx, input)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.enforceUserLimitTx(tx, input.OwnerID, "workspaces", 1); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
