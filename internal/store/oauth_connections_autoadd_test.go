@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -18,11 +19,13 @@ import (
 // ordering. "Blocked" is observed in pg_stat_activity (waitForLockWait) and is
 // never inferred from elapsed time.
 //
-// SQLite is excluded: the statement runs under the database write lock there,
-// so neither interleaving can be built. The handler tests in
+// SQLite is excluded from these two: its write lock is database-wide, so
+// neither ordering can be built as written. Its own ordering-1 analogue is
+// TestAddCreatedWorkspaceIfPermitted_SQLite_WaitsOnUncommittedRevocation below.
+// The handler tests in
 // internal/server/handlers_workspace_autoadd_race_test.go do not build it
-// either. They are sequential, and they pin that the handler takes no decision
-// of its own and reaches this method.
+// either. They are sequential, and they pin that maybeAutoAddCreatorConnection
+// takes no decision of its own and reaches this method.
 
 // createdWorkspaceInsertNeedle is a fragment of the statement text that only
 // AddCreatedWorkspaceIfPermitted's Postgres INSERT carries.
@@ -210,6 +213,73 @@ func TestAddCreatedWorkspaceIfPermitted_PG_RevocationWaitsOnInFlightInsert(t *te
 	// waitForLockWait on the revocation above.
 	if !mustAllowed(t, s, requestID, workspaceID) {
 		t.Error("insert that held the row first did not land")
+	}
+}
+
+// SQLite's own interleaving. Round 2 on #1389 pointed out that every other
+// test here is either sequential or Postgres-only. So the SQLite branch of
+// AddCreatedWorkspaceIfPermitted could be split back into GetOAuthConnection
+// plus AddConnectionWorkspace without any SQLite test noticing, and the pool
+// has more than one connection, so that race is real in production.
+//
+// The store runs WAL with BEGIN IMMEDIATE. A transaction that has revoked the
+// flag holds the write lock without committing it. The single statement needs
+// the write lock before it reads, so it waits (busy_timeout) and then reads
+// the committed revocation. A split version reads first: WAL gives it the last
+// COMMITTED snapshot, where the flag is still true. It then waits for the lock
+// and inserts after the revocation has committed.
+//
+// Boundary, stated rather than hidden: SQLite exposes no lock-wait view, so
+// nothing can observe that the call is parked on the lock. The pause before
+// the commit is what gives a split version time to take its stale read. It
+// can therefore only make the check MISS a split, under a scheduler delay
+// longer than the pause. It cannot fail a correct statement, because a
+// correct statement cannot finish while the lock is held.
+func TestAddCreatedWorkspaceIfPermitted_SQLite_WaitsOnUncommittedRevocation(t *testing.T) {
+	t.Parallel()
+	s := testStoreSQLite(t)
+	u, err := s.CreateUser(models.UserCreate{
+		Email: "bug2792-sqlite@example.com", Name: "S", Password: "pw-bug2792-12345",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	const requestID = "req-bug2792-sqlite"
+	if err := s.CreateOAuthConnection(OAuthConnection{
+		RequestID: requestID, UserID: u.ID, Name: "App", MayCreateWorkspaces: true,
+	}); err != nil {
+		t.Fatalf("CreateOAuthConnection: %v", err)
+	}
+	workspaceID, _ := seedWorkspaceForConn(t, s, "bug2792-sqlite-ws")
+
+	tx, err := s.db.Begin() // BEGIN IMMEDIATE: holds the write lock from here
+	if err != nil {
+		t.Fatalf("begin revocation tx: %v", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(
+		`UPDATE oauth_connections SET may_create_workspaces = 0 WHERE request_id = ?`, requestID,
+	); err != nil {
+		t.Fatalf("revoke in tx: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- s.AddCreatedWorkspaceIfPermitted(requestID, workspaceID) }()
+
+	select {
+	case err := <-done:
+		t.Fatalf("the insert finished (err = %v) while another connection held the write lock", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit revocation: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("AddCreatedWorkspaceIfPermitted: %v", err)
+	}
+	if mustAllowed(t, s, requestID, workspaceID) {
+		t.Error("workspace joined the allow-list although the revocation committed before the insert got the write lock")
 	}
 }
 
