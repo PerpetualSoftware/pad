@@ -1,6 +1,10 @@
 package server
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -285,5 +289,114 @@ func TestPlanLimit_WorkspaceTokenDoor_AdmittedUnderUserCap(t *testing.T) {
 	}
 	if got := ownedTokens(t, env); got != limit {
 		t.Errorf("user owns %d tokens, want exactly the cap %d", got, limit)
+	}
+}
+
+// --- U1 on the BUNDLE import door (gzip body, same route) ---
+
+// bundleLimitRace sends a one-entry bundle import from a session-authenticated
+// free-plan user whose workspaces cap is one above what they own. compete
+// controls whether planLimitAdmittedHook inserts a competing workspace.
+func bundleLimitRace(t *testing.T, compete bool) (*httptest.ResponseRecorder, int, int, bool, *Server) {
+	t.Helper()
+	srv, _ := testServerWithAttachments(t)
+	srv.cloudMode = true
+	u := mintTestUser(t, srv, "bundle-limit@example.com")
+	tok := loginUser(t, srv, "bundle-limit@example.com", "correct-horse-battery-staple")
+	if err := srv.store.SetUserPlan(u.ID, "free", ""); err != nil {
+		t.Fatalf("SetUserPlan: %v", err)
+	}
+	src, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Bundle Source", OwnerID: u.ID})
+	if err != nil {
+		t.Fatalf("CreateWorkspace(source): %v", err)
+	}
+	export, err := srv.store.ExportWorkspace(src.Slug)
+	if err != nil {
+		t.Fatalf("ExportWorkspace: %v", err)
+	}
+	payload, err := json.Marshal(export)
+	if err != nil {
+		t.Fatalf("marshal export: %v", err)
+	}
+	owned := func() int {
+		var n int
+		if err := srv.store.DB().QueryRow(srv.store.D().Rebind(
+			`SELECT COUNT(*) FROM workspaces WHERE owner_id = ?`), u.ID).Scan(&n); err != nil {
+			t.Fatalf("count workspaces: %v", err)
+		}
+		return n
+	}
+	limit := owned() + 1
+	if err := srv.store.SetUserPlanOverrides(u.ID, fmt.Sprintf(`{"workspaces":%d}`, limit)); err != nil {
+		t.Fatalf("SetUserPlanOverrides: %v", err)
+	}
+
+	ran := false
+	srv.planLimitAdmittedHook = func(feature, scope string) {
+		if feature != "workspaces" || scope != u.ID {
+			return
+		}
+		ran = true
+		if !compete {
+			return
+		}
+		if _, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Competitor", OwnerID: u.ID}); err != nil {
+			t.Errorf("competing CreateWorkspace: %v", err)
+		}
+	}
+
+	var buf bytes.Buffer
+	gzw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gzw)
+	if err := tw.WriteHeader(&tar.Header{Name: "pad-export.json", Mode: 0o644, Size: int64(len(payload))}); err != nil {
+		t.Fatalf("write header: %v", err)
+	}
+	if _, err := tw.Write(payload); err != nil {
+		t.Fatalf("write export: %v", err)
+	}
+	tw.Close()
+	gzw.Close()
+
+	req := httptest.NewRequest("POST", "/api/v1/workspaces/import?name=bundle-racer", bytes.NewReader(buf.Bytes()))
+	req.Header.Set("Content-Type", "application/gzip")
+	req.RemoteAddr = "192.0.2.1:1234"
+	req.AddCookie(&http.Cookie{Name: "pad_session", Value: tok})
+	const testCSRF = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	req.AddCookie(&http.Cookie{Name: "pad_csrf", Value: testCSRF})
+	req.Header.Set("X-CSRF-Token", testCSRF)
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	return rr, owned(), limit, ran, srv
+}
+
+func TestPlanLimitRace_WorkspacesBundle_CompetingCreateInWindow_Refused(t *testing.T) {
+	rr, got, limit, ran, srv := bundleLimitRace(t, true)
+	if !ran {
+		t.Fatal("planLimitAdmittedHook never ran for the bundle import; the leg measured nothing")
+	}
+	if got > limit {
+		t.Errorf("user owns %d workspaces under a cap of %d (answered %d)", got, limit, rr.Code)
+	}
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (body=%s)", rr.Code, rr.Body.String())
+	}
+	if code := errorCode(t, rr); code != "plan_limit_exceeded" {
+		t.Errorf("error code = %q, want plan_limit_exceeded", code)
+	}
+	if ws, err := srv.store.GetWorkspaceBySlug("bundle-racer"); err != nil || ws != nil {
+		t.Errorf("refused bundle import left a workspace behind: %+v, %v", ws, err)
+	}
+}
+
+func TestPlanLimitRace_WorkspacesBundle_NoCompetitor_Admitted(t *testing.T) {
+	rr, got, limit, ran, _ := bundleLimitRace(t, false)
+	if !ran {
+		t.Fatal("planLimitAdmittedHook never ran for the bundle import; the leg measured nothing")
+	}
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 (body=%s)", rr.Code, rr.Body.String())
+	}
+	if got != limit {
+		t.Errorf("user owns %d workspaces, want exactly the cap %d", got, limit)
 	}
 }
