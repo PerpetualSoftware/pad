@@ -656,8 +656,12 @@ describe('the SSE callback refuses a continuation that spans an identity change 
 	it('REFUSAL (success arm): the previous identity\'s collection refresh issues no item refetch', async () => {
 		const { refetches, text } = await collectionRace(true, 'resolve');
 		expect(refetches).toBe(0);
-		// The success arm's own check, which the post-catch one masks for the
-		// refetch: `adoptCollection` accepts a stale generation by design.
+		// The stale collection is not adopted either. In THIS same-collection
+		// setup `adoptCollection`'s own generation refuses it (the reload bumped
+		// `collectionGen`), so this line does not pin the success arm's
+		// `callbackGen` check: that check is load-bearing only for a
+		// cross-collection correction, which `shouldAdoptCollection` admits on a
+		// stale generation. It is held by the source guard (BUG-3084 checkpoint 45).
 		expect(text).not.toContain('STALE COLLECTION NAME');
 	});
 
