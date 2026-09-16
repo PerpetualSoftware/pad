@@ -274,6 +274,26 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 	});
 
 	/**
+	 * Defects found in the ANALYSIS itself by later review rounds. Each is an
+	 * edit the analysis accepted when it should not have.
+	 */
+	const ANALYSIS_DEFECTS: Array<{ id: string; old: string; new: string }> = [
+		{
+			// Round 5 on #1387: `?:` was walked as `consequent && alternate`, so an
+			// unsafe consequent short-circuited the walk and the alternate's commit
+			// was never seen.
+			id: 'R5-1 a commit in the alternate of a conditional whose consequent awaits',
+			old: "{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n",
+			new: "{ title: titleDraft.trim() });\n\t\t\tupdated ? await tick() : (item = withInflightTags(updated));\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n",
+		},
+	];
+	it.each(ANALYSIS_DEFECTS.map((d) => [d.id, d] as const))('analysis defect stays closed: %s', (_id, d) => {
+		expect(BASELINE).toEqual([]);
+		expect(SOURCE.split(d.old).length - 1).toBe(1);
+		expect(refusals(SOURCE.replace(d.old, d.new))).not.toEqual([]);
+	});
+
+	/**
 	 * Controls: a guard that refuses everything also refuses every mutant. These
 	 * edits commit nothing and must stay accepted.
 	 */

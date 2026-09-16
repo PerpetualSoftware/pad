@@ -642,7 +642,11 @@ class Analyser {
 			}
 			case 'ConditionalExpression': {
 				const t = this.test(n.test, s);
-				return this.expr(n.consequent, t.t) && this.expr(n.alternate, t.f);
+				// Both arms are walked: `a && b` here would skip the alternate
+				// whenever the consequent ends unsafe (round 5 on #1387).
+				const a = this.expr(n.consequent, t.t);
+				const b = this.expr(n.alternate, t.f);
+				return a && b;
 			}
 			case 'SequenceExpression':
 				for (const e of n.expressions) s = this.expr(e, s);
