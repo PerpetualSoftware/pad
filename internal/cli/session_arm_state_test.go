@@ -140,6 +140,10 @@ func TestArmState_HeadlessLivePid(t *testing.T) {
 // number, so the test doesn't depend on a pid being coincidentally free.
 func TestArmState_HeadlessDeadPidReaped(t *testing.T) {
 	repo := armStateTestEnv(t, "")
+	repo, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	deadPID := exitedProcessPID(t)
 
