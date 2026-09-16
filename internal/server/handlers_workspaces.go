@@ -509,8 +509,9 @@ func (s *Server) maybeAutoAddCreatorConnection(r *http.Request, workspaceID stri
 	}
 	if err := s.store.AddCreatedWorkspaceIfPermitted(requestID, workspaceID); err != nil {
 		// A missing connection or an unset flag is a silent no-op in the
-		// store, so any error here is genuinely unexpected; log so ops
-		// sees it.
+		// store, so an error here is a database failure: rare, possibly
+		// transient (a busy SQLite), and worth logging so ops sees it.
+		// The workspace itself is already created either way.
 		slog.Warn("auto-add workspace to OAuth connection failed",
 			"request_id", requestID,
 			"workspace_id", workspaceID,

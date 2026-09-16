@@ -19,8 +19,10 @@ import (
 // never inferred from elapsed time.
 //
 // SQLite is excluded: the statement runs under the database write lock there,
-// so neither interleaving can be built. Its handler-level leg is
-// TestAutoAddCreatorConnection_RevokedMidFlight_NotAdded.
+// so neither interleaving can be built. The handler tests in
+// internal/server/handlers_workspace_autoadd_race_test.go do not build it
+// either. They are sequential, and they pin that the handler takes no decision
+// of its own and reaches this method.
 
 // createdWorkspaceInsertNeedle is a fragment of the statement text that only
 // AddCreatedWorkspaceIfPermitted's Postgres INSERT carries.
