@@ -97,8 +97,10 @@ func TestAutoAddCreatorConnection_GrantUnchangedMidFlight_Added(t *testing.T) {
 // TestAutoAddCreatorConnection_HandlerMakesOnlyTheAtomicCall pins every call
 // maybeAutoAddCreatorConnection makes, against a closed list. A sequential
 // SQLite test cannot tell "one statement" from "a read and then an insert,
-// both after the seam", so this guard is what stops the handler from taking
-// the decision itself again. It is an allow-list rather than a deny-list of
+// both after the seam", so this guard is what stops this METHOD from taking
+// the decision itself again. Its scope is this one body: a second auto-add
+// writer added elsewhere (a caller, another door) is outside it, and the
+// store method's own atomicity is pinned by the store tests. It is an allow-list rather than a deny-list of
 // known readers, so wrapping a read in a new helper fails it too: the helper
 // call is not on the list.
 //
