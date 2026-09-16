@@ -31,7 +31,9 @@
  *    fence makes it true. Branches merge by AND; `return` / `throw` end a path.
  *    A `try` handler is entered unsafe if the try block awaits anything, since
  *    a rejection can come after any statement. Loops run their body twice, the
- *    second time from the merge of the entry and the first pass's end. A
+ *    second time from the merge of the entry and the first pass's end, and
+ *    leave from the state after their test or iterator (plus every `break`),
+ *    whatever the body does; `for await` starts every pass unsafe. A
  *    statement type the walker does not know THROWS — it is not skipped.
  *
  * 3. COMMITS fail closed. While unsafe, each of these is a violation:
@@ -737,27 +739,41 @@ class Analyser {
 
 	private loop(n: Node, entry: boolean): State {
 		if (n.init) entry = this.stmtOrExpr(n.init, entry);
-		const once = (s: boolean): State => {
+		// One pass: `exit` is the state on every way out of the loop, `next` the
+		// state carried into the following pass. A loop leaves NORMALLY right
+		// after its test (or its iterator) says stop, so that state is an exit
+		// even when the body itself always returns (round 5 P2-2).
+		const once = (s: boolean): { exit: State; next: State } => {
 			this.breaks.push([]);
 			this.continues.push([]);
+			let exit: State = EXIT;
 			if (n.type === 'WhileStatement' || n.type === 'ForStatement') {
-				if (n.test) s = this.expr(n.test, s);
+				if (n.test) {
+					s = this.expr(n.test, s);
+					exit = s;
+				}
 			}
-			if (n.type === 'ForOfStatement' || n.type === 'ForInStatement') s = this.expr(n.right, s);
-			// `for await` awaits before every iteration, and once more to find the
-			// end (round 5 P2-1).
-			if (n.type === 'ForOfStatement' && n.await) s = false;
-			let end = this.stmt(n.body, s);
-			for (const c of this.continues.pop()!) end = and(end, c);
-			if (end !== EXIT && n.update) end = this.expr(n.update, end);
-			if (end !== EXIT && n.type === 'DoWhileStatement') end = this.expr(n.test, end);
-			let out: State = end;
-			for (const b of this.breaks.pop()!) out = and(out, b);
-			return out;
+			if (n.type === 'ForOfStatement' || n.type === 'ForInStatement') {
+				s = this.expr(n.right, s);
+				// `for await` awaits before every iteration, and once more to find
+				// the end (round 5 P2-1).
+				if (n.type === 'ForOfStatement' && n.await) s = false;
+				exit = s;
+			}
+			let next = this.stmt(n.body, s);
+			for (const c of this.continues.pop()!) next = and(next, c);
+			if (next !== EXIT && n.update) next = this.expr(n.update, next);
+			if (next !== EXIT && n.type === 'DoWhileStatement') {
+				next = this.expr(n.test, next);
+				exit = next;
+			}
+			for (const b of this.breaks.pop()!) exit = and(exit, b);
+			return { exit, next };
 		};
 		const first = once(entry);
-		const second = once(first === EXIT ? entry : entry && first);
-		return and(and(entry, first), second);
+		const second = once(first.next === EXIT ? entry : entry && first.next);
+		const exit = and(first.exit, second.exit);
+		return exit;
 	}
 
 	private stmtOrExpr(n: Node, s: boolean): boolean {

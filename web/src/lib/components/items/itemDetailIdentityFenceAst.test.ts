@@ -420,6 +420,16 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 			refuses: ['saveTitle()', "assigns titleDraft after an unfenced await — titleDraft = ''"],
 		},
 		{
+			id: 'R5 E3 a commit after a for-of over an awaited list whose body always returns',
+			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tfor (const newer of await api.items.newerVersions(wsSlug, targetItem.id)) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"]],
+			refuses: ['saveTitle()', 'assigns item after an unfenced await'],
+		},
+		{
+			id: 'R5 P2-2 a commit after a while whose test awaits and whose body always returns',
+			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\twhile (await api.items.hasNewer(wsSlug, targetItem.id)) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"]],
+			refuses: ['saveTitle()', 'assigns item after an unfenced await'],
+		},
+		{
 			// A callback allowance covers what its reason covers: the refetch may
 			// read, not commit.
 			id: 'R5 P1-2 the refetch callback commits beyond its allowance',
