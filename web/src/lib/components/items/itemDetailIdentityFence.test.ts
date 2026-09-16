@@ -582,7 +582,7 @@ describe('ItemDetail: epoch reads in reactive scopes', () => {
 	 */
 	const EXEMPT: Array<{ context: RegExp; afterMarker: string; why: string }> = [
 		{
-			context: /identityHeld = !ctx\.retired && authStore\.identityEpoch$/,
+			context: /const held = !ctx\.retired && authStore\.identityEpoch$/,
 			afterMarker: 'return () =>',
 			why: 'collab teardown flush, inside the effect\'s returned cleanup',
 		},
@@ -627,7 +627,10 @@ describe('ItemDetail: epoch reads in reactive scopes', () => {
 
 	it('the collab context carries its mint-time identity, and both rich teardown flushes compare against it', () => {
 		expect(SCRIPT).toMatch(/identityEpoch:\s*untrack\(\(\)\s*=>\s*authStore\.identityEpoch\)/);
-		expect(SCRIPT).toMatch(/const identityHeld = !ctx\.retired && authStore\.identityEpoch === ctx\.identityEpoch;/);
+		expect(SCRIPT).toMatch(/const held = !ctx\.retired && authStore\.identityEpoch === ctx\.identityEpoch;/);
+		// Named `held`, not `identityHeld`: that name is the component's fence
+		// function, and a local of the same name shadows it (round 3 on #1387).
+		expect(SCRIPT.match(/\b(?:const|let)\s+identityHeld\b/g) ?? []).toEqual([]);
 		expect(SCRIPT).toMatch(/if \(ctx && !ctx\.retired && ctx\.identityEpoch === authStore\.identityEpoch\) collabFlusher\.flushNow\(ctx, true\)/);
 		// The flag is what closes the effect-flush window, where the cleanup read
 		// the epoch's previous value; the listener sets it before re-running.

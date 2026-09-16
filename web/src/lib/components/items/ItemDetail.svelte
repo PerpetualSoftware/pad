@@ -2726,8 +2726,8 @@
 			// saver (BUG-3005): this cleanup also runs on an identity change,
 			// and a Y.Doc snapshot written then carries the wrong user's
 			// cookie.
-			const identityHeld = !ctx.retired && authStore.identityEpoch === ctx.identityEpoch;
-			if (!rawMode && !skipFlush && identityHeld) {
+			const held = !ctx.retired && authStore.identityEpoch === ctx.identityEpoch;
+			if (!rawMode && !skipFlush && held) {
 				collabFlusher.flushNow(ctx, true);
 			}
 			provider.destroy();
