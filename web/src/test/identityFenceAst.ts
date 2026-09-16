@@ -52,7 +52,8 @@
  *
  * 4. FENCES by what they compare, never by name. An atom is a comparison of a
  *    CAPTURED variable against `loadGeneration` / `itemGen`, a call to
- *    `identityHeld(x)`, or an identity-epoch comparison. `!`, `&&`, `||` and
+ *    `identityHeld(x)`, or a comparison of a LIVE identity read
+ *    (`authStore.identityEpoch`, `captureIdentity()`) against a stamp. `!`, `&&`, `||` and
  *    `?:` combine atoms with their polarity, so `if (gen !== loadGeneration)
  *    return;` fences what follows and `if (gen === loadGeneration) { … }`
  *    fences only its consequent. A helper (`const stillCurrent = () => …`,
@@ -324,7 +325,12 @@ export function polarity(src: AstSource, n: Node, decls: Declarations, params: S
 			const gen =
 				(l.type === 'Identifier' && GENERATIONS.has(l.name) && isCaptureRef(r, decls, params)) ||
 				(r.type === 'Identifier' && GENERATIONS.has(r.name) && isCaptureRef(l, decls, params));
-			const ident = isIdentityOperand(src, l) && isIdentityOperand(src, r) && src.text(l) !== src.text(r);
+			// An identity atom compares a live read against a stamp. Two stamps can
+			// both be stale and still agree (round 5 P2-4); two live reads always
+			// agree.
+			const ident =
+				(isIdentityRead(src, l) && isIdentityOperand(src, r) && !isIdentityRead(src, r)) ||
+				(isIdentityRead(src, r) && isIdentityOperand(src, l) && !isIdentityRead(src, l));
 			if (!gen && !ident) return NONE;
 			return eq ? { t: true, f: false } : { t: false, f: true };
 		}

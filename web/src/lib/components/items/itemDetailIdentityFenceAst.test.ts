@@ -444,6 +444,22 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tswitch (titleDraft) {\n\t\t\t\tcase await api.items.canonicalTitle(wsSlug):\n\t\t\t\t\treturn;\n\t\t\t}\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"]],
 			refuses: ['saveTitle()', 'assigns item after an unfenced await'],
 		},
+		// Round 5 P2-4: an identity comparison between two STAMPS proves nothing.
+		{
+			id: 'R5 E9 flushTagSaver compares two stale identity stamps',
+			subs: [['\t\t\t\tif (!identityHeld(saver.epoch)) {\n', '\t\t\t\tif (tagSavers.get(saver.itemId)!.epoch !== saver.epoch) {\n']],
+			refuses: ['flushTagSaver()', 'after an unfenced await'],
+		},
+		{
+			id: 'R5 P2-4 flushTagSaver compares two live identity reads',
+			subs: [['\t\t\t\tif (!identityHeld(saver.epoch)) {\n', '\t\t\t\tif (captureIdentity() !== authStore.identityEpoch) {\n']],
+			refuses: ['flushTagSaver()', 'after an unfenced await'],
+		},
+		{
+			id: 'R5 P2-4 flushTagSaver compares a live identity read against something that is not a stamp',
+			subs: [['\t\t\t\tif (!identityHeld(saver.epoch)) {\n', '\t\t\t\tif (authStore.identityEpoch !== saver.itemId.length) {\n']],
+			refuses: ['flushTagSaver()', 'after an unfenced await'],
+		},
 		{
 			// A callback allowance covers what its reason covers: the refetch may
 			// read, not commit.
