@@ -234,9 +234,17 @@ function isIdentityRead(src: AstSource, n: Node): boolean {
 	return n.type === 'MemberExpression' && src.text(n).replace(/\s+/g, '') === 'authStore.identityEpoch';
 }
 
+export type CaptureKind = 'generation' | 'identity';
+
 export interface Declarations {
-	/** Names declared anywhere whose initialiser is a generation or identity capture. */
+	/** Names declared inside a function whose initialiser is a generation or identity capture. */
 	captures: Set<string>;
+	/** The same names, split by what they captured (round 6: `identityHeld(gen)` is not a fence). */
+	kinds: Map<CaptureKind, Set<string>>;
+	/** Local booleans initialised from a fence; each is a fence only until the next await. */
+	fenceBooleans: Set<string>;
+	/** For each fence helper, the params its polarity needs and the capture kind each must receive. */
+	fenceParams: Map<string, Array<{ index: number; kind: CaptureKind }>>;
 	/** Helper and boolean names whose value is a fence, with its polarity. */
 	fences: Map<string, Polarity>;
 	/**
@@ -263,13 +271,24 @@ const NONE: Polarity = { t: false, f: false };
 
 function collectDeclarations(src: AstSource): Declarations {
 	const captures = new Set<string>();
+	const kinds = new Map<CaptureKind, Set<string>>([
+		['generation', new Set()],
+		['identity', new Set()],
+	]);
 	const fnBodies = new Map<string, Node[]>();
 	const boolInits = new Map<string, Node[]>();
 	const note = (m: Map<string, Node[]>, k: string, v: Node) => m.set(k, [...(m.get(k) ?? []), v]);
-	const visit = (n: Node) => {
+	const visit = (n: Node, anc: Node[]) => {
 		if (n.type === 'VariableDeclarator' && n.id.type === 'Identifier' && n.init) {
-			if (isGenerationRead(n.init) || isIdentityRead(src, n.init)) captures.add(n.id.name);
-			else if (isFn(n.init) && !n.init.async) note(fnBodies, n.id.name, n.init);
+			const capture = isGenerationRead(n.init) ? 'generation' : isIdentityRead(src, n.init) ? 'identity' : null;
+			// A capture is a snapshot taken inside a function. A component-level
+			// variable is state that other code re-stamps (round 6 H40).
+			if (capture && anc.some(isFn)) {
+				captures.add(n.id.name);
+				kinds.get(capture)!.add(n.id.name);
+			} else if (capture) {
+				// component state: neither a capture nor a fence boolean
+			} else if (isFn(n.init) && !n.init.async) note(fnBodies, n.id.name, n.init);
 			else note(boolInits, n.id.name, n.init);
 		}
 		if (n.type === 'FunctionDeclaration' && !n.async && n.id) note(fnBodies, n.id.name, n);
@@ -277,7 +296,7 @@ function collectDeclarations(src: AstSource): Declarations {
 	// The markup declares captures too (the mode toggles' `startGen`).
 	walk(src.script, visit);
 	walk(src.fragment, visit);
-	const decls: Declarations = { captures, fences: new Map(), helpers: new Map(), escapes: new Set() };
+	const decls: Declarations = { captures, kinds, fenceBooleans: new Set(), fenceParams: new Map(), fences: new Map(), helpers: new Map(), escapes: new Set() };
 	for (const [name, fns] of fnBodies) if (fns.length === 1) decls.helpers.set(name, fns[0]!);
 	const reference = (n: Node, anc: Node[]) => {
 		if (n.type !== 'Identifier' || !decls.helpers.has(n.name)) return;
@@ -297,12 +316,16 @@ function collectDeclarations(src: AstSource): Declarations {
 	// is refused rather than guessed.
 	for (let pass = 0; pass < 2; pass++) {
 		for (const [name, fns] of fnBodies) {
-			const pols = fns.map((f) => returnPolarity(src, f, decls));
-			settle(decls, name, pols);
+			const rets = fns.map((f) => returnPolarity(src, f, decls));
+			settle(decls, name, rets.map((r) => r.polarity));
+			if (fns.length === 1 && decls.fences.has(name)) decls.fenceParams.set(name, rets[0]!.required);
 		}
 		for (const [name, inits] of boolInits) {
 			const pols = inits.map((i) => polarity(src, i, decls));
-			if (pols.some((p) => p.t || p.f)) settle(decls, name, pols);
+			if (pols.some((p) => p.t || p.f)) {
+				settle(decls, name, pols);
+				decls.fenceBooleans.add(name);
+			}
 		}
 	}
 	return decls;
@@ -319,45 +342,82 @@ function settle(decls: Declarations, name: string, pols: Polarity[]) {
 
 /**
  * A helper's polarity. Its OWN params count as captures here, whatever they
- * are called — the call site is what must pass a capture to them (see
- * `polarity`'s CallExpression case). Nowhere else is a param a capture
- * (round 5 P2-6).
+ * are called, and nowhere else (round 5 P2-6). Each param the polarity rests
+ * on is recorded with the capture kind it needs, so a call site must pass a
+ * capture of that kind IN THAT POSITION (round 6 H11).
  */
-function returnPolarity(src: AstSource, fn: Node, decls: Declarations): Polarity {
-	const params = new Set<string>();
-	for (const p of fn.params) patternNames(p, params);
-	if (fn.body.type !== 'BlockStatement') return polarity(src, fn.body, decls, params);
-	const stmts = fn.body.body;
-	if (stmts.length === 1 && stmts[0].type === 'ReturnStatement' && stmts[0].argument) return polarity(src, stmts[0].argument, decls, params);
-	return NONE;
+function returnPolarity(src: AstSource, fn: Node, decls: Declarations): { polarity: Polarity; required: Array<{ index: number; kind: CaptureKind }> } {
+	let body: Node | null = null;
+	if (fn.body.type !== 'BlockStatement') body = fn.body;
+	else if (fn.body.body.length === 1 && fn.body.body[0].type === 'ReturnStatement' && fn.body.body[0].argument) body = fn.body.body[0].argument;
+	if (!body) return { polarity: NONE, required: [] };
+	const required: Array<{ index: number; kind: CaptureKind }> = [];
+	// Every param shadows any capture of the same name; one at a time, each is
+	// tried as a capture of each kind.
+	const none = new Map<string, CaptureKind | null>();
+	const names = new Set<string>();
+	for (const p of fn.params) patternNames(p, names);
+	for (const name of names) none.set(name, null);
+	const all = new Map(none);
+	fn.params.forEach((p: Node, index: number) => {
+		if (p.type !== 'Identifier') return;
+		for (const kind of ['generation', 'identity'] as const) {
+			const alone = polarity(src, body!, decls, new Map([...none, [p.name, kind]]));
+			if (alone.t || alone.f) {
+				required.push({ index, kind });
+				all.set(p.name, kind);
+				break;
+			}
+		}
+	});
+	return { polarity: polarity(src, body, decls, all), required };
 }
 
 // ---------------------------------------------------------------------------
 // Polarity of a test expression
 // ---------------------------------------------------------------------------
 
-function isCaptureRef(n: Node, decls: Declarations, params: Set<string>): boolean {
-	return n.type === 'Identifier' && (decls.captures.has(n.name) || params.has(n.name));
+function isCaptureRef(n: Node, decls: Declarations, params: ReadonlyMap<string, CaptureKind | null>, kind: CaptureKind): boolean {
+	return n.type === 'Identifier' && (params.has(n.name) ? params.get(n.name) === kind : decls.kinds.get(kind)!.has(n.name));
 }
 
-function isIdentityOperand(src: AstSource, n: Node): boolean {
-	return isIdentityRead(src, n) || (n.type === 'MemberExpression' && !n.computed && ['identityEpoch', 'epoch'].includes(n.property.name));
+/**
+ * A stamp: an identity recorded earlier, read as `x.epoch` / `x.a.identityEpoch`
+ * through plain names only — never a live read, never an object built on the
+ * spot (round 6 H37).
+ */
+function isStamp(src: AstSource, n: Node): boolean {
+	if (n.type !== 'MemberExpression' || n.computed || !['identityEpoch', 'epoch'].includes(n.property.name)) return false;
+	if (isIdentityRead(src, n)) return false;
+	let o = n.object;
+	while (o.type === 'MemberExpression' && !o.computed) o = o.object;
+	return o.type === 'Identifier';
 }
 
-export function polarity(src: AstSource, n: Node, decls: Declarations, params: Set<string> = new Set()): Polarity {
+/**
+ * `live`, when given, is the set of fence booleans declared since the last
+ * await; any other fence boolean has gone stale (round 6 H10, H39).
+ */
+export function polarity(
+	src: AstSource,
+	n: Node,
+	decls: Declarations,
+	params: ReadonlyMap<string, CaptureKind | null> = new Map(),
+	live?: ReadonlySet<string>
+): Polarity {
 	switch (n.type) {
 		case 'ChainExpression':
 		case 'ParenthesizedExpression':
-			return polarity(src, n.expression, decls, params);
+			return polarity(src, n.expression, decls, params, live);
 		case 'UnaryExpression':
 			if (n.operator !== '!') return NONE;
 			{
-				const p = polarity(src, n.argument, decls, params);
+				const p = polarity(src, n.argument, decls, params, live);
 				return { t: p.f, f: p.t };
 			}
 		case 'LogicalExpression': {
-			const a = polarity(src, n.left, decls, params);
-			const b = polarity(src, n.right, decls, params);
+			const a = polarity(src, n.left, decls, params, live);
+			const b = polarity(src, n.right, decls, params, live);
 			// The left operand is evaluated first. When the right one awaits, a
 			// fence on the left is stale by the time the whole expression has a
 			// value, so only the right operand's atoms survive (round 5 P1-1). On
@@ -374,31 +434,33 @@ export function polarity(src: AstSource, n: Node, decls: Declarations, params: S
 			if (!eq && !ne) return NONE;
 			const [l, r] = [n.left, n.right];
 			const gen =
-				(l.type === 'Identifier' && GENERATIONS.has(l.name) && isCaptureRef(r, decls, params)) ||
-				(r.type === 'Identifier' && GENERATIONS.has(r.name) && isCaptureRef(l, decls, params));
+				(l.type === 'Identifier' && GENERATIONS.has(l.name) && isCaptureRef(r, decls, params, 'generation')) ||
+				(r.type === 'Identifier' && GENERATIONS.has(r.name) && isCaptureRef(l, decls, params, 'generation'));
 			// An identity atom compares a live read against a stamp. Two stamps can
 			// both be stale and still agree (round 5 P2-4); two live reads always
 			// agree.
 			const ident =
-				(isIdentityRead(src, l) && isIdentityOperand(src, r) && !isIdentityRead(src, r)) ||
-				(isIdentityRead(src, r) && isIdentityOperand(src, l) && !isIdentityRead(src, l));
+				(isIdentityRead(src, l) && isStamp(src, r)) || (isIdentityRead(src, r) && isStamp(src, l));
 			if (!gen && !ident) return NONE;
 			return eq ? { t: true, f: false } : { t: false, f: true };
 		}
 		case 'Identifier':
+			if (live && decls.fenceBooleans.has(n.name) && !live.has(n.name)) return NONE;
 			return decls.fences.get(n.name) ?? NONE;
 		case 'CallExpression': {
 			const key = calleeKey(src, n.callee);
 			if (key === 'identityHeld') {
 				const a = n.arguments[0];
-				const ok = a && (isCaptureRef(a, decls, params) || isIdentityOperand(src, a));
+				const ok = a && (isCaptureRef(a, decls, params, 'identity') || isStamp(src, a));
 				return ok ? { t: true, f: false } : NONE;
 			}
 			const helper = n.callee.type === 'Identifier' ? decls.fences.get(n.callee.name) : undefined;
 			if (!helper) return NONE;
-			// A helper taking arguments is a fence only when one of them is a
-			// capture: `switchedAway(item, gen)` with a fresh `gen` proves nothing.
-			if (n.arguments.length > 0 && !n.arguments.some((a: Node) => isCaptureRef(a, decls, params))) return NONE;
+			// Every param the helper's polarity rests on must receive a capture of
+			// the kind it compares: `switchedAway(item, gen)` with a fresh `gen`,
+			// or with the capture in another position, proves nothing.
+			const required = decls.fenceParams.get(n.callee.name) ?? [];
+			if (!required.every((r) => n.arguments[r.index] && isCaptureRef(n.arguments[r.index], decls, params, r.kind))) return NONE;
 			return helper;
 		}
 		default:
@@ -704,6 +766,8 @@ const and = (a: State, b: State): State => (a === EXIT ? b : b === EXIT ? a : a 
 class Analyser {
 	violations: Violation[] = [];
 	locals = new Set<string>();
+	/** Fence booleans declared since the last await on the walk. */
+	private liveBools = new Set<string>();
 	private breaks: State[][] = [];
 	private continues: State[][] = [];
 	private usedBare = new Set<string>();
@@ -783,7 +847,8 @@ class Analyser {
 		this.callbacksSeen.add(key);
 		if (this.inlining.has(fn)) return;
 		this.inlining.add(fn);
-		const saved = { may: this.may, breaks: this.breaks, continues: this.continues };
+		const saved = { may: this.may, breaks: this.breaks, continues: this.continues, liveBools: this.liveBools };
+		this.liveBools = new Set();
 		this.may = this.opts.callbacks?.get(key) ?? new Set();
 		this.breaks = [];
 		this.continues = [];
@@ -794,7 +859,7 @@ class Analyser {
 		});
 		this.path.pop();
 		this.inlining.delete(fn);
-		({ may: this.may, breaks: this.breaks, continues: this.continues } = saved);
+		({ may: this.may, breaks: this.breaks, continues: this.continues, liveBools: this.liveBools } = saved);
 	}
 
 	/**
@@ -872,7 +937,7 @@ class Analyser {
 
 	private test(n: Node, s: boolean): { t: boolean; f: boolean } {
 		const after = this.expr(n, s);
-		const p = polarity(this.src, n, this.decls);
+		const p = polarity(this.src, n, this.decls, new Map(), this.liveBools);
 		return { t: after || p.t, f: after || p.f };
 	}
 
@@ -902,6 +967,7 @@ class Analyser {
 						continue;
 					}
 					s = this.expr(d.init, s as boolean);
+					if (d.id.type === 'Identifier' && this.decls.fenceBooleans.has(d.id.name)) this.liveBools.add(d.id.name);
 					if (!s && d.id.type === 'Identifier' && this.decls.captures.has(d.id.name)) {
 						this.flag(d, 'captures a generation or identity after an unfenced await');
 					}
@@ -1076,7 +1142,7 @@ class Analyser {
 				return this.expr(n.right, this.expr(n.left, s));
 			case 'LogicalExpression': {
 				const l = this.expr(n.left, s);
-				const p = polarity(this.src, n.left, this.decls);
+				const p = polarity(this.src, n.left, this.decls, new Map(), this.liveBools);
 				const rhsSafe = l || (n.operator === '&&' ? p.t : n.operator === '||' ? p.f : false);
 				const r = this.expr(n.right, rhsSafe);
 				// After the whole expression, only the short-circuit that skipped the
@@ -1100,7 +1166,7 @@ class Analyser {
 				if (n.left.type !== 'Identifier') {
 					s = this.lhs(n.left, s);
 					if (!s) this.flag(n, `writes ${this.src.text(n.left)} after an unfenced await`, this.targetKey(n.left));
-				} else if (!this.locals.has(n.left.name) && !s) {
+				} else if ((this.liveBools.delete(n.left.name), !this.locals.has(n.left.name) && !s)) {
 					this.flag(n, `assigns ${n.left.name} after an unfenced await`, n.left.name);
 				}
 				// Any rewrite of a capture after an unfenced await makes every later
@@ -1123,6 +1189,7 @@ class Analyser {
 			}
 			case 'AwaitExpression':
 				this.expr(n.argument, s);
+				this.liveBools.clear();
 				return false;
 			case 'CallExpression':
 			case 'NewExpression':
@@ -1244,8 +1311,13 @@ class Analyser {
 		// Scheduling a continuation commits nothing: the continuation is a unit.
 		if (deferred) return s;
 		if (n.type === 'CallExpression') {
-			const p = polarity(this.src, n, this.decls);
-			if (p.t || p.f) return s;
+			const p = polarity(this.src, n, this.decls, new Map(), this.liveBools);
+			if (p.t || p.f) {
+				// A fence helper's body still runs here, and may commit (round 6 H25).
+				const fenceHelper = callee.type === 'Identifier' ? this.decls.helpers.get(callee.name) : undefined;
+				if (fenceHelper) this.inline(fenceHelper, s, key);
+				return s;
+			}
 		}
 		// A helper declared once in this component runs its body HERE.
 		const helper = callee.type === 'Identifier' ? this.decls.helpers.get(callee.name) : undefined;

@@ -534,6 +534,22 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 			refuses: ['default value calls or assigns'],
 		},
 		{
+			// A fence boolean stops being one when it is written (round 6 ruling B,
+			// class 6); here the write, not an await, is what makes it stale.
+			id: 'R6 a fence boolean overwritten after it is computed',
+			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tlet titleOk = gen === loadGeneration;\n\t\t\ttitleOk = true;\n\t\t\tif (!titleOk) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"]],
+			refuses: ['saveTitle()', 'assigns item after an unfenced await'],
+		},
+		{
+			// H12b with the operands the other way round.
+			id: 'R6 loadGeneration compared against an identity capture',
+			subs: [
+				[TITLE_GEN_LET[0], TITLE_GEN_LET[0].replace('\t\tsaveStatus', '\t\tconst identity = captureIdentity();\n\t\tsaveStatus')],
+				[TITLE_FENCE_AND_COMMITS, '{ title: titleDraft.trim() });\n\t\t\tif (loadGeneration !== identity) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n'],
+			],
+			refuses: ['saveTitle()', 'assigns item after an unfenced await'],
+		},
+		{
 			// Iteration methods count as synchronous only on a receiver the unit
 			// declared; anything else could be an object whose `forEach` stores
 			// the callback.
