@@ -608,6 +608,8 @@ export interface AnalyseOptions {
 	 * with no entry may commit nothing.
 	 */
 	callbacks?: ReadonlyMap<string, ReadonlySet<string>>;
+	/** When given, receives the key of every callback the walk reached (for population tables). */
+	seen?: Set<string>;
 }
 
 const EXIT = 'exit' as const;
@@ -638,6 +640,7 @@ class Analyser {
 				throw new Error(`bare-await entry ${JSON.stringify(b)} is in this unit but was never reached as a statement`);
 			}
 		}
+		for (const k of this.callbacksSeen) this.opts.seen?.add(k);
 		for (const k of this.opts.callbacks?.keys() ?? []) {
 			if (!this.callbacksSeen.has(k)) throw new Error(`callback entry ${k} names no callback this unit creates`);
 		}
