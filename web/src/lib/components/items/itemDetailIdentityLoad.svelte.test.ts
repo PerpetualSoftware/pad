@@ -167,6 +167,7 @@ vi.mock('$lib/stores/auth.svelte', () => ({ authStore: auth }));
 
 import { api } from '$lib/api/client';
 import { localIndex } from '$lib/stores/localIndex.svelte';
+import { toastStore } from '$lib/stores/toast.svelte';
 import ItemDetail from './ItemDetail.svelte';
 
 type Props = Record<string, unknown>;
@@ -511,6 +512,33 @@ describe('continuations started under the previous identity do not commit', () =
 		expect(await tagDrainRace(false)).toEqual(['["a"]', '["a","b"]']);
 	});
 
+	/** The failure arm of the same drain (round 4 on #1387, A12). */
+	async function tagFailureRace(moveIdentity: boolean) {
+		const r = mount();
+		await loaded(r);
+		const first = deferNext(api.items.update);
+		(tagInput().onchange as (t: string[]) => void)(['a']);
+		await waitFor(() => expect(first.length).toBe(1));
+		if (moveIdentity) {
+			auth.moveIdentity();
+			await settle();
+			await loaded(r);
+		}
+		const before = toastStore.toasts.filter((t) => t.message === 'Failed to save').length;
+		first[0]!.reject(new Error('tag save failed'));
+		await settle();
+		await new Promise((res) => setTimeout(res, 20));
+		return toastStore.toasts.filter((t) => t.message === 'Failed to save').length - before;
+	}
+
+	it('REFUSAL (flushTagSaver failure arm): the previous identity\'s failed batch does not toast or revert', async () => {
+		expect(await tagFailureRace(true)).toBe(0);
+	});
+
+	it('CONTROL: the same failure toasts under an unchanged identity', async () => {
+		expect(await tagFailureRace(false)).toBe(1);
+	});
+
 	/**
 	 * The previous identity's tag vocabulary, resolved late. Captured by
 	 * holding every `tags.list` open: the mount's own call and the listener's
@@ -638,6 +666,46 @@ describe('continuations started under the previous identity do not commit', () =
 		await settle();
 		return vi.mocked(localIndex.retagCollection).mock.calls.length;
 	}
+
+	/**
+	 * An INCREMENTAL sync result: the callback awaits the reconciliation, then
+	 * adopts the changed item. Its `callbackGen` check after that await is the
+	 * only thing between the previous identity's payload and the new load
+	 * (round 4 on #1387, A8): reconcileCollectionSegment's own identity check
+	 * stops only itself.
+	 */
+	async function incrementalRace(moveIdentity: boolean) {
+		const r = mount();
+		await loaded(r);
+		const lists = deferNext(api.collections.list);
+		const cb = syncCallbacks.at(-1);
+		if (!cb) throw new Error('no sync subscription');
+		const settled = cb({
+			workspace: 'ws',
+			type: 'incremental',
+			changes: { updated: [{ ...itemFor('i1'), title: 'STALE SYNC TITLE' }], deleted: [] },
+		});
+		await waitFor(() => expect(lists.length).toBe(1));
+		if (moveIdentity) {
+			auth.moveIdentity();
+			await settle();
+			await loaded(r);
+		}
+		lists[0]!.resolve([COLL]);
+		await settled;
+		await settle();
+		return r.container.textContent ?? '';
+	}
+
+	it('REFUSAL (sync callbackGen after the reconciliation): the previous identity\'s incremental payload is not adopted', async () => {
+		const text = await incrementalRace(true);
+		expect(text).toContain('Item i1');
+		expect(text).not.toContain('STALE SYNC TITLE');
+	});
+
+	it('CONTROL: the same payload is adopted under an unchanged identity', async () => {
+		expect(await incrementalRace(false)).toContain('STALE SYNC TITLE');
+	});
 
 	it('REFUSAL (explicit fence, reconcileCollectionSegment): the previous identity\'s list does not retag', async () => {
 		expect(await reconcileRace(true)).toBe(0);
