@@ -649,20 +649,51 @@ class Analyser {
 	 * A function literal that may run LATER: walked from an unsafe start, with
 	 * only its own allowance. What it does never changes the caller's state.
 	 */
-	private callback(fn: Node, key: string) {
+	private callback(fn: Node, key: string, locals: Set<string> = this.nested(fn)) {
 		if (fn.async) return; // an async function is a unit of its own
 		this.callbacksSeen.add(key);
+		if (this.inlining.has(fn)) return;
+		this.inlining.add(fn);
 		const saved = { may: this.may, breaks: this.breaks, continues: this.continues };
 		this.may = this.opts.callbacks?.get(key) ?? new Set();
 		this.breaks = [];
 		this.continues = [];
 		this.path.push(`callback ${key}`);
-		this.withLocals(this.nested(fn), () => {
+		this.withLocals(locals, () => {
 			if (fn.body.type === 'BlockStatement') this.block(fn.body.body, false);
 			else this.expr(fn.body, false);
 		});
 		this.path.pop();
+		this.inlining.delete(fn);
 		({ may: this.may, breaks: this.breaks, continues: this.continues } = saved);
+	}
+
+	/**
+	 * Walks a helper's body HERE, with the caller's state. The helper sees ITS
+	 * lexical scopes, not the caller's: a caller's local that shares a name with
+	 * component state the helper writes must not excuse that write.
+	 */
+	private inline(helper: Node, s: boolean, key: string) {
+		if (this.inlining.has(helper)) return;
+		this.inlining.add(helper);
+		this.path.push(`${key}()`);
+		const body = helper.body;
+		this.withLocals(this.lexicalOf(helper), () => {
+			if (body.type === 'BlockStatement') this.block(body.body, s);
+			else this.expr(body, s);
+		});
+		this.path.pop();
+		this.inlining.delete(helper);
+	}
+
+	/** A helper declared once in the component, named by `n`; it may be handed over by name. */
+	private helperNamed(n: Node): Node | undefined {
+		return n.type === 'Identifier' ? this.decls.helpers.get(n.name) : undefined;
+	}
+
+	/** The names a helper's body resolves locally: its own lexical chain, never the caller's. */
+	private lexicalOf(helper: Node): Set<string> {
+		return new Set([...visibleAt(this.src, helper), ...scopeBindings(helper)]);
 	}
 
 	private objectProperties(n: Node, s: boolean, keyOf: (prop: string) => string): boolean {
@@ -671,7 +702,9 @@ class Analyser {
 			else {
 				if (p.computed) s = this.expr(p.key, s);
 				const name = !p.computed && p.key.type === 'Identifier' ? p.key.name : p.key.type === 'Literal' ? String(p.key.value) : '?';
+				const named = this.helperNamed(p.value);
 				if (isFn(p.value)) this.callback(p.value, keyOf(name));
+				else if (named) this.callback(named, keyOf(name), this.lexicalOf(named));
 				else s = this.expr(p.value, s);
 			}
 		}
@@ -995,6 +1028,12 @@ class Analyser {
 				} else {
 					this.callback(a, `${key}(…)`);
 				}
+			} else if (this.helperNamed(a) && !deferred) {
+				// A helper handed over by NAME runs whenever the callee calls it,
+				// exactly as a literal would.
+				const named = this.helperNamed(a)!;
+				if (now) this.inline(named, s, a.name);
+				else this.callback(named, `${key}(…)`, this.lexicalOf(named));
 			} else if (a.type === 'ObjectExpression' && !deferred) {
 				s = this.objectProperties(a, s, (prop) => `${key}({${prop}})`);
 			} else {
@@ -1010,20 +1049,7 @@ class Analyser {
 		// A helper declared once in this component runs its body HERE.
 		const helper = callee.type === 'Identifier' ? this.decls.helpers.get(callee.name) : undefined;
 		if (helper && n.type === 'CallExpression') {
-			if (this.inlining.has(helper)) return s;
-			this.inlining.add(helper);
-			// The helper sees ITS lexical scopes, not the caller's: a caller's
-			// local that shares a name with component state the helper writes
-			// must not excuse that write.
-			const lexical = new Set([...visibleAt(this.src, helper), ...scopeBindings(helper)]);
-			this.path.push(`${key}()`);
-			const body = helper.body;
-			this.withLocals(lexical, () => {
-				if (body.type === 'BlockStatement') this.block(body.body, s);
-				else this.expr(body, s);
-			});
-			this.path.pop();
-			this.inlining.delete(helper);
+			this.inline(helper, s, key);
 			return s;
 		}
 		if (s) return s;

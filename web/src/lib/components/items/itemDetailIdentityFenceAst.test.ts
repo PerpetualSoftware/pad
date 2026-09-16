@@ -481,6 +481,17 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 			refuses: ['saveTitle()', 'callback window.addEventListener(…)', 'assigns item after an unfenced await'],
 		},
 		{
+			// A helper handed over by NAME runs as late as a literal would.
+			id: 'R5 P1-2 a commit in a helper passed by name to an event listener',
+			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tconst applyTitleLater = () => {\n\t\t\t\titem = withInflightTags(updated);\n\t\t\t};\n\t\t\twindow.addEventListener('focus', applyTitleLater);\n"]],
+			refuses: ['saveTitle()', 'callback window.addEventListener(…)', 'assigns item after an unfenced await'],
+		},
+		{
+			id: 'R5 P1-2 a commit in a helper passed by name as an object property',
+			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tconst applyTitleLater = () => {\n\t\t\t\titem = withInflightTags(updated);\n\t\t\t};\n\t\t\tdialogs.register({ onClose: applyTitleLater });\n"]],
+			refuses: ['saveTitle()', 'callback dialogs.register({onClose})', 'assigns item after an unfenced await'],
+		},
+		{
 			// Iteration methods count as synchronous only on a receiver the unit
 			// declared; anything else could be an object whose `forEach` stores
 			// the callback.
