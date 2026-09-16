@@ -371,6 +371,34 @@
 			]
 		},
 		{
+			"id": "R6 H15 catch after for-await",
+			"class": 7,
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n\t\t\tconst titles = api.items.titleStream(wsSlug, targetItem.id);\n\t\t\ttry {\n\t\t\t\tfor await (const t of titles) void t;\n\t\t\t} catch {\n\t\t\t\titem = null;\n\t\t\t}\n"
+				]
+			],
+			"refuses": [
+				"saveTitle()",
+				"assigns item after an unfenced await"
+			]
+		},
+		{
+			"id": "R6 H15b finally after for-await",
+			"class": 7,
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n\t\t\tconst titles = api.items.titleStream(wsSlug, targetItem.id);\n\t\t\ttry {\n\t\t\t\tfor await (const t of titles) void t;\n\t\t\t} finally {\n\t\t\t\titem = null;\n\t\t\t}\n"
+				]
+			],
+			"refuses": [
+				"saveTitle()",
+				"assigns item after an unfenced await"
+			]
+		},
+		{
 			"id": "R6 H16 tag function returns listener",
 			"class": 5,
 			"subs": [

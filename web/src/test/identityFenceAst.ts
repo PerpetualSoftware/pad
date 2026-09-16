@@ -1335,7 +1335,9 @@ class Analyser {
 function containsAwait(n: Node): boolean {
 	let found = false;
 	walk(n, (c, anc) => {
-		if (c.type === 'AwaitExpression' && !anc.some((a) => isFn(a) && a !== n)) found = true;
+		// `for await` suspends too, and is not an AwaitExpression (round 6 H15).
+		const suspends = c.type === 'AwaitExpression' || (c.type === 'ForOfStatement' && c.await);
+		if (suspends && !anc.some((a) => isFn(a) && a !== n)) found = true;
 	});
 	return found;
 }
