@@ -9,7 +9,10 @@
  * Every unit the AST yields must match exactly one row below, and every row
  * exactly one unit. A row may list `may`: the commits that unit is allowed to
  * make while no fence holds, each covered by the row's reason. A key is an
- * assignment target's root name or a call's callee text.
+ * assignment target's root name or a call's callee text. A row with `may`
+ * also pins the unit's exact `code`, and a row with `may` or `startSafe` pins
+ * its enclosing context (`in`), so an allowance can neither cover edited code
+ * nor follow its callback to another place.
  *
  * The round-4 mutants are the acceptance test: each is applied to an in-memory
  * copy of the component, and this guard must refuse it.
@@ -111,6 +114,19 @@ interface SignedRow extends Row {
 	body: RegExp;
 	/** For a continuation, tested against the deferring call's text up to the callback. */
 	call?: RegExp;
+	/**
+	 * The unit's enclosing context, which must equal `contextOf`: the innermost
+	 * enclosing function's name, `callee(…)` for an anonymous call argument, or
+	 * `{key}` for an object property. Required on a row that carries `may` or
+	 * `startSafe`, so the row cannot re-point by a MOVE (round 5 P2-8).
+	 */
+	in?: string;
+	/**
+	 * The unit's exact code, comments dropped (`codeOf`). Required on a row
+	 * that carries `may`, so the allowance covers that code and nothing else
+	 * (round 5 P2-7).
+	 */
+	code?: string;
 }
 
 /** Async functions that are not top-level declarations, in the script. */
@@ -127,6 +143,38 @@ const MARKUP: SignedRow[] = [
 ];
 
 const collapse = (s: string) => s.replace(/\s+/g, ' ');
+
+/** A function's params and statements, whitespace collapsed; comments are not statements, so they drop out. */
+function codeOf(src: AstSource, fn: Node): string {
+	const params = `(${fn.params.map((p: Node) => src.text(p)).join(', ')}) => `;
+	const b = fn.body;
+	const body = b.type === 'BlockStatement' ? `{ ${b.body.map((st: Node) => src.text(st)).join(' ')} }` : src.text(b);
+	return collapse(params + body);
+}
+
+const parents = new WeakMap<AstSource, Map<Node, Node>>();
+
+function contextOf(src: AstSource, unit: Unit): string {
+	const f = unit.enclosing.at(-1);
+	if (!f) return '(top level)';
+	let m = parents.get(src);
+	if (!m) {
+		const map = new Map<Node, Node>();
+		const visit = (n: Node, anc: Node[]) => {
+			if (anc.length) map.set(n, anc.at(-1)!);
+		};
+		walk(src.script, visit);
+		walk(src.fragment, visit);
+		parents.set(src, map);
+		m = map;
+	}
+	const p = m.get(f);
+	if (f.type === 'FunctionDeclaration') return f.id.name;
+	if (p?.type === 'VariableDeclarator' && p.init === f && p.id.type === 'Identifier') return p.id.name;
+	if (p?.type === 'CallExpression') return `${collapse(src.text(p.callee))}(…)`;
+	if (p?.type === 'Property' && !p.computed && p.key.type === 'Identifier') return `{${p.key.name}}`;
+	return `(anonymous ${p?.type ?? 'function'})`;
+}
 
 function clearsBeforeFirstAwait(src: AstSource, fnName: string, timer: string): string | null {
 	const fn = src.script.body.find((s: Node) => s.type === 'FunctionDeclaration' && s.id?.name === fnName);
@@ -155,20 +203,49 @@ function assignedTo(src: AstSource, unit: Unit, timer: string): string | null {
 
 /** Callbacks passed to deferring calls, in the script. */
 const CONTINUATIONS: SignedRow[] = [
-	{ call: /noScroll: true, \}\)\.catch\($/, body: /./, why: 'rename heal failure: clears only the bridge object this heal installed', may: ['renameOverride'] },
+	{
+		call: /noScroll: true, \}\)\.catch\($/,
+		body: /./,
+		in: 'reconcileCollectionSegment',
+		code: '() => { if (renameOverride === bridge) renameOverride = null; }',
+		why: 'rename heal failure: clears only the bridge object this heal installed',
+		may: ['renameOverride'],
+	},
 	{ call: /^setTimeout\($/, body: /copied = false/, why: 'copy-flag reset: switchedAway' },
 	{ call: /api\.items\.get\(wsSlug, itemSlug\)\.catch\($/, body: /./, why: 'loadData item fetch: sets a flag local to that load and re-throws' },
-	{ call: /^setTimeout\($/, body: /staleConnecting = true/, why: 'connection state of this instance\'s own provider', may: ['staleConnecting'] },
+	{
+		call: /^setTimeout\($/,
+		body: /staleConnecting = true/,
+		in: '$effect(…)',
+		code: "() => { if (collabProvider?.state === 'connecting' && !hasEverSynced) { staleConnecting = true; } }",
+		why: 'connection state of this instance\'s own provider',
+		may: ['staleConnecting'],
+	},
 	{ call: /\.get\(refreshCtx\.wsSlug, refreshCtx\.itemId\) \.then\($/, body: /./, why: 'force-refresh fetch: refreshGen against loadGeneration' },
 	{ call: /forceRefreshNonce \+= 1; \}\) \.catch\($/, body: /./, why: 'force-refresh failure: refreshGen against loadGeneration' },
-	{ call: /^setTimeout\($/, body: /^\(\) => \{ teardownFlushed = false; \}$/, why: 're-arms the BUG-3005 teardown latch, itself identity-checked', may: ['teardownFlushed'] },
+	{
+		call: /^setTimeout\($/,
+		body: /teardownFlushed/,
+		in: 'onBeforeUnload',
+		code: '() => { teardownFlushed = false; }',
+		why: 're-arms the BUG-3005 teardown latch, itself identity-checked',
+		may: ['teardownFlushed'],
+	},
 	{ call: /^queueMicrotask\($/, body: /./, why: 'collab lazy seed: refuses a retired or re-identified context first' },
-	{ call: /^setTimeout\($/, body: /^\(\) => \{ saveStatus = 'idle'; \}$/, why: 'cosmetic save-indicator reset', may: ['saveStatus'] },
+	{ call: /^setTimeout\($/, body: /saveStatus/, in: 'showSaved', code: "() => { saveStatus = 'idle'; }", why: 'cosmetic save-indicator reset', may: ['saveStatus'] },
 	{ call: /^tick\(\)\.then\($/, body: /./, why: 'schedules a focus frame; commits nothing itself' },
-	{ call: /^requestAnimationFrame\($/, body: /./, why: 'focuses the editor after a tab switch', may: ['editorInstance.commands.focus'] },
+	{
+		call: /^requestAnimationFrame\($/,
+		body: /./,
+		in: 'tick().then(…)',
+		code: '() => editorInstance?.commands.focus()',
+		why: 'focuses the editor after a tab switch',
+		may: ['editorInstance.commands.focus'],
+	},
 	{
 		call: /^setTimeout\($/,
 		body: /content: toSave \}\)\.then/,
+		in: 'handleContentUpdate',
 		why: 'content debounce: loadData clears this timer before its first await, so the callback never runs across a load',
 		startSafe: true,
 		pin: (src, unit) => clearsBeforeFirstAwait(src, 'loadData', 'contentDebounceTimer') ?? assignedTo(src, unit, 'contentDebounceTimer'),
@@ -207,7 +284,13 @@ export function refusals(code: string): string[] {
 		const hits = new Map<SignedRow, Unit[]>();
 		for (const u of members) {
 			const body = collapse(src.text(u.fn));
-			const matched = rows.filter((r) => r.body.test(body) && (!r.call || r.call.test(callText(u))));
+			const matched = rows.filter(
+				(r) =>
+					r.body.test(body) &&
+					(!r.call || r.call.test(callText(u))) &&
+					(r.in === undefined || r.in === contextOf(src, u)) &&
+					(r.code === undefined || r.code === codeOf(src, u.fn))
+			);
 			if (matched.length !== 1) {
 				out.push(`${what} ${unitLabel(src, u)} matches ${matched.length} table rows — disposition it: ${body.slice(0, 80)}`);
 				continue;
@@ -277,6 +360,13 @@ export function refusals(code: string): string[] {
 describe('ItemDetail: every async unit is tabled, and none commits past an unfenced await (AST)', () => {
 	it('the component as written is clean', () => {
 		expect(refusals(SOURCE)).toEqual([]);
+	});
+
+	it('a row that may commit or starts safe is pinned to its place, and a row that may commit to its code', () => {
+		for (const r of [...NESTED, ...MARKUP, ...CONTINUATIONS]) {
+			if (r.may || r.startSafe) expect(r.in, `row (${r.why}) has no \`in\``).toBeDefined();
+			if (r.may) expect(r.code, `row (${r.why}) has no \`code\``).toBeDefined();
+		}
 	});
 
 	it('the analysis is not vacuous: it finds units of every kind, and it reads the fences it relies on', () => {
@@ -489,6 +579,27 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 			id: "R5 E11 updateField compares the onRefetched param to loadGeneration",
 			subs: [['\t\t\tconst fresh = await submitWithOCC(false);\n\t\t\tif (!stillCurrent()) return;\n', '\t\t\tconst fresh = await submitWithOCC(false);\n\t\t\tif (latest !== loadGeneration) return;\n']],
 			refuses: ['updateField()', 'assigns item after an unfenced await'],
+		},
+		// Round 5 P2-7 / P2-8: a row's allowance covered more than its reason, and
+		// a row could re-point by a move.
+		{
+			id: 'R5 E13 the rename heal clears the override without its bridge compare',
+			subs: [['\t\t\t\tif (renameOverride === bridge) renameOverride = null;\n', '\t\t\t\trenameOverride = null;\n']],
+			refuses: ['matches 0 table rows'],
+		},
+		{
+			id: "R5 P2-8 the rename heal's catch moves onto the SSE rename navigation",
+			subs: [
+				[
+					"\t\t\t\tnoScroll: true,\n\t\t\t}).catch(() => {\n\t\t\t\t// A failed/cancelled navigation must not leave the override\n\t\t\t\t// bridging to a URL we never reached. Identity compare (this\n\t\t\t\t// heal's own bridge object, round 4 P2) so a cancelled older\n\t\t\t\t// navigation can't clear a newer bridge to the same slug.\n\t\t\t\tif (renameOverride === bridge) renameOverride = null;\n\t\t\t});\n",
+					'\t\t\t\tnoScroll: true,\n\t\t\t});\n',
+				],
+				[
+					'\t\t\t\t\t\t\tnoScroll: true,\n\t\t\t\t\t\t});\n',
+					'\t\t\t\t\t\t\tnoScroll: true,\n\t\t\t\t\t\t}).catch(() => {\n\t\t\t\t\t\t\tif (renameOverride === bridge) renameOverride = null;\n\t\t\t\t\t\t});\n',
+				],
+			],
+			refuses: ['matches 0 table rows'],
 		},
 		{
 			// A callback allowance covers what its reason covers: the refetch may
