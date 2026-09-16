@@ -131,11 +131,16 @@ function firstAwait(body: string, label: string): number {
 }
 
 /**
- * Handlers whose success path has more awaits than fence checks for a reason
- * that is not a defect. Named, with the reason, so an addition is a decision.
+ * STATEMENTS excised from a handler's body before the per-await rules, each
+ * with the reason it commits nothing. A statement, not a function: skipping
+ * the whole function left `flushRawIfPending`'s real PATCH await unchecked
+ * (round 3 on #1387). Each must occur exactly once in its handler.
  */
-const PER_AWAIT_EXEMPT: Record<string, string> = {
-	'flushRawIfPending()': 'the re-entrancy waiter `await new Promise(setTimeout 50)` returns pending state and commits nothing',
+const PER_AWAIT_EXCISED: Record<string, { statement: string; why: string }> = {
+	'flushRawIfPending()': {
+		statement: 'await new Promise((r) => setTimeout(r, 50));',
+		why: 'the re-entrancy waiter returns pending state and commits nothing',
+	},
 };
 
 /**
@@ -145,8 +150,13 @@ const PER_AWAIT_EXEMPT: Record<string, string> = {
  * least one fence per await. A LOWER BOUND, not a proof of position — the
  * mount suite's legs are the other half.
  */
-function holdsPerAwait(label: string, body: string) {
-	if (label in PER_AWAIT_EXEMPT) return;
+function holdsPerAwait(label: string, fullBody: string) {
+	let body = fullBody;
+	const excised = PER_AWAIT_EXCISED[label];
+	if (excised) {
+		expect(body.split(excised.statement).length - 1, `${label}: the excised statement (${excised.why}) is not there exactly once — re-point this table`).toBe(1);
+		body = body.replace(excised.statement, ' '.repeat(excised.statement.length));
+	}
 	const success = withoutCatchArms(body);
 	const awaits = (success.match(/\bawait\b/g) ?? []).length;
 	if (awaits === 0) return;
@@ -268,13 +278,6 @@ describe('ItemDetail: the population is closed and every member is dispositioned
 		matchSigned(blocks, NESTED_CALLBACKS, 'nested async callback');
 		for (const block of blocks) {
 			const row = NESTED_CALLBACKS.find((r) => r.signature.test(block.body.trim()))!;
-			// The collab save issues its request before any await in the body
-			// the enumerator returns (it is the arrow's parameter list onward),
-			// so hold it on the generation token alone.
-			if (row.signature.source === 'flushCollabContent\\(') {
-				expect(block.body, 'collab save no longer gates UI feedback on genAtFlush').toMatch(/genAtFlush\s*===\s*loadGeneration/);
-				continue;
-			}
 			holdsDisposition(block.label, block.body, row.disposition);
 		}
 	});
