@@ -475,7 +475,7 @@ describe('ItemDetail: deferred continuations that are not timers or async functi
 	];
 
 	it('every .then / .catch / .finally continuation is dispositioned, holds it, and the count is closed', () => {
-		const sites = [...SCRIPT.matchAll(/\.(?:then|catch|finally)\(/g)].map((m) => ({
+		const sites = [...SCRIPT.matchAll(/\.(?:then|catch|finally)\s*(?:\?\.\s*)?\(/g)].map((m) => ({
 			lead: SCRIPT.slice(Math.max(0, m.index! - 90), m.index! + 40),
 			body: SCRIPT.slice(m.index!, m.index! + 300),
 		}));
@@ -500,7 +500,10 @@ describe('ItemDetail: deferred continuations that are not timers or async functi
 
 	it('the MARKUP defers nothing: the script-scoped tables above cannot see it (round 3 on #1387)', () => {
 		const M = src.markup.replace(/<!--[\s\S]*?-->/g, (c) => ' '.repeat(c.length));
-		for (const re of [/\.(?:then|catch|finally)\(/g, /\bsetTimeout\(/g, /\bsetInterval\(/g, /\bqueueMicrotask\(/g, /\brequestAnimationFrame\(/g]) {
+		// `\s*(?:\?\.\s*)?\(` also matches an optional call (`.catch?.(`), which
+		// the first version of this rule let through. Bracket access
+		// (`['then'](`) is outside the grammar ItemDetail uses and is not matched.
+		for (const re of [/\.(?:then|catch|finally)\s*(?:\?\.\s*)?\(/g, /\b(?:setTimeout|setInterval|queueMicrotask|requestAnimationFrame)\s*(?:\?\.\s*)?\(/g]) {
 			expect(M.match(re)?.length ?? 0, `the markup now carries ${re.source} — move it into a script handler the tables cover, or widen them`).toBe(0);
 		}
 	});
