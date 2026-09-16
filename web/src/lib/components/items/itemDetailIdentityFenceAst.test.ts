@@ -47,6 +47,12 @@ interface Row {
 	/** Start the unit safe. Only with a `pin` proving why. */
 	startSafe?: boolean;
 	pin?: (src: AstSource) => string | null;
+	/**
+	 * Callbacks this unit creates that may commit something, by callback key
+	 * (see `AnalyseOptions.callbacks`). Every other callback it creates starts
+	 * unsafe and may commit nothing.
+	 */
+	callbacks?: Record<string, { may: string[]; why: string }>;
 }
 
 /** Top-level `async function` declarations, by name. */
@@ -59,7 +65,19 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	loadData: { why: 'IS the load: myGen against loadGeneration after every await' },
 	startEditTitle: { why: 'focuses and sizes the input it opened synchronously', may: ['el', 'titleInputEl.focus', 'titleInputEl.setSelectionRange'] },
 	saveTitle: { why: 'gen against loadGeneration on both arms' },
-	updateField: { why: 'stillCurrent() on every arm, the OCC refetch and the open-children confirm' },
+	updateField: {
+		why: 'stillCurrent() on every arm, the OCC refetch and the open-children confirm',
+		callbacks: {
+			'submitOrderedOCC({send})': {
+				may: ['api.items.update'],
+				why: 'submitOrderedOCC calls send first with no await before it, and re-sends only after stillCurrent() with no await between (fieldWriteOrder.test.ts: "does not RE-SEND once the view moves on DURING the refetch")',
+			},
+			'submitOrderedOCC({refetch})': {
+				may: ['api.items.get'],
+				why: 'submitOrderedOCC refetches only after stillCurrent() with no await between (fieldWriteOrder.test.ts: "does not retry once the view has moved on"); a read',
+			},
+		},
+	},
 	flushTagSaver: {
 		why: 'identityHeld(saver.epoch) before every commit and send; the unfenced writes are to this burst\'s own identity-stamped record, and the finally deletes that record only if the registry still holds it (the get)',
 		may: ['saver', 'tagSavers.get', 'tagSavers.delete'],
@@ -232,6 +250,7 @@ export function refusals(code: string): string[] {
 			const v = analyseUnit(src, decls, u, {
 				startSafe: u.kind === 'async-function' || !!row.startSafe,
 				may: new Set(row.may ?? []),
+				callbacks: new Map(Object.entries(row.callbacks ?? {}).map(([k, v]) => [k, new Set(v.may)])),
 				bareAwaits: new Set(row.bareAwaits ?? []),
 			});
 			for (const x of v) out.push(`${unitLabel(src, u)} line ${x.line}: ${x.what} — ${x.text}`);
@@ -314,7 +333,66 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id || !(await dialogs.confirm('Keep the new title?'))) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"]],
 			refuses: ['saveTitle()', 'assigns item after an unfenced await'],
 		},
+		// Round 5 P1-2: a callback handed to anything but the deferring names was
+		// walked as if it ran inside the call, and a function-valued property was
+		// not walked at all.
+		{
+			id: 'R5 E6 a commit in the onRefetched property, which runs after the refetch await',
+			subs: [["\t\t\t\t\tlastServerItem = latest;\n", "\t\t\t\t\tlastServerItem = latest;\n\t\t\t\t\titem = withInflightTags(latest);\n"]],
+			refuses: ['updateField()', 'callback submitOrderedOCC({onRefetched})', 'assigns item after an unfenced await'],
+		},
+		{
+			id: 'R5 E7 updateField\'s open-children confirm callback loses its stillCurrent fence',
+			subs: [["\t\t\t\t\t\tif (!stillCurrent()) throw new Error('switched away');\n", '']],
+			refuses: ['updateField()', 'callback confirmOpenChildrenOrThrow(…)', 'calls submitOrderedOCC after an unfenced await'],
+		},
+		{
+			id: 'R5 E7b handleMove\'s open-children confirm callback loses its stillOnSource fence',
+			subs: [["\t\t\t\t\t\tif (!stillOnSource()) throw new Error('switched away');\n", '']],
+			refuses: ['handleMove()', 'callback confirmOpenChildrenOrThrow(…)', 'after an unfenced await'],
+		},
+		{
+			id: 'R5 E8 a commit inside a requestIdleCallback callback',
+			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\trequestIdleCallback(() => {\n\t\t\t\titem = withInflightTags(updated);\n\t\t\t\tshowSaved();\n\t\t\t});\n"]],
+			refuses: ['saveTitle()', 'callback requestIdleCallback(…)', 'assigns item after an unfenced await'],
+		},
+		{
+			id: 'R5 E8b a commit inside an event listener',
+			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\twindow.addEventListener('focus', () => {\n\t\t\t\titem = withInflightTags(updated);\n\t\t\t}, { once: true });\n"]],
+			refuses: ['saveTitle()', 'callback window.addEventListener(…)', 'assigns item after an unfenced await'],
+		},
+		{
+			// Iteration methods count as synchronous only on a receiver the unit
+			// declared; anything else could be an object whose `forEach` stores
+			// the callback.
+			id: 'R5 P1-2 an iteration-named method on a receiver the unit did not declare',
+			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tsseService.forEach(() => {\n\t\t\t\titem = withInflightTags(updated);\n\t\t\t});\n"]],
+			refuses: ['saveTitle()', 'callback sseService.forEach(…)', 'assigns item after an unfenced await'],
+		},
+		{
+			// A row's `may` covers the unit's own statements, not the callbacks it
+			// creates: flushTagSaver may delete its registry entry, a listener it
+			// registers may not.
+			id: "R5 P1-2 a row's may does not reach a callback the unit creates",
+			subs: [["\tasync function flushTagSaver(saver: TagSaver) {\n\t\tsaver.running = true;\n", "\tasync function flushTagSaver(saver: TagSaver) {\n\t\twindow.addEventListener('focus', () => tagSavers.delete(saver.itemId));\n\t\tsaver.running = true;\n"]],
+			refuses: ['flushTagSaver()', 'callback window.addEventListener(…)', 'calls tagSavers.delete after an unfenced await'],
+		},
+		{
+			// A callback allowance covers what its reason covers: the refetch may
+			// read, not commit.
+			id: 'R5 P1-2 the refetch callback commits beyond its allowance',
+			subs: [["\t\t\t\trefetch: () => api.items.get(targetWs, targetItem.id),\n", "\t\t\t\trefetch: () => ((saveStatus = 'saving'), api.items.get(targetWs, targetItem.id)),\n"]],
+			refuses: ['updateField()', 'callback submitOrderedOCC({refetch})', 'assigns saveStatus after an unfenced await'],
+		},
 	];
+	it('a callback allowance that names no callback the unit creates is refused', () => {
+		const src = parseComponent(SOURCE);
+		const unit = enumerateUnits(src).units.find((u) => u.name === 'updateField')!;
+		expect(() =>
+			analyseUnit(src, declarations(src), unit, { startSafe: true, callbacks: new Map([['submitOrderedOCC({sendd})', new Set(['api.items.update'])]]) })
+		).toThrow(/names no callback this unit creates/);
+	});
+
 	it.each(ANALYSIS_DEFECTS.map((d) => [d.id, d] as const))('analysis defect stays closed: %s', (_id, d) => {
 		expect(BASELINE).toEqual([]);
 		let code = SOURCE;

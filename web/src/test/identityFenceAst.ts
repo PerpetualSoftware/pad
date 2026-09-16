@@ -16,8 +16,14 @@
  * 1. POPULATION by node type. Every `async` function node anywhere in the
  *    script or the markup is a UNIT, and so is every callback passed to a
  *    deferring call (`.then` / `.catch` / `.finally`, `setTimeout`,
- *    `setInterval`, `queueMicrotask`, `requestAnimationFrame`). Nothing is
- *    found by spelling, so no spelling hides one.
+ *    `setInterval`, `queueMicrotask`, `requestAnimationFrame`). That list IS
+ *    a spelling list, so it is not trusted to be complete: inside a unit,
+ *    every other function literal passed to a call, and every function-valued
+ *    object property, is a CALLBACK walked from an unsafe start, since it may
+ *    run after any await (round 5 P1-2). Only callees on
+ *    `SYNC_CALLBACK_CALLEES`, and array iteration methods on a receiver the
+ *    unit declared, run their callback inline with the caller's state. A
+ *    callback commits nothing unless its unit's row names it.
  *
  * 2. FLOW. Each unit is walked in evaluation order carrying one boolean,
  *    `safe`: no await has completed on this path since the last fence. An
@@ -98,6 +104,22 @@ export const GENERATIONS = new Set(['loadGeneration', 'itemGen']);
 /** Calls that deliver their callback LATER: each callback is its own unit. */
 export const DEFERRING_METHODS = new Set(['then', 'catch', 'finally']);
 export const DEFERRING_FUNCTIONS = new Set(['setTimeout', 'setInterval', 'queueMicrotask', 'requestAnimationFrame']);
+
+/**
+ * Callees known to run a function-literal argument NOW, inside the call, so
+ * the walk inlines it with the caller's state (round 5 P1-2). Every other
+ * function literal passed to a call, and every function-valued object
+ * property, is a CALLBACK that may run later: it is walked starting unsafe,
+ * and what it may commit is the unit row's `callbacks` entry for it.
+ */
+export const SYNC_CALLBACK_CALLEES: Record<string, string> = {
+	untrack: 'Svelte: calls its argument synchronously and returns its value',
+};
+/**
+ * Array iteration methods run their callback synchronously — but only an
+ * array's do, so they count only on a receiver the unit itself declared.
+ */
+export const SYNC_ITERATION_METHODS = new Set(['find', 'findIndex', 'findLast', 'filter', 'map', 'flatMap', 'some', 'every', 'forEach', 'reduce', 'sort']);
 
 /**
  * Calls that commit nothing, by callee. SHORT on purpose (lead ruling,
@@ -407,6 +429,13 @@ export interface AnalyseOptions {
 	bareAwaits?: ReadonlySet<string>;
 	/** Start the unit unsafe (a deferred callback) or safe (a function body). */
 	startSafe: boolean;
+	/**
+	 * What each callback the unit creates may commit, by callback key
+	 * (`callee(…)` for a function argument, `callee({prop})` for a property of
+	 * an object argument, `{prop}` for any other object property). A callback
+	 * with no entry may commit nothing.
+	 */
+	callbacks?: ReadonlyMap<string, ReadonlySet<string>>;
 }
 
 const EXIT = 'exit' as const;
@@ -429,6 +458,7 @@ class Analyser {
 	) {}
 
 	run(fn: Node, enclosing: Node[] = []): Violation[] {
+		this.may = this.opts.may;
 		for (const e of [...enclosing, fn]) this.declareAll(e);
 		if (fn.body.type === 'BlockStatement') this.block(fn.body.body, this.opts.startSafe);
 		else this.expr(fn.body, this.opts.startSafe);
@@ -436,6 +466,9 @@ class Analyser {
 			if (!this.usedBare.has(b) && this.src.text(fn).includes(b)) {
 				throw new Error(`bare-await entry ${JSON.stringify(b)} is in this unit but was never reached as a statement`);
 			}
+		}
+		for (const k of this.opts.callbacks?.keys() ?? []) {
+			if (!this.callbacksSeen.has(k)) throw new Error(`callback entry ${k} names no callback this unit creates`);
 		}
 		const seen = new Set<string>();
 		return this.violations.filter((v) => {
@@ -464,9 +497,56 @@ class Analyser {
 		});
 	}
 
+	/** The commits the code being walked may make: the row's, or a callback's. */
+	private may: ReadonlySet<string> | undefined;
+	/** Inlined helpers and callbacks being walked, outermost first, for messages. */
+	private path: string[] = [];
+	/** Callback keys the walk reached, so a row cannot list one that is gone. */
+	readonly callbacksSeen = new Set<string>();
+
 	private flag(n: Node, what: string, key?: string) {
-		if (key && this.opts.may?.has(key)) return;
-		this.violations.push({ line: this.src.line(n.start), what, text: this.src.text(n).replace(/\s+/g, ' ').slice(0, 100) });
+		if (key && this.may?.has(key)) return;
+		const where = this.path.map((k) => `${k} -> `).join('');
+		this.violations.push({ line: this.src.line(n.start), what: where + what, text: this.src.text(n).replace(/\s+/g, ' ').slice(0, 100) });
+	}
+
+	/**
+	 * A function literal that may run LATER: walked from an unsafe start, with
+	 * only its own allowance. What it does never changes the caller's state.
+	 */
+	private callback(fn: Node, key: string) {
+		if (fn.async) return; // an async function is a unit of its own
+		this.callbacksSeen.add(key);
+		const saved = { may: this.may, breaks: this.breaks, continues: this.continues };
+		this.may = this.opts.callbacks?.get(key) ?? new Set();
+		this.breaks = [];
+		this.continues = [];
+		this.path.push(`callback ${key}`);
+		if (fn.body.type === 'BlockStatement') this.block(fn.body.body, false);
+		else this.expr(fn.body, false);
+		this.path.pop();
+		({ may: this.may, breaks: this.breaks, continues: this.continues } = saved);
+	}
+
+	private objectProperties(n: Node, s: boolean, keyOf: (prop: string) => string): boolean {
+		for (const p of n.properties) {
+			if (p.type === 'SpreadElement') s = this.expr(p.argument, s);
+			else {
+				if (p.computed) s = this.expr(p.key, s);
+				const name = !p.computed && p.key.type === 'Identifier' ? p.key.name : p.key.type === 'Literal' ? String(p.key.value) : '?';
+				if (isFn(p.value)) this.callback(p.value, keyOf(name));
+				else s = this.expr(p.value, s);
+			}
+		}
+		return s;
+	}
+
+	private runsNow(callee: Node, key: string): boolean {
+		if (key in SYNC_CALLBACK_CALLEES) return true;
+		if (callee.type !== 'MemberExpression' || callee.computed || !SYNC_ITERATION_METHODS.has(callee.property.name)) return false;
+		let root = callee.object;
+		while (root.type === 'MemberExpression' || root.type === 'ChainExpression' || root.type === 'TSNonNullExpression') root = root.type === 'MemberExpression' ? root.object : root.expression;
+		return root.type === 'Identifier' && this.locals.has(root.name);
 	}
 
 	block(stmts: Node[], s: State): State {
@@ -616,15 +696,9 @@ class Analyser {
 				for (const e of n.elements) if (e) s = this.expr(e, s);
 				return s;
 			case 'ObjectExpression':
-				for (const p of n.properties) {
-					if (p.type === 'SpreadElement') s = this.expr(p.argument, s);
-					else {
-						if (p.computed) s = this.expr(p.key, s);
-						// A method or function-valued property is a definition, not a call.
-						if (!isFn(p.value)) s = this.expr(p.value, s);
-					}
-				}
-				return s;
+				// A function-valued property is handed to whoever reads the object,
+				// which may call it at any time.
+				return this.objectProperties(n, s, (prop) => `{${prop}}`);
 			case 'SpreadElement':
 				return this.expr(n.argument, s);
 			case 'MemberExpression':
@@ -731,14 +805,21 @@ class Analyser {
 		} else if (callee.type !== 'Identifier') {
 			s = this.expr(callee, s);
 		}
+		const now = this.runsNow(callee, key);
 		for (const a of n.arguments) {
 			if (isFn(a)) {
-				// A deferred or async callback is its own unit; a synchronous
-				// callback runs now, inside this call.
-				if (!deferred && !a.async) {
+				// A deferred or async callback is its own unit. A callback to a
+				// callee known to call it synchronously runs HERE; any other may
+				// run later, so it is walked from an unsafe start.
+				if (deferred || a.async) continue;
+				if (now) {
 					const inner = a.body.type === 'BlockStatement' ? this.block(a.body.body, s) : this.expr(a.body, s);
 					if (inner === false) s = false;
+				} else {
+					this.callback(a, `${key}(…)`);
 				}
+			} else if (a.type === 'ObjectExpression' && !deferred) {
+				s = this.objectProperties(a, s, (prop) => `${key}({${prop}})`);
 			} else {
 				s = this.expr(a, s);
 			}
@@ -754,14 +835,14 @@ class Analyser {
 		if (helper && n.type === 'CallExpression') {
 			if (this.inlining.has(helper)) return s;
 			this.inlining.add(helper);
-			const before = this.violations.length;
 			const saved = new Set(this.locals);
 			this.declareAll(helper);
+			this.path.push(`${key}()`);
 			const body = helper.body;
 			if (body.type === 'BlockStatement') this.block(body.body, s);
 			else this.expr(body, s);
+			this.path.pop();
 			this.locals = saved;
-			for (const v of this.violations.slice(before)) v.what = `${key}() -> ${v.what}`;
 			this.inlining.delete(helper);
 			return s;
 		}
