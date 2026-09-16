@@ -304,6 +304,12 @@ const SYNC_REFRESH_FENCE = '\t\t\t\tif (!item || item.id !== reqItemId || myItem
 const SYNC_REFRESH_FENCE_AND_ADOPT = SYNC_REFRESH_FENCE + '\t\t\t\titem = adoptServerItem(updated);\n';
 const SYNC_REFRESH_FENCED = '\t\t\t\tconst updated = await api.items.get(reqWsSlug, reqItemSlug);\n' + SYNC_REFRESH_FENCE_AND_ADOPT;
 
+/** saveTitle's capture, made reassignable. */
+const TITLE_GEN_LET: [string, string] = [
+	"\t\tconst gen = loadGeneration;\n\t\tsaveStatus = 'saving';\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title",
+	"\t\tlet gen = loadGeneration;\n\t\tsaveStatus = 'saving';\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title",
+];
+
 /** saveTitle's fence and the two commits under it: the anchor most round-5 edits rewrite. */
 const TITLE_FENCE_AND_COMMITS =
 	"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n";
@@ -459,6 +465,23 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 			id: 'R5 P2-4 flushTagSaver compares a live identity read against something that is not a stamp',
 			subs: [['\t\t\t\tif (!identityHeld(saver.epoch)) {\n', '\t\t\t\tif (authStore.identityEpoch !== saver.itemId.length) {\n']],
 			refuses: ['flushTagSaver()', 'after an unfenced await'],
+		},
+		// Round 5 P2-5: a capture refreshed after an await makes every later check
+		// against it pass, whatever the refresh is spelled as.
+		{
+			id: 'R5 E10 saveTitle refreshes its capture through a cast',
+			subs: [TITLE_GEN_LET, ['{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration', '{ title: titleDraft.trim() });\n\t\t\tgen = loadGeneration as number;\n\t\t\tif (gen !== loadGeneration']],
+			refuses: ['saveTitle()', 'rewrites capture gen after an unfenced await'],
+		},
+		{
+			id: 'R5 E10b saveTitle refreshes its capture through ??',
+			subs: [TITLE_GEN_LET, ['{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration', '{ title: titleDraft.trim() });\n\t\t\tgen = loadGeneration ?? gen;\n\t\t\tif (gen !== loadGeneration']],
+			refuses: ['saveTitle()', 'rewrites capture gen after an unfenced await'],
+		},
+		{
+			id: 'R5 P2-5 saveTitle bumps its capture',
+			subs: [TITLE_GEN_LET, ['{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration', '{ title: titleDraft.trim() });\n\t\t\tgen++;\n\t\t\tif (gen !== loadGeneration']],
+			refuses: ['saveTitle()', 'rewrites capture gen after an unfenced await'],
 		},
 		{
 			// A callback allowance covers what its reason covers: the refetch may

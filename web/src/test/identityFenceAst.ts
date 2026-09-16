@@ -47,7 +47,8 @@
  *      suspension and so belongs to the previous await's window;
  *    - a CAPTURE of a generation or an identity (`= loadGeneration`,
  *      `++itemGen`, `captureIdentity()`): a capture taken after an unfenced
- *      await records the new load, and every later check against it passes.
+ *      await records the new load, and every later check against it passes;
+ *      so does ANY later write to a capture's name, whatever its value.
  *    `delete`, tagged templates and dynamic `import()` are commits too.
  *
  * 4. FENCES by what they compare, never by name. An atom is a comparison of a
@@ -864,8 +865,11 @@ class Analyser {
 				} else if (!this.locals.has(n.left.name) && !s) {
 					this.flag(n, `assigns ${n.left.name} after an unfenced await`, n.left.name);
 				}
-				if (n.left.type === 'Identifier' && this.decls.captures.has(n.left.name) && !s && isGenerationRead(n.right)) {
-					this.flag(n, 'captures a generation after an unfenced await');
+				// Any rewrite of a capture after an unfenced await makes every later
+				// check against it pass, however the new value is spelled (round 5
+				// P2-5: `gen = loadGeneration as number`, `gen = loadGeneration ?? gen`).
+				if (n.left.type === 'Identifier' && this.decls.captures.has(n.left.name) && !s) {
+					this.flag(n, `rewrites capture ${n.left.name} after an unfenced await`);
 				}
 				return s;
 			}
@@ -874,6 +878,9 @@ class Analyser {
 				if (a.type !== 'Identifier') s = this.lhs(a, s);
 				const local = a.type === 'Identifier' && this.locals.has(a.name);
 				if (!local && !s) this.flag(n, `updates ${this.src.text(a)} after an unfenced await`, this.targetKey(a));
+				if (a.type === 'Identifier' && this.decls.captures.has(a.name) && !s) {
+					this.flag(n, `rewrites capture ${a.name} after an unfenced await`);
+				}
 				return s;
 			}
 			case 'AwaitExpression':
