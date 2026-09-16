@@ -71,11 +71,25 @@
  *    helper sees its own chain, not the caller's (round 5 P1-3). A `var` is
  *    treated as scoped to its block, which can only refuse more.
  *
- * WHAT THIS CANNOT DO. It proves that a check with the right SHAPE dominates
- * every commit; it does not prove the check reads the right item. On the
- * CHECK side it still trusts a captured variable by name, component-wide (a
- * shadowing declaration of a capture's name defeats it). The mount suite is
- * the other half.
+ * WHAT THIS CANNOT DO — each is a place the guard trusts something it does
+ * not check. The mount suite is the other half.
+ *
+ * - It proves a check with the right SHAPE dominates every commit, not that
+ *   the check reads the right item.
+ * - Captures are known by NAME, component-wide: a declaration anywhere whose
+ *   initialiser reads a generation makes that name a capture everywhere, and a
+ *   shadowing declaration of it inside a unit is not told apart.
+ * - Callbacks: `SYNC_CALLBACK_CALLEES`, and array iteration methods on a
+ *   receiver the unit declared, are trusted to call synchronously; a local
+ *   holding a non-array with such a method defeats that. A row's `callbacks`
+ *   allowance trusts the callee to re-check before calling (its own tests pin
+ *   that, not this file).
+ * - Function values are followed by syntax: a helper declared once is
+ *   followed where it is called or named; a function reaching a caller any
+ *   other way (built by another function and returned from it, pulled out of
+ *   a data structure) is walked where it is defined, from an unsafe start —
+ *   but only if that definition is inside a unit or an inlined helper.
+ * - `var` is treated as block-scoped (this only ever refuses more).
  */
 import { parse } from 'svelte/compiler';
 
