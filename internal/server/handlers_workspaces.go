@@ -474,8 +474,8 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 }
 
 // maybeAutoAddCreatorConnection inserts the newly-created workspace
-// into the calling OAuth connection's allow-list when the grant has
-// `may_create_workspaces=true`. No-op when:
+// into the calling OAuth connection's allow-list when the grant carries
+// `may_create_workspaces=true` AT THE MOMENT OF THE WRITE. No-op when:
 //
 //   - The calling token isn't an OAuth grant (PAT, CLI session token —
 //     they don't carry a request_id).
@@ -483,30 +483,19 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 //   - The grant's connection row doesn't exist (pre-Phase-C tokens
 //     fall here until backfill).
 //
-//   - The flag is off (user explicitly scoped out creation power at
-//     consent time or via the connections-page mutation UI). Since
-//     IDEA-2756 handleCreateWorkspace refuses a flag-off connection
-//     before it reaches here, so in the common case this branch does
-//     not fire — but it is NOT unreachable, and calling it dead would
-//     be wrong twice over. The gate reads the connection, and this
-//     function reads it AGAIN after the workspace is created; a user
-//     revoking creation power from /console/connected-apps in between
-//     (PATCH /connected-apps/{id}/flags) lands exactly here, and the
-//     workspace then exists without silently joining a connection whose
-//     grant was withdrawn mid-flight.
+//   - The flag is off. Since IDEA-2756 handleCreateWorkspace refuses a
+//     flag-off connection before it reaches here, so this case arises
+//     when the user revokes creation power from /console/connected-apps
+//     (PATCH /connected-apps/{id}/flags) after that gate ran. The
+//     workspace then exists without joining a connection whose grant was
+//     withdrawn mid-flight.
 //
-//     What this check does NOT do is close that window — it narrows it.
-//     The read below and the AddConnectionWorkspace insert after it are
-//     separate unconditional statements, so a revocation landing between
-//     THEM still adds the workspace. That residual race is BUG-2792:
-//     pre-existing, unchanged by IDEA-2756, and needing an atomic
-//     check-and-insert at the store layer rather than another read here.
-//
-//     (Codex round 3 caught the earlier "unreachable / dead code" claim
-//     in this comment — written from the call graph alone, which cannot
-//     see a concurrent write between two reads. Round 4 then caught the
-//     replacement claiming more safety than the code delivers. Both
-//     errors were the same shape in opposite directions.)
+// The flag check and the insert are ONE store statement
+// (AddCreatedWorkspaceIfPermitted), not a read here followed by an
+// unconditional insert. Two statements left a window in which a
+// revocation committing between them still added the workspace
+// (BUG-2792). The store method's comment explains why Postgres also
+// needs a row lock for the single statement to close that window.
 //
 // Errors are logged at WARN, never propagated. The caller's response
 // must not fail because of an auth-bookkeeping issue post-creation.
@@ -515,25 +504,13 @@ func (s *Server) maybeAutoAddCreatorConnection(r *http.Request, workspaceID stri
 	if kind != "oauth" || requestID == "" {
 		return
 	}
-	conn, err := s.store.GetOAuthConnection(requestID)
-	if err != nil || conn == nil {
-		// Includes ErrOAuthConnectionNotFound (pre-Phase-C grant) and
-		// any I/O error. Silent — the workspace is already created,
-		// the auto-add is a convenience the user can recover via the
-		// Connect modal.
-		return
+	if s.autoAddPreInsertHook != nil {
+		s.autoAddPreInsertHook(requestID, workspaceID)
 	}
-	if !conn.MayCreateWorkspaces {
-		// User declined creation power at consent. Respect that —
-		// the workspace exists but doesn't auto-join the connection;
-		// the user can claim it post-hoc via the Connect modal if
-		// they change their mind.
-		return
-	}
-	if err := s.store.AddConnectionWorkspace(requestID, workspaceID, store.AddedByAgentCreate); err != nil {
-		// Idempotent on the store side — re-creation through the
-		// same connection (very unlikely with fresh IDs) would no-op.
-		// Any error here is genuinely unexpected; log so ops sees it.
+	if err := s.store.AddCreatedWorkspaceIfPermitted(requestID, workspaceID); err != nil {
+		// A missing connection or an unset flag is a silent no-op in the
+		// store, so any error here is genuinely unexpected; log so ops
+		// sees it.
 		slog.Warn("auto-add workspace to OAuth connection failed",
 			"request_id", requestID,
 			"workspace_id", workspaceID,

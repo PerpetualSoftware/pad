@@ -327,6 +327,68 @@ func (s *Store) AddConnectionWorkspace(requestID, workspaceID, addedBy string) e
 	return nil
 }
 
+// AddCreatedWorkspaceIfPermitted inserts a (request_id, workspace_id) row
+// with added_by='agent-create', but ONLY while the connection still carries
+// may_create_workspaces. The check and the insert are one statement, so the
+// grant the decision reads is the grant in force when the row is written
+// (BUG-2792). A connection that is missing or has the flag off is a silent
+// no-op, as is a pair that is already present.
+//
+// Why one statement rather than GetOAuthConnection followed by
+// AddConnectionWorkspace: those are two unconditional statements, and a
+// revocation (SetScopeFlags) committing between them used to add the
+// workspace to a connection whose creation power had just been withdrawn.
+//
+// SQLite: the statement runs under the database write lock, so no
+// SetScopeFlags can commit between its read and its write.
+//
+// Postgres needs FOR SHARE on the connection row, and the single statement
+// alone is NOT enough. Under READ COMMITTED an INSERT ... SELECT decides from
+// the snapshot taken at statement start, and the only lock it takes on the
+// parent is the foreign key's FOR KEY SHARE, which does not conflict with
+// SetScopeFlags' non-key UPDATE. A revocation can therefore commit after the
+// snapshot and before the insert commits, and the row still lands.
+// FOR SHARE conflicts with that UPDATE, which gives two orderings, both
+// correct:
+//   - A revocation that holds the row first makes this statement wait. The
+//     WHERE clause is then re-evaluated against the committed row, which no
+//     longer matches, so nothing is inserted.
+//   - This statement holds the row first, so the revocation waits for it to
+//     commit. The row exists before the revocation returns, and the user
+//     removes it from the same page.
+//
+// Both orderings are pinned in oauth_connections_autoadd_test.go.
+func (s *Store) AddCreatedWorkspaceIfPermitted(requestID, workspaceID string) error {
+	if requestID == "" || workspaceID == "" {
+		return fmt.Errorf("oauth_connections: request_id and workspace_id required")
+	}
+	var stmt string
+	switch s.dialect.Driver() {
+	case DriverPostgres:
+		stmt = `
+            INSERT INTO oauth_connection_workspaces (request_id, workspace_id, added_by)
+            (SELECT c.request_id, ?, ?
+               FROM oauth_connections c
+              WHERE c.request_id = ? AND c.may_create_workspaces = ?
+                FOR SHARE)
+            ON CONFLICT (request_id, workspace_id) DO NOTHING
+        `
+	default:
+		stmt = `
+            INSERT OR IGNORE INTO oauth_connection_workspaces (request_id, workspace_id, added_by)
+            SELECT c.request_id, ?, ?
+              FROM oauth_connections c
+             WHERE c.request_id = ? AND c.may_create_workspaces = ?
+        `
+	}
+	if _, err := s.db.Exec(s.q(stmt),
+		workspaceID, AddedByAgentCreate, requestID, s.dialect.BoolToInt(true),
+	); err != nil {
+		return fmt.Errorf("oauth_connections: add created workspace: %w", err)
+	}
+	return nil
+}
+
 // RemoveConnectionWorkspace deletes one (request_id, workspace_id) row.
 // Idempotent: removing a pair that isn't present is a no-op (no error).
 // Phase D's UI uses this for the "X" affordance on each chip in the
