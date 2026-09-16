@@ -161,7 +161,19 @@ function holdsPerAwait(label: string, body: string) {
 	// `item = …` above its existing check kept every count and every position
 	// above satisfied while the stale response landed. After each await, the text
 	// up to the first fence may not assign component state or call a committer.
-	const COMMIT = /(?:^|[;{}\n])\s*(?!const\b|let\b|var\b|return\b|if\b)[A-Za-z_$][\w$]*(?:\.[\w$]+)*\s*(?:=(?!=)|\+\+|--)|\b(?:toastStore\.show|showSaved|handleGone|goto|adoptCollection|collectionStore\.\w+|editorStore\.\w+|handleNavigateAway)\(/;
+	const COMMIT = new RegExp(
+		[
+			// A statement-leading assignment or increment.
+			String.raw`(?:^|[;{}\n])\s*(?!const\b|let\b|var\b|return\b|if\b|else\b)[A-Za-z_$][\w$]*(?:\.[\w$]+)*\s*(?:=(?!=)|\+\+|--)`,
+			// The same behind a brace-less `if (…)` or `else` (round 3 on #1387).
+			String.raw`\b(?:if\s*\([^()]*(?:\([^()]*\)[^()]*)*\)|else)\s*[A-Za-z_$][\w$]*(?:\.[\w$]+)*\s*(?:=(?!=)|\+\+|--)`,
+			// A parenthesised assignment: `fresh && (item = …)`.
+			String.raw`\(\s*[A-Za-z_$][\w$]*(?:\.[\w$]+)*\s*=(?![=>])`,
+			// Committers: UI, navigation, stores, and the mutating services a
+			// continuation can drive without assigning anything (round 3 on #1387).
+			String.raw`\b(?:toastStore\.show|showSaved|handleGone|goto|adoptCollection|collectionStore\.\w+|editorStore\.\w+|handleNavigateAway|tagSavers\.(?:set|delete|clear)|localIndex\.\w+|syncService\.\w+|rawContentSaver\.\w+|collabFlusher\.\w+)\(`,
+		].join('|')
+	);
 	success.split(/\bawait\b/).slice(1).forEach((seg, i) => {
 		// The awaited EXPRESSION ends where its call chain does, not at the first
 		// newline: `await Promise.all([ a.catch((e) => { flag = true; }), … ])`
