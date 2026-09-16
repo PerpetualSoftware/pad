@@ -197,6 +197,10 @@ export function parseComponent(code: string): AstSource {
 // Declarations: captures, fence helpers, fence booleans
 // ---------------------------------------------------------------------------
 
+function collapseText(src: AstSource, n: Node): string {
+	return src.text(n).replace(/\s+/g, ' ');
+}
+
 function calleeKey(src: AstSource, callee: Node): string {
 	return src.text(callee).replace(/\s+/g, '').replace(/\?\./g, '.');
 }
@@ -227,6 +231,12 @@ export interface Declarations {
 	 * instead of being trusted or refused by its name.
 	 */
 	helpers: Map<string, Node>;
+	/**
+	 * Helper names referenced anywhere as a VALUE rather than called — passed,
+	 * stored, returned, spread. Such a helper runs whenever its holder calls
+	 * it, so its body is also walked as a callback where it is defined.
+	 */
+	escapes: Set<string>;
 }
 
 export interface Polarity {
@@ -253,8 +263,21 @@ function collectDeclarations(src: AstSource): Declarations {
 	// The markup declares captures too (the mode toggles' `startGen`).
 	walk(src.script, visit);
 	walk(src.fragment, visit);
-	const decls: Declarations = { captures, fences: new Map(), helpers: new Map() };
+	const decls: Declarations = { captures, fences: new Map(), helpers: new Map(), escapes: new Set() };
 	for (const [name, fns] of fnBodies) if (fns.length === 1) decls.helpers.set(name, fns[0]!);
+	const reference = (n: Node, anc: Node[]) => {
+		if (n.type !== 'Identifier' || !decls.helpers.has(n.name)) return;
+		const p = anc.at(-1);
+		if (!p || p.type.startsWith('TS')) return;
+		if ((p.type === 'VariableDeclarator' || isFn(p)) && p.id === n) return;
+		if (isFn(p) && p.params.includes(n)) return;
+		if (p.type === 'CallExpression' && p.callee === n) return;
+		if (p.type === 'MemberExpression' && p.property === n && !p.computed) return;
+		if (p.type === 'Property' && p.key === n && !p.computed && !p.shorthand) return;
+		decls.escapes.add(n.name);
+	};
+	walk(src.script, reference);
+	walk(src.fragment, reference);
 	// Two passes so a helper built on another helper (`stillOnSource` on
 	// `switchedAway`) resolves. A name declared twice with different polarities
 	// is refused rather than guessed.
@@ -686,6 +709,20 @@ class Analyser {
 		this.inlining.delete(helper);
 	}
 
+	/**
+	 * A function defined inside the unit. A helper that is only ever CALLED is
+	 * checked at each call site instead (`inline`); anything else — a helper
+	 * also used as a value, a name declared twice, a literal stored or returned
+	 * — may run at any time, so it is walked here as a callback (round 5 P1-2).
+	 */
+	private definition(fn: Node, key: string) {
+		if (fn.async) return;
+		const name = fn.type === 'FunctionDeclaration' ? fn.id?.name : key;
+		const isHelper = name !== undefined && this.decls.helpers.get(name) === fn;
+		if (isHelper && !this.decls.escapes.has(name)) return;
+		this.callback(fn, key, isHelper ? this.lexicalOf(fn) : this.nested(fn));
+	}
+
 	/** A helper declared once in the component, named by `n`; it may be handed over by name. */
 	private helperNamed(n: Node): Node | undefined {
 		return n.type === 'Identifier' ? this.decls.helpers.get(n.name) : undefined;
@@ -737,7 +774,9 @@ class Analyser {
 		if (s === EXIT) return EXIT;
 		switch (n.type) {
 			case 'EmptyStatement':
+				return s;
 			case 'FunctionDeclaration':
+				this.definition(n, n.id.name);
 				return s;
 			case 'BlockStatement':
 				return this.withLocals(this.plus(declaredIn(n.body)), () => this.block(n.body, s));
@@ -752,6 +791,10 @@ class Analyser {
 			case 'VariableDeclaration': {
 				for (const d of n.declarations) {
 					if (!d.init) continue;
+					if (isFn(d.init) && d.id.type === 'Identifier') {
+						this.definition(d.init, d.id.name);
+						continue;
+					}
 					s = this.expr(d.init, s as boolean);
 					if (!s && d.id.type === 'Identifier' && this.decls.captures.has(d.id.name)) {
 						this.flag(d, 'captures a generation or identity after an unfenced await');
@@ -934,7 +977,8 @@ class Analyser {
 				for (const e of n.expressions) s = this.expr(e, s);
 				return s;
 			case 'AssignmentExpression': {
-				s = this.expr(n.right, s);
+				if (isFn(n.right)) this.definition(n.right, `${collapseText(this.src, n.left)} =`);
+				else s = this.expr(n.right, s);
 				if (n.left.type !== 'Identifier') {
 					s = this.lhs(n.left, s);
 					if (!s) this.flag(n, `writes ${this.src.text(n.left)} after an unfenced await`, this.targetKey(n.left));
@@ -975,7 +1019,15 @@ class Analyser {
 				return s;
 			case 'ArrowFunctionExpression':
 			case 'FunctionExpression':
-				// A function value that is not called here is a definition.
+				// In the callee of a call (`(f ?? ((u) => goto(u)))(url)`) the literal
+				// is invoked right here, with this state.
+				if (this.calleeDepth > 0 && !n.async) {
+					this.withLocals(this.nested(n), () => (n.body.type === 'BlockStatement' ? this.block(n.body.body, s) : this.expr(n.body, s)));
+					return s;
+				}
+				// Any other function VALUE (returned, in an array, in a conditional):
+				// whoever holds it may call it at any time.
+				this.definition(n, 'function value');
 				return s;
 			case 'ClassExpression':
 			case 'YieldExpression':
@@ -1002,17 +1054,10 @@ class Analyser {
 	}
 
 	private inlining = new Set<Node>();
+	/** Above zero while walking a call's callee expression (see the function-literal case). */
+	private calleeDepth = 0;
 
-	private call(n: Node, s: boolean): boolean {
-		const callee = n.callee.type === 'ChainExpression' ? n.callee.expression : n.callee;
-		const key = calleeKey(this.src, callee);
-		const deferred = n.type === 'CallExpression' && !!deferringCallee(this.src, n);
-		if (callee.type === 'MemberExpression') {
-			s = this.expr(callee.object, s);
-			if (callee.computed) s = this.expr(callee.property, s);
-		} else if (callee.type !== 'Identifier') {
-			s = this.expr(callee, s);
-		}
+	private args(n: Node, s: boolean, key: string, callee: Node, deferred: boolean): boolean {
 		const now = this.runsNow(callee, key);
 		for (const a of n.arguments) {
 			if (isFn(a)) {
@@ -1039,6 +1084,31 @@ class Analyser {
 			} else {
 				s = this.expr(a, s);
 			}
+		}
+		return s;
+	}
+
+	private call(n: Node, s: boolean): boolean {
+		const callee = n.callee.type === 'ChainExpression' ? n.callee.expression : n.callee;
+		const key = calleeKey(this.src, callee);
+		const deferred = n.type === 'CallExpression' && !!deferringCallee(this.src, n);
+		if (callee.type === 'MemberExpression') {
+			s = this.expr(callee.object, s);
+			if (callee.computed) s = this.expr(callee.property, s);
+		} else if (callee.type !== 'Identifier') {
+			this.calleeDepth++;
+			try {
+				s = this.expr(callee, s);
+			} finally {
+				this.calleeDepth--;
+			}
+		}
+		const depth = this.calleeDepth;
+		this.calleeDepth = 0;
+		try {
+			s = this.args(n, s, key, callee, deferred);
+		} finally {
+			this.calleeDepth = depth;
 		}
 		// Scheduling a continuation commits nothing: the continuation is a unit.
 		if (deferred) return s;

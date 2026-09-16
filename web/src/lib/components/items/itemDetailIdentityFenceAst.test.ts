@@ -492,6 +492,33 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 			refuses: ['saveTitle()', 'callback dialogs.register({onClose})', 'assigns item after an unfenced await'],
 		},
 		{
+			// A function value that escapes by any route runs whenever its holder
+			// calls it.
+			id: 'R5 P1-2 a helper stored by name into component state',
+			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tconst applyTitleLater = () => {\n\t\t\t\titem = withInflightTags(updated);\n\t\t\t};\n\t\t\trenameOverride = applyTitleLater;\n"]],
+			refuses: ['saveTitle()', 'callback applyTitleLater', 'assigns item after an unfenced await'],
+		},
+		{
+			id: 'R5 P1-2 a function literal stored into component state',
+			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\trenameOverride = () => {\n\t\t\t\titem = withInflightTags(updated);\n\t\t\t};\n"]],
+			refuses: ['saveTitle()', 'callback renameOverride =', 'assigns item after an unfenced await'],
+		},
+		{
+			id: 'R5 P1-2 a function declared under a name used twice, passed by name',
+			subs: [
+				[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tconst onTitleClose = () => {\n\t\t\t\titem = withInflightTags(updated);\n\t\t\t};\n\t\t\twindow.addEventListener('blur', onTitleClose);\n"],
+				['\tfunction showSaved() {\n', '\tfunction showSaved() {\n\t\tconst onTitleClose = () => {};\n\t\tvoid onTitleClose;\n'],
+			],
+			refuses: ['saveTitle()', 'assigns item after an unfenced await'],
+		},
+		{
+			// A literal in a callee runs now; a literal in an ARGUMENT inside that
+			// callee does not.
+			id: 'R5 P1-2 a literal passed as an argument inside a called expression',
+			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\t(dialogs.register(updated ? () => { item = withInflightTags(updated); } : null) ?? tick)();\n"]],
+			refuses: ['saveTitle()', 'assigns item after an unfenced await'],
+		},
+		{
 			// Iteration methods count as synchronous only on a receiver the unit
 			// declared; anything else could be an object whose `forEach` stores
 			// the callback.
