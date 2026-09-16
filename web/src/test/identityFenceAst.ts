@@ -275,10 +275,18 @@ function settle(decls: Declarations, name: string, pols: Polarity[]) {
 	else decls.fences.delete(name);
 }
 
+/**
+ * A helper's polarity. Its OWN params count as captures here, whatever they
+ * are called — the call site is what must pass a capture to them (see
+ * `polarity`'s CallExpression case). Nowhere else is a param a capture
+ * (round 5 P2-6).
+ */
 function returnPolarity(src: AstSource, fn: Node, decls: Declarations): Polarity {
-	if (fn.body.type !== 'BlockStatement') return polarity(src, fn.body, decls);
+	const params = new Set<string>();
+	for (const p of fn.params) patternNames(p, params);
+	if (fn.body.type !== 'BlockStatement') return polarity(src, fn.body, decls, params);
 	const stmts = fn.body.body;
-	if (stmts.length === 1 && stmts[0].type === 'ReturnStatement' && stmts[0].argument) return polarity(src, stmts[0].argument, decls);
+	if (stmts.length === 1 && stmts[0].type === 'ReturnStatement' && stmts[0].argument) return polarity(src, stmts[0].argument, decls, params);
 	return NONE;
 }
 
@@ -533,7 +541,6 @@ const and = (a: State, b: State): State => (a === EXIT ? b : b === EXIT ? a : a 
 class Analyser {
 	violations: Violation[] = [];
 	locals = new Set<string>();
-	params = new Set<string>();
 	private breaks: State[][] = [];
 	private continues: State[][] = [];
 	private usedBare = new Set<string>();
@@ -546,10 +553,7 @@ class Analyser {
 
 	run(fn: Node, enclosing: Node[] = []): Violation[] {
 		this.may = this.opts.may;
-		for (const e of [...enclosing, fn]) {
-			for (const name of scopeBindings(e)) this.locals.add(name);
-			this.declareParams(e);
-		}
+		for (const e of [...enclosing, fn]) for (const name of scopeBindings(e)) this.locals.add(name);
 		if (fn.body.type === 'BlockStatement') this.block(fn.body.body, this.opts.startSafe);
 		else this.expr(fn.body, this.opts.startSafe);
 		for (const b of this.opts.bareAwaits ?? []) {
@@ -566,13 +570,6 @@ class Analyser {
 			if (seen.has(k)) return false;
 			seen.add(k);
 			return true;
-		});
-	}
-
-	/** Every param of `fn` and of every function nested in it. */
-	private declareParams(fn: Node) {
-		walk(fn, (n) => {
-			if (isFn(n)) for (const p of n.params) walk(p, (i) => i.type === 'Identifier' && this.params.add(i.name));
 		});
 	}
 
@@ -660,7 +657,7 @@ class Analyser {
 
 	private test(n: Node, s: boolean): { t: boolean; f: boolean } {
 		const after = this.expr(n, s);
-		const p = polarity(this.src, n, this.decls, this.params);
+		const p = polarity(this.src, n, this.decls);
 		return { t: after || p.t, f: after || p.f };
 	}
 
@@ -839,7 +836,7 @@ class Analyser {
 				return this.expr(n.right, this.expr(n.left, s));
 			case 'LogicalExpression': {
 				const l = this.expr(n.left, s);
-				const p = polarity(this.src, n.left, this.decls, this.params);
+				const p = polarity(this.src, n.left, this.decls);
 				const rhsSafe = l || (n.operator === '&&' ? p.t : n.operator === '||' ? p.f : false);
 				const r = this.expr(n.right, rhsSafe);
 				// After the whole expression, only the short-circuit that skipped the
@@ -961,7 +958,7 @@ class Analyser {
 		// Scheduling a continuation commits nothing: the continuation is a unit.
 		if (deferred) return s;
 		if (n.type === 'CallExpression') {
-			const p = polarity(this.src, n, this.decls, this.params);
+			const p = polarity(this.src, n, this.decls);
 			if (p.t || p.f) return s;
 		}
 		// A helper declared once in this component runs its body HERE.
@@ -974,7 +971,6 @@ class Analyser {
 			// must not excuse that write.
 			const lexical = new Set<string>();
 			for (const e of [...fnAncestors(this.src, helper), helper]) for (const name of scopeBindings(e)) lexical.add(name);
-			this.declareParams(helper);
 			this.path.push(`${key}()`);
 			const body = helper.body;
 			this.withLocals(lexical, () => {

@@ -483,6 +483,13 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 			subs: [TITLE_GEN_LET, ['{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration', '{ title: titleDraft.trim() });\n\t\t\tgen++;\n\t\t\tif (gen !== loadGeneration']],
 			refuses: ['saveTitle()', 'rewrites capture gen after an unfenced await'],
 		},
+		// Round 5 P2-6: every param of every function in or around the unit was a
+		// capture, so any of them compared to loadGeneration was a fence.
+		{
+			id: "R5 E11 updateField compares the onRefetched param to loadGeneration",
+			subs: [['\t\t\tconst fresh = await submitWithOCC(false);\n\t\t\tif (!stillCurrent()) return;\n', '\t\t\tconst fresh = await submitWithOCC(false);\n\t\t\tif (latest !== loadGeneration) return;\n']],
+			refuses: ['updateField()', 'assigns item after an unfenced await'],
+		},
 		{
 			// A callback allowance covers what its reason covers: the refetch may
 			// read, not commit.
@@ -546,6 +553,13 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 			id: 'a pure local computed after an await, before the fence',
 			old: "\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title: titleDraft.trim() });\n",
 			new: "\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title: titleDraft.trim() });\n\t\t\tconst snapshot = JSON.stringify(updated);\n",
+		},
+		{
+			// A helper's own params are captures inside its own body, whatever
+			// they are called: switchedAway stays a fence with its param renamed.
+			id: "switchedAway's generation param renamed",
+			old: '\tfunction switchedAway(targetItem: Item, gen: number): boolean {\n\t\treturn gen !== loadGeneration || item?.id !== targetItem.id;\n',
+			new: '\tfunction switchedAway(targetItem: Item, expected: number): boolean {\n\t\treturn expected !== loadGeneration || item?.id !== targetItem.id;\n',
 		},
 		{
 			id: 'a commit moved BELOW its fence stays accepted',
