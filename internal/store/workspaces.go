@@ -85,8 +85,30 @@ type execQueryer interface {
 
 // CreateWorkspace mints a workspace against the pool. Callers already inside a
 // transaction want createWorkspaceQ instead.
-func (s *Store) CreateWorkspace(input models.WorkspaceCreate) (*models.Workspace, error) {
-	return s.createWorkspaceQ(s.db, input)
+//
+// With WithPlanLimit() the mint runs in its own transaction and is refused with
+// a *PlanLimitError when the owner is already at their workspaces limit,
+// counted under the owner lock (enforceUserLimitTx, BUG-2808).
+func (s *Store) CreateWorkspace(input models.WorkspaceCreate, opts ...MintOption) (*models.Workspace, error) {
+	if !resolveMintOptions(opts).planLimit {
+		return s.createWorkspaceQ(s.db, input)
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("create workspace: begin: %w", err)
+	}
+	defer tx.Rollback()
+	if err := s.enforceUserLimitTx(tx, input.OwnerID, "workspaces", 0); err != nil {
+		return nil, err
+	}
+	ws, err := s.createWorkspaceQ(tx, input)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("create workspace: commit: %w", err)
+	}
+	return ws, nil
 }
 
 // createWorkspaceQ is CreateWorkspace against a caller-supplied executor.

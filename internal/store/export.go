@@ -401,7 +401,7 @@ func resolveImportParent(exportedParentID string, itemMap map[string]string, ins
 // export carries no source: a bundle says what the workspace WAS, and where
 // this copy is being minted from is a fact about this request. Operator
 // callers outside HTTP pass "".
-func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ownerID string, source string) (*models.Workspace, error) {
+func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ownerID string, source string, opts ...MintOption) (*models.Workspace, error) {
 	if data.Version != 1 {
 		return nil, fmt.Errorf("unsupported export version: %d", data.Version)
 	}
@@ -1118,6 +1118,18 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 				"workspace_id", ws.ID,
 				"err", err)
 			continue
+		}
+	}
+
+	// An import is a new workspace and counts against the owner's limit
+	// (BUG-2808). The check runs LAST, just before the commit, rather than
+	// at the top: the owner lock it takes is held until the commit, and an
+	// import of a large bundle would otherwise hold it for the whole import.
+	// The count therefore includes this transaction's own workspace row,
+	// which is what pendingOwn=1 accounts for.
+	if resolveMintOptions(opts).planLimit {
+		if err := s.enforceUserLimitTx(tx, ownerID, "workspaces", 1); err != nil {
+			return nil, err
 		}
 	}
 

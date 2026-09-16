@@ -135,6 +135,13 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 	staleBodies := &staleBodyTally{}
 	ws, err := s.importBundle(r.Context(), gz, newName, mint, repair, staleBodies)
 	if err != nil {
+		// A plan-limit refusal from the store (BUG-2808) is decided before the
+		// import's commit, so the transaction rolled back and there is no
+		// partial workspace to keep or remove: answer the same 403 the
+		// pre-check does and stop.
+		if writeStorePlanLimitError(w, err, "") {
+			return
+		}
 		// Errors from importBundle are already shaped with status hints —
 		// surface as 400 unless the underlying error wraps an http hint.
 		var statusErr *importStatusError
@@ -369,7 +376,7 @@ func (s *Server) importBundle(ctx context.Context, r io.Reader, newName string, 
 			// BUG-3032: read the bundle's own stale-body marker while `export`
 			// is still the thing the exporter wrote.
 			staleBodies.Observe(&export)
-			ws, err = s.store.ImportWorkspace(&export, newName, ownerID, mint.Source)
+			ws, err = s.store.ImportWorkspace(&export, newName, ownerID, mint.Source, s.planLimitMintOpts(ownerID)...)
 			if err != nil {
 				// A refusal about the bundle the caller supplied gets this
 				// door's own envelope carrying the store's Reason, exactly as

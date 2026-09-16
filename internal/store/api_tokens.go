@@ -17,7 +17,11 @@ import (
 //
 // If expiresInDays is 0 on the input, the platform default is used.
 // The maxLifetimeDays parameter enforces a ceiling on expiry (0 = no limit).
-func (s *Store) CreateAPIToken(userID string, input models.APITokenCreate, defaultExpiryDays, maxLifetimeDays int) (*models.APITokenWithSecret, error) {
+// CreateAPIToken mints a user-owned token. With WithPlanLimit() the insert runs
+// in a transaction that first takes the owner lock and counts the owner's
+// tokens (enforceUserLimitTx, BUG-2808), refusing with a *PlanLimitError at the
+// limit. Every door that mints through here therefore enforces the same cap.
+func (s *Store) CreateAPIToken(userID string, input models.APITokenCreate, defaultExpiryDays, maxLifetimeDays int, opts ...MintOption) (*models.APITokenWithSecret, error) {
 	// Generate 32 random bytes → 64 hex chars
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
@@ -59,11 +63,27 @@ func (s *Store) CreateAPIToken(userID string, input models.APITokenCreate, defau
 		expiresAt = time.Now().UTC().Add(time.Duration(expiryDays) * 24 * time.Hour).Format(time.RFC3339)
 	}
 
-	_, err := s.db.Exec(s.q(`
+	insert := `
 		INSERT INTO api_tokens (id, workspace_id, user_id, name, token_hash, prefix, scopes, expires_at, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`), id, wsID, userID, input.Name, tokenHash, prefix, scopes, expiresAt, ts)
-	if err != nil {
+	`
+	args := []any{id, wsID, userID, input.Name, tokenHash, prefix, scopes, expiresAt, ts}
+	if resolveMintOptions(opts).planLimit {
+		tx, err := s.db.Begin()
+		if err != nil {
+			return nil, fmt.Errorf("insert api token: begin: %w", err)
+		}
+		defer tx.Rollback()
+		if err := s.enforceUserLimitTx(tx, userID, "api_tokens", 0); err != nil {
+			return nil, err
+		}
+		if _, err := tx.Exec(s.q(insert), args...); err != nil {
+			return nil, fmt.Errorf("insert api token: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, fmt.Errorf("insert api token: commit: %w", err)
+		}
+	} else if _, err := s.db.Exec(s.q(insert), args...); err != nil {
 		return nil, fmt.Errorf("insert api token: %w", err)
 	}
 
