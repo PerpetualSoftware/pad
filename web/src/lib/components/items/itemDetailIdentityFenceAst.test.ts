@@ -19,6 +19,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import {
 	parseComponent,
 	declarations,
@@ -58,17 +59,24 @@ interface Row {
 	 * unsafe and may commit nothing.
 	 */
 	callbacks?: Record<string, { may: string[]; why: string }>;
+	/**
+	 * For a top-level function with `may`: the hash of its code (`codeOf`) when
+	 * the allowance was last reviewed. `may` covers the whole function, so any
+	 * edit to it refuses until the allowance is re-read and this is updated
+	 * (round 6 class 8).
+	 */
+	reviewed?: string;
 }
 
 /** Top-level `async function` declarations, by name. */
 const ASYNC_FUNCTIONS: Record<string, Row> = {
 	adoptOrConvergeToLiveCollection: { why: 'myGen against loadGeneration before adopting' },
 	reconcileCollectionSegment: { why: 'identityHeld after the list fetch; retags and navigates only under it' },
-	jumpToSection: { why: 'switches this instance\'s tab and scrolls to an anchor', may: ['document.getElementById', 'document.getElementById(anchorId).scrollIntoView'] },
-	ensureGraphComp: { why: 'lazy-loads a component module into this instance', may: ['ItemGraphComp', 'graphLoadError'] },
+	jumpToSection: { reviewed: '7c2453c5c892', why: 'switches this instance\'s tab and scrolls to an anchor', may: ['document.getElementById', 'document.getElementById(anchorId).scrollIntoView'] },
+	ensureGraphComp: { reviewed: '499e451085a7', why: 'lazy-loads a component module into this instance', may: ['ItemGraphComp', 'graphLoadError'] },
 	handleCopyRef: { why: 'switchedAway before the copied flag' },
 	loadData: { why: 'IS the load: myGen against loadGeneration after every await' },
-	startEditTitle: { why: 'focuses and sizes the input it opened synchronously', may: ['el', 'titleInputEl.focus', 'titleInputEl.setSelectionRange'] },
+	startEditTitle: { reviewed: '1f9e8d05f5c3', why: 'focuses and sizes the input it opened synchronously', may: ['el', 'titleInputEl.focus', 'titleInputEl.setSelectionRange'] },
 	saveTitle: { why: 'gen against loadGeneration on both arms' },
 	updateField: {
 		why: 'stillCurrent() on every arm, the OCC refetch and the open-children confirm',
@@ -86,6 +94,7 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	flushTagSaver: {
 		why: 'identityHeld(saver.epoch) before every commit and send; the unfenced writes are to this burst\'s own identity-stamped record, and the finally deletes that record only if the registry still holds it (the get)',
 		may: ['saver', 'tagSavers.get', 'tagSavers.delete'],
+		reviewed: 'c50131905d7a',
 	},
 	refreshCollectionIfMoved: { why: 'gen against loadGeneration after the fetch' },
 	loadTagSuggestions: { why: 'identityHeld after the fetch; the identity listener re-runs it' },
@@ -96,12 +105,13 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	flushRawIfPending: {
 		why: 'genAtFlush against loadGeneration after each PATCH; the re-entrancy waiter returns state; the finally clears this drain\'s own in-flight flag',
 		may: ['rawFlushInFlight'],
+		reviewed: '011f3f8507c4',
 		bareAwaits: ['await new Promise((r) => setTimeout(r, 50));'],
 	},
 	refreshLinksPreservingOnFailure: { why: 'returns a value; its callers fence' },
 	flushCollabBeforeRestore: { why: 'identityHeld before its failure toast' },
-	closeCopyDialog: { why: 'restores focus after closing synchronously', may: ['paneMenuTrigger.focus'] },
-	closePushDialog: { why: 'restores focus after closing synchronously', may: ['paneMenuTrigger.focus'] },
+	closeCopyDialog: { reviewed: '4d48e3e71729', why: 'restores focus after closing synchronously', may: ['paneMenuTrigger.focus'] },
+	closePushDialog: { reviewed: '2d8e690cef12', why: 'restores focus after closing synchronously', may: ['paneMenuTrigger.focus'] },
 	flushContentBeforeCopy: { why: 'returns a boolean to the dialog' },
 	handleCopied: { why: 'switchedAway before adopting the refreshed item' },
 	handleDelete: { why: 'switchedAway on both arms' },
@@ -318,7 +328,15 @@ export function refusals(code: string): string[] {
 	const expected = Object.keys(ASYNC_FUNCTIONS).sort();
 	for (const n of names) if (!(n in ASYNC_FUNCTIONS)) out.push(`async function ${n}() is not in the table — disposition it`);
 	for (const n of expected) if (!names.includes(n)) out.push(`the table names ${n}(), which is gone`);
-	for (const u of topLevel) if (ASYNC_FUNCTIONS[u.name!]) rowFor.set(u, ASYNC_FUNCTIONS[u.name!]!);
+	for (const u of topLevel) {
+		const row = ASYNC_FUNCTIONS[u.name!];
+		if (!row) continue;
+		rowFor.set(u, row);
+		if (row.reviewed !== undefined) {
+			const now = createHash('sha1').update(codeOf(src, u.fn)).digest('hex').slice(0, 12);
+			if (now !== row.reviewed) out.push(`${u.name}() has changed since its allowance was reviewed (code ${now}): re-read its may list, then update reviewed`);
+		}
+	}
 
 	const callText = (u: Unit) => collapse(code.slice(u.call!.start, u.fn.start));
 	for (const [row, us] of claim(NESTED, units.filter((u) => u.kind === 'async-function' && !u.name && !u.inMarkup), 'nested async function', callText)) {
@@ -374,6 +392,9 @@ describe('ItemDetail: every async unit is tabled, and none commits past an unfen
 		for (const r of [...NESTED, ...MARKUP, ...CONTINUATIONS]) {
 			if (r.may || r.startSafe) expect(r.in, `row (${r.why}) has no \`in\``).toBeDefined();
 			if (r.may) expect(r.code, `row (${r.why}) has no \`code\``).toBeDefined();
+		}
+		for (const [name, r] of Object.entries(ASYNC_FUNCTIONS)) {
+			if (r.may) expect(r.reviewed, `${name} has may but no reviewed hash`).toBeDefined();
 		}
 	});
 

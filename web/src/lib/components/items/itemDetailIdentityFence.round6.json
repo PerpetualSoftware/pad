@@ -485,6 +485,45 @@
 			"refuses": [
 				"shadows the capture gen"
 			]
+		},
+		{
+			"id": "R6 H18 flushTagSaver re-stamps its epoch",
+			"class": 8,
+			"subs": [
+				[
+					"\t\t\t\t\ttags: JSON.stringify(toSave)\n\t\t\t\t});\n",
+					"\t\t\t\t\ttags: JSON.stringify(toSave)\n\t\t\t\t});\n\t\t\t\tsaver.epoch = captureIdentity();\n"
+				]
+			],
+			"refuses": [
+				"flushTagSaver() has changed since its allowance was reviewed"
+			]
+		},
+		{
+			"id": "R6 H19 flushTagSaver evicts a newer saver",
+			"class": 8,
+			"subs": [
+				[
+					"\t\t\tif (saver.pending === null && tagSavers.get(saver.itemId) === saver) {\n",
+					"\t\t\tif (saver.pending === null) {\n"
+				]
+			],
+			"refuses": [
+				"flushTagSaver() has changed since its allowance was reviewed"
+			]
+		},
+		{
+			"id": "R6 H21 flushRawIfPending wedges its flag",
+			"class": 8,
+			"subs": [
+				[
+					"\t\t\t\t\tif (!item || item.id !== reqItemId || genAtFlush !== loadGeneration) return false;\n",
+					"\t\t\t\t\trawFlushInFlight = true;\n\t\t\t\t\tif (!item || item.id !== reqItemId || genAtFlush !== loadGeneration) return false;\n"
+				]
+			],
+			"refuses": [
+				"flushRawIfPending() has changed since its allowance was reviewed"
+			]
 		}
 	]
 }
