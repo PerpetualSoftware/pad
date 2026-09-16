@@ -33,7 +33,9 @@
  *    a rejection can come after any statement. Loops run their body twice, the
  *    second time from the merge of the entry and the first pass's end, and
  *    leave from the state after their test or iterator (plus every `break`),
- *    whatever the body does; `for await` starts every pass unsafe. A
+ *    whatever the body does; `for await` starts every pass unsafe. A `switch`
+ *    evaluates its case tests in order, so a case is entered from the state
+ *    after its own test and `default` from the state after all of them. A
  *    statement type the walker does not know THROWS — it is not skipped.
  *
  * 3. COMMITS fail closed. While unsafe, each of these is a violation:
@@ -718,18 +720,26 @@ class Analyser {
 				return EXIT;
 			case 'SwitchStatement': {
 				s = this.expr(n.discriminant, s);
+				// Case tests run in source order, skipping `default`, until one
+				// matches: a case is entered after its own test, and `default`
+				// only once every test has run (round 5 P2-3).
+				const entries: boolean[] = [];
+				let tested = s;
+				for (const c of n.cases) {
+					if (c.test) tested = this.expr(c.test, tested);
+					entries.push(tested);
+				}
 				this.breaks.push([]);
 				let fall: State = EXIT;
 				let hasDefault = false;
-				for (const c of n.cases) {
+				n.cases.forEach((c: Node, i: number) => {
 					if (!c.test) hasDefault = true;
-					else this.expr(c.test, s);
-					fall = this.block(c.consequent, fall === EXIT ? s : and(fall, s));
-				}
+					fall = this.block(c.consequent, and(fall, c.test ? entries[i]! : tested));
+				});
 				const brk = this.breaks.pop()!;
 				let out: State = fall;
 				for (const b of brk) out = and(out, b);
-				if (!hasDefault) out = and(out, s);
+				if (!hasDefault) out = and(out, tested);
 				return out;
 			}
 			default:
