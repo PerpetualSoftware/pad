@@ -94,9 +94,19 @@ vi.mock('$lib/api/client', () => ({
 	PadApiError: class PadApiError extends Error { code = ''; },
 	isUpdateConflictError: () => false,
 }));
+// A REAL subscription (round 3 on #1387): the no-op this replaced left the
+// SSE callback with no driven leg at all, pinned only by the source count.
+const sseCallbacks = vi.hoisted(() => [] as Array<(event: unknown) => unknown>);
 vi.mock('$lib/services/sse.svelte', () => ({
 	sseService: {
-		onItemEvent: () => () => {}, connect: vi.fn(), disconnect: vi.fn(),
+		onItemEvent: (fn: (event: unknown) => unknown) => {
+			sseCallbacks.push(fn);
+			return () => {
+				const i = sseCallbacks.indexOf(fn);
+				if (i >= 0) sseCallbacks.splice(i, 1);
+			};
+		},
+		connect: vi.fn(), disconnect: vi.fn(),
 		get connected() { return true; }, get state() { return 'open'; },
 	},
 }));
@@ -219,6 +229,8 @@ beforeEach(() => {
 	vi.mocked(api.tags.list).mockClear();
 	vi.mocked(localIndex.retagCollection).mockClear();
 	syncCallbacks.length = 0;
+	sseCallbacks.length = 0;
+	vi.mocked(api.collections.get).mockClear();
 });
 
 afterEach(() => {
@@ -605,6 +617,83 @@ describe('continuations started under the previous identity do not commit', () =
 
 	it('CONTROL: the same list retags under an unchanged identity', async () => {
 		expect(await reconcileRace(false)).toBe(1);
+	});
+});
+
+describe('the SSE callback refuses a continuation that spans an identity change (round 2 fix, round 3 leg)', () => {
+	function sse() {
+		const cb = sseCallbacks.at(-1);
+		if (!cb) throw new Error('no SSE subscription');
+		return cb;
+	}
+
+	/**
+	 * `collection_updated` with `items_changed`: the callback awaits the
+	 * collection fetch, then refetches the item. Returns the SSE path's item
+	 * GETs, counted after the identity's own reload has settled.
+	 */
+	async function collectionRace(moveIdentity: boolean, outcome: 'resolve' | 'reject') {
+		const r = mount();
+		await loaded(r);
+		const fetches = deferNext(api.collections.get);
+		const settled = sse()({ type: 'collection_updated', collection_id: 'c1', items_changed: true });
+		await waitFor(() => expect(fetches.length).toBe(1));
+		if (moveIdentity) {
+			const before = itemGets();
+			auth.moveIdentity();
+			await settle();
+			await waitFor(() => expect(itemGets(), 'the reload did not run, so this leg measures nothing').toBe(before + 1));
+			await loaded(r);
+		}
+		const base = itemGets();
+		if (outcome === 'resolve') fetches[0]!.resolve(COLL);
+		else fetches[0]!.reject(new Error('collection fetch failed'));
+		await settled;
+		await settle();
+		return itemGets() - base;
+	}
+
+	it('REFUSAL (success arm): the previous identity\'s collection refresh issues no item refetch', async () => {
+		expect(await collectionRace(true, 'resolve')).toBe(0);
+	});
+
+	it('CONTROL: the same refresh refetches the item under an unchanged identity', async () => {
+		expect(await collectionRace(false, 'resolve')).toBe(1);
+	});
+
+	it('REFUSAL (rejection fall-through): a failed fetch that spanned the change issues no item refetch', async () => {
+		expect(await collectionRace(true, 'reject')).toBe(0);
+	});
+
+	it('CONTROL: a failed fetch falls through to the item refetch under an unchanged identity', async () => {
+		expect(await collectionRace(false, 'reject')).toBe(1);
+	});
+
+	async function itemUpdatedRace(moveIdentity: boolean) {
+		const r = mount();
+		await loaded(r);
+		const gets = deferNext(api.items.get);
+		const settled = sse()({ type: 'item_updated', item_id: 'i1' });
+		await waitFor(() => expect(gets.length).toBe(1));
+		if (moveIdentity) {
+			auth.moveIdentity();
+			await settle();
+			await loaded(r);
+		}
+		gets[0]!.resolve({ ...itemFor('i1'), title: 'STALE SSE TITLE' });
+		await settled;
+		await settle();
+		return r.container.textContent ?? '';
+	}
+
+	it('REFUSAL (item branch): the previous identity\'s item_updated refetch is not adopted', async () => {
+		const text = await itemUpdatedRace(true);
+		expect(text).toContain('Item i1');
+		expect(text).not.toContain('STALE SSE TITLE');
+	});
+
+	it('CONTROL: the same refetch is adopted under an unchanged identity', async () => {
+		expect(await itemUpdatedRace(false)).toContain('STALE SSE TITLE');
 	});
 });
 
