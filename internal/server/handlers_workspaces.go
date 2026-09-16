@@ -420,10 +420,11 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		input.OwnerID = mint.OwnerID
 	}
 
-	// Charged to the AUTHENTICATED owner, never to input.OwnerID: for a
-	// caller with no resolved user that field is whatever the body said,
-	// and a body must not be able to spend someone else's plan. The
-	// pre-check in beginWorkspaceMint charges the same identity.
+	// The limit is enabled only for an AUTHENTICATED owner (mint.OwnerID),
+	// which input.OwnerID equals by this point. For a caller with no
+	// resolved user input.OwnerID is whatever the body said, and a body must
+	// not be able to spend someone else's plan. The pre-check in
+	// beginWorkspaceMint makes the same decision.
 	ws, err := s.store.CreateWorkspace(input, s.planLimitMintOpts(mint.OwnerID)...)
 	if err != nil {
 		if writeStorePlanLimitError(w, err, "") {

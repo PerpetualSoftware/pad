@@ -229,3 +229,64 @@ func TestLimitedMint_WithoutOption_NotEnforced(t *testing.T) {
 		t.Errorf("CreateAPIToken with the option at cap: err = %v, want *PlanLimitError", err)
 	}
 }
+
+// Both workspace mints take their two locks in ONE order: the workspace row's
+// UNIQUE slug entry, then the owner's users row (review round 2 on PR A). This
+// builds the interleaving the opposite order deadlocks on. An import-shaped
+// transaction has inserted slug "same-name" and not committed. A limited
+// create of the same name is then observed waiting on that row. The import
+// then asks for the owner lock under a short lock_timeout. If the create held
+// the owner lock while it waited (the old lock-then-insert order), that request
+// would wait and time out. With one order the create holds nothing, the lock
+// is granted at once, and the import commits.
+func TestLimitedMint_CreateAndImportOfOneName_NoLockCycle(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	if s.dialect.Driver() != DriverPostgres {
+		t.Skip("PAD_TEST_POSTGRES_URL not set — the cycle needs row locks, which SQLite does not have")
+	}
+	u, err := s.CreateUser(models.UserCreate{Email: "bug2808-cycle@example.com", Name: "C", Password: "pw-bug2808-12345"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if err := s.SetUserPlan(u.ID, "free", ""); err != nil {
+		t.Fatalf("SetUserPlan: %v", err)
+	}
+	if err := s.SetUserPlanOverrides(u.ID, `{"workspaces":5}`); err != nil {
+		t.Fatalf("SetUserPlanOverrides: %v", err)
+	}
+
+	imp, err := s.db.Begin()
+	if err != nil {
+		t.Fatalf("begin import-shaped tx: %v", err)
+	}
+	defer imp.Rollback()
+	if _, err := s.createWorkspaceQ(imp, models.WorkspaceCreate{Name: "same-name", OwnerID: u.ID}); err != nil {
+		t.Fatalf("import-shaped insert: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "same-name", OwnerID: u.ID}, WithPlanLimit())
+		done <- err
+	}()
+	waitForLockWait(t, s, "INSERT INTO workspaces", done)
+
+	if _, err := imp.Exec(`SET LOCAL lock_timeout = '500ms'`); err != nil {
+		t.Fatalf("set lock_timeout: %v", err)
+	}
+	if _, err := imp.Exec(s.q(`SELECT id FROM users WHERE id = ? FOR NO KEY UPDATE`), u.ID); err != nil {
+		t.Fatalf("the import could not take the owner lock while the create waited on its slug: %v "+
+			"(the create is holding the owner lock, which is the order that deadlocks)", err)
+	}
+	if err := imp.Commit(); err != nil {
+		t.Fatalf("commit import-shaped tx: %v", err)
+	}
+	// The create loses the slug race exactly as it did before BUG-2808 (a
+	// unique violation). What matters here is that it finishes.
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the create never finished after the import committed")
+	}
+}
