@@ -295,6 +295,14 @@ type Server struct {
 	// re-check, making the TOCTOU leg deterministic.
 	rowlessPreDeleteHook func(hash string)
 
+	// autoAddPreInsertHook, when non-nil, runs in
+	// maybeAutoAddCreatorConnection after the OAuth identity has been
+	// resolved and immediately BEFORE the allow-list write. Test seam only
+	// (rowlessPreDeleteHook precedent): it lets a test revoke the
+	// connection's creation power at exactly the point a separate
+	// read-then-insert would race (BUG-2792).
+	autoAddPreInsertHook func(requestID, workspaceID string)
+
 	// bg tracks fire-and-forget goroutines spawned by request handlers
 	// (TouchUserActivity in middleware_auth, async email sends, etc.) so
 	// the server can drain them before shutdown / test cleanup. Without
