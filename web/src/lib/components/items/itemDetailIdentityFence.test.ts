@@ -454,28 +454,55 @@ describe('ItemDetail: the collab provider belongs to one identity (codex round 2
 });
 
 describe('ItemDetail: deferred continuations that are not timers or async functions (class D)', () => {
-	/** Closed by count, each with its reason. */
-	const THENS: Array<{ signature: RegExp; why: string }> = [
-		{ signature: /Promise\.resolve\(\)\.then\(ensureGraphComp\)/, why: 'graph module import; identity-independent code loading (twice)' },
-		{ signature: /\.get\(refreshCtx\.wsSlug, refreshCtx\.itemId\)\s*\.then\(/, why: 'force-refresh fetch: generation + provider equality, and the provider is re-minted on an identity change' },
-		{ signature: /tick\(\)\.then\(\(\) => requestAnimationFrame/, why: 'focus after a tab switch; no data' },
-		{ signature: /\{ content: toSave \}\)\.then\(\(\) => \{/, why: 'content debounce save: switchedAway on both arms' },
-		{ signature: /\{ content: markdown \}, \{ keepalive: true \}\)\s*\.then\(/, why: 'raw keepalive save: genAtSave against loadGeneration' },
-		{ signature: /\{ content: toSave \}\)\.then\(\(updated\) => \{/, why: 'raw foreground save: genAtSave against loadGeneration' },
+	/**
+	 * Closed by count, each with its reason. A `generation` row's continuation
+	 * must carry a generation check in its first 300 characters.
+	 */
+	const CONTINUATIONS: Array<{ signature: RegExp; kind: 'generation' | 'none'; why: string }> = [
+		{ signature: /Promise\.resolve\(\)\.then\(ensureGraphComp\)/, kind: 'none', why: 'graph module import; identity-independent code loading (twice)' },
+		{ signature: /\.get\(refreshCtx\.wsSlug, refreshCtx\.itemId\)\s*\.then\(/, kind: 'generation', why: 'force-refresh fetch: generation + provider equality, and the provider is re-minted on an identity change' },
+		{ signature: /tick\(\)\.then\(\(\) => requestAnimationFrame/, kind: 'none', why: 'focus after a tab switch; no data' },
+		{ signature: /\{ content: toSave \}\)\.then\(\(\) => \{/, kind: 'generation', why: 'content debounce save: switchedAway on both arms' },
+		{ signature: /\{ content: markdown \}, \{ keepalive: true \}\)\s*\.then\(/, kind: 'generation', why: 'raw keepalive save: genAtSave against loadGeneration' },
+		{ signature: /\{ content: toSave \}\)\.then\(\(updated\) => \{/, kind: 'generation', why: 'raw foreground save: genAtSave against loadGeneration' },
+		// `.catch(` arms (round 3 on #1387: only `.then(` was counted).
+		{ signature: /noScroll: true,\s*\}\)\.catch\(\(\) => \{/, kind: 'none', why: 'rename heal: clears only the bridge object this heal installed, compared by identity' },
+		{ signature: /api\.items\.get\(wsSlug, itemSlug\)\.catch\(\(err\) => \{/, kind: 'none', why: 'loadData item fetch: sets a flag local to that load and re-throws; the load fences its own catch' },
+		{ signature: /forceRefreshNonce \+= 1;\s*\}\)\s*\.catch\(\(err\) => \{/, kind: 'generation', why: 'force-refresh failure: provider and refreshGen against loadGeneration' },
+		{ signature: /showSaved\(\);\s*\}\)\.catch\(\(\) => \{/, kind: 'generation', why: 'content debounce failure: switchedAway' },
+		{ signature: /\}\s*\}\)\s*\.catch\(\(\) => \{\}\);/, kind: 'none', why: 'raw keepalive save failure: empty handler' },
+		{ signature: /content: item\.content \}\);\s*\}\s*\}\)\.catch\(\(\) => \{/, kind: 'generation', why: 'raw foreground save failure: genAtSave against loadGeneration' },
 	];
 
-	it('every .then continuation is dispositioned, and the count is closed', () => {
-		const sites = [...SCRIPT.matchAll(/\.then\(/g)].map((m) => SCRIPT.slice(Math.max(0, m.index! - 90), m.index! + 40));
-		expect(sites.length, 'a .then was added or removed — disposition it').toBe(7);
+	it('every .then / .catch / .finally continuation is dispositioned, holds it, and the count is closed', () => {
+		const sites = [...SCRIPT.matchAll(/\.(?:then|catch|finally)\(/g)].map((m) => ({
+			lead: SCRIPT.slice(Math.max(0, m.index! - 90), m.index! + 40),
+			body: SCRIPT.slice(m.index!, m.index! + 300),
+		}));
+		expect(sites.length, 'a .then / .catch / .finally was added or removed — disposition it').toBe(13);
+		const used = new Set<number>();
 		for (const site of sites) {
-			const rows = THENS.filter((r) => r.signature.test(site));
-			expect(rows.length, `unrecognised .then: ${site.replace(/\s+/g, ' ')}`).toBe(1);
+			const rows = CONTINUATIONS.map((r, i) => [r, i] as const).filter(([r]) => r.signature.test(site.lead));
+			expect(rows.length, `unrecognised continuation: ${site.lead.replace(/\s+/g, ' ')}`).toBe(1);
+			const [row, i] = rows[0]!;
+			used.add(i);
+			if (row.kind === 'generation') {
+				expect(site.body.match(GENERATION)?.length ?? 0, `${row.why}: dispositioned GENERATION with no generation check`).toBeGreaterThan(0);
+			}
 		}
+		expect([...used].sort((x, y) => x - y), 'a continuation row matches nothing — delete it').toEqual(CONTINUATIONS.map((_, i) => i));
 	});
 
 	it('the one queueMicrotask is the collab seed, and requestAnimationFrame appears once', () => {
 		expect(SCRIPT.match(/queueMicrotask\(/g)?.length).toBe(1);
 		expect(SCRIPT.match(/requestAnimationFrame\(/g)?.length).toBe(1);
+	});
+
+	it('the MARKUP defers nothing: the script-scoped tables above cannot see it (round 3 on #1387)', () => {
+		const M = src.markup.replace(/<!--[\s\S]*?-->/g, (c) => ' '.repeat(c.length));
+		for (const re of [/\.(?:then|catch|finally)\(/g, /\bsetTimeout\(/g, /\bsetInterval\(/g, /\bqueueMicrotask\(/g, /\brequestAnimationFrame\(/g]) {
+			expect(M.match(re)?.length ?? 0, `the markup now carries ${re.source} — move it into a script handler the tables cover, or widen them`).toBe(0);
+		}
 	});
 });
 
