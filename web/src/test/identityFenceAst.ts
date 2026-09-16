@@ -570,11 +570,16 @@ function visibleAt(src: AstSource, fn: Node): Set<string> {
 	const add = (names: Set<string>) => names.forEach((x) => out.add(x));
 	for (const a of chain) {
 		if (a === src.script) continue;
-		if (isFn(a)) add(scopeBindings(a));
-		else if (a.type === 'BlockStatement') add(declaredIn(a.body));
-		else if (a.type === 'SwitchStatement') add(switchBindings(a));
-		else if (a.type === 'ForStatement' || a.type === 'ForOfStatement' || a.type === 'ForInStatement') add(loopBindings(a));
-		else if (a.type === 'CatchClause' && a.param) patternNames(a.param, out);
+		if (isFn(a)) {
+			add(scopeBindings(a));
+			continue;
+		}
+		// `isFn` narrows `a` to never here; every ancestor is still a Node.
+		const b = a as Node;
+		if (b.type === 'BlockStatement') add(declaredIn(b.body));
+		else if (b.type === 'SwitchStatement') add(switchBindings(b));
+		else if (b.type === 'ForStatement' || b.type === 'ForOfStatement' || b.type === 'ForInStatement') add(loopBindings(b));
+		else if (b.type === 'CatchClause' && b.param) patternNames(b.param, out);
 	}
 	return out;
 }
@@ -848,7 +853,10 @@ class Analyser {
 			case 'ForStatement':
 			case 'ForOfStatement':
 			case 'ForInStatement':
-				return this.withLocals(this.plus(loopBindings(n)), () => this.loop(n, s));
+			{
+				const entry = s;
+				return this.withLocals(this.plus(loopBindings(n)), () => this.loop(n, entry));
+			}
 			case 'BreakStatement':
 				this.breaks.at(-1)?.push(s);
 				return EXIT;
