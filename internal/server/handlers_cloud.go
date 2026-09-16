@@ -1104,6 +1104,9 @@ func (s *Server) enforcePlanLimit(w http.ResponseWriter, workspaceID, feature st
 		writePlanLimitError(w, result)
 		return false
 	}
+	if s.planLimitAdmittedHook != nil {
+		s.planLimitAdmittedHook(feature, workspaceID)
+	}
 	return true
 }
 
@@ -1132,6 +1135,9 @@ func (s *Server) enforceUserPlanLimit(w http.ResponseWriter, userID, feature str
 	if !result.Allowed {
 		writePlanLimitError(w, result)
 		return false
+	}
+	if s.planLimitAdmittedHook != nil {
+		s.planLimitAdmittedHook(feature, userID)
 	}
 	return true
 }
