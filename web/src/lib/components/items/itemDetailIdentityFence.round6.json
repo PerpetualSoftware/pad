@@ -1,0 +1,208 @@
+{
+	"note": "Round 6 on #1387 (BUG-3084): the 38 edits the AST guard accepted at 31f3b5e9, from the reviewer probe (its written review was lost in delivery; see checkpoint 63). Deliberately defective code, kept as JSON so repo source scanners do not read it.",
+	"mutants": [
+		{
+			"id": "R6 H2 stored in callee sequence",
+			"class": 4,
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\t(window.onfocus = updated ? () => {\n\t\t\t\titem = withInflightTags(updated);\n\t\t\t} : null, tick)();\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"calls a function built in its callee"
+			]
+		},
+		{
+			"id": "R6 H3 default param commit in inlined helper",
+			"class": 2,
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tconst applyTitleNow = (next = (item = withInflightTags(updated))) => next;\n\t\t\tapplyTitleNow();\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"default value calls or assigns"
+			]
+		},
+		{
+			"id": "R6 H3b default param commit in listener",
+			"class": 2,
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\twindow.addEventListener('focus', (_e: Event, _n = (item = withInflightTags(updated))) => {});\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"default value calls or assigns"
+			]
+		},
+		{
+			"id": "R6 H4 destructuring default commit",
+			"class": 2,
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tconst [_first = (item = withInflightTags(updated))] = [];\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"default value calls or assigns"
+			]
+		},
+		{
+			"id": "R6 H5 for-of writes component state",
+			"class": 3,
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tfor (item of [updated]);\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"for-of/for-in target is not a declaration"
+			]
+		},
+		{
+			"id": "R6 H6 switch discriminant rolls back loadGeneration",
+			"class": 1,
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tswitch ((loadGeneration = gen), 0) {\n\t\t\t\tcase 1:\n\t\t\t\t\tlet loadGeneration = 0;\n\t\t\t\t\tvoid loadGeneration;\n\t\t\t}\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"shadows the trusted name loadGeneration"
+			]
+		},
+		{
+			"id": "R6 H8 shadowed console.warn is a request",
+			"class": 1,
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tconst console = { warn: api.items.update };\n\t\t\tconsole.warn(wsSlug, targetItem.id, { title: 'stale' });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"shadows the trusted name console"
+			]
+		},
+		{
+			"id": "R6 H9 shadowed untrack registers a listener",
+			"class": 1,
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tconst untrack = window.addEventListener.bind(window, 'focus');\n\t\t\tuntrack(() => {\n\t\t\t\titem = withInflightTags(updated);\n\t\t\t});\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"shadows the trusted name untrack"
+			]
+		},
+		{
+			"id": "R6 H13 shadowed identityHeld",
+			"class": 1,
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tconst identityHeld = (_c: number) => true;\n\t\t\tif (!identityHeld(gen)) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"shadows the trusted name identityHeld"
+			]
+		},
+		{
+			"id": "R6 H13b shadowed loadGeneration",
+			"class": 1,
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tconst loadGeneration = gen;\n\t\t\tif (gen !== loadGeneration) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"shadows the trusted name loadGeneration"
+			]
+		},
+		{
+			"id": "R6 H14 default param rewrites helper param",
+			"class": 2,
+			"subs": [
+				[
+					"\t\tconst gen = loadGeneration;\n\t\tsaveStatus = 'saving';\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title",
+					"\t\tconst gen = loadGeneration;\n\t\tconst freshTitleGen = (g: number, _h = (g = loadGeneration)) => g === loadGeneration;\n\t\tsaveStatus = 'saving';\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title"
+				],
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tif (!freshTitleGen(gen)) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"default value calls or assigns"
+			]
+		},
+		{
+			"id": "R6 H41 for-of rewrites a capture",
+			"class": 3,
+			"subs": [
+				[
+					"\t\tconst gen = loadGeneration;\n\t\tsaveStatus = 'saving';\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title",
+					"\t\tlet gen = loadGeneration;\n\t\tsaveStatus = 'saving';\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title"
+				],
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tfor (gen of [loadGeneration]);\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"for-of/for-in target is not a declaration"
+			]
+		},
+		{
+			"id": "R6 H16 tag function returns listener",
+			"class": 5,
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tconst applyLater = ((_s: TemplateStringsArray) => () => {\n\t\t\t\titem = withInflightTags(updated);\n\t\t\t})`x`;\n\t\t\twindow.addEventListener('focus', applyLater);\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"tagged template"
+			]
+		},
+		{
+			"id": "R6 H33 generator helper",
+			"class": 5,
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tfunction* applyTitleGen() {\n\t\t\t\titem = withInflightTags(updated);\n\t\t\t}\n\t\t\tconst titleIt = applyTitleGen();\n\t\t\twindow.addEventListener('focus', titleIt.next.bind(titleIt));\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"generator"
+			]
+		},
+		{
+			"id": "R6 H32 forEach param shadows capture",
+			"class": 1,
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\ttry {\n\t\t\t\tthrow loadGeneration;\n\t\t\t} catch (gen) {\n\t\t\t\tif (gen !== loadGeneration) return;\n\t\t\t\titem = updated;\n\t\t\t}\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"shadows the capture gen"
+			]
+		}
+	]
+}

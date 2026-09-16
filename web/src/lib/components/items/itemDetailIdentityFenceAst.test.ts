@@ -25,11 +25,13 @@ import {
 	enumerateUnits,
 	analyseUnit,
 	walk,
+	refusedConstructs,
 	type AstSource,
 	type Node,
 	type Unit,
 } from '../../../test/identityFenceAst';
 import round4 from './itemDetailIdentityFence.round4.json';
+import round6 from './itemDetailIdentityFence.round6.json';
 
 interface GuardMutant {
 	id: string;
@@ -277,7 +279,13 @@ export function refusals(code: string): string[] {
 	} catch (e) {
 		return [`does not parse: ${String(e)}`];
 	}
-	const decls = declarations(src);
+	let decls: ReturnType<typeof declarations>;
+	try {
+		decls = declarations(src);
+	} catch (e) {
+		return [`declarations: ${String((e as Error).message ?? e)}`];
+	}
+	out.push(...refusedConstructs(src, decls));
 	const { units, deferringCalls } = enumerateUnits(src);
 
 	const claim = (rows: SignedRow[], members: Unit[], what: string, callText: (u: Unit) => string) => {
@@ -519,6 +527,13 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 			refuses: ['saveTitle()', 'assigns item after an unfenced await'],
 		},
 		{
+			// Only an empty Set/Map is an allowed constructor default (lead ruling on
+			// checkpoint 63, condition 3).
+			id: 'R6 a default value that constructs something with effects',
+			subs: [['\tfunction showSaved() {\n', "\tfunction showSaved(stream = new TitleStream()) {\n\t\tvoid stream;\n"]],
+			refuses: ['default value calls or assigns'],
+		},
+		{
 			// Iteration methods count as synchronous only on a receiver the unit
 			// declared; anything else could be an object whose `forEach` stores
 			// the callback.
@@ -681,7 +696,18 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 		).toThrow(/names no callback this unit creates/);
 	});
 
-	it.each(ANALYSIS_DEFECTS.map((d) => [d.id, d] as const))('analysis defect stays closed: %s', (_id, d) => {
+	/**
+	 * Round 6 on #1387: edits the guard accepted at 31f3b5e9, from the
+	 * reviewer's probe (checkpoint 63), each tagged with its class. Every one
+	 * is either closed here or listed in KNOWN_GAPS below.
+	 */
+	const ROUND6 = (round6.mutants as Array<{ id: string; class: number; subs: string[][]; refuses: string[] }>).map((m) => ({
+		id: `${m.id} (class ${m.class})`,
+		subs: m.subs as Array<[string, string]>,
+		refuses: m.refuses,
+	}));
+
+	it.each([...ANALYSIS_DEFECTS, ...ROUND6].map((d) => [d.id, d] as const))('analysis defect stays closed: %s', (_id, d) => {
 		expect(BASELINE).toEqual([]);
 		let code = SOURCE;
 		for (const [from, to] of d.subs) {

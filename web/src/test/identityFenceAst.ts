@@ -585,6 +585,90 @@ function visibleAt(src: AstSource, fn: Node): Set<string> {
 }
 
 // ---------------------------------------------------------------------------
+// Constructs refused outright (lead ruling on BUG-3084 checkpoint 63, (B))
+// ---------------------------------------------------------------------------
+
+/**
+ * Names the analysis resolves by spelling. A function-level declaration that
+ * reuses one would silently change what a call or a fence means, so it is
+ * refused rather than modelled.
+ */
+export function trustedNames(): Set<string> {
+	const out = new Set<string>([...GENERATIONS, ...DEFERRING_FUNCTIONS, ...Object.keys(SYNC_CALLBACK_CALLEES), 'identityHeld', 'captureIdentity', 'authStore']);
+	for (const k of Object.keys(PURE_CALLS)) out.add(k.split('.')[0]!);
+	return out;
+}
+
+const CALL_OR_WRITE = new Set(['CallExpression', 'NewExpression', 'AssignmentExpression', 'UpdateExpression', 'AwaitExpression', 'TaggedTemplateExpression', 'ImportExpression']);
+
+const EMPTY_COLLECTIONS = new Set(['Set', 'Map']);
+
+function unwrap(n: Node): Node {
+	while (n.type === 'ParenthesizedExpression' || n.type === 'TSAsExpression' || n.type === 'TSNonNullExpression' || n.type === 'TSSatisfiesExpression' || n.type === 'ChainExpression') n = n.expression;
+	return n;
+}
+
+/**
+ * Constructs the analysis does not model and refuses wherever they sit inside
+ * a function: a declaration shadowing a trusted name or a capture, a default
+ * value that calls or assigns, a generator, a tagged template, a for-of/in
+ * target that is not a declaration, and a call whose callee builds a function
+ * in any shape but `(literal)(…)` or `(name ?? literal)(…)`.
+ */
+export function refusedConstructs(src: AstSource, decls: Declarations): string[] {
+	const trusted = trustedNames();
+	const out: string[] = [];
+	const at = (n: Node) => `line ${src.line(n.start)}`;
+	const binding = (p: Node, kind: 'param' | 'catch' | 'declarator', captureInit: boolean) => {
+		const names = new Set<string>();
+		patternNames(p, names);
+		for (const name of names) {
+			if (trusted.has(name)) out.push(`${at(p)}: declares ${name}, which shadows the trusted name ${name}`);
+			else if (kind !== 'param' && !captureInit && decls.captures.has(name)) out.push(`${at(p)}: declares ${name}, which shadows the capture ${name}`);
+		}
+	};
+	const visit = (n: Node, anc: Node[]) => {
+		const inFn = anc.some(isFn);
+		if (isFn(n)) {
+			if (n.generator) out.push(`${at(n)}: generator function — the guard does not model when its body runs`);
+			for (const p of n.params) binding(p, 'param', false);
+			if (n.type !== 'ArrowFunctionExpression' && n.id && inFn && trusted.has(n.id.name)) out.push(`${at(n)}: declares ${n.id.name}, which shadows the trusted name ${n.id.name}`);
+		}
+		if (!inFn) return;
+		if (n.type === 'VariableDeclarator') binding(n.id, 'declarator', !!n.init && (isGenerationRead(n.init) || isIdentityRead(src, n.init)));
+		if (n.type === 'CatchClause' && n.param) binding(n.param, 'catch', false);
+		if (n.type === 'AssignmentPattern') {
+			let bad = false;
+			walk(n.right, (c) => {
+				// An empty collection is the one constructor default the component
+				// uses (`excludeChildIds = new Set()`); it builds a value and runs
+				// nothing of ours.
+				const emptyCollection = c.type === 'NewExpression' && c.arguments.length === 0 && c.callee.type === 'Identifier' && EMPTY_COLLECTIONS.has(c.callee.name);
+				if (CALL_OR_WRITE.has(c.type) && !emptyCollection) bad = true;
+			});
+			if (bad) out.push(`${at(n)}: default value calls or assigns — the guard does not walk defaults`);
+		}
+		if (n.type === 'TaggedTemplateExpression') out.push(`${at(n)}: tagged template — the guard does not model the tag`);
+		if ((n.type === 'ForOfStatement' || n.type === 'ForInStatement') && n.left.type !== 'VariableDeclaration') {
+			out.push(`${at(n)}: for-of/for-in target is not a declaration`);
+		}
+		if (n.type === 'CallExpression') {
+			const c = unwrap(n.callee);
+			if (c.type === 'Identifier' || c.type === 'MemberExpression' || c.type === 'Super' || c.type === 'Import') return;
+			const literalShape = isFn(c) || (c.type === 'LogicalExpression' && ['Identifier', 'MemberExpression'].includes(unwrap(c.left).type) && isFn(unwrap(c.right)));
+			let buildsFn = false;
+			walk(c, (x) => {
+				if (isFn(x)) buildsFn = true;
+			});
+			if (buildsFn && !literalShape) out.push(`${at(n)}: calls a function built in its callee`);
+		}
+	};
+	walk(src.script, visit);
+	walk(src.fragment, visit);
+	return out;
+}
+
+// ---------------------------------------------------------------------------
 // Flow analysis
 // ---------------------------------------------------------------------------
 
