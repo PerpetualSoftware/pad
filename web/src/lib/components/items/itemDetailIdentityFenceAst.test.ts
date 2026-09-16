@@ -26,7 +26,16 @@ import {
 	type Node,
 	type Unit,
 } from '../../../test/identityFenceAst';
-import { ROUND4_MUTANTS } from './itemDetailIdentityFence.round4';
+import round4 from './itemDetailIdentityFence.round4.json';
+
+interface GuardMutant {
+	id: string;
+	finding: string;
+	what: string;
+	old: string;
+	new: string;
+}
+const ROUND4_MUTANTS: GuardMutant[] = round4.mutants;
 
 const SOURCE = readFileSync(new URL('./ItemDetail.svelte', import.meta.url), 'utf8');
 
