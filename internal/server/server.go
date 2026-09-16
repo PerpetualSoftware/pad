@@ -295,6 +295,13 @@ type Server struct {
 	// re-check, making the TOCTOU leg deterministic.
 	rowlessPreDeleteHook func(hash string)
 
+	// planLimitAdmittedHook, when non-nil, runs in enforcePlanLimit and
+	// enforceUserPlanLimit immediately after a limit check ADMITS a request,
+	// before the handler goes on to write. Test seam only (rowlessPreDeleteHook
+	// precedent): it lets a test land a competing row inside the window
+	// between the count and the insert (BUG-2808).
+	planLimitAdmittedHook func(feature, scopeID string)
+
 	// autoAddPreInsertHook, when non-nil, runs in
 	// maybeAutoAddCreatorConnection after the OAuth identity has been
 	// resolved and immediately BEFORE the allow-list write. Test seam only
