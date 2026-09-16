@@ -646,27 +646,33 @@ describe('the SSE callback refuses a continuation that spans an identity change 
 			await loaded(r);
 		}
 		const base = itemGets();
-		if (outcome === 'resolve') fetches[0]!.resolve(COLL);
+		if (outcome === 'resolve') fetches[0]!.resolve({ ...COLL, name: 'STALE COLLECTION NAME' });
 		else fetches[0]!.reject(new Error('collection fetch failed'));
 		await settled;
 		await settle();
-		return itemGets() - base;
+		return { refetches: itemGets() - base, text: r.container.textContent ?? '' };
 	}
 
 	it('REFUSAL (success arm): the previous identity\'s collection refresh issues no item refetch', async () => {
-		expect(await collectionRace(true, 'resolve')).toBe(0);
+		const { refetches, text } = await collectionRace(true, 'resolve');
+		expect(refetches).toBe(0);
+		// The success arm's own check, which the post-catch one masks for the
+		// refetch: `adoptCollection` accepts a stale generation by design.
+		expect(text).not.toContain('STALE COLLECTION NAME');
 	});
 
 	it('CONTROL: the same refresh refetches the item under an unchanged identity', async () => {
-		expect(await collectionRace(false, 'resolve')).toBe(1);
+		const { refetches, text } = await collectionRace(false, 'resolve');
+		expect(refetches).toBe(1);
+		expect(text).toContain('STALE COLLECTION NAME');
 	});
 
 	it('REFUSAL (rejection fall-through): a failed fetch that spanned the change issues no item refetch', async () => {
-		expect(await collectionRace(true, 'reject')).toBe(0);
+		expect((await collectionRace(true, 'reject')).refetches).toBe(0);
 	});
 
 	it('CONTROL: a failed fetch falls through to the item refetch under an unchanged identity', async () => {
-		expect(await collectionRace(false, 'reject')).toBe(1);
+		expect((await collectionRace(false, 'reject')).refetches).toBe(1);
 	});
 
 	async function itemUpdatedRace(moveIdentity: boolean) {
