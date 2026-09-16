@@ -54,17 +54,22 @@
  * 4. FENCES by what they compare, never by name. An atom is a comparison of a
  *    CAPTURED variable against `loadGeneration` / `itemGen`, a call to
  *    `identityHeld(x)`, or a comparison of a LIVE identity read
- *    (`authStore.identityEpoch`, `captureIdentity()`) against a stamp. `!`, `&&`, `||` and
- *    `?:` combine atoms with their polarity, so `if (gen !== loadGeneration)
- *    return;` fences what follows and `if (gen === loadGeneration) { … }`
- *    fences only its consequent. A helper (`const stillCurrent = () => …`,
- *    `function switchedAway(…)`) is a fence exactly when its OWN body has a
- *    polarity; a local boolean initialised from a fence is one too.
+ *    (`authStore.identityEpoch`, `captureIdentity()`) against a stamp. `!`,
+ *    `&&` and `||` combine atoms with their polarity, and when the right
+ *    operand awaits only its own atoms survive (round 5 P1-1). So
+ *    `if (gen !== loadGeneration) return;` fences what follows and
+ *    `if (gen === loadGeneration) { … }` fences only its consequent. A `?:`
+ *    is not a fence at all (its arms are walked, its value is not read). A
+ *    helper (`const stillCurrent = () => …`, `function switchedAway(…)`) is a
+ *    fence exactly when its OWN body has a polarity, with its own params
+ *    counted as captures there and nowhere else; a call to it fences only when
+ *    it passes a capture. A local boolean initialised from a fence is one too.
  *
  * 5. SCOPES. Whether a write targets a local is decided by the lexical scopes
- *    enclosing the write: the unit's chain, plus each nested function while
- *    its body is walked. An inlined helper sees its own chain, not the
- *    caller's (round 5 P1-3). Block scoping is flattened to the function.
+ *    enclosing the write: every function, block, loop head, switch body and
+ *    catch clause around the unit, plus each one the walk enters. An inlined
+ *    helper sees its own chain, not the caller's (round 5 P1-3). A `var` is
+ *    treated as scoped to its block, which can only refuse more.
  *
  * WHAT THIS CANNOT DO. It proves that a check with the right SHAPE dominates
  * every commit; it does not prove the check reads the right item. On the
@@ -137,7 +142,7 @@ export const SYNC_ITERATION_METHODS = new Set(['find', 'findIndex', 'findLast', 
  * Calls that commit nothing, by callee. SHORT on purpose (lead ruling,
  * condition 2): a new callee is a commit until it is listed here with its
  * reason, and a list that grows to absorb every refusal is the regex problem
- * again. Keys are the callee's source text with `?.` read as `.`; a `*.name`
+ * again. Keys are the callee's source text with `?.` read as `.`.
  * There are no method-name wildcards: `*.get` once admitted `api.items.get`,
  * a request (round-4 mutant G6), so every entry names its receiver.
  */
@@ -463,48 +468,78 @@ function patternNames(p: Node, out: Set<string>) {
 	}
 }
 
+/** Names declared directly in a statement list (not inside nested blocks). */
+function declaredIn(stmts: Node[], out: Set<string> = new Set()): Set<string> {
+	for (const st of stmts) {
+		if (st.type === 'VariableDeclaration') for (const d of st.declarations) patternNames(d.id, out);
+		if (st.type === 'FunctionDeclaration' && st.id) out.add(st.id.name);
+	}
+	return out;
+}
+
 /**
- * The names a function's OWN scope binds: its params, its name if it is a
- * named expression, and every declaration in its body outside nested
- * functions (a nested function declaration binds its name here, and nothing
- * else). Block scoping is flattened to the function, which can only make a
- * name local in more of the function than it is — never in another function.
+ * The names a function's OWN top-level scope binds: its params, its name if it
+ * is a named expression, and the declarations directly in its body. A
+ * declaration inside a nested block binds only while that block is walked
+ * (`Analyser.stmt`); a `var` there is therefore treated as block-scoped, which
+ * can only make a write MORE likely to be refused.
  */
 export function scopeBindings(fn: Node): Set<string> {
 	const out = new Set<string>();
 	for (const p of fn.params) patternNames(p, out);
 	if (fn.type === 'FunctionExpression' && fn.id) out.add(fn.id.name);
-	const visit = (n: Node) => {
-		if (isFn(n)) {
-			if (n.type === 'FunctionDeclaration' && n.id) out.add(n.id.name);
-			return;
-		}
-		if (n.type === 'VariableDeclarator') patternNames(n.id, out);
-		if (n.type === 'CatchClause' && n.param) patternNames(n.param, out);
-		for (const c of children(n)) visit(c);
-	};
-	visit(fn.body);
+	if (fn.body.type === 'BlockStatement') declaredIn(fn.body.body, out);
 	return out;
 }
 
-const fnAncestorCache = new WeakMap<AstSource, Map<Node, Node[]>>();
+/** The names a loop's own head declares (`for (let i …)`, `for (const x of …)`). */
+function loopBindings(n: Node): Set<string> {
+	const out = new Set<string>();
+	for (const head of [n.init, n.left]) {
+		if (head?.type === 'VariableDeclaration') for (const d of head.declarations) patternNames(d.id, out);
+	}
+	return out;
+}
 
-/** The functions lexically enclosing `fn`, outermost first. */
-function fnAncestors(src: AstSource, fn: Node): Node[] {
-	let m = fnAncestorCache.get(src);
+/** The names a switch body declares: its cases share one block. */
+function switchBindings(n: Node): Set<string> {
+	const out = new Set<string>();
+	for (const c of n.cases) declaredIn(c.consequent, out);
+	return out;
+}
+
+const ancestorCache = new WeakMap<AstSource, Map<Node, Node[]>>();
+
+/**
+ * Names bound, at `fn`, by the scopes around it: every enclosing function,
+ * block, loop head, switch body and catch clause. The component's own script
+ * scope is NOT included — those names are component state.
+ */
+function visibleAt(src: AstSource, fn: Node): Set<string> {
+	let m = ancestorCache.get(src);
 	if (!m) {
 		const map = new Map<Node, Node[]>();
 		const visit = (n: Node, anc: Node[]) => {
-			if (isFn(n)) map.set(n, anc.filter(isFn));
+			if (isFn(n)) map.set(n, anc.slice());
 		};
 		walk(src.script, visit);
 		walk(src.fragment, visit);
-		fnAncestorCache.set(src, map);
+		ancestorCache.set(src, map);
 		m = map;
 	}
 	const chain = m.get(fn);
 	if (!chain) throw new Error(`function at line ${src.line(fn.start)} is not in the component`);
-	return chain;
+	const out = new Set<string>();
+	const add = (names: Set<string>) => names.forEach((x) => out.add(x));
+	for (const a of chain) {
+		if (a === src.script) continue;
+		if (isFn(a)) add(scopeBindings(a));
+		else if (a.type === 'BlockStatement') add(declaredIn(a.body));
+		else if (a.type === 'SwitchStatement') add(switchBindings(a));
+		else if (a.type === 'ForStatement' || a.type === 'ForOfStatement' || a.type === 'ForInStatement') add(loopBindings(a));
+		else if (a.type === 'CatchClause' && a.param) patternNames(a.param, out);
+	}
+	return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -551,9 +586,9 @@ class Analyser {
 		private opts: AnalyseOptions
 	) {}
 
-	run(fn: Node, enclosing: Node[] = []): Violation[] {
+	run(fn: Node): Violation[] {
 		this.may = this.opts.may;
-		for (const e of [...enclosing, fn]) for (const name of scopeBindings(e)) this.locals.add(name);
+		this.locals = new Set([...visibleAt(this.src, fn), ...scopeBindings(fn)]);
 		if (fn.body.type === 'BlockStatement') this.block(fn.body.body, this.opts.startSafe);
 		else this.expr(fn.body, this.opts.startSafe);
 		for (const b of this.opts.bareAwaits ?? []) {
@@ -590,7 +625,11 @@ class Analyser {
 	}
 
 	private nested(fn: Node): Set<string> {
-		return new Set([...this.locals, ...scopeBindings(fn)]);
+		return this.plus(scopeBindings(fn));
+	}
+
+	private plus(names: Set<string>): Set<string> {
+		return new Set([...this.locals, ...names]);
 	}
 
 	/** The commits the code being walked may make: the row's, or a callback's. */
@@ -668,7 +707,7 @@ class Analyser {
 			case 'FunctionDeclaration':
 				return s;
 			case 'BlockStatement':
-				return this.block(n.body, s);
+				return this.withLocals(this.plus(declaredIn(n.body)), () => this.block(n.body, s));
 			case 'ExpressionStatement': {
 				const text = this.src.text(n);
 				if (this.opts.bareAwaits?.has(text) && n.expression.type === 'AwaitExpression') {
@@ -703,7 +742,11 @@ class Analyser {
 				const awaits = containsAwait(n.block);
 				const t = this.stmt(n.block, s);
 				let c: State = EXIT;
-				if (n.handler) c = this.stmt(n.handler.body, awaits ? false : s);
+				if (n.handler) {
+					const param = new Set<string>();
+					if (n.handler.param) patternNames(n.handler.param, param);
+					c = this.withLocals(this.plus(param), () => this.stmt(n.handler.body, awaits ? false : s));
+				}
 				const normal: State = n.handler ? (t === EXIT && c === EXIT ? EXIT : and(t, c)) : t;
 				if (!n.finalizer) return normal;
 				const fin = this.stmt(n.finalizer, awaits || (n.handler && containsAwait(n.handler.body)) ? false : s);
@@ -715,40 +758,43 @@ class Analyser {
 			case 'ForStatement':
 			case 'ForOfStatement':
 			case 'ForInStatement':
-				return this.loop(n, s);
+				return this.withLocals(this.plus(loopBindings(n)), () => this.loop(n, s));
 			case 'BreakStatement':
 				this.breaks.at(-1)?.push(s);
 				return EXIT;
 			case 'ContinueStatement':
 				this.continues.at(-1)?.push(s);
 				return EXIT;
-			case 'SwitchStatement': {
-				s = this.expr(n.discriminant, s);
-				// Case tests run in source order, skipping `default`, until one
-				// matches: a case is entered after its own test, and `default`
-				// only once every test has run (round 5 P2-3).
-				const entries: boolean[] = [];
-				let tested = s;
-				for (const c of n.cases) {
-					if (c.test) tested = this.expr(c.test, tested);
-					entries.push(tested);
-				}
-				this.breaks.push([]);
-				let fall: State = EXIT;
-				let hasDefault = false;
-				n.cases.forEach((c: Node, i: number) => {
-					if (!c.test) hasDefault = true;
-					fall = this.block(c.consequent, and(fall, c.test ? entries[i]! : tested));
-				});
-				const brk = this.breaks.pop()!;
-				let out: State = fall;
-				for (const b of brk) out = and(out, b);
-				if (!hasDefault) out = and(out, tested);
-				return out;
-			}
+			case 'SwitchStatement':
+				return this.withLocals(this.plus(switchBindings(n)), () => this.switchStmt(n, s as boolean));
 			default:
 				throw new Error(`statement type ${n.type} at line ${this.src.line(n.start)} is not modelled — teach the guard rather than skip it`);
 		}
+	}
+
+	private switchStmt(n: Node, s: boolean): State {
+		s = this.expr(n.discriminant, s);
+		// Case tests run in source order, skipping `default`, until one
+		// matches: a case is entered after its own test, and `default`
+		// only once every test has run (round 5 P2-3).
+		const entries: boolean[] = [];
+		let tested = s;
+		for (const c of n.cases) {
+			if (c.test) tested = this.expr(c.test, tested);
+			entries.push(tested);
+		}
+		this.breaks.push([]);
+		let fall: State = EXIT;
+		let hasDefault = false;
+		n.cases.forEach((c: Node, i: number) => {
+			if (!c.test) hasDefault = true;
+			fall = this.block(c.consequent, and(fall, c.test ? entries[i]! : tested));
+		});
+		const brk = this.breaks.pop()!;
+		let out: State = fall;
+		for (const b of brk) out = and(out, b);
+		if (!hasDefault) out = and(out, tested);
+		return out;
 	}
 
 	private loop(n: Node, entry: boolean): State {
@@ -969,8 +1015,7 @@ class Analyser {
 			// The helper sees ITS lexical scopes, not the caller's: a caller's
 			// local that shares a name with component state the helper writes
 			// must not excuse that write.
-			const lexical = new Set<string>();
-			for (const e of [...fnAncestors(this.src, helper), helper]) for (const name of scopeBindings(e)) lexical.add(name);
+			const lexical = new Set([...visibleAt(this.src, helper), ...scopeBindings(helper)]);
 			this.path.push(`${key}()`);
 			const body = helper.body;
 			this.withLocals(lexical, () => {
@@ -997,7 +1042,7 @@ function containsAwait(n: Node): boolean {
 }
 
 export function analyseUnit(src: AstSource, decls: Declarations, unit: Unit, opts: AnalyseOptions): Violation[] {
-	return new Analyser(src, decls, opts).run(unit.fn, unit.enclosing);
+	return new Analyser(src, decls, opts).run(unit.fn);
 }
 
 export function declarations(src: AstSource): Declarations {

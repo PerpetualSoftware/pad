@@ -621,6 +621,13 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 			refuses: ['assigns item after an unfenced await — item = updated'],
 		},
 		{
+			// A block's bindings hold only inside that block: a `const item` in
+			// one branch excuses no `item =` outside it.
+			id: 'R5 P1-3 a block-scoped declaration excuses a write outside its block',
+			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (updated) {\n\t\t\t\tconst item = updated;\n\t\t\t\tvoid item;\n\t\t\t}\n\t\t\titem = withInflightTags(updated);\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tshowSaved();\n"]],
+			refuses: ['saveTitle()', 'assigns item after an unfenced await — item = withInflightTags(updated)'],
+		},
+		{
 			// An inlined helper resolves names in ITS scopes: a caller's local that
 			// shares a name with the state the helper writes excuses nothing.
 			id: "R5 P1-3 a caller's local does not excuse the same name inside an inlined helper",
@@ -671,6 +678,25 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 			id: "switchedAway's generation param renamed",
 			old: '\tfunction switchedAway(targetItem: Item, gen: number): boolean {\n\t\treturn gen !== loadGeneration || item?.id !== targetItem.id;\n',
 			new: '\tfunction switchedAway(targetItem: Item, expected: number): boolean {\n\t\treturn expected !== loadGeneration || item?.id !== targetItem.id;\n',
+		},
+		{
+			// A catch param is a local of the handler, even though the handler is
+			// entered after an await.
+			id: 'a write to the catch param in an unfenced handler',
+			old: "\t\t} catch {\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tsaveStatus = 'idle';\n\t\t\ttoastStore.show('Failed to update title'",
+			new: "\t\t} catch (err) {\n\t\t\terr = null;\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tsaveStatus = 'idle';\n\t\t\ttoastStore.show('Failed to update title'",
+		},
+		{
+			// An inlined helper declared inside a block sees that block's names.
+			id: "a helper writing a local of the block it is declared in",
+			old: '{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration',
+			new: '{ title: titleDraft.trim() });\n\t\t\tlet bumped = 0;\n\t\t\tconst bumpTitleCount = () => {\n\t\t\t\tbumped = 1;\n\t\t\t};\n\t\t\tbumpTitleCount();\n\t\t\tif (gen !== loadGeneration',
+		},
+		{
+			// A loop head's names are locals of the loop, after an await too.
+			id: 'a write to a loop-head binding after an await',
+			old: TITLE_FENCE_AND_COMMITS,
+			new: TITLE_FENCE_AND_COMMITS + '\t\t\tfor (let attempt = 0; attempt < 1; attempt++) {\n\t\t\t\tawait tick();\n\t\t\t\tattempt = 2;\n\t\t\t}\n',
 		},
 		{
 			id: 'a commit moved BELOW its fence stays accepted',
