@@ -100,8 +100,15 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 	defaultDays, maxDays := s.getTokenExpirySettings()
 
 	userID := currentUserID(r)
-	token, err := s.store.CreateAPIToken(userID, input, defaultDays, maxDays)
+	// The api_tokens cap counts every token the USER owns, so a token minted
+	// here counts against it too and is refused at the cap (BUG-2808). The
+	// note says so, because this request names a workspace and a caller
+	// would otherwise read the refusal as a per-workspace limit.
+	token, err := s.store.CreateAPIToken(userID, input, defaultDays, maxDays, s.planLimitMintOpts(userID)...)
 	if err != nil {
+		if writeStorePlanLimitError(w, err, "This limit counts every API token you own, across all workspaces.") {
+			return
+		}
 		writeInternalError(w, err)
 		return
 	}
@@ -214,8 +221,11 @@ func (s *Server) handleCreateUserToken(w http.ResponseWriter, r *http.Request) {
 
 	defaultDays, maxDays := s.getTokenExpirySettings()
 
-	token, err := s.store.CreateAPIToken(userID, input, defaultDays, maxDays)
+	token, err := s.store.CreateAPIToken(userID, input, defaultDays, maxDays, s.planLimitMintOpts(userID)...)
 	if err != nil {
+		if writeStorePlanLimitError(w, err, "") {
+			return
+		}
 		writeInternalError(w, err)
 		return
 	}

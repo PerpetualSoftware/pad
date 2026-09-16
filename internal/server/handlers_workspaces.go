@@ -420,8 +420,11 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		input.OwnerID = mint.OwnerID
 	}
 
-	ws, err := s.store.CreateWorkspace(input)
+	ws, err := s.store.CreateWorkspace(input, s.planLimitMintOpts(input.OwnerID)...)
 	if err != nil {
+		if writeStorePlanLimitError(w, err, "") {
+			return
+		}
 		writeInternalError(w, err)
 		return
 	}
@@ -892,8 +895,11 @@ func (s *Server) handleImportWorkspace(w http.ResponseWriter, r *http.Request) {
 	staleBodies := &staleBodyTally{}
 	staleBodies.Observe(&data)
 
-	ws, err := s.store.ImportWorkspace(&data, newName, userID, mint.Source)
+	ws, err := s.store.ImportWorkspace(&data, newName, userID, mint.Source, s.planLimitMintOpts(userID)...)
 	if err != nil {
+		if writeStorePlanLimitError(w, err, "") {
+			return
+		}
 		// A refusal about the EXPORT the caller supplied is a 400, not a 500
 		// (BUG-2951). This door answered 500 for every failure, including the
 		// prefix-grammar refusal whose message tells the caller which

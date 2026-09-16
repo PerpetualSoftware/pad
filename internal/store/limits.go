@@ -141,8 +141,20 @@ func (s *Store) checkLimitOn(q Queryer, workspaceID, feature string) (*LimitResu
 
 // CheckUserLimit checks a user-level limit (not workspace-scoped), such as
 // total workspace count or total API tokens.
+//
+// This is an ADVISORY read on the pool: callers use it for an early refusal.
+// It cannot hold a limit by itself, because nothing stops a concurrent writer
+// between this count and the caller's insert (BUG-2808). The insert functions
+// enforce the limit authoritatively when passed WithPlanLimit().
 func (s *Store) CheckUserLimit(userID, feature string) (*LimitResult, error) {
-	user, err := s.GetUser(userID)
+	return s.checkUserLimitOn(s.db, userID, feature)
+}
+
+// checkUserLimitOn is CheckUserLimit against a caller-supplied executor, so a
+// transaction can count on its own connection and after its own lock
+// (BUG-2409 / BUG-2778: no pool reads inside a held transaction).
+func (s *Store) checkUserLimitOn(q Queryer, userID, feature string) (*LimitResult, error) {
+	user, err := s.GetUserQ(q, userID)
 	if err != nil {
 		return nil, fmt.Errorf("check user limit: get user: %w", err)
 	}
@@ -158,12 +170,12 @@ func (s *Store) CheckUserLimit(userID, feature string) (*LimitResult, error) {
 		return &LimitResult{Allowed: true, Feature: feature, Limit: -1, Current: 0, Plan: plan}, nil
 	}
 
-	limit := s.resolveLimit(plan, feature, user.PlanOverrides)
+	limit := s.resolveLimitQ(q, plan, feature, user.PlanOverrides)
 	if limit < 0 {
 		return &LimitResult{Allowed: true, Feature: feature, Limit: -1, Current: 0, Plan: plan}, nil
 	}
 
-	current, err := s.userFeatureCount(userID, feature)
+	current, err := s.userFeatureCountOn(q, userID, feature)
 	if err != nil {
 		return nil, fmt.Errorf("check user limit: count %s: %w", feature, err)
 	}
@@ -175,6 +187,93 @@ func (s *Store) CheckUserLimit(userID, feature string) (*LimitResult, error) {
 		Current: current,
 		Plan:    plan,
 	}, nil
+}
+
+// PlanLimitError is the refusal an insert returns when WithPlanLimit() is set
+// and the limit, counted under the insert's own lock, is already reached.
+// Callers match it with errors.As and answer with the same 403 the advisory
+// pre-check writes.
+type PlanLimitError struct {
+	Result LimitResult
+}
+
+func (e *PlanLimitError) Error() string {
+	return fmt.Sprintf("plan limit reached for %s: %d of %d", e.Result.Feature, e.Result.Current, e.Result.Limit)
+}
+
+// MintOption configures a limited insert (CreateWorkspace, ImportWorkspace,
+// CreateAPIToken).
+type MintOption func(*mintOptions)
+
+type mintOptions struct {
+	planLimit bool
+}
+
+// WithPlanLimit makes the insert enforce the owner's plan limit for what it
+// creates, in the same transaction as the write (BUG-2808). The server passes
+// it in cloud mode only; self-hosted callers, migrations and the CLI's database
+// import pass nothing and are unchanged.
+func WithPlanLimit() MintOption {
+	return func(o *mintOptions) { o.planLimit = true }
+}
+
+func resolveMintOptions(opts []MintOption) mintOptions {
+	var o mintOptions
+	for _, f := range opts {
+		f(&o)
+	}
+	return o
+}
+
+// enforceUserLimitTx is the authoritative user-scoped check. It runs inside
+// the insert's transaction, and in this order:
+//
+//  1. Lock the owner's users row. On Postgres this is FOR NO KEY UPDATE,
+//     which every limited user-scoped insert takes, so two of them for one
+//     owner run one after the other and the second counts the first's
+//     committed row. FOR NO KEY UPDATE rather than FOR UPDATE: it is the
+//     weakest lock that still conflicts with itself, and it does NOT conflict
+//     with FOR KEY SHARE, the lock a foreign-key check takes on the parent
+//     row. Every insert that references this user (items, comments, sessions,
+//     activity) takes that FK lock, and FOR UPDATE would stall all of them
+//     for as long as the limited insert is open. It does conflict with a
+//     plain UPDATE of the row (last_active_at, plan changes), which waits
+//     for the commit; that wait is the cost, and it is bounded by keeping
+//     the lock late in the transaction.
+//     On SQLite the transaction is already BEGIN IMMEDIATE (the DSN's
+//     _txlock=immediate), which serialises every writer, and the row-locking
+//     clause would be a syntax error there.
+//  2. Count on the transaction, after the lock. Under READ COMMITTED each
+//     statement takes a fresh snapshot, so this count sees everything
+//     committed before the lock was granted.
+//
+// pendingOwn is the number of rows THIS transaction has already inserted that
+// the count will include (1 when the check runs after the insert, as
+// ImportWorkspace does to keep the lock short; 0 when it runs before).
+//
+// A missing owner is an error, not a pass: the caller asked for a limit and
+// there is no plan to read it from.
+func (s *Store) enforceUserLimitTx(tx *sql.Tx, userID, feature string, pendingOwn int) error {
+	lock := `SELECT id FROM users WHERE id = ?`
+	if s.dialect.Driver() == DriverPostgres {
+		lock += ` FOR NO KEY UPDATE`
+	}
+	var id string
+	if err := tx.QueryRow(s.q(lock), userID).Scan(&id); err != nil {
+		return fmt.Errorf("plan limit: lock owner %s: %w", userID, err)
+	}
+	res, err := s.checkUserLimitOn(tx, userID, feature)
+	if err != nil {
+		return err
+	}
+	if res.Limit >= 0 {
+		res.Current -= pendingOwn
+		res.Allowed = res.Current < res.Limit
+	}
+	if !res.Allowed {
+		return &PlanLimitError{Result: *res}
+	}
+	return nil
 }
 
 // resolveLimit resolves the limit for a feature using the three-tier resolution:
@@ -230,8 +329,9 @@ func (s *Store) featureCountOn(q rowQueryer, workspaceID, ownerID, feature strin
 	return count, err
 }
 
-// userFeatureCount returns the current count for a user-scoped feature.
-func (s *Store) userFeatureCount(userID, feature string) (int, error) {
+// userFeatureCountOn returns the current count for a user-scoped feature,
+// read on the given executor.
+func (s *Store) userFeatureCountOn(q rowQueryer, userID, feature string) (int, error) {
 	var count int
 	var err error
 
@@ -239,9 +339,9 @@ func (s *Store) userFeatureCount(userID, feature string) (int, error) {
 	case "workspaces":
 		// Note: this count includes soft-deleted workspaces by design — see IDEA-1611
 		// in docapp for the open question on whether this should change post-MVBP.
-		err = s.db.QueryRow(s.q(`SELECT COUNT(*) FROM workspaces WHERE owner_id = ?`), userID).Scan(&count)
+		err = q.QueryRow(s.q(`SELECT COUNT(*) FROM workspaces WHERE owner_id = ?`), userID).Scan(&count)
 	case "api_tokens":
-		err = s.db.QueryRow(s.q(`SELECT COUNT(*) FROM api_tokens WHERE user_id = ?`), userID).Scan(&count)
+		err = q.QueryRow(s.q(`SELECT COUNT(*) FROM api_tokens WHERE user_id = ?`), userID).Scan(&count)
 	default:
 		return 0, fmt.Errorf("unknown user feature: %s", feature)
 	}

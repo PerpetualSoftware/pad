@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -1142,12 +1143,43 @@ func (s *Server) enforceUserPlanLimit(w http.ResponseWriter, userID, feature str
 	return true
 }
 
+// planLimitMintOpts returns the store option that makes a user-scoped mint
+// enforce the owner's plan limit inside its own transaction (BUG-2808). Cloud
+// mode only, and only for an attributable owner: a legacy workspace token
+// resolves no user, and charging an unattributable mint against nobody's plan
+// is not a limit (the same guard beginWorkspaceMint applies to the pre-check).
+func (s *Server) planLimitMintOpts(ownerID string) []store.MintOption {
+	if !s.cloudMode || ownerID == "" {
+		return nil
+	}
+	return []store.MintOption{store.WithPlanLimit()}
+}
+
+// writeStorePlanLimitError answers a *store.PlanLimitError with the same 403
+// the advisory pre-check writes, and reports whether err was one. note, when
+// non-empty, is appended to the message.
+func writeStorePlanLimitError(w http.ResponseWriter, err error, note string) bool {
+	var ple *store.PlanLimitError
+	if !errors.As(err, &ple) {
+		return false
+	}
+	writePlanLimitErrorNote(w, &ple.Result, note)
+	return true
+}
+
 // writePlanLimitError writes a structured 403 response for plan limit violations.
 // The envelope follows the standard {"error":{"code":...,"message":...,"details":{...}}}
 // shape so PadApiError (frontend), cli.APIError (CLI), and the MCP classifier can
 // all parse it uniformly. TASK-788.
 func writePlanLimitError(w http.ResponseWriter, result *store.LimitResult) {
+	writePlanLimitErrorNote(w, result, "")
+}
+
+func writePlanLimitErrorNote(w http.ResponseWriter, result *store.LimitResult, note string) {
 	msg := planLimitMessage(result)
+	if note != "" {
+		msg += " " + note
+	}
 	writeError2(w, http.StatusForbidden, "plan_limit_exceeded", msg, map[string]interface{}{
 		"feature":     result.Feature,
 		"limit":       result.Limit,
