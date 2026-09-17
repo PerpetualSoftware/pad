@@ -227,6 +227,15 @@ describe('ItemDetail: epoch reads in reactive scopes', () => {
 		expect([...used].sort(), 'an exemption no longer matches anything — delete it rather than leave it open').toEqual([0, 1, 2]);
 	});
 
+	it('the two identity primitives the AST aid trusts by name have exactly their reviewed bodies', () => {
+		// BUG-3084 round 8 E: the flow analysis recognises identityHeld and
+		// captureIdentity by name, so a weakened body would still read as a fence
+		// there. The hash gate also covers both as helpers; this pins the text.
+		expect(SCRIPT).toMatch(/\n\tfunction captureIdentity\(\): number \{\n\t\treturn authStore\.identityEpoch;\n\t\}\n/);
+		expect(SCRIPT).toMatch(/\n\tfunction identityHeld\(captured: number\): boolean \{\n\t\treturn authStore\.identityEpoch === captured;\n\t\}\n/);
+		expect(SCRIPT.match(/\bfunction (?:captureIdentity|identityHeld)\b/g)).toHaveLength(2);
+	});
+
 	it('the page-load epoch is mentioned at exactly its five known sites', () => {
 		// Declaration, the loadData re-stamp, runTeardownFlush's guard, the
 		// beforeunload handler, the raw saver's discard. The collab cleanup and
