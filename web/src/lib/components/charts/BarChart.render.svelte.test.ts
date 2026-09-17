@@ -4,11 +4,15 @@
 // Nothing in the suite asserted anything about `BarChart`'s output. Its only
 // consumers are the insights page and its print route; no vitest suite rendered
 // either, and the one e2e spec that visits `/insights`
-// (page-title-survives-pane-and-nav.spec.ts:88) SPA-navigates there and checks
-// `document.title` alone — on a fresh fixture workspace the chart's `hasData`
-// is false, so the layers never even mount. So `Web` went green on a major bump
-// that rewrote the library's context API out from under the three chart layers.
-// The green was the enumeration (nothing looked), not the property (the charts
+// (page-title-survives-pane-and-nav.spec.ts:88) asserts the URL pathname and
+// `document.title` — nothing about chart output.
+//
+// A title assertion cannot catch this class of break, which was measured rather
+// than reasoned: serving the unmigrated v11 build in a real browser, the
+// insights page still loaded with its title intact and threw only `pageerror`s
+// while rendering zero chart elements. So `Web` went green on a major bump that
+// rewrote the library's context API out from under the three chart layers. The
+// green was the enumeration (nothing looked), not the property (the charts
 // work).
 //
 // This test renders the chart end-to-end through the real `<LayerCake>` — no
@@ -22,11 +26,15 @@
 // under test.
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
+import { tick } from 'svelte';
 
 import BarChart from './BarChart.svelte';
 
 const BOX_WIDTH = 600;
 const BOX_HEIGHT = 240;
+const TOOLTIP_WIDTH = 80;
+// BarChart's own padding literal; bandCenter offsets by its left edge.
+const PADDING_LEFT = 36;
 
 beforeAll(() => {
 	// LayerCake measures its container through `bind:clientWidth` /
@@ -40,8 +48,15 @@ beforeAll(() => {
 	// binding not to throw.
 	Object.defineProperty(HTMLElement.prototype, 'clientWidth', {
 		configurable: true,
-		get() {
-			return BOX_WIDTH;
+		get(this: HTMLElement) {
+			// The tooltip reports a NARROW width on purpose. BarChart clamps the
+			// tooltip's left edge into [w/2, canvasWidth - w/2]; if the tooltip
+			// measured the full canvas width that interval would collapse to a
+			// single point and every position assertion below would hold no matter
+			// what the layer computed. Measured: with both at 600 the hover leg
+			// could not tell `bandCenter` apart from one with `k.padding.left`
+			// dropped.
+			return this.classList?.contains('tooltip') ? TOOLTIP_WIDTH : BOX_WIDTH;
 		},
 	});
 	Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
@@ -173,5 +188,41 @@ describe('BarChart renders through LayerCake', () => {
 			(t) => Number(t.textContent?.trim())
 		);
 		expect(Math.max(...ticks)).toBeGreaterThanOrEqual(12);
+	});
+
+	it('drives the hover tooltip from context read at event time', async () => {
+		// `bandCenter` and `bandSummary` (Bars.svelte) are the only context reads
+		// in the unit that happen OUTSIDE a tracking context — they run in a
+		// pointer handler and want the value at event time rather than a
+		// dependency. Review round 1 judged that correct by design; this leg is
+		// what makes it checked rather than argued. It is also the only coverage
+		// of `k.padding` anywhere in this file.
+		const { container } = renderChart();
+
+		const hits = container.querySelectorAll('g.bars rect.hit');
+		expect(hits.length).toBe(DATA.length);
+
+		// The accessible per-band summary is built from k.x plus the series values.
+		expect(hits[1].querySelector('title')?.textContent).toBe(
+			'Tue — Created 3, Completed 7'
+		);
+
+		hits[1].dispatchEvent(new PointerEvent('pointerenter', { bubbles: true }));
+		await tick();
+
+		const tooltip = container.querySelector('.tooltip') as HTMLElement | null;
+		expect(tooltip).not.toBeNull();
+		expect(tooltip?.textContent).toContain('Tue');
+		expect(tooltip?.textContent).toContain('7');
+
+		// bandCenter = k.padding.left + k.xGet(d) + bandwidth/2. Both operands are
+		// readable off the hit-rect itself (its x IS k.xGet(d), its width IS the
+		// bandwidth), so this asserts the actual relation rather than a magic
+		// pixel — and it fails if the k.padding.left term is dropped.
+		const hitX = Number(hits[1].getAttribute('x'));
+		const hitW = Number(hits[1].getAttribute('width'));
+		const left = Number.parseFloat(tooltip!.style.left);
+		expect(Number.isFinite(left)).toBe(true);
+		expect(left).toBeCloseTo(PADDING_LEFT + hitX + hitW / 2, 5);
 	});
 });
