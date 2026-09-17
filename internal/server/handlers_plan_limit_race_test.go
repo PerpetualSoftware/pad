@@ -155,6 +155,23 @@ func (e *planLimitEnv) mustBeRefusedAtCap(t *testing.T, rr *httptest.ResponseRec
 	if code := errorCode(t, rr); code != "plan_limit_exceeded" {
 		t.Errorf("error code = %q, want plan_limit_exceeded (body=%s)", code, rr.Body.String())
 	}
+	// The structured details are what clients render ("N of M items"); a
+	// refusal that kept the code and dropped them would pass the lines above.
+	var env struct {
+		Error struct {
+			Details struct {
+				Feature string `json:"feature"`
+				Limit   int    `json:"limit"`
+				Current int    `json:"current"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &env); err != nil {
+		t.Fatalf("decode refusal: %v (body=%s)", err, rr.Body.String())
+	}
+	if d := env.Error.Details; d.Feature != feature || d.Limit != limit || d.Current != limit {
+		t.Errorf("refusal details = %+v, want feature %s at %d of %d (body=%s)", d, feature, limit, limit, rr.Body.String())
+	}
 }
 
 func TestPlanLimitRace_Workspaces_NoCompetitor_Admitted(t *testing.T) {
@@ -604,4 +621,42 @@ func TestPlanLimitRace_Webhooks_CompetingCreateInWindow_Refused(t *testing.T) {
 func TestPlanLimitRace_Webhooks_NoCompetitor_Admitted(t *testing.T) {
 	e := newPlanLimitEnv(t)
 	e.runWorkspaceRace(t, e.webhookRace(t), false)
+}
+
+// Self-hosted: the same doors, a free-plan owner (the column default) already
+// AT the cap, cloud mode off. Nothing may refuse: the pre-check is cloud-gated,
+// and so must the store option be. Without this leg, dropping the cloudMode
+// gate from workspaceLimitMintOpts would impose free-plan caps on every
+// self-hosted instance and no test would notice.
+func (e *planLimitEnv) runSelfHostedAtCap(t *testing.T, r workspaceRace) {
+	t.Helper()
+	e.srv.cloudMode = false
+	current := r.count(t)
+	if err := e.srv.store.SetUserPlanOverrides(e.user.ID, fmt.Sprintf(`{%q:%d}`, r.feature, current)); err != nil {
+		t.Fatalf("SetUserPlanOverrides: %v", err)
+	}
+	rr := r.door(t)
+	if rr.Code != r.admitted {
+		t.Fatalf("self-hosted at cap: status = %d, want %d (body=%s)", rr.Code, r.admitted, rr.Body.String())
+	}
+	if got := r.count(t); got != current+1 {
+		t.Errorf("self-hosted at cap: %s count = %d, want %d", r.feature, got, current+1)
+	}
+}
+
+func TestPlanLimit_SelfHosted_NotEnforced(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		race func(e *planLimitEnv, t *testing.T) workspaceRace
+	}{
+		{"Items", (*planLimitEnv).itemCreateRace},
+		{"ItemsImport", (*planLimitEnv).itemImportRace},
+		{"Members", (*planLimitEnv).memberAddRace},
+		{"Webhooks", (*planLimitEnv).webhookRace},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newPlanLimitEnv(t)
+			e.runSelfHostedAtCap(t, tc.race(e, t))
+		})
+	}
 }
