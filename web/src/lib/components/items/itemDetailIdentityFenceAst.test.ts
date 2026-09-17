@@ -755,6 +755,16 @@ export function refusals(code: string, opts: GateOptions = {}): string[] {
 		// Verbatim and SEP-joined, like every other reviewed text: this path kept
 		// round 10's own root cause (collapsed slices joined by ` || `, a
 		// separator that CAN occur in source) for one more round (round 11 O1).
+		//
+		// MEASURED, and recorded rather than claimed: a mutant reverting THIS
+		// LINE to the collapsed recipe SURVIVES the suite. The block itself is
+		// load-bearing — removing it is killed by round 9's F4 — but no fixture
+		// discriminates the recipe, because every collision reachable in this
+		// component needs a component-level statement that is ALSO inside some
+		// unit's verbatim hash, which refuses it first (round 11 O1: the
+		// reviewer's own collision here was refused by `ensureGraphComp()`'s
+		// row). So this is consistency with the rest of the gate, not a hole
+		// shown closed. A row passing a name no unit covers would make it bite.
 		const text = [row.text, ...[...stmts].sort((a, b) => a.start - b.start).map((st) => src.text(st))].join(SEP);
 		const now = sha(text);
 		if (!reviewed(row.reviewed, now)) {
