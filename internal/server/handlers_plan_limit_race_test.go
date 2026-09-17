@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/PerpetualSoftware/pad/internal/artifact"
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
@@ -399,4 +400,208 @@ func TestPlanLimitRace_WorkspacesBundle_NoCompetitor_Admitted(t *testing.T) {
 	if got != limit {
 		t.Errorf("user owns %d workspaces, want exactly the cap %d", got, limit)
 	}
+}
+
+// --- PR B: workspace-scoped limits (items, members, webhooks) ---
+//
+// Every door below runs enforcePlanLimit and then an insert that WithPlanLimit
+// makes authoritative. workspaceRace drives one door: the competing leg
+// inserts one counted row in the window between the pre-check and the insert,
+// and must be refused at the cap. The control inserts nothing, and must be
+// admitted at exactly the cap.
+
+type workspaceRace struct {
+	feature string
+	// count reads the feature's counted rows in the home workspace.
+	count func(t *testing.T) int
+	// compete inserts one counted row directly through the store, unlimited,
+	// as a concurrent request that had already passed its own check would.
+	compete func(t *testing.T)
+	// door makes the request under test.
+	door func(t *testing.T) *httptest.ResponseRecorder
+	// admitted is the status the door answers on success.
+	admitted int
+}
+
+func (e *planLimitEnv) runWorkspaceRace(t *testing.T, r workspaceRace, compete bool) {
+	t.Helper()
+	limit := e.capAtOneMore(t, r.feature, r.count(t))
+
+	ran := false
+	e.srv.planLimitAdmittedHook = func(feature, scope string) {
+		if feature != r.feature || scope != e.home.ID {
+			return
+		}
+		ran = true
+		if compete {
+			r.compete(t)
+		}
+	}
+
+	rr := r.door(t)
+	if !ran {
+		t.Fatalf("planLimitAdmittedHook never ran for %s; the leg measured nothing", r.feature)
+	}
+	got := r.count(t)
+	if compete {
+		e.mustBeRefusedAtCap(t, rr, limit, got, r.feature)
+		return
+	}
+	if rr.Code != r.admitted {
+		t.Fatalf("status = %d, want %d (body=%s)", rr.Code, r.admitted, rr.Body.String())
+	}
+	if got != limit {
+		t.Errorf("%s count is %d, want exactly the cap %d", r.feature, got, limit)
+	}
+}
+
+func (e *planLimitEnv) countIn(t *testing.T, query string) int {
+	t.Helper()
+	var n int
+	if err := e.srv.store.DB().QueryRow(e.srv.store.D().Rebind(query), e.home.ID).Scan(&n); err != nil {
+		t.Fatalf("count (%s): %v", query, err)
+	}
+	return n
+}
+
+func (e *planLimitEnv) collectionID(t *testing.T, slug string) string {
+	t.Helper()
+	coll, err := e.srv.store.GetCollectionBySlug(e.home.ID, slug)
+	if err != nil || coll == nil {
+		t.Fatalf("GetCollectionBySlug(%s) = %v, %v", slug, coll, err)
+	}
+	return coll.ID
+}
+
+func (e *planLimitEnv) newUser(t *testing.T, email string) *models.User {
+	t.Helper()
+	u, err := e.srv.store.CreateUser(models.UserCreate{Email: email, Name: email, Password: "pw-limit-12345"})
+	if err != nil {
+		t.Fatalf("CreateUser(%s): %v", email, err)
+	}
+	return u
+}
+
+func (e *planLimitEnv) itemRace(t *testing.T, door func(t *testing.T) *httptest.ResponseRecorder) workspaceRace {
+	tasks := e.collectionID(t, "tasks")
+	return workspaceRace{
+		feature: "items_per_workspace",
+		count: func(t *testing.T) int {
+			return e.countIn(t, `SELECT COUNT(*) FROM items WHERE workspace_id = ? AND deleted_at IS NULL`)
+		},
+		compete: func(t *testing.T) {
+			if _, err := e.srv.store.CreateItem(e.home.ID, tasks, models.ItemCreate{Title: "Competitor"}); err != nil {
+				t.Errorf("competing CreateItem: %v", err)
+			}
+		},
+		door:     door,
+		admitted: http.StatusCreated,
+	}
+}
+
+// W1: the item create door.
+func (e *planLimitEnv) itemCreateRace(t *testing.T) workspaceRace {
+	return e.itemRace(t, func(t *testing.T) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(map[string]any{"title": "Racer"})
+		return e.do("POST", "/api/v1/workspaces/"+e.home.Slug+"/collections/tasks/items", "application/json", body, "")
+	})
+}
+
+// W2: the artifact import door, which mints through the same createItemChecked.
+func (e *planLimitEnv) itemImportRace(t *testing.T) workspaceRace {
+	return e.itemRace(t, func(t *testing.T) *httptest.ResponseRecorder {
+		data, err := artifact.Encode(artifact.Artifact{
+			Kind:          artifact.KindConvention,
+			FormatVersion: artifact.FormatVersion,
+			Title:         "Imported racer",
+			Fields:        map[string]any{"status": "active", "trigger": "always", "scope": "all", "priority": "must"},
+			Body:          "An imported convention.\n",
+		})
+		if err != nil {
+			t.Fatalf("artifact.Encode: %v", err)
+		}
+		return e.do("POST", "/api/v1/workspaces/"+e.home.Slug+"/import-artifact", "text/markdown", data, "")
+	})
+}
+
+// W3: the invite door's direct add of an existing user.
+func (e *planLimitEnv) memberAddRace(t *testing.T) workspaceRace {
+	invitee := e.newUser(t, "invitee@example.com")
+	rival := e.newUser(t, "rival@example.com")
+	return workspaceRace{
+		feature: "members_per_workspace",
+		count: func(t *testing.T) int {
+			return e.countIn(t, `SELECT COUNT(*) FROM workspace_members WHERE workspace_id = ?`)
+		},
+		compete: func(t *testing.T) {
+			if err := e.srv.store.AddWorkspaceMember(e.home.ID, rival.ID, "editor"); err != nil {
+				t.Errorf("competing AddWorkspaceMember: %v", err)
+			}
+		},
+		door: func(t *testing.T) *httptest.ResponseRecorder {
+			body, _ := json.Marshal(map[string]any{"email": invitee.Email, "role": "editor"})
+			return e.do("POST", "/api/v1/workspaces/"+e.home.Slug+"/members/invite", "application/json", body, "")
+		},
+		admitted: http.StatusCreated,
+	}
+}
+
+// W4: the webhook create door. Literal IPs keep ValidateWebhookURL off DNS.
+func (e *planLimitEnv) webhookRace(t *testing.T) workspaceRace {
+	return workspaceRace{
+		feature: "webhooks",
+		count: func(t *testing.T) int {
+			return e.countIn(t, `SELECT COUNT(*) FROM webhooks WHERE workspace_id = ?`)
+		},
+		compete: func(t *testing.T) {
+			if _, err := e.srv.store.CreateWebhook(e.home.ID, models.WebhookCreate{URL: "https://8.8.4.4/rival"}); err != nil {
+				t.Errorf("competing CreateWebhook: %v", err)
+			}
+		},
+		door: func(t *testing.T) *httptest.ResponseRecorder {
+			body, _ := json.Marshal(map[string]any{"url": "https://8.8.8.8/hook"})
+			return e.do("POST", "/api/v1/workspaces/"+e.home.Slug+"/webhooks", "application/json", body, "")
+		},
+		admitted: http.StatusCreated,
+	}
+}
+
+func TestPlanLimitRace_Items_CompetingCreateInWindow_Refused(t *testing.T) {
+	e := newPlanLimitEnv(t)
+	e.runWorkspaceRace(t, e.itemCreateRace(t), true)
+}
+
+func TestPlanLimitRace_Items_NoCompetitor_Admitted(t *testing.T) {
+	e := newPlanLimitEnv(t)
+	e.runWorkspaceRace(t, e.itemCreateRace(t), false)
+}
+
+func TestPlanLimitRace_ItemsImport_CompetingCreateInWindow_Refused(t *testing.T) {
+	e := newPlanLimitEnv(t)
+	e.runWorkspaceRace(t, e.itemImportRace(t), true)
+}
+
+func TestPlanLimitRace_ItemsImport_NoCompetitor_Admitted(t *testing.T) {
+	e := newPlanLimitEnv(t)
+	e.runWorkspaceRace(t, e.itemImportRace(t), false)
+}
+
+func TestPlanLimitRace_Members_CompetingAddInWindow_Refused(t *testing.T) {
+	e := newPlanLimitEnv(t)
+	e.runWorkspaceRace(t, e.memberAddRace(t), true)
+}
+
+func TestPlanLimitRace_Members_NoCompetitor_Admitted(t *testing.T) {
+	e := newPlanLimitEnv(t)
+	e.runWorkspaceRace(t, e.memberAddRace(t), false)
+}
+
+func TestPlanLimitRace_Webhooks_CompetingCreateInWindow_Refused(t *testing.T) {
+	e := newPlanLimitEnv(t)
+	e.runWorkspaceRace(t, e.webhookRace(t), true)
+}
+
+func TestPlanLimitRace_Webhooks_NoCompetitor_Admitted(t *testing.T) {
+	e := newPlanLimitEnv(t)
+	e.runWorkspaceRace(t, e.webhookRace(t), false)
 }
