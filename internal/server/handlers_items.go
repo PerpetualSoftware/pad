@@ -777,7 +777,8 @@ func (e *itemCreateError) write(w http.ResponseWriter) {
 //
 // The caller owns everything upstream of the validate step: resolving the
 // collection, enforcing edit permission + collection visibility, decoding the
-// request body, enforcing plan limits, and resolving + visibility-gating any
+// request body, the advisory plan-limit pre-check (this helper passes the
+// authoritative option to the store itself), and resolving + visibility-gating any
 // parent (passed in as parentValue, an already-resolved item ID or "").
 // fieldMap is the parsed-but-not-yet-validated structured fields; this helper
 // validates it against schema, marshals the validated/defaulted result back

@@ -1076,6 +1076,10 @@ func (s *Server) handleGetPlanLimits(w http.ResponseWriter, r *http.Request) {
 // enforcePlanLimit checks a workspace-scoped plan limit and writes a 403
 // error if the limit is exceeded. Returns true if the operation is allowed.
 // In non-cloud mode, always returns true (no limits enforced).
+//
+// The check is ADVISORY: a concurrent request can fill the cap after it. The
+// door's insert must also pass workspaceLimitMintOpts(), which decides the
+// limit authoritatively in the insert's transaction (BUG-2808).
 func (s *Server) enforcePlanLimit(w http.ResponseWriter, workspaceID, feature string) bool {
 	if !s.cloudMode {
 		return true // Self-hosted: no limits

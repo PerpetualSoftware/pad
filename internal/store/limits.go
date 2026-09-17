@@ -61,6 +61,10 @@ type LimitResult struct {
 //  1. User plan_overrides[feature] — per-user override (if set)
 //  2. Platform plan_limits[plan][feature] — DB-stored defaults for the tier
 //  3. Hardcoded fallback — safety net if DB config is missing
+//
+// This is an ADVISORY read on the pool: callers use it for an early refusal.
+// The authoritative check is the one a limited insert (WithPlanLimit) takes
+// inside its own transaction, under its lock (BUG-2808).
 func (s *Store) CheckLimit(workspaceID, feature string) (*LimitResult, error) {
 	return s.checkLimitOn(s.db, workspaceID, feature)
 }
