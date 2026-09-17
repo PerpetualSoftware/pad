@@ -1060,14 +1060,11 @@ class Analyser {
 				if (n.handler) {
 					const param = new Set<string>();
 					if (n.handler.param) patternNames(n.handler.param, param);
-					if (awaits) this.liveBools.clear(); // round 7 F3
 					c = this.withLocals(this.plus(param), () => this.stmt(n.handler.body, awaits ? false : s));
 				}
 				const normal: State = n.handler ? (t === EXIT && c === EXIT ? EXIT : and(t, c)) : t;
 				if (!n.finalizer) return normal;
-				const finAwaits = awaits || (n.handler && containsAwait(n.handler.body));
-				if (finAwaits) this.liveBools.clear();
-				const fin = this.stmt(n.finalizer, finAwaits ? false : s);
+				const fin = this.stmt(n.finalizer, awaits || (n.handler && containsAwait(n.handler.body)) ? false : s);
 				if (fin === EXIT) return EXIT;
 				return normal === EXIT ? EXIT : normal && fin;
 			}
@@ -1140,7 +1137,10 @@ class Analyser {
 				// the end (round 5 P2-1).
 				if (n.type === 'ForOfStatement' && n.await) {
 					s = false;
-					this.liveBools.clear(); // a fence boolean lapses there too (round 7 F3)
+					// A fence boolean lapses there too (round 7 F3). The try block is
+					// walked before its handler and finalizer, so this and the await
+					// case also lapse them for a handler entered after a suspension.
+					this.liveBools.clear();
 				}
 				exit = s;
 			}

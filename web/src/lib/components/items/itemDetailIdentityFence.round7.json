@@ -76,6 +76,26 @@
 			]
 		},
 		{
+			"id": "F1d showSaved, a helper units inline, registers an async focus listener that commits (sweep, checkpoint 68)",
+			"class": "F1",
+			"subs": [
+				[
+					"\tfunction showSaved() {\n",
+					"\tfunction showSaved() {\n\t\twindow.addEventListener('focus', async () => {\n\t\t\tsaveStatus = 'idle';\n\t\t}, { once: true });\n"
+				]
+			],
+			"nested": [
+				{
+					"body": "^async \\(\\) => \\{ saveStatus = 'idle';",
+					"why": "focus reset"
+				}
+			],
+			"refuses": [
+				"async-function at line",
+				"assigns saveStatus after an unfenced await"
+			]
+		},
+		{
 			"id": "F2 updateField success arm: `if (!stillCurrent) return;` (call parens dropped)",
 			"class": "F2",
 			"subs": [
@@ -215,6 +235,28 @@
 			"refuses": [
 				"declarations:",
 				"'sameGen' is declared more than once as a fence helper"
+			]
+		},
+		{
+			"id": "F8c saveTitle: a bare `current` naming its own fence helper, where updateField declares a fence boolean `current` (sweep, checkpoint 68)",
+			"class": "F8",
+			"subs": [
+				[
+					"\t\tconst gen = loadGeneration;\n\t\tsaveStatus = 'saving';\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title",
+					"\t\tconst gen = loadGeneration;\n\t\tconst current = () => gen === loadGeneration;\n\t\tsaveStatus = 'saving';\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title"
+				],
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tif (!current) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"
+				],
+				[
+					"\t\t\tconst fresh = await submitWithOCC(false);\n\t\t\tif (!stillCurrent()) return;\n",
+					"\t\t\tconst fresh = await submitWithOCC(false);\n\t\t\tconst current = stillCurrent();\n\t\t\tif (!current) return;\n"
+				]
+			],
+			"refuses": [
+				"declarations:",
+				"'current' is declared both as a function and as a fence boolean"
 			]
 		}
 	],
