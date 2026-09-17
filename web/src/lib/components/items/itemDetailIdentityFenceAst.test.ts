@@ -808,10 +808,11 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 		return code;
 	};
 
-	it.each([...ANALYSIS_DEFECTS, ...ROUND6, ...ROUND7].map((d) => [d.id, d] as const))('analysis defect stays closed: %s', (_id, d) => {
+	const DEFECTS: Array<{ id: string; subs: Array<[string, string]>; nested?: SignedRow[]; refuses: string[] }> = [...ANALYSIS_DEFECTS, ...ROUND6, ...ROUND7];
+	it.each(DEFECTS.map((d) => [d.id, d] as const))('analysis defect stays closed: %s', (_id, d) => {
 		expect(BASELINE).toEqual([]);
 		const code = applySubs(d.subs);
-		const got = refusals(code, 'nested' in d ? d.nested : []);
+		const got = refusals(code, d.nested ?? []);
 		expect(
 			got.some((line) => d.refuses.every((s) => line.includes(s))),
 			`no refusal carries ${JSON.stringify(d.refuses)}; got ${JSON.stringify(got, null, 1)}`
