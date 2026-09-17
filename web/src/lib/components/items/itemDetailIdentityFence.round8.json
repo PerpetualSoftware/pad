@@ -1,0 +1,265 @@
+{
+	"note": "Round 8 on #1387 at edd3bc11 (BUG-3084 checkpoint 69), from the reviewer's findings.json. Under the lead's ruling on checkpoint 69 the gate is the hash table: gate entries must be refused by it with every string in refuses on one line. aidGaps are the same edits, which the flow analysis accepts, each with its sentence. gateGaps are accepted by the gate. Deliberately defective code, kept as JSON so repo source scanners do not read it.",
+	"gate": [
+		{
+			"id": "A the debounce continuation's enclosing handler no longer clears the previous timer",
+			"subs": [
+				[
+					"\t\tclearTimeout(contentDebounceTimer);\n\t\t// Cancel any pending RAW-mode saver debounce too",
+					"\t\t// Cancel any pending RAW-mode saver debounce too"
+				]
+			],
+			"refuses": [
+				"continuation at line",
+				"has changed since its row was reviewed",
+				"covers setTimeout(…), handleContentUpdate"
+			]
+		},
+		{
+			"id": "B showSaved re-registers itself by name as a visibilitychange listener",
+			"subs": [
+				[
+					"\tfunction showSaved() {\n\t\tsaveStatus = 'saved';\n",
+					"\tfunction showSaved() {\n\t\t// Nobody sees the indicator on a hidden tab: show it when they come back.\n\t\tif (document.hidden) {\n\t\t\tdocument.addEventListener('visibilitychange', showSaved, { once: true });\n\t\t\treturn;\n\t\t}\n\t\tsaveStatus = 'saved';\n"
+				]
+			],
+			"refuses": [
+				"helper showSaved() has changed since it was reviewed"
+			]
+		},
+		{
+			"id": "B2 the same through an arrow that calls showSaved",
+			"subs": [
+				[
+					"\tfunction showSaved() {\n\t\tsaveStatus = 'saved';\n",
+					"\tfunction showSaved() {\n\t\tif (document.hidden) {\n\t\t\tdocument.addEventListener('visibilitychange', () => showSaved(), { once: true });\n\t\t\treturn;\n\t\t}\n\t\tsaveStatus = 'saved';\n"
+				]
+			],
+			"refuses": [
+				"helper showSaved() has changed since it was reviewed"
+			]
+		},
+		{
+			"id": "C updateField hands submitOrderedOCC an id-only stillCurrent",
+			"subs": [
+				[
+					"\t\t\t\tstillCurrent,\n\t\t\t\tonRefetched",
+					"\t\t\t\tstillCurrent: () => item?.id === targetItem.id,\n\t\t\t\tonRefetched"
+				]
+			],
+			"refuses": [
+				"updateField() has changed since its row was reviewed"
+			]
+		},
+		{
+			"id": "D handleMove announces on a boolean derived after the await from a pre-await fence boolean",
+			"subs": [
+				[
+					"\t\t\t\tif (!stillOnSource()) return { status: 'cancelled' };\n",
+					"\t\t\t\tconst onSource = stillOnSource();\n\t\t\t\tif (!onSource) return { status: 'cancelled' };\n"
+				],
+				[
+					"\t\t\t\tif (forced) {\n\t\t\t\t\tif (stillOnSource()) toastStore.show(`Moved to ${targetSlug}`, 'success');\n",
+					"\t\t\t\tconst announce = onSource && !!forced;\n\t\t\t\tif (forced) {\n\t\t\t\t\tif (announce) toastStore.show(`Moved to ${targetSlug}`, 'success');\n"
+				]
+			],
+			"refuses": [
+				"handleMove() has changed since its row was reviewed"
+			]
+		},
+		{
+			"id": "E identityHeld holds for any caller that captured the cold baseline",
+			"subs": [
+				[
+					"\t\treturn authStore.identityEpoch === captured;\n",
+					"\t\t// Epoch 0 is the cold baseline, captured before any identity was established.\n\t\treturn captured === 0 || authStore.identityEpoch === captured;\n"
+				]
+			],
+			"refuses": [
+				"helper identityHeld() has changed since it was reviewed"
+			]
+		},
+		{
+			"id": "F autoResizeTitle writes el under startEditTitle's may",
+			"subs": [
+				[
+					"\tfunction autoResizeTitle(el: HTMLTextAreaElement) {\n\t\tel.style.height = 'auto';\n",
+					"\tfunction autoResizeTitle(el: HTMLTextAreaElement) {\n\t\tel.value = item?.title ?? el.value;\n\t\tel.style.height = 'auto';\n"
+				]
+			],
+			"refuses": [
+				"helper autoResizeTitle() has changed since it was reviewed"
+			]
+		},
+		{
+			"id": "G a function-valued let rebound in an $effect, called above the fence",
+			"subs": [
+				[
+					"\tfunction showSaved() {\n",
+					"\tlet applyTitle = (next: Item): void => {\n\t\tvoid next;\n\t};\n\t$effect(() => {\n\t\tapplyTitle = (next: Item) => {\n\t\t\titem = withInflightTags(next);\n\t\t};\n\t});\n\n\tfunction showSaved() {\n"
+				],
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n",
+					"{ title: titleDraft.trim() });\n\t\t\tapplyTitle(updated);\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n"
+				]
+			],
+			"refuses": [
+				"saveTitle() has changed since its row was reviewed"
+			]
+		},
+		{
+			"id": "H flushCollabBeforeRestore fences on a late local alias of activeCollabContext",
+			"subs": [
+				[
+					"\t\tconst identity = captureIdentity();\n\t\t// Flush against the context",
+					"\t\t// Flush against the context"
+				],
+				[
+					"\t\tif (result === 'failed' && identityHeld(identity)) {\n",
+					"\t\tconst liveCtx = activeCollabContext;\n\t\tif (result === 'failed' && liveCtx && identityHeld(liveCtx.identityEpoch)) {\n"
+				]
+			],
+			"refuses": [
+				"flushCollabBeforeRestore() has changed since its row was reviewed"
+			]
+		},
+		{
+			"id": "J updateField send callback retargeted at the live item under the send allowance",
+			"subs": [
+				[
+					"\t\t\t\tsend: (expected) => doUpdate(force, expected),\n",
+					"\t\t\t\tsend: (expected) => api.items.update(wsSlug, item!.id, { fields_patch: patch, ...(expected.kind === 'seq' ? { expected_seq: expected.value } : { expected_updated_at: expected.value }) }),\n"
+				]
+			],
+			"refuses": [
+				"updateField() has changed since its row was reviewed"
+			]
+		}
+	],
+	"aidGaps": [
+		{
+			"id": "A the debounce continuation's enclosing handler no longer clears the previous timer",
+			"model": "the pin checks that loadData clears the timer and that this setTimeout is assigned to it, not that the variable holds the only live handle; the mount suite leg for the legacy debounce is the semantic cover",
+			"subs": [
+				[
+					"\t\tclearTimeout(contentDebounceTimer);\n\t\t// Cancel any pending RAW-mode saver debounce too",
+					"\t\t// Cancel any pending RAW-mode saver debounce too"
+				]
+			]
+		},
+		{
+			"id": "B showSaved re-registers itself by name as a visibilitychange listener",
+			"model": "a helper already being inlined is not walked again as the callback it hands itself to",
+			"subs": [
+				[
+					"\tfunction showSaved() {\n\t\tsaveStatus = 'saved';\n",
+					"\tfunction showSaved() {\n\t\t// Nobody sees the indicator on a hidden tab: show it when they come back.\n\t\tif (document.hidden) {\n\t\t\tdocument.addEventListener('visibilitychange', showSaved, { once: true });\n\t\t\treturn;\n\t\t}\n\t\tsaveStatus = 'saved';\n"
+				]
+			]
+		},
+		{
+			"id": "B2 the same through an arrow that calls showSaved",
+			"model": "the same re-entry through a literal that calls the helper",
+			"subs": [
+				[
+					"\tfunction showSaved() {\n\t\tsaveStatus = 'saved';\n",
+					"\tfunction showSaved() {\n\t\tif (document.hidden) {\n\t\t\tdocument.addEventListener('visibilitychange', () => showSaved(), { once: true });\n\t\t\treturn;\n\t\t}\n\t\tsaveStatus = 'saved';\n"
+				]
+			]
+		},
+		{
+			"id": "C updateField hands submitOrderedOCC an id-only stillCurrent",
+			"model": "a callback allowance trusts the values the unit hands the callee, and nothing checks that the stillCurrent passed is a fence; the mount suite leg for the OCC retry is the semantic cover",
+			"subs": [
+				[
+					"\t\t\t\tstillCurrent,\n\t\t\t\tonRefetched",
+					"\t\t\t\tstillCurrent: () => item?.id === targetItem.id,\n\t\t\t\tonRefetched"
+				]
+			]
+		},
+		{
+			"id": "D handleMove announces on a boolean derived after the await from a pre-await fence boolean",
+			"model": "a fence boolean initialised from a lapsed fence boolean is marked live at its declaration",
+			"subs": [
+				[
+					"\t\t\t\tif (!stillOnSource()) return { status: 'cancelled' };\n",
+					"\t\t\t\tconst onSource = stillOnSource();\n\t\t\t\tif (!onSource) return { status: 'cancelled' };\n"
+				],
+				[
+					"\t\t\t\tif (forced) {\n\t\t\t\t\tif (stillOnSource()) toastStore.show(`Moved to ${targetSlug}`, 'success');\n",
+					"\t\t\t\tconst announce = onSource && !!forced;\n\t\t\t\tif (forced) {\n\t\t\t\t\tif (announce) toastStore.show(`Moved to ${targetSlug}`, 'success');\n"
+				]
+			]
+		},
+		{
+			"id": "E identityHeld holds for any caller that captured the cold baseline",
+			"model": "identityHeld, captureIdentity and authStore.identityEpoch are recognised by name; the site pins hold their bodies",
+			"subs": [
+				[
+					"\t\treturn authStore.identityEpoch === captured;\n",
+					"\t\t// Epoch 0 is the cold baseline, captured before any identity was established.\n\t\treturn captured === 0 || authStore.identityEpoch === captured;\n"
+				]
+			]
+		},
+		{
+			"id": "F autoResizeTitle writes el under startEditTitle's may",
+			"model": "a row's may keys also excuse writes inside the helpers the unit inlines",
+			"subs": [
+				[
+					"\tfunction autoResizeTitle(el: HTMLTextAreaElement) {\n\t\tel.style.height = 'auto';\n",
+					"\tfunction autoResizeTitle(el: HTMLTextAreaElement) {\n\t\tel.value = item?.title ?? el.value;\n\t\tel.style.height = 'auto';\n"
+				]
+			]
+		},
+		{
+			"id": "G a function-valued let rebound in an $effect, called above the fence",
+			"model": "a helper is declared once, not bound once: a let rebound outside every unit is inlined with its declared body",
+			"subs": [
+				[
+					"\tfunction showSaved() {\n",
+					"\tlet applyTitle = (next: Item): void => {\n\t\tvoid next;\n\t};\n\t$effect(() => {\n\t\tapplyTitle = (next: Item) => {\n\t\t\titem = withInflightTags(next);\n\t\t};\n\t});\n\n\tfunction showSaved() {\n"
+				],
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n",
+					"{ title: titleDraft.trim() });\n\t\t\tapplyTitle(updated);\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n"
+				]
+			]
+		},
+		{
+			"id": "H flushCollabBeforeRestore fences on a late local alias of activeCollabContext",
+			"model": "a stamp rooted in a local is trusted even when the local was assigned from component state after the await",
+			"subs": [
+				[
+					"\t\tconst identity = captureIdentity();\n\t\t// Flush against the context",
+					"\t\t// Flush against the context"
+				],
+				[
+					"\t\tif (result === 'failed' && identityHeld(identity)) {\n",
+					"\t\tconst liveCtx = activeCollabContext;\n\t\tif (result === 'failed' && liveCtx && identityHeld(liveCtx.identityEpoch)) {\n"
+				]
+			]
+		},
+		{
+			"id": "J updateField send callback retargeted at the live item under the send allowance",
+			"model": "the right-item cannot-do: a callback allowance covers its callee, not which item the call names",
+			"subs": [
+				[
+					"\t\t\t\tsend: (expected) => doUpdate(force, expected),\n",
+					"\t\t\t\tsend: (expected) => api.items.update(wsSlug, item!.id, { fields_patch: patch, ...(expected.kind === 'seq' ? { expected_seq: expected.value } : { expected_updated_at: expected.value }) }),\n"
+				]
+			]
+		}
+	],
+	"gateGaps": [
+		{
+			"id": "I a new callback prop on BacklinksPanel that commits unfenced",
+			"model": "outside the gate: markup handlers and child callback props are not units and are not reached from one; the site pins read only the props they list",
+			"subs": [
+				[
+					"\t\t\t\t\tonCountChange={(n) => { if (keyedSlug !== itemSlug || handedDown !== identityKey) return; backlinksCount = n; }}\n",
+					"\t\t\t\t\tonCountChange={(n) => { if (keyedSlug !== itemSlug || handedDown !== identityKey) return; backlinksCount = n; }}\n\t\t\t\t\tonLoaded={(n) => { backlinksCount = n; }}\n"
+				]
+			]
+		}
+	]
+}

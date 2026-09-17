@@ -496,8 +496,9 @@
 				]
 			],
 			"refuses": [
-				"flushTagSaver() has changed since its allowance was reviewed"
-			]
+				"flushTagSaver() has changed since its row was reviewed"
+			],
+			"gate": true
 		},
 		{
 			"id": "R6 H19 flushTagSaver evicts a newer saver",
@@ -509,8 +510,9 @@
 				]
 			],
 			"refuses": [
-				"flushTagSaver() has changed since its allowance was reviewed"
-			]
+				"flushTagSaver() has changed since its row was reviewed"
+			],
+			"gate": true
 		},
 		{
 			"id": "R6 H21 flushRawIfPending wedges its flag",
@@ -522,8 +524,9 @@
 				]
 			],
 			"refuses": [
-				"flushRawIfPending() has changed since its allowance was reviewed"
-			]
+				"flushRawIfPending() has changed since its row was reviewed"
+			],
+			"gate": true
 		},
 		{
 			"id": "R6 H20 loadData no longer always clears the debounce",
