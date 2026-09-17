@@ -58,15 +58,17 @@ export interface ResolvedSeries {
  * started reading it.
  *
  * Layers reach it as `getLayerCakeContext() as unknown as LayerCakeContext`.
- * The hop through `unknown` is required, not laziness. The package types every
- * scale as the loose `Scale` (`{ (value: any): any, [key: string]: any }`),
- * which DECLARES none of the methods the shapes above require, and an index
- * signature does not satisfy a required named member. So TS refuses the direct
- * cast — verbatim: "Conversion of type 'LayerCakeContext<any, ChartDatum[]>' to
- * type 'LayerCakeContext' may be a mistake because neither type sufficiently
- * overlaps with the other ... Property 'ticks' is missing in type 'Scale' but
- * required in type '{ (value: unknown): number; ticks: ... }'". The package
- * casts its own context through `unknown` for the same reason.
+ * The hop through `unknown` is required, not laziness: the package types every
+ * scale as `{ (value: any): any, [key: string]: any }`, and an index signature
+ * does not satisfy a required named property — so `yScale` below, which
+ * requires `ticks`, is judged non-comparable and TS2352 rejects the direct cast.
+ * `xScale` is NOT what blocks it: `bandwidth` is optional there, so nothing it
+ * requires is missing. Measured while narrowing this interface — when both
+ * scales still required `domain`, the compiler named `xScale` first; dropping it
+ * moved the error to `yScale`. The package also casts its own context through
+ * `unknown`, but for its own reasons (it gives two: conditional `ScaleFor` types
+ * that don't compare across different `S`, and an object that starts empty and
+ * is filled by `defineProperties`) — not this one.
  *
  * What the hop gives up is only that one comparison, against a type that
  * asserts nothing. What this interface exists to check is the layer bodies, and
@@ -83,7 +85,14 @@ export interface LayerCakeContext {
 		(value: unknown): number;
 		bandwidth?: () => number;
 	};
-	/** Linear scale: called for a position, and asked for `ticks()` by AxisY. */
+	/**
+	 * Linear scale: called for a position, and asked for `ticks()` by AxisY.
+	 * `ticks` is REQUIRED, which is only safe because `BarChart` hardcodes
+	 * `scaleLinear()` and never exposes the y scale as a prop — a band scale has
+	 * no `ticks`. If the y scale ever becomes caller-supplied, this narrowing
+	 * turns into a lie the cast would hide, and AxisY needs the same `typeof`
+	 * probe the bandwidth reads use.
+	 */
 	yScale: {
 		(value: unknown): number;
 		ticks: (count?: number) => number[];
