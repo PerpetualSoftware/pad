@@ -316,8 +316,15 @@ func TestVerifiedEmail_InvitationAccept_CarveOut(t *testing.T) {
 	f := newVerifiedEmailFixture(t, true)
 
 	// A second workspace the unverified user is NOT yet a member of,
-	// with an invitation bound to their email.
-	otherWS, err := f.srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Invite Target"})
+	// with an invitation bound to their email. It has an owner for the same
+	// reason the fixture's workspace does: in cloud mode the accept now checks
+	// members_per_workspace (BUG-3098), which reads the owner's plan, and every
+	// live cloud workspace has one.
+	admin, err := f.srv.store.GetUserByEmail("admin@ve.test")
+	if err != nil || admin == nil {
+		t.Fatalf("GetUserByEmail admin: %v", err)
+	}
+	otherWS, err := f.srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Invite Target", OwnerID: admin.ID})
 	if err != nil {
 		t.Fatalf("CreateWorkspace: %v", err)
 	}

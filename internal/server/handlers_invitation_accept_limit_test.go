@@ -1,9 +1,11 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -194,5 +196,124 @@ func TestAcceptLimit_SelfHosted_NotEnforced(t *testing.T) {
 				t.Errorf("members = %d, want %d", got, current+1)
 			}
 		})
+	}
+}
+
+// --- the invitee's refusal: its own code, the owner named, no upgrade link ---
+
+// mustBeMemberLimitRefusal asserts the invitee-facing refusal (BUG-3098
+// ruling 1): 403 workspace_member_limit, a message naming the owner by
+// display name only, and details without upgrade_url.
+func (e *acceptLimitEnv) mustBeMemberLimitRefusal(t *testing.T, rr *httptest.ResponseRecorder, limit int, ownerPhrase string) {
+	t.Helper()
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (body=%s)", rr.Code, rr.Body.String())
+	}
+	var env struct {
+		Error struct {
+			Code    string         `json:"code"`
+			Message string         `json:"message"`
+			Details map[string]any `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &env); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, rr.Body.String())
+	}
+	if env.Error.Code != "workspace_member_limit" {
+		t.Errorf("code = %q, want workspace_member_limit (body=%s)", env.Error.Code, rr.Body.String())
+	}
+	if !strings.Contains(env.Error.Message, ownerPhrase) {
+		t.Errorf("message %q does not contain %q", env.Error.Message, ownerPhrase)
+	}
+	if strings.Contains(env.Error.Message, e.user.Email) {
+		t.Errorf("message %q discloses the owner's email", env.Error.Message)
+	}
+	if strings.Contains(env.Error.Message, "free plan") || strings.Contains(env.Error.Message, "You've reached") {
+		t.Errorf("message %q is the owner-addressed plan-limit text", env.Error.Message)
+	}
+	d := env.Error.Details
+	if d["feature"] != "members_per_workspace" || d["limit"] != float64(limit) || d["current"] != float64(limit) {
+		t.Errorf("details = %v, want members_per_workspace at %d of %d", d, limit, limit)
+	}
+	if _, has := d["upgrade_url"]; has {
+		t.Errorf("details carry upgrade_url, which the invitee cannot use: %v", d)
+	}
+}
+
+func (e *acceptLimitEnv) setOwnerName(t *testing.T, name string) {
+	t.Helper()
+	if _, err := e.srv.store.DB().Exec(e.srv.store.D().Rebind(`UPDATE users SET name = ? WHERE id = ?`), name, e.user.ID); err != nil {
+		t.Fatalf("set owner name: %v", err)
+	}
+}
+
+func TestAcceptLimit_Refusal_NamesOwnerByDisplayName(t *testing.T) {
+	for _, door := range []string{"existing", "register"} {
+		t.Run(door, func(t *testing.T) {
+			e := newAcceptLimitEnv(t)
+			e.setOwnerName(t, "Olive Owner")
+			inv := e.invite(t, door+"@example.com")
+			limit := e.members(t)
+			e.setMemberCap(t, limit)
+
+			var rr *httptest.ResponseRecorder
+			if door == "existing" {
+				rr = e.acceptAs(t, door+"@example.com", inv)
+			} else {
+				rr = e.register(door+"@example.com", inv)
+			}
+			e.mustBeMemberLimitRefusal(t, rr, limit, "the workspace owner, Olive Owner,")
+		})
+	}
+}
+
+func TestAcceptLimit_Refusal_OwnerWithoutName(t *testing.T) {
+	e := newAcceptLimitEnv(t)
+	e.setOwnerName(t, "   ")
+	inv := e.invite(t, "existing@example.com")
+	limit := e.members(t)
+	e.setMemberCap(t, limit)
+
+	rr := e.acceptAs(t, "existing@example.com", inv)
+	e.mustBeMemberLimitRefusal(t, rr, limit, "Ask the workspace owner to make room")
+}
+
+// A2's store refusal on its own: a member lands between the pre-check and the
+// membership write. The account the request created must be rolled back and
+// the invitation left pending, and the answer is the invitee refusal, not 500.
+func TestAcceptLimit_Register_CompetingAddInWindow_RolledBack(t *testing.T) {
+	e := newAcceptLimitEnv(t)
+	inv := e.invite(t, "racer@example.com")
+	limit := e.members(t) + 1
+	e.setMemberCap(t, limit)
+	rival, err := e.srv.store.CreateUser(models.UserCreate{Email: "rival@example.com", Name: "Rival", Password: "pw-rival-12345"})
+	if err != nil {
+		t.Fatalf("CreateUser(rival): %v", err)
+	}
+
+	ran := false
+	e.srv.planLimitAdmittedHook = func(feature, scope string) {
+		if feature != "members_per_workspace" || scope != e.home.ID {
+			return
+		}
+		ran = true
+		if err := e.srv.store.AddWorkspaceMember(e.home.ID, rival.ID, "editor"); err != nil {
+			t.Errorf("competing AddWorkspaceMember: %v", err)
+		}
+	}
+
+	rr := e.register("racer@example.com", inv)
+	if !ran {
+		t.Fatal("planLimitAdmittedHook never ran on the register door; the leg measured nothing")
+	}
+	e.mustBeMemberLimitRefusal(t, rr, limit, "Ask the workspace owner")
+	if got := e.members(t); got != limit {
+		t.Errorf("members = %d under a cap of %d, want the cap", got, limit)
+	}
+	if e.accountExists(t, "racer@example.com") {
+		t.Error("the refused registration's account was not rolled back")
+	}
+	if !e.stillPending(t, inv) {
+		t.Error("the refused invitation was consumed; it must stay pending")
 	}
 }

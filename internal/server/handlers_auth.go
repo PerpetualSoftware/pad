@@ -635,6 +635,17 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		input.Username = unique
 	}
 
+	// BUG-3098: an invitation whose workspace is at its member cap is refused
+	// BEFORE the account exists, after the duplicate-email and username checks
+	// (an existing account should hear "log in", not about the cap). This door keeps an invited account only if its
+	// membership landed (see the reconcile below), so refusing first is what
+	// keeps an over-cap signup from creating anything. Advisory: a member that
+	// lands after this check is refused by AddWorkspaceMember below, whose
+	// "absent" branch rolls the account back.
+	if invitation != nil && !s.checkMemberLimitForAccept(w, invitation.WorkspaceID) {
+		return
+	}
+
 	// Create user. Only the cloud self-serve branch starts UNVERIFIED (DR-3);
 	// admin-created and invited signups inherit the verified default.
 	user, err := s.store.CreateUser(models.UserCreate{
@@ -672,7 +683,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		// handleAcceptInvitation (handlers_members.go) is the authenticated
 		// counterpart and has always done exactly this: membership fatal, then
 		// accept fatal, in this order. This door was the one that diverged.
-		if addErr := s.store.AddWorkspaceMember(invitation.WorkspaceID, user.ID, invitation.Role); addErr != nil {
+		if addErr := s.store.AddWorkspaceMember(invitation.WorkspaceID, user.ID, invitation.Role, s.workspaceLimitMintOpts()...); addErr != nil {
 			// RECONCILE BEFORE DESTROYING — here too (codex round 2).
 			//
 			// Round 1 added a DeleteUser rollback here and got the ORDER of
@@ -728,6 +739,11 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 					slog.Error("invitation signup: failed to roll back the account; the email is held by an "+
 						"account with no workspace access",
 						"user_id", user.ID, "error", derr)
+				}
+				// BUG-3098: a member cap reached after the pre-check is a
+				// refusal the invitee can act on, not a server fault.
+				if s.writeStoreMemberLimitError(w, invitation.WorkspaceID, addErr) {
+					return
 				}
 				writeInternalError(w, addErr)
 				return

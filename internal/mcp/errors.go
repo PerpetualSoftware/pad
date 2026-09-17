@@ -153,6 +153,14 @@ const (
 	// current/plan/upgrade_url from the server (TASK-788).
 	ErrPlanLimitExceeded ErrorCode = "plan_limit_exceeded"
 
+	// ErrWorkspaceMemberLimit fires on HTTP 403 responses that carry
+	// error.code="workspace_member_limit": an invitation accept refused
+	// because the workspace is at members_per_workspace (BUG-3098). It is
+	// addressed to the INVITEE, who cannot change the owner's plan, so it is
+	// deliberately not ErrPlanLimitExceeded and its hint does not say
+	// "upgrade". Details carries feature/limit/current, without upgrade_url.
+	ErrWorkspaceMemberLimit ErrorCode = "workspace_member_limit"
+
 	// ErrUpdateConflict fires on HTTP 409 responses that carry
 	// error.code="update_conflict" — an optimistic-concurrency guard
 	// rejecting an item update because its `expected_updated_at` no longer
@@ -408,7 +416,10 @@ const storedStateUnreadableHint = "Retrying will not help — the item's stored 
 var allowedStructuredErrorCodes = map[string]struct{}{
 	"open_children":       {}, // IDEA-1494
 	"plan_limit_exceeded": {}, // TASK-788
-	"update_conflict":     {}, // TASK-2022 (optimistic concurrency)
+	// BUG-3098. No catalog action reaches an invitation accept today; the
+	// entry keeps a future one from collapsing it to permission_denied.
+	"workspace_member_limit": {},
+	"update_conflict":        {}, // TASK-2022 (optimistic concurrency)
 	// BUG-2675. The only entry whose marker is written for a LOCALLY
 	// generated refusal rather than an upstream APIError — the CLI's
 	// append helpers refuse before any request is made (see
@@ -860,7 +871,7 @@ func classifyHTTPStatusKind(
 			return NewErrorResult(ErrorPayload{
 				Code:    ErrorCode(upstream403.Code),
 				Message: upstream403.Message,
-				Hint:    planLimitHintFor(upstream403.Message, route),
+				Hint:    hint403For(upstream403.Code, upstream403.Message, route),
 				Details: upstream403.Details,
 			})
 		}
@@ -1252,6 +1263,23 @@ func serverHintFor(bodyMsg, route string, status int) string {
 // planLimitHintFor generates the actionable hint for ErrPlanLimitExceeded.
 // The upgrade_url is already in the Details blob; the hint surfaces it in
 // prose so agents that only read Hint (not Details) still get the destination.
+// hint403For picks the hint for an allow-listed structured 403. The
+// plan-limit hint tells the caller to upgrade, which is wrong for an invitee
+// refused by someone else's member cap (BUG-3098).
+func hint403For(code, bodyMsg, route string) string {
+	if code == string(ErrWorkspaceMemberLimit) {
+		parts := []string{"The workspace is at its member limit; only its owner can make room. Retry the accept after they do."}
+		if route != "" {
+			parts = append(parts, fmt.Sprintf("Route: %s.", route))
+		}
+		if bodyMsg != "" {
+			parts = append(parts, fmt.Sprintf("Backend: %s", bodyMsg))
+		}
+		return strings.Join(parts, " ")
+	}
+	return planLimitHintFor(bodyMsg, route)
+}
+
 func planLimitHintFor(bodyMsg, route string) string {
 	parts := []string{"Upgrade to Pro at /console/billing to remove this limit."}
 	if route != "" {
