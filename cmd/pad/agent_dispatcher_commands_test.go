@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -33,8 +34,11 @@ import (
 //
 // Plan:
 //   - Extract ```bash fences from the formatted dispatcher, one command per
-//     line, strip trailing `#` comments, shell-split quotes.
-//   - Skip placeholder tokens: <...>, [...], TASK-N (positional examples).
+//     line, strip trailing `#` comments, shell-split quotes (strict: a line
+//     with an unterminated quote or trailing backslash fails).
+//   - Resolve the command path with placeholder tokens intact; strip
+//     placeholders (<...>, [...], TASK-N) only from the trailing arguments
+//     left after resolution, so a placeholder inside the command path fails.
 //   - root.Find(tokens) must resolve past the bare root to a real subcommand;
 //     every --flag (stripped of =value) must be declared on the target or an
 //     ancestor (covers persistent --format/--workspace/--url).
@@ -93,7 +97,9 @@ func stripShellComment(s string) string {
 
 // dispatcherSplit tokenizes one command line POSIX-ish: whitespace separates,
 // single/double quotes group, backslash escapes outside single quotes.
-func dispatcherSplit(s string) []string {
+// It is strict: an unterminated quote or a trailing backslash is a malformed
+// dispatcher line, so it returns an error instead of silently tokenizing.
+func dispatcherSplit(s string) ([]string, error) {
 	var tokens []string
 	var cur strings.Builder
 	var inS, inD, esc bool
@@ -120,8 +126,14 @@ func dispatcherSplit(s string) []string {
 			cur.WriteRune(r)
 		}
 	}
+	if esc {
+		return nil, fmt.Errorf("trailing backslash")
+	}
+	if inS || inD {
+		return nil, fmt.Errorf("unterminated quote")
+	}
 	flush()
-	return tokens
+	return tokens, nil
 }
 
 func dispatcherFlagExists(cmd *cobra.Command, name string) bool {
@@ -143,7 +155,11 @@ func TestAgentDispatcherCommandsResolve(t *testing.T) {
 		t.Fatal("dispatcher bash blocks contain no command lines")
 	}
 	for _, line := range lines {
-		tokens := dispatcherSplit(line)
+		tokens, err := dispatcherSplit(line)
+		if err != nil {
+			t.Errorf("dispatcher line %q: malformed (%v)", line, err)
+			continue
+		}
 		if len(tokens) == 0 {
 			continue
 		}
@@ -151,21 +167,46 @@ func TestAgentDispatcherCommandsResolve(t *testing.T) {
 			t.Errorf("dispatcher line %q does not start with pad", line)
 			continue
 		}
-		// Drop placeholder positionals before resolving; they are usage
-		// examples, not command names.
-		var args []string
-		for _, tok := range tokens[1:] {
-			if dispatcherPlaceholder.MatchString(tok) {
-				continue
-			}
-			args = append(args, tok)
-		}
-		target, _, err := root.Find(args)
+		// Resolve with placeholder tokens intact, so a placeholder inside
+		// the command path cannot silently vanish before Find. Only strip
+		// placeholders from the trailing arguments left after resolution.
+		args := tokens[1:]
+		target, trailing, err := root.Find(args)
 		if err != nil || target == nil || target == root {
 			t.Errorf("dispatcher line %q: command path does not resolve (%v)", line, err)
 			continue
 		}
+		consumed := len(args) - len(trailing)
+		for _, tok := range args[:consumed] {
+			if dispatcherPlaceholder.MatchString(tok) {
+				t.Errorf("dispatcher line %q: placeholder %q inside command path", line, tok)
+			}
+		}
+		// Re-resolve with placeholders removed: if stripping lets Find
+		// reach a different command, a placeholder was interleaved inside
+		// the command path (e.g. `pad item <id> show` must not pass as
+		// `pad item`).
+		var stripped []string
 		for _, tok := range args {
+			if dispatcherPlaceholder.MatchString(tok) {
+				continue
+			}
+			stripped = append(stripped, tok)
+		}
+		if deeper, _, stripErr := root.Find(stripped); stripErr != nil {
+			t.Errorf("dispatcher line %q: placeholder-stripped path does not resolve (%v)", line, stripErr)
+		} else if deeper != target {
+			t.Errorf("dispatcher line %q: placeholder inside command path (resolves to %q with placeholders, %q without)",
+				line, target.CommandPath(), deeper.CommandPath())
+		}
+		var rest []string
+		for _, tok := range trailing {
+			if dispatcherPlaceholder.MatchString(tok) {
+				continue
+			}
+			rest = append(rest, tok)
+		}
+		for _, tok := range rest {
 			if !strings.HasPrefix(tok, "-") || tok == "--" {
 				continue
 			}
