@@ -27,6 +27,7 @@ import {
 	analyseUnit,
 	walk,
 	refusedConstructs,
+	asyncUnitStartsSafe,
 	type AstSource,
 	type Node,
 	type Unit,
@@ -386,7 +387,7 @@ export function refusals(code: string, extraNested: SignedRow[] = []): string[] 
 		}
 		try {
 			const v = analyseUnit(src, decls, u, {
-				startSafe: u.kind === 'async-function' || !!row.startSafe,
+				startSafe: asyncUnitStartsSafe(decls, u, units) || !!row.startSafe,
 				may: new Set(row.may ?? []),
 				callbacks: new Map(Object.entries(row.callbacks ?? {}).map(([k, v]) => [k, new Set(v.may)])),
 				bareAwaits: new Set(row.bareAwaits ?? []),
