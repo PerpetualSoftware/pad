@@ -310,8 +310,12 @@ func (s *Store) enforceWorkspaceLimitTx(tx *sql.Tx, workspaceID, feature string)
 // item mutation in the workspace.
 //
 // LOCK ORDERING: callers take it before any other lock in the transaction, and
-// nothing else takes this key. So a transaction waiting on it holds nothing,
-// and no cycle can pass through it. The full reasoning is on BUG-2808's trail
+// no other code takes this key. So a transaction waiting on it holds nothing,
+// and no cycle can pass through it. hashtext is 32-bit, so the key can collide
+// with another workspace's seq key. The worst case is then a spurious wait: a
+// cycle would also need that seq-lock holder to wait on a row lock this
+// insert holds, and the insert holds only FK key-share locks, which the
+// seq-lock holders' row locks do not conflict with (checkpoint 7). The full reasoning is on BUG-2808's trail
 // (checkpoint 7).
 //
 // On SQLite, BEGIN IMMEDIATE already serialises every writer, and this is a
