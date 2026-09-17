@@ -523,7 +523,7 @@ export function refusals(code: string, opts: GateOptions = {}): string[] {
 		const now = sha(cov.text);
 		if (row.reviewed === undefined) out.push(`${unitLabel(src, u)}: its row (${row.why}) has no reviewed hash (code ${now})`);
 		else if (!reviewed(row.reviewed, now)) {
-			out.push(`${unitLabel(src, u)} has changed since its row was reviewed (code ${now}; covers ${roots.map((f) => fnName(src, f)).join(', ')}) — re-read the row, then update reviewed`);
+			out.push(`${unitLabel(src, u)} has changed since its row was reviewed (row: ${row.why}; code ${now}; covers ${roots.map((f) => fnName(src, f)).join(', ')}) — re-read the row, then update reviewed`);
 		}
 	}
 	// Transitive: a helper that names another component-level function pulls
@@ -1198,10 +1198,10 @@ describe('ItemDetail identity gate: a fenced unit cannot change without a re-rea
 	});
 
 	it('a helper reached only through another helper is hashed too (refinement 1)', () => {
-		const base = SOURCE.replace(
-			"\tfunction showSaved() {\n\t\tsaveStatus = 'saved';\n",
-			"\tfunction noteSaved() {\n\t\tvoid 0;\n\t}\n\n\tfunction showSaved() {\n\t\tnoteSaved();\n\t\tsaveStatus = 'saved';\n"
-		);
+		// switchedAway encloses no unit, so only a second hop reaches noteSaved.
+		const anchor = '\tfunction switchedAway(targetItem: Item, gen: number): boolean {\n';
+		expect(SOURCE.split(anchor).length - 1).toBe(1);
+		const base = SOURCE.replace(anchor, '\tfunction noteSaved() {\n\t\tvoid 0;\n\t}\n\n' + anchor + '\t\tnoteSaved();\n');
 		const opts = reviewAs(base);
 		expect(opts.extraHelpers).toHaveProperty('noteSaved');
 		const edited = base.replace('\tfunction noteSaved() {\n\t\tvoid 0;\n', "\tfunction noteSaved() {\n\t\titem = null;\n");
