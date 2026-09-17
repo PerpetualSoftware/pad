@@ -509,7 +509,7 @@ export function polarity(src: AstSource, n: Node, decls: Declarations, scope: Po
 				const ok = a && (isCaptureRef(a, decls, params, 'identity') || isStamp(src, a, locals));
 				return ok ? { t: true, f: false } : NONE;
 			}
-			const helper = n.callee.type === 'Identifier' && !decls.fenceBooleans.has(n.callee.name) ? decls.fences.get(n.callee.name) : undefined;
+			const helper = n.callee.type === 'Identifier' ? decls.fences.get(n.callee.name) : undefined;
 			if (!helper) return NONE;
 			// Every param the helper's polarity rests on must receive a capture of
 			// the kind it compares: `switchedAway(item, gen)` with a fresh `gen`,

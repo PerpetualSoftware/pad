@@ -449,6 +449,12 @@ const TITLE_GEN_LET: [string, string] = [
 	"\t\tlet gen = loadGeneration;\n\t\tsaveStatus = 'saving';\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title",
 ];
 
+/** saveTitle records an identity stamp at entry, before its await. */
+const TITLE_STAMP_AT_ENTRY: [string, string] = [
+	"\t\tconst gen = loadGeneration;\n\t\tsaveStatus = 'saving';\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title",
+	"\t\tconst gen = loadGeneration;\n\t\tconst snap = { epoch: captureIdentity() };\n\t\tsaveStatus = 'saving';\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title",
+];
+
 /** saveTitle's fence and the two commits under it: the anchor most round-5 edits rewrite. */
 const TITLE_FENCE_AND_COMMITS =
 	"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n";
@@ -848,7 +854,7 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 	 * Controls: a guard that refuses everything also refuses every mutant. These
 	 * edits commit nothing and must stay accepted.
 	 */
-	const ACCEPTED: Array<{ id: string; old: string; new: string }> = [
+	const ACCEPTED: Array<{ id: string; old: string; new: string; also?: Array<[string, string]> }> = [
 		{
 			id: 'a comment after an await, before the fence',
 			old: "\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title: titleDraft.trim() });\n",
@@ -890,10 +896,25 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 			old: "{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
 			new: "{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tshowSaved();\n\t\t\titem = withInflightTags(updated);\n",
 		},
+		{
+			// A stamp rooted in a local of the unit is a stamp inside a fence
+			// boolean's initialiser too (round 7 F4: the initialiser is read in its
+			// own scope).
+			id: 'a fence boolean over a stamp the unit recorded before its await',
+			old: TITLE_STAMP_AT_ENTRY[0],
+			new: TITLE_STAMP_AT_ENTRY[1],
+			also: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tconst held = authStore.identityEpoch === snap.epoch;\n\t\t\tif (!held || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"]],
+		},
+		{
+			// ...and inside a helper's body, read in the helper's scope.
+			id: 'a fence helper over a stamp the unit recorded before its await',
+			old: TITLE_STAMP_AT_ENTRY[0],
+			new: TITLE_STAMP_AT_ENTRY[1].replace('\t\tsaveStatus', '\t\tconst snapHeld = () => authStore.identityEpoch === snap.epoch;\n\t\tsaveStatus'),
+			also: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (!snapHeld() || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"]],
+		},
 	];
 	it.each(ACCEPTED.map((c) => [c.id, c] as const))('control accepted: %s', (_id, c) => {
 		expect(BASELINE).toEqual([]);
-		expect(SOURCE.split(c.old).length - 1).toBe(1);
-		expect(refusals(SOURCE.replace(c.old, c.new))).toEqual([]);
+		expect(refusals(applySubs([[c.old, c.new], ...(c.also ?? [])]))).toEqual([]);
 	});
 });

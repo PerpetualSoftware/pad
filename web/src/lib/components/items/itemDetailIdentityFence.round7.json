@@ -140,6 +140,20 @@
 			]
 		},
 		{
+			"id": "F2d updateField: a fence boolean initialised from a helper named without a call (sweep, checkpoint 68)",
+			"class": "F2",
+			"subs": [
+				[
+					"\t\t\tconst fresh = await submitWithOCC(false);\n\t\t\tif (!stillCurrent()) return;\n",
+					"\t\t\tconst fresh = await submitWithOCC(false);\n\t\t\tconst stale = !stillCurrent;\n\t\t\tif (stale) return;\n"
+				]
+			],
+			"refuses": [
+				"updateField()",
+				"after an unfenced await"
+			]
+		},
+		{
 			"id": "F3a saveTitle: fence boolean hoisted above a for-await, checked in the body",
 			"class": "F3",
 			"subs": [
