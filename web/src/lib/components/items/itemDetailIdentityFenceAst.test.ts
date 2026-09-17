@@ -1176,6 +1176,38 @@ describe('ItemDetail identity gate: a fenced unit cannot change without a re-rea
 		expect(refusals(code, { alsoReviewed: changedHashes(first) })).toEqual([]);
 	});
 
+	/** Reviews `base` as a fixture: its changed hashes and new helpers become accepted. */
+	const reviewAs = (base: string): GateOptions => {
+		const lines = refusals(base);
+		const extraHelpers = Object.fromEntries(
+			lines.flatMap((l) => {
+				const m = l.match(/^helper (\w+)\(\) is reachable .*\(code ([0-9a-f]{12})\)$/);
+				return m ? [[m[1]!, m[2]!]] : [];
+			})
+		);
+		const opts = { alsoReviewed: changedHashes(lines), extraHelpers };
+		expect(refusals(base, opts), 'the base does not pass once reviewed').toEqual([]);
+		return opts;
+	};
+
+	it('a component-level declaration a unit reads is part of that unit\'s hash (refinement 2)', () => {
+		const decl = '\tlet loadGeneration = 0;\n';
+		expect(SOURCE.split(decl).length - 1).toBe(1);
+		const got = refusals(SOURCE.replace(decl, '\tlet loadGeneration = $state(0);\n'));
+		expect(got.some((l) => l.includes('saveTitle() has changed since its row was reviewed'))).toBe(true);
+	});
+
+	it('a helper reached only through another helper is hashed too (refinement 1)', () => {
+		const base = SOURCE.replace(
+			"\tfunction showSaved() {\n\t\tsaveStatus = 'saved';\n",
+			"\tfunction noteSaved() {\n\t\tvoid 0;\n\t}\n\n\tfunction showSaved() {\n\t\tnoteSaved();\n\t\tsaveStatus = 'saved';\n"
+		);
+		const opts = reviewAs(base);
+		expect(opts.extraHelpers).toHaveProperty('noteSaved');
+		const edited = base.replace('\tfunction noteSaved() {\n\t\tvoid 0;\n', "\tfunction noteSaved() {\n\t\titem = null;\n");
+		expect(refusals(edited, opts).some((l) => l.includes('helper noteSaved() has changed since it was reviewed'))).toBe(true);
+	});
+
 	it('a function value rebound outside every unit changes the hash of the unit that calls it (refinement 2)', () => {
 		// Step 1: a reviewed base where saveTitle calls a no-op `let` helper.
 		const noop = '\tlet applyTitle = (next: Item): void => {\n\t\tvoid next;\n\t};\n\t$effect(() => {\n\t\tapplyTitle = (next: Item) => {\n\t\t\tvoid next;\n\t\t};\n\t});\n\n\tfunction showSaved() {\n';
@@ -1183,15 +1215,7 @@ describe('ItemDetail identity gate: a fenced unit cannot change without a re-rea
 			TITLE_FENCE_AND_COMMITS,
 			"{ title: titleDraft.trim() });\n\t\t\tapplyTitle(updated);\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"
 		);
-		const baseLines = refusals(base);
-		const extraHelpers = Object.fromEntries(
-			baseLines.flatMap((l) => {
-				const m = l.match(/^helper (\w+)\(\) is reachable .*\(code ([0-9a-f]{12})\)$/);
-				return m ? [[m[1]!, m[2]!]] : [];
-			})
-		);
-		const opts = { alsoReviewed: changedHashes(baseLines), extraHelpers };
-		expect(refusals(base, opts), 'the base does not pass once reviewed').toEqual([]);
+		const opts = reviewAs(base);
 		// Step 2: only the rebinding inside the $effect changes.
 		const rebind = '\t$effect(() => {\n\t\tapplyTitle = (next: Item) => {\n\t\t\tvoid next;\n';
 		expect(base.split(rebind).length - 1).toBe(1);
