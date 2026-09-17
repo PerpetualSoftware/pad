@@ -1437,6 +1437,22 @@ describe('ItemDetail identity gate: a fenced unit cannot change without a re-rea
 		expect(refusals(SOURCE), 'the vocabulary was not restored').toEqual([]);
 	});
 
+	it('a component-level binding form the gate does not model is REFUSED, not skipped (round 10 finding 3)', () => {
+		// `import x = require('y')` binds a runtime name through a form
+		// `topLevelOf` models neither as a declaration nor as a type. It refuses
+		// rather than letting the name fall silently outside every hash. A
+		// type-only form binds no value, so it stays accepted — the second leg.
+		expect(GATE_BASELINE).toEqual([]);
+		const anchor = '\tlet loadGeneration = 0;\n';
+		expect(SOURCE.split(anchor).length - 1).toBe(1);
+		const unmodelled = SOURCE.replace(anchor, "\timport legacyTags = require('$lib/items/openChildrenError');\n" + anchor);
+		expect(
+			refusals(unmodelled).some((l) => l.includes('TSImportEqualsDeclaration declaring legacyTags') && l.includes('is a binding form the gate does not model'))
+		).toBe(true);
+		const typeOnly = SOURCE.replace(anchor, '\tinterface LegacyTags {\n\t\tid: string;\n\t}\n' + anchor);
+		expect(refusals(typeOnly), 'a type-only declaration binds no value and is not a gate concern').toEqual([]);
+	});
+
 	it('a component-level write target no binding pattern models is REFUSED, not skipped (round 9 F3)', () => {
 		// `({ x: someMember.prop } = …)` binds through a MemberExpression inside a
 		// pattern: the gate cannot say which names it rebinds, so it refuses
