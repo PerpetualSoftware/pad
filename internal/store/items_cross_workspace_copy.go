@@ -797,7 +797,7 @@ func (s *Store) copyItemAcrossWorkspacesTx(req CrossWorkspaceCopyRequest, source
 		AgentRoleID:    nil,
 		CreatedBy:      req.CreatedBy,
 		Source:         req.Source,
-	})
+	}, mintOptions{}) // the copy checks its own limit with CheckLimitTx
 	if err != nil {
 		return nil, err
 	}

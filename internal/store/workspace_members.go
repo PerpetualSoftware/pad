@@ -27,7 +27,13 @@ const InvitationTTL = 14 * 24 * time.Hour
 // exact shape that loses events on a crash and leaks them on a later failure.
 // The transaction wraps a single INSERT, so it costs nothing beyond the
 // BEGIN/COMMIT pair.
-func (s *Store) AddWorkspaceMember(workspaceID, userID, role string) error {
+//
+// With WithPlanLimit() the workspace's members_per_workspace cap is counted
+// first, under acquirePlanLimitLock, and a reached cap refuses with
+// *PlanLimitError (BUG-2808). The owner auto-adds and invitation accepts pass
+// nothing.
+func (s *Store) AddWorkspaceMember(workspaceID, userID, role string, opts ...MintOption) error {
+	mint := resolveMintOptions(opts)
 	ts := now()
 
 	tx, err := s.db.Begin()
@@ -35,6 +41,15 @@ func (s *Store) AddWorkspaceMember(workspaceID, userID, role string) error {
 		return fmt.Errorf("add workspace member: %w", err)
 	}
 	defer tx.Rollback()
+
+	if mint.planLimit {
+		if err := s.acquirePlanLimitLock(tx, workspaceID, "members_per_workspace"); err != nil {
+			return err
+		}
+		if err := s.enforceWorkspaceLimitTx(tx, workspaceID, "members_per_workspace"); err != nil {
+			return err
+		}
+	}
 
 	if _, err := tx.Exec(s.q(`
 		INSERT INTO workspace_members (workspace_id, user_id, role, created_at)

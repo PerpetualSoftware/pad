@@ -201,8 +201,9 @@ func (e *PlanLimitError) Error() string {
 	return fmt.Sprintf("plan limit reached for %s: %d of %d", e.Result.Feature, e.Result.Current, e.Result.Limit)
 }
 
-// MintOption configures a limited insert (CreateWorkspace, ImportWorkspace,
-// CreateAPIToken).
+// MintOption configures a limited insert: CreateWorkspace, ImportWorkspace and
+// CreateAPIToken (user-scoped), and CreateItem, AddWorkspaceMember and
+// CreateWebhook (workspace-scoped).
 type MintOption func(*mintOptions)
 
 type mintOptions struct {
@@ -273,6 +274,50 @@ func (s *Store) enforceUserLimitTx(tx *sql.Tx, userID, feature string, pendingOw
 	}
 	if !res.Allowed {
 		return &PlanLimitError{Result: *res}
+	}
+	return nil
+}
+
+// enforceWorkspaceLimitTx is the authoritative workspace-scoped check. The
+// caller must already hold a lock that every limited insert of this feature
+// takes, and must not have inserted its own row yet: the count is taken as it
+// stands, so a reached cap refuses.
+//
+// Which lock that is depends on the feature. Items count under the workspace
+// seq lock (acquireWorkspaceSeqLock), which every item insert already takes.
+// Members and webhooks take acquirePlanLimitLock, a key used by nothing else.
+// The reads run on the transaction, never the pool (BUG-2409).
+func (s *Store) enforceWorkspaceLimitTx(tx *sql.Tx, workspaceID, feature string) error {
+	res, err := s.checkLimitOn(tx, workspaceID, feature)
+	if err != nil {
+		return err
+	}
+	if !res.Allowed {
+		return &PlanLimitError{Result: *res}
+	}
+	return nil
+}
+
+// acquirePlanLimitLock takes the Postgres advisory transaction lock that
+// serialises the limited inserts of one workspace-scoped feature (BUG-2808).
+// It is used for members and webhooks, whose inserts take no other workspace
+// lock. It is deliberately NOT the workspace seq lock: these inserts do not
+// touch item_number or seq, and sharing that key would queue them behind every
+// item mutation in the workspace.
+//
+// LOCK ORDERING: callers take it before any other lock in the transaction, and
+// nothing else takes this key. So a transaction waiting on it holds nothing,
+// and no cycle can pass through it. The full reasoning is on BUG-2808's trail
+// (checkpoint 7).
+//
+// On SQLite, BEGIN IMMEDIATE already serialises every writer, and this is a
+// no-op.
+func (s *Store) acquirePlanLimitLock(tx *sql.Tx, workspaceID, feature string) error {
+	if s.dialect.Driver() != DriverPostgres {
+		return nil
+	}
+	if _, err := tx.Exec("SELECT pg_advisory_xact_lock(hashtext('pad:plan-limit:' || $1 || ':' || $2))", feature, workspaceID); err != nil {
+		return fmt.Errorf("acquire plan limit lock: %w", err)
 	}
 	return nil
 }

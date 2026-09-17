@@ -207,7 +207,7 @@ func (s *Server) handleImportArtifact(w http.ResponseWriter, r *http.Request) {
 	// the artifacts most likely to hold pre-validation junk.
 	item, cerr := s.createItemChecked(r, workspaceID, coll, schema, input, normalizedFields, "", relationsCarry)
 	if cerr != nil {
-		writeError(w, cerr.status, cerr.code, cerr.message)
+		cerr.write(w)
 		return
 	}
 
