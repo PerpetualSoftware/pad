@@ -636,9 +636,10 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// BUG-3098: an invitation whose workspace is at its member cap is refused
-	// BEFORE the account exists, after the duplicate-email and username checks
-	// (an existing account should hear "log in", not about the cap). This door keeps an invited account only if its
-	// membership landed (see the reconcile below), so refusing first is what
+	// BEFORE the account exists. It runs after the duplicate-email and username
+	// checks, so an existing account still gets the duplicate-email 409 rather
+	// than a message about the cap. The reconcile below rolls back an invited
+	// account whose membership is known to be absent, so refusing first is what
 	// keeps an over-cap signup from creating anything. Advisory: a member that
 	// lands after this check is refused by AddWorkspaceMember below, whose
 	// "absent" branch rolls the account back.
