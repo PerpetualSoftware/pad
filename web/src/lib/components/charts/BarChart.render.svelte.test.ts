@@ -1,11 +1,15 @@
 // TASK-3093 — the control the layercake 11 bump (dependabot #1368) passed for
 // want of.
 //
-// Nothing in the suite rendered `BarChart`. Its only consumers are the insights
-// page and its print route, neither of which is exercised by vitest or
-// Playwright, so `Web` went green on a major bump that rewrote the library's
-// context API out from under the three chart layers. The green was the
-// enumeration (no test), not the property (the charts work).
+// Nothing in the suite asserted anything about `BarChart`'s output. Its only
+// consumers are the insights page and its print route; no vitest suite rendered
+// either, and the one e2e spec that visits `/insights`
+// (page-title-survives-pane-and-nav.spec.ts:88) SPA-navigates there and checks
+// `document.title` alone — on a fresh fixture workspace the chart's `hasData`
+// is false, so the layers never even mount. So `Web` went green on a major bump
+// that rewrote the library's context API out from under the three chart layers.
+// The green was the enumeration (nothing looked), not the property (the charts
+// work).
 //
 // This test renders the chart end-to-end through the real `<LayerCake>` — no
 // stubbed context — and asserts that the three layers each drew: bars for both
@@ -13,9 +17,10 @@
 // leg that fails if a future major moves the context shape again.
 //
 // jsdom has no layout engine, so a chart bound to `clientWidth` measures 0 and
-// every scale collapses. The two shims below give the chart a box to draw in;
-// they are layout, not behaviour, and neither one touches the code under test.
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+// every scale collapses into a negative range. The shim below gives the chart a
+// box to draw in; it is layout, not behaviour, and it does not touch the code
+// under test.
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
 
 import BarChart from './BarChart.svelte';
@@ -24,29 +29,15 @@ const BOX_WIDTH = 600;
 const BOX_HEIGHT = 240;
 
 beforeAll(() => {
-	// `bind:clientWidth` compiles to a ResizeObserver in Svelte 5, which jsdom
-	// does not implement. This one reports the fixed box once, synchronously, on
-	// observe — enough for LayerCake to compute non-degenerate ranges.
-	class StubResizeObserver implements ResizeObserver {
-		constructor(private readonly callback: ResizeObserverCallback) {}
-		observe(target: Element): void {
-			const entry = {
-				target,
-				contentRect: { width: BOX_WIDTH, height: BOX_HEIGHT } as DOMRectReadOnly,
-				borderBoxSize: [{ inlineSize: BOX_WIDTH, blockSize: BOX_HEIGHT }],
-				contentBoxSize: [{ inlineSize: BOX_WIDTH, blockSize: BOX_HEIGHT }],
-				devicePixelContentBoxSize: [{ inlineSize: BOX_WIDTH, blockSize: BOX_HEIGHT }],
-			} as unknown as ResizeObserverEntry;
-			this.callback([entry], this);
-		}
-		unobserve(): void {}
-		disconnect(): void {}
-	}
-	vi.stubGlobal('ResizeObserver', StubResizeObserver);
-
-	// jsdom returns 0 for every layout read. LayerCake falls back to
-	// `getBoundingClientRect()` and `clientWidth`/`clientHeight` for its
-	// container measurement, so both have to report the same box.
+	// LayerCake measures its container through `bind:clientWidth` /
+	// `bind:clientHeight` alone (LayerCake.svelte:375-376), and Svelte's size
+	// binding reads `element[type]` directly rather than a rect. jsdom returns 0
+	// for both, so these two getters are the whole shim — measured: with them
+	// removed the bar-geometry assertion fails, and with the other candidate
+	// shims removed (a ResizeObserver stub, a getBoundingClientRect override)
+	// nothing changes, because neither is on the measurement path. `setup-jsdom.ts`
+	// already installs a global inert ResizeObserver, which is enough for the
+	// binding not to throw.
 	Object.defineProperty(HTMLElement.prototype, 'clientWidth', {
 		configurable: true,
 		get() {
@@ -59,19 +50,6 @@ beforeAll(() => {
 			return BOX_HEIGHT;
 		},
 	});
-	HTMLElement.prototype.getBoundingClientRect = function getBoundingClientRect() {
-		return {
-			x: 0,
-			y: 0,
-			top: 0,
-			left: 0,
-			right: BOX_WIDTH,
-			bottom: BOX_HEIGHT,
-			width: BOX_WIDTH,
-			height: BOX_HEIGHT,
-			toJSON: () => ({}),
-		} as DOMRect;
-	};
 });
 
 afterEach(() => cleanup());
@@ -149,5 +127,51 @@ describe('BarChart renders through LayerCake', () => {
 			expect(Number.isFinite(Number(line.getAttribute('y1')))).toBe(true);
 			expect(Number(line.getAttribute('x2'))).toBeGreaterThan(0);
 		}
+	});
+
+	it('repaints all three layers when the data changes after mount', async () => {
+		// The three legs above assert first paint. This one asserts the property
+		// the migration actually turns on: under layercake 11 the context's keys
+		// are GETTERS, so a binding destructured at setup is a snapshot that never
+		// updates again — and a chart that draws correctly once looks identical
+		// either way. Only a post-mount change tells them apart.
+		const { container, rerender } = render(BarChart, {
+			props: { data: DATA, x: 'day', series: SERIES, ariaLabel: 'Items per day' },
+		});
+
+		const titlesOf = () =>
+			Array.from(
+				container.querySelectorAll('g.bars rect:not(.hit) title'),
+				(t) => t.textContent
+			);
+		expect(titlesOf()).toContain('Created: 5');
+
+		const NEXT = [
+			{ day: 'Thu', created: 11, completed: 1 },
+			{ day: 'Fri', created: 12, completed: 6 },
+		];
+		await rerender({ data: NEXT, x: 'day', series: SERIES, ariaLabel: 'Items per day' });
+
+		// Bars followed `k.data` and `k.yScale`...
+		expect(titlesOf()).toContain('Created: 11');
+		expect(titlesOf()).not.toContain('Created: 5');
+		expect(container.querySelectorAll('g.bars rect:not(.hit)').length).toBe(
+			NEXT.length * SERIES.length
+		);
+
+		// ...the x axis followed `k.data` and `k.x`...
+		const labels = Array.from(
+			container.querySelectorAll('g.axis-x text'),
+			(t) => t.textContent?.trim()
+		);
+		expect(labels).toEqual(['Thu', 'Fri']);
+
+		// ...and the y axis followed `k.yScale`, whose domain has to have grown
+		// past the previous maximum of 8 to cover the new one.
+		const ticks = Array.from(
+			container.querySelectorAll('g.axis-y text'),
+			(t) => Number(t.textContent?.trim())
+		);
+		expect(Math.max(...ticks)).toBeGreaterThanOrEqual(12);
 	});
 });
