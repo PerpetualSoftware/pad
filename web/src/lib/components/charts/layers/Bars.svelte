@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { getContext } from 'svelte';
+	import { getLayerCakeContext } from 'layercake';
 	import { scaleBand } from 'd3-scale';
 	import type { LayerCakeContext, ChartDatum, ResolvedSeries } from '../theme';
 
@@ -10,11 +10,11 @@
 
 	let { series, onHover }: Props = $props();
 
-	const { data, x, xGet, xScale, yScale, height, padding } =
-		getContext<LayerCakeContext>('LayerCake');
+	// Held whole, read at each use site — see the note in AxisY.svelte (TASK-3093).
+	const k = getLayerCakeContext() as unknown as LayerCakeContext;
 
 	const bandwidth = $derived(
-		typeof $xScale.bandwidth === 'function' ? $xScale.bandwidth() : 0
+		typeof k.xScale.bandwidth === 'function' ? k.xScale.bandwidth() : 0
 	);
 
 	// Inner scale positioning each series side-by-side within a band.
@@ -26,7 +26,7 @@
 	);
 
 	function barX(d: ChartDatum, key: string): number {
-		return $xGet(d) + (inner(key) ?? 0);
+		return k.xGet(d) + (inner(key) ?? 0);
 	}
 
 	function num(d: ChartDatum, key: string): number {
@@ -36,25 +36,25 @@
 
 	// Per-band summary for the accessible <title> on hit-rects: "May 28 — Created 5, Completed 3".
 	function bandSummary(d: ChartDatum): string {
-		const label = String($x(d));
+		const label = String(k.x(d));
 		const parts = series.map((s) => `${s.label} ${num(d, s.key)}`);
 		return `${label} — ${parts.join(', ')}`;
 	}
 
 	// Band center in canvas pixels: plot-area scale + left padding offset.
 	function bandCenter(d: ChartDatum): number {
-		return $padding.left + $xGet(d) + bandwidth / 2;
+		return k.padding.left + k.xGet(d) + bandwidth / 2;
 	}
 </script>
 
 <g class="bars">
-	{#each $data as d, i (i)}
+	{#each k.data as d, i (i)}
 		{#each series as s (s.key)}
 			<rect
 				x={barX(d, s.key)}
-				y={$yScale(num(d, s.key))}
+				y={k.yScale(num(d, s.key))}
 				width={inner.bandwidth()}
-				height={Math.max(0, $height - $yScale(num(d, s.key)))}
+				height={Math.max(0, k.height - k.yScale(num(d, s.key)))}
 				fill={s.color}
 			>
 				<title>{s.label}: {num(d, s.key)}</title>
@@ -63,13 +63,13 @@
 	{/each}
 
 	<!-- Invisible full-height hit-rect per band drives per-category hover. -->
-	{#each $data as d, i (i)}
+	{#each k.data as d, i (i)}
 		<rect
 			class="hit"
-			x={$xGet(d)}
+			x={k.xGet(d)}
 			y={0}
 			width={bandwidth}
-			height={$height}
+			height={k.height}
 			fill="transparent"
 			onpointerenter={() => onHover?.({ index: i, centerX: bandCenter(d) })}
 			onpointermove={() => onHover?.({ index: i, centerX: bandCenter(d) })}
