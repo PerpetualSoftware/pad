@@ -1,21 +1,27 @@
 /**
- * BUG-3084, ItemDetail — the POPULATION and COMMIT rules, on an AST (lead
- * ruling on checkpoint 51, after round 4 on #1387). `itemDetailIdentityFence
- * .test.ts` beside this keeps the site pins (listener, re-stamp, child props,
- * provider, reactive epoch reads); `itemDetailIdentityLoad.svelte.test.ts`
- * owns the semantics on a mount. The analysis itself, and what it cannot do,
- * is described in `src/test/identityFenceAst.ts`.
+ * BUG-3084, ItemDetail — the identity GATE and the analysis AID. See
+ * `src/test/identityFenceAst.ts` for what each claims and what each cannot
+ * see. `itemDetailIdentityFence.test.ts` beside this keeps the site pins;
+ * `itemDetailIdentityLoad.svelte.test.ts` owns the semantics on a mount.
  *
- * Every unit the AST yields must match exactly one row below, and every row
- * exactly one unit. A row may list `may`: the commits that unit is allowed to
- * make while no fence holds, each covered by the row's reason. A key is an
- * assignment target's root name or a call's callee text. A row with `may`
- * also pins the unit's exact `code`, and a row with `may` or `startSafe` pins
- * its enclosing context (`in`), so an allowance can neither cover edited code
- * nor follow its callback to another place.
+ * The GATE (`refusals`, lead ruling on checkpoint 69):
+ *   - every unit the AST yields matches exactly one row below, and every row
+ *     exactly one unit;
+ *   - every row, and every helper in HELPERS, carries `reviewed`: the hash of
+ *     the code it was last reviewed on (`coverage`). A mismatch refuses,
+ *     naming the row and the new hash.
+ * To accept an edit: read the row and `analysisReport` for the edited code,
+ * then paste the printed hash.
  *
- * The round-4 mutants are the acceptance test: each is applied to an in-memory
- * copy of the component, and this guard must refuse it.
+ * The AID (`analysisReport`): the flow analysis, which reads each row's
+ * reasons.
+ *   - `may` lists the commits a unit may make while no fence holds. A key is
+ *     an assignment target's root name, or a call's callee text.
+ *   - A row with `may` also pins the unit's exact `code`.
+ *   - A row with `may` or `startSafe` pins its enclosing context (`in`).
+ *
+ * Round 4's mutants and the later defect fixtures still run: the gate
+ * refuses each of them, and the aid still reports each of them.
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -1017,11 +1023,12 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 	});
 
 	/**
-	 * KNOWN GAPS (lead ruling on BUG-3084 checkpoint 63, condition 4): edits
-	 * this guard ACCEPTS although they reintroduce a stale commit, each outside
-	 * the threat model in `identityFenceAst.ts`'s header, with the sentence
-	 * that says why. Each must still be accepted: when one starts being
-	 * refused, the gap has closed, and it moves to ANALYSIS_DEFECTS.
+	 * AID GAPS (checkpoint 63 condition 4; checkpoint 69 condition 4): edits
+	 * the ANALYSIS accepts although they reintroduce a stale commit, each with
+	 * the sentence that says why. Each is listed in the "does not see" part of
+	 * `identityFenceAst.ts`'s header. The gate refuses every one of them by a
+	 * hash mismatch. When the aid starts reporting one, move it to
+	 * ANALYSIS_DEFECTS.
 	 */
 	const KNOWN_GAPS: Array<{ id: string; model: string; subs: Array<[string, string]> }> = [
 		{
@@ -1060,8 +1067,10 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 	});
 
 	/**
-	 * Controls: a guard that refuses everything also refuses every mutant. These
-	 * edits commit nothing and must stay accepted.
+	 * Controls for the AID: an analysis that reports everything also reports
+	 * every mutant. These edits commit nothing, and the aid must stay quiet on
+	 * them. (The gate refuses them all, since each edits a hashed function; its
+	 * own controls are at the end of this file.)
 	 */
 	const ACCEPTED: Array<{ id: string; old: string; new: string; also?: Array<[string, string]> }> = [
 		{

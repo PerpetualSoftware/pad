@@ -1,17 +1,36 @@
 /**
- * BUG-3084 round 4, lead ruling on checkpoint 51: the identity-fence guard for
- * ItemDetail reads an AST instead of spellings, and FAILS CLOSED.
+ * BUG-3084: the identity-fence guard for ItemDetail. Round 4 moved it from a
+ * scanner to this AST (lead ruling on checkpoint 51). Rounds 3–8 then showed
+ * that an analysis of what the code DOES does not converge: every review
+ * round found edits it accepted, and round 8 found rows missing from the
+ * population table itself (team CONVE-35). So the lead ruled on checkpoint 69:
  *
- * WHY NOT THE SCANNER (`identityFenceSource.ts`). Four review rounds on #1387
- * each returned new members of one class — shapes a regex does not model:
- * unlisted committers (`void req()`, `+=`, `obj[k] =`, `.push`), unlisted async
- * shapes (nested named functions, annotated arrows, object methods, markup
- * `async function`), a text window that borrowed the NEXT callback's fence, and
- * helpers trusted by name. Per team CONVE-35 that measured the instrument, not
- * the code. The route-surface guards still use the scanner; their port is
- * TASK-3097.
+ * THE GATE IS A CHANGE DETECTOR, and it lives in
+ * `itemDetailIdentityFenceAst.test.ts` (`refusals`). Every async unit and
+ * every deferred callback matches exactly one table row. Every row carries
+ * the hash of the code it was last reviewed on, and so does every
+ * component-level sync function a row's code reaches by name,
+ * transitively (HELPERS). What a row's hash covers:
+ *   - the unit;
+ *   - its outermost enclosing function;
+ *   - component-level declarations of names the unit references;
+ *   - component-level statements that assign a name it calls.
+ * All of that is found by syntax, never by this analysis. ANY difference
+ * refuses, naming the row. The claim is bounded and checkable: a fenced unit,
+ * or anything it inlines, cannot change without someone re-reading its row.
  *
- * WHAT THIS DOES
+ * THE COST, stated plainly: an edit to a fenced unit or a helper it reaches
+ * costs one hash bump, and the bump IS the act of re-reading the row. The
+ * refusal prints the new hash. A comment INSIDE a statement of one of those
+ * functions costs a bump too, because the hash reads statement text; a
+ * comment between statements does not.
+ *
+ * THIS FILE IS THE AID (`analysisReport`): the flow analysis a re-reader runs
+ * before bumping a hash. It keeps its round 4–7 regression fixtures, and it
+ * must stay quiet on the committed component. It no longer decides whether
+ * an edit is accepted, and nothing below is a guarantee.
+ *
+ * WHAT THE AID DOES
  *
  * 1. POPULATION by node type. Every `async` function node anywhere in the
  *    script or the markup is a UNIT, and so is every callback passed to a
@@ -55,7 +74,7 @@
  *      so does ANY later write to a capture's name, whatever its value.
  *    `delete`, tagged templates and dynamic `import()` are commits too.
  *
- * 4. FENCES by what they compare, never by name. An atom is a comparison of a
+ * 4. FENCES by what they compare. An atom is a comparison of a
  *    CAPTURED variable against `loadGeneration` / `itemGen`, a call to
  *    `identityHeld(x)`, or a comparison of a LIVE identity read
  *    (`authStore.identityEpoch`, `captureIdentity()`) against a stamp. `!`,
@@ -91,45 +110,57 @@
  *    (an empty `new Set()` / `new Map()` excepted); a generator; a tagged
  *    template; a for-of/in target that is not a declaration; a call whose
  *    callee builds a function in any shape but `(literal)(…)` or
- *    `(name ?? literal)(…)`.
+ *    `(name OP literal)(…)`, where OP is any logical operator and `name` a
+ *    plain name or member chain.
  *
- * THREAT MODEL (lead ruling on BUG-3084 checkpoint 63). This guard catches
- * ACCIDENTAL regressions by an author trying to comply with it: a commit
- * moved above its fence, a fence dropped or weakened, a callback that runs
- * later, a capture taken or rewritten at the wrong moment. It is not built to
- * stop an author working to evade it, and it does not prove the code right —
- * `itemDetailIdentityLoad.svelte.test.ts`, which mounts the component, is the
- * semantic instrument. A review finding that needs shadowing, a contrived
- * fence, or a refused construct is outside the model; it goes into the test
- * file's KNOWN_GAPS table, which must stay accepted until someone closes it.
- *
- * WHAT THIS CANNOT DO — each is a place the guard trusts something it does
- * not check.
+ * WHAT THE AID DOES NOT SEE. Each item is trusted without being checked; the
+ * test file's KNOWN_GAPS keeps each one executable.
  *
  * - It proves a check with the right SHAPE dominates every commit, not that
- *   the check reads the right item.
- * - Captures are known by name. A declaration or catch param shadowing one is
- *   refused; a function PARAM is not (helpers such as `switchedAway` need
- *   the name), so a callback param named like a capture is read as that
- *   capture. A name is the only link between a capture and its use.
- * - A stamp (`x.epoch`) rooted in a local is trusted to have been recorded
- *   earlier; one minted after the await and compared at once is a fence that
- *   cannot fail.
- * - A fence boolean read inside a helper's body never lapses: the body is
- *   read once, not at the call, so a helper returning a boolean computed
- *   before an await is a fence that cannot fail.
- * - Callbacks: `SYNC_CALLBACK_CALLEES`, and array iteration methods on a
- *   receiver the unit declared, are trusted to call synchronously; a local
- *   holding a non-array with such a method defeats that. A row's `callbacks`
- *   allowance trusts the callee to re-check before calling (its own tests pin
- *   that, not this file).
- * - Function values are followed by syntax: a helper is followed wherever it
- *   is named; any other function is walked where it is defined, from an
- *   unsafe start, when that definition is inside a unit or an inlined helper.
- * - A top-level row's `may` covers its whole function; the row's `reviewed`
- *   hash makes any edit to that function a refusal until the allowance is
- *   re-read, but says nothing about whether the re-read was careful.
- * - `var` is treated as block-scoped (this only ever refuses more).
+ *   the check reads the right item. A callback allowance covers its callee,
+ *   not which item the call names (round 8 J).
+ * - `identityHeld`, `captureIdentity` and `authStore.identityEpoch` are
+ *   recognised BY NAME. The site pins in `itemDetailIdentityFence.test.ts`
+ *   hold the two function bodies (round 8 E).
+ * - Captures are known by name. A declaration or catch param shadowing one
+ *   is refused. A function PARAM is not, because helpers such as
+ *   `switchedAway` need the name, so a callback param named like a capture
+ *   is read as that capture.
+ * - A stamp rooted in a local is trusted to have been recorded earlier. That
+ *   includes a local assigned from component state after the await
+ *   (round 8 H), and a stamp minted after the await and compared at once.
+ * - Fence booleans:
+ *   - one read inside a helper's body never lapses;
+ *   - one initialised from a fence boolean that has already lapsed is
+ *     marked live anyway (round 8 D).
+ * - Callbacks:
+ *   - `SYNC_CALLBACK_CALLEES`, and array iteration methods on a receiver in
+ *     scope, are trusted to call synchronously;
+ *   - a row's `callbacks` allowance trusts the callee to re-check before
+ *     calling, AND trusts the values the unit hands the callee for that
+ *     re-check (round 8 C);
+ *   - a helper already being inlined is not walked again as the callback it
+ *     hands itself to (round 8 B).
+ * - Helpers:
+ *   - a helper is declared once, not bound once: a `let` rebound outside
+ *     every unit is inlined with its declared body (round 8 G);
+ *   - a row's `may` keys also excuse writes inside the helpers the unit
+ *     inlines (round 8 F).
+ * - A `startSafe` row trusts its pin's premises. The debounce pin does not
+ *   prove the timer variable holds the only live handle (round 8 A). The
+ *   mount suite holds A and C semantically.
+ * - `var` is treated as block-scoped, which only ever refuses more.
+ *
+ * WHAT NEITHER SEES (the gate's own boundary, and its GATE_GAPS table):
+ * - synchronous code no row reaches: markup handlers, callback props on
+ *   child components (round 8 I), `$effect` / `onMount` bodies that enclose
+ *   no unit, and component-level statements outside the hashed set;
+ * - imported modules (`fieldWriteOrder.ts`, the auth store), which have
+ *   their own tests;
+ * - `<script module>`, because only the instance script is parsed.
+ *
+ * The site pins cover the named sites among these; the rest is covered only
+ * by review.
  */
 import { parse } from 'svelte/compiler';
 
