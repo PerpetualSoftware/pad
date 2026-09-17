@@ -824,7 +824,35 @@ export function readFenceSource(url: URL): FenceSource {
 			let m: RegExpExecArray | null;
 			while ((m = re.exec(script)) !== null) {
 				const label = `nested async callback at offset ${m.index}`;
-				out.push({ label, body: delimit(script, m.index, label), index: m.index });
+				// THE BODY STARTS AFTER THE ARROW, not at the first `{` after
+				// `async` (BUG-3084, ItemDetail). A DESTRUCTURED parameter —
+				// `async ({ ws, itemId }) => { … }` — opens a brace of its own, and
+				// delimiting from `async` returned the parameter list as the body:
+				// no awaits, no commits, so every rule a guard ran on it passed
+				// vacuously. An anonymous `async function (` is a declaration-shaped
+				// signature and takes `delimitDeclaration`, which already reads past
+				// braces in the parameter list.
+				if (m[0].startsWith('async') && /function\s*\($/.test(m[0])) {
+					out.push({ label, body: delimitDeclaration(script, m.index, label), index: m.index });
+					continue;
+				}
+				const afterArrow = m.index + m[0].length;
+				const rest = script.slice(afterArrow);
+				const lead = /^\s*/.exec(rest)![0].length;
+				if (rest[lead] !== '{') {
+					// An expression-bodied async arrow has no block to delimit, and
+					// "the next `{` in the file" is somebody else's. Refuse.
+					throw new Error(
+						`${label} is not brace-bodied — this enumerator does not read that form. ` +
+							'Teach it the shape rather than accepting a body it may have mis-delimited.'
+					);
+				}
+				const brace = afterArrow + lead;
+				const end = matchBrace(script, brace);
+				if (end === -1) {
+					throw new Error(`could not delimit ${label} — re-point this guard rather than widening it`);
+				}
+				out.push({ label, body: script.slice(m.index, end + 1), index: m.index });
 			}
 			return out;
 		},

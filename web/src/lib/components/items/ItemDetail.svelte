@@ -366,6 +366,36 @@
 		return gen !== loadGeneration || item?.id !== targetItem.id;
 	}
 
+	// The identity fence, for the commit points NO generation reaches (BUG-3084
+	// checkpoint 32). Everything `switchedAway` and the item/collection
+	// generations guard is already refused on an identity change, because the
+	// identity listener below runs `loadData`, which bumps all three. These two
+	// exist only for the sites whose staleness checks are keyed on something an
+	// identity change does not move — an item id, a workspace slug, a route.
+	//
+	// NOT `identityEpochAtLoad`. That one answers "whose typing is in the
+	// editor" and is re-stamped by a load; these answer "is the identity that
+	// STARTED this handler still signed in", captured at the handler's entry.
+	function captureIdentity(): number {
+		return authStore.identityEpoch;
+	}
+
+	function identityHeld(captured: number): boolean {
+		return authStore.identityEpoch === captured;
+	}
+
+	// Bumped by the identity listener. Children that call back into this
+	// component after their own awaits are mounted inside `{#key identityKey}`
+	// with `{@const handedDown = identityKey}`, and each such callback refuses
+	// when `handedDown !== identityKey` (BUG-3084 checkpoint 36, lead ruling).
+	// The `{@const}` FREEZES there because the key remounts the block on exactly
+	// the change the check guards — measured for a callback fired after an await
+	// from a destroyed instance. BUG-2129's "a template snapshot does not freeze"
+	// is about a block that is NOT remounted, where the prop getter re-reads it.
+	// The remount is also the children's recovery: they reload for the new
+	// identity. The requests those children issue THEMSELVES are BUG-3095.
+	let identityKey = $state(0);
+
 	// The `onOpenTarget` seam's same-item guard (PLAN-2154 / TASK-2158). Every
 	// content-link interceptor calls `fireOpenTarget(target)` instead of
 	// `onOpenTarget?.(target)` directly — the TASK-2159 anchor surfaces
@@ -471,6 +501,10 @@
 		const snap = collection;
 		const believed = effectiveCollSlug;
 		if (!ws || !routeColl || !itemRef || !snap) return;
+		// Every check below is keyed on the route and the collection id, which a
+		// same-item reload after an identity change leaves equal (BUG-3084): the
+		// previous identity's collection list would retag the index and navigate.
+		const identity = captureIdentity();
 		// Fence captured BEFORE the await (codex round 4 P1 — bumping after
 		// it made the check tautological): a newer collection write during
 		// the list fetch supersedes this heal's snapshot refresh.
@@ -481,6 +515,7 @@
 			// (destroyed), the route or snapshot may have moved — a stale
 			// continuation must not retag, refresh, or goto (round 4 P1).
 			if (destroyed) return;
+			if (!identityHeld(identity)) return;
 			if (ws !== wsSlug || routeColl !== collSlug || itemRef !== itemSlug) return;
 			if (!collection || collection.id !== snap.id) return;
 			const target = resolveSyncRenameTarget({
@@ -1069,6 +1104,41 @@
 		}
 	});
 
+	// AN IDENTITY CHANGE IS A LOAD on this surface (BUG-3084 checkpoints 32-33,
+	// lead ruling). `loadData` bumps the load, item and collection generations,
+	// so every continuation fenced by `switchedAway` or a generation check is
+	// refused by construction, and it resets the transient page state — and it
+	// is the recovery: the item reloads for whoever is signed in now, so the pane
+	// keeps working instead of latching.
+	//
+	// Fires on every transition `notifyIdentityChange` reports: a sign-in from
+	// anonymous (which does not reload the tab), a sign-out (whose own
+	// navigation tears this down, after the pre-navigation window), and a swap
+	// (which reloads the tab, after the pre-reload window). Without a route
+	// there is nothing to load. With the item no longer visible — a sign-out on
+	// a private item — the load lands in its error state like any failed load.
+	//
+	// EXPLICIT, not a side effect of a tracked read: the epoch read in
+	// `loadData` used to make the effect above depend on it, which reloaded by
+	// accident and would reload TWICE beside this listener. It is untracked
+	// there now, and the guard holds both halves.
+	const stopIdentityLoad = authStore.onIdentityChange(() => {
+		if (!(wsSlug && collSlug && itemSlug)) return;
+		// The member and role lists are cached per workspace, and the load below
+		// would otherwise reuse the previous identity's (BUG-3084 codex round 1).
+		cachedMembers = null;
+		cachedMembersWs = null;
+		cachedRoles = null;
+		cachedRolesWs = null;
+		// Retire the collab context BEFORE anything re-runs its effect: its
+		// cleanup is where the old draft would be flushed.
+		if (activeCollabContext) activeCollabContext.retired = true;
+		identityKey++;
+		loadData();
+		void loadTagSuggestions(wsSlug);
+	});
+	onDestroy(stopIdentityLoad);
+
 	// Surface the item's ref (e.g. IDEA-592) in the browser tab title.
 	// Clear the section so the format reads "{REF} · {Workspace} · Pad".
 	//
@@ -1203,6 +1273,12 @@
 		// the user's in-flight document. A proper fix needs editor-dirty-
 		// state integration; tracked separately.
 		unsubscribeSSE = sseService.onItemEvent(async (event) => {
+			// The load this event arrived under (BUG-3084 codex round 1). The
+			// collection branch awaits a fetch and then captures `itemGen` for
+			// its item refresh, so an identity change inside that fetch was
+			// invisible to the item fence; the identity listener's load bumps
+			// this, and every await below is checked against it.
+			const callbackGen = loadGeneration;
 			// BUG-2265 sibling broadcast: another ItemDetail / collection page
 			// changed THIS collection's settings/schema. This instance holds
 			// its OWN independent `collection` snapshot (the full-page pane
@@ -1271,6 +1347,7 @@
 				const collGen = ++collectionGen;
 				try {
 					const fresh = await api.collections.get(wsSlug, targetSlug);
+					if (callbackGen !== loadGeneration) return;
 					// Persistent pane host has no {#key} remount — drop if the
 					// loaded collection changed IDENTITY during the fetch (compare
 					// by stable id, not slug, so a rename still applies — Codex
@@ -1285,6 +1362,10 @@
 					// Best-effort — a stale snapshot just means the next save
 					// may 409 and self-heal via QuickActionsMenu's retry.
 				}
+				// After the try/catch, not only inside the success arm (BUG-3084
+				// codex round 2): a REJECTED collection fetch otherwise fell through
+				// into the item refresh below and adopted it under the new identity.
+				if (callbackGen !== loadGeneration) return;
 				// BUG-2265 (Codex P1): if the schema migration mutated item field
 				// values, THIS pane's `item` (loaded via api.items.get, NOT from
 				// the localIndex that the workspace deltaSync reconciles) may hold
@@ -1443,6 +1524,11 @@
 		});
 
 		unsubscribeSync = syncService.onSync(async (result) => {
+			// Same reason as the SSE callback's `callbackGen` (BUG-3084 codex
+			// round 1): reconciliation below is awaited, its own identity fence
+			// only stops ITSELF, and everything after it captures `itemGen`
+			// fresh and would adopt this result under whoever signed in during it.
+			const callbackGen = loadGeneration;
 			if (!wsSlug || !itemSlug || !item) return;
 			// A result names the workspace it was SYNCED FOR (TASK-2921).
 			if (result.workspace !== wsSlug) return;
@@ -1462,6 +1548,7 @@
 			// (PLAN-2154), never a goto.
 			if (!embedded) {
 				await reconcileCollectionSegment();
+				if (callbackGen !== loadGeneration) return;
 			}
 
 			if (result.type === 'caught_up') return;
@@ -1610,10 +1697,6 @@
 
 	async function loadData() {
 		const myGen = ++loadGeneration;
-		// Re-stamp the identity this editor's contents belong to (BUG-3005). A
-		// load is where the contents are replaced, so it is where the claim
-		// "this markdown was typed by the current user" becomes true again.
-		identityEpochAtLoad = authStore.identityEpoch;
 		// The item whose links `itemLinks` currently describes, captured BEFORE
 		// this load can replace `item`. `loadData` is not only a first load or a
 		// switch: the edit-collection handler calls it for a SAME-item reload
@@ -1679,6 +1762,24 @@
 		// stale queued markdown from item A can't PATCH into item B.
 		rawContentSaver.cancel();
 		rawContentSaver.clearPending();
+		// Re-stamp the identity this editor's contents belong to (BUG-3005). A
+		// load is where the contents are replaced, so it is where the claim
+		// "this markdown was typed by the current user" becomes true again.
+		//
+		// AFTER the flush and the clear above, never before them (BUG-3084
+		// checkpoints 32-33). The keepalive flush persists markdown typed under
+		// the identity of the PREVIOUS load, and the saver's `save` refuses it
+		// when `identityEpoch !== identityEpochAtLoad`. Re-stamping first made
+		// those two equal before the check ran, so a load triggered by an
+		// identity change PATCHed the previous user's pending draft under the
+		// new user's cookie. Still before the first await, so every
+		// continuation of this load sees the new stamp.
+		//
+		// UNTRACKED: `loadData` runs inside the route effect up to its first
+		// await, and a tracked read here made that effect re-run on every
+		// identity change (BUG-3084 checkpoint 33). The identity listener is
+		// the one mechanism that reloads on an identity change.
+		identityEpochAtLoad = untrack(() => authStore.identityEpoch);
 		// Reset raw mode on an actual item-switch (TASK-2124 decision #1). rawMode
 		// is a per-item view choice, not a session-wide one: without this,
 		// switching A→B while A is in raw-markdown mode carries raw into B. Two
@@ -2277,6 +2378,15 @@
 
 	$effect(() => {
 		if (!collabKey) return;
+		// The provider and its Y.Doc belong to ONE identity (BUG-3084 codex
+		// round 2). `collabKey` does not move on an identity change, so without
+		// this dependency the previous identity's provider survived the
+		// identity-triggered load: its applier and force-refresh callbacks, the
+		// idle collab save and the mode toggles all kept consuming the old
+		// document. Reading the key re-runs this effect on the change; the
+		// cleanup's flush is refused by the context's mint-time stamp, and a
+		// provider is minted for whoever is signed in now.
+		void identityKey;
 		const itemId = collabKey;
 		// Track forceRefreshNonce so a bump from the provider's
 		// onForceRefresh handler tears this effect's old provider+doc
@@ -2362,11 +2472,33 @@
 		// item.content — that falls through safely to the baseline
 		// compare, and its visible symptom (a re-float) is covered by the
 		// Manual-comparator tiebreak below.
-		const ctx: { wsSlug: string; itemId: string; baseline: string; seedMd: string | null } = {
+		const ctx: {
+			wsSlug: string;
+			itemId: string;
+			baseline: string;
+			seedMd: string | null;
+			identityEpoch: number;
+			retired: boolean;
+		} = {
 			wsSlug,
 			itemId,
 			baseline,
 			seedMd,
+			// The identity this editor's Y.Doc is typed under, fixed for the
+			// context's life (BUG-3084 codex round 1). NOT `identityEpochAtLoad`:
+			// a load re-stamps that, and the identity listener runs a load, so a
+			// context minted before an identity change would read as the new
+			// user's and its teardown flush would PATCH the previous user's rich
+			// draft on the new cookie. Read untracked — this runs in the collab
+			// effect, and the effect must not re-run on an identity change.
+			identityEpoch: untrack(() => authStore.identityEpoch),
+			// Set by the identity listener, synchronously, on the change itself.
+			// The epoch comparison alone is NOT enough for the effect cleanup:
+			// measured on a mount, the cleanup that runs in the effect flush after
+			// an identity change read the epoch's PREVIOUS value, matched the
+			// stamp, and flushed the old draft. A flag written in the listener has
+			// no such window (BUG-3084 codex round 2).
+			retired: false,
 		};
 		activeCollabContext = ctx;
 
@@ -2594,8 +2726,8 @@
 			// saver (BUG-3005): this cleanup also runs on an identity change,
 			// and a Y.Doc snapshot written then carries the wrong user's
 			// cookie.
-			const identityHeld = authStore.identityEpoch === identityEpochAtLoad;
-			if (!rawMode && !skipFlush && identityHeld) {
+			const held = !ctx.retired && authStore.identityEpoch === ctx.identityEpoch;
+			if (!rawMode && !skipFlush && held) {
 				collabFlusher.flushNow(ctx, true);
 			}
 			provider.destroy();
@@ -2666,8 +2798,10 @@
 		teardownFlushed = true;
 
 		// Collab path: flush the live Y.Doc snapshot.
+		// The rich flush is held to the identity its context was minted under,
+		// which the load re-stamp above does not move (BUG-3084 codex round 1).
 		const ctx = activeCollabContext;
-		if (ctx) collabFlusher.flushNow(ctx, true);
+		if (ctx && !ctx.retired && ctx.identityEpoch === authStore.identityEpoch) collabFlusher.flushNow(ctx, true);
 
 		// Raw-markdown path (BUG-2024). The saver's pending markdown is the
 		// exact debounced-but-unsaved edit; when dirty there is up to ~1.2s of
@@ -2834,6 +2968,9 @@
 		// emptiness AND re-check election (peer set may have
 		// changed).
 		queueMicrotask(() => {
+			// Before the editor write, not after it (BUG-3084 codex round 2): the
+			// seed belongs to the identity this context was minted under.
+			if (!ctx || ctx.retired || ctx.identityEpoch !== authStore.identityEpoch) return;
 			if (fragment.length > 0) return;
 			const peerIds2 = Array.from(collabProvider!.awareness.getStates().keys());
 			if (peerIds2.length === 0) return;
@@ -3201,6 +3338,11 @@
 		desired: string[]; // latest desired set (in-flight OR pending) for reload reapply
 		running: boolean;
 		confirmed: string; // last server-acknowledged tags JSON (revert target)
+		// The identity this burst was typed under (BUG-3084). A same-item reload
+		// after an identity change passes every item-id check below, so the
+		// drain would otherwise send the previous user's queued tags on the new
+		// cookie and commit the echo.
+		epoch: number;
 	};
 	// Keyed by item id so each item's in-flight saver stays discoverable across
 	// navigation — navigating away from A and back must find A's running saver
@@ -3219,7 +3361,10 @@
 		// start a fresh one. The currently-displayed item is the only one whose
 		// tags can be edited, so targetItem.id keys the right saver.
 		const existing = tagSavers.get(targetItem.id);
-		if (existing && existing.running) {
+		// Coalesce only into a burst typed under THIS identity: a running saver
+		// from before an identity change is draining towards a refusal, and
+		// handing it this edit would drop it with that burst.
+		if (existing && existing.running && existing.epoch === captureIdentity()) {
 			existing.pending = newTags;
 			existing.desired = newTags;
 			return;
@@ -3230,7 +3375,8 @@
 			pending: newTags,
 			desired: newTags,
 			running: false,
-			confirmed: targetItem.tags // confirmed baseline captured at burst start
+			confirmed: targetItem.tags, // confirmed baseline captured at burst start
+			epoch: captureIdentity()
 		};
 		tagSavers.set(targetItem.id, saver);
 		void flushTagSaver(saver);
@@ -3250,6 +3396,16 @@
 				const fresh = await api.items.update(saver.ws, saver.itemId, {
 					tags: JSON.stringify(toSave)
 				});
+				// After the await and before BOTH the commit and the next send: a
+				// second batch is only ever sent from here, with no await between
+				// this check and it, so one check covers every send after the first
+				// (and the first is issued synchronously by the handler that
+				// captured the identity). A check at the top of the loop was
+				// written first and could never fire (BUG-3084 mutation matrix).
+				if (!identityHeld(saver.epoch)) {
+					saver.pending = null;
+					return;
+				}
 				saver.confirmed = fresh.tags;
 				// Reconcile the UI to server truth only when nothing newer is
 				// queued (avoids flicker) and we're still on this item. Route
@@ -3267,6 +3423,7 @@
 		} catch (e) {
 			console.error('Failed to save tags:', e);
 			saver.pending = null;
+			if (!identityHeld(saver.epoch)) return;
 			if (item && item.id === saver.itemId) {
 				// Revert to the last server-confirmed tags, not the optimistic set.
 				item = { ...item, tags: saver.confirmed };
@@ -3294,7 +3451,12 @@
 	// Codex PR #659 rounds 8/9.
 	function withInflightTags(next: Item): Item {
 		const saver = tagSavers.get(next.id);
-		return saver?.running ? { ...next, tags: JSON.stringify(saver.desired) } : next;
+		// Only a burst typed under the CURRENT identity owns `item.tags` (BUG-3084
+		// codex round 1): the identity listener's load would otherwise render the
+		// previous user's pending tags. Untracked because some callers run inside
+		// reactive scopes and this must not make them depend on the epoch.
+		const ours = saver?.running && saver.epoch === untrack(() => captureIdentity());
+		return ours ? { ...next, tags: JSON.stringify(saver.desired) } : next;
 	}
 
 	// Realtime-refresh convenience: applies the content-adoption rule (under
@@ -3327,8 +3489,13 @@
 		const newSlug = adopted.collection_slug;
 		if (!newSlug || !collection || collection.slug === newSlug) return;
 		const collGen = ++collectionGen;
+		// `adoptCollection` deliberately accepts a STALE generation when it
+		// corrects the shown collection to the live item's, so it is not a fence
+		// against an identity change (BUG-3084 codex round 1). This one is.
+		const gen = loadGeneration;
 		try {
 			const fresh = await api.collections.get(wsSlug, newSlug);
+			if (gen !== loadGeneration) return;
 			// adoptCollection carries BOTH fences this site pioneered
 			// (BUG-2178 codex round 2): generation order for same-collection
 			// refreshes, and the live-item semantic check — now anchored on
@@ -3345,21 +3512,28 @@
 	// the item-load path per the Svelte 5 effect-splitting convention.
 	async function loadTagSuggestions(ws: string) {
 		if (!ws) return;
+		// Keyed on the workspace alone below, which an identity change does not
+		// move (BUG-3084): the previous user's tag vocabulary would land in the
+		// new user's autocomplete. The identity listener re-runs this.
+		const identity = captureIdentity();
 		try {
 			const all = await api.tags.list(ws);
 			// Drop stale results: if the workspace changed while this request
 			// was in flight (page instance reused across navigation, or a
 			// post-save reload for a now-previous workspace), don't overwrite
 			// the current workspace's suggestions. Per Codex PR #659 round 2.
-			if (ws !== wsSlug) return;
+			if (ws !== wsSlug || !identityHeld(identity)) return;
 			tagSuggestions = all.map((t) => t.tag);
 		} catch {
-			if (ws === wsSlug) tagSuggestions = [];
+			if (ws === wsSlug && identityHeld(identity)) tagSuggestions = [];
 		}
 	}
 
 	$effect(() => {
-		loadTagSuggestions(wsSlug);
+		// `wsSlug` is the dependency; the entry capture inside is not, or this
+		// effect would re-run on every identity change beside the listener.
+		const ws = wsSlug;
+		untrack(() => loadTagSuggestions(ws));
 	});
 
 	// stampSourceUrl writes the pad_source_url + pad_imported_at orphan
@@ -3661,7 +3835,7 @@
 	// flushes still PATCH the OLD item's URL with its OLD markdown,
 	// so we never cross-write one item's content into another. Per
 	// Codex review round 1.
-	let activeCollabContext: CollabFlushContext | null = null;
+	let activeCollabContext: (CollabFlushContext & { identityEpoch: number; retired: boolean }) | null = null;
 
 	// Provider we've already attempted the lazy seed against. Reset
 	// implicitly when collabProvider is replaced (the new provider
@@ -4306,6 +4480,9 @@
 		// destroyed), a viewer (no provider/editor), or the editor isn't mounted.
 		// In every such case items.content is already canonical, so no-op.
 		if (!collabProvider || !editorInstance || editorInstance.isDestroyed || !item) return;
+		// Its only post-await commit is a toast, and nothing else here moves on an
+		// identity change (BUG-3084): the warning would reach whoever signed in.
+		const identity = captureIdentity();
 		// Flush against the context the connected provider was minted with (captured
 		// at $effect-body time, NOT live route state), so the PATCH is self-routing
 		// and can never cross-write another item. Switch-safety: activeCollabContext
@@ -4346,7 +4523,7 @@
 		// forceRefreshInFlight flipped (content IS in items.content + the
 		// undo-point) — so warning on 'skipped' would mis-fire on ordinary
 		// restores. The restore itself is never blocked (the caller proceeds).
-		if (result === 'failed') {
+		if (result === 'failed' && identityHeld(identity)) {
 			toastStore.show(
 				'Your most recent edits may not be included in the restore point.',
 				'error',
@@ -4538,6 +4715,10 @@
 		restoring = true;
 		try {
 			await api.items.restore(wsSlug, targetSlug);
+			// Before the follow-up GET, not only after it: a request issued
+			// after a switch or an identity change goes out on whatever cookie
+			// is current (BUG-3084 codex round 1).
+			if (switchedAway(targetItem, gen)) return;
 			const refreshed = await api.items.get(wsSlug, targetSlug);
 			if (switchedAway(targetItem, gen)) return;
 			item = withInflightTags(refreshed);
@@ -5206,6 +5387,8 @@
 				     oncollectionupdated into this persistent parent (see the
 				     switch-safety note on the callback). -->
 				{#key itemSlug}
+					{#key identityKey}
+					{@const handedDown = identityKey}
 					<QuickActionsMenu
 						actions={quickActions}
 						{item}
@@ -5218,6 +5401,7 @@
 							editCollectionOpen = true;
 						}}
 						oncollectionupdated={(updated) => {
+							if (handedDown !== identityKey) return;
 							// Switch-safety note (BUG-2280 — investigated, NOT a live
 							// bug; do NOT add a template-side {@const keyedSlug =
 							// itemSlug} "snapshot" fence here). A quick-action save can
@@ -5230,10 +5414,13 @@
 							//      switch: a destroyed instance's `collection` prop reads
 							//      the LIVE parent value (B's collection), not a frozen
 							//      A — so the guard fails and oncollectionupdated is
-							//      never invoked. (A {@const} snapshot would NOT freeze
-							//      in Svelte 5 — it's a lazily-pulled derived that reads
-							//      the current itemSlug — so a keyedSlug fence here is a
-							//      no-op: the literal BUG-2129 trap. Verified empirically.)
+							//      never invoked. (This note said a {@const} snapshot
+							//      would NOT freeze in Svelte 5. That holds for a block
+							//      that is not remounted; inside a {#key} that remounts on
+							//      the change being guarded it DOES freeze, measured for a
+							//      destroyed instance's post-await callback — BUG-3084,
+							//      which gates this callback on `handedDown` for that
+							//      reason. The slug reasoning below is unchanged.)
 							//   2. On a SAME-collection switch the callback DOES fire,
 							//      but `updated` is that same collection, so assigning it
 							//      is correct; and loadData's collection write
@@ -5247,6 +5434,7 @@
 							adoptCollection(updated, ++collectionGen);
 						}}
 					/>
+					{/key}
 				{/key}
 			{/if}
 			{#if childTotal > 0}
@@ -5934,7 +6122,7 @@
 						read-only y-binding is deferred to TASK-1266.
 					-->
 					{#if !canEdit}
-						{#key `${item.id}:false`}
+						{#key `${item.id}:false:${identityKey}`}
 							<Editor
 								content={editorContent}
 								onUpdate={handleContentUpdate}
@@ -5992,7 +6180,7 @@
 								mutationsEnabled} below). Defaults false → editable=true,
 								byte-identical for non-host callers.
 							-->
-							{#key `${item.id}:true:${forceRefreshNonce}`}
+							{#key `${item.id}:true:${forceRefreshNonce}:${identityKey}`}
 								<Editor
 									content={editorContent}
 									onUpdate={handleContentUpdate}
@@ -6080,6 +6268,8 @@
 			     the load window took a deliberate click. It is now on the tab you
 			     land on. -->
 			<div id="item-comments" class="timeline-section">
+				{#key identityKey}
+				{@const handedDown = identityKey}
 				<ItemTimeline
 					bind:this={timelineRef}
 					bind:feed={timelineFeed}
@@ -6088,7 +6278,7 @@
 					{itemSlug}
 					currentContent={item.content ?? ''}
 					items={localIndex.getAll(wsSlug)}
-					onRestore={handleVersionRestore}
+					onRestore={(updated) => { if (handedDown !== identityKey) return; handleVersionRestore(updated); }}
 					flushBeforeRestore={flushCollabBeforeRestore}
 					itemId={itemMatchesRef ? item.id : undefined}
 					hostToken={attachmentHostToken}
@@ -6100,6 +6290,7 @@
 					title="Comments"
 					emptyLabel="No comments yet."
 				/>
+				{/key}
 			</div>
 		{/key}
 		</div><!-- /tab-panel Details -->
@@ -6217,7 +6408,10 @@
 				     REST ops, so they stay live on the peeking side. `frozen={false}`
 				     also stops the dndzone from re-initing on activePane flips — removing
 				     a source of drill-click swallowing. -->
-				<ChildItems {wsSlug} {username} {itemSlug} itemId={item.id} parentFields={fields} terminalStatuses={childTerminalStatuses} onChildrenChange={(children) => { if (keyedSlug !== itemSlug) return; handleChildrenChange(children); }} {canEdit} frozen={false} selfDirty={localDirty} selfLastSaveTime={localLastSaveTime} onOpenTarget={paneOpenTarget} />
+				{#key identityKey}
+				{@const handedDown = identityKey}
+				<ChildItems {wsSlug} {username} {itemSlug} itemId={item.id} parentFields={fields} terminalStatuses={childTerminalStatuses} onChildrenChange={(children) => { if (keyedSlug !== itemSlug || handedDown !== identityKey) return; handleChildrenChange(children); }} {canEdit} frozen={false} selfDirty={localDirty} selfLastSaveTime={localLastSaveTime} onOpenTarget={paneOpenTarget} />
+				{/key}
 			</div>
 		{/if}
 
@@ -6233,13 +6427,16 @@
 		-->
 		{#if item}
 			<div id="item-backlinks">
+				{#key identityKey}
+				{@const handedDown = identityKey}
 				<BacklinksPanel
 					{wsSlug}
 					{username}
 					{itemSlug}
 					itemId={item.id}
-					onCountChange={(n) => { if (keyedSlug !== itemSlug) return; backlinksCount = n; }}
+					onCountChange={(n) => { if (keyedSlug !== itemSlug || handedDown !== identityKey) return; backlinksCount = n; }}
 				/>
+				{/key}
 			</div>
 			<!--
 				Referenced-by panel (PLAN-2857 U5). Sits beside the
@@ -6307,6 +6504,8 @@
 				{@const kinds: readonly string[] =
 					activeTab === 'versions' ? VERSION_KINDS : CHANGE_KINDS}
 				{@const shown = timelineFeed.entries.filter((e) => kinds.includes(e.kind))}
+				{#key identityKey}
+				{@const handedDown = identityKey}
 				<TimelineEntryList
 					entries={shown}
 					showEmpty={shown.length === 0 &&
@@ -6320,10 +6519,11 @@
 					currentContent={item.content ?? ''}
 					items={localIndex.getAll(wsSlug)}
 					hostToken={attachmentHostToken}
-					onRestore={handleVersionRestore}
+					onRestore={(updated) => { if (handedDown !== identityKey) return; handleVersionRestore(updated); }}
 					flushBeforeRestore={flushCollabBeforeRestore}
 					restoreFrozen={peeking}
 				/>
+				{/key}
 				<!-- Pagination belongs to the ONE feed, so this asks the OWNER for
 				     the next page. Without it these tabs could show older entries
 				     only by visiting Details and paging there. -->
@@ -6355,6 +6555,8 @@
 			mounted and driven by its `open` prop (its consumer contract).
 		-->
 		{#key itemSlug}
+			{#key identityKey}
+			{@const handedDown = identityKey}
 			<CopyItemDialog
 				open={copyDialogOpen}
 				onclose={closeCopyDialog}
@@ -6364,9 +6566,13 @@
 				sourceRef={formatItemRef(item) || item.slug}
 				sourceUnavailable={isArchived}
 				flushContent={flushContentBeforeCopy}
-				onmove={handleMove}
-				oncopied={handleCopied}
+				onmove={(targetSlug, fieldOverrides) =>
+					handedDown !== identityKey
+						? Promise.resolve({ status: 'cancelled' as const })
+						: handleMove(targetSlug, fieldOverrides)}
+				oncopied={(result) => { if (handedDown !== identityKey) return; void handleCopied(result); }}
 			/>
+			{/key}
 		{/key}
 	{/if}
 
@@ -6470,8 +6676,12 @@
 		     EditCollectionModal echoes back rather than us trying to freeze
 		     anything on this side (see its Props.onupdated doc comment: a
 		     template-side {@const}/closure "snapshot" doesn't actually
-		     freeze in Svelte 5 — BUG-2129). -->
+		     freeze in Svelte 5 — BUG-2129 — when the block is NOT remounted;
+		     the `handedDown` identity gate below freezes because its own
+		     {#key identityKey} remounts on the change it guards, BUG-3084). -->
 		{#key itemSlug}
+		{#key identityKey}
+		{@const handedDown = identityKey}
 		<EditCollectionModal
 			bind:open={editCollectionOpen}
 			{collection}
@@ -6488,6 +6698,7 @@
 				// visibly affecting whatever the user has since navigated
 				// to (Codex PR review).
 				if (destroyed) return;
+				if (handedDown !== identityKey) return;
 				if (!editedCollectionId || !editedCollectionSlug || !editedWsSlug) return;
 				// Collection slugs are workspace-scoped (two workspaces can
 				// both have a "docs" collection) — guard against a reused
@@ -6594,10 +6805,15 @@
 				void loadData();
 			}}
 			onclose={() => {
+				// Archive calls onupdated THEN onclose after its await; the second
+				// must refuse too, or the previous identity's modal closes the new
+				// one (BUG-3084 codex round 2).
+				if (handedDown !== identityKey) return;
 				editCollectionOpen = false;
 				editCollectionSection = undefined;
 			}}
 		/>
+		{/key}
 		{/key}
 	{/if}
 {/if}

@@ -1,0 +1,558 @@
+{
+	"note": "Round 6 on #1387 (BUG-3084): the 38 edits the AST guard accepted at 31f3b5e9, from the reviewer probe (its written review was lost in delivery; see checkpoint 63). Deliberately defective code, kept as JSON so repo source scanners do not read it.",
+	"mutants": [
+		{
+			"id": "R6 H1 IIFE returns listener",
+			"class": 4,
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\twindow.addEventListener('focus', (() => () => {\n\t\t\t\titem = withInflightTags(updated);\n\t\t\t})());\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"saveTitle()",
+				"callback function value",
+				"assigns item after an unfenced await"
+			]
+		},
+		{
+			"id": "R6 H1b IIFE block body returns listener",
+			"class": 4,
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\twindow.addEventListener('focus', (() => {\n\t\t\t\treturn () => {\n\t\t\t\t\titem = withInflightTags(updated);\n\t\t\t\t};\n\t\t\t})());\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"saveTitle()",
+				"callback function value",
+				"assigns item after an unfenced await"
+			]
+		},
+		{
+			"id": "R6 H2 stored in callee sequence",
+			"class": 4,
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\t(window.onfocus = updated ? () => {\n\t\t\t\titem = withInflightTags(updated);\n\t\t\t} : null, tick)();\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"calls a function built in its callee"
+			]
+		},
+		{
+			"id": "R6 H3 default param commit in inlined helper",
+			"class": 2,
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tconst applyTitleNow = (next = (item = withInflightTags(updated))) => next;\n\t\t\tapplyTitleNow();\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"default value calls or assigns"
+			]
+		},
+		{
+			"id": "R6 H3b default param commit in listener",
+			"class": 2,
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\twindow.addEventListener('focus', (_e: Event, _n = (item = withInflightTags(updated))) => {});\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"default value calls or assigns"
+			]
+		},
+		{
+			"id": "R6 H4 destructuring default commit",
+			"class": 2,
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tconst [_first = (item = withInflightTags(updated))] = [];\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"default value calls or assigns"
+			]
+		},
+		{
+			"id": "R6 H5 for-of writes component state",
+			"class": 3,
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tfor (item of [updated]);\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"for-of/for-in target is not a declaration"
+			]
+		},
+		{
+			"id": "R6 H6 switch discriminant rolls back loadGeneration",
+			"class": 1,
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tswitch ((loadGeneration = gen), 0) {\n\t\t\t\tcase 1:\n\t\t\t\t\tlet loadGeneration = 0;\n\t\t\t\t\tvoid loadGeneration;\n\t\t\t}\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"shadows the trusted name loadGeneration"
+			]
+		},
+		{
+			"id": "R6 H7 untrack(loadData)",
+			"class": 5,
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tuntrack(loadData);\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"saveTitle()",
+				"calls untrack(loadData)"
+			]
+		},
+		{
+			"id": "R6 H8 shadowed console.warn is a request",
+			"class": 1,
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tconst console = { warn: api.items.update };\n\t\t\tconsole.warn(wsSlug, targetItem.id, { title: 'stale' });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"shadows the trusted name console"
+			]
+		},
+		{
+			"id": "R6 H9 shadowed untrack registers a listener",
+			"class": 1,
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tconst untrack = window.addEventListener.bind(window, 'focus');\n\t\t\tuntrack(() => {\n\t\t\t\titem = withInflightTags(updated);\n\t\t\t});\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"shadows the trusted name untrack"
+			]
+		},
+		{
+			"id": "R6 H13 shadowed identityHeld",
+			"class": 1,
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tconst identityHeld = (_c: number) => true;\n\t\t\tif (!identityHeld(gen)) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"shadows the trusted name identityHeld"
+			]
+		},
+		{
+			"id": "R6 H13b shadowed loadGeneration",
+			"class": 1,
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tconst loadGeneration = gen;\n\t\t\tif (gen !== loadGeneration) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"shadows the trusted name loadGeneration"
+			]
+		},
+		{
+			"id": "R6 H10 stale fence boolean",
+			"class": 6,
+			"subs": [
+				[
+					"\t\tconst gen = loadGeneration;\n\t\tsaveStatus = 'saving';\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title",
+					"\t\tconst gen = loadGeneration;\n\t\tconst titleStillHere = gen === loadGeneration;\n\t\tsaveStatus = 'saving';\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title"
+				],
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tif (!titleStillHere) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"saveTitle()",
+				"assigns item after an unfenced await"
+			]
+		},
+		{
+			"id": "R6 H11 capture in the wrong argument",
+			"class": 6,
+			"subs": [
+				[
+					"\t\tconst gen = loadGeneration;\n\t\tsaveStatus = 'saving';\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title",
+					"\t\tconst gen = loadGeneration;\n\t\tconst sameGen = (g: number, _other: number) => g === loadGeneration;\n\t\tsaveStatus = 'saving';\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title"
+				],
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tif (!sameGen(loadGeneration, gen)) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"saveTitle()",
+				"assigns item after an unfenced await"
+			]
+		},
+		{
+			"id": "R6 H12 identityHeld(gen)",
+			"class": 6,
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tif (!identityHeld(gen)) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"saveTitle()",
+				"assigns item after an unfenced await"
+			]
+		},
+		{
+			"id": "R6 H12b identity capture vs loadGeneration",
+			"class": 6,
+			"subs": [
+				[
+					"\t\tconst gen = loadGeneration;\n\t\tsaveStatus = 'saving';\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title",
+					"\t\tconst gen = loadGeneration;\n\t\tconst identity = captureIdentity();\n\t\tsaveStatus = 'saving';\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title"
+				],
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tif (identity !== loadGeneration) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"saveTitle()",
+				"assigns item after an unfenced await"
+			]
+		},
+		{
+			"id": "R6 H14 default param rewrites helper param",
+			"class": 2,
+			"subs": [
+				[
+					"\t\tconst gen = loadGeneration;\n\t\tsaveStatus = 'saving';\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title",
+					"\t\tconst gen = loadGeneration;\n\t\tconst freshTitleGen = (g: number, _h = (g = loadGeneration)) => g === loadGeneration;\n\t\tsaveStatus = 'saving';\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title"
+				],
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tif (!freshTitleGen(gen)) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"default value calls or assigns"
+			]
+		},
+		{
+			"id": "R6 H25 fence helper issues a request",
+			"class": 6,
+			"subs": [
+				[
+					"\t\tconst gen = loadGeneration;\n\t\tsaveStatus = 'saving';\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title",
+					"\t\tconst gen = loadGeneration;\n\t\tconst titleFresh = () => !!api.items.update(wsSlug, targetItem.id, { title: 'x' }) && gen === loadGeneration;\n\t\tsaveStatus = 'saving';\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title"
+				],
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tif (!titleFresh() || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"saveTitle()",
+				"titleFresh()",
+				"calls api.items.update after an unfenced await"
+			]
+		},
+		{
+			"id": "R6 H37 a live read dressed as a stamp",
+			"class": 6,
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tif (authStore.identityEpoch !== { epoch: authStore.identityEpoch }.epoch) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"saveTitle()",
+				"assigns item after an unfenced await"
+			]
+		},
+		{
+			"id": "R6 H38 identityHeld(captureIdentity())",
+			"class": 6,
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tif (!identityHeld(captureIdentity())) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"saveTitle()",
+				"assigns item after an unfenced await"
+			]
+		},
+		{
+			"id": "R6 H38b identityHeld(authStore.identityEpoch)",
+			"class": 6,
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tif (!identityHeld(authStore.identityEpoch)) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"saveTitle()",
+				"assigns item after an unfenced await"
+			]
+		},
+		{
+			"id": "R6 H39 fence boolean let, reset after the await",
+			"class": 6,
+			"subs": [
+				[
+					"\t\tconst gen = loadGeneration;\n\t\tsaveStatus = 'saving';\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title",
+					"\t\tconst gen = loadGeneration;\n\t\tlet titleOk = gen === loadGeneration;\n\t\tsaveStatus = 'saving';\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title"
+				],
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\ttitleOk = true;\n\t\t\tif (!titleOk) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"saveTitle()",
+				"assigns item after an unfenced await"
+			]
+		},
+		{
+			"id": "R6 H40 component-scope identityEpochAtLoad as capture",
+			"class": 6,
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tif (!identityHeld(identityEpochAtLoad)) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"saveTitle()",
+				"assigns item after an unfenced await"
+			]
+		},
+		{
+			"id": "R6 H41 for-of rewrites a capture",
+			"class": 3,
+			"subs": [
+				[
+					"\t\tconst gen = loadGeneration;\n\t\tsaveStatus = 'saving';\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title",
+					"\t\tlet gen = loadGeneration;\n\t\tsaveStatus = 'saving';\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title"
+				],
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tfor (gen of [loadGeneration]);\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"for-of/for-in target is not a declaration"
+			]
+		},
+		{
+			"id": "R6 H15 catch after for-await",
+			"class": 7,
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n\t\t\tconst titles = api.items.titleStream(wsSlug, targetItem.id);\n\t\t\ttry {\n\t\t\t\tfor await (const t of titles) void t;\n\t\t\t} catch {\n\t\t\t\titem = null;\n\t\t\t}\n"
+				]
+			],
+			"refuses": [
+				"saveTitle()",
+				"assigns item after an unfenced await"
+			]
+		},
+		{
+			"id": "R6 H15b finally after for-await",
+			"class": 7,
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n\t\t\tconst titles = api.items.titleStream(wsSlug, targetItem.id);\n\t\t\ttry {\n\t\t\t\tfor await (const t of titles) void t;\n\t\t\t} finally {\n\t\t\t\titem = null;\n\t\t\t}\n"
+				]
+			],
+			"refuses": [
+				"saveTitle()",
+				"assigns item after an unfenced await"
+			]
+		},
+		{
+			"id": "R6 H16 tag function returns listener",
+			"class": 5,
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tconst applyLater = ((_s: TemplateStringsArray) => () => {\n\t\t\t\titem = withInflightTags(updated);\n\t\t\t})`x`;\n\t\t\twindow.addEventListener('focus', applyLater);\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"tagged template"
+			]
+		},
+		{
+			"id": "R6 H17 top-level helper via conditional",
+			"class": 5,
+			"subs": [
+				[
+					"\tfunction showSaved() {\n",
+					"\tlet pendingTitleItem: Item | null = null;\n\tfunction applyPendingTitle() {\n\t\tif (pendingTitleItem) item = pendingTitleItem;\n\t}\n\n\tfunction showSaved() {\n"
+				],
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tpendingTitleItem = withInflightTags(updated);\n\t\t\twindow.addEventListener('focus', updated ? applyPendingTitle : showSaved, { once: true });\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"saveTitle()",
+				"callback applyPendingTitle",
+				"assigns item after an unfenced await"
+			]
+		},
+		{
+			"id": "R6 H36 unit helper passed with as",
+			"class": 5,
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tconst applyTitleLater = () => {\n\t\t\t\titem = withInflightTags(updated);\n\t\t\t};\n\t\t\twindow.addEventListener('focus', applyTitleLater as EventListener);\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"saveTitle()",
+				"callback applyTitleLater",
+				"assigns item after an unfenced await"
+			]
+		},
+		{
+			"id": "R6 H36b unit helper passed with !",
+			"class": 5,
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tconst applyTitleLater = () => {\n\t\t\t\titem = withInflightTags(updated);\n\t\t\t};\n\t\t\twindow.addEventListener('focus', applyTitleLater!);\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"saveTitle()",
+				"callback applyTitleLater",
+				"assigns item after an unfenced await"
+			]
+		},
+		{
+			"id": "R6 H33 generator helper",
+			"class": 5,
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tfunction* applyTitleGen() {\n\t\t\t\titem = withInflightTags(updated);\n\t\t\t}\n\t\t\tconst titleIt = applyTitleGen();\n\t\t\twindow.addEventListener('focus', titleIt.next.bind(titleIt));\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"generator"
+			]
+		},
+		{
+			"id": "R6 H32 forEach param shadows capture",
+			"class": 1,
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\ttry {\n\t\t\t\tthrow loadGeneration;\n\t\t\t} catch (gen) {\n\t\t\t\tif (gen !== loadGeneration) return;\n\t\t\t\titem = updated;\n\t\t\t}\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"shadows the capture gen"
+			]
+		},
+		{
+			"id": "R6 H18 flushTagSaver re-stamps its epoch",
+			"class": 8,
+			"subs": [
+				[
+					"\t\t\t\t\ttags: JSON.stringify(toSave)\n\t\t\t\t});\n",
+					"\t\t\t\t\ttags: JSON.stringify(toSave)\n\t\t\t\t});\n\t\t\t\tsaver.epoch = captureIdentity();\n"
+				]
+			],
+			"refuses": [
+				"flushTagSaver() has changed since its row was reviewed"
+			],
+			"gate": true
+		},
+		{
+			"id": "R6 H19 flushTagSaver evicts a newer saver",
+			"class": 8,
+			"subs": [
+				[
+					"\t\t\tif (saver.pending === null && tagSavers.get(saver.itemId) === saver) {\n",
+					"\t\t\tif (saver.pending === null) {\n"
+				]
+			],
+			"refuses": [
+				"flushTagSaver() has changed since its row was reviewed"
+			],
+			"gate": true
+		},
+		{
+			"id": "R6 H21 flushRawIfPending wedges its flag",
+			"class": 8,
+			"subs": [
+				[
+					"\t\t\t\t\tif (!item || item.id !== reqItemId || genAtFlush !== loadGeneration) return false;\n",
+					"\t\t\t\t\trawFlushInFlight = true;\n\t\t\t\t\tif (!item || item.id !== reqItemId || genAtFlush !== loadGeneration) return false;\n"
+				]
+			],
+			"refuses": [
+				"flushRawIfPending() has changed since its row was reviewed"
+			],
+			"gate": true
+		},
+		{
+			"id": "R6 H20 loadData no longer always clears the debounce",
+			"class": 9,
+			"subs": [
+				[
+					"\t\tclearTimeout(contentDebounceTimer);\n\t\tcontentDebounceTimer = undefined;\n\t\tcollabFlusher.cancel();\n",
+					"\t\tif (!item) clearTimeout(contentDebounceTimer);\n\t\tcontentDebounceTimer = undefined;\n\t\tcollabFlusher.cancel();\n"
+				]
+			],
+			"refuses": [
+				"loadData no longer clears contentDebounceTimer before its first await"
+			]
+		},
+		{
+			"id": "R6 H20b the clear is in an uncalled arrow",
+			"class": 9,
+			"subs": [
+				[
+					"\t\tclearTimeout(contentDebounceTimer);\n\t\tcontentDebounceTimer = undefined;\n\t\tcollabFlusher.cancel();\n",
+					"\t\tconst cancelDebounce = () => clearTimeout(contentDebounceTimer);\n\t\tcontentDebounceTimer = undefined;\n\t\tcollabFlusher.cancel();\n"
+				]
+			],
+			"refuses": [
+				"loadData no longer clears contentDebounceTimer before its first await"
+			]
+		}
+	]
+}
