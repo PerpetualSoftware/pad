@@ -63,7 +63,12 @@
  *    helper (`const stillCurrent = () => …`, `function switchedAway(…)`) is a
  *    fence exactly when its OWN body has a polarity, with its own params
  *    counted as captures there and nowhere else; a call to it fences only when
- *    it passes a capture. A local boolean initialised from a fence is one too.
+ *    each param that polarity needs receives a capture of the kind it
+ *    compares, in that position. A local boolean initialised from a fence is
+ *    one too, until the next await or a write to it. Captures are typed:
+ *    `generation` (from `loadGeneration` / `++itemGen`) or `identity` (from
+ *    `captureIdentity()`), and only a snapshot declared inside a function is
+ *    one. A stamp is `.epoch` / `.identityEpoch` read through plain names.
  *
  * 5. SCOPES. Whether a write targets a local is decided by the lexical scopes
  *    enclosing the write: every function, block, loop head, switch body and
@@ -737,7 +742,10 @@ export function refusedConstructs(src: AstSource, decls: Declarations): string[]
 		if (n.type === 'CallExpression') {
 			const c = unwrap(n.callee);
 			if (c.type === 'Identifier' || c.type === 'MemberExpression' || c.type === 'Super' || c.type === 'Import') return;
-			const literalShape = isFn(c) || (c.type === 'LogicalExpression' && ['Identifier', 'MemberExpression'].includes(unwrap(c.left).type) && isFn(unwrap(c.right)));
+			// `isFn` narrows its argument; read the logical shape through an unnarrowed alias.
+			const callee: Node = c;
+			const literalShape =
+				isFn(c) || (callee.type === 'LogicalExpression' && ['Identifier', 'MemberExpression'].includes(unwrap(callee.left).type) && isFn(unwrap(callee.right)));
 			let buildsFn = false;
 			walk(c, (x) => {
 				if (isFn(x)) buildsFn = true;
