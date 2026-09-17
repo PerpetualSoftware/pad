@@ -83,7 +83,17 @@ type OutboxEvent struct {
 type MutationOption func(*mutationOptions)
 
 type mutationOptions struct {
-	batchID string
+	batchID   string
+	planLimit bool
+}
+
+// WithRestorePlanLimit makes RestoreItem enforce the workspace's
+// items_per_workspace cap before it un-deletes the row, counted in its own
+// transaction under the workspace seq lock (BUG-3101). A restore raises the
+// live count exactly as a create does. RestoreItem is the only mutation that
+// reads this option; the server passes it in cloud mode only.
+func WithRestorePlanLimit() MutationOption {
+	return func(o *mutationOptions) { o.planLimit = true }
 }
 
 // WithEventBatch marks every canonical event this mutation emits as a member

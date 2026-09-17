@@ -3166,6 +3166,26 @@ func (s *Store) restoreItemOnce(id string, opt mutationOptions) (*models.Item, e
 		return nil, err
 	}
 
+	// BUG-3101: a restore raises items_per_workspace's live count, so it is
+	// decided here, under the seq lock every item insert and restore takes. The
+	// row being restored is not counted yet, so the count is taken as it
+	// stands. Only a row that is still archived is checked: restoring a live
+	// item is not-found below, and must not turn into a plan refusal.
+	if opt.planLimit {
+		var archived bool
+		if err := tx.QueryRow(s.q(`SELECT deleted_at IS NOT NULL FROM items WHERE id = ?`), id).Scan(&archived); err != nil {
+			if err == sql.ErrNoRows {
+				return nil, sql.ErrNoRows
+			}
+			return nil, fmt.Errorf("restore item: read archived state: %w", err)
+		}
+		if archived {
+			if err := s.enforceWorkspaceLimitTx(tx, existing.WorkspaceID, "items_per_workspace"); err != nil {
+				return nil, err
+			}
+		}
+	}
+
 	// Codex round-3 P1 / round-4 P1: restoring an item resurrects it
 	// as a (potentially non-terminal) child of EVERY parent it's
 	// linked to (one item can have both a `parent` and an

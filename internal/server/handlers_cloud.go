@@ -1194,13 +1194,28 @@ func writePlanLimitErrorNote(w http.ResponseWriter, result *store.LimitResult, n
 	if note != "" {
 		msg += " " + note
 	}
-	writeError2(w, http.StatusForbidden, "plan_limit_exceeded", msg, map[string]interface{}{
+	writeError2(w, http.StatusForbidden, "plan_limit_exceeded", msg, planLimitDetails(result))
+}
+
+// planLimitDetails is the structured half of a plan-limit refusal, shared by
+// the 403 and by the bulk envelope's per-item failure.
+func planLimitDetails(result *store.LimitResult) map[string]interface{} {
+	return map[string]interface{}{
 		"feature":     result.Feature,
 		"limit":       result.Limit,
 		"current":     result.Current,
 		"plan":        result.Plan,
 		"upgrade_url": "/console/billing",
-	})
+	}
+}
+
+// restoreLimitOpts is workspaceLimitMintOpts for RestoreItem, whose options
+// are MutationOptions (BUG-3101). Cloud mode only, like the pre-check.
+func (s *Server) restoreLimitOpts() []store.MutationOption {
+	if !s.cloudMode {
+		return nil
+	}
+	return []store.MutationOption{store.WithRestorePlanLimit()}
 }
 
 // planLimitMessage returns a human-readable statement-of-fact sentence for a
