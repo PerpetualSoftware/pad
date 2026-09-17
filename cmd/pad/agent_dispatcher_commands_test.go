@@ -48,10 +48,12 @@ import (
 //     swallow it during resolution — must be declared on the resolved target
 //     or an ancestor (covers persistent --format/--workspace/--url).
 //   - When the resolved target is a command group, every unconsumed trailing
-//     token must be a placeholder, a flag, a flag value, or past `--`:
-//     anything else is a typo'd subcommand (e.g. `pad item commment TASK-5`
-//     must not false-pass as `pad item`). Leaf commands keep accepting
-//     positional args.
+//     token must be a flag, a flag value, or past `--`: anything else is a
+//     typo'd subcommand (e.g. `pad item commment TASK-5` must not false-pass
+//     as `pad item`). Placeholders do NOT consume a group — `pad item <ref>`
+//     resolves to `pad item` with ["<ref>"] left over and must fail, or a
+//     deleted subcommand could false-pass behind a placeholder. Leaf
+//     commands keep accepting positional args and placeholders.
 //   - Fail on zero parsed commands (guard against fence-format drift).
 
 // expectedDispatcherBashBlocks pins the dispatcher's fenced bash block count:
@@ -344,9 +346,12 @@ func checkDispatcherLine(root *cobra.Command, line string) []string {
 	// command group (e.g. `pad item commment TASK-5` resolves to `pad item`
 	// with ["commment" "TASK-5"] left over, and must not false-pass as
 	// `pad item`). Leaf commands accept positional args, so only groups
-	// fail here. Placeholders, flags (validated above), flag values, and
-	// tokens after `--` handling aside, every other trailing token is a
-	// typo'd subcommand.
+	// fail here. Flags (validated above), flag values, and tokens after
+	// `--` pass through; placeholders do NOT consume a group — a bare
+	// `pad item <ref>` (or TASK-5 / [collection]) left over after resolving
+	// to a group means a deleted subcommand could false-pass, so it fails.
+	// A placeholder consumed as a flag value (e.g. `--format <fmt>`) still
+	// passes via the flag-value check below.
 	if len(target.Commands()) > 0 {
 		seenDashDash := false
 		for i, tok := range trailing {
@@ -354,13 +359,14 @@ func checkDispatcherLine(root *cobra.Command, line string) []string {
 				seenDashDash = true
 				continue
 			}
-			if dispatcherPlaceholder.MatchString(tok) {
-				continue
-			}
 			if !seenDashDash && strings.HasPrefix(tok, "-") && tok != "-" {
 				continue
 			}
 			if !seenDashDash && i > 0 && dispatcherTrailingIsFlagValue(target, trailing[i-1]) {
+				continue
+			}
+			if dispatcherPlaceholder.MatchString(tok) {
+				problems = append(problems, fmt.Sprintf("dispatcher line %q: placeholder %q does not consume group %q (unknown command)", line, tok, target.CommandPath()))
 				continue
 			}
 			problems = append(problems, fmt.Sprintf("dispatcher line %q: unknown command %q for %q", line, tok, target.CommandPath()))
@@ -537,6 +543,51 @@ func TestDispatcherLineRejectsTypoSubcommand(t *testing.T) {
 	} {
 		if problems := checkDispatcherLine(root, good); len(problems) != 0 {
 			t.Errorf("legit line %q rejected: %v", good, problems)
+		}
+	}
+}
+
+// TestDispatcherLineRejectsPlaceholderOnGroup is the negative control for the
+// placeholder-on-group hole: a placeholder-shaped trailing token must NOT
+// count as consuming a command group. `pad item <ref>` resolves to the `pad
+// item` group with ["<ref>"] left over and must fail (otherwise a deleted
+// subcommand could false-pass behind a placeholder), while legit leaf
+// placeholder positionals keep passing.
+func TestDispatcherLineRejectsPlaceholderOnGroup(t *testing.T) {
+	root := newRootCmd()
+	for _, bad := range []string{
+		"pad item <ref>",
+		"pad item <id>",
+		"pad item TASK-5",
+		"pad item [collection]",
+		"pad item <ref> --format json",
+	} {
+		problems := checkDispatcherLine(root, bad)
+		if len(problems) == 0 {
+			t.Errorf("placeholder-on-group line %q passed; want rejection", bad)
+			continue
+		}
+		found := false
+		for _, p := range problems {
+			if strings.Contains(p, "placeholder") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("placeholder-on-group line %q problems %v mention no placeholder", bad, problems)
+		}
+	}
+	// Legit leaf placeholder positionals and group-with-flags-only must pass.
+	for _, good := range []string{
+		"pad item create <collection>",
+		`pad item create <collection> "Title" [flags]`,
+		"pad item show TASK-5",
+		"pad item list [collection] --format json",
+		"pad playbook show <slug> --format markdown",
+		"pad item --format json",
+	} {
+		if problems := checkDispatcherLine(root, good); len(problems) != 0 {
+			t.Errorf("legit placeholder line %q rejected: %v", good, problems)
 		}
 	}
 }
