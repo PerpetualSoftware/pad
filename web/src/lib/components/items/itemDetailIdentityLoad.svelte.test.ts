@@ -68,6 +68,9 @@ vi.mock('$lib/collab/wsProvider.svelte', () => ({
 	},
 }));
 
+/** Per-leg switches the module mocks read; reset before every test. */
+const knobs = vi.hoisted(() => ({ canEdit: true, conflicts: false }));
+
 const COLL = vi.hoisted(() => ({
 	id: 'c1', slug: 'tasks', name: 'Tasks', prefix: 'TASK',
 	schema: '{"fields":[{"key":"estimate","label":"Estimate","type":"text"}]}', settings: '{}',
@@ -95,7 +98,8 @@ vi.mock('$lib/api/client', () => ({
 		tags: { list: vi.fn(async () => []) },
 	},
 	PadApiError: class PadApiError extends Error { code = ''; },
-	isUpdateConflictError: () => false,
+	// A rejection carrying `conflict: true` is a 409 only while a leg asks for it.
+	isUpdateConflictError: (e: unknown) => knobs.conflicts && (e as { conflict?: boolean } | null)?.conflict === true,
 }));
 // A REAL subscription (round 3 on #1387): the no-op this replaced left the
 // SSE callback with no driven leg at all, pinned only by the source count.
@@ -127,7 +131,7 @@ vi.mock('$lib/stores/localIndex.svelte', () => ({
 	localIndex: { bootstrap: vi.fn(async () => {}), getAll: () => [], retagCollection: vi.fn() },
 }));
 vi.mock('$lib/stores/workspace.svelte', () => ({
-	workspaceStore: { canEditItem: () => true, get isOwner() { return true; }, setCurrent: vi.fn(async () => {}) },
+	workspaceStore: { canEditItem: () => knobs.canEdit, get isOwner() { return true; }, setCurrent: vi.fn(async () => {}) },
 }));
 
 /**
@@ -227,6 +231,8 @@ beforeEach(() => {
 	vi.mocked(api.items.update).mockClear();
 	vi.mocked(api.items.flushCollabContent).mockClear();
 	vi.mocked(api.members.list).mockClear();
+	knobs.canEdit = true;
+	knobs.conflicts = false;
 	collab.synced = false;
 	collab.constructed = 0;
 	collab.destroyed = 0;
@@ -832,5 +838,85 @@ describe('the load a moved identity triggers does not persist the previous user\
 		await waitFor(() =>
 			expect(contentPatches()).toEqual([{ id: 'i1', content: 'typed by the signed-in user', keepalive: true }])
 		);
+	});
+});
+
+/**
+ * BUG-3084 round 8, lead ruling on checkpoint 69 (condition 2): the two
+ * stale-write shapes the hash gate does not TEST, only detects edits to.
+ */
+describe('the legacy content debounce holds one live timer across an identity change (round 8 A)', () => {
+	/**
+	 * The non-collab path: with no edit right there is no provider, and the
+	 * read-only editor's updates go through the legacy debounce.
+	 */
+	async function twoArms(r: ReturnType<typeof mount>) {
+		await loaded(r);
+		const editor = await waitFor(() => {
+			const p = stubs().find((x) => typeof x.onUpdate === 'function' && x.editable === false);
+			if (!p) throw new Error('the read-only editor did not mount');
+			return p;
+		});
+		expect(collab.constructed, 'a provider mounted, so this is not the legacy path').toBe(0);
+		(editor.onUpdate as (md: string) => void)('FIRST DRAFT');
+		(editor.onUpdate as (md: string) => void)('SECOND DRAFT');
+	}
+
+	it('REFUSAL: neither armed save runs after the identity moves', async () => {
+		knobs.canEdit = false;
+		const r = mount();
+		await twoArms(r);
+		const before = itemGets();
+		auth.moveIdentity();
+		await settle();
+		await waitFor(() => expect(itemGets(), 'the reload did not run, so this leg measures nothing').toBe(before + 1));
+		await new Promise((res) => setTimeout(res, 1400));
+		expect(contentPatches()).toEqual([]);
+	});
+
+	it('CONTROL: under an unchanged identity the second arm saves, once, and the first never does', async () => {
+		knobs.canEdit = false;
+		const r = mount();
+		await twoArms(r);
+		await new Promise((res) => setTimeout(res, 1400));
+		expect(contentPatches().map((p) => p.content)).toEqual(['SECOND DRAFT']);
+	});
+});
+
+describe('the field write\'s OCC retry does not re-send across an identity change (round 8 C)', () => {
+	async function conflictThenRefetch(moveIdentity: boolean) {
+		knobs.conflicts = true;
+		const r = mount();
+		await loaded(r);
+		vi.mocked(api.items.update).mockImplementationOnce(async () => {
+			throw Object.assign(new Error('conflict'), { conflict: true });
+		});
+		const refetch = deferNext(api.items.get);
+		const field = stubs().filter((s) => typeof s.onchange === 'function' && s.field).at(-1);
+		if (!field) throw new Error('no FieldEditor mounted — the schema field did not render');
+		(field.onchange as (v: unknown) => void)('5');
+		await waitFor(() => expect(refetch.length, 'the 409 did not start a refetch, so this leg measures nothing').toBe(1));
+		expect(vi.mocked(api.items.update)).toHaveBeenCalledTimes(1);
+		if (moveIdentity) {
+			const before = itemGets();
+			auth.moveIdentity();
+			await settle();
+			await waitFor(() => expect(itemGets(), 'the reload did not run, so this leg measures nothing').toBe(before + 1));
+			await waitFor(() => expect(r.container.textContent).toContain('Item i1'));
+		}
+		refetch[0]!.resolve(itemFor('i1'));
+		await settle();
+		await new Promise((res) => setTimeout(res, 20));
+		return r;
+	}
+
+	it('REFUSAL: the retry is abandoned once the same item reloads for a new identity', async () => {
+		await conflictThenRefetch(true);
+		expect(vi.mocked(api.items.update)).toHaveBeenCalledTimes(1);
+	});
+
+	it('CONTROL: under an unchanged identity the retry re-sends', async () => {
+		await conflictThenRefetch(false);
+		await waitFor(() => expect(vi.mocked(api.items.update)).toHaveBeenCalledTimes(2));
 	});
 });
