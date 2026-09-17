@@ -524,6 +524,32 @@
 			"refuses": [
 				"flushRawIfPending() has changed since its allowance was reviewed"
 			]
+		},
+		{
+			"id": "R6 H20 loadData no longer always clears the debounce",
+			"class": 9,
+			"subs": [
+				[
+					"\t\tclearTimeout(contentDebounceTimer);\n\t\tcontentDebounceTimer = undefined;\n\t\tcollabFlusher.cancel();\n",
+					"\t\tif (!item) clearTimeout(contentDebounceTimer);\n\t\tcontentDebounceTimer = undefined;\n\t\tcollabFlusher.cancel();\n"
+				]
+			],
+			"refuses": [
+				"loadData no longer clears contentDebounceTimer before its first await"
+			]
+		},
+		{
+			"id": "R6 H20b the clear is in an uncalled arrow",
+			"class": 9,
+			"subs": [
+				[
+					"\t\tclearTimeout(contentDebounceTimer);\n\t\tcontentDebounceTimer = undefined;\n\t\tcollabFlusher.cancel();\n",
+					"\t\tconst cancelDebounce = () => clearTimeout(contentDebounceTimer);\n\t\tcontentDebounceTimer = undefined;\n\t\tcollabFlusher.cancel();\n"
+				]
+			],
+			"refuses": [
+				"loadData no longer clears contentDebounceTimer before its first await"
+			]
 		}
 	]
 }

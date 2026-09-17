@@ -191,13 +191,23 @@ function contextOf(src: AstSource, unit: Unit): string {
 function clearsBeforeFirstAwait(src: AstSource, fnName: string, timer: string): string | null {
 	const fn = src.script.body.find((s: Node) => s.type === 'FunctionDeclaration' && s.id?.name === fnName);
 	if (!fn) return `${fnName} is gone`;
-	let firstAwait = Infinity;
-	let clear = Infinity;
-	walk(fn, (n) => {
-		if (n.type === 'AwaitExpression') firstAwait = Math.min(firstAwait, n.start);
-		if (n.type === 'CallExpression' && src.text(n).replace(/\s+/g, '') === `clearTimeout(${timer})`) clear = Math.min(clear, n.start);
-	});
-	return clear < firstAwait ? null : `${fnName} no longer clears ${timer} before its first await`;
+	// The clear must DOMINATE the first await: a statement of the function body
+	// itself, reached on every path — no await, return or throw in any
+	// statement before it (round 6 class 9: a clear made conditional, or moved
+	// into an arrow nobody calls, used to pass by position).
+	const ownExit = (st: Node) => {
+		let found = false;
+		walk(st, (n, anc) => {
+			if (anc.some((a) => a !== st && (a.type === 'ArrowFunctionExpression' || a.type === 'FunctionExpression' || a.type === 'FunctionDeclaration'))) return;
+			if (n.type === 'AwaitExpression' || n.type === 'ReturnStatement' || n.type === 'ThrowStatement') found = true;
+		});
+		return found;
+	};
+	for (const st of fn.body.body as Node[]) {
+		if (st.type === 'ExpressionStatement' && src.text(st.expression).replace(/\s+/g, '') === `clearTimeout(${timer})`) return null;
+		if (ownExit(st)) break;
+	}
+	return `${fnName} no longer clears ${timer} before its first await`;
 }
 
 /**
@@ -423,6 +433,9 @@ const SYNC_REFRESH_FENCE = '\t\t\t\tif (!item || item.id !== reqItemId || myItem
 const SYNC_REFRESH_FENCE_AND_ADOPT = SYNC_REFRESH_FENCE + '\t\t\t\titem = adoptServerItem(updated);\n';
 const SYNC_REFRESH_FENCED = '\t\t\t\tconst updated = await api.items.get(reqWsSlug, reqItemSlug);\n' + SYNC_REFRESH_FENCE_AND_ADOPT;
 
+/** loadData's unconditional debounce clear, which the debounce row's pin relies on. */
+const LOAD_DATA_CLEAR = '\t\tclearTimeout(contentDebounceTimer);\n\t\tcontentDebounceTimer = undefined;\n\t\tcollabFlusher.cancel();\n';
+
 /** saveTitle's capture, made reassignable. */
 const TITLE_GEN_LET: [string, string] = [
 	"\t\tconst gen = loadGeneration;\n\t\tsaveStatus = 'saving';\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title",
@@ -569,6 +582,18 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 				[TITLE_FENCE_AND_COMMITS, '{ title: titleDraft.trim() });\n\t\t\tif (loadGeneration !== identity) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n'],
 			],
 			refuses: ['saveTitle()', 'assigns item after an unfenced await'],
+		},
+		{
+			// Round 6 class 9: the clear must be reached on every path to the
+			// first await. An early return before it skips it on one path.
+			id: 'R6 loadData can return before it clears the debounce',
+			subs: [[LOAD_DATA_CLEAR, '\t\tif (!item) return;\n' + LOAD_DATA_CLEAR]],
+			refuses: ['loadData no longer clears contentDebounceTimer before its first await'],
+		},
+		{
+			id: 'R6 loadData awaits before it clears the debounce',
+			subs: [[LOAD_DATA_CLEAR, '\t\tawait tick();\n' + LOAD_DATA_CLEAR]],
+			refuses: ['loadData no longer clears contentDebounceTimer before its first await'],
 		},
 		{
 			// Iteration methods count as synchronous only on a receiver the unit
