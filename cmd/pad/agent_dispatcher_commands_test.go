@@ -47,6 +47,11 @@ import (
 //     before the command path, where cobra's stripFlags would otherwise
 //     swallow it during resolution — must be declared on the resolved target
 //     or an ancestor (covers persistent --format/--workspace/--url).
+//   - When the resolved target is a command group, every unconsumed trailing
+//     token must be a placeholder, a flag, a flag value, or past `--`:
+//     anything else is a typo'd subcommand (e.g. `pad item commment TASK-5`
+//     must not false-pass as `pad item`). Leaf commands keep accepting
+//     positional args.
 //   - Fail on zero parsed commands (guard against fence-format drift).
 
 // expectedDispatcherBashBlocks pins the dispatcher's fenced bash block count:
@@ -214,6 +219,44 @@ func dispatcherFlagExists(cmd *cobra.Command, name string) bool {
 	return false
 }
 
+// dispatcherTrailingIsFlagValue reports whether a trailing token is the value
+// consumed by the preceding --flag token. prev must be flag-like without `=`
+// and either a known value-taking flag or an unknown flag (whose putative
+// value is skipped to keep the error focused on the unknown-flag report).
+// Known boolean flags (NoOptDefVal != "") take no value.
+func dispatcherTrailingIsFlagValue(target *cobra.Command, prev string) bool {
+	if prev == "--" || !strings.HasPrefix(prev, "-") || prev == "-" {
+		return false
+	}
+	if strings.Contains(prev, "=") {
+		return false
+	}
+	name := strings.TrimLeft(prev, "-")
+	if name == "" {
+		return false
+	}
+	if strings.HasPrefix(name, "no-") && dispatcherFlagExists(target, strings.TrimPrefix(name, "no-")) {
+		return false
+	}
+	for c := target; c != nil; c = c.Parent() {
+		if f := c.Flags().Lookup(name); f != nil {
+			return f.NoOptDefVal == ""
+		}
+		if f := c.PersistentFlags().Lookup(name); f != nil {
+			return f.NoOptDefVal == ""
+		}
+		if len(name) == 1 {
+			if f := c.Flags().ShorthandLookup(name); f != nil {
+				return f.NoOptDefVal == ""
+			}
+			if f := c.PersistentFlags().ShorthandLookup(name); f != nil {
+				return f.NoOptDefVal == ""
+			}
+		}
+	}
+	return true
+}
+
 // checkDispatcherLine validates one dispatcher command line against the cobra
 // tree and returns every problem found (empty means the line resolves cleanly).
 func checkDispatcherLine(root *cobra.Command, line string) []string {
@@ -295,6 +338,32 @@ func checkDispatcherLine(root *cobra.Command, line string) []string {
 				continue
 			}
 			problems = append(problems, fmt.Sprintf("dispatcher line %q: unknown flag --%s on %q", line, name, target.CommandPath()))
+		}
+	}
+	// Fail on unconsumed trailing tokens when the resolved target is a
+	// command group (e.g. `pad item commment TASK-5` resolves to `pad item`
+	// with ["commment" "TASK-5"] left over, and must not false-pass as
+	// `pad item`). Leaf commands accept positional args, so only groups
+	// fail here. Placeholders, flags (validated above), flag values, and
+	// tokens after `--` handling aside, every other trailing token is a
+	// typo'd subcommand.
+	if len(target.Commands()) > 0 {
+		seenDashDash := false
+		for i, tok := range trailing {
+			if tok == "--" {
+				seenDashDash = true
+				continue
+			}
+			if dispatcherPlaceholder.MatchString(tok) {
+				continue
+			}
+			if !seenDashDash && strings.HasPrefix(tok, "-") && tok != "-" {
+				continue
+			}
+			if !seenDashDash && i > 0 && dispatcherTrailingIsFlagValue(target, trailing[i-1]) {
+				continue
+			}
+			problems = append(problems, fmt.Sprintf("dispatcher line %q: unknown command %q for %q", line, tok, target.CommandPath()))
 		}
 	}
 	return problems
@@ -429,5 +498,45 @@ func TestDispatcherLineRejectsPlaceholderInPath(t *testing.T) {
 	good := "pad item show TASK-5"
 	if problems := checkDispatcherLine(root, good); len(problems) != 0 {
 		t.Fatalf("trailing-placeholder line %q rejected: %v", good, problems)
+	}
+}
+
+// TestDispatcherLineRejectsTypoSubcommand is the negative control for the
+// unconsumed-trailing-token check: a typo'd subcommand that cobra's Find
+// leaves unconsumed (resolving to the parent group) must fail instead of
+// false-passing as the group, while legit trailing args, placeholders,
+// flags, and flag values keep passing.
+func TestDispatcherLineRejectsTypoSubcommand(t *testing.T) {
+	root := newRootCmd()
+	for _, bad := range []string{
+		"pad item commment TASK-5",
+		"pad item showw TASK-5",
+		"pad item commment TASK-5 --format json",
+	} {
+		problems := checkDispatcherLine(root, bad)
+		found := false
+		for _, p := range problems {
+			if strings.Contains(p, "unknown command") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("typo'd subcommand line %q passed or missed unknown-command; problems: %v", bad, problems)
+		}
+	}
+	// Legit lines must still pass: leaf positionals (literal and
+	// placeholder), topic args, flags, and group-with-flags-only.
+	for _, good := range []string{
+		"pad item show TASK-5",
+		`pad item comment TASK-5 "Message"`,
+		`pad item create <collection> "Title" [flags]`,
+		"pad item list [collection] --format json",
+		"pad agent guide items",
+		"pad project dashboard --format json",
+		"pad item --format json",
+	} {
+		if problems := checkDispatcherLine(root, good); len(problems) != 0 {
+			t.Errorf("legit line %q rejected: %v", good, problems)
+		}
 	}
 }
