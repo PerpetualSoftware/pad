@@ -61,6 +61,15 @@ import (
 //     plus an order check, so a deleted or substituted load-bearing command
 //     fails even though every surviving line still resolves. A permanent
 //     negative test proves deletion and substitution fail.
+//   - Pin inline `pad ...` command code spans in the dispatcher prose outside
+//     the fenced blocks (expectedDispatcherInlineCommands +
+//     checkDispatcherInlineInventory, enforced by
+//     TestAgentDispatcherInlineCommands): exact set equality plus an order
+//     check, and every pinned span must also resolve via checkDispatcherLine,
+//     so a deleted inline command or a typo'd one (e.g. `pad bootstrapp
+//     --format json`) fails. A permanent negative test proves the typo fails.
+//     The `pad agent guide <topic>` fallback is excluded here on purpose:
+//     its topic existence stays pinned by TestAgentDispatcherGuideTopicsResolve.
 
 // expectedDispatcherBashBlocks pins the dispatcher's fenced bash block count:
 // "Common commands" + "Load details". A deleted second block must fail here
@@ -793,5 +802,186 @@ func TestDispatcherInventoryRejectsDeletionOrSubstitution(t *testing.T) {
 	pristine := wrap([]string{join(expectedDispatcherCommands[0]), join(expectedDispatcherCommands[1])})
 	if problems := checkDispatcherInventory(pristine); len(problems) != 0 {
 		t.Fatalf("pristine inventory rejected: %v", problems)
+	}
+}
+
+// expectedDispatcherInlineCommands pins the literal `pad ...` command code
+// spans in the dispatcher prose OUTSIDE the fenced bash blocks (the bootstrap
+// line, `pad attachment`), in prose order. The fenced-block inventory above
+// never sees these spans, so deleting or typoing one passed every pin before
+// this existed. Update deliberately when the prose gains, loses, or rewrites
+// a literal pad command. Deliberately NOT pinned here:
+//   - `pad` alone (binary name, not a command path),
+//   - `pad agent guide <topic>` fallback (topic existence is pinned by
+//     TestAgentDispatcherGuideTopicsResolve in agent_guide_test.go),
+//   - `pad <group> <command> --help` (placeholder usage template, not a
+//     literal command; checkDispatcherLine rejects placeholders in the
+//     command path by design).
+var expectedDispatcherInlineCommands = []string{
+	"pad bootstrap --format json",
+	"pad attachment",
+}
+
+// dispatcherInlineSpan matches single-backtick code spans without newlines.
+var dispatcherInlineSpan = regexp.MustCompile("`([^`\n]+)`")
+
+// stripDispatcherFencedBlocks drops ``` fenced regions (fence lines plus
+// bodies) so inline-span extraction sees prose only. Strict fence pairing is
+// pinned separately by splitDispatcherBashBlocks; this is a plain toggle scan.
+func stripDispatcherFencedBlocks(body string) string {
+	var out []string
+	inFence := false
+	for _, raw := range strings.Split(body, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(raw), "```") {
+			inFence = !inFence
+			continue
+		}
+		if !inFence {
+			out = append(out, raw)
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+// dispatcherInlineCommandSpans returns the literal `pad ...` command code
+// spans in the dispatcher prose outside fenced blocks, in prose order.
+func dispatcherInlineCommandSpans(body string) []string {
+	var out []string
+	for _, m := range dispatcherInlineSpan.FindAllStringSubmatch(stripDispatcherFencedBlocks(body), -1) {
+		span := strings.TrimSpace(m[1])
+		if !strings.HasPrefix(span, "pad ") {
+			continue
+		}
+		if strings.HasPrefix(span, "pad agent guide ") {
+			continue // guide fallback: pinned by TestAgentDispatcherGuideTopicsResolve
+		}
+		if strings.ContainsAny(span, "<>") {
+			continue // `pad <group> <command> --help` usage template, not a literal command
+		}
+		out = append(out, span)
+	}
+	return out
+}
+
+// checkDispatcherInlineInventory compares extracted inline spans against
+// expectedDispatcherInlineCommands: exact set equality plus an order check,
+// so a deleted, added, substituted, or typo'd inline command fails.
+func checkDispatcherInlineInventory(spans []string) []string {
+	var problems []string
+	want := expectedDispatcherInlineCommands
+	if len(spans) != len(want) {
+		problems = append(problems, fmt.Sprintf("dispatcher inline inventory: expected %d commands, got %d (%q)", len(want), len(spans), spans))
+	}
+	inGot := make(map[string]bool, len(spans))
+	for _, s := range spans {
+		inGot[s] = true
+	}
+	inWant := make(map[string]bool, len(want))
+	for _, w := range want {
+		inWant[w] = true
+	}
+	for _, w := range want {
+		if !inGot[w] {
+			problems = append(problems, fmt.Sprintf("dispatcher inline inventory: missing command %q (deleted, substituted, or typo'd)", w))
+		}
+	}
+	for _, s := range spans {
+		if !inWant[s] {
+			problems = append(problems, fmt.Sprintf("dispatcher inline inventory: unexpected command %q (added, substituted, or typo'd)", s))
+		}
+	}
+	if len(spans) == len(want) {
+		for i := range want {
+			if spans[i] != want[i] {
+				problems = append(problems, fmt.Sprintf("dispatcher inline inventory: order drift at span %d: got %q, want %q", i+1, spans[i], want[i]))
+				break
+			}
+		}
+	}
+	return problems
+}
+
+// TestAgentDispatcherInlineCommands pins the inline `pad ...` command code
+// spans in the dispatcher prose outside the fenced bash blocks: the extracted
+// spans must equal expectedDispatcherInlineCommands exactly, and every span
+// must resolve against the cobra tree via checkDispatcherLine.
+func TestAgentDispatcherInlineCommands(t *testing.T) {
+	tool := cli.ResolveTool("agents")
+	if tool == nil {
+		t.Fatal(`ResolveTool("agents") returned nil`)
+	}
+	dispatcher := string(cli.FormatForTool(*tool, pad.PadSkill))
+	if _, err := splitDispatcherBashBlocks(dispatcher); err != nil {
+		t.Fatalf("dispatcher bash fences: %v", err)
+	}
+	spans := dispatcherInlineCommandSpans(dispatcher)
+	for _, p := range checkDispatcherInlineInventory(spans) {
+		t.Error(p)
+	}
+	root := newRootCmd()
+	for _, span := range spans {
+		for _, p := range checkDispatcherLine(root, span) {
+			t.Error(p)
+		}
+	}
+}
+
+// TestDispatcherInlineRejectsTypo is the permanent negative control for the
+// inline-command pin: a typo'd inline command must fail both resolution and
+// the inventory, and a deleted inline command must fail the inventory even
+// though every surviving span still resolves.
+func TestDispatcherInlineRejectsTypo(t *testing.T) {
+	root := newRootCmd()
+	// Typo'd inline commands must not resolve (proves the resolve half of
+	// the pin catches typos even before the inventory runs).
+	for _, bad := range []string{
+		"pad bootstrapp --format json",
+		"pad attachmen",
+	} {
+		if problems := checkDispatcherLine(root, bad); len(problems) == 0 {
+			t.Errorf("typo'd inline command %q passed resolution; want failure", bad)
+		}
+	}
+	contains := func(problems []string, want string) bool {
+		for _, p := range problems {
+			if strings.Contains(p, want) {
+				return true
+			}
+		}
+		return false
+	}
+	// Typo substitution: the typo'd span is unexpected and the true command
+	// is missing.
+	typoSub := []string{"pad bootstrapp --format json", "pad attachment"}
+	typoProblems := checkDispatcherInlineInventory(typoSub)
+	if len(typoProblems) == 0 {
+		t.Fatal("typo'd inline command passed inventory; want failure")
+	}
+	if !contains(typoProblems, `missing command "pad bootstrap --format json"`) {
+		t.Errorf("typo-substitution problems %v do not name the missing command", typoProblems)
+	}
+	if !contains(typoProblems, `unexpected command "pad bootstrapp --format json"`) {
+		t.Errorf("typo-substitution problems %v do not name the typo'd command", typoProblems)
+	}
+	// Deletion: every surviving span still resolves, so the resolve-only pin
+	// would pass — assert that first to prove the hole is real, then require
+	// the inventory to fail.
+	deleted := []string{"pad bootstrap --format json"}
+	for _, span := range deleted {
+		if problems := checkDispatcherLine(root, span); len(problems) != 0 {
+			t.Fatalf("surviving span %q unexpectedly fails to resolve: %v", span, problems)
+		}
+	}
+	delProblems := checkDispatcherInlineInventory(deleted)
+	if len(delProblems) == 0 {
+		t.Fatal("deleted inline command passed inventory; want failure")
+	}
+	if !contains(delProblems, `missing command "pad attachment"`) {
+		t.Errorf("deleted-command problems %v do not name the missing command", delProblems)
+	}
+	// The pristine inventory must pass: guards the negative test against
+	// rotting (failing on the real dispatcher for the wrong reason).
+	if problems := checkDispatcherInlineInventory(expectedDispatcherInlineCommands); len(problems) != 0 {
+		t.Fatalf("pristine inline inventory rejected: %v", problems)
 	}
 }
