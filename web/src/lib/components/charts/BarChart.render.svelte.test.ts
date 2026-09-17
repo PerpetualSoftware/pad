@@ -96,13 +96,39 @@ describe('BarChart renders through LayerCake', () => {
 		expect(bars.length).toBe(DATA.length * SERIES.length);
 
 		// Every bar is positioned and sized by the scales the context hands the
-		// layer. A collapsed or absent context leaves these NaN or 0.
+		// layer — in BOTH dimensions. x/width come from k.xGet and the band
+		// scale; y/height from k.yScale and k.height. A collapsed or absent
+		// context leaves these NaN or 0. Checking only the x half would leave
+		// `k.height` and the y-scale reads at Bars.svelte:55,57 uncovered, which
+		// is exactly what it did until review round 3 said so.
 		for (const bar of bars) {
 			const width = Number(bar.getAttribute('width'));
 			const x = Number(bar.getAttribute('x'));
+			const y = Number(bar.getAttribute('y'));
+			const height = Number(bar.getAttribute('height'));
 			expect(Number.isFinite(width)).toBe(true);
 			expect(width).toBeGreaterThan(0);
 			expect(Number.isFinite(x)).toBe(true);
+			expect(Number.isFinite(y)).toBe(true);
+			expect(y).toBeGreaterThanOrEqual(0);
+			expect(height).toBeGreaterThan(0);
+		}
+
+		// A relation rather than a bound: the y scale has to ORDER the bars, so
+		// the tallest value draws the tallest bar and starts highest. A y read
+		// that is stuck, zeroed or inverted fails here even when it stays finite.
+		const barFor = (title: string) =>
+			Array.from(bars).find((b) => b.querySelector('title')?.textContent === title)!;
+		const tallest = barFor('Created: 8');
+		const shortest = barFor('Completed: 2');
+		expect(Number(tallest.getAttribute('height'))).toBeGreaterThan(
+			Number(shortest.getAttribute('height'))
+		);
+		expect(Number(tallest.getAttribute('y'))).toBeLessThan(Number(shortest.getAttribute('y')));
+
+		// The hit rects span the full plot height, which is a direct k.height read.
+		for (const hit of container.querySelectorAll('g.bars rect.hit')) {
+			expect(Number(hit.getAttribute('height'))).toBeGreaterThan(0);
 		}
 
 		// The per-bar <title> carries the series label and value, so the bars are
@@ -115,11 +141,22 @@ describe('BarChart renders through LayerCake', () => {
 	it('draws the x axis with a label per category', () => {
 		const { container } = renderChart();
 
-		const labels = Array.from(
-			container.querySelectorAll('g.axis-x text'),
-			(t) => t.textContent?.trim()
-		);
-		expect(labels).toEqual(['Mon', 'Tue', 'Wed']);
+		const texts = Array.from(container.querySelectorAll('g.axis-x text'));
+		expect(texts.map((t) => t.textContent?.trim())).toEqual(['Mon', 'Tue', 'Wed']);
+
+		// Each label is placed by center(), which reads k.xGet and the band
+		// scale's bandwidth. Assert the ORDER rather than pixels: labels march
+		// left to right, and all sit inside the plot.
+		const xs = texts.map((t) => Number(t.getAttribute('x')));
+		expect(xs.every(Number.isFinite)).toBe(true);
+		expect(xs).toEqual([...xs].sort((a, b) => a - b));
+		expect(xs[0]).toBeGreaterThan(0);
+
+		// The baseline spans the plot at its foot — a direct k.width / k.height
+		// read that nothing asserted until review round 3 named it.
+		const baseline = container.querySelector('g.axis-x line')!;
+		expect(Number(baseline.getAttribute('x2'))).toBeGreaterThan(0);
+		expect(Number(baseline.getAttribute('y2'))).toBeGreaterThan(0);
 	});
 
 	it('draws the y axis with numeric ticks spanning the data', () => {
@@ -191,12 +228,16 @@ describe('BarChart renders through LayerCake', () => {
 	});
 
 	it('drives the hover tooltip from context read at event time', async () => {
-		// `bandCenter` and `bandSummary` (Bars.svelte) are the only context reads
-		// in the unit that happen OUTSIDE a tracking context — they run in a
-		// pointer handler and want the value at event time rather than a
-		// dependency. Review round 1 judged that correct by design; this leg is
-		// what makes it checked rather than argued. It is also the only coverage
-		// of `k.padding` anywhere in this file.
+		// `bandCenter` (Bars.svelte:45-47) is the ONE context read in the unit that
+		// happens outside a tracking context: it runs in the pointer handler and
+		// wants the value at event time rather than a dependency. Review round 1
+		// judged that correct by design; this leg is what makes it checked rather
+		// than argued, and it is the only coverage of `k.padding` in this file.
+		//
+		// `bandSummary` is NOT in that category, though it looks like it — its one
+		// call site is `<title>{bandSummary(d)}</title>`, a template expression, so
+		// its `k.x` read is tracked like any other. The assertion on it below runs
+		// before the pointer dispatch and is checking first paint.
 		const { container } = renderChart();
 
 		const hits = container.querySelectorAll('g.bars rect.hit');
