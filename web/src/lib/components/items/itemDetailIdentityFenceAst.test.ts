@@ -401,6 +401,14 @@ const IDENTIFIER_CALLBACKS: Array<{ text: string; count: number; why: string; re
  * changing, so every one of their fixtures would pass on a component that no
  * longer has them tabled (round 9, smaller notes). Hashed by VALUE — the sets
  * are imported and read, never scanned as source.
+ *
+ * That reason holds for `DEFERRING_METHODS` and `DEFERRING_FUNCTIONS`, which
+ * `enumerateUnits` reads. It does NOT hold for `SYNC_CALLBACK_CALLEES`: only
+ * the aid reads that one, so shrinking it drops no unit from the GATE's
+ * population (round 10 §5.3 corrected the claim, not the code). It is hashed
+ * anyway — over-inclusion costs a bump nobody needed, while leaving it out
+ * would leave a reader guessing which of the three the gate depends on. The
+ * fixture below mutates `DEFERRING_FUNCTIONS`, the load-bearing one.
  */
 const POPULATION_VOCABULARY = 'ddad17f9655e';
 

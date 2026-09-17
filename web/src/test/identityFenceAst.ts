@@ -20,7 +20,11 @@
  *     while leaving every statement of the body untouched (round 9 F1);
  *   - its outermost enclosing function;
  *   - component-level declarations of names the unit references, IMPORTS
- *     among them (round 9 F2);
+ *     among them (round 9 F2) and `class` / `enum` / `namespace` among them
+ *     (round 10 finding 3), transitively: a pulled declaration's own names
+ *     are pulled too, so `class Map` is in the hash of a unit that names
+ *     only `tagSavers`. A component-level binding form the gate does not
+ *     model is REFUSED rather than skipped;
  *   - component-level statements that REBIND a name it calls, or a
  *     component-level function it merely NAMES — a name it hands to someone
  *     else is a function it will run, just later (round 9 F4, and round 8 G
@@ -31,20 +35,38 @@
  * carries its own hash over the statements that declare or rebind the names
  * it passes, because such a call site may sit outside every hashed unit —
  * both `.then(ensureGraphComp)` sites do (round 9 F4). The population's own
- * vocabulary (`DEFERRING_METHODS`, `DEFERRING_FUNCTIONS`,
- * `SYNC_CALLBACK_CALLEES`, all below) is hashed BY VALUE for the same
- * reason: nothing in the component covers it, and shrinking it would drop
- * units from the population with no row changing.
+ * vocabulary is hashed BY VALUE for the same reason: nothing in the
+ * component covers it, so shrinking `DEFERRING_METHODS` or
+ * `DEFERRING_FUNCTIONS` would drop units from the gate's population with no
+ * row changing. `SYNC_CALLBACK_CALLEES` is hashed alongside them although
+ * the GATE never reads it — it is the aid's (round 10 §5.3 corrected the
+ * claim, not the code): over-inclusion costs a bump nobody needed, while
+ * leaving it out would invite a later reader to wonder which of the three
+ * the gate depends on.
  * All of that is found by syntax, never by this analysis. ANY difference
  * refuses, naming the row. The claim is bounded and checkable: a fenced unit,
  * or anything it inlines, cannot change without someone re-reading its row.
+ *
+ * That claim rests on the reviewed text being the SOURCE BYTES of each
+ * statement, joined by a separator that cannot occur in source. It is not
+ * normalised, and round 10 is why: while whitespace runs were collapsed, a
+ * NEWLINE left no trace — and a newline is what ends a `//` comment and what
+ * separates two statements under ASI. Moving a fence onto the end of the
+ * comment line above it, and splitting `return` from its expression, each
+ * produced a DIFFERENT PROGRAM with the SAME reviewed text: the first
+ * deleted `flushTagSaver`'s only identity fence, the second made
+ * `identityHeld` return `undefined`. A change detector that reports "no
+ * change" on a deleted fence is broken on its own terms.
  *
  * THE COST, stated plainly: an edit to a fenced unit or a helper it reaches
  * costs one hash bump, and the bump IS the act of re-reading the row. The
  * refusal prints the new hash. A comment INSIDE a statement of one of those
  * functions costs a bump too, because the hash reads statement text; a
  * comment between statements does not. So does a SIGNATURE change with no
- * body change — a return type, a param, `async` — since round 9 F1.
+ * body change — a return type, a param, `async` — since round 9 F1, and so
+ * does REINDENTING or re-wrapping a hashed statement, since round 10 made
+ * the text verbatim. Whitespace and comments BETWEEN statements remain free:
+ * they fall outside every statement's slice.
  *
  * THIS FILE IS THE AID (`analysisReport`): the flow analysis a re-reader runs
  * before bumping a hash. It keeps its round 4–7 regression fixtures, and it
@@ -173,11 +195,18 @@
  * - `var` is treated as block-scoped, which only ever refuses more.
  *
  * WHAT NEITHER SEES (the gate's own boundary, and its GATE_GAPS table):
- * - synchronous code no row reaches: markup handlers, callback props on
- *   child components (round 8 I), `$effect` / `onMount` / `onDestroy` bodies
- *   that enclose no unit, and component-level statements outside the hashed
- *   set. Dropping `destroyed = true` from the `onDestroy` body is accepted
- *   although `reconcileCollectionSegment` reads it (round 9 O1);
+ * - the MARKUP entirely: nothing in it is hashed, so a markup handler or a
+ *   callback prop on a child component is outside (round 8 I);
+ * - synchronous code no row reaches: `$effect` / `onMount` / `onDestroy`
+ *   bodies that enclose no unit, and component-level statements outside the
+ *   hashed set. Dropping `destroyed = true` from the `onDestroy` body is
+ *   accepted although `reconcileCollectionSegment` reads it (round 9 O1);
+ * - the SCHEDULING WRAPPER of a body that DOES enclose a unit. The body is
+ *   hashed as that unit's outermost enclosing function; the call around it
+ *   is a component-level statement, so swapping `onMount(() => {…})` for
+ *   `$effect(() => {…})` around the two SSE units is accepted although the
+ *   body then re-runs on every dependency change instead of once at mount
+ *   (round 10 §5). A row's `in` catches this only where the row pins it;
  * - deferrals the population does not recognise, because it recognises them
  *   by spelling: listener registrations (`authStore.onIdentityChange`,
  *   `addEventListener`, service subscriptions) and callees outside the lists
