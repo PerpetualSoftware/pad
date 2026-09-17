@@ -784,6 +784,35 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 	});
 
 	/**
+	 * KNOWN GAPS (lead ruling on BUG-3084 checkpoint 63, condition 4): edits
+	 * this guard ACCEPTS although they reintroduce a stale commit, each outside
+	 * the threat model in `identityFenceAst.ts`'s header, with the sentence
+	 * that says why. Each must still be accepted: when one starts being
+	 * refused, the gap has closed, and it moves to ANALYSIS_DEFECTS.
+	 */
+	const KNOWN_GAPS: Array<{ id: string; model: string; old: string; new: string }> = [
+		{
+			id: 'a non-array object aliased to a local, whose forEach defers its callback',
+			model:
+				'trusted synchronous callee: iteration methods on a local receiver are taken to be array methods; binding a service to a local to call a deferring method named forEach is evasion, not an ordinary edit',
+			old: TITLE_FENCE_AND_COMMITS,
+			new: TITLE_FENCE_AND_COMMITS + '\t\t\tconst later = sseService;\n\t\t\tlater.forEach(() => {\n\t\t\t\titem = withInflightTags(updated);\n\t\t\t});\n',
+		},
+		{
+			id: 'a stamp minted after the await and compared at once',
+			model:
+				'contrived fence: a stamp is trusted to have been recorded earlier; building one from a live read right before comparing it to a live read is a fence that cannot fail, which no author trying to comply writes',
+			old: TITLE_FENCE_AND_COMMITS,
+			new: '{ title: titleDraft.trim() });\n\t\t\tconst fresh = { epoch: captureIdentity() };\n\t\t\tif (authStore.identityEpoch !== fresh.epoch) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n',
+		},
+	];
+	it.each(KNOWN_GAPS.map((g) => [g.id, g] as const))('known gap, still outside the model: %s', (_id, g) => {
+		expect(BASELINE).toEqual([]);
+		expect(SOURCE.split(g.old).length - 1).toBe(1);
+		expect(refusals(SOURCE.replace(g.old, g.new)), 'this gap is now refused: move it to ANALYSIS_DEFECTS').toEqual([]);
+	});
+
+	/**
 	 * Controls: a guard that refuses everything also refuses every mutant. These
 	 * edits commit nothing and must stay accepted.
 	 */

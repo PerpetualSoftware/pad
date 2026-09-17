@@ -71,24 +71,44 @@
  *    helper sees its own chain, not the caller's (round 5 P1-3). A `var` is
  *    treated as scoped to its block, which can only refuse more.
  *
+ * 6. REFUSED OUTRIGHT, anywhere inside a function, because the walk does not
+ *    model them (`refusedConstructs`): a declaration shadowing a trusted name
+ *    (`trustedNames`) or a capture; a default value that calls or assigns
+ *    (an empty `new Set()` / `new Map()` excepted); a generator; a tagged
+ *    template; a for-of/in target that is not a declaration; a call whose
+ *    callee builds a function in any shape but `(literal)(…)` or
+ *    `(name ?? literal)(…)`.
+ *
+ * THREAT MODEL (lead ruling on BUG-3084 checkpoint 63). This guard catches
+ * ACCIDENTAL regressions by an author trying to comply with it: a commit
+ * moved above its fence, a fence dropped or weakened, a callback that runs
+ * later, a capture taken or rewritten at the wrong moment. It is not built to
+ * stop an author working to evade it, and it does not prove the code right —
+ * `itemDetailIdentityLoad.svelte.test.ts`, which mounts the component, is the
+ * semantic instrument. A review finding that needs shadowing, a contrived
+ * fence, or a refused construct is outside the model; it goes into the test
+ * file's KNOWN_GAPS table, which must stay accepted until someone closes it.
+ *
  * WHAT THIS CANNOT DO — each is a place the guard trusts something it does
- * not check. The mount suite is the other half.
+ * not check.
  *
  * - It proves a check with the right SHAPE dominates every commit, not that
  *   the check reads the right item.
- * - Captures are known by NAME, component-wide: a declaration anywhere whose
- *   initialiser reads a generation makes that name a capture everywhere, and a
- *   shadowing declaration of it inside a unit is not told apart.
+ * - Captures are known by name. Shadowing one is refused, but a name is still
+ *   the only link between a capture and its use.
+ * - A stamp (`x.epoch`) is trusted to have been recorded earlier; one minted
+ *   after the await and compared at once is a fence that cannot fail.
  * - Callbacks: `SYNC_CALLBACK_CALLEES`, and array iteration methods on a
  *   receiver the unit declared, are trusted to call synchronously; a local
  *   holding a non-array with such a method defeats that. A row's `callbacks`
  *   allowance trusts the callee to re-check before calling (its own tests pin
  *   that, not this file).
- * - Function values are followed by syntax: a helper declared once is
- *   followed where it is called or named; a function reaching a caller any
- *   other way (built by another function and returned from it, pulled out of
- *   a data structure) is walked where it is defined, from an unsafe start —
- *   but only if that definition is inside a unit or an inlined helper.
+ * - Function values are followed by syntax: a helper is followed wherever it
+ *   is named; any other function is walked where it is defined, from an
+ *   unsafe start, when that definition is inside a unit or an inlined helper.
+ * - A top-level row's `may` covers its whole function; the row's `reviewed`
+ *   hash makes any edit to that function a refusal until the allowance is
+ *   re-read, but says nothing about whether the re-read was careful.
  * - `var` is treated as block-scoped (this only ever refuses more).
  */
 import { parse } from 'svelte/compiler';
