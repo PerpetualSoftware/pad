@@ -23,8 +23,12 @@
  *     among them (round 9 F2) and `class` / `enum` / `namespace` among them
  *     (round 10 finding 3), transitively: a pulled declaration's own names
  *     are pulled too, so `class Map` is in the hash of a unit that names
- *     only `tagSavers`. A component-level binding form the gate does not
- *     model is REFUSED rather than skipped;
+ *     only `tagSavers`. The transitivity reaches HELPERS and rebindings as
+ *     well as declarations (round 11 finding 2 and O4) — a component-level
+ *     sync function named only inside a pulled declaration, as in
+ *     `const ops = { run: helper }` called through `ops.run()`, is demanded
+ *     as a helper and hashed, where it used to be neither. A component-level
+ *     binding form the gate does not model is REFUSED rather than skipped;
  *   - component-level statements that REBIND a name it calls, or a
  *     component-level function it merely NAMES — a name it hands to someone
  *     else is a function it will run, just later (round 9 F4, and round 8 G
@@ -43,12 +47,26 @@
  * claim, not the code): over-inclusion costs a bump nobody needed, while
  * leaving it out would invite a later reader to wonder which of the three
  * the gate depends on.
- * All of that is found by syntax, never by this analysis. ANY difference
- * refuses, naming the row. The claim is bounded and checkable: a fenced unit,
+ * All of that is found by syntax, never by this analysis — with one honest
+ * qualification (round 11 O3): the gate's POPULATION is enumerated by this
+ * module's walkers (`enumerateUnits`, `deferringCallee`, `walk`,
+ * `patternNames`). Their spelling LISTS are hashed by value; their bodies are
+ * not, so "the analysis does not decide" means the FLOW analysis does not,
+ * not that no code from this file is on the path. A shrinking
+ * `enumerateUnits` is caught twice over by the one-row-one-unit bijection and
+ * by the population-census assertions. ANY difference refuses, naming the
+ * row. The claim is bounded and checkable: a fenced unit,
  * or anything it inlines, cannot change without someone re-reading its row.
  *
  * That claim rests on the reviewed text being the SOURCE BYTES of each
- * statement, joined by a separator that cannot occur in source. It is not
+ * statement, plus the function's SHAPE — its node type, its name, and whether
+ * its body is a block — because none of that is inside any slice and each of
+ * it changes what a call does (round 11 finding 1: `() => EXPR` returns the
+ * expression, `() => { EXPR }` returns undefined). The slices are joined by a
+ * NUL, which cannot occur at a statement BOUNDARY: a NUL can sit inside a
+ * string literal, but then neither half of a split is a parseable statement,
+ * so no two renderings collide (round 11 O2 — the earlier wording said
+ * "cannot occur in source", which is false). It is not
  * normalised, and round 10 is why: while whitespace runs were collapsed, a
  * NEWLINE left no trace — and a newline is what ends a `//` comment and what
  * separates two statements under ASI. Moving a fence onto the end of the

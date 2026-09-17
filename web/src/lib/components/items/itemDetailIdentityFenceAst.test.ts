@@ -87,16 +87,16 @@ interface Row {
 
 /** Top-level `async function` declarations, by name. */
 const ASYNC_FUNCTIONS: Record<string, Row> = {
-	adoptOrConvergeToLiveCollection: { reviewed: '57da8b1c6376', why: 'myGen against loadGeneration before adopting' },
-	reconcileCollectionSegment: { reviewed: '88120e0ec9be', why: 'identityHeld after the list fetch; retags and navigates only under it' },
-	jumpToSection: { reviewed: 'd22cbd3af1c9', why: 'switches this instance\'s tab and scrolls to an anchor', may: ['document.getElementById', 'document.getElementById(anchorId).scrollIntoView'] },
-	ensureGraphComp: { reviewed: '06b3828fce45', why: 'lazy-loads a component module into this instance', may: ['ItemGraphComp', 'graphLoadError'] },
-	handleCopyRef: { reviewed: '4c1cb9ee5e2f', why: 'switchedAway before the copied flag' },
-	loadData: { reviewed: 'c9d92d3589ae', why: 'IS the load: myGen against loadGeneration after every await' },
-	startEditTitle: { reviewed: 'b19a73568372', why: 'focuses and sizes the input it opened synchronously', may: ['el', 'titleInputEl.focus', 'titleInputEl.setSelectionRange'] },
-	saveTitle: { reviewed: '2b08fbfc2768', why: 'gen against loadGeneration on both arms' },
+	adoptOrConvergeToLiveCollection: { reviewed: '5a647061f75f', why: 'myGen against loadGeneration before adopting' },
+	reconcileCollectionSegment: { reviewed: 'dbb36caf0452', why: 'identityHeld after the list fetch; retags and navigates only under it' },
+	jumpToSection: { reviewed: '17407aeb431b', why: 'switches this instance\'s tab and scrolls to an anchor', may: ['document.getElementById', 'document.getElementById(anchorId).scrollIntoView'] },
+	ensureGraphComp: { reviewed: 'c1565cfb8a18', why: 'lazy-loads a component module into this instance', may: ['ItemGraphComp', 'graphLoadError'] },
+	handleCopyRef: { reviewed: 'fb3adcaf167a', why: 'switchedAway before the copied flag' },
+	loadData: { reviewed: 'd91fb3958cb7', why: 'IS the load: myGen against loadGeneration after every await' },
+	startEditTitle: { reviewed: '113d9b9da03f', why: 'focuses and sizes the input it opened synchronously', may: ['el', 'titleInputEl.focus', 'titleInputEl.setSelectionRange'] },
+	saveTitle: { reviewed: '8a6bedbc107a', why: 'gen against loadGeneration on both arms' },
 	updateField: {
-		reviewed: '448c98943e27',
+		reviewed: 'd35ce99af521',
 		why: 'stillCurrent() on every arm, the OCC refetch and the open-children confirm',
 		callbacks: {
 			'submitOrderedOCC({send})': {
@@ -110,33 +110,33 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 		},
 	},
 	flushTagSaver: {
-		reviewed: '4fa79290b29b',
+		reviewed: '04c1d764e777',
 		why: 'identityHeld(saver.epoch) before every commit and send; the unfenced writes are to this burst\'s own identity-stamped record, and the finally deletes that record only if the registry still holds it (the get)',
 		may: ['saver', 'tagSavers.get', 'tagSavers.delete'],
 	},
-	refreshCollectionIfMoved: { reviewed: '8bae38ac3129', why: 'gen against loadGeneration after the fetch' },
-	loadTagSuggestions: { reviewed: 'd148c302b71f', why: 'identityHeld after the fetch; the identity listener re-runs it' },
-	stampSourceUrl: { reviewed: 'a037cb4ea941', why: 'switchedAway on both arms' },
-	refreshFromSource: { reviewed: '339982e3b812', why: 'switchedAway on every arm' },
-	updateAssignedUser: { reviewed: 'ad539f19b17e', why: 'gen against loadGeneration on both arms' },
-	updateAgentRole: { reviewed: '915268b0de78', why: 'gen against loadGeneration on both arms' },
+	refreshCollectionIfMoved: { reviewed: '9d45f94352dd', why: 'gen against loadGeneration after the fetch' },
+	loadTagSuggestions: { reviewed: 'b03a62bf7294', why: 'identityHeld after the fetch; the identity listener re-runs it' },
+	stampSourceUrl: { reviewed: 'b9d3f9d400ae', why: 'switchedAway on both arms' },
+	refreshFromSource: { reviewed: 'ef03f378ee06', why: 'switchedAway on every arm' },
+	updateAssignedUser: { reviewed: '86f060522de1', why: 'gen against loadGeneration on both arms' },
+	updateAgentRole: { reviewed: 'ae4f320cdbab', why: 'gen against loadGeneration on both arms' },
 	flushRawIfPending: {
-		reviewed: 'b2f076d614c3',
+		reviewed: 'd2494869c902',
 		why: 'genAtFlush against loadGeneration after each PATCH; the re-entrancy waiter returns state; the finally clears this drain\'s own in-flight flag',
 		may: ['rawFlushInFlight'],
 		bareAwaits: ['await new Promise((r) => setTimeout(r, 50));'],
 	},
-	refreshLinksPreservingOnFailure: { reviewed: 'e1f928eef756', why: 'returns a value; its callers fence' },
-	flushCollabBeforeRestore: { reviewed: '3194e7fd7577', why: 'identityHeld before its failure toast' },
-	closeCopyDialog: { reviewed: '99caeef9e7b1', why: 'restores focus after closing synchronously', may: ['paneMenuTrigger.focus'] },
-	closePushDialog: { reviewed: '924dd90359f3', why: 'restores focus after closing synchronously', may: ['paneMenuTrigger.focus'] },
-	flushContentBeforeCopy: { reviewed: '2ea212df1bfb', why: 'returns a boolean to the dialog' },
-	handleCopied: { reviewed: 'd4673edd29c0', why: 'switchedAway before adopting the refreshed item' },
-	handleDelete: { reviewed: '9e8e6b206568', why: 'switchedAway on both arms' },
-	handleRestore: { reviewed: '675042108745', why: 'switchedAway on every arm' },
-	handleDeleteLink: { reviewed: 'a6f68569e2b3', why: 'switchedAway after each await' },
-	handleCreateLink: { reviewed: 'd1ee075f0bbd', why: 'switchedAway after each await' },
-	handleMove: { reviewed: '45216298dc01', why: 'stillOnSource() on every arm, including inside navIfStillCurrent' },
+	refreshLinksPreservingOnFailure: { reviewed: '28ef88d9c682', why: 'returns a value; its callers fence' },
+	flushCollabBeforeRestore: { reviewed: 'e536ec058fd5', why: 'identityHeld before its failure toast' },
+	closeCopyDialog: { reviewed: '1c925f081a26', why: 'restores focus after closing synchronously', may: ['paneMenuTrigger.focus'] },
+	closePushDialog: { reviewed: 'bda8c7529677', why: 'restores focus after closing synchronously', may: ['paneMenuTrigger.focus'] },
+	flushContentBeforeCopy: { reviewed: '44ae74e1f4e9', why: 'returns a boolean to the dialog' },
+	handleCopied: { reviewed: '66bc98609e3d', why: 'switchedAway before adopting the refreshed item' },
+	handleDelete: { reviewed: 'b66adcf84794', why: 'switchedAway on both arms' },
+	handleRestore: { reviewed: 'c3a1732554a4', why: 'switchedAway on every arm' },
+	handleDeleteLink: { reviewed: 'e51f23ad3790', why: 'switchedAway after each await' },
+	handleCreateLink: { reviewed: '473b62faa93a', why: 'switchedAway after each await' },
+	handleMove: { reviewed: '5e3f78212486', why: 'stillOnSource() on every arm, including inside navIfStillCurrent' },
 };
 
 interface SignedRow extends Row {
@@ -161,15 +161,15 @@ interface SignedRow extends Row {
 
 /** Async functions that are not top-level declarations, in the script. */
 const NESTED: SignedRow[] = [
-	{ body: /event\.type === 'collection_updated'/, why: 'SSE: callbackGen after the collection fetch, itemGen on item branches', reviewed: 'a14d924fc5fe' },
-	{ body: /result\.type === 'caught_up'/, why: 'sync: callbackGen after the reconciliation, itemGen on item branches', reviewed: 'ba12e34d8627' },
-	{ body: /flushCollabContent\(/, why: 'collab save: isForegroundCurrent (genAtFlush) before UI feedback', reviewed: '450b316f32c9' },
+	{ body: /event\.type === 'collection_updated'/, why: 'SSE: callbackGen after the collection fetch, itemGen on item branches', reviewed: 'af4846d29b06' },
+	{ body: /result\.type === 'caught_up'/, why: 'sync: callbackGen after the reconciliation, itemGen on item branches', reviewed: '1f7b5cff922e' },
+	{ body: /flushCollabContent\(/, why: 'collab save: isForegroundCurrent (genAtFlush) before UI feedback', reviewed: '05b4038a08b0' },
 ];
 
 /** Async functions in the markup. */
 const MARKUP: SignedRow[] = [
-	{ body: /startGen/, why: 'Rich toggle: startGen against loadGeneration after each await', reviewed: '5c44b72487b2' },
-	{ body: /genAtToggle/, why: 'Markdown toggle: genAtToggle against loadGeneration after each await', reviewed: '14d3697b4b42' },
+	{ body: /startGen/, why: 'Rich toggle: startGen against loadGeneration after each await', reviewed: '63a9cce2ed93' },
+	{ body: /genAtToggle/, why: 'Markdown toggle: genAtToggle against loadGeneration after each await', reviewed: '19614ee2480c' },
 ];
 
 const collapse = (s: string) => s.replace(/\s+/g, ' ');
@@ -228,6 +228,15 @@ const SEP = ' ';
 function reviewedTextOf(src: AstSource, fn: Node): string {
 	const b = fn.body;
 	return [
+		// The SHAPE, because none of it is inside any slice below and each of it
+		// changes what a call does: `() => EXPR` RETURNS the expression and
+		// `() => { EXPR }` returns undefined, which is round 10's ASI finding
+		// reached through braces instead of through a newline (round 11 finding
+		// 1 — the collapsed form rendered ` => ` and `{ … }` and so told them
+		// apart; making the text verbatim dropped that discriminator).
+		fn.type,
+		fn.id?.type === 'Identifier' ? fn.id.name : '',
+		b.type === 'BlockStatement' ? '{}' : '=>',
 		fn.async ? 'async' : '',
 		fn.generator ? '*' : '',
 		fn.typeParameters ? src.text(fn.typeParameters) : '',
@@ -309,54 +318,54 @@ const CONTINUATIONS: SignedRow[] = [
 		body: /./,
 		in: 'reconcileCollectionSegment',
 		code: '() => { if (renameOverride === bridge) renameOverride = null; }',
-		why: 'rename heal failure: clears only the bridge object this heal installed', reviewed: '34e3fa14276b',
+		why: 'rename heal failure: clears only the bridge object this heal installed', reviewed: '9a33138e4937',
 		may: ['renameOverride'],
 	},
-	{ call: /^setTimeout\($/, body: /copied = false/, why: 'copy-flag reset: switchedAway', reviewed: '7686616613cf' },
-	{ call: /api\.items\.get\(wsSlug, itemSlug\)\.catch\($/, body: /./, why: 'loadData item fetch: sets a flag local to that load and re-throws', reviewed: 'c645b1bd13bf' },
+	{ call: /^setTimeout\($/, body: /copied = false/, why: 'copy-flag reset: switchedAway', reviewed: '199047839886' },
+	{ call: /api\.items\.get\(wsSlug, itemSlug\)\.catch\($/, body: /./, why: 'loadData item fetch: sets a flag local to that load and re-throws', reviewed: '11bb17b34c22' },
 	{
 		call: /^setTimeout\($/,
 		body: /staleConnecting = true/,
 		in: '$effect(…)',
 		code: "() => { if (collabProvider?.state === 'connecting' && !hasEverSynced) { staleConnecting = true; } }",
-		why: 'connection state of this instance\'s own provider', reviewed: 'd1826845dd94',
+		why: 'connection state of this instance\'s own provider', reviewed: 'c4d9f3230509',
 		may: ['staleConnecting'],
 	},
-	{ call: /\.get\(refreshCtx\.wsSlug, refreshCtx\.itemId\) \.then\($/, body: /./, why: 'force-refresh fetch: refreshGen against loadGeneration', reviewed: '7e08cad3be7d' },
-	{ call: /forceRefreshNonce \+= 1; \}\) \.catch\($/, body: /./, why: 'force-refresh failure: refreshGen against loadGeneration', reviewed: 'b8c4b73a9530' },
+	{ call: /\.get\(refreshCtx\.wsSlug, refreshCtx\.itemId\) \.then\($/, body: /./, why: 'force-refresh fetch: refreshGen against loadGeneration', reviewed: 'dad7156ff5b6' },
+	{ call: /forceRefreshNonce \+= 1; \}\) \.catch\($/, body: /./, why: 'force-refresh failure: refreshGen against loadGeneration', reviewed: 'a27963ab0e32' },
 	{
 		call: /^setTimeout\($/,
 		body: /teardownFlushed/,
 		in: 'onBeforeUnload',
 		code: '() => { teardownFlushed = false; }',
-		why: 're-arms the BUG-3005 teardown latch, itself identity-checked', reviewed: 'ef244328cfef',
+		why: 're-arms the BUG-3005 teardown latch, itself identity-checked', reviewed: 'c25508ba8261',
 		may: ['teardownFlushed'],
 	},
-	{ call: /^queueMicrotask\($/, body: /./, why: 'collab lazy seed: refuses a retired or re-identified context first', reviewed: 'c7bf0f823e95' },
-	{ call: /^setTimeout\($/, body: /saveStatus/, in: 'showSaved', code: "() => { saveStatus = 'idle'; }", why: 'cosmetic save-indicator reset', reviewed: 'e6be8c8c97a4', may: ['saveStatus'] },
-	{ call: /^tick\(\)\.then\($/, body: /./, why: 'schedules a focus frame; commits nothing itself', reviewed: '6ab60485aa8f' },
+	{ call: /^queueMicrotask\($/, body: /./, why: 'collab lazy seed: refuses a retired or re-identified context first', reviewed: '5e2ef566eb67' },
+	{ call: /^setTimeout\($/, body: /saveStatus/, in: 'showSaved', code: "() => { saveStatus = 'idle'; }", why: 'cosmetic save-indicator reset', reviewed: 'bd7f1439c3d2', may: ['saveStatus'] },
+	{ call: /^tick\(\)\.then\($/, body: /./, why: 'schedules a focus frame; commits nothing itself', reviewed: 'c64994f64cbb' },
 	{
 		call: /^requestAnimationFrame\($/,
 		body: /./,
 		in: 'tick().then(…)',
 		code: '() => editorInstance?.commands.focus()',
-		why: 'focuses the editor after a tab switch', reviewed: 'a3282519b2e6',
+		why: 'focuses the editor after a tab switch', reviewed: '33086db181c5',
 		may: ['editorInstance.commands.focus'],
 	},
 	{
 		call: /^setTimeout\($/,
 		body: /content: toSave \}\)\.then/,
 		in: 'handleContentUpdate',
-		why: 'content debounce: loadData clears this timer before its first await, so the callback never runs across a load', reviewed: '94d22dab6733',
+		why: 'content debounce: loadData clears this timer before its first await, so the callback never runs across a load', reviewed: 'a770ebbad8d1',
 		startSafe: true,
 		pin: (src, unit) => clearsBeforeFirstAwait(src, 'loadData', 'contentDebounceTimer') ?? assignedTo(src, unit, 'contentDebounceTimer'),
 	},
-	{ call: /\{ content: toSave \}\)\.then\($/, body: /^\(\) =>/, why: 'content save: switchedAway', reviewed: '378fb53bb0af' },
-	{ call: /showSaved\(\); \}\)\.catch\($/, body: /./, why: 'content save failure: switchedAway', reviewed: 'd8f40badc616' },
-	{ call: /\{ keepalive: true \}\) \.then\($/, body: /./, why: 'raw keepalive save: genAtSave against loadGeneration', reviewed: '07e82b4234de' },
-	{ call: /localDirty = false; \} \}\) \.catch\($/, body: /^\(\) => \{\}$/, why: 'raw keepalive failure: empty', reviewed: 'dd5410c0e4b8' },
-	{ call: /reqItemId, \{ content: toSave \}\)\.then\($/, body: /./, why: 'raw foreground save: genAtSave against loadGeneration', reviewed: '3bfb9354c191' },
-	{ call: /content: item\.content \}\); \} \}\)\.catch\($/, body: /./, why: 'raw foreground failure: genAtSave against loadGeneration', reviewed: '83ee5f739a96' },
+	{ call: /\{ content: toSave \}\)\.then\($/, body: /^\(\) =>/, why: 'content save: switchedAway', reviewed: 'c6f5c89645db' },
+	{ call: /showSaved\(\); \}\)\.catch\($/, body: /./, why: 'content save failure: switchedAway', reviewed: 'e96323c8ebee' },
+	{ call: /\{ keepalive: true \}\) \.then\($/, body: /./, why: 'raw keepalive save: genAtSave against loadGeneration', reviewed: '0abbaff380e5' },
+	{ call: /localDirty = false; \} \}\) \.catch\($/, body: /^\(\) => \{\}$/, why: 'raw keepalive failure: empty', reviewed: 'e50ab6dcb406' },
+	{ call: /reqItemId, \{ content: toSave \}\)\.then\($/, body: /./, why: 'raw foreground save: genAtSave against loadGeneration', reviewed: '9911d0e1cfee' },
+	{ call: /content: item\.content \}\); \} \}\)\.catch\($/, body: /./, why: 'raw foreground failure: genAtSave against loadGeneration', reviewed: '083f740f76dc' },
 ];
 
 /**
@@ -366,19 +375,19 @@ const CONTINUATIONS: SignedRow[] = [
  * one is an edit to every unit that reaches it.
  */
 const HELPERS: Record<string, string> = {
-	adoptCollection: 'd443ce4d5898',
-	adoptServerItem: '110b1f43cb5b',
-	autoResizeTitle: '174f63dad1c3',
-	captureIdentity: 'a6bca2e34264',
-	handleGone: '9462c4ad919b',
-	handleNavigateAway: '4ea0a8a05fb2',
-	identityHeld: '06ad29c10b75',
-	navigateToCollectionRoot: 'bd1f5028a85d',
-	refreshPrintMeta: '99816d218ca6',
-	runTeardownFlush: '7e97c52a1456',
-	showSaved: '39a8a5893a51',
-	switchedAway: '9d40ce2e38d8',
-	withInflightTags: '5276150bd18d',
+	adoptCollection: 'ab38368cd8fb',
+	adoptServerItem: '198d4de5b450',
+	autoResizeTitle: '7b1e2fcd0526',
+	captureIdentity: '01f30996ab05',
+	handleGone: 'fafcb8c8c429',
+	handleNavigateAway: '44ad4f59673b',
+	identityHeld: '1c5505d51f73',
+	navigateToCollectionRoot: '64dce75693d3',
+	refreshPrintMeta: '2312cc481ca5',
+	runTeardownFlush: '8c6faa52b52e',
+	showSaved: '3f1ef91fac07',
+	switchedAway: '8ba85844f406',
+	withInflightTags: '11523b4d849a',
 };
 
 /**
@@ -562,7 +571,7 @@ function coverage(src: AstSource, tl: TopLevel, roots: Node[]): { text: string; 
 			if (n.type === 'CallExpression' && n.callee.type === 'Identifier') called.add(n.callee.name);
 		});
 	}
-	const helpers = new Set([...refs].filter((n) => tl.fns.has(n) && !roots.includes(tl.fns.get(n)!)));
+	const helpers = new Set<string>();
 	// A component-level function this code NAMES is a value it will run, whether
 	// it calls it here or hands it to someone who will; rebinding that name
 	// changes what the code does without touching a byte of it. Round 8 G saw
@@ -576,21 +585,31 @@ function coverage(src: AstSource, tl: TopLevel, roots: Node[]): { text: string; 
 	// itself never names.
 	const pending = [...refs];
 	const seen = new Set(refs);
+	const absorb = (st: Node) => {
+		if (stmts.has(st)) return;
+		stmts.add(st);
+		walk(st, (x) => {
+			if (x.type === 'Identifier' && !seen.has(x.name)) {
+				seen.add(x.name);
+				pending.push(x.name);
+			}
+		});
+	};
 	while (pending.length) {
 		const n = pending.pop()!;
-		for (const st of tl.declaring.get(n) ?? []) {
-			if (stmts.has(st)) continue;
-			stmts.add(st);
-			walk(st, (x) => {
-				if (x.type === 'Identifier' && !seen.has(x.name)) {
-					seen.add(x.name);
-					pending.push(x.name);
-				}
-			});
+		// A component-level sync function reached through a pulled declaration is
+		// a function this code RUNS, so it is a helper like any other. It used to
+		// be demanded only when a ROOT named it, so `const ops = { run: helper }`
+		// called as `ops.run()` left `helper`'s body outside every hash and
+		// outside HELPERS, with nothing to say so (round 11 finding 2).
+		if (tl.fns.has(n) && !roots.includes(tl.fns.get(n)!)) helpers.add(n);
+		for (const st of tl.declaring.get(n) ?? []) absorb(st);
+		// ...and the same for a rebinding of a name reached transitively, which
+		// the old pass evaluated only for names a ROOT called or named (round 11
+		// O4).
+		if (called.has(n) || fnValues.has(n) || tl.fns.has(n) || tl.asyncFns.has(n)) {
+			for (const st of tl.statements) if (tl.rebinds.get(st)?.has(n)) absorb(st);
 		}
-	}
-	for (const st of tl.statements) {
-		for (const name of tl.rebinds.get(st) ?? []) if (called.has(name) || fnValues.has(name)) stmts.add(st);
 	}
 	const text = [
 		...roots.map((r) => reviewedTextOf(src, r)),
@@ -733,7 +752,10 @@ export function refusals(code: string, opts: GateOptions = {}): string[] {
 			for (const st of tl.declaring.get(n) ?? []) stmts.add(st);
 			for (const st of tl.statements) if (tl.rebinds.get(st)?.has(n)) stmts.add(st);
 		}
-		const text = [collapse(row.text), ...[...stmts].sort((a, b) => a.start - b.start).map((st) => collapse(src.text(st)))].join(' || ');
+		// Verbatim and SEP-joined, like every other reviewed text: this path kept
+		// round 10's own root cause (collapsed slices joined by ` || `, a
+		// separator that CAN occur in source) for one more round (round 11 O1).
+		const text = [row.text, ...[...stmts].sort((a, b) => a.start - b.start).map((st) => src.text(st))].join(SEP);
 		const now = sha(text);
 		if (!reviewed(row.reviewed, now)) {
 			out.push(
@@ -1443,6 +1465,43 @@ describe('ItemDetail identity gate: a fenced unit cannot change without a re-rea
 			DEFERRING_FUNCTIONS.add('setTimeout');
 		}
 		expect(refusals(SOURCE), 'the vocabulary was not restored').toEqual([]);
+	});
+
+	it('a concise body wrapped in braces is refused, and so is a change of declaration form (round 11 finding 1)', () => {
+		// `() => EXPR` RETURNS the expression; `() => { EXPR }` returns undefined.
+		// Neither the braces nor `=>` nor `function` vs `const f =` is inside any
+		// statement slice, so the verbatim text alone could not tell these apart
+		// — the collapsed form round 10 replaced could. The shape is in the text
+		// now.
+		expect(GATE_BASELINE).toEqual([]);
+		const concise = '\tconst handleGone = () => (onGone ?? onClose ?? navigateToCollectionRoot)();\n';
+		expect(SOURCE.split(concise).length - 1).toBe(1);
+		const braced = refusals(SOURCE.replace(concise, '\tconst handleGone = () => {\n\t\t(onGone ?? onClose ?? navigateToCollectionRoot)();\n\t};\n'));
+		expect(braced.some((l) => l.includes('helper handleGone() has changed since it was reviewed')), `got ${JSON.stringify(braced)}`).toBe(true);
+		const declared = '\tfunction identityHeld(captured: number): boolean {\n\t\treturn authStore.identityEpoch === captured;\n\t}\n';
+		expect(SOURCE.split(declared).length - 1).toBe(1);
+		const rebound = refusals(SOURCE.replace(declared, '\tconst identityHeld = (captured: number): boolean => {\n\t\treturn authStore.identityEpoch === captured;\n\t};\n'));
+		expect(rebound.some((l) => l.includes('helper identityHeld() has changed since it was reviewed')), `got ${JSON.stringify(rebound)}`).toBe(true);
+	});
+
+	it('a helper reached only through a pulled DECLARATION is demanded and hashed (round 11 finding 2)', () => {
+		// `const ops = { run: helper }` called as `ops.run()`: the unit never
+		// names `helper`, so the helper pull — which used to read only the unit's
+		// own roots — left its body outside every hash AND outside HELPERS, with
+		// no refusal to say so. The declaration pull was transitive; this one was
+		// not.
+		const anchor = '\tfunction identityHeld(captured: number): boolean {\n';
+		expect(SOURCE.split(anchor).length - 1).toBe(1);
+		const call = '\t\t\t\tconst fresh = await api.items.update(saver.ws, saver.itemId, {\n';
+		expect(SOURCE.split(call).length - 1).toBe(1);
+		const base = SOURCE.replace(
+			anchor,
+			'\tfunction sneakySave(): void {\n\t\tvoid 0;\n\t}\n\tconst sneakyOps = { run: sneakySave };\n\n' + anchor
+		).replace(call, '\t\t\t\tsneakyOps.run();\n' + call);
+		const opts = reviewAs(base);
+		expect(opts.extraHelpers, 'the helper must be DEMANDED, not silently skipped').toHaveProperty('sneakySave');
+		const edited = base.replace('\tfunction sneakySave(): void {\n\t\tvoid 0;\n\t}\n', '\tfunction sneakySave(): void {\n\t\titem = null;\n\t}\n');
+		expect(refusals(edited, opts).some((l) => l.includes('helper sneakySave() has changed since it was reviewed'))).toBe(true);
 	});
 
 	it('a component-level binding form the gate does not model is REFUSED, not skipped (round 10 finding 3)', () => {
