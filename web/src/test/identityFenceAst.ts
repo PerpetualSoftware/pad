@@ -6,15 +6,35 @@
  * population table itself (team CONVE-35). So the lead ruled on checkpoint 69:
  *
  * THE GATE IS A CHANGE DETECTOR, and it lives in
- * `itemDetailIdentityFenceAst.test.ts` (`refusals`). Every async unit and
- * every deferred callback matches exactly one table row. Every row carries
- * the hash of the code it was last reviewed on, and so does every
- * component-level sync function a row's code reaches by name,
- * transitively (HELPERS). What a row's hash covers:
- *   - the unit;
+ * `itemDetailIdentityFenceAst.test.ts` (`refusals`). Every async unit the
+ * POPULATION finds, and every deferring call it recognises, matches exactly
+ * one table row. It does NOT say every deferred callback has a row: the
+ * population is the spelling list in 1 below, so a deferral spelled some
+ * other way — a listener registration, `requestIdleCallback` — has no row to
+ * match and is not seen at all (round 9 F5). Every row carries the hash of
+ * the code it was last reviewed on, and so does every component-level sync
+ * function a row's code reaches by name, transitively (HELPERS). What a
+ * row's hash covers:
+ *   - the unit, its HEAD included — `async`, `*`, the type parameters, the
+ *     params and the return type, each of which changes what a call DOES
+ *     while leaving every statement of the body untouched (round 9 F1);
  *   - its outermost enclosing function;
- *   - component-level declarations of names the unit references;
- *   - component-level statements that assign a name it calls.
+ *   - component-level declarations of names the unit references, IMPORTS
+ *     among them (round 9 F2);
+ *   - component-level statements that REBIND a name it calls, or a
+ *     component-level function it merely NAMES — a name it hands to someone
+ *     else is a function it will run, just later (round 9 F4, and round 8 G
+ *     for the callee half). Destructuring patterns and for-in/of heads count
+ *     as rebindings (round 9 F3); a bare member write does not; any other
+ *     target shape is REFUSED by line rather than read as binding nothing.
+ * A deferring call whose callback is not a literal (`IDENTIFIER_CALLBACKS`)
+ * carries its own hash over the statements that declare or rebind the names
+ * it passes, because such a call site may sit outside every hashed unit —
+ * both `.then(ensureGraphComp)` sites do (round 9 F4). The population's own
+ * vocabulary (`DEFERRING_METHODS`, `DEFERRING_FUNCTIONS`,
+ * `SYNC_CALLBACK_CALLEES`, all below) is hashed BY VALUE for the same
+ * reason: nothing in the component covers it, and shrinking it would drop
+ * units from the population with no row changing.
  * All of that is found by syntax, never by this analysis. ANY difference
  * refuses, naming the row. The claim is bounded and checkable: a fenced unit,
  * or anything it inlines, cannot change without someone re-reading its row.
@@ -23,7 +43,8 @@
  * costs one hash bump, and the bump IS the act of re-reading the row. The
  * refusal prints the new hash. A comment INSIDE a statement of one of those
  * functions costs a bump too, because the hash reads statement text; a
- * comment between statements does not.
+ * comment between statements does not. So does a SIGNATURE change with no
+ * body change — a return type, a param, `async` — since round 9 F1.
  *
  * THIS FILE IS THE AID (`analysisReport`): the flow analysis a re-reader runs
  * before bumping a hash. It keeps its round 4–7 regression fixtures, and it
@@ -153,8 +174,20 @@
  *
  * WHAT NEITHER SEES (the gate's own boundary, and its GATE_GAPS table):
  * - synchronous code no row reaches: markup handlers, callback props on
- *   child components (round 8 I), `$effect` / `onMount` bodies that enclose
- *   no unit, and component-level statements outside the hashed set;
+ *   child components (round 8 I), `$effect` / `onMount` / `onDestroy` bodies
+ *   that enclose no unit, and component-level statements outside the hashed
+ *   set. Dropping `destroyed = true` from the `onDestroy` body is accepted
+ *   although `reconcileCollectionSegment` reads it (round 9 O1);
+ * - deferrals the population does not recognise, because it recognises them
+ *   by spelling: listener registrations (`authStore.onIdentityChange`,
+ *   `addEventListener`, service subscriptions) and callees outside the lists
+ *   in 1 — `requestIdleCallback(() => …)` inside an `$effect` that encloses
+ *   no unit is accepted (round 9 F5). The site pins hold the identity
+ *   listener;
+ * - a write to a name a unit only READS. By design: the hash covers the
+ *   names a unit CALLS or names as a function VALUE, not every name it
+ *   touches, because the second would pull most of the component into every
+ *   row;
  * - imported modules (`fieldWriteOrder.ts`, the auth store), which have
  *   their own tests;
  * - `<script module>`, because only the instance script is parsed.

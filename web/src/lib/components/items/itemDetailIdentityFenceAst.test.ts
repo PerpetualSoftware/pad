@@ -7,9 +7,11 @@
  * The GATE (`refusals`, lead ruling on checkpoint 69):
  *   - every unit the AST yields matches exactly one row below, and every row
  *     exactly one unit;
- *   - every row, and every helper in HELPERS, carries `reviewed`: the hash of
- *     the code it was last reviewed on (`coverage`). A mismatch refuses,
- *     naming the row and the new hash.
+ *   - every row, every helper in HELPERS, and every IDENTIFIER_CALLBACKS row
+ *     carries `reviewed`: the hash of the code it was last reviewed on
+ *     (`coverage`). A mismatch refuses, naming the row and the new hash.
+ *     `POPULATION_VOCABULARY` hashes the aid module's spelling lists by
+ *     value, since nothing in the component covers them.
  * To accept an edit: read the row and `analysisReport` for the edited code,
  * then paste the printed hash.
  *
@@ -34,6 +36,9 @@ import {
 	walk,
 	patternNames,
 	refusedConstructs,
+	DEFERRING_METHODS,
+	DEFERRING_FUNCTIONS,
+	SYNC_CALLBACK_CALLEES,
 	asyncUnitStartsSafe,
 	type AstSource,
 	type Node,
@@ -344,6 +349,26 @@ const IDENTIFIER_CALLBACKS: Array<{ text: string; count: number; why: string; re
 	{ text: 'setTimeout(r, 50)', count: 1, reviewed: 'f7a2eb3b36e7', why: 'resolves flushRawIfPending\'s re-entrancy waiter' },
 ];
 
+/**
+ * The hash of the POPULATION's own vocabulary, which lives in the aid module
+ * and which nothing in the component covers: deleting `setTimeout` from
+ * `DEFERRING_FUNCTIONS` removes units from the population without any row
+ * changing, so every one of their fixtures would pass on a component that no
+ * longer has them tabled (round 9, smaller notes). Hashed by VALUE — the sets
+ * are imported and read, never scanned as source.
+ */
+const POPULATION_VOCABULARY = 'ddad17f9655e';
+
+function vocabularyHash(): string {
+	return sha(
+		JSON.stringify([
+			[...DEFERRING_METHODS].sort(),
+			[...DEFERRING_FUNCTIONS].sort(),
+			Object.entries(SYNC_CALLBACK_CALLEES).sort(([a], [b]) => (a < b ? -1 : 1)),
+		])
+	);
+}
+
 function unitLabel(src: AstSource, u: Unit): string {
 	return u.name ? `${u.name}()` : `${u.kind}${u.inMarkup ? ' in markup' : ''} at line ${u.line}`;
 }
@@ -591,6 +616,12 @@ export function refusals(code: string, opts: GateOptions = {}): string[] {
 	const out = [...r.population];
 	const tl = topLevelOf(src);
 	const reviewed = (want: string | undefined, now: string) => want === now || !!opts.alsoReviewed?.has(now);
+	const vocab = vocabularyHash();
+	if (!reviewed(POPULATION_VOCABULARY, vocab)) {
+		out.push(
+			`the population vocabulary (DEFERRING_METHODS / DEFERRING_FUNCTIONS / SYNC_CALLBACK_CALLEES) has changed since it was reviewed (code ${vocab}) — re-read it, then update POPULATION_VOCABULARY`
+		);
+	}
 	for (const w of new Set(tl.unmodelledWrites)) {
 		out.push(`component-level write target ${w} is not a modelled binding pattern — teach the gate rather than skip it`);
 	}
@@ -1283,6 +1314,25 @@ describe('ItemDetail identity gate: a fenced unit cannot change without a re-rea
 			code = code.replace(from, to);
 		}
 		expect(refusals(code), 'this gap is now refused: move it to the round 8 gate fixtures').toEqual([]);
+	});
+
+	it('shrinking the population vocabulary is refused, although no row changes (round 9, smaller notes)', () => {
+		// The population is a spelling list in the AID module, and the component
+		// cannot cover it: drop `setTimeout` from it and every setTimeout unit
+		// leaves the population, taking its row's claim with it. Mutating the
+		// imported Set is the only honest fixture — the alternative is scanning
+		// that file's source, which is what this whole guard stopped doing.
+		expect(GATE_BASELINE).toEqual([]);
+		expect(DEFERRING_FUNCTIONS.has('setTimeout')).toBe(true);
+		DEFERRING_FUNCTIONS.delete('setTimeout');
+		try {
+			expect(
+				refusals(SOURCE).some((l) => l.includes('the population vocabulary') && l.includes('has changed since it was reviewed'))
+			).toBe(true);
+		} finally {
+			DEFERRING_FUNCTIONS.add('setTimeout');
+		}
+		expect(refusals(SOURCE), 'the vocabulary was not restored').toEqual([]);
 	});
 
 	it('a component-level write target no binding pattern models is REFUSED, not skipped (round 9 F3)', () => {
