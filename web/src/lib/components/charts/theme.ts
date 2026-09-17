@@ -1,5 +1,3 @@
-import type { Readable } from 'svelte/store';
-
 /**
  * Default color palette for chart series. Each entry references a CSS custom
  * property with a hex fallback, so apps can theme charts via `--chart-N`
@@ -28,32 +26,60 @@ export interface ResolvedSeries {
 }
 
 /**
- * The shape of the `'LayerCake'` context. LayerCake exposes its values as
- * Svelte stores (it's built on legacy `writable`/`derived`), so each field is
- * a `Readable`. Typing the `getContext` result this way keeps svelte-check
- * happy instead of leaving everything `unknown`.
+ * The shape of LayerCake's chart context, as our layers consume it.
+ *
+ * layercake 11 keys this context with Svelte's `createContext()` — not the
+ * string `'LayerCake'` — so layers reach it via the package's exported
+ * `getLayerCakeContext()`. Each field is a PLAIN value read through an
+ * enumerable getter on the context object (`LayerCake.svelte` builds it with
+ * `Object.defineProperties`), not a store; reads are reactive because the
+ * getters close over the chart's own `$state`/`$derived`. Under 10.x these
+ * were `Readable` stores and the layers used `$xScale` etc. (TASK-3093).
+ *
+ * Two consequences the layers depend on:
+ *   - Hold the context object and read `k.width` at the use site. Destructuring
+ *     outside a `$derived` copies the getters' current values once and never
+ *     updates — the package's own doc comment says so.
+ *   - Keys exist for every dimension LayerCake knows about, including ones this
+ *     chart never passes, and those read `undefined`. So a misspelled key is a
+ *     silent `undefined` rather than a throw, which is the other half of why
+ *     this interface is worth keeping.
+ *
+ * This is deliberately OUR interface rather than the package's exported
+ * `LayerCakeContext` type: it names only the keys these layers touch, with the
+ * scale shapes they actually call, so svelte-check keeps failing on a layer
+ * that reaches for something outside it. The package's own type widens every
+ * scale to `{ (value: any): any, [key: string]: any }`, which would check
+ * nothing about the calls below.
+ *
+ * Keys the layers do not touch are deliberately absent, `yGet` / `y` / `xRange`
+ * / `yRange` among them — they were carried in the 10.x version of this
+ * interface and used by nothing. Adding one back is how a layer declares it
+ * started reading it.
+ *
+ * Layers reach it as `getLayerCakeContext() as unknown as LayerCakeContext`.
+ * The hop through `unknown` is required, not laziness: the package's own
+ * context type shares no named member with the scale shapes above, so a direct
+ * cast is rejected as non-overlapping — the package casts its own context the
+ * same way, for the same reason. It costs nothing that matters here, because
+ * what this interface exists to check is the layer bodies: a key it does not
+ * declare, or a scale method it does not name, is still an error at the read.
  */
 export interface LayerCakeContext {
-	data: Readable<ChartDatum[]>;
-	xGet: Readable<(d: ChartDatum) => number>;
-	yGet: Readable<(d: ChartDatum) => number>;
-	xScale: Readable<{
+	data: ChartDatum[];
+	x: (d: ChartDatum) => string | number;
+	xGet: (d: ChartDatum) => number;
+	/** Band scale: called for a position, and probed for `bandwidth()` by Bars and AxisX. */
+	xScale: {
 		(value: unknown): number;
 		bandwidth?: () => number;
-		ticks?: (count?: number) => number[];
-		domain: () => unknown[];
-	}>;
-	yScale: Readable<{
+	};
+	/** Linear scale: called for a position, and asked for `ticks()` by AxisY. */
+	yScale: {
 		(value: unknown): number;
-		bandwidth?: () => number;
 		ticks: (count?: number) => number[];
-		domain: () => unknown[];
-	}>;
-	x: Readable<(d: ChartDatum) => string | number>;
-	y: Readable<(d: ChartDatum) => string | number>;
-	width: Readable<number>;
-	height: Readable<number>;
-	xRange: Readable<number[]>;
-	yRange: Readable<number[]>;
-	padding: Readable<{ top: number; right: number; bottom: number; left: number }>;
+	};
+	width: number;
+	height: number;
+	padding: { top: number; right: number; bottom: number; left: number };
 }
