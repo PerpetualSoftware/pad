@@ -1285,6 +1285,19 @@ describe('ItemDetail identity gate: a fenced unit cannot change without a re-rea
 		expect(refusals(code), 'this gap is now refused: move it to the round 8 gate fixtures').toEqual([]);
 	});
 
+	it('a component-level write target no binding pattern models is REFUSED, not skipped (round 9 F3)', () => {
+		// `({ x: someMember.prop } = …)` binds through a MemberExpression inside a
+		// pattern: the gate cannot say which names it rebinds, so it refuses
+		// rather than reading it as "rebinds nothing". A BARE member write is a
+		// different thing — not a rebinding at all — and stays accepted below.
+		const anchor = '\tfunction identityHeld(captured: number): boolean {\n';
+		expect(SOURCE.split(anchor).length - 1).toBe(1);
+		const unmodelled = SOURCE.replace(anchor, '\tconst sink: { prop?: unknown } = {};\n\t({ x: sink.prop } = { x: 1 });\n\n' + anchor);
+		expect(refusals(unmodelled).some((l) => l.includes('write target ObjectPattern') && l.includes('is not a modelled binding pattern'))).toBe(true);
+		const bareMember = SOURCE.replace(anchor, '\tconst sink: { prop?: unknown } = {};\n\tsink.prop = 1;\n\n' + anchor);
+		expect(refusals(bareMember), 'a bare member write is not a rebinding').toEqual([]);
+	});
+
 	it('CONTROL: an edit outside every hashed function is accepted', () => {
 		const anchor = '<script lang="ts">\n';
 		expect(SOURCE.split(anchor).length - 1).toBe(1);
