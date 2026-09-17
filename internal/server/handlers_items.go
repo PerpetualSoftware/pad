@@ -730,7 +730,7 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 
 	item, cerr := s.createItemChecked(r, workspaceID, coll, schema, input, fieldMap, parentValue, relationsRefuse)
 	if cerr != nil {
-		writeError(w, cerr.status, cerr.code, cerr.message)
+		cerr.write(w)
 		return
 	}
 
@@ -751,9 +751,20 @@ type itemCreateError struct {
 	status  int
 	code    string
 	message string
+	// planLimit, when set, is the store's *PlanLimitError, and write answers
+	// with the structured plan-limit 403 instead of status/code/message.
+	planLimit error
 }
 
 func (e *itemCreateError) Error() string { return e.message }
+
+// write answers the request with this error.
+func (e *itemCreateError) write(w http.ResponseWriter) {
+	if e.planLimit != nil && writeStorePlanLimitError(w, e.planLimit, "") {
+		return
+	}
+	writeError(w, e.status, e.code, e.message)
+}
 
 // createItemChecked is the shared item-create core: schema-field validation →
 // workspace-unique-field precheck → persist → optional parent link → activity
@@ -814,7 +825,7 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 	// `warnings.dropped_fields` channel — they are the same event to a caller.
 	defaultDrops, err := items.ValidateFieldsWithDrops(fieldMap, schema)
 	if err != nil {
-		return nil, &itemCreateError{http.StatusBadRequest, "validation_error", err.Error()}
+		return nil, &itemCreateError{status: http.StatusBadRequest, code: "validation_error", message: err.Error()}
 	}
 	// Referent validation for relation values (TASK-2878). AFTER the shape
 	// check, so "must be a string" and "names nothing" are never both reported
@@ -823,13 +834,13 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 	relRefusals, droppedDefaults, relErr := s.resolveRelationsForWrite(
 		r, workspaceID, workspaceRole(r), schema, fieldMap, relBefore, posture)
 	if relErr != nil {
-		return nil, &itemCreateError{http.StatusInternalServerError, "internal_error", "Failed to resolve relation references"}
+		return nil, &itemCreateError{status: http.StatusInternalServerError, code: "internal_error", message: "Failed to resolve relation references"}
 	}
 	droppedDefaults = append(defaultDrops, droppedDefaults...)
 	var unresolved []string
 	if len(relRefusals) > 0 {
 		if posture == relationsRefuse {
-			return nil, &itemCreateError{http.StatusBadRequest, "validation_error", relationIssuesMessage(relRefusals)}
+			return nil, &itemCreateError{status: http.StatusBadRequest, code: "validation_error", message: relationIssuesMessage(relRefusals)}
 		}
 		// Carry: the values stay in fieldMap exactly as supplied — the
 		// resolver leaves what it cannot resolve untouched — and the write
@@ -841,13 +852,13 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 	undeclared := items.UndeclaredFieldKeys(fieldMap, schema)
 
 	if err := s.checkUniqueFields(workspaceID, coll.ID, "", schema, fieldMap); err != nil {
-		return nil, &itemCreateError{http.StatusConflict, "conflict", err.Error()}
+		return nil, &itemCreateError{status: http.StatusConflict, code: "conflict", message: err.Error()}
 	}
 
 	// Marshal validated/defaulted fields back
 	validatedFields, err := json.Marshal(fieldMap)
 	if err != nil {
-		return nil, &itemCreateError{http.StatusInternalServerError, "internal_error", "Failed to marshal validated fields"}
+		return nil, &itemCreateError{status: http.StatusInternalServerError, code: "internal_error", message: "Failed to marshal validated fields"}
 	}
 	input.Fields = string(validatedFields)
 
@@ -876,8 +887,14 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 		}
 	}
 
-	item, err := s.store.CreateItem(workspaceID, coll.ID, input)
+	item, err := s.store.CreateItem(workspaceID, coll.ID, input, s.workspaceLimitMintOpts()...)
 	if err != nil {
+		// BUG-2808: the cap, counted under the insert's lock, was reached after
+		// the caller's advisory pre-check admitted the request.
+		var ple *store.PlanLimitError
+		if errors.As(err, &ple) {
+			return nil, &itemCreateError{status: http.StatusForbidden, code: "plan_limit_exceeded", message: ple.Error(), planLimit: err}
+		}
 		// BUG-2833 / BUG-2831: the store's typed title refusal is a 400, not a
 		// 500. Today the handler's own check above catches every reachable
 		// case, so this arm is belt-and-braces — but its ABSENCE was a latent
@@ -886,14 +903,14 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 		// answer the same way because both go through the same helper.
 		var badTitle *store.InvalidItemTitleError
 		if errors.As(err, &badTitle) {
-			return nil, &itemCreateError{http.StatusBadRequest, "bad_request", badTitle.Reason}
+			return nil, &itemCreateError{status: http.StatusBadRequest, code: "bad_request", message: badTitle.Reason}
 		}
 		// The NUL refusal, in this path's own envelope (codex round 1). Same
 		// classification as everywhere else, same sentence; only the shape
 		// differs, because createItemChecked returns its error rather than
 		// writing it.
 		if reason, ok := nulRefusalReason(err); ok {
-			return nil, &itemCreateError{http.StatusBadRequest, "bad_request", reason}
+			return nil, &itemCreateError{status: http.StatusBadRequest, code: "bad_request", message: reason}
 		}
 		if strings.Contains(err.Error(), "UNIQUE constraint") || strings.Contains(err.Error(), "duplicate key") {
 			// Could be the slug-per-workspace constraint OR the playbook
@@ -901,17 +918,17 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 			// message generic so it covers both — the application-layer
 			// pre-check (checkUniqueFields) catches the common case with a
 			// targeted error message; only a true concurrent race lands here.
-			return nil, &itemCreateError{http.StatusConflict, "conflict", "An item conflicts with an existing record (duplicate slug, title, or invocation slug)"}
+			return nil, &itemCreateError{status: http.StatusConflict, code: "conflict", message: "An item conflicts with an existing record (duplicate slug, title, or invocation slug)"}
 		}
 		slog.Error("createItemChecked: store.CreateItem failed", "error", err)
-		return nil, &itemCreateError{http.StatusInternalServerError, "internal_error", "An internal error occurred"}
+		return nil, &itemCreateError{status: http.StatusInternalServerError, code: "internal_error", message: "An internal error occurred"}
 	}
 
 	// Create parent link if specified
 	if parentValue != "" {
 		actor, _ := actorFromRequest(r)
 		if _, err := s.store.SetParentLink(workspaceID, item.ID, parentValue, actor); err != nil {
-			return nil, &itemCreateError{http.StatusInternalServerError, "internal_error", fmt.Sprintf("item created but parent link failed: %v", err)}
+			return nil, &itemCreateError{status: http.StatusInternalServerError, code: "internal_error", message: fmt.Sprintf("item created but parent link failed: %v", err)}
 		}
 		// SetParentLink advances the source seq because it changes the
 		// local-first is_unparented bit. Re-read before publishing/returning

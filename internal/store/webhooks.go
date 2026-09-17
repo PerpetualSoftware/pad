@@ -8,7 +8,12 @@ import (
 )
 
 // CreateWebhook registers a new webhook for a workspace.
-func (s *Store) CreateWebhook(workspaceID string, input models.WebhookCreate) (*models.Webhook, error) {
+//
+// With WithPlanLimit() the workspace's webhooks cap is counted in the insert's
+// transaction, under acquirePlanLimitLock, and a reached cap refuses with
+// *PlanLimitError (BUG-2808).
+func (s *Store) CreateWebhook(workspaceID string, input models.WebhookCreate, opts ...MintOption) (*models.Webhook, error) {
+	mint := resolveMintOptions(opts)
 	id := newID()
 	ts := now()
 
@@ -25,11 +30,29 @@ func (s *Store) CreateWebhook(workspaceID string, input models.WebhookCreate) (*
 		return nil, fmt.Errorf("encrypt webhook secret: %w", err)
 	}
 
-	_, err = s.db.Exec(s.q(`
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("insert webhook: %w", err)
+	}
+	defer tx.Rollback()
+
+	if mint.planLimit {
+		if err := s.acquirePlanLimitLock(tx, workspaceID, "webhooks"); err != nil {
+			return nil, err
+		}
+		if err := s.enforceWorkspaceLimitTx(tx, workspaceID, "webhooks"); err != nil {
+			return nil, err
+		}
+	}
+
+	_, err = tx.Exec(s.q(`
 		INSERT INTO webhooks (id, workspace_id, url, secret, events, active, created_at, updated_at, failure_count)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
 	`), id, workspaceID, input.URL, encSecret, evts, s.dialect.BoolToInt(true), ts, ts)
 	if err != nil {
+		return nil, fmt.Errorf("insert webhook: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("insert webhook: %w", err)
 	}
 

@@ -130,7 +130,10 @@ func (s *Server) handleInviteMember(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "conflict", "User is already a member of this workspace")
 			return
 		}
-		if err := s.store.AddWorkspaceMember(workspaceID, existingUser.ID, input.Role); err != nil {
+		if err := s.store.AddWorkspaceMember(workspaceID, existingUser.ID, input.Role, s.workspaceLimitMintOpts()...); err != nil {
+			if writeStorePlanLimitError(w, err, "") {
+				return
+			}
 			writeInternalError(w, err)
 			return
 		}

@@ -1155,6 +1155,16 @@ func (s *Server) planLimitMintOpts(ownerID string) []store.MintOption {
 	return []store.MintOption{store.WithPlanLimit()}
 }
 
+// workspaceLimitMintOpts is the option set for a workspace-scoped limited
+// insert (items, members, webhooks): the limit applies in cloud mode only,
+// the same condition enforcePlanLimit uses for its pre-check.
+func (s *Server) workspaceLimitMintOpts() []store.MintOption {
+	if !s.cloudMode {
+		return nil
+	}
+	return []store.MintOption{store.WithPlanLimit()}
+}
+
 // writeStorePlanLimitError answers a *store.PlanLimitError with the same 403
 // the advisory pre-check writes, and reports whether err was one. note, when
 // non-empty, is appended to the message.

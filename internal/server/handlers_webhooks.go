@@ -63,8 +63,11 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hook, err := s.store.CreateWebhook(workspaceID, input)
+	hook, err := s.store.CreateWebhook(workspaceID, input, s.workspaceLimitMintOpts()...)
 	if err != nil {
+		if writeStorePlanLimitError(w, err, "") {
+			return
+		}
 		writeInternalError(w, err)
 		return
 	}
