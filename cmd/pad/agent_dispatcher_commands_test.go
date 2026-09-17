@@ -60,7 +60,10 @@ var dispatcherPlaceholder = regexp.MustCompile(`^(<[^>]*>|\[[^]]*\]|TASK-[0-9]+)
 // bash blocks, with strict fence pairing: a ```bash open must be closed by a
 // following ``` line, a close with no open fails, a nested open fails, and an
 // unterminated open at EOF fails. The block count must equal
-// expectedDispatcherBashBlocks.
+// expectedDispatcherBashBlocks, and every block must contain at least one
+// command line (ignoring blanks and `#` comment-only lines): an emptied
+// block keeps both fences and the global command count but has lost
+// load-bearing content, so it must fail here.
 func splitDispatcherBashBlocks(body string) ([]string, error) {
 	var blocks []string
 	var cur []string
@@ -94,6 +97,18 @@ func splitDispatcherBashBlocks(body string) ([]string, error) {
 	}
 	if len(blocks) != expectedDispatcherBashBlocks {
 		return nil, fmt.Errorf("expected %d fenced bash blocks, got %d", expectedDispatcherBashBlocks, len(blocks))
+	}
+	for i, b := range blocks {
+		hasCmd := false
+		for _, raw := range strings.Split(b, "\n") {
+			if strings.TrimSpace(stripShellComment(raw)) != "" {
+				hasCmd = true
+				break
+			}
+		}
+		if !hasCmd {
+			return nil, fmt.Errorf("fenced bash block %d contains no command lines", i+1)
+		}
 	}
 	return blocks, nil
 }
@@ -342,5 +357,77 @@ func TestDispatcherFencePairingRejects(t *testing.T) {
 	nestedOpen := "# Pad\n\n```bash\npad item show TASK-5\n```bash\n```\n\n```bash\npad agent guide\n```\n"
 	if _, err := splitDispatcherBashBlocks(nestedOpen); err == nil {
 		t.Fatal("nested fence open inside bash block passed; want strict pairing to fail")
+	}
+	emptySecond := "# Pad\n\n```bash\npad item show TASK-5\n```\n\n```bash\n\n```\n"
+	if _, err := splitDispatcherBashBlocks(emptySecond); err == nil {
+		t.Fatal("emptied second bash block passed; want per-block non-empty guard to fail")
+	}
+	commentOnly := "# Pad\n\n```bash\npad item show TASK-5\n```\n\n```bash\n# only a comment\n```\n"
+	if _, err := splitDispatcherBashBlocks(commentOnly); err == nil {
+		t.Fatal("comment-only second bash block passed; want per-block non-empty guard to fail")
+	}
+	emptyFirst := "# Pad\n\n```bash\n   \n```\n\n```bash\npad agent guide\n```\n"
+	if _, err := splitDispatcherBashBlocks(emptyFirst); err == nil {
+		t.Fatal("emptied first bash block passed; want per-block non-empty guard to fail")
+	}
+}
+
+// TestDispatcherSplitRejectsMalformed is the negative control for the
+// tokenizer strictness logic: an unterminated quote or a trailing backslash
+// is a malformed dispatcher line, so dispatcherSplit must error and
+// checkDispatcherLine must report it instead of silently tokenizing.
+func TestDispatcherSplitRejectsMalformed(t *testing.T) {
+	for _, bad := range []string{
+		`pad item show "unterminated`,
+		`pad item show 'unterminated`,
+		`pad item show foo\`,
+	} {
+		if _, err := dispatcherSplit(bad); err == nil {
+			t.Errorf("dispatcherSplit(%q) passed; want malformed-line error", bad)
+		}
+		problems := checkDispatcherLine(newRootCmd(), bad)
+		found := false
+		for _, p := range problems {
+			if strings.Contains(p, "malformed") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("checkDispatcherLine(%q) = %v; want a malformed-line problem", bad, problems)
+		}
+	}
+	// A well-formed quoted token still tokenizes and is not flagged malformed.
+	toks, err := dispatcherSplit(`pad item show "TASK-5"`)
+	if err != nil {
+		t.Fatalf("dispatcherSplit quoted line failed: %v", err)
+	}
+	if len(toks) != 4 || toks[3] != "TASK-5" {
+		t.Fatalf("dispatcherSplit quoted line = %q; want [pad item show TASK-5]", toks)
+	}
+}
+
+// TestDispatcherLineRejectsPlaceholderInPath is the negative control for the
+// placeholder-path re-resolution logic: a placeholder interleaved inside the
+// command path must fail, while the same placeholder as a trailing argument
+// must pass.
+func TestDispatcherLineRejectsPlaceholderInPath(t *testing.T) {
+	root := newRootCmd()
+	bad := "pad item <id> show"
+	problems := checkDispatcherLine(root, bad)
+	if len(problems) == 0 {
+		t.Fatalf("placeholder-in-path line %q passed; want rejection", bad)
+	}
+	found := false
+	for _, p := range problems {
+		if strings.Contains(p, "placeholder") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("placeholder-in-path line %q problems %v mention no placeholder", bad, problems)
+	}
+	good := "pad item show TASK-5"
+	if problems := checkDispatcherLine(root, good); len(problems) != 0 {
+		t.Fatalf("trailing-placeholder line %q rejected: %v", good, problems)
 	}
 }
