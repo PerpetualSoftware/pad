@@ -20,6 +20,17 @@
 // series, the x axis's category labels, and the y axis's tick labels. It is the
 // leg that fails if a future major moves the context shape again.
 //
+// COVERAGE, stated precisely because an earlier revision of this header did not.
+// Every `k.` read in the three layers is exercised by some assertion here, and
+// each was checked by mutation rather than by inspection. What that does NOT
+// mean is that every arithmetic slip is caught: several reads are pinned by
+// relations (ordering, containment, equality between two reads of one key)
+// rather than by exact pixels, deliberately, since exact pixels would encode
+// d3's band-scale arithmetic into the test and break on any layout tweak. The
+// property this file exists to defend is the CONTEXT SHAPE — that each layer
+// still reaches a live context and reads the right key off it — and a mutant
+// that merely perturbs one term while leaving the read intact may survive.
+//
 // jsdom has no layout engine, so a chart bound to `clientWidth` measures 0 and
 // every scale collapses into a negative range. The shim below gives the chart a
 // box to draw in; it is layout, not behaviour, and it does not touch the code
@@ -117,8 +128,15 @@ describe('BarChart renders through LayerCake', () => {
 		// A relation rather than a bound: the y scale has to ORDER the bars, so
 		// the tallest value draws the tallest bar and starts highest. A y read
 		// that is stuck, zeroed or inverted fails here even when it stays finite.
-		const barFor = (title: string) =>
-			Array.from(bars).find((b) => b.querySelector('title')?.textContent === title)!;
+		const barFor = (title: string) => {
+			// Not a bare `!`: if the <title> format ever changes, `find` returns
+			// undefined and the first attribute read below would throw a TypeError
+			// naming neither the missing title nor the cause, BEFORE the assertions
+			// that would have said so plainly.
+			const bar = Array.from(bars).find((b) => b.querySelector('title')?.textContent === title);
+			expect(bar, `no bar titled ${title}`).toBeDefined();
+			return bar!;
+		};
 		const tallest = barFor('Created: 8');
 		const shortest = barFor('Completed: 2');
 		expect(Number(tallest.getAttribute('height'))).toBeGreaterThan(
@@ -130,6 +148,15 @@ describe('BarChart renders through LayerCake', () => {
 		for (const hit of container.querySelectorAll('g.bars rect.hit')) {
 			expect(Number(hit.getAttribute('height'))).toBeGreaterThan(0);
 		}
+
+		// barX = k.xGet(d) + inner(key): bands march left to right, and within a
+		// band the series sit side by side in declared order. Finiteness alone
+		// would let a positive constant through, which is the x-dimension twin of
+		// the y hole review round 3 closed.
+		const xOf = (title: string) => Number(barFor(title).getAttribute('x'));
+		expect(xOf('Created: 5')).toBeLessThan(xOf('Created: 3')); // Mon before Tue
+		expect(xOf('Created: 3')).toBeLessThan(xOf('Created: 8')); // Tue before Wed
+		expect(xOf('Created: 5')).toBeLessThan(xOf('Completed: 2')); // within Mon
 
 		// The per-bar <title> carries the series label and value, so the bars are
 		// identifiable rather than merely present.
@@ -144,19 +171,35 @@ describe('BarChart renders through LayerCake', () => {
 		const texts = Array.from(container.querySelectorAll('g.axis-x text'));
 		expect(texts.map((t) => t.textContent?.trim())).toEqual(['Mon', 'Tue', 'Wed']);
 
-		// Each label is placed by center(), which reads k.xGet and the band
-		// scale's bandwidth. Assert the ORDER rather than pixels: labels march
-		// left to right, and all sit inside the plot.
-		const xs = texts.map((t) => Number(t.getAttribute('x')));
-		expect(xs.every(Number.isFinite)).toBe(true);
-		expect(xs).toEqual([...xs].sort((a, b) => a - b));
-		expect(xs[0]).toBeGreaterThan(0);
-
 		// The baseline spans the plot at its foot — a direct k.width / k.height
 		// read that nothing asserted until review round 3 named it.
 		const baseline = container.querySelector('g.axis-x line')!;
-		expect(Number(baseline.getAttribute('x2'))).toBeGreaterThan(0);
-		expect(Number(baseline.getAttribute('y2'))).toBeGreaterThan(0);
+		const plotWidth = Number(baseline.getAttribute('x2'));
+		const plotFoot = Number(baseline.getAttribute('y2'));
+		expect(plotWidth).toBeGreaterThan(0);
+		expect(plotFoot).toBeGreaterThan(0);
+		expect(Number(baseline.getAttribute('y1'))).toBe(plotFoot);
+
+		// Each label is placed by center(), which reads k.xGet and the band
+		// scale's bandwidth. Assert ORDER and CONTAINMENT rather than pixels:
+		// labels march left to right and all land within the baseline's span,
+		// which cross-ties these two assertions instead of bounding one side only.
+		const xs = texts.map((t) => Number(t.getAttribute('x')));
+		expect(xs.every(Number.isFinite)).toBe(true);
+		expect(xs).toEqual([...xs].sort((a, b) => a - b));
+		expect(xs.at(-1)).toBeLessThan(plotWidth);
+		// Receipt for the lower bound, which is what kills a center() that drops
+		// the half-bandwidth offset: BarChart builds the x scale as
+		// `scaleBand().paddingInner(0.2)` and d3's paddingOuter defaults to 0, so
+		// k.xGet of the FIRST band is exactly 0 and any label x above 0 must have
+		// come from the offset. Give that scale a paddingOuter and this stops
+		// discriminating — assert the offset directly then.
+		expect(xs[0]).toBeGreaterThan(0);
+
+		// The labels sit BELOW the baseline (y = k.height + 16) — a k.height read
+		// distinct from the baseline's, and uncovered until review round 4.
+		const labelYs = texts.map((t) => Number(t.getAttribute('y')));
+		expect(labelYs.every((y) => y > plotFoot)).toBe(true);
 	});
 
 	it('draws the y axis with numeric ticks spanning the data', () => {
@@ -173,12 +216,51 @@ describe('BarChart renders through LayerCake', () => {
 		expect(Math.max(...ticks)).toBeGreaterThanOrEqual(8);
 
 		// Grid lines are drawn from the y scale; a collapsed context gives NaN.
-		const lines = container.querySelectorAll('g.axis-y line');
+		const lines = Array.from(container.querySelectorAll('g.axis-y line'));
 		expect(lines.length).toBe(ticks.length);
 		for (const line of lines) {
 			expect(Number.isFinite(Number(line.getAttribute('y1')))).toBe(true);
 			expect(Number(line.getAttribute('x2'))).toBeGreaterThan(0);
+			// y1 and y2 are two separate k.yScale reads on the same tick.
+			expect(Number(line.getAttribute('y2'))).toBe(Number(line.getAttribute('y1')));
 		}
+
+		// Each tick's LABEL is placed by its own k.yScale read (AxisY:29),
+		// distinct from the grid line's, and uncovered until review round 4. The
+		// scale descends — a larger tick value sits higher — and each label lines
+		// up with its own grid line.
+		const labelYs = Array.from(
+			container.querySelectorAll('g.axis-y text'),
+			(t) => Number(t.getAttribute('y'))
+		);
+		expect(labelYs).toEqual(lines.map((l) => Number(l.getAttribute('y1'))));
+		expect(labelYs[0]).toBeGreaterThan(labelYs[labelYs.length - 1]);
+	});
+
+	it('thins x labels once the categories outnumber maxTicks', () => {
+		// AxisX's `step` is ceil(k.data.length / maxTicks), and maxTicks defaults
+		// to 8 — so with the 3- and 2-row fixtures above it is always 1 and the
+		// k.data.length read is inert. This is the only leg that makes it bite.
+		const many = Array.from({ length: 20 }, (_, i) => ({
+			day: `d${String(i).padStart(2, '0')}`,
+			created: i + 1,
+			completed: 1,
+		}));
+		const { container } = render(BarChart, {
+			props: { data: many, x: 'day', series: SERIES, ariaLabel: 'Items per day' },
+		});
+
+		// One bar per series per datum regardless — thinning is labels only.
+		expect(container.querySelectorAll('g.bars rect:not(.hit)').length).toBe(
+			many.length * SERIES.length
+		);
+
+		const labels = Array.from(
+			container.querySelectorAll('g.axis-x text'),
+			(t) => t.textContent?.trim()
+		);
+		// step = ceil(20/8) = 3 → indices 0,3,6,9,12,15,18.
+		expect(labels).toEqual(['d00', 'd03', 'd06', 'd09', 'd12', 'd15', 'd18']);
 	});
 
 	it('repaints all three layers when the data changes after mount', async () => {
