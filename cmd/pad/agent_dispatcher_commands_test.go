@@ -55,11 +55,106 @@ import (
 //     deleted subcommand could false-pass behind a placeholder. Leaf
 //     commands keep accepting positional args and placeholders.
 //   - Fail on zero parsed commands (guard against fence-format drift).
+//   - Pin the required command inventory per block (expectedDispatcherCommands
+//     + checkDispatcherInventory, enforced by
+//     TestAgentDispatcherCommandsInventory): exact per-block set equality
+//     plus an order check, so a deleted or substituted load-bearing command
+//     fails even though every surviving line still resolves. A permanent
+//     negative test proves deletion and substitution fail.
 
 // expectedDispatcherBashBlocks pins the dispatcher's fenced bash block count:
 // "Common commands" + "Load details". A deleted second block must fail here
 // instead of passing on the surviving block's commands.
 const expectedDispatcherBashBlocks = 2
+
+// expectedDispatcherCommands pins the required command inventory per fenced
+// bash block ("Common commands" + "Load details"), after stripShellComment +
+// TrimSpace normalization with blank lines dropped. The resolve check in
+// checkDispatcherLine validates only surviving lines, so a deleted or
+// substituted load-bearing command would otherwise false-pass; exact
+// per-block set equality plus an order check closes that hole. Update this
+// inventory deliberately when the dispatcher in internal/cli/agents.go
+// gains, loses, or rewrites a command.
+var expectedDispatcherCommands = [][]string{
+	{
+		"pad project dashboard --format json",
+		"pad item show TASK-5 --agent",
+		"pad item list [collection] --format json",
+		`pad item create <collection> "Title" [flags]`,
+		"pad item update TASK-5 [flags]",
+		`pad item comment TASK-5 "Message"`,
+		"pad playbook list --format json",
+		"pad playbook show <slug> --format markdown",
+	},
+	{
+		"pad agent guide",
+		"pad agent guide items",
+		"pad agent guide before-performing-work",
+		"pad agent guide role-awareness",
+		"pad agent guide multi-step-workflows",
+		"pad agent guide all",
+	},
+}
+
+// normalizeDispatcherBlockLines returns the command lines of one fenced bash
+// block body with trailing `#` comments removed, whitespace trimmed, and
+// blank/comment-only lines dropped.
+func normalizeDispatcherBlockLines(block string) []string {
+	var out []string
+	for _, raw := range strings.Split(block, "\n") {
+		line := strings.TrimSpace(stripShellComment(raw))
+		if line == "" {
+			continue
+		}
+		out = append(out, line)
+	}
+	return out
+}
+
+// checkDispatcherInventory compares the normalized per-block command lines
+// against expectedDispatcherCommands, so a deleted, added, substituted, or
+// reordered dispatcher command fails. It returns every problem found (empty
+// means the inventory matches exactly).
+func checkDispatcherInventory(blocks []string) []string {
+	var problems []string
+	if len(blocks) != len(expectedDispatcherCommands) {
+		return []string{fmt.Sprintf("dispatcher inventory: expected %d blocks, got %d", len(expectedDispatcherCommands), len(blocks))}
+	}
+	for i, b := range blocks {
+		got := normalizeDispatcherBlockLines(b)
+		want := expectedDispatcherCommands[i]
+		if len(got) != len(want) {
+			problems = append(problems, fmt.Sprintf("dispatcher inventory block %d: expected %d commands, got %d", i+1, len(want), len(got)))
+		}
+		inGot := make(map[string]bool, len(got))
+		for _, l := range got {
+			inGot[l] = true
+		}
+		inWant := make(map[string]bool, len(want))
+		for _, w := range want {
+			inWant[w] = true
+		}
+		for _, w := range want {
+			if !inGot[w] {
+				problems = append(problems, fmt.Sprintf("dispatcher inventory block %d: missing command %q (deleted or substituted)", i+1, w))
+			}
+		}
+		for _, l := range got {
+			if !inWant[l] {
+				problems = append(problems, fmt.Sprintf("dispatcher inventory block %d: unexpected command %q (added or substituted)", i+1, l))
+			}
+		}
+		if len(got) == len(want) {
+			for j := range want {
+				if got[j] != want[j] {
+					problems = append(problems, fmt.Sprintf("dispatcher inventory block %d: order drift at line %d: got %q, want %q", i+1, j+1, got[j], want[j]))
+					break
+				}
+			}
+		}
+	}
+	return problems
+}
 
 var dispatcherPlaceholder = regexp.MustCompile(`^(<[^>]*>|\[[^]]*\]|TASK-[0-9]+)$`)
 
@@ -135,13 +230,7 @@ func dispatcherBashLines(t *testing.T) []string {
 	}
 	var lines []string
 	for _, b := range blocks {
-		for _, raw := range strings.Split(b, "\n") {
-			line := strings.TrimSpace(stripShellComment(raw))
-			if line == "" {
-				continue
-			}
-			lines = append(lines, line)
-		}
+		lines = append(lines, normalizeDispatcherBlockLines(b)...)
 	}
 	return lines
 }
@@ -589,5 +678,120 @@ func TestDispatcherLineRejectsPlaceholderOnGroup(t *testing.T) {
 		if problems := checkDispatcherLine(root, good); len(problems) != 0 {
 			t.Errorf("legit placeholder line %q rejected: %v", good, problems)
 		}
+	}
+}
+
+// TestAgentDispatcherCommandsInventory pins the required command inventory:
+// the normalized per-block command lines must equal
+// expectedDispatcherCommands exactly, so a deleted or substituted
+// load-bearing command fails even though every surviving line still resolves
+// against the cobra tree.
+func TestAgentDispatcherCommandsInventory(t *testing.T) {
+	tool := cli.ResolveTool("agents")
+	if tool == nil {
+		t.Fatal(`ResolveTool("agents") returned nil`)
+	}
+	dispatcher := string(cli.FormatForTool(*tool, pad.PadSkill))
+	blocks, err := splitDispatcherBashBlocks(dispatcher)
+	if err != nil {
+		t.Fatalf("dispatcher bash fences: %v", err)
+	}
+	for _, p := range checkDispatcherInventory(blocks) {
+		t.Error(p)
+	}
+}
+
+// TestDispatcherInventoryRejectsDeletionOrSubstitution is the permanent
+// negative control for the command-inventory pin: a deleted or substituted
+// dispatcher command must fail the inventory check even though every
+// surviving line still resolves (which is exactly why the resolve-only pin
+// false-passed before this inventory existed).
+func TestDispatcherInventoryRejectsDeletionOrSubstitution(t *testing.T) {
+	join := func(lines []string) string { return strings.Join(lines, "\n") }
+	wrap := func(blocks []string) []string {
+		body := "# Pad\n\n```bash\n" + blocks[0] + "\n```\n\n```bash\n" + blocks[1] + "\n```\n"
+		parsed, err := splitDispatcherBashBlocks(body)
+		if err != nil {
+			t.Fatalf("test helper failed to reparse wrapped blocks: %v", err)
+		}
+		return parsed
+	}
+	contains := func(problems []string, want string) bool {
+		for _, p := range problems {
+			if strings.Contains(p, want) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Deletion in block 1: drop the comment command. Every surviving line
+	// still resolves, so the resolve-only pin would pass — assert that first
+	// to prove the hole is real, then require the inventory to fail.
+	delLines := append([]string{}, expectedDispatcherCommands[0][:5]...)
+	delLines = append(delLines, expectedDispatcherCommands[0][6:]...)
+	root := newRootCmd()
+	for _, line := range delLines {
+		if problems := checkDispatcherLine(root, line); len(problems) != 0 {
+			t.Fatalf("surviving line %q unexpectedly fails to resolve: %v", line, problems)
+		}
+	}
+	deleted := wrap([]string{join(delLines), join(expectedDispatcherCommands[1])})
+	delProblems := checkDispatcherInventory(deleted)
+	if len(delProblems) == 0 {
+		t.Fatal("deleted command passed inventory; want failure")
+	}
+	if !contains(delProblems, `missing command "pad item comment TASK-5 \"Message\""`) {
+		t.Errorf("deleted-command problems %v do not name the missing command", delProblems)
+	}
+
+	// Deletion in block 2: drop one guide topic line.
+	del2Lines := append([]string{}, expectedDispatcherCommands[1][:2]...)
+	del2Lines = append(del2Lines, expectedDispatcherCommands[1][3:]...)
+	deleted2 := wrap([]string{join(expectedDispatcherCommands[0]), join(del2Lines)})
+	del2Problems := checkDispatcherInventory(deleted2)
+	if len(del2Problems) == 0 {
+		t.Fatal("deleted block-2 command passed inventory; want failure")
+	}
+	if !contains(del2Problems, "missing command") {
+		t.Errorf("deleted block-2 problems %v mention no missing command", del2Problems)
+	}
+
+	// Substitution in block 1: replace the comment command with a duplicate
+	// of a surviving line. Same count, every line resolves — only the
+	// inventory (missing + order drift) can catch it.
+	subLines := append([]string{}, expectedDispatcherCommands[0]...)
+	subLines[5] = expectedDispatcherCommands[0][1]
+	for _, line := range subLines {
+		if problems := checkDispatcherLine(root, line); len(problems) != 0 {
+			t.Fatalf("substituted-set line %q unexpectedly fails to resolve: %v", line, problems)
+		}
+	}
+	substituted := wrap([]string{join(subLines), join(expectedDispatcherCommands[1])})
+	subProblems := checkDispatcherInventory(substituted)
+	if len(subProblems) == 0 {
+		t.Fatal("substituted command passed inventory; want failure")
+	}
+	if !contains(subProblems, "missing command") {
+		t.Errorf("substituted-command problems %v mention no missing command", subProblems)
+	}
+
+	// Substitution in block 2 with a resolving-but-unexpected line.
+	sub2Lines := append([]string{}, expectedDispatcherCommands[1]...)
+	sub2Lines[1] = "pad agent guide"
+	substituted2 := wrap([]string{join(expectedDispatcherCommands[0]), join(sub2Lines)})
+	sub2Problems := checkDispatcherInventory(substituted2)
+	if len(sub2Problems) == 0 {
+		t.Fatal("substituted block-2 command passed inventory; want failure")
+	}
+	if !contains(sub2Problems, "unexpected command") && !contains(sub2Problems, "missing command") {
+		t.Errorf("substituted block-2 problems %v mention neither missing nor unexpected command", sub2Problems)
+	}
+
+	// The pristine inventory must pass: guards the negative test against
+	// rotting (failing on the real dispatcher for the wrong reason).
+	pristine := wrap([]string{join(expectedDispatcherCommands[0]), join(expectedDispatcherCommands[1])})
+	if problems := checkDispatcherInventory(pristine); len(problems) != 0 {
+		t.Fatalf("pristine inventory rejected: %v", problems)
 	}
 }
