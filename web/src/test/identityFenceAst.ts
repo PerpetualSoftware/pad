@@ -646,7 +646,7 @@ export function enumerateUnits(src: AstSource): { units: Unit[]; deferringCalls:
 // Scopes
 // ---------------------------------------------------------------------------
 
-function patternNames(p: Node, out: Set<string>) {
+export function patternNames(p: Node, out: Set<string>) {
 	switch (p.type) {
 		case 'Identifier':
 			out.add(p.name);

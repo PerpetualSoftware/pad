@@ -32,6 +32,7 @@ import {
 	enumerateUnits,
 	analyseUnit,
 	walk,
+	patternNames,
 	refusedConstructs,
 	asyncUnitStartsSafe,
 	type AstSource,
@@ -42,6 +43,7 @@ import round4 from './itemDetailIdentityFence.round4.json';
 import round6 from './itemDetailIdentityFence.round6.json';
 import round7 from './itemDetailIdentityFence.round7.json';
 import round8 from './itemDetailIdentityFence.round8.json';
+import round9 from './itemDetailIdentityFence.round9.json';
 
 interface GuardMutant {
 	id: string;
@@ -79,16 +81,16 @@ interface Row {
 
 /** Top-level `async function` declarations, by name. */
 const ASYNC_FUNCTIONS: Record<string, Row> = {
-	adoptOrConvergeToLiveCollection: { reviewed: 'bf80efe8fab6', why: 'myGen against loadGeneration before adopting' },
-	reconcileCollectionSegment: { reviewed: '716296138c0e', why: 'identityHeld after the list fetch; retags and navigates only under it' },
-	jumpToSection: { reviewed: '643129c7a73b', why: 'switches this instance\'s tab and scrolls to an anchor', may: ['document.getElementById', 'document.getElementById(anchorId).scrollIntoView'] },
-	ensureGraphComp: { reviewed: 'c41db6a9cb03', why: 'lazy-loads a component module into this instance', may: ['ItemGraphComp', 'graphLoadError'] },
-	handleCopyRef: { reviewed: 'bf402ccdf03f', why: 'switchedAway before the copied flag' },
-	loadData: { reviewed: '41cab0301a6d', why: 'IS the load: myGen against loadGeneration after every await' },
-	startEditTitle: { reviewed: 'c9ad3a7e30a3', why: 'focuses and sizes the input it opened synchronously', may: ['el', 'titleInputEl.focus', 'titleInputEl.setSelectionRange'] },
-	saveTitle: { reviewed: '95404f8d9759', why: 'gen against loadGeneration on both arms' },
+	adoptOrConvergeToLiveCollection: { reviewed: 'cb08aa53385a', why: 'myGen against loadGeneration before adopting' },
+	reconcileCollectionSegment: { reviewed: '7150e3ea6a7c', why: 'identityHeld after the list fetch; retags and navigates only under it' },
+	jumpToSection: { reviewed: '4c36cf1be95f', why: 'switches this instance\'s tab and scrolls to an anchor', may: ['document.getElementById', 'document.getElementById(anchorId).scrollIntoView'] },
+	ensureGraphComp: { reviewed: '27c1a56e59fa', why: 'lazy-loads a component module into this instance', may: ['ItemGraphComp', 'graphLoadError'] },
+	handleCopyRef: { reviewed: '018a7916146f', why: 'switchedAway before the copied flag' },
+	loadData: { reviewed: '5e3df9ba2292', why: 'IS the load: myGen against loadGeneration after every await' },
+	startEditTitle: { reviewed: '3c1a4d7117be', why: 'focuses and sizes the input it opened synchronously', may: ['el', 'titleInputEl.focus', 'titleInputEl.setSelectionRange'] },
+	saveTitle: { reviewed: '5138a7769691', why: 'gen against loadGeneration on both arms' },
 	updateField: {
-		reviewed: '78c200f8a749',
+		reviewed: '469c63e040d9',
 		why: 'stillCurrent() on every arm, the OCC refetch and the open-children confirm',
 		callbacks: {
 			'submitOrderedOCC({send})': {
@@ -102,33 +104,33 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 		},
 	},
 	flushTagSaver: {
-		reviewed: '3610729f7b4b',
+		reviewed: '10c9121f7fdd',
 		why: 'identityHeld(saver.epoch) before every commit and send; the unfenced writes are to this burst\'s own identity-stamped record, and the finally deletes that record only if the registry still holds it (the get)',
 		may: ['saver', 'tagSavers.get', 'tagSavers.delete'],
 	},
-	refreshCollectionIfMoved: { reviewed: 'c17ede44c83b', why: 'gen against loadGeneration after the fetch' },
-	loadTagSuggestions: { reviewed: 'a2a65a168907', why: 'identityHeld after the fetch; the identity listener re-runs it' },
-	stampSourceUrl: { reviewed: 'cddbde8eae48', why: 'switchedAway on both arms' },
-	refreshFromSource: { reviewed: '3dab29f242b3', why: 'switchedAway on every arm' },
-	updateAssignedUser: { reviewed: '0983ca9ddfee', why: 'gen against loadGeneration on both arms' },
-	updateAgentRole: { reviewed: '036ec822b47e', why: 'gen against loadGeneration on both arms' },
+	refreshCollectionIfMoved: { reviewed: 'f6397de3c584', why: 'gen against loadGeneration after the fetch' },
+	loadTagSuggestions: { reviewed: '78525023419a', why: 'identityHeld after the fetch; the identity listener re-runs it' },
+	stampSourceUrl: { reviewed: '91cbdca100c7', why: 'switchedAway on both arms' },
+	refreshFromSource: { reviewed: 'a6fbe6306422', why: 'switchedAway on every arm' },
+	updateAssignedUser: { reviewed: 'e9e1c41146bd', why: 'gen against loadGeneration on both arms' },
+	updateAgentRole: { reviewed: 'b32797bf494e', why: 'gen against loadGeneration on both arms' },
 	flushRawIfPending: {
-		reviewed: '127df117c1c9',
+		reviewed: '2ac40051f589',
 		why: 'genAtFlush against loadGeneration after each PATCH; the re-entrancy waiter returns state; the finally clears this drain\'s own in-flight flag',
 		may: ['rawFlushInFlight'],
 		bareAwaits: ['await new Promise((r) => setTimeout(r, 50));'],
 	},
-	refreshLinksPreservingOnFailure: { reviewed: '07106cafda42', why: 'returns a value; its callers fence' },
-	flushCollabBeforeRestore: { reviewed: 'b92b41b4befa', why: 'identityHeld before its failure toast' },
-	closeCopyDialog: { reviewed: 'de6f9da6db49', why: 'restores focus after closing synchronously', may: ['paneMenuTrigger.focus'] },
-	closePushDialog: { reviewed: '3514a78253cc', why: 'restores focus after closing synchronously', may: ['paneMenuTrigger.focus'] },
-	flushContentBeforeCopy: { reviewed: 'b0588d22f4a7', why: 'returns a boolean to the dialog' },
-	handleCopied: { reviewed: '7e8a0cbad376', why: 'switchedAway before adopting the refreshed item' },
-	handleDelete: { reviewed: '21973bed0774', why: 'switchedAway on both arms' },
-	handleRestore: { reviewed: 'c1c8eda7c183', why: 'switchedAway on every arm' },
-	handleDeleteLink: { reviewed: 'cb560b98a8d8', why: 'switchedAway after each await' },
-	handleCreateLink: { reviewed: '11f0f12d870b', why: 'switchedAway after each await' },
-	handleMove: { reviewed: '998d3f75df53', why: 'stillOnSource() on every arm, including inside navIfStillCurrent' },
+	refreshLinksPreservingOnFailure: { reviewed: '257b39acdf89', why: 'returns a value; its callers fence' },
+	flushCollabBeforeRestore: { reviewed: 'bbcd2cd1573d', why: 'identityHeld before its failure toast' },
+	closeCopyDialog: { reviewed: '7ae2cf63313a', why: 'restores focus after closing synchronously', may: ['paneMenuTrigger.focus'] },
+	closePushDialog: { reviewed: 'fd5a38598dc0', why: 'restores focus after closing synchronously', may: ['paneMenuTrigger.focus'] },
+	flushContentBeforeCopy: { reviewed: '44d4bb534340', why: 'returns a boolean to the dialog' },
+	handleCopied: { reviewed: 'db21f830b3ab', why: 'switchedAway before adopting the refreshed item' },
+	handleDelete: { reviewed: 'ce8911896851', why: 'switchedAway on both arms' },
+	handleRestore: { reviewed: '32b58f63f567', why: 'switchedAway on every arm' },
+	handleDeleteLink: { reviewed: '93c6652630d9', why: 'switchedAway after each await' },
+	handleCreateLink: { reviewed: 'eec657bb56a4', why: 'switchedAway after each await' },
+	handleMove: { reviewed: 'b9ae3bf0374e', why: 'stillOnSource() on every arm, including inside navIfStillCurrent' },
 };
 
 interface SignedRow extends Row {
@@ -153,25 +155,38 @@ interface SignedRow extends Row {
 
 /** Async functions that are not top-level declarations, in the script. */
 const NESTED: SignedRow[] = [
-	{ body: /event\.type === 'collection_updated'/, why: 'SSE: callbackGen after the collection fetch, itemGen on item branches', reviewed: 'ff9561c55657' },
-	{ body: /result\.type === 'caught_up'/, why: 'sync: callbackGen after the reconciliation, itemGen on item branches', reviewed: 'd278038b7d00' },
-	{ body: /flushCollabContent\(/, why: 'collab save: isForegroundCurrent (genAtFlush) before UI feedback', reviewed: 'aa3702e7a8ec' },
+	{ body: /event\.type === 'collection_updated'/, why: 'SSE: callbackGen after the collection fetch, itemGen on item branches', reviewed: 'c58913a9cf24' },
+	{ body: /result\.type === 'caught_up'/, why: 'sync: callbackGen after the reconciliation, itemGen on item branches', reviewed: '215eb0acc0c6' },
+	{ body: /flushCollabContent\(/, why: 'collab save: isForegroundCurrent (genAtFlush) before UI feedback', reviewed: 'd2667846e905' },
 ];
 
 /** Async functions in the markup. */
 const MARKUP: SignedRow[] = [
-	{ body: /startGen/, why: 'Rich toggle: startGen against loadGeneration after each await', reviewed: '8163f09db53e' },
-	{ body: /genAtToggle/, why: 'Markdown toggle: genAtToggle against loadGeneration after each await', reviewed: 'ab80fb08e5d6' },
+	{ body: /startGen/, why: 'Rich toggle: startGen against loadGeneration after each await', reviewed: '99b2b79099fe' },
+	{ body: /genAtToggle/, why: 'Markdown toggle: genAtToggle against loadGeneration after each await', reviewed: 'f83089e25dae' },
 ];
 
 const collapse = (s: string) => s.replace(/\s+/g, ' ');
 
-/** A function's params and statements, whitespace collapsed; comments are not statements, so they drop out. */
+/**
+ * A function's HEAD and statements, whitespace collapsed; comments are not
+ * statements, so they drop out.
+ *
+ * The head is `async`, `*`, the type parameters, the params and the return
+ * type. All five change what a call to the function DOES while leaving every
+ * statement of the body untouched — round 9 F1: `function* switchedAway(…)`
+ * returns a generator object, so every `if (switchedAway(…)) return;` above it
+ * becomes an unconditional return, and the mirror edit on `identityHeld` makes
+ * every fence hold. The body-only hash accepted both.
+ */
 function codeOf(src: AstSource, fn: Node): string {
-	const params = `(${fn.params.map((p: Node) => src.text(p)).join(', ')}) => `;
+	const head = `${fn.async ? 'async ' : ''}${fn.generator ? '* ' : ''}`;
+	const typeParams = fn.typeParameters ? src.text(fn.typeParameters) : '';
+	const params = `(${fn.params.map((p: Node) => src.text(p)).join(', ')})`;
+	const returns = fn.returnType ? src.text(fn.returnType) : '';
 	const b = fn.body;
 	const body = b.type === 'BlockStatement' ? `{ ${b.body.map((st: Node) => src.text(st)).join(' ')} }` : src.text(b);
-	return collapse(params + body);
+	return collapse(`${head}${typeParams}${params}${returns} => ${body}`);
 }
 
 const parents = new WeakMap<AstSource, Map<Node, Node>>();
@@ -244,11 +259,11 @@ const CONTINUATIONS: SignedRow[] = [
 		body: /./,
 		in: 'reconcileCollectionSegment',
 		code: '() => { if (renameOverride === bridge) renameOverride = null; }',
-		why: 'rename heal failure: clears only the bridge object this heal installed', reviewed: 'c06db87a69e9',
+		why: 'rename heal failure: clears only the bridge object this heal installed', reviewed: '6204e0c7eccc',
 		may: ['renameOverride'],
 	},
-	{ call: /^setTimeout\($/, body: /copied = false/, why: 'copy-flag reset: switchedAway', reviewed: '56e147b6d62a' },
-	{ call: /api\.items\.get\(wsSlug, itemSlug\)\.catch\($/, body: /./, why: 'loadData item fetch: sets a flag local to that load and re-throws', reviewed: 'e43ea7bc6f6f' },
+	{ call: /^setTimeout\($/, body: /copied = false/, why: 'copy-flag reset: switchedAway', reviewed: 'b12af8645f41' },
+	{ call: /api\.items\.get\(wsSlug, itemSlug\)\.catch\($/, body: /./, why: 'loadData item fetch: sets a flag local to that load and re-throws', reviewed: '1be77e5eb15d' },
 	{
 		call: /^setTimeout\($/,
 		body: /staleConnecting = true/,
@@ -257,41 +272,41 @@ const CONTINUATIONS: SignedRow[] = [
 		why: 'connection state of this instance\'s own provider', reviewed: 'c55e6c96d765',
 		may: ['staleConnecting'],
 	},
-	{ call: /\.get\(refreshCtx\.wsSlug, refreshCtx\.itemId\) \.then\($/, body: /./, why: 'force-refresh fetch: refreshGen against loadGeneration', reviewed: '6d51a6aabfdf' },
-	{ call: /forceRefreshNonce \+= 1; \}\) \.catch\($/, body: /./, why: 'force-refresh failure: refreshGen against loadGeneration', reviewed: 'af1556df030e' },
+	{ call: /\.get\(refreshCtx\.wsSlug, refreshCtx\.itemId\) \.then\($/, body: /./, why: 'force-refresh fetch: refreshGen against loadGeneration', reviewed: '675b9ed51297' },
+	{ call: /forceRefreshNonce \+= 1; \}\) \.catch\($/, body: /./, why: 'force-refresh failure: refreshGen against loadGeneration', reviewed: '801b8b7afdb6' },
 	{
 		call: /^setTimeout\($/,
 		body: /teardownFlushed/,
 		in: 'onBeforeUnload',
 		code: '() => { teardownFlushed = false; }',
-		why: 're-arms the BUG-3005 teardown latch, itself identity-checked', reviewed: 'ad39db63d644',
+		why: 're-arms the BUG-3005 teardown latch, itself identity-checked', reviewed: 'c869023de1df',
 		may: ['teardownFlushed'],
 	},
-	{ call: /^queueMicrotask\($/, body: /./, why: 'collab lazy seed: refuses a retired or re-identified context first', reviewed: '745cd7b681c5' },
+	{ call: /^queueMicrotask\($/, body: /./, why: 'collab lazy seed: refuses a retired or re-identified context first', reviewed: 'a8be9ffc3c58' },
 	{ call: /^setTimeout\($/, body: /saveStatus/, in: 'showSaved', code: "() => { saveStatus = 'idle'; }", why: 'cosmetic save-indicator reset', reviewed: '90e14d5c11a9', may: ['saveStatus'] },
-	{ call: /^tick\(\)\.then\($/, body: /./, why: 'schedules a focus frame; commits nothing itself', reviewed: '7e4e3943afda' },
+	{ call: /^tick\(\)\.then\($/, body: /./, why: 'schedules a focus frame; commits nothing itself', reviewed: '8196fb014a4d' },
 	{
 		call: /^requestAnimationFrame\($/,
 		body: /./,
 		in: 'tick().then(…)',
 		code: '() => editorInstance?.commands.focus()',
-		why: 'focuses the editor after a tab switch', reviewed: '113d61cd235e',
+		why: 'focuses the editor after a tab switch', reviewed: '741e17ee84aa',
 		may: ['editorInstance.commands.focus'],
 	},
 	{
 		call: /^setTimeout\($/,
 		body: /content: toSave \}\)\.then/,
 		in: 'handleContentUpdate',
-		why: 'content debounce: loadData clears this timer before its first await, so the callback never runs across a load', reviewed: '0a617316d21e',
+		why: 'content debounce: loadData clears this timer before its first await, so the callback never runs across a load', reviewed: '18f8e92888f3',
 		startSafe: true,
 		pin: (src, unit) => clearsBeforeFirstAwait(src, 'loadData', 'contentDebounceTimer') ?? assignedTo(src, unit, 'contentDebounceTimer'),
 	},
-	{ call: /\{ content: toSave \}\)\.then\($/, body: /^\(\) =>/, why: 'content save: switchedAway', reviewed: 'e9e7e1144c7e' },
-	{ call: /showSaved\(\); \}\)\.catch\($/, body: /./, why: 'content save failure: switchedAway', reviewed: 'db434fa49d04' },
-	{ call: /\{ keepalive: true \}\) \.then\($/, body: /./, why: 'raw keepalive save: genAtSave against loadGeneration', reviewed: 'ab79a6c3c6fe' },
-	{ call: /localDirty = false; \} \}\) \.catch\($/, body: /^\(\) => \{\}$/, why: 'raw keepalive failure: empty', reviewed: '33ea742058bb' },
-	{ call: /reqItemId, \{ content: toSave \}\)\.then\($/, body: /./, why: 'raw foreground save: genAtSave against loadGeneration', reviewed: 'fa36d2f9eb98' },
-	{ call: /content: item\.content \}\); \} \}\)\.catch\($/, body: /./, why: 'raw foreground failure: genAtSave against loadGeneration', reviewed: 'eb764a8ec054' },
+	{ call: /\{ content: toSave \}\)\.then\($/, body: /^\(\) =>/, why: 'content save: switchedAway', reviewed: 'a99963601ff7' },
+	{ call: /showSaved\(\); \}\)\.catch\($/, body: /./, why: 'content save failure: switchedAway', reviewed: 'cf04d9a472a0' },
+	{ call: /\{ keepalive: true \}\) \.then\($/, body: /./, why: 'raw keepalive save: genAtSave against loadGeneration', reviewed: '7402b4b3f1d8' },
+	{ call: /localDirty = false; \} \}\) \.catch\($/, body: /^\(\) => \{\}$/, why: 'raw keepalive failure: empty', reviewed: 'e21ee8d63d35' },
+	{ call: /reqItemId, \{ content: toSave \}\)\.then\($/, body: /./, why: 'raw foreground save: genAtSave against loadGeneration', reviewed: 'f236b35aa1cf' },
+	{ call: /content: item\.content \}\); \} \}\)\.catch\($/, body: /./, why: 'raw foreground failure: genAtSave against loadGeneration', reviewed: '3b9a29166b45' },
 ];
 
 /**
@@ -301,25 +316,32 @@ const CONTINUATIONS: SignedRow[] = [
  * one is an edit to every unit that reaches it.
  */
 const HELPERS: Record<string, string> = {
-	adoptCollection: 'f7434c6b7e7e',
-	adoptServerItem: 'b13b3c2258ef',
+	adoptCollection: 'fdb121f38190',
+	adoptServerItem: '5f909ebc7888',
 	autoResizeTitle: '6ab5c619e2f3',
-	captureIdentity: '3169e715940b',
+	captureIdentity: '453ffd4190cc',
 	handleGone: 'e0a6466417a8',
-	handleNavigateAway: '65a913aa7ef0',
-	identityHeld: 'aa01184970c7',
-	navigateToCollectionRoot: '1244fd1b9210',
+	handleNavigateAway: '75d7a4bd9173',
+	identityHeld: '91771f1cca22',
+	navigateToCollectionRoot: '1cd78e90dfb6',
 	refreshPrintMeta: 'dcfe6dacb9b9',
-	runTeardownFlush: 'ee41feec3e40',
+	runTeardownFlush: '8e3f6e81f2a5',
 	showSaved: '54edb673369e',
-	switchedAway: 'd06abf38a5cb',
-	withInflightTags: 'd1622fc8aa71',
+	switchedAway: '54ce551b961f',
+	withInflightTags: '0fce83bae6ef',
 };
 
-/** Deferring calls whose callback is not a function literal. */
-const IDENTIFIER_CALLBACKS: Array<{ text: string; count: number; why: string }> = [
-	{ text: 'Promise.resolve().then(ensureGraphComp)', count: 2, why: 'ensureGraphComp is itself a unit in the table above' },
-	{ text: 'setTimeout(r, 50)', count: 1, why: 'resolves flushRawIfPending\'s re-entrancy waiter' },
+/**
+ * Deferring calls whose callback is not a function literal. `count` pins the
+ * call text itself; `reviewed` hashes the component-level statements that
+ * DECLARE or REBIND the names these calls pass, because such a call site may
+ * sit outside every hashed unit (both `.then(ensureGraphComp)` sites do: one
+ * in an `$effect`, one in `setGraphParam`), and then nothing else covers a
+ * rebinding of what it defers — round 9 F4.
+ */
+const IDENTIFIER_CALLBACKS: Array<{ text: string; count: number; why: string; reviewed: string }> = [
+	{ text: 'Promise.resolve().then(ensureGraphComp)', count: 2, reviewed: '6cdb881b83f0', why: 'ensureGraphComp is itself a unit in the table above' },
+	{ text: 'setTimeout(r, 50)', count: 1, reviewed: 'f7a2eb3b36e7', why: 'resolves flushRawIfPending\'s re-entrancy waiter' },
 ];
 
 function unitLabel(src: AstSource, u: Unit): string {
@@ -341,35 +363,84 @@ function fnName(src: AstSource, fn: Node): string {
 interface TopLevel {
 	/** Component-level SYNC functions, by name: the helper population draws from these. */
 	fns: Map<string, Node>;
-	/** Component-level statements declaring each name, functions excluded. */
+	/** Component-level ASYNC function names: function VALUES, but never helpers (each is its own unit). */
+	asyncFns: Set<string>;
+	/** Component-level statements declaring each name, functions excluded, imports included. */
 	declaring: Map<string, Node[]>;
 	statements: Node[];
+	/** Names each component-level statement REBINDS anywhere inside it (round 9 F3). */
+	rebinds: Map<Node, Set<string>>;
+	/** Write targets no binding pattern models — the gate refuses rather than skipping them. */
+	unmodelledWrites: string[];
+}
+
+/**
+ * Names a statement REBINDS: assignment and update targets and for-in/of
+ * heads, destructuring patterns included (round 9 F3 — `[identityHeld] = […]`
+ * and `for (identityHeld of […])` both rebind a fence helper and neither is an
+ * `Identifier` target). A MEMBER write is not a rebinding and is skipped; any
+ * other target shape is reported, never silently dropped.
+ */
+function reboundNames(src: AstSource, st: Node, unmodelled: string[]): Set<string> {
+	const out = new Set<string>();
+	const target = (t: Node | null | undefined) => {
+		if (!t) return;
+		if (t.type === 'MemberExpression') return;
+		if (t.type === 'TSNonNullExpression' || t.type === 'TSAsExpression') return target(t.expression);
+		try {
+			const names = new Set<string>();
+			patternNames(t, names);
+			for (const n of names) out.add(n);
+		} catch {
+			unmodelled.push(`${t.type} at line ${src.line(t.start)}`);
+		}
+	};
+	walk(st, (n) => {
+		if (n.type === 'AssignmentExpression') target(n.left);
+		else if (n.type === 'UpdateExpression') target(n.argument);
+		else if ((n.type === 'ForOfStatement' || n.type === 'ForInStatement') && n.left.type !== 'VariableDeclaration') target(n.left);
+	});
+	return out;
 }
 
 function topLevelOf(src: AstSource): TopLevel {
 	const fns = new Map<string, Node>();
+	const asyncFns = new Set<string>();
 	const declaring = new Map<string, Node[]>();
 	const statements: Node[] = [];
+	const declares = (name: string, raw: Node) => declaring.set(name, [...(declaring.get(name) ?? []), raw]);
 	for (const raw of src.script.body as Node[]) {
 		const st = raw.type === 'ExportNamedDeclaration' && raw.declaration ? raw.declaration : raw;
 		statements.push(raw);
+		// An import BINDS a name the units read, and rebinding one to a different
+		// module export changes what every reader of that name does while leaving
+		// the reader's own code untouched (round 9 F2).
+		if (st.type === 'ImportDeclaration') {
+			for (const s of st.specifiers as Node[]) if (s.local?.type === 'Identifier') declares(s.local.name, raw);
+			continue;
+		}
 		if (st.type === 'FunctionDeclaration' && st.id) {
-			if (!st.async) fns.set(st.id.name, st);
+			if (st.async) asyncFns.add(st.id.name);
+			else fns.set(st.id.name, st);
 			continue;
 		}
 		if (st.type !== 'VariableDeclaration') continue;
 		for (const d of st.declarations as Node[]) {
 			const fnInit = d.init && (d.init.type === 'ArrowFunctionExpression' || d.init.type === 'FunctionExpression');
 			if (d.id.type === 'Identifier' && fnInit) {
-				if (!d.init.async) fns.set(d.id.name, d.init);
+				if (d.init.async) asyncFns.add(d.id.name);
+				else fns.set(d.id.name, d.init);
 				continue;
 			}
 			walk(d.id, (n) => {
-				if (n.type === 'Identifier') declaring.set(n.name, [...(declaring.get(n.name) ?? []), raw]);
+				if (n.type === 'Identifier') declares(n.name, raw);
 			});
 		}
 	}
-	return { fns, declaring, statements };
+	const unmodelledWrites: string[] = [];
+	const rebinds = new Map<Node, Set<string>>();
+	for (const st of statements) rebinds.set(st, reboundNames(src, st, unmodelledWrites));
+	return { fns, asyncFns, declaring, statements, rebinds, unmodelledWrites };
 }
 
 /**
@@ -391,13 +462,15 @@ function coverage(src: AstSource, tl: TopLevel, roots: Node[]): { text: string; 
 		});
 	}
 	const helpers = new Set([...refs].filter((n) => tl.fns.has(n) && !roots.includes(tl.fns.get(n)!)));
+	// A component-level function this code NAMES is a value it will run, whether
+	// it calls it here or hands it to someone who will; rebinding that name
+	// changes what the code does without touching a byte of it. Round 8 G saw
+	// the callee half only, so a name merely PASSED or stored kept a stale hash.
+	const fnValues = new Set([...refs].filter((n) => tl.fns.has(n) || tl.asyncFns.has(n)));
 	const stmts = new Set<Node>();
 	for (const n of refs) for (const st of tl.declaring.get(n) ?? []) stmts.add(st);
 	for (const st of tl.statements) {
-		walk(st, (n) => {
-			const target = n.type === 'AssignmentExpression' ? n.left : n.type === 'UpdateExpression' ? n.argument : null;
-			if (target?.type === 'Identifier' && called.has(target.name)) stmts.add(st);
-		});
+		for (const name of tl.rebinds.get(st) ?? []) if (called.has(name) || fnValues.has(name)) stmts.add(st);
 	}
 	const text = [
 		...roots.map((r) => codeOf(src, r)),
@@ -415,19 +488,27 @@ interface Resolved {
 	src: AstSource;
 	units: Unit[];
 	rowFor: Map<Unit, Row>;
+	/** Deferring calls whose callback is not a function literal, as found. */
+	idCalls: Node[];
 	/** Units without exactly one row, rows without exactly one unit, untabled deferrals. */
 	population: string[];
 }
 
 function resolve(code: string, extraNested: SignedRow[]): Resolved | string[] {
+	// Enumeration is inside the try with the parse: a deferral written as
+	// `window['setTimeout'](…)` makes `enumerateUnits` throw, and a gate that
+	// throws where it means to refuse gives its caller a stack trace instead of
+	// a line (round 9, smaller notes).
 	let src: AstSource;
+	let units: Unit[];
+	let deferringCalls: Node[];
 	try {
 		src = parseComponent(code);
+		({ units, deferringCalls } = enumerateUnits(src));
 	} catch (e) {
-		return [`does not parse: ${String(e)}`];
+		return [`does not parse, or does not enumerate: ${String(e)}`];
 	}
 	const out: string[] = [];
-	const { units, deferringCalls } = enumerateUnits(src);
 	const claim = (rows: SignedRow[], members: Unit[], what: string, callText: (u: Unit) => string) => {
 		const hits = new Map<SignedRow, Unit[]>();
 		for (const u of members) {
@@ -484,7 +565,7 @@ function resolve(code: string, extraNested: SignedRow[]): Resolved | string[] {
 		const t = src.text(c).replace(/\s+/g, '');
 		if (!IDENTIFIER_CALLBACKS.some((r) => r.text.replace(/\s+/g, '') === t)) out.push(`deferred call with a non-literal callback at line ${src.line(c.start)} is not tabled: ${t.slice(0, 80)}`);
 	}
-	return { src, units, rowFor, population: out };
+	return { src, units, rowFor, idCalls, population: out };
 }
 
 export interface GateOptions {
@@ -510,6 +591,27 @@ export function refusals(code: string, opts: GateOptions = {}): string[] {
 	const out = [...r.population];
 	const tl = topLevelOf(src);
 	const reviewed = (want: string | undefined, now: string) => want === now || !!opts.alsoReviewed?.has(now);
+	for (const w of new Set(tl.unmodelledWrites)) {
+		out.push(`component-level write target ${w} is not a modelled binding pattern — teach the gate rather than skip it`);
+	}
+	for (const row of IDENTIFIER_CALLBACKS) {
+		const calls = r.idCalls.filter((c) => src.text(c).replace(/\s+/g, '') === row.text.replace(/\s+/g, ''));
+		if (!calls.length) continue; // the population check above already refused the count
+		const passed = new Set<string>();
+		for (const c of calls) for (const a of c.arguments as Node[]) if (a.type === 'Identifier') passed.add(a.name);
+		const stmts = new Set<Node>();
+		for (const n of passed) {
+			for (const st of tl.declaring.get(n) ?? []) stmts.add(st);
+			for (const st of tl.statements) if (tl.rebinds.get(st)?.has(n)) stmts.add(st);
+		}
+		const text = [collapse(row.text), ...[...stmts].sort((a, b) => a.start - b.start).map((st) => collapse(src.text(st)))].join(' || ');
+		const now = sha(text);
+		if (!reviewed(row.reviewed, now)) {
+			out.push(
+				`${row.text} has changed since it was reviewed (code ${now}; passes ${[...passed].sort().join(', ')}) — re-read what it defers, then update reviewed`
+			);
+		}
+	}
 	const reach = new Set<string>();
 	const pending: string[] = [];
 	const pull = (helpers: Set<string>) => {
@@ -1153,11 +1255,26 @@ describe('ItemDetail identity gate: a fenced unit cannot change without a re-rea
 		expect(got.some((l) => g.refuses.every((s) => l.includes(s))), `no refusal carries ${JSON.stringify(g.refuses)}; got ${JSON.stringify(got, null, 1)}`).toBe(true);
 	});
 
+	const ROUND9 = round9.gate as Array<{ id: string; subs: string[][]; refuses: string[] }>;
+	it.each(ROUND9.map((g) => [g.id, g] as const))('round 9 edit refused by a hash mismatch: %s', (_id, g) => {
+		expect(GATE_BASELINE).toEqual([]);
+		let code = SOURCE;
+		for (const [from, to] of g.subs as Array<[string, string]>) {
+			expect(code.split(from).length - 1, `anchor ${JSON.stringify(from.slice(0, 60))} is not in the component exactly once`).toBe(1);
+			code = code.replace(from, to);
+		}
+		const got = refusals(code);
+		expect(got.some((l) => g.refuses.every((s) => l.includes(s))), `no refusal carries ${JSON.stringify(g.refuses)}; got ${JSON.stringify(got, null, 1)}`).toBe(true);
+	});
+
 	/**
 	 * GATE GAPS: edits the gate accepts, each outside what it hashes, with the
 	 * sentence that says why. When one starts being refused, it has closed.
 	 */
-	const GATE_GAPS = round8.gateGaps as Array<{ id: string; model: string; subs: string[][] }>;
+	const GATE_GAPS = [
+		...(round8.gateGaps as Array<{ id: string; model: string; subs: string[][] }>),
+		...(round9.gateGaps as Array<{ id: string; model: string; subs: string[][] }>),
+	];
 	it.each(GATE_GAPS.map((g) => [g.id, g] as const))('gate gap, still outside what is hashed: %s', (_id, g) => {
 		expect(GATE_BASELINE).toEqual([]);
 		let code = SOURCE;
@@ -1215,6 +1332,24 @@ describe('ItemDetail identity gate: a fenced unit cannot change without a re-rea
 		expect(opts.extraHelpers).toHaveProperty('noteSaved');
 		const edited = base.replace('\tfunction noteSaved() {\n\t\tvoid 0;\n', "\tfunction noteSaved() {\n\t\titem = null;\n");
 		expect(refusals(edited, opts).some((l) => l.includes('helper noteSaved() has changed since it was reviewed'))).toBe(true);
+	});
+
+	it('a function value rebound outside every unit changes the hash of the unit that only NAMES it (round 9 F4)', () => {
+		// Step 1: a reviewed base where saveTitle hands `applyTitle` to someone
+		// else rather than calling it — the round 8 G shape with the call removed.
+		const noop = '\tlet applyTitle = (next: Item): void => {\n\t\tvoid next;\n\t};\n\t$effect(() => {\n\t\tapplyTitle = (next: Item) => {\n\t\t\tvoid next;\n\t\t};\n\t});\n\n\tfunction showSaved() {\n';
+		const base = SOURCE.replace('\tfunction showSaved() {\n', noop).replace(
+			TITLE_FENCE_AND_COMMITS,
+			"{ title: titleDraft.trim() });\n\t\t\t[updated].forEach(applyTitle);\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"
+		);
+		const opts = reviewAs(base);
+		// Step 2: only the rebinding inside the $effect changes. saveTitle never
+		// calls applyTitle, so only the "names a function value" rule reaches it.
+		const rebind = '\t$effect(() => {\n\t\tapplyTitle = (next: Item) => {\n\t\t\tvoid next;\n';
+		expect(base.split(rebind).length - 1).toBe(1);
+		expect(base).not.toContain('applyTitle(');
+		const edited = base.replace(rebind, '\t$effect(() => {\n\t\tapplyTitle = (next: Item) => {\n\t\t\titem = withInflightTags(next);\n');
+		expect(refusals(edited, opts).some((l) => l.includes('saveTitle() has changed since its row was reviewed'))).toBe(true);
 	});
 
 	it('a function value rebound outside every unit changes the hash of the unit that calls it (refinement 2)', () => {

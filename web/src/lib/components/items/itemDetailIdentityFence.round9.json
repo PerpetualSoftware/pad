@@ -1,0 +1,116 @@
+{
+	"note": "Round 9 on #1387 at c8ab0e64 (BUG-3084 checkpoint 72). Findings F1-F4: edits that change a fenced unit's commit behaviour and that the checkpoint-71 gate ACCEPTED, because its hash did not cover the function head, imports, pattern/for-of rebindings, or the IDENTIFIER_CALLBACKS rows. Each entry must be refused with every string in refuses on one line. gateGaps are edits the gate still accepts, each named by the header's gate-boundary list. Deliberately defective code, kept as JSON so repo source scanners do not read it.",
+	"gate": [
+		{
+			"id": "F1 switchedAway becomes a generator: every `if (switchedAway(...)) return;` always returns",
+			"subs": [
+				[
+					"\tfunction switchedAway(targetItem: Item, gen: number): boolean {\n",
+					"\tfunction* switchedAway(targetItem: Item, gen: number): boolean {\n"
+				]
+			],
+			"refuses": [
+				"helper switchedAway() has changed since it was reviewed"
+			]
+		},
+		{
+			"id": "F1b identityHeld becomes a generator: every fence on it now holds, fail-open",
+			"subs": [
+				[
+					"\tfunction identityHeld(captured: number): boolean {\n",
+					"\tfunction* identityHeld(captured: number): boolean {\n"
+				]
+			],
+			"refuses": [
+				"helper identityHeld() has changed since it was reviewed"
+			]
+		},
+		{
+			"id": "F1c the return type alone: the head is reviewed text, not only the body",
+			"subs": [
+				[
+					"\tfunction switchedAway(targetItem: Item, gen: number): boolean {\n",
+					"\tfunction switchedAway(targetItem: Item, gen: number): unknown {\n"
+				]
+			],
+			"refuses": [
+				"helper switchedAway() has changed since it was reviewed"
+			]
+		},
+		{
+			"id": "F2 isUpdateConflictError re-imported as an alias of a different predicate",
+			"subs": [
+				[
+					"\timport { api, PadApiError, isUpdateConflictError, type ImportURLResponse } from '$lib/api/client';\n",
+					"\timport { api, PadApiError, type ImportURLResponse } from '$lib/api/client';\n"
+				],
+				[
+					"\timport { confirmOpenChildrenOrThrow, isOpenChildrenError } from '$lib/items/openChildrenError';\n",
+					"\timport { confirmOpenChildrenOrThrow, isOpenChildrenError, isOpenChildrenError as isUpdateConflictError } from '$lib/items/openChildrenError';\n"
+				]
+			],
+			"refuses": [
+				"updateField() has changed since its row was reviewed"
+			]
+		},
+		{
+			"id": "F3 identityHeld rebound by an array pattern at component level",
+			"subs": [
+				[
+					"\tfunction identityHeld(captured: number): boolean {\n\t\treturn authStore.identityEpoch === captured;\n\t}\n",
+					"\tfunction identityHeld(captured: number): boolean {\n\t\treturn authStore.identityEpoch === captured;\n\t}\n\t[identityHeld] = [(_captured: number) => true];\n"
+				]
+			],
+			"refuses": [
+				"flushTagSaver() has changed since its row was reviewed"
+			]
+		},
+		{
+			"id": "F3b identityHeld rebound by a for-of head at component level",
+			"subs": [
+				[
+					"\tfunction identityHeld(captured: number): boolean {\n\t\treturn authStore.identityEpoch === captured;\n\t}\n",
+					"\tfunction identityHeld(captured: number): boolean {\n\t\treturn authStore.identityEpoch === captured;\n\t}\n\tfor (identityHeld of [(_captured: number) => true]);\n"
+				]
+			],
+			"refuses": [
+				"flushTagSaver() has changed since its row was reviewed"
+			]
+		},
+		{
+			"id": "F4 ensureGraphComp rebound at component level, so the deferred .then(ensureGraphComp) runs an unfenced commit",
+			"subs": [
+				[
+					"\tfunction retryGraphLoad() {\n",
+					"\tensureGraphComp = () => { item = null; };\n\tfunction retryGraphLoad() {\n"
+				]
+			],
+			"refuses": [
+				"Promise.resolve().then(ensureGraphComp)",
+				"has changed since it was reviewed"
+			]
+		}
+	],
+	"gateGaps": [
+		{
+			"id": "F5 a deferral in an $effect that encloses no unit",
+			"model": "outside the gate: an $effect body that encloses no tabled unit is not hashed; the population sees the deferral only if it is a tabled deferring call with a non-literal callback",
+			"subs": [
+				[
+					"\t\t\tvoid Promise.resolve().then(ensureGraphComp);\n\t\t} else {\n",
+					"\t\t\tvoid Promise.resolve().then(ensureGraphComp);\n\t\t\trequestIdleCallback(() => { item = null; });\n\t\t} else {\n"
+				]
+			]
+		},
+		{
+			"id": "O1 the onDestroy body drops `destroyed = true`, which reconcileCollectionSegment reads",
+			"model": "outside the gate: an onDestroy body is not a unit and no tabled unit reaches it; a write to a name a unit only READS is outside the hash by design",
+			"subs": [
+				[
+					"\t\tdestroyed = true;\n",
+					""
+				]
+			]
+		}
+	]
+}
