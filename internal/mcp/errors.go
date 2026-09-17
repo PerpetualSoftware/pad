@@ -1260,9 +1260,6 @@ func serverHintFor(bodyMsg, route string, status int) string {
 	return strings.Join(parts, " ")
 }
 
-// planLimitHintFor generates the actionable hint for ErrPlanLimitExceeded.
-// The upgrade_url is already in the Details blob; the hint surfaces it in
-// prose so agents that only read Hint (not Details) still get the destination.
 // hint403For picks the hint for an allow-listed structured 403. The
 // plan-limit hint tells the caller to upgrade, which is wrong for an invitee
 // refused by someone else's member cap (BUG-3098).
@@ -1280,6 +1277,9 @@ func hint403For(code, bodyMsg, route string) string {
 	return planLimitHintFor(bodyMsg, route)
 }
 
+// planLimitHintFor generates the actionable hint for ErrPlanLimitExceeded.
+// The upgrade_url is already in the Details blob; the hint surfaces it in
+// prose so agents that only read Hint (not Details) still get the destination.
 func planLimitHintFor(bodyMsg, route string) string {
 	parts := []string{"Upgrade to Pro at /console/billing to remove this limit."}
 	if route != "" {

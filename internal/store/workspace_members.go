@@ -30,8 +30,9 @@ const InvitationTTL = 14 * 24 * time.Hour
 //
 // With WithPlanLimit() the workspace's members_per_workspace cap is counted
 // first, under acquirePlanLimitLock, and a reached cap refuses with
-// *PlanLimitError (BUG-2808). The owner auto-adds and invitation accepts pass
-// nothing.
+// *PlanLimitError (BUG-2808). The server passes it on the direct add and on
+// both invitation accepts (BUG-3098); the owner auto-adds and the ownerless
+// backfill pass nothing.
 func (s *Store) AddWorkspaceMember(workspaceID, userID, role string, opts ...MintOption) error {
 	mint := resolveMintOptions(opts)
 	ts := now()
