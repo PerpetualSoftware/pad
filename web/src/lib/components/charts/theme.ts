@@ -58,12 +58,21 @@ export interface ResolvedSeries {
  * started reading it.
  *
  * Layers reach it as `getLayerCakeContext() as unknown as LayerCakeContext`.
- * The hop through `unknown` is required, not laziness: the package's own
- * context type shares no named member with the scale shapes above, so a direct
- * cast is rejected as non-overlapping — the package casts its own context the
- * same way, for the same reason. It costs nothing that matters here, because
- * what this interface exists to check is the layer bodies: a key it does not
- * declare, or a scale method it does not name, is still an error at the read.
+ * The hop through `unknown` is required, not laziness. The package types every
+ * scale as the loose `Scale` (`{ (value: any): any, [key: string]: any }`),
+ * which DECLARES none of the methods the shapes above require, and an index
+ * signature does not satisfy a required named member. So TS refuses the direct
+ * cast — verbatim: "Conversion of type 'LayerCakeContext<any, ChartDatum[]>' to
+ * type 'LayerCakeContext' may be a mistake because neither type sufficiently
+ * overlaps with the other ... Property 'ticks' is missing in type 'Scale' but
+ * required in type '{ (value: unknown): number; ticks: ... }'". The package
+ * casts its own context through `unknown` for the same reason.
+ *
+ * What the hop gives up is only that one comparison, against a type that
+ * asserts nothing. What this interface exists to check is the layer bodies, and
+ * that still holds: a key it does not declare, or a scale method it does not
+ * name, is an error at the read. Verified rather than assumed — probing
+ * `k.xRange` and `k.yScale.bandwidth()` each fails svelte-check.
  */
 export interface LayerCakeContext {
 	data: ChartDatum[];
