@@ -1,0 +1,113 @@
+{
+	"note": "Round 10 on #1387 at 211eda13 (BUG-3084 checkpoint 74). Findings 1 and 2 are one root cause: codeOf collapsed whitespace, so a newline — which ends a // comment AND separates two statements under ASI — left no trace in the reviewed text, and two different programs hashed identically. Finding 3: component-level class / enum / namespace declarations never entered `declaring`. Each entry must be refused with every string in refuses on one line; the CONTROL entries were already refused before the fixes and are kept as regressions. Deliberately defective code, kept as JSON so repo source scanners do not read it.",
+	"gate": [
+		{
+			"id": "R10-B a line comment absorbs flushTagSaver's ONLY identity fence",
+			"subs": [
+				[
+					"\t\t\t\t// written first and could never fire (BUG-3084 mutation matrix).\n\t\t\t\tif (!identityHeld(saver.epoch)) {\n\t\t\t\t\tsaver.pending = null;\n\t\t\t\t\treturn;\n\t\t\t\t}\n",
+					"\t\t\t\t// written first and could never fire (BUG-3084 mutation matrix). if (!identityHeld(saver.epoch)) { saver.pending = null; return; }\n"
+				]
+			],
+			"refuses": [
+				"flushTagSaver() has changed since its row was reviewed"
+			]
+		},
+		{
+			"id": "R10-C CONTROL: the same fence deleted outright is refused",
+			"subs": [
+				[
+					"\t\t\t\t// written first and could never fire (BUG-3084 mutation matrix).\n\t\t\t\tif (!identityHeld(saver.epoch)) {\n\t\t\t\t\tsaver.pending = null;\n\t\t\t\t\treturn;\n\t\t\t\t}\n",
+					"\t\t\t\t// written first and could never fire (BUG-3084 mutation matrix).\n"
+				]
+			],
+			"refuses": [
+				"flushTagSaver() has changed since its row was reviewed"
+			]
+		},
+		{
+			"id": "R10-A ASI: switchedAway returns undefined, so every `if (switchedAway(...)) return;` is dead",
+			"subs": [
+				[
+					"\tfunction switchedAway(targetItem: Item, gen: number): boolean {\n\t\treturn gen !== loadGeneration || item?.id !== targetItem.id;\n\t}\n",
+					"\tfunction switchedAway(targetItem: Item, gen: number): boolean {\n\t\treturn\n\t\t\tgen !== loadGeneration || item?.id !== targetItem.id;\n\t}\n"
+				]
+			],
+			"refuses": [
+				"helper switchedAway() has changed since it was reviewed"
+			]
+		},
+		{
+			"id": "R10-D CONTROL: switchedAway made unconditionally false is refused",
+			"subs": [
+				[
+					"\tfunction switchedAway(targetItem: Item, gen: number): boolean {\n\t\treturn gen !== loadGeneration || item?.id !== targetItem.id;\n\t}\n",
+					"\tfunction switchedAway(targetItem: Item, gen: number): boolean {\n\t\tvoid targetItem;\n\t\tvoid gen;\n\t\treturn false;\n\t}\n"
+				]
+			],
+			"refuses": [
+				"helper switchedAway() has changed since it was reviewed"
+			]
+		},
+		{
+			"id": "R10-A2 ASI: identityHeld returns undefined, so every identity fence fires unconditionally",
+			"subs": [
+				[
+					"\tfunction identityHeld(captured: number): boolean {\n\t\treturn authStore.identityEpoch === captured;\n\t}\n",
+					"\tfunction identityHeld(captured: number): boolean {\n\t\treturn\n\t\t\tauthStore.identityEpoch === captured;\n\t}\n"
+				]
+			],
+			"refuses": [
+				"helper identityHeld() has changed since it was reviewed"
+			]
+		},
+		{
+			"id": "R10-A2c CONTROL: identityHeld made unconditionally true is refused",
+			"subs": [
+				[
+					"\tfunction identityHeld(captured: number): boolean {\n\t\treturn authStore.identityEpoch === captured;\n\t}\n",
+					"\tfunction identityHeld(captured: number): boolean {\n\t\tvoid captured;\n\t\treturn true;\n\t}\n"
+				]
+			],
+			"refuses": [
+				"helper identityHeld() has changed since it was reviewed"
+			]
+		},
+		{
+			"id": "R10-E a component-level class declaring a name a unit references (JSON, which flushTagSaver calls)",
+			"subs": [
+				[
+					"\tlet loadGeneration = 0;\n",
+					"\tclass JSON {\n\t\tstatic stringify(v: unknown): string {\n\t\t\tvoid v;\n\t\t\treturn '[]';\n\t\t}\n\t}\n\tlet loadGeneration = 0;\n"
+				]
+			],
+			"refuses": [
+				"flushTagSaver() has changed since its row was reviewed"
+			]
+		},
+		{
+			"id": "R10-E2 the same through a class shadowing Map, which the tagSavers declaration constructs",
+			"subs": [
+				[
+					"\tlet loadGeneration = 0;\n",
+					"\tclass Map {\n\t\tget(): undefined {\n\t\t\treturn undefined;\n\t\t}\n\t\tset(): void {}\n\t\tdelete(): void {}\n\t}\n\tlet loadGeneration = 0;\n"
+				]
+			],
+			"refuses": [
+				"has changed since"
+			]
+		},
+		{
+			"id": "R10-E3 a component-level enum declaring a name a unit references (a runtime-valued form TS authors write routinely)",
+			"subs": [
+				[
+					"\tlet loadGeneration = 0;\n",
+					"\tenum JSON {\n\t\tstringify = 0\n\t}\n\tlet loadGeneration = 0;\n"
+				]
+			],
+			"refuses": [
+				"flushTagSaver() has changed since its row was reviewed"
+			]
+		}
+	]
+}

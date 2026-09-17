@@ -49,6 +49,7 @@ import round6 from './itemDetailIdentityFence.round6.json';
 import round7 from './itemDetailIdentityFence.round7.json';
 import round8 from './itemDetailIdentityFence.round8.json';
 import round9 from './itemDetailIdentityFence.round9.json';
+import round10 from './itemDetailIdentityFence.round10.json';
 
 interface GuardMutant {
 	id: string;
@@ -86,16 +87,16 @@ interface Row {
 
 /** Top-level `async function` declarations, by name. */
 const ASYNC_FUNCTIONS: Record<string, Row> = {
-	adoptOrConvergeToLiveCollection: { reviewed: 'cb08aa53385a', why: 'myGen against loadGeneration before adopting' },
-	reconcileCollectionSegment: { reviewed: '7150e3ea6a7c', why: 'identityHeld after the list fetch; retags and navigates only under it' },
-	jumpToSection: { reviewed: '4c36cf1be95f', why: 'switches this instance\'s tab and scrolls to an anchor', may: ['document.getElementById', 'document.getElementById(anchorId).scrollIntoView'] },
-	ensureGraphComp: { reviewed: '27c1a56e59fa', why: 'lazy-loads a component module into this instance', may: ['ItemGraphComp', 'graphLoadError'] },
-	handleCopyRef: { reviewed: '018a7916146f', why: 'switchedAway before the copied flag' },
-	loadData: { reviewed: '5e3df9ba2292', why: 'IS the load: myGen against loadGeneration after every await' },
-	startEditTitle: { reviewed: '3c1a4d7117be', why: 'focuses and sizes the input it opened synchronously', may: ['el', 'titleInputEl.focus', 'titleInputEl.setSelectionRange'] },
-	saveTitle: { reviewed: '5138a7769691', why: 'gen against loadGeneration on both arms' },
+	adoptOrConvergeToLiveCollection: { reviewed: '57da8b1c6376', why: 'myGen against loadGeneration before adopting' },
+	reconcileCollectionSegment: { reviewed: '88120e0ec9be', why: 'identityHeld after the list fetch; retags and navigates only under it' },
+	jumpToSection: { reviewed: 'd22cbd3af1c9', why: 'switches this instance\'s tab and scrolls to an anchor', may: ['document.getElementById', 'document.getElementById(anchorId).scrollIntoView'] },
+	ensureGraphComp: { reviewed: '06b3828fce45', why: 'lazy-loads a component module into this instance', may: ['ItemGraphComp', 'graphLoadError'] },
+	handleCopyRef: { reviewed: '4c1cb9ee5e2f', why: 'switchedAway before the copied flag' },
+	loadData: { reviewed: 'c9d92d3589ae', why: 'IS the load: myGen against loadGeneration after every await' },
+	startEditTitle: { reviewed: 'b19a73568372', why: 'focuses and sizes the input it opened synchronously', may: ['el', 'titleInputEl.focus', 'titleInputEl.setSelectionRange'] },
+	saveTitle: { reviewed: '2b08fbfc2768', why: 'gen against loadGeneration on both arms' },
 	updateField: {
-		reviewed: '469c63e040d9',
+		reviewed: '448c98943e27',
 		why: 'stillCurrent() on every arm, the OCC refetch and the open-children confirm',
 		callbacks: {
 			'submitOrderedOCC({send})': {
@@ -109,33 +110,33 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 		},
 	},
 	flushTagSaver: {
-		reviewed: '10c9121f7fdd',
+		reviewed: '4fa79290b29b',
 		why: 'identityHeld(saver.epoch) before every commit and send; the unfenced writes are to this burst\'s own identity-stamped record, and the finally deletes that record only if the registry still holds it (the get)',
 		may: ['saver', 'tagSavers.get', 'tagSavers.delete'],
 	},
-	refreshCollectionIfMoved: { reviewed: 'f6397de3c584', why: 'gen against loadGeneration after the fetch' },
-	loadTagSuggestions: { reviewed: '78525023419a', why: 'identityHeld after the fetch; the identity listener re-runs it' },
-	stampSourceUrl: { reviewed: '91cbdca100c7', why: 'switchedAway on both arms' },
-	refreshFromSource: { reviewed: 'a6fbe6306422', why: 'switchedAway on every arm' },
-	updateAssignedUser: { reviewed: 'e9e1c41146bd', why: 'gen against loadGeneration on both arms' },
-	updateAgentRole: { reviewed: 'b32797bf494e', why: 'gen against loadGeneration on both arms' },
+	refreshCollectionIfMoved: { reviewed: '8bae38ac3129', why: 'gen against loadGeneration after the fetch' },
+	loadTagSuggestions: { reviewed: 'd148c302b71f', why: 'identityHeld after the fetch; the identity listener re-runs it' },
+	stampSourceUrl: { reviewed: 'a037cb4ea941', why: 'switchedAway on both arms' },
+	refreshFromSource: { reviewed: '339982e3b812', why: 'switchedAway on every arm' },
+	updateAssignedUser: { reviewed: 'ad539f19b17e', why: 'gen against loadGeneration on both arms' },
+	updateAgentRole: { reviewed: '915268b0de78', why: 'gen against loadGeneration on both arms' },
 	flushRawIfPending: {
-		reviewed: '2ac40051f589',
+		reviewed: 'b2f076d614c3',
 		why: 'genAtFlush against loadGeneration after each PATCH; the re-entrancy waiter returns state; the finally clears this drain\'s own in-flight flag',
 		may: ['rawFlushInFlight'],
 		bareAwaits: ['await new Promise((r) => setTimeout(r, 50));'],
 	},
-	refreshLinksPreservingOnFailure: { reviewed: '257b39acdf89', why: 'returns a value; its callers fence' },
-	flushCollabBeforeRestore: { reviewed: 'bbcd2cd1573d', why: 'identityHeld before its failure toast' },
-	closeCopyDialog: { reviewed: '7ae2cf63313a', why: 'restores focus after closing synchronously', may: ['paneMenuTrigger.focus'] },
-	closePushDialog: { reviewed: 'fd5a38598dc0', why: 'restores focus after closing synchronously', may: ['paneMenuTrigger.focus'] },
-	flushContentBeforeCopy: { reviewed: '44d4bb534340', why: 'returns a boolean to the dialog' },
-	handleCopied: { reviewed: 'db21f830b3ab', why: 'switchedAway before adopting the refreshed item' },
-	handleDelete: { reviewed: 'ce8911896851', why: 'switchedAway on both arms' },
-	handleRestore: { reviewed: '32b58f63f567', why: 'switchedAway on every arm' },
-	handleDeleteLink: { reviewed: '93c6652630d9', why: 'switchedAway after each await' },
-	handleCreateLink: { reviewed: 'eec657bb56a4', why: 'switchedAway after each await' },
-	handleMove: { reviewed: 'b9ae3bf0374e', why: 'stillOnSource() on every arm, including inside navIfStillCurrent' },
+	refreshLinksPreservingOnFailure: { reviewed: 'e1f928eef756', why: 'returns a value; its callers fence' },
+	flushCollabBeforeRestore: { reviewed: '3194e7fd7577', why: 'identityHeld before its failure toast' },
+	closeCopyDialog: { reviewed: '99caeef9e7b1', why: 'restores focus after closing synchronously', may: ['paneMenuTrigger.focus'] },
+	closePushDialog: { reviewed: '924dd90359f3', why: 'restores focus after closing synchronously', may: ['paneMenuTrigger.focus'] },
+	flushContentBeforeCopy: { reviewed: '2ea212df1bfb', why: 'returns a boolean to the dialog' },
+	handleCopied: { reviewed: 'd4673edd29c0', why: 'switchedAway before adopting the refreshed item' },
+	handleDelete: { reviewed: '9e8e6b206568', why: 'switchedAway on both arms' },
+	handleRestore: { reviewed: '675042108745', why: 'switchedAway on every arm' },
+	handleDeleteLink: { reviewed: 'a6f68569e2b3', why: 'switchedAway after each await' },
+	handleCreateLink: { reviewed: 'd1ee075f0bbd', why: 'switchedAway after each await' },
+	handleMove: { reviewed: '45216298dc01', why: 'stillOnSource() on every arm, including inside navIfStillCurrent' },
 };
 
 interface SignedRow extends Row {
@@ -160,15 +161,15 @@ interface SignedRow extends Row {
 
 /** Async functions that are not top-level declarations, in the script. */
 const NESTED: SignedRow[] = [
-	{ body: /event\.type === 'collection_updated'/, why: 'SSE: callbackGen after the collection fetch, itemGen on item branches', reviewed: 'c58913a9cf24' },
-	{ body: /result\.type === 'caught_up'/, why: 'sync: callbackGen after the reconciliation, itemGen on item branches', reviewed: '215eb0acc0c6' },
-	{ body: /flushCollabContent\(/, why: 'collab save: isForegroundCurrent (genAtFlush) before UI feedback', reviewed: 'd2667846e905' },
+	{ body: /event\.type === 'collection_updated'/, why: 'SSE: callbackGen after the collection fetch, itemGen on item branches', reviewed: 'a14d924fc5fe' },
+	{ body: /result\.type === 'caught_up'/, why: 'sync: callbackGen after the reconciliation, itemGen on item branches', reviewed: 'ba12e34d8627' },
+	{ body: /flushCollabContent\(/, why: 'collab save: isForegroundCurrent (genAtFlush) before UI feedback', reviewed: '450b316f32c9' },
 ];
 
 /** Async functions in the markup. */
 const MARKUP: SignedRow[] = [
-	{ body: /startGen/, why: 'Rich toggle: startGen against loadGeneration after each await', reviewed: '99b2b79099fe' },
-	{ body: /genAtToggle/, why: 'Markdown toggle: genAtToggle against loadGeneration after each await', reviewed: 'f83089e25dae' },
+	{ body: /startGen/, why: 'Rich toggle: startGen against loadGeneration after each await', reviewed: '5c44b72487b2' },
+	{ body: /genAtToggle/, why: 'Markdown toggle: genAtToggle against loadGeneration after each await', reviewed: '14d3697b4b42' },
 ];
 
 const collapse = (s: string) => s.replace(/\s+/g, ' ');
@@ -192,6 +193,50 @@ function codeOf(src: AstSource, fn: Node): string {
 	const b = fn.body;
 	const body = b.type === 'BlockStatement' ? `{ ${b.body.map((st: Node) => src.text(st)).join(' ')} }` : src.text(b);
 	return collapse(`${head}${typeParams}${params}${returns} => ${body}`);
+}
+
+/**
+ * A separator that cannot occur in the source: the reviewed text is built by
+ * JOINING slices, so the join has to be unambiguous or two different programs
+ * render the same text. Round 10's ASI finding is exactly that — `return`
+ * followed by an expression on the next line is TWO statements whose slices,
+ * joined by a space, are byte-identical to the ONE statement spanning the
+ * same two lines, and `identityHeld` returning `undefined` hashed the same as
+ * `identityHeld` returning the comparison.
+ */
+const SEP = ' ';
+
+/**
+ * The REVIEWED TEXT of a function: its head and each of its statements,
+ * VERBATIM, joined by `SEP`. Nothing is normalised, which is the point.
+ *
+ * Round 10 found two programs-to-one-text collisions in the collapsed form,
+ * one root cause: `collapse` replaced every whitespace run with a space, and
+ * a NEWLINE is what ends a `//` comment and what splits two statements under
+ * ASI. Moving a fence onto the end of the comment line above it, or splitting
+ * a `return` across two lines, left the reviewed text unchanged while
+ * deleting the fence or neutering the helper. A change detector that reports
+ * "no change" on a deleted fence is broken on its own terms, so the text is
+ * now the source bytes and nothing else.
+ *
+ * THE COST, stated because it is real: whitespace INSIDE a hashed statement
+ * is now part of the text, so reindenting or re-wrapping a fenced unit costs
+ * a hash bump. Whitespace and comments BETWEEN statements still cost nothing
+ * — they fall outside every statement's slice — which is the property the
+ * header's cost paragraph already describes.
+ */
+function reviewedTextOf(src: AstSource, fn: Node): string {
+	const b = fn.body;
+	return [
+		fn.async ? 'async' : '',
+		fn.generator ? '*' : '',
+		fn.typeParameters ? src.text(fn.typeParameters) : '',
+		...fn.params.map((p: Node) => src.text(p)),
+		SEP,
+		fn.returnType ? src.text(fn.returnType) : '',
+		SEP,
+		...(b.type === 'BlockStatement' ? (b.body as Node[]).map((st: Node) => src.text(st)) : [src.text(b)]),
+	].join(SEP);
 }
 
 const parents = new WeakMap<AstSource, Map<Node, Node>>();
@@ -264,54 +309,54 @@ const CONTINUATIONS: SignedRow[] = [
 		body: /./,
 		in: 'reconcileCollectionSegment',
 		code: '() => { if (renameOverride === bridge) renameOverride = null; }',
-		why: 'rename heal failure: clears only the bridge object this heal installed', reviewed: '6204e0c7eccc',
+		why: 'rename heal failure: clears only the bridge object this heal installed', reviewed: '34e3fa14276b',
 		may: ['renameOverride'],
 	},
-	{ call: /^setTimeout\($/, body: /copied = false/, why: 'copy-flag reset: switchedAway', reviewed: 'b12af8645f41' },
-	{ call: /api\.items\.get\(wsSlug, itemSlug\)\.catch\($/, body: /./, why: 'loadData item fetch: sets a flag local to that load and re-throws', reviewed: '1be77e5eb15d' },
+	{ call: /^setTimeout\($/, body: /copied = false/, why: 'copy-flag reset: switchedAway', reviewed: '7686616613cf' },
+	{ call: /api\.items\.get\(wsSlug, itemSlug\)\.catch\($/, body: /./, why: 'loadData item fetch: sets a flag local to that load and re-throws', reviewed: 'c645b1bd13bf' },
 	{
 		call: /^setTimeout\($/,
 		body: /staleConnecting = true/,
 		in: '$effect(…)',
 		code: "() => { if (collabProvider?.state === 'connecting' && !hasEverSynced) { staleConnecting = true; } }",
-		why: 'connection state of this instance\'s own provider', reviewed: 'c55e6c96d765',
+		why: 'connection state of this instance\'s own provider', reviewed: 'd1826845dd94',
 		may: ['staleConnecting'],
 	},
-	{ call: /\.get\(refreshCtx\.wsSlug, refreshCtx\.itemId\) \.then\($/, body: /./, why: 'force-refresh fetch: refreshGen against loadGeneration', reviewed: '675b9ed51297' },
-	{ call: /forceRefreshNonce \+= 1; \}\) \.catch\($/, body: /./, why: 'force-refresh failure: refreshGen against loadGeneration', reviewed: '801b8b7afdb6' },
+	{ call: /\.get\(refreshCtx\.wsSlug, refreshCtx\.itemId\) \.then\($/, body: /./, why: 'force-refresh fetch: refreshGen against loadGeneration', reviewed: '7e08cad3be7d' },
+	{ call: /forceRefreshNonce \+= 1; \}\) \.catch\($/, body: /./, why: 'force-refresh failure: refreshGen against loadGeneration', reviewed: 'b8c4b73a9530' },
 	{
 		call: /^setTimeout\($/,
 		body: /teardownFlushed/,
 		in: 'onBeforeUnload',
 		code: '() => { teardownFlushed = false; }',
-		why: 're-arms the BUG-3005 teardown latch, itself identity-checked', reviewed: 'c869023de1df',
+		why: 're-arms the BUG-3005 teardown latch, itself identity-checked', reviewed: 'ef244328cfef',
 		may: ['teardownFlushed'],
 	},
-	{ call: /^queueMicrotask\($/, body: /./, why: 'collab lazy seed: refuses a retired or re-identified context first', reviewed: 'a8be9ffc3c58' },
-	{ call: /^setTimeout\($/, body: /saveStatus/, in: 'showSaved', code: "() => { saveStatus = 'idle'; }", why: 'cosmetic save-indicator reset', reviewed: '90e14d5c11a9', may: ['saveStatus'] },
-	{ call: /^tick\(\)\.then\($/, body: /./, why: 'schedules a focus frame; commits nothing itself', reviewed: '8196fb014a4d' },
+	{ call: /^queueMicrotask\($/, body: /./, why: 'collab lazy seed: refuses a retired or re-identified context first', reviewed: 'c7bf0f823e95' },
+	{ call: /^setTimeout\($/, body: /saveStatus/, in: 'showSaved', code: "() => { saveStatus = 'idle'; }", why: 'cosmetic save-indicator reset', reviewed: 'e6be8c8c97a4', may: ['saveStatus'] },
+	{ call: /^tick\(\)\.then\($/, body: /./, why: 'schedules a focus frame; commits nothing itself', reviewed: '6ab60485aa8f' },
 	{
 		call: /^requestAnimationFrame\($/,
 		body: /./,
 		in: 'tick().then(…)',
 		code: '() => editorInstance?.commands.focus()',
-		why: 'focuses the editor after a tab switch', reviewed: '741e17ee84aa',
+		why: 'focuses the editor after a tab switch', reviewed: 'a3282519b2e6',
 		may: ['editorInstance.commands.focus'],
 	},
 	{
 		call: /^setTimeout\($/,
 		body: /content: toSave \}\)\.then/,
 		in: 'handleContentUpdate',
-		why: 'content debounce: loadData clears this timer before its first await, so the callback never runs across a load', reviewed: '18f8e92888f3',
+		why: 'content debounce: loadData clears this timer before its first await, so the callback never runs across a load', reviewed: '94d22dab6733',
 		startSafe: true,
 		pin: (src, unit) => clearsBeforeFirstAwait(src, 'loadData', 'contentDebounceTimer') ?? assignedTo(src, unit, 'contentDebounceTimer'),
 	},
-	{ call: /\{ content: toSave \}\)\.then\($/, body: /^\(\) =>/, why: 'content save: switchedAway', reviewed: 'a99963601ff7' },
-	{ call: /showSaved\(\); \}\)\.catch\($/, body: /./, why: 'content save failure: switchedAway', reviewed: 'cf04d9a472a0' },
-	{ call: /\{ keepalive: true \}\) \.then\($/, body: /./, why: 'raw keepalive save: genAtSave against loadGeneration', reviewed: '7402b4b3f1d8' },
-	{ call: /localDirty = false; \} \}\) \.catch\($/, body: /^\(\) => \{\}$/, why: 'raw keepalive failure: empty', reviewed: 'e21ee8d63d35' },
-	{ call: /reqItemId, \{ content: toSave \}\)\.then\($/, body: /./, why: 'raw foreground save: genAtSave against loadGeneration', reviewed: 'f236b35aa1cf' },
-	{ call: /content: item\.content \}\); \} \}\)\.catch\($/, body: /./, why: 'raw foreground failure: genAtSave against loadGeneration', reviewed: '3b9a29166b45' },
+	{ call: /\{ content: toSave \}\)\.then\($/, body: /^\(\) =>/, why: 'content save: switchedAway', reviewed: '378fb53bb0af' },
+	{ call: /showSaved\(\); \}\)\.catch\($/, body: /./, why: 'content save failure: switchedAway', reviewed: 'd8f40badc616' },
+	{ call: /\{ keepalive: true \}\) \.then\($/, body: /./, why: 'raw keepalive save: genAtSave against loadGeneration', reviewed: '07e82b4234de' },
+	{ call: /localDirty = false; \} \}\) \.catch\($/, body: /^\(\) => \{\}$/, why: 'raw keepalive failure: empty', reviewed: 'dd5410c0e4b8' },
+	{ call: /reqItemId, \{ content: toSave \}\)\.then\($/, body: /./, why: 'raw foreground save: genAtSave against loadGeneration', reviewed: '3bfb9354c191' },
+	{ call: /content: item\.content \}\); \} \}\)\.catch\($/, body: /./, why: 'raw foreground failure: genAtSave against loadGeneration', reviewed: '83ee5f739a96' },
 ];
 
 /**
@@ -321,19 +366,19 @@ const CONTINUATIONS: SignedRow[] = [
  * one is an edit to every unit that reaches it.
  */
 const HELPERS: Record<string, string> = {
-	adoptCollection: 'fdb121f38190',
-	adoptServerItem: '5f909ebc7888',
-	autoResizeTitle: '6ab5c619e2f3',
-	captureIdentity: '453ffd4190cc',
-	handleGone: 'e0a6466417a8',
-	handleNavigateAway: '75d7a4bd9173',
-	identityHeld: '91771f1cca22',
-	navigateToCollectionRoot: '1cd78e90dfb6',
-	refreshPrintMeta: 'dcfe6dacb9b9',
-	runTeardownFlush: '8e3f6e81f2a5',
-	showSaved: '54edb673369e',
-	switchedAway: '54ce551b961f',
-	withInflightTags: '0fce83bae6ef',
+	adoptCollection: 'd443ce4d5898',
+	adoptServerItem: '110b1f43cb5b',
+	autoResizeTitle: '174f63dad1c3',
+	captureIdentity: 'a6bca2e34264',
+	handleGone: '9462c4ad919b',
+	handleNavigateAway: '4ea0a8a05fb2',
+	identityHeld: '06ad29c10b75',
+	navigateToCollectionRoot: 'bd1f5028a85d',
+	refreshPrintMeta: '99816d218ca6',
+	runTeardownFlush: '7e97c52a1456',
+	showSaved: '39a8a5893a51',
+	switchedAway: '9d40ce2e38d8',
+	withInflightTags: '5276150bd18d',
 };
 
 /**
@@ -397,6 +442,8 @@ interface TopLevel {
 	rebinds: Map<Node, Set<string>>;
 	/** Write targets no binding pattern models — the gate refuses rather than skipping them. */
 	unmodelledWrites: string[];
+	/** Component-level binding forms `topLevelOf` does not model — likewise refused. */
+	unmodelledDeclarations: string[];
 }
 
 /**
@@ -428,8 +475,14 @@ function reboundNames(src: AstSource, st: Node, unmodelled: string[]): Set<strin
 	return out;
 }
 
+/** Component-level forms that declare a name holding a RUNTIME value. */
+const RUNTIME_DECLARATIONS = new Set(['ClassDeclaration', 'TSEnumDeclaration', 'TSModuleDeclaration']);
+/** ...and the ones that declare a name holding no value at all, so no unit can call one. */
+const TYPE_ONLY_DECLARATIONS = new Set(['TSInterfaceDeclaration', 'TSTypeAliasDeclaration', 'TSDeclareFunction']);
+
 function topLevelOf(src: AstSource): TopLevel {
 	const fns = new Map<string, Node>();
+	const unmodelledDeclarations: string[] = [];
 	const asyncFns = new Set<string>();
 	const declaring = new Map<string, Node[]>();
 	const statements: Node[] = [];
@@ -449,6 +502,21 @@ function topLevelOf(src: AstSource): TopLevel {
 			else fns.set(st.id.name, st);
 			continue;
 		}
+		// A class, an enum or a namespace declares a name with a RUNTIME value,
+		// exactly as a `const` does: `class Map { get() {} }` beside
+		// `const tagSavers = new Map()` rebinds what two hashed functions call
+		// on every write (round 10, finding 3).
+		if (RUNTIME_DECLARATIONS.has(st.type) && st.id?.type === 'Identifier') {
+			declares(st.id.name, raw);
+			continue;
+		}
+		// Anything else that BINDS a name is a form this function does not
+		// model. Refuse it rather than let a declaration the header promises to
+		// hash fall silently outside the hash.
+		if (st.id?.type === 'Identifier' && !TYPE_ONLY_DECLARATIONS.has(st.type)) {
+			unmodelledDeclarations.push(`${st.type} declaring ${st.id.name} at line ${src.line(st.start)}`);
+			continue;
+		}
 		if (st.type !== 'VariableDeclaration') continue;
 		for (const d of st.declarations as Node[]) {
 			const fnInit = d.init && (d.init.type === 'ArrowFunctionExpression' || d.init.type === 'FunctionExpression');
@@ -465,7 +533,7 @@ function topLevelOf(src: AstSource): TopLevel {
 	const unmodelledWrites: string[] = [];
 	const rebinds = new Map<Node, Set<string>>();
 	for (const st of statements) rebinds.set(st, reboundNames(src, st, unmodelledWrites));
-	return { fns, asyncFns, declaring, statements, rebinds, unmodelledWrites };
+	return { fns, asyncFns, declaring, statements, rebinds, unmodelledWrites, unmodelledDeclarations };
 }
 
 /**
@@ -493,14 +561,33 @@ function coverage(src: AstSource, tl: TopLevel, roots: Node[]): { text: string; 
 	// the callee half only, so a name merely PASSED or stored kept a stale hash.
 	const fnValues = new Set([...refs].filter((n) => tl.fns.has(n) || tl.asyncFns.has(n)));
 	const stmts = new Set<Node>();
-	for (const n of refs) for (const st of tl.declaring.get(n) ?? []) stmts.add(st);
+	// Transitive over DECLARATIONS: a pulled declaration's own names are names
+	// this code depends on too. `const tagSavers = new Map(…)` is in the hash,
+	// so a component-level `class Map` that rebinds what its methods do is in
+	// the hash as well — round 10 finding 3's durable form, which the unit
+	// itself never names.
+	const pending = [...refs];
+	const seen = new Set(refs);
+	while (pending.length) {
+		const n = pending.pop()!;
+		for (const st of tl.declaring.get(n) ?? []) {
+			if (stmts.has(st)) continue;
+			stmts.add(st);
+			walk(st, (x) => {
+				if (x.type === 'Identifier' && !seen.has(x.name)) {
+					seen.add(x.name);
+					pending.push(x.name);
+				}
+			});
+		}
+	}
 	for (const st of tl.statements) {
 		for (const name of tl.rebinds.get(st) ?? []) if (called.has(name) || fnValues.has(name)) stmts.add(st);
 	}
 	const text = [
-		...roots.map((r) => codeOf(src, r)),
-		...[...stmts].sort((a, b) => a.start - b.start).map((st) => collapse(src.text(st))),
-	].join(' || ');
+		...roots.map((r) => reviewedTextOf(src, r)),
+		...[...stmts].sort((a, b) => a.start - b.start).map((st) => src.text(st)),
+	].join(SEP);
 	return { text, helpers };
 }
 
@@ -624,6 +711,9 @@ export function refusals(code: string, opts: GateOptions = {}): string[] {
 	}
 	for (const w of new Set(tl.unmodelledWrites)) {
 		out.push(`component-level write target ${w} is not a modelled binding pattern — teach the gate rather than skip it`);
+	}
+	for (const d of new Set(tl.unmodelledDeclarations)) {
+		out.push(`component-level ${d} is a binding form the gate does not model — teach it rather than skip it`);
 	}
 	for (const row of IDENTIFIER_CALLBACKS) {
 		const calls = r.idCalls.filter((c) => src.text(c).replace(/\s+/g, '') === row.text.replace(/\s+/g, ''));
@@ -1288,6 +1378,18 @@ describe('ItemDetail identity gate: a fenced unit cannot change without a re-rea
 
 	const ROUND9 = round9.gate as Array<{ id: string; subs: string[][]; refuses: string[] }>;
 	it.each(ROUND9.map((g) => [g.id, g] as const))('round 9 edit refused by a hash mismatch: %s', (_id, g) => {
+		expect(GATE_BASELINE).toEqual([]);
+		let code = SOURCE;
+		for (const [from, to] of g.subs as Array<[string, string]>) {
+			expect(code.split(from).length - 1, `anchor ${JSON.stringify(from.slice(0, 60))} is not in the component exactly once`).toBe(1);
+			code = code.replace(from, to);
+		}
+		const got = refusals(code);
+		expect(got.some((l) => g.refuses.every((s) => l.includes(s))), `no refusal carries ${JSON.stringify(g.refuses)}; got ${JSON.stringify(got, null, 1)}`).toBe(true);
+	});
+
+	const ROUND10 = round10.gate as Array<{ id: string; subs: string[][]; refuses: string[] }>;
+	it.each(ROUND10.map((g) => [g.id, g] as const))('round 10 edit refused by a hash mismatch: %s', (_id, g) => {
 		expect(GATE_BASELINE).toEqual([]);
 		let code = SOURCE;
 		for (const [from, to] of g.subs as Array<[string, string]>) {
