@@ -1197,6 +1197,71 @@ func writePlanLimitErrorNote(w http.ResponseWriter, result *store.LimitResult, n
 	writeError2(w, http.StatusForbidden, "plan_limit_exceeded", msg, planLimitDetails(result))
 }
 
+// writeMemberLimitError answers an INVITEE whose accept would take a workspace
+// past members_per_workspace (BUG-3098). It is deliberately not the
+// plan-limit envelope: that one is addressed to the plan's owner ("You've
+// reached...", an upgrade link), and the invitee can neither see nor change
+// someone else's plan. So: its own code, a message naming the owner as the
+// person who can make room, and details without upgrade_url.
+//
+// The owner is named by display name only, never by email: the invitee holds a
+// code from an inviter who need not be the owner, and an email address is a
+// contact detail they were not given. With no display name the message says
+// "the workspace owner". A failed lookup degrades to the same wording rather
+// than failing the refusal.
+func (s *Server) writeMemberLimitError(w http.ResponseWriter, workspaceID string, result *store.LimitResult) {
+	owner := "the workspace owner"
+	if ws, err := s.store.GetWorkspaceByID(workspaceID); err == nil && ws != nil && ws.OwnerID != "" {
+		if u, err := s.store.GetUser(ws.OwnerID); err == nil && u != nil && strings.TrimSpace(u.Name) != "" {
+			owner = "the workspace owner, " + strings.TrimSpace(u.Name) + ","
+		}
+	}
+	msg := fmt.Sprintf("This workspace has reached its %d-member limit. Ask %s to make room or upgrade their plan, then accept this invitation again.", result.Limit, owner)
+	writeError2(w, http.StatusForbidden, "workspace_member_limit", msg, map[string]interface{}{
+		"feature": result.Feature,
+		"limit":   result.Limit,
+		"current": result.Current,
+	})
+}
+
+// checkMemberLimitForAccept is the advisory pre-check for an invitation
+// accept, answered with writeMemberLimitError instead of the owner-addressed
+// 403. Cloud mode only. Returns true if the accept may proceed. It fires
+// planLimitAdmittedHook like enforcePlanLimit, so tests can land a competing
+// member in the window before the authoritative insert.
+func (s *Server) checkMemberLimitForAccept(w http.ResponseWriter, workspaceID string) bool {
+	if !s.cloudMode {
+		return true
+	}
+	result, err := s.store.CheckLimit(workspaceID, "members_per_workspace")
+	if err != nil {
+		slog.Error("checkMemberLimitForAccept: CheckLimit failed",
+			"workspace_id", workspaceID, "error", err)
+		writeInternalError(w, err)
+		return false
+	}
+	if !result.Allowed {
+		s.writeMemberLimitError(w, workspaceID, result)
+		return false
+	}
+	if s.planLimitAdmittedHook != nil {
+		s.planLimitAdmittedHook("members_per_workspace", workspaceID)
+	}
+	return true
+}
+
+// writeStoreMemberLimitError is writeStorePlanLimitError for the accept
+// doors: it answers a *store.PlanLimitError with writeMemberLimitError and
+// reports whether err was one.
+func (s *Server) writeStoreMemberLimitError(w http.ResponseWriter, workspaceID string, err error) bool {
+	var ple *store.PlanLimitError
+	if !errors.As(err, &ple) {
+		return false
+	}
+	s.writeMemberLimitError(w, workspaceID, &ple.Result)
+	return true
+}
+
 // planLimitDetails is the structured half of a plan-limit refusal, shared by
 // the 403 and by the bulk envelope's per-item failure.
 func planLimitDetails(result *store.LimitResult) map[string]interface{} {

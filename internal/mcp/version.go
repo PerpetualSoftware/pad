@@ -1241,6 +1241,15 @@ const CmdhelpVersion = "0.1"
 //     content into the row — so no surface here states a duration for
 //     this one either, and it is not a promise that the row will catch
 //     up at all.
+//
+//     Post-0.37, deliberately NO bump (BUG-3098): `workspace_member_limit`
+//     joins the structured 403 allow-list, as ErrWorkspaceMemberLimit with
+//     its own hint (not the plan-limit "upgrade" hint). The server emits it
+//     when an INVITATION ACCEPT is refused by the workspace's member cap.
+//     No catalog action reaches either accept door today, so no caller of
+//     this surface can receive it; the entry exists so a future action does
+//     not collapse it to permission_denied. When an action that can reach
+//     it is added, that addition is the contract change and owns the bump.
 const ToolSurfaceVersion = "0.37"
 
 // MetaVersionURI is the canonical URI of the queryable version document.

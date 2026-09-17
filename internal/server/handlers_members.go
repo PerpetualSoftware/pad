@@ -337,8 +337,15 @@ func (s *Server) handleAcceptInvitation(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Add user to workspace
-	if err := s.store.AddWorkspaceMember(inv.WorkspaceID, user.ID, inv.Role); err != nil {
+	// Add user to workspace. BUG-3098: the accept is where the member count
+	// actually rises, so the cap is decided here, authoritatively, under the
+	// per-feature plan-limit key direct adds take. A refusal returns before
+	// AcceptInvitation, so the invitation stays pending and can be accepted
+	// once there is room. No pre-check: nothing is written before this.
+	if err := s.store.AddWorkspaceMember(inv.WorkspaceID, user.ID, inv.Role, s.workspaceLimitMintOpts()...); err != nil {
+		if s.writeStoreMemberLimitError(w, inv.WorkspaceID, err) {
+			return
+		}
 		writeInternalError(w, err)
 		return
 	}
