@@ -312,11 +312,12 @@ func (s *Store) enforceWorkspaceLimitTx(tx *sql.Tx, workspaceID, feature string)
 // LOCK ORDERING: callers take it before any other lock in the transaction, and
 // no other code takes this key. So a transaction waiting on it holds nothing,
 // and no cycle can pass through it. hashtext is 32-bit, so the key can collide
-// with another workspace's seq key. The worst case is then a spurious wait: a
-// cycle would also need that seq-lock holder to wait on a row lock this
-// insert holds, and the insert holds only FK key-share locks, which the
-// seq-lock holders' row locks do not conflict with (checkpoint 7). The full reasoning is on BUG-2808's trail
-// (checkpoint 7).
+// with any other advisory key (a seq key, another namespace's key, another
+// plan-limit key). The worst case is then a spurious wait: a cycle would also
+// need that key's holder to wait on a lock this insert holds, and the insert
+// holds only FK key-share locks and its own new rows' index entries, which no
+// such holder's locks conflict with. The full reasoning, with the list of
+// holders, is on BUG-2808's trail (checkpoints 7 and 11).
 //
 // On SQLite, BEGIN IMMEDIATE already serialises every writer, and this is a
 // no-op.

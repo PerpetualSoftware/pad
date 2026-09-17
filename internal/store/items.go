@@ -288,8 +288,9 @@ func (s *Store) tryCreateItem(workspaceID, collectionID string, input models.Ite
 // caller owns the transaction boundary.
 //
 // Every side effect of an API-PATH creation lives in this one place. Its only
-// caller is createItemTx, which both CreateItem and the cross-workspace copy
-// path (PLAN-2357 / DR-9a) go through, so those two paths cannot drift.
+// caller is createItemTxWithID, which both CreateItem (through createItemTx)
+// and the cross-workspace copy path (PLAN-2357 / DR-9a) go through, so those
+// two paths cannot drift.
 //
 // The "API-PATH" qualifier is load-bearing and was missing until TASK-2658.
 // This comment used to read "every creation side effect", full stop, and it is
@@ -511,9 +512,10 @@ func (s *Store) createItemTx(tx *sql.Tx, workspaceID, collectionID string, input
 // createItemTx also delegates here, with a minted id and its options.
 //
 // An empty id is filled in, so a caller that has no opinion behaves exactly
-// like createItemTx. The id is NOT validated for uniqueness here — the items
-// primary key does that, and a collision (a caller re-using an id) surfaces as
-// a unique violation that rolls the caller's transaction back.
+// like createItemTx called with no options. The id is NOT validated for
+// uniqueness here — the items primary key does that, and a collision (a
+// caller re-using an id) surfaces as a unique violation that rolls the
+// caller's transaction back.
 func (s *Store) createItemTxWithID(tx *sql.Tx, id, workspaceID, collectionID string, input models.ItemCreate, mint mintOptions) (*models.Item, error) {
 	// Validate assignment scope before writing — parity with CreateItem, but
 	// read through the tx so it sees the caller's uncommitted membership /
@@ -566,7 +568,7 @@ func (s *Store) createItemTxWithID(tx *sql.Tx, id, workspaceID, collectionID str
 
 	// The plan limit is decided here, under the lock every item insert in this
 	// workspace takes, so a concurrent create's row is either committed and
-	// counted or not yet begun (BUG-2808). The cross-workspace copy counts under
+	// counted or not yet inserted (BUG-2808). The cross-workspace copy counts under
 	// the same lock with CheckLimitTx and passes no option.
 	if mint.planLimit {
 		if err := s.enforceWorkspaceLimitTx(tx, workspaceID, "items_per_workspace"); err != nil {

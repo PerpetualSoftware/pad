@@ -230,9 +230,9 @@ func TestLimitedWorkspaceInsert_WaitsForNonCountingHolder_ThenAdmits(t *testing.
 	}
 }
 
-// Without WithPlanLimit the inserts are unchanged: no lock, no count, no
-// refusal past the cap. Template seeding, the copy path, owner auto-adds and
-// invitation accepts depend on that.
+// Without WithPlanLimit the inserts are unchanged: no plan-limit lock, no
+// count, no refusal past the cap. Template seeding, the copy path, owner
+// auto-adds and invitation accepts depend on that.
 func TestLimitedWorkspaceInsert_WithoutOption_NotEnforced(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)
