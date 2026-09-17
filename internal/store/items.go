@@ -488,8 +488,9 @@ func nullIfEmptyID(p *string) any {
 // its committed slug / item_number / seq (DR-14 fanout) without a second
 // round-trip after COMMIT.
 //
-// opts carries WithPlanLimit from CreateItem (BUG-2808); the copy path and the
-// tests pass none.
+// opts carries WithPlanLimit from CreateItem (BUG-2808); the tests pass none.
+// The copy path does not come through here: it calls createItemTxWithID with
+// no options and checks its own limit with CheckLimitTx.
 func (s *Store) createItemTx(tx *sql.Tx, workspaceID, collectionID string, input models.ItemCreate, opts ...MintOption) (*models.Item, error) {
 	return s.createItemTxWithID(tx, newID(), workspaceID, collectionID, input, resolveMintOptions(opts))
 }
@@ -497,8 +498,9 @@ func (s *Store) createItemTx(tx *sql.Tx, workspaceID, collectionID string, input
 // createItemTxWithID is createItemTx with the destination item's id supplied
 // by the caller instead of minted inside.
 //
-// It exists for exactly one caller: CopyItemAcrossWorkspaces (PLAN-2357 /
-// DR-9 / DR-11). The copy has to hand the attachment planner the destination
+// Its callers are createItemTx, which mints the id, and
+// CopyItemAcrossWorkspaces (PLAN-2357 / DR-9 / DR-11), the one caller that
+// supplies it. The copy has to hand the attachment planner the destination
 // item id BEFORE the item row exists, because every cloned attachment row must
 // carry item_id from the outset — never transiently NULL, since a NULL-item_id
 // row is a permanent un-reclaimable orphan (see AttachmentCopyRequest.DryRun's
