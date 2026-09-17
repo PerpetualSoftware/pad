@@ -202,8 +202,6 @@ func (e *InvalidItemTitleError) Unwrap() error { return ErrInvalidItemTitle }
 // (BUG-2808). Callers that pass nothing (template seeding, tests) are
 // unlimited, as before.
 func (s *Store) CreateItem(workspaceID, collectionID string, input models.ItemCreate, opts ...MintOption) (*models.Item, error) {
-	mint := resolveMintOptions(opts)
-
 	// Title normalization + validation (BUG-2833 / BUG-2831). Before the retry
 	// loop: it depends only on the input, so re-running it per attempt would
 	// re-derive the same verdict, and normalizing here means every attempt
@@ -229,7 +227,7 @@ func (s *Store) CreateItem(workspaceID, collectionID string, input models.ItemCr
 	// scan's outcome and picks the next free suffix.
 	var lastErr error
 	for attempt := 0; attempt < maxItemNumberRetries; attempt++ {
-		item, err := s.tryCreateItem(workspaceID, collectionID, input, mint)
+		item, err := s.tryCreateItem(workspaceID, collectionID, input, opts...)
 		if err == nil {
 			return item, nil
 		}
@@ -249,10 +247,9 @@ func (s *Store) CreateItem(workspaceID, collectionID string, input models.ItemCr
 // slug. The item_number is computed atomically via a subquery in the INSERT to
 // avoid races between concurrent inserts reading the same MAX(item_number).
 //
-// It is a thin BEGIN/COMMIT wrapper around createItemTxWithID, which is also
-// what the cross-workspace copy path calls with its own transaction — so the
-// two creation paths share one implementation and cannot drift. It calls the
-// WithID form only to pass the mint options; an empty id is minted inside.
+// It is a thin BEGIN/COMMIT wrapper around createItemTx, which is also what
+// the cross-workspace copy path calls with its own transaction — so the two
+// creation paths share one implementation and cannot drift.
 //
 // Two deliberate behaviour changes from the pre-TASK-2362 shape, neither
 // observable to any current caller (nothing in internal/server or cmd/pad
@@ -267,14 +264,14 @@ func (s *Store) CreateItem(workspaceID, collectionID string, input models.ItemCr
 //     A read-back miss now rolls the create back with an error instead of
 //     returning (nil, nil) over a committed row — the old shape handed callers
 //     a nil item and a nil error for an item that existed.
-func (s *Store) tryCreateItem(workspaceID, collectionID string, input models.ItemCreate, mint mintOptions) (*models.Item, error) {
+func (s *Store) tryCreateItem(workspaceID, collectionID string, input models.ItemCreate, opts ...MintOption) (*models.Item, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, fmt.Errorf("insert item: %w", err)
 	}
 	defer tx.Rollback()
 
-	item, err := s.createItemTxWithID(tx, "", workspaceID, collectionID, input, mint)
+	item, err := s.createItemTx(tx, workspaceID, collectionID, input, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -490,8 +487,11 @@ func nullIfEmptyID(p *string) any {
 // Returns the created item read back inside the tx, so the caller can consume
 // its committed slug / item_number / seq (DR-14 fanout) without a second
 // round-trip after COMMIT.
-func (s *Store) createItemTx(tx *sql.Tx, workspaceID, collectionID string, input models.ItemCreate) (*models.Item, error) {
-	return s.createItemTxWithID(tx, newID(), workspaceID, collectionID, input, mintOptions{})
+//
+// opts carries WithPlanLimit from CreateItem (BUG-2808); the copy path and the
+// tests pass none.
+func (s *Store) createItemTx(tx *sql.Tx, workspaceID, collectionID string, input models.ItemCreate, opts ...MintOption) (*models.Item, error) {
+	return s.createItemTxWithID(tx, newID(), workspaceID, collectionID, input, resolveMintOptions(opts))
 }
 
 // createItemTxWithID is createItemTx with the destination item's id supplied
@@ -505,6 +505,8 @@ func (s *Store) createItemTx(tx *sql.Tx, workspaceID, collectionID string, input
 // doc). Minting the id in the orchestration and passing it down is the only
 // way to satisfy both that ordering and DR-9a's "the version row and the
 // wiki-link index are built from the POST-rewrite content".
+//
+// createItemTx also delegates here, with a minted id and its options.
 //
 // An empty id is filled in, so a caller that has no opinion behaves exactly
 // like createItemTx. The id is NOT validated for uniqueness here — the items

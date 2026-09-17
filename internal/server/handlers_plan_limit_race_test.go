@@ -623,8 +623,9 @@ func TestPlanLimitRace_Webhooks_NoCompetitor_Admitted(t *testing.T) {
 	e.runWorkspaceRace(t, e.webhookRace(t), false)
 }
 
-// Self-hosted: the same doors, a free-plan owner (the column default) already
-// AT the cap, cloud mode off. Nothing may refuse: the pre-check is cloud-gated,
+// Self-hosted: the same doors, a free-plan owner already AT the cap, cloud mode
+// off. (The env sets "free" explicitly; it is also users.plan's column default,
+// which is why self-hosted owners are on it.) Nothing may refuse: the pre-check is cloud-gated,
 // and so must the store option be. Without this leg, dropping the cloudMode
 // gate from workspaceLimitMintOpts would impose free-plan caps on every
 // self-hosted instance and no test would notice.
