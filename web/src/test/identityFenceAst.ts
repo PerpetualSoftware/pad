@@ -20,7 +20,10 @@
  *    a spelling list, so it is not trusted to be complete: inside a unit,
  *    every other function literal passed to a call, and every function-valued
  *    object property, is a CALLBACK walked from an unsafe start, since it may
- *    run after any await (round 5 P1-2). Only callees on
+ *    run after any await (round 5 P1-2). An `async` literal is its own unit,
+ *    and one defined inside a unit or a helper a unit inlines starts unsafe
+ *    for the same reason (`asyncUnitStartsSafe`, round 7 F1); an async unit
+ *    defined anywhere else starts safe. Only callees on
  *    `SYNC_CALLBACK_CALLEES`, and array iteration methods on a receiver the
  *    unit declared, run their callback inline with the caller's state. A
  *    callback commits nothing unless its unit's row names it.
@@ -33,7 +36,8 @@
  *    a rejection can come after any statement. Loops run their body twice, the
  *    second time from the merge of the entry and the first pass's end, and
  *    leave from the state after their test or iterator (plus every `break`),
- *    whatever the body does; `for await` starts every pass unsafe. A `switch`
+ *    whatever the body does; `for await` starts every pass unsafe, and lapses
+ *    fence booleans as an await does (round 7 F3). A `switch`
  *    evaluates its case tests in order, so a case is entered from the state
  *    after its own test and `default` from the state after all of them. A
  *    statement type the walker does not know THROWS — it is not skipped.
@@ -62,13 +66,18 @@
  *    is not a fence at all (its arms are walked, its value is not read). A
  *    helper (`const stillCurrent = () => …`, `function switchedAway(…)`) is a
  *    fence exactly when its OWN body has a polarity, with its own params
- *    counted as captures there and nowhere else; a call to it fences only when
+ *    counted as captures there and nowhere else; a CALL to it fences only when
  *    each param that polarity needs receives a capture of the kind it
- *    compares, in that position. A local boolean initialised from a fence is
- *    one too, until the next await or a write to it. Captures are typed:
- *    `generation` (from `loadGeneration` / `++itemGen`) or `identity` (from
- *    `captureIdentity()`), and only a snapshot declared inside a function is
- *    one. A stamp is `.epoch` / `.identityEpoch` read through plain names.
+ *    compares, in that position, and its name must be declared once and never
+ *    for a fence boolean too (round 7 F8). Naming a helper without calling it
+ *    is never a fence (round 7 F2). A local boolean initialised from a fence
+ *    is one too, until the next suspension or a write to it. Captures are
+ *    typed: `generation` (from `loadGeneration` / `++itemGen`) or `identity`
+ *    (from `captureIdentity()`); the type is recorded per NAME, so a name
+ *    captured as both is refused (round 7 F5); only a snapshot declared inside
+ *    a function is one. A stamp is `.epoch` / `.identityEpoch` read through
+ *    plain names whose root is bound in the scopes around the check —
+ *    component state is re-stamped by the identity change (round 7 F4).
  *
  * 5. SCOPES. Whether a write targets a local is decided by the lexical scopes
  *    enclosing the write: every function, block, loop head, switch body and
@@ -99,10 +108,16 @@
  *
  * - It proves a check with the right SHAPE dominates every commit, not that
  *   the check reads the right item.
- * - Captures are known by name. Shadowing one is refused, but a name is still
- *   the only link between a capture and its use.
- * - A stamp (`x.epoch`) is trusted to have been recorded earlier; one minted
- *   after the await and compared at once is a fence that cannot fail.
+ * - Captures are known by name. A declaration or catch param shadowing one is
+ *   refused; a function PARAM is not (helpers such as `switchedAway` need
+ *   the name), so a callback param named like a capture is read as that
+ *   capture. A name is the only link between a capture and its use.
+ * - A stamp (`x.epoch`) rooted in a local is trusted to have been recorded
+ *   earlier; one minted after the await and compared at once is a fence that
+ *   cannot fail.
+ * - A fence boolean read inside a helper's body never lapses: the body is
+ *   read once, not at the call, so a helper returning a boolean computed
+ *   before an await is a fence that cannot fail.
  * - Callbacks: `SYNC_CALLBACK_CALLEES`, and array iteration methods on a
  *   receiver the unit declared, are trusted to call synchronously; a local
  *   holding a non-array with such a method defeats that. A row's `callbacks`

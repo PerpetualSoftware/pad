@@ -16,7 +16,10 @@
  *
  * ONE CONTROL PER REFUSAL. "No PATCH was sent" is satisfied as well by a flush
  * that never ran, so each refusal leg has a control that makes the same flush
- * run under an UNCHANGED identity and sees the PATCH go out.
+ * run under an UNCHANGED identity and sees the PATCH go out. The one
+ * exception is the collab effect-cleanup leg: only an identity change re-runs
+ * that effect, so it asserts instead that the cleanup ran (the old provider
+ * was destroyed) before asserting what it did not send (BUG-3084 round 7).
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
@@ -326,6 +329,7 @@ describe('the previous identity\'s RICH draft is not flushed on teardown (live o
 		auth.moveIdentity();
 		await settle();
 		await loaded(r);
+		expect(collab.destroyed, 'the effect cleanup ran: the old provider is gone').toBe(1);
 		window.dispatchEvent(new Event('pagehide'));
 		await settle();
 		expect(richFlushes()).not.toContain('OLD RICH DRAFT');
@@ -333,8 +337,10 @@ describe('the previous identity\'s RICH draft is not flushed on teardown (live o
 
 	// `runTeardownFlush` itself: a pagehide in the window between the listener
 	// and the collab effect's re-run — the sign-out pre-navigation window. The
-	// listener's load has already re-stamped the page-load epoch, so the only
-	// refusal left there is the retired context.
+	// listener's load has already re-stamped the page-load epoch, so what
+	// refuses there is the context itself: its retired flag, and its own
+	// identity stamp compared against the live epoch (either alone refuses;
+	// the site pin in itemDetailIdentityFence.test.ts holds the retired flag).
 	it('REFUSAL (pagehide in the pre-re-run window): runTeardownFlush does not PATCH the retired context\'s markdown', async () => {
 		collab.synced = true;
 		const r = mount();
