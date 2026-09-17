@@ -2298,8 +2298,18 @@ func (s *Server) handleRestoreItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	restored, err := s.store.RestoreItem(item.ID)
+	// BUG-3101: a restore raises items_per_workspace's live count. The
+	// advisory pre-check runs only for an archived row, so a live item still
+	// answers not-found below; RestoreItem decides authoritatively.
+	if item.DeletedAt != nil && !s.enforcePlanLimit(w, workspaceID, "items_per_workspace") {
+		return
+	}
+
+	restored, err := s.store.RestoreItem(item.ID, s.restoreLimitOpts()...)
 	if err != nil {
+		if writeStorePlanLimitError(w, err, "") {
+			return
+		}
 		if err == sql.ErrNoRows {
 			writeError(w, http.StatusNotFound, "not_found", "Item not found or not archived")
 			return

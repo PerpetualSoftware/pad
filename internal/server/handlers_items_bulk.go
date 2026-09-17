@@ -3,6 +3,7 @@ package server
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -450,8 +451,17 @@ func (s *Server) applyBulkOp(r *http.Request, workspaceID string, item *models.I
 	case "restore":
 		// Undo of a bulk archive (TASK-1674). RestoreItem clears
 		// deleted_at and bumps seq; returns the live row.
-		restored, err := s.store.RestoreItem(item.ID, store.WithEventBatch(batchID))
+		// BUG-3101: each restore is decided on its own, in request order, so
+		// a batch with room for some restores those and lists the rest under
+		// failed with the plan-limit code and details.
+		opts := append([]store.MutationOption{store.WithEventBatch(batchID)}, s.restoreLimitOpts()...)
+		restored, err := s.store.RestoreItem(item.ID, opts...)
 		if err != nil {
+			var ple *store.PlanLimitError
+			if errors.As(err, &ple) {
+				details, _ := json.Marshal(planLimitDetails(&ple.Result))
+				return nil, &bulkOpError{message: planLimitMessage(&ple.Result), code: "plan_limit_exceeded", details: details}
+			}
 			if err == sql.ErrNoRows {
 				return nil, &bulkOpError{message: "item not found or not archived"}
 			}

@@ -288,7 +288,8 @@ func (s *Store) enforceUserLimitTx(tx *sql.Tx, userID, feature string, pendingOw
 // stands, so a reached cap refuses.
 //
 // Which lock that is depends on the feature. Items count under the workspace
-// seq lock (acquireWorkspaceSeqLock), which every item insert already takes.
+// seq lock (acquireWorkspaceSeqLock), which every item insert and restore
+// already takes.
 // Members and webhooks take acquirePlanLimitLock, a key used by nothing else.
 // The reads run on the transaction, never the pool (BUG-2409).
 func (s *Store) enforceWorkspaceLimitTx(tx *sql.Tx, workspaceID, feature string) error {
