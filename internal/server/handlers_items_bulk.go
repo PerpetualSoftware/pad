@@ -89,7 +89,8 @@ type bulkItemsResponse struct {
 }
 
 // bulkOpError carries a per-row failure with an optional structured
-// code/details (currently only open_children).
+// code/details (open_children, plan_limit_exceeded and others), surfaced on
+// the row's failed[] entry.
 type bulkOpError struct {
 	message string
 	code    string
