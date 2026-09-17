@@ -1,0 +1,249 @@
+{
+	"note": "Round 7 on #1387 at 6e1ba4af (BUG-3084 checkpoint 67): edits the AST guard accepted, from the reviewer probe r7probe.test.ts, generated from its objects rather than retyped. Deliberately defective code, kept as JSON so repo source scanners do not read it. mutants must be refused with every string in refuses on one line; gaps are out of the threat model and must stay accepted.",
+	"mutants": [
+		{
+			"id": "F1a updateField onRefetched made async commits item (R5 E6 respelled)",
+			"class": "F1",
+			"subs": [
+				[
+					"\t\t\t\tonRefetched: (latest) => {\n\t\t\t\t\tlastServerItem = latest;\n\t\t\t\t}\n",
+					"\t\t\t\tonRefetched: async (latest) => {\n\t\t\t\t\tlastServerItem = latest;\n\t\t\t\t\titem = withInflightTags(latest);\n\t\t\t\t}\n"
+				]
+			],
+			"nested": [
+				{
+					"body": "^async \\(latest\\) =>",
+					"why": "OCC refetch hook"
+				}
+			],
+			"refuses": [
+				"async-function at line",
+				"assigns item after an unfenced await"
+			]
+		},
+		{
+			"id": "F1b updateField open-children retry made async, stillCurrent fence dropped (R5 E7 respelled)",
+			"class": "F1",
+			"subs": [
+				[
+					"forced = await confirmOpenChildrenOrThrow(e, parentRef, () => {\n\t\t\t\t\t\tif (!stillCurrent()) throw new Error('switched away');\n",
+					"forced = await confirmOpenChildrenOrThrow(e, parentRef, async () => {\n"
+				]
+			],
+			"nested": [
+				{
+					"body": "^async \\(\\) => \\{ \\/\\/ The dialog can sit open",
+					"why": "open-children force retry",
+					"callbacks": {
+						"submitOrderedOCC({send})": {
+							"may": [
+								"api.items.update"
+							],
+							"why": "as updateField"
+						},
+						"submitOrderedOCC({refetch})": {
+							"may": [
+								"api.items.get"
+							],
+							"why": "as updateField"
+						}
+					}
+				}
+			],
+			"refuses": [
+				"async-function at line",
+				"calls submitOrderedOCC after an unfenced await"
+			]
+		},
+		{
+			"id": "F1c saveTitle registers an async focus listener that commits (R5 E8b respelled)",
+			"class": "F1",
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n\t\t\twindow.addEventListener('focus', async () => {\n\t\t\t\titem = withInflightTags(updated);\n\t\t\t}, { once: true });\n"
+				]
+			],
+			"nested": [
+				{
+					"body": "^async \\(\\) => \\{ item = withInflightTags\\(updated\\)",
+					"why": "focus re-apply"
+				}
+			],
+			"refuses": [
+				"async-function at line",
+				"assigns item after an unfenced await"
+			]
+		},
+		{
+			"id": "F2 updateField success arm: `if (!stillCurrent) return;` (call parens dropped)",
+			"class": "F2",
+			"subs": [
+				[
+					"\t\t\tconst fresh = await submitWithOCC(false);\n\t\t\tif (!stillCurrent()) return;\n",
+					"\t\t\tconst fresh = await submitWithOCC(false);\n\t\t\tif (!stillCurrent) return;\n"
+				]
+			],
+			"refuses": [
+				"updateField()",
+				"after an unfenced await"
+			]
+		},
+		{
+			"id": "F2b updateField open-children retry: `if (!stillCurrent) throw` (call parens dropped)",
+			"class": "F2",
+			"subs": [
+				[
+					"forced = await confirmOpenChildrenOrThrow(e, parentRef, () => {\n\t\t\t\t\t\tif (!stillCurrent()) throw new Error('switched away');\n",
+					"forced = await confirmOpenChildrenOrThrow(e, parentRef, () => {\n\t\t\t\t\t\tif (!stillCurrent) throw new Error('switched away');\n"
+				]
+			],
+			"refuses": [
+				"updateField()",
+				"callback confirmOpenChildrenOrThrow(…)",
+				"calls submitOrderedOCC after an unfenced await"
+			]
+		},
+		{
+			"id": "F2c handleMove open-children retry: `if (!stillOnSource) throw` (call parens dropped)",
+			"class": "F2",
+			"subs": [
+				[
+					"\t\t\t\t\t\tif (!stillOnSource()) throw new Error('switched away');\n",
+					"\t\t\t\t\t\tif (!stillOnSource) throw new Error('switched away');\n"
+				]
+			],
+			"refuses": [
+				"handleMove()",
+				"callback confirmOpenChildrenOrThrow(…)",
+				"after an unfenced await"
+			]
+		},
+		{
+			"id": "F3a saveTitle: fence boolean hoisted above a for-await, checked in the body",
+			"class": "F3",
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tconst current = gen === loadGeneration && item?.id === targetItem.id;\n\t\t\tif (!current) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n\t\t\tfor await (const t of api.items.titleStream(wsSlug, targetItem.id)) {\n\t\t\t\tif (!current) return;\n\t\t\t\ttitleDraft = t;\n\t\t\t}\n"
+				]
+			],
+			"refuses": [
+				"saveTitle()",
+				"assigns titleDraft after an unfenced await"
+			]
+		},
+		{
+			"id": "F3b saveTitle: fence boolean checked in the catch of a try around for-await",
+			"class": "F3",
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tconst current = gen === loadGeneration && item?.id === targetItem.id;\n\t\t\tif (!current) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n\t\t\tconst titles = api.items.titleStream(wsSlug, targetItem.id);\n\t\t\ttry {\n\t\t\t\tfor await (const t of titles) void t;\n\t\t\t} catch {\n\t\t\t\tif (current) toastStore.show('Title stream failed', 'error');\n\t\t\t}\n"
+				]
+			],
+			"refuses": [
+				"saveTitle()",
+				"calls toastStore.show after an unfenced await"
+			]
+		},
+		{
+			"id": "F4 flushCollabBeforeRestore: toast fenced on activeCollabContext.identityEpoch instead of the entry capture",
+			"class": "F4",
+			"subs": [
+				[
+					"\t\tconst identity = captureIdentity();\n\t\t// Flush against the context",
+					"\t\t// Flush against the context"
+				],
+				[
+					"\t\tif (result === 'failed' && identityHeld(identity)) {\n",
+					"\t\tif (result === 'failed' && activeCollabContext && identityHeld(activeCollabContext.identityEpoch)) {\n"
+				]
+			],
+			"refuses": [
+				"flushCollabBeforeRestore()",
+				"calls toastStore.show after an unfenced await"
+			]
+		},
+		{
+			"id": "F5 saveTitle: identityHeld(startedAt) on a generation capture whose name loadTagSuggestions uses for an identity capture",
+			"class": "F5",
+			"subs": [
+				[
+					"\t\tconst identity = captureIdentity();\n\t\ttry {\n\t\t\tconst all = await api.tags.list(ws);\n\t\t\t",
+					"\t\tconst startedAt = captureIdentity();\n\t\ttry {\n\t\t\tconst all = await api.tags.list(ws);\n\t\t\t"
+				],
+				[
+					"\t\t\tif (ws !== wsSlug || !identityHeld(identity)) return;\n",
+					"\t\t\tif (ws !== wsSlug || !identityHeld(startedAt)) return;\n"
+				],
+				[
+					"\t\t\tif (ws === wsSlug && identityHeld(identity)) tagSuggestions = [];\n",
+					"\t\t\tif (ws === wsSlug && identityHeld(startedAt)) tagSuggestions = [];\n"
+				],
+				[
+					"\t\tconst gen = loadGeneration;\n\t\tsaveStatus = 'saving';\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title",
+					"\t\tconst gen = loadGeneration;\n\t\tconst startedAt = loadGeneration;\n\t\tsaveStatus = 'saving';\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title"
+				],
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tif (!identityHeld(startedAt)) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"
+				]
+			],
+			"refuses": [
+				"declarations:",
+				"'startedAt' is captured as both a generation and an identity"
+			]
+		},
+		{
+			"id": "F8 saveTitle: sameGen(loadGeneration) where a second function also declares a sameGen helper",
+			"class": "F8",
+			"subs": [
+				[
+					"\t\tconst gen = loadGeneration;\n\t\tsaveStatus = 'saving';\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title",
+					"\t\tconst gen = loadGeneration;\n\t\tconst sameGen = (g: number) => g === loadGeneration;\n\t\tsaveStatus = 'saving';\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title"
+				],
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tif (!sameGen(loadGeneration)) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"
+				],
+				[
+					"\t\t\tconst fresh = await submitWithOCC(false);\n\t\t\tif (!stillCurrent()) return;\n",
+					"\t\t\tconst fresh = await submitWithOCC(false);\n\t\t\tconst sameGen = (g: number) => g === loadGeneration;\n\t\t\tif (!stillCurrent() || !sameGen(gen)) return;\n"
+				]
+			],
+			"refuses": [
+				"declarations:",
+				"'sameGen' is declared more than once as a fence helper"
+			]
+		}
+	],
+	"gaps": [
+		{
+			"id": "F6 a callback PARAM shadowing the capture gen is accepted as a capture",
+			"class": "F6",
+			"model": "shadowing: a callback param named like a capture is read as that capture; params stay exempt from the shadowing refusal because switchedAway(targetItem, gen) and its callers need the name, and reusing a capture's name for a different value is the shadowing the header puts outside the model",
+			"subs": [
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n\t\t\tdialogs.onGeneration((gen: number) => {\n\t\t\t\tif (gen !== loadGeneration) return;\n\t\t\t\titem = withInflightTags(updated);\n\t\t\t});\n"
+				]
+			]
+		},
+		{
+			"id": "F7 a zero-arg helper returning a pre-await fence boolean",
+			"class": "F7",
+			"model": "contrived fence: a helper whose whole body is a fence boolean computed before the await is a fence that cannot lapse; no author trying to comply wraps a pre-await boolean in a zero-argument function to read it later",
+			"subs": [
+				[
+					"\t\tconst gen = loadGeneration;\n\t\tsaveStatus = 'saving';\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title",
+					"\t\tconst gen = loadGeneration;\n\t\tconst startedCurrent = gen === loadGeneration;\n\t\tconst stillHere = () => startedCurrent;\n\t\tsaveStatus = 'saving';\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title"
+				],
+				[
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
+					"{ title: titleDraft.trim() });\n\t\t\tif (!stillHere()) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"
+				]
+			]
+		}
+	]
+}

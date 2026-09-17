@@ -33,6 +33,7 @@ import {
 } from '../../../test/identityFenceAst';
 import round4 from './itemDetailIdentityFence.round4.json';
 import round6 from './itemDetailIdentityFence.round6.json';
+import round7 from './itemDetailIdentityFence.round7.json';
 
 interface GuardMutant {
 	id: string;
@@ -290,8 +291,13 @@ function unitLabel(src: AstSource, u: Unit): string {
 	return u.name ? `${u.name}()` : `${u.kind}${u.inMarkup ? ' in markup' : ''} at line ${u.line}`;
 }
 
-/** Everything this guard refuses about `code`, as readable lines. Empty means clean. */
-export function refusals(code: string): string[] {
+/**
+ * Everything this guard refuses about `code`, as readable lines. Empty means
+ * clean. `extraNested` adds NESTED rows, for fixtures whose edit comes with
+ * the row the guard would otherwise ask for.
+ */
+export function refusals(code: string, extraNested: SignedRow[] = []): string[] {
+	const nestedRows = [...NESTED, ...extraNested];
 	const out: string[] = [];
 	let src: AstSource;
 	try {
@@ -349,7 +355,7 @@ export function refusals(code: string): string[] {
 	}
 
 	const callText = (u: Unit) => collapse(code.slice(u.call!.start, u.fn.start));
-	for (const [row, us] of claim(NESTED, units.filter((u) => u.kind === 'async-function' && !u.name && !u.inMarkup), 'nested async function', callText)) {
+	for (const [row, us] of claim(nestedRows, units.filter((u) => u.kind === 'async-function' && !u.name && !u.inMarkup), 'nested async function', callText)) {
 		for (const u of us) rowFor.set(u, row);
 	}
 	for (const [row, us] of claim(MARKUP, units.filter((u) => u.kind === 'async-function' && u.inMarkup), 'markup async function', callText)) {
@@ -769,14 +775,36 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 		refuses: m.refuses,
 	}));
 
-	it.each([...ANALYSIS_DEFECTS, ...ROUND6].map((d) => [d.id, d] as const))('analysis defect stays closed: %s', (_id, d) => {
-		expect(BASELINE).toEqual([]);
+	/**
+	 * Round 7 on #1387 (checkpoint 67): edits the guard accepted at 6e1ba4af.
+	 * An F1 edit arrives with the NESTED row the guard asks for, since without
+	 * the row it is refused for being untabled rather than for what it commits.
+	 */
+	interface Round7Nested {
+		body: string;
+		why: string;
+		callbacks?: Record<string, { may: string[]; why: string }>;
+	}
+	const ROUND7 = (round7.mutants as Array<{ id: string; class: string; subs: string[][]; nested?: Round7Nested[]; refuses: string[] }>).map((m) => ({
+		id: `${m.id} (class ${m.class})`,
+		subs: m.subs as Array<[string, string]>,
+		nested: (m.nested ?? []).map((r): SignedRow => ({ ...r, body: new RegExp(r.body) })),
+		refuses: m.refuses,
+	}));
+
+	const applySubs = (subs: Array<[string, string]>) => {
 		let code = SOURCE;
-		for (const [from, to] of d.subs) {
+		for (const [from, to] of subs) {
 			expect(code.split(from).length - 1, `anchor ${JSON.stringify(from.slice(0, 60))} is not in the component exactly once`).toBe(1);
 			code = code.replace(from, to);
 		}
-		const got = refusals(code);
+		return code;
+	};
+
+	it.each([...ANALYSIS_DEFECTS, ...ROUND6, ...ROUND7].map((d) => [d.id, d] as const))('analysis defect stays closed: %s', (_id, d) => {
+		expect(BASELINE).toEqual([]);
+		const code = applySubs(d.subs);
+		const got = refusals(code, 'nested' in d ? d.nested : []);
 		expect(
 			got.some((line) => d.refuses.every((s) => line.includes(s))),
 			`no refusal carries ${JSON.stringify(d.refuses)}; got ${JSON.stringify(got, null, 1)}`
@@ -790,26 +818,29 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 	 * that says why. Each must still be accepted: when one starts being
 	 * refused, the gap has closed, and it moves to ANALYSIS_DEFECTS.
 	 */
-	const KNOWN_GAPS: Array<{ id: string; model: string; old: string; new: string }> = [
+	const KNOWN_GAPS: Array<{ id: string; model: string; subs: Array<[string, string]> }> = [
 		{
 			id: 'a non-array object aliased to a local, whose forEach defers its callback',
 			model:
 				'trusted synchronous callee: iteration methods on a local receiver are taken to be array methods; binding a service to a local to call a deferring method named forEach is evasion, not an ordinary edit',
-			old: TITLE_FENCE_AND_COMMITS,
-			new: TITLE_FENCE_AND_COMMITS + '\t\t\tconst later = sseService;\n\t\t\tlater.forEach(() => {\n\t\t\t\titem = withInflightTags(updated);\n\t\t\t});\n',
+			subs: [[TITLE_FENCE_AND_COMMITS, TITLE_FENCE_AND_COMMITS + '\t\t\tconst later = sseService;\n\t\t\tlater.forEach(() => {\n\t\t\t\titem = withInflightTags(updated);\n\t\t\t});\n']],
 		},
 		{
 			id: 'a stamp minted after the await and compared at once',
 			model:
 				'contrived fence: a stamp is trusted to have been recorded earlier; building one from a live read right before comparing it to a live read is a fence that cannot fail, which no author trying to comply writes',
-			old: TITLE_FENCE_AND_COMMITS,
-			new: '{ title: titleDraft.trim() });\n\t\t\tconst fresh = { epoch: captureIdentity() };\n\t\t\tif (authStore.identityEpoch !== fresh.epoch) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n',
+			subs: [[TITLE_FENCE_AND_COMMITS, '{ title: titleDraft.trim() });\n\t\t\tconst fresh = { epoch: captureIdentity() };\n\t\t\tif (authStore.identityEpoch !== fresh.epoch) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n']],
 		},
+		// Round 7 (checkpoint 67): the reviewer's out-of-model findings.
+		...(round7.gaps as Array<{ id: string; class: string; model: string; subs: string[][] }>).map((g) => ({
+			id: `${g.id} (class ${g.class})`,
+			model: g.model,
+			subs: g.subs as Array<[string, string]>,
+		})),
 	];
 	it.each(KNOWN_GAPS.map((g) => [g.id, g] as const))('known gap, still outside the model: %s', (_id, g) => {
 		expect(BASELINE).toEqual([]);
-		expect(SOURCE.split(g.old).length - 1).toBe(1);
-		expect(refusals(SOURCE.replace(g.old, g.new)), 'this gap is now refused: move it to ANALYSIS_DEFECTS').toEqual([]);
+		expect(refusals(applySubs(g.subs)), 'this gap is now refused: move it to ANALYSIS_DEFECTS').toEqual([]);
 	});
 
 	/**
