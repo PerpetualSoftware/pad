@@ -410,7 +410,7 @@ the per-user clients (including Codex) and skip it.
 
 | Tool | Actions |
 |---|---|
-| `pad_item` | `create`, `update`, `delete`, `get`, `list`, `move`, `restore`, `link`, `unlink`, `deps`, `star`, `unstar`, `starred`, `comment`, `list-comments`, `backlinks`, `bulk-update`, `note`, `decide`, `export`, `import`, `history`, `remind`, `ack-reminder` |
+| `pad_item` | `create`, `update`, `delete`, `get`, `list`, `move`, `restore`, `link`, `unlink`, `deps`, `star`, `unstar`, `starred`, `comment`, `list-comments`, `backlinks`, `bulk-update`, `note`, `decide`, `export`, `import`, `history`, `remind`, `ack-reminder`, `claim`, `release` |
 | `pad_workspace` | `list`, `members`, `invite`, `storage`, `audit-log`, `create`, `claim`, `deleted`, `restore` |
 | `pad_collection` | `list`, `create`, `update`, `delete` |
 | `pad_project` | `dashboard`, `next`, `ready`, `stale`, `standup`, `changelog`, `report`, `activity` |
@@ -510,6 +510,8 @@ pad item deps <ref>                   Show dependencies
 pad item unblock <src> <target>       Remove dependency
 pad item related <ref>                Show direct relationships for an item
 pad item implemented-by <ref>         Show incoming implementers for an item
+pad item claim <ref>                  Atomically claim an item for execution (--holder, --ttl; 409 names the live holder)
+pad item release <ref>                Release your execution lease (idempotent)
 pad item bulk-update --status X       Batch update multiple items
 
 pad collection list                   List collections with item counts

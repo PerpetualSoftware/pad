@@ -85,6 +85,16 @@ var padItemTool = ToolDef{
 		"remind":       passThrough([]string{"item", "remind"}),
 		"ack-reminder": passThrough([]string{"item", "ack"}),
 
+		// Execution lease (#1221 / PR #1238). Agents are the motivating
+		// users of the claim primitive — two pollers that both read
+		// "unclaimed" get one winner and one structured 409 naming the
+		// live holder — so the catalog carries it from the start
+		// (maintainer's call on the PR thread). Additive, same
+		// disposition as remind/ack-reminder above: no ToolSurfaceVersion
+		// bump (DR-7 grounds — nothing existing moved).
+		"claim":   passThrough([]string{"item", "claim"}),
+		"release": passThrough([]string{"item", "release"}),
+
 		// Stars
 		"star":    passThrough([]string{"item", "star"}),
 		"unstar":  passThrough([]string{"item", "unstar"}),
@@ -144,7 +154,7 @@ var padItemTool = ToolDef{
 // keeping the schema simple to maintain.
 var padItemSchemaParams = []ParamDef{
 	// ── Targeting ──
-	{Name: "ref", Type: "string", Description: "Item reference (e.g. TASK-5, IDEA-12, PLAYB-3, CONVE-7). Required for: update, delete, restore, get, move, link, unlink, deps, star, unstar, comment, list-comments, note, decide, export, remind. NOT used for ack-reminder (which addresses a REMINDER by `reminder_id`, since an item can carry several) and NOT used for bulk-update — pass `refs` (array) instead."},
+	{Name: "ref", Type: "string", Description: "Item reference (e.g. TASK-5, IDEA-12, PLAYB-3, CONVE-7). Required for: update, delete, restore, get, move, link, unlink, deps, star, unstar, comment, list-comments, note, decide, export, remind, claim, release. NOT used for ack-reminder (which addresses a REMINDER by `reminder_id`, since an item can carry several) and NOT used for bulk-update — pass `refs` (array) instead."},
 	{Name: "refs", Type: "array<string>", Description: "Item references for batch operations. Required for: bulk-update (one or more refs)."},
 	{Name: "target", Type: "string", Description: "The OTHER end of a relationship. Required for: link, unlink (paired with `ref` and `link_type`). For link_type=blocks, target is the item being blocked; for blocked-by it's the blocker; for supersedes it's the superseded item; etc."},
 	{Name: "link_type", Type: "string", Description: "Type of relationship for action=link/unlink.", Enum: []string{"blocks", "blocked-by", "supersedes", "implements", "split-from"}},
@@ -165,6 +175,10 @@ var padItemSchemaParams = []ParamDef{
 	// ── Reminders ── (IDEA-2641)
 	{Name: "remind_at", Type: "string", Description: "When a reminder should fire, as an RFC3339 INSTANT (e.g. 2026-08-01T09:00:00Z, or 2026-08-01T09:00:00-04:00 which is stored as the same moment in UTC). Required for: remind. A bare date (2026-08-01) is REFUSED, not assumed to mean midnight — it names a 24-hour span, and choosing an hour inside it would fire at a time nobody picked."},
 	{Name: "reminder_id", Type: "string", Description: "A reminder's id, as returned when it was armed. Required for: ack-reminder. Acknowledging removes a fired reminder from pad_project's next/ready surface; nothing else acknowledges one, and in particular completing the item does not."},
+
+	// ── Execution lease ── (#1221)
+	{Name: "holder", Type: "string", Description: "Lease holder identity for action=claim/release. Optional — defaults to the authenticated user. Use a stable per-runner name (e.g. \"sweep-runner-2\") when several runners share one account, so a 409 names which one holds the item."},
+	{Name: "ttl", Type: "string", Description: "Lease duration for action=claim, as a Go duration (e.g. \"15m\", \"1h\"). Optional — server default 15m, max 24h. A re-claim by the live holder extends the expiry from now (heartbeat); size the TTL to your polling/heartbeat cadence, not to the whole job."},
 
 	{Name: "artifact", Type: "string", Description: "Full portable artifact text (YAML frontmatter + Markdown body). Required for: import — this is the artifact a prior `export` produced. NOT the same as `content` (which is just the item's Markdown body)."},
 
@@ -370,6 +384,21 @@ Actions:
                   Nothing else acknowledges one: completing the item does not,
                   because a reminder may have been armed to fire after the
                   work was done.
+  claim         — Atomically claim an item for execution (lease with expiry).
+                  Required: ref. Optional: holder (default: you), ttl (Go
+                  duration, default 15m, max 24h).
+                  Exactly one concurrent claimer wins; the loser gets a 409
+                  naming the live holder and expiry — log it and skip, don't
+                  retry in a loop. Re-claim while you hold it to extend the
+                  expiry (heartbeat). The lease expires on its own: a crashed
+                  holder blocks nobody past the TTL, and there is no reaper
+                  to wait for.
+  release       — Release an item's execution lease when you finish.
+                  Required: ref. Optional: holder (must match the live
+                  holder; releasing someone else's live lease is refused).
+                  Idempotent: releasing an absent or expired lease answers
+                  released:false with no error, so cleanup never needs to
+                  check first.
   star          — Star an item for quick access.
                   Required: ref.
   unstar        — Remove star.

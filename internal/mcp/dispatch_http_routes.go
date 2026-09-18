@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 
@@ -387,6 +388,17 @@ func init() {
 			pathTemplate: "/api/v1/workspaces/{workspace}/reminders/{reminder_id}/ack",
 		}.toRouteMapper(),
 
+		// --- Execution lease (#1221) ---
+		// `item claim` needs a custom mapper: the catalog's `ttl` is a Go
+		// duration (the CLI flag's vocabulary) while the handler's body
+		// takes ttl_seconds. `item release` fits the declarative shape.
+		"item claim": mapItemClaim,
+		"item release": routeSpec{
+			method:       http.MethodPost,
+			pathTemplate: "/api/v1/workspaces/{workspace}/items/{ref}/release",
+			bodyKeys:     []string{"holder"},
+		}.toRouteMapper(),
+
 		// --- Roles (admin) ---
 		"role create": mapRoleCreate,
 		"role update": mapRoleUpdate,
@@ -732,6 +744,53 @@ func mapItemStarred(input map[string]any) (string, string, []byte, error) {
 		urlPath += "?include_terminal=true"
 	}
 	return http.MethodGet, urlPath, nil, nil
+}
+
+// mapItemClaim dispatches `pad item claim <ref> [--holder] [--ttl]`.
+//
+// POST /api/v1/workspaces/{ws}/items/{ref}/claim with an optional body
+// matching handlers_item_lease.go's itemLeaseInput. The catalog's `ttl`
+// param is a Go duration string on BOTH transports — that is the CLI
+// flag's own vocabulary, and stdio's BuildCLIArgs passes it straight to
+// `--ttl` — so this mapper owns the duration→ttl_seconds conversion the
+// CLI does client-side. A malformed or non-positive ttl is refused HERE,
+// naming the input, rather than sent as ttl_seconds:0 for the server to
+// default silently — a typo must not become a 15-minute lease.
+// With neither option set, no body is sent (the handler treats an
+// absent body as all-defaults).
+func mapItemClaim(input map[string]any) (string, string, []byte, error) {
+	path, err := expandPath("/api/v1/workspaces/{workspace}/items/{ref}/claim", input)
+	if err != nil {
+		return "", "", nil, err
+	}
+	bodyFields := map[string]any{}
+	if holder, _ := input["holder"].(string); holder != "" {
+		bodyFields["holder"] = holder
+	}
+	if raw, ok := input["ttl"]; ok && raw != nil {
+		s, ok := raw.(string)
+		if !ok {
+			return "", "", nil, fmt.Errorf("ttl must be a duration string (e.g. 15m, 1h), got %T", raw)
+		}
+		if s != "" {
+			d, err := time.ParseDuration(s)
+			if err != nil {
+				return "", "", nil, fmt.Errorf("invalid ttl %q: %v (use Go durations, e.g. 15m, 1h)", s, err)
+			}
+			if d <= 0 {
+				return "", "", nil, fmt.Errorf("ttl must be positive, got %s", d)
+			}
+			bodyFields["ttl_seconds"] = int(d.Seconds())
+		}
+	}
+	if len(bodyFields) == 0 {
+		return http.MethodPost, path, nil, nil
+	}
+	body, err := json.Marshal(bodyFields)
+	if err != nil {
+		return "", "", nil, err
+	}
+	return http.MethodPost, path, body, nil
 }
 
 // mapCollectionUpdate dispatches `pad collection update <slug>

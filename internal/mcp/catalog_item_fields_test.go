@@ -1721,6 +1721,10 @@ func TestFieldConflictProperty_SourcesDerivedFromTheDeclaredSchema(t *testing.T)
 		// source.
 		"remind_at": true, "reminder_id": true,
 
+		// Execution-lease coordination state (#1221) — holder/expiry live on
+		// dedicated columns, never in the item's fields blob.
+		"holder": true, "ttl": true,
+
 		// The two SOURCES themselves, not keys within them.
 		"fields": true,
 		"field":  true,
