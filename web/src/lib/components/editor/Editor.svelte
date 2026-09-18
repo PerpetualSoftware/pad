@@ -26,17 +26,46 @@
 	import CodeBlock from '@tiptap/extension-code-block';
 	import Placeholder from '@tiptap/extension-placeholder';
 	import { copyToClipboard } from '$lib/utils/clipboard';
+	import {
+		mermaidThemeForMode,
+		collectMermaidRerenders,
+		type MermaidTheme,
+	} from './mermaidTheme';
 
 	// Serialized mermaid render queue — mermaid can't handle concurrent renders
 	let mermaidMod: typeof import('mermaid') | null = null;
 	let renderQueue: Promise<void> = Promise.resolve();
 
+	// BUG-3106: the mode read and the redraw set live in mermaidTheme.ts so
+	// both are reachable from a test; the comments there carry the reasoning.
+	function currentMermaidTheme(): MermaidTheme {
+		if (typeof document === 'undefined') return 'dark';
+		return mermaidThemeForMode(document.documentElement);
+	}
+
+	// Watches <html>'s data-theme; armed in onMount, disconnected in onDestroy.
+	let themeObserver: MutationObserver | null = null;
+
+	// The theme the loaded module was last initialized with. mermaid caches
+	// its config, so a theme change needs a fresh initialize() AND a re-render
+	// — the SVG already in the DOM carries the old palette baked in.
+	let appliedMermaidTheme: MermaidTheme | null = null;
+
 	async function initMermaid() {
 		if (!mermaidMod) {
 			mermaidMod = await import('mermaid');
+		}
+		const theme = currentMermaidTheme();
+		if (theme !== appliedMermaidTheme) {
 			mermaidMod.default.initialize({
 				startOnLoad: false,
-				theme: 'dark',
+				// BUG-3106: follows the app's mode. This was an unconditional
+				// 'dark', which drew every diagram on the dark palette in light
+				// mode. The TASK-3090 comment below called it "OUR value, not a
+				// default" and kept it through the 12 bump for continuity —
+				// true of the BUMP, but it was never a deliberate choice to
+				// ignore the app's mode, just a value nobody had revisited.
+				theme,
 				securityLevel: 'strict',
 				fontFamily: 'inherit',
 				// `layout` is the load-bearing one. Read from the shipped
@@ -46,9 +75,7 @@
 				// on an upgrade nobody asked them about. `look` is a defensive
 				// pin, not a fix: both versions already default to "classic",
 				// and it is written down so a later default change cannot move
-				// our diagrams silently. (`theme` stays "dark" above for the
-				// same continuity reason — it is OUR value, not a default, and
-				// both versions default to "default".)
+				// our diagrams silently.
 				// This is the site default, not a ceiling: a diagram that opts
 				// into ELK in its own frontmatter still gets ELK.
 				//
@@ -61,8 +88,18 @@
 				layout: 'dagre',
 				look: 'classic',
 			});
+			appliedMermaidTheme = theme;
 		}
 		return mermaidMod;
+	}
+
+	// Re-render every diagram currently in this editor on the new palette.
+	// The SVG already in the DOM has the old palette baked in, so a fresh
+	// initialize() alone changes nothing that is already on screen.
+	function rerenderMermaidForTheme(root: HTMLElement) {
+		for (const { source, target } of collectMermaidRerenders(root)) {
+			queueMermaidRender(source, target);
+		}
 	}
 
 	function queueMermaidRender(source: string, target: HTMLElement) {
@@ -883,6 +920,23 @@
 	onMount(() => {
 		if (!element) return;
 
+		// BUG-3106: watch the app's mode so diagrams follow it.
+		//
+		// A MutationObserver on <html>'s data-theme rather than a hook in the
+		// togglers, because there are FOUR of them (+layout's initializer,
+		// TopBar, Sidebar, YouSheet) and they share no store — only the
+		// attribute. Observing the attribute covers all four, and covers the
+		// next one without it having to know diagrams exist.
+		const themeRoot = document.documentElement;
+		themeObserver = new MutationObserver(() => {
+			if (currentMermaidTheme() === appliedMermaidTheme) return;
+			if (element) rerenderMermaidForTheme(element);
+		});
+		themeObserver.observe(themeRoot, {
+			attributes: true,
+			attributeFilter: ['data-theme'],
+		});
+
 		// Resolve the workspace slug at mount time. The Editor lives inside
 		// a route that has page.params.workspace set; falling back to the
 		// workspace store covers code paths where the editor is rendered
@@ -1249,6 +1303,8 @@
 
 	onDestroy(() => {
 		editor?.destroy();
+		themeObserver?.disconnect();
+		themeObserver = null;
 		// onDestroy (unlike onMount) also runs during SSR, where `window` is
 		// undefined — guard with typeof before touching it (TASK-2109).
 		if (typeof window !== 'undefined' && window.visualViewport && visualViewportHandler) {
