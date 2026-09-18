@@ -1265,13 +1265,21 @@ func (s *Server) writeStoreMemberLimitError(w http.ResponseWriter, workspaceID s
 // planLimitDetails is the structured half of a plan-limit refusal, shared by
 // the 403 and by the bulk envelope's per-item failure.
 func planLimitDetails(result *store.LimitResult) map[string]interface{} {
-	return map[string]interface{}{
+	d := map[string]interface{}{
 		"feature":     result.Feature,
 		"limit":       result.Limit,
 		"current":     result.Current,
 		"plan":        result.Plan,
 		"upgrade_url": "/console/billing",
 	}
+	// `requested` appears only where an operation adds more than one at once
+	// (BUG-3103: ImportWorkspace). Every other door leaves Requested zero and
+	// this map is byte-identical to what it was before the field existed, which
+	// a test pins against a literal.
+	if result.Requested > 0 {
+		d["requested"] = result.Requested
+	}
+	return d
 }
 
 // restoreLimitOpts is workspaceLimitMintOpts for RestoreItem, whose options
@@ -1302,6 +1310,25 @@ func planLimitMessage(result *store.LimitResult) string {
 	// "3-member", "10-item", "1-workspace", "10-API-token", etc.
 	// Hyphenated form reads as a compound adjective modifying "limit".
 	limitStr := fmt.Sprintf("%d-%s", result.Limit, label)
+
+	// An operation that would add MORE THAN ONE at once gets its own sentence
+	// (BUG-3103: ImportWorkspace). Dave's day-71 ruling asks this refusal to
+	// name how many would land versus the limit, and the sentence below cannot
+	// — it never reads Current, and on the import door "You've reached" is
+	// simply false: the workspace the transaction just minted holds nothing,
+	// and it is the import that WOULD exceed the cap.
+	//
+	// Requested is zero at every other door, so their message is unchanged and
+	// a test pins it against a literal.
+	// Only items_per_workspace reaches this branch today (it is the one cap an
+	// import can exceed in bulk), so `label + "s"` is the correct plural for
+	// every value that gets here rather than a general pluralizer. A second
+	// bulk feature would need its own plural and a test; there is deliberately
+	// no speculative machinery for one that does not exist.
+	if result.Requested > 0 {
+		return fmt.Sprintf("This import would add %d %ss, over the %s limit on the free plan.", result.Requested, label, limitStr)
+	}
+
 	return fmt.Sprintf("You've reached the %s limit on the free plan.", limitStr)
 }
 

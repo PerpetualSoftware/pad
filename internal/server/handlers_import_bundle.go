@@ -190,6 +190,10 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 		}
 
 		if isValidationReject {
+			if statusErr.details != nil {
+				writeError2(w, statusErr.status, statusErr.code, statusErr.message, statusErr.details)
+				return
+			}
 			writeError(w, statusErr.status, statusErr.code, statusErr.message)
 			return
 		}
@@ -390,6 +394,26 @@ func (s *Server) importBundle(ctx context.Context, r io.Reader, newName string, 
 					return nil, &importStatusError{
 						status: http.StatusBadRequest, code: "bad_bundle",
 						message: "Bundle pad-export.json is not importable: " + v.Reason,
+					}
+				}
+				// The plan-limit refusal (BUG-3103). Without this it fell
+				// through to the wrap below and rendered as a generic failure
+				// carrying a Go-side string, on the one door where the store
+				// check and the sibling JSON door both already answer a
+				// structured 403. Enforcement being shared did not make the
+				// RESPONSE shared: ImportWorkspace refuses for both doors, but
+				// only handlers_workspaces.go was reading the error back out.
+				//
+				// ws stays nil: the store refuses inside its own transaction,
+				// so nothing committed and there is no partial workspace for
+				// the rollback arms above to clean up.
+				var ple *store.PlanLimitError
+				if errors.As(err, &ple) {
+					return nil, &importStatusError{
+						status:  http.StatusForbidden,
+						code:    "plan_limit_exceeded",
+						message: planLimitMessage(&ple.Result),
+						details: planLimitDetails(&ple.Result),
 					}
 				}
 				return nil, fmt.Errorf("import workspace: %w", err)
@@ -673,6 +697,12 @@ type importStatusError struct {
 	status  int
 	code    string
 	message string
+	// details, when non-nil, is written inside the error envelope with
+	// writeError2 instead of the bare writeError. Added for BUG-3103 so the
+	// bundle door can answer a plan-limit refusal with the SAME envelope the
+	// JSON door does — same code, same details keys — rather than a
+	// message-only near-miss that every client would have to special-case.
+	details map[string]interface{}
 }
 
 func (e *importStatusError) Error() string { return e.message }
