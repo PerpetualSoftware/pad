@@ -4,11 +4,12 @@
 	import { browser } from '$app/environment';
 	import { goto, beforeNavigate, afterNavigate } from '$app/navigation';
 	import { api, PadApiError, isPlanLimitError, planLimitMessage, isConflictOrNotFound } from '$lib/api/client';
-	import type { BulkItemsRequest, Collection, Item, PaneTarget, QuickAction, View, ViewConfig } from '$lib/types';
+	import type { BulkItemFailure, BulkItemsRequest, Collection, Item, PaneTarget, QuickAction, View, ViewConfig } from '$lib/types';
 	import { parseSettings, parseFields, parseSchema, parseTags, getStatusOptions, itemUrlId, formatItemRef } from '$lib/types';
 	import { plansProgressToMap, fetchCollectionProgress } from '$lib/collections/progressMerge';
 	import { resolveRenameNavTarget, resolveSyncRenameTarget } from '$lib/collections/renameNav';
 	import { laneWriteValue, laneWriteRefusalMessage } from '$lib/collections/laneWriteValue';
+	import { summarizeBulkFailures, bulkToastMessage } from '$lib/collections/bulkFailureReason';
 	import { createDefaultFields } from '$lib/collections/createDefaults';
 	import BoardView from '$lib/components/collections/BoardView.svelte';
 	import ListView from '$lib/components/collections/ListView.svelte';
@@ -3135,6 +3136,7 @@
 		// and on another page (BUG-3084).
 		const epochAtEntry = captureIdentity();
 		const okIds: string[] = [];
+		const failedRows: BulkItemFailure[] = [];
 		let errMsg = '';
 		// A thrown chunk (network / auth / 4xx) stops further chunks but
 		// must NOT skip finalization: earlier chunks may already have
@@ -3149,6 +3151,12 @@
 				// chunks, not merely the reporting at the end (BUG-3084).
 				if (!identityHeld(epochAtEntry)) return okIds;
 				for (const u of res.updated) okIds.push(u.id);
+				// The server's per-row rejections, accumulated ACROSS chunks
+				// (BUG-3102). These were read off `res` and discarded: the
+				// toast derived a count by subtraction and never looked at why
+				// any row was refused, so a `plan_limit_exceeded` row reached
+				// the user as a bare "N failed".
+				for (const f of res.failed) failedRows.push(f);
 			} catch (e: any) {
 				errMsg = e?.message || '';
 				break;
@@ -3186,24 +3194,20 @@
 					}
 				: undefined;
 		const dwell = undoAction ? UNDO_TOAST_MS : undefined;
+		// BUG-3102: the toast now carries the server's reasons. `failedRows` are
+		// the rows the server reported and explained; the remainder are items
+		// in a chunk that threw, which never reached per-row reporting and so
+		// must not borrow another row's reason — they are counted as not
+		// attempted, with the CHUNK'S OWN error when there was one.
+		const summary = summarizeBulkFailures(failedRows, Math.max(0, failed - failedRows.length));
+		const message = bulkToastMessage(verb, ok, summary, {
+			synced,
+			notAttemptedReason: errMsg
+		});
 		if (ok === 0) {
-			toastStore.show(errMsg || `Failed to ${verb.toLowerCase()} items`, 'error');
-		} else if (failed > 0) {
-			toastStore.show(
-				`${verb} ${ok} item${ok !== 1 ? 's' : ''}, ${failed} failed`,
-				'success',
-				dwell,
-				undefined,
-				undoAction
-			);
+			toastStore.show(message, 'error');
 		} else {
-			toastStore.show(
-				`${verb} ${ok} item${ok !== 1 ? 's' : ''}${synced ? '' : ' (updating…)'}`,
-				'success',
-				dwell,
-				undefined,
-				undoAction
-			);
+			toastStore.show(message, 'success', dwell, undefined, undoAction);
 		}
 		return okIds;
 	}
@@ -3252,23 +3256,6 @@
 	}
 	function handleBulkAssign(items: Item[], userId: string) {
 		return runBulk({ op: 'assign', ids: idsOf(items), assigned_user_id: userId }, 'Assigned');
-	}
-
-	async function handleRestore(item: Item) {
-		if (!wsSlug) return;
-		const epochAtEntry = captureIdentity();
-		const epoch = localIndex.scopeEpochFor(wsSlug);
-		try {
-			const restored = await api.items.restore(wsSlug, item.id);
-			if (!identityHeld(epochAtEntry)) return;
-			localIndex.upsert(wsSlug, restored, epoch);
-			// The title is the disclosure: the toast names an item from the
-			// previous user's workspace view (BUG-3084).
-			toastStore.show(`Restored "${item.title}"`, 'success');
-		} catch {
-			if (!identityHeld(epochAtEntry)) return;
-			toastStore.show('Failed to restore item', 'error');
-		}
 	}
 
 	// --- Saved views ---

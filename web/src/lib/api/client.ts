@@ -91,7 +91,15 @@ class PadApiError extends Error {
 	 * attempted_value }`. Undefined for codes that don't supply it.
 	 *
 	 * For `plan_limit_exceeded` (TASK-788) the shape is:
-	 *   { feature: string, limit: number, current: number, plan: string, upgrade_url: string }
+	 *   { feature: string, limit: number, current: number, plan: string,
+	 *     upgrade_url: string, requested?: number }
+	 *
+	 * `requested` appears only where one operation would add MORE THAN ONE of
+	 * the feature at once — today workspace import (BUG-3103) — and is the
+	 * count that WOULD land, as against `current`, which is what the workspace
+	 * holds now. Do not render prose from either: `message` already carries the
+	 * server's finished sentence, including the branch that names `requested`,
+	 * and rebuilding it here would fork the wording (TASK-788).
 	 */
 	details?: Record<string, unknown>;
 	/**
