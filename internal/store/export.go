@@ -875,11 +875,9 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 		insertedItems[newItemID] = true
 	}
 
-	// items_per_workspace, decided here (BUG-3103). Before this, ImportWorkspace
-	// enforced only the user-scoped `workspaces` cap, so a free-plan owner could
-	// import a workspace holding more items than the plan allows — every other
-	// door that raises the count (create, artifact import, cross-workspace copy,
-	// restore) refuses, and this one did not.
+	// items_per_workspace, compared here against the limit resolved before the
+	// loop (BUG-3103). Why the lock taken up there guards nothing is written at
+	// that site; it is not repeated.
 	//
 	// WHY AFTER THE INSERT LOOP rather than before it. The count that matters is
 	// how many items LAND, and that is not len(data.Items): the loop above skips
@@ -891,16 +889,9 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 	// counts what landed. The whole thing sits inside the transaction that also
 	// minted the workspace, so refusing here rolls the workspace back with it.
 	//
-	// THE LOCK GUARDS NOTHING HERE, and is taken only so this door reads like
-	// #1393's. ImportWorkspace mints the workspace inside this same transaction
-	// (BUG-2892), so the destination does not exist to any other writer until
-	// commit: no concurrent insert can be racing this count, unlike the create /
-	// copy / restore doors where the workspace is already live and contended.
-	// The correctness content here is arithmetic, not serialization. Recorded so
-	// nobody later reads the lock's presence as evidence of a race.
-	// The limit and the PRIOR count are resolved before the loop, the
-	// comparison happens here. That split is deliberate rather than tidy:
-	// CheckLimitTx counts on THIS transaction, so calling it after the inserts
+	// WHY THE LIMIT IS RESOLVED BEFORE THE LOOP and only compared here. The
+	// split is deliberate rather than tidy: CheckLimitTx counts on THIS
+	// transaction, so calling it after the inserts
 	// returns a count that already includes them. Resolving it afterwards and
 	// subtracting would work only by an identity ("every item this transaction
 	// inserted is in insertedItems") that nothing enforces, and getting it
