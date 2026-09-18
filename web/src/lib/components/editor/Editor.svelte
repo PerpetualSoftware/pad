@@ -1,3 +1,32 @@
+<script lang="ts" module>
+	// MODULE SCOPE, not instance scope, and that is load-bearing (BUG-3106
+	// review round 1).
+	//
+	// `mermaid` is a singleton: initialize() and render() act on ONE global
+	// config. Two <Editor>s are a routine state — the item route keeps the
+	// master ItemDetail mounted (merely `peeking`) while a pane holds a
+	// second one — so per-instance copies of this bookkeeping produce two
+	// bugs at once.
+	//
+	// A per-instance `appliedMermaidTheme` guards a global config, so
+	// instance B can decide "already applied" against a config instance A
+	// has since changed, skip the initialize() it needed, and render on the
+	// other mode's palette with nothing queued to correct it.
+	//
+	// A per-instance `renderQueue` makes overlapping render() calls routine
+	// rather than coincidental, and the queue exists precisely because
+	// mermaid cannot handle concurrent renders. One queue for one mermaid.
+	let mermaidMod: typeof import('mermaid') | null = null;
+	let renderQueue: Promise<void> = Promise.resolve();
+	let appliedMermaidTheme: MermaidTheme | null = null;
+
+	// The model source for each rendered diagram, keyed by the diagram
+	// element the SVG lands in. Written by the NodeView, which has the
+	// ProseMirror node; read by the theme re-render, which has only the DOM.
+	// A WeakMap so a torn-down NodeView's entry goes with it.
+	const mermaidSources = new WeakMap<HTMLElement, string>();
+</script>
+
 <script lang="ts">
 	import { onMount, onDestroy, untrack } from 'svelte';
 	import { page } from '$app/state';
@@ -32,24 +61,30 @@
 		type MermaidTheme,
 	} from './mermaidTheme';
 
-	// Serialized mermaid render queue — mermaid can't handle concurrent renders
-	let mermaidMod: typeof import('mermaid') | null = null;
-	let renderQueue: Promise<void> = Promise.resolve();
-
 	// BUG-3106: the mode read and the redraw set live in mermaidTheme.ts so
 	// both are reachable from a test; the comments there carry the reasoning.
+	// The serialized render queue and the applied-theme tracker are in the
+	// module block above, because mermaid's config is global.
 	function currentMermaidTheme(): MermaidTheme {
 		if (typeof document === 'undefined') return 'dark';
-		return mermaidThemeForMode(document.documentElement);
+		return mermaidThemeForMode(document.documentElement, prefersLightMode());
+	}
+
+	// The OS preference half of the read. `app.css` renders an ABSENT
+	// data-theme light when the OS prefers light, so the attribute alone
+	// cannot answer the question.
+	function prefersLightMode(): boolean {
+		if (typeof window === 'undefined' || !window.matchMedia) return false;
+		return window.matchMedia('(prefers-color-scheme: light)').matches;
 	}
 
 	// Watches <html>'s data-theme; armed in onMount, disconnected in onDestroy.
 	let themeObserver: MutationObserver | null = null;
-
-	// The theme the loaded module was last initialized with. mermaid caches
-	// its config, so a theme change needs a fresh initialize() AND a re-render
-	// — the SVG already in the DOM carries the old palette baked in.
-	let appliedMermaidTheme: MermaidTheme | null = null;
+	// Watches the OS preference, which changes the palette with NO attribute
+	// mutation whenever data-theme is absent — the one transition the
+	// MutationObserver structurally cannot see.
+	let prefersLightQuery: MediaQueryList | null = null;
+	let prefersLightHandler: (() => void) | null = null;
 
 	async function initMermaid() {
 		if (!mermaidMod) {
@@ -97,9 +132,17 @@
 	// The SVG already in the DOM has the old palette baked in, so a fresh
 	// initialize() alone changes nothing that is already on screen.
 	function rerenderMermaidForTheme(root: HTMLElement) {
-		for (const { source, target } of collectMermaidRerenders(root)) {
+		const forTheme = collectMermaidRerenders(root, (d) => mermaidSources.get(d));
+		for (const { source, target } of forTheme) {
 			queueMermaidRender(source, target);
 		}
+	}
+
+	// One handler for both watchers: the desired theme is derived the same way
+	// whichever of the two inputs moved.
+	function handleModeChange() {
+		if (currentMermaidTheme() === appliedMermaidTheme) return;
+		if (element) rerenderMermaidForTheme(element);
 	}
 
 	function queueMermaidRender(source: string, target: HTMLElement) {
@@ -572,6 +615,10 @@
 				wrapper.append(toggleBtn, diagram, pre);
 
 				const source = node.textContent?.trim() ?? '';
+				// BUG-3106: publish the MODEL source for the theme re-render,
+				// which sees only the DOM. Set even when empty, so the theme
+				// path can tell "no source" from "not a diagram we know".
+				mermaidSources.set(diagram, source);
 				if (source) {
 					queueMermaidRender(source, diagram);
 				}
@@ -601,6 +648,9 @@
 						const newSource = updatedNode.textContent?.trim() ?? '';
 						if (newSource !== lastSource) {
 							lastSource = newSource;
+							// Keep the theme re-render's source in step with the
+							// model on every edit (BUG-3106).
+							mermaidSources.set(diagram, newSource);
 							if (newSource) {
 								queueMermaidRender(newSource, diagram);
 							} else {
@@ -922,20 +972,32 @@
 
 		// BUG-3106: watch the app's mode so diagrams follow it.
 		//
-		// A MutationObserver on <html>'s data-theme rather than a hook in the
-		// togglers, because there are FOUR of them (+layout's initializer,
-		// TopBar, Sidebar, YouSheet) and they share no store — only the
-		// attribute. Observing the attribute covers all four, and covers the
-		// next one without it having to know diagrams exist.
-		const themeRoot = document.documentElement;
-		themeObserver = new MutationObserver(() => {
-			if (currentMermaidTheme() === appliedMermaidTheme) return;
-			if (element) rerenderMermaidForTheme(element);
-		});
-		themeObserver.observe(themeRoot, {
+		// TWO watchers, because the mode has two inputs.
+		//
+		// The MutationObserver on <html>'s data-theme, rather than a hook in
+		// each toggler: there are FIVE writers of that attribute
+		// (+layout's mount initializer, TopBar, Sidebar, YouSheet, and the
+		// workspace settings page) sharing no store, so observing the
+		// attribute covers all five and covers the next one without it having
+		// to know diagrams exist.
+		//
+		// The matchMedia listener for the case the observer structurally
+		// cannot see: with data-theme ABSENT, app.css switches palette on the
+		// OS preference alone, so the page goes light with no attribute
+		// mutation at all. That state is reachable and persistent — load with
+		// the OS dark and nothing in localStorage and +layout writes no
+		// attribute, then switching the OS to light flips the CSS and
+		// nothing would re-render the diagrams.
+		themeObserver = new MutationObserver(handleModeChange);
+		themeObserver.observe(document.documentElement, {
 			attributes: true,
 			attributeFilter: ['data-theme'],
 		});
+		if (typeof window !== 'undefined' && window.matchMedia) {
+			prefersLightQuery = window.matchMedia('(prefers-color-scheme: light)');
+			prefersLightHandler = handleModeChange;
+			prefersLightQuery.addEventListener('change', prefersLightHandler);
+		}
 
 		// Resolve the workspace slug at mount time. The Editor lives inside
 		// a route that has page.params.workspace set; falling back to the
@@ -1305,6 +1367,11 @@
 		editor?.destroy();
 		themeObserver?.disconnect();
 		themeObserver = null;
+		if (prefersLightQuery && prefersLightHandler) {
+			prefersLightQuery.removeEventListener('change', prefersLightHandler);
+		}
+		prefersLightQuery = null;
+		prefersLightHandler = null;
 		// onDestroy (unlike onMount) also runs during SSR, where `window` is
 		// undefined — guard with typeof before touching it (TASK-2109).
 		if (typeof window !== 'undefined' && window.visualViewport && visualViewportHandler) {

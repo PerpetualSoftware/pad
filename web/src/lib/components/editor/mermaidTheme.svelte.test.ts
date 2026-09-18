@@ -3,6 +3,9 @@ import { mermaidThemeForMode, collectMermaidRerenders } from './mermaidTheme';
 
 // BUG-3106: initMermaid passed theme:'dark' unconditionally, so every diagram
 // was drawn on the dark palette in light mode.
+//
+// Round 1 of review reshaped both functions, so these tests are written
+// against the corrected contract rather than the first attempt's.
 
 function html(attr: string | null): Element {
 	const el = document.createElement('html');
@@ -11,44 +14,56 @@ function html(attr: string | null): Element {
 }
 
 describe('mermaidThemeForMode', () => {
-	// The bug itself: this is the case that was wrong, and it is the one
-	// assertion that fails against the unfixed code.
-	it('light mode asks for the light palette', () => {
-		expect(mermaidThemeForMode(html('light'))).toBe('default');
+	// The original defect: light mode drew the dark palette.
+	it('explicit light asks for the light palette, whatever the OS prefers', () => {
+		expect(mermaidThemeForMode(html('light'), false)).toBe('default');
+		expect(mermaidThemeForMode(html('light'), true)).toBe('default');
 	});
 
-	it('explicit dark mode asks for the dark palette', () => {
-		expect(mermaidThemeForMode(html('dark'))).toBe('dark');
+	// data-theme="dark" wins over an OS light preference, because app.css
+	// excludes it from the light block via :not([data-theme="dark"]).
+	it('explicit dark asks for the dark palette, whatever the OS prefers', () => {
+		expect(mermaidThemeForMode(html('dark'), true)).toBe('dark');
+		expect(mermaidThemeForMode(html('dark'), false)).toBe('dark');
 	});
 
-	// The asymmetry worth pinning. +layout only ever SETS data-theme — for a
-	// light preference, or from a saved value — and leaves it OFF for the
-	// default, which is dark. A `=== 'dark'` predicate would read absent as
-	// light and break the common case on a fresh browser, so this is the leg
-	// that discriminates between the correct predicate and the plausible
-	// wrong one.
-	it('treats an ABSENT attribute as dark, not as light', () => {
-		expect(mermaidThemeForMode(html(null))).toBe('dark');
+	// THE ROUND-1 FINDING. The first version returned 'dark' for an absent
+	// attribute on the claim that absent means dark. app.css:699 says
+	// otherwise: `@media (prefers-color-scheme: light) {
+	// :root:not([data-theme="dark"]) { ...light... } }`, so absent + OS light
+	// renders the app light. This leg fails against that first version.
+	it('absent attribute follows the OS preference', () => {
+		expect(mermaidThemeForMode(html(null), true)).toBe('default');
+		expect(mermaidThemeForMode(html(null), false)).toBe('dark');
 	});
 
-	// An unrecognised value is the app's default mode, not a third palette.
-	it('treats an unrecognised value as dark', () => {
-		expect(mermaidThemeForMode(html('solarized'))).toBe('dark');
-		expect(mermaidThemeForMode(html(''))).toBe('dark');
+	// An unrecognised value is not a third palette: it matches
+	// :not([data-theme="dark"]), so it behaves exactly like absent.
+	it('an unrecognised value follows the OS preference, like absent', () => {
+		for (const attr of ['solarized', '']) {
+			expect(mermaidThemeForMode(html(attr), true)).toBe('default');
+			expect(mermaidThemeForMode(html(attr), false)).toBe('dark');
+		}
 	});
 
-	it('survives being called with no root (SSR)', () => {
-		expect(mermaidThemeForMode(null)).toBe('dark');
-		expect(mermaidThemeForMode(undefined)).toBe('dark');
+	it('survives no root (SSR), defaulting to dark', () => {
+		expect(mermaidThemeForMode(null, false)).toBe('dark');
+		expect(mermaidThemeForMode(undefined, false)).toBe('dark');
 	});
 });
 
 describe('collectMermaidRerenders', () => {
-	function wrapper(opts: { source: string; error?: boolean }): string {
+	// The DOM shape the NodeView builds. `text` is what lands INSIDE the
+	// contentDOM <code> — which in the real editor includes ProseMirror
+	// decorations, not just the model text. `model` is what the NodeView
+	// published for this diagram; undefined means it published nothing.
+	function wrapper(opts: { text: string; model?: string; error?: boolean }): string {
 		return `
 			<div class="mermaid-wrapper">
-				<pre class="code-block mermaid-source"><code class="language-mermaid">${opts.source}</code></pre>
-				<div class="mermaid-diagram${opts.error ? ' mermaid-error' : ''}"></div>
+				<pre class="code-block mermaid-source"><code class="language-mermaid">${opts.text}</code></pre>
+				<div class="mermaid-diagram${opts.error ? ' mermaid-error' : ''}" data-model="${
+					opts.model === undefined ? '' : encodeURIComponent(opts.model)
+				}"></div>
 			</div>`;
 	}
 
@@ -58,40 +73,79 @@ describe('collectMermaidRerenders', () => {
 		return el;
 	}
 
+	// Stands in for the WeakMap the component keeps: returns the model source
+	// the NodeView published, or undefined when it published none.
+	const modelSource = (d: HTMLElement) => {
+		const raw = d.getAttribute('data-model');
+		return raw ? decodeURIComponent(raw) : undefined;
+	};
+
 	it('returns each renderable diagram with its own source', () => {
-		const r = root(wrapper({ source: 'graph TD; A-->B;' }) + wrapper({ source: 'sequenceDiagram' }));
-		const got = collectMermaidRerenders(r);
+		const r = root(
+			wrapper({ text: 'graph TD; A-->B;', model: 'graph TD; A-->B;' }) +
+				wrapper({ text: 'sequenceDiagram', model: 'sequenceDiagram' }),
+		);
+		const got = collectMermaidRerenders(r, modelSource);
 		expect(got.map((g) => g.source)).toEqual(['graph TD; A-->B;', 'sequenceDiagram']);
-		// Each target is the diagram node from its OWN wrapper — a pairing bug
+		// Each target is the diagram from its OWN wrapper — a pairing bug
 		// would redraw one diagram's source into another's node.
 		const wrappers = r.querySelectorAll('.mermaid-wrapper');
 		expect(got[0].target).toBe(wrappers[0].querySelector('.mermaid-diagram'));
 		expect(got[1].target).toBe(wrappers[1].querySelector('.mermaid-diagram'));
 	});
 
-	it('skips a diagram showing a syntax error', () => {
-		const r = root(wrapper({ source: 'not a diagram', error: true }));
-		expect(collectMermaidRerenders(r)).toEqual([]);
+	// THE ROUND-1 P1. The `code` element is the NodeView's contentDOM, so
+	// ProseMirror renders decorations into it — a remote collaborator's caret
+	// is a widget whose label carries a text node with the peer's display
+	// name. The first version read `code.textContent` and so would have
+	// rendered `graph TD; A-->B;Dave`, which mermaid rejects; the resulting
+	// error class then made the breakage stick.
+	it('ignores decoration text in the contentDOM and uses the model source', () => {
+		const polluted =
+			'graph TD; A-->B;<span class="collaboration-carets__caret">' +
+			'<div class="collaboration-carets__label">Dave</div></span>';
+		const r = root(wrapper({ text: polluted, model: 'graph TD; A-->B;' }));
+
+		// The fixture really does reproduce the pollution, or this leg would
+		// be asserting against a DOM that never had the problem.
+		expect(r.querySelector('code')!.textContent).toContain('Dave');
+
+		const got = collectMermaidRerenders(r, modelSource);
+		expect(got).toHaveLength(1);
+		expect(got[0].source).toBe('graph TD; A-->B;');
+		expect(got[0].source).not.toContain('Dave');
 	});
 
-	it('skips an empty or blank source', () => {
-		const r = root(wrapper({ source: '' }) + wrapper({ source: '   \n  ' }));
-		expect(collectMermaidRerenders(r)).toEqual([]);
+	it('skips a diagram the NodeView published no source for', () => {
+		const r = root(wrapper({ text: 'graph TD; A-->B;' })); // model undefined
+		expect(collectMermaidRerenders(r, modelSource)).toEqual([]);
+	});
+
+	it('skips a diagram showing a syntax error', () => {
+		const r = root(wrapper({ text: 'nope', model: 'nope', error: true }));
+		expect(collectMermaidRerenders(r, modelSource)).toEqual([]);
+	});
+
+	it('skips an empty or blank model source', () => {
+		const r = root(
+			wrapper({ text: '', model: '' }) + wrapper({ text: ' ', model: '   \n  ' }),
+		);
+		expect(collectMermaidRerenders(r, modelSource)).toEqual([]);
 	});
 
 	// The error leg must skip for the RIGHT reason: a wrapper identical except
 	// for the error class is collected, so the empty result above is the class
 	// and not the fixture.
 	it('collects the same wrapper once the error class is gone', () => {
-		const r = root(wrapper({ source: 'graph TD; A-->B;', error: true }));
-		expect(collectMermaidRerenders(r)).toEqual([]);
+		const r = root(wrapper({ text: 'graph TD; A-->B;', model: 'graph TD; A-->B;', error: true }));
+		expect(collectMermaidRerenders(r, modelSource)).toEqual([]);
 		r.querySelector('.mermaid-diagram')!.classList.remove('mermaid-error');
-		expect(collectMermaidRerenders(r)).toHaveLength(1);
+		expect(collectMermaidRerenders(r, modelSource)).toHaveLength(1);
 	});
 
 	it('ignores non-mermaid code blocks', () => {
 		const r = root(`
 			<pre class="code-block"><code class="language-go">func main() {}</code></pre>`);
-		expect(collectMermaidRerenders(r)).toEqual([]);
+		expect(collectMermaidRerenders(r, modelSource)).toEqual([]);
 	});
 });
