@@ -683,6 +683,83 @@ func TestRoute_ItemBacklinks(t *testing.T) {
 // BUG-2304: `project report` — window + collections forward as query
 // params; omitted filters stay off the URL so the endpoint's own
 // defaults (window=week, all collections) apply.
+func TestRoute_ItemClaim(t *testing.T) {
+	m, p, body, err := routeTable["item claim"](map[string]any{
+		"workspace": "docapp", "ref": "TASK-5", "holder": "sweep-runner", "ttl": "30m",
+	})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if m != http.MethodPost {
+		t.Errorf("method = %q", m)
+	}
+	if p != "/api/v1/workspaces/docapp/items/TASK-5/claim" {
+		t.Errorf("path = %q", p)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, body)
+	}
+	// The catalog's `ttl` is a Go duration on both transports (the CLI
+	// flag's own vocabulary); the HTTP body carries the handler's
+	// ttl_seconds. The mapper owns that conversion.
+	want := map[string]any{"holder": "sweep-runner", "ttl_seconds": float64(1800)}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func TestRoute_ItemClaim_NoOptionsSendsEmptyBody(t *testing.T) {
+	// Both body fields are optional server-side (holder defaults to the
+	// authenticated user, TTL to the server default), and the handler
+	// accepts an absent body.
+	_, _, body, err := routeTable["item claim"](map[string]any{
+		"workspace": "docapp", "ref": "TASK-5",
+	})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if body != nil {
+		t.Errorf("expected nil body when neither option is set; got %s", body)
+	}
+}
+
+func TestRoute_ItemClaim_BadTTLRefused(t *testing.T) {
+	// A malformed or non-positive ttl is refused at the mapper, naming
+	// the input — not sent as ttl_seconds:0 for the server to default
+	// silently, which would turn a typo into a 15-minute lease.
+	for _, bad := range []string{"banana", "-5m", "0s"} {
+		_, _, _, err := routeTable["item claim"](map[string]any{
+			"workspace": "docapp", "ref": "TASK-5", "ttl": bad,
+		})
+		if err == nil {
+			t.Errorf("ttl %q must be refused", bad)
+		}
+	}
+}
+
+func TestRoute_ItemRelease(t *testing.T) {
+	m, p, body, err := routeTable["item release"](map[string]any{
+		"workspace": "docapp", "ref": "TASK-5", "holder": "sweep-runner",
+	})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if m != http.MethodPost {
+		t.Errorf("method = %q", m)
+	}
+	if p != "/api/v1/workspaces/docapp/items/TASK-5/release" {
+		t.Errorf("path = %q", p)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, body)
+	}
+	if got["holder"] != "sweep-runner" {
+		t.Errorf("body holder = %v, want sweep-runner", got["holder"])
+	}
+}
+
 func TestRoute_ProjectReport(t *testing.T) {
 	m, p, _, err := routeTable["project report"](map[string]any{
 		"workspace": "docapp", "window": "month", "collections": "tasks,bugs",

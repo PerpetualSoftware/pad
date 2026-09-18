@@ -140,6 +140,9 @@ items.created_by_user_id
 items.deleted_at
 items.id
 items.last_modified_by_user_id
+items.lease_acquired_at
+items.lease_expires_at
+items.lease_holder
 items.parent_id
 items.updated_at
 items.workspace_id
