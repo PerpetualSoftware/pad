@@ -54,6 +54,22 @@ type LimitResult struct {
 	Limit   int    `json:"limit"` // -1 means unlimited
 	Current int    `json:"current"`
 	Plan    string `json:"plan"`
+
+	// Requested is how many of the feature a single operation would add at
+	// once, set only where that is more than one — today, ImportWorkspace
+	// (BUG-3103). Zero and omitted everywhere else, so every other door's
+	// JSON and rendered message are byte-identical to before this field
+	// existed.
+	//
+	// It exists because Current could not answer the question Dave's ruling
+	// asks the refusal to answer — "how many would land vs the limit". The
+	// obvious shortcut, setting Current to the incoming count, is WRONG and
+	// deliberately not taken: Current is published in the API's error
+	// `details` and means "how many this workspace holds NOW" at every other
+	// door. Overloading it would make a consumer render "150 of 100" for a
+	// workspace holding zero items, and the overload is invisible at the call
+	// site. Two questions, two fields.
+	Requested int `json:"requested,omitempty"`
 }
 
 // CheckLimit checks whether a workspace operation is allowed under the

@@ -406,6 +406,8 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 		return nil, fmt.Errorf("unsupported export version: %d", data.Version)
 	}
 
+	mintOpts := resolveMintOptions(opts)
+
 	// Determine workspace name/slug
 	wsName := data.Workspace.Name
 	wsSlug := data.Workspace.Slug
@@ -698,6 +700,34 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 		seenItemNumbers[it.ItemNumber] = true
 	}
 
+	// items_per_workspace, resolved here and compared after the insert loop
+	// (BUG-3103). Before this, ImportWorkspace enforced only the user-scoped
+	// `workspaces` cap, so a free-plan owner could import a workspace holding
+	// more items than the plan allows — every other door that raises the count
+	// (create, artifact import, cross-workspace copy, restore) refuses, and
+	// this one did not.
+	//
+	// THE LOCK GUARDS NOTHING HERE and is taken only so this door reads like
+	// #1393's. ImportWorkspace mints the workspace inside this same transaction
+	// (BUG-2892), so the destination does not exist to any other writer until
+	// commit: no concurrent insert can be racing this count, unlike the create /
+	// copy / restore doors where the workspace is already live and contended.
+	// The correctness content here is arithmetic, not serialization. Recorded so
+	// nobody later reads the lock's presence as evidence of a race.
+	//
+	// nil when the caller passed no WithPlanLimit — the CLI database import
+	// (cmd/pad/cmd_db.go) and migrations, which stay unlimited.
+	var itemLimit *LimitResult
+	if mintOpts.planLimit {
+		if err := s.acquireWorkspaceSeqLock(tx, ws.ID); err != nil {
+			return nil, err
+		}
+		itemLimit, err = s.CheckLimitTx(tx, ws.ID, "items_per_workspace")
+		if err != nil {
+			return nil, fmt.Errorf("check item limit: %w", err)
+		}
+	}
+
 	// Import items (first pass: create items, remap collection_id).
 	//
 	// IDEA-1486 + IDEA-1488: precompute each item's coerced fields/tags so
@@ -843,6 +873,53 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 			return nil, fmt.Errorf("import item %s: %w", it.Title, err)
 		}
 		insertedItems[newItemID] = true
+	}
+
+	// items_per_workspace, decided here (BUG-3103). Before this, ImportWorkspace
+	// enforced only the user-scoped `workspaces` cap, so a free-plan owner could
+	// import a workspace holding more items than the plan allows — every other
+	// door that raises the count (create, artifact import, cross-workspace copy,
+	// restore) refuses, and this one did not.
+	//
+	// WHY AFTER THE INSERT LOOP rather than before it. The count that matters is
+	// how many items LAND, and that is not len(data.Items): the loop above skips
+	// orphaned items — ones whose collection is missing from the bundle — with a
+	// `continue`, and insertedItems is what records the survivors. Checking the
+	// bundle's length up front would refuse an import of 150 items at a 100 cap
+	// even when 50 of them are orphans and only 100 would land. Dave's ruling
+	// asks the refusal to name "how many would land vs the limit", so the check
+	// counts what landed. The whole thing sits inside the transaction that also
+	// minted the workspace, so refusing here rolls the workspace back with it.
+	//
+	// THE LOCK GUARDS NOTHING HERE, and is taken only so this door reads like
+	// #1393's. ImportWorkspace mints the workspace inside this same transaction
+	// (BUG-2892), so the destination does not exist to any other writer until
+	// commit: no concurrent insert can be racing this count, unlike the create /
+	// copy / restore doors where the workspace is already live and contended.
+	// The correctness content here is arithmetic, not serialization. Recorded so
+	// nobody later reads the lock's presence as evidence of a race.
+	// The limit and the PRIOR count are resolved before the loop, the
+	// comparison happens here. That split is deliberate rather than tidy:
+	// CheckLimitTx counts on THIS transaction, so calling it after the inserts
+	// returns a count that already includes them. Resolving it afterwards and
+	// subtracting would work only by an identity ("every item this transaction
+	// inserted is in insertedItems") that nothing enforces, and getting it
+	// wrong refuses an import that exactly fills the cap — which is why the
+	// at-cap control leg exists.
+	if itemLimit != nil && itemLimit.Limit >= 0 {
+		landed := len(insertedItems)
+		if itemLimit.Current+landed > itemLimit.Limit {
+			refused := *itemLimit
+			refused.Allowed = false
+			// Current stays the count the destination held BEFORE this import
+			// (zero for the workspace this transaction just minted). Requested
+			// is what would land. Current is deliberately NOT overloaded to
+			// carry `landed` — it is published in the API error's `details` and
+			// means "how many this workspace holds now" at every other door.
+			// See LimitResult.Requested.
+			refused.Requested = landed
+			return nil, &PlanLimitError{Result: refused}
+		}
 	}
 
 	// The remap map for relation FIELD VALUES, filtered to items that actually
