@@ -196,13 +196,27 @@ function codeOf(src: AstSource, fn: Node): string {
 }
 
 /**
- * A separator that cannot occur in the source: the reviewed text is built by
- * JOINING slices, so the join has to be unambiguous or two different programs
- * render the same text. Round 10's ASI finding is exactly that — `return`
- * followed by an expression on the next line is TWO statements whose slices,
- * joined by a space, are byte-identical to the ONE statement spanning the
- * same two lines, and `identityHeld` returning `undefined` hashed the same as
- * `identityHeld` returning the comparison.
+ * A separator that cannot occur at a STATEMENT BOUNDARY — which is the only
+ * place the join ever puts it. The reviewed text is built by JOINING slices,
+ * so the join has to be unambiguous or two different programs render the same
+ * text. Round 10's ASI finding is exactly that — `return` followed by an
+ * expression on the next line is TWO statements whose slices, joined by a
+ * space, are byte-identical to the ONE statement spanning the same two lines,
+ * and `identityHeld` returning `undefined` hashed the same as `identityHeld`
+ * returning the comparison.
+ *
+ * The boundary wording is load-bearing and replaces an earlier claim that this
+ * byte "cannot occur in the source" (BUG-3095). That was false: a NUL is legal
+ * inside a string literal, so it CAN occur in the source. What it cannot do is
+ * appear between two statements, because a statement boundary is not inside a
+ * literal — and a slice join only ever lands there. The weaker, true claim is
+ * the one the collision argument actually needs.
+ *
+ * CAUTION for anyone searching this file: the NUL below makes every byte-
+ * oriented tool classify it as BINARY. The harness `grep` runs with `-I`, so
+ * it returns exit 1 and NO output for patterns that are present here — a
+ * silent false negative indistinguishable from a real absence. Use
+ * `/bin/grep -a … | cat -v` (which renders this byte as `^@`) instead.
  */
 const SEP = ' ';
 
