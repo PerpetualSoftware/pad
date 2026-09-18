@@ -6,6 +6,7 @@
 	import { syncService } from '$lib/services/sync.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
+	import { authStore } from '$lib/stores/auth.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import type { Item, Collection, PaneTarget } from '$lib/types';
 	import { parseFields, parseSchema, formatItemRef } from '$lib/types';
@@ -171,13 +172,31 @@
 			.filter((i: any) => !i[SHADOW_ITEM_MARKER_PROPERTY_NAME])
 			.map((item, index) => ({ id: item.id, sort_order: index }));
 
+		// IDENTITY fence (BUG-3095) + the workspace this reorder is about,
+		// both captured before the loop. `wsSlug` was read LIVE inside the loop
+		// before this change, so a workspace switch mid-loop addressed the
+		// remaining PATCHes at the new workspace.
+		const isSameIdentity = authStore.identityFence();
+		const reqWs = wsSlug;
 		try {
 			for (const { id, sort_order } of updates) {
 				// HT-2176 Option A (TASK-2172): NO per-PATCH freeze recheck. The
 				// reorder was INITIATED before peeking (the top guard blocks a NEW
 				// one); breaking mid-loop would persist it only partially, leaving
 				// inconsistent sort_orders. Let the initiated reorder finish.
-				await api.items.update(wsSlug, id, { sort_order });
+				//
+				// IDENTITY is checked per iteration even though FREEZE is not
+				// (BUG-3095), and the two are not in tension. Option A's argument
+				// is that a half-applied reorder is worse than a fully-applied one
+				// the user no longer has permission to make — true while the
+				// SENDER is the same person throughout. It says nothing about a
+				// DIFFERENT user: every iteration after the first sends after the
+				// previous iteration's await, so a sign-out mid-loop would issue
+				// the remaining writes on the next user's cookie. A partial
+				// reorder is the lesser harm there, and it is the only outcome
+				// that keeps the writes attributable to whoever started them.
+				if (!isSameIdentity()) return;
+				await api.items.update(reqWs, id, { sort_order });
 			}
 		} catch (e) {
 			console.error('Failed to persist reorder:', e);
@@ -204,11 +223,18 @@
 		groupData[status] = reordered.map((it, idx) => ({ ...it, sort_order: idx }));
 
 		const updates = reorderGroup(grp, child.id, dir);
+		// IDENTITY fence + captured workspace (BUG-3095) — see handleFinalize
+		// for why the loop needs a per-iteration check and why that does not
+		// reopen Option A's partial-reorder argument.
+		const isSameIdentity = authStore.identityFence();
+		const reqWs = wsSlug;
 		try {
 			for (const u of updates) {
 				// Option A (TASK-2172): no per-PATCH freeze recheck — a reorder
-				// initiated pre-pane finishes fully (see handleFinalize).
-				await api.items.update(wsSlug, u.item.id, { sort_order: u.sort_order });
+				// initiated pre-pane finishes fully (see handleFinalize). Identity
+				// IS checked per iteration even though freeze is not (BUG-3095).
+				if (!isSameIdentity()) return;
+				await api.items.update(reqWs, u.item.id, { sort_order: u.sort_order });
 			}
 		} catch (e) {
 			console.error('Failed to persist reorder:', e);
@@ -225,18 +251,30 @@
 	let loadSeq = 0;
 
 	async function loadChildren() {
-		// Capture the request identity (item + workspace) + sequence BEFORE the
-		// await. ItemDetail reuses this panel across a no-{#key} item switch (its
-		// `itemSlug` prop just changes), so a slower A load must NOT overwrite
-		// B's children — nor fire onChildrenChange with A's data into the
-		// parent's childItemIds / progress overrides (PLAN-2105 / TASK-2112).
+		// NAVIGATION fence: capture the REQUEST identity (item + workspace) +
+		// sequence BEFORE the await. ItemDetail reuses this panel across a
+		// no-{#key} item switch (its `itemSlug` prop just changes), so a slower A
+		// load must NOT overwrite B's children — nor fire onChildrenChange with
+		// A's data into the parent's childItemIds / progress overrides
+		// (PLAN-2105 / TASK-2112).
 		const reqSlug = itemSlug;
 		const reqWs = wsSlug;
 		const seq = ++loadSeq;
+		// IDENTITY fence (BUG-3095): a different SIGNED-IN USER on the same
+		// workspace and item moves none of the three values above, so without
+		// this the commit below paints one identity's children into the next
+		// identity's pane and pushes them into the parent through
+		// onChildrenChange.
+		const isSameIdentity = authStore.identityFence();
 		// `destroyed` guards the {#key itemSlug} teardown → same-slug remount
 		// case: a late load from the old instance must not push stale children
 		// through onChildrenChange into the freshly-mounted parent (Codex).
-		const stale = () => destroyed || seq !== loadSeq || reqSlug !== itemSlug || reqWs !== wsSlug;
+		const stale = () =>
+			destroyed ||
+			!isSameIdentity() ||
+			seq !== loadSeq ||
+			reqSlug !== itemSlug ||
+			reqWs !== wsSlug;
 		// BUG-2871: only tear the list down when there is nothing valid to show
 		// for THIS item — a first load or an item switch. A same-item REFRESH
 		// keeps the rendered rows mounted, whether it succeeds or fails.
@@ -547,12 +585,23 @@
 		const title = createTitle.trim();
 		const collSlug = createCollSlug;
 		if (!title || !collSlug || creating) return;
-		// DR-6b: capture identity BEFORE the await; bail after it if the
-		// instance was destroyed (item switch) or the identity moved.
+		// DR-6b: capture the REQUEST identity (workspace + item) BEFORE the
+		// await; bail after it if the instance was destroyed or the pane
+		// navigated. This is a NAVIGATION fence — it was described as an
+		// identity fence, which it is not (BUG-3095).
 		const reqWs = wsSlug;
 		const reqSlug = itemSlug;
 		const reqId = itemId;
-		const stale = () => destroyed || reqWs !== wsSlug || reqSlug !== itemSlug || reqId !== itemId;
+		// IDENTITY fence (BUG-3095): the signed-in USER, which none of the three
+		// captures above can see. Guards the post-await `loadChildren()` refresh,
+		// which is a fresh request issued after the create settles.
+		const isSameIdentity = authStore.identityFence();
+		const stale = () =>
+			destroyed ||
+			!isSameIdentity() ||
+			reqWs !== wsSlug ||
+			reqSlug !== itemSlug ||
+			reqId !== itemId;
 		creating = true;
 		try {
 			// DR-1: parent goes ONLY through the `fields` JSON `parent` key.
@@ -625,13 +674,22 @@
 			linkSearching = false;
 			return;
 		}
-		// DR-6b: per-query sequence + identity fence.
+		// DR-6b: per-query sequence + NAVIGATION fence (workspace + item). Was
+		// described as an identity fence; it is not one (BUG-3095).
 		const seq = ++searchSeq;
 		const reqWs = wsSlug;
 		const reqSlug = itemSlug;
 		const reqId = itemId;
+		// IDENTITY fence (BUG-3095): search results are user-scoped, so a swap
+		// mid-query would render the previous identity's matches to the next one.
+		const isSameIdentity = authStore.identityFence();
 		const stale = () =>
-			destroyed || seq !== searchSeq || reqWs !== wsSlug || reqSlug !== itemSlug || reqId !== itemId;
+			destroyed ||
+			!isSameIdentity() ||
+			seq !== searchSeq ||
+			reqWs !== wsSlug ||
+			reqSlug !== itemSlug ||
+			reqId !== itemId;
 		linkSearching = true;
 		try {
 			const res = await api.search(q, { workspace: reqWs });
@@ -656,11 +714,20 @@
 		const cand = confirmCandidate;
 		// Freeze guard (TASK-2172): mirror submitCreate — no reparent while frozen.
 		if (!cand || linking || frozen) return;
-		// DR-6b: capture identity BEFORE the await.
+		// DR-6b: capture the REQUEST identity (workspace + item) BEFORE the
+		// await — a NAVIGATION fence, not an identity one (BUG-3095).
 		const reqWs = wsSlug;
 		const reqSlug = itemSlug;
 		const reqId = itemId;
-		const stale = () => destroyed || reqWs !== wsSlug || reqSlug !== itemSlug || reqId !== itemId;
+		// IDENTITY fence (BUG-3095): guards the post-await `loadChildren()`
+		// refresh, a fresh request issued after the link write settles.
+		const isSameIdentity = authStore.identityFence();
+		const stale = () =>
+			destroyed ||
+			!isSameIdentity() ||
+			reqWs !== wsSlug ||
+			reqSlug !== itemSlug ||
+			reqId !== itemId;
 		linking = true;
 		try {
 			// SOURCE = candidate, TARGET = current item id. Address the source

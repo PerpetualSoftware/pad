@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { Version, Item } from '$lib/types';
 	import { api } from '$lib/api/client';
+	import { authStore } from '$lib/stores/auth.svelte';
 	import DiffView from '$lib/components/versions/DiffView.svelte';
 	import Chip from '$lib/components/common/Chip.svelte';
 	import { relativeTime } from '$lib/utils/markdown';
@@ -52,20 +53,30 @@
 
 	async function ensureResolved() {
 		if (!version.is_diff || fetchedContent !== null || resolving) return;
-		// Capture the item identity before the await. This card lives in the
-		// timeline panel that ItemDetail reuses across a no-{#key} item switch
-		// (its itemSlug/wsSlug props change under it), so a lazy version-content
-		// resolve landing after a switch must not write into a stale card
-		// (TASK-2112). `resolving` is a local spinner flag, always cleared.
+		// NAVIGATION fence (TASK-2112): capture the REQUEST identity — the item
+		// and workspace this resolve is about — before the await. This card lives
+		// in the timeline panel that ItemDetail reuses across a no-{#key} item
+		// switch (its itemSlug/wsSlug props change under it), so a lazy
+		// version-content resolve landing after a switch must not write into a
+		// stale card. `resolving` is a local spinner flag, always cleared.
 		const reqSlug = itemSlug;
 		const reqWs = wsSlug;
+		// IDENTITY fence (BUG-3095), a separate question from the one above and
+		// not covered by it: the navigation fence compares slugs, which do not
+		// move when the SIGNED-IN USER changes on the same workspace and item.
+		// The GET is issued before any await here, so it cannot be mis-issued —
+		// what this guards is the COMMIT below, which would otherwise paint one
+		// identity's version text into a card the next identity is reading.
+		const isSameIdentity = authStore.identityFence();
 		resolving = true;
 		resolveError = false;
 		try {
 			const full = await api.versions.get(reqWs, reqSlug, version.id);
+			if (!isSameIdentity()) return;
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 			fetchedContent = full.content;
 		} catch {
+			if (!isSameIdentity()) return;
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 			resolveError = true;
 		} finally {
@@ -94,13 +105,22 @@
 		// Master-freeze guard (TASK-2172): the restore UI is hidden while frozen,
 		// but drop a straggler click so a peeking master never dispatches restore.
 		if (frozen) return;
-		// Capture the item identity before the await so a mid-flight item switch
-		// (rapid j/k / row-click in the split pane) can't fire onRestore with
-		// A's restored item into a parent now showing B — nor flip this card's
-		// confirm state after it's been repurposed (TASK-2112). `restoring` is a
-		// local button flag, always cleared.
+		// NAVIGATION fence (TASK-2112): capture the REQUEST identity — the item
+		// and workspace — before the await, so a mid-flight item switch (rapid
+		// j/k / row-click in the split pane) can't fire onRestore with A's
+		// restored item into a parent now showing B — nor flip this card's
+		// confirm state after it's been repurposed. `restoring` is a local
+		// button flag, always cleared.
 		const reqSlug = itemSlug;
 		const reqWs = wsSlug;
+		// IDENTITY fence (BUG-3095). This is the surface-8 member: the restore
+		// POST below is issued AFTER `flushBeforeRestore`, a parent-provided
+		// await of unbounded duration, so a sign-out or account swap during that
+		// flush sends the restore on the NEXT user's cookie. The navigation
+		// fence above cannot see that — an identity change leaves both slugs
+		// alone — and the pre-existing slug check ran only AFTER the POST had
+		// already gone out, which is too late for a write.
+		const isSameIdentity = authStore.identityFence();
 		restoring = true;
 		try {
 			// BUG-2271: flush the initiating client's live collab editor into
@@ -116,7 +136,15 @@
 			} catch {
 				// Swallow — proceed with the restore regardless.
 			}
+			// BUG-3095: BETWEEN the await and the send. A failed flush is
+			// swallowed above, so this is the only thing standing between an
+			// identity change during the flush and a restore issued as the new
+			// user. It must stay on this side of the POST: the slug check below
+			// runs after it, which is the right place to refuse a stale UI
+			// update and the wrong place to refuse a write.
+			if (!isSameIdentity()) return;
 			const updatedItem = await api.versions.restore(reqWs, reqSlug, version.id);
+			if (!isSameIdentity()) return;
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 			confirming = false;
 			onRestore?.(updatedItem);
