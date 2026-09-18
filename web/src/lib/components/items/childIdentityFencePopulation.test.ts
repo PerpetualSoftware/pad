@@ -47,14 +47,29 @@
  *       fence whose body is empty passes here. The driven legs are what cover
  *       that — `timelineVersionCardIdentityFence.svelte.test.ts` presses the
  *       real component through the real window.
- *   (c) CALLEE-SIDE AWAITS. A send inside a callback passed to a helper that is
- *       not itself awaited here reads as having no await before it.
- *   (d) COMMITS. This guard covers REQUESTS (`api.*`, `fetch`). A post-await
- *       assignment to component state is equally capable of showing one
- *       identity's data to the next, and is NOT modelled. The two commit rows
- *       fixed in this unit (`TimelineVersionCard.ensureResolved`,
- *       `ChildItems.loadChildren`) are covered by their own fences and by the
- *       driven legs, not by this guard.
+ *   (c) DEPTH. A send reached through a LOCAL helper is modelled to exactly ONE
+ *       hop (`loadTimeline()`, `loadChildren()` — see `requestingHelperNames`),
+ *       and a fence reached through a local helper likewise (`stale()`). A
+ *       second hop in either direction is not modelled. For sends that is
+ *       fail-OPEN, which is why it is stated here rather than implied.
+ *       A send inside a callback passed to a helper that is not itself awaited
+ *       here also reads as having no await before it.
+ *   (d) COMMITS. This guard covers REQUESTS (`api.*`, `fetch`, and one-hop
+ *       local helpers around them). A post-await assignment to component state
+ *       is equally capable of showing one identity's data to the next, and is
+ *       NOT modelled. The two commit rows fixed in this unit
+ *       (`TimelineVersionCard.ensureResolved`, `ChildItems.loadChildren`) are
+ *       covered by their own fences and by the driven legs, not by this guard.
+ *       `ItemPicker.invokeCreate` and `ItemAttachmentStrip`'s post-confirmation
+ *       delete are known members of this gap, found by hand.
+ *   (e) NON-AWAIT SUSPENSION. `ItemAttachmentStrip.confirmDelete` re-checks on
+ *       the far side of a NON-BLOCKING in-app confirmation menu — structurally
+ *       the right move, on the wrong quantity (`paint.isCurrent()` compares
+ *       `{ws, item}`). There is no `await` there at all, so nothing in this
+ *       guard's model applies: a logout and different login while that menu is
+ *       open passes the check and the DELETE goes out as the new user. Found by
+ *       hand, not by this guard, and it is the clearest evidence that this
+ *       guard is a floor and not a ceiling.
  *
  * FAIL-CLOSED, which is the property that makes the gaps survivable: anything
  * this guard cannot classify is a FAILURE, never a skip. A file it cannot parse
@@ -63,7 +78,7 @@
  * goes wrong is by asking to be taught, which is visible, rather than by going
  * quiet, which is not.
  *
- * KNOWN GAPS ARE ENUMERATED, NOT TOLERATED IN BULK (lead ruling). The 13 files
+ * KNOWN GAPS ARE ENUMERATED, NOT TOLERATED IN BULK (lead ruling). The paths
  * this unit did not fix are listed in `KNOWN_UNFENCED` by exact
  * `file::function` path. Each listed path is EXPECTED to be unfenced: a path
  * that gets fixed without being removed from the list ALSO fails, so the list
@@ -141,6 +156,28 @@ const KNOWN_UNFENCED: string[] = [
 	// Note the copy call itself is NOT retried (no idempotency key) — the fence
 	// here must refuse, never re-send.
 	'lib/components/items/CopyItemDialog.svelte::handleConfirm',
+	// ItemTimeline's six comment/reaction handlers: each writes, then calls
+	// `loadTimeline()` — a local helper that issues `api.timeline.list`. The
+	// write goes out as user A; if the identity moves during that round trip,
+	// the refresh GET goes out on the next user's cookie. These are only
+	// visible through the one-hop helper resolution in `requestingHelperNames`;
+	// a guard matching `api.*` syntactically reports them as having no send.
+	'lib/components/timeline/ItemTimeline.svelte::submitComment',
+	'lib/components/timeline/ItemTimeline.svelte::handleReply',
+	'lib/components/timeline/ItemTimeline.svelte::handleEdit',
+	'lib/components/timeline/ItemTimeline.svelte::handleDelete',
+	'lib/components/timeline/ItemTimeline.svelte::handleReaction',
+	'lib/components/timeline/ItemTimeline.svelte::handleRemoveReaction',
+	// CopyItemDialog.runPreflight: the trailing re-dispatch in its `finally`
+	// re-enters the function, issuing a preflight after the previous await with
+	// no guard at all — deliberately, per its own comment, because the trailing
+	// run re-reads the CURRENT destination. That argument is about which
+	// destination, not about who is asking.
+	'lib/components/items/CopyItemDialog.svelte::runPreflight',
+	// PushToAgentDialog.handleSend: pushes, then refreshes presence after the
+	// await. Guarded by `!destroyed && gen === presenceGen` — instance liveness
+	// plus an opening generation, neither of which sees a user change.
+	'lib/components/items/PushToAgentDialog.svelte::handleSend',
 	// Editor's onMount callback: `api.server.capabilities()` fire-and-forget.
 	// FLAGGED BUT PROBABLY NOT A DEFECT — the endpoint is public and carries no
 	// user-scoped data (its own comment says it works pre-login on shared-item
@@ -156,11 +193,55 @@ function calleeText(src: AstSource, n: Node): string {
 	return src.text(n.callee).replace(/\s+/g, '').replace(/\?\./g, '.');
 }
 
-/** A REQUEST: an `api.*` call or a bare `fetch(`. */
-function isRequest(src: AstSource, n: Node): boolean {
+/** A DIRECT REQUEST: an `api.*` call or a bare `fetch(`. */
+function isDirectRequest(src: AstSource, n: Node): boolean {
 	if (n.type !== 'CallExpression') return false;
 	const c = calleeText(src, n);
 	return c === 'fetch' || c.startsWith('api.') || c.startsWith('apiClient.');
+}
+
+/**
+ * Script-level function names whose body issues a direct request — so a CALL to
+ * one of them is itself a send.
+ *
+ * WHY THIS EXISTS, and it was a genuine hole rather than a refinement. The
+ * commonest post-await send in this codebase is not an `api.*` call; it is a
+ * call to the component's own loader: `await api.comments.create(…)` then
+ * `await loadTimeline()`, `await api.items.create(…)` then `loadChildren()`.
+ * Matching only `api.*` syntactically inside the handler misses every one of
+ * them, and the miss is a FALSE NEGATIVE — the guard reports such a path as
+ * having no send at all and stays silent.
+ *
+ * Found by three independent readers auditing the same population by hand while
+ * this guard was already green; `ItemTimeline` alone has six such handlers, none
+ * of which this guard saw. Recorded here rather than quietly fixed because the
+ * lesson is the guard's, not the codebase's: a green source scanner had not been
+ * shown able to go red for the shape that dominates the population.
+ *
+ * ONE hop, matching `fenceHelperNames`: a helper calling a helper that requests
+ * is not modelled and reads as no-send, which is the fail-open direction and is
+ * therefore declared as gap (c) in the header rather than left implicit.
+ */
+function requestingHelperNames(src: AstSource): Set<string> {
+	const names = new Set<string>();
+	walk(src.script, (n) => {
+		let fn: Node | null = null;
+		let name = '';
+		if (n.type === 'FunctionDeclaration' && n.id?.type === 'Identifier') {
+			fn = n;
+			name = n.id.name;
+		} else if (n.type === 'VariableDeclarator' && isFnNode(n.init) && n.id?.type === 'Identifier') {
+			fn = n.init;
+			name = n.id.name;
+		}
+		if (!fn || !name) return;
+		let requests = false;
+		walk(fn, (m) => {
+			if (isDirectRequest(src, m)) requests = true;
+		});
+		if (requests) names.add(name);
+	});
+	return names;
 }
 
 const isFnNode = (n: Node | undefined | null): n is Node =>
@@ -357,6 +438,10 @@ function analyseFile(path: string): { findings: Finding[]; fenced: string[] } {
 
 	const findings: Finding[] = [];
 	const fenced: string[] = [];
+	const helperSends = requestingHelperNames(src);
+	const isSend = (n: Node) =>
+		isDirectRequest(src, n) ||
+		(n.type === 'CallExpression' && helperSends.has(calleeText(src, n)));
 
 	walk(src.script, (fn, fnAncestors) => {
 		if (!isFnNode(fn)) return;
@@ -384,7 +469,7 @@ function analyseFile(path: string): { findings: Finding[]; fenced: string[] } {
 		});
 
 		walk(fn, (n, ancestors) => {
-			if (!isRequest(src, n)) return;
+			if (!isSend(n)) return;
 			// A nested function's sends belong to that function, not this one.
 			for (const a of ancestors) {
 				if (a !== fn && isFnNode(a)) return;
