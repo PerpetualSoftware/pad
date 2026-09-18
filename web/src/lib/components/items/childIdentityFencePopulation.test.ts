@@ -142,50 +142,97 @@ const NOT_DIRECTLY_IMPORTED = new Set(['lib/components/timeline/TimelineVersionC
  * removing it, fails.
  */
 const KNOWN_UNFENCED: string[] = [
-	// ItemTimeline.loadMore: paginates the timeline; the second page request is
-	// issued after the first page's await resolves.
+	// ---- BUG-3105 PR B: the burn-down list. Same item, next unit. ----
+	// Each of these is an await-then-send path — a REQUEST, a COMMIT, or both —
+	// with no identity fence. PR A fixed ShareDialog (6) and ItemPicker's
+	// upward hand-off; these are what is left, and PR B empties this array.
+
+	// ItemTimeline: loadMore and the six comment/reaction handlers were on
+	// BUG-3095's list for their REQUESTS; loadTimeline and refreshFromSSE join
+	// them under the commit model (both paint entries after their await).
 	'lib/components/timeline/ItemTimeline.svelte::loadMore',
-	// QuickActionsMenu: both send after awaiting an earlier request in the same
-	// handler; handleSaveNewAction is a read-modify-write across three calls.
-	'lib/components/common/QuickActionsMenu.svelte::handleAction',
-	'lib/components/common/QuickActionsMenu.svelte::handleSaveNewAction',
-	// EditCollectionModal.handleArchive: delete → list → delete, each after the
-	// previous await. The worst-shaped of the six: two destructive calls.
-	'lib/components/collections/EditCollectionModal.svelte::handleArchive',
-	// CopyItemDialog.handleConfirm: re-runs the preflight after an earlier await.
-	// Note the copy call itself is NOT retried (no idempotency key) — the fence
-	// here must refuse, never re-send.
-	'lib/components/items/CopyItemDialog.svelte::handleConfirm',
-	// ItemTimeline's six comment/reaction handlers: each writes, then calls
-	// `loadTimeline()` — a local helper that issues `api.timeline.list`. The
-	// write goes out as user A; if the identity moves during that round trip,
-	// the refresh GET goes out on the next user's cookie. These are only
-	// visible through the one-hop helper resolution in `requestingHelperNames`;
-	// a guard matching `api.*` syntactically reports them as having no send.
 	'lib/components/timeline/ItemTimeline.svelte::submitComment',
 	'lib/components/timeline/ItemTimeline.svelte::handleReply',
 	'lib/components/timeline/ItemTimeline.svelte::handleEdit',
 	'lib/components/timeline/ItemTimeline.svelte::handleDelete',
 	'lib/components/timeline/ItemTimeline.svelte::handleReaction',
 	'lib/components/timeline/ItemTimeline.svelte::handleRemoveReaction',
-	// CopyItemDialog.runPreflight: the trailing re-dispatch in its `finally`
-	// re-enters the function, issuing a preflight after the previous await with
-	// no guard at all — deliberately, per its own comment, because the trailing
-	// run re-reads the CURRENT destination. That argument is about which
-	// destination, not about who is asking.
+	'lib/components/timeline/ItemTimeline.svelte::loadTimeline',
+	'lib/components/timeline/ItemTimeline.svelte::refreshFromSSE',
+
+	// CopyItemDialog: handleConfirm and runPreflight were REQUEST rows; the
+	// dispatch pair and the two loaders are commit rows. dispatchCopy is the
+	// one to treat carefully in PR B — the copy has no idempotency key, so its
+	// fence must REFUSE, never re-send.
+	'lib/components/items/CopyItemDialog.svelte::handleConfirm',
 	'lib/components/items/CopyItemDialog.svelte::runPreflight',
-	// PushToAgentDialog.handleSend: pushes, then refreshes presence after the
-	// await. Guarded by `!destroyed && gen === presenceGen` — instance liveness
-	// plus an opening generation, neither of which sees a user change.
+	'lib/components/items/CopyItemDialog.svelte::dispatchCopy',
+	'lib/components/items/CopyItemDialog.svelte::dispatchMove',
+	'lib/components/items/CopyItemDialog.svelte::loadWorkspaces',
+	'lib/components/items/CopyItemDialog.svelte::loadDestCollections',
+
+	// EditCollectionModal: handleArchive is the REQUEST row (delete -> list ->
+	// delete). The other three commit after their await.
+	'lib/components/collections/EditCollectionModal.svelte::handleArchive',
+	'lib/components/collections/EditCollectionModal.svelte::handleSave',
+	'lib/components/collections/EditCollectionModal.svelte::loadCollectionOptions',
+	'lib/components/collections/EditCollectionModal.svelte::loadPreviewContext',
+
+	// ItemAttachmentStrip: confirmDelete was fixed in BUG-3095 (row 9). These
+	// three are its await-side siblings, including the delete's own
+	// continuation and the global deletion broadcast it fires.
+	'lib/components/items/ItemAttachmentStrip.svelte::performDelete',
+	'lib/components/items/ItemAttachmentStrip.svelte::revalidateAfterRestore',
+	'lib/components/items/ItemAttachmentStrip.svelte::<nested in $effect>',
+
+	// The two backlink panels: identical shape, commit-only, no post-await
+	// request. Fenced the same way in PR B.
+	'lib/components/BacklinksPanel.svelte::loadFirstPage',
+	'lib/components/BacklinksPanel.svelte::loadMore',
+	'lib/components/RelationBacklinksPanel.svelte::loadFirstPage',
+	'lib/components/RelationBacklinksPanel.svelte::loadMore',
+
+	// QuickActionsMenu: handleAction / handleSaveNewAction were REQUEST rows;
+	// readPresence commits presence state after its await.
+	'lib/components/common/QuickActionsMenu.svelte::handleAction',
+	'lib/components/common/QuickActionsMenu.svelte::handleSaveNewAction',
+	'lib/components/common/QuickActionsMenu.svelte::readPresence',
+
+	// PushToAgentDialog: handleSend was the REQUEST row; refreshPresence is its
+	// commit counterpart.
 	'lib/components/items/PushToAgentDialog.svelte::handleSend',
+	'lib/components/items/PushToAgentDialog.svelte::refreshPresence',
+
+	// FieldEditor: createRelationTarget commits through the parent's onchange,
+	// which reaches ItemDetail.updateField and issues a PATCH. It is also
+	// ItemPicker's `oncreate` caller, so PR B should consume the predicate
+	// ItemPicker now passes up rather than inventing a second mechanism.
+	'lib/components/fields/FieldEditor.svelte::createRelationTarget',
+	'lib/components/fields/FieldEditor.svelte::<nested in writeRelationList>',
+
+	// EditorBubbleMenu.handleCreate — worth its own note. BUG-3095's body
+	// called this file THE REFERENCE PATTERN. It is not: its `sinceEpoch` is
+	// localIndex.scopeEpochFor(ws), the projection-scope epoch, and the file
+	// has no identity fence at all. The commit model now puts it on the list
+	// mechanically, where before that was an argument on a trail.
+	'lib/components/editor/EditorBubbleMenu.svelte::handleCreate',
+
 	// Editor's onMount callback: `api.server.capabilities()` fire-and-forget.
-	// FLAGGED BUT PROBABLY NOT A DEFECT — the endpoint is public and carries no
-	// user-scoped data (its own comment says it works pre-login on shared-item
-	// preview surfaces), so a cross-identity issue leaks nothing. Listed rather
-	// than silently excluded because "this endpoint is public" is a judgement
-	// this guard cannot make, and the follow-up should record the decision
-	// instead of re-deriving it.
+	// Probably NOT a defect — the endpoint is public and carries no user-scoped
+	// data — but "this endpoint is public" is a judgement the guard cannot
+	// make, so PR B should record the decision rather than re-derive it.
 	'lib/components/editor/Editor.svelte::<callback of onMount>',
+
+	// ItemPicker.invokeCreate — PARTLY fixed in PR A, deliberately still listed.
+	// The upward hand-off IS fixed: it now passes an identity predicate to
+	// `oncreate` so the caller, which owns the API call, can refuse on the far
+	// side of its own await. What keeps it flagged is `finally { creating =
+	// false }` — a per-instance busy flag that MUST clear unconditionally, or a
+	// failed create leaves the picker permanently disabled. The model cannot
+	// tell a busy-flag clear from a real commit, and fencing it would be a bug.
+	// Left listed rather than papered over; see the package for the modelling
+	// question this raises.
+	'lib/components/items/ItemPicker.svelte::invokeCreate',
 ];
 
 
@@ -268,13 +315,31 @@ function fnName(src: AstSource, n: Node, ancestors: Node[]): string {
 	const parent = ancestors[ancestors.length - 1];
 	if (parent?.type === 'VariableDeclarator' && parent.id?.type === 'Identifier') return parent.id.name;
 	if (parent?.type === 'Property' && parent.key?.type === 'Identifier') return parent.key.name;
+	// A call whose CALLEE IS A FUNCTION is an IIFE — `(async () => {…})()` — and
+	// its "callee text" is the entire function body. Using that as a label
+	// produced a multi-kilobyte key containing the whole source of the function,
+	// which is unreadable, and unstable under any edit inside it. A contract key
+	// has to be short and has to survive edits to the code it names, so an IIFE
+	// is named for the nearest NAMED thing enclosing it instead.
+	const calleeLabel = (c: Node): string | null => {
+		if (isFnNode(c.callee)) return null;
+		const t = calleeText(src, c);
+		return t.length <= 40 ? t : null;
+	};
 	if (parent?.type === 'CallExpression' && parent.callee) {
-		return `<callback of ${calleeText(src, parent)}>`;
+		const l = calleeLabel(parent);
+		if (l) return `<callback of ${l}>`;
 	}
 	for (let i = ancestors.length - 1; i >= 0; i--) {
 		const a = ancestors[i];
-		if (a.type === 'CallExpression' && a.callee) return `<nested in ${calleeText(src, a)}>`;
+		if (a.type === 'CallExpression' && a.callee) {
+			const l = calleeLabel(a);
+			if (l) return `<nested in ${l}>`;
+		}
 		if (isFnNode(a) && a.id?.name) return `<nested in ${a.id.name}>`;
+		if (a.type === 'VariableDeclarator' && a.id?.type === 'Identifier') {
+			return `<nested in ${a.id.name}>`;
+		}
 	}
 	return '<anonymous>';
 }
@@ -402,6 +467,87 @@ function awaitBearingLoopAncestor(ancestors: Node[]): Node | null {
 	return null;
 }
 
+/**
+ * Script-scope bindings a handler can COMMIT to — component state.
+ *
+ * BUG-3105 step 1. BUG-3095's guard modelled only REQUESTS, and said so as a
+ * declared gap. A post-await assignment to component state leaks the same way a
+ * request does, one direction reversed: instead of the previous identity's
+ * intent going out on the next identity's cookie, the previous identity's DATA
+ * lands in the next identity's pane. `ShareDialog` is the proof — six unguarded
+ * await-then-commit paths, no fence of any kind anywhere in the file, and it
+ * appeared NOWHERE in BUG-3095's emitted list.
+ *
+ * Only top-level `let`/`var` count. A `const` cannot be reassigned, and a
+ * binding declared INSIDE the handler is that handler's own local — writing it
+ * after an await commits nothing anyone else can read.
+ */
+function componentStateNames(src: AstSource): Set<string> {
+	const names = new Set<string>();
+	for (const stmt of src.script.body ?? []) {
+		if (stmt.type !== 'VariableDeclaration' || stmt.kind === 'const') continue;
+		for (const d of stmt.declarations ?? []) {
+			if (d.id) patternNamesInto(d.id, names);
+		}
+	}
+	return names;
+}
+
+/** Every identifier bound by a declaration pattern (destructuring included). */
+function patternNamesInto(p: Node, out: Set<string>) {
+	if (!p) return;
+	switch (p.type) {
+		case 'Identifier':
+			out.add(p.name);
+			return;
+		case 'ObjectPattern':
+			for (const pr of p.properties ?? []) patternNamesInto(pr.value ?? pr.argument, out);
+			return;
+		case 'ArrayPattern':
+			for (const el of p.elements ?? []) if (el) patternNamesInto(el, out);
+			return;
+		case 'AssignmentPattern':
+			patternNamesInto(p.left, out);
+			return;
+		case 'RestElement':
+			patternNamesInto(p.argument, out);
+			return;
+	}
+}
+
+/**
+ * Names destructured out of `$props()` — the PARENT's callbacks.
+ *
+ * Calling one after an await is a commit too, and the sharpest kind: it hands
+ * the previous identity's data upward into a parent that has already moved on.
+ * `ItemPicker.invokeCreate` is the member that made this worth modelling — it
+ * awaits the parent's `oncreate` and cannot be fenced by the caller either,
+ * because it passes neither workspace nor epoch up.
+ */
+function propCallbackNames(src: AstSource): Set<string> {
+	const names = new Set<string>();
+	walk(src.script, (n) => {
+		if (n.type !== 'VariableDeclarator' || !n.init) return;
+		if (n.init.type !== 'CallExpression') return;
+		if (calleeText(src, n.init) !== '$props') return;
+		const all = new Set<string>();
+		patternNamesInto(n.id, all);
+		// A callback by convention: `onFoo` / `onfoo`. Narrow deliberately — a
+		// plain data prop is not something a handler can commit THROUGH.
+		for (const nm of all) if (/^on[A-Za-z]/.test(nm) || /^on[a-z]/.test(nm)) names.add(nm);
+	});
+	return names;
+}
+
+/** The root identifier an assignment target writes through. */
+function assignmentRoot(n: Node): string | null {
+	let t = n;
+	while (t && (t.type === 'MemberExpression' || t.type === 'ChainExpression')) {
+		t = t.object ?? t.expression;
+	}
+	return t && t.type === 'Identifier' ? t.name : null;
+}
+
 interface Finding {
 	path: string;
 	fn: string;
@@ -439,9 +585,36 @@ function analyseFile(path: string): { findings: Finding[]; fenced: string[] } {
 	const findings: Finding[] = [];
 	const fenced: string[] = [];
 	const helperSends = requestingHelperNames(src);
-	const isSend = (n: Node) =>
+	const stateNames = componentStateNames(src);
+	const propCallbacks = propCallbackNames(src);
+
+	/** What a send or commit is CALLED, for the finding text. */
+	const describe = (n: Node): string => {
+		if (n.type === 'AssignmentExpression' || n.type === 'UpdateExpression') {
+			const root = assignmentRoot(n.type === 'UpdateExpression' ? n.argument : n.left);
+			return `${root} = …`;
+		}
+		return calleeText(src, n);
+	};
+
+	const isRequestNode = (n: Node) =>
 		isDirectRequest(src, n) ||
 		(n.type === 'CallExpression' && helperSends.has(calleeText(src, n)));
+
+	const isCommitNode = (n: Node) => {
+		if (n.type === 'AssignmentExpression') {
+			const root = assignmentRoot(n.left);
+			return !!root && stateNames.has(root);
+		}
+		if (n.type === 'UpdateExpression') {
+			const root = assignmentRoot(n.argument);
+			return !!root && stateNames.has(root);
+		}
+		if (n.type === 'CallExpression') return propCallbacks.has(calleeText(src, n));
+		return false;
+	};
+
+	const isSend = (n: Node) => isRequestNode(n) || isCommitNode(n);
 
 	walk(src.script, (fn, fnAncestors) => {
 		if (!isFnNode(fn)) return;
@@ -500,7 +673,7 @@ function analyseFile(path: string): { findings: Finding[]; fenced: string[] } {
 					path,
 					fn: name,
 					line: src.line(n.start),
-					callee: calleeText(src, n),
+					callee: describe(n),
 					reason:
 						names.size === 0
 							? 'no authStore.identityFence() bound in this function'
@@ -541,18 +714,40 @@ describe('BUG-3095 — child population identity fence', () => {
 		).toEqual({ missing: [], stale: [] });
 	});
 
-	it('every await-then-request path in the population holds an identity fence', () => {
+	it('every await-then-send path in the population holds an identity fence', () => {
 		const findings: Finding[] = [];
 		for (const path of POPULATION) findings.push(...analyseFile(path).findings);
 		const unlisted = findings
 			.map((f) => ({ ...f, label: `${f.path}::${f.fn}` }))
 			.filter((f) => !KNOWN_UNFENCED.includes(f.label));
 
+		// ONE ROW PER PATH, not per offending statement (lead ruling, BUG-3105).
+		// The commit model made the difference load-bearing: a single handler can
+		// commit a dozen times, so `BacklinksPanel.loadFirstPage` alone emitted
+		// eight rows and the real shape of the list — how many HANDLERS need
+		// fencing — was buried. The fix is per handler, so the unit of the
+		// contract is the handler; the first offending line is enough to find it
+		// and the count says how much is behind it.
+		const byPath = new Map<string, typeof unlisted>();
+		for (const f of unlisted) {
+			const list = byPath.get(f.label) ?? [];
+			list.push(f);
+			byPath.set(f.label, list);
+		}
+		const rows = [...byPath.entries()]
+			.map(([label, fs]) => {
+				const first = fs.reduce((a, b) => (a.line <= b.line ? a : b));
+				const more = fs.length - 1;
+				return `${label} @${first.line} → ${first.callee}${more > 0 ? ` (+${more} more)` : ''} (${first.reason})`;
+			})
+			.sort();
+
 		expect(
-			unlisted.map((f) => `${f.label} @${f.line} → ${f.callee} (${f.reason})`),
-			'An await-then-request path with no identity fence. Fence it with ' +
-				'authStore.identityFence(), or — if it belongs to the follow-up unit — ' +
-				'add its exact file::function path to KNOWN_UNFENCED.'
+			rows,
+			'An await-then-send path with no identity fence — a REQUEST or a COMMIT ' +
+				'reachable after an await. Fence the handler with authStore.identityFence(), ' +
+				'or — if it belongs to the follow-up unit — add its exact file::function ' +
+				'path to KNOWN_UNFENCED.'
 		).toEqual([]);
 	});
 

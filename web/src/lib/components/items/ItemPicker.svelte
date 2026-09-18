@@ -41,6 +41,7 @@
 	 */
 	import { onDestroy, onMount, untrack } from 'svelte';
 	import { api } from '$lib/api/client';
+	import { authStore } from '$lib/stores/auth.svelte';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import { localSearch } from '$lib/stores/localSearch.svelte';
 	import { formatItemRef, type ItemIndexRow } from '$lib/types';
@@ -105,8 +106,16 @@
 		 * swallowed HERE and belong to the caller: it owns the API call, so it
 		 * owns the error surface (a toast) and the decision to leave the query in
 		 * place for a retry.
+		 *
+		 * Receives an IDENTITY FENCE as its second argument (BUG-3105). The
+		 * caller owns the API call, so the caller is the only one that can refuse
+		 * it — this picker cannot unsend a request the parent issued. Call
+		 * `isSameIdentity()` after your await and drop the result if it is false:
+		 * the signed-in user changed while the create was in flight, and anything
+		 * you commit belongs to the previous one. Optional and additive, so a
+		 * caller that ignores it behaves exactly as before.
 		 */
-		oncreate?: (title: string) => void | Promise<void>;
+		oncreate?: (title: string, isSameIdentity: () => boolean) => void | Promise<void>;
 		/**
 		 * Display name of the target collection for the create row. Falls back to
 		 * the slug, which is the wrong register ("in colors" vs "in Colors") but
@@ -358,9 +367,16 @@
 	}
 
 	async function coldSearch(q: string, mySeq: number) {
+		// IDENTITY fence (BUG-3105). `seq` is a supersession counter and nothing
+		// more — it does not move when the signed-in user changes, so without
+		// this the previous identity's search results paint into the next
+		// identity's picker. Search results are user-scoped by the server, which
+		// is exactly why showing them to someone else matters.
+		const isSameIdentity = authStore.identityFence();
 		loading = true;
 		try {
 			const res = await api.search(q, { workspace: wsSlug, collection });
+			if (!isSameIdentity()) return;
 			if (mySeq !== seq) return;
 			const rows = (res.results ?? []).map((r) => r.item);
 			rawResults = rows;
@@ -382,6 +398,7 @@
 			coldAnswered = pageLimit > 0 && rows.length < pageLimit;
 			activeId = null;
 		} catch {
+			if (!isSameIdentity()) return;
 			if (mySeq !== seq) return;
 			rawResults = [];
 			coldAnswered = false;
@@ -444,9 +461,16 @@
 		if (creating || !oncreate) return;
 		const title = createTitle;
 		if (!title) return;
+		// IDENTITY fence (BUG-3105), captured before the hand-off and passed UP.
+		// This picker cannot fence the request itself — `oncreate` belongs to the
+		// caller, which owns the API call — so the honest fix is to give the
+		// caller something it can check on the far side of its own await. That is
+		// the inverse of the shape this family kept finding: not a child that
+		// forgot to fence, but a child that left the parent unable to.
+		const isSameIdentity = authStore.identityFence();
 		creating = true;
 		try {
-			await oncreate(title);
+			await oncreate(title, isSameIdentity);
 		} catch {
 			// The caller owns the error surface — see the `oncreate` prop doc.
 			// Swallowed rather than rethrown so an unhandled rejection cannot
