@@ -330,7 +330,20 @@ interface Finding {
 }
 
 function analyseFile(path: string): { findings: Finding[]; fenced: string[] } {
-	const code = readFileSync(ROOT + path, 'utf8');
+	let code: string;
+	try {
+		code = readFileSync(ROOT + path, 'utf8');
+	} catch (e) {
+		// FAIL CLOSED, and cleanly: a POPULATION entry naming a file that is not
+		// there is a finding, not a crash. Raised while mutating this guard — an
+		// ENOENT escaping here reads as a broken test rather than as the guard
+		// reporting a stale population, which is the same confusion the
+		// population check exists to prevent.
+		return {
+			findings: [{ path, fn: '<file>', line: 0, callee: '<read>', reason: `missing file: ${String(e)}` }],
+			fenced: [],
+		};
+	}
 	let src: AstSource;
 	try {
 		src = parseComponent(code);
