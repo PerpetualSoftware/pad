@@ -737,6 +737,10 @@ func TestRoute_ItemClaim_BadTTLRefused(t *testing.T) {
 		})
 		if err == nil {
 			t.Errorf("ttl %q must be refused", bad)
+			continue
+		}
+		if !strings.Contains(err.Error(), bad) {
+			t.Errorf("refusal for ttl %q must name the input; got %q", bad, err.Error())
 		}
 	}
 }

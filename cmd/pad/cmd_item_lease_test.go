@@ -157,6 +157,44 @@ func TestItemClaim_BadTTLFailsLocally(t *testing.T) {
 	}
 }
 
+// A positive sub-second --ttl is refused locally rather than truncated
+// to 0 and omitted (which would silently land the server's 15m default);
+// exactly 1s is the floor and is sent as ttl_seconds:1.
+func TestItemClaim_SubSecondTTLRefused(t *testing.T) {
+	srv := setupLeaseCLI(t)
+	for _, bad := range []string{"500ms", "999ms", "1ns", "0s", "-5m"} {
+		cmd := itemClaimCmd()
+		cmd.SetArgs([]string{"TASK-5", "--ttl", bad})
+		cmd.SilenceUsage = true
+		cmd.SilenceErrors = true
+		var runErr error
+		captureStdout(t, func() {
+			runErr = cmd.Execute()
+		})
+		if runErr == nil {
+			t.Errorf("--ttl %s must be refused", bad)
+		}
+	}
+	if len(srv.claimBodies) != 0 {
+		t.Fatalf("no claim should reach the server on a refused ttl, got %d", len(srv.claimBodies))
+	}
+
+	cmd := itemClaimCmd()
+	cmd.SetArgs([]string{"TASK-5", "--ttl", "1s"})
+	cmd.SilenceUsage = true
+	captureStdout(t, func() {
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("--ttl 1s must be accepted: %v", err)
+		}
+	})
+	if len(srv.claimBodies) != 1 {
+		t.Fatalf("expected one claim, got %d", len(srv.claimBodies))
+	}
+	if n, _ := srv.claimBodies[0]["ttl_seconds"].(float64); int(n) != 1 {
+		t.Errorf("posted ttl_seconds = %v, want 1", srv.claimBodies[0]["ttl_seconds"])
+	}
+}
+
 // release distinguishes a real release from the idempotent no-op — both
 // succeed (exit 0), but the words differ so a human reading sweep logs
 // can tell them apart.
