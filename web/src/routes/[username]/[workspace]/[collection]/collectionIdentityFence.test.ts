@@ -387,7 +387,14 @@ describe('the collection page fences every async commit point', () => {
 		// four rows short of this file (checkpoint 1 on that item: the filed
 		// survey used a function-level grep, which cannot see a subscription
 		// callback).
-		expect(src.asyncFunctions().size, 'a top-level async function was added or removed').toBe(15);
+		// 15 → 14 (BUG-3102): `handleRestore` was DELETED, not refactored. It had
+		// no caller — no prop, no markup reference, no export — so it was an
+		// unreachable async handler this guard had been faithfully counting and
+		// fencing for as long as it existed. Single-item restore is owned by
+		// ItemDetail. The guard doing exactly this on the deletion is it
+		// working: the population is asserted so a member cannot leave
+		// unnoticed any more than it can arrive unnoticed.
+		expect(src.asyncFunctions().size, 'a top-level async function was added or removed').toBe(14);
 		expect(src.markupAsyncArrows(), 'an inline async arrow appeared in the markup').toHaveLength(0);
 		expect(
 			src.nestedAsyncCallbacks(),
