@@ -1077,7 +1077,13 @@ describe('ItemPicker — inline create (PLAN-2857 U8)', () => {
 
 		await press('Enter');
 		expect(oncreate).toHaveBeenCalledTimes(1);
-		expect(oncreate).toHaveBeenCalledWith('Purple');
+		// BUG-3105 widened the hand-off: `oncreate(title, isSameIdentity)`. The
+		// TITLE is what this leg is about, so it asserts the title positionally and
+		// leaves the predicate to `itemPickerIdentityHandoff.svelte.test.ts`, which
+		// owns that contract. Asserting the whole argument list here would make this
+		// leg fail for a reason it is not named after.
+		expect(oncreate).toHaveBeenCalled();
+		expect(oncreate.mock.calls[0][0]).toBe('Purple');
 		// Enter on the create row must not ALSO select whatever row it replaced.
 		expect(onselect).not.toHaveBeenCalled();
 	});
@@ -1093,7 +1099,13 @@ describe('ItemPicker — inline create (PLAN-2857 U8)', () => {
 		createRow()!.click();
 
 		expect(oncreate).toHaveBeenCalledTimes(1);
-		expect(oncreate).toHaveBeenCalledWith('Purple');
+		// BUG-3105 widened the hand-off: `oncreate(title, isSameIdentity)`. The
+		// TITLE is what this leg is about, so it asserts the title positionally and
+		// leaves the predicate to `itemPickerIdentityHandoff.svelte.test.ts`, which
+		// owns that contract. Asserting the whole argument list here would make this
+		// leg fail for a reason it is not named after.
+		expect(oncreate).toHaveBeenCalled();
+		expect(oncreate.mock.calls[0][0]).toBe('Purple');
 	});
 
 	it('withholds create for an exact title the SEARCH RANKING did not return', async () => {

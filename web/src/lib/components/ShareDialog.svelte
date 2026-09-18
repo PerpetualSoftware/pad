@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { api } from '$lib/api/client';
+	import { authStore } from '$lib/stores/auth.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
 	import Modal from '$lib/components/common/Modal.svelte';
@@ -55,15 +56,26 @@
 	});
 
 	async function loadGrants() {
+		// IDENTITY fence (BUG-3105). This file had NO fence of any kind before —
+		// not an epoch, not a generation counter, not even a captured slug; every
+		// handler read the live props at request time and committed whatever came
+		// back. Grants are an access-control list, so painting one identity's list
+		// into the next identity's dialog is the sharpest version of this bug.
+		const isSameIdentity = authStore.identityFence();
 		loadingGrants = true;
 		loadError = '';
 		try {
-			if (type === 'collection') {
-				grants = (await api.grants.listCollectionGrants(wsSlug, targetSlug)) ?? [];
-			} else {
-				grants = (await api.grants.listItemGrants(wsSlug, targetSlug)) ?? [];
-			}
+			// Into a LOCAL first, then fence, then commit. `grants = await …`
+			// writes at the await itself, so a check after that statement is
+			// already too late — the state it guards has landed.
+			const loaded =
+				type === 'collection'
+					? await api.grants.listCollectionGrants(wsSlug, targetSlug)
+					: await api.grants.listItemGrants(wsSlug, targetSlug);
+			if (!isSameIdentity()) return;
+			grants = loaded ?? [];
 		} catch (e: any) {
+			if (!isSameIdentity()) return;
 			loadError = e.message ?? 'Failed to load grants';
 			grants = [];
 		} finally {
@@ -72,15 +84,22 @@
 	}
 
 	async function loadShareLinks() {
+		// IDENTITY fence (BUG-3105). A share link carries a bearer token; the
+		// dialog renders a freshly minted one under "copy it now, it is only
+		// shown once". Rendering that to whoever happens to be signed in when the
+		// response lands is the worst commit in this file.
+		const isSameIdentity = authStore.identityFence();
 		loadingLinks = true;
 		linksError = '';
 		try {
-			if (type === 'collection') {
-				shareLinks = (await api.shareLinks.listCollectionShareLinks(wsSlug, targetSlug)) ?? [];
-			} else {
-				shareLinks = (await api.shareLinks.listItemShareLinks(wsSlug, targetSlug)) ?? [];
-			}
+			const loaded =
+				type === 'collection'
+					? await api.shareLinks.listCollectionShareLinks(wsSlug, targetSlug)
+					: await api.shareLinks.listItemShareLinks(wsSlug, targetSlug);
+			if (!isSameIdentity()) return;
+			shareLinks = loaded ?? [];
 		} catch (e: any) {
+			if (!isSameIdentity()) return;
 			linksError = e.message ?? 'Failed to load share links';
 			shareLinks = [];
 		} finally {
@@ -90,18 +109,23 @@
 
 	async function handleCreateShareLink() {
 		if (creatingLink) return;
+		// IDENTITY fence (BUG-3105). The POST is issued before any await here, so
+		// it cannot be mis-issued; what this guards is the COMMIT — a bearer
+		// token minted for THIS identity, rendered once, must not land in the
+		// next identity's dialog.
+		const isSameIdentity = authStore.identityFence();
 		creatingLink = true;
 		try {
-			let newLink: ShareLink;
-			if (type === 'collection') {
-				newLink = await api.shareLinks.createCollectionShareLink(wsSlug, targetSlug);
-			} else {
-				newLink = await api.shareLinks.createItemShareLink(wsSlug, targetSlug);
-			}
+			const newLink: ShareLink =
+				type === 'collection'
+					? await api.shareLinks.createCollectionShareLink(wsSlug, targetSlug)
+					: await api.shareLinks.createItemShareLink(wsSlug, targetSlug);
+			if (!isSameIdentity()) return;
 			shareLinks = [newLink, ...shareLinks];
 			newlyCreatedLinkId = newLink.id;
 			toastStore.show('Share link created', 'success');
 		} catch (e: any) {
+			if (!isSameIdentity()) return;
 			toastStore.show(e.message ?? 'Failed to create share link', 'error');
 		} finally {
 			creatingLink = false;
@@ -110,15 +134,19 @@
 
 	async function handleDeleteShareLink(linkId: string) {
 		if (deletingLinkId) return;
+		// IDENTITY fence (BUG-3105).
+		const isSameIdentity = authStore.identityFence();
 		deletingLinkId = linkId;
 		try {
 			await api.shareLinks.deleteShareLink(wsSlug, linkId);
+			if (!isSameIdentity()) return;
 			shareLinks = shareLinks.filter((l) => l.id !== linkId);
 			if (newlyCreatedLinkId === linkId) {
 				newlyCreatedLinkId = null;
 			}
 			toastStore.show('Share link revoked', 'success');
 		} catch (e: any) {
+			if (!isSameIdentity()) return;
 			toastStore.show(e.message ?? 'Failed to revoke share link', 'error');
 		} finally {
 			deletingLinkId = null;
@@ -146,20 +174,25 @@
 	async function handleShare() {
 		const trimmed = email.trim();
 		if (!trimmed || sharing) return;
+		// IDENTITY fence (BUG-3105). Four commits follow the await — the grant
+		// list, the email input, the permission select and a toast. Clearing the
+		// input under a DIFFERENT user is the visible half; appending a grant to
+		// a list that identity may not be allowed to see is the other.
+		const isSameIdentity = authStore.identityFence();
 		sharing = true;
 		shareError = '';
 		try {
-			let newGrant: CollectionGrant | ItemGrant;
-			if (type === 'collection') {
-				newGrant = await api.grants.createCollectionGrant(wsSlug, targetSlug, trimmed, permission);
-			} else {
-				newGrant = await api.grants.createItemGrant(wsSlug, targetSlug, trimmed, permission);
-			}
+			const newGrant: CollectionGrant | ItemGrant =
+				type === 'collection'
+					? await api.grants.createCollectionGrant(wsSlug, targetSlug, trimmed, permission)
+					: await api.grants.createItemGrant(wsSlug, targetSlug, trimmed, permission);
+			if (!isSameIdentity()) return;
 			grants = [...grants, newGrant];
 			email = '';
 			permission = 'view';
 			toastStore.show(`Shared with ${trimmed}`, 'success');
 		} catch (e: any) {
+			if (!isSameIdentity()) return;
 			shareError = e.message ?? 'Failed to share';
 		} finally {
 			sharing = false;
@@ -168,6 +201,8 @@
 
 	async function handleRevoke(grantId: string) {
 		if (revokingId) return;
+		// IDENTITY fence (BUG-3105).
+		const isSameIdentity = authStore.identityFence();
 		revokingId = grantId;
 		try {
 			if (type === 'collection') {
@@ -175,9 +210,11 @@
 			} else {
 				await api.grants.deleteItemGrant(wsSlug, targetSlug, grantId);
 			}
+			if (!isSameIdentity()) return;
 			grants = grants.filter((g) => g.id !== grantId);
 			toastStore.show('Access revoked', 'success');
 		} catch (e: any) {
+			if (!isSameIdentity()) return;
 			toastStore.show(e.message ?? 'Failed to revoke access', 'error');
 		} finally {
 			revokingId = null;
