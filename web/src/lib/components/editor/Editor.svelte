@@ -39,6 +39,27 @@
 				theme: 'dark',
 				securityLevel: 'strict',
 				fontFamily: 'inherit',
+				// `layout` is the load-bearing one. Read from the shipped
+				// bundles via mermaidAPI.getConfig(), 11.17.2 defaults to
+				// layout="dagre" and 12.0.0 to layout="elk", so without this
+				// pin every stored flowchart, state and class diagram re-flows
+				// on an upgrade nobody asked them about. `look` is a defensive
+				// pin, not a fix: both versions already default to "classic",
+				// and it is written down so a later default change cannot move
+				// our diagrams silently. (`theme` stays "dark" above for the
+				// same continuity reason — it is OUR value, not a default, and
+				// both versions default to "default".)
+				// This is the site default, not a ceiling: a diagram that opts
+				// into ELK in its own frontmatter still gets ELK.
+				//
+				// What the pin does NOT do, measured rather than assumed: it
+				// does not make 12 render identically to 11. With dagre pinned,
+				// the same flowchart goes from 377.5x623 to 426x737 and the
+				// same state diagram from 120.7x412 to 152x412 — same node and
+				// edge counts, same font size, same reading order, just drawn
+				// larger. The pin preserves the LAYOUT, not the metrics.
+				layout: 'dagre',
+				look: 'classic',
 			});
 		}
 		return mermaidMod;
