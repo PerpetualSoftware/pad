@@ -780,6 +780,12 @@ func mapItemClaim(input map[string]any) (string, string, []byte, error) {
 			if d <= 0 {
 				return "", "", nil, fmt.Errorf("ttl must be positive, got %s", d)
 			}
+			// Whole seconds cross the wire. A positive sub-second ttl
+			// would truncate to 0, which the server reads as "absent"
+			// and defaults to 15m — refuse it here instead.
+			if d < time.Second {
+				return "", "", nil, fmt.Errorf("ttl must be at least 1s, got %s", d)
+			}
 			bodyFields["ttl_seconds"] = int(d.Seconds())
 		}
 	}
