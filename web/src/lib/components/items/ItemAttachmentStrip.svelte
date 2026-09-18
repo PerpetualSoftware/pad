@@ -40,6 +40,7 @@
 	 */
 	import { onDestroy, untrack } from 'svelte';
 	import { api, PadApiError } from '$lib/api/client';
+	import { authStore } from '$lib/stores/auth.svelte';
 	import type { AttachmentListItem } from '$lib/types';
 	import {
 		iconForAttachment,
@@ -217,6 +218,13 @@
 		att: StripAttachment;
 		anchor: HTMLElement | null;
 		prompt: string;
+		/**
+		 * IDENTITY fence (BUG-3095 row 9), captured when the menu OPENED and
+		 * checked at the point that sends. It rides on the pending record rather
+		 * than on a component field because it belongs to THIS confirmation: a
+		 * second `×` click replaces the record and must capture afresh.
+		 */
+		isSameIdentity: () => boolean;
 	} | null>(null);
 
 	const uid = $props.id();
@@ -1060,6 +1068,10 @@
 			att,
 			anchor,
 			prompt: attachmentDeletePrompt(att.filename, referencedIds().has(att.id)),
+			// Captured HERE, when the menu opens, so the check at confirm time
+			// compares against the identity that asked for the deletion — not
+			// against whoever is signed in when the button is pressed.
+			isSameIdentity: authStore.identityFence(),
 		};
 	}
 
@@ -1091,12 +1103,26 @@
 	 * returned; an in-app confirmation does NOT block, and the user can switch
 	 * item or workspace while it is up. So the fence — and the permission — are
 	 * re-checked HERE, at the point that actually sends the request.
+	 *
+	 * THREE checks, answering three different questions (BUG-3095 row 9 added
+	 * the third). `canDelete` is the PERMISSION. `paint.isCurrent()` is the
+	 * NAVIGATION fence: is the strip still showing the workspace and item this
+	 * tile was painted for. `pending.isSameIdentity()` is the IDENTITY fence: is
+	 * the same USER still signed in.
+	 *
+	 * The third is not implied by the other two, and this is the site that shows
+	 * why most sharply. A logout and a different login while the confirmation
+	 * menu is open leaves the workspace and item unchanged, so the navigation
+	 * fence passes — and the DELETE below would go out on the NEW user's cookie,
+	 * for a deletion the previous user asked for. There is no `await` anywhere in
+	 * that window, so no post-await guard anywhere in this file could have caught
+	 * it; the suspension is the user reading a prompt.
 	 */
 	function confirmDelete() {
 		const pending = pendingDelete;
 		pendingDelete = null;
 		if (!pending) return;
-		if (!canDelete || !paint.isCurrent()) return;
+		if (!canDelete || !paint.isCurrent() || !pending.isSameIdentity()) return;
 		void performDelete(pending.att);
 	}
 
