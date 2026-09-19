@@ -90,8 +90,10 @@ var padItemTool = ToolDef{
 		// "unclaimed" get one winner and one structured 409 naming the
 		// live holder — so the catalog carries it from the start
 		// (maintainer's call on the PR thread). Additive, same
-		// disposition as remind/ack-reminder above: no ToolSurfaceVersion
-		// bump (DR-7 grounds — nothing existing moved).
+		// disposition as remind/ack-reminder above — and, like 0.28,
+		// it OWNS a ToolSurfaceVersion bump (0.38, #1405): DR-7 is
+		// about unknown keys in the serialized surface, not the action
+		// enum, so adding an action is the contract change.
 		"claim":   passThrough([]string{"item", "claim"}),
 		"release": passThrough([]string{"item", "release"}),
 
