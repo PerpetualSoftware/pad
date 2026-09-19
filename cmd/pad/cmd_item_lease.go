@@ -45,6 +45,13 @@ Examples:
 				if d <= 0 {
 					return fmt.Errorf("--ttl must be positive, got %s", d)
 				}
+				// Whole seconds cross the wire and TTLSeconds is omitempty:
+				// a positive sub-second --ttl would truncate to 0, be omitted,
+				// and land the server's 15m default. Refuse it here, the same
+				// floor the MCP mapper applies.
+				if d < time.Second {
+					return fmt.Errorf("--ttl must be at least 1s, got %s", d)
+				}
 				ttlSeconds = int(d.Seconds())
 			}
 

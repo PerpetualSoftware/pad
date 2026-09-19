@@ -1017,6 +1017,32 @@ const CmdhelpVersion = "0.1"
 //     browser tab and BUG-3000 carries the open half — so no surface
 //     here states a duration.
 //
+//     0.38 — PR #1238 (b4rk13) / GitHub #1221, execution lease. Two
+//     ADDITIVE actions on `pad_item`: `claim` takes an atomic lease on
+//     an item (`holder`, `ttl`; 409 `lease_held` with the holder and
+//     expiry in `details` when another live holder has it; a re-claim
+//     by the live holder extends the expiry), and `release` drops it
+//     (idempotent). Two new params, both optional, both ignored by
+//     every other action. Purely additive — same disposition as 0.28,
+//     which wired `remind` / `ack-reminder` the same way, and a 0.37
+//     consumer that enumerates neither action is unaffected.
+//
+//     Stated because the PR thread first ruled NO bump under DR-7:
+//     DR-7 (tool_surface.go) is about a consumer tolerating an unknown
+//     KEY in the serialized surface, not about the action enum. Adding
+//     an action is the contract change that owns the bump — the entry
+//     below (post-0.37) says exactly that, and 0.28 is the precedent.
+//     The PR merged at 0.37; this bump follows it as its own commit so
+//     the contributor's work lands as written.
+//
+//     Also on this line: `ttl` shorter than one second is REFUSED at
+//     the mapper. `int(d.Seconds())` truncates, so a sub-second ttl was
+//     positive enough to pass the `<= 0` guard and still reach the
+//     server as `ttl_seconds: 0`, which the handler reads as absent and
+//     defaults to fifteen minutes — the exact silent default the guard
+//     exists to prevent. A refusal at the edge of a brand-new param
+//     breaks nothing that 0.37 accepted.
+//
 //     0.37 — PR #1337. Added the optional `agent` boolean to
 //     `pad_item.get`. When true, both transports return a compact
 //     projection that keeps the full body and work-relevant metadata
@@ -1250,7 +1276,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.37"
+const ToolSurfaceVersion = "0.38"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

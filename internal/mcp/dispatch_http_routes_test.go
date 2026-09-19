@@ -728,13 +728,38 @@ func TestRoute_ItemClaim_BadTTLRefused(t *testing.T) {
 	// A malformed or non-positive ttl is refused at the mapper, naming
 	// the input — not sent as ttl_seconds:0 for the server to default
 	// silently, which would turn a typo into a 15-minute lease.
-	for _, bad := range []string{"banana", "-5m", "0s"} {
+	// Sub-second values are the sharp case: positive, so they clear a
+	// bare `<= 0` guard, but `int(d.Seconds())` truncates them to the
+	// very ttl_seconds:0 the guard exists to keep off the wire.
+	for _, bad := range []string{"banana", "-5m", "0s", "500ms", "999ms", "1ns"} {
 		_, _, _, err := routeTable["item claim"](map[string]any{
 			"workspace": "docapp", "ref": "TASK-5", "ttl": bad,
 		})
 		if err == nil {
 			t.Errorf("ttl %q must be refused", bad)
+			continue
 		}
+		if !strings.Contains(err.Error(), bad) {
+			t.Errorf("refusal for ttl %q must name the input; got %q", bad, err.Error())
+		}
+	}
+}
+
+func TestRoute_ItemClaim_OneSecondTTLAccepted(t *testing.T) {
+	// The control for the sub-second refusal: the smallest ttl that
+	// survives truncation is sent as ttl_seconds:1, not refused.
+	_, _, body, err := routeTable["item claim"](map[string]any{
+		"workspace": "docapp", "ref": "TASK-5", "ttl": "1s",
+	})
+	if err != nil {
+		t.Fatalf("1s ttl must be accepted: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("body: %v", err)
+	}
+	if got["ttl_seconds"] != float64(1) {
+		t.Errorf("ttl_seconds = %v, want 1", got["ttl_seconds"])
 	}
 }
 

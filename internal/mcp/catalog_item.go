@@ -178,7 +178,7 @@ var padItemSchemaParams = []ParamDef{
 
 	// ── Execution lease ── (#1221)
 	{Name: "holder", Type: "string", Description: "Lease holder identity for action=claim/release. Optional — defaults to the authenticated user. Use a stable per-runner name (e.g. \"sweep-runner-2\") when several runners share one account, so a 409 names which one holds the item."},
-	{Name: "ttl", Type: "string", Description: "Lease duration for action=claim, as a Go duration (e.g. \"15m\", \"1h\"). Optional — server default 15m, max 24h. A re-claim by the live holder extends the expiry from now (heartbeat); size the TTL to your polling/heartbeat cadence, not to the whole job."},
+	{Name: "ttl", Type: "string", Description: "Lease duration for action=claim, as a Go duration (e.g. \"15m\", \"1h\"). Optional — server default 15m, max 24h. Whole seconds cross the wire: minimum 1s (shorter is refused), fractional seconds truncate. A re-claim by the live holder extends the expiry from now (heartbeat); size the TTL to your polling/heartbeat cadence, not to the whole job."},
 
 	{Name: "artifact", Type: "string", Description: "Full portable artifact text (YAML frontmatter + Markdown body). Required for: import — this is the artifact a prior `export` produced. NOT the same as `content` (which is just the item's Markdown body)."},
 
