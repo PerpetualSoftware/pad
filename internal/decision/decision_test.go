@@ -465,9 +465,6 @@ func TestOversizedStringStateIsTruncatedAndFlagged(t *testing.T) {
 	if len(sent) >= len(big) {
 		t.Errorf("state was not shortened: sent %d chars of %d", len(sent), len(big))
 	}
-	if !utf8.ValidString(sent) {
-		t.Error("truncated state is not valid UTF-8; the cut ignored rune boundaries")
-	}
 	if !strings.HasPrefix(big, sent) {
 		t.Error("truncated state is not a prefix of the original")
 	}
@@ -475,6 +472,87 @@ func TestOversizedStringStateIsTruncatedAndFlagged(t *testing.T) {
 	// budget covers state AND questions together.
 	if len(sent) > int(float64(maxRequestTokens)*charsPerToken) {
 		t.Errorf("truncated state (%d chars) exceeds the whole-request char budget", len(sent))
+	}
+}
+
+// TestBudgetConstantsStayInsideTheMeasurement guards the two constants that no
+// behavioural test can check, because their correctness is a fact about the
+// LIVE provider rather than about this code. Without this, someone raising
+// either one to "use more of the window" gets a fully green suite and a
+// production 400.
+//
+// Both figures come from the bisection recorded on TASK-3116's trail.
+func TestBudgetConstantsStayInsideTheMeasurement(t *testing.T) {
+	// Largest request the live API ACCEPTED, by its own usage.input_tokens.
+	const measuredAccepted = 32476
+	// Smallest request it REFUSED with max_tokens_exceeded (predicted from
+	// the calibrated tokens-per-record; the refusal itself is measured).
+	const measuredRefused = 33600
+
+	if maxRequestTokens > measuredAccepted {
+		t.Errorf("maxRequestTokens = %d, which is above the largest request measured to be "+
+			"ACCEPTED (%d). Raising it past the measurement needs a new bisection, not a guess.",
+			maxRequestTokens, measuredAccepted)
+	}
+	if maxRequestTokens >= measuredRefused {
+		t.Errorf("maxRequestTokens = %d, at or above a request measured to be REFUSED (%d)",
+			maxRequestTokens, measuredRefused)
+	}
+
+	// charsPerToken must UNDER-estimate characters per token so that the
+	// token estimate over-estimates and truncation stays conservative. The
+	// bisection measured 2.80 chars/token on the densest content tried.
+	const measuredCharsPerToken = 2.80
+	if charsPerToken > measuredCharsPerToken {
+		t.Errorf("charsPerToken = %v, above the measured %v: truncation would under-estimate "+
+			"tokens and send over-budget requests", charsPerToken, measuredCharsPerToken)
+	}
+}
+
+// TestFitStateCutsOnRuneBoundaries sweeps the cut OFFSET, which is the whole
+// point: the offset is a function of how large the questions are, so a single
+// fixed state and question produce a single fixed offset. An earlier version of
+// this assertion lived inside the truncation test above with one offset, and a
+// mutant that deleted the rune-boundary loop entirely SURVIVED it — that one
+// offset happened to land on a boundary, so the green could not go red.
+//
+// Varying the instructions length by one byte at a time shifts the offset by
+// one, so across eight iterations over two-byte runes the cut lands mid-rune
+// several times. The mutant dies on those.
+func TestFitStateCutsOnRuneBoundaries(t *testing.T) {
+	p := newTypesafe("test-key", "jev-1.13.0")
+	// Two-byte runes throughout, so any odd cut offset splits one.
+	big := strings.Repeat("é", 300000)
+
+	sawTruncation := false
+	for extra := 0; extra < 8; extra++ {
+		questions := map[string]wireQuestion{
+			"q": {Type: "noul", Instructions: "i" + strings.Repeat("x", extra)},
+		}
+		got, truncated, err := p.fitState(big, questions)
+		if err != nil {
+			t.Fatalf("extra=%d: fitState: %v", extra, err)
+		}
+		if !truncated {
+			t.Fatalf("extra=%d: state of %d bytes was not truncated", extra, len(big))
+		}
+		sawTruncation = true
+
+		s, okStr := got.(string)
+		if !okStr {
+			t.Fatalf("extra=%d: fitState returned %T, want string", extra, got)
+		}
+		if !utf8.ValidString(s) {
+			t.Errorf("extra=%d: truncated state is not valid UTF-8 — the cut split a rune "+
+				"at offset %d", extra, len(s))
+		}
+		if !strings.HasPrefix(big, s) {
+			t.Errorf("extra=%d: truncated state is not a prefix of the original", extra)
+		}
+	}
+	// Precondition: if nothing truncated, every assertion above was vacuous.
+	if !sawTruncation {
+		t.Fatal("no iteration truncated; the test asserted nothing")
 	}
 }
 
