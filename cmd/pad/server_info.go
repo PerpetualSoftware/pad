@@ -11,6 +11,7 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/cli"
 	"github.com/PerpetualSoftware/pad/internal/config"
+	"github.com/PerpetualSoftware/pad/internal/decision"
 )
 
 type serverInfoReport struct {
@@ -33,6 +34,30 @@ type serverInfoConfig struct {
 	LoadedFromFile     bool   `json:"loaded_from_file"`
 	LoadedFromEnv      bool   `json:"loaded_from_env"`
 	LoadedFromFlags    bool   `json:"loaded_from_flags"`
+
+	// DecisionProvider reports the resolved decision provider
+	// (PLAN-3114 / TASK-3116).
+	//
+	// It sits under `config` rather than at the top level because that is
+	// what it describes: THIS HOST's resolved configuration. The provider
+	// itself is constructed server-side, and this command's own help text
+	// promises it "does not inspect remote server internals" — so against a
+	// REMOTE server this reports the CLI host's settings, which may differ
+	// from the server's. Grouping it with the other local-config fields is
+	// what keeps that honest; promoting it to the top level would read as a
+	// statement about the server.
+	DecisionProvider serverInfoDecision `json:"decision_provider"`
+}
+
+// serverInfoDecision is the resolved decision provider.
+//
+// It is always an OBJECT, with Name == "none" when nothing is configured,
+// rather than alternating between an object and the bare string "none". A
+// union-typed field would force every consumer to type-switch before reading
+// a name, for no gain over a sentinel the name field can already carry.
+type serverInfoDecision struct {
+	Name  string `json:"name"`
+	Model string `json:"model,omitempty"`
 }
 
 type serverInfoConnection struct {
@@ -99,6 +124,23 @@ does not inspect remote server internals.`,
 	}
 }
 
+// describeDecisionProvider resolves the decision provider for the report.
+//
+// The resolution order is the same one the server uses — config file first,
+// environment last, because the environment overrides the instance-admin
+// setting (ruled day 73 on PLAN-3114) — so this line cannot disagree with
+// what the server would build from the same inputs. It goes through
+// decision.Describe, which never returns the API key.
+func describeDecisionProvider(cfg *config.Config) serverInfoDecision {
+	resolved := decision.Resolve(decision.Config{
+		Provider: cfg.DecisionProvider,
+		APIKey:   cfg.TypesafeAPIKey,
+		Model:    cfg.DecisionModel,
+	}, decision.EnvConfig())
+	name, model := decision.Describe(resolved)
+	return serverInfoDecision{Name: name, Model: model}
+}
+
 func collectServerInfo(cfg *config.Config) (*serverInfoReport, error) {
 	report := &serverInfoReport{
 		Config: serverInfoConfig{
@@ -113,6 +155,7 @@ func collectServerInfo(cfg *config.Config) (*serverInfoReport, error) {
 			LoadedFromFile:     cfg.LoadedFromFile,
 			LoadedFromEnv:      cfg.LoadedFromEnv,
 			LoadedFromFlags:    cfg.LoadedFromFlags,
+			DecisionProvider:   describeDecisionProvider(cfg),
 		},
 	}
 
@@ -243,6 +286,11 @@ func printServerInfo(report *serverInfoReport) {
 		fmt.Fprintf(w, "Port:\t%d\n", report.Config.Port)
 	}
 	fmt.Fprintf(w, "Config source:\t%s\n", configSource(report.Config))
+	if d := report.Config.DecisionProvider; d.Model != "" {
+		fmt.Fprintf(w, "Decision provider:\t%s (%s)\n", d.Name, d.Model)
+	} else {
+		fmt.Fprintf(w, "Decision provider:\t%s\n", d.Name)
+	}
 
 	fmt.Println()
 	fmt.Println("Connection")
