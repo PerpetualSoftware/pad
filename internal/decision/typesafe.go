@@ -73,13 +73,27 @@ type APIError struct {
 	ErrorType string
 	// Body is the response body, truncated to a bounded length.
 	Body string
+	// BodyReadErr is set when reading the response body failed partway.
+	// Body then holds whatever arrived before the failure, and callers must
+	// not treat it as the provider's complete message — in particular a
+	// missing ErrorType may mean "could not read" rather than "not that
+	// error". Keeping the read failure instead of discarding it is the
+	// difference between a caller knowing the evidence is partial and
+	// silently trusting a truncated body.
+	BodyReadErr error
 }
 
 func (e *APIError) Error() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "decision: provider returned %d", e.StatusCode)
 	if e.ErrorType != "" {
-		return fmt.Sprintf("decision: provider returned %d (%s): %s", e.StatusCode, e.ErrorType, e.Body)
+		fmt.Fprintf(&b, " (%s)", e.ErrorType)
 	}
-	return fmt.Sprintf("decision: provider returned %d: %s", e.StatusCode, e.Body)
+	fmt.Fprintf(&b, ": %s", e.Body)
+	if e.BodyReadErr != nil {
+		fmt.Fprintf(&b, " [response body read failed partway: %v]", e.BodyReadErr)
+	}
+	return b.String()
 }
 
 // Is lets errors.Is(err, ErrMaxTokensExceeded) match the budget refusal
@@ -94,9 +108,15 @@ type typesafeProvider struct {
 	model    string
 	endpoint string
 	client   *http.Client
-	// sleep is time.Sleep in production and a no-op in tests, so backoff
-	// behaviour is asserted without spending wall clock.
-	sleep func(time.Duration)
+	// sleep waits for d or until ctx is done, whichever comes first,
+	// returning ctx.Err() in the latter case. Tests replace it to record the
+	// requested durations without spending wall clock.
+	//
+	// It takes a context because a plain time.Sleep here made a cancelled
+	// Ask keep waiting out the full backoff — up to maxBackoff — before
+	// issuing a request that could only fail. Cancellation has to be able to
+	// interrupt the WAIT, not merely be noticed after it.
+	sleep func(ctx context.Context, d time.Duration) error
 }
 
 func newTypesafe(apiKey, model string) *typesafeProvider {
@@ -105,7 +125,20 @@ func newTypesafe(apiKey, model string) *typesafeProvider {
 		model:    model,
 		endpoint: defaultTypesafeEndpoint,
 		client:   &http.Client{Timeout: requestTimeout},
-		sleep:    time.Sleep,
+		sleep:    ctxSleep,
+	}
+}
+
+// ctxSleep waits for d, or returns early with ctx.Err() if the context is done
+// first.
+func ctxSleep(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
 	}
 }
 
@@ -200,9 +233,22 @@ func (p *typesafeProvider) Ask(ctx context.Context, state any, questions map[str
 	}
 	// A provider that answered a subset would leave the caller unable to
 	// tell a missing answer from one it forgot to ask for.
-	for key := range questions {
-		if _, ok := answers[key]; !ok {
+	//
+	// The KIND check beside it matters for the same reason the Confidence
+	// pointer does. fromWire populates only the members the ANSWERED kind
+	// uses, so a noul question answered with {"type":"score","score":0}
+	// yields an Answer whose Noul is 0 — a perfectly plausible "almost
+	// certainly false" that the provider never said. Without this, a
+	// mismatched kind is indistinguishable from a confident answer.
+	for key, q := range questions {
+		a, ok := answers[key]
+		if !ok {
 			return nil, Usage{}, fmt.Errorf("decision: provider returned no answer for question %q", key)
+		}
+		if a.Kind != q.Kind {
+			return nil, Usage{}, fmt.Errorf(
+				"decision: question %q is a %s but the provider answered with a %s",
+				key, q.Kind, a.Kind)
 		}
 	}
 
@@ -284,16 +330,68 @@ func (p *typesafeProvider) fitState(state any, questions map[string]wireQuestion
 	}
 
 	s, ok := state.(string)
-	if !ok || len(s) <= remaining {
+	if !ok || marshalledLen(s) <= remaining {
 		return state, false, nil
 	}
 
-	// Cut on a rune boundary so the truncated state stays valid UTF-8.
-	cut := remaining
-	for cut > 0 && !isRuneStart(s[cut]) {
-		cut--
+	// The budget is measured against the MARSHALLED length, not the raw
+	// string length, because encoding/json escapes <, > and & to six-byte
+	// \uXXXX sequences: a state of 80,000 '<' characters is 80,000 raw bytes
+	// and 480,000 on the wire (measured ratio exactly 6.00). Sizing the cut
+	// on raw length let such a state sail past the budget check and come back
+	// as max_tokens_exceeded, which is the very refusal truncation exists to
+	// avoid.
+	//
+	// Expansion is not uniform, so one division cannot place the cut. Start
+	// from the raw budget — marshalled length is never less than raw length,
+	// so that is a valid upper bound — then shrink by the expansion ratio
+	// actually observed at the current cut until it fits. `cut` strictly
+	// decreases every iteration, so this terminates.
+	cut := runeBoundaryAtOrBefore(s, min(remaining, len(s)))
+	for cut > 0 {
+		got := marshalledLen(s[:cut])
+		if got <= remaining {
+			return s[:cut], true, nil
+		}
+		// Scale by the observed ratio, with a margin so a pathological
+		// distribution still converges, and always make progress.
+		next := int(float64(cut) * (float64(remaining) / float64(got)) * 0.95)
+		if next >= cut {
+			next = cut - 1
+		}
+		cut = runeBoundaryAtOrBefore(s, next)
 	}
-	return s[:cut], true, nil
+	// Nothing of the state fits beside the questions.
+	return "", true, nil
+}
+
+// marshalledLen is the number of bytes this string occupies as a JSON value,
+// which is what the provider's token budget is actually charged against.
+func marshalledLen(s string) int {
+	b, err := json.Marshal(s)
+	if err != nil {
+		// json.Marshal cannot fail for a string; fall back to a
+		// deliberately pessimistic bound rather than reporting a small one.
+		return len(s) * 6
+	}
+	return len(b)
+}
+
+// runeBoundaryAtOrBefore returns the largest index <= i that begins a UTF-8
+// sequence, so a cut there leaves valid UTF-8.
+func runeBoundaryAtOrBefore(s string, i int) int {
+	if i < 0 {
+		return 0
+	}
+	// len(s) is a valid cut point (the whole string) and indexing s[len(s)]
+	// would panic, so return early rather than clamping into the loop.
+	if i >= len(s) {
+		return len(s)
+	}
+	for i > 0 && !isRuneStart(s[i]) {
+		i--
+	}
+	return i
 }
 
 // isRuneStart reports whether b can begin a UTF-8 sequence — i.e. it is not a
@@ -312,12 +410,11 @@ func (p *typesafeProvider) post(ctx context.Context, body []byte) (*wireResponse
 			if ra := retryAfterOf(lastErr); ra > 0 {
 				wait = ra
 			}
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			default:
+			// The wait itself is cancellable; a cancelled context must not
+			// have to outlast the backoff before anyone notices.
+			if err := p.sleep(ctx, wait); err != nil {
+				return nil, err
 			}
-			p.sleep(wait)
 			if backoff *= 2; backoff > maxBackoff {
 				backoff = maxBackoff
 			}
@@ -349,28 +446,19 @@ func (p *typesafeProvider) post(ctx context.Context, body []byte) (*wireResponse
 		switch {
 		case status == http.StatusTooManyRequests || status == 529:
 			// Retryable by the provider's own contract.
-			lastErr = &transientError{APIError: APIError{
-				StatusCode: status,
-				ErrorType:  errorTypeOf(raw),
-				Body:       boundedBody(raw),
-			}, retryAfter: retryAfter}
+			lastErr = &transientError{APIError: apiErrorFrom(status, raw, readErr), retryAfter: retryAfter}
 			continue
 		case status >= 500:
-			lastErr = &transientError{APIError: APIError{
-				StatusCode: status,
-				ErrorType:  errorTypeOf(raw),
-				Body:       boundedBody(raw),
-			}}
+			lastErr = &transientError{APIError: apiErrorFrom(status, raw, readErr)}
 			continue
 		case status >= 400:
 			// Not retryable: the request itself is the problem. The body is
 			// surfaced verbatim, and max_tokens_exceeded is matchable via
-			// errors.Is without parsing prose.
-			return nil, &APIError{
-				StatusCode: status,
-				ErrorType:  errorTypeOf(raw),
-				Body:       boundedBody(raw),
-			}
+			// errors.Is without parsing prose. A body read that failed
+			// partway is carried on the error rather than dropped, so a
+			// caller can tell a missing ErrorType from an unread one.
+			apiErr := apiErrorFrom(status, raw, readErr)
+			return nil, &apiErr
 		}
 
 		if readErr != nil {
@@ -397,6 +485,27 @@ func (p *typesafeProvider) post(ctx context.Context, body []byte) (*wireResponse
 type transientError struct {
 	APIError
 	retryAfter time.Duration
+}
+
+// Unwrap exposes the embedded APIError to errors.As.
+//
+// Without it, exhausted retries produce an error chain of
+// fmt.Errorf -> *transientError and stop: errors.As(err, **APIError) returns
+// FALSE, because *transientError is a different type and value-embedding does
+// not make it one. A caller that retried four times into a 429 wall would then
+// have no way to read the status or the error type off the failure — the
+// information is in the chain and unreachable.
+func (t *transientError) Unwrap() error { return &t.APIError }
+
+// apiErrorFrom builds an APIError from a response, keeping a partial-read
+// failure rather than discarding it.
+func apiErrorFrom(status int, raw []byte, readErr error) APIError {
+	return APIError{
+		StatusCode:  status,
+		ErrorType:   errorTypeOf(raw),
+		Body:        boundedBody(raw),
+		BodyReadErr: readErr,
+	}
 }
 
 func retryAfterOf(err error) time.Duration {

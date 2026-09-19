@@ -60,7 +60,13 @@ func newFake(t *testing.T, handler func(f *fake, req wireRequest, raw []byte, w 
 
 	p := newTypesafe("test-key", "jev-1.13.0")
 	p.setEndpoint(f.srv.URL)
-	p.sleep = func(d time.Duration) { f.slept = append(f.slept, d) }
+	// Record the requested waits without spending wall clock, but keep the
+	// context's own semantics: a cancelled context must still abort the wait,
+	// or a test double would hide the very behaviour it is standing in for.
+	p.sleep = func(ctx context.Context, d time.Duration) error {
+		f.slept = append(f.slept, d)
+		return ctx.Err()
+	}
 	return p, f
 }
 

@@ -222,8 +222,15 @@ func (a Answer) ConfidenceOr(def float64) float64 {
 // answer carries no probabilities.
 //
 // This is the correct way to ask "which level did it pick" — see
-// [Answer.Score] for why that field is not it. Ties resolve to the LOWEST
-// index, so the result is deterministic rather than map-order dependent.
+// [Answer.Score] for why that field is not it.
+//
+// The result is deterministic for ANY key set, not only for well-formed ones.
+// Ties on probability resolve to the lowest level index, and ties on index
+// resolve to the lexicographically smaller key — the second tie-break is
+// needed because distinct key STRINGS can share an index ("1" and "01" both
+// parse to 1) and because every unparseable key shares the same sentinel, so
+// ordering on index alone leaves those cases decided by Go's randomised map
+// iteration order.
 func (a Answer) TopLevel() (index int, name string, ok bool) {
 	if a.Kind != KindScore || len(a.Probabilities) == 0 {
 		return 0, "", false
@@ -232,7 +239,13 @@ func (a Answer) TopLevel() (index int, name string, ok bool) {
 	for k := range a.Probabilities {
 		keys = append(keys, k)
 	}
-	sort.Slice(keys, func(i, j int) bool { return levelIndex(keys[i]) < levelIndex(keys[j]) })
+	sort.Slice(keys, func(i, j int) bool {
+		li, lj := levelIndex(keys[i]), levelIndex(keys[j])
+		if li != lj {
+			return li < lj
+		}
+		return keys[i] < keys[j]
+	})
 
 	best := keys[0]
 	for _, k := range keys[1:] {
