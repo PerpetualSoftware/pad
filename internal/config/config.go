@@ -57,6 +57,24 @@ type Config struct {
 	EmailFrom      string `toml:"email_from"`      // Sender address (e.g. noreply@getpad.dev)
 	EmailFromName  string `toml:"email_from_name"` // Sender display name (e.g. Pad)
 
+	// Decision provider (PLAN-3114 / TASK-3116). Empty or "none" disables
+	// decisions entirely, which is the default and is not a degraded mode.
+	//
+	// NOTE, because a reader will look for these in Load()'s env block
+	// below and not find them: the PAD_DECISION_PROVIDER /
+	// PAD_TYPESAFE_API_KEY / PAD_DECISION_MODEL environment variables are
+	// deliberately NOT applied here, unlike every other setting in this
+	// file. internal/decision owns exactly one resolver
+	// (decision.Resolve over decision.Config sources), so that the
+	// instance-admin setting arriving in TASK-3121 adds a SOURCE rather
+	// than a second place that reads provider settings. Applying the env
+	// here as well would make this file a second reader and would hide
+	// which source actually won. The fields below are the config-FILE
+	// source only.
+	DecisionProvider string `toml:"decision_provider"`
+	TypesafeAPIKey   string `toml:"typesafe_api_key"`
+	DecisionModel    string `toml:"decision_model"`
+
 	// Cloud mode
 	CloudSecret         string `toml:"cloud_secret"`          // Inbound shared secret(s) accepted from pad-cloud. Comma-separated list supports rotation.
 	CloudSidecarURL     string `toml:"cloud_sidecar_url"`     // Base URL pad uses to call the pad-cloud sidecar (reverse direction, e.g. Stripe cancel-customer on account delete)
