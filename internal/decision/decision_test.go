@@ -439,6 +439,14 @@ func TestPartialAnswerSetIsAnError(t *testing.T) {
 	if !strings.Contains(err.Error(), "blocked") {
 		t.Errorf("error does not name the unanswered question: %v", err)
 	}
+	// The KIND check would also refuse this call — a missing answer decodes
+	// with an empty Kind — and would also name the key, so the two
+	// assertions above cannot tell which check fired. The diagnosis is the
+	// difference a caller sees: "no answer" versus "answered with a ",
+	// the second naming a kind the provider never sent.
+	if !strings.Contains(err.Error(), "no answer") {
+		t.Errorf("error does not say the question went unanswered: %v", err)
+	}
 }
 
 // ---------------------------------------------------------------------------

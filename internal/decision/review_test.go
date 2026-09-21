@@ -114,11 +114,25 @@ func TestCtxSleepReturnsEarlyOnCancellation(t *testing.T) {
 
 	// And newTypesafe must actually install it; a provider left with a
 	// non-cancellable sleep would pass every test above.
-	if p := newTypesafe("k", "m"); p.sleep == nil {
-		t.Error("newTypesafe installed no sleep function")
-	} else if err := p.sleep(ctx, time.Hour); !errors.Is(err, context.Canceled) {
-		t.Errorf("the sleep installed by newTypesafe returned %v on a cancelled context, "+
-			"want context.Canceled — it is not cancellable", err)
+	//
+	// The call runs under its OWN deadline: an uncancellable sleep of an hour
+	// would otherwise hang until go test's global timeout, which reports a
+	// panic for the whole binary rather than a failure of this test.
+	p := newTypesafe("k", "m")
+	if p.sleep == nil {
+		t.Fatal("newTypesafe installed no sleep function")
+	}
+	done := make(chan error, 1)
+	go func() { done <- p.sleep(ctx, time.Hour) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("the sleep installed by newTypesafe returned %v on a cancelled context, "+
+				"want context.Canceled — it is not cancellable", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("the sleep installed by newTypesafe was still waiting 2s after being handed " +
+			"a cancelled context — it is not cancellable")
 	}
 }
 
