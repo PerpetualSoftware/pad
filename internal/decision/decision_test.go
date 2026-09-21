@@ -535,33 +535,43 @@ func TestBudgetConstantsStayInsideTheMeasurement(t *testing.T) {
 // several times. The mutant dies on those.
 func TestFitStateCutsOnRuneBoundaries(t *testing.T) {
 	p := newTypesafe("test-key", "jev-1.13.0")
-	// Two-byte runes throughout, so any odd cut offset splits one.
-	big := strings.Repeat("é", 300000)
 
+	// Why 64 offsets and three rune widths, rather than a handful: a cut
+	// that splits a rune leaves a lone lead byte, which json.Marshal
+	// replaces with a six-byte \ufffd — so a mid-rune cut often FAILS the
+	// size check on its own and the loop retries, landing wherever the
+	// retry's arithmetic puts it. That second mechanism hides the defect at
+	// most offsets. Measured with the boundary loop deleted (review round 2):
+	// invalid UTF-8 escaped at 18/64 offsets for 2-byte runes, 29/64 for
+	// 3-byte and 43/64 for 4-byte, while the previous 8-offset sweep over
+	// 2-byte runes caught NONE.
 	sawTruncation := false
-	for extra := 0; extra < 8; extra++ {
-		questions := map[string]wireQuestion{
-			"q": {Type: "noul", Instructions: "i" + strings.Repeat("x", extra)},
-		}
-		got, truncated, err := p.fitState(big, questions)
-		if err != nil {
-			t.Fatalf("extra=%d: fitState: %v", extra, err)
-		}
-		if !truncated {
-			t.Fatalf("extra=%d: state of %d bytes was not truncated", extra, len(big))
-		}
-		sawTruncation = true
+	for _, r := range []string{"é", "€", "😀"} {
+		big := strings.Repeat(r, 400000)
+		for extra := 0; extra < 64; extra++ {
+			questions := map[string]wireQuestion{
+				"q": {Type: "noul", Instructions: "i" + strings.Repeat("x", extra)},
+			}
+			got, truncated, err := p.fitState(big, questions)
+			if err != nil {
+				t.Fatalf("%q extra=%d: fitState: %v", r, extra, err)
+			}
+			if !truncated {
+				t.Fatalf("%q extra=%d: state of %d bytes was not truncated", r, extra, len(big))
+			}
+			sawTruncation = true
 
-		s, okStr := got.(string)
-		if !okStr {
-			t.Fatalf("extra=%d: fitState returned %T, want string", extra, got)
-		}
-		if !utf8.ValidString(s) {
-			t.Errorf("extra=%d: truncated state is not valid UTF-8 — the cut split a rune "+
-				"at offset %d", extra, len(s))
-		}
-		if !strings.HasPrefix(big, s) {
-			t.Errorf("extra=%d: truncated state is not a prefix of the original", extra)
+			s, okStr := got.(string)
+			if !okStr {
+				t.Fatalf("%q extra=%d: fitState returned %T, want string", r, extra, got)
+			}
+			if !utf8.ValidString(s) {
+				t.Errorf("%q extra=%d: truncated state is not valid UTF-8 — the cut split a rune "+
+					"at offset %d", r, extra, len(s))
+			}
+			if !strings.HasPrefix(big, s) {
+				t.Errorf("%q extra=%d: truncated state is not a prefix of the original", r, extra)
+			}
 		}
 	}
 	// Precondition: if nothing truncated, every assertion above was vacuous.
