@@ -54,7 +54,7 @@
 	import Link from '@tiptap/extension-link';
 	import CodeBlock from '@tiptap/extension-code-block';
 	import Placeholder from '@tiptap/extension-placeholder';
-	import { copyToClipboard } from '$lib/utils/clipboard';
+	import { createPlainCodeBlockView } from './codeBlockCopy';
 	import {
 		mermaidThemeForMode,
 		collectMermaidRerenders,
@@ -171,34 +171,6 @@
 			target.textContent = '';
 			target.classList.remove('mermaid-error');
 		});
-	}
-
-	// Build a hover-to-reveal "Copy" button for a code block.
-	// Reads the live code text from `codeEl` so it copies edits too.
-	function buildCopyButton(codeEl: HTMLElement): HTMLButtonElement {
-		const btn = document.createElement('button');
-		btn.type = 'button';
-		btn.className = 'code-copy-btn';
-		btn.setAttribute('contenteditable', 'false');
-		btn.setAttribute('aria-label', 'Copy code');
-		btn.title = 'Copy';
-		btn.textContent = 'Copy';
-		// mousedown + preventDefault avoids stealing focus / clobbering the selection
-		btn.addEventListener('mousedown', (e) => e.preventDefault());
-		btn.addEventListener('click', async (e) => {
-			e.preventDefault();
-			e.stopPropagation();
-			const text = codeEl.textContent ?? '';
-			const ok = await copyToClipboard(text);
-			const prev = btn.textContent;
-			btn.textContent = ok ? 'Copied' : 'Failed';
-			btn.classList.toggle('copied', ok);
-			setTimeout(() => {
-				btn.textContent = prev;
-				btn.classList.remove('copied');
-			}, 1200);
-		});
-		return btn;
 	}
 
 	// ProseMirror plugin: when the user copies/cuts a selection that lives
@@ -569,18 +541,14 @@
 			return [codeBlockCopyPlugin];
 		},
 		addNodeView() {
-			return (({ node }: any) => {
+			return (({ node, view, getPos }: any) => {
 				const lang = node.attrs.language;
 
-				// Non-mermaid: default rendering + hover Copy button
+				// Non-mermaid: default rendering + hover Copy button, which
+				// copies the MODEL text — never the contentDOM's, which
+				// carries peers' caret labels (BUG-3111).
 				if (lang !== 'mermaid') {
-					const pre = document.createElement('pre');
-					pre.classList.add('code-block');
-					const code = document.createElement('code');
-					if (lang) code.classList.add(`language-${lang}`);
-					pre.appendChild(code);
-					pre.appendChild(buildCopyButton(code));
-					return { dom: pre, contentDOM: code };
+					return createPlainCodeBlockView({ node, view, getPos });
 				}
 
 				// Mermaid: diagram with hidden editable source
