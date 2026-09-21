@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -336,17 +337,23 @@ func (s *Store) HasItemDecisionsAtState(itemID, questionSet, stateHash string, k
 	if len(keys) == 0 {
 		return true, nil
 	}
+	// Counted over the ASKED keys only (codex round 3). Counting every stored
+	// key was wrong in a way the count cannot see: a RENAMED key keeps the
+	// total equal — the old name answered, the new one not — so the set read
+	// complete and the new key was never asked at an unchanged state.
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(keys)), ",")
+	args := []any{itemID, questionSet, stateHash}
+	for _, k := range keys {
+		args = append(args, k)
+	}
 	var n int
 	if err := s.db.QueryRow(s.q(`
 		SELECT COUNT(DISTINCT question_key) FROM item_decisions
-		WHERE item_id = ? AND question_set = ? AND state_hash = ?`),
-		itemID, questionSet, stateHash).Scan(&n); err != nil {
+		WHERE item_id = ? AND question_set = ? AND state_hash = ?
+		  AND question_key IN (`+placeholders+`)`), args...).Scan(&n); err != nil {
 		return false, fmt.Errorf("check item decisions: %w", err)
 	}
-	// COUNT rather than per-key lookups: keys come from the registered set,
-	// and a stored key no longer in the set can only over-count if the set
-	// SHRANK — the runner then re-asks, which is the safe direction.
-	return n >= len(keys), nil
+	return n == len(keys), nil
 }
 
 // InsertItemDecisions stores one evaluation's answers in one transaction.

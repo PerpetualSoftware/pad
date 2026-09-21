@@ -364,3 +364,25 @@ func TestDecisionJobs_DropPreservesANewerGeneration(t *testing.T) {
 		t.Fatalf("dropping the current generation left %d rows", n)
 	}
 }
+
+// Codex round 3: a set whose keys CHANGED at an unchanged state is not
+// complete. A rename keeps the count equal (old key stored, new key asked),
+// so a count over every stored key would report it complete and the new key
+// would never be answered.
+func TestItemDecisions_HasStateCountsOnlyTheAskedKeys(t *testing.T) {
+	s, ws, col := decisionFixture(t)
+	item := createTestItem(t, s, ws.ID, col.ID, "Keys", "")
+	row := func(key string) models.ItemDecision {
+		return models.ItemDecision{ItemID: item.ID, QuestionSet: "triage", QuestionKey: key, Kind: "noul",
+			Answer: []byte(`{"type":"noul","noul":0.5}`), Provider: "fake", Model: "m", StateHash: "h", ItemSeq: 1}
+	}
+	if err := s.InsertItemDecisions(ws.ID, []models.ItemDecision{row("urgent"), row("old_name")}); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.HasItemDecisionsAtState(item.ID, "triage", "h", []string{"urgent", "new_name"}); err != nil || ok {
+		t.Fatalf("renamed key: HasItemDecisionsAtState = %v, %v; want false (new_name has no answer)", ok, err)
+	}
+	if ok, _ := s.HasItemDecisionsAtState(item.ID, "triage", "h", []string{"urgent", "added"}[:1]); !ok {
+		t.Fatal("control: a set whose every asked key is stored must read complete")
+	}
+}
