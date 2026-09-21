@@ -421,6 +421,13 @@ type Item struct {
 	// nor the version history.
 	Lease *ItemLease `json:"lease,omitempty"`
 
+	// Decisions are the item's latest typed-decision answers, one per
+	// question, each marked current or not (TASK-3117). Populated ONLY on the
+	// single-item GET, and absent when there are none — including on every
+	// instance with no decision provider configured, so the item shape there
+	// is unchanged. Never persisted through item paths.
+	Decisions []ItemDecision `json:"decisions,omitempty"`
+
 	DerivedClosure      *ItemDerivedClosure      `json:"derived_closure,omitempty"`
 	CodeContext         *ItemCodeContext         `json:"code_context,omitempty"`
 	Convention          *ItemConventionMetadata  `json:"convention,omitempty"`

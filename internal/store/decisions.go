@@ -239,6 +239,13 @@ func (s *Store) DropDecisionJob(j DecisionJob) error {
 	return nil
 }
 
+// ReleaseDecisionJob gives a claimed job back without recording a failure:
+// the runner stopped before finishing it (shutdown), which says nothing about
+// the job. It is claimable again at once.
+func (s *Store) ReleaseDecisionJob(j DecisionJob) error {
+	return s.releaseDecisionJob(j, "", 0)
+}
+
 func (s *Store) releaseDecisionJob(j DecisionJob, failure string, retryAfter time.Duration) error {
 	if failure == "" {
 		// Superseded: release the claim so the newer generation is claimable

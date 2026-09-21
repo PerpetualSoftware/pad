@@ -425,7 +425,15 @@ func (r *Runner) RunOnce(ctx context.Context, runnerID string, limit int, lease 
 	if err != nil {
 		return len(jobs), err
 	}
-	for _, j := range jobs {
+	for i, j := range jobs {
+		if ctx.Err() != nil {
+			// Stopping: hand back what this pass claimed but did not start,
+			// rather than leaving it stranded until the lease lapses.
+			for _, rest := range jobs[i:] {
+				r.release(rest)
+			}
+			break
+		}
 		r.runJob(ctx, j)
 	}
 	return len(jobs), nil
@@ -435,6 +443,10 @@ func (r *Runner) runJob(ctx context.Context, j store.DecisionJob) {
 	_, err := r.Evaluate(ctx, j.ItemID, j.QuestionSet)
 	var serr error
 	switch {
+	case err != nil && ctx.Err() != nil:
+		// Cancelled by shutdown, not a verdict on the job: no attempt counted.
+		r.release(j)
+		return
 	case err == nil:
 		serr = r.store.CompleteDecisionJob(j)
 	case errors.Is(err, ErrItemGone), errors.Is(err, ErrUnknownSet):
@@ -452,5 +464,11 @@ func (r *Runner) runJob(ctx context.Context, j store.DecisionJob) {
 		// The claim's lease still bounds this: an unrecorded outcome leaves
 		// the job claimed until the lease lapses, and then it is re-run.
 		slog.Error("decision job outcome not recorded", "item_id", j.ItemID, "question_set", j.QuestionSet, "error", serr)
+	}
+}
+
+func (r *Runner) release(j store.DecisionJob) {
+	if err := r.store.ReleaseDecisionJob(j); err != nil {
+		slog.Error("decision job not released", "item_id", j.ItemID, "question_set", j.QuestionSet, "error", err)
 	}
 }

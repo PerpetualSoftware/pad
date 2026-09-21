@@ -124,20 +124,23 @@ does not inspect remote server internals.`,
 	}
 }
 
-// describeDecisionProvider resolves the decision provider for the report.
-//
-// The resolution order is the same one the server uses — config file first,
-// environment last, because the environment overrides the instance-admin
-// setting (ruled day 73 on PLAN-3114) — so this line cannot disagree with
-// what the server would build from the same inputs. It goes through
-// decision.Describe, which never returns the API key.
-func describeDecisionProvider(cfg *config.Config) serverInfoDecision {
-	resolved := decision.Resolve(decision.Config{
+// resolveDecisionConfig is the ONE resolution of the decision provider's
+// settings, shared by the server's boot path and `pad server info`: config
+// file first, environment last, because the environment overrides the
+// instance-admin setting (ruled day 73 on PLAN-3114). Sharing it is what makes
+// the report unable to disagree with what the server builds.
+func resolveDecisionConfig(cfg *config.Config) decision.Config {
+	return decision.Resolve(decision.Config{
 		Provider: cfg.DecisionProvider,
 		APIKey:   cfg.TypesafeAPIKey,
 		Model:    cfg.DecisionModel,
 	}, decision.EnvConfig())
-	name, model := decision.Describe(resolved)
+}
+
+// describeDecisionProvider resolves the decision provider for the report. It
+// goes through decision.Describe, which never returns the API key.
+func describeDecisionProvider(cfg *config.Config) serverInfoDecision {
+	name, model := decision.Describe(resolveDecisionConfig(cfg))
 	return serverInfoDecision{Name: name, Model: model}
 }
 
