@@ -1304,6 +1304,11 @@
 		// `ext.options`: that assignment used to live here and never
 		// reached the NodeViews, because Tiptap's `options` is a getter
 		// returning a fresh spread per access (BUG-2426).
+		//
+		// NOT identity-fenced, deliberately (BUG-3105): the endpoint is
+		// registered outside auth and its answer is static for the binary, so
+		// nothing in it belongs to the user who asked — and a fence would leave
+		// the next identity's rotate toolbar disabled for good.
 		api.server.capabilities()
 			.then((caps) => {
 				serverImageFormats = caps.image.image_formats;

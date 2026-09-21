@@ -229,6 +229,12 @@
 		// is the same discipline for archive/restore (PLAN-2392 3c-iii U1).
 		const reqWs = wsSlug;
 		const reqEpoch = lifecycleEpoch;
+		// IDENTITY fence (BUG-3105). The probe is a HEAD made with the CALLER's
+		// credentials, so an `ok` belongs to whoever could read the row when it
+		// was asked. Neither the workspace nor the epoch moves on a sign-out.
+		// A `.then` continuation, which the population guard does not model
+		// (its declared gap (f)), so this one was found by enumeration.
+		const isSameIdentity = authStore.identityFence();
 		// LEVEL rule: while the parent is archived (or forced by a restore edge),
 		// bypass the shared module cache with a no-store revalidation so a stale
 		// cached `ok` cannot repaint a broken `<img>` and a genuine 404 lands as
@@ -243,6 +249,12 @@
 			// irrelevant — ignore it entirely.
 			if (tombstoned.has(uuid)) return;
 			if (reqWs !== wsSlug) return;
+			// Released rather than latched: the next identity's own probe may
+			// answer differently, so the id must stay eligible for it.
+			if (!isSameIdentity()) {
+				probed.delete(uuid);
+				return;
+			}
 			// A transient failure (5xx / network) is not evidence about the row,
 			// and the helper deliberately doesn't cache it — so drop the probed
 			// mark, leaving the attachment eligible again on the NEXT run of the
