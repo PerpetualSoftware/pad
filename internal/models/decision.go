@@ -11,8 +11,10 @@ import "encoding/json"
 // answer carries no confidence, and a zero would read as "certainly not".
 //
 // Current is computed at READ time, never stored: it is true when StateHash
-// equals the hash of the item's state as it stands now. An answer computed
-// before a later edit or comment is kept for the audit but is not current.
+// equals the hash of the item's state as it stands now AND QuestionHash equals
+// the fingerprint of the question as registered now, under the model the
+// provider is pinned to now. An answer computed before a later edit, comment,
+// question rewording or model change is kept for the audit but is not current.
 type ItemDecision struct {
 	ID             string          `json:"id"`
 	ItemID         string          `json:"item_id"`
@@ -24,6 +26,7 @@ type ItemDecision struct {
 	Provider       string          `json:"provider"`
 	Model          string          `json:"model"`
 	StateHash      string          `json:"state_hash"`
+	QuestionHash   string          `json:"question_hash"`
 	ItemSeq        int64           `json:"item_seq"`
 	StateTruncated bool            `json:"state_truncated,omitempty"`
 	EvaluatedAt    string          `json:"evaluated_at"`

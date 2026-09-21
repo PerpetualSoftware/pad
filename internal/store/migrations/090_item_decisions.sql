@@ -51,6 +51,15 @@ CREATE TABLE IF NOT EXISTS item_decisions (
     provider        TEXT NOT NULL,
     model           TEXT NOT NULL,
     state_hash      TEXT NOT NULL,
+
+    -- sha256 of the provider's model and THIS question's definition (kind,
+    -- instructions, criteria). state_hash says what the model read; this says
+    -- what it was asked and by which model. An answer is current only when
+    -- both still match — rewording a question or changing the pinned model at
+    -- an unchanged item state must re-ask (TASK-3117 codex round 6). Per
+    -- question, so editing one question re-asks the set but invalidates only
+    -- that key's answer.
+    question_hash   TEXT NOT NULL,
     item_seq        INTEGER NOT NULL,
 
     -- 1 when the provider truncated the state to fit its budget: the answer
@@ -62,10 +71,11 @@ CREATE TABLE IF NOT EXISTS item_decisions (
     FOREIGN KEY (item_id, workspace_id) REFERENCES items(id, workspace_id) ON DELETE CASCADE
 );
 
--- Idempotency: one answer per question per state. A second evaluation of an
--- unchanged state finds this row and makes no call.
+-- Idempotency: one answer per question per (state, question definition,
+-- model). A second evaluation of an unchanged triple finds this row and makes
+-- no call.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_item_decisions_state
-    ON item_decisions(item_id, question_set, question_key, state_hash);
+    ON item_decisions(item_id, question_set, question_key, state_hash, question_hash);
 
 -- The read path: latest row per (set, key) for one item.
 CREATE INDEX IF NOT EXISTS idx_item_decisions_latest

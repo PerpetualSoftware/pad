@@ -338,26 +338,31 @@ func (s *Store) GetDecisionJob(itemID, questionSet string) (*DecisionJobState, e
 	return &st, nil
 }
 
-// HasItemDecisionsAtState reports whether every one of keys already has an
+// HasItemDecisionsAtState reports whether every asked question already has an
 // answer for this item, set and state hash — the runner's idempotency check.
-func (s *Store) HasItemDecisionsAtState(itemID, questionSet, stateHash string, keys []string) (bool, error) {
+// keys maps each asked question key to its current question hash (model plus
+// definition): an answer to an older wording or model does not count.
+func (s *Store) HasItemDecisionsAtState(itemID, questionSet, stateHash string, keys map[string]string) (bool, error) {
 	if len(keys) == 0 {
 		return true, nil
 	}
-	// Counted over the ASKED keys only (codex round 3). Counting every stored
-	// key was wrong in a way the count cannot see: a RENAMED key keeps the
-	// total equal — the old name answered, the new one not — so the set read
-	// complete and the new key was never asked at an unchanged state.
-	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(keys)), ",")
+	// Counted over the ASKED (key, question_hash) pairs only (codex rounds 3
+	// and 6). Counting every stored key was wrong in a way the count cannot
+	// see: a RENAMED key keeps the total equal — the old name answered, the
+	// new one not — so the set read complete and the new key was never asked.
+	// Matching the question hash as well is what makes a reworded question or
+	// a new model re-ask at an unchanged item state.
+	pairs := make([]string, 0, len(keys))
 	args := []any{itemID, questionSet, stateHash}
-	for _, k := range keys {
-		args = append(args, k)
+	for k, qh := range keys {
+		pairs = append(pairs, "(question_key = ? AND question_hash = ?)")
+		args = append(args, k, qh)
 	}
 	var n int
 	if err := s.db.QueryRow(s.q(`
 		SELECT COUNT(DISTINCT question_key) FROM item_decisions
 		WHERE item_id = ? AND question_set = ? AND state_hash = ?
-		  AND question_key IN (`+placeholders+`)`), args...).Scan(&n); err != nil {
+		  AND (`+strings.Join(pairs, " OR ")+`)`), args...).Scan(&n); err != nil {
 		return false, fmt.Errorf("check item decisions: %w", err)
 	}
 	return n == len(keys), nil
@@ -388,11 +393,11 @@ func (s *Store) InsertItemDecisions(workspaceID string, rows []models.ItemDecisi
 		if _, err := tx.Exec(s.q(`
 			INSERT INTO item_decisions
 				(id, workspace_id, item_id, question_set, question_key, kind, answer, confidence,
-				 provider, model, state_hash, item_seq, state_truncated, evaluated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			ON CONFLICT (item_id, question_set, question_key, state_hash) DO NOTHING`),
+				 provider, model, state_hash, question_hash, item_seq, state_truncated, evaluated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT (item_id, question_set, question_key, state_hash, question_hash) DO NOTHING`),
 			newID(), workspaceID, r.ItemID, r.QuestionSet, r.QuestionKey, r.Kind, string(r.Answer), r.Confidence,
-			r.Provider, r.Model, r.StateHash, r.ItemSeq, truncated, evaluated,
+			r.Provider, r.Model, r.StateHash, r.QuestionHash, r.ItemSeq, truncated, evaluated,
 		); err != nil {
 			return fmt.Errorf("insert item decision %s/%s: %w", r.QuestionSet, r.QuestionKey, err)
 		}
@@ -408,7 +413,7 @@ func (s *Store) InsertItemDecisions(workspaceID string, rows []models.ItemDecisi
 func (s *Store) LatestItemDecisions(itemID string) ([]models.ItemDecision, error) {
 	rows, err := s.db.Query(s.q(`
 		SELECT d.id, d.item_id, d.question_set, d.question_key, d.kind, d.answer, d.confidence,
-		       d.provider, d.model, d.state_hash, d.item_seq, d.state_truncated, d.evaluated_at
+		       d.provider, d.model, d.state_hash, d.question_hash, d.item_seq, d.state_truncated, d.evaluated_at
 		FROM item_decisions d
 		WHERE d.item_id = ?
 		  AND NOT EXISTS (
@@ -428,7 +433,7 @@ func (s *Store) LatestItemDecisions(itemID string) ([]models.ItemDecision, error
 		var conf sql.NullFloat64
 		var truncated int
 		if err := rows.Scan(&d.ID, &d.ItemID, &d.QuestionSet, &d.QuestionKey, &d.Kind, &answer, &conf,
-			&d.Provider, &d.Model, &d.StateHash, &d.ItemSeq, &truncated, &d.EvaluatedAt); err != nil {
+			&d.Provider, &d.Model, &d.StateHash, &d.QuestionHash, &d.ItemSeq, &truncated, &d.EvaluatedAt); err != nil {
 			return nil, fmt.Errorf("scan item decision: %w", err)
 		}
 		d.Answer = []byte(answer)

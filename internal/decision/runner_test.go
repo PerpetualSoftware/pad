@@ -540,3 +540,109 @@ func TestRunner_WorkspaceRestoreResumesHeldWork(t *testing.T) {
 		t.Fatalf("provider called %d times after restore; want 1", fx.called())
 	}
 }
+
+// Codex round 6: an answer is current only for the QUESTION and MODEL that
+// produced it. Rewording a question, or changing the pinned model, at an
+// unchanged item state must re-ask — and the old answer must stop reading as
+// current.
+func TestRunner_QuestionOrModelChangeReasks(t *testing.T) {
+	fx := newRunnerFixture(t)
+	fx.evaluate(t)
+
+	reworded := NewRegistry()
+	qs := triageQuestions()
+	qs["urgent"] = Noul("Does this block a release?", "", "")
+	if err := reworded.Register(QuestionSet{Name: triageSet, Questions: qs}); err != nil {
+		t.Fatal(err)
+	}
+	p2 := newTypesafe("test-key", "jev-1.13.0")
+	p2.setEndpoint(fx.f.srv.URL)
+	r2 := NewRunner(fx.s, p2, reworded)
+	got, err := r2.Decisions(fx.item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range got {
+		want := d.QuestionKey != "urgent"
+		if d.Current != want {
+			t.Fatalf("after rewording `urgent`, %s current=%v; want %v", d.QuestionKey, d.Current, want)
+		}
+	}
+	if called, err := r2.Evaluate(context.Background(), fx.item.ID, triageSet); err != nil || !called {
+		t.Fatalf("a reworded question at an unchanged state was not re-asked (called=%v err=%v)", called, err)
+	}
+
+	p3 := newTypesafe("test-key", "jev-9.9.9")
+	p3.setEndpoint(fx.f.srv.URL)
+	r3 := NewRunner(fx.s, p3, reworded)
+	if called, err := r3.Evaluate(context.Background(), fx.item.ID, triageSet); err != nil || !called {
+		t.Fatalf("a model change at an unchanged state was not re-asked (called=%v err=%v)", called, err)
+	}
+}
+
+// Codex round 6: a provider OUTAGE must not lose owed work. Transient failures
+// (5xx, 429, transport) back off indefinitely; only a permanent refusal (a 4xx
+// naming the request itself) is dropped after repeated attempts.
+func TestRunner_TransientFailuresAreNeverDropped(t *testing.T) {
+	fx := newRunnerFixture(t)
+	fx.f.srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"detail":"upstream down"}`, http.StatusServiceUnavailable)
+	})
+	for i := 0; i < maxDecisionAttempts+2; i++ {
+		// Expire any backoff so each pass claims the job again.
+		expireDecisionBackoff(t, fx)
+		if _, err := fx.r.RunOnce(context.Background(), "tick", 10, time.Minute); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if j, _ := fx.s.GetDecisionJob(fx.item.ID, triageSet); j == nil {
+		t.Fatalf("a job failing only transiently was dropped after %d attempts", maxDecisionAttempts+2)
+	}
+}
+
+func TestRunner_PermanentRefusalIsDroppedAfterRepeatedAttempts(t *testing.T) {
+	fx := newRunnerFixture(t)
+	fx.f.srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"detail":"bad request"}`, http.StatusBadRequest)
+	})
+	for i := 0; i < maxDecisionAttempts; i++ {
+		expireDecisionBackoff(t, fx)
+		if _, err := fx.r.RunOnce(context.Background(), "tick", 10, time.Minute); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if j, _ := fx.s.GetDecisionJob(fx.item.ID, triageSet); j != nil {
+		t.Fatalf("a permanently refused job was kept after %d attempts: %+v", maxDecisionAttempts, j)
+	}
+}
+
+// expireDecisionBackoff makes a held-for-backoff job claimable now, through
+// the same release a superseding write would cause.
+func expireDecisionBackoff(t *testing.T, fx *runnerFixture) {
+	t.Helper()
+	j, _ := fx.s.GetDecisionJob(fx.item.ID, triageSet)
+	if j == nil || j.ClaimedBy == "" {
+		return
+	}
+	if err := fx.s.ReleaseDecisionJob(store.DecisionJob{ItemID: fx.item.ID, QuestionSet: triageSet, ClaimedBy: j.ClaimedBy}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// M35: a workspace deleted between the claim and the send, through RunOnce —
+// the job is HELD (owed, unclaimed, no attempt), not dropped.
+func TestRunner_WorkspaceDeletedMidJobIsHeld(t *testing.T) {
+	fx := newRunnerFixture(t)
+	fx.r.beforeAsk = func() {
+		if err := fx.s.DeleteWorkspace(fx.ws.Slug); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := fx.r.RunOnce(context.Background(), "tick", 10, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	j, _ := fx.s.GetDecisionJob(fx.item.ID, triageSet)
+	if j == nil || j.ClaimedBy != "" || j.Attempts != 0 {
+		t.Fatalf("job for a workspace deleted mid-job is %+v; want held (owed, unclaimed, attempts=0)", j)
+	}
+}

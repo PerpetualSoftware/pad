@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS item_decisions (
     provider        TEXT NOT NULL,
     model           TEXT NOT NULL,
     state_hash      TEXT NOT NULL,
+    question_hash   TEXT NOT NULL,
     item_seq        BIGINT NOT NULL,
     state_truncated INTEGER NOT NULL DEFAULT 0,
     evaluated_at    TEXT NOT NULL,
@@ -28,7 +29,7 @@ CREATE TABLE IF NOT EXISTS item_decisions (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_item_decisions_state
-    ON item_decisions(item_id, question_set, question_key, state_hash);
+    ON item_decisions(item_id, question_set, question_key, state_hash, question_hash);
 
 CREATE INDEX IF NOT EXISTS idx_item_decisions_latest
     ON item_decisions(item_id, question_set, question_key, evaluated_at);

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"sort"
 	"strings"
 	"sync"
@@ -227,6 +228,28 @@ func clipRunes(s string, n int) (string, bool) {
 	return s, false
 }
 
+// QuestionFingerprint is hex sha256 of the model and one question's full
+// definition. An answer is current only while its fingerprint still matches:
+// rewording the instructions, changing a criterion, or re-pinning the model
+// changes what was asked, and the old answer is not an answer to the new
+// question (codex round 6).
+//
+// Marshalled from a fixed struct, so field order is the struct's and map keys
+// (Choice options) are sorted by encoding/json: one question has one print.
+func QuestionFingerprint(model string, q Question) string {
+	b, _ := json.Marshal(struct {
+		Model        string            `json:"model"`
+		Kind         Kind              `json:"kind"`
+		Instructions string            `json:"instructions"`
+		Options      map[string]string `json:"options,omitempty"`
+		Levels       []string          `json:"levels,omitempty"`
+		TrueDesc     string            `json:"true_desc,omitempty"`
+		FalseDesc    string            `json:"false_desc,omitempty"`
+	}{model, q.Kind, q.Instructions, q.Options, q.Levels, q.TrueDesc, q.FalseDesc})
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
 // Runner evaluates owed decisions.
 type Runner struct {
 	store    *store.Store
@@ -324,10 +347,13 @@ func (r *Runner) Evaluate(ctx context.Context, itemID, setName string) (bool, er
 		return false, ErrSetNotApplicable
 	}
 	keys := make([]string, 0, len(qs.Questions))
-	for k := range qs.Questions {
+	qhash := make(map[string]string, len(qs.Questions))
+	for k, q := range qs.Questions {
 		keys = append(keys, k)
+		qhash[k] = QuestionFingerprint(r.provider.Model(), q)
 	}
-	have, err := r.store.HasItemDecisionsAtState(item.ID, qs.Name, st.Hash, keys)
+	sort.Strings(keys)
+	have, err := r.store.HasItemDecisionsAtState(item.ID, qs.Name, st.Hash, qhash)
 	if err != nil {
 		return false, err
 	}
@@ -385,6 +411,7 @@ func (r *Runner) Evaluate(ctx context.Context, itemID, setName string) (bool, er
 			Provider:       r.provider.Name(),
 			Model:          r.provider.Model(),
 			StateHash:      st.Hash,
+			QuestionHash:   qhash[key],
 			ItemSeq:        item.Seq,
 			StateTruncated: st.Truncated || usage.StateTruncated,
 		})
@@ -441,22 +468,63 @@ func (r *Runner) Decisions(itemID string) ([]models.ItemDecision, error) {
 		}
 		return nil, err
 	}
+	model := r.provider.Model()
 	for i := range rows {
-		rows[i].Current = rows[i].StateHash == st.Hash
+		// Current needs all three to still hold: the item state, and the
+		// question as registered now under the model pinned now. A set or key
+		// no longer registered has no "now" to match, so it is not current.
+		qhashNow := ""
+		if qs, ok := r.registry.Get(rows[i].QuestionSet); ok {
+			if q, ok := qs.Questions[rows[i].QuestionKey]; ok {
+				qhashNow = QuestionFingerprint(model, q)
+			}
+		}
+		rows[i].Current = rows[i].StateHash == st.Hash && qhashNow != "" && rows[i].QuestionHash == qhashNow
 	}
 	return rows, nil
 }
 
 // Job-handling bounds.
 const (
-	// maxDecisionAttempts: a job failing this many times in a row is dropped.
-	// The next write to the item re-enqueues it, so dropping loses nothing a
-	// user did — it stops a permanently-refused state (an over-budget item)
-	// from costing a call every backoff forever.
+	// maxDecisionAttempts: a job PERMANENTLY refused this many times in a row
+	// is dropped. The next write to the item re-enqueues it, so dropping loses
+	// nothing a user did — it stops a refused state (an over-budget item, a
+	// malformed request) from costing a call every backoff forever. A
+	// TRANSIENT failure is never dropped; see isPermanentFailure.
 	maxDecisionAttempts = 5
-	// decisionRetryBase is the first backoff; it doubles per attempt.
+	// decisionRetryBase is the first backoff; it doubles per attempt...
 	decisionRetryBase = 30 * time.Second
+	// ...up to decisionRetryCap, which is what a provider outage costs: one
+	// call per owed job per hour until the provider is back.
+	decisionRetryCap = time.Hour
 )
+
+// isPermanentFailure reports whether a failed evaluation says something about
+// the REQUEST rather than about the provider's availability (codex round 6).
+//
+// Permanent: the provider answered 4xx other than 429 — the request itself is
+// the problem, and asking again unchanged gets the same answer. Everything else
+// is transient: 5xx, 429/529 after the provider's own retries, transport
+// errors. A transient failure must never drop the job, or an outage would
+// silently discard every evaluation owed while it lasted.
+func isPermanentFailure(err error) bool {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.StatusCode >= 400 && apiErr.StatusCode < 500 && apiErr.StatusCode != http.StatusTooManyRequests
+	}
+	return false
+}
+
+func decisionBackoff(attempts int) time.Duration {
+	d := decisionRetryBase
+	for i := 0; i < attempts && d < decisionRetryCap; i++ {
+		d *= 2
+	}
+	if d > decisionRetryCap {
+		d = decisionRetryCap
+	}
+	return d
+}
 
 // RunOnce evaluates up to limit owed jobs, CLAIMING ONE AT A TIME, and
 // returns how many it claimed.
@@ -508,14 +576,15 @@ func (r *Runner) runJob(ctx context.Context, j store.DecisionJob) {
 		serr = r.store.CompleteDecisionJob(j)
 	case errors.Is(err, ErrItemGone), errors.Is(err, ErrUnknownSet), errors.Is(err, ErrSetNotApplicable):
 		serr = r.store.DropDecisionJob(j)
-	case j.Attempts+1 >= maxDecisionAttempts:
-		slog.Warn("decision job dropped after repeated failures",
+	case isPermanentFailure(err) && j.Attempts+1 >= maxDecisionAttempts:
+		slog.Warn("decision job dropped after repeated refusals",
 			"item_id", j.ItemID, "question_set", j.QuestionSet, "attempts", j.Attempts+1, "error", err)
 		serr = r.store.DropDecisionJob(j)
 	default:
 		slog.Info("decision job failed, will retry",
-			"item_id", j.ItemID, "question_set", j.QuestionSet, "attempt", j.Attempts+1, "error", err)
-		serr = r.store.FailDecisionJob(j, err, decisionRetryBase<<j.Attempts)
+			"item_id", j.ItemID, "question_set", j.QuestionSet, "attempt", j.Attempts+1,
+			"permanent", isPermanentFailure(err), "error", err)
+		serr = r.store.FailDecisionJob(j, err, decisionBackoff(j.Attempts))
 	}
 	if serr != nil {
 		// The claim's lease still bounds this: an unrecorded outcome leaves

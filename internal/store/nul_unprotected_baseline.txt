@@ -98,6 +98,7 @@ item_decisions.item_id
 item_decisions.kind
 item_decisions.model
 item_decisions.provider
+item_decisions.question_hash
 item_decisions.question_key
 item_decisions.question_set
 item_decisions.state_hash

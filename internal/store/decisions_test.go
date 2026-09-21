@@ -270,10 +270,10 @@ func TestItemDecisions_LatestHidesOlderStates(t *testing.T) {
 	if total != 3 {
 		t.Fatalf("item_decisions holds %d rows; want 3 (older state kept for the audit, duplicate refused)", total)
 	}
-	if ok, _ := s.HasItemDecisionsAtState(item.ID, "triage", "h2", []string{"urgent", "stale"}); ok {
+	if ok, _ := s.HasItemDecisionsAtState(item.ID, "triage", "h2", map[string]string{"urgent": "", "stale": ""}); ok {
 		t.Fatal("HasItemDecisionsAtState reported a complete set at h2, which has only one of two keys")
 	}
-	if ok, _ := s.HasItemDecisionsAtState(item.ID, "triage", "h1", []string{"urgent", "stale"}); !ok {
+	if ok, _ := s.HasItemDecisionsAtState(item.ID, "triage", "h1", map[string]string{"urgent": "", "stale": ""}); !ok {
 		t.Fatal("HasItemDecisionsAtState missed the complete set at h1")
 	}
 }
@@ -379,11 +379,16 @@ func TestItemDecisions_HasStateCountsOnlyTheAskedKeys(t *testing.T) {
 	if err := s.InsertItemDecisions(ws.ID, []models.ItemDecision{row("urgent"), row("old_name")}); err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := s.HasItemDecisionsAtState(item.ID, "triage", "h", []string{"urgent", "new_name"}); err != nil || ok {
+	if ok, err := s.HasItemDecisionsAtState(item.ID, "triage", "h", map[string]string{"urgent": "", "new_name": ""}); err != nil || ok {
 		t.Fatalf("renamed key: HasItemDecisionsAtState = %v, %v; want false (new_name has no answer)", ok, err)
 	}
-	if ok, _ := s.HasItemDecisionsAtState(item.ID, "triage", "h", []string{"urgent", "added"}[:1]); !ok {
+	if ok, _ := s.HasItemDecisionsAtState(item.ID, "triage", "h", map[string]string{"urgent": ""}); !ok {
 		t.Fatal("control: a set whose every asked key is stored must read complete")
+	}
+	// Codex round 6: the same key under a different question hash (a reworded
+	// question, or a new model) is not an answer.
+	if ok, _ := s.HasItemDecisionsAtState(item.ID, "triage", "h", map[string]string{"urgent": "reworded"}); ok {
+		t.Fatal("an answer to an older question definition counted as an answer to the new one")
 	}
 }
 
