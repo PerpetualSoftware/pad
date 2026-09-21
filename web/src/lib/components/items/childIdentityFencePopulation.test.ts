@@ -162,9 +162,6 @@ const KNOWN_UNFENCED: string[] = [
 	// ItemAttachmentStrip: confirmDelete was fixed in BUG-3095 (row 9). These
 	// three are its await-side siblings, including the delete's own
 	// continuation and the global deletion broadcast it fires.
-	'lib/components/items/ItemAttachmentStrip.svelte::performDelete',
-	'lib/components/items/ItemAttachmentStrip.svelte::revalidateAfterRestore',
-	'lib/components/items/ItemAttachmentStrip.svelte::<nested in $effect>',
 
 	// The two backlink panels: identical shape, commit-only, no post-await
 	// request. Fenced the same way in PR B.
