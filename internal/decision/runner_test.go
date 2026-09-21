@@ -328,3 +328,22 @@ func TestRegistry_RefusesDuplicatesAndInvalidSets(t *testing.T) {
 		t.Fatalf("SetsFor(tasks) = %s", got)
 	}
 }
+
+// A pass cancelled by shutdown hands its claims back without counting an
+// attempt and without calling the provider.
+func TestRunner_CancelledPassReleasesWithoutCountingAFailure(t *testing.T) {
+	fx := newRunnerFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	n, err := fx.r.RunOnce(ctx, "stopping", 10, time.Hour)
+	if err != nil || n != 1 {
+		t.Fatalf("RunOnce claimed %d (err %v); want 1", n, err)
+	}
+	if fx.called() != 0 {
+		t.Fatalf("a cancelled pass called the provider %d times", fx.called())
+	}
+	j, _ := fx.s.GetDecisionJob(fx.item.ID, triageSet)
+	if j == nil || j.Attempts != 0 || j.ClaimedBy != "" {
+		t.Fatalf("after a cancelled pass the job is %+v; want owed, unclaimed, attempts=0", j)
+	}
+}
