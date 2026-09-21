@@ -727,7 +727,15 @@ func showCmd() *cobra.Command {
 		Use:     "show <ref>",
 		Aliases: []string{"read"},
 		Short:   "Show item detail (fields + content)",
-		Args:    cobra.ExactArgs(1),
+		Long: `Show item detail (fields + content).
+
+When the server marks the stored body as BEHIND the item's live collaborative
+document (an editor holds unflushed edits), the default table output says so on
+its FIRST line, on stdout. --format markdown does NOT: that output is the body
+verbatim, for redirecting into a file and writing back with "item update
+--stdin", so a notice there would become part of the body. It prints the notice
+on stderr instead. --format json carries it as the content_state field.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			ws := getWorkspace()
@@ -783,7 +791,12 @@ func showCmd() *cobra.Command {
 				return nil
 			}
 
-			// Table format: show metadata + fields + content
+			// Table format: show metadata + fields + content. A stale body is
+			// announced FIRST and on STDOUT here (TASK-3132): the table is the
+			// human surface, and an agent piping it through `tail`/`head` or
+			// discarding stderr never saw the old stderr-only notice. Markdown
+			// keeps stderr (above) because its stdout is the body itself.
+			printStaleBodyLine(item)
 			cli.PrintItemMeta(item)
 
 			// Print fields (skip internal keys like github_pr which are shown separately)
@@ -814,11 +827,10 @@ func showCmd() *cobra.Command {
 				}
 			}
 
-			// Before the empty-body check, not inside it: an item whose STORED
-			// body is empty while its document holds the real text is exactly
-			// this bug's shape, and it is the case where a reader has least to
-			// go on — they see nothing at all (codex round 3).
-			warnContentStale(item)
+			// The stale-body notice for this format is the first line above,
+			// printed before the empty-body check for the reason it used to sit
+			// here: an item whose STORED body is empty while its document holds
+			// the real text is exactly that case (codex round 3).
 			if item.Content != "" {
 				fmt.Println(item.Content)
 			}
@@ -1064,7 +1076,7 @@ markdown goes to that live document first and the stored copy is updated only by
 a later collab-snapshot flush — usually from the tab that applied it, though any
 such write updates the row. The response echoes what you sent and carries
 warnings.content_outcome=applied_pending_flush; a warning line is printed to
-stderr. A "pad item show" before such a flush lands reads the stored copy and shows
+stderr, and the success line on stdout says the body went to the open editor. A "pad item show" before such a flush lands reads the stored copy and shows
 the PREVIOUS content — that is the lag, not a failed write. Nothing here
 guarantees the flush happens (see BUG-3000), so the window has no stated
 duration.
@@ -1424,14 +1436,20 @@ Examples:
 				return cli.PrintJSON(updated)
 			}
 
+			// The body outcome rides on the SAME stdout line (TASK-3132), so
+			// it survives `| tail -1` and a discarded stderr: "Updated REF"
+			// alone was identical for a one-character edit, a full replace and
+			// a write that went to an open editor.
+			outcome := ""
+			if input.Content != nil {
+				outcome = bodyOutcome(len(item.Content), len(*input.Content), clearContent,
+					updated.Warnings != nil && updated.Warnings.ContentOutcome == models.ContentOutcomeAppliedPendingFlush)
+			}
 			ref := cli.ItemRef(*updated)
 			if ref != "" {
-				fmt.Printf("Updated %s %q\n", ref, updated.Title)
+				fmt.Printf("Updated %s %q%s\n", ref, updated.Title, outcome)
 			} else {
-				fmt.Printf("Updated %q (%s)\n", updated.Title, updated.Slug)
-			}
-			if clearContent {
-				fmt.Println("  body cleared")
+				fmt.Printf("Updated %q (%s)%s\n", updated.Title, updated.Slug, outcome)
 			}
 			if summary := cli.FormatFieldSummary(updated.Fields); summary != "" {
 				fmt.Printf("  %s\n", summary)
@@ -1441,8 +1459,8 @@ Examples:
 	}
 
 	cmd.Flags().StringVar(&title, "title", "", "update title")
-	cmd.Flags().StringVar(&content, "content", "", "update body content")
-	cmd.Flags().BoolVar(&useStdin, "stdin", false, "read content from stdin")
+	cmd.Flags().StringVar(&content, "content", "", "REPLACE the whole body with this text (an empty value is ignored; use --clear-content)")
+	cmd.Flags().BoolVar(&useStdin, "stdin", false, "REPLACE the whole body with what is read from stdin (a blank read is refused)")
 	cmd.Flags().StringVar(&status, "status", "", "update status field")
 	cmd.Flags().StringVar(&priority, "priority", "", "update priority field")
 	cmd.Flags().StringVar(&assignee, "assign", "", "assign to user (name or email)")
@@ -4066,4 +4084,42 @@ func readStdinBody(verb string) (string, error) {
 		return "", fmt.Errorf("--stdin: the body read from stdin is empty or whitespace-only, so the %s was refused and nothing was sent (a lost heredoc looks like this); %s", verb, hint)
 	}
 	return string(data), nil
+}
+
+// bodyOutcome is the suffix `item update` appends to its success line when the
+// update wrote the body (TASK-3132). before is the STORED body's size when the
+// update fetched it; after is what was sent. On the applier path the body went
+// to an open editor rather than to the stored copy, so the line says the
+// stored copy is unchanged and that a following show returns the OLD body.
+func bodyOutcome(before, after int, cleared, pendingFlush bool) string {
+	if pendingFlush {
+		return fmt.Sprintf(` — body sent to the open editor (%s bytes); stored copy still %s bytes until a tab flushes — a following "pad item show" will return the OLD body`,
+			thousands(after), thousands(before))
+	}
+	verb := "replaced"
+	if cleared {
+		verb = "cleared"
+	}
+	return fmt.Sprintf(" — body %s, %s → %s bytes", verb, thousands(before), thousands(after))
+}
+
+// thousands renders n with comma separators: 16958 → "16,958".
+func thousands(n int) string {
+	s := strconv.Itoa(n)
+	if n < 0 {
+		return "-" + thousands(-n)
+	}
+	for i := len(s) - 3; i > 0; i -= 3 {
+		s = s[:i] + "," + s[i:]
+	}
+	return s
+}
+
+// printStaleBodyLine is the TABLE-format stale-body notice: STDOUT, first line
+// (TASK-3132). The markdown and JSON formats do not use it — see showCmd's help.
+func printStaleBodyLine(item *models.Item) {
+	if item == nil || item.ContentState != models.ContentOutcomeAppliedPendingFlush {
+		return
+	}
+	fmt.Println(`⚠ stale body: an editor holds edits not yet written back, so the content below is the PREVIOUS body; it catches up when a tab next flushes the item.`)
 }
