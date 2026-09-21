@@ -424,7 +424,7 @@ func inUnit(f float64) bool { return f >= 0 && f <= 1 }
 // structured state that does not fit gets the provider's own refusal, which
 // names the problem correctly.
 func (p *typesafeProvider) fitState(state any, questions map[string]wireQuestion) (any, bool, error) {
-	// Reserve EXACTLY what everything but the state costs, by marshalling
+	// Reserve exactly what everything but the state costs, by marshalling
 	// the request with an empty string state: model name, questions and
 	// punctuation, whatever their size. A fixed allowance here let a long
 	// model name push a cut-to-the-limit request over the budget.
@@ -433,10 +433,15 @@ func (p *typesafeProvider) fitState(state any, questions map[string]wireQuestion
 		return nil, false, fmt.Errorf("decision: marshal questions: %w", err)
 	}
 	budgetChars := int(float64(maxRequestTokens) * charsPerToken)
-	// The empty state occupies two bytes (""), which the state's own
-	// marshalled length below counts again.
+	// remaining is what the state VALUE may occupy, its quotes included —
+	// the envelope's own "" is subtracted back out because the state's
+	// marshalled length counts it again.
+	//
+	// Below 2 there is no room for any string state at all, not even "":
+	// returning an empty state there would still send a request one or two
+	// bytes over (review round 3), so it is the same refusal as below 0.
 	remaining := budgetChars - (len(envelope) - 2)
-	if remaining < 0 {
+	if remaining < 2 {
 		return nil, false, fmt.Errorf("decision: questions alone exceed the %d-token budget", maxRequestTokens)
 	}
 
@@ -492,8 +497,12 @@ func marshalledLen(s string) int {
 	return len(b)
 }
 
-// runeBoundaryAtOrBefore returns the largest index <= i that begins a UTF-8
-// sequence, so a cut there leaves valid UTF-8.
+// runeBoundaryAtOrBefore returns the largest index <= i that is not a UTF-8
+// continuation byte, so a cut there never SPLITS a rune: valid UTF-8 input
+// yields a valid prefix. It does not repair input that was already invalid —
+// a byte like 0xff counts as a boundary — and nothing here does: json.Marshal
+// replaces invalid bytes with U+FFFD whether or not the state was cut, and
+// marshalledLen measures the replaced form, so the budget still holds.
 func runeBoundaryAtOrBefore(s string, i int) int {
 	if i < 0 {
 		return 0

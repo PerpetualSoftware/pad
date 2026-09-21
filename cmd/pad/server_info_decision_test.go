@@ -152,6 +152,15 @@ func TestServerInfoCarriesTheDecisionProviderThroughBothDoors(t *testing.T) {
 		t.Errorf("human-readable output leaked key material:\n%s", out)
 	}
 
+	// The printer must print the REPORT, not re-resolve the environment: a
+	// report carrying values the environment does not hold tells the two
+	// apart (review round 3).
+	report.Config.DecisionProvider = serverInfoDecision{Name: "report-only-name", Model: "report-only-model"}
+	out = captureStdout(t, func() { printServerInfo(report) })
+	if !strings.Contains(out, "report-only-name (report-only-model)") {
+		t.Errorf("printServerInfo did not print the report's decision provider:\n%s", out)
+	}
+
 	// Unconfigured: the line is still printed, and says none.
 	t.Setenv("PAD_DECISION_PROVIDER", "")
 	t.Setenv("PAD_TYPESAFE_API_KEY", "")

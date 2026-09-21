@@ -179,3 +179,48 @@ func TestPartialBodyReadIsReachableWithErrorsIs(t *testing.T) {
 		t.Error("a complete error body reported an unexpected EOF")
 	}
 }
+
+// Review round 3: with 0 or 1 bytes left for the state, fitState returned
+// "" — which still marshals to two bytes, so the request went over budget.
+// This walks `remaining` across the edge by growing the instructions a byte
+// at a time and holds one invariant at every step: either an error, or a
+// request that fits.
+func TestFitStateHoldsTheBudgetAtTheQuoteEdge(t *testing.T) {
+	p := newTypesafe("test-key", "jev-1.13.0")
+	budget := int(float64(maxRequestTokens) * charsPerToken)
+	seen := map[int]bool{}
+
+	for n := budget - 120; n < budget; n++ {
+		wire := map[string]wireQuestion{"q": {Type: "noul", Instructions: strings.Repeat("i", n)}}
+		env, err := json.Marshal(wireRequest{Model: p.model, State: "", Questions: wire})
+		if err != nil {
+			t.Fatal(err)
+		}
+		remaining := budget - (len(env) - 2)
+		if remaining < -2 || remaining > 5 {
+			continue
+		}
+		seen[remaining] = true
+		for _, state := range []string{"", "abc", strings.Repeat("x", 50)} {
+			got, _, err := p.fitState(state, wire)
+			if err != nil {
+				if remaining >= 2 {
+					t.Errorf("remaining=%d state=%q: refused although a state fits: %v", remaining, state, err)
+				}
+				continue
+			}
+			full, _ := json.Marshal(wireRequest{Model: p.model, State: got, Questions: wire})
+			if len(full) > budget {
+				t.Errorf("remaining=%d state=%q: request is %d bytes, %d over the budget",
+					remaining, state, len(full), len(full)-budget)
+			}
+		}
+	}
+	// Precondition: the sweep must actually have crossed the edge, or it
+	// asserted nothing about it.
+	for _, r := range []int{0, 1, 2} {
+		if !seen[r] {
+			t.Errorf("sweep never produced remaining=%d; widen it", r)
+		}
+	}
+}
