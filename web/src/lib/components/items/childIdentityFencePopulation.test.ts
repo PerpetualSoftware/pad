@@ -158,10 +158,6 @@ const KNOWN_UNFENCED: string[] = [
 
 	// EditCollectionModal: handleArchive is the REQUEST row (delete -> list ->
 	// delete). The other three commit after their await.
-	'lib/components/collections/EditCollectionModal.svelte::handleArchive',
-	'lib/components/collections/EditCollectionModal.svelte::handleSave',
-	'lib/components/collections/EditCollectionModal.svelte::loadCollectionOptions',
-	'lib/components/collections/EditCollectionModal.svelte::loadPreviewContext',
 
 	// ItemAttachmentStrip: confirmDelete was fixed in BUG-3095 (row 9). These
 	// three are its await-side siblings, including the delete's own
@@ -598,6 +594,25 @@ function clauseBound(ancestors: Node[], n: Node, preceding: Node[]): number {
 	return bound;
 }
 
+/**
+ * The end of the latest try statement that precedes `n`, holds one of the
+ * `preceding` awaits in its BLOCK, and has a catch with no fence call in it —
+ * so the catch path reaches `n` without passing any fence inside the try.
+ * -Infinity when there is none. A fence anywhere in the catch counts: the
+ * guard checks that a fence is CALLED on the path, not what its branch does
+ * (declared gap (b)).
+ */
+function postTryBound(fn: Node, n: Node, preceding: Node[], fenceOffsets: number[]): number {
+	let bound = -Infinity;
+	walk(fn, (t) => {
+		if (t.type !== 'TryStatement' || !t.handler || t.end > n.start) return;
+		if (!preceding.some((a) => t.block.start <= a.start && t.block.end >= a.end)) return;
+		const catchFenced = fenceOffsets.some((o) => o > t.handler.start && o < t.handler.end);
+		if (!catchFenced) bound = Math.max(bound, t.end);
+	});
+	return bound;
+}
+
 function analyseSource(path: string, code: string): { findings: Finding[]; fenced: string[] } {
 	let src: AstSource;
 	try {
@@ -710,6 +725,11 @@ function analyseSource(path: string, code: string): { findings: Finding[]; fence
 			// inside the clause itself. A fence called before the whole try still
 			// counts: returning there never enters it.
 			lowerBound = Math.max(lowerBound, clauseBound(ancestors, n, preceding));
+			// The same exception edge, one statement further out: a send AFTER a
+			// try/catch is reached from the catch too, bypassing any fence in the
+			// try block (found writing EditCollectionModal.loadPreviewContext,
+			// whose placeholder commit falls through from an empty catch).
+			lowerBound = Math.max(lowerBound, postTryBound(fn, n, preceding, fenceOffsets));
 			const ok = fenceOffsets.some((o) => o > lowerBound && o < n.start);
 
 			const label = `${path}::${name}`;
@@ -863,6 +883,22 @@ describe('BUG-3105 — the literal-in-finally refinement, with its controls', ()
 			'\t\t} catch (e) {\n\t\t\tdata = e;\n\t\t} finally {'
 		);
 		expect(rows(code)).toEqual(['go:data = …']);
+	});
+
+	it('CONTROL: a commit AFTER a try/catch is not protected by a fence in the try', () => {
+		const code = fixture('busy = false;').replace(
+			'\t\t} finally {\n\t\t\tbusy = false;\n\t\t}',
+			'\t\t} catch {\n\t\t\t// swallowed\n\t\t}\n\t\tdata = null;'
+		);
+		expect(rows(code)).toEqual(['go:data = …']);
+	});
+
+	it('a fence in the catch covers the fall-through after the try', () => {
+		const code = fixture('busy = false;').replace(
+			'\t\t} finally {\n\t\t\tbusy = false;\n\t\t}',
+			'\t\t} catch {\n\t\t\tif (!isSameIdentity()) return;\n\t\t}\n\t\tdata = null;'
+		);
+		expect(rows(code)).toEqual([]);
 	});
 
 	it('a fence called BEFORE the try protects its finally — returning there never enters it', () => {

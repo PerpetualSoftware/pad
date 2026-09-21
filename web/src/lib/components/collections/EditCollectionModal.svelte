@@ -2,6 +2,7 @@
 	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import { isRelationType } from '$lib/items/relationFieldTypes';
 	import { api, isConflictOrNotFound } from '$lib/api/client';
+	import { authStore } from '$lib/stores/auth.svelte';
 	import type { Collection, CollectionUpdate, CollectionSettings, FieldDef, FieldMigration, QuickAction } from '$lib/types';
 	import { parseSchema, parseSettings } from '$lib/types';
 	import EmojiPickerButton from '$lib/components/common/EmojiPickerButton.svelte';
@@ -93,6 +94,11 @@
 		// slug with a DIFFERENT collection 409s instead of archiving the wrong
 		// one — closing the resolve-by-id → delete-by-slug TOCTOU.
 		const editedExpectedUpdatedAt = expectedUpdatedAt;
+		// IDENTITY fence (BUG-3105). The seeded-identity captures above are
+		// COLLECTION identity; none moves on a sign-out. This path chains
+		// delete -> list -> delete, so the second DELETE — destructive — would
+		// otherwise be issued on behalf of a user who is gone.
+		const isSameIdentity = authStore.identityFence();
 		const finishArchived = () => {
 			toastStore.show(`Archived "${editedCollectionName}"`, 'success');
 			onupdated(undefined, editedCollectionId, editedCollectionSlug, editedWsSlug);
@@ -100,8 +106,10 @@
 		};
 		try {
 			await api.collections.delete(editedWsSlug, editedCollectionSlug, editedExpectedUpdatedAt);
+			if (!isSameIdentity()) return;
 			finishArchived();
 		} catch (err) {
+			if (!isSameIdentity()) return;
 			// A concurrent RENAME can kill the seeded slug (404) or 409 the OCC
 			// token (BUG-2265 Pattern C). Resolve the SAME collection by its
 			// STABLE id and retry the delete against its current slug + FRESH
@@ -110,16 +118,20 @@
 			if (isConflictOrNotFound(err)) {
 				try {
 					const list = await api.collections.list(editedWsSlug);
+					if (!isSameIdentity()) return;
 					const fresh = list.find((c) => c.id === editedCollectionId);
 					if (!fresh) {
 						finishArchived();
 						return;
 					}
 					await api.collections.delete(editedWsSlug, fresh.slug, fresh.updated_at);
+					if (!isSameIdentity()) return;
 					finishArchived();
 					return;
 				} catch {
-					// fall through to the generic error
+					// fall through to the generic error — unless the failure
+					// belongs to the previous identity (BUG-3105).
+					if (!isSameIdentity()) return;
 				}
 			}
 			toastStore.show('Failed to archive collection', 'error');
@@ -176,10 +188,13 @@
 
 	async function loadCollectionOptions() {
 		const token = ++collectionsRequestToken;
+		// IDENTITY fence (BUG-3105): the request token orders reopens, not users.
+		const isSameIdentity = authStore.identityFence();
 		collectionOptions = [];
 		try {
 			const list = await api.collections.list(wsSlug);
 			if (token !== collectionsRequestToken) return;
+			if (!isSameIdentity()) return;
 			collectionOptions = list.map((c) => ({
 				slug: c.slug,
 				name: c.name,
@@ -187,6 +202,7 @@
 			}));
 		} catch {
 			if (token !== collectionsRequestToken) return;
+			if (!isSameIdentity()) return;
 			collectionOptions = [];
 		}
 	}
@@ -227,10 +243,14 @@
 	let previewContext = $state<PreviewContext>(placeholderContext(''));
 
 	async function loadPreviewContext() {
+		// IDENTITY fence (BUG-3105). The preview is built from an item the
+		// CALLER can see; under the next identity it may be one they cannot.
+		const isSameIdentity = authStore.identityFence();
 		try {
 			const items = await api.items.listByCollection(wsSlug, collection.slug, {
 				limit: 1
 			});
+			if (!isSameIdentity()) return;
 			if (items && items.length > 0) {
 				// WITH A RESOLVER (BUG-3067 round 5). `contextFromItem` defaults it
 				// to one that resolves nothing, so this preview rendered every
@@ -244,6 +264,9 @@
 		} catch {
 			// Fall through to placeholder.
 		}
+		// Checked again HERE, not only in the try: the catch path reaches this
+		// line without passing the check above.
+		if (!isSameIdentity()) return;
 		previewContext = placeholderContext(collection.name);
 	}
 
@@ -484,6 +507,8 @@
 		const editedCollectionId = seededCollectionId;
 		const editedCollectionSlug = seededCollectionSlug;
 		const editedWsSlug = seededWsSlug;
+		// IDENTITY fence (BUG-3105) — the seeded captures are collection identity.
+		const isSameIdentity = authStore.identityFence();
 		try {
 			// Build existing fields back into FieldDef[]
 			const updatedExisting: FieldDef[] = existingFields.map((f) => {
@@ -658,6 +683,7 @@
 			}
 
 			const updated = await api.collections.update(editedWsSlug, editedCollectionSlug, data);
+			if (!isSameIdentity()) return;
 			// Keep the token fresh in case the modal stays open (the parent may
 			// leave it mounted after a save) so a subsequent edit doesn't
 			// spuriously 409 against our own just-committed change.
@@ -665,6 +691,7 @@
 			toastStore.show(`Updated ${name.trim()}`, 'success');
 			onupdated(updated, editedCollectionId, editedCollectionSlug, editedWsSlug);
 		} catch (err) {
+			if (!isSameIdentity()) return;
 			if (isConflictOrNotFound(err)) {
 				// The collection changed elsewhere — a 409 (settings/schema
 				// changed) OR a 404 (a RENAME killed the slug we targeted). Both
