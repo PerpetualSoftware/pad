@@ -165,21 +165,12 @@ const KNOWN_UNFENCED: string[] = [
 
 	// The two backlink panels: identical shape, commit-only, no post-await
 	// request. Fenced the same way in PR B.
-	'lib/components/BacklinksPanel.svelte::loadFirstPage',
-	'lib/components/BacklinksPanel.svelte::loadMore',
-	'lib/components/RelationBacklinksPanel.svelte::loadFirstPage',
-	'lib/components/RelationBacklinksPanel.svelte::loadMore',
 
 	// QuickActionsMenu: handleAction / handleSaveNewAction were REQUEST rows;
 	// readPresence commits presence state after its await.
-	'lib/components/common/QuickActionsMenu.svelte::handleAction',
-	'lib/components/common/QuickActionsMenu.svelte::handleSaveNewAction',
-	'lib/components/common/QuickActionsMenu.svelte::readPresence',
 
 	// PushToAgentDialog: handleSend was the REQUEST row; refreshPresence is its
 	// commit counterpart.
-	'lib/components/items/PushToAgentDialog.svelte::handleSend',
-	'lib/components/items/PushToAgentDialog.svelte::refreshPresence',
 
 	// FieldEditor: createRelationTarget commits through the parent's onchange,
 	// which reaches ItemDetail.updateField and issues a PATCH. It is also

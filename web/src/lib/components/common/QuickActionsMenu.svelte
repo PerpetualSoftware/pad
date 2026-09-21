@@ -5,6 +5,7 @@
 	import type { QuickAction, Item, Collection } from '$lib/types';
 	import { parseFields, formatItemRef, parseSettings } from '$lib/types';
 	import { api, isConflictOrNotFound } from '$lib/api/client';
+	import { authStore } from '$lib/stores/auth.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
 	import { collapsePushMessage } from '$lib/push/message';
@@ -194,7 +195,12 @@
 
 	async function readPresence(gen: number): Promise<void> {
 		const seq = ++presenceSeq;
-		const stillCurrent = () => gen === presenceGen && seq > presenceAppliedSeq;
+		// IDENTITY fence (BUG-3105), folded into `stillCurrent`: the session
+		// list is the CALLER's sessions, and neither the generation nor the
+		// sequence moves on a sign-out.
+		const isSameIdentity = authStore.identityFence();
+		const stillCurrent = () =>
+			gen === presenceGen && seq > presenceAppliedSeq && isSameIdentity();
 		try {
 			const resp = await api.sessions.list();
 			if (!stillCurrent()) return;
@@ -351,14 +357,21 @@
 		// poll interval after a 'known' answer expired.
 		const known = currentPresence();
 		const knownCount = known?.state === 'known' ? known.count : 0;
+		// IDENTITY fence (BUG-3105). The push has no idempotency key, so the
+		// fence refuses to REPORT an outcome under the next identity; it never
+		// re-sends. The toast describes a push the previous user made.
+		const isSameIdentity = authStore.identityFence();
 		const route = routePrompt(prompt, target, known);
 		open = false;
 		resetCreateForm();
 
 		if (route.via === 'clipboard' || !target) {
 			// Still inside the click's user gesture — see the note above.
-			await copyAndAnnounce(prompt, route.via === 'clipboard' ? route.because : 'not-addressable');
-			return;
+			// RETURNED, not awaited-then-returned: identical here (nothing follows
+			// and no try encloses it), but an `await` in this branch reads to the
+			// position-based fence guard as a suspension ahead of the push below,
+			// which it never is (BUG-3105).
+			return copyAndAnnounce(prompt, route.via === 'clipboard' ? route.because : 'not-addressable');
 		}
 
 		dispatching = true;
@@ -366,6 +379,7 @@
 			// NEVER retried automatically, here or anywhere else: the endpoint
 			// carries no idempotency key.
 			const result = await api.items.push(ws, target, collapsePushMessage(prompt));
+			if (!isSameIdentity()) return;
 			// The SERVER's count wins over the preflight one (codex round 5).
 			// `knownCount` is whatever the last presence poll saw, which may
 			// be many seconds stale; the response's `delivered_sessions` is
@@ -385,6 +399,7 @@
 					: result.delivered_sessions;
 			announce({ kind: 'pushed', count });
 		} catch (err) {
+			if (!isSameIdentity()) return;
 			if (isPrePublishRefusal(err)) {
 				// The server refused before publishing, so nothing went out and
 				// handing the text over cannot deliver it twice — offer the copy.
@@ -464,6 +479,10 @@
 		const ws = wsSlug;
 		const baseCollection = collection;
 		const slug = baseCollection.slug;
+		// IDENTITY fence (BUG-3105). The collection captures above are not
+		// identity; the 409 recovery below issues a list and a SECOND update,
+		// neither of which may go out for a user who has signed out.
+		const isSameIdentity = authStore.identityFence();
 		try {
 			const icon = newIcon.trim();
 			const newAction: QuickAction = {
@@ -501,7 +520,9 @@
 				// resolve the collection by its STABLE id, re-append onto its
 				// fresh settings, and retry ONCE. Surface only if it's truly gone.
 				if (!isConflictOrNotFound(err)) throw err;
+				if (!isSameIdentity()) return;
 				const list = await api.collections.list(ws);
+				if (!isSameIdentity()) return;
 				const fresh = list.find((c) => c.id === baseCollection.id);
 				if (!fresh) throw err; // collection gone (deleted) — surface it
 				updated = await api.collections.update(ws, fresh.slug, {
@@ -518,11 +539,13 @@
 			// callback — feeding it our old response would assign stale data to
 			// the wrong page (Codex switch-safety).
 			if (wsSlug !== ws || collection?.id !== baseCollection.id) return;
+			if (!isSameIdentity()) return;
 			toastStore.show('Saved', 'success');
 			oncollectionupdated?.(updated);
 			resetCreateForm();
 			open = false;
 		} catch (err) {
+			if (!isSameIdentity()) return;
 			toastStore.show(
 				err instanceof Error ? err.message : 'Failed to save quick action',
 				'error'
