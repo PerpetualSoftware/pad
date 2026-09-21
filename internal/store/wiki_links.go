@@ -789,6 +789,11 @@ func (s *Store) cascadeTitleRename(tx *sql.Tx, renamedItemID, workspaceID, oldTi
 			}
 			continue
 		}
+		// NOT a decision enqueue door (TASK-3117 ruling 3). This is a system
+		// fan-out rewrite: one title rename touches every matching item, so an enqueue
+		// per row would be an unbounded provider bill for one action. The rewrite
+		// DOES change hashed decision state, so each touched item's stored
+		// answers read current=false until its next direct write re-evaluates.
 		if _, err := tx.Exec(s.q(`
 			UPDATE items
 			SET content = ?,

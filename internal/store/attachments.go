@@ -1645,6 +1645,11 @@ func (s *Store) RemapAttachmentReferencesInWorkspace(workspaceID string, oldToNe
 		// list, which is the kind of claim that goes stale unread. The workspace
 		// seq lock this transaction already took above is the one the subquery
 		// needs, so this costs an indexed MAX(seq) per row and no new locking.
+		// NOT a decision enqueue door (TASK-3117 ruling 3). This is a system
+		// fan-out rewrite: one import remap touches every matching item, so an enqueue
+		// per row would be an unbounded provider bill for one action. The rewrite
+		// DOES change hashed decision state, so each touched item's stored
+		// answers read current=false until its next direct write re-evaluates.
 		if _, err := tx.Exec(s.q(`UPDATE items SET content = ?, fields = ?, seq = `+nextWorkspaceSeqSubquery+` WHERE id = ?`),
 			u.content, u.fields, workspaceID, u.id); err != nil {
 			return fmt.Errorf("update item %s: %w", u.id, err)

@@ -936,6 +936,11 @@ func (s *Store) applyFieldMigrationsTx(tx *sql.Tx, collectionID, workspaceID str
 			// a separate statement, so MAX(seq) advances between
 			// them inside the transaction — every row ends up with
 			// a unique sequential seq.
+			// NOT a decision enqueue door (TASK-3117 ruling 3). This is a system
+			// fan-out rewrite: one field migration touches every matching item, so an enqueue
+			// per row would be an unbounded provider bill for one action. The rewrite
+			// DOES change hashed decision state, so each touched item's stored
+			// answers read current=false until its next direct write re-evaluates.
 			updateSQL := s.q(fmt.Sprintf(`
 				UPDATE items
 				SET fields = %s,

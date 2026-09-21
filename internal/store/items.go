@@ -5218,6 +5218,12 @@ func (s *Store) moveItemWithPreCheckOnce(
 				return nil, err
 			}
 		}
+		// A move changes the collection, which is both hashed decision state
+		// and what selects the question sets, so it is an enqueue door
+		// (TASK-3117 ruling 3). Keyed on the TARGET collection's sets.
+		if err := s.enqueueDecisionJobsTx(tx, moved.WorkspaceID, moved.ID, moved.CollectionID); err != nil {
+			return nil, err
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
