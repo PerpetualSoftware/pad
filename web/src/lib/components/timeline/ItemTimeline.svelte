@@ -675,7 +675,7 @@
 		nextCursor = null;
 		hasMore = false;
 		// A paging request in flight belongs to the view being replaced. Its
-		// own cleanup is identity-guarded, so if it resolves while the reader
+		// own cleanup is guarded on item + workspace, so if it resolves while the reader
 		// is on another item nothing ever clears this and the button comes
 		// back permanently disabled (codex round 9).
 		loadingMore = false;
@@ -707,7 +707,7 @@
 			if (!owned && ticket <= viewApplied) return;
 			error = err?.message ?? 'Failed to load timeline';
 		} finally {
-			// Identity AND ownership: a stale request's cleanup must not clear
+			// Item/workspace AND ownership: a stale request's cleanup must not clear
 			// the spinner a newer one owns (codex round 7).
 			if (reqSlug === itemSlug && reqWs === wsSlug && (owned || ticket > viewApplied)) {
 				loading = false;
@@ -801,7 +801,7 @@
 	 */
 	async function loadMore(forKinds?: readonly string[]) {
 		if (loadingMore || !nextCursor) return;
-		// Capture identity before the await so a switch mid-flight can't append
+		// Capture the item + workspace before the await so a switch mid-flight can't append
 		// A's older page onto B's entries (TASK-2112).
 		const reqSlug = itemSlug;
 		const reqWs = wsSlug;
@@ -978,7 +978,7 @@
 	// `isRetry` flag is what bounds that to ONE extra attempt.
 	async function refreshFromSSE(isRetry = false) {
 		if (destroyed) return;
-		// Capture identity before the await — this same panel instance
+		// Capture the item + workspace before the await — this same panel instance
 		// serves the next item after a no-{#key} switch, so a debounced
 		// refresh resolving late must not merge A's entries into B (TASK-2112).
 		const reqSlug = itemSlug;
@@ -988,7 +988,7 @@
 		// dispatches it — it fires on a server event and on a 2s retry timer, so
 		// it can be mid-await at an instant no user action marks.
 		const isSameIdentity = authStore.identityFence();
-		// FRESHNESS, not just identity. The item/workspace check below catches
+		// FRESHNESS, not just item/workspace. The navigation check below catches
 		// a switch, but two refreshes of the SAME item can be in flight at
 		// once — the retry path fires 2s after a failure while a newly
 		// debounced one is already running — and they can resolve out of
@@ -1167,8 +1167,8 @@
 		unsubscribe();
 		// The debounce timer AND the retry timer both live in `sseRefreshTimer`,
 		// and a rejected request can schedule a retry from its own catch AFTER
-		// teardown — the identity fence (reqSlug/reqWs) is not a teardown fence,
-		// since a remounted panel can legitimately hold the same identity. Clear
+		// teardown — the navigation fence (reqSlug/reqWs) is not a teardown fence,
+		// since a remounted panel can legitimately hold the same item. Clear
 		// the timer and latch `destroyed` so neither a pending debounce nor a late
 		// failure can fire into a dead component (found in review of BUG-2508).
 		destroyed = true;
@@ -1197,7 +1197,7 @@
 	// Posts a new comment. Throws on failure so CommentEditor preserves the
 	// draft; clears itself on success.
 	async function submitComment(body: string) {
-		// Capture identity before the await so a mid-flight item switch can't
+		// Capture the item + workspace before the await so a mid-flight item switch can't
 		// leak A's error into B's view or refresh B off A's mutation (TASK-2112).
 		// `submitting` is a composer busy flag (not item-scoped load state), so
 		// it's always cleared in finally — the switched-to composer must not
