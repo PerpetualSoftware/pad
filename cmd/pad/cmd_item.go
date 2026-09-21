@@ -1076,7 +1076,7 @@ markdown goes to that live document first and the stored copy is updated only by
 a later collab-snapshot flush — usually from the tab that applied it, though any
 such write updates the row. The response echoes what you sent and carries
 warnings.content_outcome=applied_pending_flush; a warning line is printed to
-stderr, and the success line on stdout says the body went to the open editor. A "pad item show" before such a flush lands reads the stored copy and shows
+stderr, and the last line of stdout says the body went to the open editor. A "pad item show" before such a flush lands reads the stored copy and shows
 the PREVIOUS content — that is the lag, not a failed write. Nothing here
 guarantees the flush happens (see BUG-3000), so the window has no stated
 duration.
@@ -1436,23 +1436,26 @@ Examples:
 				return cli.PrintJSON(updated)
 			}
 
-			// The body outcome rides on the SAME stdout line (TASK-3132), so
-			// it survives `| tail -1` and a discarded stderr: "Updated REF"
-			// alone was identical for a one-character edit, a full replace and
-			// a write that went to an open editor.
-			outcome := ""
-			if input.Content != nil {
-				outcome = bodyOutcome(len(item.Content), len(*input.Content), clearContent,
-					updated.Warnings != nil && updated.Warnings.ContentOutcome == models.ContentOutcomeAppliedPendingFlush)
-			}
 			ref := cli.ItemRef(*updated)
 			if ref != "" {
-				fmt.Printf("Updated %s %q%s\n", ref, updated.Title, outcome)
+				fmt.Printf("Updated %s %q\n", ref, updated.Title)
 			} else {
-				fmt.Printf("Updated %q (%s)%s\n", updated.Title, updated.Slug, outcome)
+				fmt.Printf("Updated %q (%s)\n", updated.Title, updated.Slug)
 			}
 			if summary := cli.FormatFieldSummary(updated.Fields); summary != "" {
 				fmt.Printf("  %s\n", summary)
+			}
+			// The body outcome is the LAST stdout line (TASK-3132), so it
+			// survives `| tail -1` and a discarded stderr: "Updated REF" alone
+			// was identical for a one-character edit, a full replace and a
+			// write that went to an open editor. Last, not appended to the
+			// "Updated" line: the field summary above follows that line
+			// whenever the item has fields, which is nearly always, so an
+			// outcome there is exactly what `tail -1` drops (lead review of
+			// #1416; pinned with a fields-bearing item).
+			if input.Content != nil {
+				fmt.Printf("  %s\n", bodyOutcome(len(item.Content), len(*input.Content), clearContent,
+					updated.Warnings != nil && updated.Warnings.ContentOutcome == models.ContentOutcomeAppliedPendingFlush))
 			}
 			return nil
 		},
@@ -4086,8 +4089,8 @@ func readStdinBody(verb string) (string, error) {
 	return string(data), nil
 }
 
-// bodyOutcome is the suffix `item update` appends to its success line when the
-// update wrote the body (TASK-3132). before is the STORED body's size when the
+// bodyOutcome is the final line `item update` prints when the update wrote
+// the body (TASK-3132). before is the STORED body's size when the
 // update fetched it; after is what was sent. On the applier path the body went
 // to an open editor rather than to the stored copy, so the line says a
 // following show MAY return the OLD body. "May", not "will": a concurrent flush
@@ -4095,14 +4098,14 @@ func readStdinBody(verb string) (string, error) {
 // Sizes are BYTES, as the server stores them, not characters.
 func bodyOutcome(before, after int, cleared, pendingFlush bool) string {
 	if pendingFlush {
-		return fmt.Sprintf(` — body sent to the open editor (%s bytes); the stored copy was %s bytes and a following "pad item show" may return that OLD body until a tab flushes, which is not guaranteed to happen`,
+		return fmt.Sprintf(`body sent to the open editor (%s bytes); the stored copy was %s bytes and a following "pad item show" may return that OLD body until a tab flushes, which is not guaranteed to happen`,
 			thousands(after), thousands(before))
 	}
 	verb := "replaced"
 	if cleared {
 		verb = "cleared"
 	}
-	return fmt.Sprintf(" — body %s, %s → %s bytes", verb, thousands(before), thousands(after))
+	return fmt.Sprintf("body %s, %s → %s bytes", verb, thousands(before), thousands(after))
 }
 
 // thousands renders n with comma separators: 16958 → "16,958".

@@ -32,7 +32,12 @@ func outcomeServer(t *testing.T, stored string, pendingFlush bool) {
 func outcomeServerRef(t *testing.T, stored string, pendingFlush, withRef bool) {
 	t.Helper()
 	setupFormatRoutingTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		it := models.Item{Slug: "doc-3", CollectionSlug: "docs", Title: "Design", Content: stored}
+		it := models.Item{Slug: "doc-3", CollectionSlug: "docs", Title: "Design", Content: stored,
+			// FIELDS, deliberately: a real item nearly always has them, and the
+			// update prints a field-summary line after "Updated …". The first
+			// version of this file used field-less stubs and so never saw that
+			// the outcome was NOT the last line (lead review of #1416).
+			Fields: `{"status":"draft","priority":"high"}`}
 		if withRef {
 			n := 3
 			it.CollectionPrefix, it.ItemNumber = "DOC", &n
@@ -75,12 +80,11 @@ func TestItemUpdateOutcome_Replaced(t *testing.T) {
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	line := outFirstLine(out)
-	if !strings.Contains(line, "— body replaced, 8,765 → 16,958 bytes") {
-		t.Fatalf("the success line must carry the replace and both sizes; got %q", line)
+	if first := outFirstLine(out); first != `Updated DOC-3 "Design"` {
+		t.Fatalf("the Updated line must still name the ref; got %q", first)
 	}
-	if !strings.HasPrefix(line, `Updated DOC-3 "Design" — body replaced`) {
-		t.Fatalf("the outcome must be on the SAME line as Updated REF (survives | tail -1 for a one-line output); got %q", line)
+	if line := lastLine(out); line != "  body replaced, 8,765 → 16,958 bytes" {
+		t.Fatalf("the LAST line must carry the replace and both sizes; got %q", line)
 	}
 }
 
@@ -90,7 +94,7 @@ func TestItemUpdateOutcome_SlugBranchCarriesItToo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	if line := outFirstLine(out); !strings.Contains(line, `(doc-3) — body replaced, 3 → 5 bytes`) {
+	if line := lastLine(out); !strings.Contains(line, `body replaced, 3 → 5 bytes`) {
 		t.Fatalf("the slug-fallback success line must carry the outcome too; got %q", line)
 	}
 }
@@ -101,7 +105,7 @@ func TestItemUpdateOutcome_PendingFlush(t *testing.T) {
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	line := outFirstLine(out)
+	line := lastLine(out)
 	for _, want := range []string{"sent to the open editor (16,958 bytes)", "stored copy was 8,765 bytes", "may return that OLD body", "not guaranteed"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("the applier-path line must say %q; got %q", want, line)
@@ -118,7 +122,7 @@ func TestItemUpdateOutcome_Cleared(t *testing.T) {
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	if line := outFirstLine(out); !strings.Contains(line, "— body cleared, 4 → 0 bytes") {
+	if line := lastLine(out); !strings.Contains(line, "body cleared, 4 → 0 bytes") {
 		t.Fatalf("a clear must say so on the success line; got %q", line)
 	}
 }
@@ -161,8 +165,47 @@ func TestItemUpdateOutcome_SizesAreBytes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	if line := outFirstLine(out); !strings.Contains(line, "— body replaced, 6 → 6 bytes") {
+	if line := lastLine(out); !strings.Contains(line, "body replaced, 6 → 6 bytes") {
 		t.Fatalf("sizes must be bytes (héllo=6, 日本=6); got %q", line)
+	}
+}
+
+// lastLine is what `| tail -1` returns.
+func lastLine(out string) string {
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	return lines[len(lines)-1]
+}
+
+// The contract's point: the outcome survives `| tail -1`. Driven with an item
+// that HAS fields, for all three body outcomes.
+func TestItemUpdateOutcome_IsLastLineWithFields(t *testing.T) {
+	cases := []struct {
+		name         string
+		stored       string
+		pendingFlush bool
+		args         []string
+		want         string
+	}{
+		{"replaced", "old", false, []string{"DOC-3", "--content", "newer"}, "body replaced, 3 → 5 bytes"},
+		{"cleared", "old", false, []string{"DOC-3", "--clear-content"}, "body cleared, 3 → 0 bytes"},
+		{"pending flush", "old", true, []string{"DOC-3", "--content", "newer"}, "may return that OLD body"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			outcomeServer(t, tc.stored, tc.pendingFlush)
+			out, err := runUpdate(t, tc.args...)
+			if err != nil {
+				t.Fatalf("update: %v", err)
+			}
+			// Precondition: the field summary really printed, or this leg
+			// proves nothing about ordering.
+			if !strings.Contains(out, "status") {
+				t.Fatalf("precondition: expected a field-summary line; got %q", out)
+			}
+			if got := lastLine(out); !strings.Contains(got, tc.want) {
+				t.Fatalf("| tail -1 must carry the outcome %q; last line is %q\nfull output:\n%s", tc.want, got, out)
+			}
+		})
 	}
 }
 
