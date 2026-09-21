@@ -609,6 +609,11 @@ func (s *Store) createItemTxWithID(tx *sql.Tx, id, workspaceID, collectionID str
 	if err := s.emitItemEventTx(tx, kernelevents.ItemCreated, item, nil, ""); err != nil {
 		return nil, err
 	}
+	// Same transaction, same reason: the owed evaluation commits with the
+	// item or not at all (TASK-3117). No-op when no provider is configured.
+	if err := s.enqueueDecisionJobsTx(tx, item.WorkspaceID, item.ID, item.CollectionID); err != nil {
+		return nil, err
+	}
 	return item, nil
 }
 
@@ -3036,6 +3041,12 @@ func (s *Store) updateItemWithParentLinkOnce(
 	// wrote the status_transitions row, so the event and the transition log
 	// cannot disagree about what happened.
 	if err := s.emitItemUpdateEventsTx(tx, existing, updated, mutSignal.StatusChanged, mutSignal.FromStatus, doneKey, opt.batchID, hierarchyChanged); err != nil {
+		return nil, err
+	}
+	// Enqueued on EVERY update, including ones that change nothing a
+	// question can see: whether the state changed is the runner's state-hash
+	// check, not a guess made here (TASK-3117). No-op with no provider.
+	if err := s.enqueueDecisionJobsTx(tx, updated.WorkspaceID, updated.ID, updated.CollectionID); err != nil {
 		return nil, err
 	}
 

@@ -128,6 +128,11 @@ func (s *Store) createCommentTx(tx *sql.Tx, workspaceID, itemID, userID string, 
 	if err := s.emitCommentEventTx(tx, kernelevents.CommentCreated, created); err != nil {
 		return "", err
 	}
+	// The recent trail is part of the state a decision reads, so a new
+	// comment makes an evaluation owed (TASK-3117).
+	if err := s.enqueueDecisionJobsForItemTx(tx, itemID); err != nil {
+		return "", err
+	}
 	return id, nil
 }
 
