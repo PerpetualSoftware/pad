@@ -188,6 +188,14 @@ func (s *Store) UpdateComment(id, body string) (*models.Comment, error) {
 		if err := s.emitCommentEventTx(tx, kernelevents.CommentUpdated, updated); err != nil {
 			return nil, err
 		}
+		// An edited comment can be inside the recent trail a decision reads,
+		// so an edit that changed the body is a door (TASK-3117 ruling 3:
+		// user-initiated single-item writes that change hashed state). If
+		// the comment is older than the trail window the runner finds the
+		// state unchanged and makes no call.
+		if err := s.enqueueDecisionJobsForItemTx(tx, updated.ItemID); err != nil {
+			return nil, err
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -401,6 +409,11 @@ func (s *Store) DeleteComment(id string) error {
 	}
 
 	if err := s.emitRefOnlyDeletionTx(tx, kernelevents.CommentDeleted, workspaceID, id, itemID, parentID.String); err != nil {
+		return err
+	}
+	// Deleting a comment changes the recent trail (TASK-3117 ruling 3); see
+	// UpdateComment for why an out-of-window comment costs nothing.
+	if err := s.enqueueDecisionJobsForItemTx(tx, itemID); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"testing"
 	"time"
@@ -345,5 +346,32 @@ func TestRunner_CancelledPassReleasesWithoutCountingAFailure(t *testing.T) {
 	j, _ := fx.s.GetDecisionJob(fx.item.ID, triageSet)
 	if j == nil || j.Attempts != 0 || j.ClaimedBy != "" {
 		t.Fatalf("after a cancelled pass the job is %+v; want owed, unclaimed, attempts=0", j)
+	}
+}
+
+// Cancelled MID-CALL: the provider request is in flight when shutdown
+// cancels the context. runJob must release the claim without counting an
+// attempt — distinct from the test above, where cancellation lands before
+// any job starts and runJob is never reached.
+func TestRunner_CancelledMidCallReleasesWithoutCountingAFailure(t *testing.T) {
+	fx := newRunnerFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	fx.f.srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cancel()
+		// Bounded: the server notices a client disconnect only after the
+		// body is read, so an unbounded wait here holds Close() forever.
+		_, _ = io.Copy(io.Discard, r.Body)
+		select {
+		case <-r.Context().Done():
+		case <-time.After(2 * time.Second):
+		}
+	})
+	n, err := fx.r.RunOnce(ctx, "stopping", 10, time.Hour)
+	if err != nil || n != 1 {
+		t.Fatalf("RunOnce claimed %d (err %v); want 1", n, err)
+	}
+	j, _ := fx.s.GetDecisionJob(fx.item.ID, triageSet)
+	if j == nil || j.Attempts != 0 || j.ClaimedBy != "" || j.LastError != "" {
+		t.Fatalf("after a mid-call cancel the job is %+v; want owed, unclaimed, attempts=0, no error", j)
 	}
 }

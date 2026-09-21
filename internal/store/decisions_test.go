@@ -301,3 +301,34 @@ func TestDecisionJobs_MoveEnqueuesForTargetCollection(t *testing.T) {
 		t.Fatalf("after move into the scoped collection, generation = %d; want 1", j.Generation)
 	}
 }
+
+// Comment edit and delete change the trail, so they are doors too (ruling 3's
+// rule applied). An edit that leaves the body unchanged is not.
+func TestDecisionJobs_CommentEditAndDeleteEnqueue(t *testing.T) {
+	s, ws, col := decisionFixture(t)
+	item := createTestItem(t, s, ws.ID, col.ID, "Trail", "")
+	c, err := s.CreateComment(ws.ID, item.ID, "", models.CommentCreate{Author: "a", Body: "first"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SetDecisionSetResolver(func(string) []string { return []string{"triage"} })
+
+	if _, err := s.UpdateComment(c.ID, "first"); err != nil {
+		t.Fatal(err)
+	}
+	if j, _ := s.GetDecisionJob(item.ID, "triage"); j != nil {
+		t.Fatalf("a no-op comment edit enqueued: %+v", j)
+	}
+	if _, err := s.UpdateComment(c.ID, "first, corrected"); err != nil {
+		t.Fatal(err)
+	}
+	if g := mustJob(t, s, item.ID, "triage").Generation; g != 1 {
+		t.Fatalf("after a comment edit, generation = %d; want 1", g)
+	}
+	if err := s.DeleteComment(c.ID); err != nil {
+		t.Fatal(err)
+	}
+	if g := mustJob(t, s, item.ID, "triage").Generation; g != 2 {
+		t.Fatalf("after a comment delete, generation = %d; want 2", g)
+	}
+}
