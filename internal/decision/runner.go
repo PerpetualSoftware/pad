@@ -272,6 +272,10 @@ var ErrItemGone = errors.New("decision: item is gone")
 // ErrUnknownSet reports a job for a set no longer registered: dropped.
 var ErrUnknownSet = errors.New("decision: question set is not registered")
 
+// ErrSetNotApplicable reports a job for a set that does not cover the item's
+// CURRENT collection — the item moved after the job was owed: dropped.
+var ErrSetNotApplicable = errors.New("decision: question set does not apply to the item's collection")
+
 // State builds the item's current state.
 func (r *Runner) State(itemID string) (*models.Item, BuiltState, error) {
 	item, err := r.store.GetItem(itemID)
@@ -311,6 +315,13 @@ func (r *Runner) Evaluate(ctx context.Context, itemID, setName string) (bool, er
 	item, st, err := r.State(itemID)
 	if err != nil {
 		return false, err
+	}
+	// Applicability is re-checked HERE, against the collection the item is in
+	// now, not trusted from enqueue time: a job owed before a move still names
+	// the old collection's set (codex round 2). Checked before the idempotency
+	// read so an inapplicable set never costs a call or a query.
+	if !qs.appliesTo(item.CollectionSlug) {
+		return false, ErrSetNotApplicable
 	}
 	keys := make([]string, 0, len(qs.Questions))
 	for k := range qs.Questions {
@@ -458,7 +469,7 @@ func (r *Runner) runJob(ctx context.Context, j store.DecisionJob) {
 		return
 	case err == nil:
 		serr = r.store.CompleteDecisionJob(j)
-	case errors.Is(err, ErrItemGone), errors.Is(err, ErrUnknownSet):
+	case errors.Is(err, ErrItemGone), errors.Is(err, ErrUnknownSet), errors.Is(err, ErrSetNotApplicable):
 		serr = r.store.DropDecisionJob(j)
 	case j.Attempts+1 >= maxDecisionAttempts:
 		slog.Warn("decision job dropped after repeated failures",

@@ -332,3 +332,35 @@ func TestDecisionJobs_CommentEditAndDeleteEnqueue(t *testing.T) {
 		t.Fatalf("after a comment delete, generation = %d; want 2", g)
 	}
 }
+
+// Codex round 2 P1: dropping a claim (retry limit, gone item) must not take a
+// NEWER generation with it — a write that landed mid-evaluation is still owed.
+func TestDecisionJobs_DropPreservesANewerGeneration(t *testing.T) {
+	s, ws, col := decisionFixture(t)
+	s.SetDecisionSetResolver(func(string) []string { return []string{"triage"} })
+	item := createTestItem(t, s, ws.ID, col.ID, "Drop", "")
+	claimed, err := s.ClaimDecisionJobs("r", 10, time.Hour)
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("claim: %d %v", len(claimed), err)
+	}
+	title := "Drop, edited mid-evaluation"
+	if _, err := s.UpdateItem(item.ID, models.ItemUpdate{Title: &title}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DropDecisionJob(claimed[0]); err != nil {
+		t.Fatal(err)
+	}
+	j := mustJob(t, s, item.ID, "triage")
+	if j.Generation != 2 || j.ClaimedBy != "" {
+		t.Fatalf("after dropping gen 1 under a gen-2 enqueue: %+v; want generation 2, unclaimed", j)
+	}
+
+	// Control: with no intervening write the drop removes the row.
+	again, _ := s.ClaimDecisionJobs("r", 10, time.Hour)
+	if err := s.DropDecisionJob(again[0]); err != nil {
+		t.Fatal(err)
+	}
+	if n := countDecisionJobs(t, s); n != 0 {
+		t.Fatalf("dropping the current generation left %d rows", n)
+	}
+}

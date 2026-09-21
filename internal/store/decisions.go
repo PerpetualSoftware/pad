@@ -227,16 +227,25 @@ func (s *Store) FailDecisionJob(j DecisionJob, cause error, retryAfter time.Dura
 	return s.releaseDecisionJob(j, msg, retryAfter)
 }
 
-// DropDecisionJob deletes a job outright, whatever its generation: the item
-// is gone, or the job has exhausted its attempts. A write that lands after
-// this re-creates it.
+// DropDecisionJob abandons a claimed job: the item is gone, the set no
+// longer applies, or the job has exhausted its attempts.
+//
+// Generation-matched, exactly like CompleteDecisionJob (codex round 2): the
+// verdict is about the generation this runner claimed. A write that landed
+// mid-evaluation bumped the row to a newer generation, which is new work the
+// verdict says nothing about — so the row is released for it, not deleted.
 func (s *Store) DropDecisionJob(j DecisionJob) error {
-	_, err := s.db.Exec(s.q(`DELETE FROM decision_jobs WHERE item_id = ? AND question_set = ? AND claimed_by = ?`),
-		j.ItemID, j.QuestionSet, j.ClaimedBy)
+	res, err := s.db.Exec(s.q(`
+		DELETE FROM decision_jobs
+		WHERE item_id = ? AND question_set = ? AND generation = ? AND claimed_by = ?`),
+		j.ItemID, j.QuestionSet, j.Generation, j.ClaimedBy)
 	if err != nil {
 		return fmt.Errorf("drop decision job %s/%s: %w", j.ItemID, j.QuestionSet, err)
 	}
-	return nil
+	if n, _ := res.RowsAffected(); n == 1 {
+		return nil
+	}
+	return s.releaseSupersededDecisionJob(j)
 }
 
 // ReleaseDecisionJob gives a claimed job back without recording a failure:

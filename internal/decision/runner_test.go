@@ -407,3 +407,45 @@ func TestRunner_DeletedWorkspaceOrCollectionIsNeverSent(t *testing.T) {
 		})
 	}
 }
+
+// Codex round 2 P2: a job owed for a set scoped to the item's OLD collection
+// must not reach the provider after the item moves out of that collection.
+func TestRunner_SetNoLongerApplicableAfterMoveIsNotAsked(t *testing.T) {
+	s := storetest.NewSQLite(t)
+	ws, _ := s.CreateWorkspace(models.WorkspaceCreate{Name: "Scope"})
+	bugs, err := s.CreateCollection(ws.ID, models.CollectionCreate{Name: "Bugs", Schema: `{"fields":[]}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ideas, err := s.CreateCollection(ws.ID, models.CollectionCreate{Name: "Ideas", Schema: `{"fields":[]}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, f := newFake(t, noulChoiceHandler)
+	reg := NewRegistry()
+	if err := reg.Register(QuestionSet{Name: "bug-triage", Collections: []string{bugs.Slug}, Questions: triageQuestions()}); err != nil {
+		t.Fatal(err)
+	}
+	r := NewRunner(s, p, reg)
+	r.Install(s)
+
+	item, err := s.CreateItem(ws.ID, bugs.ID, models.ItemCreate{Title: "Crash on save"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if j, _ := s.GetDecisionJob(item.ID, "bug-triage"); j == nil {
+		t.Fatal("precondition: no job owed for the scoped set")
+	}
+	if _, err := s.MoveItem(item.ID, ideas.ID, item.Fields); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.RunOnce(context.Background(), "tick", 10, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.requests) != 0 {
+		t.Fatalf("asked a set scoped to %q about an item now in %q", bugs.Slug, ideas.Slug)
+	}
+	if j, _ := s.GetDecisionJob(item.ID, "bug-triage"); j != nil {
+		t.Fatalf("an inapplicable job was kept: %+v", j)
+	}
+}
