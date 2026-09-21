@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -117,5 +118,50 @@ func TestCollectedReportCarriesDecisionProviderAndNoKey(t *testing.T) {
 	}
 	if !strings.Contains(string(blob), `"decision_provider":{"name":"none"}`) {
 		t.Errorf("unconfigured report JSON = %s, want decision_provider {\"name\":\"none\"} with model omitted", blob)
+	}
+}
+
+// Review round 2: the tests above call describeDecisionProvider directly, so
+// they have no opinion about whether collectServerInfo calls it, or whether
+// the human-readable output prints it. These go through both doors.
+func TestServerInfoCarriesTheDecisionProviderThroughBothDoors(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PAD_DECISION_PROVIDER", decision.ProviderTypesafe)
+	t.Setenv("PAD_TYPESAFE_API_KEY", "sk-super-secret-value")
+	t.Setenv("PAD_DECISION_MODEL", "jev-9.9.9")
+
+	cfg := config.DefaultConfig()
+	cfg.Mode = config.ModeRemote
+	// Nothing listens here; the connection probe fails fast and is recorded,
+	// which this test does not care about.
+	cfg.URL = "http://127.0.0.1:1"
+
+	report, err := collectServerInfo(cfg)
+	if err != nil {
+		t.Fatalf("collectServerInfo: %v", err)
+	}
+	if got := report.Config.DecisionProvider; got.Name != decision.ProviderTypesafe || got.Model != "jev-9.9.9" {
+		t.Errorf("collectServerInfo reported decision provider %+v, want typesafe / jev-9.9.9", got)
+	}
+
+	out := captureStdout(t, func() { printServerInfo(report) })
+	if !regexp.MustCompile(`Decision provider:\s+typesafe \(jev-9\.9\.9\)`).MatchString(out) {
+		t.Errorf("human-readable output has no decision provider line:\n%s", out)
+	}
+	if strings.Contains(out, "secret") {
+		t.Errorf("human-readable output leaked key material:\n%s", out)
+	}
+
+	// Unconfigured: the line is still printed, and says none.
+	t.Setenv("PAD_DECISION_PROVIDER", "")
+	t.Setenv("PAD_TYPESAFE_API_KEY", "")
+	t.Setenv("PAD_DECISION_MODEL", "")
+	report, err = collectServerInfo(cfg)
+	if err != nil {
+		t.Fatalf("collectServerInfo: %v", err)
+	}
+	out = captureStdout(t, func() { printServerInfo(report) })
+	if !regexp.MustCompile(`Decision provider:\s+none\n`).MatchString(out) {
+		t.Errorf("unconfigured output does not say the decision provider is none:\n%s", out)
 	}
 }

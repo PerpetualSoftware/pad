@@ -63,9 +63,19 @@ const (
 // "max_tokens_exceeded"}}), so this does not rest on matching prose.
 var ErrMaxTokensExceeded = errors.New("decision: provider token budget exceeded")
 
-// APIError is a non-retryable error response from the provider. The body is
-// carried verbatim (bounded) because the provider's validation messages name
-// the offending question, which is the only way a caller can fix the call.
+// APIError is an error response from the provider. It is returned directly
+// for a non-retryable status, and is reachable with errors.As through the
+// retry wrapper when a retryable status persists past the last attempt.
+//
+// The body is carried verbatim (bounded) because the provider's refusal
+// message is the only way a caller can fix the call. It is also printed by
+// Error(), which is safe only because the provider's refusal bodies do not
+// echo the request: measured 2026-09-21 against jev-1.13.0 with canary
+// strings in the state, the instructions and the criteria, three refusal
+// shapes (unknown question type, unknown model, and the budget refusal)
+// returned fixed {"detail":{"error_type","message"}} bodies naming none of
+// them. Receipts on TASK-3116's trail. A refusal shape not in that set is
+// unmeasured.
 type APIError struct {
 	StatusCode int
 	// ErrorType is the provider's machine-readable code from
@@ -95,6 +105,11 @@ func (e *APIError) Error() string {
 	}
 	return b.String()
 }
+
+// Unwrap exposes a partial-read failure to errors.Is and errors.As, so a
+// caller cancelling mid-read sees errors.Is(err, context.Canceled) rather
+// than having to inspect BodyReadErr by name.
+func (e *APIError) Unwrap() error { return e.BodyReadErr }
 
 // Is lets errors.Is(err, ErrMaxTokensExceeded) match the budget refusal
 // without the caller inspecting the status code or the body.
@@ -164,14 +179,16 @@ type wireRequest struct {
 	Questions map[string]wireQuestion `json:"questions"`
 }
 
-// wireAnswer is one answer as the provider returns it. Confidence is a
-// pointer so a noul answer — which carries none — stays distinguishable from
-// one whose confidence really is zero.
+// wireAnswer is one answer as the provider returns it. The value members are
+// pointers so an ABSENT member is distinguishable from a zero one: a noul
+// answer carries no confidence, and a response missing its `noul` would
+// otherwise decode as 0.0, a confident "false" the provider never said.
+// checkAnswer refuses any answer missing a member its kind requires.
 type wireAnswer struct {
 	Type          string             `json:"type"`
-	Choice        string             `json:"choice"`
-	Score         float64            `json:"score"`
-	Noul          float64            `json:"noul"`
+	Choice        *string            `json:"choice"`
+	Score         *float64           `json:"score"`
+	Noul          *float64           `json:"noul"`
 	Legend        map[string]string  `json:"legend"`
 	Probabilities map[string]float64 `json:"probabilities"`
 	Confidence    *float64           `json:"confidence"`
@@ -227,29 +244,26 @@ func (p *typesafeProvider) Ask(ctx context.Context, state any, questions map[str
 		return nil, Usage{}, err
 	}
 
-	answers := make(map[string]Answer, len(resp.Answers))
-	for key, wa := range resp.Answers {
-		answers[key] = fromWire(wa)
-	}
-	// A provider that answered a subset would leave the caller unable to
-	// tell a missing answer from one it forgot to ask for.
+	// Every answer is checked against the question it claims to answer
+	// before any of it reaches the caller: a missing answer, a wrong kind, a
+	// missing member, a value outside what was asked, or a number outside
+	// its range is refused, and the whole call fails (all-or-nothing, per
+	// [Provider.Ask]). Each of those would otherwise decode into a plausible
+	// value the provider never meant — see checkAnswer.
 	//
-	// The KIND check beside it matters for the same reason the Confidence
-	// pointer does. fromWire populates only the members the ANSWERED kind
-	// uses, so a noul question answered with {"type":"score","score":0}
-	// yields an Answer whose Noul is 0 — a perfectly plausible "almost
-	// certainly false" that the provider never said. Without this, a
-	// mismatched kind is indistinguishable from a confident answer.
+	// The result is built from the QUESTIONS, not from the response, so an
+	// unsolicited extra answer is dropped rather than returned: the contract
+	// is one entry per question key.
+	answers := make(map[string]Answer, len(questions))
 	for key, q := range questions {
-		a, ok := answers[key]
+		wa, ok := resp.Answers[key]
 		if !ok {
 			return nil, Usage{}, fmt.Errorf("decision: provider returned no answer for question %q", key)
 		}
-		if a.Kind != q.Kind {
-			return nil, Usage{}, fmt.Errorf(
-				"decision: question %q is a %s but the provider answered with a %s",
-				key, q.Kind, a.Kind)
+		if err := checkAnswer(q, wa); err != nil {
+			return nil, Usage{}, fmt.Errorf("decision: question %q: %w", key, err)
 		}
+		answers[key] = fromWire(wa)
 	}
 
 	return answers, Usage{
@@ -277,39 +291,132 @@ func toWire(q Question) wireQuestion {
 	return w
 }
 
-// fromWire converts a provider answer, keeping only the members that the
-// answered kind actually populates. Copying a stray Score onto a choice
-// answer would hand a consumer a number the provider never meant.
+// fromWire converts a provider answer that checkAnswer has accepted, keeping
+// only the members the answered kind populates. Copying a stray Score onto a
+// choice answer would hand a consumer a number the provider never meant.
 func fromWire(w wireAnswer) Answer {
 	a := Answer{Kind: Kind(w.Type)}
 	switch a.Kind {
 	case KindChoice:
-		a.Choice = w.Choice
+		a.Choice = *w.Choice
 		a.Probabilities = w.Probabilities
 		a.Confidence = w.Confidence
 	case KindScore:
-		a.Score = w.Score
+		a.Score = *w.Score
 		a.Legend = w.Legend
 		a.Probabilities = w.Probabilities
 		a.Confidence = w.Confidence
 	case KindNoul:
-		a.Noul = w.Noul
-	default:
-		// An unknown kind is carried through rather than dropped: the
-		// caller can see the Kind it does not recognise, which is more
-		// useful than an empty answer.
-		a.Choice = w.Choice
-		a.Score = w.Score
-		a.Noul = w.Noul
-		a.Legend = w.Legend
-		a.Probabilities = w.Probabilities
-		a.Confidence = w.Confidence
+		a.Noul = *w.Noul
 	}
 	return a
 }
 
-// fitState shortens the state, if needed, so that state plus questions fit
-// the measured token budget. It reports whether it truncated.
+// checkAnswer refuses an answer that contradicts the question it answers.
+//
+// The population is every (kind, member) cell of [Answer], enumerated in
+// the table on TASK-3116's trail (review round 2). Per kind:
+//
+//   - every kind: Type must equal the question's kind.
+//   - choice: choice PRESENT and one of the options sent; confidence PRESENT
+//     and in [0,1]; probabilities NON-EMPTY, keyed only by options sent,
+//     each in [0,1].
+//   - score: score PRESENT and in [0, levels-1] (it is the probability-
+//     weighted mean over level indices, so it cannot leave that range);
+//     confidence PRESENT and in [0,1]; probabilities NON-EMPTY; probability
+//     and legend keys each the canonical decimal index of a level sent
+//     ("0".."n-1", so "01" and "9" are refused); probabilities in [0,1].
+//   - noul: noul PRESENT and in [0,1]. Members noul does not use are
+//     ignored rather than refused — fromWire drops them, so they cannot
+//     reach a caller.
+//
+// What it does NOT check: that probabilities sum to 1 (the provider rounds,
+// and nothing downstream depends on the sum), or that the legend's NAMES
+// match the levels sent (they are echoed text; a mismatch misnames, it
+// cannot mis-index).
+func checkAnswer(q Question, w wireAnswer) error {
+	if Kind(w.Type) != q.Kind {
+		return fmt.Errorf("asked a %s but the provider answered with a %s", q.Kind, w.Type)
+	}
+	switch q.Kind {
+	case KindChoice:
+		if w.Choice == nil {
+			return errors.New("choice answer carries no choice")
+		}
+		if _, ok := q.Options[*w.Choice]; !ok {
+			return fmt.Errorf("provider chose %q, which is not one of the options sent", *w.Choice)
+		}
+		if err := checkConfidence(w.Confidence); err != nil {
+			return err
+		}
+		return checkProbabilities(w.Probabilities, func(k string) bool {
+			_, ok := q.Options[k]
+			return ok
+		})
+	case KindScore:
+		if w.Score == nil {
+			return errors.New("score answer carries no score")
+		}
+		if hi := float64(len(q.Levels) - 1); *w.Score < 0 || *w.Score > hi {
+			return fmt.Errorf("score %v is outside [0, %v] for %d levels", *w.Score, hi, len(q.Levels))
+		}
+		if err := checkConfidence(w.Confidence); err != nil {
+			return err
+		}
+		isLevel := func(k string) bool {
+			n, err := strconv.Atoi(k)
+			return err == nil && n >= 0 && n < len(q.Levels) && strconv.Itoa(n) == k
+		}
+		for k := range w.Legend {
+			if !isLevel(k) {
+				return fmt.Errorf("legend key %q is not the index of a level sent", k)
+			}
+		}
+		return checkProbabilities(w.Probabilities, isLevel)
+	case KindNoul:
+		if w.Noul == nil {
+			return errors.New("noul answer carries no noul value")
+		}
+		if !inUnit(*w.Noul) {
+			return fmt.Errorf("noul %v is outside [0, 1]", *w.Noul)
+		}
+	}
+	return nil
+}
+
+func checkConfidence(c *float64) error {
+	if c == nil {
+		return errors.New("answer carries no confidence")
+	}
+	if !inUnit(*c) {
+		return fmt.Errorf("confidence %v is outside [0, 1]", *c)
+	}
+	return nil
+}
+
+func checkProbabilities(p map[string]float64, validKey func(string) bool) error {
+	if len(p) == 0 {
+		return errors.New("answer carries no probabilities")
+	}
+	for k, v := range p {
+		if !validKey(k) {
+			return fmt.Errorf("probability key %q is not an outcome that was asked", k)
+		}
+		if !inUnit(v) {
+			return fmt.Errorf("probability %v for %q is outside [0, 1]", v, k)
+		}
+	}
+	return nil
+}
+
+func inUnit(f float64) bool { return f >= 0 && f <= 1 }
+
+// fitState shortens a STRING state, if needed, so that the request's
+// estimated size fits the measured token budget. It reports whether it
+// truncated. The estimate is bytes over [charsPerToken], which is a
+// conservative heuristic rather than a bound — see that constant — so a
+// fitted request can still be refused by the provider, and that refusal is
+// surfaced as [ErrMaxTokensExceeded].
 //
 // Only a STRING state is truncated. Cutting a marshalled struct or map at a
 // byte boundary would produce invalid JSON, and silently dropping fields
@@ -317,14 +424,18 @@ func fromWire(w wireAnswer) Answer {
 // structured state that does not fit gets the provider's own refusal, which
 // names the problem correctly.
 func (p *typesafeProvider) fitState(state any, questions map[string]wireQuestion) (any, bool, error) {
-	qb, err := json.Marshal(questions)
+	// Reserve EXACTLY what everything but the state costs, by marshalling
+	// the request with an empty string state: model name, questions and
+	// punctuation, whatever their size. A fixed allowance here let a long
+	// model name push a cut-to-the-limit request over the budget.
+	envelope, err := json.Marshal(wireRequest{Model: p.model, State: "", Questions: questions})
 	if err != nil {
 		return nil, false, fmt.Errorf("decision: marshal questions: %w", err)
 	}
 	budgetChars := int(float64(maxRequestTokens) * charsPerToken)
-	// Reserve the questions' size plus a small allowance for the envelope
-	// (model name, JSON punctuation).
-	remaining := budgetChars - len(qb) - 512
+	// The empty state occupies two bytes (""), which the state's own
+	// marshalled length below counts again.
+	remaining := budgetChars - (len(envelope) - 2)
 	if remaining < 0 {
 		return nil, false, fmt.Errorf("decision: questions alone exceed the %d-token budget", maxRequestTokens)
 	}
@@ -347,7 +458,11 @@ func (p *typesafeProvider) fitState(state any, questions map[string]wireQuestion
 	// so that is a valid upper bound — then shrink by the expansion ratio
 	// actually observed at the current cut until it fits. `cut` strictly
 	// decreases every iteration, so this terminates.
-	cut := runeBoundaryAtOrBefore(s, min(remaining, len(s)))
+	//
+	// The first cut leaves room for the two quote bytes the marshalled
+	// string adds, so a state with no escapes fits on the first try instead
+	// of overshooting by two and being scaled back by the 5% margin below.
+	cut := runeBoundaryAtOrBefore(s, min(remaining-2, len(s)))
 	for cut > 0 {
 		got := marshalledLen(s[:cut])
 		if got <= remaining {
@@ -365,8 +480,8 @@ func (p *typesafeProvider) fitState(state any, questions map[string]wireQuestion
 	return "", true, nil
 }
 
-// marshalledLen is the number of bytes this string occupies as a JSON value,
-// which is what the provider's token budget is actually charged against.
+// marshalledLen is the number of bytes this string occupies as a JSON value
+// — the bytes actually sent, which are what the token estimate is taken over.
 func marshalledLen(s string) int {
 	b, err := json.Marshal(s)
 	if err != nil {

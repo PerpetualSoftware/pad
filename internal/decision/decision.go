@@ -1,6 +1,7 @@
 // Package decision provides a pluggable typed-decision provider: a small set
-// of classification primitives (Choice, Score, Noul) answered in one round
-// trip, with calibrated probabilities where the primitive has them.
+// of classification primitives (Choice, Score, Noul) answered in one request
+// (retried on transient failure), with calibrated probabilities where the
+// primitive has them.
 //
 // The package is a PROVIDER INTERFACE, not an integration with any one
 // vendor. The only backend today is typesafe.ai's Jev model (see
@@ -183,8 +184,10 @@ type Answer struct {
 	Noul float64
 
 	// Legend maps a stringified level index to that level's name, for
-	// [KindScore] only. It echoes the Levels that were sent, so a stored
-	// answer stays interpretable after the question's levels are reworded.
+	// [KindScore] only. The provider echoes the Levels that were sent, so a
+	// stored answer stays interpretable after the question's levels are
+	// reworded. Its KEYS are checked against the levels sent; its names are
+	// echoed text and are not.
 	Legend map[string]string
 
 	// Probabilities is the distribution over outcomes. THE KEY VOCABULARY
@@ -220,6 +223,11 @@ func (a Answer) ConfidenceOr(def float64) float64 {
 // TopLevel returns the highest-probability level of a Score answer: its index
 // and its name from the legend. ok is false for any other kind, or when the
 // answer carries no probabilities.
+//
+// An answer returned by [Provider.Ask] has had every probability key checked
+// against the levels sent. An Answer built by hand has not: a key that does
+// not parse is treated as a level with a very large index and whatever name
+// the legend holds for it (often ""), and still yields ok=true.
 //
 // This is the correct way to ask "which level did it pick" — see
 // [Answer.Score] for why that field is not it.
@@ -285,7 +293,8 @@ type Provider interface {
 	// Model is the pinned model identifier this provider will use.
 	Model() string
 
-	// Ask answers every question about the same state in ONE round trip.
+	// Ask answers every question about the same state in ONE request,
+	// retried on transient provider failures.
 	//
 	// state is marshalled as JSON, so a string, a map, or any
 	// JSON-marshallable struct is accepted; prefer the narrowest state that
