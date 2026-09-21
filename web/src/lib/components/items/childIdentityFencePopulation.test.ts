@@ -150,15 +150,6 @@ const KNOWN_UNFENCED: string[] = [
 	// ItemTimeline: loadMore and the six comment/reaction handlers were on
 	// BUG-3095's list for their REQUESTS; loadTimeline and refreshFromSSE join
 	// them under the commit model (both paint entries after their await).
-	'lib/components/timeline/ItemTimeline.svelte::loadMore',
-	'lib/components/timeline/ItemTimeline.svelte::submitComment',
-	'lib/components/timeline/ItemTimeline.svelte::handleReply',
-	'lib/components/timeline/ItemTimeline.svelte::handleEdit',
-	'lib/components/timeline/ItemTimeline.svelte::handleDelete',
-	'lib/components/timeline/ItemTimeline.svelte::handleReaction',
-	'lib/components/timeline/ItemTimeline.svelte::handleRemoveReaction',
-	'lib/components/timeline/ItemTimeline.svelte::loadTimeline',
-	'lib/components/timeline/ItemTimeline.svelte::refreshFromSSE',
 
 	// CopyItemDialog: handleConfirm and runPreflight were REQUEST rows; the
 	// dispatch pair and the two loaders are commit rows. dispatchCopy is the

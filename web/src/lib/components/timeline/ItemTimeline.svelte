@@ -643,6 +643,13 @@
 		// overwrite B's entries / error / spinner (TASK-2112).
 		const reqSlug = itemSlug;
 		const reqWs = wsSlug;
+		// IDENTITY fence (BUG-3105). The capture above is a NAVIGATION fence: it
+		// asks whether the view still shows the same item in the same workspace.
+		// Neither value moves when the SIGNED-IN USER changes on the same item,
+		// which is the whole defect — a timeline is per-item, per-user REST data
+		// (own reactions, own edit affordances, comments visible to that user),
+		// so the previous identity's feed would paint into the next one's view.
+		const isSameIdentity = authStore.identityFence();
 		loading = true;
 		error = '';
 		// Paging state belongs to the page-1 fetch below and is unknown until
@@ -671,6 +678,7 @@
 		try {
 			const resp: TimelineResponse = await api.timeline.list(reqWs, reqSlug);
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
+			if (!isSameIdentity()) return;
 			if (ticket <= viewApplied) return;
 			owned = true;
 			viewApplied = ticket;
@@ -679,6 +687,9 @@
 			nextCursor = cursorFrom(resp, resp.entries);
 		} catch (err: any) {
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
+			// The error string is a commit too — a failure belonging to the
+			// previous identity's request must not surface in the next one's view.
+			if (!isSameIdentity()) return;
 			// A newer load or refresh has landed since; its error state, or
 			// its success, is the one that counts.
 			if (!owned && ticket <= viewApplied) return;
@@ -782,6 +793,11 @@
 		// A's older page onto B's entries (TASK-2112).
 		const reqSlug = itemSlug;
 		const reqWs = wsSlug;
+		// IDENTITY fence (BUG-3105), checked on EVERY hop below rather than once:
+		// this handler awaits inside a loop, so a sign-out between hop 2 and hop 3
+		// would otherwise append the previous identity's older page onto the next
+		// identity's entries. The capture is taken once, at handler entry.
+		const isSameIdentity = authStore.identityFence();
 		loadingMore = true;
 		// A successful page clears a previous failure. Without this the banner
 		// outlives the problem and sits next to the entries it claims did not
@@ -790,6 +806,14 @@
 		error = '';
 		try {
 			for (let hop = 0; hop < MAX_EMPTY_HOPS && nextCursor; hop++) {
+				// Fence the DISPATCH, not just the merge (BUG-3105). Hop 0 runs
+				// under the caller's identity, but every later hop is reached
+				// across the previous hop's await, so the back edge of this loop is
+				// itself a suspension point: without this, a sign-out mid-walk
+				// would issue the next page request on behalf of a user who is
+				// gone. The check below the await guards the COMMITS; this one
+				// guards the SEND, and they are different moments.
+				if (!isSameIdentity()) return;
 				const cursor = nextCursor;
 				// A refresh applying while this page is in flight makes the
 				// page STALE: it was assembled before the refresh and can
@@ -804,6 +828,7 @@
 					before_id: cursor.before_id
 				});
 				if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
+				if (!isSameIdentity()) return;
 				if (viewApplied !== appliedAtDispatch) return;
 				// Deduplicate by ID to handle boundary overlap from <= queries,
 				// and because the server's cursor can deliberately re-cover rows
@@ -848,6 +873,7 @@
 			}
 		} catch (err: any) {
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
+			if (!isSameIdentity()) return;
 			error = err?.message ?? 'Failed to load more';
 		} finally {
 			if (reqSlug === itemSlug && reqWs === wsSlug) loadingMore = false;
@@ -945,6 +971,11 @@
 		// refresh resolving late must not merge A's entries into B (TASK-2112).
 		const reqSlug = itemSlug;
 		const reqWs = wsSlug;
+		// IDENTITY fence (BUG-3105). An SSE-driven refresh is the path most likely
+		// to be in flight across a sign-out, because nothing the reader does
+		// dispatches it — it fires on a server event and on a 2s retry timer, so
+		// it can be mid-await at an instant no user action marks.
+		const isSameIdentity = authStore.identityFence();
 		// FRESHNESS, not just identity. The item/workspace check below catches
 		// a switch, but two refreshes of the SAME item can be in flight at
 		// once — the retry path fires 2s after a failure while a newly
@@ -961,6 +992,7 @@
 			const resp: TimelineResponse = await api.timeline.list(reqWs, reqSlug);
 			if (destroyed) return;
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
+			if (!isSameIdentity()) return;
 			if (ticket <= viewApplied) return;
 			viewApplied = ticket;
 			// This refresh has produced the view, so it owns the spinner an
@@ -1099,6 +1131,12 @@
 			// question that has been answered, and its answer would arrive
 			// staler than what is on screen (codex round 13).
 			if (ticket <= viewApplied) return;
+			// The RETRY below is a send, and scheduling it is the commit this
+			// fence guards (BUG-3105). A failure belonging to the previous
+			// identity must not re-issue itself 2s later against the next one's
+			// session — the refetch would be dispatched by nobody, on behalf of a
+			// user who is gone, and would land in a view it has no claim to.
+			if (!isSameIdentity()) return;
 			console.error('[timeline] SSE-driven refresh failed', err);
 			if (isRetry) return;
 			clearTimeout(sseRefreshTimer);
@@ -1154,6 +1192,13 @@
 		// stay stuck spinning.
 		const reqSlug = itemSlug;
 		const reqWs = wsSlug;
+		// IDENTITY fence (BUG-3105). `await loadTimeline()` below is a SEND, not
+		// just a repaint — it is the shape the guard's own header calls out as the
+		// commonest post-await send in this codebase, and the reason a scanner
+		// matching only `api.*` reported these six handlers as having no send at
+		// all. Refusing the CALL is what matters: loadTimeline captures its own
+		// fence at ITS entry, which is already the new identity by then.
+		const isSameIdentity = authStore.identityFence();
 		submitting = true;
 		error = '';
 		try {
@@ -1163,9 +1208,11 @@
 				source: 'web'
 			});
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
+			if (!isSameIdentity()) return;
 			await loadTimeline();
 		} catch (err: any) {
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
+			if (!isSameIdentity()) return;
 			error = err?.message ?? 'Failed to post comment';
 			throw err;
 		} finally {
@@ -1176,6 +1223,9 @@
 	async function handleReply(commentId: string, body: string) {
 		const reqSlug = itemSlug;
 		const reqWs = wsSlug;
+		// IDENTITY fence (BUG-3105) — see submitComment for why the refusal is on
+		// the CALL to loadTimeline rather than inside it.
+		const isSameIdentity = authStore.identityFence();
 		try {
 			await api.comments.reply(reqWs, commentId, {
 				body,
@@ -1183,9 +1233,11 @@
 				source: 'web'
 			});
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
+			if (!isSameIdentity()) return;
 			await loadTimeline();
 		} catch (err: any) {
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
+			if (!isSameIdentity()) return;
 			error = err?.message ?? 'Failed to post reply';
 			throw err; // let CommentEditor keep the draft
 		}
@@ -1196,12 +1248,16 @@
 	async function handleEdit(commentId: string, body: string) {
 		const reqSlug = itemSlug;
 		const reqWs = wsSlug;
+		// IDENTITY fence (BUG-3105) — see submitComment.
+		const isSameIdentity = authStore.identityFence();
 		try {
 			await api.comments.update(reqWs, commentId, { body });
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
+			if (!isSameIdentity()) return;
 			await loadTimeline();
 		} catch (err: any) {
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
+			if (!isSameIdentity()) return;
 			error = err?.message ?? 'Failed to edit comment';
 			throw err;
 		}
@@ -1211,12 +1267,16 @@
 		if (!confirm('Delete this comment?')) return;
 		const reqSlug = itemSlug;
 		const reqWs = wsSlug;
+		// IDENTITY fence (BUG-3105) — see submitComment.
+		const isSameIdentity = authStore.identityFence();
 		try {
 			await api.comments.delete(reqWs, commentId);
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
+			if (!isSameIdentity()) return;
 			await loadTimeline();
 		} catch (err: any) {
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
+			if (!isSameIdentity()) return;
 			error = err?.message ?? 'Failed to delete comment';
 		}
 	}
@@ -1224,12 +1284,19 @@
 	async function handleReaction(commentId: string, emoji: string) {
 		const reqSlug = itemSlug;
 		const reqWs = wsSlug;
+		// IDENTITY fence (BUG-3105). A reaction is attributed to the signed-in
+		// user server-side, so the response reflects whoever the session names at
+		// request time; painting it into the next identity's view shows them a
+		// reaction they did not leave and cannot remove.
+		const isSameIdentity = authStore.identityFence();
 		try {
 			await api.comments.addReaction(reqWs, commentId, emoji);
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
+			if (!isSameIdentity()) return;
 			await loadTimeline();
 		} catch (err: any) {
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
+			if (!isSameIdentity()) return;
 			error = err?.message ?? 'Failed to add reaction';
 		}
 	}
@@ -1237,12 +1304,16 @@
 	async function handleRemoveReaction(commentId: string, emoji: string) {
 		const reqSlug = itemSlug;
 		const reqWs = wsSlug;
+		// IDENTITY fence (BUG-3105) — see handleReaction.
+		const isSameIdentity = authStore.identityFence();
 		try {
 			await api.comments.removeReaction(reqWs, commentId, emoji);
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
+			if (!isSameIdentity()) return;
 			await loadTimeline();
 		} catch (err: any) {
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
+			if (!isSameIdentity()) return;
 			error = err?.message ?? 'Failed to remove reaction';
 		}
 	}
