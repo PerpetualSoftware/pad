@@ -377,8 +377,8 @@ func TestRunner_CancelledMidCallReleasesWithoutCountingAFailure(t *testing.T) {
 }
 
 // A soft-deleted WORKSPACE or COLLECTION stops evaluation even though the item
-// row itself is live: nothing its owner deleted goes to the provider, and the
-// job is dropped rather than retried.
+// row itself is live: nothing its owner deleted goes to the provider. A
+// workspace's jobs are held for its restore; a collection's are dropped.
 func TestRunner_DeletedWorkspaceOrCollectionIsNeverSent(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -401,8 +401,19 @@ func TestRunner_DeletedWorkspaceOrCollectionIsNeverSent(t *testing.T) {
 			if fx.called() != 0 {
 				t.Fatalf("an item in a soft-deleted %s was sent to the provider", tc.name)
 			}
-			if j, _ := fx.s.GetDecisionJob(fx.item.ID, triageSet); j != nil {
-				t.Fatalf("job for an item in a soft-deleted %s was kept: %+v", tc.name, j)
+			j, _ := fx.s.GetDecisionJob(fx.item.ID, triageSet)
+			switch tc.name {
+			case "workspace":
+				// HELD, not dropped: a workspace restore must find the work
+				// still owed (codex round 5).
+				if j == nil || j.ClaimedBy != "" || j.Attempts != 0 {
+					t.Fatalf("job for an item in a soft-deleted workspace is %+v; want held (owed, unclaimed, attempts=0)", j)
+				}
+			case "collection":
+				// A collection has no restore path, so its jobs are dropped.
+				if j != nil {
+					t.Fatalf("job for an item in a soft-deleted collection was kept: %+v", j)
+				}
 			}
 		})
 	}
@@ -498,10 +509,34 @@ func TestRunner_DeleteJustBeforeAskIsNotSent(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := fx.r.Evaluate(context.Background(), fx.item.ID, triageSet); !errors.Is(err, ErrItemGone) {
-		t.Fatalf("err = %v; want ErrItemGone", err)
+	if _, err := fx.r.Evaluate(context.Background(), fx.item.ID, triageSet); !errors.Is(err, ErrWorkspaceDeleted) {
+		t.Fatalf("err = %v; want ErrWorkspaceDeleted", err)
 	}
 	if fx.called() != 0 {
 		t.Fatal("content of a workspace deleted before the call was sent to the provider")
+	}
+}
+
+// Codex round 5: work owed in a workspace that is soft-deleted and then
+// RESTORED is evaluated after the restore — nothing enqueues on restore (it
+// is a fan-out), so the job must have survived the deletion.
+func TestRunner_WorkspaceRestoreResumesHeldWork(t *testing.T) {
+	fx := newRunnerFixture(t)
+	if err := fx.s.DeleteWorkspace(fx.ws.Slug); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ { // more than one pass: a held job must not be claimed, nor spin
+		if n, err := fx.r.RunOnce(context.Background(), "tick", 10, time.Minute); err != nil || n != 0 {
+			t.Fatalf("pass %d over a deleted workspace claimed %d (err %v); want 0", i, n, err)
+		}
+	}
+	if err := fx.s.RestoreWorkspace(fx.ws.Slug); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := fx.r.RunOnce(context.Background(), "tick", 10, time.Minute); err != nil || n != 1 {
+		t.Fatalf("after restore RunOnce claimed %d (err %v); want 1", n, err)
+	}
+	if fx.called() != 1 {
+		t.Fatalf("provider called %d times after restore; want 1", fx.called())
 	}
 }

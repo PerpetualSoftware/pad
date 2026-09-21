@@ -136,7 +136,14 @@ type DecisionJob struct {
 // used by BOTH the candidate scan and the claim UPDATE's arbiter so the two
 // cannot drift (the reminderFireable lesson). Its one parameter is the current
 // time: an unclaimed row, or one whose lease has expired.
-const decisionJobClaimable = `(claimed_by IS NULL OR lease_expires_at IS NULL OR lease_expires_at < ?)`
+//
+// A job whose WORKSPACE is soft-deleted is not claimable: it is held in place
+// so a workspace restore finds the work still owed (codex round 5). Nothing
+// enqueues on restore — that would be a fan-out over every item — so keeping
+// the row is the only thing that makes a restore resume. A purge hard-deletes
+// the items, and the composite FK cascades the held rows away.
+const decisionJobClaimable = `(claimed_by IS NULL OR lease_expires_at IS NULL OR lease_expires_at < ?)
+	AND NOT EXISTS (SELECT 1 FROM workspaces w WHERE w.id = decision_jobs.workspace_id AND w.deleted_at IS NOT NULL)`
 
 // ClaimDecisionJobs claims up to limit owed jobs for runner, oldest first,
 // each leased until now+lease.
@@ -464,23 +471,31 @@ func (s *Store) RecentComments(itemID string, n int) ([]models.Comment, error) {
 	return out, nil
 }
 
-// ItemEvaluable reports whether an item may be sent to a decision provider:
-// the item, its collection and its workspace are all live.
+// ItemLiveness reports whether an item may be sent to a decision provider,
+// in two parts because the runner treats them differently:
 //
-// GetItem filters only the ITEM's soft delete. An item in a soft-deleted
-// workspace or collection still reads — and evaluating it would send content
-// its owner deleted to a third-party provider during the restore window,
-// which the deletion was supposed to stop. Same three-way liveness the
-// reminder tick's reminderFireable enforces, for the same reason.
-func (s *Store) ItemEvaluable(itemID string) (bool, error) {
-	var n int
-	err := s.db.QueryRow(s.q(`
-		SELECT COUNT(*) FROM items i
+//   - itemLive: the item and its collection are not soft-deleted. False means
+//     the job is dropped — neither has a restore path the queue must survive
+//     (an item restore re-enqueues through its own door).
+//   - workspaceLive: its workspace is not soft-deleted. False means the job is
+//     HELD for a possible workspace restore.
+//
+// GetItem filters only the ITEM's soft delete, so this exists to stop content
+// its owner deleted — by deleting the workspace or collection — from reaching
+// a third-party provider. Same liveness the reminder tick's reminderFireable
+// enforces, for the same reason.
+func (s *Store) ItemLiveness(itemID string) (itemLive, workspaceLive bool, err error) {
+	var itemDeleted, collDeleted, wsDeleted sql.NullString
+	err = s.db.QueryRow(s.q(`
+		SELECT i.deleted_at, c.deleted_at, w.deleted_at FROM items i
 		JOIN collections c ON c.id = i.collection_id
 		JOIN workspaces w ON w.id = i.workspace_id
-		WHERE i.id = ? AND i.deleted_at IS NULL AND c.deleted_at IS NULL AND w.deleted_at IS NULL`), itemID).Scan(&n)
-	if err != nil {
-		return false, fmt.Errorf("item evaluable: %w", err)
+		WHERE i.id = ?`), itemID).Scan(&itemDeleted, &collDeleted, &wsDeleted)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, false, nil
 	}
-	return n == 1, nil
+	if err != nil {
+		return false, false, fmt.Errorf("item liveness: %w", err)
+	}
+	return !itemDeleted.Valid && !collDeleted.Valid, !wsDeleted.Valid, nil
 }

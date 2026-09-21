@@ -274,6 +274,10 @@ func (r *Runner) Install(s *store.Store) {
 // job is dropped rather than retried.
 var ErrItemGone = errors.New("decision: item is gone")
 
+// ErrWorkspaceDeleted reports that the item's workspace is soft-deleted. The
+// job is HELD, not dropped: a restore must find the work still owed.
+var ErrWorkspaceDeleted = errors.New("decision: item's workspace is soft-deleted")
+
 // ErrUnknownSet reports a job for a set no longer registered: dropped.
 var ErrUnknownSet = errors.New("decision: question set is not registered")
 
@@ -288,15 +292,6 @@ func (r *Runner) State(itemID string) (*models.Item, BuiltState, error) {
 		return nil, BuiltState{}, fmt.Errorf("decision: read item %s: %w", itemID, err)
 	}
 	if item == nil || item.DeletedAt != nil {
-		return nil, BuiltState{}, ErrItemGone
-	}
-	// The workspace or collection may be soft-deleted while the item row is
-	// not; nothing of a deleted workspace goes to the provider.
-	live, err := r.store.ItemEvaluable(itemID)
-	if err != nil {
-		return nil, BuiltState{}, err
-	}
-	if !live {
 		return nil, BuiltState{}, ErrItemGone
 	}
 	comments, err := r.store.RecentComments(itemID, RecentTrailWindow)
@@ -349,10 +344,19 @@ func (r *Runner) Evaluate(ctx context.Context, itemID, setName string) (bool, er
 	// implied: no fence can hold across a network request, so a delete that
 	// commits after this read and before the provider receives the bytes is
 	// not stopped — the window is one statement plus the request, per job.
-	if live, err := r.store.ItemEvaluable(item.ID); err != nil {
+	//
+	// This is the ONE liveness guard on the send path. A second, earlier copy
+	// in State was redundant with it (mutant M26 survived its removal), so it
+	// is gone; State serves the read path too, where nothing is sent.
+	itemLive, wsLive, err := r.store.ItemLiveness(item.ID)
+	if err != nil {
 		return false, err
-	} else if !live {
+	}
+	if !itemLive {
 		return false, ErrItemGone
+	}
+	if !wsLive {
+		return false, ErrWorkspaceDeleted
 	}
 	answers, usage, err := r.provider.Ask(ctx, st.Bytes, qs.Questions)
 	if err != nil {
@@ -492,6 +496,12 @@ func (r *Runner) runJob(ctx context.Context, j store.DecisionJob) {
 	switch {
 	case err != nil && ctx.Err() != nil:
 		// Cancelled by shutdown, not a verdict on the job: no attempt counted.
+		r.release(j)
+		return
+	case errors.Is(err, ErrWorkspaceDeleted):
+		// Held for a restore, not a failure: released with no attempt, and
+		// the claim scan will not offer it again while the workspace stays
+		// deleted.
 		r.release(j)
 		return
 	case err == nil:
