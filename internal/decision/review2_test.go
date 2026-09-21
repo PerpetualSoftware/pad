@@ -201,6 +201,16 @@ func TestFitStateHoldsTheBudgetAtTheQuoteEdge(t *testing.T) {
 			continue
 		}
 		seen[remaining] = true
+		// A structured state is never cut, and `0` marshals to ONE byte, so
+		// with remaining >= 1 it fits and must not be refused (round 4).
+		if remaining >= 1 {
+			got, truncated, err := p.fitState(0, wire)
+			if err != nil {
+				t.Errorf("remaining=%d: a one-byte structured state was refused: %v", remaining, err)
+			} else if truncated || got != 0 {
+				t.Errorf("remaining=%d: structured state came back %v (truncated=%v), want it untouched", remaining, got, truncated)
+			}
+		}
 		for _, state := range []string{"", "abc", strings.Repeat("x", 50)} {
 			got, _, err := p.fitState(state, wire)
 			if err != nil {

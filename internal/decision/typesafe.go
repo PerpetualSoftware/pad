@@ -436,18 +436,23 @@ func (p *typesafeProvider) fitState(state any, questions map[string]wireQuestion
 	// remaining is what the state VALUE may occupy, its quotes included —
 	// the envelope's own "" is subtracted back out because the state's
 	// marshalled length counts it again.
-	//
-	// Below 2 there is no room for any string state at all, not even "":
-	// returning an empty state there would still send a request one or two
-	// bytes over (review round 3), so it is the same refusal as below 0.
 	remaining := budgetChars - (len(envelope) - 2)
-	if remaining < 2 {
+	if remaining < 0 {
 		return nil, false, fmt.Errorf("decision: questions alone exceed the %d-token budget", maxRequestTokens)
 	}
 
 	s, ok := state.(string)
 	if !ok || marshalledLen(s) <= remaining {
 		return state, false, nil
+	}
+	// A string state that does not fit, with fewer than two bytes of room:
+	// not even "" fits, and returning it would still send a request one or
+	// two bytes over (review round 3). This sits AFTER the string check on
+	// purpose — a structured state is never cut, and one as small as `0`
+	// fits in a single byte (review round 4).
+	if remaining < 2 {
+		return nil, false, fmt.Errorf("decision: no room for the state beside the questions: %d byte(s) left, "+
+			"and even an empty string needs 2", remaining)
 	}
 
 	// The budget is measured against the MARSHALLED length, not the raw
