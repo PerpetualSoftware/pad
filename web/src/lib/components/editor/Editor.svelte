@@ -558,7 +558,6 @@
 				const diagram = document.createElement('div');
 				diagram.className = 'mermaid-diagram';
 				diagram.setAttribute('contenteditable', 'false');
-				diagram.textContent = 'Rendering...';
 
 				const pre = document.createElement('pre');
 				pre.classList.add('code-block', 'mermaid-source');
@@ -587,7 +586,15 @@
 				// which sees only the DOM. Set even when empty, so the theme
 				// path can tell "no source" from "not a diagram we know".
 				mermaidSources.set(diagram, source);
+				// At creation the placeholder is shown only alongside the
+				// render queued to replace it. An empty block — a freshly
+				// typed fence, or one loaded empty — has nothing coming, so
+				// it stays empty, which is also what update() leaves when a
+				// diagram's source is cleared (BUG-3113). Later renders
+				// (update(), the theme re-render) show no placeholder: the
+				// previous diagram stays up until the new one lands.
 				if (source) {
+					diagram.textContent = 'Rendering...';
 					queueMermaidRender(source, diagram);
 				}
 
