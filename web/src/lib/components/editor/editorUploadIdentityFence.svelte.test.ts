@@ -44,6 +44,20 @@ vi.mock('$lib/api/client', () => ({
 	},
 }));
 
+// The strip broadcast, spied on the REAL module so the refusal leg can assert
+// the previous user's upload was not announced into the next user's views.
+const notifySpy = vi.hoisted(() => vi.fn());
+vi.mock('$lib/attachments/events', async (importOriginal) => {
+	const actual = await importOriginal<typeof import('$lib/attachments/events')>();
+	return {
+		...actual,
+		notifyAttachmentUploaded: (...args: Parameters<typeof actual.notifyAttachmentUploaded>) => {
+			notifySpy(...args);
+			return actual.notifyAttachmentUploaded(...args);
+		},
+	};
+});
+
 const { default: BodyEditor } = await import('./Editor.svelte');
 const { page } = await import('$app/state');
 
@@ -64,6 +78,7 @@ describe('Editor upload callback — identity fence (BUG-3105)', () => {
 		identity.epoch = 0;
 		releaseUpload = null;
 		uploadMock.mockReset();
+		notifySpy.mockReset();
 		uploadMock.mockImplementation(
 			() => new Promise((resolve) => (releaseUpload = resolve))
 		);
@@ -89,18 +104,26 @@ describe('Editor upload callback — identity fence (BUG-3105)', () => {
 		target.remove();
 	});
 
-	function configuredUpload(): (file: File) => Promise<unknown> {
+	type UploadOptions = {
+		upload: (file: File) => Promise<unknown>;
+		onError: (filename: string, message: string) => void;
+	};
+	function configured(): UploadOptions {
 		if (!tiptap) throw new Error('Editor.svelte did not construct a Tiptap editor');
 		const ext = tiptap.extensionManager.extensions.find((e) => e.name === 'attachmentUpload');
 		if (!ext) throw new Error('no attachmentUpload extension on the real mount');
-		return (ext.options as { upload: (file: File) => Promise<unknown> }).upload;
+		return ext.options as UploadOptions;
 	}
+	const configuredUpload = () => configured().upload;
 
 	it('CONTROL: with the identity unchanged, the upload resolves to the server result', async () => {
 		const pending = configuredUpload()(new File(['x'], 'a.png', { type: 'image/png' }));
 		expect(uploadMock).toHaveBeenCalledTimes(1);
 		releaseUpload!(RESULT);
 		await expect(pending).resolves.toEqual(RESULT);
+		// The precondition the refusal leg's absence assertion leans on: this
+		// path DOES announce, so "not announced" below is a real difference.
+		expect(notifySpy).toHaveBeenCalledTimes(1);
 	});
 
 	it('an upload resolving after the signed-in user changed is REFUSED, not inserted', async () => {
@@ -111,5 +134,22 @@ describe('Editor upload callback — identity fence (BUG-3105)', () => {
 		identity.epoch++;
 		releaseUpload!(RESULT);
 		await expect(pending).rejects.toThrow('upload refused: the signed-in user changed');
+		expect(notifySpy).not.toHaveBeenCalled();
+	});
+
+	it('onError stays silent for the refusal, and still alerts a genuine failure', () => {
+		const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {});
+		const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+		try {
+			configured().onError('a.png', 'upload refused: the signed-in user changed');
+			expect(alertSpy).not.toHaveBeenCalled();
+			// CONTROL: the same callback does alert, so the silence above is the
+			// sentinel's doing and not an alert path that never fires.
+			configured().onError('a.png', 'network down');
+			expect(alertSpy).toHaveBeenCalledTimes(1);
+		} finally {
+			alertSpy.mockRestore();
+			errSpy.mockRestore();
+		}
 	});
 });
