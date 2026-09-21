@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { SvelteMap } from 'svelte/reactivity';
 	import { api } from '$lib/api/client';
+	import { authStore } from '$lib/stores/auth.svelte';
 	import type { RelationBacklink } from '$lib/types';
 
 	interface Props {
@@ -43,16 +44,23 @@
 		// same reason and the same bug class (PLAN-2105 / TASK-2112).
 		const reqSlug = itemSlug;
 		const reqWs = wsSlug;
+		// IDENTITY fence (BUG-3105). The slug/workspace pair above is a
+		// NAVIGATION fence; a sign-out on the same item moves neither half.
+		// Backlinks are filtered by what the CALLER may see, and the count
+		// is pushed up into the parent's badge.
+		const isSameIdentity = authStore.identityFence();
 		loading = true;
 		error = '';
 		try {
 			const page = await api.items.relationBacklinks(reqWs, reqSlug, { limit: PAGE_LIMIT });
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
+			if (!isSameIdentity()) return;
 			rows = page.relation_backlinks;
 			total = page.total;
 			hasMore = page.relation_backlinks.length === PAGE_LIMIT && page.total > page.relation_backlinks.length;
 		} catch (err) {
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
+			if (!isSameIdentity()) return;
 			error = err instanceof Error ? err.message : 'Failed to load references';
 			rows = [];
 			total = 0;
@@ -65,6 +73,8 @@
 	async function loadMore() {
 		const reqSlug = itemSlug;
 		const reqWs = wsSlug;
+		// IDENTITY fence (BUG-3105) — see loadFirstPage.
+		const isSameIdentity = authStore.identityFence();
 		loadingMore = true;
 		try {
 			const page = await api.items.relationBacklinks(reqWs, reqSlug, {
@@ -72,6 +82,7 @@
 				offset: rows.length
 			});
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
+			if (!isSameIdentity()) return;
 			rows = [...rows, ...page.relation_backlinks];
 			total = page.total;
 			hasMore = rows.length < page.total;
@@ -79,7 +90,7 @@
 			// A failed "show more" leaves what is already displayed alone —
 			// dropping loaded rows because a later page failed would be worse
 			// than stopping.
-			if (reqSlug === itemSlug && reqWs === wsSlug) hasMore = false;
+			if (reqSlug === itemSlug && reqWs === wsSlug && isSameIdentity()) hasMore = false;
 		} finally {
 			if (reqSlug === itemSlug && reqWs === wsSlug) loadingMore = false;
 		}

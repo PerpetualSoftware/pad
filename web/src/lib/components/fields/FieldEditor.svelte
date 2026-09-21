@@ -25,6 +25,7 @@ handlers — onchange is never called.
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { api } from '$lib/api/client';
+	import { authStore } from '$lib/stores/auth.svelte';
 	import ItemPicker from '$lib/components/items/ItemPicker.svelte';
 	import { shouldOpenInPane } from '$lib/components/collections/itemCardClick';
 	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
@@ -274,27 +275,35 @@ handlers — onchange is never called.
 		// Settlement owns the release from here — see `tracked`.
 		pendingRelation = { identity, list: next, tracked: true };
 		void (async () => {
+			// The release is in a FINALLY because it must run under ANY identity
+			// (BUG-3105): the hold shows the list this identity chose, so a
+			// release refused across a sign-out would leave that list on screen
+			// for the next user. It assigns a literal, which carries no data across
+			// the await — the finally-literal rule the fence guard applies.
 			try {
-				await settlement;
-			} catch {
-				// Settled is settled. The consumer owns error reporting — the
-				// only thing that changes here is that we stop holding, which is
-				// as true of a failure as of a success.
+				try {
+					await settlement;
+				} catch {
+					// Settled is settled. The consumer owns error reporting — the
+					// only thing that changes here is that we stop holding, which is
+					// as true of a failure as of a success.
+				}
+				// Flush before releasing, for a consumer that RESOLVES BEFORE IT
+				// ASSIGNS. `ItemDetail` assigns first, so nothing can currently
+				// observe this line and no test kills it — stated rather than
+				// dressed up as tested, because a mutant removing it survives the
+				// whole file. It is kept, unlike W7's duplicate guard, because that
+				// guard was unreachable BY CONSTRUCTION while this one is reachable
+				// by a consumer shape the signature permits: `Promise<void>` says
+				// when the write ended, never when the value landed. Releasing ahead
+				// of the assignment would show the pre-write list and hand an edit
+				// started in that window the stale base — the round-7 defect again.
+				await tick();
+			} finally {
+				if (!holdOrder.superseded(ticket) && pendingRelation?.identity === identity) {
+					pendingRelation = null;
+				}
 			}
-			// Flush before releasing, for a consumer that RESOLVES BEFORE IT
-			// ASSIGNS. `ItemDetail` assigns first, so nothing can currently
-			// observe this line and no test kills it — stated rather than
-			// dressed up as tested, because a mutant removing it survives the
-			// whole file. It is kept, unlike W7's duplicate guard, because that
-			// guard was unreachable BY CONSTRUCTION while this one is reachable
-			// by a consumer shape the signature permits: `Promise<void>` says
-			// when the write ended, never when the value landed. Releasing ahead
-			// of the assignment would show the pre-write list and hand an edit
-			// started in that window the stale base — the round-7 defect again.
-			await tick();
-			if (holdOrder.superseded(ticket)) return;
-			if (pendingRelation?.identity !== identity) return;
-			pendingRelation = null;
 		})();
 	}
 
@@ -530,7 +539,7 @@ handlers — onchange is never called.
 	 * exact-title suppression true on the NEXT keystroke — without it the same
 	 * text would offer to create a second item.
 	 */
-	async function createRelationTarget(title: string) {
+	async function createRelationTarget(title: string, pickerIdentity?: () => boolean) {
 		const ws = wsSlug;
 		const collSlug = field.collection;
 		if (!ws || !collSlug) return;
@@ -604,7 +613,18 @@ handlers — onchange is never called.
 		// field holding exactly what was asked for.
 		//
 		// Is the USER still waiting on this specific create?
+		//
+		// And is the same USER still signed in (BUG-3105)? None of the fences
+		// above moves on a sign-out. Two captures, deliberately both: this
+		// function's own, and the one ItemPicker hands up through `oncreate`,
+		// taken when the create was asked for. Today they are the same tick; the
+		// picker's is consumed anyway so that a picker capturing EARLIER (at the
+		// menu, as ItemAttachmentStrip's delete does) is honoured here without a
+		// second change.
+		const isSameIdentity = authStore.identityFence();
 		const stillWaiting = () =>
+			isSameIdentity() &&
+			(pickerIdentity?.() ?? true) &&
 			!destroyed &&
 			mySeq === relationWrite &&
 			ws === wsSlug &&

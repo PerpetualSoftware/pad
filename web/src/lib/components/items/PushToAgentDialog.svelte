@@ -100,6 +100,7 @@ always a broadcast that went out.
 	import Modal from '$lib/components/common/Modal.svelte';
 	import Button from '$lib/components/common/Button.svelte';
 	import { api, PadApiError } from '$lib/api/client';
+	import { authStore } from '$lib/stores/auth.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { relativeTime } from '$lib/utils/markdown';
 	import {
@@ -340,7 +341,11 @@ always a broadcast that went out.
 		 * resets to 0 per opening, which is safe because `gen` already rejects
 		 * responses from a previous one.
 		 */
-		const stillCurrent = () => gen === presenceGen && seq > presenceAppliedSeq;
+		// IDENTITY fence (BUG-3105), folded into `stillCurrent`: these are the
+		// CALLER's sessions, and neither `gen` nor `seq` moves on a sign-out.
+		const isSameIdentity = authStore.identityFence();
+		const stillCurrent = () =>
+			gen === presenceGen && seq > presenceAppliedSeq && isSameIdentity();
 		try {
 			const resp = await api.sessions.list();
 			if (!stillCurrent()) return;
@@ -447,6 +452,15 @@ always a broadcast that went out.
 		// while `sending` disables the picker, but the pattern is load-bearing
 		// elsewhere in this file and cheap to keep consistent here too.
 		const target = selectedSessionId;
+		// IDENTITY fence (BUG-3105). Neither `gen` nor `destroyed` moves on a
+		// sign-out. The push has no idempotency key, so this fence refuses to
+		// REPORT under the next identity and never re-sends. That includes the
+		// toasts, which otherwise fire even for a destroyed instance (see
+		// below): the push was real, but it was the PREVIOUS user's, and naming
+		// its item to whoever is signed in now is the leak. The busy flag is
+		// still cleared on that path, since the dialog cannot close while it is
+		// set.
+		const isSameIdentity = authStore.identityFence();
 		sending = true;
 		sendError = '';
 		try {
@@ -456,6 +470,10 @@ always a broadcast that went out.
 			const result = target
 				? await api.items.push(wsSlug, itemSlug, collapsed, target)
 				: await api.items.push(wsSlug, itemSlug, collapsed);
+			if (!isSameIdentity()) {
+				sending = false;
+				return;
+			}
 			sending = false;
 			// STRICT `=== undefined`, never `== undefined`, and both branches
 			// below are guarded by `target` for the same reason: since
@@ -513,6 +531,10 @@ always a broadcast that went out.
 			if (!stillMine()) return;
 			handleDismiss();
 		} catch (err) {
+			if (!isSameIdentity()) {
+				sending = false;
+				return;
+			}
 			sending = false;
 			if (!stillMine()) return;
 			// See PUSH_PRE_PUBLISH_ERROR_CODES: a recognised pre-publish refusal

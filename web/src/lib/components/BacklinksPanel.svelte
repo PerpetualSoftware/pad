@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { SvelteMap } from 'svelte/reactivity';
 	import { api } from '$lib/api/client';
+	import { authStore } from '$lib/stores/auth.svelte';
 	import type { Backlink } from '$lib/types';
 	import { relativeTime } from '$lib/utils/markdown';
 
@@ -44,16 +45,23 @@
 		// parent's `backlinksCount` badge (PLAN-2105 / TASK-2112).
 		const reqSlug = itemSlug;
 		const reqWs = wsSlug;
+		// IDENTITY fence (BUG-3105). The slug/workspace pair above is a
+		// NAVIGATION fence; a sign-out on the same item moves neither half.
+		// Backlinks are filtered by what the CALLER may see, and the count
+		// is pushed up into the parent's badge.
+		const isSameIdentity = authStore.identityFence();
 		loading = true;
 		error = '';
 		try {
 			const rows = await api.items.backlinks(reqWs, reqSlug, { limit: PAGE_LIMIT });
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
+			if (!isSameIdentity()) return;
 			backlinks = rows;
 			hasMore = rows.length === PAGE_LIMIT;
 			onCountChange?.(rows.length);
 		} catch (err) {
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
+			if (!isSameIdentity()) return;
 			error = err instanceof Error ? err.message : 'Failed to load backlinks';
 			backlinks = [];
 			hasMore = false;
@@ -68,6 +76,8 @@
 		if (loadingMore || !hasMore) return;
 		const reqSlug = itemSlug;
 		const reqWs = wsSlug;
+		// IDENTITY fence (BUG-3105) — see loadFirstPage.
+		const isSameIdentity = authStore.identityFence();
 		loadingMore = true;
 		try {
 			const rows = await api.items.backlinks(reqWs, reqSlug, {
@@ -75,11 +85,13 @@
 				offset: backlinks.length
 			});
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
+			if (!isSameIdentity()) return;
 			backlinks = [...backlinks, ...rows];
 			hasMore = rows.length === PAGE_LIMIT;
 			onCountChange?.(backlinks.length);
 		} catch (err) {
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
+			if (!isSameIdentity()) return;
 			error = err instanceof Error ? err.message : 'Failed to load more backlinks';
 		} finally {
 			if (reqSlug === itemSlug && reqWs === wsSlug) loadingMore = false;

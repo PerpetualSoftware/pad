@@ -51,7 +51,13 @@ vi.mock('$lib/services/sse.svelte', () => ({
 }));
 
 vi.mock('$lib/stores/auth.svelte', () => ({
-	authStore: { userId: 'user-1', user: { id: 'user-1', role: 'member' } },
+	authStore: {
+		userId: 'user-1',
+		user: { id: 'user-1', role: 'member' },
+		// ItemTimeline fences every load and handler on identity (BUG-3105);
+		// identity never changes in this suite.
+		identityFence: () => () => true,
+	},
 }));
 
 vi.mock('$lib/stores/workspace.svelte', () => ({

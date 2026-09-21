@@ -47,6 +47,7 @@ user hunting for an item that provably does not exist.
 	import Modal from '$lib/components/common/Modal.svelte';
 	import FieldEditor from '$lib/components/fields/FieldEditor.svelte';
 	import { api, PadApiError } from '$lib/api/client';
+	import { authStore } from '$lib/stores/auth.svelte';
 	import { copyDropReasonMessage } from '$lib/items/copyDropReasons';
 	import { isCollectable, uncollectableReason } from '$lib/items/copyNeedsValue';
 	import { canEditCollection } from '$lib/utils/permissions';
@@ -420,14 +421,21 @@ user hunting for an item that provably does not exist.
 
 	async function loadWorkspaces() {
 		const gen = flowGen;
+		// IDENTITY fence (BUG-3105). `flowGen` moves when the dialog is re-opened,
+		// not when the signed-in user changes under an open dialog; the workspace
+		// list is per-user, so the previous identity's list must not populate the
+		// next one's destination picker.
+		const isSameIdentity = authStore.identityFence();
 		workspacesLoading = true;
 		workspacesError = '';
 		try {
 			const list = await api.workspaces.list();
 			if (gen !== flowGen) return;
+			if (!isSameIdentity()) return;
 			workspaces = list;
 		} catch (e: any) {
 			if (gen !== flowGen) return;
+			if (!isSameIdentity()) return;
 			workspacesError = e?.message ?? 'Could not load your workspaces.';
 		} finally {
 			if (gen === flowGen) workspacesLoading = false;
@@ -451,6 +459,10 @@ user hunting for an item that provably does not exist.
 	 */
 	async function loadDestCollections(wsSlug: string) {
 		const gen = flowGen;
+		// IDENTITY fence (BUG-3105). The filter below is a PERMISSION decision
+		// made from the membership this request returned; applied under the next
+		// identity, it would offer destinations chosen by someone else's role.
+		const isSameIdentity = authStore.identityFence();
 		destCollectionsLoading = true;
 		destCollectionsError = '';
 		destCollections = [];
@@ -460,6 +472,7 @@ user hunting for an item that provably does not exist.
 				api.workspaces.me(wsSlug) as Promise<WorkspaceMembership | null>
 			]);
 			if (gen !== flowGen) return;
+			if (!isSameIdentity()) return;
 			destCollections = colls.filter((c) => {
 				if (!canEditCollection(membership, c.id)) return false;
 				// A same-workspace "move" into the item's own collection is a
@@ -469,6 +482,7 @@ user hunting for an item that provably does not exist.
 			});
 		} catch (e: any) {
 			if (gen !== flowGen) return;
+			if (!isSameIdentity()) return;
 			destCollectionsError = e?.message ?? 'Could not load collections for that workspace.';
 		} finally {
 			if (gen === flowGen) destCollectionsLoading = false;
@@ -610,6 +624,9 @@ user hunting for an item that provably does not exist.
 		}
 		const gen = flowGen;
 		const pgen = previewGen;
+		// IDENTITY fence (BUG-3105). A preview is computed server-side against
+		// the CALLER's permissions in both workspaces, so it is per-user data.
+		const isSameIdentity = authStore.identityFence();
 		preflightInFlight = true;
 		preflightLoading = true;
 		preflightError = '';
@@ -620,6 +637,7 @@ user hunting for an item that provably does not exist.
 				signal: ctl.signal
 			});
 			if (gen !== flowGen || pgen !== previewGen) return;
+			if (!isSameIdentity()) return;
 			preflight = result;
 			// A retained value that this destination turns out to declare has
 			// just been applied — re-preview so the buckets reflect it. This
@@ -628,6 +646,7 @@ user hunting for an item that provably does not exist.
 			if (mergeOverrideRows(result.fields.needs_value)) trailingQueued = true;
 		} catch (e: any) {
 			if (gen !== flowGen || pgen !== previewGen || ctl.signal.aborted) return;
+			if (!isSameIdentity()) return;
 			if (isDestinationGoneError(e)) {
 				handleDestinationLost();
 				return;
@@ -652,10 +671,15 @@ user hunting for an item that provably does not exist.
 			// it owns `preflightLoading` from here. Clearing the flag in the
 			// no-trailing branch only is what keeps a superseded run from
 			// stranding the spinner (or the Confirm gate) on.
-			if (trailingQueued) {
+			// The trailing run is a SEND, queued by an edit made under the
+			// identity captured above (BUG-3105). Across a sign-out it would be
+			// issued on behalf of a user who is gone, so it is dropped — and the
+			// spinner is then this run's to clear, since no trailing run owns it.
+			if (trailingQueued && isSameIdentity()) {
 				trailingQueued = false;
 				void runPreflight();
 			} else {
+				trailingQueued = false;
 				preflightLoading = false;
 			}
 		}
@@ -834,8 +858,17 @@ user hunting for an item that provably does not exist.
 		const pgen = previewGen;
 		const ogen = overrideGen;
 		const req = buildRequest();
+		// IDENTITY fence (BUG-3105), folded into `superseded` so every check
+		// below also asks it. The three generations are navigation/edit fences
+		// and none moves on a sign-out; this path ends in a COPY with no
+		// idempotency key, so the refusal must land before the dispatch — a
+		// fence after it could only refuse to REPORT a write already made.
+		const isSameIdentity = authStore.identityFence();
 		const superseded = () =>
-			gen !== flowGen || pgen !== previewGen || ogen !== overrideGen;
+			gen !== flowGen ||
+			pgen !== previewGen ||
+			ogen !== overrideGen ||
+			!isSameIdentity();
 		const reviewed = reviewFingerprint(preflight);
 		preparing = true;
 		submitError = '';
@@ -901,14 +934,22 @@ user hunting for an item that provably does not exist.
 	}
 
 	async function dispatchCopy(gen: number, req: ItemCopyPreflightRequest) {
+		// IDENTITY fence (BUG-3105). handleConfirm refuses BEFORE this is called;
+		// this one covers the other side of the copy's await, where the write has
+		// already happened under the captured identity. It REFUSES to report and
+		// never re-sends: the copy has no idempotency key (DR-13), so a retry
+		// duplicates the item. Nothing here may be read as a recovery path.
+		const isSameIdentity = authStore.identityFence();
 		submitting = true;
 		try {
 			const result = await api.items.copy(sourceWsSlug, item.slug, req);
 			if (gen !== flowGen) return;
+			if (!isSameIdentity()) return;
 			oncopied(result);
 			onclose();
 		} catch (e: any) {
 			if (gen !== flowGen) return;
+			if (!isSameIdentity()) return;
 			const code = errorCode(e);
 			if (isDestinationGoneError(e)) {
 				handleDestinationLost();
@@ -943,10 +984,13 @@ user hunting for an item that provably does not exist.
 		targetCollection: string,
 		fieldOverrides: Record<string, unknown>,
 	) {
+		// IDENTITY fence (BUG-3105) — the move's counterpart to dispatchCopy.
+		const isSameIdentity = authStore.identityFence();
 		submitting = true;
 		try {
 			const outcome = await onmove(targetCollection, fieldOverrides);
 			if (gen !== flowGen) return;
+			if (!isSameIdentity()) return;
 			if (outcome.status === 'ok') {
 				onclose();
 				return;

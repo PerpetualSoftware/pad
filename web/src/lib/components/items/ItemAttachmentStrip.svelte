@@ -451,12 +451,18 @@
 			// and are never touched: the GET may predate them, so their absence
 			// from the response says nothing.
 			const pendingAtRequest = new Set(pendingUploads.map((a) => a.id));
+			// IDENTITY fence (BUG-3105). `req` is a VIEW fence — workspace and
+			// item — and a sign-out on the same item moves neither. The list is
+			// filtered server-side by what the caller may see, so the previous
+			// identity's rows must not paint into the next one's strip.
+			const isSameIdentity = authStore.identityFence();
 			try {
 				const res = await api.attachments.list(reqWsSlug, {
 					item_id: reqItemId,
 					limit: MAX_FETCH,
 				});
 				if (req.stale()) return;
+				if (!isSameIdentity()) return;
 				const raw = res.attachments ?? [];
 				// Exclude BOTH tombstoned ids AND ids with a delete still in flight
 				// (PLAN-2392 3c-iii — load-path fence). `deletedIds` is only latched
@@ -551,6 +557,9 @@
 				// pre-existing (inline images are already broken for them) and
 				// is tracked as BUG-2386, not absorbed here — PLAN-2382 DR-4b.
 				if (req.stale()) return;
+				// The failure arm repaints from the pending buffer and raises the
+				// error row: both are commits (BUG-3105).
+				if (!isSameIdentity()) return;
 				// Keep anything uploaded while this request was in flight: the
 				// upload SUCCEEDED, so dropping it would hide a row the editor
 				// and server both have, until a remount (Codex review round 2).
@@ -665,12 +674,15 @@
 		const req = loadFence.restart();
 		const { ws: reqWsSlug, item: reqItemId } = req.value;
 		if (!reqItemId || !reqWsSlug) return;
+		// IDENTITY fence (BUG-3105) — the load path's, for the same reason.
+		const isSameIdentity = authStore.identityFence();
 		try {
 			const res = await api.attachments.list(reqWsSlug, {
 				item_id: reqItemId,
 				limit: MAX_FETCH,
 			});
 			if (req.stale()) return;
+			if (!isSameIdentity()) return;
 			const raw = res.attachments ?? [];
 			// Exclude BOTH the tombstoned ids AND the ids with a delete still in
 			// flight: neither may be repainted (round-3 P1). This is the only
@@ -1136,6 +1148,13 @@
 		// current when it resolves (Codex round 6).
 		const req = viewFence.begin();
 		const reqWsSlug = req.value.ws;
+		// IDENTITY fence (BUG-3105). Placed exactly where the view fence is
+		// checked below, and for the same split: the 404 broadcast stays AHEAD
+		// of both, because it is a global statement about a row the server no
+		// longer has — true for every identity. The rollback and the toast are
+		// what paint into the view, and a rollback under the next identity would
+		// re-insert a tile only the previous one was shown.
+		const isSameIdentity = authStore.identityFence();
 		const index = attachments.findIndex((a) => a.id === att.id);
 
 		// Mark the delete in-flight BEFORE the optimistic removal (PLAN-2392
@@ -1184,6 +1203,7 @@
 			}
 
 			if (req.stale()) return;
+			if (!isSameIdentity()) return;
 
 			// Someone else announced this deletion while our own call was in
 			// flight — the row is gone regardless of why ours failed, so don't

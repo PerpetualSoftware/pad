@@ -4,6 +4,7 @@
 	import { isAgentCollection } from '$lib/types';
 	import { createDefaultFields } from '$lib/collections/createDefaults';
 	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
+	import { authStore } from '$lib/stores/auth.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import { toBlockquote } from '$lib/utils/markdown';
@@ -208,6 +209,13 @@
 		// refused if a projection resync lands mid-create (BUG-2098).
 		const sinceEpoch = localIndex.scopeEpochFor(ws);
 
+		// IDENTITY fence (BUG-3105). `sinceEpoch` is the PROJECTION-SCOPE epoch,
+		// not an identity fence (BUG-3095's body called this file the reference
+		// pattern for one; it had none), and the editor-swap check below does not
+		// move on a sign-out either. Across one, the wiki-link insert would write
+		// the previous user's new item into a document the next user is editing.
+		const isSameIdentity = authStore.identityFence();
+
 		const coll = collections.find((c) => c.slug === selectedCollectionSlug);
 		if (!coll) {
 			errorMsg = 'Collection not found';
@@ -243,7 +251,16 @@
 			// alive and merely goes read-only, so we must drop the wiki-link insert
 			// explicitly — a frozen master must not be mutated by an in-flight
 			// create the user started before the pane opened.
-			if (originEditor.isDestroyed || editor !== originEditor || !originEditor.isEditable) {
+			//
+			// `!isSameIdentity()` is the sign-out arm (BUG-3105), with the same
+			// disposition: the item exists, but its link, callback and toast
+			// belonged to the previous user.
+			if (
+				!isSameIdentity() ||
+				originEditor.isDestroyed ||
+				editor !== originEditor ||
+				!originEditor.isEditable
+			) {
 				visible = false;
 				showForm = false;
 				title = '';
@@ -264,6 +281,15 @@
 			toastStore.show(`Created "${item.title}"`, 'success');
 			hide();
 		} catch (err: any) {
+			// A failure belonging to the previous identity resets the form rather
+			// than surfacing an error, the same as the stale-editor arm above.
+			if (!isSameIdentity()) {
+				visible = false;
+				showForm = false;
+				title = '';
+				errorMsg = '';
+				return;
+			}
 			if (isPlanLimitError(err)) {
 				toastStore.show(planLimitMessage(err) + ' Upgrade to Pro', 'error', 6000, '/console/billing');
 			} else {

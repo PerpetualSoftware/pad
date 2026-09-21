@@ -18,10 +18,18 @@
  *    added to ItemDetail now fails HERE, naming itself, before anyone has to
  *    notice.
  *
- * 2. EVERY AWAIT-THEN-REQUEST PATH HOLDS AN IDENTITY FENCE. For each population
- *    file, every async function (and every `.then` continuation) in which a
- *    REQUEST is reachable after an `await` must contain a call to a predicate
- *    bound from `authStore.identityFence()`, positioned between them.
+ * 2. EVERY AWAIT-THEN-SEND PATH HOLDS AN IDENTITY FENCE. For each population
+ *    file, every async function in which a SEND — a REQUEST or a COMMIT, see
+ *    (d) — is reachable after one of that function's OWN awaits must contain a
+ *    call to a predicate bound from `authStore.identityFence()`, positioned
+ *    between them. "Between" follows the exception edges (BUG-3105 PR B): a
+ *    send in a `catch` or `finally`, or after a try/catch, needs the fence on
+ *    the path that actually reaches it, because a fence in the try block is
+ *    skipped by a throw and taken by a `finally` on its own early return. A
+ *    LITERAL assignment inside a `finally` is not a commit (lead ruling 1 for
+ *    PR B): it carries no data across the await, and it is how a busy flag
+ *    clears under any identity. Each rule is pinned by the fixture legs at the
+ *    bottom of this file.
  *
  * WHY A SECOND, SIMPLER ANALYZER RATHER THAN REUSING THE AID MODULE.
  * `src/test/identityFenceAst.ts` is a 1500-line flow analysis tuned to
@@ -54,14 +62,16 @@
  *       fail-OPEN, which is why it is stated here rather than implied.
  *       A send inside a callback passed to a helper that is not itself awaited
  *       here also reads as having no await before it.
- *   (d) COMMITS. This guard covers REQUESTS (`api.*`, `fetch`, and one-hop
- *       local helpers around them). A post-await assignment to component state
- *       is equally capable of showing one identity's data to the next, and is
- *       NOT modelled. The two commit rows fixed in this unit
- *       (`TimelineVersionCard.ensureResolved`, `ChildItems.loadChildren`) are
- *       covered by their own fences and by the driven legs, not by this guard.
- *       `ItemPicker.invokeCreate` and `ItemAttachmentStrip`'s post-confirmation
- *       delete are known members of this gap, found by hand.
+ *   (d) COMMITS BEYOND STATE AND PROPS. Since BUG-3105 PR A a commit is an
+ *       assignment to a script-scope `let`/`var` or a call to an `on*` prop
+ *       callback. A METHOD CALL on a store or a module helper
+ *       (`localIndex.upsert`, `toastStore.show`, `announceAttachmentDeleted`)
+ *       is not modelled. BUG-3105 PR B dispositioned such calls by hand ONLY
+ *       inside the functions it fenced, plus one found by review
+ *       (`Editor`'s upload callback). The rest of the population is UNSWEPT
+ *       for this shape: an enumeration of post-await calls outside the
+ *       modelled set counted 202, most of them pure predicates. The sweep is
+ *       BUG-3130.
  *   (e) NON-AWAIT SUSPENSION. `ItemAttachmentStrip.confirmDelete` re-checks on
  *       the far side of a NON-BLOCKING in-app confirmation menu — structurally
  *       the right move, on the wrong quantity (`paint.isCurrent()` compares
@@ -70,6 +80,14 @@
  *       open passes the check and the DELETE goes out as the new user. Found by
  *       hand, not by this guard, and it is the clearest evidence that this
  *       guard is a floor and not a ceiling.
+ *   (f) PROMISE CONTINUATIONS. Only `await` makes a function suspend here. A
+ *       callback handed to `.then` / `.catch` / `.finally` runs after a
+ *       suspension too, and its sends are NOT seen. The population's ten
+ *       continuation sites were enumerated by hand for BUG-3105 PR B (the table
+ *       is on its trail): one was a real commit and is fenced
+ *       (`ItemTimeline.probeAttachment`); the rest are UI flushes behind
+ *       `tick()`, mermaid rendering, a display release that must run under any
+ *       identity, and the public capabilities fetch.
  *
  * FAIL-CLOSED, which is the property that makes the gaps survivable: anything
  * this guard cannot classify is a FAILURE, never a skip. A file it cannot parse
@@ -83,8 +101,8 @@
  * `file::function` path. Each listed path is EXPECTED to be unfenced: a path
  * that gets fixed without being removed from the list ALSO fails, so the list
  * cannot rot into a permanent exemption. Anything unfenced and unlisted fails.
- * That is what makes this guard mergeable green while the follow-up unit is
- * still open.
+ * That is what made this guard mergeable green while BUG-3105 was open; PR B
+ * emptied the list, so from here any unfenced path is simply a failure.
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -142,97 +160,11 @@ const NOT_DIRECTLY_IMPORTED = new Set(['lib/components/timeline/TimelineVersionC
  * removing it, fails.
  */
 const KNOWN_UNFENCED: string[] = [
-	// ---- BUG-3105 PR B: the burn-down list. Same item, next unit. ----
-	// Each of these is an await-then-send path — a REQUEST, a COMMIT, or both —
-	// with no identity fence. PR A fixed ShareDialog (6) and ItemPicker's
-	// upward hand-off; these are what is left, and PR B empties this array.
-
-	// ItemTimeline: loadMore and the six comment/reaction handlers were on
-	// BUG-3095's list for their REQUESTS; loadTimeline and refreshFromSSE join
-	// them under the commit model (both paint entries after their await).
-	'lib/components/timeline/ItemTimeline.svelte::loadMore',
-	'lib/components/timeline/ItemTimeline.svelte::submitComment',
-	'lib/components/timeline/ItemTimeline.svelte::handleReply',
-	'lib/components/timeline/ItemTimeline.svelte::handleEdit',
-	'lib/components/timeline/ItemTimeline.svelte::handleDelete',
-	'lib/components/timeline/ItemTimeline.svelte::handleReaction',
-	'lib/components/timeline/ItemTimeline.svelte::handleRemoveReaction',
-	'lib/components/timeline/ItemTimeline.svelte::loadTimeline',
-	'lib/components/timeline/ItemTimeline.svelte::refreshFromSSE',
-
-	// CopyItemDialog: handleConfirm and runPreflight were REQUEST rows; the
-	// dispatch pair and the two loaders are commit rows. dispatchCopy is the
-	// one to treat carefully in PR B — the copy has no idempotency key, so its
-	// fence must REFUSE, never re-send.
-	'lib/components/items/CopyItemDialog.svelte::handleConfirm',
-	'lib/components/items/CopyItemDialog.svelte::runPreflight',
-	'lib/components/items/CopyItemDialog.svelte::dispatchCopy',
-	'lib/components/items/CopyItemDialog.svelte::dispatchMove',
-	'lib/components/items/CopyItemDialog.svelte::loadWorkspaces',
-	'lib/components/items/CopyItemDialog.svelte::loadDestCollections',
-
-	// EditCollectionModal: handleArchive is the REQUEST row (delete -> list ->
-	// delete). The other three commit after their await.
-	'lib/components/collections/EditCollectionModal.svelte::handleArchive',
-	'lib/components/collections/EditCollectionModal.svelte::handleSave',
-	'lib/components/collections/EditCollectionModal.svelte::loadCollectionOptions',
-	'lib/components/collections/EditCollectionModal.svelte::loadPreviewContext',
-
-	// ItemAttachmentStrip: confirmDelete was fixed in BUG-3095 (row 9). These
-	// three are its await-side siblings, including the delete's own
-	// continuation and the global deletion broadcast it fires.
-	'lib/components/items/ItemAttachmentStrip.svelte::performDelete',
-	'lib/components/items/ItemAttachmentStrip.svelte::revalidateAfterRestore',
-	'lib/components/items/ItemAttachmentStrip.svelte::<nested in $effect>',
-
-	// The two backlink panels: identical shape, commit-only, no post-await
-	// request. Fenced the same way in PR B.
-	'lib/components/BacklinksPanel.svelte::loadFirstPage',
-	'lib/components/BacklinksPanel.svelte::loadMore',
-	'lib/components/RelationBacklinksPanel.svelte::loadFirstPage',
-	'lib/components/RelationBacklinksPanel.svelte::loadMore',
-
-	// QuickActionsMenu: handleAction / handleSaveNewAction were REQUEST rows;
-	// readPresence commits presence state after its await.
-	'lib/components/common/QuickActionsMenu.svelte::handleAction',
-	'lib/components/common/QuickActionsMenu.svelte::handleSaveNewAction',
-	'lib/components/common/QuickActionsMenu.svelte::readPresence',
-
-	// PushToAgentDialog: handleSend was the REQUEST row; refreshPresence is its
-	// commit counterpart.
-	'lib/components/items/PushToAgentDialog.svelte::handleSend',
-	'lib/components/items/PushToAgentDialog.svelte::refreshPresence',
-
-	// FieldEditor: createRelationTarget commits through the parent's onchange,
-	// which reaches ItemDetail.updateField and issues a PATCH. It is also
-	// ItemPicker's `oncreate` caller, so PR B should consume the predicate
-	// ItemPicker now passes up rather than inventing a second mechanism.
-	'lib/components/fields/FieldEditor.svelte::createRelationTarget',
-	'lib/components/fields/FieldEditor.svelte::<nested in writeRelationList>',
-
-	// EditorBubbleMenu.handleCreate — worth its own note. BUG-3095's body
-	// called this file THE REFERENCE PATTERN. It is not: its `sinceEpoch` is
-	// localIndex.scopeEpochFor(ws), the projection-scope epoch, and the file
-	// has no identity fence at all. The commit model now puts it on the list
-	// mechanically, where before that was an argument on a trail.
-	'lib/components/editor/EditorBubbleMenu.svelte::handleCreate',
-
-	// Editor's onMount callback: `api.server.capabilities()` fire-and-forget.
-	// Probably NOT a defect — the endpoint is public and carries no user-scoped
-	// data — but "this endpoint is public" is a judgement the guard cannot
-	// make, so PR B should record the decision rather than re-derive it.
-	'lib/components/editor/Editor.svelte::<callback of onMount>',
-
-	// ItemPicker.invokeCreate — PARTLY fixed in PR A, deliberately still listed.
-	// The upward hand-off IS fixed: it now passes an identity predicate to
-	// `oncreate` so the caller, which owns the API call, can refuse on the far
-	// side of its own await. What keeps it flagged is `finally { creating =
-	// false }` — a per-instance busy flag that MUST clear unconditionally, or a
-	// failed create leaves the picker permanently disabled. The model cannot
-	// tell a busy-flag clear from a real commit, and fencing it would be a bug.
-	// Left listed rather than papered over; see the package for the modelling
-	// question this raises.
-	'lib/components/items/ItemPicker.svelte::invokeCreate',
+	// EMPTY since BUG-3105 PR B, which cleared the 36 paths PR A listed here. The
+	// per-path dispositions — and the four the guard itself was wrong about —
+	// are on BUG-3105's trail. Empty means nothing THIS MODEL can see is
+	// unfenced; see gaps (b), (d) and (f) for what it cannot. Add to this only
+	// with an exact path and a reason.
 ];
 
 
@@ -571,6 +503,89 @@ function analyseFile(path: string): { findings: Finding[]; fenced: string[] } {
 			fenced: [],
 		};
 	}
+	return analyseSource(path, code);
+}
+
+/**
+ * True when `n` sits inside the FINALIZER of a try statement, at any depth
+ * within the function under analysis (the caller already excludes nested
+ * functions). `ancestors` runs outermost-first, as `walk` supplies it.
+ */
+function inFinalizer(ancestors: Node[], n: Node): boolean {
+	const chain = [...ancestors, n];
+	for (let i = 0; i < chain.length - 1; i++) {
+		const a = chain[i];
+		if (a.type === 'TryStatement' && a.finalizer && a.finalizer === chain[i + 1]) return true;
+	}
+	return false;
+}
+
+/**
+ * A plain `=` whose right-hand side is a LITERAL (`false`, `null`, `0`, `''`).
+ * Template literals are not `Literal` nodes and do not qualify: `${x}` can carry
+ * data. Neither does `undefined`, which is an Identifier and could be shadowed.
+ */
+function isLiteralAssignment(n: Node): boolean {
+	return n.type === 'AssignmentExpression' && n.operator === '=' && n.right?.type === 'Literal';
+}
+
+/**
+ * The start of the innermost `catch`/`finally` clause holding `n` whose try
+ * contains one of the `preceding` awaits in a part that ENTERS that clause —
+ * the block for a catch; the block or the handler for a finally. -Infinity when
+ * there is none, so it never lowers a bound.
+ */
+function clauseBound(ancestors: Node[], n: Node, preceding: Node[]): number {
+	const chain = [...ancestors, n];
+	const within = (outer: Node | null | undefined, x: Node) =>
+		!!outer && outer.start <= x.start && outer.end >= x.end;
+	let bound = -Infinity;
+	for (let i = 0; i < chain.length - 1; i++) {
+		const t = chain[i];
+		if (t.type !== 'TryStatement') continue;
+		const next = chain[i + 1];
+		let entering: Node[] = [];
+		if (t.handler && next === t.handler) entering = [t.block];
+		else if (t.finalizer && next === t.finalizer) entering = [t.block, t.handler];
+		else continue;
+		if (preceding.some((a) => entering.some((part) => within(part, a)))) {
+			bound = Math.max(bound, next.start);
+		}
+	}
+	return bound;
+}
+
+/**
+ * The end of the latest try statement that precedes `n`, holds one of the
+ * `preceding` awaits in its BLOCK, and has a catch with no fence call in it —
+ * so the catch path reaches `n` without passing any fence inside the try.
+ * -Infinity when there is none. A fence anywhere in the catch counts: the
+ * guard checks that a fence is CALLED on the path, not what its branch does
+ * (declared gap (b)).
+ */
+function postTryBound(fn: Node, n: Node, preceding: Node[], fenceOffsets: number[]): number {
+	let bound = -Infinity;
+	walk(fn, (t) => {
+		if (t.type !== 'TryStatement' || !t.handler || t.end > n.start) return;
+		if (!preceding.some((a) => t.block.start <= a.start && t.block.end >= a.end)) return;
+		const catchFenced = fenceOffsets.some((o) => o > t.handler.start && o < t.handler.end);
+		if (!catchFenced) bound = Math.max(bound, t.end);
+	});
+	return bound;
+}
+
+/** The await expressions whose nearest enclosing function is `fn` itself. */
+function ownAwaits(fn: Node): Node[] {
+	const out: Node[] = [];
+	walk(fn, (n, ancestors) => {
+		if (n.type !== 'AwaitExpression') return;
+		for (const a of ancestors) if (a !== fn && isFnNode(a)) return;
+		out.push(n);
+	});
+	return out;
+}
+
+function analyseSource(path: string, code: string): { findings: Finding[]; fenced: string[] } {
 	let src: AstSource;
 	try {
 		src = parseComponent(code);
@@ -618,35 +633,41 @@ function analyseFile(path: string): { findings: Finding[]; fenced: string[] } {
 
 	walk(src.script, (fn, fnAncestors) => {
 		if (!isFnNode(fn)) return;
-		// Only functions that can suspend are in scope.
-		let hasAwait = false;
-		walk(fn, (n) => {
-			if (n.type === 'AwaitExpression') hasAwait = true;
-		});
-		if (!hasAwait) return;
+		// Only functions that can suspend are in scope — and only THIS
+		// function's own awaits make it suspend. An await inside a nested
+		// function is that function's suspension, not this one's (BUG-3105:
+		// Editor's onMount callback was listed because an `upload: async` arrow
+		// defined inside it awaited, and every statement after that arrow's
+		// DEFINITION read as "after an await").
+		const awaitNodes = ownAwaits(fn);
+		if (awaitNodes.length === 0) return;
 
 		const name = fnName(src, fn, fnAncestors);
 		const names = fenceNamesIn(src, fn);
 		const fenceOffsets = fenceCallOffsets(src, fn, names);
 
-		// Every await NODE in this function. Nodes, not offsets, because a send
+		// `awaitNodes` holds NODES, not offsets, because a send
 		// is usually ITSELF awaited (`const x = await api.foo()`), and that
 		// wrapping AwaitExpression starts before the call it contains. Counting
 		// it as "an await preceding this send" leaves no room for any fence and
 		// reports every awaited request as unfenced — which is exactly how this
 		// guard first behaved, flagging the six paths this unit had just fixed.
 		// A send's own await is not something it can be fenced against.
-		const awaitNodes: Node[] = [];
-		walk(fn, (n) => {
-			if (n.type === 'AwaitExpression') awaitNodes.push(n);
-		});
-
 		walk(fn, (n, ancestors) => {
 			if (!isSend(n)) return;
 			// A nested function's sends belong to that function, not this one.
 			for (const a of ancestors) {
 				if (a !== fn && isFnNode(a)) return;
 			}
+			// A LITERAL assignment inside a `finally` is not a commit (BUG-3105,
+			// lead ruling 1 for PR B): a commit carries data across the await, and
+			// a literal carries none. This is what lets a busy flag clear
+			// UNCONDITIONALLY — `finally { creating = false }` must run under any
+			// identity, or a failed request leaves the component disabled. Narrow
+			// by construction: a non-literal assignment in a finally still fires,
+			// and so does a literal assignment anywhere else. Both are pinned by
+			// the fixture test at the bottom of this file.
+			if (isLiteralAssignment(n) && inFinalizer(ancestors, n)) return;
 
 			const loop = awaitBearingLoopAncestor([...ancestors, n]);
 			// An await counts as PRECEDING this send only if it does not contain
@@ -662,7 +683,24 @@ function analyseFile(path: string): { findings: Finding[]; fenced: string[] } {
 			// case there is no "before" in the textual sense — the back edge is the
 			// await — so the requirement is a fence call inside the loop body,
 			// textually above the send.
-			const lowerBound = loop ? loop.start : Math.max(...preceding.map((a) => a.start));
+			let lowerBound = loop ? loop.start : Math.max(...preceding.map((a) => a.start));
+			// A CATCH or FINALLY is not "after" the fence calls in its try block
+			// in the sense position implies (BUG-3105, found by the non-literal
+			// control below). A catch is entered from the await THROWING, so a
+			// fence textually after that await never ran; a finally is entered on
+			// every exit, INCLUDING the fence's own early return — which is the
+			// exact path on which the identity has changed. So when an await
+			// preceding the send lies inside that try, the fence must be called
+			// inside the clause itself. When every preceding await is BEFORE the
+			// try, a fence between that await and the try still counts: returning
+			// there never enters it. (A fence before an await protects nothing
+			// after it under any rule, so that case is not this rule's concern.)
+			lowerBound = Math.max(lowerBound, clauseBound(ancestors, n, preceding));
+			// The same exception edge, one statement further out: a send AFTER a
+			// try/catch is reached from the catch too, bypassing any fence in the
+			// try block (found writing EditCollectionModal.loadPreviewContext,
+			// whose placeholder commit falls through from an empty catch).
+			lowerBound = Math.max(lowerBound, postTryBound(fn, n, preceding, fenceOffsets));
 			const ok = fenceOffsets.some((o) => o > lowerBound && o < n.start);
 
 			const label = `${path}::${name}`;
@@ -766,5 +804,109 @@ describe('BUG-3095 — child population identity fence', () => {
 	});
 });
 
-/** Exported for the guard's own tests below. */
-export { analyseFile, POPULATION, KNOWN_UNFENCED };
+describe('BUG-3105 — the literal-in-finally refinement, with its controls', () => {
+	// One handler shape, three variants that differ ONLY in the statement under
+	// test, so each leg discriminates exactly one property of the refinement.
+	const fixture = (body: string) => `<script lang="ts">
+	import { api } from '$lib/api/client';
+	import { authStore } from '$lib/stores/auth.svelte';
+	let busy = $state(false);
+	let data = $state<unknown>(null);
+	async function go() {
+		const isSameIdentity = authStore.identityFence();
+		busy = true;
+		try {
+			const r = await api.items.get('ws', 'slug');
+			if (!isSameIdentity()) return;
+			data = r;
+		} finally {
+			${body}
+		}
+	}
+</script>`;
+	const rows = (code: string) =>
+		analyseSource('fixture.svelte', code).findings.map((f) => `${f.fn}:${f.callee}`);
+
+	it('a LITERAL assignment inside a finally is not a commit', () => {
+		expect(rows(fixture('busy = false;'))).toEqual([]);
+	});
+
+	it('CONTROL: a NON-literal assignment inside a finally still fires', () => {
+		// Without this leg the refinement is indistinguishable from "ignore
+		// finally blocks", which would be a real hole: `data` carries the
+		// response across the await.
+		expect(rows(fixture('data = String(busy);'))).toEqual(['go:data = …']);
+	});
+
+	it('CONTROL: a literal assignment OUTSIDE a finally still fires', () => {
+		const code = fixture('busy = false;').replace(
+			'data = r;',
+			'data = r;\n\t\t\tawait api.items.get(\'ws\', \'other\');\n\t\t\tbusy = false;'
+		);
+		expect(rows(code)).toEqual(['go:busy = …']);
+	});
+
+	it('CONTROL: a commit in a CATCH is not protected by a fence in the try', () => {
+		// The catch is entered from the await throwing, so the fence call that
+		// sits textually between them never ran.
+		const code = fixture('busy = false;').replace(
+			'\t\t} finally {',
+			'\t\t} catch (e) {\n\t\t\tdata = e;\n\t\t} finally {'
+		);
+		expect(rows(code)).toEqual(['go:data = …']);
+	});
+
+	it('CONTROL: a commit AFTER a try/catch is not protected by a fence in the try', () => {
+		const code = fixture('busy = false;').replace(
+			'\t\t} finally {\n\t\t\tbusy = false;\n\t\t}',
+			'\t\t} catch {\n\t\t\t// swallowed\n\t\t}\n\t\tdata = null;'
+		);
+		expect(rows(code)).toEqual(['go:data = …']);
+	});
+
+	it('a fence in the catch covers the fall-through after the try', () => {
+		const code = fixture('busy = false;').replace(
+			'\t\t} finally {\n\t\t\tbusy = false;\n\t\t}',
+			'\t\t} catch {\n\t\t\tif (!isSameIdentity()) return;\n\t\t}\n\t\tdata = null;'
+		);
+		expect(rows(code)).toEqual([]);
+	});
+
+	it('an await inside a NESTED function does not make the outer one suspend', () => {
+		const code = `<script lang="ts">
+	import { api } from '$lib/api/client';
+	let data = $state<unknown>(null);
+	function setup() {
+		const later = async () => {
+			await api.items.get('ws', 'slug');
+		};
+		data = later;
+	}
+</script>`;
+		expect(rows(code)).toEqual([]);
+	});
+
+	it('a fence called BEFORE the try protects its finally — returning there never enters it', () => {
+		// Guards the clause rule against over-reach: it binds only when the
+		// preceding await is INSIDE the try.
+		const code = `<script lang="ts">
+	import { api } from '$lib/api/client';
+	import { authStore } from '$lib/stores/auth.svelte';
+	let data = $state<unknown>(null);
+	async function go() {
+		const isSameIdentity = authStore.identityFence();
+		const r = await api.items.get('ws', 'slug');
+		if (!isSameIdentity()) return;
+		try {
+			data = r;
+		} finally {
+			data = String(r);
+		}
+	}
+</script>`;
+		expect(rows(code)).toEqual([]);
+	});
+});
+
+/** Exported for the guard's own tests. */
+export { analyseFile, analyseSource, POPULATION, KNOWN_UNFENCED };

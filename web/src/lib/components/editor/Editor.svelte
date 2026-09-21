@@ -694,6 +694,7 @@
 	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import { viewport } from '$lib/stores/breakpoint.svelte';
 	import { api } from '$lib/api/client';
+	import { authStore } from '$lib/stores/auth.svelte';
 	import { notifyAttachmentUploaded, toUploadedAttachment } from '$lib/attachments/events';
 	import { BlockDragHandle } from './block-drag-handle';
 	import { HtmlBlock, captureHtmlBlockSnapshot, flipHtmlBlockToSource } from './extensions/htmlBlock';
@@ -708,6 +709,10 @@
 	import { AttachmentChip } from './attachment-chip';
 	import type { AttachmentHostAddress } from '$lib/attachments/hostAddress';
 	import { AttachmentUpload } from './attachment-upload';
+
+	// The upload callback's refusal across an identity change (BUG-3105), matched
+	// by `onError` so that refusal is not presented as a failed upload.
+	const UPLOAD_IDENTITY_CHANGED = 'upload refused: the signed-in user changed';
 
 	let {
 		content = '',
@@ -1166,7 +1171,15 @@
 					// this is the only point where the association is known
 					// (PLAN-2382 / TASK-2385).
 					const uploadItemId = itemId;
+					// IDENTITY fence (BUG-3105). Resolving this promise INSERTS the
+					// node into the live document, so across a sign-out the previous
+					// user's upload would be written into a document the next user is
+					// editing, and announced to their strip. Rejecting instead removes
+					// the placeholder; the file stays on the server, attached to the
+					// item, where its next listing shows it to whoever may see it.
+					const isSameIdentity = authStore.identityFence();
 					const result = await api.attachments.upload(wsSlug, file, uploadItemId);
+					if (!isSameIdentity()) throw new Error(UPLOAD_IDENTITY_CHANGED);
 					// Only announce when the server actually persisted an
 					// association — a free-floating upload leaves item_id NULL
 					// and an optimistic tile for it would vanish on refresh.
@@ -1174,6 +1187,9 @@
 					return result;
 				},
 				onError: (filename, message) => {
+					// Not the next user's failure to hear about, and the filename is
+					// the previous user's (BUG-3105).
+					if (message === UPLOAD_IDENTITY_CHANGED) return;
 					// Surface upload failures to the user. The editor's
 					// host route doesn't yet have a centralized toast
 					// system, so we log to console + window.alert as a
@@ -1304,6 +1320,11 @@
 		// `ext.options`: that assignment used to live here and never
 		// reached the NodeViews, because Tiptap's `options` is a getter
 		// returning a fresh spread per access (BUG-2426).
+		//
+		// NOT identity-fenced, deliberately (BUG-3105): the endpoint is
+		// registered outside auth and its answer is static for the binary, so
+		// nothing in it belongs to the user who asked — and a fence would leave
+		// the next identity's rotate toolbar disabled for good.
 		api.server.capabilities()
 			.then((caps) => {
 				serverImageFormats = caps.image.image_formats;
