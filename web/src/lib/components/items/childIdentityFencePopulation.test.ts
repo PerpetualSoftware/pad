@@ -66,9 +66,12 @@
  *       assignment to a script-scope `let`/`var` or a call to an `on*` prop
  *       callback. A METHOD CALL on a store or a module helper
  *       (`localIndex.upsert`, `toastStore.show`, `announceAttachmentDeleted`)
- *       is not modelled; every such post-await call in the population was
- *       dispositioned by hand on BUG-3105's trail, fenced or left global with a
- *       reason in its source comment.
+ *       is not modelled. BUG-3105 PR B dispositioned such calls by hand ONLY
+ *       inside the functions it fenced, plus one found by review
+ *       (`Editor`'s upload callback). The rest of the population is UNSWEPT
+ *       for this shape: an enumeration of post-await calls outside the
+ *       modelled set counted 202, most of them pure predicates. The sweep is
+ *       BUG-3130.
  *   (e) NON-AWAIT SUSPENSION. `ItemAttachmentStrip.confirmDelete` re-checks on
  *       the far side of a NON-BLOCKING in-app confirmation menu — structurally
  *       the right move, on the wrong quantity (`paint.isCurrent()` compares
@@ -159,7 +162,9 @@ const NOT_DIRECTLY_IMPORTED = new Set(['lib/components/timeline/TimelineVersionC
 const KNOWN_UNFENCED: string[] = [
 	// EMPTY since BUG-3105 PR B, which cleared the 36 paths PR A listed here. The
 	// per-path dispositions — and the four the guard itself was wrong about —
-	// are on BUG-3105's trail. Add to this only with an exact path and a reason.
+	// are on BUG-3105's trail. Empty means nothing THIS MODEL can see is
+	// unfenced; see gaps (b), (d) and (f) for what it cannot. Add to this only
+	// with an exact path and a reason.
 ];
 
 
@@ -686,8 +691,10 @@ function analyseSource(path: string, code: string): { findings: Finding[]; fence
 			// every exit, INCLUDING the fence's own early return — which is the
 			// exact path on which the identity has changed. So when an await
 			// preceding the send lies inside that try, the fence must be called
-			// inside the clause itself. A fence called before the whole try still
-			// counts: returning there never enters it.
+			// inside the clause itself. When every preceding await is BEFORE the
+			// try, a fence between that await and the try still counts: returning
+			// there never enters it. (A fence before an await protects nothing
+			// after it under any rule, so that case is not this rule's concern.)
 			lowerBound = Math.max(lowerBound, clauseBound(ancestors, n, preceding));
 			// The same exception edge, one statement further out: a send AFTER a
 			// try/catch is reached from the catch too, bypassing any fence in the
