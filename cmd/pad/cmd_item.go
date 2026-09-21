@@ -4089,11 +4089,13 @@ func readStdinBody(verb string) (string, error) {
 // bodyOutcome is the suffix `item update` appends to its success line when the
 // update wrote the body (TASK-3132). before is the STORED body's size when the
 // update fetched it; after is what was sent. On the applier path the body went
-// to an open editor rather than to the stored copy, so the line says the
-// stored copy is unchanged and that a following show returns the OLD body.
+// to an open editor rather than to the stored copy, so the line says a
+// following show MAY return the OLD body. "May", not "will": a concurrent flush
+// can already have landed, and no flush is guaranteed at all (BUG-3000).
+// Sizes are BYTES, as the server stores them, not characters.
 func bodyOutcome(before, after int, cleared, pendingFlush bool) string {
 	if pendingFlush {
-		return fmt.Sprintf(` — body sent to the open editor (%s bytes); stored copy still %s bytes until a tab flushes — a following "pad item show" will return the OLD body`,
+		return fmt.Sprintf(` — body sent to the open editor (%s bytes); the stored copy was %s bytes and a following "pad item show" may return that OLD body until a tab flushes, which is not guaranteed to happen`,
 			thousands(after), thousands(before))
 	}
 	verb := "replaced"
@@ -4121,5 +4123,5 @@ func printStaleBodyLine(item *models.Item) {
 	if item == nil || item.ContentState != models.ContentOutcomeAppliedPendingFlush {
 		return
 	}
-	fmt.Println(`⚠ stale body: an editor holds edits not yet written back, so the content below is the PREVIOUS body; it catches up when a tab next flushes the item.`)
+	fmt.Println(`⚠ stale body: an editor holds edits not yet written back, so the content below is the PREVIOUS body; it catches up if and when a tab next flushes the item, which nothing guarantees.`)
 }

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/spf13/cobra"
 )
 
 // TASK-3132 (carved from IDEA-3131): `pad item update`'s success line said
@@ -101,7 +102,7 @@ func TestItemUpdateOutcome_PendingFlush(t *testing.T) {
 		t.Fatalf("update: %v", err)
 	}
 	line := outFirstLine(out)
-	for _, want := range []string{"sent to the open editor (16,958 bytes)", "stored copy still 8,765 bytes", "OLD body"} {
+	for _, want := range []string{"sent to the open editor (16,958 bytes)", "stored copy was 8,765 bytes", "may return that OLD body", "not guaranteed"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("the applier-path line must say %q; got %q", want, line)
 		}
@@ -153,6 +154,18 @@ func TestItemUpdateOutcome_JSONUnchanged(t *testing.T) {
 	}
 }
 
+// Sizes are BYTES: "é" is 2 bytes, 1 rune. A rune count would print 3 → 3.
+func TestItemUpdateOutcome_SizesAreBytes(t *testing.T) {
+	outcomeServer(t, "héllo", false)
+	out, err := runUpdate(t, "DOC-3", "--content", "日本")
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if line := outFirstLine(out); !strings.Contains(line, "— body replaced, 6 → 6 bytes") {
+		t.Fatalf("sizes must be bytes (héllo=6, 日本=6); got %q", line)
+	}
+}
+
 func TestThousands(t *testing.T) {
 	for n, want := range map[int]string{0: "0", 4: "4", 999: "999", 1000: "1,000", 16958: "16,958", 1234567: "1,234,567"} {
 		if got := thousands(n); got != want {
@@ -195,6 +208,40 @@ func TestItemShowStale_TableFirstLineOnStdout(t *testing.T) {
 	out := runShow(t)
 	if line := outFirstLine(out); !strings.HasPrefix(line, "⚠ stale body") {
 		t.Fatalf("table output must open with the stale-body line on stdout; first line %q", line)
+	}
+}
+
+// The case the stale line is placed BEFORE the empty-body check for: the stored
+// body is empty while the live document holds the real text.
+func TestItemShowStale_EmptyStoredBodyStillFlagged(t *testing.T) {
+	staleShowServer(t, "")
+	formatFlag = "table"
+	if line := outFirstLine(runShow(t)); !strings.HasPrefix(line, "⚠ stale body") {
+		t.Fatalf("an empty stale body must still be flagged; first line %q", line)
+	}
+}
+
+// JSON and --agent stay machine output: the table notice must not precede them.
+func TestItemShowStale_JSONAndAgentUntouched(t *testing.T) {
+	for name, setup := range map[string]func(cmd *cobra.Command){
+		"json":  func(*cobra.Command) { formatFlag = "json" },
+		"agent": func(cmd *cobra.Command) { formatFlag = "table"; _ = cmd.Flags().Set("agent", "true") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			staleShowServer(t, "old body")
+			cmd := showCmd()
+			setup(cmd)
+			cmd.SetArgs([]string{"DOC-3"})
+			var execErr error
+			out := captureStdout(t, func() { execErr = cmd.Execute() })
+			if execErr != nil {
+				t.Fatalf("show: %v", execErr)
+			}
+			var obj map[string]any
+			if err := json.Unmarshal([]byte(out), &obj); err != nil {
+				t.Fatalf("stdout must be exactly one JSON object; got %q (%v)", out, err)
+			}
+		})
 	}
 }
 
