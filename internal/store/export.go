@@ -863,6 +863,14 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 		// import observable, the spec pre-names the shape — ONE additive
 		// workspace-level `workspace.imported` event, never per-item fan-out.
 		// Do not "fix" this by hanging an outbox write off this INSERT.
+		//
+		// The same reasoning keeps import OFF the typed-decision queue
+		// (TASK-3117): an enqueue per imported row would be one provider call
+		// per item of the archive — the fan-out ruling 3 declines for the
+		// title-rename cascade and field migrations. Unlike those, an imported
+		// item has NO answers rather than stale ones until its next direct
+		// write enqueues it. Whether import should enqueue is an open policy
+		// question on TASK-3117, not something to change silently here.
 		_, err := tx.Exec(s.q(`
 			INSERT INTO items (id, workspace_id, collection_id, title, slug, content, fields, tags, pinned, sort_order, parent_id, created_by, last_modified_by, source, item_number, created_at, updated_at, seq)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?, `+nextWorkspaceSeqSubquery+`)`),
