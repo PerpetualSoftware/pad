@@ -634,3 +634,25 @@ func TestImportArtifactUnbindableTextRejected(t *testing.T) {
 		})
 	}
 }
+
+// BUG-3100 ruling 6: `pad item import -` sends whatever stdin held, so a lost
+// heredoc reaches this handler as an empty or whitespace-only artifact. It must
+// be refused, not imported as a hollow draft. Run through the real handler
+// rather than read, because the CLI does no check of its own on this door.
+func TestImportArtifactBlankRejected(t *testing.T) {
+	srv := testServer(t)
+	ws := createWSForTest(t, srv)
+	for name, body := range map[string]string{
+		"empty":           "",
+		"lone newline":    "\n",
+		"whitespace only": "  \t\n\n ",
+	} {
+		t.Run(name, func(t *testing.T) {
+			rr := doArtifactRequest(srv, "POST", "/api/v1/workspaces/"+ws+"/import-artifact", []byte(body))
+			if rr.Code < 400 || rr.Code >= 500 {
+				t.Fatalf("blank artifact: expected a 4xx refusal, got %d: %s", rr.Code, rr.Body.String())
+			}
+			t.Logf("refused %d: %s", rr.Code, strings.TrimSpace(rr.Body.String()))
+		})
+	}
+}

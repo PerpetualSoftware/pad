@@ -130,7 +130,8 @@ func MCPPropertyName(cliName string) string {
 // Even though catalog.go declares parameters explicitly (so stdin is
 // never advertised), BuildCLIArgs still defends against an agent
 // passing `stdin: true` from a stale schema cache — the subprocess
-// would then block on EOF and create an empty item.
+// would then read an empty stdin, which item create/update refuse since
+// BUG-3100 (before it, that created an empty item or wiped a body).
 var flagsHiddenFromMCP = map[string]struct{}{
 	"stdin": {},
 }

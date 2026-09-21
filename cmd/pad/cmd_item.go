@@ -206,6 +206,18 @@ Run with --help-collections to see available collections and their status values
 		ValidArgsFunction: completeCollectionNames,
 		Args:              cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// --stdin is read and checked FIRST, before the client is built or
+			// a request is sent (BUG-3100): a blank body is refused, never
+			// turned into a content-less item. See readStdinBody.
+			var stdinBody string
+			if useStdin {
+				b, err := readStdinBody("create")
+				if err != nil {
+					return err
+				}
+				stdinBody = b
+			}
+
 			client, _ := getClient()
 			ws := getWorkspace()
 
@@ -273,14 +285,10 @@ Run with --help-collections to see available collections and their status values
 
 			fieldsJSON, _ := json.Marshal(fields)
 
-			// Handle content from stdin
+			// Content from stdin, already read and checked at the top.
 			body := content
 			if useStdin {
-				data, err := io.ReadAll(os.Stdin)
-				if err != nil {
-					return fmt.Errorf("read stdin: %w", err)
-				}
-				body = string(data)
+				body = stdinBody
 			}
 
 			input := models.ItemCreate{
@@ -1041,6 +1049,7 @@ func updateCmd() *cobra.Command {
 		clearAssignedUser bool
 		clearAgentRole    bool
 		clearParent       bool
+		clearContent      bool
 	)
 
 	cmd := &cobra.Command{
@@ -1060,11 +1069,16 @@ the PREVIOUS content — that is the lag, not a failed write. Nothing here
 guarantees the flush happens (see BUG-3000), so the window has no stated
 duration.
 
+--stdin REPLACES the body with what it reads, and a blank read (empty or
+whitespace-only) is refused before anything is sent, because it is what a lost
+heredoc looks like. To empty a body on purpose, use --clear-content.
+
 Examples:
   pad item update TASK-5 --status done
   pad item update TASK-5 --status done --comment "Fixed the login bug"
   pad item update PLAN-2 --status active --priority high
-  pad item update DOC-3 --stdin < updated-doc.md`,
+  pad item update DOC-3 --stdin < updated-doc.md
+  pad item update DOC-3 --clear-content`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// AN EMPTY --parent IS REFUSED, not ignored (BUG-2941) — and it is
@@ -1098,6 +1112,25 @@ Examples:
 				return fmt.Errorf(`--parent "" does not detach an item and never did — it is silently ignored; use --clear-parent to remove the parent link`)
 			}
 
+			// BODY WRITES are decided here too, before any request (BUG-3100).
+			// A blank --stdin used to REPLACE the body with nothing: a lost
+			// heredoc silently wiped the item (IDEA-3131 is one). It is now
+			// refused, and clearing a body has its own explicit door,
+			// --clear-content, so nothing that was possible is removed.
+			// `--content ""` stays a no-op, as before: making it a clear would
+			// turn an unset shell variable into a wipe.
+			if clearContent && (useStdin || cmd.Flags().Changed("content")) {
+				return fmt.Errorf("--clear-content conflicts with --content and --stdin; drop one")
+			}
+			var stdinBody string
+			if useStdin {
+				b, err := readStdinBody("update")
+				if err != nil {
+					return err
+				}
+				stdinBody = b
+			}
+
 			client, _ := getClient()
 			ws := getWorkspace()
 			slug := args[0]
@@ -1125,14 +1158,12 @@ Examples:
 				input.SortOrder = &sortOrder
 			}
 
-			// Handle content
+			// Handle content. --stdin was read and checked at the top.
 			if useStdin {
-				data, err := io.ReadAll(os.Stdin)
-				if err != nil {
-					return fmt.Errorf("read stdin: %w", err)
-				}
-				body := string(data)
-				input.Content = &body
+				input.Content = &stdinBody
+			} else if clearContent {
+				empty := ""
+				input.Content = &empty
 			} else if content != "" {
 				input.Content = &content
 			}
@@ -1399,6 +1430,9 @@ Examples:
 			} else {
 				fmt.Printf("Updated %q (%s)\n", updated.Title, updated.Slug)
 			}
+			if clearContent {
+				fmt.Println("  body cleared")
+			}
 			if summary := cli.FormatFieldSummary(updated.Fields); summary != "" {
 				fmt.Printf("  %s\n", summary)
 			}
@@ -1433,6 +1467,7 @@ Examples:
 	cmd.Flags().BoolVar(&clearAssignedUser, "clear-assigned-user", false, "unassign the item (clear assigned_user_id)")
 	cmd.Flags().BoolVar(&clearAgentRole, "clear-agent-role", false, "clear the item's agent role (agent_role_id)")
 	cmd.Flags().BoolVar(&clearParent, "clear-parent", false, "detach the item from its parent (clear the parent link); conflicts with --parent")
+	cmd.Flags().BoolVar(&clearContent, "clear-content", false, "clear the item's body; conflicts with --content and --stdin (a blank --stdin is refused, BUG-3100)")
 
 	return cmd
 }
@@ -4010,4 +4045,25 @@ func warnContentPendingFlush(item *models.Item) {
 		"collab-snapshot flush does that, and one may already have run. The response's content is "+
 		"what you sent; a read before such a flush lands shows the previous content, and the "+
 		"stored form may end up differing slightly from what you sent.")
+}
+
+// readStdinBody reads an item body from stdin and REFUSES a blank one — empty
+// or whitespace-only — with an error naming the cause (BUG-3100). A lost
+// heredoc arrives as nothing or as a lone newline, and accepting it minted
+// content-less items on create and wiped bodies on update, both reporting
+// success. Nothing has been sent when this refuses. verb is "create" or
+// "update", for the message.
+func readStdinBody(verb string) (string, error) {
+	data, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		return "", fmt.Errorf("read stdin: %w", err)
+	}
+	if strings.TrimSpace(string(data)) == "" {
+		hint := "pass a body, or drop --stdin"
+		if verb == "update" {
+			hint = "pass a body, or use --clear-content to empty the body on purpose"
+		}
+		return "", fmt.Errorf("--stdin: the body read from stdin is empty or whitespace-only, so the %s was refused and nothing was sent (a lost heredoc looks like this); %s", verb, hint)
+	}
+	return string(data), nil
 }

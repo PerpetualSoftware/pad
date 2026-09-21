@@ -78,8 +78,18 @@ func TestItemShowMarkdown_EmitsBodyVerbatim(t *testing.T) {
 // The write half: `--stdin` must send exactly the bytes it was given. Paired
 // with the test above, this is the fixed point — what `show` emits is what
 // `update` sends, so a body survives any number of round trips unchanged.
+//
+// EXCEPT a BLANK body (empty or whitespace-only), which `update --stdin` now
+// REFUSES (BUG-3100): it is indistinguishable from a lost heredoc, which used
+// to wipe the item. So the fixed point holds for every non-blank body, and a
+// round trip of a blank-bodied item exits non-zero instead of rewriting nothing
+// — a behaviour change named in that unit's PR. The refusal itself is pinned
+// by item_stdin_blank_test.go; clearing on purpose is `--clear-content`.
 func TestItemUpdateStdin_SendsBodyVerbatim(t *testing.T) {
 	for name, body := range markdownShowBodies() {
+		if strings.TrimSpace(body) == "" {
+			continue
+		}
 		t.Run(name, func(t *testing.T) {
 			var sent string
 			var seenPatch bool
