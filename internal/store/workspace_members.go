@@ -763,10 +763,18 @@ func (s *Store) GetInvitationByCode(code string) (*models.WorkspaceInvitation, e
 	var acceptedAt, expiresAt *string
 	var createdAt string
 
-	// Try hashed lookup first (new invitations)
+	// Try hashed lookup first (new invitations). Both lookups JOIN the live
+	// workspace (BUG-3104): an invitation to a SOFT-DELETED workspace answers
+	// exactly like an unknown code. DeleteAccountAtomic removes only the
+	// invitations the departing user SENT, so one sent by another owner-role
+	// member survives the workspace — and every door (accept, register with
+	// invitation, preview) reads it through here. Not "expired": that answer
+	// tells the invitee to ask for a new one, which cannot succeed.
 	err := s.db.QueryRow(s.q(`
-		SELECT id, workspace_id, email, role, invited_by, code, accepted_at, expires_at, created_at
-		FROM workspace_invitations WHERE code_hash = ? AND accepted_at IS NULL
+		SELECT i.id, i.workspace_id, i.email, i.role, i.invited_by, i.code, i.accepted_at, i.expires_at, i.created_at
+		FROM workspace_invitations i
+		JOIN workspaces w ON w.id = i.workspace_id AND w.deleted_at IS NULL
+		WHERE i.code_hash = ? AND i.accepted_at IS NULL
 	`), codeHash).Scan(
 		&inv.ID, &inv.WorkspaceID, &inv.Email, &inv.Role, &inv.InvitedBy,
 		&inv.Code, &acceptedAt, &expiresAt, &createdAt,
@@ -781,10 +789,13 @@ func (s *Store) GetInvitationByCode(code string) (*models.WorkspaceInvitation, e
 		return nil, fmt.Errorf("get invitation by code hash: %w", err)
 	}
 
-	// Fall back to plaintext lookup (legacy invitations)
+	// Fall back to plaintext lookup (legacy invitations), with the same
+	// live-workspace join.
 	err = s.db.QueryRow(s.q(`
-		SELECT id, workspace_id, email, role, invited_by, code, accepted_at, expires_at, created_at
-		FROM workspace_invitations WHERE code = ? AND accepted_at IS NULL
+		SELECT i.id, i.workspace_id, i.email, i.role, i.invited_by, i.code, i.accepted_at, i.expires_at, i.created_at
+		FROM workspace_invitations i
+		JOIN workspaces w ON w.id = i.workspace_id AND w.deleted_at IS NULL
+		WHERE i.code = ? AND i.accepted_at IS NULL
 	`), code).Scan(
 		&inv.ID, &inv.WorkspaceID, &inv.Email, &inv.Role, &inv.InvitedBy,
 		&inv.Code, &acceptedAt, &expiresAt, &createdAt,

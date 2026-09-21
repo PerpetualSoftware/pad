@@ -51,6 +51,20 @@ func (s *Server) handleAdminResendInvitation(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusNotFound, "not_found", "Pending invitation not found")
 		return
 	}
+	// An invitation can outlive its workspace (BUG-3104): DeleteAccountAtomic
+	// removes only the invitations the departing user SENT. Resending one would
+	// mint a live code for a deleted workspace and email the invitee about it,
+	// so it answers as not found — the same answer the code lookup now gives.
+	// GetWorkspaceByID reads only live workspaces.
+	ws, err := s.store.GetWorkspaceByID(old.WorkspaceID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if ws == nil {
+		writeError(w, http.StatusNotFound, "not_found", "Pending invitation not found")
+		return
+	}
 
 	// Delete old invitation — abort if it's already gone (accepted or revoked concurrently)
 	if err := s.store.DeleteInvitationAdmin(invID); err != nil {
