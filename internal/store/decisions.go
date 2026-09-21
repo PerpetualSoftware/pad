@@ -447,3 +447,24 @@ func (s *Store) RecentComments(itemID string, n int) ([]models.Comment, error) {
 	}
 	return out, nil
 }
+
+// ItemEvaluable reports whether an item may be sent to a decision provider:
+// the item, its collection and its workspace are all live.
+//
+// GetItem filters only the ITEM's soft delete. An item in a soft-deleted
+// workspace or collection still reads — and evaluating it would send content
+// its owner deleted to a third-party provider during the restore window,
+// which the deletion was supposed to stop. Same three-way liveness the
+// reminder tick's reminderFireable enforces, for the same reason.
+func (s *Store) ItemEvaluable(itemID string) (bool, error) {
+	var n int
+	err := s.db.QueryRow(s.q(`
+		SELECT COUNT(*) FROM items i
+		JOIN collections c ON c.id = i.collection_id
+		JOIN workspaces w ON w.id = i.workspace_id
+		WHERE i.id = ? AND i.deleted_at IS NULL AND c.deleted_at IS NULL AND w.deleted_at IS NULL`), itemID).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("item evaluable: %w", err)
+	}
+	return n == 1, nil
+}

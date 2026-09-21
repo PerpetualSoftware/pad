@@ -281,6 +281,15 @@ func (r *Runner) State(itemID string) (*models.Item, BuiltState, error) {
 	if item == nil || item.DeletedAt != nil {
 		return nil, BuiltState{}, ErrItemGone
 	}
+	// The workspace or collection may be soft-deleted while the item row is
+	// not; nothing of a deleted workspace goes to the provider.
+	live, err := r.store.ItemEvaluable(itemID)
+	if err != nil {
+		return nil, BuiltState{}, err
+	}
+	if !live {
+		return nil, BuiltState{}, ErrItemGone
+	}
 	comments, err := r.store.RecentComments(itemID, RecentTrailWindow)
 	if err != nil {
 		return nil, BuiltState{}, err

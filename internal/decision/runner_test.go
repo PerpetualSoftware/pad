@@ -375,3 +375,35 @@ func TestRunner_CancelledMidCallReleasesWithoutCountingAFailure(t *testing.T) {
 		t.Fatalf("after a mid-call cancel the job is %+v; want owed, unclaimed, attempts=0, no error", j)
 	}
 }
+
+// A soft-deleted WORKSPACE or COLLECTION stops evaluation even though the item
+// row itself is live: nothing its owner deleted goes to the provider, and the
+// job is dropped rather than retried.
+func TestRunner_DeletedWorkspaceOrCollectionIsNeverSent(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		del  func(fx *runnerFixture) error
+	}{
+		{"workspace", func(fx *runnerFixture) error { return fx.s.DeleteWorkspace(fx.ws.Slug) }},
+		{"collection", func(fx *runnerFixture) error { return fx.s.DeleteCollection(fx.col.ID, "") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fx := newRunnerFixture(t)
+			if err := tc.del(fx); err != nil {
+				t.Fatalf("soft-delete %s: %v", tc.name, err)
+			}
+			if it, _ := fx.s.GetItem(fx.item.ID); it == nil {
+				t.Fatalf("precondition: GetItem hides the item after a %s delete; this leg no longer discriminates", tc.name)
+			}
+			if _, err := fx.r.RunOnce(context.Background(), "tick", 10, time.Minute); err != nil {
+				t.Fatal(err)
+			}
+			if fx.called() != 0 {
+				t.Fatalf("an item in a soft-deleted %s was sent to the provider", tc.name)
+			}
+			if j, _ := fx.s.GetDecisionJob(fx.item.ID, triageSet); j != nil {
+				t.Fatalf("job for an item in a soft-deleted %s was kept: %+v", tc.name, j)
+			}
+		})
+	}
+}
