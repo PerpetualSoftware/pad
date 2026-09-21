@@ -386,3 +386,28 @@ func TestItemDecisions_HasStateCountsOnlyTheAskedKeys(t *testing.T) {
 		t.Fatal("control: a set whose every asked key is stored must read complete")
 	}
 }
+
+// Codex round 4: restore is a door. A job owed at delete time is dropped as
+// gone; without an enqueue on restore the item would come back with stale
+// answers and nothing scheduled.
+func TestDecisionJobs_RestoreEnqueues(t *testing.T) {
+	s, ws, col := decisionFixture(t)
+	s.SetDecisionSetResolver(func(string) []string { return []string{"triage"} })
+	item := createTestItem(t, s, ws.ID, col.ID, "Phoenix", "")
+	claimed, _ := s.ClaimDecisionJobs("r", 10, time.Hour)
+	if err := s.DropDecisionJob(claimed[0]); err != nil { // as the runner does for a gone item
+		t.Fatal(err)
+	}
+	if err := s.DeleteItem(item.ID); err != nil {
+		t.Fatal(err)
+	}
+	if n := countDecisionJobs(t, s); n != 0 {
+		t.Fatalf("precondition: %d jobs before restore", n)
+	}
+	if _, err := s.RestoreItem(item.ID); err != nil {
+		t.Fatal(err)
+	}
+	if j := mustJob(t, s, item.ID, "triage"); j.Generation != 1 {
+		t.Fatalf("after restore, generation = %d; want 1", j.Generation)
+	}
+}

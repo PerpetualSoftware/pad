@@ -330,15 +330,15 @@ func TestRegistry_RefusesDuplicatesAndInvalidSets(t *testing.T) {
 	}
 }
 
-// A pass cancelled by shutdown hands its claims back without counting an
-// attempt and without calling the provider.
+// A pass that starts already cancelled claims nothing, calls nothing, and
+// leaves the job owed with no attempt counted.
 func TestRunner_CancelledPassReleasesWithoutCountingAFailure(t *testing.T) {
 	fx := newRunnerFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	n, err := fx.r.RunOnce(ctx, "stopping", 10, time.Hour)
-	if err != nil || n != 1 {
-		t.Fatalf("RunOnce claimed %d (err %v); want 1", n, err)
+	if err != nil || n != 0 {
+		t.Fatalf("an already-cancelled pass claimed %d (err %v); want 0", n, err)
 	}
 	if fx.called() != 0 {
 		t.Fatalf("a cancelled pass called the provider %d times", fx.called())
@@ -447,5 +447,61 @@ func TestRunner_SetNoLongerApplicableAfterMoveIsNotAsked(t *testing.T) {
 	}
 	if j, _ := s.GetDecisionJob(item.ID, "bug-triage"); j != nil {
 		t.Fatalf("an inapplicable job was kept: %+v", j)
+	}
+}
+
+// Codex round 4: jobs are claimed ONE AT A TIME, so a job's lease starts when
+// its own evaluation starts. Claiming a whole pass up front let the last job
+// wait out its lease behind the others' provider calls and be re-claimed by
+// another instance — a duplicate evaluation.
+func TestRunner_ClaimsOneJobAtATime(t *testing.T) {
+	fx := newRunnerFixture(t)
+	for i := 0; i < 2; i++ {
+		if _, err := fx.s.CreateItem(fx.ws.ID, fx.col.ID, models.ItemCreate{Title: fmt.Sprintf("more %d", i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	items, err := fx.s.ListItems(fx.ws.ID, models.ItemListParams{})
+	if err != nil || len(items) != 3 {
+		t.Fatalf("precondition: %d items (%v)", len(items), err)
+	}
+	maxClaimed := 0
+	fx.f.srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		claimed := 0
+		for _, it := range items {
+			if j, _ := fx.s.GetDecisionJob(it.ID, triageSet); j != nil && j.ClaimedBy != "" {
+				claimed++
+			}
+		}
+		if claimed > maxClaimed {
+			maxClaimed = claimed
+		}
+		var req wireRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		noulChoiceHandler(fx.f, req, nil, w)
+	})
+	n, err := fx.r.RunOnce(context.Background(), "tick", 10, time.Hour)
+	if err != nil || n != 3 {
+		t.Fatalf("RunOnce processed %d (err %v); want 3", n, err)
+	}
+	if maxClaimed != 1 {
+		t.Fatalf("up to %d jobs were claimed while a provider call was in flight; want 1", maxClaimed)
+	}
+}
+
+// Codex round 4: liveness is re-checked immediately before the provider call,
+// so a delete landing between building the state and asking stops the send.
+func TestRunner_DeleteJustBeforeAskIsNotSent(t *testing.T) {
+	fx := newRunnerFixture(t)
+	fx.r.beforeAsk = func() {
+		if err := fx.s.DeleteWorkspace(fx.ws.Slug); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := fx.r.Evaluate(context.Background(), fx.item.ID, triageSet); !errors.Is(err, ErrItemGone) {
+		t.Fatalf("err = %v; want ErrItemGone", err)
+	}
+	if fx.called() != 0 {
+		t.Fatal("content of a workspace deleted before the call was sent to the provider")
 	}
 }

@@ -232,6 +232,11 @@ type Runner struct {
 	store    *store.Store
 	provider Provider
 	registry *Registry
+
+	// beforeAsk is a TEST-ONLY seam, nil in production: it runs immediately
+	// before the final liveness check that precedes the provider call, so a
+	// test can land a delete in exactly the window that check exists for.
+	beforeAsk func()
 }
 
 // NewRunner returns a runner, or nil when provider is nil — the configured-off
@@ -335,6 +340,20 @@ func (r *Runner) Evaluate(ctx context.Context, itemID, setName string) (bool, er
 		return false, nil
 	}
 
+	if r.beforeAsk != nil {
+		r.beforeAsk()
+	}
+	// Liveness again, as the LAST statement before the send (codex round 4):
+	// the check in State ran before the idempotency read, and a delete landing
+	// in between must still stop the call. RESIDUAL, stated rather than
+	// implied: no fence can hold across a network request, so a delete that
+	// commits after this read and before the provider receives the bytes is
+	// not stopped — the window is one statement plus the request, per job.
+	if live, err := r.store.ItemEvaluable(item.ID); err != nil {
+		return false, err
+	} else if !live {
+		return false, ErrItemGone
+	}
 	answers, usage, err := r.provider.Ask(ctx, st.Bytes, qs.Questions)
 	if err != nil {
 		return true, err
@@ -435,28 +454,36 @@ const (
 	decisionRetryBase = 30 * time.Second
 )
 
-// RunOnce claims up to limit owed jobs and evaluates them. It returns how
-// many jobs it claimed.
+// RunOnce evaluates up to limit owed jobs, CLAIMING ONE AT A TIME, and
+// returns how many it claimed.
+//
+// One at a time so that each job's lease starts when its own evaluation does
+// (codex round 4). Claiming the whole pass up front made the last job wait
+// behind every earlier provider call: at the provider's worst case (4 attempts
+// x 60s plus up to 30s between them, ~5.5 min per job) twenty jobs is far past
+// any lease, and an expired claim is taken by another instance — a duplicate
+// evaluation. A single job's worst case fits inside the lease; see
+// defaultDecisionClaimLease in the server.
 func (r *Runner) RunOnce(ctx context.Context, runnerID string, limit int, lease time.Duration) (int, error) {
 	if r == nil {
 		return 0, nil
 	}
-	jobs, err := r.store.ClaimDecisionJobs(runnerID, limit, lease)
-	if err != nil {
-		return len(jobs), err
-	}
-	for i, j := range jobs {
+	n := 0
+	for n < limit {
 		if ctx.Err() != nil {
-			// Stopping: hand back what this pass claimed but did not start,
-			// rather than leaving it stranded until the lease lapses.
-			for _, rest := range jobs[i:] {
-				r.release(rest)
-			}
+			break // stopping: claim nothing further
+		}
+		jobs, err := r.store.ClaimDecisionJobs(runnerID, 1, lease)
+		if err != nil {
+			return n, err
+		}
+		if len(jobs) == 0 {
 			break
 		}
-		r.runJob(ctx, j)
+		n++
+		r.runJob(ctx, jobs[0])
 	}
-	return len(jobs), nil
+	return n, nil
 }
 
 func (r *Runner) runJob(ctx context.Context, j store.DecisionJob) {

@@ -3272,6 +3272,13 @@ func (s *Store) restoreItemOnce(id string, opt mutationOptions) (*models.Item, e
 		if err := s.emitItemEventTx(tx, kernelevents.ItemRestored, restored, nil, opt.batchID); err != nil {
 			return nil, err
 		}
+		// Restore is a door (codex round 4): a job owed when the item was
+		// deleted was dropped as gone, so without this the item returns with
+		// stale answers and nothing scheduled. If nothing changed while it was
+		// away, the runner finds its old answers current and makes no call.
+		if err := s.enqueueDecisionJobsTx(tx, restored.WorkspaceID, restored.ID, restored.CollectionID); err != nil {
+			return nil, err
+		}
 	}
 
 	if err := tx.Commit(); err != nil {

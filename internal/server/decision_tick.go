@@ -36,9 +36,15 @@ const (
 	// time rather than throughput.
 	defaultDecisionTickLimit = 20
 
-	// defaultDecisionClaimLease must outlast one pass: a lease that lapses
-	// mid-pass hands the job to another instance and buys a duplicate call.
-	// 20 jobs at the provider's retry budget stays well inside it.
+	// defaultDecisionClaimLease must outlast ONE JOB, not one pass: the
+	// runner claims jobs one at a time (codex round 4), so a lease starts
+	// when its own evaluation does. A lease that lapses mid-call hands the
+	// job to another instance and buys a duplicate provider call.
+	//
+	// THE RECEIPT: typesafe.go's retry policy is maxAttempts=4 at a 60s
+	// requestTimeout, with up to maxRetryAfter=30s between attempts — a
+	// worst case of 4*60 + 3*30 = 330s per job. 10 minutes is ~1.8x that.
+	// A provider with a longer retry budget needs this raised with it.
 	defaultDecisionClaimLease = 10 * time.Minute
 )
 
@@ -137,7 +143,8 @@ func (s *Server) StartDecisionTick() {
 
 // stopDecisionTick signals the loop to exit and cancels an in-flight provider
 // call, so Stop() does not wait out a network round trip before closing the
-// database. A cancelled job's claim lapses with its lease and is re-run.
+// database. The runner releases a cancelled job's claim without counting an
+// attempt, so it is claimable again at once.
 func (s *Server) stopDecisionTick() {
 	s.decisionTick.mu.Lock()
 	defer s.decisionTick.mu.Unlock()
