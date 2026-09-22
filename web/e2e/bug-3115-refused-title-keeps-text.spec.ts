@@ -227,4 +227,30 @@ test.describe('BUG-3115: a refused title keeps the typed text', () => {
 		expect(sent[0].title, 'the save did not echo the stored title').toBe(legacy);
 		await expect(page.getByText(`Title is too long`)).toHaveCount(0);
 	});
+
+	// CONTROL for the leg above (codex round 4): that leg passes for ANY editor
+	// that sends the save, including one with no length check at all. This one
+	// fails for that editor — a CHANGED over-limit title is refused locally —
+	// so the pair pins the guard from both sides.
+	test('playbook editor: a renamed over-limit title is refused locally and kept', async ({ page, fixture, request }) => {
+		const title = `B3115 playbook ctl ${Date.now()}`;
+		const created = await request.post(
+			`/api/v1/workspaces/${fixture.workspaceSlug}/collections/playbooks/items`,
+			{ headers: authHeaders(fixture), data: { title, content: '1. step', fields: JSON.stringify({ status: 'draft' }) } },
+		);
+		expect(created.ok(), await created.text()).toBeTruthy();
+		const pb = (await created.json()) as { id: string; slug: string };
+		const patches = titleWrites(page, 'PATCH', `/items/${pb.slug}`);
+
+		await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/playbooks/${pb.slug}`);
+		const input = page.locator('input.title-input');
+		await expect(input).toHaveValue(title);
+		await input.fill(TOO_LONG);
+		await page.getByRole('button', { name: 'Save', exact: true }).click();
+
+		await expect(page.getByText(LOCAL_REASON)).toBeVisible();
+		await expect(input, 'the typed title is gone').toHaveValue(TOO_LONG);
+		expect(patches, 'a save was sent').toEqual([]);
+		expect(await storedTitle(fixture, request, pb.id)).toBe(title);
+	});
 });
