@@ -722,6 +722,15 @@ func (s *Store) getItemTx(tx *sql.Tx, id string) (*models.Item, error) {
 //
 // Error direction is benign either way: the predicate is read-only and its only
 // consequence is an extra index seek per row.
+//
+// ONLY CONTENT-BEARING ROWS COUNT (BUG-3124). SyncStep1 frames, empty updates and
+// byte-identical re-sends are persisted but marked content_bearing = 0 at append
+// (yjs_content_bearing.go), because they cannot change the document and used to
+// keep an item "pending" forever after its tab closed. This changes the cost
+// argument above: the EXISTS still stops at the first qualifying row, but it now
+// steps over non-content rows above the watermark to find one, so its worst case
+// is an item whose unflushed tail is long and entirely non-content. The receipt
+// above predates the filter and was not re-measured.
 var contentStateSQL = contentStateSQLFor("i")
 
 // contentStateSQLFor is contentStateSQL for a query that aliases the items table
@@ -736,6 +745,7 @@ func contentStateSQLFor(alias string) string {
 			SELECT 1 FROM item_yjs_updates u
 			WHERE u.item_id = ` + alias + `.id
 			  AND u.id > COALESCE(` + alias + `.content_flushed_op_log_id, 0)
+			  AND u.content_bearing = TRUE
 		) THEN 'applied_pending_flush' ELSE '' END`
 }
 

@@ -205,3 +205,15 @@ func (s *Store) SetItemContentFlushedOpLogIDForTesting(itemID string, opLogID in
 	_, err := s.db.Exec(s.q(`UPDATE items SET content_flushed_op_log_id = ? WHERE id = ?`), opLogID, itemID)
 	return err
 }
+
+// ResetYjsClassificationForTesting returns an item's op-log rows to the state
+// migration 091 leaves legacy rows in: content_hash NULL, content_bearing TRUE.
+// It stands in for "rows written before the migration" so BackfillYjsContentBearing
+// can be driven against real append output (BUG-3124).
+//
+// Production code MUST NOT call this. The "ForTesting" suffix is the grep signal.
+func (s *Store) ResetYjsClassificationForTesting(itemID string) error {
+	_, err := s.db.Exec(s.q(`UPDATE item_yjs_updates SET content_hash = NULL, content_bearing = ? WHERE item_id = ?`),
+		s.dialect.BoolToInt(true), itemID)
+	return err
+}
