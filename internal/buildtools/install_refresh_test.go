@@ -18,6 +18,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -221,6 +222,13 @@ func startAnnouncedStub(t *testing.T, cmd *exec.Cmd, d time.Duration) int {
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start stub: %v", err)
 	}
+	// Killed and REAPED in Cleanup, which runs even when an assertion below
+	// fails, so neither a stub nor its zombie outlives the test. Wait also
+	// closes the stdout pipe, which ends the reader goroutine.
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
 	line := make(chan string, 1)
 	go func() {
 		s := bufio.NewScanner(out)
@@ -228,6 +236,9 @@ func startAnnouncedStub(t *testing.T, cmd *exec.Cmd, d time.Duration) int {
 			line <- s.Text()
 		}
 		close(line)
+		// Keep draining, so a stub that ever writes more cannot block on a
+		// full pipe.
+		_, _ = io.Copy(io.Discard, out)
 	}()
 	select {
 	case l, ok := <-line:
