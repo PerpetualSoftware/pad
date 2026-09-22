@@ -63,6 +63,94 @@ func (s *Store) AppendYjsUpdate(itemID string, data []byte, schemaVersion string
 		}
 		bearing = !dup
 	}
+	return s.insertYjsFrame(itemID, data, schemaVersion, now, hash, bearing)
+}
+
+// SyncFrameAppend is what AppendSyncFrame did with one relay frame.
+type SyncFrameAppend struct {
+	// ID is the op-log id to acknowledge the frame with. For a persisted frame
+	// it is the new row's id. For a skipped duplicate it is the item's current
+	// MAX(id): the op-log already holds identical bytes at or below it, so
+	// telling the sender "applied through here" is true (BUG-3135).
+	ID int64
+	// Persisted is false when the frame was a byte-identical duplicate of an
+	// earlier row of the same item and was not stored.
+	Persisted bool
+}
+
+// AppendSyncFrame is the relay's append (BUG-3135). It behaves like
+// AppendYjsUpdate except that a frame BYTE-IDENTICAL to an earlier row of the
+// same item is not stored. A reconnecting tab re-pushes its whole document
+// unchanged, and those copies were 92 MB of the live op-log.
+//
+// Skipping is replay-safe because op-log GC removes an item's rows all or
+// nothing (PruneItemOpLogIfDormantBefore, PruneItemOpLogTx): while the op-log
+// exists, the earlier twin exists and precedes anything that could follow.
+// Yjs updates are idempotent, so the twin already carries everything the copy
+// would. The byte compare decides; the hash only narrows the lookup, so a hash
+// collision can only ever cause a store, never a skip.
+//
+// Only an EXACT duplicate is skipped. A step2/update subtype twin (BUG-3136)
+// has the same effect but different bytes, and is stored and marked
+// non-content-bearing as before. Envelope non-content frames (SyncStep1,
+// empty updates) are not looked up and are always stored, as before.
+//
+// Same per-item serialisation CONTRACT as AppendYjsUpdate: the MAX(id) read
+// and the insert are only meaningful under the caller's per-item lock.
+func (s *Store) AppendSyncFrame(itemID string, data []byte, schemaVersion string) (SyncFrameAppend, error) {
+	if itemID == "" {
+		return SyncFrameAppend{}, errors.New("AppendSyncFrame: itemID is required")
+	}
+	if len(data) == 0 {
+		return SyncFrameAppend{}, errors.New("AppendSyncFrame: data must be non-empty")
+	}
+	if schemaVersion == "" {
+		return SyncFrameAppend{}, errors.New("AppendSyncFrame: schemaVersion is required")
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	hash := yjsFrameHash(data)
+	bearing := !yjsFrameIsEnvelopeNonContent(data)
+	if bearing {
+		// ONE statement answers both "is there an exact twin" and "what is
+		// MAX(id)", so no delete can land between them (codex round 1). Every
+		// op-log delete path removes ALL of an item's rows, so a delete after
+		// this statement would have removed an inserted copy too: under any
+		// interleaving the skip is exactly as durable as the insert it replaces.
+		// (Those paths are also fenced from a live readLoop — appendMu, the
+		// restore freeze, GC skipping items with a room — but this does not
+		// rely on that.)
+		var maxID int64
+		var exact bool
+		if err := s.db.QueryRow(s.q(`
+			SELECT COALESCE(MAX(id), 0),
+			       EXISTS (SELECT 1 FROM item_yjs_updates
+			               WHERE item_id = ? AND content_hash = ? AND update_data = ?)
+			FROM item_yjs_updates WHERE item_id = ?`), itemID, hash, data, itemID).Scan(&maxID, &exact); err != nil {
+			return SyncFrameAppend{}, fmt.Errorf("append sync frame (duplicate check): %w", err)
+		}
+		if exact {
+			return SyncFrameAppend{ID: maxID, Persisted: false}, nil
+		}
+		// Not an exact duplicate; the subtype twin is the other half of
+		// yjsIdenticalEarlierRowQ, asked directly so the exact lookup above is
+		// not repeated on every keystroke frame.
+		if twinBytes, ok := yjsSyncSubtypeTwin(data); ok {
+			twin, err := s.yjsExactEarlierRowQ(s.db, itemID, twinBytes, yjsFrameHash(twinBytes), 0)
+			if err != nil {
+				return SyncFrameAppend{}, fmt.Errorf("append sync frame (twin check): %w", err)
+			}
+			bearing = !twin
+		}
+	}
+	id, err := s.insertYjsFrame(itemID, data, schemaVersion, now, hash, bearing)
+	if err != nil {
+		return SyncFrameAppend{}, err
+	}
+	return SyncFrameAppend{ID: id, Persisted: true}, nil
+}
+
+// insertYjsFrame writes one classified op-log row and returns its id.
+func (s *Store) insertYjsFrame(itemID string, data []byte, schemaVersion, now, hash string, bearing bool) (int64, error) {
 	bearingArg := s.dialect.BoolToInt(bearing)
 
 	// Postgres needs RETURNING; SQLite gives us the new rowid via
