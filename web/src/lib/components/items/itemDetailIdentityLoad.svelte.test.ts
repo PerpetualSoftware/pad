@@ -36,6 +36,7 @@ vi.mock('$lib/components/timeline/ItemTimeline.svelte', () => import('../../../t
 vi.mock('$lib/components/timeline/TimelineEntryList.svelte', () => import('../../../test/StubComponent.svelte'));
 vi.mock('$lib/components/ChildItems.svelte', () => import('../../../test/StubComponent.svelte'));
 vi.mock('$lib/components/BacklinksPanel.svelte', () => import('../../../test/StubComponent.svelte'));
+vi.mock('$lib/components/items/DecisionChips.svelte', () => import('../../../test/StubComponent.svelte'));
 vi.mock('$lib/components/RelationBacklinksPanel.svelte', () => import('../../../test/StubComponent.svelte'));
 vi.mock('./ItemPicker.svelte', () => import('../../../test/StubComponent.svelte'));
 vi.mock('$lib/components/common/QuickActionsMenu.svelte', () => import('../../../test/StubComponent.svelte'));

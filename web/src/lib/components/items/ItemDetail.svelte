@@ -57,6 +57,7 @@
 	import CopyItemDialog from '$lib/components/items/CopyItemDialog.svelte';
 	import PushToAgentDialog from '$lib/components/items/PushToAgentDialog.svelte';
 	import ItemAttachmentStrip from '$lib/components/items/ItemAttachmentStrip.svelte';
+	import DecisionChips from '$lib/components/items/DecisionChips.svelte';
 	import AttachmentSurfaceHost from '$lib/components/attachments/AttachmentSurfaceHost.svelte';
 	import {
 		announceAttachmentParentRestored,
@@ -5384,6 +5385,9 @@
 				</span>
 			{/if}
 		</div>
+
+		<!-- Attention signals (TASK-3118); renders nothing without a provider. -->
+		<DecisionChips {wsSlug} itemRef={item.slug} itemId={item.id} />
 
 		<!-- Actions -->
 		<div class="meta-actions">
