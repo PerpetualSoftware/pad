@@ -20,10 +20,12 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -215,17 +217,29 @@ func runScript(t *testing.T, e stubEnv, built, installed, commit string) runResu
 // that never announces (it exited, or hangs), which is a fixture failure.
 func startAnnouncedStub(t *testing.T, cmd *exec.Cmd, d time.Duration) int {
 	t.Helper()
+	port, err := awaitAnnouncement(cmd, d, t.Cleanup)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	return port
+}
+
+// awaitAnnouncement is startAnnouncedStub's core, returning its failure
+// instead of failing a test, so the fixture's own refusal is testable
+// (TestPreServerFixtureRefusesAForeignListener). cleanup receives the kill
+// and reap of the started process.
+func awaitAnnouncement(cmd *exec.Cmd, d time.Duration, cleanup func(func())) (int, error) {
 	out, err := cmd.StdoutPipe()
 	if err != nil {
-		t.Fatalf("stub stdout: %v", err)
+		return 0, fmt.Errorf("stub stdout: %v", err)
 	}
 	if err := cmd.Start(); err != nil {
-		t.Fatalf("start stub: %v", err)
+		return 0, fmt.Errorf("start stub: %v", err)
 	}
-	// Killed and REAPED in Cleanup, which runs even when an assertion below
+	// Killed and REAPED in cleanup, which runs even when an assertion
 	// fails, so neither a stub nor its zombie outlives the test. Wait also
 	// closes the stdout pipe, which ends the reader goroutine.
-	t.Cleanup(func() {
+	cleanup(func() {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 	})
@@ -244,30 +258,68 @@ func startAnnouncedStub(t *testing.T, cmd *exec.Cmd, d time.Duration) int {
 	case l, ok := <-line:
 		var port int
 		if !ok {
-			t.Fatalf("stub exited without announcing a port")
+			return 0, fmt.Errorf("stub exited without announcing a port")
 		}
 		if _, err := fmt.Sscanf(l, "LISTENING %d", &port); err != nil || port <= 0 {
-			t.Fatalf("stub announced %q, want \"LISTENING <port>\"", l)
+			return 0, fmt.Errorf("stub announced %q, want \"LISTENING <port>\"", l)
 		}
-		return port
+		return port, nil
 	case <-time.After(d):
-		t.Fatalf("stub did not announce a port within %s", d)
+		return 0, fmt.Errorf("stub did not announce a port within %s", d)
 	}
-	return 0
 }
 
-func waitForListener(t *testing.T, host string, port int, d time.Duration) {
+// startPreServer starts the "running server" a test hands to the script, on
+// a port chosen in advance, and returns only once THAT process is the one
+// answering at probeHost:port (TASK-3146).
+//
+// The port cannot be 0 here, as it is in BUG-3144's two-server test: the
+// script restarts this server and reads the port from PAD_PORT or the
+// captured argv, so the fixture must know it before the start. freePort
+// releases the port before the stub binds it, and dialling the port
+// afterwards only proves that SOMETHING answers. A stub that lost the port in
+// that window has already exited on the bind error, and the dial succeeds
+// against the foreign listener, so the script's outcome is then about
+// someone else's process. Two proofs close that:
+//
+//   - the stub's own announcement, with the port it bound equal to the one
+//     chosen. A stub that lost the bind exits without announcing;
+//   - its pid, read at probeHost:port, the address the script will probe.
+//     The announcement proves the bind, not that the probed address reaches
+//     this process: a stub bound to 0.0.0.0 while something holds
+//     127.0.0.1:port is refused by Linux, but need not be elsewhere.
+//
+// STUB_ANNOUNCE is set on a COPY of cmd.Env, so neither the script's env nor
+// the restart it performs ever announces.
+func startPreServer(t *testing.T, cmd *exec.Cmd, probeHost string, port int) {
 	t.Helper()
-	addr := net.JoinHostPort(host, strconv.Itoa(port))
-	deadline := time.Now().Add(d)
-	for time.Now().Before(deadline) {
-		if c, err := net.DialTimeout("tcp", addr, 500*time.Millisecond); err == nil {
-			c.Close()
-			return
-		}
-		time.Sleep(100 * time.Millisecond)
+	if err := provePreServer(cmd, probeHost, port, 8*time.Second, t.Cleanup); err != nil {
+		t.Fatalf("fixture: pre-server on port %d: %v", port, err)
 	}
-	t.Fatalf("stub server never listened on %s", addr)
+}
+
+func provePreServer(cmd *exec.Cmd, probeHost string, port int, d time.Duration, cleanup func(func())) error {
+	cmd.Env = append(slices.Clone(cmd.Env), "STUB_ANNOUNCE=1")
+	got, err := awaitAnnouncement(cmd, d, cleanup)
+	if err != nil {
+		return err
+	}
+	if got != port {
+		return fmt.Errorf("stub announced port %d, want %d", got, port)
+	}
+	client := &http.Client{Timeout: 2 * time.Second}
+	res, err := client.Get("http://" + net.JoinHostPort(probeHost, strconv.Itoa(port)) + "/stub/pid")
+	if err != nil {
+		return fmt.Errorf("pid probe: %v", err)
+	}
+	defer res.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(res.Body, 64))
+	want := strconv.Itoa(cmd.Process.Pid)
+	if res.StatusCode != http.StatusOK || strings.TrimSpace(string(body)) != want {
+		return fmt.Errorf("%s answered /stub/pid with %d %q, want pid %s: the listener is not this stub",
+			net.JoinHostPort(probeHost, strconv.Itoa(port)), res.StatusCode, body, want)
+	}
+	return nil
 }
 
 // THE ARTIFACT CHECK (TASK-2787, and the ordering CONVE-2687's day-74 clause
@@ -324,10 +376,7 @@ func TestInstallRefresh_RestartsWithTheKilledArgv(t *testing.T) {
 	// localhost went dead while every other check read correct.
 	pre := exec.Command(built, "server", "start", "--host", "127.0.0.1")
 	pre.Env = e.env()
-	if err := pre.Start(); err != nil {
-		t.Fatalf("start pre-server: %v", err)
-	}
-	waitForListener(t, "127.0.0.1", port, 8*time.Second)
+	startPreServer(t, pre, "127.0.0.1", port)
 
 	res := runScript(t, e, built, installed, commit)
 	if res.err != nil {
@@ -581,10 +630,7 @@ func TestInstallRefresh_ProbesThePortFromTheCapturedArgv(t *testing.T) {
 
 	pre := exec.Command(built, "server", "start", "--host", "127.0.0.1", "--port", strconv.Itoa(port))
 	pre.Env = env
-	if err := pre.Start(); err != nil {
-		t.Fatalf("start pre-server: %v", err)
-	}
-	waitForListener(t, "127.0.0.1", port, 8*time.Second)
+	startPreServer(t, pre, "127.0.0.1", port)
 
 	cmd := exec.Command("bash", scriptPath(t), built, installed, commit)
 	cmd.Env = env
@@ -629,10 +675,7 @@ func TestInstallRefresh_ParsesEqualsSeparatedFlags(t *testing.T) {
 
 	pre := exec.Command(built, "server", "start", "--host=127.0.0.1", "--port="+strconv.Itoa(port))
 	pre.Env = env
-	if err := pre.Start(); err != nil {
-		t.Fatalf("start pre-server: %v", err)
-	}
-	waitForListener(t, "127.0.0.1", port, 8*time.Second)
+	startPreServer(t, pre, "127.0.0.1", port)
 
 	cmd := exec.Command("bash", scriptPath(t), built, installed, commit)
 	cmd.Env = env
@@ -761,10 +804,7 @@ func TestInstallRefresh_ProbesIPv6HostsWithBrackets(t *testing.T) {
 
 	pre := exec.Command(built, "server", "start", "--host", "::1", "--port", strconv.Itoa(port))
 	pre.Env = e.env()
-	if err := pre.Start(); err != nil {
-		t.Fatalf("start pre-server: %v", err)
-	}
-	waitForListener(t, "::1", port, 8*time.Second)
+	startPreServer(t, pre, "::1", port)
 
 	// The script probes with curl, so the precondition is whether CURL can
 	// reach ::1 — not whether Go can listen on it. The Nix build sandbox
@@ -821,10 +861,7 @@ func TestInstallRefresh_WildcardBindMustAnswerOnLoopback(t *testing.T) {
 
 	pre := exec.Command(built, "server", "start", "--host", "0.0.0.0", "--port", strconv.Itoa(port))
 	pre.Env = e.env()
-	if err := pre.Start(); err != nil {
-		t.Fatalf("start pre-server: %v", err)
-	}
-	waitForListener(t, "127.0.0.1", port, 8*time.Second)
+	startPreServer(t, pre, "127.0.0.1", port)
 
 	res := runScript(t, e, built, installed, commit)
 	if res.err != nil {
@@ -910,10 +947,7 @@ func TestInstallRefresh_CapturesArgvWithoutProc(t *testing.T) {
 
 	pre := exec.Command(built, "server", "start", "--host", "127.0.0.1", "--port", strconv.Itoa(port))
 	pre.Env = e.env()
-	if err := pre.Start(); err != nil {
-		t.Fatalf("start pre-server: %v", err)
-	}
-	waitForListener(t, "127.0.0.1", port, 8*time.Second)
+	startPreServer(t, pre, "127.0.0.1", port)
 
 	cmd := exec.Command("bash", scriptPath(t), built, installed, commit)
 	cmd.Env = append(e.env(), "PAD_NO_PROC=1")
@@ -1006,10 +1040,7 @@ func TestInstallRefresh_FailsClosedWhenTheLANAddressIsUnknown(t *testing.T) {
 
 	pre := exec.Command(built, "server", "start", "--host", "0.0.0.0", "--port", strconv.Itoa(port))
 	pre.Env = e.env()
-	if err := pre.Start(); err != nil {
-		t.Fatalf("start pre-server: %v", err)
-	}
-	waitForListener(t, "127.0.0.1", port, 8*time.Second)
+	startPreServer(t, pre, "127.0.0.1", port)
 
 	// A PATH with only the tools the script genuinely needs, and WITHOUT
 	// hostname/ipconfig. Built by symlinking, so the rest of the script
@@ -1133,6 +1164,123 @@ func TestInstallRefresh_RefusesUnresolvableCommitEvenOnAPrefixMatch(t *testing.T
 	if _, err := os.Stat(installed); err == nil {
 		t.Errorf("installed despite refusing: %s", installed)
 	}
+}
+
+// THE PRE-SERVER FIXTURE REFUSES A LISTENER THAT IS NOT ITS STUB (TASK-3146).
+//
+// The collision the fixture exists to catch, forced rather than waited for:
+// a foreign listener holds the chosen port before the stub starts, and it
+// answers /api/v1/health with ok, so it would satisfy the script's own probe.
+// The dial-only wait this replaced returned as soon as that listener
+// answered, and the test went on to judge the script against it.
+func TestPreServerFixtureRefusesAForeignListener(t *testing.T) {
+	requireScriptDeps(t)
+	dir := t.TempDir()
+	name := uniqueName(t)
+	defer killStub(t, name)
+	built := installStub(t, dir, name)
+
+	cases := []struct {
+		name, bind, probe string
+	}{
+		{"same address", "127.0.0.1", "127.0.0.1"},
+		// Linux refuses 0.0.0.0:P while 127.0.0.1:P is held, so this also
+		// lands on the announcement. The pid read is what covers a stack
+		// that allows it.
+		{"wildcard bind", "0.0.0.0", "127.0.0.1"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			foreign, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatalf("foreign listener: %v", err)
+			}
+			mux := http.NewServeMux()
+			mux.HandleFunc("/api/v1/health", func(w http.ResponseWriter, r *http.Request) {
+				w.Write([]byte(`{"status":"ok"}`))
+			})
+			srv := &http.Server{Handler: mux}
+			go srv.Serve(foreign)
+			t.Cleanup(func() { _ = srv.Close() })
+			port := foreign.Addr().(*net.TCPAddr).Port
+
+			e := stubEnv{version: "pad version dev (abc1234 x)", healthy: "1",
+				argvLog: filepath.Join(dir, "argv.log"), port: port, home: dir}
+			pre := exec.Command(built, "server", "start", "--host", c.bind, "--port", strconv.Itoa(port))
+			pre.Env = e.env()
+			err = provePreServer(pre, c.probe, port, 8*time.Second, t.Cleanup)
+			if err == nil {
+				t.Fatalf("fixture accepted port %d, which a foreign listener holds", port)
+			}
+			t.Logf("refused as it should be: %v", err)
+		})
+	}
+}
+
+// Each proof, isolated. The foreign-listener cases above all land on the
+// announcement on Linux, so neither of these checks would be shown to matter
+// by them alone.
+func TestPreServerFixtureProvesEachClaimSeparately(t *testing.T) {
+	requireScriptDeps(t)
+	dir := t.TempDir()
+	name := uniqueName(t)
+	defer killStub(t, name)
+	built := installStub(t, dir, name)
+
+	// The PID proof: the stub binds 127.0.0.1:P and announces P, all true,
+	// but the address the probe dials, 127.0.0.2:P, is someone else's. That
+	// is the shape a wildcard bind beside a held specific address takes on a
+	// stack that permits it.
+	t.Run("probed address is not the stub", func(t *testing.T) {
+		foreign, err := net.Listen("tcp", "127.0.0.2:0")
+		if err != nil {
+			t.Skipf("no 127.0.0.2 here: %v", err)
+		}
+		srv := &http.Server{Handler: http.NewServeMux()}
+		go srv.Serve(foreign)
+		t.Cleanup(func() { _ = srv.Close() })
+		port := foreign.Addr().(*net.TCPAddr).Port
+
+		e := stubEnv{version: "pad version dev (abc1234 x)", healthy: "1",
+			argvLog: filepath.Join(dir, "argv.log"), port: port, home: dir}
+		pre := exec.Command(built, "server", "start", "--host", "127.0.0.1", "--port", strconv.Itoa(port))
+		pre.Env = e.env()
+		err = provePreServer(pre, "127.0.0.2", port, 8*time.Second, t.Cleanup)
+		if err == nil || !strings.Contains(err.Error(), "not this stub") {
+			t.Fatalf("want the pid proof to refuse, got %v", err)
+		}
+	})
+
+	// The PORT proof: the stub bound, but not the port the script will be
+	// told about (here STUB_PORT=0, a fixture that forgot to pass it).
+	t.Run("stub bound a different port", func(t *testing.T) {
+		port := freePort(t)
+		e := stubEnv{version: "pad version dev (abc1234 x)", healthy: "1",
+			argvLog: filepath.Join(dir, "argv.log"), port: 0, home: dir}
+		pre := exec.Command(built, "server", "start", "--host", "127.0.0.1", "--port", strconv.Itoa(port))
+		pre.Env = e.env()
+		err := provePreServer(pre, "127.0.0.1", port, 8*time.Second, t.Cleanup)
+		if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("want %d", port)) {
+			t.Fatalf("want the port proof to refuse, got %v", err)
+		}
+	})
+}
+
+// And the positive control: an unobstructed stub passes both proofs, so the
+// refusal above is about the foreign listener and not a fixture that refuses
+// everything.
+func TestPreServerFixtureAcceptsItsOwnStub(t *testing.T) {
+	requireScriptDeps(t)
+	dir := t.TempDir()
+	name := uniqueName(t)
+	defer killStub(t, name)
+	built := installStub(t, dir, name)
+	port := freePort(t)
+	e := stubEnv{version: "pad version dev (abc1234 x)", healthy: "1",
+		argvLog: filepath.Join(dir, "argv.log"), port: port, home: dir}
+	pre := exec.Command(built, "server", "start", "--host", "0.0.0.0", "--port", strconv.Itoa(port))
+	pre.Env = e.env()
+	startPreServer(t, pre, "127.0.0.1", port)
 }
 
 // EVERY test in this file must call requireScriptDeps, and this asserts it by
