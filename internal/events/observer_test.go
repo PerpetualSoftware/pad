@@ -3,6 +3,7 @@ package events
 import (
 	"sync"
 	"testing"
+	"time"
 )
 
 type recordingObserver struct {
@@ -14,6 +15,10 @@ type recordingObserver struct {
 	unconfirmed   int
 	cycled        int
 	probeFailures int
+
+	// resetsChanged is closed, and cleared, by every SequenceReset; see
+	// awaitReset.
+	resetsChanged chan struct{}
 }
 
 func (o *recordingObserver) ResumeGap(workspaceID string) {
@@ -26,6 +31,10 @@ func (o *recordingObserver) SequenceReset(reason string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.resets = append(o.resets, reason)
+	if o.resetsChanged != nil {
+		close(o.resetsChanged)
+		o.resetsChanged = nil
+	}
 }
 
 func (o *recordingObserver) ReceiveLoopExited() {
@@ -110,6 +119,48 @@ func (o *recordingObserver) snapshot() ([]string, []string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return append([]string(nil), o.resumeGaps...), append([]string(nil), o.resets...)
+}
+
+// awaitReset blocks until the observer has been told of a reset for reason,
+// then returns every reset reason reported so far.
+//
+// A test that wants to ASSERT a reset must wait on the report itself, not on
+// something that happens before it. The bus reports resets AFTER releasing its
+// lock, deliberately, so an observer may call back into it (RedisBus.fanOut's
+// first-registered defer; dropWorkspaceCoverage's unlock-then-report). Every
+// state a test can see — a delivered event, a dropped buffer, EventsSince
+// answering nil — changes UNDER that lock, and so can be visible before the
+// report lands. Reading snapshot() on the strength of one of them races the
+// report, and a slow runner loses it (BUG-3145: main went red with resets=[]
+// on the line after the guard's own WARN).
+//
+// The deadline bounds a genuine failure only; nothing here retries an
+// assertion. It is a wait on the observer's own signal.
+func (o *recordingObserver) awaitReset(t *testing.T, reason string, timeout time.Duration) []string {
+	t.Helper()
+	deadline := time.After(timeout)
+	for {
+		o.mu.Lock()
+		for _, r := range o.resets {
+			if r == reason {
+				got := append([]string(nil), o.resets...)
+				o.mu.Unlock()
+				return got
+			}
+		}
+		if o.resetsChanged == nil {
+			o.resetsChanged = make(chan struct{})
+		}
+		changed := o.resetsChanged
+		o.mu.Unlock()
+
+		select {
+		case <-changed:
+		case <-deadline:
+			t.Fatalf("no %q reset reported within %s; got %v", reason, timeout, o.resetReasons())
+			return nil
+		}
+	}
 }
 
 // BOTH WAYS OF FAILING TO SERVE A RESUME MUST REACH THE COUNTER. This is the

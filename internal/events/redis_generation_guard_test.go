@@ -538,7 +538,9 @@ func TestACollidingRepairIsCaughtBySequenceRatherThanEpoch(t *testing.T) {
 		t.Fatalf("this test needs the two spaces to share an epoch; got %s then %s", epochA, epochB)
 	}
 
-	_, resets := obs.snapshot()
+	// Waits on the REPORT, not on the delivery above: fanOut delivers under
+	// its lock and reports after releasing it (BUG-3145).
+	resets := obs.awaitReset(t, ResetReasonCounterBackward, 3*time.Second)
 	var sawBackward bool
 	for _, r := range resets {
 		if r == ResetReasonCounterBackward {

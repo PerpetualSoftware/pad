@@ -944,8 +944,10 @@ func TestAnUndecodableMessageEndsThatWorkspacesCoverage(t *testing.T) {
 	if got := b.EventsSince("ws-1", first.ID); got != nil {
 		t.Fatalf("a message we could not read is a hole; the resume must be a gap, got %d events", len(got))
 	}
-	_, resets := obs.snapshot()
-	if len(resets) == 0 || resets[len(resets)-1] != ResetReasonUndecodableMessage {
+	// The buffer is dropped under the bus lock and the reset reported after
+	// it is released, so the poll above can end before the report (BUG-3145).
+	resets := obs.awaitReset(t, ResetReasonUndecodableMessage, 3*time.Second)
+	if resets[len(resets)-1] != ResetReasonUndecodableMessage {
 		t.Fatalf("want the drop reported as %s, got %v", ResetReasonUndecodableMessage, resets)
 	}
 }
@@ -1193,8 +1195,10 @@ func TestAPayloadThatDecodesButIsNotOurEventEndsCoverage(t *testing.T) {
 			if got := b.EventsSince("ws-1", first.ID); got != nil {
 				t.Fatalf("a payload we cannot use is a hole; the resume must be a gap, got %d events", len(got))
 			}
-			_, resets := obs.snapshot()
-			if len(resets) == 0 || resets[len(resets)-1] != ResetReasonUndecodableMessage {
+			// Same ordering as above: dropped under the lock, reported after it
+			// (BUG-3145).
+			resets := obs.awaitReset(t, ResetReasonUndecodableMessage, 3*time.Second)
+			if resets[len(resets)-1] != ResetReasonUndecodableMessage {
 				t.Fatalf("want %s, got %v", ResetReasonUndecodableMessage, resets)
 			}
 		})
