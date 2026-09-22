@@ -96,7 +96,7 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	startEditTitle: { reviewed: '113d9b9da03f', why: 'focuses and sizes the input it opened synchronously', may: ['el', 'titleInputEl.focus', 'titleInputEl.setSelectionRange'] },
 	saveTitle: { reviewed: '8a6bedbc107a', why: 'gen against loadGeneration on both arms' },
 	updateField: {
-		reviewed: 'd35ce99af521',
+		reviewed: 'fd3956618ee4',
 		why: 'stillCurrent() on every arm, the OCC refetch and the open-children confirm',
 		callbacks: {
 			'submitOrderedOCC({send})': {
@@ -106,6 +106,13 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 			'submitOrderedOCC({refetch})': {
 				may: ['api.items.get'],
 				why: 'submitOrderedOCC refetches only after stillCurrent() with no await between (fieldWriteOrder.test.ts: "does not retry once the view has moved on"); a read',
+			},
+			// BUG-3038: re-derives a whole-list body against the refetched row.
+			// Both calls are pure functions of their arguments, and the only
+			// write is to `patch`, a local of this updateField call.
+			'submitOrderedOCC({onRefetched})': {
+				may: ['parseFields', 'rederiveListWrite'],
+				why: 'pure: parseFields(latest) and rederiveListWrite(base, sent, fresh) read their arguments and return a value; the callback writes only this call\'s locals (lastServerItem, patch)',
 			},
 		},
 	},

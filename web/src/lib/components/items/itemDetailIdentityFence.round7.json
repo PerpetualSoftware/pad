@@ -6,8 +6,8 @@
 			"class": "F1",
 			"subs": [
 				[
-					"\t\t\t\tonRefetched: (latest) => {\n\t\t\t\t\tlastServerItem = latest;\n\t\t\t\t}\n",
-					"\t\t\t\tonRefetched: async (latest) => {\n\t\t\t\t\tlastServerItem = latest;\n\t\t\t\t\titem = withInflightTags(latest);\n\t\t\t\t}\n"
+					"\t\t\t\tonRefetched: (latest) => {\n\t\t\t\t\tlastServerItem = latest;\n",
+					"\t\t\t\tonRefetched: async (latest) => {\n\t\t\t\t\tlastServerItem = latest;\n\t\t\t\t\titem = withInflightTags(latest);\n"
 				]
 			],
 			"nested": [

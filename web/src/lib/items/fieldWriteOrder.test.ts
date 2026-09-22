@@ -13,7 +13,7 @@
 // the update, which is why there are two counters (CONVE-34 — a green
 // instrument is evidence only once it has been shown able to go red).
 import { describe, it, expect, vi } from 'vitest';
-import { WriteOrder, submitOrderedOCC, fieldWriteTarget, type WriteTicket } from './fieldWriteOrder';
+import { WriteOrder, submitOrderedOCC, fieldWriteTarget, rederiveListWrite, type WriteTicket } from './fieldWriteOrder';
 
 const TARGET = fieldWriteTarget('item-1', 'colors');
 
@@ -216,21 +216,23 @@ describe('submitOrderedOCC — the retry never replays a superseded body', () =>
 	it('still retries the ordinary conflict — a write nothing has superseded', async () => {
 		// The other half of the control pair: the guard must not have turned the
 		// OCC retry off. Somebody ELSE moves the row, and this write re-applies
-		// its own value against the fresh one, which is BUG-2273 working.
+		// itself against the fresh one, which is BUG-2273 working.
 		//
-		// AND IT DESCRIBES A KNOWN LOSS, deliberately. The third party added D;
-		// the retry re-sends the list it computed BEFORE that, so D disappears
-		// although the local gesture only removed A. This leg asserts what the
-		// code does, not what it should do — closing that needs the retry to
-		// re-apply the GESTURE to the fresh list rather than replay its result,
-		// which is a write-contract change and is filed as BUG-3038. Invert this
-		// assertion when that lands; it is not an endorsement.
+		// INVERTED by BUG-3038. This leg used to assert that the third party's D
+		// DISAPPEARED — the retry re-sent the list it computed before D existed,
+		// although the local gesture only removed A — annotated as a known loss,
+		// not an endorsement. It now drives the pane's composition: the retry
+		// re-derives the list from the fresh row in `onRefetched`, which runs
+		// after the refetch and before the re-send, so D survives.
 		const row = new FakeRow();
 		const order = new WriteOrder();
 		const ticket = order.take(TARGET);
+		const base = row.read().value; // captured at dispatch: [A,B,C]
+		const gesture = ['B', 'C']; // remove A
 		row.patch('t0', ['A', 'B', 'C', 'D']); // a third party, before we send
 
-		const sends: string[] = [];
+		let body = gesture;
+		const sends: Array<[string, string[]]> = [];
 		const result = await submitOrderedOCC<Row>({
 			order,
 			ticket,
@@ -241,17 +243,46 @@ describe('submitOrderedOCC — the retry never replays a superseded body', () =>
 			tokenOf: (r: Row) => r.updated_at,
 			initialExpected: 't0',
 			send: (expected) => {
-				sends.push(expected);
-				return Promise.resolve(row.patch(expected, ['B', 'C']));
+				sends.push([expected, body]);
+				return Promise.resolve(row.patch(expected, body));
 			},
 			refetch: () => Promise.resolve(row.read()),
+			onRefetched: (latest) => {
+				body = rederiveListWrite(base, gesture, latest.value) as string[];
+			},
 			isConflict,
 			stillCurrent: () => true
 		});
 
-		expect(sends).toEqual(['t0', 't1']);
+		expect(sends).toEqual([
+			['t0', ['B', 'C']],
+			['t1', ['B', 'C', 'D']]
+		]);
+		expect(result.value).toEqual(['B', 'C', 'D']);
+		expect(row.value).toEqual(['B', 'C', 'D']);
+	});
+
+	it('the helper itself still REPLAYS its body — the scalar contract (BUG-3038)', async () => {
+		// Re-derivation is the caller's, chosen by field type: a scalar's gesture IS
+		// its value, so re-sending it is right. Without an onRefetched that
+		// re-derives, the body goes out unchanged — which is exactly what loses D
+		// for a list, and why the pane re-derives only for whole-list fields.
+		const row = new FakeRow();
+		const order = new WriteOrder();
+		const ticket = order.take(TARGET);
+		row.patch('t0', ['A', 'B', 'C', 'D']);
+		const result = await submitOrderedOCC<Row>({
+			order,
+			ticket,
+			maxRetries: 2,
+			tokenOf: (r: Row) => r.updated_at,
+			initialExpected: 't0',
+			send: (expected) => Promise.resolve(row.patch(expected, ['B', 'C'])),
+			refetch: () => Promise.resolve(row.read()),
+			isConflict,
+			stillCurrent: () => true
+		});
 		expect(result.value).toEqual(['B', 'C']);
-		expect(row.value).toEqual(['B', 'C']);
 	});
 
 	it('reports the freshest row it saw while retrying', async () => {
@@ -447,5 +478,62 @@ describe('submitOrderedOCC — the retry never replays a superseded body', () =>
 
 		expect(sends).toBe(1);
 		expect(row.value).toEqual(['A', 'B', 'C', 'D']);
+	});
+});
+
+describe('rederiveListWrite (BUG-3038)', () => {
+	it('keeps an element another writer added while we removed one', () => {
+		expect(rederiveListWrite(['A', 'B', 'C'], ['B', 'C'], ['A', 'B', 'C', 'D'])).toEqual(['B', 'C', 'D']);
+	});
+
+	it('keeps another pane\'s removal while applying ours', () => {
+		expect(rederiveListWrite(['A', 'B', 'C'], ['B', 'C'], ['A', 'C'])).toEqual(['C']);
+	});
+
+	it('applies our add against a row another writer changed, appended after their order', () => {
+		expect(rederiveListWrite(['A', 'B', 'C'], ['A', 'B', 'C', 'D'], ['A', 'B', 'E'])).toEqual(['A', 'B', 'E', 'D']);
+	});
+
+	it('re-adds an element we added that a third writer has since removed — the honest outcome of our gesture', () => {
+		// base [A,B]; we add C; the fresh row lacks C because someone removed it
+		// after our add was dispatched (and E appeared). Our gesture was "add C".
+		expect(rederiveListWrite(['A', 'B'], ['A', 'B', 'C'], ['A', 'B', 'E'])).toEqual(['A', 'B', 'E', 'C']);
+	});
+
+	it('takes ORDER from the fresh row, so another writer\'s arrangement survives', () => {
+		expect(rederiveListWrite(['A', 'B', 'C'], ['A', 'C'], ['C', 'B', 'A'])).toEqual(['C', 'A']);
+	});
+
+	it('does not duplicate an add another writer already made', () => {
+		expect(rederiveListWrite(['A'], ['A', 'B'], ['A', 'B'])).toEqual(['A', 'B']);
+	});
+
+	it('removing an element someone else already removed is a no-op, not an error', () => {
+		expect(rederiveListWrite(['A', 'B'], ['B'], ['B', 'C'])).toEqual(['B', 'C']);
+	});
+
+	it('clearing the list clears only what we saw — a concurrent add survives', () => {
+		expect(rederiveListWrite(['A', 'B'], [], ['A', 'B', 'C'])).toEqual(['C']);
+	});
+
+	it('reads a missing or non-array value as the empty list', () => {
+		expect(rederiveListWrite(undefined, ['A'], '')).toEqual(['A']);
+		expect(rederiveListWrite(['A'], ['A', 'B'], null)).toEqual(['B']);
+	});
+
+	it('carries this pane\'s own UNCOMMITTED earlier gesture when the base is the dispatched row (codex round 2)', () => {
+		// Edit 1 removed A ([B,C] sent) and was abandoned on conflict because
+		// edit 2 superseded it. Edit 2 removed B from the editor's held list, so
+		// it sent [C] — and its base is the ROW it was dispatched against, which
+		// still held [A,B,C] because edit 1 never committed. The delta is then
+		// {A,B} removed, both of the user's gestures, and A stays gone.
+		expect(rederiveListWrite(['A', 'B', 'C'], ['C'], ['A', 'B', 'C', 'D'])).toEqual(['C', 'D']);
+		// The base the review proposed — the EDITOR's list [B,C] — would see only
+		// {B} removed and RESURRECT A, whose removal never reached the server.
+		expect(rederiveListWrite(['B', 'C'], ['C'], ['A', 'B', 'C', 'D'])).toEqual(['A', 'C', 'D']);
+	});
+
+	it('equals a replay when nobody else wrote', () => {
+		expect(rederiveListWrite(['A', 'B', 'C'], ['B', 'C'], ['A', 'B', 'C'])).toEqual(['B', 'C']);
 	});
 });
