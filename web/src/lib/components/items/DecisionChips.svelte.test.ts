@@ -17,6 +17,22 @@ vi.mock('$lib/api/client', () => ({
 	},
 }));
 
+// A real epoch behind a mock, so the fence the component captures is the one
+// an identity change actually moves (BUG-3130).
+const auth = vi.hoisted(() => {
+	let epoch = 0;
+	return {
+		identityFence() {
+			const captured = epoch;
+			return () => epoch === captured;
+		},
+		changeIdentity() {
+			epoch++;
+		},
+	};
+});
+vi.mock('$lib/stores/auth.svelte', () => ({ authStore: auth }));
+
 import DecisionChips from './DecisionChips.svelte';
 
 function answer(key: string, noul: number): ItemDecision {
@@ -65,5 +81,26 @@ describe('DecisionChips', () => {
 		const labels = [...document.querySelectorAll('.decision-chip-label')].map((e) => e.textContent);
 		expect(labels).toEqual(['Blocked']);
 		expect(document.querySelector('.decision-chip.flagged')).not.toBeNull();
+	});
+
+	it("does not paint a response issued under the previous identity (BUG-3130)", async () => {
+		// Same item throughout: `latest` does not move, so only the identity
+		// fence can refuse this. The answer describes what the PREVIOUS caller
+		// may see.
+		cmp = mount(DecisionChips, { target: document.body, props: { wsSlug: 'ws', itemRef: 'a', itemId: 'A' } });
+		flushSync();
+		auth.changeIdentity();
+		pending.get('a')!({ ref: 'A-1', decisions: [answer('needs_human_decision', 0.95)] });
+		await settle();
+		expect(document.querySelector('.decision-chips')).toBeNull();
+	});
+
+	it('CONTROL: the same response paints when the identity holds still', async () => {
+		// Without this the leg above passes for a component that never paints.
+		cmp = mount(DecisionChips, { target: document.body, props: { wsSlug: 'ws', itemRef: 'a', itemId: 'A' } });
+		flushSync();
+		pending.get('a')!({ ref: 'A-1', decisions: [answer('needs_human_decision', 0.95)] });
+		await settle();
+		expect(document.querySelector('.decision-chips')).not.toBeNull();
 	});
 });

@@ -118,6 +118,41 @@ describe('localIndex / localSearch across an identity change', () => {
 		expect(localSearch.search('orphan-ws', 'Alpha')).toHaveLength(0);
 	});
 
+	it('moves the reset generation of a workspace that held NO state when the identity changed (BUG-3130)', async () => {
+		// `FieldEditor.createRelationTarget` captures this before its create and
+		// upserts the response only while it is unchanged. `resetAll` resets the
+		// workspaces it holds state for, so a workspace captured while it held
+		// none was never visited, the count did not move, and the previous
+		// identity's row was written into a fresh state after the change.
+		const { localIndex } = await import('./localIndex.svelte');
+		const captured = localIndex.resetGenerationFor('ws-stateless');
+		// PRECONDITION: nothing to visit, or this is the stateful case below.
+		expect(localIndex.size('ws-stateless')).toBe(0);
+
+		auth.fireIdentityChange();
+
+		expect(localIndex.resetGenerationFor('ws-stateless')).not.toBe(captured);
+	});
+
+	it('still moves it for a workspace that DID hold state — the case the sweep already visited', async () => {
+		const { localIndex } = await import('./localIndex.svelte');
+		localIndex.upsert('ws-one', row('a', 'Alpha'));
+		const captured = localIndex.resetGenerationFor('ws-one');
+
+		auth.fireIdentityChange();
+
+		expect(localIndex.resetGenerationFor('ws-one')).not.toBe(captured);
+	});
+
+	it('leaves the reset generation alone when nothing is dropped', async () => {
+		// The counterfactual for the two above: a generation that moved on
+		// anything would refuse every create's write-back.
+		const { localIndex } = await import('./localIndex.svelte');
+		const captured = localIndex.resetGenerationFor('ws-stateless');
+		localIndex.upsert('ws-other', row('b', 'Beta'));
+		expect(localIndex.resetGenerationFor('ws-stateless')).toBe(captured);
+	});
+
 	it('keeps the rows when the identity holds still', async () => {
 		// The counterfactual. A sweep that fired on anything else would empty
 		// the local-first cache during ordinary use, which is a worse defect

@@ -68,29 +68,69 @@
  *       (`localIndex.upsert`, `toastStore.show`, `announceAttachmentDeleted`)
  *       is not modelled. BUG-3105 PR B dispositioned such calls by hand ONLY
  *       inside the functions it fenced, plus one found by review
- *       (`Editor`'s upload callback). The rest of the population is UNSWEPT
- *       for this shape: an enumeration of post-await calls outside the
- *       modelled set counted 202, most of them pure predicates. The sweep is
- *       BUG-3130.
+ *       (`Editor`'s upload callback). BUG-3130 closed the rest by ENUMERATION
+ *       rather than by widening the model: every post-await call that is
+ *       neither a modelled send nor a fence call, and that no fence precedes,
+ *       must be classified in `KNOWN_OUTSIDE_FENCE`. The classification is a
+ *       human reading of each row; the leg that enforces the table guarantees
+ *       only that a NEW such call cannot land unread, and it inherits every
+ *       other gap in this list.
  *   (e) NON-AWAIT SUSPENSION. `ItemAttachmentStrip.confirmDelete` re-checks on
  *       the far side of a NON-BLOCKING in-app confirmation menu — structurally
  *       the right move, on the wrong quantity (`paint.isCurrent()` compares
  *       `{ws, item}`). There is no `await` there at all, so nothing in this
  *       guard's model applies: a logout and different login while that menu is
- *       open passes the check and the DELETE goes out as the new user. Found by
- *       hand, not by this guard, and it is the clearest evidence that this
- *       guard is a floor and not a ceiling.
- *   (f) PROMISE CONTINUATIONS. Only `await` makes a function suspend here. A
+ *       open passed the check and the DELETE went out as the new user. Found by
+ *       hand, not by this guard, and since fixed by an identity fence captured
+ *       when the menu opens (`pending.isSameIdentity()`); the guard still cannot
+ *       see this shape, and it remains the clearest evidence that this guard is
+ *       a floor and not a ceiling.
+ *   (f) PROMISE CONTINUATIONS. Only `await` makes a function suspend here (not
+ *       `yield`: a generator's resumption is not modelled either, and the 25
+ *       files hold none on the BUG-3130 tree). A
  *       callback handed to `.then` / `.catch` / `.finally` runs after a
  *       suspension too, and its sends are NOT seen. The population's ten
  *       continuation sites were enumerated by hand for BUG-3105 PR B (the table
  *       is on its trail): one was a real commit and is fenced
  *       (`ItemTimeline.probeAttachment`); the rest are UI flushes behind
  *       `tick()`, mermaid rendering, a display release that must run under any
- *       identity, and the public capabilities fetch.
+ *       identity, and the public capabilities fetch. That hand table went stale
+ *       without a sound: TASK-3118 added `DecisionChips`, whose `.then` painted
+ *       under the next identity (fixed in BUG-3130). Since BUG-3130 the
+ *       continuations are ENUMERATED mechanically and must each appear in
+ *       `KNOWN_CONTINUATIONS` — still not MODELLED: the leg proves a new one is
+ *       read, not that it is fenced.
+ *   (g) OTHER DEFERRALS (codex round 3 on BUG-3130). A callback run later by
+ *       anything that is not an `await` or a promise continuation — `setTimeout`
+ *       / `setInterval`, `requestAnimationFrame`, `queueMicrotask`, an event
+ *       listener, a store subscription — or a callback a helper runs after its
+ *       OWN suspension, or the body of a `for await` loop, or a handler in the
+ *       MARKUP (this guard walks the script only). None is modelled or
+ *       enumerated. Measured on the BUG-3130 tree over the 25 files: `for await`
+ *       0, `queueMicrotask` 0, `requestAnimationFrame` 3, `setTimeout(` 15,
+ *       `setInterval(` 2, `addEventListener(` 10. One of them WAS a live
+ *       member: `FieldEditor`'s typed-save debounce timer (and the blur flush
+ *       of the same burst) sent a value typed under one identity as the next
+ *       identity's edit — found by codex round 5, fixed in BUG-3130 with a
+ *       fence captured at the burst's first keystroke. Left as a gap rather than a third table
+ *       because timers and listeners are mostly UI, and a table of them would
+ *       be read as coverage of the effects they schedule, which it would not be.
+ *   (h) WHAT A TABLE ROW PINS (codex round 4 on BUG-3130). A row in
+ *       `KNOWN_OUTSIDE_FENCE` / `KNOWN_CONTINUATIONS` pins a callee (or a chain
+ *       root) in a function, and how many times it occurs — not the arguments
+ *       or the callback body. `toastStore.show('Copied')` becoming
+ *       `toastStore.show(previousIdentityData)` under the same key stays green.
+ *       Deliberately: a key that hashed the call text would fail on every copy
+ *       edit, which trains a reader to re-paste keys without re-reading them —
+ *       the reason `fnName` avoids offsets. Also unmodelled: a MEMBER assignment
+ *       through a script-scope `const` (`obj.field = x`); only `let`/`var`
+ *       roots are commits (d). The population's script-scope `const`
+ *       containers are Sets and Maps, mutated through method calls, which the
+ *       outside-fence leg does report.
  *
- * FAIL-CLOSED, which is the property that makes the gaps survivable: anything
- * this guard cannot classify is a FAILURE, never a skip. A file it cannot parse
+ * FAIL-CLOSED WITHIN ITS MODEL, which is what makes the gaps above survivable:
+ * anything this guard tries to classify and cannot is a FAILURE, never a skip.
+ * What it does not model at all is (a)-(h), and there it is silent. A file it cannot parse
  * fails. A send whose enclosing function it cannot resolve fails. It never
  * concludes "safe" from not having understood something — so the way this guard
  * goes wrong is by asking to be taught, which is visible, rather than by going
@@ -167,6 +207,93 @@ const KNOWN_UNFENCED: string[] = [
 	// unfenced; see gaps (b), (d) and (f) for what it cannot. Add to this only
 	// with an exact path and a reason.
 ];
+
+/**
+ * Every post-await CALL outside a fence, classified (BUG-3130). Key:
+ * `<population path>::<function name>::<callee text>`. Not a modelled send —
+ * those must be fenced, above — and not a fence call itself.
+ *
+ * WHY A TABLE AND NOT A WIDER COMMIT MODEL. The census that produced this found
+ * 168 such calls, 136 of them already after a fence. The obvious widening —
+ * treat `toastStore.show` / `announce*` / `notify*` as commits — flags nothing
+ * that is not already fenced wherever it follows a server request; the rows it
+ * WOULD newly flag are the constant-text toasts after a clipboard await below,
+ * which would then need a carve-out. A table names each row's reason instead.
+ *
+ * TWO-WAY, like `KNOWN_UNFENCED`: an unlisted call fails, and so does a listed
+ * one that is gone or now fenced, so the table cannot rot into a blanket pass.
+ * A callee called more than once in one function carries its count (`×3`),
+ * so a new call of an already-classified shape still has to be read.
+ */
+const KNOWN_OUTSIDE_FENCE: Record<string, string> = {
+	// ── pure predicates / computation: no effect to fence ──
+	'lib/components/items/ItemAttachmentStrip.svelte::<nested in $effect>::req.stale ×3': 'pure: view-fence predicate',
+	'lib/components/items/ItemAttachmentStrip.svelte::revalidateAfterRestore::req.stale ×2': 'pure: view-fence predicate',
+	'lib/components/items/ItemAttachmentStrip.svelte::performDelete::req.stale': 'pure: view-fence predicate',
+	'lib/components/common/QuickActionsMenu.svelte::handleSaveNewAction::isConflictOrNotFound': 'pure: error classifier',
+	'lib/components/fields/FieldEditor.svelte::createRelationTarget::indexStillOurs': 'pure: reset-generation predicate',
+	'lib/components/fields/FieldEditor.svelte::<nested in writeRelationList>::holdOrder.superseded': 'pure: ticket predicate',
+	'lib/components/editor/Editor.svelte::<callback of renderQueue.then>::Math.random': 'pure: render id',
+	'lib/components/editor/Editor.svelte::<callback of renderQueue.then>::Math.random().toString': 'pure: render id',
+	'lib/components/editor/Editor.svelte::<callback of renderQueue.then>::Math.random().toString(36).slice': 'pure: render id',
+	'lib/components/editor/Editor.svelte::initMermaid::currentMermaidTheme': 'pure: reads the document theme',
+	// ── releases that must run under ANY identity (in a finally) ──
+	'lib/components/items/ItemAttachmentStrip.svelte::<nested in $effect>::noteLoadEnd': 'release: in-flight counter',
+	'lib/components/items/ItemAttachmentStrip.svelte::<nested in $effect>::stopLoadingMarker': 'release: timer clear',
+	'lib/components/items/ItemAttachmentStrip.svelte::performDelete::unmarkDeleting': 'release: ref-counted in-flight marker',
+	'lib/components/fields/FieldEditor.svelte::<nested in writeRelationList>::tick': 'release: flush before the literal release',
+	// ── identity-free UI after a LOCAL await (clipboard; no server request) ──
+	'lib/components/ShareDialog.svelte::handleCopyLink::toastStore.show ×2': 'local: constant text after a clipboard write',
+	'lib/components/items/PushToAgentDialog.svelte::handleCopyInstead::toastStore.show ×2': 'local: constant text after a clipboard write',
+	'lib/components/items/PushToAgentDialog.svelte::handleCopyInstead::handleDismiss': 'local: after a clipboard write, view-fenced on destroyed/presenceGen',
+	'lib/components/common/QuickActionsMenu.svelte::copyAndAnnounce::announce': 'local: copied/failed kind after a clipboard write',
+	// ── local render of content already on screen ──
+	'lib/components/editor/Editor.svelte::initMermaid::mermaidMod.default.initialize': 'render: library init after its dynamic import',
+	'lib/components/editor/Editor.svelte::<callback of renderQueue.then>::m.default.render': 'render: this editor\'s own diagram source',
+	'lib/components/editor/Editor.svelte::<callback of renderQueue.then>::target.classList.remove': 'render: this editor\'s own node',
+	'lib/components/editor/Editor.svelte::<callback of renderQueue.then>::target.classList.add': 'render: this editor\'s own node',
+	// ── logging ──
+	'lib/components/ChildItems.svelte::handleFinalize::console.error': 'log',
+	'lib/components/ChildItems.svelte::reorderChild::console.error': 'log',
+	// ── a server fact, true under any identity ──
+	'lib/components/items/ItemAttachmentStrip.svelte::performDelete::announceAttachmentDeleted ×2':
+		'global: a 204/404 is a fact about (ws, id), deliberately ahead of the view fence',
+	// ── fenced by structure the positional rule does not model ──
+	'lib/components/fields/FieldEditor.svelte::createRelationTarget::localIndex.upsert':
+		'structural: gated on indexStillOurs(), whose reset generation an identity change moves (BUG-3130)',
+};
+
+/**
+ * Every promise continuation in the population, dispositioned — gap (f)
+ * ENUMERATED (BUG-3130). Key: see `continuationKeys`. Two-way, like the tables
+ * above.
+ *
+ * WHY THIS EXISTS. BUG-3105 PR B enumerated these by hand and found ten. A
+ * later unit (TASK-3118) added `DecisionChips`, whose `.then` painted a
+ * response issued under the previous identity; nothing mechanical could see it,
+ * because the hand table had no way to go stale loudly. This one does. It does
+ * NOT check the continuation's fence — a predicate captured in the enclosing
+ * function is gap (a) — so a row's reason is a reading, and a new continuation
+ * fails here until someone does that reading.
+ */
+const KNOWN_CONTINUATIONS: Record<string, string> = {
+	'lib/components/items/DecisionChips.svelte::<callback of $effect>::api.items.decisions.then':
+		'fenced: identityFence() captured in the effect, checked with the latest-token (BUG-3130)',
+	'lib/components/items/DecisionChips.svelte::<callback of $effect>::api.items.decisions.catch': 'log: console.warn only',
+	'lib/components/timeline/ItemTimeline.svelte::probeAttachment::probe.then':
+		'fenced: identityFence() captured in probeAttachment (BUG-3105 PR B)',
+	'lib/components/editor/Editor.svelte::<callback of onMount>::api.server.capabilities.then':
+		'global: unauthenticated, binary-static capabilities; a fence would disable the next identity\'s toolbar (BUG-3105)',
+	'lib/components/editor/Editor.svelte::<callback of onMount>::api.server.capabilities.catch': 'no-op: empty handler',
+	'lib/components/editor/Editor.svelte::queueMermaidRender::renderQueue.then': 'render: this editor\'s own diagram source',
+	'lib/components/editor/Editor.svelte::queueMermaidClear::renderQueue.then': 'render: clears this editor\'s own node',
+	'lib/components/fields/FieldEditor.svelte::sendTyped::settled.then':
+		'release: clears the typed display for a settled write; must run under any identity',
+	'lib/components/timeline/ItemTimeline.svelte::<callback of $effect>::tick.then': 'ui: DOM role pass, cancelled on re-run',
+	'lib/components/common/Menu.svelte::<callback of $effect>::tick.then': 'ui: placement and focus',
+	'lib/components/common/QuickActionsMenu.svelte::<callback of $effect>::tick.then': 'ui: focus',
+	'lib/components/items/CopyItemDialog.svelte::<callback of $effect>::tick.then': 'ui: focus',
+};
 
 
 function calleeText(src: AstSource, n: Node): string {
@@ -489,7 +616,15 @@ interface Finding {
 	reason: string;
 }
 
-function analyseFile(path: string): { findings: Finding[]; fenced: string[] } {
+/** A post-await call outside any fence that is not a modelled send (BUG-3130). */
+interface Outside {
+	key: string;
+	line: number;
+}
+
+type Analysis = { findings: Finding[]; fenced: string[]; outside: Outside[] };
+
+function analyseFile(path: string): Analysis {
 	let code: string;
 	try {
 		code = readFileSync(ROOT + path, 'utf8');
@@ -502,6 +637,7 @@ function analyseFile(path: string): { findings: Finding[]; fenced: string[] } {
 		return {
 			findings: [{ path, fn: '<file>', line: 0, callee: '<read>', reason: `missing file: ${String(e)}` }],
 			fenced: [],
+			outside: [],
 		};
 	}
 	return analyseSource(path, code);
@@ -586,7 +722,7 @@ function ownAwaits(fn: Node): Node[] {
 	return out;
 }
 
-function analyseSource(path: string, code: string): { findings: Finding[]; fenced: string[] } {
+function analyseSource(path: string, code: string): Analysis {
 	let src: AstSource;
 	try {
 		src = parseComponent(code);
@@ -595,11 +731,13 @@ function analyseSource(path: string, code: string): { findings: Finding[]; fence
 		return {
 			findings: [{ path, fn: '<file>', line: 0, callee: '<parse>', reason: `unparseable: ${String(e)}` }],
 			fenced: [],
+			outside: [],
 		};
 	}
 
 	const findings: Finding[] = [];
 	const fenced: string[] = [];
+	const outside: Outside[] = [];
 	const helperSends = requestingHelperNames(src);
 	const stateNames = componentStateNames(src);
 	const propCallbacks = propCallbackNames(src);
@@ -655,7 +793,13 @@ function analyseSource(path: string, code: string): { findings: Finding[]; fence
 		// guard first behaved, flagging the six paths this unit had just fixed.
 		// A send's own await is not something it can be fenced against.
 		walk(fn, (n, ancestors) => {
-			if (!isSend(n)) return;
+			// A call that is neither a modelled send nor a fence call is not
+			// required to be fenced, but one reached outside a fence must be
+			// CLASSIFIED (BUG-3130). It takes the same positional rule below, so
+			// "outside a fence" means exactly what it means for a send.
+			const otherCall =
+				!isSend(n) && n.type === 'CallExpression' && !fenceOffsets.includes(n.start);
+			if (!isSend(n) && !otherCall) return;
 			// A nested function's sends belong to that function, not this one.
 			for (const a of ancestors) {
 				if (a !== fn && isFnNode(a)) return;
@@ -705,6 +849,10 @@ function analyseSource(path: string, code: string): { findings: Finding[]; fence
 			const ok = fenceOffsets.some((o) => o > lowerBound && o < n.start);
 
 			const label = `${path}::${name}`;
+			if (otherCall) {
+				if (!ok) outside.push({ key: `${label}::${calleeText(src, n)}`, line: src.line(n.start) });
+				return;
+			}
 			if (ok) {
 				fenced.push(label);
 			} else {
@@ -722,7 +870,69 @@ function analyseSource(path: string, code: string): { findings: Finding[]; fence
 		});
 	});
 
-	return { findings, fenced };
+	return { findings, fenced, outside };
+}
+
+const CONTINUATION_METHODS = new Set(['then', 'catch', 'finally']);
+
+/**
+ * Every function handed to `.then` / `.catch` / `.finally` in a file, keyed
+ * `<path>::<enclosing function>::<chain root>.<method>` — gap (f)'s population,
+ * enumerated rather than modelled (BUG-3130). The chain root is the call the
+ * continuation hangs off (`api.items.decisions`, `tick`, `renderQueue`), found
+ * by walking back through earlier `.then`/`.catch` links, so the key survives
+ * edits inside the callbacks. Two continuations with the same key in one
+ * function are COUNTED into it (`withCounts`), not merged.
+ */
+function continuationKeys(path: string, code: string): string[] {
+	let src: AstSource;
+	try {
+		src = parseComponent(code);
+	} catch (e) {
+		return [`${path}::<parse>::${String(e)}`];
+	}
+	const counts = new Map<string, number>();
+	// `p.then` and `p['then']` are the same continuation; the computed spelling
+	// was a way round the first version (codex round 3 on BUG-3130).
+	const memberName = (m: Node): string | undefined =>
+		m.computed ? (m.property?.type === 'Literal' ? String(m.property.value) : undefined) : m.property?.name;
+	walk(src.script, (n, ancestors) => {
+		if (n.type !== 'CallExpression' || n.callee?.type !== 'MemberExpression') return;
+		const method = memberName(n.callee);
+		if (!method || !CONTINUATION_METHODS.has(method)) return;
+		// ANY argument, not only an inline function: `settled.then(release,
+		// release)` hands over a callback by NAME and runs it after the same
+		// suspension (codex round 1 on BUG-3130 found exactly that one).
+		if ((n.arguments ?? []).length === 0) return;
+		let o: Node = n.callee.object;
+		for (;;) {
+			if (o?.type === 'CallExpression') o = o.callee;
+			else if (o?.type === 'MemberExpression' && CONTINUATION_METHODS.has(memberName(o) ?? '')) o = o.object;
+			else break;
+		}
+		const root = src.text(o).replace(/\s+/g, '').replace(/\?\./g, '.').slice(0, 60);
+		let enclosing = '<module>';
+		for (let i = ancestors.length - 1; i >= 0; i--) {
+			if (isFnNode(ancestors[i])) {
+				enclosing = fnName(src, ancestors[i], ancestors.slice(0, i));
+				break;
+			}
+		}
+		const key = `${path}::${enclosing}::${root}.${method}`;
+		counts.set(key, (counts.get(key) ?? 0) + 1);
+	});
+	return withCounts(counts);
+}
+
+/**
+ * Keys with their OCCURRENCE COUNT folded in (`… ×2`) when above one — so a
+ * second call of an already-classified shape in the same function changes the
+ * key and fails, instead of hiding behind the row the first one earned (codex
+ * round 3 on BUG-3130). The count is stable under edits elsewhere in the file,
+ * which a line number or an ordinal is not.
+ */
+function withCounts(counts: Map<string, number>): string[] {
+	return [...counts.entries()].map(([k, n]) => (n > 1 ? `${k} ×${n}` : k));
 }
 
 describe('BUG-3095 — child population identity fence', () => {
@@ -802,6 +1012,130 @@ describe('BUG-3095 — child population identity fence', () => {
 			'These paths are listed as known-unfenced but are now fenced (or gone). ' +
 				'Remove them from KNOWN_UNFENCED — a stale entry is a permanent hole.'
 		).toEqual([]);
+	});
+});
+
+describe('BUG-3130 — post-await calls outside a fence, and promise continuations, are classified', () => {
+	it('the outside-fence calls in the population are exactly KNOWN_OUTSIDE_FENCE', () => {
+		const counts = new Map<string, number>();
+		const firstLine = new Map<string, number>();
+		for (const path of POPULATION) {
+			for (const o of analyseFile(path).outside) {
+				counts.set(o.key, (counts.get(o.key) ?? 0) + 1);
+				if (!firstLine.has(o.key)) firstLine.set(o.key, o.line);
+			}
+		}
+		const seen = new Set(withCounts(counts));
+		const unlisted = [...seen]
+			.filter((k) => !(k in KNOWN_OUTSIDE_FENCE))
+			.map((k) => `${k} @${firstLine.get(k.replace(/ ×\d+$/, ''))}`)
+			.sort();
+		const stale = Object.keys(KNOWN_OUTSIDE_FENCE).filter((k) => !seen.has(k)).sort();
+		expect(
+			{ unlisted, stale },
+			'A call reached after an await with no identity fence before it. Either fence the ' +
+				'function, or read the call and classify it in KNOWN_OUTSIDE_FENCE with its reason. ' +
+				'A STALE row is one that is now fenced or gone: remove it.'
+		).toEqual({ unlisted: [], stale: [] });
+	});
+
+	it('the promise continuations in the population are exactly KNOWN_CONTINUATIONS', () => {
+		const seen = new Set<string>();
+		for (const path of POPULATION) {
+			for (const k of continuationKeys(path, readFileSync(ROOT + path, 'utf8'))) seen.add(k);
+		}
+		const unlisted = [...seen].filter((k) => !(k in KNOWN_CONTINUATIONS)).sort();
+		const stale = Object.keys(KNOWN_CONTINUATIONS).filter((k) => !seen.has(k)).sort();
+		expect(
+			{ unlisted, stale },
+			'A promise continuation runs after a suspension this guard does not model (gap (f)). ' +
+				'Read it: fence what it commits, then classify it in KNOWN_CONTINUATIONS. ' +
+				'A STALE row names a continuation that is gone: remove it.'
+		).toEqual({ unlisted: [], stale: [] });
+	});
+
+	it('a continuation is enumerated whether its callback is inline, NAMED, or chained', () => {
+		const code = `<script lang="ts">
+	import { api } from '$lib/api/client';
+	function go() {
+		const done = () => {};
+		api.items.get('ws', 'a').then((r) => r).catch(() => {});
+		api.items.get('ws', 'b').finally(done);
+	}
+</script>`;
+		expect(continuationKeys('f.svelte', code).sort()).toEqual([
+			'f.svelte::go::api.items.get.catch',
+			'f.svelte::go::api.items.get.finally',
+			'f.svelte::go::api.items.get.then',
+		]);
+	});
+
+	it("a COMPUTED ['then'] is the same continuation", () => {
+		const code = `<script lang="ts">
+	import { api } from '$lib/api/client';
+	function go() {
+		api.items.get('ws', 'a')['then']((r) => r);
+	}
+</script>`;
+		expect(continuationKeys('f.svelte', code)).toEqual(['f.svelte::go::api.items.get.then']);
+	});
+
+	it('a SECOND continuation of the same shape changes the key, so it cannot hide behind the first', () => {
+		const code = `<script lang="ts">
+	import { api } from '$lib/api/client';
+	function go() {
+		api.items.get('ws', 'a').then((r) => r);
+		api.items.get('ws', 'b').then((r) => r);
+	}
+</script>`;
+		expect(continuationKeys('f.svelte', code)).toEqual(['f.svelte::go::api.items.get.then ×2']);
+	});
+
+	it('CONTROL: a .then with no callback, and a method merely NAMED then elsewhere, are not', () => {
+		const code = `<script lang="ts">
+	function go(p: Promise<void>, o: { thenable: () => void }) {
+		void p.then();
+		o.thenable();
+	}
+</script>`;
+		expect(continuationKeys('f.svelte', code)).toEqual([]);
+	});
+
+	// One handler, variants differing only in the statement under test.
+	const fixture = (body: string) => `<script lang="ts">
+	import { api } from '$lib/api/client';
+	import { authStore } from '$lib/stores/auth.svelte';
+	import { toastStore } from '$lib/stores/toast.svelte';
+	async function go() {
+		const isSameIdentity = authStore.identityFence();
+		const r = await api.items.get('ws', 'slug');
+		${body}
+	}
+</script>`;
+	const keys = (code: string) => analyseSource('fixture.svelte', code).outside.map((o) => o.key);
+
+	it('a store call after an await with no fence before it is reported', () => {
+		expect(keys(fixture('toastStore.show(r.title);'))).toEqual(['fixture.svelte::go::toastStore.show']);
+	});
+
+	it('CONTROL: the same call after the fence is not', () => {
+		expect(keys(fixture('if (!isSameIdentity()) return;\n\t\ttoastStore.show(r.title);'))).toEqual([]);
+	});
+
+	it('CONTROL: the fence call itself is not reported', () => {
+		// Without this every fenced function would list its own predicate.
+		expect(keys(fixture('if (!isSameIdentity()) return;'))).toEqual([]);
+	});
+
+	it('CONTROL: a modelled send is not reported here — it is a finding, not a row', () => {
+		const res = analyseSource('fixture.svelte', fixture("await api.items.get('ws', 'other');"));
+		expect(res.outside).toEqual([]);
+		expect(res.findings.map((f) => f.callee)).toEqual(['api.items.get']);
+	});
+
+	it('CONTROL: a call in a function with no await is not reported', () => {
+		const code = fixture('').replace("const r = await api.items.get('ws', 'slug');", 'toastStore.show("x");');
+		expect(keys(code)).toEqual([]);
 	});
 });
 
@@ -910,4 +1244,4 @@ describe('BUG-3105 — the literal-in-finally refinement, with its controls', ()
 });
 
 /** Exported for the guard's own tests. */
-export { analyseFile, analyseSource, POPULATION, KNOWN_UNFENCED };
+export { analyseFile, analyseSource, continuationKeys, POPULATION, KNOWN_UNFENCED, KNOWN_OUTSIDE_FENCE, KNOWN_CONTINUATIONS };
