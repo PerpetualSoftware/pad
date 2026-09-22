@@ -1017,6 +1017,35 @@ const CmdhelpVersion = "0.1"
 //     browser tab and BUG-3000 carries the open half — so no surface
 //     here states a duration.
 //
+//     0.42 — BUG-3142 + BUG-3147, one entry for one contract change: the
+//     error CODE a LOCAL STDIO caller receives for two families of failure,
+//     both of which used to arrive as `server_error` — a code that reads as
+//     transient, so an agent retried a deterministic refusal forever. BEHAVIOR
+//     bump on the 0.35 / 0.30 grounds: no tool name, action enum or param
+//     shape changed, and the remote transport is unaffected by either half.
+//
+//     BUG-3142. BuildCLIArgs emitted positionals FIRST with no `--`, so cobra
+//     parsed any free-text value starting with `-` as a flag and refused the
+//     call before the command ran (`item search "-ship it"`: "unknown
+//     shorthand flag"). Every flag is now emitted first — root flags,
+//     --workspace and --format included, which must stay ahead of the
+//     terminator — then `--`, then the positionals. Calls that failed now
+//     succeed; the 12 free-text positionals on the stdio surface are listed
+//     on BUG-3142's trail. Separately, cobra's and pflag's argv refusals
+//     (unknown flag, flag needs an argument, arg-count, required flag, unknown
+//     command) now classify as `validation_failed`, and keep their message:
+//     the usage strip used to truncate at "Usage:", which the root's
+//     flag-error hook prints BEFORE the "Error:" line, so the message was
+//     deleted and the envelope carried an empty hint.
+//
+//     BUG-3147. A 429 on any command now reaches a stdio caller as
+//     `rate_limited` — the code the remote transport already sent — through
+//     the structured marker line the CLI writes at its root, carrying the
+//     server's Retry-After as `details.retry_after_seconds` when present. The
+//     remote envelope has no such detail: its dispatcher sees the body and
+//     not the headers, so the two transports agree on the code and stdio
+//     carries one additive detail more.
+//
 //     0.41 — PLAN-3114 unit 5 / TASK-3120. Adds a `match` action to
 //     `pad_playbook`: given free text, asks the workspace's configured
 //     typed-decision provider which of the workspace's ACTIVE playbooks (if
@@ -1339,7 +1368,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.41"
+const ToolSurfaceVersion = "0.42"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"testing"
 
@@ -19,6 +22,7 @@ func TestMain(m *testing.M) {
 		root := newRootCmd()
 		root.SetArgs(os.Args[1:])
 		if err := root.Execute(); err != nil {
+			writeRootStructuredError(os.Stderr, err)
 			os.Exit(1)
 		}
 		os.Exit(0)
@@ -71,5 +75,47 @@ func TestStdioArgvRefusalsClassifyAsValidationFailed(t *testing.T) {
 				t.Fatalf("the envelope carries no hint, so the refusal's own text was lost")
 			}
 		})
+	}
+}
+
+// BUG-3147, end to end: a 429 on any command reaches a stdio caller as
+// rate_limited, with the server's Retry-After, instead of server_error. The
+// fake server answers with the bytes internal/server's writeRateLimitResponse
+// writes (middleware_ratelimit.go: the Retry-After header, then writeError's
+// {"error":{"code","message"}} body), since that function is unexported.
+func TestStdioRateLimitClassifiesAsRateLimited(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "7")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"code":"rate_limited","message":"Too many requests. Please try again later."}}`))
+	}))
+	defer srv.Close()
+
+	t.Setenv(padHelperEnv, "1")
+	t.Setenv("HOME", t.TempDir()) // no real credentials or config reach the fake
+	bin, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	d := &mcp.ExecDispatcher{Binary: bin}
+	res, err := d.Dispatch(context.Background(), []string{"item", "show"},
+		[]string{"--url", srv.URL, "--workspace", "ws", "--format", "json", "--", "TASK-1"})
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	env, ok := res.StructuredContent.(mcp.ErrorEnvelope)
+	if !ok {
+		t.Fatalf("PRECONDITION: the call should have failed; got %T", res.StructuredContent)
+	}
+	if env.Error.Code != mcp.ErrRateLimited {
+		t.Fatalf("code = %q (message %q, hint %q), want %q",
+			env.Error.Code, env.Error.Message, env.Error.Hint, mcp.ErrRateLimited)
+	}
+	var details struct {
+		RetryAfterSeconds int `json:"retry_after_seconds"`
+	}
+	if err := json.Unmarshal(env.Error.Details, &details); err != nil || details.RetryAfterSeconds != 7 {
+		t.Fatalf("details = %s, want retry_after_seconds 7 (err %v)", env.Error.Details, err)
 	}
 }

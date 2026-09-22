@@ -442,6 +442,12 @@ var allowedStructuredErrorCodes = map[string]struct{}{
 	// is what keeps stdio from being the transport that still says
 	// server_error.
 	"stored_state_unreadable": {},
+	// BUG-3147. Written at the CLI's root for a 429 on any command
+	// (cli.WriteRateLimitedError), with the server's Retry-After in
+	// details.retry_after_seconds. Before this the stdio transport matched no
+	// pattern for the limiter's message and said server_error, while the
+	// remote transport, which sees the status, said rate_limited.
+	"rate_limited": {},
 }
 
 // extractStructuredCLIError scans stderr for the
