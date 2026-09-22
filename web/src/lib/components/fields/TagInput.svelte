@@ -111,7 +111,8 @@
 				placeholder={tags.length === 0 ? 'Add tags…' : ''}
 				role="combobox"
 				aria-expanded={listOpen}
-				aria-controls="tag-suggestions-{uid}"
+				aria-label="Add tag"
+				aria-controls={listOpen ? `tag-suggestions-${uid}` : undefined}
 				aria-autocomplete="list"
 				aria-activedescendant={listOpen && activeIndex >= 0 ? `tag-suggestion-${uid}-${activeIndex}` : undefined}
 				onkeydown={handleKeydown}
