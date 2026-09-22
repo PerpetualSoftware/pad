@@ -42,6 +42,30 @@ function activeInPane(page: Page): Promise<boolean> {
 	return page.evaluate(() => !!document.activeElement?.closest('.item-pane'));
 }
 
+/**
+ * Did focus stay inside the pane for the whole of the next `ms`, sampled every
+ * frame? An instant check cannot see an escape that ARRIVES LATE: a focused
+ * control unmounted a beat after the Tab (the tag suggestions hide 120ms after
+ * their input blurs) drops focus to <body> with no event, and whether an
+ * instant check catches that depends on how slow the machine is — which is why
+ * :230 failed in CI and passed locally (BUG-3148).
+ */
+function stayedInPane(page: Page, ms = 250): Promise<boolean> {
+	return page.evaluate(
+		(ms) =>
+			new Promise<boolean>((resolve) => {
+				const end = performance.now() + ms;
+				const tick = () => {
+					if (!document.activeElement?.closest('.item-pane')) return resolve(false);
+					if (performance.now() >= end) return resolve(true);
+					requestAnimationFrame(tick);
+				};
+				tick();
+			}),
+		ms,
+	);
+}
+
 test.describe('pane accessibility & focus management (PLAN-2105 / TASK-2122)', () => {
 	test('desktop: focus stays on the list on open; Tab bridges into the pane; two-level ESC returns then closes', async ({
 		page,
@@ -239,6 +263,17 @@ test.describe('pane accessibility & focus management (PLAN-2105 / TASK-2122)', (
 		await page.setViewportSize(MOBILE);
 		await browserLogin(page);
 		const { slug } = await seedDoc(fixture, request, 'A11y trap');
+		// Give the workspace a tag, so the pane's tag input has suggestions to
+		// render. In the full suite other specs leave tags behind; in isolation
+		// there were none, and the escape through them never happened (BUG-3148).
+		const tagged = await request.post(
+			`/api/v1/workspaces/${fixture.workspaceSlug}/collections/docs/items`,
+			{
+				headers: { Authorization: `Bearer ${fixture.apiToken}`, 'Content-Type': 'application/json' },
+				data: { title: `A11y trap tags ${Date.now()}`, tags: JSON.stringify(['b3148-alpha']) },
+			},
+		);
+		expect(tagged.ok(), await tagged.text()).toBeTruthy();
 		await page.goto(docsUrl(fixture, `?item=${slug}`));
 
 		const pane = page.locator('.item-pane');
@@ -257,14 +292,14 @@ test.describe('pane accessibility & focus management (PLAN-2105 / TASK-2122)', (
 		// Forward Tab many times: focus must NEVER escape the pane into the list
 		// column mounted behind the overlay. Without the trap it would leak out
 		// after cycling past the pane's last focusable.
-		for (let i = 0; i < 15; i++) {
+		for (let i = 0; i < 20; i++) {
 			await page.keyboard.press('Tab');
-			expect(await activeInPane(page)).toBe(true);
+			expect(await stayedInPane(page), `focus left the pane after Tab ${i + 1}`).toBe(true);
 		}
 		// Backward Tab is trapped too.
 		for (let i = 0; i < 5; i++) {
 			await page.keyboard.press('Shift+Tab');
-			expect(await activeInPane(page)).toBe(true);
+			expect(await stayedInPane(page), `focus left the pane after Shift+Tab ${i + 1}`).toBe(true);
 		}
 
 		// Containment backstop: a PROGRAMMATIC focus escape (not via Tab — e.g.
@@ -279,6 +314,20 @@ test.describe('pane accessibility & focus management (PLAN-2105 / TASK-2122)', (
 		});
 		expect(await activeInPane(page)).toBe(true);
 		await page.evaluate(() => document.getElementById('__t2122_outside')?.remove());
+
+		// Removal backstop (BUG-3148): the FOCUSED control is removed from the
+		// pane — a header swapped when loading ends, a popup unmounting on blur.
+		// Focus falls to <body> and NO focus event fires, so the focusin backstop
+		// above cannot see it; the trap has to notice the removal itself.
+		await page.evaluate(() => {
+			const b = document.createElement('button');
+			b.id = '__b3148_doomed';
+			document.querySelector('.item-pane')!.appendChild(b);
+			b.focus();
+		});
+		expect(await activeInPane(page), 'PREMISE: the injected control took focus').toBe(true);
+		await page.evaluate(() => document.getElementById('__b3148_doomed')?.remove());
+		expect(await stayedInPane(page), 'focus fell out of the pane when its control was removed').toBe(true);
 
 		// A modal <dialog> stacked over the overlay owns its OWN focus cycle —
 		// the window-level pane trap must defer to it and NOT drag Tab back into
@@ -296,5 +345,37 @@ test.describe('pane accessibility & focus management (PLAN-2105 / TASK-2122)', (
 		// Focus advanced WITHIN the dialog (native cycle) — not hijacked to the pane.
 		expect(await activeInPane(page)).toBe(false);
 		expect(await page.evaluate(() => !!document.activeElement?.closest('dialog'))).toBe(true);
+	});
+
+	test('tag suggestions are not tab stops: Tab from the tag input moves past them (BUG-3148)', async ({
+		page,
+		fixture,
+		request,
+	}, testInfo) => {
+		test.skip(testInfo.project.name !== 'desktop-chromium', 'one project is enough');
+		await page.setViewportSize(DESKTOP);
+		await browserLogin(page);
+		const { slug } = await seedDoc(fixture, request, 'A11y tags');
+		const tagged = await request.post(
+			`/api/v1/workspaces/${fixture.workspaceSlug}/collections/docs/items`,
+			{
+				headers: { Authorization: `Bearer ${fixture.apiToken}`, 'Content-Type': 'application/json' },
+				data: { title: `A11y tags source ${Date.now()}`, tags: JSON.stringify(['b3148-beta']) },
+			},
+		);
+		expect(tagged.ok(), await tagged.text()).toBeTruthy();
+		await page.goto(docsUrl(fixture, `?item=${slug}`));
+
+		const entry = page.locator('.item-pane input.tag-entry');
+		await entry.focus();
+		// PREMISE: suggestions are showing, so there is something to Tab onto.
+		await expect(page.locator('.item-pane .tag-suggestion').first()).toBeVisible();
+		await page.keyboard.press('Tab');
+		// A suggestion is picked by pointer only and unmounts 120ms after the
+		// input blurs; landing on one drops focus to <body> a beat later.
+		expect(
+			await page.evaluate(() => document.activeElement?.classList.contains('tag-suggestion') ?? false),
+			'Tab landed on a tag suggestion',
+		).toBe(false);
 	});
 });

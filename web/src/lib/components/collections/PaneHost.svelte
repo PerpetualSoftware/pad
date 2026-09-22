@@ -326,10 +326,16 @@
 	// fire after focus has already escaped the pane:
 	//  • Tab keydown — cycles focus within the pane's tabbables (smooth, no
 	//    flicker) via `nextTrapTarget`.
-	//  • focusin — the catch-all: ANY programmatic focus escape (Cmd+F focusing
-	//    the search box behind the overlay, a removed control dropping focus to
-	//    <body>) is pulled straight back into the pane (Codex P1 — Tab alone
-	//    can't see these).
+	//  • focusin — the catch-all for any programmatic focus escape (Cmd+F
+	//    focusing the search box behind the overlay) — pulled straight back into
+	//    the pane (Codex P1 — Tab alone can't see these).
+	//  • a MutationObserver on the pane — for the escape focusin CANNOT see: the
+	//    focused control is REMOVED (a header swapped when loading ends, the tag
+	//    suggestions unmounting 120ms after their input blurs), focus falls to
+	//    <body>, and no focus event fires at all. An earlier version of this
+	//    comment credited focusin with this case; measured, it never fires
+	//    (BUG-3148, which is why pane-a11y-focus:230 failed in CI on a workspace
+	//    other specs had left tags in).
 	// Both DEFER to a native modal <dialog> (Share / Edit Collection / the
 	// Open-Children confirm — `Modal.svelte` uses `showModal()`), which renders
 	// in the top layer above the overlay and owns its own focus cycle. The pane
@@ -375,9 +381,19 @@
 			if (!t || region.contains(t) || inExemptSurface(t)) return;
 			region.focus({ preventScroll: true });
 		}
+		// Focus on <body> (or nowhere) while the overlay is up is an escape by
+		// definition: nothing behind the overlay is reachable, and an exempt
+		// surface holding focus would be the active element, not <body>.
+		const refocusIfDropped = () => {
+			const a = document.activeElement;
+			if (a === null || a === document.body) region.focus({ preventScroll: true });
+		};
+		const removals = new MutationObserver(refocusIfDropped);
+		removals.observe(region, { childList: true, subtree: true });
 		window.addEventListener('keydown', onTrapKeydown);
 		document.addEventListener('focusin', onFocusIn);
 		return () => {
+			removals.disconnect();
 			window.removeEventListener('keydown', onTrapKeydown);
 			document.removeEventListener('focusin', onFocusIn);
 		};
