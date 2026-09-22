@@ -144,6 +144,7 @@ item_workspace_moves.source_item_id
 item_workspace_moves.source_workspace_id
 item_workspace_moves.target_item_id
 item_workspace_moves.target_workspace_id
+item_yjs_updates.content_hash
 item_yjs_updates.created_at
 item_yjs_updates.item_id
 item_yjs_updates.schema_version

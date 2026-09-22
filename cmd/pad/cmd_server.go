@@ -195,6 +195,20 @@ func serveCmd() *cobra.Command {
 					"items_scanned", rb.ItemsScanned)
 			}
 
+			// Classify op-log rows written before migration 090 (BUG-3124), so
+			// content_state stops reporting SyncStep1 frames and byte-identical
+			// re-sends as a pending edit. Non-fatal: until it finishes, an
+			// unclassified row counts as content-bearing, which is the old
+			// behaviour, not a broken one.
+			if yb, err := s.BackfillYjsContentBearing(); err != nil {
+				slog.Warn("op-log content_bearing backfill failed; non-fatal", "error", err)
+			} else if yb.RowsClassified > 0 {
+				slog.Info("Op-log content_bearing backfill complete",
+					"rows_classified", yb.RowsClassified,
+					"rows_non_content", yb.RowsNonContent,
+				)
+			}
+
 			// Backfill: populate status_transitions from the historical
 			// activity log (PLAN-1628 / TASK-1637). Idempotent — gated on an
 			// empty table, so it replays history exactly once on the first

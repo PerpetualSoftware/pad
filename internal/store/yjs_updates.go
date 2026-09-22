@@ -49,25 +49,41 @@ func (s *Store) AppendYjsUpdate(itemID string, data []byte, schemaVersion string
 
 	now := time.Now().UTC().Format(time.RFC3339)
 
+	// BUG-3124: classify at append (yjs_content_bearing.go). A frame that
+	// provably cannot change the document is still persisted — replay and GC
+	// see every row — but content_state stops counting it. The identical-row
+	// check is one indexed read per frame; it is skipped for envelope
+	// non-content frames, which need no lookup.
+	hash := yjsFrameHash(data)
+	bearing := !yjsFrameIsEnvelopeNonContent(data)
+	if bearing {
+		dup, err := s.yjsIdenticalEarlierRowQ(s.db, itemID, data, hash, 0)
+		if err != nil {
+			return 0, fmt.Errorf("append yjs update (identical-row check): %w", err)
+		}
+		bearing = !dup
+	}
+	bearingArg := s.dialect.BoolToInt(bearing)
+
 	// Postgres needs RETURNING; SQLite gives us the new rowid via
 	// LastInsertId. Same insert payload either way.
 	if s.dialect.Driver() == DriverPostgres {
 		query := s.dialect.Rebind(`
-			INSERT INTO item_yjs_updates (item_id, update_data, schema_version, created_at)
-			VALUES (?, ?, ?, ?)
+			INSERT INTO item_yjs_updates (item_id, update_data, schema_version, created_at, content_hash, content_bearing)
+			VALUES (?, ?, ?, ?, ?, ?)
 			RETURNING id
 		`)
 		var id int64
-		if err := s.db.QueryRow(query, itemID, data, schemaVersion, now).Scan(&id); err != nil {
+		if err := s.db.QueryRow(query, itemID, data, schemaVersion, now, hash, bearingArg).Scan(&id); err != nil {
 			return 0, fmt.Errorf("append yjs update (postgres): %w", err)
 		}
 		return id, nil
 	}
 
 	res, err := s.db.Exec(
-		`INSERT INTO item_yjs_updates (item_id, update_data, schema_version, created_at)
-		 VALUES (?, ?, ?, ?)`,
-		itemID, data, schemaVersion, now,
+		`INSERT INTO item_yjs_updates (item_id, update_data, schema_version, created_at, content_hash, content_bearing)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		itemID, data, schemaVersion, now, hash, bearingArg,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("append yjs update (sqlite): %w", err)
