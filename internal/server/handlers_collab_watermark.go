@@ -1,7 +1,6 @@
 package server
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 
@@ -48,8 +47,8 @@ func (s *Server) handleStampCollabWatermark(w http.ResponseWriter, r *http.Reque
 		OpLogCursor   int64  `json:"op_log_cursor"`
 		ContentSHA256 string `json:"content_sha256"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		writeError(w, http.StatusBadRequest, "bad_request", "Invalid JSON body")
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
 
