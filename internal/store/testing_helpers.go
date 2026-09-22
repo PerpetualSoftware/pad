@@ -207,7 +207,7 @@ func (s *Store) SetItemContentFlushedOpLogIDForTesting(itemID string, opLogID in
 }
 
 // ResetYjsClassificationForTesting returns an item's op-log rows to the state
-// migration 090 leaves legacy rows in: content_hash NULL, content_bearing TRUE.
+// migration 091 leaves legacy rows in: content_hash NULL, content_bearing TRUE.
 // It stands in for "rows written before the migration" so BackfillYjsContentBearing
 // can be driven against real append output (BUG-3124).
 //

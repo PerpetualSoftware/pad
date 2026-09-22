@@ -195,7 +195,7 @@ func serveCmd() *cobra.Command {
 					"items_scanned", rb.ItemsScanned)
 			}
 
-			// Classify op-log rows written before migration 090 (BUG-3124), so
+			// Classify op-log rows written before migration 091 (BUG-3124), so
 			// content_state stops reporting SyncStep1 frames and byte-identical
 			// re-sends as a pending edit. Non-fatal: until it finishes, an
 			// unclassified row counts as content-bearing, which is the old

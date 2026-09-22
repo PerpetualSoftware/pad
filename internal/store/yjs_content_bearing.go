@@ -135,7 +135,7 @@ type BackfillYjsContentBearingResult struct {
 // yjsBackfillBatch bounds one transaction of the backfill.
 const yjsBackfillBatch = 500
 
-// BackfillYjsContentBearing classifies op-log rows written before migration 090
+// BackfillYjsContentBearing classifies op-log rows written before migration 091
 // (content_hash IS NULL). Called from server startup after migrations.
 //
 // No completion marker, deliberately, unlike BackfillRelationLinks: here the

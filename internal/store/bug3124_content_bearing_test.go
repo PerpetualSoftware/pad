@@ -164,7 +164,7 @@ func TestIdenticalResendDefersToItsTwin(t *testing.T) {
 	}
 }
 
-// Legacy rows (written before migration 090) are unclassified and count as
+// Legacy rows (written before migration 091) are unclassified and count as
 // content-bearing until the startup backfill runs.
 func TestBackfillClassifiesLegacyRows(t *testing.T) {
 	for _, b := range contentBackends() {

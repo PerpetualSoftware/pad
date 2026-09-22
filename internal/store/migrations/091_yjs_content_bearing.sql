@@ -1,4 +1,4 @@
--- Migration 090: mark op-log rows that cannot change the document (BUG-3124).
+-- Migration 091: mark op-log rows that cannot change the document (BUG-3124).
 --
 -- content_state (BUG-3000) reads "the op-log holds a row above
 -- items.content_flushed_op_log_id". The relay persists EVERY y-protocol sync
