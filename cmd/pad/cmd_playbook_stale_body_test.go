@@ -181,12 +181,13 @@ func TestWarnPlaybookBodyStaleGating(t *testing.T) {
 // the one whose consequence is not merely a confusing read.
 //
 // `pad item edit` is a read-modify-write over the WHOLE body: it seeds $EDITOR
-// from the row and PATCHes the entire edited text back with no concurrency
-// token. When the row is behind the live document, saving replaces edits that
-// exist and are durable with a version derived from a state before them. The
-// warning does not prevent that — BUG-3035 owns the refuse/prompt/diff decision —
-// so what this test guards is that the signal exists, fires only for the defined
-// value, and says the thing that distinguishes it from an ordinary stale read.
+// from the row and PATCHes the entire edited text back. When the row is behind
+// the live document, saving replaces edits that exist and are durable with a
+// version derived from a state before them. Since BUG-3035 the command refuses
+// that state unless --force (bug3035_edit_guard_test.go), so this warning is the
+// forced path's signal; what this test guards is that the signal exists, fires
+// only for the defined value, and says the thing that distinguishes it from an
+// ordinary stale read.
 func TestWarnStaleEditSeedGating(t *testing.T) {
 	cases := []struct {
 		name string

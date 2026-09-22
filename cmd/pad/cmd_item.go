@@ -4155,10 +4155,9 @@ func warnStaleDerivedText(what string, refs []string, howToSee string) {
 // version derived from a state before them, and neither the person editing nor
 // the person whose tab holds them sees it happen.
 //
-// What this line does NOT do is stop that: it warns and proceeds. Whether the
-// command should refuse, or offer to merge, is a behaviour decision with its own
-// item (BUG-3035) rather than something to settle inside a sweep for missing
-// markers.
+// Since BUG-3035 the command REFUSES on this state by default (staleEditRefusal),
+// so this line is reached only under --force: it is the forced path's reminder of
+// what the user chose to overwrite.
 //
 // It is printed BEFORE the editor is launched. Printed afterwards it would be
 // read, at best, next to a "Updated TASK-5" line — after the damage.
