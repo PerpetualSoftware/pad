@@ -324,6 +324,13 @@ func init() {
 			pathTemplate: "/api/v1/workspaces/{workspace}/playbooks/{ref}",
 		}.toRouteMapper(),
 		"playbook run": mapPlaybookRun,
+		// match (TASK-3120) — a plain POST with a flat {text} body; no
+		// custom shaping needed, unlike run's args/raw_args juggling.
+		"playbook match": routeSpec{
+			method:       http.MethodPost,
+			pathTemplate: "/api/v1/workspaces/{workspace}/playbooks/match",
+			bodyKeys:     []string{"text"},
+		}.toRouteMapper(),
 
 		// Library single-entry lookup (PLAN-1560 / TASK-1561 endpoint,
 		// TASK-1563 MCP wiring). Workspace-free — the library is global.

@@ -58,6 +58,7 @@ func parityFixtureInput() map[string]any {
 		"status":            "open",
 		"remind_at":         "2026-08-01T09:00:00Z",
 		"reminder_id":       "rem-1",
+		"text":              "test text",
 	}
 }
 

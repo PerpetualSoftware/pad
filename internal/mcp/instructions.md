@@ -6,7 +6,7 @@ Pad is a project tracker for developers and AI agents — issues (TASK, BUG), pl
 
 If the user is asking general code questions with no project-management thread, you don't need this server.
 
-## Tool surface (v0.40)
+## Tool surface (v0.41)
 
 Ten resource × action tools, plus `pad_set_workspace` (which takes a `workspace` slug only — no action enum). Eleven tools total.
 
@@ -36,7 +36,7 @@ In `relation_targets`, a `multi_relation` key carries a JSON **ARRAY** of the sa
 - `pad_project` — Project intelligence: dashboard / next / ready / stale / standup / changelog / report / activity. Use `ready` for the actionable backlog and `stale` for items needing attention; `activity` to catch up on what other agents/users changed since you last worked (non-streaming feed with item refs + change details).
 - `pad_role` — Agent roles: list / create / update / delete.
 - `pad_search` — Full-text search across items: query.
-- `pad_playbook` — Invokable procedures: list / get / run. Use `run` to bind args against a playbook's declared spec and get the rendered body back; side-effect-free. `run` refuses a playbook whose status isn't `active` (a draft still being authored) with a `playbook_not_active` error — pass `allow_draft: true` to override. Both `run` and `get` echo the playbook's `status`. Both may also carry `content_state: "applied_pending_flush"`, meaning the BODY you are about to execute is behind the item's live collaborative document — an editor holds unflushed edits, so the steps may be superseded. It is a reason to re-read or to ask, not a reason to refuse to run; the body is still the best the server has.
+- `pad_playbook` — Invokable procedures: list / get / run / match. Use `run` to bind args against a playbook's declared spec and get the rendered body back; side-effect-free. `run` refuses a playbook whose status isn't `active` (a draft still being authored) with a `playbook_not_active` error — pass `allow_draft: true` to override. Both `run` and `get` echo the playbook's `status`. Both may also carry `content_state: "applied_pending_flush"`, meaning the BODY you are about to execute is behind the item's live collaborative document — an editor holds unflushed edits, so the steps may be superseded. It is a reason to re-read or to ask, not a reason to refuse to run; the body is still the best the server has. `match` finds a playbook from text.
 - `pad_library` — Convention + playbook library (the global catalog of pre-built entries workspaces activate): list / get / activate.
 - `pad_attachment` — Read-only attachment metadata: list / show. `list` enumerates a workspace's attachments (filter by item / category / collection / attached / unattached); `show` returns one attachment's MIME, size, filename, and ETag via a HEAD request. Uploading and general file downloads stay CLI-only; bounded image bytes are available through the attachment resource below.
 - `pad_meta` — Server introspection: server-info / version / tool-surface / bootstrap. The `bootstrap` action returns one-shot workspace context (user + collections + always-on conventions + a metadata-only `convention_index` of every active convention + roles + playbook metadata + dashboard + recent activity).

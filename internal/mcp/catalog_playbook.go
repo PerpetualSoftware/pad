@@ -62,6 +62,11 @@ var padPlaybookTool = ToolDef{
 				Type:        "boolean",
 				Description: "Escape hatch for the draft-playbook gate. action=run refuses a playbook whose status isn't \"active\" (e.g. one still being drafted) with a playbook_not_active error. Set true to run it anyway. Optional for action=run; default false.",
 			},
+			{
+				Name:        "text",
+				Type:        "string",
+				Description: "Free text to match against the workspace's ACTIVE playbooks via the typed-decision provider (e.g. the user's own request). Required for action=match. 404 decision_provider_unavailable when no provider is configured — fall back to slug/trigger routing rather than treating that as a hard failure.",
+			},
 		},
 	},
 	Actions: map[string]ActionFn{
@@ -75,6 +80,11 @@ var padPlaybookTool = ToolDef{
 		// flatten-and-forwarded so the server-side ParsePlaybookCLIArgs
 		// sees the same shape it would from a real shell.
 		"run": actionPlaybookRun,
+		// match (TASK-3120): a plain passThrough works — `pad playbook
+		// match <text>` takes one positional arg named "text", the same
+		// name this tool's own param carries, so BuildCLIArgs maps it
+		// straight across with no custom shaping.
+		"match": passThrough([]string{"playbook", "match"}),
 	},
 }
 
@@ -222,6 +232,18 @@ Actions:
                     playbook_not_active error. Pass allow_draft: true to
                     override and run it anyway. The status is echoed on
                     both the run and get responses.
+  match — Ask the workspace's typed-decision provider which ACTIVE
+          playbook (if any) matches free text — a Choice over their
+          ref/title/summary/trigger/invocation_slug plus a reserved
+          "none" option, so text asking for none of them gets an
+          honest answer instead of a forced pick. Returns choice
+          (a ref, or "none"), confidence, the provider's per-option
+          probabilities, the model, and each considered playbook's
+          ref/title/invocation_slug. Read-only and side-effect-free.
+          Required: workspace, text.
+          404 decision_provider_unavailable when no provider is
+                    configured — fall back to slug/trigger routing
+                    rather than treating that as a hard failure.
 
 Use pad_playbook when an agent needs to dispatch a named procedure or read
 a playbook's declared argument contract before invoking it. For browsing

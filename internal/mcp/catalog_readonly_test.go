@@ -140,9 +140,10 @@ func TestReadOnlyCatalog_ActionsMatchCmdhelp(t *testing.T) {
 
 		// pad_playbook actions (PLAN-1377 / TASK-1381). All three
 		// passThrough to `pad playbook <subcommand>`.
-		{"pad_playbook", "list"}: {"playbook", "list"},
-		{"pad_playbook", "get"}:  {"playbook", "show"},
-		{"pad_playbook", "run"}:  {"playbook", "run"},
+		{"pad_playbook", "list"}:  {"playbook", "list"},
+		{"pad_playbook", "get"}:   {"playbook", "show"},
+		{"pad_playbook", "run"}:   {"playbook", "run"},
+		{"pad_playbook", "match"}: {"playbook", "match"},
 
 		// pad_library actions (PLAN-1560 / TASK-1563). All three
 		// passThrough to `pad library <subcommand>` — list composes both
@@ -297,9 +298,10 @@ func TestReadOnlyCatalog_ActionsDispatchExpectedCmdPath(t *testing.T) {
 		{"pad_item", "backlinks"}:     {"item", "backlinks"},
 
 		// pad_playbook actions (PLAN-1377 / TASK-1381).
-		{"pad_playbook", "list"}: {"playbook", "list"},
-		{"pad_playbook", "get"}:  {"playbook", "show"},
-		{"pad_playbook", "run"}:  {"playbook", "run"},
+		{"pad_playbook", "list"}:  {"playbook", "list"},
+		{"pad_playbook", "get"}:   {"playbook", "show"},
+		{"pad_playbook", "run"}:   {"playbook", "run"},
+		{"pad_playbook", "match"}: {"playbook", "match"},
 
 		// pad_attachment actions (TASK-2017).
 		{"pad_attachment", "list"}: {"attachment", "list"},
@@ -331,6 +333,8 @@ func TestReadOnlyCatalog_ActionsDispatchExpectedCmdPath(t *testing.T) {
 		// can carry several, so `ref` cannot name one (IDEA-2641).
 		"reminder_id": "rem-1",
 		"remind_at":   "2026-08-01T09:00:00Z",
+		// pad_playbook.match needs a `text` positional (TASK-3120).
+		"text": "test text",
 	}
 
 	for _, def := range Catalog {
@@ -825,6 +829,11 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 					{Name: "args", Required: false, Repeatable: true},
 				},
 				Flags: mkFlags("workspace"),
+			},
+			"playbook match": {
+				Summary: "match text against active playbooks",
+				Args:    mkArgs("text"),
+				Flags:   mkFlags("workspace"),
 			},
 			// pad_library surface (PLAN-1560 / TASK-1563). list / get /
 			// activate passThrough to `pad library <subcommand>`. The
