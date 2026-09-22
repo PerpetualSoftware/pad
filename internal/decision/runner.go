@@ -63,8 +63,8 @@ func (qs QuestionSet) appliesTo(collectionSlug string) bool {
 	return false
 }
 
-// Registry holds the question sets later units register. This unit ships it
-// empty in production; tests register their own.
+// Registry holds the registered question sets. Production builds its registry
+// with ProductionRegistry (attention.go); tests register their own.
 type Registry struct {
 	mu   sync.RWMutex
 	sets map[string]QuestionSet
