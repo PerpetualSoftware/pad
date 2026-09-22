@@ -1828,6 +1828,9 @@ func (s *Server) setupRouter() {
 						r.Delete("/", s.handleDeleteItem)
 						r.Post("/restore", s.handleRestoreItem)
 						r.Post("/move", s.handleMoveItem)
+						// Content-free flush-watermark stamp from a caught-up
+						// tab (BUG-3124 unit B). Web-client only; no CLI/MCP.
+						r.Post("/collab-watermark", s.handleStampCollabWatermark)
 						// Cross-workspace copy PREFLIGHT (PLAN-2357 /
 						// TASK-2364). Reports what a copy into another
 						// workspace would carry, drop and need, and
