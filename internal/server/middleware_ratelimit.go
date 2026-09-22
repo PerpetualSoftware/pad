@@ -204,9 +204,11 @@ type RateLimiters struct {
 	// only viewer access, so the general API bucket's 600/min let a single
 	// viewer spend 600 calls a minute (TASK-3141). It is charged in the
 	// handler, immediately before the provider call, through
-	// allowDecisionProviderCall, so only a request that would actually
-	// spend consumes a token. The async decision_jobs runner is not charged
-	// here; it has its own rail.
+	// allowDecisionProviderCall, so a request answered by an earlier check
+	// consumes no token. A refusal raised INSIDE the provider call (the
+	// decision package's pre-send ErrRequestTooLarge) has already been
+	// charged. The async decision_jobs runner is not charged here; it has
+	// its own rail.
 	DecisionProvider *ipRateLimiter
 }
 
