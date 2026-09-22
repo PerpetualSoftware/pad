@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"runtime"
 	"sync/atomic"
 	"testing"
@@ -403,7 +404,8 @@ func TestActivityEndpoints(t *testing.T) {
 }
 
 // TestServer_Stop_DrainsRateLimiterCleanup pins BUG-851: NewRateLimiters
-// spawns 9 cleanup goroutines (one per ipRateLimiter), each in a
+// spawns one cleanup goroutine per ipRateLimiter (counted below rather than
+// written down, since the number grows with every bucket), each in a
 // 5-minute Sleep loop. Without explicit drain on Stop(), these leak
 // across every testServer lifecycle and (under -race) push the
 // internal/server suite past the 10-minute test timeout — see the
@@ -424,6 +426,13 @@ func TestServer_Stop_DrainsRateLimiterCleanup(t *testing.T) {
 	settle()
 	baseline := runtime.NumGoroutine()
 
+	perServer := 0
+	for _, f := range reflect.VisibleFields(reflect.TypeOf(RateLimiters{})) {
+		if f.Type == reflect.TypeOf((*ipRateLimiter)(nil)) {
+			perServer++
+		}
+	}
+
 	const cycles = 5
 	for i := 0; i < cycles; i++ {
 		// Use storetest.NewSQLiteUnmanaged (not testServer) so we control
@@ -431,10 +440,10 @@ func TestServer_Stop_DrainsRateLimiterCleanup(t *testing.T) {
 		s := storetest.NewSQLiteUnmanaged(t)
 		srv := New(s)
 
-		// Each NewRateLimiters spawns 9 cleanup goroutines.
-		if got := runtime.NumGoroutine(); got < baseline+9 {
-			t.Fatalf("cycle %d: expected at least baseline+9 goroutines after New(), got %d (baseline %d)",
-				i, got, baseline)
+		// Each NewRateLimiters spawns one cleanup goroutine per limiter.
+		if got := runtime.NumGoroutine(); got < baseline+perServer {
+			t.Fatalf("cycle %d: expected at least baseline+%d goroutines after New(), got %d (baseline %d)",
+				i, perServer, got, baseline)
 		}
 
 		srv.Stop()

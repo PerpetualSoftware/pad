@@ -359,6 +359,11 @@ func (s *Server) handleMatchPlaybook(w http.ResponseWriter, r *http.Request) {
 		choiceOptions,
 	)
 
+	// The last check before spending (TASK-3141): every refusal above
+	// answered without a provider call and consumed nothing.
+	if !s.allowDecisionProviderCall(w, r) {
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), playbookMatchTimeout)
 	defer cancel()
 	answers, _, err := provider.Ask(ctx, input.Text, map[string]decision.Question{"match": q})
