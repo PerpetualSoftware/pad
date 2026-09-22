@@ -110,7 +110,8 @@ func ProductionRegistry() (*Registry, error) {
 // WorkspaceFlags returns, for every item in the workspace, the question keys
 // in the named set whose latest answer is a Noul at or above threshold AND is
 // CURRENT — computed for the question as registered now, under the model
-// pinned now, from the item's state as it stands now. That is the same
+// pinned now, from the item's state as it stands now, for an item the set
+// still applies to (open, in a user collection). That is the same
 // currency rule [Runner.Decisions] applies, so the dashboard and the item page
 // never disagree about whether an answer still describes the item.
 //
@@ -166,12 +167,22 @@ func (r *Runner) WorkspaceFlags(workspaceID, setName string, threshold float64) 
 	}
 	flags = make(map[string]map[string]float64)
 	for _, itemID := range order {
-		_, st, serr := r.State(itemID)
+		item, st, serr := r.State(itemID)
 		if errors.Is(serr, ErrItemGone) {
 			continue
 		}
 		if serr != nil {
 			return flags, false, serr
+		}
+		// The set must still apply — the item page's rule too (Decisions).
+		// A collection schema edit can make an item terminal without moving
+		// its state hash, so the hash check below would not catch it.
+		ok, aerr := r.appliesNow(qs, item)
+		if aerr != nil {
+			return flags, false, aerr
+		}
+		if !ok {
+			continue
 		}
 		for _, c := range byItem[itemID] {
 			if c.stateHash != st.Hash {

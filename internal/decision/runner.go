@@ -352,17 +352,10 @@ func (r *Runner) Evaluate(ctx context.Context, itemID, setName string) (bool, er
 	// now, not trusted from enqueue time: a job owed before a move still names
 	// the old collection's set (codex round 2). Checked before the idempotency
 	// read so an inapplicable set never costs a call or a query.
-	if !qs.appliesTo(item.CollectionSlug) {
+	if ok, err := r.appliesNow(qs, item); err != nil {
+		return false, err
+	} else if !ok {
 		return false, ErrSetNotApplicable
-	}
-	if qs.Eligible != nil {
-		coll, err := r.store.GetCollection(item.CollectionID)
-		if err != nil {
-			return false, fmt.Errorf("decision: read collection %s: %w", item.CollectionID, err)
-		}
-		if coll == nil || !qs.Eligible(item, coll) {
-			return false, ErrSetNotApplicable
-		}
 	}
 	keys := make([]string, 0, len(qs.Questions))
 	qhash := make(map[string]string, len(qs.Questions))
@@ -479,7 +472,7 @@ func (r *Runner) Decisions(itemID string) ([]models.ItemDecision, error) {
 	if len(rows) == 0 {
 		return []models.ItemDecision{}, nil
 	}
-	_, st, err := r.State(itemID)
+	item, st, err := r.State(itemID)
 	if err != nil {
 		if errors.Is(err, ErrItemGone) {
 			return []models.ItemDecision{}, nil
@@ -487,19 +480,55 @@ func (r *Runner) Decisions(itemID string) ([]models.ItemDecision, error) {
 		return nil, err
 	}
 	model := r.provider.Model()
+	applies := map[string]bool{}
 	for i := range rows {
-		// Current needs all three to still hold: the item state, and the
-		// question as registered now under the model pinned now. A set or key
-		// no longer registered has no "now" to match, so it is not current.
+		// Current needs all of these to still hold: the item state, the
+		// question as registered now under the model pinned now, and the set
+		// still applying to the item. A set or key no longer registered has
+		// no "now" to match, so it is not current. The last is not implied by
+		// the state hash: a collection schema edit can make an item terminal,
+		// and so ineligible, without changing a byte of its state (codex
+		// round 2 on TASK-3118).
 		qhashNow := ""
-		if qs, ok := r.registry.Get(rows[i].QuestionSet); ok {
+		qs, registered := r.registry.Get(rows[i].QuestionSet)
+		if registered {
 			if q, ok := qs.Questions[rows[i].QuestionKey]; ok {
 				qhashNow = QuestionFingerprint(model, q)
 			}
 		}
-		rows[i].Current = rows[i].StateHash == st.Hash && qhashNow != "" && rows[i].QuestionHash == qhashNow
+		if !(rows[i].StateHash == st.Hash && qhashNow != "" && rows[i].QuestionHash == qhashNow) {
+			continue
+		}
+		ok, seen := applies[qs.Name]
+		if !seen {
+			ok, err = r.appliesNow(qs, item)
+			if err != nil {
+				return nil, err
+			}
+			applies[qs.Name] = ok
+		}
+		rows[i].Current = ok
 	}
 	return rows, nil
+}
+
+// appliesNow reports whether the set would be asked about the item as it
+// stands: its collection is covered and, when the set has one, its Eligible
+// predicate accepts the item. Evaluate refuses to ASK on the same rule, and
+// the read paths refuse to call an answer current on it, so an answer is never
+// presented for an item the set would not ask about today.
+func (r *Runner) appliesNow(qs QuestionSet, item *models.Item) (bool, error) {
+	if !qs.appliesTo(item.CollectionSlug) {
+		return false, nil
+	}
+	if qs.Eligible == nil {
+		return true, nil
+	}
+	coll, err := r.store.GetCollection(item.CollectionID)
+	if err != nil {
+		return false, fmt.Errorf("decision: read collection %s: %w", item.CollectionID, err)
+	}
+	return coll != nil && qs.Eligible(item, coll), nil
 }
 
 // Job-handling bounds.

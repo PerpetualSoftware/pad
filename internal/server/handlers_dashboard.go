@@ -829,7 +829,10 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 		if len(nouls) > 0 {
 			for _, item := range allItems {
 				answers, ok := nouls[item.ID]
-				if !ok || isItemDone(item.Fields, item.CollectionID, ctxMap) {
+				// No done check here: WorkspaceFlags returns an answer only
+				// for an item the set still applies to, which excludes a
+				// terminal one — the same rule the item page's chips use.
+				if !ok {
 					continue
 				}
 				if p, ok := answers[decision.AttentionNeedsHuman]; ok {

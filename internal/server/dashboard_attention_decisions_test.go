@@ -230,4 +230,16 @@ func TestDashboardAttention_ItemMadeTerminalBySchemaEditIsNotSurfaced(t *testing
 	if got := attentionFor(getDashboard(t, srv, slug), it.Ref); len(got) != 0 {
 		t.Fatalf("an item its collection now calls terminal is still in attention: %+v", got)
 	}
+	// The item page reads the same rule through /decisions: every attention
+	// answer is still stored, and none is current. (Before the edit they
+	// were — the dashboard precondition above is that leg.)
+	b := getDecisions(t, srv, slug, it.Slug)
+	if len(b.Decisions) != 3 {
+		t.Fatalf("decisions = %d rows, want the 3 stored answers", len(b.Decisions))
+	}
+	for _, d := range b.Decisions {
+		if d.Current {
+			t.Errorf("%s is current for an item its set no longer applies to", d.QuestionKey)
+		}
+	}
 }
