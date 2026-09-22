@@ -1290,6 +1290,8 @@ export interface ItemUpdate {
 	expected_seq?: number;
 	/** BUG-3133: replace edits a tab has not saved back instead of being refused with content_pending_flush. */
 	overwrite_pending_edits?: boolean;
+	/** BUG-3080: this tab's position in its own sequence of content writes; see ClientWriteStamp. */
+	client_write?: ClientWriteStamp;
 	tags?: string;
 	pinned?: boolean;
 	sort_order?: number;
@@ -2576,4 +2578,16 @@ export interface DecisionSettingsInput {
 	model?: string;
 	api_key?: string;
 	clear_api_key?: boolean;
+}
+
+/**
+ * One browser tab's position in its own sequence of content writes (BUG-3080).
+ * `tab` is a random id minted per PAGE LOAD — never a session or user id — and
+ * `n` only rises. The server refuses a write whose `n` is below one it already
+ * applied for the same (item, tab), so an older PATCH that lands last cannot
+ * put old text back. Stamped by `nextClientWrite()`.
+ */
+export interface ClientWriteStamp {
+	tab: string;
+	n: number;
 }

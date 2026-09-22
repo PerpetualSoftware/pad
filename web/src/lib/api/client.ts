@@ -24,6 +24,7 @@ import type {
 	ItemIndexResponse,
 	ItemIndexRow,
 	ItemUpdate,
+	ClientWriteStamp,
 	ItemLink,
 	ItemLinkCreate,
 	Comment,
@@ -221,6 +222,16 @@ function isPlanLimitError(err: unknown): err is PadApiError {
  */
 function isUpdateConflictError(err: unknown): err is PadApiError {
 	return err instanceof PadApiError && err.code === 'update_conflict';
+}
+
+/**
+ * True when `err` is the server refusing a content write because THIS tab has
+ * already applied a newer one (BUG-3080, `client_write`). Nothing was written,
+ * and the newer write owns the outcome — callers treat it as success and never
+ * retry it.
+ */
+function isSupersededWriteError(err: unknown): err is PadApiError {
+	return err instanceof PadApiError && err.code === 'superseded_write';
 }
 
 /**
@@ -1413,9 +1424,10 @@ export const api = {
 			ws: string,
 			slug: string,
 			content: string,
-			opts?: { keepalive?: boolean; opLogCursor?: number },
+			opts?: { keepalive?: boolean; opLogCursor?: number; clientWrite?: ClientWriteStamp },
 		) => {
-			const body: { content: string; op_log_cursor?: number } = { content };
+			const body: { content: string; op_log_cursor?: number; client_write?: ClientWriteStamp } = { content };
+			if (opts?.clientWrite) body.client_write = opts.clientWrite;
 			// `op_log_cursor` (TASK-1319) is the highest
 			// item_yjs_updates.id this tab has applied. The server
 			// advances `items.content_flushed_op_log_id` only when
@@ -2856,6 +2868,7 @@ export {
 	planLimitMessage,
 	isRateLimitError,
 	isUpdateConflictError,
+	isSupersededWriteError,
 	isNotFoundError,
 	isConflictOrNotFound
 };
