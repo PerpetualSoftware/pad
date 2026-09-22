@@ -90,4 +90,24 @@ describe('Sidebar quick-add — an in-flight create belongs to ONE opening of th
 			expect(document.querySelector('#quick-add-error'), 'the old refusal was shown on the new dialog').toBeNull();
 		});
 	}
+
+	it('the reopened dialog is usable while the old create is still in flight (codex round 2)', async () => {
+		render(Sidebar);
+		await open();
+		await type('first title');
+		await fireEvent.keyDown(input(), { key: 'Enter' });
+		expect(pending.resolve, 'no create was sent').not.toBeNull();
+		// While ITS create is in flight the opening is read-only: what was sent
+		// is what the result lands on.
+		expect(input().readOnly, 'typing is possible while the create is in flight').toBe(true);
+
+		await fireEvent.keyDown(input(), { key: 'Escape' });
+		await tick();
+		await open();
+		await type('second title');
+		await tick();
+		expect(input().readOnly, 'the new opening inherited the old one\'s busy state').toBe(false);
+		const create = document.querySelector<HTMLButtonElement>('.quick-add-btn');
+		expect(create?.disabled, 'Create is disabled until an unrelated request settles').toBe(false);
+	});
 });

@@ -138,6 +138,7 @@
 
 	function startQuickAdd(coll: Collection) {
 		quickAddSession++;
+		quickAddSubmitting = false;
 		quickAddCollection = coll;
 		quickAddTitle = '';
 		quickAddError = null;
@@ -163,6 +164,9 @@
 
 	function cancelQuickAdd() {
 		quickAddSession++;
+		// The in-flight create belongs to the opening just closed; a new one
+		// must not wait on it (codex round 2).
+		quickAddSubmitting = false;
 		quickAddCollection = null;
 		quickAddTitle = '';
 		quickAddError = null;
@@ -212,7 +216,7 @@
 				toastStore.show(err?.message || 'Failed to create item', 'error');
 			}
 		} finally {
-			quickAddSubmitting = false;
+			if (quickAddSession === session) quickAddSubmitting = false;
 		}
 	}
 
@@ -230,7 +234,7 @@
 	}
 
 	function togglePicker() {
-		if (!canSwitchCollection) return;
+		if (!canSwitchCollection || quickAddSubmitting) return;
 		pickerOpen = !pickerOpen;
 		if (pickerOpen) {
 			const i = pickerCollections.findIndex(c => c.id === quickAddCollection?.id);
@@ -240,6 +244,9 @@
 	}
 
 	function selectCollection(coll: Collection) {
+		// While a create is in flight the dialog is read-only: what was sent is
+		// what the result lands on (codex round 2).
+		if (quickAddSubmitting) return;
 		quickAddCollection = coll;
 		pickerOpen = false;
 		requestAnimationFrame(() => quickAddInputEl?.focus());
@@ -751,14 +758,14 @@
 				<button
 					type="button"
 					class="quick-add-pill"
-					class:disabled={!canSwitchCollection}
+					class:disabled={!canSwitchCollection || quickAddSubmitting}
 					onclick={togglePicker}
 					onkeydown={handlePillKeydown}
 					bind:this={pillRef}
 					aria-haspopup="listbox"
 					aria-expanded={pickerOpen}
 					aria-label="Choose collection"
-					disabled={!canSwitchCollection}
+					disabled={!canSwitchCollection || quickAddSubmitting}
 				>
 					<span class="quick-add-icon">{quickAddCollection.icon}</span>
 					<span class="quick-add-label">New {quickAddCollection.name.replace(/s$/, '')}</span>
@@ -799,6 +806,7 @@
 				use:autofocus
 				bind:this={quickAddInputEl}
 				bind:value={quickAddTitle}
+				readonly={quickAddSubmitting}
 				onkeydown={handleQuickAddKeydown}
 				oninput={(e) => { quickAddError = null; const el = e.currentTarget; el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; }}
 				aria-invalid={quickAddError ? 'true' : undefined}
