@@ -190,3 +190,45 @@ export function fieldWriteTarget(itemId: string, fieldKey: string): string {
 	// to greps for symbols it contained.
 	return `${itemId}\u0000${fieldKey}`;
 }
+
+/**
+ * Re-derive a WHOLE-LIST write against a freshly-read row (BUG-3038).
+ *
+ * `submitOrderedOCC` re-sends its body after a conflict. That is right for a
+ * scalar, whose gesture IS its value, and wrong for a list: the body is the
+ * RESULT of a gesture applied to an older list, so re-sending it erases every
+ * change another writer made in between. The field held [A,B,C], the user
+ * removed A and [B,C] was sent, someone else added D, and the retry wrote [B,C]
+ * back over [A,B,C,D].
+ *
+ * The gesture is recoverable from what the caller already has, so the write
+ * contract does not need to change. `base` is the list on the row the write was
+ * DISPATCHED against, captured at dispatch; `sent` is what the gesture produced
+ * from it. Removed = base - sent, added = sent - base, and those are applied to
+ * `fresh`:
+ *
+ *   - ORDER comes from `fresh`, so another writer's arrangement survives;
+ *   - removed elements are dropped from it by identity;
+ *   - added elements are appended in `sent`'s order, unless already present.
+ *     An added element a third writer has since REMOVED is appended again: our
+ *     gesture was to add it, and that is its honest outcome.
+ *
+ * There is no reorder gesture in the pane today (a list is only ever added to
+ * or removed from). If one is added, a pure reorder has an empty delta and this
+ * returns `fresh` unchanged, so it would need its own arm here.
+ *
+ * Elements are compared with `===`. A multi_relation list holds stored ids,
+ * and the pane builds `sent` from those same ids plus a picked item's id, so
+ * all three lists share one spelling. A missing or non-array value reads as
+ * the empty list.
+ */
+export function rederiveListWrite(base: unknown, sent: unknown, fresh: unknown): unknown[] {
+	const list = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
+	const b = list(base);
+	const s = list(sent);
+	const removed = b.filter((x) => !s.includes(x));
+	const added = s.filter((x) => !b.includes(x));
+	const out = list(fresh).filter((x) => !removed.includes(x));
+	for (const x of added) if (!out.includes(x)) out.push(x);
+	return out;
+}

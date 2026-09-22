@@ -3,7 +3,8 @@
 	import { tick, onMount, onDestroy, untrack } from 'svelte';
 	import { api, PadApiError, isUpdateConflictError, type ImportURLResponse } from '$lib/api/client';
 	import { confirmOpenChildrenOrThrow, isOpenChildrenError } from '$lib/items/openChildrenError';
-	import { WriteOrder, fieldWriteTarget, submitOrderedOCC } from '$lib/items/fieldWriteOrder';
+	import { WriteOrder, fieldWriteTarget, rederiveListWrite, submitOrderedOCC } from '$lib/items/fieldWriteOrder';
+	import { isMultiRelationType } from '$lib/items/relationFieldTypes';
 	import { isOlderSnapshot } from '$lib/items/itemSnapshotOrder';
 	import { occTokenFor, type OCCToken } from '$lib/items/occToken';
 	import { marked } from 'marked';
@@ -3155,9 +3156,17 @@
 		// this save is in flight — is no longer silently undone. `expected_updated_at`
 		// makes a stale write fail with a 409 `update_conflict` we refetch-and-retry
 		// below (IDEA-1480 / MCP v0.14, finally adopted by the web editor).
-		const patch = { [key]: value };
+		let patch: Record<string, any> = { [key]: value };
 		const targetItem = item;
 		const targetWs = wsSlug;
+		// BUG-3038: a WHOLE-LIST field's value is the result of a gesture applied
+		// to the list on THIS row, so a conflict retry must re-apply the gesture to
+		// the fresh row rather than re-send the result (see `rederiveListWrite`).
+		// The base is captured HERE, at dispatch: by retry time `item` may be a
+		// different row entirely, since BUG-3036's order guard and every other
+		// writer can move it in between.
+		const wholeList = isMultiRelationType(schema.fields.find((f) => f.key === key)?.type);
+		const dispatchedBase = wholeList ? parseFields(targetItem)[key] : undefined;
 		// Generation + id fence (Codex). A plain id check has an A→B→A gap (the
 		// returning id matches but the response is stale) and would also leak
 		// A's save/error feedback (showSaved / saveStatus / toasts) onto B.
@@ -3230,6 +3239,12 @@
 				stillCurrent,
 				onRefetched: (latest) => {
 					lastServerItem = latest;
+					// Runs after the refetch and before the re-send, with no await
+					// between, so the re-sent body is derived from exactly the row
+					// whose token it carries.
+					if (wholeList) {
+						patch = { [key]: rederiveListWrite(dispatchedBase, value, parseFields(latest)[key]) };
+					}
 				}
 			});
 
