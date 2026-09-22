@@ -46,7 +46,7 @@
 	import { goto } from '$app/navigation';
 	import { relativeTime, wikiLinksToMarkdown, markdownToWikiLinks, cleanBrokenLinks, unescapeDocLinks } from '$lib/utils/markdown';
 	import { toastStore } from '$lib/stores/toast.svelte';
-	import { titleLimitError } from '$lib/items/titleLimit';
+	import { titleEditError } from '$lib/items/titleLimit';
 	import { editorStore } from '$lib/stores/editor.svelte';
 	import type { Item, Collection, CollectionSettings, QuickAction, ItemLink, AgentRole, PaneTarget, ResolvedItemIdentity, ItemCopyResult } from '$lib/types';
 	import { parseFields, parseSchema, parseSettings, parseTags, formatItemRef, itemUrlId, getTerminalOptions, type ItemIndexRow } from '$lib/types';
@@ -3099,7 +3099,7 @@
 		// outcome does) would lose that text: reopening re-seeds the draft from
 		// the stored title.
 		if (canEdit && item && titleDraft.trim() !== item.title) {
-			const limitError = titleLimitError(titleDraft.trim());
+			const limitError = titleEditError(titleDraft.trim(), item.title);
 			if (limitError) {
 				titleError = limitError;
 				return;

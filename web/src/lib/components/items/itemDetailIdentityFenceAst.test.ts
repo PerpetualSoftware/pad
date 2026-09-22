@@ -94,7 +94,7 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	handleCopyRef: { reviewed: 'fb3adcaf167a', why: 'switchedAway before the copied flag' },
 	loadData: { reviewed: '87c4ae45dcc0', why: 'IS the load: myGen against loadGeneration after every await' },
 	startEditTitle: { reviewed: '17f04352d420', why: 'focuses and sizes the input it opened synchronously', may: ['el', 'titleInputEl.focus', 'titleInputEl.setSelectionRange'] },
-	saveTitle: { reviewed: '582e44ee8818', why: 'gen against loadGeneration on both arms, and again after the tick that resizes a reopened editor (BUG-3115)' },
+	saveTitle: { reviewed: 'ba5a2acf0d81', why: 'gen against loadGeneration on both arms, and again after the tick that resizes a reopened editor (BUG-3115)' },
 	updateField: {
 		reviewed: 'fd3956618ee4',
 		why: 'stillCurrent() on every arm, the OCC refetch and the open-children confirm',

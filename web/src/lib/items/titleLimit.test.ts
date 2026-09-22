@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { MAX_ITEM_TITLE_RUNES, serverTrimmedTitle, titleLimitError } from './titleLimit';
+import { MAX_ITEM_TITLE_RUNES, serverTrimmedTitle, titleEditError, titleLimitError } from './titleLimit';
 
 // The JS half of the item-title limit parity harness (BUG-3115). The Go half
 // is internal/models/title_limit_parity_test.go; both assert against the same
@@ -54,5 +54,34 @@ describe('titleLimit (BUG-3115)', () => {
 			const s = String.fromCodePoint(cp);
 			expect(serverTrimmedTitle(`${s}x`).length, `U+${cp.toString(16)}`).toBe(2);
 		}
+	});
+});
+
+// The update-door half (lead NO-GO on #1437): the server re-validates a title
+// only when it CHANGES, so a legacy over-limit title must stay saveable as long
+// as it is sent back unchanged. Mirrors TestPatchItemVerbatimEchoOfALegacyTitleIsANoOp.
+describe('titleEditError (BUG-3115)', () => {
+	const legacy = 'm'.repeat(MAX_ITEM_TITLE_RUNES + 45);
+
+	it('an unchanged legacy over-limit title is not refused', () => {
+		expect(titleEditError(legacy, legacy)).toBeNull();
+	});
+
+	it('a legacy title stored with Go-trimmable edges, sent trimmed, is still an echo', () => {
+		// U+0085 is trimmed by Go but not by JS: the stored row carries it, the
+		// door sends what JS trim leaves, and the server TrimSpaces before comparing.
+		expect(titleEditError(`${legacy}\u0085`.trim(), legacy)).toBeNull();
+		expect(titleEditError(`\u0085${legacy}`, legacy)).toBeNull();
+	});
+
+	it('CONTROL: a changed over-limit title is still refused', () => {
+		expect(titleEditError(legacy + 'x', legacy)).toBe(
+			`Title is too long: ${legacy.length + 1} characters, maximum ${MAX_ITEM_TITLE_RUNES}`
+		);
+		expect(titleEditError('n'.repeat(MAX_ITEM_TITLE_RUNES + 1), 'short')).not.toBeNull();
+	});
+
+	it('a changed title within the limit passes', () => {
+		expect(titleEditError('renamed', legacy)).toBeNull();
 	});
 });

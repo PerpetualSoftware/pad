@@ -172,4 +172,59 @@ test.describe('BUG-3115: a refused title keeps the typed text', () => {
 		await expect(editor, 'BUG-3115: the typed title is gone').toHaveValue(typed);
 		expect(await storedTitle(fixture, request, item.id)).toBe(title);
 	});
+
+	// Lead NO-GO on #1437: the server re-validates a title only when it CHANGES
+	// (handlers_items.go's early refusal; the store's echo comparison), so a
+	// playbook whose title predates the bound stays saveable as long as the
+	// editor sends that title back unchanged — and save() always sends it.
+	// No door can STORE an over-limit title any more, so the page is SHOWN one:
+	// the item GET is answered with a legacy title, and the PATCH carrying it
+	// back is forwarded with the title dropped. The server's half — accepting
+	// that echo — is pinned over HTTP by TestPatchItemVerbatimEchoOfALegacyTitleIsANoOp;
+	// this leg pins the client's half: it SENDS the save instead of refusing it.
+	test('playbook editor: a legacy over-limit title that is not changed does not block the save', async ({
+		page,
+		fixture,
+		request,
+	}) => {
+		const created = await request.post(
+			`/api/v1/workspaces/${fixture.workspaceSlug}/collections/playbooks/items`,
+			{
+				headers: authHeaders(fixture),
+				data: { title: `B3115 playbook ${Date.now()}`, content: '1. step', fields: JSON.stringify({ status: 'draft' }) },
+			},
+		);
+		expect(created.ok(), await created.text()).toBeTruthy();
+		const pb = (await created.json()) as { id: string; slug: string };
+		const legacy = 'L'.repeat(LIMIT + 45);
+
+		await page.route(`**/api/v1/workspaces/*/items/${pb.slug}*`, async (route) => {
+			if (route.request().method() !== 'GET') return route.fallback();
+			const real = await route.fetch();
+			const body = await real.json();
+			return route.fulfill({ response: real, json: { ...body, title: legacy } });
+		});
+		const sent: Array<Record<string, unknown>> = [];
+		await page.route(`**/api/v1/workspaces/*/items/${pb.slug}`, (route) => {
+			if (route.request().method() !== 'PATCH') return route.fallback();
+			const body = JSON.parse(route.request().postData() ?? '{}');
+			sent.push({ ...body });
+			delete body.title;
+			return route.continue({ postData: JSON.stringify(body) });
+		});
+
+		await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/playbooks/${pb.slug}`);
+		// PREMISE: the editor is showing the legacy title.
+		await expect(page.locator('input.title-input')).toHaveValue(legacy);
+
+		const saved = page.waitForResponse(
+			(r) => r.request().method() === 'PATCH' && r.url().includes(`/items/${pb.slug}`),
+		);
+		await page.getByRole('button', { name: 'Save', exact: true }).click();
+		const res = await saved;
+		expect(res.status(), await res.text()).toBe(200);
+		expect(sent, 'the save was refused locally, or sent more than once').toHaveLength(1);
+		expect(sent[0].title, 'the save did not echo the stored title').toBe(legacy);
+		await expect(page.getByText(`Title is too long`)).toHaveCount(0);
+	});
 });

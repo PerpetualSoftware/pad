@@ -47,3 +47,19 @@ export function titleLimitError(title: string): string | null {
 	if (n <= MAX_ITEM_TITLE_RUNES) return null;
 	return `Title is too long: ${n} characters, maximum ${MAX_ITEM_TITLE_RUNES}`;
 }
+
+/**
+ * The limit check for an UPDATE door: `sent` is the exact title the door will
+ * PATCH, `stored` the item's current title. Null when the server would not
+ * validate it at all — it treats a title equal to the stored one, raw or after
+ * TrimSpace, as an echo and never re-checks it
+ * (internal/server/handlers_items.go, the early refusal; the store's echo
+ * comparison). That is how a legacy title stored before the bound existed
+ * stays saveable: an edit to a playbook's body re-sends its title, and
+ * refusing that here would make the item uneditable (lead NO-GO on #1437,
+ * BUG-3115).
+ */
+export function titleEditError(sent: string, stored: string): string | null {
+	if (sent === stored || serverTrimmedTitle(sent).join('') === stored) return null;
+	return titleLimitError(sent);
+}

@@ -4,7 +4,7 @@
 	import { api } from '$lib/api/client';
 	import { parseFields, parseSchema, itemUrlId, type Collection, type Item } from '$lib/types';
 	import { toastStore } from '$lib/stores/toast.svelte';
-	import { titleLimitError } from '$lib/items/titleLimit';
+	import { titleEditError } from '$lib/items/titleLimit';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import { exportAndDownloadArtifact } from '$lib/utils/artifacts';
 	import PlaybookFormFields from '$lib/components/playbooks/PlaybookFormFields.svelte';
@@ -184,7 +184,9 @@
 	async function save() {
 		if (!item) return;
 		// BUG-3115: refuse a too-long title before sending; the form keeps it.
-		const limitError = titleLimitError(title.trim());
+		// Only a CHANGED title: save() always re-sends it, and a legacy title
+		// over the limit is grandfathered by the server as long as it is echoed.
+		const limitError = titleEditError(title.trim(), item.title);
 		if (limitError) {
 			toastStore.show(limitError, 'error');
 			return;
