@@ -93,6 +93,12 @@ If the first token isn't a known slug, fall through to the natural-language rout
 
 > *"Sounds like the release playbook (PLAYB-1160). Want me to run it? It expects a `version` argument (semver, e.g. `0.5.0`). What version are you cutting?"*
 
+**Matching by typed decision (rung 3, PLAN-3114 / TASK-3120).** Only reach for this when the user is plainly asking for a procedure or workflow to run ("do the thing we always do for X", "is there a playbook for this?") AND rungs 1-2 above found nothing — never call it on ordinary conversation, since every call spends real provider money. Call `pad playbook match "<text>"` (CLI) or `pad_playbook` with `action: match, text: "<text>"` (MCP), passing the user's own words. A 404 (no provider configured) or any other error falls back SILENTLY to today's behavior — don't mention the attempt, just continue as if this rung didn't exist. A `choice` of `"none"` means the same thing: say nothing about it and move on. Any match the provider DOES return — whatever its confidence — is an OFFER, never an auto-run, exactly like the trigger rung above:
+
+> *"Sounds like PLAYB-5 (Ship a release) — want me to run it?"*
+
+There is no confidence threshold to gate the offer on, and don't invent one: TASK-3137's replay of the same provider's `attention` question set found no threshold on the precision/recall curve that met the pre-registered bar, so nothing here justifies treating a number from this provider as a green light to skip asking. Offer every match the provider returns; let the user say no.
+
 **Argument-binding rules.**
 
 - Required positional args first, in declared order. (CLI requires them; agent should prompt for missing required args rather than failing the call.)
