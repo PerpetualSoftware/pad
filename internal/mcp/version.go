@@ -1017,6 +1017,27 @@ const CmdhelpVersion = "0.1"
 //     browser tab and BUG-3000 carries the open half — so no surface
 //     here states a duration.
 //
+//     0.39 — BUG-3133. BEHAVIOR bump on the 0.35 / 0.36 grounds: a
+//     write door now refuses a call it used to accept. `pad_item.update`
+//     that sets content AND carries expected_seq or expected_updated_at
+//     is refused with 409 `content_pending_flush` (details: ref,
+//     pending_rows) while the item's op-log holds content-bearing rows
+//     above its flush watermark — edits a browser tab has not saved
+//     back, which the token cannot see because they are not in the row
+//     it guards. Before this the write was accepted: through the
+//     designated applier it replaced the tab's document, and with no tab
+//     open the direct path's prune DELETED those edits, which existed
+//     nowhere else. A new optional boolean `overwrite_pending_edits`
+//     (additive, same bump) lifts the refusal; it is the only way out
+//     without a browser, which is why it exists on this surface at all.
+//     `content_pending_flush` is its own code, not update_conflict:
+//     re-reading returns the same row and seq, so a read-and-retry loop
+//     would never end. Unchanged: a write with no token, a write with no
+//     content, and any write to an item with nothing pending. The first
+//     of those now carries `warnings.pruned_pending_edits` (additive,
+//     omitempty) naming how many pending rows a direct write deleted.
+//     No escape hatch beyond the param, for 0.29's reason.
+//
 //     0.38 — PR #1238 (b4rk13) / GitHub #1221, execution lease. Two
 //     ADDITIVE actions on `pad_item`: `claim` takes an atomic lease on
 //     an item (`holder`, `ttl`; 409 `lease_held` with the holder and
@@ -1276,7 +1297,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.38"
+const ToolSurfaceVersion = "0.39"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

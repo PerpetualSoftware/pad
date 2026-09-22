@@ -171,6 +171,15 @@ const (
 	// actual_updated_at from the server (TASK-2022).
 	ErrUpdateConflict ErrorCode = "update_conflict"
 
+	// ErrContentPendingFlush fires on HTTP 409 responses that carry
+	// error.code="content_pending_flush" (BUG-3133): a content update carrying
+	// expected_seq / expected_updated_at, refused because the item's
+	// collaborative document holds edits not yet flushed to the stored body.
+	// Unlike ErrUpdateConflict a re-read does not clear it — the row is
+	// unchanged — so an agent should wait for the open editor to flush, or
+	// resend with overwrite_pending_edits=true. Details carries ref/pending_rows.
+	ErrContentPendingFlush ErrorCode = "content_pending_flush"
+
 	// ErrStoredStateUnreadable fires when an operation is refused because
 	// the ITEM'S STORED STATE cannot be decoded — today, an append to an
 	// implementation_notes / decision_log field whose value is not a list
@@ -420,6 +429,10 @@ var allowedStructuredErrorCodes = map[string]struct{}{
 	// entry keeps a future one from collapsing it to permission_denied.
 	"workspace_member_limit": {},
 	"update_conflict":        {}, // TASK-2022 (optimistic concurrency)
+	// BUG-3133: a token-guarded content write refused while a tab holds
+	// unflushed edits. Distinct from update_conflict because re-reading does
+	// not clear it; the way out is overwrite_pending_edits.
+	"content_pending_flush": {},
 	// BUG-2675. The only entry whose marker is written for a LOCALLY
 	// generated refusal rather than an upstream APIError — the CLI's
 	// append helpers refuse before any request is made (see
@@ -899,10 +912,17 @@ func classifyHTTPStatusKind(
 		// matching what stdio does for an unknown-code marker.
 		upstream := extractUpstreamErrorEnvelope(bodyText)
 		if _, allowed := allowedStructuredErrorCodes[upstream.Code]; allowed {
+			hint := conflictHintFor(bodyMessage, route)
+			if upstream.Code == string(ErrContentPendingFlush) {
+				// "Re-read and retry" is the one move that cannot work here:
+				// the row is unchanged, so the re-read returns the same seq
+				// and the retry is refused again (BUG-3133).
+				hint = ContentPendingFlushHint
+			}
 			return NewErrorResult(ErrorPayload{
 				Code:    ErrorCode(upstream.Code),
 				Message: upstream.Message,
-				Hint:    conflictHintFor(bodyMessage, route),
+				Hint:    hint,
 				Details: upstream.Details,
 			})
 		}
@@ -1203,6 +1223,14 @@ func permissionHintFor(bodyMsg, route string) string {
 	}
 	return strings.Join(parts, " ")
 }
+
+// ContentPendingFlushHint is the recovery guidance for ErrContentPendingFlush,
+// on both transports. Duplicated in internal/cli (ContentPendingFlushHint) for
+// the same dependency-graph reason StructuredErrorMarker is; a test asserts the
+// two match, because the same code with different guidance per transport is
+// the gap the shared allow-list exists to close.
+const ContentPendingFlushHint = "Re-reading will not clear this: the stored item is unchanged until the open editor saves its edits. " +
+	"Wait for that and re-read, or resend with overwrite_pending_edits=true to replace them."
 
 // conflictHintFor generates the actionable hint for ErrConflict.
 func conflictHintFor(bodyMsg, route string) string {

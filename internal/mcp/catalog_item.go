@@ -297,6 +297,7 @@ var padItemSchemaParams = []ParamDef{
 	// writes quickly (which is what agents do) loses the race the token exists
 	// to catch. `seq` is bumped on every mutation of the row, is returned on
 	// every item AND every item summary, and is an integer.
+	{Name: "overwrite_pending_edits", Type: "bool", Description: "update: true replaces a tab's unsaved edits instead of refusing token-guarded content (content_pending_flush)."},
 	{Name: "expected_seq", Type: "number", Description: "Optimistic-concurrency guard for action=update, PREFERRED over expected_updated_at. The `seq` you last read; the update is rejected with code=update_conflict if the item changed since. Unlike expected_updated_at it distinguishes two writes inside the same second. Optional."},
 
 	// ── Notes / decisions ──
@@ -342,7 +343,7 @@ Actions:
                   you sent, since the markdown round-trips through the editor, so compare
                   on meaning rather than bytes.
                   Optional: title, status, priority, content, role, assign, parent, comment, tags,
-                  field, fields, expected_seq, expected_updated_at.
+                  field, fields, expected_seq, expected_updated_at, overwrite_pending_edits.
                   Same placement rules as create. Field updates are applied as a
                   field-level MERGE server-side (only the keys you set change; the
                   rest are preserved), so concurrent single-field updates no longer

@@ -1043,26 +1043,27 @@ func itemWebPath(workspace models.Workspace, item models.Item) (string, error) {
 
 func updateCmd() *cobra.Command {
 	var (
-		title             string
-		content           string
-		useStdin          bool
-		status            string
-		priority          string
-		assignee          string
-		roleFlag          string
-		parentFlag        string
-		category          string
-		tags              string
-		fieldFlags        []string
-		comment           string
-		force             bool
-		sortOrder         int
-		expectedUpdatedAt string
-		expectedSeq       int64
-		clearAssignedUser bool
-		clearAgentRole    bool
-		clearParent       bool
-		clearContent      bool
+		title                 string
+		content               string
+		useStdin              bool
+		status                string
+		priority              string
+		assignee              string
+		roleFlag              string
+		parentFlag            string
+		category              string
+		tags                  string
+		fieldFlags            []string
+		comment               string
+		force                 bool
+		sortOrder             int
+		expectedUpdatedAt     string
+		expectedSeq           int64
+		overwritePendingEdits bool
+		clearAssignedUser     bool
+		clearAgentRole        bool
+		clearParent           bool
+		clearContent          bool
 	)
 
 	cmd := &cobra.Command{
@@ -1207,6 +1208,11 @@ Examples:
 			// different verdict.
 			if cmd.Flags().Changed("expected-seq") {
 				input.ExpectedSeq = &expectedSeq
+			}
+			// BUG-3133: a token-guarded content write is refused while a
+			// browser tab holds unflushed edits; this says replace them.
+			if overwritePendingEdits {
+				input.OverwritePendingEdits = true
 			}
 
 			// Build a FIELD-LEVEL patch carrying ONLY the keys this command
@@ -1424,6 +1430,13 @@ Examples:
 						cli.WriteUpdateConflictError(os.Stderr, apiErr, uc)
 						return fmt.Errorf("update rejected: item was modified by another writer")
 					}
+					// BUG-3133: rendered from the same structured payload, so
+					// the MCP stdio transport lifts the code instead of
+					// reading this as a server_error.
+					if apiErr.AsContentPendingFlush() {
+						cli.WriteContentPendingFlushError(os.Stderr, apiErr)
+						return fmt.Errorf("update rejected: the item has unflushed collaborative edits")
+					}
 				}
 				return err
 			}
@@ -1477,6 +1490,7 @@ Examples:
 	cmd.Flags().StringVar(&comment, "comment", "", "attach a comment explaining this update (e.g. why status changed)")
 	cmd.Flags().BoolVar(&force, "force", false, "override the open-children guard (allow marking the item terminal even if children are non-terminal)")
 	cmd.Flags().StringVar(&expectedUpdatedAt, "expected-updated-at", "", "optimistic concurrency: RFC3339 updated_at you last read; the update is rejected with a conflict (exit non-zero) if the item changed since")
+	cmd.Flags().BoolVar(&overwritePendingEdits, "overwrite-pending-edits", false, "with a version token and new content: replace unflushed edits a browser tab holds for this item instead of being refused with content_pending_flush (BUG-3133)")
 	cmd.Flags().Int64Var(&expectedSeq, "expected-seq", 0, "optimistic concurrency (preferred): the `seq` you last read; rejected with a conflict if the item changed since. Unlike --expected-updated-at this distinguishes two writes inside the same second (BUG-3037)")
 	// UPDATE ONLY, and deliberately asymmetric with `item create` — do NOT
 	// "complete" the pair by adding these there (IDEA-2584 ruling). Clearing
@@ -3609,11 +3623,12 @@ reason, your edited text is written to a recovery file and its path is
 printed. Exiting the editor with a nonzero status (e.g. vim's :cq) aborts
 without saving, as git does.
 
-One gap remains: the guard sees writes to the STORED item, and a browser
-tab's unsaved typing is not one until the tab writes it back. The command
+A browser tab's unsaved typing is not a write to the stored item until the
+tab writes it back, so the version token alone cannot see it. The command
 checks for such typing when the editor opens and again just before saving,
-but typing that starts in the moment between that last check and the save
-can still be overwritten.
+and the server refuses the save if any is pending when it arrives. With an
+editor tab open, typing in the instant between the server's check and the
+editor applying the new body can still be replaced.
 
 Refuses to open when the stored body is behind the item's live
 collaborative document (an editor in a browser tab holds edits not yet
@@ -3660,9 +3675,10 @@ stored body anyway.`,
 
 			// A tab that starts typing while $EDITOR is open appends to the
 			// op-log without touching the row, so the seq token cannot see it
-			// either. Re-read and refuse if that happened. This narrows the
-			// window to the gap between this read and the PATCH; it does not
-			// close it (BUG-3035).
+			// either. Re-read and refuse if that happened, so the refusal comes
+			// with the recovery file and this command's own wording. The server
+			// refuses the same state at the write itself (BUG-3133), which is
+			// what covers typing that lands between this read and the PATCH.
 			if !force {
 				latest, rerr := client.GetItem(ws, slug)
 				if rerr != nil {
@@ -3673,7 +3689,10 @@ stored body anyway.`,
 				}
 			}
 
-			input := models.ItemUpdate{Content: &edited}
+			// --force already said "replace edits held only in the live
+			// document" when it opened the editor over a stale body; the save
+			// leg says the same thing to the server (BUG-3133).
+			input := models.ItemUpdate{Content: &edited, OverwritePendingEdits: force}
 			// The token is the seq that SEEDED the editor, so any row write
 			// since — another CLI, an API caller, a tab's flush — is refused
 			// rather than overwritten. seq is never 0 on a live row; a 0 means
@@ -3693,6 +3712,7 @@ stored body anyway.`,
 
 			warnUndeclaredFields(updated)
 			warnContentPendingFlush(updated)
+			warnPrunedPendingEdits(updated)
 
 			ref := cli.ItemRef(*updated)
 			if ref != "" {
@@ -3703,7 +3723,7 @@ stored body anyway.`,
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&force, "force", false, "edit even when the stored body is behind the live collaborative document (replaces edits held only there)")
+	cmd.Flags().BoolVar(&force, "force", false, "edit even when the stored body is behind the live collaborative document, and save with overwrite_pending_edits (replaces edits held only there)")
 	return cmd
 }
 
@@ -4214,6 +4234,18 @@ func warnContentPendingFlush(item *models.Item) {
 		"collab-snapshot flush does that, and one may already have run. The response's content is "+
 		"what you sent; a read before such a flush lands shows the previous content, and the "+
 		"stored form may end up differing slightly from what you sent.")
+}
+
+// warnPrunedPendingEdits tells the caller, on stderr, that a direct content
+// write deleted unflushed edits a browser tab had left in the op-log (BUG-3133).
+// Those edits existed nowhere else, so this is the only notice anyone gets.
+func warnPrunedPendingEdits(item *models.Item) {
+	if item == nil || item.Warnings == nil || item.Warnings.PrunedPendingEdits == 0 {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "warning: this write replaced %d unflushed edit(s) a browser tab had made to this "+
+		"item without saving them back; they were deleted and are not in the version history.\n",
+		item.Warnings.PrunedPendingEdits)
 }
 
 // readStdinBody reads an item body from stdin and REFUSES a blank one — empty

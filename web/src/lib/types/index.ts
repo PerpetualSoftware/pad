@@ -776,6 +776,8 @@ export interface ItemWriteWarnings {
 	 * stored copy is ever updated (BUG-3000), so this carries no duration.
 	 */
 	content_outcome?: 'applied_pending_flush';
+	/** BUG-3133: unflushed edit rows a direct content write deleted. */
+	pruned_pending_edits?: number;
 }
 
 // ─── Items index (skinny projection) ─────────────────────────────────────────
@@ -1262,6 +1264,8 @@ export interface ItemUpdate {
 	 * sent, seq decides.
 	 */
 	expected_seq?: number;
+	/** BUG-3133: replace edits a tab has not saved back instead of being refused with content_pending_flush. */
+	overwrite_pending_edits?: boolean;
 	tags?: string;
 	pinned?: boolean;
 	sort_order?: number;

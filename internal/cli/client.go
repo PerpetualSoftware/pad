@@ -1581,6 +1581,45 @@ func WriteUpdateConflictError(w io.Writer, apiErr *APIError, uc *UpdateConflictD
 	fmt.Fprintln(w, "Re-read the item (pad item show) and retry with the current timestamp.")
 }
 
+// ContentPendingFlushCode is the structured code for BUG-3133's refusal: a
+// content write carrying a version token while a browser tab holds unflushed
+// edits the token cannot see. Keep in lockstep with internal/mcp's
+// allowedStructuredErrorCodes.
+const ContentPendingFlushCode = "content_pending_flush"
+
+// ContentPendingFlushHint rides in the marker envelope so the MCP stdio
+// transport gives the same guidance the HTTP transport does. Must equal
+// internal/mcp's ContentPendingFlushHint; a test asserts it.
+const ContentPendingFlushHint = "Re-reading will not clear this: the stored item is unchanged until the open editor saves its edits. " +
+	"Wait for that and re-read, or resend with overwrite_pending_edits=true to replace them."
+
+// AsContentPendingFlush reports whether the server refused the write with
+// content_pending_flush.
+func (e *APIError) AsContentPendingFlush() bool {
+	return e != nil && e.Code == ContentPendingFlushCode
+}
+
+// WriteContentPendingFlushError renders the content_pending_flush refusal: the
+// structured marker line for the MCP stdio classifier (the same contract as
+// WriteUpdateConflictError), then the server's message and the CLI's own way
+// out. It deliberately does NOT say "re-read and retry" — re-reading returns
+// the same row and seq, so that loop never ends.
+func WriteContentPendingFlushError(w io.Writer, apiErr *APIError) {
+	envelope := map[string]any{
+		"error": map[string]any{
+			"code":    apiErr.Code,
+			"message": apiErr.Message,
+			"hint":    ContentPendingFlushHint,
+			"details": apiErr.Details,
+		},
+	}
+	if data, err := json.Marshal(envelope); err == nil {
+		fmt.Fprintln(w, StructuredErrorMarker+string(data))
+	}
+	fmt.Fprintln(w, apiErr.Message)
+	fmt.Fprintln(w, "Pass --overwrite-pending-edits to replace those edits.")
+}
+
 // StoredStateUnreadableCode is the structured error code for "the item's
 // STORED value cannot be decoded, so the operation is refused and retrying is
 // pointless" (BUG-2675).

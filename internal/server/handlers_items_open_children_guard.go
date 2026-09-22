@@ -464,6 +464,29 @@ func writeContentNotAppliedError(w http.ResponseWriter, ref string, landedFields
 	})
 }
 
+// writeContentPendingFlushError answers the BUG-3133 refusal: a content write
+// carrying a version token while the item's op-log holds unflushed
+// collaborative edits. 409, but NOT update_conflict — re-reading returns the
+// same row and the same seq, so a read-and-retry loop would spin. The message
+// says what clears it, because nothing server-side does: an open tab flushes
+// within seconds; with no tab, only opening the item or the override.
+func writeContentPendingFlushError(w http.ResponseWriter, ref string, pendingRows int) {
+	writeJSON(w, http.StatusConflict, map[string]any{
+		"error": map[string]any{
+			"code": "content_pending_flush",
+			"message": fmt.Sprintf(
+				"%s has unflushed collaborative edits that are not in the body you read; its version token does not cover them. "+
+					"Wait for the open editor to save them and re-read, or open the item in a browser if none is open, "+
+					"or resend with overwrite_pending_edits to replace them.",
+				ref),
+			"details": map[string]any{
+				"ref":          ref,
+				"pending_rows": pendingRows,
+			},
+		},
+	})
+}
+
 // contentOutcome values for writeContentNotAppliedError's details.
 const (
 	// contentOutcomeNotApplied — no applier_request ever reached a peer, so the
