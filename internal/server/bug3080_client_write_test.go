@@ -257,3 +257,24 @@ func TestBUG3080_MarksAgeOutAndStayBounded(t *testing.T) {
 	}
 	m.release(held, 1, true)
 }
+
+func TestBUG3080_AStampOnANonContentWriteNeitherOrdersNorMarks(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+	item := createTaskWithFields(t, srv, slug, "Item", `{"status":"open"}`)
+	// A field-only PATCH carrying a high stamp (codex round 1). A field, not a
+	// title: a rename moves the slug this test addresses the item by.
+	code, out := patchContent(t, srv, slug, item.Slug, "", map[string]interface{}{
+		"fields_patch": map[string]interface{}{"status": "done"}, "client_write": map[string]interface{}{"tab": "tab-a", "n": 50},
+	})
+	if code != http.StatusOK {
+		t.Fatalf("field write: %d %v", code, out)
+	}
+	// This tab's next CONTENT write, at a lower n, is not superseded by it.
+	if code, out := patchContent(t, srv, slug, item.Slug, "", stamped("real content", "tab-a", 2)); code != http.StatusOK {
+		t.Fatalf("a non-content write must not raise the content mark; got %d %v", code, out)
+	}
+	if got := contentOf(t, srv, item.ID); got != "real content" {
+		t.Fatalf("content=%q", got)
+	}
+}

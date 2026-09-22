@@ -1826,7 +1826,12 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	// path — to the end of the handler, so the check, the write and the mark
 	// are one step for this (item, tab); see clientWriteMarks. The mark only
 	// moves when the write reaches the success answer below.
-	if input.ClientWrite != nil && s.clientWrites != nil {
+	//
+	// CONTENT writes only: the stamp orders bodies, and a stamp on a write that
+	// carries none (a title or field PATCH) neither orders nor marks anything —
+	// otherwise it could raise the mark and refuse this tab's next real content
+	// write (codex round 1).
+	if input.ClientWrite != nil && input.Content != nil && s.clientWrites != nil {
 		cw := input.ClientWrite
 		if cw.Tab == "" || len(cw.Tab) > 64 || cw.N < 1 {
 			writeError(w, http.StatusBadRequest, "validation_error",
