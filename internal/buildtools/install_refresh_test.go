@@ -14,6 +14,7 @@ package buildtools
 //     TRUNCATES TO 15 CHARACTERS.
 
 import (
+	"bufio"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -205,6 +206,43 @@ func runScript(t *testing.T, e stubEnv, built, installed, commit string) runResu
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	err := cmd.Run()
 	return runResult{stdout: out.String(), stderr: errb.String(), err: err}
+}
+
+// startAnnouncedStub starts a stub with STUB_ANNOUNCE=1 in its env and
+// returns the port it reports once it is listening. The wait is on the
+// process's own line, not on a port anyone could answer; d bounds a stub
+// that never announces (it exited, or hangs), which is a fixture failure.
+func startAnnouncedStub(t *testing.T, cmd *exec.Cmd, d time.Duration) int {
+	t.Helper()
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatalf("stub stdout: %v", err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start stub: %v", err)
+	}
+	line := make(chan string, 1)
+	go func() {
+		s := bufio.NewScanner(out)
+		if s.Scan() {
+			line <- s.Text()
+		}
+		close(line)
+	}()
+	select {
+	case l, ok := <-line:
+		var port int
+		if !ok {
+			t.Fatalf("stub exited without announcing a port")
+		}
+		if _, err := fmt.Sscanf(l, "LISTENING %d", &port); err != nil || port <= 0 {
+			t.Fatalf("stub announced %q, want \"LISTENING <port>\"", l)
+		}
+		return port
+	case <-time.After(d):
+		t.Fatalf("stub did not announce a port within %s", d)
+	}
+	return 0
 }
 
 func waitForListener(t *testing.T, host string, port int, d time.Duration) {
@@ -1008,7 +1046,7 @@ func TestInstallRefresh_RefusesWhenSeveralServersAreRunning(t *testing.T) {
 	home, dir := t.TempDir(), t.TempDir()
 	name := uniqueName(t)
 	defer killStub(t, name)
-	portA, portB := freePort(t), freePort(t)
+	portA := freePort(t)
 	const commit = "abc1234"
 
 	built := installStub(t, dir, name)
@@ -1016,21 +1054,30 @@ func TestInstallRefresh_RefusesWhenSeveralServersAreRunning(t *testing.T) {
 	e := stubEnv{version: "pad version dev (" + commit + " x)", healthy: "1",
 		argvLog: filepath.Join(home, "argv.log"), port: portA, home: home}
 
-	for _, p := range []int{portA, portB} {
-		envp := e.env()[:0]
+	// Each stub binds port 0 and announces the port it got (BUG-3144). This
+	// used to pick two "free" ports and dial them, which cannot tell whose
+	// listener answered: a stub whose port was taken in between (by the other
+	// stub, or by anything else on a busy runner) exits, the dial succeeds
+	// against the other listener, and the script correctly sees ONE server.
+	// The test then failed at the "proceeded" assertion below while the
+	// script was right. Waiting on the announcement ties readiness to THIS
+	// process, and port 0 cannot collide.
+	var ports []int
+	for range 2 {
+		envp := []string{"STUB_ANNOUNCE=1"}
 		for _, kv := range e.env() {
 			if strings.HasPrefix(kv, "STUB_PORT=") {
 				continue
 			}
 			envp = append(envp, kv)
 		}
-		envp = append(envp, fmt.Sprintf("STUB_PORT=%d", p))
-		pre := exec.Command(built, "server", "start", "--host", "127.0.0.1", "--port", strconv.Itoa(p))
+		envp = append(envp, "STUB_PORT=0")
+		pre := exec.Command(built, "server", "start", "--host", "127.0.0.1", "--port", "0")
 		pre.Env = envp
-		if err := pre.Start(); err != nil {
-			t.Fatalf("start server on %d: %v", p, err)
-		}
-		waitForListener(t, "127.0.0.1", p, 8*time.Second)
+		ports = append(ports, startAnnouncedStub(t, pre, 8*time.Second))
+	}
+	if ports[0] == ports[1] {
+		t.Fatalf("fixture: both stubs report port %d", ports[0])
 	}
 
 	res := runScript(t, e, built, installed, commit)
