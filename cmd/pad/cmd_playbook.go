@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 
 	"github.com/spf13/cobra"
 
@@ -31,6 +32,7 @@ func playbookCmd() *cobra.Command {
 	cmd.AddCommand(playbookListCmd())
 	cmd.AddCommand(playbookShowCmd())
 	cmd.AddCommand(playbookRunCmd())
+	cmd.AddCommand(playbookMatchCmd())
 	return cmd
 }
 
@@ -234,6 +236,87 @@ and run it anyway.`,
 	cmd.Flags().BoolVar(&allowDraft, "allow-draft", false,
 		"Run a playbook even if its status isn't \"active\" (the draft gate escape hatch)")
 	return cmd
+}
+
+func playbookMatchCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "match <text>",
+		Short: "Ask the typed-decision provider which active playbook (if any) matches text",
+		Long: `Send free text to the workspace's typed-decision provider and get back a
+Choice over the workspace's ACTIVE playbooks (draft and deprecated are
+excluded), plus a reserved "none" option for text that doesn't ask for any
+of them. Read-only and side-effect-free — nothing is stored or enqueued.
+
+Refuses with 404 (decision_provider_unavailable) when no provider is
+configured for this instance — callers should fall back to slug/trigger
+routing rather than treating that as a hard failure.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			ws := getWorkspace()
+			raw, err := client.MatchPlaybook(ws, args[0])
+			if err != nil {
+				return err
+			}
+			if formatFlag == "json" {
+				return cli.PrintJSON(raw)
+			}
+			var resp struct {
+				Choice        string             `json:"choice"`
+				Reason        string             `json:"reason"`
+				Confidence    *float64           `json:"confidence"`
+				Probabilities map[string]float64 `json:"probabilities"`
+				Model         string             `json:"model"`
+				Options       []struct {
+					Ref            string `json:"ref"`
+					Title          string `json:"title"`
+					InvocationSlug string `json:"invocation_slug"`
+				} `json:"options"`
+			}
+			if err := json.Unmarshal(raw, &resp); err != nil {
+				return fmt.Errorf("decode match response: %w", err)
+			}
+			if resp.Choice == "" {
+				fmt.Printf("No match: %s\n", resp.Reason)
+				return nil
+			}
+			if resp.Choice == "none" {
+				fmt.Print("No matching playbook")
+			} else {
+				title := resp.Choice
+				for _, o := range resp.Options {
+					if o.Ref == resp.Choice {
+						title = o.Title
+						break
+					}
+				}
+				fmt.Printf("Match: %s — %s", resp.Choice, title)
+			}
+			if resp.Confidence != nil {
+				fmt.Printf(" (confidence %.2f)", *resp.Confidence)
+			}
+			fmt.Println()
+			if resp.Model != "" {
+				fmt.Printf("Model: %s\n", resp.Model)
+			}
+			if len(resp.Probabilities) > 0 {
+				type pair struct {
+					name string
+					p    float64
+				}
+				pairs := make([]pair, 0, len(resp.Probabilities))
+				for name, p := range resp.Probabilities {
+					pairs = append(pairs, pair{name, p})
+				}
+				sort.Slice(pairs, func(i, j int) bool { return pairs[i].p > pairs[j].p })
+				fmt.Println("\nProbabilities:")
+				for _, pr := range pairs {
+					fmt.Printf("  %-20s %.2f\n", pr.name, pr.p)
+				}
+			}
+			return nil
+		},
+	}
 }
 
 // warnPlaybookBodyStale prints one line to STDERR when a playbook body this
