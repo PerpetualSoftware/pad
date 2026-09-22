@@ -371,11 +371,57 @@ test.describe('pane accessibility & focus management (PLAN-2105 / TASK-2122)', (
 		// PREMISE: suggestions are showing, so there is something to Tab onto.
 		await expect(page.locator('.item-pane .tag-suggestion').first()).toBeVisible();
 		await page.keyboard.press('Tab');
-		// A suggestion is picked by pointer only and unmounts 120ms after the
-		// input blurs; landing on one drops focus to <body> a beat later.
+		// Suggestions unmount 120ms after the input blurs, so landing on one
+		// drops focus to <body> a beat later. The keyboard picks them from the
+		// input instead (arrow keys + Enter, BUG-3150), so they need no tab stop.
 		expect(
 			await page.evaluate(() => document.activeElement?.classList.contains('tag-suggestion') ?? false),
 			'Tab landed on a tag suggestion',
 		).toBe(false);
+	});
+
+	test('mobile overlay: a tag suggestion is picked by keyboard without focus leaving the input (BUG-3150)', async ({
+		page,
+		fixture,
+		request,
+	}, testInfo) => {
+		test.skip(testInfo.project.name !== 'desktop-chromium', 'viewport is driven explicitly; one project is enough');
+		await page.setViewportSize(MOBILE);
+		await browserLogin(page);
+		const { slug } = await seedDoc(fixture, request, 'Kbd tags');
+		const want = `b3150-${Date.now()}`;
+		const tagged = await request.post(
+			`/api/v1/workspaces/${fixture.workspaceSlug}/collections/docs/items`,
+			{
+				headers: { Authorization: `Bearer ${fixture.apiToken}`, 'Content-Type': 'application/json' },
+				data: { title: `Kbd tags source ${Date.now()}`, tags: JSON.stringify([want]) },
+			},
+		);
+		expect(tagged.ok(), await tagged.text()).toBeTruthy();
+		await page.goto(docsUrl(fixture, `?item=${slug}`));
+		const pane = page.locator('.item-pane');
+		await expect(pane).toBeVisible();
+		await expect.poll(() => pane.evaluate((el) => getComputedStyle(el).position)).toBe('fixed');
+
+		const entry = pane.locator('input.tag-entry');
+		await entry.focus();
+		// Narrow to the seeded tag so its position in the list is known (other
+		// specs leave tags in this shared workspace). A PREFIX only: typing the
+		// whole tag would let Enter add it from the typed text, and this leg
+		// could not tell a keyboard pick from no combobox at all.
+		await entry.fill(want.slice(0, -2));
+		const option = pane.locator('.tag-suggestion', { hasText: want });
+		await expect(option).toBeVisible();
+
+		await page.keyboard.press('ArrowDown');
+		// The highlight is announced from the INPUT; focus has not moved.
+		await expect(option).toHaveAttribute('aria-selected', 'true');
+		await expect(entry).toHaveAttribute('aria-activedescendant', (await option.getAttribute('id'))!);
+		expect(await page.evaluate(() => document.activeElement?.classList.contains('tag-entry') ?? false)).toBe(true);
+
+		await page.keyboard.press('Enter');
+		await expect(pane.locator('.tag-chip', { hasText: want })).toBeVisible();
+		expect(await stayedInPane(page), 'focus left the pane while picking by keyboard').toBe(true);
+		expect(await page.evaluate(() => document.activeElement?.classList.contains('tag-entry') ?? false)).toBe(true);
 	});
 });

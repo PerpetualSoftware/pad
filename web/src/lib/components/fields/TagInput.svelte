@@ -17,6 +17,13 @@
 
 	let inputValue = $state('');
 	let showSuggestions = $state(false);
+	// The keyboard-highlighted suggestion (BUG-3150), held by the tag itself
+	// rather than by its position: typing re-filters the list, and an index
+	// would silently land on whatever slid into that slot (ItemPicker's
+	// activeId, same reason). Focus never leaves the input; the highlight is
+	// announced through aria-activedescendant.
+	let activeTag = $state<string | null>(null);
+	const uid = $props.id();
 
 	function hasTag(value: string): boolean {
 		const v = value.trim().toLowerCase();
@@ -27,6 +34,7 @@
 		const value = raw.trim();
 		inputValue = '';
 		showSuggestions = false;
+		activeTag = null;
 		if (!value || hasTag(value)) return;
 		onchange([...tags, value]);
 	}
@@ -36,13 +44,24 @@
 	}
 
 	function handleKeydown(e: KeyboardEvent) {
-		if (e.key === 'Enter' || e.key === ',') {
+		if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+			if (filteredSuggestions.length === 0) return;
 			e.preventDefault();
-			addTag(inputValue);
+			showSuggestions = true;
+			const last = filteredSuggestions.length - 1;
+			if (e.key === 'ArrowDown') {
+				activeTag = filteredSuggestions[Math.min(activeIndex + 1, last)];
+			} else {
+				activeTag = activeIndex > 0 ? filteredSuggestions[activeIndex - 1] : null;
+			}
+		} else if (e.key === 'Enter' || e.key === ',') {
+			e.preventDefault();
+			addTag(e.key === 'Enter' && listOpen && activeIndex >= 0 ? filteredSuggestions[activeIndex] : inputValue);
 		} else if (e.key === 'Backspace' && inputValue === '' && tags.length > 0) {
 			removeTag(tags.length - 1);
 		} else if (e.key === 'Escape') {
 			showSuggestions = false;
+			activeTag = null;
 		}
 	}
 
@@ -54,6 +73,9 @@
 			.filter((s) => q === '' || s.toLowerCase().includes(q))
 			.slice(0, 8);
 	});
+	let listOpen = $derived(showSuggestions && filteredSuggestions.length > 0);
+	// -1 when nothing is highlighted, or the highlighted tag was filtered out.
+	let activeIndex = $derived(activeTag === null ? -1 : filteredSuggestions.indexOf(activeTag));
 </script>
 
 {#if readonly}
@@ -87,21 +109,33 @@
 				class="tag-entry"
 				type="text"
 				placeholder={tags.length === 0 ? 'Add tags…' : ''}
+				role="combobox"
+				aria-expanded={listOpen}
+				aria-label="Add tag"
+				aria-controls={listOpen ? `tag-suggestions-${uid}` : undefined}
+				aria-autocomplete="list"
+				aria-activedescendant={listOpen && activeIndex >= 0 ? `tag-suggestion-${uid}-${activeIndex}` : undefined}
 				onkeydown={handleKeydown}
 				onfocus={() => (showSuggestions = true)}
-				onblur={() => setTimeout(() => (showSuggestions = false), 120)}
+				onblur={() => setTimeout(() => ((showSuggestions = false), (activeTag = null)), 120)}
 			/>
 		</div>
-		{#if showSuggestions && filteredSuggestions.length > 0}
-			<div class="tag-suggestions">
-				{#each filteredSuggestions as s (s)}
-					<!-- Not a tab stop (BUG-3148): a suggestion is picked by POINTER only
-					     (onmousedown, so the input keeps focus), and the list unmounts
-					     120ms after the input blurs, so tabbing onto one lands focus on
-					     a button that is about to disappear, dropping it to <body>. -->
+		{#if listOpen}
+			<div class="tag-suggestions" role="listbox" id="tag-suggestions-{uid}" aria-label="Tag suggestions">
+				{#each filteredSuggestions as s, i (s)}
+					<!-- Not a tab stop (BUG-3148): the list unmounts 120ms after the input
+					     blurs, so tabbing onto a suggestion landed focus on a button about
+					     to disappear, dropping it to <body>. Pointer picks via onmousedown
+					     (the input keeps focus); the keyboard picks with the arrow keys and
+					     Enter from the INPUT, via aria-activedescendant (BUG-3150), so focus
+					     never has to move here. -->
 					<button
 						type="button"
 						class="tag-suggestion"
+						class:active={i === activeIndex}
+						role="option"
+						id="tag-suggestion-{uid}-{i}"
+						aria-selected={i === activeIndex}
 						tabindex="-1"
 						onmousedown={(e) => {
 							e.preventDefault();
@@ -198,7 +232,8 @@
 		font-size: var(--text-sm, 0.875rem);
 		cursor: pointer;
 	}
-	.tag-suggestion:hover {
+	.tag-suggestion:hover,
+	.tag-suggestion.active {
 		background: var(--bg-hover, var(--bg-secondary));
 	}
 </style>
