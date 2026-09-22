@@ -70,5 +70,18 @@ func main() {
 	mux.HandleFunc("/api/v1/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"status":"ok"}`))
 	})
-	_ = http.ListenAndServe(net.JoinHostPort(host, port), mux)
+	// A port that cannot be bound exits the process, as ListenAndServe did.
+	ln, err := net.Listen("tcp", net.JoinHostPort(host, port))
+	if err != nil {
+		return
+	}
+	// STUB_ANNOUNCE=1 prints the port ACTUALLY bound, once listening, so a
+	// test can start a server on port 0 and learn which port it got from the
+	// process itself (BUG-3144). A test that picks a "free" port and then
+	// dials it cannot tell its own stub from whatever else took that port in
+	// between, and a stub that lost the race has already exited.
+	if os.Getenv("STUB_ANNOUNCE") == "1" {
+		fmt.Printf("LISTENING %d\n", ln.Addr().(*net.TCPAddr).Port)
+	}
+	_ = http.Serve(ln, mux)
 }
