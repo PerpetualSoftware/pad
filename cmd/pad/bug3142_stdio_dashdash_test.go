@@ -19,6 +19,12 @@ import (
 // BUG-3142's trail from the command tree (the other positionals are refs,
 // slugs and ids, for which a `-`-leading value is invalid anyway).
 func TestStdioFreeTextPositionalsSurviveALeadingDash(t *testing.T) {
+	// ParseFlags writes the root's persistent flags into package globals
+	// (formatFlag, workspaceFlag, urlFlag). Leaving `--format json` behind
+	// changed what every later test in this package printed.
+	savedFormat, savedWorkspace, savedURL := formatFlag, workspaceFlag, urlFlag
+	t.Cleanup(func() { formatFlag, workspaceFlag, urlFlag = savedFormat, savedWorkspace, savedURL })
+
 	root := newRootCmd()
 	doc := cmdhelp.Build(root, root, cmdhelp.Options{Binary: "pad", MaxDepth: -1})
 
