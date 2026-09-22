@@ -133,6 +133,10 @@ func TestMigration092RequeuesStep2RowsForTheBackfill(t *testing.T) {
 				t.Fatal(err)
 			}
 			_, _, item := seedStaleItem(t, s)
+			// A content-bearing row that is NOT a step2/update frame: 092 must
+			// leave it alone, so the count below catches a migration that drops
+			// its subtype predicate (codex round 1, P3).
+			appendFrame(t, s, item.ID, []byte{0x07, 0x01, 0x02})
 			seed := appendFrame(t, s, item.ID, probeSeedUpdate)
 			answer := appendFrame(t, s, item.ID, probeStep2Answer)
 			if err := s.SetItemContentFlushedOpLogIDForTesting(item.ID, seed); err != nil {
@@ -159,9 +163,9 @@ func TestMigration092RequeuesStep2RowsForTheBackfill(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			// 092 re-queues BOTH bearing rows: the seed (re-examined, still
-			// content: nothing earlier carries it) and the answer (cleared by
-			// its twin).
+			// 092 re-queues BOTH bearing step2/update rows: the seed
+			// (re-examined, still content: nothing earlier carries it) and the
+			// answer (cleared by its twin). The non-sync row is not re-queued.
 			if res.RowsClassified != 2 || res.RowsNonContent != 1 {
 				t.Fatalf("want 2 re-examined and 1 cleared; got %+v", res)
 			}
