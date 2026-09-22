@@ -22,7 +22,15 @@ export interface WatermarkStamperDeps {
 	cursorFor: (itemId: string) => number;
 	/** True while force-refresh recovery is in flight: the Y.Doc is known stale. */
 	isRecovering: () => boolean;
-	send: (ws: string, itemId: string, cursor: number, contentSHA256: string, keepalive: boolean) => Promise<unknown>;
+	/** Resolves with the server's answer; `advanced: false` means the proof did
+	 *  not hold at commit time (cursor behind MAX, or the body changed). */
+	send: (
+		ws: string,
+		itemId: string,
+		cursor: number,
+		contentSHA256: string,
+		keepalive: boolean,
+	) => Promise<{ advanced?: boolean } | void>;
 }
 
 export function createWatermarkStamper(deps: WatermarkStamperDeps): (input: WatermarkStampInput) => void {
@@ -32,8 +40,14 @@ export function createWatermarkStamper(deps: WatermarkStamperDeps): (input: Wate
 	return ({ ws, itemId, content, keepalive }) => {
 		if (deps.isRecovering()) return;
 		const cursor = deps.cursorFor(itemId);
-		// A cursor the server never issued, or one already sent: nothing to add.
-		if (cursor < 1 || cursor <= (lastStamped.get(itemId) ?? 0)) return;
+		// A cursor the server never issued: nothing to prove.
+		if (cursor < 1) return;
+		// A cursor already sent is skipped — EXCEPT on the keepalive (pagehide)
+		// path, which always sends: an earlier ordinary request for the same
+		// cursor may still be in flight and be cancelled by the teardown, and
+		// nothing would trigger a retry after the page is gone (codex round 1).
+		// A duplicate stamp is a no-op on the server.
+		if (!keepalive && cursor <= (lastStamped.get(itemId) ?? 0)) return;
 		lastStamped.set(itemId, cursor);
 		// Synchronous up to the request (sha256Hex, not crypto.subtle), so the
 		// pagehide path starts its keepalive request before the page unloads.
@@ -46,7 +60,14 @@ export function createWatermarkStamper(deps: WatermarkStamperDeps): (input: Wate
 		// dedupe arm, and a throw there would reject the flush itself — whose
 		// 'deduped' result callers such as the rich→raw toggle await.
 		try {
-			deps.send(ws, itemId, cursor, sha256Hex(content), keepalive).catch(forget);
+			deps
+				.send(ws, itemId, cursor, sha256Hex(content), keepalive)
+				.then((res) => {
+					// A 200 that did not advance is not a success for this cursor:
+					// the body or the op-log moved under the proof. Forget it so a
+					// later flush can try again (codex round 1).
+					if (res && res.advanced === false) forget();
+				}, forget);
 		} catch {
 			forget();
 		}

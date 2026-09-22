@@ -74,3 +74,33 @@ describe('createWatermarkStamper — a send that throws synchronously', () => {
 		expect(send).toHaveBeenCalledTimes(2);
 	});
 });
+
+describe('createWatermarkStamper — codex round 1', () => {
+	it('the keepalive (pagehide) path sends even for a cursor already sent', () => {
+		const { stamp, send } = make(42);
+		stamp(input);
+		stamp({ ...input, keepalive: true });
+		expect(send).toHaveBeenCalledTimes(2);
+		expect(send).toHaveBeenLastCalledWith('ws', 'item-1', 42, sha256Hex('stored body'), true);
+	});
+
+	it('a 200 {advanced:false} forgets the cursor so a later flush retries it', async () => {
+		const send = vi.fn(async () => ({ advanced: false }));
+		const stamp = createWatermarkStamper({ cursorFor: () => 9, isRecovering: () => false, send });
+		stamp(input);
+		await Promise.resolve();
+		await Promise.resolve();
+		stamp(input);
+		expect(send).toHaveBeenCalledTimes(2);
+	});
+
+	it('CONTROL: a 200 {advanced:true} keeps the cursor, so it is not re-sent', async () => {
+		const send = vi.fn(async () => ({ advanced: true }));
+		const stamp = createWatermarkStamper({ cursorFor: () => 9, isRecovering: () => false, send });
+		stamp(input);
+		await Promise.resolve();
+		await Promise.resolve();
+		stamp(input);
+		expect(send).toHaveBeenCalledTimes(1);
+	});
+});
