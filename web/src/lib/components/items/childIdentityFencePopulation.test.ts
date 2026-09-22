@@ -98,6 +98,19 @@
  *       continuations are ENUMERATED mechanically and must each appear in
  *       `KNOWN_CONTINUATIONS` — still not MODELLED: the leg proves a new one is
  *       read, not that it is fenced.
+ *   (g) OTHER DEFERRALS (codex round 3 on BUG-3130). A callback run later by
+ *       anything that is not an `await` or a promise continuation — `setTimeout`
+ *       / `setInterval`, `requestAnimationFrame`, `queueMicrotask`, an event
+ *       listener, a store subscription — or a callback a helper runs after its
+ *       OWN suspension, or the body of a `for await` loop, or a handler in the
+ *       MARKUP (this guard walks the script only). None is modelled or
+ *       enumerated. Measured on the BUG-3130 tree over the 25 files: `for await`
+ *       0, `queueMicrotask` 0, `requestAnimationFrame` 3, `setTimeout(` 15,
+ *       `setInterval(` 2, `addEventListener(` 10; the adversarial round that
+ *       raised the class found none of them sending or committing anything
+ *       identity-scoped unfenced. Left as a gap rather than a third table
+ *       because timers and listeners are mostly UI, and a table of them would
+ *       be read as coverage of the effects they schedule, which it would not be.
  *
  * FAIL-CLOSED, which is the property that makes the gaps survivable: anything
  * this guard cannot classify is a FAILURE, never a skip. A file it cannot parse
@@ -192,13 +205,13 @@ const KNOWN_UNFENCED: string[] = [
  *
  * TWO-WAY, like `KNOWN_UNFENCED`: an unlisted call fails, and so does a listed
  * one that is gone or now fenced, so the table cannot rot into a blanket pass.
- * One key covers every occurrence of that callee in that function — a second
- * `req.stale()` in the same loader is the same row.
+ * A callee called more than once in one function carries its count (`×3`),
+ * so a new call of an already-classified shape still has to be read.
  */
 const KNOWN_OUTSIDE_FENCE: Record<string, string> = {
 	// ── pure predicates / computation: no effect to fence ──
-	'lib/components/items/ItemAttachmentStrip.svelte::<nested in $effect>::req.stale': 'pure: view-fence predicate',
-	'lib/components/items/ItemAttachmentStrip.svelte::revalidateAfterRestore::req.stale': 'pure: view-fence predicate',
+	'lib/components/items/ItemAttachmentStrip.svelte::<nested in $effect>::req.stale ×3': 'pure: view-fence predicate',
+	'lib/components/items/ItemAttachmentStrip.svelte::revalidateAfterRestore::req.stale ×2': 'pure: view-fence predicate',
 	'lib/components/items/ItemAttachmentStrip.svelte::performDelete::req.stale': 'pure: view-fence predicate',
 	'lib/components/common/QuickActionsMenu.svelte::handleSaveNewAction::isConflictOrNotFound': 'pure: error classifier',
 	'lib/components/fields/FieldEditor.svelte::createRelationTarget::indexStillOurs': 'pure: reset-generation predicate',
@@ -213,8 +226,8 @@ const KNOWN_OUTSIDE_FENCE: Record<string, string> = {
 	'lib/components/items/ItemAttachmentStrip.svelte::performDelete::unmarkDeleting': 'release: ref-counted in-flight marker',
 	'lib/components/fields/FieldEditor.svelte::<nested in writeRelationList>::tick': 'release: flush before the literal release',
 	// ── identity-free UI after a LOCAL await (clipboard; no server request) ──
-	'lib/components/ShareDialog.svelte::handleCopyLink::toastStore.show': 'local: constant text after a clipboard write',
-	'lib/components/items/PushToAgentDialog.svelte::handleCopyInstead::toastStore.show': 'local: constant text after a clipboard write',
+	'lib/components/ShareDialog.svelte::handleCopyLink::toastStore.show ×2': 'local: constant text after a clipboard write',
+	'lib/components/items/PushToAgentDialog.svelte::handleCopyInstead::toastStore.show ×2': 'local: constant text after a clipboard write',
 	'lib/components/items/PushToAgentDialog.svelte::handleCopyInstead::handleDismiss': 'local: after a clipboard write, view-fenced on destroyed/presenceGen',
 	'lib/components/common/QuickActionsMenu.svelte::copyAndAnnounce::announce': 'local: copied/failed kind after a clipboard write',
 	// ── local render of content already on screen ──
@@ -226,7 +239,7 @@ const KNOWN_OUTSIDE_FENCE: Record<string, string> = {
 	'lib/components/ChildItems.svelte::handleFinalize::console.error': 'log',
 	'lib/components/ChildItems.svelte::reorderChild::console.error': 'log',
 	// ── a server fact, true under any identity ──
-	'lib/components/items/ItemAttachmentStrip.svelte::performDelete::announceAttachmentDeleted':
+	'lib/components/items/ItemAttachmentStrip.svelte::performDelete::announceAttachmentDeleted ×2':
 		'global: a 204/404 is a fact about (ws, id), deliberately ahead of the view fence',
 	// ── fenced by structure the positional rule does not model ──
 	'lib/components/fields/FieldEditor.svelte::createRelationTarget::localIndex.upsert':
@@ -852,7 +865,7 @@ const CONTINUATION_METHODS = new Set(['then', 'catch', 'finally']);
  * continuation hangs off (`api.items.decisions`, `tick`, `renderQueue`), found
  * by walking back through earlier `.then`/`.catch` links, so the key survives
  * edits inside the callbacks. Two continuations with the same key in one
- * function merge, which is the same bound `KNOWN_OUTSIDE_FENCE` takes.
+ * function are COUNTED into it (`withCounts`), not merged.
  */
 function continuationKeys(path: string, code: string): string[] {
 	let src: AstSource;
@@ -861,11 +874,15 @@ function continuationKeys(path: string, code: string): string[] {
 	} catch (e) {
 		return [`${path}::<parse>::${String(e)}`];
 	}
-	const keys = new Set<string>();
+	const counts = new Map<string, number>();
+	// `p.then` and `p['then']` are the same continuation; the computed spelling
+	// was a way round the first version (codex round 3 on BUG-3130).
+	const memberName = (m: Node): string | undefined =>
+		m.computed ? (m.property?.type === 'Literal' ? String(m.property.value) : undefined) : m.property?.name;
 	walk(src.script, (n, ancestors) => {
 		if (n.type !== 'CallExpression' || n.callee?.type !== 'MemberExpression') return;
-		const method = n.callee.property?.name;
-		if (!CONTINUATION_METHODS.has(method)) return;
+		const method = memberName(n.callee);
+		if (!method || !CONTINUATION_METHODS.has(method)) return;
 		// ANY argument, not only an inline function: `settled.then(release,
 		// release)` hands over a callback by NAME and runs it after the same
 		// suspension (codex round 1 on BUG-3130 found exactly that one).
@@ -873,7 +890,7 @@ function continuationKeys(path: string, code: string): string[] {
 		let o: Node = n.callee.object;
 		for (;;) {
 			if (o?.type === 'CallExpression') o = o.callee;
-			else if (o?.type === 'MemberExpression' && CONTINUATION_METHODS.has(o.property?.name)) o = o.object;
+			else if (o?.type === 'MemberExpression' && CONTINUATION_METHODS.has(memberName(o) ?? '')) o = o.object;
 			else break;
 		}
 		const root = src.text(o).replace(/\s+/g, '').replace(/\?\./g, '.').slice(0, 60);
@@ -884,9 +901,21 @@ function continuationKeys(path: string, code: string): string[] {
 				break;
 			}
 		}
-		keys.add(`${path}::${enclosing}::${root}.${method}`);
+		const key = `${path}::${enclosing}::${root}.${method}`;
+		counts.set(key, (counts.get(key) ?? 0) + 1);
 	});
-	return [...keys];
+	return withCounts(counts);
+}
+
+/**
+ * Keys with their OCCURRENCE COUNT folded in (`… ×2`) when above one — so a
+ * second call of an already-classified shape in the same function changes the
+ * key and fails, instead of hiding behind the row the first one earned (codex
+ * round 3 on BUG-3130). The count is stable under edits elsewhere in the file,
+ * which a line number or an ordinal is not.
+ */
+function withCounts(counts: Map<string, number>): string[] {
+	return [...counts.entries()].map(([k, n]) => (n > 1 ? `${k} ×${n}` : k));
 }
 
 describe('BUG-3095 — child population identity fence', () => {
@@ -971,13 +1000,18 @@ describe('BUG-3095 — child population identity fence', () => {
 
 describe('BUG-3130 — post-await calls outside a fence, and promise continuations, are classified', () => {
 	it('the outside-fence calls in the population are exactly KNOWN_OUTSIDE_FENCE', () => {
-		const seen = new Map<string, number>();
+		const counts = new Map<string, number>();
+		const firstLine = new Map<string, number>();
 		for (const path of POPULATION) {
-			for (const o of analyseFile(path).outside) if (!seen.has(o.key)) seen.set(o.key, o.line);
+			for (const o of analyseFile(path).outside) {
+				counts.set(o.key, (counts.get(o.key) ?? 0) + 1);
+				if (!firstLine.has(o.key)) firstLine.set(o.key, o.line);
+			}
 		}
-		const unlisted = [...seen.entries()]
-			.filter(([k]) => !(k in KNOWN_OUTSIDE_FENCE))
-			.map(([k, line]) => `${k} @${line}`)
+		const seen = new Set(withCounts(counts));
+		const unlisted = [...seen]
+			.filter((k) => !(k in KNOWN_OUTSIDE_FENCE))
+			.map((k) => `${k} @${firstLine.get(k.replace(/ ×\d+$/, ''))}`)
 			.sort();
 		const stale = Object.keys(KNOWN_OUTSIDE_FENCE).filter((k) => !seen.has(k)).sort();
 		expect(
@@ -1017,6 +1051,27 @@ describe('BUG-3130 — post-await calls outside a fence, and promise continuatio
 			'f.svelte::go::api.items.get.finally',
 			'f.svelte::go::api.items.get.then',
 		]);
+	});
+
+	it("a COMPUTED ['then'] is the same continuation", () => {
+		const code = `<script lang="ts">
+	import { api } from '$lib/api/client';
+	function go() {
+		api.items.get('ws', 'a')['then']((r) => r);
+	}
+</script>`;
+		expect(continuationKeys('f.svelte', code)).toEqual(['f.svelte::go::api.items.get.then']);
+	});
+
+	it('a SECOND continuation of the same shape changes the key, so it cannot hide behind the first', () => {
+		const code = `<script lang="ts">
+	import { api } from '$lib/api/client';
+	function go() {
+		api.items.get('ws', 'a').then((r) => r);
+		api.items.get('ws', 'b').then((r) => r);
+	}
+</script>`;
+		expect(continuationKeys('f.svelte', code)).toEqual(['f.svelte::go::api.items.get.then ×2']);
 	});
 
 	it('CONTROL: a .then with no callback, and a method merely NAMED then elsewhere, are not', () => {
