@@ -226,3 +226,33 @@ func TestIdenticalBytesInAnotherItemAreNotATwin(t *testing.T) {
 		})
 	}
 }
+
+// The backfill compares a legacy row only against EARLIER rows. A frame appended
+// after the migration (already hashed) must not make the legacy ORIGINAL look
+// like a re-send of it: the original is the copy that carries the content.
+func TestBackfillTwinMustBeEarlier(t *testing.T) {
+	for _, b := range contentBackends() {
+		t.Run(b.name, func(t *testing.T) {
+			s := b.open(t)
+			_, _, item := seedStaleItem(t, s)
+			full := seedPLAN3114Tail(t, s, item.ID)
+			if err := s.ResetYjsClassificationForTesting(item.ID); err != nil {
+				t.Fatal(err)
+			}
+			// Appended "while the backfill has not yet run": classified at
+			// append, and its identical-row check cannot see the NULL-hash
+			// legacy twins, so it is content-bearing.
+			appendFrame(t, s, item.ID, full)
+
+			res, err := s.BackfillYjsContentBearing()
+			if err != nil {
+				t.Fatalf("backfill: %v", err)
+			}
+			if res.RowsClassified != 7 || res.RowsNonContent != 6 {
+				t.Fatalf("classified=%d non-content=%d, want 7 and 6: the legacy original must "+
+					"stay content-bearing, not be read as a re-send of a LATER row",
+					res.RowsClassified, res.RowsNonContent)
+			}
+		})
+	}
+}
