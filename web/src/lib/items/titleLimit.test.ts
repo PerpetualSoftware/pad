@@ -1,7 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { MAX_ITEM_TITLE_RUNES, serverTrimmedTitle, titleEditError, titleLimitError } from './titleLimit';
+import {
+	copyTitle,
+	MAX_ITEM_TITLE_RUNES,
+	serverTrimmedTitle,
+	titleEditError,
+	titleLimitError
+} from './titleLimit';
 
 // The JS half of the item-title limit parity harness (BUG-3115). The Go half
 // is internal/models/title_limit_parity_test.go; both assert against the same
@@ -83,5 +89,56 @@ describe('titleEditError (BUG-3115)', () => {
 
 	it('a changed title within the limit passes', () => {
 		expect(titleEditError('renamed', legacy)).toBeNull();
+	});
+});
+
+// A duplicate's generated title (BUG-3149): the source is cut so that
+// " (copy)" always survives and the result always passes the server's check.
+describe('copyTitle (BUG-3149)', () => {
+	const runes = (s: string) => Array.from(s).length;
+
+	it('a short title is copied whole', () => {
+		expect(copyTitle('Ship')).toBe('Ship (copy)');
+	});
+
+	it('a title that fits exactly is not cut', () => {
+		const src = 'a'.repeat(MAX_ITEM_TITLE_RUNES - 7);
+		expect(copyTitle(src)).toBe(`${src} (copy)`);
+	});
+
+	it('a 255-rune source gives exactly 255 runes ending " (copy)"', () => {
+		const out = copyTitle('a'.repeat(MAX_ITEM_TITLE_RUNES));
+		expect(runes(out)).toBe(MAX_ITEM_TITLE_RUNES);
+		expect(out.endsWith(' (copy)')).toBe(true);
+		expect(titleLimitError(out)).toBeNull();
+	});
+
+	it('an astral source is cut by code point, never mid-pair', () => {
+		const out = copyTitle('😀'.repeat(MAX_ITEM_TITLE_RUNES));
+		expect(runes(out)).toBe(MAX_ITEM_TITLE_RUNES);
+		expect(out).toBe('😀'.repeat(MAX_ITEM_TITLE_RUNES - 7) + ' (copy)');
+		expect(titleLimitError(out)).toBeNull();
+	});
+
+	it('a cut landing just after a space does not double the space', () => {
+		// The space sits at the last kept position, so the cut exposes it.
+		const src = 'a'.repeat(MAX_ITEM_TITLE_RUNES - 8) + ' ' + 'b'.repeat(20);
+		expect(copyTitle(src)).toBe('a'.repeat(MAX_ITEM_TITLE_RUNES - 8) + ' (copy)');
+	});
+
+	it('the re-trim uses Go\'s space set, not JS\'s', () => {
+		// U+0085 is a Go space and is trimmed; U+FEFF is not and is kept.
+		const keep = MAX_ITEM_TITLE_RUNES - 8;
+		expect(copyTitle('a'.repeat(keep) + '\u0085' + 'b'.repeat(20))).toBe(
+			'a'.repeat(keep) + ' (copy)'
+		);
+		expect(copyTitle('a'.repeat(keep) + '﻿' + 'b'.repeat(20))).toBe(
+			'a'.repeat(keep) + '﻿ (copy)'
+		);
+	});
+
+	it('the source is measured after the server\'s trim', () => {
+		const src = '  ' + 'a'.repeat(MAX_ITEM_TITLE_RUNES - 7) + '\u0085';
+		expect(copyTitle(src)).toBe('a'.repeat(MAX_ITEM_TITLE_RUNES - 7) + ' (copy)');
 	});
 });

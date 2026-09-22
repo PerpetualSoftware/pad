@@ -10,7 +10,7 @@
 		fieldDefFor,
 	} from '$lib/collections/categoricalFieldValue';
 	import { toastStore } from '$lib/stores/toast.svelte';
-	import { titleLimitError } from '$lib/items/titleLimit';
+	import { copyTitle, titleLimitError } from '$lib/items/titleLimit';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import { exportAndDownloadArtifact, importArtifactFile } from '$lib/utils/artifacts';
 	import { statusColor } from '$lib/utils/fieldColors';
@@ -327,7 +327,7 @@
 				dupFields.arguments = fields.arguments;
 			}
 			await api.items.create(wsSlug, 'playbooks', {
-				title: `${item.title} (copy)`,
+				title: copyTitle(item.title),
 				content: item.content,
 				fields: JSON.stringify(dupFields)
 			});
