@@ -285,6 +285,17 @@ function unreachableKey(ws: string, userId: string | null): string {
 const resetGenerations = new Map<string, number>();
 
 /**
+ * Count of `resetAll()` calls — the drop of EVERY workspace, including the ones
+ * with no state entry to visit (BUG-3130). `resetAll` resets each workspace in
+ * `workspaces`, so a workspace a caller had captured while it held no state was
+ * never visited and its per-workspace count never moved: an identity change
+ * read as "no drop" to exactly that caller. Folded into `resetGenerationFor`
+ * rather than bumped per slug because the set of slugs a caller may have
+ * captured is not enumerable here.
+ */
+let allWorkspacesDropped = 0;
+
+/**
  * Workspaces whose cache was dropped because ACCESS WAS REVOKED (TASK-2921,
  * codex round 1 P1). A `$state` set so the reading component re-renders.
  *
@@ -2282,7 +2293,9 @@ export const localIndex = {
 	 * it too) and is filed rather than fixed here.
 	 */
 	resetGenerationFor(ws: string): number {
-		return resetGenerations.get(ws) ?? 0;
+		// A SUM of two counters that only ever rise, so it changes whenever
+		// either does — a per-workspace drop, or a drop of every workspace.
+		return (resetGenerations.get(ws) ?? 0) + allWorkspacesDropped;
 	},
 
 	/**
@@ -2377,6 +2390,9 @@ export const localIndex = {
 		// because `resetAll` IS the identity-change hook (see the subscription
 		// at the bottom of this file).
 		unreachable.clear();
+		// Before the per-workspace resets, so every reader sees the drop no
+		// matter which of the two counters it is sensitive to (BUG-3130).
+		allWorkspacesDropped++;
 		for (const ws of [...workspaces.keys()]) {
 			localIndex.reset(ws);
 		}

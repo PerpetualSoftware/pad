@@ -68,10 +68,13 @@
  *       (`localIndex.upsert`, `toastStore.show`, `announceAttachmentDeleted`)
  *       is not modelled. BUG-3105 PR B dispositioned such calls by hand ONLY
  *       inside the functions it fenced, plus one found by review
- *       (`Editor`'s upload callback). The rest of the population is UNSWEPT
- *       for this shape: an enumeration of post-await calls outside the
- *       modelled set counted 202, most of them pure predicates. The sweep is
- *       BUG-3130.
+ *       (`Editor`'s upload callback). BUG-3130 closed the rest by ENUMERATION
+ *       rather than by widening the model: every post-await call that is
+ *       neither a modelled send nor a fence call, and that no fence precedes,
+ *       must be classified in `KNOWN_OUTSIDE_FENCE`. The classification is a
+ *       human reading of each row; the leg that enforces the table guarantees
+ *       only that a NEW such call cannot land unread, and it inherits every
+ *       other gap in this list.
  *   (e) NON-AWAIT SUSPENSION. `ItemAttachmentStrip.confirmDelete` re-checks on
  *       the far side of a NON-BLOCKING in-app confirmation menu — structurally
  *       the right move, on the wrong quantity (`paint.isCurrent()` compares
@@ -167,6 +170,61 @@ const KNOWN_UNFENCED: string[] = [
 	// unfenced; see gaps (b), (d) and (f) for what it cannot. Add to this only
 	// with an exact path and a reason.
 ];
+
+/**
+ * Every post-await CALL outside a fence, classified (BUG-3130). Key:
+ * `<population path>::<function name>::<callee text>`. Not a modelled send —
+ * those must be fenced, above — and not a fence call itself.
+ *
+ * WHY A TABLE AND NOT A WIDER COMMIT MODEL. The census that produced this found
+ * 168 such calls, 136 of them already after a fence. The obvious widening —
+ * treat `toastStore.show` / `announce*` / `notify*` as commits — flags nothing
+ * that is not already fenced wherever it follows a server request; the rows it
+ * WOULD newly flag are the constant-text toasts after a clipboard await below,
+ * which would then need a carve-out. A table names each row's reason instead.
+ *
+ * TWO-WAY, like `KNOWN_UNFENCED`: an unlisted call fails, and so does a listed
+ * one that is gone or now fenced, so the table cannot rot into a blanket pass.
+ * One key covers every occurrence of that callee in that function — a second
+ * `req.stale()` in the same loader is the same row.
+ */
+const KNOWN_OUTSIDE_FENCE: Record<string, string> = {
+	// ── pure predicates / computation: no effect to fence ──
+	'lib/components/items/ItemAttachmentStrip.svelte::<nested in $effect>::req.stale': 'pure: view-fence predicate',
+	'lib/components/items/ItemAttachmentStrip.svelte::revalidateAfterRestore::req.stale': 'pure: view-fence predicate',
+	'lib/components/items/ItemAttachmentStrip.svelte::performDelete::req.stale': 'pure: view-fence predicate',
+	'lib/components/common/QuickActionsMenu.svelte::handleSaveNewAction::isConflictOrNotFound': 'pure: error classifier',
+	'lib/components/fields/FieldEditor.svelte::createRelationTarget::indexStillOurs': 'pure: reset-generation predicate',
+	'lib/components/fields/FieldEditor.svelte::<nested in writeRelationList>::holdOrder.superseded': 'pure: ticket predicate',
+	'lib/components/editor/Editor.svelte::<callback of renderQueue.then>::Math.random': 'pure: render id',
+	'lib/components/editor/Editor.svelte::<callback of renderQueue.then>::Math.random().toString': 'pure: render id',
+	'lib/components/editor/Editor.svelte::<callback of renderQueue.then>::Math.random().toString(36).slice': 'pure: render id',
+	'lib/components/editor/Editor.svelte::initMermaid::currentMermaidTheme': 'pure: reads the document theme',
+	// ── releases that must run under ANY identity (in a finally) ──
+	'lib/components/items/ItemAttachmentStrip.svelte::<nested in $effect>::noteLoadEnd': 'release: in-flight counter',
+	'lib/components/items/ItemAttachmentStrip.svelte::<nested in $effect>::stopLoadingMarker': 'release: timer clear',
+	'lib/components/items/ItemAttachmentStrip.svelte::performDelete::unmarkDeleting': 'release: ref-counted in-flight marker',
+	'lib/components/fields/FieldEditor.svelte::<nested in writeRelationList>::tick': 'release: flush before the literal release',
+	// ── identity-free UI after a LOCAL await (clipboard; no server request) ──
+	'lib/components/ShareDialog.svelte::handleCopyLink::toastStore.show': 'local: constant text after a clipboard write',
+	'lib/components/items/PushToAgentDialog.svelte::handleCopyInstead::toastStore.show': 'local: constant text after a clipboard write',
+	'lib/components/items/PushToAgentDialog.svelte::handleCopyInstead::handleDismiss': 'local: after a clipboard write, view-fenced on destroyed/presenceGen',
+	'lib/components/common/QuickActionsMenu.svelte::copyAndAnnounce::announce': 'local: copied/failed kind after a clipboard write',
+	// ── local render of content already on screen ──
+	'lib/components/editor/Editor.svelte::initMermaid::mermaidMod.default.initialize': 'render: library init after its dynamic import',
+	'lib/components/editor/Editor.svelte::<callback of renderQueue.then>::m.default.render': 'render: this editor\'s own diagram source',
+	'lib/components/editor/Editor.svelte::<callback of renderQueue.then>::target.classList.remove': 'render: this editor\'s own node',
+	'lib/components/editor/Editor.svelte::<callback of renderQueue.then>::target.classList.add': 'render: this editor\'s own node',
+	// ── logging ──
+	'lib/components/ChildItems.svelte::handleFinalize::console.error': 'log',
+	'lib/components/ChildItems.svelte::reorderChild::console.error': 'log',
+	// ── a server fact, true under any identity ──
+	'lib/components/items/ItemAttachmentStrip.svelte::performDelete::announceAttachmentDeleted':
+		'global: a 204/404 is a fact about (ws, id), deliberately ahead of the view fence',
+	// ── fenced by structure the positional rule does not model ──
+	'lib/components/fields/FieldEditor.svelte::createRelationTarget::localIndex.upsert':
+		'structural: gated on indexStillOurs(), whose reset generation an identity change moves (BUG-3130)',
+};
 
 
 function calleeText(src: AstSource, n: Node): string {
@@ -489,7 +547,15 @@ interface Finding {
 	reason: string;
 }
 
-function analyseFile(path: string): { findings: Finding[]; fenced: string[] } {
+/** A post-await call outside any fence that is not a modelled send (BUG-3130). */
+interface Outside {
+	key: string;
+	line: number;
+}
+
+type Analysis = { findings: Finding[]; fenced: string[]; outside: Outside[] };
+
+function analyseFile(path: string): Analysis {
 	let code: string;
 	try {
 		code = readFileSync(ROOT + path, 'utf8');
@@ -502,6 +568,7 @@ function analyseFile(path: string): { findings: Finding[]; fenced: string[] } {
 		return {
 			findings: [{ path, fn: '<file>', line: 0, callee: '<read>', reason: `missing file: ${String(e)}` }],
 			fenced: [],
+			outside: [],
 		};
 	}
 	return analyseSource(path, code);
@@ -586,7 +653,7 @@ function ownAwaits(fn: Node): Node[] {
 	return out;
 }
 
-function analyseSource(path: string, code: string): { findings: Finding[]; fenced: string[] } {
+function analyseSource(path: string, code: string): Analysis {
 	let src: AstSource;
 	try {
 		src = parseComponent(code);
@@ -595,11 +662,13 @@ function analyseSource(path: string, code: string): { findings: Finding[]; fence
 		return {
 			findings: [{ path, fn: '<file>', line: 0, callee: '<parse>', reason: `unparseable: ${String(e)}` }],
 			fenced: [],
+			outside: [],
 		};
 	}
 
 	const findings: Finding[] = [];
 	const fenced: string[] = [];
+	const outside: Outside[] = [];
 	const helperSends = requestingHelperNames(src);
 	const stateNames = componentStateNames(src);
 	const propCallbacks = propCallbackNames(src);
@@ -655,7 +724,13 @@ function analyseSource(path: string, code: string): { findings: Finding[]; fence
 		// guard first behaved, flagging the six paths this unit had just fixed.
 		// A send's own await is not something it can be fenced against.
 		walk(fn, (n, ancestors) => {
-			if (!isSend(n)) return;
+			// A call that is neither a modelled send nor a fence call is not
+			// required to be fenced, but one reached outside a fence must be
+			// CLASSIFIED (BUG-3130). It takes the same positional rule below, so
+			// "outside a fence" means exactly what it means for a send.
+			const otherCall =
+				!isSend(n) && n.type === 'CallExpression' && !fenceOffsets.includes(n.start);
+			if (!isSend(n) && !otherCall) return;
 			// A nested function's sends belong to that function, not this one.
 			for (const a of ancestors) {
 				if (a !== fn && isFnNode(a)) return;
@@ -705,6 +780,10 @@ function analyseSource(path: string, code: string): { findings: Finding[]; fence
 			const ok = fenceOffsets.some((o) => o > lowerBound && o < n.start);
 
 			const label = `${path}::${name}`;
+			if (otherCall) {
+				if (!ok) outside.push({ key: `${label}::${calleeText(src, n)}`, line: src.line(n.start) });
+				return;
+			}
 			if (ok) {
 				fenced.push(label);
 			} else {
@@ -722,7 +801,7 @@ function analyseSource(path: string, code: string): { findings: Finding[]; fence
 		});
 	});
 
-	return { findings, fenced };
+	return { findings, fenced, outside };
 }
 
 describe('BUG-3095 — child population identity fence', () => {
@@ -802,6 +881,63 @@ describe('BUG-3095 — child population identity fence', () => {
 			'These paths are listed as known-unfenced but are now fenced (or gone). ' +
 				'Remove them from KNOWN_UNFENCED — a stale entry is a permanent hole.'
 		).toEqual([]);
+	});
+});
+
+describe('BUG-3130 — every post-await call outside a fence is classified', () => {
+	it('the outside-fence calls in the population are exactly KNOWN_OUTSIDE_FENCE', () => {
+		const seen = new Map<string, number>();
+		for (const path of POPULATION) {
+			for (const o of analyseFile(path).outside) if (!seen.has(o.key)) seen.set(o.key, o.line);
+		}
+		const unlisted = [...seen.entries()]
+			.filter(([k]) => !(k in KNOWN_OUTSIDE_FENCE))
+			.map(([k, line]) => `${k} @${line}`)
+			.sort();
+		const stale = Object.keys(KNOWN_OUTSIDE_FENCE).filter((k) => !seen.has(k)).sort();
+		expect(
+			{ unlisted, stale },
+			'A call reached after an await with no identity fence before it. Either fence the ' +
+				'function, or read the call and classify it in KNOWN_OUTSIDE_FENCE with its reason. ' +
+				'A STALE row is one that is now fenced or gone: remove it.'
+		).toEqual({ unlisted: [], stale: [] });
+	});
+
+	// One handler, variants differing only in the statement under test.
+	const fixture = (body: string) => `<script lang="ts">
+	import { api } from '$lib/api/client';
+	import { authStore } from '$lib/stores/auth.svelte';
+	import { toastStore } from '$lib/stores/toast.svelte';
+	async function go() {
+		const isSameIdentity = authStore.identityFence();
+		const r = await api.items.get('ws', 'slug');
+		${body}
+	}
+</script>`;
+	const keys = (code: string) => analyseSource('fixture.svelte', code).outside.map((o) => o.key);
+
+	it('a store call after an await with no fence before it is reported', () => {
+		expect(keys(fixture('toastStore.show(r.title);'))).toEqual(['fixture.svelte::go::toastStore.show']);
+	});
+
+	it('CONTROL: the same call after the fence is not', () => {
+		expect(keys(fixture('if (!isSameIdentity()) return;\n\t\ttoastStore.show(r.title);'))).toEqual([]);
+	});
+
+	it('CONTROL: the fence call itself is not reported', () => {
+		// Without this every fenced function would list its own predicate.
+		expect(keys(fixture('if (!isSameIdentity()) return;'))).toEqual([]);
+	});
+
+	it('CONTROL: a modelled send is not reported here — it is a finding, not a row', () => {
+		const res = analyseSource('fixture.svelte', fixture("await api.items.get('ws', 'other');"));
+		expect(res.outside).toEqual([]);
+		expect(res.findings.map((f) => f.callee)).toEqual(['api.items.get']);
+	});
+
+	it('CONTROL: a call in a function with no await is not reported', () => {
+		const code = fixture('').replace("const r = await api.items.get('ws', 'slug');", 'toastStore.show("x");');
+		expect(keys(code)).toEqual([]);
 	});
 });
 
@@ -910,4 +1046,4 @@ describe('BUG-3105 — the literal-in-finally refinement, with its controls', ()
 });
 
 /** Exported for the guard's own tests. */
-export { analyseFile, analyseSource, POPULATION, KNOWN_UNFENCED };
+export { analyseFile, analyseSource, POPULATION, KNOWN_UNFENCED, KNOWN_OUTSIDE_FENCE };
