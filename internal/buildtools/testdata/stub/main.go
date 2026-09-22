@@ -70,6 +70,12 @@ func main() {
 	mux.HandleFunc("/api/v1/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"status":"ok"}`))
 	})
+	// The stub's own pid, so a fixture can prove that the process answering
+	// at an address is this one rather than whatever else holds the port
+	// (TASK-3146). A real pad has no such route, and the script never asks.
+	mux.HandleFunc("/stub/pid", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, os.Getpid())
+	})
 	// A port that cannot be bound exits the process, as ListenAndServe did.
 	ln, err := net.Listen("tcp", net.JoinHostPort(host, port))
 	if err != nil {
