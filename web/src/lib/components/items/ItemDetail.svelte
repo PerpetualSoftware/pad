@@ -22,6 +22,7 @@
 	import { CollabProvider, type CollabConnectionState } from '$lib/collab/wsProvider.svelte';
 	import { userColor } from '$lib/collab/cursorColor';
 	import { createCollabFlusher, type CollabFlushContext } from '$lib/collab/collabFlush.svelte';
+	import { createWatermarkStamper } from '$lib/collab/watermarkStamper';
 	import { createContentSaver } from '$lib/items/contentSaver.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import FieldEditor from '$lib/components/fields/FieldEditor.svelte';
@@ -2571,6 +2572,12 @@
 			// the WS is already closing on the server side and the
 			// $effect cleanup runs that destroy as part of swapping
 			// in the new provider.
+			// BUG-3124: a cursor advance with no editor update (a reconnect
+			// replay of frames this tab already had, its own trailing sync
+			// frames) would otherwise never reach the flusher, so the item kept
+			// reading "pending" forever. Settle arms an idle flushNow, which
+			// either flushes a real difference or dedupes and stamps.
+			onOpLogCursor: () => settleCollabIfCurrent(ctx),
 			onForceRefresh: () => {
 				toastStore.show(
 					'Editor refreshed — rejoining with the latest content from the server.',
@@ -3862,6 +3869,25 @@
 	// stay HERE in the injected `save` — the module owns none of it. This
 	// mirrors contentSaver's split: the module owns timing/dedup; the page owns
 	// the effectful bits it's coupled to.
+	// BUG-3124 unit B: see watermarkStamper.ts.
+	const stampCollabWatermark = createWatermarkStamper({
+		cursorFor: (itemId) =>
+			collabProvider && collabProvider.itemID === itemId ? collabProvider.lastOpLogID : 0,
+		isRecovering: () => forceRefreshInFlight,
+		send: (ws, itemId, cursor, contentSHA256, keepalive) =>
+			api.items.stampCollabWatermark(ws, itemId, cursor, contentSHA256, { keepalive }),
+	});
+
+	// A cursor advance with no editor update never reaches the flusher (BUG-3124);
+	// settle it, for the context that is still current and still this user's.
+	// Component-level rather than inline in the provider's $effect, so the
+	// identity read is not lexically inside a reactive scope.
+	function settleCollabIfCurrent(ctx: NonNullable<typeof activeCollabContext>): void {
+		if (activeCollabContext === ctx && !ctx.retired && identityHeld(ctx.identityEpoch)) {
+			collabFlusher.settle(ctx);
+		}
+	}
+
 	const collabFlusher = createCollabFlusher({
 		idleMs: 5_000,
 		// Force-refresh recovery gate: while in flight, any Y.Doc-derived
@@ -3922,6 +3948,10 @@
 		// the item we flushed is still active, else a stale flush pollutes the
 		// new page's dedupe state.
 		isActiveItem: (itemId) => !!item && item.id === itemId,
+		// BUG-3124 unit B: a deduped flush proves this tab's document renders to
+		// the body the server holds; stamp the flush watermark (no PATCH, so no
+		// version row and no seq bump). Rules live in watermarkStamper.ts.
+		stampWatermark: (input) => stampCollabWatermark(input),
 		// The actual PATCH + reactive bookkeeping. Owns saveStatus /
 		// editorStore / toast / showSaved, the op-log-cursor read, and the
 		// post-await force_refresh check (returns 'skipped' when it fires so
