@@ -1253,6 +1253,19 @@ type ItemUpdate struct {
 	// It has no effect on a write without a token or without content.
 	OverwritePendingEdits bool `json:"overwrite_pending_edits,omitempty"`
 
+	// ClientWrite orders ONE browser tab's content writes to an item
+	// (BUG-3080). The pane stamps every content PATCH with a random id minted
+	// per page load and a counter that only rises, and the server refuses a
+	// write whose counter is below one it has already applied for the same
+	// (item, tab) — 409 `superseded_write`, nothing written. Two teardown
+	// PATCHes are both dispatched before the tab sees either result, so no
+	// version token can order them (both carry the same one); this can.
+	//
+	// Optional and web-only: the CLI and MCP never send it, and a write
+	// without it is not compared against any mark. Best-effort by design —
+	// see `clientWriteMarks` for the bound, the age and what is forgotten.
+	ClientWrite *ClientWriteStamp `json:"client_write,omitempty"`
+
 	// BlankRelationKeys names the collection's scalar `relation` keys for the
 	// store to normalise on a FieldsPatch write (BUG-3028): after the patch is
 	// merged onto the row read under the write lock, any of these still holding
@@ -1347,6 +1360,14 @@ func (c *ItemCreate) UnmarshalJSON(data []byte) error {
 //
 // See BUG-1144 (input side) and BUG-991 (the symmetric response-side
 // dual-emit, fixed at the MCP boundary in PR #364).
+// ClientWriteStamp is one tab's position in its own sequence of content
+// writes (BUG-3080). Tab is a per-PAGE-LOAD random id — never a session or
+// user id, so two tabs of one user never share a sequence.
+type ClientWriteStamp struct {
+	Tab string `json:"tab"`
+	N   int64  `json:"n"`
+}
+
 func (u *ItemUpdate) UnmarshalJSON(data []byte) error {
 	// Use an alias to inherit every other field's default unmarshal
 	// behaviour, while shadowing fields/tags with json.RawMessage so we

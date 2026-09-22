@@ -43,6 +43,17 @@ import (
 )
 
 type Server struct {
+	// clientWrites orders one browser tab's content writes to an item
+	// (BUG-3080). Nil disables it — a write is then applied exactly as it was
+	// before this existed.
+	clientWrites *clientWriteMarks
+	// afterClientWriteCheck is a TEST-ONLY seam, nil in production, in the
+	// afterItemPreRead tradition: called once a stamped write has PASSED its
+	// order check and before it writes, with the (item, tab) entry held. It is
+	// how a test holds the older of two writes inside that window and shows the
+	// newer one waits rather than overtaking it (BUG-3080).
+	afterClientWriteCheck func(itemID string, n int64)
+
 	// afterItemPreRead is a TEST-ONLY seam, nil in production. When set, the
 	// item-update handler calls it after loading its own copy of the item and
 	// before handing the write to the store — the window in which another
@@ -568,6 +579,7 @@ func New(s *store.Store) *Server {
 		store:            s,
 		rateLimiters:     rl,
 		storageInfoCache: newStorageInfoCache(storageInfoTTL),
+		clientWrites:     newClientWriteMarks(),
 	}
 }
 

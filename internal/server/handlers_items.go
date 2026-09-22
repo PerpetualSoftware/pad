@@ -1150,6 +1150,10 @@ func writeInvalidItemTitle(w http.ResponseWriter, err error) bool {
 }
 
 func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
+	// BUG-3080: set only on the success answer, read by the client_write
+	// release deferred below — the tab's mark moves only for a write that
+	// went through.
+	var clientWriteApplied bool
 	// Keys this write puts in the fields blob that the schema does not
 	// declare. Stored, not refused; reported on the response (BUG-2850).
 	var undeclaredFields []string
@@ -1817,6 +1821,37 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		input.LastModifiedBy = updateActor
 	}
 
+	// BUG-3080: one tab's content writes are ordered by the counter it stamps
+	// on them. Held from here — past every validation, before the first write
+	// path — to the end of the handler, so the check, the write and the mark
+	// are one step for this (item, tab); see clientWriteMarks. The mark only
+	// moves when the write reaches the success answer below.
+	if input.ClientWrite != nil && s.clientWrites != nil {
+		cw := input.ClientWrite
+		if cw.Tab == "" || len(cw.Tab) > 64 || cw.N < 1 {
+			writeError(w, http.StatusBadRequest, "validation_error",
+				"client_write needs a tab id of 1-64 characters and a counter n of at least 1")
+			return
+		}
+		entry, applied := s.clientWrites.acquire(item.ID, cw.Tab)
+		defer func() { s.clientWrites.release(entry, cw.N, clientWriteApplied) }()
+		if cw.N < applied {
+			// Nothing is written. The tab's newer write owns the outcome, and
+			// the pane treats this answer as success, never retrying it.
+			if s.metrics != nil {
+				s.metrics.ContentWritesSupersededTotal.Inc()
+			}
+			slog.Info("client write superseded", "item_id", item.ID, "n", cw.N, "applied", applied)
+			writeError2(w, http.StatusConflict, "superseded_write",
+				"a newer write from this tab has already been applied; this one was not",
+				map[string]interface{}{"n": cw.N, "superseded_by": applied})
+			return
+		}
+		if s.afterClientWriteCheck != nil {
+			s.afterClientWriteCheck(item.ID, cw.N)
+		}
+	}
+
 	// Server-side gate: reject collab-snapshot PATCHes whose
 	// op_log_cursor is below MIN(item_yjs_updates.id). Such a
 	// cursor proves the flushing tab's Y.Doc was built on op-log
@@ -2307,6 +2342,7 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		updated.Warnings = warnings
 	}
 
+	clientWriteApplied = true
 	writeJSON(w, http.StatusOK, updated)
 }
 

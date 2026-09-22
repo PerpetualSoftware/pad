@@ -395,6 +395,14 @@ type Metrics struct {
 	MCPAuthzDenialsTotal *prometheus.CounterVec
 	MCPActiveSessions    prometheus.Gauge
 
+	// ContentWritesSupersededTotal counts item content writes the server
+	// REFUSED because the same tab had already applied a newer one
+	// (BUG-3080, `client_write`). Firing means a tab's two content PATCHes
+	// reached the server out of order and the older was dropped instead of
+	// overwriting the newer. No labels: the item and tab are per-request
+	// detail the log line carries.
+	ContentWritesSupersededTotal prometheus.Counter
+
 	// OAuth flow metrics (PLAN-943 TASK-961). Wired from
 	// internal/server/handlers_oauth.go (per-handler seams) and
 	// internal/oauth/storage.go (revocation TTL observation).
@@ -489,6 +497,11 @@ func New() *Metrics {
 	mcpActiveSessions := prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "pad_mcp_active_sessions",
 		Help: "Number of currently-open MCP Streamable HTTP sessions.",
+	})
+
+	contentWritesSupersededTotal := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "pad_content_writes_superseded_total",
+		Help: "Item content writes refused because the same browser tab had already applied a newer one (BUG-3080).",
 	})
 
 	// =====================================================================
@@ -657,6 +670,7 @@ func New() *Metrics {
 		mcpToolCallDuration,
 		mcpAuthzDenialsTotal,
 		mcpActiveSessions,
+		contentWritesSupersededTotal,
 		oauthFlowsTotal,
 		oauthFlowDuration,
 		oauthTokenRevocationsTotal,
@@ -685,20 +699,21 @@ func New() *Metrics {
 		WatchHeartbeatPublishFailuresTotal: watchHeartbeatPublishFailuresTotal,
 		SessionPresenceFailuresTotal:       sessionPresenceFailuresTotal,
 
-		HTTPRequestsTotal:          httpRequestsTotal,
-		HTTPRequestDuration:        httpRequestDuration,
-		HTTPResponseSize:           httpResponseSize,
-		SSEConnectionsActive:       &sseConnectionsActive,
-		EventBusPublishTotal:       &eventBusPublishTotal,
-		EventBusSubscribers:        &eventBusSubscribers,
-		MCPToolCallsTotal:          mcpToolCallsTotal,
-		MCPToolCallDuration:        mcpToolCallDuration,
-		MCPAuthzDenialsTotal:       mcpAuthzDenialsTotal,
-		MCPActiveSessions:          mcpActiveSessions,
-		OAuthFlowsTotal:            oauthFlowsTotal,
-		OAuthFlowDuration:          oauthFlowDuration,
-		OAuthTokenRevocationsTotal: oauthTokenRevocationsTotal,
-		OAuthTokenTTLSeconds:       oauthTokenTTLSeconds,
+		HTTPRequestsTotal:            httpRequestsTotal,
+		HTTPRequestDuration:          httpRequestDuration,
+		HTTPResponseSize:             httpResponseSize,
+		SSEConnectionsActive:         &sseConnectionsActive,
+		EventBusPublishTotal:         &eventBusPublishTotal,
+		EventBusSubscribers:          &eventBusSubscribers,
+		MCPToolCallsTotal:            mcpToolCallsTotal,
+		MCPToolCallDuration:          mcpToolCallDuration,
+		MCPAuthzDenialsTotal:         mcpAuthzDenialsTotal,
+		MCPActiveSessions:            mcpActiveSessions,
+		ContentWritesSupersededTotal: contentWritesSupersededTotal,
+		OAuthFlowsTotal:              oauthFlowsTotal,
+		OAuthFlowDuration:            oauthFlowDuration,
+		OAuthTokenRevocationsTotal:   oauthTokenRevocationsTotal,
+		OAuthTokenTTLSeconds:         oauthTokenTTLSeconds,
 	}
 }
 

@@ -2,6 +2,9 @@
 	import { page, navigating } from '$app/state';
 	import { tick, onMount, onDestroy, untrack } from 'svelte';
 	import { api, PadApiError, isUpdateConflictError, type ImportURLResponse } from '$lib/api/client';
+	// Its own statement, so units that only use `api` keep their reviewed hash.
+	import { isSupersededWriteError } from '$lib/api/client';
+	import { nextClientWrite } from '$lib/items/clientWrite';
 	import { confirmOpenChildrenOrThrow, isOpenChildrenError } from '$lib/items/openChildrenError';
 	import { WriteOrder, fieldWriteTarget, rederiveListWrite, submitOrderedOCC } from '$lib/items/fieldWriteOrder';
 	import { isMultiRelationType } from '$lib/items/relationFieldTypes';
@@ -3977,7 +3980,8 @@
 				toSave = markdownToWikiLinks(toSave, allItems);
 			}
 			toSave = cleanBrokenLinks(toSave);
-			api.items.update(wsSlug, reqItem.id, { content: toSave }).then(() => {
+			// Stamped, like every content write this pane sends (BUG-3080).
+			api.items.update(wsSlug, reqItem.id, { content: toSave, client_write: nextClientWrite() }).then(() => {
 				if (switchedAway(reqItem, gen)) return;
 				// Don't overwrite item -- resetting editorContent would
 				// clobber anything typed since the debounce started.
@@ -3986,8 +3990,10 @@
 				editorStore.setDirty(false);
 				localDirty = false;
 				showSaved();
-			}).catch(() => {
+			}).catch((e) => {
 				if (switchedAway(reqItem, gen)) return;
+				// A newer write of this tab already landed and owns the outcome.
+				if (isSupersededWriteError(e)) return;
 				saveStatus = 'idle';
 				toastStore.show('Failed to save content', 'error');
 			});
@@ -4159,6 +4165,12 @@
 				await api.items.flushCollabContent(ws, itemId, toSave, {
 					keepalive,
 					opLogCursor,
+					// BUG-3080: two teardown flushes are both dispatched before
+					// either answers, so only the server can order them — by
+					// this stamp. Deliberately NO expected_seq here: both would
+					// carry the same one, and the older landing first would get
+					// the NEWER refused.
+					clientWrite: nextClientWrite(),
 				});
 				// Post-await force_refresh check: a force_refresh frame can
 				// arrive WHILE the PATCH is in flight (server already accepted,
@@ -4182,7 +4194,14 @@
 					showSaved();
 				}
 				return 'flushed';
-			} catch {
+			} catch (e) {
+				// Superseded (BUG-3080): a newer flush of this tab already
+				// landed. Not an error, and not recorded as the last flushed
+				// content either — this body is not what the server holds.
+				// Classified inline rather than by a call: this catch runs after an
+				// await with no fence of its own, and the answer is needed on
+				// every arm, foreground or not.
+				if (e instanceof PadApiError && e.code === 'superseded_write') return 'skipped';
 				if (isForegroundCurrent()) {
 					saveStatus = 'idle';
 					toastStore.show('Failed to save content', 'error');
@@ -4246,7 +4265,7 @@
 				// state once it lands so a later unload doesn't re-prompt
 				// / re-PATCH already-saved content.
 				return api.items
-					.update(wsSlug, reqItemId, { content: markdown }, { keepalive: true })
+					.update(wsSlug, reqItemId, { content: markdown, client_write: nextClientWrite() }, { keepalive: true })
 					.then(() => {
 						if (item && item.id === reqItemId && genAtSave === loadGeneration && rawContentSaver.pending === markdown) {
 							rawContentSaver.clearPending();
@@ -4262,7 +4281,7 @@
 			localLastSaveTime = Date.now();
 			// Raw mode: content is already in storage format (with [[wiki links]])
 			const toSave = markdown;
-			return api.items.update(wsSlug, reqItemId, { content: toSave }).then((updated) => {
+			return api.items.update(wsSlug, reqItemId, { content: toSave, client_write: nextClientWrite() }).then((updated) => {
 				if (!item || item.id !== reqItemId || genAtSave !== loadGeneration) return;
 				editorStore.setLastSaveTime(Date.now());
 				localLastSaveTime = Date.now();
@@ -4292,8 +4311,10 @@
 					// cycle will land the queued edit.
 					item = withInflightTags({ ...updated, content: item.content });
 				}
-			}).catch(() => {
+			}).catch((e) => {
 				if (!item || item.id !== reqItemId || genAtSave !== loadGeneration) return;
+				// A newer write of this tab already landed and owns the outcome.
+				if (isSupersededWriteError(e)) return;
 				saveStatus = 'idle';
 				toastStore.show('Failed to save content', 'error');
 			});
@@ -4376,7 +4397,7 @@
 					saveStatus = 'saving';
 					editorStore.setLastSaveTime(Date.now());
 					localLastSaveTime = Date.now();
-					const updated = await api.items.update(wsSlug, reqItemId, { content: markdown });
+					const updated = await api.items.update(wsSlug, reqItemId, { content: markdown, client_write: nextClientWrite() });
 					if (!item || item.id !== reqItemId || genAtFlush !== loadGeneration) {
 						// Navigation completed during the await;
 						// abort and let the new item's state take
@@ -4407,11 +4428,20 @@
 						// (timestamps, version, modified_by).
 						item = withInflightTags({ ...updated, content: item.content });
 					}
-				} catch {
+				} catch (e) {
 					// Don't surface A's save failure over B (a superseded
 					// drain must not reset the current item's saveStatus /
 					// toast) — Codex.
 					if (!item || item.id !== reqItemId || genAtFlush !== loadGeneration) return false;
+					// BUG-3080: a newer write of this tab already landed, so this
+					// markdown is not what the server should hold and is not a
+					// failure. Stop draining it; a newer pending edit, if any, is
+					// sent on the next pass — after the fence above, so a switch
+					// during the await never reaches another send.
+					if (isSupersededWriteError(e)) {
+						if (rawContentSaver.pending === markdown) rawContentSaver.clearPending();
+						continue;
+					}
 					saveStatus = 'idle';
 					toastStore.show('Failed to save content', 'error');
 					lastError = true;

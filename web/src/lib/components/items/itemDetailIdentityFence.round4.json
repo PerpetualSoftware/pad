@@ -110,8 +110,8 @@
 			"id": "M1",
 			"finding": "P1-3",
 			"what": "content-debounce .then loses switchedAway",
-			"old": "api.items.update(wsSlug, reqItem.id, { content: toSave }).then(() => {\n\t\t\t\tif (switchedAway(reqItem, gen)) return;",
-			"new": "api.items.update(wsSlug, reqItem.id, { content: toSave }).then(() => {"
+			"old": "api.items.update(wsSlug, reqItem.id, { content: toSave, client_write: nextClientWrite() }).then(() => {\n\t\t\t\tif (switchedAway(reqItem, gen)) return;",
+			"new": "api.items.update(wsSlug, reqItem.id, { content: toSave, client_write: nextClientWrite() }).then(() => {"
 		},
 		{
 			"id": "M2",
@@ -138,8 +138,8 @@
 			"id": "M5",
 			"finding": "P1-3 control",
 			"what": "content-debounce .catch loses its check (KILLED in round 4)",
-			"old": "\t\t\t}).catch(() => {\n\t\t\t\tif (switchedAway(reqItem, gen)) return;",
-			"new": "\t\t\t}).catch(() => {"
+			"old": "\t\t\t}).catch((e) => {\n\t\t\t\tif (switchedAway(reqItem, gen)) return;",
+			"new": "\t\t\t}).catch((e) => {"
 		},
 		{
 			"id": "G6",
