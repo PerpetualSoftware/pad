@@ -85,7 +85,9 @@
  *       when the menu opens (`pending.isSameIdentity()`); the guard still cannot
  *       see this shape, and it remains the clearest evidence that this guard is
  *       a floor and not a ceiling.
- *   (f) PROMISE CONTINUATIONS. Only `await` makes a function suspend here. A
+ *   (f) PROMISE CONTINUATIONS. Only `await` makes a function suspend here (not
+ *       `yield`: a generator's resumption is not modelled either, and the 25
+ *       files hold none on the BUG-3130 tree). A
  *       callback handed to `.then` / `.catch` / `.finally` runs after a
  *       suspension too, and its sends are NOT seen. The population's ten
  *       continuation sites were enumerated by hand for BUG-3105 PR B (the table
@@ -111,9 +113,22 @@
  *       identity-scoped unfenced. Left as a gap rather than a third table
  *       because timers and listeners are mostly UI, and a table of them would
  *       be read as coverage of the effects they schedule, which it would not be.
+ *   (h) WHAT A TABLE ROW PINS (codex round 4 on BUG-3130). A row in
+ *       `KNOWN_OUTSIDE_FENCE` / `KNOWN_CONTINUATIONS` pins a callee (or a chain
+ *       root) in a function, and how many times it occurs — not the arguments
+ *       or the callback body. `toastStore.show('Copied')` becoming
+ *       `toastStore.show(previousIdentityData)` under the same key stays green.
+ *       Deliberately: a key that hashed the call text would fail on every copy
+ *       edit, which trains a reader to re-paste keys without re-reading them —
+ *       the reason `fnName` avoids offsets. Also unmodelled: a MEMBER assignment
+ *       through a script-scope `const` (`obj.field = x`); only `let`/`var`
+ *       roots are commits (d). The population's script-scope `const`
+ *       containers are Sets and Maps, mutated through method calls, which the
+ *       outside-fence leg does report.
  *
- * FAIL-CLOSED, which is the property that makes the gaps survivable: anything
- * this guard cannot classify is a FAILURE, never a skip. A file it cannot parse
+ * FAIL-CLOSED WITHIN ITS MODEL, which is what makes the gaps above survivable:
+ * anything this guard tries to classify and cannot is a FAILURE, never a skip.
+ * What it does not model at all is (a)-(h), and there it is silent. A file it cannot parse
  * fails. A send whose enclosing function it cannot resolve fails. It never
  * concludes "safe" from not having understood something — so the way this guard
  * goes wrong is by asking to be taught, which is visible, rather than by going
