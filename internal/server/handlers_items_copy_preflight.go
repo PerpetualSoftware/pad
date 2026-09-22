@@ -783,6 +783,12 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	// preflight exists to PREDICT what the copy does, so a coercion on one
 	// side only would make it report a field as failing that the copy accepts.
 	final = items.CoerceFields(final, items.SchemaForMigratedFields(targetSchema))
+	// BUG-3028 — MUST match the store-side copy: a blank relation override is
+	// removed before validation (a required one is then reported missing), a
+	// carried blank after it.
+	items.DropBlankRelations(final, items.SchemaForMigratedFields(targetSchema), func(k string) bool {
+		return origin[k] != "override"
+	})
 	// EVERY SPELLING OF "NO TARGETS", in one place and AFTER coercion (codex
 	// round 7). An empty `multi_relation` list is about to be removed by
 	// `normalizeEmptyRelationLists`, and validation then injects the
@@ -883,6 +889,7 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	relBefore := store.RelationKeysPresent(items.SchemaForMigratedFields(targetSchema), final)
 	issues, defaultDrops := items.ValidateFieldsDetailedWithDrops(
 		final, items.SchemaForMigratedFields(targetSchema))
+	items.DropBlankRelations(final, items.SchemaForMigratedFields(targetSchema), nil)
 	// Defaults the VALIDATOR discarded for failing their own type check
 	// (BUG-3079). Before that change every malformed default reached the late
 	// relation pass below and was reported from there; now a shape failure is

@@ -831,6 +831,14 @@ const (
 func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *models.Collection, schema models.CollectionSchema, input models.ItemCreate, fieldMap map[string]any, parentValue string, posture relationPosture) (*models.Item, *itemCreateError) {
 	// Coerce strings to their declared types before validating (BUG-2850).
 	fieldMap = items.CoerceFields(fieldMap, schema)
+	// BUG-3028: on an ordinary create every value is SUPPLIED, so a blank
+	// relation is removed before validation and a required one is refused as
+	// required. An artifact import (relationsCarry) carries values nobody typed
+	// in this request, so its blanks are removed after validation instead —
+	// the same carry-not-refuse posture it already has for unresolvable ones.
+	if posture == relationsRefuse {
+		items.DropBlankRelations(fieldMap, schema, nil)
+	}
 	// Snapshot before validation, which INJECTS schema defaults without
 	// type-checking them (codex round 7). The resolver below skips a
 	// non-string, so an injected `default: 42` on a relation field reached the
@@ -844,6 +852,7 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 	if err != nil {
 		return nil, &itemCreateError{status: http.StatusBadRequest, code: "validation_error", message: err.Error()}
 	}
+	items.DropBlankRelations(fieldMap, schema, nil)
 	// Referent validation for relation values (TASK-2878). AFTER the shape
 	// check, so "must be a string" and "names nothing" are never both reported
 	// for one value, and after coercion so the value is in its final form.
@@ -1361,6 +1370,17 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 
 		// Coerce strings to their declared types before validating (BUG-2850).
 		fieldMap = items.CoerceFields(fieldMap, schema)
+		// BUG-3028, by provenance: a blank relation this write SETS (the stored
+		// value is not already blank) is removed before validation, so a
+		// required one is refused; a legacy blank carried through unchanged is
+		// kept for validation and removed after it, landing as key-absent.
+		storedFields := map[string]any{}
+		if item.Fields != "" && item.Fields != "{}" {
+			_ = json.Unmarshal([]byte(item.Fields), &storedFields)
+		}
+		items.DropBlankRelations(fieldMap, schema, func(k string) bool {
+			return items.IsBlankRelationValue(storedFields[k])
+		})
 		// Snapshot before validation injects untyped schema defaults — see
 		// createItemChecked for the route (codex round 7).
 		relBefore := store.RelationKeysPresent(schema, fieldMap)
@@ -1370,6 +1390,7 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "validation_error", verr.Error())
 			return
 		}
+		items.DropBlankRelations(fieldMap, schema, nil)
 		droppedDefaults = append(droppedDefaults, defaultDrops...)
 		// Referent validation for relation values (TASK-2878) — the same four
 		// steps the create door runs; see resolveRelationsForWrite.
@@ -1538,6 +1559,12 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 
 		// Coerce strings to their declared types before validating (BUG-2850).
 		patchMap = items.CoerceFields(patchMap, schema)
+		// BUG-3028: a patch key is a value this write SETS, so a blank relation
+		// becomes a delete, which ValidatePartialFields already refuses for a
+		// required field: "set it blank" and "delete it" now get one answer.
+		for _, k := range items.BlankRelationKeys(patchMap, schema) {
+			patchMap[k] = nil
+		}
 		// Only the PATCHED keys are reported. A stray key already on the item
 		// is not something this write introduced, and naming it every time
 		// anyone touches the item would train the reader to ignore the field.
@@ -1685,6 +1712,9 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		// Hand the validated, parent-stripped, date-augmented patch to the
 		// store, which merges it under the write lock.
 		input.FieldsPatch = patchMap
+		// BUG-3028: legacy blanks the patch does not touch are normalised by
+		// the store under its write lock (see ItemUpdate.BlankRelationKeys).
+		input.BlankRelationKeys = items.ScalarRelationKeys(schema)
 	}
 
 	// BUG-2013: build the atomic parent-link directive. When the PATCH
@@ -2538,6 +2568,13 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	// `invalid_fields` code rather than being mislabelled as missing.
 	// Coerce strings to their declared types before validating (BUG-2850).
 	result.Fields = items.CoerceFields(result.Fields, items.SchemaForMigratedFields(targetSchema))
+	// BUG-3028: an override is a value this move SETS; a blank one is removed
+	// before validation so a required target field is refused. Blanks carried
+	// from the source are removed after validation.
+	items.DropBlankRelations(result.Fields, items.SchemaForMigratedFields(targetSchema), func(k string) bool {
+		_, set := input.FieldOverrides[k]
+		return !set
+	})
 	// Relation referents on a SAME-WORKSPACE move (TASK-2878). A migrate door,
 	// so provenance decides: an explicit override refuses, a carried value
 	// resolves and survives if it can. The targets are still in this
@@ -2598,6 +2635,7 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("Invalid field value(s): %s", strings.Join(invalid, "; ")))
 		return
 	}
+	items.DropBlankRelations(result.Fields, items.SchemaForMigratedFields(targetSchema), nil)
 	// Relation defaults ValidateFieldsDetailed just injected, which the pass
 	// above could not have seen (codex round 2). AFTER validation, not before:
 	// the required-field check has to see a value referent resolution dropped,

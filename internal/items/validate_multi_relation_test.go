@@ -74,12 +74,13 @@ func TestMultiRelation_RefusesBadShapes(t *testing.T) {
 	}
 }
 
-// THE COUNTERFACTUAL, and the reason it is here rather than assumed: scalar
-// `relation` still accepts an empty string. That is BUG-3028's defect, not
-// something U4 fixes, and the two types are deliberately different until that
-// bug converges them. A change that "helpfully" tightened the scalar case
-// while adding this one would pass every test above and silently alter a
-// shipped type — this leg is what would catch it.
+// THE COUNTERFACTUAL, and the reason it is here rather than assumed: the
+// VALIDATOR still accepts an empty scalar `relation`. BUG-3028 converged the
+// two types at the write DOORS instead — each normalises a blank relation to
+// key-absent before or after this validator by provenance (items.
+// DropBlankRelations), so a set blank never reaches it as a value. Moving that
+// rule into the validator would refuse carried legacy blanks it cannot tell
+// from set ones; this leg is what would catch that change.
 func TestMultiRelation_ScalarRelationIsUnchangedAndStillAcceptsEmpty(t *testing.T) {
 	t.Parallel()
 	schema := models.CollectionSchema{

@@ -1122,6 +1122,13 @@ func (s *Store) migrateCopyFields(q Queryer, destWorkspaceID, sourceFieldsJSON, 
 	// note there; these two live in different PACKAGES, which is exactly how
 	// they would drift unnoticed.
 	migrated.Fields = items.CoerceFields(migrated.Fields, items.SchemaForMigratedFields(targetSchema))
+	// BUG-3028: a blank relation OVERRIDE is a value this copy sets, removed
+	// before validation so a required destination field is refused; a blank
+	// carried from the source is removed after it. MUST match the preflight.
+	items.DropBlankRelations(migrated.Fields, items.SchemaForMigratedFields(targetSchema), func(k string) bool {
+		_, set := overrides[k]
+		return !set
+	})
 	// Relation referents (TASK-2878) — the eighth and last coercion door, and
 	// the only one that refuses from inside `store`.
 	//
@@ -1179,6 +1186,7 @@ func (s *Store) migrateCopyFields(q Queryer, destWorkspaceID, sourceFieldsJSON, 
 	if verr != nil {
 		return nil, nil, &FieldValidationError{Err: verr}
 	}
+	items.DropBlankRelations(migrated.Fields, items.SchemaForMigratedFields(targetSchema), nil)
 	// Defaults the validator discarded for failing their own type check
 	// (BUG-3079). Recorded here for the same reason the preflight records
 	// them: DR-6 says the preview and the copy answer identically, and the
