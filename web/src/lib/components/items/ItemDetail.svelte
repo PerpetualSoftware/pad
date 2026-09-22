@@ -4,6 +4,7 @@
 	import { api, PadApiError, isUpdateConflictError, type ImportURLResponse } from '$lib/api/client';
 	import { confirmOpenChildrenOrThrow, isOpenChildrenError } from '$lib/items/openChildrenError';
 	import { WriteOrder, fieldWriteTarget, submitOrderedOCC } from '$lib/items/fieldWriteOrder';
+	import { isOlderSnapshot } from '$lib/items/itemSnapshotOrder';
 	import { occTokenFor, type OCCToken } from '$lib/items/occToken';
 	import { marked } from 'marked';
 	import { collectionStore } from '$lib/stores/collections.svelte';
@@ -1385,13 +1386,11 @@
 				// carry a stale field value back to the server, because no write
 				// names a key the user did not edit. What remains is a display
 				// concern, which is what this refetch now serves.
-				if (
-					event.items_changed &&
-					item &&
-					itemMatchesRef &&
-					saveStatus !== 'saving' &&
-					!editingTitle
-				) {
+				// Mid-edit, the refetch is OWED rather than skipped (BUG-3036): a
+				// skip dropped the change until some unrelated event came along.
+				if (event.items_changed && item && itemMatchesRef && (saveStatus === 'saving' || editingTitle)) {
+					refreshOwed = true;
+				} else if (event.items_changed && item && itemMatchesRef) {
 					const reqItemId = item.id;
 					const reqWsSlug = wsSlug;
 					const reqItemSlug = itemSlug;
@@ -1464,11 +1463,16 @@
 				return;
 			}
 
-			// Non-destructive updates: skip if the user is actively
-			// editing the title or has a pending content save in flight.
-			// They'll catch up on the next idle event (and the
-			// syncService onTabResume path also covers anything missed).
-			if (saveStatus === 'saving' || editingTitle) return;
+			// Non-destructive updates: DEFER while the user is actively editing
+			// the title or has a save in flight. The re-read runs once that ends
+			// (`refreshOwed`, BUG-3036). It used to be skipped outright and wait
+			// for "the next idle event", which may never come: the pane stayed
+			// behind the server, and the save's own response then installed a
+			// row older than the change it had skipped.
+			if (saveStatus === 'saving' || editingTitle) {
+				refreshOwed = true;
+				return;
+			}
 
 			// Capture the item this event was scoped to *before* awaiting.
 			// Otherwise a navigation that completes during the in-flight
@@ -1502,9 +1506,14 @@
 						// a debounced save is in flight, but a user
 						// mid-keystroke with no save yet pending would
 						// still lose chars without this branch.
+						//
+						// The follow-ups read `item`, the row actually INSTALLED,
+						// not `updated`: an older row than the one shown is
+						// refused by withInflightTags (BUG-3036), and its stale
+						// collection and slug must not drive them.
 						item = adoptServerItem(updated);
-						void refreshCollectionIfMoved(updated);
-						const links = await refreshLinksPreservingOnFailure(reqWsSlug, updated.slug);
+						void refreshCollectionIfMoved(item);
+						const links = await refreshLinksPreservingOnFailure(reqWsSlug, item.slug);
 						if (!item || item.id !== reqItemId || myItemGen !== itemGen) return;
 						itemLinks = links;
 					} catch {
@@ -1592,8 +1601,12 @@
 				return;
 			}
 
-			// Don't refresh non-destructive updates if the user is actively editing
-			if (saveStatus === 'saving' || editingTitle) return;
+			// Don't refresh non-destructive updates if the user is actively
+			// editing — DEFER it until they stop (BUG-3036, as the SSE handler).
+			if (saveStatus === 'saving' || editingTitle) {
+				refreshOwed = true;
+				return;
+			}
 
 			// Capture the item this sync was scoped to *before* awaiting.
 			// Same race guard as the SSE handler above and loadData() —
@@ -1611,6 +1624,10 @@
 					// Same collab-aware adoption rule as the SSE
 					// handler above (TASK-1262).
 					if (!item || item.id !== reqItemId) return;
+					// An OLDER row than the one shown is dropped, and BEFORE the
+					// bump: bumping for it would cancel a fresher in-flight refetch
+					// and then install nothing (BUG-3036).
+					if (isOlderSnapshot(item, updated)) return;
 					// Bump the item-snapshot gen so an in-flight refetch drops (round 9).
 					const myItemGen = ++itemGen;
 					item = adoptServerItem(updated);
@@ -1630,9 +1647,12 @@
 				item = adoptServerItem(updated);
 				// Same collection-moved handling as the SSE + incremental
 				// adoptions above — a long tab absence can span a move too
-				// (codex round 2 P1).
-				void refreshCollectionIfMoved(updated);
-				const links = await refreshLinksPreservingOnFailure(reqWsSlug, updated.slug);
+				// (codex round 2 P1). The follow-ups read `item`, the row actually
+				// INSTALLED: an older row than the one shown is refused by
+				// withInflightTags (BUG-3036), and the screen is then at least as
+				// new as this read — so the cursor below may still advance.
+				void refreshCollectionIfMoved(item);
+				const links = await refreshLinksPreservingOnFailure(reqWsSlug, item.slug);
 				if (!item || item.id !== reqItemId || myItemGen !== itemGen) return;
 				itemLinks = links;
 				// Advance the cursor now that the ITEM reload succeeded. The links
@@ -1869,6 +1889,10 @@
 		// Per Codex review round 12.
 		clearTimeout(saveStatusTimer);
 		saveStatusTimer = undefined;
+		// Cleared BEFORE the status goes idle: a refresh owed to the previous
+		// item must not fire against this one when the effect below sees the
+		// status drop (BUG-3036).
+		refreshOwed = false;
 		saveStatus = 'idle';
 		// Capture the URL parts this load was scoped to. Used in the catch
 		// path to detect whether the user has navigated away before this
@@ -3457,7 +3481,18 @@
 	// saver's latest desired set at assignment time is the only race-free
 	// guarantee that a concurrent snapshot can't drop the unsaved tags. Per
 	// Codex PR #659 rounds 8/9.
+	//
+	// It is also where a snapshot OLDER than the one on screen is refused
+	// (BUG-3036): every writer in this pane answers with the whole row, so a
+	// response that is merely slow would otherwise put an earlier row over a later
+	// one while the server keeps the later. Ordered by the row's `seq` — see
+	// `itemSnapshotOrder.ts` for why that and not a dispatch count. A refused
+	// snapshot returns the item already shown, so `item = withInflightTags(x)`
+	// leaves it untouched; a site that goes on to USE `x` after assigning it asks
+	// `isOlderSnapshot` itself first.
 	function withInflightTags(next: Item): Item {
+		const shown = untrack(() => item);
+		if (shown && isOlderSnapshot(shown, next)) return shown;
 		const saver = tagSavers.get(next.id);
 		// Only a burst typed under the CURRENT identity owns `item.tags` (BUG-3084
 		// codex round 1): the identity listener's load would otherwise render the
@@ -3475,6 +3510,50 @@
 			collabProvider ? updated : { ...updated, content: item?.content ?? updated.content }
 		);
 	}
+
+	/**
+	 * A re-read an SSE event or sync pass asked for while a save was in flight or
+	 * the title was being edited (BUG-3036). Those used to be SKIPPED, so a change
+	 * made elsewhere during a save was dropped until something unrelated caused a
+	 * refresh, and the save's response then installed its own older row.
+	 *
+	 * Deferring is safe only because of the snapshot order in `withInflightTags`:
+	 * the re-read may resolve before or after the save it waited on, and an older
+	 * row cannot replace a newer one either way.
+	 *
+	 * A plain `let`, like `hasPending` in FieldEditor: the effect below reads it,
+	 * and making it reactive would have the effect's own write retrigger it.
+	 */
+	let refreshOwed = false;
+
+	async function runOwedRefresh() {
+		if (destroyed || !item) return;
+		const reqItemId = item.id;
+		const reqWsSlug = wsSlug;
+		const reqItemSlug = itemSlug;
+		const myItemGen = ++itemGen;
+		try {
+			const updated = await api.items.get(reqWsSlug, reqItemSlug);
+			if (!item || item.id !== reqItemId || myItemGen !== itemGen) return;
+			// Follow-ups read the row actually installed (see the SSE re-read).
+			item = adoptServerItem(updated);
+			void refreshCollectionIfMoved(item);
+			const links = await refreshLinksPreservingOnFailure(reqWsSlug, item.slug);
+			if (!item || item.id !== reqItemId || myItemGen !== itemGen) return;
+			itemLinks = links;
+		} catch {
+			// Best-effort, as the refreshes it stands in for.
+		}
+	}
+
+	$effect(() => {
+		// Tracks the two conditions the refreshes were deferred on, and nothing
+		// else: `refreshOwed` is plain, and the re-read runs untracked.
+		if (saveStatus === 'saving' || editingTitle) return;
+		if (!refreshOwed) return;
+		refreshOwed = false;
+		untrack(() => void runOwedRefresh());
+	});
 
 	// BUG-2178 (codex R1): an SSE / delta-sync adoption can change the item's
 	// COLLECTION — a cross-collection move by another user/tab, or this pane's
