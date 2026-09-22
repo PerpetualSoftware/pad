@@ -1150,9 +1150,9 @@ func writeInvalidItemTitle(w http.ResponseWriter, err error) bool {
 }
 
 func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
-	// BUG-3080: set only on the success answer, read by the client_write
+	// BUG-3080: set once the write has COMMITTED, read by the client_write
 	// release deferred below — the tab's mark moves only for a write that
-	// went through.
+	// went through, and for every such write, even if the response then fails.
 	var clientWriteApplied bool
 	// Keys this write puts in the fields blob that the schema does not
 	// declare. Stored, not refused; reported on the response (BUG-2850).
@@ -2149,6 +2149,12 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "Item not found")
 		return
 	}
+	// BUG-3080: the write has COMMITTED on every path that reaches here, so
+	// this tab's mark moves now — not at the response. Enrichment below can
+	// still fail with a 500, and a mark left behind then would let this tab's
+	// older write pass its check and overwrite what was just stored (codex
+	// round 2).
+	clientWriteApplied = true
 
 	// BUG-2013: the parent-link mutation is no longer a separate
 	// post-commit write here — it ran INSIDE UpdateItemWithParentLink's
@@ -2347,7 +2353,6 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		updated.Warnings = warnings
 	}
 
-	clientWriteApplied = true
 	writeJSON(w, http.StatusOK, updated)
 }
 
