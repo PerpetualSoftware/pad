@@ -61,10 +61,11 @@ var rawDecodeAllowed = map[string]string{
 	// GENERIC decode helper whose callers choose the concrete type, and none
 	// of them can be converted without breaking every other thing they decode.
 	// A new one shows up here and has to be reasoned about, which is the point.
-	"internal/cli/client.go::result":           "generic HTTP response decoder: the caller supplies the destination, so this call has no schema to strip — a caller that wants an item-field schema must decode one itself",
-	"internal/oauth/storage.go::session":       "fosite session hydration: decodes an OAuth session blob, never a collection schema",
-	"internal/server/server.go::v":             "the shared request-body decoder (BUG-2803): decodes a handler's own input struct, and a handler taking a schema goes through the collection-definition doors above",
-	"internal/server/handlers_bootstrap.go::s": "trimRedundantSchemaLabels decodes into the parallel bootstrapSchema struct and strips reserved keys in the same loop — the parallel-struct twin of UnmarshalItemFieldSchema, and it cannot call it because the whole point of that struct is a different FieldDef shape",
+	"internal/cli/client.go::result":             "generic HTTP response decoder: the caller supplies the destination, so this call has no schema to strip — a caller that wants an item-field schema must decode one itself",
+	"internal/oauth/storage.go::session":         "fosite session hydration: decodes an OAuth session blob, never a collection schema",
+	"internal/server/server.go::v":               "the shared request-body decoder (BUG-2803): decodes a handler's own input struct, and a handler taking a schema goes through the collection-definition doors above",
+	"scripts/decision-eval/attention/main.go::v": "offline eval tool (TASK-3137): readJSON decodes local `pad item show|comments|history` and activity dumps into items, comments, versions and activity rows; nothing it reads is a collection definition",
+	"internal/server/handlers_bootstrap.go::s":   "trimRedundantSchemaLabels decodes into the parallel bootstrapSchema struct and strips reserved keys in the same loop — the parallel-struct twin of UnmarshalItemFieldSchema, and it cannot call it because the whole point of that struct is a different FieldDef shape",
 
 	"internal/server/handlers_collections.go::schema":     "collection create/update INPUT — the declaration is what is being validated, by validateNoReservedFieldKeys",
 	"internal/server/handlers_collections.go::prevSchema": "the grandfather test's own baseline: a stripped prevSchema would reclassify every EXISTING declaration as newly introduced and refuse every update to such a collection",
@@ -551,7 +552,7 @@ func TestGuardAllowListHasNoDeadEntries(t *testing.T) {
 // two — so key-set equality alone would pass if the guard went blind to one of
 // a pair. A DROP with no conversion in the same change means the guard stopped
 // seeing sites, not that the sites stopped existing.
-const rawDecodeSiteCount = 20
+const rawDecodeSiteCount = 21
 
 func TestGuardSeesEveryKnownDecodeSite(t *testing.T) {
 	sites := collectSchemaDecodes(t, repoRoot(t))
