@@ -65,7 +65,7 @@ var padPlaybookTool = ToolDef{
 			{
 				Name:        "text",
 				Type:        "string",
-				Description: "Free text to match against the workspace's ACTIVE playbooks via the typed-decision provider (e.g. the user's own request). Required for action=match. 404 decision_provider_unavailable when no provider is configured — fall back to slug/trigger routing rather than treating that as a hard failure.",
+				Description: "Free text to match against active playbooks. Required for action=match.",
 			},
 		},
 	},
@@ -232,18 +232,10 @@ Actions:
                     playbook_not_active error. Pass allow_draft: true to
                     override and run it anyway. The status is echoed on
                     both the run and get responses.
-  match — Ask the workspace's typed-decision provider which ACTIVE
-          playbook (if any) matches free text — a Choice over their
-          ref/title/summary/trigger/invocation_slug plus a reserved
-          "none" option, so text asking for none of them gets an
-          honest answer instead of a forced pick. Returns choice
-          (a ref, or "none"), confidence, the provider's per-option
-          probabilities, the model, and each considered playbook's
-          ref/title/invocation_slug. Read-only and side-effect-free.
+  match — Pick the ACTIVE playbook (or "none") that text asks for.
+          Returns choice, confidence, probabilities, model.
           Required: workspace, text.
-          404 decision_provider_unavailable when no provider is
-                    configured — fall back to slug/trigger routing
-                    rather than treating that as a hard failure.
+          404 = no provider; fall back to slug/trigger routing.
 
 Use pad_playbook when an agent needs to dispatch a named procedure or read
 a playbook's declared argument contract before invoking it. For browsing
