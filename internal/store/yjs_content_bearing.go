@@ -25,6 +25,11 @@ import (
 //  3. It is byte-identical to a row already persisted for the same item. Yjs
 //     updates are idempotent, so applying the same bytes again changes nothing;
 //     the earlier copy is what carries the content, and it is counted on its own.
+//     A SyncStep2 and an update count as identical when their frames differ ONLY
+//     in that subtype byte (BUG-3136): y-protocols applies both payloads through
+//     the same readUpdate, so the same payload bytes have the same effect under
+//     either envelope. This is what catches an open tab's step2 answer to a
+//     joining tab, which carries the same full state as the seed update.
 //
 // ERROR DIRECTION. content_state is trusted by `pad item edit`'s refusal
 // (BUG-3035) and by the SQLite→Postgres migration gate, which drops the op-log.
@@ -94,18 +99,61 @@ func yjsFrameIsEnvelopeNonContent(data []byte) bool {
 }
 
 // yjsFrameHash is the content_hash column value: the sha256 of the WHOLE frame,
-// envelope included, so a SyncStep2 and an update carrying the same payload are
-// never treated as one another.
+// envelope included. The step2/update equivalence of fact (3) is NOT folded into
+// the hash; yjsIdenticalEarlierRowQ looks the subtype twin up separately, so the
+// column keeps one meaning for rows written before and after BUG-3136.
 func yjsFrameHash(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
 }
 
+// yjsSyncSubtypeTwin returns data with its sync subtype swapped between
+// SyncStep2 and update, for fact (3)'s envelope equivalence. ok is false for any
+// frame that is not EXACTLY one well-formed step2/update message (the same strict
+// parse as yjsFrameIsEnvelopeNonContent), so a frame this file does not
+// understand never gains a twin. Both codes and the message type are single-byte
+// varuints, so the swap is one byte at index 1.
+func yjsSyncSubtypeTwin(data []byte) ([]byte, bool) {
+	msgType, pos, ok := readVarUint(data, 0)
+	if !ok || msgType != yFrameSync || pos != 1 {
+		return nil, false
+	}
+	subtype, pos, ok := readVarUint(data, pos)
+	if !ok || pos != 2 || (subtype != ySyncStep2 && subtype != ySyncUpdate) {
+		return nil, false
+	}
+	n, pos, ok := readVarUint(data, pos)
+	if !ok || uint64(len(data)-pos) != n {
+		return nil, false
+	}
+	twin := append([]byte(nil), data...)
+	if subtype == ySyncStep2 {
+		twin[1] = ySyncUpdate
+	} else {
+		twin[1] = ySyncStep2
+	}
+	return twin, true
+}
+
 // yjsIdenticalEarlierRowQ reports whether the item's op-log already holds a
-// frame byte-identical to data, below beforeID when beforeID > 0. The hash
-// narrows the search through idx_yjs_updates_item_hash; the byte compare is what
-// decides, so a hash collision could only ever leave a row content-bearing.
+// frame byte-identical to data, or to its step2/update subtype twin, below
+// beforeID when beforeID > 0. The hash narrows the search through
+// idx_yjs_updates_item_hash; the byte compare is what decides, so a hash
+// collision could only ever leave a row content-bearing.
 func (s *Store) yjsIdenticalEarlierRowQ(q Queryer, itemID string, data []byte, hash string, beforeID int64) (bool, error) {
+	dup, err := s.yjsExactEarlierRowQ(q, itemID, data, hash, beforeID)
+	if err != nil || dup {
+		return dup, err
+	}
+	twin, ok := yjsSyncSubtypeTwin(data)
+	if !ok {
+		return false, nil
+	}
+	return s.yjsExactEarlierRowQ(q, itemID, twin, yjsFrameHash(twin), beforeID)
+}
+
+// yjsExactEarlierRowQ is the whole-frame lookup behind yjsIdenticalEarlierRowQ.
+func (s *Store) yjsExactEarlierRowQ(q Queryer, itemID string, data []byte, hash string, beforeID int64) (bool, error) {
 	query := `SELECT 1 FROM item_yjs_updates
 		WHERE item_id = ? AND content_hash = ? AND update_data = ?`
 	args := []interface{}{itemID, hash, data}
@@ -135,8 +183,9 @@ type BackfillYjsContentBearingResult struct {
 // yjsBackfillBatch bounds one transaction of the backfill.
 const yjsBackfillBatch = 500
 
-// BackfillYjsContentBearing classifies op-log rows written before migration 091
-// (content_hash IS NULL). Called from server startup after migrations.
+// BackfillYjsContentBearing classifies every op-log row whose content_hash IS
+// NULL: rows written before migration 091, and the step2/update rows migration
+// 093 re-queued (BUG-3136). Called from server startup after migrations.
 //
 // No completion marker, deliberately, unlike BackfillRelationLinks: here the
 // progress marker is PER ROW. content_hash IS NULL is exactly "not yet
