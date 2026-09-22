@@ -185,7 +185,7 @@ const yjsBackfillBatch = 500
 
 // BackfillYjsContentBearing classifies every op-log row whose content_hash IS
 // NULL: rows written before migration 091, and the step2/update rows migration
-// 092 re-queued (BUG-3136). Called from server startup after migrations.
+// 093 re-queued (BUG-3136). Called from server startup after migrations.
 //
 // No completion marker, deliberately, unlike BackfillRelationLinks: here the
 // progress marker is PER ROW. content_hash IS NULL is exactly "not yet

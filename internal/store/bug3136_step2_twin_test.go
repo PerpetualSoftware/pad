@@ -117,23 +117,23 @@ func TestMalformedFrameGetsNoSubtypeTwin(t *testing.T) {
 }
 
 // Rows classified under migration 091's rule keep that verdict until
-// something re-examines them. Migration 092 re-queues them; the startup
+// something re-examines them. Migration 093 re-queues them; the startup
 // backfill then applies the twin rule. The counterfactual leg shows the
 // migration is what does it: without it the backfill has nothing to examine.
-func TestMigration092RequeuesStep2RowsForTheBackfill(t *testing.T) {
+func TestMigration093RequeuesStep2RowsForTheBackfill(t *testing.T) {
 	for _, b := range contentBackends() {
 		t.Run(b.name, func(t *testing.T) {
 			s := b.open(t)
-			path := "migrations/092_yjs_step2_twin_reclassify.sql"
+			path := "migrations/093_yjs_step2_twin_reclassify.sql"
 			if b.name == "Postgres" {
-				path = "pgmigrations/069_yjs_step2_twin_reclassify.sql"
+				path = "pgmigrations/070_yjs_step2_twin_reclassify.sql"
 			}
 			sqlText, err := os.ReadFile(path)
 			if err != nil {
 				t.Fatal(err)
 			}
 			_, _, item := seedStaleItem(t, s)
-			// A content-bearing row that is NOT a step2/update frame: 092 must
+			// A content-bearing row that is NOT a step2/update frame: 093 must
 			// leave it alone, so the count below catches a migration that drops
 			// its subtype predicate (codex round 1, P3).
 			appendFrame(t, s, item.ID, []byte{0x07, 0x01, 0x02})
@@ -153,7 +153,7 @@ func TestMigration092RequeuesStep2RowsForTheBackfill(t *testing.T) {
 
 			// Counterfactual: the backfill alone does not revisit a classified row.
 			if res, err := s.BackfillYjsContentBearing(); err != nil || res.RowsClassified != 0 {
-				t.Fatalf("premise: without 092 the backfill must classify nothing; got %+v, %v", res, err)
+				t.Fatalf("premise: without 093 the backfill must classify nothing; got %+v, %v", res, err)
 			}
 
 			if _, err := s.DB().Exec(string(sqlText)); err != nil {
@@ -163,14 +163,14 @@ func TestMigration092RequeuesStep2RowsForTheBackfill(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			// 092 re-queues BOTH bearing step2/update rows: the seed
+			// 093 re-queues BOTH bearing step2/update rows: the seed
 			// (re-examined, still content: nothing earlier carries it) and the
 			// answer (cleared by its twin). The non-sync row is not re-queued.
 			if res.RowsClassified != 2 || res.RowsNonContent != 1 {
 				t.Fatalf("want 2 re-examined and 1 cleared; got %+v", res)
 			}
 			if got := contentState(t, s, item.ID); got != "" {
-				t.Fatalf("after 092 and the backfill the item must read clean; got %q", got)
+				t.Fatalf("after 093 and the backfill the item must read clean; got %q", got)
 			}
 		})
 	}

@@ -1,4 +1,4 @@
--- Migration 092: re-queue step2/update op-log rows for classification (BUG-3136).
+-- Migration 093: re-queue step2/update op-log rows for classification (BUG-3136).
 --
 -- Migration 091's classifier treated a SyncStep2 and an update carrying the
 -- same payload as different frames, so an open tab's step2 answer to a joining
