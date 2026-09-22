@@ -21,7 +21,10 @@ import (
 // tick channel for tests.
 //
 // With no provider configured the runner is nil, the store has no resolver,
-// no job row is ever written, and this loop is never started.
+// and no job row is ever written. The loop starts the first time a provider
+// is configured — at boot, or later when an admin enables one
+// (ConfigureDecisions, TASK-3121). It is not stopped when a later change
+// disables decisions: it keeps ticking, reads a nil runner, and does nothing.
 
 const (
 	// defaultDecisionTickInterval bounds how stale a decision is after a
@@ -59,18 +62,43 @@ type decisionTickConfig struct {
 	cancel   context.CancelFunc
 	running  bool
 	tick     <-chan time.Time
+
+	// stopped latches once stopDecisionTick runs. Reconfiguration can start
+	// the tick at any time (TASK-3121), so without it a settings write racing
+	// Stop() could start a loop after Stop() had drained s.bg — a goroutine
+	// using a store that is about to close (codex round 1).
+	stopped bool
+
+	// passCancel cancels the pass in flight, if any. SetDecisionRunner calls
+	// it when the runner changes, so disabling or replacing the provider
+	// stops the OLD one being called for the rest of that pass — up to
+	// `limit` more jobs of item data sent to a provider the admin turned off
+	// (codex round 1). A cancelled job's claim is released without counting
+	// an attempt, so the new runner picks it up.
+	passCancel context.CancelFunc
 }
 
 // SetDecisionRunner attaches the decision runner and wires its registry into
 // the store's write doors. A nil runner (no provider configured) removes any
 // resolver, so the doors enqueue nothing.
+//
+// The write doors' resolver is installed BEFORE the runner is published
+// (codex round 2). Disabling therefore stops new enqueues before the runner
+// goes nil, rather than leaving a window after the disable in which a write
+// still owes a job. A write whose transaction read the old resolver before
+// that point can still commit its job afterwards: it was concurrent with the
+// disable, and its row stays owed, un-run, until a provider is configured.
 func (s *Server) SetDecisionRunner(r *decision.Runner) {
-	s.decisionTick.mu.Lock()
-	s.decisionTick.runner = r
-	s.decisionTick.mu.Unlock()
 	if s.store != nil {
 		r.Install(s.store)
 	}
+	s.decisionTick.mu.Lock()
+	if s.decisionTick.runner != r && s.decisionTick.passCancel != nil {
+		s.decisionTick.passCancel()
+		s.decisionTick.passCancel = nil
+	}
+	s.decisionTick.runner = r
+	s.decisionTick.mu.Unlock()
 }
 
 func (s *Server) decisionRunner() *decision.Runner {
@@ -87,11 +115,11 @@ func (s *Server) SetDecisionTickChannel(c <-chan time.Time) {
 	s.decisionTick.tick = c
 }
 
-// StartDecisionTick starts the evaluation loop. Idempotent, and a no-op with
-// no runner attached.
+// StartDecisionTick starts the evaluation loop. Idempotent, a no-op with no
+// runner attached, and a no-op once Stop() has run.
 func (s *Server) StartDecisionTick() {
 	s.decisionTick.mu.Lock()
-	if s.decisionTick.running || s.decisionTick.runner == nil {
+	if s.decisionTick.running || s.decisionTick.stopped || s.decisionTick.runner == nil {
 		s.decisionTick.mu.Unlock()
 		return
 	}
@@ -148,6 +176,7 @@ func (s *Server) StartDecisionTick() {
 func (s *Server) stopDecisionTick() {
 	s.decisionTick.mu.Lock()
 	defer s.decisionTick.mu.Unlock()
+	s.decisionTick.stopped = true
 	if !s.decisionTick.running {
 		return
 	}
@@ -157,11 +186,23 @@ func (s *Server) stopDecisionTick() {
 }
 
 func (s *Server) runDecisionTick(ctx context.Context) {
+	// The runner and the pass's cancel are taken under ONE lock, so a swap
+	// either lands before (this pass uses the new runner) or after (the swap
+	// cancels this pass). There is no window in which the old runner runs
+	// uncancellable.
+	passCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	s.decisionTick.mu.Lock()
 	r, id, limit, lease := s.decisionTick.runner, s.decisionTick.runnerID, s.decisionTick.limit, s.decisionTick.lease
+	s.decisionTick.passCancel = cancel
 	s.decisionTick.mu.Unlock()
+	defer func() {
+		s.decisionTick.mu.Lock()
+		s.decisionTick.passCancel = nil
+		s.decisionTick.mu.Unlock()
+	}()
 
-	n, err := r.RunOnce(ctx, id, limit, lease)
+	n, err := r.RunOnce(passCtx, id, limit, lease)
 	if err != nil {
 		slog.Error("decision tick: claim failed", "error", err, "claimed", n)
 	}
