@@ -92,7 +92,7 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	jumpToSection: { reviewed: '17407aeb431b', why: 'switches this instance\'s tab and scrolls to an anchor', may: ['document.getElementById', 'document.getElementById(anchorId).scrollIntoView'] },
 	ensureGraphComp: { reviewed: 'c1565cfb8a18', why: 'lazy-loads a component module into this instance', may: ['ItemGraphComp', 'graphLoadError'] },
 	handleCopyRef: { reviewed: 'fb3adcaf167a', why: 'switchedAway before the copied flag' },
-	loadData: { reviewed: '451e2cd3d6e8', why: 'IS the load: myGen against loadGeneration after every await' },
+	loadData: { reviewed: '280f389164ae', why: 'IS the load: myGen against loadGeneration after every await' },
 	startEditTitle: { reviewed: '113d9b9da03f', why: 'focuses and sizes the input it opened synchronously', may: ['el', 'titleInputEl.focus', 'titleInputEl.setSelectionRange'] },
 	saveTitle: { reviewed: '8a6bedbc107a', why: 'gen against loadGeneration on both arms' },
 	updateField: {
@@ -127,6 +127,9 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 		bareAwaits: ['await new Promise((r) => setTimeout(r, 50));'],
 	},
 	refreshLinksPreservingOnFailure: { reviewed: '28ef88d9c682', why: 'returns a value; its callers fence' },
+	// BUG-3036: the re-read an SSE event or sync pass deferred while a save was in
+	// flight. The SSE item_updated shape: itemGen and the item id after each await.
+	runOwedRefresh: { reviewed: '9dadf261b60f', why: 'itemGen and the item id after each await, as the SSE item_updated re-read it stands in for' },
 	flushCollabBeforeRestore: { reviewed: '0d45557c8da9', why: 'identityHeld before its failure toast' },
 	closeCopyDialog: { reviewed: '1c925f081a26', why: 'restores focus after closing synchronously', may: ['paneMenuTrigger.focus'] },
 	closePushDialog: { reviewed: 'bda8c7529677', why: 'restores focus after closing synchronously', may: ['paneMenuTrigger.focus'] },
@@ -161,8 +164,8 @@ interface SignedRow extends Row {
 
 /** Async functions that are not top-level declarations, in the script. */
 const NESTED: SignedRow[] = [
-	{ body: /event\.type === 'collection_updated'/, why: 'SSE: callbackGen after the collection fetch, itemGen on item branches', reviewed: 'af4846d29b06' },
-	{ body: /result\.type === 'caught_up'/, why: 'sync: callbackGen after the reconciliation, itemGen on item branches', reviewed: '1f7b5cff922e' },
+	{ body: /event\.type === 'collection_updated'/, why: 'SSE: callbackGen after the collection fetch, itemGen on item branches', reviewed: '55875d030fa4' },
+	{ body: /result\.type === 'caught_up'/, why: 'sync: callbackGen after the reconciliation, itemGen on item branches', reviewed: 'f19ccd555a1c' },
 	{ body: /flushCollabContent\(/, why: 'collab save: isForegroundCurrent (genAtFlush) before UI feedback', reviewed: '05b4038a08b0' },
 ];
 
@@ -336,7 +339,7 @@ const CONTINUATIONS: SignedRow[] = [
 		may: ['renameOverride'],
 	},
 	{ call: /^setTimeout\($/, body: /copied = false/, why: 'copy-flag reset: switchedAway', reviewed: '199047839886' },
-	{ call: /api\.items\.get\(wsSlug, itemSlug\)\.catch\($/, body: /./, why: 'loadData item fetch: sets a flag local to that load and re-throws', reviewed: '686654a9efa6' },
+	{ call: /api\.items\.get\(wsSlug, itemSlug\)\.catch\($/, body: /./, why: 'loadData item fetch: sets a flag local to that load and re-throws', reviewed: 'f04e453039e6' },
 	{
 		call: /^setTimeout\($/,
 		body: /staleConnecting = true/,
@@ -404,7 +407,8 @@ const HELPERS: Record<string, string> = {
 	settleCollabIfCurrent: '0d243d24a373',
 	showSaved: '3f1ef91fac07',
 	switchedAway: '8ba85844f406',
-	withInflightTags: '11523b4d849a',
+	// BUG-3036: refuses a snapshot of the shown item whose seq is strictly older.
+	withInflightTags: 'd9aeb96e6bd1',
 };
 
 /**

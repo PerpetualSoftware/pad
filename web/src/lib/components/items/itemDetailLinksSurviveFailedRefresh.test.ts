@@ -120,11 +120,16 @@ describe('ItemDetail: a failed same-item links refresh keeps the links it has', 
 	});
 
 	it('routes every same-item refresh through the preserving helper', () => {
-		// Three refresh callers: the SSE adopt path, the incremental adopt path,
-		// and the long-absence reload. All three fetch by `updated.slug`, i.e.
-		// the item already loaded, which is what makes preserving correct.
-		const calls = count(code, 'await refreshLinksPreservingOnFailure(reqWsSlug, updated.slug)');
-		expect(calls).toBe(3);
+		// Four refresh callers: the SSE adopt path, the incremental adopt path,
+		// the long-absence reload, and the refresh a save deferred (BUG-3036).
+		// All four fetch the links of the item already loaded, which is what
+		// makes preserving correct. Three spell it `item.slug` — the row they
+		// actually INSTALLED, since withInflightTags may refuse an older
+		// `updated` (BUG-3036) — and the incremental path, which returns before
+		// installing an older row, still spells it `updated.slug`.
+		expect(count(code, 'await refreshLinksPreservingOnFailure(reqWsSlug, item.slug)')).toBe(3);
+		expect(count(code, 'await refreshLinksPreservingOnFailure(reqWsSlug, updated.slug)')).toBe(1);
+		expect(count(code, 'await refreshLinksPreservingOnFailure(')).toBe(4);
 	});
 
 	it('leaves exactly two direct api.links.list calls: the helper and the initial load', () => {
