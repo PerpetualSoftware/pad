@@ -211,6 +211,14 @@ export interface CollabProviderOptions {
 	 */
 	onForceRefresh?: ForceRefreshHandler;
 	/**
+	 * Called after an op_log_cursor frame ADVANCES `lastOpLogID` (BUG-3124).
+	 * Cursor frames arrive for every persisted op, this tab's own included, so
+	 * this fires even when nothing in the document changed (a reconnect replay
+	 * of frames it already had, its own trailing sync frames) — exactly the
+	 * cases where no editor update fires and so no flush would ever run.
+	 */
+	onOpLogCursor?: (opLogID: number) => void;
+	/**
 	 * The items.content generation (`item.seq`) this provider's Y.Doc was
 	 * SEEDED from (BUG-2264). Announced to the server as `?content_seq=<seq>`
 	 * on every (re)connect. If it predates the item's most recent version
@@ -322,6 +330,7 @@ export class CollabProvider {
 	private readonly WebSocketImpl: typeof WebSocket;
 	private readonly onApplierRequest?: ApplierRequestHandler;
 	private readonly onForceRefresh?: ForceRefreshHandler;
+	private readonly onOpLogCursor?: (opLogID: number) => void;
 	/**
 	 * items.content generation the Y.Doc was seeded from, announced as
 	 * `?content_seq=` on every (re)connect (BUG-2264). Constant per provider.
@@ -347,6 +356,7 @@ export class CollabProvider {
 		this.WebSocketImpl = options.WebSocketImpl ?? globalThis.WebSocket;
 		this.onApplierRequest = options.onApplierRequest;
 		this.onForceRefresh = options.onForceRefresh;
+		this.onOpLogCursor = options.onOpLogCursor;
 		this.contentSeq = options.contentSeq ?? 0;
 		// Restore the per-tab cursor BEFORE the first connect. The
 		// `since=<id>` query string is appended in connect() each
@@ -979,6 +989,12 @@ export class CollabProvider {
 				if (msg.op_log_id <= this.lastOpLogID) return;
 				this.lastOpLogID = msg.op_log_id;
 				writeStoredCursor(this.itemID, msg.op_log_id);
+				// A page callback must not break the frame loop.
+				try {
+					this.onOpLogCursor?.(msg.op_log_id);
+				} catch (err) {
+					console.warn('collab: onOpLogCursor handler threw', err);
+				}
 				return;
 			}
 			case 'force_refresh': {

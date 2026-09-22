@@ -100,6 +100,12 @@ export interface CollabFlusherConfig {
 	 *  post-await force-refresh check (returning 'skipped' when it fires).
 	 *  Resolves 'flushed' on success, 'failed' on PATCH error. */
 	save: (input: CollabSaveInput) => Promise<'flushed' | 'failed' | 'skipped'>;
+	/** Called when a flush DEDUPES — the server already holds this document's
+	 *  markdown — with the content the dedupe proved the server holds. The page
+	 *  uses it to stamp the flush watermark without a PATCH (BUG-3124 unit B):
+	 *  a deduped view used to leave op-log rows above the watermark forever.
+	 *  Optional; fire-and-forget. */
+	stampWatermark?: (input: { ws: string; itemId: string; content: string; keepalive: boolean }) => void;
 }
 
 export interface CollabFlusher {
@@ -117,6 +123,12 @@ export interface CollabFlusher {
 	 *  teardown + beforeunload with keepalive=true to land the snapshot before
 	 *  the provider tears down. */
 	flushNow(ctx: CollabFlushContext, keepalive: boolean): boolean;
+	/** Arm the idle debounce to run `flushNow(ctx, false)` — unless a flush is
+	 *  already pending, which then carries the settle too. Called when the op-log
+	 *  cursor advances without an editor update (a reconnect replay of frames
+	 *  that change nothing, or this tab's own trailing sync frames), so the tab
+	 *  still gets a chance to flush or, if nothing changed, stamp (BUG-3124). */
+	settle(ctx: CollabFlushContext | null): void;
 	/** Cancel the pending debounce without flushing. Leaves dedupe state intact. */
 	cancel(): void;
 	/** Reset the per-item dedupe baseline (`lastFlushedContent`). Call on item
@@ -189,6 +201,9 @@ export function createCollabFlusher(config: CollabFlusherConfig): CollabFlusher 
 		// its own doc comment for the revert-safety rationale the storage-space
 		// compare below still owns.
 		if (shouldDedupeEditorSpace(lastFlushedContent, ctx.seedMd, normalizedMarkdown)) {
+			// This arm fires only before the session's first flush, so the
+			// server holds the baseline.
+			config.stampWatermark?.({ ws: ctx.wsSlug, itemId: ctx.itemId, content: ctx.baseline, keepalive });
 			return 'deduped';
 		}
 		// Serialize against the CAPTURED workspace (the item being flushed), not
@@ -203,7 +218,10 @@ export function createCollabFlusher(config: CollabFlusherConfig): CollabFlusher 
 		// no-ops are suppressed. (Revert-safe: after a real flush
 		// `lastFlushedContent` is non-null and takes precedence.)
 		const serverContent = lastFlushedContent ?? ctx.baseline;
-		if (serverContent === toSave) return 'deduped';
+		if (serverContent === toSave) {
+			config.stampWatermark?.({ ws: ctx.wsSlug, itemId: ctx.itemId, content: serverContent, keepalive });
+			return 'deduped';
+		}
 
 		// Snapshot the reset generation across the PATCH so a resetDedup() that
 		// lands while it's in flight invalidates the record below.
@@ -230,6 +248,19 @@ export function createCollabFlusher(config: CollabFlusherConfig): CollabFlusher 
 		return result;
 	}
 
+	function settle(ctx: CollabFlushContext | null): void {
+		// A pending edit flush already runs the full gauntlet (and stamps if it
+		// dedupes); re-arming here would postpone a real edit's flush on every
+		// cursor frame, so leave it alone.
+		if (timer !== undefined) return;
+		if (config.isRecovering()) return;
+		if (!ctx) return;
+		timer = setTimeout(() => {
+			timer = undefined;
+			flushNow(ctx, false);
+		}, idleMs);
+	}
+
 	function flushNow(ctx: CollabFlushContext, keepalive: boolean): boolean {
 		cancel();
 		const md = config.readEditorMarkdown();
@@ -251,6 +282,7 @@ export function createCollabFlusher(config: CollabFlusherConfig): CollabFlusher 
 		schedule,
 		flush,
 		flushNow,
+		settle,
 		cancel,
 		resetDedup,
 		get lastFlushed() {

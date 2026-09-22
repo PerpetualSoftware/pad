@@ -1439,6 +1439,28 @@ export const api = {
 			});
 		},
 
+		/**
+		 * Content-free flush-watermark stamp (BUG-3124 unit B). Sent when this
+		 * tab's Y.Doc is caught up (`opLogCursor` is the highest op-log id it
+		 * has applied) AND still renders to the body the server holds, whose
+		 * sha256 is `contentSHA256`. The server advances the watermark only if
+		 * both still hold at commit time and writes nothing else — no content,
+		 * no version, no seq bump — so an idle view no longer leaves the item
+		 * reading "pending" forever. `{advanced: false}` is a normal answer.
+		 */
+		stampCollabWatermark: (
+			ws: string,
+			slug: string,
+			opLogCursor: number,
+			contentSHA256: string,
+			opts?: { keepalive?: boolean },
+		) =>
+			request<{ advanced: boolean }>(`/workspaces/${ws}/items/${slug}/collab-watermark`, {
+				method: 'POST',
+				body: JSON.stringify({ op_log_cursor: opLogCursor, content_sha256: contentSHA256 }),
+				keepalive: opts?.keepalive,
+			}),
+
 		delete: (ws: string, slug: string) =>
 			request<void>(`/workspaces/${ws}/items/${slug}`, {
 				method: 'DELETE'
