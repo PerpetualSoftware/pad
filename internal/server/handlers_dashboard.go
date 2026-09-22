@@ -2,13 +2,16 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
+	"math"
 	"net/http"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/PerpetualSoftware/pad/internal/decision"
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
@@ -808,6 +811,57 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 		})
 	}
 
+	// (f) Content-aware attention (TASK-3118): the `attention` question
+	// set's latest answers. Nil runner (no provider) => no rows, no section,
+	// byte-identical to before. The dependency graph stays the primary
+	// source for "blocked": the text-derived signal is added only for an
+	// item the graph did not already flag, which also keeps the web's
+	// `${type}:${item_slug}` attention key unique.
+	// Only CURRENT answers at or above the threshold come back — the same
+	// currency rule the item page applies — so the checks below need no
+	// threshold of their own beyond naming which key they read.
+	if nouls, failing, nerr := s.decisionRunner().WorkspaceFlags(workspaceID, decision.AttentionSetName, decision.AttentionThreshold); nerr != nil {
+		markDegraded("attention.decisions", nerr)
+	} else {
+		if failing {
+			markDegraded("attention.decisions", errors.New("decision provider is failing; attention answers may be out of date"))
+		}
+		if len(nouls) > 0 {
+			for _, item := range allItems {
+				answers, ok := nouls[item.ID]
+				// No done check here: WorkspaceFlags returns an answer only
+				// for an item the set still applies to, which excludes a
+				// terminal one — the same rule the item page's chips use.
+				if !ok {
+					continue
+				}
+				if p, ok := answers[decision.AttentionNeedsHuman]; ok {
+					resp.Attention = append(resp.Attention, DashboardAttention{
+						Type:       "needs_human",
+						ItemSlug:   item.Slug,
+						ItemRef:    item.Ref,
+						ItemTitle:  item.Title,
+						Collection: item.CollectionSlug,
+						Reason:     "Waiting on a human decision (" + attentionPercent(p) + " likely)",
+					})
+				}
+				if _, graphBlocked := firstActiveBlocker[item.ID]; graphBlocked {
+					continue
+				}
+				if p, ok := answers[decision.AttentionBlocked]; ok {
+					resp.Attention = append(resp.Attention, DashboardAttention{
+						Type:       "blocked",
+						ItemSlug:   item.Slug,
+						ItemRef:    item.Ref,
+						ItemTitle:  item.Title,
+						Collection: item.CollectionSlug,
+						Reason:     "Its text says it is blocked (" + attentionPercent(p) + " likely)",
+					})
+				}
+			}
+		}
+	}
+
 	// Recent activity — enriched with item titles and user names
 	// Fetch more than needed since some may be filtered out by visibility
 	activities, err := s.store.ListWorkspaceActivity(workspaceID, models.ActivityListParams{
@@ -1311,4 +1365,9 @@ func extractFieldValue(fieldsJSON, key string) string {
 		}
 		return string(b)
 	}
+}
+
+// attentionPercent renders a Noul probability for an attention reason.
+func attentionPercent(p float64) string {
+	return strconv.Itoa(int(math.Round(p*100))) + "%"
 }

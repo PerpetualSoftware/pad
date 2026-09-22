@@ -644,6 +644,30 @@ export interface ItemLease {
 	expires_at: string;
 }
 
+// One stored typed-decision answer (TASK-3117 / TASK-3118), from
+// GET /items/{ref}/decisions. `answer` is kind-shaped — a Noul carries
+// `noul` (a probability) and nothing else. `current` is true only when the
+// answer was computed from the item's present state, for the question as
+// registered now.
+export interface ItemDecision {
+	id: string;
+	item_id: string;
+	question_set: string;
+	question_key: string;
+	kind: 'choice' | 'score' | 'noul' | string;
+	answer: { type: string; noul?: number; choice?: string; score?: number };
+	confidence: number | null;
+	provider: string;
+	model: string;
+	evaluated_at: string;
+	current: boolean;
+}
+
+export interface ItemDecisionsResponse {
+	ref: string;
+	decisions: ItemDecision[];
+}
+
 export interface Item {
 	id: string;
 	workspace_id: string;

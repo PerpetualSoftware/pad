@@ -8,6 +8,7 @@ import type {
 	CollectionUpdate,
 	Backlink,
 	RelationBacklinksPage,
+	ItemDecisionsResponse,
 	Item,
 	BulkItemsRequest,
 	BulkItemsResponse,
@@ -1593,6 +1594,13 @@ export const api = {
 					offset: opts?.offset,
 				})}`
 			),
+
+		/**
+		 * The item's latest typed-decision answer per question (TASK-3117).
+		 * Empty when no decision provider is configured.
+		 */
+		decisions: (ws: string, slug: string) =>
+			request<ItemDecisionsResponse>(`/workspaces/${ws}/items/${slug}/decisions`),
 
 		/**
 		 * Inbound `relation` FIELD references to an item — the "Referenced

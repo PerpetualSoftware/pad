@@ -133,6 +133,7 @@ const POPULATION: string[] = [
 	'lib/components/RelationBacklinksPanel.svelte',
 	'lib/components/items/ItemPicker.svelte',
 	'lib/components/items/ItemAttachmentStrip.svelte',
+	'lib/components/items/DecisionChips.svelte',
 	'lib/components/attachments/AttachmentSurfaceHost.svelte',
 	'lib/components/common/QuickActionsMenu.svelte',
 	'lib/components/common/Menu.svelte',

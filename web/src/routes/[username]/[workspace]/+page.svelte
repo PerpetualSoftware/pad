@@ -471,6 +471,9 @@
 	function attentionIcon(type: string): string {
 		if (type === 'overdue') return '\u23f0';
 		if (type === 'stalled') return '\u26a0';
+		if (type === 'blocked') return '\u26d4';
+		// TASK-3118: an open item whose text and trail say a human must decide.
+		if (type === 'needs_human') return '\u270b';
 		if (type === 'plan_complete' || type === 'plan_completion' || type === 'phase_complete' || type === 'phase_completion') return '\ud83c\udf89';
 		if (type === 'orphaned_task' || type === 'orphaned') return '\ud83d\udd17';
 		return '?';
