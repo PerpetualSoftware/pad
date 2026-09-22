@@ -1,6 +1,7 @@
 package collab
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/gorilla/websocket"
 )
 
@@ -56,6 +58,38 @@ type fakeOpLog struct {
 	// the conditional-DELETE path because it inserted the recent row
 	// before the listing query.
 	onListDormantHook func(f *fakeOpLog)
+}
+
+// AppendSyncFrame mirrors store.AppendSyncFrame's contract (BUG-3135): an
+// exact byte duplicate of an earlier row of the same item is not stored and is
+// acknowledged with that item's current max id.
+func (f *fakeOpLog) AppendSyncFrame(itemID string, data []byte, schemaVersion string) (store.SyncFrameAppend, error) {
+	f.mu.Lock()
+	var maxID int64
+	dup := false
+	for _, r := range f.rows {
+		if r.ItemID != itemID {
+			continue
+		}
+		if r.ID > maxID {
+			maxID = r.ID
+		}
+		if bytes.Equal(r.UpdateData, data) {
+			dup = true
+		}
+	}
+	f.mu.Unlock()
+	if dup && f.failOn == "" {
+		f.mu.Lock()
+		f.appendN++
+		f.mu.Unlock()
+		return store.SyncFrameAppend{ID: maxID, Persisted: false}, nil
+	}
+	id, err := f.AppendYjsUpdate(itemID, data, schemaVersion)
+	if err != nil {
+		return store.SyncFrameAppend{}, err
+	}
+	return store.SyncFrameAppend{ID: id, Persisted: true}, nil
 }
 
 func (f *fakeOpLog) AppendYjsUpdate(itemID string, data []byte, schemaVersion string) (int64, error) {
