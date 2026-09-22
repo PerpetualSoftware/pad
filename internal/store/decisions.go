@@ -426,6 +426,10 @@ func (s *Store) LatestItemDecisions(itemID string) ([]models.ItemDecision, error
 		return nil, fmt.Errorf("list item decisions: %w", err)
 	}
 	defer rows.Close()
+	return scanItemDecisions(rows)
+}
+
+func scanItemDecisions(rows *sql.Rows) ([]models.ItemDecision, error) {
 	var out []models.ItemDecision
 	for rows.Next() {
 		var d models.ItemDecision
@@ -445,6 +449,49 @@ func (s *Store) LatestItemDecisions(itemID string) ([]models.ItemDecision, error
 		out = append(out, d)
 	}
 	return out, rows.Err()
+}
+
+// LatestWorkspaceDecisions returns the newest answer per (item, question_key)
+// in one question set across a workspace — the dashboard's batch form of
+// LatestItemDecisions. Soft-deleted items are excluded; visibility and
+// terminal-state filtering are the caller's, which already holds the item
+// list it is joining against. Current is left false, as there.
+func (s *Store) LatestWorkspaceDecisions(workspaceID, questionSet string) ([]models.ItemDecision, error) {
+	rows, err := s.db.Query(s.q(`
+		SELECT d.id, d.item_id, d.question_set, d.question_key, d.kind, d.answer, d.confidence,
+		       d.provider, d.model, d.state_hash, d.question_hash, d.item_seq, d.state_truncated, d.evaluated_at
+		FROM item_decisions d
+		JOIN items i ON i.id = d.item_id AND i.deleted_at IS NULL
+		WHERE d.workspace_id = ? AND d.question_set = ?
+		  AND NOT EXISTS (
+			SELECT 1 FROM item_decisions n
+			WHERE n.item_id = d.item_id AND n.question_set = d.question_set AND n.question_key = d.question_key
+			  AND (n.evaluated_at > d.evaluated_at OR (n.evaluated_at = d.evaluated_at AND n.id > d.id))
+		  )
+		ORDER BY d.item_id, d.question_key`), workspaceID, questionSet)
+	if err != nil {
+		return nil, fmt.Errorf("list workspace decisions: %w", err)
+	}
+	defer rows.Close()
+	return scanItemDecisions(rows)
+}
+
+// DecisionJobsFailing reports whether any owed job for the set in this
+// workspace carries a recorded failure — the read path's only view of a
+// provider that is erroring, since the provider is called off the request.
+// A failure is cleared when a new write re-enqueues the job, and the row is
+// deleted when an evaluation succeeds, so a true answer means the most
+// recent attempt at some item's current work failed.
+func (s *Store) DecisionJobsFailing(workspaceID, questionSet string) (bool, error) {
+	var n int
+	err := s.db.QueryRow(s.q(`
+		SELECT COUNT(*) FROM decision_jobs
+		WHERE workspace_id = ? AND question_set = ? AND last_error IS NOT NULL`),
+		workspaceID, questionSet).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("count failing decision jobs: %w", err)
+	}
+	return n > 0, nil
 }
 
 // RecentComments returns an item's newest n comments, oldest first — the

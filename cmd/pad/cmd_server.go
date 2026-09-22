@@ -912,7 +912,12 @@ func serveCmd() *cobra.Command {
 			if derr != nil {
 				slog.Error("decision provider misconfigured; decisions are OFF", "error", derr)
 			}
-			srv.SetDecisionRunner(decision.NewRunner(s, decisionProvider, decision.NewRegistry()))
+			decisionSets, rerr := decision.ProductionRegistry()
+			if rerr != nil {
+				slog.Error("decision question sets failed to register; decisions are OFF", "error", rerr)
+				decisionProvider = nil
+			}
+			srv.SetDecisionRunner(decision.NewRunner(s, decisionProvider, decisionSets))
 			srv.StartDecisionTick()
 
 			// Workspace hard-purge sweeper (TASK-1966). Periodic sweep

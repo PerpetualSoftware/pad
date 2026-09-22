@@ -40,6 +40,15 @@ type QuestionSet struct {
 	// Questions maps a stable question key to the question. A key is stored
 	// with every answer, so renaming one orphans its history.
 	Questions map[string]Question
+
+	// Eligible, when set, narrows the set to items whose CURRENT state it
+	// accepts. It is checked by the runner at evaluation time, never by the
+	// store's resolver: the resolver runs inside the write transaction and
+	// sees only a collection slug, while a predicate like "not terminal"
+	// needs the item's fields and its collection's schema. An ineligible
+	// item's job is dropped without a provider call; the next write
+	// re-enqueues it, so an item reopened later is evaluated then.
+	Eligible func(item *models.Item, coll *models.Collection) bool
 }
 
 func (qs QuestionSet) appliesTo(collectionSlug string) bool {
@@ -345,6 +354,15 @@ func (r *Runner) Evaluate(ctx context.Context, itemID, setName string) (bool, er
 	// read so an inapplicable set never costs a call or a query.
 	if !qs.appliesTo(item.CollectionSlug) {
 		return false, ErrSetNotApplicable
+	}
+	if qs.Eligible != nil {
+		coll, err := r.store.GetCollection(item.CollectionID)
+		if err != nil {
+			return false, fmt.Errorf("decision: read collection %s: %w", item.CollectionID, err)
+		}
+		if coll == nil || !qs.Eligible(item, coll) {
+			return false, ErrSetNotApplicable
+		}
 	}
 	keys := make([]string, 0, len(qs.Questions))
 	qhash := make(map[string]string, len(qs.Questions))
