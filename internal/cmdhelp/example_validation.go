@@ -80,6 +80,17 @@ func validateExample(path string, idx int, ex Example, doc *Document, root *cobr
 			skipNext = false
 			continue
 		}
+		// Cobra treats a lone "--" as the flag terminator: every token
+		// after it is a positional argument, never a flag, even one that
+		// LOOKS like an unknown flag (e.g. `-- "-ship it"`). The scan must
+		// stop here too, before the dash-stripping below — continuing past
+		// it, as this used to, misread the terminated example's own
+		// leading-dash text as an unrecognized flag. A lone "-" (the stdin
+		// convention) is a different token and must NOT stop the scan; it
+		// falls through to the empty-name check below instead.
+		if t == "--" {
+			break
+		}
 		if !strings.HasPrefix(t, "-") {
 			continue
 		}
@@ -89,7 +100,7 @@ func validateExample(path string, idx int, ex Example, doc *Document, root *cobr
 			name = name[:eq]
 		}
 		if name == "" {
-			continue // bare "--" terminator
+			continue // lone "-" (stdin convention), not a flag
 		}
 		// Walk target up to root, accept the flag if any level has it.
 		// Boolean flags don't consume the next token; non-bool flags

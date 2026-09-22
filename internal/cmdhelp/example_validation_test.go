@@ -131,6 +131,74 @@ func TestValidateExamples_AcceptsNegateFlag(t *testing.T) {
 	}
 }
 
+// TestValidateExamples_DoubleDashTerminatesFlagScan pins the fix for the
+// "playbook match" example drift found in CI on a2a5a853: a positional
+// argument after "--" that merely LOOKS like a flag (e.g. a dash-led text
+// arg, `-- "-ship it"`) must never be reported as an unknown flag. Cobra
+// itself stops flag parsing at "--", so the validator must too.
+func TestValidateExamples_DoubleDashTerminatesFlagScan(t *testing.T) {
+	root := &cobra.Command{Use: "padtest"}
+	leaf := &cobra.Command{
+		Use:     "leaf",
+		Short:   "leaf",
+		Example: `  padtest leaf -- "-ship it"`,
+	}
+	root.AddCommand(leaf)
+
+	doc := Build(root, root, Options{Binary: "padtest", MaxDepth: -1})
+	findings := ValidateExamples(doc, root)
+	if len(findings) != 0 {
+		t.Errorf("a dash-led positional after -- should not be reported as an unknown flag; got: %v", findings)
+	}
+}
+
+// TestValidateExamples_DoubleDashDoesNotHideEarlierDrift is the companion
+// leg: the scan must still catch a genuinely unknown flag that appears
+// BEFORE the "--" terminator. The break the fix introduces stops the scan
+// AT "--", not before it — this pins that the break sits in the right
+// place rather than swallowing everything in the example.
+func TestValidateExamples_DoubleDashDoesNotHideEarlierDrift(t *testing.T) {
+	root := &cobra.Command{Use: "padtest"}
+	leaf := &cobra.Command{
+		Use:     "leaf",
+		Short:   "leaf",
+		Example: `  padtest leaf --bogus -- "-ship it"`,
+	}
+	root.AddCommand(leaf)
+
+	doc := Build(root, root, Options{Binary: "padtest", MaxDepth: -1})
+	findings := ValidateExamples(doc, root)
+	if len(findings) == 0 {
+		t.Fatal("expected a finding for --bogus, which appears BEFORE the -- terminator; got none")
+	}
+	if !strings.Contains(findings[0], "bogus") {
+		t.Errorf("finding should mention the unknown flag %q; got: %q", "bogus", findings[0])
+	}
+}
+
+// TestValidateExamples_LoneDashDoesNotTerminateScan covers the third leg:
+// a LONE "-" (the stdin convention, e.g. `pad item import -`) is a
+// different token from "--" and must not stop the scan — an unknown flag
+// after it is still caught.
+func TestValidateExamples_LoneDashDoesNotTerminateScan(t *testing.T) {
+	root := &cobra.Command{Use: "padtest"}
+	leaf := &cobra.Command{
+		Use:     "leaf",
+		Short:   "leaf",
+		Example: `  padtest leaf - --bogus`,
+	}
+	root.AddCommand(leaf)
+
+	doc := Build(root, root, Options{Binary: "padtest", MaxDepth: -1})
+	findings := ValidateExamples(doc, root)
+	if len(findings) == 0 {
+		t.Fatal("expected a finding for --bogus after a lone \"-\"; a lone dash must not act as a terminator")
+	}
+	if !strings.Contains(findings[0], "bogus") {
+		t.Errorf("finding should mention the unknown flag %q; got: %q", "bogus", findings[0])
+	}
+}
+
 func TestValidateExamples_FlagBeforeSubcommandResolvesToCorrectTarget(t *testing.T) {
 	// Cobra accepts flags interleaved with the command path — e.g.
 	// `pad --workspace foo item create task --priority high`.
