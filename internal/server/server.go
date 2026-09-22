@@ -254,6 +254,11 @@ type Server struct {
 	// the loop via stopReminderTick.
 	reminderTick reminderTickConfig
 
+	// decisionTick holds the typed-decision runner and its evaluation loop
+	// (TASK-3117). Same shape as reminderTick; started via StartDecisionTick
+	// and stopped by Stop() via stopDecisionTick.
+	decisionTick decisionTickConfig
+
 	// inFlightUploadHashes tracks content_hash values for uploads
 	// that have called AttachmentStore.Put but not yet inserted the
 	// attachments row. Without this, the orphan GC could delete a
@@ -501,6 +506,7 @@ func (s *Server) Stop() {
 	// Item reminder tick (IDEA-2641). Same lifecycle pattern; an in-flight
 	// pass is tracked on s.bg and awaited below.
 	s.stopReminderTick()
+	s.stopDecisionTick()
 	// MCP audit writer / sweeper run on s.bg too. Signal first so
 	// the workers see the close BEFORE Wait() blocks; without the
 	// signal Wait would hang forever on the writer's blocking
@@ -1892,6 +1898,10 @@ func (s *Server) setupRouter() {
 						// about the item it names.
 						r.Get("/reminders", s.handleListItemReminders)
 						r.Post("/reminders", s.handleCreateItemReminder)
+						// Typed decisions (TASK-3117): the item's latest
+						// answer per question, each marked current or not.
+						// Read-only; evaluation happens off the write path.
+						r.Get("/decisions", s.handleListItemDecisions)
 					})
 
 					// Links (v2)

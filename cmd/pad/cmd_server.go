@@ -23,6 +23,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/cli"
 	"github.com/PerpetualSoftware/pad/internal/cmdhelp"
 	"github.com/PerpetualSoftware/pad/internal/config"
+	"github.com/PerpetualSoftware/pad/internal/decision"
 
 	"github.com/PerpetualSoftware/pad/internal/billing"
 	"github.com/PerpetualSoftware/pad/internal/collab"
@@ -885,6 +886,20 @@ func serveCmd() *cobra.Command {
 				srv.SetReminderTickConfig(reminderInterval, 0)
 			}
 			srv.StartReminderTick()
+
+			// Typed decisions (PLAN-3114 / TASK-3117). With no provider
+			// configured the runner is nil: no write enqueues a job and no
+			// tick starts. A provider that is NAMED but cannot be built (an
+			// unknown name, a missing key) is logged at ERROR and the server
+			// runs without decisions — an operator asked for them and is not
+			// getting them, which must be visible, but it is not a reason to
+			// refuse to serve everything else.
+			decisionProvider, derr := decision.New(resolveDecisionConfig(cfg))
+			if derr != nil {
+				slog.Error("decision provider misconfigured; decisions are OFF", "error", derr)
+			}
+			srv.SetDecisionRunner(decision.NewRunner(s, decisionProvider, decision.NewRegistry()))
+			srv.StartDecisionTick()
 
 			// Workspace hard-purge sweeper (TASK-1966). Periodic sweep
 			// that hard-deletes workspaces soft-deleted more than 30 days

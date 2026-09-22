@@ -318,6 +318,9 @@ var nulExcluded = map[string]string{
 	"mcp_audit_log.error_kind":            "server enum, mcp_audit.go",
 	"users.recovery_codes":                "newline-joined bcrypt hashes of server-generated codes; looks like JSON, is not",
 	"workspace_members.collection_access": "validated enum all/selected",
+	"decision_jobs.claimed_by":            "runner id minted by the server's decision tick, never request-derived",
+	"decision_jobs.last_error":            "Go error string, server-composed",
+	"item_decisions.answer":               "json.Marshal of decision.Answer: a NUL anywhere in it is written as the six-byte escape, never a raw byte, and the column is TEXT on both dialects so no jsonb parser decodes it (migration 090)",
 	"item_yjs_updates.update_data":        "BINARY (BLOB/BYTEA), the only such column in either schema. Raw Yjs updates legitimately contain NUL bytes; Layer A exempts it for the same reason and TestBinaryColumnCensus pins that. Surfaced here when the census's type filter was widened to include BLOB affinity, which is correct — the decision to exclude it is a judgement, not an oversight.",
 }
 

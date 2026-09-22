@@ -85,6 +85,9 @@ type ItemAgentView struct {
 	Convention          *models.ItemConventionMetadata  `json:"convention,omitempty"`
 	ImplementationNotes []models.ItemImplementationNote `json:"implementation_notes,omitempty"`
 	DecisionLog         []models.ItemDecisionLogEntry   `json:"decision_log,omitempty"`
+	// Decisions are the typed-decision answers (TASK-3117) — agent-facing
+	// by purpose, so the agent projection must not be the door that drops them.
+	Decisions []models.ItemDecision `json:"decisions,omitempty"`
 }
 
 // contentPreviewLimit caps the content_preview at a small, agent-friendly
@@ -182,6 +185,7 @@ func ToItemAgentView(item models.Item) ItemAgentView {
 		Convention:          item.Convention,
 		ImplementationNotes: item.ImplementationNotes,
 		DecisionLog:         item.DecisionLog,
+		Decisions:           item.Decisions,
 	}
 }
 

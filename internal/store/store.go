@@ -62,6 +62,11 @@ type Store struct {
 	// every test that sets it does so synchronously and none is parallel).
 	afterDebounceRead func()
 
+	// decisionSets names the typed-decision question sets that apply to an
+	// item (TASK-3117). Empty until the server installs a resolver, which it
+	// does only when a decision provider is configured; see decisions.go.
+	decisionSets decisionSetsPtr
+
 	// outboxRowCapOverride and outboxClaimBudgetOverride are TEST-ONLY seams,
 	// zero in production. They lower MaxOutboxPayloadBytes and
 	// maxOutboxClaimBytes so a test can cross those bounds with kilobytes

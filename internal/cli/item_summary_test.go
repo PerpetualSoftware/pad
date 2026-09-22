@@ -176,3 +176,34 @@ func TestToItemSummaries_EmptyIsNonNil(t *testing.T) {
 		t.Errorf("empty summaries should encode as [], got %s", b)
 	}
 }
+
+// The agent projection is the door agents read an item through, and decisions
+// exist for agents — so it must carry them (TASK-3117), and omit the member
+// entirely when there are none.
+func TestToItemAgentView_CarriesDecisions(t *testing.T) {
+	conf := 0.9
+	item := models.Item{ID: "i1", Title: "t", Decisions: []models.ItemDecision{{
+		QuestionSet: "triage", QuestionKey: "urgent", Kind: "choice",
+		Answer: json.RawMessage(`{"type":"choice","choice":"yes"}`), Confidence: &conf, Current: true,
+	}}}
+	b, err := json.Marshal(ToItemAgentView(item))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Decisions []models.ItemDecision `json:"decisions"`
+	}
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Decisions) != 1 || got.Decisions[0].QuestionKey != "urgent" || !got.Decisions[0].Current {
+		t.Fatalf("agent view decisions = %+v (json %s)", got.Decisions, b)
+	}
+
+	b, _ = json.Marshal(ToItemAgentView(models.Item{ID: "i2", Title: "t"}))
+	var m map[string]json.RawMessage
+	_ = json.Unmarshal(b, &m)
+	if _, has := m["decisions"]; has {
+		t.Fatalf("agent view carries a decisions member for an item with none: %s", b)
+	}
+}

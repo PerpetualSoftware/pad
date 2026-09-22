@@ -609,6 +609,11 @@ func (s *Store) createItemTxWithID(tx *sql.Tx, id, workspaceID, collectionID str
 	if err := s.emitItemEventTx(tx, kernelevents.ItemCreated, item, nil, ""); err != nil {
 		return nil, err
 	}
+	// Same transaction, same reason: the owed evaluation commits with the
+	// item or not at all (TASK-3117). No-op when no provider is configured.
+	if err := s.enqueueDecisionJobsTx(tx, item.WorkspaceID, item.ID, item.CollectionID); err != nil {
+		return nil, err
+	}
 	return item, nil
 }
 
@@ -3038,6 +3043,12 @@ func (s *Store) updateItemWithParentLinkOnce(
 	if err := s.emitItemUpdateEventsTx(tx, existing, updated, mutSignal.StatusChanged, mutSignal.FromStatus, doneKey, opt.batchID, hierarchyChanged); err != nil {
 		return nil, err
 	}
+	// Enqueued on EVERY update, including ones that change nothing a
+	// question can see: whether the state changed is the runner's state-hash
+	// check, not a guess made here (TASK-3117). No-op with no provider.
+	if err := s.enqueueDecisionJobsTx(tx, updated.WorkspaceID, updated.ID, updated.CollectionID); err != nil {
+		return nil, err
+	}
 
 	// Routed through the seam so a test can reproduce the ONE commit outcome
 	// this path must survive and cannot otherwise be shown: a transaction that
@@ -3259,6 +3270,13 @@ func (s *Store) restoreItemOnce(id string, opt mutationOptions) (*models.Item, e
 	}
 	if restored != nil {
 		if err := s.emitItemEventTx(tx, kernelevents.ItemRestored, restored, nil, opt.batchID); err != nil {
+			return nil, err
+		}
+		// Restore is a door (codex round 4): a job owed when the item was
+		// deleted was dropped as gone, so without this the item returns with
+		// stale answers and nothing scheduled. If nothing changed while it was
+		// away, the runner finds its old answers current and makes no call.
+		if err := s.enqueueDecisionJobsTx(tx, restored.WorkspaceID, restored.ID, restored.CollectionID); err != nil {
 			return nil, err
 		}
 	}
@@ -5206,6 +5224,12 @@ func (s *Store) moveItemWithPreCheckOnce(
 			if err := s.emitItemEventTx(tx, kernelevents.ItemUpdated, moved, nil, opt.batchID); err != nil {
 				return nil, err
 			}
+		}
+		// A move changes the collection, which is both hashed decision state
+		// and what selects the question sets, so it is an enqueue door
+		// (TASK-3117 ruling 3). Keyed on the TARGET collection's sets.
+		if err := s.enqueueDecisionJobsTx(tx, moved.WorkspaceID, moved.ID, moved.CollectionID); err != nil {
+			return nil, err
 		}
 	}
 
