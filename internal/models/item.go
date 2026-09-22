@@ -288,8 +288,11 @@ type Item struct {
 	// from a write response or from a read. The name differs because a write
 	// warning describes what a REQUEST did, while this describes what the ROW is.
 	//
-	// The predicate is "the op-log holds a row above items.content_flushed_op_log_id",
-	// i.e. the document is ahead of the row. That is deliberately broader than "an
+	// The predicate is "the op-log holds a CONTENT-BEARING row above
+	// items.content_flushed_op_log_id", i.e. the document is ahead of the row.
+	// Rows that provably cannot change the document (SyncStep1 frames, empty
+	// updates, byte-identical re-sends) are persisted but not counted (BUG-3124;
+	// store/yjs_content_bearing.go). That is deliberately broader than "an
 	// applier-path API write is pending flush": it also covers a user typing in an
 	// open tab whose edits have not flushed. Both serve stale content, the row does
 	// not record WHY the op-log is ahead, and the narrow reading is therefore not

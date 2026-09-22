@@ -1386,7 +1386,9 @@ type PendingFlushItem struct {
 }
 
 // ListItemsPendingContentFlush returns the workspace's items whose op-log holds
-// updates above items.content_flushed_op_log_id — the same predicate
+// content-bearing updates above items.content_flushed_op_log_id (BUG-3124: rows
+// that cannot change the document do not count, and this gate dropping them is
+// sound because items.content already is the document) — the same predicate
 // contentStateSQL evaluates, reached through the same helper so the gate and the
 // bundle's own marker cannot disagree about which rows are stale. Two
 // hand-written spellings of it would be two chances to drift, and a gate that
