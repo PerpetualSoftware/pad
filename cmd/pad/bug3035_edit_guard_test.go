@@ -290,3 +290,33 @@ func TestEditNoChangesSendsNothing(t *testing.T) {
 		t.Fatalf("an unchanged edit must say so and send nothing: err=%v out=%q patches=%d", err, out, len(stub.patches))
 	}
 }
+
+// A nonzero editor exit aborts (vim's :cq), even after the file was written:
+// nothing is sent, and the error says nothing was saved (codex round 1 P2 —
+// dispositioned as abort semantics, not a lost save).
+func TestEditNonzeroEditorExitAbortsWithoutSaving(t *testing.T) {
+	stub := &editStub{gets: []map[string]any{editFixture("body", "", 41)}}
+	abort := filepath.Join(t.TempDir(), "abort-editor")
+	if err := os.WriteFile(abort, []byte("#!/bin/sh\necho edited >> \"$1\"\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(stub.handler))
+	t.Cleanup(srv.Close)
+	setTempHomeMain(t)
+	t.Setenv("PAD_URL", srv.URL)
+	t.Setenv("PAD_TOKEN", "pad_testtoken")
+	t.Setenv("EDITOR", abort)
+	origWS := workspaceFlag
+	t.Cleanup(func() { workspaceFlag = origWS })
+	workspaceFlag = "ws"
+	cmd := editCmd()
+	cmd.SetArgs([]string{"TASK-5"})
+	var err error
+	_ = captureStderr(t, func() { _ = captureStdout(t, func() { err = cmd.Execute() }) })
+	if err == nil || !strings.Contains(err.Error(), "nothing was saved") {
+		t.Fatalf("an aborted edit must fail and say nothing was saved; got %v", err)
+	}
+	if stub.nGet != 1 || len(stub.patches) != 0 {
+		t.Fatalf("premise and conclusion: the seed read happened (%d GETs) and nothing was sent (%d PATCHes)", stub.nGet, len(stub.patches))
+	}
+}

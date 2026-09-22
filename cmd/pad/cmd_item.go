@@ -3603,10 +3603,17 @@ and saving, the content is updated in Pad.
 Items can be referenced by issue ID (e.g. TASK-5) or slug.
 Set EDITOR or VISUAL env var to choose your editor (default: vi).
 
-The save is guarded: it only lands if the item has not changed since the
-editor opened. If it has, or the save fails for any other reason, your
-edited text is written to a recovery file and its path is printed, so
-nothing you typed is lost.
+The save is guarded: it is refused if the stored item was written since
+the editor opened. If it is refused, or the save fails for any other
+reason, your edited text is written to a recovery file and its path is
+printed. Exiting the editor with a nonzero status (e.g. vim's :cq) aborts
+without saving, as git does.
+
+One gap remains: the guard sees writes to the STORED item, and a browser
+tab's unsaved typing is not one until the tab writes it back. The command
+checks for such typing when the editor opens and again just before saving,
+but typing that starts in the moment between that last check and the save
+can still be overwritten.
 
 Refuses to open when the stored body is behind the item's live
 collaborative document (an editor in a browser tab holds edits not yet
@@ -3639,7 +3646,11 @@ stored body anyway.`,
 
 			edited, err := cli.OpenInEditor(cfg, item.Content, ".md")
 			if err != nil {
-				return err
+				// A nonzero editor exit is the conventional ABORT (vim's :cq,
+				// honoured by git the same way), so nothing is sent and no
+				// recovery file is written. Say so, rather than leaving the
+				// reader to guess whether anything was saved.
+				return fmt.Errorf("%w — nothing was saved", err)
 			}
 
 			if edited == item.Content {
