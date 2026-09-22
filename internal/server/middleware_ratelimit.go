@@ -198,6 +198,16 @@ type RateLimiters struct {
 	// between calls, short enough that the limiter doesn't hold
 	// dead tokens forever after revocation.
 	MCPPerToken *ipRateLimiter
+	// DecisionProvider caps SYNCHRONOUS typed-decision provider calls per
+	// user (IP when anonymous): every one costs the instance admin money,
+	// and the endpoints that make them (today POST /playbooks/match) need
+	// only viewer access, so the general API bucket's 600/min let a single
+	// viewer spend 600 calls a minute (TASK-3141). It is charged in the
+	// handler, immediately before the provider call, through
+	// allowDecisionProviderCall, so only a request that would actually
+	// spend consumes a token. The async decision_jobs runner is not charged
+	// here; it has its own rail.
+	DecisionProvider *ipRateLimiter
 }
 
 // NewRateLimiters creates rate limiters with sensible defaults.
@@ -337,6 +347,15 @@ func NewRateLimiters() *RateLimiters {
 			Burst:     60,
 			Retention: 5 * time.Minute,
 		}),
+		// Decision provider: 30 per minute per user/IP, burst 5 (TASK-3141).
+		// Deliberately not an env knob: no bucket here has one (the only
+		// rate-limit env is PAD_DISABLE_RATE_LIMITS, for E2E), and if this
+		// ever needs tuning its home is the instance-admin decision-provider
+		// setting (TASK-3121), not the environment.
+		DecisionProvider: newIPRateLimiter(rateLimitConfig{
+			Rate:  rate.Limit(30.0 / 60.0),
+			Burst: 5,
+		}),
 	}
 }
 
@@ -367,6 +386,7 @@ func (rls *RateLimiters) Stop() {
 		rls.SharePasswordIP,
 		rls.SharePasswordShare,
 		rls.MCPPerToken,
+		rls.DecisionProvider,
 	} {
 		rl.Stop() // nil-safe via the receiver guard in (*ipRateLimiter).Stop
 	}
@@ -506,6 +526,26 @@ func (s *Server) RateLimit(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+// allowDecisionProviderCall charges one token from the DecisionProvider
+// bucket and reports whether the caller may make a synchronous provider call.
+// On refusal it has already written the 429 (with Retry-After) and the
+// handler must return. Call it IMMEDIATELY before the provider call, after
+// every check that can answer without spending, so a request that would not
+// spend never consumes a token. A nil limiter set (PAD_DISABLE_RATE_LIMITS,
+// testServer) allows, like checkMCPRateLimit.
+func (s *Server) allowDecisionProviderCall(w http.ResponseWriter, r *http.Request) bool {
+	if s.rateLimiters == nil || s.rateLimiters.DecisionProvider == nil {
+		return true
+	}
+	key := rateLimitKey(r, clientIP(r))
+	if !s.rateLimiters.DecisionProvider.getLimiter(key).Allow() {
+		slog.Warn("rate limited", "key", key, "path", r.URL.Path, "limiter", "decision_provider")
+		writeRateLimitResponse(w, s.rateLimiters.DecisionProvider.config)
+		return false
+	}
+	return true
 }
 
 // rateLimitKey returns a key for rate limiting: user ID if authenticated, IP otherwise.
