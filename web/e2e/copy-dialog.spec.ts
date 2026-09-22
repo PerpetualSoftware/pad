@@ -2,6 +2,7 @@ import { test, expect } from './fixtures';
 import { browserLogin, seedDoc } from './lib/collab-helpers';
 import type { APIRequestContext, Locator, Page } from '@playwright/test';
 import type { SuiteFixture } from './fixtures';
+import { COPY_PREFLIGHT_DEBOUNCE_MS } from '../src/lib/items/copyPreflightTiming';
 
 /**
  * Cross-workspace copy / move dialog (PLAN-2373 / TASK-2355).
@@ -601,7 +602,13 @@ test.describe('cross-workspace copy dialog (PLAN-2373 / TASK-2355)', () => {
 
 	});
 
-	test('override edits collapse to one in-flight preflight plus one trailing run', async ({
+	// Two spacings (BUG-3151). Picks faster than the debounce
+	// (COPY_PREFLIGHT_DEBOUNCE_MS, CopyItemDialog's runner) collapse in
+	// the timer; picks SLOWER than it each fire a run, which queues the trailing
+	// run while #2 is held — and the last pick's own timer is then still pending
+	// when that trailing run starts. It used to fire afterwards with an identical
+	// body (4 requests), which only full-suite load made slow enough to happen.
+	for (const gap of [0, COPY_PREFLIGHT_DEBOUNCE_MS + 100]) test(`override edits collapse to one in-flight preflight plus one trailing run (picks ${gap}ms apart)`, async ({
 		page,
 		fixture,
 		request,
@@ -657,11 +664,16 @@ test.describe('cross-workspace copy dialog (PLAN-2373 / TASK-2355)', () => {
 		await expect.poll(() => started).toBe(2);
 
 		await pick(1);
+		if (gap) await page.waitForTimeout(gap);
 		await pick(2);
 		// Single-flight: neither pick issued a request of its own.
 		expect(started).toBe(2);
 		releaseSecond();
 		await expect(dialog.getByRole('button', { name: 'Copy', exact: true })).toBeEnabled();
+		// Outlast any debounce still pending, so a late duplicate is counted
+		// here rather than after the assertion (BUG-3151: this count used to be
+		// read before the stray timer fired, except under load).
+		await page.waitForTimeout(2 * COPY_PREFLIGHT_DEBOUNCE_MS + 100);
 		// …and both were served by ONE trailing run, not one request each.
 		expect(started).toBe(3);
 	});

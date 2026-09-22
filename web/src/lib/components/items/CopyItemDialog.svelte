@@ -43,6 +43,7 @@ their own recovery paths; swallowing those into outcome-unknown would send the
 user hunting for an item that provably does not exist.
 -->
 <script lang="ts">
+	import { COPY_PREFLIGHT_DEBOUNCE_MS } from '$lib/items/copyPreflightTiming';
 	import { tick, untrack } from 'svelte';
 	import Modal from '$lib/components/common/Modal.svelte';
 	import FieldEditor from '$lib/components/fields/FieldEditor.svelte';
@@ -120,7 +121,7 @@ user hunting for an item that provably does not exist.
 	// So: a debounce, PLUS single-flight trailing coalescing (round-12 fold-in).
 	// At most one preflight is in flight at any moment; edits that settle while
 	// one is running collapse into exactly ONE trailing run.
-	const PREFLIGHT_DEBOUNCE_MS = 250;
+	const PREFLIGHT_DEBOUNCE_MS = COPY_PREFLIGHT_DEBOUNCE_MS;
 
 	/**
 	 * Types the dialog can safely collect a value for — the set `FieldEditor`
@@ -618,6 +619,14 @@ user hunting for an item that provably does not exist.
 		// arrives while one is running sets the trailing flag, and exactly one
 		// trailing run fires when the current one settles — so a burst of edits
 		// across many inputs collapses to (in-flight + 1) rather than N.
+		// A run reads the CURRENT state when it starts (buildRequest), so it
+		// answers every edit made before that moment — including one whose
+		// debounce timer is still pending. Left pending, that timer fires after
+		// and sends the same body again: a duplicate preview whenever edits are
+		// spaced wider than the debounce while one is in flight (BUG-3151, the
+		// full-suite-only failure of copy-dialog.spec.ts' coalescing test).
+		clearTimeout(debounceTimer);
+		debounceTimer = undefined;
 		if (preflightInFlight) {
 			trailingQueued = true;
 			return;
