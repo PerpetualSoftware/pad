@@ -80,9 +80,11 @@
  *       the right move, on the wrong quantity (`paint.isCurrent()` compares
  *       `{ws, item}`). There is no `await` there at all, so nothing in this
  *       guard's model applies: a logout and different login while that menu is
- *       open passes the check and the DELETE goes out as the new user. Found by
- *       hand, not by this guard, and it is the clearest evidence that this
- *       guard is a floor and not a ceiling.
+ *       open passed the check and the DELETE went out as the new user. Found by
+ *       hand, not by this guard, and since fixed by an identity fence captured
+ *       when the menu opens (`pending.isSameIdentity()`); the guard still cannot
+ *       see this shape, and it remains the clearest evidence that this guard is
+ *       a floor and not a ceiling.
  *   (f) PROMISE CONTINUATIONS. Only `await` makes a function suspend here. A
  *       callback handed to `.then` / `.catch` / `.finally` runs after a
  *       suspension too, and its sends are NOT seen. The population's ten
