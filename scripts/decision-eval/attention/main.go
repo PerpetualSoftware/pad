@@ -11,6 +11,8 @@
 //	                  questions the `attention` set sends.
 //	-mode nostatus    production state minus fields.status (ablation)
 //	-mode nostatus-notrail  ...and minus recent_trail (ablation)
+//	-mode r1 / r0     production builder over the item REPLAYED to its last
+//	                  open moment / its filing (replay.go)
 //	-mode titlebody   state = {"title","body"[:5000 runes]} with the same two
 //	                  eval questions — the day-73 shape, re-run today, as the
 //	                  control that separates model drift from state shape.
@@ -27,6 +29,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -64,6 +67,10 @@ func main() {
 		os.Exit(2)
 	}
 	if *dry {
+		if *mode == "r0" || *mode == "r1" {
+			replayDry(*dump, *mode)
+			return
+		}
 		dryRun(*dump)
 		return
 	}
@@ -86,7 +93,7 @@ func main() {
 			decision.AttentionNeedsHuman: all[decision.AttentionNeedsHuman],
 			decision.AttentionBlocked:    all[decision.AttentionBlocked],
 		}
-	} else if *mode != "production" && *mode != "nostatus" && *mode != "nostatus-notrail" {
+	} else if *mode != "production" && *mode != "nostatus" && *mode != "nostatus-notrail" && *mode != "r0" && *mode != "r1" {
 		fmt.Fprintln(os.Stderr, "unknown -mode", *mode)
 		os.Exit(2)
 	}
@@ -140,6 +147,20 @@ func evalOne(p decision.Provider, dump, mode string, m member, qs map[string]dec
 	switch mode {
 	case "production":
 		st, err := decision.BuildItemState(&item, comments)
+		if err != nil {
+			row.Err = err.Error()
+			return row
+		}
+		state, row.Truncated = st.Bytes, st.Truncated
+	case "r0", "r1":
+		it, cs, excluded := replayed(dump, mode, item, comments)
+		if excluded != "" {
+			row.Err = "excluded: " + excluded
+			return row
+		}
+		row.Status = statusOf(it.Fields)
+		row.TrailLen = min(len(cs), decision.RecentTrailWindow)
+		st, err := decision.BuildItemState(&it, cs)
 		if err != nil {
 			row.Err = err.Error()
 			return row
@@ -199,7 +220,17 @@ func summarize(mode string, rows []Row) {
 		}
 		ok = append(ok, r)
 	}
-	fmt.Printf("mode=%s items=%d errors=%d\n", mode, len(ok), errs)
+	exPos, exNeg := 0, 0
+	for _, r := range rows {
+		if strings.HasPrefix(r.Err, "excluded: ") {
+			if r.Truth {
+				exPos++
+			} else {
+				exNeg++
+			}
+		}
+	}
+	fmt.Printf("mode=%s items=%d errors=%d (excluded: %d positives, %d negatives)\n", mode, len(ok), errs, exPos, exNeg)
 	fmt.Printf("needs_human_decision AUC=%.3f  (day-73 recorded p on the same items: AUC=%.3f)\n",
 		auc(ok, func(r Row) float64 { return r.P[decision.AttentionNeedsHuman] }),
 		auc(ok, func(r Row) float64 { return r.Day73P }))
