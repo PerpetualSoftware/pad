@@ -120,6 +120,14 @@ type ItemWriteWarnings struct {
 	// characters, list renumbering and blank-line runs normalise, while markdown
 	// already in the editor's preferred form survives unchanged).
 	ContentOutcome string `json:"content_outcome,omitempty"`
+
+	// PrunedPendingEdits counts the content-bearing op-log rows above the flush
+	// watermark that a direct content write DELETED (BUG-3133). With no writer
+	// tab connected, a content write replaces items.content and prunes the
+	// op-log, and unflushed edits from a tab that closed before flushing exist
+	// nowhere else. A write without a version token, or with
+	// overwrite_pending_edits, still does that; this names how many it destroyed.
+	PrunedPendingEdits int `json:"pruned_pending_edits,omitempty"`
 }
 
 // RelationTarget is one hydrated `relation` value: the item an ID points at,
@@ -1236,6 +1244,14 @@ type ItemUpdate struct {
 	// MAX(seq)+1 and the backfill migrations numbered from 1 — so a sent 0
 	// never matches and is a conflict rather than a bypass.
 	ExpectedSeq *int64 `json:"expected_seq,omitempty"`
+
+	// OverwritePendingEdits lifts the BUG-3133 refusal. A content write that
+	// carries a version token (ExpectedSeq or ExpectedUpdatedAt) is refused
+	// with `content_pending_flush` while the item's op-log holds unflushed
+	// collaborative edits, because the token guards the row and those edits
+	// are not in it. Setting this says the caller means to replace them.
+	// It has no effect on a write without a token or without content.
+	OverwritePendingEdits bool `json:"overwrite_pending_edits,omitempty"`
 }
 
 // ErrInvalidFieldsType / ErrInvalidTagsType are returned by

@@ -144,6 +144,7 @@ func (s *Server) routeContentUpdate(
 	openChildrenPrecheck func(*sql.Tx, *models.Item) error,
 	parentLink *store.ParentLinkUpdate,
 	content string,
+	pruned *int,
 ) (contentRoute, *models.Item) {
 	var updated *models.Item
 	outcome, paErr := settleContentRoute(
@@ -151,7 +152,7 @@ func (s *Server) routeContentUpdate(
 		func() bool { return s.collab.HasElectableApplier(item.ID) },
 		func() error {
 			return s.collab.PruneAndApply(item.ID, func() error {
-				precheck := composePruneWithPrecheck(s, item.ID, openChildrenPrecheck)
+				precheck := composePruneWithPrecheck(s, item.ID, openChildrenPrecheck, pruned)
 				u, uerr := s.store.UpdateItemWithParentLink(item.ID, *input, precheck, parentLink)
 				if uerr != nil {
 					return uerr
@@ -347,7 +348,7 @@ func classifyApplyOutcome(err error) string {
 // composePruneWithPrecheck rides the op-log prune inside the write's own transaction
 // (BUG-2840 half B) by composing it onto the precheck hook UpdateItemWithParentLink
 // runs there, so a refusal from either rolls the prune back.
-func composePruneWithPrecheck(s *Server, itemID string, inner func(*sql.Tx, *models.Item) error) func(*sql.Tx, *models.Item) error {
+func composePruneWithPrecheck(s *Server, itemID string, inner func(*sql.Tx, *models.Item) error, pruned *int) func(*sql.Tx, *models.Item) error {
 	return func(tx *sql.Tx, existing *models.Item) error {
 		if inner != nil {
 			if err := inner(tx, existing); err != nil {
@@ -357,7 +358,49 @@ func composePruneWithPrecheck(s *Server, itemID string, inner func(*sql.Tx, *mod
 		if s.directWritePruneFault != nil {
 			return s.directWritePruneFault()
 		}
-		return s.store.PruneItemOpLogTx(tx, itemID)
+		// BUG-3133 D: count what the prune is about to destroy — content-bearing
+		// rows above the watermark exist nowhere else — so the response can say
+		// so. Counted in the same tx, under the same locks, as the delete.
+		n, err := s.store.CountPendingContentRowsTx(tx, itemID)
+		if err != nil {
+			return err
+		}
+		if err := s.store.PruneItemOpLogTx(tx, itemID); err != nil {
+			return err
+		}
+		if pruned != nil {
+			*pruned = n
+		}
+		return nil
+	}
+}
+
+// composePendingContentGuard wraps a precheck with the BUG-3133 refusal: a
+// token-carrying content write is refused while content-bearing op-log rows
+// sit above the flush watermark. It runs inside UpdateItem's tx, after the
+// token itself has been checked, so a stale token still answers update_conflict.
+//
+// On the direct path this runs under the per-item lock and appendMu (see
+// PruneAndApply), the fence readLoop's persist takes, so the count is exact.
+// On the applier path it shares the row-write tx, but a tab can still type
+// between that tx and the applier's setContent: the unguarded window shrinks
+// from read-to-PATCH to one server hop. It is not closed, because appendMu
+// cannot be held across the applier's network round trip.
+func composePendingContentGuard(s *Server, itemID string, inner func(*sql.Tx, *models.Item) error) func(*sql.Tx, *models.Item) error {
+	return func(tx *sql.Tx, existing *models.Item) error {
+		if inner != nil {
+			if err := inner(tx, existing); err != nil {
+				return err
+			}
+		}
+		n, err := s.store.CountPendingContentRowsTx(tx, itemID)
+		if err != nil {
+			return err
+		}
+		if n > 0 {
+			return &store.ContentPendingFlushError{ItemID: itemID, PendingRows: n}
+		}
+		return nil
 	}
 }
 
@@ -410,6 +453,10 @@ func (s *Server) writeTypedItemRefusal(w http.ResponseWriter, item *models.Item,
 	// returns the driver's error verbatim and SQLite and Postgres word it
 	// differently. Kept LAST, after every typed arm, because a substring match can
 	// swallow a typed refusal whose message happens to contain the text.
+	if pending, ok := store.AsContentPendingFlushError(err); ok {
+		writeContentPendingFlushError(w, itemRefOrSlug(*item), pending.PendingRows)
+		return true
+	}
 	if strings.Contains(err.Error(), "UNIQUE constraint") || strings.Contains(err.Error(), "duplicate key") {
 		writeError(w, http.StatusConflict, "conflict",
 			"An item conflicts with an existing record (duplicate slug, title, or invocation slug)")

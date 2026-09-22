@@ -1962,6 +1962,19 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// BUG-3133: a content write that carries a version token asserted "the body
+	// as of that version", and unflushed collaborative edits are not in the row
+	// the token guards. Refuse it while any are pending, unless the caller says
+	// it means to replace them. Composed into the precheck so every ordering
+	// below — direct, applier, collab-disabled — inherits it from here. The
+	// collab-snapshot flush is exempt: it is the tab writing those edits.
+	if input.Content != nil && !collabSnapshot && !input.OverwritePendingEdits &&
+		(input.ExpectedSeq != nil || input.ExpectedUpdatedAt != "") {
+		openChildrenPrecheck = composePendingContentGuard(s, item.ID, openChildrenPrecheck)
+	}
+	// BUG-3133 D: how many unflushed edit rows the direct path's prune deleted.
+	var prunedPendingEdits int
+
 	if input.Content != nil && s.collab != nil && !collabSnapshot {
 		// PLAN-2975: WRITE FIRST, APPLY SECOND on the applier path.
 		//
@@ -1977,7 +1990,7 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		// previously the only way to discover the applier path was to take it.
 		contentToApply := *input.Content
 
-		route, updated := s.routeContentUpdate(w, r, item, &input, openChildrenPrecheck, parentLink, contentToApply)
+		route, updated := s.routeContentUpdate(w, r, item, &input, openChildrenPrecheck, parentLink, contentToApply, &prunedPendingEdits)
 		switch route {
 		case contentRouteHandled:
 			// The refusal or the settling answer has already been written.
@@ -2021,6 +2034,10 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		// TASK-2022: optimistic-concurrency conflict → structured 409.
 		if conflict, ok := asUpdateConflictError(err); ok {
 			writeUpdateConflictError(w, itemRefOrSlug(*item), conflict)
+			return
+		}
+		if pending, ok := store.AsContentPendingFlushError(err); ok {
+			writeContentPendingFlushError(w, itemRefOrSlug(*item), pending.PendingRows)
 			return
 		}
 		// BUG-2804: the item rename cascade refuses renames that would process
@@ -2248,10 +2265,11 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Advisory, post-write, same as create (BUG-2850).
-	if len(undeclaredFields) > 0 || len(droppedDefaults) > 0 || contentAppliedPendingFlush {
+	if len(undeclaredFields) > 0 || len(droppedDefaults) > 0 || contentAppliedPendingFlush || prunedPendingEdits > 0 {
 		warnings := &models.ItemWriteWarnings{
-			UndeclaredFields: undeclaredFields,
-			DroppedFields:    droppedDefaults,
+			UndeclaredFields:   undeclaredFields,
+			DroppedFields:      droppedDefaults,
+			PrunedPendingEdits: prunedPendingEdits,
 		}
 		if contentAppliedPendingFlush {
 			warnings.ContentOutcome = contentOutcomeAppliedPendingFlush

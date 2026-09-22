@@ -439,6 +439,11 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 	if hasSeq {
 		payload["expected_seq"] = seq
 	}
+	// BUG-3133: lifts the content_pending_flush refusal. Forwarded only when
+	// true, like force, so a caller that never sends it sends nothing new.
+	if b, ok := input["overwrite_pending_edits"].(bool); ok && b {
+		payload["overwrite_pending_edits"] = true
+	}
 
 	// Field-level PATCH (TASK-2022). Send ONLY the changed keys as
 	// `fields_patch`; the server shallow-merges them onto the item's current

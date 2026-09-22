@@ -204,6 +204,23 @@ func TestEditForceOpensAStaleSeedAndStillSendsTheToken(t *testing.T) {
 	if len(stub.patches) != 1 || stub.patches[0]["expected_seq"] != float64(41) {
 		t.Fatalf("--force skips the stale refusal, not the concurrency guard: %v", stub.patches)
 	}
+	// BUG-3133: the server refuses a token-guarded save over unflushed edits,
+	// so --force must say "replace them" on the save as well, or the edit it
+	// just let the user make is refused.
+	if stub.patches[0]["overwrite_pending_edits"] != true {
+		t.Fatalf("--force must send overwrite_pending_edits on the save: %v", stub.patches[0])
+	}
+}
+
+// Control for the leg above: without --force the save never asks to overwrite.
+func TestEditWithoutForceDoesNotOverwritePendingEdits(t *testing.T) {
+	stub := &editStub{gets: []map[string]any{editFixture("body", "", 41)}}
+	if _, stderr, err, _ := runEdit(t, stub); err != nil {
+		t.Fatalf("edit: %v\n%s", err, stderr)
+	}
+	if _, has := stub.patches[0]["overwrite_pending_edits"]; has {
+		t.Fatalf("a plain edit must not send overwrite_pending_edits: %v", stub.patches[0])
+	}
 }
 
 func TestEditConflictPreservesTheEditedText(t *testing.T) {

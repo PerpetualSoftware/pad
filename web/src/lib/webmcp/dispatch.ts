@@ -489,6 +489,10 @@ const HANDLERS: Record<string, Handler> = {
 		const expectedUpdatedAt = str(args, 'expected_updated_at');
 		if (expectedUpdatedAt !== undefined) data.expected_updated_at = expectedUpdatedAt;
 		if (bool(args, 'force') === true) data.force = true;
+		// BUG-3133: lifts content_pending_flush — a token-guarded content write
+		// refused because a tab holds edits not yet saved back. Forwarded only
+		// when true, like force.
+		if (bool(args, 'overwrite_pending_edits') === true) data.overwrite_pending_edits = true;
 		const { agent_role_id, assigned_user_id } = await resolveAssignment(api, ws, args);
 		if (agent_role_id !== undefined) data.agent_role_id = agent_role_id;
 		if (assigned_user_id !== undefined) data.assigned_user_id = assigned_user_id;
