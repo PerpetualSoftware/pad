@@ -3385,6 +3385,15 @@
 		desired: string[]; // latest desired set (in-flight OR pending) for reload reapply
 		running: boolean;
 		confirmed: string; // last server-acknowledged tags JSON (revert target)
+		// BUG-3143: the set every send of this burst re-derives from. The row's
+		// tags when the burst started — the list the user's first gesture was made
+		// against — and never advanced: each `desired` is the display after ALL of
+		// the burst's gestures, so (base, desired) is the burst's whole delta.
+		base: string[];
+		// The version token of the row whose tags are `confirmed`. Sent on every
+		// PATCH, so a write that landed since is REFUSED (409) rather than
+		// overwritten; before this the tag PATCH carried no token at all.
+		token: OCCToken;
 		// The identity this burst was typed under (BUG-3084). A same-item reload
 		// after an identity change passes every item-id check below, so the
 		// drain would otherwise send the previous user's queued tags on the new
@@ -3396,6 +3405,9 @@
 	// and coalesce into it, not spawn a second concurrent A saver. Per Codex
 	// PR #659 round 6.
 	const tagSavers = new Map<string, TagSaver>();
+	// Refetch-and-retry cycles per tag batch on a 409 — the same bound
+	// updateField uses for a field write.
+	const MAX_TAG_OCC_RETRIES = 2;
 
 	function updateTags(newTags: string[]) {
 		if (!item || !canEdit) return;
@@ -3423,10 +3435,53 @@
 			desired: newTags,
 			running: false,
 			confirmed: targetItem.tags, // confirmed baseline captured at burst start
+			base: parseTags(targetItem),
+			token: occTokenFor(targetItem),
 			epoch: captureIdentity()
 		};
 		tagSavers.set(targetItem.id, saver);
 		void flushTagSaver(saver);
+	}
+
+	/**
+	 * Send one batch of a tag burst, re-deriving it and retrying on a conflict
+	 * (BUG-3143). Answers the row the write produced, or null when the identity
+	 * changed inside the conflict path — the caller's own check then stops the
+	 * drain.
+	 *
+	 * Every send carries the version token of the row whose tags are
+	 * `confirmed`, so a write that landed since is REFUSED instead of
+	 * overwritten; before this the tag PATCH carried no token. And every send is
+	 * the burst's GESTURE applied to that row — rederiveListWrite(base, desired,
+	 * confirmed) — not the absolute set the display produced: the display can
+	 * lack a tag another writer added, and a batch after a 409 goes out with a
+	 * CURRENT token, so replaying the display's set there would erase that tag
+	 * with no conflict at all. With no other writer, confirmed == base on the
+	 * first send and this is exactly `desired`.
+	 *
+	 * BUG-3084's invariant holds here as in the drain: the first PATCH is issued
+	 * synchronously after the drain's own check; the conflict refetch is a
+	 * request issued after an await, so it is checked BEFORE; and the re-send
+	 * follows a check with no await between.
+	 */
+	async function sendTagBatch(saver: TagSaver): Promise<Item | null> {
+		for (let attempt = 0; ; attempt++) {
+			const toSave = rederiveListWrite(saver.base, saver.desired, parseTags({ tags: saver.confirmed }));
+			const token = saver.token;
+			try {
+				return await api.items.update(saver.ws, saver.itemId, {
+					tags: JSON.stringify(toSave),
+					...(token.kind === 'seq' ? { expected_seq: token.value } : { expected_updated_at: token.value })
+				});
+			} catch (e) {
+				if (!isUpdateConflictError(e) || attempt >= MAX_TAG_OCC_RETRIES) throw e;
+				if (!identityHeld(saver.epoch)) return null;
+				const latest = await api.items.get(saver.ws, saver.itemId);
+				if (!identityHeld(saver.epoch)) return null;
+				saver.confirmed = latest.tags;
+				saver.token = occTokenFor(latest);
+			}
+		}
 	}
 
 	async function flushTagSaver(saver: TagSaver) {
@@ -3438,11 +3493,8 @@
 				// to the freeze (TagInput stays interactive via `readonly={!canEdit}`)
 				// and a tag write is a side-independent single-item REST PATCH, so it
 				// runs from either side; `updateTags` gates on canEdit (permission).
-				const toSave = saver.pending;
 				saver.pending = null;
-				const fresh = await api.items.update(saver.ws, saver.itemId, {
-					tags: JSON.stringify(toSave)
-				});
+				const fresh = await sendTagBatch(saver);
 				// After the await and before BOTH the commit and the next send: a
 				// second batch is only ever sent from here, with no await between
 				// this check and it, so one check covers every send after the first
@@ -3453,13 +3505,26 @@
 					saver.pending = null;
 					return;
 				}
+				// sendTagBatch answers null only when the identity was lost inside
+				// its conflict path, which the check above has already caught.
+				if (fresh === null) return;
 				saver.confirmed = fresh.tags;
+				saver.token = occTokenFor(fresh);
 				// Reconcile the UI to server truth only when nothing newer is
 				// queued (avoids flicker) and we're still on this item. Route
 				// through adoptServerItem so the tag PATCH echo can't clobber
 				// unsaved editor content — its response carries the server's
 				// `content`, and non-collab editors mirror item.content. Per
 				// Codex PR #659 round 11.
+				if (saver.pending === null) {
+					// Nothing queued, so the burst's gesture is fully applied and
+					// the returned row IS its result — including any tag another
+					// writer added, which `desired` never had. Rebase the burst
+					// onto it: withInflightTags overlays `desired` on every snapshot
+					// while this saver runs, and the adopt below would otherwise
+					// hide that tag until the next refresh (BUG-3143).
+					saver.base = saver.desired = parseTags(fresh);
+				}
 				if (saver.pending === null && item && item.id === saver.itemId) {
 					item = adoptServerItem(fresh);
 				}

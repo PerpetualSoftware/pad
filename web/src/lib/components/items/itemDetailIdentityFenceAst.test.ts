@@ -117,9 +117,16 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 		},
 	},
 	flushTagSaver: {
-		reviewed: '04c1d764e777',
-		why: 'identityHeld(saver.epoch) before every commit and send; the unfenced writes are to this burst\'s own identity-stamped record, and the finally deletes that record only if the registry still holds it (the get)',
+		reviewed: 'c2b3dd381073',
+		why: 'identityHeld(saver.epoch) before every commit and send (each batch goes through sendTagBatch, which fences its own conflict path); the unfenced writes are to this burst\'s own identity-stamped record, and the finally deletes that record only if the registry still holds it (the get)',
 		may: ['saver', 'tagSavers.get', 'tagSavers.delete'],
+	},
+	// BUG-3143: one tag batch, re-derived and retried on a conflict. Writes
+	// only this burst's own record (confirmed, token), like flushTagSaver.
+	sendTagBatch: {
+		reviewed: 'e0db17122ab9',
+		why: 'identityHeld(saver.epoch) before the conflict refetch and after it, so the re-send follows a check with no await between; answers null on a lost identity and the drain\'s own check stops',
+		may: ['saver'],
 	},
 	refreshCollectionIfMoved: { reviewed: '9d45f94352dd', why: 'gen against loadGeneration after the fetch' },
 	loadTagSuggestions: { reviewed: 'b03a62bf7294', why: 'identityHeld after the fetch; the identity listener re-runs it' },
@@ -1530,7 +1537,7 @@ describe('ItemDetail identity gate: a fenced unit cannot change without a re-rea
 		// not.
 		const anchor = '\tfunction identityHeld(captured: number): boolean {\n';
 		expect(SOURCE.split(anchor).length - 1).toBe(1);
-		const call = '\t\t\t\tconst fresh = await api.items.update(saver.ws, saver.itemId, {\n';
+		const call = '\t\t\t\tconst fresh = await sendTagBatch(saver);\n';
 		expect(SOURCE.split(call).length - 1).toBe(1);
 		const base = SOURCE.replace(
 			anchor,
