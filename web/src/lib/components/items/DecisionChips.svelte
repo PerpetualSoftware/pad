@@ -8,6 +8,7 @@
 	// on an instance with no decision provider, so that case is identical to
 	// before this component existed.
 	import { api } from '$lib/api/client';
+	import { authStore } from '$lib/stores/auth.svelte';
 	import { attentionChips, type AttentionChip } from '$lib/decisions/attentionChips';
 
 	interface Props {
@@ -27,12 +28,16 @@
 		const ref = itemRef;
 		void itemId; // re-fetch on identity change, not only on ref text
 		const token = ++latest;
+		// `latest` answers "is this still the item on screen", which a sign-out
+		// or an account swap does not change — the answer is computed from what
+		// the CALLER may see, so it must not paint for the next one (BUG-3130).
+		const isSameIdentity = authStore.identityFence();
 		chips = [];
 		if (!ws || !ref) return;
 		api.items
 			.decisions(ws, ref)
 			.then((res) => {
-				if (token === latest) chips = attentionChips(res.decisions);
+				if (token === latest && isSameIdentity()) chips = attentionChips(res.decisions);
 			})
 			.catch((err) => {
 				// Advisory surface: a failed read shows no chips rather than an

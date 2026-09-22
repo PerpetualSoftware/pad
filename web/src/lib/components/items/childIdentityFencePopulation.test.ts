@@ -90,7 +90,12 @@
  *       is on its trail): one was a real commit and is fenced
  *       (`ItemTimeline.probeAttachment`); the rest are UI flushes behind
  *       `tick()`, mermaid rendering, a display release that must run under any
- *       identity, and the public capabilities fetch.
+ *       identity, and the public capabilities fetch. That hand table went stale
+ *       without a sound: TASK-3118 added `DecisionChips`, whose `.then` painted
+ *       under the next identity (fixed in BUG-3130). Since BUG-3130 the
+ *       continuations are ENUMERATED mechanically and must each appear in
+ *       `KNOWN_CONTINUATIONS` — still not MODELLED: the leg proves a new one is
+ *       read, not that it is fenced.
  *
  * FAIL-CLOSED, which is the property that makes the gaps survivable: anything
  * this guard cannot classify is a FAILURE, never a skip. A file it cannot parse
@@ -224,6 +229,38 @@ const KNOWN_OUTSIDE_FENCE: Record<string, string> = {
 	// ── fenced by structure the positional rule does not model ──
 	'lib/components/fields/FieldEditor.svelte::createRelationTarget::localIndex.upsert':
 		'structural: gated on indexStillOurs(), whose reset generation an identity change moves (BUG-3130)',
+};
+
+/**
+ * Every promise continuation in the population, dispositioned — gap (f)
+ * ENUMERATED (BUG-3130). Key: see `continuationKeys`. Two-way, like the tables
+ * above.
+ *
+ * WHY THIS EXISTS. BUG-3105 PR B enumerated these by hand and found ten. A
+ * later unit (TASK-3118) added `DecisionChips`, whose `.then` painted a
+ * response issued under the previous identity; nothing mechanical could see it,
+ * because the hand table had no way to go stale loudly. This one does. It does
+ * NOT check the continuation's fence — a predicate captured in the enclosing
+ * function is gap (a) — so a row's reason is a reading, and a new continuation
+ * fails here until someone does that reading.
+ */
+const KNOWN_CONTINUATIONS: Record<string, string> = {
+	'lib/components/items/DecisionChips.svelte::<callback of $effect>::api.items.decisions.then':
+		'fenced: identityFence() captured in the effect, checked with the latest-token (BUG-3130)',
+	'lib/components/items/DecisionChips.svelte::<callback of $effect>::api.items.decisions.catch': 'log: console.warn only',
+	'lib/components/timeline/ItemTimeline.svelte::probeAttachment::probe.then':
+		'fenced: identityFence() captured in probeAttachment (BUG-3105 PR B)',
+	'lib/components/editor/Editor.svelte::<callback of onMount>::api.server.capabilities.then':
+		'global: unauthenticated, binary-static capabilities; a fence would disable the next identity\'s toolbar (BUG-3105)',
+	'lib/components/editor/Editor.svelte::<callback of onMount>::api.server.capabilities.catch': 'no-op: empty handler',
+	'lib/components/editor/Editor.svelte::queueMermaidRender::renderQueue.then': 'render: this editor\'s own diagram source',
+	'lib/components/editor/Editor.svelte::queueMermaidClear::renderQueue.then': 'render: clears this editor\'s own node',
+	'lib/components/fields/FieldEditor.svelte::sendTyped::settled.then':
+		'release: clears the typed display for a settled write; must run under any identity',
+	'lib/components/timeline/ItemTimeline.svelte::<callback of $effect>::tick.then': 'ui: DOM role pass, cancelled on re-run',
+	'lib/components/common/Menu.svelte::<callback of $effect>::tick.then': 'ui: placement and focus',
+	'lib/components/common/QuickActionsMenu.svelte::<callback of $effect>::tick.then': 'ui: focus',
+	'lib/components/items/CopyItemDialog.svelte::<callback of $effect>::tick.then': 'ui: focus',
 };
 
 
@@ -804,6 +841,52 @@ function analyseSource(path: string, code: string): Analysis {
 	return { findings, fenced, outside };
 }
 
+const CONTINUATION_METHODS = new Set(['then', 'catch', 'finally']);
+
+/**
+ * Every function handed to `.then` / `.catch` / `.finally` in a file, keyed
+ * `<path>::<enclosing function>::<chain root>.<method>` — gap (f)'s population,
+ * enumerated rather than modelled (BUG-3130). The chain root is the call the
+ * continuation hangs off (`api.items.decisions`, `tick`, `renderQueue`), found
+ * by walking back through earlier `.then`/`.catch` links, so the key survives
+ * edits inside the callbacks. Two continuations with the same key in one
+ * function merge, which is the same bound `KNOWN_OUTSIDE_FENCE` takes.
+ */
+function continuationKeys(path: string, code: string): string[] {
+	let src: AstSource;
+	try {
+		src = parseComponent(code);
+	} catch (e) {
+		return [`${path}::<parse>::${String(e)}`];
+	}
+	const keys = new Set<string>();
+	walk(src.script, (n, ancestors) => {
+		if (n.type !== 'CallExpression' || n.callee?.type !== 'MemberExpression') return;
+		const method = n.callee.property?.name;
+		if (!CONTINUATION_METHODS.has(method)) return;
+		// ANY argument, not only an inline function: `settled.then(release,
+		// release)` hands over a callback by NAME and runs it after the same
+		// suspension (codex round 1 on BUG-3130 found exactly that one).
+		if ((n.arguments ?? []).length === 0) return;
+		let o: Node = n.callee.object;
+		for (;;) {
+			if (o?.type === 'CallExpression') o = o.callee;
+			else if (o?.type === 'MemberExpression' && CONTINUATION_METHODS.has(o.property?.name)) o = o.object;
+			else break;
+		}
+		const root = src.text(o).replace(/\s+/g, '').replace(/\?\./g, '.').slice(0, 60);
+		let enclosing = '<module>';
+		for (let i = ancestors.length - 1; i >= 0; i--) {
+			if (isFnNode(ancestors[i])) {
+				enclosing = fnName(src, ancestors[i], ancestors.slice(0, i));
+				break;
+			}
+		}
+		keys.add(`${path}::${enclosing}::${root}.${method}`);
+	});
+	return [...keys];
+}
+
 describe('BUG-3095 — child population identity fence', () => {
 	it('the reviewed population is the population ItemDetail actually mounts', () => {
 		const detail = readFileSync(ROOT + 'lib/components/items/ItemDetail.svelte', 'utf8');
@@ -884,7 +967,7 @@ describe('BUG-3095 — child population identity fence', () => {
 	});
 });
 
-describe('BUG-3130 — every post-await call outside a fence is classified', () => {
+describe('BUG-3130 — post-await calls outside a fence, and promise continuations, are classified', () => {
 	it('the outside-fence calls in the population are exactly KNOWN_OUTSIDE_FENCE', () => {
 		const seen = new Map<string, number>();
 		for (const path of POPULATION) {
@@ -901,6 +984,47 @@ describe('BUG-3130 — every post-await call outside a fence is classified', () 
 				'function, or read the call and classify it in KNOWN_OUTSIDE_FENCE with its reason. ' +
 				'A STALE row is one that is now fenced or gone: remove it.'
 		).toEqual({ unlisted: [], stale: [] });
+	});
+
+	it('the promise continuations in the population are exactly KNOWN_CONTINUATIONS', () => {
+		const seen = new Set<string>();
+		for (const path of POPULATION) {
+			for (const k of continuationKeys(path, readFileSync(ROOT + path, 'utf8'))) seen.add(k);
+		}
+		const unlisted = [...seen].filter((k) => !(k in KNOWN_CONTINUATIONS)).sort();
+		const stale = Object.keys(KNOWN_CONTINUATIONS).filter((k) => !seen.has(k)).sort();
+		expect(
+			{ unlisted, stale },
+			'A promise continuation runs after a suspension this guard does not model (gap (f)). ' +
+				'Read it: fence what it commits, then classify it in KNOWN_CONTINUATIONS. ' +
+				'A STALE row names a continuation that is gone: remove it.'
+		).toEqual({ unlisted: [], stale: [] });
+	});
+
+	it('a continuation is enumerated whether its callback is inline, NAMED, or chained', () => {
+		const code = `<script lang="ts">
+	import { api } from '$lib/api/client';
+	function go() {
+		const done = () => {};
+		api.items.get('ws', 'a').then((r) => r).catch(() => {});
+		api.items.get('ws', 'b').finally(done);
+	}
+</script>`;
+		expect(continuationKeys('f.svelte', code).sort()).toEqual([
+			'f.svelte::go::api.items.get.catch',
+			'f.svelte::go::api.items.get.finally',
+			'f.svelte::go::api.items.get.then',
+		]);
+	});
+
+	it('CONTROL: a .then with no callback, and a method merely NAMED then elsewhere, are not', () => {
+		const code = `<script lang="ts">
+	function go(p: Promise<void>, o: { thenable: () => void }) {
+		void p.then();
+		o.thenable();
+	}
+</script>`;
+		expect(continuationKeys('f.svelte', code)).toEqual([]);
 	});
 
 	// One handler, variants differing only in the statement under test.
@@ -1046,4 +1170,4 @@ describe('BUG-3105 — the literal-in-finally refinement, with its controls', ()
 });
 
 /** Exported for the guard's own tests. */
-export { analyseFile, analyseSource, POPULATION, KNOWN_UNFENCED, KNOWN_OUTSIDE_FENCE };
+export { analyseFile, analyseSource, continuationKeys, POPULATION, KNOWN_UNFENCED, KNOWN_OUTSIDE_FENCE, KNOWN_CONTINUATIONS };
