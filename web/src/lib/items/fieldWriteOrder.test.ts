@@ -521,6 +521,18 @@ describe('rederiveListWrite (BUG-3038)', () => {
 		expect(rederiveListWrite(['A'], ['A', 'B'], null)).toEqual(['B']);
 	});
 
+	it('carries this pane\'s own UNCOMMITTED earlier gesture when the base is the dispatched row (codex round 2)', () => {
+		// Edit 1 removed A ([B,C] sent) and was abandoned on conflict because
+		// edit 2 superseded it. Edit 2 removed B from the editor's held list, so
+		// it sent [C] — and its base is the ROW it was dispatched against, which
+		// still held [A,B,C] because edit 1 never committed. The delta is then
+		// {A,B} removed, both of the user's gestures, and A stays gone.
+		expect(rederiveListWrite(['A', 'B', 'C'], ['C'], ['A', 'B', 'C', 'D'])).toEqual(['C', 'D']);
+		// The base the review proposed — the EDITOR's list [B,C] — would see only
+		// {B} removed and RESURRECT A, whose removal never reached the server.
+		expect(rederiveListWrite(['B', 'C'], ['C'], ['A', 'B', 'C', 'D'])).toEqual(['A', 'C', 'D']);
+	});
+
 	it('equals a replay when nobody else wrote', () => {
 		expect(rederiveListWrite(['A', 'B', 'C'], ['B', 'C'], ['A', 'B', 'C'])).toEqual(['B', 'C']);
 	});

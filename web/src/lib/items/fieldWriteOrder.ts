@@ -213,6 +213,14 @@ export function fieldWriteTarget(itemId: string, fieldKey: string): string {
  *     An added element a third writer has since REMOVED is appended again: our
  *     gesture was to add it, and that is its honest outcome.
  *
+ * The base is the ROW, not the list the editor showed, on purpose. While an
+ * earlier write of this pane is in flight the editor holds that write's result
+ * and derives the next gesture from it, so `sent` already carries both. The
+ * row does not, so its delta names BOTH gestures, which is right when the
+ * earlier one never commits (a superseded retry is abandoned). The editor's list
+ * as base would name only the later gesture and bring the earlier removal back
+ * (codex round 2 on BUG-3038 proposed it; the test beside this pins why not).
+ *
  * There is no reorder gesture in the pane today (a list is only ever added to
  * or removed from). If one is added, a pure reorder has an empty delta and this
  * returns `fresh` unchanged, so it would need its own arm here.
