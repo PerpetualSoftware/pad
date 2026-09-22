@@ -46,6 +46,7 @@
 	import { goto } from '$app/navigation';
 	import { relativeTime, wikiLinksToMarkdown, markdownToWikiLinks, cleanBrokenLinks, unescapeDocLinks } from '$lib/utils/markdown';
 	import { toastStore } from '$lib/stores/toast.svelte';
+	import { titleEditError } from '$lib/items/titleLimit';
 	import { editorStore } from '$lib/stores/editor.svelte';
 	import type { Item, Collection, CollectionSettings, QuickAction, ItemLink, AgentRole, PaneTarget, ResolvedItemIdentity, ItemCopyResult } from '$lib/types';
 	import { parseFields, parseSchema, parseSettings, parseTags, formatItemRef, itemUrlId, getTerminalOptions, type ItemIndexRow } from '$lib/types';
@@ -687,6 +688,9 @@
 
 	let editingTitle = $state(false);
 	let titleDraft = $state('');
+	// BUG-3115: why the title in the editor was refused. Rendered only while
+	// the editor is open, so every path that closes it hides this too.
+	let titleError = $state<string | null>(null);
 	let titleInputEl = $state<HTMLTextAreaElement>();
 
 	let fields = $derived<Record<string, any>>(item ? parseFields(item) : {});
@@ -3045,6 +3049,7 @@
 	async function startEditTitle() {
 		if (!item || !canEdit) return;
 		titleDraft = item.title;
+		titleError = null;
 		editingTitle = true;
 		// Wait for the DOM to render the textarea, then focus + select all
 		await tick();
@@ -3089,6 +3094,17 @@
 	}
 
 	async function saveTitle() {
+		// BUG-3115: a title the server would refuse is refused HERE, with the
+		// editor left open on the typed text. Closing it first (as every other
+		// outcome does) would lose that text: reopening re-seeds the draft from
+		// the stored title.
+		if (canEdit && item && titleDraft.trim() !== item.title) {
+			const limitError = titleEditError(titleDraft.trim(), item.title);
+			if (limitError) {
+				titleError = limitError;
+				return;
+			}
+		}
 		editingTitle = false;
 		// Title edits are a single-item REST PATCH — side-independent, server-gated,
 		// no shared-content collision — so they are NOT frozen while peeking (BUG-2263):
@@ -3100,6 +3116,10 @@
 		// row B while editing A's title); dropping the write then keeps the
 		// pane from showing A under ?item=B (PLAN-2105 / TASK-2112; coordinator
 		// P1). The PATCH itself targets `targetItem.id` (captured, = A).
+		// The text this PATCH sends, kept to put back in the editor if it is
+		// refused (BUG-3115). Read with no await before the send, so it is the
+		// same string the request carries.
+		const sent = titleDraft.trim();
 		const targetItem = item;
 		const gen = loadGeneration;
 		saveStatus = 'saving';
@@ -3108,10 +3128,24 @@
 			if (gen !== loadGeneration || item?.id !== targetItem.id) return;
 			item = withInflightTags(updated);
 			showSaved();
-		} catch {
+		} catch (err: any) {
 			if (gen !== loadGeneration || item?.id !== targetItem.id) return;
 			saveStatus = 'idle';
-			toastStore.show('Failed to update title', 'error');
+			const reason = err?.message || 'Failed to update title';
+			// BUG-3115: put the refused text back in the editor, with the reason,
+			// unless the user has already reopened it and typed something else.
+			// Reopened-but-untouched still holds the stored title startEditTitle
+			// seeded, which is not what they wrote. Focus is deliberately left
+			// where it is: Enter moved it to the body, where they may be typing.
+			if (!editingTitle || titleDraft === targetItem.title) {
+				titleDraft = sent;
+				titleError = reason;
+				editingTitle = true;
+				await tick();
+				if (gen === loadGeneration && titleInputEl) autoResizeTitle(titleInputEl);
+			} else {
+				toastStore.show(reason, 'error');
+			}
 		}
 	}
 
@@ -3119,6 +3153,8 @@
 		if (e.key === 'Enter') {
 			e.preventDefault();
 			saveTitle();
+			// Refused before sending (BUG-3115): stay in the title, not the body.
+			if (titleError && editingTitle) return;
 			// Move focus to the editor so you can start writing immediately.
 			// The editor lives under the Details tab — surface it first or the
 			// focus lands on a display:none node (PR #1027 Codex finding).
@@ -5474,6 +5510,7 @@
 				<span class="item-ref">{formatItemRef(item)}</span>
 			{/if}
 			{#if editingTitle}
+				<div class="title-edit">
 				<textarea
 					class="title-input"
 					rows="1"
@@ -5481,8 +5518,14 @@
 					bind:value={titleDraft}
 					onblur={saveTitle}
 					onkeydown={handleTitleKeydown}
-					oninput={(e) => autoResizeTitle(e.currentTarget)}
+					oninput={(e) => { titleError = null; autoResizeTitle(e.currentTarget); }}
+					aria-invalid={titleError ? 'true' : undefined}
+					aria-describedby={titleError ? 'item-title-error' : undefined}
 				></textarea>
+				{#if titleError}
+					<p id="item-title-error" class="title-error" role="alert">{titleError}</p>
+				{/if}
+				</div>
 			{:else if canEdit}
 				<!-- Editable on BOTH master and pane, even while peeking (BUG-2263):
 				     the freeze is invisible. Clicking flips activePane (pointerdown)
@@ -7387,6 +7430,12 @@
 		min-height: 30px;
 		color: var(--text-primary);
 		font-size: 0.88em;
+	}
+	.title-edit { flex: 1; min-width: 0; }
+	.title-error {
+		margin: var(--space-1, 0.25rem) 0 0;
+		font-size: 0.85em;
+		color: var(--accent-red);
 	}
 	.title-input {
 		font-size: 1.6em;

@@ -4,6 +4,7 @@
 	import type { Collection, Item, ItemConventionMetadata, ItemCreate } from '$lib/types';
 	import { parseFields, parseSchema, itemUrlId } from '$lib/types';
 	import { toastStore } from '$lib/stores/toast.svelte';
+	import { titleLimitError } from '$lib/items/titleLimit';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import { exportAndDownloadArtifact, importArtifactFile } from '$lib/utils/artifacts';
 	import { SvelteSet, SvelteMap } from 'svelte/reactivity';
@@ -250,6 +251,12 @@
 
 	async function handleCreate() {
 		if (!newTitle.trim() || creating || !workspace) return;
+		// BUG-3115: refuse a too-long title before sending; the form keeps it.
+		const limitError = titleLimitError(newTitle.trim());
+		if (limitError) {
+			toastStore.show(limitError, 'error');
+			return;
+		}
 		creating = true;
 		try {
 			const convention = buildConventionMetadata();
@@ -266,7 +273,7 @@
 			if (isPlanLimitError(err)) {
 				toastStore.show(planLimitMessage(err) + ' Upgrade to Pro', 'error', 6000, '/console/billing');
 			} else {
-				toastStore.show('Failed to create convention', 'error');
+				toastStore.show((err as Error)?.message || 'Failed to create convention', 'error');
 			}
 		} finally {
 			creating = false;

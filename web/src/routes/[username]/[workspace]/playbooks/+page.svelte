@@ -10,6 +10,7 @@
 		fieldDefFor,
 	} from '$lib/collections/categoricalFieldValue';
 	import { toastStore } from '$lib/stores/toast.svelte';
+	import { titleLimitError } from '$lib/items/titleLimit';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import { exportAndDownloadArtifact, importArtifactFile } from '$lib/utils/artifacts';
 	import { statusColor } from '$lib/utils/fieldColors';
@@ -242,6 +243,12 @@
 
 	async function createPlaybook(status: string) {
 		if (!newTitle.trim()) return;
+		// BUG-3115: refuse a too-long title before sending; the form keeps it.
+		const limitError = titleLimitError(newTitle.trim());
+		if (limitError) {
+			toastStore.show(limitError, 'error');
+			return;
+		}
 		try {
 			const fieldsObj: Record<string, unknown> = {
 				status,
@@ -268,7 +275,7 @@
 			if (isPlanLimitError(err)) {
 				toastStore.show(planLimitMessage(err) + ' Upgrade to Pro', 'error', 6000, '/console/billing');
 			} else {
-				toastStore.show('Failed to create playbook', 'error');
+				toastStore.show((err as Error)?.message || 'Failed to create playbook', 'error');
 			}
 		}
 	}
@@ -330,7 +337,7 @@
 			if (isPlanLimitError(err)) {
 				toastStore.show(planLimitMessage(err) + ' Upgrade to Pro', 'error', 6000, '/console/billing');
 			} else {
-				toastStore.show('Failed to duplicate playbook', 'error');
+				toastStore.show((err as Error)?.message || 'Failed to duplicate playbook', 'error');
 			}
 		} finally { duplicating = null; }
 	}

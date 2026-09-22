@@ -1,0 +1,113 @@
+{
+ "max_runes": 255,
+ "_doc": "BUG-3115: shared by internal/models/title_limit_parity_test.go and web/src/lib/items/titleLimit.test.ts. Each title is prefix + unit*count + suffix. go_space is every code point Go's unicode.IsSpace accepts (the Go half enumerates the whole range and must find exactly these). If you add a case, add it here, not to one language's test.",
+ "go_space": [
+  9,
+  10,
+  11,
+  12,
+  13,
+  32,
+  133,
+  160,
+  5760,
+  8192,
+  8193,
+  8194,
+  8195,
+  8196,
+  8197,
+  8198,
+  8199,
+  8200,
+  8201,
+  8202,
+  8232,
+  8233,
+  8239,
+  8287,
+  12288
+ ],
+ "cases": [
+  {
+   "name": "at the limit",
+   "why": "255 is allowed",
+   "prefix": "",
+   "unit": "a",
+   "count": 255,
+   "suffix": "",
+   "runes": 255,
+   "ok": true
+  },
+  {
+   "name": "one over",
+   "why": "256 is refused",
+   "prefix": "",
+   "unit": "a",
+   "count": 256,
+   "suffix": "",
+   "runes": 256,
+   "ok": false
+  },
+  {
+   "name": "astral at the limit",
+   "why": "an emoji is ONE rune but TWO UTF-16 units; a .length or maxlength count would refuse this",
+   "prefix": "",
+   "unit": "\ud83d\ude00",
+   "count": 255,
+   "suffix": "",
+   "runes": 255,
+   "ok": true
+  },
+  {
+   "name": "astral one over",
+   "why": "counted by code point",
+   "prefix": "",
+   "unit": "\ud83d\ude00",
+   "count": 256,
+   "suffix": "",
+   "runes": 256,
+   "ok": false
+  },
+  {
+   "name": "surrounding spaces are not counted",
+   "why": "the server validates the TrimSpace'd title",
+   "prefix": "   ",
+   "unit": "a",
+   "count": 255,
+   "suffix": "\t\n ",
+   "runes": 255,
+   "ok": true
+  },
+  {
+   "name": "NEL is trimmed by Go",
+   "why": "U+0085 is unicode.IsSpace but NOT stripped by JS String.trim",
+   "prefix": "\u0085",
+   "unit": "a",
+   "count": 255,
+   "suffix": "\u0085",
+   "runes": 255,
+   "ok": true
+  },
+  {
+   "name": "BOM is NOT trimmed by Go",
+   "why": "U+FEFF is stripped by JS String.trim but is not unicode.IsSpace, so the server counts it",
+   "prefix": "",
+   "unit": "a",
+   "count": 255,
+   "suffix": "\ufeff",
+   "runes": 256,
+   "ok": false
+  },
+  {
+   "name": "interior whitespace counts",
+   "why": "only the ends are trimmed",
+   "prefix": "",
+   "unit": "a ",
+   "count": 128,
+   "suffix": "",
+   "runes": 255,
+   "ok": true
+  }
+ ]
+}

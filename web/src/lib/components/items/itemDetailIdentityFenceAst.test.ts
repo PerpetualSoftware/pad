@@ -93,8 +93,8 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	ensureGraphComp: { reviewed: 'c1565cfb8a18', why: 'lazy-loads a component module into this instance', may: ['ItemGraphComp', 'graphLoadError'] },
 	handleCopyRef: { reviewed: 'fb3adcaf167a', why: 'switchedAway before the copied flag' },
 	loadData: { reviewed: '87c4ae45dcc0', why: 'IS the load: myGen against loadGeneration after every await' },
-	startEditTitle: { reviewed: '113d9b9da03f', why: 'focuses and sizes the input it opened synchronously', may: ['el', 'titleInputEl.focus', 'titleInputEl.setSelectionRange'] },
-	saveTitle: { reviewed: '8a6bedbc107a', why: 'gen against loadGeneration on both arms' },
+	startEditTitle: { reviewed: '17f04352d420', why: 'focuses and sizes the input it opened synchronously', may: ['el', 'titleInputEl.focus', 'titleInputEl.setSelectionRange'] },
+	saveTitle: { reviewed: 'ba5a2acf0d81', why: 'gen against loadGeneration on both arms, and again after the tick that resizes a reopened editor (BUG-3115)' },
 	updateField: {
 		reviewed: 'fd3956618ee4',
 		why: 'stillCurrent() on every arm, the OCC refetch and the open-children confirm',
@@ -374,13 +374,13 @@ const CONTINUATIONS: SignedRow[] = [
 	},
 	{ call: /^queueMicrotask\($/, body: /./, why: 'collab lazy seed: refuses a retired or re-identified context first', reviewed: '5e2ef566eb67' },
 	{ call: /^setTimeout\($/, body: /saveStatus/, in: 'showSaved', code: "() => { saveStatus = 'idle'; }", why: 'cosmetic save-indicator reset', reviewed: 'bd7f1439c3d2', may: ['saveStatus'] },
-	{ call: /^tick\(\)\.then\($/, body: /./, why: 'schedules a focus frame; commits nothing itself', reviewed: 'c64994f64cbb' },
+	{ call: /^tick\(\)\.then\($/, body: /./, why: 'schedules a focus frame; commits nothing itself', reviewed: 'b6f7655cb302' },
 	{
 		call: /^requestAnimationFrame\($/,
 		body: /./,
 		in: 'tick().then(…)',
 		code: '() => editorInstance?.commands.focus()',
-		why: 'focuses the editor after a tab switch', reviewed: '33086db181c5',
+		why: 'focuses the editor after a tab switch', reviewed: 'a6e3cdf6324a',
 		may: ['editorInstance.commands.focus'],
 	},
 	{
@@ -1392,8 +1392,8 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 			// A catch param is a local of the handler, even though the handler is
 			// entered after an await.
 			id: 'a write to the catch param in an unfenced handler',
-			old: "\t\t} catch {\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tsaveStatus = 'idle';\n\t\t\ttoastStore.show('Failed to update title'",
-			new: "\t\t} catch (err) {\n\t\t\terr = null;\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tsaveStatus = 'idle';\n\t\t\ttoastStore.show('Failed to update title'",
+			old: "\t\t} catch (err: any) {\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tsaveStatus = 'idle';\n",
+			new: "\t\t} catch (err: any) {\n\t\t\terr = null;\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tsaveStatus = 'idle';\n",
 		},
 		{
 			// An inlined helper declared inside a block sees that block's names.
