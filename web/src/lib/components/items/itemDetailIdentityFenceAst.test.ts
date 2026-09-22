@@ -92,7 +92,7 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	jumpToSection: { reviewed: '17407aeb431b', why: 'switches this instance\'s tab and scrolls to an anchor', may: ['document.getElementById', 'document.getElementById(anchorId).scrollIntoView'] },
 	ensureGraphComp: { reviewed: 'c1565cfb8a18', why: 'lazy-loads a component module into this instance', may: ['ItemGraphComp', 'graphLoadError'] },
 	handleCopyRef: { reviewed: 'fb3adcaf167a', why: 'switchedAway before the copied flag' },
-	loadData: { reviewed: 'd91fb3958cb7', why: 'IS the load: myGen against loadGeneration after every await' },
+	loadData: { reviewed: '451e2cd3d6e8', why: 'IS the load: myGen against loadGeneration after every await' },
 	startEditTitle: { reviewed: '113d9b9da03f', why: 'focuses and sizes the input it opened synchronously', may: ['el', 'titleInputEl.focus', 'titleInputEl.setSelectionRange'] },
 	saveTitle: { reviewed: '8a6bedbc107a', why: 'gen against loadGeneration on both arms' },
 	updateField: {
@@ -121,16 +121,16 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	updateAssignedUser: { reviewed: '86f060522de1', why: 'gen against loadGeneration on both arms' },
 	updateAgentRole: { reviewed: 'ae4f320cdbab', why: 'gen against loadGeneration on both arms' },
 	flushRawIfPending: {
-		reviewed: 'd2494869c902',
+		reviewed: '39b3b4e91cbd',
 		why: 'genAtFlush against loadGeneration after each PATCH; the re-entrancy waiter returns state; the finally clears this drain\'s own in-flight flag',
 		may: ['rawFlushInFlight'],
 		bareAwaits: ['await new Promise((r) => setTimeout(r, 50));'],
 	},
 	refreshLinksPreservingOnFailure: { reviewed: '28ef88d9c682', why: 'returns a value; its callers fence' },
-	flushCollabBeforeRestore: { reviewed: 'e536ec058fd5', why: 'identityHeld before its failure toast' },
+	flushCollabBeforeRestore: { reviewed: '0d45557c8da9', why: 'identityHeld before its failure toast' },
 	closeCopyDialog: { reviewed: '1c925f081a26', why: 'restores focus after closing synchronously', may: ['paneMenuTrigger.focus'] },
 	closePushDialog: { reviewed: 'bda8c7529677', why: 'restores focus after closing synchronously', may: ['paneMenuTrigger.focus'] },
-	flushContentBeforeCopy: { reviewed: '44ae74e1f4e9', why: 'returns a boolean to the dialog' },
+	flushContentBeforeCopy: { reviewed: 'ea71ea2653cd', why: 'returns a boolean to the dialog' },
 	handleCopied: { reviewed: '66bc98609e3d', why: 'switchedAway before adopting the refreshed item' },
 	handleDelete: { reviewed: 'b66adcf84794', why: 'switchedAway on both arms' },
 	handleRestore: { reviewed: 'c3a1732554a4', why: 'switchedAway on every arm' },
@@ -169,7 +169,7 @@ const NESTED: SignedRow[] = [
 /** Async functions in the markup. */
 const MARKUP: SignedRow[] = [
 	{ body: /startGen/, why: 'Rich toggle: startGen against loadGeneration after each await', reviewed: '63a9cce2ed93' },
-	{ body: /genAtToggle/, why: 'Markdown toggle: genAtToggle against loadGeneration after each await', reviewed: '19614ee2480c' },
+	{ body: /genAtToggle/, why: 'Markdown toggle: genAtToggle against loadGeneration after each await', reviewed: 'd651322b1528' },
 ];
 
 const collapse = (s: string) => s.replace(/\s+/g, ' ');
@@ -336,7 +336,7 @@ const CONTINUATIONS: SignedRow[] = [
 		may: ['renameOverride'],
 	},
 	{ call: /^setTimeout\($/, body: /copied = false/, why: 'copy-flag reset: switchedAway', reviewed: '199047839886' },
-	{ call: /api\.items\.get\(wsSlug, itemSlug\)\.catch\($/, body: /./, why: 'loadData item fetch: sets a flag local to that load and re-throws', reviewed: '11bb17b34c22' },
+	{ call: /api\.items\.get\(wsSlug, itemSlug\)\.catch\($/, body: /./, why: 'loadData item fetch: sets a flag local to that load and re-throws', reviewed: '686654a9efa6' },
 	{
 		call: /^setTimeout\($/,
 		body: /staleConnecting = true/,
@@ -345,14 +345,14 @@ const CONTINUATIONS: SignedRow[] = [
 		why: 'connection state of this instance\'s own provider', reviewed: 'c4d9f3230509',
 		may: ['staleConnecting'],
 	},
-	{ call: /\.get\(refreshCtx\.wsSlug, refreshCtx\.itemId\) \.then\($/, body: /./, why: 'force-refresh fetch: refreshGen against loadGeneration', reviewed: 'dad7156ff5b6' },
-	{ call: /forceRefreshNonce \+= 1; \}\) \.catch\($/, body: /./, why: 'force-refresh failure: refreshGen against loadGeneration', reviewed: 'a27963ab0e32' },
+	{ call: /\.get\(refreshCtx\.wsSlug, refreshCtx\.itemId\) \.then\($/, body: /./, why: 'force-refresh fetch: refreshGen against loadGeneration', reviewed: 'f446482ada25' },
+	{ call: /forceRefreshNonce \+= 1; \}\) \.catch\($/, body: /./, why: 'force-refresh failure: refreshGen against loadGeneration', reviewed: '9875afbc0f08' },
 	{
 		call: /^setTimeout\($/,
 		body: /teardownFlushed/,
 		in: 'onBeforeUnload',
 		code: '() => { teardownFlushed = false; }',
-		why: 're-arms the BUG-3005 teardown latch, itself identity-checked', reviewed: 'c25508ba8261',
+		why: 're-arms the BUG-3005 teardown latch, itself identity-checked', reviewed: 'db5ba014896a',
 		may: ['teardownFlushed'],
 	},
 	{ call: /^queueMicrotask\($/, body: /./, why: 'collab lazy seed: refuses a retired or re-identified context first', reviewed: '5e2ef566eb67' },
@@ -370,16 +370,16 @@ const CONTINUATIONS: SignedRow[] = [
 		call: /^setTimeout\($/,
 		body: /content: toSave \}\)\.then/,
 		in: 'handleContentUpdate',
-		why: 'content debounce: loadData clears this timer before its first await, so the callback never runs across a load', reviewed: 'a770ebbad8d1',
+		why: 'content debounce: loadData clears this timer before its first await, so the callback never runs across a load', reviewed: '992da66e24a1',
 		startSafe: true,
 		pin: (src, unit) => clearsBeforeFirstAwait(src, 'loadData', 'contentDebounceTimer') ?? assignedTo(src, unit, 'contentDebounceTimer'),
 	},
-	{ call: /\{ content: toSave \}\)\.then\($/, body: /^\(\) =>/, why: 'content save: switchedAway', reviewed: 'c6f5c89645db' },
-	{ call: /showSaved\(\); \}\)\.catch\($/, body: /./, why: 'content save failure: switchedAway', reviewed: 'e96323c8ebee' },
-	{ call: /\{ keepalive: true \}\) \.then\($/, body: /./, why: 'raw keepalive save: genAtSave against loadGeneration', reviewed: '0abbaff380e5' },
-	{ call: /localDirty = false; \} \}\) \.catch\($/, body: /^\(\) => \{\}$/, why: 'raw keepalive failure: empty', reviewed: 'e50ab6dcb406' },
-	{ call: /reqItemId, \{ content: toSave \}\)\.then\($/, body: /./, why: 'raw foreground save: genAtSave against loadGeneration', reviewed: '9911d0e1cfee' },
-	{ call: /content: item\.content \}\); \} \}\)\.catch\($/, body: /./, why: 'raw foreground failure: genAtSave against loadGeneration', reviewed: '083f740f76dc' },
+	{ call: /\{ content: toSave \}\)\.then\($/, body: /^\(\) =>/, why: 'content save: switchedAway', reviewed: '7654c1adabca' },
+	{ call: /showSaved\(\); \}\)\.catch\($/, body: /./, why: 'content save failure: switchedAway', reviewed: '18e80b72d9ac' },
+	{ call: /\{ keepalive: true \}\) \.then\($/, body: /./, why: 'raw keepalive save: genAtSave against loadGeneration', reviewed: '18c06bb62bcd' },
+	{ call: /localDirty = false; \} \}\) \.catch\($/, body: /^\(\) => \{\}$/, why: 'raw keepalive failure: empty', reviewed: 'ad9468ea6d29' },
+	{ call: /reqItemId, \{ content: toSave \}\)\.then\($/, body: /./, why: 'raw foreground save: genAtSave against loadGeneration', reviewed: '6f098a1b5fc0' },
+	{ call: /content: item\.content \}\); \} \}\)\.catch\($/, body: /./, why: 'raw foreground failure: genAtSave against loadGeneration', reviewed: 'a5f127faeed6' },
 ];
 
 /**
@@ -398,7 +398,10 @@ const HELPERS: Record<string, string> = {
 	identityHeld: '1c5505d51f73',
 	navigateToCollectionRoot: '64dce75693d3',
 	refreshPrintMeta: '2312cc481ca5',
-	runTeardownFlush: '8c6faa52b52e',
+	runTeardownFlush: '60ff925f14db',
+	// BUG-3124 unit B: the cursor-advance settle. Synchronous; arms the flusher's
+	// single timer only for the current, identity-held context.
+	settleCollabIfCurrent: '0d243d24a373',
 	showSaved: '3f1ef91fac07',
 	switchedAway: '8ba85844f406',
 	withInflightTags: '11523b4d849a',
