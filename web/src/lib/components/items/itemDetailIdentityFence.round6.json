@@ -491,8 +491,8 @@
 			"class": 8,
 			"subs": [
 				[
-					"\t\t\t\t\ttags: JSON.stringify(toSave)\n\t\t\t\t});\n",
-					"\t\t\t\t\ttags: JSON.stringify(toSave)\n\t\t\t\t});\n\t\t\t\tsaver.epoch = captureIdentity();\n"
+					"\t\t\t\tconst fresh = await sendTagBatch(saver);\n",
+					"\t\t\t\tconst fresh = await sendTagBatch(saver);\n\t\t\t\tsaver.epoch = captureIdentity();\n"
 				]
 			],
 			"refuses": [

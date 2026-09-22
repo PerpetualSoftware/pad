@@ -74,7 +74,7 @@
 			]
 		},
 		{
-			"id": "R10-E a component-level class declaring a name a unit references (JSON, which flushTagSaver calls)",
+			"id": "R10-E a component-level class declaring a name a unit references (JSON, which sendTagBatch calls; flushTagSaver did before BUG-3143 moved the PATCH)",
 			"subs": [
 				[
 					"\tlet loadGeneration = 0;\n",
@@ -82,7 +82,7 @@
 				]
 			],
 			"refuses": [
-				"flushTagSaver() has changed since its row was reviewed"
+				"sendTagBatch() has changed since its row was reviewed"
 			]
 		},
 		{
@@ -106,7 +106,7 @@
 				]
 			],
 			"refuses": [
-				"flushTagSaver() has changed since its row was reviewed"
+				"sendTagBatch() has changed since its row was reviewed"
 			]
 		}
 	]
