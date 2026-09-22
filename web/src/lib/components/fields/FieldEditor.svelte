@@ -788,6 +788,26 @@ handlers — onchange is never called.
 	// hasPending and clears it — cancelling every keystroke before the
 	// debounce can fire. Per Codex review round 4 [P1].
 	let hasPending = false;
+	// Whose burst the pending value is (BUG-3130). Captured at the burst's FIRST
+	// keystroke: the timer and the blur flush both send it later, and a sign-out
+	// and a different sign-in while the field stays mounted must not send one
+	// user's typing as the next. Plain let for the same reason as `hasPending`.
+	let pendingIdentity: (() => boolean) | null = null;
+
+	/**
+	 * Drop a pending burst typed under a previous identity — the value AND its
+	 * on-screen display, which is that user's text. True when nothing was
+	 * dropped.
+	 */
+	function keepBurstIfOurs(): boolean {
+		if (!hasPending || (pendingIdentity?.() ?? true)) return true;
+		clearTimeout(typingTimer);
+		typingTimer = undefined;
+		pendingValue = undefined;
+		hasPending = false;
+		typedDisplay = null;
+		return false;
+	}
 
 	/**
 	 * What the typed path last SENT, stamped with the item it was sent for, and
@@ -890,11 +910,14 @@ handlers — onchange is never called.
 	}
 
 	function scheduleSave(next: any) {
+		keepBurstIfOurs();
+		if (!hasPending) pendingIdentity = authStore.identityFence();
 		pendingValue = next;
 		hasPending = true;
 		clearTimeout(typingTimer);
 		typingTimer = setTimeout(() => {
 			typingTimer = undefined;
+			if (!keepBurstIfOurs()) return;
 			const v = pendingValue;
 			pendingValue = undefined;
 			hasPending = false;
@@ -903,7 +926,7 @@ handlers — onchange is never called.
 	}
 
 	function flushPendingSave() {
-		if (!hasPending) return;
+		if (!keepBurstIfOurs() || !hasPending) return;
 		clearTimeout(typingTimer);
 		typingTimer = undefined;
 		const v = pendingValue;
@@ -1096,6 +1119,8 @@ handlers — onchange is never called.
 		// `5` then `+1` into `oldValue + 1` and the typed 5 is gone (codex round 1,
 		// finding 1 — pre-existing, and reachable now that `awaitingEcho` records
 		// the missing middle case).
+		// A burst typed under a previous identity is not a base to step from.
+		keepBurstIfOurs();
 		const base = hasPending
 			? Number(pendingValue) || 0
 			: awaitingEcho

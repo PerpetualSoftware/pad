@@ -108,9 +108,11 @@
  *       MARKUP (this guard walks the script only). None is modelled or
  *       enumerated. Measured on the BUG-3130 tree over the 25 files: `for await`
  *       0, `queueMicrotask` 0, `requestAnimationFrame` 3, `setTimeout(` 15,
- *       `setInterval(` 2, `addEventListener(` 10; the adversarial round that
- *       raised the class found none of them sending or committing anything
- *       identity-scoped unfenced. Left as a gap rather than a third table
+ *       `setInterval(` 2, `addEventListener(` 10. One of them WAS a live
+ *       member: `FieldEditor`'s typed-save debounce timer (and the blur flush
+ *       of the same burst) sent a value typed under one identity as the next
+ *       identity's edit — found by codex round 5, fixed in BUG-3130 with a
+ *       fence captured at the burst's first keystroke. Left as a gap rather than a third table
  *       because timers and listeners are mostly UI, and a table of them would
  *       be read as coverage of the effects they schedule, which it would not be.
  *   (h) WHAT A TABLE ROW PINS (codex round 4 on BUG-3130). A row in
