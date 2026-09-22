@@ -26,6 +26,7 @@
 	import { sseService } from '$lib/services/sse.svelte';
 	import { syncService } from '$lib/services/sync.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
+	import { titleLimitError } from '$lib/items/titleLimit';
 	import ShareDialog from '$lib/components/ShareDialog.svelte';
 	import EditCollectionModal from '$lib/components/collections/EditCollectionModal.svelte';
 	import Modal from '$lib/components/common/Modal.svelte';
@@ -2362,6 +2363,13 @@
 		if (!wsSlug || !collSlug) return null;
 		const trimmed = title.trim();
 		if (!trimmed) return null;
+		// BUG-3115: refuse a too-long title before sending. THROWN, like a
+		// server refusal, because that is what keeps the caller's draft text.
+		const limitError = titleLimitError(trimmed);
+		if (limitError) {
+			toastStore.show(limitError, 'error');
+			throw new Error(limitError);
+		}
 		const epochAtEntry = captureIdentity();
 		try {
 			// BUG-3078: the status default goes through the declared type.
@@ -2566,6 +2574,12 @@
 	async function quickCreate() {
 		const title = quickCreateTitle.trim();
 		if (!title || !wsSlug || !collSlug || creatingNew) return;
+		// BUG-3115: refuse a too-long title before sending; the input keeps it.
+		const limitError = titleLimitError(title);
+		if (limitError) {
+			toastStore.show(limitError, 'error');
+			return;
+		}
 		const epochAtEntry = captureIdentity();
 		creatingNew = true;
 		try {

@@ -15,6 +15,7 @@
 	import { getActiveKey } from '$lib/nav/destinations';
 	import type { Collection } from '$lib/types';
 	import { toastStore } from '$lib/stores/toast.svelte';
+	import { titleLimitError } from '$lib/items/titleLimit';
 	import NotificationPanel from '$lib/components/common/NotificationPanel.svelte';
 	import CreateCollectionModal from '$lib/components/collections/CreateCollectionModal.svelte';
 	import { isBlockedByModal } from '$lib/a11y/viewerBackdrop';
@@ -24,6 +25,10 @@
 	let quickAddCollection = $state<Collection | null>(null);
 	let quickAddTitle = $state('');
 	let quickAddInputEl = $state<HTMLTextAreaElement>();
+	// BUG-3115: a refused create keeps the dialog and the typed title, with
+	// the reason shown here rather than in a toast over a closed dialog.
+	let quickAddError = $state<string | null>(null);
+	let quickAddSubmitting = $state(false);
 	let pickerOpen = $state(false);
 	let pickerHighlight = $state(0);
 	let pillRef = $state<HTMLButtonElement>();
@@ -130,6 +135,7 @@
 	function startQuickAdd(coll: Collection) {
 		quickAddCollection = coll;
 		quickAddTitle = '';
+		quickAddError = null;
 		pickerOpen = false;
 	}
 
@@ -153,14 +159,26 @@
 	function cancelQuickAdd() {
 		quickAddCollection = null;
 		quickAddTitle = '';
+		quickAddError = null;
 		pickerOpen = false;
 	}
 
 	async function submitQuickAdd() {
-		if (!wsSlug || !quickAddCollection || !quickAddTitle.trim()) return;
+		if (!wsSlug || !quickAddCollection || !quickAddTitle.trim() || quickAddSubmitting) return;
 		const coll = quickAddCollection;
 		const title = quickAddTitle.trim();
-		cancelQuickAdd();
+		// BUG-3115: this used to close the dialog and clear the text BEFORE the
+		// create, so a refused title was simply gone. The dialog now stays up
+		// until the create lands, and a too-long title is refused here without
+		// a round-trip.
+		const limitError = titleLimitError(title);
+		if (limitError) {
+			quickAddError = limitError;
+			quickAddInputEl?.focus();
+			return;
+		}
+		quickAddError = null;
+		quickAddSubmitting = true;
 		try {
 			const settings = parseSettings(coll);
 			// BUG-3078: the status default goes through the declared type.
@@ -171,14 +189,23 @@
 				fields: JSON.stringify(defaultFields),
 				source: 'web'
 			});
+			// Only close the dialog this submission came from: one the user has
+			// since dismissed or reopened is theirs, not ours.
+			if (quickAddCollection === coll) cancelQuickAdd();
 			uiStore.onNavigate();
 			goto(`${wsPrefix}/${coll.slug}/${itemUrlId(item)}?new=1`);
 		} catch (err: any) {
 			if (isPlanLimitError(err)) {
 				toastStore.show(planLimitMessage(err) + ' Upgrade to Pro', 'error', 6000, '/console/billing');
+			} else if (quickAddCollection === coll) {
+				// Still open on the text that was refused: say why, in place.
+				quickAddError = err?.message || 'Failed to create item';
+				quickAddInputEl?.focus();
 			} else {
 				toastStore.show(err?.message || 'Failed to create item', 'error');
 			}
+		} finally {
+			quickAddSubmitting = false;
 		}
 	}
 
@@ -766,14 +793,19 @@
 				bind:this={quickAddInputEl}
 				bind:value={quickAddTitle}
 				onkeydown={handleQuickAddKeydown}
-				oninput={(e) => { const el = e.currentTarget; el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; }}
+				oninput={(e) => { quickAddError = null; const el = e.currentTarget; el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; }}
+				aria-invalid={quickAddError ? 'true' : undefined}
+				aria-describedby={quickAddError ? 'quick-add-error' : undefined}
 			></textarea>
+			{#if quickAddError}
+				<p id="quick-add-error" class="quick-add-error" role="alert">{quickAddError}</p>
+			{/if}
 			<div class="quick-add-actions">
 				<span class="quick-add-hint">Enter to create · Esc to cancel</span>
 				<button
 					class="quick-add-btn"
 					type="button"
-					disabled={!quickAddTitle.trim()}
+					disabled={!quickAddTitle.trim() || quickAddSubmitting}
 					onclick={submitQuickAdd}
 				>Create</button>
 			</div>
@@ -1077,6 +1109,11 @@
 	.quick-add-hint {
 		font-size: 0.75em;
 		color: var(--text-muted);
+	}
+	.quick-add-error {
+		margin: var(--space-2) 0 0;
+		font-size: 0.8em;
+		color: var(--accent-red);
 	}
 	.quick-add-btn {
 		padding: var(--space-2) var(--space-4);

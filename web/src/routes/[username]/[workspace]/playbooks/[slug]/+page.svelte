@@ -4,6 +4,7 @@
 	import { api } from '$lib/api/client';
 	import { parseFields, parseSchema, itemUrlId, type Collection, type Item } from '$lib/types';
 	import { toastStore } from '$lib/stores/toast.svelte';
+	import { titleLimitError } from '$lib/items/titleLimit';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import { exportAndDownloadArtifact } from '$lib/utils/artifacts';
 	import PlaybookFormFields from '$lib/components/playbooks/PlaybookFormFields.svelte';
@@ -182,6 +183,12 @@
 
 	async function save() {
 		if (!item) return;
+		// BUG-3115: refuse a too-long title before sending; the form keeps it.
+		const limitError = titleLimitError(title.trim());
+		if (limitError) {
+			toastStore.show(limitError, 'error');
+			return;
+		}
 		saving = true;
 		try {
 			// BUG-3049: name the five keys this editor owns and send nothing
@@ -217,8 +224,8 @@
 			});
 			toastStore.show('Playbook saved', 'success');
 			goto(`/${username}/${wsSlug}/playbooks`);
-		} catch {
-			toastStore.show('Failed to save playbook', 'error');
+		} catch (err) {
+			toastStore.show((err as Error)?.message || 'Failed to save playbook', 'error');
 		} finally {
 			saving = false;
 		}

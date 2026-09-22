@@ -1606,6 +1606,11 @@ type ItemLinkCreate struct {
 // without being validated against it. Legacy titles at rest are out of scope
 // here; making the bound global would be a count-then-repair sweep over
 // existing rows, not a change to any door.
+//
+// The web checks typed titles against a copy of this bound before sending them
+// (web/src/lib/items/titleLimit.ts, BUG-3115). Change both together:
+// testdata/item_title_limit.json is asserted by a test in each language, so
+// changing only one fails a test.
 const MaxItemTitleRunes = 255
 
 // NormalizeItemTitle is the canonical normalization for an item title:

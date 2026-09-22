@@ -8,6 +8,7 @@
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
+	import { titleLimitError } from '$lib/items/titleLimit';
 	import type { Item, Collection, PaneTarget } from '$lib/types';
 	import { parseFields, parseSchema, formatItemRef } from '$lib/types';
 	import { collectionsNotStaleFor, categoricalValueFor } from '$lib/collections/categoricalFieldValue';
@@ -585,6 +586,12 @@
 		const title = createTitle.trim();
 		const collSlug = createCollSlug;
 		if (!title || !collSlug || creating) return;
+		// BUG-3115: refuse a too-long title before sending; the form keeps it.
+		const limitError = titleLimitError(title);
+		if (limitError) {
+			toastStore.show(limitError, 'error');
+			return;
+		}
 		// DR-6b: capture the REQUEST identity (workspace + item) BEFORE the
 		// await; bail after it if the instance was destroyed or the pane
 		// navigated. This is a NAVIGATION fence — it was described as an

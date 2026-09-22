@@ -6,6 +6,7 @@
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
+	import { titleLimitError } from '$lib/items/titleLimit';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { itemUrlId, isAgentCollection } from '$lib/types';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
@@ -164,6 +165,12 @@
 
 	async function submitNewItem() {
 		if (!newItemTitle.trim() || !newItemCollectionSlug || newItemSaving) return;
+		// BUG-3115: refuse a too-long title before sending; the form keeps it.
+		const limitError = titleLimitError(newItemTitle.trim());
+		if (limitError) {
+			toastStore.show(limitError, 'error');
+			return;
+		}
 		// `pageIdentityHeld()` as well as an entry capture, for the reason
 		// `handleDndFinalize` gives (codex round 2 [P1]). The collection and the
 		// title were chosen by whoever filled this form in, against the
@@ -191,7 +198,9 @@
 			if (isPlanLimitError(err)) {
 				toastStore.show(planLimitMessage(err) + ' Upgrade to Pro', 'error', 6000, '/console/billing');
 			} else {
-				console.error('Failed to create item:', err);
+				// BUG-3115: this used to be console-only, so a refusal looked
+				// like a button that did nothing.
+				toastStore.show((err as Error)?.message || 'Failed to create item', 'error');
 			}
 		} finally {
 			// FENCED, unlike `loadData`'s busy flag, and the asymmetry is the

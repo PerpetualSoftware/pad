@@ -6,6 +6,7 @@
 	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
+	import { titleLimitError } from '$lib/items/titleLimit';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import { toBlockquote } from '$lib/utils/markdown';
 
@@ -187,6 +188,14 @@
 
 	async function handleCreate() {
 		if (!editor || !title.trim()) return;
+		// BUG-3115: a long selection seeds a title the server would refuse.
+		// Say so here; the full selection still becomes the body once the
+		// title is shortened.
+		const limitError = titleLimitError(title.trim());
+		if (limitError) {
+			errorMsg = limitError;
+			return;
+		}
 		creating = true;
 		errorMsg = '';
 

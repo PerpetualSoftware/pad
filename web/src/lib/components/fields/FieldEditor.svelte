@@ -24,6 +24,7 @@ handlers — onchange is never called.
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
+	import { titleLimitError } from '$lib/items/titleLimit';
 	import { api } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import ItemPicker from '$lib/components/items/ItemPicker.svelte';
@@ -543,6 +544,13 @@ handlers — onchange is never called.
 		const ws = wsSlug;
 		const collSlug = field.collection;
 		if (!ws || !collSlug) return;
+		// BUG-3115: refuse a too-long title before sending; the picker keeps
+		// the query.
+		const limitError = titleLimitError(title);
+		if (limitError) {
+			toastStore.show(limitError, 'error');
+			return;
+		}
 		// Two fences on the completion, both found by codex round 1 P1, both
 		// about the same gap: the create is a round trip and the picker stays
 		// open across it, so the world can move before it lands.

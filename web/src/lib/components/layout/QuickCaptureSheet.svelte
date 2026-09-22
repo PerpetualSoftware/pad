@@ -19,6 +19,7 @@
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
+	import { titleLimitError } from '$lib/items/titleLimit';
 	import { parseSettings, itemUrlId, isAgentCollection } from '$lib/types';
 	import { createDefaultFields } from '$lib/collections/createDefaults';
 	import DockedSheet from '$lib/components/layout/DockedSheet.svelte';
@@ -66,6 +67,12 @@
 		if (!wsSlug || !selectedSlug || !title.trim() || submitting) return;
 		const coll = collections.find((c) => c.slug === selectedSlug);
 		if (!coll) return;
+		// BUG-3115: refuse a too-long title before sending; the sheet keeps it.
+		const limitError = titleLimitError(title.trim());
+		if (limitError) {
+			toastStore.show(limitError, 'error');
+			return;
+		}
 		submitting = true;
 		const t = title.trim();
 		try {
