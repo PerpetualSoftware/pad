@@ -29,6 +29,10 @@
 	// the reason shown here rather than in a toast over a closed dialog.
 	let quickAddError = $state<string | null>(null);
 	let quickAddSubmitting = $state(false);
+	// Which opening of the dialog a submission belongs to. The collection is
+	// not enough: dismissing and reopening the SAME collection mid-request
+	// would let the old response clear the new text (codex round 1, BUG-3115).
+	let quickAddSession = 0;
 	let pickerOpen = $state(false);
 	let pickerHighlight = $state(0);
 	let pillRef = $state<HTMLButtonElement>();
@@ -133,6 +137,7 @@
 	}
 
 	function startQuickAdd(coll: Collection) {
+		quickAddSession++;
 		quickAddCollection = coll;
 		quickAddTitle = '';
 		quickAddError = null;
@@ -157,6 +162,7 @@
 	}
 
 	function cancelQuickAdd() {
+		quickAddSession++;
 		quickAddCollection = null;
 		quickAddTitle = '';
 		quickAddError = null;
@@ -179,6 +185,7 @@
 		}
 		quickAddError = null;
 		quickAddSubmitting = true;
+		const session = quickAddSession;
 		try {
 			const settings = parseSettings(coll);
 			// BUG-3078: the status default goes through the declared type.
@@ -191,13 +198,13 @@
 			});
 			// Only close the dialog this submission came from: one the user has
 			// since dismissed or reopened is theirs, not ours.
-			if (quickAddCollection === coll) cancelQuickAdd();
+			if (quickAddSession === session) cancelQuickAdd();
 			uiStore.onNavigate();
 			goto(`${wsPrefix}/${coll.slug}/${itemUrlId(item)}?new=1`);
 		} catch (err: any) {
 			if (isPlanLimitError(err)) {
 				toastStore.show(planLimitMessage(err) + ' Upgrade to Pro', 'error', 6000, '/console/billing');
-			} else if (quickAddCollection === coll) {
+			} else if (quickAddSession === session) {
 				// Still open on the text that was refused: say why, in place.
 				quickAddError = err?.message || 'Failed to create item';
 				quickAddInputEl?.focus();

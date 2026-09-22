@@ -2,9 +2,13 @@
 //
 // The server refuses a title longer than models.MaxItemTitleRunes (255) with a
 // 400 whose message is "Title is too long: N characters, maximum 255"
-// (internal/models/item.go, ValidateItemTitle). Every web door that sends a
-// typed title checks it here first, so the common case needs no round-trip
-// and the user's text never leaves the input it was typed into. The refusal
+// (internal/models/item.go, ValidateItemTitle). Every UI door where a user
+// types (or selects) a title checks it here first, so the common case needs no
+// round-trip and the user's text never leaves the input it was typed into.
+// Not covered: WebMCP's agent-supplied titles (the server's refusal is returned
+// to the agent verbatim) and generated titles such as a playbook's "(copy)".
+// Length only: an empty title is refused by each door's own emptiness check,
+// or by the server's "Title is required". The refusal
 // path at each door is still the backstop — this check is a courtesy, the
 // server is the authority.
 //

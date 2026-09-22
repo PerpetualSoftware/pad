@@ -337,7 +337,7 @@
 			if (isPlanLimitError(err)) {
 				toastStore.show(planLimitMessage(err) + ' Upgrade to Pro', 'error', 6000, '/console/billing');
 			} else {
-				toastStore.show('Failed to duplicate playbook', 'error');
+				toastStore.show((err as Error)?.message || 'Failed to duplicate playbook', 'error');
 			}
 		} finally { duplicating = null; }
 	}
