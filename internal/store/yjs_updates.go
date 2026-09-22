@@ -111,15 +111,24 @@ func (s *Store) AppendSyncFrame(itemID string, data []byte, schemaVersion string
 	hash := yjsFrameHash(data)
 	bearing := !yjsFrameIsEnvelopeNonContent(data)
 	if bearing {
-		exact, err := s.yjsExactEarlierRowQ(s.db, itemID, data, hash, 0)
-		if err != nil {
+		// ONE statement answers both "is there an exact twin" and "what is
+		// MAX(id)", so no delete can land between them (codex round 1). Every
+		// op-log delete path removes ALL of an item's rows, so a delete after
+		// this statement would have removed an inserted copy too: under any
+		// interleaving the skip is exactly as durable as the insert it replaces.
+		// (Those paths are also fenced from a live readLoop — appendMu, the
+		// restore freeze, GC skipping items with a room — but this does not
+		// rely on that.)
+		var maxID int64
+		var exact bool
+		if err := s.db.QueryRow(s.q(`
+			SELECT COALESCE(MAX(id), 0),
+			       EXISTS (SELECT 1 FROM item_yjs_updates
+			               WHERE item_id = ? AND content_hash = ? AND update_data = ?)
+			FROM item_yjs_updates WHERE item_id = ?`), itemID, hash, data, itemID).Scan(&maxID, &exact); err != nil {
 			return SyncFrameAppend{}, fmt.Errorf("append sync frame (duplicate check): %w", err)
 		}
 		if exact {
-			var maxID int64
-			if err := s.db.QueryRow(s.q(`SELECT COALESCE(MAX(id), 0) FROM item_yjs_updates WHERE item_id = ?`), itemID).Scan(&maxID); err != nil {
-				return SyncFrameAppend{}, fmt.Errorf("append sync frame (max id): %w", err)
-			}
 			return SyncFrameAppend{ID: maxID, Persisted: false}, nil
 		}
 		// Not an exact duplicate; the subtype twin is the other half of
