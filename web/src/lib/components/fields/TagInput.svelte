@@ -95,9 +95,14 @@
 		{#if showSuggestions && filteredSuggestions.length > 0}
 			<div class="tag-suggestions">
 				{#each filteredSuggestions as s (s)}
+					<!-- Not a tab stop (BUG-3148): a suggestion is picked by POINTER only
+					     (onmousedown, so the input keeps focus), and the list unmounts
+					     120ms after the input blurs, so tabbing onto one lands focus on
+					     a button that is about to disappear, dropping it to <body>. -->
 					<button
 						type="button"
 						class="tag-suggestion"
+						tabindex="-1"
 						onmousedown={(e) => {
 							e.preventDefault();
 							addTag(s);
