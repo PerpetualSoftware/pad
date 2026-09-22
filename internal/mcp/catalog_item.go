@@ -311,147 +311,147 @@ const padItemToolDescription = `Item operations — the consolidated CRUD + rela
 
 Actions:
   create        — Create a new item.
-                  Required: collection, title.
-                  Optional: status, priority, category, content, parent, role, assign, tags,
-                  field, fields.
-                  Use the dedicated top-level params (status / priority / category / parent
-                  / role / assign / tags) for those named fields — the dispatcher rolls
-                  them into the item's fields JSON automatically. The 'field' param is
-                  the escape hatch for SCHEMA-DECLARED custom fields without a dedicated
-                  param; accepts an array of "key=value" strings. The 'fields' OBJECT
-                  (the same shape reads return, e.g. {"status":"done","effort":"l"}) is
-                  an equivalent write form; the same key with CONFLICTING values in two
-                  places is refused rather than resolved.
-                  The 'tags' param accepts a JSON array of strings (e.g. ["v1","frontend"])
-                  — NOT a comma-separated string.
+    Required: collection, title.
+    Optional: status, priority, category, content, parent, role, assign, tags,
+    field, fields.
+    Use the dedicated top-level params (status / priority / category / parent
+    / role / assign / tags) for those named fields — the dispatcher rolls
+    them into the item's fields JSON automatically. The 'field' param is
+    the escape hatch for SCHEMA-DECLARED custom fields without a dedicated
+    param; accepts an array of "key=value" strings. The 'fields' OBJECT
+    (the same shape reads return, e.g. {"status":"done","effort":"l"}) is
+    an equivalent write form; the same key with CONFLICTING values in two
+    places is refused rather than resolved.
+    The 'tags' param accepts a JSON array of strings (e.g. ["v1","frontend"])
+    — NOT a comma-separated string.
   update        — Update an item by ref.
-                  Required: ref. At least one mutable field.
-                  Writing 'content' while a browser tab has the item open sends the
-                  markdown to that live document first; the stored copy is updated
-                  only by a later collab-snapshot flush — usually from the tab that
-                  applied it, though any such write updates the row — and nothing
-                  guarantees one happens. The
-                  response echoes the content you SENT and carries
-                  warnings.content_outcome="applied_pending_flush", which describes
-                  this WRITE — the content went to the document, not the row — and is
-                  not a live reading of the row, which a concurrent flush may already
-                  have updated. A 'get' (or
-                  'list' with full=true — a default list carries no content at all)
-                  before such a flush lands reads the stored copy and answers with the PREVIOUS
-                  content: the lag, not a failed write, so do not re-send on the
-                  strength of it. The stored form may also not be byte-identical to what
-                  you sent, since the markdown round-trips through the editor, so compare
-                  on meaning rather than bytes.
-                  Optional: title, status, priority, content, role, assign, parent, comment, tags,
-                  field, fields, expected_seq, expected_updated_at, overwrite_pending_edits.
-                  Same placement rules as create. Field updates are applied as a
-                  field-level MERGE server-side (only the keys you set change; the
-                  rest are preserved), so concurrent single-field updates no longer
-                  clobber each other. Pass expected_seq (the seq you last read — it is
-                  on every item AND every list summary) to make the update fail with
-                  code=update_conflict if the item changed since; the error details
-                  carry actual_seq to retry with. PREFER IT over expected_updated_at,
-                  which is stored at one-second resolution: two writes inside one
-                  second both match that token, so neither conflicts and the loser
-                  silently overwrites the winner (BUG-3037). Optimistic concurrency
-                  for coordinating agents.
+    Required: ref. At least one mutable field.
+    Writing 'content' while a browser tab has the item open sends the
+    markdown to that live document first; the stored copy is updated
+    only by a later collab-snapshot flush — usually from the tab that
+    applied it, though any such write updates the row — and nothing
+    guarantees one happens. The
+    response echoes the content you SENT and carries
+    warnings.content_outcome="applied_pending_flush", which describes
+    this WRITE — the content went to the document, not the row — and is
+    not a live reading of the row, which a concurrent flush may already
+    have updated. A 'get' (or
+    'list' with full=true — a default list carries no content at all)
+    before such a flush lands reads the stored copy and answers with the PREVIOUS
+    content: the lag, not a failed write, so do not re-send on the
+    strength of it. The stored form may also not be byte-identical to what
+    you sent, since the markdown round-trips through the editor, so compare
+    on meaning rather than bytes.
+    Optional: title, status, priority, content, role, assign, parent, comment, tags,
+    field, fields, expected_seq, expected_updated_at, overwrite_pending_edits.
+    Same placement rules as create. Field updates are applied as a
+    field-level MERGE server-side (only the keys you set change; the
+    rest are preserved), so concurrent single-field updates no longer
+    clobber each other. Pass expected_seq (the seq you last read — it is
+    on every item AND every list summary) to make the update fail with
+    code=update_conflict if the item changed since; the error details
+    carry actual_seq to retry with. PREFER IT over expected_updated_at,
+    which is stored at one-second resolution: two writes inside one
+    second both match that token, so neither conflicts and the loser
+    silently overwrites the winner (BUG-3037). Optimistic concurrency
+    for coordinating agents.
   delete        — Archive an item.
-                  Required: ref.
+    Required: ref.
   restore       — Un-archive (restore) a soft-deleted item by ref.
-                  Required: ref.
+    Required: ref.
   get           — Read an item.
-                  Required: ref.
+    Required: ref.
   list          — List items, optionally filtered.
-                  Optional: collection, status, priority, parent, unparented, role, assign, all, limit, full.
-                  parent and unparented are mutually exclusive. Results are
-                  summary-shaped (no content bodies) unless full=true.
+    Optional: collection, status, priority, parent, unparented, role, assign, all, limit, full.
+    parent and unparented are mutually exclusive. Results are
+    summary-shaped (no content bodies) unless full=true.
   move          — Move an item to a different collection.
-                  Required: ref, target_collection.
+    Required: ref, target_collection.
   link          — Create a relationship between two items.
-                  Required: ref, target, link_type.
-                  link_type: blocks | blocked-by | supersedes | implements | split-from.
+    Required: ref, target, link_type.
+    link_type: blocks | blocked-by | supersedes | implements | split-from.
   unlink        — Remove a relationship.
-                  Required: ref, target, link_type.
+    Required: ref, target, link_type.
   deps          — Show all dependencies (incoming + outgoing) for an item.
-                  Required: ref.
+    Required: ref.
   remind        — Arm a one-shot reminder that fires at a specific instant.
-                  Required: ref, remind_at (RFC3339 INSTANT — a bare date is
-                  refused, since it names a 24-hour span rather than a moment).
-                  When it fires, the item appears in pad_project next/ready
-                  carrying the reminder_id, until you acknowledge it. Use this
-                  when you defer work: it is how you ask to be reminded.
+    Required: ref, remind_at (RFC3339 INSTANT — a bare date is
+    refused, since it names a 24-hour span rather than a moment).
+    When it fires, the item appears in pad_project next/ready
+    carrying the reminder_id, until you acknowledge it. Use this
+    when you defer work: it is how you ask to be reminded.
   ack-reminder  — Acknowledge a fired reminder so it leaves next/ready.
-                  Required: reminder_id (from the fired suggestion, or from
-                  the response when you armed it — NOT the item ref, since an
-                  item can carry several reminders).
-                  Nothing else acknowledges one: completing the item does not,
-                  because a reminder may have been armed to fire after the
-                  work was done.
+    Required: reminder_id (from the fired suggestion, or from
+    the response when you armed it — NOT the item ref, since an
+    item can carry several reminders).
+    Nothing else acknowledges one: completing the item does not,
+    because a reminder may have been armed to fire after the
+    work was done.
   claim         — Atomically claim an item for execution (lease with expiry).
-                  Required: ref. Optional: holder (default: you), ttl (Go
-                  duration, default 15m, max 24h).
-                  Exactly one concurrent claimer wins; the loser gets a 409
-                  naming the live holder and expiry — log it and skip, don't
-                  retry in a loop. Re-claim while you hold it to extend the
-                  expiry (heartbeat). The lease expires on its own: a crashed
-                  holder blocks nobody past the TTL, and there is no reaper
-                  to wait for.
+    Required: ref. Optional: holder (default: you), ttl (Go
+    duration, default 15m, max 24h).
+    Exactly one concurrent claimer wins; the loser gets a 409
+    naming the live holder and expiry — log it and skip, don't
+    retry in a loop. Re-claim while you hold it to extend the
+    expiry (heartbeat). The lease expires on its own: a crashed
+    holder blocks nobody past the TTL, and there is no reaper
+    to wait for.
   release       — Release an item's execution lease when you finish.
-                  Required: ref. Optional: holder (must match the live
-                  holder; releasing someone else's live lease is refused).
-                  Idempotent: releasing an absent or expired lease answers
-                  released:false with no error, so cleanup never needs to
-                  check first.
+    Required: ref. Optional: holder (must match the live
+    holder; releasing someone else's live lease is refused).
+    Idempotent: releasing an absent or expired lease answers
+    released:false with no error, so cleanup never needs to
+    check first.
   star          — Star an item for quick access.
-                  Required: ref.
+    Required: ref.
   unstar        — Remove star.
-                  Required: ref.
+    Required: ref.
   starred       — List starred items.
-                  Optional: all.
+    Optional: all.
   comment       — Add a comment.
-                  Required: ref, message.
-                  Optional: reply_to (comment ID for threaded reply).
+    Required: ref, message.
+    Optional: reply_to (comment ID for threaded reply).
   list-comments — List comments on an item.
-                  Required: ref.
+    Required: ref.
   backlinks     — List inbound [[...]] references to an item ("Mentioned in").
-                  Required: ref.
-                  Optional: limit (default 50, max 300), offset.
-                  Returns same-workspace rows first, then cross-workspace
-                  rows (each cross-ws row carries source_workspace_slug).
-                  Use this when you need to answer "what other items
-                  reference TASK-5?" without scanning the full content
-                  corpus.
+    Required: ref.
+    Optional: limit (default 50, max 300), offset.
+    Returns same-workspace rows first, then cross-workspace
+    rows (each cross-ws row carries source_workspace_slug).
+    Use this when you need to answer "what other items
+    reference TASK-5?" without scanning the full content
+    corpus.
   history       — Read an item's version history (newest-first, read-only).
-                  Required: ref. Optional: limit (default 50, max 300 —
-                  the NEWEST N versions), full.
-                  Returns a token-light summary per recorded version
-                  (id, created_at, created_by, source, change_summary);
-                  the resolved content body is omitted. Restoring a
-                  version is a web-UI action, not exposed here.
+    Required: ref. Optional: limit (default 50, max 300 —
+    the NEWEST N versions), full.
+    Returns a token-light summary per recorded version
+    (id, created_at, created_by, source, change_summary);
+    the resolved content body is omitted. Restoring a
+    version is a web-UI action, not exposed here.
   bulk-update   — Update status/priority across multiple items.
-                  Required: refs (array of refs, e.g. ["TASK-5", "TASK-8"]),
-                  AND at least one of status / priority.
+    Required: refs (array of refs, e.g. ["TASK-5", "TASK-8"]),
+    AND at least one of status / priority.
   note          — Append an implementation note to an item.
-                  Required: ref, summary.
-                  Optional: details.
+    Required: ref, summary.
+    Optional: details.
   decide        — Record a decision on an item.
-                  Required: ref, decision.
-                  Optional: rationale.
+    Required: ref, decision.
+    Optional: rationale.
   export        — Export a playbook or convention as a portable artifact.
-                  Required: ref (PLAYB-N / CONVE-N, or slug).
-                  Returns the artifact TEXT (YAML frontmatter + Markdown
-                  body) as the tool result — ready to hand to import in
-                  another workspace. Only playbooks and conventions are
-                  exportable; the server rejects any other item type.
-                  Read-only / side-effect-free.
+    Required: ref (PLAYB-N / CONVE-N, or slug).
+    Returns the artifact TEXT (YAML frontmatter + Markdown
+    body) as the tool result — ready to hand to import in
+    another workspace. Only playbooks and conventions are
+    exportable; the server rejects any other item type.
+    Read-only / side-effect-free.
   import        — Import a portable artifact as a new DRAFT item.
-                  Required: artifact (the full artifact text a prior
-                  export produced).
-                  Creates a playbook or convention draft (the server
-                  gates by the artifact's collection) and returns
-                  {ref, slug, warnings}. The item lands as a draft —
-                  review and activate it afterward. Mutating but not
-                  destructive (creates an item, like create).
+    Required: artifact (the full artifact text a prior
+    export produced).
+    Creates a playbook or convention draft (the server
+    gates by the artifact's collection) and returns
+    {ref, slug, warnings}. The item lands as a draft —
+    review and activate it afterward. Mutating but not
+    destructive (creates an item, like create).
 
 ALWAYS prefer issue refs (TASK-5, IDEA-12) over slugs.
 
