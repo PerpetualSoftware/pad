@@ -6,7 +6,8 @@
 // types (or selects) a title checks it here first, so the common case needs no
 // round-trip and the user's text never leaves the input it was typed into.
 // Not covered: WebMCP's agent-supplied titles (the server's refusal is returned
-// to the agent verbatim) and generated titles such as a playbook's "(copy)".
+// to the agent verbatim). A GENERATED title is not checked but bounded instead:
+// see copyTitle below (BUG-3149).
 // Length only: an empty title is refused by each door's own emptiness check,
 // or by the server's "Title is required". The refusal
 // path at each door is still the backstop — this check is a courtesy, the
@@ -62,4 +63,24 @@ export function titleLimitError(title: string): string | null {
 export function titleEditError(sent: string, stored: string): string | null {
 	if (sent === stored || serverTrimmedTitle(sent).join('') === stored) return null;
 	return titleLimitError(sent);
+}
+
+const COPY_SUFFIX = ' (copy)';
+
+/**
+ * The title for a duplicate of an item titled `source`: the source followed by
+ * " (copy)", always within the server's limit (BUG-3149). When the two do not
+ * fit, the SOURCE is cut, by code point after the server's TrimSpace, so that
+ * the suffix survives: it is the only part of the title that tells the copy
+ * from its original. No ellipsis, matching the server's import cut
+ * (internal/store/export.go, importCoercedTitle). Trailing whitespace the cut
+ * exposes is trimmed again, so a cut just after a space gives "foo (copy)",
+ * not "foo  (copy)".
+ */
+export function copyTitle(source: string): string {
+	const room = MAX_ITEM_TITLE_RUNES - Array.from(COPY_SUFFIX).length;
+	const base = serverTrimmedTitle(source).slice(0, room);
+	let end = base.length;
+	while (end > 0 && GO_SPACE.has(base[end - 1].codePointAt(0)!)) end--;
+	return base.slice(0, end).join('') + COPY_SUFFIX;
 }
