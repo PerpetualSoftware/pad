@@ -946,9 +946,14 @@ func TestAnUndecodableMessageEndsThatWorkspacesCoverage(t *testing.T) {
 	}
 	// The buffer is dropped under the bus lock and the reset reported after
 	// it is released, so the poll above can end before the report (BUG-3145).
+	// Exactly one report: the first event establishes coverage without a
+	// reset, so anything else in the history is a wrong report. Reports from
+	// earlier messages are guaranteed to be in it by now (one receive
+	// goroutine, in order); a duplicate issued by the same drop AFTER the
+	// awaited report may not be.
 	resets := obs.awaitReset(t, ResetReasonUndecodableMessage, 3*time.Second)
-	if resets[len(resets)-1] != ResetReasonUndecodableMessage {
-		t.Fatalf("want the drop reported as %s, got %v", ResetReasonUndecodableMessage, resets)
+	if len(resets) != 1 {
+		t.Fatalf("want the drop reported once, as %s, got %v", ResetReasonUndecodableMessage, resets)
 	}
 }
 
@@ -1197,9 +1202,10 @@ func TestAPayloadThatDecodesButIsNotOurEventEndsCoverage(t *testing.T) {
 			}
 			// Same ordering as above: dropped under the lock, reported after it
 			// (BUG-3145).
+			// Exactly one report, as above.
 			resets := obs.awaitReset(t, ResetReasonUndecodableMessage, 3*time.Second)
-			if resets[len(resets)-1] != ResetReasonUndecodableMessage {
-				t.Fatalf("want %s, got %v", ResetReasonUndecodableMessage, resets)
+			if len(resets) != 1 {
+				t.Fatalf("want exactly one %s, got %v", ResetReasonUndecodableMessage, resets)
 			}
 		})
 	}
