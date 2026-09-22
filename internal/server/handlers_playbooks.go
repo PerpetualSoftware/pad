@@ -410,10 +410,13 @@ func (s *Server) handleMatchPlaybook(w http.ResponseWriter, r *http.Request) {
 // logged server-side instead, where only someone who can read server logs
 // sees it.
 //
-// reason is "timeout" for a context deadline (this endpoint's own
-// playbookMatchTimeout, or the caller's request context being cancelled) and
-// "upstream" for everything else — enough for a caller to decide whether
-// retrying later is worth it, without any provider-specific detail.
+// reason is "timeout" for a context DEADLINE — this endpoint's own
+// playbookMatchTimeout — and "upstream" for everything else, including a
+// CANCELLED caller request (context.Canceled is a distinct error from
+// context.DeadlineExceeded and does not match here; it is also moot, since a
+// caller whose own request was cancelled never reads this response body).
+// Coarse enough for a caller to decide whether retrying later is worth it,
+// without any provider-specific detail.
 func writeDecisionProviderError(w http.ResponseWriter, workspaceID string, err error) {
 	slog.Error("playbook match: provider error", "workspace", workspaceID, "error", err)
 	reason := "upstream"
