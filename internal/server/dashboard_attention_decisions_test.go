@@ -37,6 +37,8 @@ func (p *attentionStub) Ask(_ context.Context, state any, qs map[string]decision
 			return 0.9
 		case key == decision.AttentionNeedsHuman && strings.Contains(s, "HUMAN-LOW"):
 			return 0.69
+		case key == decision.AttentionNeedsHuman && strings.Contains(s, "HUMAN-EDGE"):
+			return decision.AttentionThreshold
 		case key == decision.AttentionBlocked && strings.Contains(s, "TEXT-BLOCKED"):
 			return 0.85
 		}
@@ -85,6 +87,7 @@ func TestDashboardAttention_NeedsHumanAtThreshold(t *testing.T) {
 	slug := createWSWithCollections(t, srv)
 	high := createItem(t, srv, slug, "tasks", map[string]interface{}{"title": "Pick vendor HUMAN-HIGH", "fields": `{"status":"open"}`})
 	low := createItem(t, srv, slug, "tasks", map[string]interface{}{"title": "Pick vendor HUMAN-LOW", "fields": `{"status":"open"}`})
+	edge := createItem(t, srv, slug, "tasks", map[string]interface{}{"title": "Pick vendor HUMAN-EDGE", "fields": `{"status":"open"}`})
 	runDecisionTick(t, srv)
 
 	resp := getDashboard(t, srv, slug)
@@ -97,6 +100,9 @@ func TestDashboardAttention_NeedsHumanAtThreshold(t *testing.T) {
 	}
 	if n := len(filterAttention(attentionFor(resp, low.Ref), "needs_human")); n != 0 {
 		t.Errorf("an item at 0.69 (below the 0.7 threshold) was surfaced")
+	}
+	if n := len(filterAttention(attentionFor(resp, edge.Ref), "needs_human")); n != 1 {
+		t.Errorf("an item exactly AT the threshold was not surfaced (entries = %d)", n)
 	}
 	if resp.Degraded {
 		t.Errorf("a healthy provider marked the dashboard degraded: %v", resp.DegradedSections)
@@ -122,6 +128,9 @@ func TestDashboardAttention_TextBlockedJoinsOnlyWhenGraphIsSilent(t *testing.T) 
 	b := filterAttention(attentionFor(resp, both.Ref), "blocked")
 	if len(b) != 1 || !strings.HasPrefix(b[0].Reason, "Blocked by Upstream") {
 		t.Fatalf("graph-blocked item: blocked entries = %+v, want exactly the graph's", b)
+	}
+	if n := len(filterAttention(attentionFor(resp, blocker.Ref), "blocked")); n != 0 {
+		t.Errorf("an item whose blocked answer is 0.1 (below threshold) was surfaced as blocked")
 	}
 	tb := filterAttention(attentionFor(resp, textOnly.Ref), "blocked")
 	if len(tb) != 1 {
