@@ -282,3 +282,39 @@ func TestRelationBlank_BulkMoveCarriesALegacyBlank(t *testing.T) {
 		t.Fatalf("a carried blank must land as absent after a bulk move; got %#v", v)
 	}
 }
+
+// A blank schema DEFAULT on a relation is "no default": it must not satisfy
+// `required` by injection (codex round 1), and on an optional field it leaves
+// the key absent without reporting a drop, since nothing was lost.
+func TestRelationBlank_BlankDefaultIsNoDefault(t *testing.T) {
+	f := newBlankFixture(t)
+	coll := mustSchemaCollection(t, f.srv, f.ws.ID, "Defaulted", fmt.Sprintf(`{"fields":[
+		{"key":"owner","label":"Owner","type":"relation","collection":%q,"required":true,"default":""}
+	]}`, f.people.Slug))
+	rr := f.call(f.srv.handleCreateItem, "POST",
+		"/api/v1/workspaces/"+f.ws.Slug+"/collections/"+coll.Slug+"/items",
+		map[string]string{"collSlug": coll.Slug}, map[string]any{"title": "New"})
+	wantStatus(t, "required with blank default", rr, http.StatusBadRequest)
+
+	opt := mustSchemaCollection(t, f.srv, f.ws.ID, "OptDefaulted", fmt.Sprintf(`{"fields":[
+		{"key":"helper","label":"Helper","type":"relation","collection":%q,"default":"  "}
+	]}`, f.people.Slug))
+	rr = f.call(f.srv.handleCreateItem, "POST",
+		"/api/v1/workspaces/"+f.ws.Slug+"/collections/"+opt.Slug+"/items",
+		map[string]string{"collSlug": opt.Slug}, map[string]any{"title": "New"})
+	wantStatus(t, "optional with blank default", rr, http.StatusCreated)
+	var out struct {
+		ID       string                    `json:"id"`
+		Fields   json.RawMessage           `json:"fields"`
+		Warnings *models.ItemWriteWarnings `json:"warnings"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if out.Warnings != nil && len(out.Warnings.DroppedFields) > 0 {
+		t.Errorf("a blank default loses nothing and must not be reported as dropped: %+v", out.Warnings)
+	}
+	if v, ok := f.storedRelationKey(out.ID, "helper"); ok {
+		t.Fatalf("helper must be absent; got %#v", v)
+	}
+}
