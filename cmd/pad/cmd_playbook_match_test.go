@@ -118,3 +118,70 @@ func TestPlaybookMatchCommand_NoneAndJSON(t *testing.T) {
 		t.Errorf("json choice = %v, want none", raw["choice"])
 	}
 }
+
+// TestPlaybookMatchCommand_LeadingDashNeedsDoubleDash pins the codex-review
+// finding (BUG-3142's class, this command's own instance): text starting
+// with "-" is parsed as a flag by cobra's default flag scanner, both here
+// and over stdio MCP (which shells out to this same command) — so text like
+// "-ship it" must be preceded by "--" to reach the positional arg intact.
+// BOTH directions are asserted: without "--" the command must FAIL (a
+// silently-mistreated dash-led argument would be worse than a clear error),
+// and with "--" the exact text — dash included — must reach MatchPlaybook.
+func TestPlaybookMatchCommand_LeadingDashNeedsDoubleDash(t *testing.T) {
+	var lastText string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/workspaces/ws/playbooks/match", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		lastText, _ = body["text"].(string)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choice": "none", "confidence": 0.5, "probabilities": map[string]float64{"none": 0.5},
+			"options": []map[string]any{},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	setTempHomeMain(t)
+	t.Setenv("PAD_URL", srv.URL)
+	t.Setenv("PAD_TOKEN", "pad_testtoken")
+
+	origWS, origFormat := workspaceFlag, formatFlag
+	t.Cleanup(func() { workspaceFlag, formatFlag = origWS, origFormat })
+	workspaceFlag, formatFlag = "ws", "json"
+
+	const dashText = "-ship it"
+
+	// WITHOUT "--": cobra reads "-ship" as an unrecognized flag and must
+	// refuse, not silently swallow or mangle the text.
+	lastText = ""
+	cmd := playbookMatchCmd()
+	cmd.SetArgs([]string{dashText})
+	var execErr error
+	_ = captureStderr(t, func() {
+		_ = captureStdout(t, func() {
+			execErr = cmd.Execute()
+		})
+	})
+	if execErr == nil {
+		t.Error("playbook match with a leading-dash arg and no -- succeeded; want a flag-parse error")
+	}
+	if lastText != "" {
+		t.Errorf("server received text=%q without --; want no request to have been sent at all", lastText)
+	}
+
+	// WITH "--": the dash-led text reaches MatchPlaybook byte-for-byte.
+	lastText = ""
+	cmd = playbookMatchCmd()
+	cmd.SetArgs([]string{"--", dashText})
+	_ = captureStderr(t, func() {
+		_ = captureStdout(t, func() {
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("playbook match -- %q: %v", dashText, err)
+			}
+		})
+	})
+	if lastText != dashText {
+		t.Errorf("server received text=%q, want %q (the dash preserved)", lastText, dashText)
+	}
+}

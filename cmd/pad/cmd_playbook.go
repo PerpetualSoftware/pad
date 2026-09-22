@@ -249,7 +249,16 @@ of them. Read-only and side-effect-free — nothing is stored or enqueued.
 
 Refuses with 404 (decision_provider_unavailable) when no provider is
 configured for this instance — callers should fall back to slug/trigger
-routing rather than treating that as a hard failure.`,
+routing rather than treating that as a hard failure.
+
+Text is user speech and may start with "-" (a dash-led sentence, or literal
+text like "-ship it"); the flag parser reads a leading "-" as a flag, so put
+"--" before the text to stop that (BUG-3142 tracks this for the CLI/MCP
+stdio surface generally — this command's own help just tells you the
+workaround):
+
+Example:
+  pad playbook match -- "-ship it"`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
