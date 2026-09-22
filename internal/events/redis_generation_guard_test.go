@@ -508,6 +508,10 @@ func TestACollidingRepairIsCaughtBySequenceRatherThanEpoch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the epoch: %v", err)
 	}
+	// This read can run ahead of a report still in flight from a3's fanOut
+	// (delivered under the bus lock, reported after it; BUG-3145), so on its
+	// own it can pass while a wrong reset is on its way. The exact-history
+	// check after space B is the one that cannot: see there.
 	if _, resets := obs.snapshot(); len(resets) != 0 {
 		t.Fatalf("control: a repaired-but-consistent space must report no reset, got %v", resets)
 	}
@@ -538,18 +542,20 @@ func TestACollidingRepairIsCaughtBySequenceRatherThanEpoch(t *testing.T) {
 		t.Fatalf("this test needs the two spaces to share an epoch; got %s then %s", epochA, epochB)
 	}
 
-	_, resets := obs.snapshot()
-	var sawBackward bool
-	for _, r := range resets {
-		if r == ResetReasonCounterBackward {
-			sawBackward = true
-		}
-		if r == ResetReasonEpochRegressed || r == ResetReasonEpochChange {
-			t.Fatalf("the epoch is unchanged, so no epoch-based reason should fire; got %v", resets)
-		}
-	}
-	if !sawBackward {
-		t.Fatalf("a colliding repair must be caught by the SEQUENCE going backwards (%q), got %v",
+	// Waits on the REPORT, not on the delivery above: fanOut delivers under
+	// its lock and reports after releasing it (BUG-3145).
+	//
+	// Then asserts the WHOLE history, not just that the awaited reason is in
+	// it. Every message for ws-1 is fanned out by one receive goroutine, in
+	// order, so once b1's report exists every EARLIER fanOut has reported
+	// too. An exact match therefore catches, deterministically, a wrong reset
+	// from space A that the control above read too early to see, and an
+	// epoch-based reason (the epoch is unchanged, so none may fire). A second
+	// report from b1's OWN fanOut, issued after the awaited one, is caught
+	// only if it lands before this read: that ordering is not guaranteed.
+	resets := obs.awaitReset(t, ResetReasonCounterBackward, 3*time.Second)
+	if len(resets) != 1 {
+		t.Fatalf("a colliding repair must be caught by the SEQUENCE going backwards (%q), and by nothing else; got %v",
 			ResetReasonCounterBackward, resets)
 	}
 
