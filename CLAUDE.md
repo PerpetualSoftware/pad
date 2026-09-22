@@ -258,7 +258,9 @@ pad item unblock <source> <target>
 pad collection list           # List collections
 pad collection create "Name" --fields "key:type[:opts]; ..."  # compact DSL for simple schemas
 pad collection create "Name" --schema '<json>'                # full CollectionSchema (terminal_options, defaults, computed, relations)
-pad item edit <ref>           # Open in $EDITOR
+pad item edit <ref> [--force] # Open in $EDITOR. The save is guarded by the seq it was seeded from (a conflict or failed
+                              # save writes your text to a recovery file and prints its path); refuses a stale body
+                              # (content_state) unless --force (BUG-3035)
 pad workspace init [--template X]  # Create workspace
 pad agent install [tool]      # Install /pad skill for AI tools
 # Workspace onboarding: run `/pad onboard` from an agent session inside the

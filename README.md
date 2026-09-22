@@ -498,7 +498,7 @@ pad item open <ref>                   Open item in web UI
 pad item update <ref>                 Update item fields
 pad item delete <ref>                 Delete item
 pad item move <ref> <collection>      Move item between collections
-pad item edit <ref>                   Open item in $EDITOR
+pad item edit <ref> [--force]         Open item in $EDITOR (guarded save; see --help)
 pad item search "query"               Full-text search across all items
 pad item comment <ref> "text"         Add comment to an item
 pad item comments <ref>               View item comments

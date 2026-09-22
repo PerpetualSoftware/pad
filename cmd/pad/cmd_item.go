@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
@@ -3592,14 +3593,33 @@ func searchCmd() *cobra.Command {
 // --- playbook ---
 
 func editCmd() *cobra.Command {
-	return &cobra.Command{
+	var force bool
+	cmd := &cobra.Command{
 		Use:   "edit <ref>",
 		Short: "Open an item's content in $EDITOR",
 		Long: `Open an item's rich content in your default editor. After editing
 and saving, the content is updated in Pad.
 
 Items can be referenced by issue ID (e.g. TASK-5) or slug.
-Set EDITOR or VISUAL env var to choose your editor (default: vi).`,
+Set EDITOR or VISUAL env var to choose your editor (default: vi).
+
+The save is guarded: it is refused if the stored item was written since
+the editor opened. If it is refused, or the save fails for any other
+reason, your edited text is written to a recovery file and its path is
+printed. Exiting the editor with a nonzero status (e.g. vim's :cq) aborts
+without saving, as git does.
+
+One gap remains: the guard sees writes to the STORED item, and a browser
+tab's unsaved typing is not one until the tab writes it back. The command
+checks for such typing when the editor opens and again just before saving,
+but typing that starts in the moment between that last check and the save
+can still be overwritten.
+
+Refuses to open when the stored body is behind the item's live
+collaborative document (an editor in a browser tab holds edits not yet
+written back), because saving would replace those edits. Open the item
+in a browser tab so it flushes, then retry — or pass --force to edit the
+stored body anyway.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, cfg := getClient()
@@ -3611,13 +3631,26 @@ Set EDITOR or VISUAL env var to choose your editor (default: vi).`,
 				return err
 			}
 
+			// BUG-3035: refuse, don't just warn. The seed would be a body that
+			// predates edits which exist, and the save replaces the WHOLE body.
+			// The concurrency token below cannot catch this: those edits live in
+			// the op-log, not the row, so the row's seq never moved for them.
+			if item.ContentState == models.ContentOutcomeAppliedPendingFlush && !force {
+				return staleEditRefusal(item)
+			}
+
 			// BEFORE the editor opens, not after: this is the only point at which
-			// the warning can still change what the user does (BUG-3033).
+			// the warning can still change what the user does (BUG-3033). Reached
+			// only under --force now.
 			warnStaleEditSeed(item)
 
 			edited, err := cli.OpenInEditor(cfg, item.Content, ".md")
 			if err != nil {
-				return err
+				// A nonzero editor exit is the conventional ABORT (vim's :cq,
+				// honoured by git the same way), so nothing is sent and no
+				// recovery file is written. Say so, rather than leaving the
+				// reader to guess whether anything was saved.
+				return fmt.Errorf("%w — nothing was saved", err)
 			}
 
 			if edited == item.Content {
@@ -3625,11 +3658,37 @@ Set EDITOR or VISUAL env var to choose your editor (default: vi).`,
 				return nil
 			}
 
-			updated, err := client.UpdateItem(ws, slug, models.ItemUpdate{
-				Content: &edited,
-			})
+			// A tab that starts typing while $EDITOR is open appends to the
+			// op-log without touching the row, so the seq token cannot see it
+			// either. Re-read and refuse if that happened. This narrows the
+			// window to the gap between this read and the PATCH; it does not
+			// close it (BUG-3035).
+			if !force {
+				latest, rerr := client.GetItem(ws, slug)
+				if rerr != nil {
+					return saveEditRecovery(item, edited, rerr)
+				}
+				if latest.ContentState == models.ContentOutcomeAppliedPendingFlush {
+					return saveEditRecovery(item, edited, staleEditRefusal(latest))
+				}
+			}
+
+			input := models.ItemUpdate{Content: &edited}
+			// The token is the seq that SEEDED the editor, so any row write
+			// since — another CLI, an API caller, a tab's flush — is refused
+			// rather than overwritten. seq is never 0 on a live row; a 0 means
+			// the server did not report one, and the weaker timestamp is still
+			// better than an unguarded replace of the whole body.
+			if item.Seq >= 1 {
+				seq := item.Seq
+				input.ExpectedSeq = &seq
+			} else if !item.UpdatedAt.IsZero() {
+				input.ExpectedUpdatedAt = item.UpdatedAt.UTC().Format(time.RFC3339)
+			}
+
+			updated, err := client.UpdateItem(ws, slug, input)
 			if err != nil {
-				return err
+				return saveEditRecovery(item, edited, err)
 			}
 
 			warnUndeclaredFields(updated)
@@ -3644,6 +3703,96 @@ Set EDITOR or VISUAL env var to choose your editor (default: vi).`,
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&force, "force", false, "edit even when the stored body is behind the live collaborative document (replaces edits held only there)")
+	return cmd
+}
+
+// staleEditRefusal is the error `pad item edit` returns instead of opening the
+// editor on a body the server reports as behind its live collaborative document
+// (BUG-3035).
+//
+// It names --force as well as the tab, and says why --force is not merely a
+// footgun: the flush that would clear this state is not guaranteed to happen
+// (BUG-3000), and the state can read pending when nothing is (BUG-3124). Without
+// the escape hatch either of those would leave the item permanently uneditable
+// from the CLI.
+func staleEditRefusal(item *models.Item) error {
+	name := cli.ItemRef(*item)
+	if name == "" {
+		name = item.Slug
+	}
+	return fmt.Errorf("refusing to edit %s: its stored content is behind its live collaborative "+
+		"document — an editor holds edits that have not been written back yet, and saving would "+
+		"replace them with a version derived from a state before them. Open the item in a browser "+
+		"tab so those edits are written back, then retry. If no tab holds unsaved work (this state "+
+		"can persist after the tab that caused it has closed), pass --force to edit the stored "+
+		"content anyway", name)
+}
+
+// saveEditRecovery writes the text the user edited to a file and returns an
+// error that carries both the original cause and the file's path (BUG-3035).
+//
+// Without it a refused or failed save lost the edit outright: OpenInEditor
+// removes its temp file on return, so the only copy was this process's memory.
+// It covers EVERY failed save, not only a conflict — a network error loses the
+// same text.
+//
+// The path is printed to stderr BEFORE the cause is rendered, so a long
+// structured conflict block cannot push it off a short terminal, and it is also
+// in the returned error so a caller that discards stderr still gets it.
+func saveEditRecovery(item *models.Item, edited string, cause error) error {
+	name := cli.ItemRef(*item)
+	if name == "" {
+		name = item.Slug
+	}
+	f, ferr := os.CreateTemp("", "pad-edit-"+sanitizeRecoveryName(name)+"-*.md")
+	if ferr == nil {
+		_, ferr = f.WriteString(edited)
+		if cerr := f.Close(); ferr == nil {
+			ferr = cerr
+		}
+	}
+	if ferr != nil {
+		// Nothing else can hold the text now; say so plainly rather than
+		// pointing at a path that may be empty.
+		if f != nil {
+			_ = os.Remove(f.Name())
+		}
+		renderEditSaveError(cause)
+		return fmt.Errorf("save of %s failed and your edit could NOT be written to a recovery file (%v): %w", name, ferr, cause)
+	}
+	path := f.Name()
+	fmt.Fprintf(os.Stderr, "Your edit was NOT saved to %s. It is preserved in %s\n", name, path)
+	renderEditSaveError(cause)
+	return fmt.Errorf("save of %s failed; your edit is preserved in %s: %w", name, path, cause)
+}
+
+// renderEditSaveError prints the structured conflict block for an
+// optimistic-concurrency refusal, the same two-track shape `pad item update`
+// uses (TASK-2022), so the MCP stdio classifier and a human read one payload.
+func renderEditSaveError(err error) {
+	if apiErr, ok := err.(*cli.APIError); ok {
+		if uc := apiErr.AsUpdateConflict(); uc != nil {
+			cli.WriteUpdateConflictError(os.Stderr, apiErr, uc)
+		}
+	}
+}
+
+// sanitizeRecoveryName keeps a recovery file name to characters that are safe
+// in a path component on every platform; a slug or ref never needs more.
+func sanitizeRecoveryName(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			b.WriteRune(r)
+		} else {
+			b.WriteRune('_')
+		}
+	}
+	if b.Len() == 0 {
+		return "item"
+	}
+	return b.String()
 }
 
 // --- utility ---
@@ -4017,10 +4166,9 @@ func warnStaleDerivedText(what string, refs []string, howToSee string) {
 // version derived from a state before them, and neither the person editing nor
 // the person whose tab holds them sees it happen.
 //
-// What this line does NOT do is stop that: it warns and proceeds. Whether the
-// command should refuse, or offer to merge, is a behaviour decision with its own
-// item (BUG-3035) rather than something to settle inside a sweep for missing
-// markers.
+// Since BUG-3035 the command REFUSES on this state by default (staleEditRefusal),
+// so this line is reached only under --force: it is the forced path's reminder of
+// what the user chose to overwrite.
 //
 // It is printed BEFORE the editor is launched. Printed afterwards it would be
 // read, at best, next to a "Updated TASK-5" line — after the damage.
