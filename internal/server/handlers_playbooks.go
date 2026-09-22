@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"net/http"
 	"sort"
@@ -342,12 +343,14 @@ func (s *Server) handleMatchPlaybook(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	choiceOptions[playbookMatchNoneOption] = "the text does not ask for any of the procedures listed above"
-	// maxChoiceOptions (decision.go) is the provider's documented ceiling —
-	// 255, INCLUDING the reserved "none" entry.
-	if len(choiceOptions) > 255 {
+	choiceOptions[playbookMatchNoneOption] = "the text does not ask for any of the other options' procedures"
+	// decision.MaxChoiceOptions is the provider's documented ceiling,
+	// INCLUDING the reserved "none" entry — reading the exported constant
+	// rather than a copied literal means this refusal and
+	// decision.Question.Validate's own cannot drift apart (TASK-3120 review).
+	if len(choiceOptions) > decision.MaxChoiceOptions {
 		writeError(w, http.StatusBadRequest, "too_many_playbooks",
-			fmt.Sprintf("%d active playbooks (+1 for %q) exceed the provider's 255-option limit", len(options), playbookMatchNoneOption))
+			fmt.Sprintf("%d active playbooks (+1 for %q) exceed the provider's %d-option limit", len(options), playbookMatchNoneOption, decision.MaxChoiceOptions))
 		return
 	}
 
@@ -360,7 +363,17 @@ func (s *Server) handleMatchPlaybook(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	answers, _, err := provider.Ask(ctx, input.Text, map[string]decision.Question{"match": q})
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "decision_provider_error", err.Error())
+		// A request refused BEFORE it reached the provider (the question set
+		// alone busts the token budget, or the provider's own after-the-fact
+		// max_tokens_exceeded) is a caller-fixable input problem, not an
+		// outage — distinct 400, never the generic provider-error path below
+		// (TASK-3120 review F2).
+		if errors.Is(err, decision.ErrRequestTooLarge) || errors.Is(err, decision.ErrMaxTokensExceeded) {
+			writeError(w, http.StatusBadRequest, "match_request_too_large",
+				"too many active playbooks or too much text for one provider request — try shorter text or fewer active playbooks")
+			return
+		}
+		writeDecisionProviderError(w, workspaceID, err)
 		return
 	}
 	answer, ok := answers["match"]
@@ -382,6 +395,37 @@ func (s *Server) handleMatchPlaybook(w http.ResponseWriter, r *http.Request) {
 		Probabilities: answer.Probabilities,
 		Model:         provider.Model(),
 		Options:       options,
+	})
+}
+
+// writeDecisionProviderError answers a genuine provider-side failure — a
+// network error, a timeout, or the provider's own non-budget refusal — with
+// a FIXED message and a coarse `details.reason`, never the raw error
+// (TASK-3120 review F1). typesafe.go's client surfaces the provider's 4xx
+// response body VERBATIM in err.Error() (APIError.Error()), and that body is
+// the INSTANCE's own account state with the provider — key validity, quota,
+// billing wording — not anything about the caller's request. This endpoint
+// requires only viewer access, so echoing it would hand any workspace member
+// a window into the instance admin's provider account. The full error is
+// logged server-side instead, where only someone who can read server logs
+// sees it.
+//
+// reason is "timeout" for a context deadline (this endpoint's own
+// playbookMatchTimeout, or the caller's request context being cancelled) and
+// "upstream" for everything else — enough for a caller to decide whether
+// retrying later is worth it, without any provider-specific detail.
+func writeDecisionProviderError(w http.ResponseWriter, workspaceID string, err error) {
+	slog.Error("playbook match: provider error", "workspace", workspaceID, "error", err)
+	reason := "upstream"
+	if errors.Is(err, context.DeadlineExceeded) {
+		reason = "timeout"
+	}
+	writeJSON(w, http.StatusBadGateway, map[string]any{
+		"error": map[string]any{
+			"code":    "decision_provider_error",
+			"message": "the typed-decision provider failed to answer; try again",
+			"details": map[string]any{"reason": reason},
+		},
 	})
 }
 

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -161,7 +162,7 @@ func TestPlaybookMatch_DraftAndDeprecatedExcluded_ExactPrompt(t *testing.T) {
 	if q.Options[active.Ref] != wantDesc {
 		t.Errorf("option description = %q, want %q", q.Options[active.Ref], wantDesc)
 	}
-	if q.Options["none"] != "the text does not ask for any of the procedures listed above" {
+	if q.Options["none"] != "the text does not ask for any of the other options' procedures" {
 		t.Errorf(`"none" description = %q`, q.Options["none"])
 	}
 
@@ -215,6 +216,13 @@ func TestPlaybookMatch_OneActivePlaybookIsLegal(t *testing.T) {
 // distinguishable from "no provider configured" (404): a caller reading a
 // 502 knows the provider IS configured and try-again may help; a caller
 // reading 404 should switch to slug/trigger routing instead.
+//
+// Also pins F1 (lead review): typesafe.go's client surfaces the provider's
+// raw 4xx body verbatim in err.Error(), and that body is the INSTANCE's
+// account state with the provider (key validity, quota, billing wording) —
+// not anything about this caller's request. A viewer-accessible endpoint
+// must never echo it. The fake's error deliberately contains a
+// secret-looking string; the response must not.
 func TestPlaybookMatch_ProviderErrorIs502(t *testing.T) {
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
@@ -222,8 +230,48 @@ func TestPlaybookMatch_ProviderErrorIs502(t *testing.T) {
 		"title":  "Ship it",
 		"fields": `{"status":"active"}`,
 	})
+	const secret = "sk-live-51H8xJ2SECRET_API_KEY_DO_NOT_LEAK"
 	p := &fakeMatchProvider{askFn: func(_ any, _ map[string]decision.Question) (map[string]decision.Answer, decision.Usage, error) {
-		return nil, decision.Usage{}, errors.New("upstream exploded")
+		return nil, decision.Usage{}, fmt.Errorf("provider 401: invalid api key %s (quota: 0/1000, plan: enterprise-trial)", secret)
+	}}
+	attachMatchRunner(srv, p)
+
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/playbooks/match", matchRequestBody("ship these tasks"))
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), secret) || strings.Contains(rr.Body.String(), "quota") || strings.Contains(rr.Body.String(), "enterprise-trial") {
+		t.Fatalf("response leaked the provider's raw error text: %s", rr.Body.String())
+	}
+	var body struct {
+		Error struct {
+			Code    string         `json:"code"`
+			Details map[string]any `json:"details"`
+		} `json:"error"`
+	}
+	parseJSON(t, rr, &body)
+	if body.Error.Code != "decision_provider_error" {
+		t.Errorf("code = %q, want decision_provider_error", body.Error.Code)
+	}
+	if body.Error.Details["reason"] != "upstream" {
+		t.Errorf("details.reason = %v, want \"upstream\" for a non-timeout error", body.Error.Details["reason"])
+	}
+}
+
+// TestPlaybookMatch_ProviderTimeoutReason pins the "timeout" half of
+// writeDecisionProviderError's reason field — a context deadline (this
+// endpoint's own playbookMatchTimeout, simulated here directly since the
+// fake provider can return any error) reads distinctly from an ordinary
+// upstream failure, still under the same decision_provider_error code.
+func TestPlaybookMatch_ProviderTimeoutReason(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+	createItem(t, srv, slug, "playbooks", map[string]interface{}{
+		"title":  "Ship it",
+		"fields": `{"status":"active"}`,
+	})
+	p := &fakeMatchProvider{askFn: func(_ any, _ map[string]decision.Question) (map[string]decision.Answer, decision.Usage, error) {
+		return nil, decision.Usage{}, context.DeadlineExceeded
 	}}
 	attachMatchRunner(srv, p)
 
@@ -233,12 +281,60 @@ func TestPlaybookMatch_ProviderErrorIs502(t *testing.T) {
 	}
 	var body struct {
 		Error struct {
-			Code string `json:"code"`
+			Code    string         `json:"code"`
+			Details map[string]any `json:"details"`
 		} `json:"error"`
 	}
 	parseJSON(t, rr, &body)
 	if body.Error.Code != "decision_provider_error" {
 		t.Errorf("code = %q, want decision_provider_error", body.Error.Code)
+	}
+	if body.Error.Details["reason"] != "timeout" {
+		t.Errorf("details.reason = %v, want \"timeout\"", body.Error.Details["reason"])
+	}
+}
+
+// TestPlaybookMatch_RequestTooLargeIs400 pins F2 (lead review): a request
+// refused BEFORE it reached the provider — the question set alone busts the
+// token budget, or the provider's own after-the-fact max_tokens_exceeded —
+// is a caller-fixable "too much input for one request" problem, not an
+// outage, and must answer 400 match_request_too_large rather than the
+// generic 502 decision_provider_error a raw error would fall into.
+func TestPlaybookMatch_RequestTooLargeIs400(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{"pre-send refusal", fmt.Errorf("decision: questions alone exceed the 32000-token budget: %w", decision.ErrRequestTooLarge)},
+		{"provider's own after-the-fact refusal", fmt.Errorf("provider: %w", decision.ErrMaxTokensExceeded)},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			srv := testServer(t)
+			slug := createWSWithCollections(t, srv)
+			createItem(t, srv, slug, "playbooks", map[string]interface{}{
+				"title":  "Ship it",
+				"fields": `{"status":"active"}`,
+			})
+			p := &fakeMatchProvider{askFn: func(_ any, _ map[string]decision.Question) (map[string]decision.Answer, decision.Usage, error) {
+				return nil, decision.Usage{}, c.err
+			}}
+			attachMatchRunner(srv, p)
+
+			rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/playbooks/match", matchRequestBody("ship these tasks"))
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d: %s", rr.Code, rr.Body.String())
+			}
+			var body struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			parseJSON(t, rr, &body)
+			if body.Error.Code != "match_request_too_large" {
+				t.Errorf("code = %q, want match_request_too_large", body.Error.Code)
+			}
+		})
 	}
 }
 
