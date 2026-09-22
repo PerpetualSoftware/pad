@@ -297,8 +297,15 @@ func TestEditWarnsBeforeLaunchingTheEditor(t *testing.T) {
 			t.Cleanup(func() { workspaceFlag, formatFlag = origWS, origFormat })
 			workspaceFlag, formatFlag = "ws", ""
 
+			// --force on the stale leg: since BUG-3035 a stale read REFUSES by
+			// default (TestEditRefusesStaleSeed), so the warning is now the
+			// forced path's signal, and this test keeps guarding its ordering.
+			editArgs := []string{"TASK-5"}
+			if tc.wantWarning {
+				editArgs = append(editArgs, "--force")
+			}
 			cmd := editCmd()
-			cmd.SetArgs([]string{"TASK-5"})
+			cmd.SetArgs(editArgs)
 			stderr := captureStderr(t, func() {
 				_ = captureStdout(t, func() {
 					if err := cmd.Execute(); err != nil {
