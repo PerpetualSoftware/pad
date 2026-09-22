@@ -2552,3 +2552,28 @@ export interface ResolvedItemIdentity {
 	/** Item slug. */
 	slug: string;
 }
+
+// Decision provider settings (TASK-3121) — GET/PUT /admin/decision-provider.
+// The API key is never returned, masked or otherwise: only api_key_set.
+export interface DecisionSettings {
+	/** What the running server uses. */
+	effective: { enabled: boolean; provider: string; model: string; api_key_set: boolean };
+	/** The instance-admin setting as saved; a field the environment sets overrides it. */
+	stored: { provider: string; enabled: boolean | null; model: string; api_key_set: boolean };
+	/** Fields the server environment sets; the page disables those inputs. */
+	env: { provider: boolean; api_key: boolean; model: boolean };
+	/** Pad Cloud: the operator configures this via the environment only. */
+	read_only: boolean;
+	/** Why a configured provider is not running, when it is not. */
+	error?: string;
+	/** The saved key cannot be read; a key from the environment or config file may be in force instead. */
+	stored_key_error?: string;
+}
+
+export interface DecisionSettingsInput {
+	provider?: 'typesafe' | 'none';
+	enabled?: boolean;
+	model?: string;
+	api_key?: string;
+	clear_api_key?: boolean;
+}
