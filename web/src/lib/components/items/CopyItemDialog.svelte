@@ -43,6 +43,7 @@ their own recovery paths; swallowing those into outcome-unknown would send the
 user hunting for an item that provably does not exist.
 -->
 <script lang="ts">
+	import { COPY_PREFLIGHT_DEBOUNCE_MS } from '$lib/items/copyPreflightTiming';
 	import { tick, untrack } from 'svelte';
 	import Modal from '$lib/components/common/Modal.svelte';
 	import FieldEditor from '$lib/components/fields/FieldEditor.svelte';
@@ -120,7 +121,7 @@ user hunting for an item that provably does not exist.
 	// So: a debounce, PLUS single-flight trailing coalescing (round-12 fold-in).
 	// At most one preflight is in flight at any moment; edits that settle while
 	// one is running collapse into exactly ONE trailing run.
-	const PREFLIGHT_DEBOUNCE_MS = 250;
+	const PREFLIGHT_DEBOUNCE_MS = COPY_PREFLIGHT_DEBOUNCE_MS;
 
 	/**
 	 * Types the dialog can safely collect a value for — the set `FieldEditor`
