@@ -91,8 +91,13 @@ func Noul(instructions, trueDesc, falseDesc string) Question {
 	return Question{Kind: KindNoul, Instructions: instructions, TrueDesc: trueDesc, FalseDesc: falseDesc}
 }
 
-// maxChoiceOptions is the provider's documented ceiling on Choice options.
-const maxChoiceOptions = 255
+// MaxChoiceOptions is the provider's documented ceiling on Choice options.
+// Exported (TASK-3120) so a caller building a Choice from caller-controlled
+// input — the playbook-match endpoint, over active playbooks — can refuse
+// an over-limit set with its OWN structured error before ever calling Ask,
+// rather than letting Validate's plain error surface as an opaque 502. The
+// two refusals read the same constant, so they cannot drift out of sync.
+const MaxChoiceOptions = 255
 
 // minLevels is the provider's documented floor on Score levels.
 const minLevels = 2
@@ -112,8 +117,8 @@ func (q Question) Validate() error {
 		if len(q.Options) < 2 {
 			return fmt.Errorf("decision: choice question needs at least 2 options, got %d", len(q.Options))
 		}
-		if len(q.Options) > maxChoiceOptions {
-			return fmt.Errorf("decision: choice question has %d options, limit is %d", len(q.Options), maxChoiceOptions)
+		if len(q.Options) > MaxChoiceOptions {
+			return fmt.Errorf("decision: choice question has %d options, limit is %d", len(q.Options), MaxChoiceOptions)
 		}
 		for name, desc := range q.Options {
 			if strings.TrimSpace(name) == "" {

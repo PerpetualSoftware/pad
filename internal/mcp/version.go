@@ -1017,6 +1017,30 @@ const CmdhelpVersion = "0.1"
 //     browser tab and BUG-3000 carries the open half — so no surface
 //     here states a duration.
 //
+//     0.41 — PLAN-3114 unit 5 / TASK-3120. Adds a `match` action to
+//     `pad_playbook`: given free text, asks the workspace's configured
+//     typed-decision provider which of the workspace's ACTIVE playbooks (if
+//     any) it best matches — a Choice question over their
+//     ref/title/summary/trigger/invocation_slug, plus a reserved "none"
+//     option so text that asks for none of them gets an honest answer
+//     instead of a forced pick (and, for free, keeps a workspace with
+//     exactly one active playbook askable — Choice needs >= 2 options).
+//     Returns the choice, confidence, the provider's per-option
+//     probabilities exactly as received, the model, and each considered
+//     playbook's ref/title/invocation_slug. New optional param: `text`.
+//     Pure ADDITIVE bump, same disposition as 0.13/0.28/0.11 — nothing
+//     existing moved, and a consumer that never sends `action: match` is
+//     unaffected. No provider configured -> 404
+//     `decision_provider_unavailable` (callers fall back to slug/trigger
+//     routing); a provider error, OR an answer naming an option it was
+//     never offered, -> 502 `decision_provider_error` — kept distinct from
+//     the 404 case so a caller can tell "not configured, use the fallback"
+//     from "configured but failing, maybe retry". Read-only and
+//     side-effect-free: no job is enqueued, nothing is stored.
+//
+//     0.40 is BUG-3028's (below) — landed on main while this unit was in
+//     flight; 0.41 takes the next number rather than contest it.
+//
 //     0.40 — BUG-3028. BEHAVIOR bump on the 0.35 / 0.36 grounds: a write
 //     door refuses a value it used to accept. A scalar `relation` field had
 //     three stored spellings of "no target" — the key absent, `""`, and
@@ -1315,7 +1339,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.40"
+const ToolSurfaceVersion = "0.41"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

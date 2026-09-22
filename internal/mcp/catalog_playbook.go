@@ -62,6 +62,11 @@ var padPlaybookTool = ToolDef{
 				Type:        "boolean",
 				Description: "Escape hatch for the draft-playbook gate. action=run refuses a playbook whose status isn't \"active\" (e.g. one still being drafted) with a playbook_not_active error. Set true to run it anyway. Optional for action=run; default false.",
 			},
+			{
+				Name:        "text",
+				Type:        "string",
+				Description: "Free text to match against active playbooks. Required for action=match.",
+			},
 		},
 	},
 	Actions: map[string]ActionFn{
@@ -75,6 +80,11 @@ var padPlaybookTool = ToolDef{
 		// flatten-and-forwarded so the server-side ParsePlaybookCLIArgs
 		// sees the same shape it would from a real shell.
 		"run": actionPlaybookRun,
+		// match (TASK-3120): a plain passThrough works — `pad playbook
+		// match <text>` takes one positional arg named "text", the same
+		// name this tool's own param carries, so BuildCLIArgs maps it
+		// straight across with no custom shaping.
+		"match": passThrough([]string{"playbook", "match"}),
 	},
 }
 
@@ -222,6 +232,10 @@ Actions:
                     playbook_not_active error. Pass allow_draft: true to
                     override and run it anyway. The status is echoed on
                     both the run and get responses.
+  match — Pick the ACTIVE playbook (or "none") that text asks for.
+          Returns choice, confidence, probabilities, model.
+          Required: workspace, text.
+          404 = no provider; fall back to slug/trigger routing.
 
 Use pad_playbook when an agent needs to dispatch a named procedure or read
 a playbook's declared argument contract before invoking it. For browsing

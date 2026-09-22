@@ -292,6 +292,25 @@ func (r *Runner) Registry() *Registry {
 	return r.registry
 }
 
+// Provider returns the runner's provider (nil for a nil runner). For a
+// non-nil runner this is never nil either — [NewRunner] returns nil
+// whenever its Provider argument is nil, so the two are never out of sync.
+//
+// Exposed for a caller that needs a plain synchronous Ask — a single
+// question answered against caller-supplied state, with no enqueue, no
+// idempotency check, and nothing stored (PLAN-3114 unit 5, TASK-3120: the
+// playbook-match endpoint). [Runner.Evaluate] is the wrong tool for that:
+// it drives the owed-jobs pipeline (registry lookup by name, state built
+// from an ITEM's row, a stored idempotency check, and a written
+// models.ItemDecision row), all of which a one-off Choice over free text has
+// no use for.
+func (r *Runner) Provider() Provider {
+	if r == nil {
+		return nil
+	}
+	return r.provider
+}
+
 // Install wires the runner's registry into the store's write doors. With a
 // nil runner it removes any resolver, so the doors enqueue nothing.
 func (r *Runner) Install(s *store.Store) {

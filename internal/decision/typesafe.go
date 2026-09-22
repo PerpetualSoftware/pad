@@ -63,6 +63,18 @@ const (
 // "max_tokens_exceeded"}}), so this does not rest on matching prose.
 var ErrMaxTokensExceeded = errors.New("decision: provider token budget exceeded")
 
+// ErrRequestTooLarge reports that fitState refused a request BEFORE it was
+// sent — the questions alone exceed maxRequestTokens, or state has no room
+// beside them (TASK-3120). Distinguished from [ErrMaxTokensExceeded], which
+// is the PROVIDER's own refusal of a request fitState judged small enough to
+// send: this one never reaches the network, so a caller mapping it does not
+// need to distinguish "the provider is down" from "the request was too big
+// to attempt" the way an opaque error would force it to. A caller that wants
+// EITHER kind of "too big for one request" can errors.Is against both
+// values; one that cares about the pre-send/provider-side distinction still
+// can, since they remain separate values.
+var ErrRequestTooLarge = errors.New("decision: request too large for the token budget")
+
 // APIError is an error response from the provider. It is returned directly
 // for a non-retryable status, and is reachable with errors.As through the
 // retry wrapper when a retryable status persists past the last attempt.
@@ -438,7 +450,7 @@ func (p *typesafeProvider) fitState(state any, questions map[string]wireQuestion
 	// marshalled length counts it again.
 	remaining := budgetChars - (len(envelope) - 2)
 	if remaining < 0 {
-		return nil, false, fmt.Errorf("decision: questions alone exceed the %d-token budget", maxRequestTokens)
+		return nil, false, fmt.Errorf("decision: questions alone exceed the %d-token budget: %w", maxRequestTokens, ErrRequestTooLarge)
 	}
 
 	s, ok := state.(string)
@@ -452,7 +464,7 @@ func (p *typesafeProvider) fitState(state any, questions map[string]wireQuestion
 	// fits in a single byte (review round 4).
 	if remaining < 2 {
 		return nil, false, fmt.Errorf("decision: no room for the state beside the questions: %d byte(s) left, "+
-			"and even an empty string needs 2", remaining)
+			"and even an empty string needs 2: %w", remaining, ErrRequestTooLarge)
 	}
 
 	// The budget is measured against the MARSHALLED length, not the raw

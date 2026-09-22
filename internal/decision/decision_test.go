@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -305,6 +306,50 @@ func TestOversizedStateSurfacesTypedError(t *testing.T) {
 	}
 	if apiErr.ErrorType != "max_tokens_exceeded" {
 		t.Errorf("ErrorType = %q, want max_tokens_exceeded", apiErr.ErrorType)
+	}
+}
+
+// TestFitStateRefusesOversizedQuestionsBeforeSending pins ErrRequestTooLarge
+// (TASK-3120, lead review F2): a Choice question set whose options alone
+// exceed maxRequestTokens is refused by fitState BEFORE any HTTP call, with
+// an error matching errors.Is(err, ErrRequestTooLarge) — distinct from
+// ErrMaxTokensExceeded, which is the PROVIDER's own after-the-fact refusal
+// of a request fitState let through. The fake fails the test if it is ever
+// called, since that would mean the pre-send guard let an oversized request
+// reach the network.
+//
+// The option count (254, plus one option's-worth of budget consumed by
+// "none" in a real caller) and per-option description length (~350 chars —
+// title + a near-cap PlaybookSummary + trigger + invocation_slug) mirror
+// what the playbook-match endpoint could plausibly build from a workspace
+// with a couple hundred active playbooks and realistic bodies: this is the
+// SAME scenario F2 named, reproduced directly against the budget check
+// rather than through the server's fixtures.
+func TestFitStateRefusesOversizedQuestionsBeforeSending(t *testing.T) {
+	p, _ := newFake(t, func(*fake, wireRequest, []byte, http.ResponseWriter) {
+		t.Fatal("provider was called for a request fitState should have refused before sending")
+	})
+
+	opts := make(map[string]string, 254)
+	for i := 0; i < 254; i++ {
+		opts[fmt.Sprintf("PLAYB-%d", i)] = fmt.Sprintf(
+			"Playbook number %d: %s (trigger: on-release; invoke via slug \"playbook-%d\")",
+			i, strings.Repeat("word ", 55), i)
+	}
+	q := Choice("Given the text, which of these does it ask for?", opts)
+	if err := q.Validate(); err != nil {
+		t.Fatalf("fixture question does not validate: %v", err)
+	}
+
+	_, _, err := p.Ask(context.Background(), "some free text", map[string]Question{"match": q})
+	if err == nil {
+		t.Fatal("Ask succeeded on a question set that should have busted the pre-send token budget")
+	}
+	if !errors.Is(err, ErrRequestTooLarge) {
+		t.Errorf("errors.Is(err, ErrRequestTooLarge) = false; err = %v", err)
+	}
+	if errors.Is(err, ErrMaxTokensExceeded) {
+		t.Error("a PRE-SEND refusal matched ErrMaxTokensExceeded, which is the provider's own after-the-fact refusal — the two must stay distinguishable")
 	}
 }
 

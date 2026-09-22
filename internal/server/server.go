@@ -2052,6 +2052,7 @@ func (s *Server) setupRouter() {
 					// bound args. The agent (skill or MCP-driven)
 					// executes the body; the server does not.
 					r.Get("/playbooks", s.handleListPlaybooks)
+					r.Post("/playbooks/match", s.handleMatchPlaybook)
 					r.Get("/playbooks/{ref}", s.handleShowPlaybook)
 					r.Post("/playbooks/{ref}/run", s.handleRunPlaybook)
 

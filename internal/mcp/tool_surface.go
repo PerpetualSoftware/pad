@@ -65,7 +65,8 @@ type toolSurfaceToolSummary struct {
 //   - pad_role:       list read; create/update/delete write.
 //   - pad_search:     query read.
 //   - pad_playbook:   list/get read; run is side-effect-free (returns the
-//     body + bound args for the agent to execute) → read.
+//     body + bound args for the agent to execute) → read; match is a
+//     read-only provider query, nothing stored → read.
 //   - pad_library:    list/get read; activate mutates workspace state → write.
 //   - pad_attachment: list/show read (metadata only; no upload/download).
 //   - pad_meta:       server-info/version/tool-surface/bootstrap all read.
@@ -111,9 +112,10 @@ var readOnlyActions = map[string]map[string]bool{
 		"query": true,
 	},
 	"pad_playbook": {
-		"list": true,
-		"get":  true,
-		"run":  true,
+		"list":  true,
+		"get":   true,
+		"run":   true,
+		"match": true,
 	},
 	"pad_library": {
 		"list": true,

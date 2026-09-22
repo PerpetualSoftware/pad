@@ -765,6 +765,16 @@ func (c *Client) ShowPlaybook(wsSlug, identifier string) (json.RawMessage, error
 	return result, c.get("/workspaces/"+wsSlug+"/playbooks/"+identifier, &result)
 }
 
+// MatchPlaybook asks the workspace's typed-decision provider whether text
+// asks for one of the workspace's active playbooks (PLAN-3114 / TASK-3120).
+// Read-only and side-effect-free. A 404 means no provider is configured —
+// callers fall back to slug/trigger routing rather than treating it as a
+// hard failure.
+func (c *Client) MatchPlaybook(wsSlug, text string) (json.RawMessage, error) {
+	var result json.RawMessage
+	return result, c.post("/workspaces/"+wsSlug+"/playbooks/match", map[string]any{"text": text}, &result)
+}
+
 // RunPlaybook binds the supplied args to the playbook's declared spec
 // and returns the body + bound args + any unsatisfied required args.
 // Side-effect-free: the server only parses; the agent executes.

@@ -1,16 +1,22 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
+	"unicode/utf8"
 
 	"github.com/PerpetualSoftware/pad/internal/collections"
+	"github.com/PerpetualSoftware/pad/internal/decision"
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/go-chi/chi/v5"
 )
@@ -88,26 +94,26 @@ type PlaybookUnboundArgument struct {
 	Spec PlaybookArgumentSpec `json:"spec"`
 }
 
-// handleListPlaybooks returns playbook metadata for the workspace.
-// Same shape as the bootstrap blob's `playbooks` field, hand-rolled
-// here so callers can fetch it without pulling in the full bootstrap.
-func (s *Server) handleListPlaybooks(w http.ResponseWriter, r *http.Request) {
-	workspaceID, ok := s.getWorkspaceID(w, r)
-	if !ok {
-		return
-	}
-	// Reuse the same metadata projection as bootstrap. Visibility is
-	// applied at the ListItems level: collIDs/itemIDs reflect the
-	// caller's filtered view.
+// listPlaybookItems gathers the workspace's playbook items, scoped to what
+// the caller can see. Shared by handleListPlaybooks and handleMatchPlaybook
+// (TASK-3120) so the two can never disagree about which items a caller's
+// playbook catalog contains — the same reasoning as the copy/preflight pair
+// in CLAUDE.md's relation-field notes: two doors, one function, because they
+// live in different handlers and that is how they'd otherwise drift.
+//
+// needsContent controls whether item bodies are fetched: callers that derive
+// a playbook's summary from its markdown (list, match) need it; a caller
+// that only wants ref/title/status does not.
+func (s *Server) listPlaybookItems(r *http.Request, workspaceID string, needsContent bool) ([]models.Item, error) {
+	// Visibility is applied at the ListItems level: collIDs/itemIDs reflect
+	// the caller's filtered view.
 	visibleIDs, err := s.visibleCollectionIDs(r, workspaceID)
 	if err != nil {
-		writeInternalError(w, err)
-		return
+		return nil, err
 	}
 	fullCollIDs, grantedItemIDs, err := s.guestResourceFilter(r, workspaceID)
 	if err != nil {
-		writeInternalError(w, err)
-		return
+		return nil, err
 	}
 	subCollIDs := visibleIDs
 	var subItemIDs []string
@@ -121,15 +127,309 @@ func (s *Server) handleListPlaybooks(w http.ResponseWriter, r *http.Request) {
 	// ([[BUG-2702]]). TASK-2657.
 	traited, err := s.store.ListTraitedCollections(workspaceID)
 	if err != nil {
-		writeInternalError(w, err)
+		return nil, err
+	}
+	return s.collectBootstrapSourceItems(workspaceID, traited, bootstrapKeyPlaybooks, needsContent, visibleIDs, subCollIDs, subItemIDs)
+}
+
+// handleListPlaybooks returns playbook metadata for the workspace.
+// Same shape as the bootstrap blob's `playbooks` field, hand-rolled
+// here so callers can fetch it without pulling in the full bootstrap.
+func (s *Server) handleListPlaybooks(w http.ResponseWriter, r *http.Request) {
+	workspaceID, ok := s.getWorkspaceID(w, r)
+	if !ok {
 		return
 	}
-	items, err := s.collectBootstrapSourceItems(workspaceID, traited, bootstrapKeyPlaybooks, true, visibleIDs, subCollIDs, subItemIDs)
+	items, err := s.listPlaybookItems(r, workspaceID, true)
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, projectPlaybookMetadata(items))
+}
+
+const (
+	// maxPlaybookMatchTextRunes bounds the free text this endpoint sends to
+	// the provider. This is a short intent string — a user request, an
+	// agent action — not a document body, so it is bounded far tighter than
+	// decision/runner.go's maxStateBodyRunes (16000), which bounds a full
+	// item body.
+	maxPlaybookMatchTextRunes = 4000
+
+	// playbookMatchNoneOption is the reserved Choice option meaning "the
+	// text does not ask for any of the playbooks offered". Without it a
+	// Choice question forces a pick among the playbooks sent even when the
+	// text asks for none of them, and (as a side effect) a workspace with
+	// exactly one active playbook would have no legal question to ask —
+	// decision.Question.Validate refuses a Choice with fewer than 2 options.
+	// One active playbook plus "none" is 2, which is legal.
+	playbookMatchNoneOption = "none"
+
+	// playbookMatchTimeout bounds the SYNCHRONOUS provider call this
+	// endpoint makes — an HTTP caller (viewer, CLI, MCP) blocks on it
+	// directly, unlike the async decision tick (decision_tick.go), which
+	// can afford the provider's full worst-case retry budget because
+	// nothing is waiting on it. That budget is real: typesafe.go's client
+	// already times out each HTTP attempt at requestTimeout (60s), but its
+	// retry loop can chain up to maxAttempts=4 attempts with up to
+	// maxRetryAfter=30s between them — a worst case of 4*60 + 3*30 = 330s
+	// (decision_tick.go carries the identical receipt for that path). 30s
+	// here is generous next to the eval's measured ~70-500ms latency and
+	// covers one slow attempt plus its first backoff, but stops well short
+	// of the full retry ladder. No prior synchronous provider call exists
+	// to inherit a bound from — this is a fresh judgment call for this
+	// endpoint, not an established precedent.
+	playbookMatchTimeout = 30 * time.Second
+)
+
+// PlaybookMatchResponse is the result of `POST /workspaces/{ws}/playbooks/match`
+// (PLAN-3114 unit 5, TASK-3120): a typed-decision Choice over the workspace's
+// caller-visible ACTIVE playbooks, plus a reserved "none" option so text that
+// doesn't ask for any of them gets an honest answer instead of a forced pick.
+// Read-only, synchronous, stores nothing and enqueues nothing — see
+// [decision.Runner.Provider]'s doc comment for why this bypasses the
+// owed-jobs pipeline [decision.Runner.Evaluate] drives.
+type PlaybookMatchResponse struct {
+	// Choice is the provider's pick: a playbook ref from Options, or the
+	// literal "none". Empty (with Reason set) only when there were zero
+	// active playbooks to choose among.
+	Choice string `json:"choice,omitempty"`
+	// Reason explains an empty Choice. The only value today is
+	// "no_active_playbooks": the caller-visible workspace has none, so no
+	// provider call was made — a Choice needs at least two options, and
+	// "none" alone isn't one.
+	Reason string `json:"reason,omitempty"`
+	// Confidence is the provider's confidence in Choice. Present whenever
+	// Choice is (a Choice answer always carries one — see [decision.Answer]).
+	Confidence *float64 `json:"confidence,omitempty"`
+	// Probabilities is the full per-option distribution the provider
+	// returned — every key in Options plus "none" — exactly as received,
+	// unfiltered.
+	Probabilities map[string]float64 `json:"probabilities,omitempty"`
+	// Model is the provider's pinned model identifier.
+	Model string `json:"model,omitempty"`
+	// Options lists every active playbook the provider was asked to choose
+	// among — enough identity to act on Choice without a second lookup.
+	// Never includes the reserved "none" entry, which carries no identity.
+	Options []PlaybookMatchOption `json:"options"`
+}
+
+// PlaybookMatchOption is one playbook's identity as offered to the provider.
+type PlaybookMatchOption struct {
+	Ref            string `json:"ref"`
+	Title          string `json:"title"`
+	InvocationSlug string `json:"invocation_slug,omitempty"`
+}
+
+// playbookMatchOptions filters items to active playbooks (draft and
+// deprecated are excluded — the same gate `pad playbook run` enforces
+// server-side, so match never offers a playbook running it would refuse) and
+// builds both the decision.Choice options (ref -> description, for the
+// provider) and the identity list (for the response).
+//
+// Option description = title + first-paragraph summary (BUG-3033's
+// PlaybookSummary — same derivation `pad playbook list` uses), falling back
+// to the title alone when the body yields no summary: decision.Question.
+// Validate refuses an empty option description, and an item's title is
+// never empty (models.ValidateItemTitle). Trigger and invocation_slug, when
+// present, ride in a trailing parenthetical rather than as more sentences —
+// the summary's own trailing punctuation is caller-written prose the
+// builder doesn't control, and appending ". Trigger: ..." after a summary
+// that already ends in "." reads as a stutter ("it.. Trigger:").
+func playbookMatchOptions(items []models.Item) (map[string]string, []PlaybookMatchOption) {
+	choiceOptions := map[string]string{}
+	var options []PlaybookMatchOption
+	for i := range items {
+		it := &items[i]
+		if !strings.EqualFold(playbookStatus(it), "active") {
+			continue
+		}
+		var fields map[string]any
+		if it.Fields != "" {
+			_ = json.Unmarshal([]byte(it.Fields), &fields)
+		}
+		invocationSlug, _ := fields["invocation_slug"].(string)
+		trigger, _ := fields["trigger"].(string)
+		summary := collections.PlaybookSummary(it.Content)
+
+		var b strings.Builder
+		b.WriteString(it.Title)
+		if summary != "" {
+			b.WriteString(": ")
+			b.WriteString(summary)
+		}
+		var meta []string
+		if trigger != "" {
+			meta = append(meta, "trigger: "+trigger)
+		}
+		if invocationSlug != "" {
+			meta = append(meta, `invoke via slug "`+invocationSlug+`"`)
+		}
+		if len(meta) > 0 {
+			b.WriteString(" (")
+			b.WriteString(strings.Join(meta, "; "))
+			b.WriteString(")")
+		}
+		choiceOptions[it.Ref] = b.String()
+		options = append(options, PlaybookMatchOption{
+			Ref:            it.Ref,
+			Title:          it.Title,
+			InvocationSlug: invocationSlug,
+		})
+	}
+	return choiceOptions, options
+}
+
+// handleMatchPlaybook answers "does this text ask for one of the workspace's
+// active playbooks" as a typed-decision Choice (PLAN-3114 unit 5, TASK-3120).
+// Read-only and side-effect-free: no job is enqueued, no row is stored, and a
+// repeat call is safe.
+//
+// Draft and deprecated playbooks are excluded from the options, matching the
+// skill's own activation rule. Zero active playbooks answers 200 with
+// choice="" and a reason — that is a legitimate answer ("nothing to match
+// against"), not an error. Over the provider's option ceiling refuses rather
+// than silently dropping playbooks, which would answer from an incomplete
+// set. A provider outage or an out-of-set answer both refuse with
+// decision_provider_error — distinct from decision_provider_unavailable
+// (no provider configured at all), so a caller can tell "try slug/trigger
+// routing instead" (unavailable) apart from "something went wrong upstream"
+// (error) rather than reading one as the other.
+func (s *Server) handleMatchPlaybook(w http.ResponseWriter, r *http.Request) {
+	workspaceID, ok := s.getWorkspaceID(w, r)
+	if !ok {
+		return
+	}
+	var input struct {
+		Text string `json:"text"`
+	}
+	// EOF (an empty body) is not a decode failure here — it just means no
+	// text was sent, and the empty-text check below reports that with a
+	// clearer message than a JSON decode error would.
+	if err := decodeJSON(r, &input); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	if strings.TrimSpace(input.Text) == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "text is required")
+		return
+	}
+	if n := utf8.RuneCountInString(input.Text); n > maxPlaybookMatchTextRunes {
+		writeError(w, http.StatusBadRequest, "bad_request",
+			fmt.Sprintf("text is too long: %d characters, maximum %d", n, maxPlaybookMatchTextRunes))
+		return
+	}
+
+	runner := s.decisionRunner()
+	if runner == nil {
+		writeError(w, http.StatusNotFound, "decision_provider_unavailable",
+			"no typed-decision provider is configured — fall back to slug/trigger routing")
+		return
+	}
+	provider := runner.Provider()
+
+	items, err := s.listPlaybookItems(r, workspaceID, true)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	choiceOptions, options := playbookMatchOptions(items)
+	sort.Slice(options, func(i, j int) bool { return options[i].Ref < options[j].Ref })
+
+	if len(options) == 0 {
+		writeJSON(w, http.StatusOK, PlaybookMatchResponse{
+			Reason:  "no_active_playbooks",
+			Options: []PlaybookMatchOption{},
+		})
+		return
+	}
+	choiceOptions[playbookMatchNoneOption] = "the text does not ask for any of the other options' procedures"
+	// decision.MaxChoiceOptions is the provider's documented ceiling,
+	// INCLUDING the reserved "none" entry — reading the exported constant
+	// rather than a copied literal means this refusal and
+	// decision.Question.Validate's own cannot drift apart (TASK-3120 review).
+	if len(choiceOptions) > decision.MaxChoiceOptions {
+		writeError(w, http.StatusBadRequest, "too_many_playbooks",
+			fmt.Sprintf("%d active playbooks (+1 for %q) exceed the provider's %d-option limit", len(options), playbookMatchNoneOption, decision.MaxChoiceOptions))
+		return
+	}
+
+	q := decision.Choice(
+		"Given the text, does it ask for one of these procedures to be run? Pick the option that best matches what the text is asking for, or \"none\" if it does not ask for any of them.",
+		choiceOptions,
+	)
+
+	ctx, cancel := context.WithTimeout(r.Context(), playbookMatchTimeout)
+	defer cancel()
+	answers, _, err := provider.Ask(ctx, input.Text, map[string]decision.Question{"match": q})
+	if err != nil {
+		// A request refused BEFORE it reached the provider (the question set
+		// alone busts the token budget, or the provider's own after-the-fact
+		// max_tokens_exceeded) is a caller-fixable input problem, not an
+		// outage — distinct 400, never the generic provider-error path below
+		// (TASK-3120 review F2).
+		if errors.Is(err, decision.ErrRequestTooLarge) || errors.Is(err, decision.ErrMaxTokensExceeded) {
+			writeError(w, http.StatusBadRequest, "match_request_too_large",
+				"too many active playbooks or too much text for one provider request — try shorter text or fewer active playbooks")
+			return
+		}
+		writeDecisionProviderError(w, workspaceID, err)
+		return
+	}
+	answer, ok := answers["match"]
+	if !ok || answer.Kind != decision.KindChoice {
+		writeError(w, http.StatusBadGateway, "decision_provider_error", "provider returned no choice answer")
+		return
+	}
+	// Never pass an unknown value through: the provider named an option it
+	// was never offered.
+	if _, known := choiceOptions[answer.Choice]; !known {
+		writeError(w, http.StatusBadGateway, "decision_provider_error",
+			fmt.Sprintf("provider returned an unrecognized choice %q", answer.Choice))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, PlaybookMatchResponse{
+		Choice:        answer.Choice,
+		Confidence:    answer.Confidence,
+		Probabilities: answer.Probabilities,
+		Model:         provider.Model(),
+		Options:       options,
+	})
+}
+
+// writeDecisionProviderError answers a genuine provider-side failure — a
+// network error, a timeout, or the provider's own non-budget refusal — with
+// a FIXED message and a coarse `details.reason`, never the raw error
+// (TASK-3120 review F1). typesafe.go's client surfaces the provider's 4xx
+// response body VERBATIM in err.Error() (APIError.Error()), and that body is
+// the INSTANCE's own account state with the provider — key validity, quota,
+// billing wording — not anything about the caller's request. This endpoint
+// requires only viewer access, so echoing it would hand any workspace member
+// a window into the instance admin's provider account. The full error is
+// logged server-side instead, where only someone who can read server logs
+// sees it.
+//
+// reason is "timeout" for a context DEADLINE — this endpoint's own
+// playbookMatchTimeout — and "upstream" for everything else, including a
+// CANCELLED caller request (context.Canceled is a distinct error from
+// context.DeadlineExceeded and does not match here; it is also moot, since a
+// caller whose own request was cancelled never reads this response body).
+// Coarse enough for a caller to decide whether retrying later is worth it,
+// without any provider-specific detail.
+func writeDecisionProviderError(w http.ResponseWriter, workspaceID string, err error) {
+	slog.Error("playbook match: provider error", "workspace", workspaceID, "error", err)
+	reason := "upstream"
+	if errors.Is(err, context.DeadlineExceeded) {
+		reason = "timeout"
+	}
+	writeJSON(w, http.StatusBadGateway, map[string]any{
+		"error": map[string]any{
+			"code":    "decision_provider_error",
+			"message": "the typed-decision provider failed to answer; try again",
+			"details": map[string]any{"reason": reason},
+		},
+	})
 }
 
 // handleShowPlaybook returns the full playbook item identified by ref,
