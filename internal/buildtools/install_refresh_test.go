@@ -1252,14 +1252,22 @@ func TestPreServerFixtureProvesEachClaimSeparately(t *testing.T) {
 	})
 
 	// The PORT proof: the stub bound, but not the port the script will be
-	// told about (here STUB_PORT=0, a fixture that forgot to pass it).
+	// told about (here STUB_PORT=0, a fixture that forgot to pass it). The
+	// chosen port stays HELD for the whole case, so the stub's port 0 can
+	// never be handed that same port, which would make both proofs true
+	// (codex round 1).
 	t.Run("stub bound a different port", func(t *testing.T) {
-		port := freePort(t)
+		held, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("hold a port: %v", err)
+		}
+		t.Cleanup(func() { _ = held.Close() })
+		port := held.Addr().(*net.TCPAddr).Port
 		e := stubEnv{version: "pad version dev (abc1234 x)", healthy: "1",
 			argvLog: filepath.Join(dir, "argv.log"), port: 0, home: dir}
 		pre := exec.Command(built, "server", "start", "--host", "127.0.0.1", "--port", strconv.Itoa(port))
 		pre.Env = e.env()
-		err := provePreServer(pre, "127.0.0.1", port, 8*time.Second, t.Cleanup)
+		err = provePreServer(pre, "127.0.0.1", port, 8*time.Second, t.Cleanup)
 		if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("want %d", port)) {
 			t.Fatalf("want the port proof to refuse, got %v", err)
 		}
