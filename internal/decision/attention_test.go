@@ -166,7 +166,7 @@ func TestAttention_OnlyOpenItemsInUserCollectionsAreAsked(t *testing.T) {
 			t.Errorf("ineligible item %s kept its job: %+v", it.ID, j)
 		}
 	}
-	nouls, _, err := fx.r.WorkspaceNouls(fx.ws.ID, AttentionSetName)
+	nouls, _, err := fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,9 +184,9 @@ func TestAttention_OnlyOpenItemsInUserCollectionsAreAsked(t *testing.T) {
 	}
 }
 
-// WorkspaceNouls returns the LATEST answer per item and key, scoped to the
+// WorkspaceFlags returns the LATEST answer per item and key, scoped to the
 // workspace, and drops answers to a question that has since been reworded.
-func TestWorkspaceNouls_LatestCurrentQuestionAndWorkspaceScoped(t *testing.T) {
+func TestWorkspaceFlags_LatestCurrentQuestionAndWorkspaceScoped(t *testing.T) {
 	fx := newAttentionFixture(t)
 	it := fx.item(t, fx.tasks.ID, "open")
 	fx.tick(t)
@@ -196,9 +196,9 @@ func TestWorkspaceNouls_LatestCurrentQuestionAndWorkspaceScoped(t *testing.T) {
 		t.Fatal(err)
 	}
 	fx.tick(t)
-	nouls, failing, err := fx.r.WorkspaceNouls(fx.ws.ID, AttentionSetName)
+	nouls, failing, err := fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, 0)
 	if err != nil || failing {
-		t.Fatalf("WorkspaceNouls: failing=%v err=%v", failing, err)
+		t.Fatalf("WorkspaceFlags: failing=%v err=%v", failing, err)
 	}
 	if got := nouls[it.ID][AttentionNeedsHuman]; got != 0.3 {
 		t.Fatalf("needs_human = %v, want the LATEST answer 0.3 (first was 0.9)", got)
@@ -208,7 +208,7 @@ func TestWorkspaceNouls_LatestCurrentQuestionAndWorkspaceScoped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n, _, _ := fx.r.WorkspaceNouls(other.ID, AttentionSetName); len(n) != 0 {
+	if n, _, _ := fx.r.WorkspaceFlags(other.ID, AttentionSetName, 0); len(n) != 0 {
 		t.Fatalf("another workspace saw %v", n)
 	}
 
@@ -223,7 +223,7 @@ func TestWorkspaceNouls_LatestCurrentQuestionAndWorkspaceScoped(t *testing.T) {
 		t.Fatal(err)
 	}
 	r2 := NewRunner(fx.s, fx.r.provider, reg)
-	n2, _, err := r2.WorkspaceNouls(fx.ws.ID, AttentionSetName)
+	n2, _, err := r2.WorkspaceFlags(fx.ws.ID, AttentionSetName, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,30 +237,67 @@ func TestWorkspaceNouls_LatestCurrentQuestionAndWorkspaceScoped(t *testing.T) {
 	if err := fx.s.DeleteItem(it.ID); err != nil {
 		t.Fatal(err)
 	}
-	if n, _, _ := fx.r.WorkspaceNouls(fx.ws.ID, AttentionSetName); len(n) != 0 {
+	if n, _, _ := fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, 0); len(n) != 0 {
 		t.Fatalf("a deleted item's answers were returned: %v", n)
 	}
 }
 
-func TestWorkspaceNouls_ReportsAFailingProvider(t *testing.T) {
+func TestWorkspaceFlags_ReportsAFailingProvider(t *testing.T) {
 	fx := newAttentionFixture(t)
 	fx.item(t, fx.tasks.ID, "open")
-	if _, failing, _ := fx.r.WorkspaceNouls(fx.ws.ID, AttentionSetName); failing {
+	if _, failing, _ := fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, 0); failing {
 		t.Fatal("precondition: failing before any attempt")
 	}
 	fx.f.srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"detail":"upstream down"}`, http.StatusServiceUnavailable)
 	})
 	fx.tick(t)
-	if _, failing, err := fx.r.WorkspaceNouls(fx.ws.ID, AttentionSetName); err != nil || !failing {
+	if _, failing, err := fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, 0); err != nil || !failing {
 		t.Fatalf("after a provider failure: failing=%v err=%v, want failing", failing, err)
 	}
 }
 
-func TestWorkspaceNouls_NilRunner(t *testing.T) {
+func TestWorkspaceFlags_NilRunner(t *testing.T) {
 	var r *Runner
-	n, failing, err := r.WorkspaceNouls("ws", AttentionSetName)
+	n, failing, err := r.WorkspaceFlags("ws", AttentionSetName, 0)
 	if n != nil || failing || err != nil {
 		t.Fatalf("nil runner: %v %v %v", n, failing, err)
+	}
+}
+
+// An answer computed before the item's latest change is NOT current, and is
+// not returned — the dashboard applies the item page's currency rule. The
+// counterfactual legs: the same answer IS returned before the change, and is
+// returned again once the tick has re-asked about the new state.
+func TestWorkspaceFlags_AnswerFromAnEarlierStateIsNotReturned(t *testing.T) {
+	fx := newAttentionFixture(t)
+	it := fx.item(t, fx.tasks.ID, "open")
+	fx.tick(t)
+	flags, _, err := fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, AttentionThreshold)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := flags[it.ID][AttentionNeedsHuman]; !ok {
+		t.Fatalf("precondition: the fresh 0.9 answer is not flagged: %v", flags)
+	}
+	if _, ok := flags[it.ID][AttentionBlocked]; ok {
+		t.Fatal("a 0.2 answer was returned above a 0.7 threshold")
+	}
+
+	if _, err := fx.s.CreateComment(fx.ws.ID, it.ID, "", models.CommentCreate{Author: "wren", Body: "Dave decided: vendor B"}); err != nil {
+		t.Fatal(err)
+	}
+	flags, _, err = fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, AttentionThreshold)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := flags[it.ID]; ok {
+		t.Fatalf("an answer from before the latest comment was returned as current: %v", flags[it.ID])
+	}
+
+	fx.tick(t)
+	flags, _, _ = fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, AttentionThreshold)
+	if _, ok := flags[it.ID][AttentionNeedsHuman]; !ok {
+		t.Fatal("after the tick re-asked, the current answer is not returned")
 	}
 }

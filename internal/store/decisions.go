@@ -453,7 +453,10 @@ func scanItemDecisions(rows *sql.Rows) ([]models.ItemDecision, error) {
 
 // LatestWorkspaceDecisions returns the newest answer per (item, question_key)
 // in one question set across a workspace — the dashboard's batch form of
-// LatestItemDecisions. Soft-deleted items are excluded; visibility and
+// LatestItemDecisions. Soft-deleted items are excluded HERE as a cost filter,
+// not as the correctness guard: the one caller (Runner.WorkspaceFlags) reads
+// each flagged item's state and skips a gone one, so without this join a
+// deleted item costs a read and is still not shown. Visibility and
 // terminal-state filtering are the caller's, which already holds the item
 // list it is joining against. Current is left false, as there.
 func (s *Store) LatestWorkspaceDecisions(workspaceID, questionSet string) ([]models.ItemDecision, error) {

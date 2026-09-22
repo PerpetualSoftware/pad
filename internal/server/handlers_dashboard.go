@@ -817,7 +817,10 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 	// source for "blocked": the text-derived signal is added only for an
 	// item the graph did not already flag, which also keeps the web's
 	// `${type}:${item_slug}` attention key unique.
-	if nouls, failing, nerr := s.decisionRunner().WorkspaceNouls(workspaceID, decision.AttentionSetName); nerr != nil {
+	// Only CURRENT answers at or above the threshold come back — the same
+	// currency rule the item page applies — so the checks below need no
+	// threshold of their own beyond naming which key they read.
+	if nouls, failing, nerr := s.decisionRunner().WorkspaceFlags(workspaceID, decision.AttentionSetName, decision.AttentionThreshold); nerr != nil {
 		markDegraded("attention.decisions", nerr)
 	} else {
 		if failing {
@@ -829,7 +832,7 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 				if !ok || isItemDone(item.Fields, item.CollectionID, ctxMap) {
 					continue
 				}
-				if p, ok := answers[decision.AttentionNeedsHuman]; ok && p >= decision.AttentionThreshold {
+				if p, ok := answers[decision.AttentionNeedsHuman]; ok {
 					resp.Attention = append(resp.Attention, DashboardAttention{
 						Type:       "needs_human",
 						ItemSlug:   item.Slug,
@@ -842,7 +845,7 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 				if _, graphBlocked := firstActiveBlocker[item.ID]; graphBlocked {
 					continue
 				}
-				if p, ok := answers[decision.AttentionBlocked]; ok && p >= decision.AttentionThreshold {
+				if p, ok := answers[decision.AttentionBlocked]; ok {
 					resp.Attention = append(resp.Attention, DashboardAttention{
 						Type:       "blocked",
 						ItemSlug:   item.Slug,

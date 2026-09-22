@@ -202,3 +202,32 @@ func containsString(ss []string, want string) bool {
 	}
 	return false
 }
+
+// A collection edit can make an item terminal without touching the item: the
+// item's state (and so its stored answer's currency) is unchanged, and no job
+// is owed. The dashboard's own done check is what drops it.
+func TestDashboardAttention_ItemMadeTerminalBySchemaEditIsNotSurfaced(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	attachAttentionRunner(t, srv)
+	slug := createWSWithCollections(t, srv)
+	schema := func(terminal string) string {
+		return `{"fields":[{"key":"status","type":"select","options":["open","shelved","done"],"terminal_options":[` + terminal + `]}]}`
+	}
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections", map[string]any{"name": "Asks", "schema": schema(`"done"`)})
+	if rr.Code != 201 {
+		t.Fatalf("create collection: %d %s", rr.Code, rr.Body.String())
+	}
+	it := createItem(t, srv, slug, "asks", map[string]interface{}{"title": "Budget sign-off HUMAN-HIGH", "fields": `{"status":"shelved"}`})
+	runDecisionTick(t, srv)
+	if len(filterAttention(attentionFor(getDashboard(t, srv, slug), it.Ref), "needs_human")) != 1 {
+		t.Fatal("precondition: the shelved (non-terminal) item is not surfaced")
+	}
+	rr = doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/collections/asks", map[string]any{"schema": schema(`"done","shelved"`)})
+	if rr.Code != 200 {
+		t.Fatalf("patch collection: %d %s", rr.Code, rr.Body.String())
+	}
+	if got := attentionFor(getDashboard(t, srv, slug), it.Ref); len(got) != 0 {
+		t.Fatalf("an item its collection now calls terminal is still in attention: %+v", got)
+	}
+}

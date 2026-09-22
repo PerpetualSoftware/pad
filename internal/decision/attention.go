@@ -2,6 +2,7 @@ package decision
 
 import (
 	"encoding/json"
+	"errors"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -106,20 +107,26 @@ func ProductionRegistry() (*Registry, error) {
 	return reg, nil
 }
 
-// WorkspaceNouls returns, for every item in the workspace with a stored
-// answer in the named set, the latest Noul probability per question key.
+// WorkspaceFlags returns, for every item in the workspace, the question keys
+// in the named set whose latest answer is a Noul at or above threshold AND is
+// CURRENT — computed for the question as registered now, under the model
+// pinned now, from the item's state as it stands now. That is the same
+// currency rule [Runner.Decisions] applies, so the dashboard and the item page
+// never disagree about whether an answer still describes the item.
 //
-// Only answers to the question AS REGISTERED NOW, under the model pinned now,
-// are returned: a row whose question_hash no longer matches answered a
-// different question, and the dashboard must not present it as an answer to
-// this one. The item-STATE match that Decisions also requires is deliberately
-// not checked here — it would need every item's recent trail read to hash
-// (one query per item). An item whose state has moved has a job owed, and the
-// tick replaces the answer; what lags is reported through failing.
+// Cost: one batch read for the workspace, then one state read (the item plus
+// its recent trail) per item holding at least one ABOVE-THRESHOLD answer. An
+// answer below the threshold is never surfaced, so its currency is never
+// checked; the per-item reads are bounded by the flagged items, not by the
+// workspace.
+//
+// An answer whose item has moved on is dropped rather than shown: the change
+// that moved it owes a job, and the tick answers again. What can lag without
+// bound is a provider outage, which failing reports.
 //
 // failing reports that some owed job in the set has a recorded failure — the
 // provider erroring. A nil runner returns nothing, not an error.
-func (r *Runner) WorkspaceNouls(workspaceID, setName string) (byItem map[string]map[string]float64, failing bool, err error) {
+func (r *Runner) WorkspaceFlags(workspaceID, setName string, threshold float64) (flags map[string]map[string]float64, failing bool, err error) {
 	if r == nil {
 		return nil, false, nil
 	}
@@ -136,23 +143,49 @@ func (r *Runner) WorkspaceNouls(workspaceID, setName string) (byItem map[string]
 	if err != nil {
 		return nil, false, err
 	}
-	byItem = make(map[string]map[string]float64)
+	// Candidates first, so the state read happens once per flagged item.
+	type candidate struct {
+		key       string
+		p         float64
+		stateHash string
+	}
+	byItem := make(map[string][]candidate)
+	var order []string
 	for _, d := range rows {
 		if want, ok := qhashNow[d.QuestionKey]; !ok || d.QuestionHash != want {
 			continue
 		}
 		p, ok := NoulValue(d)
-		if !ok {
+		if !ok || p < threshold {
 			continue
 		}
-		if byItem[d.ItemID] == nil {
-			byItem[d.ItemID] = make(map[string]float64, len(qs.Questions))
+		if _, seen := byItem[d.ItemID]; !seen {
+			order = append(order, d.ItemID)
 		}
-		byItem[d.ItemID][d.QuestionKey] = p
+		byItem[d.ItemID] = append(byItem[d.ItemID], candidate{d.QuestionKey, p, d.StateHash})
+	}
+	flags = make(map[string]map[string]float64)
+	for _, itemID := range order {
+		_, st, serr := r.State(itemID)
+		if errors.Is(serr, ErrItemGone) {
+			continue
+		}
+		if serr != nil {
+			return flags, false, serr
+		}
+		for _, c := range byItem[itemID] {
+			if c.stateHash != st.Hash {
+				continue
+			}
+			if flags[itemID] == nil {
+				flags[itemID] = make(map[string]float64, len(byItem[itemID]))
+			}
+			flags[itemID][c.key] = c.p
+		}
 	}
 	failing, err = r.store.DecisionJobsFailing(workspaceID, setName)
 	if err != nil {
-		return byItem, false, err
+		return flags, false, err
 	}
-	return byItem, failing, nil
+	return flags, failing, nil
 }
