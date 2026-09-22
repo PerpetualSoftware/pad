@@ -610,7 +610,8 @@ func (r *Runner) runJob(ctx context.Context, j store.DecisionJob) {
 	var serr error
 	switch {
 	case err != nil && ctx.Err() != nil:
-		// Cancelled by shutdown, not a verdict on the job: no attempt counted.
+		// Cancelled by shutdown, or by the provider being swapped or disabled
+		// mid-pass (TASK-3121) — not a verdict on the job: no attempt counted.
 		r.release(j)
 		return
 	case errors.Is(err, ErrWorkspaceDeleted):

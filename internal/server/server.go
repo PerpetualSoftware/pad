@@ -259,6 +259,10 @@ type Server struct {
 	// and stopped by Stop() via stopDecisionTick.
 	decisionTick decisionTickConfig
 
+	// decisionSettings holds the decision provider's config-file source and
+	// question sets, and serialises reconfiguration (TASK-3121).
+	decisionSettings decisionSettingsState
+
 	// inFlightUploadHashes tracks content_hash values for uploads
 	// that have called AttachmentStore.Put but not yet inserted the
 	// attachments row. Without this, the orphan GC could delete a
@@ -1543,6 +1547,8 @@ func (s *Server) setupRouter() {
 			r.Route("/admin", func(r chi.Router) {
 				r.Get("/settings", s.handleGetPlatformSettings)
 				r.Patch("/settings", s.handleUpdatePlatformSettings)
+				r.Get("/decision-provider", s.handleGetDecisionSettings)
+				r.Put("/decision-provider", s.handleUpdateDecisionSettings)
 				r.Post("/test-email", s.handleTestEmail)
 
 				// Cloud sidecar endpoints — only exist in cloud mode. requireCloudMode

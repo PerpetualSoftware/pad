@@ -65,9 +65,9 @@ type Config struct {
 	// PAD_TYPESAFE_API_KEY / PAD_DECISION_MODEL environment variables are
 	// deliberately NOT applied here, unlike every other setting in this
 	// file. internal/decision owns exactly one resolver
-	// (decision.Resolve over decision.Config sources), so that the
-	// instance-admin setting arriving in TASK-3121 adds a SOURCE rather
-	// than a second place that reads provider settings. Applying the env
+	// (decision.Resolve over decision.Config sources); the instance-admin
+	// setting (TASK-3121) is another SOURCE there, resolved by the server,
+	// rather than a second place that reads provider settings. Applying the env
 	// here as well would make this file a second reader and would hide
 	// which source actually won. The fields below are the config-FILE
 	// source only.

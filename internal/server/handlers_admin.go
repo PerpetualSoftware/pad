@@ -161,10 +161,16 @@ func (s *Server) handleUpdatePlatformSettings(w http.ResponseWriter, r *http.Req
 			keys = append(keys, key)
 		}
 	}
-	keysJSON, _ := json.Marshal(keys)
-	s.logAuditEvent(models.ActionSettingsChanged, r, fmt.Sprintf(`{"keys":%s}`, keysJSON))
+	s.logAuditEvent(models.ActionSettingsChanged, r, settingsChangedMeta(keys))
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
+}
+
+// settingsChangedMeta is the settings_changed audit metadata: the KEYS that
+// changed, never their values.
+func settingsChangedMeta(keys []string) string {
+	keysJSON, _ := json.Marshal(keys)
+	return fmt.Sprintf(`{"keys":%s}`, keysJSON)
 }
 
 // handleTestEmail sends a test email to verify the email configuration.

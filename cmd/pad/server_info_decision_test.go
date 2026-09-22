@@ -98,7 +98,7 @@ func TestCollectedReportCarriesDecisionProviderAndNoKey(t *testing.T) {
 	}
 	s := string(blob)
 
-	if !strings.Contains(s, `"decision_provider":{"name":"typesafe","model":"`+decision.DefaultModel+`"}`) {
+	if !strings.Contains(s, `"decision_provider":{"name":"typesafe","model":"`+decision.DefaultModel+`","sources":["file","env"]}`) {
 		t.Errorf("report JSON does not carry decision_provider with the pinned default model: %s", s)
 	}
 	if strings.Contains(s, "sk-super-secret-value") || strings.Contains(s, "secret") {
@@ -116,8 +116,8 @@ func TestCollectedReportCarriesDecisionProviderAndNoKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal report: %v", err)
 	}
-	if !strings.Contains(string(blob), `"decision_provider":{"name":"none"}`) {
-		t.Errorf("unconfigured report JSON = %s, want decision_provider {\"name\":\"none\"} with model omitted", blob)
+	if !strings.Contains(string(blob), `"decision_provider":{"name":"none","sources":["file","env"]}`) {
+		t.Errorf("unconfigured report JSON = %s, want decision_provider {\"name\":\"none\",\"sources\":[\"file\",\"env\"]} with model omitted", blob)
 	}
 }
 
@@ -170,7 +170,7 @@ func TestServerInfoCarriesTheDecisionProviderThroughBothDoors(t *testing.T) {
 		t.Fatalf("collectServerInfo: %v", err)
 	}
 	out = captureStdout(t, func() { printServerInfo(report) })
-	if !regexp.MustCompile(`Decision provider:\s+none\n`).MatchString(out) {
+	if !regexp.MustCompile(`Decision provider:\s+none — config file \+ environment; the admin setting is not included\n`).MatchString(out) {
 		t.Errorf("unconfigured output does not say the decision provider is none:\n%s", out)
 	}
 }

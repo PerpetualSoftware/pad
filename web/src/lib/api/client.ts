@@ -1,4 +1,6 @@
 import type {
+	DecisionSettings,
+	DecisionSettingsInput,
 	Workspace,
 	DeletedWorkspace,
 	WorkspaceCreate,
@@ -2770,6 +2772,14 @@ export const api = {
 			request<{ ok: boolean }>('/admin/settings', {
 				method: 'PATCH',
 				body: JSON.stringify(settings)
+			}),
+		// Decision provider (TASK-3121). The response never carries the API
+		// key — only whether one is set. api_key is write-only.
+		getDecisionSettings: () => request<DecisionSettings>('/admin/decision-provider'),
+		updateDecisionSettings: (input: DecisionSettingsInput) =>
+			request<DecisionSettings>('/admin/decision-provider', {
+				method: 'PUT',
+				body: JSON.stringify(input)
 			}),
 		testEmail: (to?: string) =>
 			request<{ ok: boolean; sent_to: string }>('/admin/test-email', {

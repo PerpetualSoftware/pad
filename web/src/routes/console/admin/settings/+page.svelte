@@ -8,6 +8,8 @@
 		adminStore,
 		type LimitTiers
 	} from '$lib/stores/admin.svelte';
+	import { api } from '$lib/api/client';
+	import type { DecisionSettings, DecisionSettingsInput } from '$lib/types';
 
 	// Plan limits
 	let limits = $state<LimitTiers | null>(null);
@@ -36,6 +38,67 @@
 	let integrationsStatus = $state<'idle' | 'saved' | 'error'>('idle');
 	let testingEmail = $state(false);
 	let testEmailResult = $state<{ message: string; type: 'success' | 'error' } | null>(null);
+
+	// Decision provider (TASK-3121). The server never returns the API key, only
+	// whether one is set, so the key input starts empty and is sent only when the
+	// admin types into it. Its own endpoint rather than /admin/settings: the key
+	// is encrypted at rest and the environment can override each field.
+	let decision = $state<DecisionSettings | null>(null);
+	let decisionLoadError = $state('');
+	let decisionEnabled = $state(false);
+	let decisionProvider = $state<'typesafe' | 'none'>('typesafe');
+	let decisionModel = $state('');
+	let decisionKey = $state('');
+	let decisionClearKey = $state(false);
+	let savingDecision = $state(false);
+	let decisionStatus = $state<{ message: string; type: 'saved' | 'error' } | null>(null);
+
+	function applyDecision(d: DecisionSettings) {
+		decision = d;
+		// Seed from what is in force for env-set fields (the input is disabled and
+		// shows that value) and from the stored setting otherwise.
+		decisionEnabled = d.env.provider ? d.effective.enabled : (d.stored.enabled ?? d.effective.enabled);
+		// "none" only when that is what is saved (or what the environment
+		// forces); an unset provider shows the one real choice.
+		const shown = d.env.provider ? d.effective.provider : d.stored.provider;
+		decisionProvider = shown === 'none' ? 'none' : 'typesafe';
+		decisionModel = d.env.model ? d.effective.model : d.stored.model;
+		decisionKey = '';
+		decisionClearKey = false;
+	}
+
+	async function loadDecision() {
+		try {
+			applyDecision(await api.admin.getDecisionSettings());
+		} catch (e) {
+			decisionLoadError = e instanceof Error ? e.message : 'Failed to load';
+		}
+	}
+
+	async function saveDecision() {
+		if (!decision) return;
+		savingDecision = true;
+		decisionStatus = null;
+		// Only fields the environment does not set: the server refuses the rest.
+		const input: DecisionSettingsInput = {};
+		if (!decision.env.provider) {
+			input.enabled = decisionEnabled;
+			input.provider = decisionProvider;
+		}
+		if (!decision.env.model) input.model = decisionModel.trim();
+		if (!decision.env.api_key) {
+			if (decisionKey.trim()) input.api_key = decisionKey.trim();
+			else if (decisionClearKey) input.clear_api_key = true;
+		}
+		try {
+			applyDecision(await api.admin.updateDecisionSettings(input));
+			decisionStatus = { message: 'Saved', type: 'saved' };
+		} catch (e) {
+			decisionStatus = { message: e instanceof Error ? e.message : 'Failed to save', type: 'error' };
+		} finally {
+			savingDecision = false;
+		}
+	}
 
 	let loading = $state(true);
 
@@ -137,6 +200,7 @@
 
 	onMount(() => {
 		loadSettings();
+		loadDecision();
 	});
 </script>
 
@@ -290,6 +354,143 @@
 					</div>
 				</div>
 			{/if}
+		</section>
+
+		<section class="section" data-testid="decision-provider-section">
+			<h2 class="section-title">Decision provider</h2>
+			<p class="section-desc">
+				Scores open items for attention (needs a human decision, blocked, waiting on someone
+				outside the team) using a hosted model.
+			</p>
+
+			<div class="email-card">
+				{#if decisionLoadError}
+					<p class="save-msg error-msg">Could not load: {decisionLoadError}</p>
+				{:else if !decision}
+					<p class="save-msg">Loading…</p>
+				{:else if decision.read_only}
+					<p class="save-msg" data-testid="decision-operator-note">
+						Configured by the operator.
+						{decision.effective.enabled
+							? `Enabled: ${decision.effective.provider} (${decision.effective.model}).`
+							: 'Disabled.'}
+					</p>
+				{:else}
+					<p class="privacy-line" data-testid="decision-privacy-line">
+						When enabled, item titles, bodies and comments are sent to the provider.
+					</p>
+
+					<div class="email-field">
+						<label for="decision-provider">
+							Provider
+							{#if decision.env.provider}<span class="env-note">set by environment</span>{/if}
+						</label>
+						<select
+							id="decision-provider"
+							value={decisionProvider}
+							disabled={decision.env.provider}
+							onchange={(e) => (decisionProvider = e.currentTarget.value as 'typesafe' | 'none')}
+						>
+							<option value="none">None (disabled)</option>
+							<option value="typesafe">typesafe</option>
+						</select>
+					</div>
+
+					<label class="toggle-row">
+						<input
+							type="checkbox"
+							data-testid="decision-enabled"
+							checked={decisionEnabled}
+							disabled={decision.env.provider}
+							onchange={(e) => (decisionEnabled = e.currentTarget.checked)}
+						/>
+						<span>Enable decisions</span>
+						{#if decision.env.provider}<span class="env-note">set by environment</span>{/if}
+					</label>
+
+					<div class="email-field">
+						<label for="decision-api-key">
+							API key
+							{#if decision.env.api_key}<span class="env-note">set by environment</span>{/if}
+						</label>
+						<input
+							id="decision-api-key"
+							type="password"
+							autocomplete="off"
+							disabled={decision.env.api_key}
+							value={decisionKey}
+							oninput={(e) => {
+								decisionKey = e.currentTarget.value;
+								if (decisionKey) decisionClearKey = false;
+							}}
+							placeholder={decision.stored.api_key_set
+								? 'A key is saved — type to replace it'
+								: 'typesafe API key'}
+						/>
+						{#if decision.stored_key_error}
+							<span class="save-msg error-msg" data-testid="decision-stored-key-error"
+								>{decision.stored_key_error}</span
+							>
+						{/if}
+						{#if decision.stored.api_key_set && !decision.env.api_key}
+							<label class="toggle-row small">
+								<input
+									type="checkbox"
+									checked={decisionClearKey}
+									disabled={decisionKey !== ''}
+									onchange={(e) => (decisionClearKey = e.currentTarget.checked)}
+								/>
+								<span>Remove the saved key</span>
+							</label>
+						{/if}
+					</div>
+
+					<div class="email-field">
+						<label for="decision-model">
+							Model
+							{#if decision.env.model}<span class="env-note">set by environment</span>{/if}
+						</label>
+						<input
+							id="decision-model"
+							type="text"
+							disabled={decision.env.model}
+							value={decisionModel}
+							oninput={(e) => (decisionModel = e.currentTarget.value)}
+							placeholder="jev-1.13.0 (default)"
+						/>
+					</div>
+
+					<div class="edit-actions">
+						<button
+							class="btn primary"
+							data-testid="decision-save"
+							disabled={savingDecision}
+							onclick={saveDecision}
+						>
+							{savingDecision ? 'Saving...' : 'Save Decision Settings'}
+						</button>
+						{#if decisionStatus}
+							<span
+								class="save-msg"
+								class:error-msg={decisionStatus.type === 'error'}
+								data-testid="decision-status">{decisionStatus.message}</span
+							>
+						{/if}
+					</div>
+				{/if}
+
+				{#if decision}
+					<p class="save-msg" data-testid="decision-effective">
+						{#if decision.effective.enabled && !decision.error}
+							Running: {decision.effective.provider} ({decision.effective.model}).
+						{:else if decision.error}
+							<span class="error-msg">Not running: {decision.error}</span>
+						{:else}
+							Off.
+						{/if}
+					</p>
+				{/if}
+			</div>
 		</section>
 
 		<section class="section">
@@ -492,5 +693,23 @@
 	}
 	.toggle-row input[type='checkbox'] {
 		cursor: pointer;
+	}
+	.toggle-row.small {
+		font-size: 0.8rem;
+		color: var(--text-secondary);
+	}
+	.env-note {
+		font-size: 0.75rem;
+		color: var(--text-muted);
+		font-style: italic;
+		margin-left: var(--space-2);
+	}
+	.privacy-line {
+		font-size: 0.8rem;
+		color: var(--text-secondary);
+		margin: 0;
+	}
+	.error-msg {
+		color: var(--accent-red, #d33);
 	}
 </style>

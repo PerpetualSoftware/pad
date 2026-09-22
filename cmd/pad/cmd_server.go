@@ -908,17 +908,20 @@ func serveCmd() *cobra.Command {
 			// runs without decisions — an operator asked for them and is not
 			// getting them, which must be visible, but it is not a reason to
 			// refuse to serve everything else.
-			decisionProvider, derr := decision.New(resolveDecisionConfig(cfg))
-			if derr != nil {
-				slog.Error("decision provider misconfigured; decisions are OFF", "error", derr)
-			}
+			//
+			// The config file is one source; the instance-admin setting and
+			// the environment are resolved by the server itself, which
+			// rebuilds the provider whenever an admin changes the setting —
+			// no restart (TASK-3121).
 			decisionSets, rerr := decision.ProductionRegistry()
 			if rerr != nil {
 				slog.Error("decision question sets failed to register; decisions are OFF", "error", rerr)
-				decisionProvider = nil
+				decisionSets = nil
 			}
-			srv.SetDecisionRunner(decision.NewRunner(s, decisionProvider, decisionSets))
-			srv.StartDecisionTick()
+			srv.SetDecisionBase(decisionFileConfig(cfg), decisionSets)
+			if derr := srv.ConfigureDecisions(); derr != nil {
+				slog.Error("decision provider misconfigured; decisions are OFF", "error", derr)
+			}
 
 			// Workspace hard-purge sweeper (TASK-1966). Periodic sweep
 			// that hard-deletes workspaces soft-deleted more than 30 days

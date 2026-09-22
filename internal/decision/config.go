@@ -29,10 +29,10 @@ const DefaultModel = "jev-1.13.0"
 
 // Config is the resolved decision-provider configuration.
 //
-// It is the SINGLE reader of provider settings. This unit populates it from
-// the environment and from pad's config file; the instance-admin setting
-// arrives in a later unit (TASK-3121) as another SOURCE passed to [Resolve],
-// not as a second place that reads settings. See TASK-3116.
+// It is the SINGLE reader of provider settings. Three sources feed it, each
+// a Config passed to [Resolve] / [ResolveNamed]: pad's config file, the
+// instance-admin setting (TASK-3121), and the environment — in that order,
+// later winning. See TASK-3116.
 type Config struct {
 	// Provider is the backend name: "typesafe", "none", or "" when this
 	// source has no opinion.
@@ -75,19 +75,55 @@ func EnvConfig() Config {
 // environment that wants to TURN OFF a provider an admin enabled has to say
 // so with a value, and "none" is that value.
 func Resolve(sources ...Config) Config {
+	named := make([]NamedConfig, len(sources))
+	for i, c := range sources {
+		named[i] = NamedConfig{Config: c}
+	}
+	out, _ := ResolveNamed(named...)
+	return out
+}
+
+// Source names for [NamedConfig], as reported by [Origins].
+const (
+	SourceFile  = "file"
+	SourceAdmin = "admin"
+	SourceEnv   = "env"
+)
+
+// NamedConfig is a [Config] source labelled for [ResolveNamed].
+type NamedConfig struct {
+	Name string
+	Config
+}
+
+// Origins reports, per field, the Name of the source whose value won, or ""
+// when no source set that field.
+type Origins struct {
+	Provider string
+	APIKey   string
+	Model    string
+}
+
+// ResolveNamed is [Resolve] with attribution: it applies the same
+// later-wins, non-empty-overrides rule and also reports which source each
+// field came from. [Resolve] is implemented on it, so the two cannot drift —
+// the admin page's "set by environment" is read from the same pass that
+// builds the provider (TASK-3121).
+func ResolveNamed(sources ...NamedConfig) (Config, Origins) {
 	var out Config
+	var o Origins
 	for _, s := range sources {
 		if v := strings.TrimSpace(s.Provider); v != "" {
-			out.Provider = v
+			out.Provider, o.Provider = v, s.Name
 		}
 		if v := strings.TrimSpace(s.APIKey); v != "" {
-			out.APIKey = v
+			out.APIKey, o.APIKey = v, s.Name
 		}
 		if v := strings.TrimSpace(s.Model); v != "" {
-			out.Model = v
+			out.Model, o.Model = v, s.Name
 		}
 	}
-	return out
+	return out, o
 }
 
 // New builds the configured provider.

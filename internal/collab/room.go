@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/gorilla/websocket"
 )
 
@@ -229,7 +230,10 @@ type Room struct {
 // narrow interface lets manager_test stub op-log behaviour without
 // dragging in the entire *store.Store API surface.
 type opLogStore interface {
-	AppendYjsUpdate(itemID string, data []byte, schemaVersion string) (int64, error)
+	// AppendSyncFrame persists one relay frame, or skips it when it is a
+	// byte-identical duplicate of an earlier row (BUG-3135). Either way the
+	// returned ID is what the frame is acknowledged with.
+	AppendSyncFrame(itemID string, data []byte, schemaVersion string) (store.SyncFrameAppend, error)
 	LoadYjsUpdatesSince(itemID string, sinceID int64) ([]models.YjsUpdate, error)
 	// LatestYjsUpdateSchemaVersion + PruneYjsUpdatesBefore power the
 	// schema-mismatch rebuild flow (TASK-1268). The room manager
@@ -467,7 +471,14 @@ func (r *Room) readLoop(rc *roomConn) error {
 			// persist and broadcast loses at most a live keystroke
 			// that the originating peer will replay on reconnect
 			// anyway.
-			persistedID, err := r.store.AppendYjsUpdate(r.itemID, data, r.schemaVersion)
+			// BUG-3135: a byte-identical re-send is not stored, but it is
+			// broadcast and acknowledged exactly like a stored frame. Its ack
+			// id is the item's current MAX(id), read under appendMu: every row
+			// at or below it was published to each conn's bus before this
+			// event, so the cursor cannot overtake an undelivered binary (the
+			// round-23 hazard below).
+			appended, err := r.store.AppendSyncFrame(r.itemID, data, r.schemaVersion)
+			persistedID := appended.ID
 			if err != nil {
 				slog.Error("collab: append op-log",
 					"item_id", r.itemID,
@@ -479,7 +490,7 @@ func (r *Room) readLoop(rc *roomConn) error {
 				// → no cursor frame is emitted by writeLoop for this
 				// event (we'd be advertising a fictional id).
 			}
-			if persistedID > 0 {
+			if appended.Persisted && persistedID > 0 {
 				// Advance the conn's durable high-water (BUG-2276 residual 2). Only
 				// frames that actually landed advance it, so a restore's finalization
 				// can read it (under appendMu) to know this conn's applier frame

@@ -58,6 +58,12 @@ type serverInfoConfig struct {
 type serverInfoDecision struct {
 	Name  string `json:"name"`
 	Model string `json:"model,omitempty"`
+
+	// Sources names the sources this report resolved. It omits the
+	// instance-admin setting, which lives in the server's database and can
+	// override the config file there (TASK-3121); an admin sees the running
+	// server's answer at console/admin/settings.
+	Sources []string `json:"sources"`
 }
 
 type serverInfoConnection struct {
@@ -124,24 +130,31 @@ does not inspect remote server internals.`,
 	}
 }
 
-// resolveDecisionConfig is the ONE resolution of the decision provider's
-// settings, shared by the server's boot path and `pad server info`: config
-// file first, environment last, because the environment overrides the
-// instance-admin setting (ruled day 73 on PLAN-3114). Sharing it is what makes
-// the report unable to disagree with what the server builds.
-func resolveDecisionConfig(cfg *config.Config) decision.Config {
-	return decision.Resolve(decision.Config{
+// decisionFileConfig is the config-file source of the decision provider's
+// settings, handed to the server at boot (SetDecisionBase).
+func decisionFileConfig(cfg *config.Config) decision.Config {
+	return decision.Config{
 		Provider: cfg.DecisionProvider,
 		APIKey:   cfg.TypesafeAPIKey,
 		Model:    cfg.DecisionModel,
-	}, decision.EnvConfig())
+	}
+}
+
+// resolveDecisionConfig resolves the two sources THIS HOST can see: config
+// file first, environment last, because the environment overrides the
+// instance-admin setting (ruled day 73 on PLAN-3114). The running server
+// resolves a third source between them — the instance-admin setting, stored
+// in its database (TASK-3121) — which this command does not read; the report
+// says so rather than presenting a two-source answer as the server's.
+func resolveDecisionConfig(cfg *config.Config) decision.Config {
+	return decision.Resolve(decisionFileConfig(cfg), decision.EnvConfig())
 }
 
 // describeDecisionProvider resolves the decision provider for the report. It
 // goes through decision.Describe, which never returns the API key.
 func describeDecisionProvider(cfg *config.Config) serverInfoDecision {
 	name, model := decision.Describe(resolveDecisionConfig(cfg))
-	return serverInfoDecision{Name: name, Model: model}
+	return serverInfoDecision{Name: name, Model: model, Sources: []string{decision.SourceFile, decision.SourceEnv}}
 }
 
 func collectServerInfo(cfg *config.Config) (*serverInfoReport, error) {
@@ -290,9 +303,9 @@ func printServerInfo(report *serverInfoReport) {
 	}
 	fmt.Fprintf(w, "Config source:\t%s\n", configSource(report.Config))
 	if d := report.Config.DecisionProvider; d.Model != "" {
-		fmt.Fprintf(w, "Decision provider:\t%s (%s)\n", d.Name, d.Model)
+		fmt.Fprintf(w, "Decision provider:\t%s (%s) — config file + environment; the admin setting is not included\n", d.Name, d.Model)
 	} else {
-		fmt.Fprintf(w, "Decision provider:\t%s\n", d.Name)
+		fmt.Fprintf(w, "Decision provider:\t%s — config file + environment; the admin setting is not included\n", d.Name)
 	}
 
 	fmt.Println()
