@@ -167,12 +167,22 @@ func ValidateFieldsDetailedWithDrops(
 
 		// Apply default if field is missing and a default is defined
 		if !exists || val == nil {
-			if def.Default == nil {
+			// BUG-3028: a blank default on a scalar relation IS "no default" —
+			// the key absent is the only stored form of "no target", so there is
+			// nothing to inject. Injecting it would satisfy `required` here and
+			// then be normalised away after validation, landing a required
+			// relation with no target (codex round 1).
+			blankRelationDefault := def.Type == "relation" && IsBlankRelationValue(def.Default)
+			if def.Default == nil || blankRelationDefault {
 				if def.Required {
+					msg := fmt.Sprintf("field %q is required", def.Key)
+					if blankRelationDefault {
+						msg = fmt.Sprintf("field %q is required and its schema default is blank, which names no target", def.Key)
+					}
 					issues = append(issues, FieldIssue{
 						Key:     def.Key,
 						Kind:    IssueRequired,
-						Message: fmt.Sprintf("field %q is required", def.Key),
+						Message: msg,
 					})
 				}
 				continue

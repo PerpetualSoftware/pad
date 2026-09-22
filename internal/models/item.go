@@ -1252,6 +1252,15 @@ type ItemUpdate struct {
 	// are not in it. Setting this says the caller means to replace them.
 	// It has no effect on a write without a token or without content.
 	OverwritePendingEdits bool `json:"overwrite_pending_edits,omitempty"`
+
+	// BlankRelationKeys names the collection's scalar `relation` keys for the
+	// store to normalise on a FieldsPatch write (BUG-3028): after the patch is
+	// merged onto the row read under the write lock, any of these still holding
+	// a blank string is deleted, so a legacy "" or " " the patch did not touch
+	// is carried through as key-absent. It is decided under the lock rather than
+	// from the handler's earlier read, which could delete a value a concurrent
+	// write had just set. Server-internal; never read from a request body.
+	BlankRelationKeys []string `json:"-"`
 }
 
 // ErrInvalidFieldsType / ErrInvalidTagsType are returned by

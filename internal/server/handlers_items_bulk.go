@@ -562,6 +562,13 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 
 	// Coerce strings to their declared types before validating (BUG-2850).
 	fieldMap = items.CoerceFields(fieldMap, schema)
+	// BUG-3028: a blank relation in `changes` is one this write SETS, removed
+	// before validation so a required one is refused; a blank carried from the
+	// stored row is removed after validation, landing as key-absent.
+	items.DropBlankRelations(fieldMap, schema, func(k string) bool {
+		_, set := changes[k]
+		return !set
+	})
 	// Snapshot before validation, which INJECTS schema defaults: this door's
 	// relation pass looks only at the keys `changes` names, so a relation
 	// default validation fills in was persisted raw — never canonicalised and
@@ -574,6 +581,7 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 	if err != nil {
 		return nil, &bulkOpError{message: err.Error(), code: "validation_error"}
 	}
+	items.DropBlankRelations(fieldMap, schema, nil)
 	if droppedFields != nil && len(defaultDrops) > 0 {
 		*droppedFields = append(*droppedFields, defaultDrops...)
 	}
@@ -930,6 +938,13 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 	// doesn't allow (e.g. a status not in the target's options).
 	// Coerce strings to their declared types before validating (BUG-2850).
 	result.Fields = items.CoerceFields(result.Fields, items.SchemaForMigratedFields(targetSchema))
+	// BUG-3028: an override is a value this move SETS; a blank one is removed
+	// before validation so a required target field is refused. Blanks carried
+	// from the source are removed after validation.
+	items.DropBlankRelations(result.Fields, items.SchemaForMigratedFields(targetSchema), func(k string) bool {
+		_, set := suppliedByCaller[k]
+		return !set
+	})
 	// Relation referents on a bulk move (TASK-2878). Same door class as the
 	// single-item move: within the workspace, so a valid relation survives and
 	// only an unresolvable one is dropped. `req` carries no per-field
@@ -980,6 +995,7 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 	if err := items.ValidateFields(result.Fields, items.SchemaForMigratedFields(targetSchema)); err != nil {
 		return nil, &bulkOpError{message: err.Error(), code: "validation_error"}
 	}
+	items.DropBlankRelations(result.Fields, items.SchemaForMigratedFields(targetSchema), nil)
 	// Relation defaults ValidateFields just injected (codex round 2). After
 	// validation for the reason ResolveLateRelationDefaults documents.
 	lateDropped, lateErr := s.store.ResolveLateRelationDefaults(

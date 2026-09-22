@@ -1309,6 +1309,7 @@ func (s *Store) ListItems(workspaceID string, params models.ItemListParams) ([]m
 	}
 
 	// Field filters — supports comma-separated values as OR
+	blankRelationFilterKeys := s.scalarRelationFilterKeys(workspaceID, params)
 	for key, value := range params.Fields {
 		// Sanitize the key to prevent SQL injection — field names must be
 		// alphanumeric/underscore only (user-controlled from query params).
@@ -1324,6 +1325,12 @@ func (s *Store) ListItems(workspaceID string, params models.ItemListParams) ([]m
 				args = append(args, strings.TrimSpace(v))
 			}
 			query += " AND " + jsonExpr + " IN (" + strings.Join(placeholders, ",") + ")"
+		} else if value == "" && blankRelationFilterKeys[key] {
+			// BUG-3028: "no target" on a scalar relation has three stored
+			// spellings until every row is normalised — absent, "" and
+			// whitespace — and `owner=` asks for all of them, not for the one
+			// that happens to be spelled "".
+			query += " AND (" + jsonExpr + " IS NULL OR TRIM(" + jsonExpr + ") = '')"
 		} else {
 			query += " AND " + jsonExpr + " = ?"
 			args = append(args, value)
@@ -2091,6 +2098,7 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 
 	// Field filters — supports comma-separated values as OR. Field keys are
 	// user-controlled (query params), so isValidFieldKey gates SQL composition.
+	blankRelationFilterKeys := s.scalarRelationFilterKeys(workspaceID, params)
 	for key, value := range params.Fields {
 		if !isValidFieldKey(key) {
 			continue
@@ -2104,6 +2112,12 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 				args = append(args, strings.TrimSpace(v))
 			}
 			query += " AND " + jsonExpr + " IN (" + strings.Join(placeholders, ",") + ")"
+		} else if value == "" && blankRelationFilterKeys[key] {
+			// BUG-3028: "no target" on a scalar relation has three stored
+			// spellings until every row is normalised — absent, "" and
+			// whitespace — and `owner=` asks for all of them, not for the one
+			// that happens to be spelled "".
+			query += " AND (" + jsonExpr + " IS NULL OR TRIM(" + jsonExpr + ") = '')"
 		} else {
 			query += " AND " + jsonExpr + " = ?"
 			args = append(args, value)
@@ -2227,6 +2241,71 @@ func mergeFieldsPatch(currentJSON string, patch map[string]interface{}) (string,
 //   - Provided=false  → no parent-link change (the common case).
 //   - Provided=true, ParentID!="" → set the parent to ParentID.
 //   - Provided=true, ParentID=="" → clear the parent link.
+//
+// scalarRelationFilterKeys returns the scalar `relation` keys of the collection
+// a list is scoped to, for the BUG-3028 empty-value filter. Nil when the list
+// is not scoped to one collection (a key can be a relation in one collection
+// and text in another, so the broadened predicate is only sound with a schema
+// in hand), when no empty filter value is present, or on a lookup error — in
+// every such case the filter keeps its exact-match meaning.
+func (s *Store) scalarRelationFilterKeys(workspaceID string, params models.ItemListParams) map[string]bool {
+	if params.CollectionSlug == "" {
+		return nil
+	}
+	hasEmpty := false
+	for _, v := range params.Fields {
+		if v == "" {
+			hasEmpty = true
+			break
+		}
+	}
+	if !hasEmpty {
+		return nil
+	}
+	coll, err := s.GetCollectionBySlug(workspaceID, params.CollectionSlug)
+	if err != nil || coll == nil {
+		return nil
+	}
+	var schema models.CollectionSchema
+	if err := models.UnmarshalItemFieldSchema([]byte(coll.Schema), &schema); err != nil {
+		return nil
+	}
+	keys := map[string]bool{}
+	for _, def := range schema.Fields {
+		if def.Type == "relation" {
+			keys[def.Key] = true
+		}
+	}
+	return keys
+}
+
+// dropBlankStringKeys deletes, from a fields JSON object, each of keys whose
+// value is a string that trims to "" (BUG-3028: the non-canonical spellings of
+// an empty relation). Other values, and other keys, are left alone.
+func dropBlankStringKeys(fieldsJSON string, keys []string) (string, error) {
+	m := map[string]interface{}{}
+	if fieldsJSON != "" && fieldsJSON != "{}" {
+		if err := json.Unmarshal([]byte(fieldsJSON), &m); err != nil {
+			return "", fmt.Errorf("parse merged fields: %w", err)
+		}
+	}
+	changed := false
+	for _, k := range keys {
+		if s, ok := m[k].(string); ok && strings.TrimSpace(s) == "" {
+			delete(m, k)
+			changed = true
+		}
+	}
+	if !changed {
+		return fieldsJSON, nil
+	}
+	out, err := json.Marshal(m)
+	if err != nil {
+		return "", fmt.Errorf("marshal normalised fields: %w", err)
+	}
+	return string(out), nil
+}
+
 type ParentLinkUpdate struct {
 	Provided    bool
 	ParentID    string
@@ -2608,6 +2687,12 @@ func (s *Store) updateItemWithParentLinkOnce(
 		merged, mErr := mergeFieldsPatch(existing.Fields, input.FieldsPatch)
 		if mErr != nil {
 			return nil, mErr
+		}
+		if len(input.BlankRelationKeys) > 0 {
+			merged, mErr = dropBlankStringKeys(merged, input.BlankRelationKeys)
+			if mErr != nil {
+				return nil, mErr
+			}
 		}
 		input.Fields = &merged
 	}

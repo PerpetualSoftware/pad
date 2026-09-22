@@ -100,6 +100,16 @@ func TestImportArtifactCarriesAndReportsUnresolvableRelations(t *testing.T) {
 			warning:  "declares a default for it that is not a valid reference",
 		},
 		{
+			// BUG-3028: an import CARRIES values nobody typed in this request,
+			// so a blank on a REQUIRED relation is normalised to key-absent,
+			// not refused. Nothing was lost, so nothing is reported.
+			name:     "required field, whitespace-only value",
+			field:    relationField(map[string]any{"required": true}),
+			role:     `"   "`,
+			wantKind: droppedKey,
+			warning:  "",
+		},
+		{
 			// CONTROL. Without it every assertion above is satisfied by a door
 			// that resolves nothing at all and reports everything.
 			name:     "control: a value that resolves",

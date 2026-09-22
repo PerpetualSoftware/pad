@@ -1017,6 +1017,24 @@ const CmdhelpVersion = "0.1"
 //     browser tab and BUG-3000 carries the open half — so no surface
 //     here states a duration.
 //
+//     0.40 — BUG-3028. BEHAVIOR bump on the 0.35 / 0.36 grounds: a write
+//     door refuses a value it used to accept. A scalar `relation` field had
+//     three stored spellings of "no target" — the key absent, `""`, and
+//     whitespace-only — and `required` was enforced only against the first,
+//     so a required relation holding `""` validated. The canonical form is now
+//     the one multi_relation already uses (0.33): the key ABSENT. A blank a
+//     write SETS — on create, in `fields_patch`, as a changed value in a full
+//     `fields`, or as a move/copy override — is normalised to absent BEFORE
+//     validation, so a required one is refused as required, the same answer
+//     deleting it already got. A legacy blank a write merely CARRIES (a patch
+//     that does not touch it, a full-`fields` read-modify-write sending it back
+//     unchanged, a move, a copy, an artifact import) is normalised to absent
+//     AFTER validation and never refused, by the provenance rule 0.29 set for
+//     carried relation values. `pad_item.list` with an EMPTY filter value on a
+//     scalar relation key of the listed collection (`owner=`) now matches all
+//     three spellings, where it matched only `""`. No param or shape changed;
+//     no escape hatch, for 0.29's reason.
+//
 //     0.39 — BUG-3133. BEHAVIOR bump on the 0.35 / 0.36 grounds: a
 //     write door now refuses a call it used to accept. `pad_item.update`
 //     that sets content AND carries expected_seq or expected_updated_at
@@ -1297,7 +1315,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.39"
+const ToolSurfaceVersion = "0.40"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a
