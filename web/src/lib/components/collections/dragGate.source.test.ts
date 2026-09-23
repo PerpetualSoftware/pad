@@ -14,7 +14,14 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-const VIEWS = { 'BoardView.svelte': 1, 'ListView.svelte': 2 } as const;
+// Paths relative to this directory, with the number of zones each must hold.
+// BUG-3159 added the roles board and the child list.
+const VIEWS = {
+	'BoardView.svelte': 1,
+	'ListView.svelte': 2,
+	'../ChildItems.svelte': 1,
+	'../../../routes/[username]/[workspace]/roles/+page.svelte': 1,
+} as const;
 
 /** The text of each `use:dndzone={{ … }}` config, brace-matched. */
 function dndzoneConfigs(src: string): string[] {
@@ -34,7 +41,7 @@ function dndzoneConfigs(src: string): string[] {
 	return out;
 }
 
-describe('every collection-view drag zone asks viewport.dragDisabled', () => {
+describe('every item drag zone asks viewport.dragDisabled', () => {
 	for (const [file, expected] of Object.entries(VIEWS)) {
 		it(file, () => {
 			const src = readFileSync(resolve(__dirname, file), 'utf8');

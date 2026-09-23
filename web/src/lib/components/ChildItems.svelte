@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { viewport } from '$lib/stores/breakpoint.svelte';
 	import { SvelteMap } from 'svelte/reactivity';
 	import { onDestroy, onMount } from 'svelte';
 	import { api } from '$lib/api/client';
@@ -930,7 +931,10 @@
 						type: 'child-item',
 						dropTargetClasses: ['drop-target'],
 						delayTouchStart: touchDragDelayMs,
-						dragDisabled: !canEdit || frozen
+						// BUG-3159: off by input, not width, like every drag zone
+						// (viewport.dragDisabled). A drop writes sort_order, so a held
+						// finger reordered the children; the kebab reorder stays.
+						dragDisabled: viewport.dragDisabled || !canEdit || frozen
 					}}
 					onconsider={(e) => handleConsider(status, e)}
 					onfinalize={(e) => handleFinalize(status, e)}

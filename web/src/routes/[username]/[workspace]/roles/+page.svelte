@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { viewport } from '$lib/stores/breakpoint.svelte';
 	import { page } from '$app/state';
 	import { onDestroy, onMount } from 'svelte';
 	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
@@ -1027,7 +1028,11 @@
 							type: 'role-board-card',
 							dropTargetClasses: ['drop-target'],
 							delayTouchStart: touchDragDelayMs,
-							dragDisabled: !canEditAnyItem
+							// BUG-3159: off by input, not width, like every drag zone
+							// (viewport.dragDisabled). A cross-lane drop writes the role AND,
+							// for an unassigned item, assigns it to the current user; touch
+							// keeps the item's role select as the non-drag path.
+							dragDisabled: viewport.dragDisabled || !canEditAnyItem
 						}}
 						onconsider={(e) => handleDndConsider(laneKey(lane), e)}
 						onfinalize={(e) => handleDndFinalize(laneKey(lane), e)}
