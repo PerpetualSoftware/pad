@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { viewport } from '$lib/stores/breakpoint.svelte';
 	import { relationGroupingRefusal, relationGroupingRefusalMessage } from '$lib/collections/relationGroups';
 	import type { Item, Collection } from '$lib/types';
 	import { parseSchema, parseFields } from '$lib/types';
@@ -472,7 +473,9 @@
 			   which matches the existing intra-group item behaviour and lets
 			   ordinary taps/scrolls pass through unmolested. */
 			delayTouchStart: touchDragDelayMs,
-			dragDisabled: !canEdit
+			// Off by input, not width, like every drag zone (BUG-3158): a group
+			// reorder persists the lane order for the whole collection.
+			dragDisabled: viewport.dragDisabled || !canEdit
 		}}
 		onconsider={handleGroupConsider}
 		onfinalize={handleGroupFinalize}
@@ -548,7 +551,10 @@
 							// stored `sort_order`. TASK-1367 / Codex R5.
 							// Also disable under any non-manual page sort
 							// (TASK-1670) — the group is comparator-ordered.
-							dragDisabled: !canEdit || preserveOrder || sortMode !== 'manual'
+							// BUG-3158: this zone had no touch gate at all, so a held
+							// finger moved a row into another group — on a status-
+							// grouped list, another status — at any width.
+							dragDisabled: viewport.dragDisabled || !canEdit || preserveOrder || sortMode !== 'manual'
 						}}
 						onconsider={(e) => handleConsider(groupName, e)}
 						onfinalize={(e) => handleFinalize(groupName, e)}

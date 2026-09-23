@@ -80,3 +80,73 @@ describe('viewport.isMobile', () => {
 		expect(viewport.isMobile).toBe(false);
 	});
 });
+
+/**
+ * BUG-3158 — a matchMedia whose answer depends on the QUERY, so width and
+ * pointer can disagree (a landscape phone: wide AND coarse). The installer
+ * above answers every query alike and cannot express that case.
+ */
+function installPerQuery(initial: Record<string, boolean>) {
+	const lists = new Map<string, { matches: boolean; listeners: Set<ChangeListener> }>();
+	vi.stubGlobal(
+		'matchMedia',
+		vi.fn((query: string) => {
+			if (!lists.has(query)) lists.set(query, { matches: initial[query] ?? false, listeners: new Set() });
+			const l = lists.get(query)!;
+			return {
+				get matches() {
+					return l.matches;
+				},
+				media: query,
+				onchange: null,
+				addEventListener: (_t: string, cb: ChangeListener) => l.listeners.add(cb),
+				removeEventListener: (_t: string, cb: ChangeListener) => l.listeners.delete(cb),
+				addListener: (cb: ChangeListener) => l.listeners.add(cb),
+				removeListener: (cb: ChangeListener) => l.listeners.delete(cb),
+				dispatchEvent: () => true,
+			};
+		}),
+	);
+	return {
+		fire(query: string, matches: boolean) {
+			const l = lists.get(query)!;
+			l.matches = matches;
+			for (const cb of l.listeners) cb({ matches });
+		},
+	};
+}
+
+describe('viewport.dragDisabled (BUG-3158)', () => {
+	const WIDE = '(max-width: 768px)';
+	const COARSE = '(pointer: coarse)';
+
+	it('a landscape phone — wide but coarse — has drag disabled', async () => {
+		installPerQuery({ [WIDE]: false, [COARSE]: true });
+		const { viewport } = await import('./breakpoint.svelte');
+		expect(viewport.isMobile, 'precondition: not mobile by width').toBe(false);
+		expect(viewport.isCoarsePointer).toBe(true);
+		expect(viewport.dragDisabled).toBe(true);
+	});
+
+	it('a narrow viewport with a fine pointer keeps the width rule the board always had', async () => {
+		installPerQuery({ [WIDE]: true, [COARSE]: false });
+		const { viewport } = await import('./breakpoint.svelte');
+		expect(viewport.dragDisabled).toBe(true);
+	});
+
+	it('CONTROL: a wide viewport with a fine pointer (desktop, touch laptop) keeps drag', async () => {
+		installPerQuery({ [WIDE]: false, [COARSE]: false });
+		const { viewport } = await import('./breakpoint.svelte');
+		expect(viewport.dragDisabled).toBe(false);
+	});
+
+	it('follows a pointer change (a tablet docked to a mouse, and back)', async () => {
+		const ctl = installPerQuery({ [WIDE]: false, [COARSE]: true });
+		const { viewport } = await import('./breakpoint.svelte');
+		expect(viewport.dragDisabled).toBe(true);
+		ctl.fire(COARSE, false);
+		expect(viewport.dragDisabled).toBe(false);
+		ctl.fire(COARSE, true);
+		expect(viewport.dragDisabled).toBe(true);
+	});
+});
