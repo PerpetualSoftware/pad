@@ -3,6 +3,7 @@ package events
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"strings"
 	"sync"
@@ -192,5 +193,53 @@ func TestALateRejectionLeavesAdmittedCallersInPlace(t *testing.T) {
 	b.mu.Unlock()
 	if !live {
 		t.Fatal("a late rejection took down a subscription callers were already admitted into")
+	}
+}
+
+// TestATimerThatLosesToARejectionAdmitsNobody pins the one ordering the
+// integration tests cannot schedule: the rejection and confirmTimeout become
+// ready together and the select picks the timer. markUnconfirmedAdmission must
+// then refuse the rejected subscription, and abandonIfRejected, which runs after
+// every arm, takes it down. Driven as the two calls in that order on a
+// fabricated entry, because staging it through a client is a race by
+// construction.
+func TestATimerThatLosesToARejectionAdmitsNobody(t *testing.T) {
+	s := newRejectingSubscribeServer(t, "NOPERM unused", 0)
+	b, obs := newRejectedSubscribeBus(t, s)
+	client := redis.NewClient(&redis.Options{Addr: s.mr.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+
+	b.mu.Lock()
+	b.wsSubs["ws-1"] = &redisSub{
+		pubsub:    client.Subscribe(context.Background()), // no channels: no dial, no SUBSCRIBE
+		cancel:    func() {},
+		gen:       7,
+		confirmed: make(chan struct{}),
+		rejected:  make(chan struct{}),
+	}
+	b.mu.Unlock()
+
+	if !b.rejectSubscription("ws-1", 7, errors.New("NOPERM injected")) {
+		t.Fatal("a rejection before any admission was not recorded")
+	}
+	b.markUnconfirmedAdmission("ws-1", 7)
+
+	b.mu.Lock()
+	admitted := b.wsSubs["ws-1"].unconfirmedAdmitted
+	b.mu.Unlock()
+	if admitted {
+		t.Fatal("a timer that lost to a rejection admitted callers into the rejected subscription")
+	}
+	if got := obs.unconfirmedCount(); got != 0 {
+		t.Fatalf("SubscriptionUnconfirmed reported %d times for a rejected subscription, want 0", got)
+	}
+	if !b.abandonIfRejected("ws-1", 7) {
+		t.Fatal("abandonIfRejected did not take down a rejected subscription")
+	}
+	b.mu.Lock()
+	_, live := b.wsSubs["ws-1"]
+	b.mu.Unlock()
+	if live {
+		t.Fatal("the rejected subscription is still installed")
 	}
 }
