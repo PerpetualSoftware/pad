@@ -821,11 +821,28 @@ func TestImportWorkspace_AbandonedOptionsMustBeTerminal(t *testing.T) {
 	var patched bool
 	for i := range exp.Collections {
 		if exp.Collections[i].Slug == "tasks" {
-			if !strings.Contains(exp.Collections[i].Schema, `"abandoned_options":["cancelled"]`) {
-				t.Fatalf("precondition: tasks export does not carry the seeded declaration: %s", exp.Collections[i].Schema)
+			// Parsed, not string-matched: Postgres stores the schema as JSONB,
+			// which re-spaces and reorders it, so the exported text is not the
+			// seeded text (the first version of this test failed on PG only).
+			var schema models.CollectionSchema
+			if err := models.UnmarshalItemFieldSchema([]byte(exp.Collections[i].Schema), &schema); err != nil {
+				t.Fatalf("parse tasks schema: %v", err)
 			}
-			exp.Collections[i].Schema = strings.Replace(exp.Collections[i].Schema, `"abandoned_options":["cancelled"]`, `"abandoned_options":["dropped"]`, 1)
-			patched = true
+			for j := range schema.Fields {
+				if schema.Fields[j].Key != "status" {
+					continue
+				}
+				if strings.Join(schema.Fields[j].AbandonedOptions, ",") != "cancelled" {
+					t.Fatalf("precondition: tasks status does not carry the seeded declaration: %v", schema.Fields[j].AbandonedOptions)
+				}
+				schema.Fields[j].AbandonedOptions = []string{"dropped"}
+				patched = true
+			}
+			raw, err := json.Marshal(schema)
+			if err != nil {
+				t.Fatal(err)
+			}
+			exp.Collections[i].Schema = string(raw)
 		}
 	}
 	if !patched {
