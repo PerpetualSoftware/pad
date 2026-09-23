@@ -34,6 +34,11 @@
 	let selectedWindow = $state<ReportWindow>('week');
 	// Empty set === no filter (show all collections).
 	let selectedCollections = $state<string[]>([]);
+	// BUG-2410: the picker offers the collections the default report covers,
+	// which leaves out SYSTEM collections (Conventions, Playbooks). The API still
+	// honours an explicit ?collections= naming one, including from a layout
+	// saved before this change.
+	let pickableCollections = $derived(collections.filter((c) => !c.is_system));
 	// Period navigation: periods back from now (0 = current). SESSION-only — not
 	// part of ReportLayout, never persisted via scheduleSave.
 	let offset = $state(0);
@@ -451,7 +456,7 @@
 			>
 				All
 			</button>
-			{#each collections as coll (coll.id)}
+			{#each pickableCollections as coll (coll.id)}
 				<button
 					type="button"
 					class="chip"
