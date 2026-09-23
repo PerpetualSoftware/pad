@@ -81,20 +81,21 @@ export function applyListAnchor(scroller: HTMLElement, anchor: ListAnchor): numb
  * Apply `anchor` now, then keep re-applying for a few frames while the new
  * layout settles (the pane's content and the reflowed rows can still move the
  * row). Stops as soon as anything else moves the scroller — the reader
- * scrolling, or a restore that owns it — or after `budgetMs`. Returns a cancel.
+ * scrolling, or a restore that owns it — or after `budgetMs`. Returns a cancel,
+ * or null when nothing was applied (no scroller, or the row is not in it).
  */
 export function holdListAnchor(
 	getScroller: () => HTMLElement | null,
 	anchor: ListAnchor,
 	budgetMs = 500,
-): () => void {
+): (() => void) | null {
 	let cancelled = false;
 	let frame = 0;
 	const start = performance.now();
 	const first = getScroller();
 	let scroller = first;
 	let last = first ? applyListAnchor(first, anchor) : null;
-	if (last === null) return () => {};
+	if (last === null) return null;
 	const tick = () => {
 		frame = 0;
 		if (cancelled) return;

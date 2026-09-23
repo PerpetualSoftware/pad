@@ -71,6 +71,12 @@ describe('applyListAnchor', () => {
 		expect(applyListAnchor(scroller, { key: 'gone', clientTop: 10 })).toBeNull();
 		expect(scroller.scrollTop).toBe(30);
 	});
+
+	it('holdListAnchor reports that nothing was applied (null) for a missing row or scroller', () => {
+		const { scroller } = makeList({ rows: 5, rowHeight: 100, bandTop: 50, height: 700 });
+		expect(holdListAnchor(() => scroller, { key: 'gone', clientTop: 10 })).toBeNull();
+		expect(holdListAnchor(() => null, { key: 'K-1', clientTop: 10 })).toBeNull();
+	});
 });
 
 describe('holdListAnchor', () => {

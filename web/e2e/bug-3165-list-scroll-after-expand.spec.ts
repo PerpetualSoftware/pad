@@ -191,6 +191,40 @@ test.describe('BUG-3165: the list keeps its position across the split pane', () 
 		}
 	});
 
+	test('Back to the pre-pane entry while the page is still LOADING restores its saved position (codex r1)', async ({ page, fixture, request }) => {
+		// No handoff can run while the list is loading (there is no row to
+		// anchor on), so the entry's saved offset is the only position there is:
+		// the popstate must not skip it.
+		const { coll } = await setup(page, fixture, request, 'list');
+		try {
+			const { title } = await scrollAndPick(page);
+			await openRow(page, title);
+			// Hold the collection's metadata read across a reload of the pane
+			// entry, so the page is still in its initial load when Back lands.
+			let release!: () => void;
+			const gate = new Promise<void>((r) => (release = r));
+			const collPath = `/collections/${coll.slug}`;
+			await page.route((u) => u.pathname.endsWith(collPath), async (route) => {
+				await gate;
+				await route.continue();
+			});
+			await page.reload();
+			await expect(page.locator('.list-column > .loading')).toBeVisible({ timeout: 10_000 });
+			await page.goBack();
+			await page.waitForURL((u) => !u.search.includes('item='), { timeout: 10_000 });
+			await page.waitForTimeout(300);
+			const loadingAtBack = await page.locator('.list-column > .loading').count();
+			release();
+			await expect(page.locator('.item-card').nth(ROWS - 1)).toBeAttached({ timeout: 15_000 });
+			await page.waitForTimeout(2500);
+			expect(loadingAtBack, 'precondition: the page was loading when Back landed').toBe(1);
+			const y = await page.locator('.main-content').evaluate((el) => el.scrollTop);
+			expect(Math.abs(y - 600), `the saved position was dropped (scrollTop ${y})`).toBeLessThan(40);
+		} finally {
+			await deleteCollection(fixture, request, coll.slug);
+		}
+	});
+
 	test('table view: opening an item keeps its row in place', async ({ page, fixture, request }) => {
 		const { coll } = await setup(page, fixture, request, 'table');
 		try {

@@ -1101,6 +1101,8 @@
 	let prevPaneRef: string | null = null;
 	let pendingHandoff: { anchor: ListAnchor; paneOpen: boolean } | null = null;
 	let releaseHandoff: (() => void) | null = null;
+	// The URL a handoff was APPLIED for; the popstate skip below needs it.
+	let handoffHref: string | null = null;
 	$effect.pre(() => {
 		const ref = openItemRef;
 		const open = !!ref;
@@ -1128,20 +1130,30 @@
 			if (!h || h.paneOpen !== open) return;
 			releaseHandoff?.();
 			releaseHandoff = holdListAnchor(() => listScroller(open), h.anchor);
+			handoffHref = releaseHandoff ? page.url.href : null;
 		});
 	});
 	onDestroy(() => releaseHandoff?.());
-	// A Back / Forward that stays on this page and involves the pane (open,
-	// close, or pane-to-pane) leaves the list where the handoff above put it, or
-	// where it already was: the entry's saved pixel offset was taken in the
-	// OTHER layout, or before the reader scrolled the list, and would jump it.
-	// SvelteKit calls `snapshot.restore` synchronously after these callbacks, so
-	// the skip is released in a microtask. Entering the page from elsewhere (a
-	// different pathname — the Back from Expand to full page) still restores.
+	// A Back / Forward that stays on this page and involves the pane leaves the
+	// list where it is rather than applying the entry's saved pixel offset,
+	// which was taken in the OTHER layout (open / close) or before the reader
+	// scrolled the list (pane-to-pane) and would jump it. Only when there IS a
+	// position to keep: a handoff was applied for this very navigation, or —
+	// pane-to-pane, where the column never switched — the list is rendered.
+	// Otherwise (still loading, nothing anchored) the saved offset is the only
+	// position there is, so it restores (codex r1). SvelteKit calls
+	// `snapshot.restore` synchronously after these callbacks, so the skip is
+	// released in a microtask. Entering the page from elsewhere (a different
+	// pathname — the Back from Expand to full page) always restores.
 	afterNavigate((nav) => {
+		const handedOff = !!nav.to && handoffHref === nav.to.url.href;
+		handoffHref = null;
 		if (nav.type !== 'popstate' || !nav.from || !nav.to) return;
 		if (nav.from.url.pathname !== nav.to.url.pathname) return;
-		if (!nav.from.url.searchParams.has('item') && !nav.to.url.searchParams.has('item')) return;
+		const fromPane = nav.from.url.searchParams.has('item');
+		const toPane = nav.to.url.searchParams.has('item');
+		const paneToPane = fromPane && toPane && !loading && viewMode !== 'board';
+		if (!handedOff && !paneToPane) return;
 		queueMicrotask(scrollRestoration.skipNextRestore());
 	});
 
