@@ -4,6 +4,7 @@
 	import { agentNameOf } from '$lib/utils/agentActor';
 	import Chip from '$lib/components/common/Chip.svelte';
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
+	import { appendUnique, cursorAfter } from '$lib/utils/activityPaging';
 
 	interface Activity {
 		id: string;
@@ -64,7 +65,6 @@
 	let error = $state('');
 	let filterAction = $state('');
 	let filterDays = $state(30);
-	let offset = $state(0);
 	let hasMore = $state(false);
 	let loadingMore = $state(false);
 	let requestCounter = 0;
@@ -233,7 +233,6 @@
 		} else {
 			loading = true;
 			error = '';
-			offset = 0;
 		}
 
 		try {
@@ -241,7 +240,12 @@
 			if (filterAction) params.set('action', filterAction);
 			params.set('days', String(filterDays));
 			params.set('limit', String(LIMIT));
-			params.set('offset', String(append ? offset : 0));
+			// Keyset, not offset (BUG-2781): see $lib/utils/activityPaging.
+			const cursor = append ? cursorAfter(entries) : null;
+			if (cursor) {
+				params.set('before', cursor.before);
+				params.set('before_id', cursor.before_id);
+			}
 			const result = await adminFetch(`/audit-log?${params}`);
 
 			// Discard stale responses from superseded requests
@@ -249,16 +253,11 @@
 
 			const items: Activity[] = Array.isArray(result) ? result : [];
 			if (append) {
-				entries = [...entries, ...items];
+				entries = appendUnique(entries, items);
 			} else {
 				entries = items;
 			}
 			hasMore = items.length >= LIMIT;
-			if (append) {
-				offset += items.length;
-			} else {
-				offset = items.length;
-			}
 		} catch (e) {
 			if (thisRequest !== requestCounter) return;
 			if (!append) {

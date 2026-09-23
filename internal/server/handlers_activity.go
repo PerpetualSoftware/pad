@@ -35,6 +35,10 @@ func (s *Server) handleListWorkspaceActivity(w http.ResponseWriter, r *http.Requ
 			params.Offset = o
 		}
 	}
+	var cursorOK bool
+	if params.Before, params.BeforeID, cursorOK = activityCursorFromQuery(w, r, params.Offset); !cursorOK {
+		return
+	}
 	// since=YYYY-MM-DD restricts to activity on or after that date. Applied
 	// in the store query so LIMIT counts post-filter rows. Backs
 	// `pad project activity --since` and the pad_project.activity MCP action.
@@ -137,6 +141,10 @@ func (s *Server) handleListDocumentActivity(w http.ResponseWriter, r *http.Reque
 		if o, err := strconv.Atoi(offsetStr); err == nil {
 			params.Offset = o
 		}
+	}
+	var cursorOK bool
+	if params.Before, params.BeforeID, cursorOK = activityCursorFromQuery(w, r, params.Offset); !cursorOK {
+		return
 	}
 
 	activities, err := s.store.ListDocumentActivity(doc.ID, params)

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
@@ -232,8 +233,9 @@ func (s *Server) handleAdminGetUserMetrics(w http.ResponseWriter, r *http.Reques
 // the admin user modal (T1554). PLAN-1542 / TASK-1546.
 //
 // GET /api/v1/admin/users/{userID}/activity?limit=20&offset=0&action=...
+// (or &before=<created_at>&before_id=<id> in place of offset, BUG-2781)
 //
-//	Returns: {"events":[...], "next_offset": int|null}
+//	Returns: {"events":[...], "next_offset": int|null, "next_before": string|null, "next_before_id": string|null}
 //	next_offset is set when more results may exist (limit+1 lookup); null
 //	when the page is the last.
 func (s *Server) handleAdminGetUserActivity(w http.ResponseWriter, r *http.Request) {
@@ -270,6 +272,10 @@ func (s *Server) handleAdminGetUserActivity(w http.ResponseWriter, r *http.Reque
 			params.Offset = n
 		}
 	}
+	var cursorOK bool
+	if params.Before, params.BeforeID, cursorOK = activityCursorFromQuery(w, r, params.Offset); !cursorOK {
+		return
+	}
 
 	activities, err := s.store.ListUserActivity(userID, params)
 	if err != nil {
@@ -285,10 +291,18 @@ func (s *Server) handleAdminGetUserActivity(w http.ResponseWriter, r *http.Reque
 	resp := map[string]interface{}{
 		"events": activities,
 	}
+	// next_before / next_before_id (BUG-2781) are the keyset cursor for the
+	// next page, additive beside next_offset and null exactly when it is. A
+	// caller paging by cursor sends them back as before / before_id.
 	if hasMore {
+		last := activities[len(activities)-1]
 		resp["next_offset"] = params.Offset + limit
+		resp["next_before"] = last.CreatedAt.UTC().Format(time.RFC3339)
+		resp["next_before_id"] = last.ID
 	} else {
 		resp["next_offset"] = nil
+		resp["next_before"] = nil
+		resp["next_before_id"] = nil
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
