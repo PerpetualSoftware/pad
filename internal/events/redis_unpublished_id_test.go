@@ -3,6 +3,7 @@ package events
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -115,4 +116,35 @@ func newPublishFailingRedisBus(t *testing.T) (*RedisBus, *atomic.Bool) {
 	b := NewRedisBus(client)
 	t.Cleanup(b.Close)
 	return b, fail
+}
+
+type countingHandler struct{ n atomic.Int64 }
+
+func (h *countingHandler) Enabled(context.Context, slog.Level) bool  { return true }
+func (h *countingHandler) Handle(context.Context, slog.Record) error { h.n.Add(1); return nil }
+func (h *countingHandler) WithAttrs([]slog.Attr) slog.Handler        { return h }
+func (h *countingHandler) WithGroup(string) slog.Handler             { return h }
+
+// BUG-2732 (the lead's review note): a failed publish is LOGGED BY THE CALLER,
+// rate-bounded (server.publishActivityEvent). The bus used to log every
+// failure itself as well, once per publish for the whole of a Redis outage.
+// A storm of failures must produce no log line at this layer. Not parallel:
+// it swaps the process-wide default logger.
+func TestAFailedPublishIsNotLoggedByTheBus(t *testing.T) {
+	b, fail := newPublishFailingRedisBus(t)
+
+	h := &countingHandler{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(h))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	fail.Store(true)
+	for range 50 {
+		if err := b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"}); err == nil {
+			t.Fatal("precondition: the injected PUBLISH failure did not fail the publish")
+		}
+	}
+	if n := h.n.Load(); n != 0 {
+		t.Fatalf("50 failed publishes produced %d log records at the bus layer; the caller owns that log, bounded", n)
+	}
 }
