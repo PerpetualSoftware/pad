@@ -46,10 +46,9 @@ func labelValues(t *testing.T, m *metrics.Metrics, family, label string) []strin
 // in the same run, which must keep its own value; a bound that mapped
 // everything to "unknown" fails it. The audit ROW keeps what the caller sent.
 func TestMCPToolMetricsLabel_IsBoundedByTheKnownNames(t *testing.T) {
-	srv, user, bearer := auditedMCPServer(t)
+	srv, user, bearer := auditedMCPServerWith(t, func(n string) bool { return n == "pad_item" || n == "tools/list" })
 	m := metrics.New()
 	srv.SetMetrics(m)
-	srv.mcpCallNameKnown = (func(n string) bool { return n == "pad_item" || n == "tools/list" })
 
 	post := func(body string) {
 		t.Helper()
