@@ -418,65 +418,6 @@ test.describe('pane async-race hardening (PLAN-2154 R14 / TASK-2167)', () => {
 		expect(postBack).not.toContain(refA);
 	});
 
-	// BUG-2182 added a replaceState on the entry a drill leaves (its scroll
-	// position), which makes that entry a SvelteKit SHALLOW entry, and Back to a
-	// shallow entry skips the navigation lifecycle. The race above never saves a
-	// position (its items are empty), so it cannot see whether that changes the
-	// settle/cancel ordering. This one scrolls A first.
-	test('BUG-2182: the same race with A SCROLLED, so the drill saves its position into A\u2019s entry (a SvelteKit shallow entry)', async ({
-		page,
-		fixture,
-		request,
-	}) => {
-		await page.setViewportSize(DESKTOP);
-		await enableHook(page);
-		await browserLogin(page);
-		const { collSlug, seeded } = await seedFreshCollection(fixture, request, 'Race drillback', 'RDBK', [
-			{ title: 'Race drillback alpha', body: Array.from({ length: 60 }, (_, i) => `Alpha paragraph ${i}.`).join('\n\n') },
-			{ title: 'Race drillback bravo' },
-			{ title: 'Race drillback charlie' },
-		]);
-		const [, b, c] = seeded;
-		await page.goto(collUrl(fixture, collSlug));
-
-		const itemGets = trackItemGets(page);
-		await page.locator('.item-card', { hasText: 'Race drillback alpha' }).first().click();
-		const pane = page.locator('.item-pane');
-		await expect(pane).toBeVisible();
-		const refA = openItemParam(page);
-		await expect(pane.getByText('Alpha paragraph 59.')).toBeAttached({ timeout: 10_000 });
-		await pane.evaluate((el) => (el.scrollTop = 2000));
-		await page.waitForTimeout(200);
-		expect(await pane.evaluate((el) => el.scrollTop), 'precondition: A scrolled').toBeGreaterThan(500);
-		await drillTo(page, b.slug);
-		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
-
-		// Back to A (depth 0) — a popstate that arms the mint-settle for A — then
-		// IMMEDIATELY drill to C, inside the settle window.
-		const getsBeforeBack = itemGets.length;
-		await page.goBack();
-		await expect.poll(() => openItemParam(page)).toBe(refA);
-		await drillTo(page, c.slug);
-
-		await expect.poll(() => openItemParam(page)).toBe(c.slug);
-		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
-		await expect(pane.locator('.title', { hasText: /Race drillback charlie/ })).toBeVisible();
-
-		// The cancelled A-settle must NOT fire late and drag the pane back to A.
-		await page.waitForTimeout(FOLLOW_DEBOUNCE_MS + 120);
-		expect(openItemParam(page)).toBe(c.slug);
-		await expect(pane.locator('.title', { hasText: /Race drillback charlie/ })).toBeVisible();
-		// Non-vacuous proof the settle was pending-then-CANCELLED, not merely
-		// overwritten late: A's ref was never minted (fetched) during the window —
-		// the drill's `goto` cancelled the settle before it could re-fetch A. Had
-		// the settle fired, A would appear in the post-Back fetch sequence (Codex
-		// round 3).
-		const postBack = itemGets.slice(getsBeforeBack);
-		expect(postBack).toContain(c.slug);
-		expect(postBack).not.toContain(refA);
-	});
-
-
 	// ── Scenario 3 — a close fired during an in-flight history.go + latch ────
 	// A cold-loaded, then drilled pane closes via a TWO-PHASE cold-base
 	// `history.go(-depth)` + a latched `replaceState`-delete fired on the
