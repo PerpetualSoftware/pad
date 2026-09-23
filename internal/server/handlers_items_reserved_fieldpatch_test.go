@@ -171,42 +171,10 @@ func TestPatchItemFieldsPatchRefusalNamesEveryReservedKeyPresent(t *testing.T) {
 	}
 }
 
-// TestPatchItemFieldsPatchStillWritesGitHubPR — Codex round 3, P1.
-//
-// `github_pr` is the one reserved key this gate must NOT refuse. `pad github
-// link` needs the caller's local git branch and the `gh` CLI, so it is excluded
-// from the remote MCP surface by name, and internal/mcp/dispatch_http.go's
-// noRemoteEquivalent map directs remote agents to
-// `item update --field github_pr=...` as the sanctioned alternative. Refusing
-// it here removed a documented capability from those agents and answered with
-// a message naming a command they cannot run — a circular remedy aimed at the
-// exact audience the gate was supposed to help.
-//
-// This asserts the WRITE LANDS, not merely that no error came back: a gate
-// that refused silently would satisfy a status-only assertion.
-func TestPatchItemFieldsPatchStillWritesGitHubPR(t *testing.T) {
-	srv := testServer(t)
-	slug := createWSWithCollections(t, srv)
-	item := createTaskWithFields(t, srv, slug, "Item", `{"status":"open"}`)
-
-	rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+item.Slug, map[string]interface{}{
-		"fields_patch": map[string]interface{}{
-			models.ItemFieldGitHubPR: map[string]any{"number": 1160, "url": "https://example.test/pr/1160"},
-		},
-	})
-	if rr.Code != http.StatusOK {
-		t.Fatalf("github_pr must remain writable through fields_patch — remote MCP has no other way to link a PR; got %d: %s",
-			rr.Code, rr.Body.String())
-	}
-	got := getItemFields(t, srv, slug, item.Slug)
-	pr, ok := got[models.ItemFieldGitHubPR].(map[string]any)
-	if !ok {
-		t.Fatalf("github_pr did not persist: %#v", got[models.ItemFieldGitHubPR])
-	}
-	if pr["url"] != "https://example.test/pr/1160" {
-		t.Errorf("github_pr value not stored verbatim: %#v", pr)
-	}
-}
+// (TestPatchItemFieldsPatchStillWritesGitHubPR lived here: it pinned the
+// github_pr exemption. BUG-2696 closed that door, because what it wrote from
+// `--field` was an unreadable string; the refusal and the typed member that
+// replaced it are pinned in handlers_items_github_pr_test.go.)
 
 // TestPatchItemFieldsPatchRemedyIsHonestWhenAlreadyUnreadable — Codex round 1.
 //
@@ -339,12 +307,10 @@ func TestReservedFieldTablesAreExhaustive(t *testing.T) {
 	//
 	//   - convention — written at activation / create time, with no update
 	//     path to name.
-	//   - github_pr — never refused by the patch gate at all
-	//     (items.PatchRefusedFieldKeysIn exempts it), so a remedy here would
-	//     be advice for a rejection that cannot happen.
+	//   (github_pr was here until BUG-2696 closed its patch-door exemption; it
+	//   now has a remedy, `pad github link` / `unlink`.)
 	noRemedy := map[string]bool{
 		models.ItemFieldConvention: true,
-		models.ItemFieldGitHubPR:   true,
 	}
 
 	for _, key := range models.ReservedItemFieldKeys() {

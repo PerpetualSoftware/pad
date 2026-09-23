@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -608,6 +609,35 @@ type ItemDecisionLogEntry struct {
 	Rationale string `json:"rationale,omitempty"`
 	CreatedAt string `json:"created_at,omitempty"`
 	CreatedBy string `json:"created_by,omitempty"`
+}
+
+// ItemGitHubPR is the stored shape of the `github_pr` system metadata key,
+// and the typed update member that writes it (BUG-2696). The JSON tags are
+// the stored shape ExtractItemCodeContext decodes.
+type ItemGitHubPR struct {
+	Number    int    `json:"number"`
+	URL       string `json:"url"`
+	Title     string `json:"title,omitempty"`
+	State     string `json:"state,omitempty"`
+	Branch    string `json:"branch,omitempty"`
+	Repo      string `json:"repo,omitempty"`
+	UpdatedAt string `json:"updated_at,omitempty"`
+}
+
+// ValidateGitHubPR refuses a PR object that would not render as a link: it
+// needs a positive number and an absolute http(s) URL.
+func ValidateGitHubPR(pr *ItemGitHubPR) error {
+	if pr == nil {
+		return errors.New("github_pr is empty")
+	}
+	if pr.Number <= 0 {
+		return fmt.Errorf("github_pr.number must be a positive PR number, got %d", pr.Number)
+	}
+	u, err := url.Parse(strings.TrimSpace(pr.URL))
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+		return fmt.Errorf("github_pr.url must be an absolute http(s) URL, got %q", pr.URL)
+	}
+	return nil
 }
 
 type githubPRFields struct {
@@ -1216,6 +1246,19 @@ type ItemUpdate struct {
 	// update --force` and MCP `pad_item.action: update` with
 	// `force: true`.
 	Force bool `json:"force,omitempty"`
+
+	// GitHubPR / ClearGitHubPR are the typed door for the `github_pr` system
+	// metadata key (BUG-2696). `fields_patch` refuses `github_pr` like every
+	// other reserved key, so this is the ONLY way to write it on update, and
+	// the point is VALIDITY rather than who the sender is: any HTTP caller
+	// may send it, but it must be a well-formed PR object (ValidateGitHubPR),
+	// so the double-encoded strings a `--field github_pr=...` write used to
+	// store cannot be written any more. `pad github link` / `unlink` /
+	// `project reconcile` use it. Not exposed on the MCP catalog. Mutually
+	// exclusive with each other and with a full `fields` write. Transport-
+	// only: the handler lowers it into the field patch.
+	GitHubPR      *ItemGitHubPR `json:"github_pr,omitempty"`
+	ClearGitHubPR bool          `json:"clear_github_pr,omitempty"`
 
 	// RefuseUndeclaredFields is a strict opt-in (BUG-3156): when true, a
 	// write that would store a field key the item's collection does not

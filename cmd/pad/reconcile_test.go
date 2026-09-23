@@ -107,8 +107,11 @@ func TestNeedsPRMetadataRefresh(t *testing.T) {
 // the item read and the write was reverted. The property that actually holds is
 // that the patch contains github_pr and nothing else, so no other field is
 // reachable by this write.
-func TestGitHubPRFieldPatchNamesOnlyGitHubPR(t *testing.T) {
-	patch := gitHubPRFieldPatch(&GitHubPR{
+func TestGitHubPRUpdateNamesOnlyGitHubPR(t *testing.T) {
+	// Since BUG-2696 the write is the typed github_pr member, not a
+	// fields_patch entry. BUG-3049's property still holds: nothing but the
+	// PR is in the update, so no other field is reachable by it.
+	up := gitHubPRUpdate(&GitHubPR{
 		Number:    41,
 		URL:       "https://github.com/PerpetualSoftware/pad/pull/41",
 		Title:     "PR",
@@ -117,14 +120,10 @@ func TestGitHubPRFieldPatchNamesOnlyGitHubPR(t *testing.T) {
 		Repo:      "PerpetualSoftware/pad",
 		UpdatedAt: "2026-04-02T15:05:00Z",
 	})
-	if len(patch) != 1 {
-		t.Fatalf("expected a single-key patch, got %d keys: %v", len(patch), patch)
+	if up.Fields != nil || up.FieldsPatch != nil {
+		t.Fatalf("the PR update must carry no field blob or patch: %+v", up)
 	}
-	pr, ok := patch["github_pr"].(GitHubPR)
-	if !ok {
-		t.Fatalf("expected patch[\"github_pr\"] to carry a GitHubPR, got %T", patch["github_pr"])
-	}
-	if pr.Number != 41 || pr.State != "MERGED" {
-		t.Fatalf("patch carries the wrong PR: %+v", pr)
+	if up.GitHubPR == nil || up.GitHubPR.Number != 41 || up.GitHubPR.State != "MERGED" {
+		t.Fatalf("the update carries the wrong PR: %+v", up.GitHubPR)
 	}
 }

@@ -190,14 +190,15 @@ Examples:
 			// add `github_pr`, and PATCH the blob back — so anything written to
 			// the item between the GetItem above and this write was reverted.
 			// A patch names only `github_pr`, and the server merges it under the
-			// row lock. `github_pr` is the one reserved metadata key that
-			// fields_patch accepts (items.PatchRefusedFieldKeysIn, BUG-2627
-			// part 2), precisely because this door is its sanctioned writer.
-			_, err = client.UpdateItem(ws, item.Slug, models.ItemUpdate{
-				FieldsPatch: gitHubPRFieldPatch(pr),
-			})
+			// row lock. Since BUG-2696 it goes through the typed, validated
+			// github_pr member: fields_patch refuses the key, because a
+			// `--field github_pr=...` write stored an unreadable string.
+			updated, err := client.UpdateItem(ws, item.Slug, gitHubPRUpdate(pr))
 			if err != nil {
 				return fmt.Errorf("failed to update item: %w", err)
+			}
+			if err := verifyPRLinked(updated, pr.Number); err != nil {
+				return err
 			}
 
 			ref := cli.ItemRef(*item)
@@ -335,14 +336,15 @@ func githubUnlinkCmd() *cobra.Command {
 				return fmt.Errorf("item %q has no linked PR", args[0])
 			}
 
-			// BUG-3049: delete the one key, not rewrite the blob. A nil value
-			// in fields_patch is a DELETE (store.mergeFieldsPatch), so the
-			// unlink no longer reverts concurrent writes to other fields. The
+			// BUG-3049: delete the one key, not rewrite the blob. Since
+			// BUG-2696 through the typed clear_github_pr member (fields_patch
+			// refuses the key); the server lowers it to a patch DELETE. The
 			// decode above stays: it is how "has no linked PR" is detected.
-			_, err = client.UpdateItem(ws, item.Slug, models.ItemUpdate{
-				FieldsPatch: map[string]interface{}{"github_pr": nil},
-			})
+			updated, err := client.UpdateItem(ws, item.Slug, models.ItemUpdate{ClearGitHubPR: true})
 			if err != nil {
+				return err
+			}
+			if err := verifyPRUnlinked(updated); err != nil {
 				return err
 			}
 

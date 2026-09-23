@@ -70,7 +70,9 @@ func UndeclaredOverrideKeys(overrides map[string]any, targetFields []models.Fiel
 // `pad github link` send one, and so does convention activation via
 // models.BuildConventionItemFields → ItemCreate. Closing it would break the
 // system writers it exists for. So item CREATE is still a mint site for a
-// hand-written reserved key, tracked with the rest of the surface in BUG-2685.
+// hand-written reserved key. That is BUG-3163 — not BUG-2685, which this
+// comment used to cite: 2685 fixed SCHEMA-DECLARED reserved keys (grandfathered
+// FieldDefs), not hand-written values (BUG-2696 checkpoint 1).
 //
 // What the fields_patch gate buys is that the UPDATE door — the one a user or
 // an agent actually reaches for, on all three transports — can no longer write
@@ -135,13 +137,17 @@ func ReservedFieldKeysIn(fields map[string]any) []string {
 // argument is different — an override re-introduces a key MigrateFields
 // deliberately dropped. Whether remote agents should get a real PR-link action
 // so this key can be closed too is a product question, not a gate question.
+//
+// SUPERSEDED FOR github_pr BY BUG-2696, and the reasoning above is kept as the
+// record of why the exemption existed. The premise was that this door WORKED
+// as github_pr's cross-surface writer; it never did — a `--field` value is
+// stored as a string on every transport, so the PR data landed double-encoded,
+// no link rendered, and `=null` stored the string "null". An exemption for a
+// door that only writes unreadable data protects nothing. github_pr now has a
+// typed, validated member (models.ItemUpdate.GitHubPR / ClearGitHubPR) that
+// `pad github link` / `unlink` / `project reconcile` use, so this door refuses
+// all four reserved keys. Remote agents lose nothing that worked; a structured
+// remote PR-link action is deferred to the MCP catalog-trim decision.
 func PatchRefusedFieldKeysIn(fields map[string]any) []string {
-	var bad []string
-	for _, k := range ReservedFieldKeysIn(fields) {
-		if k == models.ItemFieldGitHubPR {
-			continue
-		}
-		bad = append(bad, k)
-	}
-	return bad
+	return ReservedFieldKeysIn(fields)
 }

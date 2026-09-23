@@ -1568,17 +1568,20 @@ func reservedFieldLabel(key string) string {
 //     (models.BuildConventionItemFields), and a convention item's user-facing
 //     trigger / scope / priority are ORDINARY schema fields, so `pad item
 //     update --field trigger=always` is unaffected by this gate.
-//   - `github_pr` — it never reaches this message at all. The patch door does
-//     not refuse it (items.PatchRefusedFieldKeysIn exempts it, because on
-//     remote MCP that door is its only writer), so naming `pad github link`
-//     here would be prescribing a command for a refusal that cannot happen —
-//     and prescribing it to the one audience that cannot run it.
+//
+// `github_pr` HAS one since BUG-2696, which closed its patch-door exemption:
+// `pad github link` / `unlink`. The remedy says plainly that there is no MCP
+// writer yet (the typed member is not on the catalog), rather than naming a
+// command a remote agent could run.
 func reservedFieldRemedy(key string) string {
 	switch key {
 	case models.ItemFieldImplementationNotes:
 		return "`pad item note <ref> \"<summary>\"` (MCP: pad_item action=note)"
 	case models.ItemFieldDecisionLog:
 		return "`pad item decide <ref> \"<decision>\"` (MCP: pad_item action=decide)"
+	case models.ItemFieldGitHubPR:
+		// No MCP form: the typed writer is not on the catalog (BUG-2696).
+		return "`pad github link <ref>` / `pad github unlink <ref>` (CLI; no MCP writer yet)"
 	}
 	return ""
 }

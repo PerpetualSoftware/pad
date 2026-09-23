@@ -239,9 +239,9 @@ var noRemoteEquivalent = map[string]string{
 	// BUG-2627). Until that is fixed there is no working remote path,
 	// and saying so is better than sending an agent down one that
 	// silently does nothing.
-	"github link":   "needs the agent's local git branch + `gh` CLI. There is currently NO working remote alternative: `item update --field github_pr=...` stores the value as a string, so no link appears even though the call succeeds (BUG-2696). Hand PR linking to a human rather than retrying.",
+	"github link":   "needs the agent's local git branch + `gh` CLI. There is currently NO remote alternative: an `item update` field setter naming github_pr is refused (BUG-2696), and no PR-link action exists on this surface yet. Hand PR linking to a human rather than retrying.",
 	"github status": "needs the agent's local git branch + `gh` CLI; query GitHub directly via the agent's tools",
-	"github unlink": "needs the agent's local git branch + `gh` CLI. Same as `github link`: `item update --field github_pr=null` stores the string \"null\" rather than clearing the key (BUG-2696), so there is no working remote path today.",
+	"github unlink": "needs the agent's local git branch + `gh` CLI. Same as `github link`: an `item update` field setter naming github_pr is refused (BUG-2696), so there is no remote path today.",
 	// `project reconcile` shells out to `gh` CLI to compare stored
 	// PR metadata against live GitHub state — same locality argument.
 	"project reconcile": "shells out to `gh` CLI to compare stored PR metadata against live GitHub state; agents reconcile via their own GitHub tools + `item update`",

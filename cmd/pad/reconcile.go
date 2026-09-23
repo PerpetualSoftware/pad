@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os/exec"
@@ -204,10 +205,11 @@ func reconcileItem(client *cli.Client, ws string, item *models.Item, apply bool)
 	result.Findings = buildReconcileFindings(item, livePR, prErr, branchExists, branchErr)
 
 	if apply && livePR != nil && needsPRMetadataRefresh(item, livePR) {
-		updatedItem, err := client.UpdateItem(ws, item.Slug, models.ItemUpdate{
-			FieldsPatch: gitHubPRFieldPatch(livePR),
-		})
+		updatedItem, err := client.UpdateItem(ws, item.Slug, gitHubPRUpdate(livePR))
 		if err != nil {
+			return nil, err
+		}
+		if err := verifyPRLinked(updatedItem, livePR.Number); err != nil {
 			return nil, err
 		}
 		item.Fields = updatedItem.Fields
@@ -390,16 +392,37 @@ func needsPRMetadataRefresh(item *models.Item, livePR *GitHubPR) bool {
 // read and the write was as wide as that call — and any field written inside it
 // was reverted. Naming one key removes the window instead of narrowing it, and
 // removes the need to parse (or be able to parse) the rest of the blob at all.
-func gitHubPRFieldPatch(livePR *GitHubPR) map[string]any {
-	return map[string]any{
-		"github_pr": GitHubPR{
-			Number:    livePR.Number,
-			URL:       livePR.URL,
-			Title:     livePR.Title,
-			State:     livePR.State,
-			Branch:    livePR.Branch,
-			Repo:      livePR.Repo,
-			UpdatedAt: livePR.UpdatedAt,
-		},
+// gitHubPRUpdate is the typed update that writes an item's github_pr
+// (BUG-2696). fields_patch refuses the key since then; this member is the
+// validated door `link` and `reconcile` share.
+func gitHubPRUpdate(livePR *GitHubPR) models.ItemUpdate {
+	return models.ItemUpdate{GitHubPR: &models.ItemGitHubPR{
+		Number:    livePR.Number,
+		URL:       livePR.URL,
+		Title:     livePR.Title,
+		State:     livePR.State,
+		Branch:    livePR.Branch,
+		Repo:      livePR.Repo,
+		UpdatedAt: livePR.UpdatedAt,
+	}}
+}
+
+// verifyPRLinked checks the WRITE landed, from the server's own answer
+// (BUG-2696). A server older than this CLI does not know the typed member,
+// ignores it as an unknown JSON field, and answers 200 having written
+// nothing, so a success reported from the status alone would be false.
+func verifyPRLinked(updated *models.Item, number int) error {
+	if updated != nil && updated.CodeContext != nil && updated.CodeContext.PullRequest != nil &&
+		updated.CodeContext.PullRequest.Number == number {
+		return nil
 	}
+	return fmt.Errorf("the server accepted the request but the item shows no link to PR #%d. Is the server older than this CLI? `pad github link` needs a server with BUG-2696 (compare `pad --version` with `pad server info`)", number)
+}
+
+// verifyPRUnlinked is verifyPRLinked for unlink.
+func verifyPRUnlinked(updated *models.Item) error {
+	if updated != nil && (updated.CodeContext == nil || updated.CodeContext.PullRequest == nil) {
+		return nil
+	}
+	return errors.New("the server accepted the request but the item still shows a linked PR. Is the server older than this CLI? `pad github unlink` needs a server with BUG-2696 (compare `pad --version` with `pad server info`)")
 }
