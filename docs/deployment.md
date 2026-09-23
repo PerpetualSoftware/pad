@@ -931,6 +931,9 @@ workspace's subscription, so:
   subscription on its next maintenance pass; **phase 1 does not**, so a watch
   subscription that failed at startup keeps the instance refusing watch
   clients until it restarts — loudly, where it used to admit them silently.
+  (Nothing else recovers it: the failed connection is closed at startup, so
+  there is none left for go-redis's own reconnect to revive, and phase 1 runs
+  no maintenance loop.)
   One case is still not seen: a rejection of the automatic re-`SUBSCRIBE`
   go-redis sends after a reconnect, mid-life (BUG-3155).
 
