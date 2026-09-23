@@ -47,8 +47,11 @@ func DroppedFilenameRune(r rune) bool {
 const fallbackFilename = "upload.bin"
 
 // NormalizeFilename is the stored form of a caller-supplied attachment name.
-// Every door that writes attachments.filename calls it, before ValidateUpload
-// sees the name. It normalises rather than refuses: the bytes of the upload are
+// Every door that writes a CALLER-SUPPLIED name calls it (upload, bundle
+// import), before ValidateUpload sees the name. Derived rows (thumbnails,
+// transforms, cross-workspace copies) take their name from a row that already
+// went through it; a legacy row that did not is rewritten at startup when it
+// carries a Bidi_Control character (store.BackfillBidiAttachmentFilenames). It normalises rather than refuses: the bytes of the upload are
 // fine and only the label is at issue, and an attack name still ends in a
 // refusal, because its normalised form carries the extension it was hiding
 // (checkpoint 1 on BUG-2818 has the full reasoning).
