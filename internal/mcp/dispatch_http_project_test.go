@@ -1228,30 +1228,35 @@ func TestDispatch_ItemBulkUpdate_MergesExistingFields(t *testing.T) {
 
 // --- item note + decide ---
 
-func TestDispatch_ItemNote_AppendsToFields(t *testing.T) {
+// BUG-3056: the dispatcher sends ONLY the append and lets the server apply it
+// under its write lock. A GET or a `fields` member in the PATCH is the old
+// read-modify-write, which reverted concurrent writes to other keys.
+func appendOnlyMux(t *testing.T, got *map[string]any) *http.ServeMux {
+	t.Helper()
 	mux := http.NewServeMux()
-	patched := ""
 	mux.HandleFunc("/api/v1/workspaces/docapp/items/TASK-5", func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"ref":"TASK-5","fields":"{\"status\":\"open\"}"}`))
-		case http.MethodPatch:
-			buf := make([]byte, r.ContentLength)
-			_, _ = r.Body.Read(buf)
-			var got map[string]any
-			_ = json.Unmarshal(buf, &got)
-			patched, _ = got["fields"].(string)
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"ref":"TASK-5"}`))
+		if r.Method != http.MethodPatch {
+			t.Errorf("unexpected %s — the append must be one PATCH with no prefetch", r.Method)
+			http.Error(w, "unexpected", http.StatusMethodNotAllowed)
+			return
 		}
+		if err := json.NewDecoder(r.Body).Decode(got); err != nil {
+			t.Errorf("decode PATCH body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ref":"TASK-5"}`))
 	})
-	d := &HTTPHandlerDispatcher{Handler: mux, UserResolver: fixedUserResolver(&models.User{ID: "u", Name: "Dave"})}
+	return mux
+}
+
+func TestDispatch_ItemNote_SendsServerAppend(t *testing.T) {
+	var got map[string]any
+	d := &HTTPHandlerDispatcher{Handler: appendOnlyMux(t, &got), UserResolver: fixedUserResolver(&models.User{ID: "u", Name: "Dave"})}
 	res, err := d.Dispatch(
 		WithDispatchInput(context.Background(), map[string]any{
 			"workspace": "docapp",
 			"ref":       "TASK-5",
-			"summary":   "Investigated mutex bug",
+			"summary":   "  Investigated mutex bug ",
 			"details":   "Race in handler; needs lock around shared state",
 		}),
 		[]string{"item", "note"}, nil,
@@ -1259,23 +1264,23 @@ func TestDispatch_ItemNote_AppendsToFields(t *testing.T) {
 	if err != nil || res.IsError {
 		t.Fatalf("Dispatch err=%v IsError=%v: %#v", err, res != nil && res.IsError, res)
 	}
-	var fields map[string]any
-	if err := json.Unmarshal([]byte(patched), &fields); err != nil {
-		t.Fatalf("decode patched fields: %v", err)
+	if _, has := got["fields"]; has {
+		t.Errorf("PATCH carries a full fields blob — the BUG-3056 race: %v", got)
 	}
-	notes, ok := fields["implementation_notes"].([]any)
-	if !ok || len(notes) != 1 {
-		t.Fatalf("expected one implementation_note; got %#v", fields["implementation_notes"])
+	app, ok := got["append_implementation_note"].(map[string]any)
+	if !ok {
+		t.Fatalf("PATCH has no append_implementation_note: %v", got)
 	}
-	note, _ := notes[0].(map[string]any)
-	if note["summary"] != "Investigated mutex bug" {
-		t.Errorf("summary = %v", note["summary"])
+	if app["summary"] != "Investigated mutex bug" {
+		t.Errorf("summary = %q, want it trimmed", app["summary"])
 	}
-	if note["details"] != "Race in handler; needs lock around shared state" {
-		t.Errorf("details = %v", note["details"])
+	if app["details"] != "Race in handler; needs lock around shared state" {
+		t.Errorf("details = %v", app["details"])
 	}
-	if note["created_by"] != "Dave" {
-		t.Errorf("created_by = %v, want Dave (user.Name fallback)", note["created_by"])
+	for _, k := range []string{"id", "created_at", "created_by"} {
+		if _, has := app[k]; has {
+			t.Errorf("append carries %q — the server mints it", k)
+		}
 	}
 }
 
@@ -1304,25 +1309,9 @@ func TestDispatch_ItemNote_RequiresArgs(t *testing.T) {
 	}
 }
 
-func TestDispatch_ItemDecide_AppendsToDecisionLog(t *testing.T) {
-	mux := http.NewServeMux()
-	patched := ""
-	mux.HandleFunc("/api/v1/workspaces/docapp/items/TASK-5", func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"ref":"TASK-5","fields":"{}"}`))
-		case http.MethodPatch:
-			buf := make([]byte, r.ContentLength)
-			_, _ = r.Body.Read(buf)
-			var got map[string]any
-			_ = json.Unmarshal(buf, &got)
-			patched, _ = got["fields"].(string)
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"ref":"TASK-5"}`))
-		}
-	})
-	d := &HTTPHandlerDispatcher{Handler: mux, UserResolver: fixedUserResolver(&models.User{ID: "u", Name: "Dave"})}
+func TestDispatch_ItemDecide_SendsServerAppend(t *testing.T) {
+	var got map[string]any
+	d := &HTTPHandlerDispatcher{Handler: appendOnlyMux(t, &got), UserResolver: fixedUserResolver(&models.User{ID: "u", Name: "Dave"})}
 	res, err := d.Dispatch(
 		WithDispatchInput(context.Background(), map[string]any{
 			"workspace": "docapp",
@@ -1335,20 +1324,15 @@ func TestDispatch_ItemDecide_AppendsToDecisionLog(t *testing.T) {
 	if err != nil || res.IsError {
 		t.Fatalf("Dispatch err=%v IsError=%v: %#v", err, res != nil && res.IsError, res)
 	}
-	var fields map[string]any
-	if err := json.Unmarshal([]byte(patched), &fields); err != nil {
-		t.Fatalf("decode patched: %v", err)
+	if _, has := got["fields"]; has {
+		t.Errorf("PATCH carries a full fields blob — the BUG-3056 race: %v", got)
 	}
-	log, ok := fields["decision_log"].([]any)
-	if !ok || len(log) != 1 {
-		t.Fatalf("expected one decision_log entry; got %#v", fields["decision_log"])
+	app, ok := got["append_decision"].(map[string]any)
+	if !ok {
+		t.Fatalf("PATCH has no append_decision: %v", got)
 	}
-	entry, _ := log[0].(map[string]any)
-	if entry["decision"] != "Use Redis for caching" {
-		t.Errorf("decision = %v", entry["decision"])
-	}
-	if entry["rationale"] != "Memory pressure on the in-memory cache" {
-		t.Errorf("rationale = %v", entry["rationale"])
+	if app["decision"] != "Use Redis for caching" || app["rationale"] != "Memory pressure on the in-memory cache" {
+		t.Errorf("append_decision = %v", app)
 	}
 }
 

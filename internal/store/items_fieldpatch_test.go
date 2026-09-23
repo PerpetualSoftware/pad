@@ -255,3 +255,76 @@ func TestUpdateItemExpectedUpdatedAtConflict(t *testing.T) {
 		t.Errorf("conflicting update should be a no-op; status got %v want open", got)
 	}
 }
+
+// TestUpdateItemAppendsStructuredEntriesUnderTheLock (BUG-3056): the minted
+// entries are appended to the row UpdateItem re-reads under its lock, after
+// any fields_patch is merged onto it, so neither the patch nor the entries
+// already stored are lost. Runs on Postgres under `make test-pg` (testStore).
+func TestUpdateItemAppendsStructuredEntriesUnderTheLock(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Append")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	seed, err := models.AppendImplementationNote(`{"status":"open","priority":"high"}`,
+		models.ItemImplementationNote{ID: "note-old", Summary: "earlier"})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	item, err := s.CreateItem(ws.ID, col.ID, models.ItemCreate{Title: "Item", Fields: seed})
+	if err != nil {
+		t.Fatalf("CreateItem: %v", err)
+	}
+
+	updated, err := s.UpdateItem(item.ID, models.ItemUpdate{
+		FieldsPatch:                map[string]any{"status": "done"},
+		ImplementationNoteToAppend: &models.ItemImplementationNote{ID: "note-new", Summary: "later"},
+		DecisionToAppend:           &models.ItemDecisionLogEntry{ID: "decision-new", Decision: "go"},
+	})
+	if err != nil {
+		t.Fatalf("UpdateItem: %v", err)
+	}
+	fields := decodeFields(t, updated.Fields)
+	if fields["status"] != "done" || fields["priority"] != "high" {
+		t.Errorf("patch not applied onto the locked row: %v", fields)
+	}
+	notes := models.ExtractItemImplementationNotes(updated.Fields)
+	if len(notes) != 2 || notes[0].ID != "note-old" || notes[1].ID != "note-new" {
+		t.Errorf("notes = %+v, want the earlier entry then the appended one", notes)
+	}
+	if log := models.ExtractItemDecisionLog(updated.Fields); len(log) != 1 || log[0].ID != "decision-new" {
+		t.Errorf("decision_log = %+v", log)
+	}
+}
+
+// TestUpdateItemAppendRefusesUnreadableAndWritesNothing: the Append* guard
+// runs inside the transaction, so a refusal rolls the whole update back —
+// including a fields_patch that rode with it.
+func TestUpdateItemAppendRefusesUnreadableAndWritesNothing(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "AppendBad")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	broken := `{"status":"open","decision_log":"[{\"decision\":\"legacy\"}]"}`
+	item, err := s.CreateItem(ws.ID, col.ID, models.ItemCreate{Title: "Item", Fields: broken})
+	if err != nil {
+		t.Fatalf("CreateItem: %v", err)
+	}
+	before := item.Fields
+
+	_, err = s.UpdateItem(item.ID, models.ItemUpdate{
+		FieldsPatch:      map[string]any{"status": "done"},
+		DecisionToAppend: &models.ItemDecisionLogEntry{ID: "decision-new", Decision: "go"},
+	})
+	if !errors.Is(err, models.ErrStructuredFieldUnreadable) {
+		t.Fatalf("err = %v, want ErrStructuredFieldUnreadable", err)
+	}
+	after, err := s.GetItem(item.ID)
+	if err != nil {
+		t.Fatalf("GetItem: %v", err)
+	}
+	if after.Fields != before {
+		t.Errorf("a refused append changed the row:\n before %s\n after  %s", before, after.Fields)
+	}
+}

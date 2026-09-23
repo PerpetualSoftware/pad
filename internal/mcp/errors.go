@@ -3,15 +3,12 @@ package mcp
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
-
-	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // ─────────────────────────────────────────────────────────────────────
@@ -971,6 +968,12 @@ func classifyHTTPStatusKind(
 				// and the retry is refused again (BUG-3133).
 				hint = ContentPendingFlushHint
 			}
+			if upstream.Code == string(ErrStoredStateUnreadable) {
+				// Same reason: the stored value stays undecodable, so every
+				// retry refuses identically. Since BUG-3056 the note/decide
+				// append runs server-side and reaches the agent by this arm.
+				hint = storedStateUnreadableHint
+			}
 			return NewErrorResult(ErrorPayload{
 				Code:    ErrorCode(upstream.Code),
 				Message: upstream.Message,
@@ -1472,30 +1475,6 @@ func dispatcherErrorResult(cmdKey, op string, err error) *mcp.CallToolResult {
 		Code:    ErrServerError,
 		Message: fmt.Sprintf("%s: %s failed", cmdKey, op),
 		Hint:    hint,
-	})
-}
-
-// structuredAppendErrorResult classifies a failure from one of the Append*
-// helpers (BUG-2675).
-//
-// Every other failure in those dispatchers really is an internal fault and
-// keeps dispatcherErrorResult's ErrServerError. The refusal is the exception:
-// the server is working correctly and the ITEM's stored value is unreadable,
-// so ErrServerError's "our fault, probably transient" framing is wrong in both
-// halves — it invites a retry of something that can never succeed.
-//
-// Kept as a wrapper rather than a branch inside dispatcherErrorResult because
-// dispatcherErrorResult is the honest answer for every one of its ~20 other
-// call sites, and teaching it one caller's domain error would make it the place
-// where the next such special case also lands.
-func structuredAppendErrorResult(cmdKey, op string, err error) *mcp.CallToolResult {
-	if !errors.Is(err, models.ErrStructuredFieldUnreadable) {
-		return dispatcherErrorResult(cmdKey, op, err)
-	}
-	return NewErrorResult(ErrorPayload{
-		Code:    ErrStoredStateUnreadable,
-		Message: fmt.Sprintf("%s refused: %s", cmdKey, err.Error()),
-		Hint:    storedStateUnreadableHint,
 	})
 }
 

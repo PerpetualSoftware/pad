@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"net/http"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -249,4 +250,33 @@ func TokenAllowedWorkspaceSet(ctx context.Context) map[string]struct{} {
 		set[slug] = struct{}{}
 	}
 	return set
+}
+
+// ctxStructuredEntryAuthor carries the created_by label for an implementation
+// note or decision entry the item PATCH appends (BUG-3056). Set only by
+// in-process callers through WithStructuredEntryAuthor; nothing reads it from
+// a network request, so it cannot be spoofed by one.
+const ctxStructuredEntryAuthor contextKey = "structured_entry_author"
+
+// WithStructuredEntryAuthor sets the created_by the item PATCH stamps on an
+// appended entry, in place of actorFromRequest's user/agent.
+//
+// It exists for the remote /mcp dispatcher, which has always attributed these
+// entries to the requesting user's display name (falling back to email) so a
+// shared MCP server's audit can tell its users apart. When the append moved
+// server-side, that label could no longer ride in the entry the client built,
+// and an in-process request carries no X-Pad-Agent, so without this the entry
+// would read "user" — a change BUG-3056 had no business making. The general
+// gap (remote /mcp writes carry no agent identity) is BUG-2772.
+func WithStructuredEntryAuthor(ctx context.Context, label string) context.Context {
+	return context.WithValue(ctx, ctxStructuredEntryAuthor, label)
+}
+
+// structuredEntryAuthor is the created_by for an entry this request appends.
+func structuredEntryAuthor(r *http.Request) string {
+	if label, ok := r.Context().Value(ctxStructuredEntryAuthor).(string); ok && label != "" {
+		return label
+	}
+	actor, _ := actorFromRequest(r)
+	return actor
 }

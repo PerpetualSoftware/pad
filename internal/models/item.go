@@ -399,6 +399,11 @@ type Item struct {
 	// broken every existing parser of the item write response.
 	Warnings *ItemWriteWarnings `json:"warnings,omitempty"`
 
+	// Appended is populated on an UPDATE response that carried
+	// append_implementation_note / append_decision, and never on reads or in
+	// storage. See ItemAppendedEntries.
+	Appended *ItemAppendedEntries `json:"appended,omitempty"`
+
 	// HasChildren is true if this item has child items linked to it.
 	// Populated by enrichment, not stored in the DB.
 	HasChildren bool `json:"has_children,omitempty"`
@@ -1274,6 +1279,57 @@ type ItemUpdate struct {
 	// from the handler's earlier read, which could delete a value a concurrent
 	// write had just set. Server-internal; never read from a request body.
 	BlankRelationKeys []string `json:"-"`
+
+	// AppendImplementationNote / AppendDecision append ONE structured entry
+	// to the item's `implementation_notes` / `decision_log` (BUG-3056). The
+	// server re-reads the row under its write lock and appends there, so a
+	// concurrent write to any other key cannot be reverted by it — which is
+	// what the GET, append, full-`fields` PATCH these callers used to send
+	// did. The server mints the entry's id, created_at and created_by; the
+	// caller supplies only the text. Refused alongside `fields` (a full
+	// replace has no single meaning combined with an append); allowed
+	// alongside `fields_patch`, since both are merges under the same lock.
+	//
+	// An OLDER server ignores these keys and answers 200 having written
+	// nothing, so a client must check GET /server/capabilities for
+	// `item_field_append` before sending them — see the CLI's
+	// ServerSupportsItemFieldAppend.
+	AppendImplementationNote *ItemImplementationNoteAppend `json:"append_implementation_note,omitempty"`
+	AppendDecision           *ItemDecisionLogAppend        `json:"append_decision,omitempty"`
+
+	// ImplementationNoteToAppend / DecisionToAppend are the MINTED entries
+	// the handler builds from the two request members above, for the store
+	// to append under its lock. Server-internal; never read from a request
+	// body, so a caller cannot supply its own id or attribution.
+	ImplementationNoteToAppend *ItemImplementationNote `json:"-"`
+	DecisionToAppend           *ItemDecisionLogEntry   `json:"-"`
+}
+
+// ItemImplementationNoteAppend is the request shape of
+// ItemUpdate.AppendImplementationNote: the text only.
+type ItemImplementationNoteAppend struct {
+	Summary string `json:"summary"`
+	Details string `json:"details,omitempty"`
+}
+
+// ItemDecisionLogAppend is the request shape of ItemUpdate.AppendDecision.
+type ItemDecisionLogAppend struct {
+	Decision  string `json:"decision"`
+	Rationale string `json:"rationale,omitempty"`
+}
+
+// ItemAppendedEntries echoes, on an UPDATE response, the entries that write
+// appended (BUG-3056) — including the id the server minted, which the caller
+// has no other way to learn.
+type ItemAppendedEntries struct {
+	ImplementationNote *ItemImplementationNote `json:"implementation_note,omitempty"`
+	Decision           *ItemDecisionLogEntry   `json:"decision,omitempty"`
+}
+
+// NewStructuredEntryID mints the id of an implementation-note or decision-log
+// entry: the prefix and a unix-nano timestamp, the shape every writer has used.
+func NewStructuredEntryID(prefix string) string {
+	return fmt.Sprintf("%s-%d", prefix, time.Now().UTC().UnixNano())
 }
 
 // ErrInvalidFieldsType / ErrInvalidTagsType are returned by

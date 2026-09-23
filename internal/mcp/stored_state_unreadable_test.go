@@ -10,8 +10,10 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -19,45 +21,55 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
-// TestStructuredAppendErrorResultClassifiesTheRefusal is the HTTP-transport
-// half: the append guard's sentinel becomes stored_state_unreadable, and
-// anything else keeps dispatcherErrorResult's server_error.
-//
-// The second leg is the one that makes the first mean something. Without it a
-// classifier that returned stored_state_unreadable for EVERY error would pass.
-func TestStructuredAppendErrorResultClassifiesTheRefusal(t *testing.T) {
-	refusal := fmt.Errorf("%w: %q holds a value that is not a list of entries",
-		models.ErrStructuredFieldUnreadable, models.ItemFieldImplementationNotes)
-
-	res := structuredAppendErrorResult("item note", "append note", refusal)
+// remoteUnreadableEnvelope is what the remote transport hands an agent when
+// the item PATCH refuses an append with 409 stored_state_unreadable — the
+// only way the refusal reaches that transport since BUG-3056 moved the append
+// guard into the server.
+func remoteUnreadableEnvelope(t *testing.T, code, message string) ErrorEnvelope {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{"error": map[string]any{"code": code, "message": message}})
+	if err != nil {
+		t.Fatalf("encode body: %v", err)
+	}
+	res := classifyHTTPStatusKind(context.Background(), "item note", "/api/v1/workspaces/ws/items/TASK-1",
+		http.StatusConflict, body, nil, ResourceItem, "TASK-1")
 	env, ok := res.StructuredContent.(ErrorEnvelope)
 	if !ok {
 		t.Fatalf("expected ErrorEnvelope, got %T", res.StructuredContent)
 	}
-	if env.Error.Code != ErrStoredStateUnreadable {
-		t.Fatalf("code: got %q, want %q", env.Error.Code, ErrStoredStateUnreadable)
-	}
 	if !res.IsError {
 		t.Error("result must carry IsError")
 	}
-	// The whole point of the code is that an agent stops instead of retrying,
-	// so the hint has to say so where the agent reads it.
-	if !strings.Contains(strings.ToLower(env.Error.Hint), "retry") {
-		t.Errorf("hint must tell the agent retrying is pointless; got: %s", env.Error.Hint)
+	return env
+}
+
+// TestRemoteClassifiesTheRefusal is the HTTP-transport half: the server's 409
+// keeps its code and gets the retry-hostile hint rather than the generic
+// conflict hint, which says to re-read and retry — the one move that cannot
+// work, because the stored value stays undecodable.
+//
+// The control leg is what makes the first mean something: an ordinary 409
+// keeps its ordinary classification.
+func TestRemoteClassifiesTheRefusal(t *testing.T) {
+	msg := fmt.Sprintf("%v: %q holds a value that is not a list of entries",
+		models.ErrStructuredFieldUnreadable, models.ItemFieldImplementationNotes)
+	env := remoteUnreadableEnvelope(t, "stored_state_unreadable", msg)
+	if env.Error.Code != ErrStoredStateUnreadable {
+		t.Fatalf("code: got %q, want %q", env.Error.Code, ErrStoredStateUnreadable)
+	}
+	if env.Error.Hint != storedStateUnreadableHint {
+		t.Errorf("hint: got %q, want the retry-hostile hint", env.Error.Hint)
 	}
 	if !strings.Contains(env.Error.Message, models.ItemFieldImplementationNotes) {
 		t.Errorf("message must carry the refusal text naming the field; got: %s", env.Error.Message)
 	}
 
-	// Control leg: an ordinary dispatcher fault is NOT retry-hostile and must
-	// keep its old classification.
-	other := structuredAppendErrorResult("item note", "encode body", errors.New("boom"))
-	otherEnv, ok := other.StructuredContent.(ErrorEnvelope)
-	if !ok {
-		t.Fatalf("expected ErrorEnvelope, got %T", other.StructuredContent)
+	other := remoteUnreadableEnvelope(t, "conflict", "someone else wrote first")
+	if other.Error.Code != ErrConflict {
+		t.Errorf("unrelated 409: got %q, want %q", other.Error.Code, ErrConflict)
 	}
-	if otherEnv.Error.Code != ErrServerError {
-		t.Errorf("unrelated dispatcher error: got %q, want %q", otherEnv.Error.Code, ErrServerError)
+	if other.Error.Hint == storedStateUnreadableHint {
+		t.Error("an ordinary conflict must not get the retry-hostile hint")
 	}
 }
 
@@ -92,8 +104,7 @@ func TestStdioSurfacesStoredStateUnreadable(t *testing.T) {
 	// the same gap as a code only one transport emits. Compared against the
 	// HTTP path's envelope rather than against a literal, so the assertion
 	// fails if either side changes alone.
-	httpEnv := structuredAppendErrorResult("item decide", "append decision", refusal).
-		StructuredContent.(ErrorEnvelope)
+	httpEnv := remoteUnreadableEnvelope(t, "stored_state_unreadable", refusal.Error())
 	if env.Error.Hint != httpEnv.Error.Hint {
 		t.Errorf("stdio hint differs from the HTTP hint for the same condition:\n stdio: %q\n http:  %q",
 			env.Error.Hint, httpEnv.Error.Hint)

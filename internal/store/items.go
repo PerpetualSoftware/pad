@@ -2697,6 +2697,29 @@ func (s *Store) updateItemWithParentLinkOnce(
 		input.Fields = &merged
 	}
 
+	// BUG-3056: a structured-entry append, onto the locked row (or onto the
+	// patch just merged over it). The Append* helpers' unreadable guard runs
+	// here too, so a stored value they cannot decode is refused rather than
+	// overwritten, exactly as it was when the client ran them.
+	if input.ImplementationNoteToAppend != nil || input.DecisionToAppend != nil {
+		base := existing.Fields
+		if input.Fields != nil {
+			base = *input.Fields
+		}
+		var aErr error
+		if input.ImplementationNoteToAppend != nil {
+			if base, aErr = models.AppendImplementationNote(base, *input.ImplementationNoteToAppend); aErr != nil {
+				return nil, aErr
+			}
+		}
+		if input.DecisionToAppend != nil {
+			if base, aErr = models.AppendDecisionLogEntry(base, *input.DecisionToAppend); aErr != nil {
+				return nil, aErr
+			}
+		}
+		input.Fields = &base
+	}
+
 	ts := now()
 
 	// Create version if content is changing

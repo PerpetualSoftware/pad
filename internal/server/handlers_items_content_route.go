@@ -435,6 +435,9 @@ func (s *Server) writeTypedItemRefusal(w http.ResponseWriter, item *models.Item,
 	if writeInvalidItemTitle(w, err) {
 		return true
 	}
+	if writeStoredStateUnreadable(w, err) {
+		return true
+	}
 	// The FIFTH arm, and the one this function was built without — found by codex
 	// round 5 as a REGRESSION, not a gap. The ordinary path maps a UNIQUE-constraint
 	// race to a 409 (a concurrent update that passes checkUniqueFields and then hits

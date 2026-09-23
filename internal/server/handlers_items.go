@@ -1149,6 +1149,21 @@ func writeInvalidItemTitle(w http.ResponseWriter, err error) bool {
 	return true
 }
 
+// writeStoredStateUnreadable answers the Append* helpers' refusal (BUG-2627
+// part 3), which since BUG-3056 runs in the store under the write lock rather
+// than in the client: the item's stored implementation_notes / decision_log
+// (or its whole fields blob) cannot be decoded, and appending would overwrite
+// it. 409 with the same code the bulk door and both MCP transports use, since
+// retrying refuses identically. Every UpdateItem error arm carries it, like
+// writeInvalidItemTitle.
+func writeStoredStateUnreadable(w http.ResponseWriter, err error) bool {
+	if !errors.Is(err, models.ErrStructuredFieldUnreadable) {
+		return false
+	}
+	writeError(w, http.StatusConflict, storedStateUnreadableCode, err.Error())
+	return true
+}
+
 func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	// BUG-3080: set once the write has COMMITTED, read by the client_write
 	// release deferred below — the tab's mark moves only for a write that
@@ -1250,6 +1265,41 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request",
 			"cannot combine \"fields\" (full replace) and \"fields_patch\" (field-level merge) in one update")
 		return
+	}
+
+	// BUG-3056: a structured-entry append. Refused with a full `fields` replace,
+	// which would have to choose between the blob it carries and the row the
+	// append reads under the lock. The SERVER mints the entry's id, created_at
+	// and created_by — created_by from the same request signal that stamps this
+	// write's last_modified_by below, or an in-process caller's label (see
+	// WithStructuredEntryAuthor) — so a caller supplies only the text and
+	// cannot write an entry the extractor would not decode.
+	if input.AppendImplementationNote != nil || input.AppendDecision != nil {
+		if input.Fields != nil {
+			writeError(w, http.StatusBadRequest, "bad_request",
+				"cannot combine \"fields\" (full replace) with append_implementation_note or append_decision; use fields_patch for the other keys")
+			return
+		}
+		appendActor := structuredEntryAuthor(r)
+		mintedAt := time.Now().UTC().Format(time.RFC3339)
+		if a := input.AppendImplementationNote; a != nil {
+			input.ImplementationNoteToAppend = &models.ItemImplementationNote{
+				ID:        models.NewStructuredEntryID("note"),
+				Summary:   a.Summary,
+				Details:   a.Details,
+				CreatedAt: mintedAt,
+				CreatedBy: appendActor,
+			}
+		}
+		if a := input.AppendDecision; a != nil {
+			input.DecisionToAppend = &models.ItemDecisionLogEntry{
+				ID:        models.NewStructuredEntryID("decision"),
+				Decision:  a.Decision,
+				Rationale: a.Rationale,
+				CreatedAt: mintedAt,
+				CreatedBy: appendActor,
+			}
+		}
 	}
 
 	// BUG-2627 part 2: `fields_patch` is the door every USER field-setter
@@ -1992,6 +2042,9 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			if writeInvalidItemTitle(w, err) {
 				return
 			}
+			if writeStoredStateUnreadable(w, err) {
+				return
+			}
 			// Mirror the main UpdateItem path: map UNIQUE constraint /
 			// duplicate key races (e.g. concurrent edits both racing the
 			// invocation_slug partial unique index) to 409 conflict so
@@ -2132,6 +2185,9 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		// understood and declined, and retrying it unchanged will be declined
 		// identically.
 		if writeInvalidItemTitle(w, err) {
+			return
+		}
+		if writeStoredStateUnreadable(w, err) {
 			return
 		}
 		// Map UNIQUE constraint races (e.g. concurrent updates that both
@@ -2338,6 +2394,14 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	// account for.
 	if contentAppliedPendingFlush {
 		updated.Content = appliedContent
+	}
+
+	// BUG-3056: echo the appended entries, with the ids the server minted.
+	if input.ImplementationNoteToAppend != nil || input.DecisionToAppend != nil {
+		updated.Appended = &models.ItemAppendedEntries{
+			ImplementationNote: input.ImplementationNoteToAppend,
+			Decision:           input.DecisionToAppend,
+		}
 	}
 
 	// Advisory, post-write, same as create (BUG-2850).
