@@ -108,11 +108,12 @@ func TestARejectedSubscribeRefusesItsCallerInsteadOfAdmittingIt(t *testing.T) {
 			ch, _, outcome := b.SubscribeIfAllowed(context.Background(), "ws-1", 0)
 			elapsed := time.Since(start)
 
-			// PREMISE: Redis rejected, on the initial attempt and on the
-			// loop's one retry. Fewer means the refusal came from somewhere
-			// else.
-			if got := s.rejected.Load(); got < 2 {
-				t.Fatalf("SUBSCRIBE rejected %d times, want at least 2 (initial attempt + the loop's retry); the instrument never armed", got)
+			// PREMISE: Redis rejected at least once. Checked before the
+			// outcome, and only for ONE rejection, so that against the defect
+			// this test fails on the outcome below, which is what the defect
+			// gets wrong, rather than on a count the defect also changes.
+			if got := s.rejected.Load(); got < 1 {
+				t.Fatalf("SUBSCRIBE was never rejected; the instrument never armed")
 			}
 
 			// Each assertion is stated as what the defect leaves behind
@@ -140,6 +141,11 @@ func TestARejectedSubscribeRefusesItsCallerInsteadOfAdmittingIt(t *testing.T) {
 			}
 			if got := obs.unconfirmedCount(); got != 0 {
 				t.Fatalf("SubscriptionUnconfirmed reported %d times, want 0: the caller was admitted when the bound ran out rather than refused on the reply", got)
+			}
+			// The refusal went through the establish loop's one retry, as a
+			// failed SUBSCRIBE write does (BUG-2764), before giving up.
+			if got := s.rejected.Load(); got != 2 {
+				t.Errorf("SUBSCRIBE rejected %d times, want 2 (initial attempt + the loop's retry)", got)
 			}
 			// The reply is what refused it, not the bound: two attempts that
 			// each sat out confirmTimeout would take 2x it.
