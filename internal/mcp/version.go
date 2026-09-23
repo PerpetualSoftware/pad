@@ -1017,6 +1017,17 @@ const CmdhelpVersion = "0.1"
 //     browser tab and BUG-3000 carries the open half — so no surface
 //     here states a duration.
 //
+//     0.49 — BUG-2410. `pad_project.action=report` with NO `collections`
+//     param now leaves out SYSTEM collections (Collection.IsSystem: today
+//     Conventions and Playbooks), so they stop counting in created, WIP and
+//     status totals. A call that NAMES one (`collections: "conventions"`) still
+//     includes it. BEHAVIOR bump on the 0.40 / 0.42 grounds (lead-ruled): no
+//     tool name, action enum or param shape changed, but a default call's
+//     content changed for every caller. The rule is the store's
+//     (resolveReportCollections), so the web Insights page, the print report,
+//     `pad project report` and both MCP transports change together. Keyed on
+//     the flag, never on slugs, so a future system collection follows it.
+//
 //     0.48 — BUG-3163. `pad_item.action=create` REFUSES a `field` (or
 //     `fields` object) entry naming any reserved metadata key —
 //     implementation_notes, decision_log, github_pr, convention — on every
@@ -1513,7 +1524,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.48"
+const ToolSurfaceVersion = "0.49"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

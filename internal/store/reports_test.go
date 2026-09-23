@@ -853,3 +853,64 @@ func TestImportWorkspace_AbandonedOptionsMustBeTerminal(t *testing.T) {
 		t.Fatalf("want an import refusal naming the value, got %v", err)
 	}
 }
+
+// BUG-2410: a default report excludes SYSTEM collections, keyed on IsSystem.
+// The fixture is built so that a rule keyed on slugs would fail both ways: the
+// system collection has an ordinary slug, and an ordinary collection has the
+// slug `conventions`.
+func TestGetReport_DefaultExcludesSystemCollections(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	wsID, tasksID := newTransitionTestWorkspace(t, s)
+
+	sys, err := s.CreateCollection(wsID, models.CollectionCreate{
+		Name: "House Rules", Slug: "house-rules", Prefix: "HR", IsSystem: true,
+		Schema: `{"fields":[{"key":"status","type":"select","options":["open","done"],"default":"open"}]}`,
+	})
+	if err != nil {
+		t.Fatalf("create system collection: %v", err)
+	}
+	notSys, err := s.CreateCollection(wsID, models.CollectionCreate{
+		Name: "Conventions", Slug: "conventions", Prefix: "CV",
+		Schema: `{"fields":[{"key":"status","type":"select","options":["open","done"],"default":"open"}]}`,
+	})
+	if err != nil {
+		t.Fatalf("create ordinary collection slugged conventions: %v", err)
+	}
+	createTestItem(t, s, wsID, tasksID, "task", "")
+	createTestItem(t, s, wsID, sys.ID, "rule 1", "")
+	createTestItem(t, s, wsID, sys.ID, "rule 2", "")
+	createTestItem(t, s, wsID, notSys.ID, "ordinary", "")
+
+	now := time.Now().UTC()
+	rep, err := s.GetReport(wsID, ReportOptions{Window: "week", Now: now})
+	if err != nil {
+		t.Fatalf("GetReport: %v", err)
+	}
+	has := func(list []string, slug string) bool {
+		for _, x := range list {
+			if x == slug {
+				return true
+			}
+		}
+		return false
+	}
+	if has(rep.Collections, "house-rules") {
+		t.Errorf("default report includes the system collection: %v", rep.Collections)
+	}
+	if !has(rep.Collections, "conventions") || !has(rep.Collections, "tasks") {
+		t.Errorf("default report dropped an ordinary collection (a slug-keyed rule would): %v", rep.Collections)
+	}
+	if rep.Totals.Created != 2 {
+		t.Errorf("created = %d, want 2 (the task and the ordinary item; the system collection's 2 left out)", rep.Totals.Created)
+	}
+
+	// An explicit request for the system collection is honoured.
+	named, err := s.GetReport(wsID, ReportOptions{Window: "week", Now: now, Collections: []string{"house-rules"}})
+	if err != nil {
+		t.Fatalf("GetReport named: %v", err)
+	}
+	if !has(named.Collections, "house-rules") || named.Totals.Created != 2 {
+		t.Errorf("?collections=house-rules = %v created %d; want it included with its 2 items", named.Collections, named.Totals.Created)
+	}
+}

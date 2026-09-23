@@ -36,7 +36,7 @@ var padProjectTool = ToolDef{
 			{
 				Name:        "collections",
 				Type:        "string",
-				Description: "Comma-separated collection slugs to include for action=report (default: all visible).",
+				Description: "Comma-separated collection slugs to include for action=report (default: all visible, non-system; name a system collection to include it).",
 			},
 			{
 				Name:        "actor",

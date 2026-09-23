@@ -691,7 +691,7 @@ net flow, completed-by-collection, and a current status-distribution snapshot.
 		},
 	}
 	cmd.Flags().StringVar(&window, "window", "week", "Report window: day|week|2wk|month")
-	cmd.Flags().StringVar(&collections, "collections", "", "Comma-separated collection slugs to include (default: all visible)")
+	cmd.Flags().StringVar(&collections, "collections", "", "Comma-separated collection slugs to include (default: all visible, non-system; name a system collection to include it)")
 	return cmd
 }
 

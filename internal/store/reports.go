@@ -659,6 +659,16 @@ func (s *Store) resolveReportCollections(workspaceID string, opts ReportOptions)
 		if len(want) > 0 && !want[strings.ToLower(c.Slug)] {
 			continue
 		}
+		// BUG-2410: a DEFAULT report (no collections named) leaves out system
+		// collections — Conventions and Playbooks are how the workspace is run,
+		// not the work it tracks, and they were counted in Insights' created,
+		// WIP and status totals. Keyed on IsSystem, never on slugs, so a future
+		// system collection follows the rule without anyone remembering it. A
+		// caller that NAMES one (?collections=conventions) still gets it: an
+		// explicit request is a decision, not a default.
+		if len(want) == 0 && c.IsSystem {
+			continue
+		}
 		if visible != nil && !visible[c.ID] {
 			continue
 		}
