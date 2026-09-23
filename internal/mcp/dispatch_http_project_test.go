@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -1131,22 +1132,21 @@ func TestDispatch_ItemBulkUpdate_RequiresStatusOrPriority(t *testing.T) {
 }
 
 func TestDispatch_ItemBulkUpdate_PerItemFailureDoesNotAbort(t *testing.T) {
-	// First ref fails GET (404); second succeeds. The dispatcher
+	// First ref's PATCH answers 404; second succeeds. The dispatcher
 	// must report both — successes get Updated:true, failures get
 	// Error populated. Mirrors the CLI's per-item green/red output.
+	// (Since BUG-3156 each row is a single PATCH with no prefetch, so
+	// the 404 is the update's own not-found answer.)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/workspaces/docapp/items/TASK-9", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	})
 	mux.HandleFunc("/api/v1/workspaces/docapp/items/TASK-1", func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"ref":"TASK-1","fields":"{\"status\":\"open\"}"}`))
-		case http.MethodPatch:
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"ref":"TASK-1"}`))
+		if r.Method != http.MethodPatch {
+			t.Errorf("unexpected %s — bulk-update sends one PATCH per row", r.Method)
 		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ref":"TASK-1"}`))
 	})
 	d := &HTTPHandlerDispatcher{Handler: mux, UserResolver: fixedUserResolver(&models.User{ID: "u"})}
 	res, err := d.Dispatch(
@@ -1181,26 +1181,23 @@ func TestDispatch_ItemBulkUpdate_PerItemFailureDoesNotAbort(t *testing.T) {
 	}
 }
 
-func TestDispatch_ItemBulkUpdate_MergesExistingFields(t *testing.T) {
-	// Bulk-update applies the same RMW merge item.update uses: the
-	// existing priority "high" must survive when only --status is
-	// being changed.
+func TestDispatch_ItemBulkUpdate_PatchesOnlyTheKeysItSets(t *testing.T) {
+	// BUG-3156: bulk-update used to GET the item, set status on the decoded
+	// blob and PATCH the WHOLE blob back (this test then asserted that the
+	// untouched keys were carried, which pinned the revert). It now sends
+	// one PATCH per row with `fields_patch` holding only what the call set,
+	// and no `fields` member, so it cannot write any other key.
 	mux := http.NewServeMux()
-	patchedFields := ""
+	var got map[string]any
+	methods := []string{}
 	mux.HandleFunc("/api/v1/workspaces/docapp/items/TASK-1", func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"ref":"TASK-1","fields":"{\"status\":\"open\",\"priority\":\"high\",\"category\":\"bug\"}"}`))
-		case http.MethodPatch:
-			body := make([]byte, r.ContentLength)
-			_, _ = r.Body.Read(body)
-			var got map[string]any
+		methods = append(methods, r.Method)
+		if r.Method == http.MethodPatch {
+			body, _ := io.ReadAll(r.Body)
 			_ = json.Unmarshal(body, &got)
-			patchedFields, _ = got["fields"].(string)
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"ref":"TASK-1"}`))
 		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ref":"TASK-1"}`))
 	})
 	d := &HTTPHandlerDispatcher{Handler: mux, UserResolver: fixedUserResolver(&models.User{ID: "u"})}
 	_, _ = d.Dispatch(
@@ -1211,18 +1208,15 @@ func TestDispatch_ItemBulkUpdate_MergesExistingFields(t *testing.T) {
 		}),
 		[]string{"item", "bulk-update"}, nil,
 	)
-	var fields map[string]any
-	if err := json.Unmarshal([]byte(patchedFields), &fields); err != nil {
-		t.Fatalf("decode patched fields: %v", err)
+	if len(methods) != 1 || methods[0] != http.MethodPatch {
+		t.Fatalf("requests = %v, want exactly one PATCH (no prefetch)", methods)
 	}
-	if fields["status"] != "in-progress" {
-		t.Errorf("status not updated: %v", fields)
+	if _, has := got["fields"]; has {
+		t.Fatalf("the PATCH carries a whole `fields` blob, which reverts concurrent writes: %v", got)
 	}
-	if fields["priority"] != "high" {
-		t.Errorf("priority should survive RMW: %v", fields)
-	}
-	if fields["category"] != "bug" {
-		t.Errorf("category should survive RMW: %v", fields)
+	patch, _ := got["fields_patch"].(map[string]any)
+	if len(patch) != 1 || patch["status"] != "in-progress" {
+		t.Fatalf("fields_patch = %v, want exactly {status: in-progress}", got["fields_patch"])
 	}
 }
 
