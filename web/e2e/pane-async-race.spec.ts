@@ -7,6 +7,7 @@ import {
 } from './lib/collab-helpers';
 import type { APIRequestContext, Page } from '@playwright/test';
 import type { SuiteFixture } from './fixtures';
+import { backThenDrillAfterSettleArms } from './lib/paneSettle';
 
 /**
  * Pane mini-browser — async-race hardening suite (PLAN-2154 R14 / TASK-2167).
@@ -394,11 +395,16 @@ test.describe('pane async-race hardening (PLAN-2154 R14 / TASK-2167)', () => {
 		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
 
 		// Back to A (depth 0) — a popstate that arms the mint-settle for A — then
-		// IMMEDIATELY drill to C, inside the settle window.
+		// drill to C INSIDE the settle window, 20ms before it would fire
+		// (BUG-3166). The drill is scheduled in the page from the moment the
+		// settle is armed, not by two Playwright steps: those spent the window on
+		// round-trips, so on a loaded box the drill often ran AFTER the settle
+		// had fired — when minting A first is correct — and the test failed on
+		// the harness's timing. Measured over 40 runs, every A fetch had the
+		// drill running after the fire; none had it before.
 		const getsBeforeBack = itemGets.length;
-		await page.goBack();
-		await expect.poll(() => openItemParam(page)).toBe(refA);
-		await drillTo(page, c.slug);
+		const drill = await backThenDrillAfterSettleArms(page, c.slug, FOLLOW_DEBOUNCE_MS - 20);
+		expect(drill.settleFiredFirst, `precondition: the drill ran inside the settle window (${Math.round(drill.drillAfterArmMs)}ms after arming)`).toBe(false);
 
 		await expect.poll(() => openItemParam(page)).toBe(c.slug);
 		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
@@ -416,6 +422,46 @@ test.describe('pane async-race hardening (PLAN-2154 R14 / TASK-2167)', () => {
 		const postBack = itemGets.slice(getsBeforeBack);
 		expect(postBack).toContain(c.slug);
 		expect(postBack).not.toContain(refA);
+	});
+
+	// ── Scenario 2b — the same drill AFTER the settle window (BUG-3166) ─────
+	// The other half of the contract: a reader who stays on A past the window
+	// DOES get A minted (fetched), and the later drill still lands on C. Pins
+	// that "never fetch A" above is about the window, so a future window change
+	// cannot turn correct behaviour into a "fix".
+	test('a drill fired AFTER the back-settle window: A is minted first, then the drill lands on the new target', async ({
+		page,
+		fixture,
+		request,
+	}) => {
+		await page.setViewportSize(DESKTOP);
+		await enableHook(page);
+		await browserLogin(page);
+		const { collSlug, seeded } = await seedFreshCollection(fixture, request, 'Race drilllate', 'RDLT', [
+			{ title: 'Race drilllate alpha' },
+			{ title: 'Race drilllate bravo' },
+			{ title: 'Race drilllate charlie' },
+		]);
+		const [, b, c] = seeded;
+		await page.goto(collUrl(fixture, collSlug));
+
+		const itemGets = trackItemGets(page);
+		await page.locator('.item-card', { hasText: 'Race drilllate alpha' }).first().click();
+		const pane = page.locator('.item-pane');
+		await expect(pane).toBeVisible();
+		const refA = openItemParam(page);
+		await drillTo(page, b.slug);
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
+
+		const getsBeforeBack = itemGets.length;
+		const drill = await backThenDrillAfterSettleArms(page, c.slug, FOLLOW_DEBOUNCE_MS + 160);
+		expect(drill.settleFiredFirst, `precondition: the settle fired before the drill (${Math.round(drill.drillAfterArmMs)}ms after arming)`).toBe(true);
+
+		await expect.poll(() => openItemParam(page)).toBe(c.slug);
+		await expect(pane.locator('.title', { hasText: /Race drilllate charlie/ })).toBeVisible();
+		const postBack = itemGets.slice(getsBeforeBack);
+		expect(postBack, 'the settle minted A before the late drill').toContain(refA);
+		expect(postBack.lastIndexOf(c.slug)).toBeGreaterThan(postBack.indexOf(refA!));
 	});
 
 	// ── Scenario 3 — a close fired during an in-flight history.go + latch ────

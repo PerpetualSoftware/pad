@@ -2,6 +2,7 @@ import { test, expect } from './fixtures';
 import { browserLogin, seedDoc, EDITOR_SELECTOR, SYNCED_BADGE_SELECTOR } from './lib/collab-helpers';
 import type { APIRequestContext, Page } from '@playwright/test';
 import type { SuiteFixture } from './fixtures';
+import { backThenDrillAfterSettleArms } from './lib/paneSettle';
 
 /**
  * Full-page pane HOST — Phase-2 CAPSTONE runtime verification
@@ -673,11 +674,13 @@ test.describe('full-page pane host CAPSTONE (PLAN-2154 Phase 2 / TASK-2175)', ()
 		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
 
 		// Back to A (depth 0) — a popstate that arms the mint-settle for A — then
-		// IMMEDIATELY drill to C, inside the settle window.
+		// drill to C INSIDE the settle window, timed in the page from the moment
+		// the settle is armed (BUG-3166: two Playwright steps spent the window on
+		// round-trips, so on a loaded box the drill often ran after the settle
+		// had fired, when minting A first is correct).
 		const getsBeforeBack = itemGets.length;
-		await page.goBack();
-		await expect.poll(() => openItemParam(page)).toBe(refA);
-		await drillTo(page, c.slug);
+		const drill = await backThenDrillAfterSettleArms(page, c.slug, FOLLOW_DEBOUNCE_MS - 20);
+		expect(drill.settleFiredFirst, `precondition: the drill ran inside the settle window (${Math.round(drill.drillAfterArmMs)}ms after arming)`).toBe(false);
 
 		await expect.poll(() => openItemParam(page)).toBe(c.slug);
 		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
