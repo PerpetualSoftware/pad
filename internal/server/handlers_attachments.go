@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -322,75 +321,14 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 		itemIDPtr = &canonicalItemID
 	}
 
-	// Sanitize the filename: strip path components so a client can't
-	// sneak directory traversal through the display name. We don't
-	// store this in the storage backend — only in the DB row for UI.
-	// The uploaded filename is caller-supplied text bound for a text column,
-	// and a multipart header can carry a NUL through the RFC 5987 encoded
-	// form (filename*=UTF-8\'\'a%00.png). Same predicate as the path and
-	// query rules; falling back to a generic name rather than refusing the
-	// upload, because the bytes are fine and only the label is unusable
-	// (codex round 4, BUG-2803).
-	// Reduce to a leaf under BOTH separator conventions before anything else.
-	// filepath.Base is platform-specific, so on Unix it leaves a backslash
-	// alone — and the stored name is consumed cross-platform (a Windows client
-	// joining it onto a directory reads "..\\evil" as a traversal). Splitting
-	// on the backslash too makes the stored value a safe path component
-	// everywhere rather than only on the server's own OS (codex round 28).
-	//
-	// This NORMALISES rather than refuses: a legitimate Unix name containing a
-	// backslash keeps its last segment instead of being replaced wholesale,
-	// which is less lossy than the alternative and still portable.
-	filename := filepath.Base(header.Filename)
-	if i := strings.LastIndexByte(filename, '\\'); i >= 0 {
-		filename = filename[i+1:]
-	}
-	if !bindableText(filename) {
-		// Keep the EXTENSION when it is itself storable. The unusable part
-		// of a name like "sh<NUL>ot.png" is the stem; ".png" is ordinary
-		// text, and it is what every downstream consumer dispatches on —
-		// Content-Disposition, the web download anchor, bundle export naming,
-		// and `pad attachment view`, whose whole contract is handing a path to
-		// something that opens files by extension.
-		//
-		// Dropping it made this fallback lossier than the empty-name one two
-		// lines below, which has always produced "upload.bin" (codex round
-		// 24). Bounded to a short extension so a hostile name cannot smuggle
-		// a long tail through the fallback.
-		// bindableText is NOT the bar here (codex round 25). It permits
-		// control characters — they are valid UTF-8 and not NUL — and a
-		// control character survives storage but is STRIPPED when the name
-		// is written into Content-Disposition. So ".s<VT>vg" passes the
-		// extension blocklist, which sees no known extension, and reappears
-		// as ".svg" at the client. attachments.SafeFallbackExtension requires
-		// a KNOWN, ALLOWED, plain-alphanumeric extension instead, so a
-		// synthesised name can only carry a suffix the product already
-		// accepts on the ordinary path.
-		if ext := filepath.Ext(filename); attachments.SafeFallbackExtension(ext) {
-			filename = "upload" + strings.ToLower(ext)
-		} else {
-			filename = "upload"
-		}
-	}
-	// A name that is only dots or separators is not a filename, it is a PATH
-	// COMPONENT, and consumers join it onto a directory. ".." was missing
-	// here: it survives bindableText, and filepath.Ext("..") is "." — non-empty
-	// — so even an extension check passes it through, while filepath.Join on
-	// the client side resolves it to the PARENT directory (codex round 26).
-	//
-	// Only "." and ".." are path components; "..." and longer runs are
-	// ordinary POSIX filenames and are kept (codex round 27 — the trimmed-form
-	// check I used first refused those too, which is over-refusal for no
-	// gain). A backslash is likewise a legal character in a Unix filename, and
-	// filepath.Base above has already reduced any "a/b" to "b", so a separator
-	// test here is dead on this platform and was removed rather than left to
-	// look load-bearing.
-	//
-	// What remains is the real hazard: a name a consumer joins onto a
-	// directory and lands somewhere else.
-	if filename == "" || filename == "." || filename == ".." || filename == "/" {
-		filename = "upload.bin"
-	}
+	// The stored name, and the name ValidateUpload judges below: one string,
+	// normalised by the same function every ingest door calls (BUG-2818). It
+	// reduces the name to a leaf under both separator conventions, falls back
+	// to a generic name when the text cannot be stored at all (BUG-2803), drops
+	// the characters the Content-Disposition header drops, and trims the
+	// trailing dots and spaces a download would lose. See
+	// attachments.NormalizeFilename for each rule's reason.
+	filename := attachments.NormalizeFilename(header.Filename)
 
 	// Stream into a temp file under the OS temp dir. We copy in 32KiB
 	// chunks via io.Copy and tee through a sha256 hasher.
@@ -904,7 +842,7 @@ func (s *Server) handleGetAttachment(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Pad-Attachment-Derived", derived)
 	}
 	w.Header().Set("Content-Disposition",
-		fmt.Sprintf(`%s; filename=%q`, disposition, sanitizeHeaderFilename(att.Filename)))
+		fmt.Sprintf(`%s; filename=%q`, disposition, sanitizeHeaderFilename(attachments.ServedFilename(att.Filename))))
 
 	// http.ServeContent gives Range, conditional GETs, and 206
 	// responses for free — but it requires an io.ReadSeeker. FSStore
@@ -956,10 +894,12 @@ func isKnownVariant(v string) bool {
 }
 
 // sanitizeHeaderFilename strips characters that can't safely appear in
-// a Content-Disposition filename header — quotes, CR, LF, and any
-// control byte. The Filename column was already basenamed at upload
-// time so path separators are not a concern; we only need to keep the
-// header value parseable.
+// a Content-Disposition filename header: quotes, backslashes and control
+// characters, by attachments.DroppedFilenameRune, which is also the rule
+// ingest normalises with (BUG-2818). The caller passes the SERVED name
+// (attachments.ServedFilename), so for any row stored since that fix this
+// drops nothing; it still runs because a header value must be parseable
+// whatever reaches it.
 func sanitizeHeaderFilename(name string) string {
 	if name == "" {
 		return "attachment"
@@ -967,12 +907,10 @@ func sanitizeHeaderFilename(name string) string {
 	var b strings.Builder
 	b.Grow(len(name))
 	for _, r := range name {
-		switch {
-		case r == '"' || r == '\\':
-			// Drop quotes and backslashes — they break the quoted-string syntax.
-		case r < 0x20 || r == 0x7f:
-			// Drop control bytes — protect against header injection.
-		default:
+		// The SAME predicate ingest normalises with (BUG-2818): a character
+		// dropped here and kept there would let the blocklist judge a
+		// different extension from the one this header serves.
+		if !attachments.DroppedFilenameRune(r) {
 			b.WriteRune(r)
 		}
 	}

@@ -614,7 +614,13 @@ func (s *Server) rehydrateAttachment(
 	if len(head) > 512 {
 		head = head[:512]
 	}
-	allowed, code, vErr := attachments.ValidateUpload(head, entry.Filename)
+	// The manifest's name is caller-supplied, exactly like an upload's, and
+	// was stored VERBATIM before BUG-2818: no leaf reduction, no fallback, and
+	// the characters the download header drops still inside the extension the
+	// blocklist judged. It goes through the same normaliser as the upload door,
+	// BEFORE validation, so the name judged is the name stored and served.
+	filename := attachments.NormalizeFilename(entry.Filename)
+	allowed, code, vErr := attachments.ValidateUpload(head, filename)
 	if vErr != nil {
 		return "", fmt.Errorf("mime validation (%s): %w", code, vErr)
 	}
@@ -670,7 +676,7 @@ func (s *Server) rehydrateAttachment(
 		ContentHash: hash,
 		MimeType:    allowed.MIME,
 		SizeBytes:   int64(len(blob)),
-		Filename:    entry.Filename,
+		Filename:    filename,
 		Width:       entry.Width,
 		Height:      entry.Height,
 	}
