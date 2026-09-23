@@ -51,10 +51,9 @@ export function createThrottledRefresh(run: () => void, opts: ThrottledRefreshOp
 
 	function trigger() {
 		if (disposed) return;
-		if (isHidden()) {
-			missedWhileHidden = true;
-			return;
-		}
+		// No hidden check here: `fire` decides, at the moment a run would happen,
+		// and records the miss. A second check here was unobservable (a mutant
+		// removing it survived every test), so it is not kept.
 		if (timer !== undefined) return; // one pending run covers this event too
 		const delay = Math.max(minDelayMs, lastRun + intervalMs - now());
 		timer = setTimeout(fire, delay);

@@ -150,11 +150,17 @@ describe('ItemTimeline: item_updated re-reads the head, throttled (BUG-3160)', (
 		expect(timelineListMock, 'a comment must not wait out the item_updated window').toHaveBeenCalledTimes(1);
 	});
 
-	it('unmounting clears a pending re-read', async () => {
+	it('unmounting clears a pending re-read, and its timer', async () => {
 		await mountTimeline();
+		const before = vi.getTimerCount();
 		fire('item_updated', 'item-a');
+		expect(vi.getTimerCount(), 'precondition: the event scheduled a re-read').toBe(before + 1);
 		unmount(app!);
 		app = null;
+		// The timer itself, not only the fetch: refreshFromSSE's own `destroyed`
+		// latch would already stop a leaked timer from fetching (lead ruling:
+		// clear the timer on destroy).
+		expect(vi.getTimerCount(), 'the throttle timer outlived the component').toBe(before);
 		await advance(15_000);
 		expect(timelineListMock).not.toHaveBeenCalled();
 	});
