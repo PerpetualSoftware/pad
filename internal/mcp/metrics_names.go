@@ -8,18 +8,47 @@ import "github.com/mark3labs/mcp-go/mcp"
 var protocolMethods = map[string]struct{}{}
 
 func init() {
-	for _, m := range []mcp.MCPMethod{
-		mcp.MethodInitialize, mcp.MethodPing,
-		mcp.MethodResourcesList, mcp.MethodResourcesTemplatesList, mcp.MethodResourcesRead,
-		mcp.MethodResourcesSubscribe, mcp.MethodResourcesUnsubscribe,
-		mcp.MethodPromptsList, mcp.MethodPromptsGet,
-		mcp.MethodToolsList, mcp.MethodToolsCall,
-		mcp.MethodSetLogLevel, mcp.MethodCompletionComplete,
-		mcp.MethodNotificationInitialized, mcp.MethodNotificationCancelled,
-		mcp.MethodNotificationProgress, mcp.MethodNotificationMessage,
-		mcp.MethodListRoots,
+	// Every method constant mcp-go defines (v1.1.0, 34 of them), including the
+	// server-to-client ones: a label value that is a library constant is
+	// bounded whichever direction it was meant for, and a legitimate method
+	// missing from here would be counted as "unknown".
+	for _, m := range []string{
+		string(mcp.MethodCompletionComplete),
+		string(mcp.MethodElicitationCreate),
+		string(mcp.MethodInitialize),
+		string(mcp.MethodListRoots),
+		string(mcp.MethodNotificationCancelled),
+		string(mcp.MethodNotificationElicitationComplete),
+		string(mcp.MethodNotificationInitialized),
+		string(mcp.MethodNotificationMessage),
+		string(mcp.MethodNotificationProgress),
+		string(mcp.MethodNotificationPromptsListChanged),
+		string(mcp.MethodNotificationResourceUpdated),
+		string(mcp.MethodNotificationResourcesListChanged),
+		string(mcp.MethodNotificationRootsListChanged),
+		string(mcp.MethodNotificationSubscriptionsAcknowledged),
+		string(mcp.MethodNotificationTasksStatus),
+		string(mcp.MethodNotificationToolsListChanged),
+		string(mcp.MethodPing),
+		string(mcp.MethodPromptsGet),
+		string(mcp.MethodPromptsList),
+		string(mcp.MethodResourcesList),
+		string(mcp.MethodResourcesRead),
+		string(mcp.MethodResourcesSubscribe),
+		string(mcp.MethodResourcesTemplatesList),
+		string(mcp.MethodResourcesUnsubscribe),
+		string(mcp.MethodSamplingCreateMessage),
+		string(mcp.MethodServerDiscover),
+		string(mcp.MethodSetLogLevel),
+		string(mcp.MethodSubscriptionsListen),
+		string(mcp.MethodTasksCancel),
+		string(mcp.MethodTasksGet),
+		string(mcp.MethodTasksList),
+		string(mcp.MethodTasksResult),
+		string(mcp.MethodToolsCall),
+		string(mcp.MethodToolsList),
 	} {
-		protocolMethods[string(m)] = struct{}{}
+		protocolMethods[m] = struct{}{}
 	}
 }
 
