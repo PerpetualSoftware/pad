@@ -37,6 +37,19 @@ export interface PaneHistoryState {
 	 * shared `?item=` URL. Drills copy (inherit) this from the current entry.
 	 */
 	paneOwned?: boolean;
+	/**
+	 * The pane's scroll position when the user drilled FORWARD from this entry
+	 * (BUG-2182). Written into the entry being left, never into the new one, so
+	 * a Back/Forward traversal can put the reader where they were; an entry
+	 * without it (a cold load, a first open) stays at the top.
+	 */
+	paneScrollTop?: number;
+}
+
+/** The saved pane scroll position of an entry, or null when it has none. */
+export function readPaneScrollTop(state: PaneHistoryState | null | undefined): number | null {
+	const v = state?.paneScrollTop;
+	return typeof v === 'number' && Number.isFinite(v) && v > 0 ? Math.floor(v) : null;
 }
 
 /** The normalized, always-present form after {@link readPaneState}. */
