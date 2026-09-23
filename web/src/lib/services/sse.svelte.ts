@@ -1,4 +1,5 @@
 import { SvelteSet } from 'svelte/reactivity';
+import { probeRetryAfterMs, reconnectDelayMs } from './sseReconnect';
 
 export type SSEStatus = 'disconnected' | 'connected' | 'reconnecting' | 'unauthorized';
 
@@ -202,6 +203,58 @@ function createSSEService() {
 	// holds. IDEA-2535 owns that question separately.
 	let pendingSyncOnConnect = false;
 
+	// THE RECONNECT IS OURS, not the browser's (BUG-2733). Measured in
+	// Chromium: a refused connection (429 / 503) is never retried, so the tab
+	// went dark for good, and an ended stream is retried on a flat 3s, so a
+	// restarted server got every tab back on one tick. See sseReconnect.ts
+	// for the policy. The timer and attempt count belong to the CURRENT
+	// connection and are reset by disconnect().
+	let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+	let reconnectAttempt = 0;
+
+	function clearReconnect() {
+		if (reconnectTimer !== null) {
+			clearTimeout(reconnectTimer);
+			reconnectTimer = null;
+		}
+		reconnectAttempt = 0;
+	}
+
+	/**
+	 * Take a failed source down and schedule its replacement.
+	 *
+	 * `refused` is the CLOSED-at-onerror case: the server answered with a
+	 * non-200, the only case that can carry a Retry-After, so only then is
+	 * the endpoint probed for it. A dropped stream goes straight to the
+	 * ladder.
+	 *
+	 * The replacement is a NEW EventSource, which sends no Last-Event-ID, so
+	 * the server cannot replay what was missed. pendingSyncOnConnect is armed
+	 * instead: the /items-changes delta on connect (BUG-2540) reconciles the
+	 * gap the replay used to cover.
+	 */
+	function scheduleReconnect(workspaceSlug: string, url: string, refused: boolean) {
+		if (reconnectTimer !== null) return;
+		reconnectAttempt++;
+		const attempt = reconnectAttempt;
+		const arm = (retryAfterMs: number | null) => {
+			// The workspace may have changed, or disconnect() run, while the
+			// probe was in flight; either one owns what happens next.
+			if (currentWorkspace !== workspaceSlug || eventSource !== null || reconnectAttempt !== attempt) return;
+			reconnectTimer = setTimeout(() => {
+				reconnectTimer = null;
+				if (currentWorkspace !== workspaceSlug || eventSource !== null) return;
+				pendingSyncOnConnect = true;
+				openEventSource(workspaceSlug);
+			}, reconnectDelayMs(attempt, retryAfterMs));
+		};
+		if (refused) {
+			void probeRetryAfterMs(url).then(arm);
+		} else {
+			arm(null);
+		}
+	}
+
 	function openEventSource(workspaceSlug: string) {
 		const url = `/api/v1/events?workspace=${encodeURIComponent(workspaceSlug)}`;
 		const source = new EventSource(url);
@@ -233,6 +286,7 @@ function createSSEService() {
 		source.onopen = () => {
 			if (source !== eventSource) return;
 			status = 'connected';
+			reconnectAttempt = 0;
 			broadcast({ type: 'status', status: 'connected' });
 			claimPendingSync();
 		};
@@ -241,13 +295,19 @@ function createSSEService() {
 			if (source !== eventSource) return;
 			status = 'reconnecting';
 			broadcast({ type: 'status', status: 'reconnecting' });
-			// EventSource auto-reconnects and sends Last-Event-ID.
-			// The server replays missed events from its buffer.
+			// NOT left to the browser (BUG-2733): see scheduleReconnect. Read
+			// readyState BEFORE close(), which forces it to CLOSED: CLOSED
+			// here means the server refused the connection outright.
+			const refused = source.readyState === EventSource.CLOSED;
+			source.close();
+			eventSource = null;
+			scheduleReconnect(workspaceSlug, url, refused);
 		};
 
 		source.addEventListener('connected', () => {
 			if (source !== eventSource) return;
 			status = 'connected';
+			reconnectAttempt = 0;
 			broadcast({ type: 'status', status: 'connected' });
 			// Mirror onopen — some platforms fire `connected`
 			// reliably before `onopen` on reconnect, others vice
@@ -444,6 +504,8 @@ function createSSEService() {
 	}
 
 	function disconnect() {
+		// A scheduled reconnect belongs to the connection being torn down.
+		clearReconnect();
 		// Release the leader lock first so a peer tab can take over
 		// even on the same browser session (e.g. workspace switch).
 		if (releaseLeaderLock) {
