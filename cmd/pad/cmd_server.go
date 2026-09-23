@@ -447,7 +447,9 @@ func serveCmd() *cobra.Command {
 					parseDurationEnv("PAD_MCP_SESSION_TTL", 0),
 					parseDurationEnv("PAD_MCP_SESSION_SWEEP_INTERVAL", 0),
 				)
-				srv.SetMCPTransport(streamable, cfg.MCPPublicURL, cfg.AuthServerURL)
+				// The last argument bounds the tool metrics label by the
+				// tools this server actually registered (BUG-2817).
+				srv.SetMCPTransport(streamable, cfg.MCPPublicURL, cfg.AuthServerURL, mcpSrv.IsKnownCallName)
 				slog.Info("MCP /mcp transport mounted",
 					"public_url", cfg.MCPPublicURL,
 					"auth_server", cfg.AuthServerURL,

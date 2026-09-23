@@ -60,7 +60,7 @@ func oauthEnabledTestServer(t *testing.T) (*Server, *oauth.Server) {
 	// Pass testCanonicalAudience directly — post-fix it IS the canonical
 	// resource URL (no /mcp suffix to strip).
 	stub := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {})
-	srv.SetMCPTransport(stub, testCanonicalAudience, testAuthServerURL)
+	srv.SetMCPTransport(stub, testCanonicalAudience, testAuthServerURL, nil)
 
 	o, err := oauth.NewServer(oauth.Config{
 		Store:           srv.store,
@@ -923,7 +923,7 @@ func TestOAuth_AuthorizationServerMetadata_503WhenOAuthDisabled(t *testing.T) {
 	// but DO NOT call SetOAuthServer — simulating the
 	// PAD_MCP_PUBLIC_URL-unset path in cmd/pad/main.go.
 	stub := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {})
-	srv.SetMCPTransport(stub, "https://mcp.test.example", "https://app.test.example")
+	srv.SetMCPTransport(stub, "https://mcp.test.example", "https://app.test.example", nil)
 
 	rr := doRequest(srv, "GET", "/.well-known/oauth-authorization-server", nil)
 	if rr.Code != http.StatusServiceUnavailable {

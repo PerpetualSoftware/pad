@@ -33,13 +33,20 @@ import (
 // writer is started by SetMCPTransport (the wiring lives there).
 func auditedMCPServer(t *testing.T) (srv *Server, user *models.User, bearer string) {
 	t.Helper()
+	return auditedMCPServerWith(t, nil)
+}
+
+// auditedMCPServerWith is auditedMCPServer with the metrics call-name
+// predicate passed through SetMCPTransport, the production door (BUG-2817).
+func auditedMCPServerWith(t *testing.T, knownCallName func(string) bool) (srv *Server, user *models.User, bearer string) {
+	t.Helper()
 	srv = testServer(t)
 	srv.SetCloudMode("test-secret")
 	stub := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
 	})
-	srv.SetMCPTransport(stub, "https://mcp.test.example", "https://app.test.example")
+	srv.SetMCPTransport(stub, "https://mcp.test.example", "https://app.test.example", knownCallName)
 
 	var err error
 	user, err = srv.store.CreateUser(models.UserCreate{

@@ -351,7 +351,7 @@ func (s *Server) recordMCPCallMetrics(tool, status, userID string, dur time.Dura
 	if s.metrics == nil {
 		return
 	}
-	tool = metricsToolLabel(tool)
+	tool = s.boundedToolLabel(metricsToolLabel(tool))
 	s.metrics.MCPToolCallsTotal.WithLabelValues(userID, tool, status).Inc()
 	// Histogram is per-tool only — duration distributions per user
 	// would explode the series count without a clear analytical
@@ -401,15 +401,34 @@ func (s *Server) recordMCPCallMetrics(tool, status, userID string, dur time.Dura
 // exactly one extra label value in total, and it is a constant rather than
 // anything a caller supplies.
 //
-// This bounds only the marker's contribution. The tool label as a whole is
-// still caller-driven and unbounded — see BUG-2817 — because it comes from
-// params.name. That is pre-existing and not this unit's to fix, but it is the
-// reason this function collapses rather than passing the marked name through.
+// This bounds only the marker's contribution. The label as a whole is bounded
+// by boundedToolLabel, which recordMCPCallMetrics applies after this (BUG-2817).
 func metricsToolLabel(tool string) string {
 	if strings.HasPrefix(tool, sanitisedLabelPrefix) {
 		return strings.TrimSuffix(sanitisedLabelPrefix, " ")
 	}
 	return tool
+}
+
+// unknownToolLabel is the one label value every name outside the known set
+// shares (BUG-2817).
+const unknownToolLabel = "unknown"
+
+// boundedToolLabel maps a name the server does not know to unknownToolLabel.
+// The tool name is whatever the caller put in the request, and the audit
+// middleware records rejected and denied calls too, so without a bound an
+// authenticated caller mints a new series per request by varying the name. The
+// audit ROW keeps the full value; only the Prometheus label is bounded. The
+// predicate arrives with SetMCPTransport.
+// The sanitised marker is a server-chosen constant and passes through.
+func (s *Server) boundedToolLabel(tool string) string {
+	if tool == strings.TrimSuffix(sanitisedLabelPrefix, " ") {
+		return tool
+	}
+	if s.mcpCallNameKnown != nil && s.mcpCallNameKnown(tool) {
+		return tool
+	}
+	return unknownToolLabel
 }
 
 // sanitisedLabelPrefix marks an identity that only became well-formed after
