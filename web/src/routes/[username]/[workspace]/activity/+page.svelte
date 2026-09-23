@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { browser } from '$app/environment';
-	import { onMount } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 	import { api } from '$lib/api/client';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
@@ -13,7 +13,9 @@
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
 	import EpisodeFeed from '$lib/components/activity/EpisodeFeed.svelte';
 	import type { Activity, Collection } from '$lib/types';
-	import { appendUnique, cursorAfter } from '$lib/utils/activityPaging';
+	import { appendUnique, cursorAfter, mergeHead } from '$lib/utils/activityPaging';
+	import { sseService } from '$lib/services/sse.svelte';
+	import { createThrottledRefresh } from '$lib/utils/throttledRefresh';
 
 	let wsSlug = $derived(page.params.workspace ?? '');
 	let username = $derived(page.params.username ?? '');
@@ -118,10 +120,15 @@
 	// appended rows from the PREVIOUS filter onto the new feed, and a slower
 	// reset could overwrite a newer one (BUG-2781, codex round 1).
 	let activityRequest = 0;
+	// Bumped only by a RESET (filter or workspace change). A head re-read that
+	// lands after one is describing the previous feed and is dropped; a
+	// load-more does not bump it, because the two merge by id and commute.
+	let resetGeneration = 0;
 
 	async function loadActivities(slug: string, reset = false) {
 		const thisRequest = ++activityRequest;
 		if (reset) {
+			resetGeneration++;
 			loading = true;
 			loadingMore = false;
 			activities = [];
@@ -156,6 +163,10 @@
 			if (thisRequest === activityRequest) {
 				loading = false;
 				loadingMore = false;
+				if (headRefreshOwed) {
+					headRefreshOwed = false;
+					headRefresh.trigger();
+				}
 			}
 		}
 	}
@@ -165,6 +176,51 @@
 			loadActivities(wsSlug, false);
 		}
 	}
+
+	// BUG-3160: this page never re-read its head, so a row the debounce merge
+	// restamped to now (it moves AHEAD of every cursor held) and every new row
+	// stayed invisible until a reload. Any item event now re-reads the first
+	// page and folds it in by id (mergeHead). Throttled exactly as the item
+	// timeline is: at most one re-read per 10s, trailing, none while the tab is
+	// hidden (lead-ruled). The cap matters most here, because this listens
+	// WORKSPACE-wide — two busy seats must still mean at most 6 requests a
+	// minute per open tab.
+	// A head read skipped because a load was running. That load's read may have
+	// been sent BEFORE the event's write, so the event is owed a re-read once
+	// the load settles (codex round 1); skipping it silently lost the change.
+	let headRefreshOwed = false;
+
+	async function refreshHead() {
+		const gen = resetGeneration;
+		const slug = wsSlug;
+		if (!slug) return;
+		if (loading) {
+			headRefreshOwed = true;
+			return;
+		}
+		const params: Record<string, string | number> = { limit: PAGE_SIZE };
+		if (filterAction) params.action = filterAction;
+		if (filterSource) params.source = filterSource;
+		try {
+			const fresh = await api.activity.list(slug, params);
+			if (gen !== resetGeneration || slug !== wsSlug) return;
+			activities = mergeHead(activities, fresh);
+		} catch {
+			// The next event re-reads; a failed head read loses nothing held.
+		}
+	}
+
+	const headRefresh = createThrottledRefresh(() => void refreshHead(), { intervalMs: 10_000 });
+	const unsubscribeItemEvents = sseService.onItemEvent(() => headRefresh.trigger());
+	function onVisibilityChange() {
+		if (document.visibilityState === 'visible') headRefresh.onVisible();
+	}
+	if (browser) document.addEventListener('visibilitychange', onVisibilityChange);
+	onDestroy(() => {
+		unsubscribeItemEvents();
+		headRefresh.dispose();
+		if (browser) document.removeEventListener('visibilitychange', onVisibilityChange);
+	});
 
 	// Client-side collection filter using enriched top-level field or metadata fallback
 	let filteredActivities = $derived.by(() => {
@@ -407,7 +463,7 @@
 							{@const collSlug = activity.collection_slug || meta.collection_slug}
 							{@const fieldChanges = parseFieldChanges(meta.changes)}
 							{@const src = getSourceLabel(activity.source, activity.actor, activity.actor_name, meta)}
-							<div class="entry {borderClass(activity.source, activity.actor)}">
+							<div class="entry {borderClass(activity.source, activity.actor)}" data-activity-id={activity.id}>
 								<span
 									class="entry-icon"
 									style="color: {actionColor(activity.action)}"
