@@ -19,7 +19,7 @@
 		const params = new URLSearchParams();
 		params.set('window', selectedWindow);
 		if (offset > 0) params.set('offset', String(offset));
-		if (selectedCollections.length > 0) params.set('collections', selectedCollections.join(','));
+		if (activeCollections.length > 0) params.set('collections', activeCollections.join(','));
 		const qs = params.toString();
 		return `/${username}/${wsSlug}/insights/print${qs ? `?${qs}` : ''}`;
 	});
@@ -39,6 +39,14 @@
 	// honours an explicit ?collections= naming one, including from a layout
 	// saved before this change.
 	let pickableCollections = $derived(collections.filter((c) => !c.is_system));
+	// The selection that COUNTS: the saved/selected slugs minus system ones. A
+	// layout saved before BUG-2410 can still name a system collection, and the
+	// picker cannot show one, so sending it would filter the report by a
+	// selection the page does not display (codex round 1). Derived rather than
+	// filtered once at hydration, because the collections and the layout load
+	// independently; the next save persists this cleaned list.
+	let systemSlugs = $derived(new Set(collections.filter((c) => c.is_system).map((c) => c.slug)));
+	let activeCollections = $derived(selectedCollections.filter((s) => !systemSlugs.has(s)));
 	// Period navigation: periods back from now (0 = current). SESSION-only — not
 	// part of ReportLayout, never persisted via scheduleSave.
 	let offset = $state(0);
@@ -130,7 +138,7 @@
 			hiddenCards.clear();
 			hydrated = false;
 		}
-		const colls = [...selectedCollections];
+		const colls = [...activeCollections];
 		const off = offset;
 		if (slug) {
 			loadReport(slug, win, colls, off);
@@ -212,7 +220,7 @@
 			const layout: ReportLayout = {
 				hidden_cards: [...hiddenCards],
 				default_window: selectedWindow,
-				default_collections: selectedCollections
+				default_collections: activeCollections
 			};
 			void api.report.saveLayout(slug, layout).catch(() => {
 				// Best-effort persistence; a failed save shouldn't disrupt the page.
@@ -450,8 +458,8 @@
 			<button
 				type="button"
 				class="chip"
-				class:active={selectedCollections.length === 0}
-				aria-pressed={selectedCollections.length === 0}
+				class:active={activeCollections.length === 0}
+				aria-pressed={activeCollections.length === 0}
 				onclick={clearCollectionFilter}
 			>
 				All
