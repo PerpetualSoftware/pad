@@ -717,9 +717,12 @@ handlers — onchange is never called.
 		}
 	}
 
-	/** Escape while the picker's input has focus closes it and returns focus to
-	 *  the trigger. `preventDefault` so the pane / dialog behind does not also
-	 *  close on the same key (their handlers skip a handled event). */
+	/** Escape while the picker's input has focus closes it (macOS Safari: the
+	 *  focused segment blurs) and returns focus to the trigger. The pane hosts
+	 *  already ignore an Escape whose target is a text-entry input — `date`
+	 *  counts — which is what keeps the pane open here (a mutant without the
+	 *  `preventDefault` still passes the pane e2e). The key is marked handled
+	 *  anyway, for any consumer that asks. */
 	function handleDateKeydown(e: KeyboardEvent) {
 		if (e.key !== 'Escape') return;
 		e.preventDefault();

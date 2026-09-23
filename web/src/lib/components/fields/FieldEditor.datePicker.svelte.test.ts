@@ -123,12 +123,12 @@ describe('date picker opens from a FOCUSED input (BUG-2858)', () => {
 		expect(input.getAttribute('aria-hidden')).toBe('true');
 	});
 
-	it('Escape in the input closes it: blur, focus back to the trigger, and the key is marked handled', () => {
+	it('Escape in the input closes it: blur, focus back to the trigger, key marked handled', () => {
 		const { trigger, input } = mount();
 		trigger.click();
 		const ev = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
 		input.dispatchEvent(ev);
-		expect(ev.defaultPrevented, 'handled, so the pane/dialog behind skips it').toBe(true);
+		expect(ev.defaultPrevented, 'the key is marked handled').toBe(true);
 		expect(document.activeElement).toBe(trigger);
 	});
 
