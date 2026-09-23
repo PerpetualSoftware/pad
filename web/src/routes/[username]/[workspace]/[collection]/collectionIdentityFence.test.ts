@@ -186,10 +186,14 @@ describe('the collection page fences every async commit point', () => {
 		// (codex round 2 [P2]). An entry now lists the read tokens it vouches
 		// for, and any other read in that effect is an offender.
 		const INTENDED_DEPENDENCY: Record<string, { allowedReads: string[]; why: string; afterMarker?: string }> = {
-			'localIndex.bootstrap': {
+			// Keyed on the shared helper's call since BUG-3181 moved the bootstrap
+			// → identity check → reconcile sequence out of this page into
+			// `enterWorkspaceIndex` (its order and sole-caller guard live in
+			// lib/stores/workspaceIndexEntry.test.ts).
+			'enterWorkspaceIndex(': {
 				allowedReads: ['captureIdentity(', 'identityHeld('],
 				why:
-					'the bootstrap/deltaSync effect re-runs on an identity change BY DESIGN — it reads ' +
+					'the bootstrap/reconcile effect re-runs on an identity change BY DESIGN — it reads ' +
 					'authStore.userId synchronously and on purpose, so the capture is the CURRENT one ' +
 					'and its fences stop the PREVIOUS run\'s continuation.',
 			},
@@ -397,10 +401,15 @@ describe('the collection page fences every async commit point', () => {
 		// unnoticed any more than it can arrive unnoticed.
 		expect(src.asyncFunctions().size, 'a top-level async function was added or removed').toBe(14);
 		expect(src.markupAsyncArrows(), 'an inline async arrow appeared in the markup').toHaveLength(0);
+		// 4 → 3 (BUG-3181): the bootstrap `$effect`'s async IIFE left this page.
+		// Its bootstrap → identity check → reconcile sequence is now the shared
+		// `enterWorkspaceIndex`, whose order and sole-caller status are pinned in
+		// lib/stores/workspaceIndexEntry.test.ts; the effect keeps its
+		// synchronous capture, which the INTENDED_DEPENDENCY entry above covers.
 		expect(
 			src.nestedAsyncCallbacks(),
 			'an async callback that is neither a top-level declaration nor a markup arrow'
-		).toHaveLength(4);
+		).toHaveLength(3);
 		expect(src.deferredTimers(), 'a setTimeout/setInterval was added or removed').toHaveLength(3);
 	});
 
@@ -500,8 +509,9 @@ describe('the collection page fences every async commit point', () => {
 	});
 
 	it('fences the async callbacks that are not declarations', () => {
-		// The four here are an `$effect` IIFE, the SSE subscription, the sync
-		// subscription and the debounced search timer. Two of them are the
+		// The three here are the SSE subscription, the sync subscription and the
+		// debounced search timer (the bootstrap `$effect` IIFE that was a fourth
+		// moved into `enterWorkspaceIndex` — BUG-3181). Two of them are the
 		// `pageIdentityHeld` shape rather than the entry-capture one: a
 		// subscription callback ARRIVES after the identity has already moved,
 		// so a capture taken at its entry is the new value and can detect

@@ -37,6 +37,7 @@
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
+	import { enterWorkspaceIndex } from '$lib/stores/workspaceIndexEntry';
 	import { localSearch, parseSearchQuery } from '$lib/stores/localSearch.svelte';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import { confirmOpenChildrenOrThrow, isOpenChildrenError } from '$lib/items/openChildrenError';
@@ -516,25 +517,10 @@
 		// so the capture is the CURRENT one and the fence stops the PREVIOUS
 		// run's continuation, not this one (BUG-3084).
 		const epochAtEntry = captureIdentity();
-		(async () => {
-			try {
-				await localIndex.bootstrap(wsSlug, { userId: uid });
-			} catch {
-				// Bootstrap errors flip bootstrapState to 'error'; the
-				// indexError-gated error banner surfaces them. 401/403
-				// redirect/purge is handled by the API client +
-				// TASK-1360.
-			}
-			// OUTSIDE the try, and before the call rather than after it
-			// (BUG-3084). Inside, a bootstrap REJECTION skips the check and
-			// reaches the reconcile anyway — the catch swallows by design. And
-			// after the call it would be dead code: `deltaSync` is the commit,
-			// so a check that follows it guards nothing.
-			if (!identityHeld(epochAtEntry)) return;
-			// Catch up any deltas missed while the user was on a
-			// different page within the same workspace.
-			await deltaSync(wsSlug);
-		})();
+		// bootstrap → identity check → reconcile, in the order BUG-3084 fixed,
+		// now shared with the workspace activity page (BUG-3181). Errors are the
+		// store's to record (the indexError-gated banner surfaces them).
+		void enterWorkspaceIndex(wsSlug, uid, epochAtEntry);
 	});
 	// isOwner now comes from workspaceStore (PLAN-1100 / TASK-1101) — populated
 	// by workspaceStore.setCurrent via the /me endpoint. The workspaceMembers
@@ -4143,7 +4129,7 @@
 					class="empty-cta"
 					onclick={() => {
 						localIndex.reset(wsSlug);
-						localIndex.bootstrap(wsSlug, { userId: authStore.userId || null });
+						void enterWorkspaceIndex(wsSlug, authStore.userId || null, captureIdentity());
 					}}
 				>
 					Retry

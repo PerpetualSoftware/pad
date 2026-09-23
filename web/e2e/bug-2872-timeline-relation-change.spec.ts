@@ -7,8 +7,8 @@ import { deleteCollection } from './lib/attachment-viewer';
  * BUG-2872 — an activity change on a `relation` field rendered the item ID the
  * field stores ("owner: → d84fb3b1-…"). It now renders the target's
  * `REF · title` (or "(deleted)" / "Unresolved reference"), on the item's
- * Activity tab and the workspace activity page's Audit view (where, until the
- * workspace index has loaded, it reads "Linked item"). A scalar
+ * Activity tab and the workspace activity page's Audit view, which since
+ * BUG-3181 brings the workspace index up itself. A scalar
  * field's change is unchanged.
  */
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
@@ -107,17 +107,18 @@ test.describe('BUG-2872: an activity change on a relation field renders the targ
 		}
 	});
 
-	test('workspace activity page, cold load: never the id; "Linked item" until the index loads', async ({ page, fixture, request }) => {
-		// /activity does not bootstrap the local index, so on a cold load the
-		// target cannot be looked up yet. It must not print the id, and must not
-		// claim the value names nothing ("Unresolved reference") either.
+	test('workspace activity page, cold load: REF · title (the page brings the index up — BUG-3181)', async ({ page, fixture, request }) => {
+		// /activity used to leave the local index cold, so a relation change read
+		// "Linked item" until some other page loaded it. It now enters the index
+		// itself (enterWorkspaceIndex), so a cold load resolves the target.
 		await page.setViewportSize({ width: 1400, height: 900 });
 		await browserLogin(page);
 		const s = await seed(fixture, request);
 		try {
 			await page.goto(`/${fixture.adminUsername}/${s.ws}/activity`);
 			const p = await auditPill(page, s.item.title);
-			await expect(p).toContainText('Linked item');
+			await expect(p).toContainText(s.target.ref, { timeout: 10_000 });
+			await expect(p).toContainText(s.target.title);
 			const text = await p.innerText();
 			expect(text).not.toMatch(UUID);
 			expect(text).not.toContain('Unresolved reference');
