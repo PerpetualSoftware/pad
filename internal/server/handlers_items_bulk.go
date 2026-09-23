@@ -924,6 +924,18 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 	// checked for visibility (codex round 11).
 	suppliedByCaller := map[string]any{}
 	if req.Status != "" {
+		// BUG-3154: the same refusal bulkFieldUpdate makes for a status-only
+		// move. MigrateFields keeps only target-declared fields, but this
+		// override is merged after it and validation walks only declared
+		// fields, so a target with no `status` field stored an orphan here.
+		// Checked against the stripped schema, the one the override is
+		// validated against below and the one BUG-2379's move check uses.
+		if undeclared := items.UndeclaredOverrideKeys(map[string]any{"status": req.Status}, items.SchemaForMigratedFields(targetSchema).Fields); len(undeclared) > 0 {
+			return nil, &bulkOpError{
+				code:    "validation_error",
+				message: fmt.Sprintf("collection %q has no %q field, so this operation does not apply to this item", targetColl.Slug, undeclared[0]),
+			}
+		}
 		result.Fields["status"] = req.Status
 		suppliedByCaller["status"] = req.Status
 	}

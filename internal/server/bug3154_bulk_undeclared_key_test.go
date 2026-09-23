@@ -100,3 +100,65 @@ func TestBulkItems_RefusesAFieldTheItemsCollectionDoesNotDeclare(t *testing.T) {
 		})
 	}
 }
+
+// The same refusal on a status move COMBINED with a collection move
+// (bulkMoveCollection), found by review round 1. MigrateFields keeps only the
+// target's declared fields, but the status override is merged after it, so a
+// target with no `status` field used to receive an orphan. `collection` is one
+// per request, so the control is a second request: the identical move into a
+// target that DOES declare `status` must apply.
+func TestBulkItems_CollectionMoveRefusesAStatusTheTargetDoesNotDeclare(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+	ws, err := srv.store.GetWorkspaceBySlug(slug)
+	if err != nil || ws == nil {
+		t.Fatalf("GetWorkspaceBySlug(%s): %v", slug, err)
+	}
+	bare := mustSchemaCollection(t, srv, ws.ID, "Bare Notes", `{"fields":[
+		{"key":"note","label":"Note","type":"text"}
+	]}`)
+	withStatus := mustSchemaCollection(t, srv, ws.ID, "Staged Notes", `{"fields":[
+		{"key":"note","label":"Note","type":"text"},
+		{"key":"status","label":"Status","type":"select","options":["open","done"]}
+	]}`)
+
+	control := createBulkTestItem(t, srv, slug, "Control", `{"status":"open"}`)
+	refused := createBulkTestItem(t, srv, slug, "Refused", `{"status":"open"}`)
+
+	move := func(ref, target string) bulkItemsResponse {
+		t.Helper()
+		rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/items/bulk", map[string]any{
+			"ids": []string{ref}, "op": "move", "collection": target, "status": "done",
+		})
+		if rr.Code != http.StatusOK {
+			t.Fatalf("bulk move to %s: expected 200, got %d: %s", target, rr.Code, rr.Body.String())
+		}
+		var resp bulkItemsResponse
+		parseJSON(t, rr, &resp)
+		return resp
+	}
+
+	// Control: the target declares status, so the override applies.
+	if resp := move(control.Ref, withStatus.Slug); len(resp.Updated) != 1 || len(resp.Failed) != 0 {
+		t.Fatalf("control move: expected 1 updated / 0 failed, got %+v", resp)
+	}
+	if got := itemFields(t, srv, slug, control.Slug)["status"]; got != "done" {
+		t.Errorf("control: status = %v, want done", got)
+	}
+
+	resp := move(refused.Ref, bare.Slug)
+	if len(resp.Updated) != 0 || len(resp.Failed) != 1 || resp.Failed[0].Ref != refused.Ref {
+		t.Fatalf("expected %s under failed only, got %+v", refused.Ref, resp)
+	}
+	if f := resp.Failed[0]; f.Code != "validation_error" || !strings.Contains(f.Error, bare.Slug) || !strings.Contains(f.Error, `"status"`) {
+		t.Errorf("failed row should be validation_error naming %q and \"status\", got %+v", bare.Slug, f)
+	}
+	after, err := srv.store.GetItem(refused.ID)
+	if err != nil || after == nil {
+		t.Fatalf("reload %s: %v", refused.Ref, err)
+	}
+	if after.CollectionID != refused.CollectionID || after.Seq != refused.Seq {
+		t.Errorf("BUG-3154: refused item was moved or written: collection %s -> %s, seq %d -> %d",
+			refused.CollectionID, after.CollectionID, refused.Seq, after.Seq)
+	}
+}

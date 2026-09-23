@@ -1023,10 +1023,12 @@ const CmdhelpVersion = "0.1"
 //     listed in the bulk response's `failed` array with code
 //     `validation_error` and a message naming the collection and the field,
 //     and nothing is written; the other items in the call still apply. The
-//     door is `POST /workspaces/{ws}/items/bulk` (ops `set-priority` and a
-//     status-only `move`), whose key is chosen by the SERVER, not typed by
-//     the caller, and which used to store the value as an orphan field no
-//     schema renders while reporting the item as updated. BEHAVIOR bump on
+//     door is `POST /workspaces/{ws}/items/bulk` (`set-priority`, and `move`
+//     with a `status`, with or without a `collection`; for a collection move
+//     the TARGET's schema decides). Its request carries an operation and a
+//     value, and the SERVER picks the field key. It used to store the value
+//     as an orphan field no schema renders while reporting the item as
+//     updated. BEHAVIOR bump on
 //     the 0.43 / 0.40 / 0.29 grounds: no tool name, action enum or param
 //     shape changed, but a write door refuses a call it used to accept.
 //
@@ -1038,8 +1040,9 @@ const CmdhelpVersion = "0.1"
 //     BUG-2850). So the same catalog call is refused per item on WebMCP and
 //     stored with a warning on the other two. The line between them is the
 //     one this entry draws, server-chosen key versus caller-typed key, and
-//     it holds at the HTTP doors but not at the catalog, where the caller
-//     typed the same thing either way. Whether stdio and remote should call
+//     it is a property of the two HTTP doors, not of the catalog call. On
+//     every transport the catalog caller supplies the same `status` or
+//     `priority` param; only the door the transport happens to reach differs. Whether stdio and remote should call
 //     the bulk endpoint is tracked separately; it is not converged here.
 //
 //     0.43 — BUG-2379. `pad_item.action=move` REFUSES a field override
