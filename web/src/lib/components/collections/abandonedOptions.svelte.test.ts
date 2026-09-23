@@ -98,6 +98,61 @@ describe('FieldEditor abandoned toggle', () => {
 	});
 });
 
+describe('FieldEditor option rename (codex round 1 on #1468)', () => {
+	function typeInto(input: HTMLInputElement, value: string) {
+		input.value = value;
+		input.dispatchEvent(new Event('input', { bubbles: true }));
+	}
+
+	it('carries terminal and abandoned marks to the renamed value, keystroke by keystroke', async () => {
+		const field = $state(
+			fieldFromDef(
+				{
+					key: 'status',
+					label: 'Status',
+					type: 'select',
+					options: ['open', 'done', 'cancelled'],
+					terminal_options: ['done', 'cancelled'],
+					abandoned_options: ['cancelled']
+				},
+				true
+			)
+		);
+		app = mount(FieldEditor, { target: host, props: { field, index: 0, total: 1 } }) as Record<string, unknown>;
+		await settle();
+
+		const input = [...host.querySelectorAll<HTMLInputElement>('.option-name-input')].find((i) => i.value === 'cancelled')!;
+		for (const step of ['cancelle', 'cancele', 'canceled']) {
+			typeInto(input, step);
+			await settle();
+		}
+		expect(field.options).toEqual(['open', 'done', 'canceled']);
+		expect(field.terminalOptions).toEqual(['done', 'canceled']);
+		expect(field.abandonedOptions).toEqual(['canceled']);
+	});
+
+	it('leaves a mark on the old value while another row still holds it', async () => {
+		const field = $state(
+			fieldFromDef(
+				{
+					key: 'status',
+					label: 'Status',
+					type: 'select',
+					options: ['done', 'done'],
+					terminal_options: ['done']
+				},
+				true
+			)
+		);
+		app = mount(FieldEditor, { target: host, props: { field, index: 0, total: 1 } }) as Record<string, unknown>;
+		await settle();
+		const inputs = host.querySelectorAll<HTMLInputElement>('.option-name-input');
+		typeInto(inputs[1], 'shipped');
+		await settle();
+		expect(field.terminalOptions).toEqual(['done']);
+	});
+});
+
 describe('EditCollectionModal round trip', () => {
 	it('saves abandoned_options it loaded, instead of stripping them', async () => {
 		updateMock.mockImplementation(async () => ({}));
@@ -141,5 +196,54 @@ describe('EditCollectionModal round trip', () => {
 		const data = updateMock.mock.calls[0][2] as { schema: string };
 		const status = JSON.parse(data.schema).fields.find((f: { key: string }) => f.key === 'status');
 		expect(status.abandoned_options).toEqual(['overturned']);
+	});
+
+	it('saves the RENAMED value as terminal and abandoned, with the value migration', async () => {
+		updateMock.mockImplementation(async () => ({}));
+		const collection = {
+			id: 'c2',
+			slug: 'plans2',
+			name: 'Plans',
+			icon: '',
+			description: '',
+			prefix: 'PLANB',
+			schema: JSON.stringify({
+				fields: [
+					{
+						key: 'status',
+						label: 'Status',
+						type: 'select',
+						options: ['open', 'completed', 'overturned'],
+						terminal_options: ['completed', 'overturned'],
+						abandoned_options: ['overturned']
+					}
+				]
+			}),
+			settings: '{}',
+			updated_at: '2026-09-23T00:00:00Z'
+		} as unknown as Collection;
+
+		app = mount(EditCollectionModal, {
+			target: host,
+			props: { open: true, collection, wsSlug: 'ws', initialSection: 'fields' }
+		}) as Record<string, unknown>;
+		await settle();
+
+		const input = [...document.querySelectorAll<HTMLInputElement>('.option-name-input')].find(
+			(i) => i.value === 'overturned'
+		);
+		expect(input, 'the overturned option row').toBeTruthy();
+		input!.value = 'reversed';
+		input!.dispatchEvent(new Event('input', { bubbles: true }));
+		await settle();
+
+		[...document.querySelectorAll<HTMLButtonElement>('button')].find((b) => /^\s*save/i.test(b.textContent ?? ''))!.click();
+		await settle();
+
+		const data = updateMock.mock.calls[0][2] as { schema: string; migrations?: { rename_options?: Record<string, string> }[] };
+		const status = JSON.parse(data.schema).fields.find((f: { key: string }) => f.key === 'status');
+		expect(status.terminal_options).toEqual(['completed', 'reversed']);
+		expect(status.abandoned_options).toEqual(['reversed']);
+		expect(JSON.stringify(data.migrations ?? [])).toContain('reversed');
 	});
 });

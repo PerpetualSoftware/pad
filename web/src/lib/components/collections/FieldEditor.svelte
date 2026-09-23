@@ -105,6 +105,24 @@
 		field.keyTouched = true;
 	}
 
+	// Markings are keyed by option VALUE, so an edited option must carry its
+	// terminal and abandoned marks to the new value (codex round 1 on #1468):
+	// a plain bind left them on the old value, which the save then filtered
+	// out, silently un-marking a renamed "cancelled" and counting it shipped.
+	function renameOption(optIndex: number, next: string) {
+		const prev = field.options[optIndex];
+		field.options[optIndex] = next;
+		if (prev === next) return;
+		for (const marks of [field.terminalOptions, field.abandonedOptions]) {
+			const at = marks.indexOf(prev);
+			if (at < 0) continue;
+			// Another row may still hold the old value; its marking stays.
+			if (field.options.includes(prev)) continue;
+			if (marks.includes(next)) marks.splice(at, 1);
+			else marks[at] = next;
+		}
+	}
+
 	function removeOption(optIndex: number) {
 		field.options.splice(optIndex, 1);
 	}
@@ -375,7 +393,8 @@
 						<input
 							class="option-name-input"
 							type="text"
-							bind:value={field.options[oi]}
+							value={field.options[oi]}
+							oninput={(e) => renameOption(oi, e.currentTarget.value)}
 							placeholder="option name"
 						/>
 						<button
@@ -387,8 +406,8 @@
 								? 'Marked as terminal (click to unmark)'
 								: 'Mark as terminal — items with this value are considered done / closed'}
 							aria-label={isTerminal(field.options[oi])
-								? 'Unmark as terminal'
-								: 'Mark as terminal'}
+								? `Unmark ${field.options[oi]} as terminal`
+								: `Mark ${field.options[oi]} as terminal`}
 						>
 							{#if isTerminal(field.options[oi])}
 								<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
@@ -438,8 +457,8 @@
 										? 'Counts as abandoned: left out of the changelog and completed work (click to unmark)'
 										: 'Mark as abandoned: this value closes an item without delivering it'}
 									aria-label={isAbandoned(field.options[oi])
-										? 'Unmark as abandoned'
-										: 'Mark as abandoned'}
+										? `Unmark ${field.options[oi]} as abandoned`
+										: `Mark ${field.options[oi]} as abandoned`}
 								>&#10007;</button>
 							{:else}
 								<span class="option-abandoned-placeholder" aria-hidden="true"></span>
