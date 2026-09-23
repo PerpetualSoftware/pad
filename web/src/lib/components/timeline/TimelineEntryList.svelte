@@ -16,6 +16,7 @@
 	 * comments (the changes list) simply omits them.
 	 */
 	import type { TimelineEntry, Item } from '$lib/types';
+	import type { ChangeContext } from '$lib/timeline/changeContext';
 	import type { AttachmentMeta } from '$lib/markdown/attachments';
 	import TimelineCommentCard from './TimelineCommentCard.svelte';
 	import TimelineActivityCard from './TimelineActivityCard.svelte';
@@ -71,6 +72,9 @@
 		onReaction?: (commentId: string, emoji: string) => void;
 		onRemoveReaction?: (commentId: string, emoji: string) => void;
 
+		/** Relation rendering for activity change pills (BUG-2872). */
+		changeContext?: ChangeContext;
+
 		// Version cards.
 		itemSlug?: string;
 		currentContent?: string;
@@ -81,6 +85,7 @@
 
 	let {
 		entries,
+		changeContext,
 		listEl = $bindable(),
 		showEmpty = false,
 		emptyLabel = 'No timeline entries yet.',
@@ -141,7 +146,7 @@
 						{onRemoveReaction}
 					/>
 				{:else if entry.kind === 'activity' && entry.activity}
-					<TimelineActivityCard activity={entry.activity} />
+					<TimelineActivityCard activity={entry.activity} {changeContext} />
 				{:else if entry.kind === 'version' && entry.version}
 					<TimelineVersionCard
 						version={entry.version}

@@ -12,7 +12,10 @@
 	import PageHeader from '$lib/components/common/PageHeader.svelte';
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
 	import EpisodeFeed from '$lib/components/activity/EpisodeFeed.svelte';
-	import type { Activity, Collection } from '$lib/types';
+	import type { Activity, Collection, FieldDef } from '$lib/types';
+	import { parseSchema } from '$lib/types';
+	import ActivityChangeValue from '$lib/components/timeline/ActivityChangeValue.svelte';
+	import { createChangeContext, type ChangeContext } from '$lib/timeline/changeContext';
 	import { appendUnique, cursorAfter, mergeHead } from '$lib/utils/activityPaging';
 	import { sseService } from '$lib/services/sse.svelte';
 	import { createThrottledRefresh } from '$lib/utils/throttledRefresh';
@@ -23,6 +26,17 @@
 	// Data
 	let activities = $state<Activity[]>([]);
 	let collections = $state<Collection[]>([]);
+	// Field definitions by collection slug, so a relation change renders as a
+	// chip instead of the item ID it stores (BUG-2872). The CURRENT schema of
+	// the row's collection, as the item timeline uses.
+	let fieldsBySlug = $derived(
+		new Map(collections.map((c) => [c.slug, new Map<string, FieldDef>(parseSchema(c).fields.map((f) => [f.key, f]))])),
+	);
+	let changeContexts = $derived(
+		new Map<string, ChangeContext>(
+			[...fieldsBySlug].map(([slug, fields]) => [slug, createChangeContext(() => wsSlug, (key) => fields.get(key))]),
+		),
+	);
 	let loading = $state(true);
 	let loadingMore = $state(false);
 	let hasMore = $state(true);
@@ -493,9 +507,9 @@
 											{#each fieldChanges as change, i (i)}
 												<span class="change-pill">
 													<span class="change-field">{change.field}:</span>
-													<span class="change-from">{change.from}</span>
+													<span class="change-from"><ActivityChangeValue text={change.from} field={collSlug ? fieldsBySlug.get(collSlug)?.get(change.field) : undefined} context={collSlug ? changeContexts.get(collSlug) : undefined} /></span>
 													<span class="change-arrow">&rarr;</span>
-													<span class="change-to">{change.to}</span>
+													<span class="change-to"><ActivityChangeValue text={change.to} field={collSlug ? fieldsBySlug.get(collSlug)?.get(change.field) : undefined} context={collSlug ? changeContexts.get(collSlug) : undefined} /></span>
 												</span>
 											{/each}
 										</div>

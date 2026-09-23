@@ -14,6 +14,7 @@
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { pushEscapeHandler, ESCAPE_PRIORITY } from '$lib/stores/escapeStack';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
+	import { createChangeContext } from '$lib/timeline/changeContext';
 	import { resolveSyncRenameTarget } from '$lib/collections/renameNav';
 	import { shouldAdoptCollection } from '$lib/items/adoptCollection';
 	import { syncService } from '$lib/services/sync.svelte';
@@ -700,6 +701,13 @@
 	let tags = $derived(parseTags(item));
 	let tagSuggestions = $state<string[]>([]);
 	let schema = $derived(collection ? parseSchema(collection) : { fields: [] });
+	// Timeline change pills render a relation as the target rather than the
+	// item ID it stores (BUG-2872). Built here, where the schema and the stores
+	// already are, and handed to both timeline lists.
+	const timelineChangeContext = createChangeContext(
+		() => wsSlug ?? '',
+		(key) => schema.fields.find((f) => f.key === key),
+	);
 	let settings = $derived<CollectionSettings>(collection ? parseSettings(collection) : { layout: 'balanced', default_view: 'board' });
 	let layout = $derived(settings.layout);
 	let quickActions = $derived<QuickAction[]>(settings.quick_actions ?? []);
@@ -6784,6 +6792,7 @@
 					{itemSlug}
 					currentContent={item.content ?? ''}
 					items={localIndex.getAll(wsSlug)}
+					changeContext={timelineChangeContext}
 					hostToken={attachmentHostToken}
 					onRestore={(updated) => { if (handedDown !== identityKey) return; handleVersionRestore(updated); }}
 					flushBeforeRestore={flushCollabBeforeRestore}
