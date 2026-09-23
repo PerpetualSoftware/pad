@@ -291,7 +291,7 @@
 		</div>
 		{#each sortedItems as item, i (item.id)}
 			{@const fields = parseFields(item)}
-			<div class="table-row" class:focused={focusedItemId === item.id} role="row">
+			<div class="table-row" class:focused={focusedItemId === item.id} role="row" data-item-key={itemUrlId(item)} data-item-slug={item.slug}>
 				<div class="table-cell col-ref" role="cell"><span class="ref">{formatItemRef(item) ?? ''}</span></div>
 				<div class="table-cell col-title" role="cell">
 					<a href="/{resolvedUsername}/{resolvedWsSlug}/{collection.slug}/{itemUrlId(item)}" class="title-link" onclick={(e) => handleTitleClick(e, item)}>{item.title}</a>

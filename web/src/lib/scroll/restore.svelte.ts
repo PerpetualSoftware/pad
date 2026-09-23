@@ -172,6 +172,17 @@ export interface ScrollRestorationOptions {
 
 export interface ScrollRestoration {
 	snapshot: Snapshot<number>;
+	/**
+	 * Arm a one-shot: the NEXT `snapshot.restore` is dropped (and any parked
+	 * value with it) instead of applied. For a page that positioned its own
+	 * scroller for the navigation in flight, where the entry's saved pixel
+	 * offset would undo that (BUG-3165: the collection list's pane open/close
+	 * handoff). Call it from `afterNavigate`, which SvelteKit runs synchronously
+	 * right before it restores a popstate's snapshot, and call the returned
+	 * release in a microtask so a navigation that restores nothing cannot leave
+	 * it armed for a later, genuine restore.
+	 */
+	skipNextRestore: () => () => void;
 }
 
 /**
@@ -235,6 +246,8 @@ export function createScrollRestoration(
 	// callback checks `alive` AND re-reads `persistKey()` to bail if the
 	// route changed mid-flight.
 	let alive = true;
+	// Armed by `skipNextRestore`, consumed by the next `snapshot.restore`.
+	let skipRestore = false;
 	onDestroy(() => {
 		alive = false;
 	});
@@ -513,6 +526,12 @@ export function createScrollRestoration(
 				// replaces the unsafe `snapshotRestoreCalled` boolean
 				// (Codex BUG-1425 round 5 P1).
 				snapshotKey = key;
+				if (skipRestore) {
+					// The page positioned the scroller itself for this navigation.
+					skipRestore = false;
+					pending = null;
+					return;
+				}
 				// Always reset the per-key guard — even when y is 0 or
 				// invalid — so a subsequent valid restore can fire.
 				restoredKey = undefined;
@@ -529,6 +548,13 @@ export function createScrollRestoration(
 				}
 				pending = { y, key };
 			},
+		},
+		skipNextRestore: () => {
+			skipRestore = true;
+			pending = null;
+			return () => {
+				skipRestore = false;
+			};
 		},
 	};
 }

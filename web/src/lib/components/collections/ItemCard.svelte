@@ -193,7 +193,7 @@
 	}
 </script>
 
-<a href={itemUrl} class="item-card" class:compact class:focused class:has-pr={!!pullRequest} onclick={handleCardClick}>
+<a href={itemUrl} class="item-card" data-item-key={itemUrlId(item)} data-item-slug={item.slug} class:compact class:focused class:has-pr={!!pullRequest} onclick={handleCardClick}>
 	{#if pullRequest}
 		<button
 			type="button"
