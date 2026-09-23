@@ -116,12 +116,17 @@ async function rolesDrag(
 	await page.setViewportSize(viewport);
 	await browserLogin(page);
 	const stamp = Date.now();
+	// Each scratch resource registers its cleanup the moment it exists, so a
+	// failure partway through setup leaks nothing (codex round 1).
 	const coll = await scratchCollection(fixture, request);
+	cleanups.push(() => deleteCollection(fixture, request, coll.slug));
 	// Lanes sort by NAME, so the stamp goes first: the pair sorts together and
 	// its two lanes are adjacent whatever other roles exist.
 	const roleA = await api(request, fixture, 'post', '/agent-roles', { name: `B3159 ${stamp} A` });
+	cleanups.push(() => deleteRole(fixture, request, roleA));
 	const roleB = await api(request, fixture, 'post', '/agent-roles', { name: `B3159 ${stamp} B` });
-	try {
+	cleanups.push(() => deleteRole(fixture, request, roleB));
+	{
 		const title = `B3159 role item ${stamp}`;
 		const anchorTitle = `B3159 role anchor ${stamp}`;
 		const item = await api(request, fixture, 'post', `/collections/${coll.slug}/items`, {
@@ -157,17 +162,13 @@ async function rolesDrag(
 		await drag(page, start, end);
 		const read = () => api(request, fixture, 'get', `/items/${item.slug}`);
 		return { read, roleA, roleB };
-	} finally {
-		// Cleanup is registered, not run here: the caller still reads the item.
-		cleanups.push(async () => {
-			await deleteCollection(fixture, request, coll.slug);
-			for (const r of [roleA, roleB]) {
-				const res = await request.delete(`/api/v1/workspaces/${fixture.workspaceSlug}/agent-roles/${r.id}`, { headers: authHeaders(fixture) });
-				// Warn, never throw: a throw here would replace the test's real failure.
-				if (!res.ok()) console.warn(`[bug-3159] leaked role ${r.name}: ${res.status()} ${await res.text()}`);
-			}
-		});
 	}
+}
+
+async function deleteRole(fixture: SuiteFixture, request: APIRequestContext, r: { id: string; name: string }) {
+	const res = await request.delete(`/api/v1/workspaces/${fixture.workspaceSlug}/agent-roles/${r.id}`, { headers: authHeaders(fixture) });
+	// Warn, never throw: a throw here would replace the test's real failure.
+	if (!res.ok()) console.warn(`[bug-3159] leaked role ${r.name}: ${res.status()} ${await res.text()}`);
 }
 
 test('BUG-3159: a touch drag on the ROLES board in landscape changes neither role nor assignee', async ({
@@ -211,7 +212,8 @@ async function childrenDrag(
 	await browserLogin(page);
 	const stamp = Date.now();
 	const coll = await scratchCollection(fixture, request);
-	try {
+	cleanups.push(() => deleteCollection(fixture, request, coll.slug));
+	{
 		const parent = await api(request, fixture, 'post', `/collections/${coll.slug}/items`, {
 			title: `B3159 parent ${stamp}`, fields: JSON.stringify({ status: 'open' }),
 		});
@@ -249,8 +251,6 @@ async function childrenDrag(
 
 		await drag(page, start, end);
 		return { before, read: order };
-	} finally {
-		cleanups.push(() => deleteCollection(fixture, request, coll.slug));
 	}
 }
 
