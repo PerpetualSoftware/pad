@@ -30,7 +30,7 @@ import (
 // TestRemap_ConcurrentItemEditIsNotOverwritten drives the interleaving through
 // the afterRemapScan seam. The concurrent edit runs in ANOTHER goroutine,
 // because the remap's own transaction holds the lock it needs; the seam then
-// waits a bounded time for it.
+// waits until it either commits or is seen waiting on that lock.
 //
 // The concurrent write is a FIELD patch (status open -> done), because the
 // remap writes content AND fields back together. That makes the right outcome
@@ -41,8 +41,8 @@ import (
 //
 // Three assertions, each catching a different wrong outcome (CONVE-12):
 //
-//   - the edit did NOT complete inside the window. This is the lock itself,
-//     observed directly: without it the edit commits within milliseconds.
+//   - the edit was seen BLOCKED on the advisory lock while the remap sat in
+//     its window. This is the lock itself, observed in pg_stat_activity.
 //   - the edited field survives. Without the lock the remap writes back the
 //     fields it scanned ("open") and erases the edit; this is the defect.
 //   - the content reference is remapped. A remap that skipped the contended
@@ -60,30 +60,51 @@ func TestRemap_ConcurrentItemEditIsNotOverwritten(t *testing.T) {
 	const newID = "0197bbbb-0000-7000-8000-000000000002"
 	item := createTestItem(t, s, ws.ID, col.ID, "Imported", "see ![img](pad-attachment:"+oldID+") here")
 
-	// How long the seam waits for the edit. Without the lock an item update
-	// on a local Postgres commits in single-digit milliseconds, so this is
-	// generous by two orders of magnitude; with the lock the edit cannot
-	// finish at all until the remap commits, so no length makes it pass.
-	const window = 2 * time.Second
+	// The seam decides between two OBSERVED outcomes, never a timeout:
+	//   - the edit COMMITTED while the remap sat between scan and write: nothing
+	//     serialised it (the defect);
+	//   - the edit's backend is seen WAITING on an advisory lock: the lock is
+	//     serialising it (the fix).
+	// A time window alone cannot tell "blocked" from "slow" (codex round 1 on
+	// BUG-2797): an edit delayed past the window under parallel load would land
+	// AFTER a lockless remap, and every assertion below would pass without the
+	// lock. Each test has its own database, so current_database() isolates this
+	// test's backends from every other test's. Neither outcome within the
+	// deadline is a fatal, inconclusive run, not a pass.
+	const deadline = 30 * time.Second
 
 	var (
-		once          sync.Once
-		editDone      = make(chan error, 1)
-		inWindow      bool
-		editStartedAt time.Time
+		once     sync.Once
+		editDone = make(chan error, 1)
+		outcome  string // "committed" | "blocked"
 	)
 	s.afterRemapScan = func(string) {
 		once.Do(func() {
-			editStartedAt = time.Now()
 			go func() {
 				_, err := s.UpdateItem(item.ID, models.ItemUpdate{FieldsPatch: map[string]any{"status": "done"}})
 				editDone <- err
 			}()
-			select {
-			case err := <-editDone:
-				inWindow = true
-				editDone <- err // hand it on to the check after the remap
-			case <-time.After(window):
+			stop := time.After(deadline)
+			for outcome == "" {
+				select {
+				case err := <-editDone:
+					outcome = "committed"
+					editDone <- err // hand it on to the check after the remap
+				case <-stop:
+					t.Errorf("within %s the edit neither committed nor was seen waiting on a lock: inconclusive", deadline)
+					return
+				case <-time.After(20 * time.Millisecond):
+					var waiting int
+					if err := s.db.QueryRow(`SELECT count(*) FROM pg_stat_activity
+						WHERE datname = current_database()
+						  AND wait_event_type = 'Lock' AND wait_event = 'advisory'`).Scan(&waiting); err != nil {
+						t.Errorf("read pg_stat_activity: %v", err)
+						return
+					}
+					if waiting > 0 {
+						outcome = "blocked"
+					}
+				}
 			}
 		})
 	}
@@ -92,8 +113,8 @@ func TestRemap_ConcurrentItemEditIsNotOverwritten(t *testing.T) {
 	if err := s.RemapAttachmentReferencesInWorkspace(ws.ID, map[string]string{oldID: newID}); err != nil {
 		t.Fatalf("remap: %v", err)
 	}
-	if editStartedAt.IsZero() {
-		t.Fatal("the seam never fired, so this run exercised nothing")
+	if outcome == "" {
+		t.Fatal("the seam never reached an outcome (it did not fire, or the run was inconclusive), so this run exercised nothing")
 	}
 	select {
 	case err := <-editDone:
@@ -104,7 +125,7 @@ func TestRemap_ConcurrentItemEditIsNotOverwritten(t *testing.T) {
 		t.Fatal("the concurrent edit never finished after the remap committed")
 	}
 
-	if inWindow {
+	if outcome != "blocked" {
 		t.Errorf("the concurrent edit COMMITTED inside the remap's scan-to-write window: " +
 			"nothing serialised it against the remap (the workspace seq lock is not held)")
 	}
