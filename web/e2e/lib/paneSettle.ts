@@ -58,20 +58,20 @@ export async function backThenDrillAfterSettleArms(
 					}, delay);
 					return id;
 				}) as typeof window.setTimeout;
-				window.addEventListener(
-					'popstate',
-					() => {
-						// Registered after SvelteKit's, so this runs once its handling of
-						// the Back (settle included) is done: the window closes here.
-						inBackDispatch = false;
-						if (window.setTimeout !== orig) {
-							restore();
-							reject(new Error('the back-settle was not armed inside the popstate dispatch'));
-						}
-					},
-					{ once: true },
-				);
-				orig(() => {
+				const onPopstate = () => {
+					// Registered after SvelteKit's, so this runs once its handling of
+					// the Back (settle included) is done: the window closes here.
+					clearTimeout(safety);
+					inBackDispatch = false;
+					if (window.setTimeout !== orig) {
+						restore();
+						reject(new Error('the back-settle was not armed inside the popstate dispatch'));
+					}
+				};
+				window.addEventListener('popstate', onPopstate, { once: true });
+				const safety = orig(() => {
+					window.removeEventListener('popstate', onPopstate);
+					inBackDispatch = false;
 					restore();
 					reject(new Error('no popstate within 5s of history.back()'));
 				}, 5000);
