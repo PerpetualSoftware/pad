@@ -2,17 +2,19 @@
 	// Test-only wrapper: `createScrollRestoration` calls `onDestroy`, which needs a
 	// real component context (`$effect.root` does not provide one), so the restore
 	// integration tests (TASK-2457) mount this and drive the returned snapshot.
-	import { createScrollRestoration } from '../restore.svelte';
+	import { createScrollRestoration, type ScrollRestoration } from '../restore.svelte';
 	import type { Snapshot } from '@sveltejs/kit';
 
 	let {
 		ready,
 		scrollTarget,
 		expose,
+		exposeRestoration,
 	}: {
 		ready: () => boolean;
 		scrollTarget: () => HTMLElement | Window | null;
 		expose: (snap: Snapshot<number>) => void;
+		exposeRestoration?: (r: ScrollRestoration) => void;
 	} = $props();
 
 	// Wrap the prop functions so the factory reads the current prop on each call
@@ -23,5 +25,6 @@
 	});
 	$effect(() => {
 		expose(restoration.snapshot);
+		exposeRestoration?.(restoration);
 	});
 </script>
