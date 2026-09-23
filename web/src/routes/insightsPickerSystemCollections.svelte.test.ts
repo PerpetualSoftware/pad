@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { flushSync, mount, unmount, tick } from 'svelte';
-import { page } from '$app/state';
 import type { Collection } from '$lib/types';
 
 /**
@@ -12,6 +11,22 @@ import type { Collection } from '$lib/types';
 function coll(slug: string, name: string, is_system: boolean): Collection {
 	return { id: `id-${slug}`, slug, name, icon: '', is_system } as unknown as Collection;
 }
+
+// A REACTIVE `$app/state` page for this file (the shared mock is a plain
+// object, so a workspace switch would re-run nothing). The mock delegates
+// through a hoisted holder to a module-level `$state`, the Lightbox tests'
+// pattern.
+const pageHolder = vi.hoisted(() => ({ get: (): unknown => null }));
+vi.mock('$app/state', () => ({
+	get page() {
+		return pageHolder.get();
+	},
+}));
+const reactivePage = $state({
+	params: { workspace: 'ws', username: 'alice' } as Record<string, string>,
+	url: new URL('http://localhost/'),
+});
+pageHolder.get = () => reactivePage;
 
 const getLayout = vi.hoisted(() => vi.fn());
 const listCollections = vi.hoisted(() => vi.fn());
@@ -61,8 +76,8 @@ beforeEach(() => {
 	reportGet.mockReset().mockResolvedValue(null);
 	host = document.createElement('div');
 	document.body.appendChild(host);
-	page.params.workspace = 'ws';
-	page.params.username = 'alice';
+	reactivePage.params.workspace = 'ws';
+	reactivePage.params.username = 'alice';
 	localStorage.clear();
 });
 
@@ -114,5 +129,28 @@ describe('Insights collection picker (BUG-2410)', () => {
 		expect(saveLayout, 'precondition: the change was saved').toHaveBeenCalled();
 		const saved = saveLayout.mock.calls[saveLayout.mock.calls.length - 1][1] as { default_collections: string[] };
 		expect(saved.default_collections, 'a failed collections load erased the saved layout').toEqual(['playbooks', 'tasks']);
+	});
+
+	it('a stale collections failure from a workspace the user left does not unfilter the current one (codex round 3)', async () => {
+		let rejectA!: (e: Error) => void;
+		listCollections.mockImplementationOnce(() => new Promise((_, rej) => (rejectA = rej)));
+		getLayout.mockResolvedValue({ default_window: 'week', default_collections: ['tasks'], hidden_cards: [] });
+		app = mount(InsightsPage, { target: host, props: {} }) as Record<string, unknown>;
+		await settle();
+		// Switch workspace while A's collections request is still in flight.
+		reactivePage.params.workspace = 'ws2';
+		await settle();
+		expect(listCollections.mock.calls.map((c) => c[0])).toEqual(['ws', 'ws2']);
+		rejectA(new Error('A failed late'));
+		await settle();
+		reportGet.mockClear();
+		// Any later report request for ws2 must keep its selection.
+		const month = [...host.querySelectorAll<HTMLButtonElement>('button.window-btn')].find((b) => b.textContent?.trim() === 'Month');
+		month!.click();
+		await settle();
+		expect(reportGet, 'precondition: a report was requested for ws2').toHaveBeenCalled();
+		const last = reportGet.mock.calls[reportGet.mock.calls.length - 1];
+		expect(last[0]).toBe('ws2');
+		expect((last[1] as { collections?: string[] }).collections, "A's late failure unfiltered ws2's report").toEqual(['tasks']);
 	});
 });

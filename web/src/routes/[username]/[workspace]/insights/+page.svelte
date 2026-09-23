@@ -153,10 +153,16 @@
 	});
 
 	async function loadCollections(slug: string) {
+		// Workspace-guarded like loadLayout (codex round 3): a slower response for
+		// a workspace the user has left must not replace this one's collections,
+		// nor mark this one's list as failed.
 		try {
-			collections = await api.collections.list(slug);
+			const list = await api.collections.list(slug);
+			if (slug !== wsSlug) return;
+			collections = list;
 			collectionsFailed = false;
 		} catch {
+			if (slug !== wsSlug) return;
 			collectionsFailed = true;
 			// Filter is a progressive enhancement; allow the page to render.
 		}
