@@ -13,9 +13,9 @@ import (
 // BUG-3153: attachment names stored before ingest dropped Bidi_Control
 // characters.
 //
-// A name such as "x<U+202E>gvs.txt" is a .txt that every bidi-aware renderer —
-// about forty web read sites, the CLI list, server-rendered chips — displays as
-// "xtxt.svg". Ingest now drops those characters (attachments.DroppedFilenameRune),
+// A name such as "x<U+202E>gvs.txt" is a .txt that a bidi-aware renderer —
+// the web UI's attachment strip, storage tab, lightbox and chips, the CLI list,
+// server-rendered chips — displays as "xtxt.svg". Ingest now drops those characters (attachments.DroppedFilenameRune),
 // and the download header drops them for any row by construction. What is left
 // is the stored value those display readers show, so the rows are rewritten at
 // rest, once, rather than every reader being patched.
@@ -132,7 +132,13 @@ func (s *Store) backfillBidiAttachmentFilenames(rename func(string) string) (*Ba
 			if err != nil {
 				return res, fmt.Errorf("backfill bidi filenames: update %s: %w", r.id, err)
 			}
-			if n, err := result.RowsAffected(); err != nil || n == 0 {
+			n, err := result.RowsAffected()
+			if err != nil {
+				// The UPDATE may have landed; without a count this row cannot
+				// be logged as rewritten, so stop rather than go unrecorded.
+				return res, fmt.Errorf("backfill bidi filenames: rows affected %s: %w", r.id, err)
+			}
+			if n == 0 {
 				continue // renamed concurrently; that write stands
 			}
 			res.RowsRewritten++
