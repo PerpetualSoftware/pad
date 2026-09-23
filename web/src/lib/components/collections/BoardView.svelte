@@ -225,6 +225,8 @@
 
 	const flipDurationMs = 200;
 	const touchDragDelayMs = 500;
+	// See viewport.dragDisabled (BUG-3158).
+	const noTouchDrag = $derived(viewport.dragDisabled);
 
 	let schema = $derived(parseSchema(collection));
 	let field = $derived(schema.fields.find((f) => f.key === groupField));
@@ -893,14 +895,18 @@
 					// under any non-manual page sort (TASK-1670): the
 					// lane is comparator-ordered, so a drag couldn't
 					// stick anyway.
-					dragDisabled: viewport.isMobile || !canEdit || preserveOrder || laneSortFor(colValue) !== 'manual'
+					// Touch drag is off by INPUT, not width (BUG-3158): a landscape
+					// phone is wider than the mobile breakpoint, and a finger held
+					// past delayTouchStart while scrolling picked the card up and
+					// dropped it in another lane. The card menu's move stays.
+					dragDisabled: noTouchDrag || !canEdit || preserveOrder || laneSortFor(colValue) !== 'manual'
 				}}
 				onconsider={(e) => handleConsider(colValue, e)}
 				onfinalize={(e) => handleFinalize(colValue, e)}
 				oncontextmenu={(e) => e.preventDefault()}
 			>
 				{#each colItems as item, i (item.id)}
-					<div class="card-wrapper" class:no-drag={viewport.isMobile}>
+					<div class="card-wrapper" class:no-drag={noTouchDrag}>
 						<ItemCard
 							{item}
 							{collection}

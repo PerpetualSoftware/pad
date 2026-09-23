@@ -36,11 +36,52 @@ if (browser) {
 }
 
 /**
- * Reactive mobile-viewport flag. Read it in components (`viewport.isMobile`) or
- * templates and it tracks the viewport automatically. `false` during SSR.
+ * The PRIMARY pointer is coarse (a finger), independent of width (BUG-3158).
+ * `isMobile` answers a LAYOUT question; this answers an INPUT question, and the
+ * two disagree on a phone in landscape (~915px wide, so not "mobile") and on
+ * every tablet. Gate touch-hostile interactions such as card drag on this, not
+ * on width.
+ *
+ * PRIMARY pointer, deliberately, not `any-pointer` (lead-ruled on BUG-3158's
+ * trail; raised again by codex round 1). A device whose primary pointer is fine
+ * but which ALSO has a touchscreen — a touch laptop, an iPad driven by a
+ * trackpad — reports `pointer: fine`, keeps drag, and a finger on its screen
+ * can still pick a card up after the 500ms hold. `any-pointer: coarse` would
+ * close that, and would also take mouse drag away from every touch laptop,
+ * which is the device class most likely to be used with a mouse. The phone and
+ * tablet cases, where touch is the only input, are what the report was about.
+ * Revisit only with a per-gesture gate (withhold drag for a TOUCH-initiated
+ * press), which svelte-dnd-action's zone-level `dragDisabled` cannot express.
+ */
+export const COARSE_POINTER_QUERY = '(pointer: coarse)';
+
+let coarsePointer = $state(browser ? window.matchMedia(COARSE_POINTER_QUERY).matches : false);
+
+if (browser) {
+	window.matchMedia(COARSE_POINTER_QUERY).addEventListener('change', (e) => {
+		coarsePointer = e.matches;
+	});
+}
+
+/**
+ * Reactive viewport flags. Read them in components (`viewport.isMobile`,
+ * `viewport.isCoarsePointer`) or templates and they track the device
+ * automatically. Both `false` during SSR.
  */
 export const viewport = {
 	get isMobile() {
 		return mobile;
+	},
+	get isCoarsePointer() {
+		return coarsePointer;
+	},
+	/**
+	 * THE predicate every drag zone asks (BUG-3158): drag is withheld on a
+	 * narrow viewport (the layout rule the board always had) and on any device
+	 * whose primary pointer is a finger. One place, so the zones cannot drift
+	 * apart the way the board (gated on width) and the list (not gated) did.
+	 */
+	get dragDisabled() {
+		return mobile || coarsePointer;
 	}
 };
