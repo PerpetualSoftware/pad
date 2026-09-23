@@ -128,11 +128,6 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 	}
 	defer release()
 
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no")
-
 	// Subscribe FIRST, replay (if resuming) as part of the SAME atomic
 	// call when a Last-Event-ID was supplied (codex round 1 finding 3):
 	// subscribing and separately reading the replay buffer left a window
@@ -144,6 +139,7 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 	var ch chan watchevents.Notification
 	var missed []watchevents.Notification
 	var gaps <-chan struct{}
+	var subscribeErr error
 	var lastID int64
 	// unreadableCursor mirrors the activity stream's rule (BUG-2731): sending
 	// this header at all means the client believes it has a position, so a
@@ -159,7 +155,7 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 			// here, and this handler is holding a global AND a per-user admission
 			// slot that only come back on return — so a client that disconnects
 			// mid-wait would otherwise keep both for the remainder of it.
-			ch, missed, gaps = s.watchEvents.SubscribeAndReplaySince(r.Context(), lastID)
+			ch, missed, gaps, subscribeErr = s.watchEvents.SubscribeAndReplaySince(r.Context(), lastID)
 		} else {
 			unreadableCursor = true
 			slog.Info("watch-events: resume carried an unreadable Last-Event-ID, sending sync_required",
@@ -168,9 +164,29 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 		}
 	}
 	if ch == nil {
-		ch, gaps = s.watchEvents.Subscribe()
+		ch, gaps, subscribeErr = s.watchEvents.Subscribe()
+	}
+	if subscribeErr != nil {
+		// REFUSED RATHER THAN ADMITTED (BUG-2800). The bus registered nothing:
+		// this instance has no subscription to the watch channel, or it is
+		// shutting down, so a stream opened now would carry nothing while
+		// looking live. Same status, code and Retry-After as the activity
+		// stream's SubscribeFailed (BUG-2764), so a client handles both one
+		// way. The CLI monitor folds any non-200 into its backoff ladder.
+		slog.Warn("watch stream subscribe refused: this instance cannot deliver notifications",
+			"user_id", user.ID, "error", subscribeErr)
+		w.Header().Set("Retry-After", "5")
+		writeError(w, http.StatusServiceUnavailable, "subscription_failed", "Event subscription could not be established; retry shortly")
+		return
 	}
 	defer s.watchEvents.Unsubscribe(ch)
+
+	// Set SSE headers. Nothing above this line has written a response the
+	// client could read as a stream, and nothing below refuses one.
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
 
 	// Presence registration (PLAN-2558 S1). Deliberately bracketed to
 	// the SUBSCRIPTION's lifetime rather than the request's: a session

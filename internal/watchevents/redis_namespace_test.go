@@ -30,7 +30,7 @@ func TestRedisBusHonoursTheNamespace(t *testing.T) {
 	b := NewRedisBusWithKeys(client, 64, keys, false)
 	t.Cleanup(b.Close)
 
-	ch, _ := b.Subscribe()
+	ch, _, _ := b.Subscribe()
 	if err := b.Publish(Notification{Kind: KindPush, ItemRef: "TASK-1"}); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestRedisBusDefaultKeepsHistoricalKeys(t *testing.T) {
 
 	b, mr := newMiniredisBus(t, 64)
 
-	ch, _ := b.Subscribe()
+	ch, _, _ := b.Subscribe()
 	if err := b.Publish(Notification{Kind: KindPush, ItemRef: "TASK-1"}); err != nil {
 		t.Fatalf("publish: %v", err)
 	}

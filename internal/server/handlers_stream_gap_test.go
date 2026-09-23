@@ -58,14 +58,14 @@ type gapWatchBus struct {
 	gaps chan struct{}
 }
 
-func (b *gapWatchBus) Subscribe() (chan watchevents.Notification, <-chan struct{}) {
-	ch, _ := b.Bus.Subscribe()
-	return ch, b.gaps
+func (b *gapWatchBus) Subscribe() (chan watchevents.Notification, <-chan struct{}, error) {
+	ch, _, err := b.Bus.Subscribe()
+	return ch, b.gaps, err
 }
 
-func (b *gapWatchBus) SubscribeAndReplaySince(ctx context.Context, sinceID int64) (chan watchevents.Notification, []watchevents.Notification, <-chan struct{}) {
-	ch, missed, _ := b.Bus.SubscribeAndReplaySince(ctx, sinceID)
-	return ch, missed, b.gaps
+func (b *gapWatchBus) SubscribeAndReplaySince(ctx context.Context, sinceID int64) (chan watchevents.Notification, []watchevents.Notification, <-chan struct{}, error) {
+	ch, missed, _, err := b.Bus.SubscribeAndReplaySince(ctx, sinceID)
+	return ch, missed, b.gaps, err
 }
 
 // TestActivityStreamAnnouncesAGapMidStream is the binding, asserted from the

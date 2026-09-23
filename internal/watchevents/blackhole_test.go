@@ -148,7 +148,7 @@ func TestAWedgedWatchRouteIsDetectedEndToEnd(t *testing.T) {
 	b.SetObserver(obs)
 	t.Cleanup(b.Close)
 
-	ch, _ := b.Subscribe()
+	ch, _, _ := b.Subscribe()
 	defer b.Unsubscribe(ch)
 
 	// Prove the route works before breaking it, so a test that never delivered

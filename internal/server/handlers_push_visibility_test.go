@@ -229,7 +229,7 @@ func TestPushToItem_TargetedAtInvisibleSessionSkipsPublish(t *testing.T) {
 	sessionID := presence.Add(adminUserID, SessionIdentity{Label: "cli", Armed: true},
 		SessionOrigin{BearerAuth: true})
 
-	ch, _ := srv.watchEvents.Subscribe()
+	ch, _, _ := srv.watchEvents.Subscribe()
 
 	rr := cookiePush(t, srv, slug, item.Slug, adminSessionToken, map[string]interface{}{
 		"message":           "run the migration",
@@ -271,7 +271,7 @@ func TestPushToItem_TargetedAtVisibleSessionPublishes(t *testing.T) {
 	sessionID := presence.Add(adminUserID, SessionIdentity{Label: "browser", Armed: true},
 		SessionOrigin{BearerAuth: false})
 
-	ch, _ := srv.watchEvents.Subscribe()
+	ch, _, _ := srv.watchEvents.Subscribe()
 
 	rr := cookiePush(t, srv, slug, item.Slug, adminSessionToken, map[string]interface{}{
 		"message":           "run the migration",

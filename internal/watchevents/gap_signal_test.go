@@ -27,8 +27,8 @@ func TestGapSignalIsPerInstanceForAReceivedHole(t *testing.T) {
 	b := newLocalOnlyBus(16)
 	defer b.Close()
 
-	chA, gapsA := b.Subscribe()
-	chB, gapsB := b.Subscribe()
+	chA, gapsA, _ := b.Subscribe()
+	chB, gapsB, _ := b.Subscribe()
 	defer b.Unsubscribe(chA)
 	defer b.Unsubscribe(chB)
 
@@ -48,7 +48,7 @@ func TestGapSignalIsPerInstanceForAReceivedHole(t *testing.T) {
 
 	// A subscriber that arrives after the hole missed nothing it was
 	// promised: its cursor starts here.
-	chC, gapsC := b.Subscribe()
+	chC, gapsC, _ := b.Subscribe()
 	defer b.Unsubscribe(chC)
 	b.fanOutLocally(Notification{ID: 6, Kind: "test"}, b.currentGen())
 	if raised(gapsC) {
@@ -67,8 +67,8 @@ func TestGapSignalForASlowSubscriberIsNotBroadcast(t *testing.T) {
 	b := newLocalOnlyBus(256)
 	defer b.Close()
 
-	slow, slowGaps := b.Subscribe()
-	fast, fastGaps := b.Subscribe()
+	slow, slowGaps, _ := b.Subscribe()
+	fast, fastGaps, _ := b.Subscribe()
 	defer b.Unsubscribe(slow)
 	defer b.Unsubscribe(fast)
 
@@ -104,7 +104,7 @@ func TestGapSignalCoalesces(t *testing.T) {
 	b := newLocalOnlyBus(256)
 	defer b.Close()
 
-	ch, gaps := b.Subscribe()
+	ch, gaps, _ := b.Subscribe()
 	defer b.Unsubscribe(ch)
 
 	for i := 1; i <= 200; i++ {
@@ -127,8 +127,8 @@ func TestMemoryBusSignalsTheDroppedSubscriberOnly(t *testing.T) {
 	b := New()
 	defer b.Close()
 
-	slow, slowGaps := b.Subscribe()
-	fast, fastGaps := b.Subscribe()
+	slow, slowGaps, _ := b.Subscribe()
+	fast, fastGaps, _ := b.Subscribe()
 	defer b.Unsubscribe(slow)
 	defer b.Unsubscribe(fast)
 
@@ -156,8 +156,8 @@ func TestEpochChangeSignalsEverySubscriber(t *testing.T) {
 	b := newLocalOnlyBus(16)
 	defer b.Close()
 
-	chA, gapsA := b.Subscribe()
-	chB, gapsB := b.Subscribe()
+	chA, gapsA, _ := b.Subscribe()
+	chB, gapsB, _ := b.Subscribe()
 	defer b.Unsubscribe(chA)
 	defer b.Unsubscribe(chB)
 
@@ -184,8 +184,8 @@ func TestCounterBackwardsSignalsEverySubscriber(t *testing.T) {
 	b := newLocalOnlyBus(16)
 	defer b.Close()
 
-	chA, gapsA := b.Subscribe()
-	chB, gapsB := b.Subscribe()
+	chA, gapsA, _ := b.Subscribe()
+	chB, gapsB, _ := b.Subscribe()
 	defer b.Unsubscribe(chA)
 	defer b.Unsubscribe(chB)
 
