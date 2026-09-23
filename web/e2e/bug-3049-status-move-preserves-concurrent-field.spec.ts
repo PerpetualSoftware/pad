@@ -72,7 +72,8 @@ test('BUG-3049: a status click does not revert a field written after page load',
 	await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/tasks`);
 	const card = itemCard(page, title);
 	await expect(card).toBeVisible();
-	const statusChip = card.locator('[title="Click to cycle status"]');
+	// BUG-3157: the chip opens a status picker; the move is choosing a row.
+	const statusChip = card.locator('[aria-haspopup="menu"][title="Change status"]');
 	await expect(statusChip).toBeVisible();
 	const statusBefore = (await statusChip.innerText()).trim();
 
@@ -101,6 +102,7 @@ test('BUG-3049: a status click does not revert a field written after page load',
 		(r) => r.url().includes(`/items/${item.id}`) && r.request().method() === 'PATCH',
 	);
 	await statusChip.click();
+	await page.getByRole('menu', { name: 'Status' }).getByRole('menuitemradio', { name: /done/i }).click();
 	const patchRes = await patched;
 	expect(patchRes.ok(), await patchRes.text()).toBeTruthy();
 

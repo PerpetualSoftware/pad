@@ -317,7 +317,7 @@
 
 	// Column order state — tracks the displayed order, syncs from schema when not dragging
 	/**
-	 * What a CARD's status chip cycles through: the `status` field's DECLARED
+	 * What a CARD's status picker offers (BUG-3157; it cycled before): the `status` field's DECLARED
 	 * OPTIONS, at every grouping, read from the schema rather than from the
 	 * board's lanes.
 	 *
@@ -325,8 +325,8 @@
 	 * was grouped BY status, where the two are the same array (`columns` is
 	 * `field?.options` and `field` IS status). Grouped by anything else it
 	 * produced a defect that does NOT look like the list's version of BUG-3068,
-	 * which is why it needs saying: `ItemCard` cycles
-	 * `statusOptions.indexOf(fields.status)`, so on a board grouped by `priority`
+	 * which is why it needs saying: `ItemCard` cycled
+	 * from `statusOptions.indexOf(fields.status)`, so on a board grouped by `priority`
 	 * the item's STATUS was looked up in a list of PRIORITIES and normally missed,
 	 * returning -1 and making the next index 0 — so the click jumped the card to
 	 * the FIRST LANE from wherever it was, while the chip's label went on showing

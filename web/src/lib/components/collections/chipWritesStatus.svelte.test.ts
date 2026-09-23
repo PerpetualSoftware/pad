@@ -68,6 +68,8 @@ vi.mock('$lib/stores/workspace.svelte', () => ({
 }));
 
 import ListView from './ListView.svelte';
+import { STATUS_CHIP, chooseStatus, openStatusPicker, rowLabel, statusChipIn } from './statusPickerTestKit';
+import { formatFieldLabel } from '$lib/utils/fieldColors';
 import BoardView from './BoardView.svelte';
 
 /**
@@ -130,12 +132,6 @@ afterEach(() => {
 	canEditItem = true;
 });
 
-function chipIn(container: HTMLElement): HTMLElement {
-	const chip = container.querySelector('[title="Click to cycle status"]');
-	expect(chip, 'no status chip rendered — this test cannot discriminate without one').not.toBeNull();
-	return chip as HTMLElement;
-}
-
 describe('a status chip on a list grouped by a NON-status field', () => {
 	function renderList() {
 		const onLaneChange = vi.fn();
@@ -155,7 +151,7 @@ describe('a status chip on a list grouped by a NON-status field', () => {
 		return { screen, onLaneChange, onStatusChange };
 	}
 
-	it('sends the next STATUS through the status writer', async () => {
+	it('sends the chosen STATUS through the status writer', async () => {
 		const { screen, onStatusChange } = renderList();
 
 		// PRECONDITION: the list really is grouped by priority, so the write
@@ -163,7 +159,7 @@ describe('a status chip on a list grouped by a NON-status field', () => {
 		// status one — where the defect is invisible because both targets agree.
 		expect(screen.container.textContent).toContain('High');
 
-		await fireEvent.click(chipIn(screen.container));
+		await chooseStatus(screen.container, 'done');
 
 		expect(onStatusChange).toHaveBeenCalledTimes(1);
 		expect(onStatusChange.mock.calls[0][0]).toEqual(expect.objectContaining({ id: 'car-1' }));
@@ -178,7 +174,7 @@ describe('a status chip on a list grouped by a NON-status field', () => {
 		// Asserting the VALUE alone would not catch it: the value was right, the
 		// destination was not, and the destination is a different callback.
 		const { screen, onLaneChange } = renderList();
-		await fireEvent.click(chipIn(screen.container));
+		await chooseStatus(screen.container, 'done');
 		expect(onLaneChange).not.toHaveBeenCalled();
 	});
 });
@@ -201,7 +197,7 @@ describe('a status chip on a board grouped by a NON-status field', () => {
 		return { screen, onLaneChange, onStatusChange };
 	}
 
-	it('cycles the STATUS field options, not the board lanes', async () => {
+	it('offers and writes the STATUS field options, not the board lanes', async () => {
 		// THE BOARD'S OWN ARM, and it is not the list's. `statusOptions={columns}`
 		// fed the card the PRIORITY lanes, so `indexOf('in_progress')` missed,
 		// returned -1, and index 0 sent `low` — the first lane. Both assertions
@@ -214,7 +210,13 @@ describe('a status chip on a board grouped by a NON-status field', () => {
 		// vocabulary for a status chip.
 		expect(screen.container.textContent).toContain('High');
 
-		await fireEvent.click(chipIn(screen.container));
+		// The picker offers the STATUS options. Offering the lanes is the same
+		// defect the cycle had (`statusOptions={columns}`), in picker form.
+		const rows = await openStatusPicker(screen.container);
+		expect(rows.map(rowLabel)).toEqual(STATUSES.map((s) => formatFieldLabel(s)));
+		await fireEvent.click(statusChipIn(screen.container));
+
+		await chooseStatus(screen.container, 'done');
 
 		expect(onStatusChange).toHaveBeenCalledTimes(1);
 		expect(onStatusChange.mock.calls[0][1]).toBe('done');
@@ -226,7 +228,7 @@ describe('a status chip on a board grouped by a NON-status field', () => {
 
 	it('never reaches the lane writer, which is the only path to the group field', async () => {
 		const { screen, onLaneChange } = renderBoard();
-		await fireEvent.click(chipIn(screen.container));
+		await chooseStatus(screen.container, 'done');
 		expect(onLaneChange).not.toHaveBeenCalled();
 	});
 });
@@ -236,7 +238,7 @@ describe('CONTROL: grouped BY status, where the two writers agree', () => {
 	// would satisfy every leg above. It also pins the case the fix must NOT
 	// change: on a status-grouped board the lanes and the status options are the
 	// same array, and they were before the fix too.
-	it('still cycles status on a status-grouped board', async () => {
+	it('still sets status on a status-grouped board', async () => {
 		const onLaneChange = vi.fn();
 		const onStatusChange = vi.fn();
 		const screen = render(BoardView, {
@@ -251,14 +253,14 @@ describe('CONTROL: grouped BY status, where the two writers agree', () => {
 			} as never,
 		});
 
-		await fireEvent.click(chipIn(screen.container));
+		await chooseStatus(screen.container, 'done');
 
 		expect(onStatusChange).toHaveBeenCalledTimes(1);
 		expect(onStatusChange.mock.calls[0][1]).toBe('done');
 		expect(onLaneChange).not.toHaveBeenCalled();
 	});
 
-	it('still cycles status on a status-grouped list', async () => {
+	it('still sets status on a status-grouped list', async () => {
 		const onLaneChange = vi.fn();
 		const onStatusChange = vi.fn();
 		const screen = render(ListView, {
@@ -274,7 +276,7 @@ describe('CONTROL: grouped BY status, where the two writers agree', () => {
 			} as never,
 		});
 
-		await fireEvent.click(chipIn(screen.container));
+		await chooseStatus(screen.container, 'done');
 
 		expect(onStatusChange).toHaveBeenCalledTimes(1);
 		expect(onStatusChange.mock.calls[0][1]).toBe('done');
@@ -425,7 +427,7 @@ describe('a status field that is not a status at all', () => {
 		const screen = renderRetypedStatus('multi_select', ['old-a']);
 		// PRECONDITION: the card rendered, so "no chip" is not "no card".
 		expect(screen.container.querySelectorAll('.item-card')).toHaveLength(1);
-		expect(screen.container.querySelector('[title="Click to cycle status"]')).toBeNull();
+		expect(screen.container.querySelector(STATUS_CHIP)).toBeNull();
 		expect(screen.container.textContent).not.toContain('Old A');
 	});
 
@@ -437,7 +439,7 @@ describe('a status field that is not a status at all', () => {
 		// clickable — which would now cycle `old-a`/`old-b` into it.
 		const screen = renderRetypedStatus('relation', 'id-red');
 		expect(screen.container.querySelectorAll('.item-card')).toHaveLength(1);
-		expect(screen.container.querySelector('[title="Click to cycle status"]')).toBeNull();
+		expect(screen.container.querySelector(STATUS_CHIP)).toBeNull();
 		expect(screen.container.textContent).not.toContain('Id Red');
 	});
 });
@@ -468,7 +470,7 @@ describe('a read-only viewer gets no clickable chip', () => {
 	] as const;
 
 	for (const [label, Component, groupField] of cases) {
-		it(`${label} grouped by ${groupField}: chip is not clickable`, () => {
+		it(`${label} grouped by ${groupField}: chip is not a picker`, () => {
 			canEditItem = false;
 			const screen = render(Component as never, {
 				props: {
@@ -483,7 +485,7 @@ describe('a read-only viewer gets no clickable chip', () => {
 			});
 			// PRECONDITION: the card rendered, so "no clickable chip" is not "no card".
 			expect(screen.container.querySelectorAll('.item-card')).toHaveLength(1);
-			expect(screen.container.querySelector('[title="Click to cycle status"]')).toBeNull();
+			expect(screen.container.querySelector(STATUS_CHIP)).toBeNull();
 			// CONTROL: the status is still SHOWN, just not cyclable — withholding
 			// the information rather than the affordance would be a different and
 			// worse change.
@@ -510,30 +512,25 @@ describe('a read-only viewer gets no clickable chip', () => {
 			} as never,
 		});
 
-		const chip = screen.container.querySelector('[title="Click to cycle status"]');
+		const chip = screen.container.querySelector(STATUS_CHIP);
 		expect(chip, 'a per-item-granted editor lost the chip to a collection-level gate').not.toBeNull();
-		await fireEvent.click(chip as HTMLElement);
+		await chooseStatus(screen.container, 'done');
 		expect(onStatusChange).toHaveBeenCalledTimes(1);
 	});
 });
 
 describe('a stored status the schema no longer declares', () => {
-	// THE SAME -1 ARITHMETIC THIS UNIT FIXED ON THE BOARD, arriving from the
-	// other side. The board's version was wrong OPTIONS; this is a wrong VALUE:
-	// `statusOptions.indexOf(fields.status)` answers -1 for a stale or
-	// hand-written status, and -1 + 1 is 0, so a click rewrote it to the FIRST
-	// option while looking to the user like a single step forward.
-	//
-	// Pre-existing on the list (it always used schema options) and now reachable
-	// in more configurations, since relation/refusal grouping no longer withholds
-	// the chip. Found by the round-2 adversarial pass, not by me.
-	it('is not cycled to the first option by a click', async () => {
+	// BUG-3068 fixed the cycle's -1 arithmetic: `indexOf` answered -1 for a
+	// stale or hand-written status and -1 + 1 is 0, so a click rewrote it to the
+	// FIRST option. With a picker (BUG-3157) there is no arithmetic: the stale
+	// value is shown with no row checked, opening the picker writes nothing, and
+	// choosing a row is an explicit decision to replace it.
+	function renderStale(onStatusChange: ReturnType<typeof vi.fn>) {
 		const stale = {
 			...item('car-1'),
 			fields: JSON.stringify({ status: 'retired_status', priority: 'high' }),
 		} as Item;
-		const onStatusChange = vi.fn();
-		const screen = render(ListView, {
+		return render(ListView, {
 			props: {
 				items: [stale],
 				collection: collection(),
@@ -544,35 +541,24 @@ describe('a stored status the schema no longer declares', () => {
 				onStatusChange,
 			} as never,
 		});
+	}
 
-		// PRECONDITION: the chip rendered and is clickable, so a no-op write is
-		// not "no chip to click".
-		const chip = screen.container.querySelector('[title="Click to cycle status"]');
-		expect(chip).not.toBeNull();
-
-		await fireEvent.click(chip as HTMLElement);
-
+	it('is not rewritten by opening the picker, and no row claims to be current', async () => {
+		const onStatusChange = vi.fn();
+		const screen = renderStale(onStatusChange);
+		const rows = await openStatusPicker(screen.container);
+		expect(onStatusChange, 'opening the picker wrote a status').not.toHaveBeenCalled();
 		expect(
-			onStatusChange,
-			'a value that is not on the list has no next value; writing the first one is a silent rewrite',
-		).not.toHaveBeenCalled();
+			rows.filter((r) => r.getAttribute('aria-checked') === 'true').map(rowLabel),
+			'a stale value matches no option, so no row may be checked',
+		).toEqual([]);
 	});
 
-	it('CONTROL: a declared status still cycles', async () => {
-		// Without this, a chip that never writes at all satisfies the leg above.
+	it('CONTROL: choosing a row replaces it, explicitly', async () => {
+		// Without this, a picker that never writes at all satisfies the leg above.
 		const onStatusChange = vi.fn();
-		const screen = render(ListView, {
-			props: {
-				items: [item('car-1')],
-				collection: collection(),
-				wsSlug: 'ws',
-				groupField: 'priority',
-				statusOptions: STATUSES,
-				onLaneChange: vi.fn(),
-				onStatusChange,
-			} as never,
-		});
-		await fireEvent.click(chipIn(screen.container));
+		const screen = renderStale(onStatusChange);
+		await chooseStatus(screen.container, 'done');
 		expect(onStatusChange).toHaveBeenCalledTimes(1);
 		expect(onStatusChange.mock.calls[0][1]).toBe('done');
 	});

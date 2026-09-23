@@ -33,6 +33,7 @@ vi.mock('$lib/stores/workspace.svelte', () => ({
 }));
 
 import TableView from './TableView.svelte';
+import { STATUS_CHIP, chooseStatus, openStatusPicker, rowLabel } from './statusPickerTestKit';
 
 afterEach(() => {
 	cleanup();
@@ -138,9 +139,12 @@ describe('a status field holding a LIST', () => {
 		expect(clickables.length, 'nothing was clicked, so nothing was tested').toBeGreaterThan(0);
 		for (const el of clickables) (el as HTMLElement).click();
 		expect(onStatusChange).not.toHaveBeenCalled();
+		// A picker writes nothing until a row is chosen (BUG-3157), so this is
+		// what proves the list value is not offered as a status.
+		expect(screen.container.querySelector(STATUS_CHIP), 'a list value was offered as a status picker').toBeNull();
 	});
 
-	it('CONTROL: the same click DOES cycle an ordinary string status', () => {
+	it('CONTROL: the picker DOES set an ordinary string status', async () => {
 		// The counterfactual for the leg above — without it, a row that rendered
 		// no controls at all would pass, and so would a chip made inert.
 		const ordinary = collection([
@@ -155,14 +159,12 @@ describe('a status field holding a LIST', () => {
 			} as never,
 		});
 
-		const chip = screen.container.querySelector('.chip') as HTMLElement | null;
-		expect(chip, 'no chip to click').not.toBeNull();
-		chip!.click();
+		await chooseStatus(screen.container, 'in_progress');
 		expect(onStatusChange).toHaveBeenCalledTimes(1);
 		expect(onStatusChange.mock.calls[0][1]).toBe('in_progress');
 	});
 
-	it('keeps the setter chip for a row with NO status stored', () => {
+	it('keeps the setter chip for a row with NO status stored', async () => {
 		// The affordance the first version of the gate removed: with nothing
 		// stored, the chip renders empty and clicking it sets the first option,
 		// which is how a row gets its first status. An absent value and an empty
@@ -175,9 +177,8 @@ describe('a status field holding a LIST', () => {
 			props: { items: [item('car-1', {})], collection: ordinary, onStatusChange } as never,
 		});
 
-		const chip = screen.container.querySelector('.chip') as HTMLElement | null;
-		expect(chip, 'the missing-status setter chip is gone').not.toBeNull();
-		chip!.click();
+		expect(screen.container.querySelector(STATUS_CHIP), 'the missing-status setter chip is gone').not.toBeNull();
+		await chooseStatus(screen.container, 'open');
 		expect(onStatusChange).toHaveBeenCalledTimes(1);
 		expect(onStatusChange.mock.calls[0][1]).toBe('open');
 	});
@@ -198,7 +199,7 @@ describe('a status field holding a LIST', () => {
 
 		expect(chips(screen.container)).toContain('In Progress');
 		const clickable = [...screen.container.querySelectorAll('.chip')].filter(
-			(c) => c.getAttribute('title') === 'Click to cycle status',
+			(c) => c.matches(STATUS_CHIP),
 		);
 		expect(clickable).toHaveLength(1);
 	});
@@ -277,7 +278,7 @@ describe('a stored status the schema no longer declares (BUG-3068 round 3)', () 
 		{ key: 'status', label: 'Status', type: 'select', options: ['open', 'in_progress'] },
 	]);
 
-	it('does not rewrite a stale status to the first option', () => {
+	it('does not rewrite a stale status: opening the picker writes nothing and checks no row', async () => {
 		const onStatusChange = vi.fn();
 		const screen = render(TableView, {
 			props: {
@@ -286,25 +287,19 @@ describe('a stored status the schema no longer declares (BUG-3068 round 3)', () 
 				onStatusChange,
 			} as never,
 		});
-		const chip = screen.container.querySelector('[title="Click to cycle status"]');
-		expect(chip, 'no chip rendered — this leg cannot discriminate').not.toBeNull();
-		(chip as HTMLElement).click();
-		expect(
-			onStatusChange,
-			'a value that is not on the list has no next value',
-		).not.toHaveBeenCalled();
+		const rows = await openStatusPicker(screen.container);
+		expect(onStatusChange, 'opening the picker wrote a status').not.toHaveBeenCalled();
+		expect(rows.filter((r) => r.getAttribute('aria-checked') === 'true').map(rowLabel)).toEqual([]);
 	});
 
-	it('STILL sets the first option when the status is absent', () => {
-		// The sibling case the guard must not catch, and the counterfactual for
-		// the leg above: without it, a chip that never writes passes that one.
+	it('STILL sets the first option when the status is absent', async () => {
+		// The counterfactual for the leg above: without it, a picker that never
+		// writes passes that one.
 		const onStatusChange = vi.fn();
 		const screen = render(TableView, {
 			props: { items: [item('car-2', {})], collection: ordinary, onStatusChange } as never,
 		});
-		const chip = screen.container.querySelector('[title="Click to cycle status"]');
-		expect(chip).not.toBeNull();
-		(chip as HTMLElement).click();
+		await chooseStatus(screen.container, 'open');
 		expect(onStatusChange).toHaveBeenCalledTimes(1);
 		expect(onStatusChange.mock.calls[0][1]).toBe('open');
 	});
@@ -331,7 +326,7 @@ describe('the table chip asks the same permission question as the card (BUG-3068
 		});
 		// PRECONDITION: the row rendered, so "no chip" is not "no row".
 		expect(screen.container.querySelectorAll('.table-row:not(.table-header)').length).toBeGreaterThan(0);
-		expect(screen.container.querySelector('[title="Click to cycle status"]')).toBeNull();
+		expect(screen.container.querySelector(STATUS_CHIP)).toBeNull();
 		// CONTROL: the status is still SHOWN. The affordance is withheld, not the
 		// information.
 		expect(screen.container.textContent).toContain('Open');
@@ -346,7 +341,7 @@ describe('the table chip asks the same permission question as the card (BUG-3068
 				onStatusChange: vi.fn(),
 			} as never,
 		});
-		expect(screen.container.querySelector('[title="Click to cycle status"]')).not.toBeNull();
+		expect(screen.container.querySelector(STATUS_CHIP)).not.toBeNull();
 	});
 
 	it('offers no setter for a status field declaring NO options', () => {
@@ -363,7 +358,7 @@ describe('the table chip asks the same permission question as the card (BUG-3068
 			} as never,
 		});
 		expect(screen.container.querySelectorAll('.table-row:not(.table-header)').length).toBeGreaterThan(0);
-		expect(screen.container.querySelector('[title="Click to cycle status"]')).toBeNull();
+		expect(screen.container.querySelector(STATUS_CHIP)).toBeNull();
 		expect(onStatusChange).not.toHaveBeenCalled();
 	});
 });

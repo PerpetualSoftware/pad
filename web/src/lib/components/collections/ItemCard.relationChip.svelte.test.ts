@@ -27,6 +27,7 @@ vi.mock('$lib/stores/workspace.svelte', () => ({
 }));
 
 import ItemCard from './ItemCard.svelte';
+import { STATUS_CHIP, chooseStatus } from './statusPickerTestKit';
 
 afterEach(() => {
 	cleanup();
@@ -110,9 +111,13 @@ describe('a status/priority field retyped to a relation', () => {
 			(el as HTMLElement).click();
 		}
 		expect(onStatusClick).not.toHaveBeenCalled();
+		// A picker writes nothing until a row is chosen (BUG-3157), so "no write
+		// after clicking everything" no longer proves the chip is withheld. This
+		// does.
+		expect(screen.container.querySelector(STATUS_CHIP), 'a relation id was offered as a status picker').toBeNull();
 	});
 
-	it('CONTROL: an ordinary select status still chips and still cycles', () => {
+	it('CONTROL: an ordinary select status still chips and still sets', async () => {
 		// Without this, withholding every chip would satisfy both legs above
 		// while removing a working affordance from every card in the app.
 		const ordinary = collection([
@@ -127,10 +132,9 @@ describe('a status/priority field retyped to a relation', () => {
 				onStatusClick,
 			} as never,
 		});
-		const chip = screen.container.querySelector('.chip') as HTMLElement | null;
-		expect(chip, 'no chip to click').not.toBeNull();
-		chip!.click();
+		await chooseStatus(screen.container, 'done');
 		expect(onStatusClick).toHaveBeenCalledTimes(1);
+		expect(onStatusClick.mock.calls[0][1]).toBe('done');
 	});
 
 	it('CONTROL: a retyped PRIORITY is withheld while an ordinary one still shows', () => {
