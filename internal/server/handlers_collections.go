@@ -218,6 +218,10 @@ func (s *Server) handleCreateCollection(w http.ResponseWriter, r *http.Request) 
 			writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 			return
 		}
+		if err := models.ValidateAbandonedOptions(schema); err != nil {
+			writeError(w, http.StatusBadRequest, "validation_error", err.Error())
+			return
+		}
 	}
 
 	// Kernel traits are declarations that switch on kernel behavior, so a
@@ -372,6 +376,10 @@ func (s *Server) handleUpdateCollection(w http.ResponseWriter, r *http.Request) 
 		_ = json.Unmarshal([]byte(coll.Schema), &prevSchema)
 		if err := validateNoReservedFieldKeys(schema, &prevSchema); err != nil {
 			writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+			return
+		}
+		if err := models.ValidateAbandonedOptions(schema); err != nil {
+			writeError(w, http.StatusBadRequest, "validation_error", err.Error())
 			return
 		}
 	}

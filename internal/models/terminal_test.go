@@ -2,6 +2,7 @@ package models
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -339,5 +340,37 @@ func TestCollectionCompletedWorkValues_ParsesJSON(t *testing.T) {
 	}
 	if !reflect.DeepEqual(values, []string{"shipped"}) {
 		t.Fatalf("expected [shipped], got %v", values)
+	}
+}
+
+// BUG-2347: a declared abandoned_options REPLACES the global names for that
+// field rather than adding to them: the collection's own vocabulary is not
+// second-guessed. Undeclared, the global names still apply.
+func TestPositiveTerminalValuesHonourDeclaredAbandonedOptions(t *testing.T) {
+	field := FieldDef{Key: "status", Type: "select",
+		Options:          []string{"open", "completed", "overturned", "cancelled"},
+		TerminalOptions:  []string{"completed", "overturned", "cancelled"},
+		AbandonedOptions: []string{"Overturned"},
+	}
+	_, got := PositiveTerminalValuesForDoneField(CollectionSchema{Fields: []FieldDef{field}}, CollectionSettings{})
+	if strings.Join(got, ",") != "completed,cancelled" {
+		t.Fatalf("declared: got %v, want [completed cancelled] (case-insensitive, declared list only)", got)
+	}
+
+	field.AbandonedOptions = nil
+	_, got = PositiveTerminalValuesForDoneField(CollectionSchema{Fields: []FieldDef{field}}, CollectionSettings{})
+	if strings.Join(got, ",") != "completed,overturned" {
+		t.Fatalf("fallback: got %v, want [completed overturned]", got)
+	}
+}
+
+func TestValidateAbandonedOptions(t *testing.T) {
+	ok := CollectionSchema{Fields: []FieldDef{{Key: "status", TerminalOptions: []string{"done", "cancelled"}, AbandonedOptions: []string{"Cancelled"}}}}
+	if err := ValidateAbandonedOptions(ok); err != nil {
+		t.Fatalf("subset refused: %v", err)
+	}
+	bad := CollectionSchema{Fields: []FieldDef{{Key: "status", TerminalOptions: []string{"done"}, AbandonedOptions: []string{"cancelled"}}}}
+	if err := ValidateAbandonedOptions(bad); err == nil {
+		t.Fatal("a non-terminal abandoned value was accepted")
 	}
 }

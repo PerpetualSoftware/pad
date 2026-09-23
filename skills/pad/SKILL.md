@@ -266,7 +266,7 @@ pad collection list
 pad collection create "Name" [--fields "key:type[:opts];..."] [--schema JSON|@file|-]
 ```
 
-`--fields` is the compact DSL for simple schemas. `--schema` is the full CollectionSchema (required for `terminal_options`, computed fields, custom defaults, relation fields). The two are mutually exclusive.
+`--fields` is the compact DSL for simple schemas. `--schema` is the full CollectionSchema (required for `terminal_options` / `abandoned_options`, computed fields, custom defaults, relation fields). The two are mutually exclusive.
 
 ### Server, auth, bootstrap
 ```bash

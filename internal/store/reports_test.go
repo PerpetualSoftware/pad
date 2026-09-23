@@ -756,3 +756,100 @@ func TestGetReport_DisabledConventionNotCompleted(t *testing.T) {
 		t.Fatalf("disabled convention must not count as completed work, got %d", rep.Totals.Completed)
 	}
 }
+
+// BUG-2347: report throughput takes "abandoned" from the collection's own
+// abandoned_options, through the same resolver as the changelog. "overturned"
+// is not a global negative name, so without the declaration it would count.
+func TestGetReport_DeclaredAbandonedOptionNotCompleted(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	u, err := s.CreateUser(models.UserCreate{Name: "P", Email: "p@example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "Plans", Slug: "plansws", OwnerID: u.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	col, err := s.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Reviews", Slug: "reviews", Prefix: "REVIE",
+		Schema: `{"fields":[{"key":"status","label":"Status","type":"select","options":["open","completed","overturned"],"terminal_options":["completed","overturned"],"abandoned_options":["overturned"],"default":"open"}]}`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, final := range []string{"overturned", "completed"} {
+		item, err := s.CreateItem(ws.ID, col.ID, models.ItemCreate{Title: final, Fields: `{"status":"open"}`})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.UpdateItem(item.ID, models.ItemUpdate{Fields: strPtr(`{"status":"` + final + `"}`)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rep, err := s.GetReport(ws.ID, ReportOptions{Window: "week", Now: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Totals.Completed != 1 {
+		t.Fatalf("completed = %d, want 1 (the completed item; overturned is declared abandoned)", rep.Totals.Completed)
+	}
+}
+
+// BUG-2347 (codex round 1 on #1464): workspace import enforces the same
+// subset rule as the collection create/update doors.
+func TestImportWorkspace_AbandonedOptionsMustBeTerminal(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	owner := createTestUser(t, s, "abandon-import@test.com", "Owner", "password123")
+	src := createTestWorkspace(t, s, "Abandon Import Source")
+	if err := s.SeedCollectionsFromTemplate(src.ID, "startup"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Positive control: the seeded declaration (tasks: [cancelled]) survives
+	// a round trip, so the refusal below is about the tampered value.
+	exp, err := s.ExportWorkspace(src.Slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ImportWorkspace(exp, "abandon-ok", owner.ID, ""); err != nil {
+		t.Fatalf("a valid seeded declaration was refused on import: %v", err)
+	}
+
+	exp, _ = s.ExportWorkspace(src.Slug)
+	var patched bool
+	for i := range exp.Collections {
+		if exp.Collections[i].Slug == "tasks" {
+			// Parsed, not string-matched: Postgres stores the schema as JSONB,
+			// which re-spaces and reorders it, so the exported text is not the
+			// seeded text (the first version of this test failed on PG only).
+			var schema models.CollectionSchema
+			if err := models.UnmarshalItemFieldSchema([]byte(exp.Collections[i].Schema), &schema); err != nil {
+				t.Fatalf("parse tasks schema: %v", err)
+			}
+			for j := range schema.Fields {
+				if schema.Fields[j].Key != "status" {
+					continue
+				}
+				if strings.Join(schema.Fields[j].AbandonedOptions, ",") != "cancelled" {
+					t.Fatalf("precondition: tasks status does not carry the seeded declaration: %v", schema.Fields[j].AbandonedOptions)
+				}
+				schema.Fields[j].AbandonedOptions = []string{"dropped"}
+				patched = true
+			}
+			raw, err := json.Marshal(schema)
+			if err != nil {
+				t.Fatal(err)
+			}
+			exp.Collections[i].Schema = string(raw)
+		}
+	}
+	if !patched {
+		t.Fatal("no tasks collection to patch")
+	}
+	_, err = s.ImportWorkspace(exp, "abandon-bad", owner.ID, "")
+	if err == nil || !strings.Contains(err.Error(), "dropped") {
+		t.Fatalf("want an import refusal naming the value, got %v", err)
+	}
+}

@@ -372,6 +372,8 @@ export interface FieldDef {
 	type: 'text' | 'number' | 'select' | 'multi_select' | 'date' | 'checkbox' | 'url' | 'relation' | 'multi_relation' | 'json';
 	options?: string[];
 	terminal_options?: string[];
+	/** Subset of terminal_options that closes WITHOUT delivering; excluded from changelog/standup/report throughput (BUG-2347). */
+	abandoned_options?: string[];
 	default?: any;
 	required?: boolean;
 	computed?: boolean;

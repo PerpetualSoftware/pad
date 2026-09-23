@@ -151,13 +151,14 @@ func tasksCollection(sortOrder int) DefaultCollection {
 		Schema: models.CollectionSchema{
 			Fields: []models.FieldDef{
 				{
-					Key:             "status",
-					Label:           "Status",
-					Type:            "select",
-					Options:         []string{"open", "in-progress", "done", "cancelled"},
-					TerminalOptions: []string{"done", "cancelled"},
-					Default:         "open",
-					Required:        true,
+					Key:              "status",
+					Label:            "Status",
+					Type:             "select",
+					Options:          []string{"open", "in-progress", "done", "cancelled"},
+					TerminalOptions:  []string{"done", "cancelled"},
+					AbandonedOptions: []string{"cancelled"},
+					Default:          "open",
+					Required:         true,
 				},
 				{
 					Key:     "priority",
@@ -208,13 +209,14 @@ func ideasCollection(sortOrder int) DefaultCollection {
 		Schema: models.CollectionSchema{
 			Fields: []models.FieldDef{
 				{
-					Key:             "status",
-					Label:           "Status",
-					Type:            "select",
-					Options:         []string{"new", "exploring", "planned", "implemented", "rejected"},
-					TerminalOptions: []string{"implemented", "rejected"},
-					Default:         "new",
-					Required:        true,
+					Key:              "status",
+					Label:            "Status",
+					Type:             "select",
+					Options:          []string{"new", "exploring", "planned", "implemented", "rejected"},
+					TerminalOptions:  []string{"implemented", "rejected"},
+					AbandonedOptions: []string{"rejected"},
+					Default:          "new",
+					Required:         true,
 				},
 				{
 					Key:     "impact",
@@ -446,13 +448,14 @@ func conventionsCollection(sortOrder int, triggerOptions, scopeOptions []string)
 		Schema: models.CollectionSchema{
 			Fields: []models.FieldDef{
 				{
-					Key:             "status",
-					Label:           "Status",
-					Type:            "select",
-					Options:         []string{"active", "draft", "disabled"},
-					TerminalOptions: []string{"disabled"},
-					Default:         "active",
-					Required:        true,
+					Key:              "status",
+					Label:            "Status",
+					Type:             "select",
+					Options:          []string{"active", "draft", "disabled"},
+					TerminalOptions:  []string{"disabled"},
+					AbandonedOptions: []string{"disabled"},
+					Default:          "active",
+					Required:         true,
 				},
 				{
 					Key:     "trigger",
@@ -510,13 +513,14 @@ func playbooksCollection(sortOrder int, triggerOptions, scopeOptions []string) D
 		Schema: models.CollectionSchema{
 			Fields: []models.FieldDef{
 				{
-					Key:             "status",
-					Label:           "Status",
-					Type:            "select",
-					Options:         []string{"active", "draft", "deprecated"},
-					TerminalOptions: []string{"deprecated"},
-					Default:         "draft",
-					Required:        true,
+					Key:              "status",
+					Label:            "Status",
+					Type:             "select",
+					Options:          []string{"active", "draft", "deprecated"},
+					TerminalOptions:  []string{"deprecated"},
+					AbandonedOptions: []string{"deprecated"},
+					Default:          "draft",
+					Required:         true,
 				},
 				{
 					Key:     "trigger",
@@ -687,13 +691,14 @@ var templates = []WorkspaceTemplate{
 				Schema: models.CollectionSchema{
 					Fields: []models.FieldDef{
 						{
-							Key:             "status",
-							Label:           "Status",
-							Type:            "select",
-							Options:         []string{"new", "triaged", "fixing", "resolved", "wontfix"},
-							TerminalOptions: []string{"resolved", "wontfix"},
-							Default:         "new",
-							Required:        true,
+							Key:              "status",
+							Label:            "Status",
+							Type:             "select",
+							Options:          []string{"new", "triaged", "fixing", "resolved", "wontfix"},
+							TerminalOptions:  []string{"resolved", "wontfix"},
+							AbandonedOptions: []string{"wontfix"},
+							Default:          "new",
+							Required:         true,
 						},
 						{
 							Key:     "severity",

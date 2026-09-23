@@ -100,13 +100,14 @@ func hiringCandidatesCollection(sortOrder int) DefaultCollection {
 		Schema: models.CollectionSchema{
 			Fields: []models.FieldDef{
 				{
-					Key:             "stage",
-					Label:           "Stage",
-					Type:            "select",
-					Options:         []string{"sourced", "applied", "screen", "onsite", "offer", "hired", "rejected", "withdrawn"},
-					TerminalOptions: []string{"hired", "rejected", "withdrawn"},
-					Default:         "applied",
-					Required:        true,
+					Key:              "stage",
+					Label:            "Stage",
+					Type:             "select",
+					Options:          []string{"sourced", "applied", "screen", "onsite", "offer", "hired", "rejected", "withdrawn"},
+					TerminalOptions:  []string{"hired", "rejected", "withdrawn"},
+					AbandonedOptions: []string{"rejected", "withdrawn"},
+					Default:          "applied",
+					Required:         true,
 				},
 				{
 					Key:     "source",
