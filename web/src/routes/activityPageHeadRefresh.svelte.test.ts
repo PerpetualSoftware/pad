@@ -164,4 +164,22 @@ describe('workspace activity head re-read (BUG-3160)', () => {
 		expect(ids, 'precondition: the reset rendered').toContain('f');
 		expect(ids, 'a stale head read leaked old-filter rows into the new feed').not.toContain('stale');
 	});
+
+	it('an item event during a load is not lost: the head is re-read once the load finishes (codex round 1)', async () => {
+		let release!: (rows: Activity[]) => void;
+		listActivity.mockImplementationOnce(() => new Promise<Activity[]>((r) => (release = r)));
+		app = mount(ActivityPage, { target: host, props: {} }) as Record<string, unknown>;
+		await settle();
+		expect(listActivity, 'precondition: the initial load is in flight').toHaveBeenCalledTimes(1);
+		// The event's write may have landed AFTER the load's read was sent.
+		sseBox.handler!({ type: 'item_updated', item_id: 'x' });
+		await advance(600);
+		listActivity.mockResolvedValue([act('new', 0), act('a', 20)]);
+		release([act('a', 20)]);
+		await settle();
+		await advance(10_000);
+		expect(listActivity.mock.calls.length, 'no head re-read followed the event that arrived mid-load').toBeGreaterThanOrEqual(2);
+		const ids = [...host.querySelectorAll('[data-activity-id]')].map((e) => e.getAttribute('data-activity-id'));
+		expect(ids).toContain('new');
+	});
 });

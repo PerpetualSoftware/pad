@@ -163,6 +163,10 @@
 			if (thisRequest === activityRequest) {
 				loading = false;
 				loadingMore = false;
+				if (headRefreshOwed) {
+					headRefreshOwed = false;
+					headRefresh.trigger();
+				}
 			}
 		}
 	}
@@ -181,10 +185,19 @@
 	// hidden (lead-ruled). The cap matters most here, because this listens
 	// WORKSPACE-wide — two busy seats must still mean at most 6 requests a
 	// minute per open tab.
+	// A head read skipped because a load was running. That load's read may have
+	// been sent BEFORE the event's write, so the event is owed a re-read once
+	// the load settles (codex round 1); skipping it silently lost the change.
+	let headRefreshOwed = false;
+
 	async function refreshHead() {
 		const gen = resetGeneration;
 		const slug = wsSlug;
-		if (!slug || loading) return;
+		if (!slug) return;
+		if (loading) {
+			headRefreshOwed = true;
+			return;
+		}
 		const params: Record<string, string | number> = { limit: PAGE_SIZE };
 		if (filterAction) params.action = filterAction;
 		if (filterSource) params.source = filterSource;
