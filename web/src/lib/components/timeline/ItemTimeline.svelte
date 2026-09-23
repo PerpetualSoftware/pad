@@ -2,6 +2,7 @@
 	import { onDestroy, tick, untrack } from 'svelte';
 	import { api } from '$lib/api/client';
 	import { sseService } from '$lib/services/sse.svelte';
+	import { createThrottledRefresh } from '$lib/utils/throttledRefresh';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import type { TimelineEntry, TimelineResponse, Item } from '$lib/types';
@@ -922,10 +923,11 @@
 		loadTimeline();
 	});
 
-	// Only refresh the timeline for comment/reaction events — NOT item_updated.
-	// Content saves create version-diff entries that appear on next natural
-	// refresh (new comment, page load). Refreshing on every content save caused
-	// visible shakiness and rate-limit errors from rapid SSE replay.
+	// Comment/reaction events refresh on a 500ms debounce. item_updated does NOT
+	// join that path: it fires on every item PATCH, including the collab tab's
+	// ~5s content flush, and refreshing on each one caused visible shakiness and
+	// rate-limit errors from rapid SSE replay. It gets its own THROTTLED path
+	// below instead (BUG-3160) — see `updatedRefresh`.
 	//
 	// The `note` / `decision` kinds (BUG-2301) inherit this deliberately. They
 	// are written by `pad item note` / `pad item decide`, which PATCH the item
@@ -933,9 +935,10 @@
 	// until the next natural refresh. That is the same staleness version
 	// entries have always had, and these kinds have no web writer at all, so no
 	// user performs the action and then waits on this view. Flagged twice in
-	// review and declined twice: admitting `item_updated` here would trade a
+	// review and declined twice: admitting `item_updated` HERE would trade a
 	// bounded, documented staleness for the shakiness and rate-limit errors
-	// this exclusion exists to prevent.
+	// this exclusion exists to prevent. BUG-3160 closed that staleness without
+	// reopening them, through the throttled path below.
 	const relevantEvents = new Set([
 		'comment_created',
 		'comment_updated',
@@ -1156,15 +1159,35 @@
 		}
 	}
 
+	// BUG-3160: an update can create an activity row, or MERGE into an existing
+	// one and restamp it (the debounce merge), and neither showed here until
+	// a reload. item_updated for THIS item now re-reads the head, capped at one
+	// re-read per 10s per mounted timeline, trailing, and never while the tab is
+	// hidden (lead-ruled; the cap is what keeps an edit burst from becoming the
+	// shakiness the exclusion above exists to prevent). Filtered by item id:
+	// onItemEvent is workspace-wide, and without an id there is nothing to
+	// filter on, so no item_updated refresh at all. The re-read is
+	// refreshFromSSE, so it inherits its ordering and its rule that a row absent
+	// from the fresh page is not a deleted one.
+	const updatedRefresh = createThrottledRefresh(() => void refreshFromSSE(), { intervalMs: 10_000 });
+	function onVisibilityChange() {
+		if (document.visibilityState === 'visible') updatedRefresh.onVisible();
+	}
+	if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onVisibilityChange);
+
 	const unsubscribe = sseService.onItemEvent((event) => {
 		if (relevantEvents.has(event.type)) {
 			clearTimeout(sseRefreshTimer);
 			sseRefreshTimer = setTimeout(() => void refreshFromSSE(), 500);
+		} else if (event.type === 'item_updated' && itemId && event.item_id === itemId) {
+			updatedRefresh.trigger();
 		}
 	});
 
 	onDestroy(() => {
 		unsubscribe();
+		updatedRefresh.dispose();
+		if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisibilityChange);
 		// The debounce timer AND the retry timer both live in `sseRefreshTimer`,
 		// and a rejected request can schedule a retry from its own catch AFTER
 		// teardown — the navigation fence (reqSlug/reqWs) is not a teardown fence,
