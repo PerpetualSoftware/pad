@@ -11,6 +11,7 @@
 	import { statusColor, priorityColor, formatFieldLabel as formatLabel } from '$lib/utils/fieldColors';
 	import Chip from '$lib/components/common/Chip.svelte';
 	import ItemActionsMenu from './ItemActionsMenu.svelte';
+	import StatusPicker from './StatusPicker.svelte';
 	import type { ReorderDirection } from '$lib/collections/reorder';
 	import { shouldOpenInPane } from './itemCardClick';
 
@@ -131,13 +132,13 @@
 	 */
 	let statusWritable = $derived(workspaceStore.canEditItem(item));
 
-	let statusCyclable = $derived(
+	// Whether the chip is offered as a status PICKER (BUG-3157; it was a
+	// one-tap cycle before). The status is shown as a static chip otherwise.
+	let statusSettable = $derived(
 		statusWritable && !!onStatusClick && !!statusOptions && statusOptions.length > 1 && !!fields.status
 	);
 
 	let pullRequest = $derived(item.code_context?.pull_request);
-
-	let pulsing = $state(false);
 
 	function prStateColor(state: string): string {
 		switch (state?.toUpperCase()) {
@@ -155,29 +156,6 @@
 		if (pullRequest?.url) {
 			window.open(pullRequest.url, '_blank', 'noopener,noreferrer');
 		}
-	}
-
-	function cycleStatus(e: MouseEvent) {
-		e.preventDefault();
-		e.stopPropagation();
-		if (!statusOptions || !onStatusClick || !fields.status) return;
-		const currentIndex = statusOptions.indexOf(fields.status);
-		// A STORED STATUS THE SCHEMA NO LONGER DECLARES IS NOT A CYCLE POSITION
-		// (BUG-3068 round 2). `indexOf` answers -1 for it, and -1 + 1 is 0, so a
-		// click silently rewrote a stale or hand-written value to the FIRST
-		// option — indistinguishable to the user from advancing one step, and a
-		// second instance of the exact arithmetic this unit fixed on the board,
-		// arriving from the VALUE side rather than the options side. There is no
-		// honest "next" from a position that is not on the list, so the click is
-		// a no-op and the item keeps the value someone stored.
-		if (currentIndex < 0) return;
-		const nextIndex = (currentIndex + 1) % statusOptions.length;
-		const nextStatus = statusOptions[nextIndex];
-
-		pulsing = true;
-		setTimeout(() => { pulsing = false; }, 300);
-
-		onStatusClick(item, nextStatus);
 	}
 
 	function toggleStar(e: MouseEvent) {
@@ -292,16 +270,13 @@
 			stale the next time a type is added, and this question does not.
 		-->
 		{#if statusField && typeof fields.status === 'string' && fields.status}
-			{#if statusCyclable}
-				<Chip
-					size="sm"
-					color={statusColor(fields.status)}
-					pulse={pulsing}
-					onclick={cycleStatus}
-					title="Click to cycle status"
-				>
-					{formatLabel(fields.status)}
-				</Chip>
+			{#if statusSettable && statusOptions && onStatusClick}
+				<!-- BUG-3157: a picker, never a one-tap cycle — see StatusPicker. -->
+				<StatusPicker
+					value={fields.status}
+					options={statusOptions}
+					onselect={(next) => onStatusClick(item, next)}
+				/>
 			{:else}
 				<Chip size="sm" color={statusColor(fields.status)}>
 					{formatLabel(fields.status)}

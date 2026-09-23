@@ -16,8 +16,15 @@
 		 *  itself also handles clicks (house pattern, cf. ItemCard). */
 		onclick?: (e: MouseEvent) => void;
 		title?: string;
-		/** Brief scale pulse — used by status click-cycling. */
+		/** Brief scale pulse. */
 		pulse?: boolean;
+		/** Button branch only: the rendered <button>, for a menu that needs
+		 *  its trigger (placement, focus return, outside-click exemption). */
+		el?: HTMLButtonElement;
+		/** Button branch only: marks the chip as a menu trigger (BUG-3157). */
+		haspopup?: 'menu' | 'dialog';
+		expanded?: boolean;
+		ariaLabel?: string;
 		children: Snippet;
 	}
 
@@ -28,17 +35,25 @@
 		onclick,
 		title,
 		pulse = false,
+		el = $bindable(),
+		haspopup,
+		expanded,
+		ariaLabel,
 		children
 	}: Props = $props();
 </script>
 
 {#if onclick}
 	<button
+		bind:this={el}
 		type="button"
 		class="chip {size}"
 		class:pulse
 		style:--chip-c={color}
 		{title}
+		aria-haspopup={haspopup}
+		aria-expanded={haspopup ? !!expanded : undefined}
+		aria-label={ariaLabel}
 		onclick={(e) => {
 			e.preventDefault();
 			onclick?.(e);
