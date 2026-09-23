@@ -55,8 +55,14 @@ func TestRefuseUndeclaredFieldsRefusesAPatchedUndeclaredKey(t *testing.T) {
 	slug, itemSlug := notesWithItem(t, srv)
 	path := "/api/v1/workspaces/" + slug + "/items/" + itemSlug
 
+	// The refused request also carries a title and a body: a refusal must
+	// stop EVERY write in the request, not just the fields blob (codex
+	// round 1 on #1463: a guard moved below those paths would otherwise
+	// still pass).
 	rr := doRequest(srv, "PATCH", path, map[string]interface{}{
 		"fields_patch":             map[string]any{"status": "done", "priority": "high"},
+		"title":                    "Renamed by a refused write",
+		"content":                  "Body from a refused write",
 		"refuse_undeclared_fields": true,
 	})
 	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "validation_error") {
@@ -72,6 +78,15 @@ func TestRefuseUndeclaredFieldsRefusesAPatchedUndeclaredKey(t *testing.T) {
 	}
 	if _, ok := got["priority"]; ok {
 		t.Errorf("priority was stored despite the refusal: %v", got)
+	}
+	rr = doRequest(srv, "GET", path, nil)
+	var after models.Item
+	parseJSON(t, rr, &after)
+	if after.Title != "A note" {
+		t.Errorf("title = %q: a refused write renamed the item", after.Title)
+	}
+	if after.Content != "" {
+		t.Errorf("content = %q: a refused write stored a body", after.Content)
 	}
 
 	// Positive control: the same flag on a declared-only patch is a normal write.
