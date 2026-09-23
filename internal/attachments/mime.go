@@ -639,9 +639,11 @@ func buildCanonicalExtForMIME() map[string]string {
 //
 // That divergence — storable here, stripped by Content-Disposition sanitising,
 // so ".s<VT>vg" reaches the client as ".svg" past a blocklist that never
-// evaluated it — is a pre-existing hazard on the ORDINARY upload path, where
-// the name is not synthesised at all. Tracked as BUG-2818; this predicate only
-// refuses to add a second door to it.
+// evaluated it — was also open on the ORDINARY upload path, where the name is
+// not synthesised at all. BUG-2818 closed it there: NormalizeFilename drops
+// those characters before ValidateUpload judges the name (filename.go). This
+// predicate still refuses such a suffix on its own terms, and is reached only
+// for a name that cannot be stored at all.
 //
 // Anything else is dropped and the fallback stays extensionless.
 func SafeFallbackExtension(ext string) bool {
@@ -654,6 +656,20 @@ func SafeFallbackExtension(ext string) bool {
 	}
 	_, allowed := LookupMIME(NormalizeMIME(mimeStr))
 	return allowed
+}
+
+// BlockedExtension reports whether ext (with its leading dot, any case) is one
+// ValidateUpload refuses as extension_blocked: a known extension whose type is
+// not on the allowlist. It is the same map and the same allowlist lookup, so
+// ServedFilename (BUG-2818) cannot disagree with the upload gate about which
+// suffixes are blocked.
+func BlockedExtension(ext string) bool {
+	mimeStr, ok := extMIMEMap[strings.ToLower(ext)]
+	if !ok {
+		return false
+	}
+	_, allowed := allowed[NormalizeMIME(mimeStr)]
+	return !allowed
 }
 
 var extMIMEMap = map[string]string{
