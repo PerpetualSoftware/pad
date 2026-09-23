@@ -285,6 +285,11 @@ func listCompletedWorkSince(client *cli.Client, ws string, cutoff time.Time, lim
 		return nil
 	}
 	var out []models.Item
+	// Each item once (BUG-2639): the server's list endpoint splits a filter
+	// value containing a comma into an IN list, so a collection whose
+	// completed-work values include both "x" and "x,y" returns an item with
+	// status x for both queries. The server copy dedups the same way.
+	seen := map[string]bool{}
 	for _, c := range colls {
 		field, values := models.CollectionCompletedWorkValues(c.Schema, c.Settings)
 		for _, status := range values {
@@ -298,7 +303,8 @@ func listCompletedWorkSince(client *cli.Client, ws string, cutoff time.Time, lim
 				continue
 			}
 			for _, item := range items {
-				if item.UpdatedAt.After(cutoff) {
+				if item.UpdatedAt.After(cutoff) && !seen[item.ID] {
+					seen[item.ID] = true
 					out = append(out, item)
 				}
 			}

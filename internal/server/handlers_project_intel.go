@@ -179,16 +179,39 @@ func (s *Server) listTerminalItemsSince(
 		}
 	}
 
+	// BUG-2639: a granted item counts only under the (field, value) groups its
+	// OWN collection declares. ListItems ORs ItemIDs past the CollectionIDs
+	// restriction, which is right for visibility, but here CollectionIDs also
+	// carries meaning ("the collections for which this value is completed
+	// work"), and an unscoped grant list bypassed it: an item was counted
+	// under another collection's terminal value, and could appear once per
+	// matching group. So resolve each granted item's collection once, and
+	// hand each group only the granted items that live in one of its
+	// collections. The group's FULL list is used, not `allowed`, because an
+	// item-grant-only collection must still contribute its granted items.
+	grantedByColl := map[string][]string{}
+	if len(itemIDs) > 0 {
+		granted, gerr := s.store.ListItems(workspaceID, models.ItemListParams{ItemIDs: itemIDs, NoContent: true})
+		if gerr != nil {
+			return nil
+		}
+		for _, it := range granted {
+			grantedByColl[it.CollectionID] = append(grantedByColl[it.CollectionID], it.ID)
+		}
+	}
+
 	var out []models.Item
+	seen := map[string]bool{}
 	for _, k := range order {
-		var queryCollIDs []string
+		var queryCollIDs, queryItemIDs []string
 		if restrict {
 			for _, id := range groups[k] {
 				if allowed[id] {
 					queryCollIDs = append(queryCollIDs, id)
 				}
+				queryItemIDs = append(queryItemIDs, grantedByColl[id]...)
 			}
-			if len(queryCollIDs) == 0 && len(itemIDs) == 0 {
+			if len(queryCollIDs) == 0 && len(queryItemIDs) == 0 {
 				continue
 			}
 		} else {
@@ -196,7 +219,7 @@ func (s *Server) listTerminalItemsSince(
 		}
 		items, err := s.store.ListItems(workspaceID, models.ItemListParams{
 			CollectionIDs: queryCollIDs,
-			ItemIDs:       itemIDs,
+			ItemIDs:       queryItemIDs,
 			Fields:        map[string]string{k.field: k.value},
 			Sort:          "updated_at:desc",
 			Limit:         limit,
@@ -205,7 +228,12 @@ func (s *Server) listTerminalItemsSince(
 			continue
 		}
 		for _, item := range items {
-			if item.UpdatedAt.After(cutoff) {
+			// Not merely defensive: ListItems splits a Fields value containing a
+			// comma into an IN list, so a collection whose completed-work values
+			// include both "x" and "x,y" matches an item with status x in two
+			// groups, for members too (BUG-2639). Each item is listed once.
+			if item.UpdatedAt.After(cutoff) && !seen[item.ID] {
+				seen[item.ID] = true
 				out = append(out, item)
 			}
 		}
