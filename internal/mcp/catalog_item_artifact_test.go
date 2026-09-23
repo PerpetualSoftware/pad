@@ -114,10 +114,11 @@ func TestPadItemImport_WritesTempFileAndDispatches(t *testing.T) {
 	if !equalStrings(disp.gotPath, []string{"item", "import"}) {
 		t.Errorf("cmdPath = %v, want [item import]", disp.gotPath)
 	}
-	if len(disp.gotArgs) == 0 {
-		t.Fatalf("cliArgs empty; want a tempfile positional")
+	pos := cliPositionals(disp.gotArgs)
+	if len(pos) == 0 {
+		t.Fatalf("no positionals in %v; want a tempfile positional", disp.gotArgs)
 	}
-	tmpPath := disp.gotArgs[0]
+	tmpPath := pos[0]
 	if !strings.HasSuffix(tmpPath, ".pad.md") {
 		t.Errorf("positional %q should be a .pad.md temp path", tmpPath)
 	}

@@ -44,9 +44,9 @@ func TestPadItemLink_DispatchTable(t *testing.T) {
 			if route.link.inverted {
 				wantFirst, wantSecond = "TASK-B", "TASK-A"
 			}
-			if disp.gotArgs[0] != wantFirst || disp.gotArgs[1] != wantSecond {
-				t.Errorf("positionals = (%q, %q), want (%q, %q) — link op = %+v",
-					disp.gotArgs[0], disp.gotArgs[1], wantFirst, wantSecond, route.link)
+			if pos := cliPositionals(disp.gotArgs); len(pos) != 2 || pos[0] != wantFirst || pos[1] != wantSecond {
+				t.Errorf("positionals = %q, want (%q, %q) — link op = %+v",
+					pos, wantFirst, wantSecond, route.link)
 			}
 		})
 
@@ -78,9 +78,9 @@ func TestPadItemLink_DispatchTable(t *testing.T) {
 			if route.unlink.inverted {
 				wantFirst, wantSecond = "TASK-B", "TASK-A"
 			}
-			if disp.gotArgs[0] != wantFirst || disp.gotArgs[1] != wantSecond {
-				t.Errorf("positionals = (%q, %q), want (%q, %q) — unlink op = %+v",
-					disp.gotArgs[0], disp.gotArgs[1], wantFirst, wantSecond, route.unlink)
+			if pos := cliPositionals(disp.gotArgs); len(pos) != 2 || pos[0] != wantFirst || pos[1] != wantSecond {
+				t.Errorf("positionals = %q, want (%q, %q) — unlink op = %+v",
+					pos, wantFirst, wantSecond, route.unlink)
 			}
 		})
 	}
@@ -219,10 +219,10 @@ func TestPadItemBulkUpdate_TranslatesRefsArray(t *testing.T) {
 			t.Errorf("cmdPath = %v, want [item bulk-update]", disp.gotPath)
 		}
 		// Both refs become positionals (BuildCLIArgs expands repeatable
-		// args). The `--status done` flag follows.
+		// args), behind the `--` terminator (BUG-3142).
 		joined := strings.Join(disp.gotArgs, " ")
-		if !strings.HasPrefix(joined, "TASK-5 TASK-8") {
-			t.Errorf("cliArgs %q should begin with both refs as positionals", joined)
+		if pos := cliPositionals(disp.gotArgs); !equalStrings(pos, []string{"TASK-5", "TASK-8"}) {
+			t.Errorf("positionals = %q in %q, want both refs", pos, joined)
 		}
 		if !strings.Contains(joined, "--status done") {
 			t.Errorf("cliArgs %q should contain --status done", joined)
@@ -243,8 +243,8 @@ func TestPadItemBulkUpdate_TranslatesRefsArray(t *testing.T) {
 		if err != nil {
 			t.Fatalf("err: %v", err)
 		}
-		if disp.gotArgs[0] != "TASK-5" {
-			t.Errorf("first positional = %q, want TASK-5", disp.gotArgs[0])
+		if pos := cliPositionals(disp.gotArgs); len(pos) == 0 || pos[0] != "TASK-5" {
+			t.Errorf("positionals = %q, want TASK-5 first", pos)
 		}
 	})
 

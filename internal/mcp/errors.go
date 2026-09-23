@@ -442,6 +442,12 @@ var allowedStructuredErrorCodes = map[string]struct{}{
 	// is what keeps stdio from being the transport that still says
 	// server_error.
 	"stored_state_unreadable": {},
+	// BUG-3147. Written at the CLI's root for a 429 on any command
+	// (cli.WriteRateLimitedError), with the server's Retry-After in
+	// details.retry_after_seconds. Before this the stdio transport matched no
+	// pattern for the limiter's message and said server_error, while the
+	// remote transport, which sees the status, said rate_limited.
+	"rate_limited": {},
 }
 
 // extractStructuredCLIError scans stderr for the
@@ -640,6 +646,17 @@ var (
 	// real classifiers with the real server text, so a reworded message fails
 	// there rather than in an agent's retry loop (Codex rounds 7-8).
 	reValidationFailed = regexp.MustCompile(`(invalid|missing required|must be one of|validation|not settable|has no field|cannot )`)
+
+	// The argv-parse refusals cobra and pflag raise before a command runs
+	// (BUG-3142). Each is deterministic — the same argv fails the same way —
+	// and none matched the pattern above, so every one reached an agent as a
+	// retryable server_error. Enumerated from the vendored sources (cobra
+	// args.go/command.go, pflag errors.go), not from memory; the one pair
+	// already covered by `invalid` ("invalid argument …" from both) is left
+	// to that pattern. Anchored at a line start, optionally after the CLI's
+	// "Error: " prefix, so a server message merely CONTAINING one of these
+	// words cannot be pulled in.
+	reCobraUsage = regexp.MustCompile(`(?m)^(?:error: )?(?:unknown (?:shorthand )?flag: |flag needs an argument: |unknown command "|requires at least \d+ arg\(s\)|accepts (?:at most |between )?\d+ (?:and \d+ )?arg\(s\)|required flag\(s\) ")`)
 	// Only match QUOTED slugs to avoid capturing stop-words like "not"
 	// in generic "Workspace not found" / "workspace not visible"
 	// messages. Quoted forms come from CLI stderr ("workspace 'foo'
@@ -659,7 +676,9 @@ func execStderrMatchesPermissionDenied(lower string) bool {
 	return rePermissionDenied.MatchString(lower)
 }
 func execStderrMatchesItemNotFound(lower string) bool { return reItemNotFound.MatchString(lower) }
-func execStderrMatchesValidation(lower string) bool   { return reValidationFailed.MatchString(lower) }
+func execStderrMatchesValidation(lower string) bool {
+	return reValidationFailed.MatchString(lower) || reCobraUsage.MatchString(lower)
+}
 
 // extractUnknownWorkspaceSlug pulls the slug from a CLI stderr like
 // "workspace 'foo' does not exist" so the envelope can name it.
@@ -718,15 +737,32 @@ func extractValidationField(msg string) string {
 //
 // The block is recognizable: a line containing exactly "Usage:"
 // (with optional surrounding whitespace) followed by the help text.
-// Truncate at the first such line. If no Usage block is present
-// (the typical no-cobra-help error path), the input is returned
+// It is removed up to the end of the input or to the first line that
+// starts with "Error:", whichever comes first. If no Usage block is
+// present (the typical no-cobra-help error path), the input is returned
 // unchanged.
+//
+// WHY THE "Error:" STOP (BUG-3142). The root command's flag-error hook
+// prints the usage block FIRST and cobra's "Error: …" line AFTER it, so
+// truncating at "Usage:" deleted the only line naming what went wrong: a
+// flag-parse refusal reached the classifier as an empty string and was
+// reported as server_error with no message. A runtime error prints the
+// other way round (or no usage at all), which the stop leaves unchanged.
 func stripCobraUsageBlock(stderr string) string {
 	idx := indexOfUsageLine(stderr)
 	if idx < 0 {
 		return stderr
 	}
-	return strings.TrimRight(stderr[:idx], " \t\r\n")
+	head := strings.TrimRight(stderr[:idx], " \t\r\n")
+	rel := strings.Index(stderr[idx:], "\nError:")
+	if rel < 0 {
+		return head
+	}
+	errLine := strings.TrimSpace(stderr[idx+rel+1:])
+	if head == "" {
+		return errLine
+	}
+	return head + "\n" + errLine
 }
 
 // indexOfUsageLine returns the byte offset of the line containing

@@ -1405,6 +1405,12 @@ type APIError struct {
 	Code    string          `json:"code"`
 	Message string          `json:"message"`
 	Details json.RawMessage `json:"details,omitempty"`
+
+	// From the RESPONSE rather than its body, so never part of the JSON
+	// (BUG-3147). RetryAfterSeconds is the 429's Retry-After header in whole
+	// seconds; zero when the response carried none or it did not parse.
+	Status            int `json:"-"`
+	RetryAfterSeconds int `json:"-"`
 }
 
 func (e *APIError) Error() string {
@@ -2089,9 +2095,71 @@ func (c *Client) handleResponse(resp *http.Response, result interface{}) error {
 	return nil
 }
 
+// RateLimitedHint is the guidance a stdio MCP caller receives with a
+// rate_limited envelope (BUG-3147). The limiter differs by route, so the wait
+// is the server's, carried in details, never a figure in this prose.
+const RateLimitedHint = "Rate-limited by the server. Wait details.retry_after_seconds when it is present, " +
+	"otherwise back off, then retry; space out burst-heavy work."
+
+// IsRateLimited reports whether err is, or wraps, the server's 429 refusal.
+func IsRateLimited(err error) (*APIError, bool) {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.Code == "rate_limited" {
+		return apiErr, true
+	}
+	return nil, false
+}
+
+// WriteRateLimitedError writes the structured marker line for a 429
+// (BUG-3147), so the stdio MCP transport reports rate_limited — with the
+// server's wait — instead of inferring server_error from prose that matches
+// nothing. Unlike the other writers it prints no human line: every command can
+// receive a 429, so this is written once at the root, after cobra has already
+// printed the "Error: <message>" line a person reads.
+func WriteRateLimitedError(w io.Writer, apiErr *APIError) {
+	body := map[string]any{
+		"code":    "rate_limited",
+		"message": apiErr.Message,
+		"hint":    RateLimitedHint,
+	}
+	if apiErr.RetryAfterSeconds > 0 {
+		body["details"] = map[string]any{"retry_after_seconds": apiErr.RetryAfterSeconds}
+	}
+	if data, err := json.Marshal(map[string]any{"error": body}); err == nil {
+		fmt.Fprintln(w, StructuredErrorMarker+string(data))
+	}
+}
+
 func (c *Client) parseError(resp *http.Response) error {
 	body, _ := io.ReadAll(resp.Body)
-	return parseErrorBody(resp.StatusCode, body)
+	err := parseErrorBody(resp.StatusCode, body)
+	if apiErr, ok := err.(*APIError); ok && resp.StatusCode == http.StatusTooManyRequests {
+		apiErr.RetryAfterSeconds = parseRetryAfterSeconds(resp.Header.Get("Retry-After"))
+	}
+	return err
+}
+
+// parseRetryAfterSeconds reads a Retry-After header in either of its two
+// forms — delta-seconds or an HTTP-date — as whole seconds from now. Zero for
+// an absent, malformed or already-past value, which a caller treats as "no
+// suggestion" rather than "retry immediately".
+func parseRetryAfterSeconds(v string) int {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0
+	}
+	if n, err := strconv.Atoi(v); err == nil {
+		if n < 0 {
+			return 0
+		}
+		return n
+	}
+	if t, err := http.ParseTime(v); err == nil {
+		if d := time.Until(t); d > 0 {
+			return int(d.Round(time.Second).Seconds())
+		}
+	}
+	return 0
 }
 
 // parseErrorBody decodes an error response whose body has already been
@@ -2106,6 +2174,7 @@ func parseErrorBody(status int, body []byte) error {
 		if errResp.Error.Code == "csrf_error" {
 			errResp.Error.Message = "Session authentication error. Run 'pad auth login' to re-authenticate."
 		}
+		errResp.Error.Status = status
 		return &errResp.Error
 	}
 	return fmt.Errorf("API error: %d %s", status, string(body))

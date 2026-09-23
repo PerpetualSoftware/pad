@@ -27,10 +27,11 @@ func TestBuildCLIArgs_PositionalsAndScalarFlags(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildCLIArgs: %v", err)
 	}
+	// Flags first, then the positionals behind `--` (BUG-3142).
 	want := []string{
-		"tasks", "Fix OAuth",
 		"--priority", "high",
 		"--format", "json",
+		"--", "tasks", "Fix OAuth",
 	}
 	if !equalSlice(got, want) {
 		t.Errorf("got %v, want %v", got, want)
@@ -76,10 +77,10 @@ func TestBuildCLIArgs_HyphenatedFlagAcceptedAsSnakeCase(t *testing.T) {
 	}
 	// Sorted-flag order: blocked-by < due-date.
 	want := []string{
-		"TASK-5",
 		"--blocked-by", "TASK-3",
 		"--due-date", "2026-06-01",
 		"--format", "json",
+		"--", "TASK-5",
 	}
 	if !equalSlice(got, want) {
 		t.Errorf("got %v, want %v", got, want)
@@ -292,7 +293,7 @@ func TestBuildCLIArgs_RepeatableArgExpands(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildCLIArgs: %v", err)
 	}
-	want := []string{"TASK-5", "TASK-8", "--format", "json"}
+	want := []string{"--format", "json", "--", "TASK-5", "TASK-8"}
 	if !equalSlice(got, want) {
 		t.Errorf("got %v, want %v", got, want)
 	}
@@ -477,4 +478,17 @@ func TestBuildCLIArgs_ArrayFlagValueIsJSONEncoded(t *testing.T) {
 	if rawVal != `["a","b","c"]` {
 		t.Errorf("expected JSON array, got %q", rawVal)
 	}
+}
+
+// cliPositionals returns the positionals of a BuildCLIArgs vector: everything
+// after its `--` terminator, which is where BUG-3142 put them. Nil when the
+// vector has none. Tests read positionals through this rather than by index,
+// so they pin the terminator, not an offset.
+func cliPositionals(args []string) []string {
+	for i, a := range args {
+		if a == "--" {
+			return args[i+1:]
+		}
+	}
+	return nil
 }

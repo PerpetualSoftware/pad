@@ -498,7 +498,16 @@ func BuildCLIArgs(
 		}
 	}
 
-	out := append(positionals, flagArgs...)
+	// FLAGS FIRST, positionals last behind a `--` (BUG-3142). Positionals used
+	// to lead, with no terminator, so cobra parsed any value starting with `-`
+	// as a flag: `item search "-ship it"` failed with "unknown shorthand flag"
+	// before the command ran, on every free-text positional this transport
+	// carries. Everything appended below is a flag too — the root flags,
+	// --workspace, --format — and must stay AHEAD of the `--`, or cobra would
+	// read it as positional text; the positionals are therefore appended last,
+	// at the return. Flag VALUES need no such care: pflag takes the next
+	// argument as a flag's value whatever it starts with.
+	out := flagArgs
 
 	// Inject root-level flags (e.g. --url) when the input didn't
 	// already supply them. Sorted for deterministic test output.
@@ -544,6 +553,11 @@ func BuildCLIArgs(
 	}
 	if !formatProvided {
 		out = append(out, "--format", "json")
+	}
+	// Only when there is something to terminate, so a command with no
+	// positionals keeps the exact vector it always had.
+	if len(positionals) > 0 {
+		out = append(append(out, "--"), positionals...)
 	}
 	return out, nil
 }

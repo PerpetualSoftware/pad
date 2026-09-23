@@ -56,7 +56,19 @@ func main() {
 	}
 
 	if err := newRootCmd().Execute(); err != nil {
+		writeRootStructuredError(os.Stderr, err)
 		os.Exit(1)
+	}
+}
+
+// writeRootStructuredError adds the machine-readable marker line for the
+// refusals ANY command can receive, which no per-command writer can own
+// (BUG-3147). Today that is the server's 429: cobra has already printed
+// "Error: <message>" for a person, and the stdio MCP transport lifts this line
+// instead of guessing a code from that prose.
+func writeRootStructuredError(w io.Writer, err error) {
+	if apiErr, ok := cli.IsRateLimited(err); ok {
+		cli.WriteRateLimitedError(w, apiErr)
 	}
 }
 
