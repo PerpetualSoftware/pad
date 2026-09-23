@@ -26,7 +26,7 @@ type slowSettleWatchBus struct {
 	entered chan struct{}
 }
 
-func (b *slowSettleWatchBus) SubscribeAndReplaySince(ctx context.Context, sinceID int64) (chan watchevents.Notification, []watchevents.Notification, <-chan struct{}) {
+func (b *slowSettleWatchBus) SubscribeAndReplaySince(ctx context.Context, sinceID int64) (chan watchevents.Notification, []watchevents.Notification, <-chan struct{}, error) {
 	b.once.Do(func() { close(b.entered) })
 	select {
 	case <-ctx.Done():

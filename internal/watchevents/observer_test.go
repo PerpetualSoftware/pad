@@ -131,7 +131,7 @@ func TestMemoryBusReportsSlowSubscriberDrop(t *testing.T) {
 	obs := newRecordingObserver()
 	b.SetObserver(obs)
 
-	ch, _ := b.Subscribe()
+	ch, _, _ := b.Subscribe()
 
 	// PREMISE: a healthy subscriber is delivered to and reports nothing.
 	if err := b.Publish(Notification{Kind: KindPush, ItemRef: "TASK-1"}); err != nil {
@@ -180,7 +180,7 @@ func TestRedisBusReportsSlowSubscriberDrop(t *testing.T) {
 	obs := newRecordingObserver()
 	b.SetObserver(obs)
 
-	ch, _ := b.Subscribe()
+	ch, _, _ := b.Subscribe()
 
 	// PREMISE: a subscriber with room is delivered to and reports
 	// nothing, so the assertion below is about the OVERFLOW rather than
@@ -320,7 +320,7 @@ func TestRedisBusReportsReceiveLoopExit(t *testing.T) {
 	// PREMISE: the bus is genuinely receiving before we break it —
 	// otherwise a bus that never started would pass by reporting an exit
 	// for the wrong reason.
-	ch, _ := b.Subscribe()
+	ch, _, _ := b.Subscribe()
 	if err := b.Publish(Notification{Kind: KindPush, ItemRef: "TASK-1"}); err != nil {
 		t.Fatalf("premise publish: %v", err)
 	}
@@ -374,7 +374,7 @@ func TestRedisBusCloseDoesNotReportAReceiveLoopExit(t *testing.T) {
 
 		// PREMISE: the loop is genuinely running, so a clean shutdown is
 		// what is being measured rather than a bus that never started.
-		ch, _ := b.Subscribe()
+		ch, _, _ := b.Subscribe()
 		if err := b.Publish(Notification{Kind: KindPush, ItemRef: "TASK-1"}); err != nil {
 			t.Fatalf("iteration %d premise publish: %v", i, err)
 		}
@@ -409,7 +409,7 @@ func TestRedisBusReportsResumeGaps(t *testing.T) {
 		obs := newRecordingObserver()
 		b.SetObserver(obs)
 
-		ch, _ := b.Subscribe()
+		ch, _, _ := b.Subscribe()
 		if err := b.Publish(Notification{Kind: KindComment, ItemRef: "TASK-1"}); err != nil {
 			t.Fatalf("premise publish: %v", err)
 		}
@@ -425,7 +425,7 @@ func TestRedisBusReportsResumeGaps(t *testing.T) {
 			t.Fatalf("set counter: %v", err)
 		}
 
-		_, missed, _ := b.SubscribeAndReplaySince(context.Background(), 1)
+		_, missed, _, _ := b.SubscribeAndReplaySince(context.Background(), 1)
 		if missed != nil {
 			t.Fatalf("premise failed: the resume was served rather than reported as a gap; got %+v", missed)
 		}
@@ -443,7 +443,7 @@ func TestRedisBusReportsResumeGaps(t *testing.T) {
 		obs := newRecordingObserver()
 		b.SetObserver(obs)
 
-		ch, _ := b.Subscribe()
+		ch, _, _ := b.Subscribe()
 		if err := b.Publish(Notification{Kind: KindComment, ItemRef: "TASK-1"}); err != nil {
 			t.Fatalf("premise publish: %v", err)
 		}
@@ -466,7 +466,7 @@ func TestRedisBusReportsResumeGaps(t *testing.T) {
 		}
 		before := obs.snapshot().resumeGaps
 
-		_, missed, _ := b.SubscribeAndReplaySince(context.Background(), 1)
+		_, missed, _, _ := b.SubscribeAndReplaySince(context.Background(), 1)
 		if missed != nil {
 			t.Fatalf("premise failed: the resume was served rather than reported as a gap; got %+v", missed)
 		}
@@ -481,7 +481,7 @@ func TestRedisBusReportsResumeGaps(t *testing.T) {
 		obs := newRecordingObserver()
 		b.SetObserver(obs)
 
-		ch, _ := b.Subscribe()
+		ch, _, _ := b.Subscribe()
 		if err := b.Publish(Notification{Kind: KindComment, ItemRef: "TASK-1"}); err != nil {
 			t.Fatalf("premise publish: %v", err)
 		}
@@ -492,7 +492,7 @@ func TestRedisBusReportsResumeGaps(t *testing.T) {
 		}
 		b.Unsubscribe(ch)
 
-		if _, missed, _ := b.SubscribeAndReplaySince(context.Background(), 1); missed == nil {
+		if _, missed, _, _ := b.SubscribeAndReplaySince(context.Background(), 1); missed == nil {
 			t.Fatal("premise failed: a current instance reported a gap")
 		}
 		if got := obs.snapshot(); got.resumeGaps != 0 {
@@ -517,7 +517,7 @@ func (o *reentrantObserver) reenter(name string) {
 	// resume gap, so calling it from an observer is unbounded mutual
 	// recursion. Observer's contract names that hazard; the bus cannot
 	// fix it on the caller's behalf.
-	ch, _ := o.b.Subscribe()
+	ch, _, _ := o.b.Subscribe()
 	o.b.Unsubscribe(ch)
 	select {
 	case o.calls <- name:
@@ -584,7 +584,7 @@ func TestMemoryBusDropCounterIsMeaningfulWithoutRedis(t *testing.T) {
 	obs := newRecordingObserver()
 	b.SetObserver(obs)
 
-	ch, _ := b.Subscribe()
+	ch, _, _ := b.Subscribe()
 	for i := 0; i < 65; i++ { // 64-deep buffer, then one more
 		if err := b.Publish(Notification{Kind: KindPush, ItemRef: "TASK-1"}); err != nil {
 			t.Fatalf("publish %d: %v", i, err)

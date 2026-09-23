@@ -36,7 +36,7 @@ import (
 func TestResumeReportsAGapWhenThisInstanceMissedTheTail(t *testing.T) {
 	b, mr := newMiniredisBus(t, 64)
 
-	ch, _ := b.Subscribe()
+	ch, _, _ := b.Subscribe()
 	b.Publish(Notification{Kind: KindComment, ItemRef: "TASK-1"})
 	select {
 	case <-ch:
@@ -50,7 +50,7 @@ func TestResumeReportsAGapWhenThisInstanceMissedTheTail(t *testing.T) {
 		t.Fatalf("set counter: %v", err)
 	}
 
-	_, missed, _ := b.SubscribeAndReplaySince(context.Background(), 1)
+	_, missed, _, _ := b.SubscribeAndReplaySince(context.Background(), 1)
 	if missed != nil {
 		t.Fatalf("a resume from 1 must report a gap when id 2 exists and we never saw it; got %+v", missed)
 	}
@@ -62,7 +62,7 @@ func TestResumeReportsAGapWhenThisInstanceMissedTheTail(t *testing.T) {
 func TestResumeDoesNotReportAGapWhenTheInstanceIsCurrent(t *testing.T) {
 	b, _ := newMiniredisBus(t, 64)
 
-	ch, _ := b.Subscribe()
+	ch, _, _ := b.Subscribe()
 	for i := 0; i < 3; i++ {
 		b.Publish(Notification{Kind: KindComment, ItemRef: "TASK-1"})
 	}
@@ -75,7 +75,7 @@ func TestResumeDoesNotReportAGapWhenTheInstanceIsCurrent(t *testing.T) {
 	}
 	b.Unsubscribe(ch)
 
-	_, missed, _ := b.SubscribeAndReplaySince(context.Background(), 1)
+	_, missed, _, _ := b.SubscribeAndReplaySince(context.Background(), 1)
 	if missed == nil {
 		t.Fatal("this instance has seen everything the counter knows about; a resume must replay, not resync")
 	}
@@ -93,7 +93,7 @@ func TestResumeDoesNotReportAGapWhenTheInstanceIsCurrent(t *testing.T) {
 func TestResumeToleratesAnInFlightCounter(t *testing.T) {
 	b, mr := newMiniredisBus(t, 64)
 
-	ch, _ := b.Subscribe()
+	ch, _, _ := b.Subscribe()
 	b.Publish(Notification{Kind: KindComment, ItemRef: "TASK-1"})
 	select {
 	case <-ch:
@@ -111,7 +111,7 @@ func TestResumeToleratesAnInFlightCounter(t *testing.T) {
 		b.fanOutLocally(Notification{ID: 2, Kind: KindComment, ItemRef: "TASK-2"}, b.currentGen())
 	}()
 
-	_, missed, _ := b.SubscribeAndReplaySince(context.Background(), 1)
+	_, missed, _, _ := b.SubscribeAndReplaySince(context.Background(), 1)
 	if missed == nil {
 		t.Fatal("the id arrived during the settle window, so nothing was missed; " +
 			"reporting a gap here would resync on ordinary in-flight traffic")
@@ -129,7 +129,7 @@ func TestResumeToleratesAnInFlightCounter(t *testing.T) {
 func TestResumeReportsAGapWhenTheCounterAdvancesAgainDuringTheSettle(t *testing.T) {
 	b, mr := newMiniredisBus(t, 64)
 
-	ch, _ := b.Subscribe()
+	ch, _, _ := b.Subscribe()
 	b.Publish(Notification{Kind: KindComment, ItemRef: "TASK-1"})
 	select {
 	case <-ch:
@@ -149,7 +149,7 @@ func TestResumeReportsAGapWhenTheCounterAdvancesAgainDuringTheSettle(t *testing.
 		_ = mr.Set(b.keys.Name(redisWatchSeqSuffix), "3")
 	}()
 
-	_, missed, _ := b.SubscribeAndReplaySince(context.Background(), 1)
+	_, missed, _, _ := b.SubscribeAndReplaySince(context.Background(), 1)
 	if missed != nil {
 		t.Fatalf("id 3 exists and never reached this instance; the resume must report a gap "+
 			"rather than converge against a stale counter snapshot; got %+v", missed)
@@ -164,7 +164,7 @@ func TestResumeReportsAGapWhenTheCounterAdvancesAgainDuringTheSettle(t *testing.
 func TestResumeDoesNotResyncWhenTheCounterReadRacedAPublish(t *testing.T) {
 	b, mr := newMiniredisBus(t, 64)
 
-	ch, _ := b.Subscribe()
+	ch, _, _ := b.Subscribe()
 	b.Publish(Notification{Kind: KindComment, ItemRef: "TASK-1"})
 	b.Publish(Notification{Kind: KindComment, ItemRef: "TASK-2"})
 	for i := 0; i < 2; i++ {
@@ -186,7 +186,7 @@ func TestResumeDoesNotResyncWhenTheCounterReadRacedAPublish(t *testing.T) {
 		_ = mr.Set(b.keys.Name(redisWatchSeqSuffix), "2")
 	}()
 
-	_, missed, _ := b.SubscribeAndReplaySince(context.Background(), 1)
+	_, missed, _, _ := b.SubscribeAndReplaySince(context.Background(), 1)
 	if missed == nil {
 		t.Fatal("this instance holds everything the counter ends up reporting; resyncing here " +
 			"would punish a client that missed nothing")
@@ -203,7 +203,7 @@ func TestResumeDoesNotResyncWhenTheCounterReadRacedAPublish(t *testing.T) {
 func TestResumeFallsBackToLocalKnowledgeWhenTheCounterIsUnreadable(t *testing.T) {
 	b, mr := newMiniredisBus(t, 64)
 
-	ch, _ := b.Subscribe()
+	ch, _, _ := b.Subscribe()
 	b.Publish(Notification{Kind: KindComment, ItemRef: "TASK-1"})
 	b.Publish(Notification{Kind: KindComment, ItemRef: "TASK-2"})
 	for i := 0; i < 2; i++ {
@@ -223,7 +223,7 @@ func TestResumeFallsBackToLocalKnowledgeWhenTheCounterIsUnreadable(t *testing.T)
 		t.Fatalf("seed a wrong-typed key: %v", err)
 	}
 
-	_, missed, _ := b.SubscribeAndReplaySince(context.Background(), 1)
+	_, missed, _, _ := b.SubscribeAndReplaySince(context.Background(), 1)
 	if missed == nil {
 		t.Fatal("an unreadable counter must fall back to local knowledge, not resync every reconnect")
 	}
@@ -242,7 +242,7 @@ func TestResumeFallsBackToLocalKnowledgeWhenTheCounterIsUnreadable(t *testing.T)
 func TestResumeReportsAGapWhenTheCounterKeyDisappears(t *testing.T) {
 	b, mr := newMiniredisBus(t, 64)
 
-	ch, _ := b.Subscribe()
+	ch, _, _ := b.Subscribe()
 	b.Publish(Notification{Kind: KindComment, ItemRef: "TASK-1"})
 	b.Publish(Notification{Kind: KindComment, ItemRef: "TASK-2"})
 	for i := 0; i < 2; i++ {
@@ -256,7 +256,7 @@ func TestResumeReportsAGapWhenTheCounterKeyDisappears(t *testing.T) {
 
 	mr.Del(b.keys.Name(redisWatchSeqSuffix))
 
-	_, missed, _ := b.SubscribeAndReplaySince(context.Background(), 1)
+	_, missed, _, _ := b.SubscribeAndReplaySince(context.Background(), 1)
 	if missed != nil {
 		t.Fatalf("the counter is gone while this instance holds ids 1-2; replaying a dead id space "+
 			"is exactly what the next publish (starting again at 1) will collide with; got %+v", missed)
@@ -290,7 +290,7 @@ func TestResumeIsUnaffectedForAFreshSubscriber(t *testing.T) {
 	}
 
 	start := time.Now()
-	_, missed, _ := b.SubscribeAndReplaySince(context.Background(), 0)
+	_, missed, _, _ := b.SubscribeAndReplaySince(context.Background(), 0)
 	if elapsed := time.Since(start); elapsed >= settleWindow {
 		t.Errorf("a fresh subscriber waited %v — it should not pay the settle window at all", elapsed)
 	}
@@ -339,7 +339,7 @@ func TestACancelledResumeStopsPayingForTheSettleWindow(t *testing.T) {
 	}
 
 	start := time.Now()
-	ch, missed, _ := b.SubscribeAndReplaySince(ctx, 1)
+	ch, missed, _, _ := b.SubscribeAndReplaySince(ctx, 1)
 	elapsed := time.Since(start)
 
 	if !entered.Load() {
@@ -403,7 +403,7 @@ func TestAResumeCancelledBeforeItStartsIsDeclinedOutright(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	ch, missed, _ := b.SubscribeAndReplaySince(ctx, 1)
+	ch, missed, _, _ := b.SubscribeAndReplaySince(ctx, 1)
 
 	if reachedSettle.Load() {
 		t.Error("an already-cancelled caller paid for the settle window")
@@ -444,7 +444,7 @@ func TestTheMemoryBusDeclinesACancelledResumeToo(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	ch, missed, _ := b.SubscribeAndReplaySince(ctx, 1)
+	ch, missed, _, _ := b.SubscribeAndReplaySince(ctx, 1)
 	if missed != nil {
 		t.Fatalf("MemoryBus handed a cancelled caller %d replayed notifications", len(missed))
 	}
@@ -472,7 +472,7 @@ func TestAnUncancelledResumeStillSettles(t *testing.T) {
 	}
 
 	start := time.Now()
-	_, missed, _ := b.SubscribeAndReplaySince(context.Background(), 1)
+	_, missed, _, _ := b.SubscribeAndReplaySince(context.Background(), 1)
 	elapsed := time.Since(start)
 
 	if elapsed < settleWindow {
@@ -509,7 +509,7 @@ func TestClosingTheBusStillEndsTheSettleWindow(t *testing.T) {
 	start := time.Now()
 	// The caller's context stays live throughout, so only the bus closing can
 	// end this wait.
-	_, _, _ = b.SubscribeAndReplaySince(context.Background(), 1)
+	_, _, _, _ = b.SubscribeAndReplaySince(context.Background(), 1)
 
 	if elapsed := time.Since(start); elapsed >= settleWindow {
 		t.Fatalf("a closing bus waited %v, the full settle window of %v: shutdown is blocked behind a connected client",

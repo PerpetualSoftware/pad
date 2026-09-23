@@ -146,7 +146,7 @@ func waitForReset(t *testing.T, obs *recordingObserver, reason, what string) obs
 func TestCoverageIsReestablishedByTheNextNotification(t *testing.T) {
 	b, _, cutter, obs := newCutterBus(t, 64)
 
-	ch, _ := b.Subscribe()
+	ch, _, _ := b.Subscribe()
 	defer b.Unsubscribe(ch)
 
 	if err := b.Publish(Notification{Kind: KindComment, ItemRef: "TASK-1"}); err != nil {
@@ -169,7 +169,7 @@ func TestCoverageIsReestablishedByTheNextNotification(t *testing.T) {
 	// and must be served — knownFrom was set to exactly that notification's
 	// id by the cold-start arm. If lastAppendedID had survived the drop, this
 	// resume is refused, and it is refused for every id, forever.
-	resumeCh, replay, _ := b.SubscribeAndReplaySince(context.Background(), second.ID-1)
+	resumeCh, replay, _, _ := b.SubscribeAndReplaySince(context.Background(), second.ID-1)
 	defer b.Unsubscribe(resumeCh)
 	if replay == nil {
 		t.Fatal("coverage was never re-established: a resume from the id below the first post-outage notification " +
@@ -187,7 +187,7 @@ func TestCoverageIsReestablishedByTheNextNotification(t *testing.T) {
 func TestAResubscriptionEndsThisInstancesCoverage(t *testing.T) {
 	b, _, cutter, obs := newCutterBus(t, 64)
 
-	ch, _ := b.Subscribe()
+	ch, _, _ := b.Subscribe()
 	defer b.Unsubscribe(ch)
 
 	// TWO notifications, and the cursor is the FIRST one's id — not id-1.
@@ -209,7 +209,7 @@ func TestAResubscriptionEndsThisInstancesCoverage(t *testing.T) {
 	// that refuses every resume and reports a reset on every message — a
 	// differently-broken instrument, indistinguishable from the assertions
 	// below on their own.
-	healthyCh, healthy, _ := b.SubscribeAndReplaySince(context.Background(), first.ID)
+	healthyCh, healthy, _, _ := b.SubscribeAndReplaySince(context.Background(), first.ID)
 	b.Unsubscribe(healthyCh)
 	if healthy == nil {
 		t.Fatal("a cursor inside our coverage must be served while the subscription is healthy")
@@ -227,7 +227,7 @@ func TestAResubscriptionEndsThisInstancesCoverage(t *testing.T) {
 	}
 
 	// And the coverage really is gone for the pre-outage cursor.
-	refusedCh, refused, _ := b.SubscribeAndReplaySince(context.Background(), first.ID)
+	refusedCh, refused, _, _ := b.SubscribeAndReplaySince(context.Background(), first.ID)
 	defer b.Unsubscribe(refusedCh)
 	if refused != nil {
 		t.Fatalf("after a resubscription the buffer must not vouch for the outage, got %d notifications", len(refused))
@@ -264,7 +264,7 @@ func TestAResubscriptionEndsThisInstancesCoverage(t *testing.T) {
 	// subscriber is not in the signalled set because it arrived afterwards.
 	// Silent loss, handed out by us. Verified by mutation: keeping the buffer
 	// survives every other assertion here.
-	freshCh, fresh, _ := b.SubscribeAndReplaySince(context.Background(), 0)
+	freshCh, fresh, _, _ := b.SubscribeAndReplaySince(context.Background(), 0)
 	defer b.Unsubscribe(freshCh)
 	if len(fresh) != 0 {
 		t.Fatalf("a subscriber arriving after the outage must not be handed the pre-outage buffer, got %d notifications", len(fresh))
@@ -278,9 +278,9 @@ func TestAResubscriptionEndsThisInstancesCoverage(t *testing.T) {
 func TestAResubscriptionSignalsEverySubscriberHoldingTheStreamOpen(t *testing.T) {
 	b, _, cutter, obs := newCutterBus(t, 64)
 
-	chA, gapsA := b.Subscribe()
+	chA, gapsA, _ := b.Subscribe()
 	defer b.Unsubscribe(chA)
-	chB, gapsB := b.Subscribe()
+	chB, gapsB, _ := b.Subscribe()
 	defer b.Unsubscribe(chB)
 
 	if err := b.Publish(Notification{Kind: KindComment, ItemRef: "TASK-1"}); err != nil {
@@ -320,7 +320,7 @@ func TestAResubscriptionSignalsEverySubscriberHoldingTheStreamOpen(t *testing.T)
 func TestAnUndecodableMessageEndsCoverage(t *testing.T) {
 	b, mr, _, obs := newCutterBus(t, 64)
 
-	ch, gaps := b.Subscribe()
+	ch, gaps, _ := b.Subscribe()
 	defer b.Unsubscribe(ch)
 
 	// Two, for the same reason as the resubscription test: the cursor has to
@@ -339,7 +339,7 @@ func TestAnUndecodableMessageEndsCoverage(t *testing.T) {
 	}
 
 	// CONTROL: that cursor is served right now.
-	healthyCh, healthy, _ := b.SubscribeAndReplaySince(context.Background(), first.ID)
+	healthyCh, healthy, _, _ := b.SubscribeAndReplaySince(context.Background(), first.ID)
 	b.Unsubscribe(healthyCh)
 	if healthy == nil {
 		t.Fatal("a cursor inside our coverage must be served before the undecodable message arrives")
@@ -359,7 +359,7 @@ func TestAnUndecodableMessageEndsCoverage(t *testing.T) {
 	// NOTHING IS PUBLISHED AFTER THIS POINT. The cursor that was inside our
 	// coverage a moment ago is refused now, on a stream that has gone quiet —
 	// the case id arithmetic alone can never reach.
-	refusedCh, refused, _ := b.SubscribeAndReplaySince(context.Background(), first.ID)
+	refusedCh, refused, _, _ := b.SubscribeAndReplaySince(context.Background(), first.ID)
 	defer b.Unsubscribe(refusedCh)
 	if refused != nil {
 		t.Fatalf("after an undecodable message the buffer must not vouch for the span, got %d notifications", len(refused))
@@ -429,7 +429,7 @@ func TestAnUndecodableMessageEndsCoverage(t *testing.T) {
 func TestNoCoverageIsDroppedAtStartup(t *testing.T) {
 	b, _, _, obs := newCutterBus(t, 64)
 
-	ch, gaps := b.Subscribe()
+	ch, gaps, _ := b.Subscribe()
 	defer b.Unsubscribe(ch)
 
 	// ORDERED, NOT TIMED (codex round 16). The first version slept 500ms and
@@ -491,7 +491,7 @@ func drainOne(t *testing.T, ch chan Notification) Notification {
 func TestCloseDoesNotLookLikeAResubscription(t *testing.T) {
 	b, _, _, obs := newCutterBus(t, 64)
 
-	ch, _ := b.Subscribe()
+	ch, _, _ := b.Subscribe()
 	if err := b.Publish(Notification{Kind: KindComment, ItemRef: "TASK-1"}); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
@@ -528,7 +528,7 @@ func TestCloseDoesNotLookLikeAResubscription(t *testing.T) {
 func TestAResubscriptionOnAnIdleBusStillEndsCoverage(t *testing.T) {
 	b, _, cutter, obs := newCutterBus(t, 64)
 
-	ch, gaps := b.Subscribe()
+	ch, gaps, _ := b.Subscribe()
 	defer b.Unsubscribe(ch)
 
 	// CONTROL: nothing has been published, so nothing has been reported.

@@ -52,8 +52,16 @@ func deadClient(t *testing.T) *redis.Client {
 // instead would have been the wrong fix: a zero-value RedisBus is not a
 // supported construction, and a defensive nil check there would mask real
 // misuse to spare a test fixture.
+//
+// pubsub IS SET, to a PubSub that never dials: a Subscribe call with no
+// channels opens no connection. These tests model an instance whose
+// subscription is live and feed its fan-out by hand, and since BUG-2800 an
+// instance with NO subscription refuses new subscribers (ErrNotSubscribed),
+// because nothing would reach them. Leaving the slot nil would make every
+// fixture here the refused case.
 func newLocalOnlyBus(size int) *RedisBus {
 	ctx, cancel := context.WithCancel(context.Background())
+	idle := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1", MaxRetries: -1})
 	return &RedisBus{
 		subscribers: make(map[chan Notification]*subscriber),
 		replay:      newReplayBuffer(size),
@@ -63,6 +71,7 @@ func newLocalOnlyBus(size int) *RedisBus {
 		replaySize: size,
 		ctx:        ctx,
 		cancel:     cancel,
+		pubsub:     idle.Subscribe(ctx),
 	}
 }
 
@@ -85,7 +94,7 @@ func TestRedisBusSubscribeAndReplayIsAtomic(t *testing.T) {
 		b.fanOutLocally(Notification{ID: i, Kind: KindComment, ItemRef: "TASK-1"}, b.currentGen())
 	}
 
-	ch, missed, _ := b.SubscribeAndReplaySince(context.Background(), 1)
+	ch, missed, _, _ := b.SubscribeAndReplaySince(context.Background(), 1)
 
 	if len(missed) != 2 {
 		t.Fatalf("replay since 1 should carry ids 2,3; got %d entries: %+v", len(missed), missed)
@@ -149,7 +158,7 @@ func TestRedisBusSubscribeAndReplayHasNoWindowUnderConcurrency(t *testing.T) {
 
 	// Join mid-flight.
 	time.Sleep(2 * time.Millisecond)
-	ch, missed, _ := b.SubscribeAndReplaySince(context.Background(), 0)
+	ch, missed, _, _ := b.SubscribeAndReplaySince(context.Background(), 0)
 
 	wg.Wait()
 
@@ -259,7 +268,7 @@ func TestRedisBusSubscribeAndReplayNeverDoubleDelivers(t *testing.T) {
 			}()
 		}
 
-		ch, missed, _ := b.SubscribeAndReplaySince(context.Background(), 0)
+		ch, missed, _, _ := b.SubscribeAndReplaySince(context.Background(), 0)
 		b.afterSubscribeRegister = nil
 
 		// Block until the forced fan-out has actually completed before
@@ -371,7 +380,7 @@ func TestRedisBusPublishFailsClosedWhenIDsAreUnavailable(t *testing.T) {
 	b.client = client
 	defer b.Close()
 
-	ch, _ := b.Subscribe()
+	ch, _, _ := b.Subscribe()
 	b.Publish(Notification{Kind: KindPush, ItemRef: "TASK-1", Summary: "should not be published"})
 
 	cmds := rec.names()
@@ -714,7 +723,7 @@ func TestRedisBusDecodePayloadRoundTrip(t *testing.T) {
 // close.
 func TestRedisBusCloseIsIdempotentAndClosesSubscribers(t *testing.T) {
 	b := newLocalOnlyBus(16)
-	ch, _ := b.Subscribe()
+	ch, _, _ := b.Subscribe()
 
 	b.Close()
 	b.Close() // must not panic on a double close of the same channels
@@ -730,7 +739,7 @@ func TestRedisBusCloseIsIdempotentAndClosesSubscribers(t *testing.T) {
 
 	// A subscriber arriving after Close must get a closed channel rather than
 	// registering into a bus that will never close it.
-	late, _ := b.Subscribe()
+	late, _, _ := b.Subscribe()
 	select {
 	case _, ok := <-late:
 		if ok {

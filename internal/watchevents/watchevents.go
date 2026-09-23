@@ -65,7 +65,21 @@ import (
 // act on the distinction — see Bus.Publish's doc comment on why every
 // other error means "unconfirmed" instead. Compare with errors.Is; both
 // implementations wrap it with context.
+//
+// Subscribe and SubscribeAndReplaySince return it too (BUG-2800): a
+// subscriber registered after Close would never be closed by anyone.
 var ErrBusClosed = errors.New("watchevents: bus is closed")
+
+// ErrNotSubscribed is returned by Subscribe and SubscribeAndReplaySince when
+// this instance has no subscription to the shared watch channel (BUG-2800),
+// so a subscriber would receive nothing published on any other instance,
+// including this one's own publishes, which also travel through Redis. Only
+// RedisBus returns it: its constructor or an idle cycle leaves the slot empty
+// when a SUBSCRIBE cannot be written (BUG-2764) or is rejected (BUG-2799), and
+// an idle cycle empties it briefly while it replaces the connection. The
+// activity stream refuses the same condition with SubscribeFailed; the SSE
+// handler maps both to the same 503.
+var ErrNotSubscribed = errors.New("watchevents: this instance has no subscription to the watch channel")
 
 // Notification kinds, matching DOC-2479's event payload contract
 // (kind ∈ {status-change, assignment, comment, ask}) exactly.
@@ -241,7 +255,13 @@ type Bus interface {
 	// has no transport to lose anything in, so its sequence is contiguous by
 	// construction. A caller must not read "no instance-wide signal" as
 	// evidence of anything beyond which bus it is talking to.
-	Subscribe() (chan Notification, <-chan struct{})
+	//
+	// A NON-NIL ERROR IS A REFUSAL (BUG-2800): ErrBusClosed, or ErrNotSubscribed
+	// when this instance could not deliver anything to the subscriber. Nothing
+	// is registered. The channel returned with it is closed rather than nil,
+	// so a caller that ignores the error still sees its stream end instead of
+	// blocking on a channel nobody will ever close.
+	Subscribe() (chan Notification, <-chan struct{}, error)
 	// SubscribeAndReplaySince atomically subscribes AND captures every
 	// buffered notification with ID > sinceID, under the SAME lock
 	// (codex round 1 finding 3). Subscribing and reading the replay
@@ -259,7 +279,10 @@ type Bus interface {
 	// turns any of them into sync_required; the subscription is still valid,
 	// only the replay is unavailable.
 	//
-	// The third return is the subscriber's GAP SIGNAL — see Subscribe.
+	// The third return is the subscriber's GAP SIGNAL — see Subscribe, which
+	// also says what a non-nil error means. A caller whose ctx has already
+	// ended is NOT refused: it gets a closed channel and no error, because it
+	// is a departure and there is nobody left to read a refusal.
 	//
 	// ctx IS THE CALLER'S REQUEST CONTEXT, and it is load-bearing on the Redis
 	// implementation (BUG-2751): that one may WAIT — a settle window plus two
@@ -267,7 +290,7 @@ type Bus interface {
 	// only released when the handler returns. A caller that has gone must not
 	// go on paying for that. MemoryBus does no I/O here and accepts the
 	// parameter to keep one interface; see its implementation.
-	SubscribeAndReplaySince(ctx context.Context, sinceID int64) (chan Notification, []Notification, <-chan struct{})
+	SubscribeAndReplaySince(ctx context.Context, sinceID int64) (chan Notification, []Notification, <-chan struct{}, error)
 	// Unsubscribe removes a subscriber and closes its channel.
 	Unsubscribe(ch chan Notification)
 	// EventsSince returns buffered notifications with ID > sinceID, for
@@ -559,7 +582,7 @@ func newSubscriber() *subscriber {
 	}
 }
 
-func (b *MemoryBus) Subscribe() (chan Notification, <-chan struct{}) {
+func (b *MemoryBus) Subscribe() (chan Notification, <-chan struct{}, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	sub := newSubscriber()
@@ -572,10 +595,10 @@ func (b *MemoryBus) Subscribe() (chan Notification, <-chan struct{}) {
 		// start and the two implementations must not differ in a way a
 		// consumer can feel (codex round 2 on BUG-2651).
 		close(ch)
-		return ch, sub.gaps
+		return ch, sub.gaps, ErrBusClosed
 	}
 	b.subscribers[ch] = sub
-	return ch, sub.gaps
+	return ch, sub.gaps, nil
 }
 
 // SubscribeAndReplaySince — see the Bus interface doc comment for why
@@ -596,11 +619,11 @@ func (b *MemoryBus) Subscribe() (chan Notification, <-chan struct{}) {
 // the closed-bus branch — a closed channel, never nil, because the handler
 // treats nil as "fall back to plain Subscribe" and would re-register the very
 // caller this is declining.
-func (b *MemoryBus) SubscribeAndReplaySince(ctx context.Context, sinceID int64) (chan Notification, []Notification, <-chan struct{}) {
+func (b *MemoryBus) SubscribeAndReplaySince(ctx context.Context, sinceID int64) (chan Notification, []Notification, <-chan struct{}, error) {
 	if ctx.Err() != nil {
 		sub := newSubscriber()
 		close(sub.ch)
-		return sub.ch, nil, sub.gaps
+		return sub.ch, nil, sub.gaps, nil
 	}
 	// Reported with the lock released, like every other report in this
 	// package. RedisBus counts its own unservable resumes; MemoryBus did not,
@@ -618,14 +641,14 @@ func (b *MemoryBus) SubscribeAndReplaySince(ctx context.Context, sinceID int64) 
 	if b.closed {
 		// Same post-Close guard as Subscribe.
 		close(ch)
-		return ch, nil, sub.gaps
+		return ch, nil, sub.gaps, ErrBusClosed
 	}
 	b.subscribers[ch] = sub
 	missed := b.replaySinceLocked(sinceID)
 	if missed == nil {
 		pending.resumeGap()
 	}
-	return ch, missed, sub.gaps
+	return ch, missed, sub.gaps, nil
 }
 
 func (b *MemoryBus) Unsubscribe(ch chan Notification) {

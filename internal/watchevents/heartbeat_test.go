@@ -88,7 +88,7 @@ func (b *RedisBus) currentPubSub() *redis.PubSub {
 func TestAHeartbeatDoesNotEndCoverage(t *testing.T) {
 	b, mr, _, obs := newHeartbeatBus(t, false)
 
-	ch, _ := b.Subscribe()
+	ch, _, _ := b.Subscribe()
 	defer b.Unsubscribe(ch)
 
 	if err := b.Publish(Notification{Kind: KindComment, ItemRef: "TASK-1"}); err != nil {
@@ -149,7 +149,7 @@ func TestAPayloadWearingThePrefixStillEndsCoverage(t *testing.T) {
 func TestAPayloadWearingThePrefixEndsCoverageThroughTheRealPath(t *testing.T) {
 	b, mr, _, obs := newHeartbeatBus(t, false)
 
-	ch, _ := b.Subscribe()
+	ch, _, _ := b.Subscribe()
 	defer b.Unsubscribe(ch)
 
 	raw := redis.NewClient(&redis.Options{Addr: mr.Addr()})
@@ -188,7 +188,7 @@ func TestAPayloadWearingThePrefixEndsCoverageThroughTheRealPath(t *testing.T) {
 func TestAnIdleSubscriptionEndsCoverageAndIsReplaced(t *testing.T) {
 	b, _, clock, obs := newHeartbeatBus(t, true)
 
-	ch, _ := b.Subscribe()
+	ch, _, _ := b.Subscribe()
 	defer b.Unsubscribe(ch)
 	before := b.currentPubSub()
 
@@ -217,7 +217,7 @@ func TestAnIdleSubscriptionEndsCoverageAndIsReplaced(t *testing.T) {
 func TestAReplacedLoopExitsQuietly(t *testing.T) {
 	b, _, clock, obs := newHeartbeatBus(t, true)
 
-	ch, _ := b.Subscribe()
+	ch, _, _ := b.Subscribe()
 	defer b.Unsubscribe(ch)
 
 	// WAITED FOR, NOT SAMPLED (codex round 9). The count is incremented inside
@@ -257,7 +257,7 @@ func TestAReplacedLoopExitsQuietly(t *testing.T) {
 func TestAFreshSubscriptionIsNotCycled(t *testing.T) {
 	b, _, _, obs := newHeartbeatBus(t, true)
 
-	ch, _ := b.Subscribe()
+	ch, _, _ := b.Subscribe()
 	defer b.Unsubscribe(ch)
 	before := b.currentPubSub()
 
@@ -278,7 +278,7 @@ func TestAFreshSubscriptionIsNotCycled(t *testing.T) {
 func TestAQuietInstanceIsNotCycledOnPhase1(t *testing.T) {
 	b, _, clock, obs := newHeartbeatBus(t, false)
 
-	ch, _ := b.Subscribe()
+	ch, _, _ := b.Subscribe()
 	defer b.Unsubscribe(ch)
 	before := b.currentPubSub()
 
@@ -300,7 +300,7 @@ func TestAQuietInstanceIsNotCycledOnPhase1(t *testing.T) {
 func TestPhase2CyclesTheSameInstance(t *testing.T) {
 	b, _, clock, obs := newHeartbeatBus(t, true)
 
-	ch, _ := b.Subscribe()
+	ch, _, _ := b.Subscribe()
 	defer b.Unsubscribe(ch)
 
 	wedge(t, b, clock, DefaultWatchIdleTimeout+time.Second)
@@ -319,7 +319,7 @@ func TestPhase2CyclesTheSameInstance(t *testing.T) {
 func TestAFailedProbeSuspendsDetection(t *testing.T) {
 	b, mr, clock, obs := newHeartbeatBus(t, true)
 
-	ch, _ := b.Subscribe()
+	ch, _, _ := b.Subscribe()
 	defer b.Unsubscribe(ch)
 	before := b.currentPubSub()
 
@@ -426,7 +426,7 @@ func TestTheCadenceDoesNotDriftWithPassDuration(t *testing.T) {
 func TestOrdinaryTrafficKeepsTheInstanceAlive(t *testing.T) {
 	b, _, clock, obs := newHeartbeatBus(t, true)
 
-	ch, _ := b.Subscribe()
+	ch, _, _ := b.Subscribe()
 	defer b.Unsubscribe(ch)
 	before := b.currentPubSub()
 
@@ -469,7 +469,7 @@ func TestOrdinaryTrafficKeepsTheInstanceAlive(t *testing.T) {
 func TestAReplacementCanItselfBeCycled(t *testing.T) {
 	b, _, clock, obs := newHeartbeatBus(t, true)
 
-	ch, _ := b.Subscribe()
+	ch, _, _ := b.Subscribe()
 	defer b.Unsubscribe(ch)
 
 	wedge(t, b, clock, DefaultWatchIdleTimeout+time.Second)
@@ -518,7 +518,7 @@ func TestAReplacementCanItselfBeCycled(t *testing.T) {
 func TestAnInstanceThatRecoversBeforeItsCycleIsNotCycled(t *testing.T) {
 	b, _, clock, obs := newHeartbeatBus(t, true)
 
-	ch, _ := b.Subscribe()
+	ch, _, _ := b.Subscribe()
 	defer b.Unsubscribe(ch)
 	before := b.currentPubSub()
 
@@ -560,7 +560,7 @@ func TestAnInstanceThatRecoversBeforeItsCycleIsNotCycled(t *testing.T) {
 func TestTheReceiveLoopActuallyConsultsTheGeneration(t *testing.T) {
 	b, _, clock, _ := newHeartbeatBus(t, true)
 
-	ch, _ := b.Subscribe()
+	ch, _, _ := b.Subscribe()
 	defer b.Unsubscribe(ch)
 
 	// THE CLOCK MUST MOVE FIRST or this test cannot discriminate: on a frozen
@@ -645,7 +645,7 @@ func TestTheReceiveLoopActuallyConsultsTheGeneration(t *testing.T) {
 func TestAProbeDoesNotCreditTheSubscriptionThatReplacedIt(t *testing.T) {
 	b, _, clock, _ := newHeartbeatBus(t, true)
 
-	ch, _ := b.Subscribe()
+	ch, _, _ := b.Subscribe()
 	defer b.Unsubscribe(ch)
 
 	var moved atomic.Bool
@@ -687,7 +687,7 @@ func TestAProbeDoesNotCreditTheSubscriptionThatReplacedIt(t *testing.T) {
 func TestAStragglerCannotEnterTheReplacementsBuffer(t *testing.T) {
 	b, _, clock, _ := newHeartbeatBus(t, true)
 
-	ch, _ := b.Subscribe()
+	ch, _, _ := b.Subscribe()
 	defer b.Unsubscribe(ch)
 
 	staleGen := b.currentGen()
@@ -723,7 +723,7 @@ func TestAStragglerCannotEnterTheReplacementsBuffer(t *testing.T) {
 func TestEachMutationRefusesAStragglerOnItsOwn(t *testing.T) {
 	b, _, clock, obs := newHeartbeatBus(t, true)
 
-	ch, _ := b.Subscribe()
+	ch, _, _ := b.Subscribe()
 	defer b.Unsubscribe(ch)
 
 	staleGen := b.currentGen()
@@ -823,7 +823,7 @@ func TestEachMutationRefusesAStragglerOnItsOwn(t *testing.T) {
 func TestClosingTheBusDuringAnIdleCycleIsSafe(t *testing.T) {
 	b, _, clock, _ := newHeartbeatBus(t, true)
 
-	ch, _ := b.Subscribe()
+	ch, _, _ := b.Subscribe()
 	defer b.Unsubscribe(ch)
 
 	// HELD OPEN AT THE POINT THE WINDOW ACTUALLY IS. A first version started
@@ -891,7 +891,7 @@ func TestClosingTheBusDuringAnIdleCycleIsSafe(t *testing.T) {
 func TestAFailedResubscribeDoesNotReDropCoverageEveryPass(t *testing.T) {
 	b, mr, clock, obs := newHeartbeatBus(t, true)
 
-	ch, _ := b.Subscribe()
+	ch, _, _ := b.Subscribe()
 	defer b.Unsubscribe(ch)
 
 	// Redis goes away entirely: the resubscribe inside the cycle cannot
@@ -925,7 +925,7 @@ func TestAFailedResubscribeDoesNotReDropCoverageEveryPass(t *testing.T) {
 func TestRecoveryAfterAFailedResubscribeStillReplacesTheConnection(t *testing.T) {
 	b, mr, clock, obs := newHeartbeatBus(t, true)
 
-	ch, _ := b.Subscribe()
+	ch, _, _ := b.Subscribe()
 	defer b.Unsubscribe(ch)
 
 	addr := mr.Addr()
@@ -980,7 +980,7 @@ func TestRecoveryAfterAFailedResubscribeStillReplacesTheConnection(t *testing.T)
 func TestTwoConcurrentRetriesInstallOneSubscription(t *testing.T) {
 	b, _, clock, _ := newHeartbeatBus(t, true)
 
-	ch, _ := b.Subscribe()
+	ch, _, _ := b.Subscribe()
 	defer b.Unsubscribe(ch)
 
 	// Get the bus into the no-subscription state the retry arm exists for, by
@@ -1087,7 +1087,7 @@ func TestTwoConcurrentRetriesInstallOneSubscription(t *testing.T) {
 func TestTheFrameSeamFiresForEveryArm(t *testing.T) {
 	b, mr, _, _ := newHeartbeatBus(t, false)
 
-	ch, _ := b.Subscribe()
+	ch, _, _ := b.Subscribe()
 	defer b.Unsubscribe(ch)
 
 	var handled atomic.Int32

@@ -649,20 +649,39 @@ func (b *RedisBus) Publish(n Notification) error {
 
 // Subscribe returns a channel receiving every future Notification, with no
 // replay — same contract as MemoryBus.Subscribe.
-func (b *RedisBus) Subscribe() (chan Notification, <-chan struct{}) {
+func (b *RedisBus) Subscribe() (chan Notification, <-chan struct{}, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	sub := newSubscriber()
 	ch := sub.ch
-	if b.closed {
-		// A subscriber registered after Close would never be closed by
-		// anyone. Hand back an already-closed channel so the consumer's
-		// range/select terminates instead of blocking forever.
+	if err := b.refusalLocked(); err != nil {
 		close(ch)
-		return ch, sub.gaps
+		return ch, sub.gaps, err
 	}
 	b.subscribers[ch] = sub
-	return ch, sub.gaps
+	return ch, sub.gaps, nil
+}
+
+// refusalLocked says whether a new subscriber must be refused, and why.
+// Callers must hold b.mu, and must decide AND register under that one hold:
+// b.pubsub is installed and emptied under b.mu, so a check taken in a separate
+// critical section could admit a subscriber into a slot emptied in between.
+//
+// A subscriber registered after Close would never be closed by anyone. One
+// registered while b.pubsub is nil would receive nothing (BUG-2800): every
+// notification reaches this instance through the shared channel, its own
+// publishes included, and this instance has no subscription to it. That is
+// true whether the slot is empty because a SUBSCRIBE failed (BUG-2764, BUG-2799)
+// or because an idle cycle is between connections, so both are refused; the
+// client's retry lands on whatever the cycle installs.
+func (b *RedisBus) refusalLocked() error {
+	switch {
+	case b.closed:
+		return ErrBusClosed
+	case b.pubsub == nil:
+		return ErrNotSubscribed
+	}
+	return nil
 }
 
 // SubscribeAndReplaySince atomically registers the subscriber and captures the
@@ -684,7 +703,7 @@ func (b *RedisBus) Subscribe() (chan Notification, <-chan struct{}) {
 // and the caller turns that into sync_required.
 //
 // The third return is the subscriber's GAP SIGNAL — see Subscribe.
-func (b *RedisBus) SubscribeAndReplaySince(ctx context.Context, sinceID int64) (chan Notification, []Notification, <-chan struct{}) {
+func (b *RedisBus) SubscribeAndReplaySince(ctx context.Context, sinceID int64) (chan Notification, []Notification, <-chan struct{}, error) {
 	// Consulted BEFORE the lock: it sleeps and does network I/O. See its
 	// comment for why that ordering is also the only one that preserves the
 	// subscribe-and-replay guarantee.
@@ -731,9 +750,9 @@ func (b *RedisBus) SubscribeAndReplaySince(ctx context.Context, sinceID int64) (
 	defer b.mu.Unlock()
 	sub := newSubscriber()
 	ch := sub.ch
-	if b.closed {
+	if err := b.refusalLocked(); err != nil {
 		close(ch)
-		return ch, nil, sub.gaps
+		return ch, nil, sub.gaps, err
 	}
 	b.subscribers[ch] = sub
 	if b.afterSubscribeRegister != nil {
@@ -742,7 +761,7 @@ func (b *RedisBus) SubscribeAndReplaySince(ctx context.Context, sinceID int64) (
 	if forceGap {
 		// Already counted by resumeOutrunsLocalView, which is where that
 		// decision is made.
-		return ch, nil, sub.gaps
+		return ch, nil, sub.gaps, nil
 	}
 
 	missed := b.replaySince(sinceID)
@@ -759,7 +778,7 @@ func (b *RedisBus) SubscribeAndReplaySince(ctx context.Context, sinceID int64) (
 		// with the lock released.
 		pending.resumeGap()
 	}
-	return ch, missed, sub.gaps
+	return ch, missed, sub.gaps, nil
 }
 
 // callerIsGone reports whether a Redis error is our own cancellation rather
@@ -797,12 +816,12 @@ func callerIsGone(err error) bool {
 // condition an operator does act on — capacity held by connections that no
 // longer exist — is already visible in the admission counts, and this change is
 // what keeps those honest.
-func (b *RedisBus) declineCancelledResume(sinceID int64) (chan Notification, []Notification, <-chan struct{}) {
+func (b *RedisBus) declineCancelledResume(sinceID int64) (chan Notification, []Notification, <-chan struct{}, error) {
 	slog.Debug("watchevents: resume abandoned before it could be served; the caller is gone",
 		"since_id", sinceID)
 	sub := newSubscriber()
 	close(sub.ch)
-	return sub.ch, nil, sub.gaps
+	return sub.ch, nil, sub.gaps, nil
 }
 
 // whicheverEndsFirst returns a context that ends when EITHER input does, and a

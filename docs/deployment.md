@@ -916,14 +916,26 @@ workspace's subscription, so:
   failed subscribe yielded a connection that looked live and was subscribed to
   nothing, and only a later reconnect or the detector's next pass (phase 2)
   ever replaced it. Pad now issues the `SUBSCRIBE` where its error is
-  visible: a failed one installs nothing and is logged with the error. On the
-  **activity stream** (`/api/v1/events`) its callers are then refused with a
-  503 (`subscription_failed`, `Retry-After`) rather than admitted into a
-  stream that would carry nothing — on both phases, with no detector
-  involved. The **watch stream** cannot refuse yet: its bus has no failure
-  outcome, so a watch client on an instance whose single subscription could
-  not be established is still admitted and hears nothing (BUG-2800); phase 2
-  re-establishes on the next maintenance pass, phase 1 does not.
+  visible: a failed one installs nothing and is logged with the error. The
+  same holds when Redis *answers* the `SUBSCRIBE` with an error reply — an
+  ACL denial (`-NOPERM`), `-NOAUTH`, a disabled command, or anything a proxy
+  in front of Redis says (BUG-2799) — which go-redis's channel loop used to
+  swallow without a log line. Both **streams** then refuse their callers with
+  a 503 (`subscription_failed`, `Retry-After: 5`) rather than admitting them
+  into a stream that would carry nothing: the **activity stream**
+  (`/api/v1/events`) per workspace, and the **watch stream**
+  (`/api/v1/events/stream`, BUG-2800) whenever the instance holds no
+  subscription to the watch channel. On the watch stream that refusal also
+  covers the moment a phase-2 maintenance pass spends between closing an idle
+  connection and confirming its replacement. Phase 2 re-establishes a watch
+  subscription on its next maintenance pass; **phase 1 does not**, so a watch
+  subscription that failed at startup keeps the instance refusing watch
+  clients until it restarts — loudly, where it used to admit them silently.
+  (Nothing else recovers it: the failed connection is closed at startup, so
+  there is none left for go-redis's own reconnect to revive, and phase 1 runs
+  no maintenance loop.)
+  One case is still not seen: a rejection of the automatic re-`SUBSCRIBE`
+  go-redis sends after a reconnect, mid-life (BUG-3155).
 
 **What to watch.** On the activity bus,
 `pad_event_subscription_cycled_total` — expect zero. Read it rather than that
