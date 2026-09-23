@@ -57,22 +57,23 @@ func UndeclaredOverrideKeys(overrides map[string]any, targetFields []models.Fiel
 //     stripped schema (the move since BUG-2379).
 //   - `fields_patch`, the partial-update door every USER field-setter lowers
 //     into — `pad item update --field`, the MCP `field` param on both
-//     transports, and anything else PATCHing an item (BUG-2627 part 2). That
-//     door refuses a SUBSET: see PatchRefusedFieldKeysIn, which is this list
-//     minus github_pr, and says why.
+//     transports, and anything else PATCHing an item (BUG-2627 part 2). It
+//     refuses every key this returns since BUG-2696 (PatchRefusedFieldKeysIn
+//     keeps the record of github_pr's former exemption).
+//   - item CREATE's `fields` (BUG-3163). Convention activation, the one
+//     system writer that used that door, sends the typed ItemCreate.Convention
+//     member instead.
 //
 // It was named ReservedOverrideKeys until the second caller arrived; the list
 // and the semantics are unchanged.
 //
-// Membership here is still NOT the same as "this key is unwritable", and the
-// remaining hole is deliberate rather than missed. A FULL `fields` blob reaches
-// them all, because that door is shared: `pad item note` / `pad item decide` /
-// `pad github link` send one, and so does convention activation via
-// models.BuildConventionItemFields → ItemCreate. Closing it would break the
-// system writers it exists for. So item CREATE is still a mint site for a
-// hand-written reserved key. That is BUG-3163 — not BUG-2685, which this
-// comment used to cite: 2685 fixed SCHEMA-DECLARED reserved keys (grandfathered
-// FieldDefs), not hand-written values (BUG-2696 checkpoint 1).
+// A FULL `fields` blob on update is the one door that may still name these
+// keys, and only to CARRY the stored value unchanged: a blob that changes one,
+// or omits a stored one (which would delete it), is refused in the update
+// transaction against the locked row (BUG-3163; see the server's
+// composeReservedCarryGuard). Pad's own writers no longer send a full blob:
+// note/decide use typed append members, `pad github link` a typed member, and
+// convention activation ItemCreate.Convention.
 //
 // What the fields_patch gate buys is that the UPDATE door — the one a user or
 // an agent actually reaches for, on all three transports — can no longer write

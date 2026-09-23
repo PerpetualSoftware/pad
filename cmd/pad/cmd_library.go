@@ -363,7 +363,9 @@ Examples:
 			}
 
 			if foundConvention != nil {
-				fieldsJSON, err := models.BuildConventionItemFields("active", &models.ItemConventionMetadata{
+				// BUG-3163: the metadata travels as the typed `convention`
+				// member; create's `fields` refuses the reserved key.
+				fieldsJSON, convention, err := models.BuildConventionItemCreate("active", &models.ItemConventionMetadata{
 					Category:    foundConvention.Category,
 					Trigger:     foundConvention.Trigger,
 					Surfaces:    foundConvention.Surfaces,
@@ -375,9 +377,10 @@ Examples:
 				}
 
 				input := models.ItemCreate{
-					Title:   foundConvention.Title,
-					Content: foundConvention.Content,
-					Fields:  string(fieldsJSON),
+					Title:      foundConvention.Title,
+					Content:    foundConvention.Content,
+					Fields:     fieldsJSON,
+					Convention: convention,
 				}
 
 				target, err := libraryTargetSlug(client, ws, string(artifact.KindConvention), "conventions")
@@ -392,6 +395,9 @@ Examples:
 							return fmt.Errorf("convention activation blocked: plan limit reached")
 						}
 					}
+					return err
+				}
+				if err := verifyConventionLanded(item); err != nil {
 					return err
 				}
 

@@ -2086,15 +2086,17 @@ export const api = {
 						priority: convention.enforcement,
 						enforcement: convention.enforcement,
 						surfaces: convention.surfaces,
-						commands: convention.commands ?? [],
-						convention: {
-							category: convention.category,
-							trigger: convention.trigger,
-							surfaces: convention.surfaces,
-							enforcement: convention.enforcement,
-							commands: convention.commands ?? []
-						}
-					})
+						commands: convention.commands ?? []
+					}),
+					// BUG-3163: create's `fields` refuses the reserved `convention`
+					// key, so the metadata travels as the typed member.
+					convention: {
+						category: convention.category,
+						trigger: convention.trigger,
+						surfaces: convention.surfaces,
+						enforcement: convention.enforcement,
+						commands: convention.commands ?? []
+					}
 				})
 			}),
 

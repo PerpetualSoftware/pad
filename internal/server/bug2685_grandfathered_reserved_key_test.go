@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -97,19 +98,17 @@ func TestBUG2685_LegacyDeclarationRefusesTheSystemsOwnWrite(t *testing.T) {
 		t.Fatalf("decode created item: %v (%s)", err, got.body)
 	}
 
-	// Exactly what `pad item note` sends.
-	fields, err := models.AppendImplementationNote(created.Fields, models.ItemImplementationNote{
-		Summary:   "a note",
-		Details:   "the details",
-		CreatedAt: "2026-09-14T00:00:00Z",
-		CreatedBy: "agent",
-	})
-	if err != nil {
-		t.Fatalf("AppendImplementationNote: %v", err)
-	}
-
+	// Exactly what `pad item note` sends to a current server: the typed append
+	// member (BUG-3056). This leg used to send the whole blob with the note
+	// appended, the legacy client-side path that only runs against servers
+	// predating that member. BUG-3163 refuses a full `fields` write that
+	// changes stored reserved metadata, so that shape is no longer the
+	// system's own write on this server.
 	rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+ws+"/items/"+created.Slug,
-		map[string]interface{}{"fields": fields})
+		map[string]interface{}{"append_implementation_note": map[string]interface{}{
+			"summary": "a note",
+			"details": "the details",
+		}})
 	if rr.Code != http.StatusOK {
 		t.Errorf("the system's own note write was refused by a legacy declaration: %d %s",
 			rr.Code, rr.Body.String())
@@ -155,9 +154,19 @@ func TestBUG2685_ADeclarationDoesNotDecideWhetherAWriteSucceeds(t *testing.T) {
 			"declared collection answered %d\n  undeclared: %s\n  declared:   %s",
 			control.code, declared.code, control.body, declared.body)
 	}
-	if control.code != http.StatusCreated {
-		t.Fatalf("premise broken: the control write did not succeed (%d %s), so the comparison above "+
-			"could pass by both paths failing", control.code, control.body)
+	// BUG-3163 closed the create-mint hole this leg's comment named: create's
+	// `fields` now refuses a reserved key on EVERY collection, before schema
+	// validation runs. So both answers are that refusal, and the premise is
+	// pinned to IT rather than to "some 400": a declaration-driven type error
+	// would also be a 400, and would make the comparison pass for the wrong
+	// reason.
+	if control.code != http.StatusBadRequest || !strings.Contains(control.body, "cannot be set through an item create's fields") {
+		t.Fatalf("premise broken: the control write was not refused by the reserved-key create gate (%d %s)",
+			control.code, control.body)
+	}
+	if control.body != declared.body {
+		t.Errorf("a grandfathered declaration changed the refusal:\n  undeclared: %s\n  declared:   %s",
+			control.body, declared.body)
 	}
 }
 

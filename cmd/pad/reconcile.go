@@ -426,3 +426,25 @@ func verifyPRUnlinked(updated *models.Item) error {
 	}
 	return errors.New("the server accepted the request but the item still shows a linked PR. Is the server older than this CLI? `pad github unlink` needs a server with BUG-2696 (compare `pad --version` with `pad server info`)")
 }
+
+// verifyConventionLanded checks library activation's typed `convention` member
+// was STORED (BUG-3163). A server older than this CLI ignores the member and
+// creates the item without it, answering 201. item.Convention cannot tell the
+// two apart: ExtractItemConventionMetadata falls back to the sibling trigger /
+// scope / category keys, which this write also sends, so it is non-nil either
+// way. The stored `convention` key in the fields blob is the only witness.
+func verifyConventionLanded(created *models.Item) error {
+	if created != nil && created.Fields != "" {
+		var fields map[string]any
+		if json.Unmarshal([]byte(created.Fields), &fields) == nil {
+			if v, ok := fields[models.ItemFieldConvention]; ok && v != nil {
+				return nil
+			}
+		}
+	}
+	ref := "the new item"
+	if created != nil {
+		ref = created.Slug
+	}
+	return fmt.Errorf("the server created %s but stored no convention metadata. Is the server older than this CLI? `pad library activate` needs a server with BUG-3163 (compare `pad --version` with `pad server info`); the item exists and can be deleted or re-created once the server is upgraded", ref)
+}

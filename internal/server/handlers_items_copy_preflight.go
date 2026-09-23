@@ -1561,11 +1561,12 @@ func reservedFieldLabel(key string) string {
 // renders as a plain refusal rather than inventing a command; an unhelpful-but-
 // true message beats a confident wrong one.
 //
-// Every remedy here was run against `--help` when it was written. Two keys
-// deliberately have none, for opposite reasons:
+// Every remedy here was run against `--help` when it was written. One key
+// deliberately has none:
 //
 //   - `convention` — its metadata is stamped at activation / create time
-//     (models.BuildConventionItemFields), and a convention item's user-facing
+//     through the typed ItemCreate.Convention member (BUG-3163; built by
+//     models.BuildConventionItemCreate), and a convention item's user-facing
 //     trigger / scope / priority are ORDINARY schema fields, so `pad item
 //     update --field trigger=always` is unaffected by this gate.
 //

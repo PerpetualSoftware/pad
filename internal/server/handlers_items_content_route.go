@@ -425,6 +425,11 @@ func (s *Server) writeTypedItemRefusal(w http.ResponseWriter, item *models.Item,
 		writeOpenChildrenError(w, itemRefOrSlug(*item), details)
 		return true
 	}
+	// BUG-3163: the full-fields reserved-metadata carry check, composed into
+	// the precheck every ordering here runs.
+	if writeReservedFieldsCarryError(w, err) {
+		return true
+	}
 	if conflict, ok := asUpdateConflictError(err); ok {
 		writeUpdateConflictError(w, itemRefOrSlug(*item), conflict)
 		return true

@@ -1159,6 +1159,46 @@ type ItemCreate struct {
 	AgentRoleID    *string `json:"agent_role_id,omitempty"`
 	CreatedBy      string  `json:"created_by,omitempty"`
 	Source         string  `json:"source,omitempty"`
+	// Convention is the typed door for the `convention` system metadata key
+	// (BUG-3163). Create's `fields` refuses every reserved key, so this is how
+	// convention activation writes it: the handler validates the object and
+	// lowers it into the fields blob. Like ItemUpdate.GitHubPR (BUG-2696), what
+	// it buys is VALIDITY, not sender identity — any caller may send it, but
+	// only a well-formed object gets in. The sibling schema fields a convention
+	// also carries (trigger, scope, priority, …) stay ordinary `fields`.
+	Convention *ItemConventionMetadata `json:"convention,omitempty"`
+}
+
+// ValidateConventionMetadata normalizes a typed convention member and refuses
+// one that carries nothing: an empty object would lower to a key the extractor
+// reads back as "no metadata", so accepting it would report a write that
+// stored nothing readable.
+func ValidateConventionMetadata(metadata *ItemConventionMetadata) (*ItemConventionMetadata, error) {
+	normalized := normalizeItemConventionMetadata(metadata)
+	if normalized == nil {
+		return nil, errors.New("convention is empty: set at least one of category, trigger, surfaces, enforcement, commands")
+	}
+	return normalized, nil
+}
+
+// BuildConventionItemCreate is BuildConventionItemFields for the create door
+// (BUG-3163): the same fields blob MINUS the reserved `convention` key, plus
+// the normalized metadata to send as ItemCreate.Convention.
+func BuildConventionItemCreate(status string, metadata *ItemConventionMetadata) (string, *ItemConventionMetadata, error) {
+	fieldsJSON, err := BuildConventionItemFields(status, metadata)
+	if err != nil {
+		return "", nil, err
+	}
+	fieldsMap, err := parseMutableItemFields(fieldsJSON)
+	if err != nil {
+		return "", nil, err
+	}
+	delete(fieldsMap, ItemFieldConvention)
+	out, err := marshalItemFields(fieldsMap)
+	if err != nil {
+		return "", nil, err
+	}
+	return out, normalizeItemConventionMetadata(metadata), nil
 }
 
 type ItemUpdate struct {

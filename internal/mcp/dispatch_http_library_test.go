@@ -112,6 +112,15 @@ func TestDispatch_LibraryActivate_ConventionByTitle(t *testing.T) {
 	if fields["trigger"] != "on-commit" {
 		t.Errorf("trigger = %v, want on-commit", fields["trigger"])
 	}
+	// BUG-3163: create's `fields` refuses the reserved `convention` key, so the
+	// metadata must travel as the typed member and not in `fields`.
+	if _, bad := fields["convention"]; bad {
+		t.Errorf("fields still carries the reserved convention key: %v", fields["convention"])
+	}
+	conv, ok := got["convention"].(map[string]any)
+	if !ok || conv["category"] != "git" || conv["trigger"] != "on-commit" {
+		t.Errorf("typed convention member = %#v, want category=git trigger=on-commit", got["convention"])
+	}
 }
 
 func TestDispatch_LibraryActivate_PlaybookByTitle_FallsThroughConventionLookup(t *testing.T) {

@@ -1246,6 +1246,9 @@ export interface ItemCreate {
 	agent_role_id?: string;
 	created_by?: string;
 	source?: string;
+	/** Typed door for the reserved `convention` metadata key (BUG-3163): create's
+	 *  `fields` refuses it, and the server validates and stores this instead. */
+	convention?: ItemConventionMetadata;
 }
 
 export interface ItemUpdate {
