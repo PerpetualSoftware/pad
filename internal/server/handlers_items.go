@@ -1164,6 +1164,43 @@ func writeStoredStateUnreadable(w http.ResponseWriter, err error) bool {
 	return true
 }
 
+// refuseUndeclaredFields answers the strict opt-in `refuse_undeclared_fields`
+// on an item update (BUG-3156): when the caller set it and the write would
+// store a key the item's collection does not declare, the write is refused
+// with 400 validation_error and nothing is written. It refuses EXACTLY the
+// keys warnings.undeclared_fields would otherwise have named on this write,
+// so the two can never disagree about what "undeclared" means here: on a
+// fields_patch write, the patched keys only; on a full `fields` write, the
+// whole blob, stray stored keys included, as that warning always has.
+//
+// Without the flag nothing changes: the key is accepted and named in
+// warnings.undeclared_fields (BUG-2850). A server that predates the flag
+// ignores it as an unknown member, which is also that accept-and-warn, so a
+// strict caller must not read a 200 as proof the key was declared unless the
+// warning is absent.
+//
+// Its first callers are both transports of pad_item bulk-update, whose
+// status/priority keys are the operation's, not the caller's, the same
+// reasoning POST /items/bulk refuses them on (BUG-3154).
+func refuseUndeclaredFields(w http.ResponseWriter, refuse bool, collectionSlug string, undeclared []string) bool {
+	if !refuse || len(undeclared) == 0 {
+		return false
+	}
+	writeError(w, http.StatusBadRequest, "validation_error",
+		fmt.Sprintf("collection %q has no %s field, and refuse_undeclared_fields is set, so nothing was written",
+			collectionSlug, quotedList(undeclared)))
+	return true
+}
+
+// quotedList renders keys as "a", "b" for a refusal message.
+func quotedList(keys []string) string {
+	q := make([]string, len(keys))
+	for i, k := range keys {
+		q[i] = strconv.Quote(k)
+	}
+	return strings.Join(q, ", ")
+}
+
 func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	// BUG-3080: set once the write has COMMITTED, read by the client_write
 	// release deferred below — the tab's mark moves only for a write that
@@ -1459,6 +1496,9 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		}
 		droppedDefaults = append(droppedDefaults, writeDropped...)
 		undeclaredFields = items.UndeclaredFieldKeys(fieldMap, schema)
+		if refuseUndeclaredFields(w, input.RefuseUndeclaredFields, coll.Slug, undeclaredFields) {
+			return
+		}
 
 		if err := s.checkUniqueFields(workspaceID, item.CollectionID, item.ID, schema, fieldMap); err != nil {
 			writeError(w, http.StatusConflict, "conflict", err.Error())
@@ -1637,6 +1677,9 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			stored[k] = v
 		}
 		undeclaredFields = items.UndeclaredFieldKeys(stored, schema)
+		if refuseUndeclaredFields(w, input.RefuseUndeclaredFields, coll.Slug, undeclaredFields) {
+			return
+		}
 		if err := items.ValidatePartialFields(patchMap, schema); err != nil {
 			writeError(w, http.StatusBadRequest, "validation_error", err.Error())
 			return

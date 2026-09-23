@@ -3902,9 +3902,16 @@ Examples:
 					applied["priority"] = priority
 				}
 
+				// RefuseUndeclaredFields (BUG-3156): status and priority
+				// are this OPERATION's keys, not ones the caller typed, so
+				// an item whose collection declares neither is refused
+				// into `failed` with validation_error rather than given an
+				// orphan field: the contract POST /items/bulk (and so
+				// WebMCP) has had since BUG-3154.
 				input := models.ItemUpdate{
-					FieldsPatch: patch,
-					Force:       force,
+					FieldsPatch:            patch,
+					Force:                  force,
+					RefuseUndeclaredFields: true,
 				}
 
 				_, err = client.UpdateItem(ws, slug, input)
