@@ -2606,6 +2606,15 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for k, v := range input.FieldOverrides {
+		if v == nil {
+			// An explicit null means "leave this unset": DELETE rather than
+			// assign nil, exactly as the copy does (items_cross_workspace_copy.go,
+			// where the reason is recorded). Assigning persisted a literal
+			// `"key": null` and suppressed the schema default; codex round 1 on
+			// BUG-2379 found the two siblings disagreeing here too.
+			delete(result.Fields, k)
+			continue
+		}
 		result.Fields[k] = v
 	}
 

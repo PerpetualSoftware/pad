@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -275,5 +276,37 @@ func TestMoveItem_ReservedOverrideKeepsItsOwnMessage(t *testing.T) {
 	}
 	if !strings.Contains(rr.Body.String(), "reserved for system metadata") {
 		t.Errorf("a reserved key should be refused as reserved, not as undeclared; body=%s", rr.Body.String())
+	}
+}
+
+// An explicit null override UNSETS the key, as the copy's does, rather than
+// storing a literal null (codex round 1 on BUG-2379).
+func TestMoveItem_NullOverrideUnsetsTheField(t *testing.T) {
+	srv := testServer(t)
+	slug, src, dst := moveTestCollections(t, srv)
+	item := createItem(t, srv, slug, src.Slug, map[string]interface{}{
+		"title": "Movable", "fields": `{"note":"hi"}`,
+	})
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/move",
+		map[string]interface{}{
+			"target_collection": dst.Slug,
+			"field_overrides":   map[string]interface{}{"ticket": "T-9", "note": nil},
+		})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("move: %d %s", rr.Code, rr.Body.String())
+	}
+	got, err := srv.store.GetItem(item.ID)
+	if err != nil || got == nil {
+		t.Fatalf("GetItem: %v", err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal([]byte(got.Fields), &fields); err != nil {
+		t.Fatalf("decode fields %q: %v", got.Fields, err)
+	}
+	if v, present := fields["note"]; present {
+		t.Errorf("a null override must unset the field, but it is stored as %#v (fields=%s)", v, got.Fields)
+	}
+	if fields["ticket"] != "T-9" {
+		t.Errorf("the other override was lost: fields=%s", got.Fields)
 	}
 }
