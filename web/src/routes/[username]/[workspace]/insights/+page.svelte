@@ -19,7 +19,7 @@
 		const params = new URLSearchParams();
 		params.set('window', selectedWindow);
 		if (offset > 0) params.set('offset', String(offset));
-		if (activeCollections.length > 0) params.set('collections', activeCollections.join(','));
+		if (requestCollections.length > 0) params.set('collections', requestCollections.join(','));
 		const qs = params.toString();
 		return `/${username}/${wsSlug}/insights/print${qs ? `?${qs}` : ''}`;
 	});
@@ -47,6 +47,13 @@
 	// independently; the next save persists this cleaned list.
 	let systemSlugs = $derived(new Set(collections.filter((c) => c.is_system).map((c) => c.slug)));
 	let activeCollections = $derived(selectedCollections.filter((s) => !systemSlugs.has(s)));
+	// When the collection list could not be loaded, nothing is known to be a
+	// system collection and the picker shows no chips, so no selection can be
+	// shown either: the REPORT goes unfiltered (the server's default already
+	// leaves system collections out). The SAVED layout keeps activeCollections,
+	// so a failed load never erases the user's choice (codex round 2).
+	let collectionsFailed = $state(false);
+	let requestCollections = $derived(collectionsFailed ? [] : activeCollections);
 	// Period navigation: periods back from now (0 = current). SESSION-only — not
 	// part of ReportLayout, never persisted via scheduleSave.
 	let offset = $state(0);
@@ -138,7 +145,7 @@
 			hiddenCards.clear();
 			hydrated = false;
 		}
-		const colls = [...activeCollections];
+		const colls = [...requestCollections];
 		const off = offset;
 		if (slug) {
 			loadReport(slug, win, colls, off);
@@ -148,7 +155,9 @@
 	async function loadCollections(slug: string) {
 		try {
 			collections = await api.collections.list(slug);
+			collectionsFailed = false;
 		} catch {
+			collectionsFailed = true;
 			// Filter is a progressive enhancement; allow the page to render.
 		}
 	}
@@ -458,8 +467,8 @@
 			<button
 				type="button"
 				class="chip"
-				class:active={activeCollections.length === 0}
-				aria-pressed={activeCollections.length === 0}
+				class:active={requestCollections.length === 0}
+				aria-pressed={requestCollections.length === 0}
 				onclick={clearCollectionFilter}
 			>
 				All
