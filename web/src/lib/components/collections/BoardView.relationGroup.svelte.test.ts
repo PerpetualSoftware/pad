@@ -64,6 +64,7 @@ vi.mock('$lib/stores/workspace.svelte', () => ({
 }));
 
 import BoardView from './BoardView.svelte';
+import { STATUS_CHIP, chooseStatus } from './statusPickerTestKit';
 
 /** BoardView's source with comments stripped, so a guard cannot be satisfied by prose. */
 const SRC = readFileSync(resolve(__dirname, './BoardView.svelte'), 'utf8').replace(
@@ -239,10 +240,10 @@ describe('BoardView grouped by a relation field', () => {
 		});
 
 		expect(screen.container.querySelectorAll('.item-card')).toHaveLength(2);
-		const chip = screen.container.querySelector('[title="Click to cycle status"]');
+		const chip = screen.container.querySelector(STATUS_CHIP);
 		expect(chip, 'the chip is withheld again — repointing it was the whole unit').not.toBeNull();
 
-		await fireEvent.click(chip as HTMLElement);
+		await chooseStatus(screen.container, 'done');
 
 		// A STATUS value through the status prop. Not a lane id, and not through
 		// the lane writer — which is the only callback that reaches `car_color`.
@@ -251,7 +252,7 @@ describe('BoardView grouped by a relation field', () => {
 		expect(onLaneChange).not.toHaveBeenCalled();
 	});
 
-	it('STILL offers status cycling on an ordinary board — the counterfactual', () => {
+	it('STILL offers the status picker on an ordinary board — the counterfactual', () => {
 		// Withholding it everywhere would remove a working affordance from every
 		// board on the instance, which is worse than the defect.
 		const coll = collection();
@@ -283,7 +284,7 @@ describe('BoardView grouped by a relation field', () => {
 			} as never,
 		});
 
-		expect(screen.container.querySelector('[title="Click to cycle status"]')).not.toBeNull();
+		expect(screen.container.querySelector(STATUS_CHIP)).not.toBeNull();
 	});
 
 	it('labels a live lane with REF and title, not the stored id', () => {
@@ -760,9 +761,9 @@ describe('a REFUSED grouping must not write a group value (U4, codex round 1 P5)
 		expect(screen.container.textContent).toContain('more than one group');
 		expect(screen.container.querySelectorAll('.item-card')).toHaveLength(1);
 
-		const chip = screen.container.querySelector('[title="Click to cycle status"]');
+		const chip = screen.container.querySelector(STATUS_CHIP);
 		expect(chip, 'the chip is withheld again').not.toBeNull();
-		await fireEvent.click(chip as HTMLElement);
+		await chooseStatus(screen.container, 'done');
 
 		expect(onStatusChange).toHaveBeenCalledTimes(1);
 		expect(onStatusChange.mock.calls[0][1]).toBe('done');

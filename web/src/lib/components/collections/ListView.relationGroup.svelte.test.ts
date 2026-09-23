@@ -44,6 +44,7 @@ vi.mock('$lib/stores/collections.svelte', () => ({
 }));
 
 import ListView from './ListView.svelte';
+import { STATUS_CHIP, chooseStatus } from './statusPickerTestKit';
 
 const DANGLING = 'f47ac10b-58cc-4372-a567-0e02b2c3d479';
 
@@ -170,10 +171,10 @@ describe('ListView grouped by a relation field', () => {
 				onStatusChange,
 			} as never,
 		});
-		const chip = screen.container.querySelector('[title="Click to cycle status"]');
+		const chip = screen.container.querySelector(STATUS_CHIP);
 		expect(chip, 'the chip is withheld again — it is the only status affordance on a card').not.toBeNull();
 
-		await fireEvent.click(chip as HTMLElement);
+		await chooseStatus(screen.container, 'done');
 
 		// The write names `status`, carries a STATUS value, and the lane writer
 		// — the only callback that could reach `car_color` — never fires.
@@ -182,14 +183,14 @@ describe('ListView grouped by a relation field', () => {
 		expect(onLaneChange).not.toHaveBeenCalled();
 	});
 
-	it('STILL groups and cycles status on an ordinary field — the counterfactual', () => {
+	it('STILL groups and offers the status picker on an ordinary field — the counterfactual', () => {
 		const screen = renderList(
 			[item('car-1')],
 			[{ key: 'status', label: 'Status', type: 'select', options: ['open', 'done'] }],
 			'status',
 		);
 		expect(groups(screen)).toContainEqual({ ref: null, note: null, name: 'Open' });
-		expect(screen.container.querySelector('[title="Click to cycle status"]')).not.toBeNull();
+		expect(screen.container.querySelector(STATUS_CHIP)).not.toBeNull();
 	});
 });
 
@@ -354,16 +355,16 @@ describe('a REFUSED grouping in the list must not write a group value (U4, codex
 		// about a refused grouping rather than about an ordinary one.
 		expect(screen.container.textContent).toContain('more than one group');
 
-		const chip = screen.container.querySelector('[title="Click to cycle status"]');
+		const chip = screen.container.querySelector(STATUS_CHIP);
 		expect(chip).not.toBeNull();
-		await fireEvent.click(chip as HTMLElement);
+		await chooseStatus(screen.container, 'done');
 
 		expect(onStatusChange).toHaveBeenCalledTimes(1);
 		expect(onStatusChange.mock.calls[0][1]).toBe('done');
 		expect(onLaneChange).not.toHaveBeenCalled();
 	});
 
-	it('CONTROL: an ordinary grouped list still offers status cycling', () => {
+	it('CONTROL: an ordinary grouped list still offers the status picker', () => {
 		// Withholding it everywhere would remove a working affordance from every
 		// list on the instance, which is worse than the defect.
 		const withStatus = (id: string) =>
@@ -378,7 +379,7 @@ describe('a REFUSED grouping in the list must not write a group value (U4, codex
 				onStatusChange: vi.fn(),
 			} as never,
 		});
-		expect(screen.container.querySelector('[title="Click to cycle status"]')).not.toBeNull();
+		expect(screen.container.querySelector(STATUS_CHIP)).not.toBeNull();
 	});
 
 	it('gates the drop write on groupingRefusal', () => {
