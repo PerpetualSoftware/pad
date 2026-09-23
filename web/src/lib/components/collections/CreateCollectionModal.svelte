@@ -10,6 +10,7 @@
 		coerceDefault,
 		fieldFromDef,
 		isSafeDoneFieldKey,
+		keptAbandoned,
 		typeSupportsDefault,
 		validateFieldKey,
 		type EditableField
@@ -316,6 +317,8 @@
 					) {
 						const terms = f.terminalOptions.filter((t) => def.options!.includes(t));
 						if (terms.length > 0) def.terminal_options = terms;
+						const ab = keptAbandoned(f.abandonedOptions, terms);
+						if (ab.length > 0) def.abandoned_options = ab;
 					}
 					// Advanced controls (T3 / TASK-596). Only emit when set so
 					// payloads stay compact and round-trip with existing schemas.

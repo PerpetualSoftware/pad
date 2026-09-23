@@ -117,6 +117,11 @@
 		const idx = field.terminalOptions.indexOf(option);
 		if (idx >= 0) {
 			field.terminalOptions.splice(idx, 1);
+			// An option that no longer closes an item cannot close it without
+			// delivering either: the server refuses abandoned_options outside
+			// terminal_options (BUG-2347).
+			const ab = field.abandonedOptions.indexOf(option);
+			if (ab >= 0) field.abandonedOptions.splice(ab, 1);
 		} else {
 			field.terminalOptions.push(option);
 		}
@@ -124,6 +129,23 @@
 
 	function isTerminal(option: string): boolean {
 		return field.terminalOptions.includes(option);
+	}
+
+	// "Counts as abandoned" (BUG-2347): a terminal option that closes an item
+	// WITHOUT delivering it (cancelled, rejected, overturned…). The changelog,
+	// standup and report throughput leave those items out. Offered only on a
+	// terminal option.
+	function toggleAbandoned(option: string) {
+		const idx = field.abandonedOptions.indexOf(option);
+		if (idx >= 0) {
+			field.abandonedOptions.splice(idx, 1);
+		} else {
+			field.abandonedOptions.push(option);
+		}
+	}
+
+	function isAbandoned(option: string): boolean {
+		return field.abandonedOptions.includes(option);
 	}
 
 	// ── Advanced section ─────────────────────────────────────────────────────
@@ -330,6 +352,11 @@
 							<span class="done-pill done-pill--saved">Saved</span>
 						{/if}
 					</span>
+					<span
+						class="options-col-abandoned"
+						title="Mark a terminal option that closes an item WITHOUT delivering it (cancelled, rejected, overturned…). The changelog, standup and reports leave those items out of completed work."
+						>Abandoned?</span
+					>
 					<span class="options-col-spacer"></span>
 				</div>
 				{#if !isActiveDoneField}
@@ -399,6 +426,25 @@
 								</svg>
 							{/if}
 						</button>
+						{#if showsTerminalColumn}
+							{#if isTerminal(field.options[oi])}
+								<button
+									class="option-abandoned-toggle"
+									class:active={isAbandoned(field.options[oi])}
+									type="button"
+									aria-pressed={isAbandoned(field.options[oi])}
+									onclick={() => toggleAbandoned(field.options[oi])}
+									title={isAbandoned(field.options[oi])
+										? 'Counts as abandoned: left out of the changelog and completed work (click to unmark)'
+										: 'Mark as abandoned: this value closes an item without delivering it'}
+									aria-label={isAbandoned(field.options[oi])
+										? 'Unmark as abandoned'
+										: 'Mark as abandoned'}
+								>&#10007;</button>
+							{:else}
+								<span class="option-abandoned-placeholder" aria-hidden="true"></span>
+							{/if}
+						{/if}
 						<button
 							class="option-remove-btn"
 							type="button"
@@ -886,6 +932,42 @@
 
 	.option-done-toggle.active {
 		color: var(--accent-green, #22c55e);
+	}
+
+	.options-col-abandoned {
+		width: 40px;
+		flex-shrink: 0;
+		text-align: center;
+		font-size: 0.75em;
+		color: var(--text-muted);
+	}
+
+	.option-abandoned-toggle,
+	.option-abandoned-placeholder {
+		width: 40px;
+		flex-shrink: 0;
+	}
+
+	.option-abandoned-toggle {
+		background: none;
+		border: none;
+		color: var(--text-muted);
+		opacity: 0.5;
+		cursor: pointer;
+		padding: var(--space-1);
+		border-radius: var(--radius-sm);
+		transition:
+			color 0.15s,
+			opacity 0.15s;
+	}
+
+	.option-abandoned-toggle:hover {
+		opacity: 1;
+	}
+
+	.option-abandoned-toggle.active {
+		color: var(--accent-red, #ef4444);
+		opacity: 1;
 	}
 
 	.option-remove-btn {
