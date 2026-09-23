@@ -31,6 +31,13 @@ export interface EditableField {
 	options: string[];
 	originalOptions: string[];
 	terminalOptions: string[];
+	/**
+	 * Subset of terminalOptions that closes WITHOUT delivering
+	 * (`abandoned_options`, BUG-2347). Always an array, like terminalOptions.
+	 * It MUST round-trip: a save that rebuilt the FieldDef without it would
+	 * silently strip the server-side declaration.
+	 */
+	abandonedOptions: string[];
 	required?: boolean;
 	computed?: boolean;
 	collection?: string;
@@ -404,6 +411,7 @@ export function blankField(): EditableField {
 		options: [],
 		originalOptions: [],
 		terminalOptions: [],
+		abandonedOptions: [],
 		keyTouched: false
 	};
 }
@@ -426,6 +434,7 @@ export function fieldFromDef(def: FieldDef, existing: boolean): EditableField {
 		options: def.options ? [...def.options] : [],
 		originalOptions: existing && def.options ? [...def.options] : [],
 		terminalOptions: def.terminal_options ? [...def.terminal_options] : [],
+		abandonedOptions: def.abandoned_options ? [...def.abandoned_options] : [],
 		required: def.required,
 		computed: def.computed,
 		collection: def.collection,
@@ -439,4 +448,14 @@ export function fieldFromDef(def: FieldDef, existing: boolean): EditableField {
 		// the key is preserved verbatim, not overwritten by slugify(label).
 		keyTouched: true
 	};
+}
+
+/**
+ * The abandoned markings to save beside `terms` (the terminal options being
+ * saved): only those still terminal, so an option renamed, removed or
+ * unmarked terminal cannot leave a declaration the server refuses
+ * (abandoned_options must be a subset of terminal_options, BUG-2347).
+ */
+export function keptAbandoned(abandoned: readonly string[], terms: readonly string[]): string[] {
+	return abandoned.filter((a) => terms.includes(a));
 }
