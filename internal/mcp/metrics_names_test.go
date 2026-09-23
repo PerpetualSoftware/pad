@@ -33,7 +33,45 @@ func TestIsKnownCallName(t *testing.T) {
 	if !srv.IsKnownCallName(SetWorkspaceToolName) {
 		t.Errorf("%q is not a known call name", SetWorkspaceToolName)
 	}
-	for _, m := range []string{"initialize", "tools/list", "tools/call", "ping", "resources/read", "notifications/initialized"} {
+	// Literal strings, not the mcp constants protocolMethods is built from, so
+	// an entry dropped from that list fails here (every method mcp-go v1.1.0
+	// defines).
+	for _, m := range []string{
+		"completion/complete",
+		"elicitation/create",
+		"initialize",
+		"logging/setLevel",
+		"notifications/cancelled",
+		"notifications/elicitation/complete",
+		"notifications/initialized",
+		"notifications/message",
+		"notifications/progress",
+		"notifications/prompts/list_changed",
+		"notifications/resources/list_changed",
+		"notifications/resources/updated",
+		"notifications/roots/list_changed",
+		"notifications/subscriptions/acknowledged",
+		"notifications/tasks/status",
+		"notifications/tools/list_changed",
+		"ping",
+		"prompts/get",
+		"prompts/list",
+		"resources/list",
+		"resources/read",
+		"resources/subscribe",
+		"resources/templates/list",
+		"resources/unsubscribe",
+		"roots/list",
+		"sampling/createMessage",
+		"server/discover",
+		"subscriptions/listen",
+		"tasks/cancel",
+		"tasks/get",
+		"tasks/list",
+		"tasks/result",
+		"tools/call",
+		"tools/list",
+	} {
 		if !srv.IsKnownCallName(m) {
 			t.Errorf("protocol method %q is not a known call name", m)
 		}
