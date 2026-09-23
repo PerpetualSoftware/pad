@@ -1147,7 +1147,7 @@ func (s *Server) publishBulkItemsEvent(workspaceID, op, collection string, count
 	if s.events == nil {
 		return
 	}
-	s.events.Publish(events.Event{
+	s.publishActivityEvent(events.Event{
 		Type:        sseItemsBulk,
 		WorkspaceID: workspaceID,
 		Collection:  collection,

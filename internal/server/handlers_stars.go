@@ -45,7 +45,7 @@ func (s *Server) handleStarItem(w http.ResponseWriter, r *http.Request) {
 
 	if s.events != nil {
 		actor, source := actorFromRequest(r)
-		s.events.Publish(events.Event{
+		s.publishActivityEvent(events.Event{
 			Type:        events.ItemStarred,
 			WorkspaceID: workspaceID,
 			ItemID:      item.ID,
@@ -112,7 +112,7 @@ func (s *Server) handleUnstarItem(w http.ResponseWriter, r *http.Request) {
 
 	if s.events != nil {
 		actor, source := actorFromRequest(r)
-		s.events.Publish(events.Event{
+		s.publishActivityEvent(events.Event{
 			Type:        events.ItemUnstarred,
 			WorkspaceID: workspaceID,
 			ItemID:      item.ID,

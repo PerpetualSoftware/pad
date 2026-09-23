@@ -1301,15 +1301,32 @@ func (b *RedisBus) unsubscribeLocked(ch chan Event) {
 // Publish sends an event to Redis, which distributes it to all instances.
 // Events are assigned a globally unique sequence ID via Redis INCR so that
 // Last-Event-ID is valid across any instance on reconnect.
-func (b *RedisBus) Publish(event Event) {
+//
+// Returns ErrBusClosed or an UNCONFIRMED error; see EventBus.Publish. Every
+// failure below except the closed check reports as unconfirmed, including the
+// two that provably published nothing (a failed assignment and a marshal
+// error): the caller's only use of the distinction is the outcome label, and
+// collapsing a proven non-publish into "unconfirmed" overstates nothing.
+func (b *RedisBus) Publish(event Event) error {
 	if event.Timestamp == 0 {
 		event.Timestamp = time.Now().UnixMilli()
 	}
 
+	// THE ROOT CONTEXT IS CANCELLED ONLY BY Close, so an error here proves
+	// shutdown began before this publish issued any command, and nothing
+	// went out. Read before the Redis call rather than inferred from its
+	// error, which would be indistinguishable from a request that raced a
+	// real failure (the reasoning watchevents' RedisBus.Publish records for
+	// BUG-2699). A Close landing AFTER this check makes the call fail with a
+	// context error, which is reported as unconfirmed, and is: the command
+	// may already have been written.
+	if b.ctx.Err() != nil {
+		return ErrBusClosed
+	}
+
 	channel := b.keys.Name(redisChannelSuffix) + event.WorkspaceID
 	if b.publishEpoch {
-		b.publishWithEpoch(channel, event)
-		return
+		return b.publishWithEpoch(channel, event)
 	}
 
 	// PHASE 1: the historical two-call shape — assign, then publish — so the
@@ -1353,21 +1370,27 @@ func (b *RedisBus) Publish(event Event) {
 		// bought nothing: this bus has no local fan-out path, so an event
 		// that does not reach Redis reaches no subscriber on this instance
 		// either, fallback id or not. Failing loudly is the honest outcome.
-		slog.Error("failed to assign an event ID from Redis; dropping the publish", "error", err)
-		return
+		//
+		// NOT LOGGED HERE, nor on any failure below (BUG-2732): the error is
+		// returned, and the caller's publishActivityEvent logs it with the
+		// outcome and a rate bound. A per-failure log at this layer ran once
+		// per publish for the whole of a Redis outage, unbounded.
+		return fmt.Errorf("events: assign event id (phase 1): %w", err)
 	}
 	event.ID = id
 
 	data, err := json.Marshal(event)
 	if err != nil {
-		slog.Error("failed to marshal event for Redis", "error", err)
-		return
+		return fmt.Errorf("events: marshal event: %w", err)
 	}
 
+	// A failure HERE is the one that leaves an assigned ID unpublished, and
+	// that hole is invisible to subscribers (EventBus.Publish's doc comment).
 	if err := b.client.Publish(b.ctx, channel, data).Err(); err != nil {
-		slog.Error("failed to publish event to Redis; the event may or may not have reached subscribers, and is not retried here",
-			"channel", channel, "phase", 1, "error", err)
+		// Not retried: the event may or may not have reached subscribers.
+		return fmt.Errorf("events: redis publish (phase 1): %w", err)
 	}
+	return nil
 }
 
 // publishWithEpoch is the PHASE 2 path: one atomic script assigns the ID,
@@ -1379,11 +1402,10 @@ func (b *RedisBus) Publish(event Event) {
 // running a PRE-phase-1 binary cannot parse this at all, which is the reason
 // the flip is a second roll rather than a config change (see
 // config.EventsPublishEpoch).
-func (b *RedisBus) publishWithEpoch(channel string, event Event) {
+func (b *RedisBus) publishWithEpoch(channel string, event Event) error {
 	data, err := json.Marshal(event)
 	if err != nil {
-		slog.Error("failed to marshal event for Redis", "error", err)
-		return
+		return fmt.Errorf("events: marshal event: %w", err)
 	}
 
 	// A fresh token per logical publish — NOT per attempt, which is the point:
@@ -1402,14 +1424,15 @@ func (b *RedisBus) publishWithEpoch(channel string, event Event) {
 		// bus has no local fan-out path so the event reaches nobody here
 		// either way.
 		//
-		// Note what this error does and does not mean: the script is atomic,
-		// so it never half-executes — but go-redis retries a command whose
-		// REPLY was lost, so an error here can accompany a publish that
-		// actually happened. That is what the dedupe token is for, and why
-		// this logs rather than re-publishing.
-		slog.Error("failed to publish event to Redis; the script is atomic so it did not half-execute, but a lost REPLY means it may have published anyway — do not re-publish by hand",
-			"channel", channel, "phase", 2, "error", err)
+		// Note what this error does and does not mean: go-redis retries a
+		// command whose REPLY was lost, so an error here can accompany a
+		// publish that actually happened. That is what the dedupe token is
+		// for, and why this returns UNCONFIRMED rather than re-publishing.
+		// (The script is atomic, not transactional: nothing interleaves with
+		// it, but a runtime error after its INCR does not undo the INCR.)
+		return fmt.Errorf("events: redis publish script (phase 2): %w", err)
 	}
+	return nil
 }
 
 // EventsSince returns buffered events for a workspace with IDs greater than

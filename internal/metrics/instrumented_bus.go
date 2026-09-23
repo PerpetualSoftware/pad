@@ -102,19 +102,21 @@ func (b *InstrumentedBus) Unsubscribe(ch chan events.Event) {
 	(*b.metrics.EventBusSubscribers).Set(float64(b.inner.SubscriberCount()))
 }
 
-// Publish delegates to the inner bus and increments the publish counter.
+// Publish delegates to the inner bus, counts the attempt, and counts a
+// failure by outcome. The error is returned unchanged.
 //
-// ATTEMPTS, NOT CONFIRMATIONS, and the counter's Help says so.
-// events.EventBus.Publish returns nothing, so a Redis publish that failed
-// is indistinguishable here from one that succeeded — during an outage
-// this counter keeps climbing while nothing is delivered. Fixing it
-// properly means Publish reporting acceptance, which is the same change
-// BUG-2699 made for the watch bus and the same interface-wide edit;
-// tracked separately rather than smuggled into an instrumentation
-// wrapper.
-func (b *InstrumentedBus) Publish(event events.Event) {
-	b.inner.Publish(event)
+// pad_eventbus_publish_total stays ATTEMPTS, as it always was: a failure
+// moves it AND the failures counter, so attempts minus failures is the
+// accepted count. Splitting the existing counter by outcome instead would
+// have changed its series identity under every dashboard reading it
+// (BUG-2732).
+func (b *InstrumentedBus) Publish(event events.Event) error {
+	err := b.inner.Publish(event)
 	(*b.metrics.EventBusPublishTotal).Inc()
+	if err != nil {
+		b.metrics.EventBusPublishFailuresTotal.WithLabelValues(events.PublishFailureOutcome(err)).Inc()
+	}
+	return err
 }
 
 // Close delegates to the inner bus.
