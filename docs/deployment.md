@@ -1177,7 +1177,7 @@ Pad exposes Prometheus metrics at `/metrics` (unauthenticated). Key metrics:
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| `pad_http_requests_total` | counter | Total HTTP requests by method, path, status |
+| `pad_http_requests_total` | counter | Total HTTP requests by method, path, status. A method outside the standard set (GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS, CONNECT, TRACE) is recorded as `OTHER`, so a caller cannot mint series by inventing methods |
 | `pad_http_request_duration_seconds` | histogram | Request latency |
 | `pad_http_response_size_bytes` | histogram | Response body sizes |
 | `pad_sse_connections_active` | gauge | Connections on the workspace activity stream (`/api/v1/events`) only |

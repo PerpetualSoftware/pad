@@ -26,6 +26,7 @@ import (
 // session-gauge change for ordinary tool calls.
 func TestRecordMCPCallMetrics_HappyPath(t *testing.T) {
 	s := &Server{metrics: metrics.New()}
+	s.SetMCPMetricsCallNames(func(n string) bool { return n == "pad_item" })
 	r := httptest.NewRequest(http.MethodPost, "/mcp", nil)
 
 	s.recordMCPCallMetrics("pad_item", "ok", "user-1", 50*time.Millisecond, r, http.StatusOK)
@@ -240,6 +241,7 @@ func gaugeValueOrZero(t *testing.T, g interface {
 // aggregate query asks.
 func TestRecordMCPCallMetrics_CollapsesSanitisedLabel(t *testing.T) {
 	s := &Server{metrics: metrics.New()}
+	s.SetMCPMetricsCallNames(func(n string) bool { return n == "pad_item" })
 	r := httptest.NewRequest(http.MethodPost, "/mcp", nil)
 
 	marked := auditLabel("pad_item", true)
