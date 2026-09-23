@@ -894,10 +894,11 @@ func isKnownVariant(v string) bool {
 }
 
 // sanitizeHeaderFilename strips characters that can't safely appear in
-// a Content-Disposition filename header: quotes, backslashes and control
-// characters, by attachments.DroppedFilenameRune, which is also the rule
-// ingest normalises with (BUG-2818). The caller passes the SERVED name
-// (attachments.ServedFilename), so for any row stored since that fix this
+// a Content-Disposition filename header: quotes, backslashes, control
+// characters and Bidi_Control characters (BUG-3153), by
+// attachments.DroppedFilenameRune, which is also the rule ingest normalises
+// with (BUG-2818). The caller passes the SERVED name
+// (attachments.ServedFilename), which already applies that rule, so this
 // drops nothing; it still runs because a header value must be parseable
 // whatever reaches it.
 func sanitizeHeaderFilename(name string) string {

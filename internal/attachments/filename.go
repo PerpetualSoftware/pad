@@ -31,16 +31,27 @@ import (
 //     and the header cannot carry them.
 //   - '"' and '\': they break the header's quoted-string, so the header has to
 //     drop them, and anything it drops the blocklist must not have seen.
+//   - The Unicode Bidi_Control property (BUG-3153): the embeddings, overrides
+//     and isolates (U+202A-U+202E, U+2066-U+2069) and the implicit marks
+//     (U+200E, U+200F, U+061C). They make a bidi-aware renderer DISPLAY an
+//     extension the name does not have, so "x<U+202E>gvs.txt" (a .txt) shows as
+//     "xtxt.svg". Chosen by property rather than by range so the set is the
+//     standard's; ZWJ is Join_Control, not Bidi_Control, and emoji sequences
+//     keep it. One inside an extension also hides it from the blocklist, as a
+//     control byte did: "x.s<U+202E>vg" normalises to "x.svg" and is refused.
 func DroppedFilenameRune(r rune) bool {
-	return unicode.IsControl(r) || r == '"' || r == '\\'
+	return unicode.IsControl(r) || r == '"' || r == '\\' || unicode.Is(unicode.Bidi_Control, r)
 }
 
 // fallbackFilename is the name for an upload whose own name leaves nothing.
 const fallbackFilename = "upload.bin"
 
 // NormalizeFilename is the stored form of a caller-supplied attachment name.
-// Every door that writes attachments.filename calls it, before ValidateUpload
-// sees the name. It normalises rather than refuses: the bytes of the upload are
+// Every door that writes a CALLER-SUPPLIED name calls it (upload, bundle
+// import), before ValidateUpload sees the name. Derived rows (thumbnails,
+// transforms, cross-workspace copies) take their name from a row that already
+// went through it; a legacy row that did not is rewritten at startup when it
+// carries a Bidi_Control character (store.BackfillBidiAttachmentFilenames). It normalises rather than refuses: the bytes of the upload are
 // fine and only the label is at issue, and an attack name still ends in a
 // refusal, because its normalised form carries the extension it was hiding
 // (checkpoint 1 on BUG-2818 has the full reasoning).

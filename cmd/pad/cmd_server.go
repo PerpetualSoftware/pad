@@ -209,6 +209,19 @@ func serveCmd() *cobra.Command {
 				)
 			}
 
+			// Rewrite attachment names stored with Bidi_Control characters
+			// (BUG-3153), which display an extension the file does not have.
+			// Each rewrite is logged with its old name; the count is logged
+			// on every boot, 0 included, so an instance's exposure is visible.
+			// Non-fatal: an unrewritten row still downloads under its served
+			// name, which drops the characters.
+			if bb, err := s.BackfillBidiAttachmentFilenames(); err != nil {
+				slog.Warn("attachment bidi filename backfill failed; non-fatal", "error", err,
+					"rows_rewritten_before_error", bb.RowsRewritten)
+			} else {
+				slog.Info("Attachment bidi filename backfill complete", "rows_rewritten", bb.RowsRewritten)
+			}
+
 			// Backfill: populate status_transitions from the historical
 			// activity log (PLAN-1628 / TASK-1637). Idempotent — gated on an
 			// empty table, so it replays history exactly once on the first

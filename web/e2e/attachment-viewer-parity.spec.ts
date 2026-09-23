@@ -372,7 +372,12 @@ test.describe('attachment viewer — four-surface parity (TASK-2436)', () => {
 		// a dialog that names itself — not an empty name, not a truncated one,
 		// and not a layout that pushes the page sideways.
 		const longName = `${'long-'.repeat(30)}name.png`;
-		const bidiName = 'start ‮reversed‬ مرحبا.png';
+		const bidiName = 'start \u202Ereversed\u202C مرحبا.png';
+		// Ingest drops Bidi_Control characters (BUG-3153): the override is how a
+		// name displays an extension it does not have. The name the UI shows is
+		// the STORED one — the RTL letters kept, the controls gone — and it must
+		// still be addressable and name its dialog.
+		const bidiStored = 'start reversed مرحبا.png';
 
 		await browserLogin(page);
 		const doc = await seedDoc(fixture, request, 'Parity hostile names');
@@ -381,7 +386,7 @@ test.describe('attachment viewer — four-surface parity (TASK-2436)', () => {
 		await page.goto(itemUrl(fixture, doc.slug));
 		await expect(page.locator(TILE)).toHaveCount(2);
 
-		for (const name of [longName, bidiName]) {
+		for (const name of [longName, bidiStored]) {
 			// Addressable BY NAME — the accessible name is the whole filename,
 			// exactly as stored.
 			// ANCHORED at BOTH ends of the filename: on the action verb (the
@@ -412,7 +417,7 @@ test.describe('attachment viewer — four-surface parity (TASK-2436)', () => {
 		// horizontal overflow — the failure a physical `left`/`right` pair would
 		// produce if the layout depended on it.
 		await page.evaluate(() => document.documentElement.setAttribute('dir', 'rtl'));
-		await page.getByRole('button', { name: new RegExp(`^View ${escapeRe(bidiName)},`) }).click();
+		await page.getByRole('button', { name: new RegExp(`^View ${escapeRe(bidiStored)},`) }).click();
 		await expect(page.locator(VIEWER)).toHaveCount(1);
 		const rtl = await page.evaluate(() => {
 			const el = document.querySelector<HTMLElement>('.attachment-viewer')!;
