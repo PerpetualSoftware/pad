@@ -337,6 +337,20 @@ describe('owned reconnect in the SSE service (BUG-2733)', () => {
 		sse.disconnect();
 	});
 
+	it.each([401, 403])('a refusal the probe reads as %i is unauthorized and never retried (lead NO-GO)', async (code) => {
+		// An expired session or a lost membership refuses the stream exactly
+		// like a limit does, and EventSource cannot tell them apart. Before the
+		// owned reconnect such a tab stayed closed; retrying it forever at the
+		// cap while saying "reconnecting" would be the regression.
+		vi.stubGlobal('fetch', refusalFetch(code, null));
+		const sse = await connected();
+		sources[0].fireRefused();
+		await flush();
+		expect(sse.status).toBe('unauthorized');
+		await vi.advanceTimersByTimeAsync(RECONNECT_CAP_MS * 3);
+		expect(sources).toHaveLength(1);
+	});
+
 	it('disconnect cancels a scheduled reconnect', async () => {
 		vi.stubGlobal('fetch', vi.fn());
 		const sse = await connected();

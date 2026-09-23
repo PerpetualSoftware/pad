@@ -1,5 +1,5 @@
 import { SvelteSet } from 'svelte/reactivity';
-import { probeRetryAfterMs, reconnectDelayMs } from './sseReconnect';
+import { probeRefusal, reconnectDelayMs } from './sseReconnect';
 
 export type SSEStatus = 'disconnected' | 'connected' | 'reconnecting' | 'unauthorized';
 
@@ -264,7 +264,22 @@ function createSSEService() {
 			}, reconnectDelayMs(attempt, retryAfterMs));
 		};
 		if (refused) {
-			void probeRetryAfterMs(url).then(arm);
+			void probeRefusal(url).then((probe) => {
+				if (probe.kind === 'retry') {
+					arm(probe.retryAfterMs);
+					return;
+				}
+				// 401 / 403: the same end state the server's own `unauthorized`
+				// event produces (see its listener), and for the same reason:
+				// retrying a dead credential forever, while saying
+				// "reconnecting", is the tight loop that listener exists to
+				// stop. Stale answers are dropped like arm()'s.
+				if (generation !== reconnectGeneration || currentWorkspace !== workspaceSlug || eventSource !== null) return;
+				reconnectPending = false;
+				status = 'unauthorized';
+				broadcast({ type: 'status', status: 'unauthorized' });
+				currentWorkspace = '';
+			});
 		} else {
 			arm(null);
 		}

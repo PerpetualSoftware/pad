@@ -51,6 +51,15 @@ export function parseRetryAfterMs(value: string | null, now: number = Date.now()
 }
 
 /**
+ * What a refusal probe learned. `unauthorized` is a 401 or 403: an expired
+ * session or a lost membership, which refuses the stream exactly as a limit
+ * does and must NOT be retried (before the owned reconnect such a tab simply
+ * stayed closed). Anything else is `retry`, with the Retry-After to honour if
+ * the server gave one.
+ */
+export type RefusalProbe = { kind: 'unauthorized' } | { kind: 'retry'; retryAfterMs: number | null };
+
+/**
  * Ask the stream endpoint why it refused, because EventSource cannot say: the
  * spec exposes neither the status nor the headers of a failed connection.
  *
@@ -59,10 +68,10 @@ export function parseRetryAfterMs(value: string | null, now: number = Date.now()
  * The body is aborted as soon as the headers arrive: a 200 here is a live SSE
  * stream holding an admission slot, and nothing should read it.
  *
- * Returns the Retry-After to honour, or null. A failed probe (network error,
- * no header) is null, and the ladder alone decides.
+ * A failed probe (network error) is a retry with no floor, and the ladder
+ * alone decides: it says nothing about the credential.
  */
-export async function probeRetryAfterMs(url: string, fetchFn: typeof fetch = fetch): Promise<number | null> {
+export async function probeRefusal(url: string, fetchFn: typeof fetch = fetch): Promise<RefusalProbe> {
 	const controller = new AbortController();
 	try {
 		const res = await fetchFn(url, {
@@ -71,12 +80,15 @@ export async function probeRetryAfterMs(url: string, fetchFn: typeof fetch = fet
 			credentials: 'same-origin',
 			signal: controller.signal
 		});
-		if (res.status === 429 || res.status === 503) {
-			return parseRetryAfterMs(res.headers.get('Retry-After'));
+		if (res.status === 401 || res.status === 403) {
+			return { kind: 'unauthorized' };
 		}
-		return null;
+		if (res.status === 429 || res.status === 503) {
+			return { kind: 'retry', retryAfterMs: parseRetryAfterMs(res.headers.get('Retry-After')) };
+		}
+		return { kind: 'retry', retryAfterMs: null };
 	} catch {
-		return null;
+		return { kind: 'retry', retryAfterMs: null };
 	} finally {
 		controller.abort();
 	}
