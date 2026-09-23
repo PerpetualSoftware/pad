@@ -24,7 +24,14 @@ const LANDSCAPE = { width: 915, height: 412 };
 // Scratch fixtures are removed after each test, once its assertions have read them.
 const cleanups: Array<() => Promise<void>> = [];
 test.afterEach(async () => {
-	while (cleanups.length) await cleanups.pop()!();
+	// One failed cleanup must not stop the rest, or mask the test's own result.
+	while (cleanups.length) {
+		try {
+			await cleanups.pop()!();
+		} catch (e) {
+			console.warn(`[bug-3159] cleanup failed: ${e}`);
+		}
+	}
 });
 const PORTRAIT = { width: 412, height: 915 };
 
@@ -166,9 +173,13 @@ async function rolesDrag(
 }
 
 async function deleteRole(fixture: SuiteFixture, request: APIRequestContext, r: { id: string; name: string }) {
-	const res = await request.delete(`/api/v1/workspaces/${fixture.workspaceSlug}/agent-roles/${r.id}`, { headers: authHeaders(fixture) });
 	// Warn, never throw: a throw here would replace the test's real failure.
-	if (!res.ok()) console.warn(`[bug-3159] leaked role ${r.name}: ${res.status()} ${await res.text()}`);
+	try {
+		const res = await request.delete(`/api/v1/workspaces/${fixture.workspaceSlug}/agent-roles/${r.id}`, { headers: authHeaders(fixture) });
+		if (!res.ok()) console.warn(`[bug-3159] leaked role ${r.name}: ${res.status()} ${await res.text()}`);
+	} catch (e) {
+		console.warn(`[bug-3159] leaked role ${r.name}: ${e}`);
+	}
 }
 
 test('BUG-3159: a touch drag on the ROLES board in landscape changes neither role nor assignee', async ({
