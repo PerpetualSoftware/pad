@@ -2,6 +2,7 @@ package events
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -9,6 +10,27 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/idspace"
 )
+
+// ErrBusClosed is returned by Publish when the bus has already been shut down
+// (BUG-2732). It is the ONE Publish failure that proves the event was not
+// published: the bus observed its own shutdown before sending anything, so no
+// subscriber on any instance can have received it.
+//
+// A sentinel rather than an ordinary error because the distinction is what
+// pad_eventbus_publish_failures_total's outcome label reports. Compare with
+// errors.Is. Same contract as internal/watchevents' ErrBusClosed (BUG-2699).
+var ErrBusClosed = errors.New("events: bus is closed")
+
+// PublishFailureOutcome names a non-nil Publish error by the outcome it
+// reports: "closed" for ErrBusClosed, "unconfirmed" for anything else. It is
+// the label set of pad_eventbus_publish_failures_total, and the word the
+// server's discard helper logs, so the two cannot drift apart (BUG-2732).
+func PublishFailureOutcome(err error) string {
+	if errors.Is(err, ErrBusClosed) {
+		return "closed"
+	}
+	return "unconfirmed"
+}
 
 // Event types
 const (
@@ -257,7 +279,29 @@ type EventBus interface {
 	Unsubscribe(ch chan Event)
 
 	// Publish sends an event to all subscribers for the event's workspace.
-	Publish(event Event)
+	//
+	// nil means ACCEPTED. A returned error is two different outcomes, the
+	// same pair internal/watchevents' Publish reports (BUG-2699):
+	//
+	//   - ErrBusClosed means nothing was published, provably.
+	//   - Any OTHER error means UNCONFIRMED, not "did not happen". RedisBus's
+	//     publish is a Redis call, and go-redis retries a command whose reply
+	//     was lost, so the event may have gone out while the call errored.
+	//     Never re-publish on it: that risks a duplicate, not a repeat of
+	//     nothing.
+	//
+	// EVERY PRODUCER TODAY DISCARDS IT, through one server helper
+	// (publishActivityEvent) where that ruling is written down (BUG-2732):
+	// each publish sits on top of a write that already committed, so failing
+	// the request would report a successful write as a failure.
+	//
+	// A FAILED PUBLISH IS NOT SURFACED TO SUBSCRIBERS. An ID assigned and
+	// never published leaves no gap a subscriber or a resume can see, because
+	// per-workspace IDs are non-consecutive by construction (see knownFrom,
+	// BUG-2735; pinned by TestAnAssignedButUnpublishedIDIsNotSurfacedAsAGap).
+	// The error, its log line and pad_eventbus_publish_failures_total are the
+	// only trace a lost event leaves.
+	Publish(event Event) error
 
 	// EventsSince returns events for a workspace with IDs greater than sinceID.
 	// Used to replay missed events on SSE reconnect (Last-Event-ID).
@@ -611,6 +655,11 @@ type MemoryBus struct {
 	mu          sync.RWMutex
 	subscribers map[chan Event]*subscriber
 
+	// closed is set by Close under mu, and read by Publish under the same
+	// lock, so a publish after Close answers ErrBusClosed rather than
+	// burning an ID into a buffer nobody will read (BUG-2732).
+	closed bool
+
 	// Monotonic sequence counter for event IDs, counting up from base.
 	seq atomic.Int64
 
@@ -785,7 +834,7 @@ func (b *MemoryBus) Unsubscribe(ch chan Event) {
 // Non-blocking: if a subscriber's channel is full, the event is dropped
 // and a warning is logged. Events are assigned a monotonic sequence ID
 // and stored in the replay buffer for Last-Event-ID support.
-func (b *MemoryBus) Publish(event Event) {
+func (b *MemoryBus) Publish(event Event) error {
 	if event.Timestamp == 0 {
 		event.Timestamp = time.Now().UnixMilli()
 	}
@@ -820,6 +869,13 @@ func (b *MemoryBus) Publish(event Event) {
 	// exclusive holder — subscribe, unsubscribe, close.
 	b.mu.RLock()
 	defer b.mu.RUnlock()
+
+	// After Close the subscriber set is empty, so the loop below would run
+	// over nothing and report success. Under b.mu, which Close takes
+	// exclusively, so the answer cannot go stale before the append.
+	if b.closed {
+		return ErrBusClosed
+	}
 
 	// Store in replay buffer for reconnect replay.
 	b.replayMu.Lock()
@@ -888,6 +944,7 @@ func (b *MemoryBus) Publish(event Event) {
 			dropped++
 		}
 	}
+	return nil
 }
 
 // EventsSince returns buffered events for a workspace with IDs greater than sinceID.
@@ -974,6 +1031,8 @@ func (b *MemoryBus) eventsSinceLocked(workspaceID string, sinceID int64) []Event
 func (b *MemoryBus) Close() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+
+	b.closed = true
 
 	for ch := range b.subscribers {
 		delete(b.subscribers, ch)

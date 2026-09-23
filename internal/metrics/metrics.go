@@ -27,6 +27,17 @@ type Metrics struct {
 	EventBusPublishTotal *prometheus.Counter
 	EventBusSubscribers  *prometheus.Gauge
 
+	// EventBusPublishFailuresTotal counts publishes the bus reported as
+	// failed, by outcome (BUG-2732): closed (provably not published — the bus
+	// was shut down) or unconfirmed (any other error; the event may have gone
+	// out anyway). A SIBLING of EventBusPublishTotal rather than a label on
+	// it, so the existing counter's series identity and meaning ("attempts")
+	// are unchanged for dashboards that already read it.
+	//
+	// It is the ONLY signal of an event lost mid-subscription: such a loss
+	// leaves no gap a subscriber or a resume can detect.
+	EventBusPublishFailuresTotal *prometheus.CounterVec
+
 	// Redis operability metrics (BUG-2727). Wired from
 	// cmd/pad/cmd_server.go. Which of them are live depends on the
 	// deployment shape, and the distinction is what alerts are built on
@@ -444,8 +455,18 @@ func New() *Metrics {
 
 	eventBusPublishTotal := prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "pad_eventbus_publish_total",
-		Help: "Events HANDED to the event bus. On a Redis-backed bus this counts attempts, not confirmed publishes — Publish returns nothing, so a failed Redis publish is logged and still counted here. See pad_redis_up.",
+		Help: "Events HANDED to the event bus. Counts attempts, not confirmed publishes: a failed publish is still counted here, and is ALSO counted in pad_eventbus_publish_failures_total. See pad_redis_up.",
 	})
+
+	eventBusPublishFailuresTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "pad_eventbus_publish_failures_total",
+		Help: "Activity-event publishes the bus reported as failed, by outcome: closed (the bus was already shut down, so the event provably went nowhere — expected in small numbers during shutdown) or unconfirmed (any other error, usually Redis; the event may have been published anyway, because go-redis retries a command whose reply was lost). Each one is also in pad_eventbus_publish_total. THIS IS THE ONLY TRACE OF A LOST EVENT: an event lost mid-subscription leaves no gap that a connected client or a resume can detect, so no resync is triggered, not even on reconnect: a resume across the lost event is served as complete. The write underneath always committed. Expect zero outside shutdown.",
+	}, []string{"outcome"})
+	// A CLOSED label set, both series present from the start, so a rate()
+	// over it reads zero rather than absent before the first failure.
+	for _, outcome := range []string{"closed", "unconfirmed"} {
+		eventBusPublishFailuresTotal.WithLabelValues(outcome)
+	}
 
 	eventBusSubscribers := prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "pad_eventbus_subscribers",
@@ -664,6 +685,7 @@ func New() *Metrics {
 		httpResponseSize,
 		sseConnectionsActive,
 		eventBusPublishTotal,
+		eventBusPublishFailuresTotal,
 		eventBusSubscribers,
 		mcpToolCallsTotal,
 		mcpToolCallDuration,
@@ -703,6 +725,7 @@ func New() *Metrics {
 		HTTPResponseSize:             httpResponseSize,
 		SSEConnectionsActive:         &sseConnectionsActive,
 		EventBusPublishTotal:         &eventBusPublishTotal,
+		EventBusPublishFailuresTotal: eventBusPublishFailuresTotal,
 		EventBusSubscribers:          &eventBusSubscribers,
 		MCPToolCallsTotal:            mcpToolCallsTotal,
 		MCPToolCallDuration:          mcpToolCallDuration,

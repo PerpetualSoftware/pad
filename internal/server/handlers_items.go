@@ -2884,7 +2884,7 @@ func (s *Server) publishItemEventWithName(eventType, workspaceID, itemID, title,
 	if s.events == nil {
 		return
 	}
-	s.events.Publish(events.Event{
+	s.publishActivityEvent(events.Event{
 		Type:        eventType,
 		WorkspaceID: workspaceID,
 		ItemID:      itemID,

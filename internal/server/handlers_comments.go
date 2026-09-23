@@ -495,7 +495,7 @@ func (s *Server) publishCommentEvent(eventType, workspaceID, itemID, commentID, 
 	if s.events == nil {
 		return
 	}
-	s.events.Publish(events.Event{
+	s.publishActivityEvent(events.Event{
 		Type:        eventType,
 		WorkspaceID: workspaceID,
 		ItemID:      itemID,
@@ -516,7 +516,7 @@ func (s *Server) publishReactionEvent(eventType string, comment *models.Comment)
 	if item, err := s.store.GetItem(comment.ItemID); err == nil && item != nil {
 		collSlug = item.CollectionSlug
 	}
-	s.events.Publish(events.Event{
+	s.publishActivityEvent(events.Event{
 		Type:        eventType,
 		WorkspaceID: comment.WorkspaceID,
 		ItemID:      comment.ItemID,

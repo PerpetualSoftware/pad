@@ -1182,7 +1182,8 @@ Pad exposes Prometheus metrics at `/metrics` (unauthenticated). Key metrics:
 | `pad_http_response_size_bytes` | histogram | Response body sizes |
 | `pad_sse_connections_active` | gauge | Connections on the workspace activity stream (`/api/v1/events`) only |
 | `pad_stream_connections_active` | gauge | Held connections across **both** SSE endpoints — the population the limits bound |
-| `pad_eventbus_publish_total` | counter | Events HANDED to the bus — attempts, not confirmed publishes. A failed Redis publish is logged and still counted (BUG-2732) |
+| `pad_eventbus_publish_total` | counter | Events HANDED to the bus — attempts, not confirmed publishes. A failed publish is still counted here, and ALSO in `pad_eventbus_publish_failures_total` |
+| `pad_eventbus_publish_failures_total` | counter | Publishes the bus reported as failed, by `outcome`: `closed` (the bus was already shut down, so the event provably went nowhere — expected in small numbers at shutdown) or `unconfirmed` (any other error, usually Redis; the event may have gone out anyway). Each failure is also logged, rate-bounded, with outcome, event type and workspace. **This is the only trace of a lost event**: a lost event leaves no gap that a connected client or a resume can detect, so no resync is triggered, not even on reconnect. Expect zero outside shutdown (BUG-2732) |
 | `pad_eventbus_subscribers` | gauge | Active event subscribers |
 | `pad_db_open_connections` | gauge | Database connection pool stats |
 

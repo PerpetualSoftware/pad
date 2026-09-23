@@ -79,6 +79,7 @@ type Server struct {
 	httpServer            *http.Server         // underlying HTTP server (set during ListenAndServe)
 	webFS                 fs.FS                // embedded web UI static files (optional)
 	events                events.EventBus      // real-time event bus (optional)
+	publishFailures       publishFailureLog    // rate-bounds publishActivityEvent's failure log (BUG-2732)
 	watchEvents           watchevents.Bus      // watch/nudge notification bus (optional, TASK-2533)
 	sessionPresence       SessionPresence      // live event-stream connections per user (optional, PLAN-2558 S1)
 	redisHealth           *RedisHealth         // cached Redis reachability, reported by /api/v1/health/ready and pad_redis_up (optional, BUG-2727)

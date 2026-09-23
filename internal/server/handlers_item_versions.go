@@ -381,7 +381,7 @@ func (s *Server) handleRestoreItemVersion(w http.ResponseWriter, r *http.Request
 	// detect contiguity vs. gap rather than blindly falling back
 	// to a generic /items-changes refetch.
 	if s.events != nil {
-		s.events.Publish(events.Event{
+		s.publishActivityEvent(events.Event{
 			// Derived, not a literal (codex round 9). A raw string here is a
 			// second source of SSE vocabulary — the exact drift the taxonomy's
 			// mapping exists to end, and the harder kind to find because it
