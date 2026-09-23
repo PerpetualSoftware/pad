@@ -13,6 +13,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/server"
 )
 
 // dispatchProjectReady reproduces `pad project ready --format json` —
@@ -515,10 +516,12 @@ func (d *HTTPHandlerDispatcher) dispatchItemNote(
 
 	itemPath := "/api/v1/workspaces/" + url.PathEscape(workspace) +
 		"/items/" + url.PathEscape(ref)
-	// BUG-3056: the server appends under its write lock (and mints the id,
-	// timestamp and attribution), so a concurrent write to another key cannot
-	// be reverted by this one. No capability check: this dispatcher runs
-	// in-process with the handler it calls, so the two cannot disagree.
+	// BUG-3056: the server appends under its write lock (and mints the id and
+	// timestamp), so a concurrent write to another key cannot be reverted by
+	// this one. No capability check: this dispatcher runs in-process with the
+	// handler it calls, so the two cannot disagree. The entry keeps this door's
+	// own attribution, the user's display name.
+	ctx = server.WithStructuredEntryAuthor(ctx, userActorLabel(user))
 	body, err := json.Marshal(models.ItemUpdate{
 		AppendImplementationNote: &models.ItemImplementationNoteAppend{
 			Summary: strings.TrimSpace(summary),
@@ -562,6 +565,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemDecide(
 	itemPath := "/api/v1/workspaces/" + url.PathEscape(workspace) +
 		"/items/" + url.PathEscape(ref)
 	// BUG-3056 — see dispatchItemNote.
+	ctx = server.WithStructuredEntryAuthor(ctx, userActorLabel(user))
 	body, err := json.Marshal(models.ItemUpdate{
 		AppendDecision: &models.ItemDecisionLogAppend{
 			Decision:  strings.TrimSpace(decision),
@@ -572,6 +576,23 @@ func (d *HTTPHandlerDispatcher) dispatchItemDecide(
 		return dispatcherErrorResult(cmdKey, "encode body", err), nil
 	}
 	return d.executeRequest(ctx, cmdKey, user, http.MethodPatch, itemPath, body)
+}
+
+// userActorLabel is the created_by this door writes on note/decision entries:
+// the requesting user's name, falling back to email, so audit-log review can
+// tell who appended what when several users share one MCP server. (The CLI
+// writes the user/agent kind instead; the two doors have always differed.)
+func userActorLabel(user *models.User) string {
+	if user == nil {
+		return "user"
+	}
+	if user.Name != "" {
+		return user.Name
+	}
+	if user.Email != "" {
+		return user.Email
+	}
+	return "user"
 }
 
 // dispatchLibraryList composes the /convention-library and

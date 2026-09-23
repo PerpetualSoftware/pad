@@ -1271,7 +1271,8 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	// which would have to choose between the blob it carries and the row the
 	// append reads under the lock. The SERVER mints the entry's id, created_at
 	// and created_by — created_by from the same request signal that stamps this
-	// write's last_modified_by below — so a caller supplies only the text and
+	// write's last_modified_by below, or an in-process caller's label (see
+	// WithStructuredEntryAuthor) — so a caller supplies only the text and
 	// cannot write an entry the extractor would not decode.
 	if input.AppendImplementationNote != nil || input.AppendDecision != nil {
 		if input.Fields != nil {
@@ -1279,7 +1280,7 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 				"cannot combine \"fields\" (full replace) with append_implementation_note or append_decision; use fields_patch for the other keys")
 			return
 		}
-		appendActor, _ := actorFromRequest(r)
+		appendActor := structuredEntryAuthor(r)
 		mintedAt := time.Now().UTC().Format(time.RFC3339)
 		if a := input.AppendImplementationNote; a != nil {
 			input.ImplementationNoteToAppend = &models.ItemImplementationNote{
