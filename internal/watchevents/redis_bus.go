@@ -504,11 +504,31 @@ func NewRedisBusWithKeys(client *redis.Client, size int, keys redisns.Keys, publ
 		// consume, and the first one the loop ever sees — after a
 		// re-establishment — IS a resubscription, so announcing a hole for it
 		// is the truth.
+		//
+		// AN ERROR REPLY IS A REFUSAL, NOT A LATE CONFIRMATION (BUG-2799). A
+		// SUBSCRIBE Redis rejects (-NOPERM, -NOAUTH, a disabled command,
+		// anything a proxy says) is written successfully, so the branch above
+		// passes it, and the rejection arrives here as the first reply. It was
+		// logged like a timeout and the PubSub was kept, with a receive loop
+		// started on a connection subscribed to nothing, which left
+		// cycleIfIdle's `b.pubsub == nil` retry gate shut for the life of the
+		// process. It is now treated like the failed write above: closed, and
+		// the slot left empty so phase 2 re-establishes. A timeout or a
+		// connection error is not a refusal and keeps the old handling.
 		subCtx, subCancel := context.WithTimeout(ctx, 5*time.Second)
 		if _, err := b.pubsub.Receive(subCtx); err != nil {
-			slog.Warn("watchevents: Redis subscription not confirmed at construction; "+
-				"notifications published before it establishes will be missed by this instance",
-				"error", err, "channel", keys.Name(redisWatchChannelSuffix))
+			var replyErr redis.Error
+			if errors.As(err, &replyErr) {
+				slog.Error("watchevents: Redis rejected the SUBSCRIBE at construction; "+
+					"this instance receives no notifications until the subscription is re-established",
+					"error", err, "channel", keys.Name(redisWatchChannelSuffix))
+				_ = b.pubsub.Close()
+				b.pubsub = nil
+			} else {
+				slog.Warn("watchevents: Redis subscription not confirmed at construction; "+
+					"notifications published before it establishes will be missed by this instance",
+					"error", err, "channel", keys.Name(redisWatchChannelSuffix))
+			}
 		}
 		subCancel()
 	}

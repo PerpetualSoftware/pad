@@ -763,16 +763,19 @@ type redisSub struct {
 	// the SUBSCRIBE being written and it being registered unreachable by a
 	// client.
 	//
-	// SIGNALLED FROM INSIDE THE RECEIVE LOOP rather than by a Receive call
-	// placed ahead of it, and that is load-bearing rather than stylistic.
-	// receiveMessages treats its FIRST *redis.Subscription as this initial
-	// acknowledgement and skips it; every later one is a RESUBSCRIPTION and
-	// ends the workspace's coverage (BUG-2739). Consuming the first
-	// acknowledgement with a Receive before the loop starts — the shape
-	// internal/watchevents uses in its once-per-process constructor — would
-	// leave the loop treating the first GENUINE resubscription as the
-	// initial one and silently skipping it, un-fixing BUG-2739 from a diff
-	// that appears only to have added a wait.
+	// SIGNALLED FROM INSIDE THE RECEIVE LOOP BODY, and that is load-bearing
+	// rather than stylistic. receiveMessages treats its FIRST
+	// *redis.Subscription as this initial acknowledgement and skips it; every
+	// later one is a RESUBSCRIPTION and ends the workspace's coverage
+	// (BUG-2739). Consuming the first acknowledgement with a Receive before
+	// the loop and NOT passing it on — the shape internal/watchevents uses in
+	// its once-per-process constructor — would leave the loop treating the
+	// first GENUINE resubscription as the initial one and silently skipping
+	// it, un-fixing BUG-2739 from a diff that appears only to have added a
+	// wait. There IS a Receive before the loop since BUG-2799, reading the
+	// first reply so an error reply can be seen at all, and it hands a
+	// *redis.Subscription on to the loop body as its first frame for exactly
+	// this reason.
 	confirmed chan struct{}
 	// confirmClosed guards confirmed against a second close. Guarded by b.mu.
 	confirmClosed bool
@@ -782,6 +785,14 @@ type redisSub struct {
 	// acknowledgement eventually lands, that span becomes a hole those
 	// subscribers sat through, so they are told to reconcile. Guarded by b.mu.
 	unconfirmedAdmitted bool
+
+	// rejectErr is the error reply Redis answered the SUBSCRIBE with, in place
+	// of an acknowledgement (BUG-2799), and rejected is closed when it is set.
+	// The establisher waits on rejected alongside confirmed and abandons the
+	// subscription rather than admitting anyone into it. Set only while nobody
+	// has been admitted yet; see rejectSubscription. Guarded by b.mu.
+	rejectErr error
+	rejected  chan struct{}
 }
 
 // pendingSub is the one-establisher-per-workspace record. Concurrent first
@@ -1694,6 +1705,7 @@ func (b *RedisBus) establishSubscription(ctx context.Context, workspaceID string
 		lastSeen:    b.now(),
 		lastProbeOK: b.now(),
 		confirmed:   make(chan struct{}),
+		rejected:    make(chan struct{}),
 	}
 	b.wsSubs[workspaceID] = sub
 	b.mu.Unlock()
@@ -1740,26 +1752,82 @@ func (b *RedisBus) establishSubscription(ctx context.Context, workspaceID string
 			defer timer.Stop()
 			select {
 			case <-sub.confirmed:
+			case <-sub.rejected:
 			case <-b.ctx.Done():
 			case <-timer.C:
 				b.markUnconfirmedAdmission(workspaceID, gen)
 			}
+			b.abandonIfRejected(workspaceID, gen)
 			if b.afterSubscriptionConfirmed != nil {
 				b.afterSubscriptionConfirmed()
 			}
 			b.finishPending(workspaceID, pending)
 		}()
 		return true
+	case <-sub.rejected:
 	case <-timer.C:
 		b.markUnconfirmedAdmission(workspaceID, gen)
 	}
 	timer.Stop()
+
+	// CHECKED AFTER EVERY ARM, not only the rejected one (BUG-2799). The timer
+	// and the rejection can be ready together, and select picks between them
+	// at random; markUnconfirmedAdmission refuses a rejected subscription, so
+	// a timer that wins still admits nobody, and this is what then takes the
+	// subscription down.
+	abandoned := b.abandonIfRejected(workspaceID, gen)
 
 	if b.afterSubscriptionConfirmed != nil {
 		b.afterSubscriptionConfirmed()
 	}
 
 	b.finishPending(workspaceID, pending)
+	return !abandoned
+}
+
+// rejectSubscription runs when Redis answers a SUBSCRIBE with an error reply
+// instead of an acknowledgement (BUG-2799): an ACL denial (-NOPERM), -NOAUTH, a
+// disabled or unsupported command, or anything a proxy in front of Redis says.
+// The write succeeded, so BUG-2764's check on it passed; this is the reply half.
+//
+// It reports whether the rejection was recorded for the establisher to act on.
+// It is not when subscribers have already been admitted without an
+// acknowledgement (the reply came after confirmTimeout): taking the
+// subscription down under them would leave their channels wired to nothing,
+// so that case stays what it was before this fix, a subscription carrying
+// nothing that the idle cycle replaces on phase 2, and is only logged.
+func (b *RedisBus) rejectSubscription(workspaceID string, gen int64, err error) bool {
+	b.mu.Lock()
+	sub, ok := b.wsSubs[workspaceID]
+	recorded := ok && sub.gen == gen && !sub.confirmClosed && !sub.unconfirmedAdmitted && sub.rejectErr == nil
+	if recorded {
+		sub.rejectErr = err
+		close(sub.rejected)
+	}
+	b.mu.Unlock()
+	if !recorded {
+		slog.Error("events: Redis rejected the SUBSCRIBE after subscribers were already admitted without an acknowledgement; this workspace receives nothing on this instance until the subscription is replaced",
+			"workspace", workspaceID, "error", err)
+	}
+	return recorded
+}
+
+// abandonIfRejected takes down a subscription Redis rejected, before anyone is
+// admitted into it, and reports whether it did. Its callers then find no
+// subscription and are refused with SubscribeFailed, the same outcome
+// BUG-2764 gives a SUBSCRIBE that could not be written.
+func (b *RedisBus) abandonIfRejected(workspaceID string, gen int64) bool {
+	b.mu.Lock()
+	sub, ok := b.wsSubs[workspaceID]
+	if !ok || sub.gen != gen || sub.rejectErr == nil {
+		b.mu.Unlock()
+		return false
+	}
+	rejectErr := sub.rejectErr
+	b.stopRedisSubscription(workspaceID)
+	b.mu.Unlock()
+	slog.Error("events: Redis rejected the SUBSCRIBE; no subscription was installed and its callers are being refused rather than admitted into a stream that would carry nothing",
+		"workspace", workspaceID, "error", rejectErr)
 	return true
 }
 
@@ -1827,7 +1895,9 @@ func (b *RedisBus) markUnconfirmedAdmission(workspaceID string, gen int64) {
 	// the flag, this would set it again with nothing left to come and clear
 	// it — a subscriber counted as unconfirmed, never told to reconcile, and
 	// a workspace whose flag stays set until its NEXT resubscription.
-	if ok && sub.gen == gen && !sub.confirmClosed {
+	// A REJECTED subscription is refused too (BUG-2799): the establisher is
+	// about to take it down, and marking it would admit callers into it.
+	if ok && sub.gen == gen && !sub.confirmClosed && sub.rejectErr == nil {
 		sub.unconfirmedAdmitted = true
 	} else {
 		ok = false
@@ -1950,108 +2020,152 @@ func (b *RedisBus) stopRedisSubscription(workspaceID string) {
 func (b *RedisBus) receiveMessages(ctx context.Context, pubsub *redis.PubSub, workspaceID string, gen int64) {
 	defer b.reportReceiveLoopExited()
 
+	// THE FIRST REPLY IS READ HERE, BEFORE THE CHANNEL EXISTS (BUG-2799),
+	// because the channel cannot deliver it when it is an error. go-redis's
+	// channel goroutine drops a Receive error without a word (v9.22.0,
+	// pubsub.go initAllChan: back off, continue), so a SUBSCRIBE Redis answers
+	// with an error reply never reached this loop, and its callers were
+	// admitted into a subscription to nothing when confirmTimeout ran out.
+	//
+	// The frame is HANDED ON, not consumed: a *redis.Subscription read here
+	// goes through the loop body below as its first frame, where `subscribed`
+	// counts it as the initial acknowledgement exactly as before. That is what
+	// keeps BUG-2739's resubscription accounting intact; see redisSub.confirmed.
+	//
+	// NO TIMEOUT, deliberately. A ReceiveTimeout that expires leaves the
+	// connection alone, but a read bounded by a ctx DEADLINE is treated as a
+	// bad connection and re-subscribes (both pinned in
+	// redis_probe_timeout_test.go). ctx here has no deadline. The read ends
+	// when a reply arrives or when stopRedisSubscription closes the PubSub,
+	// the same way the channel loop does. confirmTimeout is the
+	// establisher's bound, not this read's.
+	first, err := pubsub.Receive(ctx)
+	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		var replyErr redis.Error
+		if errors.As(err, &replyErr) {
+			if b.rejectSubscription(workspaceID, gen, err) {
+				return
+			}
+		}
+		// Anything else is the connection, and go-redis has already
+		// reconnected and re-subscribed on it. The acknowledgement for that
+		// arrives through the channel, and the loop takes it as the initial
+		// one, as it always has.
+		first = nil
+	}
+
 	ch := pubsub.ChannelWithSubscriptions()
 	var subscribed bool
 	for {
-		select {
-		case <-ctx.Done():
-			return
-		case raw, ok := <-ch:
-			if !ok {
+		var raw interface{}
+		if first != nil {
+			raw, first = first, nil
+		} else {
+			var ok bool
+			select {
+			case <-ctx.Done():
 				return
+			case raw, ok = <-ch:
+				if !ok {
+					return
+				}
 			}
-			// STAMPED FOR EVERY FRAME, ahead of the type switch and ahead of
-			// any decode (BUG-2738). What idle detection measures is whether
-			// the SOCKET carries traffic, so a frame that turns out to be
-			// undecodable, or to name another workspace, or to be a
-			// resubscription notice, is still proof the route works — and each
-			// of those paths `continue`s, so stamping inside the switch would
-			// miss them. A message we could not read means coverage is broken,
-			// which dropWorkspaceCoverage handles; it does NOT mean the
-			// connection is dead, and cycling it would be the wrong remedy.
-			b.stampLastSeen(workspaceID, gen)
+		}
+		// STAMPED FOR EVERY FRAME, ahead of the type switch and ahead of
+		// any decode (BUG-2738). What idle detection measures is whether
+		// the SOCKET carries traffic, so a frame that turns out to be
+		// undecodable, or to name another workspace, or to be a
+		// resubscription notice, is still proof the route works — and each
+		// of those paths `continue`s, so stamping inside the switch would
+		// miss them. A message we could not read means coverage is broken,
+		// which dropWorkspaceCoverage handles; it does NOT mean the
+		// connection is dead, and cycling it would be the wrong remedy.
+		b.stampLastSeen(workspaceID, gen)
 
-			switch msg := raw.(type) {
-			case *redis.Subscription:
-				if msg.Kind != "subscribe" && msg.Kind != "psubscribe" {
-					continue
-				}
-				if !subscribed {
-					// THE INITIAL ACKNOWLEDGEMENT. Whoever is inside
-					// establishSubscription is waiting on this, and nothing is
-					// admitted until it lands (BUG-2747). Signalled here rather
-					// than by a Receive placed before this loop, because such a
-					// Receive would eat this message and leave the flag below
-					// to swallow the first genuine RESUBSCRIPTION instead —
-					// see redisSub.confirmed.
-					subscribed = true
-					b.confirmSubscription(workspaceID, gen)
-					continue
-				}
-				// A RESUBSCRIPTION: the connection dropped and came back, and
-				// whatever was published in between never reached us.
-				slog.Warn("events: pub/sub resubscribed; dropping this workspace's replay buffer, resumes across the gap will report sync_required",
-					"workspace", workspaceID, "channel", msg.Channel)
-				b.dropWorkspaceCoverage(workspaceID, ResetReasonSubscriptionResumed, gen)
-
-			case *redis.Message:
-				kind, epoch, event, err := decodePayload(msg.Payload)
-				if kind == payloadHeartbeat {
-					// PHASE 1 IS EXACTLY THIS: recognise and ignore. The frame
-					// has already done its whole job by arriving — the stamp
-					// above is the entire effect. It consumes no id, drops no
-					// buffer, reaches no subscriber and moves no counter, so an
-					// instance that publishes none is still a correct receiver
-					// for one that does. That is what makes the two-phase roll
-					// zero-loss.
-					continue
-				}
-				if err != nil {
-					// A MESSAGE WE CANNOT READ IS A HOLE IN THIS WORKSPACE'S
-					// COVERAGE (codex round 11). Dropping it and carrying on
-					// left the buffer claiming a span it no longer had: the
-					// event is gone, the ids either side of it look
-					// contiguous, and a later resume across it is answered
-					// "caught up". Silent loss, from a payload we know we
-					// failed to read.
-					//
-					// The workspace comes from the CHANNEL rather than from
-					// the body, which is what makes this possible at all when
-					// the body is the thing that would not parse.
-					slog.Error("failed to decode Redis event; ending this workspace's replay coverage, resumes across it will report sync_required",
-						"channel", msg.Channel, "error", err)
-					b.dropWorkspaceCoverage(workspaceID, ResetReasonUndecodableMessage, gen)
-					continue
-				}
-				if event.WorkspaceID != workspaceID {
-					// THE CHANNEL IS THE AUTHORITY ON WHOSE EVENT THIS IS, not
-					// the body (codex round 15). Two things arrive here that
-					// decode without error and are not a usable event:
-					//
-					//   - a payload that is valid JSON and empty — "null" or
-					//     "{}" both unmarshal into a zero Event, whose
-					//     workspace is "". Fan-out then finds no subscription
-					//     for "" and returned early WITHOUT ending coverage,
-					//     so the buffer went on looking continuous across an
-					//     event it had skipped.
-					//
-					//   - a body naming a DIFFERENT workspace from the channel
-					//     it arrived on. Fan-out indexes by the body's
-					//     workspace, so such a message would have been
-					//     appended to that OTHER workspace's buffer, with an
-					//     id from a stream that workspace's subscribers are
-					//     not reading.
-					//
-					// Both are the same failure as an unparseable payload —
-					// something reached this channel that this installation
-					// did not publish — so they take the same route.
-					slog.Error("Redis event names a different workspace than the channel it arrived on; ending this workspace's replay coverage",
-						"channel", msg.Channel, "channel_workspace", workspaceID, "event_workspace", event.WorkspaceID, "id", event.ID)
-					b.dropWorkspaceCoverage(workspaceID, ResetReasonUndecodableMessage, gen)
-					continue
-				}
-				b.fanOutFromRedis(gen, epoch, event)
+		switch msg := raw.(type) {
+		case *redis.Subscription:
+			if msg.Kind != "subscribe" && msg.Kind != "psubscribe" {
+				continue
 			}
+			if !subscribed {
+				// THE INITIAL ACKNOWLEDGEMENT. Whoever is inside
+				// establishSubscription is waiting on this, and nothing is
+				// admitted until it lands (BUG-2747). Signalled here even
+				// when the pre-loop Receive above is what read it: that read
+				// hands the frame on rather than consuming it, so this flag
+				// still sees the initial acknowledgement and the first
+				// genuine RESUBSCRIPTION still reaches the branch below. See
+				// redisSub.confirmed.
+				subscribed = true
+				b.confirmSubscription(workspaceID, gen)
+				continue
+			}
+			// A RESUBSCRIPTION: the connection dropped and came back, and
+			// whatever was published in between never reached us.
+			slog.Warn("events: pub/sub resubscribed; dropping this workspace's replay buffer, resumes across the gap will report sync_required",
+				"workspace", workspaceID, "channel", msg.Channel)
+			b.dropWorkspaceCoverage(workspaceID, ResetReasonSubscriptionResumed, gen)
+
+		case *redis.Message:
+			kind, epoch, event, err := decodePayload(msg.Payload)
+			if kind == payloadHeartbeat {
+				// PHASE 1 IS EXACTLY THIS: recognise and ignore. The frame
+				// has already done its whole job by arriving — the stamp
+				// above is the entire effect. It consumes no id, drops no
+				// buffer, reaches no subscriber and moves no counter, so an
+				// instance that publishes none is still a correct receiver
+				// for one that does. That is what makes the two-phase roll
+				// zero-loss.
+				continue
+			}
+			if err != nil {
+				// A MESSAGE WE CANNOT READ IS A HOLE IN THIS WORKSPACE'S
+				// COVERAGE (codex round 11). Dropping it and carrying on
+				// left the buffer claiming a span it no longer had: the
+				// event is gone, the ids either side of it look
+				// contiguous, and a later resume across it is answered
+				// "caught up". Silent loss, from a payload we know we
+				// failed to read.
+				//
+				// The workspace comes from the CHANNEL rather than from
+				// the body, which is what makes this possible at all when
+				// the body is the thing that would not parse.
+				slog.Error("failed to decode Redis event; ending this workspace's replay coverage, resumes across it will report sync_required",
+					"channel", msg.Channel, "error", err)
+				b.dropWorkspaceCoverage(workspaceID, ResetReasonUndecodableMessage, gen)
+				continue
+			}
+			if event.WorkspaceID != workspaceID {
+				// THE CHANNEL IS THE AUTHORITY ON WHOSE EVENT THIS IS, not
+				// the body (codex round 15). Two things arrive here that
+				// decode without error and are not a usable event:
+				//
+				//   - a payload that is valid JSON and empty — "null" or
+				//     "{}" both unmarshal into a zero Event, whose
+				//     workspace is "". Fan-out then finds no subscription
+				//     for "" and returned early WITHOUT ending coverage,
+				//     so the buffer went on looking continuous across an
+				//     event it had skipped.
+				//
+				//   - a body naming a DIFFERENT workspace from the channel
+				//     it arrived on. Fan-out indexes by the body's
+				//     workspace, so such a message would have been
+				//     appended to that OTHER workspace's buffer, with an
+				//     id from a stream that workspace's subscribers are
+				//     not reading.
+				//
+				// Both are the same failure as an unparseable payload —
+				// something reached this channel that this installation
+				// did not publish — so they take the same route.
+				slog.Error("Redis event names a different workspace than the channel it arrived on; ending this workspace's replay coverage",
+					"channel", msg.Channel, "channel_workspace", workspaceID, "event_workspace", event.WorkspaceID, "id", event.ID)
+				b.dropWorkspaceCoverage(workspaceID, ResetReasonUndecodableMessage, gen)
+				continue
+			}
+			b.fanOutFromRedis(gen, epoch, event)
 		}
 	}
 }
