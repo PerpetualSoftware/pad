@@ -1017,6 +1017,28 @@ const CmdhelpVersion = "0.1"
 //     browser tab and BUG-3000 carries the open half — so no surface
 //     here states a duration.
 //
+//     0.47 — BUG-2696. `pad_item.action=update` REFUSES a `field` (or
+//     `fields` object, or fields_patch) entry naming `github_pr`, on every
+//     transport, with 400 validation_error naming `pad github link` /
+//     `unlink` — the same refusal the other three reserved keys have had since
+//     0.23. `github_pr` was exempt then as remote MCP's only writer; that door
+//     never worked (a field value is stored as a string, so the PR landed
+//     double-encoded, no link rendered, and `=null` stored the string "null").
+//     BEHAVIOR bump on the 0.46 / 0.44 grounds: a write door refuses a call it
+//     used to accept. Nothing that worked is lost: no remote agent could link a
+//     PR before, and the noRemoteEquivalent hint already said so.
+//
+//     The writer is a new, ADDITIVE, typed item-update member, `github_pr`
+//     (a PR object: number > 0 and an absolute http(s) url required) plus
+//     `clear_github_pr`, which `pad github link` / `unlink` / `project
+//     reconcile` use. It is NOT on this catalog: a structured remote PR-link
+//     action is deferred to the MCP catalog-trim decision. What it buys is
+//     VALIDITY, not sender identity: any HTTP caller may send it, but only a
+//     well-formed PR object gets in. The CLI verifies from the response that
+//     the link landed, because a server older than it ignores the member and
+//     answers 200. Item CREATE, which still accepts hand-written reserved keys,
+//     is BUG-3163 (0.48).
+//
 //     0.46 — BUG-3156. `pad_item.action=bulk-update` over LOCAL STDIO and
 //     REMOTE /mcp now REFUSES, per item, a status or priority change on an
 //     item whose collection does not declare that field, and writes nothing
@@ -1463,7 +1485,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.46"
+const ToolSurfaceVersion = "0.47"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

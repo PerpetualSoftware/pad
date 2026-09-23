@@ -1344,10 +1344,10 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	// param on the remote transport (dispatch_http_advanced.go), and the same
 	// param on stdio by way of that CLI. None of them may write the system
 	// metadata that HAS another writer, so the refusal sits here, once, rather
-	// than at each client. `github_pr` is exempt and PatchRefusedFieldKeysIn
-	// explains why: it is the one reserved key for which this door IS the
-	// sanctioned cross-surface writer, because `pad github link` cannot run on
-	// remote MCP at all.
+	// than at each client. That now includes `github_pr` (BUG-2696): it was
+	// exempt as remote MCP's only writer, but this door stored it as an
+	// unreadable string on every transport, so it has a typed, validated
+	// member instead (input.GitHubPR, below).
 	//
 	// It sits with the mutual-exclusion check above rather than in the
 	// fields_patch block below because both are "reject an illegitimate patch
@@ -1361,10 +1361,13 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	// refuses on that item until someone repairs the row. Silently dropping it
 	// would leave the caller believing they had written history they had not.
 	//
-	// Scope, stated because it is deliberate: this closes UPDATE only. The full
-	// `fields` blob is shared with Pad's own writers (note / decide / github
-	// link, and convention activation through ItemCreate), so item CREATE stays
-	// a mint site — see items.ReservedFieldKeysIn's comment and BUG-2685.
+	// Scope, stated because it is deliberate: this closes the FIELD-PATCH
+	// door, which every user field-setter lowers into. A full `fields` blob on
+	// update is unchanged (it round-trips stored reserved values, and the
+	// legacy client-side note/decide append for old servers writes it), and
+	// item CREATE is still a mint site because convention activation writes
+	// through it. That is BUG-3163, NOT BUG-2685: 2685 fixed SCHEMA-DECLARED
+	// reserved keys, not hand-written values.
 	//
 	// The item's CURRENT fields go into the message because a remedy has to
 	// work in the state the caller is in: when the stored value is already
@@ -1373,6 +1376,37 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	if bad := items.PatchRefusedFieldKeysIn(input.FieldsPatch); len(bad) > 0 {
 		writeError(w, http.StatusBadRequest, "validation_error", reservedFieldPatchMessage(bad, item.Fields))
 		return
+	}
+
+	// BUG-2696: the typed github_pr door. Checked AFTER the caller's own
+	// fields_patch has been refused any reserved key, then lowered into the
+	// patch, so the value takes the same merge-under-lock path every other
+	// patched key does. What this buys is VALIDITY, not sender identity: any
+	// caller may send it, but only a well-formed PR object gets in.
+	if input.GitHubPR != nil || input.ClearGitHubPR {
+		switch {
+		case input.GitHubPR != nil && input.ClearGitHubPR:
+			writeError(w, http.StatusBadRequest, "validation_error", "github_pr and clear_github_pr are mutually exclusive — send one")
+			return
+		case input.Fields != nil:
+			writeError(w, http.StatusBadRequest, "validation_error", "github_pr / clear_github_pr cannot be combined with a full `fields` write — send fields_patch, or no fields")
+			return
+		}
+		if input.GitHubPR != nil {
+			if err := models.ValidateGitHubPR(input.GitHubPR); err != nil {
+				writeError(w, http.StatusBadRequest, "validation_error", err.Error())
+				return
+			}
+		}
+		if input.FieldsPatch == nil {
+			input.FieldsPatch = map[string]any{}
+		}
+		if input.GitHubPR != nil {
+			input.FieldsPatch[models.ItemFieldGitHubPR] = input.GitHubPR
+		} else {
+			// A nil value in fields_patch DELETES the key (store.mergeFieldsPatch).
+			input.FieldsPatch[models.ItemFieldGitHubPR] = nil
+		}
 	}
 
 	// TASK-2022: validate the optimistic-concurrency token's format at the

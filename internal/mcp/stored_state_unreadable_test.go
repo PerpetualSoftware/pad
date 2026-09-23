@@ -132,8 +132,10 @@ func TestStdioSurfacesStoredStateUnreadable(t *testing.T) {
 // This is deliberately a NEGATIVE assertion on the prescription rather than a
 // positive one on the wording: the point is that no future edit quietly
 // reinstates the recommendation while the underlying write is still broken.
-// Delete this test when BUG-2696 is fixed — at that point the advice becomes
-// true and should come back.
+// BUG-2696's fix did NOT bring the advice back: it CLOSED the field write
+// (refused on every transport) rather than making it work, and deferred a
+// remote PR-link action. So the guard stays, re-aimed: a hint may mention
+// github_pr only to say the write is refused / there is no remote path.
 func TestNoRemoteEquivalentDoesNotAdvertiseTheBrokenPRWorkaround(t *testing.T) {
 	for _, cmd := range []string{"github link", "github unlink"} {
 		hint, ok := noRemoteEquivalent[cmd]
@@ -147,8 +149,8 @@ func TestNoRemoteEquivalentDoesNotAdvertiseTheBrokenPRWorkaround(t *testing.T) {
 		// The failure this guards: prescribing the write without the caveat.
 		lower := strings.ToLower(hint)
 		if strings.Contains(lower, "github_pr") &&
-			!strings.Contains(lower, "no working remote") && !strings.Contains(lower, "rather than clearing") {
-			t.Errorf("%q hint mentions the github_pr field write without saying it does not work; got: %s", cmd, hint)
+			!strings.Contains(lower, "refused") && !strings.Contains(lower, "no remote") {
+			t.Errorf("%q hint mentions the github_pr field write without saying it is refused; got: %s", cmd, hint)
 		}
 	}
 }

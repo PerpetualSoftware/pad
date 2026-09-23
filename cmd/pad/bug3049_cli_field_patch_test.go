@@ -69,6 +69,35 @@ func fieldsRaceServer(t *testing.T, stored map[string]any, concurrent map[string
 				_ = json.Unmarshal([]byte(blob), &replacement)
 				stored = replacement
 			}
+			// BUG-2696: the server refuses github_pr in a CALLER's
+			// fields_patch, so the mock does too, before lowering the typed
+			// members; a client that regressed to the old patch write fails
+			// here as it would against the real server.
+			if patch, ok := body["fields_patch"].(map[string]any); ok {
+				if _, has := patch["github_pr"]; has {
+					w.WriteHeader(http.StatusBadRequest)
+					_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"code": "validation_error", "message": "\"github_pr\" is system metadata"}})
+					return
+				}
+			}
+			// BUG-2696: the typed github_pr members, lowered into the patch
+			// exactly as the server does (a clear is a patch DELETE).
+			if pr, ok := body["github_pr"]; ok {
+				patch, _ := body["fields_patch"].(map[string]any)
+				if patch == nil {
+					patch = map[string]any{}
+				}
+				patch["github_pr"] = pr
+				body["fields_patch"] = patch
+			}
+			if clear, _ := body["clear_github_pr"].(bool); clear {
+				patch, _ := body["fields_patch"].(map[string]any)
+				if patch == nil {
+					patch = map[string]any{}
+				}
+				patch["github_pr"] = nil
+				body["fields_patch"] = patch
+			}
 			if patch, ok := body["fields_patch"].(map[string]any); ok {
 				for k, v := range patch {
 					if v == nil {
