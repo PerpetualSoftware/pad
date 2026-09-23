@@ -68,9 +68,10 @@ test('BUG-3157: a tap on a board card status chip opens a picker and changes not
 	const afterTap = await storedStatus(request, fixture, item.slug);
 	expect(afterTap, 'a single tap on the status chip changed the stored status').toBe('open');
 
-	const picker = page.getByRole('menu', { name: /status/i }).or(page.getByRole('dialog', { name: /status/i }));
+	// On mobile the picker is a BottomSheet dialog whose rows sit in a menu.
+	const picker = page.getByRole('dialog', { name: 'Status' }).getByRole('menu', { name: 'Status' });
 	await expect(picker, 'the tap should open a status picker').toBeVisible();
 
-	await picker.getByRole('menuitemradio', { name: /done/i }).or(picker.getByRole('option', { name: /done/i })).first().tap();
+	await picker.getByRole('menuitemradio', { name: /done/i }).tap();
 	await expect.poll(() => storedStatus(request, fixture, item.slug)).toBe('done');
 });
