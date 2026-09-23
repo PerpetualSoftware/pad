@@ -5,7 +5,9 @@
 	import { createThrottledRefresh } from '$lib/utils/throttledRefresh';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
-	import type { TimelineEntry, TimelineResponse, Item } from '$lib/types';
+	import type { TimelineEntry, TimelineResponse, Item, FieldDef } from '$lib/types';
+	import { parseSchema } from '$lib/types';
+	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { attachmentRefsIn } from '$lib/utils/commentAttachments';
 	import {
 		fetchAttachmentMetadata,
@@ -140,6 +142,17 @@
 			? workspaceStore.canEditItem({ id: itemId, collection_id: collectionId })
 			: false)
 	);
+
+	// The item's collection's field definitions, keyed, so an activity change
+	// pill can render a relation as a chip instead of the item ID it stores
+	// (BUG-2872). The CURRENT schema: a change recorded before the field was
+	// retyped renders by what the key is now, the same answer every other
+	// surface gives about that key.
+	let fieldsByKey = $derived.by(() => {
+		const coll = collectionId ? collectionStore.collections.find((c) => c.id === collectionId) : undefined;
+		return new Map<string, FieldDef>((coll ? parseSchema(coll).fields : []).map((f) => [f.key, f]));
+	});
+	const fieldFor = (key: string) => fieldsByKey.get(key);
 
 	let entries: TimelineEntry[] = $state([]);
 
@@ -1417,6 +1430,7 @@
 			{wsSlug}
 			{username}
 			{items}
+			{fieldFor}
 			{hostToken}
 			{currentUserId}
 			{canEdit}

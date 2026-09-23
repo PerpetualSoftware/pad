@@ -700,6 +700,10 @@
 	let tags = $derived(parseTags(item));
 	let tagSuggestions = $state<string[]>([]);
 	let schema = $derived(collection ? parseSchema(collection) : { fields: [] });
+	// The Activity tab's change pills need to know which keys are relations, so
+	// a relation change renders as a chip instead of the item ID it stores
+	// (BUG-2872). `ItemTimeline` derives the same thing for the Details view.
+	const timelineFieldFor = (key: string) => schema.fields.find((f) => f.key === key);
 	let settings = $derived<CollectionSettings>(collection ? parseSettings(collection) : { layout: 'balanced', default_view: 'board' });
 	let layout = $derived(settings.layout);
 	let quickActions = $derived<QuickAction[]>(settings.quick_actions ?? []);
@@ -6784,6 +6788,7 @@
 					{itemSlug}
 					currentContent={item.content ?? ''}
 					items={localIndex.getAll(wsSlug)}
+					fieldFor={timelineFieldFor}
 					hostToken={attachmentHostToken}
 					onRestore={(updated) => { if (handedDown !== identityKey) return; handleVersionRestore(updated); }}
 					flushBeforeRestore={flushCollabBeforeRestore}

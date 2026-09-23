@@ -4,8 +4,20 @@
 	import { parseFieldChanges } from '$lib/utils/activityChanges';
 	import { agentNameOf } from '$lib/utils/agentActor';
 	import Chip from '$lib/components/common/Chip.svelte';
+	import ActivityChangeValue from './ActivityChangeValue.svelte';
+	import type { FieldDef } from '$lib/types';
 
-	let { activity }: { activity: Activity } = $props();
+	let {
+		activity,
+		wsSlug = '',
+		fieldFor,
+	}: {
+		activity: Activity;
+		wsSlug?: string;
+		/** The changed key's field definition, so a relation change renders as a
+		 *  chip rather than the item ID it stores (BUG-2872). */
+		fieldFor?: (key: string) => FieldDef | undefined;
+	} = $props();
 
 	function parseMetadata(meta: string): Record<string, any> {
 		try {
@@ -86,9 +98,9 @@
 			{#each changes as change, i (i)}
 				<span class="change-pill">
 					<span class="change-field">{change.field}:</span>
-					<span class="change-from">{change.from}</span>
+					<span class="change-from"><ActivityChangeValue text={change.from} field={fieldFor?.(change.field)} {wsSlug} /></span>
 					<span class="change-arrow">&rarr;</span>
-					<span class="change-to">{change.to}</span>
+					<span class="change-to"><ActivityChangeValue text={change.to} field={fieldFor?.(change.field)} {wsSlug} /></span>
 				</span>
 			{/each}
 		</div>
