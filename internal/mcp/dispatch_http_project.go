@@ -275,10 +275,10 @@ func filterAgentAttention(attention []map[string]any) []map[string]any {
 // --- item bulk-update ---
 
 // dispatchItemBulkUpdate iterates the input's `ref` array and applies
-// --status / --priority via the same read-modify-write semantics the
-// item.update path uses (so existing fields survive). Mirrors the
-// CLI's bulkUpdateCmd: at-least-one-of-status-or-priority gating, per-
-// item GET → field merge → PATCH, and a per-item success/error report.
+// --status / --priority as a per-item `fields_patch` (so other fields are
+// never written, BUG-3156). Mirrors the CLI's bulkUpdateCmd:
+// at-least-one-of-status-or-priority gating, one PATCH per item, and a
+// per-item success/error report.
 //
 // The cmdhelp surface marks `ref` as required AND repeatable — agents
 // pass it as either []any (typical JSON array) or []string. Anything
@@ -348,54 +348,27 @@ func (d *HTTPHandlerDispatcher) dispatchItemBulkUpdate(
 	}
 
 	for _, ref := range refs {
-		// Per-item RMW: GET, merge fields, PATCH. Same shape
-		// dispatchItemUpdate uses, but inlined here so a per-item
-		// failure produces a {ref, error} entry instead of aborting.
+		// BUG-3156: ONE PATCH per row carrying `fields_patch` with only the
+		// keys this call sets. This used to be a read-modify-write: GET the
+		// item, set status/priority on the DECODED blob, PATCH the whole
+		// blob back, which reverted any field another client wrote between
+		// the two (BUG-3049's defect, on the transport that fix missed; the
+		// CLI has sent `fields_patch` since). The server merges the patch
+		// under its write lock. There is no prefetch: the PATCH does its own
+		// visibility and not-found checks, and a GET whose only job was the
+		// merge is the defect's shape (the same call BUG-3056 made for
+		// note/decide).
 		itemPath := "/api/v1/workspaces/" + url.PathEscape(workspace) +
 			"/items/" + url.PathEscape(ref)
 
-		getReq, err := d.buildAuthedRequest(ctx, http.MethodGet, itemPath, nil, user)
-		if err != nil {
-			results = append(results, bulkResult{Ref: ref, Error: rowDispatcherError("build request", err)})
-			continue
-		}
-		getRec := httptest.NewRecorder()
-		d.Handler.ServeHTTP(getRec, getReq)
-		if getRec.Code >= 400 {
-			results = append(results, bulkResult{
-				Ref:   ref,
-				Error: rowUpstreamError("read item", itemPath, getRec.Code, getRec.Body.Bytes(), ref),
-			})
-			continue
-		}
-		var existing struct {
-			Fields string `json:"fields"`
-		}
-		if err := json.Unmarshal(getRec.Body.Bytes(), &existing); err != nil {
-			results = append(results, bulkResult{Ref: ref, Error: rowDispatcherError("parse item", err)})
-			continue
-		}
-
-		merged := map[string]any{}
-		if existing.Fields != "" && existing.Fields != "{}" {
-			if err := json.Unmarshal([]byte(existing.Fields), &merged); err != nil {
-				results = append(results, bulkResult{Ref: ref, Error: rowDispatcherError("parse existing fields", err)})
-				continue
-			}
-		}
+		fieldsPatch := map[string]any{}
 		if status != "" {
-			merged["status"] = status
+			fieldsPatch["status"] = status
 		}
 		if priority != "" {
-			merged["priority"] = priority
+			fieldsPatch["priority"] = priority
 		}
-		fieldsJSON, err := json.Marshal(merged)
-		if err != nil {
-			results = append(results, bulkResult{Ref: ref, Error: rowDispatcherError("encode fields", err)})
-			continue
-		}
-		fieldsStr := string(fieldsJSON)
-		patchPayload := map[string]any{"fields": fieldsStr}
+		patchPayload := map[string]any{"fields_patch": fieldsPatch}
 		// IDEA-1494: forward the open-children guard override per-row.
 		// Same flag shape as `pad item bulk-update --force` so the
 		// override travels through both transports identically.
