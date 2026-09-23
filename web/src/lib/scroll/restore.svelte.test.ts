@@ -7,7 +7,7 @@ import {
 	__resetViewerBackdropForTests,
 	VIEWER_ROOT_CLASS,
 } from '$lib/a11y/viewerBackdrop';
-import { isModalViewerScrollInput } from './restore.svelte';
+import { isModalViewerScrollInput, type ScrollRestoration } from './restore.svelte';
 
 // TASK-2457 — a page scroll-restoration must not be aborted by input the user
 // aimed at the frontmost attachment viewer (its own wheel-zoom / arrow-nav),
@@ -216,5 +216,58 @@ describe('isModalViewerScrollInput (TASK-2457)', () => {
 		expect(
 			isModalViewerScrollInput({ defaultPrevented: false, target: window } as unknown as Event)
 		).toBe(false);
+	});
+});
+
+// BUG-3165 — the collection page positions its list itself across a pane
+// open/close and arms `skipNextRestore` so the entry's saved pixel offset (taken
+// in the other layout) does not undo that.
+describe('skipNextRestore (BUG-3165)', () => {
+	function mountHarness() {
+		const target = makeTarget();
+		let snap: Snapshot<number> | undefined;
+		let restoration: ScrollRestoration | undefined;
+		const app = mount(RestoreHarness, {
+			target: appRoot,
+			props: {
+				ready: () => true,
+				scrollTarget: () => target,
+				expose: (s: Snapshot<number>) => (snap = s),
+				exposeRestoration: (r: ScrollRestoration) => (restoration = r),
+			},
+		});
+		mounted.push(app);
+		flushSync();
+		const scrolled = () => (target.scrollTo as unknown as ReturnType<typeof vi.fn>).mock.calls.length > 0;
+		const restore = (y: number) => {
+			snap!.restore!(y);
+			flushSync();
+			frame();
+			frame();
+		};
+		return { restoration: restoration!, restore, scrolled };
+	}
+
+	it('drops exactly the next restore, then restores normally', () => {
+		const h = mountHarness();
+		h.restoration.skipNextRestore();
+		h.restore(100);
+		expect(h.scrolled(), 'the armed restore was applied').toBe(false);
+		h.restore(100);
+		expect(h.scrolled(), 'the skip was not one-shot').toBe(true);
+	});
+
+	it('a released skip drops nothing', () => {
+		const h = mountHarness();
+		const release = h.restoration.skipNextRestore();
+		release();
+		h.restore(100);
+		expect(h.scrolled()).toBe(true);
+	});
+
+	it('CONTROL: with no skip armed, the restore is applied', () => {
+		const h = mountHarness();
+		h.restore(100);
+		expect(h.scrolled()).toBe(true);
 	});
 });

@@ -296,6 +296,7 @@ describe('the collection page fences every async commit point', () => {
 			saveViewInput: 'DOM binding',
 			quickCreateInput: 'DOM binding',
 			paneHostEl: 'DOM binding',
+			listColumnEl: 'DOM binding (BUG-3165 list scroll handoff)',
 			viewMenuTrigger: 'DOM binding',
 			sortMenuTrigger: 'DOM binding',
 			collMenuTrigger: 'DOM binding',

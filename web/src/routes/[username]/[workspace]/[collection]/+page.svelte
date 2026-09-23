@@ -23,6 +23,7 @@
 	import { viewport } from '$lib/stores/breakpoint.svelte';
 	import SSEStatusIndicator from '$lib/components/SSEStatusIndicator.svelte';
 	import { onDestroy, onMount, untrack } from 'svelte';
+	import { captureListAnchor, holdListAnchor, type ListAnchor } from '$lib/collections/listScrollHandoff';
 	import { sseService } from '$lib/services/sse.svelte';
 	import { syncService } from '$lib/services/sync.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
@@ -1073,8 +1074,88 @@
 		// for stable in-page filter behavior.
 		persistKey: () =>
 			wsSlug ? `pad-last-scroll-${wsSlug}-${page.url.pathname}` : null,
+		// With the pane open the list scrolls in `.list-column`, not
+		// `.main-content` (which the pane-open layout clips to the viewport), so
+		// an entry left with the pane open saves — and a Back onto it restores —
+		// the column's position (BUG-3165: Expand to full page, then Back).
+		scrollTarget: listScrollTarget,
 	});
 	export const snapshot = scrollRestoration.snapshot;
+
+	// ── List position across the pane opening / closing (BUG-3165) ──────
+	// Opening or closing the pane swaps the list's scroll container (see
+	// `listScrollTarget`), so the position is handed over explicitly, anchored
+	// on a row (`$lib/collections/listScrollHandoff`). The anchor is read in a
+	// PRE effect — before the DOM switches layout, while the old container still
+	// holds the position — and applied after the switch.
+	let listColumnEl = $state<HTMLElement | null>(null);
+	function listScrollTarget(): HTMLElement | Window | null {
+		if (openItemRef && viewMode !== 'board' && listColumnEl) return listColumnEl;
+		return document.querySelector<HTMLElement>('.main-content') ?? window;
+	}
+	function listScroller(paneOpen: boolean): HTMLElement | null {
+		if (paneOpen) return listColumnEl;
+		return document.querySelector<HTMLElement>('.main-content');
+	}
+	let prevPaneOpen: boolean | undefined = undefined;
+	let prevPaneRef: string | null = null;
+	let pendingHandoff: { anchor: ListAnchor; paneOpen: boolean } | null = null;
+	let releaseHandoff: (() => void) | null = null;
+	// The URL a handoff was APPLIED for; the popstate skip below needs it.
+	let handoffHref: string | null = null;
+	$effect.pre(() => {
+		const ref = openItemRef;
+		const open = !!ref;
+		untrack(() => {
+			const was = prevPaneOpen;
+			const wasRef = prevPaneRef;
+			prevPaneOpen = open;
+			prevPaneRef = ref;
+			// First run (mount — including a Back onto a pane entry, which the
+			// snapshot restore covers), or no layout change: nothing to hand over.
+			if (!browser || was === undefined || was === open) return;
+			if (loading || viewMode === 'board') return;
+			const from = listScroller(was);
+			if (!from) return;
+			// Opening: the row being opened. Closing: the row that was open.
+			const anchor = captureListAnchor(from, open ? ref : wasRef);
+			pendingHandoff = anchor ? { anchor, paneOpen: open } : null;
+		});
+	});
+	$effect(() => {
+		const open = !!openItemRef;
+		untrack(() => {
+			const h = pendingHandoff;
+			pendingHandoff = null;
+			if (!h || h.paneOpen !== open) return;
+			releaseHandoff?.();
+			releaseHandoff = holdListAnchor(() => listScroller(open), h.anchor);
+			handoffHref = releaseHandoff ? page.url.href : null;
+		});
+	});
+	onDestroy(() => releaseHandoff?.());
+	// A Back / Forward that stays on this page and involves the pane leaves the
+	// list where it is rather than applying the entry's saved pixel offset,
+	// which was taken in the OTHER layout (open / close) or before the reader
+	// scrolled the list (pane-to-pane) and would jump it. Only when there IS a
+	// position to keep: a handoff was applied for this very navigation, or —
+	// pane-to-pane, where the column never switched — the list is rendered.
+	// Otherwise (still loading, nothing anchored) the saved offset is the only
+	// position there is, so it restores (codex r1). SvelteKit calls
+	// `snapshot.restore` synchronously after these callbacks, so the skip is
+	// released in a microtask. Entering the page from elsewhere (a different
+	// pathname — the Back from Expand to full page) always restores.
+	afterNavigate((nav) => {
+		const handedOff = !!nav.to && handoffHref === nav.to.url.href;
+		handoffHref = null;
+		if (nav.type !== 'popstate' || !nav.from || !nav.to) return;
+		if (nav.from.url.pathname !== nav.to.url.pathname) return;
+		const fromPane = nav.from.url.searchParams.has('item');
+		const toPane = nav.to.url.searchParams.has('item');
+		const paneToPane = fromPane && toPane && !loading && viewMode !== 'board';
+		if (!handedOff && !paneToPane) return;
+		queueMicrotask(scrollRestoration.skipNextRestore());
+	});
 
 	// Reflect the collection name in the browser tab; clear any stale item ref.
 	//
@@ -3631,6 +3712,7 @@
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<div
 		class="list-column"
+		bind:this={listColumnEl}
 		tabindex="-1"
 		inert={viewport.isMobile && !!openItemRef}
 		onclick={dismissPaneOnBackgroundClick}
