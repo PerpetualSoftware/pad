@@ -934,8 +934,21 @@ workspace's subscription, so:
   (Nothing else recovers it: the failed connection is closed at startup, so
   there is none left for go-redis's own reconnect to revive, and phase 1 runs
   no maintenance loop.)
-  One case is still not seen: a rejection of the automatic re-`SUBSCRIBE`
-  go-redis sends after a reconnect, mid-life (BUG-3155).
+  **One case is not seen, and cannot be from inside Pad** (BUG-3155, a
+  documented limit): Redis rejecting the `SUBSCRIBE` that go-redis re-sends
+  on its own after a connection drops mid-life. go-redis's channel loop
+  retries both the drop and the rejection without surfacing either, and the
+  connection it leaves behind is live but subscribed to nothing, so its
+  health check still passes. To Pad that instance looks exactly like one on a
+  quiet channel. A *successful* re-subscribe is seen (logged, and counted as
+  a resubscription); only the rejection is not. On phase 2 the idle detector
+  replaces such a subscription, and the replacement's first reply is read
+  directly, so its rejection is caught and refused as above. On phase 1
+  nothing does. **Operator action: restart Pad after changing Redis ACLs,
+  credentials, or topology underneath a running instance.** That is the
+  realistic way to make a working subscription's re-`SUBSCRIBE` fail, and a
+  restart puts every subscription back through the path that does see a
+  rejection.
 
 **What to watch.** On the activity bus,
 `pad_event_subscription_cycled_total` — expect zero. Read it rather than that

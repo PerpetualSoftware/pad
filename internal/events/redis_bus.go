@@ -2017,6 +2017,18 @@ func (b *RedisBus) stopRedisSubscription(workspaceID string) {
 // stamp goes stale. Do not assume the health check covers it; it still does
 // not, and a future change that drops the stamping silently un-fixes BUG-2738
 // while leaving this loop looking untouched.
+//
+// NOR DOES THIS LOOP SEE A REJECTED RE-SUBSCRIBE (BUG-2799 closed the first
+// reply only; BUG-3155 is the documented limit). After a mid-life drop,
+// go-redis reconnects and re-sends SUBSCRIBE by itself. If Redis answers with
+// an error reply, initAllChan drops it like the drop before it (back off,
+// continue), and the connection left behind is live and subscribed to nothing,
+// so the health check's PING still succeeds. Nothing reaches the channel, which
+// here is indistinguishable from a quiet workspace. A SUCCESSFUL re-subscribe
+// does arrive, as the resubscription branch below. The idle cycle is the only
+// cover, on phase 2, and its replacement's first reply goes through the probe
+// above. A dial counter was ruled out: the dial hook is client-wide, so it
+// counts ordinary pool growth. deployment.md carries the operator action.
 func (b *RedisBus) receiveMessages(ctx context.Context, pubsub *redis.PubSub, workspaceID string, gen int64) {
 	defer b.reportReceiveLoopExited()
 

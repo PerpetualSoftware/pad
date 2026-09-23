@@ -1182,6 +1182,16 @@ func (b *RedisBus) Close() {
 // does: that is BUG-2727's standing boundary, unchanged in both directions
 // by this work. A reconnecting client is covered either way, since
 // resumeOutrunsLocalView asks the shared counter rather than local state.
+//
+// AND ONE CASE IT CANNOT SEE AT ALL (BUG-3155, a documented limit): Redis
+// REJECTING the SUBSCRIBE go-redis re-sends by itself after a mid-life drop.
+// initAllChan drops that error reply like the drop before it, and leaves a live
+// connection subscribed to nothing whose health-check PING still succeeds. No
+// frame reaches this loop, so it cannot tell that state from a quiet channel.
+// Phase 2's idle cycle replaces it (resubscribe reads the first reply, so the
+// replacement's rejection is seen); phase 1 has no cover. The same limit, and
+// the reasoning against a dial counter, is written at internal/events'
+// receiveMessages; deployment.md carries the operator action.
 // TAKES ITS SUBSCRIPTION AND ITS OWN CONTEXT, rather than reading b.pubsub
 // (BUG-2769). An idle cycle replaces the subscription under a running bus, and
 // the loop reading the OLD one has to be able to tell "I was replaced" from "the
