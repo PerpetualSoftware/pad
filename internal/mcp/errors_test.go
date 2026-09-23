@@ -181,6 +181,9 @@ func TestClassifyHTTPStatus(t *testing.T) {
 		// it landed in pre-fix. Agents implementing backoff key off
 		// the code without parsing free-form text.
 		{"429_rate_limited", http.StatusTooManyRequests, "rate_limited", ErrRateLimited},
+		// BUG-2829: 413 is a deliberate cap, too_large, not the other-4xx
+		// bucket. 418 stays the control for that bucket.
+		{"413_too_large", http.StatusRequestEntityTooLarge, "too large", ErrTooLarge},
 		{"418_other", http.StatusTeapot, "weird", ErrServerError},
 	}
 	for _, tc := range cases {

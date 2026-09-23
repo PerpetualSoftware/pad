@@ -1017,6 +1017,23 @@ const CmdhelpVersion = "0.1"
 //     browser tab and BUG-3000 carries the open half — so no surface
 //     here states a duration.
 //
+//     0.45 — BUG-2829. The error CODE a caller receives for an HTTP 413, on
+//     BOTH transports: `too_large` (details.reason carrying the server's own
+//     code) where it used to be `server_error`. BEHAVIOR bump on the 0.42
+//     grounds; no name, enum or param shape changed. Three producers are
+//     reachable from the catalog, all deliberate caps: a title rename's
+//     wiki-link cascade (`rename_cascade_too_large`, pad_item.update), an
+//     oversized outbox event row (`event_payload_too_large`, any mutating
+//     action), and an oversized artifact (`too_large`, pad_item.import). The
+//     old code read as transient and invited a retry that fails identically;
+//     the new one says shrink or split. Not `validation_failed`, because no
+//     input value is wrong. REMOTE: classifyHTTPStatusKind maps 413 directly.
+//     STDIO: the CLI root writes a structured marker for any 413
+//     (cli.WriteTooLargeError), and `too_large` joins
+//     allowedStructuredErrorCodes. Every other unmapped 4xx still falls to
+//     `server_error`; the enumeration on BUG-2829's trail found none of them
+//     reachable from a catalog action. 0.44 is BUG-3154's (#1450).
+//
 //     0.44 — BUG-3154. `pad_item.action=bulk-update` over the WebMCP
 //     browser transport now REFUSES, per item, a status or priority change
 //     on an item whose collection does not declare that field. The item is
@@ -1414,7 +1431,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.44"
+const ToolSurfaceVersion = "0.45"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

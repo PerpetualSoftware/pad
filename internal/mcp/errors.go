@@ -144,6 +144,18 @@ const (
 	// transient vs persistent throttling.
 	ErrRateLimited ErrorCode = "rate_limited"
 
+	// ErrTooLarge fires on HTTP 413: the request, or what it would cause, is
+	// over a cap the server enforces deliberately (BUG-2829). Three producers
+	// are reachable from the catalog today: a title rename whose wiki-link
+	// cascade would rewrite too many items (rename_cascade_too_large), a write
+	// whose outbox event row would be oversized (event_payload_too_large, any
+	// mutating action), and an oversized artifact import (too_large). The
+	// upstream code rides in details.reason. Not validation_failed: nothing in
+	// the input is WRONG, and the way out is to shrink or split the change, not
+	// to fix a value. Not server_error: retrying the same call fails the same
+	// way, and that code reads as transient.
+	ErrTooLarge ErrorCode = "too_large"
+
 	// ErrPlanLimitExceeded fires on HTTP 403 responses that carry
 	// error.code="plan_limit_exceeded" — a free-tier plan enforcement
 	// gate (e.g. items_per_workspace, members_per_workspace, workspaces,
@@ -448,6 +460,10 @@ var allowedStructuredErrorCodes = map[string]struct{}{
 	// pattern for the limiter's message and said server_error, while the
 	// remote transport, which sees the status, said rate_limited.
 	"rate_limited": {},
+	// BUG-2829. Written at the CLI's root for a 413 on any command
+	// (cli.WriteTooLargeError), with the server's own code in details.reason.
+	// Before this both transports said server_error for a deliberate cap.
+	"too_large": {},
 }
 
 // extractStructuredCLIError scans stderr for the
@@ -992,6 +1008,27 @@ func classifyHTTPStatusKind(
 		})
 	}
 
+	if status == http.StatusRequestEntityTooLarge {
+		// BUG-2829. A deliberate cap, never a fault: see ErrTooLarge. The
+		// server's message is used as-is because it names what was measured
+		// and the limit; the upstream code distinguishes the three producers.
+		upstream := extractUpstreamErrorEnvelope(bodyText)
+		msg := upstream.Message
+		if msg == "" {
+			msg = fmt.Sprintf("pad %s refused: request too large (HTTP 413)", cmdKey)
+		}
+		var details json.RawMessage
+		if upstream.Code != "" {
+			details, _ = json.Marshal(map[string]string{"reason": upstream.Code})
+		}
+		return NewErrorResult(ErrorPayload{
+			Code:    ErrTooLarge,
+			Message: msg,
+			Hint:    tooLargeHintFor(route),
+			Details: details,
+		})
+	}
+
 	if status >= 500 {
 		return NewErrorResult(ErrorPayload{
 			Code:    ErrUpstreamError,
@@ -1383,6 +1420,22 @@ func rateLimitHintFor(bodyMsg, route string) string {
 		parts = append(parts, fmt.Sprintf("Backend: %s", bodyMsg))
 	}
 	return strings.Join(parts, " ")
+}
+
+// tooLargeHint mirrors cli.TooLargeHint, duplicated for the reason
+// structuredErrorMarker is and pinned equal to it by a test, so the two
+// transports give the same guidance for the same refusal (BUG-2829).
+const tooLargeHint = "Refused by a server size cap, not a fault: retrying the same call fails the same way. " +
+	"Shrink or split the change (details.reason names which cap), then retry."
+
+// tooLargeHintFor is the guidance for a 413 (BUG-2829). It does not repeat the
+// server's message, which is already the envelope's message.
+func tooLargeHintFor(route string) string {
+	hint := tooLargeHint
+	if route != "" {
+		hint += fmt.Sprintf(" Route: %s.", route)
+	}
+	return hint
 }
 
 // ─────────────────────────────────────────────────────────────────────
