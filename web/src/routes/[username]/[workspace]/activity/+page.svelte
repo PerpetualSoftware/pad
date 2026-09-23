@@ -15,6 +15,7 @@
 	import type { Activity, Collection, FieldDef } from '$lib/types';
 	import { parseSchema } from '$lib/types';
 	import ActivityChangeValue from '$lib/components/timeline/ActivityChangeValue.svelte';
+	import { createChangeContext, type ChangeContext } from '$lib/timeline/changeContext';
 	import { appendUnique, cursorAfter, mergeHead } from '$lib/utils/activityPaging';
 	import { sseService } from '$lib/services/sse.svelte';
 	import { createThrottledRefresh } from '$lib/utils/throttledRefresh';
@@ -30,6 +31,11 @@
 	// the row's collection, as the item timeline uses.
 	let fieldsBySlug = $derived(
 		new Map(collections.map((c) => [c.slug, new Map<string, FieldDef>(parseSchema(c).fields.map((f) => [f.key, f]))])),
+	);
+	let changeContexts = $derived(
+		new Map<string, ChangeContext>(
+			[...fieldsBySlug].map(([slug, fields]) => [slug, createChangeContext(() => wsSlug, (key) => fields.get(key))]),
+		),
 	);
 	let loading = $state(true);
 	let loadingMore = $state(false);
@@ -501,9 +507,9 @@
 											{#each fieldChanges as change, i (i)}
 												<span class="change-pill">
 													<span class="change-field">{change.field}:</span>
-													<span class="change-from"><ActivityChangeValue text={change.from} field={collSlug ? fieldsBySlug.get(collSlug)?.get(change.field) : undefined} {wsSlug} /></span>
+													<span class="change-from"><ActivityChangeValue text={change.from} field={collSlug ? fieldsBySlug.get(collSlug)?.get(change.field) : undefined} context={collSlug ? changeContexts.get(collSlug) : undefined} /></span>
 													<span class="change-arrow">&rarr;</span>
-													<span class="change-to"><ActivityChangeValue text={change.to} field={collSlug ? fieldsBySlug.get(collSlug)?.get(change.field) : undefined} {wsSlug} /></span>
+													<span class="change-to"><ActivityChangeValue text={change.to} field={collSlug ? fieldsBySlug.get(collSlug)?.get(change.field) : undefined} context={collSlug ? changeContexts.get(collSlug) : undefined} /></span>
 												</span>
 											{/each}
 										</div>

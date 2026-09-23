@@ -1,16 +1,14 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
 import type { FieldDef } from '$lib/types';
 
 // BUG-2872 — one side of an activity field change. A relation side renders the
 // target (or an honest state), never the item ID the field stores; any other
-// field's side renders its text untouched.
-const { localIndexMock, collectionStoreMock } = vi.hoisted(() => ({
-	localIndexMock: { bootstrapStateFor: vi.fn(), findByIdOrSlug: vi.fn() },
-	collectionStoreMock: { collections: [{ id: 'c-people', slug: 'people' }, { id: 'c-tasks', slug: 'tasks' }] },
-}));
-vi.mock('$lib/stores/localIndex.svelte', () => ({ localIndex: localIndexMock }));
-vi.mock('$lib/stores/collections.svelte', () => ({ collectionStore: collectionStoreMock }));
+// field's side renders its text untouched. The resolver and readiness come from
+// the owning page's ChangeContext (tested in changeContext.test.ts); here a
+// fake one drives each state.
+import type { ChangeContext } from '$lib/timeline/changeContext';
+import type { ItemIndexRow } from '$lib/types';
 
 import ActivityChangeValue from './ActivityChangeValue.svelte';
 
@@ -27,31 +25,43 @@ const row = (over: Record<string, unknown> = {}) => ({
 	...over,
 });
 
-function textOf(props: { text: string; field?: FieldDef | null }) {
-	const { container } = render(ActivityChangeValue, { props: { wsSlug: 'ws', ...props } });
+let ready = true;
+let lookup: (id: string, declared: string | undefined) => ItemIndexRow | null = () => null;
+const context: ChangeContext = {
+	fieldFor: () => undefined,
+	resolveRow: (id, declared) => lookup(id, declared),
+	indexReady: () => ready,
+};
+
+function textOf(props: { text: string; field?: FieldDef | null; noContext?: boolean }) {
+	const { container } = render(ActivityChangeValue, {
+		props: { text: props.text, field: props.field, context: props.noContext ? undefined : context },
+	});
 	return container.textContent?.replace(/\s+/g, ' ').trim() ?? '';
 }
 
 describe('ActivityChangeValue (BUG-2872)', () => {
 	beforeEach(() => {
-		localIndexMock.bootstrapStateFor.mockReturnValue('ready');
-		localIndexMock.findByIdOrSlug.mockReturnValue(null);
+		ready = true;
+		lookup = () => null;
 	});
-	afterEach(() => {
-		cleanup();
-		vi.clearAllMocks();
-	});
+	afterEach(() => cleanup());
 
 	it('a resolved relation renders REF and title, never the id', () => {
-		localIndexMock.findByIdOrSlug.mockImplementation((_ws: string, v: string) => (v === ID ? row() : null));
+		let declaredSeen: string | undefined;
+		lookup = (v, declared) => {
+			declaredSeen = declared;
+			return v === ID ? (row() as unknown as ItemIndexRow) : null;
+		};
 		const t = textOf({ text: ID, field: OWNER });
 		expect(t).toContain('Ada Lovelace');
 		expect(t).toMatch(/PEOP-7/);
 		expect(t).not.toContain(ID);
+		expect(declaredSeen, 'resolved against the field\'s declared target').toBe('people');
 	});
 
 	it('a deleted target says so', () => {
-		localIndexMock.findByIdOrSlug.mockReturnValue(row({ deleted_at: '2026-09-01T00:00:00Z' }));
+		lookup = () => row({ deleted_at: '2026-09-01T00:00:00Z' }) as unknown as ItemIndexRow;
 		const t = textOf({ text: ID, field: OWNER });
 		expect(t).toContain('(deleted)');
 		expect(t).not.toContain(ID);
@@ -63,21 +73,20 @@ describe('ActivityChangeValue (BUG-2872)', () => {
 	});
 
 	it('with the index NOT ready, a miss is "Linked item" — not a claim that it names nothing', () => {
-		localIndexMock.bootstrapStateFor.mockReturnValue('cold');
+		ready = false;
 		const t = textOf({ text: ID, field: OWNER });
 		expect(t).toBe('Linked item');
 		expect(t).not.toContain(ID);
 	});
 
-	it('a row in ANOTHER collection than the field declares is not taken for the target', () => {
-		localIndexMock.findByIdOrSlug.mockReturnValue(row({ collection_slug: 'tasks', collection_prefix: 'TASK' }));
-		expect(textOf({ text: ID, field: OWNER })).toBe('Unresolved reference');
-	});
-
 	it('a non-relation field renders its text verbatim, even an id-shaped one', () => {
-		localIndexMock.findByIdOrSlug.mockReturnValue(row());
+		lookup = () => row() as unknown as ItemIndexRow;
 		expect(textOf({ text: ID, field: NOTE })).toBe(ID);
 		expect(textOf({ text: 'plain words', field: null })).toBe('plain words');
+	});
+
+	it('with no context (a caller that supplies none) a relation side is "Linked item", never the id', () => {
+		expect(textOf({ text: ID, field: OWNER, noContext: true })).toBe('Linked item');
 	});
 
 	it('an empty relation side stays empty', () => {

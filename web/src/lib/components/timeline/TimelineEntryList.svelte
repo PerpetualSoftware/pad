@@ -15,7 +15,8 @@
 	 * their handlers live with the data they mutate. A view that renders no
 	 * comments (the changes list) simply omits them.
 	 */
-	import type { TimelineEntry, Item, FieldDef } from '$lib/types';
+	import type { TimelineEntry, Item } from '$lib/types';
+	import type { ChangeContext } from '$lib/timeline/changeContext';
 	import type { AttachmentMeta } from '$lib/markdown/attachments';
 	import TimelineCommentCard from './TimelineCommentCard.svelte';
 	import TimelineActivityCard from './TimelineActivityCard.svelte';
@@ -71,8 +72,8 @@
 		onReaction?: (commentId: string, emoji: string) => void;
 		onRemoveReaction?: (commentId: string, emoji: string) => void;
 
-		/** Field definitions for activity change pills (BUG-2872). */
-		fieldFor?: (key: string) => FieldDef | undefined;
+		/** Relation rendering for activity change pills (BUG-2872). */
+		changeContext?: ChangeContext;
 
 		// Version cards.
 		itemSlug?: string;
@@ -84,7 +85,7 @@
 
 	let {
 		entries,
-		fieldFor,
+		changeContext,
 		listEl = $bindable(),
 		showEmpty = false,
 		emptyLabel = 'No timeline entries yet.',
@@ -145,7 +146,7 @@
 						{onRemoveReaction}
 					/>
 				{:else if entry.kind === 'activity' && entry.activity}
-					<TimelineActivityCard activity={entry.activity} {wsSlug} {fieldFor} />
+					<TimelineActivityCard activity={entry.activity} {changeContext} />
 				{:else if entry.kind === 'version' && entry.version}
 					<TimelineVersionCard
 						version={entry.version}

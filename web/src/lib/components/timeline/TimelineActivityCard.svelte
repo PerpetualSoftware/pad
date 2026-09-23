@@ -5,18 +5,16 @@
 	import { agentNameOf } from '$lib/utils/agentActor';
 	import Chip from '$lib/components/common/Chip.svelte';
 	import ActivityChangeValue from './ActivityChangeValue.svelte';
-	import type { FieldDef } from '$lib/types';
+	import type { ChangeContext } from '$lib/timeline/changeContext';
 
 	let {
 		activity,
-		wsSlug = '',
-		fieldFor,
+		changeContext,
 	}: {
 		activity: Activity;
-		wsSlug?: string;
-		/** The changed key's field definition, so a relation change renders as a
-		 *  chip rather than the item ID it stores (BUG-2872). */
-		fieldFor?: (key: string) => FieldDef | undefined;
+		/** Lets a relation change render as the target rather than the item ID
+		 *  it stores (BUG-2872). Absent: every side renders as text. */
+		changeContext?: ChangeContext;
 	} = $props();
 
 	function parseMetadata(meta: string): Record<string, any> {
@@ -98,9 +96,9 @@
 			{#each changes as change, i (i)}
 				<span class="change-pill">
 					<span class="change-field">{change.field}:</span>
-					<span class="change-from"><ActivityChangeValue text={change.from} field={fieldFor?.(change.field)} {wsSlug} /></span>
+					<span class="change-from"><ActivityChangeValue text={change.from} field={changeContext?.fieldFor(change.field)} context={changeContext} /></span>
 					<span class="change-arrow">&rarr;</span>
-					<span class="change-to"><ActivityChangeValue text={change.to} field={fieldFor?.(change.field)} {wsSlug} /></span>
+					<span class="change-to"><ActivityChangeValue text={change.to} field={changeContext?.fieldFor(change.field)} context={changeContext} /></span>
 				</span>
 			{/each}
 		</div>

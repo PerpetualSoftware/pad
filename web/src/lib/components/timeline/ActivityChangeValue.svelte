@@ -15,35 +15,34 @@
 	// `multi_relation` needs nothing here: `formatChangeValue` collapses any list
 	// to a count ("(2 items)"), so no id reaches the text in the first place.
 	import type { FieldDef } from '$lib/types';
-	import { narrowRelationRow, relationChipFor } from '$lib/collections/relationGroups';
-	import { localIndex } from '$lib/stores/localIndex.svelte';
-	import { collectionStore } from '$lib/stores/collections.svelte';
+	import type { ChangeContext } from '$lib/timeline/changeContext';
+	import { relationChipFor } from '$lib/collections/relationGroups';
 
 	let {
 		text,
 		field,
-		wsSlug,
+		context,
 	}: {
 		/** The side's display text as the server wrote it. */
 		text: string;
 		/** The changed key's field definition, when known. */
 		field?: FieldDef | null;
-		wsSlug: string;
+		/** Resolution context from the owning page; absent means render text. */
+		context?: ChangeContext;
 	} = $props();
 
-	let knownCollectionSlugs = $derived(new Set(collectionStore.collections.map((c) => c.slug)));
-	let isRelation = $derived(field?.type === 'relation' && !!wsSlug && !!text.trim());
+	let isRelation = $derived(field?.type === 'relation' && !!text.trim());
+	// No context means nothing to resolve against: the chip below then reads
+	// as a miss before the index is ready — "Linked item", never the id.
 	let chip = $derived(
 		isRelation && field
-			? relationChipFor(text, (id) =>
-					narrowRelationRow(localIndex.findByIdOrSlug(wsSlug, id), id, field.collection, knownCollectionSlugs),
-				)
+			? relationChipFor(text, (id) => context?.resolveRow(id, field.collection) ?? null)
 			: null,
 	);
 	// "Unresolved reference" is a claim that the value names nothing, and it is
 	// only true once the workspace index has loaded. Before that a miss means
 	// "not looked up yet" — say that, and still never the id.
-	let indexReady = $derived(!!wsSlug && localIndex.bootstrapStateFor(wsSlug) === 'ready');
+	let indexReady = $derived(!!context && context.indexReady());
 </script>
 
 {#if !isRelation || !chip}
