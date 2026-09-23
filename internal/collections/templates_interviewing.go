@@ -50,13 +50,14 @@ func interviewingApplicationsCollection(sortOrder int) DefaultCollection {
 		Schema: models.CollectionSchema{
 			Fields: []models.FieldDef{
 				{
-					Key:             "stage",
-					Label:           "Stage",
-					Type:            "select",
-					Options:         []string{"researching", "applied", "screen", "interviewing", "offer", "accepted", "rejected", "withdrawn"},
-					TerminalOptions: []string{"accepted", "rejected", "withdrawn"},
-					Default:         "researching",
-					Required:        true,
+					Key:              "stage",
+					Label:            "Stage",
+					Type:             "select",
+					Options:          []string{"researching", "applied", "screen", "interviewing", "offer", "accepted", "rejected", "withdrawn"},
+					TerminalOptions:  []string{"accepted", "rejected", "withdrawn"},
+					AbandonedOptions: []string{"rejected", "withdrawn"},
+					Default:          "researching",
+					Required:         true,
 				},
 				{
 					Key:   "company",

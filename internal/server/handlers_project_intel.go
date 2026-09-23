@@ -124,8 +124,9 @@ func (s *Server) projectIntelVisibility(r *http.Request, workspaceID string) (co
 
 // listTerminalItemsSince fetches items that reached a *positive* terminal
 // since cutoff. Terminal values are resolved per collection via
-// models.CollectionCompletedWorkValues (schema terminal_options, minus
-// models.NegativeTerminals) rather than iterating the global
+// models.CollectionCompletedWorkValues (schema terminal_options, minus the
+// field's abandoned_options, or minus models.NegativeTerminals when it
+// declares none — BUG-2347) rather than iterating the global
 // DefaultTerminalStatuses union — so a collection that only declares
 // "shipped" is not scanned for "done", and a disabled convention is not
 // counted as completed work (BUG-1049).

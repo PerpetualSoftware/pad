@@ -2,6 +2,7 @@ package models
 
 import (
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"strings"
 )
@@ -96,8 +97,9 @@ func TerminalValuesForDoneField(
 // cancelled task, or disabled convention is not counted as completed work.
 // Matched case-insensitively.
 //
-// A future task can make this per-collection configurable; for now it's a
-// sensible global default (PLAN-1628). "disabled" is included so collections
+// Since BUG-2347 a field's own `abandoned_options` REPLACES this list for
+// that field; this remains the fallback for fields that declare none
+// (PLAN-1628). "disabled" is included so collections
 // whose only schema-declared terminal is "disabled" (stock Conventions) do
 // not report turning a rule off as throughput (BUG-1049).
 var NegativeTerminals = map[string]bool{
@@ -117,21 +119,73 @@ func IsNegativeTerminal(value string) bool {
 	return NegativeTerminals[strings.ToLower(strings.TrimSpace(value))]
 }
 
-// PositiveTerminalValuesForDoneField is TerminalValuesForDoneField minus
-// NegativeTerminals — the values that count as completed *work*.
+// PositiveTerminalValuesForDoneField is TerminalValuesForDoneField minus the
+// values that close WITHOUT delivering — the values that count as completed
+// *work*. It is the ONE resolver for that question (BUG-2347): the changelog,
+// standup, the CLI's changelog copy and report throughput all call it.
+//
+// Which values are "abandoned": the done field's own `abandoned_options` when
+// it declares any; otherwise the global NegativeTerminals names. The global
+// list is a guess about vocabulary and cannot know a collection's own words —
+// "overturned" on plans, "withdrawn" on candidates — which is why a field
+// that declares its own list is never second-guessed by it.
 func PositiveTerminalValuesForDoneField(
 	schema CollectionSchema,
 	settings CollectionSettings,
 ) (fieldKey string, values []string) {
 	fieldKey, terminals := TerminalValuesForDoneField(schema, settings)
+	abandoned := declaredAbandoned(schema, fieldKey)
 	values = make([]string, 0, len(terminals))
 	for _, v := range terminals {
-		if IsNegativeTerminal(v) {
+		if abandoned != nil {
+			if abandoned[strings.ToLower(strings.TrimSpace(v))] {
+				continue
+			}
+		} else if IsNegativeTerminal(v) {
 			continue
 		}
 		values = append(values, v)
 	}
 	return fieldKey, values
+}
+
+// declaredAbandoned returns the done field's abandoned_options as a
+// lowercased set, or nil when the field declares none (the fallback case).
+func declaredAbandoned(schema CollectionSchema, fieldKey string) map[string]bool {
+	for _, f := range schema.Fields {
+		if f.Key != fieldKey || len(f.AbandonedOptions) == 0 {
+			continue
+		}
+		set := make(map[string]bool, len(f.AbandonedOptions))
+		for _, v := range f.AbandonedOptions {
+			set[strings.ToLower(strings.TrimSpace(v))] = true
+		}
+		return set
+	}
+	return nil
+}
+
+// ValidateAbandonedOptions refuses a schema whose abandoned_options name a
+// value that is not one of the same field's terminal_options (BUG-2347). An
+// abandoned value that is not terminal would never be reached by the
+// completed-work resolver, so declaring it is a mistake the author should
+// hear about rather than a silent no-op.
+func ValidateAbandonedOptions(schema CollectionSchema) error {
+	for _, f := range schema.Fields {
+		if len(f.AbandonedOptions) == 0 {
+			continue
+		}
+		terminal := make(map[string]bool, len(f.TerminalOptions))
+		for _, t := range f.TerminalOptions {
+			terminal[strings.ToLower(strings.TrimSpace(t))] = true
+		}
+		for _, a := range f.AbandonedOptions {
+			if !terminal[strings.ToLower(strings.TrimSpace(a))] {
+				return fmt.Errorf("field %q: abandoned_options value %q is not one of its terminal_options", f.Key, a)
+			}
+		}
+	}
+	return nil
 }
 
 // CollectionCompletedWorkValues unmarshals a collection's persisted schema

@@ -756,3 +756,42 @@ func TestGetReport_DisabledConventionNotCompleted(t *testing.T) {
 		t.Fatalf("disabled convention must not count as completed work, got %d", rep.Totals.Completed)
 	}
 }
+
+// BUG-2347: report throughput takes "abandoned" from the collection's own
+// abandoned_options, through the same resolver as the changelog. "overturned"
+// is not a global negative name, so without the declaration it would count.
+func TestGetReport_DeclaredAbandonedOptionNotCompleted(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	u, err := s.CreateUser(models.UserCreate{Name: "P", Email: "p@example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "Plans", Slug: "plansws", OwnerID: u.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	col, err := s.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Reviews", Slug: "reviews", Prefix: "REVIE",
+		Schema: `{"fields":[{"key":"status","label":"Status","type":"select","options":["open","completed","overturned"],"terminal_options":["completed","overturned"],"abandoned_options":["overturned"],"default":"open"}]}`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, final := range []string{"overturned", "completed"} {
+		item, err := s.CreateItem(ws.ID, col.ID, models.ItemCreate{Title: final, Fields: `{"status":"open"}`})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.UpdateItem(item.ID, models.ItemUpdate{Fields: strPtr(`{"status":"` + final + `"}`)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rep, err := s.GetReport(ws.ID, ReportOptions{Window: "week", Now: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Totals.Completed != 1 {
+		t.Fatalf("completed = %d, want 1 (the completed item; overturned is declared abandoned)", rep.Totals.Completed)
+	}
+}

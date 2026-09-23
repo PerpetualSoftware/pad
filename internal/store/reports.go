@@ -18,7 +18,8 @@ import (
 // throughput bucketed over a window, net flow, completed-by-collection, and a
 // current status-distribution snapshot. "Completed" is a status_transitions
 // row INTO a *positive* terminal value (a terminal option that isn't a
-// negative outcome like rejected/cancelled — see models.NegativeTerminals),
+// negative outcome: the done field's abandoned_options, or the global
+// models.NegativeTerminals when it declares none — BUG-2347),
 // counted per the collection's done field. Created counts items.created_at.
 //
 // Everything routes date math through dialect.DateBucket so the same query
@@ -672,14 +673,8 @@ func (s *Store) resolveReportCollections(workspaceID string, opts ReportOptions)
 			_ = json.Unmarshal([]byte(c.Settings), &settings)
 		}
 		doneKey, terminals := models.TerminalValuesForDoneField(schema, settings)
-
-		var positives []string
-		for _, v := range terminals {
-			if models.IsNegativeTerminal(v) {
-				continue
-			}
-			positives = append(positives, v)
-		}
+		// The shared resolver, so abandoned_options apply here too (BUG-2347).
+		_, positives := models.PositiveTerminalValuesForDoneField(schema, settings)
 		out = append(out, reportCollection{
 			id:                c.ID,
 			slug:              c.Slug,

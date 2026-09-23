@@ -83,13 +83,14 @@ func specsCollection(sortOrder int) DefaultCollection {
 		Schema: models.CollectionSchema{
 			Fields: []models.FieldDef{
 				{
-					Key:             "status",
-					Label:           "Status",
-					Type:            "select",
-					Options:         []string{"draft", "in-review", "approved", "implemented", "superseded"},
-					TerminalOptions: []string{"superseded"},
-					Default:         "draft",
-					Required:        true,
+					Key:              "status",
+					Label:            "Status",
+					Type:             "select",
+					Options:          []string{"draft", "in-review", "approved", "implemented", "superseded"},
+					TerminalOptions:  []string{"superseded"},
+					AbandonedOptions: []string{"superseded"},
+					Default:          "draft",
+					Required:         true,
 				},
 				{
 					Key:   "version",

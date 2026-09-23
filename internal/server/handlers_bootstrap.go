@@ -161,18 +161,19 @@ type bootstrapSchema struct {
 // it uses reflection to assert structural parity and fails the build
 // if the two diverge.
 type bootstrapFieldDef struct {
-	Key             string          `json:"key"`
-	Label           string          `json:"label,omitempty"`
-	Type            string          `json:"type"`
-	Options         []string        `json:"options,omitempty"`
-	TerminalOptions []string        `json:"terminal_options,omitempty"`
-	Default         json.RawMessage `json:"default,omitempty"`
-	Required        bool            `json:"required,omitempty"`
-	Computed        bool            `json:"computed,omitempty"`
-	Collection      string          `json:"collection,omitempty"`
-	Suffix          string          `json:"suffix,omitempty"`
-	Pattern         string          `json:"pattern,omitempty"`
-	UniqueScope     string          `json:"unique_scope,omitempty"`
+	Key              string          `json:"key"`
+	Label            string          `json:"label,omitempty"`
+	Type             string          `json:"type"`
+	Options          []string        `json:"options,omitempty"`
+	TerminalOptions  []string        `json:"terminal_options,omitempty"`
+	AbandonedOptions []string        `json:"abandoned_options,omitempty"`
+	Default          json.RawMessage `json:"default,omitempty"`
+	Required         bool            `json:"required,omitempty"`
+	Computed         bool            `json:"computed,omitempty"`
+	Collection       string          `json:"collection,omitempty"`
+	Suffix           string          `json:"suffix,omitempty"`
+	Pattern          string          `json:"pattern,omitempty"`
+	UniqueScope      string          `json:"unique_scope,omitempty"`
 }
 
 // trimRedundantSchemaLabels parses the schema JSON, drops field
