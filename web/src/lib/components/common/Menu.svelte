@@ -173,6 +173,14 @@
 		return items()[0];
 	}
 
+	// A menu owes arrow/Home/End navigation wherever it renders (BUG-3157 codex
+	// round 2). In the sheet, Escape stays with BottomSheet, which owns it
+	// there along with focus return.
+	function onSheetKeydown(e: KeyboardEvent) {
+		if (e.key === 'Escape') return;
+		onKeydown(e);
+	}
+
 	function onKeydown(e: KeyboardEvent) {
 		if (e.key === 'Escape') {
 			e.stopPropagation();
@@ -206,7 +214,14 @@
 			<!-- The rows are menuitem / menuitemradio, which must be owned by a
 			     menu; the sheet itself is a dialog. Without this wrapper the
 			     sheet branch had no menu at all (BUG-3157 codex round 1). -->
-			<div class="menu-sheet-body" role="menu" aria-label={ariaLabel ?? sheetTitle}>
+			<div
+				class="menu-sheet-body"
+				role="menu"
+				aria-label={ariaLabel ?? sheetTitle}
+				tabindex="-1"
+				bind:this={panelEl}
+				onkeydown={onSheetKeydown}
+			>
 				{@render children()}
 			</div>
 		</BottomSheet>

@@ -62,6 +62,20 @@ describe('StatusPicker at the mobile breakpoint', () => {
 		}
 	});
 
+	it('arrow keys move between the sheet\u2019s rows, as a menu\u2019s do (codex round 2)', async () => {
+		const { card } = renderInCard();
+		await fireEvent.click(statusChipIn(card));
+		await tick();
+		const rows = statusRows();
+		rows[0].focus();
+		await fireEvent.keyDown(rows[0], { key: 'ArrowDown' });
+		expect(document.activeElement).toBe(rows[1]);
+		await fireEvent.keyDown(rows[1], { key: 'End' });
+		expect(document.activeElement).toBe(rows[2]);
+		await fireEvent.keyDown(rows[2], { key: 'ArrowDown' });
+		expect(document.activeElement, 'ArrowDown past the end wraps').toBe(rows[0]);
+	});
+
 	it('choosing a row in the sheet writes that status', async () => {
 		const { card, onselect } = renderInCard();
 		await chooseStatus(card, 'done');
