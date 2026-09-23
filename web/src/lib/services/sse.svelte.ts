@@ -1,4 +1,5 @@
 import { SvelteSet } from 'svelte/reactivity';
+import { probeRefusal, reconnectDelayMs } from './sseReconnect';
 
 export type SSEStatus = 'disconnected' | 'connected' | 'reconnecting' | 'unauthorized';
 
@@ -202,6 +203,88 @@ function createSSEService() {
 	// holds. IDEA-2535 owns that question separately.
 	let pendingSyncOnConnect = false;
 
+	// THE RECONNECT IS OURS, not the browser's (BUG-2733). Measured in
+	// Chromium: a refused connection (429 / 503) is never retried, so the tab
+	// went dark for good, and an ended stream is retried on a flat 3s, so a
+	// restarted server got every tab back on one tick. See sseReconnect.ts
+	// for the policy. The timer and attempt count belong to the CURRENT
+	// connection and are reset by disconnect().
+	let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+	let reconnectAttempt = 0;
+	// True from the failure until the replacement source exists: covers the
+	// probe in flight as well as the timer. connect() reads it so a layout
+	// re-run cannot reopen ahead of the backoff (codex r1).
+	let reconnectPending = false;
+	// Bumped by every teardown. A probe answers asynchronously, so an answer
+	// that arrives after disconnect() must find a different generation and
+	// arm nothing, even when the tab has since reconnected to the SAME
+	// workspace and failed again at the same attempt number (codex r1).
+	let reconnectGeneration = 0;
+
+	function clearReconnect() {
+		if (reconnectTimer !== null) {
+			clearTimeout(reconnectTimer);
+			reconnectTimer = null;
+		}
+		reconnectAttempt = 0;
+		reconnectPending = false;
+		reconnectGeneration++;
+	}
+
+	/**
+	 * Take a failed source down and schedule its replacement.
+	 *
+	 * `refused` is the CLOSED-at-onerror case: the server answered with a
+	 * non-200, the only case that can carry a Retry-After, so only then is
+	 * the endpoint probed for it. A dropped stream goes straight to the
+	 * ladder.
+	 *
+	 * The replacement is a NEW EventSource, which sends no Last-Event-ID, so
+	 * the server cannot replay what was missed. pendingSyncOnConnect is armed
+	 * instead: the /items-changes delta on connect (BUG-2540) reconciles the
+	 * gap the replay used to cover.
+	 */
+	function scheduleReconnect(workspaceSlug: string, url: string, refused: boolean) {
+		if (reconnectPending) return;
+		reconnectPending = true;
+		reconnectAttempt++;
+		const attempt = reconnectAttempt;
+		const generation = reconnectGeneration;
+		const arm = (retryAfterMs: number | null) => {
+			// disconnect() may have run while the probe was in flight, and the
+			// tab may even be back on the same workspace: the generation is
+			// the only check that tells those apart.
+			if (generation !== reconnectGeneration || currentWorkspace !== workspaceSlug || eventSource !== null) return;
+			reconnectTimer = setTimeout(() => {
+				reconnectTimer = null;
+				if (generation !== reconnectGeneration || currentWorkspace !== workspaceSlug || eventSource !== null) return;
+				reconnectPending = false;
+				pendingSyncOnConnect = true;
+				openEventSource(workspaceSlug);
+			}, reconnectDelayMs(attempt, retryAfterMs));
+		};
+		if (refused) {
+			void probeRefusal(url).then((probe) => {
+				if (probe.kind === 'retry') {
+					arm(probe.retryAfterMs);
+					return;
+				}
+				// 401 / 403: the same end state the server's own `unauthorized`
+				// event produces (see its listener), and for the same reason:
+				// retrying a dead credential forever, while saying
+				// "reconnecting", is the tight loop that listener exists to
+				// stop. Stale answers are dropped like arm()'s.
+				if (generation !== reconnectGeneration || currentWorkspace !== workspaceSlug || eventSource !== null) return;
+				reconnectPending = false;
+				status = 'unauthorized';
+				broadcast({ type: 'status', status: 'unauthorized' });
+				currentWorkspace = '';
+			});
+		} else {
+			arm(null);
+		}
+	}
+
 	function openEventSource(workspaceSlug: string) {
 		const url = `/api/v1/events?workspace=${encodeURIComponent(workspaceSlug)}`;
 		const source = new EventSource(url);
@@ -233,6 +316,7 @@ function createSSEService() {
 		source.onopen = () => {
 			if (source !== eventSource) return;
 			status = 'connected';
+			reconnectAttempt = 0;
 			broadcast({ type: 'status', status: 'connected' });
 			claimPendingSync();
 		};
@@ -241,13 +325,19 @@ function createSSEService() {
 			if (source !== eventSource) return;
 			status = 'reconnecting';
 			broadcast({ type: 'status', status: 'reconnecting' });
-			// EventSource auto-reconnects and sends Last-Event-ID.
-			// The server replays missed events from its buffer.
+			// NOT left to the browser (BUG-2733): see scheduleReconnect. Read
+			// readyState BEFORE close(), which forces it to CLOSED: CLOSED
+			// here means the server refused the connection outright.
+			const refused = source.readyState === EventSource.CLOSED;
+			source.close();
+			eventSource = null;
+			scheduleReconnect(workspaceSlug, url, refused);
 		};
 
 		source.addEventListener('connected', () => {
 			if (source !== eventSource) return;
 			status = 'connected';
+			reconnectAttempt = 0;
 			broadcast({ type: 'status', status: 'connected' });
 			// Mirror onopen — some platforms fire `connected`
 			// reliably before `onopen` on reconnect, others vice
@@ -411,6 +501,13 @@ function createSSEService() {
 	}
 
 	function connect(workspaceSlug: string) {
+		// Backing off on this workspace: the scheduled reconnect owns the next
+		// open (BUG-2733, codex r1). Without this, a layout re-run found no
+		// live source on a leader tab, tore down and reopened at once, ahead
+		// of the ladder and of any Retry-After.
+		if (currentWorkspace === workspaceSlug && reconnectPending) {
+			return;
+		}
 		// Already connected to the same workspace — no-op.
 		if (currentWorkspace === workspaceSlug && (eventSource || bc)) {
 			if (eventSource && eventSource.readyState !== EventSource.CLOSED) {
@@ -444,6 +541,8 @@ function createSSEService() {
 	}
 
 	function disconnect() {
+		// A scheduled reconnect belongs to the connection being torn down.
+		clearReconnect();
 		// Release the leader lock first so a peer tab can take over
 		// even on the same browser session (e.g. workspace switch).
 		if (releaseLeaderLock) {
