@@ -119,3 +119,44 @@ func TestStdioRateLimitClassifiesAsRateLimited(t *testing.T) {
 		t.Fatalf("details = %s, want retry_after_seconds 7 (err %v)", env.Error.Details, err)
 	}
 }
+
+// BUG-2829, end to end on stdio: a 413 on a write reaches the caller as
+// too_large with the server's own code in details.reason, instead of
+// server_error. The fake answers with the bytes writeItemRenameCascadeTooLarge
+// writes (writeError's {"error":{"code","message"}} body at 413). The command
+// is `item update` with a title, the door that cascade refusal comes through.
+func TestStdioPayloadTooLargeClassifiesAsTooLarge(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusRequestEntityTooLarge)
+		_, _ = w.Write([]byte(`{"error":{"code":"rename_cascade_too_large","message":"Renaming this item would rewrite links in too many items."}}`))
+	}))
+	defer srv.Close()
+
+	t.Setenv(padHelperEnv, "1")
+	t.Setenv("HOME", t.TempDir())
+	bin, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	d := &mcp.ExecDispatcher{Binary: bin}
+	res, err := d.Dispatch(context.Background(), []string{"item", "update"},
+		[]string{"--url", srv.URL, "--workspace", "ws", "--format", "json", "--title", "Renamed", "--", "TASK-1"})
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	env, ok := res.StructuredContent.(mcp.ErrorEnvelope)
+	if !ok {
+		t.Fatalf("PRECONDITION: the call should have failed; got %T", res.StructuredContent)
+	}
+	if env.Error.Code != mcp.ErrTooLarge {
+		t.Fatalf("code = %q (message %q, hint %q), want %q",
+			env.Error.Code, env.Error.Message, env.Error.Hint, mcp.ErrTooLarge)
+	}
+	var details struct {
+		Reason string `json:"reason"`
+	}
+	if err := json.Unmarshal(env.Error.Details, &details); err != nil || details.Reason != "rename_cascade_too_large" {
+		t.Fatalf("details = %s, want reason rename_cascade_too_large (err %v)", env.Error.Details, err)
+	}
+}

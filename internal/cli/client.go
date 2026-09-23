@@ -2110,6 +2110,42 @@ func IsRateLimited(err error) (*APIError, bool) {
 	return nil, false
 }
 
+// TooLargeHint is the guidance an MCP caller receives with a too_large
+// envelope (BUG-2829), on either transport. The cap is the server's and
+// differs by producer, so no figure appears here; the server's message names
+// what was measured and the limit.
+const TooLargeHint = "Refused by a server size cap, not a fault: retrying the same call fails the same way. " +
+	"Shrink or split the change (details.reason names which cap), then retry."
+
+// IsTooLarge reports whether err is, or wraps, a server 413. Keyed on the
+// STATUS, not the code, because three producers refuse with three codes.
+func IsTooLarge(err error) (*APIError, bool) {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.Status == http.StatusRequestEntityTooLarge {
+		return apiErr, true
+	}
+	return nil, false
+}
+
+// WriteTooLargeError writes the structured marker line for a 413 (BUG-2829),
+// with the server's own code in details.reason, so the stdio MCP transport
+// reports too_large instead of inferring server_error from prose that matches
+// nothing. Written once at the root, like WriteRateLimitedError, because
+// several commands can receive one and none of them owns it.
+func WriteTooLargeError(w io.Writer, apiErr *APIError) {
+	body := map[string]any{
+		"code":    "too_large",
+		"message": apiErr.Message,
+		"hint":    TooLargeHint,
+	}
+	if apiErr.Code != "" {
+		body["details"] = map[string]any{"reason": apiErr.Code}
+	}
+	if data, err := json.Marshal(map[string]any{"error": body}); err == nil {
+		fmt.Fprintln(w, StructuredErrorMarker+string(data))
+	}
+}
+
 // WriteRateLimitedError writes the structured marker line for a 429
 // (BUG-3147), so the stdio MCP transport reports rate_limited — with the
 // server's wait — instead of inferring server_error from prose that matches
