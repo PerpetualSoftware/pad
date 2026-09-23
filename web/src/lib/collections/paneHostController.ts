@@ -22,7 +22,7 @@
 // pane-follow, the list-row focus-return target, the unsaved-draft leave guard)
 // stays in the host and is handed in as a small set of injected callbacks.
 
-import { goto, afterNavigate } from '$app/navigation';
+import { goto, afterNavigate, replaceState } from '$app/navigation';
 import { page } from '$app/state';
 import { browser } from '$app/environment';
 import { itemUrlId, type Item, type PaneTarget } from '$lib/types';
@@ -32,6 +32,7 @@ import {
 	planLateralOpen,
 	planPaneClose,
 	type ResolvedPaneState,
+	type PaneHistoryState,
 } from '$lib/collections/paneController';
 import { resolvePaneTarget } from '$lib/collections/paneTarget';
 
@@ -57,6 +58,12 @@ export interface PaneControllerDeps {
 	 * `{#key itemSlug}` remount destroys the just-activated control (R1).
 	 */
 	focusPaneRegion: () => void;
+	/**
+	 * The pane's current scroll offset, or null with no pane (BUG-2182). Read
+	 * just before a forward drill and saved into the entry being left, so Back
+	 * can restore it. Optional: a host without a pane has nothing to report.
+	 */
+	getPaneScrollTop?: () => number | null;
 	/**
 	 * Capture the element that opened the pane, so an eventual close can return
 	 * focus to it (list-row fallback; collection page only). Called ONLY on a
@@ -295,6 +302,17 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 		deps.cancelFollow();
 		const plan = planPaneDrill(deps.getOpenItemRef(), target, currentPaneState());
 		if (plan.kind === 'noop') return;
+		// BUG-2182: remember where the reader was in THIS item before leaving it,
+		// merged into the current entry's state through SvelteKit's own shallow
+		// routing (never a raw history.replaceState, which would clobber Kit's
+		// sveltekit:* keys). Only for a push: a capped drill REPLACES the entry,
+		// and the entry it would be saved on is the one being overwritten.
+		if (plan.kind === 'push') {
+			const top = deps.getPaneScrollTop?.() ?? null;
+			if (top !== null && top > 0) {
+				replaceState('', { ...(page.state as PaneHistoryState), paneScrollTop: top });
+			}
+		}
 		const url = new URL(page.url);
 		url.searchParams.set('item', target);
 		goto(`${url.pathname}${url.search}`, {

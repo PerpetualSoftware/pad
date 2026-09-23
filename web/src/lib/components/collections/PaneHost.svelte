@@ -24,6 +24,8 @@
 	// openItemRef}` gate, which mounts/unmounts THIS whole component.
 	import { browser } from '$app/environment';
 	import { onDestroy, untrack } from 'svelte';
+	import { page } from '$app/state';
+	import { readPaneScrollTop } from '$lib/collections/paneController';
 	import ItemDetail from '$lib/components/items/ItemDetail.svelte';
 	import { viewport } from '$lib/stores/breakpoint.svelte';
 	import { paneOverlay } from '$lib/stores/paneOverlay.svelte';
@@ -111,6 +113,103 @@
 	// Exposed as a Svelte 5 instance export (PLAN-2154 Architecture E / TASK-2170)
 	// so the host can wire it as the controller's `focusPaneRegion` dep AND its
 	// list→pane Tab bridge, both via `paneHostEl?.focusPaneRegion()`.
+	/** The pane's scroll offset, for the controller's forward-drill save (BUG-2182). */
+	export function getPaneScrollTop(): number | null {
+		return paneEl ? paneEl.scrollTop : null;
+	}
+
+	// BUG-2182: a Back/Forward traversal onto an entry that saved a scroll
+	// position (see PaneHistoryState.paneScrollTop) puts the reader back there.
+	// Only on a POPSTATE (a traversal): page.state also changes on unrelated replaceState
+	// writes to the same entry, and restoring on those would yank the reader
+	// back to a position they have since scrolled away from.
+	//
+	// The item's content renders after the navigation, so the position is
+	// applied once the pane can scroll that far — waited for with a
+	// ResizeObserver on the pane's content, capped at ~1s (lead ruling). The
+	// reader wins: any scroll during the wait that is not our own, or a
+	// wheel/touch/key gesture, cancels it. Our own assignment happens only at
+	// the moment it succeeds, so the scroll event it raises is never mistaken
+	// for the reader's.
+	const RESTORE_CAP_MS = 1000;
+	let cancelRestore: (() => void) | null = null;
+
+	function restorePaneScroll(el: HTMLElement, target: number): () => void {
+		let done = false;
+		const finish = () => {
+			if (done) return;
+			done = true;
+			ro.disconnect();
+			clearTimeout(timer);
+			el.removeEventListener('scroll', onScroll);
+			for (const ev of GESTURES) el.removeEventListener(ev, finish);
+		};
+		const apply = () => {
+			if (done) return;
+			if (el.scrollHeight - el.clientHeight < target) return;
+			el.scrollTop = target;
+			finish();
+		};
+		// Before the restore lands, the pane sits at 0 while content grows, which
+		// raises no scroll event; a scroll now can only be the reader's.
+		const onScroll = () => {
+			if (!done && el.scrollTop > 2) finish();
+		};
+		const ro = new ResizeObserver(apply);
+		for (const child of Array.from(el.children)) ro.observe(child);
+		const timer = setTimeout(finish, RESTORE_CAP_MS);
+		el.addEventListener('scroll', onScroll, { passive: true });
+		for (const ev of GESTURES) el.addEventListener(ev, finish, { passive: true });
+		apply();
+		return finish;
+	}
+
+	// The window's popstate, not afterNavigate: saving the position makes the
+	// entry being left a SvelteKit SHALLOW entry (replaceState), and traversing
+	// back to a shallow entry updates page.state without running a navigation,
+	// so afterNavigate never fires for it (measured). SvelteKit applies the
+	// entry's state in its own popstate handler; the read waits a task for it.
+	//
+	// The restore then waits for ItemDetail's onReady(true) — the LOADED item
+	// matching the requested ref — before it starts. Starting at the popstate
+	// measured against the PREVIOUS item still on screen (it read B's height,
+	// then the swap collapsed it) and let the 1s cap run out on the network
+	// fetch. onReady is the same switch boundary the full-page scroll restore
+	// uses for this A→B→A case (BUG-1425).
+	let readyGen = 0;
+	let pendingRestore: { target: number; gen: number } | null = null;
+	const GESTURES = ['wheel', 'touchstart', 'keydown'] as const;
+
+	// A reader gesture while the item is still loading cancels the pending
+	// restore too, not only one during the height wait: the reader has already
+	// started moving, and jumping them afterwards is the same override.
+	function dropPending() {
+		pendingRestore = null;
+		for (const ev of GESTURES) paneEl?.removeEventListener(ev, dropPending);
+	}
+
+	function onPopState() {
+		cancelRestore?.();
+		cancelRestore = null;
+		dropPending();
+		setTimeout(() => {
+			const target = readPaneScrollTop(page.state);
+			if (target === null || !paneEl) return;
+			pendingRestore = { target, gen: readyGen };
+			for (const ev of GESTURES) paneEl.addEventListener(ev, dropPending, { passive: true });
+		}, 0);
+	}
+
+	function handleItemReady(ready: boolean) {
+		if (!ready) return;
+		readyGen++;
+		const p = pendingRestore;
+		if (!p || readyGen <= p.gen || !paneEl) return;
+		dropPending();
+		cancelRestore = restorePaneScroll(paneEl, p.target);
+	}
+	if (browser) window.addEventListener('popstate', onPopState);
+
 	export function focusPaneRegion() {
 		if (!browser) return;
 		if (!openItemRef || !paneEl) return;
@@ -481,6 +580,9 @@
 	// this from an `openItemRef`→null effect — the shell's unmount IS that
 	// transition now).
 	onDestroy(() => {
+		cancelRestore?.();
+		dropPending();
+		if (browser) window.removeEventListener('popstate', onPopState);
 		if (resizingPane && browser) {
 			document.body.style.userSelect = '';
 			document.body.style.cursor = '';
@@ -656,6 +758,7 @@
 		<ItemDetail
 			ref={paneMintForRoute}
 			embedded
+			onReady={handleItemReady}
 			peeking={activePane === 'master'}
 			{username}
 			{wsSlug}

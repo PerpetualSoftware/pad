@@ -683,6 +683,7 @@
 		getOpenItemRef: () => openItemRef,
 		cancelFollow: () => cancelPaneFollow(),
 		focusPaneRegion: () => paneHostEl?.focusPaneRegion(),
+		getPaneScrollTop: () => paneHostEl?.getPaneScrollTop() ?? null,
 		captureReturnFocus,
 		setBypassNavGuard: (bypass) => {
 			bypassNavGuard = bypass;
