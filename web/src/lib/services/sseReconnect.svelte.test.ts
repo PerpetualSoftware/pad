@@ -264,6 +264,30 @@ describe('owned reconnect in the SSE service (BUG-2733)', () => {
 		expect(sources).toHaveLength(1);
 	});
 
+	it('a stale timer cannot open a stream for a tab that came back as a FOLLOWER', async () => {
+		// disconnect() then connect() to the SAME workspace, with another tab now
+		// holding the leader lock: this tab listens on the BroadcastChannel and
+		// must not own an EventSource. The old timer passes the workspace check
+		// (same slug) and the no-live-source check (followers have none), so
+		// only disconnect() cancelling it keeps this tab from opening a second
+		// stream beside the leader's.
+		vi.stubGlobal('fetch', vi.fn());
+		const sse = await connected();
+		sources[0].fireDropped();
+		await flush();
+		sse.disconnect();
+		Object.defineProperty(globalThis.navigator, 'locks', {
+			value: { request: () => new Promise<void>(() => {}), query: async () => ({ held: [], pending: [] }) },
+			configurable: true,
+			writable: true
+		});
+		sse.connect('ws-a');
+		await flush();
+		await vi.advanceTimersByTimeAsync(RECONNECT_CAP_MS * 2);
+		expect(sources).toHaveLength(1);
+		sse.disconnect();
+	});
+
 	it('disconnect cancels a scheduled reconnect', async () => {
 		vi.stubGlobal('fetch', vi.fn());
 		const sse = await connected();
