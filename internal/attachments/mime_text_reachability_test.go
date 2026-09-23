@@ -35,13 +35,13 @@ func TestTextFamilyEntriesAreReachableAndNeverGainInline(t *testing.T) {
 	}
 	sort.Strings(exts)
 
-	checked := 0
+	checked := map[string]bool{}
 	for _, ext := range exts {
 		mapped, ok := LookupMIME(NormalizeMIME(extMIMEMap[ext]))
 		if !ok || mapped.Category != CategoryText {
 			continue // blocked, or not a text type: not this test's population
 		}
-		checked++
+		checked[ext] = true
 		got, code, err := ValidateUpload(body, "f"+ext)
 		if err != nil {
 			t.Errorf("%s: plain text under its own extension was refused (%s): %v", ext, code, err)
@@ -58,9 +58,19 @@ func TestTextFamilyEntriesAreReachableAndNeverGainInline(t *testing.T) {
 				ext, got.MIME)
 		}
 	}
-	// The population is the text family, and it must not be empty or shrink
-	// unnoticed: a filter that matched nothing would pass every check above.
-	if checked < 10 {
-		t.Fatalf("only %d text-family extensions checked; expected the full family (>= 10)", checked)
+	// The population must not SHRINK unnoticed: the filter above skips an
+	// extension that stops being an allowed text type, and a count floor would
+	// let that pass silently (codex round 1 on BUG-2841). Every member as of
+	// this test is named here. GROWTH needs no edit, because the loop reads the
+	// table, which is the point of enumerating it; a REMOVAL fails until
+	// someone removes it here too, which is the deliberate step it should be.
+	for _, ext := range []string{
+		".csv", ".htm", ".html", ".js", ".json", ".md",
+		".toml", ".tsv", ".txt", ".xml", ".yaml", ".yml",
+	} {
+		if !checked[ext] {
+			t.Errorf("%s is no longer an allowed text-family extension, so this test no longer checks it; "+
+				"if that is deliberate, remove it from this list", ext)
+		}
 	}
 }
