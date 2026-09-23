@@ -322,7 +322,7 @@ func TestMCP_ValidPAT_ReachesTransport(t *testing.T) {
 	})
 
 	srv.SetCloudMode("test-secret")
-	srv.SetMCPTransport(stub, "https://mcp.test.example", "https://app.test.example")
+	srv.SetMCPTransport(stub, "https://mcp.test.example", "https://app.test.example", nil)
 
 	req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1}`))
 	req.Header.Set("Authorization", "Bearer "+tok.Token)
@@ -369,7 +369,7 @@ func TestMCP_NoToken_FallsBackToHostWhenPublicURLUnset(t *testing.T) {
 	})
 	// Both URLs intentionally empty — simulates a cloud deploy that
 	// hasn't set PAD_MCP_PUBLIC_URL / PAD_AUTH_SERVER_URL yet.
-	srv.SetMCPTransport(stub, "", "")
+	srv.SetMCPTransport(stub, "", "", nil)
 
 	req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{}`))
 	req.Host = "mcp.test.local"
@@ -433,7 +433,7 @@ func TestMCP_ReadScopedPAT_StashesScopesInContext(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 	srv.SetCloudMode("test-secret")
-	srv.SetMCPTransport(stub, "https://mcp.test.example", "https://app.test.example")
+	srv.SetMCPTransport(stub, "https://mcp.test.example", "https://app.test.example", nil)
 
 	req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{}`))
 	req.Header.Set("Authorization", "Bearer "+tok.Token)
@@ -492,7 +492,7 @@ func mcpEnabledTestServer(t *testing.T) *Server {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
 	})
-	srv.SetMCPTransport(stub, "https://mcp.test.example", "https://app.test.example")
+	srv.SetMCPTransport(stub, "https://mcp.test.example", "https://app.test.example", nil)
 	return srv
 }
 
@@ -519,7 +519,7 @@ func mcpAndOAuthEnabledTestServer(t *testing.T) (srv *Server, transport *mcpStub
 	// (no /mcp suffix to strip).
 	srv.SetMCPTransport(http.HandlerFunc(transport.serve),
 		testCanonicalAudience,
-		testAuthServerURL)
+		testAuthServerURL, nil)
 
 	o, err := newTestOAuthServer(t, srv)
 	if err != nil {

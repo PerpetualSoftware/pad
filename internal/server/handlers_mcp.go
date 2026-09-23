@@ -63,8 +63,12 @@ import (
 // transport state into a Server they then never start, but the
 // `routerOnce.Do` ordering in ensureRouter means production traffic
 // would just see 404s on /mcp.
-func (s *Server) SetMCPTransport(transport http.Handler, mcpPublicURL, authServerURL string) {
+func (s *Server) SetMCPTransport(transport http.Handler, mcpPublicURL, authServerURL string, knownCallName func(string) bool) {
 	s.mcpTransport = transport
+	// Bounds the MCP metrics tool label (BUG-2817). A parameter rather than
+	// a separate setter, so the transport cannot be mounted without deciding
+	// it; nil records every name as "unknown".
+	s.mcpCallNameKnown = knownCallName
 	s.mcpPublicURL = mcpPublicURL
 	s.mcpAuthServerURL = authServerURL
 

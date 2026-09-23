@@ -49,7 +49,7 @@ func TestMCPToolMetricsLabel_IsBoundedByTheKnownNames(t *testing.T) {
 	srv, user, bearer := auditedMCPServer(t)
 	m := metrics.New()
 	srv.SetMetrics(m)
-	srv.SetMCPMetricsCallNames(func(n string) bool { return n == "pad_item" || n == "tools/list" })
+	srv.mcpCallNameKnown = (func(n string) bool { return n == "pad_item" || n == "tools/list" })
 
 	post := func(body string) {
 		t.Helper()
@@ -111,7 +111,9 @@ func TestHTTPMetricsMethodLabel_IsBounded(t *testing.T) {
 	r.Use(MetricsMiddleware(m))
 	r.HandleFunc("/x", func(w http.ResponseWriter, _ *http.Request) {})
 
-	for _, method := range []string{http.MethodGet, http.MethodPost} {
+	standard := []string{http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut,
+		http.MethodPatch, http.MethodDelete, http.MethodOptions, http.MethodConnect, http.MethodTrace}
+	for _, method := range standard {
 		r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(method, "/x", nil))
 	}
 	const n = 25
@@ -119,7 +121,10 @@ func TestHTTPMetricsMethodLabel_IsBounded(t *testing.T) {
 		r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(fmt.Sprintf("M%d", i), "/x", nil))
 	}
 
-	want := "GET,OTHER,POST"
+	// Every standard method keeps its own value, and the invented ones share one.
+	wantSet := append(append([]string{}, standard...), "OTHER")
+	sort.Strings(wantSet)
+	want := strings.Join(wantSet, ",")
 	for _, fam := range []string{"pad_http_requests_total", "pad_http_request_duration_seconds", "pad_http_response_size_bytes"} {
 		if got := strings.Join(labelValues(t, m, fam, "method"), ","); got != want {
 			t.Errorf("%s method labels = %s after %d invented methods, want %s", fam, got, n, want)

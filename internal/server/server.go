@@ -135,7 +135,7 @@ type Server struct {
 	// mcpCallNameKnown bounds the MCP metrics tool label (BUG-2817): a
 	// name it does not know is recorded as "unknown". Nil records every
 	// name as "unknown", so an unwired server cannot mint caller-chosen
-	// series. Wired by SetMCPMetricsCallNames.
+	// series. Set by SetMCPTransport.
 	mcpCallNameKnown func(string) bool
 	mcpPublicURL     string // canonical public URL of the MCP vhost (e.g. https://mcp.getpad.dev)
 	mcpAuthServerURL string // canonical URL of the OAuth auth server (e.g. https://app.getpad.dev), TASK-951

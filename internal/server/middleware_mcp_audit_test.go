@@ -39,7 +39,7 @@ func auditedMCPServer(t *testing.T) (srv *Server, user *models.User, bearer stri
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
 	})
-	srv.SetMCPTransport(stub, "https://mcp.test.example", "https://app.test.example")
+	srv.SetMCPTransport(stub, "https://mcp.test.example", "https://app.test.example", nil)
 
 	var err error
 	user, err = srv.store.CreateUser(models.UserCreate{

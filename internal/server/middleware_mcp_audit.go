@@ -414,16 +414,12 @@ func metricsToolLabel(tool string) string {
 // shares (BUG-2817).
 const unknownToolLabel = "unknown"
 
-// SetMCPMetricsCallNames wires the predicate that bounds the MCP metrics tool
-// label. The tool name is whatever the caller put in the request, and the
-// audit middleware records rejected and denied calls too, so without a bound an
-// authenticated caller mints a new series per request by varying the name. The
-// audit ROW keeps the full value; only the Prometheus label is bounded.
-func (s *Server) SetMCPMetricsCallNames(known func(string) bool) {
-	s.mcpCallNameKnown = known
-}
-
 // boundedToolLabel maps a name the server does not know to unknownToolLabel.
+// The tool name is whatever the caller put in the request, and the audit
+// middleware records rejected and denied calls too, so without a bound an
+// authenticated caller mints a new series per request by varying the name. The
+// audit ROW keeps the full value; only the Prometheus label is bounded. The
+// predicate arrives with SetMCPTransport.
 // The sanitised marker is a server-chosen constant and passes through.
 func (s *Server) boundedToolLabel(tool string) string {
 	if tool == strings.TrimSuffix(sanitisedLabelPrefix, " ") {
