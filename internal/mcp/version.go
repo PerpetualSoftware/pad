@@ -1017,6 +1017,34 @@ const CmdhelpVersion = "0.1"
 //     browser tab and BUG-3000 carries the open half — so no surface
 //     here states a duration.
 //
+//     0.48 — BUG-3163. `pad_item.action=create` REFUSES a `field` (or
+//     `fields` object) entry naming any reserved metadata key —
+//     implementation_notes, decision_log, github_pr, convention — on every
+//     transport, with 400 validation_error; nothing is created. It was the
+//     last door that stored one: a `field` value is typed by schema lookup,
+//     these keys are in no schema, so it landed as a string no extractor
+//     reads, and for notes/decisions it also made note/decide refuse on the
+//     item until the row was repaired. The remedy is to create the item and
+//     then use note / decide on it; convention metadata comes from library
+//     activation. BEHAVIOR bump on the 0.47 grounds: a write door refuses a
+//     call it used to accept, and nothing that worked is lost.
+//
+//     Library activation, the one system writer that used the create door,
+//     moves to a new ADDITIVE, typed item-create member, `convention` (the
+//     ItemConventionMetadata object; an empty one is refused), on every
+//     surface: CLI, remote library activate, and the web library and
+//     Conventions pages. It is NOT on this catalog; activation is
+//     `pad_library.activate`, whose shape is unchanged. The CLI verifies from
+//     the stored fields that the metadata landed, because a server older than
+//     it ignores the member and answers 201.
+//
+//     Not reachable from this catalog, recorded because it is the same door
+//     family: a FULL `fields` blob on the item-update HTTP endpoint may now
+//     only CARRY stored reserved metadata unchanged. A differing value, or an
+//     omitted stored key (which would delete it), is refused with 400, checked
+//     against the row under the write lock. `pad_item.update` lowers every
+//     field write into fields_patch and never sends a full blob.
+//
 //     0.47 — BUG-2696. `pad_item.action=update` REFUSES a `field` (or
 //     `fields` object, or fields_patch) entry naming `github_pr`, on every
 //     transport, with 400 validation_error naming `pad github link` /
@@ -1485,7 +1513,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.47"
+const ToolSurfaceVersion = "0.48"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

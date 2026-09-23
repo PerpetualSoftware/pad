@@ -189,7 +189,7 @@ func TestPatchItemFieldsPatchRemedyIsHonestWhenAlreadyUnreadable(t *testing.T) {
 
 	// The TASK-860 shape: the entries array stored as a JSON-encoded STRING.
 	broken := `{"status":"open","implementation_notes":"[{\"summary\":\"legacy\"}]"}`
-	item := createTaskWithFields(t, srv, slug, "Legacy row", broken)
+	item := createTaskThenSeedFields(t, srv, slug, "Legacy row", broken)
 
 	// Precondition: the row really is in the defect state. Without this the
 	// test could pass against a server that never stored the string at all.
@@ -226,7 +226,7 @@ func TestPatchItemFieldsPatchRemedyIsHonestWhenAlreadyUnreadable(t *testing.T) {
 func TestPatchItemFieldsPatchRemedyStandsOnAHealthyItem(t *testing.T) {
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
-	item := createTaskWithFields(t, srv, slug, "Healthy row",
+	item := createTaskThenSeedFields(t, srv, slug, "Healthy row",
 		`{"status":"open","implementation_notes":[{"id":"note-1","summary":"fine"}]}`)
 
 	rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+item.Slug, map[string]interface{}{
@@ -265,33 +265,14 @@ func TestPatchItemFieldsPatchAllowsOrdinaryKeys(t *testing.T) {
 	}
 }
 
-// TestPatchItemFullFieldsStillWritesReservedKeys is the leg that decides
-// whether the gate was placed correctly, and the one most worth keeping.
-//
-// The full `fields` blob is how Pad's OWN writers reach these keys — `pad item
-// note`, `pad item decide`, `pad github link`, and convention activation
-// through ItemCreate all send one. A gate written one level too high (on both
-// doors, or inside the store) would break every one of them, and no assertion
-// in this file about the patch door would notice.
-func TestPatchItemFullFieldsStillWritesReservedKeys(t *testing.T) {
-	srv := testServer(t)
-	slug := createWSWithCollections(t, srv)
-	item := createTaskWithFields(t, srv, slug, "Item", `{"status":"open"}`)
-
-	// The shape AppendImplementationNote produces: a real array of entries.
-	full := `{"status":"open","implementation_notes":[{"id":"note-1","summary":"did a thing"}]}`
-	rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+item.Slug, map[string]interface{}{
-		"fields": full,
-	})
-	if rr.Code != http.StatusOK {
-		t.Fatalf("full-fields write of a reserved key: expected 200, got %d: %s", rr.Code, rr.Body.String())
-	}
-	got := getItemFields(t, srv, slug, item.Slug)
-	notes, ok := got[models.ItemFieldImplementationNotes].([]any)
-	if !ok || len(notes) != 1 {
-		t.Fatalf("system writer's note did not persist through the full-fields door: %v", got)
-	}
-}
+// TestPatchItemFullFieldsStillWritesReservedKeys lived here and pinned that a
+// full `fields` blob could WRITE reserved keys, because Pad's own writers sent
+// one. They no longer do: note/decide use typed append members, github link a
+// typed member, and convention activation ItemCreate.Convention. BUG-3163
+// closed that door to any change of stored reserved metadata, so a full blob
+// may only CARRY it unchanged. The over-breadth concern this test guarded (a
+// gate one level too high breaking the system writers) is now covered by
+// TestBUG3163_FullFieldsCarryIsAllowed and TestBUG3163_TypedConventionIsStored.
 
 // TestReservedFieldTablesAreExhaustive keeps the two hand-maintained per-key
 // tables in step with models.ReservedItemFieldKeys().

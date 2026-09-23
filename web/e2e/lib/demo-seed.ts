@@ -212,15 +212,18 @@ export async function activateLibraryConventions(
 					priority: conv.enforcement,
 					enforcement: conv.enforcement,
 					surfaces: conv.surfaces,
-					commands: conv.commands ?? [],
-					convention: {
-						category: conv.category,
-						trigger: conv.trigger,
-						surfaces: conv.surfaces,
-						enforcement: conv.enforcement,
-						commands: conv.commands ?? []
-					}
-				})
+					commands: conv.commands ?? []
+				}),
+				// BUG-3163: create's `fields` refuses the reserved `convention`
+				// key; the metadata travels as the typed member, as in
+				// api.library.activate.
+				convention: {
+					category: conv.category,
+					trigger: conv.trigger,
+					surfaces: conv.surfaces,
+					enforcement: conv.enforcement,
+					commands: conv.commands ?? []
+				}
 			}
 		});
 		if (!resp.ok()) {

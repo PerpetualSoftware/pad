@@ -36,16 +36,22 @@ import (
 // it vouches for the component rather than its binding to the three
 // SQL-backed sources (team CONVE-19).
 
-// patchItemFields overwrites the item's fields blob through the real PATCH
-// path, so the entries are hydrated exactly as production hydrates them.
+// patchItemFields overwrites the item's stored fields blob. It used to go
+// through a full-`fields` PATCH; since BUG-3163 that door refuses a write that
+// changes stored reserved metadata, so it seeds through the store instead
+// (seedStoredFields). The timeline reads the same row either way, so the
+// entries are still hydrated exactly as production hydrates them.
 func patchItemFields(t *testing.T, srv *Server, wsSlug, itemSlug, fieldsJSON string) {
 	t.Helper()
-	rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+wsSlug+"/items/"+itemSlug, map[string]any{
-		"fields": fieldsJSON,
-	})
-	if rr.Code != http.StatusOK {
-		t.Fatalf("patch item fields = %d: %s", rr.Code, rr.Body.String())
+	ws, err := srv.store.GetWorkspaceBySlug(wsSlug)
+	if err != nil || ws == nil {
+		t.Fatalf("resolve workspace %q: %v", wsSlug, err)
 	}
+	it, err := srv.store.ResolveItem(ws.ID, itemSlug)
+	if err != nil || it == nil {
+		t.Fatalf("resolve item %q: %v", itemSlug, err)
+	}
+	seedStoredFields(t, srv, it.ID, fieldsJSON)
 }
 
 func entriesByKind(entries []models.TimelineEntry, kind string) []models.TimelineEntry {

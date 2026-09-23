@@ -32,7 +32,7 @@ import (
 //
 // Two minor divergences from the CLI:
 //
-//   - The CLI uses `models.BuildConventionItemFields` for
+//   - The CLI uses `models.BuildConventionItemCreate` for
 //     conventions (deals with surfaces/enforcement/commands metadata)
 //     but builds the playbook fields by hand. We match exactly.
 //   - The target collection, resolved from each entry's artifact kind via the
@@ -58,7 +58,10 @@ func (d *HTTPHandlerDispatcher) dispatchLibraryActivate(
 	}
 
 	if conv := collections.GetLibraryConvention(title); conv != nil {
-		fieldsJSON, err := models.BuildConventionItemFields("active", &models.ItemConventionMetadata{
+		// BUG-3163: create's `fields` refuses the reserved `convention` key, so
+		// the metadata travels as the typed member. This door is in-process with
+		// the server it posts to, so there is no version skew to verify.
+		fieldsJSON, convention, err := models.BuildConventionItemCreate("active", &models.ItemConventionMetadata{
 			Category:    conv.Category,
 			Trigger:     conv.Trigger,
 			Surfaces:    conv.Surfaces,
@@ -72,7 +75,7 @@ func (d *HTTPHandlerDispatcher) dispatchLibraryActivate(
 		if terr != nil {
 			return dispatcherErrorResult(cmdKey, "resolve target collection", terr), nil
 		}
-		return d.postLibraryItem(ctx, user, workspace, target, cmdKey, conv.Title, conv.Content, fieldsJSON)
+		return d.postLibraryItem(ctx, user, workspace, target, cmdKey, conv.Title, conv.Content, fieldsJSON, convention)
 	}
 
 	if pb := collections.GetLibraryPlaybook(title); pb != nil {
@@ -99,7 +102,7 @@ func (d *HTTPHandlerDispatcher) dispatchLibraryActivate(
 		if terr != nil {
 			return dispatcherErrorResult(cmdKey, "resolve target collection", terr), nil
 		}
-		return d.postLibraryItem(ctx, user, workspace, target, cmdKey, pb.Title, pb.Content, string(fieldsJSON))
+		return d.postLibraryItem(ctx, user, workspace, target, cmdKey, pb.Title, pb.Content, string(fieldsJSON), nil)
 	}
 
 	return NewErrorResult(ErrorPayload{
@@ -155,10 +158,14 @@ func (d *HTTPHandlerDispatcher) postLibraryItem(
 	ctx context.Context,
 	user *models.User,
 	workspace, collection, cmdKey, title, content, fieldsJSON string,
+	convention *models.ItemConventionMetadata,
 ) (*mcp.CallToolResult, error) {
 	payload := map[string]any{
 		"title":  title,
 		"fields": fieldsJSON,
+	}
+	if convention != nil {
+		payload["convention"] = convention
 	}
 	if content != "" {
 		payload["content"] = content

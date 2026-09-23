@@ -388,7 +388,7 @@ Run with --help-collections to see available collections and their status values
 	cmd.Flags().StringVar(&parentSlug, "parent", "", "parent item (ref, slug, or ID)")
 	cmd.Flags().StringVar(&category, "category", "", "category field value")
 	cmd.Flags().StringVar(&tags, "tags", "", "JSON array of tags")
-	cmd.Flags().StringArrayVarP(&fieldFlags, "field", "f", nil, "set arbitrary field (repeatable): --field key=value")
+	cmd.Flags().StringArrayVarP(&fieldFlags, "field", "f", nil, "set arbitrary field (repeatable): --field key=value; refused for implementation_notes, decision_log, github_pr and convention (create the item, then use `pad item note` / `pad item decide` / `pad github link`; conventions come from `pad library activate`)")
 
 	// Shell completion for collection arg
 	cmd.RegisterFlagCompletionFunc("status", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
@@ -1485,7 +1485,7 @@ Examples:
 	cmd.Flags().StringVar(&parentFlag, "parent", "", "update parent item (ref, slug, or ID); an empty --parent \"\" is REFUSED, it does not clear — use --clear-parent")
 	cmd.Flags().StringVar(&category, "category", "", "update category field")
 	cmd.Flags().StringVar(&tags, "tags", "", "update tags (JSON array)")
-	cmd.Flags().StringArrayVarP(&fieldFlags, "field", "f", nil, "set a field (repeatable): --field key=value; refused for implementation_notes (use `pad item note`), decision_log (`pad item decide`) and convention (`pad library activate`)")
+	cmd.Flags().StringArrayVarP(&fieldFlags, "field", "f", nil, "set a field (repeatable): --field key=value; refused for implementation_notes (use `pad item note`), decision_log (`pad item decide`), github_pr (`pad github link`) and convention (`pad library activate`)")
 	cmd.Flags().IntVar(&sortOrder, "sort-order", 0, "set the item's sort_order rank (lower appears first; used by child lists and drag-reorder)")
 	cmd.Flags().StringVar(&comment, "comment", "", "attach a comment explaining this update (e.g. why status changed)")
 	cmd.Flags().BoolVar(&force, "force", false, "override the open-children guard (allow marking the item terminal even if children are non-terminal)")

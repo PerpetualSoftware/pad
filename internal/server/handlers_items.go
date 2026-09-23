@@ -705,6 +705,27 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// BUG-3163: create's `fields` refuses every reserved metadata key, the
+	// create-side twin of the field-patch gate (BUG-2627 / BUG-2696). A value
+	// arriving here from a `--field` / MCP `field` setter is a string no
+	// extractor can read. The check runs on the CALLER's map, before the typed
+	// convention member is lowered below, or that member would refuse itself.
+	// Artifact import shares createItemChecked but not this handler, and needs
+	// no gate: artifact.Decode fills Fields only from a fixed frontmatter key
+	// list (BUG-3163 checkpoint 2).
+	if bad := items.ReservedFieldKeysIn(fieldMap); len(bad) > 0 {
+		writeError(w, http.StatusBadRequest, "validation_error", reservedFieldCreateMessage(bad))
+		return
+	}
+	if input.Convention != nil {
+		normalized, cerr := models.ValidateConventionMetadata(input.Convention)
+		if cerr != nil {
+			writeError(w, http.StatusBadRequest, "validation_error", cerr.Error())
+			return
+		}
+		fieldMap[models.ItemFieldConvention] = normalized
+	}
+
 	// Extract parent from fields — it's managed via item_links, not stored in fields JSON.
 	// Accepts both "parent" and "plan" as the field key.
 	// Skip this if the schema actually defines a field with that key.
@@ -1361,13 +1382,11 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	// refuses on that item until someone repairs the row. Silently dropping it
 	// would leave the caller believing they had written history they had not.
 	//
-	// Scope, stated because it is deliberate: this closes the FIELD-PATCH
-	// door, which every user field-setter lowers into. A full `fields` blob on
-	// update is unchanged (it round-trips stored reserved values, and the
-	// legacy client-side note/decide append for old servers writes it), and
-	// item CREATE is still a mint site because convention activation writes
-	// through it. That is BUG-3163, NOT BUG-2685: 2685 fixed SCHEMA-DECLARED
-	// reserved keys, not hand-written values.
+	// Scope: this closes the FIELD-PATCH door, which every user field-setter
+	// lowers into. The other two doors closed in BUG-3163: item CREATE refuses
+	// the keys in `fields` (convention activation uses a typed member), and a
+	// full `fields` blob may only CARRY stored reserved values unchanged
+	// (composeReservedCarryGuard, below in the full-fields block).
 	//
 	// The item's CURRENT fields go into the message because a remedy has to
 	// work in the state the caller is in: when the stored value is already
@@ -1467,6 +1486,10 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "bad_request", "Invalid fields JSON")
 			return
 		}
+		// BUG-3163: the reserved keys this blob carries, taken before any pass
+		// below can touch the map. Checked against the row under the write lock
+		// by composeReservedCarryGuard, after the open-children precheck is set.
+		callerReserved := callerReservedFields(fieldMap)
 
 		// Extract parent from fields — it's managed via item_links, not stored in fields JSON.
 		// Accepts both "parent" and "plan" as the field key.
@@ -1606,6 +1629,13 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 				return nil
 			}
 		}
+
+		// BUG-3163: a full blob may CARRY stored reserved metadata unchanged but
+		// may not change it, and omitting a stored key would delete it (the store
+		// replaces the blob), so omission is a change too (lead ruling on
+		// checkpoint 3). Composed into the precheck so the comparison is against
+		// the row as re-read under the write lock, on every ordering below.
+		openChildrenPrecheck = composeReservedCarryGuard(openChildrenPrecheck, callerReserved)
 
 		validatedFields, err := json.Marshal(fieldMap)
 		if err != nil {
@@ -2096,6 +2126,9 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 				writeOpenChildrenError(w, itemRefOrSlug(*item), details)
 				return
 			}
+			if writeReservedFieldsCarryError(w, err) {
+				return
+			}
 			if errors.Is(err, errStaleCollabSnapshot) {
 				writeError(w, http.StatusConflict, "stale_collab_snapshot",
 					"This editor's view is out of sync with the server; please reload.")
@@ -2229,6 +2262,10 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		// when the guard ran inside the store tx.
 		if details, ok := asOpenChildrenGuardError(err); ok {
 			writeOpenChildrenError(w, itemRefOrSlug(*item), details)
+			return
+		}
+		// BUG-3163: the full-fields reserved-metadata carry check.
+		if writeReservedFieldsCarryError(w, err) {
 			return
 		}
 		// TASK-2022: optimistic-concurrency conflict → structured 409.

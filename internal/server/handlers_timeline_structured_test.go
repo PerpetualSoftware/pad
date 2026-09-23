@@ -33,17 +33,20 @@ func timelineItemWithStructured(t *testing.T, srv *Server, wsSlug, notesJSON, de
 	}
 	fields += `}`
 
+	// Created plain, then seeded below the write doors: create's `fields`
+	// refuses reserved keys since BUG-3163, and these fixtures need arbitrary
+	// (including hostile) entry shapes the typed append members would not mint.
 	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+wsSlug+"/collections/tasks/items", map[string]any{
 		"title":  "structured subject",
 		"source": "cli",
-		"fields": fields,
+		"fields": `{"status":"open"}`,
 	})
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("create item = %d: %s", rr.Code, rr.Body.String())
 	}
 	var it models.Item
 	parseJSON(t, rr, &it)
-	return &it
+	return seedStoredFields(t, srv, it.ID, fields)
 }
 
 func fetchTimeline(t *testing.T, srv *Server, wsSlug, itemSlug, query string) models.TimelineResponse {
@@ -565,11 +568,9 @@ func TestItemTimeline_FractionalStructuredEntryDoesNotSkipSameSecondRows(t *test
 	notesJSON := `[{"id":"0-frac","summary":"boundary","created_at":"` +
 		commentSecond.Add(500*time.Millisecond).Format(time.RFC3339Nano) +
 		`","created_by":"user"}]`
-	rr = doRequest(srv, "PATCH", "/api/v1/workspaces/"+ws+"/items/"+item.Slug,
-		map[string]any{"fields": `{"status":"open","implementation_notes":` + notesJSON + `}`, "source": "cli"})
-	if rr.Code != http.StatusOK {
-		t.Fatalf("patch notes = %d: %s", rr.Code, rr.Body.String())
-	}
+	// Seeded below the write doors (BUG-3163 refuses a full-fields write that
+	// changes stored notes, and the typed append member mints its own time).
+	seedStoredFields(t, srv, item.ID, `{"status":"open","implementation_notes":`+notesJSON+`}`)
 
 	seen := walkTimelinePages(t, srv, ws, item.Slug)
 	assertEachEntryOnce(t, seen, "0-frac", commentID)

@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
-	import type { Collection, Item, ItemConventionMetadata, ItemCreate } from '$lib/types';
+	import type { Collection, Item, ItemConventionMetadata } from '$lib/types';
+	import { conventionCreatePayload } from '$lib/conventions/createPayload';
 	import { parseFields, parseSchema, itemUrlId } from '$lib/types';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { titleLimitError } from '$lib/items/titleLimit';
@@ -259,12 +260,11 @@
 		}
 		creating = true;
 		try {
-			const convention = buildConventionMetadata();
-			const data: ItemCreate = {
-				title: newTitle.trim(),
-				content: newContent.trim(),
-				fields: JSON.stringify(buildConventionFields(convention)),
-			};
+			const data = conventionCreatePayload(
+				newTitle.trim(),
+				newContent.trim(),
+				buildConventionMetadata()
+			);
 			const created = await api.items.create(workspace, 'conventions', data);
 			conventions = [...conventions, created];
 			toastStore.show('Convention created', 'success');
@@ -477,19 +477,6 @@
 		};
 	}
 
-	function buildConventionFields(convention: ItemConventionMetadata) {
-		return {
-			status: 'active',
-			category: convention.category ?? '',
-			trigger: convention.trigger ?? 'always',
-			scope: convention.surfaces?.[0] ?? 'all',
-			priority: convention.enforcement ?? 'should',
-			enforcement: convention.enforcement ?? 'should',
-			surfaces: convention.surfaces ?? ['all'],
-			commands: convention.commands ?? [],
-			convention
-		};
-	}
 </script>
 
 <div class="conventions-page">

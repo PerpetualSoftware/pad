@@ -137,6 +137,26 @@ func (s *Store) SetItemUpdateCommitHookForTesting(hook func(tx *sql.Tx) error) (
 	return func() { s.commitItemUpdate = prev }
 }
 
+// SetAfterItemPreLockReadHookForTesting sets the afterItemPreLockRead seam
+// (see its field comment) for the lifetime of the returned restore function,
+// so a test outside this package can commit a concurrent write inside the
+// window between an update's pre-lock read and its transaction.
+//
+// It exists for BUG-3163: the full-fields reserved-metadata check must compare
+// against the row re-read UNDER the write lock, and only a write landing in
+// this window can tell that apart from a comparison against the handler's
+// earlier read. The same constraints as the field apply: it fires once per
+// attempt, and a hook that issues its own update must clear the seam around
+// that nested call.
+//
+// Production code MUST NOT call this. The "ForTesting" suffix is the grep
+// signal. Set it only while no other request is in flight against this Store.
+func (s *Store) SetAfterItemPreLockReadHookForTesting(hook func(itemID string)) (restore func()) {
+	prev := s.afterItemPreLockRead
+	s.afterItemPreLockRead = hook
+	return func() { s.afterItemPreLockRead = prev }
+}
+
 // SetAddWorkspaceMemberCommitHookForTesting routes AddWorkspaceMember's COMMIT
 // through hook for the lifetime of the returned restore function.
 //

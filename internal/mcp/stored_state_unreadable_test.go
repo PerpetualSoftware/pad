@@ -165,6 +165,19 @@ func TestNoRemoteEquivalentDoesNotAdvertiseTheBrokenPRWorkaround(t *testing.T) {
 //
 // Driven through the REAL classifiers with the REAL server message text, so a
 // reworded refusal that stops matching fails here rather than in the field.
+// The first sentence of each BUG-3163 refusal, which is what the classifier
+// matches on. Kept identical to the server's builders by
+// TestBUG3163_RefusalTextsMatchTheStdioTable in internal/server.
+const (
+	bug3163CreateRefusal     = `"implementation_notes" is system metadata and cannot be set through an item create's fields.`
+	bug3163FullFieldsRefusal = `A full "fields" write cannot change stored system metadata: "implementation_notes" differs from the stored value.`
+)
+
+func strconvQuote(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
+
 func TestReservedKeyRefusalsAgreeAcrossTransports(t *testing.T) {
 	// Verbatim from handlers_items.go's move/copy override gate.
 	const moveRefusal = "Error: Field(s) reserved for system metadata and not settable here: implementation_notes"
@@ -185,6 +198,14 @@ func TestReservedKeyRefusalsAgreeAcrossTransports(t *testing.T) {
 		// message.
 		{"copy undeclared-override refusal", "Error: Destination collection has no field(s): github_pr",
 			`{"error":{"code":"malformed_override","message":"Destination collection has no field(s): github_pr"}}`},
+		// BUG-3163's two refusals. The texts are the server's builders' output
+		// verbatim; the server package pins its builders to these same literals
+		// (TestBUG3163_RefusalTextsMatchTheStdioTable), since this package
+		// cannot import it.
+		{"create reserved-key refusal (BUG-3163)", "Error: " + bug3163CreateRefusal,
+			`{"error":{"code":"validation_error","message":` + strconvQuote(bug3163CreateRefusal) + `}}`},
+		{"full-fields carry refusal (BUG-3163)", "Error: " + bug3163FullFieldsRefusal,
+			`{"error":{"code":"validation_error","message":` + strconvQuote(bug3163FullFieldsRefusal) + `}}`},
 		// Control leg: a message the pattern list ALREADY covered. Without it
 		// this table could pass by matching everything.
 		{"copy invalid-override refusal (preflight)", `Error: Invalid override value(s): effort must be one of s, m, l`,
