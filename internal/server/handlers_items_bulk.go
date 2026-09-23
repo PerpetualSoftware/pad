@@ -525,6 +525,24 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 		return nil, &bulkOpError{message: "failed to parse collection schema"}
 	}
 
+	// REFUSE a key the item's collection does not declare (BUG-3154). Every
+	// caller passes a key the SERVER chose (`status` for a status-only move,
+	// `priority` for set-priority) and validation below walks only declared
+	// fields, so on a collection without that field the value was written as
+	// an orphan no schema-driven surface renders, and the item was reported
+	// under `updated` although the operation has no meaning there. Refused per
+	// ITEM, so the rest of the batch still applies.
+	//
+	// Deliberately NOT the accept-and-warn of a single-item update
+	// (BUG-2850): there the caller TYPES the key and round-trips whole blobs;
+	// here the caller named an operation and the key is ours.
+	if undeclared := items.UndeclaredOverrideKeys(changes, schema.Fields); len(undeclared) > 0 {
+		return nil, &bulkOpError{
+			code:    "validation_error",
+			message: fmt.Sprintf("collection %q has no %q field, so this operation does not apply to this item", coll.Slug, undeclared[0]),
+		}
+	}
+
 	fieldMap := make(map[string]any)
 	if item.Fields != "" && item.Fields != "{}" {
 		// REFUSE an unreadable stored blob rather than discard it (BUG-3049,

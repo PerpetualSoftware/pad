@@ -1017,6 +1017,31 @@ const CmdhelpVersion = "0.1"
 //     browser tab and BUG-3000 carries the open half — so no surface
 //     here states a duration.
 //
+//     0.44 — BUG-3154. `pad_item.action=bulk-update` over the WebMCP
+//     browser transport now REFUSES, per item, a status or priority change
+//     on an item whose collection does not declare that field. The item is
+//     listed in the bulk response's `failed` array with code
+//     `validation_error` and a message naming the collection and the field,
+//     and nothing is written; the other items in the call still apply. The
+//     door is `POST /workspaces/{ws}/items/bulk` (ops `set-priority` and a
+//     status-only `move`), whose key is chosen by the SERVER, not typed by
+//     the caller, and which used to store the value as an orphan field no
+//     schema renders while reporting the item as updated. BEHAVIOR bump on
+//     the 0.43 / 0.40 / 0.29 grounds: no tool name, action enum or param
+//     shape changed, but a write door refuses a call it used to accept.
+//
+//     THE TRANSPORTS DISAGREE after this, and it is stated rather than
+//     implied. Local stdio (`pad item bulk-update`) and remote /mcp
+//     (dispatchItemBulkUpdate) never reach the bulk endpoint. They issue a
+//     per-item PATCH, which is the single-item update door and ACCEPTS an
+//     undeclared key, naming it in `warnings.undeclared_fields` (0.27 /
+//     BUG-2850). So the same catalog call is refused per item on WebMCP and
+//     stored with a warning on the other two. The line between them is the
+//     one this entry draws, server-chosen key versus caller-typed key, and
+//     it holds at the HTTP doors but not at the catalog, where the caller
+//     typed the same thing either way. Whether stdio and remote should call
+//     the bulk endpoint is tracked separately; it is not converged here.
+//
 //     0.43 — BUG-2379. `pad_item.action=move` REFUSES a field override
 //     naming a field the DESTINATION collection's schema does not declare,
 //     with 400 `malformed_override` — the same check (UndeclaredOverrideKeys,
@@ -1386,7 +1411,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.43"
+const ToolSurfaceVersion = "0.44"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a
