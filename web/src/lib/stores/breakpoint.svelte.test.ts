@@ -140,6 +140,16 @@ describe('viewport.dragDisabled (BUG-3158)', () => {
 		expect(viewport.dragDisabled).toBe(false);
 	});
 
+	it('asks about the PRIMARY pointer: a fine-primary device that also has touch keeps drag (ruled trade-off)', async () => {
+		// A touch laptop: `any-pointer: coarse` is true, `pointer: coarse` is not.
+		// Pinned so that switching the query is a deliberate change, not a drift —
+		// see the COARSE_POINTER_QUERY comment for why primary was chosen.
+		installPerQuery({ [WIDE]: false, [COARSE]: false, '(any-pointer: coarse)': true });
+		const { viewport, COARSE_POINTER_QUERY } = await import('./breakpoint.svelte');
+		expect(COARSE_POINTER_QUERY).toBe('(pointer: coarse)');
+		expect(viewport.dragDisabled).toBe(false);
+	});
+
 	it('follows a pointer change (a tablet docked to a mouse, and back)', async () => {
 		const ctl = installPerQuery({ [WIDE]: false, [COARSE]: true });
 		const { viewport } = await import('./breakpoint.svelte');

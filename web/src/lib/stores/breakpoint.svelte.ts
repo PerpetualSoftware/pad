@@ -40,7 +40,18 @@ if (browser) {
  * `isMobile` answers a LAYOUT question; this answers an INPUT question, and the
  * two disagree on a phone in landscape (~915px wide, so not "mobile") and on
  * every tablet. Gate touch-hostile interactions such as card drag on this, not
- * on width. A touch laptop's primary pointer is fine, so it keeps them.
+ * on width.
+ *
+ * PRIMARY pointer, deliberately, not `any-pointer` (lead-ruled on BUG-3158's
+ * trail; raised again by codex round 1). A device whose primary pointer is fine
+ * but which ALSO has a touchscreen — a touch laptop, an iPad driven by a
+ * trackpad — reports `pointer: fine`, keeps drag, and a finger on its screen
+ * can still pick a card up after the 500ms hold. `any-pointer: coarse` would
+ * close that, and would also take mouse drag away from every touch laptop,
+ * which is the device class most likely to be used with a mouse. The phone and
+ * tablet cases, where touch is the only input, are what the report was about.
+ * Revisit only with a per-gesture gate (withhold drag for a TOUCH-initiated
+ * press), which svelte-dnd-action's zone-level `dragDisabled` cannot express.
  */
 export const COARSE_POINTER_QUERY = '(pointer: coarse)';
 
