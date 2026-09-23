@@ -52,9 +52,9 @@ func UndeclaredOverrideKeys(overrides map[string]any, targetFields []models.Fiel
 // Two kinds of map consult it, for the same reason:
 //
 //   - FIELD-OVERRIDE maps, on every path that has one: the same-workspace move,
-//     the copy preflight, and the mutating copy (the last two via
-//     UndeclaredOverrideKeys against a stripped schema). Those paths refuse
-//     every key this returns.
+//     the copy preflight, and the mutating copy. Those paths refuse every key
+//     this returns, and all three also run UndeclaredOverrideKeys against a
+//     stripped schema (the move since BUG-2379).
 //   - `fields_patch`, the partial-update door every USER field-setter lowers
 //     into — `pad item update --field`, the MCP `field` param on both
 //     transports, and anything else PATCHing an item (BUG-2627 part 2). That

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -205,5 +206,107 @@ func TestMoveItem_PaddedOverrideValueRefused(t *testing.T) {
 	}
 	if fresh.CollectionID != src.ID {
 		t.Errorf("item moved despite the 400 — collection is now %q", fresh.CollectionID)
+	}
+}
+
+// BUG-2379: an override naming a field the destination does not declare is
+// refused with the copy's code and message, and nothing is written. Before the
+// fix it merged into the item as an invisible orphan field.
+func TestMoveItem_UndeclaredOverrideRefused(t *testing.T) {
+	srv := testServer(t)
+	slug, src, dst := moveTestCollections(t, srv)
+	item := createItem(t, srv, slug, src.Slug, map[string]interface{}{
+		"title": "Movable", "fields": `{"note":"hi"}`,
+	})
+
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/move",
+		map[string]interface{}{
+			"target_collection": dst.Slug,
+			"field_overrides":   map[string]interface{}{"ticket": "T-9", "ghost": "x", "another": "y"},
+		})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if code := errCode(t, rr); code != "malformed_override" {
+		t.Fatalf("code = %q, want malformed_override (the copy's code); body=%s", code, rr.Body.String())
+	}
+	if body := rr.Body.String(); !strings.Contains(body, "another") || !strings.Contains(body, "ghost") {
+		t.Errorf("the refusal must name every undeclared key; body=%s", body)
+	}
+	// Nothing moved and nothing was written.
+	got, err := srv.store.GetItem(item.ID)
+	if err != nil || got == nil {
+		t.Fatalf("GetItem: %v", err)
+	}
+	if got.CollectionID != src.ID {
+		t.Errorf("the item moved despite the refusal: collection %s, want %s", got.CollectionID, src.ID)
+	}
+	if strings.Contains(got.Fields, "ghost") {
+		t.Errorf("the undeclared key was stored: fields=%s", got.Fields)
+	}
+
+	// Control: the same move with only declared overrides succeeds, so the
+	// refusal above is about the undeclared keys.
+	rr = doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/move",
+		map[string]interface{}{
+			"target_collection": dst.Slug,
+			"field_overrides":   map[string]interface{}{"ticket": "T-9"},
+		})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("control move with declared overrides: %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+// A reserved key keeps its own, more specific refusal: it is not declared by
+// any schema either, so the declared-key gate would also catch it, and the
+// order decides which message the caller reads.
+func TestMoveItem_ReservedOverrideKeepsItsOwnMessage(t *testing.T) {
+	srv := testServer(t)
+	slug, src, dst := moveTestCollections(t, srv)
+	item := createItem(t, srv, slug, src.Slug, map[string]interface{}{
+		"title": "Movable", "fields": `{"note":"hi"}`,
+	})
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/move",
+		map[string]interface{}{
+			"target_collection": dst.Slug,
+			"field_overrides":   map[string]interface{}{"ticket": "T-9", "decision_log": "x"},
+		})
+	if rr.Code != http.StatusBadRequest || errCode(t, rr) != "malformed_override" {
+		t.Fatalf("expected 400 malformed_override, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "reserved for system metadata") {
+		t.Errorf("a reserved key should be refused as reserved, not as undeclared; body=%s", rr.Body.String())
+	}
+}
+
+// An explicit null override UNSETS the key, as the copy's does, rather than
+// storing a literal null (codex round 1 on BUG-2379).
+func TestMoveItem_NullOverrideUnsetsTheField(t *testing.T) {
+	srv := testServer(t)
+	slug, src, dst := moveTestCollections(t, srv)
+	item := createItem(t, srv, slug, src.Slug, map[string]interface{}{
+		"title": "Movable", "fields": `{"note":"hi"}`,
+	})
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/move",
+		map[string]interface{}{
+			"target_collection": dst.Slug,
+			"field_overrides":   map[string]interface{}{"ticket": "T-9", "note": nil},
+		})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("move: %d %s", rr.Code, rr.Body.String())
+	}
+	got, err := srv.store.GetItem(item.ID)
+	if err != nil || got == nil {
+		t.Fatalf("GetItem: %v", err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal([]byte(got.Fields), &fields); err != nil {
+		t.Fatalf("decode fields %q: %v", got.Fields, err)
+	}
+	if v, present := fields["note"]; present {
+		t.Errorf("a null override must unset the field, but it is stored as %#v (fields=%s)", v, got.Fields)
+	}
+	if fields["ticket"] != "T-9" {
+		t.Errorf("the other override was lost: fields=%s", got.Fields)
 	}
 }
