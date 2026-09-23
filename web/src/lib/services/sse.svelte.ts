@@ -211,6 +211,15 @@ function createSSEService() {
 	// connection and are reset by disconnect().
 	let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 	let reconnectAttempt = 0;
+	// True from the failure until the replacement source exists: covers the
+	// probe in flight as well as the timer. connect() reads it so a layout
+	// re-run cannot reopen ahead of the backoff (codex r1).
+	let reconnectPending = false;
+	// Bumped by every teardown. A probe answers asynchronously, so an answer
+	// that arrives after disconnect() must find a different generation and
+	// arm nothing, even when the tab has since reconnected to the SAME
+	// workspace and failed again at the same attempt number (codex r1).
+	let reconnectGeneration = 0;
 
 	function clearReconnect() {
 		if (reconnectTimer !== null) {
@@ -218,6 +227,8 @@ function createSSEService() {
 			reconnectTimer = null;
 		}
 		reconnectAttempt = 0;
+		reconnectPending = false;
+		reconnectGeneration++;
 	}
 
 	/**
@@ -234,16 +245,20 @@ function createSSEService() {
 	 * gap the replay used to cover.
 	 */
 	function scheduleReconnect(workspaceSlug: string, url: string, refused: boolean) {
-		if (reconnectTimer !== null) return;
+		if (reconnectPending) return;
+		reconnectPending = true;
 		reconnectAttempt++;
 		const attempt = reconnectAttempt;
+		const generation = reconnectGeneration;
 		const arm = (retryAfterMs: number | null) => {
-			// The workspace may have changed, or disconnect() run, while the
-			// probe was in flight; either one owns what happens next.
-			if (currentWorkspace !== workspaceSlug || eventSource !== null || reconnectAttempt !== attempt) return;
+			// disconnect() may have run while the probe was in flight, and the
+			// tab may even be back on the same workspace: the generation is
+			// the only check that tells those apart.
+			if (generation !== reconnectGeneration || currentWorkspace !== workspaceSlug || eventSource !== null) return;
 			reconnectTimer = setTimeout(() => {
 				reconnectTimer = null;
-				if (currentWorkspace !== workspaceSlug || eventSource !== null) return;
+				if (generation !== reconnectGeneration || currentWorkspace !== workspaceSlug || eventSource !== null) return;
+				reconnectPending = false;
 				pendingSyncOnConnect = true;
 				openEventSource(workspaceSlug);
 			}, reconnectDelayMs(attempt, retryAfterMs));
@@ -471,6 +486,13 @@ function createSSEService() {
 	}
 
 	function connect(workspaceSlug: string) {
+		// Backing off on this workspace: the scheduled reconnect owns the next
+		// open (BUG-2733, codex r1). Without this, a layout re-run found no
+		// live source on a leader tab, tore down and reopened at once, ahead
+		// of the ladder and of any Retry-After.
+		if (currentWorkspace === workspaceSlug && reconnectPending) {
+			return;
+		}
 		// Already connected to the same workspace — no-op.
 		if (currentWorkspace === workspaceSlug && (eventSource || bc)) {
 			if (eventSource && eventSource.readyState !== EventSource.CLOSED) {

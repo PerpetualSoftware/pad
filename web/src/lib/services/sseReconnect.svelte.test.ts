@@ -288,6 +288,55 @@ describe('owned reconnect in the SSE service (BUG-2733)', () => {
 		sse.disconnect();
 	});
 
+	it('connect() for the same workspace during backoff does not jump the queue (codex r1)', async () => {
+		vi.stubGlobal('fetch', refusalFetch(429, '30'));
+		const sse = await connected();
+		sources[0].fireRefused();
+		await flush();
+		// A layout re-run calls connect() again for the workspace it is on.
+		sse.connect('ws-a');
+		await flush();
+		expect(sources).toHaveLength(1); // not reopened ahead of the server's 30s
+		await vi.advanceTimersByTimeAsync(29_999);
+		expect(sources).toHaveLength(1);
+		await vi.advanceTimersByTimeAsync(15_001);
+		expect(sources).toHaveLength(2);
+		sse.disconnect();
+	});
+
+	it('a probe still in flight across disconnect() and connect() arms nothing (codex r1)', async () => {
+		// The first probe hangs until released; the second answers at once.
+		let releaseFirst!: (r: Response) => void;
+		const first = new Promise<Response>((r) => (releaseFirst = r));
+		const fetchSpy = vi
+			.fn()
+			.mockImplementationOnce(() => first)
+			.mockImplementation(async () => new Response('{}', { status: 429, headers: { 'Retry-After': '60' } }));
+		vi.stubGlobal('fetch', fetchSpy);
+
+		const sse = await connected();
+		sources[0].fireRefused();
+		await flush();
+		sse.disconnect();
+		sse.connect('ws-a');
+		await flush();
+		sources[1].fireOpen();
+		sources[1].fireRefused();
+		await flush();
+		expect(fetchSpy).toHaveBeenCalledTimes(2);
+
+		// The stale probe now answers with a SHORT floor. Nothing may act on it.
+		releaseFirst(new Response('{}', { status: 429, headers: { 'Retry-After': '1' } }));
+		await flush();
+		await vi.advanceTimersByTimeAsync(59_999);
+		expect(sources).toHaveLength(2); // only the live refusal's 60s governs
+		await vi.advanceTimersByTimeAsync(30_001);
+		expect(sources).toHaveLength(3);
+		await vi.advanceTimersByTimeAsync(RECONNECT_CAP_MS);
+		expect(sources).toHaveLength(3); // and no second timer fires later
+		sse.disconnect();
+	});
+
 	it('disconnect cancels a scheduled reconnect', async () => {
 		vi.stubGlobal('fetch', vi.fn());
 		const sse = await connected();
