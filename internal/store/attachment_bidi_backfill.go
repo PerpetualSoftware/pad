@@ -24,7 +24,13 @@ import (
 // extension hid it from the blocklist ("x.s<U+202E>vg" is no known extension),
 // so stripping alone could store "x.svg" — the blocked extension BUG-2818's
 // ingest exists to keep out of the table. attachments.ServedFilename strips and
-// then maps a blocked extension to ".bin". That choice lives HERE rather than
+// then maps a blocked extension to ".bin". For a selected row the rewrite is
+// therefore WIDER than the Bidi_Control characters: whatever else
+// NormalizeFilename changes about a legacy name (other control characters,
+// trailing dots and spaces) changes too, which makes the stored name equal the
+// name the download header has served since BUG-2818. Rows without a
+// Bidi_Control character are never selected, so no other row changes.
+// That choice lives HERE rather than
 // at the startup call site, so no wiring can substitute a plain strip without
 // a test in this package seeing it.
 
@@ -57,10 +63,16 @@ const bidiBackfillBatch = 200
 // nothing. A rename that leaves one is refused as an error rather than written,
 // because it would be selected again on every boot.
 //
-// REVERSIBLE by the log: every rewrite logs the attachment id, its workspace,
-// and the old and new names quoted to ASCII (so the log line itself cannot
-// spoof a reader, and the old name can be restored byte for byte). Each UPDATE
-// is conditional on the old name, so a concurrent rename is never overwritten.
+// Reversible for as long as the server log is retained, and no longer: every
+// rewrite logs the attachment id, its workspace, and the old and new names
+// quoted to ASCII (so the log line itself cannot spoof a reader, and the old
+// name can be restored byte for byte). There is no durable record in the
+// database. Each UPDATE is conditional on the old name, so a concurrent rename
+// is never overwritten.
+//
+// It runs on EVERY boot and selects by content, so a row that gains such a
+// name later — a variant or copy derived from a parent that a failed pass left
+// unrewritten — is picked up by the next start.
 func (s *Store) BackfillBidiAttachmentFilenames() (*BackfillBidiFilenamesResult, error) {
 	return s.backfillBidiAttachmentFilenames(attachments.ServedFilename)
 }

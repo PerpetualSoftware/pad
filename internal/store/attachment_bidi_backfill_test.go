@@ -61,6 +61,9 @@ func TestBackfillBidiAttachmentFilenames(t *testing.T) {
 	// would store "x.svg"; the served name maps the uncovered blocked
 	// extension to .bin.
 	hidden := seedAttachmentNamed(t, s, ws, "x.s\u202Evg")
+	// The rewrite is the SERVED name, so other legacy characters on a
+	// selected row go too (here a trailing dot and space).
+	wider := seedAttachmentNamed(t, s, ws, "w\u202Egvs.txt. ")
 	// Marks and isolates count too.
 	marks := seedAttachmentNamed(t, s, ws, "a\u200Fb\u2066c\u2069.txt")
 	// Soft-deleted rows are included: a restore would bring them back.
@@ -78,8 +81,8 @@ func TestBackfillBidiAttachmentFilenames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("backfill: %v", err)
 	}
-	if res.RowsRewritten != 4 {
-		t.Errorf("RowsRewritten = %d, want 4", res.RowsRewritten)
+	if res.RowsRewritten != 5 {
+		t.Errorf("RowsRewritten = %d, want 5", res.RowsRewritten)
 	}
 	for _, c := range []struct {
 		a    *models.Attachment
@@ -87,6 +90,7 @@ func TestBackfillBidiAttachmentFilenames(t *testing.T) {
 	}{
 		{spoof, "xgvs.txt"},
 		{hidden, "x.bin"},
+		{wider, "wgvs.txt"},
 		{marks, "abc.txt"},
 		{deleted, "dgvs.txt"},
 		{plain, "notes.txt"},
@@ -146,5 +150,33 @@ func TestBackfillBidiAttachmentFilenamesKeepsAConcurrentRename(t *testing.T) {
 	}
 	if got := storedFilename(t, s, a.ID); got != "renamed-by-user.txt" {
 		t.Errorf("the concurrent rename was overwritten: stored %q", got)
+	}
+}
+
+// Every member of the property is selected by the SQL, on both dialects: one
+// row per rune, each rewritten. The runes come from unicode.Bidi_Control, NOT
+// from bidiControlRunes, so a member missing from the SQL list fails here.
+func TestBackfillBidiAttachmentFilenamesSelectsEveryBidiControl(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Bidi Every Rune")
+	seeded := map[string]rune{}
+	for r := rune(0); r <= unicode.MaxRune; r++ {
+		if !unicode.Is(unicode.Bidi_Control, r) {
+			continue
+		}
+		a := seedAttachmentNamed(t, s, ws, "n"+string(r)+"ame.txt")
+		seeded[a.ID] = r
+	}
+	res, err := s.BackfillBidiAttachmentFilenames()
+	if err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	if res.RowsRewritten != len(seeded) {
+		t.Errorf("RowsRewritten = %d, want %d", res.RowsRewritten, len(seeded))
+	}
+	for id, r := range seeded {
+		if got := storedFilename(t, s, id); got != "name.txt" {
+			t.Errorf("%U: stored %q, want %q", r, got, "name.txt")
+		}
 	}
 }
