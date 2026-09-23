@@ -795,3 +795,44 @@ func TestGetReport_DeclaredAbandonedOptionNotCompleted(t *testing.T) {
 		t.Fatalf("completed = %d, want 1 (the completed item; overturned is declared abandoned)", rep.Totals.Completed)
 	}
 }
+
+// BUG-2347 (codex round 1 on #1464): workspace import enforces the same
+// subset rule as the collection create/update doors.
+func TestImportWorkspace_AbandonedOptionsMustBeTerminal(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	owner := createTestUser(t, s, "abandon-import@test.com", "Owner", "password123")
+	src := createTestWorkspace(t, s, "Abandon Import Source")
+	if err := s.SeedCollectionsFromTemplate(src.ID, "startup"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Positive control: the seeded declaration (tasks: [cancelled]) survives
+	// a round trip, so the refusal below is about the tampered value.
+	exp, err := s.ExportWorkspace(src.Slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ImportWorkspace(exp, "abandon-ok", owner.ID, ""); err != nil {
+		t.Fatalf("a valid seeded declaration was refused on import: %v", err)
+	}
+
+	exp, _ = s.ExportWorkspace(src.Slug)
+	var patched bool
+	for i := range exp.Collections {
+		if exp.Collections[i].Slug == "tasks" {
+			if !strings.Contains(exp.Collections[i].Schema, `"abandoned_options":["cancelled"]`) {
+				t.Fatalf("precondition: tasks export does not carry the seeded declaration: %s", exp.Collections[i].Schema)
+			}
+			exp.Collections[i].Schema = strings.Replace(exp.Collections[i].Schema, `"abandoned_options":["cancelled"]`, `"abandoned_options":["dropped"]`, 1)
+			patched = true
+		}
+	}
+	if !patched {
+		t.Fatal("no tasks collection to patch")
+	}
+	_, err = s.ImportWorkspace(exp, "abandon-bad", owner.ID, "")
+	if err == nil || !strings.Contains(err.Error(), "dropped") {
+		t.Fatalf("want an import refusal naming the value, got %v", err)
+	}
+}

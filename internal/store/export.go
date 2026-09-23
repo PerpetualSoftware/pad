@@ -668,6 +668,18 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 				"workspace", ws.Slug, "collection", c.Slug, "prefix", prefix)
 		}
 
+		// abandoned_options must be a subset of terminal_options, as the
+		// create/update doors require (BUG-2347, codex round 1 on #1464): a
+		// declared list REPLACES the global fallback, so an invalid one would
+		// make a real abandon value count as shipped. Only a schema that
+		// parses is checked; the rest of the blob stays verbatim, as always.
+		var importedSchema models.CollectionSchema
+		if c.Schema != "" && models.UnmarshalItemFieldSchema([]byte(c.Schema), &importedSchema) == nil {
+			if err := models.ValidateAbandonedOptions(importedSchema); err != nil {
+				return nil, invalidf("import collection %q: %v; fix abandoned_options in the export and import again", c.Name, err)
+			}
+		}
+
 		// NULLIF so an ABSENT deleted_at — every archive written before
 		// BUG-2884, which decodes the missing key as "" — imports the
 		// collection LIVE. That direction is what keeps old bundles working;
