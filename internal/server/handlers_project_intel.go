@@ -235,10 +235,11 @@ func (s *Server) listTerminalItemsSince(
 			continue
 		}
 		for _, item := range items {
-			// Not merely defensive: ListItems splits a Fields value containing a
-			// comma into an IN list, so a collection whose completed-work values
-			// include both "x" and "x,y" matches an item with status x in two
-			// groups, for members too (BUG-2639). Each item is listed once.
+			// Defensive. An item's collection holds one value for its done
+			// field, so it matches at most one of its own groups now that the
+			// store matches Fields exactly (BUG-3167); before that, a value
+			// containing a comma was split into an OR and could match two
+			// (BUG-2639). The report must never list an item twice.
 			if item.UpdatedAt.After(cutoff) && !seen[item.ID] {
 				seen[item.ID] = true
 				out = append(out, item)

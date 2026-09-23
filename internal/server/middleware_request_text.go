@@ -210,7 +210,7 @@ func bindableText(s string) bool {
 // validCursorID model, and reading the mechanism retired it: the set of
 // query parameter names that reaches the store is UNBOUNDED BY DESIGN.
 // parseItemListParams folds every parameter it does not recognise into
-// params.Fields, so `?email=`, `?type=` and `?anything-at-all=` become
+// a field filter (params.Fields, or params.FieldsAnyOf for a comma list), so `?email=`, `?type=` and `?anything-at-all=` become
 // field filters and reach a text comparison exactly as `?search=` does.
 // There is no finite list of points to validate, because the wildcard
 // branch is what turns an undeclared name into a filter in the first

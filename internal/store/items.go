@@ -1308,34 +1308,7 @@ func (s *Store) ListItems(workspaceID string, params models.ItemListParams) ([]m
 		args = append(args, params.ParentLinkID)
 	}
 
-	// Field filters — supports comma-separated values as OR
-	blankRelationFilterKeys := s.scalarRelationFilterKeys(workspaceID, params)
-	for key, value := range params.Fields {
-		// Sanitize the key to prevent SQL injection — field names must be
-		// alphanumeric/underscore only (user-controlled from query params).
-		if !isValidFieldKey(key) {
-			continue
-		}
-		jsonExpr := s.dialect.JSONExtractText("i.fields", key)
-		if strings.Contains(value, ",") {
-			values := strings.Split(value, ",")
-			placeholders := make([]string, len(values))
-			for i, v := range values {
-				placeholders[i] = "?"
-				args = append(args, strings.TrimSpace(v))
-			}
-			query += " AND " + jsonExpr + " IN (" + strings.Join(placeholders, ",") + ")"
-		} else if value == "" && blankRelationFilterKeys[key] {
-			// BUG-3028: "no target" on a scalar relation has three stored
-			// spellings until every row is normalised — absent, "" and
-			// whitespace — and `owner=` asks for all of them, not for the one
-			// that happens to be spelled "".
-			query += " AND (" + jsonExpr + " IS NULL OR TRIM(" + jsonExpr + ") = '')"
-		} else {
-			query += " AND " + jsonExpr + " = ?"
-			args = append(args, value)
-		}
-	}
+	query, args = s.appendFieldFilters(workspaceID, params, query, args)
 
 	// Non-terminal filter (BUG-2001): keep only items whose resolved done
 	// field is NOT one of their collection's terminal options. Evaluated
@@ -2096,33 +2069,7 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 		args = append(args, params.AgentRoleID, params.AgentRoleID)
 	}
 
-	// Field filters — supports comma-separated values as OR. Field keys are
-	// user-controlled (query params), so isValidFieldKey gates SQL composition.
-	blankRelationFilterKeys := s.scalarRelationFilterKeys(workspaceID, params)
-	for key, value := range params.Fields {
-		if !isValidFieldKey(key) {
-			continue
-		}
-		jsonExpr := s.dialect.JSONExtractText("i.fields", key)
-		if strings.Contains(value, ",") {
-			values := strings.Split(value, ",")
-			placeholders := make([]string, len(values))
-			for i, v := range values {
-				placeholders[i] = "?"
-				args = append(args, strings.TrimSpace(v))
-			}
-			query += " AND " + jsonExpr + " IN (" + strings.Join(placeholders, ",") + ")"
-		} else if value == "" && blankRelationFilterKeys[key] {
-			// BUG-3028: "no target" on a scalar relation has three stored
-			// spellings until every row is normalised — absent, "" and
-			// whitespace — and `owner=` asks for all of them, not for the one
-			// that happens to be spelled "".
-			query += " AND (" + jsonExpr + " IS NULL OR TRIM(" + jsonExpr + ") = '')"
-		} else {
-			query += " AND " + jsonExpr + " = ?"
-			args = append(args, value)
-		}
-	}
+	query, args = s.appendFieldFilters(workspaceID, params, query, args)
 
 	// Non-terminal filter (BUG-2001) — parity with the non-FTS path so a
 	// `search + non_terminal` combination hides terminal items per each
@@ -2242,6 +2189,48 @@ func mergeFieldsPatch(currentJSON string, patch map[string]interface{}) (string,
 //   - Provided=true, ParentID!="" → set the parent to ParentID.
 //   - Provided=true, ParentID=="" → clear the parent link.
 //
+// appendFieldFilters adds the field filters of an item list, shared by
+// ListItems and listItemsFTS so the two cannot drift. Field keys can come from
+// query parameters, so isValidFieldKey gates SQL composition for both kinds.
+//
+// Fields match EXACTLY (BUG-3167). They used to be split on commas into an OR,
+// for every caller, so a value containing a comma could never be matched as
+// itself and the in-process callers that pass stored or schema values got an
+// OR they never asked for. The OR is now its own member, FieldsAnyOf, and the
+// query-string parse is the one place that turns `?key=a,b` into it.
+func (s *Store) appendFieldFilters(workspaceID string, params models.ItemListParams, query string, args []any) (string, []any) {
+	blankRelationFilterKeys := s.scalarRelationFilterKeys(workspaceID, params)
+	for key, value := range params.Fields {
+		if !isValidFieldKey(key) {
+			continue
+		}
+		jsonExpr := s.dialect.JSONExtractText("i.fields", key)
+		if value == "" && blankRelationFilterKeys[key] {
+			// BUG-3028: "no target" on a scalar relation has three stored
+			// spellings until every row is normalised — absent, "" and
+			// whitespace — and `owner=` asks for all of them, not for the one
+			// that happens to be spelled "".
+			query += " AND (" + jsonExpr + " IS NULL OR TRIM(" + jsonExpr + ") = '')"
+		} else {
+			query += " AND " + jsonExpr + " = ?"
+			args = append(args, value)
+		}
+	}
+	for key, values := range params.FieldsAnyOf {
+		if !isValidFieldKey(key) || len(values) == 0 {
+			continue
+		}
+		jsonExpr := s.dialect.JSONExtractText("i.fields", key)
+		placeholders := make([]string, len(values))
+		for i, v := range values {
+			placeholders[i] = "?"
+			args = append(args, v)
+		}
+		query += " AND " + jsonExpr + " IN (" + strings.Join(placeholders, ",") + ")"
+	}
+	return query, args
+}
+
 // scalarRelationFilterKeys returns the scalar `relation` keys of the collection
 // a list is scoped to, for the BUG-3028 empty-value filter. Nil when the list
 // is not scoped to one collection (a key can be a relation in one collection

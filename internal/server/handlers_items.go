@@ -3556,7 +3556,7 @@ func (s *Server) handleGetItemProgress(w http.ResponseWriter, r *http.Request) {
 // An optional schema can be passed; if the schema defines a field with the key,
 // that key is left as a normal field filter instead of being treated as a parent link.
 func (s *Server) resolveParentFilter(r *http.Request, workspaceID string, params *models.ItemListParams, schemas ...models.CollectionSchema) error {
-	if params.Fields == nil {
+	if params.Fields == nil && params.FieldsAnyOf == nil {
 		return nil
 	}
 
@@ -3574,6 +3574,15 @@ func (s *Server) resolveParentFilter(r *http.Request, workspaceID string, params
 		if v, ok := params.Fields[key]; ok && v != "" {
 			val = v
 			delete(params.Fields, key)
+			break
+		}
+		// A comma-containing parent value is lowered to FieldsAnyOf by
+		// parseItemListParams (BUG-3167). A parent filter names ONE item, so
+		// rejoin it and let the lookup below refuse it, exactly as the whole
+		// string was refused before the lowering existed.
+		if pieces, ok := params.FieldsAnyOf[key]; ok && len(pieces) > 0 {
+			val = strings.Join(pieces, ",")
+			delete(params.FieldsAnyOf, key)
 			break
 		}
 	}
@@ -3846,7 +3855,19 @@ func parseItemListParams(r *http.Request) models.ItemListParams {
 		"assigned_user_id": true, "agent_role_id": true, "non_terminal": true,
 	}
 
+	// A field filter value containing a comma is an OR over its pieces
+	// (`?status=open,done`, and `pad item list --status open,done` which sends
+	// exactly that). This is the ONE place a comma becomes an OR (BUG-3167):
+	// the store matches Fields exactly and takes the OR as FieldsAnyOf.
+	//
+	// DOCUMENTED LIMIT: over the query string, a literal value that itself
+	// contains a comma cannot be filtered for exactly, because the comma is
+	// the delimiter here. A repeated-parameter form (`?status=a&status=b`)
+	// would lift it, but an older server reads only the first value and
+	// silently NARROWS the result, so it was declined (BUG-3167 lead ruling;
+	// the census found no comma-containing option values).
 	fields := make(map[string]string)
+	anyOf := make(map[string][]string)
 	for key, values := range r.URL.Query() {
 		if knownParams[key] {
 			continue
@@ -3859,12 +3880,24 @@ func parseItemListParams(r *http.Request) models.ItemListParams {
 		if key == "unparented" && params.Unparented {
 			continue
 		}
-		if len(values) > 0 {
-			fields[key] = values[0]
+		if len(values) == 0 {
+			continue
+		}
+		if v := values[0]; strings.Contains(v, ",") {
+			pieces := strings.Split(v, ",")
+			for i := range pieces {
+				pieces[i] = strings.TrimSpace(pieces[i])
+			}
+			anyOf[key] = pieces
+		} else {
+			fields[key] = v
 		}
 	}
 	if len(fields) > 0 {
 		params.Fields = fields
+	}
+	if len(anyOf) > 0 {
+		params.FieldsAnyOf = anyOf
 	}
 
 	return params
