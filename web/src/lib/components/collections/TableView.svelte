@@ -271,13 +271,16 @@
 			<div class="table-cell col-ref" role="columnheader">Ref</div>
 			<div class="table-cell col-title" role="columnheader">
 				<button class="sort-btn" onclick={() => toggleSort('title')}>
-					Title {sortKey === 'title' ? (sortDir === 'asc' ? '↑' : '↓') : ''}
+					<span class="header-label">Title</span>{#if sortKey === 'title'}<span class="sort-arrow">{sortDir === 'asc' ? '↑' : '↓'}</span>{/if}
 				</button>
 			</div>
 			{#each visibleFields as field (field.key)}
 				<div class="table-cell" role="columnheader">
-					<button class="sort-btn" onclick={() => toggleSort(field.key)}>
-						{field.label || field.key} {sortKey === field.key ? (sortDir === 'asc' ? '↑' : '↓') : ''}
+					<!-- BUG-2837: the label wraps to two lines, then ellipsis, and is
+					     clipped to its column; the full text is the button's title. The
+					     sort arrow is its own span, so a clamped label never hides it. -->
+					<button class="sort-btn" title={field.label || field.key} onclick={() => toggleSort(field.key)}>
+						<span class="header-label">{field.label || field.key}</span>{#if sortKey === field.key}<span class="sort-arrow">{sortDir === 'asc' ? '↑' : '↓'}</span>{/if}
 					</button>
 				</div>
 			{/each}
@@ -447,11 +450,17 @@
 		min-width: 0;
 	}
 
+	/* BUG-2837: header labels WRAP, to two lines at most, and are clipped to
+	   their column. They used to be nowrap with nothing clipping them, and field
+	   columns are extrinsic (minmax(90px, 0.55fr), for row alignment), so a label
+	   wider than its column painted over the next one. Bottom-aligned, so one-
+	   and two-line labels share a baseline; the row takes the tallest label's
+	   height, and the sticky header's own background still covers the rows. */
 	.table-header .table-cell {
 		font-weight: 600;
 		font-size: 0.85em;
 		color: var(--text-secondary);
-		white-space: nowrap;
+		align-items: flex-end;
 	}
 
 	.sort-btn {
@@ -462,8 +471,33 @@
 		font-weight: 600;
 		cursor: pointer;
 		padding: 0;
-		white-space: nowrap;
 		text-align: left;
+		display: flex;
+		align-items: flex-end;
+		gap: 4px;
+		min-width: 0;
+		max-width: 100%;
+	}
+
+	.header-label {
+		display: -webkit-box;
+		-webkit-box-orient: vertical;
+		-webkit-line-clamp: 2;
+		line-clamp: 2;
+		overflow: hidden;
+		overflow-wrap: anywhere;
+		min-width: 0;
+	}
+
+	.sort-arrow {
+		flex-shrink: 0;
+	}
+
+	/* The Title column is a COLUMN flexbox (.col-title), where align-items is
+	   horizontal: bottom-align its header label with justify-content, or Title
+	   sits one line above a two-line neighbour. */
+	.table-header .col-title {
+		justify-content: flex-end;
 	}
 
 	.sort-btn:hover {
