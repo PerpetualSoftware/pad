@@ -15,7 +15,7 @@ import { deleteCollection } from './lib/attachment-viewer';
 
 const ROWS = 80;
 
-async function setup(page: Page, fixture: import('./fixtures').SuiteFixture, request: APIRequestContext, view: 'list' | 'table') {
+async function setup(page: Page, fixture: import('./fixtures').SuiteFixture, request: APIRequestContext, view: 'list' | 'table', titleOf: (i: number) => string = (i) => `B3165 row ${String(i).padStart(2, '0')}`) {
 	await page.setViewportSize({ width: 1400, height: 800 });
 	await browserLogin(page);
 	const headers = { Authorization: `Bearer ${fixture.apiToken}`, 'Content-Type': 'application/json' };
@@ -28,7 +28,7 @@ async function setup(page: Page, fixture: import('./fixtures').SuiteFixture, req
 	const coll = await res.json();
 	for (let i = 0; i < ROWS; i++) {
 		const r = await request.post(`/api/v1/workspaces/${fixture.workspaceSlug}/collections/${coll.slug}/items`, {
-			headers, data: { title: `B3165 row ${String(i).padStart(2, '0')}` },
+			headers, data: { title: titleOf(i) },
 		});
 		expect(r.ok(), await r.text()).toBeTruthy();
 	}
@@ -56,6 +56,15 @@ function rowTop(page: Page, title: string) {
 		const row = Array.from(document.querySelectorAll<HTMLElement>(rowSel))
 			.find((el) => el.querySelector(titleSel)?.textContent?.trim() === t);
 		return row ? Math.round(row.getBoundingClientRect().top) : null;
+	}, [ROW_SEL, TITLE_SEL, title] as const);
+}
+
+/** Rendered height of the row with this title. */
+function rowHeight(page: Page, title: string) {
+	return page.evaluate(([rowSel, titleSel, t]) => {
+		const row = Array.from(document.querySelectorAll<HTMLElement>(rowSel))
+			.find((el) => el.querySelector(titleSel)?.textContent?.trim() === t);
+		return row ? Math.round(row.getBoundingClientRect().height) : 0;
 	}, [ROW_SEL, TITLE_SEL, title] as const);
 }
 
@@ -122,6 +131,27 @@ test.describe('BUG-3165: the list keeps its position across the split pane', () 
 			await expect.poll(() => rowTop(page, title), { timeout: 4000, message: 'Back from the full page lost the list position' })
 				.toBeGreaterThan(before - 40);
 			expect(await rowTop(page, title)).toBeLessThan(before + 40);
+		} finally {
+			await deleteCollection(fixture, request, coll.slug);
+		}
+	});
+
+	test('rows that reflow taller in the column: the CLICKED row stays put, not merely the top one', async ({ page, fixture, request }) => {
+		// Long titles fit on one line at full width and wrap in the narrower
+		// column, so every row above the clicked one grows: holding the TOP row
+		// in place would push the clicked row down by that growth.
+		const { coll } = await setup(page, fixture, request, 'list', (i) =>
+			`B3165 row ${String(i).padStart(2, '0')} ${'with a long title that wraps once the pane narrows the list '.repeat(2).trim()}`);
+		try {
+			const { title, before } = await scrollAndPick(page);
+			const heightBefore = await rowHeight(page, title);
+			await openRow(page, title);
+			// Precondition: the rows really grew, or this leg cannot tell the two
+			// anchors apart.
+			expect(await rowHeight(page, title), 'precondition: rows reflow taller in the column').toBeGreaterThan(heightBefore + 10);
+			const opened = await rowTop(page, title);
+			expect(opened, 'opening the pane moved the clicked row').toBeGreaterThan(before - 40);
+			expect(opened).toBeLessThan(before + 40);
 		} finally {
 			await deleteCollection(fixture, request, coll.slug);
 		}
