@@ -2568,9 +2568,9 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 
 	// Apply overrides.
 	//
-	// Reserved keys are REFUSED rather than merged (Codex round 4). This path
-	// has no declared-key gate at all — unlike the copy, which runs
-	// UndeclaredOverrideKeys — so without this an override could write
+	// Reserved keys are REFUSED rather than merged (Codex round 4). They are
+	// checked FIRST, and separately from the declared-key gate below, so a
+	// reserved key gets the message that names why — without this an override could write
 	// arbitrary junk straight into implementation_notes or decision_log,
 	// bypassing both the schema (which does not declare them) and the
 	// migrated-output validation (which strips them). On the copy the same
@@ -2586,6 +2586,23 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	if bad := items.ReservedFieldKeysIn(input.FieldOverrides); len(bad) > 0 {
 		writeError(w, http.StatusBadRequest, "malformed_override",
 			fmt.Sprintf("Field(s) reserved for system metadata and not settable here: %s", strings.Join(bad, ", ")))
+		return
+	}
+	// An override must name a field the DESTINATION declares (BUG-2379). The
+	// same check, against the same stripped schema, with the same code and
+	// message, as the cross-workspace copy (structuralOverrideError): the two
+	// sibling endpoints used to disagree about one request field, and this
+	// one merged an undeclared key into the item as an invisible orphan.
+	//
+	// Refused here although item create and update ACCEPT undeclared keys with
+	// a warning (BUG-2850). That acceptance exists because clients round-trip
+	// the whole fields blob, so a stored orphan re-arrives on every ordinary
+	// update. An override is never round-tripped state; it is a fresh
+	// assertion about the destination schema. Orphans already on the item are
+	// carried by MigrateFields above, not by this map, so they are untouched.
+	if bad := items.UndeclaredOverrideKeys(input.FieldOverrides, items.SchemaForMigratedFields(targetSchema).Fields); len(bad) > 0 {
+		writeError(w, http.StatusBadRequest, "malformed_override",
+			"Destination collection has no field(s): "+summarizeKeys(bad))
 		return
 	}
 	for k, v := range input.FieldOverrides {

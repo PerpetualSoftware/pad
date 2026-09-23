@@ -1017,6 +1017,24 @@ const CmdhelpVersion = "0.1"
 //     browser tab and BUG-3000 carries the open half — so no surface
 //     here states a duration.
 //
+//     0.43 — BUG-2379. `pad_item.action=move` REFUSES a field override
+//     naming a field the DESTINATION collection's schema does not declare,
+//     with 400 `malformed_override` — the same check (UndeclaredOverrideKeys,
+//     against the same stripped schema), code and message the cross-workspace
+//     copy has always used. BEHAVIOR bump on the 0.40 / 0.36 / 0.29 grounds:
+//     no tool name, action enum or param shape changed, but a write door
+//     refuses a call it used to accept. It used to merge the key into the
+//     moved item as an orphan field no schema renders, so the two sibling
+//     endpoints disagreed about one request field.
+//
+//     Refused although create and update ACCEPT undeclared keys and name them
+//     in `warnings.undeclared_fields` (0.27 / BUG-2850). That acceptance
+//     exists because callers round-trip the whole fields blob; an override is
+//     never round-tripped state but a fresh assertion about the destination
+//     schema, which is the copy's reasoning. Orphans already stored on the
+//     moved item are carried by the migration, not by the override map, and
+//     are unaffected. No escape hatch, for 0.29's reason.
+//
 //     0.42 — BUG-3142 + BUG-3147, one entry for one contract change: the
 //     error CODE a LOCAL STDIO caller receives for two families of failure,
 //     both of which used to arrive as `server_error` — a code that reads as
@@ -1368,7 +1386,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.42"
+const ToolSurfaceVersion = "0.43"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

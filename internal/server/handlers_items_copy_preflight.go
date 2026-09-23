@@ -35,7 +35,8 @@ import (
 // `field_overrides` mirrors the existing move endpoint's field of the same
 // name: a flat map of destination-schema field key → value. Keys the
 // destination schema does not declare are REJECTED rather than passed
-// through — see the malformed_override status below.
+// through — see the malformed_override status below. The move refuses them
+// the same way since BUG-2379; before that it merged them silently.
 //
 // A null value means "unset this key", and it is REMOVED from the map
 // rather than set to nil. That distinction is normative, not incidental:
