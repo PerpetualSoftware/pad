@@ -26,6 +26,15 @@ type serverCapabilities struct {
 	// ABSENCE (an old build that 404s this endpoint or omits the field) is the
 	// signal to retry.
 	CollectionResolution bool `json:"collection_resolution"`
+
+	// ItemFieldAppend is true when the item PATCH honours
+	// append_implementation_note / append_decision (BUG-3056). The CLI must
+	// know BEFORE it sends one: an older build decodes the request without
+	// those keys, writes nothing, and answers 200, so a client that sent the
+	// append and checked afterwards could only fall back by writing a second
+	// time — a duplicate whenever that check was wrong. Always true here; its
+	// absence means "send the legacy full-fields write".
+	ItemFieldAppend bool `json:"item_field_append"`
 }
 
 // WHAT A BUILD THAT CANNOT DECODE A FORMAT ACTUALLY COSTS THE READER
@@ -68,7 +77,7 @@ type serverCapabilities struct {
 // rather than 500-ing — that signals to the editor "uploads still work,
 // but disable transformation tools."
 func (s *Server) handleServerCapabilities(w http.ResponseWriter, r *http.Request) {
-	resp := serverCapabilities{CollectionResolution: true}
+	resp := serverCapabilities{CollectionResolution: true, ItemFieldAppend: true}
 	if s.imageProcessor != nil {
 		resp.Image = s.imageProcessor.Capabilities()
 	} else {

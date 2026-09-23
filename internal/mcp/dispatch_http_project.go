@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 
@@ -516,23 +515,16 @@ func (d *HTTPHandlerDispatcher) dispatchItemNote(
 
 	itemPath := "/api/v1/workspaces/" + url.PathEscape(workspace) +
 		"/items/" + url.PathEscape(ref)
-	currentFields, errRes := d.prefetchItemFields(ctx, user, cmdKey, itemPath, ref)
-	if errRes != nil {
-		return errRes, nil
-	}
-
-	updated, err := models.AppendImplementationNote(currentFields, models.ItemImplementationNote{
-		ID:        newStructuredEntryID("note"),
-		Summary:   strings.TrimSpace(summary),
-		Details:   details,
-		CreatedAt: time.Now().UTC().Format(time.RFC3339),
-		CreatedBy: userActorLabel(user),
+	// BUG-3056: the server appends under its write lock (and mints the id,
+	// timestamp and attribution), so a concurrent write to another key cannot
+	// be reverted by this one. No capability check: this dispatcher runs
+	// in-process with the handler it calls, so the two cannot disagree.
+	body, err := json.Marshal(models.ItemUpdate{
+		AppendImplementationNote: &models.ItemImplementationNoteAppend{
+			Summary: strings.TrimSpace(summary),
+			Details: details,
+		},
 	})
-	if err != nil {
-		return structuredAppendErrorResult(cmdKey, "append note", err), nil
-	}
-
-	body, err := json.Marshal(map[string]any{"fields": updated})
 	if err != nil {
 		return dispatcherErrorResult(cmdKey, "encode body", err), nil
 	}
@@ -569,90 +561,17 @@ func (d *HTTPHandlerDispatcher) dispatchItemDecide(
 
 	itemPath := "/api/v1/workspaces/" + url.PathEscape(workspace) +
 		"/items/" + url.PathEscape(ref)
-	currentFields, errRes := d.prefetchItemFields(ctx, user, cmdKey, itemPath, ref)
-	if errRes != nil {
-		return errRes, nil
-	}
-
-	updated, err := models.AppendDecisionLogEntry(currentFields, models.ItemDecisionLogEntry{
-		ID:        newStructuredEntryID("decision"),
-		Decision:  strings.TrimSpace(decision),
-		Rationale: rationale,
-		CreatedAt: time.Now().UTC().Format(time.RFC3339),
-		CreatedBy: userActorLabel(user),
+	// BUG-3056 — see dispatchItemNote.
+	body, err := json.Marshal(models.ItemUpdate{
+		AppendDecision: &models.ItemDecisionLogAppend{
+			Decision:  strings.TrimSpace(decision),
+			Rationale: rationale,
+		},
 	})
-	if err != nil {
-		return structuredAppendErrorResult(cmdKey, "append decision", err), nil
-	}
-
-	body, err := json.Marshal(map[string]any{"fields": updated})
 	if err != nil {
 		return dispatcherErrorResult(cmdKey, "encode body", err), nil
 	}
 	return d.executeRequest(ctx, cmdKey, user, http.MethodPatch, itemPath, body)
-}
-
-// prefetchItemFields GETs the item at itemPath and returns its
-// `fields` JSON string. Surfaces 404s and parse errors as
-// IsError-flagged tool results so the dispatcher's caller can return
-// them directly without further wrapping.
-//
-// Used by note/decide which append into the existing fields blob —
-// they need the current value so AppendImplementationNote /
-// AppendDecisionLogEntry can preserve other entries.
-//
-// ref is the item ref the caller was looking up; threaded through to
-// the error envelope so agents see e.g. "Item TASK-7 not found"
-// rather than a bare 404 (TASK-1078 / TASK-1079).
-func (d *HTTPHandlerDispatcher) prefetchItemFields(
-	ctx context.Context,
-	user *models.User,
-	cmdKey, itemPath, ref string,
-) (string, *mcp.CallToolResult) {
-	req, err := d.buildAuthedRequest(ctx, http.MethodGet, itemPath, nil, user)
-	if err != nil {
-		return "", dispatcherErrorResult(cmdKey, "build prefetch", err)
-	}
-	rec := httptest.NewRecorder()
-	d.Handler.ServeHTTP(rec, req)
-	if rec.Code >= 400 {
-		return "", upstreamHTTPErrorResult(ctx, cmdKey, "prefetch item", itemPath,
-			rec.Code, rec.Body.Bytes(), d.Lister, ResourceItem, ref)
-	}
-	var existing struct {
-		Fields string `json:"fields"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &existing); err != nil {
-		return "", dispatcherErrorResult(cmdKey, "parse current item", err)
-	}
-	return existing.Fields, nil
-}
-
-// newStructuredEntryID mirrors the CLI's helper for note/decision
-// IDs (cmd/pad/notes.go). The actual collision-avoidance is handled
-// by combining the prefix + a unix-nano timestamp — same shape so
-// CLI-created and MCP-created entries are indistinguishable in
-// downstream consumers.
-func newStructuredEntryID(prefix string) string {
-	return fmt.Sprintf("%s-%d", prefix, time.Now().UTC().UnixNano())
-}
-
-// userActorLabel produces a stable string label for the actor that
-// created a structured entry. Mirrors the CLI's "user" label for
-// CLI-driven entries; for MCP we use the requesting user's name (or
-// email fallback) so audit-log review can tell who appended what
-// when multiple users share the same MCP server.
-func userActorLabel(user *models.User) string {
-	if user == nil {
-		return "user"
-	}
-	if user.Name != "" {
-		return user.Name
-	}
-	if user.Email != "" {
-		return user.Email
-	}
-	return "user"
 }
 
 // dispatchLibraryList composes the /convention-library and

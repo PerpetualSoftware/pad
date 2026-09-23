@@ -35,13 +35,22 @@ type Client struct {
 	agentName    string // optional agent name, sent as X-Pad-Agent header
 
 	// capMu guards the lazy, cached probe of GET /server/capabilities behind
-	// CollectionNotFoundIsAuthoritative. capProbed is set only once a DEFINITIVE
-	// answer is cached (a 200 with the flag, or a clean 404); a transient probe
-	// failure leaves capProbed false so a later call re-probes rather than
-	// poisoning the cache. capResolves is the cached definitive verdict.
-	capMu       sync.Mutex
-	capProbed   bool
-	capResolves bool
+	// CollectionNotFoundIsAuthoritative and ServerSupportsItemFieldAppend.
+	// capProbed is set only once a DEFINITIVE answer is cached (a 200 that
+	// decodes, or a clean 404); a transient probe failure leaves capProbed
+	// false so a later call re-probes rather than poisoning the cache. caps is
+	// the cached definitive answer. Each reader decides for itself what an
+	// INDETERMINATE probe means, because the safe side differs per flag.
+	capMu     sync.Mutex
+	capProbed bool
+	caps      serverCapabilityFlags
+}
+
+// serverCapabilityFlags is the subset of GET /server/capabilities the CLI
+// acts on. A clean 404 (a build with no such endpoint) is the zero value.
+type serverCapabilityFlags struct {
+	CollectionResolution bool `json:"collection_resolution"`
+	ItemFieldAppend      bool `json:"item_field_append"`
 }
 
 func NewClient(host string, port int) *Client {
@@ -281,51 +290,80 @@ func (c *Client) CreateItem(wsSlug, collSlug string, input models.ItemCreate) (*
 // The definitive verdict is cached (static for the server's lifetime); an
 // indeterminate probe is re-tried on the next call.
 func (c *Client) CollectionNotFoundIsAuthoritative() bool {
-	c.capMu.Lock()
-	defer c.capMu.Unlock()
-	if c.capProbed {
-		return c.capResolves
-	}
-	resolves, definitive := c.probeCollectionResolution()
+	caps, definitive := c.serverCapabilities()
 	if !definitive {
 		// Fail closed without caching: trust the not-found for THIS call, but
 		// re-probe next time in case the blip clears.
 		return true
 	}
-	c.capResolves = resolves
-	c.capProbed = true
-	return resolves
+	return caps.CollectionResolution
 }
 
-// probeCollectionResolution issues the one GET /server/capabilities probe and
+// ServerSupportsItemFieldAppend reports whether the item PATCH on this server
+// honours append_implementation_note / append_decision (BUG-3056), which lets
+// `pad item note` / `decide` append under the server's write lock instead of
+// sending the whole fields blob back.
+//
+// It must be asked BEFORE the write, never inferred after it: an older build
+// ignores the unknown keys and answers 200 having written nothing, and the
+// only recovery from discovering that afterwards is a second write, which
+// duplicates the entry whenever the discovery was wrong.
+//
+// An INDETERMINATE probe answers false, uncached — the opposite side from
+// CollectionNotFoundIsAuthoritative, for the same reason that one gives: pick
+// the side whose failure is recoverable. The legacy full-fields write is
+// CORRECT against every server (it carries only the old concurrent-write race);
+// the append against a server without it silently writes nothing.
+func (c *Client) ServerSupportsItemFieldAppend() bool {
+	caps, definitive := c.serverCapabilities()
+	return definitive && caps.ItemFieldAppend
+}
+
+// serverCapabilities returns the cached definitive capability answer, probing
+// once if there is none. definitive is false when the probe was
+// indeterminate; that is not cached, so the next call probes again.
+func (c *Client) serverCapabilities() (serverCapabilityFlags, bool) {
+	c.capMu.Lock()
+	defer c.capMu.Unlock()
+	if c.capProbed {
+		return c.caps, true
+	}
+	caps, definitive := c.probeServerCapabilities()
+	if !definitive {
+		return serverCapabilityFlags{}, false
+	}
+	c.caps = caps
+	c.capProbed = true
+	return caps, true
+}
+
+// probeServerCapabilities issues the one GET /server/capabilities probe and
 // classifies the outcome. definitive is true only when the server gave a clear
-// answer — HTTP 200 (resolves = the advertised flag) or HTTP 404 (resolves =
-// false: a build with no capabilities endpoint has no resolver). A transport
+// answer — HTTP 200 (the advertised flags) or HTTP 404 (every flag false: a
+// build with no capabilities endpoint has none of these features). A transport
 // error, a 200 whose body will not decode, or any other status (e.g. a 5xx) is
 // NOT definitive.
-func (c *Client) probeCollectionResolution() (resolves, definitive bool) {
+func (c *Client) probeServerCapabilities() (serverCapabilityFlags, bool) {
 	req, err := c.newRequest("GET", "/server/capabilities", nil)
 	if err != nil {
-		return false, false
+		return serverCapabilityFlags{}, false
 	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return false, false
+		return serverCapabilityFlags{}, false
 	}
 	defer resp.Body.Close()
 	switch resp.StatusCode {
 	case http.StatusOK:
-		var caps struct {
-			CollectionResolution bool `json:"collection_resolution"`
-		}
+		var caps serverCapabilityFlags
 		if err := json.NewDecoder(resp.Body).Decode(&caps); err != nil {
-			return false, false
+			return serverCapabilityFlags{}, false
 		}
-		return caps.CollectionResolution, true
+		return caps, true
 	case http.StatusNotFound:
-		return false, true
+		return serverCapabilityFlags{}, true
 	default:
-		return false, false
+		return serverCapabilityFlags{}, false
 	}
 }
 

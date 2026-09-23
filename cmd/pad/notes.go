@@ -27,59 +27,42 @@ func noteCmd() *cobra.Command {
 			client, _ := getClient()
 			ws := getWorkspace()
 
-			item, err := client.GetItem(ws, args[0])
-			if err != nil {
-				return err
-			}
-
 			body := strings.TrimSpace(details)
 			if readStdin {
+				var err error
 				body, err = readStructuredEntryBody()
 				if err != nil {
 					return err
 				}
 			}
+			summary := strings.TrimSpace(args[1])
 
-			// Capture the entry locally before persisting so the JSON
-			// branch can echo the freshly-created note back to the
-			// caller (BUG-989: previously this command emitted only
-			// plain text, agents had to re-fetch the item to read the
-			// note ID / timestamp).
-			entry := models.ItemImplementationNote{
-				ID:        newStructuredEntryID("note"),
-				Summary:   strings.TrimSpace(args[1]),
-				Details:   body,
-				CreatedAt: time.Now().UTC().Format(time.RFC3339),
-				// The server never parses this entry — it lives inside the
-				// item's fields JSON — so the client is the last party that
-				// could know who wrote it. Hardcoding "user" here made every
-				// agent note claim a human wrote it (BUG-2542); leaving it
-				// empty would have left it authorless, since nothing
-				// downstream fills it in. Self-declared, like the header.
-				CreatedBy: cli.ActorKind(),
-			}
-			fields, err := models.AppendImplementationNote(item.Fields, entry)
-			if err != nil {
-				// BUG-2675: the append refusal is retry-hostile — the stored
-				// value is undecodable and every retry refuses identically.
-				// Emit the structured marker so a stdio MCP agent gets that
-				// code instead of a generic server_error it may retry.
-				if errors.Is(err, models.ErrStructuredFieldUnreadable) {
-					cli.WriteStoredStateUnreadableError(os.Stderr, err)
-					// Bare error so cobra exits non-zero without re-printing
-					// the (already-rendered) message.
-					return fmt.Errorf("note refused: %s is unreadable on this item", models.ItemFieldImplementationNotes)
+			var (
+				updated *models.Item
+				entry   models.ItemImplementationNote
+				err     error
+			)
+			if client.ServerSupportsItemFieldAppend() {
+				// BUG-3056: the server appends under its write lock, so a
+				// concurrent write to another key cannot be reverted by this
+				// one. It mints the id, timestamp and attribution.
+				updated, err = client.UpdateItem(ws, args[0], models.ItemUpdate{
+					AppendImplementationNote: &models.ItemImplementationNoteAppend{Summary: summary, Details: body},
+					Source:                   "cli",
+				})
+				if err != nil {
+					return structuredAppendRefusal(err, "note", models.ItemFieldImplementationNotes)
 				}
-				return err
-			}
-
-			updated, err := client.UpdateItem(ws, item.Slug, models.ItemUpdate{
-				Fields: &fields,
-				// LastModifiedBy left empty — server-stamped (BUG-2542).
-				Source: "cli",
-			})
-			if err != nil {
-				return err
+				if updated.Appended == nil || updated.Appended.ImplementationNote == nil ||
+					!implementationNotePresent(updated.Fields, updated.Appended.ImplementationNote.ID) {
+					return unconfirmedAppendError("note", cli.ItemRef(*updated))
+				}
+				entry = *updated.Appended.ImplementationNote
+			} else {
+				updated, entry, err = legacyAppendNote(client, ws, args[0], summary, body)
+				if err != nil {
+					return err
+				}
 			}
 
 			if formatFlag == "json" {
@@ -112,51 +95,40 @@ func decideCmd() *cobra.Command {
 			client, _ := getClient()
 			ws := getWorkspace()
 
-			item, err := client.GetItem(ws, args[0])
-			if err != nil {
-				return err
-			}
-
 			body := strings.TrimSpace(rationale)
 			if readStdin {
+				var err error
 				body, err = readStructuredEntryBody()
 				if err != nil {
 					return err
 				}
 			}
+			decision := strings.TrimSpace(args[1])
 
-			// Capture the entry locally so the JSON branch can echo
-			// it back without re-fetching the item (BUG-989).
-			entry := models.ItemDecisionLogEntry{
-				ID:        newStructuredEntryID("decision"),
-				Decision:  strings.TrimSpace(args[1]),
-				Rationale: body,
-				CreatedAt: time.Now().UTC().Format(time.RFC3339),
-				// The server never parses this entry — it lives inside the
-				// item's fields JSON — so the client is the last party that
-				// could know who wrote it. Hardcoding "user" here made every
-				// agent note claim a human wrote it (BUG-2542); leaving it
-				// empty would have left it authorless, since nothing
-				// downstream fills it in. Self-declared, like the header.
-				CreatedBy: cli.ActorKind(),
-			}
-			fields, err := models.AppendDecisionLogEntry(item.Fields, entry)
-			if err != nil {
-				// BUG-2675 — same retry-hostile refusal as `pad item note`.
-				if errors.Is(err, models.ErrStructuredFieldUnreadable) {
-					cli.WriteStoredStateUnreadableError(os.Stderr, err)
-					return fmt.Errorf("decision refused: %s is unreadable on this item", models.ItemFieldDecisionLog)
+			var (
+				updated *models.Item
+				entry   models.ItemDecisionLogEntry
+				err     error
+			)
+			if client.ServerSupportsItemFieldAppend() {
+				// BUG-3056 — see `pad item note`.
+				updated, err = client.UpdateItem(ws, args[0], models.ItemUpdate{
+					AppendDecision: &models.ItemDecisionLogAppend{Decision: decision, Rationale: body},
+					Source:         "cli",
+				})
+				if err != nil {
+					return structuredAppendRefusal(err, "decision", models.ItemFieldDecisionLog)
 				}
-				return err
-			}
-
-			updated, err := client.UpdateItem(ws, item.Slug, models.ItemUpdate{
-				Fields: &fields,
-				// LastModifiedBy left empty — server-stamped (BUG-2542).
-				Source: "cli",
-			})
-			if err != nil {
-				return err
+				if updated.Appended == nil || updated.Appended.Decision == nil ||
+					!decisionPresent(updated.Fields, updated.Appended.Decision.ID) {
+					return unconfirmedAppendError("decision", cli.ItemRef(*updated))
+				}
+				entry = *updated.Appended.Decision
+			} else {
+				updated, entry, err = legacyAppendDecision(client, ws, args[0], decision, body)
+				if err != nil {
+					return err
+				}
 			}
 
 			if formatFlag == "json" {
@@ -177,8 +149,109 @@ func decideCmd() *cobra.Command {
 	return cmd
 }
 
-func newStructuredEntryID(prefix string) string {
-	return fmt.Sprintf("%s-%d", prefix, time.Now().UTC().UnixNano())
+// legacyAppendNote is `pad item note` against a server that does not
+// advertise item_field_append: GET, append locally, PATCH the whole fields
+// blob back. It carries the BUG-3056 race (a concurrent write to another key
+// between the GET and the PATCH is reverted), which is the price of talking
+// to that server at all; it is still correct in every other respect.
+func legacyAppendNote(client *cli.Client, ws, ref, summary, body string) (*models.Item, models.ItemImplementationNote, error) {
+	item, err := client.GetItem(ws, ref)
+	if err != nil {
+		return nil, models.ItemImplementationNote{}, err
+	}
+	entry := models.ItemImplementationNote{
+		ID:        models.NewStructuredEntryID("note"),
+		Summary:   summary,
+		Details:   body,
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		// On this path the client writes the entry whole, so it is the last
+		// party that could know who wrote it (BUG-2542). Self-declared, like
+		// the X-Pad-Agent header.
+		CreatedBy: cli.ActorKind(),
+	}
+	fields, err := models.AppendImplementationNote(item.Fields, entry)
+	if err != nil {
+		return nil, entry, structuredAppendRefusal(err, "note", models.ItemFieldImplementationNotes)
+	}
+	updated, err := client.UpdateItem(ws, item.Slug, models.ItemUpdate{
+		Fields: &fields,
+		// LastModifiedBy left empty — server-stamped (BUG-2542).
+		Source: "cli",
+	})
+	return updated, entry, err
+}
+
+// legacyAppendDecision is legacyAppendNote for `pad item decide`.
+func legacyAppendDecision(client *cli.Client, ws, ref, decision, body string) (*models.Item, models.ItemDecisionLogEntry, error) {
+	item, err := client.GetItem(ws, ref)
+	if err != nil {
+		return nil, models.ItemDecisionLogEntry{}, err
+	}
+	entry := models.ItemDecisionLogEntry{
+		ID:        models.NewStructuredEntryID("decision"),
+		Decision:  decision,
+		Rationale: body,
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		CreatedBy: cli.ActorKind(),
+	}
+	fields, err := models.AppendDecisionLogEntry(item.Fields, entry)
+	if err != nil {
+		return nil, entry, structuredAppendRefusal(err, "decision", models.ItemFieldDecisionLog)
+	}
+	updated, err := client.UpdateItem(ws, item.Slug, models.ItemUpdate{
+		Fields: &fields,
+		Source: "cli",
+	})
+	return updated, entry, err
+}
+
+// structuredAppendRefusal turns the Append* helpers' refusal — raised locally
+// on the legacy path, or by the server as 409 stored_state_unreadable on the
+// append path — into the structured marker a stdio MCP agent reads as the
+// retry-hostile code rather than a generic server_error (BUG-2675). Any other
+// error is returned unchanged.
+func structuredAppendRefusal(err error, kind, key string) error {
+	refusal := err
+	var apiErr *cli.APIError
+	switch {
+	case errors.Is(err, models.ErrStructuredFieldUnreadable):
+	case errors.As(err, &apiErr) && apiErr.Code == cli.StoredStateUnreadableCode:
+		refusal = errors.New(apiErr.Message)
+	default:
+		return err
+	}
+	cli.WriteStoredStateUnreadableError(os.Stderr, refusal)
+	// Bare error so cobra exits non-zero without re-printing the
+	// already-rendered message.
+	return fmt.Errorf("%s refused: %s is unreadable on this item", kind, key)
+}
+
+// unconfirmedAppendError is the append path's post-write assertion failing:
+// the server accepted the request but its response does not show the entry.
+// It is reported, and deliberately NOT followed by a legacy write — the
+// capability check already said this server appends, so a second write would
+// duplicate the entry whenever it did (lead ruling on BUG-3056).
+func unconfirmedAppendError(kind, ref string) error {
+	return fmt.Errorf("the server accepted the %s for %s but its response does not show it appended; "+
+		"it was NOT re-sent, so check `pad item show %s --format json` before trying again", kind, ref, ref)
+}
+
+func implementationNotePresent(fieldsJSON, id string) bool {
+	for _, n := range models.ExtractItemImplementationNotes(fieldsJSON) {
+		if n.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func decisionPresent(fieldsJSON, id string) bool {
+	for _, d := range models.ExtractItemDecisionLog(fieldsJSON) {
+		if d.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 func readStructuredEntryBody() (string, error) {
