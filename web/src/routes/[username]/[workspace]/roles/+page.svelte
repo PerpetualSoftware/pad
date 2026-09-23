@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { viewport } from '$lib/stores/breakpoint.svelte';
+	import { roleIcon } from '$lib/utils/roleIcon';
 	import { page } from '$app/state';
 	import { onDestroy, onMount } from 'svelte';
 	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
@@ -1004,7 +1005,7 @@
 								{#if canReorderLanes}
 									<span class="lane-drag-handle" title="Drag to reorder">⠿</span>
 								{/if}
-								<span class="lane-icon">{lane.role.icon || '&#129302;'}</span>
+								<span class="lane-icon">{roleIcon(lane.role.icon)}</span>
 								<span class="lane-name">{lane.role.name}</span>
 							{:else}
 								<span class="lane-name unassigned-name">Unassigned</span>
