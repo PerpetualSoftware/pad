@@ -1598,6 +1598,12 @@ func (s *Store) RemapAttachmentReferencesInWorkspace(workspaceID string, oldToNe
 	}
 	crows.Close()
 
+	// Both scans are done and nothing is written yet: the lost-update window
+	// the workspace seq lock above closes (BUG-2797).
+	if s.afterRemapScan != nil {
+		s.afterRemapScan(workspaceID)
+	}
+
 	// Stamp what the rewrites now point AT, inside this same transaction.
 	// The import stamped each comment body at insert time, but the body still
 	// held the SOURCE ids then, so those stamps landed on nothing that ends up

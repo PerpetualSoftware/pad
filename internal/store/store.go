@@ -229,6 +229,16 @@ type Store struct {
 	// above.
 	afterDebounceRefusal func()
 
+	// afterRemapScan is a TEST-ONLY seam, nil in production. When set,
+	// RemapAttachmentReferencesInWorkspace calls it after scanning every item's
+	// content and fields and before writing any rewrite back: the window in
+	// which a concurrent item write would be overwritten by the remap's stale
+	// snapshot, were it not for the workspace seq lock the remap holds
+	// (BUG-2797, closed by #1328). Same usage constraints as the seams above;
+	// a hook that writes to the same workspace must do so from ANOTHER
+	// goroutine, since the calling transaction holds the lock that write needs.
+	afterRemapScan func(workspaceID string)
+
 	// stopMaint signals the background WAL checkpointer to exit; maintDone
 	// is closed once it has. Both are nil on the Postgres path (no WAL
 	// file to checkpoint) and Close() guards on nil accordingly.
