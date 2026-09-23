@@ -655,10 +655,9 @@ func collapseChanges(s string) string {
 // are NOT included here; that's a separate "received" sub-feed that would
 // need a JSON predicate. Filed as follow-up when needed.
 //
-// Pagination uses offset (matches sibling ListWorkspaceActivity /
-// ListDocumentActivity). For per-user feeds this is fine — datasets are
-// bounded and "between-page drift" is acceptable for an admin tool.
-// PLAN-1542 / TASK-1546.
+// Pagination is by the (created_at, id) keyset cursor in params.Before /
+// params.BeforeID, like its siblings (BUG-2781); params.Offset is still
+// honoured for callers that have not moved. PLAN-1542 / TASK-1546.
 func (s *Store) ListUserActivity(userID string, params models.ActivityListParams) ([]models.Activity, error) {
 	query := `
 		SELECT a.id, COALESCE(a.workspace_id, ''), COALESCE(a.document_id, ''), a.action, a.actor, a.source, a.metadata, COALESCE(a.user_id, ''), a.created_at, COALESCE(u.name, ''), COALESCE(a.ip_address, ''), COALESCE(a.user_agent, '')

@@ -113,9 +113,17 @@
 		}
 	}
 
+	// Latest request wins. A reset (filter or workspace change) supersedes
+	// any load-more still in flight: without this, that older response
+	// appended rows from the PREVIOUS filter onto the new feed, and a slower
+	// reset could overwrite a newer one (BUG-2781, codex round 1).
+	let activityRequest = 0;
+
 	async function loadActivities(slug: string, reset = false) {
+		const thisRequest = ++activityRequest;
 		if (reset) {
 			loading = true;
+			loadingMore = false;
 			activities = [];
 		} else {
 			loadingMore = true;
@@ -135,6 +143,7 @@
 			if (filterSource) params.source = filterSource;
 
 			const result = await api.activity.list(slug, params);
+			if (thisRequest !== activityRequest) return;
 			if (reset) {
 				activities = result;
 			} else {
@@ -144,8 +153,10 @@
 		} catch {
 			// allow partial render
 		} finally {
-			loading = false;
-			loadingMore = false;
+			if (thisRequest === activityRequest) {
+				loading = false;
+				loadingMore = false;
+			}
 		}
 	}
 

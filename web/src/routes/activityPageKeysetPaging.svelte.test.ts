@@ -87,3 +87,40 @@ describe('workspace activity paging', () => {
 		expect(host.querySelectorAll('.activity-entry, .date-entries > *')).toHaveLength(31);
 	});
 });
+
+describe('workspace activity request ordering', () => {
+	it('drops a load-more that a filter reset superseded', async () => {
+		const page1 = Array.from({ length: 30 }, (_, i) => act(i));
+		let releaseStale!: (rows: Activity[]) => void;
+		const stale = new Promise<Activity[]>((resolve) => (releaseStale = resolve));
+		const filtered = [{ ...act(100), action: 'created' } as Activity];
+		listActivity.mockImplementation(async (_slug, params) => {
+			const n = listActivity.mock.calls.length;
+			if (n === 1) return page1;
+			if (n === 2) return stale; // the load-more, held open
+			expect(params.action, 'the reset carries the new filter').toBe('created');
+			return filtered;
+		});
+
+		localStorage.setItem('pad-activity-view', 'audit');
+		app = mount(ActivityPage, { target: host, props: {} }) as Record<string, unknown>;
+		await settle();
+
+		const btn = [...host.querySelectorAll('button')].find((b) => /load more/i.test(b.textContent ?? ''));
+		btn!.click();
+		await settle();
+
+		// A filter change resets the feed while the load-more is in flight.
+		const select = host.querySelector<HTMLSelectElement>('#filter-action')!;
+		select.value = 'created';
+		select.dispatchEvent(new Event('change', { bubbles: true }));
+		await settle();
+
+		// The stale load-more now lands, carrying rows from the OLD filter.
+		releaseStale([act(30), act(31)]);
+		await settle();
+
+		expect(listActivity).toHaveBeenCalledTimes(3);
+		expect(host.querySelectorAll('.date-entries > *')).toHaveLength(1);
+	});
+});

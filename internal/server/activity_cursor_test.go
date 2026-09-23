@@ -102,6 +102,28 @@ func TestActivityCursorIsRefusedWhenMalformed(t *testing.T) {
 			t.Errorf("%s: got %d, want 200: %s", q, rr.Code, rr.Body.String())
 		}
 	}
+
+	// The item activity door shares the parser (codex round 1): a cursor it
+	// ignored would answer every next page with the first page again.
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", map[string]interface{}{"title": "cursor door"})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create item: %d %s", rr.Code, rr.Body.String())
+	}
+	var item models.Item
+	parseJSON(t, rr, &item)
+	itemBase := "/api/v1/workspaces/" + slug + "/items/" + item.Slug + "/activity?"
+	if rr := doRequest(srv, "GET", itemBase+"before_id=abc", nil); rr.Code != http.StatusBadRequest {
+		t.Errorf("item door, half cursor: got %d, want 400", rr.Code)
+	}
+	if rr := doRequest(srv, "GET", itemBase+"before=2000-01-01T00:00:00Z&before_id=0", nil); rr.Code != http.StatusOK {
+		t.Errorf("item door, cursor: got %d, want 200", rr.Code)
+	} else {
+		var page []models.Activity
+		parseJSON(t, rr, &page)
+		if len(page) != 0 {
+			t.Errorf("item door: a cursor before every row must return nothing, got %d rows (was it ignored?)", len(page))
+		}
+	}
 }
 
 func TestAdminUserActivityReturnsAKeysetCursor(t *testing.T) {

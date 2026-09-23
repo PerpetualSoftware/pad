@@ -3813,6 +3813,13 @@ func (s *Server) handleListItemActivity(w http.ResponseWriter, r *http.Request) 
 			params.Limit = l
 		}
 	}
+	// This door never took offset, and it takes the keyset cursor its
+	// siblings do (BUG-2781): a cursor it ignored would answer every "next
+	// page" with the first page again.
+	var cursorOK bool
+	if params.Before, params.BeforeID, cursorOK = activityCursorFromQuery(w, r, 0); !cursorOK {
+		return
+	}
 
 	activities, err := s.store.ListDocumentActivity(item.ID, params)
 	if err != nil {
