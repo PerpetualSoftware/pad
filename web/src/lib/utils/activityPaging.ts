@@ -48,3 +48,24 @@ export function appendUnique<T extends { id: string }>(held: readonly T[], page:
 	}
 	return out;
 }
+
+/**
+ * Folds a fresh read of the feed's HEAD into the rows held (BUG-3160). This is
+ * what makes a row the debounce merge restamped visible: it is in `fresh`
+ * under the same id, at its new position and with its new content.
+ *
+ * - A row in `fresh` replaces the held row with the same id.
+ * - A held row ABSENT from `fresh` is kept: the head is only the newest page,
+ *   and a row that rolled off it is not a deleted row (the rule ItemTimeline's
+ *   refresh follows, BUG-2773).
+ * - The result is in the feed's order, (created_at, id) descending, so a moved
+ *   row lands at the top rather than where it was.
+ */
+export function mergeHead<T extends PagedRow>(held: readonly T[], fresh: readonly T[]): T[] {
+	const byId = new Map<string, T>();
+	for (const row of held) byId.set(row.id, row);
+	for (const row of fresh) byId.set(row.id, row);
+	return [...byId.values()].sort((a, b) =>
+		a.created_at === b.created_at ? (a.id < b.id ? 1 : a.id > b.id ? -1 : 0) : a.created_at < b.created_at ? 1 : -1,
+	);
+}
