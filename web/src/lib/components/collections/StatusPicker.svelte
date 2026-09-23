@@ -26,6 +26,7 @@
 	import MenuItem from '$lib/components/common/MenuItem.svelte';
 	import { portal } from '$lib/utils/portalAction';
 	import { statusColor, formatFieldLabel as formatLabel } from '$lib/utils/fieldColors';
+	import { viewport } from '$lib/stores/breakpoint.svelte';
 
 	interface Props {
 		/** The stored status; '' when the item has none. */
@@ -57,7 +58,7 @@
 	color={statusColor(value)}
 	onclick={toggle}
 	bind:el={triggerEl}
-	haspopup="menu"
+	haspopup={viewport.isMobile ? 'dialog' : 'menu'}
 	expanded={open}
 	title="Change status"
 >

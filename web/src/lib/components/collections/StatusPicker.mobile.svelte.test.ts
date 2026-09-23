@@ -47,6 +47,21 @@ describe('StatusPicker at the mobile breakpoint', () => {
 		expect(statusRows().some((r) => card.contains(r))).toBe(false);
 	});
 
+	it('announces a dialog, and its rows are owned by a menu inside it (codex round 1)', async () => {
+		const { card } = renderInCard();
+		const chip = statusChipIn(card);
+		expect(chip.getAttribute('aria-haspopup')).toBe('dialog');
+		await fireEvent.click(chip);
+		await tick();
+		const rows = statusRows();
+		expect(rows.length).toBe(3);
+		for (const r of rows) {
+			const owner = r.closest('[role="menu"]');
+			expect(owner, 'a menuitemradio with no owning menu').not.toBeNull();
+			expect(owner!.closest('[role="dialog"]'), 'the menu should sit inside the sheet').not.toBeNull();
+		}
+	});
+
 	it('choosing a row in the sheet writes that status', async () => {
 		const { card, onselect } = renderInCard();
 		await chooseStatus(card, 'done');

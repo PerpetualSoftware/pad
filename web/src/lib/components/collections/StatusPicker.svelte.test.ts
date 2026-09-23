@@ -70,5 +70,7 @@ describe('StatusPicker', () => {
 	it('is a menu trigger by its ARIA, which is also what the views’ tests find it by', () => {
 		const { screen } = renderPicker();
 		expect(screen.container.querySelector(STATUS_CHIP)).not.toBeNull();
+		// Desktop opens a popover menu; the mobile file pins 'dialog'.
+		expect(statusChipIn(screen.container).getAttribute('aria-haspopup')).toBe('menu');
 	});
 });

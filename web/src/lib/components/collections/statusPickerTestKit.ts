@@ -10,7 +10,7 @@ import { expect } from 'vitest';
 import { formatFieldLabel } from '$lib/utils/fieldColors';
 
 /** The chip rendered as a status-picker trigger (and only then). */
-export const STATUS_CHIP = '[aria-haspopup="menu"][title="Change status"]';
+export const STATUS_CHIP = '[aria-haspopup][title="Change status"]';
 
 export function statusChipIn(container: ParentNode): HTMLElement {
 	const chip = container.querySelector(STATUS_CHIP);

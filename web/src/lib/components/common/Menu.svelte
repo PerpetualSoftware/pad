@@ -203,7 +203,12 @@
 		<!-- focusKey forwarded: the sheet owns focus on mobile, so the
 		     drill-down handoff (DR-8) has to be re-run there too. -->
 		<BottomSheet {open} onclose={onclose} title={sheetTitle} {focusKey}>
-			{@render children()}
+			<!-- The rows are menuitem / menuitemradio, which must be owned by a
+			     menu; the sheet itself is a dialog. Without this wrapper the
+			     sheet branch had no menu at all (BUG-3157 codex round 1). -->
+			<div class="menu-sheet-body" role="menu" aria-label={ariaLabel ?? sheetTitle}>
+				{@render children()}
+			</div>
 		</BottomSheet>
 	{/if}
 {:else if open}
