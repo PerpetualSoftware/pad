@@ -137,11 +137,14 @@ test.describe('BUG-3165: the list keeps its position across the split pane', () 
 	});
 
 	test('rows that reflow taller in the column: the CLICKED row stays put, not merely the top one', async ({ page, fixture, request }) => {
-		// Long titles fit on one line at full width and wrap in the narrower
-		// column, so every row above the clicked one grows: holding the TOP row
-		// in place would push the clicked row down by that growth.
+		// Long titles wrap onto more lines in the narrower column than at full
+		// width, so every row above the clicked one grows: holding the TOP row in
+		// place would push the clicked row down by that growth. 250 characters
+		// (titles cap at 255), so the line count differs whatever the font's
+		// glyph width: a ~130 character title wrapped to two lines in BOTH
+		// layouts on CI's fonts.
 		const { coll } = await setup(page, fixture, request, 'list', (i) =>
-			`B3165 row ${String(i).padStart(2, '0')} ${'with a long title that wraps once the pane narrows the list '.repeat(2).trim()}`);
+			`B3165 row ${String(i).padStart(2, '0')} ${'with a long title that wraps once the pane narrows the list '.repeat(5)}`.slice(0, 250).trim());
 		try {
 			const { title, before } = await scrollAndPick(page);
 			const heightBefore = await rowHeight(page, title);
