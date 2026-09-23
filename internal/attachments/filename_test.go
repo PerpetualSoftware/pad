@@ -25,6 +25,20 @@ func TestNormalizeFilename(t *testing.T) {
 		{"x.s\u0085vg", "x.svg"}, // C1: a control character too
 		{"x.s\x7fvg", "x.svg"},
 		{`x.s"vg`, "x.svg"},
+		// BUG-3153: every Bidi_Control is dropped. The spoof itself — a .txt
+		// that a bidi-aware renderer shows as "xtxt.svg" — keeps its letters
+		// and its real extension.
+		{"x\u202Egvs.txt", "xgvs.txt"},
+		{"x\u202Agvs\u202C.txt", "xgvs.txt"},
+		{"x\u2066a\u2067b\u2068c\u2069.txt", "xabc.txt"},
+		{"a\u200Eb\u200Fc\u061Cd.txt", "abcd.txt"},
+		// One inside the extension hid it from the blocklist, as a control
+		// byte did.
+		{"x.s\u202Evg", "x.svg"},
+		// ZWJ is not Bidi_Control: an emoji sequence survives intact.
+		{"\U0001F469\u200D\U0001F4BB notes.txt", "\U0001F469\u200D\U0001F4BB notes.txt"},
+		// Nor are other format characters touched (U+00AD soft hyphen, Cf).
+		{"co\u00ADop.txt", "co\u00ADop.txt"},
 		// Trailing dots and spaces, which a download save strips (Q1).
 		{"x.svg.", "x.svg"},
 		{"x.svg ", "x.svg"},
