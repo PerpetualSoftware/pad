@@ -40,7 +40,7 @@
 		/**
 		 * A STATUS CHIP CLICK — names the `status` field and nothing else, at every
 		 * grouping. `ItemCard`'s chip has always meant exactly this (it renders
-		 * `fields.status` and cycles `statusOptions`); what it lacked was a caller
+		 * `fields.status` and offers `statusOptions` in a picker, BUG-3157); what it lacked was a caller
 		 * that agreed.
 		 */
 		onStatusChange?: (item: Item, newStatus: string) => void | Promise<void>;

@@ -535,7 +535,7 @@
 	}
 
 	/* Status + priority render as Chip primitives now (tinted pills per
-	   the refresh mock); the chip carries the click-cycle + pulse. */
+	   the refresh mock); the status chip is a picker trigger (BUG-3157). */
 
 	.meta-sep {
 		font-size: 0.7em;
