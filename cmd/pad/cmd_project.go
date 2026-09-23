@@ -278,11 +278,12 @@ func nextCmd() *cobra.Command {
 // models.CollectionCompletedWorkValues — KEEP IN SYNC with
 // server.listTerminalItemsSince (BUG-1049). Best-effort per collection
 // and status: a list error skips that query rather than failing the
-// whole report.
-func listCompletedWorkSince(client *cli.Client, ws string, cutoff time.Time, limit int) []models.Item {
+// whole report. It also returns each collection's resolved done field keyed by
+// collection id, which completedWorkValue reads (BUG-2640).
+func listCompletedWorkSince(client *cli.Client, ws string, cutoff time.Time, limit int) ([]models.Item, map[string]string) {
 	colls, err := client.ListCollections(ws)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 	var out []models.Item
 	// Each item once (BUG-2639): the server's list endpoint splits a filter
@@ -290,8 +291,10 @@ func listCompletedWorkSince(client *cli.Client, ws string, cutoff time.Time, lim
 	// completed-work values include both "x" and "x,y" returns an item with
 	// status x for both queries. The server copy dedups the same way.
 	seen := map[string]bool{}
+	doneField := make(map[string]string, len(colls))
 	for _, c := range colls {
 		field, values := models.CollectionCompletedWorkValues(c.Schema, c.Settings)
+		doneField[c.ID] = field
 		for _, status := range values {
 			params := url.Values{
 				field:   {status},
@@ -310,7 +313,18 @@ func listCompletedWorkSince(client *cli.Client, ws string, cutoff time.Time, lim
 			}
 		}
 	}
-	return out
+	return out, doneField
+}
+
+// completedWorkValue is the value that closed a completed-work item: its own
+// collection's done field, falling back to "status" for a collection the map
+// does not know. KEEP IN SYNC with the server's completedWorkValue (BUG-2640).
+func completedWorkValue(item models.Item, doneField map[string]string) string {
+	field := doneField[item.CollectionID]
+	if field == "" {
+		field = "status"
+	}
+	return extractFieldFromJSON(item.Fields, field)
 }
 
 // --- standup ---
@@ -364,7 +378,7 @@ func standupCmd() *cobra.Command {
 			}
 
 			cutoff := time.Now().AddDate(0, 0, -days)
-			completedItems := listCompletedWorkSince(client, ws, cutoff, 20)
+			completedItems, doneField := listCompletedWorkSince(client, ws, cutoff, 20)
 
 			// Fetch in-progress items
 			inProgressItems, err := client.ListItems(ws, url.Values{
@@ -407,7 +421,7 @@ func standupCmd() *cobra.Command {
 					output.Completed = append(output.Completed, standupItem{
 						Ref:    cli.ItemRef(item),
 						Title:  item.Title,
-						Status: extractFieldFromJSON(item.Fields, "status"),
+						Status: completedWorkValue(item, doneField),
 					})
 				}
 				for _, item := range inProgressItems {
@@ -719,7 +733,7 @@ func changelogCmd() *cobra.Command {
 				cutoff = time.Now().AddDate(0, 0, -days)
 			}
 
-			allItems := listCompletedWorkSince(client, ws, cutoff, 100)
+			allItems, doneField := listCompletedWorkSince(client, ws, cutoff, 100)
 
 			// Filter by parent if specified
 			filterParent := parentRef
@@ -812,7 +826,7 @@ func changelogCmd() *cobra.Command {
 						cg.Items = append(cg.Items, changelogItem{
 							Ref:    cli.ItemRef(item),
 							Title:  item.Title,
-							Status: extractFieldFromJSON(item.Fields, "status"),
+							Status: completedWorkValue(item, doneField),
 						})
 					}
 					output.Groups = append(output.Groups, cg)

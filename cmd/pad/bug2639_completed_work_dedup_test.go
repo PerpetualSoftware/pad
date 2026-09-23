@@ -36,7 +36,7 @@ func TestListCompletedWorkSinceListsAnItemOnce(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	got := listCompletedWorkSince(cli.NewClientFromURL(srv.URL), "ws", time.Now().Add(-time.Hour), 20)
+	got, _ := listCompletedWorkSince(cli.NewClientFromURL(srv.URL), "ws", time.Now().Add(-time.Hour), 20)
 	if queries != 2 {
 		t.Fatalf("premise: expected one query per completed-work value (2), got %d", queries)
 	}

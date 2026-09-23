@@ -139,13 +139,18 @@ func (s *Server) projectIntelVisibility(r *http.Request, workspaceID string) (co
 // The MCP transport inherits this by proxying here (TASK-1916) rather
 // than replicating the loop.
 //
+// It also returns each collection's resolved done field, keyed by collection
+// id, so a caller renders the value that closed the item rather than the
+// literal "status", which is blank for a collection whose done field is
+// something else (BUG-2640). See completedWorkValue.
+//
 // KEEP IN SYNC with cmd/pad/cmd_project.go's listCompletedWorkSince.
 func (s *Server) listTerminalItemsSince(
 	workspaceID string, collIDs, itemIDs []string, cutoff time.Time, limit int,
-) []models.Item {
+) ([]models.Item, map[string]string) {
 	colls, err := s.store.ListCollections(workspaceID)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 
 	// Resolve terminals for EVERY collection, including ones the caller
@@ -168,8 +173,10 @@ func (s *Server) listTerminalItemsSince(
 	}
 	groups := map[queryKey][]string{}
 	var order []queryKey
+	doneField := make(map[string]string, len(colls))
 	for _, c := range colls {
 		field, values := models.CollectionCompletedWorkValues(c.Schema, c.Settings)
+		doneField[c.ID] = field
 		for _, value := range values {
 			k := queryKey{field: field, value: value}
 			if _, exists := groups[k]; !exists {
@@ -193,7 +200,7 @@ func (s *Server) listTerminalItemsSince(
 	if len(itemIDs) > 0 {
 		granted, gerr := s.store.ListItems(workspaceID, models.ItemListParams{ItemIDs: itemIDs, NoContent: true})
 		if gerr != nil {
-			return nil
+			return nil, nil
 		}
 		for _, it := range granted {
 			grantedByColl[it.CollectionID] = append(grantedByColl[it.CollectionID], it.ID)
@@ -238,7 +245,18 @@ func (s *Server) listTerminalItemsSince(
 			}
 		}
 	}
-	return out
+	return out, doneField
+}
+
+// completedWorkValue is the value that closed a completed-work item: its own
+// collection's done field (BUG-2640), falling back to "status" for a
+// collection the map does not know.
+func completedWorkValue(item models.Item, doneField map[string]string) string {
+	field := doneField[item.CollectionID]
+	if field == "" {
+		field = "status"
+	}
+	return extractFieldValue(item.Fields, field)
 }
 
 // --- GET /workspaces/{slug}/next ---
@@ -322,7 +340,7 @@ func (s *Server) handleGetProjectStandup(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	completed := s.listTerminalItemsSince(workspaceID, collIDs, itemIDs, cutoff, 20)
+	completed, doneField := s.listTerminalItemsSince(workspaceID, collIDs, itemIDs, cutoff, 20)
 
 	// In-progress items: unbounded, best-effort (a store error yields an
 	// empty list rather than failing the whole standup — matches the CLI's
@@ -349,7 +367,7 @@ func (s *Server) handleGetProjectStandup(w http.ResponseWriter, r *http.Request)
 		resp.Completed = append(resp.Completed, StandupItem{
 			Ref:    item.Ref,
 			Title:  item.Title,
-			Status: extractFieldValue(item.Fields, "status"),
+			Status: completedWorkValue(item, doneField),
 		})
 	}
 	for _, item := range inProgress {
@@ -457,7 +475,7 @@ func (s *Server) handleGetProjectChangelog(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	items := s.listTerminalItemsSince(workspaceID, collIDs, itemIDs, cutoff, 100)
+	items, doneField := s.listTerminalItemsSince(workspaceID, collIDs, itemIDs, cutoff, 100)
 	if parent != "" {
 		// The parent filter needs the items' own parent-link metadata
 		// (parent_link_id / parent_ref / parent_title) populated —
@@ -502,7 +520,7 @@ func (s *Server) handleGetProjectChangelog(w http.ResponseWriter, r *http.Reques
 		g.Items = append(g.Items, ChangelogItem{
 			Ref:    item.Ref,
 			Title:  item.Title,
-			Status: extractFieldValue(item.Fields, "status"),
+			Status: completedWorkValue(item, doneField),
 		})
 		g.Count = len(g.Items)
 	}
