@@ -1132,22 +1132,21 @@ func TestDispatch_ItemBulkUpdate_RequiresStatusOrPriority(t *testing.T) {
 }
 
 func TestDispatch_ItemBulkUpdate_PerItemFailureDoesNotAbort(t *testing.T) {
-	// First ref fails GET (404); second succeeds. The dispatcher
+	// First ref's PATCH answers 404; second succeeds. The dispatcher
 	// must report both — successes get Updated:true, failures get
 	// Error populated. Mirrors the CLI's per-item green/red output.
+	// (Since BUG-3156 each row is a single PATCH with no prefetch, so
+	// the 404 is the update's own not-found answer.)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/workspaces/docapp/items/TASK-9", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	})
 	mux.HandleFunc("/api/v1/workspaces/docapp/items/TASK-1", func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"ref":"TASK-1","fields":"{\"status\":\"open\"}"}`))
-		case http.MethodPatch:
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"ref":"TASK-1"}`))
+		if r.Method != http.MethodPatch {
+			t.Errorf("unexpected %s — bulk-update sends one PATCH per row", r.Method)
 		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ref":"TASK-1"}`))
 	})
 	d := &HTTPHandlerDispatcher{Handler: mux, UserResolver: fixedUserResolver(&models.User{ID: "u"})}
 	res, err := d.Dispatch(
