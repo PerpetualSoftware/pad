@@ -25,6 +25,11 @@
 		/** Swap to BottomSheet at the mobile breakpoint. */
 		sheetOnMobile?: boolean;
 		sheetTitle?: string;
+		/** Sheet mode only: the content IS a menu (rows are menuitem /
+		 *  menuitemradio), so wrap it in role="menu" with arrow-key navigation.
+		 *  Opt-in because several sheetOnMobile consumers put non-menu content
+		 *  here (a delete confirmation, for one). BUG-3157. */
+		sheetMenu?: boolean;
 		ariaLabel?: string;
 		/** Extra containers that count as "inside" for outside-click
 		 *  (e.g. a nested portaled emoji picker). */
@@ -66,6 +71,7 @@
 		width = 220,
 		sheetOnMobile = false,
 		sheetTitle,
+		sheetMenu = false,
 		ariaLabel,
 		exempt,
 		suppressOutside,
@@ -211,19 +217,23 @@
 		<!-- focusKey forwarded: the sheet owns focus on mobile, so the
 		     drill-down handoff (DR-8) has to be re-run there too. -->
 		<BottomSheet {open} onclose={onclose} title={sheetTitle} {focusKey}>
-			<!-- The rows are menuitem / menuitemradio, which must be owned by a
-			     menu; the sheet itself is a dialog. Without this wrapper the
-			     sheet branch had no menu at all (BUG-3157 codex round 1). -->
-			<div
-				class="menu-sheet-body"
-				role="menu"
-				aria-label={ariaLabel ?? sheetTitle}
-				tabindex="-1"
-				bind:this={panelEl}
-				onkeydown={onSheetKeydown}
-			>
+			{#if sheetMenu}
+				<!-- The rows are menuitem / menuitemradio, which must be owned by
+				     a menu; the sheet itself is a dialog (BUG-3157 codex rounds
+				     1-3). -->
+				<div
+					class="menu-sheet-body"
+					role="menu"
+					aria-label={ariaLabel ?? sheetTitle}
+					tabindex="-1"
+					bind:this={panelEl}
+					onkeydown={onSheetKeydown}
+				>
+					{@render children()}
+				</div>
+			{:else}
 				{@render children()}
-			</div>
+			{/if}
 		</BottomSheet>
 	{/if}
 {:else if open}

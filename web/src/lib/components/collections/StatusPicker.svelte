@@ -75,6 +75,7 @@
 			align="left"
 			width={200}
 			sheetOnMobile
+			sheetMenu
 			sheetTitle="Status"
 			ariaLabel="Status"
 		>
