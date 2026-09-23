@@ -111,6 +111,12 @@ type ActivityListParams struct {
 	Since  time.Time
 	Limit  int
 	Offset int
+	// Before and BeforeID are the keyset cursor (BUG-2781): return rows
+	// strictly after (Before, BeforeID) in the feed's (created_at, id)
+	// DESCENDING order. The caller takes both from the last row it holds.
+	// Mutually exclusive with Offset at the HTTP doors.
+	Before   time.Time
+	BeforeID string
 }
 
 // AuditLogParams are query parameters for the audit log endpoint.
@@ -121,6 +127,9 @@ type AuditLogParams struct {
 	Days        int
 	Limit       int
 	Offset      int
+	// Before and BeforeID: the keyset cursor, as on ActivityListParams.
+	Before   time.Time
+	BeforeID string
 }
 
 // TimelineEntry represents a single entry in the unified item timeline.

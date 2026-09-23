@@ -673,6 +673,7 @@ func (s *Store) ListUserActivity(userID string, params models.ActivityListParams
 		args = append(args, params.Action)
 	}
 
+	query += activityKeysetClause(params.Before, params.BeforeID, &args)
 	query += " ORDER BY a.created_at DESC, a.id DESC"
 
 	limit := params.Limit
@@ -728,7 +729,8 @@ func (s *Store) ListWorkspaceActivity(workspaceID string, params models.Activity
 		args = append(args, params.Since.UTC().Format(time.RFC3339))
 	}
 
-	query += " ORDER BY a.created_at DESC"
+	query += activityKeysetClause(params.Before, params.BeforeID, &args)
+	query += " ORDER BY a.created_at DESC, a.id DESC"
 
 	limit := params.Limit
 	if limit <= 0 {
@@ -766,7 +768,8 @@ func (s *Store) ListDocumentActivity(documentID string, params models.ActivityLi
 		args = append(args, params.Actor)
 	}
 
-	query += " ORDER BY a.created_at DESC"
+	query += activityKeysetClause(params.Before, params.BeforeID, &args)
+	query += " ORDER BY a.created_at DESC, a.id DESC"
 
 	limit := params.Limit
 	if limit <= 0 {
@@ -836,6 +839,40 @@ func (s *Store) ListDocumentActivityBeforeTime(documentID string, before time.Ti
 	return scanActivitiesWithUser(rows)
 }
 
+// activityKeysetClause is the keyset predicate the paginated activity feeds
+// share (BUG-2781): rows strictly after the cursor in (created_at, id)
+// DESCENDING order, which is the ORDER BY every feed uses. It appends its
+// arguments to args and returns "" when there is no cursor.
+//
+// WHY A KEYSET RATHER THAN OFFSET: activity rows move. A debounce merge
+// restamps created_at to now (mergeIntoUnlinkedActivity), so between two page
+// requests an older row can jump to the head and every row behind it shifts
+// down one position; the next OFFSET page then repeats a row the client
+// already has. A cursor names a position in the ORDER, not a count, so rows
+// moving ahead of it do not shift what comes after it.
+//
+// WHAT IT DOES NOT FIX, stated so nobody claims it: the moved row itself is
+// now ahead of the cursor and no later page returns it. A client sees it only
+// by re-reading the head of the feed. Pinned by
+// TestOffsetPagingRepeatsARowWhenADebounceMergeMovesAnOlderOne and its keyset
+// twin.
+//
+// An empty beforeID with a non-zero before is a timestamp-only cursor: rows
+// strictly older than that second. It can skip rows that share the cursor's
+// second, which is why the HTTP doors require both.
+func activityKeysetClause(before time.Time, beforeID string, args *[]interface{}) string {
+	if before.IsZero() {
+		return ""
+	}
+	ts := before.UTC().Format(time.RFC3339)
+	if beforeID == "" {
+		*args = append(*args, ts)
+		return " AND a.created_at < ?"
+	}
+	*args = append(*args, ts, ts, beforeID)
+	return " AND (a.created_at < ? OR (a.created_at = ? AND a.id < ?))"
+}
+
 func scanActivitiesWithUser(rows interface {
 	Next() bool
 	Scan(dest ...interface{}) error
@@ -892,7 +929,8 @@ func (s *Store) ListAuditLog(params models.AuditLogParams) ([]models.Activity, e
 		args = append(args, cutoff)
 	}
 
-	query += ` ORDER BY a.created_at DESC`
+	query += activityKeysetClause(params.Before, params.BeforeID, &args)
+	query += ` ORDER BY a.created_at DESC, a.id DESC`
 
 	limit := params.Limit
 	if limit <= 0 {

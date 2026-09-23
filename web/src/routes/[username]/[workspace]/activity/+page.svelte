@@ -13,6 +13,7 @@
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
 	import EpisodeFeed from '$lib/components/activity/EpisodeFeed.svelte';
 	import type { Activity, Collection } from '$lib/types';
+	import { appendUnique, cursorAfter } from '$lib/utils/activityPaging';
 
 	let wsSlug = $derived(page.params.workspace ?? '');
 	let username = $derived(page.params.username ?? '');
@@ -121,10 +122,15 @@
 		}
 
 		try {
-			const params: Record<string, string | number> = {
-				limit: PAGE_SIZE,
-				offset: reset ? 0 : activities.length
-			};
+			// Keyset, not offset (BUG-2781): the cursor names the last row held,
+			// so a row restamped to the head between pages cannot shift the
+			// next page back onto rows already shown.
+			const params: Record<string, string | number> = { limit: PAGE_SIZE };
+			const cursor = reset ? null : cursorAfter(activities);
+			if (cursor) {
+				params.before = cursor.before;
+				params.before_id = cursor.before_id;
+			}
 			if (filterAction) params.action = filterAction;
 			if (filterSource) params.source = filterSource;
 
@@ -132,7 +138,7 @@
 			if (reset) {
 				activities = result;
 			} else {
-				activities = [...activities, ...result];
+				activities = appendUnique(activities, result);
 			}
 			hasMore = result.length >= PAGE_SIZE;
 		} catch {

@@ -56,6 +56,10 @@ func (s *Server) handleAuditLog(w http.ResponseWriter, r *http.Request) {
 			params.Offset = offset
 		}
 	}
+	var cursorOK bool
+	if params.Before, params.BeforeID, cursorOK = activityCursorFromQuery(w, r, params.Offset); !cursorOK {
+		return
+	}
 
 	activities, err := s.store.ListAuditLog(params)
 	if err != nil {

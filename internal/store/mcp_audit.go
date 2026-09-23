@@ -117,7 +117,7 @@ func (s *Store) ListMCPAuditByUser(userID string, limit, offset int) ([]models.M
 		       result_status, error_kind, latency_ms, request_id
 		FROM mcp_audit_log
 		WHERE user_id = ?
-		ORDER BY timestamp DESC
+		ORDER BY timestamp DESC, id DESC
 		LIMIT ? OFFSET ?
 	`), userID, limit, offset)
 	if err != nil {
@@ -151,7 +151,7 @@ func (s *Store) ListMCPAuditByConnection(userID string, kind models.TokenKind, r
 		       result_status, error_kind, latency_ms, request_id
 		FROM mcp_audit_log
 		WHERE user_id = ? AND token_kind = ? AND token_ref = ?
-		ORDER BY timestamp DESC
+		ORDER BY timestamp DESC, id DESC
 		LIMIT ? OFFSET ?
 	`), userID, string(kind), ref, limit, offset)
 	if err != nil {
@@ -176,7 +176,7 @@ func (s *Store) ListAllMCPAudit(limit, offset int) ([]models.MCPAuditEntry, erro
 		       token_kind, token_ref, tool_name, args_hash,
 		       result_status, error_kind, latency_ms, request_id
 		FROM mcp_audit_log
-		ORDER BY timestamp DESC
+		ORDER BY timestamp DESC, id DESC
 		LIMIT ? OFFSET ?
 	`), limit, offset)
 	if err != nil {

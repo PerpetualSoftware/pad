@@ -1,7 +1,9 @@
 <!--
   Activity tab — chronological feed of activities originated by this user.
-  Consumes GET /admin/users/{id}/activity (T1546) with offset pagination
-  via the next_offset field.
+  Consumes GET /admin/users/{id}/activity (T1546), paging by the keyset
+  cursor the server returns as next_before / next_before_id (BUG-2781).
+  It used to page by next_offset, which repeats a row whenever a debounce
+  merge restamps an older one to the head between two requests.
 
   Items written + comments authored come through; admin actions where
   the user is the SUBJECT are server-filtered out (the endpoint scopes
@@ -14,6 +16,7 @@
 <script lang="ts">
 	import { adminFetch, type AdminUser } from '$lib/stores/admin.svelte';
 	import { agentNameFromMetadata } from '$lib/utils/agentActor';
+	import { appendUnique, type ActivityCursor } from '$lib/utils/activityPaging';
 
 	interface Props {
 		user: AdminUser;
@@ -49,7 +52,8 @@
 	// flip back to a "Retry" full-tab state (Codex review on PR #609).
 	let loadError = $state('');
 	let loadMoreError = $state('');
-	let nextOffset = $state<number | null>(0);
+	// The cursor for the next page, or null when the last page is held.
+	let nextCursor = $state<ActivityCursor | null>(null);
 	let fetchedForUserId = $state<string | null>(null);
 
 	const PAGE_SIZE = 20;
@@ -69,12 +73,12 @@
 		loading = true;
 		loadError = '';
 		events = [];
-		nextOffset = 0;
+		nextCursor = null;
 		try {
-			const result = await fetchPage(userId, 0);
+			const result = await fetchPage(userId, null);
 			if (user.id !== userId) return;
 			events = result.events;
-			nextOffset = result.next_offset;
+			nextCursor = result.next;
 		} catch (e) {
 			if (user.id !== userId) return;
 			loadError = e instanceof Error ? e.message : 'Failed to load activity';
@@ -89,16 +93,16 @@
 	}
 
 	async function loadMore() {
-		if (loadingMore || nextOffset === null) return;
+		if (loadingMore || nextCursor === null) return;
 		const userId = user.id;
-		const offset = nextOffset;
+		const cursor = nextCursor;
 		loadingMore = true;
 		loadMoreError = '';
 		try {
-			const result = await fetchPage(userId, offset);
+			const result = await fetchPage(userId, cursor);
 			if (user.id !== userId) return;
-			events = [...events, ...result.events];
-			nextOffset = result.next_offset;
+			events = appendUnique(events, result.events);
+			nextCursor = result.next;
 		} catch (e) {
 			if (user.id !== userId) return;
 			// Append failure — keep the already-loaded feed visible and
@@ -113,13 +117,20 @@
 
 	async function fetchPage(
 		userId: string,
-		offset: number
-	): Promise<{ events: ActivityEvent[]; next_offset: number | null }> {
-		const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(offset) });
+		cursor: ActivityCursor | null
+	): Promise<{ events: ActivityEvent[]; next: ActivityCursor | null }> {
+		const params = new URLSearchParams({ limit: String(PAGE_SIZE) });
+		if (cursor) {
+			params.set('before', cursor.before);
+			params.set('before_id', cursor.before_id);
+		}
 		const r = await adminFetch(`/admin/users/${userId}/activity?` + params.toString());
 		return {
 			events: (r.events ?? []) as ActivityEvent[],
-			next_offset: typeof r.next_offset === 'number' ? r.next_offset : null
+			next:
+				typeof r.next_before === 'string' && typeof r.next_before_id === 'string'
+					? { before: r.next_before, before_id: r.next_before_id }
+					: null
 		};
 	}
 
@@ -329,12 +340,12 @@
 			</li>
 		{/each}
 	</ul>
-	{#if nextOffset !== null || loadMoreError}
+	{#if nextCursor !== null || loadMoreError}
 		<div class="load-more-row">
 			{#if loadMoreError}
 				<span class="load-more-error">{loadMoreError}</span>
 			{/if}
-			{#if nextOffset !== null}
+			{#if nextCursor !== null}
 				<button class="btn" type="button" disabled={loadingMore} onclick={loadMore}
 					>{loadingMore ? 'Loading…' : loadMoreError ? 'Retry' : 'Load more'}</button
 				>
