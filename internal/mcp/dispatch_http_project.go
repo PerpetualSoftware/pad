@@ -368,7 +368,11 @@ func (d *HTTPHandlerDispatcher) dispatchItemBulkUpdate(
 		if priority != "" {
 			fieldsPatch["priority"] = priority
 		}
-		patchPayload := map[string]any{"fields_patch": fieldsPatch}
+		// refuse_undeclared_fields (BUG-3156): status and priority are the
+		// operation's keys, so a collection declaring neither refuses the
+		// row with validation_error instead of storing an orphan field, the
+		// same answer stdio and POST /items/bulk (WebMCP) give.
+		patchPayload := map[string]any{"fields_patch": fieldsPatch, "refuse_undeclared_fields": true}
 		// IDEA-1494: forward the open-children guard override per-row.
 		// Same flag shape as `pad item bulk-update --force` so the
 		// override travels through both transports identically.

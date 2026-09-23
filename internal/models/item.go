@@ -1217,6 +1217,14 @@ type ItemUpdate struct {
 	// `force: true`.
 	Force bool `json:"force,omitempty"`
 
+	// RefuseUndeclaredFields is a strict opt-in (BUG-3156): when true, a
+	// write that would store a field key the item's collection does not
+	// declare is REFUSED with 400 validation_error instead of being accepted
+	// and named in warnings.undeclared_fields. It refuses exactly the keys
+	// that warning would have named. Transport-only, like Force. A server
+	// that predates it ignores the member, which is the accept-and-warn.
+	RefuseUndeclaredFields bool `json:"refuse_undeclared_fields,omitempty"`
+
 	// ExpectedUpdatedAt, when non-empty, enables optimistic-concurrency
 	// checking (TASK-2022). UpdateItem parses it as RFC3339 and compares it
 	// against the item's current updated_at read under the write lock;

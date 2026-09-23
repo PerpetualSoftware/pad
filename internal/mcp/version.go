@@ -1017,6 +1017,35 @@ const CmdhelpVersion = "0.1"
 //     browser tab and BUG-3000 carries the open half — so no surface
 //     here states a duration.
 //
+//     0.46 — BUG-3156. `pad_item.action=bulk-update` over LOCAL STDIO and
+//     REMOTE /mcp now REFUSES, per item, a status or priority change on an
+//     item whose collection does not declare that field, and writes nothing
+//     for that item; the rest of the call still applies. That is the answer
+//     WebMCP has given since 0.44, so the three transports now AGREE on
+//     whether the write happens. The row reports it in each transport's own
+//     vocabulary, unchanged in shape: stdio's `failed[]` row carries code
+//     `validation_error`, remote's `results[]` row carries code
+//     `validation_failed` with the server's message in `hint`. BEHAVIOR bump
+//     on the 0.44 / 0.43 grounds: no tool name, action enum or param shape
+//     changed, but a write that used to be accepted with a warning is now
+//     refused.
+//
+//     The mechanism is a new, general, ADDITIVE request member on item
+//     update, `refuse_undeclared_fields: true` (public API, documented in
+//     CLAUDE.md): with it, the PATCH refuses with 400 validation_error
+//     exactly the keys `warnings.undeclared_fields` would otherwise have
+//     named. Both bulk-update transports set it, because status and priority
+//     are the operation's keys rather than ones the caller typed (the
+//     BUG-3154 line). `pad_item.update` does NOT set it and still
+//     accepts-and-warns (0.27). SKEW, stated: a server that predates the
+//     member ignores it, which is exactly the old accept-and-warn, so a newer
+//     client against an older server behaves as 0.45 did.
+//
+//     Separately, and without a bump, #1462 (the same bug's part a) stopped
+//     remote bulk-update PATCHing the whole fields blob, which reverted
+//     concurrent writes to other fields (BUG-3049's defect on the transport
+//     that fix missed).
+//
 //     0.45 — BUG-2829. The error CODE a caller receives for an HTTP 413, on
 //     BOTH transports: `too_large` (details.reason carrying the server's own
 //     code) where it used to be `server_error`. BEHAVIOR bump on the 0.42
@@ -1061,6 +1090,9 @@ const CmdhelpVersion = "0.1"
 //     every transport the catalog caller supplies the same `status` or
 //     `priority` param; only the door the transport happens to reach differs. Whether stdio and remote should call
 //     the bulk endpoint is tracked separately; it is not converged here.
+//     (CONVERGED in 0.46, BUG-3156, without moving them onto the bulk
+//     endpoint: they refuse through the single-item door's new
+//     `refuse_undeclared_fields` member.)
 //
 //     0.43 — BUG-2379. `pad_item.action=move` REFUSES a field override
 //     naming a field the DESTINATION collection's schema does not declare,
@@ -1431,7 +1463,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.45"
+const ToolSurfaceVersion = "0.46"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a
