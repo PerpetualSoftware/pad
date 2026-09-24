@@ -292,10 +292,23 @@ func (s *Server) importBundle(ctx context.Context, r io.Reader, newName string, 
 	// any tr.Next error after pad-export.json (a stalled or dropped body, a
 	// corrupt or truncated gzip, the body cap) left an invisible husk. Rather
 	// than trust each return to pass ws, the minted workspace is handed back
-	// here, whatever the return said. A PANIC after the mint is not covered:
-	// retErr stays nil, the recovery middleware answers 500, and the
-	// workspace is left as it was before this change.
+	// here, whatever the return said.
+	//
+	// A PANIC after the mint takes the same keep door (BUG-3191). retErr
+	// stays nil on a panic and the unwind skips the handler's keep arm, the
+	// only place a failed import's owner row is written, so the workspace
+	// was left live, ownerless and unnamed by chi's 500. The recover here
+	// attaches the importer through addOwnerOrCompensate (kept AND
+	// reachable, or removed when the owner row cannot be written), then
+	// re-panics, so the recovery middleware still answers and logs as it
+	// did.
 	defer func() {
+		if p := recover(); p != nil {
+			if ws != nil {
+				s.keepMintedWorkspaceAfterPanic(ws, ownerID, p)
+			}
+			panic(p)
+		}
 		if retErr != nil && result == nil && ws != nil {
 			result = ws
 		}
@@ -447,6 +460,9 @@ func (s *Server) importBundle(ctx context.Context, r io.Reader, newName string, 
 				return ws, fmt.Errorf("build slug→id map: %w", err)
 			}
 			exportSeen = true
+			if s.importBundleAfterMintHook != nil {
+				s.importBundleAfterMintHook()
+			}
 
 		case hdr.Name == "attachments/manifest.json":
 			if !exportSeen {
@@ -595,6 +611,28 @@ func (s *Server) importBundle(ctx context.Context, r io.Reader, newName string, 
 	s.storageInfoCache.invalidate(ws.ID)
 
 	return ws, nil
+}
+
+// keepMintedWorkspaceAfterPanic runs the keep door for a workspace a panicking
+// import had already minted (BUG-3191): the importer is attached as owner, or
+// the workspace is removed when that fails. With no resolved importer (the
+// fresh-install window, a legacy token) there is nobody to attach, which is
+// the handler's keep arm's answer too. The outcome is logged, because the
+// response is chi's generic 500 and cannot name the workspace.
+func (s *Server) keepMintedWorkspaceAfterPanic(ws *models.Workspace, ownerID string, panicked any) {
+	if ownerID == "" {
+		slog.Error("import: panic after the workspace was created; kept, with no importer to attach",
+			"workspace_id", ws.ID, "workspace_slug", ws.Slug, "panic", fmt.Sprint(panicked))
+		return
+	}
+	if err := s.addOwnerOrCompensate("import bundle (panic)", ws.ID, ws.Slug, ownerID); err != nil {
+		slog.Error("import: panic after the workspace was created, and it could not be attached to the importer",
+			"workspace_id", ws.ID, "workspace_slug", ws.Slug, "user_id", ownerID,
+			"panic", fmt.Sprint(panicked), "error", err)
+		return
+	}
+	slog.Error("import: panic after the workspace was created; kept and attached to the importer",
+		"workspace_id", ws.ID, "workspace_slug", ws.Slug, "user_id", ownerID, "panic", fmt.Sprint(panicked))
 }
 
 // readEntry reads exactly size bytes from a tar reader (the rest of
