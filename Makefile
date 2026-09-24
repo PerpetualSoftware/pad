@@ -38,7 +38,10 @@ install: build
 	@#     sibling's build sitting at ./pad cannot be installed silently
 	@#     (TASK-2787);
 	@#   - the server comes back with the argv of the process it killed,
-	@#     rather than whatever an auto-start defaults to (BUG-2897);
+	@#     rather than whatever an auto-start defaults to (BUG-2897), and in
+	@#     that process's working directory rather than the caller's; a server
+	@#     whose directory was deleted is refused before anything is stopped
+	@#     (BUG-3196);
 	@#   - nothing is printed about a restart until the server answers on
 	@#     BOTH 127.0.0.1 and the configured host.
 	@#
