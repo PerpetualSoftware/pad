@@ -232,7 +232,10 @@ describe('TASK-2921 — a result names the workspace it was SYNCED FOR', () => {
 
 		const running = syncService.triggerSync();
 		// Move the service's current workspace while the request is outstanding.
-		changesImpl = async () => changesAt(2_060_000);
+		// The seed answers an EMPTY delta: since BUG-3201 a non-empty seed is
+		// delivered (labelled with its own workspace, correctly), and this test is
+		// about the triggered pass's label, not the seed's.
+		changesImpl = async () => ({ ...changesAt(2_060_000), updated: [] });
 		const switched = syncService.setWorkspace('other');
 		release();
 		await running;
@@ -255,11 +258,14 @@ describe('TASK-2921 — a result names the workspace it was SYNCED FOR', () => {
 			release = r;
 		});
 		let first = true;
-		changesImpl = async () => {
+		changesImpl = async (_ws, since) => {
 			if (first) {
 				first = false;
 				await gate;
 			}
+			// The seed (since = the real clock, not a test cursor) answers an
+			// EMPTY delta, for the reason given in the test above (BUG-3201).
+			if (since > 1e12) return { ...changesAt(3_060_000), updated: [] };
 			return changesAt(3_060_000);
 		};
 

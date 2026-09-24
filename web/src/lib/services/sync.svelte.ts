@@ -69,6 +69,10 @@ function createSyncService() {
 	let pendingSync = false;
 	let wsSlug = $state<string>('');
 	let initialized = false;
+	// Which setWorkspace call may still write the cursor (BUG-3201). A counter,
+	// not a slug compare: A, then B, then A again would let the first A's late
+	// seed pass a slug check. It governs the CURSOR only; see setWorkspace.
+	let seedGeneration = 0;
 
 	const callbacks = new Set<SyncCallback>();
 
@@ -100,13 +104,33 @@ function createSyncService() {
 
 	async function setWorkspace(slug: string) {
 		wsSlug = slug;
+		const gen = ++seedGeneration;
 		// Seed the sync cursor from the server's clock, not the client's.
 		// This avoids clock-skew issues where Date.now() on the client
 		// is ahead/behind the server, causing missed or duplicate changes.
 		try {
 			const changes = await api.changes.since(slug, Date.now());
-			lastSyncTime = changes.server_time;
+			// Two questions, answered separately (BUG-3201, codex round 1):
+			//   - the CURSOR belongs to the newest seed only; an older one's
+			//     clock is behind it;
+			//   - the DELTA belongs to its workspace, and is delivered whenever
+			//     that workspace is still the current one, even when a later
+			//     seed for the SAME slug superseded this one: dropping it is the
+			//     very loss this fixes, one call removed.
+			if (gen === seedGeneration) lastSyncTime = changes.server_time;
+			if (wsSlug !== slug) return;
+			// The seed's own delta is DELIVERED, not dropped. It holds the
+			// changes committed between the request's `since` and the server's
+			// clock, and the cursor moved past them, so no later sync can return
+			// them. Measured: a child renamed inside that window stayed stale in
+			// its parent's children panel across a tab-resume, because the resume
+			// answered caught_up and nothing re-fetched. Usually empty, and then
+			// nothing is sent.
+			if (changes.updated.length > 0 || changes.deleted.length > 0) {
+				notify({ type: 'incremental', changes, workspace: slug });
+			}
 		} catch {
+			if (gen !== seedGeneration) return;
 			// Fallback to client time if the server call fails.
 			// Not ideal, but better than leaving the cursor at 0.
 			lastSyncTime = Date.now();
