@@ -2502,15 +2502,20 @@ const isStrArrOrAbsent = (v: unknown) =>
 /** Schema fields for the done-field resolvers below, validated in ONE place.
  *
  * Stored JSON can be valid and still mistyped (`{"fields":null}`, a null
- * entry, a number inside terminal_options). Go's typed unmarshal refuses the
- * whole schema on a mistyped member and its resolvers fall back to defaults,
- * so any entry that is not an object, or whose key, type, terminal_options or
- * abandoned_options has the wrong type, makes this return no fields: the same
- * defaults. A null entry is skipped, as Go's zero-value element matches
- * nothing. Validating here rather than at each read closes the class for
- * every resolver that reads through it (codex rounds 2 and 3 on BUG-3195 each
- * found one more member). Residual: a mistyped property these resolvers do
- * not read (e.g. `options`) fails Go's unmarshal and not this check. */
+ * entry, a number inside terminal_options). Every property these resolvers
+ * READ is type-checked here, so none of them can throw on stored data: any
+ * entry that is not an object, or whose key, type, terminal_options or
+ * abandoned_options has the wrong type, makes this return no fields and the
+ * resolvers use the defaults, as Go's do when its typed unmarshal fails. A
+ * null entry is dropped; Go decodes it as a zero-value field, which matches
+ * no key, so the answer is the same. (codex rounds 2 to 4 on BUG-3195.)
+ *
+ * NOT exact parity on corrupt data, stated rather than implied: Go rejects
+ * the whole schema, or the whole settings object, when ANY decoded member is
+ * mistyped, including ones read nowhere here (a field's `options`, a
+ * settings `layout`). This accepts those and resolves from the members it
+ * reads. Matching that would mean mirroring Go's full decoder in TypeScript;
+ * the server's /progress stays the authority for a parent's numbers. */
 function schemaFields(collection: Collection): FieldDef[] {
 	const fields: unknown = parseSchema(collection).fields;
 	if (!Array.isArray(fields)) return [];
