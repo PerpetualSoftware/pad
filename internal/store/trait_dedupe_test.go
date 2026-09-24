@@ -147,7 +147,7 @@ func TestDedupeKeepsTheCollectionTheUserWroteIn(t *testing.T) {
 // one does and that the log says the choice was arbitrary rather than dressing
 // it up as age.
 func TestDedupeReportsAnArbitraryTieAsArbitrary(t *testing.T) {
-	t.Parallel()
+	// NOT t.Parallel() (BUG-3088): this test swaps the process-global slog default to capture records, and a parallel sibling logging in that window would land in the capture (or capture this test's records into its own). Non-parallel tests never overlap parallel ones.
 	s := testStore(t)
 	ws, _, _ := duplicateTraitFixture(t, s, "Dedupe Arbitrary Tie", false)
 	if got := declaringConvention(t, s, ws.ID); len(got) != 2 {
