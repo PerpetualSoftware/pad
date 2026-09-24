@@ -1223,36 +1223,17 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 		}
 	}
 
+	// No FTS pass follows the commit. On SQLite items_fts is an
+	// external-content table kept by the items_fts_* triggers, which fired for
+	// every row inserted above, inside this transaction. A second pass that
+	// re-inserted each row double-indexed it (FTS5 integrity-check reports the
+	// table malformed) and cost one write transaction per item after the
+	// commit, which stalled every other writer on the database (BUG-2758).
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit import: %w", err)
 	}
 
-	// Rebuild FTS indexes for the new workspace (outside transaction)
-	s.rebuildFTSForWorkspace(ws.ID)
-
 	return ws, nil
-}
-
-// rebuildFTSForWorkspace rebuilds the FTS index for all items in a workspace.
-// This is needed after import because direct INSERTs bypass the FTS triggers.
-// Only applicable to SQLite (PostgreSQL uses trigger-maintained tsvector columns).
-func (s *Store) rebuildFTSForWorkspace(wsID string) {
-	if s.dialect.Driver() != DriverSQLite {
-		return
-	}
-	rows, err := s.db.Query(s.q(`SELECT rowid, title, content, tags FROM items WHERE workspace_id = ? AND deleted_at IS NULL`), wsID)
-	if err != nil {
-		return
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var rowid int64
-		var title, content, tags string
-		if err := rows.Scan(&rowid, &title, &content, &tags); err != nil {
-			continue
-		}
-		s.db.Exec(s.q(`INSERT INTO items_fts(rowid, title, content, tags) VALUES (?, ?, ?, ?)`), rowid, title, content, tags)
-	}
 }
 
 // remapFieldIDs replaces old UUIDs in a JSON fields string with their new IDs.

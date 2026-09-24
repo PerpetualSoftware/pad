@@ -559,6 +559,17 @@ func readMigrationNames(fsys embed.FS, dir string) ([]string, error) {
 	return names, nil
 }
 
+// slowSQLiteMigrations names the SQLite migrations whose cost grows with the
+// database, so the server logs a line before starting one and a slow first
+// boot after an upgrade has an explanation in the log. The runner applies
+// migrations under the database's write lock with no other output.
+var slowSQLiteMigrations = map[string]string{
+	// BUG-2758. Measured with the sqlite3 CLI: 1.0 s for 9,766 items (a copy of
+	// a 321 MB working database); 10.5 s for a synthetic 97,660 items
+	// (235 MB of content). Roughly linear in item content.
+	"095_rebuild_items_fts.sql": "rebuilding the item search index; this takes about 1 s per 10,000 items",
+}
+
 func (s *Store) migrate() error {
 	// Create migrations tracking table
 	_, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -625,6 +636,9 @@ func (s *Store) migrate() error {
 			return fmt.Errorf("read migration %s: %w", name, err)
 		}
 
+		if notice, ok := slowSQLiteMigrations[name]; ok {
+			slog.Info("applying a slow migration", "migration", name, "note", notice)
+		}
 		if err := applySQLiteMigration(s.db, name, string(data)); err != nil {
 			return err
 		}

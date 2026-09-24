@@ -1489,9 +1489,11 @@ func (s *Store) WorkspaceItemSlugMap(workspaceID string) (map[string]string, err
 // which used to rewrite a mapped id sitting as the PREFIX of a
 // longer one (Codex round 26). See its doc.
 //
-// FTS reindex via the existing rebuild helper happens AFTER the
-// transaction commits — direct UPDATE bypasses the SQLite FTS
-// triggers the same way ImportWorkspace's INSERTs do.
+// Search needs no separate pass: on SQLite each UPDATE fires the
+// items_fts_update / comments_fts_update triggers inside the
+// transaction, and on Postgres search_vector is trigger-maintained. A
+// post-commit rebuild that used to follow re-inserted every item and
+// double-indexed it (BUG-2758).
 func (s *Store) RemapAttachmentReferencesInWorkspace(workspaceID string, oldToNew map[string]string) error {
 	if len(oldToNew) == 0 {
 		return nil
@@ -1677,20 +1679,19 @@ func (s *Store) RemapAttachmentReferencesInWorkspace(workspaceID string, oldToNe
 		}
 	}
 
+	// The UPDATEs above fired items_fts_update, which already reindexed the
+	// rewritten content; there is no separate FTS pass (BUG-2758).
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit remap: %w", err)
 	}
-
-	// Refresh FTS so search queries see the rewritten content.
-	s.rebuildFTSForWorkspace(workspaceID)
 	return nil
 }
 
 // remapAttachmentRefs replaces "pad-attachment:OLD" with
 // "pad-attachment:NEW" for every (old, new) pair in the map. Pure
 // string operation — kept private so callers go through
-// RemapAttachmentReferencesInWorkspace which also handles the FTS
-// reindex.
+// RemapAttachmentReferencesInWorkspace, whose UPDATEs fire the FTS
+// triggers.
 //
 // IT TOKENIZES WITH attachmentRefRE, the SAME pattern the copy
 // planner enumerates references with, and rewrites only when the
