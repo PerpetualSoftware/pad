@@ -73,13 +73,13 @@ func TestRelationTitleDoors_ThreeSpellingsAgreeThroughTheCreateDoor(t *testing.T
 // TestRelationTitleDoors_TitleWrongCollectionDoesNotDiscloseExistence is
 // ruling (3) on the TITLE path, and it is the leg the addendum was written for.
 //
-// The ref-path equivalent (TestRelationDoors_WrongCollectionDoesNotDisclose-
-// Existence) collapses by RE-RESOLVING the value through ResolveRelationTarget.
-// That ladder does not speak titles, so a title-derived wrong_collection would
-// re-resolve to nil, take the not-found arm, and collapse for EVERY caller —
-// visible and invisible alike. The invisible leg below would still pass. Only
-// the VISIBLE leg catches it, which is why both are here and why the fix
-// carries the matched id on the issue instead of looking it up twice.
+// The server's collapse used to RE-RESOLVE a wrong_collection value through a
+// UUID-or-ref ladder. That ladder does not speak titles, so a title-derived
+// wrong_collection would re-resolve to nil, take the not-found arm, and collapse
+// for EVERY caller, visible and invisible alike. The invisible leg below would
+// still pass. Only the VISIBLE leg catches it, which is why both are here. The
+// resolver now judges visibility itself and the server never looks a value up
+// twice (BUG-3012).
 func TestRelationTitleDoors_TitleWrongCollectionDoesNotDiscloseExistence(t *testing.T) {
 	f := newDoorFixture(t)
 	// A live item in a collection that is NOT the relation's declared target,
