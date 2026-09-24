@@ -7,22 +7,11 @@
 # Lines starting with '#' and blank lines are ignored. One GO-XXXX-NNNN per
 # line; anything after whitespace on the line is treated as a comment.
 #
-# ── Go 1.26.5 stdlib (8) ─────────────────────────────────────────────────
-# nixpkgs nixos-26.05 ships go 1.26.5 and its Go builder pins
-# GOTOOLCHAIN=local, so the `toolchain go1.26.6` line in go.mod (BUG-2565)
-# is ignored there by design. These clear as a group when nixos-26.05
-# backports go 1.26.6 and the flake input is updated — vulnscan.sh emits a
-# warning when a listed advisory stops being reported; when these 8 go
-# quiet, delete them here, verify `go version -m result/bin/pad` reads
-# go1.26.6, and close BUG-2567.
-GO-2026-5026  net/http: Punycode label validation
-GO-2026-5942  x/net/dns/dnsmessage via stdlib: SVCB/HTTPS RR panic
-GO-2026-5972  encoding/asn1: recursion depth
-GO-2026-6088  encoding/xml: recursion depth
-GO-2026-6089  net/http: ReadHeaderTimeout on unencrypted HTTP/2 check
-GO-2026-6090  crypto/tls: post-handshake message limit
-GO-2026-6091  html/template: JS regexp context tracking
-GO-2026-6218  net/url: quadratic resolvePath
+# ── Go stdlib: none ──────────────────────────────────────────────────────
+# The 8 stdlib advisories accepted here while nixos-26.05 shipped go 1.26.5
+# (GO-2026-5026, -5942, -5972, -6088, -6089, -6090, -6091, -6218; BUG-2567)
+# were removed when the nixpkgs input was updated to a revision shipping
+# go 1.26.7 (BUG-2085). vulnscan.sh fails on any of them reappearing.
 #
 # ── Precision artifacts of the stripped binary (1) ───────────────────────
 # nix/package.nix builds with ldflags "-s -w", which strips the symbols
@@ -34,7 +23,10 @@ GO-2026-6218  net/url: quadratic resolvePath
 # each clears when its dependency is bumped past the advisory or
 # dropped. (Cleared so far: GO-2026-6222 via x/image v0.45.0 and
 # GO-2026-4985 via the otel exporter bump to v1.45.0, both 2026-08-15.)
-# GO-2026-5932 has NO fixed version upstream (openpgp is frozen); it
-# clears only if the module leaves the graph (pulled via go-jose and
-# pgconn), so expect it to stay a while.
+# GO-2026-5932 will never clear. It is a deprecation advisory on the
+# x/crypto/openpgp PACKAGE ("unmaintained, unsafe by design"), so no fixed
+# version will ever exist, and the x/crypto MODULE cannot leave the graph:
+# pad imports x/crypto/bcrypt itself. pad does not import openpgp; the
+# symbol-precise local scan (`make vuln`) reports it only at module level,
+# with 0 package results (BUG-2085). Accepted permanently.
 GO-2026-5932  x/crypto/openpgp: unmaintained (uncalled)
