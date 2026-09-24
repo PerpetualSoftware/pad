@@ -1839,7 +1839,7 @@ func TestExpectedFTSTriggers_MatchesActual(t *testing.T) {
 // SELECT, a dialect check that always returns early) and the BUG-822
 // class of drift would go undetected again.
 func TestStartupInvariants_LogsOnMissingTrigger(t *testing.T) {
-	t.Parallel()
+	// NOT t.Parallel() (BUG-3088): this test swaps the process-global slog default to capture records, and a parallel sibling logging in that window would land in the capture (or capture this test's records into its own). Non-parallel tests never overlap parallel ones.
 	s := testStore(t)
 
 	if s.dialect.Driver() != DriverSQLite {
@@ -1888,10 +1888,12 @@ func TestStartupInvariants_LogsOnMissingTrigger(t *testing.T) {
 	}
 }
 
-// recordCapturingHandler is a minimal slog.Handler used by
-// TestStartupInvariants_LogsOnMissingTrigger to capture records without
-// emitting them to stderr. Not safe for concurrent use; tests are
-// single-threaded.
+// recordCapturingHandler is a minimal slog.Handler that captures records
+// without emitting them to stderr. Tests install it as the PROCESS-GLOBAL
+// slog default, so a test using it must NOT call t.Parallel(): a parallel
+// sibling logging in that window lands in the capture, and two capturing tests
+// steal each other's records (BUG-3088: 13 of 40 runs of one such test failed
+// on a sibling's warning). TestSlogCaptureTestsAreNotParallel enforces it.
 type recordCapturingHandler struct {
 	records *[]slog.Record
 	attrs   []slog.Attr

@@ -258,7 +258,7 @@ func TestRoundTripPreservesDependentsUnderSoftDeletedCollection(t *testing.T) {
 // must not participate in the import's duplicate-declaration scan, and must
 // not be mistaken for the workspace's conventions collection.
 func TestImportRoutingIgnoresSoftDeletedCollections(t *testing.T) {
-	t.Parallel()
+	// NOT t.Parallel() (BUG-3088): this test swaps the process-global slog default to capture records, and a parallel sibling logging in that window would land in the capture (or capture this test's records into its own). Non-parallel tests never overlap parallel ones.
 	s := testStore(t)
 	owner := createTestUser(t, s, "routing2884@test.com", "Owner", "password123")
 	ws := createTestWorkspace(t, s, "Routing 2884")
