@@ -476,7 +476,7 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 	// confusing ("create succeeded but you got an error") and the user
 	// can always re-grant via the Connect-project modal. PAT auth has
 	// no request_id and the no-op short-circuits at the kind check.
-	s.maybeAutoAddCreatorConnection(r, ws.ID)
+	s.finishWorkspaceMint(r, ws.ID)
 
 	writeJSON(w, http.StatusCreated, ws)
 }
@@ -938,6 +938,8 @@ func (s *Server) handleImportWorkspace(w http.ResponseWriter, r *http.Request) {
 		slog.Info("workspace import carried item bodies that were behind their live collaborative documents",
 			"workspace_id", ws.ID, "stale_bodies", staleBodies.Count)
 	}
+	// Post-creation side effects, on the success path only (BUG-2794).
+	s.finishWorkspaceMint(r, ws.ID)
 	repair.SetHeader(w)
 	staleBodies.SetHeader(w)
 	writeJSON(w, http.StatusCreated, ws)
