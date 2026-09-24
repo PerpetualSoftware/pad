@@ -185,8 +185,8 @@ const (
 	// undone. Unlike an acknowledgement that merely arrives late (admitted,
 	// counted, reconciled when it lands), this is a stream that would never
 	// carry anything, so it is refused: the client can reconnect, and a
-	// refusal it can see beats a silence it cannot. MemoryBus never returns
-	// it.
+	// refusal it can see beats a silence it cannot. MemoryBus returns it for
+	// one reason only, a subscribe after Close (BUG-2737).
 	SubscribeFailed
 )
 
@@ -655,9 +655,11 @@ type MemoryBus struct {
 	mu          sync.RWMutex
 	subscribers map[chan Event]*subscriber
 
-	// closed is set by Close under mu, and read by Publish under the same
-	// lock, so a publish after Close answers ErrBusClosed rather than
-	// burning an ID into a buffer nobody will read (BUG-2732).
+	// closed is set by Close under mu, and read under the same lock by
+	// Publish, so a publish after Close answers ErrBusClosed rather than
+	// burning an ID into a buffer nobody will read (BUG-2732), and by the
+	// three Subscribe* doors, which refuse with SubscribeFailed rather than
+	// hand out a channel nothing will close (BUG-2737).
 	closed bool
 
 	// Monotonic sequence counter for event IDs, counting up from base.
@@ -730,6 +732,15 @@ func (b *MemoryBus) Subscribe(ctx context.Context, workspaceID string) (chan Eve
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
+	// After Close nothing will ever close a channel handed out here, so a
+	// caller ranging over it would block forever: during shutdown, an SSE
+	// handler that subscribed late held srv.Shutdown to its full deadline
+	// (BUG-2737). Refused with the outcome RedisBus already gives a closed
+	// bus, so the two implementations answer a late subscriber alike.
+	if b.closed {
+		return nil, nil, SubscribeFailed
+	}
+
 	sub := newSubscriber(workspaceID)
 	b.subscribers[sub.ch] = sub
 	return sub.ch, sub.gaps, SubscribeOK
@@ -743,6 +754,11 @@ func (b *MemoryBus) SubscribeIfAllowed(ctx context.Context, workspaceID string, 
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
+
+	// See Subscribe (BUG-2737).
+	if b.closed {
+		return nil, nil, SubscribeFailed
+	}
 
 	if maxPerWorkspace > 0 {
 		count := 0
@@ -785,6 +801,14 @@ func (b *MemoryBus) SubscribeAndReplaySince(ctx context.Context, workspaceID str
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
+
+	// See Subscribe (BUG-2737). resuming is cleared as RedisBus clears it on
+	// its SubscribeFailed paths: a refused subscription is not a resume this
+	// instance failed to serve.
+	if b.closed {
+		resuming = false
+		return nil, nil, nil, SubscribeFailed
+	}
 
 	if maxPerWorkspace > 0 {
 		count := 0
