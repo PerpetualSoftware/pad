@@ -1664,7 +1664,8 @@ func TestInstallRefresh_RefusesAServerWhoseCwdWasDeleted(t *testing.T) {
 	if res.err == nil {
 		t.Fatalf("script proceeded with the server in a deleted directory; stdout=%s", res.stdout)
 	}
-	if !strings.Contains(res.stderr, "no longer exists") || !strings.Contains(res.stderr, gone) {
+	// The path, not the kernel's "<path> (deleted)" spelling of it.
+	if !strings.Contains(res.stderr, "no longer exists: "+gone+"\n") {
 		t.Errorf("refusal did not name the missing directory %s; stderr=%s", gone, res.stderr)
 	}
 	if _, err := os.Stat(installed); err == nil {

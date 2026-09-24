@@ -406,9 +406,8 @@ fi
 # was started, like its argv, so it is captured and restored the same way.
 #
 # Refused BEFORE anything is stopped:
-#   - the captured cwd no longer exists (Linux reports it with a " (deleted)"
-#     suffix): the server cannot be put back where it was, and the refusal
-#     names the path so the operator can choose;
+#   - the captured cwd no longer exists: the server cannot be put back where
+#     it was, and the refusal names the path so the operator can choose;
 #   - the cwd cannot be read at all: restoring both argv and cwd is then
 #     impossible, and falling back to the caller's cwd is this bug.
 # With no server running there is nothing to restore; the caller's cwd is used,
@@ -424,12 +423,10 @@ if [ -n "$TARGET_PID" ]; then
 		die "the working directory of the running server (pid $TARGET_PID) cannot be read here.
   Nothing was stopped or installed; the restart could not put it back where it was."
 	fi
-	case "$SERVER_CWD" in
-	*" (deleted)")
-		die "the running server (pid $TARGET_PID) is in a directory that no longer exists: ${SERVER_CWD% (deleted)}
-  Nothing was stopped or installed. Restart it from the directory it should run in, then refresh."
-		;;
-	esac
+	# Linux reads a removed directory back with a " (deleted)" suffix. Strip
+	# it so the refusal names the real path; the one existence check below
+	# then refuses it, since that path is gone.
+	SERVER_CWD="${SERVER_CWD% (deleted)}"
 	if [ ! -d "$SERVER_CWD" ]; then
 		die "the running server (pid $TARGET_PID) is in a directory that no longer exists: $SERVER_CWD
   Nothing was stopped or installed. Restart it from the directory it should run in, then refresh."
