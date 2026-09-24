@@ -1,5 +1,6 @@
 import { SvelteSet } from 'svelte/reactivity';
 import { probeRefusal, reconnectDelayMs } from './sseReconnect';
+import { syncRequiredSpreadDelayMs } from './syncSpread';
 
 export type SSEStatus = 'disconnected' | 'connected' | 'reconnecting' | 'unauthorized';
 
@@ -71,6 +72,14 @@ const ITEM_EVENTS = [
 type BCEnvelope =
 	| { type: 'item_event'; event: ItemEvent }
 	| { type: 'sync_required' }
+	// The SERVER's `sync_required` (BUG-2761). A separate envelope from the
+	// one above because the receiving tab treats it differently: it draws its
+	// OWN spread delay rather than dispatching at once, so N tabs of one
+	// browser spread as well as N browsers. The plain envelope keeps carrying
+	// the item-change reconciles, which are never spread. A peer on an older
+	// bundle ignores the unknown type and simply misses this one signal,
+	// which its own next sync covers.
+	| { type: 'sync_required_spread' }
 	| { type: 'status'; status: SSEStatus }
 	// A newly-joined tab asks the current leader for its live status.
 	// BroadcastChannel doesn't replay the leader's earlier `status`
@@ -115,9 +124,44 @@ function createSSEService() {
 
 	function dispatchSyncRequired() {
 		needsSync = true;
+		// An immediate dispatch SUBSUMES a spread one still pending: every
+		// consumer answers by issuing a fresh request, and a request issued
+		// now postdates the signal the timer is holding, so it covers it.
+		// Firing the timer later would be a second resync for the same gap.
+		cancelSpreadSync();
 		for (const cb of syncRequiredCallbacks) {
 			cb();
 		}
+	}
+
+	// The pending spread dispatch, if any (BUG-2761). One per tab: a signal
+	// arriving while it is pending folds into it rather than drawing again,
+	// since one resync after the last signal covers them all.
+	let spreadTimer: ReturnType<typeof setTimeout> | null = null;
+
+	function cancelSpreadSync() {
+		if (spreadTimer !== null) {
+			clearTimeout(spreadTimer);
+			spreadTimer = null;
+		}
+	}
+
+	/**
+	 * Answer a server `sync_required` after a random delay instead of at once
+	 * — see syncSpread.ts for why and for the window. `needsSync` is set NOW,
+	 * so a tab resume inside the window still sees that a sync is owed.
+	 *
+	 * Only the server's mass-coverage signal comes through here. Item-change
+	 * reconciles (`items_bulk_updated`, a collection change that rewrote
+	 * items) call dispatchSyncRequired directly and are never delayed.
+	 */
+	function scheduleSpreadSync() {
+		needsSync = true;
+		if (spreadTimer !== null) return;
+		spreadTimer = setTimeout(() => {
+			spreadTimer = null;
+			dispatchSyncRequired();
+		}, syncRequiredSpreadDelayMs());
 	}
 
 	function broadcast(env: BCEnvelope) {
@@ -156,6 +200,8 @@ function createSSEService() {
 				dispatchItemEvent(env.event);
 			} else if (env.type === 'sync_required') {
 				dispatchSyncRequired();
+			} else if (env.type === 'sync_required_spread') {
+				scheduleSpreadSync();
 			} else if (env.type === 'status') {
 				// Mirror the leader's connection status so peer-tab UI
 				// indicators don't show "disconnected" while the
@@ -354,8 +400,12 @@ function createSSEService() {
 			// source exists — and would dispatch into (and broadcast onto)
 			// the NEW workspace's channel.
 			if (source !== eventSource) return;
-			dispatchSyncRequired();
-			broadcast({ type: 'sync_required' });
+			// Spread, not dispatched at once (BUG-2761). The broadcast goes
+			// out NOW rather than when this tab's own timer fires, so each
+			// peer draws an independent delay instead of all of them firing
+			// together at the leader's.
+			scheduleSpreadSync();
+			broadcast({ type: 'sync_required_spread' });
 		});
 
 		// Bulk mutations (TASK-1668) emit ONE `items_bulk_updated` event
@@ -559,6 +609,12 @@ function createSSEService() {
 		currentWorkspace = '';
 		isLeader = false;
 		status = 'disconnected';
+		// A spread sync belongs to the connection that was told. Fired after a
+		// switch it would dispatch into the NEXT workspace's consumers — the
+		// stale-source defect (BUG-2611) arriving by timer instead of by
+		// queued task. The next connection's own first-connect sync (BUG-2540)
+		// covers whatever it was holding.
+		cancelSpreadSync();
 		// Don't carry an unclaimed arm across a teardown (codex review).
 		//
 		// Belt-and-braces, and labelled as such rather than implied to be
@@ -593,6 +649,11 @@ function createSSEService() {
 	 * Subscribe to `sync_required` events from the server. Fires when the
 	 * server's replay buffer couldn't cover a reconnect gap and the client
 	 * needs to do a fresh sync. Returns an unsubscribe function.
+	 *
+	 * Also fires for item-change reconciles (`items_bulk_updated`, a
+	 * collection change that rewrote items) and on every connect (BUG-2540),
+	 * all immediately. The server's `sync_required` itself fires after a
+	 * random spread delay of up to SYNC_REQUIRED_SPREAD_MS (BUG-2761).
 	 *
 	 * Used by syncService to drive `triggerSync()` without sse.svelte
 	 * having to import sync.svelte (which would form a circular dep —

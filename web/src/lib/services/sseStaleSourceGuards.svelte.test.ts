@@ -15,6 +15,7 @@
 // must still dispatch — a guard that silences both would pass a guards-only
 // assertion while breaking the product.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { SYNC_REQUIRED_SPREAD_MS } from './syncSpread';
 
 let sources: FakeEventSource[] = [];
 
@@ -119,11 +120,21 @@ describe('SSE stale-source guards (BUG-2611)', () => {
 		const onSync = vi.fn();
 		sse.onSyncRequired(onSync);
 
-		a.fire('sync_required');
-		expect(onSync).not.toHaveBeenCalled();
+		// The server's sync_required is dispatched after a spread delay
+		// (BUG-2761), so both legs are read after the window has passed —
+		// otherwise the stale leg would pass by timing, not by the guard.
+		vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+		try {
+			a.fire('sync_required');
+			vi.advanceTimersByTime(SYNC_REQUIRED_SPREAD_MS);
+			expect(onSync).not.toHaveBeenCalled();
 
-		b.fire('sync_required');
-		expect(onSync).toHaveBeenCalledTimes(1);
+			b.fire('sync_required');
+			vi.advanceTimersByTime(SYNC_REQUIRED_SPREAD_MS);
+			expect(onSync).toHaveBeenCalledTimes(1);
+		} finally {
+			vi.useRealTimers();
+		}
 		sse.disconnect();
 	});
 

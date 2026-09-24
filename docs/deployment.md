@@ -245,8 +245,8 @@ Both SSE endpoints — `/api/v1/events` (activity, workspace-scoped) and
 `/api/v1/events/stream` (watch, user-scoped) — emit a `sync_required` event
 when the server cannot honestly claim the client has seen everything. The
 client's answer is to reconcile: the web client runs an incremental `/changes`
-delta (not a full page load), and the `pad` CLI clears its cursor so its next
-reconnect starts fresh.
+delta (not a full page load) after a random delay of up to 5 seconds, and the
+`pad` CLI clears its cursor so its next reconnect starts fresh.
 
 **It is emitted in two situations, not one.** The distinction matters for
 reading the metrics below, and for anyone writing a third-party consumer:
@@ -384,6 +384,14 @@ differently and a third-party consumer cannot infer this from the frame:
 - **Keep the connection open.** The frame is not a close and does not ask for a
   reconnect. The server keeps streaming; a client that tears down and redials
   on every `sync_required` turns one delta into a reconnect storm.
+- **Spread your answer if it is a request.** The causes that end coverage are
+  fleet-wide (a Redis failover, an ID-space change, an idle-timeout after a
+  network event), so every subscriber is told in the same instant, and because
+  the streams stay open the SSE admission limits never shed any of it. A client
+  that refetches at once lands with every other client on the database. The web
+  client waits a uniform random delay in [0, 5s) per tab (BUG-2761) — 5s being
+  the same interval the server already allows itself to hold a mid-stream gap
+  before announcing it.
 - **Expect events after it, possibly with IDs below the hole.** A mid-stream
   `sync_required` is not ordered against events the server had already queued
   for that connection, so a client can receive the frame and then events that
