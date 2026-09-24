@@ -70,6 +70,9 @@ const fallbackFilename = "upload.bin"
 //     filepath.Ext reads ".". Skipped when it would leave nothing.
 //  5. A name left empty, or that is only a path component ("." or ".."),
 //     becomes "upload.bin".
+//  6. A Windows reserved device name gets a "_" prefix (BUG-2822): Windows
+//     opens "nul.txt" as the null device, so a download saved under the stored
+//     name is lost or refused. See windowsDeviceName for the match.
 func NormalizeFilename(raw string) string {
 	name := filepath.Base(raw)
 	if i := strings.LastIndexByte(name, '\\'); i >= 0 {
@@ -96,7 +99,36 @@ func NormalizeFilename(raw string) string {
 	if name == "" || name == "." || name == ".." || name == "/" {
 		return fallbackFilename
 	}
+	if windowsDeviceName(name) {
+		return "_" + name
+	}
 	return name
+}
+
+// windowsReservedStems are the device names Windows resolves a path component
+// to, whatever directory it sits in: Microsoft's "Naming Files, Paths, and
+// Namespaces" list, plus CONIN$ and CONOUT$, and the superscript digits that
+// list names for COM and LPT. Upper case; the match folds case.
+var windowsReservedStems = func() map[string]bool {
+	m := map[string]bool{"CON": true, "PRN": true, "AUX": true, "NUL": true, "CONIN$": true, "CONOUT$": true}
+	for _, d := range []string{"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "\u00B9", "\u00B2", "\u00B3"} {
+		m["COM"+d] = true
+		m["LPT"+d] = true
+	}
+	return m
+}()
+
+// windowsDeviceName reports whether Windows would open name as a device. It
+// reads the name as Windows does: the stem is everything before the FIRST dot
+// or colon, so "con.tar.gz" and "nul:x.txt" are devices (a colon opens the
+// stream syntax, codex round 1), and trailing spaces in the stem are ignored,
+// so "con .txt" is one too. The match folds case.
+func windowsDeviceName(name string) bool {
+	stem := name
+	if i := strings.IndexAny(name, ".:"); i >= 0 {
+		stem = name[:i]
+	}
+	return windowsReservedStems[strings.ToUpper(strings.TrimRight(stem, " "))]
 }
 
 // ServedFilename is the name an attachment is offered under, derived from its

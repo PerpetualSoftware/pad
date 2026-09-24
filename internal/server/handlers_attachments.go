@@ -325,9 +325,10 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 	// normalised by the same function every ingest door calls (BUG-2818). It
 	// reduces the name to a leaf under both separator conventions, falls back
 	// to a generic name when the text cannot be stored at all (BUG-2803), drops
-	// the characters the Content-Disposition header drops, and trims the
-	// trailing dots and spaces a download would lose. See
-	// attachments.NormalizeFilename for each rule's reason.
+	// the characters the Content-Disposition header drops, trims the trailing
+	// dots and spaces a download would lose, and prefixes a Windows device
+	// name with "_" (BUG-2822). See attachments.NormalizeFilename for each
+	// rule's reason.
 	filename := attachments.NormalizeFilename(header.Filename)
 
 	// Stream into a temp file under the OS temp dir. We copy in 32KiB
