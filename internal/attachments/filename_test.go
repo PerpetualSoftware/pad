@@ -59,6 +59,35 @@ func TestNormalizeFilename(t *testing.T) {
 		// All dots is a POSIX name, not a path component (BUG-2803 round 27).
 		{"...", "..."},
 		{". .", ". ."},
+		// BUG-2822: a Windows device name, with or without an extension, in any
+		// case, and with the stem's trailing spaces ignored as Windows ignores
+		// them, gets a "_" prefix. The name stays readable, and so does its
+		// extension.
+		{"CON", "_CON"},
+		{"nul.txt", "_nul.txt"},
+		{"Aux.tar.gz", "_Aux.tar.gz"},
+		{"con .txt", "_con .txt"},
+		{"PRN.", "_PRN"},
+		{"LPT1.png", "_LPT1.png"},
+		{"com9", "_com9"},
+		{"COM0.txt", "_COM0.txt"},
+		{"com\u00B9.txt", "_com\u00B9.txt"},
+		{"CONIN$", "_CONIN$"},
+		{"conout$.log", "_conout$.log"},
+		{"a/b/NUL", "_NUL"},
+		// Preservation: a device name inside a longer stem, after the first
+		// dot, or with a leading space, is not one. Nor are COM and LPT
+		// without a digit, or with two.
+		{"console.txt", "console.txt"},
+		{"connect.png", "connect.png"},
+		{"nullable.go", "nullable.go"},
+		{"report.con", "report.con"},
+		{"my.nul.txt", "my.nul.txt"},
+		{" con.txt", " con.txt"},
+		{"com.txt", "com.txt"},
+		{"COM10.txt", "COM10.txt"},
+		{"lpt.png", "lpt.png"},
+		{"auxiliary.pdf", "auxiliary.pdf"},
 		// Unstorable text keeps BUG-2803's fallback, extension only if allowed.
 		{"sh\x00ot.png", "upload.png"},
 		{"sh\x00ot.svg", "upload"},
