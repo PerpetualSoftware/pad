@@ -998,7 +998,12 @@ export interface ItemCopyPreflightNeedsValue {
 	 */
 	collection_unavailable?: boolean;
 	required: boolean;
-	reason: 'missing_required' | 'invalid_value';
+	/**
+	 * `state_change` (BUG-2367): the copy or move would change the item between
+	 * open, done and abandoned, so the destination done field must be chosen.
+	 * `message` names the change and the values; `options` carry them.
+	 */
+	reason: 'missing_required' | 'invalid_value' | 'state_change';
 	message?: string;
 }
 

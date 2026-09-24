@@ -657,7 +657,7 @@ func (s *Store) copyItemAcrossWorkspacesTx(req CrossWorkspaceCopyRequest, source
 	//
 	// The DESTINATION workspace id, not the source's: a supplied override is
 	// a write into workspace B and has to name something that exists THERE.
-	finalFields, dropped, notUnique, err := s.migrateCopyFields(tx, req.TargetWorkspaceID, targetColl, source.Fields, sourceColl.Schema, req.FieldOverrides, scope, req.RelationVisibility)
+	finalFields, dropped, notUnique, err := s.migrateCopyFields(tx, req.TargetWorkspaceID, targetColl, source.Fields, sourceColl, req.FieldOverrides, scope, req.RelationVisibility)
 	if err != nil {
 		return nil, err
 	}
@@ -1082,8 +1082,9 @@ func (s *Store) getCollectionInWorkspaceTx(tx *sql.Tx, collectionID, workspaceID
 //
 // Returns the final field map (the planner's input, pre-rewrite) and the keys
 // migration dropped.
-func (s *Store) migrateCopyFields(q Queryer, destWorkspaceID string, targetColl *models.Collection, sourceFieldsJSON, sourceSchemaJSON string, overrides map[string]any, scope items.MigrateScope, canSee RelationVisibilityFunc) (map[string]any, []string, []models.NotUniqueDrop, error) {
+func (s *Store) migrateCopyFields(q Queryer, destWorkspaceID string, targetColl *models.Collection, sourceFieldsJSON string, sourceColl *models.Collection, overrides map[string]any, scope items.MigrateScope, canSee RelationVisibilityFunc) (map[string]any, []string, []models.NotUniqueDrop, error) {
 	targetSchemaJSON := targetColl.Schema
+	sourceSchemaJSON := sourceColl.Schema
 	var sourceSchema, targetSchema models.CollectionSchema
 	if err := json.Unmarshal([]byte(sourceSchemaJSON), &sourceSchema); err != nil {
 		return nil, nil, nil, fmt.Errorf("copy item across workspaces: parse source schema: %w", err)
@@ -1315,6 +1316,16 @@ func (s *Store) migrateCopyFields(q Queryer, destWorkspaceID string, targetColl 
 	if len(conflicts) > 0 {
 		return nil, nil, nil, &UniqueFieldConflictError{Keys: conflicts}
 	}
+	// A copy that would change the item's open/done/abandoned state must
+	// be asked for (BUG-2367 item 4). After the unique check, in the order
+	// the preflight refuses in, so one request gets one answer from both.
+	if ch := models.MigrateCloseStateChange(
+		currentFields, sourceSchema, copySettingsOf(sourceColl),
+		migrated.Fields, targetSchema, copySettingsOf(targetColl),
+		func(k string) bool { _, set := overrides[k]; return set },
+	); ch != nil {
+		return nil, nil, nil, &FieldValidationError{Err: errors.New(ch.Message())}
+	}
 	return migrated.Fields, stillDropped, notUnique, nil
 }
 
@@ -1482,4 +1493,14 @@ func isLockTimeoutError(err error) bool {
 		return false
 	}
 	return strings.Contains(strings.ToLower(err.Error()), "database is locked")
+}
+
+// copySettingsOf parses a collection's settings for done-field resolution,
+// treating unreadable settings as empty like every other done-field caller.
+func copySettingsOf(c *models.Collection) models.CollectionSettings {
+	var settings models.CollectionSettings
+	if c != nil && c.Settings != "" {
+		_ = json.Unmarshal([]byte(c.Settings), &settings)
+	}
+	return settings
 }

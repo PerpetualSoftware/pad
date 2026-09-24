@@ -1099,6 +1099,16 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 	// Same uniqueness rule, check and sentence as handleMoveItem (BUG-2367):
 	// before it, a collision on invocation_slug surfaced as the raw SQL error
 	// text in `failed[]`, and one on an unindexed unique field was stored.
+	// Same state-change rule and sentence as handleMoveItem (BUG-2367 item
+	// 4). A bulk `move` carrying `status` has supplied the value.
+	if ch := models.MigrateCloseStateChange(
+		currentFields, sourceSchema, collectionSettingsOf(sourceColl),
+		result.Fields, targetSchema, collectionSettingsOf(targetColl),
+		func(k string) bool { _, set := suppliedByCaller[k]; return set },
+	); ch != nil {
+		raw, _ := json.Marshal(ch.Details())
+		return nil, &bulkOpError{message: ch.Message(), code: closeStateChangeCode, details: raw}
+	}
 	if conflicts, uerr := s.store.UniqueFieldConflictsQ(s.store.Q(), targetColl.ID, item.ID, targetSchema.Fields, result.Fields); uerr != nil {
 		return nil, &bulkOpError{message: "failed to check unique fields", code: "internal_error"}
 	} else if len(conflicts) > 0 {
