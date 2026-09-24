@@ -103,8 +103,29 @@ const ALLOWED: Record<string, { count: number; why: string }> = {
 			'different contract — no reconcile, its own load-generation fence — not a copy of this one.',
 	},
 };
-/** Any spelling of a direct call: `localIndex.bootstrap(`, `?.`, or `['bootstrap']`. */
-const DIRECT_CALL = /localIndex\s*(?:\?\.|\.)\s*bootstrap\s*\(|localIndex\s*\[\s*['"`]bootstrap['"`]\s*\]/g;
+/**
+ * A REFERENCE to the member, not just a call (codex r1): an alias taken first
+ * (`const b = localIndex.bootstrap; b(ws)`) is a direct call in all but
+ * spelling. Covered: `.` / `?.` access, `['bootstrap']`, and destructuring
+ * from `localIndex`. Comments are stripped first — prose naming the method is
+ * not a call. BOUNDARY, stated rather than implied: this stops a page
+ * hand-rolling the sequence; it does not chase `localIndex` passed through a
+ * generic function or a computed key. That would be an adversary, not a
+ * convenience copy.
+ */
+const DIRECT_REF =
+	/localIndex\s*(?:\?\.|\.)\s*bootstrap\b|localIndex\s*\[\s*['"`]bootstrap['"`]\s*\]|\{[^}]*\bbootstrap\b[^}]*\}\s*=\s*localIndex\b/g;
+
+function stripComments(text: string): string {
+	return text
+		.replace(/\/\*[\s\S]*?\*\//g, '')
+		.replace(/<!--[\s\S]*?-->/g, '')
+		.replace(/(^|[^:'"`\\])\/\/.*$/gm, '$1');
+}
+
+export function countDirectReferences(text: string): number {
+	return (stripComments(text).match(DIRECT_REF) ?? []).length;
+}
 
 function sourceFiles(dir: string): string[] {
 	const out: string[] = [];
@@ -119,11 +140,27 @@ function sourceFiles(dir: string): string[] {
 export function directBootstrapCallers(root: string): Record<string, number> {
 	const found: Record<string, number> = {};
 	for (const file of sourceFiles(root)) {
-		const n = (readFileSync(file, 'utf8').match(DIRECT_CALL) ?? []).length;
+		const n = countDirectReferences(readFileSync(file, 'utf8'));
 		if (n > 0) found[relative(root, file).split('\\').join('/')] = n;
 	}
 	return found;
 }
+
+describe('the reference scanner (BUG-3181)', () => {
+	it.each([
+		['a call', 'await localIndex.bootstrap(ws, { userId });', 1],
+		['optional chaining', 'localIndex?.bootstrap(ws, o);', 1],
+		['bracket access', "localIndex['bootstrap'](ws, o);", 1],
+		['an alias taken first', 'const b = localIndex.bootstrap;\nawait b(ws, o);', 1],
+		['destructuring', 'const { bootstrap } = localIndex;\nawait bootstrap(ws, o);', 1],
+		['bootstrapStateFor is a different member', "localIndex.bootstrapStateFor(ws) === 'ready'", 0],
+		['a line comment', '// then `localIndex.bootstrap` runs', 0],
+		['a block comment', '/* localIndex.bootstrap(ws) */', 0],
+		['an HTML comment', '<!-- localIndex.bootstrap(ws) -->', 0],
+	])('%s', (_label, text, expected) => {
+		expect(countDirectReferences(text)).toBe(expected);
+	});
+});
 
 describe('nothing but the helper calls localIndex.bootstrap directly (BUG-3181)', () => {
 	it('the scan sees the helper itself (not blind)', () => {
