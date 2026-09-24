@@ -229,7 +229,7 @@ describe('localIndex.reconcile — the door the collection route now uses', () =
 		expect(kept.some((r) => r.id === 'new-session-row')).toBe(true);
 	});
 
-	it('two concurrent reconciles cannot regress the cursor', async () => {
+	it('an older, lower batch landing after a newer one cannot regress the cursor', () => {
 		// IDEA-2901 asked for this to be PINNED rather than assumed, and codex
 		// round 11 proposed it as a defect: two loops both start at cursor 10,
 		// the newer response applies 20, then the older applies 15 and progress
@@ -237,57 +237,52 @@ describe('localIndex.reconcile — the door the collection route now uses', () =
 		// compares and assigns with NO await between them, so a non-advancing
 		// batch is dropped whole by guard 1 and nothing can interleave.
 		//
-		// MEASURED DURING THE WINDOW, NOT AT THE END. The first version of this
-		// test asserted the final cursor, and a mutant deleting guard 1 SURVIVED
-		// it: the older loop regresses the cursor to 15 and then immediately
-		// polls again and re-advances to 20, so the end state is identical and
-		// the stale row is skipped by guard 2 either way. The only thing that can
-		// see it is the cursor each request is ISSUED from.
+		// DRIVEN AT `applyDelta` SINCE BUG-3192. The first form ran two loops
+		// through `reconcile`, which now serialises its asks, so the door can no
+		// longer produce the interleaving. Two loops CAN still overlap — a
+		// bootstrap reentry calls `reconcileWorkspace` directly — and this is the
+		// order they would land in. The earlier form measured the cursor each
+		// request was ISSUED from, because at loop level the regressed cursor
+		// re-advanced before the end; applying the two batches in their landing
+		// order sees the regression directly. A mutant deleting guard 1 leaves
+		// the cursor at 15.
+		localIndex.applyDelta(ws, [row('keeper', 1, 'kept')], '10', false);
+		localIndex.applyDelta(ws, [row('fresh', 20, 'kept')], '20', false);
+		localIndex.applyDelta(ws, [row('stale', 15, 'kept')], '15', false);
+
+		expect(localIndex.cursorFor(ws)).toBe('20');
+		const kept = localIndex.getByCollection(ws, 'kept');
+		expect(kept.some((r) => r.id === 'fresh')).toBe(true);
+		expect(kept.some((r) => r.id === 'stale')).toBe(false);
+	});
+
+	it('concurrent asks through the door are serialised: the second reads from the cursor the first reached', async () => {
 		await boot([row('keeper', 1, 'kept')]);
-
-		const issuedFrom: number[] = [];
-		let releaseOld!: () => void;
-		const oldGate = new Promise<void>((r) => {
-			releaseOld = r;
+		const issuedFrom: string[] = [];
+		let releaseFirst!: () => void;
+		const firstGate = new Promise<void>((r) => {
+			releaseFirst = r;
 		});
-		let call = 0;
-		vi.spyOn(api.items, 'changes').mockImplementation(async () => {
-			issuedFrom.push(Number(localIndex.cursorFor(ws)));
-			call += 1;
-			if (call === 1) {
-				// The OLDER request: issued first, resolves last, lower cursor.
-				await oldGate;
-				return {
-					changes: [row('stale', 15, 'kept')],
-					cursor: '15',
-					includes_unparented_metadata: false,
-					access_epoch: 'epoch-1',
-				};
+		vi.spyOn(api.items, 'changes').mockImplementation(async (_ws: string, since: string) => {
+			issuedFrom.push(since);
+			if (issuedFrom.length === 1) {
+				await firstGate;
+				return { changes: [row('fresh', 20, 'kept')], cursor: '20', includes_unparented_metadata: false, access_epoch: 'epoch-1' };
 			}
-			return {
-				changes: [row('fresh', 20, 'kept')],
-				cursor: '20',
-				includes_unparented_metadata: false,
-				access_epoch: 'epoch-1',
-			};
+			return { changes: [], cursor: since, includes_unparented_metadata: false, access_epoch: 'epoch-1' };
 		});
 
-		const older = localIndex.reconcile(ws);
+		const first = localIndex.reconcile(ws);
+		const second = localIndex.reconcile(ws);
 		await Promise.resolve();
-		const newer = localIndex.reconcile(ws);
-		await newer;
-		expect(localIndex.cursorFor(ws)).toBe('20');
-
-		releaseOld();
-		await older;
-
-		// THE PROPERTY: no request was ever issued from a cursor lower than one
-		// an earlier request had already been issued from.
-		const highWater = issuedFrom.map((_, i) => Math.max(...issuedFrom.slice(0, i + 1)));
-		expect(issuedFrom).toEqual(highWater);
-
-		expect(localIndex.cursorFor(ws)).toBe('20');
-		expect(localIndex.getByCollection(ws, 'kept').some((r) => r.id === 'fresh')).toBe(true);
+		expect(issuedFrom, 'the second ask waits for the read ahead of it').toEqual(['10']);
+		releaseFirst();
+		await first;
+		await second;
+		// The first pass's own loop polls once more from 20 before it concludes;
+		// the queued pass then reads from 20 as well, never from 10.
+		expect(issuedFrom[0]).toBe('10');
+		expect(issuedFrom.slice(1).every((s) => s === '20')).toBe(true);
 	});
 
 	it('is a no-op reporting catch-up for a workspace that was never hydrated', async () => {

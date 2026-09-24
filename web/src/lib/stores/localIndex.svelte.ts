@@ -102,6 +102,18 @@ class WorkspaceState {
 	// round 3).
 	generation = 0;
 
+	// True while a first-time `bootstrap` has not yet issued its first NETWORK
+	// read — the window spent awaiting the IDB hydrate (BUG-3192). A `reconcile`
+	// arriving in that window joins the bootstrap instead of fetching: whatever
+	// the bootstrap then reads (the cold `/items-index` snapshot, or the warm
+	// path's `/items-changes` drain) is issued AFTER the reconcile was asked
+	// for, so it answers that ask. On a cold cursor the fetch it replaces is
+	// `items-changes?since=0`, a full delta the snapshot then duplicates.
+	//
+	// PLAIN, not `$state`: it is read from `reconcile`, which callers run
+	// inside effects, and nothing renders from it.
+	bootstrapBeforeFirstRead = false;
+
 	// `pendingResync` is true when the warm-cache path hydrated rows
 	// from IDB but the follow-up /items-changes reconcile didn't
 	// complete (transient network blip). The cache is usable —
@@ -256,8 +268,9 @@ const workspaces = new SvelteMap<string, WorkspaceState>();
  *
  * A PLAIN Set, deliberately not a `SvelteSet`, and that is the fix rather than
  * an implementation detail. The storm was a feedback loop: `bootstrap`'s
- * synchronous prefix READS reactive state and WRITES it, and it runs inside the
- * calling `$effect`'s tracking scope, so every write re-fired the effect, which
+ * synchronous prefix READS reactive state and WRITES it, and it ran inside the
+ * calling `$effect`'s tracking scope (ItemDetail's, until BUG-3192), so every
+ * write re-fired the effect, which
  * called `bootstrap`, which wrote again — measured at one request per tick,
  * unbounded. A reactive terminal flag would keep that loop running at full
  * speed with the network removed: the same spin, now invisible. This Set is
@@ -372,6 +385,44 @@ function markWorkspaceDropped(ws: string): void {
 
 const inflight = new Map<string, Promise<void>>();
 const projectionResyncs = new Map<string, Promise<void>>();
+// The public `reconcile` door's single flight (BUG-3192): the pass whose reads
+// are in flight, and the ONE pass queued behind it (or behind a bootstrap)
+// that every ask arriving meanwhile shares. See `localIndex.reconcile`.
+const runningReconciles = new Map<string, Promise<boolean>>();
+const queuedReconciles = new Map<string, Promise<boolean>>();
+// How long a queued pass waits for the read ahead of it before reading anyway.
+// Not a latency budget: a slow read that is still going to answer is worth
+// waiting for, since reading alongside it is the duplicate this queue removes.
+// Its only job is to bound a request that never settles.
+export const RECONCILE_QUEUE_MAX_WAIT_MS = 15_000;
+
+/** Resolves when `p` settles or `ms` elapses, whichever is first; never rejects. */
+function settledOrTimeout(p: Promise<unknown>, ms: number): Promise<void> {
+	return new Promise((resolve) => {
+		const timer = setTimeout(resolve, ms);
+		const done = () => {
+			clearTimeout(timer);
+			resolve();
+		};
+		p.then(done, done);
+	});
+}
+
+/**
+ * A bootstrap that has not issued a read yet answers the ask on its own (see
+ * `bootstrapBeforeFirstRead`), so no pass follows it unless it left work
+ * owing. Its failure is rethrown as-is: the bootstrap already ran the
+ * auth-drop reaction, and running it again would run it twice.
+ */
+async function joinUnreadBootstrap(ws: string, state: WorkspaceState, bootstrapping: Promise<void>): Promise<boolean> {
+	const generation = state.generation;
+	await bootstrapping;
+	if (state.generation !== generation) return false;
+	if (state.bootstrapState === 'ready' && !state.pendingResync) return true;
+	// Owed work (a pinned snapshot's replay it could not finish, a warm drain
+	// that blipped) goes through the door like any other ask.
+	return localIndex.reconcile(ws);
+}
 
 function ensureState(ws: string): WorkspaceState {
 	let state = workspaces.get(ws);
@@ -814,6 +865,66 @@ async function reconcileWorkspace(
 	return false;
 }
 
+/**
+ * One reconcile pass for the public `reconcile` door, registered as the
+ * workspace's running pass while its reads are in flight (BUG-3192).
+ */
+function runReconcilePass(ws: string): Promise<boolean> {
+	const pass = reconcilePassBody(ws);
+	runningReconciles.set(ws, pass);
+	const clear = () => {
+		if (runningReconciles.get(ws) === pass) runningReconciles.delete(ws);
+	};
+	pass.then(clear, clear);
+	return pass;
+}
+
+async function reconcilePassBody(ws: string): Promise<boolean> {
+	const state = workspaces.get(ws);
+	if (!state) return true;
+	// GENERATION FENCE, the same one `bootstrap` has carried since Codex P1
+	// round 3 of TASK-1357 (codex round 4 P1 of this unit).
+	//
+	// Without it, a `reset()` landing while `/items-changes` is in flight —
+	// a sign-out, a user switch, a 403 purge — leaves this loop reading the
+	// DETACHED state's cursor and handing the response to `applyDelta`,
+	// which calls `ensureState(ws)` and writes it into the REPLACEMENT
+	// state. Old-user rows in the new user's cache, and persisted.
+	//
+	// The reconcile token does not cover this. It answers "did a resync
+	// overtake my request", and its answer sends the loop round AGAIN rather
+	// than aborting — so a token bump on the drop makes the loop re-poll
+	// against a state that is no longer the workspace's.
+	//
+	// This gap is older than this unit — the collection route's `deltaSync`
+	// never had a generation check either — but it stops being an obscure
+	// one now that the layout drives this for every route.
+	//
+	// GENERATION ALONE, not generation-plus-identity. `reset()` bumps
+	// `prior.generation` BEFORE deleting the entry, precisely so an in-flight
+	// holder of the old object can tell — so a `workspaces.get(ws) !== state`
+	// check is implied by the generation check rather than independent of it.
+	// A mutation run confirmed it: each half survived removal alone and only
+	// the pair died, which is the signature of a redundant guard rather than
+	// defence in depth. If `reset` ever stops bumping first, this is the line
+	// that breaks.
+	const generation = state.generation;
+	const isStale = () => state.generation !== generation;
+	try {
+		return await reconcileWorkspace(ws, state, isStale);
+	} catch (err) {
+		// 401 / 403 means the cached rows are no longer this caller's to
+		// display, and the reaction is the STORE's (TASK-2921) — the same
+		// `dropCacheForAuthError` bootstrap uses. It has to be here rather
+		// than at the caller, because the caller is no longer the collection
+		// route: the layout drives this now, for every route, and a purge
+		// that only one page performed would have quietly stopped happening.
+		// Rethrown either way so the caller's redirect handler still sees it.
+		if (isAuthError(err)) dropCacheForAuthError(ws, state);
+		throw err;
+	}
+}
+
 async function resyncProjectionScope(
 	ws: string,
 	state: WorkspaceState,
@@ -1084,9 +1195,11 @@ export const localIndex = {
 		// TERMINAL REFUSAL, CHECKED FIRST AND WRITING NOTHING (BUG-2983).
 		//
 		// Position is the fix. Everything below this line reads reactive state
-		// and then writes it, and `bootstrap` runs inside the calling `$effect`'s
-		// tracking scope (it is called before `loadData`'s first `await`), so
-		// each write re-fires the effect, which calls `bootstrap` again. On a
+		// and then writes it, so a caller running `bootstrap` inside an
+		// `$effect`'s tracking scope is re-fired by each write, and calls
+		// `bootstrap` again. (ItemDetail's route effect did exactly that until
+		// BUG-3192 untracked its `loadData` call, which cost a cold item page
+		// two extra loads; any other tracked caller still would.) On a
 		// SUCCESSFUL load that converges — the next pass hits the `'ready'`
 		// early return before any fetch — but a failure lands on `'error'`, which
 		// is not an early-return state, so every pass refetched. Measured at one
@@ -1154,6 +1267,9 @@ export const localIndex = {
 		// because a bare `const p = ...` puts `p` in the TDZ when the
 		// suspended async body resumes and references it.
 		const slot: { p: Promise<void> | null } = { p: null };
+		// A reentry reads the network at once (no hydrate), so it opens no join
+		// window; see `bootstrapBeforeFirstRead`.
+		state.bootstrapBeforeFirstRead = !reentry;
 		slot.p = (async () => {
 			try {
 				// Stage 1: warm path. Always try IDB first. Skip
@@ -1172,6 +1288,10 @@ export const localIndex = {
 							retags: {},
 						}
 					: await persistHydrate(userId, ws);
+				// Every path below reads the network, so the join window closes
+				// here, before the staleness bail (a stale state is unreachable
+				// from `workspaces` anyway).
+				state.bootstrapBeforeFirstRead = false;
 				if (isStale()) return;
 				// The durable cache has now answered, whatever it said. From
 				// here an empty RAM state is evidence about the cache and not
@@ -1442,6 +1562,9 @@ export const localIndex = {
 				// remove the new entry and let a duplicate bootstrap
 				// start (Codex P2 round 7).
 				if (slot.p && inflight.get(ws) === slot.p) inflight.delete(ws);
+				// A hydrate that THREW never reached the line that closes the
+				// join window; a joiner is already awaiting this promise.
+				state.bootstrapBeforeFirstRead = false;
 			}
 		})();
 		inflight.set(ws, slot.p);
@@ -1821,7 +1944,9 @@ export const localIndex = {
 	 * the same unit, which is the whole hazard this sweep exists for.
 	 *
 	 * No-op returning true for an unhydrated workspace — there is nothing to
-	 * reconcile and no ask outstanding, so reporting catch-up is honest.
+	 * reconcile and no ask outstanding, so reporting catch-up is honest. A
+	 * workspace whose first bootstrap is still hydrating from IDB is joined
+	 * rather than fetched for (BUG-3192; see `bootstrapBeforeFirstRead`).
 	 */
 	/**
 	 * Was this workspace's cache dropped because ACCESS WAS REVOKED, as opposed
@@ -1836,51 +1961,47 @@ export const localIndex = {
 		return accessRevoked.has(ws);
 	},
 
-	async reconcile(ws: string): Promise<boolean> {
+	/**
+	 * ONE ASK, ONE READ ISSUED AFTER IT (BUG-3192). An ask to reconcile is
+	 * answered by any read of the server that is issued AFTER the ask, and by
+	 * nothing issued before it (that read may predate whatever prompted the
+	 * ask). So:
+	 *   - a bootstrap still hydrating from IDB has not read yet: join it;
+	 *   - a pass already QUEUED has not read yet either: join it;
+	 *   - a bootstrap or pass whose read IS in flight cannot answer: queue ONE
+	 *     pass behind it, which every ask arriving in the meantime shares.
+	 * Measured on a cold item page, the layout's first sync result and an SSE
+	 * event each started their own pass while the `/items-index` snapshot was
+	 * in flight, one of them at `since=0`: a full delta duplicating the
+	 * snapshot, plus a second small one. Now it is one pass, from the
+	 * snapshot's cursor.
+	 */
+	reconcile(ws: string): Promise<boolean> {
 		const state = workspaces.get(ws);
-		if (!state) return true;
-		// GENERATION FENCE, the same one `bootstrap` has carried since Codex P1
-		// round 3 of TASK-1357 (codex round 4 P1 of this unit).
-		//
-		// Without it, a `reset()` landing while `/items-changes` is in flight —
-		// a sign-out, a user switch, a 403 purge — leaves this loop reading the
-		// DETACHED state's cursor and handing the response to `applyDelta`,
-		// which calls `ensureState(ws)` and writes it into the REPLACEMENT
-		// state. Old-user rows in the new user's cache, and persisted.
-		//
-		// The reconcile token does not cover this. It answers "did a resync
-		// overtake my request", and its answer sends the loop round AGAIN rather
-		// than aborting — so a token bump on the drop makes the loop re-poll
-		// against a state that is no longer the workspace's.
-		//
-		// This gap is older than this unit — the collection route's `deltaSync`
-		// never had a generation check either — but it stops being an obscure
-		// one now that the layout drives this for every route.
-		//
-		// GENERATION ALONE, not generation-plus-identity. `reset()` bumps
-		// `prior.generation` BEFORE deleting the entry, precisely so an in-flight
-		// holder of the old object can tell — so a `workspaces.get(ws) !== state`
-		// check is implied by the generation check rather than independent of it.
-		// A mutation run confirmed it: each half survived removal alone and only
-		// the pair died, which is the signature of a redundant guard rather than
-		// defence in depth. If `reset` ever stops bumping first, this is the line
-		// that breaks.
-		const generation = state.generation;
-		const isStale = () => state.generation !== generation;
-		try {
-			return await reconcileWorkspace(ws, state, isStale);
-		} catch (err) {
-			// 401 / 403 means the cached rows are no longer this caller's to
-			// display, and the reaction is the STORE's (TASK-2921) — the same
-			// `dropCacheForAuthError` bootstrap uses. It has to be here rather
-			// than at the caller, because the caller is no longer the collection
-			// route: the layout drives this now, for every route, and a purge
-			// that only one page performed would have quietly stopped happening.
-			// Rethrown either way so the caller's redirect handler still sees it.
-			if (isAuthError(err)) dropCacheForAuthError(ws, state);
-			throw err;
+		if (!state) return Promise.resolve(true);
+		const queued = queuedReconciles.get(ws);
+		if (queued) return queued;
+		const bootstrapping = inflight.get(ws);
+		if (bootstrapping && state.bootstrapBeforeFirstRead) {
+			return joinUnreadBootstrap(ws, state, bootstrapping);
 		}
+		const ahead = runningReconciles.get(ws) ?? bootstrapping;
+		if (!ahead) return runReconcilePass(ws);
+		// Settled either way before the pass starts: the pass is this ask's own
+		// read, and it is owed whatever the read ahead of it did. BOUNDED: a
+		// request that never settles (a stalled connection) used to strand only
+		// its own caller, and must not now strand every later ask behind it.
+		const next = settledOrTimeout(ahead, RECONCILE_QUEUE_MAX_WAIT_MS)
+			.then(() => {
+				// Off the queue BEFORE the pass issues its read, so an ask arriving
+				// after that queues a fresh pass rather than joining this one.
+				if (queuedReconciles.get(ws) === next) queuedReconciles.delete(ws);
+				return runReconcilePass(ws);
+			});
+		queuedReconciles.set(ws, next);
+		return next;
 	},
+
 
 	/**
 	 * Classify an SSE event against the workspace cursor (TASK-1358).
@@ -2335,6 +2456,11 @@ export const localIndex = {
 		workspaces.delete(ws);
 		inflight.delete(ws);
 		projectionResyncs.delete(ws);
+		// A pass reading for the dropped state answers nothing about the next
+		// one, so later asks must not queue behind it (BUG-3192). A pass already
+		// queued still runs and reads the replacement state, which is harmless.
+		runningReconciles.delete(ws);
+		queuedReconciles.delete(ws);
 
 		// Drop the MiniSearch index for the workspace too. A fresh
 		// bootstrap will rebuild it from the new owner's snapshot —
