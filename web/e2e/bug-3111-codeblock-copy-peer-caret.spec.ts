@@ -1,5 +1,5 @@
 import { test, expect, quietCrossActorToasts } from './fixtures';
-import { browserLogin, EDITOR_SELECTOR, SYNCED_BADGE_SELECTOR } from './lib/collab-helpers';
+import { browserLogin, EDITOR_SELECTOR, SYNCED_BADGE_SELECTOR, expectEditorMounted } from './lib/collab-helpers';
 
 /**
  * BUG-3111: a code block's Copy button copied a remote peer's display name.
@@ -53,7 +53,7 @@ test('copying a code block excludes a remote peer caret label', async ({
 	await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
 	await browserLogin(page);
 	await page.goto(path);
-	await expect(page.locator(EDITOR_SELECTOR)).toBeVisible();
+	await expectEditorMounted(page);
 	await expect(page.locator(SYNCED_BADGE_SELECTOR)).toBeVisible();
 
 	// Page B — the peer, in its own context so it is a separate awareness

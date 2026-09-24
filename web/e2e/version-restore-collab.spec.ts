@@ -1,6 +1,6 @@
 import { test, expect } from './fixtures';
 import type { Request as PWRequest } from '@playwright/test';
-import { browserLogin, EDITOR_SELECTOR, SYNCED_BADGE_SELECTOR } from './lib/collab-helpers';
+import { browserLogin, SYNCED_BADGE_SELECTOR, expectEditorMounted } from './lib/collab-helpers';
 
 /**
  * Version-restore under live collab (BUG-2264).
@@ -81,8 +81,7 @@ test('restoring a version under live collab is not clobbered by the next flush (
 	await browserLogin(page);
 	await page.goto(`/${fixture.adminUsername}/${ws}/docs/${slug}`);
 
-	const editor = page.locator(EDITOR_SELECTOR);
-	await expect(editor).toBeVisible();
+	const editor = await expectEditorMounted(page);
 	// Y.Doc hydrated from items.content (the seeded v1).
 	await expect(editor).toContainText(alpha);
 	// Schema-version handshake complete — typing before this races the binding.
@@ -241,8 +240,7 @@ test('an unflushed live edit is captured in the restore undo-point via the UI (B
 	await browserLogin(page);
 	await page.goto(`/${fixture.adminUsername}/${ws}/docs/${slug}`);
 
-	let editor = page.locator(EDITOR_SELECTOR);
-	await expect(editor).toBeVisible();
+	let editor = await expectEditorMounted(page);
 	await expect(editor).toContainText(alpha);
 	await expect(page.locator(SYNCED_BADGE_SELECTOR)).toBeVisible();
 
@@ -266,8 +264,7 @@ test('an unflushed live edit is captured in the restore undo-point via the UI (B
 	// do NOT auto-refresh the timeline (ItemTimeline only refreshes on
 	// comment/reaction events); a natural reload surfaces the new version entry.
 	await page.reload();
-	editor = page.locator(EDITOR_SELECTOR);
-	await expect(editor).toBeVisible();
+	editor = await expectEditorMounted(page);
 	await expect(editor).toContainText(beta);
 	await expect(page.locator(SYNCED_BADGE_SELECTOR)).toBeVisible();
 
