@@ -58,9 +58,17 @@
 		expandedIds = next;
 	}
 
-	// Each child by its own collection's done field, terminal and abandoned
-	// values; an abandoned child leaves both numbers (BUG-3195).
-	let counts = $derived(countChildProgress(children, collectionStore.collections ?? []));
+	// The COUNTS judge each child by its own collection's done field, terminal
+	// and abandoned values; an abandoned child leaves both numbers (BUG-3195).
+	// A store stamped for another workspace is not consulted (the child then
+	// falls back to the default lists, as the server does with no context).
+	// Per-row done styling below still uses the inherited terminal list.
+	let counts = $derived(
+		countChildProgress(
+			children,
+			collectionsNotStaleFor(collectionStore.collectionsWorkspace, wsSlug) ? (collectionStore.collections ?? []) : []
+		)
+	);
 
 	// In-pane drill interception for a `.nested-link` anchor (TASK-2159 /
 	// PLAN-2154 Architecture B.2) — same predicate/contract as

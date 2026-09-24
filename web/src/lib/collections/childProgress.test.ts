@@ -88,3 +88,20 @@ describe('getAbandonedOptions (BUG-3195)', () => {
 		expect(DEFAULT_ABANDONED_STATUSES).toEqual(['cancelled', 'rejected', 'wontfix', 'disabled']);
 	});
 });
+
+describe('resolvers fall back instead of throwing on odd stored JSON (codex round 2)', () => {
+	it('a schema whose fields is null resolves with the defaults', () => {
+		const odd = { slug: 'odd', schema: '{"fields":null}', settings: '{}' } as unknown as Collection;
+		expect(childState(child('a', 'odd', { status: 'done' }), odd)).toBe('done');
+		expect(childState(child('b', 'odd', { status: 'cancelled' }), odd)).toBe('out');
+	});
+
+	it('a non-string board_group_by resolves the done field to status', () => {
+		const odd = {
+			slug: 'odd',
+			schema: JSON.stringify({ fields: [{ key: 'status', type: 'select', terminal_options: ['done'] }] }),
+			settings: '{"board_group_by":7}'
+		} as unknown as Collection;
+		expect(childState(child('a', 'odd', { status: 'done' }), odd)).toBe('done');
+	});
+});

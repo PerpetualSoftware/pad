@@ -73,6 +73,26 @@ async function render(statuses: string[], abandonedOptions: string[]) {
 }
 
 describe('NestedChildren progress (BUG-3195)', () => {
+	it('ignores a collection store stamped for another workspace', async () => {
+		collectionsState.collectionsWorkspace = 'other-ws';
+		try {
+			// The stale store declares `done` abandoned, which would give 1/1
+			// (both done out, cancelled delivered). Ignored, the default lists
+			// apply: cancelled leaves, both done count, 2/2.
+			expect(await render(['done', 'done', 'cancelled'], ['done'])).toBe('2/2');
+		} finally {
+			collectionsState.collectionsWorkspace = 'ws';
+		}
+	});
+
+	it('control for the staleness case: the fresh store gives the declared answer', async () => {
+		try {
+			expect(await render(['done', 'done', 'cancelled'], ['done'])).toBe('1/1');
+		} finally {
+			collectionsState.collectionsWorkspace = 'ws';
+		}
+	});
+
 	it('leaves an abandoned child out of both numbers', async () => {
 		expect(await render(['done', 'cancelled', 'open'], ['cancelled'])).toBe('1/2');
 	});

@@ -2495,12 +2495,21 @@ const NEGATIVE_TERMINALS = [
 	'duplicate', 'declined', 'abandoned', 'disabled'
 ];
 
+/** Schema fields as an array whatever the stored JSON holds. Valid JSON such
+ * as `{"fields":null}` must fall back the way Go's typed unmarshal does, not
+ * throw inside a render. */
+function schemaFields(collection: Collection): FieldDef[] {
+	const fields = parseSchema(collection).fields;
+	return Array.isArray(fields) ? fields : [];
+}
+
 /** The collection's done field: board_group_by when it names a `select`
  * field with a safe key, otherwise `status`. Mirrors models.DoneFieldKey. */
 export function doneFieldKey(collection: Collection): string {
-	const candidate = (parseSettings(collection).board_group_by ?? '').trim();
+	const raw = parseSettings(collection).board_group_by;
+	const candidate = typeof raw === 'string' ? raw.trim() : '';
 	if (!candidate || !/^[a-zA-Z][a-zA-Z0-9_]*$/.test(candidate)) return 'status';
-	const f = parseSchema(collection).fields.find((x) => x.key === candidate && x.type === 'select');
+	const f = schemaFields(collection).find((x) => x.key === candidate && x.type === 'select');
 	return f ? candidate : 'status';
 }
 
@@ -2508,8 +2517,8 @@ export function doneFieldKey(collection: Collection): string {
  * Mirrors models.TerminalValuesForDoneField. */
 export function doneFieldTerminalOptions(collection: Collection): string[] {
 	const key = doneFieldKey(collection);
-	const f = parseSchema(collection).fields.find((x) => x.key === key && x.type === 'select');
-	return f?.terminal_options?.length ? [...f.terminal_options] : [...DEFAULT_TERMINAL_STATUSES];
+	const f = schemaFields(collection).find((x) => x.key === key && x.type === 'select');
+	return Array.isArray(f?.terminal_options) && f.terminal_options.length ? [...f.terminal_options] : [...DEFAULT_TERMINAL_STATUSES];
 }
 
 /** The collection's ABANDONED values: terminal values of its done field that
@@ -2520,9 +2529,11 @@ export function doneFieldTerminalOptions(collection: Collection): string[] {
  * (BUG-3195). */
 export function getAbandonedOptions(collection: Collection): string[] {
 	const key = doneFieldKey(collection);
-	const f = parseSchema(collection).fields.find((x) => x.key === key);
+	const f = schemaFields(collection).find((x) => x.key === key);
 	const terminal = doneFieldTerminalOptions(collection);
-	const declared = (f?.abandoned_options ?? []).map((v) => v.trim().toLowerCase());
+	const declared = (Array.isArray(f?.abandoned_options) ? f.abandoned_options : [])
+		.filter((v): v is string => typeof v === 'string')
+		.map((v) => v.trim().toLowerCase());
 	if (declared.length) return terminal.filter((v) => declared.includes(v.trim().toLowerCase()));
 	return terminal.filter((v) => NEGATIVE_TERMINALS.includes(v.trim().toLowerCase()));
 }
