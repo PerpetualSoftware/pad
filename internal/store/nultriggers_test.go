@@ -97,6 +97,22 @@ func TestNULTriggersRefuseAnUnguardedWriter(t *testing.T) {
 		}
 	})
 
+	// A column added AFTER 084 (BUG-3108). Its trigger comes from a later
+	// file, so this is the case 084 alone could not cover. The control write
+	// comes first for the same reason as the fixture control above.
+	t.Run("a post-084 column refuses a raw NUL", func(t *testing.T) {
+		if _, err := raw.Exec(`UPDATE items SET lease_holder = ? WHERE id = ?`, "clean holder", item.ID); err != nil {
+			t.Fatalf("the unguarded writer must be able to write a clean lease_holder: %v", err)
+		}
+		_, err := raw.Exec(`UPDATE items SET lease_holder = ? WHERE id = ?`, "agent"+textguard.NUL+"holder", item.ID)
+		if err == nil {
+			t.Fatal("an unguarded writer stored a NUL in items.lease_holder")
+		}
+		if !strings.Contains(err.Error(), nulTriggerMarker) {
+			t.Errorf("refused, but not by our trigger: %v", err)
+		}
+	})
+
 	// The doubled-backslash control, which is the false-positive the whole
 	// predicate family has to avoid. Measured literal on modernc in TASK-2824.
 	t.Run("a doubled backslash is NOT refused", func(t *testing.T) {
@@ -148,32 +164,39 @@ func TestNULTriggersRefuseAnUnguardedWriter(t *testing.T) {
 // regenerating would erase the evidence.
 func TestNULTriggersMatchTheList(t *testing.T) {
 	t.Parallel()
-	committed, err := os.ReadFile("migrations/" + nulTriggerMigration)
-	if err != nil {
-		t.Fatalf("read migration: %v", err)
-	}
-	rendered := renderNULTriggerMigration()
-	if string(committed) == rendered {
-		return
-	}
+	for _, f := range nulTriggerMigrations {
+		committed, err := os.ReadFile("migrations/" + f)
+		if err != nil {
+			t.Fatalf("read migration %s: %v", f, err)
+		}
+		rendered := renderNULTriggerMigration(f)
+		if string(committed) == rendered {
+			continue
+		}
 
-	// A diff a human can act on, rather than 2000 lines of "not equal".
-	cl := strings.Split(string(committed), "\n")
-	rl := strings.Split(rendered, "\n")
-	for i := 0; i < len(cl) || i < len(rl); i++ {
-		var c, r string
-		if i < len(cl) {
-			c = cl[i]
+		// A diff a human can act on, rather than 2000 lines of "not equal".
+		cl := strings.Split(string(committed), "\n")
+		rl := strings.Split(rendered, "\n")
+		found := false
+		for i := 0; i < len(cl) || i < len(rl); i++ {
+			var c, r string
+			if i < len(cl) {
+				c = cl[i]
+			}
+			if i < len(rl) {
+				r = rl[i]
+			}
+			if c != r {
+				t.Errorf("%s and the list disagree, first at line %d:\n  committed: %q\n  rendered:  %q\n"+
+					"(committed has %d lines, the list renders %d)", f, i+1, c, r, len(cl), len(rl))
+				found = true
+				break
+			}
 		}
-		if i < len(rl) {
-			r = rl[i]
-		}
-		if c != r {
-			t.Fatalf("the committed migration and the list disagree, first at line %d:\n  committed: %q\n  rendered:  %q\n"+
-				"(committed has %d lines, the list renders %d)", i+1, c, r, len(cl), len(rl))
+		if !found {
+			t.Errorf("%s and the list differ but no differing line was found — the comparison is broken", f)
 		}
 	}
-	t.Fatalf("migration and list differ but no differing line was found — the comparison is broken")
 }
 
 // TestTriggerRefusalIsIndistinguishableFromLayerA discharges Ruling 2's

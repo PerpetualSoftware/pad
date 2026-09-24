@@ -96,7 +96,6 @@ item_decisions.evaluated_at
 item_decisions.id
 item_decisions.item_id
 item_decisions.kind
-item_decisions.model
 item_decisions.provider
 item_decisions.question_hash
 item_decisions.question_key
@@ -115,7 +114,6 @@ item_links.source_id
 item_links.target_id
 item_links.user_id
 item_links.workspace_id
-item_relation_links.source_field_key
 item_relation_links.source_item_id
 item_relation_links.target_item_id
 item_relation_links.workspace_id
@@ -159,7 +157,6 @@ items.id
 items.last_modified_by_user_id
 items.lease_acquired_at
 items.lease_expires_at
-items.lease_holder
 items.parent_id
 items.updated_at
 items.workspace_id
