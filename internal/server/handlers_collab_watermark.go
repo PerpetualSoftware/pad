@@ -10,7 +10,8 @@ import (
 
 // handleStampCollabWatermark is POST /workspaces/{ws}/items/{itemSlug}/collab-watermark
 // (BUG-3124 unit B): a caught-up browser tab whose document still renders to
-// the stored body tells the server so, and the server advances the flush
+// the stored body (or to the editor's own serialization of it, BUG-3197) tells
+// the server so, and the server advances the flush
 // watermark without writing content. See store.StampContentWatermarkIfCaughtUp
 // for the proof and for why this is not a PATCH.
 //

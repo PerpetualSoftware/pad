@@ -52,6 +52,10 @@ export interface CollabFlushContext {
 	/** Editor-markdown-space projection of the Y.Doc seed for the editor-space
 	 *  short-circuit (BUG-1941). Null when no seed was captured this session. */
 	seedMd: string | null;
+	/** The editor's own serialization of `seedMd`, normalized (BUG-3197).
+	 *  Computed on the first flush that needs it and memoized here; undefined
+	 *  until then. Whoever replaces `seedMd` must reset this to undefined. */
+	seedCanonical?: string;
 }
 
 // CollabFlushResult discriminates the four outcomes a flush can produce:
@@ -106,6 +110,12 @@ export interface CollabFlusherConfig {
 	 *  a deduped view used to leave op-log rows above the watermark forever.
 	 *  Optional; fire-and-forget. */
 	stampWatermark?: (input: { ws: string; itemId: string; content: string; keepalive: boolean }) => void;
+	/** Parse `markdown` into a document with the live editor's schema and
+	 *  serialize it back, without touching the editor's own document: what the
+	 *  editor would emit for that markdown untouched (BUG-3197). Returns null
+	 *  when the editor is unavailable or either step throws, and the flush then
+	 *  compares against the seed alone, as it did before. Optional. */
+	canonicalize?: (markdown: string) => string | null;
 }
 
 export interface CollabFlusher {
@@ -129,6 +139,12 @@ export interface CollabFlusher {
 	 *  that change nothing, or this tab's own trailing sync frames), so the tab
 	 *  still gets a chance to flush or, if nothing changed, stamp (BUG-3124). */
 	settle(ctx: CollabFlushContext | null): void;
+	/** Compute and memoize the editor's canonical form of `ctx.seedMd` now
+	 *  (BUG-3197). The page calls it while the editor is alive, so the teardown
+	 *  flush, which runs after the editor is destroyed, does not have to
+	 *  canonicalize against a destroyed editor. No-op when already memoized,
+	 *  when there is no seed, or when canonicalization is unavailable. */
+	prime(ctx: CollabFlushContext): void;
 	/** Cancel the pending debounce without flushing. Leaves dedupe state intact. */
 	cancel(): void;
 	/** Reset the per-item dedupe baseline (`lastFlushedContent`). Call on item
@@ -158,6 +174,14 @@ export function createCollabFlusher(config: CollabFlusherConfig): CollabFlusher 
 	// promise turn `await config.save()` introduces over the page's original
 	// inline await. Per Codex review (TASK-2082).
 	let resetGeneration = 0;
+
+	// Memoize the editor's canonical form of the seed on the context (BUG-3197).
+	// A failed canonicalization is not memoized, so a later call retries.
+	function prime(ctx: CollabFlushContext): void {
+		if (ctx.seedMd === null || ctx.seedCanonical !== undefined || !config.canonicalize) return;
+		const canonical = config.canonicalize(ctx.seedMd);
+		if (canonical !== null) ctx.seedCanonical = config.normalize(canonical);
+	}
 
 	function cancel(): void {
 		if (timer !== undefined) {
@@ -200,7 +224,11 @@ export function createCollabFlusher(config: CollabFlusherConfig): CollabFlusher 
 		// scopes this to the baseline arm only (lastFlushedContent === null); see
 		// its own doc comment for the revert-safety rationale the storage-space
 		// compare below still owns.
-		if (shouldDedupeEditorSpace(lastFlushedContent, ctx.seedMd, normalizedMarkdown)) {
+		// The canonical arm (BUG-3197). Usually already primed while the editor
+		// was alive (see prime); computed here otherwise, only when the exact
+		// compare misses.
+		if (lastFlushedContent === null && normalizedMarkdown !== ctx.seedMd) prime(ctx);
+		if (shouldDedupeEditorSpace(lastFlushedContent, ctx.seedMd, normalizedMarkdown, ctx.seedCanonical ?? null)) {
 			// This arm fires only before the session's first flush, so the
 			// server holds the baseline.
 			config.stampWatermark?.({ ws: ctx.wsSlug, itemId: ctx.itemId, content: ctx.baseline, keepalive });
@@ -281,6 +309,7 @@ export function createCollabFlusher(config: CollabFlusherConfig): CollabFlusher 
 	return {
 		schedule,
 		flush,
+		prime,
 		flushNow,
 		settle,
 		cancel,

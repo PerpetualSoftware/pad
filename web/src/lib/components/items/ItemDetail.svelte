@@ -47,6 +47,7 @@
 	import RelationBacklinksPanel from '$lib/components/RelationBacklinksPanel.svelte';
 	import { goto } from '$app/navigation';
 	import { relativeTime, wikiLinksToMarkdown, markdownToWikiLinks, cleanBrokenLinks, unescapeDocLinks } from '$lib/utils/markdown';
+	import { canonicalEditorMarkdown } from '$lib/collab/canonicalMarkdown';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { titleEditError } from '$lib/items/titleLimit';
 	import { editorStore } from '$lib/stores/editor.svelte';
@@ -2614,6 +2615,7 @@
 			itemId: string;
 			baseline: string;
 			seedMd: string | null;
+			seedCanonical?: string;
 			identityEpoch: number;
 			retired: boolean;
 		} = {
@@ -2638,6 +2640,7 @@
 			retired: false,
 		};
 		activeCollabContext = ctx;
+		primeCanonicalSeed();
 
 		const doc = new Y.Doc();
 		const provider = new CollabProvider(itemId, doc, {
@@ -3132,7 +3135,11 @@
 			// peer (which never reaches this point, and so keeps its
 			// eager value) or a superseded item-load can't stamp a seed
 			// nobody actually wrote. Per BUG-1941.
-			if (ctx && activeCollabContext === ctx) ctx.seedMd = unescapeDocLinks(seedMd);
+			if (ctx && activeCollabContext === ctx) {
+				ctx.seedMd = unescapeDocLinks(seedMd);
+				ctx.seedCanonical = undefined;
+				collabFlusher.prime(ctx);
+			}
 		});
 	});
 
@@ -4233,6 +4240,18 @@
 		}
 	}
 
+	// Memoize the active context's canonical seed while the editor is alive
+	// (BUG-3197): the teardown flush runs after the child editor is destroyed.
+	// Called from the editor-mount callback and at context creation, whichever
+	// comes second finds both present. Untracked, because both callers must
+	// not depend on editorInstance: the collab effect owns the provider, and a
+	// tracked read there would rebuild it when the editor mounts.
+	function primeCanonicalSeed(): void {
+		untrack(() => {
+			if (activeCollabContext && editorInstance) collabFlusher.prime(activeCollabContext);
+		});
+	}
+
 	const collabFlusher = createCollabFlusher({
 		idleMs: 5_000,
 		// Force-refresh recovery gate: while in flight, any Y.Doc-derived
@@ -4297,6 +4316,16 @@
 		// the body the server holds; stamp the flush watermark (no PATCH, so no
 		// version row and no seq bump). Rules live in watermarkStamper.ts.
 		stampWatermark: (input) => stampCollabWatermark(input),
+		// The editor's own serialization of the seed (BUG-3197), so a view of a
+		// body the editor does not reproduce byte for byte still dedupes.
+		canonicalize: (markdown) => {
+			if (!editorInstance) return null;
+			try {
+				return canonicalEditorMarkdown(editorInstance, markdown);
+			} catch {
+				return null;
+			}
+		},
 		// The actual PATCH + reactive bookkeeping. Owns saveStatus /
 		// editorStore / toast / showSaved, the op-log-cursor read, and the
 		// post-await force_refresh check (returns 'skipped' when it fires so
@@ -6674,7 +6703,7 @@
 								editable={false}
 								itemId={item.id}
 								hostToken={attachmentHostToken}
-								onEditor={(e) => editorInstance = e}
+								onEditor={(e) => { editorInstance = e; primeCanonicalSeed(); }}
 								onImportInserted={handleImportInserted}
 							/>
 						{/key}
@@ -6735,7 +6764,7 @@
 									ydoc={ydoc}
 									awareness={collabProvider?.awareness}
 									collabUser={collabUserState}
-									onEditor={(e) => editorInstance = e}
+									onEditor={(e) => { editorInstance = e; primeCanonicalSeed(); }}
 									onImportInserted={handleImportInserted}
 								/>
 							{/key}
