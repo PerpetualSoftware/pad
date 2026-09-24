@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures';
-import { browserLogin, EDITOR_SELECTOR, SYNCED_BADGE_SELECTOR } from './lib/collab-helpers';
+import { browserLogin, EDITOR_SELECTOR, SYNCED_BADGE_SELECTOR, expectEditorMounted } from './lib/collab-helpers';
 
 /**
  * BUG-3113: an empty mermaid block showed "Rendering..." forever.
@@ -35,7 +35,7 @@ async function openDoc(
 	const { slug } = (await resp.json()) as { slug: string };
 	await browserLogin(page);
 	await page.goto(`/${fixture.adminUsername}/${ws}/docs/${slug}`);
-	await expect(page.locator(EDITOR_SELECTOR)).toBeVisible();
+	await expectEditorMounted(page);
 	await expect(page.locator(SYNCED_BADGE_SELECTOR)).toBeVisible();
 }
 

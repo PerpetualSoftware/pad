@@ -1,4 +1,4 @@
-import type { APIRequestContext, Page } from '@playwright/test';
+import { expect, type APIRequestContext, type Locator, type Page } from '@playwright/test';
 import type { SuiteFixture } from '../fixtures';
 import { ADMIN_EMAIL, ADMIN_PASSWORD } from '../global-setup';
 
@@ -67,3 +67,37 @@ export async function seedDoc(
 export const EDITOR_SELECTOR = '.editor-content .ProseMirror';
 /** The "Synced" collab-state badge — present once the Y.Doc binding is live. */
 export const SYNCED_BADGE_SELECTOR = '.collab-state-synced';
+
+/**
+ * The suite's budget for a collab handshake (socket, sync, reconnect backoff).
+ * One definition: six specs each declared their own `SYNC_TIMEOUT = 20_000`
+ * before BUG-3152 moved it here.
+ */
+export const SYNC_TIMEOUT = 20_000;
+
+/**
+ * How long a spec waits for the collab editor's FIRST mount after a goto or a
+ * reload (BUG-3152). It is SYNC_TIMEOUT, since a first mount includes that
+ * handshake.
+ *
+ * The first mount sits behind a chain of sequential requests (session, the
+ * item, its collection, then the collab socket and its sync), and under box
+ * contention (load 17-23 on 8 cores, full local runs at 4 workers) one request
+ * in that chain stalled 1.4-2.2s, so the default 5s expired with the socket
+ * still connecting (version-restore-collab:209 twice, collab-persistence:41
+ * once, in 8 runs). Measured, not assumed: that stall is NOT a product defect.
+ * The same reads under 40 concurrent writers in isolation stayed under 90ms
+ * (BUG-3152 checkpoint 7).
+ *
+ * MOUNT LATENCY UNDER LOAD IS NOT WHAT THESE SPECS TEST. Use this only for the
+ * first-mount wait. Assertions about content or ordering keep their own
+ * budgets, so this widens nothing a spec is actually checking.
+ */
+export const EDITOR_MOUNT_TIMEOUT = SYNC_TIMEOUT;
+
+/** Wait for the collab editor's first mount; returns its locator. */
+export async function expectEditorMounted(page: Page): Promise<Locator> {
+	const editor = page.locator(EDITOR_SELECTOR);
+	await expect(editor).toBeVisible({ timeout: EDITOR_MOUNT_TIMEOUT });
+	return editor;
+}

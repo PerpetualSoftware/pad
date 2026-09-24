@@ -123,6 +123,17 @@ test('BUG-2602: a held cross-collection load released after a move cannot revert
 	// The switch: same route, new ?item= — no remount.
 	// NOTE: from here until release, the pane shows a loading state, so
 	// the mid-hold oracles below are network-level.
+	// The oracle below is the SSE path's item REFETCH, so the page must be
+	// subscribed before the move commits (BUG-3152). A move landing before the
+	// subscription still reaches the pane, but through the connect catch-up,
+	// which adopts the item from the /changes payload with no item GET, so this
+	// oracle would never fire. The server subscribes before it flushes the
+	// stream's headers (handlers_events.go, SubscribeAndReplaySince), so the
+	// response arriving means subscribed. Armed before the navigation that
+	// opens the stream.
+	const eventsOpen = page.waitForResponse((r) => r.url().includes('/api/v1/events?workspace='), {
+		timeout: 15_000,
+	});
 	await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/tasks?item=${item.slug}`);
 
 	// PRECONDITION: the hold actually caught loadData's realColl fetch —
@@ -130,6 +141,7 @@ test('BUG-2602: a held cross-collection load released after a move cannot revert
 	// means loadData already adopted the item (item precedes collection
 	// in loadData), so the SSE move handling below has an item to match.
 	await expect.poll(() => heldCount, { timeout: 15_000 }).toBeGreaterThan(0);
+	await eventsOpen;
 
 	// The MOVE, while the SRC fetch is held. The pane's live SSE delivers
 	// item_updated and the pane refetches the item by slug — that

@@ -4,6 +4,7 @@ import {
 	seedDoc,
 	EDITOR_SELECTOR,
 	SYNCED_BADGE_SELECTOR,
+	SYNC_TIMEOUT,
 } from './lib/collab-helpers';
 import type { APIRequestContext, Page } from '@playwright/test';
 import type { SuiteFixture } from './fixtures';
@@ -67,7 +68,6 @@ import { backThenDrillAfterSettleArms } from './lib/paneSettle';
 
 const DESKTOP = { width: 1200, height: 900 };
 const FOLLOW_DEBOUNCE_MS = 140; // == PANE_FOLLOW_DEBOUNCE_MS / PANE_MINT_SETTLE_MS
-const SYNC_TIMEOUT = 20_000; // slow collab handshake + reconnect backoff
 
 function docsUrl(fixture: SuiteFixture, query = ''): string {
 	return `/${fixture.adminUsername}/${fixture.workspaceSlug}/docs${query}`;

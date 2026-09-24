@@ -12,9 +12,8 @@
 // bug-3030-teardown-write-count.spec.ts records: a page that navigates away
 // stops reporting its requests while its keepalive request still lands.
 import { test, expect } from './fixtures';
-import { browserLogin, EDITOR_SELECTOR, SYNCED_BADGE_SELECTOR } from './lib/collab-helpers';
+import { browserLogin, EDITOR_SELECTOR, SYNCED_BADGE_SELECTOR, SYNC_TIMEOUT } from './lib/collab-helpers';
 
-const SYNC_TIMEOUT = 20_000;
 const BODY = 'Seed body for BUG-3124 — a paragraph a tab will seed from.';
 
 async function seedWithBody(fixture, request): Promise<string> {

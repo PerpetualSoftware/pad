@@ -1,6 +1,6 @@
 import { test, expect, type SuiteFixture, quietCrossActorToasts } from './fixtures';
 import type { Browser, Page } from '@playwright/test';
-import { browserLogin, seedDoc } from './lib/collab-helpers';
+import { browserLogin, seedDoc, expectEditorMounted } from './lib/collab-helpers';
 
 /**
  * Editor / collab persistence e2e (TASK-2058 under TASK-733).
@@ -63,8 +63,7 @@ test('typed editor content survives a reload via the collab op-log', async ({
 	// Editor mounts and the collab provider reaches "Synced" — this is
 	// the schema-version handshake completing against the server's
 	// DefaultSchemaVersion. Typing before this races the Y.Doc binding.
-	const editor = page.locator('.editor-content .ProseMirror');
-	await expect(editor).toBeVisible();
+	const editor = await expectEditorMounted(page);
 	await expect(page.locator('.collab-state-synced')).toBeVisible();
 
 	// Register the flush wait BEFORE typing so we can't miss the response.
@@ -99,8 +98,7 @@ test('typed editor content survives a reload via the collab op-log', async ({
 	// (+ op-log replay). The typed text must come back or a layer of the
 	// persistence chain is broken.
 	await page.reload();
-	const reloaded = page.locator('.editor-content .ProseMirror');
-	await expect(reloaded).toBeVisible();
+	const reloaded = await expectEditorMounted(page);
 	await expect(reloaded).toContainText(marker);
 });
 
@@ -131,7 +129,7 @@ async function openSyncedEditor(
 	const page = await context.newPage();
 	await browserLogin(page);
 	await page.goto(path);
-	await expect(page.locator('.editor-content .ProseMirror')).toBeVisible();
+	await expectEditorMounted(page);
 	await expect(page.locator('.collab-state-synced')).toBeVisible();
 	return { page, close: () => context.close() };
 }

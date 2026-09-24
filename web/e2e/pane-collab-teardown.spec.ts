@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures';
-import { browserLogin, seedDoc, EDITOR_SELECTOR, SYNCED_BADGE_SELECTOR } from './lib/collab-helpers';
+import { browserLogin, seedDoc, EDITOR_SELECTOR, SYNCED_BADGE_SELECTOR, SYNC_TIMEOUT } from './lib/collab-helpers';
 
 /**
  * Split-pane collab teardown e2e (PLAN-2105 Phase 3 / TASK-2117).
@@ -51,7 +51,6 @@ import { browserLogin, seedDoc, EDITOR_SELECTOR, SYNCED_BADGE_SELECTOR } from '.
 
 const COLLAB_WS_RE = /\/api\/v1\/collab\//;
 const COLLAB_SNAPSHOT_RE = /source=collab-snapshot/;
-const SYNC_TIMEOUT = 20_000;
 // The teardown flush dispatches its PATCH synchronously on close; the 5s
 // idle backup can't dispatch until ~5s after the edit. 3s cleanly
 // separates them (a local keepalive PATCH dispatches in well under 1s).

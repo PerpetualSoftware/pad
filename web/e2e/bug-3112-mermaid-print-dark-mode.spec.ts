@@ -1,6 +1,6 @@
 import { test, expect } from './fixtures';
 import type { Page } from '@playwright/test';
-import { browserLogin, EDITOR_SELECTOR, SYNCED_BADGE_SELECTOR } from './lib/collab-helpers';
+import { browserLogin, EDITOR_SELECTOR, SYNCED_BADGE_SELECTOR, expectEditorMounted } from './lib/collab-helpers';
 
 /**
  * BUG-3112: printing from dark mode put dark-palette mermaid diagrams on white
@@ -46,7 +46,7 @@ async function openDoc(
 	const { slug } = (await resp.json()) as { slug: string };
 	await browserLogin(page);
 	await page.goto(`/${fixture.adminUsername}/${ws}/docs/${slug}`);
-	await expect(page.locator(EDITOR_SELECTOR)).toBeVisible();
+	await expectEditorMounted(page);
 	await expect(page.locator(SYNCED_BADGE_SELECTOR)).toBeVisible();
 	await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
 }
