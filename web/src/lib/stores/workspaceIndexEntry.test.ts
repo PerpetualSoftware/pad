@@ -106,15 +106,21 @@ const ALLOWED: Record<string, { count: number; why: string }> = {
 /**
  * A REFERENCE to the member, not just a call (codex r1): an alias taken first
  * (`const b = localIndex.bootstrap; b(ws)`) is a direct call in all but
- * spelling. Covered: `.` / `?.` access, `['bootstrap']`, and destructuring
- * from `localIndex`. Comments are stripped first — prose naming the method is
+ * spelling. Covered: `.` / `?.` access, `['bootstrap']`, and destructuring,
+ * on `localIndex` or any name a file imports it as. Comments are stripped first — prose naming the method is
  * not a call. BOUNDARY, stated rather than implied: this stops a page
  * hand-rolling the sequence; it does not chase `localIndex` passed through a
  * generic function or a computed key. That would be an adversary, not a
  * convenience copy.
  */
-const DIRECT_REF =
-	/localIndex\s*(?:\?\.|\.)\s*bootstrap\b|localIndex\s*\[\s*['"`]bootstrap['"`]\s*\]|\{[^}]*\bbootstrap\b[^}]*\}\s*=\s*localIndex\b/g;
+/** The spellings, for one name the store is bound to in a file. */
+function directRef(name: string): RegExp {
+	const n = name.replace(/[$]/g, '\\$');
+	return new RegExp(
+		`\\b${n}\\s*(?:\\?\\.|\\.)\\s*bootstrap\\b|\\b${n}\\s*\\[\\s*['"\`]bootstrap['"\`]\\s*\\]|\\{[^}]*\\bbootstrap\\b[^}]*\\}\\s*=\\s*${n}\\b`,
+		'g',
+	);
+}
 
 function stripComments(text: string): string {
 	return text
@@ -124,7 +130,13 @@ function stripComments(text: string): string {
 }
 
 export function countDirectReferences(text: string): number {
-	return (stripComments(text).match(DIRECT_REF) ?? []).length;
+	const code = stripComments(text);
+	// The store under its own name, and under any name a file imports it as.
+	const names = new Set(['localIndex']);
+	for (const m of code.matchAll(/\blocalIndex\s+as\s+([A-Za-z_$][\w$]*)/g)) names.add(m[1]);
+	let n = 0;
+	for (const name of names) n += (code.match(directRef(name)) ?? []).length;
+	return n;
 }
 
 function sourceFiles(dir: string): string[] {
@@ -153,6 +165,7 @@ describe('the reference scanner (BUG-3181)', () => {
 		['bracket access', "localIndex['bootstrap'](ws, o);", 1],
 		['an alias taken first', 'const b = localIndex.bootstrap;\nawait b(ws, o);', 1],
 		['destructuring', 'const { bootstrap } = localIndex;\nawait bootstrap(ws, o);', 1],
+		['a renamed import', "import { localIndex as li } from './localIndex.svelte';\nconst b = li.bootstrap;", 1],
 		['bootstrapStateFor is a different member', "localIndex.bootstrapStateFor(ws) === 'ready'", 0],
 		['a line comment', '// then `localIndex.bootstrap` runs', 0],
 		['a block comment', '/* localIndex.bootstrap(ws) */', 0],
