@@ -355,8 +355,19 @@ type rowsQueryer interface {
 //
 // raced reports that a row appeared between the unlocked read and the lock:
 // nothing was written, and the caller merges into that row through the
-// ordinary compare-and-set path. The merge path takes no lock, so this one
-// cannot invert an order with it; nor does it take a workspace or item lock.
+// ordinary compare-and-set path.
+//
+// LOCK ORDER: the debounce lock is a LEAF. It is taken first in its own
+// transaction, and nothing else is locked while it is held: no advisory lock,
+// no row lock beyond the INSERT's foreign-key check. It is also never taken
+// inside a transaction that already holds one. Every advisory key shares
+// hashtext's int32 space, so a nested inversion would deadlock even between
+// unrelated keys. The single caller, internal/server/handlers_documents.go
+// logActivityWithMetaReturningID, runs outside any transaction; none of the
+// server's *sql.Tx prechecks (which run inside UpdateItem's seq-locked tx)
+// reaches it (BUG-2777 checkpoint 4). A caller that must log from inside
+// such a transaction takes the seq lock first and this one second, and
+// nothing may take them the other way round.
 func (s *Store) insertDebouncedOnMiss(a models.Activity, cutoff, incomingAgent string) (id string, raced bool, err error) {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -365,7 +376,7 @@ func (s *Store) insertDebouncedOnMiss(a models.Activity, cutoff, incomingAgent s
 	defer tx.Rollback()
 
 	if s.dialect.Driver() == DriverPostgres {
-		if _, err := tx.Exec("SELECT pg_advisory_xact_lock(hashtext($1))", "activity-debounce:"+a.DocumentID); err != nil {
+		if _, err := tx.Exec("SELECT pg_advisory_xact_lock(hashtext('pad:activity-debounce:' || $1))", a.DocumentID); err != nil {
 			return "", false, fmt.Errorf("acquire debounce lock: %w", err)
 		}
 	}
