@@ -146,20 +146,27 @@ func TestRedisBusSubscribeAndReplayHasNoWindowUnderConcurrency(t *testing.T) {
 	// fan-out, and the precondition below failed with "0 replayed" (and a
 	// subscriber delayed past the producer's whole run fails the mirror way,
 	// "0 on the channel"). Two barriers make both legs non-empty on every
-	// run:
+	// run that reaches the subscribe:
 	//
 	//   - the subscriber waits until the producer has fanned out its first
 	//     readyAfter ids, so the replay leg holds at least those;
 	//   - the producer parks at holdAt until the subscribe has returned, so
 	//     at least the ids from holdAt on reach the channel.
 	//
-	// Between them the subscribe still races fan-outs readyAfter+1..holdAt-1
-	// whenever it is prompt, which is the concurrency this test is named for.
-	// It is not the split-lock DETECTOR — the test after this one is, by a
-	// forced interleaving; this one asserts exactly-once under a real race.
+	// Between them fan-outs readyAfter+1..holdAt-1 are free to run DURING the
+	// subscribe, which is the concurrency this test is named for — possible
+	// on every run, forced on none. It is not the split-lock DETECTOR: the
+	// test after this one is, by a forced interleaving at that exact
+	// boundary.
 	const readyAfter, holdAt = 50, 500
 	ready := make(chan struct{})
 	subscribed := make(chan struct{})
+	// Released on EVERY exit, not only after a successful subscribe (codex
+	// review): a subscribe that panics or a t.Fatal before the release would
+	// otherwise leave the producer parked at holdAt for good.
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(subscribed) }) }
+	defer release()
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -187,7 +194,7 @@ func TestRedisBusSubscribeAndReplayHasNoWindowUnderConcurrency(t *testing.T) {
 	// Join mid-flight.
 	<-ready
 	ch, missed, _, _ := b.SubscribeAndReplaySince(context.Background(), 0)
-	close(subscribed)
+	release()
 
 	wg.Wait()
 
