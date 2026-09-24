@@ -10,6 +10,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
+import { UNRESOLVED_LABEL } from '$lib/collections/relationGroups';
+import { existenceClaimsIn } from '../../../test/existenceClaim';
 
 const {
 	localIndexMock,
@@ -140,7 +142,7 @@ describe('FieldEditor — relation, three render states', () => {
 		render(FieldEditor, { props: { field, value: 'red', wsSlug: 'ws', readonly: true, onchange: () => {} } });
 		await tick();
 		expect(document.body.textContent).not.toMatch(/\(deleted\)/i);
-		expect(document.body.textContent).not.toMatch(/unresolved/i);
+		expect(document.body.textContent).not.toContain(UNRESOLVED_LABEL);
 		const chip = document.querySelector('.relation-chip.is-text');
 		expect(chip?.textContent).toContain('red');
 		expect(chip?.textContent).toMatch(/text, not a reference/i);
@@ -158,6 +160,20 @@ describe('FieldEditor — relation, three render states', () => {
 		expect(document.querySelector('.relation-chip.is-text')).toBeNull();
 		expect(document.querySelector('.relation-chip.is-unresolved')).not.toBeNull();
 		expectNoBareUuid();
+	});
+
+	it('(d2) the unresolved chip says nothing about whether its target exists (BUG-3013)', async () => {
+		// An id that matches nothing in the index may be a live item in a
+		// collection this member cannot see (the index feed leaves those out), so
+		// neither the chip nor its hover text may assert that it is gone.
+		render(FieldEditor, {
+			props: { field, value: '0197aaaa-0000-7000-8000-999999999999', wsSlug: 'ws', readonly: true, onchange: () => {} },
+		});
+		await tick();
+		const chip = document.querySelector('.relation-chip.is-unresolved');
+		expect(chip, 'precondition: the unresolved chip rendered').not.toBeNull();
+		expect(chip?.textContent).toContain(UNRESOLVED_LABEL);
+		expect(existenceClaimsIn(chip!)).toEqual([]);
 	});
 });
 
@@ -192,7 +208,7 @@ describe('FieldEditor — relation resolves by ID, in the declared collection', 
 		rows.set(foreign.id, foreign);
 		render(FieldEditor, { props: { field, value: foreign.id, wsSlug: 'ws', username: 'dave', readonly: true, onchange: () => {} } });
 		await tick();
-		expect(document.body.textContent).toMatch(/unresolved/i);
+		expect(document.body.textContent).toContain(UNRESOLVED_LABEL);
 		expect(document.body.textContent).not.toContain('A Task');
 	});
 });
@@ -218,7 +234,7 @@ describe('FieldEditor — a renamed target collection must not look like data lo
 		render(FieldEditor, { props: { field, value: retagged.id, wsSlug: 'ws', username: 'dave', readonly: true, onchange: () => {} } });
 		await tick();
 		expect(document.body.textContent).toContain('Red');
-		expect(document.body.textContent).not.toMatch(/unresolved/i);
+		expect(document.body.textContent).not.toContain(UNRESOLVED_LABEL);
 	});
 
 	it('survives the window where the index is retagged but the collection list is not', async () => {
@@ -234,7 +250,7 @@ describe('FieldEditor — a renamed target collection must not look like data lo
 		render(FieldEditor, { props: { field, value: retagged.id, wsSlug: 'ws', username: 'dave', readonly: true, onchange: () => {} } });
 		await tick();
 		expect(document.body.textContent).toContain('Red');
-		expect(document.body.textContent).not.toMatch(/unresolved/i);
+		expect(document.body.textContent).not.toContain(UNRESOLVED_LABEL);
 	});
 
 	it('CONTROL: a genuine cross-collection value is still rejected when both slugs are known', async () => {
@@ -246,7 +262,7 @@ describe('FieldEditor — a renamed target collection must not look like data lo
 		rows.set(foreign.id, foreign);
 		render(FieldEditor, { props: { field, value: foreign.id, wsSlug: 'ws', username: 'dave', readonly: true, onchange: () => {} } });
 		await tick();
-		expect(document.body.textContent).toMatch(/unresolved/i);
+		expect(document.body.textContent).toContain(UNRESOLVED_LABEL);
 		expect(document.body.textContent).not.toContain('A Task');
 	});
 

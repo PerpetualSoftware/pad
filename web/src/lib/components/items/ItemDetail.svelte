@@ -81,6 +81,7 @@
 	import { starredStore } from '$lib/stores/starred.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
+	import { createLinksRetry, type LinksRetryTarget } from '$lib/items/linksRetry';
 
 	type RelationshipEntry = {
 		key: string;
@@ -759,6 +760,14 @@
 	let paneMenuView = $state<'root' | 'move' | 'delete'>('root');
 	let moving = $state(false);
 	let itemLinks = $state<ItemLink[]>([]);
+
+	/**
+	 * The links refresh this pane still owes after a failure (BUG-2992; the
+	 * schedule, and why the sync cursor cannot carry it, are in `linksRetry.ts`).
+	 * The attempt is `retryLinks`, declared beside the helper that records the
+	 * debt.
+	 */
+	const linksRetry = createLinksRetry((target) => retryLinks(target));
 	let workspaceMembers = $state<{ user_id: string; user_name: string; user_email: string; role: string }[]>([]);
 	// Mirrored out of the ONE mounted <ItemTimeline> (IDEA-2843), which now
 	// lives under the content on Details rendering comments. The Activity and
@@ -1564,6 +1573,11 @@
 			// clobber it — the new item's loadData refetches fresh state
 			// (PLAN-2105 / TASK-2112; Codex).
 			if (!itemMatchesRef) return;
+			// A sync result means the tab came back from an absence, which is
+			// when a spent links retry should try again (BUG-2992). Before the
+			// caught_up return on purpose: link changes do not touch the item,
+			// so a gap that held only link changes reports caught_up.
+			linksRetry.kick();
 			// Item writes below are ordered via the dedicated itemGen (round 9),
 			// bumped per-refetch; a switch is caught by the item-id check.
 
@@ -1672,9 +1686,10 @@
 				if (!item || item.id !== reqItemId || myItemGen !== itemGen) return;
 				itemLinks = links;
 				// Advance the cursor now that the ITEM reload succeeded. The links
-				// half may have failed and been preserved rather than fetched
-				// (`refreshLinksPreservingOnFailure`), which the cursor cannot
-				// express — BUG-2992.
+				// half may have failed and been preserved rather than fetched; the
+				// cursor cannot express that (it is shared, and the workspace
+				// layout advances it on its own), so that half is owed to
+				// `linksRetry` instead (BUG-2992).
 				syncService.markSynced();
 			} catch {
 				// Ignore — will catch up on next event
@@ -1696,6 +1711,7 @@
 
 	onDestroy(() => {
 		destroyed = true;
+		linksRetry.cancel();
 		unsubscribeSync?.();
 		unsubscribeSSE?.();
 		unsubscribeBeforePrint?.();
@@ -2113,8 +2129,11 @@
 				const links = await api.links.list(wsSlug, itemData.slug);
 				if (myGen !== loadGeneration) return;
 				itemLinks = links;
+				linksRetry.succeeded(itemData.id);
 			} catch {
 				if (myGen !== loadGeneration) return;
+				// Owed either way: kept rows are stale, cleared rows are missing.
+				linksRetry.failed({ itemId: itemData.id, ws: wsSlug });
 				// Clear only when the rows we hold belong to a DIFFERENT item (or
 				// to no item yet). A same-item reload keeps them, matching the
 				// three refresh callers; the asymmetry is about whose rows they
@@ -4578,25 +4597,61 @@
 	 * actually survive the failure — which is the half this closes, exactly as
 	 * the Children fix had to cover its error branch as well as its loading one.
 	 *
-	 * WHAT IT DOES NOT PROMISE is a retry. Turning the error into a successful
-	 * return means the full-refresh caller's `syncService.markSynced()` still
-	 * advances the cursor, so stale links can persist until something else asks
-	 * — and a non-structural link change emits no event to ask on. That is not
-	 * introduced here (`.catch(() => [])` returned successfully too) but this
-	 * makes it survivable rather than visibly empty, so it is filed rather than
-	 * left implied: BUG-2992.
+	 * A FAILURE IS OWED A RETRY, and this is where it is recorded. Turning the
+	 * error into a successful return means the full-refresh caller's
+	 * `syncService.markSynced()` still advances the cursor, and a non-structural
+	 * link change emits no event to ask again on, so without it stale links
+	 * could persist indefinitely (BUG-2992). `linksRetry` below schedules that
+	 * retry; every success here clears it.
 	 *
 	 * Callers still re-check item identity after awaiting, since this returns
 	 * links for whatever `slug` they asked about.
 	 */
 	async function refreshLinksPreservingOnFailure(ws: string, slug: string): Promise<ItemLink[]> {
+		// Every caller asks about the item on screen, so it names the debt.
+		const forItemId = untrack(() => item?.id ?? null);
 		try {
-			return await api.links.list(ws, slug);
+			const links = await api.links.list(ws, slug);
+			if (forItemId) linksRetry.succeeded(forItemId);
+			return links;
 		} catch {
+			if (forItemId) linksRetry.failed({ itemId: forItemId, ws });
 			// The current list, so the assignment at the call site is a no-op
 			// rather than a destructive one.
 			return itemLinks;
 		}
+	}
+
+	/**
+	 * `linksRetry`'s attempt: re-fetch the links a failed refresh left stale.
+	 *
+	 * Answers "fresh" only when it installed the links, or when the target no
+	 * longer applies (another item, workspace, or a destroyed pane). A NEWER
+	 * write in the meantime is not fresh, and the answer is `false` so it is
+	 * retried: a bumped `itemGen` may be an SSE re-read whose item GET failed
+	 * before it reached the links, and a replaced `itemLinks` may be a local add
+	 * or remove that changed one row, not the stale rest. Installing over either
+	 * would let the older response win. A successful refresh clears the debt
+	 * through `refreshLinksPreservingOnFailure` instead.
+	 *
+	 * The `itemGen` check is also the identity fence: the identity listener runs
+	 * `loadData`, which bumps it (see `captureIdentity`).
+	 */
+	async function retryLinks(target: LinksRetryTarget): Promise<boolean> {
+		if (destroyed || !item || item.id !== target.itemId || wsSlug !== target.ws) return true;
+		const reqItemId = item.id;
+		const myItemGen = itemGen;
+		const linksAtIssue = itemLinks;
+		let links: ItemLink[];
+		try {
+			links = await api.links.list(target.ws, item.slug);
+		} catch {
+			return false;
+		}
+		if (destroyed || !item || item.id !== reqItemId || wsSlug !== target.ws) return true;
+		if (myItemGen !== itemGen || itemLinks !== linksAtIssue) return false;
+		itemLinks = links;
+		return true;
 	}
 
 	function relationHref(collectionSlug?: string, refOrSlug?: string): string | null {

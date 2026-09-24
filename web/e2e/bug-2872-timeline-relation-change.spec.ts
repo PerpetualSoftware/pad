@@ -6,7 +6,7 @@ import { deleteCollection } from './lib/attachment-viewer';
 /**
  * BUG-2872 — an activity change on a `relation` field rendered the item ID the
  * field stores ("owner: → d84fb3b1-…"). It now renders the target's
- * `REF · title` (or "(deleted)" / "Unresolved reference"), on the item's
+ * `REF · title` (or "(deleted)" / "Unavailable item"), on the item's
  * Activity tab and the workspace activity page's Audit view, which since
  * BUG-3181 brings the workspace index up itself. A scalar
  * field's change is unchanged.
@@ -100,7 +100,7 @@ test.describe('BUG-2872: an activity change on a relation field renders the targ
 			await expect(p).toBeVisible({ timeout: 15_000 });
 			const text = await p.innerText();
 			expect(text).not.toMatch(UUID);
-			expect(text).toMatch(/\(deleted\)|Unresolved reference/);
+			expect(text).toMatch(/\(deleted\)|Unavailable item/);
 		} finally {
 			await deleteCollection(fixture, request, s.src.slug);
 			await deleteCollection(fixture, request, s.tgt.slug);
@@ -121,7 +121,7 @@ test.describe('BUG-2872: an activity change on a relation field renders the targ
 			await expect(p).toContainText(s.target.title);
 			const text = await p.innerText();
 			expect(text).not.toMatch(UUID);
-			expect(text).not.toContain('Unresolved reference');
+			expect(text).not.toContain('Unavailable item');
 		} finally {
 			await deleteCollection(fixture, request, s.src.slug);
 			await deleteCollection(fixture, request, s.tgt.slug);
