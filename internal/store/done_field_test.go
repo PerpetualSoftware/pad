@@ -55,7 +55,8 @@ func TestGetItemProgress_DoneFieldFollowsBoardGroupBy(t *testing.T) {
 	// Create four bug items as children:
 	//   b1: resolution=open          → not done
 	//   b2: resolution=fixed         → done (terminal on resolution)
-	//   b3: resolution=wontfix       → done (terminal on resolution)
+	//   b3: resolution=wontfix       → terminal on resolution but ABANDONED
+	//        (the NegativeTerminals fallback), so out of both counts (BUG-3195)
 	//   b4: resolution=open, status=fixed → NOT done
 	//        (status is terminal, but status isn't the done field anymore)
 	bugCases := []struct {
@@ -96,13 +97,14 @@ func TestGetItemProgress_DoneFieldFollowsBoardGroupBy(t *testing.T) {
 	}
 
 	// Expected:
-	//   total = 4 (all children)
-	//   done  = 2 (b2 + b3 — the ones with terminal `resolution` values)
-	if total != 4 {
-		t.Errorf("expected total=4, got %d", total)
+	//   total = 3 (all children except the abandoned b3)
+	//   done  = 1 (b2, the delivered terminal `resolution` value; b4's
+	//              terminal `status` does not count)
+	if total != 3 {
+		t.Errorf("expected total=3, got %d", total)
 	}
-	if done != 2 {
-		t.Errorf("expected done=2 (resolution-driven), got %d", done)
+	if done != 1 {
+		t.Errorf("expected done=1 (resolution-driven), got %d", done)
 	}
 }
 
@@ -152,11 +154,13 @@ func TestGetItemProgress_DefaultsToStatusWithoutSettings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetItemProgress: %v", err)
 	}
-	if total != 4 {
-		t.Errorf("expected total=4, got %d", total)
+	// cancelled is terminal and abandoned (NegativeTerminals fallback): out of
+	// both counts (BUG-3195). open, done and in-progress remain.
+	if total != 3 {
+		t.Errorf("expected total=3, got %d", total)
 	}
-	if done != 2 {
-		t.Errorf("expected done=2 (status-driven), got %d", done)
+	if done != 1 {
+		t.Errorf("expected done=1 (status-driven), got %d", done)
 	}
 }
 
