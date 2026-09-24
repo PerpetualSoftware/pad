@@ -53,7 +53,8 @@ const ActivityDebounceCooldown = 5 * time.Minute
 // choice and the rows it visits are not bounded by this constant. What is
 // bounded is the QUERY COUNT — BUG-2770's retry loop issues at most
 // debounceMergeAttempts candidate queries, each losing attempt adding one
-// UPDATE and at most one primary-key probe.
+// UPDATE and at most one primary-key probe, or, when the attempt MISSED, one
+// locked re-read of the candidate in insertDebouncedOnMiss (BUG-2777).
 //
 // Deliberately not claiming more than that here. The earlier version of
 // this comment asserted which index the planner would use and that the cost
@@ -172,9 +173,23 @@ func (s *Store) CreateActivityDebounced(a models.Activity) (string, error) {
 	for attempt := 0; attempt < debounceMergeAttempts; attempt++ {
 		existingID, existingMeta, ok := s.recentDebounceCandidate(a, cutoff, incomingAgent)
 		if !ok || existingID == "" {
-			// Query trouble, or nothing recent of this writer's — start a
-			// new run.
-			return s.CreateActivity(a)
+			if !ok {
+				// Query trouble: nothing to coalesce with that we can see.
+				return s.CreateActivity(a)
+			}
+			// Nothing recent of this writer's. Test seam (BUG-2777): the
+			// window in which a concurrent call that also found nothing
+			// inserts first. Nil in production.
+			if s.afterDebounceMiss != nil {
+				s.afterDebounceMiss()
+			}
+			id, raced, err := s.insertDebouncedOnMiss(a, cutoff, incomingAgent)
+			if err != nil || !raced {
+				return id, err
+			}
+			// Another call of this writer's started the run first. Go around
+			// and merge into it, like any other contended attempt.
+			continue
 		}
 
 		// Test seam: runs between the read and the write, which is exactly
@@ -316,7 +331,74 @@ const debounceMergeAttempts = 3
 // trouble); the caller starts a new run rather than guessing. An empty id
 // with ok true means the read succeeded and this writer has no recent row.
 func (s *Store) recentDebounceCandidate(a models.Activity, cutoff, incomingAgent string) (id, metadata string, ok bool) {
-	rows, err := s.db.Query(s.q(`
+	return s.recentDebounceCandidateQ(s.db, a, cutoff, incomingAgent)
+}
+
+// rowsQueryer is the multi-row read both *sql.DB and *sql.Tx provide.
+type rowsQueryer interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+}
+
+// insertDebouncedOnMiss starts a new run for a writer whose unlocked
+// candidate read found nothing (BUG-2777). Two calls of one writer that both
+// miss would otherwise both insert, so the run the debounce exists to
+// coalesce starts as two rows; measured, four concurrent calls did so in 29
+// of 30 bursts on both backends (BUG-2777 checkpoint 1).
+//
+// The miss is re-checked and the insert made as ONE serialized decision per
+// document: a transaction holding a lock keyed on the document, re-reading
+// the candidate inside it, and inserting only if it is still absent. On
+// Postgres the lock is an advisory transaction lock, and the re-read, a new
+// READ COMMITTED statement issued after it is granted, sees the row the
+// previous holder committed. On SQLite the DSN's _txlock=immediate makes
+// BEGIN itself the lock.
+//
+// raced reports that a row appeared between the unlocked read and the lock:
+// nothing was written, and the caller merges into that row through the
+// ordinary compare-and-set path. The merge path takes no lock, so this one
+// cannot invert an order with it; nor does it take a workspace or item lock.
+func (s *Store) insertDebouncedOnMiss(a models.Activity, cutoff, incomingAgent string) (id string, raced bool, err error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return "", false, fmt.Errorf("begin debounce insert: %w", err)
+	}
+	defer tx.Rollback()
+
+	if s.dialect.Driver() == DriverPostgres {
+		if _, err := tx.Exec("SELECT pg_advisory_xact_lock(hashtext($1))", "activity-debounce:"+a.DocumentID); err != nil {
+			return "", false, fmt.Errorf("acquire debounce lock: %w", err)
+		}
+	}
+
+	existingID, _, ok := s.recentDebounceCandidateQ(tx, a, cutoff, incomingAgent)
+	if !ok {
+		// Query trouble on the re-read: degrade exactly as the unlocked read
+		// does, to a fresh row. A Postgres transaction is aborted after a
+		// failed statement, so that row is written outside it.
+		_ = tx.Rollback()
+		id, err := s.CreateActivity(a)
+		return id, false, err
+	}
+	if existingID != "" {
+		return "", true, nil
+	}
+	// Test seam (BUG-2777): inside the lock, after the re-read missed and
+	// before the insert. Nil in production.
+	if s.afterDebounceLockedMiss != nil {
+		s.afterDebounceLockedMiss()
+	}
+	id, err = s.createActivityQ(tx, a)
+	if err != nil {
+		return "", false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return "", false, fmt.Errorf("commit debounce insert: %w", err)
+	}
+	return id, false, nil
+}
+
+func (s *Store) recentDebounceCandidateQ(q rowsQueryer, a models.Activity, cutoff, incomingAgent string) (id, metadata string, ok bool) {
+	rows, err := q.Query(s.q(`
 		SELECT id, metadata FROM activities
 		WHERE document_id = ? AND action = ? AND created_at >= ? AND actor = ?
 			AND ((user_id IS NOT NULL AND user_id = ?) OR (user_id IS NULL AND ? = ''))
