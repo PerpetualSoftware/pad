@@ -52,15 +52,26 @@ async function openDoc(
 }
 
 /**
- * Relative luminance (0 black .. 1 white) of the painted pixel just inside the
- * first node's left edge: clear of the stroke, and clear of the centred label.
+ * Relative luminance (0 black .. 1 white) of the painted pixel inside the first
+ * node's FILL.
+ *
+ * Measured on the node's SHAPE, not on `g.node`, whose box also holds the label
+ * (codex round 1): the point is a few px inside the shape's left edge, past the
+ * stroke, at mid-height, and the shape must be wide enough that the centred
+ * label cannot reach it. The screen leg (dark fill, luminance < 0.3) is what
+ * shows the point is fill rather than a light label on a dark node.
  */
 async function nodeInteriorLuminance(page: Page): Promise<number> {
-	const node = page.locator(`${EDITOR_SELECTOR} ${DIAGRAM} svg g.node`).first();
-	await node.scrollIntoViewIfNeeded();
-	const box = await node.boundingBox();
-	expect(box, 'the node has a box').not.toBeNull();
-	const x = Math.round(box!.x + Math.min(10, box!.width * 0.15));
+	const shape = page
+		.locator(`${EDITOR_SELECTOR} ${DIAGRAM} svg g.node`)
+		.first()
+		.locator(':scope > rect, :scope > path, :scope > polygon, :scope > circle, :scope > g > rect, :scope > g > path')
+		.first();
+	await shape.scrollIntoViewIfNeeded();
+	const box = await shape.boundingBox();
+	expect(box, 'the node shape has a box').not.toBeNull();
+	expect(box!.width, 'the shape is wide enough to sample clear of its label').toBeGreaterThan(40);
+	const x = Math.round(box!.x + 5);
 	const y = Math.round(box!.y + box!.height / 2);
 	const png = await page.screenshot({ clip: { x, y, width: 1, height: 1 } });
 	return page.evaluate(async (b64) => {
