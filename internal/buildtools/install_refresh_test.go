@@ -1756,3 +1756,54 @@ func TestInstallRefresh_JudgesAPortOnlyListenerByItsOwnName(t *testing.T) {
 		})
 	}
 }
+
+// An UNREADABLE server cwd is refused like a missing one, naming what was
+// read and why it failed (lead ruling on BUG-3196). Reached deterministically:
+// PAD_NO_PROC forces the lsof path, and a PATH without lsof leaves nothing to
+// read the cwd with.
+func TestInstallRefresh_RefusesAnUnreadableCwdNamingWhatWasRead(t *testing.T) {
+	requireScriptDeps(t, "ss")
+	home, dir := t.TempDir(), t.TempDir()
+	name := uniqueName(t)
+	defer killStub(t, name)
+	port := freePort(t)
+	const commit = "abc1234"
+
+	built := installStub(t, dir, name)
+	installed := filepath.Join(home, "bin", name)
+	e := stubEnv{version: "pad version dev (" + commit + " x)", healthy: "1",
+		argvLog: filepath.Join(home, "argv.log"), port: port, home: home}
+	pre := exec.Command(built, "server", "start", "--host", "127.0.0.1")
+	pre.Env = e.env()
+	startPreServer(t, pre, "127.0.0.1", port)
+
+	stubPath := t.TempDir()
+	for _, tool := range []string{"bash", "sed", "awk", "curl", "cp", "mv", "mkdir", "rm", "chmod", "pkill", "pgrep", "ps", "sleep", "mktemp", "dirname", "basename", "git", "head", "setsid", "nohup", "printf", "cat", "readlink", "ss", "grep", "cut", "sort", "tail"} {
+		if full, err := exec.LookPath(tool); err == nil {
+			_ = os.Symlink(full, filepath.Join(stubPath, tool))
+		}
+	}
+	env := []string{}
+	for _, kv := range e.env() {
+		if !strings.HasPrefix(kv, "PATH=") {
+			env = append(env, kv)
+		}
+	}
+	env = append(env, "PATH="+stubPath, "PAD_NO_PROC=1")
+	cmd := exec.Command("bash", scriptPath(t), built, installed, commit)
+	cmd.Env = env
+	var out, errb strings.Builder
+	cmd.Stdout, cmd.Stderr = &out, &errb
+	if err := cmd.Run(); err == nil {
+		t.Fatalf("script proceeded without being able to read the server's cwd; stdout=%s", out.String())
+	}
+	if !strings.Contains(errb.String(), "cannot be read: (no /proc and no lsof)") {
+		t.Errorf("refusal did not name what was read; stderr=%s", errb.String())
+	}
+	if _, err := os.Stat(installed); err == nil {
+		t.Errorf("installed despite refusing: %s", installed)
+	}
+	if got, err := pidAnswersAt(port); err != nil || got != strconv.Itoa(pre.Process.Pid) {
+		t.Errorf("the server was touched by a refused refresh: %q %v", got, err)
+	}
+}

@@ -414,13 +414,23 @@ fi
 # as before.
 SERVER_CWD=""
 if [ -n "$TARGET_PID" ]; then
-	if [ -z "${PAD_NO_PROC:-}" ] && { [ -e "/proc/$TARGET_PID/cwd" ] || [ -L "/proc/$TARGET_PID/cwd" ]; }; then
-		SERVER_CWD="$(readlink "/proc/$TARGET_PID/cwd" 2>/dev/null || true)"
+	# What was read and why it failed, for the refusal: the path asked and
+	# the tool's own error text, which carries the errno (e.g. "Permission
+	# denied"). Lead ruling on BUG-3196.
+	cwd_source="" cwd_err=""
+	if [ -z "${PAD_NO_PROC:-}" ] && [ -d /proc ]; then
+		cwd_source="/proc/$TARGET_PID/cwd"
+		cwd_err="$(readlink "$cwd_source" 2>&1 >/dev/null)" || true
+		SERVER_CWD="$(readlink "$cwd_source" 2>/dev/null || true)"
 	elif command -v lsof >/dev/null 2>&1; then
+		cwd_source="lsof -a -p $TARGET_PID -d cwd"
+		cwd_err="$(lsof -a -p "$TARGET_PID" -d cwd -Fn 2>&1 >/dev/null)" || true
 		SERVER_CWD="$(lsof -a -p "$TARGET_PID" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)"
+	else
+		cwd_source="(no /proc and no lsof)"
 	fi
 	if [ -z "$SERVER_CWD" ]; then
-		die "the working directory of the running server (pid $TARGET_PID) cannot be read here.
+		die "the working directory of the running server (pid $TARGET_PID) cannot be read: $cwd_source: ${cwd_err:-no output}
   Nothing was stopped or installed; the restart could not put it back where it was."
 	fi
 	# Linux reads a removed directory back with a " (deleted)" suffix. Strip
