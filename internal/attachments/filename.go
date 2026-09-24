@@ -119,11 +119,15 @@ var windowsReservedStems = func() map[string]bool {
 }()
 
 // windowsDeviceName reports whether Windows would open name as a device. It
-// reads the name as Windows does: the stem is everything before the FIRST dot,
-// so "con.tar.gz" is a device, and trailing spaces in the stem are ignored, so
-// "con .txt" is one too. The match folds case.
+// reads the name as Windows does: the stem is everything before the FIRST dot
+// or colon, so "con.tar.gz" and "nul:x.txt" are devices (a colon opens the
+// stream syntax, codex round 1), and trailing spaces in the stem are ignored,
+// so "con .txt" is one too. The match folds case.
 func windowsDeviceName(name string) bool {
-	stem, _, _ := strings.Cut(name, ".")
+	stem := name
+	if i := strings.IndexAny(name, ".:"); i >= 0 {
+		stem = name[:i]
+	}
 	return windowsReservedStems[strings.ToUpper(strings.TrimRight(stem, " "))]
 }
 

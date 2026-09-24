@@ -75,6 +75,8 @@ func TestNormalizeFilename(t *testing.T) {
 		{"CONIN$", "_CONIN$"},
 		{"conout$.log", "_conout$.log"},
 		{"a/b/NUL", "_NUL"},
+		{"NUL:stream.txt", "_NUL:stream.txt"},
+		{"con:", "_con:"},
 		// Preservation: a device name inside a longer stem, after the first
 		// dot, or with a leading space, is not one. Nor are COM and LPT
 		// without a digit, or with two.
@@ -88,6 +90,7 @@ func TestNormalizeFilename(t *testing.T) {
 		{"COM10.txt", "COM10.txt"},
 		{"lpt.png", "lpt.png"},
 		{"auxiliary.pdf", "auxiliary.pdf"},
+		{"note:con.txt", "note:con.txt"},
 		// Unstorable text keeps BUG-2803's fallback, extension only if allowed.
 		{"sh\x00ot.png", "upload.png"},
 		{"sh\x00ot.svg", "upload"},
