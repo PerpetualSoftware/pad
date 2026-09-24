@@ -42,9 +42,11 @@ install: build
 	@#   - nothing is printed about a restart until the server answers on
 	@#     BOTH 127.0.0.1 and the configured host.
 	@#
-	@#   - it replaces only the server LISTENING on the configured port,
-	@#     stopped by pid, and leaves other `pad server start` processes
-	@#     (a sibling's e2e server on its own port) running (BUG-3194).
+	@#   - it replaces one server, stopped by pid: the one listening on the
+	@#     configured port, or the only one running when nothing listens
+	@#     there. Other `pad server start` processes (a sibling's e2e server
+	@#     on its own port) are left running, and an ambiguous port is
+	@#     refused (BUG-3194).
 	@#
 	@# CAUTION: this target's `build` step runs `npm ci`, which deletes a
 	@# node_modules that sibling worktrees symlink to. When another

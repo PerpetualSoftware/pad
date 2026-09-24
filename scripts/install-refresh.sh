@@ -185,9 +185,13 @@ SERVER_PIDS=()
 # contains that byte.
 US=$'\x1f'
 declare -A SERVER_ARGV_OF=()
+# Every element TERMINATED by the separator, not joined by it, and read back
+# with mapfile: `read -a` drops trailing empty fields, and a trailing
+# separator also keeps command substitution from stripping a final newline
+# (codex round 1).
 join_us() {
-	local IFS="$US"
-	printf '%s' "$*"
+	local a
+	for a in "$@"; do printf '%s%s' "$a" "$US"; done
 }
 if command -v pgrep >/dev/null 2>&1; then
 	while read -r pid; do
@@ -263,34 +267,67 @@ for candidate in "${PAD_PORT:-}" "$(config_value port || true)"; do
 done
 TARGET_PORT="${TARGET_PORT:-7777}"
 
-# listener_pids prints the pids listening on TCP port $1, one per line.
+# listener_pids prints the pids listening on TCP port $1, one per line, and
+# prints the word HIDDEN when a listener is visible but its owner is not (ss
+# without process info, lsof unable to read another process). A hidden owner
+# is refused below rather than read as "nothing is on the port" (codex
+# round 1).
 listener_pids() {
+	local lines pids
 	if command -v ss >/dev/null 2>&1; then
-		ss -Hltnp "sport = :$1" 2>/dev/null | grep -o 'pid=[0-9]*' | cut -d= -f2 | sort -u
+		lines="$(ss -Hltnp "sport = :$1" 2>/dev/null)"
+		[ -n "$lines" ] || return 0
+		while IFS= read -r l; do
+			case "$l" in *pid=*) ;; *) echo HIDDEN ;; esac
+		done <<<"$lines"
+		grep -o 'pid=[0-9]*' <<<"$lines" | cut -d= -f2 | sort -u
 	elif command -v lsof >/dev/null 2>&1; then
-		lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null | sort -u
+		lines="$(lsof -nP -iTCP:"$1" -sTCP:LISTEN 2>/dev/null | tail -n +2)"
+		[ -n "$lines" ] || return 0
+		pids="$(awk '{print $2}' <<<"$lines" | grep -E '^[0-9]+$' | sort -u)"
+		[ -n "$pids" ] || echo HIDDEN
+		printf '%s\n' "$pids"
 	fi
 }
 
 TARGET_PID=""
 LISTENERS=()
+HIDDEN=""
 while read -r lp; do
-	[ -n "$lp" ] && LISTENERS+=("$lp")
+	case "$lp" in
+	HIDDEN) HIDDEN=1 ;;
+	'') ;;
+	*) LISTENERS+=("$lp") ;;
+	esac
 done < <(listener_pids "$TARGET_PORT")
 
 matched=()
+foreign=()
 for lp in "${LISTENERS[@]}"; do
-	[ -n "${SERVER_ARGV_OF[$lp]+x}" ] && matched+=("$lp")
+	if [ -n "${SERVER_ARGV_OF[$lp]+x}" ]; then
+		matched+=("$lp")
+	else
+		foreign+=("$lp")
+	fi
 done
+
+# A listener whose owner cannot be read, or ANY non-captured listener on the
+# port (even beside a captured one, on another address), makes the port
+# ambiguous: refused before anything else is considered (codex round 1).
+if [ -n "$HIDDEN" ]; then
+	die "something is listening on port $TARGET_PORT but its owning process cannot be read here.
+  Nothing was stopped or installed; this script will not guess which server that is."
+fi
+if [ "${#foreign[@]}" -gt 0 ]; then
+	die "port $TARGET_PORT is held by pid(s) ${foreign[*]}, which is not a running \`$(basename "$BUILT") server start\`.
+  Nothing was stopped or installed; find out what holds the port first."
+fi
 
 if [ "${#matched[@]}" -gt 1 ]; then
 	die "more than one \`$(basename "$BUILT") server start\` is listening on port $TARGET_PORT (pids: ${matched[*]}).
   Nothing was stopped or installed. Use the manual sibling-safe refresh."
 elif [ "${#matched[@]}" -eq 1 ]; then
 	TARGET_PID="${matched[0]}"
-elif [ "${#LISTENERS[@]}" -gt 0 ]; then
-	die "port $TARGET_PORT is held by pid(s) ${LISTENERS[*]}, which is not a running \`$(basename "$BUILT") server start\`.
-  Nothing was stopped or installed; find out what holds the port first."
 elif [ "${#SERVER_PIDS[@]}" -eq 1 ]; then
 	TARGET_PID="${SERVER_PIDS[0]}"
 elif [ "${#SERVER_PIDS[@]}" -gt 1 ]; then
@@ -300,7 +337,7 @@ elif [ "${#SERVER_PIDS[@]}" -gt 1 ]; then
 fi
 
 if [ -n "$TARGET_PID" ]; then
-	IFS="$US" read -r -a SERVER_ARGV <<<"${SERVER_ARGV_OF[$TARGET_PID]}"
+	mapfile -d "$US" -t SERVER_ARGV < <(printf '%s' "${SERVER_ARGV_OF[$TARGET_PID]}")
 	OTHERS=()
 	for sp in "${SERVER_PIDS[@]}"; do
 		[ "$sp" != "$TARGET_PID" ] && OTHERS+=("$sp")
@@ -363,25 +400,34 @@ fi
 # SIGTERM first so the graceful-shutdown path runs (BUG-1531).
 BIN_NAME="$(basename "$BUILT")"
 if [ -n "$TARGET_PID" ]; then
-	# Re-read the same way the capture read it, so the two compare exactly.
-	now=()
-	if [ -z "${PAD_NO_PROC:-}" ] && [ -r "/proc/$TARGET_PID/cmdline" ]; then
-		mapfile -d '' -t now < "/proc/$TARGET_PID/cmdline" 2>/dev/null
-	else
-		read -r -a now <<<"$(ps -o args= -p "$TARGET_PID" 2>/dev/null || true)"
-	fi
-	now_argv="$(join_us "${now[@]}")"
-	if [ ${#now[@]} -gt 0 ] && [ "$now_argv" != "${SERVER_ARGV_OF[$TARGET_PID]}" ]; then
-		now_argv="${now[*]}"
-		die "pid $TARGET_PID no longer runs the captured server (now: $now_argv).
+	# still_target re-reads the pid's argv the way the capture read it and
+	# succeeds only if it is still the captured server. Asked before EACH
+	# signal: a pid that exits and is recycled during the TERM wait must not
+	# receive the KILL (codex round 1). A pid that is already gone is not
+	# signalled at all.
+	still_target() {
+		local now=()
+		if [ -z "${PAD_NO_PROC:-}" ] && [ -r "/proc/$TARGET_PID/cmdline" ]; then
+			mapfile -d '' -t now < "/proc/$TARGET_PID/cmdline" 2>/dev/null
+		else
+			read -r -a now <<<"$(ps -o args= -p "$TARGET_PID" 2>/dev/null || true)"
+		fi
+		[ ${#now[@]} -gt 0 ] && [ "$(join_us "${now[@]}")" = "${SERVER_ARGV_OF[$TARGET_PID]}" ]
+	}
+	if kill -0 "$TARGET_PID" 2>/dev/null; then
+		if ! still_target; then
+			die "pid $TARGET_PID no longer runs the captured server.
   Nothing was stopped or installed; re-run."
+		fi
+		kill -TERM "$TARGET_PID" 2>/dev/null || true
+		for _ in 1 2 3 4 5; do
+			kill -0 "$TARGET_PID" 2>/dev/null || break
+			sleep 1
+		done
+		if kill -0 "$TARGET_PID" 2>/dev/null && still_target; then
+			kill -KILL "$TARGET_PID" 2>/dev/null || true
+		fi
 	fi
-	kill -TERM "$TARGET_PID" 2>/dev/null || true
-	for _ in 1 2 3 4 5; do
-		kill -0 "$TARGET_PID" 2>/dev/null || break
-		sleep 1
-	done
-	kill -KILL "$TARGET_PID" 2>/dev/null || true
 fi
 
 # --- 4. Move into place, then check the OUTCOME -------------------------------

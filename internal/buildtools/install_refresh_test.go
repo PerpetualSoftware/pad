@@ -1253,6 +1253,81 @@ func TestInstallRefresh_RefusesWhenThePortIsHeldByAnotherProcess(t *testing.T) {
 	}
 }
 
+// A FOREIGN LISTENER BESIDE THE TARGET, on the same port at another address,
+// makes the port ambiguous and is refused (BUG-3194, codex round 1): the
+// captured server matching is not enough when something else also holds the
+// port.
+func TestInstallRefresh_RefusesAForeignListenerBesideTheTarget(t *testing.T) {
+	requireScriptDeps(t, "ss")
+	home, dir := t.TempDir(), t.TempDir()
+	name := uniqueName(t)
+	defer killStub(t, name)
+	port := freePort(t)
+	const commit = "abc1234"
+
+	built := installStub(t, dir, name)
+	installed := filepath.Join(home, "bin", name)
+	e := stubEnv{version: "pad version dev (" + commit + " x)", healthy: "1",
+		argvLog: filepath.Join(home, "argv.log"), port: port, home: home}
+	pre := exec.Command(built, "server", "start", "--host", "127.0.0.1")
+	pre.Env = e.env()
+	startPreServer(t, pre, "127.0.0.1", port)
+
+	foreign, err := net.Listen("tcp", net.JoinHostPort("127.0.0.2", strconv.Itoa(port)))
+	if err != nil {
+		t.Skipf("cannot bind a second loopback address here: %v", err)
+	}
+	defer foreign.Close()
+
+	res := runScript(t, e, built, installed, commit)
+	if res.err == nil {
+		t.Fatalf("script proceeded with a foreign listener on port %d beside the target; stdout=%s", port, res.stdout)
+	}
+	if !strings.Contains(res.stderr, "is held by") {
+		t.Errorf("refusal did not name the foreign holder; stderr=%s", res.stderr)
+	}
+	if got, err := pidAnswersAt(port); err != nil || got != strconv.Itoa(pre.Process.Pid) {
+		t.Errorf("the target was touched by a refused refresh: %q %v", got, err)
+	}
+}
+
+// AN EMPTY TRAILING ARGUMENT survives the argv round trip (BUG-3194, codex
+// round 1): `read -a` dropped trailing empty fields, so the restart ran a
+// shorter command than the one it replaced.
+func TestInstallRefresh_KeepsAnEmptyTrailingArgument(t *testing.T) {
+	requireScriptDeps(t)
+	home, dir := t.TempDir(), t.TempDir()
+	name := uniqueName(t)
+	defer killStub(t, name)
+	port := freePort(t)
+	const commit = "abc1234"
+
+	built := installStub(t, dir, name)
+	installed := filepath.Join(home, "bin", name)
+	if err := os.MkdirAll(filepath.Dir(installed), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	argvLog := filepath.Join(home, "argv.log")
+	e := stubEnv{version: "pad version dev (" + commit + " x)", healthy: "1",
+		argvLog: argvLog, port: port, home: home}
+	pre := exec.Command(built, "server", "start", "--host", "127.0.0.1", "--label", "")
+	pre.Env = e.env()
+	startPreServer(t, pre, "127.0.0.1", port)
+
+	res := runScript(t, e, built, installed, commit)
+	if res.err != nil {
+		t.Fatalf("script failed: %v\nstdout=%s\nstderr=%s", res.err, res.stdout, res.stderr)
+	}
+	logged, err := os.ReadFile(argvLog)
+	if err != nil {
+		t.Fatalf("read argv log: %v", err)
+	}
+	lines := strings.Split(strings.TrimRight(string(logged), "\n"), "\n")
+	if last := lines[len(lines)-1]; last != "server start --host 127.0.0.1 --label " {
+		t.Errorf("restart argv = %q, want the empty trailing argument kept (%q)", last, "server start --host 127.0.0.1 --label ")
+	}
+}
+
 // AN UNRESOLVABLE ID IS REFUSED, even when it shares a prefix with the
 // expected one (codex round 9).
 //
