@@ -295,7 +295,7 @@
 				<div class="table-cell col-ref" role="cell"><span class="ref">{formatItemRef(item) ?? ''}</span></div>
 				<div class="table-cell col-title" role="cell">
 					<a href="/{resolvedUsername}/{resolvedWsSlug}/{collection.slug}/{itemUrlId(item)}" class="title-link" onclick={(e) => handleTitleClick(e, item)}>{item.title}</a>
-					{#if itemProgress?.[item.id] && itemProgress[item.id].total > 0}
+					{#if itemProgress?.[item.id]}
 						{@const p = itemProgress[item.id]}
 						<div class="cell-progress">
 							<div class="cell-progress-bar"><div class="cell-progress-fill" style:width="{Math.round((p.done / p.total) * 100)}%"></div></div>
