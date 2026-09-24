@@ -5340,3 +5340,148 @@ describe('Lightbox — the text arm', () => {
 		expect(root().querySelector('.lightbox-text .lightbox-retry')).not.toBeNull();
 	});
 });
+
+// BUG-2522: while the toolbar's delete confirmation is pending, the keyboard is
+// already blocked (onKeydown returns for every key), and the pointer gestures now
+// stand down the same way. One leg per gesture START path (wheel, double-click,
+// mouse/pen pan, touch pan, pinch), plus a gesture that was already live when the
+// confirmation opened. Each leg cancels the confirmation and repeats the same
+// gesture as its control, so it is the pending gate that held, not a dead path.
+describe('Lightbox — a pending delete confirmation owns the pointer gestures (BUG-2522)', () => {
+	beforeEach(() => {
+		captured = [];
+		released = [];
+		(Element.prototype as unknown as Record<string, unknown>).setPointerCapture = function (id: number) {
+			captured.push(id);
+		};
+		(Element.prototype as unknown as Record<string, unknown>).releasePointerCapture = function (id: number) {
+			released.push(id);
+		};
+	});
+	afterEach(() => {
+		if (REAL_PC.setPointerCapture === undefined)
+			delete (Element.prototype as unknown as Record<string, unknown>).setPointerCapture;
+		else Element.prototype.setPointerCapture = REAL_PC.setPointerCapture;
+		if (REAL_PC.releasePointerCapture === undefined)
+			delete (Element.prototype as unknown as Record<string, unknown>).releasePointerCapture;
+		else Element.prototype.releasePointerCapture = REAL_PC.releasePointerCapture;
+	});
+
+	function imageEl(): HTMLElement {
+		return root().querySelector<HTMLElement>('.lightbox-image')!;
+	}
+	/** Mount with Delete offered, mock OVERFLOW_G, and decode, so every gesture can arm. */
+	function mountPainted(): void {
+		mountViewer({ mutationsEnabled: true });
+		mockGeometry(root(), OVERFLOW_G);
+		fireLoad(2000, 2000);
+	}
+	function openConfirm(): void {
+		root().querySelector<HTMLElement>('.lightbox-tool[aria-label="Delete"]')!.click();
+		flushSync();
+		expect(root().querySelector('.lightbox-delete-confirm')).not.toBeNull();
+	}
+	function cancelConfirm(): void {
+		Array.from(root().querySelectorAll<HTMLElement>('.lightbox-delete-confirm button'))
+			.find((b) => b.textContent?.includes('Cancel'))!
+			.click();
+		flushSync();
+		expect(root().querySelector('.lightbox-delete-confirm')).toBeNull();
+	}
+	function ptr(
+		type: string,
+		x: number,
+		y: number,
+		opts: { pointerType?: string; pointerId?: number; buttons?: number } = {}
+	): void {
+		imageEl().dispatchEvent(pointerEvent(type, x, y, opts));
+		flushSync();
+	}
+	function dblclick(): void {
+		imageEl().dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: 500, clientY: 500 }));
+		flushSync();
+	}
+
+	it('a wheel is still consumed but does not zoom', () => {
+		mountPainted();
+		openConfirm();
+		expect(wheel(imageEl(), { deltaY: -100, clientX: 500, clientY: 500 })).toBe(true);
+		expect(scaleOf()).toBe(1);
+
+		cancelConfirm();
+		wheel(imageEl(), { deltaY: -100, clientX: 500, clientY: 500 });
+		expect(scaleOf()).toBeGreaterThan(1);
+	});
+
+	it('a double-click does not toggle zoom', () => {
+		mountPainted();
+		openConfirm();
+		dblclick();
+		expect(scaleOf()).toBe(1);
+
+		cancelConfirm();
+		dblclick();
+		expect(scaleOf()).toBeCloseTo(ACTUAL_SCALE);
+	});
+
+	it('a mouse drag does not arm a pan', () => {
+		mountPainted();
+		openConfirm();
+		ptr('pointerdown', 500, 500);
+		ptr('pointermove', 600, 500);
+		ptr('pointerup', 600, 500, { buttons: 0 });
+		expect(captured).toEqual([]);
+
+		cancelConfirm();
+		ptr('pointerdown', 500, 500);
+		ptr('pointermove', 600, 500);
+		expect(captured).toContain(1);
+		ptr('pointerup', 600, 500, { buttons: 0 });
+	});
+
+	it('a touch drag does not arm a pan', () => {
+		mountPainted();
+		openConfirm();
+		ptr('pointerdown', 500, 500, { pointerType: 'touch' });
+		ptr('pointermove', 600, 500, { pointerType: 'touch' });
+		ptr('pointerup', 600, 500, { pointerType: 'touch', buttons: 0 });
+		expect(captured).toEqual([]);
+
+		cancelConfirm();
+		ptr('pointerdown', 500, 500, { pointerType: 'touch' });
+		ptr('pointermove', 600, 500, { pointerType: 'touch' });
+		expect(captured).toContain(1);
+		ptr('pointerup', 600, 500, { pointerType: 'touch', buttons: 0 });
+	});
+
+	it('a two-finger spread does not pinch-zoom', () => {
+		mountPainted();
+		const spread = () => {
+			ptr('pointerdown', 400, 500, { pointerType: 'touch', pointerId: 1 });
+			ptr('pointerdown', 600, 500, { pointerType: 'touch', pointerId: 2 });
+			ptr('pointermove', 700, 500, { pointerType: 'touch', pointerId: 2 });
+			ptr('pointerup', 700, 500, { pointerType: 'touch', pointerId: 2, buttons: 0 });
+			ptr('pointerup', 400, 500, { pointerType: 'touch', pointerId: 1, buttons: 0 });
+		};
+		openConfirm();
+		spread();
+		expect(scaleOf()).toBe(1);
+
+		cancelConfirm();
+		spread();
+		expect(scaleOf()).toBeCloseTo(1.5);
+	});
+
+	it('a pan already live when the confirmation opens is torn down', () => {
+		mountPainted();
+		dblclick(); // actual size, so a drag has pan room
+		ptr('pointerdown', 500, 500, { pointerType: 'touch' });
+		ptr('pointermove', 600, 500, { pointerType: 'touch' });
+		expect(panX()).toBeCloseTo(100); // the pan is live and moving
+		openConfirm(); // another finger taps Delete
+		ptr('pointermove', 700, 500, { pointerType: 'touch' });
+		expect(panX()).toBeCloseTo(100); // it stopped at the confirm
+		expect(released).toContain(1);
+		ptr('pointerup', 700, 500, { pointerType: 'touch', buttons: 0 });
+	});
+});
