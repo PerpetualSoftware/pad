@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/PerpetualSoftware/pad/internal/artifact"
+	"github.com/PerpetualSoftware/pad/internal/attachments"
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
@@ -147,5 +148,12 @@ func (s *Server) handleExportItemArtifact(w http.ResponseWriter, r *http.Request
 // artifactExportFilename builds the download filename for an exported item:
 // "<slug>.pad.md".
 func artifactExportFilename(item *models.Item) string {
-	return item.Slug + ".pad.md"
+	name := item.Slug + ".pad.md"
+	// BUG-3185: the stem is the slug, so an item slugged "nul", "con", "com1"
+	// and so on names a Windows device, and a client saving the suggested name
+	// writes nowhere. Prefixed "_" as attachment names are (BUG-2822).
+	if attachments.WindowsDeviceName(name) {
+		return "_" + name
+	}
+	return name
 }
