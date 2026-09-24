@@ -263,12 +263,11 @@ var nulColumns = []nulColumn{
 	// resolveLeaseRequest; the server's own value is only the fallback. The
 	// attribution columns above have the same shape.
 	{"items", "lease_holder", classText},
-	// A schema field key, which the caller wrote into the collection schema.
-	// Derived from stored item fields, like item_wiki_links.
-	{"item_relation_links", "source_field_key", classText},
-	// The model pin is free text from the admin decision-provider setting
-	// (trimmed and length-bounded, nothing else), copied into every answer.
-	// Second ring.
+	// The model pin is free text, trimmed and length-bounded and nothing else,
+	// copied into every answer. It resolves from the config file, the admin
+	// setting and the environment. The admin setting's column is protected,
+	// but a config-file string can decode a \u0000 escape to a real NUL, so
+	// the copy is not covered by its source. Second ring.
 	{"item_decisions", "model", classText},
 }
 
@@ -296,9 +295,8 @@ var nulTriggerMigrations = []string{
 // nulColumnTriggerFile assigns a column to a trigger file other than the
 // first. Every column not named here is in nulTriggerMigrations[0].
 var nulColumnTriggerFile = map[string]string{
-	"items.lease_holder":                   "094_nul_invariant_triggers_post084.sql",
-	"item_relation_links.source_field_key": "094_nul_invariant_triggers_post084.sql",
-	"item_decisions.model":                 "094_nul_invariant_triggers_post084.sql",
+	"items.lease_holder":   "094_nul_invariant_triggers_post084.sql",
+	"item_decisions.model": "094_nul_invariant_triggers_post084.sql",
 }
 
 // nulTriggerFileFor names the trigger file a column's triggers are rendered
@@ -368,23 +366,24 @@ func NULProtectedColumns() []nulColumn {
 // on an unlisted column are to fail on every known exclusion or to ignore the
 // class entirely.
 var nulExcluded = map[string]string{
-	"activities.action":                   "fixed enum, models.ValidActions",
-	"event_outbox.last_error":             "Go error string, server-composed",
-	"mcp_audit_log.tool_name":             "server enum, mcp_audit.go",
-	"mcp_audit_log.error_kind":            "server enum, mcp_audit.go",
-	"users.recovery_codes":                "newline-joined bcrypt hashes of server-generated codes; looks like JSON, is not",
-	"workspace_members.collection_access": "validated enum all/selected",
-	"decision_jobs.claimed_by":            "runner id minted by the server's decision tick, never request-derived",
-	"decision_jobs.last_error":            "Go error string, server-composed",
-	"item_decisions.answer":               "json.Marshal of decision.Answer: a NUL anywhere in it is written as the six-byte escape, never a raw byte, and the column is TEXT on both dialects so no jsonb parser decodes it (migration 090)",
-	"item_yjs_updates.update_data":        "BINARY (BLOB/BYTEA), the only such column in either schema. Raw Yjs updates legitimately contain NUL bytes; Layer A exempts it for the same reason and TestBinaryColumnCensus pins that. Surfaced here when the census's type filter was widened to include BLOB affinity, which is correct — the decision to exclude it is a judgement, not an oversight.",
+	"activities.action":                    "fixed enum, models.ValidActions",
+	"event_outbox.last_error":              "Go error string, server-composed",
+	"mcp_audit_log.tool_name":              "server enum, mcp_audit.go",
+	"mcp_audit_log.error_kind":             "server enum, mcp_audit.go",
+	"users.recovery_codes":                 "newline-joined bcrypt hashes of server-generated codes; looks like JSON, is not",
+	"workspace_members.collection_access":  "validated enum all/selected",
+	"decision_jobs.claimed_by":             "runner id minted by the server's decision tick, never request-derived",
+	"decision_jobs.last_error":             "Go error string, server-composed",
+	"item_decisions.answer":                "json.Marshal of decision.Answer: a NUL anywhere in it is written as the six-byte escape, never a raw byte, and the column is TEXT on both dialects so no jsonb parser decodes it (migration 090)",
+	"item_relation_links.source_field_key": "copied from a key of collections.schema, whose classJSON trigger checks decoded keys, inside the writing transaction; migration 088 states the derivation (BUG-3108 population table)",
+	"item_yjs_updates.update_data":         "BINARY (BLOB/BYTEA), the only such column in either schema. Raw Yjs updates legitimately contain NUL bytes; Layer A exempts it for the same reason and TestBinaryColumnCensus pins that. Surfaced here when the census's type filter was widened to include BLOB affinity, which is correct — the decision to exclude it is a judgement, not an oversight.",
 }
 
-// ensureNULTriggers re-applies the Layer B trigger migration if any of its
-// triggers are missing.
+// ensureNULTriggers re-applies the applied Layer B trigger migrations if any of
+// their triggers are missing.
 //
 // It runs after every migration pass, and exists because a table rebuild drops
-// the table's triggers while migration 084 stays recorded as applied — so
+// the table's triggers while the trigger files stay recorded as applied — so
 // without this, the first rebuild after S2 would remove protection from that
 // table forever, with nothing to see.
 //

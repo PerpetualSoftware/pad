@@ -29,24 +29,6 @@ BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: item_decisions.model must not contain a NUL');
 END;
 
-CREATE TRIGGER IF NOT EXISTS pad_nul_item_relation_links_source_field_key_ins
-BEFORE INSERT ON item_relation_links
-FOR EACH ROW WHEN NEW.source_field_key IS NOT NULL AND (
-			instr(NEW.source_field_key, char(0)) > 0
-)
-BEGIN
-	SELECT RAISE(ABORT, 'pad_nul_invariant: item_relation_links.source_field_key must not contain a NUL');
-END;
-
-CREATE TRIGGER IF NOT EXISTS pad_nul_item_relation_links_source_field_key_upd
-BEFORE UPDATE OF source_field_key ON item_relation_links
-FOR EACH ROW WHEN NEW.source_field_key IS NOT NULL AND (
-			instr(NEW.source_field_key, char(0)) > 0
-)
-BEGIN
-	SELECT RAISE(ABORT, 'pad_nul_invariant: item_relation_links.source_field_key must not contain a NUL');
-END;
-
 CREATE TRIGGER IF NOT EXISTS pad_nul_items_lease_holder_ins
 BEFORE INSERT ON items
 FOR EACH ROW WHEN NEW.lease_holder IS NOT NULL AND (
