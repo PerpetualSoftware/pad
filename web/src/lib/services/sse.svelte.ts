@@ -71,15 +71,18 @@ const ITEM_EVENTS = [
 // without opening their own EventSource (PLAN-1343 / TASK-1359).
 type BCEnvelope =
 	| { type: 'item_event'; event: ItemEvent }
-	| { type: 'sync_required' }
-	// The SERVER's `sync_required` (BUG-2761). A separate envelope from the
-	// one above because the receiving tab treats it differently: it draws its
-	// OWN spread delay rather than dispatching at once, so N tabs of one
-	// browser spread as well as N browsers. The plain envelope keeps carrying
-	// the item-change reconciles, which are never spread. A peer on an older
-	// bundle ignores the unknown type and simply misses this one signal,
-	// which its own next sync covers.
-	| { type: 'sync_required_spread' }
+	// `spread` marks the SERVER's `sync_required` (BUG-2761): the receiving
+	// tab draws its OWN spread delay rather than dispatching at once, so N
+	// tabs of one browser spread as well as N browsers. Without it the
+	// envelope is an item-change reconcile, which is never spread.
+	//
+	// A FLAG on the existing type rather than a new type, for mixed bundles
+	// after a deploy: a peer on an older bundle ignores the unknown member and
+	// dispatches at once — unspread, but not lost. A new type would be
+	// ignored outright, and nothing guarantees that tab another sync (codex
+	// round 1). The other direction is the same shape: an older leader sends
+	// no flag, and a newer peer answers at once.
+	| { type: 'sync_required'; spread?: true }
 	| { type: 'status'; status: SSEStatus }
 	// A newly-joined tab asks the current leader for its live status.
 	// BroadcastChannel doesn't replay the leader's earlier `status`
@@ -154,6 +157,12 @@ function createSSEService() {
 	 * Only the server's mass-coverage signal comes through here. Item-change
 	 * reconciles (`items_bulk_updated`, a collection change that rewrote
 	 * items) call dispatchSyncRequired directly and are never delayed.
+	 *
+	 * A tab RESUME inside the window syncs off `needsSync` and the timer still
+	 * fires afterwards: one redundant resync, accepted (codex round 1). Letting
+	 * the resume cancel the timer would be wrong, not just cheaper — the graph
+	 * views listen to this dispatch and not to syncService, and a resume
+	 * notifies only syncService's subscribers, so they would never refetch.
 	 */
 	function scheduleSpreadSync() {
 		needsSync = true;
@@ -199,9 +208,8 @@ function createSSEService() {
 			if (env.type === 'item_event') {
 				dispatchItemEvent(env.event);
 			} else if (env.type === 'sync_required') {
-				dispatchSyncRequired();
-			} else if (env.type === 'sync_required_spread') {
-				scheduleSpreadSync();
+				if (env.spread === true) scheduleSpreadSync();
+				else dispatchSyncRequired();
 			} else if (env.type === 'status') {
 				// Mirror the leader's connection status so peer-tab UI
 				// indicators don't show "disconnected" while the
@@ -405,7 +413,7 @@ function createSSEService() {
 			// peer draws an independent delay instead of all of them firing
 			// together at the leader's.
 			scheduleSpreadSync();
-			broadcast({ type: 'sync_required_spread' });
+			broadcast({ type: 'sync_required', spread: true });
 		});
 
 		// Bulk mutations (TASK-1668) emit ONE `items_bulk_updated` event

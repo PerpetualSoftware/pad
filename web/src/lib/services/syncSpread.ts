@@ -2,9 +2,12 @@
  * How long a tab may wait before answering a server `sync_required` (BUG-2761).
  *
  * The server sends `sync_required` mid-stream when a subscriber's replay
- * coverage ended — and the causes that end it are FLEET-WIDE: a Redis failover,
- * an ID-space epoch change, a subscription's idle_timeout after a network event
- * wedged many routes at once. Every subscriber of every affected workspace is
+ * coverage ended. (It also sends it on a resume from a Last-Event-ID it cannot
+ * vouch for, but this client never resumes: every reconnect is a new
+ * EventSource with no Last-Event-ID, BUG-2733, and is reconciled by the
+ * first-connect sync, which is not spread.) The causes that end coverage are
+ * FLEET-WIDE: a Redis failover, an ID-space epoch change, a subscription's
+ * idle_timeout after a network event wedged many routes at once. Every subscriber of every affected workspace is
  * told in the same instant, and the streams stay open, so the SSE admission
  * limits never see it. Answered at once, every tab's resync (`/changes`, then
  * the layout's `/items-changes` reconcile, then whatever the route reloads)

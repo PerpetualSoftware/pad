@@ -223,7 +223,7 @@ describe('server sync_required is spread (BUG-2761)', () => {
 		// leader's own spread timer could never arrive here.
 		await until(() => seen.length > 0);
 
-		expect(seen).toContainEqual({ type: 'sync_required_spread' });
+		expect(seen).toContainEqual({ type: 'sync_required', spread: true });
 		sse.disconnect();
 	});
 
@@ -237,7 +237,7 @@ describe('server sync_required is spread (BUG-2761)', () => {
 		expect(sources).toHaveLength(0);
 		const leaderBc = channel('ws-a');
 
-		leaderBc.postMessage({ type: 'sync_required_spread' });
+		leaderBc.postMessage({ type: 'sync_required', spread: true });
 		// needsSync is the delivery witness: set on receipt, before any timer.
 		await until(() => sse.needsSync);
 		expect(onSync).not.toHaveBeenCalled();
@@ -312,7 +312,7 @@ describe('item-change reconciles are never delayed by the spread timer (lead rul
 		await Promise.resolve();
 		const leaderBc = channel('ws-a');
 
-		leaderBc.postMessage({ type: 'sync_required_spread' });
+		leaderBc.postMessage({ type: 'sync_required', spread: true });
 		await until(() => sse.needsSync);
 		expect(onSync).not.toHaveBeenCalled();
 		leaderBc.postMessage({ type: 'sync_required' });
