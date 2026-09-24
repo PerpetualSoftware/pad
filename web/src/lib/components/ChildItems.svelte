@@ -33,6 +33,9 @@
 		itemId: string;
 		parentFields?: Record<string, any>;
 		terminalStatuses?: string[];
+		/** Abandoned child statuses, for the per-row counts in ChildChart and
+		 * NestedChildren: such a child leaves both counts (BUG-3195). */
+		abandonedStatuses?: string[];
 		onChildrenChange?: (children: Item[]) => void;
 		/**
 		 * canEdit gates child reorder via drag (PLAN-1100 / TASK-1108).
@@ -86,7 +89,7 @@
 		progress?: { done: number; total: number; percentage: number };
 	}
 
-	let { wsSlug, username = '', itemSlug, itemId, parentFields, terminalStatuses, onChildrenChange, canEdit = true, frozen = false, selfDirty = false, selfLastSaveTime = 0, onOpenTarget, progress }: Props = $props();
+	let { wsSlug, username = '', itemSlug, itemId, parentFields, terminalStatuses, abandonedStatuses, onChildrenChange, canEdit = true, frozen = false, selfDirty = false, selfLastSaveTime = 0, onOpenTarget, progress }: Props = $props();
 
 	const defaultTerminal = ['done', 'completed', 'resolved', 'cancelled', 'rejected', 'wontfix', 'fixed', 'implemented', 'archived', 'disabled', 'deprecated'];
 	const terminal = $derived(terminalStatuses ?? defaultTerminal);
@@ -924,7 +927,7 @@
 	{/if}
 
 	{#if !loading && children.length >= 2}
-		<ChildChart {children} startDate={parentFields?.start_date} endDate={parentFields?.end_date} {terminalStatuses} />
+		<ChildChart {children} startDate={parentFields?.start_date} endDate={parentFields?.end_date} {terminalStatuses} {abandonedStatuses} />
 	{/if}
 
 	{#if loading}
@@ -998,7 +1001,7 @@
 								{/if}
 							</div>
 							{#if canExpand && isExpanded}
-								<NestedChildren {wsSlug} {username} parentSlug={child.slug} depth={1} maxDepth={3} {terminalStatuses} {onOpenTarget} />
+								<NestedChildren {wsSlug} {username} parentSlug={child.slug} depth={1} maxDepth={3} {terminalStatuses} {abandonedStatuses} {onOpenTarget} />
 							{/if}
 						</div>
 					{/each}

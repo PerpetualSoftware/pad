@@ -1,17 +1,22 @@
 <script lang="ts">
 	import type { Item } from '$lib/types';
-	import { parseFields } from '$lib/types';
+	import { parseFields, DEFAULT_ABANDONED_STATUSES } from '$lib/types';
+	import { countedChildren } from '$lib/collections/childProgress';
 
 	interface Props {
 		children: Item[];
 		startDate?: string;
 		endDate?: string;
 		terminalStatuses?: string[];
+		/** Abandoned statuses (cancelled, wontfix, …): such a child is not part
+		 * of the work any more and leaves the burndown entirely (BUG-3195). */
+		abandonedStatuses?: string[];
 	}
 
-	let { children, startDate, endDate, terminalStatuses }: Props = $props();
+	let { children, startDate, endDate, terminalStatuses, abandonedStatuses }: Props = $props();
 	const defaultTerminal = ['done', 'completed', 'resolved', 'cancelled', 'rejected', 'wontfix', 'fixed', 'implemented', 'archived', 'disabled', 'deprecated'];
 	const terminal = $derived(terminalStatuses ?? defaultTerminal);
+	const abandoned = $derived(abandonedStatuses ?? DEFAULT_ABANDONED_STATUSES);
 
 	// Chart dimensions
 	const padding = { top: 20, right: 20, bottom: 30, left: 40 };
@@ -21,12 +26,13 @@
 	const chartH = height - padding.top - padding.bottom;
 
 	let chartData = $derived.by(() => {
-		const total = children.length;
+		const counted = countedChildren(children, abandoned);
+		const total = counted.length;
 		if (total < 2) return null;
 
-		// Identify completed children
+		// Identify completed children (abandoned ones already left out)
 		const completions: { date: Date; count: number }[] = [];
-		for (const child of children) {
+		for (const child of counted) {
 			const f = parseFields(child);
 			if (terminal.includes(f.status)) {
 				completions.push({ date: new Date(child.updated_at), count: 1 });
@@ -43,9 +49,9 @@
 		if (startDate) {
 			start = new Date(startDate);
 		} else {
-			// Infer: earliest created_at among children
-			let earliest = new Date(children[0].created_at);
-			for (const child of children) {
+			// Infer: earliest created_at among the counted children
+			let earliest = new Date(counted[0].created_at);
+			for (const child of counted) {
 				const d = new Date(child.created_at);
 				if (d < earliest) earliest = d;
 			}
@@ -58,7 +64,7 @@
 		if (endDate) {
 			end = new Date(endDate);
 		} else if (allDone && completions.length > 0) {
-			// All children done → last completion date
+			// All counted children done → last completion date
 			end = new Date(completions[completions.length - 1].date);
 		} else {
 			// Open-ended → today

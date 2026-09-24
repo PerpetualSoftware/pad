@@ -26,11 +26,13 @@ export interface ProgressEntry {
 
 export type ProgressMap = Record<string, ProgressEntry>;
 
-/** Build the badge map for a `plans` collection from plans-progress rows. */
+/** Build the badge map for a `plans` collection from plans-progress rows.
+ * A 0/0 row is left out: nothing counted renders as no progress, whether the
+ * plan has no children or every child is abandoned (BUG-3195). */
 export function plansProgressToMap(rows: ProgressRow[]): ProgressMap {
 	const map: ProgressMap = {};
 	for (const p of rows) {
-		map[p.item_id] = { total: p.total, done: p.done };
+		if (p.total > 0) map[p.item_id] = { total: p.total, done: p.done };
 	}
 	return map;
 }

@@ -2487,6 +2487,29 @@ export function getTerminalOptions(collection: Collection): string[] {
 	return statusField?.terminal_options ?? [...DEFAULT_TERMINAL_STATUSES];
 }
 
+/** Terminal values that close WITHOUT delivering, used when a field declares no
+ * abandoned_options. Mirrors models.NegativeTerminals (internal/models/terminal.go);
+ * keep the two lists identical. */
+const NEGATIVE_TERMINALS = [
+	'rejected', 'cancelled', 'canceled', 'wontfix', "won't fix",
+	'duplicate', 'declined', 'abandoned', 'disabled'
+];
+
+/** The collection's ABANDONED status values: terminal values that close an item
+ * without delivering it. The status field's own abandoned_options when it
+ * declares any, otherwise its terminal options that are in NEGATIVE_TERMINALS.
+ * The same rule as the server's models.AbandonedValuesForDoneField, which
+ * progress uses to leave such children out of done and total (BUG-3195). */
+export function getAbandonedOptions(collection: Collection): string[] {
+	const schema = parseSchema(collection);
+	const statusField = schema.fields.find((f) => f.key === 'status');
+	if (statusField?.abandoned_options?.length) return [...statusField.abandoned_options];
+	return getTerminalOptions(collection).filter((v) => NEGATIVE_TERMINALS.includes(v.trim().toLowerCase()));
+}
+
+/** getAbandonedOptions for callers with no collection context. */
+export const DEFAULT_ABANDONED_STATUSES = DEFAULT_TERMINAL_STATUSES.filter((v) => NEGATIVE_TERMINALS.includes(v));
+
 /** Check if a status value is terminal (finalized) for a given collection. */
 export function isTerminalStatus(status: string, collection: Collection): boolean {
 	return getTerminalOptions(collection).includes(status);

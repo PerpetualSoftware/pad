@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { api } from '$lib/api/client';
 	import type { Item, PaneTarget } from '$lib/types';
-	import { parseFields, formatItemRef } from '$lib/types';
+	import { parseFields, formatItemRef, DEFAULT_ABANDONED_STATUSES } from '$lib/types';
+	import { countChildProgress } from '$lib/collections/childProgress';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { collectionsNotStaleFor, categoricalValueFor } from '$lib/collections/categoricalFieldValue';
 	import { shouldOpenInPane } from './collections/itemCardClick';
@@ -13,6 +14,8 @@
 		depth?: number;
 		maxDepth?: number;
 		terminalStatuses?: string[];
+		/** Abandoned statuses: such a child leaves both counts (BUG-3195). */
+		abandonedStatuses?: string[];
 		/**
 		 * In-pane drill interceptor (PLAN-2154 Architecture B.2 / TASK-2159).
 		 * Threaded from `ChildItems`/`ItemDetail`'s `fireOpenTarget`; forwarded
@@ -22,10 +25,11 @@
 		onOpenTarget?: (target: PaneTarget) => void;
 	}
 
-	let { wsSlug, username = '', parentSlug, depth = 1, maxDepth = 3, terminalStatuses, onOpenTarget }: Props = $props();
+	let { wsSlug, username = '', parentSlug, depth = 1, maxDepth = 3, terminalStatuses, abandonedStatuses, onOpenTarget }: Props = $props();
 
 	const defaultTerminal = ['done', 'completed', 'resolved', 'cancelled', 'rejected', 'wontfix', 'fixed', 'implemented', 'archived', 'disabled', 'deprecated'];
 	const terminal = $derived(terminalStatuses ?? defaultTerminal);
+	const abandoned = $derived(abandonedStatuses ?? DEFAULT_ABANDONED_STATUSES);
 
 	let children = $state<Item[]>([]);
 	let loading = $state(true);
@@ -57,7 +61,7 @@
 		expandedIds = next;
 	}
 
-	let doneCount = $derived(children.filter(c => terminal.includes(parseFields(c).status)).length);
+	let counts = $derived(countChildProgress(children, terminal, abandoned));
 
 	// In-pane drill interception for a `.nested-link` anchor (TASK-2159 /
 	// PLAN-2154 Architecture B.2) — same predicate/contract as
@@ -75,10 +79,12 @@
 {:else if children.length > 0}
 	<div class="nested-children" style:--depth={depth}>
 		<div class="nested-progress">
-			<span class="nested-count">{doneCount}/{children.length}</span>
-			<div class="nested-bar">
-				<div class="nested-bar-fill" style:width="{children.length > 0 ? Math.round((doneCount / children.length) * 100) : 0}%"></div>
-			</div>
+			{#if counts.total > 0}
+				<span class="nested-count">{counts.done}/{counts.total}</span>
+				<div class="nested-bar">
+					<div class="nested-bar-fill" style:width="{Math.round((counts.done / counts.total) * 100)}%"></div>
+				</div>
+			{/if}
 		</div>
 		{#each children as child (child.id)}
 			{@const fields = parseFields(child)}
@@ -114,7 +120,7 @@
 					{/if}
 				</div>
 				{#if canExpand && isExpanded}
-					<svelte:self wsSlug={wsSlug} {username} parentSlug={child.slug} depth={depth + 1} {maxDepth} {terminalStatuses} {onOpenTarget} />
+					<svelte:self wsSlug={wsSlug} {username} parentSlug={child.slug} depth={depth + 1} {maxDepth} {terminalStatuses} {abandonedStatuses} {onOpenTarget} />
 				{/if}
 			</div>
 		{/each}
