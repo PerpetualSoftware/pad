@@ -2075,3 +2075,33 @@ func TestItemCopyTally(t *testing.T) {
 		t.Fatalf("an ordinary row was tallied as unfillable: %+v (why=%q)", got, got.Why())
 	}
 }
+
+// BUG-2367: a value dropped as not unique is named — value and, when the
+// server sent one, the holder — in both the dry run and the result, because
+// for invocation_slug the copy stops answering to that slug.
+func TestRenderItemCopy_NotUnique(t *testing.T) {
+	msg := `invocation_slug "day" is taken by PLAYB-19`
+
+	pre := &cli.ItemCopyPreflight{}
+	pre.Fields.Dropped = []cli.ItemCopyPreflightDropped{
+		{Key: "invocation_slug", Kind: "field", Reason: "not_unique", Detail: msg},
+		{Key: "progress", Kind: "field", Reason: "target_computed"},
+	}
+	var buf bytes.Buffer
+	renderItemCopyPreflight(&buf, pre)
+	for _, w := range []string{"— " + msg, "— the destination computes this field itself"} {
+		if !strings.Contains(buf.String(), w) {
+			t.Errorf("dry run missing %q:\n%s", w, buf.String())
+		}
+	}
+
+	res := &cli.ItemCopyResult{Warnings: cli.ItemCopyResultWarnings{
+		DroppedFields: []string{"invocation_slug"},
+		NotUnique:     []models.NotUniqueDrop{{Key: "invocation_slug", Value: "day", Holder: "PLAYB-19", Message: msg}},
+	}}
+	buf.Reset()
+	renderItemCopyResult(&buf, res)
+	if !strings.Contains(buf.String(), "not unique                     "+msg) {
+		t.Errorf("result missing the not_unique line:\n%s", buf.String())
+	}
+}

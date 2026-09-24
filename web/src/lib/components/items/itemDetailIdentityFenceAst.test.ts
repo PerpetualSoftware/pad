@@ -157,12 +157,12 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	closeCopyDialog: { reviewed: '1c925f081a26', why: 'restores focus after closing synchronously', may: ['paneMenuTrigger.focus'] },
 	closePushDialog: { reviewed: 'bda8c7529677', why: 'restores focus after closing synchronously', may: ['paneMenuTrigger.focus'] },
 	flushContentBeforeCopy: { reviewed: '317db0613e7a', why: 'returns a boolean to the dialog' },
-	handleCopied: { reviewed: '66bc98609e3d', why: 'switchedAway before adopting the refreshed item' },
+	handleCopied: { reviewed: 'f35fb099838d', why: 'switchedAway before adopting the refreshed item' },
 	handleDelete: { reviewed: 'b66adcf84794', why: 'switchedAway on both arms' },
 	handleRestore: { reviewed: 'c3a1732554a4', why: 'switchedAway on every arm' },
 	handleDeleteLink: { reviewed: 'e51f23ad3790', why: 'switchedAway after each await' },
 	handleCreateLink: { reviewed: '473b62faa93a', why: 'switchedAway after each await' },
-	handleMove: { reviewed: '5e3f78212486', why: 'stillOnSource() on every arm, including inside navIfStillCurrent' },
+	handleMove: { reviewed: '0b4e986d6705', why: 'stillOnSource() on every arm, including inside navIfStillCurrent' },
 };
 
 interface SignedRow extends Row {
@@ -430,6 +430,9 @@ const HELPERS: Record<string, string> = {
 	// single timer only for the current, identity-held context.
 	settleCollabIfCurrent: '90b989ea66f6',
 	showSaved: '3f1ef91fac07',
+	// BUG-2367: the move's success toast, naming any not_unique drop.
+	// Synchronous; reads only its arguments and writes only the toast store.
+	showMovedToast: '6a32f06fbd9f',
 	switchedAway: '8ba85844f406',
 	// BUG-3036: refuses a snapshot of the shown item whose seq is strictly older.
 	withInflightTags: 'd9aeb96e6bd1',

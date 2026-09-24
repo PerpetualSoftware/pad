@@ -112,7 +112,12 @@ import (
 //	                              no creator). Shared verbatim with the
 //	                              preflight.
 //	409 conflict                — a unique constraint in the destination
-//	                              (slug, title, playbook invocation_slug)
+//	                              (slug, title, playbook invocation_slug),
+//	                              or a field override / schema default that
+//	                              collides on a destination unique_scope
+//	                              field (BUG-2367). A CARRIED value that
+//	                              collides is not refused: it is dropped and
+//	                              named in warnings.not_unique
 //	409 cross_backend_attachments — the copy would have to move attachment
 //	                              BYTES between storage backends, which v1
 //	                              refuses (store.ErrCopyCrossBackendAttachments).
@@ -261,6 +266,10 @@ type ItemCopyResultWarnings struct {
 	// DroppedFields are the destination-schema keys migration could not
 	// carry. Always non-nil.
 	DroppedFields []string `json:"dropped_fields"`
+
+	// NotUnique says why and what for each DroppedFields key dropped for
+	// colliding on a destination unique field (BUG-2367). Additive, omitempty.
+	NotUnique []models.NotUniqueDrop `json:"not_unique,omitempty"`
 
 	// DroppedAssignee / DroppedAgentRole record the DR-8 scrubs.
 	DroppedAssignee  bool `json:"dropped_assignee"`
@@ -479,6 +488,7 @@ func (s *Server) handleCopyItem(w http.ResponseWriter, r *http.Request) {
 		Item:          res.Item,
 		Warnings: ItemCopyResultWarnings{
 			DroppedFields:        nonNilStrings(res.DroppedFields),
+			NotUnique:            res.NotUnique,
 			DroppedAssignee:      res.DroppedAssignee,
 			DroppedAgentRole:     res.DroppedAgentRole,
 			AttachmentCount:      res.AttachmentsCopied,
@@ -783,6 +793,12 @@ func (s *Server) writeCopyError(w http.ResponseWriter, err error) {
 		// turns a 400 into an amplifier.
 		writeError(w, http.StatusBadRequest, "malformed_override",
 			"Destination collection has no field(s): "+summarizeKeys(undeclared.Keys))
+		return
+	}
+
+	var uniq *store.UniqueFieldConflictError
+	if errors.As(err, &uniq) {
+		writeError(w, http.StatusConflict, "conflict", uniq.Error())
 		return
 	}
 

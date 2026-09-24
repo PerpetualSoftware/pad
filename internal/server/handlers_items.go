@@ -2861,6 +2861,22 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	for _, ri := range relDropped {
 		result.Dropped = append(result.Dropped, ri.Key)
 	}
+	// A CARRIED value colliding on a destination unique field is dropped and
+	// reported, before validation so a required one is refused as required;
+	// an override that collides is left for the final check (BUG-2367).
+	notUnique, nuErr := s.store.DropCarriedUniqueCollisionsQ(s.store.Q(),
+		s.relationVisibility(r, workspaceRole(r)), workspaceID, targetColl,
+		targetSchema.Fields, result.Fields, func(k string) bool {
+			_, set := input.FieldOverrides[k]
+			return set
+		})
+	if nuErr != nil {
+		writeInternalError(w, nuErr)
+		return
+	}
+	for _, d := range notUnique {
+		result.Dropped = append(result.Dropped, d.Key)
+	}
 	// Snapshot AFTER the pass above and BEFORE validation: what this needs to
 	// identify is exactly what VALIDATION adds — which includes a default the
 	// pass just deleted as unresolvable and validation puts straight back.
@@ -2926,6 +2942,16 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, ri := range append(lateDropped, invisibleDefaults...) {
 		result.Dropped = append(result.Dropped, ri.Key)
+	}
+	// A carried value on a unique_scope field must be unique in the collection
+	// it is moving INTO (BUG-2367). Checked on the final map, so an override
+	// that replaces the colliding value passes.
+	if conflicts, uerr := s.store.UniqueFieldConflictsQ(s.store.Q(), targetColl.ID, item.ID, targetSchema.Fields, result.Fields); uerr != nil {
+		writeInternalError(w, uerr)
+		return
+	} else if len(conflicts) > 0 {
+		writeError(w, http.StatusConflict, "conflict", store.UniqueFieldConflictsMessage(conflicts))
+		return
 	}
 
 	// Serialize migrated fields
@@ -3036,6 +3062,9 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	if dropped := items.StillDropped(result.Dropped, result.Fields); len(dropped) > 0 {
 		moveAudit["dropped_fields"] = strings.Join(dropped, ", ")
 	}
+	if len(notUnique) > 0 {
+		moveAudit["not_unique"] = notUniqueSummary(notUnique, targetColl.Name)
+	}
 	s.logActivityWithMeta(workspaceID, moved.ID, "moved", r, auditMeta(moveAudit))
 
 	// Publish events for both old and new collections
@@ -3049,7 +3078,29 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if len(notUnique) > 0 {
+		// The move's only drop the response names: for invocation_slug the
+		// item has stopped answering to that slug, and the caller has to
+		// learn that from the answer to its own request (BUG-2367).
+		if moved.Warnings == nil {
+			moved.Warnings = &models.ItemWriteWarnings{}
+		}
+		moved.Warnings.NotUnique = notUnique
+	}
+
 	writeJSON(w, http.StatusOK, moved)
+}
+
+// notUniqueSummary joins not_unique drops into the one line an activity row
+// carries (BUG-2367). Always the holder-free sentence: the row is read by
+// everyone who can see the moved item, and the holder was named only because
+// the ACTOR may see it.
+func notUniqueSummary(drops []models.NotUniqueDrop, collectionName string) string {
+	msgs := make([]string, 0, len(drops))
+	for _, d := range drops {
+		msgs = append(msgs, store.NotUniqueAnonymousMessage(d.Key, d.Value, collectionName))
+	}
+	return strings.Join(msgs, "; ")
 }
 
 // publishItemEventWithName publishes a real-time event for item changes with actor name.

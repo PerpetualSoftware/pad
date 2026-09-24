@@ -137,8 +137,13 @@ type ItemCopyPreflightDropped struct {
 	Kind string `json:"kind"`
 	// Reason is one of no_target_field / incompatible_type /
 	// undeclared_source_field / assignee_not_a_member /
-	// agent_role_not_portable.
+	// agent_role_not_portable / target_computed / not_unique, or one of the
+	// relation-referent reasons.
 	Reason string `json:"reason"`
+	// Detail is the sentence to print instead of the reason's generic one,
+	// when the server has something more specific to say: a not_unique drop
+	// names the value and, when visible, the item holding it (BUG-2367).
+	Detail string `json:"detail,omitempty"`
 }
 
 // ItemCopyPreflightNeedsValue is one destination field the copy cannot satisfy
@@ -246,12 +251,15 @@ type ItemCopyResultDestination struct {
 // preflight's warning block. Deliberately narrower — the relationship
 // counters are preview-only.
 type ItemCopyResultWarnings struct {
-	DroppedFields        []string `json:"dropped_fields"`
-	DroppedAssignee      bool     `json:"dropped_assignee"`
-	DroppedAgentRole     bool     `json:"dropped_agent_role"`
-	AttachmentCount      int      `json:"attachment_count"`
-	AttachmentBytes      int64    `json:"attachment_bytes"`
-	UnresolvableRefCount int      `json:"unresolvable_ref_count"`
+	DroppedFields []string `json:"dropped_fields"`
+	// NotUnique says why and what for each dropped key that collided on a
+	// destination unique field (BUG-2367).
+	NotUnique            []models.NotUniqueDrop `json:"not_unique,omitempty"`
+	DroppedAssignee      bool                   `json:"dropped_assignee"`
+	DroppedAgentRole     bool                   `json:"dropped_agent_role"`
+	AttachmentCount      int                    `json:"attachment_count"`
+	AttachmentBytes      int64                  `json:"attachment_bytes"`
+	UnresolvableRefCount int                    `json:"unresolvable_ref_count"`
 
 	// SourceContentState says the body this copy carried was behind the
 	// source item's live collaborative document (BUG-3032). Omitted by the

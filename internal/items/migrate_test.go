@@ -495,3 +495,28 @@ func TestMigrateFields_GrandfatheredReservedDeclarationIsInert(t *testing.T) {
 		t.Errorf("ordinary defaults must still apply, got %#v", result.Fields["status"])
 	}
 }
+
+// BUG-2367: a computed destination field is the server's to populate, so a
+// source that declares the same key as an ordinary field must not plant its
+// literal there — even when the types match exactly.
+func TestMigrateFields_NeverCarriesIntoComputed(t *testing.T) {
+	source := []models.FieldDef{
+		{Key: "progress", Type: "number"},
+		{Key: "effort", Type: "number"},
+	}
+	target := []models.FieldDef{
+		{Key: "progress", Type: "number", Computed: true},
+		{Key: "effort", Type: "number"},
+	}
+	result := MigrateFields(map[string]any{"progress": 40.0, "effort": 3.0}, source, target, SameWorkspace)
+
+	if _, ok := result.Fields["progress"]; ok {
+		t.Errorf("progress was carried into a computed field: %v", result.Fields["progress"])
+	}
+	if result.Fields["effort"] != 3.0 {
+		t.Errorf("control: effort should carry, got %v", result.Fields["effort"])
+	}
+	if len(result.Dropped) != 1 || result.Dropped[0] != "progress" {
+		t.Errorf("dropped: got %v, want [progress]", result.Dropped)
+	}
+}

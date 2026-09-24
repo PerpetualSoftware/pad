@@ -117,6 +117,13 @@ func MigrateFields(
 			result.Dropped = append(result.Dropped, key)
 			continue
 		}
+		// A computed field is the server's to populate, never a carried
+		// literal's (BUG-2367): a source that happens to declare the same key
+		// as an ordinary field would otherwise plant a stale snapshot in it.
+		if targetField.Computed {
+			result.Dropped = append(result.Dropped, key)
+			continue
+		}
 
 		sourceField := sourceDefs[key]
 		migrated, ok := migrateValue(value, sourceField.Type, targetField)

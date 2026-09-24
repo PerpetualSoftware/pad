@@ -1213,7 +1213,7 @@ user hunting for an item that provably does not exist.
 									{#each preflight.fields.dropped as f (f.key + f.kind)}
 										<li>
 											<span class="k">{f.label || f.key}</span>
-											<span class="v muted">{dropReason(f.reason)}</span>
+											<span class="v muted">{f.detail ?? dropReason(f.reason)}</span>
 										</li>
 									{/each}
 								</ul>

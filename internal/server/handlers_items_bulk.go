@@ -67,6 +67,9 @@ type bulkItemsRequest struct {
 type bulkItemOutcome struct {
 	Ref string `json:"ref"`
 	ID  string `json:"id"`
+	// NotUnique names each carried value a collection move dropped for
+	// colliding on a destination unique field (BUG-2367). Additive, omitempty.
+	NotUnique []models.NotUniqueDrop `json:"not_unique,omitempty"`
 }
 
 // bulkItemFailure is one row that failed, carrying the structured
@@ -325,12 +328,19 @@ func (s *Server) handleBulkItems(w http.ResponseWriter, r *http.Request) {
 		// move branch because a bulk STATUS or PRIORITY change can discard a
 		// relation default too, and a drop nobody records is the defect
 		// BUG-2674 closed.
+		if resolvedTarget != nil && updated != nil && updated.Warnings != nil && len(updated.Warnings.NotUnique) > 0 {
+			meta["not_unique"] = notUniqueSummary(updated.Warnings.NotUnique, resolvedTarget.Name)
+		}
 		if len(droppedFields) > 0 {
 			meta["dropped_fields"] = strings.Join(droppedFields, ", ")
 		}
 		s.logActivityWithMeta(workspaceID, item.ID, action, r, auditMeta(meta))
 
-		resp.Updated = append(resp.Updated, bulkItemOutcome{Ref: itemRefOrSlug(*item), ID: item.ID})
+		outcome := bulkItemOutcome{Ref: itemRefOrSlug(*item), ID: item.ID}
+		if updated != nil && updated.Warnings != nil {
+			outcome.NotUnique = updated.Warnings.NotUnique
+		}
+		resp.Updated = append(resp.Updated, outcome)
 		affectedIDs = append(affectedIDs, item.ID)
 
 		// Determine which collection scopes need a reconcile event.
@@ -1016,6 +1026,20 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 	for _, ri := range relDropped {
 		result.Dropped = append(result.Dropped, ri.Key)
 	}
+	// Carried unique collisions: dropped and reported, as handleMoveItem does
+	// (BUG-2367).
+	notUnique, nuErr := s.store.DropCarriedUniqueCollisionsQ(s.store.Q(),
+		s.relationVisibility(r, workspaceRole(r)), workspaceID, targetColl,
+		targetSchema.Fields, result.Fields, func(k string) bool {
+			_, set := suppliedByCaller[k]
+			return set
+		})
+	if nuErr != nil {
+		return nil, &bulkOpError{message: "failed to check unique fields", code: "internal_error"}
+	}
+	for _, d := range notUnique {
+		result.Dropped = append(result.Dropped, d.Key)
+	}
 	// Snapshot AFTER the pass above and BEFORE validation: what this needs to
 	// identify is exactly what VALIDATION adds — which includes a default the
 	// pass just deleted as unresolvable and validation puts straight back.
@@ -1072,6 +1096,14 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 	// the FINAL map for the reason handleMoveItem filters: a key MigrateFields
 	// listed may have been re-supplied or re-defaulted since, and reporting
 	// that would be a confident falsehood about data sitting on the item.
+	// Same uniqueness rule, check and sentence as handleMoveItem (BUG-2367):
+	// before it, a collision on invocation_slug surfaced as the raw SQL error
+	// text in `failed[]`, and one on an unindexed unique field was stored.
+	if conflicts, uerr := s.store.UniqueFieldConflictsQ(s.store.Q(), targetColl.ID, item.ID, targetSchema.Fields, result.Fields); uerr != nil {
+		return nil, &bulkOpError{message: "failed to check unique fields", code: "internal_error"}
+	} else if len(conflicts) > 0 {
+		return nil, &bulkOpError{message: store.UniqueFieldConflictsMessage(conflicts), code: "conflict"}
+	}
 	if droppedFields != nil {
 		*droppedFields = items.StillDropped(result.Dropped, result.Fields)
 	}
@@ -1133,6 +1165,12 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 			}
 		}
 		return nil, bulkStoreError(err)
+	}
+	if len(notUnique) > 0 {
+		if moved.Warnings == nil {
+			moved.Warnings = &models.ItemWriteWarnings{}
+		}
+		moved.Warnings.NotUnique = notUnique
 	}
 	return moved, nil
 }
