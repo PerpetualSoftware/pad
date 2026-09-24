@@ -78,7 +78,7 @@ func TestMain(m *testing.M) {
 // running these tests without anyone remembering to update a skip list.
 func requireScriptDeps(t *testing.T, extra ...string) {
 	t.Helper()
-	for _, tool := range append([]string{"bash", "pgrep", "pkill", "curl", "ps"}, extra...) {
+	for _, tool := range append([]string{"bash", "pgrep", "pkill", "curl", "ps", "readlink"}, extra...) {
 		if _, err := exec.LookPath(tool); err != nil {
 			t.Skipf("%s not available; this environment cannot run install-refresh.sh", tool)
 		}
@@ -929,7 +929,7 @@ func TestInstallRefresh_ConfigValuesIgnoreInlineComments(t *testing.T) {
 // as the setsid case, and for the same reason: the branch carries the risk,
 // the detection is one test.
 func TestInstallRefresh_CapturesArgvWithoutProc(t *testing.T) {
-	requireScriptDeps(t)
+	requireScriptDeps(t, "lsof") // without /proc the server's cwd is read with lsof (BUG-3196)
 	home, dir := t.TempDir(), t.TempDir()
 	name := uniqueName(t)
 	defer killStub(t, name)
@@ -1046,7 +1046,7 @@ func TestInstallRefresh_FailsClosedWhenTheLANAddressIsUnknown(t *testing.T) {
 	// hostname/ipconfig. Built by symlinking, so the rest of the script
 	// still works and only address discovery is impossible.
 	stubPath := t.TempDir()
-	for _, tool := range []string{"bash", "sed", "awk", "curl", "cp", "mv", "mkdir", "rm", "chmod", "pkill", "pgrep", "ps", "sleep", "mktemp", "dirname", "basename", "git", "head", "setsid", "nohup", "printf", "cat"} {
+	for _, tool := range []string{"bash", "sed", "awk", "curl", "cp", "mv", "mkdir", "rm", "chmod", "pkill", "pgrep", "ps", "sleep", "mktemp", "dirname", "basename", "git", "head", "setsid", "nohup", "printf", "cat", "readlink"} {
 		full, err := exec.LookPath(tool)
 		if err != nil {
 			continue
@@ -1555,5 +1555,255 @@ func TestEveryScriptTestDeclaresItsDependencies(t *testing.T) {
 	}
 	if len(missing) > 0 {
 		t.Errorf("these tests drive install-refresh.sh without declaring their dependencies, so they FAIL rather than SKIP where the tools are absent: %v", missing)
+	}
+}
+
+// runScriptIn is runScript with the SCRIPT's own working directory set, which
+// is what a refresh run from a worktree looks like (BUG-3196).
+func runScriptIn(t *testing.T, e stubEnv, dir, built, installed, commit string, extraEnv ...string) runResult {
+	t.Helper()
+	cmd := exec.Command("bash", scriptPath(t), built, installed, commit)
+	cmd.Env = append(e.env(), extraEnv...)
+	cmd.Dir = dir
+	var out, errb strings.Builder
+	cmd.Stdout, cmd.Stderr = &out, &errb
+	err := cmd.Run()
+	return runResult{stdout: out.String(), stderr: errb.String(), err: err}
+}
+
+func realDir(t *testing.T, d string) string {
+	t.Helper()
+	r, err := filepath.EvalSymlinks(d)
+	if err != nil {
+		t.Fatalf("eval %s: %v", d, err)
+	}
+	return r
+}
+
+// padName is uniqueName for a binary whose name starts `pad-`, the shape a
+// listener found only by port must have to be taken for a pad server.
+func padName(t *testing.T) string {
+	t.Helper()
+	return "pad-" + strings.TrimPrefix(uniqueName(t), "padstb")
+}
+
+// BUG-3196: the restart runs in the directory the SERVER was running in, not
+// in the directory the refresh was run from. Before the fix a refresh run from
+// a worktree left :7777 in that worktree, and then in a deleted directory once
+// the worktree was removed.
+func TestInstallRefresh_RestartsInTheServersOwnCwd(t *testing.T) {
+	requireScriptDeps(t)
+	home, dir := t.TempDir(), t.TempDir()
+	serverDir, callerDir := realDir(t, t.TempDir()), realDir(t, t.TempDir())
+	name := uniqueName(t)
+	defer killStub(t, name)
+	port := freePort(t)
+	const commit = "abc1234"
+
+	built := installStub(t, dir, name)
+	installed := filepath.Join(home, "bin", name)
+	if err := os.MkdirAll(filepath.Dir(installed), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	cwdLog := filepath.Join(home, "cwd.log")
+	e := stubEnv{version: "pad version dev (" + commit + " x)", healthy: "1",
+		argvLog: filepath.Join(home, "argv.log"), port: port, home: home}
+
+	pre := exec.Command(built, "server", "start", "--host", "127.0.0.1")
+	pre.Env = append(e.env(), "STUB_CWD_LOG="+cwdLog)
+	pre.Dir = serverDir
+	startPreServer(t, pre, "127.0.0.1", port)
+
+	res := runScriptIn(t, e, callerDir, built, installed, commit, "STUB_CWD_LOG="+cwdLog)
+	if res.err != nil {
+		t.Fatalf("script failed: %v\nstdout=%s\nstderr=%s", res.err, res.stdout, res.stderr)
+	}
+	logged, err := os.ReadFile(cwdLog)
+	if err != nil {
+		t.Fatalf("read cwd log: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(logged)), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected the pre-server and the restart in the cwd log, got %q", lines)
+	}
+	if got := lines[len(lines)-1]; got != serverDir {
+		t.Errorf("the restart ran in %q, want the server's own %q (the caller was in %q)", got, serverDir, callerDir)
+	}
+	if !strings.Contains(res.stdout, "captured server cwd: "+serverDir) {
+		t.Errorf("the script did not report the captured cwd; stdout=%s", res.stdout)
+	}
+}
+
+// A server whose directory has been deleted cannot be put back where it was,
+// so the refresh refuses, naming the path, before anything is stopped.
+func TestInstallRefresh_RefusesAServerWhoseCwdWasDeleted(t *testing.T) {
+	requireScriptDeps(t, "ss")
+	home, dir := t.TempDir(), t.TempDir()
+	gone := filepath.Join(realDir(t, t.TempDir()), "worktree")
+	if err := os.Mkdir(gone, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	name := uniqueName(t)
+	defer killStub(t, name)
+	port := freePort(t)
+	const commit = "abc1234"
+
+	built := installStub(t, dir, name)
+	installed := filepath.Join(home, "bin", name)
+	e := stubEnv{version: "pad version dev (" + commit + " x)", healthy: "1",
+		argvLog: filepath.Join(home, "argv.log"), port: port, home: home}
+	pre := exec.Command(built, "server", "start", "--host", "127.0.0.1")
+	pre.Env = e.env()
+	pre.Dir = gone
+	startPreServer(t, pre, "127.0.0.1", port)
+	if err := os.Remove(gone); err != nil {
+		t.Fatalf("remove the server's directory: %v", err)
+	}
+
+	res := runScript(t, e, built, installed, commit)
+	if res.err == nil {
+		t.Fatalf("script proceeded with the server in a deleted directory; stdout=%s", res.stdout)
+	}
+	// The path, not the kernel's "<path> (deleted)" spelling of it.
+	if !strings.Contains(res.stderr, "no longer exists: "+gone+"\n") {
+		t.Errorf("refusal did not name the missing directory %s; stderr=%s", gone, res.stderr)
+	}
+	if _, err := os.Stat(installed); err == nil {
+		t.Errorf("installed despite refusing: %s", installed)
+	}
+	if got, err := pidAnswersAt(port); err != nil || got != strconv.Itoa(pre.Process.Pid) {
+		t.Errorf("the server was touched by a refused refresh: %q %v", got, err)
+	}
+}
+
+// The staged binary's NAME does not decide the match (BUG-3196). The running
+// server is the installed binary; the build being installed has another name.
+// Before the fix the candidates came from the built name only, found nothing,
+// and the listener read as a foreign process.
+func TestInstallRefresh_MatchesTheRunningServerNotTheBuiltName(t *testing.T) {
+	requireScriptDeps(t, "ss")
+	home, dir := t.TempDir(), t.TempDir()
+	runName, builtName := uniqueName(t), uniqueName(t)
+	defer killStub(t, runName)
+	defer killStub(t, builtName)
+	port := freePort(t)
+	const commit = "abc1234"
+
+	built := installStub(t, dir, builtName)
+	installed := installStub(t, filepath.Join(home), runName)
+	e := stubEnv{version: "pad version dev (" + commit + " x)", healthy: "1",
+		argvLog: filepath.Join(home, "argv.log"), port: port, home: home}
+	pre := exec.Command(installed, "server", "start", "--host", "127.0.0.1")
+	pre.Env = e.env()
+	startPreServer(t, pre, "127.0.0.1", port)
+
+	res := runScript(t, e, built, installed, commit)
+	if res.err != nil {
+		t.Fatalf("script refused a server running as the installed binary: %v\nstdout=%s\nstderr=%s", res.err, res.stdout, res.stderr)
+	}
+	if got, err := pidAnswersAt(port); err != nil || got == strconv.Itoa(pre.Process.Pid) {
+		t.Errorf("the server was not replaced: %q %v", got, err)
+	}
+}
+
+// A listener on the port found by NEITHER candidate name is taken for the
+// server only when its own argv[0] names a pad binary.
+func TestInstallRefresh_JudgesAPortOnlyListenerByItsOwnName(t *testing.T) {
+	requireScriptDeps(t, "ss")
+	const commit = "abc1234"
+	for _, c := range []struct {
+		name     string
+		runName  func(*testing.T) string
+		replaced bool
+	}{
+		{"a pad-named server is replaced", padName, true},
+		{"a non-pad process reading `server start` is refused", func(t *testing.T) string {
+			return "xsrv" + strings.TrimPrefix(uniqueName(t), "padstb")
+		}, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			home, dir := t.TempDir(), t.TempDir()
+			runName, builtName := c.runName(t), uniqueName(t)
+			defer killStub(t, runName)
+			defer killStub(t, builtName)
+			port := freePort(t)
+			built := installStub(t, dir, builtName)
+			running := installStub(t, t.TempDir(), runName)
+			installed := filepath.Join(home, "bin", builtName)
+			e := stubEnv{version: "pad version dev (" + commit + " x)", healthy: "1",
+				argvLog: filepath.Join(home, "argv.log"), port: port, home: home}
+			pre := exec.Command(running, "server", "start", "--host", "127.0.0.1")
+			pre.Env = e.env()
+			startPreServer(t, pre, "127.0.0.1", port)
+
+			res := runScript(t, e, built, installed, commit)
+			got, perr := pidAnswersAt(port)
+			if c.replaced {
+				if res.err != nil {
+					t.Fatalf("refused a pad server on the port: %v\nstderr=%s", res.err, res.stderr)
+				}
+				if perr != nil || got == strconv.Itoa(pre.Process.Pid) {
+					t.Errorf("not replaced: %q %v", got, perr)
+				}
+				return
+			}
+			if res.err == nil || !strings.Contains(res.stderr, "is held by") {
+				t.Fatalf("a non-pad listener was not refused as foreign: err=%v stderr=%s", res.err, res.stderr)
+			}
+			if perr != nil || got != strconv.Itoa(pre.Process.Pid) {
+				t.Errorf("the foreign listener was touched: %q %v", got, perr)
+			}
+		})
+	}
+}
+
+// An UNREADABLE server cwd is refused like a missing one, naming what was
+// read and why it failed (lead ruling on BUG-3196). Reached deterministically:
+// PAD_NO_PROC forces the lsof path, and a PATH without lsof leaves nothing to
+// read the cwd with.
+func TestInstallRefresh_RefusesAnUnreadableCwdNamingWhatWasRead(t *testing.T) {
+	requireScriptDeps(t, "ss")
+	home, dir := t.TempDir(), t.TempDir()
+	name := uniqueName(t)
+	defer killStub(t, name)
+	port := freePort(t)
+	const commit = "abc1234"
+
+	built := installStub(t, dir, name)
+	installed := filepath.Join(home, "bin", name)
+	e := stubEnv{version: "pad version dev (" + commit + " x)", healthy: "1",
+		argvLog: filepath.Join(home, "argv.log"), port: port, home: home}
+	pre := exec.Command(built, "server", "start", "--host", "127.0.0.1")
+	pre.Env = e.env()
+	startPreServer(t, pre, "127.0.0.1", port)
+
+	stubPath := t.TempDir()
+	for _, tool := range []string{"bash", "sed", "awk", "curl", "cp", "mv", "mkdir", "rm", "chmod", "pkill", "pgrep", "ps", "sleep", "mktemp", "dirname", "basename", "git", "head", "setsid", "nohup", "printf", "cat", "readlink", "ss", "grep", "cut", "sort", "tail"} {
+		if full, err := exec.LookPath(tool); err == nil {
+			_ = os.Symlink(full, filepath.Join(stubPath, tool))
+		}
+	}
+	env := []string{}
+	for _, kv := range e.env() {
+		if !strings.HasPrefix(kv, "PATH=") {
+			env = append(env, kv)
+		}
+	}
+	env = append(env, "PATH="+stubPath, "PAD_NO_PROC=1")
+	cmd := exec.Command("bash", scriptPath(t), built, installed, commit)
+	cmd.Env = env
+	var out, errb strings.Builder
+	cmd.Stdout, cmd.Stderr = &out, &errb
+	if err := cmd.Run(); err == nil {
+		t.Fatalf("script proceeded without being able to read the server's cwd; stdout=%s", out.String())
+	}
+	if !strings.Contains(errb.String(), "cannot be read: (no /proc and no lsof)") {
+		t.Errorf("refusal did not name what was read; stderr=%s", errb.String())
+	}
+	if _, err := os.Stat(installed); err == nil {
+		t.Errorf("installed despite refusing: %s", installed)
+	}
+	if got, err := pidAnswersAt(port); err != nil || got != strconv.Itoa(pre.Process.Pid) {
+		t.Errorf("the server was touched by a refused refresh: %q %v", got, err)
 	}
 }
