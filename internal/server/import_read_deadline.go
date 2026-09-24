@@ -19,10 +19,13 @@ import (
 // the reproduction tables are on BUG-3184's trail).
 //
 // So the import route arms the connection's read deadline before EACH Read
-// instead: now + idle, never past the ceiling. The deadline then measures only
-// time spent waiting for the client inside a Read, which is what the global
-// timeout is for, and server work between reads no longer counts. The ceiling
-// bounds a client that trickles a byte just inside every idle window.
+// instead: now + idle, never past the ceiling. The idle window then measures
+// only time spent waiting for the client inside a Read, which is what the
+// global timeout is for, and server work between reads no longer counts
+// against it. The ceiling is different: it is fixed when the route takes the
+// body and counts EVERYTHING after that, server work included, so it bounds a
+// client that trickles a byte just inside every idle window and, at 1h, is the
+// one limit a slow enough import can still reach.
 const (
 	defaultImportReadIdle    = 60 * time.Second
 	defaultImportReadCeiling = time.Hour
