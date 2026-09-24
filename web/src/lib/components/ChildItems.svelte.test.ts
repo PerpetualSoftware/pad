@@ -130,3 +130,52 @@ describe('ChildItems self-save reload suppression (PLAN-2154 Phase 0 / TASK-2156
 		await vi.waitFor(() => expect(childrenMock).toHaveBeenCalledTimes(2));
 	});
 });
+
+// BUG-3192 Unit B: the header's completion is the SERVER's (`progress` prop),
+// or absent. There is no local fallback: counting `status` against a terminal
+// list is the computation that was wrong (a collection whose done field is not
+// `status` counted 0 done while the server counted 1).
+describe('ChildItems header completion comes from the server or not at all (BUG-3192)', () => {
+	let target: HTMLElement;
+	let instance: ReturnType<typeof mount> | undefined;
+	const kid = (id: string, fields: Record<string, unknown>) => ({
+		id, slug: id, title: `Child ${id}`, collection_slug: 'stages', fields: JSON.stringify(fields),
+		created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
+	});
+
+	beforeEach(() => {
+		childrenMock.mockClear();
+		// Two children whose done field is `stage`: one shipped, one not. A
+		// `status` count says 0 done.
+		childrenMock.mockImplementation(async () => [kid('a', { stage: 'shipped' }), kid('b', { stage: 'todo' })]);
+		target = document.body.appendChild(document.createElement('div'));
+	});
+
+	afterEach(() => {
+		if (instance) unmount(instance);
+		instance = undefined;
+		target.remove();
+		childrenMock.mockImplementation(async () => []);
+	});
+
+	async function mountWith(progress?: { done: number; total: number; percentage: number }) {
+		instance = mount(ChildItems, {
+			target,
+			props: { wsSlug: 'ws-1', itemSlug: 'p-1', itemId: 'p-1', ...(progress ? { progress } : {}) },
+		});
+		flushSync();
+		await vi.waitFor(() => expect(target.querySelector('.child-count')).not.toBeNull());
+	}
+
+	it('with the server numbers: shows them, not a local status count', async () => {
+		await mountWith({ done: 1, total: 2, percentage: 50 });
+		expect(target.querySelector('.child-count')?.textContent?.trim()).toBe('1/2 done');
+		expect((target.querySelector('.progress-fill') as HTMLElement | null)?.style.width).toBe('50%');
+	});
+
+	it('without them: the child count alone and no bar, never a locally computed "0/2 done"', async () => {
+		await mountWith();
+		expect(target.querySelector('.child-count')?.textContent?.trim()).toBe('2');
+		expect(target.querySelector('.progress-bar')).toBeNull();
+	});
+});

@@ -74,9 +74,19 @@
 		 * recursively into `NestedChildren`.
 		 */
 		onOpenTarget?: (target: PaneTarget) => void;
+		/**
+		 * The parent's completion as the SERVER counts it (`GET /progress`),
+		 * which is the definition (BUG-3192): it applies each child collection's
+		 * own done field and terminal/abandoned options, and counts only the
+		 * children the caller may see. When present, the header counts come from
+		 * here so they always match the action-bar badge and the Properties
+		 * progress field, which read the same numbers. The local count below is
+		 * only a fallback for before those numbers are known.
+		 */
+		progress?: { done: number; total: number; percentage: number };
 	}
 
-	let { wsSlug, username = '', itemSlug, itemId, parentFields, terminalStatuses, onChildrenChange, canEdit = true, frozen = false, selfDirty = false, selfLastSaveTime = 0, onOpenTarget }: Props = $props();
+	let { wsSlug, username = '', itemSlug, itemId, parentFields, terminalStatuses, onChildrenChange, canEdit = true, frozen = false, selfDirty = false, selfLastSaveTime = 0, onOpenTarget, progress }: Props = $props();
 
 	const defaultTerminal = ['done', 'completed', 'resolved', 'cancelled', 'rejected', 'wontfix', 'fixed', 'implemented', 'archived', 'disabled', 'deprecated'];
 	const terminal = $derived(terminalStatuses ?? defaultTerminal);
@@ -108,9 +118,14 @@
 	const flipDurationMs = 200;
 	const touchDragDelayMs = 500;
 
-	let doneCount = $derived(children.filter((t) => terminal.includes(parseFields(t).status)).length);
-	let totalCount = $derived(children.length);
-	let percentage = $derived(totalCount > 0 ? Math.round((doneCount / totalCount) * 100) : 0);
+	// Completion comes from the server or not at all (BUG-3192). There is no
+	// local fallback: counting `status` against a terminal list is the
+	// computation that was wrong (a collection whose done field is not `status`
+	// counted 0 done), so while the numbers are unknown the header shows the
+	// child count alone and no bar.
+	let doneCount = $derived(progress?.done);
+	let totalCount = $derived(progress ? progress.total : children.length);
+	let percentage = $derived(progress?.percentage);
 
 	/** Set of child item IDs — exposed for deduplication by the parent page */
 	export function getChildIds(): Set<string> {
@@ -769,7 +784,7 @@
 		<h3>Children</h3>
 		<div class="section-header-controls">
 			{#if totalCount > 0}
-				<span class="child-count">{doneCount}/{totalCount} done</span>
+				<span class="child-count">{doneCount === undefined ? `${totalCount}` : `${doneCount}/${totalCount} done`}</span>
 			{/if}
 			{#if showAddChild}
 				<button
@@ -902,7 +917,7 @@
 		</div>
 	{/if}
 
-	{#if children.length > 0}
+	{#if children.length > 0 && percentage !== undefined}
 		<div class="progress-bar">
 			<div class="progress-fill" style:width="{percentage}%"></div>
 		</div>
@@ -1000,7 +1015,7 @@
 {#if !loading && !error && children.length > 0}
 	<div class="print-children" aria-hidden="true">
 		<div class="print-children-header">
-			Children ({doneCount}/{totalCount} done)
+			Children ({doneCount === undefined ? totalCount : `${doneCount}/${totalCount} done`})
 		</div>
 		<ul class="print-child-list">
 			{#each children as child (child.id)}
