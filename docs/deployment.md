@@ -349,17 +349,24 @@ reading the metrics below, and for anyone writing a third-party consumer:
   tracking with a heartbeat that makes the threshold answerable — see *Half-open
   connection detection*, which covers both buses.
 
-  **A further residual affects RESUMES rather than open streams** (BUG-2743): if
-  the watch counter restarts without the epoch rotating — evicted under
-  `maxmemory`, lost to a `FLUSHDB`, restored from a stale snapshot — the old
+  **Resumes across a watch counter restart** (BUG-2743, BUG-2728): when the
+  watch counter restarts — evicted under `maxmemory`, lost to a `FLUSHDB`,
+  restored from a stale snapshot, with or without the epoch rotating — the old
   and new ID spaces overlap, and a `Last-Event-ID` inside that overlap cannot
-  be attributed to either. The instance refuses the cursors it can identify as
-  stale and serves the rest, so a client holding an old-space cursor in the
-  overlap can be handed new-space notifications as though they followed it.
-  Arithmetic on the IDs cannot close this — telling two sequences apart is
-  what the epoch token is for, and this is precisely the case the epoch does
-  not see. Rotating the epoch (see *Event ID-space migration*) is what makes a
-  deliberate counter reset safe.
+  be attributed to either. An instance that saw the restart now REFUSES every
+  resume from a cursor at or below the old space's high-water mark, as it last
+  saw it, answering `sync_required`. Before this it served them, handing an
+  old-space client new-space notifications as though they followed its cursor,
+  and a cursor equal to the new space's first ID was told it was caught up.
+  The price is that a client genuinely in the NEW space whose cursor is still
+  at or below the old peak also resyncs, once; for `pad watch --stream`, the
+  only watch-stream client today, a resync clears its cursor and keeps the
+  connection, with no refetch. Two limits remain: the boundary is what THIS
+  instance saw of the old space, so a replica that joined late knows a lower
+  peak, and one that never saw the old space knows none — the cursor carries
+  no epoch, so nothing local can do better. Rotating the epoch (see *Event
+  ID-space migration*) is still what makes a deliberate counter reset
+  unambiguous.
 
   A RECONNECTING client is largely covered on the watch stream anyway, because
   a resume consults the shared counter rather than local state alone. Not

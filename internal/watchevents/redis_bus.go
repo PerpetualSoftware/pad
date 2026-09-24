@@ -290,6 +290,34 @@ type RedisBus struct {
 	// epoch changes, since ids from a new space are not comparable with it.
 	highWaterID int64
 
+	// ambiguousThrough is the highest id of an id space this instance has
+	// ABANDONED — the old space's high-water mark at the moment a restart was
+	// detected (BUG-2743, BUG-2728). A resume from any cursor at or below it
+	// is refused, because old and new spaces overlap there and the cursor
+	// could belong to either: served, an old-space client would be handed the
+	// new space's ids as though they followed its own and never told what it
+	// missed below its cursor.
+	//
+	// Set by every arm that detects a space change — the epoch arm and both
+	// counter-backward arms — and read in ONE place, replaySince, so the
+	// arms' own knownFrom assignments (and the gap arm, which can lower
+	// knownFrom back into the overlap) cannot reopen it.
+	//
+	// NEVER CLEARED, and that is a deliberate departure from BUG-2743's
+	// sketch ("cleared once lastAppendedID passes it"). Climbing past the old
+	// peak does not make a cursor below it any less ambiguous: new 1..12
+	// after an old peak of 10 still holds 6..12 in the buffer, and an
+	// old-space 5 would be served them. Refusing costs nothing extra once
+	// eviction has carried the buffer past the old peak — replayBuffer.since
+	// refuses such cursors anyway — and until then it refuses exactly the
+	// ambiguous ones. Raised, never lowered, by a later restart.
+	//
+	// It knows only what THIS instance saw of the old space. A replica that
+	// joined late has a lower high-water mark than the space really reached,
+	// and one that never saw the old space at all has none; the cursor
+	// carries no epoch, so nothing local can do better.
+	ambiguousThrough int64
+
 	// epoch identifies the id space these ids belong to. A change means the
 	// counter was reset and the buffer describes a sequence that no longer
 	// exists — see redisWatchEpochSuffix and fanOutFromRedis.
@@ -1032,6 +1060,16 @@ func (b *RedisBus) highestSeen() int64 {
 	return b.lastAppendedID
 }
 
+// abandonSpaceLocked records that the id space whose high-water mark is
+// oldPeak has been abandoned, so replaySince refuses cursors inside it. See
+// ambiguousThrough. Callers must hold mu, and must call it BEFORE rebasing
+// highWaterID onto the new space.
+func (b *RedisBus) abandonSpaceLocked(oldPeak int64) {
+	if oldPeak > b.ambiguousThrough {
+		b.ambiguousThrough = oldPeak
+	}
+}
+
 // replaySince is replayBuffer.since plus the hole check. Callers must hold mu.
 //
 // Returning nil is the same signal eviction already produces, and the SSE
@@ -1055,6 +1093,13 @@ func (b *RedisBus) replaySince(sinceID int64) []Notification {
 		// 102 arrives. B says caught-up, then delivers 102, and 101 is gone
 		// with nothing to tell anyone.
 		if b.knownFrom == 0 || sinceID+1 < b.knownFrom {
+			return nil
+		}
+		// Inside an abandoned id space (BUG-2743, BUG-2728). Checked
+		// separately from knownFrom rather than folded into it, because
+		// knownFrom is rewritten by every arm — the gap arm included — and
+		// this refusal must survive all of them.
+		if sinceID <= b.ambiguousThrough {
 			return nil
 		}
 	}
@@ -1463,6 +1508,13 @@ func (b *RedisBus) fanOutFromRedis(epoch string, n Notification, gen int64) {
 		b.replay = newReplayBuffer(b.replaySize)
 		b.lastAppendedID = 0
 		b.knownFrom = 0
+		// Recorded BEFORE the mark is discarded: a rotated epoch usually
+		// means the counter restarted too (a FLUSHDB takes both keys), so
+		// the new ids overlap the old ones, and the cold-start arm's +1
+		// below refuses only the cursor one under the first new id
+		// (BUG-2728). When the counter did NOT restart the new ids are all
+		// above this mark and it refuses nothing the +1 does not.
+		b.abandonSpaceLocked(b.highWaterID)
 		// The new space's ids are not comparable with the old space's high
 		// water mark, so it goes with the epoch it belonged to.
 		b.highWaterID = 0
@@ -1525,8 +1577,10 @@ func (b *RedisBus) fanOutLocally(n Notification, gen int64) {
 			"the Redis sequence counter was reset during the outage",
 			"high_water", b.highWaterID, "got", n.ID)
 		// n.ID + 1, NOT n.ID — see the note on the arm below; the id space
-		// restarted, so a cursor at n.ID-1 may belong to the old one.
+		// restarted, so a cursor at n.ID-1 may belong to the old one. And
+		// every cursor up to the old peak may too — see ambiguousThrough.
 		b.knownFrom = n.ID + 1
+		b.abandonSpaceLocked(b.highWaterID)
 		b.highWaterID = n.ID
 		pending.reset(ResetReasonCounterBackward)
 		b.signalAllLocked()
@@ -1607,21 +1661,19 @@ func (b *RedisBus) fanOutLocally(n Notification, gen int64) {
 		// another instance — the conservative direction, same trade the
 		// epoch arm already accepts.
 		//
-		// WHAT THIS DOES NOT CLOSE, because arithmetic on ids cannot
-		// (BUG-2743 tracks the complete fix). replaySince serves any cursor
-		// at or above knownFrom-1, so this admits n.ID itself — and if the
-		// OLD space also reached n.ID, that cursor is still ambiguous. The
-		// same is true of every old-space id up to the old high water mark,
-		// and of the epoch arm's identical +1. Closing it needs a boundary
-		// that remembers the OLD space's extent (refuse everything at or
-		// below it until the new space climbs past), not a larger constant
-		// here. That is a resume-semantics change touching the epoch path
-		// too, so it is its own unit.
+		// The +1 alone refuses only n.ID-1: replaySince serves any cursor at
+		// or above knownFrom-1, so n.ID itself, and every old-space id up to
+		// the old high-water mark, would still be served as though it
+		// followed. abandonSpaceLocked is what closes that (BUG-2743): it
+		// remembers the OLD space's extent, and replaySince refuses every
+		// cursor inside it, on every arm.
 		//
-		// This arm is mitigation, and the epoch is the actual answer: an
-		// opaque token is the only thing that can say "different sequence"
-		// when the numbers cannot. See redisWatchEpochSuffix.
+		// Still bounded by what THIS instance saw of the old space, and the
+		// epoch remains the actual answer: an opaque token is the only thing
+		// that can say "different sequence" when the numbers cannot. See
+		// redisWatchEpochSuffix.
 		b.knownFrom = n.ID + 1
+		b.abandonSpaceLocked(b.highWaterID)
 		// The high water mark REBASES onto the new space here, and must:
 		// leaving it at the old space's peak would make every id of the
 		// restarted sequence look backward to the cold-start arm after any
