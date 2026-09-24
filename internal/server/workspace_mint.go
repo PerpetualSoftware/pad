@@ -117,3 +117,23 @@ func validateWorkspaceMintPayload(name string, settings *string) error {
 	}
 	return nil
 }
+
+// finishWorkspaceMint runs every side effect a mint owes AFTER the workspace
+// exists: today, adding it to the calling OAuth connection's allow-list
+// (maybeAutoAddCreatorConnection), so an agent that minted a workspace can use
+// it without re-authorising.
+//
+// It is the back half of beginWorkspaceMint, and exists for the same reason
+// (BUG-2794). The import doors used to skip this step, so an OAuth connection
+// with an explicit allow-list got a 201 for an imported workspace it could not
+// then see. Every door that mints calls it, on its SUCCESS path only, after
+// the owner is attached and before the 201. The bundle door's workspace row
+// commits before its items do, so a failed bundle import can leave a partial
+// workspace behind; that one must not join the connection's allow-list, and a
+// call here on the error path would put it there.
+//
+// Best-effort, like the step it wraps: the workspace exists either way, so a
+// failure logs and never fails the response.
+func (s *Server) finishWorkspaceMint(r *http.Request, workspaceID string) {
+	s.maybeAutoAddCreatorConnection(r, workspaceID)
+}

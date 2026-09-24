@@ -246,6 +246,10 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 		slog.Info("bundle import carried item bodies that were behind their live collaborative documents",
 			"workspace_id", ws.ID, "stale_bodies", staleBodies.Count)
 	}
+	// Post-creation side effects, on the success path only: a failed bundle
+	// import above can leave a partial workspace, and it must not join the
+	// caller's OAuth allow-list (BUG-2794).
+	s.finishWorkspaceMint(r, ws.ID)
 	repair.SetHeader(w)
 	staleBodies.SetHeader(w)
 	writeJSON(w, http.StatusCreated, ws)
