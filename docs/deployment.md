@@ -87,6 +87,7 @@ All configuration is via environment variables or a config file (`~/.pad/config.
 | `PAD_SSE_MAX_CONNECTIONS` | `1000` | Maximum streaming connections **per instance**, across both `/api/v1/events` and `/api/v1/events/stream` |
 | `PAD_SSE_MAX_PER_WORKSPACE` | `100` | Per-workspace maximum connections on `/api/v1/events`, **per instance** |
 | `PAD_SSE_MAX_PER_USER` | `50` | Per-user maximum streaming connections across both endpoints, **per instance** |
+| `PAD_COLLAB_MAX_PER_USER` | `50` | Per-user maximum open collaborative-editing WebSockets (`/api/v1/collab/{itemID}`), **per instance**. See *Collab connection limits* below |
 | `PAD_EVENTS_PUBLISH_EPOCH` | `false` | Phase 2 of the event ID-space migration: publish the `<epoch>\|<id>\|<json>` wire form. **Only set this once every instance runs a binary that accepts it** — see *Event ID-space migration* below. Ignored without Redis. |
 | `PAD_WATCH_HEARTBEAT` | `false` | Phase 2 of half-open detection on the **watch** stream (`/api/v1/events/stream`). Independent of `PAD_EVENTS_HEARTBEAT` — the two buses hold different connections with different fates — and rolled the same way, phase 1 everywhere first. Ignored without Redis. |
 | `PAD_EVENTS_HEARTBEAT` | `false` | Phase 2 of the half-open-connection detection rollout: publish a bus-internal liveness frame on each subscribed workspace channel every 30s. **Only set this once every instance runs a binary that recognises it** — see *Half-open connection detection* below. Setting it early makes every un-upgraded instance resync all its clients every 30 seconds. Ignored without Redis. |
@@ -136,6 +137,29 @@ single user can hold `PAD_SSE_MAX_PER_USER` connections *on each replica*. Size
 them per pod and multiply by replica count for the deployment ceiling. Watch
 `pad_stream_connections_active` (per instance) rather than inferring the total
 from the configured number.
+
+#### Collab connection limits
+
+The collaborative editor holds one WebSocket per open item pane
+(`/api/v1/collab/{itemID}`). Two bounds apply to it, both per user (per
+workspace for a caller with no resolved user, as on `/api/v1/events`), and
+neither is the general API rate limit:
+
+- **Dials:** a rate bucket of its own, 5 per second with a burst of 50. A dial
+  does not spend the user's API budget, and REST calls do not spend the dial
+  budget. A server restart makes every open tab re-dial within about a second,
+  and the burst is sized to cover that. Not configurable, like the other rate
+  buckets.
+- **Open sockets:** `PAD_COLLAB_MAX_PER_USER` (default 50). A dial over it is
+  refused with `429` code `collab_limit_exceeded` and a `Retry-After` header.
+
+A browser cannot read a refused WebSocket handshake's status, so the web
+editor does not see the `429`. It reconnects on a jittered backoff (1s, 2s,
+4s, … capped at 30s, each step randomised between half and all of itself), so
+tabs refused together do not retry together. Both bounds are **per instance**,
+like the streaming limits above. Both defaults were sized from measurement:
+20 tabs held 20 sockets and re-dialled all of them within 0.3 s of a restart
+(BUG-1308).
 
 #### Redis configuration notes
 
@@ -1298,6 +1322,7 @@ curl -s http://localhost:7777/api/v1/health   # {"status":"ok"}
 - [ ] **Redis:** Connected for multi-instance events, notifications, and session presence (`PAD_REDIS_URL`), on a non-evicting `maxmemory-policy`, single node (not a cluster)
 - [ ] **Redis namespace:** `PAD_REDIS_NAMESPACE` set if this endpoint is shared with another Pad installation
 - [ ] **Streaming limits:** `PAD_SSE_MAX_CONNECTIONS` / `PAD_SSE_MAX_PER_USER` sized for your fleet (both cover *both* SSE endpoints)
+- [ ] **Collab limit:** `PAD_COLLAB_MAX_PER_USER` sized for how many items a user keeps open at once (one socket per open item pane, per instance)
 - [ ] **Redis alerting:** `pad_redis_up` and `pad_watchevents_sequence_gaps_total` wired to alerts
 - [ ] **Stream-honesty alerting:** `pad_event_resume_gaps_total` alerting on a rate that does NOT settle after a deploy (a step around one is expected — cold replay buffers), and `pad_event_receive_loop_exits_total` read as a rate against a stable subscriber count. See the metrics table above for what each label means
 - [ ] **TLS:** Reverse proxy with valid certificates

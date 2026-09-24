@@ -14,6 +14,8 @@ data:
   PAD_SSE_MAX_CONNECTIONS: "1000"
   PAD_SSE_MAX_PER_WORKSPACE: "100"
   PAD_SSE_MAX_PER_USER: "50"
+  # Open collab WebSockets per user, per instance (BUG-1308).
+  PAD_COLLAB_MAX_PER_USER: "50"
   # Set when this Redis endpoint is shared with another Pad installation.
   # Empty/unset keeps the historical key names. Changing it on a running
   # deployment makes connected clients resync — see docs/deployment.md.
