@@ -54,8 +54,8 @@ vi.mock('$lib/stores/toast.svelte', () => ({ toastStore: toastMock }));
 
 import FieldEditor from './FieldEditor.svelte';
 
-const LIVE = { id: 'uuid-live', title: 'Red', item_number: 3, collection_prefix: 'COLO', collection_slug: 'colors', slug: 'red', deleted_at: null };
-const GONE = { ...LIVE, id: 'uuid-gone', title: 'Retired Blue', item_number: 4, slug: 'retired-blue', deleted_at: '2026-01-01T00:00:00Z' };
+const LIVE = { id: '0197aaaa-0000-7000-8000-000000000007', title: 'Red', item_number: 3, collection_prefix: 'COLO', collection_slug: 'colors', slug: 'red', deleted_at: null };
+const GONE = { ...LIVE, id: '0197aaaa-0000-7000-8000-000000000005', title: 'Retired Blue', item_number: 4, slug: 'retired-blue', deleted_at: '2026-01-01T00:00:00Z' };
 
 const field = { key: 'color', label: 'Colour', type: 'relation' as const, collection: 'colors' };
 
@@ -131,15 +131,32 @@ describe('FieldEditor — relation, three render states', () => {
 		expectNoBareUuid();
 	});
 
-	it('(c) a value resolving to nothing renders as unresolved, NOT as deleted', async () => {
+	it('(c) a value that was never an id renders as TEXT, NOT as deleted or as a broken reference', async () => {
 		// This is what R1 + R2 have been writing into these fields all along, so
 		// it is the common case on existing data, not an edge. It must be
 		// distinguishable from (b) — a value whose target was deleted and a value
-		// that was never an id are different facts about the item.
+		// that was never an id are different facts about the item. Since
+		// BUG-3014 it says what it is: stored text, shown as the text.
 		render(FieldEditor, { props: { field, value: 'red', wsSlug: 'ws', readonly: true, onchange: () => {} } });
 		await tick();
 		expect(document.body.textContent).not.toMatch(/\(deleted\)/i);
-		expect(document.body.textContent ?? '').toMatch(/unresolved|not found|unknown/i);
+		expect(document.body.textContent).not.toMatch(/unresolved/i);
+		const chip = document.querySelector('.relation-chip.is-text');
+		expect(chip?.textContent).toContain('red');
+		expect(chip?.textContent).toMatch(/text, not a reference/i);
+		expectNoBareUuid();
+	});
+
+	it('(d) an ID-shaped value resolving to nothing stays UNRESOLVED, never text (BUG-3014 ruling)', async () => {
+		// The counter-case. A UUID that matches nothing is the gone-or-hidden
+		// case the server keeps indistinguishable; calling it "text" would be
+		// false, and showing it would put a bare id in front of the user.
+		render(FieldEditor, {
+			props: { field, value: '0197aaaa-0000-7000-8000-999999999999', wsSlug: 'ws', readonly: true, onchange: () => {} },
+		});
+		await tick();
+		expect(document.querySelector('.relation-chip.is-text')).toBeNull();
+		expect(document.querySelector('.relation-chip.is-unresolved')).not.toBeNull();
 		expectNoBareUuid();
 	});
 });
@@ -147,27 +164,31 @@ describe('FieldEditor — relation, three render states', () => {
 describe('FieldEditor — relation resolves by ID, in the declared collection', () => {
 	// Both legs found by driving this in a real browser, not by reading the code.
 
-	it('a legacy free-text value that matches an item SLUG is unresolved, not a chip', async () => {
+	it('a legacy free-text value that matches an item SLUG is text, not a live chip', async () => {
 		// `localIndex.findByIdOrSlug` resolves by id OR slug, so the string "red"
 		// — exactly what the old text fallback wrote into these fields — otherwise
 		// renders as a working reference to the item slugged "red". The field
 		// stores an ID; a slug match makes the chip lie about what is stored, and
 		// slugs are mutable, so the same value could point elsewhere tomorrow.
-		rows.set('red', { ...LIVE, id: 'uuid-live' });
+		rows.set('red', { ...LIVE, id: '0197aaaa-0000-7000-8000-000000000007' });
 		localIndexMock.findByIdOrSlug.mockImplementation((_ws: string, k: string) =>
 			k === 'red' ? LIVE : (rows.get(k) ?? null)
 		);
 		render(FieldEditor, { props: { field, value: 'red', wsSlug: 'ws', username: 'dave', readonly: true, onchange: () => {} } });
 		await tick();
-		expect(document.body.textContent).toMatch(/unresolved/i);
+		// The stored text, and nothing borrowed from the slug match: no link, no
+		// ref, not the item's title "Red".
+		expect(document.querySelector('.relation-chip.is-text')).not.toBeNull();
+		expect(document.querySelector('a.relation-chip')).toBeNull();
 		expect(document.body.textContent).not.toContain('Red');
+		expect(document.body.textContent).not.toContain('COLO-');
 	});
 
 	it('an id resolving into a DIFFERENT collection is unresolved', async () => {
 		// The helper is workspace-wide. Without the collection check a relation
 		// declared against `colors` renders an item from `tasks`. Same defect the
 		// design pass recorded against the server's `ResolveItem`.
-		const foreign = { ...LIVE, id: 'uuid-foreign', title: 'A Task', collection_slug: 'tasks', collection_prefix: 'TASK' };
+		const foreign = { ...LIVE, id: '0197aaaa-0000-7000-8000-000000000002', title: 'A Task', collection_slug: 'tasks', collection_prefix: 'TASK' };
 		rows.set(foreign.id, foreign);
 		render(FieldEditor, { props: { field, value: foreign.id, wsSlug: 'ws', username: 'dave', readonly: true, onchange: () => {} } });
 		await tick();
@@ -221,7 +242,7 @@ describe('FieldEditor — a renamed target collection must not look like data lo
 		// `colors` and `tasks` are live, so the list and the index agree and the
 		// mismatch IS evidence.
 		collectionStoreMock.collections = [{ slug: 'colors' }, { slug: 'tasks' }];
-		const foreign = { ...LIVE, id: 'uuid-foreign2', title: 'A Task', collection_slug: 'tasks' };
+		const foreign = { ...LIVE, id: '0197aaaa-0000-7000-8000-000000000003', title: 'A Task', collection_slug: 'tasks' };
 		rows.set(foreign.id, foreign);
 		render(FieldEditor, { props: { field, value: foreign.id, wsSlug: 'ws', username: 'dave', readonly: true, onchange: () => {} } });
 		await tick();
@@ -381,7 +402,7 @@ describe('FieldEditor — relation, inline create (PLAN-2857 U8)', () => {
 		// any collection other than the field's declared target — `tasks` is in
 		// the store precisely so that mutant has somewhere to land.
 		const created = {
-			id: 'uuid-new',
+			id: '0197aaaa-0000-7000-8000-000000000008',
 			title: 'Purple',
 			item_number: 9,
 			collection_prefix: 'COLO',
@@ -405,7 +426,7 @@ describe('FieldEditor — relation, inline create (PLAN-2857 U8)', () => {
 		expect(ws).toBe('ws');
 		expect(coll).toBe('colors');
 		expect(body.title).toBe('Purple');
-		expect(onchange).toHaveBeenCalledWith('uuid-new');
+		expect(onchange).toHaveBeenCalledWith('0197aaaa-0000-7000-8000-000000000008');
 	});
 
 	it('sends no field values, so the server applies the collection schema defaults', async () => {
@@ -416,7 +437,7 @@ describe('FieldEditor — relation, inline create (PLAN-2857 U8)', () => {
 		// entry, as the collection page's "+ New" does — would override that
 		// answer with a worse one, and would be wrong for any schema whose
 		// default is not its first option.
-		createApi.mockResolvedValue({ id: 'uuid-new', title: 'Purple', collection_slug: 'colors' });
+		createApi.mockResolvedValue({ id: '0197aaaa-0000-7000-8000-000000000008', title: 'Purple', collection_slug: 'colors' });
 		localIndexMock.getByCollection.mockReturnValue([]);
 		localSearchMock.search.mockReturnValue([]);
 		render(FieldEditor, { props: editableProps });
@@ -440,7 +461,7 @@ describe('FieldEditor — relation, inline create (PLAN-2857 U8)', () => {
 		// The epoch is BUG-2098's guard, and it has to be read before the
 		// request, not after: a projection resync landing mid-flight means the
 		// response was authorized under a scope that no longer applies.
-		const created = { id: 'uuid-new', title: 'Purple', collection_slug: 'colors' };
+		const created = { id: '0197aaaa-0000-7000-8000-000000000008', title: 'Purple', collection_slug: 'colors' };
 		createApi.mockImplementation(async () => {
 			localIndexMock.scopeEpochFor.mockReturnValue(99);
 			return created;
@@ -464,7 +485,7 @@ describe('FieldEditor — relation, inline create (PLAN-2857 U8)', () => {
 		// create-time uniqueness check to rely on, and this is why one is not
 		// needed.
 		const created = {
-			id: 'uuid-new',
+			id: '0197aaaa-0000-7000-8000-000000000008',
 			title: 'Purple',
 			item_number: 9,
 			collection_prefix: 'COLO',
@@ -487,7 +508,7 @@ describe('FieldEditor — relation, inline create (PLAN-2857 U8)', () => {
 		row!.click();
 		await tick();
 		expect(createApi).not.toHaveBeenCalled();
-		expect(onchange).toHaveBeenCalledWith('uuid-new');
+		expect(onchange).toHaveBeenCalledWith('0197aaaa-0000-7000-8000-000000000008');
 	});
 
 	it('a failed create surfaces the error and leaves the field alone', async () => {
@@ -521,7 +542,7 @@ describe('FieldEditor — relation, inline create (PLAN-2857 U8)', () => {
 		let release!: (v: unknown) => void;
 		createApi.mockReturnValue(new Promise((r) => { release = r; }));
 		const picked = {
-			id: 'uuid-picked', title: 'Teal', item_number: 5, collection_prefix: 'COLO',
+			id: '0197aaaa-0000-7000-8000-000000000009', title: 'Teal', item_number: 5, collection_prefix: 'COLO',
 			collection_slug: 'colors', slug: 'teal', deleted_at: null,
 		};
 		rows.set(picked.id, picked);
@@ -540,9 +561,9 @@ describe('FieldEditor — relation, inline create (PLAN-2857 U8)', () => {
 		await typeQuery('Teal');
 		document.querySelector<HTMLElement>('.picker-result')!.click();
 		await tick();
-		expect(onchange).toHaveBeenCalledWith('uuid-picked');
+		expect(onchange).toHaveBeenCalledWith('0197aaaa-0000-7000-8000-000000000009');
 
-		release({ id: 'uuid-new', title: 'Purple', collection_slug: 'colors' });
+		release({ id: '0197aaaa-0000-7000-8000-000000000008', title: 'Purple', collection_slug: 'colors' });
 		await tick();
 		await tick();
 
@@ -550,7 +571,7 @@ describe('FieldEditor — relation, inline create (PLAN-2857 U8)', () => {
 		// must not become the field's value.
 		expect(localIndexMock.upsert).toHaveBeenCalled();
 		expect(onchange).toHaveBeenCalledTimes(1);
-		expect(onchange).not.toHaveBeenCalledWith('uuid-new');
+		expect(onchange).not.toHaveBeenCalledWith('0197aaaa-0000-7000-8000-000000000008');
 	});
 
 	it('a create that lands after this editor is destroyed writes nothing', async () => {
@@ -573,7 +594,7 @@ describe('FieldEditor — relation, inline create (PLAN-2857 U8)', () => {
 		await tick();
 
 		cleanup(); // the {#key itemSlug} remount
-		release({ id: 'uuid-new', title: 'Purple', collection_slug: 'colors' });
+		release({ id: '0197aaaa-0000-7000-8000-000000000008', title: 'Purple', collection_slug: 'colors' });
 		await tick();
 		await tick();
 
@@ -609,7 +630,7 @@ describe('FieldEditor — relation, inline create (PLAN-2857 U8)', () => {
 		el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
 		await tick();
 
-		release({ id: 'uuid-new', title: 'Purple', collection_slug: 'colors' });
+		release({ id: '0197aaaa-0000-7000-8000-000000000008', title: 'Purple', collection_slug: 'colors' });
 		await tick();
 		await tick();
 
@@ -638,7 +659,7 @@ describe('FieldEditor — relation, inline create (PLAN-2857 U8)', () => {
 		await rerender({ ...editableProps, wsSlug: 'other-ws', onchange });
 		await tick();
 
-		release({ id: 'uuid-new', title: 'Purple', collection_slug: 'colors' });
+		release({ id: '0197aaaa-0000-7000-8000-000000000008', title: 'Purple', collection_slug: 'colors' });
 		await tick();
 		await tick();
 
@@ -706,7 +727,7 @@ describe('FieldEditor — relation, inline create (PLAN-2857 U8)', () => {
 		// case, not a coincidence.
 		localIndexMock.resetGenerationFor.mockReturnValue(4);
 		localIndexMock.scopeEpochFor.mockReturnValue(7);
-		release({ id: 'uuid-new', title: 'Purple', collection_slug: 'colors' });
+		release({ id: '0197aaaa-0000-7000-8000-000000000008', title: 'Purple', collection_slug: 'colors' });
 		await tick();
 		await tick();
 
@@ -756,7 +777,7 @@ describe('FieldEditor — relation, inline create (PLAN-2857 U8)', () => {
 
 		// The purge: state deleted, re-bootstrapped, epoch back to 0.
 		localIndexMock.scopeEpochFor.mockReturnValue(0);
-		release({ id: 'uuid-new', title: 'Purple', collection_slug: 'colors' });
+		release({ id: '0197aaaa-0000-7000-8000-000000000008', title: 'Purple', collection_slug: 'colors' });
 		await tick();
 		await tick();
 

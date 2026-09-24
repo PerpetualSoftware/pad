@@ -42,6 +42,21 @@ func TestRenderRelationValue(t *testing.T) {
 		}
 	})
 
+	t.Run("stored text renders as text, not as an unavailable target", func(t *testing.T) {
+		t.Parallel()
+		// BUG-3014: the value was never an id, so "(unavailable)" would claim a
+		// target that is gone or hidden when there was no target at all.
+		got := RenderRelationValue(models.RelationTarget{ID: "Red", StoredAsText: true})
+		if got != `"Red" (text, not a reference)` {
+			t.Errorf("got %q, want %q", got, `"Red" (text, not a reference)`)
+		}
+		for _, forbidden := range []string{"unavailable", "deleted", "broken"} {
+			if strings.Contains(strings.ToLower(got), forbidden) {
+				t.Errorf("render %q claims %q about a value that is simply text", got, forbidden)
+			}
+		}
+	})
+
 	t.Run("ref without a title does not render a dangling separator", func(t *testing.T) {
 		t.Parallel()
 		got := RenderRelationValue(models.RelationTarget{ID: "abc", Ref: "COLO-3"})

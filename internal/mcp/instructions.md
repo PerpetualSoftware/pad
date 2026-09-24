@@ -6,7 +6,7 @@ Pad is a project tracker for developers and AI agents — issues (TASK, BUG), pl
 
 If the user is asking general code questions with no project-management thread, you don't need this server.
 
-## Tool surface (v0.49)
+## Tool surface (v0.50)
 
 Ten resource × action tools, plus `pad_set_workspace` (which takes a `workspace` slug only — no action enum). Eleven tools total.
 
@@ -16,7 +16,7 @@ Inputs are validated strictly: an undeclared top-level key is rejected with a st
 
 **Relation fields (v0.31).** A `relation` value may be a UUID, an issue ref (`COLO-3`), or the target item's EXACT TITLE — in that order, so an item literally titled `COLO-3` is unreachable by title while the ref resolves. Title matching is scoped to the collection the field declares: a title that is unique only workspace-wide is REFUSED, naming the collection searched, and a title matching two or more items inside the declared collection is refused as `ambiguous` rather than `not_found` — it matched too much, not too little. Only items YOU can see count towards any of that, so a match you have no access to never changes your answer.
 
-Reads carry a `relation_targets` member beside `fields`: field key → `{id, ref, title}`, so you can render a relation without a request per value. `fields` still holds the canonical id, which is what you write back. An entry with an `id` and NO `ref`/`title` means the target is gone **or** you may not see it — the two are deliberately indistinguishable, so do not render it as either "deleted" or "hidden"; "unavailable" is the honest word.
+Reads carry a `relation_targets` member beside `fields`: field key → `{id, ref, title}`, so you can render a relation without a request per value. `fields` still holds the canonical id, which is what you write back. An entry with an `id` and NO `ref`/`title` means the target is gone **or** you may not see it — the two are deliberately indistinguishable, so do not render it as either "deleted" or "hidden"; "unavailable" is the honest word. An entry with `stored_as_text: true` differs: the stored value is not UUID-shaped, so it was never an id (an imported title, legacy text). Render it as text, not as unavailable.
 
 **`multi_relation` fields (v0.33).** A field declared `multi_relation` holds an ORDERED LIST of references — `["<uuid>", "COLO-3", "Red"]` — and every element resolves through the same UUID → ref → exact-title ladder, with the same collection scoping. Declare one through the `fields` DSL as `owners:multi_relation:people`: the third part is the TARGET COLLECTION, and omitting it is refused at parse time rather than building a field no write can ever satisfy.
 

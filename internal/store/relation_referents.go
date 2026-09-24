@@ -2115,6 +2115,18 @@ func (s *Store) DropInvisibleRelationDefaultsQ(
 	return dropped, nil
 }
 
+// relationValueStoredAsText is the `stored_as_text` predicate (BUG-3014): a
+// stored relation value that, after strings.TrimSpace, is not 8-4-4-4-12 hex
+// was never an id. Syntactic on purpose (lead ruling).
+//
+// KEEP IN SYNC with isRelationValueStoredAsText in
+// web/src/lib/items/relationFieldTypes.ts. Both are pinned to the same table,
+// internal/store/testdata/relation_stored_as_text_cases.json, so a drift on
+// either side turns exactly one suite red.
+func relationValueStoredAsText(value string) bool {
+	return !isUUID(strings.TrimSpace(value))
+}
+
 // HydrateRelationTargetsQ resolves the stored `relation` values on a batch of
 // items into {id, ref, title} entries (PLAN-2857 U6).
 //
@@ -2182,10 +2194,10 @@ func (s *Store) HydrateRelationTargetsQ(
 					continue
 				}
 				// EVERY element, blanks included, so position is preserved. A
-				// blank cannot name anything and will hydrate ID-only, which is
-				// the same honest shape a dangling value gets — and keeping the
-				// position is what lets a consumer line the list up against the
-				// stored array. Dropping it would silently shorten the list for
+				// blank cannot name anything and hydrates as stored text (it is
+				// not UUID-shaped, BUG-3014), which is what it is — and keeping
+				// the position is what lets a consumer line the list up against
+				// the stored array. Dropping it would silently shorten the list for
 				// exactly the legacy rows that need explaining.
 				values = elems
 			} else {
@@ -2299,6 +2311,13 @@ func (s *Store) HydrateRelationTargetsQ(
 			hydrated := make([]models.RelationTarget, 0, len(want.values))
 			for _, value := range want.values {
 				value := strings.TrimSpace(value)
+				if relationValueStoredAsText(value) {
+					// Not an id at all, so there was never anything to look up
+					// (BUG-3014). Say so, from the bytes alone; see
+					// models.RelationTarget.StoredAsText.
+					hydrated = append(hydrated, models.RelationTarget{ID: value, StoredAsText: true})
+					continue
+				}
 				target, ok := resolved[value]
 				if !ok {
 					// Dangling: the stored value names nothing live. ID-only, so
