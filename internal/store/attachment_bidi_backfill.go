@@ -27,8 +27,9 @@ import (
 // then maps a blocked extension to ".bin". For a selected row the rewrite is
 // therefore WIDER than the Bidi_Control characters: whatever else
 // NormalizeFilename changes about a legacy name (other control characters,
-// trailing dots and spaces) changes too, which makes the stored name equal the
-// name the download header has served since BUG-2818. Rows without a
+// trailing dots and spaces, a Windows device name's "_" prefix) changes too,
+// which makes the stored name equal the name the download header has served
+// since BUG-2818 (since BUG-2822 for the prefix). Rows without a
 // Bidi_Control character are never selected, so no other row changes.
 // That choice lives HERE rather than
 // at the startup call site, so no wiring can substitute a plain strip without
