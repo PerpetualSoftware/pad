@@ -252,9 +252,12 @@ function createSyncService() {
 	}
 
 	/**
-	 * Trigger a sync immediately (e.g., when SSE sends sync_required
+	 * Trigger a sync immediately (e.g., when SSE signals sync_required
 	 * while the tab is still visible). This bypasses the visibility
-	 * change listener and runs the sync directly.
+	 * change listener and runs the sync directly. "Immediately" is about
+	 * THIS call: the server's own `sync_required` reaches it only after the
+	 * sse service's spread delay (BUG-2761, syncSpread.ts), while item-change
+	 * reconciles reach it at once.
 	 */
 	async function triggerSync() {
 		if (!wsSlug) return;

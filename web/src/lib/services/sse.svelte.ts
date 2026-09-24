@@ -1,5 +1,6 @@
 import { SvelteSet } from 'svelte/reactivity';
 import { probeRefusal, reconnectDelayMs } from './sseReconnect';
+import { syncRequiredSpreadDelayMs } from './syncSpread';
 
 export type SSEStatus = 'disconnected' | 'connected' | 'reconnecting' | 'unauthorized';
 
@@ -70,7 +71,18 @@ const ITEM_EVENTS = [
 // without opening their own EventSource (PLAN-1343 / TASK-1359).
 type BCEnvelope =
 	| { type: 'item_event'; event: ItemEvent }
-	| { type: 'sync_required' }
+	// `spread` marks the SERVER's `sync_required` (BUG-2761): the receiving
+	// tab draws its OWN spread delay rather than dispatching at once, so N
+	// tabs of one browser spread as well as N browsers. Without it the
+	// envelope is an item-change reconcile, which is never spread.
+	//
+	// A FLAG on the existing type rather than a new type, for mixed bundles
+	// after a deploy: a peer on an older bundle ignores the unknown member and
+	// dispatches at once — unspread, but not lost. A new type would be
+	// ignored outright, and nothing guarantees that tab another sync (codex
+	// round 1). The other direction is the same shape: an older leader sends
+	// no flag, and a newer peer answers at once.
+	| { type: 'sync_required'; spread?: true }
 	| { type: 'status'; status: SSEStatus }
 	// A newly-joined tab asks the current leader for its live status.
 	// BroadcastChannel doesn't replay the leader's earlier `status`
@@ -115,9 +127,50 @@ function createSSEService() {
 
 	function dispatchSyncRequired() {
 		needsSync = true;
+		// An immediate dispatch SUBSUMES a spread one still pending: every
+		// consumer answers by issuing a fresh request, and a request issued
+		// now postdates the signal the timer is holding, so it covers it.
+		// Firing the timer later would be a second resync for the same gap.
+		cancelSpreadSync();
 		for (const cb of syncRequiredCallbacks) {
 			cb();
 		}
+	}
+
+	// The pending spread dispatch, if any (BUG-2761). One per tab: a signal
+	// arriving while it is pending folds into it rather than drawing again,
+	// since one resync after the last signal covers them all.
+	let spreadTimer: ReturnType<typeof setTimeout> | null = null;
+
+	function cancelSpreadSync() {
+		if (spreadTimer !== null) {
+			clearTimeout(spreadTimer);
+			spreadTimer = null;
+		}
+	}
+
+	/**
+	 * Answer a server `sync_required` after a random delay instead of at once
+	 * — see syncSpread.ts for why and for the window. `needsSync` is set NOW,
+	 * so a tab resume inside the window still sees that a sync is owed.
+	 *
+	 * Only the server's mass-coverage signal comes through here. Item-change
+	 * reconciles (`items_bulk_updated`, a collection change that rewrote
+	 * items) call dispatchSyncRequired directly and are never delayed.
+	 *
+	 * A tab RESUME inside the window syncs off `needsSync` and the timer still
+	 * fires afterwards: one redundant resync, accepted (codex round 1). Letting
+	 * the resume cancel the timer would be wrong, not just cheaper — the graph
+	 * views listen to this dispatch and not to syncService, and a resume
+	 * notifies only syncService's subscribers, so they would never refetch.
+	 */
+	function scheduleSpreadSync() {
+		needsSync = true;
+		if (spreadTimer !== null) return;
+		spreadTimer = setTimeout(() => {
+			spreadTimer = null;
+			dispatchSyncRequired();
+		}, syncRequiredSpreadDelayMs());
 	}
 
 	function broadcast(env: BCEnvelope) {
@@ -155,7 +208,8 @@ function createSSEService() {
 			if (env.type === 'item_event') {
 				dispatchItemEvent(env.event);
 			} else if (env.type === 'sync_required') {
-				dispatchSyncRequired();
+				if (env.spread === true) scheduleSpreadSync();
+				else dispatchSyncRequired();
 			} else if (env.type === 'status') {
 				// Mirror the leader's connection status so peer-tab UI
 				// indicators don't show "disconnected" while the
@@ -354,8 +408,12 @@ function createSSEService() {
 			// source exists — and would dispatch into (and broadcast onto)
 			// the NEW workspace's channel.
 			if (source !== eventSource) return;
-			dispatchSyncRequired();
-			broadcast({ type: 'sync_required' });
+			// Spread, not dispatched at once (BUG-2761). The broadcast goes
+			// out NOW rather than when this tab's own timer fires, so each
+			// peer draws an independent delay instead of all of them firing
+			// together at the leader's.
+			scheduleSpreadSync();
+			broadcast({ type: 'sync_required', spread: true });
 		});
 
 		// Bulk mutations (TASK-1668) emit ONE `items_bulk_updated` event
@@ -559,6 +617,12 @@ function createSSEService() {
 		currentWorkspace = '';
 		isLeader = false;
 		status = 'disconnected';
+		// A spread sync belongs to the connection that was told. Fired after a
+		// switch it would dispatch into the NEXT workspace's consumers — the
+		// stale-source defect (BUG-2611) arriving by timer instead of by
+		// queued task. The next connection's own first-connect sync (BUG-2540)
+		// covers whatever it was holding.
+		cancelSpreadSync();
 		// Don't carry an unclaimed arm across a teardown (codex review).
 		//
 		// Belt-and-braces, and labelled as such rather than implied to be
@@ -590,9 +654,16 @@ function createSSEService() {
 	}
 
 	/**
-	 * Subscribe to `sync_required` events from the server. Fires when the
-	 * server's replay buffer couldn't cover a reconnect gap and the client
-	 * needs to do a fresh sync. Returns an unsubscribe function.
+	 * Subscribe to sync-required signals. Fires when the server says this
+	 * stream missed events it cannot replay (its `sync_required`, sent
+	 * mid-stream — this client never resumes from a Last-Event-ID, so the
+	 * resume form does not reach it) and the client needs a fresh sync.
+	 * Returns an unsubscribe function.
+	 *
+	 * Also fires for item-change reconciles (`items_bulk_updated`, a
+	 * collection change that rewrote items) and on every connect (BUG-2540),
+	 * all immediately. The server's `sync_required` itself fires after a
+	 * random spread delay of up to SYNC_REQUIRED_SPREAD_MS (BUG-2761).
 	 *
 	 * Used by syncService to drive `triggerSync()` without sse.svelte
 	 * having to import sync.svelte (which would form a circular dep —
