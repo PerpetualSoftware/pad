@@ -22,8 +22,14 @@ func TestGenerateNULTriggerMigration(t *testing.T) {
 	if os.Getenv("GEN_NUL_TRIGGERS") == "" {
 		t.Skip("generator; run with GEN_NUL_TRIGGERS=1 after changing nulcolumns.go")
 	}
-	if err := os.WriteFile("migrations/"+nulTriggerMigration, []byte(renderNULTriggerMigration()), 0o644); err != nil {
-		t.Fatalf("write: %v", err)
+	// Every file, including the shipped ones. Rendering a shipped file must
+	// reproduce it byte for byte, so rewriting it is a no-op unless the list
+	// moved a column into it, which TestNULTriggerFilesFollowTheirColumns and
+	// the pin test both refuse.
+	for _, f := range nulTriggerMigrations {
+		if err := os.WriteFile("migrations/"+f, []byte(renderNULTriggerMigration(f)), 0o644); err != nil {
+			t.Fatalf("write %s: %v", f, err)
+		}
 	}
 	t.Logf("wrote %d triggers for %d columns", len(NULProtectedColumns())*2, len(NULProtectedColumns()))
 }

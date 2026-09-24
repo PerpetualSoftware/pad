@@ -252,6 +252,60 @@ var nulColumns = []nulColumn{
 	{"sessions", "ip_address", classText}, // header-derived
 	{"email_optouts", "email", classText},
 	{"mcp_audit_log", "request_id", classText},
+
+	// POST-084 COLUMNS (BUG-3108). Their triggers cannot live in 084, which
+	// runs before these columns exist, so each is assigned a later trigger
+	// file in nulColumnTriggerFile below. The population table (every text
+	// column a migration after 084 introduced, and the decision on each) is on
+	// BUG-3108's trail.
+	//
+	// lease_holder is the request body's `holder`, stored verbatim by
+	// resolveLeaseRequest; the server's own value is only the fallback. The
+	// attribution columns above have the same shape.
+	{"items", "lease_holder", classText},
+	// The model pin is free text, trimmed and length-bounded and nothing else,
+	// copied into every answer. It resolves from the config file, the admin
+	// setting and the environment. The admin setting's column is protected,
+	// but a config-file string can decode a \u0000 escape to a real NUL, so
+	// the copy is not covered by its source. Second ring.
+	{"item_decisions", "model", classText},
+}
+
+// nulTriggerMigrations are the generated trigger files, in migration order.
+//
+// A trigger can only be created after its column exists, and 084 runs before
+// every later migration's columns do. Putting a later column's trigger in 084
+// breaks two things: SQLite re-parses every trigger in the schema during an
+// ALTER TABLE ... RENAME, so the next table-rebuild migration fails with "no
+// such column", and ensureNULTriggers re-executes the file after every
+// migration, including the ones that run before that column exists (BUG-3108).
+//
+// So a column added after a trigger file ships gets its trigger in a LATER
+// file. Adding one means appending a new file here, numbered after the
+// column's migration, and mapping the column to it in nulColumnTriggerFile.
+// TestNULTriggerFilesFollowTheirColumns fails, naming the column and the
+// migration that introduced it, until that is done. A shipped file is never
+// rewritten to take a new column: databases that already applied it would
+// never run it again.
+var nulTriggerMigrations = []string{
+	"084_nul_invariant_triggers.sql",
+	"094_nul_invariant_triggers_post084.sql",
+}
+
+// nulColumnTriggerFile assigns a column to a trigger file other than the
+// first. Every column not named here is in nulTriggerMigrations[0].
+var nulColumnTriggerFile = map[string]string{
+	"items.lease_holder":   "094_nul_invariant_triggers_post084.sql",
+	"item_decisions.model": "094_nul_invariant_triggers_post084.sql",
+}
+
+// nulTriggerFileFor names the trigger file a column's triggers are rendered
+// into.
+func nulTriggerFileFor(c nulColumn) string {
+	if f, ok := nulColumnTriggerFile[c.Table+"."+c.Column]; ok {
+		return f
+	}
+	return nulTriggerMigrations[0]
 }
 
 // oauthRequestTables share one writer and one column set, so they are expanded
@@ -312,23 +366,24 @@ func NULProtectedColumns() []nulColumn {
 // on an unlisted column are to fail on every known exclusion or to ignore the
 // class entirely.
 var nulExcluded = map[string]string{
-	"activities.action":                   "fixed enum, models.ValidActions",
-	"event_outbox.last_error":             "Go error string, server-composed",
-	"mcp_audit_log.tool_name":             "server enum, mcp_audit.go",
-	"mcp_audit_log.error_kind":            "server enum, mcp_audit.go",
-	"users.recovery_codes":                "newline-joined bcrypt hashes of server-generated codes; looks like JSON, is not",
-	"workspace_members.collection_access": "validated enum all/selected",
-	"decision_jobs.claimed_by":            "runner id minted by the server's decision tick, never request-derived",
-	"decision_jobs.last_error":            "Go error string, server-composed",
-	"item_decisions.answer":               "json.Marshal of decision.Answer: a NUL anywhere in it is written as the six-byte escape, never a raw byte, and the column is TEXT on both dialects so no jsonb parser decodes it (migration 090)",
-	"item_yjs_updates.update_data":        "BINARY (BLOB/BYTEA), the only such column in either schema. Raw Yjs updates legitimately contain NUL bytes; Layer A exempts it for the same reason and TestBinaryColumnCensus pins that. Surfaced here when the census's type filter was widened to include BLOB affinity, which is correct — the decision to exclude it is a judgement, not an oversight.",
+	"activities.action":                    "fixed enum, models.ValidActions",
+	"event_outbox.last_error":              "Go error string, server-composed",
+	"mcp_audit_log.tool_name":              "server enum, mcp_audit.go",
+	"mcp_audit_log.error_kind":             "server enum, mcp_audit.go",
+	"users.recovery_codes":                 "newline-joined bcrypt hashes of server-generated codes; looks like JSON, is not",
+	"workspace_members.collection_access":  "validated enum all/selected",
+	"decision_jobs.claimed_by":             "runner id minted by the server's decision tick, never request-derived",
+	"decision_jobs.last_error":             "Go error string, server-composed",
+	"item_decisions.answer":                "json.Marshal of decision.Answer: a NUL anywhere in it is written as the six-byte escape, never a raw byte, and the column is TEXT on both dialects so no jsonb parser decodes it (migration 090)",
+	"item_relation_links.source_field_key": "only written by replaceRelationLinks, as a field definition's key value read from collections.schema in the same transaction; that column's classJSON trigger checks every decoded value; migration 088 states the derivation (BUG-3108 writer list)",
+	"item_yjs_updates.update_data":         "BINARY (BLOB/BYTEA), the only such column in either schema. Raw Yjs updates legitimately contain NUL bytes; Layer A exempts it for the same reason and TestBinaryColumnCensus pins that. Surfaced here when the census's type filter was widened to include BLOB affinity, which is correct — the decision to exclude it is a judgement, not an oversight.",
 }
 
-// ensureNULTriggers re-applies the Layer B trigger migration if any of its
-// triggers are missing.
+// ensureNULTriggers re-applies the applied Layer B trigger migrations if any of
+// their triggers are missing.
 //
 // It runs after every migration pass, and exists because a table rebuild drops
-// the table's triggers while migration 084 stays recorded as applied — so
+// the table's triggers while the trigger files stay recorded as applied — so
 // without this, the first rebuild after S2 would remove protection from that
 // table forever, with nothing to see.
 //
@@ -351,6 +406,15 @@ func (s *Store) ensureNULTriggers() error {
 // observables in a row is the point at which the honest fix is to make the
 // thing itself observable (codex round 5).
 func (s *Store) ensureNULTriggersReporting() (restored bool, err error) {
+	return s.ensureNULTriggersFor(nulTriggerMigrations)
+}
+
+// ensureNULTriggersFor is the restore, over the trigger files a binary KNOWS.
+//
+// Production passes every file this binary ships. The parameter exists so a
+// test can run the restore as an OLDER binary would, knowing fewer files, and
+// check that it leaves a newer file's triggers alone (see nulTriggerPrefix).
+func (s *Store) ensureNULTriggersFor(known []string) (restored bool, err error) {
 	if s.dialect.Driver() != DriverSQLite {
 		return false, nil
 	}
@@ -362,17 +426,21 @@ func (s *Store) ensureNULTriggersReporting() (restored bool, err error) {
 	// during a FRESH install while the early migrations are still creating the
 	// tables. Attempting the trigger SQL then fails on "no such table" — caught
 	// immediately by the test suite when the per-migration call was added.
-	applied, err := s.nulTriggerMigrationApplied()
+	//
+	// The same holds per FILE (BUG-3108): a later trigger file's triggers name
+	// columns that do not exist until the migrations before it have run, so
+	// only the files already applied are wanted or re-executed.
+	applied, err := s.nulTriggerMigrationsApplied(known)
 	if err != nil {
 		return false, err
 	}
-	if !applied {
+	if len(applied) == 0 {
 		return false, nil
 	}
 
 	// name -> the exact CREATE statement the list renders, so the check can
 	// compare DEFINITIONS.
-	want := renderedNULTriggers()
+	want := renderedNULTriggers(applied)
 
 	// The SET, not the count (codex round 2). A database with the right NUMBER
 	// of triggers but a missing one and an extra one read as healthy, and
@@ -382,9 +450,13 @@ func (s *Store) ensureNULTriggersReporting() (restored bool, err error) {
 	// character wildcard, so 'pad_nul_%' also matches names this code never
 	// generates — a loose pattern in a health check is a health check that can
 	// be satisfied by the wrong thing.
-	data, err := migrationsFS.ReadFile("migrations/" + nulTriggerMigration)
-	if err != nil {
-		return false, fmt.Errorf("read %s: %w", nulTriggerMigration, err)
+	files := make([]string, 0, len(applied))
+	for _, name := range applied {
+		data, err := migrationsFS.ReadFile("migrations/" + name)
+		if err != nil {
+			return false, fmt.Errorf("read %s: %w", name, err)
+		}
+		files = append(files, string(data))
 	}
 
 	// TRANSACTION FIRST, THEN INSPECT (codex rounds 2 and 3).
@@ -405,12 +477,12 @@ func (s *Store) ensureNULTriggersReporting() (restored bool, err error) {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	have, err := nulTriggersIn(tx)
+	have, err := nulTriggersIn(tx, known)
 	if err != nil {
 		return false, err
 	}
 	missing := false
-	// An EXTRA pad_nul_ trigger is unhealthy too (codex round 6). A stray one
+	// An EXTRA trigger in a known namespace is unhealthy too (codex round 6). A stray one
 	// left by a partial restore or a manual edit can ABORT legitimate writes,
 	// and a check that only asks "is everything I expect present" reports that
 	// database as fine. The drop-then-recreate below removes them, so detecting
@@ -447,8 +519,10 @@ func (s *Store) ensureNULTriggersReporting() (restored bool, err error) {
 			return false, fmt.Errorf("drop stale NUL trigger %s: %w", name, derr)
 		}
 	}
-	if err := execMulti(tx, string(data)); err != nil {
-		return false, fmt.Errorf("restore NUL triggers: %w", err)
+	for i, data := range files {
+		if err := execMulti(tx, data); err != nil {
+			return false, fmt.Errorf("restore NUL triggers from %s: %w", applied[i], err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return false, fmt.Errorf("commit trigger restore: %w", err)
@@ -472,46 +546,74 @@ func (s *Store) ensureNULTriggersReporting() (restored bool, err error) {
 	return true, nil
 }
 
-// nulTriggersIn reads the NUL triggers present, name -> stored SQL.
+// nulTriggersIn reads the NUL triggers present in the named files' namespaces,
+// name -> stored SQL.
 //
 // GLOB rather than LIKE: LIKE's `_` is a single-character wildcard, so
 // 'pad_nul_%' also matches names this code never generates, and a loose pattern
 // in a health check is a check that can be satisfied by the wrong thing.
-func nulTriggersIn(q Queryer) (map[string]string, error) {
+func nulTriggersIn(q Queryer, files []string) (map[string]string, error) {
+	out := map[string]string{}
+	for _, f := range files {
+		if err := readNULTriggers(q, nulTriggerPrefix(f), out); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+func readNULTriggers(q Queryer, prefix string, out map[string]string) error {
 	rows, err := q.Query(
-		`SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND name GLOB 'pad_nul_*'`,
+		`SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND name GLOB ?`, prefix+"*",
 	)
 	if err != nil {
-		return nil, fmt.Errorf("list NUL triggers: %w", err)
+		return fmt.Errorf("list NUL triggers: %w", err)
 	}
 	defer rows.Close()
-	out := map[string]string{}
 	for rows.Next() {
 		var n string
 		var sqlText sql.NullString
 		if err := rows.Scan(&n, &sqlText); err != nil {
-			return nil, err
+			return err
 		}
 		out[n] = normalizeTriggerSQL(sqlText.String)
 	}
-	return out, rows.Err()
+	return rows.Err()
 }
 
-// nulTriggerMigration is the generated file, named once so the generator, the
-// re-assertion and the pin test all refer to the same artifact.
-const nulTriggerMigration = "084_nul_invariant_triggers.sql"
-
-// renderedNULTriggers returns the exact CREATE statement each trigger should
-// have, keyed by name.
+// nulTriggerPrefix is the name prefix of one trigger file's triggers: pad_nul_
+// for 084, and pad_nul<NNN>_ for a later file NNN.
 //
-// It parses the SAME rendered migration text the file is generated from, so
+// Separate namespaces are what keep an OLDER binary from destroying a newer
+// file's triggers (BUG-3108, codex round 1). The restore reads its triggers by
+// GLOB, treats any name in that namespace it does not expect as a stray, and
+// drops it. A binary that predates 094 reads 'pad_nul_*'; had 094's triggers
+// used that prefix, such a binary started with --force would drop them all.
+// 'pad_nul094_x' is outside 'pad_nul_*', because the eighth character is '0',
+// not '_'. migratedTriggerPrefix stays out of this family for the same reason.
+func nulTriggerPrefix(file string) string {
+	if file == nulTriggerMigrations[0] {
+		return "pad_nul_"
+	}
+	num, _, _ := strings.Cut(file, "_")
+	return "pad_nul" + num + "_"
+}
+
+// renderedNULTriggers returns the exact CREATE statement each trigger in the
+// named trigger files should have, keyed by name.
+//
+// It parses the SAME rendered migration text the files are generated from, so
 // there is still one definition of what a trigger is. Comparing DEFINITIONS
 // rather than names is what lets the restoration replace a stale trigger — a
 // same-name no-op body satisfies CREATE TRIGGER IF NOT EXISTS forever, so a
 // name check can never repair one (codex round 3).
-func renderedNULTriggers() map[string]string {
+func renderedNULTriggers(files []string) map[string]string {
 	out := map[string]string{}
-	for _, stmt := range strings.Split(renderNULTriggerMigration(), ";\n\n") {
+	var all strings.Builder
+	for _, f := range files {
+		all.WriteString(renderNULTriggerMigration(f))
+	}
+	for _, stmt := range strings.Split(all.String(), ";\n\n") {
 		stmt = strings.TrimSpace(stmt)
 		i := strings.Index(stmt, "CREATE TRIGGER IF NOT EXISTS ")
 		if i < 0 {
@@ -548,42 +650,54 @@ func normalizeTriggerSQL(s string) string {
 	return strings.Replace(out, "CREATE TRIGGER IF NOT EXISTS ", "CREATE TRIGGER ", 1)
 }
 
-// nulTriggerMigrationApplied reports whether the migration that creates the
-// triggers has run.
+// nulTriggerMigrationsApplied returns the trigger files that have run, in
+// migration order.
 //
 // A QUERY ERROR IS AN ERROR (codex round 5). The first version folded it in
 // with "not applied" behind a nolint:nilerr, so a migrated database with a
 // transient read failure would start successfully with the invariant
 // unenforced — the one outcome this whole layer exists to prevent. Only the
 // schema_migrations table being ABSENT means "earlier than that migration".
-func (s *Store) nulTriggerMigrationApplied() (bool, error) {
+func (s *Store) nulTriggerMigrationsApplied(known []string) ([]string, error) {
 	var exists int
 	if err := s.db.QueryRow(
 		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='schema_migrations'`,
 	).Scan(&exists); err != nil {
-		return false, fmt.Errorf("check schema_migrations: %w", err)
+		return nil, fmt.Errorf("check schema_migrations: %w", err)
 	}
 	if exists == 0 {
-		return false, nil
+		return nil, nil
 	}
-	var applied int
-	if err := s.db.QueryRow(
-		`SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, nulTriggerMigration,
-	).Scan(&applied); err != nil {
-		return false, fmt.Errorf("check %s applied: %w", nulTriggerMigration, err)
+	var out []string
+	for _, name := range known {
+		var applied int
+		if err := s.db.QueryRow(
+			`SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, name,
+		).Scan(&applied); err != nil {
+			return nil, fmt.Errorf("check %s applied: %w", name, err)
+		}
+		if applied > 0 {
+			out = append(out, name)
+		}
 	}
-	return applied > 0, nil
+	return out, nil
 }
 
-// renderNULTriggerMigration is the single definition of the migration's text.
+// renderNULTriggerMigration is the single definition of one trigger file's
+// text: its header, then the triggers of every column assigned to it.
 //
 // It lives in PRODUCTION code, not the generator test, because it has three
 // production-relevant readers: the generator writes it, the pin test compares
 // the committed file against it byte for byte, and the startup restoration
 // compares the LIVE triggers against it (codex round 3). One definition, three
 // consumers — the same shape the column list has, for the same reason.
-func renderNULTriggerMigration() string {
-	cols := NULProtectedColumns()
+func renderNULTriggerMigration(file string) string {
+	var cols []nulColumn
+	for _, c := range NULProtectedColumns() {
+		if nulTriggerFileFor(c) == file {
+			cols = append(cols, c)
+		}
+	}
 	sort.Slice(cols, func(i, j int) bool {
 		if cols[i].Table != cols[j].Table {
 			return cols[i].Table < cols[j].Table
@@ -592,13 +706,17 @@ func renderNULTriggerMigration() string {
 	})
 
 	var b strings.Builder
-	b.WriteString(nulTriggerMigrationHeader)
+	if file == nulTriggerMigrations[0] {
+		b.WriteString(nulTriggerMigrationHeader)
+	} else {
+		b.WriteString(nulLaterTriggerMigrationHeader)
+	}
 	for _, c := range cols {
 		for _, ev := range []struct{ suffix, on string }{
 			{"ins", "INSERT"},
 			{"upd", "UPDATE OF " + c.Column},
 		} {
-			name := fmt.Sprintf("pad_nul_%s_%s_%s", c.Table, c.Column, ev.suffix)
+			name := fmt.Sprintf("%s%s_%s_%s", nulTriggerPrefix(file), c.Table, c.Column, ev.suffix)
 			cond := fmt.Sprintf("instr(NEW.%s, char(0)) > 0", c.Column)
 			if c.Class == classJSON {
 				cond += fmt.Sprintf(`

@@ -664,8 +664,9 @@ func (s *Store) migrate() error {
 	// SQLite drops a table's triggers when the table is dropped, and this
 	// codebase rebuilds tables to change constraints — migrations 025, 055,
 	// 056, 057, 068 and 072 all do it. A future rebuild would silently take
-	// the NUL triggers with it, and migration 084 would never run again because
-	// it is already recorded as applied.
+	// the NUL triggers with it, and the trigger files (084 and the later ones
+	// in nulTriggerMigrations) would never run again because they are already
+	// recorded as applied.
 	//
 	// The FTS check above warns in that situation and leaves search broken
 	// until someone notices, which was judged the right cost for a derived

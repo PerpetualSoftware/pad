@@ -25,7 +25,7 @@ func plantLegacyRows(t *testing.T, s *Store, plant func(raw *sql.DB)) {
 	}
 	defer raw.Close()
 
-	names, err := nulTriggersIn(raw)
+	names, err := nulTriggersIn(raw, nulTriggerMigrations)
 	if err != nil {
 		t.Fatalf("list triggers: %v", err)
 	}
@@ -336,7 +336,7 @@ func mustExec(t *testing.T, db *sql.DB, query string, args ...any) {
 func TestScanCostFiguresMatchTheList(t *testing.T) {
 	t.Parallel()
 	const (
-		wantTotal = 131
+		wantTotal = 133
 		wantJSON  = 24
 	)
 
