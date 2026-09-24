@@ -269,6 +269,7 @@ func TestEveryRequestBodyReaderIsAccountedFor(t *testing.T) {
 		"handlers_oauth.go":          "KNOWN GAP, tracked as BUG-2811: the OAuth handlers read FORM-encoded bodies (r.Form/FormValue), which no rule in this family covers — the transport rules see the query half of r.Form and not the body half. Listed so this test states the gap instead of being blind to it; measuring it needs a fosite-backed fixture.",
 		"handlers_watches.go":        "guards on r.Body != nil && r.ContentLength != 0, then decodes THROUGH decodeJSON — the closing-round-4 fix for the chunked-body drop; the one reader expression is the nil check itself, and the body bytes flow through the chokepoint",
 		"handlers_item_lease.go":     "guards on r.Body != nil && r.ContentLength != 0, then decodes THROUGH decodeJSON — same shape as handlers_watches.go; the one reader expression is the nil check, and the body (optional holder/ttl_seconds) flows through the chokepoint, so the caller-text holder gets BUG-2803's NUL refusal before it can reach items.lease_holder",
+		"import_read_deadline.go":    "a PASS-THROUGH, not a reader: it replaces r.Body with a wrapper whose Read arms the connection deadline and delegates, byte for byte, to the original body (BUG-3184). Nothing in the file inspects the bytes; the import route's two decoders (decodeJSONWithLimit, and the bundle path's bodyDecodesNUL on pad-export.json) read them afterwards, unchanged",
 	}
 
 	// Reader counts as reviewed. A mismatch means this file gained or lost a
@@ -289,6 +290,7 @@ func TestEveryRequestBodyReaderIsAccountedFor(t *testing.T) {
 		"handlers_oauth.go":          13,
 		"handlers_watches.go":        1,
 		"handlers_item_lease.go":     1,
+		"import_read_deadline.go":    2,
 	}
 	accounted := map[string]entry{}
 	for name, why := range accountedWhy {
