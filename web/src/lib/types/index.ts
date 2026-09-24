@@ -2495,16 +2495,36 @@ const NEGATIVE_TERMINALS = [
 	'duplicate', 'declined', 'abandoned', 'disabled'
 ];
 
-/** The collection's ABANDONED status values: terminal values that close an item
- * without delivering it. The status field's own abandoned_options when it
- * declares any, otherwise its terminal options that are in NEGATIVE_TERMINALS.
- * The same rule as the server's models.AbandonedValuesForDoneField, which
- * progress uses to leave such children out of done and total (BUG-3195). */
+/** The collection's done field: board_group_by when it names a `select`
+ * field with a safe key, otherwise `status`. Mirrors models.DoneFieldKey. */
+export function doneFieldKey(collection: Collection): string {
+	const candidate = (parseSettings(collection).board_group_by ?? '').trim();
+	if (!candidate || !/^[a-zA-Z][a-zA-Z0-9_]*$/.test(candidate)) return 'status';
+	const f = parseSchema(collection).fields.find((x) => x.key === candidate && x.type === 'select');
+	return f ? candidate : 'status';
+}
+
+/** Terminal values of the collection's done field, or the defaults.
+ * Mirrors models.TerminalValuesForDoneField. */
+export function doneFieldTerminalOptions(collection: Collection): string[] {
+	const key = doneFieldKey(collection);
+	const f = parseSchema(collection).fields.find((x) => x.key === key && x.type === 'select');
+	return f?.terminal_options?.length ? [...f.terminal_options] : [...DEFAULT_TERMINAL_STATUSES];
+}
+
+/** The collection's ABANDONED values: terminal values of its done field that
+ * close an item without delivering it. The field's own abandoned_options when
+ * it declares any, otherwise its terminal values that are in
+ * NEGATIVE_TERMINALS. Mirrors models.AbandonedValuesForDoneField, which the
+ * server's progress uses to leave such children out of done and total
+ * (BUG-3195). */
 export function getAbandonedOptions(collection: Collection): string[] {
-	const schema = parseSchema(collection);
-	const statusField = schema.fields.find((f) => f.key === 'status');
-	if (statusField?.abandoned_options?.length) return [...statusField.abandoned_options];
-	return getTerminalOptions(collection).filter((v) => NEGATIVE_TERMINALS.includes(v.trim().toLowerCase()));
+	const key = doneFieldKey(collection);
+	const f = parseSchema(collection).fields.find((x) => x.key === key);
+	const terminal = doneFieldTerminalOptions(collection);
+	const declared = (f?.abandoned_options ?? []).map((v) => v.trim().toLowerCase());
+	if (declared.length) return terminal.filter((v) => declared.includes(v.trim().toLowerCase()));
+	return terminal.filter((v) => NEGATIVE_TERMINALS.includes(v.trim().toLowerCase()));
 }
 
 /** getAbandonedOptions for callers with no collection context. */

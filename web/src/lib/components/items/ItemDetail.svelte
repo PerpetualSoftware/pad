@@ -51,7 +51,7 @@
 	import { titleEditError } from '$lib/items/titleLimit';
 	import { editorStore } from '$lib/stores/editor.svelte';
 	import type { Item, Collection, CollectionSettings, QuickAction, ItemLink, AgentRole, PaneTarget, ResolvedItemIdentity, ItemCopyResult } from '$lib/types';
-	import { parseFields, parseSchema, parseSettings, parseTags, formatItemRef, itemUrlId, getTerminalOptions, getAbandonedOptions, type ItemIndexRow } from '$lib/types';
+	import { parseFields, parseSchema, parseSettings, parseTags, formatItemRef, itemUrlId, getTerminalOptions, type ItemIndexRow } from '$lib/types';
 	import ItemPicker from './ItemPicker.svelte';
 	import QuickActionsMenu from '$lib/components/common/QuickActionsMenu.svelte';
 	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
@@ -4548,7 +4548,6 @@
 
 	let computedOverrides = $state<Record<string, any>>({});
 	let childTerminalStatuses = $state<string[] | undefined>(undefined);
-	let childAbandonedStatuses = $state<string[] | undefined>(undefined);
 
 	// IDEA-2133: child completion count surfaced as a "🌳 done/total" jump
 	// badge in the action bar (mirrors the "📎 N" backlinks badge). Derived
@@ -4645,17 +4644,13 @@
 		const allCollections = collectionStore.collections ?? [];
 		// Gather terminal statuses from all collections the children belong to
 		const termSet = new Set<string>();
-		// And the abandoned ones, which leave a per-row count entirely (BUG-3195).
-		const abandonedSet = new Set<string>();
 		for (const child of items) {
 			const col = allCollections.find(c => c.slug === child.collection_slug);
 			if (col) {
 				for (const ts of getTerminalOptions(col)) termSet.add(ts);
-				for (const ab of getAbandonedOptions(col)) abandonedSet.add(ab);
 			}
 		}
 		childTerminalStatuses = termSet.size > 0 ? [...termSet] : ['done', 'cancelled'];
-		childAbandonedStatuses = termSet.size > 0 ? [...abandonedSet] : ['cancelled'];
 	}
 
 	function fieldValue(key: string): any {
@@ -6845,7 +6840,7 @@
 				     a source of drill-click swallowing. -->
 				{#key identityKey}
 				{@const handedDown = identityKey}
-				<ChildItems {wsSlug} {username} {itemSlug} itemId={item.id} parentFields={fields} terminalStatuses={childTerminalStatuses} abandonedStatuses={childAbandonedStatuses} onChildrenChange={(children) => { if (keyedSlug !== itemSlug || handedDown !== identityKey) return; handleChildrenChange(children); }} {canEdit} frozen={false} selfDirty={localDirty} selfLastSaveTime={localLastSaveTime} onOpenTarget={paneOpenTarget} progress={computedOverrides._progressTotal !== undefined ? { done: computedOverrides._progressDone, total: computedOverrides._progressTotal, percentage: computedOverrides.progress } : undefined} />
+				<ChildItems {wsSlug} {username} {itemSlug} itemId={item.id} parentFields={fields} terminalStatuses={childTerminalStatuses} onChildrenChange={(children) => { if (keyedSlug !== itemSlug || handedDown !== identityKey) return; handleChildrenChange(children); }} {canEdit} frozen={false} selfDirty={localDirty} selfLastSaveTime={localLastSaveTime} onOpenTarget={paneOpenTarget} progress={computedOverrides._progressTotal !== undefined ? { done: computedOverrides._progressDone, total: computedOverrides._progressTotal, percentage: computedOverrides.progress } : undefined} />
 				{/key}
 			</div>
 		{/if}

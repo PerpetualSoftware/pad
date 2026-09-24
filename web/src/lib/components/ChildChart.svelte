@@ -1,22 +1,19 @@
 <script lang="ts">
 	import type { Item } from '$lib/types';
-	import { parseFields, DEFAULT_ABANDONED_STATUSES } from '$lib/types';
-	import { countedChildren } from '$lib/collections/childProgress';
+	import { countedChildren, isChildDone } from '$lib/collections/childProgress';
+	import { collectionStore } from '$lib/stores/collections.svelte';
 
 	interface Props {
 		children: Item[];
 		startDate?: string;
 		endDate?: string;
-		terminalStatuses?: string[];
-		/** Abandoned statuses (cancelled, wontfix, …): such a child is not part
-		 * of the work any more and leaves the burndown entirely (BUG-3195). */
-		abandonedStatuses?: string[];
 	}
 
-	let { children, startDate, endDate, terminalStatuses, abandonedStatuses }: Props = $props();
-	const defaultTerminal = ['done', 'completed', 'resolved', 'cancelled', 'rejected', 'wontfix', 'fixed', 'implemented', 'archived', 'disabled', 'deprecated'];
-	const terminal = $derived(terminalStatuses ?? defaultTerminal);
-	const abandoned = $derived(abandonedStatuses ?? DEFAULT_ABANDONED_STATUSES);
+	let { children, startDate, endDate }: Props = $props();
+	// Each child by its own collection's done field and terminal/abandoned
+	// values. An abandoned child is not part of the work any more and leaves
+	// the burndown entirely (BUG-3195).
+	const collections = $derived(collectionStore.collections ?? []);
 
 	// Chart dimensions
 	const padding = { top: 20, right: 20, bottom: 30, left: 40 };
@@ -26,15 +23,14 @@
 	const chartH = height - padding.top - padding.bottom;
 
 	let chartData = $derived.by(() => {
-		const counted = countedChildren(children, abandoned);
+		const counted = countedChildren(children, collections);
 		const total = counted.length;
 		if (total < 2) return null;
 
 		// Identify completed children (abandoned ones already left out)
 		const completions: { date: Date; count: number }[] = [];
 		for (const child of counted) {
-			const f = parseFields(child);
-			if (terminal.includes(f.status)) {
+			if (isChildDone(child, collections)) {
 				completions.push({ date: new Date(child.updated_at), count: 1 });
 			}
 		}

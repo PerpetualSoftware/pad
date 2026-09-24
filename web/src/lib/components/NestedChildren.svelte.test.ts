@@ -16,6 +16,12 @@ vi.mock('$lib/api/client', () => ({
 	}
 }));
 
+const collectionsState: { collections: unknown[]; collectionsWorkspace: string | null } = {
+	collections: [],
+	collectionsWorkspace: 'ws'
+};
+vi.mock('$lib/stores/collections.svelte', () => ({ collectionStore: collectionsState }));
+
 const { default: NestedChildren } = await import('./NestedChildren.svelte');
 
 const item = (id: string, status: string) => ({
@@ -37,7 +43,16 @@ afterEach(() => {
 	childrenMock.mockReset();
 });
 
-async function render(statuses: string[], abandonedStatuses?: string[]) {
+async function render(statuses: string[], abandonedOptions: string[]) {
+	collectionsState.collections = [
+		{
+			slug: 'tasks',
+			schema: JSON.stringify({
+				fields: [{ key: 'status', type: 'select', terminal_options: ['done', 'cancelled'], abandoned_options: abandonedOptions }]
+			}),
+			settings: '{}'
+		}
+	];
 	childrenMock.mockResolvedValue(statuses.map((s, i) => item(`c${i}`, s)));
 	target = document.createElement('div');
 	document.body.appendChild(target);
@@ -46,8 +61,7 @@ async function render(statuses: string[], abandonedStatuses?: string[]) {
 		props: {
 			wsSlug: 'ws',
 			parentSlug: 'p',
-			terminalStatuses: ['done', 'cancelled'],
-			abandonedStatuses
+			terminalStatuses: ['done', 'cancelled']
 		}
 	});
 	for (let i = 0; i < 5; i++) {
@@ -70,7 +84,10 @@ describe('NestedChildren progress (BUG-3195)', () => {
 		expect(target?.querySelectorAll('.nested-children').length).toBe(1);
 	});
 
-	it('control: with nothing declared abandoned the same child counts as done', async () => {
-		expect(await render(['done', 'cancelled', 'open'], [])).toBe('2/3');
+	it('control: the declared list decides which child leaves', async () => {
+		// A declared list REPLACES the NegativeTerminals fallback, so declaring
+		// only `done` makes `cancelled` a delivered terminal: done leaves, and
+		// cancelled now counts as done. The exclusion follows the declaration.
+		expect(await render(['done', 'cancelled', 'open'], ['done'])).toBe('1/2');
 	});
 });

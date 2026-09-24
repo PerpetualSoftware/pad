@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { api } from '$lib/api/client';
 	import type { Item, PaneTarget } from '$lib/types';
-	import { parseFields, formatItemRef, DEFAULT_ABANDONED_STATUSES } from '$lib/types';
+	import { parseFields, formatItemRef } from '$lib/types';
 	import { countChildProgress } from '$lib/collections/childProgress';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { collectionsNotStaleFor, categoricalValueFor } from '$lib/collections/categoricalFieldValue';
@@ -14,8 +14,6 @@
 		depth?: number;
 		maxDepth?: number;
 		terminalStatuses?: string[];
-		/** Abandoned statuses: such a child leaves both counts (BUG-3195). */
-		abandonedStatuses?: string[];
 		/**
 		 * In-pane drill interceptor (PLAN-2154 Architecture B.2 / TASK-2159).
 		 * Threaded from `ChildItems`/`ItemDetail`'s `fireOpenTarget`; forwarded
@@ -25,11 +23,10 @@
 		onOpenTarget?: (target: PaneTarget) => void;
 	}
 
-	let { wsSlug, username = '', parentSlug, depth = 1, maxDepth = 3, terminalStatuses, abandonedStatuses, onOpenTarget }: Props = $props();
+	let { wsSlug, username = '', parentSlug, depth = 1, maxDepth = 3, terminalStatuses, onOpenTarget }: Props = $props();
 
 	const defaultTerminal = ['done', 'completed', 'resolved', 'cancelled', 'rejected', 'wontfix', 'fixed', 'implemented', 'archived', 'disabled', 'deprecated'];
 	const terminal = $derived(terminalStatuses ?? defaultTerminal);
-	const abandoned = $derived(abandonedStatuses ?? DEFAULT_ABANDONED_STATUSES);
 
 	let children = $state<Item[]>([]);
 	let loading = $state(true);
@@ -61,7 +58,9 @@
 		expandedIds = next;
 	}
 
-	let counts = $derived(countChildProgress(children, terminal, abandoned));
+	// Each child by its own collection's done field, terminal and abandoned
+	// values; an abandoned child leaves both numbers (BUG-3195).
+	let counts = $derived(countChildProgress(children, collectionStore.collections ?? []));
 
 	// In-pane drill interception for a `.nested-link` anchor (TASK-2159 /
 	// PLAN-2154 Architecture B.2) — same predicate/contract as
@@ -120,7 +119,7 @@
 					{/if}
 				</div>
 				{#if canExpand && isExpanded}
-					<svelte:self wsSlug={wsSlug} {username} parentSlug={child.slug} depth={depth + 1} {maxDepth} {terminalStatuses} {abandonedStatuses} {onOpenTarget} />
+					<svelte:self wsSlug={wsSlug} {username} parentSlug={child.slug} depth={depth + 1} {maxDepth} {terminalStatuses} {onOpenTarget} />
 				{/if}
 			</div>
 		{/each}
