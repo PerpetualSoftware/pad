@@ -1328,6 +1328,45 @@ func TestInstallRefresh_KeepsAnEmptyTrailingArgument(t *testing.T) {
 	}
 }
 
+// A LONE SIBLING SERVER while this box's server is down is not the target
+// (BUG-3194, codex round 2): nothing listens on the resolved port, and the one
+// `server start` running takes its port from the environment, not an explicit
+// --port, which is the shape of an e2e webServer. Replacing it would restart
+// someone else's server from this install.
+func TestInstallRefresh_RefusesALoneServerWithoutAnExplicitPort(t *testing.T) {
+	requireScriptDeps(t, "ss")
+	home, dir := t.TempDir(), t.TempDir()
+	name := uniqueName(t)
+	defer killStub(t, name)
+	const commit = "abc1234"
+
+	built := installStub(t, dir, name)
+	installed := filepath.Join(home, "bin", name)
+	e := stubEnv{version: "pad version dev (" + commit + " x)", healthy: "1",
+		argvLog: filepath.Join(home, "argv.log"), port: freePort(t), home: home}
+	envp := []string{"STUB_ANNOUNCE=1"}
+	for _, kv := range e.env() {
+		if !strings.HasPrefix(kv, "STUB_PORT=") {
+			envp = append(envp, kv)
+		}
+	}
+	envp = append(envp, "STUB_PORT=0")
+	sib := exec.Command(built, "server", "start", "--host", "127.0.0.1")
+	sib.Env = envp
+	sibPort := startAnnouncedStub(t, sib, 8*time.Second)
+
+	res := runScript(t, e, built, installed, commit)
+	if res.err == nil {
+		t.Fatalf("script replaced a lone server with no explicit --port while nothing held the target port; stdout=%s", res.stdout)
+	}
+	if !strings.Contains(res.stderr, "was not started with --port") {
+		t.Errorf("refusal did not say why; stderr=%s", res.stderr)
+	}
+	if got, err := pidAnswersAt(sibPort); err != nil || got != strconv.Itoa(sib.Process.Pid) {
+		t.Errorf("the lone server was touched by a refused refresh: %q %v", got, err)
+	}
+}
+
 // AN UNRESOLVABLE ID IS REFUSED, even when it shares a prefix with the
 // expected one (codex round 9).
 //

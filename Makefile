@@ -43,8 +43,8 @@ install: build
 	@#     BOTH 127.0.0.1 and the configured host.
 	@#
 	@#   - it replaces one server, stopped by pid: the one listening on the
-	@#     configured port, or the only one running when nothing listens
-	@#     there. Other `pad server start` processes (a sibling's e2e server
+	@#     configured port, or the only one running, started with an
+	@#     explicit --port, when nothing listens there. Other `pad server start` processes (a sibling's e2e server
 	@#     on its own port) are left running, and an ambiguous port is
 	@#     refused (BUG-3194).
 	@#

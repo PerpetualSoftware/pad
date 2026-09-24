@@ -252,8 +252,11 @@ fi
 #   - the port is held by something that is not a captured `server start`;
 #   - more than one captured server holds it;
 #   - nothing holds it and more than one server is running elsewhere.
-# With exactly one server and nothing on the port (a server started with
-# `--port` elsewhere), that one server is the target, as before.
+# With exactly one server, nothing on the port, and an explicit `--port` in its
+# argv (a server deliberately started elsewhere), that server is the target.
+# Stated limits: an argument containing the \x1f separator would be split
+# (no pad flag takes one), and a pid can in principle be recycled between
+# the last argv check and a signal.
 #
 # The listener is read with `ss` (Linux) or `lsof` (macOS). Where neither can
 # see listeners, only the unambiguous one-server case proceeds.
@@ -329,7 +332,20 @@ if [ "${#matched[@]}" -gt 1 ]; then
 elif [ "${#matched[@]}" -eq 1 ]; then
 	TARGET_PID="${matched[0]}"
 elif [ "${#SERVER_PIDS[@]}" -eq 1 ]; then
-	TARGET_PID="${SERVER_PIDS[0]}"
+	# The only server, and nothing on the target port: this is the target
+	# ONLY if it was deliberately started elsewhere, with an explicit
+	# --port. Without that it is most likely a sibling's server (an e2e
+	# webServer takes its port from the environment) while this box's own
+	# server is down, and replacing it would restart someone else's server
+	# from this install (codex round 2).
+	only=()
+	mapfile -d "$US" -t only < <(printf '%s' "${SERVER_ARGV_OF[${SERVER_PIDS[0]}]}")
+	if flag_value --port "${only[@]}" >/dev/null; then
+		TARGET_PID="${SERVER_PIDS[0]}"
+	else
+		die "nothing is listening on port $TARGET_PORT, and the one \`$(basename "$BUILT") server start\` running (pid ${SERVER_PIDS[0]}) was not started with --port, so it is not this box's server on another port.
+  Nothing was stopped or installed. Start the server, or use the manual refresh."
+	fi
 elif [ "${#SERVER_PIDS[@]}" -gt 1 ]; then
 	die "more than one \`$(basename "$BUILT") server start\` process is running (pids: ${SERVER_PIDS[*]}) and none is listening on port $TARGET_PORT.
   This script cannot tell which one to replace.
