@@ -841,11 +841,13 @@
 		if ((e.target as Element | null)?.closest?.('.lightbox-text-scroll')) return;
 		e.preventDefault();
 		e.stopPropagation();
-		// A wheel over the TOOLBAR (or its delete drill-down) is consumed like every
-		// other wheel — the modal owns it, so the inert page can't scroll — but must
-		// NOT zoom the image behind it (TASK-2474). The same exclusion the pointerdown
-		// and double-click handlers carry, applied here too.
-		if ((e.target as Element | null)?.closest?.('.lightbox-toolbar, .lightbox-meta')) return;
+		// A wheel over any viewer CONTROL (close, nav, the toolbar or its delete
+		// drill-down, …) is consumed like every other wheel — the modal owns it, so the
+		// inert page can't scroll — but must NOT zoom the image behind it (TASK-2474).
+		// It calls the SAME predicate pointerdown and double-click use: a narrower
+		// list of its own let a wheel over a nav arrow or the close button zoom
+		// (BUG-2507).
+		if (chromeExcluded(e)) return;
 		// Consumed (the modal owns the wheel) but INERT with no decoded bitmap — the
 		// mobile deferred placeholder or the error UI, where the broken `<img>` still
 		// satisfies `readGeometry` (TASK-2461). Same guard the keys use.
@@ -1106,9 +1108,8 @@
 	}
 
 	// ── shared gesture predicates (TASK-2518) ────────────────────────────────
-	// The chrome/control exclusion carried by pointerdown AND double-click: a press
-	// on a control is that control's, never a pan / zoom. (Wheel uses a NARROWER
-	// list — toolbar+meta only — so it is not folded in here.)
+	// The chrome/control exclusion carried by pointerdown, double-click AND wheel: a
+	// press or wheel on a control is that control's, never a pan / zoom (BUG-2507).
 	function chromeExcluded(e: PointerEvent | MouseEvent): boolean {
 		return !!(e.target as Element | null)?.closest?.(
 			'.lightbox-close, .lightbox-nav, .lightbox-retry, .lightbox-tap-load, .lightbox-toolbar, .lightbox-meta'
@@ -3458,8 +3459,8 @@
 	   bottom with NO magic-number coordination between them — `order` alone puts
 	   content on top (0), then meta (1), then the toolbar as the very bottom bar (2),
 	   primary actions in thumb reach. They are the SAME elements with the SAME
-	   classes, so `.lightbox-toolbar` / `.lightbox-meta` still match all three
-	   pointer-exclusion `.closest()` lists (pointerdown / dblclick / wheel) — a
+	   classes, so `.lightbox-toolbar` / `.lightbox-meta` still match the gesture
+	   exclusion the pointerdown / dblclick / wheel handlers share — a
 	   press, double-click or wheel on the docked chrome stays excluded from the
 	   pan/zoom exactly as on desktop. Dropping to `position: static` also makes the
 	   desktop `:has(.lightbox-delete-confirm)` top-offset inert (a `top` on a static
