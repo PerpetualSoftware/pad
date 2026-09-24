@@ -4,6 +4,8 @@
 	import { onMount, onDestroy } from 'svelte';
 	import { api } from '$lib/api/client';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
+	import { authStore } from '$lib/stores/auth.svelte';
+	import { enterWorkspaceIndex } from '$lib/stores/workspaceIndexEntry';
 	import { titleStore } from '$lib/stores/title.svelte';
 	import { relativeTime } from '$lib/utils/markdown';
 	import { parseFieldChanges, formatChangesForDisplay } from '$lib/utils/activityChanges';
@@ -88,6 +90,20 @@
 	});
 
 	const PAGE_SIZE = 30;
+
+	// Bring the workspace's local index up (BUG-3181), so an activity change on
+	// a relation field resolves to its target's REF · title rather than
+	// reading "Linked item" until some other page happens to load the index.
+	// The shared helper is the collection page's own sequence (bootstrap →
+	// identity check → reconcile); this effect mirrors that page's entry:
+	// it reads `authStore.userId` on purpose, so it re-runs for a new
+	// identity, and captures the epoch here, synchronously, for the fence.
+	$effect(() => {
+		if (!wsSlug) return;
+		const uid = authStore.userId || null;
+		const epochAtEntry = authStore.identityEpoch;
+		void enterWorkspaceIndex(wsSlug, uid, epochAtEntry);
+	});
 
 	// Reload when workspace or filters change
 	$effect(() => {

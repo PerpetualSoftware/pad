@@ -1,0 +1,110 @@
+{
+  "_doc": "BUG-3014 shared vectors. KEEP IN SYNC: read by internal/store/relation_stored_as_text_test.go (TestRelationValueStoredAsText_SharedVectors, Go relationValueStoredAsText) AND web/src/lib/items/relationFieldTypes.test.ts (isRelationValueStoredAsText). stored_as_text is true when the value, after Go strings.TrimSpace, is not 8-4-4-4-12 hex.",
+  "cases": [
+    {
+      "name": "lowercase UUID",
+      "value": "0197aaaa-0000-7000-8000-00000000abcd",
+      "stored_as_text": false
+    },
+    {
+      "name": "uppercase UUID",
+      "value": "0197AAAA-0000-7000-8000-00000000ABCD",
+      "stored_as_text": false
+    },
+    {
+      "name": "mixed-case UUID",
+      "value": "0197AAAA-0000-7000-8000-00000000abCD",
+      "stored_as_text": false
+    },
+    {
+      "name": "UUID padded with ASCII spaces",
+      "value": "  0197aaaa-0000-7000-8000-00000000abcd  ",
+      "stored_as_text": false
+    },
+    {
+      "name": "UUID padded with tab and newline",
+      "value": "\t0197aaaa-0000-7000-8000-00000000abcd\n",
+      "stored_as_text": false
+    },
+    {
+      "name": "UUID padded with U+0085 (Go space, not JS)",
+      "value": "\u00850197aaaa-0000-7000-8000-00000000abcd",
+      "stored_as_text": false
+    },
+    {
+      "name": "UUID padded with U+00A0",
+      "value": "\u00a00197aaaa-0000-7000-8000-00000000abcd\u00a0",
+      "stored_as_text": false
+    },
+    {
+      "name": "UUID padded with U+3000",
+      "value": "0197aaaa-0000-7000-8000-00000000abcd\u3000",
+      "stored_as_text": false
+    },
+    {
+      "name": "UUID padded with U+FEFF (JS space, not Go)",
+      "value": "\ufeff0197aaaa-0000-7000-8000-00000000abcd",
+      "stored_as_text": true
+    },
+    {
+      "name": "UUID in braces",
+      "value": "{0197aaaa-0000-7000-8000-00000000abcd}",
+      "stored_as_text": true
+    },
+    {
+      "name": "UUID without dashes",
+      "value": "0197aaaa00007000800000000000abcd",
+      "stored_as_text": true
+    },
+    {
+      "name": "UUID with a non-hex letter",
+      "value": "0197aaaa-0000-7000-8000-00000000abcg",
+      "stored_as_text": true
+    },
+    {
+      "name": "UUID one char short",
+      "value": "0197aaaa-0000-7000-8000-00000000abc",
+      "stored_as_text": true
+    },
+    {
+      "name": "UUID one char long",
+      "value": "0197aaaa-0000-7000-8000-00000000abcda",
+      "stored_as_text": true
+    },
+    {
+      "name": "dashes in the wrong places",
+      "value": "0197aaaa0-000-7000-8000-00000000abcd",
+      "stored_as_text": true
+    },
+    {
+      "name": "URN form",
+      "value": "urn:uuid:0197aaaa-0000-7000-8000-00000000abcd",
+      "stored_as_text": true
+    },
+    {
+      "name": "title",
+      "value": "Red",
+      "stored_as_text": true
+    },
+    {
+      "name": "title that looks like a ref",
+      "value": "COLO-3",
+      "stored_as_text": true
+    },
+    {
+      "name": "legacy ref with padding",
+      "value": " COLO-999 ",
+      "stored_as_text": true
+    },
+    {
+      "name": "empty",
+      "value": "",
+      "stored_as_text": true
+    },
+    {
+      "name": "whitespace only",
+      "value": "   ",
+      "stored_as_text": true
+    }
+  ]
+}
