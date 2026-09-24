@@ -2487,6 +2487,87 @@ export function getTerminalOptions(collection: Collection): string[] {
 	return statusField?.terminal_options ?? [...DEFAULT_TERMINAL_STATUSES];
 }
 
+/** Terminal values that close WITHOUT delivering, used when a field declares no
+ * abandoned_options. Mirrors models.NegativeTerminals (internal/models/terminal.go);
+ * keep the two lists identical. */
+const NEGATIVE_TERMINALS = [
+	'rejected', 'cancelled', 'canceled', 'wontfix', "won't fix",
+	'duplicate', 'declined', 'abandoned', 'disabled'
+];
+
+const isStrOrAbsent = (v: unknown) => v === undefined || v === null || typeof v === 'string';
+const isStrArrOrAbsent = (v: unknown) =>
+	v === undefined || v === null || (Array.isArray(v) && v.every((x) => typeof x === 'string'));
+
+/** Schema fields for the done-field resolvers below, validated in ONE place.
+ *
+ * Stored JSON can be valid and still mistyped (`{"fields":null}`, a null
+ * entry, a number inside terminal_options). Every property these resolvers
+ * READ is type-checked here, so none of them can throw on stored data: any
+ * entry that is not an object, or whose key, type, terminal_options or
+ * abandoned_options has the wrong type, makes this return no fields and the
+ * resolvers use the defaults, as Go's do when its typed unmarshal fails. A
+ * null entry is dropped; Go decodes it as a zero-value field, which matches
+ * no key, so the answer is the same. (codex rounds 2 to 4 on BUG-3195.)
+ *
+ * NOT exact parity on corrupt data, stated rather than implied: Go rejects
+ * the whole schema, or the whole settings object, when ANY decoded member is
+ * mistyped, including ones read nowhere here (a field's `options`, a
+ * settings `layout`). This accepts those and resolves from the members it
+ * reads. Matching that would mean mirroring Go's full decoder in TypeScript;
+ * the server's /progress stays the authority for a parent's numbers. */
+function schemaFields(collection: Collection): FieldDef[] {
+	const fields: unknown = parseSchema(collection).fields;
+	if (!Array.isArray(fields)) return [];
+	const ok = fields.every(
+		(f) =>
+			f === null ||
+			(typeof f === 'object' &&
+				!Array.isArray(f) &&
+				isStrOrAbsent((f as FieldDef).key) &&
+				isStrOrAbsent((f as FieldDef).type) &&
+				isStrArrOrAbsent((f as FieldDef).terminal_options) &&
+				isStrArrOrAbsent((f as FieldDef).abandoned_options))
+	);
+	return ok ? (fields.filter((f) => f !== null) as FieldDef[]) : [];
+}
+
+/** The collection's done field: board_group_by when it names a `select`
+ * field with a safe key, otherwise `status`. Mirrors models.DoneFieldKey. */
+export function doneFieldKey(collection: Collection): string {
+	const raw = parseSettings(collection).board_group_by;
+	const candidate = typeof raw === 'string' ? raw.trim() : '';
+	if (!candidate || !/^[a-zA-Z][a-zA-Z0-9_]*$/.test(candidate)) return 'status';
+	const f = schemaFields(collection).find((x) => x.key === candidate && x.type === 'select');
+	return f ? candidate : 'status';
+}
+
+/** Terminal values of the collection's done field, or the defaults.
+ * Mirrors models.TerminalValuesForDoneField. */
+export function doneFieldTerminalOptions(collection: Collection): string[] {
+	const key = doneFieldKey(collection);
+	const f = schemaFields(collection).find((x) => x.key === key && x.type === 'select');
+	return f?.terminal_options?.length ? [...f.terminal_options] : [...DEFAULT_TERMINAL_STATUSES];
+}
+
+/** The collection's ABANDONED values: terminal values of its done field that
+ * close an item without delivering it. The field's own abandoned_options when
+ * it declares any, otherwise its terminal values that are in
+ * NEGATIVE_TERMINALS. Mirrors models.AbandonedValuesForDoneField, which the
+ * server's progress uses to leave such children out of done and total
+ * (BUG-3195). */
+export function getAbandonedOptions(collection: Collection): string[] {
+	const key = doneFieldKey(collection);
+	const f = schemaFields(collection).find((x) => x.key === key);
+	const terminal = doneFieldTerminalOptions(collection);
+	const declared = (f?.abandoned_options ?? []).map((v) => v.trim().toLowerCase());
+	if (declared.length) return terminal.filter((v) => declared.includes(v.trim().toLowerCase()));
+	return terminal.filter((v) => NEGATIVE_TERMINALS.includes(v.trim().toLowerCase()));
+}
+
+/** getAbandonedOptions for callers with no collection context. */
+export const DEFAULT_ABANDONED_STATUSES = DEFAULT_TERMINAL_STATUSES.filter((v) => NEGATIVE_TERMINALS.includes(v));
+
 /** Check if a status value is terminal (finalized) for a given collection. */
 export function isTerminalStatus(status: string, collection: Collection): boolean {
 	return getTerminalOptions(collection).includes(status);

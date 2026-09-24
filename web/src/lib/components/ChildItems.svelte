@@ -924,7 +924,7 @@
 	{/if}
 
 	{#if !loading && children.length >= 2}
-		<ChildChart {children} startDate={parentFields?.start_date} endDate={parentFields?.end_date} {terminalStatuses} />
+		<ChildChart {children} {wsSlug} startDate={parentFields?.start_date} endDate={parentFields?.end_date} />
 	{/if}
 
 	{#if loading}

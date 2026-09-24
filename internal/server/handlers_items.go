@@ -3247,8 +3247,12 @@ func (s *Server) collectionChildrenProgress(
 			if !s.isItemVisibleToGuest(r, workspaceID, &child, fullCollIDs, grantedItemIDs) {
 				continue
 			}
+			counted, isDone := childProgressState(child.Fields, child.CollectionID, ctxMap)
+			if !counted {
+				continue
+			}
 			total++
-			if isItemDone(child.Fields, child.CollectionID, ctxMap) {
+			if isDone {
 				done++
 			}
 		}
@@ -3504,7 +3508,6 @@ func (s *Server) handleGetItemProgress(w http.ResponseWriter, r *http.Request) {
 			if !s.isItemVisibleToGuest(r, workspaceID, &child, progFullCollIDs, progGrantedItemIDs) {
 				continue
 			}
-			total++
 			ctx, cached := ctxCache[child.CollectionID]
 			if !cached {
 				if coll, cerr := s.store.GetCollection(child.CollectionID); cerr == nil && coll != nil {
@@ -3515,9 +3518,14 @@ func (s *Server) handleGetItemProgress(w http.ResponseWriter, r *http.Request) {
 				}
 				ctxCache[child.CollectionID] = ctx
 			}
-			// Build a one-entry ctx map for isItemDone so it hits the
-			// typed-context branch rather than the status-only fallback.
-			if isItemDone(child.Fields, child.CollectionID, map[string]doneContext{child.CollectionID: ctx}) {
+			// A one-entry ctx map so the typed-context branch is taken
+			// rather than the status-only fallback.
+			counted, isDone := childProgressState(child.Fields, child.CollectionID, map[string]doneContext{child.CollectionID: ctx})
+			if !counted {
+				continue
+			}
+			total++
+			if isDone {
 				done++
 			}
 		}

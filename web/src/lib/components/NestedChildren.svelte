@@ -2,6 +2,7 @@
 	import { api } from '$lib/api/client';
 	import type { Item, PaneTarget } from '$lib/types';
 	import { parseFields, formatItemRef } from '$lib/types';
+	import { countChildProgress } from '$lib/collections/childProgress';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { collectionsNotStaleFor, categoricalValueFor } from '$lib/collections/categoricalFieldValue';
 	import { shouldOpenInPane } from './collections/itemCardClick';
@@ -57,7 +58,17 @@
 		expandedIds = next;
 	}
 
-	let doneCount = $derived(children.filter(c => terminal.includes(parseFields(c).status)).length);
+	// The COUNTS judge each child by its own collection's done field, terminal
+	// and abandoned values; an abandoned child leaves both numbers (BUG-3195).
+	// A store stamped for another workspace is not consulted (the child then
+	// falls back to the default lists, as the server does with no context).
+	// Per-row done styling below still uses the inherited terminal list.
+	let counts = $derived(
+		countChildProgress(
+			children,
+			collectionsNotStaleFor(collectionStore.collectionsWorkspace, wsSlug) ? (collectionStore.collections ?? []) : []
+		)
+	);
 
 	// In-pane drill interception for a `.nested-link` anchor (TASK-2159 /
 	// PLAN-2154 Architecture B.2) — same predicate/contract as
@@ -75,10 +86,12 @@
 {:else if children.length > 0}
 	<div class="nested-children" style:--depth={depth}>
 		<div class="nested-progress">
-			<span class="nested-count">{doneCount}/{children.length}</span>
-			<div class="nested-bar">
-				<div class="nested-bar-fill" style:width="{children.length > 0 ? Math.round((doneCount / children.length) * 100) : 0}%"></div>
-			</div>
+			{#if counts.total > 0}
+				<span class="nested-count">{counts.done}/{counts.total}</span>
+				<div class="nested-bar">
+					<div class="nested-bar-fill" style:width="{Math.round((counts.done / counts.total) * 100)}%"></div>
+				</div>
+			{/if}
 		</div>
 		{#each children as child (child.id)}
 			{@const fields = parseFields(child)}

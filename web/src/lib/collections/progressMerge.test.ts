@@ -6,14 +6,15 @@ import {
 } from './progressMerge';
 
 describe('plansProgressToMap', () => {
-	it('maps rows by item_id without a label', () => {
+	it('maps rows by item_id without a label, leaving 0/0 rows out', () => {
+		// 0/0 renders as no progress (BUG-3195): a plan with no children and a
+		// plan whose every child is abandoned both have nothing to show.
 		const rows: ProgressRow[] = [
 			{ item_id: 'a', total: 4, done: 2 },
 			{ item_id: 'b', total: 0, done: 0 },
 		];
 		expect(plansProgressToMap(rows)).toEqual({
 			a: { total: 4, done: 2 },
-			b: { total: 0, done: 0 },
 		});
 	});
 

@@ -1,17 +1,25 @@
 <script lang="ts">
 	import type { Item } from '$lib/types';
-	import { parseFields } from '$lib/types';
+	import { countedChildren, isChildDone } from '$lib/collections/childProgress';
+	import { collectionStore } from '$lib/stores/collections.svelte';
+	import { collectionsNotStaleFor } from '$lib/collections/categoricalFieldValue';
 
 	interface Props {
 		children: Item[];
 		startDate?: string;
 		endDate?: string;
-		terminalStatuses?: string[];
+		/** The workspace the children belong to, so a collection store stamped
+		 * for another workspace is not used to judge them. */
+		wsSlug?: string;
 	}
 
-	let { children, startDate, endDate, terminalStatuses }: Props = $props();
-	const defaultTerminal = ['done', 'completed', 'resolved', 'cancelled', 'rejected', 'wontfix', 'fixed', 'implemented', 'archived', 'disabled', 'deprecated'];
-	const terminal = $derived(terminalStatuses ?? defaultTerminal);
+	let { children, startDate, endDate, wsSlug }: Props = $props();
+	// Each child by its own collection's done field and terminal/abandoned
+	// values. An abandoned child is not part of the work any more and leaves
+	// the burndown entirely (BUG-3195).
+	const collections = $derived(
+		collectionsNotStaleFor(collectionStore.collectionsWorkspace, wsSlug) ? (collectionStore.collections ?? []) : []
+	);
 
 	// Chart dimensions
 	const padding = { top: 20, right: 20, bottom: 30, left: 40 };
@@ -21,14 +29,14 @@
 	const chartH = height - padding.top - padding.bottom;
 
 	let chartData = $derived.by(() => {
-		const total = children.length;
+		const counted = countedChildren(children, collections);
+		const total = counted.length;
 		if (total < 2) return null;
 
-		// Identify completed children
+		// Identify completed children (abandoned ones already left out)
 		const completions: { date: Date; count: number }[] = [];
-		for (const child of children) {
-			const f = parseFields(child);
-			if (terminal.includes(f.status)) {
+		for (const child of counted) {
+			if (isChildDone(child, collections)) {
 				completions.push({ date: new Date(child.updated_at), count: 1 });
 			}
 		}
@@ -43,9 +51,9 @@
 		if (startDate) {
 			start = new Date(startDate);
 		} else {
-			// Infer: earliest created_at among children
-			let earliest = new Date(children[0].created_at);
-			for (const child of children) {
+			// Infer: earliest created_at among the counted children
+			let earliest = new Date(counted[0].created_at);
+			for (const child of counted) {
 				const d = new Date(child.created_at);
 				if (d < earliest) earliest = d;
 			}
@@ -58,7 +66,7 @@
 		if (endDate) {
 			end = new Date(endDate);
 		} else if (allDone && completions.length > 0) {
-			// All children done → last completion date
+			// All counted children done → last completion date
 			end = new Date(completions[completions.length - 1].date);
 		} else {
 			// Open-ended → today
