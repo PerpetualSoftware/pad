@@ -502,8 +502,8 @@ if [ -n "$TARGET_PID" ]; then
 		# (BUG-3196, codex round 1): it was checked before the snapshot, and
 		# a directory removed since then would leave the server stopped with
 		# nowhere to restart it. RESIDUAL, stated: one removed between this
-		# check and the restart's `cd` still does, and the restart then
-		# fails loudly rather than starting elsewhere.
+		# check and the restart's `cd` still can, and the restart then fails
+		# loudly (naming the port to check) rather than starting elsewhere.
 		if [ -n "$SERVER_CWD" ] && [ ! -d "$SERVER_CWD" ]; then
 			die "the running server's directory no longer exists: $SERVER_CWD
   Nothing was stopped or installed. Restart it from the directory it should run in, then refresh."
@@ -606,7 +606,8 @@ case "${restart[0]}" in
 *) restart[0]="$(cd "$(dirname "${restart[0]}")" && pwd)/$(basename "${restart[0]}")" ;;
 esac
 if [ -n "$SERVER_CWD" ]; then
-	cd "$SERVER_CWD" || die "could not enter $SERVER_CWD to restart the server there. No server is running."
+	cd "$SERVER_CWD" || die "could not enter $SERVER_CWD to restart the server there.
+  The old server was signalled to stop and the new binary is installed; nothing was restarted. Check what is running on port $TARGET_PORT."
 fi
 if [ -z "${PAD_NO_SETSID:-}" ] && command -v setsid >/dev/null 2>&1; then
 	setsid nohup "${restart[@]}" >>"$HOME/.pad/server.log" 2>&1 </dev/null &
