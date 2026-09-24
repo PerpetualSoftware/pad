@@ -69,9 +69,16 @@ export const EDITOR_SELECTOR = '.editor-content .ProseMirror';
 export const SYNCED_BADGE_SELECTOR = '.collab-state-synced';
 
 /**
+ * The suite's budget for a collab handshake (socket, sync, reconnect backoff).
+ * One definition: six specs each declared their own `SYNC_TIMEOUT = 20_000`
+ * before BUG-3152 moved it here.
+ */
+export const SYNC_TIMEOUT = 20_000;
+
+/**
  * How long a spec waits for the collab editor's FIRST mount after a goto or a
- * reload (BUG-3152). 20s, the figure the suite's other collab specs already
- * use as their local SYNC_TIMEOUT.
+ * reload (BUG-3152). It is SYNC_TIMEOUT, since a first mount includes that
+ * handshake.
  *
  * The first mount sits behind a chain of sequential requests (session, the
  * item, its collection, then the collab socket and its sync), and under box
@@ -86,7 +93,7 @@ export const SYNCED_BADGE_SELECTOR = '.collab-state-synced';
  * first-mount wait. Assertions about content or ordering keep their own
  * budgets, so this widens nothing a spec is actually checking.
  */
-export const EDITOR_MOUNT_TIMEOUT = 20_000;
+export const EDITOR_MOUNT_TIMEOUT = SYNC_TIMEOUT;
 
 /** Wait for the collab editor's first mount; returns its locator. */
 export async function expectEditorMounted(page: Page): Promise<Locator> {

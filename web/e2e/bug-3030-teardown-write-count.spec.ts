@@ -8,9 +8,8 @@
 // seq is the number of writes that actually landed, and it is indifferent to
 // what the client-side listener could still see.
 import { test, expect } from './fixtures';
-import { browserLogin, seedDoc, EDITOR_SELECTOR, SYNCED_BADGE_SELECTOR } from './lib/collab-helpers';
+import { browserLogin, seedDoc, EDITOR_SELECTOR, SYNCED_BADGE_SELECTOR, SYNC_TIMEOUT } from './lib/collab-helpers';
 
-const SYNC_TIMEOUT = 20_000;
 
 // page.request shares the browser context's cookies; the bare `request`
 // fixture does not, and reported "content landed = false" for a case that

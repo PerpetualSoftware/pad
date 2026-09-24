@@ -15,9 +15,8 @@
 // synthesised: both are the page's own requests.
 import { test, expect } from './fixtures';
 import type { Route } from '@playwright/test';
-import { browserLogin, seedDoc, EDITOR_SELECTOR, SYNCED_BADGE_SELECTOR } from './lib/collab-helpers';
+import { browserLogin, seedDoc, EDITOR_SELECTOR, SYNCED_BADGE_SELECTOR, SYNC_TIMEOUT } from './lib/collab-helpers';
 
-const SYNC_TIMEOUT = 20_000;
 
 test('an older flush that reaches the server last is refused, and the newer content stays', async ({
 	page,
