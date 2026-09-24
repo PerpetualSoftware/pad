@@ -929,7 +929,8 @@ func TestInstallRefresh_ConfigValuesIgnoreInlineComments(t *testing.T) {
 // as the setsid case, and for the same reason: the branch carries the risk,
 // the detection is one test.
 func TestInstallRefresh_CapturesArgvWithoutProc(t *testing.T) {
-	requireScriptDeps(t)
+	// lsof: without /proc the server's cwd is read with it (BUG-3196).
+	requireScriptDeps(t, "lsof")
 	home, dir := t.TempDir(), t.TempDir()
 	name := uniqueName(t)
 	defer killStub(t, name)
