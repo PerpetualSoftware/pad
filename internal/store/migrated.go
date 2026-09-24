@@ -66,8 +66,9 @@ const migratedMarkerTable = "pad_migrated_marker"
 // migratedTriggerPrefix namespaces the refusal triggers.
 //
 // DELIBERATELY NOT `pad_nul_`. nulcolumns.go's ensureNULTriggersReporting
-// enumerates sqlite_master with GLOB 'pad_nul_*' and drop-recreates what it
-// finds, and treats an unexpected `pad_nul_` trigger as an unhealthy extra. A
+// enumerates sqlite_master with one GLOB per trigger file ('pad_nul_*',
+// 'pad_nul094_*'; see nulTriggerPrefix) and drop-recreates what it finds, and
+// treats an unexpected trigger in those namespaces as an unhealthy extra. A
 // separate prefix keeps these two sets outside each other's population in both
 // directions — verified against that GLOB, not assumed.
 const migratedTriggerPrefix = "pad_migrated_"

@@ -25,7 +25,7 @@ func plantLegacyRows(t *testing.T, s *Store, plant func(raw *sql.DB)) {
 	}
 	defer raw.Close()
 
-	names, err := nulTriggersIn(raw)
+	names, err := nulTriggersIn(raw, nulTriggerMigrations)
 	if err != nil {
 		t.Fatalf("list triggers: %v", err)
 	}

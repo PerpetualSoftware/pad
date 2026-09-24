@@ -11,7 +11,7 @@
 -- the next table rebuild. The predicate, the marker and the SQLite-only scope
 -- are 084's; its header carries the measurements.
 
-CREATE TRIGGER IF NOT EXISTS pad_nul_item_decisions_model_ins
+CREATE TRIGGER IF NOT EXISTS pad_nul094_item_decisions_model_ins
 BEFORE INSERT ON item_decisions
 FOR EACH ROW WHEN NEW.model IS NOT NULL AND (
 			instr(NEW.model, char(0)) > 0
@@ -20,7 +20,7 @@ BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: item_decisions.model must not contain a NUL');
 END;
 
-CREATE TRIGGER IF NOT EXISTS pad_nul_item_decisions_model_upd
+CREATE TRIGGER IF NOT EXISTS pad_nul094_item_decisions_model_upd
 BEFORE UPDATE OF model ON item_decisions
 FOR EACH ROW WHEN NEW.model IS NOT NULL AND (
 			instr(NEW.model, char(0)) > 0
@@ -29,7 +29,7 @@ BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: item_decisions.model must not contain a NUL');
 END;
 
-CREATE TRIGGER IF NOT EXISTS pad_nul_items_lease_holder_ins
+CREATE TRIGGER IF NOT EXISTS pad_nul094_items_lease_holder_ins
 BEFORE INSERT ON items
 FOR EACH ROW WHEN NEW.lease_holder IS NOT NULL AND (
 			instr(NEW.lease_holder, char(0)) > 0
@@ -38,7 +38,7 @@ BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: items.lease_holder must not contain a NUL');
 END;
 
-CREATE TRIGGER IF NOT EXISTS pad_nul_items_lease_holder_upd
+CREATE TRIGGER IF NOT EXISTS pad_nul094_items_lease_holder_upd
 BEFORE UPDATE OF lease_holder ON items
 FOR EACH ROW WHEN NEW.lease_holder IS NOT NULL AND (
 			instr(NEW.lease_holder, char(0)) > 0

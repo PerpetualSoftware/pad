@@ -406,6 +406,15 @@ func (s *Store) ensureNULTriggers() error {
 // observables in a row is the point at which the honest fix is to make the
 // thing itself observable (codex round 5).
 func (s *Store) ensureNULTriggersReporting() (restored bool, err error) {
+	return s.ensureNULTriggersFor(nulTriggerMigrations)
+}
+
+// ensureNULTriggersFor is the restore, over the trigger files a binary KNOWS.
+//
+// Production passes every file this binary ships. The parameter exists so a
+// test can run the restore as an OLDER binary would, knowing fewer files, and
+// check that it leaves a newer file's triggers alone (see nulTriggerPrefix).
+func (s *Store) ensureNULTriggersFor(known []string) (restored bool, err error) {
 	if s.dialect.Driver() != DriverSQLite {
 		return false, nil
 	}
@@ -421,7 +430,7 @@ func (s *Store) ensureNULTriggersReporting() (restored bool, err error) {
 	// The same holds per FILE (BUG-3108): a later trigger file's triggers name
 	// columns that do not exist until the migrations before it have run, so
 	// only the files already applied are wanted or re-executed.
-	applied, err := s.nulTriggerMigrationsApplied()
+	applied, err := s.nulTriggerMigrationsApplied(known)
 	if err != nil {
 		return false, err
 	}
@@ -468,12 +477,12 @@ func (s *Store) ensureNULTriggersReporting() (restored bool, err error) {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	have, err := nulTriggersIn(tx)
+	have, err := nulTriggersIn(tx, known)
 	if err != nil {
 		return false, err
 	}
 	missing := false
-	// An EXTRA pad_nul_ trigger is unhealthy too (codex round 6). A stray one
+	// An EXTRA trigger in a known namespace is unhealthy too (codex round 6). A stray one
 	// left by a partial restore or a manual edit can ABORT legitimate writes,
 	// and a check that only asks "is everything I expect present" reports that
 	// database as fine. The drop-then-recreate below removes them, so detecting
@@ -537,29 +546,57 @@ func (s *Store) ensureNULTriggersReporting() (restored bool, err error) {
 	return true, nil
 }
 
-// nulTriggersIn reads the NUL triggers present, name -> stored SQL.
+// nulTriggersIn reads the NUL triggers present in the named files' namespaces,
+// name -> stored SQL.
 //
 // GLOB rather than LIKE: LIKE's `_` is a single-character wildcard, so
 // 'pad_nul_%' also matches names this code never generates, and a loose pattern
 // in a health check is a check that can be satisfied by the wrong thing.
-func nulTriggersIn(q Queryer) (map[string]string, error) {
+func nulTriggersIn(q Queryer, files []string) (map[string]string, error) {
+	out := map[string]string{}
+	for _, f := range files {
+		if err := readNULTriggers(q, nulTriggerPrefix(f), out); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+func readNULTriggers(q Queryer, prefix string, out map[string]string) error {
 	rows, err := q.Query(
-		`SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND name GLOB 'pad_nul_*'`,
+		`SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND name GLOB ?`, prefix+"*",
 	)
 	if err != nil {
-		return nil, fmt.Errorf("list NUL triggers: %w", err)
+		return fmt.Errorf("list NUL triggers: %w", err)
 	}
 	defer rows.Close()
-	out := map[string]string{}
 	for rows.Next() {
 		var n string
 		var sqlText sql.NullString
 		if err := rows.Scan(&n, &sqlText); err != nil {
-			return nil, err
+			return err
 		}
 		out[n] = normalizeTriggerSQL(sqlText.String)
 	}
-	return out, rows.Err()
+	return rows.Err()
+}
+
+// nulTriggerPrefix is the name prefix of one trigger file's triggers: pad_nul_
+// for 084, and pad_nul<NNN>_ for a later file NNN.
+//
+// Separate namespaces are what keep an OLDER binary from destroying a newer
+// file's triggers (BUG-3108, codex round 1). The restore reads its triggers by
+// GLOB, treats any name in that namespace it does not expect as a stray, and
+// drops it. A binary that predates 094 reads 'pad_nul_*'; had 094's triggers
+// used that prefix, such a binary started with --force would drop them all.
+// 'pad_nul094_x' is outside 'pad_nul_*', because the eighth character is '0',
+// not '_'. migratedTriggerPrefix stays out of this family for the same reason.
+func nulTriggerPrefix(file string) string {
+	if file == nulTriggerMigrations[0] {
+		return "pad_nul_"
+	}
+	num, _, _ := strings.Cut(file, "_")
+	return "pad_nul" + num + "_"
 }
 
 // renderedNULTriggers returns the exact CREATE statement each trigger in the
@@ -621,7 +658,7 @@ func normalizeTriggerSQL(s string) string {
 // transient read failure would start successfully with the invariant
 // unenforced — the one outcome this whole layer exists to prevent. Only the
 // schema_migrations table being ABSENT means "earlier than that migration".
-func (s *Store) nulTriggerMigrationsApplied() ([]string, error) {
+func (s *Store) nulTriggerMigrationsApplied(known []string) ([]string, error) {
 	var exists int
 	if err := s.db.QueryRow(
 		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='schema_migrations'`,
@@ -632,7 +669,7 @@ func (s *Store) nulTriggerMigrationsApplied() ([]string, error) {
 		return nil, nil
 	}
 	var out []string
-	for _, name := range nulTriggerMigrations {
+	for _, name := range known {
 		var applied int
 		if err := s.db.QueryRow(
 			`SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, name,
@@ -679,7 +716,7 @@ func renderNULTriggerMigration(file string) string {
 			{"ins", "INSERT"},
 			{"upd", "UPDATE OF " + c.Column},
 		} {
-			name := fmt.Sprintf("pad_nul_%s_%s_%s", c.Table, c.Column, ev.suffix)
+			name := fmt.Sprintf("%s%s_%s_%s", nulTriggerPrefix(file), c.Table, c.Column, ev.suffix)
 			cond := fmt.Sprintf("instr(NEW.%s, char(0)) > 0", c.Column)
 			if c.Class == classJSON {
 				cond += fmt.Sprintf(`

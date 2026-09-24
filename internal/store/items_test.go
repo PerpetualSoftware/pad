@@ -1818,8 +1818,15 @@ func TestExpectedFTSTriggers_MatchesActual(t *testing.T) {
 		// generated migration and the shared column list). Excluded here by
 		// PREFIX rather than by name so adding a protected column does not
 		// require editing this test too — which is the coupling that would
-		// make one of the two lists rot.
-		if strings.HasPrefix(name, "pad_nul_") {
+		// make one of the two lists rot. One prefix per trigger file
+		// (nulTriggerPrefix, BUG-3108).
+		isNUL := false
+		for _, f := range nulTriggerMigrations {
+			if strings.HasPrefix(name, nulTriggerPrefix(f)) {
+				isNUL = true
+			}
+		}
+		if isNUL {
 			continue
 		}
 		key := table + "/" + name

@@ -13,7 +13,12 @@ import (
 
 // columnIntroductions applies the SQLite migration chain one file at a time to
 // a fresh raw database and records, for every column that exists at the end,
-// the migration after which it FIRST appeared.
+// the LAST migration after which it appeared having been absent just before.
+//
+// Last, not first (codex round 1): a column dropped and re-added, or a table
+// renamed away and replaced under its old name, is introduced again, and a
+// trigger file between the two appearances would name a column that did not
+// exist when it ran.
 //
 // It is the instrument BUG-3108's ordering rule is checked against, and it is
 // derived from the chain rather than written down, so a column cannot be
@@ -24,6 +29,25 @@ import (
 // check the inputs of.
 func columnIntroductions(t *testing.T) (intro map[string]string, migrations []string) {
 	t.Helper()
+	migrations, err := readMigrationNames(migrationsFS, "migrations")
+	if err != nil {
+		t.Fatalf("read migrations: %v", err)
+	}
+	steps := make([]chainStep, 0, len(migrations))
+	for _, name := range migrations {
+		data, err := migrationsFS.ReadFile("migrations/" + name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		steps = append(steps, chainStep{name, string(data)})
+	}
+	return columnIntroductionsOf(t, steps), migrations
+}
+
+type chainStep struct{ name, sql string }
+
+func columnIntroductionsOf(t *testing.T, steps []chainStep) map[string]string {
+	t.Helper()
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "chain.db"))
 	if err != nil {
 		t.Fatalf("open: %v", err)
@@ -32,17 +56,11 @@ func columnIntroductions(t *testing.T) (intro map[string]string, migrations []st
 	if _, err := db.Exec(`CREATE TABLE schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)`); err != nil {
 		t.Fatalf("schema_migrations: %v", err)
 	}
-	migrations, err = readMigrationNames(migrationsFS, "migrations")
-	if err != nil {
-		t.Fatalf("read migrations: %v", err)
-	}
-	intro = map[string]string{}
-	for _, name := range migrations {
-		data, err := migrationsFS.ReadFile("migrations/" + name)
-		if err != nil {
-			t.Fatalf("read %s: %v", name, err)
-		}
-		if err := applySQLiteMigration(db, name, string(data)); err != nil {
+	intro := map[string]string{}
+	prev := map[string]bool{}
+	for _, step := range steps {
+		name := step.name
+		if err := applySQLiteMigration(db, name, step.sql); err != nil {
 			t.Fatalf("apply %s: %v", name, err)
 		}
 		rows, err := db.Query(`
@@ -53,20 +71,54 @@ func columnIntroductions(t *testing.T) (intro map[string]string, migrations []st
 		if err != nil {
 			t.Fatalf("columns after %s: %v", name, err)
 		}
+		now := map[string]bool{}
 		for rows.Next() {
 			var table, col string
 			if err := rows.Scan(&table, &col); err != nil {
 				t.Fatalf("scan: %v", err)
 			}
-			if _, seen := intro[table+"."+col]; !seen {
-				intro[table+"."+col] = name
+			key := table + "." + col
+			now[key] = true
+			if !prev[key] {
+				intro[key] = name
 			}
 		}
 		if err := rows.Close(); err != nil {
 			t.Fatalf("rows after %s: %v", name, err)
 		}
+		prev = now
 	}
-	return intro, migrations
+	// Report only what exists at the end of the chain.
+	for key := range intro {
+		if !prev[key] {
+			delete(intro, key)
+		}
+	}
+	return intro
+}
+
+// TestColumnIntroductionsTakesTheLatestAppearance checks the instrument itself
+// on a synthetic chain, because the real chain has no column that disappears
+// and comes back, so it could not show the rule going red. A column dropped
+// and re-added, and a table renamed away and replaced under its old name, are
+// both introduced again at the later step.
+func TestColumnIntroductionsTakesTheLatestAppearance(t *testing.T) {
+	t.Parallel()
+	intro := columnIntroductionsOf(t, []chainStep{
+		{"001_a.sql", "CREATE TABLE t (id TEXT, c TEXT); CREATE TABLE u (id TEXT, d TEXT);"},
+		{"002_a.sql", "ALTER TABLE t DROP COLUMN c; ALTER TABLE u RENAME TO u_old;"},
+		{"003_a.sql", "ALTER TABLE t ADD COLUMN c TEXT; CREATE TABLE u (id TEXT, d TEXT);"},
+	})
+	for key, want := range map[string]string{
+		"t.id":    "001_a.sql",
+		"t.c":     "003_a.sql",
+		"u.d":     "003_a.sql",
+		"u_old.d": "002_a.sql",
+	} {
+		if got := intro[key]; got != want {
+			t.Errorf("%s: introduced at %q, want %q", key, got, want)
+		}
+	}
 }
 
 // TestNULTriggerFilesFollowTheirColumns is BUG-3108's ordering rule: every
@@ -155,7 +207,7 @@ func TestNULTriggerRestorationCoversLaterFiles(t *testing.T) {
 	col := createTestCollection(t, s, ws.ID, "Tasks")
 	item := createTestItem(t, s, ws.ID, col.ID, "Later file subject", "")
 
-	for _, tr := range []string{"pad_nul_items_lease_holder_ins", "pad_nul_items_lease_holder_upd"} {
+	for _, tr := range []string{"pad_nul094_items_lease_holder_ins", "pad_nul094_items_lease_holder_upd"} {
 		// No IF EXISTS: the fixture needs the trigger to exist.
 		if _, err := s.db.Exec("DROP TRIGGER " + tr); err != nil {
 			t.Fatalf("drop %s: %v", tr, err)
@@ -226,7 +278,7 @@ func TestNULTriggerRestorationSkipsUnappliedFiles(t *testing.T) {
 	if !restored {
 		t.Fatal("the dropped 084 trigger was not restored, so the restore never ran and the check below is vacuous")
 	}
-	have, err := nulTriggersIn(s.db)
+	have, err := nulTriggersIn(s.db, nulTriggerMigrations)
 	if err != nil {
 		t.Fatalf("list triggers: %v", err)
 	}
@@ -236,6 +288,47 @@ func TestNULTriggerRestorationSkipsUnappliedFiles(t *testing.T) {
 	for name := range laterTriggers {
 		if _, ok := have[name]; ok {
 			t.Errorf("the restore created %s from %s, which is not applied", name, later)
+		}
+	}
+}
+
+// TestNULTriggerRestorationByAnOlderBinaryKeepsLaterFiles runs the restore as a
+// binary that knows only 084 would, against a database carrying 094's
+// triggers. That binary refuses to start on a schema ahead of it unless forced,
+// and a forced one must not destroy the newer triggers (codex round 1): they
+// are the protection Layer B exists to keep in force while an older binary
+// writes the file.
+//
+// One 084 trigger is dropped so the older restore actually runs, rather than
+// passing because it had nothing to do.
+func TestNULTriggerRestorationByAnOlderBinaryKeepsLaterFiles(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	if s.dialect.Driver() != DriverSQLite {
+		t.Skip("Layer B is SQLite-only")
+	}
+	later := renderedNULTriggers(nulTriggerMigrations[1:])
+	if len(later) == 0 {
+		t.Fatal("no later-file triggers; the fixture proves nothing")
+	}
+	if _, err := s.db.Exec(`DROP TRIGGER pad_nul_items_content_upd`); err != nil {
+		t.Fatalf("drop an 084 trigger: %v", err)
+	}
+
+	restored, err := s.ensureNULTriggersFor(nulTriggerMigrations[:1])
+	if err != nil {
+		t.Fatalf("restore as an older binary: %v", err)
+	}
+	if !restored {
+		t.Fatal("the older binary's restore did not run, so the check below is vacuous")
+	}
+	have, err := nulTriggersIn(s.db, nulTriggerMigrations)
+	if err != nil {
+		t.Fatalf("list triggers: %v", err)
+	}
+	for name := range later {
+		if _, ok := have[name]; !ok {
+			t.Errorf("an older binary's restore dropped %s", name)
 		}
 	}
 }
