@@ -133,7 +133,7 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	refreshProgress: { reviewed: '88f486338d7b', why: 'gen against loadGeneration, plus the slug and workspace, after the fetch' },
 	loadTagSuggestions: { reviewed: 'b03a62bf7294', why: 'identityHeld after the fetch; the identity listener re-runs it' },
 	stampSourceUrl: { reviewed: 'b9d3f9d400ae', why: 'switchedAway on both arms' },
-	refreshFromSource: { reviewed: 'ef03f378ee06', why: 'switchedAway on every arm' },
+	refreshFromSource: { reviewed: '205f77aba079', why: 'switchedAway on every arm; the frozen-editor notice (BUG-2177) is after that check' },
 	updateAssignedUser: { reviewed: '86f060522de1', why: 'gen against loadGeneration on both arms' },
 	updateAgentRole: { reviewed: 'ae4f320cdbab', why: 'gen against loadGeneration on both arms' },
 	flushRawIfPending: {

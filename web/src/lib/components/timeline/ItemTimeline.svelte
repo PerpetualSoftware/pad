@@ -1379,9 +1379,9 @@
 	     Read-only viewers / guests with view-only grants see the timeline
 	     thread but cannot post; the composer is hidden entirely. Note: an
 	     attachment upload the user STARTED in this composer before the pane
-	     opened is orphaned when the composer unmounts on freeze — the ACCEPTED,
-	     tracked BUG-2177 tradeoff (its upload bails via attachment-upload.ts's
-	     view.isDestroyed check; no crash, no committed-content loss). -->
+	     opened cannot be inserted once the composer unmounts on freeze. The
+	     file is stored, so CommentEditor's onNotice tells the user it was not
+	     inserted, naming it (BUG-2177); no crash, no committed-content loss. -->
 	{#if canEdit && showComposer}
 		<div class="compose">
 			<CommentEditor

@@ -91,6 +91,9 @@ vi.mock('$lib/stores/auth.svelte', () => ({
 		// ItemTimeline fences every load and handler on identity (BUG-3105);
 		// identity never changes in this suite.
 		identityFence: () => () => true,
+		// The toast store registers here at import, and CommentEditor now
+		// imports it for its stored-upload notice (BUG-2177).
+		onIdentityChange: () => () => {},
 	},
 }));
 

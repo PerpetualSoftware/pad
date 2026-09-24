@@ -125,6 +125,11 @@ export type AttachmentTransform = (
 	payload: AttachmentTransformRequest
 ) => Promise<AttachmentTransformResult>;
 
+/** The notice for a rotate or crop dropped by the master freeze (BUG-2177).
+ *  The host prefixes "Couldn't transform image: ". */
+export const IMAGE_EDIT_INTERRUPTED =
+	'the edit was interrupted because the editor became read-only before it finished (for example, a pane opened over it). Try it again.';
+
 export interface AttachmentImageOptions {
 	HTMLAttributes: Record<string, unknown>;
 	/**
@@ -1241,7 +1246,16 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 				// throw, and a read-only one must not receive the Yjs transaction the
 				// freeze forbids. The server-side transform still ran; only its doc
 				// reference is dropped (no crash, no committed-content loss).
-				if (editor.isDestroyed || !editor.isEditable) return;
+				// A FROZEN editor tells the user (BUG-2177, lead ruling day 78): the
+				// edit is not replayed on thaw, because applying it minutes later
+				// changes the document while the user is not looking, which is worse
+				// than asking them to repeat one gesture. A destroyed editor is an
+				// item switch, whose user has moved on, so it stays silent.
+				if (editor.isDestroyed) return;
+				if (!editor.isEditable) {
+					opts.onError?.(IMAGE_EDIT_INTERRUPTED);
+					return;
+				}
 				const pos = typeof getPos === 'function' ? getPos() : null;
 				if (pos == null) return;
 				// Replace the node's UUID at its current position.
@@ -1333,12 +1347,16 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 					rect = null;
 				}
 				if (rect == null) return;
-				// Master-freeze / R14 (TASK-2172); tracked edge BUG-2177: peeking can
-				// begin WHILE the crop modal is open. Re-check editability after it
-				// resolves — before the server-side transform — so a frozen/remounted
-				// master starts no transform (a crop initiated pre-pane whose editor
-				// remounts is the accepted BUG-2177 orphan: no crash, no content loss).
-				if (editor.isDestroyed || !editor.isEditable) return;
+				// Master-freeze / R14 (TASK-2172): peeking can begin WHILE the crop
+				// modal is open. Re-check editability after it resolves, before the
+				// server-side transform, so a frozen or remounted master starts no
+				// transform. A frozen one reports the dropped crop (BUG-2177).
+				if (editor.isDestroyed) return;
+				if (!editor.isEditable) {
+					// The crop the user just chose is dropped, so say so (BUG-2177).
+					opts.onError?.(IMAGE_EDIT_INTERRUPTED);
+					return;
+				}
 				// Live node moved to a different uuid while the modal was
 				// open — the rect doesn't apply. Drop silently rather than
 				// mis-cropping the new image.

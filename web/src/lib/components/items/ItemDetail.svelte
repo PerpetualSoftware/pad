@@ -4001,7 +4001,15 @@
 			// forbids. Drop it (the old peeking `{#key}` remount dropped it via the
 			// identity arm); no crash, no committed-content loss (the doc is in the
 			// retained Y.Doc).
-			if (switchedAway(targetItem, gen) || editorInstance !== targetEditor || !targetEditor?.isEditable) {
+			if (switchedAway(targetItem, gen) || editorInstance !== targetEditor || !targetEditor) {
+				return;
+			}
+			// Frozen: the replace is dropped, and the user is told rather than
+			// left to find the old content (BUG-2177, lead ruling day 78). Not
+			// replayed on thaw: a whole-document replace landing minutes later,
+			// while the user is not looking, is worse than asking them to repeat it.
+			if (!targetEditor.isEditable) {
+				toastStore.show('The refresh from source was interrupted because the editor became read-only before it finished (for example, a pane opened over it). Try it again.', 'error');
 				return;
 			}
 			const html = marked.parse(resp.markdown, { async: false }) as string;

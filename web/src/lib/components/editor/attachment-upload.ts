@@ -21,6 +21,17 @@
  * deleted before completion (user changed their mind, navigated away,
  * etc.). Orphan-GC reclaims the on-disk bytes after the grace period.
  *
+ * A FROZEN editor (read-only while a detail pane is open over it, the
+ * master freeze of TASK-2172 / TASK-2180) defers rather than drops
+ * (BUG-2177). Every entry point refuses to START an upload on a read-only
+ * view, so an upload in flight at freeze time was begun by the user while
+ * the editor was editable. Its result is parked on the placeholder entry,
+ * which keeps being mapped through every transaction (peers' included), and
+ * inserted by the plugin view's `update` once the view is editable again.
+ * Where it can no longer be inserted — the view was torn down — the host is
+ * told through `onNotice`, naming the file, because the bytes are stored
+ * server-side and nothing references them.
+ *
  * Multiple files in a single drop fan out as concurrent uploads with
  * individual placeholders — the user sees one spinner per file and
  * each replaces its own placeholder when its upload finishes, in
@@ -50,6 +61,15 @@ declare module '@tiptap/core' {
 interface UploadEntry {
 	pos: number;
 	filename: string;
+	/** Set when the upload finished while the view was read-only (BUG-2177):
+	 *  the result waits here, on the mapped placeholder, for the thaw. */
+	result?: AttachmentUploadResult;
+	/** The placeholder's position was deleted outright (the content around it
+	 *  removed, or the whole document replaced), so a mapped number survives
+	 *  but the place the user dropped the file does not. Inserting there would
+	 *  put the file at a deletion boundary, possibly in content the user never
+	 *  saw (codex round 1 on BUG-2177), so a lost placeholder is reported. */
+	lost?: boolean;
 }
 
 interface UploadState {
@@ -61,6 +81,8 @@ interface UploadAction {
 	add?: { id: string; pos: number; filename: string };
 	/** Remove a placeholder by id (success or cancellation). */
 	remove?: string;
+	/** Park a finished upload's result on its placeholder (frozen view, BUG-2177). */
+	ready?: { id: string; result: AttachmentUploadResult };
 }
 
 export interface AttachmentUploadOptions {
@@ -72,6 +94,17 @@ export interface AttachmentUploadOptions {
 	 * the host app's notification system.
 	 */
 	onError?: (filename: string, message: string) => void;
+	/**
+	 * Called when an upload SUCCEEDED but its result could not be inserted
+	 * (BUG-2177): the file is stored server-side and nothing references it.
+	 * The message names the file. Wired to the host's notification system.
+	 */
+	onNotice?: (message: string) => void;
+}
+
+/** The notice for a stored upload whose reference never landed (BUG-2177). */
+export function storedNotInsertedMessage(filename: string): string {
+	return `${filename} was uploaded but not inserted into the document: the editor closed, or the place it was dropped was removed, before it could be inserted. Attach it again to use it.`;
 }
 
 const pluginKey = new PluginKey<UploadState>('attachmentUpload');
@@ -182,31 +215,43 @@ function startUpload(
 			// Drop the result (the bytes are already stored server-side; the
 			// reference is simply not inserted) and clean up the placeholder if the
 			// same view still lives.
-			if (view.isDestroyed || !view.editable) {
-				if (!view.isDestroyed) {
-					view.dispatch(view.state.tr.setMeta(pluginKey, { remove: id } satisfies UploadAction));
-				}
+			// BUG-2177 changes the frozen arm from DROP to DEFER: the file was
+			// uploaded at the user's request, so its reference is inserted when
+			// the view thaws (see the plugin view's `update`), not discarded.
+			// A DESTROYED view cannot take it at all, and the stored bytes would
+			// be orphaned silently, so the host is told, naming the file.
+			if (view.isDestroyed) {
+				opts.onNotice?.(storedNotInsertedMessage(filename));
 				return;
 			}
 			const state = pluginKey.getState(view.state);
 			const entry = state?.uploads.get(id);
 			if (!entry) return; // placeholder gone — drop the upload silently
+			if (!view.editable) {
+				// A meta-only transaction: no document step, so no Yjs op, which
+				// is why it is allowed on a frozen view (the removal below it on
+				// the error arm relies on the same property).
+				view.dispatch(view.state.tr.setMeta(pluginKey, { ready: { id, result } } satisfies UploadAction));
+				return;
+			}
 			const tr = view.state.tr;
-			const node = nodeForResult(view, result);
+			const node = entry.lost ? null : nodeForResult(view, result);
 			if (node) tr.insert(entry.pos, node);
 			tr.setMeta(pluginKey, { remove: id } satisfies UploadAction);
 			view.dispatch(tr);
+			if (!node) opts.onNotice?.(storedNotInsertedMessage(filename));
 		})
 		.catch((err: unknown) => {
-			// Same teardown/freeze guard as the success path (TASK-2172): a
-			// destroyed view can't accept the placeholder-cleanup dispatch, and a
-			// read-only master (peeking) must not surface an upload-error alert for
-			// an upload it never let the user start. The cleanup dispatch is a
-			// meta-only transaction (no doc step → no Yjs op), so it's safe to run
-			// on a live view; only skip it when the view is gone.
+			// A destroyed view can't accept the placeholder-cleanup dispatch. The
+			// cleanup is a meta-only transaction (no doc step, so no Yjs op) and
+			// is safe on a live view, frozen or not. The failure IS reported while
+			// frozen (BUG-2177): every entry point refuses to start an upload on a
+			// read-only view, so this one was begun by the user while the editor
+			// was editable, and its failure is theirs to hear about. (The earlier
+			// reasoning, "an upload it never let the user start", described a
+			// paste onto a frozen view, which the handlers already refuse.)
 			if (view.isDestroyed) return;
 			view.dispatch(view.state.tr.setMeta(pluginKey, { remove: id } satisfies UploadAction));
-			if (!view.editable) return;
 			const message = err instanceof Error ? err.message : String(err ?? 'Upload failed');
 			opts.onError?.(filename, message);
 		});
@@ -232,6 +277,39 @@ function nodeForResult(view: EditorView, result: AttachmentUploadResult) {
 	return null;
 }
 
+function hasReadyUploads(view: EditorView): boolean {
+	const st = pluginKey.getState(view.state);
+	if (!st) return false;
+	for (const entry of st.uploads.values()) if (entry.result) return true;
+	return false;
+}
+
+/** Insert every parked upload at its mapped placeholder (BUG-2177). One
+ *  transaction per upload, each reading the state the previous one left, so
+ *  no position is used after a sibling insertion shifted it. */
+function insertReadyUploads(view: EditorView, opts: AttachmentUploadOptions): void {
+	for (;;) {
+		if (view.isDestroyed || !view.editable) return;
+		const st = pluginKey.getState(view.state);
+		if (!st) return;
+		let ready: [string, UploadEntry] | undefined;
+		for (const pair of st.uploads) {
+			if (pair[1].result) {
+				ready = pair;
+				break;
+			}
+		}
+		if (!ready) return;
+		const [id, entry] = ready;
+		const tr = view.state.tr;
+		const node = entry.lost ? null : nodeForResult(view, entry.result!);
+		if (node) tr.insert(entry.pos, node);
+		tr.setMeta(pluginKey, { remove: id } satisfies UploadAction);
+		view.dispatch(tr);
+		if (!node) opts.onNotice?.(storedNotInsertedMessage(entry.filename));
+	}
+}
+
 /** Build the ProseMirror plugin. Exposed for tests / advanced wiring. */
 export function attachmentUploadPlugin(opts: AttachmentUploadOptions): Plugin<UploadState> {
 	return new Plugin<UploadState>({
@@ -246,7 +324,12 @@ export function attachmentUploadPlugin(opts: AttachmentUploadOptions): Plugin<Up
 				// reference for change detection.
 				const next: UploadState = { uploads: new Map() };
 				for (const [id, entry] of prev.uploads) {
-					next.uploads.set(id, { ...entry, pos: tr.mapping.map(entry.pos) });
+					const mapped = tr.mapping.mapResult(entry.pos, -1);
+					next.uploads.set(id, {
+						...entry,
+						pos: mapped.pos,
+						lost: entry.lost || mapped.deletedAcross,
+					});
 				}
 				const action = tr.getMeta(pluginKey) as UploadAction | undefined;
 				if (action?.add) {
@@ -255,11 +338,51 @@ export function attachmentUploadPlugin(opts: AttachmentUploadOptions): Plugin<Up
 						filename: action.add.filename,
 					});
 				}
+				if (action?.ready) {
+					const entry = next.uploads.get(action.ready.id);
+					if (entry) next.uploads.set(action.ready.id, { ...entry, result: action.ready.result });
+				}
 				if (action?.remove) {
 					next.uploads.delete(action.remove);
 				}
 				return next;
 			},
+		},
+		view(editorView) {
+			// BUG-2177: insert uploads that finished while the view was frozen,
+			// once it is editable again. ProseMirror calls a plugin view's
+			// `update` on every view update, including the setProps an
+			// `editable` flip performs (the block drag handle relies on the same
+			// thing). Deferred to a microtask because dispatching from inside
+			// `update` would re-enter the view update in progress.
+			let scheduled = false;
+			const schedule = (view: EditorView) => {
+				if (scheduled || !view.editable) return;
+				if (!hasReadyUploads(view)) return;
+				scheduled = true;
+				queueMicrotask(() => {
+					scheduled = false;
+					insertReadyUploads(view, opts);
+				});
+			};
+			// A plugin view is also created when the plugin set is rebuilt, and
+			// entries parked before that must not wait for an unrelated update.
+			schedule(editorView);
+			return {
+				update(view) {
+					schedule(view);
+				},
+				// The view is going away with results still parked: the files are
+				// stored and nothing will reference them, so say so, as the
+				// destroyed arm of the upload itself does (codex round 1).
+				destroy() {
+					const st = pluginKey.getState(editorView.state);
+					if (!st) return;
+					for (const entry of st.uploads.values()) {
+						if (entry.result) opts.onNotice?.(storedNotInsertedMessage(entry.filename));
+					}
+				},
+			};
 		},
 		props: {
 			decorations(state) {
@@ -334,6 +457,7 @@ export const AttachmentUpload = Extension.create<AttachmentUploadOptions>({
 				throw new Error('AttachmentUpload: configure({ upload }) is required');
 			},
 			onError: undefined,
+			onNotice: undefined,
 		};
 	},
 
