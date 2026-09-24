@@ -119,7 +119,7 @@ describe('FilterBar relation filter', () => {
 	it('never echoes an unresolvable value back at the user', () => {
 		const dangling = 'f47ac10b-58cc-4372-a567-0e02b2c3d479';
 		const screen = renderBar({ activeFilters: { car_color: dangling } });
-		expect(trigger(screen)?.textContent).toContain('Unresolved reference');
+		expect(trigger(screen)?.textContent).toContain('Unavailable item');
 		expect(screen.container.innerHTML).not.toContain(dangling);
 	});
 
