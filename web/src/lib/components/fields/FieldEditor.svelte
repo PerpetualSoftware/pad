@@ -684,6 +684,51 @@ handlers — onchange is never called.
 	// ── Date input state ──────────────────────────────────────────────────
 
 	let dateInputEl: HTMLInputElement | undefined = $state(undefined);
+	let dateTriggerEl: HTMLButtonElement | undefined = $state(undefined);
+	/** True while the hidden date input holds focus (its picker is up). */
+	let dateInputFocused = $state(false);
+
+	/**
+	 * Open the native date picker (BUG-2858).
+	 *
+	 * The input is FOCUSED first, synchronously, then `showPicker()` is called.
+	 * Both halves are WebKit, read from source:
+	 *  - macOS Safari closes its date popover only when a focused inner segment
+	 *    field of the input blurs (`DateTimeEditElement::didBlurFromField` →
+	 *    `didBlurFromControl`); the popover window has no outside-click monitor,
+	 *    and Escape reaches it only when it was opened from the keyboard.
+	 *    `showPicker()` never focuses, so a picker opened from this hidden,
+	 *    never-focused input could not be dismissed at all.
+	 *  - iOS has no `showPicker()` picker (`PageClientImplIOS::createDateTimePicker`
+	 *    returns null); its date picker comes only from focus, and only when the
+	 *    focus happens inside the tap (`userIsInteracting`). So the focus must stay
+	 *    synchronous in this click handler — nothing may be awaited before it.
+	 * `showPicker()` can throw (NotAllowedError without activation,
+	 * InvalidStateError); focus has already done what it can by then.
+	 */
+	function openDatePicker() {
+		const el = dateInputEl;
+		if (!el) return;
+		el.focus({ preventScroll: true });
+		try {
+			el.showPicker();
+		} catch {
+			// See above: the focus stands on its own.
+		}
+	}
+
+	/** Escape while the picker's input has focus closes it (macOS Safari: the
+	 *  focused segment blurs) and returns focus to the trigger. The pane hosts
+	 *  already ignore an Escape whose target is a text-entry input — `date`
+	 *  counts — which is what keeps the pane open here (a mutant without the
+	 *  `preventDefault` still passes the pane e2e). The key is marked handled
+	 *  anyway, for any consumer that asks. */
+	function handleDateKeydown(e: KeyboardEvent) {
+		if (e.key !== 'Escape') return;
+		e.preventDefault();
+		dateInputEl?.blur();
+		dateTriggerEl?.focus();
+	}
 
 	function formatDate(dateStr: string): string {
 		try {
@@ -1367,10 +1412,11 @@ handlers — onchange is never called.
 	<!-- Custom date picker -->
 	<div class="date-wrapper">
 		<button
+			bind:this={dateTriggerEl}
 			class="select-trigger date-trigger"
 			type="button"
 			aria-label={ariaLabel}
-			onclick={() => dateInputEl?.showPicker()}
+			onclick={openDatePicker}
 		>
 			{#if value}
 				<span class="date-label">{formatDate(value)}</span>
@@ -1391,14 +1437,21 @@ handlers — onchange is never called.
 				<line x1="9" y1="1.5" x2="9" y2="4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
 			</svg>
 		</button>
+		<!-- Hidden from assistive tech only while it does NOT hold focus: a
+		     focused aria-hidden element is an a11y error, and once focused it
+		     is the control being operated, so it carries the field's label. -->
 		<input
 			bind:this={dateInputEl}
 			class="date-hidden-input"
 			type="date"
 			value={value ?? ''}
 			onchange={handleDateInput}
+			onkeydown={handleDateKeydown}
+			onfocus={() => (dateInputFocused = true)}
+			onblur={() => (dateInputFocused = false)}
 			tabindex={-1}
-			aria-hidden="true"
+			aria-hidden={dateInputFocused ? undefined : 'true'}
+			aria-label={ariaLabel ?? (field.label || field.key)}
 		/>
 	</div>
 
@@ -1778,6 +1831,9 @@ handlers — onchange is never called.
 		height: 100%;
 		cursor: pointer;
 		pointer-events: none;
+		/* iOS zooms the page onto a focused input under 16px (BUG-2858: the
+		   input is now focused to open its picker). Invisible either way. */
+		font-size: 16px;
 	}
 
 	/* ── Number input ────────────────────────────────────────────────── */
