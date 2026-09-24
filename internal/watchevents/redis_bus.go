@@ -1618,7 +1618,9 @@ func (b *RedisBus) fanOutLocally(n Notification, gen int64) {
 		// nil instead — replayBuffer.since() returns nil once sinceID
 		// exceeds the newest id it holds, which after the reset is a small
 		// number — so those clients resync, which is the only honest
-		// outcome. Clients in the NEW space keep working immediately.
+		// outcome. Clients in the NEW space keep working once their cursor
+		// is above the old space's peak; at or below it they resync too,
+		// because such a cursor is ambiguous (see ambiguousThrough).
 		//
 		// RESIDUAL WINDOW, accepted (codex round 8). This fires when the
 		// first post-reset notification ARRIVES, so between the counter
@@ -1630,8 +1632,10 @@ func (b *RedisBus) fanOutLocally(n Notification, gen int64) {
 		// something.
 		//
 		// CLOSED, as of the trailing-gap work: resumeOutrunsLocalView reads
-		// the shared counter on every resume, and a value BELOW our
-		// high-water mark is exactly this reset seen from the other side. So
+		// the shared counter on every resume, and inside this window — before
+		// the first post-reset notification arrives — a value BELOW the last
+		// id we appended (highestSeen) is exactly this reset seen from the
+		// other side. So
 		// a client reconnecting inside this window is told to resync rather
 		// than handed stale ids. This arm still matters — it is what repairs
 		// the instance's own state when the first post-reset message
@@ -1656,17 +1660,15 @@ func (b *RedisBus) fanOutLocally(n Notification, gen int64) {
 		// rotation is precisely the case the epoch cannot see, so it is the
 		// case that needed the guard most.
 		//
-		// The cost is one refused resume for a client genuinely at n.ID-1 of
-		// the NEW space, which it could only hold by having been served by
-		// another instance — the conservative direction, same trade the
-		// epoch arm already accepts.
-		//
 		// The +1 alone refuses only n.ID-1: replaySince serves any cursor at
 		// or above knownFrom-1, so n.ID itself, and every old-space id up to
 		// the old high-water mark, would still be served as though it
 		// followed. abandonSpaceLocked is what closes that (BUG-2743): it
 		// remembers the OLD space's extent, and replaySince refuses every
-		// cursor inside it, on every arm.
+		// cursor inside it, on every arm. The cost is one refused resume for
+		// every client whose cursor, genuinely in the NEW space, is still at
+		// or below the old peak — the conservative direction, and the same
+		// trade for every arm.
 		//
 		// Still bounded by what THIS instance saw of the old space, and the
 		// epoch remains the actual answer: an opaque token is the only thing
