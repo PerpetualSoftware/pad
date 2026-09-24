@@ -179,6 +179,20 @@ commit_matches() {
 # is handled at restart time rather than treated as an error here.
 SERVER_ARGV=()
 SERVER_PIDS=()
+# The argv of every captured server, joined per pid on the ASCII unit
+# separator (a bash string cannot hold the NULs /proc uses), so the target can
+# be chosen after the port is known (BUG-3194). No argument pad accepts
+# contains that byte.
+US=$'\x1f'
+declare -A SERVER_ARGV_OF=()
+# Every element TERMINATED by the separator, not joined by it, and read back
+# with mapfile: `read -a` drops trailing empty fields, and a trailing
+# separator also keeps command substitution from stripping a final newline
+# (codex round 1).
+join_us() {
+	local a
+	for a in "$@"; do printf '%s%s' "$a" "$US"; done
+}
 if command -v pgrep >/dev/null 2>&1; then
 	while read -r pid; do
 		[ -n "$pid" ] || continue
@@ -218,27 +232,135 @@ if command -v pgrep >/dev/null 2>&1; then
 		for ((i = 1; i < ${#argv[@]}; i++)); do
 			if [ "${argv[i]}" = "server" ] && [ "${argv[i + 1]:-}" = "start" ]; then
 				SERVER_PIDS+=("$pid")
-				[ ${#SERVER_ARGV[@]} -eq 0 ] && SERVER_ARGV=("${argv[@]}")
+				SERVER_ARGV_OF[$pid]="$(join_us "${argv[@]}")"
 				break
 			fi
 		done
 	done < <(pgrep -x "$(basename "$BUILT")" 2>/dev/null || true)
 fi
 
-# MORE THAN ONE server is a case this script cannot answer honestly (codex
-# round 9). The stop is `pkill -x`, which is system-wide and kills every
-# matching process, while the restart can only bring back the argv of ONE.
-# A sibling's worktree server would be killed and left down, or restarted
-# with another server's arguments.
+# --- 1b. Choose the TARGET: the server holding the port this refresh is for ----
 #
-# Refusing here rather than guessing: CONVE-2687's manual sibling-safe
-# recipe exists precisely for a box with more than one live server, and it
-# aims its kill by /proc identity instead of by name.
-if [ "${#SERVER_PIDS[@]}" -gt 1 ]; then
-	die "more than one \`$(basename "$BUILT") server start\` process is running (pids: ${SERVER_PIDS[*]}).
-  The stop below is a system-wide pkill and the restart can only restore one
-  argv, so this would kill a server it cannot bring back.
+# BUG-3194. The target is the `server start` process LISTENING on the port the
+# server itself would resolve with no flag (PAD_PORT, then the config file,
+# then 7777), not "the only `server start` on the box". A sibling's e2e server
+# on its own port is a different server; it used to make this script refuse
+# (the old guard counted every `server start`), and the stop below used to be
+# a system-wide `pkill -x` that would have killed it.
+#
+# Refused, still, where the answer is genuinely ambiguous:
+#   - the port is held by something that is not a captured `server start`;
+#   - more than one captured server holds it;
+#   - nothing holds it and more than one server is running elsewhere.
+# With exactly one server, nothing on the port, and an explicit `--port` in its
+# argv (a server deliberately started elsewhere), that server is the target.
+# Stated limits: an argument containing the \x1f separator would be split
+# (no pad flag takes one), and a pid can in principle be recycled between
+# the last argv check and a signal.
+#
+# The listener is read with `ss` (Linux) or `lsof` (macOS). Where neither can
+# see listeners, only the unambiguous one-server case proceeds.
+numeric() { case "$1" in '' | *[!0-9]*) return 1 ;; *) return 0 ;; esac; }
+TARGET_PORT=""
+for candidate in "${PAD_PORT:-}" "$(config_value port || true)"; do
+	if numeric "$candidate"; then
+		TARGET_PORT="$candidate"
+		break
+	fi
+done
+TARGET_PORT="${TARGET_PORT:-7777}"
+
+# listener_pids prints the pids listening on TCP port $1, one per line, and
+# prints the word HIDDEN when a listener is visible but its owner is not (ss
+# without process info, lsof unable to read another process). A hidden owner
+# is refused below rather than read as "nothing is on the port" (codex
+# round 1).
+listener_pids() {
+	local lines pids
+	if command -v ss >/dev/null 2>&1; then
+		lines="$(ss -Hltnp "sport = :$1" 2>/dev/null)"
+		[ -n "$lines" ] || return 0
+		while IFS= read -r l; do
+			case "$l" in *pid=*) ;; *) echo HIDDEN ;; esac
+		done <<<"$lines"
+		grep -o 'pid=[0-9]*' <<<"$lines" | cut -d= -f2 | sort -u
+	elif command -v lsof >/dev/null 2>&1; then
+		lines="$(lsof -nP -iTCP:"$1" -sTCP:LISTEN 2>/dev/null | tail -n +2)"
+		[ -n "$lines" ] || return 0
+		pids="$(awk '{print $2}' <<<"$lines" | grep -E '^[0-9]+$' | sort -u)"
+		[ -n "$pids" ] || echo HIDDEN
+		printf '%s\n' "$pids"
+	fi
+}
+
+TARGET_PID=""
+LISTENERS=()
+HIDDEN=""
+while read -r lp; do
+	case "$lp" in
+	HIDDEN) HIDDEN=1 ;;
+	'') ;;
+	*) LISTENERS+=("$lp") ;;
+	esac
+done < <(listener_pids "$TARGET_PORT")
+
+matched=()
+foreign=()
+for lp in "${LISTENERS[@]}"; do
+	if [ -n "${SERVER_ARGV_OF[$lp]+x}" ]; then
+		matched+=("$lp")
+	else
+		foreign+=("$lp")
+	fi
+done
+
+# A listener whose owner cannot be read, or ANY non-captured listener on the
+# port (even beside a captured one, on another address), makes the port
+# ambiguous: refused before anything else is considered (codex round 1).
+if [ -n "$HIDDEN" ]; then
+	die "something is listening on port $TARGET_PORT but its owning process cannot be read here.
+  Nothing was stopped or installed; this script will not guess which server that is."
+fi
+if [ "${#foreign[@]}" -gt 0 ]; then
+	die "port $TARGET_PORT is held by pid(s) ${foreign[*]}, which is not a running \`$(basename "$BUILT") server start\`.
+  Nothing was stopped or installed; find out what holds the port first."
+fi
+
+if [ "${#matched[@]}" -gt 1 ]; then
+	die "more than one \`$(basename "$BUILT") server start\` is listening on port $TARGET_PORT (pids: ${matched[*]}).
   Nothing was stopped or installed. Use the manual sibling-safe refresh."
+elif [ "${#matched[@]}" -eq 1 ]; then
+	TARGET_PID="${matched[0]}"
+elif [ "${#SERVER_PIDS[@]}" -eq 1 ]; then
+	# The only server, and nothing on the target port: this is the target
+	# ONLY if it was deliberately started elsewhere, with an explicit
+	# --port. Without that it is most likely a sibling's server (an e2e
+	# webServer takes its port from the environment) while this box's own
+	# server is down, and replacing it would restart someone else's server
+	# from this install (codex round 2).
+	only=()
+	mapfile -d "$US" -t only < <(printf '%s' "${SERVER_ARGV_OF[${SERVER_PIDS[0]}]}")
+	if flag_value --port "${only[@]}" >/dev/null; then
+		TARGET_PID="${SERVER_PIDS[0]}"
+	else
+		die "nothing is listening on port $TARGET_PORT, and the one \`$(basename "$BUILT") server start\` running (pid ${SERVER_PIDS[0]}) was not started with --port, so it is not this box's server on another port.
+  Nothing was stopped or installed. Start the server, or use the manual refresh."
+	fi
+elif [ "${#SERVER_PIDS[@]}" -gt 1 ]; then
+	die "more than one \`$(basename "$BUILT") server start\` process is running (pids: ${SERVER_PIDS[*]}) and none is listening on port $TARGET_PORT.
+  This script cannot tell which one to replace.
+  Nothing was stopped or installed. Use the manual sibling-safe refresh."
+fi
+
+if [ -n "$TARGET_PID" ]; then
+	mapfile -d "$US" -t SERVER_ARGV < <(printf '%s' "${SERVER_ARGV_OF[$TARGET_PID]}")
+	OTHERS=()
+	for sp in "${SERVER_PIDS[@]}"; do
+		[ "$sp" != "$TARGET_PID" ] && OTHERS+=("$sp")
+	done
+	if [ "${#OTHERS[@]}" -gt 0 ]; then
+		note "other \`$(basename "$BUILT") server start\` processes are left running: ${OTHERS[*]}"
+	fi
 fi
 
 if [ ${#SERVER_ARGV[@]} -gt 0 ]; then
@@ -286,16 +408,43 @@ fi
 
 # --- 3. Stop -----------------------------------------------------------------
 #
-# Unchanged from the previous target, including its system-wide reach: this
-# is the plain path, and CONVE-2687's manual recipe remains the sibling-safe
-# one. SIGTERM first so the graceful-shutdown path runs (BUG-1531).
+# The TARGET only, by pid (BUG-3194). This used to be `pkill -x <name>`, which
+# reached every process with the binary's name: a sibling's e2e server, and
+# any `pad` CLI call in flight. The argv is re-read immediately before the
+# kill, because the pid was captured before the artifact check and a pid can
+# be recycled: a mismatch refuses rather than killing whatever now holds it.
+# SIGTERM first so the graceful-shutdown path runs (BUG-1531).
 BIN_NAME="$(basename "$BUILT")"
-pkill -TERM -x "$BIN_NAME" 2>/dev/null || true
-for _ in 1 2 3 4 5; do
-	pgrep -x "$BIN_NAME" >/dev/null 2>&1 || break
-	sleep 1
-done
-pkill -KILL -x "$BIN_NAME" 2>/dev/null || true
+if [ -n "$TARGET_PID" ]; then
+	# still_target re-reads the pid's argv the way the capture read it and
+	# succeeds only if it is still the captured server. Asked before EACH
+	# signal: a pid that exits and is recycled during the TERM wait must not
+	# receive the KILL (codex round 1). A pid that is already gone is not
+	# signalled at all.
+	still_target() {
+		local now=()
+		if [ -z "${PAD_NO_PROC:-}" ] && [ -r "/proc/$TARGET_PID/cmdline" ]; then
+			mapfile -d '' -t now < "/proc/$TARGET_PID/cmdline" 2>/dev/null
+		else
+			read -r -a now <<<"$(ps -o args= -p "$TARGET_PID" 2>/dev/null || true)"
+		fi
+		[ ${#now[@]} -gt 0 ] && [ "$(join_us "${now[@]}")" = "${SERVER_ARGV_OF[$TARGET_PID]}" ]
+	}
+	if kill -0 "$TARGET_PID" 2>/dev/null; then
+		if ! still_target; then
+			die "pid $TARGET_PID no longer runs the captured server.
+  Nothing was stopped or installed; re-run."
+		fi
+		kill -TERM "$TARGET_PID" 2>/dev/null || true
+		for _ in 1 2 3 4 5; do
+			kill -0 "$TARGET_PID" 2>/dev/null || break
+			sleep 1
+		done
+		if kill -0 "$TARGET_PID" 2>/dev/null && still_target; then
+			kill -KILL "$TARGET_PID" 2>/dev/null || true
+		fi
+	fi
+fi
 
 # --- 4. Move into place, then check the OUTCOME -------------------------------
 mv -f "$STAGED" "$INSTALLED" || die "could not move the staged binary into $INSTALLED"
@@ -402,8 +551,6 @@ configured_port="$(flag_value --port "${SERVER_ARGV[@]}" || true)"
 # source. Without that, a mistyped or inherited PAD_PORT is probed
 # literally and every refresh fails against a server that is running fine
 # (codex round 7).
-numeric() { case "$1" in '' | *[!0-9]*) return 1 ;; *) return 0 ;; esac; }
-
 PORT=""
 for candidate in "$configured_port" "${PAD_PORT:-}" "$(config_value port || true)"; do
 	if numeric "$candidate"; then

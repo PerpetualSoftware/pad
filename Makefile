@@ -42,11 +42,17 @@ install: build
 	@#   - nothing is printed about a restart until the server answers on
 	@#     BOTH 127.0.0.1 and the configured host.
 	@#
-	@# CAUTION, unchanged: the stop is `pkill -x $(BINARY)`, which is
-	@# SYSTEM-WIDE (matches the binary name on the whole host). Designed for
-	@# single-developer local setups. When another session's worktree is
-	@# live, use CONVE-2687's manual sibling-safe recipe instead — this
-	@# target is the plain path, now honest, not a replacement for it.
+	@#   - it replaces one server, stopped by pid: the one listening on the
+	@#     configured port, or the only one running, started with an
+	@#     explicit --port, when nothing listens there. Other `pad server
+	@#     start` processes (a sibling's e2e server on its own port) are
+	@#     left running, and an ambiguous port is refused (BUG-3194).
+	@#
+	@# CAUTION: this target's `build` step runs `npm ci`, which deletes a
+	@# node_modules that sibling worktrees symlink to. When another
+	@# session's worktree is live, build by hand (`npx vite build`, then
+	@# `make build-go`) and run scripts/install-refresh.sh directly, per
+	@# CONVE-2687.
 	@bash scripts/install-refresh.sh $(BINARY) $(INSTALL_DIR)/$(BINARY) $(COMMIT)
 
 # -timeout matches CI (see .github/workflows/ci.yml). Without it `go test`

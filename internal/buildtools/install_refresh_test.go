@@ -1135,6 +1135,238 @@ func TestInstallRefresh_RefusesWhenSeveralServersAreRunning(t *testing.T) {
 	}
 }
 
+// startSiblingStub starts a second `server start` of the same binary on a
+// port of its own (port 0, announced), the shape of a sibling seat's e2e
+// server, and returns its pid and port.
+func startSiblingStub(t *testing.T, built string, e stubEnv) (int, int) {
+	t.Helper()
+	envp := []string{"STUB_ANNOUNCE=1"}
+	for _, kv := range e.env() {
+		if strings.HasPrefix(kv, "STUB_PORT=") {
+			continue
+		}
+		envp = append(envp, kv)
+	}
+	envp = append(envp, "STUB_PORT=0")
+	sib := exec.Command(built, "server", "start", "--host", "127.0.0.1", "--port", "0")
+	sib.Env = envp
+	port := startAnnouncedStub(t, sib, 8*time.Second)
+	return sib.Process.Pid, port
+}
+
+func pidAnswersAt(port int) (string, error) {
+	client := &http.Client{Timeout: 2 * time.Second}
+	res, err := client.Get("http://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(port)) + "/stub/pid")
+	if err != nil {
+		return "", err
+	}
+	defer res.Body.Close()
+	b, err := io.ReadAll(res.Body)
+	return strings.TrimSpace(string(b)), err
+}
+
+// A SECOND SERVER ON ANOTHER PORT is not the target (BUG-3194). A sibling
+// seat's e2e server made this script refuse (the old guard counted every
+// `server start`), and its stop was a system-wide `pkill -x` that would have
+// killed that server. The target is the one listening on the resolved port;
+// the other is left running and still answers as itself.
+func TestInstallRefresh_LeavesAServerOnAnotherPortRunning(t *testing.T) {
+	requireScriptDeps(t, "ss")
+	home, dir := t.TempDir(), t.TempDir()
+	name := uniqueName(t)
+	defer killStub(t, name)
+	port := freePort(t)
+	const commit = "abc1234"
+
+	built := installStub(t, dir, name)
+	installed := filepath.Join(home, "bin", name)
+	if err := os.MkdirAll(filepath.Dir(installed), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	argvLog := filepath.Join(home, "argv.log")
+	e := stubEnv{version: "pad version dev (" + commit + " x)", healthy: "1",
+		argvLog: argvLog, port: port, home: home}
+
+	pre := exec.Command(built, "server", "start", "--host", "127.0.0.1")
+	pre.Env = e.env()
+	startPreServer(t, pre, "127.0.0.1", port)
+	targetPid := pre.Process.Pid
+	sibPid, sibPort := startSiblingStub(t, built, e)
+
+	res := runScript(t, e, built, installed, commit)
+	if res.err != nil {
+		t.Fatalf("script refused or failed with a second server on another port: %v\nstdout=%s\nstderr=%s", res.err, res.stdout, res.stderr)
+	}
+	if strings.TrimSpace(res.stderr) != "" {
+		t.Errorf("successful refresh wrote to stderr: %q", res.stderr)
+	}
+	if got, err := pidAnswersAt(sibPort); err != nil || got != strconv.Itoa(sibPid) {
+		t.Errorf("the sibling server on port %d is gone or replaced after the refresh: answered %q, err %v (want pid %d)", sibPort, got, err, sibPid)
+	}
+	got, err := pidAnswersAt(port)
+	if err != nil {
+		t.Fatalf("nothing answers on the target port %d after the refresh: %v", port, err)
+	}
+	if got == strconv.Itoa(targetPid) || got == strconv.Itoa(sibPid) {
+		t.Errorf("the target port %d is still served by pid %s; the target was not replaced", port, got)
+	}
+	if !strings.Contains(res.stdout, "left running: "+strconv.Itoa(sibPid)) {
+		t.Errorf("the script did not name the server it left running; stdout=%s", res.stdout)
+	}
+}
+
+// THE PORT HELD BY SOMETHING ELSE is refused (BUG-3194): the listener is not
+// a `server start` this script captured, so there is nothing it may replace
+// there, and the one pad server elsewhere is not it either.
+func TestInstallRefresh_RefusesWhenThePortIsHeldByAnotherProcess(t *testing.T) {
+	requireScriptDeps(t, "ss")
+	home, dir := t.TempDir(), t.TempDir()
+	name := uniqueName(t)
+	defer killStub(t, name)
+	const commit = "abc1234"
+
+	foreign, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("foreign listener: %v", err)
+	}
+	defer foreign.Close()
+	port := foreign.Addr().(*net.TCPAddr).Port
+
+	built := installStub(t, dir, name)
+	installed := filepath.Join(home, "bin", name)
+	e := stubEnv{version: "pad version dev (" + commit + " x)", healthy: "1",
+		argvLog: filepath.Join(home, "argv.log"), port: port, home: home}
+	sibPid, sibPort := startSiblingStub(t, built, e)
+
+	res := runScript(t, e, built, installed, commit)
+	if res.err == nil {
+		t.Fatalf("script proceeded with port %d held by a foreign listener; stdout=%s", port, res.stdout)
+	}
+	if !strings.Contains(res.stderr, "is held by") {
+		t.Errorf("refusal did not name the foreign holder; stderr=%s", res.stderr)
+	}
+	if _, err := os.Stat(installed); err == nil {
+		t.Errorf("installed despite refusing: %s", installed)
+	}
+	if got, err := pidAnswersAt(sibPort); err != nil || got != strconv.Itoa(sibPid) {
+		t.Errorf("the pad server on port %d was touched by a refused refresh: %q %v", sibPort, got, err)
+	}
+}
+
+// A FOREIGN LISTENER BESIDE THE TARGET, on the same port at another address,
+// makes the port ambiguous and is refused (BUG-3194, codex round 1): the
+// captured server matching is not enough when something else also holds the
+// port.
+func TestInstallRefresh_RefusesAForeignListenerBesideTheTarget(t *testing.T) {
+	requireScriptDeps(t, "ss")
+	home, dir := t.TempDir(), t.TempDir()
+	name := uniqueName(t)
+	defer killStub(t, name)
+	port := freePort(t)
+	const commit = "abc1234"
+
+	built := installStub(t, dir, name)
+	installed := filepath.Join(home, "bin", name)
+	e := stubEnv{version: "pad version dev (" + commit + " x)", healthy: "1",
+		argvLog: filepath.Join(home, "argv.log"), port: port, home: home}
+	pre := exec.Command(built, "server", "start", "--host", "127.0.0.1")
+	pre.Env = e.env()
+	startPreServer(t, pre, "127.0.0.1", port)
+
+	foreign, err := net.Listen("tcp", net.JoinHostPort("127.0.0.2", strconv.Itoa(port)))
+	if err != nil {
+		t.Skipf("cannot bind a second loopback address here: %v", err)
+	}
+	defer foreign.Close()
+
+	res := runScript(t, e, built, installed, commit)
+	if res.err == nil {
+		t.Fatalf("script proceeded with a foreign listener on port %d beside the target; stdout=%s", port, res.stdout)
+	}
+	if !strings.Contains(res.stderr, "is held by") {
+		t.Errorf("refusal did not name the foreign holder; stderr=%s", res.stderr)
+	}
+	if got, err := pidAnswersAt(port); err != nil || got != strconv.Itoa(pre.Process.Pid) {
+		t.Errorf("the target was touched by a refused refresh: %q %v", got, err)
+	}
+}
+
+// AN EMPTY TRAILING ARGUMENT survives the argv round trip (BUG-3194, codex
+// round 1): `read -a` dropped trailing empty fields, so the restart ran a
+// shorter command than the one it replaced.
+func TestInstallRefresh_KeepsAnEmptyTrailingArgument(t *testing.T) {
+	requireScriptDeps(t)
+	home, dir := t.TempDir(), t.TempDir()
+	name := uniqueName(t)
+	defer killStub(t, name)
+	port := freePort(t)
+	const commit = "abc1234"
+
+	built := installStub(t, dir, name)
+	installed := filepath.Join(home, "bin", name)
+	if err := os.MkdirAll(filepath.Dir(installed), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	argvLog := filepath.Join(home, "argv.log")
+	e := stubEnv{version: "pad version dev (" + commit + " x)", healthy: "1",
+		argvLog: argvLog, port: port, home: home}
+	pre := exec.Command(built, "server", "start", "--host", "127.0.0.1", "--label", "")
+	pre.Env = e.env()
+	startPreServer(t, pre, "127.0.0.1", port)
+
+	res := runScript(t, e, built, installed, commit)
+	if res.err != nil {
+		t.Fatalf("script failed: %v\nstdout=%s\nstderr=%s", res.err, res.stdout, res.stderr)
+	}
+	logged, err := os.ReadFile(argvLog)
+	if err != nil {
+		t.Fatalf("read argv log: %v", err)
+	}
+	lines := strings.Split(strings.TrimRight(string(logged), "\n"), "\n")
+	if last := lines[len(lines)-1]; last != "server start --host 127.0.0.1 --label " {
+		t.Errorf("restart argv = %q, want the empty trailing argument kept (%q)", last, "server start --host 127.0.0.1 --label ")
+	}
+}
+
+// A LONE SIBLING SERVER while this box's server is down is not the target
+// (BUG-3194, codex round 2): nothing listens on the resolved port, and the one
+// `server start` running takes its port from the environment, not an explicit
+// --port, which is the shape of an e2e webServer. Replacing it would restart
+// someone else's server from this install.
+func TestInstallRefresh_RefusesALoneServerWithoutAnExplicitPort(t *testing.T) {
+	requireScriptDeps(t, "ss")
+	home, dir := t.TempDir(), t.TempDir()
+	name := uniqueName(t)
+	defer killStub(t, name)
+	const commit = "abc1234"
+
+	built := installStub(t, dir, name)
+	installed := filepath.Join(home, "bin", name)
+	e := stubEnv{version: "pad version dev (" + commit + " x)", healthy: "1",
+		argvLog: filepath.Join(home, "argv.log"), port: freePort(t), home: home}
+	envp := []string{"STUB_ANNOUNCE=1"}
+	for _, kv := range e.env() {
+		if !strings.HasPrefix(kv, "STUB_PORT=") {
+			envp = append(envp, kv)
+		}
+	}
+	envp = append(envp, "STUB_PORT=0")
+	sib := exec.Command(built, "server", "start", "--host", "127.0.0.1")
+	sib.Env = envp
+	sibPort := startAnnouncedStub(t, sib, 8*time.Second)
+
+	res := runScript(t, e, built, installed, commit)
+	if res.err == nil {
+		t.Fatalf("script replaced a lone server with no explicit --port while nothing held the target port; stdout=%s", res.stdout)
+	}
+	if !strings.Contains(res.stderr, "was not started with --port") {
+		t.Errorf("refusal did not say why; stderr=%s", res.stderr)
+	}
+	if got, err := pidAnswersAt(sibPort); err != nil || got != strconv.Itoa(sib.Process.Pid) {
+		t.Errorf("the lone server was touched by a refused refresh: %q %v", got, err)
+	}
+}
+
 // AN UNRESOLVABLE ID IS REFUSED, even when it shares a prefix with the
 // expected one (codex round 9).
 //
