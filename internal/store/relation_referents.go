@@ -92,17 +92,14 @@ type RelationIssue struct {
 
 	// VisibilityChecked is set when the RESOLVER already judged this issue
 	// against a requester — i.e. it was given a RelationVisibilityFunc.
+	// resolveRelationValueQ stamps it on every `wrong_collection` it builds,
+	// on the title, UUID and ref rungs alike, whenever it had a func.
 	//
-	// Only the TITLE path sets it, and only because the server's collapse pass
-	// must then leave it alone. That pass re-resolves the value through
-	// `ResolveRelationTarget`, which speaks a UUID-or-ref ladder and cannot
-	// resolve a title: it would find nothing, take the vanished-target arm, and
-	// collapse a `wrong_collection` the caller is entitled to see. Removing an
-	// earlier marker field reintroduced exactly that, and the VISIBLE leg of
-	// the door test caught it — the invisible leg passes either way.
-	//
-	// The ref path deliberately keeps its own collapse. Retrofitting it is a
-	// change to working code and belongs to BUG-3012, not here.
+	// The server's passes TRUST it and never look the value up again. They
+	// used to re-resolve an unjudged issue, which was a second lookup a delete
+	// could race (BUG-3012), and which on a title found nothing and collapsed a
+	// reason the caller was entitled to see. An issue that arrives WITHOUT it
+	// now fails closed to `not_found` with no lookup (failClosedUnjudged).
 	//
 	// Internal only: this type has no JSON tags and reaches callers through
 	// Message().
@@ -692,18 +689,6 @@ func (s *Store) resolveRelationValueQ(
 		}, nil
 	}
 	return item.ID, nil, nil
-}
-
-// ResolveRelationTarget resolves ONE relation value to its item, or (nil, nil)
-// when nothing in the workspace answers to it.
-//
-// Exported for the server's visibility layer. `wrong_collection` names a LIVE
-// item, so the message distinguishes "exists, elsewhere" from "does not
-// exist" — an existence oracle unless the server can first check whether the
-// requester may see that item, which needs the item. Same UUID-or-ref rule as
-// everything else here: no slug fallback.
-func (s *Store) ResolveRelationTarget(workspaceID, value string) (*models.Item, error) {
-	return s.resolveRelationTargetQ(s.Q(), workspaceID, value)
 }
 
 // RequiredRelationIssues returns the subset of issues whose field the schema
