@@ -294,7 +294,12 @@ reading the metrics below, and for anyone writing a third-party consumer:
   uses the watch stream today it is nearly nothing: `pad watch --stream` reacts
   to `sync_required` by clearing its cursor and KEEPING THE CONNECTION OPEN
   (`cmd/pad/cmd_watch.go`), so a failover produces no reconnect and no refetch
-  — the next notification simply starts a fresh coverage span. The cost to
+  — the next notification simply starts a fresh coverage span. What it does
+  produce is one `PAD (resync) ...` line on the monitor's stdout (repeats with
+  no notification between them folded into one), because the agent reading
+  that stream cannot see a cleared cursor and would otherwise carry on as
+  though it had missed nothing. Any re-check that follows is the agent's
+  request, not the monitor's. The cost to
   watch out for is a future consumer that answers `sync_required` with a
   refetch instead: for that client the announcement is one request per
   connection, arriving together, since per-connection coalescing smooths
@@ -360,8 +365,9 @@ reading the metrics below, and for anyone writing a third-party consumer:
   and a cursor equal to the new space's first ID was told it was caught up.
   The price is that a client genuinely in the NEW space whose cursor is still
   at or below the old peak also resyncs, once; for `pad watch --stream`, the
-  only watch-stream client today, a resync clears its cursor and keeps the
-  connection, with no refetch. Two limits remain: the boundary is what THIS
+  only watch-stream client today, a resync clears its cursor, keeps the
+  connection and fetches nothing, and prints a `PAD (resync)` line so the
+  agent reading it knows to re-check. Two limits remain: the boundary is what THIS
   instance saw of the old space, so a replica that joined late knows a lower
   peak, and one that never saw the old space knows none — the cursor carries
   no epoch, so nothing local can do better. Rotating the epoch (see *Event
@@ -423,7 +429,8 @@ differently and a third-party consumer cannot infer this from the frame:
   during a hole is missed permanently. This endpoint is best-effort for pushes
   by design, and `sync_required` on it means "your position is untrustworthy",
   not "re-fetch and you will be whole again". The `pad` CLI monitor does
-  exactly this: it clears its cursor and keeps listening. There IS a separate metric — see
+  exactly this: it clears its cursor, keeps listening, and prints a
+  `PAD (resync)` line so its reader knows a hole happened. There IS a separate metric — see
 `pad_event_midstream_resyncs_total` below — so the two populations stay
 distinguishable to an operator without changing what any existing alert means.
 

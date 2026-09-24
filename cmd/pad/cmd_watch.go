@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -129,6 +130,16 @@ func formatMonitorLine(p watchStreamPayload) string {
 	return fmt.Sprintf("PAD (update) %s/%s → %s (%s): %s", p.Workspace, p.ItemRef, p.Kind, p.Actor, p.Summary)
 }
 
+// resyncMonitorLine is printed when the server sends sync_required: the
+// stream missed notifications it cannot replay (BUG-2743 / BUG-2728 made a
+// resume inside an abandoned id space one more cause). Clearing the cursor
+// is this process's whole recovery, but the CONSUMER of stdout — the agent
+// session the plugin monitor feeds — cannot see a cleared cursor, and
+// without this line would carry on as though it had missed nothing. The
+// line is the only channel it has. Same "PAD (<kind>)" shape as an update,
+// so a reader that routes on that prefix sees it.
+const resyncMonitorLine = "PAD (resync) the watch stream missed notifications it cannot replay — re-check the items you are watching (pad watch list) rather than assuming nothing changed"
+
 // sleepOrDone waits for d or ctx cancellation, whichever comes first.
 // Returns false if ctx was cancelled — the caller should stop looping,
 // not schedule another retry, when that happens (Ctrl+C / SIGTERM
@@ -176,7 +187,9 @@ pad watch remove <ref>
 pad watch --stream --for-session
     The plugin monitor command (see monitors/monitors.json). Prints one
     line per matching event to stdout in a fixed, machine-readable
-    format.
+    format, and one "PAD (resync) ..." line when the server says the
+    stream missed notifications it cannot replay: after that line,
+    re-check watched items rather than assuming nothing changed.
 
     Silent on startup in three cases, and silence does not distinguish
     them: no workspace linked (retries hourly), padd unreachable
@@ -564,12 +577,23 @@ func runWatchMonitor(ctx context.Context) error {
 // too large to replay, stop trying.
 //
 // It is also delivered MID-STREAM since BUG-2730, on a connection that never
-// dropped. Clearing the cursor is the whole response there too — this loop
-// keeps the connection open and the next notification starts a fresh coverage
-// span — so a growing cause list costs this client nothing.
+// dropped. Clearing the cursor is this PROCESS's whole response there too —
+// this loop keeps the connection open and the next notification starts a
+// fresh coverage span — so a growing cause list costs it no request.
+//
+// It is NOT the consumer's whole response: whoever reads stdout has to be
+// told it missed something, so each sync_required also prints
+// resyncMonitorLine, behind the same consent gate as a notification. Repeats
+// with no notification between them are folded into one line, because the
+// consumer's answer to the second is the answer it already owes the first.
 func streamWatchEvents(resp *http.Response, lastEventID string) string {
+	return streamWatchEventsTo(os.Stdout, resp, lastEventID)
+}
+
+func streamWatchEventsTo(w io.Writer, resp *http.Response, lastEventID string) string {
 	scanner := bufio.NewScanner(resp.Body)
 	var eventType, data string
+	resyncAnnounced := false
 	for scanner.Scan() {
 		line := scanner.Text()
 		switch {
@@ -596,11 +620,21 @@ func streamWatchEvents(resp *http.Response, lastEventID string) string {
 				if data != "" {
 					var payload watchStreamPayload
 					if err := json.Unmarshal([]byte(data), &payload); err == nil {
-						fmt.Println(formatMonitorLine(payload))
+						fmt.Fprintln(w, formatMonitorLine(payload))
+						resyncAnnounced = false
 					}
 				}
 			case "sync_required":
 				lastEventID = ""
+				if !resyncAnnounced {
+					// The same consent gate a notification takes: a disarmed
+					// session is told nothing, including this.
+					if !cli.ResolveAnnouncedArmed() {
+						return lastEventID
+					}
+					fmt.Fprintln(w, resyncMonitorLine)
+					resyncAnnounced = true
+				}
 			}
 			eventType, data = "", ""
 		}
