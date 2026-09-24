@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // The per-door × per-provenance table for referent validation (PLAN-2857 U1 /
@@ -1533,4 +1534,85 @@ func TestRelationDoors_CarriedNonStringRelationDropsInsteadOfRefusing(t *testing
 				v, ok, f.target.ID)
 		}
 	})
+}
+
+// TestRelationDoors_PreflightCarriedTitleWrongCollectionIsJudgedPerRequester is
+// BUG-3012's path end to end, on its TITLE rung. A carried value that is the
+// exact title of a live item OUTSIDE the declared collection resolves (with no
+// visibility func, by provenance) to `wrong_collection`, and the store judges
+// that REASON against the requester on the matched row. So:
+//
+//   - a requester who can SEE the matched item is told wrong_collection;
+//   - one who cannot is told not_found, the SAME reason a value naming
+//     nothing gets, and the response never carries the hidden item's id.
+//
+// The title rung is the one the removed server re-resolve could never judge
+// (a UUID-or-ref ladder cannot speak titles), and it was the untested half of
+// the fix, so both legs are asserted here.
+func TestRelationDoors_PreflightCarriedTitleWrongCollectionIsJudgedPerRequester(t *testing.T) {
+	f := newDoorFixture(t)
+	secret := mustSchemaCollection(t, f.srv, f.ws.ID, "Secret Titles", `{"fields":[]}`)
+	hidden, err := f.srv.store.CreateItem(f.ws.ID, secret.ID, models.ItemCreate{
+		Title: "Hidden Title Person", CreatedBy: f.owner.ID,
+	})
+	if err != nil {
+		t.Fatalf("CreateItem(hidden): %v", err)
+	}
+	dst := mustSchemaCollection(t, f.srv, f.ws.ID, "Title Preflight Dest", fmt.Sprintf(`{"fields":[
+		{"key":"status","label":"Status","type":"select","options":["open","done"]},
+		{"key":"owner_ref","label":"Owner","type":"relation","collection":%q}
+	]}`, f.people.Slug))
+
+	blind := mustUser(t, f.srv, "blind-carried-title@example.com", "blindcarriedtitle", "")
+	if err := f.srv.store.AddWorkspaceMember(f.ws.ID, blind.ID, "editor"); err != nil {
+		t.Fatalf("AddWorkspaceMember: %v", err)
+	}
+	if err := f.srv.store.SetMemberCollectionAccess(f.ws.ID, blind.ID, "specific",
+		[]string{f.tasks.ID, dst.ID, f.people.ID}); err != nil {
+		t.Fatalf("SetMemberCollectionAccess: %v", err)
+	}
+
+	reasonFor := func(user *models.User, role, stored string) (string, string) {
+		t.Helper()
+		item := f.seed(fmt.Sprintf(`{"status":"open","owner_ref":%q}`, stored))
+		rr := f.callAs(user, role, f.srv.handleCopyItemPreflight, "POST",
+			"/api/v1/workspaces/"+f.ws.Slug+"/items/"+item.Slug+"/copy/preflight",
+			map[string]string{"itemSlug": item.Slug},
+			map[string]any{"target_workspace": f.ws.Slug, "target_collection": dst.Slug})
+		if rr.Code != http.StatusOK {
+			t.Fatalf("preflight (%s): got %d, want 200: %s", stored, rr.Code, rr.Body.String())
+		}
+		var pre ItemCopyPreflight
+		if err := json.Unmarshal(rr.Body.Bytes(), &pre); err != nil {
+			t.Fatalf("parse preflight: %v: %s", err, rr.Body.String())
+		}
+		for _, d := range pre.Fields.Dropped {
+			if d.Key == "owner_ref" {
+				return d.Reason, rr.Body.String()
+			}
+		}
+		t.Fatalf("preflight (%s) reported no drop for owner_ref: %+v", stored, pre.Fields)
+		return "", ""
+	}
+
+	// The requester who can see the matched item gets the specific reason.
+	ownerReason, _ := reasonFor(f.owner, "owner", hidden.Title)
+	if ownerReason != string(store.RelationTargetWrongCollection) {
+		t.Errorf("owner (can see %q) got %q for its carried title, want %q",
+			hidden.Title, ownerReason, store.RelationTargetWrongCollection)
+	}
+
+	// The one who cannot is told exactly what a value naming nothing is told.
+	blindReason, body := reasonFor(blind, "editor", hidden.Title)
+	danglingReason, _ := reasonFor(blind, "editor", "No Such Person Anywhere")
+	if blindReason != danglingReason {
+		t.Errorf("a requester who cannot see %q distinguishes it from a title naming nothing: "+
+			"%q vs %q, which is the existence oracle", hidden.Title, blindReason, danglingReason)
+	}
+	if blindReason == string(store.RelationTargetWrongCollection) {
+		t.Errorf("the blind requester was told %q, which names a live item", blindReason)
+	}
+	if strings.Contains(body, hidden.ID) {
+		t.Errorf("the blind requester's preflight carried the hidden item's id: %s", body)
+	}
 }
