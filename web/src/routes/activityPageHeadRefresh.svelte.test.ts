@@ -35,6 +35,14 @@ vi.mock('$lib/services/sse.svelte', () => ({
 	}
 }));
 
+// BUG-3181: the page brings the workspace's local index up on entry. That is
+// the shared helper's job (and its own test's), not this file's — and the
+// real one would drive the local index against an API mock with no index
+// endpoints, which never settles. Stubbed here; the one leg below checks
+// the page asks for it.
+const enterWorkspaceIndex = vi.hoisted(() => vi.fn(async () => true));
+vi.mock('$lib/stores/workspaceIndexEntry', () => ({ enterWorkspaceIndex }));
+
 const { default: ActivityPage } = await import('./[username]/[workspace]/activity/+page.svelte');
 
 function act(id: string, secondsAgo: number, action = 'settings_changed'): Activity {
@@ -96,6 +104,13 @@ async function mountPage(first: Activity[]) {
 }
 
 describe('workspace activity head re-read (BUG-3160)', () => {
+	it('brings the workspace local index up on entry (BUG-3181)', async () => {
+		enterWorkspaceIndex.mockClear();
+		await mountPage([act('a1', 5)]);
+		expect(enterWorkspaceIndex).toHaveBeenCalledTimes(1);
+		expect(enterWorkspaceIndex.mock.calls[0][0]).toBe('ws');
+	});
+
 	it('a row the debounce merge restamped moves to the top after an item event', async () => {
 		await mountPage([act('b', 10), act('a', 20)]);
 		expect([...host.querySelectorAll('[data-activity-id]')].map((e) => e.getAttribute('data-activity-id'))).toEqual(['b', 'a']);
