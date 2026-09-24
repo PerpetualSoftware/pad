@@ -53,6 +53,7 @@
 	} from '@tiptap/pm/tables';
 	import Link from '@tiptap/extension-link';
 	import CodeBlock from '@tiptap/extension-code-block';
+	import { codeBlockMarkdownStorage } from './extensions/frontmatter';
 	import Placeholder from '@tiptap/extension-placeholder';
 	import { createPlainCodeBlockView } from './codeBlockCopy';
 	import {
@@ -545,6 +546,15 @@
 	// Key: ignoreMutation prevents ProseMirror's MutationObserver from
 	// detecting our SVG insertion and triggering an infinite re-parse loop.
 	const MermaidCodeBlock = CodeBlock.extend({
+		// A leading frontmatter block round-trips as a codeBlock with language
+		// `frontmatter` (BUG-2692); every other language keeps tiptap-markdown's
+		// default fence spec, reproduced in codeBlockMarkdownStorage.
+		addStorage() {
+			return {
+				...this.parent?.(),
+				markdown: codeBlockMarkdownStorage(this.options.languageClassPrefix),
+			};
+		},
 		addProseMirrorPlugins() {
 			return [codeBlockCopyPlugin];
 		},
