@@ -274,6 +274,15 @@ func (s *Server) streamAttachmentToTar(ctx context.Context, tw *tar.Writer, a *m
 }
 
 // bundleAttachmentPath builds the tar entry name for an attachment.
+//
+// CROSS-VERSION CONTRACT: import does not read this path from the manifest; it
+// RECOMPUTES it from (id, filename) with this same function
+// (handlers_import_bundle.go), and a blob whose name matches no entry is
+// skipped silently. So changing the output for any input makes an older
+// server drop those attachments' bytes from a newer bundle without a word.
+// That is why a reserved character in the extension ("x.p|ng") is left as is
+// here, rather than made portable (BUG-3186, lead ruling: the bundle is a
+// machine format consumed by import). Do not change this casually.
 // Exported as a function (not a const helper) so the import path can
 // import it and resolve manifest entries without duplicating the
 // filename logic.

@@ -7,6 +7,7 @@ import (
 	goMime "mime"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -255,6 +256,29 @@ func parseAttachmentFilename(disposition string) string {
 // Returns "" when nothing usable survives, which the caller already handles by
 // falling back to the attachment id.
 func safeLocalFilename(name string) string {
+	return safeLocalFilenameFor(hostOS, name)
+}
+
+// hostOS is the OS whose filesystem rules safeLocalFilename applies. A
+// variable rather than a direct runtime.GOOS read so a test can drive the
+// production wrapper under each OS; a wrapper hard-coding either answer is
+// then caught on any build host (codex round 1 on BUG-3186).
+var hostOS = runtime.GOOS
+
+// safeLocalFilenameFor is safeLocalFilename for a named OS, so the Windows
+// branch is testable on any build host.
+//
+// ON WINDOWS ONLY, the name also goes through attachments.WindowsPathComponent
+// (BUG-3186): reserved characters would be refused, and a colon would write
+// the bytes into an NTFS alternate data stream. On Linux and macOS the name is
+// kept as given ("Meeting: notes.pdf" is legal there), because each saver
+// applies its own filesystem's rules, as browsers do.
+//
+// KNOWN EDGE, ACCEPTED (lead ruling, BUG-3186): a Linux or macOS CLI writing
+// onto an NTFS mount (WSL /mnt/c, a USB drive) keeps the colon. The CLI cannot
+// see the target filesystem's rules from the OS name. This is not a bug to
+// rediscover.
+func safeLocalFilenameFor(goos, name string) string {
 	name = filepath.Base(strings.TrimSpace(name))
 	switch name {
 	case "", ".", "..", string(filepath.Separator):
@@ -276,7 +300,11 @@ func safeLocalFilename(name string) string {
 	// store the name at all. Strip the dots instead of refusing: "photo." is
 	// an ordinary name wearing one (codex closing round). Cannot empty the
 	// name — the dots-only case returned above.
-	return strings.TrimRight(name, ".")
+	name = strings.TrimRight(name, ".")
+	if goos == "windows" {
+		name = attachments.WindowsPathComponent(name)
+	}
+	return name
 }
 
 // extensionForMIME delegates to the server package's mapping instead of
