@@ -524,13 +524,13 @@ func resolveWorkspaceSlugTx(tx *sql.Tx, s *Store, slug string) sql.NullString {
 //     acquireWorkspaceSeqLock unconditionally at the top of its tx and
 //     holds it to COMMIT, so two item updates in a workspace serialize
 //     on Postgres and an ordinary content edit cannot commit inside
-//     this window at all. The one writer that can is
-//     RemapAttachmentReferencesInWorkspace, which rewrites items.content
-//     in its own transaction without that lock. That writer is missing a
-//     guard outright — it races ordinary item edits too, reachable during
-//     a bundle import while the workspace is already visible to its owner
-//     — so the fix belongs there, at BUG-2797, and BUG-2795 tracks this
-//     cascade's pairing as a consequence of it), re-stamp
+//     this window at all. The only other writer of items.content,
+//     RemapAttachmentReferencesInWorkspace, takes the same lock before
+//     its scan (BUG-2797), so it cannot commit inside this window
+//     either. The unconditional write is safe ONLY while every writer of
+//     items.content takes that lock before it reads; a new writer that
+//     does not must bring its own compare-and-set, and this cascade then
+//     needs one too (BUG-2795)), re-stamp
 //     updated_at + content_flushed_at, bump the workspace seq, and
 //     re-run replaceWikiLinks so the source's own index rows refresh
 //     with the new literal AND the new target_item_id resolution.
