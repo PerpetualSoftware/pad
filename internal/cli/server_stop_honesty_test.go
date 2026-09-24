@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/config"
 )
@@ -124,7 +125,7 @@ func TestStopServer_StalePIDFileNamingALiveStrangerIsNotSignalled(t *testing.T) 
 	// The record names THIS process — alive, and emphatically not a pad server.
 	// Nothing holds the file, so ownership is stale and the pid must not be
 	// signalled. If it were, this test process would receive SIGTERM.
-	if err := writePIDRecord(cfg.PIDFile(), pidRecord{PID: os.Getpid()}); err != nil {
+	if err := writePIDRecord(cfg.PIDFile(), pidRecord{PID: os.Getpid(), StartedAt: time.Now().UTC()}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
@@ -137,6 +138,39 @@ func TestStopServer_StalePIDFileNamingALiveStrangerIsNotSignalled(t *testing.T) 
 	}
 	if _, statErr := os.Stat(cfg.PIDFile()); !os.IsNotExist(statErr) {
 		t.Errorf("stale PID file survived (stat err = %v) — it should be removed once it is known to name nothing", statErr)
+	}
+}
+
+// TestStopServer_LegacyPIDFileIsRefusedAndKept is BUG-2970 through stop
+// itself: the day-19 refresh, where the new binary's stop met a bare-pid file
+// written by a running pre-lock server. Refusing was right; deleting the file
+// on the way was not, since it was the only record of a live server. Unix
+// only in effect: Windows already answered unprovable for this shape.
+func TestStopServer_LegacyPIDFileIsRefusedAndKept(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{Host: "127.0.0.1", Port: unusedPort(t), DataDir: dir}
+
+	// This live process stands in for the pre-lock server. If stop signalled
+	// it, the test process would receive SIGTERM.
+	legacy := []byte(strconv.Itoa(os.Getpid()) + "\n")
+	if err := os.WriteFile(cfg.PIDFile(), legacy, 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	err := StopServer(cfg)
+	if err == nil {
+		t.Fatal("StopServer reported success for a legacy record it cannot prove is ours")
+	}
+	if !strings.Contains(err.Error(), "cannot confirm") {
+		t.Errorf("message = %q, want the unprovable refusal (cannot confirm)", err.Error())
+	}
+	// The way out must be NAMED (lead review, day 79): the kept state is
+	// only acceptable if the refusal tells the user how to leave it.
+	if !strings.Contains(err.Error(), "remove "+cfg.PIDFile()) {
+		t.Errorf("message = %q, want it to name the manual remedy (remove %s)", err.Error(), cfg.PIDFile())
+	}
+	if got, readErr := os.ReadFile(cfg.PIDFile()); readErr != nil || string(got) != string(legacy) {
+		t.Errorf("legacy PID file not kept intact: content %q, read err %v", got, readErr)
 	}
 }
 

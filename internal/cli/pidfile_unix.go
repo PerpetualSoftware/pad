@@ -92,6 +92,24 @@ func pidFileOwner(path string) (pidRecord, pidFileOwnership) {
 		}
 		return rec, pidFileUnprovable
 	}
+	if ok && rec.StartedAt.IsZero() && !processIsGone(rec.PID) {
+		// A LEGACY record (BUG-2970): a bare pid, written by a build that
+		// predates the lock (BUG-2969), so a free lock proves nothing about it
+		// — its writer never took one, and may be a live server right now.
+		// Unprovable, as Windows already answers for the same shape, and the
+		// file is LEFT: deleting the record of a live server is the failure
+		// BUG-2969 exists to prevent. Every record this build writes carries a
+		// StartedAt, so only a pre-lock file reaches this branch.
+		//
+		// Only while its pid EXISTS. A pid with no process behind it cannot be
+		// anyone's server, so a legacy record naming one is stale by the same
+		// proof and falls through to the removal below, under this lock. The
+		// kept case is therefore never a trap: `pad server start` probes the
+		// port, not this file, and its claim overwrites it; and stop's
+		// unprovable refusal names the manual remedy (remove the file).
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		return rec, pidFileUnprovable
+	}
 	// Stale. Remove the file WHILE STILL HOLDING the lock (codex round 2):
 	// releasing first leaves a window in which a replacement server claims the
 	// path, and the remove then deletes ITS live record — the same
