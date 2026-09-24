@@ -3,6 +3,7 @@ package server
 import (
 	"database/sql"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/store"
@@ -80,5 +81,55 @@ func panicAfterMintOwnerFailureRemoves(t *testing.T, driver store.DriverType) {
 	}
 	if husks := restorableHusks(t, dest, u.ID); len(husks) != 0 {
 		t.Errorf("the removed workspace is restorable by the importer (%d rows); want none", len(husks))
+	}
+}
+
+// Chi's Recoverer logs the stack of the RE-panic, so the keep door's Error
+// line is the only record of where the import actually panicked. The injected
+// panic's frame (the hook closure inside panicAfterMint) must be in it. Not
+// parallel: it swaps the global slog default.
+func TestImportBundle_BUG3191_KeepDoorLogsTheOriginalPanicStack(t *testing.T) {
+	bundle := realBundleWithBlob(t)
+	dest := attachmentsServerOn(t, store.DriverSQLite)
+	_, tok := memberImporter(t, dest)
+	panicAfterMint(dest)
+	logs := captureLogs(t)
+
+	if rr := importAs(dest, "panicstack", bundle, tok); rr.Code != http.StatusInternalServerError {
+		t.Fatalf("want 500, got %d", rr.Code)
+	}
+	var line string
+	for _, l := range strings.Split(logs.String(), "\n") {
+		if strings.Contains(l, "import: panic after the workspace was created") {
+			line = l
+		}
+	}
+	if line == "" {
+		t.Fatalf("no keep-door Error line was logged:\n%s", logs.String())
+	}
+	if !strings.Contains(line, "panicAfterMint") {
+		t.Errorf("the keep door's stack does not include the original panic site (panicAfterMint): %s", line)
+	}
+}
+
+// panic(nil) reaches the keep door too: under go 1.21+ semantics recover
+// returns a *runtime.PanicNilError for it, not nil, so the `p != nil` test
+// holds. Pinned so a GODEBUG=panicnil=1 build, or a rewrite of the check,
+// cannot quietly reopen it.
+func TestImportBundle_BUG3191_PanicNilAfterMintKeepsTheWorkspaceOwned(t *testing.T) {
+	bundle := realBundleWithBlob(t)
+	dest := attachmentsServerOn(t, store.DriverSQLite)
+	u, tok := memberImporter(t, dest)
+	dest.importBundleAfterMintHook = func() { panic(nil) } //nolint:govet // the nil panic is the case under test
+
+	if rr := importAs(dest, "panicnil", bundle, tok); rr.Code != http.StatusInternalServerError {
+		t.Fatalf("want the recovery middleware's 500, got %d: %s", rr.Code, rr.Body.String())
+	}
+	mine, err := dest.store.GetUserWorkspaces(u.ID)
+	if err != nil {
+		t.Fatalf("GetUserWorkspaces: %v", err)
+	}
+	if len(mine) != 1 || mine[0].Slug != "panicnil" {
+		t.Fatalf("after panic(nil) the minted workspace is not in its importer's list (%d rows)", len(mine))
 	}
 }
