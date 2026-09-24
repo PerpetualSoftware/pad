@@ -298,7 +298,7 @@ reading the metrics below, and for anyone writing a third-party consumer:
   produce is one `PAD (resync) ...` line on the monitor's stdout (repeats with
   no notification between them folded into one), because the agent reading
   that stream cannot see a cleared cursor and would otherwise carry on as
-  though it had missed nothing. Any re-check that follows is the agent's
+  though it could not have missed anything. Any re-check that follows is the agent's
   request, not the monitor's. The cost to
   watch out for is a future consumer that answers `sync_required` with a
   refetch instead: for that client the announcement is one request per
@@ -430,7 +430,7 @@ differently and a third-party consumer cannot infer this from the frame:
   by design, and `sync_required` on it means "your position is untrustworthy",
   not "re-fetch and you will be whole again". The `pad` CLI monitor does
   exactly this: it clears its cursor, keeps listening, and prints a
-  `PAD (resync)` line so its reader knows a hole happened. There IS a separate metric — see
+  `PAD (resync)` line so its reader knows a hole may have happened. There IS a separate metric — see
 `pad_event_midstream_resyncs_total` below — so the two populations stay
 distinguishable to an operator without changing what any existing alert means.
 

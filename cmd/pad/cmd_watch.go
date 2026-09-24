@@ -130,15 +130,16 @@ func formatMonitorLine(p watchStreamPayload) string {
 	return fmt.Sprintf("PAD (update) %s/%s → %s (%s): %s", p.Workspace, p.ItemRef, p.Kind, p.Actor, p.Summary)
 }
 
-// resyncMonitorLine is printed when the server sends sync_required: the
-// stream missed notifications it cannot replay (BUG-2743 / BUG-2728 made a
+// resyncMonitorLine is printed when the server sends sync_required: it
+// cannot vouch for the span since the cursor, so the stream may have missed
+// notifications it cannot replay (BUG-2743 / BUG-2728 made a
 // resume inside an abandoned id space one more cause). Clearing the cursor
 // is this process's whole recovery, but the CONSUMER of stdout — the agent
 // session the plugin monitor feeds — cannot see a cleared cursor, and
-// without this line would carry on as though it had missed nothing. The
+// without this line would carry on as though it could not have missed anything. The
 // line is the only channel it has. Same "PAD (<kind>)" shape as an update,
 // so a reader that routes on that prefix sees it.
-const resyncMonitorLine = "PAD (resync) the watch stream missed notifications it cannot replay — re-check the items you are watching (pad watch list) rather than assuming nothing changed"
+const resyncMonitorLine = "PAD (resync) the watch stream may have missed notifications it cannot replay — re-check the items you are watching (pad watch list) rather than assuming nothing changed"
 
 // sleepOrDone waits for d or ctx cancellation, whichever comes first.
 // Returns false if ctx was cancelled — the caller should stop looping,
@@ -188,7 +189,7 @@ pad watch --stream --for-session
     The plugin monitor command (see monitors/monitors.json). Prints one
     line per matching event to stdout in a fixed, machine-readable
     format, and one "PAD (resync) ..." line when the server says the
-    stream missed notifications it cannot replay: after that line,
+    stream may have missed notifications it cannot replay: after that line,
     re-check watched items rather than assuming nothing changed.
 
     Silent on startup in three cases, and silence does not distinguish
@@ -582,7 +583,7 @@ func runWatchMonitor(ctx context.Context) error {
 // fresh coverage span — so a growing cause list costs it no request.
 //
 // It is NOT the consumer's whole response: whoever reads stdout has to be
-// told it missed something, so each sync_required also prints
+// told it may have missed something, so each sync_required also prints
 // resyncMonitorLine, behind the same consent gate as a notification. Repeats
 // with no notification between them are folded into one line, because the
 // consumer's answer to the second is the answer it already owes the first.
