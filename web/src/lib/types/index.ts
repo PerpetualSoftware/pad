@@ -2495,12 +2495,36 @@ const NEGATIVE_TERMINALS = [
 	'duplicate', 'declined', 'abandoned', 'disabled'
 ];
 
-/** Schema fields as an array whatever the stored JSON holds. Valid JSON such
- * as `{"fields":null}` must fall back the way Go's typed unmarshal does, not
- * throw inside a render. */
+const isStrOrAbsent = (v: unknown) => v === undefined || v === null || typeof v === 'string';
+const isStrArrOrAbsent = (v: unknown) =>
+	v === undefined || v === null || (Array.isArray(v) && v.every((x) => typeof x === 'string'));
+
+/** Schema fields for the done-field resolvers below, validated in ONE place.
+ *
+ * Stored JSON can be valid and still mistyped (`{"fields":null}`, a null
+ * entry, a number inside terminal_options). Go's typed unmarshal refuses the
+ * whole schema on a mistyped member and its resolvers fall back to defaults,
+ * so any entry that is not an object, or whose key, type, terminal_options or
+ * abandoned_options has the wrong type, makes this return no fields: the same
+ * defaults. A null entry is skipped, as Go's zero-value element matches
+ * nothing. Validating here rather than at each read closes the class for
+ * every resolver that reads through it (codex rounds 2 and 3 on BUG-3195 each
+ * found one more member). Residual: a mistyped property these resolvers do
+ * not read (e.g. `options`) fails Go's unmarshal and not this check. */
 function schemaFields(collection: Collection): FieldDef[] {
-	const fields = parseSchema(collection).fields;
-	return Array.isArray(fields) ? fields : [];
+	const fields: unknown = parseSchema(collection).fields;
+	if (!Array.isArray(fields)) return [];
+	const ok = fields.every(
+		(f) =>
+			f === null ||
+			(typeof f === 'object' &&
+				!Array.isArray(f) &&
+				isStrOrAbsent((f as FieldDef).key) &&
+				isStrOrAbsent((f as FieldDef).type) &&
+				isStrArrOrAbsent((f as FieldDef).terminal_options) &&
+				isStrArrOrAbsent((f as FieldDef).abandoned_options))
+	);
+	return ok ? (fields.filter((f) => f !== null) as FieldDef[]) : [];
 }
 
 /** The collection's done field: board_group_by when it names a `select`
@@ -2518,7 +2542,7 @@ export function doneFieldKey(collection: Collection): string {
 export function doneFieldTerminalOptions(collection: Collection): string[] {
 	const key = doneFieldKey(collection);
 	const f = schemaFields(collection).find((x) => x.key === key && x.type === 'select');
-	return Array.isArray(f?.terminal_options) && f.terminal_options.length ? [...f.terminal_options] : [...DEFAULT_TERMINAL_STATUSES];
+	return f?.terminal_options?.length ? [...f.terminal_options] : [...DEFAULT_TERMINAL_STATUSES];
 }
 
 /** The collection's ABANDONED values: terminal values of its done field that
@@ -2531,9 +2555,7 @@ export function getAbandonedOptions(collection: Collection): string[] {
 	const key = doneFieldKey(collection);
 	const f = schemaFields(collection).find((x) => x.key === key);
 	const terminal = doneFieldTerminalOptions(collection);
-	const declared = (Array.isArray(f?.abandoned_options) ? f.abandoned_options : [])
-		.filter((v): v is string => typeof v === 'string')
-		.map((v) => v.trim().toLowerCase());
+	const declared = (f?.abandoned_options ?? []).map((v) => v.trim().toLowerCase());
 	if (declared.length) return terminal.filter((v) => declared.includes(v.trim().toLowerCase()));
 	return terminal.filter((v) => NEGATIVE_TERMINALS.includes(v.trim().toLowerCase()));
 }

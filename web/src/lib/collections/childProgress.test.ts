@@ -105,3 +105,23 @@ describe('resolvers fall back instead of throwing on odd stored JSON (codex roun
 		expect(childState(child('a', 'odd', { status: 'done' }), odd)).toBe('done');
 	});
 });
+
+describe('schema validation happens in one place (codex round 3)', () => {
+	const odd = (fields: unknown) =>
+		({ slug: 'odd', schema: JSON.stringify({ fields }), settings: '{"board_group_by":"resolution"}' }) as unknown as Collection;
+	// Each shape would have reached `.key` / `.trim()` on a non-string before.
+	for (const [name, fields] of [
+		['a null entry beside a valid one', [null, { key: 'status', type: 'select', terminal_options: ['done', 'cancelled'] }]],
+		['a number inside terminal_options', [{ key: 'status', type: 'select', terminal_options: ['done', 7] }]],
+		['a number inside abandoned_options', [{ key: 'status', type: 'select', terminal_options: ['done'], abandoned_options: [1] }]],
+		['a non-object entry', ['status']],
+		['a numeric key', [{ key: 5, type: 'select' }]]
+	] as const) {
+		it(`${name}: no throw, and a mistyped schema falls back to the defaults`, () => {
+			const c = odd(fields);
+			expect(() => childState(child('a', 'odd', { status: 'cancelled' }), c)).not.toThrow();
+			expect(childState(child('a', 'odd', { status: 'cancelled' }), c)).toBe('out');
+			expect(childState(child('b', 'odd', { status: 'done' }), c)).toBe('done');
+		});
+	}
+});
