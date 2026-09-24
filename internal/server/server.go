@@ -225,6 +225,13 @@ type Server struct {
 	// exports can opt in without recompiling.
 	importBundleMaxBytes int64
 
+	// importReadIdle and importReadCeiling bound reading a workspace import's
+	// body in place of the server-wide ReadTimeout (BUG-3184); see
+	// withImportReadDeadline. 0 → defaultImportReadIdle (60s) and
+	// defaultImportReadCeiling (1h). Only tests set them.
+	importReadIdle    time.Duration
+	importReadCeiling time.Duration
+
 	// importArtifactMaxBytes caps a single playbook/convention artifact
 	// import (POST /workspaces/{ws}/import-artifact). 0 →
 	// defaultImportArtifactMaxBytes (1 MiB). A single artifact is tiny;
@@ -2239,6 +2246,11 @@ func (s *Server) ListenAndServe(addr string) error {
 func (s *Server) Listen(addr string) (net.Listener, error) {
 	s.ensureRouter()
 
+	// ReadTimeout bounds reading the WHOLE request, headers and body, from its
+	// start. The workspace import route replaces it with a per-Read deadline
+	// once the caller is authorised to mint (withImportReadDeadline, BUG-3184),
+	// because it reads its body while it writes and so spends server time
+	// between reads.
 	s.httpServer = &http.Server{
 		Addr:              addr,
 		Handler:           s.router,

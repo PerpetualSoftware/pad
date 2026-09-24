@@ -818,6 +818,9 @@ func (s *Server) handleImportWorkspace(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// After the mint gate and before either body read: both body shapes read
+	// under the per-Read deadline rather than the server-wide one (BUG-3184).
+	s.withImportReadDeadline(w, r)
 
 	// Content-Type dispatch:
 	//   application/gzip / application/x-gzip / application/x-tar
