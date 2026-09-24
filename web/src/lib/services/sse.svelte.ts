@@ -654,9 +654,11 @@ function createSSEService() {
 	}
 
 	/**
-	 * Subscribe to `sync_required` events from the server. Fires when the
-	 * server's replay buffer couldn't cover a reconnect gap and the client
-	 * needs to do a fresh sync. Returns an unsubscribe function.
+	 * Subscribe to sync-required signals. Fires when the server says this
+	 * stream missed events it cannot replay (its `sync_required`, sent
+	 * mid-stream — this client never resumes from a Last-Event-ID, so the
+	 * resume form does not reach it) and the client needs a fresh sync.
+	 * Returns an unsubscribe function.
 	 *
 	 * Also fires for item-change reconciles (`items_bulk_updated`, a
 	 * collection change that rewrote items) and on every connect (BUG-2540),
