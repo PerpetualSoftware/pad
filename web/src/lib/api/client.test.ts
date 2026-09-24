@@ -7,7 +7,9 @@ import {
 	setRateLimitHandler,
 	isNotFoundError,
 	isUpdateConflictError,
-	isConflictOrNotFound
+	isConflictOrNotFound,
+	MAX_RATE_LIMIT_RETRIES,
+	rateLimitRetryDelayMs
 } from './client';
 
 // The 401 interceptor branches on `typeof window !== 'undefined'`. The
@@ -211,6 +213,38 @@ describe('parseRetryAfterMs (TASK-2026)', () => {
 	});
 });
 
+describe('rateLimitRetryDelayMs (BUG-3192)', () => {
+	it('never retries sooner than the server asked', () => {
+		expect(rateLimitRetryDelayMs(1000, 0, () => 0)).toBe(1000);
+		expect(rateLimitRetryDelayMs(1000, 2, () => 0)).toBe(1000);
+	});
+
+	it('spreads over one more floor above it', () => {
+		expect(rateLimitRetryDelayMs(1000, 0, () => 0.5)).toBe(1500);
+		expect(rateLimitRetryDelayMs(1000, 0, () => 0.999)).toBeCloseTo(1999, 0);
+	});
+
+	it('doubles the default floor per attempt when the server sent no Retry-After', () => {
+		expect(rateLimitRetryDelayMs(null, 0, () => 0)).toBe(750);
+		expect(rateLimitRetryDelayMs(null, 1, () => 0)).toBe(1500);
+		expect(rateLimitRetryDelayMs(null, 2, () => 0)).toBe(3000);
+	});
+
+	it('stays under the 5 s ceiling for any floor at or under it', () => {
+		expect(rateLimitRetryDelayMs(4000, 0, () => 0.999)).toBeLessThanOrEqual(5000);
+		expect(rateLimitRetryDelayMs(4000, 0, () => 0)).toBe(4000);
+		expect(rateLimitRetryDelayMs(5000, 0, () => 0.999)).toBe(5000);
+	});
+
+	it('does NOT retry when the floor is above the ceiling, rather than retrying early at it', () => {
+		// Clamping 12 s down to 5 s would retry into a bucket that said wait.
+		expect(rateLimitRetryDelayMs(12_000, 0, () => 0)).toBeNull();
+		expect(rateLimitRetryDelayMs(5001, 0, () => 0)).toBeNull();
+		// The unhinted floor crosses the cap too, from attempt 3 (6000 ms).
+		expect(rateLimitRetryDelayMs(null, 3, () => 0)).toBeNull();
+	});
+});
+
 describe('api client 429 handling (TASK-2026)', () => {
 	beforeEach(() => {
 		vi.unstubAllGlobals();
@@ -221,19 +255,22 @@ describe('api client 429 handling (TASK-2026)', () => {
 
 	it('arms a global cooldown so a follow-up GET waits out the last Retry-After instead of bursting (Codex P1)', async () => {
 		vi.useFakeTimers();
+		// Jitter pinned to the floor, so each retry sleeps exactly Retry-After.
+		const random = vi.spyOn(Math, 'random').mockReturnValue(0);
 		// Anchor the clock at epoch 0 so the cooldown this test arms is a
 		// small number that is safely in the past once real timers resume —
 		// no module-level cooldown leaks into later tests.
 		vi.setSystemTime(0);
 		try {
-			// First chain: a GET that 429s on both the original and its one
-			// retry (Retry-After: 1s), exhausting the retry and arming the
-			// cooldown ~1s out.
+			// First chain: a GET that 429s on the original and every retry
+			// (Retry-After: 1s), exhausting the retries and arming the
+			// cooldown ~1s past the last one.
 			mockFetchSequence([
 				{ status: 429, body: { error: { code: 'rate_limited' } }, retryAfter: '1' },
 			]);
 			const p1 = api.workspaces.list().catch((e) => e);
-			await vi.advanceTimersByTimeAsync(1000); // resolve the internal retry sleep
+			// resolve the internal retry sleeps
+			await vi.advanceTimersByTimeAsync(1000 * MAX_RATE_LIMIT_RETRIES);
 			expect(isRateLimitError(await p1)).toBe(true);
 
 			// Second chain: an INDEPENDENT follow-up GET. It must sit in the
@@ -245,11 +282,60 @@ describe('api client 429 handling (TASK-2026)', () => {
 			await p2;
 			expect(fetchMock2).toHaveBeenCalledTimes(1);
 		} finally {
+			random.mockRestore();
 			vi.useRealTimers();
 		}
 	});
 
-	it('retries an idempotent GET exactly once after a 429, then returns the retry payload', async () => {
+	it('sleeps the JITTERED delay, not the bare Retry-After (the herd must spread)', async () => {
+		// Placed right after the cooldown leg and anchored just past ITS
+		// cooldown: the cooldown is module state in wall-clock ms, so a leg
+		// running after the real-time 429 legs would sit in their window.
+		vi.useFakeTimers();
+		vi.setSystemTime(10_000);
+		const random = vi.spyOn(Math, 'random').mockReturnValue(0.5);
+		try {
+			const fetchMock = mockFetchSequence([
+				{ status: 429, body: { error: { code: 'rate_limited' } }, retryAfter: '1' },
+				{ status: 200, body: [] },
+			]);
+			const p = api.workspaces.list();
+			// Floor 1000, window up to 2000, random 0.5: the retry goes at 1500.
+			await vi.advanceTimersByTimeAsync(1499);
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+			await vi.advanceTimersByTimeAsync(1);
+			await p;
+			expect(fetchMock).toHaveBeenCalledTimes(2);
+		} finally {
+			random.mockRestore();
+			vi.useRealTimers();
+		}
+	});
+
+	it('a Retry-After longer than the cap is not retried: rate_limited surfaces at once', async () => {
+		// Fake clock anchored in the far past, after the other anchored legs:
+		// this 429 arms the module cooldown 5 s out, and in real time that
+		// would stall every GET leg after it.
+		vi.useFakeTimers();
+		vi.setSystemTime(20_000);
+		const handler = vi.fn();
+		setRateLimitHandler(handler);
+		try {
+			const fetchMock = mockFetchSequence([
+				{ status: 429, body: { error: { code: 'rate_limited' } }, retryAfter: '12' },
+				{ status: 200, body: [] },
+			]);
+			const err = (await api.workspaces.list().catch((e) => e)) as PadApiError;
+			expect(isRateLimitError(err)).toBe(true);
+			expect(fetchMock, 'no retry into a bucket that asked for 12 s').toHaveBeenCalledTimes(1);
+			expect(handler).toHaveBeenCalledTimes(1);
+		} finally {
+			setRateLimitHandler(null);
+			vi.useRealTimers();
+		}
+	});
+
+	it('retries an idempotent GET after a 429, then returns the retry payload', async () => {
 		const fetchMock = mockFetchSequence([
 			{ status: 429, body: { error: { code: 'rate_limited' } }, retryAfter: '0' },
 			{ status: 200, body: [{ id: 'w1' }] },
@@ -261,9 +347,8 @@ describe('api client 429 handling (TASK-2026)', () => {
 		expect(fetchMock).toHaveBeenCalledTimes(2);
 	});
 
-	it('surfaces a distinct rate_limited error when the GET retry also 429s', async () => {
+	it('surfaces a distinct rate_limited error when every GET retry also 429s', async () => {
 		const fetchMock = mockFetchSequence([
-			{ status: 429, body: { error: { code: 'rate_limited' } }, retryAfter: '0' },
 			{ status: 429, body: { error: { code: 'rate_limited' } }, retryAfter: '0' },
 		]);
 
@@ -271,8 +356,19 @@ describe('api client 429 handling (TASK-2026)', () => {
 		expect(isRateLimitError(err)).toBe(true);
 		expect(err).toBeInstanceOf(PadApiError);
 		expect((err as PadApiError).code).toBe('rate_limited');
-		// Original + a single retry — never more.
-		expect(fetchMock).toHaveBeenCalledTimes(2);
+		// Original + MAX_RATE_LIMIT_RETRIES retries — never more (BUG-3192).
+		expect(fetchMock).toHaveBeenCalledTimes(1 + MAX_RATE_LIMIT_RETRIES);
+	});
+
+	it('recovers on the LAST allowed retry (BUG-3192: one retry left tabs unloaded)', async () => {
+		const fetchMock = mockFetchSequence([
+			...Array.from({ length: MAX_RATE_LIMIT_RETRIES }, () => ({
+				status: 429, body: { error: { code: 'rate_limited' } }, retryAfter: '0',
+			})),
+			{ status: 200, body: [{ id: 'w1' }] },
+		]);
+		expect(await api.workspaces.list()).toEqual([{ id: 'w1' }]);
+		expect(fetchMock).toHaveBeenCalledTimes(1 + MAX_RATE_LIMIT_RETRIES);
 	});
 
 	it('does NOT retry a non-idempotent POST on 429 (avoids duplicate writes)', async () => {
@@ -291,7 +387,10 @@ describe('api client 429 handling (TASK-2026)', () => {
 
 	it('carries the parsed Retry-After delay on the rate_limited error', async () => {
 		mockFetchSequence([
-			{ status: 429, body: { error: { code: 'rate_limited' } }, retryAfter: '0' },
+			// Zero until the surfaced one, so the retries do not really sleep.
+			...Array.from({ length: MAX_RATE_LIMIT_RETRIES }, () => ({
+				status: 429, body: { error: { code: 'rate_limited' } }, retryAfter: '0',
+			})),
 			{ status: 429, body: { error: { code: 'rate_limited' } }, retryAfter: '2' },
 		]);
 
@@ -314,7 +413,10 @@ describe('rate-limit UI seam / setRateLimitHandler (TASK-2080)', () => {
 		const handler = vi.fn();
 		setRateLimitHandler(handler);
 		mockFetchSequence([
-			{ status: 429, body: { error: { code: 'rate_limited' } }, retryAfter: '0' },
+			// Zero until the surfaced one, so the retries do not really sleep.
+			...Array.from({ length: MAX_RATE_LIMIT_RETRIES }, () => ({
+				status: 429, body: { error: { code: 'rate_limited' } }, retryAfter: '0',
+			})),
 			{ status: 429, body: { error: { code: 'rate_limited' } }, retryAfter: '2' },
 		]);
 

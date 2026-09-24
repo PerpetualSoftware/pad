@@ -121,20 +121,57 @@ class PadApiError extends Error {
 }
 
 /**
- * Server-busy / rate-limit handling (TASK-2026). When the server returns
- * 429 we honor `Retry-After` for a SINGLE delayed retry of idempotent
- * GET/HEAD requests, then (if it still 429s) surface a distinct
+ * Server-busy / rate-limit handling (TASK-2026, BUG-3192). When the server
+ * returns 429 we retry idempotent GET/HEAD requests up to
+ * `MAX_RATE_LIMIT_RETRIES` times, each after a jittered delay no shorter than
+ * the server's `Retry-After`, then (if it still 429s) surface a distinct
  * `rate_limited` PadApiError so the UI can show a "server busy" message
  * rather than a generic failure. This is the client half of the rate-limit
  * story; the server-side raise lives separately (IDEA-1842).
+ *
+ * WHY MORE THAN ONE, AND WHY JITTER (BUG-3192). Two tabs opened together
+ * each load an item page's worth of requests against one per-user burst.
+ * The refused requests all carry the same `Retry-After`, so a single fixed
+ * retry sent them back together, the herd was refused again, and the tab
+ * rendered errors it never recovered from without a reload.
  */
 // Absolute ceiling on how long a single Retry-After delay may block the
 // UI. A hostile or misconfigured `Retry-After: 86400` must not hang the
 // app for a day — clamp to a few seconds and let the user retry by hand.
 const MAX_RETRY_AFTER_MS = 5_000;
-// Backoff used when a 429 arrives with no (or an unparseable) Retry-After
-// header, so the one automatic GET retry still spaces itself out.
+// Backoff FLOOR used when a 429 arrives with no (or an unparseable)
+// Retry-After header, doubled per attempt so an unhinted retry still spaces
+// itself out.
 const DEFAULT_RETRY_BACKOFF_MS = 750;
+// Automatic retries of one idempotent request after a 429, before the
+// `rate_limited` error surfaces. Bounded so a sustained storm still reaches
+// the "server busy" UI in at most a few `MAX_RETRY_AFTER_MS` windows.
+export const MAX_RATE_LIMIT_RETRIES = 3;
+
+/**
+ * How long retry number `attempt` (0-based) waits after a 429, or `null`
+ * for "do not retry".
+ *
+ * Uniform over a window starting at the FLOOR the server asked for (the
+ * UNCLAMPED `Retry-After`, or the doubling default) and reaching up to
+ * `min(2 × floor, MAX_RETRY_AFTER_MS)`. The randomness is the point: refused
+ * requests carry one `Retry-After`, and without it they return together.
+ *
+ * It never goes BELOW the floor, which would be a retry the server has
+ * already said it will refuse. So a floor ABOVE the cap is not clamped down
+ * to it: that would retry early into a bucket that said wait and burn an
+ * attempt doing it. The request surfaces `rate_limited` at once instead.
+ */
+export function rateLimitRetryDelayMs(
+	retryAfterMs: number | null,
+	attempt: number,
+	random: () => number = Math.random,
+): number | null {
+	const floor = retryAfterMs ?? DEFAULT_RETRY_BACKOFF_MS * 2 ** attempt;
+	if (!Number.isFinite(floor) || floor > MAX_RETRY_AFTER_MS) return null;
+	const ceiling = Math.min(floor * 2, MAX_RETRY_AFTER_MS);
+	return floor + random() * (ceiling - floor);
+}
 
 // Global soft cooldown (epoch ms). Every observed 429 pushes this forward
 // to `now + Retry-After` (never backward — see `armRateLimitCooldown`).
@@ -151,8 +188,8 @@ let rateLimitedUntil = 0;
 
 /**
  * Push the global rate-limit cooldown out to `now + backoffMs`, never
- * pulling it in. Called on EVERY 429 (including the one that then triggers
- * the single automatic retry) so a concurrent request started during the
+ * pulling it in. Called on EVERY 429 (including one that then triggers an
+ * automatic retry) so a concurrent request started during the
  * retry's own backoff sleep still sees the cooldown. TASK-2026.
  */
 function armRateLimitCooldown(backoffMs: number): void {
@@ -174,18 +211,28 @@ function clampRetryMs(ms: number): number {
  * `MAX_RETRY_AFTER_MS`. TASK-2026.
  */
 export function parseRetryAfterMs(header: string | null | undefined): number | null {
+	const raw = parseRetryAfterRawMs(header);
+	return raw === null ? null : clampRetryMs(raw);
+}
+
+/**
+ * `parseRetryAfterMs` WITHOUT the clamp: what the server actually asked for.
+ * The retry decision needs it (BUG-3192): a 12 s `Retry-After` clamped to 5 s
+ * reads as "retry at 5 s", which is a retry into a bucket that said wait.
+ */
+function parseRetryAfterRawMs(header: string | null | undefined): number | null {
 	if (!header) return null;
 	const trimmed = header.trim();
 	if (trimmed === '') return null;
 	// Delta-seconds form: a bare non-negative integer.
 	if (/^\d+$/.test(trimmed)) {
-		return clampRetryMs(Number(trimmed) * 1000);
+		return Number(trimmed) * 1000;
 	}
 	// HTTP-date form. Date.parse returns NaN for garbage.
 	const when = Date.parse(trimmed);
 	if (Number.isNaN(when)) return null;
 	const delta = when - Date.now();
-	return clampRetryMs(delta <= 0 ? 0 : delta);
+	return delta <= 0 ? 0 : delta;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -589,10 +636,11 @@ const CREDENTIAL_RECONFIRM_401_PATHS = new Set(['/auth/delete-account']);
 async function request<T>(
 	path: string,
 	options?: RequestInit,
-	// Internal flag: true on the single automatic re-invocation after a
-	// 429. Prevents an infinite retry loop if the retried request also
-	// 429s. Never passed by external callers. TASK-2026.
-	rateLimitRetried = false,
+	// Internal: how many automatic re-invocations after a 429 this call is
+	// (0 for a caller's own request). Bounded by MAX_RATE_LIMIT_RETRIES so a
+	// retried request that also 429s cannot loop. Never passed by external
+	// callers. TASK-2026, BUG-3192.
+	rateLimitAttempt = 0,
 ): Promise<T> {
 	const headers: Record<string, string> = { 'Content-Type': 'application/json' };
 
@@ -613,15 +661,15 @@ async function request<T>(
 
 	// Rate-limit cooldown (TASK-2026). If a recent 429 asked us to back
 	// off, wait out the remaining window before firing another idempotent
-	// request so independent call sites don't hammer a busy server. The
-	// internal single-retry (`rateLimitRetried`) already slept, so it
-	// skips this. Non-idempotent writes are never delayed here — they
+	// request so independent call sites don't hammer a busy server. An
+	// internal retry (`rateLimitAttempt > 0`) already slept, so it skips
+	// this. Non-idempotent writes are never delayed here — they
 	// don't auto-retry and shouldn't be silently stalled by an unrelated
 	// GET's cooldown. The loop re-reads the deadline after each nap so a
 	// cooldown EXTENDED by another 429 mid-sleep is honored (Codex round
 	// 2 P2), but the total wait is capped at MAX_RETRY_AFTER_MS so a
 	// sustained 429 storm can't stall a single request indefinitely.
-	if (isIdempotent && !rateLimitRetried) {
+	if (isIdempotent && rateLimitAttempt === 0) {
 		const waitStart = Date.now();
 		let remaining = rateLimitedUntil - Date.now();
 		while (remaining > 0 && Date.now() - waitStart < MAX_RETRY_AFTER_MS) {
@@ -717,11 +765,13 @@ async function request<T>(
 		}
 	}
 	if (resp.status === 429) {
-		// Rate limited (TASK-2026). Honor Retry-After for ONE delayed
-		// retry of idempotent requests; then surface a distinct
+		// Rate limited (TASK-2026, BUG-3192). Retry idempotent requests up
+		// to MAX_RATE_LIMIT_RETRIES times, each no sooner than Retry-After
+		// and jittered (rateLimitRetryDelayMs); then surface a distinct
 		// `rate_limited` error so callers can show "server busy" rather
 		// than a generic failure.
-		const retryAfterMs = parseRetryAfterMs(resp.headers?.get('Retry-After'));
+		const retryAfterHeader = resp.headers?.get('Retry-After');
+		const retryAfterMs = parseRetryAfterMs(retryAfterHeader);
 		const backoffMs = retryAfterMs ?? DEFAULT_RETRY_BACKOFF_MS;
 		// Arm the global cooldown on EVERY 429 — including this one that we
 		// may be about to retry — so a concurrent idempotent request that
@@ -730,9 +780,16 @@ async function request<T>(
 		armRateLimitCooldown(backoffMs);
 		// Only GET/HEAD auto-retry — retrying a POST/PATCH/DELETE could
 		// duplicate a write the server may have already partially applied.
-		if (isIdempotent && !rateLimitRetried) {
-			await sleep(backoffMs);
-			return request<T>(path, options, true);
+		// The delay is computed from the UNCLAMPED Retry-After: a server asking
+		// for longer than the cap gets no retry at all (null), rather than an
+		// early one at the cap.
+		const retryDelayMs =
+			isIdempotent && rateLimitAttempt < MAX_RATE_LIMIT_RETRIES
+				? rateLimitRetryDelayMs(parseRetryAfterRawMs(retryAfterHeader), rateLimitAttempt)
+				: null;
+		if (retryDelayMs !== null) {
+			await sleep(retryDelayMs);
+			return request<T>(path, options, rateLimitAttempt + 1);
 		}
 		// Prefer the server's structured error envelope if present, but
 		// force the distinct `rate_limited` code + a clear message so UI
