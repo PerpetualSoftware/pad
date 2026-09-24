@@ -65,7 +65,7 @@ func TestClaimPIDFile_HoldsTheLockWhileRunning(t *testing.T) {
 // liveness check would call it ours and signal it.
 func TestPIDFileOwner_UnheldFileIsStale(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pad.pid")
-	rec := pidRecord{PID: os.Getpid()}
+	rec := pidRecord{PID: os.Getpid(), StartedAt: time.Now().UTC()}
 	if err := writePIDRecord(path, rec); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestPIDFileOwner_ReportsTheRecordItVerified(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pad.pid")
 
 	// Predecessor's record, unheld.
-	if err := writePIDRecord(path, pidRecord{PID: 111}); err != nil {
+	if err := writePIDRecord(path, pidRecord{PID: 111, StartedAt: time.Now().UTC()}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
@@ -201,7 +201,7 @@ func TestPIDFileOwner_HeldButUnreadableIsUnprovable(t *testing.T) {
 // returns is how that placement stays put.
 func TestPIDFileOwner_RemovesTheStaleFileItself(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pad.pid")
-	if err := writePIDRecord(path, pidRecord{PID: os.Getpid()}); err != nil {
+	if err := writePIDRecord(path, pidRecord{PID: os.Getpid(), StartedAt: time.Now().UTC()}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
@@ -212,6 +212,40 @@ func TestPIDFileOwner_RemovesTheStaleFileItself(t *testing.T) {
 		t.Errorf("stale PID file survived the ownership check (stat err = %v) — cleanup must happen while the "+
 			"check holds the lock, not afterwards", err)
 	}
+}
+
+// TestPIDFileOwner_LegacyBarePIDIsUnprovableAndKept is BUG-2970. A bare-pid
+// file was written by a build that predates the lock (BUG-2969), so the free
+// lock on it proves nothing: its server never took one, and may be answering
+// right now. That is what happened on the day-19 refresh, where the probe
+// deleted the record of a live pre-fix server on its way to refusing.
+//
+// Two assertions, because each catches a different wrong answer: the verdict
+// (stale would permit the cleanup path) and the FILE (a fix that returned
+// unprovable after removing it would pass the first and still lose the
+// record). The pid is this live test process, the strongest form.
+func TestPIDFileOwner_LegacyBarePIDIsUnprovableAndKept(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pad.pid")
+	legacy := []byte(strconv.Itoa(os.Getpid()) + "\n")
+	if err := os.WriteFile(path, legacy, 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if _, owner := pidFileOwner(path); owner != pidFileUnprovable {
+		t.Errorf("owner = %v for an unheld legacy bare-pid file, want unprovable — no build that wrote this "+
+			"form took the lock, so a free lock says nothing about its server", owner)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("the legacy PID file was removed by the ownership check (%v) — that deletes the only record "+
+			"of a server that may be live", err)
+	}
+	if string(got) != string(legacy) {
+		t.Errorf("legacy PID file rewritten: %q, want %q", got, legacy)
+	}
+	// Not left locked: a successor starting now must be able to claim it.
+	release := ClaimPIDFile(path)
+	release()
 }
 
 // TestClaimPIDFile_RetriesPastABriefProbe covers the interaction the round-2
