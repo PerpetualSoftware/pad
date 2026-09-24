@@ -431,6 +431,8 @@ if [ -n "$TARGET_PID" ]; then
 		die "the running server (pid $TARGET_PID) is in a directory that no longer exists: $SERVER_CWD
   Nothing was stopped or installed. Restart it from the directory it should run in, then refresh."
 	fi
+	# Stated limit: command substitution strips trailing newlines, so a
+	# directory whose NAME ends in one is not captured exactly.
 	note "captured server cwd: $SERVER_CWD"
 fi
 
@@ -496,6 +498,16 @@ if [ -n "$TARGET_PID" ]; then
 		[ ${#now[@]} -gt 0 ] && [ "$(join_us "${now[@]}")" = "${SERVER_ARGV_OF[$TARGET_PID]}" ]
 	}
 	if kill -0 "$TARGET_PID" 2>/dev/null; then
+		# The cwd is checked again at the last moment before the stop
+		# (BUG-3196, codex round 1): it was checked before the snapshot, and
+		# a directory removed since then would leave the server stopped with
+		# nowhere to restart it. RESIDUAL, stated: one removed between this
+		# check and the restart's `cd` still does, and the restart then
+		# fails loudly rather than starting elsewhere.
+		if [ -n "$SERVER_CWD" ] && [ ! -d "$SERVER_CWD" ]; then
+			die "the running server's directory no longer exists: $SERVER_CWD
+  Nothing was stopped or installed. Restart it from the directory it should run in, then refresh."
+		fi
 		if ! still_target; then
 			die "pid $TARGET_PID no longer runs the captured server.
   Nothing was stopped or installed; re-run."
