@@ -193,50 +193,69 @@ join_us() {
 	local a
 	for a in "$@"; do printf '%s%s' "$a" "$US"; done
 }
-if command -v pgrep >/dev/null 2>&1; then
-	while read -r pid; do
-		[ -n "$pid" ] || continue
-		# /proc where it exists, `ps` where it does not.
-		#
-		# Codex round 5 (P1): macOS has no /proc, so this loop found
-		# nothing there, SERVER_ARGV stayed empty, and the restart fell
-		# back to defaults — the exact defect BUG-2897 is about, silently
-		# unfixed on the platform the setsid fallback had just been added
-		# for. A fix that is Linux-only while advertising portability is
-		# worse than one that admits its platform.
-		#
-		# /proc is preferred because it gives the argv NUL-separated and
-		# therefore exactly; `ps -o args=` returns one space-joined string,
-		# so an argument containing a space is split. Named rather than
-		# hidden: no `pad server start` flag takes such a value today.
-		# No `local` here: this loop runs at TOP LEVEL, and bash answers
-		# `local` outside a function with an error on stderr for every
-		# matching process (codex round 6). It kept working — the arrays
-		# were still assigned — while printing a spurious error on every
-		# normal refresh, which is precisely the class of noise this unit
-		# exists to remove.
-		argv=()
-		# PAD_NO_PROC forces the `ps` path. Same reasoning as PAD_NO_SETSID:
-		# the branch is unreachable on any machine with /proc, and an
-		# untestable branch is exactly how the macOS half of this fix would
-		# have shipped broken.
-		if [ -z "${PAD_NO_PROC:-}" ] && [ -r "/proc/$pid/cmdline" ]; then
-			mapfile -d '' -t argv < "/proc/$pid/cmdline"
-		else
-			line="$(ps -o args= -p "$pid" 2>/dev/null || true)"
-			[ -n "$line" ] || continue
-			read -r -a argv <<<"$line"
+# capture_pid records $1 as a server if its argv carries the `server start`
+# verb pair. Keyed by identity (the argv), not by the binary's file name
+# (BUG-3196): the name of the binary being INSTALLED says nothing about the
+# name of the one running.
+#
+# With a second argument `require-pad`, argv[0] must also name a pad binary
+# (pad, pad-*, pad.*), checked before anything is recorded. The name-matched
+# candidates do not need it; a listener found only by port does.
+capture_pid() {
+	local pid="$1" require="${2:-}"
+	[ -n "$pid" ] || return 0
+	[ -n "${SERVER_ARGV_OF[$pid]+x}" ] && return 0
+	# /proc where it exists, `ps` where it does not.
+	#
+	# Codex round 5 (P1): macOS has no /proc, so this loop found
+	# nothing there, SERVER_ARGV stayed empty, and the restart fell
+	# back to defaults — the exact defect BUG-2897 is about, silently
+	# unfixed on the platform the setsid fallback had just been added
+	# for. A fix that is Linux-only while advertising portability is
+	# worse than one that admits its platform.
+	#
+	# /proc is preferred because it gives the argv NUL-separated and
+	# therefore exactly; `ps -o args=` returns one space-joined string,
+	# so an argument containing a space is split. Named rather than
+	# hidden: no `pad server start` flag takes such a value today.
+	# A function now (BUG-3196), so `local` is legal here; codex round 6 of
+	# BUG-3194 had removed it when this body ran at top level.
+	local argv=() line i
+	# PAD_NO_PROC forces the `ps` path. Same reasoning as PAD_NO_SETSID:
+	# the branch is unreachable on any machine with /proc, and an
+	# untestable branch is exactly how the macOS half of this fix would
+	# have shipped broken.
+	if [ -z "${PAD_NO_PROC:-}" ] && [ -r "/proc/$pid/cmdline" ]; then
+		mapfile -d '' -t argv < "/proc/$pid/cmdline"
+	else
+		line="$(ps -o args= -p "$pid" 2>/dev/null || true)"
+		[ -n "$line" ] || return 0
+		read -r -a argv <<<"$line"
+	fi
+	[ ${#argv[@]} -gt 0 ] || return 0
+	if [ "$require" = require-pad ]; then
+		case "$(basename "${argv[0]}")" in
+		pad | pad-* | pad.*) ;;
+		*) return 0 ;;
+		esac
+	fi
+	# argv[0] is the binary; look for the `server start` verb pair.
+	for ((i = 1; i < ${#argv[@]}; i++)); do
+		if [ "${argv[i]}" = "server" ] && [ "${argv[i + 1]:-}" = "start" ]; then
+			SERVER_PIDS+=("$pid")
+			SERVER_ARGV_OF[$pid]="$(join_us "${argv[@]}")"
+			break
 		fi
-		[ ${#argv[@]} -gt 0 ] || continue
-		# argv[0] is the binary; look for the `server start` verb pair.
-		for ((i = 1; i < ${#argv[@]}; i++)); do
-			if [ "${argv[i]}" = "server" ] && [ "${argv[i + 1]:-}" = "start" ]; then
-				SERVER_PIDS+=("$pid")
-				SERVER_ARGV_OF[$pid]="$(join_us "${argv[@]}")"
-				break
-			fi
-		done
-	done < <(pgrep -x "$(basename "$BUILT")" 2>/dev/null || true)
+	done
+}
+if command -v pgrep >/dev/null 2>&1; then
+	# Candidates by name: the running binary is normally the installed one,
+	# and the built one's name is kept for a server started from a build.
+	while read -r pid; do
+		capture_pid "$pid"
+	# A pid found under both names is captured once: capture_pid skips a pid
+	# it has already recorded.
+	done < <({ pgrep -x "$(basename "$INSTALLED")"; pgrep -x "$(basename "$BUILT")"; } 2>/dev/null || true)
 fi
 
 # --- 1b. Choose the TARGET: the server holding the port this refresh is for ----
@@ -304,6 +323,16 @@ while read -r lp; do
 	esac
 done < <(listener_pids "$TARGET_PORT")
 
+# A listener is judged by what it IS rather than by the name of the binary
+# being installed (BUG-3196): a pad `server start` holding the port is a server
+# even when neither candidate name matched it (a binary started as
+# pad-<commit>, say). Its OWN argv[0] must still be a pad binary: without that
+# any tool on this port whose argv happens to read `server start` would be
+# stopped and replaced.
+for lp in "${LISTENERS[@]}"; do
+	capture_pid "$lp" require-pad
+done
+
 matched=()
 foreign=()
 for lp in "${LISTENERS[@]}"; do
@@ -322,12 +351,12 @@ if [ -n "$HIDDEN" ]; then
   Nothing was stopped or installed; this script will not guess which server that is."
 fi
 if [ "${#foreign[@]}" -gt 0 ]; then
-	die "port $TARGET_PORT is held by pid(s) ${foreign[*]}, which is not a running \`$(basename "$BUILT") server start\`.
+	die "port $TARGET_PORT is held by pid(s) ${foreign[*]}, which is not a running \`server start\`.
   Nothing was stopped or installed; find out what holds the port first."
 fi
 
 if [ "${#matched[@]}" -gt 1 ]; then
-	die "more than one \`$(basename "$BUILT") server start\` is listening on port $TARGET_PORT (pids: ${matched[*]}).
+	die "more than one \`server start\` is listening on port $TARGET_PORT (pids: ${matched[*]}).
   Nothing was stopped or installed. Use the manual sibling-safe refresh."
 elif [ "${#matched[@]}" -eq 1 ]; then
 	TARGET_PID="${matched[0]}"
@@ -343,11 +372,11 @@ elif [ "${#SERVER_PIDS[@]}" -eq 1 ]; then
 	if flag_value --port "${only[@]}" >/dev/null; then
 		TARGET_PID="${SERVER_PIDS[0]}"
 	else
-		die "nothing is listening on port $TARGET_PORT, and the one \`$(basename "$BUILT") server start\` running (pid ${SERVER_PIDS[0]}) was not started with --port, so it is not this box's server on another port.
+		die "nothing is listening on port $TARGET_PORT, and the one \`server start\` running (pid ${SERVER_PIDS[0]}) was not started with --port, so it is not this box's server on another port.
   Nothing was stopped or installed. Start the server, or use the manual refresh."
 	fi
 elif [ "${#SERVER_PIDS[@]}" -gt 1 ]; then
-	die "more than one \`$(basename "$BUILT") server start\` process is running (pids: ${SERVER_PIDS[*]}) and none is listening on port $TARGET_PORT.
+	die "more than one \`server start\` process is running (pids: ${SERVER_PIDS[*]}) and none is listening on port $TARGET_PORT.
   This script cannot tell which one to replace.
   Nothing was stopped or installed. Use the manual sibling-safe refresh."
 fi
@@ -359,7 +388,7 @@ if [ -n "$TARGET_PID" ]; then
 		[ "$sp" != "$TARGET_PID" ] && OTHERS+=("$sp")
 	done
 	if [ "${#OTHERS[@]}" -gt 0 ]; then
-		note "other \`$(basename "$BUILT") server start\` processes are left running: ${OTHERS[*]}"
+		note "other \`server start\` processes are left running: ${OTHERS[*]}"
 	fi
 fi
 
@@ -367,6 +396,45 @@ if [ ${#SERVER_ARGV[@]} -gt 0 ]; then
 	note "captured server argv: ${SERVER_ARGV[*]}"
 else
 	note "no running server found; will start with defaults after install"
+fi
+
+# --- 1c. Capture the TARGET's working directory, with its argv ----------------
+#
+# BUG-3196. The restart used to inherit the INVOKING shell's cwd, so a refresh
+# run from a worktree left the server in that worktree, and removing the
+# worktree left it in a deleted directory. The server's cwd is part of how it
+# was started, like its argv, so it is captured and restored the same way.
+#
+# Refused BEFORE anything is stopped:
+#   - the captured cwd no longer exists (Linux reports it with a " (deleted)"
+#     suffix): the server cannot be put back where it was, and the refusal
+#     names the path so the operator can choose;
+#   - the cwd cannot be read at all: restoring both argv and cwd is then
+#     impossible, and falling back to the caller's cwd is this bug.
+# With no server running there is nothing to restore; the caller's cwd is used,
+# as before.
+SERVER_CWD=""
+if [ -n "$TARGET_PID" ]; then
+	if [ -z "${PAD_NO_PROC:-}" ] && { [ -e "/proc/$TARGET_PID/cwd" ] || [ -L "/proc/$TARGET_PID/cwd" ]; }; then
+		SERVER_CWD="$(readlink "/proc/$TARGET_PID/cwd" 2>/dev/null || true)"
+	elif command -v lsof >/dev/null 2>&1; then
+		SERVER_CWD="$(lsof -a -p "$TARGET_PID" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)"
+	fi
+	if [ -z "$SERVER_CWD" ]; then
+		die "the working directory of the running server (pid $TARGET_PID) cannot be read here.
+  Nothing was stopped or installed; the restart could not put it back where it was."
+	fi
+	case "$SERVER_CWD" in
+	*" (deleted)")
+		die "the running server (pid $TARGET_PID) is in a directory that no longer exists: ${SERVER_CWD% (deleted)}
+  Nothing was stopped or installed. Restart it from the directory it should run in, then refresh."
+		;;
+	esac
+	if [ ! -d "$SERVER_CWD" ]; then
+		die "the running server (pid $TARGET_PID) is in a directory that no longer exists: $SERVER_CWD
+  Nothing was stopped or installed. Restart it from the directory it should run in, then refresh."
+	fi
+	note "captured server cwd: $SERVER_CWD"
 fi
 
 # --- 2. SNAPSHOT the artifact, then check the snapshot ------------------------
@@ -522,6 +590,15 @@ if [ -n "$EXPECT_COMMIT" ]; then
 	fi
 fi
 
+# In the captured cwd (BUG-3196). The binary path is made absolute first,
+# since the install path may have been given relative to the caller's cwd.
+case "${restart[0]}" in
+/*) ;;
+*) restart[0]="$(cd "$(dirname "${restart[0]}")" && pwd)/$(basename "${restart[0]}")" ;;
+esac
+if [ -n "$SERVER_CWD" ]; then
+	cd "$SERVER_CWD" || die "could not enter $SERVER_CWD to restart the server there. No server is running."
+fi
 if [ -z "${PAD_NO_SETSID:-}" ] && command -v setsid >/dev/null 2>&1; then
 	setsid nohup "${restart[@]}" >>"$HOME/.pad/server.log" 2>&1 </dev/null &
 else

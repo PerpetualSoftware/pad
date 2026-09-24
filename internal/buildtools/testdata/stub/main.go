@@ -53,6 +53,16 @@ func main() {
 	if !(len(os.Args) > 2 && os.Args[1] == "server" && os.Args[2] == "start") {
 		return
 	}
+	// STUB_CWD_LOG records the directory each server start runs in, so a test
+	// can see where a restart put it (BUG-3196).
+	if logPath := os.Getenv("STUB_CWD_LOG"); logPath != "" {
+		if wd, err := os.Getwd(); err == nil {
+			if f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+				fmt.Fprintln(f, wd)
+				f.Close()
+			}
+		}
+	}
 	// STUB_HEALTHY=0 exits immediately: what a restart that silently did
 	// not happen looks like from outside.
 	if os.Getenv("STUB_HEALTHY") != "1" {
