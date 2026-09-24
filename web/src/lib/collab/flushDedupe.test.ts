@@ -22,4 +22,24 @@ describe('shouldDedupeEditorSpace', () => {
 	it('does NOT dedupe once a flush has already happened this session, even if markdown reverts to the seed', () => {
 		expect(shouldDedupeEditorSpace('some flushed content', 'seed text', 'seed text')).toBe(false);
 	});
+
+	// BUG-3197: the editor does not reproduce every stored dialect byte for byte,
+	// so the seed's CANONICAL form (the editor's own serialization of it) is a
+	// second way a no-edit view can match.
+	it('dedupes a no-edit view whose markdown matches the canonical form of the seed, not the seed', () => {
+		expect(shouldDedupeEditorSpace(null, '* one', '- one', '- one')).toBe(true);
+	});
+
+	it('does not dedupe a real edit of a non-canonical seed', () => {
+		expect(shouldDedupeEditorSpace(null, '* one', '- one\n- two', '- one')).toBe(false);
+	});
+
+	it('the canonical arm keeps revert-safety: after a flush it never dedupes', () => {
+		expect(shouldDedupeEditorSpace('flushed', '* one', '- one', '- one')).toBe(false);
+	});
+
+	it('without a canonical form the predicate is the old one', () => {
+		expect(shouldDedupeEditorSpace(null, '* one', '- one', null)).toBe(false);
+		expect(shouldDedupeEditorSpace(null, '* one', '- one')).toBe(false);
+	});
 });

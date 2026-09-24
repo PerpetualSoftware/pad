@@ -1515,7 +1515,8 @@ export const api = {
 		 * Content-free flush-watermark stamp (BUG-3124 unit B). Sent when this
 		 * tab's Y.Doc is caught up (`opLogCursor` is the highest op-log id it
 		 * has applied) AND still renders to the body the server holds, whose
-		 * sha256 is `contentSHA256`. The server advances the watermark only if
+		 * sha256 is `contentSHA256` (byte for byte, or as the editor's own
+		 * serialization of that body, BUG-3197). The server advances the watermark only if
 		 * both still hold at commit time and writes nothing else — no content,
 		 * no version, no seq bump — so an idle view no longer leaves the item
 		 * reading "pending" forever. `{advanced: false}` is a normal answer.

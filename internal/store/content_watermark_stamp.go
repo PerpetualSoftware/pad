@@ -27,7 +27,15 @@ var ErrWatermarkStampBadInput = errors.New("watermark stamp: bad input")
 // content is identical to the row:
 //   - cursor == MAX(op-log id): the tab's Y.Doc has applied every persisted row;
 //   - sha256(items.content) == contentSHA256: the markdown that document
-//     renders to IS the stored body.
+//     renders to IS the stored body, byte for byte, or (since BUG-3197) is the
+//     editor's own serialization of it. The tab stamps in the second case when
+//     its document serializes exactly as the stored body does once parsed, so
+//     a document re-seeded from the stored body serializes the same way. A real
+//     flush gives the same equivalence and no more (it stores the
+//     serialization, and the next seed parses it), so the stamp claims nothing
+//     a flush would not. In BOTH cases the proof is about markdown: document
+//     state the serializer does not write is not in items.content, and
+//     neither a flush nor this stamp could put it there.
 //
 // Together they say the row covers every op, which is exactly what the
 // watermark records. Both are checked in ONE conditional UPDATE, against the

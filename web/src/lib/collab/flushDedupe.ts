@@ -19,14 +19,26 @@
 // non-null means a real flush already happened this session; from then on
 // the server holds edited content, so reverting to the seed must still
 // PATCH (revert-safety) — hence the `lastFlushedContent === null` gate.
+//
+// `seedCanonical` (BUG-3197) is the editor's OWN serialization of the seed:
+// the same markdown parsed into a document and serialized back, which is what
+// the editor emits for a document nobody touched. The seed itself is the
+// stored text, and the editor does not reproduce every stored dialect byte for
+// byte (`* a` comes back `- a`, a setext heading comes back ATX, a rule gains a
+// blank line after it), so comparing against the seed alone made merely
+// OPENING such an item write a normalised body and a version row. A user edit
+// whose output is exactly that form is indistinguishable, in what the editor
+// would store, from not editing at all; deduping it keeps the stored dialect
+// instead of rewriting it.
 export function shouldDedupeEditorSpace(
 	lastFlushedContent: string | null,
 	seedMarkdown: string | null,
 	normalizedMarkdown: string,
+	seedCanonical: string | null = null,
 ): boolean {
 	return (
 		lastFlushedContent === null &&
 		seedMarkdown !== null &&
-		normalizedMarkdown === seedMarkdown
+		(normalizedMarkdown === seedMarkdown || (seedCanonical !== null && normalizedMarkdown === seedCanonical))
 	);
 }
