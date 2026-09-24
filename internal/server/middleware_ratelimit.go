@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"golang.org/x/time/rate"
 )
 
@@ -528,8 +529,11 @@ func (s *Server) RateLimit(next http.Handler) http.Handler {
 		// Collab WebSocket dials draw on their own bucket, never the general
 		// API one (BUG-1308): a socket dial and a REST call are different
 		// units, and sharing one burst let a user's own reconnects refuse
-		// their page loads and the reverse.
-		if strings.HasPrefix(path, "/api/v1/collab/") {
+		// their page loads and the reverse. Only an actual upgrade request
+		// counts as a dial; anything else under the prefix (a plain GET, a
+		// POST, a future REST route) is an ordinary API request and pays the
+		// API bucket (codex round 1).
+		if strings.HasPrefix(path, "/api/v1/collab/") && websocket.IsWebSocketUpgrade(r) {
 			key := rateLimitKey(r, ip)
 			if !s.rateLimiters.CollabDial.getLimiter(key).Allow() {
 				slog.Warn("rate limited", "key", key, "path", path, "limiter", "collab_dial")

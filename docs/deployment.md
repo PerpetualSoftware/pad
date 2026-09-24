@@ -141,17 +141,20 @@ from the configured number.
 #### Collab connection limits
 
 The collaborative editor holds one WebSocket per open item pane
-(`/api/v1/collab/{itemID}`). Two bounds apply to it, both per user (per
-workspace for a caller with no resolved user, as on `/api/v1/events`), and
-neither is the general API rate limit:
+(`/api/v1/collab/{itemID}`). Two bounds apply to it, and neither is the general
+API rate limit:
 
-- **Dials:** a rate bucket of its own, 5 per second with a burst of 50. A dial
+- **Dials:** a rate bucket of its own, 5 per second with a burst of 50, keyed
+  like every rate bucket (per user, per client IP for a caller with no
+  resolved user). Only a WebSocket upgrade request counts as a dial. A dial
   does not spend the user's API budget, and REST calls do not spend the dial
   budget. A server restart makes every open tab re-dial within about a second,
   and the burst is sized to cover that. Not configurable, like the other rate
   buckets.
-- **Open sockets:** `PAD_COLLAB_MAX_PER_USER` (default 50). A dial over it is
-  refused with `429` code `collab_limit_exceeded` and a `Retry-After` header.
+- **Open sockets:** `PAD_COLLAB_MAX_PER_USER` (default 50), per user, or per
+  workspace for a caller with no resolved user (as on `/api/v1/events`). A dial
+  over it is refused with `429` code `collab_limit_exceeded` and a
+  `Retry-After` header.
 
 A browser cannot read a refused WebSocket handshake's status, so the web
 editor does not see the `429`. It reconnects on a jittered backoff (1s, 2s,

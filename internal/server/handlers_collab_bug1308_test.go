@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/gorilla/websocket"
 )
 
@@ -21,6 +22,8 @@ import (
 func collabDialStatus(srv *Server) int {
 	req := httptest.NewRequest("GET", "/api/v1/collab/00000000-0000-0000-0000-000000000000", nil)
 	req.RemoteAddr = "192.0.2.7:1234"
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "websocket")
 	rr := httptest.NewRecorder()
 	srv.ServeHTTP(rr, req)
 	return rr.Code
@@ -78,6 +81,33 @@ func TestRESTCallsDoNotSpendTheCollabDialBucket(t *testing.T) {
 	}
 	if code := collabDialStatus(srv); code != http.StatusNotFound {
 		t.Fatalf("a collab dial after the API burst was spent answered %d, want it to reach the handler (404)", code)
+	}
+}
+
+// Only an upgrade request is a dial. A plain request under the prefix is an
+// ordinary API request and pays the API bucket, so it cannot be used to spend
+// the dial budget in place of the API one, or to escape the API one.
+func TestNonUpgradeCollabRequestPaysTheAPIBucket(t *testing.T) {
+	srv := testServer(t)
+	plain := func() int {
+		req := httptest.NewRequest("GET", "/api/v1/collab/00000000-0000-0000-0000-000000000000", nil)
+		req.RemoteAddr = "192.0.2.7:1234"
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		return rr.Code
+	}
+	apiBurst := srv.rateLimiters.API.config.Burst
+	refused := 0
+	for i := 0; i < apiBurst+10; i++ {
+		if plain() == http.StatusTooManyRequests {
+			refused++
+		}
+	}
+	if refused == 0 {
+		t.Fatalf("%d plain requests under /api/v1/collab/ against an API burst of %d: none refused, so they are not paying the API bucket", apiBurst+10, apiBurst)
+	}
+	if code := collabDialStatus(srv); code != http.StatusNotFound {
+		t.Fatalf("a real dial after plain requests spent the API bucket answered %d; the dial bucket should be untouched", code)
 	}
 }
 
@@ -147,4 +177,51 @@ func TestCollabSocketCapPerPrincipal(t *testing.T) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+}
+
+// Two authenticated users in ONE workspace hold separate caps: the principal
+// is the user, not the workspace. A key that fell back to the workspace for
+// everyone would pass the fresh-install test above (its items sit in two
+// workspaces) and fail here.
+func TestCollabSocketCapIsPerUserWithinAWorkspace(t *testing.T) {
+	srv := testServerWithCollab(t)
+	bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
+	srv.SetCollabLimits(1)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	itemID := seedCollabFixture(t, srv, "SharedWS")
+	item, err := srv.store.GetItem(itemID)
+	if err != nil || item == nil {
+		t.Fatalf("GetItem: %v", err)
+	}
+	session := func(email string) []*http.Cookie {
+		u, err := srv.store.CreateUser(models.UserCreate{Email: email, Name: email, Password: "correct-horse-battery-staple", Role: "member"})
+		if err != nil {
+			t.Fatalf("CreateUser %s: %v", email, err)
+		}
+		if err := srv.store.AddWorkspaceMember(item.WorkspaceID, u.ID, "editor"); err != nil {
+			t.Fatalf("AddWorkspaceMember %s: %v", email, err)
+		}
+		tok, err := srv.store.CreateSession(u.ID, "go-test", "127.0.0.1", "go-test", 24*time.Hour)
+		if err != nil {
+			t.Fatalf("CreateSession %s: %v", email, err)
+		}
+		return []*http.Cookie{{Name: "pad_session", Value: tok}}
+	}
+	alice, bob := session("alice@test.com"), session("bob@test.com")
+
+	a1, resp, err := dialCollab(t, ts.URL, itemID, alice, "go-test")
+	if err != nil {
+		t.Fatalf("alice's first socket: %v (%v)", err, resp)
+	}
+	defer a1.Close()
+	if _, resp, err := dialCollab(t, ts.URL, itemID, alice, "go-test"); err == nil || resp == nil || resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("alice's second socket at a cap of 1: want 429, got err=%v resp=%v", err, resp)
+	}
+	b1, resp, err := dialCollab(t, ts.URL, itemID, bob, "go-test")
+	if err != nil {
+		t.Fatalf("bob was refused by alice's cap in the same workspace: %v (%v)", err, resp)
+	}
+	b1.Close()
 }
