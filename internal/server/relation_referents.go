@@ -1,6 +1,7 @@
 package server
 
 import (
+	"log/slog"
 	"net/http"
 	"sort"
 	"strings"
@@ -139,33 +140,9 @@ func (s *Server) resolveRelationReferentsAs(
 			if ri.Reason != store.RelationTargetWrongCollection {
 				continue
 			}
-			if ri.VisibilityChecked {
-				// The resolver judged this one against this requester already
-				// (title path). Re-resolving it here would run a title through
-				// a UUID-or-ref ladder, find nothing, and collapse a reason the
-				// caller is entitled to see.
-				continue
-			}
-			target, terr := s.store.ResolveRelationTarget(workspaceID, ri.Value)
-			if terr != nil {
-				return nil, terr
-			}
-			if target == nil {
-				// Deleted between the resolver's lookup and this one. The
-				// issue still SAYS `wrong_collection`, and that message
-				// reveals the value named something a moment ago — the same
-				// disclosure for a caller who cannot see it (codex round 4).
-				// My first comment here read "already the safe answer", which
-				// was wrong: nothing had rewritten the reason.
-				collapseIssue(issues, def.Key, store.RelationTargetNotFound)
-				continue
-			}
-			seen, verr := s.checkItemVisible(workspaceID, target, currentUser(r), role, isBearerAuth(r))
-			if verr != nil {
-				return nil, verr
-			}
-			if !seen {
-				collapseIssue(issues, def.Key, store.RelationTargetNotFound)
+			if !ri.VisibilityChecked {
+				// See failClosedUnjudged (BUG-3012).
+				failClosedUnjudged(issues, def.Key, "main")
 			}
 			continue
 		}
@@ -222,50 +199,60 @@ func collapseIssue(issues []store.RelationIssue, key string, reason store.Relati
 	}
 }
 
-// collapseInvisibleRelationIssues rewrites `wrong_collection` to `not_found`
-// on any issue whose target the requester cannot see — the same collapse
-// resolveRelationReferentsAs applies to the MAIN pass, hoisted so the LATE
-// pass gets it too.
+// collapseInvisibleRelationIssues is the LATE pass's guard against an
+// unjudged `wrong_collection` reaching a caller: the same rule
+// resolveRelationReferentsAs applies to the MAIN pass.
 //
-// `store.ResolveLateRelationDefaults` is a store function and cannot know who
-// is asking, so every issue it returns carries the raw reason. Those issues
-// reach a caller: each door feeds them to RequiredRelationIssues and renders
-// the result into a 400 or a preflight `needs_value` row. `wrong_collection`
-// is the one reason that names a LIVE item, so an invisible target announced
-// that way is the existence oracle round 3 closed, reopened through the door
-// round 10 added (codex round 15).
+// Late-default issues reach a caller: each door feeds them to
+// RequiredRelationIssues and renders the result into a 400 or a preflight
+// `needs_value` row. `wrong_collection` is the one reason that names a LIVE
+// item, so an invisible target announced that way is the existence oracle
+// round 3 closed, reopened through the door round 10 added (codex round 15).
+// Applied at all five late-default sites, per CONVE-18.
 //
-// Reviewer named ONE site; this is applied at all five late-default sites,
-// per CONVE-18 — the class is "a store-resolved issue reaching a caller
-// without passing the visibility collapse", not the one call it was spotted at.
-// ONLY the ref path reaches here now. A title-derived issue is decided inside
-// the resolver, which takes this requester's visibility predicate — so an
-// invisible title match never becomes a `wrong_collection` in the first place,
-// and there is nothing for this pass to collapse.
+// Since the day-64 ruling, `store.ResolveLateRelationDefaults` takes the
+// requester's visibility func and judges every rung itself, so its issues
+// arrive with VisibilityChecked set and this pass leaves them alone. An issue
+// without it fails closed, with no second lookup (failClosedUnjudged,
+// BUG-3012).
 func (s *Server) collapseInvisibleRelationIssues(r *http.Request, workspaceID, role string, issues []store.RelationIssue) error {
 	for i := range issues {
 		if issues[i].Reason != store.RelationTargetWrongCollection || issues[i].VisibilityChecked {
 			continue
 		}
-		target, terr := s.store.ResolveRelationTarget(workspaceID, issues[i].Value)
-		if terr != nil {
-			return terr
-		}
-		if target == nil {
-			// Vanished between the two reads. The reason still SAYS the value
-			// named something a moment ago, which is the same disclosure.
-			issues[i].Reason = store.RelationTargetNotFound
-			continue
-		}
-		seen, verr := s.checkItemVisible(workspaceID, target, currentUser(r), role, isBearerAuth(r))
-		if verr != nil {
-			return verr
-		}
-		if !seen {
-			issues[i].Reason = store.RelationTargetNotFound
-		}
+		// See failClosedUnjudged (BUG-3012).
+		failClosedUnjudged(issues, issues[i].Key, "late")
 	}
 	return nil
+}
+
+// failClosedUnjudged collapses a `wrong_collection` issue that reached a
+// server pass WITHOUT the resolver having judged it against the requester
+// (VisibilityChecked false), and does so with NO lookup (BUG-3012).
+//
+// `wrong_collection` names a live item, so an unjudged one is an existence
+// oracle waiting for a caller who cannot see it. Both passes used to settle
+// that by RE-RESOLVING the value and checking visibility on what came back,
+// which was a second lookup of a value the resolver had already looked up:
+// a delete between the two turned a visible caller's specific message into
+// `not_found`. Since the day-64 ruling moved visibility into the resolver,
+// every server feeder hands it a non-nil relationVisibility, and both sites
+// that build this reason stamp VisibilityChecked when they had one. The one
+// resolution that deliberately runs WITHOUT one, MigrateRelationReferentsQ's
+// carried branch (survival must not depend on the mover), judges its
+// wrong_collection REASONS itself against the matched row. So nothing reaches
+// here; a server test run counts zero of this log line (BUG-3012 trail).
+//
+// It stays as a FAIL-CLOSED guard rather than being deleted outright,
+// because the store documents a nil visibility func as legitimate ("count
+// every live match", for import and migrate): a future feeder that passes
+// nil would otherwise hand an unjudged issue straight to a caller. Collapsing
+// discloses less, never more, and the log says a feeder skipped the
+// resolver's visibility argument.
+func failClosedUnjudged(issues []store.RelationIssue, key, pass string) {
+	slog.Warn("relation issue reached the server without a visibility judgement; collapsing to not_found",
+		"key", key, "pass", pass)
+	collapseIssue(issues, key, store.RelationTargetNotFound)
 }
 
 // refuseRelationIssues writes the 400 a write door owes and reports whether it
