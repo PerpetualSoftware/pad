@@ -16,6 +16,7 @@
 // target and the raw value into them, rather than resolving on its own.
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
+import { existenceClaimsIn } from '../../../test/existenceClaim';
 import type { Collection, Item, ItemIndexRow } from '$lib/types';
 
 function row(over: Partial<ItemIndexRow>): ItemIndexRow {
@@ -138,8 +139,18 @@ describe('a relation cell', () => {
 		// The common case for this is a legacy free-text value the pre-TASK-2878
 		// fallback wrote. Showing it would present a typo as a reference.
 		const screen = renderRow(SCALAR, { car_color: 'not-an-id' });
-		expect(cells(screen.container)).toEqual(['Unresolved reference']);
+		expect(cells(screen.container)).toEqual(['Unavailable item']);
 		expect(screen.container.textContent).not.toContain('not-an-id');
+	});
+
+	it('says nothing about whether an unresolved target exists (BUG-3013)', () => {
+		// A restricted member's index leaves out items in collections they cannot
+		// see, so this miss may be a live item. The cell, its hover text included,
+		// must not assert it is gone.
+		const screen = renderRow(SCALAR, { car_color: 'not-an-id' });
+		const chip = screen.container.querySelector('.cell-relation.is-unresolved');
+		expect(chip, 'precondition: the unresolved chip rendered').not.toBeNull();
+		expect(existenceClaimsIn(chip!)).toEqual([]);
 	});
 
 	it('marks a deleted target as deleted and still shows its name, not its id', () => {
@@ -154,7 +165,7 @@ describe('a relation cell', () => {
 		// `tasks`. BINDING leg: `narrowRelationRow` can only apply the rule if
 		// this component hands it `field.collection`.
 		const screen = renderRow(SCALAR, { car_color: 'id-foreign' });
-		expect(cells(screen.container)).toEqual(['Unresolved reference']);
+		expect(cells(screen.container)).toEqual(['Unavailable item']);
 		expect(screen.container.textContent).not.toContain('Some Task');
 	});
 
@@ -164,7 +175,7 @@ describe('a relation cell', () => {
 		// match makes the label lie about what is stored. BINDING leg again — the
 		// component calls the shared narrowing rather than the raw index lookup.
 		const screen = renderRow(SCALAR, { car_color: 'red' });
-		expect(cells(screen.container)).toEqual(['Unresolved reference']);
+		expect(cells(screen.container)).toEqual(['Unavailable item']);
 		expect(screen.container.textContent).not.toContain('COLOR-3');
 	});
 

@@ -132,11 +132,14 @@ describe('ItemDetail: a failed same-item links refresh keeps the links it has', 
 		expect(count(code, 'await refreshLinksPreservingOnFailure(')).toBe(4);
 	});
 
-	it('leaves exactly two direct api.links.list calls: the helper and the initial load', () => {
+	it('leaves exactly three direct api.links.list calls: the helper, the initial load and the retry', () => {
 		// If a fourth appears, a new caller has been added that does not go
 		// through the helper — which is how the three original sites drifted
-		// into having the same bug three times.
-		expect(count(code, 'api.links.list(')).toBe(2);
+		// into having the same bug three times. The third is BUG-2992's
+		// `retryLinks`, which must not route through the helper: a failed retry
+		// recording its failure through it would re-arm the schedule it is
+		// running inside.
+		expect(count(code, 'api.links.list(')).toBe(3);
 	});
 
 	it('has a helper whose failure branch returns the CURRENT links, not an empty array', () => {
@@ -148,9 +151,13 @@ describe('ItemDetail: a failed same-item links refresh keeps the links it has', 
 		// which reintroduces the exact defect while routing through the helper.
 		// Rejecting the old spelling is not the same as asserting the new
 		// behaviour, so this pins the fallback VALUE.
-		expect(code).toMatch(
-			/async function refreshLinksPreservingOnFailure\([^)]*\)[^{]*\{[\s\S]{0,400}?catch\s*\{[^}]*return itemLinks;[\s\S]{0,40}?\}/
-		);
+		// Brace-matched rather than `catch\s*\{[^}]*return itemLinks;`: since
+		// BUG-2992 the catch records the failure with an object literal, whose
+		// `}` a `[^}]*` cannot cross.
+		const helperAt = code.indexOf('async function refreshLinksPreservingOnFailure');
+		const helper = balancedBlock(code, helperAt);
+		const catchBody = balancedBlock(helper, helper.indexOf('catch'));
+		expect(catchBody).toMatch(/return itemLinks;\s*\}\s*$/);
 		// And the helper MUTATES NOTHING. Pinning only the return value admits
 		// `catch { itemLinks = []; return itemLinks; }`, which satisfies every
 		// other assertion here while reintroducing the defect (codex round 2

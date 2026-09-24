@@ -142,7 +142,7 @@ describe('ListView grouped by a relation field', () => {
 
 	it('folds a dangling value into one honest group', () => {
 		const screen = renderList([item('car-1', DANGLING)]);
-		expect(groups(screen)).toContainEqual({ ref: null, note: null, name: 'Unresolved reference' });
+		expect(groups(screen)).toContainEqual({ ref: null, note: null, name: 'Unavailable item' });
 		expect(screen.container.innerHTML).not.toContain(DANGLING);
 	});
 

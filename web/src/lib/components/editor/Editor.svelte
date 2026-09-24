@@ -149,15 +149,22 @@
 		renderQueue = renderQueue.then(async () => {
 			try {
 				const m = await initMermaid();
+				// The palette THIS render bakes in, read after initMermaid set it
+				// and before anything else can run in the serialized queue.
+				const renderedTheme = appliedMermaidTheme;
 				const id = `mmd-${Math.random().toString(36).slice(2, 10)}`;
 				const { svg } = await m.default.render(id, source);
 				target.innerHTML = svg;
+				// BUG-3112: the print rule below keys on this, because print
+				// cannot re-render (see `.mermaid-diagram[data-mermaid-theme]`).
+				if (renderedTheme) target.dataset.mermaidTheme = renderedTheme;
 				// A successful render means the source is now valid — drop any
 				// error styling left over from a prior failed render.
 				target.classList.remove('mermaid-error');
 			} catch {
 				target.textContent = '⚠ Invalid Mermaid syntax';
 				target.classList.add('mermaid-error');
+				delete target.dataset.mermaidTheme;
 			}
 		});
 	}
@@ -170,6 +177,7 @@
 		renderQueue = renderQueue.then(() => {
 			target.textContent = '';
 			target.classList.remove('mermaid-error');
+			delete target.dataset.mermaidTheme;
 		});
 	}
 
@@ -1891,6 +1899,28 @@
 	.editor-content :global(.mermaid-diagram svg) {
 		max-width: 100%;
 		height: auto;
+	}
+	/*
+		BUG-3112: printing always uses the light palette (app.css pins it for
+		every theme), but a diagram's palette is baked into its SVG when it is
+		rendered, so one drawn in dark mode would print dark-on-white. Print is
+		browser-native (Ctrl+P, no app action) and `beforeprint` is synchronous,
+		so an async re-render cannot land in the printout; the flip has to be
+		CSS, which applies at print paint.
+
+		AN APPROXIMATION, deliberately (lead ruling on the BUG-3112 trail): this
+		is mermaid's DARK palette inverted, not its light one, and author
+		classDef / style colours are inverted too. hue-rotate(180deg) undoes the
+		hue half of the inversion, so a colour keeps roughly its hue with its
+		lightness flipped, which reads correctly on paper. The exact alternative,
+		a light twin rendered per diagram in dark mode, was declined as doubling
+		mermaid work for every dark-mode reader. Transparent areas of the SVG
+		stay transparent, so the wrapper's (print-light) background shows through.
+	*/
+	@media print {
+		.editor-content :global(.mermaid-diagram[data-mermaid-theme='dark'] svg) {
+			filter: invert(1) hue-rotate(180deg);
+		}
 	}
 	.editor-content :global(.mermaid-error) {
 		color: var(--accent-orange);
