@@ -1192,7 +1192,8 @@ func (s *Server) metricsAuth(next http.Handler) http.Handler {
 }
 
 // SetCollabLimits bounds how many collab WebSockets (/api/v1/collab/{itemID})
-// one principal may hold open at once (BUG-1308). 0 means unlimited. Per user
+// one principal may hold open at once (BUG-1308). 0 or less means unlimited,
+// as with the SSE limits. Per user
 // only: the instance-wide bound SSE has was not asked for, since an open
 // collab socket is one per open item pane and the dial bucket already paces
 // how fast a user can open them. Config-time, like SetSSELimits.
