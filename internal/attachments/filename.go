@@ -135,6 +135,42 @@ func WindowsDeviceName(name string) bool {
 	return windowsReservedStems[strings.ToUpper(strings.TrimRight(stem, " "))]
 }
 
+// windowsReservedChars are the characters Windows refuses in a path
+// component. The separators are included for completeness; callers that have
+// already stripped directories never meet them. ':' is the dangerous one:
+// "a.svg:x.txt" is not refused, it names an NTFS alternate data stream, so the
+// bytes land in a stream on an empty "a.svg" (BUG-3186).
+const windowsReservedChars = `<>:"/\|?*`
+
+// WindowsPathComponent returns name made safe to use as ONE path component on
+// Windows (BUG-3186): each reserved character and each C0 control becomes "_",
+// trailing dots and spaces (which Windows strips silently) are trimmed, and a
+// device stem gets the "_" prefix WindowsDeviceName calls for. It returns ""
+// when nothing usable survives, so callers keep their own fallback.
+//
+// It is for the boundary where a stored name becomes a PATH, never for the
+// stored name itself: "Meeting: notes.pdf" is a normal name to store and to
+// show (the lead ruling on BUG-3186). Apply it where the path is made, and on
+// the platform it describes.
+func WindowsPathComponent(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		if r < 0x20 || strings.ContainsRune(windowsReservedChars, r) {
+			b.WriteRune('_')
+			continue
+		}
+		b.WriteRune(r)
+	}
+	out := strings.TrimRight(b.String(), ". ")
+	if out == "" {
+		return ""
+	}
+	if WindowsDeviceName(out) {
+		return "_" + out
+	}
+	return out
+}
+
 // ServedFilename is the name an attachment is offered under, derived from its
 // STORED name. For a row stored after BUG-2818 it equals the stored name.
 // For a LEGACY row, stored before ingest normalised, it applies the same
