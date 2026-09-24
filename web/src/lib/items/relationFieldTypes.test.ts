@@ -1,11 +1,12 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
 	RELATION_FIELD_TYPES,
 	isMultiRelationType,
 	isRelationType,
 	isResolvableRelation,
-	relationValuesOf
-} from './relationFieldTypes';
+	relationValuesOf, isRelationValueStoredAsText } from './relationFieldTypes';
 
 /**
  * The TS relation-type predicates (PLAN-2857 U4).
@@ -119,4 +120,33 @@ describe('relationValuesOf', () => {
 		// "a,b", which would render as a reference to an item named a,b.
 		expect(relationValuesOf('relation', ['id-red', 'id-blue'])).toEqual([]);
 	});
+});
+
+/**
+ * BUG-3014 shared vectors: the other half of
+ * TestRelationValueStoredAsText_SharedVectors in
+ * internal/store/relation_stored_as_text_test.go. KEEP IN SYNC: both suites
+ * read the same table, so the web's copy of the `stored_as_text` predicate and
+ * the server's can only drift by turning one of them red. The table includes
+ * U+0085 (a space to Go only) and U+FEFF (to JS only), which is what makes the
+ * trim a contract rather than a detail.
+ */
+const storedAsTextFixture = JSON.parse(
+	readFileSync(
+		fileURLToPath(new URL('../../../../internal/store/testdata/relation_stored_as_text_cases.json', import.meta.url)),
+		'utf8',
+	),
+) as { cases: { name: string; value: string; stored_as_text: boolean }[] };
+
+describe('isRelationValueStoredAsText — server contract fixture', () => {
+	// An empty or truncated fixture would make every it() below vacuous.
+	it('loads the full shared fixture', () => {
+		expect(storedAsTextFixture.cases.length).toBeGreaterThanOrEqual(20);
+	});
+
+	for (const tc of storedAsTextFixture.cases) {
+		it(tc.name, () => {
+			expect(isRelationValueStoredAsText(tc.value)).toBe(tc.stored_as_text);
+		});
+	}
 });

@@ -2,6 +2,8 @@ package store
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -147,5 +149,37 @@ func TestImportWorkspace_TitleValuedRelationHydratesAsStoredText(t *testing.T) {
 	got := scalarHydrated(t, out[byTitle["Titled"].ID]["color"])
 	if !got.StoredAsText || got.ID != "Red" || got.Ref != "" {
 		t.Errorf("an imported title-valued relation hydrated as %+v, want {id:\"Red\", stored_as_text:true}", got)
+	}
+}
+
+// TestRelationValueStoredAsText_SharedVectors pins the Go predicate to the
+// table the web's copy is pinned to (lead review, day 79). KEEP IN SYNC with
+// web/src/lib/items/relationFieldTypes.test.ts, which reads the same file:
+// the two implementations of one contract rule can only drift by turning one
+// of the two suites red.
+func TestRelationValueStoredAsText_SharedVectors(t *testing.T) {
+	t.Parallel()
+	raw, err := os.ReadFile(filepath.Join("testdata", "relation_stored_as_text_cases.json"))
+	if err != nil {
+		t.Fatalf("read shared vectors: %v", err)
+	}
+	var fixture struct {
+		Cases []struct {
+			Name         string `json:"name"`
+			Value        string `json:"value"`
+			StoredAsText bool   `json:"stored_as_text"`
+		} `json:"cases"`
+	}
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatalf("decode shared vectors: %v", err)
+	}
+	// An empty or truncated fixture would make the loop vacuous and green.
+	if len(fixture.Cases) < 20 {
+		t.Fatalf("shared vectors hold %d cases, want at least 20", len(fixture.Cases))
+	}
+	for _, tc := range fixture.Cases {
+		if got := relationValueStoredAsText(tc.Value); got != tc.StoredAsText {
+			t.Errorf("%s: relationValueStoredAsText(%q) = %v, want %v", tc.Name, tc.Value, got, tc.StoredAsText)
+		}
 	}
 }

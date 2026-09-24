@@ -26,6 +26,7 @@
  * everything that is not a component.
  */
 import type { FieldDef } from '$lib/types';
+import { serverTrimmedTitle } from './titleLimit';
 
 /** Every field type whose value names other items. */
 export const RELATION_FIELD_TYPES = ['relation', 'multi_relation'] as const;
@@ -91,12 +92,22 @@ export function relationValuesOf(type: string | undefined | null, value: unknown
  * Is a stored relation value TEXT rather than an id (BUG-3014)?
  *
  * The web mirror of the server's `stored_as_text` marker on
- * `relation_targets`, with the same predicate: NOT UUID-shaped (8-4-4-4-12
- * hex), as Go's `isUUID` in `internal/store/items.go` checks it. Syntactic on
- * purpose, so its meaning cannot drift with the resolver: a title a bundle
- * import carried, or legacy free text, is text whether or not an item with
- * that name happens to exist, and saying so is not a claim about any item.
+ * `relation_targets`, with the same predicate: after Go's strings.TrimSpace,
+ * NOT UUID-shaped (8-4-4-4-12 hex, either case). Syntactic on purpose, so its
+ * meaning cannot drift with the resolver: a title a bundle import carried, or
+ * legacy free text, is text whether or not an item with that name happens to
+ * exist, and saying so is not a claim about any item.
+ *
+ * Trimmed with `serverTrimmedTitle`, NOT `String.prototype.trim`: the two
+ * disagree on U+0085 (Go only) and U+FEFF (JS only), and a UUID padded with
+ * either would otherwise be marked on one side and not the other.
+ *
+ * KEEP IN SYNC with `relationValueStoredAsText` in
+ * internal/store/relation_referents.go. Both are pinned to the same table,
+ * internal/store/testdata/relation_stored_as_text_cases.json (read by
+ * relationFieldTypes.test.ts here and relation_stored_as_text_test.go there).
  */
 export function isRelationValueStoredAsText(value: string): boolean {
-	return !/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(value.trim());
+	const trimmed = serverTrimmedTitle(value).join('');
+	return !/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(trimmed);
 }
