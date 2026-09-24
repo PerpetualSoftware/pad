@@ -7,8 +7,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/events"
+	"github.com/PerpetualSoftware/pad/internal/metrics"
 )
 
 // failingEstablishBus stands in for a bus whose Redis SUBSCRIBE cannot be
@@ -82,6 +84,55 @@ func TestAFailedSubscriptionIsRefusedWithARetryableStatus(t *testing.T) {
 		}
 		if payload.Error.Code != "subscription_failed" {
 			t.Fatalf("%s: error code = %q, want subscription_failed (body %q)", name, payload.Error.Code, body)
+		}
+		if held := srv.admission().heldTotal(); held != 0 {
+			t.Fatalf("%s: admission slots held after the refusal = %d, want 0", name, held)
+		}
+	}
+}
+
+// TestSSEAfterBusCloseIsRefusedNotHeld is BUG-2737's BINDING assertion
+// (CONVE-19): internal/events vouches for a closed bus refusing a subscribe;
+// this proves the handler, through the router and the production metrics
+// wrapper, turns that into a prompt 503 instead of holding the connection.
+//
+// Against the defect the closed MemoryBus admitted the subscribe, so the
+// handler answered 200 with SSE headers and then blocked on a channel nothing
+// would close. The client's own deadline is what distinguishes the two: a
+// refusal returns well inside it, a held stream never returns a body at all.
+func TestSSEAfterBusCloseIsRefusedNotHeld(t *testing.T) {
+	srv := testServer(t)
+	bus := metrics.NewInstrumentedBus(events.New(), metrics.New())
+	srv.SetEventBus(bus)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	slug := createTestWorkspace(t, ts.URL, "Test")
+	bus.Close()
+
+	for name, lastID := range map[string]string{"fresh": "", "resume": "7"} {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/events?workspace="+slug, nil)
+		if err != nil {
+			cancel()
+			t.Fatalf("%s: new request: %v", name, err)
+		}
+		if lastID != "" {
+			req.Header.Set("Last-Event-ID", lastID)
+		}
+		resp, err := isolatedTestClient().Do(req)
+		if err != nil {
+			cancel()
+			t.Fatalf("%s: GET: %v", name, err)
+		}
+		body, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		cancel()
+		if err != nil {
+			t.Fatalf("%s: the stream was HELD past the client's deadline instead of refused: status %d, read error %v", name, resp.StatusCode, err)
+		}
+		if resp.StatusCode != http.StatusServiceUnavailable {
+			t.Fatalf("%s: status = %d, want 503 (body %q)", name, resp.StatusCode, body)
 		}
 		if held := srv.admission().heldTotal(); held != 0 {
 			t.Fatalf("%s: admission slots held after the refusal = %d, want 0", name, held)
