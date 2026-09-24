@@ -104,6 +104,9 @@ type Server struct {
 	midStreamGapCooldownOverride time.Duration
 	sseMaxPerUser                int              // per-user SSE connection limit across BOTH stream endpoints (0 = unlimited, BUG-2726)
 	streamAdmit                  *streamAdmission // shared admission gate for both stream endpoints (BUG-2726)
+	collabAdmitOnce              sync.Once        // lazily builds collabAdmit for servers that never call SetCollabLimits
+	collabAdmit                  *streamAdmission // per-user open collab WebSocket bound (BUG-1308)
+	collabMaxPerUser             int              // per-user open collab WebSocket limit (0 or less = unlimited, BUG-1308)
 	cloudMode                    bool             // true when running as Pad Cloud (PAD_CLOUD=true or PAD_MODE=cloud)
 	cloudSecrets                 []string         // shared secrets for sidecar ↔ pad communication (supports rotation)
 	cloudSidecar                 CloudSidecar     // reverse pad → pad-cloud client (e.g. Stripe cancel on account delete); nil = not configured
@@ -1186,6 +1189,29 @@ func (s *Server) metricsAuth(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// SetCollabLimits bounds how many collab WebSockets (/api/v1/collab/{itemID})
+// one principal may hold open at once (BUG-1308). 0 or less means unlimited,
+// as with the SSE limits. Per user
+// only: the instance-wide bound SSE has was not asked for, since an open
+// collab socket is one per open item pane and the dial bucket already paces
+// how fast a user can open them. Config-time, like SetSSELimits.
+func (s *Server) SetCollabLimits(perUser int) {
+	s.collabMaxPerUser = perUser
+	s.collabAdmission().setLimits(0, perUser)
+}
+
+// collabAdmission returns the collab socket gate, built unbounded on first use
+// so a Server that never calls SetCollabLimits still has a working gate. The
+// same streamAdmission type as the SSE gate, with no global bound.
+func (s *Server) collabAdmission() *streamAdmission {
+	s.collabAdmitOnce.Do(func() {
+		if s.collabAdmit == nil {
+			s.collabAdmit = newStreamAdmission(0, s.collabMaxPerUser)
+		}
+	})
+	return s.collabAdmit
 }
 
 // SetSSELimits configures the streaming connection limits. A value of 0

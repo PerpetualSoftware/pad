@@ -169,6 +169,17 @@ func writeStreamLimitExceeded(w http.ResponseWriter) {
 	writeError(w, http.StatusTooManyRequests, "sse_limit_exceeded", "Streaming connection limit reached")
 }
 
+// writeCollabLimitExceeded answers a collab WebSocket dial refused because
+// the principal already holds PAD_COLLAB_MAX_PER_USER sockets (BUG-1308).
+// Its own code rather than sse_limit_exceeded: the knob that lifts it is a
+// different one. Retry-After matches the stream hint for the same reason that
+// one exists; a browser WebSocket cannot read either, and the web provider's
+// jittered backoff is what spaces its retries.
+func writeCollabLimitExceeded(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", strconv.Itoa(streamLimitRetryAfterSeconds))
+	writeError(w, http.StatusTooManyRequests, "collab_limit_exceeded", "Collaboration connection limit reached")
+}
+
 // counts returns the current global total and this user's count, for log
 // lines. Snapshot only — never use it to decide admission, which is
 // acquire's job under one lock.

@@ -271,6 +271,10 @@ func serveCmd() *cobra.Command {
 				"per_principal", cfg.SSEMaxPerUser,
 				"per_instance_and_per_principal_cover", "/api/v1/events + /api/v1/events/stream",
 				"per_workspace_covers", "/api/v1/events")
+			srv.SetCollabLimits(cfg.CollabMaxPerUser)
+			slog.Info("Collab connection limit (PER INSTANCE — not deployment-wide)",
+				"per_principal", cfg.CollabMaxPerUser,
+				"covers", "/api/v1/collab/{itemID}")
 
 			// MCP tool-surface descriptor endpoint (PLAN-1888 / TASK-1891).
 			// Inject the cycle-free catalog→JSON serializer so the authed

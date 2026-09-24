@@ -181,6 +181,21 @@ func (s *Server) handleCollab(w http.ResponseWriter, r *http.Request) {
 	// than risk a clobber. Absent/other value = legacy (false).
 	bracketCapable := r.URL.Query().Get("applier_bracket") == "1"
 
+	// Per-principal open-socket bound (BUG-1308), taken before the upgrade so
+	// a refusal can still answer in JSON, and held for the socket's life:
+	// Join returns only when the connection ends, and the deferred release
+	// runs after it.
+	principal := streamPrincipal(r, item.WorkspaceID)
+	release, refusal := s.collabAdmission().acquire(principal)
+	if refusal != admissionRefusalNone {
+		_, held := s.collabAdmission().counts(principal)
+		slog.Warn("collab: connection limit reached",
+			"item_id", itemID, "principal", principal, "held", held, "limit", s.collabMaxPerUser)
+		writeCollabLimitExceeded(w)
+		return
+	}
+	defer release()
+
 	conn, err := collabUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		// Upgrade itself emits the right HTTP status (e.g. 400 on

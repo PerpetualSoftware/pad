@@ -104,6 +104,7 @@ type Config struct {
 	SSEMaxConnections  int `toml:"sse_max_connections"`   // Global max SSE connections (0 = unlimited)
 	SSEMaxPerWorkspace int `toml:"sse_max_per_workspace"` // Per-workspace max SSE connections (0 = unlimited)
 	SSEMaxPerUser      int `toml:"sse_max_per_user"`      // Per-user max streaming connections across BOTH SSE endpoints (0 = unlimited, BUG-2726)
+	CollabMaxPerUser   int `toml:"collab_max_per_user"`   // Per-user max open collab WebSockets (0 or less = unlimited, as the SSE knobs, BUG-1308)
 
 	// RedisNamespace scopes every Redis key and channel Pad uses to one
 	// installation (BUG-2724). Empty — the default — reproduces the
@@ -325,6 +326,10 @@ func DefaultConfig() *Config {
 		// workspace to count against. It is not meant to constrain a
 		// normal user, who holds one browser tab and one agent monitor.
 		SSEMaxPerUser: 50,
+		// One collab socket per open item pane. Measured at 20 for 20 tabs
+		// (BUG-1308 checkpoint 2); 50 leaves 2.5x headroom and matches
+		// SSEMaxPerUser.
+		CollabMaxPerUser: 50,
 	}
 }
 
@@ -530,6 +535,11 @@ func Load() (*Config, error) {
 	if v := os.Getenv("PAD_SSE_MAX_PER_USER"); v != "" {
 		if max, err := strconv.Atoi(v); err == nil {
 			cfg.SSEMaxPerUser = max
+		}
+	}
+	if v := os.Getenv("PAD_COLLAB_MAX_PER_USER"); v != "" {
+		if max, err := strconv.Atoi(v); err == nil {
+			cfg.CollabMaxPerUser = max
 		}
 	}
 

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"golang.org/x/time/rate"
 )
 
@@ -210,6 +211,17 @@ type RateLimiters struct {
 	// charged. The async decision_jobs runner is not charged here; it has
 	// its own rail.
 	DecisionProvider *ipRateLimiter
+	// CollabDial caps WebSocket dials to /api/v1/collab/{itemID} per user (IP
+	// when anonymous), in place of the general API bucket (BUG-1308). A dial
+	// used to spend the same token as a REST call, so a user's own reconnects
+	// and page loads competed for one burst of 60: 100 dials from one user got
+	// 60 through and 40 refused, and a server bounce re-dials every open
+	// socket inside ~0.3s. Sized from that measurement (BUG-1308 checkpoint 2):
+	// burst 50 covers every socket a heavy user re-dials at once (20 at 20
+	// tabs, 2.5x headroom), 5/s covers a flapping network on the 1-2-4s
+	// backoff. How many sockets a user may HOLD is the separate collab
+	// admission gate (PAD_COLLAB_MAX_PER_USER).
+	CollabDial *ipRateLimiter
 }
 
 // NewRateLimiters creates rate limiters with sensible defaults.
@@ -260,6 +272,12 @@ func NewRateLimiters() *RateLimiters {
 		API: newIPRateLimiter(rateLimitConfig{
 			Rate:  rate.Limit(600.0 / 60.0),
 			Burst: 60,
+		}),
+		// Collab WebSocket dials: 5 per second per user/IP, burst 50. See
+		// the CollabDial field for the measurement behind both numbers.
+		CollabDial: newIPRateLimiter(rateLimitConfig{
+			Rate:  rate.Limit(5),
+			Burst: 50,
 		}),
 		// Search: 30 requests per minute per user/IP (= 30/60 per second, burst 10)
 		Search: newIPRateLimiter(rateLimitConfig{
@@ -389,6 +407,7 @@ func (rls *RateLimiters) Stop() {
 		rls.SharePasswordShare,
 		rls.MCPPerToken,
 		rls.DecisionProvider,
+		rls.CollabDial,
 	} {
 		rl.Stop() // nil-safe via the receiver guard in (*ipRateLimiter).Stop
 	}
@@ -507,6 +526,24 @@ func (s *Server) RateLimit(next http.Handler) http.Handler {
 		}
 
 		// Search endpoint
+		// Collab WebSocket dials draw on their own bucket, never the general
+		// API one (BUG-1308): a socket dial and a REST call are different
+		// units, and sharing one burst let a user's own reconnects refuse
+		// their page loads and the reverse. Only an actual upgrade request
+		// counts as a dial; anything else under the prefix (a plain GET, a
+		// POST, a future REST route) is an ordinary API request and pays the
+		// API bucket (codex round 1).
+		if strings.HasPrefix(path, "/api/v1/collab/") && websocket.IsWebSocketUpgrade(r) {
+			key := rateLimitKey(r, ip)
+			if !s.rateLimiters.CollabDial.getLimiter(key).Allow() {
+				slog.Warn("rate limited", "key", key, "path", path, "limiter", "collab_dial")
+				writeRateLimitResponse(w, s.rateLimiters.CollabDial.config)
+				return
+			}
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		if path == "/api/v1/search" {
 			key := rateLimitKey(r, ip)
 			if !s.rateLimiters.Search.getLimiter(key).Allow() {

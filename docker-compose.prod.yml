@@ -29,6 +29,8 @@ services:
       # PAD_SSE_MAX_CONNECTIONS: "1000"
       # PAD_SSE_MAX_PER_WORKSPACE: "100"
       # PAD_SSE_MAX_PER_USER: "50"
+      # Open collab WebSockets per user, per instance (BUG-1308).
+      # PAD_COLLAB_MAX_PER_USER: "50"
       # Set only when this Redis is shared with another Pad installation.
       # PAD_REDIS_NAMESPACE: "prod"
     deploy:

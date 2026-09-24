@@ -68,7 +68,7 @@ func main() {
 	url := flag.String("url", "", "WebSocket URL, e.g. ws://localhost:7777/api/v1/collab/<itemID>")
 	cookie := flag.String("cookie", "", "Cookie header to send (e.g. \"pad_session=abc123\"). Pass either -cookie OR -token (or both — they set independent headers and don't conflict).")
 	token := flag.String("token", "", "Bearer token for Authorization header. Pass either -token OR -cookie when the server has been bootstrapped; both can be set together.")
-	clients := flag.Int("clients", 5, "Number of concurrent simulated editors")
+	clients := flag.Int("clients", 5, "Number of concurrent simulated editors. They all dial as ONE user, so beyond the server's PAD_COLLAB_MAX_PER_USER (default 50) the extra dials are refused by design, and more than 50 at once also exceed the per-user collab dial burst (BUG-1308). Raise PAD_COLLAB_MAX_PER_USER on the target server for a larger run")
 	dur := flag.Duration("duration", 30*time.Second, "How long to run the test")
 	opsPerSec := flag.Float64("ops-per-sec", 2.0, "Per-client op send rate (Hz)")
 	frameBytes := flag.Int("frame-bytes", 32, "Size in bytes of the synthetic update payload (excluding the 1-byte sync header)")

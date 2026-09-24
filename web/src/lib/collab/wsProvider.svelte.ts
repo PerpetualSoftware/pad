@@ -34,9 +34,18 @@ import { SCHEMA_VERSION } from './schemaVersion';
 const MESSAGE_SYNC = 0;
 const MESSAGE_AWARENESS = 1;
 
-/** Reconnect backoff: 1s, 2s, 4s, … capped at 30s. Reset on a clean
- *  open. Sophisticated mobile reconnect (visibility, network state)
- *  is TASK-1265's concern; this is the floor behavior. */
+/** Reconnect backoff: 1s, 2s, 4s, … capped at 30s, each JITTERED to between
+ *  half and all of that step (BUG-1308). Reset on a clean open. Sophisticated
+ *  mobile reconnect (visibility, network state) is TASK-1265's concern; this
+ *  is the floor behavior.
+ *
+ *  Why jitter: a server bounce closes every tab's socket in the same instant,
+ *  and without it every tab re-dials on the same 1s, 2s, 4s marks. The server
+ *  refuses dials over the per-user dial bucket or socket cap with a 429 the
+ *  browser WebSocket API cannot read (the handshake just fails), so the only
+ *  thing that spreads a refused herd out is the client choosing different
+ *  delays. Half-to-full ("equal jitter") rather than zero-to-full keeps a
+ *  floor under each step, so a retry never fires immediately. */
 const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
 
@@ -198,6 +207,11 @@ export interface CollabProviderOptions {
 	 */
 	WebSocketImpl?: typeof WebSocket;
 	/**
+	 * Override the random source for reconnect jitter — used by tests to pin
+	 * the delay. Returns a value in [0, 1), like Math.random.
+	 */
+	random?: () => number;
+	/**
 	 * Designated-applier handler. See `ApplierRequestHandler`.
 	 * If unset, applier_request frames are dropped (server falls back
 	 * after timeout). Production callers always set this.
@@ -328,6 +342,7 @@ export class CollabProvider {
 
 	private ws: WebSocket | null = null;
 	private readonly WebSocketImpl: typeof WebSocket;
+	private readonly random: () => number;
 	private readonly onApplierRequest?: ApplierRequestHandler;
 	private readonly onForceRefresh?: ForceRefreshHandler;
 	private readonly onOpLogCursor?: (opLogID: number) => void;
@@ -354,6 +369,7 @@ export class CollabProvider {
 		this.awareness = new awarenessProtocol.Awareness(ydoc);
 
 		this.WebSocketImpl = options.WebSocketImpl ?? globalThis.WebSocket;
+		this.random = options.random ?? Math.random;
 		this.onApplierRequest = options.onApplierRequest;
 		this.onForceRefresh = options.onForceRefresh;
 		this.onOpLogCursor = options.onOpLogCursor;
@@ -1152,10 +1168,12 @@ export class CollabProvider {
 
 	private scheduleReconnect(): void {
 		if (this.destroyed) return;
-		const delay = Math.min(
+		const step = Math.min(
 			RECONNECT_MAX_MS,
 			RECONNECT_BASE_MS * 2 ** this.reconnectAttempts,
 		);
+		// Equal jitter: half the step, plus a random share of the other half.
+		const delay = step / 2 + this.random() * (step / 2);
 		this.reconnectAttempts++;
 		// Public state stays at the close-time variant
 		// ('connecting' before any sync, 'reconnecting' after) until
