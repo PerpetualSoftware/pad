@@ -19,7 +19,12 @@ handlers — onchange is never called.
 	import { formatItemRef, type FieldDef, type ItemIndexRow, type PaneTarget } from '$lib/types';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import { narrowRelationRow } from '$lib/collections/relationGroups';
-	import { isMultiRelationType, isRelationType, relationValuesOf } from '$lib/items/relationFieldTypes';
+	import {
+		isMultiRelationType,
+		isRelationType,
+		isRelationValueStoredAsText,
+		relationValuesOf,
+	} from '$lib/items/relationFieldTypes';
 	import { WriteOrder } from '$lib/items/fieldWriteOrder';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
@@ -1239,6 +1244,19 @@ handlers — onchange is never called.
 			<span class="relation-title">{row?.title}</span>
 			<span class="relation-note">(deleted)</span>
 		</span>
+	{:else if isRelationValueStoredAsText(raw)}
+		<!--
+			Stored as TEXT, not as an id (BUG-3014): a title a bundle import
+			carried verbatim, or legacy free text. It was never a reference, so
+			"Unresolved reference" overstates it; show the text and say what it
+			is. Not a claim that it is broken: it may name a live item, and
+			resolving it here would make the answer depend on the reader. The
+			server marks the same values `stored_as_text` on `relation_targets`.
+		-->
+		<span class="relation-chip is-text" title="Stored as text, not as a reference to an item.">
+			<span class="relation-title">{raw.trim()}</span>
+			<span class="relation-note">(text, not a reference)</span>
+		</span>
 	{:else}
 		<!--
 			The value is not an item this workspace knows. Says so, rather than
@@ -1754,6 +1772,12 @@ handlers — onchange is never called.
 	.relation-note {
 		flex-shrink: 0;
 		font-style: italic;
+	}
+
+	/* Stored text (BUG-3014): the value itself reads normally, since it is
+	   what the field holds; only the note is muted. */
+	.relation-chip.is-text .relation-note {
+		color: var(--text-muted);
 	}
 
 	.relation-empty {

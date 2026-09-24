@@ -60,10 +60,10 @@ vi.mock('$lib/stores/toast.svelte', () => ({ toastStore: toastMock }));
 
 import FieldEditor from './FieldEditor.svelte';
 
-const RED = { id: 'uuid-red', title: 'Red', item_number: 3, collection_prefix: 'COLO', collection_slug: 'colors', slug: 'red', deleted_at: null };
-const BLUE = { ...RED, id: 'uuid-blue', title: 'Blue', item_number: 4, slug: 'blue' };
-const GREEN = { ...RED, id: 'uuid-green', title: 'Green', item_number: 5, slug: 'green' };
-const GONE = { ...RED, id: 'uuid-gone', title: 'Retired Puce', item_number: 6, slug: 'retired-puce', deleted_at: '2026-01-01T00:00:00Z' };
+const RED = { id: '0197aaaa-0000-7000-8000-000000000010', title: 'Red', item_number: 3, collection_prefix: 'COLO', collection_slug: 'colors', slug: 'red', deleted_at: null };
+const BLUE = { ...RED, id: '0197aaaa-0000-7000-8000-000000000001', title: 'Blue', item_number: 4, slug: 'blue' };
+const GREEN = { ...RED, id: '0197aaaa-0000-7000-8000-000000000006', title: 'Green', item_number: 5, slug: 'green' };
+const GONE = { ...RED, id: '0197aaaa-0000-7000-8000-000000000005', title: 'Retired Puce', item_number: 6, slug: 'retired-puce', deleted_at: '2026-01-01T00:00:00Z' };
 
 /** The field under test. `relation` appears only in the CONTROL legs. */
 const multi = { key: 'colors', label: 'Colours', type: 'multi_relation' as const, collection: 'colors' };
@@ -138,7 +138,8 @@ describe('multi_relation — read-only rendering', () => {
 		});
 		await tick();
 		expect(document.querySelectorAll('.relation-chip.is-deleted')).toHaveLength(1);
-		expect(document.querySelectorAll('.relation-chip.is-unresolved')).toHaveLength(1);
+		// 'not-an-id' was never an id: stored text since BUG-3014.
+		expect(document.querySelectorAll('.relation-chip.is-text')).toHaveLength(1);
 		expect(document.querySelectorAll('a.relation-chip')).toHaveLength(1);
 		expectNoBareUuid();
 	});
@@ -321,7 +322,7 @@ describe('multi_relation — duplicates are prevented, not de-duplicated', () =>
 		// resolved id, and is precisely the element whose target the server can
 		// still hand back. The stored element IS the id, so excluding the raw
 		// string is what closes it.
-		const GHOST = { ...RED, id: 'uuid-ghost', title: 'Ghost', item_number: 12, slug: 'ghost' };
+		const GHOST = { ...RED, id: '0197aaaa-0000-7000-8000-000000000004', title: 'Ghost', item_number: 12, slug: 'ghost' };
 		localIndexMock.bootstrapStateFor.mockReturnValue('loading');
 		searchApi.mockResolvedValue({ results: [{ item: GHOST }, { item: BLUE }], limit: 20 });
 		render(FieldEditor, { props: { ...editable, value: [GHOST.id], onchange: () => {} } });
@@ -359,7 +360,7 @@ describe('multi_relation — inline create (PLAN-2857 U8) appends like any other
 		// The create path and the pick path are two ways of choosing, and they
 		// reach the field through one function. If they did not, a create on a
 		// multi_relation would quietly replace everything already in it.
-		const NEW = { ...RED, id: 'uuid-new', title: 'Puce', item_number: 9, slug: 'puce' };
+		const NEW = { ...RED, id: '0197aaaa-0000-7000-8000-000000000008', title: 'Puce', item_number: 9, slug: 'puce' };
 		createApi.mockResolvedValue(NEW);
 		const onchange = vi.fn();
 		render(FieldEditor, { props: { ...editable, value: [RED.id, BLUE.id], onchange } });

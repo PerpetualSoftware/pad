@@ -86,3 +86,17 @@ export function relationValuesOf(type: string | undefined | null, value: unknown
 	const raw = typeof value === 'string' ? value.trim() : '';
 	return raw ? [raw] : [];
 }
+
+/**
+ * Is a stored relation value TEXT rather than an id (BUG-3014)?
+ *
+ * The web mirror of the server's `stored_as_text` marker on
+ * `relation_targets`, with the same predicate: NOT UUID-shaped (8-4-4-4-12
+ * hex), as Go's `isUUID` in `internal/store/items.go` checks it. Syntactic on
+ * purpose, so its meaning cannot drift with the resolver: a title a bundle
+ * import carried, or legacy free text, is text whether or not an item with
+ * that name happens to exist, and saying so is not a claim about any item.
+ */
+export function isRelationValueStoredAsText(value: string): boolean {
+	return !/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(value.trim());
+}

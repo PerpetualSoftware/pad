@@ -15,8 +15,15 @@ import (
 // to render it, so this is a formatter over data the response holds — no
 // lookup, and nothing here can fail.
 //
-//	resolved  -> "COLO-3 · Red"
-//	id-only   -> "6f2c… (unavailable)"
+//	resolved       -> "COLO-3 · Red"
+//	id-only        -> "6f2c… (unavailable)"
+//	stored as text -> "\"Red\" (text, not a reference)"
+//
+// STORED AS TEXT (BUG-3014) is neither of the other two. The value was never
+// an id, so "(unavailable)" would claim a target that is gone or hidden when
+// there was no target to lose. The wording says what the value is, not that
+// anything is broken: it may well name a live item, and resolving it here would
+// make the answer depend on who reads it.
 //
 // WHY "unavailable" AND NOT "deleted". An id-only entry has TWO causes that
 // this layer cannot tell apart: the target is gone, or the requester may not
@@ -51,6 +58,9 @@ func RenderRelationTargets(set models.RelationTargetSet) string {
 }
 
 func RenderRelationValue(target models.RelationTarget) string {
+	if target.StoredAsText {
+		return fmt.Sprintf("%q (text, not a reference)", target.ID)
+	}
 	if target.Ref == "" {
 		return fmt.Sprintf("%s (unavailable)", target.ID)
 	}

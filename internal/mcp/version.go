@@ -1017,6 +1017,21 @@ const CmdhelpVersion = "0.1"
 //     browser tab and BUG-3000 carries the open half — so no surface
 //     here states a duration.
 //
+//     0.50 — BUG-3014. A `relation_targets` entry gains an ADDITIVE,
+//     omitempty `stored_as_text: true` when the stored value is not
+//     UUID-shaped: a title a bundle import carried verbatim, or legacy free
+//     text. Such a value was never an id, and it used to hydrate as a plain
+//     id-only entry, which reads as "the target is gone or not visible" (a
+//     claim about a target when there was none). An id-only entry WITHOUT
+//     the flag keeps exactly that meaning, and a UUID-shaped value, resolved
+//     or not, marshals byte-identically to 0.49. The predicate is syntactic
+//     and decided from the stored bytes alone, never from a lookup, so the
+//     flag discloses nothing about any item (lead-ruled). It is deliberately
+//     not coupled to the resolver's UUID/ref/title ladder, whose evolution
+//     would otherwise change the flag's meaning without a bump. The CLI
+//     renders such a value as `"<text>" (text, not a reference)`, and the web
+//     chip says the same. ADDITIVE bump (the 0.28 / 0.13 disposition).
+//
 //     0.49 — BUG-2410. `pad_project.action=report` with NO `collections`
 //     param now leaves out SYSTEM collections (Collection.IsSystem: today
 //     Conventions and Playbooks), so they stop counting in created, WIP and
@@ -1524,7 +1539,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.49"
+const ToolSurfaceVersion = "0.50"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

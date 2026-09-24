@@ -2182,10 +2182,10 @@ func (s *Store) HydrateRelationTargetsQ(
 					continue
 				}
 				// EVERY element, blanks included, so position is preserved. A
-				// blank cannot name anything and will hydrate ID-only, which is
-				// the same honest shape a dangling value gets — and keeping the
-				// position is what lets a consumer line the list up against the
-				// stored array. Dropping it would silently shorten the list for
+				// blank cannot name anything and hydrates as stored text (it is
+				// not UUID-shaped, BUG-3014), which is what it is — and keeping
+				// the position is what lets a consumer line the list up against
+				// the stored array. Dropping it would silently shorten the list for
 				// exactly the legacy rows that need explaining.
 				values = elems
 			} else {
@@ -2299,6 +2299,13 @@ func (s *Store) HydrateRelationTargetsQ(
 			hydrated := make([]models.RelationTarget, 0, len(want.values))
 			for _, value := range want.values {
 				value := strings.TrimSpace(value)
+				if !isUUID(value) {
+					// Not an id at all, so there was never anything to look up
+					// (BUG-3014). Say so, from the bytes alone; see
+					// models.RelationTarget.StoredAsText.
+					hydrated = append(hydrated, models.RelationTarget{ID: value, StoredAsText: true})
+					continue
+				}
 				target, ok := resolved[value]
 				if !ok {
 					// Dangling: the stored value names nothing live. ID-only, so

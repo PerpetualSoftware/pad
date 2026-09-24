@@ -139,10 +139,20 @@ type ItemWriteWarnings struct {
 // target is gone or invisible. `Ref` and `Title` are present only when the
 // target resolved and the requester may see it, so a consumer must treat them
 // as optional rather than assuming a hydrated entry is complete.
+//
+// `StoredAsText` (BUG-3014, ToolSurfaceVersion 0.50) is set when the stored
+// value is not UUID-shaped, so it was never an id to look up: a title a bundle
+// import carried verbatim, or legacy free text. An ID-only entry WITHOUT it
+// still means "gone or not visible", deliberately indistinguishable. The flag is
+// decided from the stored bytes alone, never from a lookup, so it says nothing
+// about any target and cannot serve as an existence oracle. Its predicate is
+// syntactic on purpose: tying it to the resolver's ladder would let its meaning
+// change as the ladder does, without a version bump.
 type RelationTarget struct {
-	ID    string `json:"id"`
-	Ref   string `json:"ref,omitempty"`
-	Title string `json:"title,omitempty"`
+	ID           string `json:"id"`
+	Ref          string `json:"ref,omitempty"`
+	Title        string `json:"title,omitempty"`
+	StoredAsText bool   `json:"stored_as_text,omitempty"`
 }
 
 // RelationTargetSet is what one `relation_targets` KEY carries: a single target
