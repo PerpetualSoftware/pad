@@ -294,6 +294,33 @@ func isItemDone(fieldsJSON, collectionID string, ctxMap map[string]doneContext) 
 	return models.IsTerminalStatusDefault(status)
 }
 
+// childProgressState says how one child counts toward its parent's progress:
+// whether it is in the total, and whether it is done. An ABANDONED child
+// (a terminal value that closes without delivering) is in neither (BUG-3195,
+// lead ruling), so progress never reads 100% with nothing delivered. Every
+// Go-side progress loop calls this; the SQL side is
+// store.buildChildrenAbandonedExpr, from the same resolver.
+func childProgressState(fieldsJSON, collectionID string, ctxMap map[string]doneContext) (counted, done bool) {
+	if fieldsJSON == "" || fieldsJSON == "{}" {
+		return true, false
+	}
+	var fields map[string]any
+	if err := json.Unmarshal([]byte(fieldsJSON), &fields); err != nil {
+		return true, false
+	}
+	if ctx, ok := ctxMap[collectionID]; ok {
+		if models.IsAbandonedItem(fields, ctx.schema, ctx.settings) {
+			return false, false
+		}
+		return true, models.IsTerminalItem(fields, ctx.schema, ctx.settings)
+	}
+	status, _ := fields["status"].(string)
+	if models.IsAbandonedStatusDefault(status) {
+		return false, false
+	}
+	return true, models.IsTerminalStatusDefault(status)
+}
+
 func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
@@ -578,8 +605,12 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 				if !s.isItemVisibleToGuest(r, workspaceID, &child, dashFullCollIDs, dashGrantedItemIDs) {
 					continue
 				}
+				counted, isDone := childProgressState(child.Fields, child.CollectionID, ctxMap)
+				if !counted {
+					continue
+				}
 				total++
-				if isItemDone(child.Fields, child.CollectionID, ctxMap) {
+				if isDone {
 					done++
 				}
 			}

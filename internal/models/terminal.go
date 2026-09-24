@@ -149,6 +149,76 @@ func PositiveTerminalValuesForDoneField(
 	return fieldKey, values
 }
 
+// AbandonedValuesForDoneField is the complement of
+// PositiveTerminalValuesForDoneField within the terminal set: the terminal
+// values that close an item WITHOUT delivering it. Derived from that resolver
+// rather than decided separately, so "shipped" and "abandoned" cannot disagree
+// about a value.
+//
+// Progress uses it (BUG-3195): an abandoned child is not part of the work any
+// more, so it leaves both the done count and the total.
+func AbandonedValuesForDoneField(
+	schema CollectionSchema,
+	settings CollectionSettings,
+) (fieldKey string, values []string) {
+	fieldKey, terminals := TerminalValuesForDoneField(schema, settings)
+	_, positives := PositiveTerminalValuesForDoneField(schema, settings)
+	return fieldKey, subtractValues(terminals, positives)
+}
+
+// DefaultAbandonedStatuses is AbandonedValuesForDoneField for the fallback
+// case with no usable schema: the default terminal list minus its shipping
+// values.
+func DefaultAbandonedStatuses() []string {
+	_, values := AbandonedValuesForDoneField(CollectionSchema{}, CollectionSettings{})
+	return values
+}
+
+// IsAbandonedItem reports whether an item's done-field value is one of its
+// collection's abandoned values. The IsTerminalItem shape, over the
+// abandoned subset.
+func IsAbandonedItem(
+	itemFields map[string]any,
+	schema CollectionSchema,
+	settings CollectionSettings,
+) bool {
+	key, values := AbandonedValuesForDoneField(schema, settings)
+	s, ok := itemFields[key].(string)
+	if !ok {
+		return false
+	}
+	return containsFold(values, s)
+}
+
+// IsAbandonedStatusDefault is IsTerminalStatusDefault over the abandoned
+// subset, for callers with no collection context.
+func IsAbandonedStatusDefault(status string) bool {
+	return containsFold(DefaultAbandonedStatuses(), status)
+}
+
+func subtractValues(all, remove []string) []string {
+	out := make([]string, 0, len(all))
+	for _, v := range all {
+		if !containsFold(remove, v) {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// containsFold compares by strings.ToLower, the rule IsTerminalItem and the
+// SQL LOWER(...) IN (...) filters use, so the abandoned check cannot match a
+// value the terminal check does not.
+func containsFold(values []string, s string) bool {
+	lower := strings.ToLower(s)
+	for _, v := range values {
+		if strings.ToLower(v) == lower {
+			return true
+		}
+	}
+	return false
+}
+
 // declaredAbandoned returns the done field's abandoned_options as a
 // lowercased set, or nil when the field declares none (the fallback case).
 func declaredAbandoned(schema CollectionSchema, fieldKey string) map[string]bool {
