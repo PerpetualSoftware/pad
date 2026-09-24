@@ -688,6 +688,7 @@
 	import { viewport } from '$lib/stores/breakpoint.svelte';
 	import { api } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
+	import { toastStore } from '$lib/stores/toast.svelte';
 	import { notifyAttachmentUploaded, toUploadedAttachment } from '$lib/attachments/events';
 	import { BlockDragHandle } from './block-drag-handle';
 	import { HtmlBlock, captureHtmlBlockSnapshot, flipHtmlBlockToSource } from './extensions/htmlBlock';
@@ -1192,6 +1193,12 @@
 					if (typeof window !== 'undefined' && typeof window.alert === 'function') {
 						window.alert(`Couldn't upload ${filename}: ${message}`);
 					}
+				},
+				// A stored upload whose reference could not be inserted (BUG-2177).
+				// The identity fence above rejects a previous user's upload before
+				// it resolves, so a notice always belongs to the user signed in now.
+				onNotice: (message) => {
+					toastStore.show(message, 'error');
 				},
 			}),
 		];

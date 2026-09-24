@@ -22,6 +22,8 @@
 	import Placeholder from '@tiptap/extension-placeholder';
 	import { Markdown } from 'tiptap-markdown';
 	import { api } from '$lib/api/client';
+	import { authStore } from '$lib/stores/auth.svelte';
+	import { toastStore } from '$lib/stores/toast.svelte';
 	import { notifyAttachmentUploaded, toUploadedAttachment } from '$lib/attachments/events';
 	import { unescapeDocLinks } from '$lib/utils/markdown';
 	import { AttachmentImage } from './editor/attachment-image';
@@ -214,6 +216,10 @@
 
 	onMount(() => {
 		if (!element) return;
+		// The identity this composer was opened under. A notice about a stored
+		// upload names its file, so it must not reach a different user after a
+		// sign-out (the BUG-3105 class).
+		const isSameIdentity = authStore.identityFence();
 
 		editor = new Editor({
 			element,
@@ -270,6 +276,13 @@
 						if (typeof window !== 'undefined' && typeof window.alert === 'function') {
 							window.alert(`Couldn't upload ${filename}: ${message}`);
 						}
+					},
+					// An upload that finished after this composer unmounted: when a
+					// pane opens over the timeline, when the user navigates away. The
+					// file is stored and referenced nowhere, so say so (BUG-2177).
+					onNotice: (message) => {
+						if (!isSameIdentity()) return;
+						toastStore.show(message, 'error');
 					}
 				})
 			],
