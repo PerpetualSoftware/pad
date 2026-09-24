@@ -1,0 +1,68 @@
+{
+ "_doc": "BUG-3195: shared by internal/models/progress_abandoned_parity_test.go and web/src/lib/collections/childProgress.parity.test.ts. KEEP-IN-SYNC: each case is one collection (schema + settings as STORED JSON strings) and its children's field objects; `go` and `web` give each child's state (out = abandoned, left out of done AND total; done; open) and the totals. They are equal except where a case documents a divergence in `why`. Add a case here, not to one language's test.",
+ "cases": [
+  {
+   "name": "declared abandoned_options",
+   "why": "the field's own list decides: cancelled is out, done counts",
+   "schema": "{\"fields\":[{\"key\":\"status\",\"type\":\"select\",\"terminal_options\":[\"done\",\"cancelled\"],\"abandoned_options\":[\"cancelled\"]}]}",
+   "settings": "{}",
+   "children": [{"status": "done"}, {"status": "cancelled"}, {"status": "open"}],
+   "go": {"states": ["done", "out", "open"], "done": 1, "total": 2},
+   "web": {"states": ["done", "out", "open"], "done": 1, "total": 2}
+  },
+  {
+   "name": "undeclared, NegativeTerminals fallback",
+   "why": "no abandoned_options: terminal values in the negative list are out, others are delivered",
+   "schema": "{\"fields\":[{\"key\":\"status\",\"type\":\"select\",\"terminal_options\":[\"fixed\",\"wontfix\"]}]}",
+   "settings": "{}",
+   "children": [{"status": "fixed"}, {"status": "wontfix"}],
+   "go": {"states": ["done", "out"], "done": 1, "total": 1},
+   "web": {"states": ["done", "out"], "done": 1, "total": 1}
+  },
+  {
+   "name": "a declared list replaces the fallback",
+   "why": "declaring only `dropped` makes cancelled a delivered terminal",
+   "schema": "{\"fields\":[{\"key\":\"status\",\"type\":\"select\",\"terminal_options\":[\"cancelled\",\"dropped\"],\"abandoned_options\":[\"dropped\"]}]}",
+   "settings": "{}",
+   "children": [{"status": "cancelled"}, {"status": "dropped"}],
+   "go": {"states": ["done", "out"], "done": 1, "total": 1},
+   "web": {"states": ["done", "out"], "done": 1, "total": 1}
+  },
+  {
+   "name": "case mismatch",
+   "why": "both sides compare case-insensitively",
+   "schema": "{\"fields\":[{\"key\":\"status\",\"type\":\"select\",\"terminal_options\":[\"done\",\"cancelled\"],\"abandoned_options\":[\"cancelled\"]}]}",
+   "settings": "{}",
+   "children": [{"status": "Done"}, {"status": "CANCELLED"}],
+   "go": {"states": ["done", "out"], "done": 1, "total": 1},
+   "web": {"states": ["done", "out"], "done": 1, "total": 1}
+  },
+  {
+   "name": "board_group_by done field",
+   "why": "the done field is `resolution`; a terminal `status` does not count",
+   "schema": "{\"fields\":[{\"key\":\"status\",\"type\":\"select\",\"terminal_options\":[\"fixed\"]},{\"key\":\"resolution\",\"type\":\"select\",\"terminal_options\":[\"fixed\",\"wontfix\"]}]}",
+   "settings": "{\"board_group_by\":\"resolution\"}",
+   "children": [{"resolution": "fixed", "status": "new"}, {"resolution": "wontfix"}, {"resolution": "open", "status": "fixed"}],
+   "go": {"states": ["done", "out", "open"], "done": 1, "total": 2},
+   "web": {"states": ["done", "out", "open"], "done": 1, "total": 2}
+  },
+  {
+   "name": "every child abandoned is 0/0",
+   "why": "nothing counted; renders as no progress",
+   "schema": "{\"fields\":[{\"key\":\"status\",\"type\":\"select\",\"terminal_options\":[\"done\",\"cancelled\"],\"abandoned_options\":[\"cancelled\"]}]}",
+   "settings": "{}",
+   "children": [{"status": "cancelled"}, {"status": "cancelled"}],
+   "go": {"states": ["out", "out"], "done": 0, "total": 0},
+   "web": {"states": ["out", "out"], "done": 0, "total": 0}
+  },
+  {
+   "name": "corrupt schema: a mistyped member the resolvers do not read",
+   "why": "DOCUMENTED DIVERGENCE (BUG-3195 codex round 4). `options: 7` fails Go's typed unmarshal of the whole schema, so Go falls back to status + the default terminal list, where `shipped` is not terminal (open). The web validates only the members it reads, keeps the field, and applies the declared list (out). The server's /progress is the authority for a parent's numbers; this is the per-row client count on a corrupt schema.",
+   "schema": "{\"fields\":[{\"key\":\"status\",\"type\":\"select\",\"options\":7,\"terminal_options\":[\"done\",\"shipped\"],\"abandoned_options\":[\"shipped\"]}]}",
+   "settings": "{}",
+   "children": [{"status": "shipped"}, {"status": "done"}],
+   "go": {"states": ["open", "done"], "done": 1, "total": 2},
+   "web": {"states": ["out", "done"], "done": 1, "total": 1}
+  }
+ ]
+}
