@@ -1126,9 +1126,24 @@
 	function itemPersistedMarkdown(): string | null {
 		return (itemMatchesRef ? item?.content : null) ?? null;
 	}
+	// THE ROUTE IS THE LOAD'S ONLY TRIGGER (BUG-3192). The three reads below are
+	// the effect's whole dependency set; `loadData` runs under `untrack`.
+	//
+	// It used to run in this effect's tracking scope, so every reactive read in
+	// its synchronous prefix was a dependency too. `localIndex.bootstrap()` is
+	// called in that prefix and reads the workspace's `bootstrapState`, then
+	// writes it — `'cold'` → `'loading'` before its first await, `'loading'` →
+	// `'ready'` when the index lands — and each write re-ran this effect. A cold
+	// item page fetched the item and its collection three times (runs measured
+	// at 447, 466 and 1017 ms). Untracking the call alone would have hidden that
+	// AND the route with it; the identity stays explicit so navigating between
+	// items still reloads (itemDetailLoadsOnce.svelte.test.ts).
 	$effect(() => {
-		if (wsSlug && collSlug && itemSlug) {
-			loadData();
+		const ws = wsSlug;
+		const coll = collSlug;
+		const slug = itemSlug;
+		if (ws && coll && slug) {
+			untrack(() => loadData());
 		}
 	});
 
@@ -1761,9 +1776,11 @@
 		// render under another's title (BUG-2871, codex P1).
 		//
 		// READ THROUGH `untrack`, and that is not a style choice (CONVE-1688).
-		// `loadData` is called from an `$effect` whose tracked deps are
-		// `wsSlug`/`collSlug`/`itemSlug`, and it WRITES `item` further down. A
-		// plain read here adds `item` to that effect's dependencies, making the
+		// The route effect now calls `loadData` under `untrack` (BUG-3192), so
+		// no caller tracks this read today. It stays untracked because a caller
+		// that runs `loadData` in a tracking scope again would reintroduce the
+		// failure below. `loadData` WRITES `item` further down, so a tracked
+		// read here adds `item` to that caller's dependencies, making the
 		// effect self-invalidating: dev throws `effect_update_depth_exceeded`,
 		// and the PRODUCTION build silently wedges the global effect scheduler,
 		// so the app stops re-rendering with no error at all. That is what this
@@ -1801,12 +1818,12 @@
 		// swap) FIRST. The saver's `save` callback captures the live item.id (the
 		// old item) internally, so the PATCH targets the right item.
 		//
-		// UNTRACK is load-bearing (Codex): loadData runs inside the route
-		// $effect's tracking scope, and flushNow synchronously invokes the save
-		// callback which reads `item`. A tracked read here would make `item` a
-		// dependency of the route effect → loadData would re-fire on every item
-		// mutation (SSE / field edit), a duplicate-load loop. untrack keeps
-		// loadData's dependency set unchanged.
+		// UNTRACK (Codex): flushNow synchronously invokes the save callback,
+		// which reads `item`. Under a tracking caller that read would make
+		// `item` a dependency → loadData would re-fire on every item mutation
+		// (SSE / field edit), a duplicate-load loop. The route effect untracks
+		// the whole call since BUG-3192; this stays as the same defence as the
+		// `linksHeldForItemId` read above.
 		untrack(() => {
 			if (rawContentSaver.dirty && item) {
 				rawContentSaver.flushNow({ keepalive: true });
@@ -1829,10 +1846,11 @@
 		// new user's cookie. Still before the first await, so every
 		// continuation of this load sees the new stamp.
 		//
-		// UNTRACKED: `loadData` runs inside the route effect up to its first
-		// await, and a tracked read here made that effect re-run on every
-		// identity change (BUG-3084 checkpoint 33). The identity listener is
-		// the one mechanism that reloads on an identity change.
+		// UNTRACKED: when `loadData` ran inside the route effect, a tracked read
+		// here made that effect re-run on every identity change (BUG-3084
+		// checkpoint 33). The route effect untracks the whole call since
+		// BUG-3192; this stays as defence. The identity listener is the one
+		// mechanism that reloads on an identity change.
 		identityEpochAtLoad = untrack(() => authStore.identityEpoch);
 		// Reset raw mode on an actual item-switch (TASK-2124 decision #1). rawMode
 		// is a per-item view choice, not a session-wide one: without this,
@@ -1864,8 +1882,8 @@
 		// ALSO null, so resetting rawMode mounts nothing to race — B just opens in
 		// rich/collab mode once it resolves. On a true same-item reload
 		// itemMatchesRef stays true and we preserve raw mode. untrack so reading
-		// the derived here doesn't enter the route $effect's dep set (would cause
-		// the duplicate-load loop the keepalive flush above is untracked to avoid).
+		// the derived here can't enter a tracking caller's dep set (the
+		// duplicate-load loop the keepalive flush above is untracked to avoid).
 		untrack(() => {
 			if (!itemMatchesRef) rawMode = false;
 		});
