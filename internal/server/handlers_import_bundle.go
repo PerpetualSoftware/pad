@@ -285,14 +285,16 @@ func (s *Server) importBundle(ctx context.Context, r io.Reader, newName string, 
 
 	var ws *models.Workspace
 
-	// ONE DOOR for every failure after the mint (BUG-3184). The handler's
+	// ONE DOOR for every ERROR return after the mint (BUG-3184). The handler's
 	// keep and rollback arms can only act on a workspace they are handed, so
 	// an error return that drops ws strands a live workspace with no member
 	// row that the 400 never mentions. `read tar entry` did exactly that:
 	// any tr.Next error after pad-export.json (a stalled or dropped body, a
 	// corrupt or truncated gzip, the body cap) left an invisible husk. Rather
 	// than trust each return to pass ws, the minted workspace is handed back
-	// here, whatever the return said.
+	// here, whatever the return said. A PANIC after the mint is not covered:
+	// retErr stays nil, the recovery middleware answers 500, and the
+	// workspace is left as it was before this change.
 	defer func() {
 		if retErr != nil && result == nil && ws != nil {
 			result = ws
