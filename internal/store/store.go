@@ -62,6 +62,20 @@ type Store struct {
 	// every test that sets it does so synchronously and none is parallel).
 	afterDebounceRead func()
 
+	// afterDebounceMiss is a TEST-ONLY seam, nil in production. When set,
+	// CreateActivityDebounced calls it after its candidate read found NO row
+	// to coalesce with and before it inserts a fresh one: the window in which
+	// a concurrent writer that also found nothing inserts too (BUG-2777).
+	// Same usage constraints as afterDebounceRead.
+	afterDebounceMiss func()
+
+	// afterDebounceLockedMiss is a TEST-ONLY seam, nil in production. When
+	// set, insertDebouncedOnMiss calls it while holding its per-document lock,
+	// after the re-read found no candidate and before the insert (BUG-2777):
+	// a concurrent miss must be seen WAITING here, not inserting. Same usage
+	// constraints as afterDebounceRead.
+	afterDebounceLockedMiss func()
+
 	// decisionSets names the typed-decision question sets that apply to an
 	// item (TASK-3117). Empty until the server installs a resolver, which it
 	// does only when a decision provider is configured; see decisions.go.
