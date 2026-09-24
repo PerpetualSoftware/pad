@@ -5484,4 +5484,21 @@ describe('Lightbox — a pending delete confirmation owns the pointer gestures (
 		expect(released).toContain(1);
 		ptr('pointerup', 700, 500, { pointerType: 'touch', buttons: 0 });
 	});
+
+	it('a MOUSE pan already live when the confirmation opens is torn down too', () => {
+		// The mouse cannot press Delete mid-drag, but the keyboard can (Tab to Delete,
+		// Enter) while the button is still held. A live touch gesture is already torn
+		// down by the paint-arm leg of the same effect, so only this leg shows the
+		// confirmation's own trigger.
+		mountPainted();
+		dblclick();
+		ptr('pointerdown', 500, 500);
+		ptr('pointermove', 600, 500);
+		expect(panX()).toBeCloseTo(100);
+		openConfirm();
+		ptr('pointermove', 700, 500);
+		expect(panX()).toBeCloseTo(100);
+		expect(released).toContain(1);
+		ptr('pointerup', 700, 500, { buttons: 0 });
+	});
 });
