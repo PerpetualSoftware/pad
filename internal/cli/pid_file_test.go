@@ -4,10 +4,14 @@ package cli
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/PerpetualSoftware/pad/internal/config"
 )
 
 // BUG-2965 and BUG-2969 together: the PID file must let `pad server stop`
@@ -273,5 +277,92 @@ func TestClaimPIDFile_RetriesPastABriefProbe(t *testing.T) {
 	rec, ok := readPIDRecord(path)
 	if !ok || rec.PID != os.Getpid() {
 		t.Errorf("claim did not survive a brief foreign hold (record %+v, ok=%v)", rec, ok)
+	}
+}
+
+// deadPID returns the pid of a process that has already exited and been
+// reaped. The number can in principle be reused before the caller looks, which
+// would turn a "dead" leg into a live one; the tests using it assert the
+// dead-pid behaviour only after checking processIsGone themselves.
+func deadPID(t *testing.T) int {
+	t.Helper()
+	cmd := exec.Command("true")
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("run a short-lived process: %v", err)
+	}
+	pid := cmd.ProcessState.Pid()
+	if !processIsGone(pid) {
+		t.Skipf("pid %d was reused before the test could look; nothing to assert", pid)
+	}
+	return pid
+}
+
+// TestPIDFileOwner_LegacyBarePIDNamingADeadProcessIsStale is the way out of
+// BUG-2970's kept state (lead review, day 79): a legacy record whose pid has no
+// process behind it cannot be anyone's server, so it is stale by the same
+// proof as an unheld fingerprinted record, and is removed under the lock.
+// Without this a dead legacy file would be kept forever and every stop would
+// refuse over it.
+func TestPIDFileOwner_LegacyBarePIDNamingADeadProcessIsStale(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pad.pid")
+	pid := deadPID(t)
+	if err := os.WriteFile(path, []byte(strconv.Itoa(pid)+"\n"), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if _, owner := pidFileOwner(path); owner != pidFileStale {
+		t.Errorf("owner = %v for a legacy file naming a DEAD pid, want stale", owner)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("a legacy file naming a dead pid survived (stat err = %v); it names nothing and must not linger", err)
+	}
+}
+
+// TestStopServer_LegacyPIDFileNamingADeadProcessSaysNotRunning is the same
+// through stop: the user sees "not running", not the unprovable refusal.
+func TestStopServer_LegacyPIDFileNamingADeadProcessSaysNotRunning(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{Host: "127.0.0.1", Port: unusedPort(t), DataDir: dir}
+	pid := deadPID(t)
+	if err := os.WriteFile(cfg.PIDFile(), []byte(strconv.Itoa(pid)+"\n"), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	err := StopServer(cfg)
+	if err == nil || !strings.Contains(err.Error(), "server not running") {
+		t.Fatalf("StopServer = %v, want a \"server not running\" answer for a legacy record naming a dead pid", err)
+	}
+	if strings.Contains(err.Error(), "cannot confirm") {
+		t.Errorf("a dead legacy pid got the unprovable refusal %q; it is provably stale", err.Error())
+	}
+	if _, statErr := os.Stat(cfg.PIDFile()); !os.IsNotExist(statErr) {
+		t.Errorf("the dead legacy PID file survived stop (stat err = %v)", statErr)
+	}
+}
+
+// TestClaimPIDFile_OverwritesAKeptLegacyRecord is the START half of the lead's
+// question: a legacy file kept as unprovable must not block a new server.
+// `pad server start` never reads the file (EnsureServer probes the port), and
+// the new server's claim takes it over: no lock was ever held on a legacy file,
+// so the claim succeeds and writes this build's fingerprinted record.
+func TestClaimPIDFile_OverwritesAKeptLegacyRecord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pad.pid")
+	// Live pid, so the file is in the KEPT state before the claim.
+	if err := os.WriteFile(path, []byte(strconv.Itoa(os.Getpid())+"\n"), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, owner := pidFileOwner(path); owner != pidFileUnprovable {
+		t.Fatalf("PRECONDITION: owner = %v, want the kept (unprovable) state", owner)
+	}
+
+	release := ClaimPIDFile(path)
+	defer release()
+
+	rec, ok := readPIDRecord(path)
+	if !ok || rec.PID != os.Getpid() || rec.StartedAt.IsZero() {
+		t.Fatalf("after the claim the file holds %+v (ok=%v), want this build's fingerprinted record", rec, ok)
+	}
+	if _, owner := pidFileOwner(path); owner != pidFileOurs {
+		t.Errorf("owner = %v after the claim, want ours: the new server must be addressable by stop", owner)
 	}
 }

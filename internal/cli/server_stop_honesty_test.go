@@ -164,6 +164,11 @@ func TestStopServer_LegacyPIDFileIsRefusedAndKept(t *testing.T) {
 	if !strings.Contains(err.Error(), "cannot confirm") {
 		t.Errorf("message = %q, want the unprovable refusal (cannot confirm)", err.Error())
 	}
+	// The way out must be NAMED (lead review, day 79): the kept state is
+	// only acceptable if the refusal tells the user how to leave it.
+	if !strings.Contains(err.Error(), "remove "+cfg.PIDFile()) {
+		t.Errorf("message = %q, want it to name the manual remedy (remove %s)", err.Error(), cfg.PIDFile())
+	}
 	if got, readErr := os.ReadFile(cfg.PIDFile()); readErr != nil || string(got) != string(legacy) {
 		t.Errorf("legacy PID file not kept intact: content %q, read err %v", got, readErr)
 	}
