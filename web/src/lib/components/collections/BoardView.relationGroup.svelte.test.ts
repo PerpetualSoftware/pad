@@ -185,7 +185,7 @@ describe('BoardView grouped by a relation field', () => {
 		expect(Object.values(byLane).reduce((a, b) => a + b, 0)).toBe(5);
 		expect(byLane['COLOR-1Red']).toBe(2);
 		expect(byLane['COLOR-9Gone(deleted)']).toBe(1);
-		expect(byLane['Unresolvedreference']).toBe(1);
+		expect(byLane['Unavailableitem']).toBe(1);
 		expect(byLane['Uncategorized']).toBe(1);
 	});
 
@@ -311,7 +311,7 @@ describe('BoardView grouped by a relation field', () => {
 		const screen = renderBoard([item('car-1', DANGLING)]);
 		const html = screen.container.innerHTML;
 
-		expect(lanes(screen)).toContainEqual({ ref: null, note: null, name: 'Unresolved reference' });
+		expect(lanes(screen)).toContainEqual({ ref: null, note: null, name: 'Unavailable item' });
 		expect(html).not.toContain(DANGLING);
 		expect(html).not.toContain('f47ac10b');
 	});

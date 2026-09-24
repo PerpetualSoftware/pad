@@ -113,7 +113,7 @@ describe('a status field holding a LIST', () => {
 		const cells = [...screen.container.querySelectorAll('.cell-relation')];
 		expect(cells, 'the value vanished instead of rendering').toHaveLength(2);
 		expect(screen.container.textContent).not.toContain('id-red');
-		expect(cells[0].textContent).toContain('Unresolved reference');
+		expect(cells[0].textContent).toContain('Unavailable item');
 	});
 
 	it('and offers no WRITE either — the withheld chip is the point, not its styling', () => {

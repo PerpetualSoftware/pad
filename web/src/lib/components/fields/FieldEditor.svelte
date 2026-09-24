@@ -18,7 +18,7 @@ handlers — onchange is never called.
 	import { onDestroy, tick } from 'svelte';
 	import { formatItemRef, type FieldDef, type ItemIndexRow, type PaneTarget } from '$lib/types';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
-	import { narrowRelationRow } from '$lib/collections/relationGroups';
+	import { narrowRelationRow, UNRESOLVED_LABEL, UNRESOLVED_TITLE } from '$lib/collections/relationGroups';
 	import {
 		isMultiRelationType,
 		isRelationType,
@@ -1248,7 +1248,7 @@ handlers — onchange is never called.
 		<!--
 			Stored as TEXT, not as an id (BUG-3014): a title a bundle import
 			carried verbatim, or legacy free text. It was never a reference, so
-			"Unresolved reference" overstates it; show the text and say what it
+			the unresolved chip overstates it; show the text and say what it
 			is. Not a claim that it is broken: it may name a live item, and
 			resolving it here would make the answer depend on the reader. The
 			server marks the same values `stored_as_text` on `relation_targets`.
@@ -1259,13 +1259,13 @@ handlers — onchange is never called.
 		</span>
 	{:else}
 		<!--
-			The value is not an item this workspace knows. Says so, rather than
-			showing the stored string as though it were a name — it is usually a
-			free-text value the old fallback wrote, and the user needs to know it
-			does not point at anything.
+			An id that does not resolve to an item the viewer can see. The wording
+			is neutral because the miss may be a live target in a collection this
+			member cannot see, as well as a dangling id (BUG-3013; see
+			UNRESOLVED_LABEL). Text values took the branch above.
 		-->
-		<span class="relation-chip is-unresolved" title="This value does not match any item in this workspace.">
-			<span class="relation-note">Unresolved reference</span>
+		<span class="relation-chip is-unresolved" title={UNRESOLVED_TITLE}>
+			<span class="relation-note">{UNRESOLVED_LABEL}</span>
 		</span>
 	{/if}
 {/snippet}

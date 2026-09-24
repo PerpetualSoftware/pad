@@ -23,13 +23,35 @@ import { UNCATEGORIZED } from './boardColumns';
  * resolves to nothing is usually free text an older, unvalidated write left
  * behind (the pre-TASK-2878 fallback accepted any string), so showing it as
  * though it were a lane name would present a typo as a category. `FieldEditor`
- * says "Unresolved reference" for exactly this state; the lane says the same.
+ * says `UNRESOLVED_LABEL` for exactly this state; the lane says the same.
  *
  * Reserved with a `$` prefix for the reason `$unparented` is: a real field
  * value can never collide with it, because schema validation refuses new field
  * keys starting with `$` and an item id is a UUID.
  */
 export const UNRESOLVED_LANE = '$unresolved';
+
+/**
+ * What every surface says for a relation value that does not resolve.
+ *
+ * NEUTRAL WORDING (BUG-3013). "Does not resolve" has three causes the client
+ * cannot tell apart: legacy free text that names nothing, a target that is
+ * gone, and a target that is ALIVE in a collection this member may not see.
+ * The index feed leaves the third out for a restricted member (the visibility
+ * filter in internal/server/handlers_changes.go), so it misses exactly as a
+ * dangling id does. Any wording that asserts non-existence ("unresolved
+ * reference", "does not match any item") is false for that case, and it is the
+ * existence claim the server's not_found collapse exists to withhold. The CLI
+ * says "(unavailable)" for the same reason (internal/cli/relation_render.go),
+ * and so does the copy dialog (`copyDropReasons.ts`, `not_found`).
+ *
+ * "(deleted)" is NOT covered by this. It is shown only when the index HOLDS the
+ * row and the row carries `deleted_at`, which is positive evidence.
+ */
+export const UNRESOLVED_LABEL = 'Unavailable item';
+
+/** The hover text beside `UNRESOLVED_LABEL`. True in all three cases above. */
+export const UNRESOLVED_TITLE = "This value doesn't resolve to an item you can see.";
 
 export type RelationLaneState = 'empty' | 'live' | 'deleted' | 'unresolved';
 
@@ -61,7 +83,7 @@ export function relationChipFor(value: string, resolve: ResolveRow): RelationChi
 			value: UNRESOLVED_LANE,
 			ref: null,
 			title: null,
-			label: 'Unresolved reference',
+			label: UNRESOLVED_LABEL,
 			state: 'unresolved',
 		};
 	}
@@ -188,7 +210,7 @@ export function relationLanes(items: Item[], fieldKey: string, resolve: ResolveR
 			value: UNRESOLVED_LANE,
 			ref: null,
 			title: null,
-			label: 'Unresolved reference',
+			label: UNRESOLVED_LABEL,
 			state: 'unresolved',
 		});
 	}
