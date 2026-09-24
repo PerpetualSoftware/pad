@@ -410,6 +410,13 @@ type Server struct {
 	// for "non-commit" errors.
 	directWritePruneFault func() error
 
+	// importBundleAfterMintHook is a TEST SEAM (always nil in production,
+	// BUG-3191): importBundle calls it right after pad-export.json has minted
+	// the workspace, so a test can panic there. A panic mid-import has no
+	// natural trigger, so without the seam the recover that sends it to the
+	// keep door could not be driven by a test.
+	importBundleAfterMintHook func()
+
 	// membershipCheck is a TEST SEAM (always nil in production, BUG-3026). When
 	// non-nil, autoCreateWorkspace's reconcile calls it instead of
 	// store.IsWorkspaceMember.

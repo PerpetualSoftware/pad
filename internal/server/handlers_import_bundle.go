@@ -12,6 +12,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"runtime/debug"
 	"strings"
 
 	"github.com/PerpetualSoftware/pad/internal/attachments"
@@ -292,10 +293,29 @@ func (s *Server) importBundle(ctx context.Context, r io.Reader, newName string, 
 	// any tr.Next error after pad-export.json (a stalled or dropped body, a
 	// corrupt or truncated gzip, the body cap) left an invisible husk. Rather
 	// than trust each return to pass ws, the minted workspace is handed back
-	// here, whatever the return said. A PANIC after the mint is not covered:
-	// retErr stays nil, the recovery middleware answers 500, and the
-	// workspace is left as it was before this change.
+	// here, whatever the return said.
+	//
+	// A PANIC inside this function after the mint takes the same keep door
+	// (BUG-3191). retErr stays nil on a panic and the unwind skips the
+	// handler's keep arm, the only place a failed import's owner row is
+	// written, so the workspace was left live, ownerless and unnamed by chi's
+	// 500. The recover here runs keepMintedWorkspaceAfterPanic, which attaches
+	// the importer through addOwnerOrCompensate (with that helper's outcomes:
+	// attached, removed when the owner row cannot be written, or kept with
+	// ownership unconfirmed on its uncertain-state arms; with no resolved
+	// importer, kept) and then re-panics with the same value, so the recovery
+	// middleware still answers 500. Chi's logged stack then starts at this
+	// re-panic, so the original stack is logged by the keep door instead.
+	// panic(nil) is covered too: under go 1.21+ semantics (go.mod: 1.26)
+	// recover returns a *runtime.PanicNilError for it, never nil. A panic
+	// after this function returns (in the handler) is not covered here.
 	defer func() {
+		if p := recover(); p != nil {
+			if ws != nil {
+				s.keepMintedWorkspaceAfterPanic(ws, ownerID, p)
+			}
+			panic(p)
+		}
 		if retErr != nil && result == nil && ws != nil {
 			result = ws
 		}
@@ -447,6 +467,9 @@ func (s *Server) importBundle(ctx context.Context, r io.Reader, newName string, 
 				return ws, fmt.Errorf("build slug→id map: %w", err)
 			}
 			exportSeen = true
+			if s.importBundleAfterMintHook != nil {
+				s.importBundleAfterMintHook()
+			}
 
 		case hdr.Name == "attachments/manifest.json":
 			if !exportSeen {
@@ -595,6 +618,34 @@ func (s *Server) importBundle(ctx context.Context, r io.Reader, newName string, 
 	s.storageInfoCache.invalidate(ws.ID)
 
 	return ws, nil
+}
+
+// keepMintedWorkspaceAfterPanic runs the keep door for a workspace a panicking
+// import had already minted (BUG-3191): the importer is attached as owner, or
+// the workspace is removed when that fails. With no resolved importer (the
+// fresh-install window, a legacy token) there is nobody to attach, which is
+// the handler's keep arm's answer too. The outcome is logged, because the
+// response is chi's generic 500 and cannot name the workspace.
+//
+// The stack is captured HERE, in the deferred call, where the panicking frames
+// are still on the goroutine's stack; the re-panic that follows is what chi's
+// Recoverer sees and logs, so this is the only log line carrying the original
+// panic site.
+func (s *Server) keepMintedWorkspaceAfterPanic(ws *models.Workspace, ownerID string, panicked any) {
+	stack := string(debug.Stack())
+	if ownerID == "" {
+		slog.Error("import: panic after the workspace was created; kept, with no importer to attach",
+			"workspace_id", ws.ID, "workspace_slug", ws.Slug, "panic", fmt.Sprint(panicked), "stack", stack)
+		return
+	}
+	if err := s.addOwnerOrCompensate("import bundle (panic)", ws.ID, ws.Slug, ownerID); err != nil {
+		slog.Error("import: panic after the workspace was created, and it could not be attached to the importer",
+			"workspace_id", ws.ID, "workspace_slug", ws.Slug, "user_id", ownerID,
+			"panic", fmt.Sprint(panicked), "error", err, "stack", stack)
+		return
+	}
+	slog.Error("import: panic after the workspace was created; kept and attached to the importer",
+		"workspace_id", ws.ID, "workspace_slug", ws.Slug, "user_id", ownerID, "panic", fmt.Sprint(panicked), "stack", stack)
 }
 
 // readEntry reads exactly size bytes from a tar reader (the rest of
