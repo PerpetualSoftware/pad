@@ -91,6 +91,9 @@ async function leader(ws = 'ws-a') {
 	// spread) is not counted.
 	const onSync = vi.fn();
 	sse.onSyncRequired(onSync);
+	// That first-connect sync also set needsSync; clear it so a leg reading
+	// needsSync measures the signal under test and not the connect.
+	sse.clearSyncFlag();
 	return { sse, source, onSync };
 }
 
@@ -160,15 +163,21 @@ describe('server sync_required is spread (BUG-2761)', () => {
 		sse.disconnect();
 	});
 
-	it('folds signals arriving inside the window into one dispatch', async () => {
+	it('folds signals arriving inside the window into one dispatch, at the FIRST signal\'s delay', async () => {
+		// A fold, not a debounce. Restarting the timer on each signal would also
+		// produce one dispatch, but under a steady stream of signals less than a
+		// window apart it would never fire at all. So the dispatch is read at the
+		// first signal's draw (2500ms), with a second signal landing before it.
 		const { sse, source, onSync } = await leader();
 
 		source.fire('sync_required');
-		vi.advanceTimersByTime(1000);
+		vi.advanceTimersByTime(2000);
 		source.fire('sync_required');
 		source.fire('sync_required');
-		vi.advanceTimersByTime(SYNC_REQUIRED_SPREAD_MS * 2);
+		vi.advanceTimersByTime(500);
+		expect(onSync).toHaveBeenCalledTimes(1);
 
+		vi.advanceTimersByTime(SYNC_REQUIRED_SPREAD_MS * 2);
 		expect(onSync).toHaveBeenCalledTimes(1);
 		sse.disconnect();
 	});
