@@ -201,39 +201,73 @@ func tarNextFailureGoesThroughTheKeepDoor(t *testing.T, driver store.DriverType)
 
 // --- (2) the per-Read deadline, over a real listener ------------------------
 
-// liveImport sends headers and prefix, stalls, then sends rest, over a real TCP
-// connection to srv served with the given server-wide ReadTimeout. Returns the
-// status line and body.
-func liveImport(t *testing.T, srv *Server, readTimeout time.Duration, token, name string, prefix, rest []byte, stall time.Duration) (string, string) {
+const liveCSRF = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+// liveServer serves srv on a real listener with the given server-wide
+// ReadTimeout (Listen's 15s, scaled down).
+func liveServer(t *testing.T, srv *Server, readTimeout time.Duration) string {
 	t.Helper()
 	ts := httptest.NewUnstartedServer(srv)
-	ts.Config.ReadTimeout = readTimeout // Listen's 15s, scaled down
+	ts.Config.ReadTimeout = readTimeout
 	ts.Start()
 	t.Cleanup(ts.Close)
+	return ts.Listener.Addr().String()
+}
 
-	conn, err := net.Dial("tcp", ts.Listener.Addr().String())
-	if err != nil {
-		t.Fatalf("dial: %v", err)
+// sendImport writes one import request on conn: headers, then each piece
+// with gap between them. keepAlive leaves the connection open for another
+// request. Returns the status line and body.
+func sendImport(t *testing.T, conn net.Conn, br *bufio.Reader, token, name, contentType string, pieces [][]byte, gap time.Duration, keepAlive bool) (string, string) {
+	t.Helper()
+	total := 0
+	for _, p := range pieces {
+		total += len(p)
 	}
-	defer conn.Close()
-	const csrf = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	connHdr := "close"
+	if keepAlive {
+		connHdr = "keep-alive"
+	}
 	head := fmt.Sprintf("POST /api/v1/workspaces/import?name=%s HTTP/1.1\r\nHost: pad.test\r\n"+
-		"Content-Type: application/gzip\r\nContent-Length: %d\r\n"+
-		"Cookie: pad_session=%s; pad_csrf=%s\r\nX-CSRF-Token: %s\r\nConnection: close\r\n\r\n",
-		name, len(prefix)+len(rest), token, csrf, csrf)
-	if _, err := conn.Write(append([]byte(head), prefix...)); err != nil {
-		t.Fatalf("write prefix: %v", err)
+		"Content-Type: %s\r\nContent-Length: %d\r\n"+
+		"Cookie: pad_session=%s; pad_csrf=%s\r\nX-CSRF-Token: %s\r\nConnection: %s\r\n\r\n",
+		name, contentType, total, token, liveCSRF, liveCSRF, connHdr)
+	if _, err := conn.Write([]byte(head)); err != nil {
+		t.Fatalf("write head: %v", err)
 	}
-	time.Sleep(stall)
-	_, _ = conn.Write(rest) // the server may already have answered and closed
+	for i, p := range pieces {
+		if i > 0 {
+			time.Sleep(gap)
+		}
+		if _, err := conn.Write(p); err != nil {
+			break // the server may already have answered and closed
+		}
+	}
 	_ = conn.SetReadDeadline(time.Now().Add(30 * time.Second))
-	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	resp, err := http.ReadResponse(br, nil)
 	if err != nil {
 		t.Fatalf("read response: %v", err)
 	}
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(resp.Body)
 	return resp.Status, string(b)
+}
+
+// liveImport sends headers and prefix, stalls, then sends rest, over a fresh
+// connection.
+func liveImport(t *testing.T, srv *Server, readTimeout time.Duration, token, name string, prefix, rest []byte, stall time.Duration) (string, string) {
+	t.Helper()
+	conn, err := net.Dial("tcp", liveServer(t, srv, readTimeout))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	return sendImport(t, conn, bufio.NewReader(conn), token, name, "application/gzip", [][]byte{prefix, rest}, stall, false)
+}
+
+// thirds splits b into three pieces.
+func thirds(b []byte) [][]byte {
+	n := len(b) / 3
+	return [][]byte{b[:n], b[n : 2*n], b[2*n:]}
 }
 
 // The stall is LONGER than the server-wide ReadTimeout and SHORTER than the
@@ -247,6 +281,78 @@ func TestImportBundle_BUG3184_ServerTimeBetweenReadsDoesNotCount(t *testing.T) {
 	status, body := liveImport(t, srv, 300*time.Millisecond, tok, "patient", prefix, rest, time.Second)
 	if !strings.HasPrefix(status, "201") {
 		t.Fatalf("an import stalled 1s under a 300ms server-wide ReadTimeout and a 3s per-Read window must succeed, got %s: %s", status, body)
+	}
+}
+
+// The deadline is armed PER READ, not once: a client whose every gap is inside
+// the idle window but whose whole body takes longer than it still succeeds. A
+// single longer deadline (the fix this is not) fails this leg and passes the
+// one above.
+func TestImportBundle_BUG3184_TheWindowRestartsOnEveryRead(t *testing.T) {
+	prefix, rest := splitAfterManifest(t, realBundleWithBlob(t))
+	body := append(append([]byte(nil), prefix...), rest...)
+	srv := attachmentsServerOn(t, store.DriverSQLite)
+	_, tok := memberImporter(t, srv)
+	srv.importReadIdle = time.Second
+
+	conn, err := net.Dial("tcp", liveServer(t, srv, 300*time.Millisecond))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	status, resp := sendImport(t, conn, bufio.NewReader(conn), tok, "steady", "application/gzip", thirds(body), 700*time.Millisecond, false)
+	if !strings.HasPrefix(status, "201") {
+		t.Fatalf("a body sent in three pieces 700ms apart (1.4s in all) under a 1s per-Read window must succeed, got %s: %s", status, resp)
+	}
+}
+
+// The JSON body shape reads under the same deadline: the wrap sits above the
+// Content-Type dispatch.
+func TestImportJSON_BUG3184_ReadsUnderThePerReadDeadline(t *testing.T) {
+	src, srcSlug := testServerWithAttachments(t)
+	rr := doRequest(src, "GET", "/api/v1/workspaces/"+srcSlug+"/export", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("export: %d %s", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.Bytes()
+	srv := attachmentsServerOn(t, store.DriverSQLite)
+	_, tok := memberImporter(t, srv)
+	srv.importReadIdle = 3 * time.Second
+
+	conn, err := net.Dial("tcp", liveServer(t, srv, 300*time.Millisecond))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	status, resp := sendImport(t, conn, bufio.NewReader(conn), tok, "jsonpatient", "application/json", [][]byte{body[:len(body)/2], body[len(body)/2:]}, time.Second, false)
+	if !strings.HasPrefix(status, "201") {
+		t.Fatalf("a JSON import stalled 1s under a 300ms server-wide ReadTimeout and a 3s per-Read window must succeed, got %s: %s", status, resp)
+	}
+}
+
+// The deadline an import arms does not outlive its request: net/http re-arms
+// the connection for the next request on a keep-alive connection. Measured
+// here rather than argued from net/http's source, because a leak would fail
+// an UNRELATED request on the same connection.
+func TestImportBundle_BUG3184_DeadlineDoesNotLeakToTheNextRequest(t *testing.T) {
+	prefix, rest := splitAfterManifest(t, realBundleWithBlob(t))
+	body := append(append([]byte(nil), prefix...), rest...)
+	srv := attachmentsServerOn(t, store.DriverSQLite)
+	_, tok := memberImporter(t, srv)
+	srv.importReadIdle = 500 * time.Millisecond
+
+	conn, err := net.Dial("tcp", liveServer(t, srv, time.Minute))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	br := bufio.NewReader(conn)
+	if status, resp := sendImport(t, conn, br, tok, "first", "application/gzip", [][]byte{body}, 0, true); !strings.HasPrefix(status, "201") {
+		t.Fatalf("first import: %s %s", status, resp)
+	}
+	time.Sleep(time.Second) // past the import's last per-Read deadline
+	if status, resp := sendImport(t, conn, br, tok, "second", "application/gzip", [][]byte{body}, 0, false); !strings.HasPrefix(status, "201") {
+		t.Fatalf("a second request on the same keep-alive connection, after the first import's deadline passed, must not time out: %s %s", status, resp)
 	}
 }
 
