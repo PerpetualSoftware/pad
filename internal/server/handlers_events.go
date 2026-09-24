@@ -263,7 +263,8 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		return
 	case events.SubscribeFailed:
 		// This instance could not open the workspace's Redis subscription
-		// (BUG-2764), or is shutting down: the stream would carry nothing,
+		// (BUG-2764), or is shutting down — either bus, after Close
+		// (BUG-2737): the stream would carry nothing,
 		// so refuse it and let the client reconnect rather than hold a
 		// connection that looks live. A Redis failure is logged by the bus
 		// with its error; a shutdown is quiet by design.
