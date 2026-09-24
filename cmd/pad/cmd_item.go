@@ -1840,6 +1840,14 @@ Examples:
 			}
 
 			fmt.Printf("Moved %q to %s\n", moved.Title, args[1])
+			// On STDOUT, unlike the other write warnings: it is part of what
+			// the move did, and stdout is what an MCP agent driving this
+			// command reads back (BUG-2367).
+			if moved.Warnings != nil {
+				for _, d := range moved.Warnings.NotUnique {
+					fmt.Printf("  dropped: %s\n", itemCopyLine(d.Message))
+				}
+			}
 			return nil
 		},
 	}
@@ -2217,6 +2225,8 @@ var itemCopyDroppedReasons = map[string]string{
 	"undeclared_source_field": "the source item's own collection schema no longer declares this key",
 	"assignee_not_a_member":   "the assignee is not a member of the destination workspace",
 	"agent_role_not_portable": "agent roles are workspace-local and never carry",
+	"target_computed":         "the destination computes this field itself",
+	"not_unique":              "another item in the destination already has this value",
 }
 
 var itemCopyNeedsValueReasons = map[string]string{
@@ -2262,9 +2272,12 @@ func renderItemCopyPreflight(out io.Writer, p *cli.ItemCopyPreflight) error {
 		fmt.Fprintf(w, "    (none)\n")
 	}
 	for _, f := range p.Fields.Dropped {
+		reason := itemCopyReason(itemCopyDroppedReasons, f.Reason)
+		if f.Detail != "" {
+			reason = itemCopyLine(f.Detail)
+		}
 		fmt.Fprintf(w, "    %-20s %s (%s) — %s\n",
-			itemCopyLine(f.Key), itemCopyTypeLabel("", f.Label), itemCopyLine(f.Kind),
-			itemCopyReason(itemCopyDroppedReasons, f.Reason))
+			itemCopyLine(f.Key), itemCopyTypeLabel("", f.Label), itemCopyLine(f.Kind), reason)
 	}
 
 	fmt.Fprintf(w, "  needs_value (%d)\n", len(p.Fields.NeedsValue))
@@ -2636,6 +2649,11 @@ func renderItemCopyResult(out io.Writer, r *cli.ItemCopyResult) error {
 		dropped = itemCopyList(warn.DroppedFields)
 	}
 	fmt.Fprintf(w, "  %-32s %s\n", "fields dropped", dropped)
+	// Why, for a value dropped as not unique (BUG-2367): for invocation_slug
+	// the copy no longer answers to that slug, which a bare key hides.
+	for _, d := range warn.NotUnique {
+		fmt.Fprintf(w, "  %-32s %s\n", "  not unique", itemCopyLine(d.Message))
+	}
 	fmt.Fprintf(w, "  %-32s %s\n", "assignee dropped", yesNo(warn.DroppedAssignee))
 	fmt.Fprintf(w, "  %-32s %s\n", "agent role dropped", yesNo(warn.DroppedAgentRole))
 	fmt.Fprintf(w, "  %-32s %s\n", "attachments cloned", itemCopyAttachmentSummary(warn.AttachmentCount, warn.AttachmentBytes))

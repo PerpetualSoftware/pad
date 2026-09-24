@@ -129,6 +129,24 @@ type ItemWriteWarnings struct {
 	// nowhere else. A write without a version token, or with
 	// overwrite_pending_edits, still does that; this names how many it destroyed.
 	PrunedPendingEdits int `json:"pruned_pending_edits,omitempty"`
+
+	// NotUnique describes each value a move or copy DROPPED because the
+	// destination collection declares that field unique and another item
+	// already holds the value (BUG-2367). Its keys are also in DroppedFields;
+	// this says why and what, because for invocation_slug the drop has a
+	// consequence the reader must be able to act on — the item stops answering
+	// to that slug.
+	NotUnique []NotUniqueDrop `json:"not_unique,omitempty"`
+}
+
+// NotUniqueDrop is one carried value dropped for colliding on a unique field.
+// Holder is the ref of the item holding the value, present ONLY when the caller
+// may see that item; Message is the one sentence every surface prints.
+type NotUniqueDrop struct {
+	Key     string `json:"key"`
+	Value   string `json:"value"`
+	Holder  string `json:"holder,omitempty"`
+	Message string `json:"message"`
 }
 
 // RelationTarget is one hydrated `relation` value: the item an ID points at,

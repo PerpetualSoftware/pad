@@ -58,6 +58,8 @@ export const COPY_DROP_REASONS = [
 	'invalid_shape',
 	'ambiguous',
 	'duplicate_referent',
+	'target_computed',
+	'not_unique',
 ] as const;
 
 export type CopyDropReason = (typeof COPY_DROP_REASONS)[number];
@@ -106,6 +108,15 @@ const MESSAGES: Record<CopyDropReason, string> = {
 	// case, and a user told "this value appears twice" while looking at two
 	// different strings reads the message as a bug.
 	duplicate_referent: 'it refers to an item already linked earlier in this field',
+
+	// BUG-2367. The destination fills this field itself; a carried value
+	// would be a stale snapshot of someone else's computation.
+	target_computed: 'the destination computes this field itself',
+
+	// BUG-2367. The row's `detail` names the value and, when the caller may
+	// see it, the item holding it; this sentence is what shows when it does
+	// not, and it claims only what the reason alone says.
+	not_unique: 'another item in the destination already has this value',
 };
 
 /**

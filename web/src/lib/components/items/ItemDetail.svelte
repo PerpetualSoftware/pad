@@ -5142,12 +5142,20 @@
 	async function handleCopied(result: ItemCopyResult) {
 		const dest = result.destination;
 		const label = dest.ref ?? dest.slug;
-		toastStore.show(
-			result.source.archived
-				? `Moved to ${dest.workspace_name} as ${label}`
-				: `Copied to ${dest.workspace_name} as ${label}`,
-			'success',
-		);
+		const verb = result.source.archived ? 'Moved' : 'Copied';
+		// A value dropped as NOT UNIQUE is named, not folded into a clean
+		// success (BUG-2367): the preview listed it, and the copy's own answer
+		// must say it too.
+		const notUnique = result.warnings.not_unique ?? [];
+		if (notUnique.length > 0) {
+			toastStore.show(
+				`${verb} to ${dest.workspace_name} as ${label}, without: ${notUnique.map((d) => d.message).join('; ')}`,
+				'info',
+				10000,
+			);
+		} else {
+			toastStore.show(`${verb} to ${dest.workspace_name} as ${label}`, 'success');
+		}
 		if (!result.source.archived) return;
 		const targetItem = item;
 		if (!targetItem) return;
@@ -5384,6 +5392,25 @@
 	 * decide whether to close; the toasts, the open-children force retry, and
 	 * `navIfStillCurrent`'s route-identity fencing are unchanged.
 	 */
+	/**
+	 * The move's success toast. A value the destination refused as NOT UNIQUE
+	 * was dropped from the moved item, and for an invocation slug that means
+	 * the item no longer answers to it, so the toast says so rather than
+	 * reporting a clean move (BUG-2367).
+	 */
+	function showMovedToast(targetSlug: string, moved: Item) {
+		const notUnique = moved.warnings?.not_unique ?? [];
+		if (notUnique.length === 0) {
+			toastStore.show(`Moved to ${targetSlug}`, 'success');
+			return;
+		}
+		toastStore.show(
+			`Moved to ${targetSlug}, without: ${notUnique.map((d) => d.message).join('; ')}`,
+			'info',
+			10000
+		);
+	}
+
 	async function handleMove(
 		targetSlug: string,
 		fieldOverrides?: Record<string, unknown>,
@@ -5439,7 +5466,7 @@
 		};
 		try {
 			const moved = await doMove(false);
-			if (stillOnSource()) toastStore.show(`Moved to ${targetSlug}`, 'success');
+			if (stillOnSource()) showMovedToast(targetSlug, moved);
 			navIfStillCurrent(moved.slug);
 			return { status: 'ok' };
 		} catch (e: any) {
@@ -5465,7 +5492,7 @@
 					return { status: 'failed', message: retryErr?.message ?? 'Failed to move item' };
 				}
 				if (forced) {
-					if (stillOnSource()) toastStore.show(`Moved to ${targetSlug}`, 'success');
+					if (stillOnSource()) showMovedToast(targetSlug, forced);
 					navIfStillCurrent(forced.slug);
 					return { status: 'ok' };
 				}

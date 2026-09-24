@@ -381,7 +381,10 @@ type CrossWorkspaceCopyResult struct {
 	// DroppedFields are field keys MigrateFields could not carry into the
 	// destination schema. DroppedAssignee / DroppedAgentRole record the DR-8
 	// scrubs.
-	DroppedFields    []string
+	DroppedFields []string
+	// NotUnique describes the DroppedFields entries dropped for colliding on
+	// a destination unique field (BUG-2367).
+	NotUnique        []models.NotUniqueDrop
 	DroppedAssignee  bool
 	DroppedAgentRole bool
 }
@@ -654,7 +657,7 @@ func (s *Store) copyItemAcrossWorkspacesTx(req CrossWorkspaceCopyRequest, source
 	//
 	// The DESTINATION workspace id, not the source's: a supplied override is
 	// a write into workspace B and has to name something that exists THERE.
-	finalFields, dropped, err := s.migrateCopyFields(tx, req.TargetWorkspaceID, source.Fields, sourceColl.Schema, targetColl.Schema, req.FieldOverrides, scope, req.RelationVisibility)
+	finalFields, dropped, notUnique, err := s.migrateCopyFields(tx, req.TargetWorkspaceID, targetColl, source.Fields, sourceColl.Schema, req.FieldOverrides, scope, req.RelationVisibility)
 	if err != nil {
 		return nil, err
 	}
@@ -868,6 +871,7 @@ func (s *Store) copyItemAcrossWorkspacesTx(req CrossWorkspaceCopyRequest, source
 		BytesCopied:       plan.TotalBytes,
 		UnresolvableRefs:  plan.UnresolvableRefs,
 		DroppedFields:     dropped,
+		NotUnique:         notUnique,
 		DroppedAssignee:   droppedAssignee,
 		DroppedAgentRole:  droppedAgentRole,
 	}, nil
@@ -1073,25 +1077,26 @@ func (s *Store) getCollectionInWorkspaceTx(tx *sql.Tx, collectionID, workspaceID
 // and items.ValidateFields all operate on map[string]any — and, decisively,
 // the preflight does the identical round-trip, so the preview and the copy
 // AGREE. Making the copy alone byte-faithful would break that agreement, which
-// is the one thing this pipeline exists to preserve. It belongs with BUG-2367,
+// is the one thing this pipeline exists to preserve. It belongs with BUG-3202,
 // as a change to the field model for all callers at once.
 //
 // Returns the final field map (the planner's input, pre-rewrite) and the keys
 // migration dropped.
-func (s *Store) migrateCopyFields(q Queryer, destWorkspaceID, sourceFieldsJSON, sourceSchemaJSON, targetSchemaJSON string, overrides map[string]any, scope items.MigrateScope, canSee RelationVisibilityFunc) (map[string]any, []string, error) {
+func (s *Store) migrateCopyFields(q Queryer, destWorkspaceID string, targetColl *models.Collection, sourceFieldsJSON, sourceSchemaJSON string, overrides map[string]any, scope items.MigrateScope, canSee RelationVisibilityFunc) (map[string]any, []string, []models.NotUniqueDrop, error) {
+	targetSchemaJSON := targetColl.Schema
 	var sourceSchema, targetSchema models.CollectionSchema
 	if err := json.Unmarshal([]byte(sourceSchemaJSON), &sourceSchema); err != nil {
-		return nil, nil, fmt.Errorf("copy item across workspaces: parse source schema: %w", err)
+		return nil, nil, nil, fmt.Errorf("copy item across workspaces: parse source schema: %w", err)
 	}
 	if err := json.Unmarshal([]byte(targetSchemaJSON), &targetSchema); err != nil {
-		return nil, nil, fmt.Errorf("copy item across workspaces: parse target schema: %w", err)
+		return nil, nil, nil, fmt.Errorf("copy item across workspaces: parse target schema: %w", err)
 	}
 
 	// Refused BEFORE the source item's fields are even parsed, so the
 	// rejection cannot depend on the source's contents — same ordering the
 	// preflight uses for the same reason.
 	if bad := items.UndeclaredOverrideKeys(overrides, items.SchemaForMigratedFields(targetSchema).Fields); len(bad) > 0 {
-		return nil, nil, &UndeclaredOverrideError{Keys: bad}
+		return nil, nil, nil, &UndeclaredOverrideError{Keys: bad}
 	}
 
 	currentFields := map[string]any{}
@@ -1154,14 +1159,14 @@ func (s *Store) migrateCopyFields(q Queryer, destWorkspaceID, sourceFieldsJSON, 
 		items.SchemaForMigratedFields(targetSchema), migrated.Fields, overrides,
 		CarriedSourceValues(currentFields, migrated.Dropped), mode)
 	if relErr != nil {
-		return nil, nil, fmt.Errorf("copy item across workspaces: resolve relation referents: %w", relErr)
+		return nil, nil, nil, fmt.Errorf("copy item across workspaces: resolve relation referents: %w", relErr)
 	}
 	if len(relRefusals) > 0 {
 		// The same 400 validation_error the preflight's refuseRelationIssues
 		// emits, through the channel this function already uses for a failed
 		// destination validation — so the copy and its preview refuse one
 		// request with one code and one sentence.
-		return nil, nil, &FieldValidationError{Err: errors.New(RelationIssuesMessage(relRefusals))}
+		return nil, nil, nil, &FieldValidationError{Err: errors.New(RelationIssuesMessage(relRefusals))}
 	}
 	// Appended to Dropped rather than reported separately: StillDropped below
 	// filters this list against the FINAL map, and MigrateRelationReferentsQ
@@ -1180,11 +1185,24 @@ func (s *Store) migrateCopyFields(q Queryer, destWorkspaceID, sourceFieldsJSON, 
 	// pass just deleted as unresolvable and validation puts straight back.
 	// Snapshotting before the pass would treat that key as already examined
 	// and skip it, which is the arrangement that hid it.
+	// Carried unique collisions (BUG-2367): the same pass, at the same point,
+	// as the move doors and the preflight.
+	notUnique, nuErr := s.DropCarriedUniqueCollisionsQ(q, canSee, destWorkspaceID, targetColl,
+		targetSchema.Fields, migrated.Fields, func(k string) bool {
+			_, set := overrides[k]
+			return set
+		})
+	if nuErr != nil {
+		return nil, nil, nil, fmt.Errorf("copy item across workspaces: %w", nuErr)
+	}
+	for _, d := range notUnique {
+		migrated.Dropped = append(migrated.Dropped, d.Key)
+	}
 	relBefore := RelationKeysPresent(items.SchemaForMigratedFields(targetSchema), migrated.Fields)
 	defaultDrops, verr := items.ValidateFieldsWithDrops(
 		migrated.Fields, items.SchemaForMigratedFields(targetSchema))
 	if verr != nil {
-		return nil, nil, &FieldValidationError{Err: verr}
+		return nil, nil, nil, &FieldValidationError{Err: verr}
 	}
 	items.DropBlankRelations(migrated.Fields, items.SchemaForMigratedFields(targetSchema), nil)
 	// Defaults the validator discarded for failing their own type check
@@ -1199,7 +1217,7 @@ func (s *Store) migrateCopyFields(q Queryer, destWorkspaceID, sourceFieldsJSON, 
 	lateDropped, lateErr := s.ResolveLateRelationDefaultsQ(q, canSee, destWorkspaceID,
 		items.SchemaForMigratedFields(targetSchema), migrated.Fields, relBefore)
 	if lateErr != nil {
-		return nil, nil, fmt.Errorf("copy item across workspaces: resolve relation defaults: %w", lateErr)
+		return nil, nil, nil, fmt.Errorf("copy item across workspaces: resolve relation defaults: %w", lateErr)
 	}
 	// A REQUIRED relation whose default did not resolve cannot be left as a
 	// drop: the key is deleted AFTER validation passed, so nothing re-checks
@@ -1208,7 +1226,7 @@ func (s *Store) migrateCopyFields(q Queryer, destWorkspaceID, sourceFieldsJSON, 
 	// re-inject the same broken default. There is no valid value, so this
 	// refuses.
 	if req := RequiredRelationIssues(items.SchemaForMigratedFields(targetSchema), lateDropped); len(req) > 0 {
-		return nil, nil, &FieldValidationError{Err: errors.New(RelationIssuesMessage(req))}
+		return nil, nil, nil, &FieldValidationError{Err: errors.New(RelationIssuesMessage(req))}
 	}
 	// THE EIGHTH DOOR'S VISIBILITY PASS (night-11 finding; lead ruling day-58).
 	//
@@ -1236,14 +1254,14 @@ func (s *Store) migrateCopyFields(q Queryer, destWorkspaceID, sourceFieldsJSON, 
 		items.SchemaForMigratedFields(targetSchema), migrated.Fields,
 		NotDefaultKeys(overrides, CarriedSourceValues(currentFields, migrated.Dropped)))
 	if invErr != nil {
-		return nil, nil, fmt.Errorf("copy item across workspaces: relation default visibility: %w", invErr)
+		return nil, nil, nil, fmt.Errorf("copy item across workspaces: relation default visibility: %w", invErr)
 	}
 	// A REQUIRED relation whose default was dropped for visibility cannot be
 	// left as a drop, for the same reason the unresolvable case above cannot:
 	// the key is deleted AFTER validation passed, so nothing re-checks it and
 	// the item would land with a required field absent.
 	if req := RequiredRelationIssues(items.SchemaForMigratedFields(targetSchema), invisibleDefaults); len(req) > 0 {
-		return nil, nil, &FieldValidationError{Err: errors.New(RelationIssuesMessage(req))}
+		return nil, nil, nil, &FieldValidationError{Err: errors.New(RelationIssuesMessage(req))}
 	}
 	for _, ri := range append(lateDropped, invisibleDefaults...) {
 		migrated.Dropped = append(migrated.Dropped, ri.Key)
@@ -1286,7 +1304,18 @@ func (s *Store) migrateCopyFields(q Queryer, destWorkspaceID, sourceFieldsJSON, 
 		}
 	}
 	sort.Strings(stillDropped)
-	return migrated.Fields, stillDropped, nil
+	// Uniqueness on the FINAL map (BUG-2367), inside the copy's transaction:
+	// an override or a default that collides is refused, the same check the
+	// move doors and the preflight run. The item does not exist yet, so
+	// nothing is excluded.
+	conflicts, uerr := s.UniqueFieldConflictsQ(q, targetColl.ID, "", targetSchema.Fields, migrated.Fields)
+	if uerr != nil {
+		return nil, nil, nil, fmt.Errorf("copy item across workspaces: %w", uerr)
+	}
+	if len(conflicts) > 0 {
+		return nil, nil, nil, &UniqueFieldConflictError{Keys: conflicts}
+	}
+	return migrated.Fields, stillDropped, notUnique, nil
 }
 
 // carryAssigneeTx implements DR-8's assignee rule: the source's assignee

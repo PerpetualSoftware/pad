@@ -770,6 +770,19 @@ export interface Item {
  * struct marks each `omitempty`: an absent key means "nothing to report for
  * this kind", not "unknown".
  */
+/**
+ * One carried value dropped for colliding on a destination unique field
+ * (BUG-2367). `holder` is the ref of the item holding the value, present only
+ * when the caller may see that item; `message` is the sentence every surface
+ * prints.
+ */
+export interface NotUniqueDrop {
+	key: string;
+	value: string;
+	holder?: string;
+	message: string;
+}
+
 export interface ItemWriteWarnings {
 	/** Field keys stored in the blob that the collection's schema does not declare (BUG-2850). */
 	undeclared_fields?: string[];
@@ -783,6 +796,12 @@ export interface ItemWriteWarnings {
 	 * which is about the key rather than what it points at.
 	 */
 	unresolved_relations?: string[];
+	/**
+	 * Carried values a move or copy dropped because the destination declares
+	 * the field unique and another item already holds the value (BUG-2367).
+	 * Their keys are also in `dropped_fields`; `message` is the sentence to show.
+	 */
+	not_unique?: NotUniqueDrop[];
 	/**
 	 * Where a content write ended up, in the same vocabulary the
 	 * `content_not_applied` error uses. On a 200 it takes exactly one value,
@@ -885,6 +904,8 @@ export interface ItemCopyPreflightDropped {
 	label?: string;
 	/** `assignment` covers the assignee / agent-role pair, not a schema field. */
 	kind: 'field' | 'assignment';
+	/** One sentence naming what was lost where `reason` cannot (BUG-2367). */
+	detail?: string;
 	reason:
 		| 'no_target_field'
 		| 'incompatible_type'
@@ -930,7 +951,15 @@ export interface ItemCopyPreflightDropped {
 		 * strings — a UUID and a ref, or a ref and an exact title — so nothing
 		 * that cannot resolve them can see the duplication.
 		 */
-		| 'duplicate_referent';
+		| 'duplicate_referent'
+		/** The destination field is computed by the server (BUG-2367). */
+		| 'target_computed'
+		/**
+		 * The destination declares the field unique and another item already
+		 * holds the carried value (BUG-2367). `detail` says which value, and
+		 * which item when the caller may see it.
+		 */
+		| 'not_unique';
 }
 
 export interface ItemCopyPreflightNeedsValue {
@@ -1141,6 +1170,8 @@ export interface ItemCopyResultDestination {
 export interface ItemCopyResultWarnings {
 	/** Destination-schema keys migration could not carry. Never null. */
 	dropped_fields: string[];
+	/** Which of those were dropped for colliding on a unique field, and why (BUG-2367). */
+	not_unique?: NotUniqueDrop[];
 	dropped_assignee: boolean;
 	dropped_agent_role: boolean;
 	attachment_count: number;

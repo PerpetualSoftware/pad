@@ -117,6 +117,17 @@
 			<span class="dropped-keys">{metadata.dropped_fields}</span>
 		</div>
 	{/if}
+	<!--
+		BUG-2367. Why a value was dropped when the destination declares the
+		field unique: the server writes one sentence per drop, naming the value
+		and, when the actor may see it, the item that holds it.
+	-->
+	{#if activity.action === 'moved' && metadata.not_unique}
+		<div class="dropped">
+			<span class="dropped-label">Not unique:</span>
+			<span class="dropped-keys">{metadata.not_unique}</span>
+		</div>
+	{/if}
 </div>
 
 <style>

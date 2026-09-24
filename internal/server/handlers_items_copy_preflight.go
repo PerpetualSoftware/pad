@@ -263,6 +263,8 @@ const (
 	dropReasonUndeclaredSourceField = "undeclared_source_field"
 	dropReasonAssigneeNotAMember    = "assignee_not_a_member"
 	dropReasonAgentRoleNotPortable  = "agent_role_not_portable"
+	dropReasonTargetComputed        = "target_computed"
+	dropReasonNotUnique             = "not_unique"
 	dropReasonReferentNotPortable   = string(store.RelationTargetNotPortable)
 )
 
@@ -282,6 +284,8 @@ func preflightDropReasons() []string {
 		dropReasonUndeclaredSourceField,
 		dropReasonAssigneeNotAMember,
 		dropReasonAgentRoleNotPortable,
+		dropReasonTargetComputed,
+		dropReasonNotUnique,
 	}
 	seen := make(map[string]bool, len(out))
 	for _, r := range out {
@@ -297,8 +301,12 @@ func preflightDropReasons() []string {
 }
 
 type ItemCopyPreflightDropped struct {
-	Key   string `json:"key"`
-	Label string `json:"label,omitempty"`
+	Key string `json:"key"`
+	// Detail is one sentence saying what was lost, where the reason alone
+	// cannot: a `not_unique` drop names the value and, when the caller may
+	// see it, the item holding it (BUG-2367). Additive, omitempty.
+	Detail string `json:"detail,omitempty"`
+	Label  string `json:"label,omitempty"`
 	// Kind is "field" for a collection-schema field, or "assignment" for
 	// the assignee / agent-role pair (DR-8), which live on the item row
 	// rather than in its fields.
@@ -322,6 +330,14 @@ type ItemCopyPreflightDropped struct {
 	//                                destination workspace (DR-8)
 	//   "agent_role_not_portable"  — role slugs are workspace-local and
 	//                                never carry (DR-8)
+	//   "target_computed"          — the destination field is computed by
+	//                                the server, so a carried literal would
+	//                                be a stale snapshot (BUG-2367)
+	//   "not_unique"               — the destination declares the field
+	//                                unique and another item already holds
+	//                                the carried value; Detail names the
+	//                                value and, when visible, the holder
+	//                                (BUG-2367)
 	//   "referent_not_portable"    — system metadata whose VALUE points at
 	//                                something belonging to the SOURCE
 	//                                workspace's context, so it describes
@@ -882,6 +898,26 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 		dropReasonByKey[ri.Key] = string(ri.Reason)
 		delete(origin, ri.Key)
 	}
+	// Carried unique collisions (BUG-2367): the copy's pass, at the copy's
+	// point, so the preview and the copy drop the same keys. The detail line
+	// names the holder only when the caller may see it.
+	notUnique, nuErr := s.store.DropCarriedUniqueCollisionsQ(s.store.Q(),
+		s.relationVisibility(r, dst.Role), dst.WorkspaceID(), targetColl,
+		targetSchema.Fields, final, func(k string) bool {
+			_, set := input.FieldOverrides[k]
+			return set
+		})
+	if nuErr != nil {
+		writeInternalError(w, fmt.Errorf("copy preflight: %w", nuErr))
+		return
+	}
+	dropDetailByKey := make(map[string]string, len(notUnique))
+	for _, d := range notUnique {
+		migrated.Dropped = append(migrated.Dropped, d.Key)
+		dropReasonByKey[d.Key] = dropReasonNotUnique
+		dropDetailByKey[d.Key] = d.Message
+		delete(origin, d.Key)
+	}
 	// Snapshot AFTER the pass above and BEFORE validation: what this needs to
 	// identify is exactly what VALIDATION adds — which includes a default the
 	// pass just deleted as unresolvable and validation puts straight back.
@@ -991,6 +1027,16 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 		// endpoint an amplifier.
 		writeError(w, http.StatusBadRequest, "invalid_override",
 			"Invalid override value(s): "+summarizeMessages(badOverrides))
+		return
+	}
+
+	// An override or default that collides is the copy's 409, so the preview
+	// refuses it the same way (BUG-2367).
+	if conflicts, uerr := s.store.UniqueFieldConflictsQ(s.store.Q(), targetColl.ID, "", targetSchema.Fields, final); uerr != nil {
+		writeInternalError(w, fmt.Errorf("copy preflight: %w", uerr))
+		return
+	} else if len(conflicts) > 0 {
+		writeError(w, http.StatusConflict, "conflict", store.UniqueFieldConflictsMessage(conflicts))
 		return
 	}
 
@@ -1140,6 +1186,7 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 			}
 			resp.Fields.Dropped = append(resp.Fields.Dropped, ItemCopyPreflightDropped{
 				Key: key, Label: label, Kind: "field", Reason: reasonForKey,
+				Detail: dropDetailByKey[key],
 			})
 			continue
 		}
@@ -1165,6 +1212,11 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 			reason = dropReasonIncompatibleType
 			if !declaredBySource {
 				reason = dropReasonUndeclaredSourceField
+			}
+			// Checked last so it wins: MigrateFields refuses a computed
+			// destination before it looks at either schema's type.
+			if def.Computed {
+				reason = dropReasonTargetComputed
 			}
 			if def.Label != "" {
 				label = def.Label

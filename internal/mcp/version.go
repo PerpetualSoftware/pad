@@ -1017,6 +1017,29 @@ const CmdhelpVersion = "0.1"
 //     browser tab and BUG-3000 carries the open half — so no surface
 //     here states a duration.
 //
+//     0.51 — BUG-2367. `pad_item.action=move` (and the copy and bulk-move
+//     doors behind the same field pipeline) stops carrying a value into a
+//     field the destination schema marks COMPUTED, and stops carrying a
+//     value that collides on a destination `unique_scope` field. Before it,
+//     a unique collision answered 500 on single move for invocation_slug
+//     (the only indexed one), leaked the SQL error text through bulk move,
+//     and stored a duplicate on any unindexed unique field. The rule is
+//     provenance, as TASK-2878 made it for relation referents: a CARRIED
+//     value that collides is DROPPED and reported, and a supplied override
+//     or an injected default that collides is REFUSED with 409 conflict. A
+//     required field emptied by the drop is refused as required, the
+//     existing needs_value route. Reporting is additive and omitempty: the
+//     move response gains `warnings.not_unique` [{key, value, holder?,
+//     message}] (its keys also sit in the copy's `dropped_fields`), bulk
+//     `updated[]` rows and the copy's `warnings` carry the same list, and the
+//     copy preflight gains the drop reasons `target_computed` and
+//     `not_unique` plus a `detail` sentence on the dropped row. `holder` (the
+//     ref of the item holding the value) is present only when the caller may
+//     see that item, so the drop is not an existence oracle. Local stdio
+//     `item move` prints `  dropped: <message>` lines on stdout after its
+//     success line. BEHAVIOR bump on the 0.43 / 0.29 grounds (lead-ruled): a
+//     move or copy stores something different from what it stored before.
+//
 //     0.50 — BUG-3014. A `relation_targets` entry gains an ADDITIVE,
 //     omitempty `stored_as_text: true` when the stored value is not
 //     UUID-shaped: a title a bundle import carried verbatim, or legacy free
@@ -1539,7 +1562,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.50"
+const ToolSurfaceVersion = "0.51"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

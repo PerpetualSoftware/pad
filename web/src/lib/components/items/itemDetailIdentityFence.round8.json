@@ -59,8 +59,8 @@
 					"\t\t\t\tconst onSource = stillOnSource();\n\t\t\t\tif (!onSource) return { status: 'cancelled' };\n"
 				],
 				[
-					"\t\t\t\tif (forced) {\n\t\t\t\t\tif (stillOnSource()) toastStore.show(`Moved to ${targetSlug}`, 'success');\n",
-					"\t\t\t\tconst announce = onSource && !!forced;\n\t\t\t\tif (forced) {\n\t\t\t\t\tif (announce) toastStore.show(`Moved to ${targetSlug}`, 'success');\n"
+					"\t\t\t\tif (forced) {\n\t\t\t\t\tif (stillOnSource()) showMovedToast(targetSlug, forced);\n",
+					"\t\t\t\tconst announce = onSource && !!forced;\n\t\t\t\tif (forced) {\n\t\t\t\t\tif (announce) showMovedToast(targetSlug, forced);\n"
 				]
 			],
 			"refuses": [
@@ -186,8 +186,8 @@
 					"\t\t\t\tconst onSource = stillOnSource();\n\t\t\t\tif (!onSource) return { status: 'cancelled' };\n"
 				],
 				[
-					"\t\t\t\tif (forced) {\n\t\t\t\t\tif (stillOnSource()) toastStore.show(`Moved to ${targetSlug}`, 'success');\n",
-					"\t\t\t\tconst announce = onSource && !!forced;\n\t\t\t\tif (forced) {\n\t\t\t\t\tif (announce) toastStore.show(`Moved to ${targetSlug}`, 'success');\n"
+					"\t\t\t\tif (forced) {\n\t\t\t\t\tif (stillOnSource()) showMovedToast(targetSlug, forced);\n",
+					"\t\t\t\tconst announce = onSource && !!forced;\n\t\t\t\tif (forced) {\n\t\t\t\t\tif (announce) showMovedToast(targetSlug, forced);\n"
 				]
 			]
 		},
