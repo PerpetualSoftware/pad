@@ -92,7 +92,7 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	jumpToSection: { reviewed: '17407aeb431b', why: 'switches this instance\'s tab and scrolls to an anchor', may: ['document.getElementById', 'document.getElementById(anchorId).scrollIntoView'] },
 	ensureGraphComp: { reviewed: 'c1565cfb8a18', why: 'lazy-loads a component module into this instance', may: ['ItemGraphComp', 'graphLoadError'] },
 	handleCopyRef: { reviewed: 'fb3adcaf167a', why: 'switchedAway before the copied flag' },
-	loadData: { reviewed: '8ba274ad4c3d', why: 'IS the load: myGen against loadGeneration after every await' },
+	loadData: { reviewed: '05a2cb755ede', why: 'IS the load: myGen against loadGeneration after every await; the BUG-3198 re-read of a changed item runs after the install, keyed on the installed item id, and fences itself on itemGen' },
 	startEditTitle: { reviewed: '17f04352d420', why: 'focuses and sizes the input it opened synchronously', may: ['el', 'titleInputEl.focus', 'titleInputEl.setSelectionRange'] },
 	saveTitle: { reviewed: 'ba5a2acf0d81', why: 'gen against loadGeneration on both arms, and again after the tick that resizes a reopened editor (BUG-3115)' },
 	updateField: {
@@ -152,7 +152,7 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	retryLinks: { reviewed: '721460b6df3f', why: 'item id, workspace and itemGen after the await; commits only when nothing wrote the links since' },
 	// BUG-3036: the re-read an SSE event or sync pass deferred while a save was in
 	// flight. The SSE item_updated shape: itemGen and the item id after each await.
-	runOwedRefresh: { reviewed: '9dadf261b60f', why: 'itemGen and the item id after each await, as the SSE item_updated re-read it stands in for' },
+	runOwedRefresh: { reviewed: '1ede6aa08b69', why: 'destroyed, itemGen and the item id after each await, as the SSE item_updated re-read it stands in for (destroyed since BUG-3198: the load path calls it too)' },
 	flushCollabBeforeRestore: { reviewed: '90cad44a7fe6', why: 'identityHeld before its failure toast' },
 	closeCopyDialog: { reviewed: '1c925f081a26', why: 'restores focus after closing synchronously', may: ['paneMenuTrigger.focus'] },
 	closePushDialog: { reviewed: 'bda8c7529677', why: 'restores focus after closing synchronously', may: ['paneMenuTrigger.focus'] },
@@ -187,8 +187,8 @@ interface SignedRow extends Row {
 
 /** Async functions that are not top-level declarations, in the script. */
 const NESTED: SignedRow[] = [
-	{ body: /event\.type === 'collection_updated'/, why: 'SSE: callbackGen after the collection fetch, itemGen on item branches', reviewed: '10cad1a99a63' },
-	{ body: /result\.type === 'caught_up'/, why: 'sync: callbackGen after the reconciliation, itemGen on item branches', reviewed: '0b84c1b8bd09' },
+	{ body: /event\.type === 'collection_updated'/, why: 'SSE: callbackGen after the collection fetch, itemGen on item branches; a change or a migration arriving before this load installs its item is only RECORDED (BUG-3198), synchronously, before any await', reviewed: '9f17abf36838' },
+	{ body: /result\.type === 'caught_up'/, why: 'sync: callbackGen after the reconciliation, itemGen on item branches; a result arriving before this load installs its item is only RECORDED (BUG-3198), synchronously, before any await', reviewed: '5b9a1740820e' },
 	{ body: /flushCollabContent\(/, why: 'collab save: isForegroundCurrent (genAtFlush) before UI feedback', reviewed: '6dba5f66f347' },
 ];
 
@@ -362,7 +362,7 @@ const CONTINUATIONS: SignedRow[] = [
 		may: ['renameOverride'],
 	},
 	{ call: /^setTimeout\($/, body: /copied = false/, why: 'copy-flag reset: switchedAway', reviewed: '199047839886' },
-	{ call: /api\.items\.get\(wsSlug, itemSlug\)\.catch\($/, body: /./, why: 'loadData item fetch: sets a flag local to that load and re-throws', reviewed: '290b22d2bdc0' },
+	{ call: /api\.items\.get\(wsSlug, itemSlug\)\.catch\($/, body: /./, why: 'loadData item fetch: sets a flag local to that load and re-throws', reviewed: 'b8fedd6a6c14' },
 	{
 		call: /^setTimeout\($/,
 		body: /staleConnecting = true/,
@@ -433,6 +433,11 @@ const HELPERS: Record<string, string> = {
 	switchedAway: '8ba85844f406',
 	// BUG-3036: refuses a snapshot of the shown item whose seq is strictly older.
 	withInflightTags: 'd9aeb96e6bd1',
+	// BUG-3198: records the ids a delivery named while no item was installed.
+	// Synchronous; writes only the plain `changedDuringLoad` record.
+	noteChangeDuringLoad: 'ed3955c8ecae',
+	// BUG-3198: a fresh, empty record. Pure.
+	emptyChangedDuringLoad: 'd94fd85a8f1f',
 };
 
 /**

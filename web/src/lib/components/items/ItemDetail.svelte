@@ -1336,7 +1336,15 @@
 				// Match by STABLE id, not slug (Codex round 7): a replayed rename
 				// event's old slug can be re-owned by a DIFFERENT collection, so a
 				// slug match could load the wrong schema into this pane.
-				if (!snap || event.collection_id !== snap.id) return;
+				if (!snap) {
+					// No collection installed yet: a load is in flight. A schema
+					// migration that changed item values would otherwise be lost
+					// when the load installs an item read before it (BUG-3198,
+					// codex round 2), so record the collection it names.
+					if (event.items_changed && event.collection_id) noteChangeDuringLoad([], false, [event.collection_id]);
+					return;
+				}
+				if (event.collection_id !== snap.id) return;
 				const slug = snap.slug;
 				// BUG-2272: on the FULL-PAGE item route, retarget the URL +
 				// breadcrumb to the collection's NEW slug on a remote rename.
@@ -1429,7 +1437,11 @@
 				// concern, which is what this refetch now serves.
 				// Mid-edit, the refetch is OWED rather than skipped (BUG-3036): a
 				// skip dropped the change until some unrelated event came along.
-				if (event.items_changed && item && itemMatchesRef && (saveStatus === 'saving' || editingTitle)) {
+				if (event.items_changed && (!item || !itemMatchesRef)) {
+					// The same migration, arriving while a load (or a switch) is in
+					// flight: recorded for the load to check (BUG-3198).
+					noteChangeDuringLoad([], false, [snap.id]);
+				} else if (event.items_changed && item && itemMatchesRef && (saveStatus === 'saving' || editingTitle)) {
 					refreshOwed = true;
 				} else if (event.items_changed && item && itemMatchesRef) {
 					const reqItemId = item.id;
@@ -1451,13 +1463,19 @@
 				}
 				return;
 			}
-			if (!item || event.item_id !== item.id) return;
-			// Ignore events while mid-switch: during A→B the loaded `item` is
-			// still A but the requested ref is already B, so a stale archive/
-			// delete event for A would otherwise call handleGone() and close
-			// B's just-opening pane. The new item's loadData refetches fresh
-			// state anyway (PLAN-2105 / TASK-2112; Codex).
-			if (!itemMatchesRef) return;
+			// No item of the REQUESTED ref is installed yet (a first load, or
+			// mid-switch A→B with `item` still A): an event cannot be applied,
+			// and a stale archive/delete event for A must not call handleGone()
+			// and close B's just-opening pane (PLAN-2105 / TASK-2112; Codex). It
+			// is RECORDED rather than dropped (BUG-3198): the in-flight load's
+			// item read may predate this change, so "the new load refetches
+			// fresh state" is not true, and the load checks this record when it
+			// installs its item.
+			if (!item || !itemMatchesRef) {
+				if (event.item_id) noteChangeDuringLoad([event.item_id]);
+				return;
+			}
+			if (event.item_id !== item.id) return;
 			// Item writes below are ordered via the dedicated itemGen (round 9),
 			// captured per-refetch just before the fetch so a switch / a newer
 			// item write (load, migration, another SSE/onSync refetch) drops the
@@ -1581,14 +1599,28 @@
 			// only stops ITSELF, and everything after it captures `itemGen`
 			// fresh and would adopt this result under whoever signed in during it.
 			const callbackGen = loadGeneration;
-			if (!wsSlug || !itemSlug || !item) return;
+			if (!wsSlug || !itemSlug) return;
 			// A result names the workspace it was SYNCED FOR (TASK-2921).
 			if (result.workspace !== wsSlug) return;
-			// Ignore sync results while mid-switch (loaded item still A, ref
-			// already B) so a stale delete/refresh can't close B's pane or
-			// clobber it — the new item's loadData refetches fresh state
-			// (PLAN-2105 / TASK-2112; Codex).
-			if (!itemMatchesRef) return;
+			// No item of the requested ref is installed yet (a first load, or
+			// mid-switch with `item` still A): a stale delete/refresh must not
+			// close B's pane or clobber it (PLAN-2105 / TASK-2112; Codex), so the
+			// result is not APPLIED here. It is RECORDED (BUG-3198): measured, a
+			// bulk archive landed after this load's item read and before the
+			// load installed `item` (it waits on the index bootstrap), its sync
+			// arrived in that window, and dropping it left the Archived item
+			// rendered live with nothing left to correct it.
+			if (!item || !itemMatchesRef) {
+				if (result.type === 'incremental') {
+					noteChangeDuringLoad([
+						...result.changes.deleted,
+						...result.changes.updated.map((u) => u.id),
+					]);
+				} else if (result.type === 'full_refresh') {
+					noteChangeDuringLoad([], true);
+				}
+				return;
+			}
 			// A sync result means the tab came back from an absence, which is
 			// when a spent links retry should try again (BUG-2992). Before the
 			// caught_up return on purpose: link changes do not touch the item,
@@ -1944,6 +1976,9 @@
 		// item must not fire against this one when the effect below sees the
 		// status drop (BUG-3036).
 		refreshOwed = false;
+		// A change recorded for the PREVIOUS load's item is not this load's
+		// (BUG-3198): the record describes what arrived while this load runs.
+		changedDuringLoad = emptyChangedDuringLoad();
 		saveStatus = 'idle';
 		// Capture the URL parts this load was scoped to. Used in the catch
 		// path to detect whether the user has navigated away before this
@@ -2013,6 +2048,24 @@
 			if (myItemGen === itemGen) {
 				item = withInflightTags(itemData);
 				loadedItemWsSlug = reqWsSlug;
+			}
+			// A change to THIS item delivered while the load was in flight
+			// (BUG-3198): the read above may predate it, so read again. One read,
+			// issued now, after the change. OUTSIDE the itemGen gate on purpose
+			// (codex round 1): a newer item write that bumped itemGen installs
+			// its own row and skips the install above, and a check inside the
+			// gate would then leave the record unconsumed and the change
+			// unapplied. Keyed on the item actually installed, whoever
+			// installed it.
+			if (
+				item &&
+				item.id === itemData.id &&
+				(changedDuringLoad.full ||
+					changedDuringLoad.ids.has(itemData.id) ||
+					changedDuringLoad.collIds.has(itemData.collection_id))
+			) {
+				changedDuringLoad = emptyChangedDuringLoad();
+				void runOwedRefresh();
 			}
 			// Cross-collection `?item=` safety (PLAN-2105 / TASK-2112). The
 			// Promise.all above optimistically fetched the collection by the
@@ -3695,6 +3748,34 @@
 	 */
 	let refreshOwed = false;
 
+	/**
+	 * Item changes delivered while no item of the current load is installed
+	 * (BUG-3198). `loadData` installs `item` only after its item read AND the
+	 * index bootstrap resolve, and the bootstrap is the slow leg, so a change
+	 * can land after the item read and be delivered before `item` exists. The
+	 * handlers record the ids such a delivery names (or `full` for a
+	 * full_refresh) instead of dropping them, and `loadData` refetches the item
+	 * once if the record names the item it installed. That re-read is issued
+	 * AFTER the change, so no ask is answered by an older read (BUG-3192
+	 * Unit A's invariant). Reset at the start of every load. A plain `let`,
+	 * like `refreshOwed`: nothing renders from it.
+	 */
+	let changedDuringLoad: ChangedDuringLoad = emptyChangedDuringLoad();
+
+	/** `collIds`: collections whose schema migration changed item values (a
+	 *  `collection_updated` with `items_changed`), which names no item. */
+	type ChangedDuringLoad = { ids: Set<string>; full: boolean; collIds: Set<string> };
+
+	function emptyChangedDuringLoad(): ChangedDuringLoad {
+		return { ids: new Set(), full: false, collIds: new Set() };
+	}
+
+	function noteChangeDuringLoad(ids: Iterable<string>, full = false, collIds: Iterable<string> = []) {
+		for (const id of ids) changedDuringLoad.ids.add(id);
+		if (full) changedDuringLoad.full = true;
+		for (const id of collIds) changedDuringLoad.collIds.add(id);
+	}
+
 	async function runOwedRefresh() {
 		if (destroyed || !item) return;
 		const reqItemId = item.id;
@@ -3703,12 +3784,16 @@
 		const myItemGen = ++itemGen;
 		try {
 			const updated = await api.items.get(reqWsSlug, reqItemSlug);
-			if (!item || item.id !== reqItemId || myItemGen !== itemGen) return;
+			// `destroyed` after every await too (codex round 2 on BUG-3198): the
+			// load path now calls this, and a pane closed mid-read bumps
+			// loadGeneration but not itemGen, so the item fence alone let the
+			// response land in a destroyed instance.
+			if (destroyed || !item || item.id !== reqItemId || myItemGen !== itemGen) return;
 			// Follow-ups read the row actually installed (see the SSE re-read).
 			item = adoptServerItem(updated);
 			void refreshCollectionIfMoved(item);
 			const links = await refreshLinksPreservingOnFailure(reqWsSlug, item.slug);
-			if (!item || item.id !== reqItemId || myItemGen !== itemGen) return;
+			if (destroyed || !item || item.id !== reqItemId || myItemGen !== itemGen) return;
 			itemLinks = links;
 		} catch {
 			// Best-effort, as the refreshes it stands in for.
