@@ -426,14 +426,19 @@ jobs:
     runs-on: ubuntu-latest
     # Build the binary + UI once and reuse across Playwright projects.
     # The cap is a runaway sanity check, not a perf budget. It covers
-    # build-web + build-binary + install-playwright + ~190 tests: a clean
-    # pass is ~8-10m, but a single flaky-test retry tips the total past a
-    # 10m cap and the job is CANCELLED mid-suite while every test passed —
-    # a required gate going red with zero code involvement (BUG-2645
-    # mechanism b: marginal timeout). 15m absorbs one retry while still
-    # killing a genuine hang. Evidence pair: an 8m10s clean rerun vs a
-    # 10m18s cancel at the same SHA.
-    timeout-minutes: 15
+    # build-web + build-binary + install-playwright + the suite. A single
+    # flaky-test retry (~+2m) past the cap CANCELS the job mid-suite while
+    # every test passed: a required gate going red with zero code
+    # involvement (BUG-2645 mechanism b). History:
+    #   - 10 -> 15 (#1158): a green job took 7m54s. Evidence pair: an 8m10s
+    #     clean rerun vs a 10m18s cancel at the same SHA.
+    #   - 15 -> 20 (BUG-3188): measured 2026-09-24, green E2E median 10.9m
+    #     (9.3-11.7m over 5 runs) as the suite grew ~190 -> ~280 tests. The
+    #     growth is new specs; tests present in both runs were not slower.
+    # Raising the cap treats the symptom. The tripwire is IDEA-3189: shard
+    # or trim when the median of the last 10 green E2E jobs passes 14m (the
+    # measurement recipe is on that item). Still kills a genuine hang.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
