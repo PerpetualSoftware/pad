@@ -128,10 +128,12 @@ func TestBUG2639_GuestItemGrantsCountOnlyUnderTheirOwnCollection(t *testing.T) {
 	})
 }
 
-// The dedup is not only defensive. ListItems splits a Fields value containing
-// a comma into an IN list, so a collection whose completed-work values include
-// both "x" and "x,y" puts an item with status x into TWO (field, value) groups,
-// for a member as much as a guest. Each item is listed once regardless.
+// A collection whose completed-work values include both "x" and "x,y" lists an
+// item with status x once. When this was written, ListItems split a Fields
+// value containing a comma into an IN list, so the item landed in two
+// (field, value) groups and the dedup was what kept it single (BUG-2639).
+// Since BUG-3167 the store matches exactly, the "x,y" group matches only a
+// literal "x,y", and this pins the outcome whichever mechanism holds it.
 func TestBUG2639_CompletedWorkListsAnItemOnce(t *testing.T) {
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		slug := createWSWithCollections(t, srv)

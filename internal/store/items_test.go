@@ -2419,10 +2419,12 @@ func TestListItems_FTS_FieldFilter(t *testing.T) {
 		t.Errorf("expected exactly the high-priority item, got %d items", len(items))
 	}
 
-	// Comma-separated — narrows to 2 (high + medium).
+	// An explicit OR — narrows to 2 (high + medium). Fields used to split a
+	// comma value into this OR; since BUG-3167 Fields match exactly and the OR
+	// is asked for by name.
 	items, err = s.ListItems(ws.ID, models.ItemListParams{
-		Search: "Searchhitkeyword",
-		Fields: map[string]string{"priority": "high,medium"},
+		Search:      "Searchhitkeyword",
+		FieldsAnyOf: map[string][]string{"priority": {"high", "medium"}},
 	})
 	if err != nil {
 		t.Fatalf("ListItems search+field=high,medium: %v", err)

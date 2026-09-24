@@ -1624,10 +1624,20 @@ func flexJSONToString(raw json.RawMessage, expectedStart byte, errInvalid error)
 
 type ItemListParams struct {
 	CollectionSlug string
-	CollectionIDs  []string          // permission filter: restrict to these collection IDs (nil = no filter)
-	ItemIDs        []string          // permission filter: additionally restrict to these item IDs (for item-level grants)
-	Fields         map[string]string // field filters: key=value
-	Sort           string            // e.g. "priority:desc,created_at:asc"
+	CollectionIDs  []string // permission filter: restrict to these collection IDs (nil = no filter)
+	ItemIDs        []string // permission filter: additionally restrict to these item IDs (for item-level grants)
+	// Fields are EXACT-match field filters: key=value, compared verbatim. A
+	// value containing a comma is matched as that literal string (BUG-3167);
+	// it used to be split into an OR, which every in-process caller (the
+	// uniqueness check, playbook routing, schema-driven completed-work and
+	// bootstrap queries) had never meant.
+	Fields map[string]string
+	// FieldsAnyOf are OR filters: key matches ANY of the listed values. The
+	// one producer of an OR from caller input is parseItemListParams, which
+	// lowers a `?key=a,b` query value here to keep the documented list
+	// contract; everything else asks for an OR by name.
+	FieldsAnyOf    map[string][]string
+	Sort           string // e.g. "priority:desc,created_at:asc"
 	GroupBy        string
 	Search         string // FTS query
 	ParentID       string
