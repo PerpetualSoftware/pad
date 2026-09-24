@@ -2946,6 +2946,17 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	// A carried value on a unique_scope field must be unique in the collection
 	// it is moving INTO (BUG-2367). Checked on the final map, so an override
 	// that replaces the colliding value passes.
+	// A move that would change the item's open/done/abandoned state must be
+	// asked for, not inferred from whichever value survived migration or
+	// whichever default the destination injected (BUG-2367 item 4).
+	if ch := models.MigrateCloseStateChange(
+		currentFields, sourceSchema, collectionSettingsOf(sourceColl),
+		result.Fields, targetSchema, collectionSettingsOf(targetColl),
+		func(k string) bool { _, set := input.FieldOverrides[k]; return set },
+	); ch != nil {
+		writeError2(w, http.StatusBadRequest, closeStateChangeCode, ch.Message(), ch.Details())
+		return
+	}
 	if conflicts, uerr := s.store.UniqueFieldConflictsQ(s.store.Q(), targetColl.ID, item.ID, targetSchema.Fields, result.Fields); uerr != nil {
 		writeInternalError(w, uerr)
 		return

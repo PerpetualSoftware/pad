@@ -2105,3 +2105,15 @@ func TestRenderItemCopy_NotUnique(t *testing.T) {
 		t.Errorf("result missing the not_unique line:\n%s", buf.String())
 	}
 }
+
+// BUG-2367 item 4: the refusal's details become the exact command to run.
+func TestItemMoveStateChangeHint(t *testing.T) {
+	got := itemMoveStateChangeHint("TASK-5", "ideas", []byte(`{"field":"status","options":["new","implemented","rejected"],"from":"done","to":"open"}`))
+	want := "hint: pad item move TASK-5 ideas --field status=<new|implemented|rejected>"
+	if got != want {
+		t.Fatalf("got  %q\nwant %q", got, want)
+	}
+	if itemMoveStateChangeHint("TASK-5", "ideas", nil) != "" {
+		t.Fatal("no details must print no hint")
+	}
+}

@@ -1017,6 +1017,22 @@ const CmdhelpVersion = "0.1"
 //     browser tab and BUG-3000 carries the open half — so no surface
 //     here states a duration.
 //
+//     0.52 — BUG-2367 item 4. `pad_item.action=move` (and bulk move, the
+//     cross-workspace copy and its preflight) REFUSES a move that would
+//     change the item between open, done and abandoned unless the caller
+//     names the destination done field. It used to carry whichever value
+//     survived migration, or inject the destination default, so a closed
+//     task moved into ideas silently reopened as `new`, and an abandoned
+//     item could land counted as shipped. Only the STATE is compared: two
+//     different values that both mean done carry without asking. Move
+//     answers 400 `state_change_requires_value` with details {field,
+//     options, from, to} and a message naming both; bulk move puts the same
+//     in a `failed[]` row; the copy answers 400 validation_error with the
+//     same sentence; the preflight asks through a needs_value row with
+//     reason `state_change`, which the web dialog's picker already renders.
+//     A destination with no done select field has no state to change and is
+//     exempt. BEHAVIOR bump on the 0.43 / 0.29 grounds (lead-ruled).
+//
 //     0.51 — BUG-2367. `pad_item.action=move` (and the copy and bulk-move
 //     doors behind the same field pipeline) stops carrying a value into a
 //     field the destination schema marks COMPUTED, and stops carrying a
@@ -1562,7 +1578,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.51"
+const ToolSurfaceVersion = "0.52"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

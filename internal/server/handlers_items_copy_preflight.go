@@ -265,7 +265,11 @@ const (
 	dropReasonAgentRoleNotPortable  = "agent_role_not_portable"
 	dropReasonTargetComputed        = "target_computed"
 	dropReasonNotUnique             = "not_unique"
-	dropReasonReferentNotPortable   = string(store.RelationTargetNotPortable)
+
+	// needsValueReasonStateChange is the needs_value reason for a copy that
+	// would change the item's open/done/abandoned state (BUG-2367 item 4).
+	needsValueReasonStateChange   = "state_change"
+	dropReasonReferentNotPortable = string(store.RelationTargetNotPortable)
 )
 
 // preflightDropReasons is the COMPLETE set of values this endpoint can put in
@@ -403,10 +407,12 @@ type ItemCopyPreflightNeedsValue struct {
 	// `access_epoch` follows on the item doors.
 	CollectionUnavailable bool `json:"collection_unavailable,omitempty"`
 	Required              bool `json:"required"`
-	// Reason is "missing_required" (no value and no default) or
+	// Reason is "missing_required" (no value and no default),
 	// "invalid_value" (a value carried across that the destination schema
 	// rejects — only reachable for non-override values; an INVALID
-	// OVERRIDE is a 400, not a bucket entry).
+	// OVERRIDE is a 400, not a bucket entry), or "state_change" (the copy
+	// would change the item between open, done and abandoned, so the
+	// destination done field must be chosen; BUG-2367).
 	Reason string `json:"reason"`
 	// Message is the validator's explanation, for display.
 	Message string `json:"message,omitempty"`
@@ -1091,7 +1097,29 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	// existing preflight/copy parity helper collapses carried entries into a
 	// map, so it could not see the duplicate: a check that de-duplicates
 	// before comparing cannot detect duplication.
+	// A copy that would change the item's open/done/abandoned state asks for
+	// the destination done field rather than inferring it (BUG-2367 item 4).
+	// It is a needs_value row, not a refusal, so the dialog's picker offers
+	// the options; the copy itself refuses the same request with the same
+	// sentence.
+	stateChange := models.MigrateCloseStateChange(
+		currentFields, sourceSchema, collectionSettingsOf(sourceColl),
+		final, targetSchema, collectionSettingsOf(targetColl),
+		func(k string) bool { _, set := input.FieldOverrides[k]; return set },
+	)
 	for _, def := range items.SchemaForMigratedFields(targetSchema).Fields {
+		if _, bad := issueByKey[def.Key]; !bad && stateChange != nil && def.Key == stateChange.Key {
+			resp.Fields.NeedsValue = append(resp.Fields.NeedsValue, ItemCopyPreflightNeedsValue{
+				Key:      def.Key,
+				Label:    def.Label,
+				Type:     def.Type,
+				Options:  def.Options,
+				Required: true,
+				Reason:   needsValueReasonStateChange,
+				Message:  stateChange.Message(),
+			})
+			continue
+		}
 		if iss, bad := issueByKey[def.Key]; bad {
 			reason := "invalid_value"
 			if iss.Kind == items.IssueRequired {

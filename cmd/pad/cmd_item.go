@@ -1835,6 +1835,13 @@ Examples:
 						cli.WriteOpenChildrenError(os.Stderr, apiErr, oc)
 						return fmt.Errorf("move rejected: open children present")
 					}
+					// BUG-2367 item 4: the server names the field and the
+					// values it takes; this names the command that sets one.
+					if apiErr.Code == "state_change_requires_value" {
+						if hint := itemMoveStateChangeHint(args[0], args[1], apiErr.Details); hint != "" {
+							fmt.Fprintln(os.Stderr, hint)
+						}
+					}
 				}
 				return err
 			}
@@ -2232,6 +2239,7 @@ var itemCopyDroppedReasons = map[string]string{
 var itemCopyNeedsValueReasons = map[string]string{
 	"missing_required": "required, with no value to carry and no default",
 	"invalid_value":    "the carried value is not valid in the destination",
+	"state_change":     "the copy would change the item between open, done and abandoned; choose the destination value",
 }
 
 func itemCopyReason(table map[string]string, code string) string {
@@ -4348,4 +4356,20 @@ func printStaleBodyLine(item *models.Item) {
 		return
 	}
 	fmt.Println(`⚠ stale body: an editor holds edits not yet written back, so the content below is the PREVIOUS body; it catches up if and when a tab next flushes the item, which nothing guarantees.`)
+}
+
+// itemMoveStateChangeHint turns a state_change_requires_value refusal's details
+// into the exact command that answers it (BUG-2367 item 4). The server message
+// already names the field and its values; this names the flag. Empty when the
+// details do not carry a field, e.g. from a server that predates them.
+func itemMoveStateChangeHint(ref, collection string, details json.RawMessage) string {
+	var d struct {
+		Field   string   `json:"field"`
+		Options []string `json:"options"`
+	}
+	if json.Unmarshal(details, &d) != nil || d.Field == "" {
+		return ""
+	}
+	return fmt.Sprintf("hint: pad item move %s %s --field %s=<%s>",
+		itemCopyLine(ref), itemCopyLine(collection), itemCopyLine(d.Field), itemCopyLine(strings.Join(d.Options, "|")))
 }
