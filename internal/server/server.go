@@ -106,7 +106,7 @@ type Server struct {
 	streamAdmit                  *streamAdmission // shared admission gate for both stream endpoints (BUG-2726)
 	collabAdmitOnce              sync.Once        // lazily builds collabAdmit for servers that never call SetCollabLimits
 	collabAdmit                  *streamAdmission // per-user open collab WebSocket bound (BUG-1308)
-	collabMaxPerUser             int              // per-user open collab WebSocket limit (0 = unlimited, BUG-1308)
+	collabMaxPerUser             int              // per-user open collab WebSocket limit (0 or less = unlimited, BUG-1308)
 	cloudMode                    bool             // true when running as Pad Cloud (PAD_CLOUD=true or PAD_MODE=cloud)
 	cloudSecrets                 []string         // shared secrets for sidecar ↔ pad communication (supports rotation)
 	cloudSidecar                 CloudSidecar     // reverse pad → pad-cloud client (e.g. Stripe cancel on account delete); nil = not configured
