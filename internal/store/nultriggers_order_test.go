@@ -186,3 +186,56 @@ func TestNULTriggerRestorationCoversLaterFiles(t *testing.T) {
 		t.Fatalf("after the restore a raw NUL in items.lease_holder must be refused by our trigger, got %v", err)
 	}
 }
+
+// TestNULTriggerRestorationSkipsUnappliedFiles puts a database back in the
+// state an upgrade passes through: 084 applied and a later trigger file not yet
+// applied. A restore in that window must re-create 084's triggers and none of
+// the later file's, because the later file's columns may not exist yet.
+//
+// The window is reached by unrecording 094 and dropping its triggers, with one
+// 084 trigger dropped too so the restore actually runs. Without that, "nothing
+// was re-created" would hold because nothing was attempted.
+func TestNULTriggerRestorationSkipsUnappliedFiles(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	if s.dialect.Driver() != DriverSQLite {
+		t.Skip("Layer B is SQLite-only")
+	}
+	later := nulTriggerMigrations[len(nulTriggerMigrations)-1]
+	laterTriggers := renderedNULTriggers([]string{later})
+	if len(laterTriggers) == 0 {
+		t.Fatalf("%s renders no triggers; the fixture proves nothing", later)
+	}
+
+	if _, err := s.db.Exec(`DELETE FROM schema_migrations WHERE version = ?`, later); err != nil {
+		t.Fatalf("unrecord %s: %v", later, err)
+	}
+	for name := range laterTriggers {
+		if _, err := s.db.Exec(`DROP TRIGGER "` + name + `"`); err != nil {
+			t.Fatalf("drop %s: %v", name, err)
+		}
+	}
+	if _, err := s.db.Exec(`DROP TRIGGER pad_nul_items_content_upd`); err != nil {
+		t.Fatalf("drop an 084 trigger: %v", err)
+	}
+
+	restored, err := s.ensureNULTriggersReporting()
+	if err != nil {
+		t.Fatalf("ensureNULTriggersReporting: %v", err)
+	}
+	if !restored {
+		t.Fatal("the dropped 084 trigger was not restored, so the restore never ran and the check below is vacuous")
+	}
+	have, err := nulTriggersIn(s.db)
+	if err != nil {
+		t.Fatalf("list triggers: %v", err)
+	}
+	if _, ok := have["pad_nul_items_content_upd"]; !ok {
+		t.Error("the restore did not re-create the dropped 084 trigger")
+	}
+	for name := range laterTriggers {
+		if _, ok := have[name]; ok {
+			t.Errorf("the restore created %s from %s, which is not applied", name, later)
+		}
+	}
+}
