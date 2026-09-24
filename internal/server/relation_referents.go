@@ -237,8 +237,11 @@ func (s *Server) collapseInvisibleRelationIssues(r *http.Request, workspaceID, r
 // a delete between the two turned a visible caller's specific message into
 // `not_found`. Since the day-64 ruling moved visibility into the resolver,
 // every server feeder hands it a non-nil relationVisibility, and both sites
-// that build this reason stamp VisibilityChecked when they had one; so on
-// main nothing reaches here (checkpoint 1 on BUG-3012 enumerates it).
+// that build this reason stamp VisibilityChecked when they had one. The one
+// resolution that deliberately runs WITHOUT one, MigrateRelationReferentsQ's
+// carried branch (survival must not depend on the mover), judges its
+// wrong_collection REASONS itself against the matched row. So nothing reaches
+// here; a server test run counts zero of this log line (BUG-3012 trail).
 //
 // It stays as a FAIL-CLOSED guard rather than being deleted outright,
 // because the store documents a nil visibility func as legitimate ("count

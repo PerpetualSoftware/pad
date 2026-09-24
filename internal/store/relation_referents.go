@@ -104,6 +104,14 @@ type RelationIssue struct {
 	// Internal only: this type has no JSON tags and reaches callers through
 	// Message().
 	VisibilityChecked bool
+
+	// matched is the live item a `wrong_collection` issue names, as the
+	// resolver found it (BUG-3012). It lets a caller that resolved WITHOUT a
+	// visibility func (the carried branch of MigrateRelationReferentsQ, which
+	// judges survival by provenance) still judge the REPORTED REASON against
+	// the requester, on the exact row resolved, with no second lookup of the
+	// value for a delete to race. Nil for every other reason.
+	matched *models.Item
 }
 
 // Message renders the issue the way every door reports it. One function so the
@@ -639,6 +647,7 @@ func (s *Store) resolveRelationValueQ(
 			return "", &RelationIssue{
 				Key: def.Key, Value: value, Target: def.Collection,
 				Reason: RelationTargetWrongCollection, VisibilityChecked: canSee != nil,
+				matched: outside,
 			}, nil
 		default:
 			return "", &RelationIssue{
@@ -686,6 +695,7 @@ func (s *Store) resolveRelationValueQ(
 		return "", &RelationIssue{
 			Key: def.Key, Value: value, Target: def.Collection,
 			Reason: RelationTargetWrongCollection, VisibilityChecked: canSee != nil,
+			matched: item,
 		}, nil
 	}
 	return item.ID, nil, nil
@@ -1623,6 +1633,28 @@ func (s *Store) MigrateRelationReferentsQ(
 		issues, resolveErr := s.ResolveRelationReferentsQ(q, workspaceID, schema, carried, nil)
 		if resolveErr != nil {
 			return nil, nil, resolveErr
+		}
+		// The DISPOSITION above is the mover-independent one: a carried
+		// wrong_collection is dropped for every mover. Its REPORTED REASON is
+		// not stored anywhere, but it does reach the caller (the copy
+		// preflight renders it), and `wrong_collection` names a live item. So
+		// the reason alone is judged against the requester, here, on the row
+		// the resolver matched, and stamped as judged (BUG-3012). The server
+		// used to settle this by looking the value up a second time.
+		if canSee != nil {
+			for i := range issues {
+				if issues[i].Reason != RelationTargetWrongCollection || issues[i].matched == nil {
+					continue
+				}
+				visible, verr := canSee(q, workspaceID, issues[i].matched)
+				if verr != nil {
+					return nil, nil, verr
+				}
+				if !visible {
+					issues[i].Reason = RelationTargetNotFound
+				}
+				issues[i].VisibilityChecked = true
+			}
 		}
 		for _, ri := range issues {
 			dropped = append(dropped, ri)
