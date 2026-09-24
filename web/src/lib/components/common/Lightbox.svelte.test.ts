@@ -3926,8 +3926,8 @@ describe('Lightbox — mobile sheet layout (3c-ii T5 / AM-3)', () => {
 
 	it('keeps the docked chrome excluded from pan, wheel-zoom AND double-click', () => {
 		// The docked toolbar/meta are the SAME elements with the SAME classes, so they
-		// stay in all THREE gesture-exclusion `.closest()` lists (pointerdown /
-		// dblclick / WHEEL — the classic miss). Exercised with a real raster bitmap so
+		// stay excluded from all three gestures (pointerdown / dblclick / WHEEL — the
+		// classic miss), which share one predicate since BUG-2507. Exercised with a real raster bitmap so
 		// each gesture otherwise COULD act; a live control at the end proves the
 		// handlers are armed and it is the exclusions that held.
 		mobileFlag = true;
@@ -4392,6 +4392,50 @@ describe('Lightbox — action toolbar (TASK-2474)', () => {
 		).toBe(true);
 		expect(scaleOf()).toBeGreaterThan(before);
 	});
+
+	// BUG-2507: the wheel carried a narrower exclusion than pointerdown and
+	// double-click, so a wheel over a nav arrow or the close button zoomed the image
+	// under the cursor. One leg per chrome control that is on screen WITH a bitmap
+	// present (retry and tap-load render only while the bitmap is absent, where the
+	// wheel is already inert).
+	for (const [name, selector] of [
+		['prev nav arrow', '.lightbox-nav.prev'],
+		['next nav arrow', '.lightbox-nav.next'],
+		['close button', '.lightbox-close'],
+	] as const) {
+		it(`consumes a wheel over the ${name} without zooming the image`, () => {
+			mountViewer({
+				mutationsEnabled: false,
+				images: [image(IMG_A, 'a'), image(IMG_B, 'b', 'image/jpeg')],
+			});
+			fireLoad(2000, 2000);
+			mockGeometry(root(), {
+				stageW: 1000,
+				stageH: 1000,
+				fittedW: 900,
+				fittedH: 900,
+				naturalW: 2000,
+				naturalH: 2000,
+			});
+			const before = scaleOf();
+			const control = root().querySelector<HTMLElement>(selector);
+			expect(control).not.toBeNull();
+
+			expect(wheel(control!, { deltaY: -100, clientX: 500, clientY: 500 })).toBe(true);
+			expect(scaleOf()).toBe(before);
+
+			// Control: the same wheel over the image zooms, so the exclusion is what
+			// stopped it.
+			expect(
+				wheel(root().querySelector<HTMLElement>('.lightbox-image')!, {
+					deltaY: -100,
+					clientX: 500,
+					clientY: 500,
+				})
+			).toBe(true);
+			expect(scaleOf()).toBeGreaterThan(before);
+		});
+	}
 });
 
 describe('Lightbox — metadata header (TASK-2475)', () => {
