@@ -427,7 +427,10 @@ describe('relationGroupingRefusal (U4)', () => {
 
 describe('unresolved wording (BUG-3013)', () => {
 	// The shared label and hover text feed every chip, lane, filter and cell,
-	// so a claim here reaches all of them at once.
+	// so a claim here reaches all of them at once. This checks the constants and
+	// the two functions here; rendered guards cover the table cell, FieldEditor
+	// and the activity value, and the filter chip and board/list lanes are
+	// pinned to the exact label by their own tests.
 	it('neither the label nor the hover text asserts the target is gone', () => {
 		expect(UNRESOLVED_LABEL).not.toMatch(EXISTENCE_CLAIM);
 		expect(UNRESOLVED_TITLE).not.toMatch(EXISTENCE_CLAIM);
@@ -439,5 +442,25 @@ describe('unresolved wording (BUG-3013)', () => {
 		const [lane] = relationLanes([item('a', 'nope')], 'car', resolve);
 		expect(lane.label).toBe(UNRESOLVED_LABEL);
 		expect(relationLaneAriaName(lane, 'fallback')).not.toMatch(EXISTENCE_CLAIM);
+	});
+});
+
+describe('EXISTENCE_CLAIM itself (BUG-3013)', () => {
+	// The guard is only as good as its pattern, so the old wording, in every
+	// spelling a regression is likely to use, must match it.
+	it.each([
+		'This value does not match any item in this workspace.',
+		'This value doesn\u2019t match any item',
+		"It doesn't exist",
+		'it does not point at anything',
+		'points to nothing',
+		'(deleted)',
+	])('matches %j', (text) => {
+		expect(text).toMatch(EXISTENCE_CLAIM);
+	});
+
+	it('does not match the neutral wording', () => {
+		expect(UNRESOLVED_TITLE).not.toMatch(EXISTENCE_CLAIM);
+		expect(UNRESOLVED_LABEL).not.toMatch(EXISTENCE_CLAIM);
 	});
 });
