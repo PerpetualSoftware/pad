@@ -17,6 +17,7 @@ import (
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
+	"github.com/PerpetualSoftware/pad/internal/attachments"
 	"github.com/PerpetualSoftware/pad/internal/cli"
 	"github.com/PerpetualSoftware/pad/internal/items"
 
@@ -2845,13 +2846,9 @@ Examples:
 
 			// Default filename: the server-suggested Content-Disposition
 			// filename (<slug>.pad.md), falling back to the ref when the
-			// header is missing.
+			// header is missing. See defaultExportPath for the device rule.
 			if outPath == "" {
-				if res.Filename != "" {
-					outPath = res.Filename
-				} else {
-					outPath = args[0] + ".pad.md"
-				}
+				outPath = defaultExportPath(res.Filename, args[0])
 			}
 
 			if err := writeFileAtomic(outPath, res.Body, 0o644); err != nil {
@@ -2863,6 +2860,25 @@ Examples:
 	}
 	cmd.Flags().StringVarP(&outPath, "output", "o", "", "output file path (default <slug>.pad.md; use - for stdout)")
 	return cmd
+}
+
+// defaultExportPath is the file `pad item export` writes when no -o is given:
+// the server-suggested name, else "<ref>.pad.md".
+//
+// BUG-3185: when that name's stem is a Windows device ("nul.pad.md",
+// "con.pad.md"), it is prefixed "_" here as well as on the server. The CLI is
+// the process that writes the file, and a server older than the fix still
+// suggests the device name; the ref fallback never passed through the server
+// at all.
+func defaultExportPath(serverName, ref string) string {
+	name := serverName
+	if name == "" {
+		name = ref + ".pad.md"
+	}
+	if attachments.WindowsDeviceName(name) {
+		return "_" + name
+	}
+	return name
 }
 
 // writeFileAtomic writes data to a sibling temp file, fsyncs it, then

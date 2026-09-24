@@ -72,7 +72,7 @@ const fallbackFilename = "upload.bin"
 //     becomes "upload.bin".
 //  6. A Windows reserved device name gets a "_" prefix (BUG-2822): Windows
 //     opens "nul.txt" as the null device, so a download saved under the stored
-//     name is lost or refused. See windowsDeviceName for the match.
+//     name is lost or refused. See WindowsDeviceName for the match.
 func NormalizeFilename(raw string) string {
 	name := filepath.Base(raw)
 	if i := strings.LastIndexByte(name, '\\'); i >= 0 {
@@ -99,7 +99,7 @@ func NormalizeFilename(raw string) string {
 	if name == "" || name == "." || name == ".." || name == "/" {
 		return fallbackFilename
 	}
-	if windowsDeviceName(name) {
+	if WindowsDeviceName(name) {
 		return "_" + name
 	}
 	return name
@@ -118,12 +118,16 @@ var windowsReservedStems = func() map[string]bool {
 	return m
 }()
 
-// windowsDeviceName reports whether Windows would open name as a device. It
+// WindowsDeviceName reports whether Windows would open name as a device. It
 // reads the name as Windows does: the stem is everything before the FIRST dot
 // or colon, so "con.tar.gz" and "nul:x.txt" are devices (a colon opens the
 // stream syntax, codex round 1), and trailing spaces in the stem are ignored,
 // so "con .txt" is one too. The match folds case.
-func windowsDeviceName(name string) bool {
+//
+// Exported for BUG-3185: every name offered for download or written by the
+// CLI that is derived from user data goes through this one rule. Do not write
+// a second predicate; the stem rule has already been corrected once.
+func WindowsDeviceName(name string) bool {
 	stem := name
 	if i := strings.IndexAny(name, ".:"); i >= 0 {
 		stem = name[:i]
