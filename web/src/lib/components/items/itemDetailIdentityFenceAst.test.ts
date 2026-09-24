@@ -92,7 +92,7 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	jumpToSection: { reviewed: '17407aeb431b', why: 'switches this instance\'s tab and scrolls to an anchor', may: ['document.getElementById', 'document.getElementById(anchorId).scrollIntoView'] },
 	ensureGraphComp: { reviewed: 'c1565cfb8a18', why: 'lazy-loads a component module into this instance', may: ['ItemGraphComp', 'graphLoadError'] },
 	handleCopyRef: { reviewed: 'fb3adcaf167a', why: 'switchedAway before the copied flag' },
-	loadData: { reviewed: '5e21efa617d1', why: 'IS the load: myGen against loadGeneration after every await' },
+	loadData: { reviewed: '8ba274ad4c3d', why: 'IS the load: myGen against loadGeneration after every await' },
 	startEditTitle: { reviewed: '17f04352d420', why: 'focuses and sizes the input it opened synchronously', may: ['el', 'titleInputEl.focus', 'titleInputEl.setSelectionRange'] },
 	saveTitle: { reviewed: 'ba5a2acf0d81', why: 'gen against loadGeneration on both arms, and again after the tick that resizes a reopened editor (BUG-3115)' },
 	updateField: {
@@ -129,6 +129,8 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 		may: ['saver'],
 	},
 	refreshCollectionIfMoved: { reviewed: '9d45f94352dd', why: 'gen against loadGeneration after the fetch' },
+	// BUG-3192 Unit B: re-reads the server's progress when the children change.
+	refreshProgress: { reviewed: '88f486338d7b', why: 'gen against loadGeneration, plus the slug and workspace, after the fetch' },
 	loadTagSuggestions: { reviewed: 'b03a62bf7294', why: 'identityHeld after the fetch; the identity listener re-runs it' },
 	stampSourceUrl: { reviewed: 'b9d3f9d400ae', why: 'switchedAway on both arms' },
 	refreshFromSource: { reviewed: 'ef03f378ee06', why: 'switchedAway on every arm' },
@@ -360,7 +362,7 @@ const CONTINUATIONS: SignedRow[] = [
 		may: ['renameOverride'],
 	},
 	{ call: /^setTimeout\($/, body: /copied = false/, why: 'copy-flag reset: switchedAway', reviewed: '199047839886' },
-	{ call: /api\.items\.get\(wsSlug, itemSlug\)\.catch\($/, body: /./, why: 'loadData item fetch: sets a flag local to that load and re-throws', reviewed: '35b358df9898' },
+	{ call: /api\.items\.get\(wsSlug, itemSlug\)\.catch\($/, body: /./, why: 'loadData item fetch: sets a flag local to that load and re-throws', reviewed: '290b22d2bdc0' },
 	{
 		call: /^setTimeout\($/,
 		body: /staleConnecting = true/,
@@ -415,6 +417,7 @@ const CONTINUATIONS: SignedRow[] = [
 const HELPERS: Record<string, string> = {
 	adoptCollection: 'ab38368cd8fb',
 	adoptServerItem: '198d4de5b450',
+	applyProgress: 'b28014625819',
 	autoResizeTitle: '7b1e2fcd0526',
 	captureIdentity: '01f30996ab05',
 	handleGone: 'fafcb8c8c429',

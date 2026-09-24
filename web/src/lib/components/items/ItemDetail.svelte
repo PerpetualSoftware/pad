@@ -19,6 +19,7 @@
 	import { shouldAdoptCollection } from '$lib/items/adoptCollection';
 	import { syncService } from '$lib/services/sync.svelte';
 	import { sseService } from '$lib/services/sse.svelte';
+	import { visibility } from '$lib/services/visibility.svelte';
 	import Editor from '$lib/components/editor/Editor.svelte';
 	import EditorBubbleMenu from '$lib/components/editor/EditorBubbleMenu.svelte';
 	import EditorLinkPopover from '$lib/components/editor/EditorLinkPopover.svelte';
@@ -2109,21 +2110,25 @@
 			}
 			localDirty = false;
 
-			// Fetch child item progress for any item (generalized parent/child)
+			// Fetch child item progress for any item (generalized parent/child).
+			// Ticketed like every /progress read (BUG-3192): a child-change
+			// re-read issued after this one may already have landed.
+			const progressTicket = ++progressIssued;
 			try {
 				const progress = await api.items.progress(wsSlug, itemData.slug);
 				if (myGen !== loadGeneration) return;
-				if (progress.total > 0) {
-					hasChildren = true;
-					computedOverrides = { progress: progress.percentage, _progressDone: progress.done, _progressTotal: progress.total };
-				} else {
-					hasChildren = false;
-					computedOverrides = {};
-				}
+				applyProgress(progressTicket, progress);
 			} catch {
 				if (myGen !== loadGeneration) return;
-				hasChildren = false;
-				computedOverrides = {};
+				if (progressTicket > progressApplied) {
+					hasChildren = false;
+					computedOverrides = {};
+					// Re-asked on ChildItems' first report of this load
+					// (handleChildrenChange). It cannot have reported yet: the page
+					// renders the skeleton until this load's `finally`. A failed
+					// re-ask does not re-arm, so this cannot loop.
+					progressFailedGen = loadGeneration;
+				}
 			}
 
 			// Items for wiki-link resolution are now loaded as part of the
@@ -4556,13 +4561,86 @@
 	let childDone = $derived<number>(computedOverrides._progressDone ?? 0);
 	let childTotal = $derived<number>(computedOverrides._progressTotal ?? 0);
 
+	// The children signature (ids + statuses) last reported for this load, and
+	// the load generation it belongs to. Plain, not $state: nothing renders
+	// from them.
+	let childrenSig: string | null = null;
+	let childrenSigGen = -1;
+
+	/**
+	 * Re-read the SERVER's progress for the current item (BUG-3192). The
+	 * server's count is the definition — each child collection's own done
+	 * field, terminal and abandoned options, and only the children the caller
+	 * may see — so the client never computes it. Fenced on the load
+	 * generation and slug, like every other write of `computedOverrides`.
+	 */
+	async function refreshProgress() {
+		const gen = loadGeneration;
+		const reqWs = wsSlug;
+		const reqSlug = itemSlug;
+		const ticket = ++progressIssued;
+		try {
+			const p = await api.items.progress(reqWs, reqSlug);
+			if (gen !== loadGeneration || reqSlug !== itemSlug || reqWs !== wsSlug) return;
+			applyProgress(ticket, p);
+		} catch {
+			// Keep the last known numbers; the next change or load asks again.
+		}
+	}
+
+	// ORDERING for /progress reads (BUG-3192, codex round 1): two child-change
+	// re-reads can be in flight together under one load generation (two quick
+	// SSE child updates), and the generation fence cannot order them. (The
+	// load's own read cannot overlap one: ChildItems is not mounted until the
+	// load's `finally` lifts the skeleton.) Each read takes
+	// a ticket when ISSUED; a response writes only if its ticket is above the
+	// highest one already applied, so an older answer landing last never
+	// overwrites a newer one. Plain counters, not $state.
+	let progressIssued = 0;
+	let progressApplied = 0;
+	// The load generation whose own /progress read failed, so the first
+	// children report of that load asks again instead of leaving no numbers.
+	let progressFailedGen = -1;
+
+	function applyProgress(ticket: number, p: { total: number; done: number; percentage: number }) {
+		if (ticket <= progressApplied) return;
+		progressApplied = ticket;
+		hasChildren = p.total > 0;
+		computedOverrides = p.total > 0
+			? { progress: p.percentage, _progressDone: p.done, _progressTotal: p.total }
+			: {};
+	}
+
 	function handleChildrenChange(items: Item[]) {
 		// Track child IDs for deduplication in the relationships section
 		childItemIds = new Set(items.map(i => i.id));
 		hasChildren = items.length > 0;
 
-		// Recompute progress from the actual children
-		const total = items.length;
+		// PROGRESS IS THE SERVER'S (BUG-3192). This used to recompute
+		// computedOverrides from `items` with the union of the children's
+		// status terminal_options, racing the load's GET /progress. The two
+		// disagree (2 of 3 done: server 66%, client 67%, and a collection whose
+		// done field is not `status` counts differently), and whichever landed
+		// last won. Now a change re-reads /progress instead: only when the
+		// children's ids or statuses actually CHANGED within this load. The
+		// first report of a load is ChildItems' initial fetch, which the load's
+		// own GET /progress already answers, so a load issues no extra request.
+		const sig = items
+			.map((i) => `${i.id}:${parseFields(i).status ?? ''}`)
+			.sort()
+			.join('|');
+		const sameLoad = childrenSigGen === loadGeneration;
+		const changed = sameLoad && childrenSig !== sig;
+		// The load's own read FAILED: without a re-ask the numbers stay absent
+		// for the whole load (codex round 1). Once, then it is a normal load.
+		const owed = progressFailedGen === loadGeneration;
+		childrenSig = sig;
+		childrenSigGen = loadGeneration;
+		if (owed) progressFailedGen = -1;
+		if (changed || owed) void refreshProgress();
+
+		// Terminal statuses still feed the per-row rendering (ChildChart,
+		// NestedChildren), which classifies one child at a time.
 		const allCollections = collectionStore.collections ?? [];
 		// Gather terminal statuses from all collections the children belong to
 		const termSet = new Set<string>();
@@ -4572,11 +4650,7 @@
 				for (const ts of getTerminalOptions(col)) termSet.add(ts);
 			}
 		}
-		const termOpts = termSet.size > 0 ? [...termSet] : ['done', 'cancelled'];
-		childTerminalStatuses = termOpts;
-		const done = items.filter((i) => termOpts.includes(parseFields(i).status)).length;
-		const progress = total > 0 ? Math.round((done / total) * 100) : 0;
-		computedOverrides = { progress, _progressDone: done, _progressTotal: total };
+		childTerminalStatuses = termSet.size > 0 ? [...termSet] : ['done', 'cancelled'];
 	}
 
 	function fieldValue(key: string): any {
@@ -5700,7 +5774,9 @@
 		</div>
 
 		<!-- Attention signals (TASK-3118); renders nothing without a provider. -->
-		<DecisionChips {wsSlug} itemRef={item.slug} itemId={item.id} />
+		{#if visibility.seenVisible}
+			<DecisionChips {wsSlug} itemRef={item.slug} itemId={item.id} />
+		{/if}
 
 		<!-- Actions -->
 		<div class="meta-actions">
@@ -6211,6 +6287,7 @@
 			     delete control (PLAN-2382 DR-6). itemContent feeds the
 			     "still used in this item's content" confirm only — the strip's
 			     contents are keyed on item_id, never on body refs (DR-1). -->
+			{#if visibility.seenVisible}
 			<ItemAttachmentStrip
 				{wsSlug}
 				{username}
@@ -6221,6 +6298,7 @@
 				liveContent={liveEditorMarkdown}
 				parentArchived={itemMatchesRef && isArchived}
 			/>
+			{/if}
 
 			<!-- The unified attachment surface host is mounted at the TOP LEVEL, not
 			     here — see the `AttachmentSurfaceHost` mount below the `{/if}`. It
@@ -6615,6 +6693,10 @@
 			     the load window took a deliberate click. It is now on the tab you
 			     land on. -->
 			<div id="item-comments" class="timeline-section">
+				<!-- Behind visibility.seenVisible (BUG-3192 Unit B): a tab loaded HIDDEN
+				     issues these reads when first shown, not at load. One-way, so this
+				     never unmounts anything (PLAN-2290's rule stands). -->
+				{#if visibility.seenVisible}
 				{#key identityKey}
 				{@const handedDown = identityKey}
 				<ItemTimeline
@@ -6638,6 +6720,7 @@
 					emptyLabel="No comments yet."
 				/>
 				{/key}
+				{/if}
 			</div>
 		{/key}
 		</div><!-- /tab-panel Details -->
@@ -6748,7 +6831,7 @@
 		     action-bar jump badge (IDEA-2133); scroll-margin-top clears the
 		     sticky page/pane header. Plain wrapper — does not affect the
 		     always-mounted SSE guarantee below. -->
-		{#if item}
+		{#if item && visibility.seenVisible}
 			<div id="item-children" class="children-anchor">
 				<!-- ChildItems takes the REAL `canEdit` and is NOT frozen while peeking
 				     (BUG-2263): add-child (create/link) and reorder are side-independent
@@ -6757,7 +6840,7 @@
 				     a source of drill-click swallowing. -->
 				{#key identityKey}
 				{@const handedDown = identityKey}
-				<ChildItems {wsSlug} {username} {itemSlug} itemId={item.id} parentFields={fields} terminalStatuses={childTerminalStatuses} onChildrenChange={(children) => { if (keyedSlug !== itemSlug || handedDown !== identityKey) return; handleChildrenChange(children); }} {canEdit} frozen={false} selfDirty={localDirty} selfLastSaveTime={localLastSaveTime} onOpenTarget={paneOpenTarget} />
+				<ChildItems {wsSlug} {username} {itemSlug} itemId={item.id} parentFields={fields} terminalStatuses={childTerminalStatuses} onChildrenChange={(children) => { if (keyedSlug !== itemSlug || handedDown !== identityKey) return; handleChildrenChange(children); }} {canEdit} frozen={false} selfDirty={localDirty} selfLastSaveTime={localLastSaveTime} onOpenTarget={paneOpenTarget} progress={computedOverrides._progressTotal !== undefined ? { done: computedOverrides._progressDone, total: computedOverrides._progressTotal, percentage: computedOverrides.progress } : undefined} />
 				{/key}
 			</div>
 		{/if}
@@ -6772,7 +6855,7 @@
 			the count callback. Anchor id is referenced by the "📎 N"
 			action button's smooth scroll.
 		-->
-		{#if item}
+		{#if item && visibility.seenVisible}
 			<div id="item-backlinks">
 				{#key identityKey}
 				{@const handedDown = identityKey}
