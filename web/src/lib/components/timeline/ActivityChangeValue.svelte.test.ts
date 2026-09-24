@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
+import { existenceClaimsIn } from '../../../test/existenceClaim';
 import type { FieldDef } from '$lib/types';
 
 // BUG-2872 — one side of an activity field change. A relation side renders the
@@ -67,9 +68,16 @@ describe('ActivityChangeValue (BUG-2872)', () => {
 		expect(t).not.toContain(ID);
 	});
 
-	it('with the index READY, a value naming nothing is "Unresolved reference"', () => {
+	it('with the index READY, a value naming nothing is "Unavailable item"', () => {
 		const t = textOf({ text: ID, field: OWNER });
-		expect(t).toBe('Unresolved reference');
+		expect(t).toBe('Unavailable item');
+	});
+
+	it('an unresolved value says nothing about whether its target exists (BUG-3013)', () => {
+		const { container } = render(ActivityChangeValue, { props: { text: ID, field: OWNER, context } });
+		const chip = container.querySelector('.change-relation.is-unresolved');
+		expect(chip, 'precondition: the unresolved chip rendered').not.toBeNull();
+		expect(existenceClaimsIn(chip!)).toEqual([]);
 	});
 
 	it('with the index NOT ready, a miss is "Linked item" — not a claim that it names nothing', () => {

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { Item, Collection, FieldDef } from '$lib/types';
 	import { isRelationType, relationValuesOf } from '$lib/items/relationFieldTypes';
-	import { narrowRelationRow, relationChipFor } from '$lib/collections/relationGroups';
+	import { narrowRelationRow, relationChipFor, UNRESOLVED_TITLE } from '$lib/collections/relationGroups';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
@@ -247,7 +247,7 @@
 				{#if !chip}
 					<!-- Filtered above; the arm exists so a null can never fall through as blank. -->
 				{:else if chip.state === 'unresolved'}
-					<span class="cell-relation is-unresolved" title="This value does not match any item in this workspace.">
+					<span class="cell-relation is-unresolved" title={UNRESOLVED_TITLE}>
 						{chip.label}
 					</span>
 				{:else}

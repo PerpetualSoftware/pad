@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { Item, ItemIndexRow } from '$lib/types';
 import { UNCATEGORIZED, bucketByColumn } from './boardColumns';
+import { EXISTENCE_CLAIM } from '../../test/existenceClaim';
 import {
+	UNRESOLVED_LABEL,
 	UNRESOLVED_LANE,
+	UNRESOLVED_TITLE,
 	narrowRelationRow,
 	relationChipFor,
 	relationFilterMatches,
@@ -86,7 +89,7 @@ describe('relationLanes', () => {
 		);
 		expect(lanes).toHaveLength(1);
 		expect(lanes[0].value).toBe(UNRESOLVED_LANE);
-		expect(lanes[0].label).toBe('Unresolved reference');
+		expect(lanes[0].label).toBe('Unavailable item');
 		// The assertion that matters: nothing in the lane repeats the stored
 		// string, which is usually free text an older unvalidated write left.
 		expect(JSON.stringify(lanes[0])).not.toContain('f47ac10b');
@@ -294,7 +297,7 @@ describe('relationLaneAriaName', () => {
 		const [deleted] = relationLanes([item('a', 'gone')], 'car', resolve);
 		expect(relationLaneAriaName(deleted, 'fallback')).toBe('COLOR-3 Gone (deleted)');
 		const [unresolved] = relationLanes([item('a', 'nope')], 'car', resolve);
-		expect(relationLaneAriaName(unresolved, 'fallback')).toBe('Unresolved reference');
+		expect(relationLaneAriaName(unresolved, 'fallback')).toBe('Unavailable item');
 	});
 
 	it('falls back for a lane that is not a relation lane at all', () => {
@@ -419,5 +422,45 @@ describe('relationGroupingRefusal (U4)', () => {
 		expect(relationGroupingRefusalMessage('multi_valued')).not.toBe(
 			relationGroupingRefusalMessage('no_target')
 		);
+	});
+});
+
+describe('unresolved wording (BUG-3013)', () => {
+	// The shared label and hover text feed every chip, lane, filter and cell,
+	// so a claim here reaches all of them at once. This checks the constants and
+	// the two functions here; rendered guards cover the table cell, FieldEditor
+	// and the activity value, and the filter chip and board/list lanes are
+	// pinned to the exact label by their own tests.
+	it('neither the label nor the hover text asserts the target is gone', () => {
+		expect(UNRESOLVED_LABEL).not.toMatch(EXISTENCE_CLAIM);
+		expect(UNRESOLVED_TITLE).not.toMatch(EXISTENCE_CLAIM);
+	});
+
+	it('the chip, the lane and the lane aria name all use that label', () => {
+		const resolve = () => null;
+		expect(relationChipFor('nope', resolve)?.label).toBe(UNRESOLVED_LABEL);
+		const [lane] = relationLanes([item('a', 'nope')], 'car', resolve);
+		expect(lane.label).toBe(UNRESOLVED_LABEL);
+		expect(relationLaneAriaName(lane, 'fallback')).not.toMatch(EXISTENCE_CLAIM);
+	});
+});
+
+describe('EXISTENCE_CLAIM itself (BUG-3013)', () => {
+	// The guard is only as good as its pattern, so the old wording, in every
+	// spelling a regression is likely to use, must match it.
+	it.each([
+		'This value does not match any item in this workspace.',
+		'This value doesn\u2019t match any item',
+		"It doesn't exist",
+		'it does not point at anything',
+		'points to nothing',
+		'(deleted)',
+	])('matches %j', (text) => {
+		expect(text).toMatch(EXISTENCE_CLAIM);
+	});
+
+	it('does not match the neutral wording', () => {
+		expect(UNRESOLVED_TITLE).not.toMatch(EXISTENCE_CLAIM);
+		expect(UNRESOLVED_LABEL).not.toMatch(EXISTENCE_CLAIM);
 	});
 });
