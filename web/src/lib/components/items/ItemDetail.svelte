@@ -4614,8 +4614,11 @@
 		const genAtFlush = loadGeneration;
 		let lastError = false;
 		// ONE indicator write for the whole drain, begun before its first await
-		// and settled in the finally below (BUG-3044). "Saved" shows once, when
-		// the drain empties, as it always did.
+		// and settled in the finally below (BUG-3044). That is the truthful
+		// status for a drain: it IS saving until its last PATCH settles, so the
+		// indicator stays 'saving' across every pass and shows "Saved" once, when
+		// the drain empties, as it always did. A token per pass would flicker
+		// between passes while the drain is still sending.
 		const saveTok = saves.begin();
 		try {
 			for (let i = 0; i < RAW_FLUSH_DRAIN_CAP; i++) {
