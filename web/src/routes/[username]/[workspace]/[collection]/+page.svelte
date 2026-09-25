@@ -2179,7 +2179,13 @@
 			if (isOpenChildrenError(e)) {
 				let forced;
 				try {
-					forced = await confirmOpenChildrenOrThrow(e, parentRef, () => doUpdate(true));
+					// Still worth asking if it waits in the queue (BUG-3046). This
+					// page has no per-item write order, so identity is the only
+					// fence it can offer; an identity change already abandons the
+					// queue (BUG-3005), so this is belt, stated as such.
+					forced = await confirmOpenChildrenOrThrow(e, parentRef, () => doUpdate(true), () =>
+						identityHeld(epochAtEntry)
+					);
 				} catch (retryErr) {
 					// The retry-with-force itself failed (network /
 					// 500 / fresh validation error). Surface that

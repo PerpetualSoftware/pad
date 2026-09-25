@@ -18,13 +18,35 @@ interface PendingRequest {
 	parentRef: string;
 	details: OpenChildrenDetails;
 	resolve: (confirmed: boolean) => void;
+	/**
+	 * Whether the question is still worth asking, supplied by the REQUESTER
+	 * (BUG-3046): only it knows its pane identity and write order. Asked when
+	 * a queued entry is about to be SHOWN; absent means always live.
+	 */
+	isLive?: () => boolean;
 }
 
 let active = $state<PendingRequest | null>(null);
 const queue: PendingRequest[] = [];
 
+/**
+ * Show the next QUEUED request that is still live (BUG-3046). A request queued
+ * behind another is not withdrawn when its reason disappears: the user
+ * switched items, or a newer edit superseded the one that raised it. Showing it
+ * asked the user to decide something no longer live. A dead entry resolves
+ * FALSE, the cancel answer, so its producer takes the cancel path, which is
+ * what the producer's own fenced retry would have ended in anyway.
+ */
 function advanceQueue(): void {
-	active = queue.shift() ?? null;
+	for (let next = queue.shift(); next; next = queue.shift()) {
+		if (next.isLive && !next.isLive()) {
+			next.resolve(false);
+			continue;
+		}
+		active = next;
+		return;
+	}
+	active = null;
 }
 
 /**
@@ -35,9 +57,13 @@ function advanceQueue(): void {
  * Multiple concurrent requests serialize — the second waits until
  * the first resolves before showing.
  */
-function request(parentRef: string, details: OpenChildrenDetails): Promise<boolean> {
+function request(
+	parentRef: string,
+	details: OpenChildrenDetails,
+	isLive?: () => boolean
+): Promise<boolean> {
 	return new Promise<boolean>((resolve) => {
-		const entry: PendingRequest = { parentRef, details, resolve };
+		const entry: PendingRequest = { parentRef, details, resolve, isLive };
 		if (active === null) {
 			active = entry;
 		} else {
