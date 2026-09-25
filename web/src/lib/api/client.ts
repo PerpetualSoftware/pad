@@ -81,6 +81,7 @@ import type {
 	ClaimCodeResponse,
 	ImportArtifactResult
 } from '$lib/types';
+import { noteServerDate } from './serverClock';
 
 const BASE = '/api/v1';
 
@@ -683,6 +684,10 @@ async function request<T>(
 		credentials: 'same-origin',
 		...options
 	});
+	// Every response, error statuses included, is a reading of the server's
+	// clock; the sync cursor is stamped from these, never from Date.now()
+	// (BUG-3207).
+	noteServerDate(resp.headers?.get?.('Date'));
 	if (resp.status === 401) {
 		const barePath = path.split('?')[0];
 		if (AUTH_FORM_401_PATHS.has(barePath)) {
