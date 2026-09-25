@@ -856,6 +856,9 @@
 		// still consumed — the modal owns the wheel — but must NOT zoom, or it would
 		// read as a zoom-out. Direction comes from `deltaY` alone.
 		if (e.deltaY === 0) return;
+		// Consumed but INERT while the delete confirmation is pending, like every key
+		// (BUG-2522).
+		if (deleteConfirm.pending) return;
 		const g = readGeometry();
 		const rect = stageEl?.getBoundingClientRect();
 		if (!g || !rect) return;
@@ -1195,7 +1198,14 @@
 	function onTouchDown(e: PointerEvent): void {
 		const el = rootEl;
 		const gatesOpen = !!el && pointerGatesOpen(el);
-		const armable = !chromeExcluded(e) && touchOnImage(e) && gesturesArmable && gatesOpen;
+		// A pending delete confirmation owns the surface (BUG-2522): nothing arms, so
+		// neither a pan, a pinch promotion nor a double-tap can start under it.
+		const armable =
+			!chromeExcluded(e) &&
+			touchOnImage(e) &&
+			gesturesArmable &&
+			gatesOpen &&
+			!deleteConfirm.pending;
 		const ownerEntry = gesturePointerId !== null ? registry.get(gesturePointerId) : undefined;
 
 		// A live NON-touch (mouse/pen) gesture owns the surface — a touch is
@@ -1546,6 +1556,8 @@
 		if (!bitmapPresent) return;
 		const el = rootEl;
 		if (!el || !pointerGatesOpen(el)) return; // START gate
+		// A pending delete confirmation owns the pointer, as it owns every key (BUG-2522).
+		if (deleteConfirm.pending) return;
 		armPan(e);
 	}
 
@@ -1729,6 +1741,8 @@
 		if (!bitmapPresent) return;
 		const el = rootEl;
 		if (!el || !pointerGatesOpen(el)) return;
+		// Inert while the delete confirmation is pending (BUG-2522).
+		if (deleteConfirm.pending) return;
 		const g = readGeometry();
 		const rect = stageEl?.getBoundingClientRect();
 		if (!g || !rect) return;
@@ -2073,10 +2087,14 @@
 	// requires the painted element while a mouse pan tolerates the looser arm. Reads
 	// `bitmapPresent` + `gesturesArmable` (tracked) and tears down in `untrack` (it
 	// writes `dragging` etc., never read here), so it cannot self-invalidate (CONVE-1688).
+	// A third trigger: the delete confirmation opening tears down ANY live gesture
+	// (a touch pan held while another finger taps Delete), since the confirmation
+	// owns the pointer until it resolves (BUG-2522).
 	$effect(() => {
-		if (bitmapPresent && gesturesArmable) return;
+		const confirmPending = deleteConfirm.pending;
+		if (bitmapPresent && gesturesArmable && !confirmPending) return;
 		untrack(() => {
-			if (!bitmapPresent || touchGestureLive()) cancelGesture();
+			if (!bitmapPresent || confirmPending || touchGestureLive()) cancelGesture();
 			// The paint arm is lost with no live gesture to tear down (e.g. a SAME-ID
 			// reload — dimension fill — which keeps `bitmapPresent` true so cancelGesture
 			// does not run): drop any pending FIRST tap, so a tap before the reload cannot
