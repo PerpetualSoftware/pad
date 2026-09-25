@@ -1517,8 +1517,10 @@ func TestRunItemCopy_FieldsAreTypedAgainstTheDestinationSchema(t *testing.T) {
 		t.Fatalf("runItemCopy: %v", err)
 	}
 	ov := d.preflightCalls[0].FieldOverrides
-	if ov["points"] != 3.0 {
-		t.Errorf("points = %#v, want float64(3)", ov["points"])
+	// A JSON number. Since BUG-3202 it is the caller's literal as a
+	// json.Number, so a value past 2^53 keeps its digits.
+	if ov["points"] != json.Number("3") {
+		t.Errorf("points = %#v, want json.Number(\"3\")", ov["points"])
 	}
 	if ov["done"] != true {
 		t.Errorf("done = %#v, want bool true", ov["done"])

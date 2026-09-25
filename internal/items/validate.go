@@ -1,8 +1,11 @@
 package items
 
 import (
+	"encoding/json"
 	"fmt"
+	"math"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -360,9 +363,17 @@ func validateFieldType(def models.FieldDef, val any) error {
 			return fmt.Errorf("field %q must be a string", def.Key)
 		}
 	case "number":
-		switch val.(type) {
+		switch n := val.(type) {
 		case float64, int, int64, float32:
 			// ok
+		case json.Number:
+			// The write doors decode with UseNumber so a number keeps its
+			// literal (BUG-3202). A json.Number is not guaranteed to be a
+			// number when it did not come from the decoder, so it is parsed
+			// here with the same rule the decoder applies.
+			if f, err := strconv.ParseFloat(string(n), 64); err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
+				return fmt.Errorf("field %q must be a number", def.Key)
+			}
 		default:
 			return fmt.Errorf("field %q must be a number", def.Key)
 		}

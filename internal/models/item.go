@@ -1114,7 +1114,7 @@ func parseMutableItemFields(fieldsJSON string) (map[string]any, error) {
 		return map[string]any{}, nil
 	}
 	var fieldsMap map[string]any
-	if err := json.Unmarshal([]byte(fieldsJSON), &fieldsMap); err != nil {
+	if err := DecodeJSONKeepingNumbers([]byte(fieldsJSON), &fieldsMap); err != nil {
 		return nil, fmt.Errorf("parse item fields: %w", err)
 	}
 	if fieldsMap == nil {
@@ -1567,13 +1567,27 @@ func (u *ItemUpdate) UnmarshalJSON(data []byte) error {
 	// alias's same-named fields because they are less deeply nested.
 	type alias ItemUpdate
 	aux := struct {
-		Fields json.RawMessage `json:"fields,omitempty"`
-		Tags   json.RawMessage `json:"tags,omitempty"`
+		Fields      json.RawMessage `json:"fields,omitempty"`
+		Tags        json.RawMessage `json:"tags,omitempty"`
+		FieldsPatch json.RawMessage `json:"fields_patch,omitempty"`
 		*alias
 	}{alias: (*alias)(u)}
 
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
+	}
+
+	// fields_patch is decoded keeping number literals (BUG-3202): its values
+	// are merged into the stored blob and written, so a float64 here rounds
+	// an integer above 2^53 that the caller sent. Absent and null leave it
+	// nil, as the plain decode did.
+	u.FieldsPatch = nil
+	if trimmed := bytes.TrimSpace(aux.FieldsPatch); len(trimmed) > 0 && !bytes.Equal(trimmed, []byte("null")) {
+		patch, err := DecodeFieldsJSON(trimmed)
+		if err != nil {
+			return fmt.Errorf("fields_patch: %w", err)
+		}
+		u.FieldsPatch = patch
 	}
 
 	// The alias decode leaves u.Fields / u.Tags nil (the raw bytes were
@@ -1652,8 +1666,11 @@ func flexJSONToString(raw json.RawMessage, expectedStart byte, errInvalid error)
 		// Object or array — re-marshal to a canonical JSON string so
 		// the downstream string-typed pipeline can json.Unmarshal it
 		// back to a map/slice exactly as if the caller had stringified.
+		// Decoded keeping number literals (BUG-3202): this re-marshal is
+		// what a caller sending `fields` as an object gets stored, and a
+		// float64 round trip rounded every integer above 2^53 in it.
 		var v any
-		if err := json.Unmarshal(trimmed, &v); err != nil {
+		if err := DecodeJSONKeepingNumbers(trimmed, &v); err != nil {
 			return nil, errInvalid
 		}
 		b, err := json.Marshal(v)

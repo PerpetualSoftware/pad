@@ -915,7 +915,7 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 	}
 
 	currentFields := make(map[string]any)
-	if err := json.Unmarshal([]byte(item.Fields), &currentFields); err != nil {
+	if err := models.DecodeJSONKeepingNumbers([]byte(item.Fields), &currentFields); err != nil {
 		currentFields = make(map[string]any)
 	}
 

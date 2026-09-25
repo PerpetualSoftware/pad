@@ -1069,16 +1069,14 @@ func (s *Store) getCollectionInWorkspaceTx(tx *sql.Tx, collectionID, workspaceID
 // handleCopyItemPreflight's, and TestCopyEndpoint_PreflightAndCopyAgree*
 // fails when the two drift.
 //
-// NOT BYTE-FAITHFUL, and deliberately not fixed here (Codex round 26).
-// Decoding items.fields into map[string]any and re-encoding it turns every
-// JSON number into a float64, so an integer past 2^53 is rounded, and key
-// order, escaping and number formatting are normalised rather than preserved.
-// That is how EVERY field write in Pad works — handleMoveItem, handleUpdateItem
-// and items.ValidateFields all operate on map[string]any — and, decisively,
-// the preflight does the identical round-trip, so the preview and the copy
-// AGREE. Making the copy alone byte-faithful would break that agreement, which
-// is the one thing this pipeline exists to preserve. It belongs with BUG-3202,
-// as a change to the field model for all callers at once.
+// NUMBERS ARE KEPT, the rest is normalised. The source blob is decoded with
+// models.DecodeJSONKeepingNumbers (BUG-3202), so every number survives as the
+// literal it was stored as, including an integer past 2^53, which a float64
+// decode used to round. Key order and escaping are still normalised by the
+// re-encode, as in every field write. The preflight decodes the same way, so
+// the preview and the copy still AGREE, which is the one thing this pipeline
+// exists to preserve (Codex round 26 deferred the number half to BUG-3202 for
+// exactly that reason: it had to change for all callers at once).
 //
 // Returns the final field map (the planner's input, pre-rewrite) and the keys
 // migration dropped.
@@ -1102,7 +1100,7 @@ func (s *Store) migrateCopyFields(q Queryer, destWorkspaceID string, targetColl 
 
 	currentFields := map[string]any{}
 	if strings.TrimSpace(sourceFieldsJSON) != "" {
-		if err := json.Unmarshal([]byte(sourceFieldsJSON), &currentFields); err != nil {
+		if err := models.DecodeJSONKeepingNumbers([]byte(sourceFieldsJSON), &currentFields); err != nil {
 			// A source row with unparseable fields migrates as if it had none,
 			// matching handleMoveItem's tolerance. Refusing would strand the
 			// item in A with no way out.

@@ -2197,7 +2197,7 @@ func (e *UpdateConflictError) Error() string {
 func mergeFieldsPatch(currentJSON string, patch map[string]interface{}) (string, error) {
 	m := map[string]interface{}{}
 	if currentJSON != "" && currentJSON != "{}" {
-		if err := json.Unmarshal([]byte(currentJSON), &m); err != nil {
+		if err := models.DecodeJSONKeepingNumbers([]byte(currentJSON), &m); err != nil {
 			return "", fmt.Errorf("parse current fields for merge: %w", err)
 		}
 	}
@@ -2322,7 +2322,7 @@ func (s *Store) scalarRelationFilterKeys(workspaceID string, params models.ItemL
 func dropBlankStringKeys(fieldsJSON string, keys []string) (string, error) {
 	m := map[string]interface{}{}
 	if fieldsJSON != "" && fieldsJSON != "{}" {
-		if err := json.Unmarshal([]byte(fieldsJSON), &m); err != nil {
+		if err := models.DecodeJSONKeepingNumbers([]byte(fieldsJSON), &m); err != nil {
 			return "", fmt.Errorf("parse merged fields: %w", err)
 		}
 	}

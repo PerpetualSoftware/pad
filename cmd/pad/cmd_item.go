@@ -147,10 +147,18 @@ func parseFieldFlag(schema models.CollectionSchema, key, raw string) any {
 		// either owes the other.
 		case "json", "multi_select", "multi_relation":
 			var v any
-			if err := json.Unmarshal([]byte(raw), &v); err == nil {
+			if err := models.DecodeJSONKeepingNumbers([]byte(raw), &v); err == nil {
 				return v
 			}
 		case "number":
+			// A JSON number literal is sent AS that literal (BUG-3202), so
+			// `--field n=9007199254740993` keeps its digits; a float64 would
+			// send 9007199254740992. Same rule as items.coerceValue.
+			if models.IsJSONNumberLiteral(raw) {
+				if f, err := strconv.ParseFloat(raw, 64); err == nil && !math.IsNaN(f) && !math.IsInf(f, 0) {
+					return json.Number(raw)
+				}
+			}
 			if f, err := strconv.ParseFloat(raw, 64); err == nil {
 				// Reject NaN / ±Inf — encoding/json can't marshal them, and
 				// the downstream json.Marshal(fields) error is ignored, so

@@ -87,10 +87,21 @@ func coerceValue(def models.FieldDef, v any) any {
 	// type unwritable from the CLI entirely (codex round 1).
 	case "json", "multi_select", "multi_relation":
 		var parsed any
-		if err := json.Unmarshal([]byte(s), &parsed); err == nil {
+		if err := models.DecodeJSONKeepingNumbers([]byte(s), &parsed); err == nil {
 			return parsed
 		}
 	case "number":
+		// A string that is a valid JSON number literal is kept AS that
+		// literal (BUG-3202): `--field n=9007199254740993` arrives here as
+		// text, and a float64 would store 9007199254740992. Anything else
+		// ParseFloat accepts (" 42", "0x1p-2", "Inf") still goes through
+		// the float path below, unchanged. cmd/pad's parseFieldFlag applies
+		// the same rule client-side and is kept in step with this one.
+		if models.IsJSONNumberLiteral(s) {
+			if f, err := strconv.ParseFloat(s, 64); err == nil && !math.IsNaN(f) && !math.IsInf(f, 0) {
+				return json.Number(s)
+			}
+		}
 		if f, err := strconv.ParseFloat(s, 64); err == nil {
 			// Reject NaN / ±Inf rather than storing them: encoding/json cannot
 			// marshal either, and the downstream json.Marshal(fields) error is
