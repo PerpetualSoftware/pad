@@ -5,6 +5,7 @@
 	// Its own statement, so units that only use `api` keep their reviewed hash.
 	import { isSupersededWriteError } from '$lib/api/client';
 	import { nextClientWrite } from '$lib/items/clientWrite';
+	import { SaveTracker, type SaveToken } from '$lib/items/saveTracker.svelte';
 	import { confirmOpenChildrenOrThrow, isOpenChildrenError } from '$lib/items/openChildrenError';
 	import { WriteOrder, fieldWriteTarget, rederiveListWrite, submitOrderedOCC } from '$lib/items/fieldWriteOrder';
 	import { isMultiRelationType } from '$lib/items/relationFieldTypes';
@@ -727,8 +728,12 @@
 	});
 
 	let contentDebounceTimer: ReturnType<typeof setTimeout> | undefined;
-	let saveStatus = $state<'idle' | 'saving' | 'saved'>('idle');
-	let saveStatusTimer: ReturnType<typeof setTimeout> | undefined;
+	// The save indicator counts the writes OUTSTANDING (BUG-3044): every
+	// `saves.begin()` below is settled in a `finally`, so a superseded or
+	// fenced-off write still counts down. `saveStatus` stays the name the SSE
+	// gates read.
+	const saves = new SaveTracker();
+	const saveStatus = $derived(saves.status);
 
 	// Per-instance shadow of editorStore.dirty/lastSaveTime (PLAN-2154 Phase 0 /
 	// R4, TASK-2156). editorStore is a module singleton — with a second
@@ -1970,8 +1975,6 @@
 		// the next item, which then suppresses SSE/sync refreshes
 		// (the `if (saveStatus === 'saving')` guards above).
 		// Per Codex review round 12.
-		clearTimeout(saveStatusTimer);
-		saveStatusTimer = undefined;
 		// Cleared BEFORE the status goes idle: a refresh owed to the previous
 		// item must not fire against this one when the effect below sees the
 		// status drop (BUG-3036).
@@ -1979,7 +1982,9 @@
 		// A change recorded for the PREVIOUS load's item is not this load's
 		// (BUG-3198): the record describes what arrived while this load runs.
 		changedDuringLoad = emptyChangedDuringLoad();
-		saveStatus = 'idle';
+		// Forgets every write still out for the previous item: their settles
+		// carry the old epoch and are ignored (BUG-3044).
+		saves.reset();
 		// Capture the URL parts this load was scoped to. Used in the catch
 		// path to detect whether the user has navigated away before this
 		// request rejected — without this the stale catch would clobber a
@@ -3196,10 +3201,13 @@
 		onBack?.();
 	}
 
-	function showSaved() {
-		saveStatus = 'saved';
-		clearTimeout(saveStatusTimer);
-		saveStatusTimer = setTimeout(() => { saveStatus = 'idle'; }, 2000);
+	/**
+	 * Records that THIS write succeeded. The indicator shows "Saved" once the
+	 * last outstanding write settles, and only if the newest one issued is this
+	 * kind of success (BUG-3044); see `SaveTracker`.
+	 */
+	function showSaved(saveTok: SaveToken) {
+		saves.succeed(saveTok);
 	}
 
 	async function saveTitle() {
@@ -3231,15 +3239,14 @@
 		const sent = titleDraft.trim();
 		const targetItem = item;
 		const gen = loadGeneration;
-		saveStatus = 'saving';
+		const saveTok = saves.begin();
 		try {
 			const updated = await api.items.update(wsSlug, targetItem.id, { title: titleDraft.trim() });
 			if (gen !== loadGeneration || item?.id !== targetItem.id) return;
 			item = withInflightTags(updated);
-			showSaved();
+			showSaved(saveTok);
 		} catch (err: any) {
 			if (gen !== loadGeneration || item?.id !== targetItem.id) return;
-			saveStatus = 'idle';
 			const reason = err?.message || 'Failed to update title';
 			// BUG-3115: put the refused text back in the editor, with the reason,
 			// unless the user has already reopened it and typed something else.
@@ -3255,6 +3262,8 @@
 			} else {
 				toastStore.show(reason, 'error');
 			}
+		} finally {
+			saves.settle(saveTok);
 		}
 	}
 
@@ -3326,7 +3335,7 @@
 		// Taken BEFORE the first send, so a second edit to the same field while
 		// this one is in flight is visible to every post-await branch below.
 		const ticket = fieldWrites.take(fieldWriteTarget(targetItem.id, key));
-		saveStatus = 'saving';
+		const saveTok = saves.begin();
 
 		// One PATCH attempt: single-key merge, OCC-guarded by the caller-supplied
 		// token. `force` overrides the open-children guard (BUG-1538).
@@ -3404,7 +3413,7 @@
 			// looks exactly as healthy as the newer one.
 			if (!fieldWrites.claim(ticket)) return;
 			item = withInflightTags(fresh);
-			showSaved();
+			showSaved(saveTok);
 		} catch (e) {
 			// A newer write for this field was dispatched while this one was in
 			// flight, so this one's outcome is not the one the user is waiting
@@ -3450,7 +3459,6 @@
 					// question is re-asked here rather than inherited from the
 					// check at the top of this catch.
 					if (fieldWrites.superseded(ticket)) return;
-					saveStatus = 'idle';
 					const msg = retryErr instanceof Error ? retryErr.message : 'Failed to save';
 					console.error('Forced field update failed:', retryErr);
 					toastStore.show(msg, 'error');
@@ -3469,7 +3477,7 @@
 					// question that matters: has anything newer actually written?
 					if (!fieldWrites.claim(ticket)) return;
 					item = withInflightTags(forced);
-					showSaved();
+					showSaved(saveTok);
 					return;
 				}
 				// User declined to override. Snap the on-page field back
@@ -3486,7 +3494,6 @@
 				// claim on return — server changed, pane showing the old value,
 				// and nothing left to correct it. A branch that asserts no new
 				// server truth must not take the mark for one.
-				if (!fieldWrites.superseded(ticket)) saveStatus = 'idle';
 				item = { ...item };
 				toastStore.show('Status change cancelled', 'info');
 				return;
@@ -3498,7 +3505,6 @@
 			if (isUpdateConflictError(e)) {
 				if (!stillCurrent() || !item) return;
 				if (!fieldWrites.claim(ticket)) return;
-				saveStatus = 'idle';
 				// `lastServerItem` is only ever assigned inside the submitWithOCC
 				// closure, so TS's control-flow narrows it to `null` here — the
 				// assertion restores the real union type it actually holds.
@@ -3513,9 +3519,12 @@
 			}
 			// Any other failure mode — network, validation, 500, etc.
 			if (!stillCurrent()) return;
-			saveStatus = 'idle';
 			console.error('Failed to save field:', e);
 			toastStore.show('Failed to save', 'error');
+		} finally {
+			// EVERY path, the superseded early returns included: a superseded
+			// write that never settled would pin 'saving' for the item (BUG-3044).
+			saves.settle(saveTok);
 		}
 	}
 
@@ -3637,7 +3646,7 @@
 
 	async function flushTagSaver(saver: TagSaver) {
 		saver.running = true;
-		saveStatus = 'saving';
+		const saveTok = saves.begin();
 		try {
 			while (saver.pending !== null) {
 				// NO freeze recheck in the drain (BUG-2263): tag editing is invisible
@@ -3680,7 +3689,7 @@
 					item = adoptServerItem(fresh);
 				}
 			}
-			if (item && item.id === saver.itemId) showSaved();
+			if (item && item.id === saver.itemId) showSaved(saveTok);
 			// A newly-created tag should appear in autocomplete next time.
 			void loadTagSuggestions(saver.ws);
 		} catch (e) {
@@ -3690,10 +3699,10 @@
 			if (item && item.id === saver.itemId) {
 				// Revert to the last server-confirmed tags, not the optimistic set.
 				item = { ...item, tags: saver.confirmed };
-				saveStatus = 'idle';
 				toastStore.show('Failed to save', 'error');
 			}
 		} finally {
+			saves.settle(saveTok);
 			saver.running = false;
 			// Drop the entry once fully drained so the map doesn't accumulate
 			// stale savers; guard on identity so a newer saver isn't evicted.
@@ -4059,7 +4068,7 @@
 		// coordinator P1).
 		const targetItem = item;
 		const gen = loadGeneration;
-		saveStatus = 'saving';
+		const saveTok = saves.begin();
 		try {
 			const update: Record<string, any> = {};
 			if (userId) {
@@ -4070,11 +4079,12 @@
 			const updated = await api.items.update(wsSlug, targetItem.id, update);
 			if (gen !== loadGeneration || item?.id !== targetItem.id) return;
 			item = withInflightTags(updated);
-			showSaved();
+			showSaved(saveTok);
 		} catch {
 			if (gen !== loadGeneration || item?.id !== targetItem.id) return;
-			saveStatus = 'idle';
 			toastStore.show('Failed to update assignment', 'error');
+		} finally {
+			saves.settle(saveTok);
 		}
 	}
 
@@ -4085,7 +4095,7 @@
 		// coordinator P1).
 		const targetItem = item;
 		const gen = loadGeneration;
-		saveStatus = 'saving';
+		const saveTok = saves.begin();
 		try {
 			const update: Record<string, any> = {};
 			if (roleId) {
@@ -4096,11 +4106,12 @@
 			const updated = await api.items.update(wsSlug, targetItem.id, update);
 			if (gen !== loadGeneration || item?.id !== targetItem.id) return;
 			item = withInflightTags(updated);
-			showSaved();
+			showSaved(saveTok);
 		} catch {
 			if (gen !== loadGeneration || item?.id !== targetItem.id) return;
-			saveStatus = 'idle';
 			toastStore.show('Failed to update role', 'error');
+		} finally {
+			saves.settle(saveTok);
 		}
 	}
 
@@ -4157,7 +4168,7 @@
 			// saved/error feedback onto a switched-in item (Codex).
 			const reqItem = item;
 			const gen = loadGeneration;
-			saveStatus = 'saving';
+			const saveTok = saves.begin();
 			// Set lastSaveTime BEFORE the API call so the SSE guard works
 			// even if the SSE event arrives before the response.
 			editorStore.setLastSaveTime(Date.now());
@@ -4177,14 +4188,13 @@
 				localLastSaveTime = Date.now();
 				editorStore.setDirty(false);
 				localDirty = false;
-				showSaved();
+				showSaved(saveTok);
 			}).catch((e) => {
 				if (switchedAway(reqItem, gen)) return;
 				// A newer write of this tab already landed and owns the outcome.
 				if (isSupersededWriteError(e)) return;
-				saveStatus = 'idle';
 				toastStore.show('Failed to save content', 'error');
-			});
+			}).finally(() => saves.settle(saveTok));
 		}, 1200);
 	}
 
@@ -4350,8 +4360,11 @@
 			const isForegroundCurrent = (): boolean =>
 				!keepalive && !!item && item.id === itemId && genAtFlush === loadGeneration;
 
+			// Only a foreground flush owns the indicator; a keepalive flush after
+			// navigation begins nothing, so it settles nothing.
+			let saveTok: SaveToken | null = null;
 			if (isForegroundCurrent()) {
-				saveStatus = 'saving';
+				saveTok = saves.begin();
 				localLastSaveTime = Date.now();
 				// Singleton editorStore is owned by the ACTIVE side only: a FROZEN
 				// (peeking) instance stamps its own shadow above but must not touch the
@@ -4401,7 +4414,7 @@
 						editorStore.setLastSaveTime(Date.now());
 						editorStore.setDirty(false);
 					}
-					showSaved();
+					if (saveTok) showSaved(saveTok);
 				}
 				return 'flushed';
 			} catch (e) {
@@ -4413,10 +4426,12 @@
 				// every arm, foreground or not.
 				if (e instanceof PadApiError && e.code === 'superseded_write') return 'skipped';
 				if (isForegroundCurrent()) {
-					saveStatus = 'idle';
 					toastStore.show('Failed to save content', 'error');
 				}
 				return 'failed';
+			} finally {
+				// The force_refresh and superseded returns included (BUG-3044).
+				if (saveTok) saves.settle(saveTok);
 			}
 		},
 	});
@@ -4486,7 +4501,7 @@
 					.catch(() => {});
 			}
 			// Debounced raw save.
-			saveStatus = 'saving';
+			const saveTok = saves.begin();
 			editorStore.setLastSaveTime(Date.now());
 			localLastSaveTime = Date.now();
 			// Raw mode: content is already in storage format (with [[wiki links]])
@@ -4514,7 +4529,7 @@
 					rawContentSaver.clearPending();
 					editorStore.setDirty(false);
 					localDirty = false;
-					showSaved();
+					showSaved(saveTok);
 				} else {
 					// Newer pending edit; keep local content, adopt
 					// server-side metadata only. The next debounce
@@ -4525,9 +4540,8 @@
 				if (!item || item.id !== reqItemId || genAtSave !== loadGeneration) return;
 				// A newer write of this tab already landed and owns the outcome.
 				if (isSupersededWriteError(e)) return;
-				saveStatus = 'idle';
 				toastStore.show('Failed to save content', 'error');
-			});
+			}).finally(() => saves.settle(saveTok));
 		},
 	});
 
@@ -4598,13 +4612,19 @@
 		const reqItemId = item.id;
 		const genAtFlush = loadGeneration;
 		let lastError = false;
+		// ONE indicator write for the whole drain, begun before its first await
+		// and settled in the finally below (BUG-3044). That is the truthful
+		// status for a drain: it IS saving until its last PATCH settles, so the
+		// indicator stays 'saving' across every pass and shows "Saved" once, when
+		// the drain empties, as it always did. A token per pass would flicker
+		// between passes while the drain is still sending.
+		const saveTok = saves.begin();
 		try {
 			for (let i = 0; i < RAW_FLUSH_DRAIN_CAP; i++) {
 				const markdown: string | null = rawContentSaver.pending;
 				if (markdown === null) break;
 				rawContentSaver.cancel();
 				try {
-					saveStatus = 'saving';
 					editorStore.setLastSaveTime(Date.now());
 					localLastSaveTime = Date.now();
 					const updated = await api.items.update(wsSlug, reqItemId, { content: markdown, client_write: nextClientWrite() });
@@ -4652,7 +4672,6 @@
 						if (rawContentSaver.pending === markdown) rawContentSaver.clearPending();
 						continue;
 					}
-					saveStatus = 'idle';
 					toastStore.show('Failed to save content', 'error');
 					lastError = true;
 					break;
@@ -4661,11 +4680,12 @@
 			if (!lastError && rawContentSaver.pending === null) {
 				editorStore.setDirty(false);
 				localDirty = false;
-				showSaved();
+				showSaved(saveTok);
 				return true;
 			}
 			return false;
 		} finally {
+			saves.settle(saveTok);
 			rawFlushInFlight = false;
 		}
 	}

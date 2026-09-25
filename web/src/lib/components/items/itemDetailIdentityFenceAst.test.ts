@@ -85,19 +85,40 @@ interface Row {
 	reviewed?: string;
 }
 
+/**
+ * Why a save-indicator settle may run after an unfenced await (BUG-3044, lead
+ * ruling): it MUST run on every path, the item-switch and superseded returns
+ * included, or the outstanding count pins 'saving' and every SSE gate with it.
+ * What keeps a stale settle from moving the NEXT item's indicator is the
+ * tracker's epoch, which `saves.reset()` bumps at load. This analysis cannot
+ * see that and is deliberately not taught to trust it; the claim is pinned by
+ * saveTracker.svelte.test.ts 'a settle from before a reset (item switch) is
+ * ignored', which a reset that does not bump the epoch fails.
+ */
+const SETTLE_WHY =
+	"save-indicator settle: runs on every path by design; a stale token is a no-op by the tracker's epoch (saveTracker.svelte.test.ts 'a settle from before a reset (item switch) is ignored')";
+
+/** The same, appended to the reason of a row whose own `finally` settles. */
+const SETTLE_NOTE = `; its finally settles the save indicator (${SETTLE_WHY})`;
+
+/** The collab flush's `save` callback, exactly (`codeOf`): the settle allowance covers this code and nothing else. */
+const COLLAB_SAVE_CODE =
+	"async ({ ws, itemId, toSave, keepalive }) => { const genAtFlush = loadGeneration; const isForegroundCurrent = (): boolean => !keepalive && !!item && item.id === itemId && genAtFlush === loadGeneration; let saveTok: SaveToken | null = null; if (isForegroundCurrent()) { saveTok = saves.begin(); localLastSaveTime = Date.now(); // Singleton editorStore is owned by the ACTIVE side only: a FROZEN // (peeking) instance stamps its own shadow above but must not touch the // singleton (PLAN-2179 DR-2 / TASK-2181). `saveStatus` is per-instance. if (!peeking) editorStore.setLastSaveTime(Date.now()); } try { // Pass the provider's per-tab op-log cursor (TASK-1319) so the // server can advance the GC watermark when this tab is caught // up to MAX(op-log.id). When the cursor is below MAX (peer ops // not yet applied here) the server leaves the watermark // untouched — the GC sweeper must not delete rows this markdown // doesn't reflect. The cursor reflects the provider tracking // THIS item; if a navigation has already swapped to another // item the foreground flush path bails earlier on dedupe and // this code doesn't run. const opLogCursor = collabProvider && collabProvider.itemID === itemId ? collabProvider.lastOpLogID : undefined; await api.items.flushCollabContent(ws, itemId, toSave, { keepalive, opLogCursor, // BUG-3080: two teardown flushes are both dispatched before // either answers, so only the server can order them — by // this stamp. Deliberately NO expected_seq here: both would // carry the same one, and the older landing first would get // the NEWER refused. clientWrite: nextClientWrite(), }); // Post-await force_refresh check: a force_refresh frame can // arrive WHILE the PATCH is in flight (server already accepted, // items.content already overwritten — the server-side gate // covers the happens-before case where MIN had advanced past // our cursor by the time the request landed). Refuse to record // this flush as authoritative locally — returning 'skipped' // stops the flusher seeding lastFlushedContent from a // known-stale base and skips the saveStatus update. Per Codex // round 10 [P1]. if (forceRefreshInFlight) return 'skipped'; if (isForegroundCurrent()) { localLastSaveTime = Date.now(); localDirty = false; // Singleton editorStore: active side only (PLAN-2179 / TASK-2181) — // a frozen preview's remote-op flush updates only its shadow above. if (!peeking) { editorStore.setLastSaveTime(Date.now()); editorStore.setDirty(false); } if (saveTok) showSaved(saveTok); } return 'flushed'; } catch (e) { // Superseded (BUG-3080): a newer flush of this tab already // landed. Not an error, and not recorded as the last flushed // content either — this body is not what the server holds. // Classified inline rather than by a call: this catch runs after an // await with no fence of its own, and the answer is needed on // every arm, foreground or not. if (e instanceof PadApiError && e.code === 'superseded_write') return 'skipped'; if (isForegroundCurrent()) { toastStore.show('Failed to save content', 'error'); } return 'failed'; } finally { // The force_refresh and superseded returns included (BUG-3044). if (saveTok) saves.settle(saveTok); } }";
+
 /** Top-level `async function` declarations, by name. */
 const ASYNC_FUNCTIONS: Record<string, Row> = {
 	adoptOrConvergeToLiveCollection: { reviewed: '5a647061f75f', why: 'myGen against loadGeneration before adopting' },
 	reconcileCollectionSegment: { reviewed: 'dbb36caf0452', why: 'identityHeld after the list fetch; retags and navigates only under it' },
 	jumpToSection: { reviewed: '17407aeb431b', why: 'switches this instance\'s tab and scrolls to an anchor', may: ['document.getElementById', 'document.getElementById(anchorId).scrollIntoView'] },
 	ensureGraphComp: { reviewed: 'c1565cfb8a18', why: 'lazy-loads a component module into this instance', may: ['ItemGraphComp', 'graphLoadError'] },
-	handleCopyRef: { reviewed: 'fb3adcaf167a', why: 'switchedAway before the copied flag' },
-	loadData: { reviewed: '8ed3c63b1d7d', why: 'IS the load: myGen against loadGeneration after every await; the BUG-3198 re-read of a changed item runs after the install, keyed on the installed item id, and fences itself on itemGen' },
+	handleCopyRef: { reviewed: 'a5e0a0394fcc', why: 'switchedAway before the copied flag' },
+	loadData: { reviewed: '8eb393047b3e', why: 'IS the load: myGen against loadGeneration after every await; the BUG-3198 re-read of a changed item runs after the install, keyed on the installed item id, and fences itself on itemGen' },
 	startEditTitle: { reviewed: '17f04352d420', why: 'focuses and sizes the input it opened synchronously', may: ['el', 'titleInputEl.focus', 'titleInputEl.setSelectionRange'] },
-	saveTitle: { reviewed: 'ba5a2acf0d81', why: 'gen against loadGeneration on both arms, and again after the tick that resizes a reopened editor (BUG-3115)' },
+	saveTitle: { reviewed: 'cef019550a0a', why: 'gen against loadGeneration on both arms, and again after the tick that resizes a reopened editor (BUG-3115)' + SETTLE_NOTE, may: ['saves.settle'] },
 	updateField: {
-		reviewed: '4ae2212df0a5',
-		why: 'stillCurrent() on every arm, the OCC refetch and the open-children confirm',
+		reviewed: '55dd4fdc7824',
+		why: 'stillCurrent() on every arm, the OCC refetch and the open-children confirm' + SETTLE_NOTE,
+		may: ['saves.settle'],
 		callbacks: {
 			'submitOrderedOCC({send})': {
 				may: ['api.items.update'],
@@ -117,9 +138,9 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 		},
 	},
 	flushTagSaver: {
-		reviewed: 'c2b3dd381073',
-		why: 'identityHeld(saver.epoch) before every commit and send (each batch goes through sendTagBatch, which fences its own conflict path); the unfenced writes are to this burst\'s own identity-stamped record, and the finally deletes that record only if the registry still holds it (the get)',
-		may: ['saver', 'tagSavers.get', 'tagSavers.delete'],
+		reviewed: '310eef4ca57e',
+		why: 'identityHeld(saver.epoch) before every commit and send (each batch goes through sendTagBatch, which fences its own conflict path); the unfenced writes are to this burst\'s own identity-stamped record, and the finally deletes that record only if the registry still holds it (the get)' + SETTLE_NOTE,
+		may: ['saves.settle', 'saver', 'tagSavers.get', 'tagSavers.delete'],
 	},
 	// BUG-3143: one tag batch, re-derived and retried on a conflict. Writes
 	// only this burst's own record (confirmed, token), like flushTagSaver.
@@ -134,12 +155,12 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	loadTagSuggestions: { reviewed: 'b03a62bf7294', why: 'identityHeld after the fetch; the identity listener re-runs it' },
 	stampSourceUrl: { reviewed: 'b9d3f9d400ae', why: 'switchedAway on both arms' },
 	refreshFromSource: { reviewed: '205f77aba079', why: 'switchedAway on every arm; the frozen-editor notice (BUG-2177) is after that check' },
-	updateAssignedUser: { reviewed: '86f060522de1', why: 'gen against loadGeneration on both arms' },
-	updateAgentRole: { reviewed: 'ae4f320cdbab', why: 'gen against loadGeneration on both arms' },
+	updateAssignedUser: { reviewed: '5e4128e45ae7', why: 'gen against loadGeneration on both arms' + SETTLE_NOTE, may: ['saves.settle'] },
+	updateAgentRole: { reviewed: '9b0a6af92cc2', why: 'gen against loadGeneration on both arms' + SETTLE_NOTE, may: ['saves.settle'] },
 	flushRawIfPending: {
-		reviewed: '0420c7e37b44',
-		why: 'genAtFlush against loadGeneration after each PATCH; the re-entrancy waiter returns state; the finally clears this drain\'s own in-flight flag',
-		may: ['rawFlushInFlight'],
+		reviewed: '425804645744',
+		why: 'genAtFlush against loadGeneration after each PATCH; the re-entrancy waiter returns state; the finally clears this drain\'s own in-flight flag' + SETTLE_NOTE,
+		may: ['saves.settle', 'rawFlushInFlight'],
 		bareAwaits: ['await new Promise((r) => setTimeout(r, 50));'],
 	},
 	refreshLinksPreservingOnFailure: {
@@ -153,10 +174,10 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	// BUG-3036: the re-read an SSE event or sync pass deferred while a save was in
 	// flight. The SSE item_updated shape: itemGen and the item id after each await.
 	runOwedRefresh: { reviewed: '1ede6aa08b69', why: 'destroyed, itemGen and the item id after each await, as the SSE item_updated re-read it stands in for (destroyed since BUG-3198: the load path calls it too)' },
-	flushCollabBeforeRestore: { reviewed: '58150a653ea6', why: 'identityHeld before its failure toast' },
+	flushCollabBeforeRestore: { reviewed: 'f9f7621c1dd2', why: 'identityHeld before its failure toast' },
 	closeCopyDialog: { reviewed: '1c925f081a26', why: 'restores focus after closing synchronously', may: ['paneMenuTrigger.focus'] },
 	closePushDialog: { reviewed: 'bda8c7529677', why: 'restores focus after closing synchronously', may: ['paneMenuTrigger.focus'] },
-	flushContentBeforeCopy: { reviewed: '5bea1cb961b5', why: 'returns a boolean to the dialog' },
+	flushContentBeforeCopy: { reviewed: 'd7083bf9954c', why: 'returns a boolean to the dialog' },
 	handleCopied: { reviewed: 'f35fb099838d', why: 'switchedAway before adopting the refreshed item' },
 	handleDelete: { reviewed: 'b66adcf84794', why: 'switchedAway on both arms' },
 	handleRestore: { reviewed: 'c3a1732554a4', why: 'switchedAway on every arm' },
@@ -187,15 +208,22 @@ interface SignedRow extends Row {
 
 /** Async functions that are not top-level declarations, in the script. */
 const NESTED: SignedRow[] = [
-	{ body: /event\.type === 'collection_updated'/, why: 'SSE: callbackGen after the collection fetch, itemGen on item branches; a change or a migration arriving before this load installs its item is only RECORDED (BUG-3198), synchronously, before any await', reviewed: 'fd626753eaf9' },
-	{ body: /result\.type === 'caught_up'/, why: 'sync: callbackGen after the reconciliation, itemGen on item branches; a result arriving before this load installs its item is only RECORDED (BUG-3198), synchronously, before any await', reviewed: '30f73f3a3ece' },
-	{ body: /flushCollabContent\(/, why: 'collab save: isForegroundCurrent (genAtFlush) before UI feedback', reviewed: '6dba5f66f347' },
+	{ body: /event\.type === 'collection_updated'/, why: 'SSE: callbackGen after the collection fetch, itemGen on item branches; a change or a migration arriving before this load installs its item is only RECORDED (BUG-3198), synchronously, before any await', reviewed: '87c80cea46db' },
+	{ body: /result\.type === 'caught_up'/, why: 'sync: callbackGen after the reconciliation, itemGen on item branches; a result arriving before this load installs its item is only RECORDED (BUG-3198), synchronously, before any await', reviewed: 'a7ae81a0da33' },
+	{
+		body: /flushCollabContent\(/,
+		in: '(top level)',
+		code: COLLAB_SAVE_CODE,
+		why: 'collab save: isForegroundCurrent (genAtFlush) before UI feedback' + SETTLE_NOTE,
+		reviewed: 'f197b2c9f0ef',
+		may: ['saves.settle'],
+	},
 ];
 
 /** Async functions in the markup. */
 const MARKUP: SignedRow[] = [
 	{ body: /startGen/, why: 'Rich toggle: startGen against loadGeneration after each await', reviewed: '63a9cce2ed93' },
-	{ body: /genAtToggle/, why: 'Markdown toggle: genAtToggle against loadGeneration after each await', reviewed: '5c5b8240c566' },
+	{ body: /genAtToggle/, why: 'Markdown toggle: genAtToggle against loadGeneration after each await', reviewed: '6ad6c1318246' },
 ];
 
 const collapse = (s: string) => s.replace(/\s+/g, ' ');
@@ -361,28 +389,27 @@ const CONTINUATIONS: SignedRow[] = [
 		why: 'rename heal failure: clears only the bridge object this heal installed', reviewed: '9a33138e4937',
 		may: ['renameOverride'],
 	},
-	{ call: /^setTimeout\($/, body: /copied = false/, why: 'copy-flag reset: switchedAway', reviewed: '199047839886' },
-	{ call: /api\.items\.get\(wsSlug, itemSlug\)\.catch\($/, body: /./, why: 'loadData item fetch: sets a flag local to that load and re-throws', reviewed: '1567ed00227b' },
+	{ call: /^setTimeout\($/, body: /copied = false/, why: 'copy-flag reset: switchedAway', reviewed: '8a8d4754017f' },
+	{ call: /api\.items\.get\(wsSlug, itemSlug\)\.catch\($/, body: /./, why: 'loadData item fetch: sets a flag local to that load and re-throws', reviewed: 'f2267a80cece' },
 	{
 		call: /^setTimeout\($/,
 		body: /staleConnecting = true/,
 		in: '$effect(…)',
 		code: "() => { if (collabProvider?.state === 'connecting' && !hasEverSynced) { staleConnecting = true; } }",
-		why: 'connection state of this instance\'s own provider', reviewed: 'c4d9f3230509',
+		why: 'connection state of this instance\'s own provider', reviewed: 'b0f9f4cc5f23',
 		may: ['staleConnecting'],
 	},
-	{ call: /\.get\(refreshCtx\.wsSlug, refreshCtx\.itemId\) \.then\($/, body: /./, why: 'force-refresh fetch: refreshGen against loadGeneration', reviewed: '0a1fffba6d45' },
-	{ call: /forceRefreshNonce \+= 1; \}\) \.catch\($/, body: /./, why: 'force-refresh failure: refreshGen against loadGeneration', reviewed: 'e54e21b2c59d' },
+	{ call: /\.get\(refreshCtx\.wsSlug, refreshCtx\.itemId\) \.then\($/, body: /./, why: 'force-refresh fetch: refreshGen against loadGeneration', reviewed: '85c402dd6ca9' },
+	{ call: /forceRefreshNonce \+= 1; \}\) \.catch\($/, body: /./, why: 'force-refresh failure: refreshGen against loadGeneration', reviewed: 'b34c4479bb79' },
 	{
 		call: /^setTimeout\($/,
 		body: /teardownFlushed/,
 		in: 'onBeforeUnload',
 		code: '() => { teardownFlushed = false; }',
-		why: 're-arms the BUG-3005 teardown latch, itself identity-checked', reviewed: '48cada93d389',
+		why: 're-arms the BUG-3005 teardown latch, itself identity-checked', reviewed: 'e598de5a2771',
 		may: ['teardownFlushed'],
 	},
-	{ call: /^queueMicrotask\($/, body: /./, why: 'collab lazy seed: refuses a retired or re-identified context first', reviewed: 'bb4b5bef7eec' },
-	{ call: /^setTimeout\($/, body: /saveStatus/, in: 'showSaved', code: "() => { saveStatus = 'idle'; }", why: 'cosmetic save-indicator reset', reviewed: 'bd7f1439c3d2', may: ['saveStatus'] },
+	{ call: /^queueMicrotask\($/, body: /./, why: 'collab lazy seed: refuses a retired or re-identified context first', reviewed: '197a4a45d219' },
 	{ call: /^tick\(\)\.then\($/, body: /./, why: 'schedules a focus frame; commits nothing itself', reviewed: 'b6f7655cb302' },
 	{
 		call: /^requestAnimationFrame\($/,
@@ -396,16 +423,34 @@ const CONTINUATIONS: SignedRow[] = [
 		call: /^setTimeout\($/,
 		body: /content: toSave, client_write: nextClientWrite\(\) \}\)\.then/,
 		in: 'handleContentUpdate',
-		why: 'content debounce: loadData clears this timer before its first await, so the callback never runs across a load', reviewed: '1302904e1805',
+		why: 'content debounce: loadData clears this timer before its first await, so the callback never runs across a load', reviewed: 'd05baa756ebd',
 		startSafe: true,
 		pin: (src, unit) => clearsBeforeFirstAwait(src, 'loadData', 'contentDebounceTimer') ?? assignedTo(src, unit, 'contentDebounceTimer'),
 	},
-	{ call: /\{ content: toSave, client_write: nextClientWrite\(\) \}\)\.then\($/, body: /^\(\) =>/, why: 'content save: switchedAway', reviewed: '77120c902e52' },
-	{ call: /showSaved\(\); \}\)\.catch\($/, body: /./, why: 'content save failure: switchedAway', reviewed: '541348670a2a' },
-	{ call: /\{ keepalive: true \}\) \.then\($/, body: /./, why: 'raw keepalive save: genAtSave against loadGeneration', reviewed: 'dcdd26c60264' },
-	{ call: /localDirty = false; \} \}\) \.catch\($/, body: /^\(\) => \{\}$/, why: 'raw keepalive failure: empty', reviewed: '61988786e8bf' },
-	{ call: /reqItemId, \{ content: toSave, client_write: nextClientWrite\(\) \}\)\.then\($/, body: /./, why: 'raw foreground save: genAtSave against loadGeneration', reviewed: 'ddb4a299f255' },
-	{ call: /content: item\.content \}\); \} \}\)\.catch\($/, body: /./, why: 'raw foreground failure: genAtSave against loadGeneration', reviewed: '3c3619ac0a37' },
+	{ call: /\{ content: toSave, client_write: nextClientWrite\(\) \}\)\.then\($/, body: /^\(\) =>/, why: 'content save: switchedAway', reviewed: '160532c3b115' },
+	{ call: /showSaved\(saveTok\); \}\)\.catch\($/, body: /./, why: 'content save failure: switchedAway', reviewed: '73e9f73724f5' },
+	{
+		call: /\.finally\($/,
+		body: /^\(\) => saves\.settle\(saveTok\)$/,
+		in: 'setTimeout(…)',
+		code: '() => saves.settle(saveTok)',
+		why: SETTLE_WHY,
+		reviewed: '4fbcd658ebba',
+		may: ['saves.settle'],
+	},
+	{ call: /\{ keepalive: true \}\) \.then\($/, body: /./, why: 'raw keepalive save: genAtSave against loadGeneration', reviewed: '758b235c3705' },
+	{ call: /localDirty = false; \} \}\) \.catch\($/, body: /^\(\) => \{\}$/, why: 'raw keepalive failure: empty', reviewed: '66b6e4855355' },
+	{ call: /reqItemId, \{ content: toSave, client_write: nextClientWrite\(\) \}\)\.then\($/, body: /./, why: 'raw foreground save: genAtSave against loadGeneration', reviewed: '109114fbb1b8' },
+	{ call: /content: item\.content \}\); \} \}\)\.catch\($/, body: /./, why: 'raw foreground failure: genAtSave against loadGeneration', reviewed: 'a47d5c0c6f20' },
+	{
+		call: /\.finally\($/,
+		body: /^\(\) => saves\.settle\(saveTok\)$/,
+		in: '{save}',
+		code: '() => saves.settle(saveTok)',
+		why: SETTLE_WHY,
+		reviewed: '0ef0106d13cc',
+		may: ['saves.settle'],
+	},
 ];
 
 /**
@@ -415,7 +460,7 @@ const CONTINUATIONS: SignedRow[] = [
  * one is an edit to every unit that reaches it.
  */
 const HELPERS: Record<string, string> = {
-	primeCanonicalSeed: 'bd355af5a470',
+	primeCanonicalSeed: '9d90b6bf0245',
 	adoptCollection: 'ab38368cd8fb',
 	adoptServerItem: '198d4de5b450',
 	applyProgress: 'b28014625819',
@@ -426,11 +471,11 @@ const HELPERS: Record<string, string> = {
 	identityHeld: '1c5505d51f73',
 	navigateToCollectionRoot: '64dce75693d3',
 	refreshPrintMeta: '2312cc481ca5',
-	runTeardownFlush: '5718e613cefd',
+	runTeardownFlush: '8251de42632d',
 	// BUG-3124 unit B: the cursor-advance settle. Synchronous; arms the flusher's
 	// single timer only for the current, identity-held context.
-	settleCollabIfCurrent: 'c3f36ad978c9',
-	showSaved: '3f1ef91fac07',
+	showSaved: '456dd972dcf5',
+	settleCollabIfCurrent: '438f4aed6d2f',
 	// BUG-2367: the move's success toast, naming any not_unique drop.
 	// Synchronous; reads only its arguments and writes only the toast store.
 	showMovedToast: '6a32f06fbd9f',
@@ -960,19 +1005,19 @@ const LOAD_DATA_CLEAR = '\t\tclearTimeout(contentDebounceTimer);\n\t\tcontentDeb
 
 /** saveTitle's capture, made reassignable. */
 const TITLE_GEN_LET: [string, string] = [
-	"\t\tconst gen = loadGeneration;\n\t\tsaveStatus = 'saving';\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title",
-	"\t\tlet gen = loadGeneration;\n\t\tsaveStatus = 'saving';\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title",
+	"\t\tconst gen = loadGeneration;\n\t\tconst saveTok = saves.begin();\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title",
+	"\t\tlet gen = loadGeneration;\n\t\tconst saveTok = saves.begin();\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title",
 ];
 
 /** saveTitle records an identity stamp at entry, before its await. */
 const TITLE_STAMP_AT_ENTRY: [string, string] = [
-	"\t\tconst gen = loadGeneration;\n\t\tsaveStatus = 'saving';\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title",
-	"\t\tconst gen = loadGeneration;\n\t\tconst snap = { epoch: captureIdentity() };\n\t\tsaveStatus = 'saving';\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title",
+	"\t\tconst gen = loadGeneration;\n\t\tconst saveTok = saves.begin();\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title",
+	"\t\tconst gen = loadGeneration;\n\t\tconst snap = { epoch: captureIdentity() };\n\t\tconst saveTok = saves.begin();\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title",
 ];
 
 /** saveTitle's fence and the two commits under it: the anchor most round-5 edits rewrite. */
 const TITLE_FENCE_AND_COMMITS =
-	"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n";
+	"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved(saveTok);\n";
 
 describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, condition 1)', () => {
 	// Without a clean baseline every mutant is "refused" for free.
@@ -1009,17 +1054,17 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 		// read as holding after that await.
 		{
 			id: 'R5 E1 a fence before an await in one && test',
-			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (gen === loadGeneration && (await dialogs.confirm('Keep the new title?'))) {\n\t\t\t\titem = withInflightTags(updated);\n\t\t\t\tshowSaved();\n\t\t\t}\n"]],
+			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (gen === loadGeneration && (await dialogs.confirm('Keep the new title?'))) {\n\t\t\t\titem = withInflightTags(updated);\n\t\t\t\tshowSaved(saveTok);\n\t\t\t}\n"]],
 			refuses: ['saveTitle()', 'assigns item after an unfenced await'],
 		},
 		{
 			id: 'R5 E1b a fence boolean whose initialiser awaits after the fence',
-			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tconst keep = gen === loadGeneration && (await dialogs.confirm('Keep the new title?'));\n\t\t\tif (!keep) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"]],
+			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tconst keep = gen === loadGeneration && (await dialogs.confirm('Keep the new title?'));\n\t\t\tif (!keep) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved(saveTok);\n"]],
 			refuses: ['saveTitle()', 'assigns item after an unfenced await'],
 		},
 		{
 			id: 'R5 E1c the early-return form: fence, then an await, in one || test',
-			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id || !(await dialogs.confirm('Keep the new title?'))) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"]],
+			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id || !(await dialogs.confirm('Keep the new title?'))) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved(saveTok);\n"]],
 			refuses: ['saveTitle()', 'assigns item after an unfenced await'],
 		},
 		// Round 5 P1-2: a callback handed to anything but the deferring names was
@@ -1042,7 +1087,7 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 		},
 		{
 			id: 'R5 E8 a commit inside a requestIdleCallback callback',
-			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\trequestIdleCallback(() => {\n\t\t\t\titem = withInflightTags(updated);\n\t\t\t\tshowSaved();\n\t\t\t});\n"]],
+			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\trequestIdleCallback(() => {\n\t\t\t\titem = withInflightTags(updated);\n\t\t\t\tshowSaved(saveTok);\n\t\t\t});\n"]],
 			refuses: ['saveTitle()', 'callback requestIdleCallback(…)', 'assigns item after an unfenced await'],
 		},
 		{
@@ -1077,7 +1122,7 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 			id: 'R5 P1-2 a function declared under a name used twice, passed by name',
 			subs: [
 				[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tconst onTitleClose = () => {\n\t\t\t\titem = withInflightTags(updated);\n\t\t\t};\n\t\t\twindow.addEventListener('blur', onTitleClose);\n"],
-				['\tfunction showSaved() {\n', '\tfunction showSaved() {\n\t\tconst onTitleClose = () => {};\n\t\tvoid onTitleClose;\n'],
+				['\tfunction showSaved(saveTok: SaveToken) {\n', '\tfunction showSaved(saveTok: SaveToken) {\n\t\tconst onTitleClose = () => {};\n\t\tvoid onTitleClose;\n'],
 			],
 			refuses: ['saveTitle()', 'assigns item after an unfenced await'],
 		},
@@ -1092,14 +1137,14 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 			// Only an empty Set/Map is an allowed constructor default (lead ruling on
 			// checkpoint 63, condition 3).
 			id: 'R6 a default value that constructs something with effects',
-			subs: [['\tfunction showSaved() {\n', "\tfunction showSaved(stream = new TitleStream()) {\n\t\tvoid stream;\n"]],
+			subs: [['\tfunction showSaved(saveTok: SaveToken) {\n', "\tfunction showSaved(stream = new TitleStream()) {\n\t\tvoid stream;\n"]],
 			refuses: ['default value calls or assigns'],
 		},
 		{
 			// A fence boolean stops being one when it is written (round 6 ruling B,
 			// class 6); here the write, not an await, is what makes it stale.
 			id: 'R6 a fence boolean overwritten after it is computed',
-			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tlet titleOk = gen === loadGeneration;\n\t\t\ttitleOk = true;\n\t\t\tif (!titleOk) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"]],
+			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tlet titleOk = gen === loadGeneration;\n\t\t\ttitleOk = true;\n\t\t\tif (!titleOk) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved(saveTok);\n"]],
 			refuses: ['saveTitle()', 'assigns item after an unfenced await'],
 		},
 		{
@@ -1107,7 +1152,7 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 			id: 'R6 loadGeneration compared against an identity capture',
 			subs: [
 				[TITLE_GEN_LET[0], TITLE_GEN_LET[0].replace('\t\tsaveStatus', '\t\tconst identity = captureIdentity();\n\t\tsaveStatus')],
-				[TITLE_FENCE_AND_COMMITS, '{ title: titleDraft.trim() });\n\t\t\tif (loadGeneration !== identity) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n'],
+				[TITLE_FENCE_AND_COMMITS, '{ title: titleDraft.trim() });\n\t\t\tif (loadGeneration !== identity) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved(saveTok);\n'],
 			],
 			refuses: ['saveTitle()', 'assigns item after an unfenced await'],
 		},
@@ -1160,12 +1205,12 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 		},
 		{
 			id: 'R5 E3 a commit after a for-of over an awaited list whose body always returns',
-			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tfor (const newer of await api.items.newerVersions(wsSlug, targetItem.id)) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"]],
+			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tfor (const newer of await api.items.newerVersions(wsSlug, targetItem.id)) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved(saveTok);\n"]],
 			refuses: ['saveTitle()', 'assigns item after an unfenced await'],
 		},
 		{
 			id: 'R5 P2-2 a commit after a while whose test awaits and whose body always returns',
-			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\twhile (await api.items.hasNewer(wsSlug, targetItem.id)) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"]],
+			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\twhile (await api.items.hasNewer(wsSlug, targetItem.id)) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved(saveTok);\n"]],
 			refuses: ['saveTitle()', 'assigns item after an unfenced await'],
 		},
 		{
@@ -1180,7 +1225,7 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 		},
 		{
 			id: 'R5 P2-3 a commit after a switch with no default whose test awaits',
-			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tswitch (titleDraft) {\n\t\t\t\tcase await api.items.canonicalTitle(wsSlug):\n\t\t\t\t\treturn;\n\t\t\t}\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"]],
+			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tswitch (titleDraft) {\n\t\t\t\tcase await api.items.canonicalTitle(wsSlug):\n\t\t\t\t\treturn;\n\t\t\t}\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved(saveTok);\n"]],
 			refuses: ['saveTitle()', 'assigns item after an unfenced await'],
 		},
 		// Round 5 P2-4: an identity comparison between two STAMPS proves nothing.
@@ -1267,15 +1312,15 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 			// A block's bindings hold only inside that block: a `const item` in
 			// one branch excuses no `item =` outside it.
 			id: 'R5 P1-3 a block-scoped declaration excuses a write outside its block',
-			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (updated) {\n\t\t\t\tconst item = updated;\n\t\t\t\tvoid item;\n\t\t\t}\n\t\t\titem = withInflightTags(updated);\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tshowSaved();\n"]],
+			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (updated) {\n\t\t\t\tconst item = updated;\n\t\t\t\tvoid item;\n\t\t\t}\n\t\t\titem = withInflightTags(updated);\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tshowSaved(saveTok);\n"]],
 			refuses: ['saveTitle()', 'assigns item after an unfenced await — item = withInflightTags(updated)'],
 		},
 		{
 			// An inlined helper resolves names in ITS scopes: a caller's local that
 			// shares a name with the state the helper writes excuses nothing.
 			id: "R5 P1-3 a caller's local does not excuse the same name inside an inlined helper",
-			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tconst saveStatus = updated.title;\n\t\t\tshowSaved();\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n"]],
-			refuses: ['saveTitle()', 'showSaved() -> assigns saveStatus after an unfenced await'],
+			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tconst saveStatus = updated.title;\n\t\t\tshowSaved(saveTok);\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n"]],
+			refuses: ['saveTitle()', 'showSaved() -> calls saves.succeed after an unfenced await'],
 		},
 	];
 	it('a callback allowance that names no callback the unit creates is refused', () => {
@@ -1358,7 +1403,7 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 			id: 'a stamp minted after the await and compared at once',
 			model:
 				'contrived fence: a stamp is trusted to have been recorded earlier; building one from a live read right before comparing it to a live read is a fence that cannot fail, which no author trying to comply writes',
-			subs: [[TITLE_FENCE_AND_COMMITS, '{ title: titleDraft.trim() });\n\t\t\tconst fresh = { epoch: captureIdentity() };\n\t\t\tif (authStore.identityEpoch !== fresh.epoch) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n']],
+			subs: [[TITLE_FENCE_AND_COMMITS, '{ title: titleDraft.trim() });\n\t\t\tconst fresh = { epoch: captureIdentity() };\n\t\t\tif (authStore.identityEpoch !== fresh.epoch) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved(saveTok);\n']],
 		},
 		// Round 7 (checkpoint 67): the reviewer's out-of-model findings.
 		...(round7.gaps as Array<{ id: string; class: string; model: string; subs: string[][] }>).map((g) => ({
@@ -1411,8 +1456,8 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 			// A catch param is a local of the handler, even though the handler is
 			// entered after an await.
 			id: 'a write to the catch param in an unfenced handler',
-			old: "\t\t} catch (err: any) {\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tsaveStatus = 'idle';\n",
-			new: "\t\t} catch (err: any) {\n\t\t\terr = null;\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tsaveStatus = 'idle';\n",
+			old: "\t\t} catch (err: any) {\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n",
+			new: "\t\t} catch (err: any) {\n\t\t\terr = null;\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n",
 		},
 		{
 			// An inlined helper declared inside a block sees that block's names.
@@ -1428,8 +1473,8 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 		},
 		{
 			id: 'a commit moved BELOW its fence stays accepted',
-			old: "{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
-			new: "{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tshowSaved();\n\t\t\titem = withInflightTags(updated);\n",
+			old: "{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved(saveTok);\n",
+			new: "{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tshowSaved(saveTok);\n\t\t\titem = withInflightTags(updated);\n",
 		},
 		{
 			// A stamp rooted in a local of the unit is a stamp inside a fence
@@ -1438,14 +1483,14 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 			id: 'a fence boolean over a stamp the unit recorded before its await',
 			old: TITLE_STAMP_AT_ENTRY[0],
 			new: TITLE_STAMP_AT_ENTRY[1],
-			also: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tconst held = authStore.identityEpoch === snap.epoch;\n\t\t\tif (!held || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"]],
+			also: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tconst held = authStore.identityEpoch === snap.epoch;\n\t\t\tif (!held || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved(saveTok);\n"]],
 		},
 		{
 			// ...and inside a helper's body, read in the helper's scope.
 			id: 'a fence helper over a stamp the unit recorded before its await',
 			old: TITLE_STAMP_AT_ENTRY[0],
-			new: TITLE_STAMP_AT_ENTRY[1].replace('\t\tsaveStatus', '\t\tconst snapHeld = () => authStore.identityEpoch === snap.epoch;\n\t\tsaveStatus'),
-			also: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (!snapHeld() || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"]],
+			new: TITLE_STAMP_AT_ENTRY[1].replace('\t\tconst saveTok', '\t\tconst snapHeld = () => authStore.identityEpoch === snap.epoch;\n\t\tconst saveTok'),
+			also: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (!snapHeld() || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved(saveTok);\n"]],
 		},
 	];
 	it.each(ACCEPTED.map((c) => [c.id, c] as const))('control accepted: %s', (_id, c) => {
@@ -1606,7 +1651,7 @@ describe('ItemDetail identity gate: a fenced unit cannot change without a re-rea
 	it('CONTROL: an edit to a fenced unit costs exactly one hash bump', () => {
 		const code = SOURCE.replace(
 			TITLE_FENCE_AND_COMMITS,
-			"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tshowSaved();\n\t\t\titem = withInflightTags(updated);\n"
+			"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tshowSaved(saveTok);\n\t\t\titem = withInflightTags(updated);\n"
 		);
 		const first = refusals(code);
 		expect(first).toHaveLength(1);
@@ -1649,10 +1694,10 @@ describe('ItemDetail identity gate: a fenced unit cannot change without a re-rea
 	it('a function value rebound outside every unit changes the hash of the unit that only NAMES it (round 9 F4)', () => {
 		// Step 1: a reviewed base where saveTitle hands `applyTitle` to someone
 		// else rather than calling it — the round 8 G shape with the call removed.
-		const noop = '\tlet applyTitle = (next: Item): void => {\n\t\tvoid next;\n\t};\n\t$effect(() => {\n\t\tapplyTitle = (next: Item) => {\n\t\t\tvoid next;\n\t\t};\n\t});\n\n\tfunction showSaved() {\n';
-		const base = SOURCE.replace('\tfunction showSaved() {\n', noop).replace(
+		const noop = '\tlet applyTitle = (next: Item): void => {\n\t\tvoid next;\n\t};\n\t$effect(() => {\n\t\tapplyTitle = (next: Item) => {\n\t\t\tvoid next;\n\t\t};\n\t});\n\n\tfunction showSaved(saveTok: SaveToken) {\n';
+		const base = SOURCE.replace('\tfunction showSaved(saveTok: SaveToken) {\n', noop).replace(
 			TITLE_FENCE_AND_COMMITS,
-			"{ title: titleDraft.trim() });\n\t\t\t[updated].forEach(applyTitle);\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"
+			"{ title: titleDraft.trim() });\n\t\t\t[updated].forEach(applyTitle);\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved(saveTok);\n"
 		);
 		const opts = reviewAs(base);
 		// Step 2: only the rebinding inside the $effect changes. saveTitle never
@@ -1666,10 +1711,10 @@ describe('ItemDetail identity gate: a fenced unit cannot change without a re-rea
 
 	it('a function value rebound outside every unit changes the hash of the unit that calls it (refinement 2)', () => {
 		// Step 1: a reviewed base where saveTitle calls a no-op `let` helper.
-		const noop = '\tlet applyTitle = (next: Item): void => {\n\t\tvoid next;\n\t};\n\t$effect(() => {\n\t\tapplyTitle = (next: Item) => {\n\t\t\tvoid next;\n\t\t};\n\t});\n\n\tfunction showSaved() {\n';
-		const base = SOURCE.replace('\tfunction showSaved() {\n', noop).replace(
+		const noop = '\tlet applyTitle = (next: Item): void => {\n\t\tvoid next;\n\t};\n\t$effect(() => {\n\t\tapplyTitle = (next: Item) => {\n\t\t\tvoid next;\n\t\t};\n\t});\n\n\tfunction showSaved(saveTok: SaveToken) {\n';
+		const base = SOURCE.replace('\tfunction showSaved(saveTok: SaveToken) {\n', noop).replace(
 			TITLE_FENCE_AND_COMMITS,
-			"{ title: titleDraft.trim() });\n\t\t\tapplyTitle(updated);\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"
+			"{ title: titleDraft.trim() });\n\t\t\tapplyTitle(updated);\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved(saveTok);\n"
 		);
 		const opts = reviewAs(base);
 		// Step 2: only the rebinding inside the $effect changes.
