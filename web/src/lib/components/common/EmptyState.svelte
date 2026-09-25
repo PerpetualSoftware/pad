@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
+	import { ownValue } from '$lib/utils/ownValue';
 	import type { Collection } from '$lib/types';
 	import Button from '$lib/components/common/Button.svelte';
 
@@ -41,7 +42,7 @@
 
 	let message = $derived(
 		collection
-			? (messages[collection.slug] ?? `No ${collection.name.toLowerCase()} yet.`)
+			? (ownValue(messages, collection.slug) ?? `No ${collection.name.toLowerCase()} yet.`)
 			: (genericMessage ?? '')
 	);
 

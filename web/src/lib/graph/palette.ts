@@ -22,7 +22,13 @@ export const GRAPH_PALETTE = [
  * assigner per payload (or per component) to keep assignment deterministic.
  */
 export function createCollectionColorMap() {
-	const colors: Record<string, string> = {};
+	// NULL-PROTOTYPE (BUG-3054). The key is a collection slug, which a user
+	// picks: a collection named "Constructor" has the slug `constructor`, and a
+	// plain object answered `colors['constructor']` with Object's constructor
+	// function, so that collection was "coloured" by a function. Not `$state`
+	// anywhere, so the null prototype costs nothing; Object.entries/keys read it
+	// the same.
+	const colors: Record<string, string> = Object.create(null);
 	function colorForCollection(slug: string): string {
 		if (!colors[slug]) {
 			const idx = Object.keys(colors).length % GRAPH_PALETTE.length;
