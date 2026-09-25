@@ -522,7 +522,7 @@ The detection chain that does hold, stated so nobody has to rediscover it:
 > A merge requires IDs to be REUSED at a receiver. Reuse requires the sequence
 > counter to go BACKWARDS. A backwards counter is detected regardless of what
 > the epoch says — it is the `counter_backward` reason, which drops the
-> affected buffers and refuses cursors below the discarded high-water mark.
+> affected buffers and refuses cursors at or below the discarded high-water mark.
 
 So the guarantee is carried by a different detector than the epoch mechanism
 suggests. That is deliberate and it is tested end to end

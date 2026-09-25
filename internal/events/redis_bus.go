@@ -2910,7 +2910,7 @@ func (b *RedisBus) fanOut(gen, epoch int64, event Event) {
 		// own ids are reissued sees them as backward and lands here, while a
 		// workspace that never held them keeps a strictly increasing stream
 		// and needs no reset.
-		slog.Warn("event sequence went backwards; dropping replay buffers, resumes below the discarded high-water mark will report sync_required",
+		slog.Warn("event sequence went backwards; dropping replay buffers, resumes at or below the discarded high-water mark will report sync_required",
 			"high_water_mark", rb.lastAppendedID, "id", event.ID, "workspace", event.WorkspaceID)
 		b.dropAllBuffers(floorRaise)
 		rb = b.newBuffer()
