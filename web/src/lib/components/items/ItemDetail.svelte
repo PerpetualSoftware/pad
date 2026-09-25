@@ -3438,7 +3438,10 @@
 						// passing through it.
 						if (fieldWrites.superseded(ticket)) throw new Error('superseded');
 						return submitWithOCC(true);
-					});
+					},
+					// Still worth ASKING if the prompt waits in the queue (BUG-3046):
+					// the same two fences the retry checks.
+					() => stillCurrent() && !fieldWrites.superseded(ticket));
 				} catch (retryErr) {
 					// The force retry itself failed (network / 500 /
 					// fresh validation error after the override).
@@ -5510,10 +5513,16 @@
 				if (!stillOnSource()) return { status: 'cancelled' };
 				let forced;
 				try {
-					forced = await confirmOpenChildrenOrThrow(e, parentRef, () => {
-						if (!stillOnSource()) throw new Error('switched away');
-						return doMove(true);
-					});
+					forced = await confirmOpenChildrenOrThrow(
+						e,
+						parentRef,
+						() => {
+							if (!stillOnSource()) throw new Error('switched away');
+							return doMove(true);
+						},
+						// Still worth asking if it waits in the queue (BUG-3046).
+						stillOnSource
+					);
 				} catch (retryErr: any) {
 					console.error('Forced move failed:', retryErr);
 					if (stillOnSource()) toastStore.show(retryErr?.message ?? 'Failed to move item', 'error');
