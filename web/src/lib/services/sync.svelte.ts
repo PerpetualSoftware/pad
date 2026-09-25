@@ -61,6 +61,16 @@ const MIN_ABSENCE_MS = 2000;
  * too much data for very long absences.
  */
 const MAX_INCREMENTAL_MS = 10 * 60 * 1000; // 10 minutes
+/**
+ * How long a sync signal that reached an UNSEEDED cursor waits for the seed
+ * still in flight before answering full_refresh anyway (BUG-3207). The API
+ * client has no request timeout, so without a bound a seed that never answers
+ * would hold that signal, and `syncing` with it, forever. Receipt: seed latency
+ * across 310 instrumented e2e page loads at 8 workers (a lower bound per load)
+ * was p50 160 ms, p95 391 ms, max 874 ms. Exceeding the bound costs a
+ * whole-workspace reload, the behaviour before the wait existed, never a miss.
+ */
+export const SEED_WAIT_MS = 5000;
 
 function createSyncService() {
 	// The cursor holds SERVER times only (BUG-3207): a /changes `server_time`, or
@@ -247,7 +257,17 @@ function createSyncService() {
 		// Not seeded YET: the seed's answer is the cursor to ask from. Its
 		// `server_time` is taken before its reads, so an incremental pass from it
 		// covers every change the seed's own delta did not.
-		if (lastSyncTime <= 0 && seedInFlight) await seedInFlight;
+		// Bounded, and a FAILED seed resolves with the cursor still unseeded:
+		// either way the signal falls through to full_refresh below, never
+		// dropped and never waiting forever.
+		if (lastSyncTime <= 0 && seedInFlight) {
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			await Promise.race([
+				seedInFlight,
+				new Promise<void>((r) => (timer = setTimeout(r, SEED_WAIT_MS)))
+			]);
+			clearTimeout(timer);
+		}
 		// Never seeded: there is no server time to ask from, and `since=0` would
 		// return the whole workspace as a "delta" (BUG-3207).
 		if (lastSyncTime <= 0) {

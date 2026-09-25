@@ -36,11 +36,17 @@ import { test, quietCrossActorToasts, type SuiteFixture } from './fixtures';
  *
  * The oracle then requires:
  *   1. the page read a live row — otherwise no sync was involved;
- *   2. the deletion arrived on a `/changes` that is neither the seed (ordinal
- *      0) nor issued before the archive. Both are checked so a RETRIED seed
- *      cannot pass on ordinal alone. The URL match is anchored so
- *      `/items-changes` — a different, seq-based endpoint — cannot consume
- *      ordinals;
+ *   2. the deletion arrived on a `/changes` that is not the seed (ordinal 0).
+ *      It is NOT required to have been issued after the archive: a response
+ *      that carries the deletion was necessarily read after the archive
+ *      committed, whenever the client sent it. Judging by CLIENT send time
+ *      refused a correct delivery — an incremental issued 16 ms before the
+ *      archive, read after its commit, carried it, and the pass after it
+ *      rightly carried nothing (BUG-3207, lead ruling). What the send-time
+ *      guard was for, a RETRIED seed at a later ordinal, is not separable by
+ *      ordinal alone; no path re-seeds a workspace the page never left. The
+ *      URL match is anchored so `/items-changes` — a different, seq-based
+ *      endpoint — cannot consume ordinals;
  *   3. the banner rendered.
  *
  * Ground truth for archived-ness is the server's `deleted_at`, never the UI:
@@ -162,7 +168,6 @@ async function runLeg(opts: {
 					try {
 						if (CHANGES_RE.test(resp.url())) {
 							const order = changesOrder.get(resp.request());
-							const issued = changesIssuedAt.get(resp.request());
 							const body = (await resp.json()) as { deleted?: string[]; server_time?: number };
 							// The seed's server_time is what the client keeps as
 							// lastSyncTime — the cursor the failing sync used.
@@ -172,8 +177,6 @@ async function runLeg(opts: {
 							if (
 								order !== undefined &&
 								order > 0 &&
-								issued !== undefined &&
-								issued >= archiveSentAt &&
 								body.deleted?.includes(item.id)
 							) {
 								incrementalCarriedDeletion = true;
@@ -276,7 +279,7 @@ async function runLeg(opts: {
 			).toBeTruthy();
 			expect(
 				incrementalCarriedDeletion,
-				`the deletion must arrive on a /changes issued after the archive and after the page's cursor-seeding one — not the seed, and not a reload — ${diag}`
+				`the deletion must arrive on a /changes after the page's cursor-seeding one — not the seed, and not a reload — ${diag}`
 			).toBeTruthy();
 			return { outcome: 'checked' };
 		} finally {

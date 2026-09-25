@@ -240,6 +240,48 @@ describe('BUG-3207 — the cursor is never written from the client clock', () =>
 		expect(sinceCalls[1], 'the pass asks from the seed cursor').toBe(10_000);
 	});
 
+	it('a signal awaiting a seed that FAILS falls through to full_refresh, not dropped', async () => {
+		const { clock, syncService } = await fresh();
+		responseSeen(clock);
+		let open!: () => void;
+		gate = new Promise<void>((r) => (open = r));
+		down = true;
+		const seeding = syncService.setWorkspace('ws');
+		const results: string[] = [];
+		const off = syncService.onSync((r) => {
+			results.push((r as { type: string }).type);
+		});
+		const syncing = syncService.triggerSync();
+		open();
+		await seeding;
+		await syncing;
+		off();
+		expect(syncService.lastSyncTime).toBe(0);
+		expect(results).toEqual(['full_refresh']);
+	});
+
+	it('a signal awaiting a seed that NEVER answers falls through to full_refresh after SEED_WAIT_MS, not forever', async () => {
+		vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+		vi.setSystemTime(serverNow);
+		const { clock, syncService } = await fresh();
+		const { SEED_WAIT_MS } = await import('./sync.svelte');
+		responseSeen(clock);
+		gate = new Promise<void>(() => {}); // the seed hangs
+		void syncService.setWorkspace('ws');
+		const results: string[] = [];
+		const off = syncService.onSync((r) => {
+			results.push((r as { type: string }).type);
+		});
+		const syncing = syncService.triggerSync();
+		await vi.advanceTimersByTimeAsync(SEED_WAIT_MS - 1);
+		expect(results, 'still waiting inside the bound').toEqual([]);
+		await vi.advanceTimersByTimeAsync(1);
+		await syncing;
+		off();
+		expect(results).toEqual(['full_refresh']);
+		expect(syncService.syncing, 'the sync lock is released').toBe(false);
+	});
+
 	it('a never-seeded tab answers full_refresh, and does not ask for since=0', async () => {
 		const { syncService } = await fresh();
 		down = true;
