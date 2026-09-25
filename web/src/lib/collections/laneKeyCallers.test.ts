@@ -202,8 +202,15 @@ describe('BUG-3057: the collection page writes a CONVERTED lane value', () => {
 	});
 
 	it('sends the CONVERTED value on the create-in-lane path, not the lane key', () => {
-		expect(page).toContain('laneWriteValue(groupFieldDef, groupValue)');
+		// The create-in-lane body moved to `draftCreateFields` (BUG-3043), which
+		// first decides WHERE a draft saves (its lane may be gone) and then
+		// converts through the declared type. So the page must hand it the
+		// SCHEMA field, and the module must convert the live lane through it.
+		expect(page).toContain('draftCreateFields(groupValue, groupFieldDef, groupField,');
 		expect(page).not.toContain('defaultFields[groupField] = groupValue;');
+		const laneDrafts = read('./laneDrafts.ts');
+		expect(laneDrafts).toContain('laneWriteValue(field, target.lane)');
+		expect(laneDrafts).not.toContain('fields[groupKey] = lane;');
 	});
 
 	it('resolves the group field against the SCHEMA, since the type is what converts', () => {
