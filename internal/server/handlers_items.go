@@ -706,7 +706,7 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 	// Parse and validate input fields
 	fieldMap := make(map[string]any)
 	if input.Fields != "" {
-		if err := json.Unmarshal([]byte(input.Fields), &fieldMap); err != nil {
+		if err := models.DecodeJSONKeepingNumbers([]byte(input.Fields), &fieldMap); err != nil {
 			writeError(w, http.StatusBadRequest, "bad_request", "Invalid fields JSON")
 			return
 		}
@@ -1489,7 +1489,7 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		}
 
 		fieldMap := make(map[string]any)
-		if err := json.Unmarshal([]byte(*input.Fields), &fieldMap); err != nil {
+		if err := models.DecodeJSONKeepingNumbers([]byte(*input.Fields), &fieldMap); err != nil {
 			writeError(w, http.StatusBadRequest, "bad_request", "Invalid fields JSON")
 			return
 		}
@@ -2681,8 +2681,8 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var input struct {
-		TargetCollection string         `json:"target_collection"`
-		FieldOverrides   map[string]any `json:"field_overrides"`
+		TargetCollection string             `json:"target_collection"`
+		FieldOverrides   models.FieldValues `json:"field_overrides"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_body", err.Error())
@@ -2739,7 +2739,7 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 
 	// Parse current fields
 	var currentFields map[string]any
-	if err := json.Unmarshal([]byte(item.Fields), &currentFields); err != nil {
+	if err := models.DecodeJSONKeepingNumbers([]byte(item.Fields), &currentFields); err != nil {
 		currentFields = make(map[string]any)
 	}
 

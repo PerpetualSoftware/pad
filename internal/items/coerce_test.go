@@ -1,6 +1,7 @@
 package items
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -32,8 +33,11 @@ func TestCoerceFieldsTypesDeclaredStrings(t *testing.T) {
 	}
 	out := CoerceFields(in, coerceSchema())
 
-	if got, ok := out["cost"].(float64); !ok || got != 42 {
-		t.Fatalf("cost: want float64(42), got %[1]T(%[1]v)", out["cost"])
+	// A JSON NUMBER, not a string. Since BUG-3202 that is a json.Number
+	// holding the caller's literal, so an integer above 2^53 keeps its
+	// digits; before, it was a float64.
+	if got, ok := out["cost"].(json.Number); !ok || got != "42" {
+		t.Fatalf("cost: want json.Number(42), got %[1]T(%[1]v)", out["cost"])
 	}
 	if _, ok := out["spec"].([]any); !ok {
 		t.Fatalf("spec: want []any, got %[1]T(%[1]v)", out["spec"])
@@ -169,5 +173,45 @@ func TestUndeclaredFieldKeysIsSortedAndSkipsDeclared(t *testing.T) {
 
 	if len(got) != 2 || got[0] != "alpha" || got[1] != "zebra" {
 		t.Fatalf("undeclared = %v, want [alpha zebra] sorted, with the declared 'cost' absent", got)
+	}
+}
+
+// BUG-3202: a numeric string keeps its literal, so a value past float64's
+// integer precision reaches the store with every digit. The forms ParseFloat
+// accepts that are NOT JSON number literals keep the old float path.
+func TestCoerceFieldsKeepsNumberLiterals(t *testing.T) {
+	cases := map[string]any{
+		"9007199254740993": json.Number("9007199254740993"),
+		"-12.50":           json.Number("-12.50"),
+		"1e3":              json.Number("1e3"),
+		" 42":              " 42",       // ParseFloat refuses the space: stays a string, as before
+		"0x1p4":            float64(16), // a hex float ParseFloat accepts and JSON does not: the old float path
+		"1e400":            "1e400",     // out of range: left for the validator to refuse
+		"NaN":              "NaN",
+	}
+	for in, want := range cases {
+		got := CoerceFields(map[string]any{"cost": in}, coerceSchema())["cost"]
+		if got != want {
+			t.Errorf("coerce %q: got %[2]T(%[2]v), want %[3]T(%[3]v)", in, got, want)
+		}
+	}
+}
+
+// BUG-3202: the write doors now hand the validator json.Number values. One
+// from the decoder is always a valid literal, but a json.Number can be built
+// from any string, so the validator parses it rather than trusting the type.
+func TestValidateFieldsNumberAcceptsOnlyValidJSONNumbers(t *testing.T) {
+	schema := models.CollectionSchema{Fields: []models.FieldDef{{Key: "cost", Type: "number"}}}
+	for in, ok := range map[json.Number]bool{
+		"9007199254740993": true,
+		"-1.5e3":           true,
+		"abc":              false,
+		"1e400":            false,
+		"":                 false,
+	} {
+		err := ValidateFields(map[string]any{"cost": in}, schema)
+		if (err == nil) != ok {
+			t.Errorf("json.Number(%q): err=%v, want accepted=%v", in, err, ok)
+		}
 	}
 }

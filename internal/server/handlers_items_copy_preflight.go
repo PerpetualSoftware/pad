@@ -134,10 +134,10 @@ import (
 // itemCopyPreflightRequest is the wire shape. TASK-2365's mutating copy
 // takes the same one.
 type itemCopyPreflightRequest struct {
-	TargetWorkspace  string         `json:"target_workspace"`
-	TargetCollection string         `json:"target_collection"`
-	FieldOverrides   map[string]any `json:"field_overrides"`
-	ArchiveSource    bool           `json:"archive_source"`
+	TargetWorkspace  string             `json:"target_workspace"`
+	TargetCollection string             `json:"target_collection"`
+	FieldOverrides   models.FieldValues `json:"field_overrides"`
+	ArchiveSource    bool               `json:"archive_source"`
 }
 
 // ItemCopyPreflight is the 200 response.
@@ -698,7 +698,7 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	// DR-6 disagreement this endpoint exists to prevent. It also covers the
 	// benign empty-string case on old rows.
 	var currentFields map[string]any
-	if err := json.Unmarshal([]byte(item.Fields), &currentFields); err != nil {
+	if err := models.DecodeJSONKeepingNumbers([]byte(item.Fields), &currentFields); err != nil {
 		currentFields = map[string]any{}
 	}
 

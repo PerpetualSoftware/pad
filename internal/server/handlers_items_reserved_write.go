@@ -110,14 +110,16 @@ func callerReservedFields(fieldMap map[string]any) map[string]any {
 func reservedCarryViolations(caller map[string]any, storedFieldsJSON string) (changed, omitted []string) {
 	stored := map[string]any{}
 	if storedFieldsJSON != "" {
-		_ = json.Unmarshal([]byte(storedFieldsJSON), &stored)
+		if m, err := models.DecodeFieldsJSON([]byte(storedFieldsJSON)); err == nil {
+			stored = m
+		}
 		if stored == nil {
 			stored = map[string]any{}
 		}
 	}
 	for k, v := range caller {
 		sv, ok := stored[k]
-		if !ok || !reflect.DeepEqual(normalizeJSONValue(v), sv) {
+		if !ok || !reflect.DeepEqual(models.CanonicalJSONNumbers(normalizeJSONValue(v)), models.CanonicalJSONNumbers(sv)) {
 			changed = append(changed, k)
 		}
 	}
@@ -144,7 +146,7 @@ func normalizeJSONValue(v any) any {
 		return v
 	}
 	var out any
-	if err := json.Unmarshal(raw, &out); err != nil {
+	if err := models.DecodeJSONKeepingNumbers(raw, &out); err != nil {
 		return v
 	}
 	return out
