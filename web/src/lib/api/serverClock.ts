@@ -44,10 +44,18 @@ export function noteServerDate(dateHeader: string | null | undefined, receivedAt
 	sample = { serverMs, receivedAt };
 }
 
-/** The server's clock now, erring early; `null` with no sample yet. */
+/**
+ * The server's clock now, erring early; `null` with no sample yet.
+ *
+ * A WHOLE number of milliseconds: `performance.now()` is fractional, and
+ * handleGetChanges parses `since` with ParseInt, so a fractional cursor made
+ * every /changes asked from it a 400 that degraded to a full reload (BUG-3207
+ * checkpoint 8). Floor, never round: rounding can move the estimate up, and
+ * this module's one property is that it never runs ahead.
+ */
 export function estimateServerNow(now = performance.now()): number | null {
 	if (!sample) return null;
-	return projected(sample, now) - RESOLUTION_MARGIN_MS;
+	return Math.floor(projected(sample, now) - RESOLUTION_MARGIN_MS);
 }
 
 function projected(s: { serverMs: number; receivedAt: number }, now: number): number {

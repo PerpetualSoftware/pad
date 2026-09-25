@@ -48,6 +48,20 @@ describe('serverClock (BUG-3207)', () => {
 		}
 	});
 
+	it('is a whole millisecond even when the monotonic clock is fractional', () => {
+		// performance.now() carries a fraction; the server parses `since` with
+		// ParseInt, so a fractional cursor is a 400 on every /changes asked from it
+		// (BUG-3207 checkpoint 8: each such sync degraded to a full reload).
+		for (const receivedAt of [0, 1_000.25, 3_517.8]) {
+			for (const now of [receivedAt, receivedAt + 0.4, receivedAt + 1_234.9]) {
+				__resetServerClockForTests();
+				noteServerDate(httpDate(1_790_000_123_456), receivedAt);
+				const estimate = estimateServerNow(now)!;
+				expect(Number.isInteger(estimate), `receivedAt ${receivedAt} now ${now} -> ${estimate}`).toBe(true);
+			}
+		}
+	});
+
 	it('keeps the sample that projects newest, not the one received last', () => {
 		// A newer Date received later wins.
 		noteServerDate(httpDate(10_000), 0);

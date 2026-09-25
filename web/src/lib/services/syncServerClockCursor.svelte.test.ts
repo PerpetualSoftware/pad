@@ -30,6 +30,9 @@ vi.mock('$lib/api/client', () => ({
 			since: async (_ws: string, since: number): Promise<Changes> => {
 				sinceCalls.push(since);
 				if (down) throw new Error('server down');
+				// handleGetChanges parses `since` with strconv.ParseInt: anything but
+				// a whole number of milliseconds is a 400 (BUG-3207 checkpoint 8).
+				if (!Number.isInteger(since) || since < 0) throw new Error('400 bad_request: since');
 				return {
 					updated: commits.filter((c) => c.at > since).map((c) => ({ id: c.id })),
 					deleted: [],
@@ -129,6 +132,30 @@ describe('BUG-3207 — a full reload is vouched for by a stamp taken BEFORE its 
 			expect(ids, 'a change during the reads is re-delivered').toContain('during-reads');
 		});
 	}
+
+	it('with a FRACTIONAL monotonic clock (a real browser), the sync after a stamped reload is incremental, not a 400 degraded to full_refresh', async () => {
+		// performance.now() carries a fraction, and the reading and the stamp land
+		// at different fractions. A fractional stamp became the cursor, every
+		// /changes asked from it was refused, and each sync fell back to a full
+		// reload for the rest of the tab (BUG-3207 checkpoint 8: 11 of 11 e2e
+		// failures, 0 of 49 passes).
+		const { clock, syncService } = await fresh();
+		perfNow = 1_234.56;
+		responseSeen(clock);
+		await syncService.setWorkspace('ws');
+		perfNow += 10_000.37;
+		serverNow += 10_000;
+		vi.setSystemTime(serverNow + skew);
+		const stamp = await syncService.stamp();
+		syncService.markSynced(stamp);
+		advance(1_000);
+		commits.push({ id: 'after-reload', at: serverNow });
+		advance(1_000);
+		const seen = await syncOnce(syncService);
+		expect(sinceCalls.every((s) => Number.isInteger(s)), `since values: ${sinceCalls.join(', ')}`).toBe(true);
+		expect(seen.map((r) => r.type)).toEqual(['incremental']);
+		expect((seen[0].changes?.updated ?? []).map((u) => u.id)).toContain('after-reload');
+	});
 
 	it('a null stamp (none could be taken) leaves the cursor where it is', async () => {
 		const { clock, syncService } = await fresh();
