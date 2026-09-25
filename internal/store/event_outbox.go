@@ -1261,29 +1261,60 @@ func (s *Store) emitBulkItemEventTx(tx *sql.Tx, workspaceID string, members []*m
 // fire twice on one item, the second time against a state that never existed
 // as a final value.
 //
-// COST, stated rather than discovered later: this is N sequential joined reads
-// for N members, inside the caller's transaction and under whatever lock the
-// caller holds (Codex round 6). The honest framing is that it roughly DOUBLES
-// an already-N-long lock hold rather than introducing one — the migration loop
-// this serves already issues N sequential UPDATEs under the same lock, by
-// design, so each row gets its own seq. A single batched read would halve it;
-// that is BUG-2718, deliberately not done here because it means a new joined
-// query on the least-reviewed path of a heavily-reviewed change.
+// COST: one joined read per outboxMemberChunk members, inside the caller's
+// transaction and under whatever lock the caller holds. It used to be one read
+// PER MEMBER (Codex round 6), which roughly doubled an already-N-long lock hold
+// — the migration loop this serves issues N sequential UPDATEs under the same
+// lock, by design, so each row gets its own seq. BUG-2718 batched it. The
+// query is itemSnapshotSelect, the same SELECT and scan a single-item read
+// uses, so a batched snapshot cannot differ in shape from any other event's.
 func (s *Store) outboxMemberSnapshotsTx(tx *sql.Tx, ids []string) ([]*models.Item, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
+	// De-duplicate, keeping FIRST-occurrence order: the payload's member order
+	// is the caller's order, as it was when this read one id at a time.
 	seen := make(map[string]bool, len(ids))
-	out := make([]*models.Item, 0, len(ids))
+	unique := make([]string, 0, len(ids))
 	for _, id := range ids {
-		if seen[id] {
-			continue
+		if !seen[id] {
+			seen[id] = true
+			unique = append(unique, id)
 		}
-		seen[id] = true
-		item, err := s.getItemTx(tx, id)
+	}
+	byID := make(map[string]*models.Item, len(unique))
+	for start := 0; start < len(unique); start += outboxMemberChunk {
+		end := min(start+outboxMemberChunk, len(unique))
+		chunk := unique[start:end]
+		args := make([]any, len(chunk))
+		for i, id := range chunk {
+			args[i] = id
+		}
+		rows, err := tx.Query(s.q(itemSnapshotSelect+`
+			WHERE i.id IN (`+placeholders(len(chunk))+`) AND i.deleted_at IS NULL`), args...)
 		if err != nil {
-			return nil, fmt.Errorf("outbox: read bulk member snapshot %s: %w", id, err)
+			return nil, fmt.Errorf("outbox: read bulk member snapshots (%d from %s): %w", len(chunk), chunk[0], err)
 		}
+		for rows.Next() {
+			item, err := scanItemSnapshot(rows)
+			if err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("outbox: scan bulk member snapshot (%d from %s): %w", len(chunk), chunk[0], err)
+			}
+			byID[item.ID] = item
+		}
+		// A batch has no single member to name, so the error names the
+		// chunk: its size and first id (the per-member read named the id).
+		if err := rows.Close(); err != nil {
+			return nil, fmt.Errorf("outbox: read bulk member snapshots (%d from %s): %w", len(chunk), chunk[0], err)
+		}
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("outbox: read bulk member snapshots (%d from %s): %w", len(chunk), chunk[0], err)
+		}
+	}
+	out := make([]*models.Item, 0, len(unique))
+	for _, id := range unique {
+		item := byID[id]
 		if item == nil {
 			// Archived or gone between the write and here. Skipping is
 			// correct: a member snapshot the event cannot produce is one no
@@ -1299,6 +1330,13 @@ func (s *Store) outboxMemberSnapshotsTx(tx *sql.Tx, ids []string) ([]*models.Ite
 	}
 	return out, nil
 }
+
+// outboxMemberChunk bounds one IN (...) list in outboxMemberSnapshotsTx.
+// Host-parameter limits are build-dependent (historically 999 on SQLite,
+// 65535 on Postgres) and a select-option rename in a large collection can
+// touch thousands of rows, so the batch is split rather than left to fail.
+// Same bound and reasoning as attachmentPlanChunk.
+const outboxMemberChunk = 400
 
 // refOnlyDeletionPayload is the wire shape of a hard-delete event
 // (comment.deleted, attachment.removed) — SPEC-3 v1.4.

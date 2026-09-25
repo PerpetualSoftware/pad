@@ -131,6 +131,16 @@ type Store struct {
 	// (codex round 3).
 	afterItemPreLockRead func(itemID string)
 
+	// afterItemRestoreOrMoveCommit is a TEST-ONLY seam, nil in production.
+	// restoreItemOnce and MoveItemWithPreCheck call it right after their
+	// COMMIT and before they return. It exists for BUG-2717: both used to
+	// re-read the item after commit, so a concurrent write landing in that
+	// window was handed back as though this mutation had produced it. A test
+	// writes to the item from the hook and asserts the returned row is still
+	// the one this mutation committed. Same usage constraint as the hooks
+	// above: set it only while no other request is in flight on this Store.
+	afterItemRestoreOrMoveCommit func(itemID string)
+
 	// commitItemUpdate is a TEST-ONLY seam, nil in production. When set,
 	// updateItemWithParentLinkOnce routes its final COMMIT through it instead
 	// of calling tx.Commit directly.

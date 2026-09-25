@@ -752,13 +752,13 @@ func contentStateSQLFor(alias string) string {
 // getItemScanQ is the one item-row scan behind GetItem, getItemTx and
 // GetItemIncludeDeleted — identical SELECT and hydration, differing only in
 // executor and in whether soft-deleted rows are visible. (nil, nil) on no row.
-func (s *Store) getItemScanQ(q Queryer, id string, includeDeleted bool) (*models.Item, error) {
-	var item models.Item
-	var createdAt, updatedAt string
-	var deletedAt *string
-	var pinned bool
-
-	query := `
+// itemSnapshotSelect is the full joined item read, WITHOUT its WHERE clause.
+// getItemScanQ appends `WHERE i.id = ?`; outboxMemberSnapshotsTx appends an
+// `IN (...)` list. One definition, so a batched snapshot can never differ in
+// shape from a single one (BUG-2718): the outbox's slice-diff comparison
+// depends on every item snapshot being the same projection. Scan it with
+// scanItemSnapshot, which reads exactly these columns in this order.
+var itemSnapshotSelect = `
 		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, ` + contentStateSQL + `, i.fields, i.tags,
 		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 		       i.created_by, i.last_modified_by, i.source,
@@ -769,12 +769,16 @@ func (s *Store) getItemScanQ(q Queryer, id string, includeDeleted bool) (*models
 		FROM items i
 		JOIN collections c ON c.id = i.collection_id
 		LEFT JOIN users au ON au.id = i.assigned_user_id
-		LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
-		WHERE i.id = ?`
-	if !includeDeleted {
-		query += ` AND i.deleted_at IS NULL`
-	}
-	err := q.QueryRow(s.q(query), id).Scan(
+		LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id`
+
+// scanItemSnapshot scans one itemSnapshotSelect row and hydrates it exactly as
+// a single-item read does. sql.ErrNoRows is returned unwrapped.
+func scanItemSnapshot(row interface{ Scan(dest ...any) error }) (*models.Item, error) {
+	var item models.Item
+	var createdAt, updatedAt string
+	var deletedAt *string
+	var pinned bool
+	if err := row.Scan(
 		&item.ID, &item.WorkspaceID, &item.CollectionID, &item.Title, &item.Slug,
 		&item.Content, &item.ContentState, &item.Fields, &item.Tags,
 		&pinned, &item.SortOrder, &item.ParentID, &item.AssignedUserID, &item.AgentRoleID, &item.RoleSortOrder,
@@ -783,20 +787,31 @@ func (s *Store) getItemScanQ(q Queryer, id string, includeDeleted bool) (*models
 		&item.CollectionSlug, &item.CollectionName, &item.CollectionIcon, &item.CollectionPrefix,
 		&item.AssignedUserName, &item.AssignedUserEmail,
 		&item.AgentRoleName, &item.AgentRoleSlug, &item.AgentRoleIcon,
-	)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
+	); err != nil {
 		return nil, err
 	}
-
 	item.Pinned = pinned
 	item.CreatedAt = parseTime(createdAt)
 	item.UpdatedAt = parseTime(updatedAt)
 	item.DeletedAt = parseTimePtr(deletedAt)
 	hydrateItemComputedMetadata(&item)
 	return &item, nil
+}
+
+func (s *Store) getItemScanQ(q Queryer, id string, includeDeleted bool) (*models.Item, error) {
+	query := itemSnapshotSelect + `
+		WHERE i.id = ?`
+	if !includeDeleted {
+		query += ` AND i.deleted_at IS NULL`
+	}
+	item, err := scanItemSnapshot(q.QueryRow(s.q(query), id))
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return item, nil
 }
 
 func (s *Store) GetItemBySlug(workspaceID, slug string) (*models.Item, error) {
@@ -3424,7 +3439,16 @@ func (s *Store) restoreItemOnce(id string, opt mutationOptions) (*models.Item, e
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return s.GetItem(id)
+	if s.afterItemRestoreOrMoveCommit != nil {
+		s.afterItemRestoreOrMoveCommit(id)
+	}
+	// Return the in-tx snapshot, not a post-commit re-read (BUG-2717, the
+	// update path's BUG-2264 reasoning): a re-read can fail AFTER the commit
+	// succeeded, making a committed restore look failed, and can observe a
+	// concurrent writer's later seq. getItemTx ran GetItem's SQL inside this
+	// tx, so the shape is identical and the row is exactly this restore's.
+	// emitItemEventTx scrubbed a CLONE for the payload, so this is unscrubbed.
+	return restored, nil
 }
 
 func (s *Store) SearchItems(workspaceID, query string) ([]ItemSearchResult, error) {
@@ -5437,10 +5461,18 @@ func (s *Store) moveItemWithPreCheckOnce(
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+	if s.afterItemRestoreOrMoveCommit != nil {
+		s.afterItemRestoreOrMoveCommit(itemID)
+	}
 
-	result, err := s.GetItem(itemID)
-	if err != nil || result == nil {
-		return result, err
+	// The in-tx snapshot, not a post-commit re-read (BUG-2717, the update
+	// path's BUG-2264 reasoning): a re-read can fail after a successful
+	// commit, and can observe a concurrent writer's later seq instead of the
+	// row this move produced. Identical SQL, so the shape is unchanged; the
+	// outbox scrubbed a clone, so this one is unscrubbed.
+	result := moved
+	if result == nil {
+		return nil, nil
 	}
 	// Same race-free-delta rationale as updateItemWithParentLinkOnce
 	// (TASK-2533): oldStatus/newStatus were captured under the write lock
