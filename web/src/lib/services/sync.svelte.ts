@@ -108,7 +108,26 @@ function createSyncService() {
 		});
 	}
 
+	// The seed request still in flight, if any. A sync signal that reaches an
+	// UNSEEDED cursor while it is out waits for it instead of answering
+	// full_refresh (BUG-3207 checkpoint 10): the SSE connect and the first
+	// events routinely beat the seed's response, and each such signal used to
+	// cost a whole-workspace reconcile — 77 of 160 measured page loads under
+	// load, where main asked one incremental /changes.
+	let seedInFlight: Promise<void> | null = null;
+
 	async function setWorkspace(slug: string) {
+		const run = seed(slug);
+		seedInFlight = run;
+		try {
+			await run;
+		} finally {
+			if (seedInFlight === run) seedInFlight = null;
+		}
+	}
+
+	/** Never rejects: a failed seed writes nothing and resolves. */
+	async function seed(slug: string) {
 		wsSlug = slug;
 		const gen = ++seedGeneration;
 		// Seed the sync cursor from the server's clock, not the client's.
@@ -225,6 +244,10 @@ function createSyncService() {
 		if (absenceMs > MAX_INCREMENTAL_MS) {
 			return { type: 'full_refresh' };
 		}
+		// Not seeded YET: the seed's answer is the cursor to ask from. Its
+		// `server_time` is taken before its reads, so an incremental pass from it
+		// covers every change the seed's own delta did not.
+		if (lastSyncTime <= 0 && seedInFlight) await seedInFlight;
 		// Never seeded: there is no server time to ask from, and `since=0` would
 		// return the whole workspace as a "delta" (BUG-3207).
 		if (lastSyncTime <= 0) {

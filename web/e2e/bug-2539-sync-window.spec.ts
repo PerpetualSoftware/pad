@@ -136,6 +136,11 @@ async function runLeg(opts: {
 		const changesOrder = new Map<Request, number>();
 		const changesIssuedAt = new Map<Request, number>();
 		let changesSeen = 0;
+		// Every /changes issued once the archive went out, awaited before the
+		// oracle reads the record: one issued after the archive but not yet
+		// answered at check time used to read as "nothing carried it" (BUG-3207
+		// checkpoint 9).
+		const changesAfterArchive: Promise<unknown>[] = [];
 
 		const CHANGES_RE = changesReFor(ws.slug);
 		const ITEM_GET_RE = itemGetReFor(ws.slug);
@@ -143,6 +148,7 @@ async function runLeg(opts: {
 			if (CHANGES_RE.test(r.url())) {
 				changesOrder.set(r, changesSeen++);
 				changesIssuedAt.set(r, Date.now());
+				if (Date.now() >= archiveSentAt) changesAfterArchive.push(r.response().catch(() => null));
 			}
 		};
 		page.on('request', onRequest);
@@ -243,6 +249,7 @@ async function runLeg(opts: {
 
 			// The open page must learn about it without a reload.
 			await expect(page.locator('.archived-banner')).toBeVisible({ timeout: 10_000 });
+			await Promise.all(changesAfterArchive);
 			// Drain until no new handler was queued while awaiting.
 			for (let drained = 0; drained < inFlight.length; ) {
 				drained = inFlight.length;

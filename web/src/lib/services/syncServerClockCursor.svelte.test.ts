@@ -22,6 +22,8 @@ let serverNow = 0;
 let perfNow = 0;
 let commits: Array<{ id: string; at: number }> = [];
 let down = false;
+/** When set, every /changes answer waits for it: a request still in flight. */
+let gate: Promise<void> | null = null;
 const sinceCalls: number[] = [];
 
 vi.mock('$lib/api/client', () => ({
@@ -29,6 +31,7 @@ vi.mock('$lib/api/client', () => ({
 		changes: {
 			since: async (_ws: string, since: number): Promise<Changes> => {
 				sinceCalls.push(since);
+				if (gate) await gate;
 				if (down) throw new Error('server down');
 				// handleGetChanges parses `since` with strconv.ParseInt: anything but
 				// a whole number of milliseconds is a 400 (BUG-3207 checkpoint 8).
@@ -87,6 +90,7 @@ beforeEach(() => {
 	perfNow = 0;
 	commits = [];
 	down = false;
+	gate = null;
 	sinceCalls.length = 0;
 	skew = 0;
 	vi.setSystemTime(serverNow);
@@ -209,6 +213,31 @@ describe('BUG-3207 — the cursor is never written from the client clock', () =>
 		advance(2_000);
 		const seen = await syncOnce(syncService);
 		expect((seen[0].changes?.updated ?? []).map((u) => u.id)).toContain('in-the-skew-window');
+	});
+
+	it('a sync signal that beats the seed response waits for it and asks incrementally, not full_refresh', async () => {
+		// The SSE connect and the first events routinely arrive while the seed
+		// is still out. Answering those with full_refresh cost a whole-workspace
+		// reconcile on 77 of 160 measured page loads (BUG-3207 checkpoint 10).
+		const { clock, syncService } = await fresh();
+		responseSeen(clock);
+		let open!: () => void;
+		gate = new Promise<void>((r) => (open = r));
+		const seeding = syncService.setWorkspace('ws');
+		const results: string[] = [];
+		const off = syncService.onSync((r) => {
+			results.push((r as { type: string }).type);
+		});
+		const syncing = syncService.triggerSync();
+		commits.push({ id: 'after-seed-time', at: serverNow + 1 });
+		open();
+		gate = null;
+		await seeding;
+		advance(1_000);
+		await syncing;
+		off();
+		expect(results, 'no whole-workspace reload for a signal the seed answers').not.toContain('full_refresh');
+		expect(sinceCalls[1], 'the pass asks from the seed cursor').toBe(10_000);
 	});
 
 	it('a never-seeded tab answers full_refresh, and does not ask for since=0', async () => {
