@@ -1652,8 +1652,18 @@ func flexJSONToString(raw json.RawMessage, expectedStart byte, errInvalid error)
 
 type ItemListParams struct {
 	CollectionSlug string
-	CollectionIDs  []string // permission filter: restrict to these collection IDs (nil = no filter)
-	ItemIDs        []string // permission filter: additionally restrict to these item IDs (for item-level grants)
+	// ScopeCollectionID restricts to exactly one collection by ID, ANDed
+	// unconditionally. It is a SCOPE, not a permission filter: it never
+	// combines with CollectionIDs/ItemIDs, which are an OR-ed permission
+	// pair ("in a fully granted collection, OR specifically granted"), so
+	// scoping through CollectionIDs would widen an item-grant caller to the
+	// whole collection. Callers that resolved or gated a collection by ID
+	// set this instead of CollectionSlug, so the check and the query agree
+	// on identity: a slug can be freed by a rename or delete and re-taken
+	// by another collection between the two (BUG-2631).
+	ScopeCollectionID string
+	CollectionIDs     []string // permission filter: restrict to these collection IDs (nil = no filter)
+	ItemIDs           []string // permission filter: additionally restrict to these item IDs (for item-level grants)
 	// Fields are EXACT-match field filters: key=value, compared verbatim. A
 	// value containing a comma is matched as that literal string (BUG-3167);
 	// it used to be split into an OR, which every in-process caller (the

@@ -186,6 +186,7 @@ func (s *Server) handleListItemsIndex(w http.ResponseWriter, r *http.Request) {
 	// changes meaning. A slug that resolves to nothing is left as the caller
 	// wrote it, preserving today's empty-result behaviour.
 	indexCollection := r.URL.Query().Get("collection")
+	var indexCollectionID string
 	if indexCollection != "" {
 		coll, rerr := s.resolveItemCollectionSlug(workspaceID, indexCollection)
 		if rerr != nil {
@@ -197,11 +198,16 @@ func (s *Server) handleListItemsIndex(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if coll != nil {
-			indexCollection = coll.Slug
+			// Scoped by the resolved ID rather than its slug, which can be
+			// re-taken by another collection before the query runs
+			// (BUG-2631).
+			indexCollection = ""
+			indexCollectionID = coll.ID
 		}
 	}
 	params := store.ItemIndexParams{
-		CollectionSlug: indexCollection,
+		CollectionSlug:    indexCollection,
+		ScopeCollectionID: indexCollectionID,
 	}
 	if r.URL.Query().Get("include_archived") == "true" {
 		params.IncludeArchived = true
@@ -531,20 +537,21 @@ func (s *Server) handleListCollectionItems(w http.ResponseWriter, r *http.Reques
 	}
 
 	params := parseItemListParams(r)
-	// The RESOLVED slug, not the raw URL parameter. The store filters by slug
-	// and does its own exact lookup, so passing the caller's input here would
-	// resolve the collection for the visibility gate above and then filter on
-	// a slug that matches nothing — a 200 with an empty list (BUG-2578).
-	params.CollectionSlug = coll.Slug
-	// DO NOT pin this by setting params.CollectionIDs. It looks like a scoping
+	// Scope the query by the ID the visibility gate above checked, not by a
+	// slug (BUG-2631): a slug can be freed by a rename or delete and re-taken
+	// by another collection between the gate and the query, and the response
+	// would then carry that collection's items. (Filtering on the raw URL
+	// parameter was worse still — an alias resolved for the gate matched
+	// nothing in the query, a 200 with an empty list, BUG-2578.)
+	params.ScopeCollectionID = coll.ID
+	// DO NOT scope through params.CollectionIDs. It looks like a scoping
 	// filter and is not: CollectionIDs and ItemIDs are a PERMISSION PAIR,
 	// combined with OR ("in a fully-granted collection, or specifically
 	// granted"). Setting CollectionIDs here while the item-grant branch below
 	// sets ItemIDs turns the caller's grants into
 	// `collection_id IN (this) OR id IN (granted)` — which hands a guest
-	// holding one item grant every item in the collection. Pinning the query
-	// to a stable collection ID needs a scoping parameter distinct from the
-	// permission pair; see BUG-2631 for the slug-reuse race that motivates it.
+	// holding one item grant every item in the collection. ScopeCollectionID
+	// is ANDed on its own and exists for exactly this.
 	if err := validateUnparentedListRequest(r, params); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return

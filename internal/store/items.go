@@ -1242,6 +1242,12 @@ func (s *Store) ListItems(workspaceID string, params models.ItemListParams) ([]m
 		query += " AND c.slug = ?"
 		args = append(args, params.CollectionSlug)
 	}
+	// Scope, not permission: ANDed on its own, never part of the
+	// CollectionIDs/ItemIDs pair below (BUG-2631).
+	if params.ScopeCollectionID != "" {
+		query += " AND i.collection_id = ?"
+		args = append(args, params.ScopeCollectionID)
+	}
 
 	if len(params.CollectionIDs) > 0 && len(params.ItemIDs) > 0 {
 		// Guest with both collection-level and item-level grants:
@@ -1421,6 +1427,10 @@ func (s *Store) ListWorkspaceTags(workspaceID string, collectionIDs, itemIDs []s
 type ItemIndexParams struct {
 	// CollectionSlug optionally restricts to a single collection by slug.
 	CollectionSlug string
+	// ScopeCollectionID restricts to one collection by ID, ANDed
+	// unconditionally; a scope, not a permission filter. See
+	// models.ItemListParams.ScopeCollectionID (BUG-2631).
+	ScopeCollectionID string
 	// CollectionIDs is the permission filter for visible collections.
 	// nil = unfiltered. A non-nil empty slice means "no visible collections"
 	// and (combined with empty ItemIDs) returns an empty result immediately,
@@ -1484,6 +1494,12 @@ func (s *Store) ListItemsIndex(workspaceID string, params ItemIndexParams) ([]mo
 	if params.CollectionSlug != "" {
 		query += " AND c.slug = ?"
 		args = append(args, params.CollectionSlug)
+	}
+	// Scope, not permission: ANDed on its own, never part of the
+	// CollectionIDs/ItemIDs pair below (BUG-2631).
+	if params.ScopeCollectionID != "" {
+		query += " AND i.collection_id = ?"
+		args = append(args, params.ScopeCollectionID)
 	}
 
 	if len(params.CollectionIDs) > 0 && len(params.ItemIDs) > 0 {
@@ -2003,6 +2019,12 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 		query += " AND c.slug = ?"
 		args = append(args, params.CollectionSlug)
 	}
+	// Scope, not permission: ANDed on its own, never part of the
+	// CollectionIDs/ItemIDs pair below (BUG-2631).
+	if params.ScopeCollectionID != "" {
+		query += " AND i.collection_id = ?"
+		args = append(args, params.ScopeCollectionID)
+	}
 
 	// Parent link filter — mirrors the non-FTS path so combining
 	// `parent=<UUID>&search=<q>` doesn't silently drop the parent constraint
@@ -2238,7 +2260,7 @@ func (s *Store) appendFieldFilters(workspaceID string, params models.ItemListPar
 // in hand), when no empty filter value is present, or on a lookup error — in
 // every such case the filter keeps its exact-match meaning.
 func (s *Store) scalarRelationFilterKeys(workspaceID string, params models.ItemListParams) map[string]bool {
-	if params.CollectionSlug == "" {
+	if params.CollectionSlug == "" && params.ScopeCollectionID == "" {
 		return nil
 	}
 	hasEmpty := false
@@ -2251,7 +2273,18 @@ func (s *Store) scalarRelationFilterKeys(workspaceID string, params models.ItemL
 	if !hasEmpty {
 		return nil
 	}
-	coll, err := s.GetCollectionBySlug(workspaceID, params.CollectionSlug)
+	// The scope ID wins when both are set: it is the identity the caller
+	// checked (BUG-2631).
+	var coll *models.Collection
+	var err error
+	if params.ScopeCollectionID != "" {
+		coll, err = s.GetCollection(params.ScopeCollectionID)
+		if coll != nil && coll.WorkspaceID != workspaceID {
+			coll = nil
+		}
+	} else {
+		coll, err = s.GetCollectionBySlug(workspaceID, params.CollectionSlug)
+	}
 	if err != nil || coll == nil {
 		return nil
 	}
