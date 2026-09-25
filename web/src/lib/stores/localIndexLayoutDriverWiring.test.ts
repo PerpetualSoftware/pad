@@ -57,7 +57,40 @@ describe('TASK-2921 — the workspace layout drives the reconcile for every rout
 	});
 
 	it('still owns markSynced, which depends on the reconcile outcome', () => {
-		expect(layoutSource).toContain('syncService.markSynced()');
+		// BUG-3207: it now carries the stamp taken before the reconcile's reads.
+		expect(layoutSource).toContain('syncService.markSynced(syncStamp)');
+	});
+
+	it('takes the stamp BEFORE the reconcile reads (BUG-3207)', () => {
+		// Same instrument, same limits: ORDER in the source, not reachability.
+		// A stamp taken after the reads re-opens the miss the unit closed.
+		const stampAt = layoutSource.indexOf('await syncService.stamp()');
+		const reconcileAt = layoutSource.indexOf('await localIndex.reconcile(ws)');
+		expect(stampAt).toBeGreaterThan(-1);
+		expect(stampAt).toBeLessThan(reconcileAt);
+	});
+});
+
+describe('BUG-3207 — the layout is the ONLY full_refresh cursor writer', () => {
+	/**
+	 * Lead ruling: a single item's reload cannot vouch for the shared
+	 * workspace cursor, so ItemDetail no longer calls markSynced. Pinned the way
+	 * the ruling asked ("a failed layout reconcile plus a successful item reload
+	 * leaves the cursor unmoved"), within the limit of a source pin: neither
+	 * route component has a harness, and the service-level half, that
+	 * markSynced is the only door that moves the cursor on a full reload, is
+	 * syncServerClockCursor.svelte.test.ts. This fails if any component outside
+	 * the layout calls it again.
+	 */
+	it('no component other than the workspace layout calls markSynced', () => {
+		const files = import.meta.glob('/src/**/*.svelte', { query: '?raw', import: 'default', eager: true }) as Record<
+			string,
+			string
+		>;
+		const callers = Object.entries(files)
+			.filter(([, src]) => src.includes('syncService.markSynced('))
+			.map(([path]) => path);
+		expect(callers).toEqual(['/src/routes/[username]/[workspace]/+layout.svelte']);
 	});
 });
 

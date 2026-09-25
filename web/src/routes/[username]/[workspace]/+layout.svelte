@@ -72,8 +72,9 @@
 			// the server comes back, `/changes` usually SUCCEEDS with nothing to
 			// report, so the result is `caught_up`. The type meaning "nothing
 			// was missed" is exactly the one that arrives when everything was,
-			// because the cursor was seeded during the outage. Both calls below
-			// are no-ops when nothing is missing.
+			// whenever the cursor was seeded before the outage (a never-seeded
+			// tab answers full_refresh since BUG-3207; this handles both). Both
+			// calls below are no-ops when nothing is missing.
 			try {
 				await workspaceStore.recoverIfMissing(ws);
 			} catch {
@@ -111,6 +112,10 @@
 			// attempt. The localIndex cursor is independent of
 			// syncService.lastSyncTime and per-row seq guards make repeated
 			// calls idempotent.
+			// The server time this reload vouches for, taken BEFORE its reads so
+			// a change committed during them is re-delivered rather than skipped
+			// (BUG-3207). Only a full_refresh advances the cursor below.
+			const syncStamp = result.type === 'full_refresh' ? await syncService.stamp() : null;
 			let caughtUp = false;
 			try {
 				caughtUp = await localIndex.reconcile(ws);
@@ -128,8 +133,10 @@
 			// must not be advanced on the strength of a result for a workspace
 			// the user has since left — the reconcile that vouched for it was
 			// about a different cache.
+			// This is the ONLY full_refresh cursor writer: a single item's reload
+			// cannot vouch for the workspace (BUG-3207, lead ruling).
 			if (caughtUp && result.type === 'full_refresh' && wsSlug === ws) {
-				syncService.markSynced();
+				syncService.markSynced(syncStamp);
 			}
 		});
 

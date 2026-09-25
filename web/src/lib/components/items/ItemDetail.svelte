@@ -1739,12 +1739,11 @@
 				const links = await refreshLinksPreservingOnFailure(reqWsSlug, item.slug);
 				if (!item || item.id !== reqItemId || myItemGen !== itemGen) return;
 				itemLinks = links;
-				// Advance the cursor now that the ITEM reload succeeded. The links
-				// half may have failed and been preserved rather than fetched; the
-				// cursor cannot express that (it is shared, and the workspace
-				// layout advances it on its own), so that half is owed to
-				// `linksRetry` instead (BUG-2992).
-				syncService.markSynced();
+				// No cursor write here (BUG-3207). This reload read ONE item, and
+				// the cursor is shared across the workspace: advancing it would
+				// vouch for every other item's changes, including when the
+				// layout's workspace reconcile FAILED and deliberately left the
+				// cursor alone. The layout is the only full_refresh cursor writer.
 			} catch {
 				// Ignore — will catch up on next event
 			}
@@ -4834,9 +4833,9 @@
 	 * actually survive the failure — which is the half this closes, exactly as
 	 * the Children fix had to cover its error branch as well as its loading one.
 	 *
-	 * A FAILURE IS OWED A RETRY, and this is where it is recorded. Turning the
-	 * error into a successful return means the full-refresh caller's
-	 * `syncService.markSynced()` still advances the cursor, and a non-structural
+	 * A FAILURE IS OWED A RETRY, and this is where it is recorded. The shared
+	 * sync cursor still advances on the workspace layout's clean reconcile (the
+	 * pane itself no longer writes it, BUG-3207), and a non-structural
 	 * link change emits no event to ask again on, so without it stale links
 	 * could persist indefinitely (BUG-2992). `linksRetry` below schedules that
 	 * retry; every success here clears it.
