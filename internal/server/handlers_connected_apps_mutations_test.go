@@ -339,6 +339,7 @@ func TestHandleAddConnectedAppWorkspace_NonMember404(t *testing.T) {
 
 	rr := doAuthedJSON(srv, "POST", "/api/v1/connected-apps/add-nonmember-chain/workspaces",
 		map[string]string{"workspace": otherSlug}, tok)
+	assertWorkspaceNotFound(t, rr, "Workspace not found.")
 	if rr.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404 (non-member must look like not-found)", rr.Code)
 	}

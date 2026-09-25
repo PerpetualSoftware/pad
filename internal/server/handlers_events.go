@@ -81,7 +81,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if ws == nil {
-		writeError(w, http.StatusNotFound, "not_found", "Workspace not found")
+		writeWorkspaceNotFound(w, "Workspace not found")
 		return
 	}
 
@@ -156,7 +156,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 			}
 			if !hasGrants {
 				s.recordMCPAuthzDenial(r, "not_a_member")
-				writeError(w, http.StatusNotFound, "not_found", "Workspace not found")
+				writeWorkspaceNotFound(w, "Workspace not found")
 				return
 			}
 		}

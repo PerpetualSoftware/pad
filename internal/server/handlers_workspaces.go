@@ -561,7 +561,7 @@ func (s *Server) handleUpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if ws == nil {
-		writeError(w, http.StatusNotFound, "not_found", "Workspace not found")
+		writeWorkspaceNotFound(w, "Workspace not found")
 		return
 	}
 
@@ -580,7 +580,7 @@ func (s *Server) handleDeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 	err := s.store.DeleteWorkspace(ws.Slug)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "not_found", "Workspace not found")
+		writeWorkspaceNotFound(w, "Workspace not found")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -748,7 +748,7 @@ func (s *Server) handleRestoreWorkspace(w http.ResponseWriter, r *http.Request) 
 	}
 	if restored == nil {
 		// Extremely unlikely (just restored), but don't lie about success.
-		writeError(w, http.StatusNotFound, "not_found", "Workspace not found")
+		writeWorkspaceNotFound(w, "Workspace not found")
 		return
 	}
 

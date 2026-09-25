@@ -101,7 +101,11 @@ func (s *Server) handleCollab(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var sErr *statusError
 		if errors.As(err, &sErr) {
-			writeError(w, sErr.code, sErr.kind, sErr.message)
+			if sErr.details != nil {
+				writeError2(w, sErr.code, sErr.kind, sErr.message, sErr.details)
+			} else {
+				writeError(w, sErr.code, sErr.kind, sErr.message)
+			}
 			return
 		}
 		writeInternalError(w, err)
@@ -473,6 +477,9 @@ type statusError struct {
 	code    int
 	kind    string
 	message string
+	// details, when non-nil, is written as the envelope's details object
+	// (the workspace-resolution marker, BUG-3069).
+	details map[string]interface{}
 }
 
 func (e *statusError) Error() string { return e.message }
@@ -538,7 +545,9 @@ func (s *Server) authorizeCollabAccess(r *http.Request, item *models.Item) (coll
 		return collabAccess{}, err
 	}
 	if ws == nil {
-		return collabAccess{}, newStatusError(http.StatusNotFound, "not_found", "Workspace not found")
+		sErr := newStatusError(http.StatusNotFound, "not_found", "Workspace not found")
+		sErr.details = workspaceNotFoundDetails()
+		return collabAccess{}, sErr
 	}
 
 	// OAuth token allow-list gate.

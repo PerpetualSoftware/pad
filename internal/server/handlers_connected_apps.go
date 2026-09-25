@@ -453,7 +453,7 @@ func (s *Server) handleAddConnectedAppWorkspace(w http.ResponseWriter, r *http.R
 		return
 	}
 	if ws == nil {
-		writeError(w, http.StatusNotFound, "not_found", "Workspace not found.")
+		writeWorkspaceNotFound(w, "Workspace not found.")
 		return
 	}
 	// Membership check: the user can only grant their own connection
@@ -464,7 +464,7 @@ func (s *Server) handleAddConnectedAppWorkspace(w http.ResponseWriter, r *http.R
 		return
 	}
 	if member == nil {
-		writeError(w, http.StatusNotFound, "not_found", "Workspace not found.")
+		writeWorkspaceNotFound(w, "Workspace not found.")
 		return
 	}
 	if err := s.store.AddConnectionWorkspace(id, ws.ID, store.AddedByUser); err != nil {
