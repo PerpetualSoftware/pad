@@ -222,6 +222,19 @@ func serveCmd() *cobra.Command {
 				slog.Info("Attachment bidi filename backfill complete", "rows_rewritten", bb.RowsRewritten)
 			}
 
+			// Persist an id on every implementation note / decision entry
+			// stored without a usable, unique one (BUG-2788), so a timeline
+			// entry's identity no longer depends on its position in the array.
+			// Silent by ruling (no seq, no event); the premise is on the
+			// function. Non-fatal: an unrepaired entry still renders, on the
+			// timeline's positional fallback, as it always has.
+			if sb, err := s.BackfillStructuredEntryIDs(); err != nil {
+				slog.Warn("structured entry id backfill failed; non-fatal", "error", err,
+					"rows_repaired_before_error", sb.RowsRepaired)
+			} else {
+				slog.Info("Structured entry id backfill complete", "rows_repaired", sb.RowsRepaired)
+			}
+
 			// Backfill: populate status_transitions from the historical
 			// activity log (PLAN-1628 / TASK-1637). Idempotent — gated on an
 			// empty table, so it replays history exactly once on the first

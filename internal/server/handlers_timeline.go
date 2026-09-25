@@ -10,7 +10,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/google/uuid"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -312,7 +311,7 @@ func structuredTimelineEntries(item *models.Item, before time.Time, beforeID str
 	//
 	//   - structured raw vs structured raw ....... the `!usedIDs[raw]` guard
 	//   - structured raw vs derived, same kind ... divert on the prefix
-	//   - structured raw vs derived, cross kind .. hasStructuredPrefix
+	//   - structured raw vs derived, cross kind .. models.StructuredEntryIDKey
 	//   - derived vs derived ..................... equal only if raws are
 	//   - structured vs a row id ................. divert on UUID shape
 	//   - fallback vs anything ................... the `for usedIDs[id]` loop
@@ -320,115 +319,33 @@ func structuredTimelineEntries(item *models.Item, before time.Time, beforeID str
 	// WHAT IS NOT, deliberately and with somewhere to read about it:
 	//
 	//   - the positional fallback encodes an ARRAY INDEX, so an entry with no
-	//     usable id of its own can be renumbered by an insert or delete
-	//     earlier in the blob. That id is the cursor's tie-breaker, so a
-	//     renumbered entry can be skipped or re-shown across a page boundary.
-	//     Everything with something of its own to derive from was moved OFF
-	//     that path; what is left has nothing. Filed as BUG-2788.
+	//     usable id of its own could be renumbered by an insert or delete
+	//     earlier in the blob, and the id is the cursor's tie-breaker. BUG-2788
+	//     CLOSED this for every row this server writes: the append helpers and
+	//     workspace import persist an id, and a startup backfill persisted one
+	//     on every existing row, so nothing reaches the fallback except a blob
+	//     that escaped both (see the POSITIONAL FALLBACK note in entryID).
 	//   - a row id that is not a UUID is outside what the shape test diverts,
 	//     and two rows in DIFFERENT tables are not deduped against each other
 	//     at all. Both are properties of the writers rather than of this
 	//     function, both are unreachable through any current write or import
 	//     path, and neither can be detected here without the row lookup this
-	//     design exists to avoid. See looksLikeRowID.
+	//     design exists to avoid. See models.StructuredEntryIDKey.
 	usedIDs := make(map[string]bool, len(item.ImplementationNotes)+len(item.DecisionLog))
 	entryID := func(raw, prefix string, i int) string {
-		// A raw id must be usable as a CURSOR, not merely unique: the client
-		// sends it back as `before_id` and the handler now refuses a value the
-		// database would refuse (BUG-2774's validCursorID). These ids come
-		// from the item's fields blob, and a JSON NUL escape there reaches
-		// here intact on SQLite — Postgres's jsonb rejects it at the door,
-		// which is why this is a one-backend hazard. This comment used to
-		// say "nothing validates them on write"; since BUG-2803 the HTTP
-		// API does refuse a request body whose strings decode to a NUL,
-		// including one nested inside a JSON-encoded `fields` string. The
-		// store does not, so rows predating that rule, and anything writing
-		// a blob by another path (a migration, an import, a future
-		// non-HTTP writer), can still carry one — which is why this
-		// fallback stays.
-		// Emitting such an id would make the server hand out a cursor it then
-		// answers 400 to, wedging paging on that item (codex round 1). It gets
-		// the positional fallback the empty and duplicate cases already take.
-		// A raw id that is UUID-SHAPED is refused, because that is the only
-		// shape it could collide with (BUG-2783). Comments, activities and
-		// versions are the other sources in this merged stream, and every one
-		// of their rows takes its id from store.newID() — uuid.New().String()
-		// — at all six insert sites, the import path included, which re-mints
-		// rather than preserving an artifact's ids. So a blob id can only
-		// equal a row id by being a UUID, and refusing that shape makes the
-		// collision impossible.
-		//
-		// A collision is not cosmetic. Two entries sharing an id in ONE page
-		// hit `{#each visibleEntries as entry (entry.id)}` in
-		// ItemTimeline.svelte, and a keyed each with a duplicate key is a
-		// Svelte error, not a silent drop; across pages, the append path's
-		// `existingIds` filter silently discards the later one. Both are the
-		// failure the intra-structured dedupe already prevents.
-		//
-		// WHY NOT consult the ids actually fetched for this page: that is
-		// what the first version of this fix did, and it is wrong. The three
-		// SQL windows depend on the cursor, so a structured entry would take
-		// its raw id on one page and a positional id on another, depending on
-		// whether the colliding row happened to be inside that page's window.
-		// This id is not merely a render key — it is the SECOND TERM OF THE
-		// CURSOR PREDICATE above, so making it window-dependent makes an
-		// entry's own sort position depend on which page is being built, and
-		// paging can then skip or repeat it. The id has to be a function of
-		// the item alone, which is what the shape test is.
-		// `divert` is true for a raw id that must not be emitted as-is:
-		// UUID-shaped (it could equal a row id), or already carrying EITHER
-		// structured kind's derived namespace (it could equal some entry's
-		// derived id). Both get the same treatment below.
-		//
-		// Both prefixes, not just this call's: notes and decisions share
-		// `usedIDs`, so a NOTE whose raw id is `decision:<uuid>` would be kept
-		// and then collide with the id a DECISION derives from `<uuid>`,
-		// pushing the decision onto the positional path — the round-3 hole
-		// again, one kind across (codex round 4).
-		divert := looksLikeRowID(raw) || hasStructuredPrefix(raw)
-
-		if raw != "" && validCursorID(raw) && !divert && !usedIDs[raw] {
-			usedIDs[raw] = true
-			return raw
+		// The kept / diverted-to-derived / unusable decision is
+		// models.StructuredEntryIDKey, shared with the persisted-id repair
+		// (BUG-2788) so the two cannot disagree about which entries need an id.
+		if key, usable := models.StructuredEntryIDKey(raw, prefix); usable && !usedIDs[key] {
+			usedIDs[key] = true
+			return key
 		}
-		// A raw id that is only unusable because of its SHAPE gets a derived
-		// id rather than the positional fallback, so the entry keeps an
-		// identity tied to itself instead of to its index.
-		//
-		// This matters because the positional fallback is index-dependent and
-		// therefore unstable across mutations of the blob: inserting or
-		// removing an earlier entry renumbers every later one, and since the
-		// id is the cursor's tie-breaker, a renumbered entry can be skipped or
-		// re-shown across a page boundary. That instability predates this fix
-		// and still applies to entries with an ABSENT or DUPLICATE id, which
-		// have nothing else to derive from — but a UUID-shaped id does, and
-		// diverting those onto the positional path would have widened an
-		// existing hazard to a much larger population for no reason
-		// (codex round 2, P1).
-		//
-		// The namespace is what makes it safe, and it is closed rather than
-		// merely unlikely (codex round 3). Two rules together:
-		//
-		//   - a raw id is KEPT only if it does NOT begin with `<prefix>:`
-		//   - a diverted id is `<prefix>:` + raw
-		//
-		// so a derived id always begins with the prefix and a kept one never
-		// does, and the two can never collide. Two derived ids are equal only
-		// when their raws are equal, which is the duplicate case. And a bare
-		// UUID row id cannot equal either form.
-		//
-		// The earlier version diverted only UUID-shaped ids, which left a
-		// hole: a blob holding both `note:<uuid>` and `<uuid>` had the second
-		// derive onto the first's kept id, fall through, and land on the
-		// positional path — two distinct, legitimate ids, one of them made
-		// unstable. Diverting the prefix form closes it.
-		if raw != "" && validCursorID(raw) && divert {
-			derived := prefix + ":" + raw
-			if !usedIDs[derived] {
-				usedIDs[derived] = true
-				return derived
-			}
-		}
+		// POSITIONAL FALLBACK. Since BUG-2788 every write path persists a
+		// usable, unique id (the append helpers and workspace import repair
+		// the blob, and a startup backfill repaired every existing row), so
+		// this is unreachable by construction for anything written through
+		// this server. It stays as the defence for a blob that escaped, e.g.
+		// one written by a server older than the backfill after it ran.
 		id := fmt.Sprintf("%s-idx-%d", prefix, i)
 		for usedIDs[id] {
 			id += "x"
@@ -794,52 +711,4 @@ func exhaustedWindowCursor(
 // already bounds. A bound that can only fire on a valid id is not protection.
 func validCursorID(v string) bool {
 	return utf8.ValidString(v) && !strings.ContainsRune(v, 0)
-}
-
-// looksLikeRowID reports whether a structured entry's raw id could be the id
-// of a comment, activity or version row on the same item.
-//
-// Those are the only ids a structured entry can collide with in the merged
-// timeline, and every one of them is minted by store.newID(), which is
-// uuid.New().String(). Enumerated rather than sampled: the six INSERT sites
-// into comments / activities / item_versions all pass newID(), and the import
-// path re-mints instead of carrying an artifact's ids across.
-//
-// So the test is the UUID SHAPE, not membership in any particular set — which
-// is what keeps the answer independent of which rows a given page fetched.
-//
-// SCOPE, because this is a property of the WRITERS and not of the schema: all
-// three tables declare `id TEXT PRIMARY KEY` with no format constraint, and
-// migrations carry existing ids across verbatim. A row whose id is not a UUID
-// — written by some future path that does not go through newID(), or already
-// present in a database this code has never seen — would be outside what this
-// refuses, and a blob id equal to it would collide again. The same gap has a
-// second face: the three SQL sources keep their own ids verbatim and are not
-// deduped against EACH OTHER, so two rows in different tables sharing an id
-// would collide in the merged stream without any structured entry involved.
-// Nothing here can detect either without consulting the rows, which is the
-// dependency the whole design exists to avoid. It is latent rather than reachable through any
-// current write or import path (codex round 2, P2), and the enforcement that
-// would close it belongs at the writers or the schema, not here.
-// The cost is that a blob id that happens to be a well-formed UUID loses its
-// raw id even when nothing collides with it; that is accepted, because such an
-// id is indistinguishable from a colliding one without consulting the very
-// rows this must not depend on.
-func looksLikeRowID(raw string) bool {
-	return uuid.Validate(raw) == nil
-}
-
-// structuredEntryPrefixes are the namespaces entryID mints derived ids in.
-// Both kinds share one uniqueness map, so a raw id carrying EITHER prefix has
-// to be diverted regardless of which kind is being numbered — otherwise one
-// kind's kept id can collide with the other kind's derived id.
-var structuredEntryPrefixes = []string{"note", "decision"}
-
-func hasStructuredPrefix(raw string) bool {
-	for _, p := range structuredEntryPrefixes {
-		if strings.HasPrefix(raw, p+":") {
-			return true
-		}
-	}
-	return false
 }
