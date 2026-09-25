@@ -312,6 +312,18 @@ type RedisBus struct {
 	// refuses such cursors anyway — and until then it refuses exactly the
 	// ambiguous ones. Raised, never lowered, by a later restart.
 	//
+	// WHAT IT COSTS, stated because it was first stated wrong as "once"
+	// (BUG-2743 trail, day 80): a client genuinely in the NEW space is refused
+	// on EVERY reconnect until the new space climbs past the old peak — each
+	// refusal retires its cursor, the ids it then receives are new-space ids
+	// still at or below the peak, and the next resume lands inside the
+	// boundary again. It ends when the new space passes the peak or this
+	// process restarts, since the field is in memory. The activity bus names
+	// the same loop in internal/events dropAllBuffers and declines it on an
+	// epoch change; this bus accepts it on every arm, by lead ruling (a) on
+	// BUG-2743: a missed watch notification is unrecoverable, and the loop
+	// costs one refused resume per reconnect with nothing fetched.
+	//
 	// It knows only what THIS instance saw of the old space. A replica that
 	// joined late has a lower high-water mark than the space really reached,
 	// and one that never saw the old space at all has none; the cursor
@@ -1619,8 +1631,9 @@ func (b *RedisBus) fanOutLocally(n Notification, gen int64) {
 		// exceeds the newest id it holds, which after the reset is a small
 		// number — so those clients resync, which is the only honest
 		// outcome. Clients in the NEW space keep working once their cursor
-		// is above the old space's peak; at or below it they resync too,
-		// because such a cursor is ambiguous (see ambiguousThrough).
+		// is above the old space's peak; at or below it they are refused on
+		// every reconnect until the new space climbs past it, because such a
+		// cursor is ambiguous (see ambiguousThrough for the cost).
 		//
 		// RESIDUAL WINDOW, accepted (codex round 8). This fires when the
 		// first post-reset notification ARRIVES, so between the counter
@@ -1665,10 +1678,11 @@ func (b *RedisBus) fanOutLocally(n Notification, gen int64) {
 		// the old high-water mark, would still be served as though it
 		// followed. abandonSpaceLocked is what closes that (BUG-2743): it
 		// remembers the OLD space's extent, and replaySince refuses every
-		// cursor inside it, on every arm. The cost is one refused resume for
-		// every client whose cursor, genuinely in the NEW space, is still at
-		// or below the old peak — the conservative direction, and the same
-		// trade for every arm.
+		// cursor inside it, on every arm. The cost is a refused resume on
+		// every reconnect for a client genuinely in the NEW space until the
+		// new space climbs past the old peak — the conservative direction,
+		// the same trade for every arm, and stated in full at
+		// ambiguousThrough.
 		//
 		// Still bounded by what THIS instance saw of the old space, and the
 		// epoch remains the actual answer: an opaque token is the only thing
