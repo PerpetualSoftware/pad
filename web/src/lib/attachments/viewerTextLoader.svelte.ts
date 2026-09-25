@@ -49,6 +49,7 @@
  * Deleting either one leaves a real hole, which is the test each must fail.
  */
 import { attachmentDownloadUrl } from '$lib/markdown/attachments';
+import { withRequestDeadline } from '$lib/api/client';
 import { canPreviewAsText, TEXT_PREVIEW_MAX_BYTES } from '$lib/attachments/display';
 import type { LightboxImage } from './events';
 
@@ -185,11 +186,19 @@ export function createViewerTextLoader(): ViewerTextLoader {
 		phase = 'loading';
 		void (async () => {
 			try {
-				const res = await fetch(attachmentDownloadUrl(a.wsSlug, id), {
-					signal: a.controller.signal
-				});
-				if (!res.ok) throw new Error(`HTTP ${res.status}`);
-				const body = await readBounded(res, TEXT_PREVIEW_MAX_BYTES);
+				// Under the API deadline (BUG-3216), linked to the repoint controller:
+				// a repoint stays an AbortError (returned on below), a server that
+				// never answers becomes `request_timeout` and lands in 'error', which
+				// offers a retry, instead of 'loading' for ever. The bounded body read
+				// is inside, so a body that stalls after its headers is covered too.
+				const body = await withRequestDeadline(
+					async (signal) => {
+						const res = await fetch(attachmentDownloadUrl(a.wsSlug, id), { signal });
+						if (!res.ok) throw new Error(`HTTP ${res.status}`);
+						return await readBounded(res, TEXT_PREVIEW_MAX_BYTES);
+					},
+					{ idempotent: true, signal: a.controller.signal }
+				);
 				// THE STALENESS FENCE. Both halves are needed: the token catches a
 				// retry of the SAME entry (id unchanged), the id catches navigation
 				// to a different one (token could coincide only by accident, but the

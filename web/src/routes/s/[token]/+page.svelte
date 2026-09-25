@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { onMount } from 'svelte';
-	import { api } from '$lib/api/client';
+	import { api, withRequestDeadline } from '$lib/api/client';
 	import { renderMarkedWithAttachments } from '$lib/utils/markdown';
 	import { renderAttachmentUnavailable } from '$lib/markdown/attachments';
 	import DOMPurify from 'dompurify';
@@ -457,11 +457,18 @@
 		passwordError = '';
 		passwordLoading = true;
 		try {
-			const resp = await fetch(`/api/v1/s/${token}`, {
-				credentials: 'same-origin',
-				headers: { 'X-Share-Password': passwordInput }
-			});
-			const data = await resp.json();
+			// Under the API deadline (BUG-3216): `passwordLoading` is held across it.
+			const { resp, data } = await withRequestDeadline(
+				async (signal) => {
+					const resp = await fetch(`/api/v1/s/${token}`, {
+						credentials: 'same-origin',
+						headers: { 'X-Share-Password': passwordInput },
+						signal
+					});
+					return { resp, data: await resp.json() };
+				},
+				{ idempotent: true }
+			);
 			if (!resp.ok) {
 				passwordError = data?.error?.message ?? 'Incorrect password';
 				return;
