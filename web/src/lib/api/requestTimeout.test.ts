@@ -135,3 +135,13 @@ describe('request() timeout (BUG-3211)', () => {
 		expect(seen[0].aborted).toBe(false);
 	});
 });
+
+describe('the remaining direct fetches are bounded (BUG-3216)', () => {
+	it('the share view', async () => {
+		vi.stubGlobal('fetch', hungFetch().fn);
+		const err = await api.share.get('tok').catch((e) => e);
+		expect(err.code).toBe('request_timeout');
+	});
+	// adminFetch's leg is in stores/adminFetchTimeout.svelte.test.ts: the admin
+	// store uses runes, which only the jsdom project compiles.
+});

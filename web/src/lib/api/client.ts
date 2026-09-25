@@ -733,21 +733,38 @@ export function requestTimeoutError(isIdempotent: boolean): PadApiError {
 }
 
 /**
- * A plain fetch-and-parse under `request()`'s deadline, for the few direct
- * fetches that sit under a gate or a dedup promise (BUG-3211). GET-shaped:
- * a timeout reads as the idempotent `request_timeout`.
+ * Run `fn` — a fetch AND every read of its body — under `request()`'s deadline
+ * (BUG-3211, BUG-3216), for the direct fetches that bypass `request()` because
+ * they read their responses their own way. `fn` must pass `signal` to its fetch.
+ *
+ * `idempotent` picks the timeout's message: a write's says the change may still
+ * have been saved. `ms` is the site's budget; the default is the API's.
  */
-async function fetchJsonWithDeadline<T>(url: string, init?: RequestInit): Promise<T> {
-	const deadline = requestDeadline(requestTimeoutMs, init?.signal);
+export async function withRequestDeadline<T>(
+	fn: (signal: AbortSignal) => Promise<T>,
+	opts: { idempotent: boolean; ms?: number; signal?: AbortSignal | null },
+): Promise<T> {
+	const deadline = requestDeadline(opts.ms ?? requestTimeoutMs, opts.signal);
 	try {
-		const resp = await fetch(url, { ...init, signal: deadline.signal });
-		return (await resp.json()) as T;
+		return await fn(deadline.signal);
 	} catch (err) {
-		if (deadline.timedOut()) throw requestTimeoutError(true);
+		if (deadline.timedOut()) throw requestTimeoutError(opts.idempotent);
 		throw err;
 	} finally {
 		deadline.clear();
 	}
+}
+
+/**
+ * A plain fetch-and-parse under `request()`'s deadline, for the few direct
+ * fetches that sit under a gate or a dedup promise (BUG-3211). GET-shaped:
+ * a timeout reads as the idempotent `request_timeout`.
+ */
+function fetchJsonWithDeadline<T>(url: string, init?: RequestInit): Promise<T> {
+	return withRequestDeadline(
+		async (signal) => (await (await fetch(url, { ...init, signal })).json()) as T,
+		{ idempotent: true, signal: init?.signal },
+	);
 }
 
 async function request<T>(
@@ -2471,14 +2488,19 @@ export const api = {
 		get: (token: string, password?: string): Promise<SharePayload> => {
 			const headers: Record<string, string> = {};
 			if (password) headers['X-Share-Password'] = password;
-			return fetch(`${BASE}/s/${token}`, { credentials: 'same-origin', headers }).then(async (resp) => {
-				if (!resp.ok) {
-					const body = await resp.json().catch(() => null);
-					if (body?.error) throw new PadApiError(body.error);
-					throw new Error(`API error: ${resp.status}`);
-				}
-				return resp.json() as Promise<SharePayload>;
-			});
+			// Under the API deadline (BUG-3216). A GET, so a timeout is idempotent.
+			return withRequestDeadline(
+				async (signal) => {
+					const resp = await fetch(`${BASE}/s/${token}`, { credentials: 'same-origin', headers, signal });
+					if (!resp.ok) {
+						const body = await resp.json().catch(() => null);
+						if (body?.error) throw new PadApiError(body.error);
+						throw new Error(`API error: ${resp.status}`);
+					}
+					return (await resp.json()) as SharePayload;
+				},
+				{ idempotent: true }
+			);
 		},
 	},
 

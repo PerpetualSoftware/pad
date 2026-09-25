@@ -2,6 +2,7 @@
 // Admin store – shared state & utilities for the admin section
 // ---------------------------------------------------------------------------
 
+import { withRequestDeadline } from '$lib/api/client';
 import { authStore } from './auth.svelte';
 
 // ---- Interfaces -----------------------------------------------------------
@@ -75,9 +76,16 @@ export function getCSRFToken(): string | null {
 }
 
 export async function adminFetch(path: string, opts?: RequestInit) {
-	const resp = await fetch('/api/v1' + path, { credentials: 'same-origin', ...opts });
-	if (!resp.ok) throw new Error(`${resp.status}`);
-	return resp.json();
+	// Under the API deadline (BUG-3216); a write's timeout says it may have landed.
+	const method = (opts?.method ?? 'GET').toUpperCase();
+	return withRequestDeadline(
+		async (signal) => {
+			const resp = await fetch('/api/v1' + path, { credentials: 'same-origin', ...opts, signal });
+			if (!resp.ok) throw new Error(`${resp.status}`);
+			return await resp.json();
+		},
+		{ idempotent: method === 'GET' || method === 'HEAD', signal: opts?.signal }
+	);
 }
 
 export async function adminPatch(path: string, body: unknown) {

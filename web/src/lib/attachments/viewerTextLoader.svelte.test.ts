@@ -369,3 +369,30 @@ describe('createViewerTextLoader', () => {
 		expect(loader.text).toBe('');
 	});
 });
+
+// BUG-3216 — a preview request the server never answers ends in 'error' (which
+// offers a retry) instead of 'loading' for ever.
+describe('viewerTextLoader is bounded (BUG-3216)', () => {
+	afterEach(async () => {
+		(await import('$lib/api/client')).setRequestTimeoutForTests();
+		vi.unstubAllGlobals();
+	});
+
+	it('a hung preview times out into the error phase', async () => {
+		(await import('$lib/api/client')).setRequestTimeoutForTests(30);
+		vi.stubGlobal(
+			'fetch',
+			vi.fn((_u: string, init?: RequestInit) => {
+				const signal = init?.signal ?? undefined;
+				// No signal: nothing can abort it, so it hangs like a real hung request.
+				return new Promise<Response>((_r, reject) => {
+					signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+				});
+			})
+		);
+		const loader = createViewerTextLoader();
+		loader.load(entry(), 'ws');
+		expect(loader.phase).toBe('loading');
+		await vi.waitFor(() => expect(loader.phase).toBe('error'), { timeout: 1000 });
+	});
+});

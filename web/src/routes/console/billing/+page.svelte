@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { authStore } from '$lib/stores/auth.svelte';
-	import { api } from '$lib/api/client';
+	import { api, withRequestDeadline } from '$lib/api/client';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import Button from '$lib/components/common/Button.svelte';
 	import { goto } from '$app/navigation';
@@ -174,13 +174,16 @@
 
 	async function loadPlanLimits() {
 		try {
-			const resp = await fetch('/api/v1/plan-limits', { credentials: 'same-origin' });
+			// Under the API deadline (BUG-3216); a timeout falls to the catch below.
+			const body = await withRequestDeadline(
+				async (signal) => {
+					const resp = await fetch('/api/v1/plan-limits', { credentials: 'same-origin', signal });
+					return resp.ok ? await resp.json() : null;
+				},
+				{ idempotent: true }
+			);
 			if (destroyed) return;
-			if (resp.ok) {
-				const body = await resp.json();
-				if (destroyed) return;
-				limits = body;
-			}
+			if (body) limits = body;
 		} catch {
 			/* use fallback rendering */
 		}

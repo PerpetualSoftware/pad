@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { withRequestDeadline } from '$lib/api/client';
 	import { onMount } from 'svelte';
 	import { adminFetch, adminPost, getCSRFToken, formatDate } from '$lib/stores/admin.svelte';
 	import Chip from '$lib/components/common/Chip.svelte';
@@ -29,13 +30,20 @@
 		const headers: Record<string, string> = {};
 		const csrf = getCSRFToken();
 		if (csrf) headers['X-CSRF-Token'] = csrf;
-		const resp = await fetch('/api/v1' + path, {
-			method: 'DELETE',
-			credentials: 'same-origin',
-			headers
-		});
-		if (!resp.ok) throw new Error(`${resp.status}`);
-		return resp.json();
+		// Under the API deadline (BUG-3216): `actionSaving` is held across it.
+		return withRequestDeadline(
+			async (signal) => {
+				const resp = await fetch('/api/v1' + path, {
+					method: 'DELETE',
+					credentials: 'same-origin',
+					headers,
+					signal
+				});
+				if (!resp.ok) throw new Error(`${resp.status}`);
+				return await resp.json();
+			},
+			{ idempotent: false }
+		);
 	}
 
 	async function loadInvitations() {

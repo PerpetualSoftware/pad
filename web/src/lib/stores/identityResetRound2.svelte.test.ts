@@ -14,7 +14,12 @@ const api = vi.hoisted(() => ({
 	items: { list: vi.fn(), listByCollection: vi.fn(), get: vi.fn(), starred: vi.fn() },
 	workspaces: { list: vi.fn(), get: vi.fn(), me: vi.fn(), create: vi.fn() },
 }));
-vi.mock('$lib/api/client', () => ({ api }));
+// `withRequestDeadline` (BUG-3216) passes straight through: these legs are
+// about identity fencing, and a real deadline would only add a timer.
+vi.mock('$lib/api/client', () => ({
+	api,
+	withRequestDeadline: <T>(fn: (signal: AbortSignal) => Promise<T>) => fn(new AbortController().signal),
+}));
 vi.mock('./localIndexPersistence', () => ({
 	hydrateCollections: vi.fn(async () => null),
 	persistCollections: vi.fn(async () => {}),
