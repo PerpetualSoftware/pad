@@ -2,13 +2,14 @@ package server
 
 import (
 	"bytes"
-	"encoding/json"
 	"io"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strings"
 	"unicode/utf8"
 
+	"github.com/PerpetualSoftware/pad/internal/jsonscan"
 	"github.com/PerpetualSoftware/pad/internal/textguard"
 )
 
@@ -354,8 +355,8 @@ func validQueryText(rawQuery string) bool {
 // for the reason the tests do the same.
 var unicodeEscapePrefix = []byte{'\\', 'u', '0', '0'}
 
-// bodyDecodesNUL reports whether any string a handler could read out of this
-// JSON body — an object key or a value, at any nesting depth, including
+// THE REQUEST-BODY SCAN (scanRequestBody, below). Its NUL half reports
+// whether any string a handler could read out of this JSON body — an object key or a value, at any nesting depth, including
 // inside a JSON document carried as a string — decodes to a string containing
 // a NUL.
 //
@@ -429,73 +430,303 @@ var unicodeEscapePrefix = []byte{'\\', 'u', '0', '0'}
 // That choice has a consequence, and it is finding (2) below rather than a
 // clean separation of concerns.
 //
-// WHAT THIS CHECK DOES NOT COVER — four measured disagreements between what
-// this scan sees and what the typed decode does, left OPEN deliberately
-// (BUG-2803 rounds 16-17; lead ruling: land-and-follow). They are
-// recorded here because this is the function a reader consults before
-// trusting the check, and an unqualified doc comment above an incomplete
-// guard is how the next person inherits a false belief.
+// WHAT CHANGED IN BUG-2812. This used to decode the body into map[string]any
+// and walk the tree, and the tree is a lossy model of the document. Four
+// measured disagreements with the typed decode followed from that (BUG-2803
+// rounds 16-17). The scan now reads TOKENS (package jsonscan), and each of the
+// four has an answer:
 //
-// The root cause of all four is one thing: this scan decodes into
-// map[string]any, and encoding/json's typed decode does NOT agree with that
-// model about keys. TWO UNDER-REFUSE (a NUL gets through) and TWO
-// OVER-REFUSE (a legitimate body is rejected).
+//  1. A NUL IN A SHADOWED DUPLICATE, {"fields_patch":{"orphan":"<NUL>"},
+//     "fields_patch":{...}}: the tree kept one value per key and never saw the
+//     first. Every occurrence is a token, so it is REFUSED as a NUL.
+//  2. A NUMBER NO float64 HOLDS, {"title":"a<NUL>b","ignored":1e999}: the tree
+//     decode failed, this answered "no NUL", and the typed decode skipped the
+//     unknown field and stored the title. A number is never converted, so the
+//     title is seen and REFUSED.
+//  3. A NUL IN A FIELD NO HANDLER READS, {"title":"ok","future":"<NUL>"}:
+//     still refused, ACCEPTED as before. Scoping the scan to known fields
+//     needs the destination type, which this function deliberately lacks
+//     (WHY NOT REFLECT above). It is in the BUG-2803 release note.
+//  4. A CASE-VARIANT DUPLICATE, {"title":"<NUL>","TITLE":"safe"}: refused as
+//     before, and now for a stated reason rather than as an accepted
+//     over-refusal. It is a repeated request member (below).
 //
-// UNDER-REFUSALS — these are the BUG-2812 unit's spec, not a TODO here. Both
-// dissolve under a token-stream walk that never builds values, which is that
-// unit's design. The ruling's reasoning for not folding that rewrite in: a
-// review loop finding something in nearly every round says the pre-scan
-// machinery has a DESIGN problem, and the answer to that is a unit of its
-// own rather than a late restructure of a branch already deep in review.
+// REPEATED REQUEST MEMBERS ARE REFUSED (BUG-2812 ruling, day 80). The typed
+// decode gives a repeat one of two meanings depending on the destination: a
+// map member MERGES the occurrences, a struct or raw member keeps the LAST.
+// A caller who sent two cannot know which, and BUG-3219 was a write that
+// silently lost one. So a repeat anywhere in the REQUEST's own structure is
+// refused. Two things bound "repeat":
 //
-//  1. DUPLICATE KEYS MERGE DIFFERENTLY (P1). For
-//     {"fields_patch":{"orphan":"<NUL>"},"fields_patch":{"status":"open"}},
-//     decoding into map[string]any REPLACES the first value, so this scan
-//     sees only `status`; encoding/json MERGES into an already-populated map
-//     field, so the handler keeps both and persists the NUL. The `any` scan
-//     structurally cannot see the shadowed occurrence — no amount of care
-//     inside this model reaches it.
-//  2. A SCAN FAILURE LETS A KNOWN-BAD VALUE THROUGH (P1). For
-//     {"title":"a<NUL>b","ignored":1e999}, the overflowing number makes the
-//     `any` unmarshal fail, this function returns false (see the paragraph
-//     above), and the typed decode then SKIPS the unknown field and accepts
-//     the body with its NUL title. Returning an error instead would reject
-//     bodies the handlers accept today, so the fix is not "refuse on scan
-//     failure" — it is not building values in the first place.
+//   - Case folding applies where the destination is known to be a STRUCT,
+//     since encoding/json matches `TITLE` to a `title` field. Into a MAP,
+//     `Status` and `status` are two keys and only an exact repeat counts.
+//     decodeJSONBytes knows its destination, so it passes the TOP-LEVEL kind
+//     (repeatFoldFor): a struct folds its members; a slice of structs folds
+//     each element's (PUT /workspaces/reorder, the role board); a map
+//     (admin settings, admin user limits) folds nothing. Below the top level
+//     the scan does not know struct from map and counts exact repeats only,
+//     so a case-variant repeat inside a NESTED struct still takes the typed
+//     decode's last-wins answer. That is a known residual; the member scans on
+//     fields_patch and field_overrides (BUG-3219) are the precise check for
+//     the two nested members where it mattered.
+//   - Caller DATA is exempt: below a JSON-encoded field key (`fields`,
+//     `schema`, ...), a repeated key is the item's own content, which BUG-2896
+//     stores collapsed rather than refusing.
 //
-// OVER-REFUSALS — dispositions, ACCEPTED as-is, and the reason each is
-// tolerable is that it refuses rather than admits:
+// This runs on EVERY body, not only one carrying an escape, because a refusal
+// that depended on whether a body happened to mention an escape would be no
+// rule at all. The NUL half still only looks where a NUL can be (bodies
+// containing unicodeEscapePrefix). Cost, measured on the same bodies before
+// and after: BUG-2812's trail.
+
+// bodyFindings is what one scan of a request body found.
+type bodyFindings struct {
+	nul bool
+	// repeat is the first repeated request member, as the body spelled its
+	// FIRST occurrence, or "" when there was none.
+	repeat string
+}
+
+// bodyDecodesNUL reports only the NUL half of scanRequestBody.
+func bodyDecodesNUL(raw []byte) bool { return scanRequestBody(raw, foldMembers).nul }
+
+// repeatFold says where the scan may fold member names, from what it knows of
+// the destination's TOP-LEVEL type.
+type repeatFold int
+
+const (
+	// foldMembers: the top-level value decodes into a struct.
+	foldMembers repeatFold = iota
+	// foldElementMembers: into a slice or array of structs.
+	foldElementMembers
+	// foldNone: into a map, or a type the scan cannot classify.
+	foldNone
+)
+
+// repeatFoldFor classifies a decode destination by its top-level kind only.
+// It reflects on the TYPE, never the value, so none of WHY NOT REFLECT's
+// concerns (a []byte seen after base64) apply.
+func repeatFoldFor(dst any) repeatFold {
+	t := reflect.TypeOf(dst)
+	for t != nil && t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t == nil {
+		return foldNone
+	}
+	switch t.Kind() {
+	case reflect.Struct:
+		return foldMembers
+	case reflect.Slice, reflect.Array:
+		e := t.Elem()
+		for e.Kind() == reflect.Pointer {
+			e = e.Elem()
+		}
+		if e.Kind() == reflect.Struct {
+			return foldElementMembers
+		}
+	}
+	return foldNone
+}
+
+// scanRequestBody reads the whole body once. A body that is not exactly one
+// well-formed JSON value reports nothing: the caller's own decode reports the
+// JSON error, so there is one place that phrases "invalid JSON", and it is
+// never this one. That is also why the scan does not stop at its first
+// finding. A finding in a document that turns out to be malformed would put a
+// NUL or repeat message on a body whose real problem is its syntax.
+func scanRequestBody(raw []byte, fold repeatFold) bodyFindings {
+	w := bodyWalk{sc: jsonscan.NewScanner(raw), nulChecks: bytes.Contains(raw, unicodeEscapePrefix)}
+	w.sc.Raw = !w.nulChecks
+	k, str, err := w.sc.Next()
+	if err != nil || !w.value(k, str, false, fold == foldMembers, fold == foldElementMembers) {
+		return bodyFindings{}
+	}
+	if _, _, err := w.sc.Next(); err != io.EOF {
+		return bodyFindings{}
+	}
+	return w.found
+}
+
+type bodyWalk struct {
+	sc        *jsonscan.Scanner
+	nulChecks bool
+	found     bodyFindings
+	// spans and arena hold the member names of every object currently open,
+	// innermost last (see noteMember).
+	spans []memberSpan
+	arena []byte
+}
+
+// value walks one value whose first token is (k, str). It answers false for
+// malformed input.
 //
-//  3. UNKNOWN FIELDS ARE SCANNED THOUGH HANDLERS IGNORE THEM (P2).
-//     {"title":"valid","future_field":"<NUL>"} is refused although the value
-//     reaches nothing. Scoping the scan to known fields would need the
-//     destination type, which this function deliberately does not have (see
-//     WHY NOT REFLECT above) — so the alternative is not a smaller change,
-//     it is a different design. ACCEPTED, and it is an OBSERVABLE
-//     COMPATIBILITY CHANGE: a client sending a forward-compatible field with
-//     a NUL escape in it now gets a 400 where it got a 200. Stated in the
-//     release note for that reason, not only here.
-//  4. CASE-VARIANT DUPLICATES OVER-REJECT (P2). For
-//     {"title":"<NUL>","TITLE":"safe"} the typed decode keeps `safe` and
-//     discards the NUL, while this scan sees both keys and refuses. Same
-//     root as (1), opposite direction: there the map model hides an
-//     occurrence, here it retains one the decode drops. ACCEPTED — refusing
-//     a body that deliberately spells one field twice in two cases costs a
-//     caller nothing real.
+// inUserData says the walk has left the REQUEST's own structure and is inside
+// caller data: the object or array under a JSON-encoded field key. The key
+// list is not consulted there, and repeats are not refused there, for the
+// reasons on jsonEncodedFieldKeys and the block above. Both halves of the first
+// matter:
 //
-// The asymmetry is the honest summary: within the map model, (1) and (4) are
-// the same defect seen from two sides, and only one of them fails safe.
-func bodyDecodesNUL(raw []byte) bool {
-	if !bytes.Contains(raw, unicodeEscapePrefix) {
+//   - A collection may declare a user field literally named `schema` or
+//     `tags`. Treating `{"fields":{"schema":"..."}}`'s inner key as a wire key
+//     refused valid text that happened to hold a JSON example (codex round 8
+//     on BUG-2803).
+//   - Below the document Postgres parses, an escape is harmless. Measured on
+//     Postgres 17 with the check disabled: a NUL escape two levels deep
+//     imports 201, because `fields` is parsed ONCE and the inner text is
+//     re-escaped when the blob is written (codex round 7).
+//
+// Together those make the descent into a second document exactly one level
+// deep by construction: only a string under a JSON-encoded key at request
+// level is re-parsed.
+//
+// fold says this object's member names are case-folded before comparing (its
+// destination is a struct); foldElems says the same of each element of this
+// array. Both come from the top-level destination only.
+func (w *bodyWalk) value(k jsonscan.Kind, str []byte, inUserData, fold, foldElems bool) bool {
+	switch k {
+	case jsonscan.String:
+		w.checkNUL(str)
+		return true
+	case jsonscan.Scalar:
+		return true
+	case jsonscan.ArrayStart:
+		for {
+			w.sc.Raw = !w.nulChecks
+			ek, estr, err := w.sc.Next()
+			if err != nil {
+				return false
+			}
+			if ek == jsonscan.ArrayEnd {
+				return true
+			}
+			if !w.value(ek, estr, inUserData, foldElems, false) {
+				return false
+			}
+		}
+	case jsonscan.ObjectStart:
+		members := w.openMembers()
+		defer w.closeMembers(members)
+		for {
+			// Names are always decoded: the repeat check compares them.
+			w.sc.Raw = false
+			nk, name, err := w.sc.Next()
+			if err != nil {
+				return false
+			}
+			if nk == jsonscan.ObjectEnd {
+				return true
+			}
+			if nk != jsonscan.String {
+				return false
+			}
+			w.checkNUL(name)
+			// Read everything the name decides BEFORE the next token: name is
+			// only valid until then.
+			encoded := !inUserData && encodedFieldKey(name)
+			if !inUserData {
+				w.noteMember(members, name, fold)
+			}
+			// A value's text matters only to the NUL half, and only when the
+			// body can hold a NUL at all.
+			w.sc.Raw = !w.nulChecks
+			vk, vstr, err := w.sc.Next()
+			if err != nil {
+				return false
+			}
+			if encoded {
+				if vk == jsonscan.String {
+					// BOTH checks (codex round 9 on BUG-2803): the string
+					// itself, and the document it carries.
+					w.checkNUL(vstr)
+					if w.nulChecks && !w.found.nul && nestedDocumentDecodesNUL(string(vstr)) {
+						w.found.nul = true
+					}
+					continue
+				}
+				// The field's natural shape: caller data from here down.
+				if !w.value(vk, vstr, true, false, false) {
+					return false
+				}
+				continue
+			}
+			if !w.value(vk, vstr, inUserData, false, false) {
+				return false
+			}
+		}
+	default:
+		// A closing delimiter where a value belongs.
 		return false
 	}
-	var v any
-	if err := json.Unmarshal(raw, &v); err != nil {
-		// Malformed: the caller's own decode reports the JSON error, so this
-		// function never has to phrase one.
-		return false
+}
+
+// memberSpan is one member name recorded in bodyWalk.arena: key is the bytes
+// compared (folded where the destination is a struct), orig is the spelling a
+// refusal reports.
+type memberSpan struct{ keyStart, keyEnd, origStart, origEnd int }
+
+// membersFrame marks where one object's names begin in the walk's shared
+// stacks. Objects nest, and a child's names are dropped when it closes, so a
+// parent's names stay contiguous from its own mark.
+type membersFrame struct{ spans, arena int }
+
+func (w *bodyWalk) openMembers() membersFrame {
+	return membersFrame{spans: len(w.spans), arena: len(w.arena)}
+}
+
+func (w *bodyWalk) closeMembers(f membersFrame) {
+	w.spans, w.arena = w.spans[:f.spans], w.arena[:f.arena]
+}
+
+// noteMember records a member name and reports a repeat. The names live in one
+// buffer the whole walk reuses, rather than a map per object with a string per
+// key: every body is walked now, and that allocation per key was most of the
+// cost on the common body (BUG-2812 trail, perf table). The search is linear,
+// which is cheaper than hashing for the few members a request object has; an
+// object with thousands of members costs quadratic time in its own size,
+// bounded by the body cap.
+func (w *bodyWalk) noteMember(f membersFrame, name []byte, fold bool) {
+	origStart := len(w.arena)
+	w.arena = append(w.arena, name...)
+	keyStart, keyEnd := origStart, len(w.arena)
+	if fold {
+		keyStart = len(w.arena)
+		w.arena = append(w.arena, jsonscan.FoldName(name)...)
+		keyEnd = len(w.arena)
 	}
-	return valueDecodesNUL(v, false)
+	key := w.arena[keyStart:keyEnd]
+	for _, sp := range w.spans[f.spans:] {
+		if bytes.Equal(w.arena[sp.keyStart:sp.keyEnd], key) {
+			if w.found.repeat == "" {
+				w.found.repeat = string(w.arena[sp.origStart:sp.origEnd])
+			}
+			return
+		}
+	}
+	w.spans = append(w.spans, memberSpan{keyStart, keyEnd, origStart, origStart + len(name)})
+}
+
+// encodedFieldKey is isJSONEncodedFieldKey for a name the walk holds as bytes,
+// with the common case answered without a string: an exact hit, or a name of
+// lower-case ASCII, which case-folds only to itself, so the fold loop over the
+// list cannot match it.
+func encodedFieldKey(name []byte) bool {
+	if jsonEncodedFieldKeys[string(name)] {
+		return true
+	}
+	for _, c := range name {
+		if c >= utf8.RuneSelf || ('A' <= c && c <= 'Z') {
+			return isJSONEncodedFieldKey(string(name))
+		}
+	}
+	return false
+}
+
+func (w *bodyWalk) checkNUL(s []byte) {
+	if w.nulChecks && !w.found.nul && bytes.IndexByte(s, 0) >= 0 {
+		w.found.nul = true
+	}
 }
 
 // jsonEncodedFieldKeys are the REQUEST-BODY keys whose STRING value is itself
@@ -567,94 +798,6 @@ func isJSONEncodedFieldKey(k string) bool {
 	for canonical := range jsonEncodedFieldKeys {
 		if strings.EqualFold(k, canonical) {
 			return true
-		}
-	}
-	return false
-}
-
-// valueDecodesNUL walks a decoded request body for a string that contains a
-// NUL, descending into a JSON document carried as a string exactly once.
-//
-// inUserData says the walk has left the REQUEST's own structure and is inside
-// caller data — the natural object under `fields`, an element of a `tags`
-// array, or a re-parsed document. The key list is not consulted there, and
-// both halves of that matter:
-//
-//   - A collection may declare a user field literally named `schema` or
-//     `tags`. Treating `{"fields":{"schema":"..."}}`'s inner key as a wire key
-//     refused valid text that happened to hold a JSON example (codex round 8).
-//   - Below the document Postgres parses, an escape is harmless. Measured on
-//     Postgres 17 with the check disabled: a NUL escape two levels deep
-//     imports 201, because `fields` is parsed ONCE and the inner text is
-//     re-escaped when the blob is written, so Postgres never sees an escape
-//     (codex round 7).
-//
-// Together those make the descent exactly one level deep by construction,
-// which is why there is no depth counter here. An earlier version had one,
-// bounding a recursion that inherited the flag through the whole subtree;
-// with the flag no longer inherited, a counter would be a bound that can
-// never fire, and dead protection reads as protection.
-//
-// WHY A DECODED WALK RATHER THAN reflection over the destination struct: a
-// reflective walk sees []byte fields AFTER base64 decoding, so a body
-// carrying legitimate binary — {"b":"AQAC"} decodes to the bytes 01 00 02 —
-// would be refused for a NUL that is not text and never reaches a text
-// column. Decoding into `any` never produces a []byte, so the value seen here
-// is the base64 TEXT. No request struct has such a field today (searched:
-// []byte with a json tag in internal/server and internal/models, non-test —
-// only models.YjsUpdate.UpdateData, which no handler decodes from a body);
-// this shape is chosen so that adding one later cannot silently start
-// rejecting valid requests.
-func valueDecodesNUL(v any, inUserData bool) bool {
-	// S1 (DOC-2823): once classing is switched OFF there is nothing
-	// request-specific left to do, and the walk is textguard's — literally the
-	// same traversal this function used to carry inline. Delegating rather than
-	// keeping a copy is the point of extracting the package: two walks of the
-	// same shape, in two layers, is the disagreement this cluster exists
-	// because of.
-	if inUserData {
-		return textguard.ValueDecodesNUL(v)
-	}
-	switch t := v.(type) {
-	case string:
-		return textguard.ContainsNUL(t)
-	case map[string]any:
-		for k, sub := range t {
-			if textguard.ContainsNUL(k) {
-				return true
-			}
-			if !inUserData && isJSONEncodedFieldKey(k) {
-				if str, isString := sub.(string); isString {
-					// BOTH checks. The nested walk answers "is there an
-					// escape inside the document this string carries"; it
-					// does NOT answer "does this string itself contain a
-					// NUL", and taking the JSON-encoded branch used to skip
-					// the plain check entirely — so a direct NUL in a
-					// `fields` value was accepted, reopening the door this
-					// whole change exists to close (codex round 9, a
-					// regression introduced by the round-8 restructure).
-					if textguard.ContainsNUL(str) || nestedDocumentDecodesNUL(str) {
-						return true
-					}
-					continue
-				}
-				// The field's NATURAL shape: an array or object whose
-				// elements the server marshals itself. Nothing re-parses
-				// them, so everything below is caller data.
-				if valueDecodesNUL(sub, true) {
-					return true
-				}
-				continue
-			}
-			if valueDecodesNUL(sub, inUserData) {
-				return true
-			}
-		}
-	case []any:
-		for _, sub := range t {
-			if valueDecodesNUL(sub, inUserData) {
-				return true
-			}
 		}
 	}
 	return false

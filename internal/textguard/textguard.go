@@ -21,8 +21,11 @@
 package textguard
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
+
+	"github.com/PerpetualSoftware/pad/internal/jsonscan"
 )
 
 // escapePrefix is the only spelling of a NUL a JSON document can carry. Used
@@ -80,11 +83,7 @@ func DocumentDecodesNUL(s string) bool {
 	if !strings.Contains(s, escapePrefix) || !IsJSONDocument(s) {
 		return false
 	}
-	var inner any
-	if err := json.Unmarshal([]byte(strings.TrimSpace(s)), &inner); err != nil {
-		return false
-	}
-	return ValueDecodesNUL(inner)
+	return TokensDecodeNUL([]byte(strings.TrimSpace(s)))
 }
 
 // DocumentDecodesNULAnyShape is DocumentDecodesNUL widened to every JSON
@@ -98,11 +97,40 @@ func DocumentDecodesNULAnyShape(s string) bool {
 	if t == "" || !strings.Contains(t, escapePrefix) || !json.Valid([]byte(t)) {
 		return false
 	}
-	var inner any
-	if err := json.Unmarshal([]byte(t), &inner); err != nil {
-		return false
+	return TokensDecodeNUL([]byte(t))
+}
+
+// TokensDecodeNUL walks a VALID JSON document token by token and reports
+// whether any string in it, key or value, decodes to a NUL (BUG-2812).
+//
+// It replaced a decode into `any` followed by a walk of the tree, which got
+// two things wrong because the tree is a lossy model of the document:
+//
+//   - A REPEATED KEY. A map keeps one value per key, so the walk never saw a
+//     value a later duplicate shadowed. Postgres's jsonb parser reads every
+//     occurrence before it deduplicates, and refuses the shadowed escape, so
+//     the guard admitted what the database refused.
+//   - A NUMBER NO float64 HOLDS. `1e999` is valid JSON that json.Unmarshal
+//     into `any` refuses with a range error, so the walk answered "no NUL" for
+//     a document it never read.
+//
+// A token stream has neither loss: every occurrence arrives, and a number is
+// never converted. It also builds no tree, which is the amplification half of
+// the same bug (see package jsonscan for why that needs jsontext).
+//
+// The caller validates first. A document that fails part-way answers false,
+// the same "not a JSON document" answer the entry points give malformed input.
+func TokensDecodeNUL(doc []byte) bool {
+	sc := jsonscan.NewScanner(doc)
+	for {
+		k, str, err := sc.Next()
+		if err != nil {
+			return false
+		}
+		if k == jsonscan.String && bytes.IndexByte(str, 0) >= 0 {
+			return true
+		}
 	}
-	return ValueDecodesNUL(inner)
 }
 
 // ValueDecodesNUL walks an ALREADY-DECODED JSON value for a NUL in any string

@@ -381,17 +381,18 @@ database carries any affected rows it lists them, prints the repair command,
 and exits without moving anything — rather than failing partway through the
 copy against PostgreSQL's JSONB parser, which is what it used to do.
 
-One shape is checked differently, and it is worth knowing why. A JSON value
-with LITERAL duplicate keys — `{"a":"...","a":"..."}` — hides anything in the
-shadowed copy from every check Pad makes, because the JSON decoder keeps only
-the last. PostgreSQL still refuses it. Rather than let such a row through, the
-preflight asks the destination directly: any value that merely *mentions* a NUL
-escape is cast on the target database before anything moves, and the migration
-is refused if PostgreSQL rejects it. That check is exact in both directions — a
-document that only writes *about* the escape is accepted, as it should be.
+A JSON value with LITERAL duplicate keys — `{"a":"...","a":"..."}` — used to
+hide anything in the shadowed copy, because Pad's checks decoded it the way the
+JSON decoder does and kept only the last. PostgreSQL refuses it all the same.
+Since BUG-2812 the checks read every occurrence, so such a row is an ordinary
+violation: listed by the scan and fixed by `pad db repair-nul`.
 
-`pad db scan-nul` lists those values under a separate heading, and
-`pad db repair-nul` fixes the fatal shape while leaving the harmless ones byte
+The preflight also asks the destination directly: any value that merely
+*mentions* a NUL escape and is not already a violation is cast on the target
+database before anything moves, and the migration is refused if PostgreSQL
+rejects it. That check is exact in both directions — a document that only
+writes *about* the escape is accepted, as it should be. `pad db scan-nul` lists
+those values under a separate heading, and `pad db repair-nul` leaves them byte
 for byte as they were.
 
 Two things to know about that check:
