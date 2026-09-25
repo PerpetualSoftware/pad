@@ -8,6 +8,11 @@
 // opening an item from a scrolled list dropped the list to its top (the clicked
 // row off screen) and closing it jumped the list again.
 //
+// Table view is the exception (BUG-3164): the table's own `.table-scroll` is
+// the scroller with or without the pane, so the container does not change. The
+// anchor is still worth holding there, since the table narrows and its rows can
+// reflow when the pane opens.
+//
 // A pixel copy is wrong: the column is narrower than the page, so rows reflow
 // to a different height. Instead an ANCHOR ROW is kept at the same place on
 // screen — the pane item's own row when it is visible (the row the reader just

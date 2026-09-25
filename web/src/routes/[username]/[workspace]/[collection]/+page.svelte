@@ -1043,8 +1043,10 @@
 	// archived (which changes the dataset but not the URL) doesn't apply
 	// a stale offset across the two views.
 	//
-	// Scope is intentionally page-level scroll only. Board view's internal
-	// horizontal scroll container is not captured here.
+	// Scope is the list's vertical scroller (see `listScrollTarget`): the page,
+	// the pane-open column, or, in table view, the table's own `.table-scroll`
+	// (BUG-3164). Board view's internal horizontal scroll container is not
+	// captured here.
 	const scrollRestoration = createScrollRestoration({
 		// `collection?.slug === collSlug` is the identity check that
 		// prevents firing against stale content when the same component
@@ -1066,22 +1068,33 @@
 		// `.main-content` (which the pane-open layout clips to the viewport), so
 		// an entry left with the pane open saves — and a Back onto it restores —
 		// the column's position (BUG-3165: Expand to full page, then Back).
+		// Table view scrolls in its own `.table-scroll` either way (BUG-3164).
 		scrollTarget: listScrollTarget,
 	});
 	export const snapshot = scrollRestoration.snapshot;
 
 	// ── List position across the pane opening / closing (BUG-3165) ──────
 	// Opening or closing the pane swaps the list's scroll container (see
-	// `listScrollTarget`), so the position is handed over explicitly, anchored
+	// `listScrollTarget`; table view keeps one, but its rows reflow as the table
+	// narrows), so the position is handed over explicitly, anchored
 	// on a row (`$lib/collections/listScrollHandoff`). The anchor is read in a
 	// PRE effect — before the DOM switches layout, while the old container still
 	// holds the position — and applied after the switch.
 	let listColumnEl = $state<HTMLElement | null>(null);
+	// In table view the TABLE is the scroller, pane or no pane (BUG-3164): it
+	// fills the list's visible region and owns both axes, so its sticky header
+	// row has a vertical scroll to stick against. Null until the table has
+	// rendered, which the restore helper retries per frame.
+	function tableScroller(): HTMLElement | null {
+		return listColumnEl?.querySelector<HTMLElement>('.table-scroll') ?? null;
+	}
 	function listScrollTarget(): HTMLElement | Window | null {
+		if (viewMode === 'table') return tableScroller();
 		if (openItemRef && viewMode !== 'board' && listColumnEl) return listColumnEl;
 		return document.querySelector<HTMLElement>('.main-content') ?? window;
 	}
 	function listScroller(paneOpen: boolean): HTMLElement | null {
+		if (viewMode === 'table') return tableScroller();
 		if (paneOpen) return listColumnEl;
 		return document.querySelector<HTMLElement>('.main-content');
 	}
@@ -3181,10 +3194,22 @@
 
 	function scrollFocusedIntoView() {
 		requestAnimationFrame(() => {
-			const el = document.querySelector('.item-card.focused');
-			if (el) {
+			const el = document.querySelector<HTMLElement>('.item-card.focused, .table-row.focused');
+			if (!el) return;
+			// A table row scrolls inside the table, under a sticky header row
+			// (BUG-3164), so `nearest` would leave a row reached from below
+			// hidden behind the header. Scroll the table by exactly the overlap.
+			const table = el.closest<HTMLElement>('.table-scroll');
+			if (!table) {
 				el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+				return;
 			}
+			const box = table.getBoundingClientRect();
+			const top = table.querySelector('.table-header')?.getBoundingClientRect().bottom ?? box.top;
+			const bottom = box.top + table.clientTop + table.clientHeight;
+			const row = el.getBoundingClientRect();
+			if (row.top < top) table.scrollBy({ top: row.top - top, behavior: 'smooth' });
+			else if (row.bottom > bottom) table.scrollBy({ top: row.bottom - bottom, behavior: 'smooth' });
 		});
 	}
 
@@ -3685,7 +3710,7 @@
 	is the ONLY thing that mounts/unmounts on open/close — see the NO-{#key}
 	note on the ItemDetail mount below.
 -->
-<div class="collection-page" class:board-active={viewMode === 'board'} class:pane-open={!!openItemRef}>
+<div class="collection-page" class:board-active={viewMode === 'board'} class:table-active={viewMode === 'table'} class:pane-open={!!openItemRef}>
 	<!-- tabindex=-1: a programmatic focus landmark (not a Tab stop) so closing
 	     the pane can return focus here when there's no originating row to land on
 	     (deep-linked / filtered-out item — TASK-2122).
@@ -4421,7 +4446,7 @@
 	/* ── Split-pane layout (PLAN-2105 / TASK-2112) ──────────────────────
 	   The list content is always wrapped in .list-column so the detail
 	   pane can mount/unmount without remounting the list. In the default
-	   (no-pane, non-board) layout .list-column is a transparent block, so
+	   (no-pane, list view) layout .list-column is a transparent block, so
 	   no styles are needed there. Board view is a fixed-height flex column
 	   though, so the wrapper must fill it: the board's own `flex:1;
 	   min-height:0` expects its parent to be a constrained flex column,
@@ -4432,6 +4457,28 @@
 		display: flex;
 		flex-direction: column;
 		overflow: hidden;
+	}
+
+	/* Table view fills .main-content the way the board does (BUG-3164, option
+	   A as ruled on its trail). The table's own `.table-scroll` then owns BOTH
+	   scroll axes: it needs `overflow-x: auto` for wide tables, which computes
+	   to auto vertically too, so it is the sticky header row's scroll
+	   container, and the header can only stick if the vertical scroll happens
+	   there as well. The page keeps its default width and padding; only its
+	   height is bounded. `.list-column` keeps `overflow-y: auto` so a view with
+	   no table (loading, empty, no matches) still scrolls. */
+	.collection-page.table-active {
+		height: 100%;
+		display: flex;
+		flex-direction: column;
+		overflow: hidden;
+	}
+	.collection-page.table-active .list-column {
+		flex: 1;
+		min-height: 0;
+		display: flex;
+		flex-direction: column;
+		overflow-y: auto;
 	}
 
 	/* When a detail pane is open the page becomes a flex row: list column
