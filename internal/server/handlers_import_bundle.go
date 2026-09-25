@@ -134,7 +134,8 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 	repair := &nulRepairTally{Enabled: wantsNULRepair(r)}
 
 	staleBodies := &staleBodyTally{}
-	ws, err := s.importBundle(r.Context(), gz, newName, mint, repair, staleBodies)
+	var importReport store.ImportReport
+	ws, err := s.importBundle(r.Context(), gz, newName, mint, repair, staleBodies, &importReport)
 	if err != nil {
 		// A plan-limit refusal from the store (BUG-2808) is decided before the
 		// import's commit, so the transaction rolled back and there is no
@@ -253,6 +254,7 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 	s.finishWorkspaceMint(r, ws.ID)
 	repair.SetHeader(w)
 	staleBodies.SetHeader(w)
+	setImportCollapsedHeader(w, importReport)
 	writeJSON(w, http.StatusCreated, ws)
 }
 
@@ -275,7 +277,7 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 // Split out from the handler so tests can drive it with a tar.Reader
 // over an in-memory bundle and assert on the resulting state without
 // a live HTTP server.
-func (s *Server) importBundle(ctx context.Context, r io.Reader, newName string, mint workspaceMintAuth, repair *nulRepairTally, staleBodies *staleBodyTally) (result *models.Workspace, retErr error) {
+func (s *Server) importBundle(ctx context.Context, r io.Reader, newName string, mint workspaceMintAuth, repair *nulRepairTally, staleBodies *staleBodyTally, report *store.ImportReport) (result *models.Workspace, retErr error) {
 	// The bundle door is the SECOND body shape behind the import route, and
 	// it mints through the same store call, so it takes the same mint
 	// context the JSON path does rather than re-deriving owner and source
@@ -420,7 +422,11 @@ func (s *Server) importBundle(ctx context.Context, r io.Reader, newName string, 
 			// BUG-3032: read the bundle's own stale-body marker while `export`
 			// is still the thing the exporter wrote.
 			staleBodies.Observe(&export)
-			ws, err = s.store.ImportWorkspace(&export, newName, ownerID, mint.Source, s.planLimitMintOpts(ownerID)...)
+			var rep store.ImportReport
+			ws, rep, err = s.store.ImportWorkspaceWithReport(&export, newName, ownerID, mint.Source, s.planLimitMintOpts(ownerID)...)
+			if report != nil {
+				*report = rep
+			}
 			if err != nil {
 				// A refusal about the bundle the caller supplied gets this
 				// door's own envelope carrying the store's Reason, exactly as

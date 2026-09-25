@@ -2573,7 +2573,7 @@ func repairBodyNULEscapes(raw []byte) (out []byte, replaced int, declined string
 	// them), so this costs nothing an operator will meet by accident. Rewriting
 	// such a body faithfully needs a token-preserving pass, which is BUG-2812's
 	// token-walk and not a rider on this.
-	if key, dup := firstDuplicateJSONKey(raw); dup {
+	if key, dup := models.FirstDuplicateJSONKey(raw); dup {
 		return raw, 0, "the payload repeats the member " + strconv.Quote(key) +
 			", and repairing it would change which value is imported"
 	}
@@ -2602,72 +2602,6 @@ func repairBodyNULEscapes(raw []byte) (out []byte, replaced int, declined string
 		return raw, 0, ""
 	}
 	return bytes.TrimRight(buf.Bytes(), "\n"), n, ""
-}
-
-// firstDuplicateJSONKey reports the first object member name that appears twice
-// in the same object, at any depth.
-//
-// A token walk rather than a decode, because a decode is exactly what loses the
-// information: by the time there is a map, the duplicate is gone.
-//
-// Malformed input answers false — the caller has already checked json.Valid,
-// and a decode error there is the caller's to report, not this function's to
-// duplicate.
-func firstDuplicateJSONKey(raw []byte) (string, bool) {
-	type frame struct {
-		isObject  bool
-		seen      map[string]bool
-		expectKey bool
-	}
-	var stack []*frame
-	top := func() *frame {
-		if len(stack) == 0 {
-			return nil
-		}
-		return stack[len(stack)-1]
-	}
-
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	for {
-		tok, err := dec.Token()
-		if err != nil {
-			return "", false // EOF, or malformed — nothing to report either way.
-		}
-		if d, isDelim := tok.(json.Delim); isDelim {
-			switch d {
-			case '{':
-				stack = append(stack, &frame{isObject: true, seen: map[string]bool{}, expectKey: true})
-			case '[':
-				stack = append(stack, &frame{})
-			case '}', ']':
-				if len(stack) > 0 {
-					stack = stack[:len(stack)-1]
-				}
-				// The container that just closed WAS a value of its parent, so
-				// the parent's next token is a key again.
-				if f := top(); f != nil && f.isObject {
-					f.expectKey = true
-				}
-			}
-			continue
-		}
-		f := top()
-		if f == nil || !f.isObject {
-			continue
-		}
-		if f.expectKey {
-			if name, isString := tok.(string); isString {
-				if f.seen[name] {
-					return name, true
-				}
-				f.seen[name] = true
-			}
-			f.expectKey = false
-			continue
-		}
-		// A scalar value; the next token in this object is a key.
-		f.expectKey = true
-	}
 }
 
 // repairDecodedNULs walks a decoded body, repairing every string the gate would

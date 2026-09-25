@@ -401,7 +401,32 @@ func resolveImportParent(exportedParentID string, itemMap map[string]string, ins
 // export carries no source: a bundle says what the workspace WAS, and where
 // this copy is being minted from is a fact about this request. Operator
 // callers outside HTTP pass "".
+// ImportReport describes what an import normalised on the way in, for the
+// caller to surface (BUG-2896).
+type ImportReport struct {
+	// CollapsedDuplicateKeys counts stored blobs (collection traits and item
+	// fields) that repeated a JSON member name and were stored collapsed, so
+	// SQLite's json_extract (first occurrence) and Go and Postgres (last) read
+	// the same value. Every other blob is stored verbatim.
+	CollapsedDuplicateKeys int
+}
+
+// ImportWorkspace is ImportWorkspaceWithReport for callers with no use for the
+// report.
 func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ownerID string, source string, opts ...MintOption) (*models.Workspace, error) {
+	ws, _, err := s.ImportWorkspaceWithReport(data, newName, ownerID, source, opts...)
+	return ws, err
+}
+
+// ImportWorkspaceWithReport imports an archive as a new workspace and reports
+// what it normalised on the way in.
+func (s *Store) ImportWorkspaceWithReport(data *models.WorkspaceExport, newName string, ownerID string, source string, opts ...MintOption) (*models.Workspace, ImportReport, error) {
+	var report ImportReport
+	ws, err := s.importWorkspace(data, newName, ownerID, source, &report, opts...)
+	return ws, report, err
+}
+
+func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ownerID string, source string, report *ImportReport, opts ...MintOption) (*models.Workspace, error) {
 	if data.Version != 1 {
 		return nil, fmt.Errorf("unsupported export version: %d", data.Version)
 	}
@@ -570,6 +595,21 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 				"collection", c.Slug, "workspace_id", ws.ID, "error", verr)
 			traits = "{}"
 			discarded = true
+		} else if key, dup := models.FirstDuplicateJSONKey([]byte(traits)); dup {
+			// BUG-2896: a repeated member means SQLite's unique index
+			// (json_extract, FIRST occurrence) and the resolver (Go, LAST,
+			// merging a repeated object into one struct) read different
+			// declarations. Store the resolver's own encoding of what it
+			// parsed, so every reader sees one declaration. Only here: a blob
+			// without a repeat keeps its bytes.
+			canon, jerr := parsed.JSON()
+			if jerr != nil {
+				return nil, fmt.Errorf("import collection %s: encode traits: %w", c.Slug, jerr)
+			}
+			slog.Warn("import: collection traits repeated a JSON member; stored collapsed",
+				"collection", c.Slug, "workspace_id", ws.ID, "member", key)
+			traits = canon
+			report.CollapsedDuplicateKeys++
 		}
 
 		// COMPATIBILITY INFERENCE for archives written before traits existed.
@@ -851,6 +891,18 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 		}
 		claimedSlugs[itemSlug] = true
 		fieldsJSON := coerceJSONForImport(it.Fields, "{}", "items.fields", it.ID, ws.ID, true)
+		// BUG-2896: a fields blob that repeats a member is stored collapsed
+		// (last wins, as Go and Postgres read it), so SQLite's json_extract,
+		// which reads the FIRST occurrence, cannot disagree with them about
+		// the status, a filter or a sort. Any other blob keeps its bytes.
+		if collapsed, key, did, cerr := models.CollapseDuplicateJSONKeys(fieldsJSON); cerr != nil {
+			return nil, fmt.Errorf("import item %s: %w", it.ID, cerr)
+		} else if did {
+			slog.Warn("import: item fields repeated a JSON member; stored collapsed",
+				"item", it.ID, "workspace_id", ws.ID, "member", key)
+			fieldsJSON = collapsed
+			report.CollapsedDuplicateKeys++
+		}
 		// Import is the one live door that brings in structured entries as
 		// written elsewhere, so it gives any without a usable, unique id a
 		// persisted one before the row exists (BUG-2788). A blob that needs no

@@ -912,7 +912,7 @@ func (s *Server) handleImportWorkspace(w http.ResponseWriter, r *http.Request) {
 	staleBodies := &staleBodyTally{}
 	staleBodies.Observe(&data)
 
-	ws, err := s.store.ImportWorkspace(&data, newName, userID, mint.Source, s.planLimitMintOpts(userID)...)
+	ws, importReport, err := s.store.ImportWorkspaceWithReport(&data, newName, userID, mint.Source, s.planLimitMintOpts(userID)...)
 	if err != nil {
 		if writeStorePlanLimitError(w, err, "") {
 			return
@@ -954,5 +954,6 @@ func (s *Server) handleImportWorkspace(w http.ResponseWriter, r *http.Request) {
 	s.finishWorkspaceMint(r, ws.ID)
 	repair.SetHeader(w)
 	staleBodies.SetHeader(w)
+	setImportCollapsedHeader(w, importReport)
 	writeJSON(w, http.StatusCreated, ws)
 }

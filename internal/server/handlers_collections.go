@@ -232,6 +232,19 @@ func (s *Server) handleCreateCollection(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
+	// BUG-2896: traits that repeat a JSON member are stored as the parsed
+	// declaration's own encoding, BEFORE the conflict check, so the check,
+	// the unique index and the resolver all read one declaration. The
+	// object wire form was already re-encoded this way; the string form
+	// stored the raw bytes, and SQLite's index then read the FIRST repeat.
+	var collapsed []string
+	if canon, key, cerr := models.CanonicalTraitsIfDuplicated(input.Traits); cerr != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", cerr.Error())
+		return
+	} else if key != "" {
+		input.Traits = canon
+		collapsed = []string{key}
+	}
 	if err := s.checkTraitConflicts(workspaceID, input.Traits, ""); err != nil {
 		writeError(w, http.StatusConflict, "conflict", err.Error())
 		return
@@ -258,6 +271,9 @@ func (s *Server) handleCreateCollection(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if len(collapsed) > 0 {
+		coll.Warnings = &models.CollectionWriteWarnings{CollapsedDuplicateKeys: collapsed}
+	}
 	writeJSON(w, http.StatusCreated, coll)
 }
 
@@ -333,6 +349,7 @@ func (s *Server) handleUpdateCollection(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	var updateCollapsed []string
 	// Same fail-loud gate as create: a malformed declaration is refused, not
 	// stored as a blob that silently parses to "declares nothing". A nil
 	// Traits (every pre-TASK-2657 client) skips this and leaves the stored
@@ -341,6 +358,14 @@ func (s *Server) handleUpdateCollection(w http.ResponseWriter, r *http.Request) 
 		if err := validateCollectionTraits(*input.Traits); err != nil {
 			writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 			return
+		}
+		// BUG-2896: see create.
+		if canon, key, cerr := models.CanonicalTraitsIfDuplicated(*input.Traits); cerr != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", cerr.Error())
+			return
+		} else if key != "" {
+			input.Traits = &canon
+			updateCollapsed = []string{key}
 		}
 		if err := s.checkTraitConflicts(workspaceID, *input.Traits, coll.ID); err != nil {
 			writeError(w, http.StatusConflict, "conflict", err.Error())
@@ -465,6 +490,9 @@ func (s *Server) handleUpdateCollection(w http.ResponseWriter, r *http.Request) 
 	}
 	s.publishCollectionEvent(events.CollectionUpdated, workspaceID, updated.ID, coll.Slug, newSlug, migrationRequested)
 
+	if len(updateCollapsed) > 0 {
+		updated.Warnings = &models.CollectionWriteWarnings{CollapsedDuplicateKeys: updateCollapsed}
+	}
 	writeJSON(w, http.StatusOK, updated)
 }
 
