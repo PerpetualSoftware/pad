@@ -34,16 +34,25 @@ const SURFACES: { name: string; source: string; uses: string[]; forbidden: strin
 	{
 		name: 'ListView',
 		source: read('../components/collections/ListView.svelte'),
-		uses: ['laneValue', 'isUngrouped', 'formatLaneLabel'],
-		forbidden: ['formatLabel', 'laneValue', 'isUngrouped', 'inlinedLaneValue'],
+		uses: ['laneValue', 'isUngrouped', 'formatLaneLabel', 'laneKey'],
+		forbidden: ['formatLabel', 'laneValue', 'isUngrouped', 'inlinedLaneValue', 'laneKey'],
 	},
 	{
 		name: 'BoardView',
 		source: read('../components/collections/BoardView.svelte'),
 		// Buckets through `bucketByColumn`, which normalises internally, so it
-		// needs the label but not the pair.
-		uses: ['formatLaneLabel'],
-		forbidden: ['formatLabel', 'laneValue', 'isUngrouped', 'inlinedLaneValue'],
+		// needs the label but not the pair. `laneKey` keys its `$state` lane
+		// records (BUG-3208).
+		uses: ['formatLaneLabel', 'laneKey'],
+		forbidden: ['formatLabel', 'laneValue', 'isUngrouped', 'inlinedLaneValue', 'laneKey'],
+	},
+	{
+		// Groups children by status into a `$state` record (BUG-3054), with a
+		// private `laneKey` until BUG-3208 moved the one copy into boardColumns.
+		name: 'ChildItems',
+		source: read('../components/ChildItems.svelte'),
+		uses: ['laneKey'],
+		forbidden: ['laneKey'],
 	},
 	{
 		name: 'shareView (public board + list)',
@@ -100,6 +109,7 @@ describe('no surface keeps a private copy of a lane-key helper', () => {
 		formatLabel: { pattern: /function\s+formatLabel\s*\(/, what: 'a private formatLabel' },
 		laneValue: { pattern: /function\s+laneValue\s*\(/, what: 'a private laneValue' },
 		isUngrouped: { pattern: /function\s+isUngrouped\s*\(/, what: 'a private isUngrouped' },
+		laneKey: { pattern: /function\s+laneKey\s*\(/, what: 'a private laneKey' },
 		inlinedLaneValue: {
 			// The inlined normalisation, in the exact spelling all four copies used.
 			pattern: /typeof\s+\w+\s*===\s*'string'\s*\?\s*\w+\s*:\s*\w+\s*==\s*null\s*\?\s*''/,
@@ -130,6 +140,7 @@ describe('no surface keeps a private copy of a lane-key helper', () => {
 		expect(/function\s+formatLabel\s*\(/.test('\tfunction formatLabel(value: string): string {')).toBe(
 			true,
 		);
+		expect(/function\s+laneKey\s*\(/.test('\tfunction laneKey(status: string): string {')).toBe(true);
 		expect(
 			/typeof\s+\w+\s*===\s*'string'\s*\?\s*\w+\s*:\s*\w+\s*==\s*null\s*\?\s*''/.test(
 				"const value = typeof raw === 'string' ? raw : raw == null ? '' : String(raw);",
