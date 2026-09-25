@@ -363,8 +363,13 @@ reading the metrics below, and for anyone writing a third-party consumer:
   saw it, answering `sync_required`. Before this it served them, handing an
   old-space client new-space notifications as though they followed its cursor,
   and a cursor equal to the new space's first ID was told it was caught up.
-  The price is that a client genuinely in the NEW space whose cursor is still
-  at or below the old peak also resyncs, once; for `pad watch --stream`, the
+  The price is that a client genuinely in the NEW space is refused too, on
+  EVERY reconnect until the new space climbs past the old peak or the instance
+  restarts (the boundary is held in memory): each refusal retires its cursor,
+  and the IDs it receives next are still at or below the peak. The activity
+  stream declines this loop on an epoch change; the watch stream accepts it on
+  every arm, because a missed watch notification cannot be recovered. For
+  `pad watch --stream`, the
   only watch-stream client today, a resync clears its cursor, keeps the
   connection and fetches nothing, and prints a `PAD (resync)` line so the
   agent reading it knows to re-check. Two limits remain: the boundary is what THIS
