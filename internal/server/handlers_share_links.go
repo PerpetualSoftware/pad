@@ -563,8 +563,11 @@ func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) 
 			writeError(w, http.StatusNotFound, "not_found", "Not found")
 			return
 		}
+		// Scoped by the link's collection ID, never its slug: a slug freed
+		// and re-taken by another collection would otherwise serve that
+		// collection's items through a public link (BUG-2631).
 		items, err := s.store.ListItems(link.WorkspaceID, models.ItemListParams{
-			CollectionSlug: coll.Slug,
+			ScopeCollectionID: coll.ID,
 		})
 		if err != nil {
 			writeInternalError(w, err)

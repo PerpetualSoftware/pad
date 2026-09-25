@@ -744,10 +744,12 @@ func (s *Server) collectBootstrapSourceItems(workspaceID string, traited []colle
 			continue
 		}
 		items, err := s.store.ListItems(workspaceID, models.ItemListParams{
-			CollectionSlug: src.Collection.Slug,
-			CollectionIDs:  collIDs,
-			ItemIDs:        itemIDs,
-			Fields:         src.Include.Filter,
+			// The ID the visibility gate above checked, not a slug that can
+			// be re-taken in between (BUG-2631).
+			ScopeCollectionID: src.Collection.ID,
+			CollectionIDs:     collIDs,
+			ItemIDs:           itemIDs,
+			Fields:            src.Include.Filter,
 			// NoContent is a QUERY optimization and is NOT the same question
 			// as the declaration's mode. Mode decides whether bodies are
 			// SHIPPED; some metadata projections still have to READ the body
@@ -953,12 +955,13 @@ func (s *Server) collectGenericBootstrapIncludes(workspaceID string, traited []c
 			// than inferred from a full page — len(items) == cap is
 			// ambiguous on its own.
 			items, err := s.store.ListItems(workspaceID, models.ItemListParams{
-				CollectionSlug: coll.Slug,
-				CollectionIDs:  collIDs,
-				ItemIDs:        itemIDs,
-				Fields:         inc.Filter,
-				NoContent:      !wantBodies,
-				Limit:          bootstrapGenericIncludeCap + 1,
+				// Scoped by the gated ID, not the slug (BUG-2631).
+				ScopeCollectionID: coll.ID,
+				CollectionIDs:     collIDs,
+				ItemIDs:           itemIDs,
+				Fields:            inc.Filter,
+				NoContent:         !wantBodies,
+				Limit:             bootstrapGenericIncludeCap + 1,
 			})
 			if err != nil {
 				return nil, err

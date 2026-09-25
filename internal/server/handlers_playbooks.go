@@ -680,9 +680,10 @@ func (s *Server) resolvePlaybook(workspaceID, identifier string, visibleCollIDs 
 	// guard uniqueness (SPEC-5 v1.1 amendment 4).
 	for _, coll := range routing {
 		bySlug, err := s.store.ListItems(workspaceID, models.ItemListParams{
-			CollectionSlug: coll.Slug,
-			Fields:         map[string]string{coll.Traits.InvocationField: identifier},
-			Limit:          1,
+			// By the routing collection's ID, not its slug (BUG-2631).
+			ScopeCollectionID: coll.ID,
+			Fields:            map[string]string{coll.Traits.InvocationField: identifier},
+			Limit:             1,
 		})
 		if err != nil {
 			return nil, err
