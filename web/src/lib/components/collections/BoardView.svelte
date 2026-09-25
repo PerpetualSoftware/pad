@@ -7,6 +7,7 @@
 	import {
 		bucketByColumn,
 		formatLaneLabel,
+		laneKey,
 		laneValue,
 		UNCATEGORIZED,
 	} from '$lib/collections/boardColumns';
@@ -173,15 +174,20 @@
 	// Ephemeral per-lane sort overrides (TASK-1673): a lane sorts by its
 	// override when set, else the page-wide `sortMode`. Not persisted —
 	// cleared on reload. Available to everyone (sort is a view preference).
+	// Keyed by `laneKey(value)` (BUG-3208): a bare option value finds the
+	// INHERITED member for every Object.prototype name, so a lane named
+	// `constructor` read a function as its override, ignored the page sort and
+	// lost its reorder menu.
 	let laneSortOverrides = $state<Record<string, SortMode>>({});
 	function setLaneSort(colValue: string, mode: SortMode | null) {
 		if (mode === null) {
-			delete laneSortOverrides[colValue];
+			delete laneSortOverrides[laneKey(colValue)];
 		} else {
-			laneSortOverrides[colValue] = mode;
+			laneSortOverrides[laneKey(colValue)] = mode;
 		}
 	}
-	const laneSortFor = (colValue: string): SortMode => laneSortOverrides[colValue] ?? sortMode;
+	const laneSortFor = (colValue: string): SortMode =>
+		laneSortOverrides[laneKey(colValue)] ?? sortMode;
 
 	// ── Inline draft cards (TASK-1676) ──────────────────────────────────
 	// Trello/GitHub-style: the `+` opens an editable draft card in the
@@ -440,12 +446,19 @@
 	}
 
 	let isDragging = $state(false);
+	/**
+	 * Lanes keyed by `laneKey(value)`, never by the raw option value (BUG-3208).
+	 * An option named `__proto__` re-parented a raw-keyed record instead of
+	 * creating a lane, and a re-parented record is not proxied by `$state`, so
+	 * the whole board lost its drag reactivity. Read and write it only through
+	 * `laneKey`.
+	 */
 	let columnData: Record<string, Item[]> = $state({});
 
 	let propColumnData = $derived.by(() => {
 		// Bucket items into their lanes, routing empty/unknown-value items
 		// into the UNCATEGORIZED ('') lane instead of dropping them (IDEA-2275).
-		const result = bucketByColumn(
+		const buckets = bucketByColumn(
 			items,
 			groupField,
 			columns,
@@ -457,9 +470,13 @@
 		// else the page-wide sort (TASK-1670 / TASK-1673); 'manual'
 		// resolves to the stored sort_order, preserving prior behavior.
 		if (!preserveOrder) {
-			for (const key of Object.keys(result)) {
-				result[key].sort(itemComparator(laneSortFor(key), collection));
+			for (const [value, list] of buckets) {
+				list.sort(itemComparator(laneSortFor(value), collection));
 			}
+		}
+		const result: Record<string, Item[]> = {};
+		for (const [value, list] of buckets) {
+			result[laneKey(value)] = list;
 		}
 		return result;
 	});
@@ -479,7 +496,7 @@
 		const data = propColumnData;
 		if (!isDragging && !dropCooldown) {
 			columnData = data;
-			showUncategorized = (data[UNCATEGORIZED]?.length ?? 0) > 0;
+			showUncategorized = (data[laneKey(UNCATEGORIZED)]?.length ?? 0) > 0;
 		}
 	});
 
@@ -515,7 +532,7 @@
 	let navColumns = $derived(
 		renderColumns.map((col) => ({
 			value: col,
-			items: (columnData[col] ?? []).filter((i: any) => !i[SHADOW_ITEM_MARKER_PROPERTY_NAME]),
+			items: (columnData[laneKey(col)] ?? []).filter((i: any) => !i[SHADOW_ITEM_MARKER_PROPERTY_NAME]),
 		}))
 	);
 	$effect(() => {
@@ -523,7 +540,7 @@
 	});
 
 	function handleConsider(columnValue: string, e: CustomEvent<DndEvent<Item>>) {
-		columnData[columnValue] = e.detail.items;
+		columnData[laneKey(columnValue)] = e.detail.items;
 		if (!isDragging && e.detail.info.trigger === TRIGGERS.DRAG_STARTED) {
 			if (typeof navigator !== 'undefined' && navigator.vibrate) {
 				navigator.vibrate(50);
@@ -533,7 +550,7 @@
 	}
 
 	async function handleFinalize(columnValue: string, e: CustomEvent<DndEvent<Item>>) {
-		columnData[columnValue] = e.detail.items;
+		columnData[laneKey(columnValue)] = e.detail.items;
 
 		const { id: itemId, trigger } = e.detail.info;
 		isDragging = false;
@@ -654,7 +671,7 @@
 		if (moveSucceeded) {
 			// Only persist reorder after a successful move.
 			if (onReorder) {
-				const order = placement === 'top' ? (columnData[targetColumn] ?? []) : placement;
+				const order = placement === 'top' ? (columnData[laneKey(targetColumn)] ?? []) : placement;
 				const reorderUpdates = order
 					.filter((i: any) => !i[SHADOW_ITEM_MARKER_PROPERTY_NAME])
 					.map((it, index) => ({ slug: it.id, sort_order: index }));
@@ -674,7 +691,7 @@
 	// lanes. Scope is the item's own lane, matching the drag handler.
 	function reorderItem(columnValue: string, item: Item, dir: ReorderDirection) {
 		if (!onReorder) return;
-		const grp = (columnData[columnValue] ?? []).filter(
+		const grp = (columnData[laneKey(columnValue)] ?? []).filter(
 			(i: any) => !i[SHADOW_ITEM_MARKER_PROPERTY_NAME]
 		);
 		const updates = reorderGroup(grp, item.id, dir);
@@ -698,10 +715,10 @@
 		const target = adjacentColumn(renderColumns, columnValue, dir);
 		if (target === null) return;
 
-		const source = (columnData[columnValue] ?? []).filter((i) => i.id !== item.id);
-		const dest = [item, ...(columnData[target] ?? []).filter((i) => i.id !== item.id)];
-		columnData[columnValue] = source;
-		columnData[target] = dest;
+		const source = (columnData[laneKey(columnValue)] ?? []).filter((i) => i.id !== item.id);
+		const dest = [item, ...(columnData[laneKey(target)] ?? []).filter((i) => i.id !== item.id)];
+		columnData[laneKey(columnValue)] = source;
+		columnData[laneKey(target)] = dest;
 
 		commitColumnMove(item, target, 'top');
 	}
@@ -806,7 +823,7 @@
 {/each}
 <div class="board-view">
 	{#each renderColumns as colValue (colValue)}
-		{@const colItems = columnData[colValue] ?? []}
+		{@const colItems = columnData[laneKey(colValue)] ?? []}
 		{@const isUncategorized = colValue === UNCATEGORIZED}
 		{@const relLane = relationLaneByValue.get(colValue)}
 		{@const laneName = relLane ? (relLane.title ?? relLane.label) : formatLaneLabel(colValue)}
@@ -897,7 +914,7 @@
 									{members}
 									{tagSuggestions}
 									{sortMode}
-									laneSort={laneSortOverrides[colValue]}
+									laneSort={laneSortOverrides[laneKey(colValue)]}
 									onSetLaneSort={(m) => setLaneSort(colValue, m)}
 									onClose={closeMenu}
 									onAddItem={onCreateInColumn && !isUncategorized && !isRelationGroup && !groupingRefusal

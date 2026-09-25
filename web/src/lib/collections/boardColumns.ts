@@ -70,6 +70,14 @@ export function isUngrouped(value: unknown): boolean {
  * rather than being dropped. The returned map always contains the '' key
  * (possibly empty) — callers decide whether to render the lane based on its
  * length, so it only appears "if needed".
+ *
+ * A `Map`, not a plain object (BUG-3208). The keys are schema option VALUES,
+ * and a plain object keyed by them does not create a lane for `__proto__`:
+ * `result['__proto__'] = []` RE-PARENTS the object onto that array, the lane
+ * is missing from `Object.keys`, and a caller that puts the result in `$state`
+ * loses proxying for the WHOLE board, because Svelte proxies only objects whose
+ * prototype is Object.prototype. A caller that needs a `$state` record keys it
+ * by `laneKey(value)` instead.
  */
 export function bucketByColumn(
 	items: Item[],
@@ -83,21 +91,32 @@ export function bucketByColumn(
 	 * the field's own value, so every existing caller is unchanged.
 	 */
 	valueFor?: (item: Item) => string
-): Record<string, Item[]> {
-	const known = new Set(columns);
-	const result: Record<string, Item[]> = { [UNCATEGORIZED]: [] };
+): Map<string, Item[]> {
+	const result = new Map<string, Item[]>([[UNCATEGORIZED, []]]);
 	for (const col of columns) {
-		result[col] = [];
+		result.set(col, []);
 	}
 	for (const item of items) {
 		const value = valueFor ? valueFor(item) : laneValue(parseFields(item)[groupField]);
-		if (value && known.has(value)) {
-			result[value].push(item);
-		} else {
-			result[UNCATEGORIZED].push(item);
-		}
+		const lane = value ? result.get(value) : undefined;
+		(lane ?? result.get(UNCATEGORIZED)!).push(item);
 	}
 	return result;
+}
+
+/**
+ * The key a lane's value is stored under in a plain-object lane record.
+ *
+ * A prefix no Object.prototype member starts with, so every value is an OWN
+ * key: `__proto__` creates a lane instead of re-parenting the record, and
+ * `constructor` or `toString` read as absent instead of finding the inherited
+ * function (BUG-3208, the board's copy of BUG-3054). Not `Object.create(null)`:
+ * these records are `$state`, and Svelte proxies only objects whose prototype
+ * is Object.prototype, so a null-prototype record would silently lose its
+ * reactivity.
+ */
+export function laneKey(value: string): string {
+	return `lane:${value}`;
 }
 
 /**

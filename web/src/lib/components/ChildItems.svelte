@@ -13,6 +13,7 @@
 	import type { Item, Collection, PaneTarget } from '$lib/types';
 	import { parseFields, parseSchema, formatItemRef } from '$lib/types';
 	import { collectionsNotStaleFor, categoricalValueFor } from '$lib/collections/categoricalFieldValue';
+	import { laneKey } from '$lib/collections/boardColumns';
 	import { dndzone, TRIGGERS, SHADOW_ITEM_MARKER_PROPERTY_NAME } from 'svelte-dnd-action';
 	import type { DndEvent } from 'svelte-dnd-action';
 	import {
@@ -159,11 +160,6 @@
 	 * Svelte proxies only objects whose prototype is Object.prototype.
 	 */
 	let groupData: Record<string, Item[]> = $state({});
-
-	/** The `groupData` key for a status (BUG-3054; see `groupData`). */
-	function laneKey(status: string): string {
-		return `lane:${status}`;
-	}
 
 	$effect(() => {
 		const g = groups;

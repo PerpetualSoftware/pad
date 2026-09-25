@@ -119,7 +119,7 @@ describe('relationLaneValueFor + bucketByColumn', () => {
 
 		const buckets = bucketByColumn(rewritten, 'car', lanes.map((l) => l.value));
 
-		const placements = Object.entries(buckets).flatMap(([lane, list]) =>
+		const placements = [...buckets].flatMap(([lane, list]) =>
 			list.map((i) => ({ id: i.id, lane })),
 		);
 		// Exactly one placement per item, and no item lost.

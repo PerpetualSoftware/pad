@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import type { Item } from '$lib/types';
 import {
 	bucketByColumn,
+	laneKey,
 	formatLaneLabel,
 	isUngrouped,
 	laneValue,
@@ -23,24 +24,24 @@ describe('bucketByColumn', () => {
 			item('c', { status: 'open' })
 		];
 		const result = bucketByColumn(items, 'status', columns);
-		expect(result['open'].map((i) => i.id)).toEqual(['a', 'c']);
-		expect(result['done'].map((i) => i.id)).toEqual(['b']);
-		expect(result['in_progress']).toEqual([]);
+		expect(result.get('open')!.map((i) => i.id)).toEqual(['a', 'c']);
+		expect(result.get('done')!.map((i) => i.id)).toEqual(['b']);
+		expect(result.get('in_progress')!).toEqual([]);
 	});
 
 	it('always seeds every known column and the uncategorized bucket', () => {
 		const result = bucketByColumn([], 'status', columns);
-		expect(Object.keys(result).sort()).toEqual(
+		expect([...result.keys()].sort()).toEqual(
 			[UNCATEGORIZED, 'done', 'in_progress', 'open'].sort()
 		);
-		expect(result[UNCATEGORIZED]).toEqual([]);
+		expect(result.get(UNCATEGORIZED)!).toEqual([]);
 	});
 
 	it('collects items with an empty group value into UNCATEGORIZED', () => {
 		const items = [item('a', { status: '' }), item('b', { status: 'open' })];
 		const result = bucketByColumn(items, 'status', columns);
-		expect(result[UNCATEGORIZED].map((i) => i.id)).toEqual(['a']);
-		expect(result['open'].map((i) => i.id)).toEqual(['b']);
+		expect(result.get(UNCATEGORIZED)!.map((i) => i.id)).toEqual(['a']);
+		expect(result.get('open')!.map((i) => i.id)).toEqual(['b']);
 	});
 
 	it('treats a missing/null group value as uncategorized', () => {
@@ -50,20 +51,20 @@ describe('bucketByColumn', () => {
 			item('c', { priority: 'high' }) // unrelated field only
 		];
 		const result = bucketByColumn(items, 'status', columns);
-		expect(result[UNCATEGORIZED].map((i) => i.id)).toEqual(['a', 'b', 'c']);
+		expect(result.get(UNCATEGORIZED)!.map((i) => i.id)).toEqual(['a', 'b', 'c']);
 	});
 
 	it('collects items whose value is not a known option (stale/removed) into UNCATEGORIZED', () => {
 		const items = [item('a', { status: 'archived' }), item('b', { status: 'open' })];
 		const result = bucketByColumn(items, 'status', columns);
-		expect(result[UNCATEGORIZED].map((i) => i.id)).toEqual(['a']);
-		expect(result['open'].map((i) => i.id)).toEqual(['b']);
+		expect(result.get(UNCATEGORIZED)!.map((i) => i.id)).toEqual(['a']);
+		expect(result.get('open')!.map((i) => i.id)).toEqual(['b']);
 	});
 
 	it('leaves the uncategorized bucket empty when every item is categorized', () => {
 		const items = [item('a', { status: 'open' }), item('b', { status: 'done' })];
 		const result = bucketByColumn(items, 'status', columns);
-		expect(result[UNCATEGORIZED]).toEqual([]);
+		expect(result.get(UNCATEGORIZED)!).toEqual([]);
 	});
 
 	it('honours the chosen group field, not always status', () => {
@@ -72,8 +73,8 @@ describe('bucketByColumn', () => {
 			item('b', { status: 'open' }) // no impact → uncategorized under impact grouping
 		];
 		const result = bucketByColumn(items, 'impact', ['low', 'medium', 'high']);
-		expect(result['high'].map((i) => i.id)).toEqual(['a']);
-		expect(result[UNCATEGORIZED].map((i) => i.id)).toEqual(['b']);
+		expect(result.get('high')!.map((i) => i.id)).toEqual(['a']);
+		expect(result.get(UNCATEGORIZED)!.map((i) => i.id)).toEqual(['b']);
 	});
 });
 
@@ -162,12 +163,33 @@ describe('bucketByColumn with falsy-but-present values', () => {
 		// truthiness test, so '0' is truthy — but pin it, because this is the
 		// behaviour ListView now shares and a change here would move both.
 		const result = bucketByColumn([item('a', { score: 0 })], 'score', ['0']);
-		expect(result['0'].map((i) => i.id)).toEqual(['a']);
-		expect(result[UNCATEGORIZED]).toEqual([]);
+		expect(result.get('0')!.map((i) => i.id)).toEqual(['a']);
+		expect(result.get(UNCATEGORIZED)!).toEqual([]);
 	});
 
 	it('files a 0 with no matching column under Uncategorized, still visible', () => {
 		const result = bucketByColumn([item('a', { score: 0 })], 'score', columns);
-		expect(result[UNCATEGORIZED].map((i) => i.id)).toEqual(['a']);
+		expect(result.get(UNCATEGORIZED)!.map((i) => i.id)).toEqual(['a']);
 	});
+});
+
+describe('lanes named after an Object.prototype member (BUG-3208)', () => {
+	const NAMES = ['__proto__', 'constructor', 'toString', 'hasOwnProperty', 'valueOf'];
+
+	for (const name of NAMES) {
+		it(`bucketByColumn gives "${name}" its own lane`, () => {
+			const result = bucketByColumn([item('a', { stage: name })], 'stage', [name, 'open']);
+			expect([...result.keys()].sort()).toEqual([UNCATEGORIZED, name, 'open'].sort());
+			expect(result.get(name)!.map((i) => i.id)).toEqual(['a']);
+			expect(result.get(UNCATEGORIZED)).toEqual([]);
+		});
+
+		it(`laneKey makes "${name}" an own key of a plain record`, () => {
+			const record: Record<string, string[]> = {};
+			expect(record[laneKey(name)], 'nothing inherited under the key').toBeUndefined();
+			record[laneKey(name)] = ['x'];
+			expect(Object.getPrototypeOf(record), 'the record is not re-parented').toBe(Object.prototype);
+			expect(Object.hasOwn(record, laneKey(name))).toBe(true);
+		});
+	}
 });

@@ -4,7 +4,7 @@
 	import type { Item, Collection } from '$lib/types';
 	import { parseSchema, parseFields } from '$lib/types';
 	import { itemComparator, type SortMode } from '$lib/collections/itemSort';
-	import { formatLaneLabel, isUngrouped, laneValue } from '$lib/collections/boardColumns';
+	import { formatLaneLabel, isUngrouped, laneKey, laneValue } from '$lib/collections/boardColumns';
 	import { reorderGroup, disabledDirections, type ReorderDirection } from '$lib/collections/reorder';
 	import {
 		narrowRelationRow,
@@ -417,11 +417,6 @@
 		if (onReorder && reorderUpdates.length > 0) {
 			onReorder(reorderUpdates);
 		}
-	}
-
-	/** The `groupData` key for a lane value (BUG-3054; see `groupData`). */
-	function laneKey(value: string): string {
-		return `lane:${value}`;
 	}
 
 	function itemCount(groupItems: Item[]): number {
