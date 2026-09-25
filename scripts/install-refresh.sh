@@ -70,6 +70,21 @@ flag_value() {
 	return 1
 }
 
+# data_dir prints the directory the server and CLI keep their state in, by
+# config.Load's rule: PAD_DB_PATH's directory, else PAD_DATA_DIR, else ~/.pad
+# (PAD_DB_PATH is applied second there, so it wins). The refresh marker
+# (BUG-3215) must be found by every CLI on the box, so it lives here and not
+# anywhere the cwd or the linked workspace could change.
+data_dir() {
+	if [ -n "${PAD_DB_PATH:-}" ]; then
+		dirname "$PAD_DB_PATH"
+	elif [ -n "${PAD_DATA_DIR:-}" ]; then
+		printf '%s' "$PAD_DATA_DIR"
+	else
+		printf '%s' "$HOME/.pad"
+	fi
+}
+
 # config_value prints a top-level key from the pad config file, or nothing.
 #
 # The file is FLAT TOML (internal/config/config.go: Host, Port, Mode, ... are
@@ -82,9 +97,8 @@ flag_value() {
 # A stated boundary was the previous answer; it is a bad one when the cost of
 # closing it is a grep and the cost of leaving it is a permanent false alarm.
 config_value() {
-	local key="$1" path="$HOME/.pad/config.toml"
-	[ -n "${PAD_DATA_DIR:-}" ] && path="$PAD_DATA_DIR/config.toml"
-	[ -n "${PAD_DB_PATH:-}" ] && path="$(dirname "$PAD_DB_PATH")/config.toml"
+	local key="$1" path
+	path="$(data_dir)/config.toml"
 	[ -r "$path" ] || return 1
 	# Strip an inline comment before taking the value: `port = 8080 # dev`
 	# is valid TOML and the Go parser accepts it, so a regex that swallows
@@ -464,7 +478,17 @@ fi
 mkdir -p "$(dirname "$INSTALLED")"
 STAGED="$(mktemp "$(dirname "$INSTALLED")/.$(basename "$INSTALLED").XXXXXX")" ||
 	die "could not stage the install next to $INSTALLED"
-cleanup() { [ -n "${STAGED:-}" ] && rm -f "$STAGED"; }
+# The marker is removed only while it is still OURS: a second refresh that
+# started after this one owns the file now, and removing it would reopen the
+# window it is holding.
+cleanup() {
+	[ -n "${STAGED:-}" ] && rm -f "$STAGED"
+	if [ -n "${MARKER_WRITTEN:-}" ] &&
+		[ "$(sed -n 's/.*"pid": *\([0-9]*\).*/\1/p' "$REFRESH_MARKER" 2>/dev/null)" = "$$" ]; then
+		rm -f "$REFRESH_MARKER"
+	fi
+	return 0
+}
 trap cleanup EXIT
 
 cp -f "$BUILT" "$STAGED" || die "cp failed"
@@ -482,6 +506,70 @@ if [ -n "$EXPECT_COMMIT" ]; then
   Nothing was stopped or installed; re-run the build and install together."
 	fi
 fi
+
+# PORT resolution, in the server's own precedence order. Resolved before the
+# stop because the refresh marker names it (BUG-3215); the probe uses it too.
+#
+# Codex round 1: probing a fixed 7777 while faithfully restarting a server
+# that was started with `--port 8080` fails a HEALTHY restart, and does it
+# with this script's most confident message. The flag exists
+# (cmd_server.go: `--port`, default 7777) so the case is reachable, and the
+# whole point of this script is that the restart preserves the invocation —
+# a probe that ignores half of that invocation is checking the wrong server.
+configured_port="$(flag_value --port "${SERVER_ARGV[@]}" || true)"
+# Each source is accepted only if it is NUMERIC, mirroring the application:
+# config.go ignores a non-integer PAD_PORT and falls through to the next
+# source. Without that, a mistyped or inherited PAD_PORT is probed
+# literally and every refresh fails against a server that is running fine
+# (codex round 7).
+PORT=""
+for candidate in "$configured_port" "${PAD_PORT:-}" "$(config_value port || true)"; do
+	if numeric "$candidate"; then
+		PORT="$candidate"
+		break
+	fi
+	if [ -n "$candidate" ]; then
+		note "ignoring non-numeric port value \"$candidate\" (as the server does)"
+	fi
+done
+PORT="${PORT:-7777}"
+
+# --- 2b. Claim the stop->restart window (BUG-3215) ---------------------------
+#
+# Between the stop below and the restart answering, nothing serves this port,
+# and any pad CLI call in that window used to AUTO-START a server of its own:
+# the caller's binary (a worktree build, or the old inode before the rename),
+# from the caller's cwd, with default flags. It then held the port against
+# this script's restart. Measured on day 79: the lead's `pad item comment`
+# took the port during a bounce, 127.0.0.1:7777 went dark, and the script
+# exited 1.
+#
+# The marker hands the window to this script. EnsureServer
+# (internal/cli/refresh_marker.go) reads it and waits instead of spawning
+# while it is LIVE: the pid below alive AND the deadline not passed, for the
+# port it names. Written by rename, so a reader never sees half of it; removed
+# by the EXIT trap, on success and on every refusal after this point.
+#
+# The deadline is short on purpose: the 5s TERM wait, a 5s margin for the
+# install and the spawn, and one probe timeout (PAD_PROBE_TIMEOUT, 20s by
+# default), so 30s by default. A healthy bounce is over in seconds and the
+# waiting CLI returns the moment the server answers; the deadline only
+# decides how long a CLI waits on a refresh that is failing, after which it
+# errors naming this pid rather than spawning.
+REFRESH_MARKER="$(data_dir)/refresh.lock"
+MARKER_WRITTEN=""
+probe_budget="$PROBE_TIMEOUT"
+numeric "$probe_budget" || probe_budget=20
+mkdir -p "$(dirname "$REFRESH_MARKER")" || die "could not create $(dirname "$REFRESH_MARKER") for the refresh marker"
+marker_tmp="$(mktemp "$REFRESH_MARKER.XXXXXX")" || die "could not stage the refresh marker next to $REFRESH_MARKER"
+printf '{"pid": %d, "port": %d, "deadline": %d}\n' "$$" "$PORT" "$(($(date +%s) + 10 + probe_budget))" >"$marker_tmp" &&
+	mv -f "$marker_tmp" "$REFRESH_MARKER" ||
+	{
+		rm -f "$marker_tmp"
+		die "could not write the refresh marker $REFRESH_MARKER.
+  Nothing was stopped or installed."
+	}
+MARKER_WRITTEN=1
 
 # --- 3. Stop -----------------------------------------------------------------
 #
@@ -619,11 +707,41 @@ if [ -n "$SERVER_CWD" ]; then
 	cd "$SERVER_CWD" || die "could not enter $SERVER_CWD to restart the server there.
   The old server was signalled to stop and the new binary is installed; nothing was restarted. Check what is running on port $TARGET_PORT."
 fi
+# describe_pid prints "pid N (argv)" for a report. Best effort: a pid that has
+# gone by the time it is read is named alone.
+describe_pid() {
+	local args
+	args="$(ps -o args= -p "$1" 2>/dev/null || true)"
+	if [ -n "$args" ]; then
+		printf 'pid %s (%s)' "$1" "$args"
+	else
+		printf 'pid %s' "$1"
+	fi
+}
+
+# The old server is stopped, so anything holding the port NOW took it in the
+# window (BUG-3215): a CLI auto-start from a binary that predates the marker,
+# or a start by hand. The restart could not bind, so it is not spawned, and
+# the holder is named instead of left for the probe to misread.
+early=()
+while read -r lp; do
+	case "$lp" in HIDDEN | '') ;; *) early+=("$lp") ;; esac
+done < <(listener_pids "$PORT")
+if [ "${#early[@]}" -gt 0 ]; then
+	held_by=()
+	for lp in "${early[@]}"; do held_by+=("$(describe_pid "$lp")"); done
+	die "port $PORT was taken after the old server stopped and before the restart, by: ${held_by[*]}.
+  The binary is installed; nothing was restarted, because the restart could not bind.
+  Most likely a pad CLI call auto-started a server in the window. Stop that process and re-run the refresh.
+  Restart argv would have been: ${restart[*]}"
+fi
+
 if [ -z "${PAD_NO_SETSID:-}" ] && command -v setsid >/dev/null 2>&1; then
 	setsid nohup "${restart[@]}" >>"$HOME/.pad/server.log" 2>&1 </dev/null &
 else
 	nohup "${restart[@]}" >>"$HOME/.pad/server.log" 2>&1 </dev/null &
 fi
+RESTART_PID=$!
 disown 2>/dev/null || true
 
 # --- 6. Probe BOTH addresses before claiming anything -------------------------
@@ -634,31 +752,6 @@ disown 2>/dev/null || true
 # local CLI call and browser tab uses.
 configured_host="$(flag_value --host "${SERVER_ARGV[@]}" || true)"
 
-# PORT resolution, in the server's own precedence order.
-#
-# Codex round 1: probing a fixed 7777 while faithfully restarting a server
-# that was started with `--port 8080` fails a HEALTHY restart, and does it
-# with this script's most confident message. The flag exists
-# (cmd_server.go: `--port`, default 7777) so the case is reachable, and the
-# whole point of this script is that the restart preserves the invocation —
-# a probe that ignores half of that invocation is checking the wrong server.
-configured_port="$(flag_value --port "${SERVER_ARGV[@]}" || true)"
-# Each source is accepted only if it is NUMERIC, mirroring the application:
-# config.go ignores a non-integer PAD_PORT and falls through to the next
-# source. Without that, a mistyped or inherited PAD_PORT is probed
-# literally and every refresh fails against a server that is running fine
-# (codex round 7).
-PORT=""
-for candidate in "$configured_port" "${PAD_PORT:-}" "$(config_value port || true)"; do
-	if numeric "$candidate"; then
-		PORT="$candidate"
-		break
-	fi
-	if [ -n "$candidate" ]; then
-		note "ignoring non-numeric port value \"$candidate\" (as the server does)"
-	fi
-done
-PORT="${PORT:-7777}"
 
 # HOST likewise. When the argv carries no --host, fall back to PAD_HOST,
 # which config.go reads for exactly this purpose.
@@ -754,6 +847,42 @@ if [ "${probe_any:-0}" = "1" ] && [ "$answered" -gt 0 ]; then
 	probe_hosts=("localhost")
 fi
 
+# WHO answered (BUG-3215). A health probe answers for whatever holds the
+# address, so a server that took the port in the window passes it: on day 79
+# the stray bound the LAN address with default flags, and had it bound
+# loopback this script would have printed success over the wrong server. The
+# listener must be the restart this script spawned (or its direct child,
+# should `setsid` have had to fork). Checked on the failure path too, where a
+# named holder is the diagnosis a bare "did not answer" is not.
+owner_ok() {
+	[ "$1" = "$RESTART_PID" ] && return 0
+	[ "$(ps -o ppid= -p "$1" 2>/dev/null | tr -d ' ')" = "$RESTART_PID" ]
+}
+late=()
+late_hidden=""
+while read -r lp; do
+	case "$lp" in HIDDEN) late_hidden=1 ;; '') ;; *) late+=("$lp") ;; esac
+done < <(listener_pids "$PORT")
+foreign_late=()
+for lp in "${late[@]}"; do
+	owner_ok "$lp" || foreign_late+=("$(describe_pid "$lp")")
+done
+if [ "${#foreign_late[@]}" -gt 0 ]; then
+	die "port $PORT is held by ${foreign_late[*]}, not by this refresh's restart (pid $RESTART_PID).
+  The binary is installed, but the server answering is not the one this refresh started.
+  Most likely a pad CLI call auto-started a server in the window. Stop that process and re-run the refresh.
+  Restart argv was: ${restart[*]}"
+fi
+if [ -n "$late_hidden" ]; then
+	die "a listener on port $PORT cannot be attributed to a process here, so this refresh cannot confirm the restart (pid $RESTART_PID) is what answers.
+  The binary is installed. Check what holds port $PORT."
+fi
+if [ "${#late[@]}" -eq 0 ] && [ ${#failed[@]} -eq 0 ]; then
+	# Neither ss nor lsof can see listeners here: the probe passed, but
+	# whose server answered is unverified, and the success line says so.
+	unattributed=1
+fi
+
 if [ ${#failed[@]} -gt 0 ]; then
 	die "server did not answer on: ${failed[*]} (port $PORT, waited ${PROBE_TIMEOUT}s each).
   The binary is installed; the server is not serving those addresses.
@@ -761,3 +890,6 @@ if [ ${#failed[@]} -gt 0 ]; then
 fi
 
 note "server restarted and answering on: ${probe_hosts[*]} (port $PORT)"
+if [ -n "${unattributed:-}" ]; then
+	note "listener ownership NOT verified: neither ss nor lsof can see listeners here, so the process answering was not confirmed to be the restart (pid $RESTART_PID)"
+fi

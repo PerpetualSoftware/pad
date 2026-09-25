@@ -24,6 +24,26 @@ func EnsureServer(cfg *config.Config) error {
 		return nil
 	}
 
+	// A refresh may have stopped the server on purpose and be about to
+	// restart it (BUG-3215). Its window is its own: wait for it rather than
+	// spawn a server with this caller's binary, flags and cwd over it.
+	if err := awaitRefresh(cfg); err != nil {
+		return err
+	}
+	if isServerHealthy(cfg.Host, cfg.Port) {
+		return nil
+	}
+
+	return spawnServer(cfg)
+}
+
+// spawnServer starts `<this binary> server start` in the background and waits
+// for it to answer. A variable so the tests can count spawns: the defect
+// BUG-3215 guards against is a spawn, and only a counter observes one that
+// did not happen.
+var spawnServer = startBackgroundServer
+
+func startBackgroundServer(cfg *config.Config) error {
 	// Start server as background process
 	exePath, err := os.Executable()
 	if err != nil {
