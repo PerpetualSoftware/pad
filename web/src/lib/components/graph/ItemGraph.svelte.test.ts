@@ -156,8 +156,15 @@ async function mount() {
 	// dynamic `import('@dagrejs/dagre')`, which is IO-bound, so under full-suite
 	// load timers keep firing while it waits and 50 polls (~250 ms) ran out
 	// before the first node. A ready mount still returns on the first poll.
-	// 3 s, under vitest's 5 s test timeout, so a mount that never readies still
-	// reaches the loud assertions below instead of timing the test out.
+	// THE BUDGET IS 3 s, and its receipt (BUG-3203, measured 2026-09-24): a real
+	// mount was ready on the first poll every time, at 72-76 ms isolated and
+	// 150 ms worst under the full suite (the file's first test, cold import).
+	// A planted 400 ms async step in the chain, 2.7x that worst case, failed
+	// 8/8 under the old 50-poll budget and passes under this one. 3 s is 20x the
+	// worst measured mount. It also stays under vitest's 5 s test timeout, so a
+	// mount that never readies still reaches the loud assertions below instead
+	// of timing the test out. Raise it only with a new measurement that beats
+	// this one, not because a run was slow.
 	await vi.waitFor(
 		() => {
 			flushSync();
