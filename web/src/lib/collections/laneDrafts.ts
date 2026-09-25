@@ -17,7 +17,10 @@
 // reason.
 //
 // "Can Uncategorized receive it" is a property of the FIELD, not of the lane,
-// and it follows what the server stores (internal/items/validate.go):
+// and it follows what the server stores (internal/items/validate.go). Those
+// server facts are PINNED from the Go side by TestUncategorizedCreateFacts_BUG3043
+// (internal/items/lane_draft_bug3043_test.go), so a validator change that would
+// make this mirror wrong fails there rather than drifting in silence:
 //   * select / text-like: `''` is stored even on a REQUIRED field (required
 //     fires only on an absent or null key; `''` skips the options check), and
 //     `''` is exactly the Uncategorized lane.
