@@ -1538,9 +1538,19 @@ func TestPreServerFixtureAcceptsItsOwnStub(t *testing.T) {
 // check passes, because the untouched test runs fine wherever the
 // dependencies exist.
 func TestEveryScriptTestDeclaresItsDependencies(t *testing.T) {
-	src, err := os.ReadFile("install_refresh_test.go")
-	if err != nil {
-		t.Fatalf("read own source: %v", err)
+	// Every file of script tests, not only this one: a guard that reads one
+	// file exempts the next file anyone adds (BUG-3215 added one).
+	files, err := filepath.Glob("install_refresh*_test.go")
+	if err != nil || len(files) < 2 {
+		t.Fatalf("glob script test files: %v (found %v)", err, files)
+	}
+	var src []byte
+	for _, f := range files {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatalf("read %s: %v", f, err)
+		}
+		src = append(src, b...)
 	}
 	re := regexp.MustCompile(`func (TestInstallRefresh_\w+)\(t \*testing\.T\) \{\n(\t[^\n]*)`)
 	matches := re.FindAllStringSubmatch(string(src), -1)
