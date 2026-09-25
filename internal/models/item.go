@@ -1015,7 +1015,24 @@ func AppendImplementationNote(fieldsJSON string, note ItemImplementationNote) (s
 	notes := ExtractItemImplementationNotes(fieldsJSON)
 	notes = append(notes, note)
 	fieldsMap[ItemFieldImplementationNotes] = notes
-	return marshalItemFields(fieldsMap)
+	return marshalWithPersistedEntryIDs(fieldsMap)
+}
+
+// marshalWithPersistedEntryIDs marshals an append helper's result and gives
+// any sibling entry without a usable, unique id a persisted one (BUG-2788).
+// The helpers re-marshal the whole array, so this is where an idless entry
+// carried in from an import or a legacy row gets fixed on the item's next
+// append, rather than being re-written idless.
+func marshalWithPersistedEntryIDs(fieldsMap map[string]any) (string, error) {
+	out, err := marshalItemFields(fieldsMap)
+	if err != nil {
+		return "", err
+	}
+	fixed, _, err := EnsureStructuredEntryIDs(out)
+	if err != nil {
+		return "", err
+	}
+	return fixed, nil
 }
 
 func AppendDecisionLogEntry(fieldsJSON string, entry ItemDecisionLogEntry) (string, error) {
@@ -1030,7 +1047,7 @@ func AppendDecisionLogEntry(fieldsJSON string, entry ItemDecisionLogEntry) (stri
 	entries := ExtractItemDecisionLog(fieldsJSON)
 	entries = append(entries, entry)
 	fieldsMap[ItemFieldDecisionLog] = entries
-	return marshalItemFields(fieldsMap)
+	return marshalWithPersistedEntryIDs(fieldsMap)
 }
 
 func ApplyItemConventionMetadata(fieldsJSON string, metadata *ItemConventionMetadata) (string, error) {

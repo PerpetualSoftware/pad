@@ -851,6 +851,14 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 		}
 		claimedSlugs[itemSlug] = true
 		fieldsJSON := coerceJSONForImport(it.Fields, "{}", "items.fields", it.ID, ws.ID, true)
+		// Import is the one live door that brings in structured entries as
+		// written elsewhere, so it gives any without a usable, unique id a
+		// persisted one before the row exists (BUG-2788). Verbatim otherwise.
+		if fixed, changed, err := models.EnsureStructuredEntryIDs(fieldsJSON); err != nil {
+			return nil, fmt.Errorf("import item %s: persist structured entry ids: %w", it.ID, err)
+		} else if changed {
+			fieldsJSON = fixed
+		}
 		tagsJSON := coerceJSONForImport(it.Tags, "[]", "items.tags", it.ID, ws.ID, false)
 		coercedFields[it.ID] = fieldsJSON
 		coercedTags[it.ID] = tagsJSON
