@@ -48,25 +48,28 @@ type mcpAuditEntryDTO struct {
 	TokenKind    string `json:"token_kind"`    // "oauth" | "pat"
 	ConnectionID string `json:"connection_id"` // OAuth request_id, or PAT id
 	ToolName     string `json:"tool_name"`
-	ArgsHash     string `json:"args_hash,omitempty"`
-	ResultStatus string `json:"result_status"`
-	ErrorKind    string `json:"error_kind,omitempty"`
-	LatencyMs    int    `json:"latency_ms"`
-	RequestID    string `json:"request_id"`
+	// ToolNameSource: caller | sanitised | synthesised | unknown (BUG-2819).
+	ToolNameSource string `json:"tool_name_source"`
+	ArgsHash       string `json:"args_hash,omitempty"`
+	ResultStatus   string `json:"result_status"`
+	ErrorKind      string `json:"error_kind,omitempty"`
+	LatencyMs      int    `json:"latency_ms"`
+	RequestID      string `json:"request_id"`
 }
 
 func mcpAuditEntryToDTO(e models.MCPAuditEntry) mcpAuditEntryDTO {
 	dto := mcpAuditEntryDTO{
-		ID:           e.ID,
-		Timestamp:    e.Timestamp.UTC().Format(time.RFC3339),
-		UserID:       e.UserID,
-		TokenKind:    string(e.TokenKind),
-		ConnectionID: e.TokenRef,
-		ToolName:     e.ToolName,
-		ArgsHash:     e.ArgsHash,
-		ResultStatus: string(e.ResultStatus),
-		LatencyMs:    e.LatencyMs,
-		RequestID:    e.RequestID,
+		ID:             e.ID,
+		Timestamp:      e.Timestamp.UTC().Format(time.RFC3339),
+		UserID:         e.UserID,
+		TokenKind:      string(e.TokenKind),
+		ConnectionID:   e.TokenRef,
+		ToolName:       e.ToolName,
+		ToolNameSource: string(e.ToolNameSource),
+		ArgsHash:       e.ArgsHash,
+		ResultStatus:   string(e.ResultStatus),
+		LatencyMs:      e.LatencyMs,
+		RequestID:      e.RequestID,
 	}
 	if e.WorkspaceID != nil {
 		dto.WorkspaceID = *e.WorkspaceID

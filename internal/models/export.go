@@ -50,18 +50,22 @@ type ReminderExport struct {
 // kept here for forward compatibility (e.g. if a future format
 // version starts shipping pre-derived variants).
 type AttachmentManifestEntry struct {
-	ID          string `json:"id"`           // attachment UUID (the original)
-	Filename    string `json:"filename"`     // user-facing filename
-	MIME        string `json:"mime"`         // canonical MIME from upload time
-	SizeBytes   int64  `json:"size_bytes"`   // bytes on disk (matches the blob)
-	ContentHash string `json:"content_hash"` // sha256 hex, the dedupe key
-	Width       *int   `json:"width,omitempty"`
-	Height      *int   `json:"height,omitempty"`
-	ItemID      string `json:"item_id,omitempty"` // exporter's item UUID; remapped on import
-	ParentID    string `json:"parent_id,omitempty"`
-	Variant     string `json:"variant,omitempty"`
-	UploadedBy  string `json:"uploaded_by"`
-	CreatedAt   string `json:"created_at"`
+	ID       string `json:"id"`       // attachment UUID (the original)
+	Filename string `json:"filename"` // user-facing filename
+	// FilenameSource is the exporter's provenance for Filename (BUG-2819).
+	// Omitted by bundles that predate it. On import it is the BUNDLE's
+	// claim, not an observation by the importing server.
+	FilenameSource string `json:"filename_source,omitempty"`
+	MIME           string `json:"mime"`         // canonical MIME from upload time
+	SizeBytes      int64  `json:"size_bytes"`   // bytes on disk (matches the blob)
+	ContentHash    string `json:"content_hash"` // sha256 hex, the dedupe key
+	Width          *int   `json:"width,omitempty"`
+	Height         *int   `json:"height,omitempty"`
+	ItemID         string `json:"item_id,omitempty"` // exporter's item UUID; remapped on import
+	ParentID       string `json:"parent_id,omitempty"`
+	Variant        string `json:"variant,omitempty"`
+	UploadedBy     string `json:"uploaded_by"`
+	CreatedAt      string `json:"created_at"`
 }
 
 // AttachmentManifest is the top-level shape of attachments/manifest.json

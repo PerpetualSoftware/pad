@@ -275,6 +275,8 @@ func (s *Server) persistThumbnail(
 		Height:      &h,
 		ParentID:    &parentRef,
 		Variant:     &variantRef,
+		// The server built this name from the parent's (BUG-2819).
+		FilenameSource: string(attachments.FilenameDerived),
 	}
 	inserted, err := s.store.CreateAttachmentVariantIfParentLive(row)
 	if err != nil {

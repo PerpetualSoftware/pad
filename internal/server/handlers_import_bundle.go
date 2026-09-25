@@ -690,7 +690,8 @@ func (s *Server) rehydrateAttachment(
 	// the characters the download header drops still inside the extension the
 	// blocklist judged. It goes through the same normaliser as the upload door,
 	// BEFORE validation, so the name judged is the name stored and served.
-	filename := attachments.NormalizeFilename(entry.Filename)
+	filename, observed := attachments.NormalizeFilenameWithSource(entry.Filename)
+	filenameSource := importedFilenameSource(observed, entry.FilenameSource)
 	allowed, code, vErr := attachments.ValidateUpload(head, filename)
 	if vErr != nil {
 		return "", fmt.Errorf("mime validation (%s): %w", code, vErr)
@@ -750,6 +751,8 @@ func (s *Server) rehydrateAttachment(
 		Filename:    filename,
 		Width:       entry.Width,
 		Height:      entry.Height,
+
+		FilenameSource: string(filenameSource),
 	}
 	if err := s.store.CreateAttachment(att); err != nil {
 		return "", fmt.Errorf("create attachment row: %w", err)
@@ -821,4 +824,26 @@ func isSafeBundleEntryName(name string) bool {
 		}
 	}
 	return true
+}
+
+// importedFilenameSource decides filename_source for an attachment arriving in
+// a bundle (BUG-2819).
+//
+// When THIS server altered the name (normalised or substituted it), that is an
+// observation and it wins. When the name arrived storable and unchanged, the
+// bundle's own recorded source is used — which is the BUNDLE's CLAIM, not
+// anything this server saw. That is acceptable only because provenance carries
+// no authority: nothing matches on the filename and the attachment's identity
+// is its ID. If a consumer ever branches on filename_source for trust, this
+// has to be revisited. A bundle that predates the field, or carries a value
+// outside the enum, gets "unknown": the name's history was never recorded, and
+// claiming "caller" for it is exactly the ambiguity the field exists to end.
+func importedFilenameSource(observed attachments.FilenameSource, claimed string) attachments.FilenameSource {
+	if observed != attachments.FilenameFromCaller {
+		return observed
+	}
+	if attachments.ValidFilenameSource(claimed) {
+		return attachments.FilenameSource(claimed)
+	}
+	return attachments.FilenameSourceUnknown
 }

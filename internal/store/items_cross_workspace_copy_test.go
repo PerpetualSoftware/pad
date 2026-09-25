@@ -847,9 +847,9 @@ func TestCopyItemAcrossWorkspaces_AttachmentInsertFailureRollsBackTheItem(t *tes
 	id := newID()
 	if _, err := f.s.db.Exec(f.s.q(`
 		INSERT INTO attachments (`+attachmentColumns+`)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`), id, f.wsA.ID, nil, "uploader", "", newID(), "image/png", 10, "keyless.png",
-		nil, nil, nil, nil, now(), nil); err != nil {
+		nil, nil, nil, nil, now(), nil, "caller"); err != nil {
 		t.Fatalf("insert keyless attachment: %v", err)
 	}
 

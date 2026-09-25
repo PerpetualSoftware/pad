@@ -23,10 +23,17 @@ type Attachment struct {
 	MimeType    string  `json:"mime_type"`
 	SizeBytes   int64   `json:"size_bytes"`
 	Filename    string  `json:"filename"`
-	Width       *int    `json:"width,omitempty"`  // images only
-	Height      *int    `json:"height,omitempty"` // images only
-	ParentID    *string `json:"parent_id,omitempty"`
-	Variant     *string `json:"variant,omitempty"` // "original" | "thumb-sm" | "thumb-md"
+	// FilenameSource says where Filename came from: caller, normalised,
+	// substituted, derived, or unknown for a row written before it was
+	// recorded (BUG-2819; values in attachments.FilenameSource). A bundle
+	// import stores the BUNDLE's claim, not an observation by this server,
+	// which is acceptable only because nothing branches on it for trust:
+	// the attachment's identity is its ID.
+	FilenameSource string  `json:"filename_source"`
+	Width          *int    `json:"width,omitempty"`  // images only
+	Height         *int    `json:"height,omitempty"` // images only
+	ParentID       *string `json:"parent_id,omitempty"`
+	Variant        *string `json:"variant,omitempty"` // "original" | "thumb-sm" | "thumb-md"
 
 	CreatedAt time.Time  `json:"created_at"`
 	DeletedAt *time.Time `json:"deleted_at,omitempty"`

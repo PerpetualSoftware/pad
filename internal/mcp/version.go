@@ -1017,6 +1017,24 @@ const CmdhelpVersion = "0.1"
 //     browser tab and BUG-3000 carries the open half — so no surface
 //     here states a duration.
 //
+//     0.53 — BUG-2819. ADDITIVE: every attachment row returned by
+//     `pad_attachment.action=list` gains `filename_source` (caller |
+//     normalised | substituted | derived | unknown), on BOTH transports:
+//     remote passes the list handler's JSON through, and stdio's
+//     `pad attachment list --format json` carries each row as raw JSON. The
+//     stored filename alone cannot say whether the caller sent it or the
+//     server substituted it — a file can really be named "upload.bin" — and
+//     this is the field that can. Rows written before it read `unknown`,
+//     never `caller`; a bundle import stores the bundle's claim when the
+//     name arrives unchanged. Nothing moved, retyped or disappeared, so a
+//     consumer that ignores the key is unaffected: the 0.28 / 0.13
+//     disposition (lead-ruled on BUG-2819's trail: bump if and only if the
+//     field reaches a response, which it does). `pad_attachment.action=show`
+//     synthesises its shape from HEAD headers and does NOT carry it. The
+//     sibling `mcp_audit_log.tool_name_source` reaches no catalog action
+//     (the catalog's `audit-log` is the workspace activity log), so it owes
+//     nothing here.
+//
 //     0.52 — BUG-2367 item 4. `pad_item.action=move` (and bulk move, the
 //     cross-workspace copy and its preflight) REFUSES a move that would
 //     change the item between open, done and abandoned unless the caller
@@ -1578,7 +1596,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.52"
+const ToolSurfaceVersion = "0.53"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PerpetualSoftware/pad/internal/attachments"
 	"github.com/PerpetualSoftware/pad/internal/kernelevents"
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -33,7 +34,23 @@ type WorkspaceStorageInfo struct {
 // attachmentColumns is the canonical column list. Keep the column names in
 // alignment with migrations/047_attachments.sql + pgmigrations/026_attachments.sql.
 const attachmentColumns = `id, workspace_id, item_id, uploaded_by, storage_key, content_hash,
-	mime_type, size_bytes, filename, width, height, parent_id, variant, created_at, deleted_at`
+	mime_type, size_bytes, filename, width, height, parent_id, variant, created_at, deleted_at,
+	filename_source`
+
+// attachmentFilenameSource is the filename_source an insert writes (BUG-2819).
+// An unset value is stored as "unknown" — the honest answer for a row whose
+// writer did not classify its name — and never as "caller". A value outside
+// the enum is refused here rather than by the CHECK constraint, so the error
+// names the field instead of arriving as a driver constraint failure.
+func attachmentFilenameSource(a *models.Attachment) (string, error) {
+	if a.FilenameSource == "" {
+		a.FilenameSource = string(attachments.FilenameSourceUnknown)
+	}
+	if !attachments.ValidFilenameSource(a.FilenameSource) {
+		return "", fmt.Errorf("create attachment: invalid filename_source %q", a.FilenameSource)
+	}
+	return a.FilenameSource, nil
+}
 
 // scanAttachment scans a single row into a models.Attachment, handling
 // nullables via *string / *int.
@@ -49,6 +66,7 @@ func scanAttachment(row interface {
 		&a.ID, &a.WorkspaceID, &itemID, &a.UploadedBy, &a.StorageKey, &a.ContentHash,
 		&a.MimeType, &a.SizeBytes, &a.Filename, &width, &height,
 		&parentID, &variant, &createdAt, &deletedAt,
+		&a.FilenameSource,
 	)
 	if err != nil {
 		return nil, err
@@ -217,13 +235,17 @@ func (s *Store) createAttachmentOn(ex sqlExecer, a *models.Attachment) error {
 		ts = a.CreatedAt.UTC().Format("2006-01-02T15:04:05Z07:00")
 	}
 
-	_, err := ex.Exec(s.q(`
+	source, err := attachmentFilenameSource(a)
+	if err != nil {
+		return err
+	}
+	_, err = ex.Exec(s.q(`
 		INSERT INTO attachments (`+attachmentColumns+`)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`),
 		a.ID, a.WorkspaceID, a.ItemID, a.UploadedBy, a.StorageKey, a.ContentHash,
 		a.MimeType, a.SizeBytes, a.Filename, a.Width, a.Height,
-		a.ParentID, a.Variant, ts, nil,
+		a.ParentID, a.Variant, ts, nil, source,
 	)
 	if err != nil {
 		return fmt.Errorf("create attachment: %w", err)
@@ -616,7 +638,8 @@ func (s *Store) WorkspaceAttachments(workspaceID string, filters AttachmentListF
 	// `a.` so SQLite doesn't choke on the ambiguous `id` shared with
 	// the joined items table.
 	const aliasedAttachmentColumns = `a.id, a.workspace_id, a.item_id, a.uploaded_by, a.storage_key, a.content_hash,
-		a.mime_type, a.size_bytes, a.filename, a.width, a.height, a.parent_id, a.variant, a.created_at, a.deleted_at`
+		a.mime_type, a.size_bytes, a.filename, a.width, a.height, a.parent_id, a.variant, a.created_at, a.deleted_at,
+		a.filename_source`
 
 	// Same rationale as the count query above: include soft-deleted
 	// parent items so the row is still visible for users who would
@@ -671,6 +694,7 @@ func (s *Store) WorkspaceAttachments(workspaceID string, filters AttachmentListF
 			&a.ID, &a.WorkspaceID, &itemID, &a.UploadedBy, &a.StorageKey, &a.ContentHash,
 			&a.MimeType, &a.SizeBytes, &a.Filename, &width, &height,
 			&parentID, &variant, &createdAt, &deletedAt,
+			&a.FilenameSource,
 			&itemTitle, &itemSlug, &itemDeletedAt,
 			&collSlug, &collName,
 		); err != nil {
@@ -1414,12 +1438,16 @@ func (s *Store) CreateAttachmentVariantIfParentLive(a *models.Attachment) (bool,
 		return false, fmt.Errorf("lock variant parent: %w", err)
 	}
 
+	source, err := attachmentFilenameSource(a)
+	if err != nil {
+		return false, err
+	}
 	if _, err := tx.Exec(s.q(`
 		INSERT INTO attachments (`+attachmentColumns+`)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`), a.ID, a.WorkspaceID, a.ItemID, a.UploadedBy, a.StorageKey, a.ContentHash,
 		a.MimeType, a.SizeBytes, a.Filename, a.Width, a.Height, a.ParentID, a.Variant,
-		ts, nil); err != nil {
+		ts, nil, source); err != nil {
 		return false, fmt.Errorf("create variant row: %w", err)
 	}
 	if err := tx.Commit(); err != nil {

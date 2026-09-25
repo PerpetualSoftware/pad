@@ -320,6 +320,8 @@ func (s *Server) handleTransformAttachment(w http.ResponseWriter, r *http.Reques
 		Filename:    transformedFilename(parent.Filename, req.Operation, outFormat),
 		Width:       &tw,
 		Height:      &th,
+		// The server built this name from the parent's (BUG-2819).
+		FilenameSource: string(attachments.FilenameDerived),
 	}
 	// CreateAttachmentForLiveItem, not CreateAttachment (PLAN-2391 DR-14).
 	// The parent-item check above is point-in-time: item deletion commits in
