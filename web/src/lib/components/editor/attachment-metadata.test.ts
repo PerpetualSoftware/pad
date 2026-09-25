@@ -54,7 +54,9 @@ describe('fetchAttachmentMetadata — result arms', () => {
 		// HEAD, not GET — a GET would pull the whole blob across the wire.
 		expect(fetchMock).toHaveBeenCalledWith(url(uuid), {
 			method: 'HEAD',
-			credentials: 'same-origin'
+			credentials: 'same-origin',
+			// Every HEAD is bounded (BUG-3211): a hung one used to be cached for ever.
+			signal: expect.any(AbortSignal)
 		});
 	});
 
@@ -281,6 +283,7 @@ describe('the no-store cache option reaches the dispatched request (PLAN-2392 3c
 			method: 'HEAD',
 			credentials: 'same-origin',
 			cache: 'no-store',
+			signal: expect.any(AbortSignal),
 		});
 	});
 
@@ -294,6 +297,7 @@ describe('the no-store cache option reaches the dispatched request (PLAN-2392 3c
 			method: 'HEAD',
 			credentials: 'same-origin',
 			cache: 'no-store',
+			signal: expect.any(AbortSignal),
 		});
 	});
 
@@ -316,6 +320,7 @@ describe('the no-store cache option reaches the dispatched request (PLAN-2392 3c
 			method: 'HEAD',
 			credentials: 'same-origin',
 			cache: 'no-store',
+			signal: expect.any(AbortSignal),
 		});
 	});
 

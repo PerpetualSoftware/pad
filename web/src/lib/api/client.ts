@@ -656,6 +656,100 @@ const AUTH_FORM_401_PATHS = new Set(['/auth/login', '/auth/register', '/auth/2fa
  */
 const CREDENTIAL_RECONFIRM_401_PATHS = new Set(['/auth/delete-account']);
 
+/**
+ * The longest one `request()` attempt may take, headers and body, before it is
+ * abandoned with `request_timeout` (BUG-3211). Without it a request the server
+ * accepted but never answered (a stalled proxy, a half-open connection after a
+ * laptop sleep, a wedged handler) was awaited for as long as the browser cared
+ * to, and every gate held across the await held with it: the sync lock, the
+ * local index's dedup promises, the pane's save indicator.
+ *
+ * RECEIPT: the full e2e suite at 8 workers against a local server (SQLite,
+ * rate limits off; BUG-3211 checkpoint 2): 50,936 requests over 89 routes, and
+ * not one ordinary request/response route above 2.5s. The slowest were login
+ * (52 of 263 over 1s, password hashing under load) and item GET / create. The
+ * collab WebSocket and the SSE stream are long-lived by design and do not go
+ * through here.
+ *
+ * NOT MEASURED, and the reason the value sits 12x above that tail rather than
+ * near it: Postgres, large workspaces (a bootstrap or items-changes after a
+ * long absence), and slow networks. A false timeout on a WRITE is the costly
+ * direction — the server may finish it anyway — so this errs long.
+ */
+export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+
+/**
+ * `attachments.transform`'s bound: server-side image decode and re-encode, not
+ * covered by the receipt above, so given 4x the default rather than a guess
+ * fitted to nothing.
+ */
+export const TRANSFORM_TIMEOUT_MS = 120_000;
+let requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS;
+
+/** Test seam: shorten the request timeout; call with no argument to restore. */
+export function setRequestTimeoutForTests(ms?: number): void {
+	requestTimeoutMs = ms ?? DEFAULT_REQUEST_TIMEOUT_MS;
+}
+
+/**
+ * An abort signal that fires after `ms`, and also when the caller's own signal
+ * does. Linked by hand rather than with `AbortSignal.any`, which needs Safari
+ * 17.4 / Chrome 116. `timedOut()` tells the two apart: a caller's abort stays
+ * the caller's (an AbortError it asked for), a timeout becomes `request_timeout`.
+ */
+function requestDeadline(ms: number, callerSignal?: AbortSignal | null) {
+	const controller = new AbortController();
+	let timedOut = false;
+	const onCallerAbort = () => controller.abort(callerSignal?.reason);
+	if (callerSignal?.aborted) controller.abort(callerSignal.reason);
+	else callerSignal?.addEventListener('abort', onCallerAbort, { once: true });
+	const timer = setTimeout(() => {
+		timedOut = true;
+		controller.abort(new DOMException('request timed out', 'TimeoutError'));
+	}, ms);
+	return {
+		signal: controller.signal,
+		timedOut: () => timedOut,
+		clear: () => {
+			clearTimeout(timer);
+			callerSignal?.removeEventListener('abort', onCallerAbort);
+		},
+	};
+}
+
+/**
+ * The error a timed-out request throws. A WRITE's message says it may have
+ * landed: aborting the request does not stop the server, so "failed" would be
+ * a claim nobody can make, and a user who re-sends on the strength of it can
+ * duplicate a create. Never retried automatically, for the same reason.
+ */
+export function requestTimeoutError(isIdempotent: boolean): PadApiError {
+	return new PadApiError({
+		code: 'request_timeout',
+		message: isIdempotent
+			? 'The server did not respond in time. Please try again.'
+			: 'The server did not respond in time. Your change may still have been saved — check before trying again.',
+	});
+}
+
+/**
+ * A plain fetch-and-parse under `request()`'s deadline, for the few direct
+ * fetches that sit under a gate or a dedup promise (BUG-3211). GET-shaped:
+ * a timeout reads as the idempotent `request_timeout`.
+ */
+async function fetchJsonWithDeadline<T>(url: string, init?: RequestInit): Promise<T> {
+	const deadline = requestDeadline(requestTimeoutMs, init?.signal);
+	try {
+		const resp = await fetch(url, { ...init, signal: deadline.signal });
+		return (await resp.json()) as T;
+	} catch (err) {
+		if (deadline.timedOut()) throw requestTimeoutError(true);
+		throw err;
+	} finally {
+		deadline.clear();
+	}
+}
+
 async function request<T>(
 	path: string,
 	options?: RequestInit,
@@ -701,10 +795,39 @@ async function request<T>(
 		}
 	}
 
+	// Armed per ATTEMPT and only now, so the client's own deliberate waits —
+	// the cooldown above, a 429 retry's sleep below — never count against it.
+	const deadline = requestDeadline(requestTimeoutMs, options?.signal);
+	try {
+		return await requestAttempt<T>(path, options, rateLimitAttempt, headers, method, isIdempotent, issuedAs, deadline);
+	} catch (err) {
+		if (deadline.timedOut()) throw requestTimeoutError(isIdempotent);
+		throw err;
+	} finally {
+		deadline.clear();
+	}
+}
+
+/**
+ * One attempt of `request()`, from the fetch to the parsed body, under the
+ * attempt's deadline. Every body read is awaited HERE, so a body that stalls
+ * after its headers is covered too.
+ */
+async function requestAttempt<T>(
+	path: string,
+	options: RequestInit | undefined,
+	rateLimitAttempt: number,
+	headers: Record<string, string>,
+	method: string | undefined,
+	isIdempotent: boolean,
+	issuedAs: ReturnType<typeof currentIdentity>,
+	deadline: ReturnType<typeof requestDeadline>,
+): Promise<T> {
 	const resp = await fetch(BASE + path, {
 		headers,
 		credentials: 'same-origin',
-		...options
+		...options,
+		signal: deadline.signal,
 	});
 	// Every response, error statuses included, is a reading of the server's
 	// clock; the sync cursor is stamped from these, never from Date.now()
@@ -823,6 +946,8 @@ async function request<T>(
 				? rateLimitRetryDelayMs(parseRetryAfterRawMs(retryAfterHeader), rateLimitAttempt)
 				: null;
 		if (retryDelayMs !== null) {
+			// This attempt is over; the retry arms its own deadline.
+			deadline.clear();
 			await sleep(retryDelayMs);
 			return request<T>(path, options, rateLimitAttempt + 1);
 		}
@@ -849,7 +974,7 @@ async function request<T>(
 		throw new Error(`API error: ${resp.status}`);
 	}
 	if (resp.status === 204) return undefined as T;
-	return resp.json();
+	return (await resp.json()) as T;
 }
 
 /**
@@ -2360,7 +2485,12 @@ export const api = {
 	// ── Auth ──────────────────────────────────────────────────────────────────
 
 	auth: {
-		session: (): Promise<AuthSession> => fetch(BASE + '/auth/session', { credentials: 'same-origin' }).then((r) => r.json()),
+		// A direct fetch (its body is read as-is, with none of request()'s status
+		// handling), but under the same deadline: `authStore.load()` dedups
+		// every caller onto this one promise, so a session request the server
+		// never answered left the app's auth load pending for good (BUG-3211).
+		session: (): Promise<AuthSession> =>
+			fetchJsonWithDeadline<AuthSession>(BASE + '/auth/session', { credentials: 'same-origin' }),
 		login: (email: string, password: string) =>
 			request<LoginResponse>('/auth/login', {
 				method: 'POST',
@@ -2635,27 +2765,40 @@ export const api = {
 			const headers: Record<string, string> = { 'Content-Type': 'application/json' };
 			const csrf = getCSRFToken();
 			if (csrf) headers['X-CSRF-Token'] = csrf;
-			const resp = await fetch(
-				`${BASE}/workspaces/${workspaceSlug}/attachments/${attachmentId}/transform`,
-				{
-					method: 'POST',
-					headers,
-					credentials: 'same-origin',
-					body: JSON.stringify(payload)
+			// Its own, longer bound (BUG-3211): the server decodes and re-encodes
+			// the image, which the request-timeout receipt never measured. A
+			// timeout here is a WRITE's: the new attachment may still have been
+			// created.
+			const deadline = requestDeadline(TRANSFORM_TIMEOUT_MS);
+			try {
+				const resp = await fetch(
+					`${BASE}/workspaces/${workspaceSlug}/attachments/${attachmentId}/transform`,
+					{
+						method: 'POST',
+						headers,
+						credentials: 'same-origin',
+						body: JSON.stringify(payload),
+						signal: deadline.signal
+					}
+				);
+				if (resp.status === 401) {
+					if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
+						window.location.href = '/login';
+					}
+					throw new PadApiError({ code: 'unauthorized', message: 'Authentication required' });
 				}
-			);
-			if (resp.status === 401) {
-				if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
-					window.location.href = '/login';
+				if (!resp.ok) {
+					const body = await resp.json().catch(() => null);
+					if (body?.error) throw new PadApiError(body.error);
+					throw new Error(`transform failed: ${resp.status}`);
 				}
-				throw new PadApiError({ code: 'unauthorized', message: 'Authentication required' });
+				return (await resp.json()) as AttachmentTransformResult;
+			} catch (err) {
+				if (deadline.timedOut()) throw requestTimeoutError(false);
+				throw err;
+			} finally {
+				deadline.clear();
 			}
-			if (!resp.ok) {
-				const body = await resp.json().catch(() => null);
-				if (body?.error) throw new PadApiError(body.error);
-				throw new Error(`transform failed: ${resp.status}`);
-			}
-			return (await resp.json()) as AttachmentTransformResult;
 		},
 
 		/**
@@ -2939,21 +3082,33 @@ export const api = {
 		 * convention) rather than pad's nested `{ error: { code, message } }` from
 		 * TASK-788. Parse accordingly below.
 		 */
-		createCheckoutSession: (): Promise<{ url: string }> =>
-			fetch('/billing/checkout', {
-				method: 'POST',
-				credentials: 'same-origin',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({})
-			}).then(async (r) => {
+		createCheckoutSession: async (): Promise<{ url: string }> => {
+			// Under the request deadline (BUG-3211): the billing page holds
+			// `checkoutInProgress` across this await, and its Upgrade button stays
+			// disabled on "Redirecting…" until it settles.
+			const deadline = requestDeadline(requestTimeoutMs);
+			try {
+				const r = await fetch('/billing/checkout', {
+					method: 'POST',
+					credentials: 'same-origin',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({}),
+					signal: deadline.signal
+				});
 				if (!r.ok) {
 					const body = await r.json().catch(() => ({}));
 					throw new Error(
 						(body as { error?: string }).error || `Checkout request failed (${r.status})`
 					);
 				}
-				return r.json() as Promise<{ url: string }>;
-			})
+				return (await r.json()) as { url: string };
+			} catch (err) {
+				if (deadline.timedOut()) throw requestTimeoutError(false);
+				throw err;
+			} finally {
+				deadline.clear();
+			}
+		}
 	}
 };
 
