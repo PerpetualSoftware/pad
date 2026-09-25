@@ -34,8 +34,7 @@ func TestEnsureStructuredEntryIDs(t *testing.T) {
 		`{"summary":"no id"},` + // absent → minted
 		`{"id":"keep","summary":"a","extra":"kept"},` + // kept, unknown key survives
 		`{"id":"keep","summary":"dup"},` + // duplicate → minted; FIRST keeps
-		`{"id":"` + u + `","summary":"uuid"},` + // diverted, usable → kept
-		`"not-an-object"` + // left alone
+		`{"id":"` + u + `","summary":"uuid","html":"a<b>&c"}` + // diverted, usable → kept; HTML not escaped
 		`],"decision_log":[` +
 		`{"id":"keep","decision":"cross-kind dup of a kept raw id"},` + // claimed by a note → minted
 		`{"id":"` + u + `","decision":"same uuid, other kind"},` + // derives decision:<u> → distinct → kept
@@ -56,7 +55,7 @@ func TestEnsureStructuredEntryIDs(t *testing.T) {
 	if !minted(notes[0], "note") {
 		t.Errorf("absent id: got %v, want a minted note id", notes[0])
 	}
-	if notes[1] != "keep" || notes[3] != u || notes[4] != "not-an-object" {
+	if notes[1] != "keep" || notes[3] != u {
 		t.Errorf("kept entries changed: %v", notes)
 	}
 	if !minted(notes[2], "note") {
@@ -66,7 +65,7 @@ func TestEnsureStructuredEntryIDs(t *testing.T) {
 		t.Errorf("decisions = %v", decs)
 	}
 	// Unknown keys and number literals survive the rewrite byte for byte.
-	for _, want := range []string{`"extra":"kept"`, `12345678901234567890`, `"f":1.0`} {
+	for _, want := range []string{`"extra":"kept"`, `12345678901234567890`, `"f":1.0`, `"html":"a<b>&c"`} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lost %s: %s", want, out)
 		}
@@ -79,7 +78,7 @@ func TestEnsureStructuredEntryIDs(t *testing.T) {
 		prefix := structuredEntryPrefixes[i]
 		for _, v := range list {
 			s, ok := v.(string)
-			if !ok || s == "not-an-object" {
+			if !ok {
 				continue
 			}
 			k, usable := StructuredEntryIDKey(s, prefix)
@@ -127,5 +126,28 @@ func TestAppendRepairsIdlessSiblings(t *testing.T) {
 	}
 	if s, _ := entryIDs(t, outD, ItemFieldDecisionLog)[0].(string); s == "" {
 		t.Errorf("the idless legacy decision is still idless after an append: %s", outD)
+	}
+}
+
+// Round-1 review (BUG-2788): the repair touches only what the timeline can
+// read, and only a blob that is exactly one JSON value.
+func TestEnsureStructuredEntryIDsSkipsWhatTheTimelineCannotRead(t *testing.T) {
+	for name, in := range map[string]string{
+		"non-object element":   `{"implementation_notes":[{"summary":"idless"},"not-an-object"]}`,
+		"non-string id":        `{"implementation_notes":[{"summary":"idless"},{"id":7,"summary":"numeric"}]}`,
+		"not an array":         `{"implementation_notes":{"summary":"idless"}}`,
+		"trailing bytes":       `{"implementation_notes":[{"summary":"idless"}]} trailing`,
+		"top-level not object": `[{"summary":"idless"}]`,
+	} {
+		out, changed, err := EnsureStructuredEntryIDs(in)
+		if err != nil || changed || out != in {
+			t.Errorf("%s: changed=%v err=%v out=%q, want the input untouched", name, changed, err, out)
+		}
+		// Control: the timeline really does show nothing for the kind.
+		if name != "trailing bytes" && name != "top-level not object" {
+			if got := ExtractItemImplementationNotes(in); len(got) != 0 {
+				t.Errorf("%s: control failed, the timeline extraction reads %d notes", name, len(got))
+			}
+		}
 	}
 }

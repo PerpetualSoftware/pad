@@ -45,8 +45,11 @@ type BackfillStructuredEntryIDsResult struct {
 // If a client that sends reserved keys in a full `fields` update is ever
 // added, this premise has to be revisited before this runs silently again.
 //
-// Each UPDATE is conditional on the row's seq as read, so a concurrent write
-// is never overwritten; that row is picked up by the next boot. Idempotent: a
+// Each UPDATE is conditional on BOTH the row's seq and its fields text as
+// read, so a concurrent write is never overwritten, including one that
+// changed fields without moving seq; that row is picked up by the next boot.
+// A repaired blob changes in its ids and in formatting only (key order and
+// spacing may differ from a SQLite row's stored text); every value is equal. Idempotent: a
 // repaired blob needs nothing, so a second run rewrites no row. It selects by
 // content on every boot, like the bidi filename backfill.
 func (s *Store) BackfillStructuredEntryIDs() (*BackfillStructuredEntryIDsResult, error) {
@@ -98,7 +101,7 @@ func (s *Store) BackfillStructuredEntryIDs() (*BackfillStructuredEntryIDsResult,
 			if !changed {
 				continue
 			}
-			result, err := s.db.Exec(s.q(`UPDATE items SET fields = ? WHERE id = ? AND seq = ?`), fixed, r.id, r.seq)
+			result, err := s.db.Exec(s.q(`UPDATE items SET fields = ? WHERE id = ? AND seq = ? AND `+fieldsExpr+` = ?`), fixed, r.id, r.seq, r.fields)
 			if err != nil {
 				return res, fmt.Errorf("backfill structured entry ids: update %s: %w", r.id, err)
 			}

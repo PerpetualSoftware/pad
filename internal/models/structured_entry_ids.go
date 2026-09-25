@@ -1,7 +1,10 @@
 package models
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
+	"io"
 	"strings"
 	"unicode/utf8"
 
@@ -95,9 +98,9 @@ func hasStructuredEntryPrefix(raw string) bool {
 // key, so an entry could be skipped or shown twice across a page boundary.
 // A persisted id makes an entry's identity independent of its siblings.
 //
-// It edits the decoded JSON directly, so unknown keys inside an entry, and
-// entries that are not objects, survive untouched. It is idempotent: a second
-// pass finds nothing to change. changed is false, and fixed equals the input,
+// It edits the decoded JSON directly, so unknown keys inside an entry survive
+// untouched, and it only touches arrays the timeline can read (see
+// timelineCanRead). It is idempotent: a second pass finds nothing to change. changed is false, and fixed equals the input,
 // when nothing needed an id.
 func EnsureStructuredEntryIDs(fieldsJSON string) (fixed string, changed bool, err error) {
 	// Decoded with UseNumber: the backfill rewrites blobs nothing else is
@@ -113,11 +116,25 @@ func EnsureStructuredEntryIDs(fieldsJSON string) (fixed string, changed bool, er
 	if dec.Decode(&fieldsMap) != nil || fieldsMap == nil {
 		return fieldsJSON, false, nil
 	}
+	// Exactly ONE JSON value, or leave the blob alone: a single Decode stops
+	// after the first value, so trailing bytes would otherwise be dropped,
+	// turning a blob every other reader rejects into a valid one silently.
+	if _, err := dec.Token(); err != io.EOF {
+		return fieldsJSON, false, nil
+	}
+	// Only kinds the TIMELINE can read. It extracts each array into a typed
+	// slice, and an array with a non-object element or a non-string id fails
+	// that whole decode and shows nothing for the kind. Repairing inside such
+	// an array would stabilise ids nothing displays, and replacing a
+	// non-string id would change what the timeline shows at all. So the
+	// repaired population is exactly the one the timeline numbers by position.
 	arrays := map[string][]any{}
 	for _, key := range []string{ItemFieldImplementationNotes, ItemFieldDecisionLog} {
-		if list, isList := fieldsMap[key].([]any); isList {
-			arrays[key] = list
+		list, isList := fieldsMap[key].([]any)
+		if !isList || !timelineCanRead(key, list) {
+			continue
 		}
+		arrays[key] = list
 	}
 	if len(arrays) == 0 {
 		return fieldsJSON, false, nil
@@ -149,9 +166,29 @@ func EnsureStructuredEntryIDs(fieldsJSON string) (fixed string, changed bool, er
 	if !changed {
 		return fieldsJSON, false, nil
 	}
-	out, err := marshalItemFields(fieldsMap)
-	if err != nil {
-		return fieldsJSON, false, err
+	// Without HTML escaping, so a repaired blob differs from the stored one
+	// in the ids and in formatting only; values, including every string, are
+	// unchanged (json.Marshal would rewrite <, > and & as \u escapes).
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(fieldsMap); err != nil {
+		return fieldsJSON, false, fmt.Errorf("marshal item fields: %w", err)
 	}
-	return out, true, nil
+	return strings.TrimSuffix(buf.String(), "\n"), true, nil
+}
+
+// timelineCanRead reports whether the timeline's typed extraction accepts
+// this array, i.e. whether its entries are displayed at all.
+func timelineCanRead(key string, list []any) bool {
+	raw, err := json.Marshal(list)
+	if err != nil {
+		return false
+	}
+	if key == ItemFieldImplementationNotes {
+		var notes []ItemImplementationNote
+		return json.Unmarshal(raw, &notes) == nil
+	}
+	var entries []ItemDecisionLogEntry
+	return json.Unmarshal(raw, &entries) == nil
 }
