@@ -12,6 +12,8 @@
 	import { laneWriteValue, laneWriteRefusalMessage } from '$lib/collections/laneWriteValue';
 	import { summarizeBulkFailures, bulkToastMessage } from '$lib/collections/bulkFailureReason';
 	import { createDefaultFields } from '$lib/collections/createDefaults';
+	import { blockedDraftMessage, draftCreateFields, draftTargets, saveAllDrafts } from '$lib/collections/laneDrafts';
+	import { formatLaneLabel } from '$lib/collections/boardColumns';
 	import BoardView from '$lib/components/collections/BoardView.svelte';
 	import ListView from '$lib/components/collections/ListView.svelte';
 	import TableView from '$lib/components/collections/TableView.svelte';
@@ -2428,33 +2430,26 @@
 			toastStore.show(limitError, 'error');
 			throw new Error(limitError);
 		}
+		// BUG-3043: `groupValue` is the lane the draft was TYPED in, which may
+		// no longer exist. `draftCreateFields` decides where it goes (and the
+		// BUG-3057 / BUG-3078 conversions through the declared type); a draft
+		// that cannot be saved anywhere honest is refused by THROWING, like the
+		// title limit above, since that is what keeps the text, rather than by
+		// a null a caller could read as done.
+		const built = draftCreateFields(groupValue, groupFieldDef, groupField, createDefaultFields(collection));
+		if (!built.ok) {
+			toastStore.show(built.message, 'error');
+			throw new Error(built.message);
+		}
 		const epochAtEntry = captureIdentity();
 		try {
-			// BUG-3078: the status default goes through the declared type.
-			const defaultFields: Record<string, any> = createDefaultFields(collection);
-			// Pre-fill the lane's group field (status, or a custom
-			// board_group_by select) so the item opens in this lane — converted
-			// through the declared type, for the reason on the drag path
-			// (BUG-3057). Creating in a `0` lane of a number field used to send
-			// the string `"0"`, which the server refuses, so the create failed.
-			const laneWrite = laneWriteValue(groupFieldDef, groupValue);
-			if (!laneWrite.ok) {
-				const label = groupFieldDef?.label || groupField;
-				toastStore.show(laneWriteRefusalMessage(laneWrite.reason, label), 'error');
-				return null;
-			}
-			// A null here is the PATCH path's delete sentinel and means nothing on
-			// create — the field is simply absent from a new item.
-			if (laneWrite.value !== null) {
-				defaultFields[groupField] = laneWrite.value;
-			}
 			// Epoch before create: a brand-new id is never in the fence set,
 			// so this is the case the epoch guard exists for (BUG-2098).
 			const epoch = localIndex.scopeEpochFor(wsSlug);
 			const item = await api.items.create(wsSlug, collSlug, {
 				title: trimmed,
 				content: '',
-				fields: JSON.stringify(defaultFields),
+				fields: JSON.stringify(built.fields),
 				source: 'web'
 			});
 			// The signed-in identity, not the projection scope the `epoch`
@@ -2498,6 +2493,23 @@
 	let bypassNavGuard = false;
 
 	let hasUnsavedDrafts = $derived(Object.values(draftText).some((t) => t.trim().length > 0));
+
+	// Where each non-empty draft saves (BUG-3043). BoardView reads this to
+	// show an orphaned draft inside Uncategorized, or its blocked notice; the
+	// leave dialog reads it to refuse Save all while any draft is blocked.
+	let draftPlacement = $derived(draftTargets(draftText, groupFieldDef, createDefaultFields(collection)));
+	let blockedDraftNotices = $derived(
+		Object.values(draftPlacement).flatMap((t) =>
+			t.kind === 'blocked'
+				? [{ lane: t.lostLane, message: blockedDraftMessage(formatLaneLabel(t.lostLane), groupFieldDef?.label || groupField, t.reason) }]
+				: []
+		)
+	);
+
+	function discardDraft(lane: string) {
+		delete draftText[lane];
+		delete draftOpen[lane];
+	}
 
 	// Intercept in-app navigation while a draft is unsaved. `nav.to` is
 	// null for full unload (reload / tab close / external) — drafts are
@@ -2556,44 +2568,40 @@
 
 	async function leaveSaveAll() {
 		if (savingDrafts) return;
+		// BUG-3043, lead ruling: a draft that cannot be saved anywhere honest
+		// BLOCKS Save all, with the notice the dialog shows. Refused up front
+		// rather than after the other drafts saved, so the dialog never ends
+		// half-done around a draft it was always going to refuse.
+		if (blockedDraftNotices.length > 0) return;
 		const epochAtEntry = captureIdentity();
 		savingDrafts = true;
-		try {
-			// Clear EACH draft as its create succeeds (not all at the end),
-			// so retrying after a partial failure can't re-create the ones
-			// that already saved (Codex round 1).
-			for (const [col, text] of Object.entries(draftText)) {
-				const title = text.trim();
-				if (!title) continue;
-				await quickCreateInColumn(col, title, false);
-				// Per iteration, and BEFORE the draft is cleared: the callee
-				// returns null rather than committing once the identity has
-				// moved, so clearing here would discard the user's text on the
-				// strength of a create that did not land (BUG-3084).
-				if (!identityHeld(epochAtEntry)) {
-					// WRITES NOTHING. A continuation that has lost the identity
-					// may not touch shared interaction state — `resetPerSessionState()`
-					// already cleared this flag, synchronously, before this
-					// resumed, so clearing it again can only release a gate the
-					// NEW user is holding. Same reversal as the roles board's
-					// lost-identity exits (codex round 1 [P2]).
-					return;
-				}
-				delete draftText[col];
-				delete draftOpen[col];
+		// `saveAllDrafts` clears each draft as its create lands and stops at the
+		// first that does not — a throw, or a null with the identity held
+		// (BUG-3043), which used to count as a save and delete the text.
+		const outcome = await saveAllDrafts(
+			draftText,
+			(lane, title) => quickCreateInColumn(lane, title, false),
+			() => identityHeld(epochAtEntry),
+			(lane) => {
+				delete draftText[lane];
+				delete draftOpen[lane];
 			}
-		} catch {
-			// A create failed (already toasted) — keep the dialog open with
-			// the still-unsaved drafts so the user can retry or discard.
-			// See the note on createNewItem's busy flag (codex round 1 [P2]).
-			if (identityHeld(epochAtEntry)) savingDrafts = false;
-			return;
-		}
-		// See the note on createNewItem's busy flag (codex round 1 [P2]).
+		);
+		// WRITES NOTHING once the identity has moved. A continuation that has
+		// lost it may not touch shared interaction state — `resetPerSessionState()`
+		// already cleared this flag, synchronously, before this resumed, so
+		// clearing it again can only release a gate the NEW user is holding. Same
+		// reversal as the roles board's lost-identity exits (codex round 1 [P2]).
+		// The pending navigation was the PREVIOUS user's intent, formed when they
+		// tried to leave the page (BUG-3084).
+		if (outcome === 'identity_moved') return;
+		// See the note on createNewItem's busy flag (codex round 1 [P2]). The
+		// outcome already says the identity held; the check is repeated in the
+		// spelling the fence's source guard reads, rather than exempted there.
 		if (identityHeld(epochAtEntry)) savingDrafts = false;
-		// The pending navigation was the PREVIOUS user's intent, formed when
-		// they tried to leave the page (BUG-3084).
-		if (!identityHeld(epochAtEntry)) return;
+		// A create failed (already toasted): keep the dialog open with the
+		// still-unsaved drafts so the user can retry or discard.
+		if (outcome === 'failed') return;
 		runPendingNav();
 	}
 
@@ -4163,6 +4171,9 @@
 				onCreateInColumn={canEditThisCollection ? quickCreateInColumn : undefined}
 				bind:draftText
 				bind:draftOpen
+				{draftPlacement}
+				{blockedDraftNotices}
+				onDiscardDraft={discardDraft}
 				onMoveColumn={canBulkEdit ? handleBulkMove : undefined}
 				onTagColumn={canBulkEdit ? handleBulkTag : undefined}
 				onUntagColumn={canBulkEdit ? handleBulkUntag : undefined}
@@ -4305,10 +4316,15 @@
 		<div class="leave-dialog">
 			<h3 class="leave-title">Unsaved card</h3>
 			<p class="leave-body">You have an unsaved card. Save it before leaving?</p>
+			<!-- BUG-3043: a draft whose lane is gone and which Uncategorized
+			     cannot receive blocks Save, and says why, naming the lane. -->
+			{#each blockedDraftNotices as notice (notice.lane)}
+				<p class="leave-blocked" role="alert">{notice.message}</p>
+			{/each}
 			<div class="leave-actions">
 				<button class="leave-stay" disabled={savingDrafts} onclick={leaveStay}>Stay</button>
 				<button class="leave-discard" disabled={savingDrafts} onclick={leaveDiscard}>Discard</button>
-				<button class="leave-save" disabled={savingDrafts} onclick={leaveSaveAll}>Save</button>
+				<button class="leave-save" disabled={savingDrafts || blockedDraftNotices.length > 0} onclick={leaveSaveAll}>Save</button>
 			</div>
 		</div>
 	{/if}
@@ -4329,6 +4345,11 @@
 		margin: 0 0 var(--space-4);
 		font-size: 0.875em;
 		color: var(--text-secondary);
+	}
+	.leave-blocked {
+		margin: 0 0 var(--space-3);
+		font-size: 0.8125em;
+		color: var(--accent-red);
 	}
 	.leave-actions {
 		display: flex;

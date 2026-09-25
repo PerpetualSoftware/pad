@@ -27,6 +27,7 @@
 	import EmptyState from '../common/EmptyState.svelte';
 	import LaneActionsMenu from './LaneActionsMenu.svelte';
 	import { viewport } from '$lib/stores/breakpoint.svelte';
+	import type { DraftSaveTarget } from '$lib/collections/laneDrafts';
 
 
 	interface Props {
@@ -77,6 +78,18 @@
 		 */
 		draftText?: Record<string, string>;
 		draftOpen?: Record<string, boolean>;
+		/**
+		 * Where each non-empty draft saves (BUG-3043), keyed like `draftText`.
+		 * A `rehomed` draft's lane no longer exists: it renders inside the
+		 * Uncategorized lane, marked with the lane it came from, and that lane
+		 * is shown for it. Submitting it still passes its ORIGINAL key to
+		 * `onCreateInColumn`, which is where the page resolves the target.
+		 */
+		draftPlacement?: Record<string, DraftSaveTarget>;
+		/** Drafts that cannot be saved anywhere honest, with the notice naming the lost lane. */
+		blockedDraftNotices?: { lane: string; message: string }[];
+		/** Discard one draft (the way out of a blocked or re-homed one). */
+		onDiscardDraft?: (lane: string) => void;
 		/**
 		 * Bulk lane actions (TASK-1672), each operating on the lane's
 		 * CURRENTLY-FILTERED items via the bulk endpoint. Surfaced in the
@@ -138,7 +151,7 @@
 		onColumnsRendered?: (columns: { value: string; items: Item[] }[]) => void;
 	}
 
-	let { items, collection, wsSlug = '', groupField = 'status', focusedItemId = null, onLaneChange, onStatusChange, onReorder, onArchiveColumn, onGroupReorder, oncreate, onCreateInColumn, onMoveColumn, onTagColumn, onUntagColumn, onSetPriorityColumn, onAssignColumn, members = [], tagSuggestions = [], filtered = false, itemProgress, progressLabel = 'tasks', canEdit = true, preserveOrder = false, sortMode = 'manual', draftText = $bindable({}), draftOpen = $bindable({}), onItemOpen, onColumnsRendered }: Props = $props();
+	let { items, collection, wsSlug = '', groupField = 'status', focusedItemId = null, onLaneChange, onStatusChange, onReorder, onArchiveColumn, onGroupReorder, oncreate, onCreateInColumn, onMoveColumn, onTagColumn, onUntagColumn, onSetPriorityColumn, onAssignColumn, members = [], tagSuggestions = [], filtered = false, itemProgress, progressLabel = 'tasks', canEdit = true, preserveOrder = false, sortMode = 'manual', draftText = $bindable({}), draftOpen = $bindable({}), draftPlacement = {}, blockedDraftNotices = [], onDiscardDraft, onItemOpen, onColumnsRendered }: Props = $props();
 
 	// Local — disables the draft card while its Enter-create is in flight.
 	let savingDraft = $state(false);
@@ -472,8 +485,17 @@
 	// needed (DR-1), then the user-orderable real columns. UNCATEGORIZED is
 	// deliberately kept OUT of `columnOrder` (the persisted, drag-reorderable
 	// set) so it can't be reordered into the middle or written to saved order.
+	// Drafts whose lane is gone, shown inside Uncategorized (BUG-3043). That
+	// lane is rendered for them even when no ITEM is in it: without this the
+	// re-home would move the draft into a lane nobody can see, which is the
+	// defect again under a different name.
+	let rehomedDrafts = $derived(
+		Object.entries(draftPlacement).flatMap(([lane, t]) =>
+			t.kind === 'rehomed' ? [{ lane, lostLane: t.lostLane }] : []
+		)
+	);
 	let renderColumns = $derived(
-		showUncategorized ? [UNCATEGORIZED, ...columnOrder] : columnOrder
+		showUncategorized || rehomedDrafts.length > 0 ? [UNCATEGORIZED, ...columnOrder] : columnOrder
 	);
 
 	// Surface the board's rendered column structure to the parent for keyboard
@@ -728,6 +750,53 @@
 		{relationGroupingRefusalMessage(groupingRefusal)}
 	</p>
 {/if}
+{#snippet draftCard(key: string, movedFrom: string | null)}
+	<div class="lane-draft" class:lane-draft-rehomed={movedFrom !== null}>
+		{#if movedFrom !== null}
+			<p class="lane-draft-moved">Moved from {formatLaneLabel(movedFrom)}, a lane that no longer exists</p>
+		{/if}
+		<textarea
+			bind:this={draftInputs[key]}
+			bind:value={draftText[key]}
+			class="lane-draft-input"
+			placeholder="Enter a title…"
+			rows="2"
+			disabled={savingDraft}
+			onkeydown={(e) => {
+				if (e.key === 'Enter' && !e.shiftKey) {
+					e.preventDefault();
+					submitDraft(key);
+				} else if (e.key === 'Escape' && movedFrom === null) {
+					e.preventDefault();
+					escapeDraft(key);
+				}
+			}}
+		></textarea>
+		<div class="lane-draft-actions">
+			<button
+				class="lane-draft-add"
+				disabled={!draftText[key]?.trim() || savingDraft}
+				onclick={() => submitDraft(key)}
+			>Add card</button>
+			{#if movedFrom === null}
+				<button class="lane-draft-close" onclick={() => escapeDraft(key)}>Close</button>
+			{:else if onDiscardDraft}
+				<button class="lane-draft-close" onclick={() => onDiscardDraft?.(key)}>Discard</button>
+			{/if}
+		</div>
+	</div>
+{/snippet}
+{#each blockedDraftNotices as notice (notice.lane)}
+	<!-- BUG-3043 edge 1: the draft is kept, not re-homed into a place that
+	     would not hold it; this is where the user sees it and can let it go. -->
+	<div class="board-draft-blocked" role="alert">
+		<p>{notice.message}</p>
+		<p class="board-draft-blocked-text">“{draftText[notice.lane]}”</p>
+		{#if onDiscardDraft}
+			<button class="lane-draft-close" onclick={() => onDiscardDraft?.(notice.lane)}>Discard draft</button>
+		{/if}
+	</div>
+{/each}
 <div class="board-view">
 	{#each renderColumns as colValue (colValue)}
 		{@const colItems = columnData[colValue] ?? []}
@@ -850,33 +919,15 @@
 			{#if draftOpen[colValue]}
 				<!-- Inline draft card (TASK-1676). Lives ABOVE the dndzone so
 				     it isn't draggable and isn't a real item until saved. -->
-				<div class="lane-draft">
-					<textarea
-						bind:this={draftInputs[colValue]}
-						bind:value={draftText[colValue]}
-						class="lane-draft-input"
-						placeholder="Enter a title…"
-						rows="2"
-						disabled={savingDraft}
-						onkeydown={(e) => {
-							if (e.key === 'Enter' && !e.shiftKey) {
-								e.preventDefault();
-								submitDraft(colValue);
-							} else if (e.key === 'Escape') {
-								e.preventDefault();
-								escapeDraft(colValue);
-							}
-						}}
-					></textarea>
-					<div class="lane-draft-actions">
-						<button
-							class="lane-draft-add"
-							disabled={!draftText[colValue]?.trim() || savingDraft}
-							onclick={() => submitDraft(colValue)}
-						>Add card</button>
-						<button class="lane-draft-close" onclick={() => escapeDraft(colValue)}>Close</button>
-					</div>
-				</div>
+				{@render draftCard(colValue, null)}
+			{/if}
+			{#if isUncategorized && onCreateInColumn}
+				<!-- Re-homed drafts (BUG-3043): their lane no longer exists. Always
+				     rendered, not gated on `draftOpen` — there is no "+" left to
+				     reopen one with. -->
+				{#each rehomedDrafts as d (d.lane)}
+					{@render draftCard(d.lane, d.lostLane)}
+				{/each}
 			{/if}
 			<!-- svelte-ignore a11y_no_static_element_interactions -->
 			<div
@@ -1268,6 +1319,33 @@
 		border: 1px solid var(--accent-blue);
 		border-radius: var(--radius-md);
 		box-shadow: var(--shadow-sm);
+	}
+
+	.lane-draft-rehomed {
+		border-style: dashed;
+	}
+
+	.lane-draft-moved {
+		margin: 0;
+		font-size: 0.75em;
+		color: var(--text-secondary);
+	}
+
+	.board-draft-blocked {
+		margin: 0 0 var(--space-3);
+		padding: var(--space-2) var(--space-3);
+		border: 1px solid var(--accent-red);
+		border-radius: var(--radius-md);
+		font-size: 0.8125em;
+		color: var(--text-primary);
+	}
+
+	.board-draft-blocked p {
+		margin: 0 0 var(--space-1);
+	}
+
+	.board-draft-blocked-text {
+		color: var(--text-secondary);
 	}
 
 	.lane-draft-input {

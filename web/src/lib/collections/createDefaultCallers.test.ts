@@ -24,8 +24,9 @@ const CALLERS: { name: string; rel: string; expectedCalls: number }[] = [
 	{ name: 'EditorBubbleMenu', rel: '../components/editor/EditorBubbleMenu.svelte', expectedCalls: 1 },
 	// Three separate create paths in one file: "Untitled", create-in-lane, and
 	// quick-create. Counted rather than merely detected, so removing two of the
-	// three still fails.
-	{ name: 'collection page', rel: '../../routes/[username]/[workspace]/[collection]/+page.svelte', expectedCalls: 3 },
+	// three still fails. The fourth (BUG-3043) is `draftPlacement`, which asks
+	// the same defaults whether an omitted group key would be filled in.
+	{ name: 'collection page', rel: '../../routes/[username]/[workspace]/[collection]/+page.svelte', expectedCalls: 4 },
 ];
 
 /**
