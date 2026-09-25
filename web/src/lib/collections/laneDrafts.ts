@@ -64,34 +64,75 @@ export function uncategorizedWrite(field: FieldDef | undefined | null): Uncatego
 
 export type BlockedReason = 'required' | 'defaulted';
 
+/**
+ * A draft's map key: the GROUP FIELD it was typed under, and the lane
+ * (BUG-3214). A bare lane value said nothing about which field it belonged to,
+ * and the map is not cleared on a regroup, so a draft typed in status's `open`
+ * lane was read, after regrouping by a field that also has an `open` option, as
+ * THAT field's live lane and saved into it. The separator is the ASCII unit
+ * separator, which no schema option is expected to contain.
+ */
+const DRAFT_KEY_SEP = '\u001f';
+
+export function draftKey(field: string, lane: string): string {
+	return `${field}${DRAFT_KEY_SEP}${lane}`;
+}
+
+/** The inverse of `draftKey`. A key without a field (a bare lane) is read as one. */
+export function parseDraftKey(key: string): { field: string | null; lane: string } {
+	const i = key.indexOf(DRAFT_KEY_SEP);
+	return i < 0 ? { field: null, lane: key } : { field: key.slice(0, i), lane: key.slice(i + 1) };
+}
+
 export type DraftSaveTarget =
 	/** The draft's lane is still offered: save it there, as always. */
 	| { kind: 'lane'; lane: string }
 	/** The lane is gone: the draft shows in, and saves to, Uncategorized. */
-	| { kind: 'rehomed'; lostLane: string }
+	| { kind: 'rehomed'; lostLane: string; lostField?: string }
 	/** The lane is gone and Uncategorized cannot receive the create. */
-	| { kind: 'blocked'; lostLane: string; reason: BlockedReason };
+	| { kind: 'blocked'; lostLane: string; reason: BlockedReason; lostField?: string };
 
 /**
- * Where the draft keyed `lane` saves to.
+ * Where the draft keyed `key` (a `draftKey`, or a bare lane) saves to.
+ *
+ * A draft typed under ANOTHER group field is orphaned whatever its lane is
+ * called (BUG-3214): its lane belongs to that field, and a same-named lane of
+ * the current one is a coincidence, not its home. `lostField` names that field
+ * so the mark can say where the draft came from.
  *
  * `clientDefaults` is what the page's create pre-fills (`createDefaultFields`),
  * because an omitted group key is only Uncategorized if that does not fill it.
  */
 export function draftSaveTarget(
-	lane: string,
+	key: string,
 	field: FieldDef | undefined | null,
 	clientDefaults: Record<string, unknown>,
 ): DraftSaveTarget {
-	if (draftableLanes(field).has(lane)) return { kind: 'lane', lane };
+	const { field: typedUnder, lane } = parseDraftKey(key);
+	const otherField = typedUnder !== null && typedUnder !== (field?.key ?? null);
+	const lost = otherField ? { lostLane: lane, lostField: typedUnder } : { lostLane: lane };
+	if (!otherField && draftableLanes(field).has(lane)) return { kind: 'lane', lane };
 	const write = uncategorizedWrite(field);
-	if (write.send || !field) return { kind: 'rehomed', lostLane: lane };
+	if (write.send || !field) return { kind: 'rehomed', ...lost };
 	const filled =
 		(Object.hasOwn(clientDefaults, field.key) && clientDefaults[field.key] != null) ||
 		field.default != null;
-	if (filled) return { kind: 'blocked', lostLane: lane, reason: 'defaulted' };
-	if (field.required) return { kind: 'blocked', lostLane: lane, reason: 'required' };
-	return { kind: 'rehomed', lostLane: lane };
+	if (filled) return { kind: 'blocked', ...lost, reason: 'defaulted' };
+	if (field.required) return { kind: 'blocked', ...lost, reason: 'required' };
+	return { kind: 'rehomed', ...lost };
+}
+
+/**
+ * How a lost lane is named to the user: the lane, plus the field it belonged to
+ * when that is not the board's current grouping (BUG-3214). `labelFor` maps a
+ * field key to its label.
+ */
+export function lostLaneLabel(
+	target: { lostLane: string; lostField?: string },
+	labelFor: (fieldKey: string) => string,
+): string {
+	const lane = formatLaneLabel(target.lostLane);
+	return target.lostField ? `${lane} (${labelFor(target.lostField)})` : lane;
 }
 
 /** The notice for a draft that cannot be saved, naming the lane it lost. */
@@ -110,15 +151,16 @@ export function blockedDraftMessage(lostLaneLabel: string, fieldLabel: string, r
  * the draft's text on every path that saves one.
  */
 export function draftCreateFields(
-	lane: string,
+	key: string,
 	field: FieldDef | undefined | null,
 	groupKey: string,
 	clientDefaults: Record<string, unknown>,
+	labelFor: (fieldKey: string) => string = (k) => k,
 ): { ok: true; fields: Record<string, unknown> } | { ok: false; message: string } {
 	const label = field?.label || groupKey;
-	const target = draftSaveTarget(lane, field, clientDefaults);
+	const target = draftSaveTarget(key, field, clientDefaults);
 	if (target.kind === 'blocked') {
-		return { ok: false, message: blockedDraftMessage(formatLaneLabel(target.lostLane), label, target.reason) };
+		return { ok: false, message: blockedDraftMessage(lostLaneLabel(target, labelFor), label, target.reason) };
 	}
 	const fields = { ...clientDefaults };
 	if (target.kind === 'rehomed') {

@@ -12,6 +12,9 @@ import {
 	draftSaveTarget,
 	draftTargets,
 	draftableLanes,
+	draftKey,
+	lostLaneLabel,
+	parseDraftKey,
 	saveAllDrafts,
 	uncategorizedWrite
 } from './laneDrafts';
@@ -192,5 +195,34 @@ describe('saveAllDrafts', () => {
 		);
 		expect(out).toBe('identity_moved');
 		expect(cleared).toEqual([]);
+	});
+});
+
+describe('draft keys carry the group field (BUG-3214)', () => {
+	it('round-trips field and lane, and reads a bare key as a lane', () => {
+		expect(parseDraftKey(draftKey('status', 'open'))).toEqual({ field: 'status', lane: 'open' });
+		expect(parseDraftKey('open')).toEqual({ field: null, lane: 'open' });
+		expect(parseDraftKey(draftKey('status', 'a,b'))).toEqual({ field: 'status', lane: 'a,b' });
+	});
+
+	it('THE BUG: a draft typed under status "open" is NOT stage\'s live "open" lane after a regroup', () => {
+		const stage = f('select', { key: 'stage', options: ['open', 'later'] });
+		expect(draftSaveTarget(draftKey('status', 'open'), stage, {})).toEqual({
+			kind: 'rehomed',
+			lostLane: 'open',
+			lostField: 'status'
+		});
+	});
+
+	it('a draft under the CURRENT field keeps its live lane, as before', () => {
+		const stage = f('select', { key: 'stage', options: ['open'] });
+		expect(draftSaveTarget(draftKey('stage', 'open'), stage, {})).toEqual({ kind: 'lane', lane: 'open' });
+	});
+
+	it('a regrouped draft that Uncategorized cannot receive is blocked, naming its field', () => {
+		const score = f('number', { key: 'score', options: ['1'], required: true });
+		const t = draftSaveTarget(draftKey('status', 'open'), score, {});
+		expect(t).toEqual({ kind: 'blocked', lostLane: 'open', lostField: 'status', reason: 'required' });
+		expect(lostLaneLabel(t as never, (k) => (k === 'status' ? 'Status' : k))).toBe('Open (Status)');
 	});
 });
