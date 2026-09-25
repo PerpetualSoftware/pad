@@ -1293,21 +1293,23 @@ func (s *Store) outboxMemberSnapshotsTx(tx *sql.Tx, ids []string) ([]*models.Ite
 		rows, err := tx.Query(s.q(itemSnapshotSelect+`
 			WHERE i.id IN (`+placeholders(len(chunk))+`) AND i.deleted_at IS NULL`), args...)
 		if err != nil {
-			return nil, fmt.Errorf("outbox: read bulk member snapshots: %w", err)
+			return nil, fmt.Errorf("outbox: read bulk member snapshots (%d from %s): %w", len(chunk), chunk[0], err)
 		}
 		for rows.Next() {
 			item, err := scanItemSnapshot(rows)
 			if err != nil {
 				rows.Close()
-				return nil, fmt.Errorf("outbox: scan bulk member snapshot: %w", err)
+				return nil, fmt.Errorf("outbox: scan bulk member snapshot (%d from %s): %w", len(chunk), chunk[0], err)
 			}
 			byID[item.ID] = item
 		}
+		// A batch has no single member to name, so the error names the
+		// chunk: its size and first id (the per-member read named the id).
 		if err := rows.Close(); err != nil {
-			return nil, fmt.Errorf("outbox: read bulk member snapshots: %w", err)
+			return nil, fmt.Errorf("outbox: read bulk member snapshots (%d from %s): %w", len(chunk), chunk[0], err)
 		}
 		if err := rows.Err(); err != nil {
-			return nil, fmt.Errorf("outbox: read bulk member snapshots: %w", err)
+			return nil, fmt.Errorf("outbox: read bulk member snapshots (%d from %s): %w", len(chunk), chunk[0], err)
 		}
 	}
 	out := make([]*models.Item, 0, len(unique))
