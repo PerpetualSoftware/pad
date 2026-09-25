@@ -20,8 +20,11 @@ describe('groupResultsByCollection (BUG-3054)', () => {
 		for (const s of slugs) {
 			expect(groups[s].results, s).toHaveLength(1);
 		}
-		expect(groups.constructor.name).toBe('Constructor');
-		expect(groups.constructor.icon).toBe('🏗');
+		// A `string`-typed key: `groups.constructor` is typed as Object's Function
+		// by TypeScript, the same inherited-member confusion at the type level.
+		const ctor: string = 'constructor';
+		expect(groups[ctor].name).toBe('Constructor');
+		expect(groups[ctor].icon).toBe('🏗');
 	});
 
 	it('collects several hits for one slug into one group, in first-seen order', () => {
@@ -30,6 +33,7 @@ describe('groupResultsByCollection (BUG-3054)', () => {
 			[],
 		);
 		expect(Object.keys(groups)).toEqual(['constructor', 'tasks']);
-		expect(groups.constructor.results.map((r) => r.item.id)).toEqual(['a', 'c']);
+		const ctor: string = 'constructor';
+		expect(groups[ctor].results.map((r) => r.item.id)).toEqual(['a', 'c']);
 	});
 });
