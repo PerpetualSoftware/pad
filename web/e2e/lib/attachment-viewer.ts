@@ -309,27 +309,33 @@ export async function settleScale(page: Page, selector = VIEWER_IMAGE): Promise<
 	await page.evaluate(
 		() => new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())))
 	);
-	await expect
-		.poll(() =>
-			page.evaluate((sel) => {
-				const all = document.querySelectorAll<HTMLElement>(sel);
-				const el = all[all.length - 1];
-				if (!el) return false;
-				// Flush style first: a transform written since the last style recalc has
-				// not STARTED its transition yet, and getAnimations() would report none.
-				void getComputedStyle(el).transform;
-				return !el
-					.getAnimations()
-					.some(
-						(a) =>
-							a instanceof CSSTransition &&
-							a.transitionProperty === 'transform' &&
-							a.playState !== 'finished' &&
-							a.playState !== 'idle'
-					);
-			}, selector)
-		)
-		.toBe(true);
+	// Awaits each live transition's `finished` in the page rather than polling
+	// from the test. expect.poll's 100/250/500ms backoff, paid once per zoom
+	// step, stretched the zoom spec's 20-step zoomToMax toward its 30s budget
+	// under load (BUG-3213: pan-clamp p90 18.7s → 23.6s, one timeout).
+	await page.evaluate(async (sel) => {
+		const all = document.querySelectorAll<HTMLElement>(sel);
+		const el = all[all.length - 1];
+		if (!el) throw new Error(`settleScale: no element for ${sel}`);
+		for (;;) {
+			// Flush style first: a transform written since the last style recalc has
+			// not STARTED its transition yet, and getAnimations() would report none.
+			void getComputedStyle(el).transform;
+			const live = el
+				.getAnimations()
+				.filter(
+					(a) =>
+						a instanceof CSSTransition &&
+						a.transitionProperty === 'transform' &&
+						a.playState !== 'finished' &&
+						a.playState !== 'idle'
+				);
+			if (live.length === 0) return;
+			// A transition retargeted mid-flight is CANCELLED, which rejects
+			// `finished`; loop and wait on its replacement.
+			await Promise.all(live.map((a) => a.finished.catch(() => undefined)));
+		}
+	}, selector);
 	return renderedScale(page, selector);
 }
 
