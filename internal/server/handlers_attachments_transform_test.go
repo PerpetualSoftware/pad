@@ -86,6 +86,15 @@ func TestTransform_Rotate90SwapsWidthHeight(t *testing.T) {
 	if resp.Mime != "image/png" {
 		t.Errorf("rotated MIME = %q, want image/png", resp.Mime)
 	}
+	// The transform's name is built by the server from the parent's, and
+	// the row says so (BUG-2819).
+	row, err := srv.store.GetAttachment(resp.ID)
+	if err != nil || row == nil {
+		t.Fatalf("GetAttachment(transform): %v", err)
+	}
+	if row.FilenameSource != "derived" {
+		t.Errorf("transform filename_source = %q, want derived", row.FilenameSource)
+	}
 }
 
 func TestTransform_Rotate180KeepsDimensions(t *testing.T) {

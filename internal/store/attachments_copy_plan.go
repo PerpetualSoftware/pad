@@ -243,8 +243,9 @@ type AttachmentAuthorizer func(q Queryer, att models.Attachment) (bool, error)
 // to.
 type AttachmentCopyRow struct {
 	// Attachment is the row to insert. ID and WorkspaceID are fresh;
-	// ContentHash, MimeType, SizeBytes, Filename, Width and Height are
-	// carried over verbatim; ItemID and UploadedBy come from the request;
+	// ContentHash, MimeType, SizeBytes, Filename, FilenameSource, Width and
+	// Height are carried over verbatim (a clone's name has the same origin as
+	// its source's, BUG-2819); ItemID and UploadedBy come from the request;
 	// ParentID is remapped to the new original's ID. StorageKey is carried
 	// over ONLY when the target backend can resolve it — see
 	// NeedsByteTransfer.

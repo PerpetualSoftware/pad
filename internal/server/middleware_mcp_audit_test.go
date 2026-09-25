@@ -114,6 +114,9 @@ func TestMCPAudit_RecordsToolCallWithToolNameAndArgsHash(t *testing.T) {
 	if got.ToolName != "pad_item" {
 		t.Errorf("ToolName = %q, want %q", got.ToolName, "pad_item")
 	}
+	if got.ToolNameSource != models.MCPToolNameFromCaller {
+		t.Errorf("ToolNameSource = %q, want caller (BUG-2819)", got.ToolNameSource)
+	}
 	if got.ArgsHash == "" {
 		t.Error("ArgsHash empty for a tools/call with arguments")
 	}
@@ -347,6 +350,10 @@ func TestMCPAudit_RateLimited_RecordsDeniedRow(t *testing.T) {
 				}
 				if r.ToolName != "pad_item" {
 					t.Errorf("denied row tool_name = %q, want pad_item", r.ToolName)
+				}
+				// The denied-row door records provenance too (BUG-2819).
+				if r.ToolNameSource != models.MCPToolNameFromCaller {
+					t.Errorf("denied row tool_name_source = %q, want caller", r.ToolNameSource)
 				}
 				break
 			}

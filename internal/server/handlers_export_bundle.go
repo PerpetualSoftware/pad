@@ -119,15 +119,18 @@ func (s *Server) handleExportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 	}
 	for _, a := range attachments {
 		entry := models.AttachmentManifestEntry{
-			ID:          a.ID,
-			Filename:    a.Filename,
-			MIME:        a.MimeType,
-			SizeBytes:   a.SizeBytes,
-			ContentHash: a.ContentHash,
-			Width:       a.Width,
-			Height:      a.Height,
-			UploadedBy:  a.UploadedBy,
-			CreatedAt:   a.CreatedAt.UTC().Format(time.RFC3339),
+			ID:       a.ID,
+			Filename: a.Filename,
+			// Carried so an import does not re-label a substituted
+			// "upload.bin" as the caller's own name (BUG-2819).
+			FilenameSource: a.FilenameSource,
+			MIME:           a.MimeType,
+			SizeBytes:      a.SizeBytes,
+			ContentHash:    a.ContentHash,
+			Width:          a.Width,
+			Height:         a.Height,
+			UploadedBy:     a.UploadedBy,
+			CreatedAt:      a.CreatedAt.UTC().Format(time.RFC3339),
 		}
 		if a.ItemID != nil {
 			entry.ItemID = *a.ItemID

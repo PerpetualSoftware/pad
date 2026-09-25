@@ -66,6 +66,14 @@ func (s *Store) InsertMCPAuditEntry(in models.MCPAuditEntryInput) error {
 	if in.RequestID == "" {
 		return fmt.Errorf("mcp_audit: request_id required")
 	}
+	// An unclassified name is stored as "unknown", never "caller" (BUG-2819).
+	toolNameSource := in.ToolNameSource
+	if toolNameSource == "" {
+		toolNameSource = models.MCPToolNameSourceUnknown
+	}
+	if !toolNameSource.Valid() {
+		return fmt.Errorf("mcp_audit: invalid tool_name_source %q", toolNameSource)
+	}
 
 	ts := in.Timestamp
 	if ts.IsZero() {
@@ -85,11 +93,13 @@ func (s *Store) InsertMCPAuditEntry(in models.MCPAuditEntryInput) error {
 		INSERT INTO mcp_audit_log (
 			id, timestamp, user_id, workspace_id,
 			token_kind, token_ref, tool_name, args_hash,
-			result_status, error_kind, latency_ms, request_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			result_status, error_kind, latency_ms, request_id,
+			tool_name_source
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`), newID(), ts.UTC().Format(time.RFC3339), in.UserID, workspaceID,
 		string(in.TokenKind), in.TokenRef, in.ToolName, in.ArgsHash,
-		string(in.ResultStatus), errorKind, in.LatencyMs, in.RequestID)
+		string(in.ResultStatus), errorKind, in.LatencyMs, in.RequestID,
+		string(toolNameSource))
 	if err != nil {
 		return fmt.Errorf("insert mcp audit: %w", err)
 	}
@@ -114,7 +124,7 @@ func (s *Store) ListMCPAuditByUser(userID string, limit, offset int) ([]models.M
 	rows, err := s.db.Query(s.q(`
 		SELECT id, timestamp, user_id, workspace_id,
 		       token_kind, token_ref, tool_name, args_hash,
-		       result_status, error_kind, latency_ms, request_id
+		       result_status, error_kind, latency_ms, request_id, tool_name_source
 		FROM mcp_audit_log
 		WHERE user_id = ?
 		ORDER BY timestamp DESC, id DESC
@@ -148,7 +158,7 @@ func (s *Store) ListMCPAuditByConnection(userID string, kind models.TokenKind, r
 	rows, err := s.db.Query(s.q(`
 		SELECT id, timestamp, user_id, workspace_id,
 		       token_kind, token_ref, tool_name, args_hash,
-		       result_status, error_kind, latency_ms, request_id
+		       result_status, error_kind, latency_ms, request_id, tool_name_source
 		FROM mcp_audit_log
 		WHERE user_id = ? AND token_kind = ? AND token_ref = ?
 		ORDER BY timestamp DESC, id DESC
@@ -174,7 +184,7 @@ func (s *Store) ListAllMCPAudit(limit, offset int) ([]models.MCPAuditEntry, erro
 	rows, err := s.db.Query(s.q(`
 		SELECT id, timestamp, user_id, workspace_id,
 		       token_kind, token_ref, tool_name, args_hash,
-		       result_status, error_kind, latency_ms, request_id
+		       result_status, error_kind, latency_ms, request_id, tool_name_source
 		FROM mcp_audit_log
 		ORDER BY timestamp DESC, id DESC
 		LIMIT ? OFFSET ?
@@ -299,15 +309,17 @@ func scanMCPAuditRows(rows *sql.Rows) ([]models.MCPAuditEntry, error) {
 			errorKind    sql.NullString
 			resultStatus string
 			latencyMs    int
+			nameSource   string
 		)
 		err := rows.Scan(&e.ID, &tsStr, &e.UserID, &workspaceID,
 			&kind, &e.TokenRef, &e.ToolName, &e.ArgsHash,
-			&resultStatus, &errorKind, &latencyMs, &e.RequestID)
+			&resultStatus, &errorKind, &latencyMs, &e.RequestID, &nameSource)
 		if err != nil {
 			return nil, fmt.Errorf("scan mcp audit row: %w", err)
 		}
 		e.Timestamp = parseTime(tsStr)
 		e.TokenKind = models.TokenKind(kind)
+		e.ToolNameSource = models.MCPToolNameSource(nameSource)
 		e.ResultStatus = models.MCPAuditResultStatus(resultStatus)
 		e.LatencyMs = latencyMs
 		if workspaceID.Valid && workspaceID.String != "" {

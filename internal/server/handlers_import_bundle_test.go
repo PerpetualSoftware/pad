@@ -801,3 +801,28 @@ func TestImportBundle_RefusesNULInManifest(t *testing.T) {
 			"behaviour changed and the release note now says something false: %s", list.Body.String())
 	}
 }
+
+// BUG-2819: what this server observed about the name wins; an unchanged name
+// takes the bundle's claim when it is a known value, and "unknown" otherwise
+// (never "caller" for a history nobody recorded).
+func TestImportedFilenameSource(t *testing.T) {
+	cases := []struct {
+		observed attachments.FilenameSource
+		claimed  string
+		want     attachments.FilenameSource
+	}{
+		{attachments.FilenameSubstituted, "caller", attachments.FilenameSubstituted},
+		{attachments.FilenameNormalised, "caller", attachments.FilenameNormalised},
+		{attachments.FilenameFromCaller, "substituted", attachments.FilenameSubstituted},
+		{attachments.FilenameFromCaller, "caller", attachments.FilenameFromCaller},
+		{attachments.FilenameFromCaller, "derived", attachments.FilenameDerived},
+		{attachments.FilenameFromCaller, "unknown", attachments.FilenameSourceUnknown},
+		{attachments.FilenameFromCaller, "", attachments.FilenameSourceUnknown},
+		{attachments.FilenameFromCaller, "made-up", attachments.FilenameSourceUnknown},
+	}
+	for _, tc := range cases {
+		if got := importedFilenameSource(tc.observed, tc.claimed); got != tc.want {
+			t.Errorf("importedFilenameSource(%q, %q) = %q, want %q", tc.observed, tc.claimed, got, tc.want)
+		}
+	}
+}

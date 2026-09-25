@@ -74,15 +74,72 @@ const fallbackFilename = "upload.bin"
 //     opens "nul.txt" as the null device, so a download saved under the stored
 //     name is lost or refused. See WindowsDeviceName for the match.
 func NormalizeFilename(raw string) string {
-	name := filepath.Base(raw)
+	name, _ := NormalizeFilenameWithSource(raw)
+	return name
+}
+
+// FilenameSource says where a stored attachment name came from (BUG-2819).
+// The stored name alone cannot say: a caller can upload a file literally
+// named "upload.bin", which is also what the server substitutes for a name
+// it cannot store. The values match attachments.filename_source (migration
+// 096), which has a CHECK constraint on exactly this set.
+type FilenameSource string
+
+const (
+	// FilenameFromCaller is the caller's name, stored exactly as sent.
+	FilenameFromCaller FilenameSource = "caller"
+	// FilenameNormalised is the caller's name, altered to be storable: a
+	// directory part removed, runes dropped, trailing dots or spaces trimmed,
+	// or a Windows device name prefixed.
+	FilenameNormalised FilenameSource = "normalised"
+	// FilenameSubstituted is a name the server chose because the caller's
+	// left nothing usable ("upload", "upload<ext>", "upload.bin").
+	FilenameSubstituted FilenameSource = "substituted"
+	// FilenameDerived is a name the server built from a parent row's name
+	// (a thumbnail or a transform).
+	FilenameDerived FilenameSource = "derived"
+	// FilenameSourceUnknown marks a row written before provenance was
+	// recorded. Never claimed as FilenameFromCaller.
+	FilenameSourceUnknown FilenameSource = "unknown"
+)
+
+// ValidFilenameSource reports whether v is one of the stored values.
+func ValidFilenameSource(v string) bool {
+	switch FilenameSource(v) {
+	case FilenameFromCaller, FilenameNormalised, FilenameSubstituted, FilenameDerived, FilenameSourceUnknown:
+		return true
+	}
+	return false
+}
+
+// NormalizeFilenameWithSource is NormalizeFilename that also reports which of
+// its branches decided the result, so the door that stores the name can
+// record its provenance (BUG-2819). The name it returns is NormalizeFilename's,
+// byte for byte.
+func NormalizeFilenameWithSource(raw string) (string, FilenameSource) {
+	name, substituted := normalizeFilename(raw)
+	switch {
+	case substituted:
+		return name, FilenameSubstituted
+	case name != raw:
+		return name, FilenameNormalised
+	default:
+		return name, FilenameFromCaller
+	}
+}
+
+// normalizeFilename is the rule itself. substituted is true when the result
+// is a server-chosen name rather than some form of the caller's.
+func normalizeFilename(raw string) (name string, substituted bool) {
+	name = filepath.Base(raw)
 	if i := strings.LastIndexByte(name, '\\'); i >= 0 {
 		name = name[i+1:]
 	}
 	if !utf8.ValidString(name) || strings.ContainsRune(name, 0) {
 		if ext := filepath.Ext(name); SafeFallbackExtension(ext) {
-			return "upload" + strings.ToLower(ext)
+			return "upload" + strings.ToLower(ext), true
 		}
-		return "upload"
+		return "upload", true
 	}
 	name = strings.Map(func(r rune) rune {
 		if DroppedFilenameRune(r) {
@@ -97,12 +154,12 @@ func NormalizeFilename(raw string) string {
 		name = trimmed
 	}
 	if name == "" || name == "." || name == ".." || name == "/" {
-		return fallbackFilename
+		return fallbackFilename, true
 	}
 	if WindowsDeviceName(name) {
-		return "_" + name
+		return "_" + name, false
 	}
-	return name
+	return name, false
 }
 
 // windowsReservedStems are the device names Windows resolves a path component

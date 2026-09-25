@@ -288,22 +288,23 @@ func (s *Server) MCPAuditLog(next http.Handler) http.Handler {
 			reqID = strconv.FormatInt(start.UnixNano(), 36)
 		}
 
-		toolName, argsHash := parseMCPRequestBody(snifferBytes)
+		toolName, argsHash, toolNameSource := parseMCPRequestBodyWithSource(snifferBytes)
 
 		status, errorKind := classifyMCPResult(ww.Status())
 
 		entry := models.MCPAuditEntryInput{
-			Timestamp:    start,
-			UserID:       user.ID,
-			WorkspaceID:  "", // workspace context isn't reliably on the request — populated only when present below
-			TokenKind:    models.TokenKind(kind),
-			TokenRef:     ref,
-			ToolName:     toolName,
-			ArgsHash:     argsHash,
-			ResultStatus: status,
-			ErrorKind:    errorKind,
-			LatencyMs:    latencyMs,
-			RequestID:    reqID,
+			Timestamp:      start,
+			UserID:         user.ID,
+			WorkspaceID:    "", // workspace context isn't reliably on the request — populated only when present below
+			TokenKind:      models.TokenKind(kind),
+			TokenRef:       ref,
+			ToolName:       toolName,
+			ToolNameSource: toolNameSource,
+			ArgsHash:       argsHash,
+			ResultStatus:   status,
+			ErrorKind:      errorKind,
+			LatencyMs:      latencyMs,
+			RequestID:      reqID,
 		}
 
 		s.mcpAudit.enqueue(entry)
@@ -462,10 +463,11 @@ func auditLabel(clean string, changed bool) string {
 	// collide. Same for a tool called "(unknown)".
 	//
 	// This is cheaper and more complete than marking only what cleaning
-	// changed, and it needs no schema change. The principled fix for the
-	// whole class is a separate provenance FIELD rather than sentinel strings
-	// in a caller-controlled namespace — BUG-2819, filed rather than folded
-	// in because it is a migration on two tables and this is not.
+	// changed. Since BUG-2819 the row also carries tool_name_source, a
+	// provenance FIELD the caller cannot write, which is the principled fix
+	// for the class; this reservation is now REDUNDANT by design and is kept
+	// as defence in depth, so a reader of the name column alone still cannot
+	// be fooled.
 	//
 	// Cost, stated: an MCP tool genuinely named with a leading "(" is
 	// recorded marked. Tool names are identifiers in every catalog this
@@ -477,15 +479,34 @@ func auditLabel(clean string, changed bool) string {
 }
 
 func parseMCPRequestBody(body []byte) (toolName, argsHash string) {
+	toolName, argsHash, _ = parseMCPRequestBodyWithSource(body)
+	return toolName, argsHash
+}
+
+// labelSource is the provenance of an auditLabel result: "sanitised" exactly
+// when auditLabel added the mark, "caller" when it returned the name as sent.
+func labelSource(label, clean string) models.MCPToolNameSource {
+	if label != clean {
+		return models.MCPToolNameSanitised
+	}
+	return models.MCPToolNameFromCaller
+}
+
+// parseMCPRequestBodyWithSource is parseMCPRequestBody plus the provenance of
+// the tool name, decided at the branch that produced it (BUG-2819): every
+// placeholder return is "synthesised", and a caller-derived name is "caller"
+// or "sanitised" by whether auditLabel marked it. The name and hash it
+// returns are parseMCPRequestBody's, byte for byte.
+func parseMCPRequestBodyWithSource(body []byte) (toolName, argsHash string, source models.MCPToolNameSource) {
 	if len(body) == 0 {
-		return "(unknown)", ""
+		return "(unknown)", "", models.MCPToolNameSynthesised
 	}
 	var env struct {
 		Method string          `json:"method"`
 		Params json.RawMessage `json:"params"`
 	}
 	if err := json.Unmarshal(body, &env); err != nil {
-		return "(unknown)", ""
+		return "(unknown)", "", models.MCPToolNameSynthesised
 	}
 	// SANITISE FIRST, THEN test for emptiness — not the other way round. A
 	// value made entirely of NUL escapes is non-empty as decoded and empty
@@ -506,25 +527,27 @@ func parseMCPRequestBody(body []byte) (toolName, argsHash string) {
 	// what the client actually sent.
 	if env.Method != "tools/call" {
 		if method, changed := sanitiseStoredTextChanged(env.Method); method != "" {
-			return auditLabel(method, changed), ""
+			label := auditLabel(method, changed)
+			return label, "", labelSource(label, method)
 		}
 		// Empty only after cleaning — keep the visible signal rather than
 		// storing "". This is the round-21 boundary, preserved.
-		return "(unknown)", ""
+		return "(unknown)", "", models.MCPToolNameSynthesised
 	}
 	var p struct {
 		Name      string          `json:"name"`
 		Arguments json.RawMessage `json:"arguments"`
 	}
 	if err := json.Unmarshal(env.Params, &p); err != nil {
-		return "tools/call", ""
+		return "tools/call", "", models.MCPToolNameSynthesised
 	}
 	if name, changed := sanitiseStoredTextChanged(p.Name); name != "" {
 		// The hash still describes the real arguments, so it is kept; it is
 		// the NAME that has to stay distinguishable.
-		return auditLabel(name, changed), hashCanonicalJSON(p.Arguments)
+		label := auditLabel(name, changed)
+		return label, hashCanonicalJSON(p.Arguments), labelSource(label, name)
 	}
-	return "tools/call", ""
+	return "tools/call", "", models.MCPToolNameSynthesised
 }
 
 // hashCanonicalJSON returns a SHA-256 hex of a canonicalized form of
@@ -698,19 +721,20 @@ func (s *Server) emitMCPAuditDenied(r *http.Request, user *models.User, kind, re
 		limited := io.LimitReader(r.Body, mcpAuditBodyMaxBytes)
 		snifferBytes, _ = io.ReadAll(limited)
 	}
-	toolName, argsHash := parseMCPRequestBody(snifferBytes)
+	toolName, argsHash, toolNameSource := parseMCPRequestBodyWithSource(snifferBytes)
 
 	s.mcpAudit.enqueue(models.MCPAuditEntryInput{
-		Timestamp:    latencyStart,
-		UserID:       user.ID,
-		TokenKind:    models.TokenKind(kind),
-		TokenRef:     ref,
-		ToolName:     toolName,
-		ArgsHash:     argsHash,
-		ResultStatus: models.MCPAuditResultDenied,
-		ErrorKind:    errorKind,
-		LatencyMs:    int(time.Since(latencyStart) / time.Millisecond),
-		RequestID:    reqID,
+		Timestamp:      latencyStart,
+		UserID:         user.ID,
+		TokenKind:      models.TokenKind(kind),
+		TokenRef:       ref,
+		ToolName:       toolName,
+		ToolNameSource: toolNameSource,
+		ArgsHash:       argsHash,
+		ResultStatus:   models.MCPAuditResultDenied,
+		ErrorKind:      errorKind,
+		LatencyMs:      int(time.Since(latencyStart) / time.Millisecond),
+		RequestID:      reqID,
 	})
 
 	// TASK-961: mirror the denial into the authz-denials counter so

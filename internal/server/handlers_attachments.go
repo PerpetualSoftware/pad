@@ -329,7 +329,10 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 	// dots and spaces a download would lose, and prefixes a Windows device
 	// name with "_" (BUG-2822). See attachments.NormalizeFilename for each
 	// rule's reason.
-	filename := attachments.NormalizeFilename(header.Filename)
+	// The source is decided HERE, by comparing the raw name with its stored
+	// form, and recorded on the row (BUG-2819): "upload.bin" can be either a
+	// substitution or a file the caller really named that.
+	filename, filenameSource := attachments.NormalizeFilenameWithSource(header.Filename)
 
 	// Stream into a temp file under the OS temp dir. We copy in 32KiB
 	// chunks via io.Copy and tee through a sha256 hasher.
@@ -443,6 +446,8 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 		Filename:    filename,
 		Width:       width,
 		Height:      height,
+
+		FilenameSource: string(filenameSource),
 	}
 	// CreateAttachmentForLiveItem, not CreateAttachment: the parent item was
 	// validated near the top of this handler, but everything since — spooling
@@ -511,15 +516,19 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 	}
 
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"id":          att.ID,
-		"url":         attachmentURL(chi.URLParam(r, "slug"), att.ID),
-		"mime":        att.MimeType,
-		"size":        att.SizeBytes,
-		"width":       att.Width,
-		"height":      att.Height,
-		"filename":    att.Filename,
-		"category":    string(entry.Category),
-		"render_mode": renderModeString(entry.RenderMode),
+		"id":       att.ID,
+		"url":      attachmentURL(chi.URLParam(r, "slug"), att.ID),
+		"mime":     att.MimeType,
+		"size":     att.SizeBytes,
+		"width":    att.Width,
+		"height":   att.Height,
+		"filename": att.Filename,
+		// Where that name came from (BUG-2819): an uploader whose name was
+		// substituted or normalised can tell, without guessing from the
+		// string.
+		"filename_source": att.FilenameSource,
+		"category":        string(entry.Category),
+		"render_mode":     renderModeString(entry.RenderMode),
 	})
 }
 

@@ -61,18 +61,52 @@ const (
 //     — pad's tool catalog uses `pad_*` names, JSON-RPC methods use
 //     `<group>/<verb>` — so a single column is safe.
 type MCPAuditEntry struct {
-	ID           string
-	Timestamp    time.Time
-	UserID       string
-	WorkspaceID  *string
-	TokenKind    TokenKind
-	TokenRef     string
-	ToolName     string
-	ArgsHash     string
-	ResultStatus MCPAuditResultStatus
-	ErrorKind    *string
-	LatencyMs    int
-	RequestID    string
+	ID          string
+	Timestamp   time.Time
+	UserID      string
+	WorkspaceID *string
+	TokenKind   TokenKind
+	TokenRef    string
+	ToolName    string
+	// ToolNameSource says where ToolName came from (BUG-2819).
+	ToolNameSource MCPToolNameSource
+	ArgsHash       string
+	ResultStatus   MCPAuditResultStatus
+	ErrorKind      *string
+	LatencyMs      int
+	RequestID      string
+}
+
+// MCPToolNameSource says where an audit row's tool_name came from
+// (BUG-2819). The stored name cannot say on its own: a caller can name a tool
+// "(unknown)", which is also what the server records for an unparseable body.
+// The values match mcp_audit_log.tool_name_source (migration 096), which has a
+// CHECK constraint on exactly this set. The "(sanitised) " / "(unknown)"
+// namespace reservation in the audit middleware stays as defence in depth; it
+// is no longer the only way to tell the two apart.
+type MCPToolNameSource string
+
+const (
+	// MCPToolNameFromCaller is the caller's tool (or method) name as sent.
+	MCPToolNameFromCaller MCPToolNameSource = "caller"
+	// MCPToolNameSanitised is the caller's name with the "(sanitised) " mark:
+	// cleaning changed it, or it entered the reserved leading-"(" namespace.
+	MCPToolNameSanitised MCPToolNameSource = "sanitised"
+	// MCPToolNameSynthesised is a placeholder the server chose because the
+	// request named nothing usable ("(unknown)", "tools/call").
+	MCPToolNameSynthesised MCPToolNameSource = "synthesised"
+	// MCPToolNameSourceUnknown marks a row written before provenance was
+	// recorded.
+	MCPToolNameSourceUnknown MCPToolNameSource = "unknown"
+)
+
+// Valid reports whether v is one of the stored values.
+func (v MCPToolNameSource) Valid() bool {
+	switch v {
+	case MCPToolNameFromCaller, MCPToolNameSanitised, MCPToolNameSynthesised, MCPToolNameSourceUnknown:
+		return true
+	}
+	return false
 }
 
 // MCPAuditEntryInput is the write-side shape for InsertMCPAuditEntry.
@@ -80,17 +114,20 @@ type MCPAuditEntry struct {
 // caller's already-set timestamp (the middleware records the pre-
 // handler instant for accurate latency, then writes async).
 type MCPAuditEntryInput struct {
-	Timestamp    time.Time
-	UserID       string
-	WorkspaceID  string // empty → NULL
-	TokenKind    TokenKind
-	TokenRef     string
-	ToolName     string
-	ArgsHash     string
-	ResultStatus MCPAuditResultStatus
-	ErrorKind    string // empty → NULL
-	LatencyMs    int
-	RequestID    string
+	Timestamp   time.Time
+	UserID      string
+	WorkspaceID string // empty → NULL
+	TokenKind   TokenKind
+	TokenRef    string
+	ToolName    string
+	// ToolNameSource is where ToolName came from; empty is stored as
+	// "unknown", never as "caller" (BUG-2819).
+	ToolNameSource MCPToolNameSource
+	ArgsHash       string
+	ResultStatus   MCPAuditResultStatus
+	ErrorKind      string // empty → NULL
+	LatencyMs      int
+	RequestID      string
 }
 
 // MCPConnectionStats summarizes audit-log activity for one OAuth
