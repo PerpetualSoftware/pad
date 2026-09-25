@@ -423,16 +423,27 @@ type replayBuffer struct {
 }
 
 // newReplayBufferAfterReset builds a buffer replacing one whose sequence was
-// discarded. It refuses every cursor BELOW discarded+1 — that is, everything
-// at or below the highest ID the discarded buffers held, EXCEPT that a cursor
-// exactly equal to `discarded` is still served, since nothing above it was
-// buffered for such a client to be missing. Pass 0 when nothing was held.
+// discarded. Its floor refuses every cursor at or below `discarded`, the
+// highest ID the discarded buffers held, and does not refuse `discarded+1` —
+// which the ordinary checks (the newest ID, eviction) may still refuse. Pass
+// 0 when nothing was held.
+//
+// `discarded` ITSELF IS REFUSED (BUG-3206). It used to be served, on the
+// reasoning that nothing above it was buffered for such a client to be
+// missing. That holds only if the new sequence starts above it, and the reset
+// that raises this floor (the counter going backwards) is by definition one
+// where it did not: old 200, new 150, so a client at the old 200 has missed
+// the new 150..200 and was handed 201 as though it followed. The branch that
+// raises the floor cannot tell a genuine restart from an out-of-order straggler
+// and refuses on that uncertainty (see dropAllBuffers); serving the one cursor
+// at the peak contradicted it. `since` refuses sinceID+1 < knownFrom, so a
+// floor of discarded+2 is what refuses `discarded` and admits discarded+1.
 //
 // Use newReplayBuffer for a genuinely new buffer; the two differ in what they
 // may vouch for, and that difference is the whole point of having two.
 func newReplayBufferAfterReset(size int, discarded int64) *replayBuffer {
 	rb := newReplayBuffer(size)
-	rb.minKnownFrom = discarded + 1
+	rb.minKnownFrom = discarded + 2
 	return rb
 }
 
