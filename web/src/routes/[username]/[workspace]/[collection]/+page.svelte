@@ -12,8 +12,7 @@
 	import { laneWriteValue, laneWriteRefusalMessage } from '$lib/collections/laneWriteValue';
 	import { summarizeBulkFailures, bulkToastMessage } from '$lib/collections/bulkFailureReason';
 	import { createDefaultFields } from '$lib/collections/createDefaults';
-	import { blockedDraftMessage, draftCreateFields, draftTargets, saveAllDrafts } from '$lib/collections/laneDrafts';
-	import { formatLaneLabel } from '$lib/collections/boardColumns';
+	import { blockedDraftMessage, draftCreateFields, draftTargets, lostLaneLabel, saveAllDrafts } from '$lib/collections/laneDrafts';
 	import BoardView from '$lib/components/collections/BoardView.svelte';
 	import ListView from '$lib/components/collections/ListView.svelte';
 	import TableView from '$lib/components/collections/TableView.svelte';
@@ -2436,7 +2435,7 @@
 		// that cannot be saved anywhere honest is refused by THROWING, like the
 		// title limit above, since that is what keeps the text, rather than by
 		// a null a caller could read as done.
-		const built = draftCreateFields(groupValue, groupFieldDef, groupField, createDefaultFields(collection));
+		const built = draftCreateFields(groupValue, groupFieldDef, groupField, createDefaultFields(collection), fieldLabelFor);
 		if (!built.ok) {
 			toastStore.show(built.message, 'error');
 			throw new Error(built.message);
@@ -2498,13 +2497,20 @@
 	// show an orphaned draft inside Uncategorized, or its blocked notice; the
 	// leave dialog reads it to refuse Save all while any draft is blocked.
 	let draftPlacement = $derived(draftTargets(draftText, groupFieldDef, createDefaultFields(collection)));
+	// Keyed by the draft's MAP key (a `draftKey`), which is what Discard needs;
+	// the lost lane and, after a regroup, its field are what the message names.
 	let blockedDraftNotices = $derived(
-		Object.values(draftPlacement).flatMap((t) =>
+		Object.entries(draftPlacement).flatMap(([key, t]) =>
 			t.kind === 'blocked'
-				? [{ lane: t.lostLane, message: blockedDraftMessage(formatLaneLabel(t.lostLane), groupFieldDef?.label || groupField, t.reason) }]
+				? [{ lane: key, message: blockedDraftMessage(lostLaneLabel(t, fieldLabelFor), groupFieldDef?.label || groupField, t.reason) }]
 				: []
 		)
 	);
+
+	/** A schema field's label by key, for naming a draft's field after a regroup. */
+	function fieldLabelFor(fieldKey: string): string {
+		return schema?.fields.find((f) => f.key === fieldKey)?.label || fieldKey;
+	}
 
 	function discardDraft(lane: string) {
 		delete draftText[lane];

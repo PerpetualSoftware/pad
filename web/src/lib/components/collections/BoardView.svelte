@@ -27,7 +27,7 @@
 	import EmptyState from '../common/EmptyState.svelte';
 	import LaneActionsMenu from './LaneActionsMenu.svelte';
 	import { viewport } from '$lib/stores/breakpoint.svelte';
-	import type { DraftSaveTarget } from '$lib/collections/laneDrafts';
+	import { draftKey, lostLaneLabel, type DraftSaveTarget } from '$lib/collections/laneDrafts';
 
 
 	interface Props {
@@ -57,8 +57,9 @@
 		onGroupReorder?: (newOrder: string[]) => void;
 		oncreate?: () => void;
 		/**
-		 * Create an item in this lane from the inline draft card
-		 * (TASK-1676), pre-filling the lane's group value. Throws on failure
+		 * Create an item from the inline draft card keyed `groupValue` — a
+		 * `draftKey`, which the page resolves to a lane (TASK-1676, BUG-3214),
+		 * pre-filling the lane's group value. Throws on failure
 		 * so the draft can be restored. Gated behind `canEdit`. When wired,
 		 * the `+`/menu open a draft.
 		 *
@@ -72,9 +73,10 @@
 		/**
 		 * Inline draft state (TASK-1676) — owned by the page (which holds
 		 * the leave guard + dialog) so a draft survives a board↔list view
-		 * switch that unmounts this component. Keyed by lane value:
-		 * `draftText` is the in-progress title, `draftOpen` the card
-		 * visibility. Bound.
+		 * switch that unmounts this component. Keyed by `draftKey(groupField,
+		 * lane)` — the field AND the lane, so a regroup cannot read one field's
+		 * draft as another field's same-named lane (BUG-3214): `draftText` is the
+		 * in-progress title, `draftOpen` the card visibility. Bound.
 		 */
 		draftText?: Record<string, string>;
 		draftOpen?: Record<string, boolean>;
@@ -485,13 +487,18 @@
 	// needed (DR-1), then the user-orderable real columns. UNCATEGORIZED is
 	// deliberately kept OUT of `columnOrder` (the persisted, drag-reorderable
 	// set) so it can't be reordered into the middle or written to saved order.
+	/** A schema field's label by key, for a draft moved here by a regroup (BUG-3214). */
+	function fieldLabelFor(fieldKey: string): string {
+		return parseSchema(collection).fields.find((f) => f.key === fieldKey)?.label || fieldKey;
+	}
+
 	// Drafts whose lane is gone, shown inside Uncategorized (BUG-3043). That
 	// lane is rendered for them even when no ITEM is in it: without this the
 	// re-home would move the draft into a lane nobody can see, which is the
 	// defect again under a different name.
 	let rehomedDrafts = $derived(
 		Object.entries(draftPlacement).flatMap(([lane, t]) =>
-			t.kind === 'rehomed' ? [{ lane, lostLane: t.lostLane }] : []
+			t.kind === 'rehomed' ? [{ lane, lost: { lostLane: t.lostLane, lostField: t.lostField } }] : []
 		)
 	);
 	let renderColumns = $derived(
@@ -750,10 +757,10 @@
 		{relationGroupingRefusalMessage(groupingRefusal)}
 	</p>
 {/if}
-{#snippet draftCard(key: string, movedFrom: string | null)}
+{#snippet draftCard(key: string, movedFrom: { lostLane: string; lostField?: string } | null)}
 	<div class="lane-draft" class:lane-draft-rehomed={movedFrom !== null}>
 		{#if movedFrom !== null}
-			<p class="lane-draft-moved">Moved from {formatLaneLabel(movedFrom)}, a lane that no longer exists</p>
+			<p class="lane-draft-moved">Moved from {lostLaneLabel(movedFrom, fieldLabelFor)}, a lane that no longer exists</p>
 		{/if}
 		<textarea
 			bind:this={draftInputs[key]}
@@ -865,7 +872,7 @@
 							class="lane-btn lane-add-btn"
 							title="Add item to {formatLaneLabel(colValue).toLowerCase()}"
 							aria-label="Add item to {formatLaneLabel(colValue)}"
-							onclick={() => openDraft(colValue)}
+							onclick={() => openDraft(draftKey(groupField, colValue))}
 						>+</button>
 					{/if}
 					<!-- Kebab shows for create OR any non-empty lane (sort is
@@ -894,7 +901,7 @@
 									onSetLaneSort={(m) => setLaneSort(colValue, m)}
 									onClose={closeMenu}
 									onAddItem={onCreateInColumn && !isUncategorized && !isRelationGroup && !groupingRefusal
-										? () => openDraft(colValue)
+										? () => openDraft(draftKey(groupField, colValue))
 										: undefined}
 									onArchive={onArchiveColumn ? () => onArchiveColumn?.(colItems) : undefined}
 									onMove={/* The FIFTH affordance that writes the group value —
@@ -916,17 +923,17 @@
 					{/if}
 				</div>
 			</div>
-			{#if draftOpen[colValue]}
+			{#if draftOpen[draftKey(groupField, colValue)]}
 				<!-- Inline draft card (TASK-1676). Lives ABOVE the dndzone so
 				     it isn't draggable and isn't a real item until saved. -->
-				{@render draftCard(colValue, null)}
+				{@render draftCard(draftKey(groupField, colValue), null)}
 			{/if}
 			{#if isUncategorized && onCreateInColumn}
 				<!-- Re-homed drafts (BUG-3043): their lane no longer exists. Always
 				     rendered, not gated on `draftOpen` — there is no "+" left to
 				     reopen one with. -->
 				{#each rehomedDrafts as d (d.lane)}
-					{@render draftCard(d.lane, d.lostLane)}
+					{@render draftCard(d.lane, d.lost)}
 				{/each}
 			{/if}
 			<!-- svelte-ignore a11y_no_static_element_interactions -->
