@@ -9,6 +9,7 @@
 	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import { localSearch, parseSearchQuery, parseGoToTarget } from '$lib/stores/localSearch.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
+	import { groupResultsByCollection } from './groupResults';
 	import type {
 		SearchResult,
 		SearchFacets,
@@ -108,20 +109,8 @@
 	// Derived: group results by collection when not filtering by collection
 	let groupedResults = $derived.by(() => {
 		if (filterCollection || results.length === 0) return null;
-		const groups: Record<string, { icon: string; name: string; results: SearchResult[] }> = {};
-		for (const r of results) {
-			const slug = r.item.collection_slug || 'unknown';
-			if (!groups[slug]) {
-				const coll = collectionStore.collections.find((c) => c.slug === slug);
-				groups[slug] = {
-					icon: r.item.collection_icon || coll?.icon || '📦',
-					name: coll?.name || slug,
-					results: []
-				};
-			}
-			groups[slug].results.push(r);
-		}
-		return groups;
+		// Keyed by a user-chosen slug, so a null-prototype map (BUG-3054).
+		return groupResultsByCollection(results, collectionStore.collections);
 	});
 
 	// Derived: flat index list for keyboard navigation. Content matches

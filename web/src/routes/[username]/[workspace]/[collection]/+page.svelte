@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { isRelationType } from '$lib/items/relationFieldTypes';
+	import { ownValue } from '$lib/utils/ownValue';
 	import { page, navigating } from '$app/state';
 	import { browser } from '$app/environment';
 	import { goto, beforeNavigate, afterNavigate } from '$app/navigation';
@@ -1824,24 +1825,6 @@
 		return result;
 	});
 
-	let itemCounts = $derived.by(() => {
-		if (!collection) return null;
-		const statusField = schema?.fields.find((f) => f.key === 'status');
-		if (!statusField?.options) return null;
-		const counts: Record<string, number> = {};
-		for (const opt of statusField.options) {
-			counts[opt] = 0;
-		}
-		for (const item of items) {
-			const fields = parseFields(item);
-			const status = fields.status;
-			if (status && counts[status] !== undefined) {
-				counts[status]++;
-			}
-		}
-		return counts;
-	});
-
 	// Per-collection tag counts for the filter chips. Computed client-side
 	// from `items` (already collection-scoped via localIndex, and already
 	// honoring the `showArchived` toggle) — no network round-trip, and the
@@ -1874,7 +1857,8 @@
 		bugs: '/pad triage open issues in this project',
 	};
 
-	let emptyHint = $derived(emptyHintMap[collSlug] ?? null);
+	// A collection slug is user-chosen: own keys only (BUG-3054).
+	let emptyHint = $derived(ownValue(emptyHintMap, collSlug) ?? null);
 
 	let filtersOpen = $state(false);
 	let hasActiveFilters = $derived(searchQuery.trim() !== '' || Object.keys(activeFilters).length > 0 || selectedTags.length > 0 || unparentedApplied);
