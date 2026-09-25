@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -164,6 +165,10 @@ func (s *Server) resolveAuthorizedCopy(w http.ResponseWriter, r *http.Request) (
 	// repeatedly from a live UI (Codex round 7).
 	var input itemCopyPreflightRequest
 	if err := decodeJSON(r, &input); err != nil {
+		if rep := (*models.RepeatedMemberError)(nil); errors.As(err, &rep) {
+			writeError(w, http.StatusBadRequest, "invalid_body", rep.Error())
+			return out, false
+		}
 		writeError(w, http.StatusBadRequest, "invalid_body", "Invalid JSON body")
 		return out, false
 	}

@@ -96,9 +96,20 @@ func checkNumbersFitFloat64(v any) error {
 // into the destination item, so a plain map[string]any member rounded an
 // integer above 2^53 the caller supplied. Absent and null decode to nil, as
 // the plain map did.
+//
+// A repeated member used to MERGE into the plain map; decoded here it would
+// replace, and the last occurrence would win (BUG-3219). encoding/json decodes
+// every occurrence into the same field, so a second call finding the map
+// already set is a repeat, and it is refused. That misses one shape, a null
+// followed by an object, where nothing is dropped; the structs carrying this
+// type also call RefuseRepeatedMember, which sees every occurrence and names
+// the member. This check is the backstop for a struct that forgets to.
 type FieldValues map[string]any
 
 func (f *FieldValues) UnmarshalJSON(data []byte) error {
+	if *f != nil {
+		return &RepeatedMemberError{Member: "a field-values member"}
+	}
 	m, err := DecodeFieldsJSON(data)
 	if err != nil {
 		return err

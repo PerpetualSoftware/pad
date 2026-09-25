@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -138,6 +139,13 @@ type itemCopyPreflightRequest struct {
 	TargetCollection string             `json:"target_collection"`
 	FieldOverrides   models.FieldValues `json:"field_overrides"`
 	ArchiveSource    bool               `json:"archive_source"`
+}
+
+// UnmarshalJSON refuses a repeated field_overrides (BUG-3219): FieldValues
+// keeps only the last occurrence, where the plain map before BUG-3202 merged.
+func (q *itemCopyPreflightRequest) UnmarshalJSON(data []byte) error {
+	type alias itemCopyPreflightRequest
+	return refuseRepeatedFieldValues(json.Unmarshal(data, (*alias)(q)), data, "field_overrides")
 }
 
 // ItemCopyPreflight is the 200 response.
@@ -1765,4 +1773,24 @@ func dropEmptyRelationOrigins(final map[string]any, origin map[string]string, sc
 		delete(final, def.Key)
 		delete(origin, def.Key)
 	}
+}
+
+// refuseRepeatedFieldValues finishes a request decode whose struct carries a
+// models.FieldValues member (BUG-3219). decodeErr is the struct decode's
+// result. A repeat is answered naming the member: FieldValues's own backstop
+// fires DURING the decode but cannot know its member's name, and a repeat whose
+// first occurrence is null gets past that backstop, so the scan runs after
+// either a clean decode or the backstop's refusal. Any other decode error is
+// returned as it is.
+func refuseRepeatedFieldValues(decodeErr error, data []byte, member string) error {
+	if decodeErr != nil {
+		var rep *models.RepeatedMemberError
+		if !errors.As(decodeErr, &rep) {
+			return decodeErr
+		}
+	}
+	if err := models.RefuseRepeatedMember(data, member); err != nil {
+		return err
+	}
+	return decodeErr
 }

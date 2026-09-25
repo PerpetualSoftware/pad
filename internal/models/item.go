@@ -1576,6 +1576,12 @@ func (u *ItemUpdate) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
 	}
+	// The raw capture below keeps only the LAST fields_patch, where the plain
+	// map decode before BUG-3202 merged repeats. Refuse a repeat rather than
+	// drop part of the write (BUG-3219).
+	if err := RefuseRepeatedMember(data, "fields_patch"); err != nil {
+		return err
+	}
 
 	// fields_patch is decoded keeping number literals (BUG-3202): its values
 	// are merged into the stored blob and written, so a float64 here rounds
