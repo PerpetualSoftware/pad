@@ -19,8 +19,8 @@
 			"id": "B showSaved re-registers itself by name as a visibilitychange listener",
 			"subs": [
 				[
-					"\tfunction showSaved() {\n\t\tsaveStatus = 'saved';\n",
-					"\tfunction showSaved() {\n\t\t// Nobody sees the indicator on a hidden tab: show it when they come back.\n\t\tif (document.hidden) {\n\t\t\tdocument.addEventListener('visibilitychange', showSaved, { once: true });\n\t\t\treturn;\n\t\t}\n\t\tsaveStatus = 'saved';\n"
+					"\tfunction showSaved(saveTok: SaveToken) {\n\t\tsaves.succeed(saveTok);\n",
+					"\tfunction showSaved(saveTok: SaveToken) {\n\t\t// Nobody sees the indicator on a hidden tab: show it when they come back.\n\t\tif (document.hidden) {\n\t\t\tdocument.addEventListener('visibilitychange', showSaved, { once: true });\n\t\t\treturn;\n\t\t}\n\t\tsaves.succeed(saveTok);\n"
 				]
 			],
 			"refuses": [
@@ -31,8 +31,8 @@
 			"id": "B2 the same through an arrow that calls showSaved",
 			"subs": [
 				[
-					"\tfunction showSaved() {\n\t\tsaveStatus = 'saved';\n",
-					"\tfunction showSaved() {\n\t\tif (document.hidden) {\n\t\t\tdocument.addEventListener('visibilitychange', () => showSaved(), { once: true });\n\t\t\treturn;\n\t\t}\n\t\tsaveStatus = 'saved';\n"
+					"\tfunction showSaved(saveTok: SaveToken) {\n\t\tsaves.succeed(saveTok);\n",
+					"\tfunction showSaved(saveTok: SaveToken) {\n\t\tif (document.hidden) {\n\t\t\tdocument.addEventListener('visibilitychange', () => showSaved(saveTok), { once: true });\n\t\t\treturn;\n\t\t}\n\t\tsaves.succeed(saveTok);\n"
 				]
 			],
 			"refuses": [
@@ -95,8 +95,8 @@
 			"id": "G a function-valued let rebound in an $effect, called above the fence",
 			"subs": [
 				[
-					"\tfunction showSaved() {\n",
-					"\tlet applyTitle = (next: Item): void => {\n\t\tvoid next;\n\t};\n\t$effect(() => {\n\t\tapplyTitle = (next: Item) => {\n\t\t\titem = withInflightTags(next);\n\t\t};\n\t});\n\n\tfunction showSaved() {\n"
+					"\tfunction showSaved(saveTok: SaveToken) {\n",
+					"\tlet applyTitle = (next: Item): void => {\n\t\tvoid next;\n\t};\n\t$effect(() => {\n\t\tapplyTitle = (next: Item) => {\n\t\t\titem = withInflightTags(next);\n\t\t};\n\t});\n\n\tfunction showSaved(saveTok: SaveToken) {\n"
 				],
 				[
 					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n",
@@ -152,8 +152,8 @@
 			"model": "a helper already being inlined is not walked again as the callback it hands itself to",
 			"subs": [
 				[
-					"\tfunction showSaved() {\n\t\tsaveStatus = 'saved';\n",
-					"\tfunction showSaved() {\n\t\t// Nobody sees the indicator on a hidden tab: show it when they come back.\n\t\tif (document.hidden) {\n\t\t\tdocument.addEventListener('visibilitychange', showSaved, { once: true });\n\t\t\treturn;\n\t\t}\n\t\tsaveStatus = 'saved';\n"
+					"\tfunction showSaved(saveTok: SaveToken) {\n\t\tsaves.succeed(saveTok);\n",
+					"\tfunction showSaved(saveTok: SaveToken) {\n\t\t// Nobody sees the indicator on a hidden tab: show it when they come back.\n\t\tif (document.hidden) {\n\t\t\tdocument.addEventListener('visibilitychange', showSaved, { once: true });\n\t\t\treturn;\n\t\t}\n\t\tsaves.succeed(saveTok);\n"
 				]
 			]
 		},
@@ -162,8 +162,8 @@
 			"model": "the same re-entry through a literal that calls the helper",
 			"subs": [
 				[
-					"\tfunction showSaved() {\n\t\tsaveStatus = 'saved';\n",
-					"\tfunction showSaved() {\n\t\tif (document.hidden) {\n\t\t\tdocument.addEventListener('visibilitychange', () => showSaved(), { once: true });\n\t\t\treturn;\n\t\t}\n\t\tsaveStatus = 'saved';\n"
+					"\tfunction showSaved(saveTok: SaveToken) {\n\t\tsaves.succeed(saveTok);\n",
+					"\tfunction showSaved(saveTok: SaveToken) {\n\t\tif (document.hidden) {\n\t\t\tdocument.addEventListener('visibilitychange', () => showSaved(saveTok), { once: true });\n\t\t\treturn;\n\t\t}\n\t\tsaves.succeed(saveTok);\n"
 				]
 			]
 		},
@@ -216,8 +216,8 @@
 			"model": "a helper is declared once, not bound once: a let rebound outside every unit is inlined with its declared body",
 			"subs": [
 				[
-					"\tfunction showSaved() {\n",
-					"\tlet applyTitle = (next: Item): void => {\n\t\tvoid next;\n\t};\n\t$effect(() => {\n\t\tapplyTitle = (next: Item) => {\n\t\t\titem = withInflightTags(next);\n\t\t};\n\t});\n\n\tfunction showSaved() {\n"
+					"\tfunction showSaved(saveTok: SaveToken) {\n",
+					"\tlet applyTitle = (next: Item): void => {\n\t\tvoid next;\n\t};\n\t$effect(() => {\n\t\tapplyTitle = (next: Item) => {\n\t\t\titem = withInflightTags(next);\n\t\t};\n\t});\n\n\tfunction showSaved(saveTok: SaveToken) {\n"
 				],
 				[
 					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n",

@@ -141,7 +141,7 @@ describe('ItemDetail field writes are ordered', () => {
 		// leaves the server holding the confirmed value and the pane showing the
 		// old one, with nothing left to correct it. `claim` asks whether anything
 		// newer actually WROTE, which is the question that matters here.
-		// Bounded at the branch's own `showSaved()`, not at the next landmark:
+		// Bounded at the branch's own `showSaved(saveTok)`, not at the next landmark:
 		// the DECLINED branch below it legitimately mentions supersession (for
 		// the save indicator), and a slice running into it reports that as a
 		// violation here.
@@ -151,7 +151,7 @@ describe('ItemDetail field writes are ordered', () => {
 		// anchored on the branch would miss it — measured, it survived.
 		const windowAt = UPDATE_FIELD.indexOf('if (!stillCurrent() || !item) return;');
 		const forcedAt = UPDATE_FIELD.indexOf('if (forced) {', windowAt);
-		const savedAt = UPDATE_FIELD.indexOf('showSaved();', forcedAt);
+		const savedAt = UPDATE_FIELD.indexOf('showSaved(saveTok);', forcedAt);
 		expect(windowAt).toBeGreaterThan(-1);
 		expect(forcedAt).toBeGreaterThan(windowAt);
 		expect(savedAt).toBeGreaterThan(forcedAt);
@@ -175,9 +175,12 @@ describe('ItemDetail field writes are ordered', () => {
 		const afterForced = declined.slice(declined.indexOf('toastStore.show(\'Status change cancelled\''));
 		expect(declined).toContain("toastStore.show('Status change cancelled'");
 		// Between the end of the forced branch and the cancel toast there is no
-		// claim — only the saveStatus guard.
+		// claim. (It used to hold the save-indicator guard; the indicator now
+		// settles in updateField's finally, BUG-3044.)
 		const cancelAt = declined.indexOf("toastStore.show('Status change cancelled'");
-		const declinedBody = declined.slice(declined.indexOf('}', declined.indexOf('showSaved();')), cancelAt);
+		const succeedAt = declined.indexOf('showSaved(saveTok);');
+		expect(succeedAt, 'the forced branch ends at its success record').toBeGreaterThan(-1);
+		const declinedBody = declined.slice(declined.indexOf('}', succeedAt), cancelAt);
 		expect(declinedBody).not.toContain('fieldWrites.claim(ticket)');
 		expect(afterForced.length).toBeGreaterThan(0);
 	});

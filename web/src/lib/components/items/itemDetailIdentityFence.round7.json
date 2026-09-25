@@ -60,8 +60,8 @@
 			"class": "F1",
 			"subs": [
 				[
-					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
-					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n\t\t\twindow.addEventListener('focus', async () => {\n\t\t\t\titem = withInflightTags(updated);\n\t\t\t}, { once: true });\n"
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved(saveTok);\n",
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved(saveTok);\n\t\t\twindow.addEventListener('focus', async () => {\n\t\t\t\titem = withInflightTags(updated);\n\t\t\t}, { once: true });\n"
 				]
 			],
 			"nested": [
@@ -80,8 +80,8 @@
 			"class": "F1",
 			"subs": [
 				[
-					"\tfunction showSaved() {\n",
-					"\tfunction showSaved() {\n\t\twindow.addEventListener('focus', async () => {\n\t\t\tsaveStatus = 'idle';\n\t\t}, { once: true });\n"
+					"\tfunction showSaved(saveTok: SaveToken) {\n",
+					"\tfunction showSaved(saveTok: SaveToken) {\n\t\twindow.addEventListener('focus', async () => {\n\t\t\tsaveStatus = 'idle';\n\t\t}, { once: true });\n"
 				]
 			],
 			"nested": [
@@ -158,8 +158,8 @@
 			"class": "F3",
 			"subs": [
 				[
-					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
-					"{ title: titleDraft.trim() });\n\t\t\tconst current = gen === loadGeneration && item?.id === targetItem.id;\n\t\t\tif (!current) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n\t\t\tfor await (const t of api.items.titleStream(wsSlug, targetItem.id)) {\n\t\t\t\tif (!current) return;\n\t\t\t\ttitleDraft = t;\n\t\t\t}\n"
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved(saveTok);\n",
+					"{ title: titleDraft.trim() });\n\t\t\tconst current = gen === loadGeneration && item?.id === targetItem.id;\n\t\t\tif (!current) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved(saveTok);\n\t\t\tfor await (const t of api.items.titleStream(wsSlug, targetItem.id)) {\n\t\t\t\tif (!current) return;\n\t\t\t\ttitleDraft = t;\n\t\t\t}\n"
 				]
 			],
 			"refuses": [
@@ -172,8 +172,8 @@
 			"class": "F3",
 			"subs": [
 				[
-					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
-					"{ title: titleDraft.trim() });\n\t\t\tconst current = gen === loadGeneration && item?.id === targetItem.id;\n\t\t\tif (!current) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n\t\t\tconst titles = api.items.titleStream(wsSlug, targetItem.id);\n\t\t\ttry {\n\t\t\t\tfor await (const t of titles) void t;\n\t\t\t} catch {\n\t\t\t\tif (current) toastStore.show('Title stream failed', 'error');\n\t\t\t}\n"
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved(saveTok);\n",
+					"{ title: titleDraft.trim() });\n\t\t\tconst current = gen === loadGeneration && item?.id === targetItem.id;\n\t\t\tif (!current) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved(saveTok);\n\t\t\tconst titles = api.items.titleStream(wsSlug, targetItem.id);\n\t\t\ttry {\n\t\t\t\tfor await (const t of titles) void t;\n\t\t\t} catch {\n\t\t\t\tif (current) toastStore.show('Title stream failed', 'error');\n\t\t\t}\n"
 				]
 			],
 			"refuses": [
@@ -216,12 +216,12 @@
 					"\t\t\tif (ws === wsSlug && identityHeld(startedAt)) tagSuggestions = [];\n"
 				],
 				[
-					"\t\tconst gen = loadGeneration;\n\t\tsaveStatus = 'saving';\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title",
-					"\t\tconst gen = loadGeneration;\n\t\tconst startedAt = loadGeneration;\n\t\tsaveStatus = 'saving';\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title"
+					"\t\tconst gen = loadGeneration;\n\t\tconst saveTok = saves.begin();\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title",
+					"\t\tconst gen = loadGeneration;\n\t\tconst startedAt = loadGeneration;\n\t\tconst saveTok = saves.begin();\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title"
 				],
 				[
-					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
-					"{ title: titleDraft.trim() });\n\t\t\tif (!identityHeld(startedAt)) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved(saveTok);\n",
+					"{ title: titleDraft.trim() });\n\t\t\tif (!identityHeld(startedAt)) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved(saveTok);\n"
 				]
 			],
 			"refuses": [
@@ -234,12 +234,12 @@
 			"class": "F8",
 			"subs": [
 				[
-					"\t\tconst gen = loadGeneration;\n\t\tsaveStatus = 'saving';\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title",
-					"\t\tconst gen = loadGeneration;\n\t\tconst sameGen = (g: number) => g === loadGeneration;\n\t\tsaveStatus = 'saving';\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title"
+					"\t\tconst gen = loadGeneration;\n\t\tconst saveTok = saves.begin();\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title",
+					"\t\tconst gen = loadGeneration;\n\t\tconst sameGen = (g: number) => g === loadGeneration;\n\t\tconst saveTok = saves.begin();\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title"
 				],
 				[
-					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
-					"{ title: titleDraft.trim() });\n\t\t\tif (!sameGen(loadGeneration)) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved(saveTok);\n",
+					"{ title: titleDraft.trim() });\n\t\t\tif (!sameGen(loadGeneration)) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved(saveTok);\n"
 				],
 				[
 					"\t\t\tconst fresh = await submitWithOCC(false);\n\t\t\tif (!stillCurrent()) return;\n",
@@ -256,12 +256,12 @@
 			"class": "F8",
 			"subs": [
 				[
-					"\t\tconst gen = loadGeneration;\n\t\tsaveStatus = 'saving';\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title",
-					"\t\tconst gen = loadGeneration;\n\t\tconst current = () => gen === loadGeneration;\n\t\tsaveStatus = 'saving';\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title"
+					"\t\tconst gen = loadGeneration;\n\t\tconst saveTok = saves.begin();\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title",
+					"\t\tconst gen = loadGeneration;\n\t\tconst current = () => gen === loadGeneration;\n\t\tconst saveTok = saves.begin();\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title"
 				],
 				[
-					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
-					"{ title: titleDraft.trim() });\n\t\t\tif (!current) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved(saveTok);\n",
+					"{ title: titleDraft.trim() });\n\t\t\tif (!current) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved(saveTok);\n"
 				],
 				[
 					"\t\t\tconst fresh = await submitWithOCC(false);\n\t\t\tif (!stillCurrent()) return;\n",
@@ -281,8 +281,8 @@
 			"model": "shadowing: a callback param named like a capture is read as that capture; params stay exempt from the shadowing refusal because switchedAway(targetItem, gen) and its callers need the name, and reusing a capture's name for a different value is the shadowing the header puts outside the model",
 			"subs": [
 				[
-					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
-					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n\t\t\tdialogs.onGeneration((gen: number) => {\n\t\t\t\tif (gen !== loadGeneration) return;\n\t\t\t\titem = withInflightTags(updated);\n\t\t\t});\n"
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved(saveTok);\n",
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved(saveTok);\n\t\t\tdialogs.onGeneration((gen: number) => {\n\t\t\t\tif (gen !== loadGeneration) return;\n\t\t\t\titem = withInflightTags(updated);\n\t\t\t});\n"
 				]
 			]
 		},
@@ -292,12 +292,12 @@
 			"model": "contrived fence: a helper whose whole body is a fence boolean computed before the await is a fence that cannot lapse; no author trying to comply wraps a pre-await boolean in a zero-argument function to read it later",
 			"subs": [
 				[
-					"\t\tconst gen = loadGeneration;\n\t\tsaveStatus = 'saving';\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title",
-					"\t\tconst gen = loadGeneration;\n\t\tconst startedCurrent = gen === loadGeneration;\n\t\tconst stillHere = () => startedCurrent;\n\t\tsaveStatus = 'saving';\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title"
+					"\t\tconst gen = loadGeneration;\n\t\tconst saveTok = saves.begin();\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title",
+					"\t\tconst gen = loadGeneration;\n\t\tconst startedCurrent = gen === loadGeneration;\n\t\tconst stillHere = () => startedCurrent;\n\t\tconst saveTok = saves.begin();\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title"
 				],
 				[
-					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n",
-					"{ title: titleDraft.trim() });\n\t\t\tif (!stillHere()) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved();\n"
+					"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved(saveTok);\n",
+					"{ title: titleDraft.trim() });\n\t\t\tif (!stillHere()) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved(saveTok);\n"
 				]
 			]
 		}
