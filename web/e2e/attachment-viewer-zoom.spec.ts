@@ -66,27 +66,27 @@ async function openBig(
 }
 
 /**
- * Zoom to maximum by pressing '+' ONE step at a time, settling each transition,
- * until the scale stops climbing (the clamp). Per-step settling avoids the
- * rapid-press race where two mid-animation reads look equal and stop early.
+ * Zoom to maximum: press '+' in BURSTS, settle once per burst, and stop at the
+ * first burst that does not climb (the clamp).
+ *
+ * A burst is safe because each press computes from the viewer's zoom STATE, not
+ * from the rendered matrix, so four presses land exactly four steps however the
+ * transitions overlap. `settleScale` waits for the transition to END, so a burst
+ * that does not climb really is the clamp and not a read taken too early.
+ *
+ * It used to settle after EVERY press, with a 1.5s wait for the clamp press to
+ * climb. Once settleScale waited out the full 0.15s transition (BUG-3213),
+ * paying that on every step moved all three callers 2-3s closer to the 30s
+ * budget at 8 workers (pan-clamp p50 17.2s → 19.8s, max 19.6s → 25.2s).
  */
 async function zoomToMax(page: Page): Promise<number> {
+	const BURST = 4;
 	let prev = await settleScale(page);
-	for (let i = 0; i < 20; i++) {
-		await page.keyboard.press('+');
-		// Wait for THIS press to take effect (the scale climbs past `prev`), up to a
-		// deadline; if it never climbs, we are at the clamp. This avoids the race
-		// where the press hasn't been processed yet and two equal reads look settled.
-		const deadline = Date.now() + 1500;
-		let climbed = false;
-		while (Date.now() < deadline) {
-			if ((await renderedScale(page)) > prev + 1e-3) {
-				climbed = true;
-				break;
-			}
-		}
-		if (!climbed) return prev; // clamp reached
-		prev = await settleScale(page);
+	for (let i = 0; i < 10; i++) {
+		for (let k = 0; k < BURST; k++) await page.keyboard.press('+');
+		const now = await settleScale(page);
+		if (now <= prev + 1e-3) return now; // clamp reached
+		prev = now;
 	}
 	return prev;
 }
