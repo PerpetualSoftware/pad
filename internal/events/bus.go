@@ -423,9 +423,10 @@ type replayBuffer struct {
 }
 
 // newReplayBufferAfterReset builds a buffer replacing one whose sequence was
-// discarded. It refuses every cursor at or below `discarded`, the highest ID
-// the discarded buffers held, and serves `discarded+1` onward. Pass 0 when
-// nothing was held.
+// discarded. Its floor refuses every cursor at or below `discarded`, the
+// highest ID the discarded buffers held, and does not refuse `discarded+1` —
+// which the ordinary checks (the newest ID, eviction) may still refuse. Pass
+// 0 when nothing was held.
 //
 // `discarded` ITSELF IS REFUSED (BUG-3206). It used to be served, on the
 // reasoning that nothing above it was buffered for such a client to be
