@@ -110,6 +110,13 @@ func EnsureStructuredEntryIDs(fieldsJSON string) (fixed string, changed bool, er
 	if fieldsJSON == "" || fieldsJSON == "{}" {
 		return fieldsJSON, false, nil
 	}
+	// The timeline's FIRST stage: it parses the whole blob with a plain
+	// Unmarshal, which fails on a number outside float64's range anywhere in
+	// it, and then shows no entries at all. Such a blob has nothing on the
+	// positional path, so it is left alone (codex round 2).
+	if _, ok := parseItemFields(fieldsJSON); !ok {
+		return fieldsJSON, false, nil
+	}
 	dec := json.NewDecoder(strings.NewReader(fieldsJSON))
 	dec.UseNumber()
 	var fieldsMap map[string]any

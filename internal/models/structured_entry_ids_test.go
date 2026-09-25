@@ -133,21 +133,26 @@ func TestAppendRepairsIdlessSiblings(t *testing.T) {
 // read, and only a blob that is exactly one JSON value.
 func TestEnsureStructuredEntryIDsSkipsWhatTheTimelineCannotRead(t *testing.T) {
 	for name, in := range map[string]string{
-		"non-object element":   `{"implementation_notes":[{"summary":"idless"},"not-an-object"]}`,
-		"non-string id":        `{"implementation_notes":[{"summary":"idless"},{"id":7,"summary":"numeric"}]}`,
-		"not an array":         `{"implementation_notes":{"summary":"idless"}}`,
-		"trailing bytes":       `{"implementation_notes":[{"summary":"idless"}]} trailing`,
-		"top-level not object": `[{"summary":"idless"}]`,
+		"non-object element":    `{"implementation_notes":[{"summary":"idless"},"not-an-object"]}`,
+		"non-string id":         `{"implementation_notes":[{"summary":"idless"},{"id":7,"summary":"numeric"}]}`,
+		"not an array":          `{"implementation_notes":{"summary":"idless"}}`,
+		"trailing bytes":        `{"implementation_notes":[{"summary":"idless"}]} trailing`,
+		"top-level not object":  `[{"summary":"idless"}]`,
+		"number beyond float64": `{"x":1e10000,"implementation_notes":[{"summary":"idless"}]}`,
 	} {
 		out, changed, err := EnsureStructuredEntryIDs(in)
 		if err != nil || changed || out != in {
 			t.Errorf("%s: changed=%v err=%v out=%q, want the input untouched", name, changed, err, out)
 		}
 		// Control: the timeline really does show nothing for the kind.
-		if name != "trailing bytes" && name != "top-level not object" {
+		if name != "trailing bytes" && name != "top-level not object" && name != "number beyond float64" {
 			if got := ExtractItemImplementationNotes(in); len(got) != 0 {
 				t.Errorf("%s: control failed, the timeline extraction reads %d notes", name, len(got))
 			}
+		}
+		// Every case: the timeline's own extraction reads nothing either.
+		if got := ExtractItemImplementationNotes(in); len(got) != 0 && name != "trailing bytes" {
+			t.Errorf("%s: control failed, the timeline extraction reads %d notes", name, len(got))
 		}
 	}
 }
