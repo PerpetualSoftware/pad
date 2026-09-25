@@ -704,13 +704,11 @@ func TestAnEpochChangeDiscardsTheHighWaterMark(t *testing.T) {
 // only: the shared-counter check cannot see this at all, since after the reset
 // the remote counter and our high-water mark AGREE on the new space's value.
 //
-// SCOPE, so this test is not read as more than it is (codex round 22): it
-// pins the boundary at n.ID-1, and n.ID ITSELF is still admitted. If the old
-// space also reached n.ID that cursor remains ambiguous, as does every
-// old-space id up to the old high water mark. No constant here closes that —
-// it needs a boundary that remembers the old space's extent, which is
-// BUG-2743. The +1 is a strict improvement over n.ID and not a complete fix,
-// and the epoch is what actually distinguishes two sequences.
+// SCOPE: this pins the +1 at n.ID-1. n.ID itself, and every cursor up to the
+// old high-water mark, is refused by the abandoned-space boundary instead
+// (BUG-2743), which redis_bus_ambiguity_test.go pins across every arm. The
+// NEW-space leg below therefore uses a cursor ABOVE the old peak: one at or
+// below it is exactly as ambiguous as 99, and is refused since BUG-2743.
 func TestAnOldSpaceCursorIsRefusedAfterACounterReset(t *testing.T) {
 	t.Parallel()
 
@@ -749,13 +747,19 @@ func TestAnOldSpaceCursorIsRefusedAfterACounterReset(t *testing.T) {
 					"got %d notifications; knownFrom must be n.ID+1 after a counter reset, not n.ID", len(got))
 			}
 
-			// AND THE NEW SPACE STILL WORKS: a client genuinely at 100 is
-			// served whatever follows. Without this leg, refusing everything
-			// forever would pass the assertion above.
-			b.fanOutLocally(Notification{ID: 101, Kind: KindComment, ItemRef: "NEWER"}, b.currentGen())
-			got := b.EventsSince(100)
+			// AND THE NEW SPACE STILL WORKS once it is unambiguous: after it
+			// climbs past the old peak of 200, a client at 201 is served
+			// whatever follows. Without this leg, refusing everything forever
+			// would pass the assertion above. (A cursor at 100 — this space's
+			// own first id — is refused since BUG-2743: the old space reached
+			// 100 too.)
+			for id := int64(101); id <= 201; id++ {
+				b.fanOutLocally(Notification{ID: id, Kind: KindComment, ItemRef: "NEW"}, b.currentGen())
+			}
+			b.fanOutLocally(Notification{ID: 202, Kind: KindComment, ItemRef: "NEWER"}, b.currentGen())
+			got := b.EventsSince(201)
 			if len(got) != 1 || got[0].ItemRef != "NEWER" {
-				t.Fatalf("a cursor inside the NEW space must be served, got %+v", got)
+				t.Fatalf("a cursor above the old space must be served, got %+v", got)
 			}
 		})
 	}

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -401,5 +403,70 @@ func TestMonitorSessionIdentity_RootCwdIsUnlabelled(t *testing.T) {
 	}
 	if ident.PID != os.Getpid() {
 		t.Fatalf("pid = %d, want %d — the pid is still worth sending", ident.PID, os.Getpid())
+	}
+}
+
+// THE CONSUMER IS TOLD (BUG-2743 / BUG-2728 follow-through, lead ruling on
+// #1518). Clearing the cursor is this process's recovery; the agent reading
+// stdout cannot see a cursor, so a sync_required that printed nothing left it
+// believing it had missed nothing. Each leg reads what reached the WRITER,
+// which is the only thing the consumer ever sees.
+func TestStreamWatchEvents_SyncRequiredPrintsAResyncLine(t *testing.T) {
+	armSessionForTest(t)
+	const syncReq = "event: sync_required\ndata: {\"reason\":\"gap\"}\n\n"
+	notif := func(id int) string {
+		return fmt.Sprintf("id: %d\nevent: notification\ndata: {\"item_ref\":\"TASK-%d\",\"kind\":\"comment\",\"actor\":\"Dave\",\"summary\":\"hi\"}\n\n", id, id)
+	}
+	count := func(out string) int { return strings.Count(out, resyncMonitorLine) }
+
+	for _, tc := range []struct {
+		name string
+		body string
+		want int
+	}{
+		// The control for the fold: a sync_required with no notification
+		// before it prints exactly one line.
+		{"one sync_required", syncReq, 1},
+		// Repeats with nothing between them: the consumer already owes the
+		// re-check, so a second line would be noise.
+		{"repeats are folded", syncReq + syncReq + syncReq, 1},
+		// A notification in between means the consumer may have acted on
+		// the first; a new gap after it must be announced again.
+		{"re-announced after a notification", syncReq + notif(7) + syncReq, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			streamWatchEventsTo(&buf, fakeSSEResponse(tc.body), "42")
+			if got := count(buf.String()); got != tc.want {
+				t.Fatalf("want %d resync line(s), got %d; stdout was:\n%s", tc.want, got, buf.String())
+			}
+		})
+	}
+}
+
+// A disarmed session is told nothing, a resync included — the same consent
+// gate a notification takes.
+func TestStreamWatchEvents_ResyncLineRespectsConsent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CODE_MESSAGING_SOCKET", "")
+	dataDir := filepath.Join(home, ".pad")
+	if err := os.MkdirAll(dataDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PAD_DATA_DIR", dataDir)
+	workDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workDir, ".pad.toml"), []byte("workspace = \"demo\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(workDir)
+
+	var buf bytes.Buffer
+	last := streamWatchEventsTo(&buf, fakeSSEResponse("event: sync_required\ndata: {}\n\n"), "42")
+	if buf.Len() != 0 {
+		t.Fatalf("a disarmed session must print nothing, got %q", buf.String())
+	}
+	if last != "" {
+		t.Fatalf("the cursor is still cleared when nothing is printed, got %q", last)
 	}
 }

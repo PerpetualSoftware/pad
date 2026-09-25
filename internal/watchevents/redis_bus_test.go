@@ -139,12 +139,47 @@ func TestRedisBusSubscribeAndReplayHasNoWindowUnderConcurrency(t *testing.T) {
 	b := newLocalOnlyBus(4096)
 	defer b.Close()
 
+	// THE STRADDLE IS BUILT, NOT HOPED FOR (BUG-3199). This used to join after
+	// a fixed 2ms sleep, which straddled only while the producer happened to
+	// be running at that moment: on a loaded CI runner the producer goroutine
+	// was not scheduled within 2ms, the subscriber joined before the first
+	// fan-out, and the precondition below failed with "0 replayed" (and a
+	// subscriber delayed past the producer's whole run fails the mirror way,
+	// "0 on the channel"). Two barriers make both legs non-empty on every
+	// run that reaches the subscribe:
+	//
+	//   - the subscriber waits until the producer has fanned out its first
+	//     readyAfter ids, so the replay leg holds at least those;
+	//   - the producer parks at holdAt until the subscribe has returned, so
+	//     at least the ids from holdAt on reach the channel.
+	//
+	// Between them fan-outs readyAfter+1..holdAt-1 are free to run DURING the
+	// subscribe, which is the concurrency this test is named for — possible
+	// on every run, forced on none. It is not the split-lock DETECTOR: the
+	// test after this one is, by a forced interleaving at that exact
+	// boundary.
+	const readyAfter, holdAt = 50, 500
+	ready := make(chan struct{})
+	subscribed := make(chan struct{})
+	// Released on EVERY exit, not only after a successful subscribe (codex
+	// review): a subscribe that panics or a t.Fatal before the release would
+	// otherwise leave the producer parked at holdAt for good.
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(subscribed) }) }
+	defer release()
+
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		for i := int64(1); i <= total; i++ {
+			if i == holdAt {
+				<-subscribed
+			}
 			b.fanOutLocally(Notification{ID: i, Kind: KindStatusChange, ItemRef: "TASK-1"}, b.currentGen())
+			if i == readyAfter {
+				close(ready)
+			}
 			// Deliberately paced. The first version of this test fired all
 			// of them as fast as a map iteration allows and then slept 1ms
 			// before subscribing — so the producer was always FINISHED by
@@ -157,8 +192,9 @@ func TestRedisBusSubscribeAndReplayHasNoWindowUnderConcurrency(t *testing.T) {
 	}()
 
 	// Join mid-flight.
-	time.Sleep(2 * time.Millisecond)
+	<-ready
 	ch, missed, _, _ := b.SubscribeAndReplaySince(context.Background(), 0)
+	release()
 
 	wg.Wait()
 
@@ -200,7 +236,9 @@ drain:
 	// THE PRECONDITION THAT MAKES THE ASSERTION ABOVE MEAN ANYTHING. If the
 	// subscriber joined before the first fan-out or after the last, there was
 	// no window to test and "no duplicates" is trivially true. Both legs must
-	// be non-empty for this run to have exercised the boundary at all.
+	// be non-empty for this run to have exercised the boundary at all. The
+	// barriers above guarantee it; this now catches a barrier that stopped
+	// doing its job rather than a scheduler that did not cooperate.
 	if len(missed) == 0 || fromChannel == 0 {
 		t.Fatalf("fixture did not straddle the subscribe: %d replayed, %d on the channel — "+
 			"the run proves nothing about the window", len(missed), fromChannel)
@@ -627,20 +665,31 @@ func TestRedisBusCounterResetDropsTheStaleReplayBuffer(t *testing.T) {
 		t.Errorf("a resume from the pre-reset id space must report a gap; got %+v", got)
 	}
 
-	// A client in the NEW space works normally, and must never see a stale
-	// entry — which is the assertion a build that merely logged the reset
-	// and kept the buffer would fail.
-	after := b.EventsSince(1)
+	// A cursor at or below the old peak is ambiguous — the old space reached
+	// 1 too — and is refused since BUG-2743.
+	if got := b.EventsSince(1); got != nil {
+		t.Errorf("a resume from 1 is inside the abandoned id space and must report a gap; got %+v", got)
+	}
+
+	// A client in the NEW space, once it is above the old peak, works
+	// normally and must never see a stale entry — which is the assertion a
+	// build that merely logged the reset and kept the buffer would fail. The
+	// buffer is 64 wide, so the climb past 101 evicts the reset's first ids
+	// and every entry left must be new.
+	for id := int64(3); id <= 103; id++ {
+		b.fanOutLocally(Notification{ID: id, Kind: KindComment, ItemRef: "TASK-new"}, b.currentGen())
+	}
+	after := b.EventsSince(102)
 	if after == nil {
-		t.Fatal("a resume from 1 is inside the new id space and must replay")
+		t.Fatal("a resume from 102 is above the abandoned id space and must replay")
 	}
 	for _, n := range after {
 		if n.ItemRef != "TASK-new" {
 			t.Fatalf("replay after a counter reset returned a pre-reset entry: %+v", n)
 		}
 	}
-	if len(after) != 1 || after[0].ID != 2 {
-		t.Errorf("resume from 1: got %+v, want just id 2", after)
+	if len(after) != 1 || after[0].ID != 103 {
+		t.Errorf("resume from 102: got %+v, want just id 103", after)
 	}
 }
 
