@@ -54,6 +54,9 @@ afterEach(() => {
 });
 
 describe('a duplicate delivery leaves the index unchanged (BUG-3207)', () => {
+	// Idempotent by CONTENT: re-applying an identical row changes nothing, so no
+	// guard mutant can turn this red (measured). It pins the outcome the
+	// duplicate produces, not a mechanism.
 	it('the same row twice applies once', async () => {
 		await boot();
 		// Caught up by default: a pass keeps reading until a delta is empty.
@@ -75,7 +78,11 @@ describe('a duplicate delivery leaves the index unchanged (BUG-3207)', () => {
 		const changes = vi.spyOn(api.items, 'changes').mockResolvedValue(delta([], '11'));
 		changes.mockResolvedValueOnce(delta([row('a', 11, 'renamed')], '11'));
 		await localIndex.reconcile(ws);
-		changes.mockResolvedValueOnce(delta([row('a', 1, 'original')], '11'));
+		// An ADVANCED cursor, so the batch is not dropped whole. The row then
+		// meets applyDelta's per-row guards, the cursor floor and the existing
+		// row's seq; each alone holds it (measured: removing both turns this red,
+		// removing either one does not).
+		changes.mockResolvedValueOnce(delta([row('a', 1, 'original')], '12'));
 		await localIndex.reconcile(ws);
 		expect(view()).toEqual(['a:11:renamed', 'b:2:other']);
 	});
