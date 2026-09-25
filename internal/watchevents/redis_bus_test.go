@@ -627,20 +627,31 @@ func TestRedisBusCounterResetDropsTheStaleReplayBuffer(t *testing.T) {
 		t.Errorf("a resume from the pre-reset id space must report a gap; got %+v", got)
 	}
 
-	// A client in the NEW space works normally, and must never see a stale
-	// entry — which is the assertion a build that merely logged the reset
-	// and kept the buffer would fail.
-	after := b.EventsSince(1)
+	// A cursor at or below the old peak is ambiguous — the old space reached
+	// 1 too — and is refused since BUG-2743.
+	if got := b.EventsSince(1); got != nil {
+		t.Errorf("a resume from 1 is inside the abandoned id space and must report a gap; got %+v", got)
+	}
+
+	// A client in the NEW space, once it is above the old peak, works
+	// normally and must never see a stale entry — which is the assertion a
+	// build that merely logged the reset and kept the buffer would fail. The
+	// buffer is 64 wide, so the climb past 101 evicts the reset's first ids
+	// and every entry left must be new.
+	for id := int64(3); id <= 103; id++ {
+		b.fanOutLocally(Notification{ID: id, Kind: KindComment, ItemRef: "TASK-new"}, b.currentGen())
+	}
+	after := b.EventsSince(102)
 	if after == nil {
-		t.Fatal("a resume from 1 is inside the new id space and must replay")
+		t.Fatal("a resume from 102 is above the abandoned id space and must replay")
 	}
 	for _, n := range after {
 		if n.ItemRef != "TASK-new" {
 			t.Fatalf("replay after a counter reset returned a pre-reset entry: %+v", n)
 		}
 	}
-	if len(after) != 1 || after[0].ID != 2 {
-		t.Errorf("resume from 1: got %+v, want just id 2", after)
+	if len(after) != 1 || after[0].ID != 103 {
+		t.Errorf("resume from 102: got %+v, want just id 103", after)
 	}
 }
 
