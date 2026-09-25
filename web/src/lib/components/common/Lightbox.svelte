@@ -841,11 +841,13 @@
 		if ((e.target as Element | null)?.closest?.('.lightbox-text-scroll')) return;
 		e.preventDefault();
 		e.stopPropagation();
-		// A wheel over the TOOLBAR (or its delete drill-down) is consumed like every
-		// other wheel — the modal owns it, so the inert page can't scroll — but must
-		// NOT zoom the image behind it (TASK-2474). The same exclusion the pointerdown
-		// and double-click handlers carry, applied here too.
-		if ((e.target as Element | null)?.closest?.('.lightbox-toolbar, .lightbox-meta')) return;
+		// A wheel over any viewer CONTROL (close, nav, the toolbar or its delete
+		// drill-down, …) is consumed like every other wheel — the modal owns it, so the
+		// inert page can't scroll — but must NOT zoom the image behind it (TASK-2474).
+		// It calls the SAME predicate pointerdown and double-click use: a narrower
+		// list of its own let a wheel over a nav arrow or the close button zoom
+		// (BUG-2507).
+		if (chromeExcluded(e)) return;
 		// Consumed (the modal owns the wheel) but INERT with no decoded bitmap — the
 		// mobile deferred placeholder or the error UI, where the broken `<img>` still
 		// satisfies `readGeometry` (TASK-2461). Same guard the keys use.
@@ -854,6 +856,9 @@
 		// still consumed — the modal owns the wheel — but must NOT zoom, or it would
 		// read as a zoom-out. Direction comes from `deltaY` alone.
 		if (e.deltaY === 0) return;
+		// Consumed but INERT while the delete confirmation is pending, like every key
+		// (BUG-2522).
+		if (deleteConfirm.pending) return;
 		const g = readGeometry();
 		const rect = stageEl?.getBoundingClientRect();
 		if (!g || !rect) return;
@@ -1106,9 +1111,8 @@
 	}
 
 	// ── shared gesture predicates (TASK-2518) ────────────────────────────────
-	// The chrome/control exclusion carried by pointerdown AND double-click: a press
-	// on a control is that control's, never a pan / zoom. (Wheel uses a NARROWER
-	// list — toolbar+meta only — so it is not folded in here.)
+	// The chrome/control exclusion carried by pointerdown, double-click AND wheel: a
+	// press or wheel on a control is that control's, never a pan / zoom (BUG-2507).
 	function chromeExcluded(e: PointerEvent | MouseEvent): boolean {
 		return !!(e.target as Element | null)?.closest?.(
 			'.lightbox-close, .lightbox-nav, .lightbox-retry, .lightbox-tap-load, .lightbox-toolbar, .lightbox-meta'
@@ -1194,7 +1198,14 @@
 	function onTouchDown(e: PointerEvent): void {
 		const el = rootEl;
 		const gatesOpen = !!el && pointerGatesOpen(el);
-		const armable = !chromeExcluded(e) && touchOnImage(e) && gesturesArmable && gatesOpen;
+		// A pending delete confirmation owns the surface (BUG-2522): nothing arms, so
+		// neither a pan, a pinch promotion nor a double-tap can start under it.
+		const armable =
+			!chromeExcluded(e) &&
+			touchOnImage(e) &&
+			gesturesArmable &&
+			gatesOpen &&
+			!deleteConfirm.pending;
 		const ownerEntry = gesturePointerId !== null ? registry.get(gesturePointerId) : undefined;
 
 		// A live NON-touch (mouse/pen) gesture owns the surface — a touch is
@@ -1545,6 +1556,8 @@
 		if (!bitmapPresent) return;
 		const el = rootEl;
 		if (!el || !pointerGatesOpen(el)) return; // START gate
+		// A pending delete confirmation owns the pointer, as it owns every key (BUG-2522).
+		if (deleteConfirm.pending) return;
 		armPan(e);
 	}
 
@@ -1728,6 +1741,8 @@
 		if (!bitmapPresent) return;
 		const el = rootEl;
 		if (!el || !pointerGatesOpen(el)) return;
+		// Inert while the delete confirmation is pending (BUG-2522).
+		if (deleteConfirm.pending) return;
 		const g = readGeometry();
 		const rect = stageEl?.getBoundingClientRect();
 		if (!g || !rect) return;
@@ -2072,10 +2087,14 @@
 	// requires the painted element while a mouse pan tolerates the looser arm. Reads
 	// `bitmapPresent` + `gesturesArmable` (tracked) and tears down in `untrack` (it
 	// writes `dragging` etc., never read here), so it cannot self-invalidate (CONVE-1688).
+	// A third trigger: the delete confirmation opening tears down ANY live gesture
+	// (a touch pan held while another finger taps Delete), since the confirmation
+	// owns the pointer until it resolves (BUG-2522).
 	$effect(() => {
-		if (bitmapPresent && gesturesArmable) return;
+		const confirmPending = deleteConfirm.pending;
+		if (bitmapPresent && gesturesArmable && !confirmPending) return;
 		untrack(() => {
-			if (!bitmapPresent || touchGestureLive()) cancelGesture();
+			if (!bitmapPresent || confirmPending || touchGestureLive()) cancelGesture();
 			// The paint arm is lost with no live gesture to tear down (e.g. a SAME-ID
 			// reload — dimension fill — which keeps `bitmapPresent` true so cancelGesture
 			// does not run): drop any pending FIRST tap, so a tap before the reload cannot
@@ -3458,8 +3477,8 @@
 	   bottom with NO magic-number coordination between them — `order` alone puts
 	   content on top (0), then meta (1), then the toolbar as the very bottom bar (2),
 	   primary actions in thumb reach. They are the SAME elements with the SAME
-	   classes, so `.lightbox-toolbar` / `.lightbox-meta` still match all three
-	   pointer-exclusion `.closest()` lists (pointerdown / dblclick / wheel) — a
+	   classes, so `.lightbox-toolbar` / `.lightbox-meta` still match the gesture
+	   exclusion the pointerdown / dblclick / wheel handlers share — a
 	   press, double-click or wheel on the docked chrome stays excluded from the
 	   pan/zoom exactly as on desktop. Dropping to `position: static` also makes the
 	   desktop `:has(.lightbox-delete-confirm)` top-offset inert (a `top` on a static

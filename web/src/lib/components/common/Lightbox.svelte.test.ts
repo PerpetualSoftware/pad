@@ -3926,8 +3926,8 @@ describe('Lightbox — mobile sheet layout (3c-ii T5 / AM-3)', () => {
 
 	it('keeps the docked chrome excluded from pan, wheel-zoom AND double-click', () => {
 		// The docked toolbar/meta are the SAME elements with the SAME classes, so they
-		// stay in all THREE gesture-exclusion `.closest()` lists (pointerdown /
-		// dblclick / WHEEL — the classic miss). Exercised with a real raster bitmap so
+		// stay excluded from all three gestures (pointerdown / dblclick / WHEEL — the
+		// classic miss), which share one predicate since BUG-2507. Exercised with a real raster bitmap so
 		// each gesture otherwise COULD act; a live control at the end proves the
 		// handlers are armed and it is the exclusions that held.
 		mobileFlag = true;
@@ -4392,6 +4392,50 @@ describe('Lightbox — action toolbar (TASK-2474)', () => {
 		).toBe(true);
 		expect(scaleOf()).toBeGreaterThan(before);
 	});
+
+	// BUG-2507: the wheel carried a narrower exclusion than pointerdown and
+	// double-click, so a wheel over a nav arrow or the close button zoomed the image
+	// under the cursor. One leg per chrome control that is on screen WITH a bitmap
+	// present (retry and tap-load render only while the bitmap is absent, where the
+	// wheel is already inert).
+	for (const [name, selector] of [
+		['prev nav arrow', '.lightbox-nav.prev'],
+		['next nav arrow', '.lightbox-nav.next'],
+		['close button', '.lightbox-close'],
+	] as const) {
+		it(`consumes a wheel over the ${name} without zooming the image`, () => {
+			mountViewer({
+				mutationsEnabled: false,
+				images: [image(IMG_A, 'a'), image(IMG_B, 'b', 'image/jpeg')],
+			});
+			fireLoad(2000, 2000);
+			mockGeometry(root(), {
+				stageW: 1000,
+				stageH: 1000,
+				fittedW: 900,
+				fittedH: 900,
+				naturalW: 2000,
+				naturalH: 2000,
+			});
+			const before = scaleOf();
+			const control = root().querySelector<HTMLElement>(selector);
+			expect(control).not.toBeNull();
+
+			expect(wheel(control!, { deltaY: -100, clientX: 500, clientY: 500 })).toBe(true);
+			expect(scaleOf()).toBe(before);
+
+			// Control: the same wheel over the image zooms, so the exclusion is what
+			// stopped it.
+			expect(
+				wheel(root().querySelector<HTMLElement>('.lightbox-image')!, {
+					deltaY: -100,
+					clientX: 500,
+					clientY: 500,
+				})
+			).toBe(true);
+			expect(scaleOf()).toBeGreaterThan(before);
+		});
+	}
 });
 
 describe('Lightbox — metadata header (TASK-2475)', () => {
@@ -5294,5 +5338,167 @@ describe('Lightbox — the text arm', () => {
 		mountViewer({ images: [image(IMG_A, 'notes.md', 'text/markdown')] });
 		await settleAsync();
 		expect(root().querySelector('.lightbox-text .lightbox-retry')).not.toBeNull();
+	});
+});
+
+// BUG-2522: while the toolbar's delete confirmation is pending, the keyboard is
+// already blocked (onKeydown returns for every key), and the pointer gestures now
+// stand down the same way. One leg per gesture START path (wheel, double-click,
+// mouse/pen pan, touch pan, pinch), plus a gesture that was already live when the
+// confirmation opened. Each leg cancels the confirmation and repeats the same
+// gesture as its control, so it is the pending gate that held, not a dead path.
+describe('Lightbox — a pending delete confirmation owns the pointer gestures (BUG-2522)', () => {
+	beforeEach(() => {
+		captured = [];
+		released = [];
+		(Element.prototype as unknown as Record<string, unknown>).setPointerCapture = function (id: number) {
+			captured.push(id);
+		};
+		(Element.prototype as unknown as Record<string, unknown>).releasePointerCapture = function (id: number) {
+			released.push(id);
+		};
+	});
+	afterEach(() => {
+		if (REAL_PC.setPointerCapture === undefined)
+			delete (Element.prototype as unknown as Record<string, unknown>).setPointerCapture;
+		else Element.prototype.setPointerCapture = REAL_PC.setPointerCapture;
+		if (REAL_PC.releasePointerCapture === undefined)
+			delete (Element.prototype as unknown as Record<string, unknown>).releasePointerCapture;
+		else Element.prototype.releasePointerCapture = REAL_PC.releasePointerCapture;
+	});
+
+	function imageEl(): HTMLElement {
+		return root().querySelector<HTMLElement>('.lightbox-image')!;
+	}
+	/** Mount with Delete offered, mock OVERFLOW_G, and decode, so every gesture can arm. */
+	function mountPainted(): void {
+		mountViewer({ mutationsEnabled: true });
+		mockGeometry(root(), OVERFLOW_G);
+		fireLoad(2000, 2000);
+	}
+	function openConfirm(): void {
+		root().querySelector<HTMLElement>('.lightbox-tool[aria-label="Delete"]')!.click();
+		flushSync();
+		expect(root().querySelector('.lightbox-delete-confirm')).not.toBeNull();
+	}
+	function cancelConfirm(): void {
+		Array.from(root().querySelectorAll<HTMLElement>('.lightbox-delete-confirm button'))
+			.find((b) => b.textContent?.includes('Cancel'))!
+			.click();
+		flushSync();
+		expect(root().querySelector('.lightbox-delete-confirm')).toBeNull();
+	}
+	function ptr(
+		type: string,
+		x: number,
+		y: number,
+		opts: { pointerType?: string; pointerId?: number; buttons?: number } = {}
+	): void {
+		imageEl().dispatchEvent(pointerEvent(type, x, y, opts));
+		flushSync();
+	}
+	function dblclick(): void {
+		imageEl().dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: 500, clientY: 500 }));
+		flushSync();
+	}
+
+	it('a wheel is still consumed but does not zoom', () => {
+		mountPainted();
+		openConfirm();
+		expect(wheel(imageEl(), { deltaY: -100, clientX: 500, clientY: 500 })).toBe(true);
+		expect(scaleOf()).toBe(1);
+
+		cancelConfirm();
+		wheel(imageEl(), { deltaY: -100, clientX: 500, clientY: 500 });
+		expect(scaleOf()).toBeGreaterThan(1);
+	});
+
+	it('a double-click does not toggle zoom', () => {
+		mountPainted();
+		openConfirm();
+		dblclick();
+		expect(scaleOf()).toBe(1);
+
+		cancelConfirm();
+		dblclick();
+		expect(scaleOf()).toBeCloseTo(ACTUAL_SCALE);
+	});
+
+	it('a mouse drag does not arm a pan', () => {
+		mountPainted();
+		openConfirm();
+		ptr('pointerdown', 500, 500);
+		ptr('pointermove', 600, 500);
+		ptr('pointerup', 600, 500, { buttons: 0 });
+		expect(captured).toEqual([]);
+
+		cancelConfirm();
+		ptr('pointerdown', 500, 500);
+		ptr('pointermove', 600, 500);
+		expect(captured).toContain(1);
+		ptr('pointerup', 600, 500, { buttons: 0 });
+	});
+
+	it('a touch drag does not arm a pan', () => {
+		mountPainted();
+		openConfirm();
+		ptr('pointerdown', 500, 500, { pointerType: 'touch' });
+		ptr('pointermove', 600, 500, { pointerType: 'touch' });
+		ptr('pointerup', 600, 500, { pointerType: 'touch', buttons: 0 });
+		expect(captured).toEqual([]);
+
+		cancelConfirm();
+		ptr('pointerdown', 500, 500, { pointerType: 'touch' });
+		ptr('pointermove', 600, 500, { pointerType: 'touch' });
+		expect(captured).toContain(1);
+		ptr('pointerup', 600, 500, { pointerType: 'touch', buttons: 0 });
+	});
+
+	it('a two-finger spread does not pinch-zoom', () => {
+		mountPainted();
+		const spread = () => {
+			ptr('pointerdown', 400, 500, { pointerType: 'touch', pointerId: 1 });
+			ptr('pointerdown', 600, 500, { pointerType: 'touch', pointerId: 2 });
+			ptr('pointermove', 700, 500, { pointerType: 'touch', pointerId: 2 });
+			ptr('pointerup', 700, 500, { pointerType: 'touch', pointerId: 2, buttons: 0 });
+			ptr('pointerup', 400, 500, { pointerType: 'touch', pointerId: 1, buttons: 0 });
+		};
+		openConfirm();
+		spread();
+		expect(scaleOf()).toBe(1);
+
+		cancelConfirm();
+		spread();
+		expect(scaleOf()).toBeCloseTo(1.5);
+	});
+
+	it('a pan already live when the confirmation opens is torn down', () => {
+		mountPainted();
+		dblclick(); // actual size, so a drag has pan room
+		ptr('pointerdown', 500, 500, { pointerType: 'touch' });
+		ptr('pointermove', 600, 500, { pointerType: 'touch' });
+		expect(panX()).toBeCloseTo(100); // the pan is live and moving
+		openConfirm(); // another finger taps Delete
+		ptr('pointermove', 700, 500, { pointerType: 'touch' });
+		expect(panX()).toBeCloseTo(100); // it stopped at the confirm
+		expect(released).toContain(1);
+		ptr('pointerup', 700, 500, { pointerType: 'touch', buttons: 0 });
+	});
+
+	it('a MOUSE pan already live when the confirmation opens is torn down too', () => {
+		// The mouse cannot press Delete mid-drag, but the keyboard can (Tab to Delete,
+		// Enter) while the button is still held. A live touch gesture is already torn
+		// down by the paint-arm leg of the same effect, so only this leg shows the
+		// confirmation's own trigger.
+		mountPainted();
+		dblclick();
+		ptr('pointerdown', 500, 500);
+		ptr('pointermove', 600, 500);
+		expect(panX()).toBeCloseTo(100);
+		openConfirm();
+		ptr('pointermove', 700, 500);
+		expect(panX()).toBeCloseTo(100);
+		expect(released).toContain(1);
+		ptr('pointerup', 700, 500, { buttons: 0 });
 	});
 });
