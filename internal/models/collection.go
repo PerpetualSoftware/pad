@@ -112,6 +112,41 @@ type Collection struct {
 	// Computed (not stored)
 	ItemCount       int `json:"item_count"`
 	ActiveItemCount int `json:"active_item_count"`
+
+	// Warnings is set only on a create/update RESPONSE, never stored or read
+	// back (BUG-2896). Additive and omitempty, so a clean write is
+	// byte-identical to before.
+	Warnings *CollectionWriteWarnings `json:"warnings,omitempty"`
+}
+
+// CollectionWriteWarnings names what a collection write normalised.
+type CollectionWriteWarnings struct {
+	// CollapsedDuplicateKeys names each JSON member that the request's
+	// `traits` repeated (at any depth). The traits were stored as the parsed
+	// declaration's own encoding, so SQLite's unique index (json_extract, the
+	// FIRST occurrence) and the resolver (Go, the LAST) read one declaration.
+	CollapsedDuplicateKeys []string `json:"collapsed_duplicate_keys,omitempty"`
+}
+
+// CanonicalTraitsIfDuplicated returns raw unchanged unless some object in it
+// repeats a member name, in which case it returns the parsed declaration's own
+// encoding and the repeated member (BUG-2896). raw must already have passed
+// ParseCollectionTraits. Rewriting only on a repeat keeps every other blob's
+// bytes as the caller sent them.
+func CanonicalTraitsIfDuplicated(raw string) (out, dupKey string, err error) {
+	key, dup := FirstDuplicateJSONKey([]byte(raw))
+	if !dup {
+		return raw, "", nil
+	}
+	parsed, err := ParseCollectionTraits(raw)
+	if err != nil {
+		return raw, "", err
+	}
+	canon, err := parsed.JSON()
+	if err != nil {
+		return raw, "", err
+	}
+	return canon, key, nil
 }
 
 type CollectionCreate struct {

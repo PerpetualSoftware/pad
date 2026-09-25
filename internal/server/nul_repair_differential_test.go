@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/PerpetualSoftware/pad/internal/textguard"
 )
@@ -456,7 +457,7 @@ func TestFirstDuplicateJSONKey(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, dup := firstDuplicateJSONKey([]byte(tc.in))
+			got, dup := models.FirstDuplicateJSONKey([]byte(tc.in))
 			if dup != tc.dup || got != tc.want {
 				t.Errorf("%s\n  in: %s\n  got (%q, %v), want (%q, %v)", tc.why, tc.in, got, dup, tc.want, tc.dup)
 			}

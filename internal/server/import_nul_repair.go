@@ -129,3 +129,15 @@ func nulRepairRemedy(t *nulRepairTally) string {
 		" with the NUL repair option (--repair-nul on the CLI) to replace each NUL with U+FFFD, or repair" +
 		" the source database first with '" + store.RepairNULCommand + "'"
 }
+
+// ImportCollapsedDuplicateKeysHeader carries how many stored blobs a workspace
+// import collapsed because they repeated a JSON member (BUG-2896): collection
+// traits and item fields, each stored so SQLite's json_extract (first
+// occurrence) and Go and Postgres (last) read the same value. Always set on a
+// successful import, "0" included, so a client can tell a clean import from a
+// server that predates the header. The server log names each blob and member.
+const ImportCollapsedDuplicateKeysHeader = "X-Pad-Import-Collapsed-Duplicate-Keys"
+
+func setImportCollapsedHeader(w http.ResponseWriter, report store.ImportReport) {
+	w.Header().Set(ImportCollapsedDuplicateKeysHeader, strconv.Itoa(report.CollapsedDuplicateKeys))
+}
