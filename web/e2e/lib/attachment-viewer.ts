@@ -287,22 +287,50 @@ export function transformOf(page: Page, selector = VIEWER_IMAGE): Promise<string
 }
 
 /**
- * The RENDERED scale once the CSS transition has settled (two equal reads). A
- * pinch drops the transition (`.pinching`), but a discrete zoom / a toggle keeps
- * the 0.15s ease, so measuring immediately after one samples a mid-animation
- * matrix. Polls to a fixpoint (lifted from the zoom spec's `settledScale`).
+ * The RENDERED scale once the image's `transform` transition has ENDED. A pinch
+ * drops the transition (`.pinching`), but a discrete zoom / a toggle keeps the
+ * 0.15s ease, so measuring immediately after one samples a mid-animation matrix.
+ *
+ * "Ended" is read from the transition itself — no live `transform` CSSTransition
+ * on the element — NOT from two equal reads of the matrix. The fixpoint this
+ * replaces accepted a mid-transition value whenever the renderer produced no
+ * frame between two polls, which under an 8-worker load it did on ~9% of runs of
+ * the touch spec's pre-zoom (BUG-3213: 11/120 settled between powers of
+ * ZOOM_STEP, e.g. 1.34 on the way to 3.05).
+ *
+ * Two animation frames are awaited FIRST. Chromium delivers touch moves aligned
+ * to frames, and a CDP `touchMove` resolves while the move can still be queued,
+ * so without the flush a gesture's LAST step may not have reached the handlers
+ * yet. The old fixpoint's own polling delay used to hide that. Once it was gone,
+ * the pinch oracle read one step early on 17/120 loaded runs: exactly 6.25px off
+ * in X, which is its 50px midpoint move split into 8 steps (BUG-3213).
  */
-export async function settleScale(page: Page): Promise<number> {
-	let last = Number.NaN;
+export async function settleScale(page: Page, selector = VIEWER_IMAGE): Promise<number> {
+	await page.evaluate(
+		() => new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())))
+	);
 	await expect
-		.poll(async () => {
-			const s = await renderedScale(page);
-			const stable = Math.abs(s - last) < 1e-3;
-			last = s;
-			return stable;
-		})
+		.poll(() =>
+			page.evaluate((sel) => {
+				const all = document.querySelectorAll<HTMLElement>(sel);
+				const el = all[all.length - 1];
+				if (!el) return false;
+				// Flush style first: a transform written since the last style recalc has
+				// not STARTED its transition yet, and getAnimations() would report none.
+				void getComputedStyle(el).transform;
+				return !el
+					.getAnimations()
+					.some(
+						(a) =>
+							a instanceof CSSTransition &&
+							a.transitionProperty === 'transform' &&
+							a.playState !== 'finished' &&
+							a.playState !== 'idle'
+					);
+			}, selector)
+		)
 		.toBe(true);
-	return renderedScale(page);
+	return renderedScale(page, selector);
 }
 
 /**

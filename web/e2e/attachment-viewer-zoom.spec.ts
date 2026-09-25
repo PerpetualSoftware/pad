@@ -15,6 +15,7 @@ import {
 	imageRect,
 	itemUrl,
 	renderedScale,
+	settleScale,
 	uploadAttachment,
 	viewerClose,
 	viewerTapLoad
@@ -64,27 +65,13 @@ async function openBig(
 		.toBe(naturalWidth);
 }
 
-/** Read the RENDERED scale once the CSS transition has settled (two equal reads). */
-async function settledScale(page: Page): Promise<number> {
-	let last = Number.NaN;
-	await expect
-		.poll(async () => {
-			const s = await renderedScale(page);
-			const stable = Math.abs(s - last) < 1e-3;
-			last = s;
-			return stable;
-		})
-		.toBe(true);
-	return renderedScale(page);
-}
-
 /**
  * Zoom to maximum by pressing '+' ONE step at a time, settling each transition,
  * until the scale stops climbing (the clamp). Per-step settling avoids the
  * rapid-press race where two mid-animation reads look equal and stop early.
  */
 async function zoomToMax(page: Page): Promise<number> {
-	let prev = await settledScale(page);
+	let prev = await settleScale(page);
 	for (let i = 0; i < 20; i++) {
 		await page.keyboard.press('+');
 		// Wait for THIS press to take effect (the scale climbs past `prev`), up to a
@@ -99,7 +86,7 @@ async function zoomToMax(page: Page): Promise<number> {
 			}
 		}
 		if (!climbed) return prev; // clamp reached
-		prev = await settledScale(page);
+		prev = await settleScale(page);
 	}
 	return prev;
 }
@@ -234,7 +221,7 @@ test.describe('attachment viewer — desktop zoom & pan (TASK-2461)', () => {
 
 		await page.mouse.move(px, py);
 		await page.mouse.wheel(0, -120); // one step in
-		await settledScale(page);
+		await settleScale(page);
 		const after = await imageRect(page);
 		// The same image-fractional point, mapped through the NEW rect, is still
 		// under the cursor (uniform scale ⇒ linear map).
@@ -361,7 +348,7 @@ test.describe('attachment viewer — desktop zoom & pan (TASK-2461)', () => {
 		// The ResizeObserver re-clamp fires async on layout — poll until the stranded
 		// scale is pulled down to the new, lower ceiling.
 		await expect.poll(() => renderedScale(page)).toBeLessThan(maxBefore - 0.2);
-		const after = await settledScale(page);
+		const after = await settleScale(page);
 		// Clamped DOWN to the new ceiling — but NOT reset to fit: a handler that
 		// snapped to `resetZoom()` would also be below the old max, so the "still
 		// zoomed" leg is what makes this a clamp and not a reset.
@@ -369,7 +356,7 @@ test.describe('attachment viewer — desktop zoom & pan (TASK-2461)', () => {
 		// And it sits at the NEW maximum, not some arbitrary lower value: pressing '+'
 		// again does not climb (already at the clamp).
 		await page.keyboard.press('+');
-		expect(await settledScale(page), 'the clamped scale IS the new maximum').toBeCloseTo(after, 1);
+		expect(await settleScale(page), 'the clamped scale IS the new maximum').toBeCloseTo(after, 1);
 	});
 
 	test('reduced-motion suppresses the zoom ANIMATION, and normal mode keeps it', async ({
