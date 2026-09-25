@@ -139,12 +139,47 @@ func TestRedisBusSubscribeAndReplayHasNoWindowUnderConcurrency(t *testing.T) {
 	b := newLocalOnlyBus(4096)
 	defer b.Close()
 
+	// THE STRADDLE IS BUILT, NOT HOPED FOR (BUG-3199). This used to join after
+	// a fixed 2ms sleep, which straddled only while the producer happened to
+	// be running at that moment: on a loaded CI runner the producer goroutine
+	// was not scheduled within 2ms, the subscriber joined before the first
+	// fan-out, and the precondition below failed with "0 replayed" (and a
+	// subscriber delayed past the producer's whole run fails the mirror way,
+	// "0 on the channel"). Two barriers make both legs non-empty on every
+	// run that reaches the subscribe:
+	//
+	//   - the subscriber waits until the producer has fanned out its first
+	//     readyAfter ids, so the replay leg holds at least those;
+	//   - the producer parks at holdAt until the subscribe has returned, so
+	//     at least the ids from holdAt on reach the channel.
+	//
+	// Between them fan-outs readyAfter+1..holdAt-1 are free to run DURING the
+	// subscribe, which is the concurrency this test is named for — possible
+	// on every run, forced on none. It is not the split-lock DETECTOR: the
+	// test after this one is, by a forced interleaving at that exact
+	// boundary.
+	const readyAfter, holdAt = 50, 500
+	ready := make(chan struct{})
+	subscribed := make(chan struct{})
+	// Released on EVERY exit, not only after a successful subscribe (codex
+	// review): a subscribe that panics or a t.Fatal before the release would
+	// otherwise leave the producer parked at holdAt for good.
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(subscribed) }) }
+	defer release()
+
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		for i := int64(1); i <= total; i++ {
+			if i == holdAt {
+				<-subscribed
+			}
 			b.fanOutLocally(Notification{ID: i, Kind: KindStatusChange, ItemRef: "TASK-1"}, b.currentGen())
+			if i == readyAfter {
+				close(ready)
+			}
 			// Deliberately paced. The first version of this test fired all
 			// of them as fast as a map iteration allows and then slept 1ms
 			// before subscribing — so the producer was always FINISHED by
@@ -157,8 +192,9 @@ func TestRedisBusSubscribeAndReplayHasNoWindowUnderConcurrency(t *testing.T) {
 	}()
 
 	// Join mid-flight.
-	time.Sleep(2 * time.Millisecond)
+	<-ready
 	ch, missed, _, _ := b.SubscribeAndReplaySince(context.Background(), 0)
+	release()
 
 	wg.Wait()
 
@@ -200,7 +236,9 @@ drain:
 	// THE PRECONDITION THAT MAKES THE ASSERTION ABOVE MEAN ANYTHING. If the
 	// subscriber joined before the first fan-out or after the last, there was
 	// no window to test and "no duplicates" is trivially true. Both legs must
-	// be non-empty for this run to have exercised the boundary at all.
+	// be non-empty for this run to have exercised the boundary at all. The
+	// barriers above guarantee it; this now catches a barrier that stopped
+	// doing its job rather than a scheduler that did not cooperate.
 	if len(missed) == 0 || fromChannel == 0 {
 		t.Fatalf("fixture did not straddle the subscribe: %d replayed, %d on the channel — "+
 			"the run proves nothing about the window", len(missed), fromChannel)
