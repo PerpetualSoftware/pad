@@ -1488,29 +1488,33 @@ func itemUpdatedSliceChanged(before, after *models.Item, statusKey string) (bool
 		for _, k := range itemDeltaExcludedKeys {
 			delete(m, k)
 		}
-		// The status field lives INSIDE the fields blob, so excluding it is a
-		// nested delete rather than a top-level one. Re-marshalling the blob
-		// through a map also normalizes key order, which means a rewrite that
-		// only reorders keys is correctly NOT a change.
-		if statusKey != "" && maskStatus {
-			if blob, ok := m["fields"].(string); ok {
-				var f map[string]any
-				if err := json.Unmarshal([]byte(blob), &f); err == nil {
+		// The fields blob is compared by VALUE, never as text (BUG-3202).
+		// Field writes keep a number's literal, so one value can be stored
+		// as 1e3 or 1000; a text comparison reported a rewrite between the
+		// two as a change, and so did a blob whose keys were only
+		// reordered. It is decoded keeping number literals and every number
+		// is put in one exact canonical spelling (a float64 compare would
+		// miss a change between two integers above 2^53). The status field
+		// lives INSIDE the blob, so masking it is a nested delete, done here
+		// only when item.status_changed can see it (maskStatus above).
+		if blob, ok := m["fields"].(string); ok {
+			if f, err := models.DecodeFieldsJSON([]byte(blob)); err == nil && f != nil {
+				if statusKey != "" && maskStatus {
 					delete(f, statusKey)
-					nb, err := json.Marshal(f)
-					if err != nil {
-						return "", fmt.Errorf("outbox: re-marshal fields blob: %w", err)
-					}
-					m["fields"] = string(nb)
 				}
-				// An unparseable fields blob (an array, a scalar, corrupt JSON)
-				// is left verbatim. It compares byte-for-byte on both sides, so
-				// a corrupt blob still yields a correct changed / did-not-change
-				// answer; it just cannot have the status key masked out of it.
-				// Leaving such a change to item.updated is the honest outcome:
-				// the status machinery cannot see it either, so item.updated is
-				// the only event that can describe it at all.
+				nb, err := json.Marshal(models.CanonicalJSONNumbers(f))
+				if err != nil {
+					return "", fmt.Errorf("outbox: re-marshal fields blob: %w", err)
+				}
+				m["fields"] = string(nb)
 			}
+			// An unparseable fields blob (an array, a scalar, corrupt JSON)
+			// is left verbatim. It compares byte-for-byte on both sides, so
+			// a corrupt blob still yields a correct changed / did-not-change
+			// answer; it just cannot have the status key masked out of it.
+			// Leaving such a change to item.updated is the honest outcome:
+			// the status machinery cannot see it either, so item.updated is
+			// the only event that can describe it at all.
 		}
 		// Map marshalling sorts keys, so this is a stable canonical form.
 		out, err := json.Marshal(m)

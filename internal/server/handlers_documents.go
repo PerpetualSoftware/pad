@@ -525,11 +525,14 @@ func appendChange(meta, change string) string {
 }
 
 func diffFields(oldFields, newFields string) string {
-	var oldMap, newMap map[string]any
-	if err := json.Unmarshal([]byte(oldFields), &oldMap); err != nil {
+	// Decoded keeping number literals (BUG-3202), so the comparison below
+	// is on exact values and a large integer is displayed with its digits.
+	oldMap, err := models.DecodeFieldsJSON([]byte(oldFields))
+	if err != nil {
 		return ""
 	}
-	if err := json.Unmarshal([]byte(newFields), &newMap); err != nil {
+	newMap, err := models.DecodeFieldsJSON([]byte(newFields))
+	if err != nil {
 		return ""
 	}
 
@@ -546,9 +549,11 @@ func diffFields(oldFields, newFields string) string {
 		// (e.g. `(1 note)`, `(object)`), so two semantically distinct edits
 		// of the same cardinality would otherwise produce equal display
 		// strings and the change would be silently dropped from the activity
-		// metadata. reflect.DeepEqual is correct for the types `json.Unmarshal`
-		// produces here (nil, bool, float64, string, []any, map[string]any).
-		if reflect.DeepEqual(oldVal, newVal) {
+		// metadata. Numbers are compared in one exact canonical spelling
+		// (BUG-3202): a stored 1e3 and a resent 1000 are the same value and
+		// no change, while two integers above 2^53 that share a float64 are
+		// different values and a change.
+		if reflect.DeepEqual(models.CanonicalJSONNumbers(oldVal), models.CanonicalJSONNumbers(newVal)) {
 			continue
 		}
 		oldStr := formatChangeValue(key, oldVal)

@@ -48,3 +48,42 @@ func TestDecodeFieldsJSON_AcceptsWhatUnmarshalAccepts(t *testing.T) {
 		}
 	}
 }
+
+// CanonicalJSONNumbers: equal values get one spelling, different values keep
+// different ones, including two integers above 2^53 that share a float64.
+func TestCanonicalJSONNumbers(t *testing.T) {
+	same := [][]string{
+		{"1000", "1e3", "1.0e3", "1000.0", "1E+3", "10000e-1", "0.1e4"},
+		{"0", "-0", "0.0", "0e5"},
+		{"-12.5", "-125e-1", "-1.25e1"},
+		{"9007199254740993", "9007199254740993.000"},
+	}
+	for _, group := range same {
+		want := CanonicalJSONNumbers(json.Number(group[0]))
+		for _, s := range group[1:] {
+			if got := CanonicalJSONNumbers(json.Number(s)); got != want {
+				t.Errorf("%s canonicalises to %v, but %s to %v; they are the same value", s, got, group[0], want)
+			}
+		}
+	}
+	diff := [][2]string{
+		{"9007199254740993", "9007199254740992"},
+		{"0.1", "0.10000000000000001"},
+		{"1000", "-1000"},
+		{"1e3", "1e4"},
+	}
+	for _, p := range diff {
+		if CanonicalJSONNumbers(json.Number(p[0])) == CanonicalJSONNumbers(json.Number(p[1])) {
+			t.Errorf("%s and %s are different values but canonicalise equal", p[0], p[1])
+		}
+	}
+	// A float64 from a plain decode meets its json.Number twin.
+	if CanonicalJSONNumbers(float64(1000)) != CanonicalJSONNumbers(json.Number("1e3")) {
+		t.Error("float64 1000 and json.Number 1e3 must canonicalise equal")
+	}
+	// The output is valid JSON.
+	b, err := json.Marshal(CanonicalJSONNumbers(map[string]any{"n": json.Number("1000.0")}))
+	if err != nil || !json.Valid(b) {
+		t.Errorf("canonical form does not marshal to valid JSON: %s %v", b, err)
+	}
+}

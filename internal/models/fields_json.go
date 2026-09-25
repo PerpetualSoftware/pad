@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 )
 
 // DecodeFieldsJSON decodes an item's fields blob with every number kept as the
@@ -116,4 +117,80 @@ func IsJSONNumberLiteral(s string) bool {
 		return false
 	}
 	return json.Valid([]byte(s))
+}
+
+// CanonicalJSONNumbers returns v with every number replaced by one canonical
+// spelling of its exact value, for code that COMPARES decoded field values
+// (BUG-3202). Since field writes keep a number's literal, one value can be
+// stored as different text (1e3, 1000, 1000.0); comparing that text reports a
+// change nobody made. Comparing float64s instead has the opposite hole: two
+// different integers above 2^53 round to one float and compare equal. The
+// canonical form is exact and equal for equal values, so both are closed.
+//
+// Numbers may arrive as json.Number (from DecodeJSONKeepingNumbers) or as
+// float64 (from a plain decode); both are canonicalised, so a caller comparing
+// a value from each gets the numeric answer. Maps and slices are copied, never
+// mutated. The result is for comparison and marshals to valid JSON, but it is
+// NOT a storage form: it rewrites the caller's spelling.
+func CanonicalJSONNumbers(v any) any {
+	switch x := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(x))
+		for k, e := range x {
+			out[k] = CanonicalJSONNumbers(e)
+		}
+		return out
+	case []any:
+		out := make([]any, len(x))
+		for i, e := range x {
+			out[i] = CanonicalJSONNumbers(e)
+		}
+		return out
+	case json.Number:
+		return json.Number(canonicalNumberLiteral(string(x)))
+	case float64:
+		return json.Number(canonicalNumberLiteral(strconv.FormatFloat(x, 'g', -1, 64)))
+	}
+	return v
+}
+
+// canonicalNumberLiteral rewrites a JSON number literal as
+// [-]<digits without leading or trailing zeros>e<exponent>, which is exact
+// and the same for every spelling of one value: 1000, 1e3, 1.0e3 and 1000.0
+// all become "1e3", and zero in any spelling becomes "0". A string that is not
+// a number literal is returned unchanged.
+func canonicalNumberLiteral(s string) string {
+	if !IsJSONNumberLiteral(s) {
+		return s
+	}
+	neg := strings.HasPrefix(s, "-")
+	s = strings.TrimPrefix(s, "-")
+	mant, expPart := s, ""
+	if i := strings.IndexAny(s, "eE"); i >= 0 {
+		mant, expPart = s[:i], s[i+1:]
+	}
+	exp := 0
+	if expPart != "" {
+		e, err := strconv.Atoi(expPart)
+		if err != nil {
+			return s // an exponent too large for int: leave it; no such value fits a float64 anyway
+		}
+		exp = e
+	}
+	intPart, frac := mant, ""
+	if i := strings.IndexByte(mant, '.'); i >= 0 {
+		intPart, frac = mant[:i], mant[i+1:]
+	}
+	digits := strings.TrimLeft(intPart+frac, "0")
+	exp -= len(frac)
+	if digits == "" {
+		return "0"
+	}
+	trimmed := strings.TrimRight(digits, "0")
+	exp += len(digits) - len(trimmed)
+	out := trimmed + "e" + strconv.Itoa(exp)
+	if neg {
+		out = "-" + out
+	}
+	return out
 }
