@@ -151,21 +151,33 @@
 
 	// ── Drag-and-drop state ──────────────────────────────────────────────────
 	let isDragging = $state(false);
+	/**
+	 * Lanes keyed by `laneKey(status)`, never by the raw status (BUG-3054). A
+	 * plain object keyed by user data finds an inherited member for a value like
+	 * `__proto__`, which re-parented the object instead of creating a lane, so
+	 * its children vanished. Not `Object.create(null)`: this is `$state`, and
+	 * Svelte proxies only objects whose prototype is Object.prototype.
+	 */
 	let groupData: Record<string, Item[]> = $state({});
+
+	/** The `groupData` key for a status (BUG-3054; see `groupData`). */
+	function laneKey(status: string): string {
+		return `lane:${status}`;
+	}
 
 	$effect(() => {
 		const g = groups;
 		if (!isDragging) {
 			const data: Record<string, Item[]> = {};
 			for (const [status, statusChildren] of g) {
-				data[status] = [...statusChildren];
+				data[laneKey(status)] = [...statusChildren];
 			}
 			groupData = data;
 		}
 	});
 
 	function handleConsider(status: string, e: CustomEvent<DndEvent<Item>>) {
-		groupData[status] = e.detail.items;
+		groupData[laneKey(status)] = e.detail.items;
 		if (!isDragging && e.detail.info.trigger === TRIGGERS.DRAG_STARTED) {
 			if (typeof navigator !== 'undefined' && navigator.vibrate) {
 				navigator.vibrate(50);
@@ -175,7 +187,7 @@
 	}
 
 	async function handleFinalize(status: string, e: CustomEvent<DndEvent<Item>>) {
-		groupData[status] = e.detail.items;
+		groupData[laneKey(status)] = e.detail.items;
 		isDragging = false;
 
 		// HT-2176 Option A (TASK-2172): gate reorder INITIATION, not finalization.
@@ -185,7 +197,7 @@
 		// stays (the zone gate mirror; a non-editor never reaches finalize anyway).
 		if (!canEdit) return;
 
-		const updates = groupData[status]
+		const updates = groupData[laneKey(status)]
 			.filter((i: any) => !i[SHADOW_ITEM_MARKER_PROPERTY_NAME])
 			.map((item, index) => ({ id: item.id, sort_order: index }));
 
@@ -230,14 +242,14 @@
 		// Freeze guard (TASK-2172 / R14): mirror handleFinalize. The kebab is
 		// hidden while `!canEdit || frozen`; this drops a straggler invocation.
 		if (!canEdit || frozen) return;
-		const grp = (groupData[status] ?? []).filter(
+		const grp = (groupData[laneKey(status)] ?? []).filter(
 			(i: any) => !i[SHADOW_ITEM_MARKER_PROPERTY_NAME]
 		);
 		const reordered = reorderedList(grp, child.id, dir);
 		if (reordered === grp) return; // no-op (edge of group)
 
 		// Optimistic: show the new order immediately with dense sort_order.
-		groupData[status] = reordered.map((it, idx) => ({ ...it, sort_order: idx }));
+		groupData[laneKey(status)] = reordered.map((it, idx) => ({ ...it, sort_order: idx }));
 
 		const updates = reorderGroup(grp, child.id, dir);
 		// IDENTITY fence + captured workspace (BUG-3095) — see handleFinalize
@@ -937,11 +949,11 @@
 	{:else}
 		{#each groups as [status, _statusChildren] (status)}
 			<div class="child-group">
-				<div class="group-label">{formatLabel(status)} ({(groupData[status] ?? []).length})</div>
+				<div class="group-label">{formatLabel(status)} ({(groupData[laneKey(status)] ?? []).length})</div>
 				<div
 					class="child-list"
 					use:dndzone={{
-						items: groupData[status] ?? [],
+						items: groupData[laneKey(status)] ?? [],
 						flipDurationMs,
 						type: 'child-item',
 						dropTargetClasses: ['drop-target'],
@@ -954,7 +966,7 @@
 					onconsider={(e) => handleConsider(status, e)}
 					onfinalize={(e) => handleFinalize(status, e)}
 				>
-					{#each groupData[status] ?? [] as child, i (child.id)}
+					{#each groupData[laneKey(status)] ?? [] as child, i (child.id)}
 						{@const fields = parseFields(child)}
 						<!-- ASKED OF THE CHILD'S OWN COLLECTION, not of this item's
 						     (BUG-3067). A child row may live in ANY collection, so the
@@ -992,7 +1004,7 @@
 									<ItemActionsMenu
 										item={child}
 										label={child.title}
-										disabledDirs={disabledDirections(i, (groupData[status] ?? []).length)}
+										disabledDirs={disabledDirections(i, (groupData[laneKey(status)] ?? []).length)}
 										onReorder={(dir) => reorderChild(status, child, dir)}
 									/>
 								{/if}

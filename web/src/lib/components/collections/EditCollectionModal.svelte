@@ -479,7 +479,10 @@
 			if (field.type !== 'select' && field.type !== 'multi_select') continue;
 			if (field.originalOptions.length === 0) continue;
 
-			const renames: Record<string, string> = {};
+			// Null-prototype (BUG-3054): keyed by an option VALUE, and `__proto__`
+			// assigned into a plain object re-parents it instead of adding a key,
+			// so that rename was silently dropped from the migration.
+			const renames: Record<string, string> = Object.create(null);
 			for (let i = 0; i < field.originalOptions.length; i++) {
 				const oldVal = field.originalOptions[i];
 				const newVal = field.options[i];

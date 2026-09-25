@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
+	import { ownValue } from '$lib/utils/ownValue';
 	import { goto } from '$app/navigation';
 	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
 	import { parseFields, parseSchema, itemUrlId, type Collection, type Item } from '$lib/types';
@@ -217,7 +218,7 @@
 			// `STATUS_ORDER` misses it and every such row collapses to the same
 			// default rank. Withholding the chip fixed what the row SHOWED and left
 			// what it was sorted BY, which is the same value wearing a different hat.
-			const sa = STATUS_ORDER[declaredStatusOf(fa)] ?? 1, sb = STATUS_ORDER[declaredStatusOf(fb)] ?? 1;
+			const sa = ownValue(STATUS_ORDER, declaredStatusOf(fa)) ?? 1, sb = ownValue(STATUS_ORDER, declaredStatusOf(fb)) ?? 1;
 			if (sa !== sb) return sa - sb;
 			const ta = fa.trigger ?? '', tb = fb.trigger ?? '';
 			if (ta !== tb) return ta.localeCompare(tb);

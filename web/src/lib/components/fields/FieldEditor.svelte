@@ -1190,8 +1190,25 @@ handlers — onchange is never called.
 	}
 
 	function handleCheckboxToggle() {
-		onchange(!value);
+		// Toggle what the user last SAW, not the prop (BUG-3047). The prop lags
+		// every write until its round trip lands, so two quick clicks negated the
+		// same old value, both sent it, and the field ended where it started: one
+		// click lost. The base is the newest value we sent, for this item, still
+		// outstanding; the prop only when nothing of ours is.
+		//
+		// Same record and same display hold the number step uses (`sendTyped` /
+		// `typedDisplay`), so the checkbox inherits every release path they have:
+		// its own echo coming home, the write settling (a REFUSED toggle returns
+		// to the stored value), a subject swap, unmount.
+		const base =
+			awaitingEcho && awaitingEcho.itemId === itemId ? !!awaitingEcho.sent : !!value;
+		const next = !base;
+		typedDisplay = String(next);
+		sendTyped(next);
 	}
+
+	/** What the switch shows: the toggle we sent while it is outstanding, else the prop. */
+	let shownChecked = $derived(typedDisplay !== null ? typedDisplay === 'true' : !!value);
 
 	// ── Scroll focused option into view ────────────────────────────────────
 
@@ -1416,10 +1433,10 @@ handlers — onchange is never called.
 	<!-- Toggle switch -->
 	<button
 		class="toggle"
-		class:on={!!value}
+		class:on={shownChecked}
 		type="button"
 		role="switch"
-		aria-checked={!!value}
+		aria-checked={shownChecked}
 		aria-label={field.label}
 		onclick={handleCheckboxToggle}
 	>

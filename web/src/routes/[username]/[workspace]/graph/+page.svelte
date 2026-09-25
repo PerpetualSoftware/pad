@@ -14,7 +14,7 @@
 	import { sseService, type ItemEvent } from '$lib/services/sse.svelte';
 	import type { NodeObject, LinkObject } from '3d-force-graph';
 	import type { GraphResponse, Item } from '$lib/types';
-	import { GRAPH_PALETTE } from '$lib/graph/palette';
+	import { createCollectionColorMap } from '$lib/graph/palette';
 	import { isBlockedByModal } from '$lib/a11y/viewerBackdrop';
 	import DetailCard from './DetailCard.svelte';
 	import GraphToolbar from './GraphToolbar.svelte';
@@ -245,16 +245,13 @@
 	// WebGL can't resolve — so we use the shared hex GRAPH_PALETTE (also used by the
 	// 2D per-item graph, PLAN-1780) and assign colors to collection slugs in
 	// first-seen order (stable within a single graph payload).
-	const PALETTE = GRAPH_PALETTE;
-	// Built fresh on each graphData change. Plain `let` (rebuilt imperatively).
-	let collectionColors: Record<string, string> = {};
-
+	// The SHARED assigner, rebuilt on each graphData change (a plain `let`,
+	// rebuilt imperatively). This page used to carry a byte-identical private
+	// copy, and the copy had the same prototype-key defect the shared one was
+	// fixed for (BUG-3054).
+	let collectionPalette = createCollectionColorMap();
 	function colorForCollection(slug: string): string {
-		if (!collectionColors[slug]) {
-			const idx = Object.keys(collectionColors).length % PALETTE.length;
-			collectionColors[slug] = PALETTE[idx];
-		}
-		return collectionColors[slug];
+		return collectionPalette.colorForCollection(slug);
 	}
 
 	// The renderer's builder methods type their accessor params as the library's
@@ -1024,7 +1021,7 @@
 
 	// Push freshly-loaded data into the renderer once both are ready. Reads
 	// graphData (reactive) + rendererReady (reactive); writes only the imperative
-	// `graph` handle and the plain `collectionColors` map, never a tracked $state.
+	// `graph` handle and the plain `collectionPalette` assigner, never a tracked $state.
 	// A null graphData (workspace switch in flight, or load error) clears the
 	// canvas too — otherwise the previous workspace's nodes linger behind the
 	// loading overlay (Codex round-1 finding #1).
@@ -1033,7 +1030,7 @@
 		// graphData verbatim when no filter is active, so the unfiltered path is
 		// unchanged. Reads filteredData (reactive, derived from graphData + the filter
 		// $states); writes only the imperative `graph` handle + the plain
-		// collectionColors map, never a tracked $state — CONVE-1688-clean.
+		// collectionPalette assigner, never a tracked $state — CONVE-1688-clean.
 		const data = filteredData;
 		// Rebuild the uuid→ref bridge from the FULL payload (not the filtered subset)
 		// so SSE correlation works for items the current filter happens to hide — a
@@ -1082,7 +1079,7 @@
 		// from the FULL node list (not the filtered subset) so a collection keeps its
 		// hue whether or not the current filter happens to include it — the filter
 		// chips and the rendered nodes must agree on color.
-		collectionColors = {};
+		collectionPalette = createCollectionColorMap();
 		for (const n of graphData?.nodes ?? []) colorForCollection(n.collection);
 		graph.graphData({
 			nodes: data ? data.nodes.map((n) => ({ ...n, id: n.ref, name: n.title })) : [],

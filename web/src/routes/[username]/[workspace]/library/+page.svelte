@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onDestroy, untrack } from 'svelte';
+	import { ownValue } from '$lib/utils/ownValue';
 	import { page } from '$app/state';
 	import { api } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
@@ -350,7 +351,7 @@
 									<div class="badges">
 										<Chip size="sm" color="var(--status-blue)">{convention.trigger}</Chip>
 										<Chip size="sm" color="var(--accent-purple)">{conventionSurfaceLabel(convention)}</Chip>
-										<Chip size="sm" color={priorityColors[convention.enforcement] ?? 'var(--accent-gray)'}>
+										<Chip size="sm" color={ownValue(priorityColors, convention.enforcement) ?? 'var(--accent-gray)'}>
 											{convention.enforcement}
 										</Chip>
 										{#if convention.commands?.length}

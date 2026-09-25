@@ -119,10 +119,16 @@ export function formatOpenChildrenPrompt(parentRef: string, d: OpenChildrenDetai
 export async function confirmOpenChildrenOrThrow<T>(
 	err: unknown,
 	parentRef: string,
-	retryWithForce: () => Promise<T>
+	retryWithForce: () => Promise<T>,
+	/**
+	 * Whether the prompt is still worth SHOWING if it has to wait in the queue
+	 * (BUG-3046). Pass the same fence the retry checks; a prompt that is dead
+	 * by the time it would be shown resolves as a cancel.
+	 */
+	isLive?: () => boolean
 ): Promise<T | null> {
 	if (!isOpenChildrenError(err)) throw err;
-	const proceed = await openChildrenDialog.request(parentRef, err.details);
+	const proceed = await openChildrenDialog.request(parentRef, err.details, isLive);
 	if (!proceed) return null;
 	return await retryWithForce();
 }

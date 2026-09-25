@@ -14,6 +14,7 @@
  */
 
 import familyFixture from './mime-families.json';
+import { ownValue } from '$lib/utils/ownValue';
 import { GENERIC_ICON_ID, isAttachmentIconId, type AttachmentIconId } from './icons/index';
 
 // Same algorithm as web/src/routes/console/billing/+page.svelte. Picks a
@@ -223,7 +224,8 @@ export function iconForAttachment(
 		if (pattern.test(m)) return family;
 	}
 
-	const byExtension = EXTENSION_FAMILIES[extensionOf(filename)];
+	// A filename's extension is user-chosen: own keys only (BUG-3054).
+	const byExtension = ownValue(EXTENSION_FAMILIES, extensionOf(filename));
 	if (byExtension) return byExtension;
 
 	// Last, and after the extension check: `text/*` is the widest of the

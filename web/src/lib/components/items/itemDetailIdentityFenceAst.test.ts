@@ -96,7 +96,7 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	startEditTitle: { reviewed: '17f04352d420', why: 'focuses and sizes the input it opened synchronously', may: ['el', 'titleInputEl.focus', 'titleInputEl.setSelectionRange'] },
 	saveTitle: { reviewed: 'ba5a2acf0d81', why: 'gen against loadGeneration on both arms, and again after the tick that resizes a reopened editor (BUG-3115)' },
 	updateField: {
-		reviewed: 'fd3956618ee4',
+		reviewed: '4ae2212df0a5',
 		why: 'stillCurrent() on every arm, the OCC refetch and the open-children confirm',
 		callbacks: {
 			'submitOrderedOCC({send})': {
@@ -162,7 +162,7 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	handleRestore: { reviewed: 'c3a1732554a4', why: 'switchedAway on every arm' },
 	handleDeleteLink: { reviewed: 'e51f23ad3790', why: 'switchedAway after each await' },
 	handleCreateLink: { reviewed: '473b62faa93a', why: 'switchedAway after each await' },
-	handleMove: { reviewed: '0b4e986d6705', why: 'stillOnSource() on every arm, including inside navIfStillCurrent' },
+	handleMove: { reviewed: 'da5513ba767f', why: 'stillOnSource() on every arm, including inside navIfStillCurrent' },
 };
 
 interface SignedRow extends Row {
