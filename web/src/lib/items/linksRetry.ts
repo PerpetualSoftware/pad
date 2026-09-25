@@ -7,10 +7,10 @@
  *
  *  - A link added or removed elsewhere, without touching the item, emits no
  *    item event, so no later refresh is guaranteed.
- *  - Holding back the sync cursor cannot help either. `markSynced()` is one
- *    shared `lastSyncTime = Date.now()`, and the workspace layout advances it
- *    on its own after every clean reconcile, so a pane withholding its call
- *    still sees the cursor move.
+ *  - Holding back the sync cursor cannot help either. It is one shared cursor,
+ *    and the workspace layout advances it on its own after every clean
+ *    reconcile (the only full_refresh writer since BUG-3207), so nothing a
+ *    pane does holds it back.
  *
  * So the pane has to remember the failure itself, and this is that memory: one
  * pending target per pane, retried on a bounded backoff, and restarted by

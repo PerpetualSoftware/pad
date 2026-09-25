@@ -16,6 +16,7 @@
  */
 
 import { api } from '$lib/api/client';
+import { estimateServerNow } from '$lib/api/serverClock';
 import { sseService } from '$lib/services/sse.svelte';
 import type { Item, ChangesResponse } from '$lib/types';
 
@@ -62,7 +63,12 @@ const MIN_ABSENCE_MS = 2000;
 const MAX_INCREMENTAL_MS = 10 * 60 * 1000; // 10 minutes
 
 function createSyncService() {
-	let lastSyncTime = $state<number>(Date.now());
+	// The cursor holds SERVER times only (BUG-3207): a /changes `server_time`, or
+	// a `stamp()` taken before the reads a full reload vouches for. 0 means
+	// UNSEEDED, and an unseeded cursor answers full_refresh rather than asking
+	// for `since=0`. It used to start at the client's Date.now(), which skips the
+	// skew window whenever the client clock runs ahead of the server's.
+	let lastSyncTime = $state<number>(0);
 	let hiddenSince = $state<number>(0);
 	let syncing = $state<boolean>(false);
 	/** A sync_required that arrived mid-sync and still needs a pass (BUG-2508). */
@@ -109,7 +115,16 @@ function createSyncService() {
 		// This avoids clock-skew issues where Date.now() on the client
 		// is ahead/behind the server, causing missed or duplicate changes.
 		try {
-			const changes = await api.changes.since(slug, Date.now());
+			// The seed's `since` bounds the DELTA delivered below, which covers the
+			// changes committed between this workspace's page loads and the cursor
+			// the seed sets. Asked from the client clock, a client running ahead
+			// gets an empty delta while the cursor jumps to server time: the gap is
+			// skipped (BUG-3207). The server-clock estimate errs early, so the
+			// delta can only grow. The client clock remains only for a tab that
+			// has had no response at all yet, where there is nothing to estimate
+			// from and nothing loaded to have missed.
+			const since = estimateServerNow() ?? Date.now();
+			const changes = await api.changes.since(slug, since);
 			// Two questions, answered separately (BUG-3201, codex round 1):
 			//   - the CURSOR belongs to the newest seed only; an older one's
 			//     clock is behind it;
@@ -130,10 +145,11 @@ function createSyncService() {
 				notify({ type: 'incremental', changes, workspace: slug });
 			}
 		} catch {
-			if (gen !== seedGeneration) return;
-			// Fallback to client time if the server call fails.
-			// Not ideal, but better than leaving the cursor at 0.
-			lastSyncTime = Date.now();
+			// A failed seed writes NOTHING (BUG-3207). It used to write the
+			// client's Date.now(), which skips the skew window when the client
+			// runs ahead. Keeping the previous cursor only ever re-delivers (it is
+			// a server time at or before this workspace's page loads), and an
+			// unseeded one answers the next sync with a full_refresh.
 		}
 	}
 
@@ -209,6 +225,11 @@ function createSyncService() {
 		if (absenceMs > MAX_INCREMENTAL_MS) {
 			return { type: 'full_refresh' };
 		}
+		// Never seeded: there is no server time to ask from, and `since=0` would
+		// return the whole workspace as a "delta" (BUG-3207).
+		if (lastSyncTime <= 0) {
+			return { type: 'full_refresh' };
+		}
 
 		// Try incremental sync via /changes endpoint
 		try {
@@ -270,9 +291,46 @@ function createSyncService() {
 		}
 	}
 
-	/** Mark a successful data load (updates the sync timestamp). */
-	function markSynced() {
-		lastSyncTime = Date.now();
+	/**
+	 * The server time to vouch for a full reload with. Take it BEFORE the reload
+	 * reads, and hand it to `markSynced` once they succeed (BUG-3207).
+	 *
+	 * Before, not after: `markSynced` used to stamp at the END of the reload, so
+	 * a change committed between the reads and the stamp was behind the cursor
+	 * and not in the reads — skipped by every later sync, even with a perfect
+	 * clock. Stamped first, the same change is re-delivered by the next
+	 * incremental sync instead. That duplicate is the chosen trade: a duplicate
+	 * is re-applied harmlessly (per-row seq and snapshot guards), a miss is never
+	 * recovered.
+	 *
+	 * The estimate comes from the `Date` headers the API client has seen
+	 * (`serverClock.ts`, which errs early by construction). With none yet in
+	 * this tab it asks the server once through /changes, whose response also
+	 * seeds the estimate for later stamps. `null` when both fail; the caller then
+	 * leaves the cursor where it is.
+	 */
+	async function stamp(): Promise<number | null> {
+		const estimate = estimateServerNow();
+		if (estimate !== null) return estimate;
+		if (!wsSlug) return null;
+		try {
+			// The `since` here only filters the payload, which is discarded; the
+			// client clock never reaches the cursor. `server_time` is exact, and
+			// the server takes it before its own reads.
+			return (await api.changes.since(wsSlug, Date.now())).server_time;
+		} catch {
+			return null;
+		}
+	}
+
+	/**
+	 * Mark a successful full reload, vouched for by a `stamp()` taken BEFORE its
+	 * reads. A `null` stamp (none could be taken) leaves the cursor alone. The
+	 * stamp may be older than the cursor; moving back only re-delivers.
+	 */
+	function markSynced(stampMs: number | null) {
+		if (stampMs === null) return;
+		lastSyncTime = stampMs;
 	}
 
 	/**
@@ -335,6 +393,7 @@ function createSyncService() {
 		init,
 		setWorkspace,
 		onSync,
+		stamp,
 		markSynced,
 		triggerSync
 	};

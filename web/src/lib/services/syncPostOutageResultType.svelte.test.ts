@@ -8,13 +8,19 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
  * everything-is-stale signal, and the reconcile subscriber next to it is
  * already shaped that way. This file is why the recovery is NOT gated there.
  *
- * When the server comes back, `/changes` SUCCEEDS. The cursor was seeded during
- * the outage — `setWorkspace`'s own seeding call failed and fell back to client
- * time — so an ordinary quiet workspace answers with nothing to report, and the
- * result is `caught_up`. **The type that means "nothing was missed" is exactly
- * the one delivered when everything was.** A `full_refresh` arrives only when
- * `/changes` ITSELF fails or the absence exceeds the incremental window, which
- * is the case where the server is still down and recovery cannot work anyway.
+ * When the server comes back, `/changes` SUCCEEDS. A tab whose cursor was
+ * seeded BEFORE the outage (an earlier workspace entry) still holds it — the
+ * outage's own seed fails and, since BUG-3207, writes nothing — so an ordinary
+ * quiet workspace answers with nothing to report, and the result is
+ * `caught_up`. **The type that means "nothing was missed" is exactly the one
+ * delivered when everything was.**
+ *
+ * BUG-3207 changed ONE case (pinned in syncServerClockCursor.svelte.test.ts): a
+ * tab that was never seeded (its first seed failed during the outage) now
+ * answers `full_refresh`, because an unseeded cursor has no server time to ask
+ * from. Before, the failed seed wrote the client clock and that case read
+ * `caught_up` too. The gating decision survives it: recovery runs on every
+ * result type, so it holds whichever of the two a returning server reports.
  *
  * So the recovery is gated on the CONDITION — identity actually missing — and
  * runs on every result. These legs pin the reading that forced that choice; if
@@ -59,12 +65,19 @@ beforeEach(() => {
 	});
 });
 
-/** The outage: the cursor seed itself fails and falls back to client time. */
+/**
+ * The outage, for a tab whose cursor a seed set BEFORE it: an earlier entry
+ * seeds at server time 500, then the outage's own seed fails and writes
+ * nothing (BUG-3207).
+ */
 async function seedDuringOutage() {
+	changesImpl = async () => ({ updated: [], deleted: [], server_time: 500, collections_changed: false });
+	await syncService.setWorkspace('ws');
 	changesImpl = async () => {
 		throw new Error('server down');
 	};
 	await syncService.setWorkspace('ws');
+	expect(syncService.lastSyncTime).toBe(500);
 }
 
 describe('TASK-2200 — what a returning server actually reports', () => {
