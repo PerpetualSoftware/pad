@@ -579,8 +579,17 @@ func (s *Server) handleDeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	err := s.store.DeleteWorkspace(ws.Slug)
-	if err != nil {
+	if errors.Is(err, sql.ErrNoRows) {
+		// Resolved above and gone by the time the delete ran: the
+		// workspace itself no longer resolves, so it is the marked 404.
 		writeWorkspaceNotFound(w, "Workspace not found")
+		return
+	}
+	if err != nil {
+		// Any other failure is not evidence the workspace is gone, and
+		// must not carry the marker that tells a client to stop asking
+		// about it (BUG-3069).
+		writeInternalError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
