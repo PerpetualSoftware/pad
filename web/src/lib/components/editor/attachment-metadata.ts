@@ -65,7 +65,17 @@ export interface AttachmentMetadata {
  */
 export interface MetadataFetchOptions {
 	cache?: RequestCache;
+	/** Override the HEAD's timeout (tests). */
+	timeoutMs?: number;
 }
+
+/**
+ * How long a metadata HEAD may take before it counts as a failed request
+ * (BUG-3211). The API client's value, for its reasons and on its receipt
+ * (`DEFAULT_REQUEST_TIMEOUT_MS` in $lib/api/client); restated rather than
+ * imported so this editor module does not take on the whole client.
+ */
+export const METADATA_HEAD_TIMEOUT_MS = 30_000;
 
 /**
  * The outcome of a metadata probe (PLAN-2392 DR-17).
@@ -185,7 +195,20 @@ export function fetchAttachmentMetadata(
 			// caller asks: an unspecified `cache` leaves fetch on its default, so the
 			// plain seed-fill HEAD is unchanged.
 			if (options?.cache) init.cache = options.cache;
-			const resp = await fetch(getDownloadUrl(uuid), init);
+			// BOUNDED (BUG-3211). This promise is CACHED and shared: every later
+			// lookup of this attachment is handed it. A HEAD the server never
+			// answered used to leave a promise that never settled, so every
+			// later lookup hung with it. A timeout lands in the catch below as
+			// `transient`, which is evicted like any other failed request.
+			const controller = new AbortController();
+			const timer = setTimeout(() => controller.abort(), options?.timeoutMs ?? METADATA_HEAD_TIMEOUT_MS);
+			init.signal = controller.signal;
+			let resp: Response;
+			try {
+				resp = await fetch(getDownloadUrl(uuid), init);
+			} finally {
+				clearTimeout(timer);
+			}
 			if (resp.status === 404) return { status: 'missing' as const };
 			if (!resp.ok) return { status: 'transient' as const };
 			const ctype = resp.headers.get('content-type') ?? '';

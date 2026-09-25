@@ -70,9 +70,22 @@ export type RefusalProbe = { kind: 'unauthorized' } | { kind: 'retry'; retryAfte
  *
  * A failed probe (network error) is a retry with no floor, and the ladder
  * alone decides: it says nothing about the credential.
+ *
+ * BOUNDED (BUG-3211). The caller holds `reconnectPending` until this settles,
+ * and nothing else clears it, so a probe whose headers never arrived stopped
+ * the tab from ever reconnecting its stream. A timed-out probe is a `retry`
+ * with no floor, which is what a network error already means here. 10s rather
+ * than the API's 30s: this reads headers only, and the ladder retries anyway.
  */
-export async function probeRefusal(url: string, fetchFn: typeof fetch = fetch): Promise<RefusalProbe> {
+export const PROBE_TIMEOUT_MS = 10_000;
+
+export async function probeRefusal(
+	url: string,
+	fetchFn: typeof fetch = fetch,
+	timeoutMs: number = PROBE_TIMEOUT_MS,
+): Promise<RefusalProbe> {
 	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), timeoutMs);
 	try {
 		const res = await fetchFn(url, {
 			method: 'GET',
@@ -90,6 +103,7 @@ export async function probeRefusal(url: string, fetchFn: typeof fetch = fetch): 
 	} catch {
 		return { kind: 'retry', retryAfterMs: null };
 	} finally {
+		clearTimeout(timer);
 		controller.abort();
 	}
 }
