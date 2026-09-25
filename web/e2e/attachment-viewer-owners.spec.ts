@@ -54,13 +54,67 @@ async function expectCursorMoves(
 	focusedCard: () => Promise<string | null>,
 	message: string
 ): Promise<void> {
+	// Each press records what the route's j/k guard reads at that moment, so a
+	// stuck cursor names which guard dropped it (BUG-3204: seen once in CI, with
+	// no trace kept, and not reproducible locally).
+	const presses: { key: string; state: NavGuardState }[] = [];
 	const before = await focusedCard();
+	presses.push({ key: 'j', state: await navGuardState(page) });
 	await page.keyboard.press('j');
 	if ((await focusedCard()) === before) {
 		await page.waitForTimeout(PANE_FOLLOW_SETTLE_MS);
+		presses.push({ key: 'k', state: await navGuardState(page) });
 		await page.keyboard.press('k');
 	}
-	await expect.poll(focusedCard, { message }).not.toBe(before);
+	try {
+		await expect.poll(focusedCard, { message }).not.toBe(before);
+	} catch (err) {
+		const after = await navGuardState(page);
+		throw new Error(
+			`${(err as Error).message}\nBUG-3204 guard state per press: ${JSON.stringify(presses)}\n` +
+				`after the poll: ${JSON.stringify(after)}`
+		);
+	}
+}
+
+interface NavGuardState {
+	/** Tag, id and classes of `document.activeElement` and its two nearest ancestors. */
+	active: string;
+	/** Focus is where the route's j/k handler bails (collection +page.svelte). */
+	activeInPane: boolean;
+	activeInEditableOrMenu: boolean;
+	/** Viewer roots still mounted, and native modals open: `isBlockedByModal`'s inputs. */
+	viewerRoots: number;
+	nativeModals: number;
+	/** Body children the viewer lease set `inert` on; 0 once every lease is released. */
+	inertBodyChildren: number;
+	focusedCard: string | null;
+}
+
+async function navGuardState(page: Page): Promise<NavGuardState> {
+	return page.evaluate(() => {
+		const describe = (el: Element | null): string =>
+			el ? `${el.tagName.toLowerCase()}${el.id ? '#' + el.id : ''}.${[...el.classList].join('.')}` : 'null';
+		const a = document.activeElement;
+		let modals = 0;
+		try {
+			modals = document.querySelectorAll('dialog:modal').length;
+		} catch {
+			modals = -1;
+		}
+		return {
+			active: [a, a?.parentElement ?? null, a?.parentElement?.parentElement ?? null]
+				.map(describe)
+				.join(' < '),
+			activeInPane: !!a?.closest('.item-pane'),
+			activeInEditableOrMenu: !!a?.closest('[contenteditable="true"], .pane-divider, [role="menu"]'),
+			viewerRoots: document.querySelectorAll('.attachment-viewer').length,
+			nativeModals: modals,
+			inertBodyChildren: [...document.body.children].filter((c) => c.hasAttribute('inert')).length,
+			focusedCard:
+				document.querySelector('.item-card.focused')?.textContent?.trim().slice(0, 60) ?? null,
+		};
+	});
 }
 
 /** Open a viewer from the first strip tile, past whatever is covering it. */
