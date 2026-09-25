@@ -1283,6 +1283,10 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "bad_request", models.ErrInvalidTagsType.Error())
 			return
 		}
+		if rep := (*models.RepeatedMemberError)(nil); errors.As(err, &rep) {
+			writeError(w, http.StatusBadRequest, "bad_request", rep.Error())
+			return
+		}
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
@@ -2656,6 +2660,19 @@ func (s *Server) handleRestoreItem(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleMoveItem moves an item to a different collection with field migration.
+// itemMoveRequest is the move endpoint's wire shape.
+type itemMoveRequest struct {
+	TargetCollection string             `json:"target_collection"`
+	FieldOverrides   models.FieldValues `json:"field_overrides"`
+}
+
+// UnmarshalJSON refuses a repeated field_overrides (BUG-3219): FieldValues
+// keeps only the last occurrence, where the plain map before BUG-3202 merged.
+func (m *itemMoveRequest) UnmarshalJSON(data []byte) error {
+	type alias itemMoveRequest
+	return refuseRepeatedFieldValues(json.Unmarshal(data, (*alias)(m)), data, "field_overrides")
+}
+
 func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
@@ -2680,11 +2697,12 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var input struct {
-		TargetCollection string             `json:"target_collection"`
-		FieldOverrides   models.FieldValues `json:"field_overrides"`
-	}
+	var input itemMoveRequest
 	if err := decodeJSON(r, &input); err != nil {
+		if rep := (*models.RepeatedMemberError)(nil); errors.As(err, &rep) {
+			writeError(w, http.StatusBadRequest, "invalid_body", rep.Error())
+			return
+		}
 		writeError(w, http.StatusBadRequest, "invalid_body", err.Error())
 		return
 	}
