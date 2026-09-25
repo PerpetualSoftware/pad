@@ -128,7 +128,15 @@ func (s *Store) backfillBidiAttachmentFilenames(rename func(string) string) (*Ba
 			if strings.ContainsFunc(newName, isBidiControl) {
 				return res, fmt.Errorf("backfill bidi filenames: rename of attachment %s left a Bidi_Control character", r.id)
 			}
-			result, err := s.db.Exec(s.q(`UPDATE attachments SET filename = ? WHERE id = ? AND filename = ?`),
+			// The server is changing the stored name, so a row that claimed
+			// the name as the caller's own now holds a normalised form of it
+			// (BUG-2819). Every other value stays true: substituted, derived
+			// and unknown are all still accurate about where the name came
+			// from.
+			result, err := s.db.Exec(s.q(`UPDATE attachments
+				SET filename = ?,
+				    filename_source = CASE WHEN filename_source = 'caller' THEN 'normalised' ELSE filename_source END
+				WHERE id = ? AND filename = ?`),
 				newName, r.id, r.filename)
 			if err != nil {
 				return res, fmt.Errorf("backfill bidi filenames: update %s: %w", r.id, err)

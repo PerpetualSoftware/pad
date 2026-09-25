@@ -180,3 +180,38 @@ func TestBackfillBidiAttachmentFilenamesSelectsEveryBidiControl(t *testing.T) {
 		}
 	}
 }
+
+// BUG-2819: the backfill changes a stored name, so a row that recorded the
+// name as the caller's own must stop saying so. Every other source value is
+// still true after the rewrite and is left alone.
+func TestBackfillBidiAttachmentFilenamesKeepsProvenanceTrue(t *testing.T) {
+	s := testStore(t)
+	ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "Bidi Prov"})
+	if err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	cases := map[string]string{"caller": "normalised", "unknown": "unknown", "substituted": "substituted", "derived": "derived", "normalised": "normalised"}
+	ids := map[string]string{}
+	for from := range cases {
+		a := &models.Attachment{
+			WorkspaceID: ws.ID, UploadedBy: "u", StorageKey: "fs:" + newID(), ContentHash: newID(),
+			MimeType: "text/plain", SizeBytes: 1, Filename: "x\u202E" + from + ".txt", FilenameSource: from,
+		}
+		if err := s.CreateAttachment(a); err != nil {
+			t.Fatalf("CreateAttachment(%s): %v", from, err)
+		}
+		ids[from] = a.ID
+	}
+	if _, err := s.BackfillBidiAttachmentFilenames(); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	for from, want := range cases {
+		a, err := s.GetAttachment(ids[from])
+		if err != nil || a == nil {
+			t.Fatalf("GetAttachment: %v", err)
+		}
+		if a.FilenameSource != want {
+			t.Errorf("%s row after the rewrite: source %q, want %q", from, a.FilenameSource, want)
+		}
+	}
+}

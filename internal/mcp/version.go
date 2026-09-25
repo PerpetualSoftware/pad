@@ -1019,9 +1019,11 @@ const CmdhelpVersion = "0.1"
 //
 //     0.53 — BUG-2819. ADDITIVE: every attachment row returned by
 //     `pad_attachment.action=list` gains `filename_source` (caller |
-//     normalised | substituted | derived | unknown), on BOTH transports:
-//     remote passes the list handler's JSON through, and stdio's
+//     normalised | substituted | derived | unknown), on BOTH transports —
+//     remote /mcp passes the list handler's JSON through, and local stdio's
 //     `pad attachment list --format json` carries each row as raw JSON. The
+//     key is ALWAYS PRESENT (not omitempty): `unknown` is itself the answer
+//     for a legacy row, so its absence would say nothing. The
 //     stored filename alone cannot say whether the caller sent it or the
 //     server substituted it — a file can really be named "upload.bin" — and
 //     this is the field that can. Rows written before it read `unknown`,
