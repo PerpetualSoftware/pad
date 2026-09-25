@@ -292,6 +292,16 @@
 	}
 
 	let isDragging = $state(false);
+	/**
+	 * Lanes keyed by `laneKey(value)`, never by the raw value (BUG-3054). The value
+	 * is user data (a text field's contents), and a plain object keyed by it
+	 * finds an INHERITED member for `toString`, `constructor` or `__proto__`: the
+	 * push threw, or `__proto__` re-parented the object and the lane vanished.
+	 * A prefix no Object.prototype member starts with makes every value an own
+	 * key. Not `Object.create(null)`: this is `$state`, and Svelte proxies only
+	 * objects whose prototype is Object.prototype, so a null-prototype object
+	 * would silently drop the drag handlers' reactivity.
+	 */
 	let groupData: Record<string, Item[]> = $state({});
 
 	/**
@@ -301,14 +311,14 @@
 	let propGroupData = $derived.by(() => {
 		const result: Record<string, Item[]> = {};
 		for (const opt of groupOptions) {
-			result[opt] = [];
+			result[laneKey(opt)] = [];
 		}
 		for (const item of items) {
-			const value = groupValueFor(item);
-			if (result[value] !== undefined) {
-				result[value].push(item);
+			const key = laneKey(groupValueFor(item));
+			if (Object.hasOwn(result, key)) {
+				result[key].push(item);
 			} else {
-				result[value] = [item];
+				result[key] = [item];
 			}
 		}
 		// `preserveOrder` opts out of the in-group sort so a parent that
@@ -337,7 +347,7 @@
 	});
 
 	function handleConsider(groupName: string, e: CustomEvent<DndEvent<Item>>) {
-		groupData[groupName] = e.detail.items;
+		groupData[laneKey(groupName)] = e.detail.items;
 		if (!isDragging && e.detail.info.trigger === TRIGGERS.DRAG_STARTED) {
 			if (typeof navigator !== 'undefined' && navigator.vibrate) {
 				navigator.vibrate(50);
@@ -347,11 +357,11 @@
 	}
 
 	async function handleFinalize(groupName: string, e: CustomEvent<DndEvent<Item>>) {
-		groupData[groupName] = e.detail.items;
+		groupData[laneKey(groupName)] = e.detail.items;
 
 		// Capture the desired order BEFORE setting isDragging = false or awaiting,
 		// because both can trigger reactive effects that overwrite groupData.
-		const reorderUpdates = groupData[groupName]
+		const reorderUpdates = groupData[laneKey(groupName)]
 			.filter((i: any) => !i[SHADOW_ITEM_MARKER_PROPERTY_NAME])
 			.map((item, index) => ({ slug: item.id, sort_order: index }));
 
@@ -409,6 +419,11 @@
 		}
 	}
 
+	/** The `groupData` key for a lane value (BUG-3054; see `groupData`). */
+	function laneKey(value: string): string {
+		return `lane:${value}`;
+	}
+
 	function itemCount(groupItems: Item[]): number {
 		return groupItems.filter((i: any) => !i[SHADOW_ITEM_MARKER_PROPERTY_NAME]).length;
 	}
@@ -421,7 +436,7 @@
 
 	function reorderItem(groupName: string, item: Item, dir: ReorderDirection) {
 		if (!onReorder) return;
-		const grp = (groupData[groupName] ?? []).filter(
+		const grp = (groupData[laneKey(groupName)] ?? []).filter(
 			(i: any) => !i[SHADOW_ITEM_MARKER_PROPERTY_NAME]
 		);
 		const updates = reorderGroup(grp, item.id, dir);
@@ -482,7 +497,7 @@
 	>
 		{#each groupItems as group (group.id)}
 			{@const groupName = group.id}
-			{@const grpItems = groupData[groupName] ?? []}
+			{@const grpItems = groupData[laneKey(groupName)] ?? []}
 			<div class="item-group">
 				<div
 					class="group-header"

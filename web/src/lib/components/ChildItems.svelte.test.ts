@@ -179,3 +179,48 @@ describe('ChildItems header completion comes from the server or not at all (BUG-
 		expect(target.querySelector('.progress-bar')).toBeNull();
 	});
 });
+
+// BUG-3054: children are grouped by status into a plain object keyed by the
+// status value. `__proto__` re-parented that object instead of creating a lane,
+// so its children vanished. Confirmed RED on main.
+describe('a child status that names an Object.prototype member (BUG-3054)', () => {
+	let target: HTMLElement;
+	let instance: ReturnType<typeof mount> | undefined;
+	const kid = (id: string, status: string) => ({
+		id, slug: id, title: `Child ${id}`, collection_slug: 'tasks', fields: JSON.stringify({ status }),
+		created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
+	});
+
+	beforeEach(() => {
+		childrenMock.mockClear();
+		childrenMock.mockImplementation(async () => [
+			kid('p', '__proto__'),
+			kid('c', 'constructor'),
+			kid('t', 'toString'),
+			kid('o', 'open'),
+		]);
+		target = document.body.appendChild(document.createElement('div'));
+	});
+
+	afterEach(() => {
+		if (instance) unmount(instance);
+		instance = undefined;
+		target.remove();
+		childrenMock.mockImplementation(async () => []);
+	});
+
+	it('renders every child, in a lane of its own status', async () => {
+		instance = mount(ChildItems, { target, props: { wsSlug: 'ws-1', itemSlug: 'p-1', itemId: 'p-1' } });
+		flushSync();
+		await vi.waitFor(() => expect(target.querySelector('.child-count')).not.toBeNull());
+		flushSync();
+		const text = target.textContent ?? '';
+		for (const id of ['p', 'c', 't', 'o']) {
+			expect(text, `child ${id} is rendered`).toContain(`Child ${id}`);
+		}
+		// One lane per status, each counting exactly its own child.
+		const labels = [...target.querySelectorAll('.group-label')].map((el) => el.textContent?.trim() ?? '');
+		expect(labels).toHaveLength(4);
+		for (const label of labels) expect(label, label).toMatch(/\(1\)$/);
+	});
+});
