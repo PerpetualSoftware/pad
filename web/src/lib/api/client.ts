@@ -533,6 +533,19 @@ function parseAccessRevokedScope(path: string): AccessRevokedScope | null {
 const WORKSPACE_LEVEL_READS = new Set(['items-index', 'items-changes', 'items', 'collections']);
 
 /**
+ * True when a 404 body is the server's workspace-resolution refusal: code
+ * `not_found` carrying `details.scope: "workspace"` (BUG-3069). Anything else,
+ * including an unparseable body, is false, and the caller falls back to the
+ * request-shape rule.
+ */
+export function isWorkspaceNotFoundBody(body: unknown): boolean {
+	const error = (body as { error?: { code?: unknown; details?: unknown } } | null)?.error;
+	if (!error || error.code !== 'not_found') return false;
+	const details = error.details as { scope?: unknown } | null | undefined;
+	return details?.scope === 'workspace';
+}
+
+/**
  * The workspace a 404 proves unreachable, or null (BUG-2983).
  *
  * DELIBERATELY NARROWER than `parseAccessRevokedScope`, and the difference is
@@ -548,19 +561,28 @@ const WORKSPACE_LEVEL_READS = new Set(['items-index', 'items-changes', 'items', 
  * `not_found` the server can produce is `RequireWorkspaceAccess`'s, because
  * there is no second thing to be missing.
  *
- * KEYED ON REQUEST SHAPE, NOT ON THE ERROR BODY, and that is a stopgap rather
- * than a preference: the workspace 404 and an item 404 both carry
- * `code: "not_found"` today, so the body cannot separate them. A distinct
- * server-side code is filed as BUG-3069; when it exists, this should key on it
- * and the shape rule becomes a fallback.
+ * THE BODY DECIDES FIRST (BUG-3069). A server that marks its workspace refusal
+ * with `details.scope: "workspace"` has said which thing it refused, so any
+ * path under `/workspaces/{ws}` qualifies, item reads included: the marker is
+ * only ever written when the workspace itself did not resolve. The code stays
+ * `not_found` (a new code would have broken every consumer keyed on it), so
+ * the marker, not the code, is the contract.
+ *
+ * The request-shape rule below is the FALLBACK for a server that predates the
+ * marker, where the workspace 404 and an item 404 are byte-identical and the
+ * shape is the only evidence. It is not consulted when the marker is present.
  */
-function parseWorkspaceGoneScope(path: string): AccessRevokedScope | null {
+function parseWorkspaceGoneScope(
+	path: string,
+	markedWorkspace = false
+): AccessRevokedScope | null {
 	let stripped = path.startsWith(BASE) ? path.slice(BASE.length) : path;
 	const qIdx = stripped.indexOf('?');
 	if (qIdx >= 0) stripped = stripped.slice(0, qIdx);
 	if (stripped.startsWith('/')) stripped = stripped.slice(1);
 	const parts = stripped.split('/');
 	if (parts[0] !== 'workspaces' || !parts[1]) return null;
+	if (markedWorkspace) return { kind: 'workspace', workspace: parts[1], reason: 'gone' };
 	// `/workspaces/{ws}` (2) or `/workspaces/{ws}/{endpoint}` (3). Anything
 	// longer names a sub-resource that can itself be missing.
 	if (parts.length > 3) return null;
@@ -754,10 +776,16 @@ async function request<T>(
 		// (which the client then politely retried once, adding to the pile).
 		//
 		// Same seam as the 403 for the same reason: both mean STOP ASKING AND
-		// PURGE. Narrower path rule, because a 404 is usually about the ITEM —
-		// see `parseWorkspaceGoneScope`.
+		// PURGE. The server marks its workspace refusal with
+		// `details.scope: "workspace"` (BUG-3069); without the marker (an older
+		// server) the narrower path rule decides, because a 404 is usually about
+		// the ITEM — see `parseWorkspaceGoneScope`.
+		//
+		// The body is read HERE, once, and the error thrown from here, so the
+		// generic `!resp.ok` branch below never tries to read it a second time.
+		const body = await resp.json().catch(() => null);
 		if (method === undefined || method === 'GET' || method === 'HEAD') {
-			const scope = parseWorkspaceGoneScope(path);
+			const scope = parseWorkspaceGoneScope(path, isWorkspaceNotFoundBody(body));
 			if (scope) scope.identity = issuedAs;
 			if (scope && accessRevokedHandler) {
 				try {
@@ -768,6 +796,8 @@ async function request<T>(
 				}
 			}
 		}
+		if (body?.error) throw new PadApiError(body.error);
+		throw new Error(`API error: ${resp.status}`);
 	}
 	if (resp.status === 429) {
 		// Rate limited (TASK-2026, BUG-3192). Retry idempotent requests up

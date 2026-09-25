@@ -2355,6 +2355,29 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 	})
 }
 
+// workspaceNotFoundDetails marks a 404 as the WORKSPACE failing to resolve
+// for this caller (a non-member, or a deleted workspace), as opposed to a
+// sub-resource inside a workspace the caller can read (BUG-3069). The two
+// used to be byte-identical, so a client had to infer which from the request
+// path, and they demand opposite reactions: the first means stop asking about
+// this workspace, the second means one item is gone.
+//
+// Status, code and message are unchanged, so every existing consumer of
+// `not_found` sees what it always saw, and the existence-oracle posture is
+// untouched: the caller learns only that the thing refused was the workspace,
+// which it already knew it asked about. Every workspace-resolution refusal
+// goes through writeWorkspaceNotFound so the marker cannot drift per site.
+func workspaceNotFoundDetails() map[string]interface{} {
+	return map[string]interface{}{"scope": "workspace"}
+}
+
+// writeWorkspaceNotFound writes the workspace-resolution 404 (BUG-3069).
+// The message is passed through because two doors have long said
+// "Workspace not found." with a period, and the text is not changing.
+func writeWorkspaceNotFound(w http.ResponseWriter, message string) {
+	writeError2(w, http.StatusNotFound, "not_found", message, workspaceNotFoundDetails())
+}
+
 // writeInternalError logs the real error server-side and sends a generic
 // message to the client. This prevents leaking SQL errors, file paths,
 // and other internal details.
@@ -2807,7 +2830,7 @@ func (s *Server) getWorkspaceID(w http.ResponseWriter, r *http.Request) (string,
 		return "", false
 	}
 	if ws == nil {
-		writeError(w, http.StatusNotFound, "not_found", "Workspace not found")
+		writeWorkspaceNotFound(w, "Workspace not found")
 		return "", false
 	}
 	return ws.ID, true
@@ -2836,7 +2859,7 @@ func (s *Server) getWorkspace(w http.ResponseWriter, r *http.Request) (*models.W
 		return nil, false
 	}
 	if ws == nil {
-		writeError(w, http.StatusNotFound, "not_found", "Workspace not found")
+		writeWorkspaceNotFound(w, "Workspace not found")
 		return nil, false
 	}
 	return ws, true

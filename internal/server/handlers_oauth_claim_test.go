@@ -192,6 +192,7 @@ func TestHandleOAuthClaim_BadRequest400(t *testing.T) {
 func TestHandleOAuthClaim_WorkspaceNotFound404(t *testing.T) {
 	e := newClaimTestEnv(t)
 	rr := e.doClaim(map[string]string{"workspace": "no-such-ws", "code": "123456"}, "")
+	assertWorkspaceNotFound(t, rr, "Workspace not found.")
 	if rr.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", rr.Code)
 	}
@@ -211,6 +212,7 @@ func TestHandleOAuthClaim_NotAMember404(t *testing.T) {
 	_ = e.srv.store.AddWorkspaceMember(otherWS.ID, other.ID, "owner")
 
 	rr := e.doClaim(map[string]string{"workspace": otherWS.Slug, "code": "123456"}, "")
+	assertWorkspaceNotFound(t, rr, "Workspace not found.")
 	if rr.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404 (not-a-member should look like not-found)", rr.Code)
 	}

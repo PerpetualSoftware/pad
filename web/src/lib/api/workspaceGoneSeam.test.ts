@@ -14,7 +14,7 @@
 // purging a workspace the caller can read perfectly well would be a far worse
 // bug than the storm this fixes.
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { api, setAccessRevokedHandler, setIdentityProvider, type AccessRevokedScope } from './client';
+import { api, PadApiError, setAccessRevokedHandler, setIdentityProvider, type AccessRevokedScope } from './client';
 
 function mockFetchStatus(status: number, body: unknown = { error: { code: 'not_found', message: 'x' } }) {
 	vi.stubGlobal(
@@ -151,5 +151,76 @@ describe('the request is stamped with WHO asked (codex round 1 P1)', () => {
 		mockFetchStatus(403, { error: { code: 'forbidden', message: 'x' } });
 		await expect(api.items.listIndex('secret', { includeArchived: true })).rejects.toThrow();
 		expect(seen[0]).toMatchObject({ reason: 'forbidden', identity: 'user-a' });
+	});
+});
+
+// BUG-3069: the server marks its workspace refusal with `details.scope:
+// "workspace"`, keeping code, status and message unchanged. With the marker
+// the BODY decides and the path rule above is not consulted; without it (an
+// older server) the path rule is the only evidence and every leg above holds.
+describe('a 404 carrying the workspace marker', () => {
+	const marked = {
+		error: { code: 'not_found', message: 'Workspace not found', details: { scope: 'workspace' } },
+	};
+
+	it('fires the seam for an ITEM read the path rule would refuse', async () => {
+		// The discriminating leg: the same call as "does NOT fire the seam for a
+		// missing ITEM" above, differing only in the body. A deep link into a
+		// workspace the caller cannot read is the commonest case, and the path
+		// rule could never catch it.
+		const seen = capture();
+		mockFetchStatus(404, marked);
+		await expect(api.items.get('ghost', 'PLAN-625')).rejects.toThrow();
+		expect(seen).toEqual([{ kind: 'workspace', workspace: 'ghost', reason: 'gone' }]);
+	});
+
+	it('fires the seam for a COLLECTION read the path rule would refuse', async () => {
+		const seen = capture();
+		mockFetchStatus(404, marked);
+		await expect(api.collections.get('ghost', 'plans')).rejects.toThrow();
+		expect(seen.map((s) => s.workspace)).toEqual(['ghost']);
+	});
+
+	it('does NOT fire for a marker with another scope, or on another code', async () => {
+		const seen = capture();
+		mockFetchStatus(404, { error: { code: 'not_found', message: 'x', details: { scope: 'item' } } });
+		await expect(api.items.get('readable', 'PLAN-625')).rejects.toThrow();
+		mockFetchStatus(404, { error: { code: 'collection_not_found', message: 'x', details: { scope: 'workspace' } } });
+		await expect(api.items.get('readable', 'PLAN-625')).rejects.toThrow();
+		expect(seen).toEqual([]);
+	});
+
+	it('does NOT fire on a write, marker or not', async () => {
+		const seen = capture();
+		mockFetchStatus(404, marked);
+		await expect(api.items.delete('ghost', 'PLAN-625')).rejects.toThrow();
+		expect(seen).toEqual([]);
+	});
+
+	it('surfaces the same not_found error every existing consumer keys on, details included', async () => {
+		capture();
+		mockFetchStatus(404, marked);
+		const err = await api.items.get('ghost', 'PLAN-625').catch((e) => e);
+		expect(err).toBeInstanceOf(PadApiError);
+		expect(err.code).toBe('not_found');
+		expect(err.message).toBe('Workspace not found');
+		expect(err.details).toEqual({ scope: 'workspace' });
+	});
+
+	it('a 404 with no JSON body still throws, and the path rule still decides', async () => {
+		const seen = capture();
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async () => ({
+				status: 404,
+				ok: false,
+				json: async () => {
+					throw new SyntaxError('not json');
+				},
+				headers: { get: () => null },
+			})),
+		);
+		await expect(api.collections.list('ghost')).rejects.toThrow('API error: 404');
+		expect(seen.map((s) => s.workspace)).toEqual(['ghost']);
 	});
 });

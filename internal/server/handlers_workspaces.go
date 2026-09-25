@@ -561,7 +561,7 @@ func (s *Server) handleUpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if ws == nil {
-		writeError(w, http.StatusNotFound, "not_found", "Workspace not found")
+		writeWorkspaceNotFound(w, "Workspace not found")
 		return
 	}
 
@@ -579,8 +579,17 @@ func (s *Server) handleDeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	err := s.store.DeleteWorkspace(ws.Slug)
+	if errors.Is(err, sql.ErrNoRows) {
+		// Resolved above and gone by the time the delete ran: the
+		// workspace itself no longer resolves, so it is the marked 404.
+		writeWorkspaceNotFound(w, "Workspace not found")
+		return
+	}
 	if err != nil {
-		writeError(w, http.StatusNotFound, "not_found", "Workspace not found")
+		// Any other failure is not evidence the workspace is gone, and
+		// must not carry the marker that tells a client to stop asking
+		// about it (BUG-3069).
+		writeInternalError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -748,7 +757,7 @@ func (s *Server) handleRestoreWorkspace(w http.ResponseWriter, r *http.Request) 
 	}
 	if restored == nil {
 		// Extremely unlikely (just restored), but don't lie about success.
-		writeError(w, http.StatusNotFound, "not_found", "Workspace not found")
+		writeWorkspaceNotFound(w, "Workspace not found")
 		return
 	}
 

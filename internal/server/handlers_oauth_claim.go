@@ -91,11 +91,17 @@ func (s *Server) handleOAuthClaim(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ws, err := s.store.GetWorkspaceBySlug(input.Workspace)
-	if err != nil || ws == nil {
+	if err != nil {
+		// A store error is not evidence the workspace is absent, so it
+		// must not carry the workspace marker (BUG-3069).
+		writeInternalError(w, err)
+		return
+	}
+	if ws == nil {
 		// Don't distinguish "doesn't exist" from "you're not a
 		// member" — 404 uniform so the endpoint can't be used to
 		// probe workspace existence.
-		writeError(w, http.StatusNotFound, "not_found", "Workspace not found.")
+		writeWorkspaceNotFound(w, "Workspace not found.")
 		return
 	}
 	// Verify the requesting user is actually a member of the workspace
@@ -109,7 +115,7 @@ func (s *Server) handleOAuthClaim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if member == nil {
-		writeError(w, http.StatusNotFound, "not_found", "Workspace not found.")
+		writeWorkspaceNotFound(w, "Workspace not found.")
 		return
 	}
 

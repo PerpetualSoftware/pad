@@ -602,7 +602,7 @@ func (s *Server) RequireWorkspaceAccess(next http.Handler) http.Handler {
 			return
 		}
 		if ws == nil {
-			writeError(w, http.StatusNotFound, "not_found", "Workspace not found")
+			writeWorkspaceNotFound(w, "Workspace not found")
 			return
 		}
 
