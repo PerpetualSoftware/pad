@@ -30,6 +30,7 @@ func sessionCmd() *cobra.Command {
 		sessionPruneCmd(),
 		sessionArmCmd(),
 		sessionDisarmCmd(),
+		sessionResetCmd(),
 		sessionStatusCmd(),
 		sessionShouldArmCmd(),
 		sessionFirstConnectCmd(),
@@ -401,11 +402,21 @@ table in the repo's .pad.toml (a deliberate, committed choice).`,
 			if err != nil {
 				return err
 			}
+			// Read the state back rather than assume it: where the session's
+			// owner cannot be verified the arm cannot take effect (BUG-2771),
+			// and saying "armed" there would be the lie this verb must not tell.
+			state := cli.SessionArmState()
 			if formatFlag == "json" {
 				return cli.PrintJSON(map[string]any{
-					"armed": true,
-					"path":  path,
+					"armed":       state == cli.LocalArmOn,
+					"local_state": localArmStateString(state),
+					"path":        path,
 				})
+			}
+			if state == cli.LocalArmUnverifiable {
+				fmt.Println("NOT armed: this session cannot be verified on this platform, so a local arm cannot take effect.")
+				fmt.Println("Use 'push.auto_arm = true' in the repo's .pad.toml instead; 'pad session reset' removes the file just written.")
+				return nil
 			}
 			fmt.Println("Armed this session — it will accept pad push notifications.")
 			fmt.Println("Takes effect when the session's push monitor next connects.")
@@ -454,8 +465,52 @@ Idempotent.`,
 				})
 			}
 			fmt.Println("Disarmed this session — it no longer accepts pad push notifications.")
-			if autoArm {
+			if cli.SessionArmState() == cli.LocalArmUnverifiable {
+				// The file is kept rather than reaped (BUG-2771), so here the
+				// disarm outlives the session: say so and name the way out.
+				fmt.Println("(This session cannot be verified on this platform, so the disarm stays in force for this directory until 'pad session reset'.)")
+			} else if autoArm {
 				fmt.Println("(This repo has push.auto_arm=true; a NEW session will arm again. Remove it from .pad.toml to stop that.)")
+			}
+			return nil
+		},
+	}
+}
+
+// sessionResetCmd is `pad session reset` (BUG-2771): remove this session's
+// arm-state file outright, so auto_arm decides again. Arm and disarm both
+// WRITE the file; before BUG-2771 a file whose owner could not be verified
+// was reaped on the next read, and there was no need for a verb that
+// removes one. Now such a file is kept (reaping it forgot a disarm), so it
+// needs an explicit way out. Idempotent.
+func sessionResetCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "reset",
+		Short: "Remove this session's local arm/disarm override so auto_arm decides",
+		Long: `Remove this session's local arm-state file, so the repository's
+.pad.toml 'push.auto_arm' decides whether this session accepts pushes.
+
+Needed mainly where a session cannot be verified (a headless session on
+Windows): there a local arm or disarm is kept rather than expiring with the
+session, and stays in force for the directory until reset.
+
+Idempotent.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			removed, path, err := cli.RemoveArmState()
+			if err != nil {
+				return err
+			}
+			if formatFlag == "json" {
+				return cli.PrintJSON(map[string]any{
+					"removed": removed,
+					"path":    path,
+				})
+			}
+			if removed {
+				fmt.Println("Removed this session's local arm/disarm override; auto_arm decides again.")
+			} else {
+				fmt.Println("No local arm/disarm override to remove.")
 			}
 			return nil
 		},
@@ -468,9 +523,12 @@ type sessionStatusJSON struct {
 	Workspace string `json:"workspace,omitempty"`
 	// LocalState is THIS session's tri-state local override (PLAN-2613 S3):
 	// "armed" (explicit `pad session arm`), "disarmed" (explicit `pad
-	// session disarm`, which beats auto_arm for this session), or "none"
-	// (no live override — auto_arm decides). It reflects intent on this
-	// machine, not server state.
+	// session disarm`, which beats auto_arm for this session), "none"
+	// (no live override — auto_arm decides), "error" (a file that cannot
+	// be read — fails closed), or "unverifiable" (a file whose session
+	// cannot be verified on this platform — fails closed and is kept until
+	// `pad session reset`, BUG-2771). It reflects intent on this machine,
+	// not server state.
 	LocalState string `json:"local_state"`
 	// LocalArmed is the boolean shorthand: LocalState == "armed". Retained
 	// for a simple read; LocalState carries the full tri-state.
@@ -599,6 +657,8 @@ func localArmStateString(s cli.LocalArmState) string {
 		return "disarmed"
 	case cli.LocalArmError:
 		return "error"
+	case cli.LocalArmUnverifiable:
+		return "unverifiable"
 	default:
 		return "none"
 	}
@@ -620,6 +680,8 @@ func printSessionStatus(st sessionStatusJSON) {
 		local = "disarmed (pad session disarm) — wins for this session"
 	case "error":
 		local = "unreadable local state — failing closed (run pad session arm to reset)"
+	case "unverifiable":
+		local = "cannot verify this session on this platform — failing closed; local arm/disarm cannot take effect here (use .pad.toml push.auto_arm; pad session reset clears this file)"
 	}
 	fmt.Fprintf(tw, "Local state:\t%s\n", local)
 

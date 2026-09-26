@@ -320,8 +320,11 @@ func readArmState() (st *ArmState, path string, err error) {
 // itself is OwnerLiveness (session_owner.go), shared with the session
 // registry since TASK-2767; this is the consent gate's posture on it:
 // ONLY an explicit alive counts. Dead is dead, and unknown — a platform
-// that cannot probe the owner — is treated as dead too, because a gate
-// that cannot verify consent must not grant it (fail closed). The
+// that cannot probe the owner — never grants, because a gate that cannot
+// verify consent must not grant it (fail closed). It is not dead either:
+// SessionArmState keeps an unknown file rather than reaping it, since a
+// reap would hand the decision to auto_arm and forget a disarm (BUG-2771).
+// The
 // registry's pruner takes the opposite posture on the same unknown, and
 // that asymmetry is the reason the verdict is tri-state.
 //
@@ -331,11 +334,24 @@ func readArmState() (st *ArmState, path string, err error) {
 // start token when one was recorded — and a headless file with NO token
 // (a non-Linux unix arm, e.g. macOS) falls back to bare pid-liveness, the
 // documented residual on the secondary path. On Windows the pid cannot be
-// probed at all: the verdict is unknown, which this gate treats as not
-// alive — the same effective result as before the shared verdict.
+// probed at all: the verdict is unknown, which resolves to
+// LocalArmUnverifiable (not armed, not reaped).
 func armStateOwnerAlive(st *ArmState) bool {
+	return armStateOwnerVerdict(st) == LivenessAlive
+}
+
+// ownerLivenessFn is OwnerLiveness behind a seam, so the unknown verdict —
+// which a real probe produces on Windows, and on unix only when /proc or the
+// socket cannot be examined — is reachable from a test on any platform
+// (BUG-2771). Production never reassigns it.
+var ownerLivenessFn = OwnerLiveness
+
+// armStateOwnerVerdict is the tri-state verdict on st's recorded owner.
+// SessionArmState needs all three: dead reaps, alive resolves the file, and
+// unknown is neither (BUG-2771).
+func armStateOwnerVerdict(st *ArmState) Liveness {
 	if st == nil {
-		return false
+		return LivenessDead
 	}
 	owner := SessionOwner{
 		PID:                 st.PID,
@@ -352,7 +368,7 @@ func armStateOwnerAlive(st *ArmState) bool {
 		// agree. The socket is the whole owner here.
 		owner.PID, owner.ProcStart = 0, ""
 	}
-	return OwnerLiveness(&owner) == LivenessAlive
+	return ownerLivenessFn(&owner)
 }
 
 // LocalArmState is the tri-state of THIS session's local arm-state file
@@ -375,6 +391,14 @@ const (
 	// gate exists to prevent. Distinct from LocalArmAbsent (no file at
 	// all), which safely resolves auto_arm.
 	LocalArmError
+	// LocalArmUnverifiable: a well-formed file exists but its owner cannot
+	// be probed here — every headless file on Windows, and on unix a file
+	// whose /proc entry or socket cannot be examined (BUG-2771). It resolves
+	// to NOT armed and is NOT reaped. Reaping it used to fall back to
+	// auto_arm, forgetting an explicit disarm (consent fail-open). The cost
+	// is that such a file outlives its session: it keeps auto_arm from
+	// deciding for this key until `pad session reset` removes it.
+	LocalArmUnverifiable
 )
 
 // SessionArmState reads THIS session's local arm-state file and returns
@@ -412,13 +436,20 @@ func SessionArmState() LocalArmState {
 		// is not well-formedness.
 		return LocalArmError
 	}
-	if !armStateOwnerAlive(st) {
+	switch armStateOwnerVerdict(st) {
+	case LivenessDead:
 		// Dead owner: reap the stale file so it can't override a future
 		// session (constraint 2). Absent falls back to auto_arm — which is
 		// exactly the "across sessions, auto_arm remains the contract"
 		// ruling for a disarmed file too.
 		reapArmFile(path)
 		return LocalArmAbsent
+	case LivenessUnknown:
+		// Cannot tell whether the owner is alive. Reaping would treat that
+		// as dead and hand the decision to auto_arm, forgetting a disarm;
+		// honouring the file would arm on unverified consent. Neither: keep
+		// the file, arm nothing (BUG-2771).
+		return LocalArmUnverifiable
 	}
 	if st.Disarmed {
 		return LocalArmOff
@@ -462,10 +493,11 @@ func ResolveAnnouncedArmed() bool {
 	switch SessionArmState() {
 	case LocalArmOn:
 		return true
-	case LocalArmOff, LocalArmError:
-		// OFF and ERROR both suppress arming: an explicit disarm wins, and
-		// an unreadable local state fails closed rather than falling to
-		// auto_arm (HIGH-2).
+	case LocalArmOff, LocalArmError, LocalArmUnverifiable:
+		// OFF, ERROR and UNVERIFIABLE all suppress arming: an explicit
+		// disarm wins, and a local state that cannot be read (HIGH-2) or
+		// whose owner cannot be verified (BUG-2771) fails closed rather
+		// than falling to auto_arm.
 		return false
 	default: // LocalArmAbsent
 		return ResolveAutoArmFromDisk().Armed
@@ -510,8 +542,8 @@ func MarkFirstConnect() (first bool, err error) {
 // closed), never the reverse. Best effort throughout — a lingering file
 // is simply re-evaluated on the next read.
 func reapArmFile(path string) {
-	if st, _, err := readArmState(); err == nil && st != nil && armStateOwnerAlive(st) {
-		return // someone re-armed with a live owner — leave it
+	if st, _, err := readArmState(); err == nil && st != nil && armStateOwnerVerdict(st) != LivenessDead {
+		return // re-written by an owner that is not provably dead — leave it
 	}
 	_ = os.Remove(path)
 }

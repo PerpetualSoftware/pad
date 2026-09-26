@@ -31,6 +31,9 @@ to Pad's live stream:
   (auto_arm will re-arm the next session)."
 - `local_state` is `error` → "Local push state unreadable — failing closed; run
   `/pad:connect` to reset."
+- `local_state` is `unverifiable` → "This session can't be verified on this platform, so
+  a local connect can't take effect — use `push.auto_arm` in `.pad.toml`; `pad session
+  reset` clears the local override."
 - otherwise not accepting → "Not accepting pushes — run `/pad:connect` to receive them
   here."
 
