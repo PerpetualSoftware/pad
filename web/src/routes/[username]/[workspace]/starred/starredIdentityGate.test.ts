@@ -1,6 +1,7 @@
 // The starred page's identity gate (TASK-3097): its one async unit, tabled with
 // the hash of the code it was reviewed on. `identityGateSuite` says what the
-// gate refuses and why.
+// gate refuses and why. No scanner guard covers this page, so a NEW handler
+// here is checked by review alone.
 import { identityGateSuite } from '../../../../test/identityGateSuite';
 
 identityGateSuite({

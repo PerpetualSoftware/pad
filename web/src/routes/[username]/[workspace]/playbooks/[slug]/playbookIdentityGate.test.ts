@@ -1,6 +1,7 @@
 // The playbook editor's identity gate (TASK-3097): its async units, tabled
 // with the hash of the code each was reviewed on. `identityGateSuite` says
-// what the gate refuses and why.
+// what the gate refuses and why. No scanner guard covers this page, so a NEW
+// handler here is checked by review alone.
 //
 // None of these units checks the signed-in identity. The loads check the ROUTE
 // (workspace, and the ref for loadItem), which a sign-in as someone else does

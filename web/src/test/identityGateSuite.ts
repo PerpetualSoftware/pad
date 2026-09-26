@@ -24,6 +24,17 @@
  *
  * The aid (`analysisReport`) is not required quiet on a route surface (lead
  * ruling (a) on TASK-3097): its trusted vocabulary names ItemDetail's fences.
+ *
+ * THE SCANNER GUARDS STAY (TASK-3097, lead ruling 2). Where a surface has a
+ * regex guard beside its gate (`<surface>IdentityFence.test.ts`, built on
+ * `identityFenceSource.ts`), the two answer different questions. The gate
+ * catches an EDIT to a unit it already knows, which the scanner cannot see.
+ * The scanner enforces the RULE on a NEW handler (an entry capture before the
+ * first await, a check after each one), which the gate does not: a new unit
+ * needs only a row, and on the routes the aid that would read it is advisory.
+ * Do not retire either as a duplicate of the other. tags, starred and the
+ * playbook editor have no scanner, so on those pages a new handler is checked
+ * by review alone; their gate files say so.
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
