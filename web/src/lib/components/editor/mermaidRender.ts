@@ -66,6 +66,19 @@ export type MermaidFailure = 'invalid' | 'timeout';
 
 class MermaidTimeout extends Error {}
 
+/**
+ * Append a job to the queue so that its link SETTLES whatever the job does.
+ * A throw from a caller's `onError` / `onRendered` used to reject the link,
+ * and every later `.then` job was then skipped for good, which is the same
+ * stall as a hung render arriving by another route (BUG-3239, codex r1).
+ * The error is reported, not swallowed.
+ */
+function enqueue(job: () => void | Promise<void>): void {
+	renderQueue = renderQueue.then(job).catch((e) => {
+		console.error('mermaid render queue: a job threw', e);
+	});
+}
+
 let importPromise: Promise<typeof import('mermaid')> | null = null;
 /** Set once a job gave up on a still-pending import; cleared when it settles. */
 let importStalled = false;
@@ -181,7 +194,7 @@ export function queueMermaidRender(
 	onError: (target: HTMLElement, reason: MermaidFailure) => void = markFailed,
 	onRendered?: (target: HTMLElement) => void
 ): void {
-	renderQueue = renderQueue.then(async () => {
+	enqueue(async () => {
 		try {
 			const m = await initMermaid();
 			// The palette THIS render bakes in, read after initMermaid set it
@@ -219,7 +232,7 @@ function markFailed(target: HTMLElement, reason: MermaidFailure) {
  * queueMermaidRender() could overwrite a synchronous clear with stale SVG.
  */
 export function queueMermaidClear(target: HTMLElement): void {
-	renderQueue = renderQueue.then(() => {
+	enqueue(() => {
 		target.textContent = '';
 		target.classList.remove('mermaid-error');
 		delete target.dataset.mermaidTheme;

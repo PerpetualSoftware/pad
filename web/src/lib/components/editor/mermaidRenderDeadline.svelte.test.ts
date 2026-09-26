@@ -113,6 +113,27 @@ describe('BUG-3239: a mermaid render that never settles does not stall the queue
 		expect(hung.querySelector('svg')?.getAttribute('data-src')).toBe('graph newer');
 	});
 
+	it('a callback that throws does not poison the queue for the diagrams after it (codex r1)', async () => {
+		const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+		const a = el();
+		const b = el();
+		const c = el();
+		loader.queueMermaidRender('graph a', a, () => {}, () => {
+			throw new Error('onRendered blew up');
+		});
+		loader.queueMermaidRender('INVALID', b, () => {
+			throw new Error('onError blew up');
+		});
+		loader.queueMermaidRender('graph c', c);
+		await drain();
+		expect(c.querySelector('svg')?.getAttribute('data-src')).toBe('graph c');
+		// ONE report: `onRendered` runs inside the job's own try, so its throw
+		// is routed to that job's `onError` (a no-op here), which predates this
+		// fix. Only the throwing `onError` reaches the queue's guard.
+		expect(spy).toHaveBeenCalledTimes(1);
+		spy.mockRestore();
+	});
+
 	it('a render just under the deadline still draws', async () => {
 		const slow = el();
 		loader.queueMermaidRender('HANG', slow);
