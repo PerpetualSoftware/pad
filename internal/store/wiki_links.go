@@ -516,8 +516,11 @@ func resolveWorkspaceSlugTx(tx *sql.Tx, s *Store, slug string) sql.NullString {
 //     link have `[[oldTitle]]` (or `[[<coll>/oldTitle]]`) literal in
 //     their content. The renderer would no longer resolve those after
 //     the rename, breaking the user's click target. Rewrite each
-//     source's content via links.ReplaceTitle (matches the document
-//     rename behavior — see documents.go::updateLinksInTx, though not
+//     source's content through buildCascadeBody, which calls
+//     links.RewriteBracketsAt: a POSITION-based rewrite over the bracket
+//     offsets the scan recorded, carrying the title escaper. (The
+//     document cascade, documents.go::updateLinksInTx, is the one that
+//     uses links.ReplaceTitle — BUG-2839. Nor does this cascade share
 //     its concurrency behavior: that cascade got a compare-and-set in
 //     BUG-2785 and this one still writes unconditionally. That is NOT
 //     the same exposure, and the difference is a lock: UpdateItem takes

@@ -3531,7 +3531,15 @@ func searchCmd() *cobra.Command {
 			params.Set("q", strings.Join(args, " "))
 			params.Set("workspace", ws)
 			if collection != "" {
-				params.Set("collection", normalizeCollectionSlug(collection))
+				// A server that resolves the filter itself gets the name as
+				// typed, so an exact collection beats its alias (BUG-2659).
+				// An older one matches a literal slug, and still needs the
+				// shorthand expanded here.
+				if client.ServerResolvesSearchCollection() {
+					params.Set("collection", collection)
+				} else {
+					params.Set("collection", normalizeCollectionSlug(collection))
+				}
 			}
 			if status != "" {
 				params.Set("status", status)

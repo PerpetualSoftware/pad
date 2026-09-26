@@ -105,7 +105,7 @@ REST API at `/api/v1/`. Key endpoints:
 - `GET /workspaces/{ws}/items/{slug}/children` — child items linked to a parent
 - `GET /workspaces/{ws}/items/{slug}/progress` — child item completion progress
 - `GET/POST /workspaces/{ws}/items/{slug}/links` — item relationships (blocks/blocked-by, parent/child)
-- `GET /search?q=query&workspace=slug` — full-text search
+- `GET /search?q=query&workspace=slug` — full-text search. A `collection` filter resolves like a collection in the item routes (BUG-2659): exact slug first, then the singular/alias fallback, and an archived collection still claims its name. It resolves once per workspace in scope, so `collection=task` means `task` where one exists and `tasks` where it does not. `GET /server/capabilities` advertises it as `search_collection_resolution`; the CLI sends the name as typed only to a server that does, and expands the shorthand itself otherwise
 - `GET /api/v1/events?workspace=slug` — SSE real-time events (workspace-scoped)
 - `GET /api/v1/events/stream` — SSE watch/push notifications (USER-scoped, spans every workspace the caller belongs to; backs `pad watch --stream`)
 

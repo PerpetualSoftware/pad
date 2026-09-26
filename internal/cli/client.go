@@ -49,8 +49,9 @@ type Client struct {
 // serverCapabilityFlags is the subset of GET /server/capabilities the CLI
 // acts on. A clean 404 (a build with no such endpoint) is the zero value.
 type serverCapabilityFlags struct {
-	CollectionResolution bool `json:"collection_resolution"`
-	ItemFieldAppend      bool `json:"item_field_append"`
+	CollectionResolution       bool `json:"collection_resolution"`
+	ItemFieldAppend            bool `json:"item_field_append"`
+	SearchCollectionResolution bool `json:"search_collection_resolution"`
 }
 
 func NewClient(host string, port int) *Client {
@@ -317,6 +318,17 @@ func (c *Client) CollectionNotFoundIsAuthoritative() bool {
 func (c *Client) ServerSupportsItemFieldAppend() bool {
 	caps, definitive := c.serverCapabilities()
 	return definitive && caps.ItemFieldAppend
+}
+
+// ServerResolvesSearchCollection reports whether GET /search resolves its
+// `collection` filter server-side (BUG-2659), so the CLI can send the
+// collection exactly as typed and let an exact match beat the alias. An
+// indeterminate probe answers false: the fallback is today's client-side
+// normalisation, which on a read-only filter can only misscope a search,
+// never write anywhere.
+func (c *Client) ServerResolvesSearchCollection() bool {
+	caps, definitive := c.serverCapabilities()
+	return definitive && caps.SearchCollectionResolution
 }
 
 // serverCapabilities returns the cached definitive capability answer, probing

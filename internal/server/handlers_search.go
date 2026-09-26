@@ -238,6 +238,30 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// BUG-2659: resolve the collection filter the way the item handlers
+	// resolve a collection (exact match first, then the singular/alias
+	// fallback, an archived name still claiming itself), once per workspace
+	// in scope. A literal `c.slug = ?` answered a shorthand with nothing, so
+	// clients normalised before sending, which let `tasks` shadow a real
+	// collection named `task`.
+	if params.Collection != "" {
+		ids, rerr := s.resolveSearchCollectionFilter(params)
+		if rerr != nil {
+			writeInternalError(w, rerr)
+			return
+		}
+		if len(ids) == 0 {
+			writeJSON(w, http.StatusOK, &store.SearchResponse{
+				Results: []store.SearchResult{},
+				Limit:   params.Limit,
+				Offset:  params.Offset,
+			})
+			return
+		}
+		params.CollectionFilterIDs = ids
+		params.Collection = ""
+	}
+
 	resp, err := s.store.Search(params)
 	if err != nil {
 		writeInternalError(w, err)
@@ -245,6 +269,49 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// resolveSearchCollectionFilter resolves params.Collection in every workspace
+// the search is scoped to, and returns the matched collection IDs (at most one
+// per workspace). The scope mirrors the store's: a named workspace, else the
+// caller's scoped workspace IDs, else (no user: the fresh-install window)
+// every workspace. Resolution does not consult visibility; the permission
+// filter the store applies alongside it still does, so resolving to a
+// collection the caller cannot see yields no rows rather than another
+// collection's.
+func (s *Server) resolveSearchCollectionFilter(params store.SearchParams) ([]string, error) {
+	var wsIDs []string
+	switch {
+	case params.Workspace != "":
+		ws, err := s.store.GetWorkspaceBySlug(params.Workspace)
+		if err != nil {
+			return nil, err
+		}
+		if ws != nil {
+			wsIDs = []string{ws.ID}
+		}
+	case len(params.WorkspaceIDs) > 0:
+		wsIDs = params.WorkspaceIDs
+	default:
+		all, err := s.store.ListWorkspaces()
+		if err != nil {
+			return nil, err
+		}
+		for _, ws := range all {
+			wsIDs = append(wsIDs, ws.ID)
+		}
+	}
+	ids := []string{}
+	for _, wsID := range wsIDs {
+		coll, err := s.resolveItemCollectionSlug(wsID, params.Collection)
+		if err != nil {
+			return nil, err
+		}
+		if coll != nil {
+			ids = append(ids, coll.ID)
+		}
+	}
+	return ids, nil
 }
 
 func removeString(ss []string, s string) []string {

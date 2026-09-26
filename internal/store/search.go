@@ -47,8 +47,14 @@ type SearchParams struct {
 	ItemIDs       []string // permission filter: additionally allow these specific item IDs (for item-level grants)
 
 	// Content filters (applied on top of permission filters)
-	Collection   string            // collection slug — scope search to a single collection
-	FieldFilters map[string]string // field key → value filters (e.g. {"status": "open", "priority": "high"})
+	Collection string // collection slug — scope search to a single collection
+	// CollectionFilterIDs, when non-nil, replaces Collection: the filter
+	// resolved to concrete collections, one per in-scope workspace
+	// (BUG-2659). One slug cannot express it, because the same input can
+	// name `task` in one workspace and resolve to `tasks` in another.
+	// Non-nil and empty matches nothing.
+	CollectionFilterIDs []string
+	FieldFilters        map[string]string // field key → value filters (e.g. {"status": "open", "priority": "high"})
 
 	// Pagination
 	Limit  int // max results per page (default 50, max 200)
@@ -156,10 +162,7 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 		}
 
 		// Apply content filters to ref lookup too
-		if params.Collection != "" {
-			refQuery += ` AND c.slug = ?`
-			refArgs = append(refArgs, params.Collection)
-		}
+		refQuery, refArgs = appendSearchCollectionFilter(refQuery, refArgs, params)
 		for key, value := range params.FieldFilters {
 			if !validFieldKey.MatchString(key) {
 				continue // skip unsafe keys
@@ -270,10 +273,7 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 		}
 
 		// Apply content filters to numeric lookup too
-		if params.Collection != "" {
-			numQuery += ` AND c.slug = ?`
-			numArgs = append(numArgs, params.Collection)
-		}
+		numQuery, numArgs = appendSearchCollectionFilter(numQuery, numArgs, params)
 		for key, value := range params.FieldFilters {
 			if !validFieldKey.MatchString(key) {
 				continue
@@ -456,11 +456,8 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 		}
 	}
 
-	// Collection slug filter — scope to a single collection by slug.
-	if params.Collection != "" {
-		query += ` AND c.slug = ?`
-		args = append(args, params.Collection)
-	}
+	// Collection filter — the resolved per-workspace set, or a literal slug.
+	query, args = appendSearchCollectionFilter(query, args, params)
 
 	// Field filters — filter by structured field values in the JSON fields column.
 	for key, value := range params.FieldFilters {
@@ -689,10 +686,7 @@ func (s *Store) appendSearchFilters(query string, args []interface{}, params Sea
 		}
 	}
 
-	if params.Collection != "" {
-		query += ` AND c.slug = ?`
-		args = append(args, params.Collection)
-	}
+	query, args = appendSearchCollectionFilter(query, args, params)
 
 	for key, value := range params.FieldFilters {
 		if !validFieldKey.MatchString(key) {
@@ -828,4 +822,25 @@ func sanitizeFTSQuery(q string) string {
 // query) untouched. See BUG-842 and the FTSMatch dialect method.
 func sanitizePGFTSQuery(q string) string {
 	return strings.ReplaceAll(q, "-", " ")
+}
+
+// appendSearchCollectionFilter adds the collection content filter to a search
+// query. A resolved CollectionFilterIDs set (BUG-2659) wins; a bare Collection
+// slug is the literal match callers inside the store still use.
+func appendSearchCollectionFilter(query string, args []interface{}, params SearchParams) (string, []interface{}) {
+	if params.CollectionFilterIDs != nil {
+		if len(params.CollectionFilterIDs) == 0 {
+			return query + ` AND 1 = 0`, args
+		}
+		query += ` AND i.collection_id IN (` + placeholders(len(params.CollectionFilterIDs)) + `)`
+		for _, id := range params.CollectionFilterIDs {
+			args = append(args, id)
+		}
+		return query, args
+	}
+	if params.Collection != "" {
+		query += ` AND c.slug = ?`
+		args = append(args, params.Collection)
+	}
+	return query, args
 }
