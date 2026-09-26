@@ -22,6 +22,7 @@
 	} from './shareView';
 	import { isRelationType } from '$lib/items/relationFieldTypes';
 	import StaleBodyNotice from '$lib/components/common/StaleBodyNotice.svelte';
+	import { mermaidBlocks } from './shareMermaid';
 
 	interface Props {
 		item: PublicItem;
@@ -101,7 +102,7 @@
 		{#if item.contentStale}<StaleBodyNotice />{/if}
 		<!-- `html` is pre-sanitized by the route's marked()+DOMPurify pipeline.
 		     No new XSS surface — same sanitized source as the single-item view. -->
-		<div class="expansion-content">
+		<div class="expansion-content" {@attach mermaidBlocks(html)}>
 			{@html html}
 		</div>
 	{:else if displayFields.length === 0}
@@ -175,6 +176,12 @@
 
 	/* Markdown content styles — mirror the single-item share view so an expanded
 	   row reads identically to a directly-shared item. */
+	/* TASK-2248 U2: a drawn mermaid diagram fits the column. */
+	.expansion-content :global(.share-mermaid svg) {
+		max-width: 100%;
+		height: auto;
+	}
+
 	.expansion-content :global(h1) {
 		font-size: 1.5em;
 		font-weight: 700;

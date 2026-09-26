@@ -1,25 +1,8 @@
 <script lang="ts" module>
-	// MODULE SCOPE, not instance scope, and that is load-bearing (BUG-3106
-	// review round 1).
+	// The mermaid module, render queue and applied-theme tracker live in
+	// `mermaidRender.ts` (TASK-2248 U2), at module scope for the reason given
+	// there: mermaid is one global, and the share page renders with it too.
 	//
-	// `mermaid` is a singleton: initialize() and render() act on ONE global
-	// config. Two <Editor>s are a routine state — the item route keeps the
-	// master ItemDetail mounted (merely `peeking`) while a pane holds a
-	// second one — so per-instance copies of this bookkeeping produce two
-	// bugs at once.
-	//
-	// A per-instance `appliedMermaidTheme` guards a global config, so
-	// instance B can decide "already applied" against a config instance A
-	// has since changed, skip the initialize() it needed, and render on the
-	// other mode's palette with nothing queued to correct it.
-	//
-	// A per-instance `renderQueue` makes overlapping render() calls routine
-	// rather than coincidental, and the queue exists precisely because
-	// mermaid cannot handle concurrent renders. One queue for one mermaid.
-	let mermaidMod: typeof import('mermaid') | null = null;
-	let renderQueue: Promise<void> = Promise.resolve();
-	let appliedMermaidTheme: MermaidTheme | null = null;
-
 	// The model source for each rendered diagram, keyed by the diagram
 	// element the SVG lands in. Written by the NodeView, which has the
 	// ProseMirror node; read by the theme re-render, which has only the DOM.
@@ -56,28 +39,17 @@
 	import { codeBlockMarkdownStorage } from './extensions/frontmatter';
 	import Placeholder from '@tiptap/extension-placeholder';
 	import { createPlainCodeBlockView } from './codeBlockCopy';
+	import { collectMermaidRerenders } from './mermaidTheme';
 	import {
-		mermaidThemeForMode,
-		collectMermaidRerenders,
-		type MermaidTheme,
-	} from './mermaidTheme';
+		currentMermaidTheme,
+		mermaidAppliedTheme,
+		queueMermaidRender,
+		queueMermaidClear,
+	} from './mermaidRender';
 
 	// BUG-3106: the mode read and the redraw set live in mermaidTheme.ts so
-	// both are reachable from a test; the comments there carry the reasoning.
-	// The serialized render queue and the applied-theme tracker are in the
-	// module block above, because mermaid's config is global.
-	function currentMermaidTheme(): MermaidTheme {
-		if (typeof document === 'undefined') return 'dark';
-		return mermaidThemeForMode(document.documentElement, prefersLightMode());
-	}
-
-	// The OS preference half of the read. `app.css` renders an ABSENT
-	// data-theme light when the OS prefers light, so the attribute alone
-	// cannot answer the question.
-	function prefersLightMode(): boolean {
-		if (typeof window === 'undefined' || !window.matchMedia) return false;
-		return window.matchMedia('(prefers-color-scheme: light)').matches;
-	}
+	// both are reachable from a test; the loader, the serialized render queue
+	// and the applied-theme tracker are in mermaidRender.ts (TASK-2248 U2).
 
 	// Watches <html>'s data-theme; armed in onMount, disconnected in onDestroy.
 	let themeObserver: MutationObserver | null = null;
@@ -86,48 +58,6 @@
 	// MutationObserver structurally cannot see.
 	let prefersLightQuery: MediaQueryList | null = null;
 	let prefersLightHandler: (() => void) | null = null;
-
-	async function initMermaid() {
-		if (!mermaidMod) {
-			mermaidMod = await import('mermaid');
-		}
-		const theme = currentMermaidTheme();
-		if (theme !== appliedMermaidTheme) {
-			mermaidMod.default.initialize({
-				startOnLoad: false,
-				// BUG-3106: follows the app's mode. This was an unconditional
-				// 'dark', which drew every diagram on the dark palette in light
-				// mode. The TASK-3090 comment below called it "OUR value, not a
-				// default" and kept it through the 12 bump for continuity —
-				// true of the BUMP, but it was never a deliberate choice to
-				// ignore the app's mode, just a value nobody had revisited.
-				theme,
-				securityLevel: 'strict',
-				fontFamily: 'inherit',
-				// `layout` is the load-bearing one. Read from the shipped
-				// bundles via mermaidAPI.getConfig(), 11.17.2 defaults to
-				// layout="dagre" and 12.0.0 to layout="elk", so without this
-				// pin every stored flowchart, state and class diagram re-flows
-				// on an upgrade nobody asked them about. `look` is a defensive
-				// pin, not a fix: both versions already default to "classic",
-				// and it is written down so a later default change cannot move
-				// our diagrams silently.
-				// This is the site default, not a ceiling: a diagram that opts
-				// into ELK in its own frontmatter still gets ELK.
-				//
-				// What the pin does NOT do, measured rather than assumed: it
-				// does not make 12 render identically to 11. With dagre pinned,
-				// the same flowchart goes from 377.5x623 to 426x737 and the
-				// same state diagram from 120.7x412 to 152x412 — same node and
-				// edge counts, same font size, same reading order, just drawn
-				// larger. The pin preserves the LAYOUT, not the metrics.
-				layout: 'dagre',
-				look: 'classic',
-			});
-			appliedMermaidTheme = theme;
-		}
-		return mermaidMod;
-	}
 
 	// Re-render every diagram currently in this editor on the new palette.
 	// The SVG already in the DOM has the old palette baked in, so a fresh
@@ -142,44 +72,8 @@
 	// One handler for both watchers: the desired theme is derived the same way
 	// whichever of the two inputs moved.
 	function handleModeChange() {
-		if (currentMermaidTheme() === appliedMermaidTheme) return;
+		if (currentMermaidTheme() === mermaidAppliedTheme()) return;
 		if (element) rerenderMermaidForTheme(element);
-	}
-
-	function queueMermaidRender(source: string, target: HTMLElement) {
-		renderQueue = renderQueue.then(async () => {
-			try {
-				const m = await initMermaid();
-				// The palette THIS render bakes in, read after initMermaid set it
-				// and before anything else can run in the serialized queue.
-				const renderedTheme = appliedMermaidTheme;
-				const id = `mmd-${Math.random().toString(36).slice(2, 10)}`;
-				const { svg } = await m.default.render(id, source);
-				target.innerHTML = svg;
-				// BUG-3112: the print rule below keys on this, because print
-				// cannot re-render (see `.mermaid-diagram[data-mermaid-theme]`).
-				if (renderedTheme) target.dataset.mermaidTheme = renderedTheme;
-				// A successful render means the source is now valid — drop any
-				// error styling left over from a prior failed render.
-				target.classList.remove('mermaid-error');
-			} catch {
-				target.textContent = '⚠ Invalid Mermaid syntax';
-				target.classList.add('mermaid-error');
-				delete target.dataset.mermaidTheme;
-			}
-		});
-	}
-
-	// Chain a diagram-clear through the shared mermaid render queue so it
-	// executes AFTER any still-pending renders for the same target. Without
-	// this, an in-flight queueMermaidRender() could overwrite a synchronous
-	// clear with stale SVG.
-	function queueMermaidClear(target: HTMLElement) {
-		renderQueue = renderQueue.then(() => {
-			target.textContent = '';
-			target.classList.remove('mermaid-error');
-			delete target.dataset.mermaidTheme;
-		});
 	}
 
 	// ProseMirror plugin: when the user copies/cuts a selection that lives
