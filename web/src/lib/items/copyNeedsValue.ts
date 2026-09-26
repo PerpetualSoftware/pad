@@ -7,9 +7,9 @@ import { isRelationType } from '$lib/items/relationFieldTypes';
  *
  * Everything else is NOT rendered as a text box. `json` is deliberately
  * read-only in FieldEditor (a plain text input would store the string "[]"
- * where an array belongs), and `multi_select` falls through FieldEditor's TEXT
- * fallback, which yields a string where the server requires `[]any`. That last
- * one is the dangerous case: enterable and silently invalid.
+ * where an array belongs), and `multi_select` has no editor in FieldEditor: it
+ * used to fall through to the TEXT fallback, which yielded a string where the
+ * server requires `[]any`, and since BUG-3052 unit 2 it renders read-only.
  */
 export const COLLECTABLE_TYPES = new Set([
 	'text',

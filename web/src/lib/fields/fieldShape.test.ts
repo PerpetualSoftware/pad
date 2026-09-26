@@ -1,6 +1,6 @@
 // BUG-3052 unit 1: the read-side text conversion never throws.
 import { describe, expect, it } from 'vitest';
-import { fieldMatches, safeString, safeText } from './fieldShape';
+import { fieldMatches, rawText, readAs, safeString, safeText } from './fieldShape';
 import { laneValue } from '$lib/collections/boardColumns';
 
 // A value JSON.parse happily produces, on which String() / `${}` / new Date() throw.
@@ -84,5 +84,66 @@ describe('fieldMatches', () => {
 		expect(fieldMatches('5', 5)).toBe(true);
 		expect(fieldMatches(5, 5)).toBe(true);
 		expect(fieldMatches('true', true)).toBe(true);
+	});
+});
+
+// BUG-3052 unit 2: the shape half of the server's validateFieldType, asked of a read.
+describe('readAs', () => {
+	const ok = (raw: unknown, t: string) => readAs(raw, t).ok;
+
+	it('accepts each type\'s own shape, and an absent value for any type', () => {
+		expect(ok('x', 'text')).toBe(true);
+		expect(ok('https://x', 'url')).toBe(true);
+		expect(ok('open', 'select')).toBe(true);
+		expect(ok('2026-09-26', 'date')).toBe(true);
+		expect(ok('2026-09-26T10:00:00Z', 'date')).toBe(true);
+		expect(ok('2026-09-26T23:59:59,5+05:30', 'date')).toBe(true);
+		expect(ok('', 'date')).toBe(true);
+		expect(ok(5, 'number')).toBe(true);
+		expect(ok(0, 'number')).toBe(true);
+		expect(ok(false, 'checkbox')).toBe(true);
+		expect(ok(['a'], 'multi_select')).toBe(true);
+		expect(ok([], 'multi_select')).toBe(true);
+		for (const t of ['text', 'number', 'checkbox', 'date', 'multi_select']) {
+			expect(ok(null, t), t).toBe(true);
+			expect(ok(undefined, t), t).toBe(true);
+			// ItemDetail passes an unset field as `''` (`fields[key] ?? ''`).
+			expect(ok('', t), t).toBe(true);
+		}
+	});
+
+	it('refuses what the server would refuse to write', () => {
+		expect(ok(5, 'text')).toBe(false);
+		expect(ok(['a'], 'select')).toBe(false);
+		expect(ok('5', 'number')).toBe(false);
+		expect(ok(Infinity, 'number')).toBe(false);
+		expect(ok('false', 'checkbox')).toBe(false);
+		expect(ok(0, 'checkbox')).toBe(false);
+
+		expect(ok(20260926, 'date')).toBe(false);
+		expect(ok('a', 'multi_select')).toBe(false);
+		expect(ok(['a', 1], 'multi_select')).toBe(false);
+		expect(ok(HOSTILE, 'text')).toBe(false);
+	});
+
+	it('judges a date by its JSON type only, not by whether it parses', () => {
+		// The value half (a date that parses, a select value that is an option)
+		// is the editor's to show; see readAs's comment for why.
+		expect(ok('next week', 'date')).toBe(true);
+		expect(ok('2026-99-99', 'date')).toBe(true);
+		expect(ok(20260926, 'date')).toBe(false);
+	});
+
+	it('does not judge json, relations or an unknown type', () => {
+		for (const t of ['json', 'relation', 'multi_relation', 'mystery']) expect(ok({ a: 1 }, t), t).toBe(true);
+	});
+});
+
+describe('rawText', () => {
+	it('is the stored JSON text, so a string shows quoted and an object shows its members', () => {
+		expect(rawText('5')).toBe('"5"');
+		expect(rawText({ a: 1 })).toBe('{"a":1}');
+		expect(rawText(HOSTILE)).toBe('{"toString":0}');
+		expect(rawText(undefined)).toBe('');
 	});
 });

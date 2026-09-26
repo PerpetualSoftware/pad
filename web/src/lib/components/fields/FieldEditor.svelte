@@ -18,6 +18,7 @@ handlers — onchange is never called.
 	import { onDestroy, tick } from 'svelte';
 	import { formatItemRef, type FieldDef, type ItemIndexRow, type PaneTarget } from '$lib/types';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
+	import { rawText, readAs } from '$lib/fields/fieldShape';
 	import { narrowRelationRow, UNRESOLVED_LABEL, UNRESOLVED_TITLE } from '$lib/collections/relationGroups';
 	import {
 		isMultiRelationType,
@@ -106,7 +107,28 @@ handlers — onchange is never called.
 		itemId?: string;
 	}
 
-	let { field, value, onchange, readonly = false, ariaLabel, wsSlug, username = '', onOpenTarget, itemId }: Props = $props();
+	let { field, value: storedValue, onchange, readonly = false, ariaLabel, wsSlug, username = '', onOpenTarget, itemId }: Props = $props();
+
+	// ── Shape mismatch (BUG-3052 unit 2) ───────────────────────────────────
+	//
+	// A declared type is not a promise about the stored value: a retype
+	// rewrites nothing. A value whose SHAPE does not match (`"5"` under a
+	// number, `"false"` under a checkbox) is shown as its raw stored text with a
+	// note, never fed to the type's editor: the checkbox read `!!"false"` as
+	// checked and its toggle wrote a boolean over the string, and the number
+	// step converted the string. The ruling: an edit REPLACES the value
+	// explicitly, never a silent coercion. Replace opens the ordinary editor on
+	// an EMPTY value; nothing is written until the user sets one.
+	//
+	// The replace state is KEYED on (item, field, stored value) rather than a
+	// flag an effect resets, so switching items or a remote write ends it and
+	// the next item cannot inherit it.
+	let shape = $derived(readAs(storedValue, field.type));
+	let mismatchKey = $derived(`${itemId ?? ''}\u0000${field.key}\u0000${rawText(storedValue)}`);
+	let replacingKey = $state<string | null>(null);
+	let replacing = $derived(!shape.ok && replacingKey === mismatchKey);
+	/** What every editor branch below reads: the stored value, or nothing while replacing it. */
+	let value = $derived(shape.ok ? storedValue : undefined);
 
 	// ── Relation resolution ───────────────────────────────────────────────
 	//
@@ -1308,7 +1330,16 @@ handlers — onchange is never called.
 	{/if}
 {/snippet}
 
-{#if readonly}
+{#if !shape.ok && !replacing}
+	<div class="field-mismatch">
+		<span class="mismatch-raw">{rawText(storedValue)}</span>
+		<span class="mismatch-note">Doesn't match the field type ({field.type})</span>
+		{#if !readonly}
+			<button type="button" class="mismatch-action" onclick={() => (replacingKey = mismatchKey)}>Replace</button>
+		{/if}
+	</div>
+
+{:else if readonly}
 	<!--
 		Display-only mode (PLAN-1100 / TASK-1105). No inputs, no dropdowns,
 		no mutation handlers — value rendered with the same visual language
@@ -1681,8 +1712,18 @@ handlers — onchange is never called.
 		<span>{value === undefined || value === null ? '—' : JSON.stringify(value)}</span>
 	</div>
 
+{:else if field.type === 'multi_select'}
+	<!-- No multi_select editor exists here yet (BUG-3052 unit 2). The text
+	     input this used to fall to wrote a STRING, which the server refuses
+	     for a multi_select, so the values are shown read-only and the hint
+	     says so rather than leaving a dead field. -->
+	<div class="readonly-display" title="Multi-select values can't be edited here yet.">
+		<span>{Array.isArray(value) && value.length ? value.join(', ') : '—'}</span>
+		<span class="mismatch-note">Can't be edited here yet</span>
+	</div>
+
 {:else}
-	<!-- Text / Multi-select fallback -->
+	<!-- Text fallback -->
 	<input
 		class="field-input"
 		type="text"
@@ -1692,8 +1733,47 @@ handlers — onchange is never called.
 		onblur={flushPendingSave}
 	/>
 {/if}
+{#if replacing}
+	<button type="button" class="mismatch-action" onclick={() => (replacingKey = null)}>Keep the stored value</button>
+{/if}
 
 <style>
+	/* ── Shape mismatch (BUG-3052 unit 2) ─────────────────────────────── */
+
+	.field-mismatch {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: var(--space-1) var(--space-2);
+		padding: var(--space-1) var(--space-2);
+		min-height: 30px;
+		font-size: 0.88em;
+	}
+
+	.mismatch-raw {
+		font-family: var(--font-mono);
+		color: var(--text-primary);
+		overflow-wrap: anywhere;
+	}
+
+	.mismatch-note {
+		font-size: 0.85em;
+		color: var(--text-muted);
+	}
+
+	.mismatch-action {
+		font-size: 0.85em;
+		color: var(--accent-blue);
+		background: none;
+		border: none;
+		padding: 0;
+		cursor: pointer;
+	}
+
+	.mismatch-action:hover {
+		text-decoration: underline;
+	}
+
 	/* ── Readonly display ─────────────────────────────────────────────── */
 
 	.readonly-display {

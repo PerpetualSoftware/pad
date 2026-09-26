@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { safeText } from '$lib/fields/fieldShape';
+	import { rawText, readAs, safeText } from '$lib/fields/fieldShape';
 	import type { Item, Collection, FieldDef } from '$lib/types';
 	import { isRelationType, relationValuesOf } from '$lib/items/relationFieldTypes';
 	import { narrowRelationRow, relationChipFor, UNRESOLVED_TITLE } from '$lib/collections/relationGroups';
@@ -355,8 +355,17 @@
 							{/if}
 						{:else}
 							<!-- safeText (BUG-3052): Svelte's text conversion threw on a
-							     stored `{"toString":0}` and took the table down. -->
-							<span class="cell-value">{safeText(fields[field.key])}</span>
+							     stored `{"toString":0}` and took the table down. A value
+							     whose shape does not match its declared type (unit 2)
+							     shows its raw stored text, marked, as FieldEditor does:
+							     an object no longer reads `[object Object]`, and `"5"`
+							     under a number is visibly not the number 5. -->
+							{@const cellShape = readAs(fields[field.key], field.type)}
+							{#if cellShape.ok}
+								<span class="cell-value">{safeText(fields[field.key])}</span>
+							{:else}
+								<span class="cell-value cell-mismatch" title="Doesn't match the field type ({field.type})">{rawText(fields[field.key])}<span class="sr-only"> (doesn't match the field type {field.type})</span></span>
+							{/if}
 						{/if}
 					</div>
 				{/each}
@@ -544,6 +553,14 @@
 	.cell-value {
 		color: var(--text-secondary);
 		font-size: 0.9em;
+	}
+
+	/* A value whose shape does not match its declared type (BUG-3052 unit 2):
+	   raw stored text, set apart so it does not read as a well-typed value. */
+	.cell-mismatch {
+		font-family: var(--font-mono);
+		text-decoration: underline dotted var(--text-muted);
+		cursor: help;
 	}
 
 	/* Relation cells (BUG-3016). Same vocabulary as the properties chip, sized
