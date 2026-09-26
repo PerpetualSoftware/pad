@@ -74,7 +74,13 @@ func TestItemShareCarriesDefsOnlyForTheFieldsItShows(t *testing.T) {
 		if !reflect.DeepEqual(defs, want) {
 			t.Fatalf("field_defs = %#v\nwant %#v", defs, want)
 		}
-		// Nothing about the schema beyond that, anywhere in the response.
+		// The label and type of each shown field ARE schema facts, sent on
+		// purpose: that disclosure is the reviewed decision in #1587, and the
+		// DeepEqual above pins exactly what it is. What this scan adds is
+		// narrower. None of the listed schema facts beyond those appears
+		// anywhere in the response: option lists, the other options,
+		// abandoned options, defaults, required, the relation target, and the
+		// labels of fields this item carries no value for.
 		body, _ := json.Marshal(raw)
 		for _, leak := range []string{`"options"`, "doing", "dropped", "abandoned_options", `"default"`, `"required"`, "people", "Codename", "Score"} {
 			if strings.Contains(string(body), leak) {
