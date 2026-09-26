@@ -395,7 +395,11 @@ the current state.
 
 Arming is per-session and transient. To opt a whole REPOSITORY in without
 arming each session by hand, set 'push.auto_arm = true' under a [push]
-table in the repo's .pad.toml (a deliberate, committed choice).`,
+table in the repo's .pad.toml (a deliberate, committed choice).
+
+A headless session (no messaging socket) is identified by CLAUDE_PID or
+PAD_SESSION_PID, exactly as for 'pad session disarm'; with neither set this
+command exits non-zero.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path, err := cli.WriteArmState()
@@ -449,6 +453,14 @@ This holds even when the repository opted in via .pad.toml
 session. It does NOT revoke the repo's standing consent: a NEW session in
 an auto_arm repo arms again. To turn auto-arm off permanently, remove
 'push.auto_arm' from .pad.toml (the same deliberate edit that turned it on).
+
+Without a messaging socket (a headless session), the disarm is tied to the
+session's process, which the harness names: Claude Code exports CLAUDE_PID,
+and any other harness or shell can set PAD_SESSION_PID to the pid of the
+long-lived session process. With neither set, this command exits non-zero
+rather than report a disarm that would expire the moment it returns. Where
+the session's process cannot be checked at all (headless on Windows), the
+disarm is kept for the directory until 'pad session reset'.
 
 Idempotent.`,
 		Args: cobra.NoArgs,
