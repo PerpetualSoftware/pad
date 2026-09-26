@@ -18,11 +18,19 @@ import (
 // as an escape.
 func TestDocumentRenameFollowsEscapedLinks(t *testing.T) {
 	for _, tc := range []struct {
-		legacy, escapedLink, otherLink string
+		legacy string
+		// links are every encoding of a link to legacy: each must be rewritten.
+		links []string
+		// others are NOT links to legacy by the grammar and must be untouched.
+		others []string
 	}{
-		{`A|B`, `[[A\|B]]`, `[[A|B]]`},
-		{`A\B`, `[[A\\B]]`, `[[A\B]]`},
-		{`A]B`, `[[A\]B]]`, `[[A]B]]`},
+		// `[[A|B]]` is a link to `A` displaying `B`.
+		{`A|B`, []string{`[[A\|B]]`}, []string{`[[A|B]]`}},
+		// A `\` before an ordinary character is literal, so the raw and the
+		// doubled form both decode to `A\B`.
+		{`A\B`, []string{`[[A\\B]]`, `[[A\B]]`}, []string{`[[AB]]`, `[[A\B|alias]]`}},
+		// `[[A]B]]` is a link to `A` followed by the text `B]]`.
+		{`A]B`, []string{`[[A\]B]]`}, []string{`[[A]B]]`}},
 	} {
 		t.Run(tc.legacy, func(t *testing.T) {
 			s := testStore(t)
@@ -36,17 +44,28 @@ func TestDocumentRenameFollowsEscapedLinks(t *testing.T) {
 			if _, err := s.DB().Exec(s.q(`UPDATE documents SET title = ? WHERE id = ?`), tc.legacy, target.ID); err != nil {
 				t.Fatal(err)
 			}
-			body := "real " + tc.escapedLink + " / other " + tc.otherLink + " / plain [[Unrelated]]"
+			body, want := "", ""
+			for _, l := range tc.links {
+				body += "link " + l + " / "
+				want += "link [[Fresh]] / "
+			}
+			for _, o := range tc.others {
+				body += "other " + o + " / "
+				want += "other " + o + " / "
+			}
 			linker, err := s.CreateDocument(ws.ID, models.DocumentCreate{Title: "Linker", Content: body})
 			if err != nil {
 				t.Fatal(err)
 			}
-
-			// A linker holding ONLY the escaped link: the scan must find it by
-			// that form, not by the raw literal the first linker also carries.
-			onlyEscaped, err := s.CreateDocument(ws.ID, models.DocumentCreate{Title: "Only escaped", Content: "just " + tc.escapedLink})
-			if err != nil {
-				t.Fatal(err)
+			// One linker per encoding, holding ONLY that encoding: the scan
+			// must find each by its own form, not by a sibling in the same body.
+			var singles []*models.Document
+			for _, l := range tc.links {
+				d, err := s.CreateDocument(ws.ID, models.DocumentCreate{Title: "Only " + l, Content: "just " + l})
+				if err != nil {
+					t.Fatal(err)
+				}
+				singles = append(singles, d)
 			}
 
 			newTitle := "Fresh"
@@ -57,16 +76,17 @@ func TestDocumentRenameFollowsEscapedLinks(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := "real [[Fresh]] / other " + tc.otherLink + " / plain [[Unrelated]]"
 			if got.Content != want {
 				t.Fatalf("linker after rename:\n got %q\nwant %q", got.Content, want)
 			}
-			only, err := s.GetDocument(onlyEscaped.ID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if only.Content != "just [[Fresh]]" {
-				t.Fatalf("a linker holding only the escaped link was not rewritten: %q", only.Content)
+			for i, d := range singles {
+				got, err := s.GetDocument(d.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got.Content != "just [[Fresh]]" {
+					t.Errorf("a linker holding only %s was not rewritten: %q", tc.links[i], got.Content)
+				}
 			}
 		})
 	}
@@ -80,9 +100,10 @@ func TestCascadeRetainedBytesProjectsTheEscapedRewrite(t *testing.T) {
 	for _, tc := range []struct{ old, new string }{
 		{`A|B`, "Fresh"}, {`A\B`, "Fresh"}, {`A]B`, "x"}, {"Plain", "Longer title"}, {"Fresh", `A|B|C`},
 	} {
-		read := "one [[" + links.EscapeWikiTitle(tc.old) + "]] two [[" + links.EscapeWikiTitle(tc.old) + "]] three"
-		occ := int64(strings.Count(read, "[["+links.EscapeWikiTitle(tc.old)+"]]"))
-		got := cascadeRetainedBytes(read, occ, tc.old, tc.new)
+		// Two encodings of the same link where the title has one: the
+		// projection must price each by its own length.
+		read := "one [[" + links.EscapeWikiTitle(tc.old) + "]] two [[" + strings.ReplaceAll(links.EscapeWikiTitle(tc.old), `\\`, `\`) + "]] three"
+		got := cascadeRetainedBytes(read, tc.old, tc.new)
 		want := int64(len(read) + len(links.ReplaceTitle(read, tc.old, tc.new)))
 		if got != want {
 			t.Errorf("%q -> %q: projected %d, ReplaceTitle holds %d", tc.old, tc.new, got, want)

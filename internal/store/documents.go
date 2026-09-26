@@ -600,21 +600,35 @@ func (s *Store) acquireWorkspaceDocumentRenameLock(tx *sql.Tx, workspaceID strin
 //
 // The explicit ESCAPE clause makes both dialects agree, rather than leaving
 // SQLite correct by accident and Postgres wrong by default.
+// titleLinkLikePattern is a LIKE pattern matching every document that may hold
+// a link to title (BUG-2806). A link is decided by the wiki grammar, and one
+// title has several encodings: the escaped form (links.EscapeWikiTitle), and
+// that form with any `\\` written as a single `\` where the grammar still
+// decodes it the same. Every encoding is the escaped form with some
+// backslashes removed, so turning each backslash of the escaped form into `%`
+// matches them all. It is a superset by construction, and the rewriter's own
+// matcher is the authority on which rows actually link the title.
+func titleLinkLikePattern(title string) string {
+	parts := strings.Split(links.EscapeWikiTitle(title), `\`)
+	for i := range parts {
+		parts[i] = escapeLikePattern(parts[i])
+	}
+	return "%[[" + strings.Join(parts, "%") + "]]%"
+}
+
 func escapeLikePattern(s string) string {
 	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
 	return r.Replace(s)
 }
 
 func (s *Store) updateLinksInTx(tx *sql.Tx, workspaceID, oldTitle, newTitle string) error {
-	// Find all documents in the workspace that link oldTitle. The literal is
-	// the ESCAPED form, which is how a link stores a title containing `|`,
-	// `\` or `]` (BUG-2806); ReplaceTitle builds the same literal, so the
-	// scan, the occurrence count and the rewrite agree on what a link is.
-	searchTerm := "[[" + links.EscapeWikiTitle(oldTitle) + "]]"
+	// Find the documents in the workspace that may link oldTitle. The pattern
+	// is a SUPERSET (titleLinkLikePattern); links.ReplaceTitle's grammar
+	// decides what is actually a link, below.
 	rows, err := tx.Query(s.q(`
 		SELECT id, content FROM documents
 		WHERE workspace_id = ? AND deleted_at IS NULL AND content LIKE ? ESCAPE '\'
-	`), workspaceID, "%"+escapeLikePattern(searchTerm)+"%")
+	`), workspaceID, titleLinkLikePattern(oldTitle))
 	if err != nil {
 		return err
 	}
@@ -679,12 +693,11 @@ func (s *Store) updateLinksInTx(tx *sql.Tx, workspaceID, oldTitle, newTitle stri
 		// clause closed — the pattern selects a superset of the linkers, and
 		// the authority on what is actually a linker is the rewriter's own
 		// case-sensitive count.
-		occurrences := int64(strings.Count(du.read, searchTerm))
-		if occurrences == 0 {
+		if _, occurrences := links.ProjectReplaceTitle(du.read, oldTitle, newTitle); occurrences == 0 {
 			continue
 		}
 
-		du.retained = cascadeRetainedBytes(du.read, occurrences, oldTitle, newTitle)
+		du.retained = cascadeRetainedBytes(du.read, oldTitle, newTitle)
 		retained += du.retained
 		if retained > MaxRenameCascadeRetainedBytes {
 			return newRenameCascadeTooLargeError(newTitle, retained)
@@ -720,7 +733,7 @@ func (s *Store) updateLinksInTx(tx *sql.Tx, workspaceID, oldTitle, newTitle stri
 		// the retry replaces it; it does not, and the bound could be exceeded
 		// by up to one document's share while the arithmetic reported it
 		// satisfied.
-		if err := s.rewriteLinkerCAS(tx, du.id, du.read, du.rewritten, oldTitle, newTitle, searchTerm, retained); err != nil {
+		if err := s.rewriteLinkerCAS(tx, du.id, du.read, du.rewritten, oldTitle, newTitle, retained); err != nil {
 			return err
 		}
 	}
@@ -736,7 +749,8 @@ func (s *Store) updateLinksInTx(tx *sql.Tx, workspaceID, oldTitle, newTitle stri
 // len(read) + occurrences * (len(new) - len(old)) to the byte, and this
 // function is the only place that arithmetic lives — the scan and the retry
 // path must not be allowed to drift apart on it.
-func cascadeRetainedBytes(read string, occurrences int64, oldTitle, newTitle string) int64 {
+func cascadeRetainedBytes(read, oldTitle, newTitle string) int64 {
+	projected, occurrences := links.ProjectReplaceTitle(read, oldTitle, newTitle)
 	if occurrences == 0 {
 		// No second string exists to charge for: strings.Replace returns its
 		// input unchanged when there is nothing to replace, so ReplaceTitle
@@ -749,10 +763,10 @@ func cascadeRetainedBytes(read string, occurrences int64, oldTitle, newTitle str
 		// allocates.
 		return int64(len(read))
 	}
-	// The bracket lengths ReplaceTitle writes are the ESCAPED titles'
-	// (BUG-2806), counted without building them.
-	rewritten := int64(len(read)) + occurrences*int64(links.EscapedWikiTitleLen(newTitle)-links.EscapedWikiTitleLen(oldTitle))
-	return int64(len(read)) + rewritten
+	// Projected by ReplaceTitle's own matcher, without building it (BUG-2806):
+	// a title's links may use different encodings, so no per-link constant
+	// describes the rewrite.
+	return int64(len(read)) + int64(projected)
 }
 
 // RenameCascadeTooLargeError carries the refusal's NUMBERS as typed fields, so
@@ -994,7 +1008,7 @@ var cascadeRewriteAttempts = 3
 // Both are pre-existing and neither is made worse here. They are recorded
 // because the next reader's question is "is the cascade correct now", and the
 // honest answer is "for the direction this bug named".
-func (s *Store) rewriteLinkerCAS(tx *sql.Tx, id, read, rewritten, oldTitle, newTitle, searchTerm string, scanTotal int64) error {
+func (s *Store) rewriteLinkerCAS(tx *sql.Tx, id, read, rewritten, oldTitle, newTitle string, scanTotal int64) error {
 	expected := read
 	next := rewritten
 	// Total charged by retries so far — see the accumulation below.
@@ -1035,7 +1049,6 @@ func (s *Store) rewriteLinkerCAS(tx *sql.Tx, id, read, rewritten, oldTitle, newT
 		// could grow a linker between the scan and the retry and walk the
 		// rename straight back into the amplification it was refused for
 		// (BUG-2798, codex round 1 P1).
-		grownOccurrences := int64(strings.Count(current, searchTerm))
 		// ACCUMULATED across attempts, not just this one. Each retry's
 		// buffers become unreachable when `expected`/`next` are reassigned
 		// below, but unreachable is not the same as reclaimed — the runtime
@@ -1044,7 +1057,7 @@ func (s *Store) rewriteLinkerCAS(tx *sql.Tx, id, read, rewritten, oldTitle, newT
 		// the conservative reading, and it errs toward refusing, which is the
 		// safe direction for a memory bound. The loop is capped at
 		// cascadeRewriteAttempts, so this cannot accumulate without end.
-		retriesSpent += cascadeRetainedBytes(current, grownOccurrences, oldTitle, newTitle)
+		retriesSpent += cascadeRetainedBytes(current, oldTitle, newTitle)
 		grown := retriesSpent
 		if scanTotal+grown > MaxRenameCascadeRetainedBytes {
 			// Report the AGGREGATE, not this body alone. The bodies the scan
