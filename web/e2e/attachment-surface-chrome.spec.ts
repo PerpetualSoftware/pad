@@ -431,8 +431,17 @@ test.describe('attachment viewer — 3c-i surface chrome (TASK-2484)', () => {
 		// probed exactly once by the navigation step. ns-a is untouched by the arrow —
 		// it stays at 1, quiescent (no arrow-back is issued, so no count can transiently
 		// inflate; the reopen below is the only thing that moves ns-a again).
+		// Where the arrow LANDS is asserted by the shown attachment's id, not by the
+		// counter's position (BUG-3210). The two uploads usually share a second of
+		// `created_at`, the list's newest-first sort has no tiebreaker, so ns-a is
+		// "1 / 2" or "2 / 2" by the database's tie-break. Either way one ArrowRight in a
+		// two-entry set lands on ns-b, which is the entry this step is about.
+		const shownId = async () =>
+			(await page.locator(VIEWER_IMAGE).getAttribute('src'))?.match(/attachments\/([0-9a-f-]+)/)?.[1];
+		// Anchor the start too, so a viewer stuck on ns-b cannot pass as having paged.
+		await expect.poll(shownId, 'the open shows the clicked entry, ns-a').toBe(a);
 		await page.keyboard.press('ArrowRight');
-		await expect(page.locator(VIEWER_COUNTER)).toHaveText('2 / 2');
+		await expect.poll(shownId, 'ArrowRight lands on the sibling, ns-b').toBe(b);
 		await expect.poll(() => headsDone[b], 'arrowing to a fresh entry forces one no-store HEAD (U3)').toBe(1);
 		expect(heads[b]).toBe(1);
 		expect(heads[a], 'the arrow does not re-probe the departed entry').toBe(1);

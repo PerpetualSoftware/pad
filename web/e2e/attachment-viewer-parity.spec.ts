@@ -144,7 +144,11 @@ test.describe('attachment viewer — four-surface parity (TASK-2436)', () => {
 		await runParityMatrix(
 			page,
 			async () => {
-				await page.locator(`${TILE}[aria-label*="strip-a.png"]`).click();
+				// The FIRST tile, not strip-a by name (BUG-3210): the two uploads usually
+				// share a second of `created_at`, and the newest-first list breaks that
+				// tie arbitrarily, so strip-a was "1 / 2" or "2 / 2" at random and the
+				// matrix below starts from "1 / 2".
+				await page.locator(TILE).first().click();
 			},
 			{ multiple: true }
 		);
