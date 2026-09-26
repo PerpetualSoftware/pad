@@ -290,6 +290,46 @@ jobs:
             Stop-Process -Id $server.Id -ErrorAction SilentlyContinue
           }
 
+      # A headless disarm must hold for as long as its session lives, on both
+      # platforms, through the REAL owner probe (no Go test runs in this job).
+      # Windows cannot probe a pid, so the verdict is unknown: before BUG-2771
+      # that read as dead, and the next read reaped the file and let auto_arm
+      # forget the disarm. On unix the file named the exiting `pad session
+      # disarm` instead of the session, so it was dead on arrival (BUG-3227).
+      # This step's shell stands in for the session, named the way a
+      # non-Claude harness names it: PAD_SESSION_PID.
+      - name: Headless disarm holds for the session (BUG-2771, BUG-3227)
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:PAD_SESSION_PID = "$PID"
+          $binary = (Resolve-Path '${{ matrix.path }}').Path
+          $env:PAD_DATA_DIR = Join-Path $env:RUNNER_TEMP 'pad-arm-smoke'
+          Remove-Item Env:CLAUDE_CODE_MESSAGING_SOCKET -ErrorAction SilentlyContinue
+          $repo = Join-Path $env:RUNNER_TEMP 'arm-repo'
+          New-Item -ItemType Directory -Force $repo | Out-Null
+          Set-Content (Join-Path $repo '.pad.toml') "workspace = `"demo`"`n[push]`nauto_arm = true`n"
+          Push-Location $repo
+          try {
+            & $binary session should-arm
+            if ($LASTEXITCODE -ne 0) { throw 'premise: an auto_arm repo with no override must arm' }
+
+            $d = & $binary session disarm --format json | ConvertFrom-Json
+            if (-not (Test-Path $d.path)) { throw 'disarm wrote no arm-state file' }
+            foreach ($i in 1, 2) {
+              & $binary session should-arm
+              if ($LASTEXITCODE -eq 0) { throw "read ${i}: the disarm was forgotten and the session arms via auto_arm" }
+              if (-not (Test-Path $d.path)) { throw "read ${i} reaped the disarm file" }
+            }
+
+            $r = & $binary session reset --format json | ConvertFrom-Json
+            if (-not $r.removed) { throw 'pad session reset removed nothing' }
+            & $binary session should-arm
+            if ($LASTEXITCODE -ne 0) { throw 'after reset, auto_arm must decide again (armed)' }
+          } finally {
+            Pop-Location
+          }
+          $global:LASTEXITCODE = 0
+
   go-postgres:
     # Backstop only. A hung TEST is caught by -timeout=45m on the steps
     # below, which fails fast AND prints the goroutine dump that tells

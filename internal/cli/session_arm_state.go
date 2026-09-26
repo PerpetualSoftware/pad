@@ -47,9 +47,13 @@ import (
 //     no socket (a headless agent), the key falls back to the working
 //     directory — PER-REPO semantics, documented as secondary: the
 //     sanctioned headless arming path is .pad.toml auto_arm (D4), not
-//     this file, because a short-lived `pad session arm` in a headless
-//     shell owns nothing long-lived for liveness to track (its own pid
-//     dies with the command). See armStateOwnerAlive.
+//     this file. A headless file is owned by the SESSION process the
+//     harness names (PAD_SESSION_PID, else CLAUDE_PID — CaptureSessionOwner),
+//     never by the short-lived `pad session arm` itself, whose pid is dead
+//     before anyone reads the file (BUG-3227). With no harness to name
+//     one, the owner is the command and the file is dead on arrival; the
+//     arm/disarm verbs read their state back and refuse in that case
+//     rather than report a consent change that did not happen.
 //
 //   - LIFECYCLE (constraint 3). arm writes/overwrites the file
 //     (idempotent). disarm REWRITES it as an explicit OFF marker (S3 —
@@ -85,10 +89,15 @@ type ArmState struct {
 	// and it is carried forward across arm/disarm rewrites so toggling
 	// consent doesn't reset the boot flag. See MarkFirstConnect.
 	Booted bool `json:"booted,omitempty"`
-	// PID is the process that wrote the file. For a socket-keyed session
-	// it is informational (the socket is the liveness signal); for the
-	// headless fallback it IS the liveness signal.
+	// PID: for a socket-keyed session, the process that wrote the file,
+	// informational only (the socket is the liveness signal). For the
+	// headless fallback it IS the liveness signal, so it is the SESSION
+	// owner's pid (see PIDSource), not the writing command's (BUG-3227).
 	PID int `json:"pid"`
+	// PIDSource is where a headless file's PID came from: "PAD_SESSION_PID",
+	// "CLAUDE_PID", or "self" (BUG-3227). Diagnostic only; "self" means the
+	// file names the command that wrote it and is dead on arrival.
+	PIDSource string `json:"session_pid_source,omitempty"`
 	// Socket is CLAUDE_CODE_MESSAGING_SOCKET at arm time, or "" for the
 	// headless fallback. When set, its continued existence on disk is a
 	// necessary liveness signal — it outlives the short-lived arm command
@@ -226,9 +235,17 @@ func writeArmStateFile(disarmed bool) (path string, err error) {
 			}
 		}
 	} else {
-		// Headless: record an owner-identity token so pid reuse can't
-		// revive this file (best effort — empty where unsupported).
-		st.ProcStart, _ = procStartToken(st.PID)
+		// Headless: the owner is the session process, not this command
+		// (BUG-3227). os.Getpid() here is the exiting `pad session arm`,
+		// which read as dead on the very next read, so every headless arm
+		// and disarm was reaped on arrival. CaptureSessionOwner resolves
+		// the same owner the session registry records, with its start
+		// token for the pid-reuse defence.
+		owner, oerr := CaptureSessionOwner()
+		if oerr != nil {
+			return "", fmt.Errorf("cannot record arm state: %w", oerr)
+		}
+		st.PID, st.ProcStart, st.PIDSource = owner.PID, owner.ProcStart, owner.PIDSource
 	}
 	data, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
@@ -320,8 +337,11 @@ func readArmState() (st *ArmState, path string, err error) {
 // itself is OwnerLiveness (session_owner.go), shared with the session
 // registry since TASK-2767; this is the consent gate's posture on it:
 // ONLY an explicit alive counts. Dead is dead, and unknown — a platform
-// that cannot probe the owner — is treated as dead too, because a gate
-// that cannot verify consent must not grant it (fail closed). The
+// that cannot probe the owner — never grants, because a gate that cannot
+// verify consent must not grant it (fail closed). It is not dead either:
+// SessionArmState keeps an unknown file rather than reaping it, since a
+// reap would hand the decision to auto_arm and forget a disarm (BUG-2771).
+// The
 // registry's pruner takes the opposite posture on the same unknown, and
 // that asymmetry is the reason the verdict is tri-state.
 //
@@ -331,11 +351,24 @@ func readArmState() (st *ArmState, path string, err error) {
 // start token when one was recorded — and a headless file with NO token
 // (a non-Linux unix arm, e.g. macOS) falls back to bare pid-liveness, the
 // documented residual on the secondary path. On Windows the pid cannot be
-// probed at all: the verdict is unknown, which this gate treats as not
-// alive — the same effective result as before the shared verdict.
+// probed at all: the verdict is unknown, which resolves to
+// LocalArmUnverifiable (not armed, not reaped).
 func armStateOwnerAlive(st *ArmState) bool {
+	return armStateOwnerVerdict(st) == LivenessAlive
+}
+
+// ownerLivenessFn is OwnerLiveness behind a seam, so the unknown verdict —
+// which a real probe produces on Windows, and on unix only when /proc or the
+// socket cannot be examined — is reachable from a test on any platform
+// (BUG-2771). Production never reassigns it.
+var ownerLivenessFn = OwnerLiveness
+
+// armStateOwnerVerdict is the tri-state verdict on st's recorded owner.
+// SessionArmState needs all three: dead reaps, alive resolves the file, and
+// unknown is neither (BUG-2771).
+func armStateOwnerVerdict(st *ArmState) Liveness {
 	if st == nil {
-		return false
+		return LivenessDead
 	}
 	owner := SessionOwner{
 		PID:                 st.PID,
@@ -352,7 +385,7 @@ func armStateOwnerAlive(st *ArmState) bool {
 		// agree. The socket is the whole owner here.
 		owner.PID, owner.ProcStart = 0, ""
 	}
-	return OwnerLiveness(&owner) == LivenessAlive
+	return ownerLivenessFn(&owner)
 }
 
 // LocalArmState is the tri-state of THIS session's local arm-state file
@@ -375,6 +408,14 @@ const (
 	// gate exists to prevent. Distinct from LocalArmAbsent (no file at
 	// all), which safely resolves auto_arm.
 	LocalArmError
+	// LocalArmUnverifiable: a well-formed file exists but its owner cannot
+	// be probed here — every headless file on Windows, and on unix a file
+	// whose /proc entry or socket cannot be examined (BUG-2771). It resolves
+	// to NOT armed and is NOT reaped. Reaping it used to fall back to
+	// auto_arm, forgetting an explicit disarm (consent fail-open). The cost
+	// is that such a file outlives its session: it keeps auto_arm from
+	// deciding for this key until `pad session reset` removes it.
+	LocalArmUnverifiable
 )
 
 // SessionArmState reads THIS session's local arm-state file and returns
@@ -412,19 +453,58 @@ func SessionArmState() LocalArmState {
 		// is not well-formedness.
 		return LocalArmError
 	}
-	if !armStateOwnerAlive(st) {
+	switch armStateOwnerVerdict(st) {
+	case LivenessDead:
 		// Dead owner: reap the stale file so it can't override a future
 		// session (constraint 2). Absent falls back to auto_arm — which is
 		// exactly the "across sessions, auto_arm remains the contract"
 		// ruling for a disarmed file too.
 		reapArmFile(path)
 		return LocalArmAbsent
+	case LivenessUnknown:
+		// Cannot tell whether the owner is alive. Reaping would treat that
+		// as dead and hand the decision to auto_arm, forgetting a disarm;
+		// honouring the file would arm on unverified consent. Neither: keep
+		// the file, arm nothing (BUG-2771).
+		return LocalArmUnverifiable
 	}
 	if st.Disarmed {
 		return LocalArmOff
 	}
 	return LocalArmOn
 }
+
+// VerifyArmStateHeld reads this session's arm state back after an arm or
+// disarm write and refuses when the file did not survive the read: its
+// owner was already dead, so it was reaped and auto_arm decides as if the
+// verb had never run (BUG-3227). That happens when a headless write names
+// no session process (no PAD_SESSION_PID or CLAUDE_PID), so the owner is
+// the exiting command itself. Reporting success there would state a
+// consent change that did not happen, which for a disarm is the fail-open
+// this file exists to prevent.
+//
+// The reap is not always observable here. A headless file owned by "self"
+// names THIS command, which is still running during the read-back, so it
+// reads as alive and dies the moment the command exits. Such a file is
+// refused on its recorded source rather than on its verdict. Where the pid
+// cannot be probed at all (Windows) the verdict is unknown instead, and
+// the file is kept as LocalArmUnverifiable (BUG-2771), so that case is
+// not refused.
+func VerifyArmStateHeld() (LocalArmState, error) {
+	state := SessionArmState()
+	if state == LocalArmAbsent {
+		return state, errArmStateNotHeld
+	}
+	if state == LocalArmOn || state == LocalArmOff {
+		if st, _, err := readArmState(); err == nil && st != nil && st.Socket == "" && st.PIDSource == "self" {
+			return state, errArmStateNotHeld
+		}
+	}
+	return state, nil
+}
+
+var errArmStateNotHeld = fmt.Errorf("this session's arm state could not be held: no long-lived session process owns it " +
+	"(set PAD_SESSION_PID to the session's pid, or use .pad.toml push.auto_arm)")
 
 // armStateWellFormed reports whether a parsed ArmState carries the stamps
 // AND invariants writeArmStateFile always produces: a non-empty RFC3339
@@ -462,10 +542,11 @@ func ResolveAnnouncedArmed() bool {
 	switch SessionArmState() {
 	case LocalArmOn:
 		return true
-	case LocalArmOff, LocalArmError:
-		// OFF and ERROR both suppress arming: an explicit disarm wins, and
-		// an unreadable local state fails closed rather than falling to
-		// auto_arm (HIGH-2).
+	case LocalArmOff, LocalArmError, LocalArmUnverifiable:
+		// OFF, ERROR and UNVERIFIABLE all suppress arming: an explicit
+		// disarm wins, and a local state that cannot be read (HIGH-2) or
+		// whose owner cannot be verified (BUG-2771) fails closed rather
+		// than falling to auto_arm.
 		return false
 	default: // LocalArmAbsent
 		return ResolveAutoArmFromDisk().Armed
@@ -510,8 +591,8 @@ func MarkFirstConnect() (first bool, err error) {
 // closed), never the reverse. Best effort throughout — a lingering file
 // is simply re-evaluated on the next read.
 func reapArmFile(path string) {
-	if st, _, err := readArmState(); err == nil && st != nil && armStateOwnerAlive(st) {
-		return // someone re-armed with a live owner — leave it
+	if st, _, err := readArmState(); err == nil && st != nil && armStateOwnerVerdict(st) != LivenessDead {
+		return // re-written by an owner that is not provably dead — leave it
 	}
 	_ = os.Remove(path)
 }

@@ -36,6 +36,9 @@ Do these in order:
    `accepting_sessions` of `connected_sessions` accepting pushes. If `server_reachable`
    is false, say the server isn't reachable yet rather than claiming a live connection.
    If `auto_arm` is on, mention this repo auto-arms new sessions.
+   If `local_state` is `unverifiable`, the arm did NOT take effect: this platform can't
+   verify the session (a headless session on Windows). Say so plainly, and point at
+   `push.auto_arm = true` in `.pad.toml` as the way to receive pushes here.
 
 **What connecting means (say this once, briefly, on first connect):** while connected,
 a `pad push` from the user arrives as direction to act on — treated as if they typed it
