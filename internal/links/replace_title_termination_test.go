@@ -40,16 +40,13 @@ func TestReplaceTitle_TerminatesWhenNewTitleEmbedsOldToken(t *testing.T) {
 				// The property under test is TERMINATION, and specifically that
 				// the substitution happens once per occurrence in the INPUT.
 				//
-				// Asserting the exact output would pin escape semantics this
-				// codebase does not have: the document API accepts these titles
-				// (handlers_documents.go validates doc_type and status, never the
-				// title), and ReplaceTitle emits them raw, so renaming to
-				// `A]] [[A` yields `[[A]] [[A]]` — two links to nothing rather
-				// than one link to the new title. That is a REAL second defect,
-				// filed as BUG-2796; it is not what this test is about, and
-				// pinning the output here would freeze the broken rendering as
-				// though it were intended.
-				if n := strings.Count(got, "[["+tc.new+"]]"); n != 1 {
+				// The substitution is counted in the form ReplaceTitle emits:
+				// the ESCAPED title (BUG-2806), so `A]] [[A` is written as
+				// `[[A\]\] [[A]]`, ONE link to the new title. It used to emit
+				// the raw title, which made two links to nothing (BUG-2796);
+				// that is fixed, and the count is taken on the escaped literal
+				// because the raw one no longer appears at all.
+				if n := strings.Count(got, "[["+EscapeWikiTitle(tc.new)+"]]"); n != 1 {
 					t.Errorf("substituted %d times, want exactly 1 (one occurrence in the input)\n got: %q", n, got)
 				}
 			case <-time.After(5 * time.Second):

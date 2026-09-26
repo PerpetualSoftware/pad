@@ -6,17 +6,153 @@ import (
 	"strings"
 )
 
-// ReplaceTitle replaces all [[oldTitle]] with [[newTitle]] in content.
-// LEGACY helper used by the document-rename path; case-sensitive,
-// no-pipe forms only. For item rename use RewriteWikiTitle below,
-// which also handles `[[Title|alias]]`, `[[<slug>/Title]]`, and
-// `[[<slug>/Title|alias]]` and matches case-insensitively to mirror
-// the renderer's title resolution.
+// ReplaceTitle rewrites every link to oldTitle as a link to newTitle. LEGACY
+// helper used by the document-rename path: case-sensitive, and whole-body
+// links only (`[[Title]]`, no alias). For item rename use RewriteWikiTitle
+// below, which also handles `[[Title|alias]]`, `[[<slug>/Title]]`, and
+// `[[<slug>/Title|alias]]` and matches case-insensitively to mirror the
+// renderer's title resolution.
+//
+// A LINK is decided by the grammar, not by a literal (BUG-2806): a bracket
+// the extractor's own pattern (wikiLinkPattern) matches, with no unescaped
+// `|`, whose body DECODES (unescapeWikiBody) to exactly oldTitle. A title can
+// have several encodings — a `\` followed by an ordinary character may be
+// written raw or doubled, and both decode the same — and every one is a link
+// to it. The raw literal this used to search for was wrong in both
+// directions for a title containing `|` or `]`: `[[A|B]]` is a link to `A`
+// displaying `B`, so it was REWRITTEN though it links elsewhere, while the real
+// link `[[A\|B]]` was left stale. newTitle is emitted in the escaped form, so
+// the rewritten bracket reads back as newTitle.
+//
+// It TERMINATES whatever the titles are. The matcher reads only the input and
+// the rewrite goes to a separate builder, so inserted text is never
+// re-examined. That was not always so: an earlier version re-scanned its own
+// output, and a new title that re-embedded the old link (`A]] [[A`) grew the
+// string without bound inside the rename transaction (BUG-2785, codex round
+// 2; the termination test pins it).
 func ReplaceTitle(content, oldTitle, newTitle string) string {
-	old := "[[" + oldTitle + "]]"
-	new := "[[" + newTitle + "]]"
-	return replaceAll(content, old, new)
+	newLink := "[[" + escapeWikiBody(newTitle) + "]]"
+	var b strings.Builder
+	prev := 0
+	forEachTitleLink(content, oldTitle, func(start, end int) {
+		b.WriteString(content[prev:start])
+		b.WriteString(newLink)
+		prev = end
+	})
+	if prev == 0 && b.Len() == 0 {
+		return content // no link: the input, unallocated
+	}
+	b.WriteString(content[prev:])
+	return b.String()
 }
+
+// ProjectReplaceTitle is len(ReplaceTitle(content, oldTitle, newTitle)) and the
+// number of links it rewrites, computed WITHOUT allocating: the document
+// cascade's memory bound runs before anything proportional to the rewrite may
+// exist (BUG-2798; codex R5 on BUG-2804 for the title). A version that
+// collected match indices allocated 203,928,560 bytes projecting one 2 MiB
+// body of short links, against the bound test's 52,428,800-byte ceiling.
+func ProjectReplaceTitle(content, oldTitle, newTitle string) (length, occurrences int) {
+	length = len(content)
+	newLen := 4 + escapedWikiBodyLen(newTitle)
+	forEachTitleLink(content, oldTitle, func(start, end int) {
+		length += newLen - (end - start)
+		occurrences++
+	})
+	return length, occurrences
+}
+
+// forEachTitleLink calls fn(start, end) for every whole-body link to title,
+// by the rule ReplaceTitle documents, in order and never overlapping.
+//
+// It is wikiLinkPattern (`\[\[((?:\\.|[^\]\\])+)\]\]`, leftmost-first)
+// executed by hand, so it allocates nothing and stays linear. From a `[[` at
+// s the body is consumed as escape pairs or bytes other than `]` and `\`, and
+// stops at the first `]` or at a `\` with nothing after it: a match iff that
+// stop is `]]` after a non-empty body. On a failure stopping at p, no match can
+// start inside (s, p): a `[[` there is consumed by the parse from s as
+// ordinary bytes, so a parse started from it is in the same state at every
+// position after it and stops at the same p the same way. Resuming at p is
+// therefore exact, which is what makes the scan linear.
+func forEachTitleLink(content, title string, fn func(start, end int)) {
+	if title == "" {
+		return
+	}
+	i := 0
+	for i < len(content) {
+		k := strings.Index(content[i:], "[[")
+		if k < 0 {
+			return
+		}
+		s := i + k
+		j, end := s+2, -1
+		for j < len(content) {
+			c := content[j]
+			if c == '\\' {
+				if j+1 < len(content) {
+					j += 2
+					continue
+				}
+				break
+			}
+			if c == ']' {
+				if j > s+2 && j+1 < len(content) && content[j+1] == ']' {
+					end = j + 2
+				}
+				break
+			}
+			j++
+		}
+		if end < 0 {
+			i = j
+			continue
+		}
+		if wikiBodyIsTitle(content[s+2:end-2], title) {
+			fn(s, end)
+		}
+		i = end
+	}
+}
+
+// wikiBodyIsTitle reports whether a bracket body is a whole-body link to
+// title: no unescaped `|` (splitOnUnescapedPipe's rule, where `\` consumes the
+// next byte), and unescapeWikiBody(body) == title, compared as it decodes
+// rather than by building the decoded string.
+func wikiBodyIsTitle(body, title string) bool {
+	for i := 0; i < len(body); i++ {
+		if body[i] == '\\' && i+1 < len(body) {
+			i++
+			continue
+		}
+		if body[i] == '|' {
+			return false
+		}
+	}
+	t := 0
+	for i := 0; i < len(body); {
+		b, step := body[i], 1
+		if b == '\\' && i+1 < len(body) {
+			if n := body[i+1]; n == '\\' || n == ']' || n == '|' {
+				b, step = n, 2
+			}
+		}
+		if t >= len(title) || title[t] != b {
+			return false
+		}
+		t++
+		i += step
+	}
+	return t == len(title)
+}
+
+// EscapeWikiTitle is title in the form a wiki-link body stores it: `\`, `]`
+// and `|` escaped with a backslash. A caller that searches or counts link
+// literals (the document rename cascade, BUG-2806) must build them from this,
+// or it looks for a string no link contains.
+func EscapeWikiTitle(title string) string { return escapeWikiBody(title) }
+
+// EscapedWikiTitleLen is len(EscapeWikiTitle(title)) without building it.
+func EscapedWikiTitleLen(title string) int { return escapedWikiBodyLen(title) }
 
 // RewriteWikiTitle rewrites the four title-form wiki-link shapes that
 // resolve to an item titled `oldTitle` in collection `collSlug`,
@@ -44,11 +180,10 @@ func ReplaceTitle(content, oldTitle, newTitle string) string {
 // supports. This rewriter does NOT attempt escape-aware matching on
 // the TITLE segment — a title literally containing `]` would be
 // stored escaped and would fail to match the regex's `oldTitle`
-// literal. The same limitation exists in the legacy ReplaceTitle
-// helper above and the document-rename path; items with such titles
-// are vanishingly rare in practice (an item titled `My [Plan]`
-// would be a stretch). Promotable to a separate task if a real user
-// hits it.
+// literal. The legacy ReplaceTitle helper above, which the document-rename
+// path uses, had the same limitation until BUG-2806 made it match and emit
+// the escaped form; the item cascade uses the position-based
+// RewriteBracketsAt, which is escape-aware (BUG-2805).
 func RewriteWikiTitle(content, oldTitle, newTitle, collSlug string) string {
 	if oldTitle == "" || oldTitle == newTitle {
 		return content
@@ -641,37 +776,4 @@ func bracketRewriteAt(content string, position int, targetTitle string, esc Titl
 		return false, "", 0, false
 	}
 	return qualified, displaySuffix, bracketEnd, true
-}
-
-// replaceAll substitutes every occurrence of old with new, scanning the INPUT
-// once rather than re-scanning its own output.
-//
-// The previous implementation looped `find old in result; splice new in` until
-// no match remained — re-searching the string it was building, including the
-// text it had just inserted. When `new` CONTAINS `old` that never terminates
-// and the string grows without bound.
-//
-// Reachable from a user-supplied document title, and measured rather than
-// argued: ReplaceTitle("x [[A]] y", "A", "A]] [[A") builds `[[A]] [[A]]`, which
-// still contains `[[A]]`, and a probe against the old implementation ran for 3s
-// without terminating before being killed. The caller is inside the rename
-// transaction, so the hang holds that transaction open indefinitely on either
-// dialect. On POSTGRES it also holds the workspace rename advisory lock
-// (BUG-2778), blocking every other rename in that workspace behind it; on
-// SQLITE that advisory lock is a no-op and the equivalent damage is the
-// database-wide write lock the transaction already holds under BEGIN IMMEDIATE.
-// Different mechanism, same outcome for everyone else.
-//
-// strings.Replace with n = -1 has the semantics that were actually wanted:
-// non-overlapping, left-to-right, over the input, so inserted text is never
-// re-examined. A title that re-embeds the old token now produces one
-// substitution per original occurrence and stops.
-//
-// Found by Codex round 2 on BUG-2785 while enumerating ways the cascade's retry
-// could fail to terminate. Pre-existing — but folded into that fix rather than
-// filed, because it is three lines against a server hang, and BUG-2785's retry
-// calls this helper again per attempt, which makes it reachable more often than
-// before.
-func replaceAll(s, old, new string) string {
-	return strings.Replace(s, old, new, -1)
 }
