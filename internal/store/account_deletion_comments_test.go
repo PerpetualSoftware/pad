@@ -44,7 +44,7 @@ func TestDeleteAccountAtomic_DetachesAuthoredComments(t *testing.T) {
 	}
 
 	// Must not fail on the comments.user_id FK.
-	if err := s.DeleteAccountAtomic(user.ID, []string{ws.Slug}); err != nil {
+	if err := s.DeleteAccountAtomic(user.ID); err != nil {
 		t.Fatalf("DeleteAccountAtomic: %v", err)
 	}
 

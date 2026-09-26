@@ -967,7 +967,7 @@ func (s *Store) DeleteUser(id string) error {
 //     (ON DELETE CASCADE); items.assigned_user_id and activities.user_id
 //     (ON DELETE SET NULL; activities gained its FK action in migrations
 //     072/050).
-func (s *Store) DeleteAccountAtomic(userID string, ownedWorkspaceSlugs []string) error {
+func (s *Store) DeleteAccountAtomic(userID string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("delete account: begin tx: %w", err)
@@ -976,16 +976,38 @@ func (s *Store) DeleteAccountAtomic(userID string, ownedWorkspaceSlugs []string)
 
 	ts := now()
 
-	// 1. Soft-delete all owned workspaces. They keep their rows (and every
-	// item/activity/comment within) so the data stays recoverable; only the
-	// user identity is hard-removed below.
-	for _, slug := range ownedWorkspaceSlugs {
-		if _, err := tx.Exec(s.q(`
-			UPDATE workspaces SET deleted_at = ?, updated_at = ?
-			WHERE slug = ? AND deleted_at IS NULL
-		`), ts, ts, slug); err != nil {
-			return fmt.Errorf("delete account: delete workspace %s: %w", slug, err)
-		}
+	// 0. Lock the user's row FIRST, with the lock every limited mint of a
+	// user-scoped row takes (enforceUserLimitTx, BUG-2808). The owned set
+	// below is read under it, so it is exact (BUG-3099): a mint that
+	// committed before the lock is in the set, and one still open waits
+	// here, then finds no user row when this commits and rolls back. The
+	// set used to be read by the HANDLER before this transaction began, and
+	// from memberships, so a workspace minted in between, or owned but not
+	// yet joined, survived as a live workspace of a deleted user. On SQLite
+	// the transaction is already BEGIN IMMEDIATE, which serialises every
+	// writer, and the row-locking clause would be a syntax error there.
+	//
+	// Deadlock-free against the mint because the mint's only write before
+	// its own lock is the workspaces row, which takes no lock on users (no
+	// foreign key from workspaces.owner_id on Postgres): it holds nothing
+	// this transaction waits for.
+	lock := `SELECT id FROM users WHERE id = ?`
+	if s.dialect.Driver() == DriverPostgres {
+		lock += ` FOR NO KEY UPDATE`
+	}
+	var lockedID string
+	if err := tx.QueryRow(s.q(lock), userID).Scan(&lockedID); err != nil {
+		return fmt.Errorf("delete account: lock user: %w", err)
+	}
+
+	// 1. Soft-delete every workspace the user OWNS. They keep their rows (and
+	// every item/activity/comment within) so the data stays recoverable; only
+	// the user identity is hard-removed below.
+	if _, err := tx.Exec(s.q(`
+		UPDATE workspaces SET deleted_at = ?, updated_at = ?
+		WHERE owner_id = ? AND deleted_at IS NULL
+	`), ts, ts, userID); err != nil {
+		return fmt.Errorf("delete account: delete owned workspaces: %w", err)
 	}
 
 	// exec runs one cleanup statement keyed on userID, wrapping the error with

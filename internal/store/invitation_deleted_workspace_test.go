@@ -70,7 +70,7 @@ func TestGetInvitationByCode_SoftDeletedWorkspace(t *testing.T) {
 		t.Fatalf("CONTROL: a live workspace's invitation must be found; got %+v", before)
 	}
 
-	if err := s.DeleteAccountAtomic(owner.ID, []string{ws.Slug}); err != nil {
+	if err := s.DeleteAccountAtomic(owner.ID); err != nil {
 		t.Fatalf("DeleteAccountAtomic: %v", err)
 	}
 	if got, err := s.GetWorkspaceByID(ws.ID); err != nil || got != nil {
