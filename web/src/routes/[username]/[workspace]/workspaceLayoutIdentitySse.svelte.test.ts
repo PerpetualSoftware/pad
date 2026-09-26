@@ -9,10 +9,10 @@
 //
 // What survives here is the SSE DISCONNECT, and it is not redundant with the
 // reload. `sseService.connect` is idempotent per workspace, so the EventSource
-// A opened keeps delivering into this tab for the whole pre-reload window —
-// still authorized, because signing in as B replaces the cookie without
-// destroying A's session row, which is precisely the case BUG-3007's
-// server-side close cannot see. Closing it here bounds that window to zero.
+// A opened keeps delivering into this tab for the whole pre-reload window.
+// Signing in as B destroys A's session row (BUG-3011), so BUG-3007's
+// server-side close ends that stream too, but only on its next revalidation
+// tick. Closing it here bounds that window to zero.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
 import { createRawSnippet, tick } from 'svelte';

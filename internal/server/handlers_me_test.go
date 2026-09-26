@@ -195,11 +195,11 @@ func TestMe_GuestWithItemGrant(t *testing.T) {
 	parseJSON(t, rr, &item)
 
 	// Register a non-member user.
-	rr = doRequestWithCookie(env.srv, "POST", "/api/v1/auth/register", map[string]string{
+	rr = doRequestWithBearer(env.srv, "POST", "/api/v1/auth/register", env.ownerToken, map[string]string{
 		"email":    "guest@test.com",
 		"name":     "Guest",
 		"password": "correct-horse-battery-staple",
-	}, env.ownerToken)
+	})
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("register guest: %d %s", rr.Code, rr.Body.String())
 	}
@@ -267,11 +267,11 @@ func TestMe_GuestWithItemGrant(t *testing.T) {
 func TestMe_NonMemberNoGrants_NoAccess(t *testing.T) {
 	env := setupRBACEnv(t)
 
-	rr := doRequestWithCookie(env.srv, "POST", "/api/v1/auth/register", map[string]string{
+	rr := doRequestWithBearer(env.srv, "POST", "/api/v1/auth/register", env.ownerToken, map[string]string{
 		"email":    "stranger@test.com",
 		"name":     "Stranger",
 		"password": "correct-horse-battery-staple",
-	}, env.ownerToken)
+	})
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("register stranger: %d %s", rr.Code, rr.Body.String())
 	}

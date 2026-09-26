@@ -38,22 +38,24 @@ func setupRBACEnv(t *testing.T) *rbacTestEnv {
 	var ws models.Workspace
 	parseJSON(t, rr, &ws)
 
-	// Register editor user
-	rr = doRequestWithCookie(srv, "POST", "/api/v1/auth/register", map[string]string{
+	// Register editor user. As a BEARER, not a cookie: a register signs the
+	// new user in and destroys the session named by the cookie it replaces
+	// (BUG-3011), so a cookie-authenticated admin would lose ownerToken here.
+	rr = doRequestWithBearer(srv, "POST", "/api/v1/auth/register", ownerToken, map[string]string{
 		"email":    "editor@test.com",
 		"name":     "Editor",
 		"password": "correct-horse-battery-staple",
-	}, ownerToken)
+	})
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("register editor: expected 201, got %d: %s", rr.Code, rr.Body.String())
 	}
 
 	// Register viewer user
-	rr = doRequestWithCookie(srv, "POST", "/api/v1/auth/register", map[string]string{
+	rr = doRequestWithBearer(srv, "POST", "/api/v1/auth/register", ownerToken, map[string]string{
 		"email":    "viewer@test.com",
 		"name":     "Viewer",
 		"password": "correct-horse-battery-staple",
-	}, ownerToken)
+	})
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("register viewer: expected 201, got %d: %s", rr.Code, rr.Body.String())
 	}
