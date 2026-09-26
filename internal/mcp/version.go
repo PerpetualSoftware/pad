@@ -1017,6 +1017,25 @@ const CmdhelpVersion = "0.1"
 //     browser tab and BUG-3000 carries the open half — so no surface
 //     here states a duration.
 //
+//     0.54 — BUG-3217. A `fields` number is decoded from the raw request
+//     bytes with its literal kept, on BOTH transports: mcp-go fills the
+//     tool arguments with a plain json.Unmarshal, so 9007199254740993 used
+//     to arrive as 9007199254740992 and 1.10 as 1.1. Remote /mcp stored the
+//     rounded value; local stdio stringified the rounded float64 into its
+//     `--field` entry, so it was affected too (the filing believed it was
+//     not). Only `fields` is re-read; every other numeric param is unchanged.
+//     The BUMP is owed by one NEW REFUSAL (lead-ruled on BUG-3217's trail):
+//     on `pad_item.action=create` / `update`, a `fields` number beside a
+//     `field: ["n=…"]` entry for the same
+//     key is compared by exact numeric value, so two numbers that differ
+//     only above 2^53 — which rounded to one float64 and were silently
+//     collapsed into ONE rounded write — are now refused with
+//     `validation_failed`, message "pad_item.<action>: fields.n conflicts
+//     with the field array entry "n=…" (… vs …) — pass one of them, or the
+//     same value in both", hint "Check the input shape against the tool's
+//     schema." A matching pair still succeeds as one write however it is
+//     spelled: 3.0 beside n=3, and 1.10 beside n=1.1, collapse as they did.
+//
 //     0.53 — BUG-2819. ADDITIVE: every attachment row returned by
 //     `pad_attachment.action=list` gains `filename_source` (caller |
 //     normalised | substituted | derived | unknown), on BOTH transports —
@@ -1598,7 +1617,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.53"
+const ToolSurfaceVersion = "0.54"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

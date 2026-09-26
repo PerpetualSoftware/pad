@@ -2,8 +2,10 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"sort"
 	"strconv"
 	"strings"
@@ -482,7 +484,12 @@ func detectFieldConflicts(prefix string, input map[string]any) *mcp.CallToolResu
 				return errStructured(prefix, fmt.Errorf(
 					"%s conflicts with %s — one key cannot be both a structured value and a string", a.source, b.source))
 			}
-			if a.value != b.value {
+			// scalarEqual rather than a.value != b.value: each side's value
+			// IS stringifyFieldValue(raw), so for strings and float64 this
+			// is the same comparison, and a `fields` json.Number (BUG-3217)
+			// compares by numeric value — 3.0 next to "n=3" stays one write,
+			// as it was while both were float64.
+			if !scalarEqual(a.raw, b.raw) {
 				return errStructured(prefix, fmt.Errorf(
 					"%s conflicts with %s (%s vs %s) — pass one of them, or the same value in both",
 					a.source, b.source, a.value, b.value))
@@ -999,6 +1006,8 @@ func stringifyFieldValue(v any) (string, error) {
 		return strconv.FormatBool(t), nil
 	case float64: // JSON numbers decode to float64
 		return strconv.FormatFloat(t, 'f', -1, 64), nil
+	case json.Number: // a `fields` number, kept as its literal (BUG-3217)
+		return t.String(), nil
 	case int:
 		return strconv.Itoa(t), nil
 	case nil:
@@ -1013,10 +1022,25 @@ func stringifyFieldValue(v any) (string, error) {
 // form (so 3 == 3.0 and "done" == "done"); anything non-scalar (e.g.
 // two tags arrays) compares by fmt.Sprint — good enough to distinguish
 // "same call twice" from a genuine conflict.
+//
+// A json.Number (a `fields` number kept as its literal, BUG-3217) compares
+// by numeric VALUE against the other side's string form, so 3.0 still equals
+// 3 and "1.1" still equals 1.10, as they did while both were float64 — and
+// 9007199254740993 no longer equals 9007199254740992, which it did only
+// because both had been rounded to the same float64.
 func scalarEqual(a, b any) bool {
 	as, aerr := stringifyFieldValue(a)
 	bs, berr := stringifyFieldValue(b)
 	if aerr == nil && berr == nil {
+		_, aNum := a.(json.Number)
+		_, bNum := b.(json.Number)
+		if aNum || bNum {
+			ar, aok := new(big.Rat).SetString(as)
+			br, bok := new(big.Rat).SetString(bs)
+			if aok && bok {
+				return ar.Cmp(br) == 0
+			}
+		}
 		return as == bs
 	}
 	return fmt.Sprint(a) == fmt.Sprint(b)
