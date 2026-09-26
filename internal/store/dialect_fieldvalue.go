@@ -29,6 +29,9 @@ import (
 // rendered with each dialect's own number text, so one whose SQLite REAL form
 // uses an exponent or needs more than 15 significant digits (1.5e-7) renders
 // differently. Equality is numeric and does not depend on the rendering.
+// Beyond int64, SQLite holds a number as REAL, so equality there is
+// float-precise (2^63 equals 2^63+1) while Postgres stays exact; pinned by
+// TestFieldValueNumberExtremes.
 
 // jsonNumberRe is the JSON number grammar. An argument outside it never
 // equals a stored number, so SQLite's CAST('abc' AS REAL) = 0 cannot fire.
@@ -44,8 +47,10 @@ func numericArg(arg string) (any, bool) {
 	if n, err := strconv.ParseInt(arg, 10, 64); err == nil {
 		return n, true
 	}
+	// Out of float64 range, ParseFloat answers ±Inf with ErrRange, and that is
+	// the value SQLite stores for such a literal, so 1e400 still finds itself.
 	f, err := strconv.ParseFloat(arg, 64)
-	if err != nil || math.IsInf(f, 0) {
+	if err != nil && !math.IsInf(f, 0) {
 		return nil, false
 	}
 	if f == math.Trunc(f) && f >= -9.2e18 && f <= 9.2e18 {

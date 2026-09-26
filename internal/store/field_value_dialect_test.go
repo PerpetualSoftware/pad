@@ -373,3 +373,35 @@ func TestFieldValueDialectResidual(t *testing.T) {
 		t.Errorf("rendered 1.5e-7 as %q on %s, want %q", link.SourceStatus, s.dialect.Driver(), want)
 	}
 }
+
+// Number extremes (codex round 1). A literal beyond float64 range still
+// equals its own spelling on both dialects. Beyond int64, SQLite holds a REAL,
+// so equality there is float-precise while Postgres stays exact: the stated
+// residual, pinned so a change to it is seen.
+func TestFieldValueNumberExtremes(t *testing.T) {
+	f := newFieldValueFixture(t)
+	s, ws := f.s, f.ws
+	id := f.byLbl[`0`]
+	match := func(arg string) bool {
+		t.Helper()
+		got, err := s.ListItems(ws.ID, models.ItemListParams{CollectionSlug: f.vals.Slug, Fields: map[string]string{"status": arg}})
+		if err != nil {
+			t.Fatalf("ListItems %q: %v", arg, err)
+		}
+		return len(got) == 1 && got[0].ID == id
+	}
+
+	f.seed(t, id, "status", `1e400`)
+	if !match("1e400") {
+		t.Errorf("stored 1e400 does not match its own spelling on %s", s.dialect.Driver())
+	}
+
+	f.seed(t, id, "status", `9223372036854775808`)
+	if !match("9223372036854775808") {
+		t.Errorf("stored 2^63 does not match its own spelling on %s", s.dialect.Driver())
+	}
+	wantNeighbour := s.dialect.Driver() == DriverSQLite
+	if got := match("9223372036854775809"); got != wantNeighbour {
+		t.Errorf("2^63 vs 2^63+1 matched=%v on %s, want %v (float-precise on SQLite, exact on Postgres)", got, s.dialect.Driver(), wantNeighbour)
+	}
+}
