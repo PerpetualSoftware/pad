@@ -10,6 +10,11 @@
 	import PlaybookFormFields from '$lib/components/playbooks/PlaybookFormFields.svelte';
 	import Button from '$lib/components/common/Button.svelte';
 	import {
+		playbookFieldsPatch,
+		storedFormMismatches,
+		type PlaybookFormSnapshot
+	} from '$lib/playbooks/editorPatch';
+	import {
 		argumentsFromJSON,
 		argumentsToJSON,
 		type PlaybookArgument
@@ -68,6 +73,16 @@
 	let scope = $state('all');
 	let status = $state('draft');
 
+	// What the form held when the item loaded: save sends only the keys the
+	// user changed from it (BUG-3075, see $lib/playbooks/editorPatch).
+	let loadedForm = $state<PlaybookFormSnapshot | null>(null);
+	/** The stored values themselves, for the note on one the form cannot show. */
+	let storedRaw = $state<{ status: unknown; trigger: unknown; scope: unknown }>({
+		status: undefined,
+		trigger: undefined,
+		scope: undefined
+	});
+
 	$effect(() => {
 		if (wsSlug && ref) {
 			loadItem(wsSlug, ref);
@@ -116,6 +131,8 @@
 			scope = typeof fields.scope === 'string' ? fields.scope : 'all';
 			status = typeof fields.status === 'string' ? fields.status : 'draft';
 			args = argumentsFromJSON(fields.arguments);
+			loadedForm = { status, trigger, scope, invocationSlug, args: argumentsToJSON(args) };
+			storedRaw = { status: fields.status, trigger: fields.trigger, scope: fields.scope };
 		} catch {
 			if (ws !== wsSlug || slugOrRef !== ref) return;
 			// Explicit null on the current-request error path so a failed
@@ -181,6 +198,8 @@
 		schemaStatuses.length > 0 ? schemaStatuses : (FALLBACK_STATUSES as readonly string[])
 	);
 
+	let storedMismatches = $derived(storedFormMismatches(storedRaw, statuses, scopes));
+
 	async function save() {
 		if (!item) return;
 		// BUG-3115: refuse a too-long title before sending; the form keeps it.
@@ -201,28 +220,14 @@
 			// a status toggle from the playbooks list page. A patch preserves
 			// unknown keys by not naming them, which is the same protection
 			// without the revert.
-			const fieldsPatch: Record<string, unknown> = {
-				status,
-				trigger,
-				scope,
-				// `arguments` goes in as a JSON VALUE (array of objects), not a
-				// stringified array — the server stores it as a `json` field.
-				// argumentsToJSON returns a string, so we parse it back to a
-				// value. This matches the canonical shape in
-				// internal/collections/templates_startup_ship.go.
-				arguments: JSON.parse(argumentsToJSON(args))
-			};
-			// Set or clear invocation_slug. Empty user input clears the field
-			// (the user removed the slug); a non-empty value sets it. Storing
-			// `""` would still hit the unique-index, so the clear is a NULL,
-			// which internal/store/items.go::mergeFieldsPatch removes from the
-			// stored blob — the patch-path equivalent of deleting the key.
-			const trimmedSlug = invocationSlug.trim();
-			fieldsPatch.invocation_slug = trimmedSlug ? trimmedSlug : null;
+			const fieldsPatch = playbookFieldsPatch(
+				{ status, trigger, scope, invocationSlug, args: argumentsToJSON(args) },
+				loadedForm
+			);
 			await api.items.update(wsSlug, item.slug, {
 				title: title.trim(),
 				content: bodyContent,
-				fields_patch: fieldsPatch
+				...(Object.keys(fieldsPatch).length ? { fields_patch: fieldsPatch } : {})
 			});
 			toastStore.show('Playbook saved', 'success');
 			goto(`/${username}/${wsSlug}/playbooks`);
@@ -293,6 +298,11 @@
 
 		<div class="edit-grid">
 			<aside class="edit-sidebar">
+				{#each storedMismatches as m (m.label)}
+					<p class="stored-mismatch">
+						{m.label} is stored as <code>{m.raw}</code>, which this form can't show. It is kept unless you change {m.label.toLowerCase()} here.
+					</p>
+				{/each}
 				<PlaybookFormFields
 					{wsSlug}
 					selfItemId={item.id}
@@ -330,6 +340,15 @@
 </div>
 
 <style>
+	/* A stored value the form cannot show (BUG-3075). */
+	.stored-mismatch {
+		margin: 0 0 var(--space-2);
+		padding: var(--space-2);
+		font-size: 0.85em;
+		color: var(--text-secondary);
+		border: 1px dashed var(--border);
+		border-radius: var(--radius-sm, 4px);
+	}
 	.edit-page {
 		max-width: var(--content-max-width);
 		margin: 0 auto;
