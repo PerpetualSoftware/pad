@@ -27,6 +27,7 @@
 -->
 <script lang="ts">
 	import type { Snippet } from 'svelte';
+	import { backdropDismiss } from '$lib/utils/backdropDismiss';
 
 	interface Props {
 		/** Whether the modal is shown. Single source of truth — drive it from parent state. */
@@ -108,14 +109,11 @@
 		onclose();
 	}
 
-	// A click whose target is the dialog element itself landed on the backdrop
-	// (the ::backdrop pseudo dispatches its clicks to the dialog). Clicks on the
-	// content target descendant nodes, so this cleanly distinguishes the two.
-	function handleClick(e: MouseEvent) {
-		if (closeOnBackdrop && e.target === dialogEl) {
-			onclose();
-		}
-	}
+	// The ::backdrop pseudo dispatches its pointer events to the dialog element,
+	// so a press on the backdrop targets the dialog itself. The action dismisses
+	// only when both the press and the release land there: a text selection that
+	// starts in the content and is released on the backdrop also produces a click
+	// targeting the dialog, and must not close it (BUG-3229).
 </script>
 
 <dialog
@@ -126,7 +124,7 @@
 	aria-labelledby={labelledby}
 	aria-label={ariaLabel}
 	oncancel={handleCancel}
-	onclick={handleClick}
+	use:backdropDismiss={{ enabled: closeOnBackdrop, onDismiss: onclose }}
 >
 	{#if open}
 		{@render children()}

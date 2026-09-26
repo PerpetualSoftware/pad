@@ -79,24 +79,68 @@ describe('Modal.svelte', () => {
 		expect(cancelEvent.defaultPrevented).toBe(true);
 	});
 
-	it('fires onclose on a backdrop click (target === dialog)', async () => {
+	// A press is pointerdown on one target, pointerup on another, then a click on
+	// their nearest common ancestor. The ::backdrop dispatches to the dialog, so
+	// the dialog element itself stands for the backdrop here.
+	function press(down: Element, up: Element, click: Element) {
+		down.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+		up.dispatchEvent(new Event('pointerup', { bubbles: true }));
+		click.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+	}
+	function content(): Element {
+		const el = getDialog().firstElementChild;
+		if (!el) throw new Error('no content');
+		return el;
+	}
+
+	it('fires onclose on a backdrop press (down and up both on the backdrop)', async () => {
 		const onclose = vi.fn();
 		render(Modal, { props: baseProps({ open: true, onclose }) });
 		await tick();
 		flushSync();
 
-		// A click whose target is the dialog element itself is the backdrop.
-		getDialog().dispatchEvent(new MouseEvent('click', { bubbles: true }));
+		press(getDialog(), getDialog(), getDialog());
 		expect(onclose).toHaveBeenCalledTimes(1);
 	});
 
-	it('does NOT close on a backdrop click when closeOnBackdrop=false', async () => {
+	it('does NOT close when a selection starts in the content and is released on the backdrop (BUG-3229)', async () => {
+		const onclose = vi.fn();
+		render(Modal, { props: baseProps({ open: true, onclose }) });
+		await tick();
+		flushSync();
+
+		// The click lands on the common ancestor, which is the dialog itself.
+		press(content(), getDialog(), getDialog());
+		expect(onclose).not.toHaveBeenCalled();
+	});
+
+	it('does NOT close when a press starts on the backdrop and is released in the content (BUG-3229)', async () => {
+		const onclose = vi.fn();
+		render(Modal, { props: baseProps({ open: true, onclose }) });
+		await tick();
+		flushSync();
+
+		press(getDialog(), content(), getDialog());
+		expect(onclose).not.toHaveBeenCalled();
+	});
+
+	it('does NOT close on a bare click with no press behind it', async () => {
+		const onclose = vi.fn();
+		render(Modal, { props: baseProps({ open: true, onclose }) });
+		await tick();
+		flushSync();
+
+		getDialog().dispatchEvent(new MouseEvent('click', { bubbles: true }));
+		expect(onclose).not.toHaveBeenCalled();
+	});
+
+	it('does NOT close on a backdrop press when closeOnBackdrop=false', async () => {
 		const onclose = vi.fn();
 		render(Modal, { props: baseProps({ open: true, onclose, closeOnBackdrop: false }) });
 		await tick();
 		flushSync();
 
-		getDialog().dispatchEvent(new MouseEvent('click', { bubbles: true }));
+		press(getDialog(), getDialog(), getDialog());
 		expect(onclose).not.toHaveBeenCalled();
 	});
 

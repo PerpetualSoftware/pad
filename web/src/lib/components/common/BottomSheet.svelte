@@ -20,6 +20,7 @@
 	import type { Snippet } from 'svelte';
 	import { paneFocusables, nextTrapTarget } from '$lib/collections/paneFocus';
 	import { isBlockedByModal } from '$lib/a11y/viewerBackdrop';
+	import { backdropDismiss } from '$lib/utils/backdropDismiss';
 
 	interface Props {
 		open: boolean;
@@ -179,7 +180,7 @@
 {#if open}
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
-	<div class="bs-overlay" onclick={onclose}>
+	<div class="bs-overlay" use:backdropDismiss={{ onDismiss: onclose }}>
 		<div
 			bind:this={sheetEl}
 			class="bs-sheet"

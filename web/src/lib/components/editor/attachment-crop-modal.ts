@@ -26,6 +26,8 @@
  *   works correctly.
  */
 
+import { backdropDismiss } from '$lib/utils/backdropDismiss';
+
 export interface CropResult {
 	/** x in original-image pixels, origin top-left. */
 	x: number;
@@ -347,9 +349,10 @@ export function openCropModal(opts: OpenCropModalOptions): Promise<CropResult | 
 			e.preventDefault();
 			close(null);
 		});
-		dialog.addEventListener('click', (event) => {
-			if (event.target === dialog) close(null);
-		});
+		// Only a press that both starts and ends on the backdrop cancels: a
+		// crop-handle drag or a text selection released outside the box must
+		// not (BUG-3229). The listeners go with the dialog when it is removed.
+		backdropDismiss(dialog, { onDismiss: () => close(null) });
 
 		dialog.showModal();
 	});

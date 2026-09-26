@@ -2182,6 +2182,9 @@ describe('Lightbox — drag-to-pan and double-click (TASK-2458)', () => {
 	it('CONTROL: a plain backdrop click (no gesture) still closes', () => {
 		const onClose = vi.fn();
 		mountViewer({ onClose });
+		// A real press on the backdrop: down and up both on the root (BUG-3229).
+		root().dispatchEvent(pointerEvent('pointerdown', 10, 10));
+		root().dispatchEvent(pointerEvent('pointerup', 10, 10, { buttons: 0 }));
 		root().dispatchEvent(new MouseEvent('click', { bubbles: true }));
 		expect(onClose).toHaveBeenCalledTimes(1);
 	});
@@ -3264,6 +3267,10 @@ describe('Lightbox — touch pan, pinch, double-tap (TASK-2518)', () => {
 		imageEl().dispatchEvent(new Event('error'));
 		flushSync();
 		await new Promise((r) => setTimeout(r, 0)); // let the suppress-clear timer fire
+		// The next tap is a real backdrop press (BUG-3229), so only a stuck
+		// suppressClick could swallow it.
+		tdown(10, 10, 9, { target: root() });
+		tup(10, 10, 9, { target: root() });
 		root().dispatchEvent(new MouseEvent('click', { bubbles: true }));
 		expect(onClose).toHaveBeenCalledTimes(1); // not swallowed by a stuck suppressClick
 	});
@@ -4036,6 +4043,9 @@ describe('Lightbox — the modal contract holds UNDER the mobile sheet (3c-ii T5
 	it('still closes on a backdrop click', () => {
 		const onClose = vi.fn();
 		mountViewer({ onClose });
+		// A real press on the backdrop: down and up both on the root (BUG-3229).
+		root().dispatchEvent(pointerEvent('pointerdown', 10, 10));
+		root().dispatchEvent(pointerEvent('pointerup', 10, 10, { buttons: 0 }));
 		root().dispatchEvent(new MouseEvent('click', { bubbles: true }));
 		flushSync();
 		expect(onClose).toHaveBeenCalledTimes(1);

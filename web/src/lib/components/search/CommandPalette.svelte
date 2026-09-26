@@ -22,6 +22,7 @@
 	import { fieldMatches } from '$lib/fields/fieldShape';
 	import StaleBodyDot from '$lib/components/common/StaleBodyDot.svelte';
 	import { isBodyStale } from '$lib/items/staleBody';
+	import { backdropDismiss } from '$lib/utils/backdropDismiss';
 
 	const RECENT_SEARCHES_KEY = 'pad-recent-searches';
 	const MAX_RECENT = 10;
@@ -820,7 +821,7 @@
 {#if uiStore.searchOpen}
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
-	<div class="overlay" onclick={() => uiStore.closeSearch()}>
+	<div class="overlay" use:backdropDismiss={{ onDismiss: () => uiStore.closeSearch() }}>
 		<div
 			class="palette"
 			onclick={(e) => e.stopPropagation()}
