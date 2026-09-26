@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -898,18 +899,33 @@ func (s *Store) applyFieldMigrationsTx(tx *sql.Tx, collectionID, workspaceID str
 	var renames []map[string]any
 
 	for _, m := range migrations {
+		// A rename map is applied SIMULTANEOUSLY (BUG-3224 codex r1): every
+		// match for every old value is collected BEFORE any row is written,
+		// so a stored value is mapped at most once. Applied one rename at a
+		// time, a→b then b→c turned "a" into "c", and b→c then a→b into "b",
+		// decided by map iteration order; the editor builds such chains
+		// whenever options shift position.
+		olds := make([]string, 0, len(m.RenameOptions))
 		for oldVal, newVal := range m.RenameOptions {
-			if oldVal == newVal {
-				continue
+			if oldVal != newVal {
+				olds = append(olds, oldVal)
 			}
-			jsonSet := s.dialect.JSONSet("fields", m.Field)
+		}
+		if len(olds) == 0 {
+			continue
+		}
+		sort.Strings(olds)
+		jsonSet := s.dialect.JSONSet("fields", m.Field)
+
+		// Phase 1a: scalar matches. SELECT inside the same transaction as
+		// the UPDATEs, so we observe a consistent snapshot of who needs to
+		// migrate.
+		type scalarHit struct{ id, oldVal string }
+		var scalarHits []scalarHit
+		for _, oldVal := range olds {
 			// BUG-3221: matched by JSON type, so the same rows migrate on
 			// both dialects.
 			matchOld, matchArgs := s.dialect.JSONFieldEquals("fields", m.Field, oldVal)
-
-			// Step 1: find all matching item IDs. SELECT inside the
-			// same transaction as the subsequent UPDATEs, so we
-			// observe a consistent snapshot of who needs to migrate.
 			idRows, err := tx.Query(s.q(fmt.Sprintf(`
 				SELECT id FROM items
 				WHERE collection_id = ?
@@ -917,55 +933,72 @@ func (s *Store) applyFieldMigrationsTx(tx *sql.Tx, collectionID, workspaceID str
 				  AND deleted_at IS NULL
 			`, matchOld)), append([]any{collectionID}, matchArgs...)...)
 			if err != nil {
-				return totalAffected, fmt.Errorf("migrate field %s (%s → %s) list: %w", m.Field, oldVal, newVal, err)
+				return totalAffected, fmt.Errorf("migrate field %s (%s → %s) list: %w", m.Field, oldVal, m.RenameOptions[oldVal], err)
 			}
-			var ids []string
 			for idRows.Next() {
 				var id string
 				if err := idRows.Scan(&id); err != nil {
 					idRows.Close()
 					return totalAffected, fmt.Errorf("migrate field %s scan: %w", m.Field, err)
 				}
-				ids = append(ids, id)
+				scalarHits = append(scalarHits, scalarHit{id, oldVal})
 			}
 			if err := idRows.Err(); err != nil {
 				idRows.Close()
 				return totalAffected, fmt.Errorf("migrate field %s rows: %w", m.Field, err)
 			}
 			idRows.Close()
+		}
+		// Phase 1b: array (multi_select) values holding any old option.
+		arrayRows, err := s.arrayRowsHoldingTx(tx, collectionID, m.Field, olds)
+		if err != nil {
+			return totalAffected, err
+		}
 
-			// Step 2: update each row individually. Each UPDATE is
-			// a separate statement, so MAX(seq) advances between
-			// them inside the transaction — every row ends up with
-			// a unique sequential seq.
-			// NOT a decision enqueue door (TASK-3117 ruling 3). This is a system
-			// fan-out rewrite: one field migration touches every matching item, so an enqueue
-			// per row would be an unbounded provider bill for one action. The rewrite
-			// DOES change hashed decision state, so each touched item's stored
-			// answers read current=false until its next direct write re-evaluates.
-			updateSQL := s.q(fmt.Sprintf(`
-				UPDATE items
-				SET fields = %s,
-				    updated_at = ?,
-				    seq = `+nextWorkspaceSeqSubquery+`
-				WHERE id = ?
-			`, jsonSet))
-			for _, id := range ids {
-				result, err := tx.Exec(updateSQL, newVal, ts, workspaceID, id)
-				if err != nil {
-					return totalAffected, fmt.Errorf("migrate field %s (%s → %s) row %s: %w", m.Field, oldVal, newVal, id, err)
-				}
-				n, _ := result.RowsAffected()
-				totalAffected += n
-				if n > 0 {
-					touchedIDs = append(touchedIDs, id)
-				}
+		// Phase 2: write. Each UPDATE is a separate statement, so MAX(seq)
+		// advances between them inside the transaction — every row ends up
+		// with a unique sequential seq.
+		// NOT a decision enqueue door (TASK-3117 ruling 3). This is a system
+		// fan-out rewrite: one field migration touches every matching item, so an enqueue
+		// per row would be an unbounded provider bill for one action. The rewrite
+		// DOES change hashed decision state, so each touched item's stored
+		// answers read current=false until its next direct write re-evaluates.
+		updateSQL := s.q(fmt.Sprintf(`
+			UPDATE items
+			SET fields = %s,
+			    updated_at = ?,
+			    seq = `+nextWorkspaceSeqSubquery+`
+			WHERE id = ?
+		`, jsonSet))
+		applied := map[string]bool{}
+		for _, h := range scalarHits {
+			newVal := m.RenameOptions[h.oldVal]
+			result, err := tx.Exec(updateSQL, newVal, ts, workspaceID, h.id)
+			if err != nil {
+				return totalAffected, fmt.Errorf("migrate field %s (%s → %s) row %s: %w", m.Field, h.oldVal, newVal, h.id, err)
 			}
-			if len(ids) > 0 {
+			n, _ := result.RowsAffected()
+			totalAffected += n
+			if n > 0 {
+				touchedIDs = append(touchedIDs, h.id)
+				applied[h.oldVal] = true
+			}
+		}
+		arrayIDs, arrayOlds, err := s.writeRenamedArraysTx(tx, workspaceID, m.Field, arrayRows, m.RenameOptions, ts)
+		if err != nil {
+			return totalAffected, err
+		}
+		totalAffected += int64(len(arrayIDs))
+		touchedIDs = append(touchedIDs, arrayIDs...)
+		for _, o := range arrayOlds {
+			applied[o] = true
+		}
+		for _, oldVal := range olds {
+			if applied[oldVal] {
 				renames = append(renames, map[string]any{
 					"field": m.Field,
 					"from":  oldVal,
-					"to":    newVal,
+					"to":    m.RenameOptions[oldVal],
 				})
 			}
 		}
