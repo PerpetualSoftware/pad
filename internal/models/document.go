@@ -100,10 +100,14 @@ type DocumentListParams struct {
 // (Dave's ruling, day-63).
 const MaxDocumentTitleRunes = 255
 
-// wikiTitleRoundTripFailure reports why emitting `[[title]]` the way
-// links.ReplaceTitle does — plain concatenation, no escaping — would produce a
-// bracket that does not read back as this title. Returns "" when the title
-// survives the round trip.
+// wikiTitleRoundTripFailure reports why emitting `[[title]]` by plain
+// concatenation, no escaping — the way links.ReplaceTitle did until BUG-2806
+// made it emit the escaped form — would produce a bracket that does not read
+// back as this title. Returns "" when the title survives the round trip.
+//
+// BUG-2806 also made the document rename cascade find a link stored in
+// escaped form, which is the reason given below for refusing `|` and `\`.
+// The refusal itself is unchanged: lifting it is a separate decision.
 //
 // This is BUG-2796 stated as a property rather than as a character blacklist,
 // and the distinction is not cosmetic: the first version of this function

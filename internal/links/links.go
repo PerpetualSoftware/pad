@@ -61,11 +61,10 @@ func EscapedWikiTitleLen(title string) int { return escapedWikiBodyLen(title) }
 // supports. This rewriter does NOT attempt escape-aware matching on
 // the TITLE segment — a title literally containing `]` would be
 // stored escaped and would fail to match the regex's `oldTitle`
-// literal. The same limitation exists in the legacy ReplaceTitle
-// helper above and the document-rename path; items with such titles
-// are vanishingly rare in practice (an item titled `My [Plan]`
-// would be a stretch). Promotable to a separate task if a real user
-// hits it.
+// literal. The legacy ReplaceTitle helper above, which the document-rename
+// path uses, had the same limitation until BUG-2806 made it match and emit
+// the escaped form; the item cascade uses the position-based
+// RewriteBracketsAt, which is escape-aware (BUG-2805).
 func RewriteWikiTitle(content, oldTitle, newTitle, collSlug string) string {
 	if oldTitle == "" || oldTitle == newTitle {
 		return content
