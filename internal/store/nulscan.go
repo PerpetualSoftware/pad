@@ -55,6 +55,12 @@ type NULViolation struct {
 	// pass for each.
 	RawNUL     bool
 	EscapedNUL bool
+	// InvalidUTF8 marks a value that is not valid UTF-8 (BUG-3222). It is
+	// not a NUL defect, but PostgreSQL refuses it the same way, SQLSTATE
+	// 22021 under a UTF8 database, and a migration that meets one fails
+	// partway through the copy exactly as a NUL does. So it rides the same
+	// census, repair and preflight rather than a second command pair.
+	InvalidUTF8 bool
 	// KeyIncomplete marks a row one of whose key columns is NULL, so Key does
 	// not address it. SQLite permits NULL in a declared PRIMARY KEY that is
 	// neither INTEGER PRIMARY KEY nor NOT NULL, which no other engine does.
@@ -69,13 +75,17 @@ func (v NULViolation) String() string {
 	for _, k := range sortedKeys(v.Key) {
 		parts = append(parts, k+"="+v.Key[k])
 	}
-	kind := "raw NUL"
-	switch {
-	case v.RawNUL && v.EscapedNUL:
-		kind = "raw NUL + escaped NUL"
-	case v.EscapedNUL:
-		kind = "escaped NUL"
+	var kinds []string
+	if v.RawNUL {
+		kinds = append(kinds, "raw NUL")
 	}
+	if v.EscapedNUL {
+		kinds = append(kinds, "escaped NUL")
+	}
+	if v.InvalidUTF8 {
+		kinds = append(kinds, "invalid UTF-8")
+	}
+	kind := strings.Join(kinds, " + ")
 	out := fmt.Sprintf("%s.%s [%s] (%s)", v.Table, v.Column, strings.Join(parts, ", "), kind)
 	if v.WorkspaceID != "" {
 		out += " workspace=" + v.WorkspaceID
@@ -206,7 +216,7 @@ func (s *Store) ScanNUL() (*NULScanReport, error) {
 	if s.dialect.Driver() != DriverSQLite {
 		return &NULScanReport{
 			Applicable: false,
-			Reason: "PostgreSQL refuses these values natively (SQLSTATE 22021 for a NUL in text, " +
+			Reason: "PostgreSQL refuses these values natively (SQLSTATE 22021 for a NUL in text or invalid UTF-8, " +
 				"22P05 for the escape reaching jsonb), so no stored row can carry one",
 		}, nil
 	}
@@ -246,8 +256,15 @@ func (s *Store) ScanNUL() (*NULScanReport, error) {
 		if err != nil {
 			return nil, err
 		}
-		report.Violations = append(report.Violations, found...)
 		report.Suspects = append(report.Suspects, suspects...)
+
+		// BUG-3222: invalid UTF-8, folded into the same violation when a
+		// row carries both defects so the census counts each value once.
+		invalid, err := s.scanColumnUTF8(c, addr)
+		if err != nil {
+			return nil, err
+		}
+		report.Violations = append(report.Violations, mergeUTF8Violations(found, invalid)...)
 	}
 	sort.Strings(report.ColumnsAbsent)
 	return report, nil

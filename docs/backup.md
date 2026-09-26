@@ -349,17 +349,21 @@ commands below are for.
 
 ### Finding and repairing affected rows
 
-`pad db scan-nul` reports every stored value carrying a NUL — which table and
-column, which row, and which workspace — and changes nothing:
+`pad db scan-nul` reports every stored value carrying a NUL, and every value
+that is not valid UTF-8 — which table and column, which row, and which
+workspace — and changes nothing. Invalid UTF-8 is not a NUL, but PostgreSQL
+refuses it the same way (SQLSTATE 22021 under a UTF8 database) and SQLite stores
+it silently, so it breaks a migration the same way. Finding it means reading
+every stored value in full; on a 306 MB database that added about a second.
 
 ```bash
 pad db scan-nul                       # the live database
 pad db scan-nul --from /backups/pad-20260901.db   # or a backup file
 ```
 
-`pad db repair-nul` rewrites those values, replacing each NUL with U+FFFD (the
-Unicode replacement character) and leaving the rest of the value byte for byte
-as it was. **It changes stored content**, which is why it is a separate command
+`pad db repair-nul` rewrites those values, replacing each NUL and each invalid
+UTF-8 byte sequence with U+FFFD (the Unicode replacement character) and leaving
+the rest of the value byte for byte as it was. **It changes stored content**, which is why it is a separate command
 and never part of a migration — running a schema upgrade should not rewrite
 your text on your behalf. Run the scan first; it is the dry run. Running the
 repair twice is safe.
