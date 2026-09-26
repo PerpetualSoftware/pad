@@ -606,8 +606,11 @@ func escapeLikePattern(s string) string {
 }
 
 func (s *Store) updateLinksInTx(tx *sql.Tx, workspaceID, oldTitle, newTitle string) error {
-	// Find all documents in the workspace that contain [[oldTitle]]
-	searchTerm := "[[" + oldTitle + "]]"
+	// Find all documents in the workspace that link oldTitle. The literal is
+	// the ESCAPED form, which is how a link stores a title containing `|`,
+	// `\` or `]` (BUG-2806); ReplaceTitle builds the same literal, so the
+	// scan, the occurrence count and the rewrite agree on what a link is.
+	searchTerm := "[[" + links.EscapeWikiTitle(oldTitle) + "]]"
 	rows, err := tx.Query(s.q(`
 		SELECT id, content FROM documents
 		WHERE workspace_id = ? AND deleted_at IS NULL AND content LIKE ? ESCAPE '\'
@@ -746,7 +749,9 @@ func cascadeRetainedBytes(read string, occurrences int64, oldTitle, newTitle str
 		// allocates.
 		return int64(len(read))
 	}
-	rewritten := int64(len(read)) + occurrences*int64(len(newTitle)-len(oldTitle))
+	// The bracket lengths ReplaceTitle writes are the ESCAPED titles'
+	// (BUG-2806), counted without building them.
+	rewritten := int64(len(read)) + occurrences*int64(links.EscapedWikiTitleLen(newTitle)-links.EscapedWikiTitleLen(oldTitle))
 	return int64(len(read)) + rewritten
 }
 

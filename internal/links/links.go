@@ -6,17 +6,34 @@ import (
 	"strings"
 )
 
-// ReplaceTitle replaces all [[oldTitle]] with [[newTitle]] in content.
-// LEGACY helper used by the document-rename path; case-sensitive,
-// no-pipe forms only. For item rename use RewriteWikiTitle below,
-// which also handles `[[Title|alias]]`, `[[<slug>/Title]]`, and
-// `[[<slug>/Title|alias]]` and matches case-insensitively to mirror
-// the renderer's title resolution.
+// ReplaceTitle replaces every link to oldTitle, `[[<oldTitle escaped>]]`, with
+// the same link to newTitle. LEGACY helper used by the document-rename path;
+// case-sensitive, no-alias forms only. For item rename use RewriteWikiTitle
+// below, which also handles `[[Title|alias]]`, `[[<slug>/Title]]`, and
+// `[[<slug>/Title|alias]]` and matches case-insensitively to mirror the
+// renderer's title resolution.
+//
+// Both titles are written in the grammar's ESCAPED form (EscapeWikiTitle),
+// which is how a link to them is stored (BUG-2806). It used to match the raw
+// literal, and for a title containing `|`, `\` or `]` the raw literal is not a
+// link to that title at all — `[[A|B]]` links to `A` and displays `B` — so a
+// rename left every real link stale and rewrote a link to a different target.
+// For any title without those characters the escaped form IS the raw form, so
+// nothing changes for them.
 func ReplaceTitle(content, oldTitle, newTitle string) string {
-	old := "[[" + oldTitle + "]]"
-	new := "[[" + newTitle + "]]"
+	old := "[[" + escapeWikiBody(oldTitle) + "]]"
+	new := "[[" + escapeWikiBody(newTitle) + "]]"
 	return replaceAll(content, old, new)
 }
+
+// EscapeWikiTitle is title in the form a wiki-link body stores it: `\`, `]`
+// and `|` escaped with a backslash. A caller that searches or counts link
+// literals (the document rename cascade, BUG-2806) must build them from this,
+// or it looks for a string no link contains.
+func EscapeWikiTitle(title string) string { return escapeWikiBody(title) }
+
+// EscapedWikiTitleLen is len(EscapeWikiTitle(title)) without building it.
+func EscapedWikiTitleLen(title string) int { return escapedWikiBodyLen(title) }
 
 // RewriteWikiTitle rewrites the four title-form wiki-link shapes that
 // resolve to an item titled `oldTitle` in collection `collSlug`,
