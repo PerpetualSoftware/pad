@@ -290,18 +290,18 @@ jobs:
             Stop-Process -Id $server.Id -ErrorAction SilentlyContinue
           }
 
-      # BUG-2771. Windows cannot probe a headless arm file's owner (Signal(0)
-      # is unsupported), so the verdict is unknown. Before the fix that read as
-      # dead: the next read reaped the file and fell back to auto_arm, which
-      # forgot an explicit disarm. No Go test runs on Windows in this job, so
-      # this step is the only instrument on the real Windows verdict rather
-      # than an injected one. Windows only: on unix the same headless file
-      # records the short-lived command's pid, which is provably dead by the
-      # next read, so the file is correctly reaped there.
-      - name: Headless disarm survives on Windows (BUG-2771)
-        if: matrix.os == 'windows-latest'
+      # A headless disarm must hold for as long as its session lives, on both
+      # platforms, through the REAL owner probe (no Go test runs in this job).
+      # Windows cannot probe a pid, so the verdict is unknown: before BUG-2771
+      # that read as dead, and the next read reaped the file and let auto_arm
+      # forget the disarm. On unix the file named the exiting `pad session
+      # disarm` instead of the session, so it was dead on arrival (BUG-3227).
+      # This step's shell stands in for the session, named the way a
+      # non-Claude harness names it: PAD_SESSION_PID.
+      - name: Headless disarm holds for the session (BUG-2771, BUG-3227)
         run: |
           $ErrorActionPreference = 'Stop'
+          $env:PAD_SESSION_PID = "$PID"
           $binary = (Resolve-Path '${{ matrix.path }}').Path
           $env:PAD_DATA_DIR = Join-Path $env:RUNNER_TEMP 'pad-arm-smoke'
           Remove-Item Env:CLAUDE_CODE_MESSAGING_SOCKET -ErrorAction SilentlyContinue
