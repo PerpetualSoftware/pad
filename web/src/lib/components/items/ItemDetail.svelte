@@ -51,7 +51,7 @@
 	import { relativeTime, wikiLinksToMarkdown, markdownToWikiLinks, cleanBrokenLinks, unescapeDocLinks } from '$lib/utils/markdown';
 	import { canonicalEditorMarkdown } from '$lib/collab/canonicalMarkdown';
 	import { toastStore } from '$lib/stores/toast.svelte';
-	import { titleEditError } from '$lib/items/titleLimit';
+	import { titleEditError, titleLengthState } from '$lib/items/titleLimit';
 	import { editorStore } from '$lib/stores/editor.svelte';
 	import type { Item, Collection, CollectionSettings, QuickAction, ItemLink, AgentRole, PaneTarget, ResolvedItemIdentity, ItemCopyResult } from '$lib/types';
 	import { parseFields, parseSchema, parseSettings, parseTags, formatItemRef, itemUrlId, getTerminalOptions, type ItemIndexRow } from '$lib/types';
@@ -695,6 +695,8 @@
 
 	let editingTitle = $state(false);
 	let titleDraft = $state('');
+	/** Live length feedback for the title being edited (BUG-2836). */
+	let titleLength = $derived(titleLengthState(titleDraft, item?.title ?? ''));
 	// BUG-3115: why the title in the editor was refused. Rendered only while
 	// the editor is open, so every path that closes it hides this too.
 	let titleError = $state<string | null>(null);
@@ -5855,11 +5857,23 @@
 					onblur={saveTitle}
 					onkeydown={handleTitleKeydown}
 					oninput={(e) => { titleError = null; autoResizeTitle(e.currentTarget); }}
-					aria-invalid={titleError ? 'true' : undefined}
-					aria-describedby={titleError ? 'item-title-error' : undefined}
+					aria-invalid={titleError || titleLength.over ? 'true' : undefined}
+					aria-describedby={titleError ? 'item-title-error' : titleLength.show ? 'item-title-count' : undefined}
 				></textarea>
 				{#if titleError}
 					<p id="item-title-error" class="title-error" role="alert">{titleError}</p>
+				{:else if titleLength.show}
+					<!-- BUG-2836: the count WHILE typing, in the server's units (code
+					     points after its trim), rather than only on the refused save. -->
+					<!-- Not a live region: announcing every keystroke's count is noise.
+					     aria-describedby lets a screen reader read it on demand, and
+					     only the CROSSING into too-long is announced, below. -->
+					<p id="item-title-count" class="title-count" class:over={titleLength.over}>
+						{titleLength.count} / {titleLength.max}{titleLength.over ? ' (too long)' : ''}
+					</p>
+					{#if titleLength.over}
+						<span class="sr-only" role="status">Title too long</span>
+					{/if}
 				{/if}
 				</div>
 			{:else if canEdit}
@@ -7803,6 +7817,27 @@
 		margin: var(--space-1, 0.25rem) 0 0;
 		font-size: 0.85em;
 		color: var(--accent-red);
+	}
+	/* Live title length (BUG-2836): muted until the title would be refused. */
+	.title-count {
+		margin: var(--space-1, 0.25rem) 0 0;
+		font-size: 0.8em;
+		color: var(--text-muted);
+	}
+	.title-count.over {
+		color: var(--accent-red);
+	}
+	/* Visually hidden, read by assistive tech: the too-long announcement (BUG-2836). */
+	.sr-only {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		padding: 0;
+		margin: -1px;
+		overflow: hidden;
+		clip: rect(0, 0, 0, 0);
+		white-space: nowrap;
+		border: 0;
 	}
 	.title-input {
 		font-size: 1.6em;

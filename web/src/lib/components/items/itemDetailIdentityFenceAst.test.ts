@@ -114,7 +114,10 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	handleCopyRef: { reviewed: 'a5e0a0394fcc', why: 'switchedAway before the copied flag' },
 	loadData: { reviewed: '8eb393047b3e', why: 'IS the load: myGen against loadGeneration after every await; the BUG-3198 re-read of a changed item runs after the install, keyed on the installed item id, and fences itself on itemGen' },
 	startEditTitle: { reviewed: '17f04352d420', why: 'focuses and sizes the input it opened synchronously', may: ['el', 'titleInputEl.focus', 'titleInputEl.setSelectionRange'] },
-	saveTitle: { reviewed: 'cef019550a0a', why: 'gen against loadGeneration on both arms, and again after the tick that resizes a reopened editor (BUG-3115)' + SETTLE_NOTE, may: ['saves.settle'] },
+	// Re-reviewed for BUG-2836: saveTitle's own lines are unchanged (the diff
+	// touches only a $derived beside titleDraft and the textarea's aria
+	// attributes), yet its hash moved; the rule below still holds.
+	saveTitle: { reviewed: '38815d73d55f', why: 'gen against loadGeneration on both arms, and again after the tick that resizes a reopened editor (BUG-3115)' + SETTLE_NOTE, may: ['saves.settle'] },
 	updateField: {
 		reviewed: '55dd4fdc7824',
 		why: 'stillCurrent() on every arm, the OCC refetch and the open-children confirm' + SETTLE_NOTE,
