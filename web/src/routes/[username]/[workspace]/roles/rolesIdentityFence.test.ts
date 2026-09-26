@@ -1,6 +1,13 @@
 // Node-project SOURCE guard: every async commit point on the roles board is
 // fenced on the signed-in identity (BUG-3084, surface 2 of 7).
 //
+// THE GATE BESIDE THIS (TASK-3097): `rolesIdentityGate.test.ts` tables every async unit on
+// this page with the hash of the code it was reviewed on, and refuses any
+// edit to one until its row is re-read. That catches BUG-3084's round-4
+// classes, which a source scanner cannot see. This file catches what the
+// gate does not: the RULE on a NEW handler, which the gate accepts with any
+// row. Keep both. Neither is a duplicate of the other.
+//
 // Same pair as surface 1: `rolesIdentityFence.svelte.test.ts` beside this file
 // owns the SEMANTICS of the handlers it drives; this owns the POPULATION,
 // because a behavioural suite only covers the members someone wrote a case for

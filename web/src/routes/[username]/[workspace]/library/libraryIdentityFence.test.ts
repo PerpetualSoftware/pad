@@ -2,6 +2,13 @@
  * BUG-3084 surface 3 — the SOURCE half. `libraryIdentityFence.svelte.test.ts`
  * beside this file owns the SEMANTICS; this owns the POPULATION.
  *
+ * THE GATE BESIDE THIS (TASK-3097): `libraryIdentityGate.test.ts` tables every async unit on
+ * this page with the hash of the code it was reviewed on, and refuses any
+ * edit to one until its row is re-read. That catches BUG-3084's round-4
+ * classes, which a source scanner cannot see. This file catches what the
+ * gate does not: the RULE on a NEW handler, which the gate accepts with any
+ * row. Keep both. Neither is a duplicate of the other.
+ *
  * Separating the two is the reusable part of this family. The behavioural suite
  * can only speak for the handlers it drives; this one enumerates every commit
  * point on the page and fails when a new member arrives, which is what stops a

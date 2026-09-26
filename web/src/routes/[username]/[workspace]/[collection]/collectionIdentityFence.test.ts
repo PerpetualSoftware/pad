@@ -1,6 +1,13 @@
 // Node-project SOURCE guard: every async commit point on the collection page
 // is fenced on the signed-in identity (BUG-3084, surface 1 of 7).
 //
+// THE GATE BESIDE THIS (TASK-3097): `collectionIdentityGate.test.ts` tables every async unit on
+// this page with the hash of the code it was reviewed on, and refuses any
+// edit to one until its row is re-read. That catches BUG-3084's round-4
+// classes, which a source scanner cannot see. This file catches what the
+// gate does not: the RULE on a NEW handler, which the gate accepts with any
+// row. Keep both. Neither is a duplicate of the other.
+//
 // WHY SOURCE, and why it is not the only instrument: `collectionIdentityFence\
 // .svelte.test.ts` next to this file mounts the page, holds a request open,
 // moves the identity and asserts no commit lands — that owns the SEMANTICS of

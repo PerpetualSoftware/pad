@@ -5,8 +5,10 @@
  * round found edits it accepted, and round 8 found rows missing from the
  * population table itself (team CONVE-35). So the lead ruled on checkpoint 69:
  *
- * THE GATE IS A CHANGE DETECTOR, and it lives in
- * `itemDetailIdentityFenceAst.test.ts` (`refusals`). Every async unit the
+ * THE GATE IS A CHANGE DETECTOR. Its machinery is `refusals` in
+ * `identityFenceGate.ts`, and ItemDetail's table is in
+ * `itemDetailIdentityFenceAst.test.ts` (the route surfaces have their own
+ * tables since TASK-3097). Every async unit the
  * POPULATION finds, and every deferring call it recognises, matches exactly
  * one table row. It does NOT say every deferred callback has a row: the
  * population is the spelling list in 1 below, so a deferral spelled some

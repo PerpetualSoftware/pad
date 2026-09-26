@@ -4,6 +4,9 @@
  * see. `itemDetailIdentityFence.test.ts` beside this keeps the site pins;
  * `itemDetailIdentityLoad.svelte.test.ts` owns the semantics on a mount.
  *
+ * The machinery of both lives in `src/test/identityFenceGate.ts` (TASK-3097,
+ * shared with the route surfaces); this file holds ItemDetail's TABLE.
+ *
  * The GATE (`refusals`, lead ruling on checkpoint 69):
  *   - every unit the AST yields matches exactly one row below, and every row
  *     exactly one unit;
@@ -27,23 +30,18 @@
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { createHash } from 'node:crypto';
+import { parseComponent, declarations, enumerateUnits, analyseUnit, DEFERRING_FUNCTIONS } from '../../../test/identityFenceAst';
 import {
-	parseComponent,
-	declarations,
-	enumerateUnits,
-	analyseUnit,
-	walk,
-	patternNames,
-	refusedConstructs,
-	DEFERRING_METHODS,
-	DEFERRING_FUNCTIONS,
-	SYNC_CALLBACK_CALLEES,
-	asyncUnitStartsSafe,
-	type AstSource,
-	type Node,
-	type Unit,
-} from '../../../test/identityFenceAst';
+	refusals as gateRefusals,
+	analysisReport as gateAnalysisReport,
+	clearsBeforeFirstAwait,
+	assignedTo,
+	topLevelOf,
+	type GateOptions,
+	type GateTable,
+	type Row,
+	type SignedRow,
+} from '../../../test/identityFenceGate';
 import round4 from './itemDetailIdentityFence.round4.json';
 import round6 from './itemDetailIdentityFence.round6.json';
 import round7 from './itemDetailIdentityFence.round7.json';
@@ -62,28 +60,6 @@ const ROUND4_MUTANTS: GuardMutant[] = round4.mutants;
 
 const SOURCE = readFileSync(new URL('./ItemDetail.svelte', import.meta.url), 'utf8');
 
-interface Row {
-	why: string;
-	may?: string[];
-	/** Exact statement texts read as a bare await (their argument is not walked). */
-	bareAwaits?: string[];
-	/** Start the unit safe. Only with a `pin` proving why. */
-	startSafe?: boolean;
-	pin?: (src: AstSource, unit: Unit) => string | null;
-	/**
-	 * Callbacks this unit creates that may commit something, by callback key
-	 * (see `AnalyseOptions.callbacks`). Every other callback it creates starts
-	 * unsafe and may commit nothing.
-	 */
-	callbacks?: Record<string, { may: string[]; why: string }>;
-	/**
-	 * For a top-level function with `may`: the hash of its code (`codeOf`) when
-	 * the allowance was last reviewed. `may` covers the whole function, so any
-	 * edit to it refuses until the allowance is re-read and this is updated
-	 * (round 6 class 8).
-	 */
-	reviewed?: string;
-}
 
 /**
  * Why a save-indicator settle may run after an unfenced await (BUG-3044, lead
@@ -189,25 +165,6 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	handleMove: { reviewed: 'da5513ba767f', why: 'stillOnSource() on every arm, including inside navIfStillCurrent' },
 };
 
-interface SignedRow extends Row {
-	/** Tested against the unit's function text (whitespace collapsed). */
-	body: RegExp;
-	/** For a continuation, tested against the deferring call's text up to the callback. */
-	call?: RegExp;
-	/**
-	 * The unit's enclosing context, which must equal `contextOf`: the innermost
-	 * enclosing function's name, `callee(…)` for an anonymous call argument, or
-	 * `{key}` for an object property. Required on a row that carries `may` or
-	 * `startSafe`, so the row cannot re-point by a MOVE (round 5 P2-8).
-	 */
-	in?: string;
-	/**
-	 * The unit's exact code, comments dropped (`codeOf`). Required on a row
-	 * that carries `may`, so the allowance covers that code and nothing else
-	 * (round 5 P2-7).
-	 */
-	code?: string;
-}
 
 /** Async functions that are not top-level declarations, in the script. */
 const NESTED: SignedRow[] = [
@@ -232,158 +189,6 @@ const MARKUP: SignedRow[] = [
 	{ body: /genAtToggle/, why: 'Markdown toggle: genAtToggle against loadGeneration after each await', reviewed: 'dea496abe16e' },
 ];
 
-const collapse = (s: string) => s.replace(/\s+/g, ' ');
-
-/**
- * A function's HEAD and statements, whitespace collapsed; comments are not
- * statements, so they drop out.
- *
- * The head is `async`, `*`, the type parameters, the params and the return
- * type. All five change what a call to the function DOES while leaving every
- * statement of the body untouched — round 9 F1: `function* switchedAway(…)`
- * returns a generator object, so every `if (switchedAway(…)) return;` above it
- * becomes an unconditional return, and the mirror edit on `identityHeld` makes
- * every fence hold. The body-only hash accepted both.
- */
-function codeOf(src: AstSource, fn: Node): string {
-	const head = `${fn.async ? 'async ' : ''}${fn.generator ? '* ' : ''}`;
-	const typeParams = fn.typeParameters ? src.text(fn.typeParameters) : '';
-	const params = `(${fn.params.map((p: Node) => src.text(p)).join(', ')})`;
-	const returns = fn.returnType ? src.text(fn.returnType) : '';
-	const b = fn.body;
-	const body = b.type === 'BlockStatement' ? `{ ${b.body.map((st: Node) => src.text(st)).join(' ')} }` : src.text(b);
-	return collapse(`${head}${typeParams}${params}${returns} => ${body}`);
-}
-
-/**
- * A separator that cannot occur at a STATEMENT BOUNDARY — which is the only
- * place the join ever puts it. The reviewed text is built by JOINING slices,
- * so the join has to be unambiguous or two different programs render the same
- * text. Round 10's ASI finding is exactly that — `return` followed by an
- * expression on the next line is TWO statements whose slices, joined by a
- * space, are byte-identical to the ONE statement spanning the same two lines,
- * and `identityHeld` returning `undefined` hashed the same as `identityHeld`
- * returning the comparison.
- *
- * The boundary wording is load-bearing and replaces an earlier claim that this
- * byte "cannot occur in the source" (BUG-3095). That was false: a NUL is legal
- * inside a string literal, so it CAN occur in the source. What it cannot do is
- * appear between two statements, because a statement boundary is not inside a
- * literal — and a slice join only ever lands there. The weaker, true claim is
- * the one the collision argument actually needs.
- *
- * CAUTION for anyone searching this file: the NUL below makes every byte-
- * oriented tool classify it as BINARY. The harness `grep` runs with `-I`, so
- * it returns exit 1 and NO output for patterns that are present here — a
- * silent false negative indistinguishable from a real absence. Use
- * `/bin/grep -a … | cat -v` (which renders this byte as `^@`) instead.
- */
-const SEP = ' ';
-
-/**
- * The REVIEWED TEXT of a function: its head and each of its statements,
- * VERBATIM, joined by `SEP`. Nothing is normalised, which is the point.
- *
- * Round 10 found two programs-to-one-text collisions in the collapsed form,
- * one root cause: `collapse` replaced every whitespace run with a space, and
- * a NEWLINE is what ends a `//` comment and what splits two statements under
- * ASI. Moving a fence onto the end of the comment line above it, or splitting
- * a `return` across two lines, left the reviewed text unchanged while
- * deleting the fence or neutering the helper. A change detector that reports
- * "no change" on a deleted fence is broken on its own terms, so the text is
- * now the source bytes and nothing else.
- *
- * THE COST, stated because it is real: whitespace INSIDE a hashed statement
- * is now part of the text, so reindenting or re-wrapping a fenced unit costs
- * a hash bump. Whitespace and comments BETWEEN statements still cost nothing
- * — they fall outside every statement's slice — which is the property the
- * header's cost paragraph already describes.
- */
-function reviewedTextOf(src: AstSource, fn: Node): string {
-	const b = fn.body;
-	return [
-		// The SHAPE, because none of it is inside any slice below and each of it
-		// changes what a call does: `() => EXPR` RETURNS the expression and
-		// `() => { EXPR }` returns undefined, which is round 10's ASI finding
-		// reached through braces instead of through a newline (round 11 finding
-		// 1 — the collapsed form rendered ` => ` and `{ … }` and so told them
-		// apart; making the text verbatim dropped that discriminator).
-		fn.type,
-		fn.id?.type === 'Identifier' ? fn.id.name : '',
-		b.type === 'BlockStatement' ? '{}' : '=>',
-		fn.async ? 'async' : '',
-		fn.generator ? '*' : '',
-		fn.typeParameters ? src.text(fn.typeParameters) : '',
-		...fn.params.map((p: Node) => src.text(p)),
-		SEP,
-		fn.returnType ? src.text(fn.returnType) : '',
-		SEP,
-		...(b.type === 'BlockStatement' ? (b.body as Node[]).map((st: Node) => src.text(st)) : [src.text(b)]),
-	].join(SEP);
-}
-
-const parents = new WeakMap<AstSource, Map<Node, Node>>();
-
-function parentsOf(src: AstSource): Map<Node, Node> {
-	let m = parents.get(src);
-	if (!m) {
-		const map = new Map<Node, Node>();
-		const visit = (n: Node, anc: Node[]) => {
-			if (anc.length) map.set(n, anc.at(-1)!);
-		};
-		walk(src.script, visit);
-		walk(src.fragment, visit);
-		parents.set(src, map);
-		m = map;
-	}
-	return m;
-}
-
-function contextOf(src: AstSource, unit: Unit): string {
-	const f = unit.enclosing.at(-1);
-	if (!f) return '(top level)';
-	const p = parentsOf(src).get(f);
-	if (f.type === 'FunctionDeclaration') return f.id.name;
-	if (p?.type === 'VariableDeclarator' && p.init === f && p.id.type === 'Identifier') return p.id.name;
-	if (p?.type === 'CallExpression') return `${collapse(src.text(p.callee))}(…)`;
-	if (p?.type === 'Property' && !p.computed && p.key.type === 'Identifier') return `{${p.key.name}}`;
-	return `(anonymous ${p?.type ?? 'function'})`;
-}
-
-function clearsBeforeFirstAwait(src: AstSource, fnName: string, timer: string): string | null {
-	const fn = src.script.body.find((s: Node) => s.type === 'FunctionDeclaration' && s.id?.name === fnName);
-	if (!fn) return `${fnName} is gone`;
-	// The clear must DOMINATE the first await: a statement of the function body
-	// itself, reached on every path — no await, return or throw in any
-	// statement before it (round 6 class 9: a clear made conditional, or moved
-	// into an arrow nobody calls, used to pass by position).
-	const ownExit = (st: Node) => {
-		let found = false;
-		walk(st, (n, anc) => {
-			if (anc.some((a) => a !== st && (a.type === 'ArrowFunctionExpression' || a.type === 'FunctionExpression' || a.type === 'FunctionDeclaration'))) return;
-			if (n.type === 'AwaitExpression' || n.type === 'ReturnStatement' || n.type === 'ThrowStatement') found = true;
-		});
-		return found;
-	};
-	for (const st of fn.body.body as Node[]) {
-		if (st.type === 'ExpressionStatement' && src.text(st.expression).replace(/\s+/g, '') === `clearTimeout(${timer})`) return null;
-		if (ownExit(st)) break;
-	}
-	return `${fnName} no longer clears ${timer} before its first await`;
-}
-
-/**
- * Why a continuation's timer is `timer`: its deferring call must be the whole
- * right-hand side of `timer = …` (round 5 P1-4 — a pin on the clear alone held
- * after the callback was moved onto a timer nobody clears).
- */
-function assignedTo(src: AstSource, unit: Unit, timer: string): string | null {
-	let ok = false;
-	walk(src.script, (n) => {
-		if (n.type === 'AssignmentExpression' && n.operator === '=' && n.right === unit.call && n.left.type === 'Identifier' && n.left.name === timer) ok = true;
-	});
-	return ok ? null : `its ${src.text(unit.call!.callee)} is not assigned to ${timer}`;
-}
 
 /** Callbacks passed to deferring calls, in the script. */
 const CONTINUATIONS: SignedRow[] = [
@@ -505,459 +310,26 @@ const HELPERS: Record<string, string> = {
  * in an `$effect`, one in `setGraphParam`), and then nothing else covers a
  * rebinding of what it defers — round 9 F4.
  */
-const IDENTIFIER_CALLBACKS: Array<{ text: string; count: number; why: string; reviewed: string }> = [
+const IDENTIFIER_CALLBACKS: GateTable['identifierCallbacks'] = [
 	{ text: 'Promise.resolve().then(ensureGraphComp)', count: 2, reviewed: '6cdb881b83f0', why: 'ensureGraphComp is itself a unit in the table above' },
 	{ text: 'setTimeout(r, 50)', count: 1, reviewed: 'f7a2eb3b36e7', why: 'resolves flushRawIfPending\'s re-entrancy waiter' },
 ];
 
-/**
- * The hash of the POPULATION's own vocabulary, which lives in the aid module
- * and which nothing in the component covers: deleting `setTimeout` from
- * `DEFERRING_FUNCTIONS` removes units from the population without any row
- * changing, so every one of their fixtures would pass on a component that no
- * longer has them tabled (round 9, smaller notes). Hashed by VALUE — the sets
- * are imported and read, never scanned as source.
- *
- * That reason holds for `DEFERRING_METHODS` and `DEFERRING_FUNCTIONS`, which
- * `enumerateUnits` reads. It does NOT hold for `SYNC_CALLBACK_CALLEES`: only
- * the aid reads that one, so shrinking it drops no unit from the GATE's
- * population (round 10 §5.3 corrected the claim, not the code). It is hashed
- * anyway — over-inclusion costs a bump nobody needed, while leaving it out
- * would leave a reader guessing which of the three the gate depends on. The
- * fixture below mutates `DEFERRING_FUNCTIONS`, the load-bearing one.
- */
-const POPULATION_VOCABULARY = 'ddad17f9655e';
+const TABLE: GateTable = {
+	asyncFunctions: ASYNC_FUNCTIONS,
+	nested: NESTED,
+	markup: MARKUP,
+	continuations: CONTINUATIONS,
+	helpers: HELPERS,
+	identifierCallbacks: IDENTIFIER_CALLBACKS,
+};
 
-function vocabularyHash(): string {
-	return sha(
-		JSON.stringify([
-			[...DEFERRING_METHODS].sort(),
-			[...DEFERRING_FUNCTIONS].sort(),
-			Object.entries(SYNC_CALLBACK_CALLEES).sort(([a], [b]) => (a < b ? -1 : 1)),
-		])
-	);
-}
+/** THE GATE on ItemDetail's table (see `identityFenceGate.ts`). */
+const refusals = (code: string, opts: GateOptions = {}) => gateRefusals(TABLE, code, opts);
 
-function unitLabel(src: AstSource, u: Unit): string {
-	return u.name ? `${u.name}()` : `${u.kind}${u.inMarkup ? ' in markup' : ''} at line ${u.line}`;
-}
+/** THE AID on ItemDetail's table; required quiet on the committed component. */
+const analysisReport = (code: string, extraNested: SignedRow[] = []) => gateAnalysisReport(TABLE, code, extraNested);
 
-const sha = (s: string) => createHash('sha1').update(s).digest('hex').slice(0, 12);
-
-/** A function's name for messages: its declared or bound name, or where it is passed. */
-function fnName(src: AstSource, fn: Node): string {
-	if (fn.type === 'FunctionDeclaration' && fn.id) return fn.id.name;
-	const p = parentsOf(src).get(fn);
-	if (p?.type === 'VariableDeclarator' && p.id.type === 'Identifier') return p.id.name;
-	if (p?.type === 'CallExpression') return `${collapse(src.text(p.callee))}(…)`;
-	if (p?.type === 'Property' && !p.computed && p.key.type === 'Identifier') return `{${p.key.name}}`;
-	return `function at line ${src.line(fn.start)}`;
-}
-
-interface TopLevel {
-	/** Component-level SYNC functions, by name: the helper population draws from these. */
-	fns: Map<string, Node>;
-	/** Component-level ASYNC function names: function VALUES, but never helpers (each is its own unit). */
-	asyncFns: Set<string>;
-	/** Component-level statements declaring each name, functions excluded, imports included. */
-	declaring: Map<string, Node[]>;
-	statements: Node[];
-	/** Names each component-level statement REBINDS anywhere inside it (round 9 F3). */
-	rebinds: Map<Node, Set<string>>;
-	/** Write targets no binding pattern models — the gate refuses rather than skipping them. */
-	unmodelledWrites: string[];
-	/** Component-level binding forms `topLevelOf` does not model — likewise refused. */
-	unmodelledDeclarations: string[];
-}
-
-/**
- * Names a statement REBINDS: assignment and update targets and for-in/of
- * heads, destructuring patterns included (round 9 F3 — `[identityHeld] = […]`
- * and `for (identityHeld of […])` both rebind a fence helper and neither is an
- * `Identifier` target). A MEMBER write is not a rebinding and is skipped; any
- * other target shape is reported, never silently dropped.
- */
-function reboundNames(src: AstSource, st: Node, unmodelled: string[]): Set<string> {
-	const out = new Set<string>();
-	const target = (t: Node | null | undefined) => {
-		if (!t) return;
-		if (t.type === 'MemberExpression') return;
-		if (t.type === 'TSNonNullExpression' || t.type === 'TSAsExpression') return target(t.expression);
-		try {
-			const names = new Set<string>();
-			patternNames(t, names);
-			for (const n of names) out.add(n);
-		} catch {
-			unmodelled.push(`${t.type} at line ${src.line(t.start)}`);
-		}
-	};
-	walk(st, (n) => {
-		if (n.type === 'AssignmentExpression') target(n.left);
-		else if (n.type === 'UpdateExpression') target(n.argument);
-		else if ((n.type === 'ForOfStatement' || n.type === 'ForInStatement') && n.left.type !== 'VariableDeclaration') target(n.left);
-	});
-	return out;
-}
-
-/** Component-level forms that declare a name holding a RUNTIME value. */
-const RUNTIME_DECLARATIONS = new Set(['ClassDeclaration', 'TSEnumDeclaration', 'TSModuleDeclaration']);
-/** ...and the ones that declare a name holding no value at all, so no unit can call one. */
-const TYPE_ONLY_DECLARATIONS = new Set(['TSInterfaceDeclaration', 'TSTypeAliasDeclaration', 'TSDeclareFunction']);
-
-function topLevelOf(src: AstSource): TopLevel {
-	const fns = new Map<string, Node>();
-	const unmodelledDeclarations: string[] = [];
-	const asyncFns = new Set<string>();
-	const declaring = new Map<string, Node[]>();
-	const statements: Node[] = [];
-	const declares = (name: string, raw: Node) => declaring.set(name, [...(declaring.get(name) ?? []), raw]);
-	for (const raw of src.script.body as Node[]) {
-		const st = raw.type === 'ExportNamedDeclaration' && raw.declaration ? raw.declaration : raw;
-		statements.push(raw);
-		// An import BINDS a name the units read, and rebinding one to a different
-		// module export changes what every reader of that name does while leaving
-		// the reader's own code untouched (round 9 F2).
-		if (st.type === 'ImportDeclaration') {
-			for (const s of st.specifiers as Node[]) if (s.local?.type === 'Identifier') declares(s.local.name, raw);
-			continue;
-		}
-		if (st.type === 'FunctionDeclaration' && st.id) {
-			if (st.async) asyncFns.add(st.id.name);
-			else fns.set(st.id.name, st);
-			continue;
-		}
-		// A class, an enum or a namespace declares a name with a RUNTIME value,
-		// exactly as a `const` does: `class Map { get() {} }` beside
-		// `const tagSavers = new Map()` rebinds what two hashed functions call
-		// on every write (round 10, finding 3).
-		if (RUNTIME_DECLARATIONS.has(st.type) && st.id?.type === 'Identifier') {
-			declares(st.id.name, raw);
-			continue;
-		}
-		// Anything else that BINDS a name is a form this function does not
-		// model. Refuse it rather than let a declaration the header promises to
-		// hash fall silently outside the hash.
-		if (st.id?.type === 'Identifier' && !TYPE_ONLY_DECLARATIONS.has(st.type)) {
-			unmodelledDeclarations.push(`${st.type} declaring ${st.id.name} at line ${src.line(st.start)}`);
-			continue;
-		}
-		if (st.type !== 'VariableDeclaration') continue;
-		for (const d of st.declarations as Node[]) {
-			const fnInit = d.init && (d.init.type === 'ArrowFunctionExpression' || d.init.type === 'FunctionExpression');
-			if (d.id.type === 'Identifier' && fnInit) {
-				if (d.init.async) asyncFns.add(d.id.name);
-				else fns.set(d.id.name, d.init);
-				continue;
-			}
-			walk(d.id, (n) => {
-				if (n.type === 'Identifier') declares(n.name, raw);
-			});
-		}
-	}
-	const unmodelledWrites: string[] = [];
-	const rebinds = new Map<Node, Set<string>>();
-	for (const st of statements) rebinds.set(st, reboundNames(src, st, unmodelledWrites));
-	return { fns, asyncFns, declaring, statements, rebinds, unmodelledWrites, unmodelledDeclarations };
-}
-
-/**
- * What a hash covers (lead ruling on checkpoint 69, condition 1 and its
- * refinement 2): the code of `roots`, every component-level declaration of a
- * name that code references, and every component-level statement that
- * assigns a name that code CALLS — a function value rebound outside every
- * function (round 8 G). `helpers` are the component-level sync functions the
- * code names; each is its own HELPERS row. All by syntax, never by the
- * analysis, because the analysis is what the hash does not trust.
- */
-function coverage(src: AstSource, tl: TopLevel, roots: Node[]): { text: string; helpers: Set<string> } {
-	const refs = new Set<string>();
-	const called = new Set<string>();
-	for (const r of roots) {
-		walk(r, (n) => {
-			if (n.type === 'Identifier') refs.add(n.name);
-			if (n.type === 'CallExpression' && n.callee.type === 'Identifier') called.add(n.callee.name);
-		});
-	}
-	const helpers = new Set<string>();
-	// A component-level function this code NAMES is a value it will run, whether
-	// it calls it here or hands it to someone who will; rebinding that name
-	// changes what the code does without touching a byte of it. Round 8 G saw
-	// the callee half only, so a name merely PASSED or stored kept a stale hash.
-	const fnValues = new Set([...refs].filter((n) => tl.fns.has(n) || tl.asyncFns.has(n)));
-	const stmts = new Set<Node>();
-	// Transitive over DECLARATIONS: a pulled declaration's own names are names
-	// this code depends on too. `const tagSavers = new Map(…)` is in the hash,
-	// so a component-level `class Map` that rebinds what its methods do is in
-	// the hash as well — round 10 finding 3's durable form, which the unit
-	// itself never names.
-	const pending = [...refs];
-	const seen = new Set(refs);
-	const absorb = (st: Node) => {
-		if (stmts.has(st)) return;
-		stmts.add(st);
-		walk(st, (x) => {
-			if (x.type === 'Identifier' && !seen.has(x.name)) {
-				seen.add(x.name);
-				pending.push(x.name);
-			}
-		});
-	};
-	while (pending.length) {
-		const n = pending.pop()!;
-		// A component-level sync function reached through a pulled declaration is
-		// a function this code RUNS, so it is a helper like any other. It used to
-		// be demanded only when a ROOT named it, so `const ops = { run: helper }`
-		// called as `ops.run()` left `helper`'s body outside every hash and
-		// outside HELPERS, with nothing to say so (round 11 finding 2).
-		if (tl.fns.has(n) && !roots.includes(tl.fns.get(n)!)) helpers.add(n);
-		for (const st of tl.declaring.get(n) ?? []) absorb(st);
-		// ...and the same for a rebinding of a name reached transitively, which
-		// the old pass evaluated only for names a ROOT called or named (round 11
-		// O4).
-		if (called.has(n) || fnValues.has(n) || tl.fns.has(n) || tl.asyncFns.has(n)) {
-			for (const st of tl.statements) if (tl.rebinds.get(st)?.has(n)) absorb(st);
-		}
-	}
-	const text = [
-		...roots.map((r) => reviewedTextOf(src, r)),
-		...[...stmts].sort((a, b) => a.start - b.start).map((st) => src.text(st)),
-	].join(SEP);
-	return { text, helpers };
-}
-
-/** What each unit's row hash covers: the unit, and its outermost enclosing function. */
-function unitRoots(u: Unit): Node[] {
-	return u.enclosing[0] ? [u.fn, u.enclosing[0]] : [u.fn];
-}
-
-interface Resolved {
-	src: AstSource;
-	units: Unit[];
-	rowFor: Map<Unit, Row>;
-	/** Deferring calls whose callback is not a function literal, as found. */
-	idCalls: Node[];
-	/** Units without exactly one row, rows without exactly one unit, untabled deferrals. */
-	population: string[];
-}
-
-function resolve(code: string, extraNested: SignedRow[]): Resolved | string[] {
-	// Enumeration is inside the try with the parse: a deferral written as
-	// `window['setTimeout'](…)` makes `enumerateUnits` throw, and a gate that
-	// throws where it means to refuse gives its caller a stack trace instead of
-	// a line (round 9, smaller notes).
-	let src: AstSource;
-	let units: Unit[];
-	let deferringCalls: Node[];
-	try {
-		src = parseComponent(code);
-		({ units, deferringCalls } = enumerateUnits(src));
-	} catch (e) {
-		return [`does not parse, or does not enumerate: ${String(e)}`];
-	}
-	const out: string[] = [];
-	const claim = (rows: SignedRow[], members: Unit[], what: string, callText: (u: Unit) => string) => {
-		const hits = new Map<SignedRow, Unit[]>();
-		for (const u of members) {
-			const body = collapse(src.text(u.fn));
-			const matched = rows.filter(
-				(r) =>
-					r.body.test(body) &&
-					(!r.call || r.call.test(callText(u))) &&
-					(r.in === undefined || r.in === contextOf(src, u)) &&
-					(r.code === undefined || r.code === codeOf(src, u.fn))
-			);
-			if (matched.length !== 1) {
-				out.push(`${what} ${unitLabel(src, u)} matches ${matched.length} table rows — disposition it: ${body.slice(0, 80)}`);
-				continue;
-			}
-			hits.set(matched[0]!, [...(hits.get(matched[0]!) ?? []), u]);
-		}
-		for (const r of rows) {
-			const n = hits.get(r)?.length ?? 0;
-			if (n !== 1) out.push(`${what} row (${r.why}) matches ${n} units — it must match exactly one`);
-		}
-		return hits;
-	};
-
-	const rowFor = new Map<Unit, Row>();
-	const topLevel = units.filter((u) => u.kind === 'async-function' && u.name);
-	const names = topLevel.map((u) => u.name!).sort();
-	const expected = Object.keys(ASYNC_FUNCTIONS).sort();
-	for (const n of names) if (!(n in ASYNC_FUNCTIONS)) out.push(`async function ${n}() is not in the table — disposition it`);
-	for (const n of expected) if (!names.includes(n)) out.push(`the table names ${n}(), which is gone`);
-	for (const u of topLevel) {
-		const row = ASYNC_FUNCTIONS[u.name!];
-		if (row) rowFor.set(u, row);
-	}
-	const callText = (u: Unit) => collapse(code.slice(u.call!.start, u.fn.start));
-	for (const [row, us] of claim([...NESTED, ...extraNested], units.filter((u) => u.kind === 'async-function' && !u.name && !u.inMarkup), 'nested async function', callText)) {
-		for (const u of us) rowFor.set(u, row);
-	}
-	for (const [row, us] of claim(MARKUP, units.filter((u) => u.kind === 'async-function' && u.inMarkup), 'markup async function', callText)) {
-		for (const u of us) rowFor.set(u, row);
-	}
-	for (const u of units.filter((x) => x.kind === 'continuation' && x.inMarkup)) {
-		out.push(`the markup defers a continuation at line ${u.line} — move it into a script handler the table covers`);
-	}
-	for (const [row, us] of claim(CONTINUATIONS, units.filter((u) => u.kind === 'continuation' && !u.inMarkup), 'continuation', callText)) {
-		for (const u of us) rowFor.set(u, row);
-	}
-	const idCalls = deferringCalls.filter((c) => !c.arguments.some((a: Node) => a.type.endsWith('FunctionExpression')));
-	for (const row of IDENTIFIER_CALLBACKS) {
-		const n = idCalls.filter((c) => src.text(c).replace(/\s+/g, '') === row.text.replace(/\s+/g, '')).length;
-		if (n !== row.count) out.push(`${row.text} occurs ${n} times, the table says ${row.count}`);
-	}
-	for (const c of idCalls) {
-		const t = src.text(c).replace(/\s+/g, '');
-		if (!IDENTIFIER_CALLBACKS.some((r) => r.text.replace(/\s+/g, '') === t)) out.push(`deferred call with a non-literal callback at line ${src.line(c.start)} is not tabled: ${t.slice(0, 80)}`);
-	}
-	return { src, units, rowFor, idCalls, population: out };
-}
-
-export interface GateOptions {
-	/** NESTED rows added by a fixture whose edit comes with the row the gate asks for. */
-	extraNested?: SignedRow[];
-	/** Hashes to treat as reviewed as well: the control that a bump is all an edit costs. */
-	alsoReviewed?: ReadonlySet<string>;
-	/** HELPERS rows added by a fixture, by name. */
-	extraHelpers?: Readonly<Record<string, string>>;
-}
-
-/**
- * THE GATE (lead ruling on BUG-3084 checkpoint 69). Everything it refuses
- * about `code`, as readable lines; empty means clean. Every unit matches one
- * row, every row and every helper those rows reach carries the hash of the
- * code it was last reviewed on, and any difference refuses. The analysis
- * does not decide here: `analysisReport` is what the re-reader reads.
- */
-export function refusals(code: string, opts: GateOptions = {}): string[] {
-	const r = resolve(code, opts.extraNested ?? []);
-	if (Array.isArray(r)) return r;
-	const { src, units, rowFor } = r;
-	const out = [...r.population];
-	const tl = topLevelOf(src);
-	const reviewed = (want: string | undefined, now: string) => want === now || !!opts.alsoReviewed?.has(now);
-	const vocab = vocabularyHash();
-	if (!reviewed(POPULATION_VOCABULARY, vocab)) {
-		out.push(
-			`the population vocabulary (DEFERRING_METHODS / DEFERRING_FUNCTIONS / SYNC_CALLBACK_CALLEES) has changed since it was reviewed (code ${vocab}) — re-read it, then update POPULATION_VOCABULARY`
-		);
-	}
-	for (const w of new Set(tl.unmodelledWrites)) {
-		out.push(`component-level write target ${w} is not a modelled binding pattern — teach the gate rather than skip it`);
-	}
-	for (const d of new Set(tl.unmodelledDeclarations)) {
-		out.push(`component-level ${d} is a binding form the gate does not model — teach it rather than skip it`);
-	}
-	for (const row of IDENTIFIER_CALLBACKS) {
-		const calls = r.idCalls.filter((c) => src.text(c).replace(/\s+/g, '') === row.text.replace(/\s+/g, ''));
-		if (!calls.length) continue; // the population check above already refused the count
-		const passed = new Set<string>();
-		for (const c of calls) for (const a of c.arguments as Node[]) if (a.type === 'Identifier') passed.add(a.name);
-		const stmts = new Set<Node>();
-		for (const n of passed) {
-			for (const st of tl.declaring.get(n) ?? []) stmts.add(st);
-			for (const st of tl.statements) if (tl.rebinds.get(st)?.has(n)) stmts.add(st);
-		}
-		// Verbatim and SEP-joined, like every other reviewed text: this path kept
-		// round 10's own root cause (collapsed slices joined by ` || `, a
-		// separator that CAN occur in source) for one more round (round 11 O1).
-		//
-		// MEASURED, and recorded rather than claimed: a mutant reverting THIS
-		// LINE to the collapsed recipe SURVIVES the suite. The block itself is
-		// load-bearing — removing it is killed by round 9's F4 — but no fixture
-		// discriminates the recipe, because every collision reachable in this
-		// component needs a component-level statement that is ALSO inside some
-		// unit's verbatim hash, which refuses it first (round 11 O1: the
-		// reviewer's own collision here was refused by `ensureGraphComp()`'s
-		// row). So this is consistency with the rest of the gate, not a hole
-		// shown closed. A row passing a name no unit covers would make it bite.
-		const text = [row.text, ...[...stmts].sort((a, b) => a.start - b.start).map((st) => src.text(st))].join(SEP);
-		const now = sha(text);
-		if (!reviewed(row.reviewed, now)) {
-			out.push(
-				`${row.text} has changed since it was reviewed (code ${now}; passes ${[...passed].sort().join(', ')}) — re-read what it defers, then update reviewed`
-			);
-		}
-	}
-	const reach = new Set<string>();
-	const pending: string[] = [];
-	const pull = (helpers: Set<string>) => {
-		for (const h of helpers) {
-			if (!reach.has(h)) {
-				reach.add(h);
-				pending.push(h);
-			}
-		}
-	};
-	for (const u of units) {
-		const row = rowFor.get(u);
-		if (!row) continue;
-		const roots = unitRoots(u);
-		const cov = coverage(src, tl, roots);
-		pull(cov.helpers);
-		const now = sha(cov.text);
-		if (row.reviewed === undefined) out.push(`${unitLabel(src, u)}: its row (${row.why}) has no reviewed hash (code ${now})`);
-		else if (!reviewed(row.reviewed, now)) {
-			out.push(`${unitLabel(src, u)} has changed since its row was reviewed (row: ${row.why}; code ${now}; covers ${roots.map((f) => fnName(src, f)).join(', ')}) — re-read the row, then update reviewed`);
-		}
-	}
-	// Transitive: a helper that names another component-level function pulls
-	// that one in too (refinement 1).
-	while (pending.length) {
-		const h = pending.pop()!;
-		pull(coverage(src, tl, [tl.fns.get(h)!]).helpers);
-	}
-	const helpers: Record<string, string> = { ...HELPERS, ...opts.extraHelpers };
-	for (const h of [...reach].sort()) {
-		const now = sha(coverage(src, tl, [tl.fns.get(h)!]).text);
-		if (!(h in helpers)) out.push(`helper ${h}() is reachable from a tabled unit but not in HELPERS — add it (code ${now})`);
-		else if (!reviewed(helpers[h], now)) out.push(`helper ${h}() has changed since it was reviewed (code ${now}) — re-read it, then update HELPERS`);
-	}
-	for (const h of Object.keys(helpers)) if (!reach.has(h)) out.push(`HELPERS names ${h}(), which no tabled unit reaches`);
-	return out;
-}
-
-/**
- * THE AID: what the flow analysis in `src/test/identityFenceAst.ts` reports
- * about `code`, for the person re-reading a row before bumping its hash.
- * It keeps its round 4–7 regression fixtures, and it must stay quiet on the
- * committed component so a re-reader starts from an empty report; it no
- * longer decides whether an edit is accepted.
- */
-export function analysisReport(code: string, extraNested: SignedRow[] = []): string[] {
-	const r = resolve(code, extraNested);
-	if (Array.isArray(r)) return r;
-	const { src, units, rowFor } = r;
-	const out = [...r.population];
-	let decls: ReturnType<typeof declarations>;
-	try {
-		decls = declarations(src);
-	} catch (e) {
-		return [...out, `declarations: ${String((e as Error).message ?? e)}`];
-	}
-	out.push(...refusedConstructs(src, decls));
-	for (const u of units) {
-		const row = rowFor.get(u);
-		if (!row) continue;
-		if (row.startSafe) {
-			const why = row.pin ? row.pin(src, u) : 'a row that starts safe has no pin';
-			if (why) out.push(`${unitLabel(src, u)} starts safe, but ${why}`);
-		}
-		try {
-			const v = analyseUnit(src, decls, u, {
-				startSafe: asyncUnitStartsSafe(decls, u, units) || !!row.startSafe,
-				may: new Set(row.may ?? []),
-				callbacks: new Map(Object.entries(row.callbacks ?? {}).map(([k, v]) => [k, new Set(v.may)])),
-				bareAwaits: new Set(row.bareAwaits ?? []),
-			});
-			for (const x of v) out.push(`${unitLabel(src, u)} line ${x.line}: ${x.what} — ${x.text}`);
-		} catch (e) {
-			out.push(`${unitLabel(src, u)}: ${String((e as Error).message ?? e)}`);
-		}
-	}
-	return out;
-}
 
 describe('ItemDetail: every async unit is tabled, and none commits past an unfenced await (AST)', () => {
 	it('the component as written passes the gate', () => {
