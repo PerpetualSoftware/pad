@@ -78,6 +78,7 @@ type Server struct {
 	streamGaugeFor        *metrics.Metrics     // the metrics instance pad_stream_connections_active is registered on (BUG-2726)
 	httpServer            *http.Server         // underlying HTTP server (set during ListenAndServe)
 	webFS                 fs.FS                // embedded web UI static files (optional)
+	webIdentity           *webBuildIdentity    // what webFS is, computed once in SetWebUI (TASK-3233)
 	events                events.EventBus      // real-time event bus (optional)
 	publishFailures       publishFailureLog    // rate-bounds publishActivityEvent's failure log (BUG-2732)
 	watchEvents           watchevents.Bus      // watch/nudge notification bus (optional, TASK-2533)
@@ -2173,6 +2174,7 @@ func (s *Server) setupRouter() {
 // SetWebUI sets the embedded web UI filesystem for serving the SPA.
 func (s *Server) SetWebUI(fsys fs.FS) {
 	s.webFS = fsys
+	s.webIdentity = identifyWebBuild(fsys)
 	s.ensureRouter()
 	s.router.Handle("/*", s.spaHandler())
 }

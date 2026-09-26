@@ -893,3 +893,38 @@ note "server restarted and answering on: ${probe_hosts[*]} (port $PORT)"
 if [ -n "${unattributed:-}" ]; then
 	note "listener ownership NOT verified: neither ss nor lsof can see listeners here, so the process answering was not confirmed to be the restart (pid $RESTART_PID)"
 fi
+
+# --- 7. Report WHICH web bundle is served, and warn when it is not a clean
+#        build of this commit (TASK-3233) ---------------------------------------
+# The binary's commit stamp says nothing about web/build: it is generated,
+# gitignored and embedded as it stands, so a bundle built from uncommitted
+# edits (a negative-control build, BUG-3129) or left over from an older
+# commit ships under a clean commit stamp. The server digests the bundle it
+# embeds and reports it in /api/v1/health, with the source stamp `vite build`
+# writes (commit, and entries `git status` listed under web/). This step only
+# WARNS: the restart has already happened, and the fix is to rebuild web and
+# refresh again. A server older than TASK-3233 reports no `web` member.
+warn() { printf 'install-refresh: WARNING: %s\n' "$*" >&2; }
+health_json="$(curl -fsS -m 2 "$(probe_url "${probe_hosts[0]}" "$PORT")" 2>/dev/null || true)"
+web_json="$(printf '%s' "$health_json" | sed -n 's/.*"web":{\([^}]*\)}.*/\1/p')"
+if [ -z "$web_json" ]; then
+	note "served web bundle: not reported (the server predates TASK-3233, or has no web UI)"
+else
+	web_sha="$(printf '%s' "$web_json" | sed -n 's/.*"sha256":"\([0-9a-f]*\)".*/\1/p')"
+	web_commit="$(printf '%s' "$web_json" | sed -n 's/.*"source_commit":"\([0-9a-f]*\)".*/\1/p')"
+	web_dirty="$(printf '%s' "$web_json" | sed -n 's/.*"source_dirty":\([0-9]*\).*/\1/p')"
+	note "serving web bundle sha256 ${web_sha:-?} (built from ${web_commit:-unknown commit}, web/ dirty ${web_dirty:-unknown})"
+	if [ -z "$web_commit" ]; then
+		warn "the web bundle carries no source stamp, so where it was built from is unknown (built without git, or before TASK-3233)."
+	elif [ -n "$EXPECT_COMMIT" ] && ! commit_matches "$EXPECT_COMMIT" "$web_commit"; then
+		# A bundle stamped with an older commit is correct when web/ did not
+		# change in between (a backend-only commit on top). Warn only when it
+		# did, or when that cannot be established.
+		if ! git diff --quiet "$web_commit" "$EXPECT_COMMIT" -- web/ 2>/dev/null; then
+			warn "the web bundle was built at ${web_commit}, and web/ differs between that commit and ${EXPECT_COMMIT} (or that cannot be checked here): web/build is stale. Rebuild web (vite build) and refresh again."
+		fi
+	fi
+	if [ -n "$web_dirty" ] && [ "$web_dirty" != "0" ]; then
+		warn "the web bundle was built while web/ had ${web_dirty} uncommitted change(s): it is not a build of any commit. Rebuild web from a clean tree and refresh again."
+	fi
+fi
