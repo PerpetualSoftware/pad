@@ -16,6 +16,7 @@
 	import MenuItem from '$lib/components/common/MenuItem.svelte';
 	import { workspaceRestoreTarget } from '$lib/utils/workspace-route';
 	import { isBlockedByModal } from '$lib/a11y/viewerBackdrop';
+	import { clickOutside } from '$lib/utils/clickOutside';
 
 	let { mobile = false }: { mobile?: boolean } = $props();
 
@@ -560,9 +561,13 @@
 			e.preventDefault();
 			return;
 		}
+		// A pill is exempt from the overflow menu's outside-press dismissal (a
+		// press may start a drag into the menu), so every real click on one
+		// closes the menu here, the modifier-click (new tab/window) included, as
+		// the window click closer it replaced did (BUG-3231).
+		closeOverflow();
 		if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
 		e.preventDefault();
-		closeOverflow();
 		const target =
 			ws.slug === currentSlug
 				? `/${ws.owner_username}/${ws.slug}`
@@ -632,48 +637,21 @@
 </script>
 
 <!--
-	This window handler now serves ONLY the dnd-entangled workspace
-	overflow menu. The user menu moved onto the shared Menu primitive
-	(PLAN-2290 Phase 2 / TASK-2292), which owns its own instance-scoped
-	pointerdown outside-click.
-
-	The overflow menu deliberately stays on window `click` with the
-	`!isDragging` guard rather than the primitive's pointerdown-based
-	outside-close:
-	  • pointerdown fires at drag START — mousedown on a workspace pill
-	    (outside the menu) is exactly how a reorder drag begins, so a
-	    pointerdown-based close would tear the menu down as the user
-	    starts dragging toward it.
-	  • the `click` fired on mouseup at drag END must NOT close the menu
-	    either — finalize handlers are still wiring up state at that
-	    point (drop animation / finalize ordering), hence the
-	    `!isDragging` guard below.
+	The overflow menu's outside dismissal is `clickOutside` on the menu
+	(BUG-3231), which decides on the press, so a drag begun inside the menu and
+	released outside no longer closes it. It used to be a window `click` handler
+	here, for two reasons that still hold and are now met differently:
+	  • pointerdown fires at drag START, and a press on a visible workspace
+	    pill (outside the menu) is how a reorder drag toward the menu begins.
+	    The pills are therefore `extra` containers; a plain or modifier click
+	    on a pill closes the menu itself (handleWsClick).
+	  • nothing may close it mid-drag while finalize handlers are wiring up
+	    state: `suppress: () => isDragging`.
+	The user menu is on the shared Menu primitive (PLAN-2290 Phase 2 /
+	TASK-2292). This window handler keeps only the drag disarm and the keys.
 -->
 <svelte:window
 	onmouseup={disarmMenu}
-	onclick={(e) => {
-		const target = e.target as HTMLElement;
-		// DELIBERATELY UNGUARDED by `isBlockedByModal` (TASK-2430). Unlike the
-		// keydown handler above, this is a pointer-DISMISSER: its only effect is
-		// to close the menu, i.e. to tear down LOWER UI. A click inside a
-		// frontmost viewer closing chrome that is already obscured and inert is
-		// the correct outcome, not a leak — the same reasoning that keeps
-		// `clickOutside.ts`, the emoji/reaction pickers and the sidebar's
-		// collection picker unguarded. Adding a gate here would leave a stale
-		// menu open behind the viewer instead.
-		//
-		// Don't close on outside-click during a drag — the click event
-		// fired on mouseup at drag end would otherwise tear down the
-		// menu while finalize handlers are still wiring up state.
-		if (
-			overflowOpen &&
-			!isDragging &&
-			!target.closest('#workspace-overflow-menu') &&
-			!target.closest('.overflow-trigger-wrap')
-		) {
-			closeOverflow();
-		}
-	}}
 	onkeydown={handleOverflowKeydown}
 />
 
@@ -928,6 +906,20 @@
 					<!-- svelte-ignore a11y_no_static_element_interactions -->
 					<div
 						bind:this={overflowMenuEl}
+						use:clickOutside={{
+							// dismisses only on a press that STARTS outside (BUG-3231): a drag begun inside and released outside is not an outside click.
+							// Unguarded by isBlockedByModal on purpose (TASK-2430): a dismisser only
+							// tears down lower UI. A press on a visible pill is exempt: it may be the
+							// start of a drag into this menu, and a plain click on a pill closes the
+							// menu itself (handleWsClick). Not during a drag either.
+							enabled: overflowOpen,
+							onOutside: closeOverflow,
+							extra: () => [
+								overflowTriggerEl?.closest('.overflow-trigger-wrap'),
+								...(rowEl?.querySelectorAll('a.workspace-item') ?? []),
+							],
+							suppress: () => isDragging,
+						}}
 						id="workspace-overflow-menu"
 						class="overflow-menu"
 						class:open={menuVisible}

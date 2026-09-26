@@ -2,6 +2,7 @@
 	import EmojiPicker from '$lib/components/common/EmojiPicker.svelte';
 	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
 	import { viewport } from '$lib/stores/breakpoint.svelte';
+	import { clickOutside } from '$lib/utils/clickOutside';
 
 	interface Props {
 		value: string;
@@ -45,17 +46,6 @@
 		};
 	}
 
-	function handleWindowClick(e: MouseEvent) {
-		// On mobile the BottomSheet owns dismissal (backdrop tap + Escape +
-		// close button) — skip the outside-click handler so it doesn't race.
-		if (viewport.isMobile) return;
-		if (open) {
-			const target = e.target as HTMLElement;
-			if (!target?.closest('.emoji-picker-button') && !target?.closest('.epb-dropdown')) {
-				open = false;
-			}
-		}
-	}
 
 	function toggleOpen() {
 		// Mobile branch skips the positioning math — BottomSheet docks to
@@ -83,7 +73,6 @@
 	}
 </script>
 
-<svelte:window onclick={handleWindowClick} />
 
 <div class="emoji-picker-button" class:size-md={size === 'md'}>
 	<button
@@ -104,7 +93,12 @@
 			</div>
 		</BottomSheet>
 	{:else if open}
-		<div class="epb-dropdown" use:portal style="position:absolute; z-index:99999; left:{dropdownX}px; top:{dropdownY}px;">
+		<!-- `clickOutside` dismisses only on a press that STARTS outside (BUG-3231): a drag begun inside and released outside is not an outside click. Desktop only: on mobile the BottomSheet owns dismissal. -->
+		<div
+			class="epb-dropdown"
+			use:portal
+			use:clickOutside={{ onOutside: () => (open = false), extra: () => [triggerEl] }}
+			style="position:absolute; z-index:99999; left:{dropdownX}px; top:{dropdownY}px;">
 			<EmojiPicker selected={value} onselect={handleSelect} />
 		</div>
 	{/if}

@@ -136,11 +136,13 @@
 		return v.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 	}
 
-	// stopPropagation on every click: a click that mutates state (drill-down,
-	// archive confirm) re-renders and detaches the clicked node before the
-	// event bubbles to BoardView's <svelte:window> outside-click handler,
-	// where closest() on the orphan returns null and slams the menu shut.
-	// Same Svelte 5 same-click issue documented in console/+layout.svelte.
+	// stopPropagation on every click. It was needed while BoardView closed this
+	// menu from a <svelte:window> click handler: a click that mutates state
+	// (drill-down, archive confirm) re-renders and detaches the clicked node
+	// before the event bubbled there, closest() on the orphan returned null, and
+	// the menu slammed shut. BoardView now uses `clickOutside`, which decides on
+	// the press before any click re-renders (BUG-3231); the guard stays as
+	// belt-and-braces. Same Svelte 5 issue documented in console/+layout.svelte.
 	function run(e: MouseEvent, fn: () => void) {
 		e.stopPropagation();
 		fn();
