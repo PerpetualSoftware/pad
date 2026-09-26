@@ -604,7 +604,8 @@ func (r *Room) pickApplier(tried map[*websocket.Conn]struct{}) *roomConn {
 		// is written under writeMu, and any later applier_request is ordered behind
 		// that cursor on the same conn, so an elected (replayDone) conn is guaranteed
 		// anchored before it applies.
-		if !rc.canWrite.Load() || rc.frozen.Load() || !rc.replayDone.Load() {
+		// An evicted conn (BUG-2103) holds a Y.Doc the op-log no longer backs.
+		if !rc.canWrite.Load() || rc.frozen.Load() || rc.evicted.Load() || !rc.replayDone.Load() {
 			continue
 		}
 		candidates = append(candidates, rc)

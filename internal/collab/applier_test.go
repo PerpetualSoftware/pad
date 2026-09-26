@@ -591,9 +591,8 @@ func TestApplierAckSucceedsWhenFramePersisted(t *testing.T) {
 // must NOT block the no-applier direct write. PruneAndApply runs applyFn
 // (prune + write) rather than returning ErrRoomActiveDuringPrune, so the
 // op-log is safely pruned even with viewers attached and a later editor
-// lazy-seeds from the fresh items.content. (Read-only peers keep a
-// possibly-stale Y.Doc until they reconnect/refresh — an accepted
-// best-effort residual tracked in BUG-2103.)
+// lazy-seeds from the fresh items.content. (The read-only peers are
+// then evicted and force-refreshed — BUG-2103, prune_evict_bug2103_test.go.)
 func TestPruneAndApplyAllowsReadOnlyRoom(t *testing.T) {
 	bus := NewMemoryOpBus()
 	defer bus.Close()

@@ -930,16 +930,16 @@ func (m *RoomManager) UnderItemLock(itemID string, fn func() error) error {
 // attached, so a later editor lazy-seeds from the fresh items.content
 // instead of replaying stale ops.
 //
-// ACCEPTED RESIDUAL (TASK-265 / BUG-2103): connected read-only peers
-// keep a possibly-stale in-memory Y.Doc after this direct write until
-// their next reconnect/refresh (their resume cursor now sits below the
-// pruned op-log's MIN, so a reconnect force_refreshes and re-seeds). A
-// viewer promoted to editor BEFORE re-syncing could push that stale
-// content — a lost-update edge, not a security hole (a promoted viewer
-// is a legitimate editor). This is best-effort degradation consistent
-// with the pre-existing direct-write contract (see applier.go); a
-// proactive re-seed/refresh to remaining read-only peers is tracked in
-// BUG-2103.
+// After a SUCCESSFUL write, every read-only peer still attached holds a
+// Y.Doc the pruned op-log no longer backs (BUG-2103): it would go on
+// displaying the old body, and a viewer promoted to editor before
+// reconnecting would push that stale state back as a lost update. So each
+// one is marked evicted under appendMu — in the same critical section as
+// the write, so no promotion can persist a frame in between — and then
+// force-refreshed outside it, rebuilding from the fresh items.content on
+// reconnect. A failed write rolled back and leaves the viewers current,
+// so nothing is refreshed. The refresh holds the per-item lock like a
+// restore's does, bounded per conn by closeFrameDeadline.
 func (m *RoomManager) PruneAndApply(itemID string, applyFn func() error) error {
 	lock := m.itemLock(itemID)
 	lock.Lock()
@@ -966,22 +966,43 @@ func (m *RoomManager) PruneAndApply(itemID string, applyFn func() error) error {
 	// appendMu / room.mu, so there's no inversion or re-entrant
 	// deadlock. Lock order: itemLock → appendMu → room.mu. Per TASK-265.
 	room.appendMu.Lock()
-	defer room.appendMu.Unlock()
 
 	// Re-verify under the lock: only a live WRITER conn blocks the
 	// prune (its Y.Doc would diverge from the emptied op-log) — route
 	// through the applier protocol instead. A read-only conn can't
-	// persist, so it does NOT block (see the accepted residual above).
+	// persist, so it does NOT block; it is refreshed below instead. An
+	// already-evicted conn is on its way out and cannot persist either,
+	// even if a promotion flipped its canWrite since.
 	room.mu.Lock()
 	for _, rc := range room.conns {
-		if rc.canWrite.Load() {
+		if rc.canWrite.Load() && !rc.evicted.Load() {
 			room.mu.Unlock()
+			room.appendMu.Unlock()
 			return ErrRoomActiveDuringPrune
 		}
 	}
 	room.mu.Unlock()
 
-	return applyFn()
+	if err := applyFn(); err != nil {
+		room.appendMu.Unlock()
+		return err
+	}
+
+	room.mu.Lock()
+	stale := make([]*roomConn, 0, len(room.conns))
+	for _, rc := range room.conns {
+		if !rc.evicted.Load() {
+			rc.evicted.Store(true)
+			stale = append(stale, rc)
+		}
+	}
+	room.mu.Unlock()
+	room.appendMu.Unlock()
+
+	if len(stale) > 0 {
+		room.forceRefreshConns(stale)
+	}
+	return nil
 }
 
 // ForceRefreshRoom makes items.content the canonical source for an item's collab
