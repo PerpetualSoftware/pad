@@ -107,6 +107,7 @@
 		isMarkdownAttachment
 	} from '$lib/attachments/display';
 	import { createSurfaceMetadata } from '$lib/attachments/surfaceMetadata.svelte';
+	import { backdropDismiss } from '$lib/utils/backdropDismiss';
 
 	interface Props {
 		images: LightboxImage[];
@@ -2307,10 +2308,12 @@
 		// NO Escape branch. See the registration above.
 	}
 
-	// Close only on a click of the backdrop itself — clicks on the image or
-	// controls have a different target, so they don't dismiss. This avoids
-	// putting a click handler (and its a11y burden) on the <img>.
-	function onBackdropClick(e: MouseEvent) {
+	// Close only on a press of the backdrop itself: `backdropDismiss` calls this
+	// only when the press AND the release both landed on the root and the click
+	// targets it, so clicks on the image or controls don't dismiss, and neither
+	// does a selection dragged out of the text preview or the metadata (BUG-3229).
+	// This avoids putting a click handler (and its a11y burden) on the <img>.
+	function onBackdropDismiss() {
 		// A pan that released here produced this click — a drag is not a dismissal
 		// (TASK-2458). A below-threshold press (still a click) leaves this false, so
 		// it still closes; a plain click on the backdrop closes as before.
@@ -2321,7 +2324,7 @@
 		// pointer owner that skips the gates the keyboard owner carries is the drift
 		// that breeds the next BUG-2441.
 		if (!el || !pointerGatesOpen(el)) return;
-		if (e.target === e.currentTarget) onClose();
+		onClose();
 	}
 </script>
 
@@ -2342,7 +2345,7 @@
 	aria-modal="true"
 	aria-label={dialogLabel}
 	tabindex="-1"
-	onclick={onBackdropClick}
+	use:backdropDismiss={{ onDismiss: onBackdropDismiss }}
 	ondblclick={onDoubleClick}
 	onpointerdown={onPointerDown}
 	onpointermove={onPointerMove}

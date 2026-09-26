@@ -19,6 +19,7 @@
 	import NotificationPanel from '$lib/components/common/NotificationPanel.svelte';
 	import CreateCollectionModal from '$lib/components/collections/CreateCollectionModal.svelte';
 	import { isBlockedByModal } from '$lib/a11y/viewerBackdrop';
+	import { backdropDismiss } from '$lib/utils/backdropDismiss';
 
 	let notificationPanelOpen = $state(false);
 	let showCreateCollection = $state(false);
@@ -752,7 +753,7 @@
 {#if quickAddCollection}
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
-	<div class="quick-add-overlay" onclick={cancelQuickAdd}>
+	<div class="quick-add-overlay" use:backdropDismiss={{ onDismiss: cancelQuickAdd }}>
 		<div class="quick-add-modal" onclick={(e) => e.stopPropagation()}>
 			<div class="quick-add-header">
 				<button

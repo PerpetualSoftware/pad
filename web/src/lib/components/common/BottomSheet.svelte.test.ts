@@ -80,8 +80,25 @@ describe('BottomSheet.svelte', () => {
 		flushSync();
 
 		const overlay = document.querySelector('.bs-overlay') as HTMLElement;
+		// A real press: down and up both on the overlay (BUG-3229).
+		overlay.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+		overlay.dispatchEvent(new Event('pointerup', { bubbles: true }));
 		overlay.dispatchEvent(new MouseEvent('click', { bubbles: true }));
 		expect(onclose).toHaveBeenCalledTimes(1);
+	});
+
+	it('does NOT close when a selection starts in the sheet and is released on the overlay (BUG-3229)', async () => {
+		const onclose = vi.fn();
+		render(BottomSheet, { props: baseProps({ open: true, onclose }) });
+		await tick();
+		flushSync();
+
+		const overlay = document.querySelector('.bs-overlay') as HTMLElement;
+		const sheet = document.querySelector('.bs-sheet') as HTMLElement;
+		sheet.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+		overlay.dispatchEvent(new Event('pointerup', { bubbles: true }));
+		overlay.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+		expect(onclose).not.toHaveBeenCalled();
 	});
 
 	it('traps Tab: forward Tab off the last control wraps to the first', async () => {
