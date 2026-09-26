@@ -216,6 +216,14 @@ describe('BUG-3237: the settings load never vouches for the previous identity\'s
 
 		auth.swapTo('u2');
 		flushSync();
+		// The CONSEQUENCE first (codex r1 on #1588): click whatever copy button
+		// is on screen while the new identity's load is pending. With both
+		// mechanisms removed, the previous session's button is still there and
+		// `pageIdentityHeld()` already vouches for it, so this is where the
+		// filed defect shows up, not only in the DOM assertions below.
+		for (const b of onScreen().copyButtons) b.click();
+		await new Promise((r) => setTimeout(r, 20));
+		expect(copies).not.toContain('https://pad.test/join/A');
 		expect(onScreen().emails).not.toContain('invitee-of-A@example.com');
 		expect(onScreen().copyButtons).toHaveLength(0);
 
