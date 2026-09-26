@@ -29,9 +29,13 @@ import (
 // rendered with each dialect's own number text, so one whose SQLite REAL form
 // uses an exponent or needs more than 15 significant digits (1.5e-7) renders
 // differently. Equality is numeric and does not depend on the rendering.
-// Beyond int64, SQLite holds a number as REAL, so equality there is
-// float-precise (2^63 equals 2^63+1) while Postgres stays exact; pinned by
-// TestFieldValueNumberExtremes.
+// Second residual, one class: SQLite holds a number as int64 or float64, so
+// its numeric equality is exact only for numbers those types represent
+// exactly, while Postgres compares numeric exactly. Every member is the same
+// rounding: beyond int64 (2^63 equals 2^63+1), beyond float64 range (1e400
+// equals 1e401, both +Inf), underflow (1e-400 equals 0), and more than 17
+// significant digits (0.1 equals 0.10000000000000000001). Pinned, one case
+// per member, by TestFieldValueNumberExtremes.
 
 // jsonNumberRe is the JSON number grammar. An argument outside it never
 // equals a stored number, so SQLite's CAST('abc' AS REAL) = 0 cannot fire.

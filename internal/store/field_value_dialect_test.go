@@ -374,10 +374,10 @@ func TestFieldValueDialectResidual(t *testing.T) {
 	}
 }
 
-// Number extremes (codex round 1). A literal beyond float64 range still
-// equals its own spelling on both dialects. Beyond int64, SQLite holds a REAL,
-// so equality there is float-precise while Postgres stays exact: the stated
-// residual, pinned so a change to it is seen.
+// Number extremes (codex rounds 1 and 2). A literal beyond float64 range
+// still equals its own spelling on both dialects. The residual class stated
+// in dialect_fieldvalue.go, one case per member: SQLite rounds to int64 or
+// float64 and so equates neighbours; Postgres stays exact.
 func TestFieldValueNumberExtremes(t *testing.T) {
 	f := newFieldValueFixture(t)
 	s, ws := f.s, f.ws
@@ -388,20 +388,26 @@ func TestFieldValueNumberExtremes(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ListItems %q: %v", arg, err)
 		}
-		return len(got) == 1 && got[0].ID == id
+		for _, it := range got {
+			if it.ID == id {
+				return true
+			}
+		}
+		return false
 	}
-
-	f.seed(t, id, "status", `1e400`)
-	if !match("1e400") {
-		t.Errorf("stored 1e400 does not match its own spelling on %s", s.dialect.Driver())
-	}
-
-	f.seed(t, id, "status", `9223372036854775808`)
-	if !match("9223372036854775808") {
-		t.Errorf("stored 2^63 does not match its own spelling on %s", s.dialect.Driver())
-	}
-	wantNeighbour := s.dialect.Driver() == DriverSQLite
-	if got := match("9223372036854775809"); got != wantNeighbour {
-		t.Errorf("2^63 vs 2^63+1 matched=%v on %s, want %v (float-precise on SQLite, exact on Postgres)", got, s.dialect.Driver(), wantNeighbour)
+	sqlite := s.dialect.Driver() == DriverSQLite
+	for _, c := range []struct{ member, stored, neighbour string }{
+		{"beyond int64", `9223372036854775808`, "9223372036854775809"},
+		{"beyond float64 range", `1e400`, "1e401"},
+		{"underflow", `1e-400`, "0"},
+		{"more than 17 significant digits", `0.1`, "0.10000000000000000001"},
+	} {
+		f.seed(t, id, "status", c.stored)
+		if !match(c.stored) {
+			t.Errorf("%s: stored %s does not match its own spelling on %s", c.member, c.stored, s.dialect.Driver())
+		}
+		if got := match(c.neighbour); got != sqlite {
+			t.Errorf("%s: stored %s vs %s matched=%v on %s, want %v (rounded on SQLite, exact on Postgres)", c.member, c.stored, c.neighbour, got, s.dialect.Driver(), sqlite)
+		}
 	}
 }
