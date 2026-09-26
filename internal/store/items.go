@@ -2249,21 +2249,24 @@ func (s *Store) appendFieldFilters(workspaceID string, params models.ItemListPar
 			// that happens to be spelled "".
 			query += " AND (" + jsonExpr + " IS NULL OR TRIM(" + jsonExpr + ") = '')"
 		} else {
-			query += " AND " + jsonExpr + " = ?"
-			args = append(args, value)
+			// BUG-3221: compared by JSON type, so a stored number or boolean
+			// answers the same on both dialects.
+			cond, condArgs := s.dialect.JSONFieldEquals("i.fields", key, value)
+			query += " AND " + cond
+			args = append(args, condArgs...)
 		}
 	}
 	for key, values := range params.FieldsAnyOf {
 		if !isValidFieldKey(key) || len(values) == 0 {
 			continue
 		}
-		jsonExpr := s.dialect.JSONExtractText("i.fields", key)
-		placeholders := make([]string, len(values))
+		conds := make([]string, len(values))
 		for i, v := range values {
-			placeholders[i] = "?"
-			args = append(args, v)
+			cond, condArgs := s.dialect.JSONFieldEquals("i.fields", key, v)
+			conds[i] = cond
+			args = append(args, condArgs...)
 		}
-		query += " AND " + jsonExpr + " IN (" + strings.Join(placeholders, ",") + ")"
+		query += " AND (" + strings.Join(conds, " OR ") + ")"
 	}
 	return query, args
 }
@@ -3674,8 +3677,8 @@ func (s *Store) getItemLink(id string) (*models.ItemLink, error) {
 	var sourceItemNumber, targetItemNumber sql.NullInt64
 	var sourceStatus, targetStatus sql.NullString
 
-	srcStatus := s.dialect.JSONExtractText("s.fields", "status")
-	tgtStatus := s.dialect.JSONExtractText("t.fields", "status")
+	srcStatus := s.dialect.JSONFieldText("s.fields", "status")
+	tgtStatus := s.dialect.JSONFieldText("t.fields", "status")
 	err := s.db.QueryRow(s.q(fmt.Sprintf(`
 		SELECT l.id, l.workspace_id, l.source_id, l.target_id, l.link_type, l.created_by, l.created_at,
 		       s.title, t.title, s.slug, t.slug, sc.slug, tc.slug, sc.prefix, tc.prefix,
@@ -3726,8 +3729,8 @@ func (s *Store) getItemLink(id string) (*models.ItemLink, error) {
 // restoring a soft-deleted item resurrects its relationships automatically. See
 // BUG-734.
 func (s *Store) GetItemLinks(itemID string) ([]models.ItemLink, error) {
-	srcStatusExpr := s.dialect.JSONExtractText("s.fields", "status")
-	tgtStatusExpr := s.dialect.JSONExtractText("t.fields", "status")
+	srcStatusExpr := s.dialect.JSONFieldText("s.fields", "status")
+	tgtStatusExpr := s.dialect.JSONFieldText("t.fields", "status")
 	rows, err := s.db.Query(s.q(fmt.Sprintf(`
 		SELECT l.id, l.workspace_id, l.source_id, l.target_id, l.link_type, l.created_by, l.created_at,
 		       s.title, t.title, s.slug, t.slug, sc.slug, tc.slug, sc.prefix, tc.prefix,
@@ -4279,8 +4282,8 @@ func (s *Store) itemWorkspaceIDTx(tx *sql.Tx, itemID string) (string, error) {
 // A parent link pointing to a soft-deleted item is treated as no parent — the
 // breadcrumb / lineage UI shouldn't show a deleted ancestor. See BUG-734.
 func (s *Store) GetParentForItem(itemID string) (*models.ItemLink, error) {
-	sStatusExpr := s.dialect.JSONExtractText("s.fields", "status")
-	tStatusExpr := s.dialect.JSONExtractText("t.fields", "status")
+	sStatusExpr := s.dialect.JSONFieldText("s.fields", "status")
+	tStatusExpr := s.dialect.JSONFieldText("t.fields", "status")
 	rows, err := s.db.Query(s.q(fmt.Sprintf(`
 		SELECT l.id, l.workspace_id, l.source_id, l.target_id, l.link_type, l.created_by, l.created_at,
 		       s.title, t.title, s.slug, t.slug, sc.slug, tc.slug, sc.prefix, tc.prefix,
@@ -4621,14 +4624,14 @@ func scanCollectionDoneFilters(rows *sql.Rows) []collectionDoneFilter {
 // so dashboards for untyped collections keep working.
 func (s *Store) buildChildrenDoneExpr(filters []collectionDoneFilter, itemAlias string) (string, []any) {
 	if len(filters) == 0 {
-		statusExpr := s.dialect.JSONExtractText(itemAlias+".fields", "status")
+		statusExpr := s.dialect.JSONFieldText(itemAlias+".fields", "status")
 		placeholders, args := models.DefaultTerminalStatusPlaceholders()
 		return fmt.Sprintf("LOWER(COALESCE(%s, '')) IN (%s)", statusExpr, placeholders), args
 	}
 	clauses := make([]string, 0, len(filters))
 	args := make([]any, 0, len(filters)*4)
 	for _, f := range filters {
-		fieldExpr := s.dialect.JSONExtractText(itemAlias+".fields", f.doneKey)
+		fieldExpr := s.dialect.JSONFieldText(itemAlias+".fields", f.doneKey)
 		placeholders := make([]string, len(f.values))
 		args = append(args, f.collectionID)
 		for i, v := range f.values {
@@ -4650,7 +4653,7 @@ func (s *Store) buildChildrenDoneExpr(filters []collectionDoneFilter, itemAlias 
 // yields NULL and NOT of it is safe inside COUNT(CASE ...).
 func (s *Store) buildChildrenAbandonedExpr(filters []collectionDoneFilter, itemAlias string) (string, []any) {
 	if len(filters) == 0 {
-		statusExpr := s.dialect.JSONExtractText(itemAlias+".fields", "status")
+		statusExpr := s.dialect.JSONFieldText(itemAlias+".fields", "status")
 		values := models.DefaultAbandonedStatuses()
 		if len(values) == 0 {
 			return "(1=0)", nil
@@ -4669,7 +4672,7 @@ func (s *Store) buildChildrenAbandonedExpr(filters []collectionDoneFilter, itemA
 		if len(f.abandoned) == 0 {
 			continue
 		}
-		fieldExpr := s.dialect.JSONExtractText(itemAlias+".fields", f.doneKey)
+		fieldExpr := s.dialect.JSONFieldText(itemAlias+".fields", f.doneKey)
 		placeholders := make([]string, len(f.abandoned))
 		args = append(args, f.collectionID)
 		for i, v := range f.abandoned {
@@ -5523,7 +5526,9 @@ func buildItemSort(sort string, dialect Dialect) string {
 			if !validSortField.MatchString(col) {
 				continue // skip invalid field names
 			}
-			parts = append(parts, fmt.Sprintf("%s %s", dialect.JSONExtractText("i.fields", col), dir))
+			// BUG-3221/BUG-3218: numbers numerically, then strings, booleans,
+			// other shapes, and NULLs last, on both dialects.
+			parts = append(parts, dialect.JSONFieldOrder("i.fields", col, dir))
 		}
 	}
 

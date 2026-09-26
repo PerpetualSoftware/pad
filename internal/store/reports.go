@@ -577,7 +577,7 @@ func (s *Store) reportWIP(workspaceID string, colls []reportCollection, now time
 
 	for _, c := range colls {
 		slugByID[c.id] = c.slug
-		fieldExpr := s.dialect.JSONExtractText("fields", c.doneKey)
+		fieldExpr := s.dialect.JSONFieldText("fields", c.doneKey)
 		// Open = done-field value NOT in this collection's terminal set. An
 		// item with no done-field value (NULL/"") is also open.
 		var notTerminal string
@@ -816,7 +816,7 @@ func (s *Store) positiveTerminalExpr(colls []reportCollection) (string, []any) {
 func (s *Store) reportStatusDistribution(workspaceID string, colls []reportCollection) ([]ReportStatusCount, error) {
 	out := []ReportStatusCount{}
 	for _, c := range colls {
-		fieldExpr := s.dialect.JSONExtractText("fields", c.doneKey)
+		fieldExpr := s.dialect.JSONFieldText("fields", c.doneKey)
 		query := fmt.Sprintf(`
 			SELECT LOWER(COALESCE(%s, '')) AS st, COUNT(*)
 			FROM items
