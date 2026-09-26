@@ -235,10 +235,9 @@ const KNOWN_OUTSIDE_FENCE: Record<string, string> = {
 	'lib/components/common/QuickActionsMenu.svelte::handleSaveNewAction::isConflictOrNotFound': 'pure: error classifier',
 	'lib/components/fields/FieldEditor.svelte::createRelationTarget::indexStillOurs': 'pure: reset-generation predicate',
 	'lib/components/fields/FieldEditor.svelte::<nested in writeRelationList>::holdOrder.superseded': 'pure: ticket predicate',
-	'lib/components/editor/Editor.svelte::<callback of renderQueue.then>::Math.random': 'pure: render id',
-	'lib/components/editor/Editor.svelte::<callback of renderQueue.then>::Math.random().toString': 'pure: render id',
-	'lib/components/editor/Editor.svelte::<callback of renderQueue.then>::Math.random().toString(36).slice': 'pure: render id',
-	'lib/components/editor/Editor.svelte::initMermaid::currentMermaidTheme': 'pure: reads the document theme',
+	// Editor's mermaid render rows left with the render itself: it moved to
+	// editor/mermaidRender.ts (TASK-2248 U2), a module this population does not
+	// scan. It only draws a diagram into a node its caller hands it.
 	// ── releases that must run under ANY identity (in a finally) ──
 	'lib/components/items/ItemAttachmentStrip.svelte::<nested in $effect>::noteLoadEnd': 'release: in-flight counter',
 	'lib/components/items/ItemAttachmentStrip.svelte::<nested in $effect>::stopLoadingMarker': 'release: timer clear',
@@ -250,10 +249,6 @@ const KNOWN_OUTSIDE_FENCE: Record<string, string> = {
 	'lib/components/items/PushToAgentDialog.svelte::handleCopyInstead::handleDismiss': 'local: after a clipboard write, view-fenced on destroyed/presenceGen',
 	'lib/components/common/QuickActionsMenu.svelte::copyAndAnnounce::announce': 'local: copied/failed kind after a clipboard write',
 	// ── local render of content already on screen ──
-	'lib/components/editor/Editor.svelte::initMermaid::mermaidMod.default.initialize': 'render: library init after its dynamic import',
-	'lib/components/editor/Editor.svelte::<callback of renderQueue.then>::m.default.render': 'render: this editor\'s own diagram source',
-	'lib/components/editor/Editor.svelte::<callback of renderQueue.then>::target.classList.remove': 'render: this editor\'s own node',
-	'lib/components/editor/Editor.svelte::<callback of renderQueue.then>::target.classList.add': 'render: this editor\'s own node',
 	// ── logging ──
 	'lib/components/ChildItems.svelte::handleFinalize::console.error': 'log',
 	'lib/components/ChildItems.svelte::reorderChild::console.error': 'log',
@@ -287,8 +282,6 @@ const KNOWN_CONTINUATIONS: Record<string, string> = {
 	'lib/components/editor/Editor.svelte::<callback of onMount>::api.server.capabilities.then':
 		'global: unauthenticated, binary-static capabilities; a fence would disable the next identity\'s toolbar (BUG-3105)',
 	'lib/components/editor/Editor.svelte::<callback of onMount>::api.server.capabilities.catch': 'no-op: empty handler',
-	'lib/components/editor/Editor.svelte::queueMermaidRender::renderQueue.then': 'render: this editor\'s own diagram source',
-	'lib/components/editor/Editor.svelte::queueMermaidClear::renderQueue.then': 'render: clears this editor\'s own node',
 	'lib/components/fields/FieldEditor.svelte::sendTyped::settled.then':
 		'release: clears the typed display for a settled write; must run under any identity',
 	'lib/components/timeline/ItemTimeline.svelte::<callback of $effect>::tick.then': 'ui: DOM role pass, cancelled on re-run',

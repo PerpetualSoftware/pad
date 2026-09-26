@@ -7,6 +7,7 @@
 	import { renderAttachmentUnavailable } from '$lib/markdown/attachments';
 	import DOMPurify from 'dompurify';
 	import { inertInternalReferences } from '$lib/components/share/shareRender';
+	import { mermaidBlocks } from '$lib/components/share/shareMermaid';
 	import PublicCollectionView from '$lib/components/share/PublicCollectionView.svelte';
 	import StaleBodyNotice from '$lib/components/common/StaleBodyNotice.svelte';
 	import { isBodyStale } from '$lib/items/staleBody';
@@ -628,7 +629,7 @@
 
 				{#if itemData.content}
 					{#if itemData.contentStale}<StaleBodyNotice />{/if}
-					<div class="item-content">
+					<div class="item-content" {@attach mermaidBlocks(renderedContent)}>
 						{@html renderedContent}
 					</div>
 				{/if}
@@ -855,6 +856,12 @@
 	}
 
 	/* Markdown content styles */
+	/* TASK-2248 U2: a drawn mermaid diagram fits the column. */
+	.item-content :global(.share-mermaid svg) {
+		max-width: 100%;
+		height: auto;
+	}
+
 	.item-content :global(h1) {
 		font-size: 1.6em;
 		font-weight: 700;
