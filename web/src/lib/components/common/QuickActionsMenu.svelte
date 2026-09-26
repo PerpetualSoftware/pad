@@ -8,6 +8,7 @@
 	import { api, isConflictOrNotFound } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
+	import { pendingEditsDialog } from '$lib/stores/pendingEditsDialog.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
 	import { collapsePushMessage } from '$lib/push/message';
 	import {
@@ -363,10 +364,24 @@
 		// re-sends. The toast describes a push the previous user made.
 		const isSameIdentity = authStore.identityFence();
 		const route = routePrompt(prompt, target, known);
+		// BUG-3050 U2: `{content}` is an excerpt of the STORED body. When that
+		// body is behind a tab's unsaved edits, the excerpt is out of date.
+		// Captured here, before any await, like everything above.
+		const staleExcerpt =
+			item?.content_state === 'applied_pending_flush' && action.prompt.includes('{content}');
+		const itemLabel = item ? (formatItemRef(item) ?? item.title) : '';
 		open = false;
 		resetCreateForm();
 
 		if (route.via === 'clipboard' || !target) {
+			// The copy must stay inside the click's gesture, so a stale excerpt
+			// is reported rather than asked about here.
+			if (staleExcerpt) {
+				toastStore.show(
+					`The copied excerpt of ${itemLabel} may be out of date: it has edits in an open tab that are not stored yet.`,
+					'info'
+				);
+			}
 			// Still inside the click's user gesture — see the note above.
 			// RETURNED, not awaited-then-returned: identical here (nothing follows
 			// and no try encloses it), but an `await` in this branch reads to the
@@ -374,6 +389,12 @@
 			// which it never is (BUG-3105).
 			return copyAndAnnounce(prompt, route.via === 'clipboard' ? route.because : 'not-addressable');
 		}
+
+		// A push is not tied to the gesture, so a stale excerpt is ASKED about.
+		// Only captured values are used after this await, and the identity
+		// fence is re-checked: the push has no idempotency key.
+		if (staleExcerpt && !(await pendingEditsDialog.request(itemLabel, 'excerpt'))) return;
+		if (!isSameIdentity()) return;
 
 		dispatching = true;
 		try {

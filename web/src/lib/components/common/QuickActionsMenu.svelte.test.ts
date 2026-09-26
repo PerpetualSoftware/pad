@@ -72,6 +72,7 @@ function noopComponent() {
 }
 
 const { default: QuickActionsMenu } = await import('./QuickActionsMenu.svelte');
+const { pendingEditsDialog } = await import('$lib/stores/pendingEditsDialog.svelte');
 
 function makeCollection(id: string, slug: string): Collection {
 	return {
@@ -798,5 +799,77 @@ describe('QuickActionsMenu presence staleness (codex round 1)', () => {
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+});
+
+// BUG-3050 U2: `{content}` is an excerpt of the STORED body. When the item's
+// stored body is behind a tab's unsaved edits (content_state:
+// applied_pending_flush), a push sends an out-of-date excerpt to an agent.
+describe('a stale {content} excerpt (BUG-3050 U2)', () => {
+	const EXCERPT_ACTION: QuickAction = { label: 'Summarise', prompt: 'Summarise {ref}: {content}', scope: 'item' };
+	const marked = () => ({ ...makeItem(), content: 'stored body', content_state: 'applied_pending_flush' }) as Item;
+
+	beforeEach(() => {
+		toastShow.mockReset();
+		pushMock.mockReset();
+		copyMock.mockReset();
+		copyMock.mockResolvedValue(true);
+		pushMock.mockResolvedValue({ pushed: true, delivered_sessions: 1 });
+		sessionsListMock.mockReset();
+		sessionsListMock.mockResolvedValue({ sessions: [{ id: 's1', armed: true }], count: 1 });
+		pendingEditsDialog.abandonAll();
+	});
+
+	it('a push asks first, and Cancel sends nothing', async () => {
+		const { host, component } = mountMenu({ item: marked(), actions: [EXCERPT_ACTION] });
+		await openMenu(host);
+		actionRow(host, 'Summarise').click();
+		await vi.waitFor(() => expect(pendingEditsDialog.active?.kind).toBe('excerpt'));
+		expect(pushMock).not.toHaveBeenCalled();
+		pendingEditsDialog.keep();
+		await tick();
+		await tick();
+		expect(pushMock).not.toHaveBeenCalled();
+		unmount(component);
+		host.remove();
+	});
+
+	it('"Use it anyway" pushes, once', async () => {
+		const { host, component } = mountMenu({ item: marked(), actions: [EXCERPT_ACTION] });
+		await openMenu(host);
+		actionRow(host, 'Summarise').click();
+		await vi.waitFor(() => expect(pendingEditsDialog.active?.kind).toBe('excerpt'));
+		pendingEditsDialog.overwrite();
+		await vi.waitFor(() => expect(pushMock).toHaveBeenCalledTimes(1));
+		unmount(component);
+		host.remove();
+	});
+
+	it('control: no {content} in the prompt, or an unmarked item, is never asked about', async () => {
+		for (const [item, action] of [
+			[marked(), PUSH_ACTION],
+			[{ ...makeItem(), content: 'body' } as Item, EXCERPT_ACTION],
+		] as const) {
+			pushMock.mockClear();
+			const { host, component } = mountMenu({ item, actions: [action] });
+			await openMenu(host);
+			actionRow(host, action.label).click();
+			await vi.waitFor(() => expect(pushMock).toHaveBeenCalledTimes(1));
+			expect(pendingEditsDialog.active).toBeNull();
+			unmount(component);
+			host.remove();
+		}
+	});
+
+	it('the clipboard route still copies inside the gesture, and says the excerpt may be out of date', async () => {
+		sessionsListMock.mockResolvedValue({ sessions: [], count: 0 });
+		const { host, component } = mountMenu({ item: marked(), actions: [EXCERPT_ACTION] });
+		await openMenu(host);
+		actionRow(host, 'Summarise').click();
+		await vi.waitFor(() => expect(copyMock).toHaveBeenCalledTimes(1));
+		expect(pendingEditsDialog.active).toBeNull();
+		expect(toastShow.mock.calls.some(([m]) => String(m).includes('may be out of date'))).toBe(true);
+		unmount(component);
+		host.remove();
 	});
 });
