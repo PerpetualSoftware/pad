@@ -270,18 +270,19 @@ func TestPreflightAsksTheDestinationAboutSuspects(t *testing.T) {
 	t.Run("a NUL behind a repeated key refuses the migration", func(t *testing.T) {
 		src, path := newSource(t, `{"a":"`+esc+`","a":"clean"}`)
 
-		// The premise, asserted so this cannot quietly become a case we catch
-		// ourselves: our own scan finds NO violation here.
+		// Since BUG-2812 our own scan sees this value, so it is refused as a
+		// VIOLATION rather than by the destination oracle. The leg keeps its
+		// point, that the preflight refuses the row PostgreSQL would, with its
+		// premise updated: a violation, and not also a suspect.
 		scan, err := src.ScanNUL()
 		if err != nil {
 			t.Fatalf("scan: %v", err)
 		}
-		if scan.Total() != 0 {
-			t.Fatalf("the scan now reports this as a violation, so the oracle is not what refuses it: %v",
-				scan.Violations)
+		if scan.Total() != 1 {
+			t.Fatalf("expected the shadowed NUL as one violation, got %v", scan.Violations)
 		}
-		if len(scan.Suspects) != 1 {
-			t.Fatalf("expected exactly one suspect, got %d", len(scan.Suspects))
+		if len(scan.Suspects) != 0 {
+			t.Fatalf("a violation is also listed as a suspect: %v", scan.Suspects)
 		}
 
 		err = preflightNULForMigration(src, dst, path)
@@ -547,9 +548,11 @@ func TestPreflightDoesNotFailClosedOnUnmigratedSuspects(t *testing.T) {
 	}
 	defer dst.Close()
 
-	// activities.metadata is JSON-classed (so the escape makes it a SUSPECT
-	// rather than a violation) and its table is NOT migrated.
-	plantActivitySuspect(t, dbPath, `{"a":"`+textguard.EscNUL+`","a":"clean"}`)
+	// activities.metadata is JSON-classed and its table is NOT migrated. The
+	// value is a doubled-backslash literal, which hits the pre-filter without
+	// decoding to a NUL, so it is a SUSPECT. (Until BUG-2812 the fixture was a
+	// NUL behind a repeated key; the scan now reports that as a violation.)
+	plantActivitySuspect(t, dbPath, `{"note":"x`+textguard.EscNUL[:1]+textguard.EscNUL+`y"}`)
 
 	scan, err := s.ScanNUL()
 	if err != nil {
@@ -614,12 +617,12 @@ func plantActivitySuspect(t *testing.T, dbPath, value string) {
 	if store.MigratedTables()["activities"] {
 		t.Fatal("activities is listed as migrated; pick a table the migration really skips")
 	}
-	// The triggers have to go first, and that is itself worth recording: Layer B
-	// REFUSES this value. SQLite's json_tree walks tokens rather than building a
-	// map, so it sees the NUL in the shadowed member that our Go predicate
-	// cannot — the database is stricter than the shared predicate for exactly
-	// this shape. Such a row can therefore only be LEGACY data, written before
-	// the triggers existed, which is precisely the population BUG-2810 is about.
+	// The triggers go first because the row's NULL primary key is itself
+	// something only LEGACY data carries, written before the triggers existed,
+	// which is the population BUG-2810 is about. (When the fixture was a NUL
+	// behind a repeated key, Layer B refused the value too: SQLite's json_tree
+	// walks tokens, and saw the shadowed member before BUG-2812 made the Go
+	// predicate do the same.)
 	rows, err := raw.Query(
 		`SELECT name FROM sqlite_master WHERE type='trigger' AND name GLOB 'pad_nul_activities_metadata_*'`)
 	if err != nil {
