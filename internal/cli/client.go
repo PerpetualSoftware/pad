@@ -1323,17 +1323,6 @@ func (c *Client) LoginVerify2FA(challengeToken, code, recoveryCode string) (*Log
 	return &result, err
 }
 
-// Register creates a new user account.
-func (c *Client) Register(email, name, password string) (*LoginResponse, error) {
-	var result LoginResponse
-	err := c.post("/auth/register", map[string]string{
-		"email":    email,
-		"name":     name,
-		"password": password,
-	}, &result)
-	return &result, err
-}
-
 // Bootstrap creates the first admin account on a fresh instance.
 func (c *Client) Bootstrap(email, name, password string) (*LoginResponse, error) {
 	return c.BootstrapWithToken(email, name, password, "")
