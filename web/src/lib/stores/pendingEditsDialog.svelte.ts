@@ -5,7 +5,7 @@
 // all abandoned (as KEEP) on an identity change.
 import { authStore } from './auth.svelte';
 
-export type PendingEditsKind = 'save' | 'duplicate';
+export type PendingEditsKind = 'save' | 'duplicate' | 'excerpt';
 
 interface PendingRequest {
 	itemRef: string;
