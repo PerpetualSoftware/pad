@@ -3,7 +3,6 @@ package store
 import (
 	"database/sql"
 	"fmt"
-	"sort"
 	"strings"
 	"unicode/utf8"
 )
@@ -28,7 +27,8 @@ import (
 // CAST AS BLOB, not a plain read: the bytes are what is judged, and a BLOB is
 // returned exactly as stored.
 func (s *Store) scanColumnUTF8(c nulColumn, addr tableAddressing) ([]NULViolation, error) {
-	sel := make([]string, 0, len(addr.KeyColumns)+2)
+	sel := make([]string, 0, len(addr.KeyColumns)+3)
+	sel = append(sel, "rowid")
 	for _, k := range addr.KeyColumns {
 		sel = append(sel, quoteIdent(k))
 	}
@@ -50,6 +50,8 @@ func (s *Store) scanColumnUTF8(c nulColumn, addr tableAddressing) ([]NULViolatio
 		// Nullable key and workspace columns, for the reason scanColumn
 		// gives: SQLite permits NULL in some PRIMARY KEY columns.
 		dest := make([]any, 0, len(sel))
+		var rowid int64
+		dest = append(dest, &rowid)
 		keyVals := make([]sql.NullString, len(addr.KeyColumns))
 		for i := range keyVals {
 			dest = append(dest, &keyVals[i])
@@ -72,6 +74,7 @@ func (s *Store) scanColumnUTF8(c nulColumn, addr tableAddressing) ([]NULViolatio
 			Key:         map[string]string{},
 			WorkspaceID: wsID.String,
 			InvalidUTF8: true,
+			rowid:       rowid,
 		}
 		for i, k := range addr.KeyColumns {
 			if !keyVals[i].Valid {
@@ -87,40 +90,25 @@ func (s *Store) scanColumnUTF8(c nulColumn, addr tableAddressing) ([]NULViolatio
 
 // mergeUTF8Violations folds one column's invalid-UTF-8 findings into its NUL
 // findings, so a value carrying both defects is ONE violation with both kinds
-// rather than two rows the census would count twice. Order: the NUL findings
-// in their order, then the UTF-8-only ones in theirs.
+// rather than two rows the census would count twice. Matched on the rowid
+// both scans read, not on Key, which cannot identify a KeyIncomplete row
+// (codex r1). Order: the NUL findings in their order, then the UTF-8-only
+// ones in theirs.
 func mergeUTF8Violations(nul, invalid []NULViolation) []NULViolation {
 	if len(invalid) == 0 {
 		return nul
 	}
-	index := make(map[string]int, len(nul))
+	index := make(map[int64]int, len(nul))
 	for i, v := range nul {
-		index[violationAddress(v)] = i
+		index[v.rowid] = i
 	}
 	out := append([]NULViolation{}, nul...)
 	for _, v := range invalid {
-		if i, ok := index[violationAddress(v)]; ok && !v.KeyIncomplete {
+		if i, ok := index[v.rowid]; ok {
 			out[i].InvalidUTF8 = true
 			continue
 		}
 		out = append(out, v)
 	}
 	return out
-}
-
-// violationAddress renders a violation's row address as one comparable key.
-func violationAddress(v NULViolation) string {
-	keys := make([]string, 0, len(v.Key))
-	for k := range v.Key {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	var b strings.Builder
-	for _, k := range keys {
-		b.WriteString(k)
-		b.WriteByte(0)
-		b.WriteString(v.Key[k])
-		b.WriteByte(0)
-	}
-	return b.String()
 }

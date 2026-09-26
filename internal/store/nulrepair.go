@@ -216,11 +216,13 @@ func (s *Store) repairOneNUL(v NULViolation) (bool, error) {
 	}
 
 	// Invalid UTF-8 first (BUG-3222): each invalid byte sequence becomes
-	// U+FFFD, the same replacement the NUL repair uses. In a JSON-classed
-	// value an invalid byte can only sit inside a string (outside one the
-	// document is not JSON at all), so the result is still the same document
-	// with that string's bad bytes replaced; TestRepairInvalidUTF8KeepsJSONValid
-	// pins it. Then the NUL repair, on the now-valid text.
+	// U+FFFD, the same replacement the NUL repair uses. In a VALID JSON
+	// document an invalid byte can only sit inside a string, so the result is
+	// the same document with that string's bad bytes replaced
+	// (TestRepairInvalidUTF8KeepsJSONValid). A value that was already MALFORMED
+	// JSON stays malformed: PostgreSQL refuses it for that reason too (22P02),
+	// which is outside this census and not made worse by the repair (codex r1).
+	// Then the NUL repair, on the now-valid text.
 	repaired := value
 	if invalidUTF8 {
 		repaired = strings.ToValidUTF8(repaired, textguard.Replacement)

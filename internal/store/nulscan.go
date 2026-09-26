@@ -56,11 +56,15 @@ type NULViolation struct {
 	RawNUL     bool
 	EscapedNUL bool
 	// InvalidUTF8 marks a value that is not valid UTF-8 (BUG-3222). It is
-	// not a NUL defect, but PostgreSQL refuses it the same way, SQLSTATE
-	// 22021 under a UTF8 database, and a migration that meets one fails
+	// not a NUL defect, but PostgreSQL refuses it too (SQLSTATE 22021 under
+	// a UTF8 database), and a migration that meets one fails
 	// partway through the copy exactly as a NUL does. So it rides the same
 	// census, repair and preflight rather than a second command pair.
 	InvalidUTF8 bool
+	// rowid is the row's SQLite rowid, internal to the scan: it identifies the
+	// row even when KeyIncomplete does not let Key do so, which is what lets
+	// the NUL and invalid-UTF-8 findings for one value merge (BUG-3222).
+	rowid int64
 	// KeyIncomplete marks a row one of whose key columns is NULL, so Key does
 	// not address it. SQLite permits NULL in a declared PRIMARY KEY that is
 	// neither INTEGER PRIMARY KEY nor NOT NULL, which no other engine does.
@@ -363,7 +367,8 @@ func (s *Store) scanColumn(c nulColumn, addr tableAddressing) ([]NULViolation, [
 	qt := quoteIdent(c.Table)
 	qc := quoteIdent(c.Column)
 
-	sel := make([]string, 0, len(addr.KeyColumns)+2)
+	sel := make([]string, 0, len(addr.KeyColumns)+3)
+	sel = append(sel, "rowid")
 	for _, k := range addr.KeyColumns {
 		sel = append(sel, quoteIdent(k))
 	}
@@ -400,6 +405,8 @@ func (s *Store) scanColumn(c nulColumn, addr tableAddressing) ([]NULViolation, [
 		// that is not INTEGER PRIMARY KEY or explicitly NOT NULL. Only the
 		// value column is guaranteed non-NULL, by the query's own WHERE.
 		dest := make([]any, 0, len(sel))
+		var rowid int64
+		dest = append(dest, &rowid)
 		keyVals := make([]sql.NullString, len(addr.KeyColumns))
 		for i := range keyVals {
 			dest = append(dest, &keyVals[i])
@@ -453,6 +460,7 @@ func (s *Store) scanColumn(c nulColumn, addr tableAddressing) ([]NULViolation, [
 			Key:         map[string]string{},
 			WorkspaceID: wsID.String,
 			RawNUL:      textguard.ContainsNUL(value),
+			rowid:       rowid,
 		}
 		v.EscapedNUL = isJSON && textguard.DocumentDecodesNULAnyShape(value)
 		for i, k := range addr.KeyColumns {

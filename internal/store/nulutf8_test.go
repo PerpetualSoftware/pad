@@ -112,8 +112,8 @@ func TestScanAndRepairInvalidUTF8(t *testing.T) {
 	}
 }
 
-// An invalid byte can only sit inside a JSON string (outside one the document
-// is not JSON), so replacing it leaves a valid document with the same shape.
+// In a VALID JSON document an invalid byte can only sit inside a string, so
+// replacing it leaves a valid document with the same shape.
 func TestRepairInvalidUTF8KeepsJSONValid(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)
@@ -137,5 +137,42 @@ func TestRepairInvalidUTF8KeepsJSONValid(t *testing.T) {
 	want := `{"note":"x` + textguard.Replacement + `y","n":1e3,"arr":["a` + textguard.Replacement + `"]}`
 	if got != want || !json.Valid([]byte(got)) || !utf8.ValidString(got) {
 		t.Errorf("repaired to %q (valid JSON %v), want %q", got, json.Valid([]byte(got)), want)
+	}
+}
+
+// A value whose row has an INCOMPLETE key (a NULL in its primary key, which
+// SQLite permits) and carries both defects is still ONE violation (codex r1).
+// Two such rows stay two: the merge is by rowid, which both scans read, not by
+// the partial key they share.
+func TestInvalidUTF8MergesOnKeyIncompleteRows(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	if s.dialect.Driver() != DriverSQLite {
+		t.Skip("SQLite only")
+	}
+	value := `{"note":"a` + textguard.NUL + `b` + invalidByte + `"}`
+	plantLegacyRows(t, s, func(raw *sql.DB) {
+		for i := 0; i < 2; i++ {
+			mustExec(t, raw, `INSERT INTO activities (id, action, actor, source, metadata, created_at)
+				VALUES (NULL, 'created', 'agent', 'cli', ?, datetime('now'))`, value)
+		}
+	})
+	report, err := s.ScanNUL()
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	var got []NULViolation
+	for _, v := range report.Violations {
+		if v.Table == "activities" && v.Column == "metadata" {
+			got = append(got, v)
+		}
+	}
+	if len(got) != 2 {
+		t.Fatalf("want 2 violations (two rows, each counted once), got %d: %v", len(got), got)
+	}
+	for _, v := range got {
+		if !v.KeyIncomplete || !v.RawNUL || !v.InvalidUTF8 {
+			t.Errorf("want one incomplete-key violation carrying both kinds, got %+v", v)
+		}
 	}
 }

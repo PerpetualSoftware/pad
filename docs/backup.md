@@ -352,8 +352,8 @@ commands below are for.
 `pad db scan-nul` reports every stored value carrying a NUL, and every value
 that is not valid UTF-8 — which table and column, which row, and which
 workspace — and changes nothing. Invalid UTF-8 is not a NUL, but PostgreSQL
-refuses it the same way (SQLSTATE 22021 under a UTF8 database) and SQLite stores
-it silently, so it breaks a migration the same way. Finding it means reading
+refuses it too (SQLSTATE 22021 under a UTF8 database) and SQLite stores it
+silently, so it breaks a migration in the same way. Finding it means reading
 every stored value in full; on a 306 MB database that added about a second.
 
 ```bash

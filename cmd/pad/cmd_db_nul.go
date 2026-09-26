@@ -46,8 +46,8 @@ func dbScanNULCmd() *cobra.Command {
 		Long: `Counts and locates every stored value that violates Pad's NUL invariant:
 a real NUL byte in any protected column, or a JSON escape in a JSON column
 that a JSON parser would decode to one. It also reports every value that is
-not valid UTF-8: not a NUL, but PostgreSQL refuses it the same way (SQLSTATE
-22021 under a UTF8 database), so it breaks a migration the same way.
+not valid UTF-8. That is not a NUL, but PostgreSQL refuses it too (SQLSTATE
+22021 under a UTF8 database), so it breaks a migration in the same way.
 
 Finding invalid UTF-8 means reading every stored value in full, since SQLite
 has no way to test for it in a query; on a large database that takes about as
@@ -101,9 +101,10 @@ func dbRepairNULCmd() *cobra.Command {
 		Short: "Replace stored NULs and invalid UTF-8 with U+FFFD (rewrites user content)",
 		Long: `Rewrites every stored value 'pad db scan-nul' reports, replacing each NUL,
 and each invalid UTF-8 byte sequence, with U+FFFD (the Unicode replacement
-character) and leaving the rest of the value byte for byte as it was. In a JSON
-value an invalid byte can only sit inside a string, so the document stays valid
-JSON with that string's bad bytes replaced.
+character) and leaving the rest of the value byte for byte as it was. In a valid
+JSON document an invalid byte can only sit inside a string, so the document
+stays valid JSON with that string's bad bytes replaced; a value that was not
+valid JSON to begin with is not made valid by this.
 
 THIS CHANGES USER CONTENT. It is a separate command, and never part of a
 migration, for that reason: a migration that rewrote stored text would decide
