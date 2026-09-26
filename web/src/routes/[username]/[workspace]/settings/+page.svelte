@@ -375,6 +375,22 @@
 		// was loaded, not the one current when the module first evaluated. A
 		// route component that survives an identity change without remounting
 		// would otherwise keep comparing against a stale epoch for ever.
+		//
+		// STAMPING AT ENTRY, BEFORE THE DATA LANDS, IS SAFE HERE, and only
+		// because of two OTHER mechanisms (BUG-3237). The roles board and the
+		// library call this ordering a defect, because there the stamp vouches
+		// for data the round-trip has not yet replaced. On this page nothing is
+		// left to vouch for:
+		//   1. the (user, workspace)-keyed load effect clears name, context,
+		//      collections, members and invitations BEFORE it calls load(),
+		//      and a real identity change moves the user id with the epoch;
+		//   2. `loading = true` above swaps the whole page for the spinner, so
+		//      no control rendered from any list is clickable mid-load.
+		// EACH ONE ALONE covers the other's removal, and removing both lets a
+		// Copy invite link click copy the previous session's join URL.
+		// Removing one because the other "covers it" leaves no margin at all.
+		// `settingsLoadIdentityOrder.svelte.test.ts` is the pin: it is the only
+		// test that fails with both removed.
 		identityEpochAtLoad = authStore.identityEpoch;
 		try {
 			await workspaceStore.setCurrent(slug);
