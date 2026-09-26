@@ -1101,7 +1101,7 @@ func (s *Store) adminOpenItemsCountClause() (clause string, args []interface{}) 
 		placeholders[i] = "?"
 		args[i] = strings.ToLower(v)
 	}
-	expr := "LOWER(COALESCE(" + s.dialect.JSONExtractText("i.fields", "status") + ", ''))"
+	expr := "LOWER(COALESCE(" + s.dialect.JSONFieldText("i.fields", "status") + ", ''))"
 	return expr + " NOT IN (" + strings.Join(placeholders, ", ") + ")", args
 }
 

@@ -37,6 +37,14 @@ type Dialect interface {
 	// PostgreSQL: col #>> '{path,to,key}'
 	JSONExtractPath(column, path string) string
 
+	// JSONFieldText, JSONFieldEquals and JSONFieldOrder read an item field
+	// value by its JSON type, identically on both dialects (BUG-3221; the
+	// rule is in dialect_fieldvalue.go). Use them, not JSONExtractText,
+	// wherever a field value is compared, counted, grouped, sorted or shown.
+	JSONFieldText(column, key string) string
+	JSONFieldEquals(column, key, arg string) (string, []any)
+	JSONFieldOrder(column, key, dir string) string
+
 	// JSONSet returns SQL to set a value at a path in a JSON column.
 	// SQLite: json_set(col, '$.key', ?)
 	// PostgreSQL: jsonb_set(col::jsonb, '{key}', ?::jsonb)

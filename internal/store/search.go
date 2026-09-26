@@ -164,8 +164,9 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 			if !validFieldKey.MatchString(key) {
 				continue // skip unsafe keys
 			}
-			refQuery += ` AND ` + s.dialect.JSONExtractText("i.fields", key) + ` = ?`
-			refArgs = append(refArgs, value)
+			cond, condArgs := s.dialect.JSONFieldEquals("i.fields", key, value) // BUG-3221
+			refQuery += ` AND ` + cond
+			refArgs = append(refArgs, condArgs...)
 		}
 
 		// Stable order for cross-workspace global searches (where the same
@@ -277,8 +278,9 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 			if !validFieldKey.MatchString(key) {
 				continue
 			}
-			numQuery += ` AND ` + s.dialect.JSONExtractText("i.fields", key) + ` = ?`
-			numArgs = append(numArgs, value)
+			cond, condArgs := s.dialect.JSONFieldEquals("i.fields", key, value) // BUG-3221
+			numQuery += ` AND ` + cond
+			numArgs = append(numArgs, condArgs...)
 		}
 
 		// Avoid duplicating an item already added by the parseItemRef path
@@ -465,8 +467,9 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 		if !validFieldKey.MatchString(key) {
 			continue // skip unsafe keys
 		}
-		query += ` AND ` + s.dialect.JSONExtractText("i.fields", key) + ` = ?`
-		args = append(args, value)
+		cond, condArgs := s.dialect.JSONFieldEquals("i.fields", key, value) // BUG-3221
+		query += ` AND ` + cond
+		args = append(args, condArgs...)
 	}
 
 	// Exclude direct hits (ref + numeric) from FTS so duplicates don't consume
@@ -695,8 +698,9 @@ func (s *Store) appendSearchFilters(query string, args []interface{}, params Sea
 		if !validFieldKey.MatchString(key) {
 			continue
 		}
-		query += ` AND ` + s.dialect.JSONExtractText("i.fields", key) + ` = ?`
-		args = append(args, value)
+		cond, condArgs := s.dialect.JSONFieldEquals("i.fields", key, value) // BUG-3221
+		query += ` AND ` + cond
+		args = append(args, condArgs...)
 	}
 
 	return query, args
@@ -726,7 +730,7 @@ func (s *Store) searchOrderClause(params SearchParams) string {
 // result set to produce collection and status breakdowns. Non-fatal — returns
 // nil if either query fails.
 func (s *Store) searchFacets(params SearchParams) *SearchFacets {
-	statusExtract := s.dialect.JSONExtractText("i.fields", "status")
+	statusExtract := s.dialect.JSONFieldText("i.fields", "status") // BUG-3221
 
 	var baseQuery string
 	var baseArgs []interface{}

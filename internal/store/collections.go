@@ -422,7 +422,7 @@ func (s *Store) ListCollections(workspaceID string) ([]models.Collection, error)
 			_ = json.Unmarshal([]byte(c.Settings), &settings)
 		}
 		doneKey, termPlaceholders, termArgs := models.TerminalPlaceholdersForDoneField(schema, settings)
-		jsonExtractDone := s.dialect.JSONExtractText("i.fields", doneKey)
+		jsonExtractDone := s.dialect.JSONFieldText("i.fields", doneKey)
 		args := append([]any{c.ID}, termArgs...)
 		err := s.db.QueryRow(s.q(fmt.Sprintf(`
 			SELECT COUNT(*) FROM items i
@@ -903,7 +903,9 @@ func (s *Store) applyFieldMigrationsTx(tx *sql.Tx, collectionID, workspaceID str
 				continue
 			}
 			jsonSet := s.dialect.JSONSet("fields", m.Field)
-			jsonExtract := s.dialect.JSONExtractText("fields", m.Field)
+			// BUG-3221: matched by JSON type, so the same rows migrate on
+			// both dialects.
+			matchOld, matchArgs := s.dialect.JSONFieldEquals("fields", m.Field, oldVal)
 
 			// Step 1: find all matching item IDs. SELECT inside the
 			// same transaction as the subsequent UPDATEs, so we
@@ -911,9 +913,9 @@ func (s *Store) applyFieldMigrationsTx(tx *sql.Tx, collectionID, workspaceID str
 			idRows, err := tx.Query(s.q(fmt.Sprintf(`
 				SELECT id FROM items
 				WHERE collection_id = ?
-				  AND %s = ?
+				  AND %s
 				  AND deleted_at IS NULL
-			`, jsonExtract)), collectionID, oldVal)
+			`, matchOld)), append([]any{collectionID}, matchArgs...)...)
 			if err != nil {
 				return totalAffected, fmt.Errorf("migrate field %s (%s → %s) list: %w", m.Field, oldVal, newVal, err)
 			}

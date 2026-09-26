@@ -66,15 +66,18 @@ func (s *Store) uniqueFieldConflictsQ(q Queryer, collectionID, excludeItemID str
 		if !validFieldKey.MatchString(def.Key) {
 			return nil, fmt.Errorf("unique field check: unsupported field key %q", def.Key)
 		}
+		// BUG-3221: a holder is found by JSON type, identically on both
+		// dialects.
+		match, matchArgs := s.dialect.JSONFieldEquals("fields", def.Key, val)
+		args := append(append([]any{collectionID}, matchArgs...), excludeItemID)
 		var id string
 		err := q.QueryRow(s.q(fmt.Sprintf(`
 			SELECT id FROM items
 			WHERE collection_id = ?
-			  AND %s = ?
+			  AND %s
 			  AND id != ?
 			  AND deleted_at IS NULL
-			LIMIT 1`, s.dialect.JSONExtractText("fields", def.Key))),
-			collectionID, val, excludeItemID).Scan(&id)
+			LIMIT 1`, match)), args...).Scan(&id)
 		if err == nil {
 			out = append(out, uniqueConflict{key: def.Key, value: val, holderID: id})
 			continue
