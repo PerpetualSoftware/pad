@@ -487,6 +487,29 @@ func writeContentPendingFlushError(w http.ResponseWriter, ref string, pendingRow
 	})
 }
 
+// writeRestorePendingFlushError answers the BUG-3031 refusal: a version restore
+// while the item's op-log holds unflushed collaborative edits. Same code and
+// details as the BUG-3133 refusal, so one client branch handles both; the
+// message differs because a restore carries no version token. It names the loss
+// plainly: the undo point a restore leaves is built from the saved body, so
+// those edits would be in no version afterwards.
+func writeRestorePendingFlushError(w http.ResponseWriter, ref string, pendingRows int) {
+	writeJSON(w, http.StatusConflict, map[string]any{
+		"error": map[string]any{
+			"code": "content_pending_flush",
+			"message": fmt.Sprintf(
+				"%s has unsaved edits from another editor session that are not in its saved body. "+
+					"Restoring now would discard them, and no version would keep them. "+
+					"Open the item in a browser to save them first, or resend with overwrite_pending_edits to discard them.",
+				ref),
+			"details": map[string]any{
+				"ref":          ref,
+				"pending_rows": pendingRows,
+			},
+		},
+	})
+}
+
 // contentOutcome values for writeContentNotAppliedError's details.
 const (
 	// contentOutcomeNotApplied — no applier_request ever reached a peer, so the

@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { Version, Item } from '$lib/types';
-	import { api } from '$lib/api/client';
+	import { api, isContentPendingFlushError } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import DiffView from '$lib/components/versions/DiffView.svelte';
 	import Chip from '$lib/components/common/Chip.svelte';
@@ -41,6 +41,10 @@
 	let expanded = $state(false);
 	let confirming = $state(false);
 	let restoring = $state(false);
+	// BUG-3031: the server refused the restore because the item holds edits
+	// another editor session has not saved. The confirm then asks again, naming
+	// what the restore would discard, and a second yes sends the override.
+	let pendingEdits = $state(false);
 
 	// The timeline endpoint serves raw reverse-patch text for diff versions
 	// (is_diff), so version.content is unreadable patch data, not real content.
@@ -88,6 +92,7 @@
 		expanded = !expanded;
 		if (!expanded) {
 			confirming = false;
+			pendingEdits = false;
 		} else {
 			ensureResolved();
 		}
@@ -99,9 +104,10 @@
 
 	function cancelRestore() {
 		confirming = false;
+		pendingEdits = false;
 	}
 
-	async function confirmRestore() {
+	async function confirmRestore(overwritePendingEdits: boolean) {
 		// Master-freeze guard (TASK-2172): the restore UI is hidden while frozen,
 		// but drop a straggler click so a peeking master never dispatches restore.
 		if (frozen) return;
@@ -143,10 +149,28 @@
 			// runs after it, which is the right place to refuse a stale UI
 			// update and the wrong place to refuse a write.
 			if (!isSameIdentity()) return;
-			const updatedItem = await api.versions.restore(reqWs, reqSlug, version.id);
+			let updatedItem;
+			try {
+				updatedItem = overwritePendingEdits
+					? await api.versions.restore(reqWs, reqSlug, version.id, { overwritePendingEdits: true })
+					: await api.versions.restore(reqWs, reqSlug, version.id);
+			} catch (err) {
+				// BUG-3031: nothing was written. The flush above drained THIS tab's
+				// editor, so the pending edits are another session's, and only the
+				// user can decide to discard them. Same fences as the success path,
+				// first: the question is about this item, asked of this user.
+				if (!isSameIdentity()) return;
+				if (isContentPendingFlushError(err)) {
+					if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
+					pendingEdits = true;
+					return;
+				}
+				throw err;
+			}
 			if (!isSameIdentity()) return;
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 			confirming = false;
+			pendingEdits = false;
 			onRestore?.(updatedItem);
 		} finally {
 			restoring = false;
@@ -211,7 +235,13 @@
 			<div class="restore-area">
 				{#if confirming}
 					<div class="confirm-prompt">
-						<span class="confirm-text">Restore to this version?</span>
+						{#if pendingEdits}
+							<span class="confirm-text confirm-warning" role="alert">
+								This item has unsaved edits from another tab or session. Restoring will discard them, and no version will keep them.
+							</span>
+						{:else}
+							<span class="confirm-text">Restore to this version?</span>
+						{/if}
 						<div class="confirm-actions">
 							<button
 								class="btn-cancel"
@@ -224,10 +254,10 @@
 							<button
 								class="btn-restore-confirm"
 								type="button"
-								onclick={confirmRestore}
+								onclick={() => confirmRestore(pendingEdits)}
 								disabled={restoring}
 							>
-								{restoring ? 'Restoring...' : 'Confirm Restore'}
+								{restoring ? 'Restoring...' : pendingEdits ? 'Discard edits and restore' : 'Confirm Restore'}
 							</button>
 						</div>
 					</div>
@@ -382,6 +412,11 @@
 		font-size: 0.8em;
 		color: var(--text-secondary);
 		font-weight: 500;
+	}
+
+	.confirm-warning {
+		color: var(--text-primary);
+		flex-basis: 100%;
 	}
 
 	.confirm-actions {
