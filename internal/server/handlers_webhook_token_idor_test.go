@@ -30,11 +30,11 @@ func TestWebhookTokenCrossWorkspaceIDOR(t *testing.T) {
 
 	// Attacker is a separate user who legitimately OWNS a different workspace (B),
 	// but is NOT a member of A.
-	rr = doRequestWithCookie(srv, "POST", "/api/v1/auth/register", map[string]string{
+	rr = doRequestWithBearer(srv, "POST", "/api/v1/auth/register", adminToken, map[string]string{
 		"email":    "attacker@test.com",
 		"name":     "Attacker",
 		"password": "correct-horse-battery-staple",
-	}, adminToken)
+	})
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("register attacker: %d %s", rr.Code, rr.Body.String())
 	}

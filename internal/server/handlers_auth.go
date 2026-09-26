@@ -348,7 +348,41 @@ func (s *Server) createAuthSession(w http.ResponseWriter, r *http.Request, user 
 	// Set CSRF cookie alongside the session cookie
 	setCSRFCookie(w, int(ttl.Seconds()), s.secureCookies)
 
+	s.destroyReplacedSessions(r)
+
 	return token, nil
+}
+
+// destroyReplacedSessions deletes the session rows named by the session
+// cookies this request presented, which the sign-in that just minted a new
+// row is replacing (BUG-3011). Nothing else holds such a row: sessions are
+// per mint, so other devices and CLI padsess_ bearers have rows of their
+// own, and other tabs in this browser share the cookie jar this response
+// overwrites. Left alone, the row stays a valid credential until its TTL
+// that no UI can reach or end, and a connection it opened stays authorized
+// past a sign-in as someone else (BUG-3007 checks credential liveness).
+//
+// Deletion is by the PRESENTED token only, never by user id, so another
+// session of the same user is untouched. Both cookie names count: in
+// secure mode an unprefixed legacy cookie is shadowed by the new
+// __Host- one from here on (validateSessionCookie prefers the prefixed
+// name), which orphans it the same way. Best-effort: a sign-in never fails
+// over this, since the caller already holds the new session.
+func (s *Server) destroyReplacedSessions(r *http.Request) {
+	names := []string{sessionCookieName(s.secureCookies)}
+	if s.secureCookies {
+		names = append(names, sessionCookieName(false))
+	}
+	for _, name := range names {
+		cookie, err := r.Cookie(name)
+		if err != nil || cookie.Value == "" {
+			continue
+		}
+		if err := s.store.DeleteSession(cookie.Value); err != nil {
+			slog.Warn("sign-in could not destroy the session it replaced",
+				"cookie", name, "error", err)
+		}
+	}
 }
 
 // handleBootstrap creates the first admin account for a fresh instance.
@@ -1441,6 +1475,11 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 
 	// Set CSRF cookie alongside the new session
 	setCSRFCookie(w, int(webSessionTTL.Seconds()), s.secureCookies)
+
+	// DeleteUserSessions above covers the reset user's rows only. A reset
+	// completed in a browser signed in as someone else replaces THAT
+	// cookie too, and orphans its row the same way a sign-in does.
+	s.destroyReplacedSessions(r)
 
 	s.logAuditEventForUser(models.ActionPasswordReset, r, user.ID, auditMeta(map[string]string{"email": user.Email}))
 

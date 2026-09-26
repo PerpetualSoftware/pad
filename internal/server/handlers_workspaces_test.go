@@ -26,11 +26,11 @@ func TestListWorkspaces_AdminScopedToMembership(t *testing.T) {
 	adminToken := bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
 
 	// 2. Register a regular user via admin-driven signup.
-	rr := doRequestWithCookie(srv, "POST", "/api/v1/auth/register", map[string]string{
+	rr := doRequestWithBearer(srv, "POST", "/api/v1/auth/register", adminToken, map[string]string{
 		"email":    "alice@test.com",
 		"name":     "Alice",
 		"password": "correct-horse-battery-staple",
-	}, adminToken)
+	})
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("register alice: expected 201, got %d: %s", rr.Code, rr.Body.String())
 	}
@@ -108,11 +108,11 @@ func TestListWorkspaces_RegularUserScopedToMembership(t *testing.T) {
 	parseJSON(t, rr, &adminWS)
 
 	// Register Bob.
-	rr = doRequestWithCookie(srv, "POST", "/api/v1/auth/register", map[string]string{
+	rr = doRequestWithBearer(srv, "POST", "/api/v1/auth/register", adminToken, map[string]string{
 		"email":    "bob@test.com",
 		"name":     "Bob",
 		"password": "correct-horse-battery-staple",
-	}, adminToken)
+	})
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("register bob: %d %s", rr.Code, rr.Body.String())
 	}
@@ -159,11 +159,11 @@ func setupOwnedDeletedWorkspace(t *testing.T, srv *Server) (aliceToken, bobToken
 		{"alice@test.com", "Alice"},
 		{"bob@test.com", "Bob"},
 	} {
-		rr := doRequestWithCookie(srv, "POST", "/api/v1/auth/register", map[string]string{
+		rr := doRequestWithBearer(srv, "POST", "/api/v1/auth/register", adminToken, map[string]string{
 			"email":    u.email,
 			"name":     u.name,
 			"password": "correct-horse-battery-staple",
-		}, adminToken)
+		})
 		if rr.Code != http.StatusCreated {
 			t.Fatalf("register %s: expected 201, got %d: %s", u.email, rr.Code, rr.Body.String())
 		}

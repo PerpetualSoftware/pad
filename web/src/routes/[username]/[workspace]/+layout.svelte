@@ -247,11 +247,11 @@
 	// The SSE disconnect STAYS, and is the reason this listener still exists.
 	// `sseService.connect` is idempotent per workspace, so the EventSource A
 	// opened would otherwise keep delivering into this tab for the whole
-	// pre-reload window — a stream still authorized, because signing in as B
-	// REPLACES the cookie without destroying A's session row, which is exactly
-	// the case BUG-3007's server-side close cannot see (BUG-3011 tracks the
-	// server half). Closing it here bounds that window to zero rather than to
-	// however long the reload takes.
+	// pre-reload window. Signing in as B now destroys A's session row
+	// (BUG-3011), so BUG-3007's server-side close does end that stream, but
+	// only on its next revalidation tick, and a server without BUG-3011
+	// never ends it at all. Closing it here bounds that window to zero
+	// rather than to however long the tick or the reload takes.
 	const stopIdentityWatch = authStore.onIdentityChange(() => {
 		sseService.disconnect();
 	});
