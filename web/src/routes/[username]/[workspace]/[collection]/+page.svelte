@@ -64,6 +64,7 @@
 	import { pushEscapeHandler, runTopEscape, topEscapePriority, ESCAPE_PRIORITY } from '$lib/stores/escapeStack';
 	import { hasForeignEscapeOwner, isBlockedByModal } from '$lib/a11y/viewerBackdrop';
 	import { boardKeyNav, type BoardNavColumn, type BoardNavDirection } from '$lib/collections/boardNav';
+	import { fieldMatches } from '$lib/fields/fieldShape';
 
 	type ViewMode = 'list' | 'board' | 'table';
 
@@ -1743,6 +1744,10 @@
 	let statusOptions = $derived(collection ? getStatusOptions(collection) : []);
 
 	/** Schema keys whose filter value names an item rather than an option. */
+	/** Declared type per schema key, for `fieldMatches`. */
+	let schemaFieldTypes = $derived(
+		new Map((schema?.fields ?? []).map((f) => [f.key, f.type] as const)),
+	);
 	let relationFilterKeys = $derived(
 		new Set((schema?.fields ?? []).filter((f) => isRelationType(f.type)).map((f) => f.key)),
 	);
@@ -1767,7 +1772,11 @@
 				if (relationFilterKeys.has(key)) {
 					return relationFilterMatches(fields[key], value);
 				}
-				return fields[key] === value;
+				// `fieldMatches`, not `===` (BUG-3052 unit 3): the filter keeps an
+				// item iff it sits in that lane, so a `5` stored in a select is
+				// found by filtering for `'5'`, and a multi_select array by any
+				// one of its values.
+				return fieldMatches(fields[key], value, schemaFieldTypes.get(key));
 			});
 		}
 

@@ -155,7 +155,8 @@
 		const schemaKeys = new Set(baseParsedCollection.fields.map((f) => f.key));
 		const applicable = rawFilters.filter((f) => filterEvaluable(schemaKeys, f));
 		if (applicable.length === 0) return items;
-		return items.filter((item) => applicable.every((f) => matchesFilter(item, f)));
+		const fieldTypes = new Map(baseParsedCollection.fields.map((f) => [f.key, f.type] as const));
+		return items.filter((item) => applicable.every((f) => matchesFilter(item, f, fieldTypes)));
 	});
 
 	// `filterEvaluable` / `matchesFilter` now live in `shareView.ts` — the

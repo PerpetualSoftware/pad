@@ -90,6 +90,14 @@ describe('matchesFilter', () => {
 			matchesFilter(item({ unparented: 'false' }), { field: 'unparented', op: 'eq', value: 'true' }),
 		).toBe(false);
 	});
+
+	it('eq on a multi_select keeps an item holding the value among others, as the logged-in page does (BUG-3052 unit 3)', () => {
+		const types = new Map([['labels', 'multi_select']]);
+		expect(matchesFilter(item({ labels: ['a', 'b'] }), { field: 'labels', op: 'eq', value: 'b' }, types)).toBe(true);
+		expect(matchesFilter(item({ labels: ['a'] }), { field: 'labels', op: 'eq', value: 'b' }, types)).toBe(false);
+		// Without the declared type an array is one value, the lane it sits in.
+		expect(matchesFilter(item({ labels: ['a', 'b'] }), { field: 'labels', op: 'eq', value: 'b' })).toBe(false);
+	});
 });
 
 describe('resolveGroupField with a relation field (TASK-2998, codex round 1)', () => {

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { safeText } from '$lib/fields/fieldShape';
+	import { fieldMatches, safeText } from '$lib/fields/fieldShape';
 	import { page } from '$app/state';
 	import { ownValue } from '$lib/utils/ownValue';
 	import { goto } from '$app/navigation';
@@ -207,10 +207,10 @@
 			items = items.filter(i => i.title.toLowerCase().includes(q) || (i.content ?? '').toLowerCase().includes(q));
 		}
 		if (filterTrigger) {
-			items = items.filter(i => (parseFields(i).trigger ?? 'manual') === filterTrigger);
+			items = items.filter(i => fieldMatches(parseFields(i).trigger ?? 'manual', filterTrigger));
 		}
 		if (filterScope) {
-			items = items.filter(i => (parseFields(i).scope ?? 'all') === filterScope);
+			items = items.filter(i => fieldMatches(parseFields(i).scope ?? 'all', filterScope));
 		}
 		return items.sort((a, b) => {
 			const fa = parseFields(a), fb = parseFields(b);

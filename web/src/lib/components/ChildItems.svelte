@@ -14,7 +14,7 @@
 	import { parseFields, parseSchema, formatItemRef } from '$lib/types';
 	import { collectionsNotStaleFor, categoricalValueFor } from '$lib/collections/categoricalFieldValue';
 	import { laneKey } from '$lib/collections/boardColumns';
-	import { safeText } from '$lib/fields/fieldShape';
+	import { fieldMatches, safeText } from '$lib/fields/fieldShape';
 	import { dndzone, TRIGGERS, SHADOW_ITEM_MARKER_PROPERTY_NAME } from 'svelte-dnd-action';
 	import type { DndEvent } from 'svelte-dnd-action';
 	import {
@@ -979,7 +979,7 @@
 						     collection PICKER; what it lacked was asking them about the
 						     row it was drawing. -->
 						{@const priority = categoricalValueFor(collectionStore.collections, child, 'priority', fields.priority, collectionsNotStaleFor(collectionStore.collectionsWorkspace, wsSlug))}
-						{@const isDone = terminal.includes(fields.status)}
+						{@const isDone = terminal.some((t) => fieldMatches(fields.status, t))}
 						{@const isExpanded = expandedIds.has(child.id)}
 						{@const canExpand = child.has_children}
 						<div class="child-item-wrapper">
@@ -1041,7 +1041,7 @@
 				     so a sweep that stopped at the first hit in each file missed it
 				     (BUG-3067 round 3). -->
 				{@const printStatus = categoricalValueFor(collectionStore.collections, child, 'status', childFields.status, collectionsNotStaleFor(collectionStore.collectionsWorkspace, wsSlug))}
-				{@const isDone = terminal.includes(childFields.status)}
+				{@const isDone = terminal.some((t) => fieldMatches(childFields.status, t))}
 				<li class="print-child-row" class:done={isDone}>
 					<span class="print-check">{isDone ? '[x]' : '[ ]'}</span>
 					{#if formatItemRef(child)}

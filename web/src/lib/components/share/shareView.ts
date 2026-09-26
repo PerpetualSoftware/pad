@@ -17,7 +17,7 @@
 import type { FieldDef } from '$lib/types';
 import { isRelationType, relationValuesOf } from '$lib/items/relationFieldTypes';
 import { UNPARENTED_FILTER_FIELD } from '$lib/collections/unparentedFilter';
-import { safeString, safeText } from '$lib/fields/fieldShape';
+import { fieldMatches, safeString, safeText } from '$lib/fields/fieldShape';
 
 // Re-exported so existing/future imports of `UNPARENTED_FILTER_FIELD` from
 // this module keep working — the canonical definition lives in
@@ -239,7 +239,11 @@ export function filterEvaluable(schemaKeys: Set<string>, filter: unknown): boole
  * `filterEvaluable` gate can't accidentally apply it either (defense in
  * depth for DR-5).
  */
-export function matchesFilter(item: PublicItem, filter: unknown): boolean {
+export function matchesFilter(
+	item: PublicItem,
+	filter: unknown,
+	fieldTypes?: ReadonlyMap<string, string>,
+): boolean {
 	if (!filter || typeof filter !== 'object') return true;
 	const f = filter as { field?: unknown; op?: unknown; value?: unknown };
 	if (typeof f.field !== 'string') return true;
@@ -248,8 +252,11 @@ export function matchesFilter(item: PublicItem, filter: unknown): boolean {
 	// `safeText` / `safeString`, not `String` (BUG-3052): a stored
 	// `{"toString":0}` made `String` throw, which took the whole shared view
 	// down. Same comparisons, same answers, for every value `String` handled.
+	// `eq` goes through `fieldMatches` (BUG-3052 unit 3), the predicate the
+	// logged-in collection page uses, so one saved view keeps the same items
+	// on both: a multi_select array matches any one of its values.
 	if (f.op === 'eq') {
-		return safeText(fieldVal) === safeText(f.value);
+		return fieldMatches(fieldVal, f.value, fieldTypes?.get(f.field));
 	}
 	if (f.op === 'in') {
 		const wanted = Array.isArray(f.value) ? f.value.map((v) => safeString(v)) : [safeString(f.value)];
