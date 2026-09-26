@@ -3357,8 +3357,13 @@
 	}
 	function handleBulkMove(items: Item[], status: string) {
 		const ws = wsSlug;
-		// All lane items shared the lane's status; undo moves them back.
-		const sourceStatus = items.length ? String(parseFields(items[0]).status ?? '') : '';
+		// All lane items shared the lane's status; undo moves them back. Only a
+		// STRING status is written back (BUG-3052 unit 2): the lane key is the
+		// value's text, so moving a `5` back would store `"5"`, a silent change
+		// of type, and a `{"toString":0}` made `String` throw. No undo is offered
+		// for those rather than a coercing one.
+		const rawSource = items.length ? parseFields(items[0]).status : undefined;
+		const sourceStatus = typeof rawSource === 'string' ? rawSource : '';
 		return runBulkOn(ws, { op: 'move', ids: idsOf(items), status }, 'Moved', {
 			undo: sourceStatus
 				? (okIds) => runBulkOn(ws, { op: 'move', ids: okIds, status: sourceStatus }, 'Moved back')

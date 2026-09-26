@@ -377,3 +377,30 @@ describe('a text cell holding a value String() cannot convert (BUG-3052)', () =>
 		expect(screen.container.textContent).toContain('plain');
 	});
 });
+
+// BUG-3052 unit 2: a cell whose value does not match its field's declared type
+// shows the raw stored text, marked, instead of text that reads as well-typed.
+describe('a cell whose value does not match its field type (BUG-3052 unit 2)', () => {
+	it('shows the raw text, marked, and leaves well-typed cells alone', () => {
+		const coll = collection([
+			{ key: 'effort', label: 'Effort', type: 'number' },
+			{ key: 'note', label: 'Note', type: 'text' },
+		]);
+		const screen = render(TableView, {
+			props: {
+				items: [item('car-1', { effort: '5', note: { a: 1 } }), item('car-2', { effort: 3, note: 'plain' })],
+				collection: coll,
+			} as never,
+		});
+		const marked = [...screen.container.querySelectorAll('.cell-mismatch')];
+		expect(marked.map((el) => el.getAttribute('title'))).toEqual([
+			"Doesn't match the field type (number)",
+			"Doesn't match the field type (text)",
+		]);
+		// `"5"` is visibly not the number 5, and an object is not `[object Object]`.
+		expect(marked[0].textContent).toContain('"5"');
+		expect(marked[1].textContent).toContain('{"a":1}');
+		expect(screen.container.textContent).not.toContain('[object Object]');
+		expect(screen.container.textContent).toContain('plain');
+	});
+});
