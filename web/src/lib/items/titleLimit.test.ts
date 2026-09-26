@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 import {
 	copyTitle,
 	MAX_ITEM_TITLE_RUNES,
+	TITLE_COUNT_FROM,
+	titleLengthState,
 	serverTrimmedTitle,
 	titleEditError,
 	titleLimitError
@@ -140,5 +142,36 @@ describe('copyTitle (BUG-3149)', () => {
 	it('the source is measured after the server\'s trim', () => {
 		const src = '  ' + 'a'.repeat(MAX_ITEM_TITLE_RUNES - 7) + '\u0085';
 		expect(copyTitle(src)).toBe('a'.repeat(MAX_ITEM_TITLE_RUNES - 7) + ' (copy)');
+	});
+});
+
+// BUG-2836: live feedback while typing a title.
+describe('titleLengthState', () => {
+	const at = (n: number) => 'x'.repeat(n);
+
+	it('stays quiet well under the limit', () => {
+		expect(titleLengthState(at(10), 'old')).toEqual({ count: 10, max: MAX_ITEM_TITLE_RUNES, show: false, over: false });
+	});
+
+	it('shows the count from TITLE_COUNT_FROM, and marks invalid only past the limit', () => {
+		expect(titleLengthState(at(TITLE_COUNT_FROM), 'old')).toMatchObject({ show: true, over: false });
+		expect(titleLengthState(at(MAX_ITEM_TITLE_RUNES), 'old')).toMatchObject({ show: true, over: false });
+		expect(titleLengthState(at(MAX_ITEM_TITLE_RUNES + 1), 'old')).toMatchObject({ show: true, over: true });
+	});
+
+	it('counts in the server’s units: code points after its trim, so an emoji is one', () => {
+		const emoji = '😀'.repeat(MAX_ITEM_TITLE_RUNES);
+		expect(titleLengthState(`  ${emoji}  `, 'old')).toMatchObject({ count: MAX_ITEM_TITLE_RUNES, over: false });
+	});
+
+	it('a LEGACY title already over the limit, unchanged, is not flagged (the server grandfathers the echo)', () => {
+		const legacy = at(MAX_ITEM_TITLE_RUNES + 40);
+		// Nothing shown at all: "295 / 255" unflagged would contradict itself (review R1).
+		expect(titleLengthState(legacy, legacy)).toMatchObject({ show: false, over: false });
+		// A trailing U+0085 is kept by JS trim, so the echo still matches (review R1, measured).
+		const nel = legacy + '\u0085';
+		expect(titleLengthState(nel, nel)).toMatchObject({ show: false, over: false });
+		// Editing it is a rename, and a rename over the limit is refused.
+		expect(titleLengthState(legacy + 'y', legacy)).toMatchObject({ over: true });
 	});
 });

@@ -13,8 +13,11 @@
 // path at each door is still the backstop — this check is a courtesy, the
 // server is the authority.
 //
-// The constant is pinned to the Go one by TestWebTitleLimitMatchesServer
-// (internal/models/title_limit_parity_test.go), so the two cannot drift.
+// The constant is pinned to the Go one through a shared corpus,
+// testdata/item_title_limit.json: TestTitleLimitCorpus_MaxMatchesServer
+// (internal/models/title_limit_parity_test.go) asserts its max_runes equals
+// models.MaxItemTitleRunes, and titleLimit.test.ts asserts this constant equals
+// the same max_runes, so the two cannot drift.
 
 export const MAX_ITEM_TITLE_RUNES = 255;
 
@@ -83,4 +86,29 @@ export function copyTitle(source: string): string {
 	let end = base.length;
 	while (end > 0 && GO_SPACE.has(base[end - 1].codePointAt(0)!)) end--;
 	return base.slice(0, end).join('') + COPY_SUFFIX;
+}
+
+/** Past this many characters a title input shows a live count (BUG-2836). */
+export const TITLE_COUNT_FROM = 200;
+
+/**
+ * What a title input shows WHILE typing (BUG-2836): the count in the server's
+ * own units, whether to show it, and whether the title as typed would be
+ * refused. Invalid exactly when the save would be (`titleEditError`), so a
+ * legacy title already over the limit and sent back unchanged is NOT flagged:
+ * the server treats it as an echo and never re-checks it. Nothing here
+ * truncates: an over-limit legacy value is left whole until the user edits it.
+ */
+export function titleLengthState(
+	draft: string,
+	stored: string,
+): { count: number; max: number; show: boolean; over: boolean } {
+	const count = serverTrimmedTitle(draft).length;
+	const sent = draft.trim();
+	// An unchanged title is an echo the save never sends (and the server never
+	// re-checks), so it shows nothing: a legacy title over the limit read
+	// "300 / 255" without being invalid, which contradicts itself.
+	const unchanged = sent === stored || serverTrimmedTitle(sent).join('') === stored;
+	const over = !unchanged && titleEditError(sent, stored) !== null;
+	return { count, max: MAX_ITEM_TITLE_RUNES, show: !unchanged && (over || count >= TITLE_COUNT_FROM), over };
 }
