@@ -150,12 +150,16 @@ func (s *Server) registerOAuthRoutes(r interface {
 	if s.oauthServer == nil || !s.IsCloud() {
 		return
 	}
-	r.Post("/oauth/register", s.handleOAuthRegister)
+	// Every POST here takes ValidateFormBody (BUG-2811): the form-encoded
+	// body is the half of r.Form ValidateQuery cannot see. register is JSON
+	// and passes the content-type gate untouched; it is wrapped so the rule
+	// is "every POST in this group", not a list to keep in step.
+	r.Post("/oauth/register", ValidateFormBody(s.handleOAuthRegister))
 	r.Get("/oauth/authorize", s.handleOAuthAuthorize)
-	r.Post("/oauth/authorize/decide", s.handleOAuthAuthorizeDecide)
-	r.Post("/oauth/token", s.handleOAuthToken)
-	r.Post("/oauth/revoke", s.handleOAuthRevoke)
-	r.Post("/oauth/introspect", s.handleOAuthIntrospect)
+	r.Post("/oauth/authorize/decide", ValidateFormBody(s.handleOAuthAuthorizeDecide))
+	r.Post("/oauth/token", ValidateFormBody(s.handleOAuthToken))
+	r.Post("/oauth/revoke", ValidateFormBody(s.handleOAuthRevoke))
+	r.Post("/oauth/introspect", ValidateFormBody(s.handleOAuthIntrospect))
 }
 
 // =====================================================================
