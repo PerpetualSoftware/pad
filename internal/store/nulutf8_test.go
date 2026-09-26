@@ -176,3 +176,45 @@ func TestInvalidUTF8MergesOnKeyIncompleteRows(t *testing.T) {
 		}
 	}
 }
+
+// The rowid merge (and the rowid address item_wiki_links already uses) reads
+// SQLite's hidden rowid. A table that DECLARED a column named rowid, _rowid_
+// or oid would shadow it, and the scan would read that column instead (codex
+// r2). None does; this makes adding one fail here rather than miscount.
+func TestNoProtectedTableShadowsRowid(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	if s.dialect.Driver() != DriverSQLite {
+		t.Skip("SQLite only")
+	}
+	seen := map[string]bool{}
+	for _, c := range NULProtectedColumns() {
+		if seen[c.Table] {
+			continue
+		}
+		seen[c.Table] = true
+		rows, err := s.db.Query(`SELECT name FROM pragma_table_info(?)`, c.Table)
+		if err != nil {
+			t.Fatalf("table_info %s: %v", c.Table, err)
+		}
+		n := 0
+		for rows.Next() {
+			var name string
+			if err := rows.Scan(&name); err != nil {
+				t.Fatal(err)
+			}
+			n++
+			switch strings.ToLower(name) {
+			case "rowid", "_rowid_", "oid":
+				t.Errorf("%s declares a column %q, which shadows SQLite's rowid the NUL scan merges on", c.Table, name)
+			}
+		}
+		rows.Close()
+		if n == 0 {
+			t.Errorf("%s: no columns read; the check would pass vacuously", c.Table)
+		}
+	}
+	if len(seen) == 0 {
+		t.Fatal("no protected tables")
+	}
+}
