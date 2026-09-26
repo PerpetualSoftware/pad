@@ -21,6 +21,95 @@ let mermaidMod: typeof import('mermaid') | null = null;
 let renderQueue: Promise<void> = Promise.resolve();
 let appliedMermaidTheme: MermaidTheme | null = null;
 
+/**
+ * EVERY QUEUED JOB IS BOUNDED (BUG-3239). The queue is one promise chain, so
+ * a job that never settles used to stall every diagram queued after it, in
+ * every editor and on share pages, until reload. A job that runs past its
+ * deadline is failed as a `'timeout'`, and the queue moves on. If it settles
+ * later, it writes nothing.
+ *
+ * What this cannot do: mermaid is single-threaded JS, so a render stuck in a
+ * SYNCHRONOUS loop blocks the page and no timer fires. Only async stalls are
+ * covered. After a timeout the next job may also overlap a render that is
+ * merely slow, which is the concurrency the queue exists to prevent, so the
+ * bounds sit well above anything measured. Too long only delays the diagrams
+ * behind a real stall, while too short fails real diagrams and risks overlap.
+ *
+ * RENDER, measured on 2026-09-26 in headless Chromium with mermaid 12.0.0 and
+ * this file's init config, warm p50 / max over 7-14 runs:
+ *   unthrottled:  flowchart 10 nodes 50 / 59 ms, 50 nodes 194 / 213 ms,
+ *                 200 nodes 736 / 753 ms (cold 740); sequence 150 msgs 119 / 125 ms
+ *   6x CPU throttle (a slow phone): flowchart 50 nodes 1.31 / 1.35 s,
+ *                 200 nodes 4.90 / 5.04 s, 500 nodes 12.4 / 12.6 s (cold 12.8)
+ * Render time is linear in diagram size and tightly distributed (max within
+ * 3% of p50 at every size). 30 s is 2.4x the slowest case measured, a
+ * 500-node flowchart on a throttled CPU, and it leaves room for the lazy
+ * per-diagram renderer chunk that render() fetches, which those timings
+ * (single-bundle mermaid.min.js) do not include.
+ */
+export const MERMAID_RENDER_DEADLINE_MS = 30_000;
+
+/**
+ * IMPORT, bounded separately because it is network-bound, not CPU-bound. The
+ * static graph of `import('mermaid')` in the built app is 25 chunks, 718,470
+ * bytes raw and 181,945 gzipped (measured on the 6e83faa6 build; :7777 serves
+ * them uncompressed). At a Slow-3G-class 50 KB/s that is about 15 s before
+ * round trips. 60 s is 4x that. A browser can leave a stalled chunk fetch
+ * pending far longer, and a stalled fetch is one SHARED pending module
+ * promise, so after one job has timed out waiting on it the jobs behind it
+ * fail at once instead of each waiting out another minute (`importStalled`).
+ */
+export const MERMAID_IMPORT_DEADLINE_MS = 60_000;
+
+/** Why a queued render did not draw: its source failed, or its job ran out of time. */
+export type MermaidFailure = 'invalid' | 'timeout';
+
+class MermaidTimeout extends Error {}
+
+let importPromise: Promise<typeof import('mermaid')> | null = null;
+/** Set once a job gave up on a still-pending import; cleared when it settles. */
+let importStalled = false;
+
+function withDeadline<T>(p: Promise<T>, ms: number): Promise<T> {
+	return new Promise<T>((resolve, reject) => {
+		const timer = setTimeout(() => reject(new MermaidTimeout()), ms);
+		p.then(
+			(v) => {
+				clearTimeout(timer);
+				resolve(v);
+			},
+			(e) => {
+				clearTimeout(timer);
+				reject(e);
+			}
+		);
+	});
+}
+
+function loadMermaid(): Promise<typeof import('mermaid')> {
+	if (mermaidMod) return Promise.resolve(mermaidMod);
+	if (!importPromise) {
+		const p = import('mermaid');
+		importPromise = p;
+		p.then(
+			(m) => {
+				mermaidMod = m;
+				importStalled = false;
+			},
+			() => {
+				// A failed import is retried by the next job, not cached.
+				if (importPromise === p) importPromise = null;
+				importStalled = false;
+			}
+		);
+	}
+	if (importStalled) return Promise.reject(new MermaidTimeout());
+	return withDeadline(importPromise, MERMAID_IMPORT_DEADLINE_MS).catch((e) => {
+		if (e instanceof MermaidTimeout) importStalled = true;
+		throw e;
+	});
+}
+
 /** The palette mermaid's global config currently holds, or null before the first render. */
 export function mermaidAppliedTheme(): MermaidTheme | null {
 	return appliedMermaidTheme;
@@ -40,12 +129,10 @@ export function currentMermaidTheme(): MermaidTheme {
 }
 
 async function initMermaid() {
-	if (!mermaidMod) {
-		mermaidMod = await import('mermaid');
-	}
+	const mod = await loadMermaid();
 	const theme = currentMermaidTheme();
 	if (theme !== appliedMermaidTheme) {
-		mermaidMod.default.initialize({
+		mod.default.initialize({
 			startOnLoad: false,
 			// BUG-3106: follows the app's mode. This was an unconditional
 			// 'dark', which drew every diagram on the dark palette in light
@@ -78,19 +165,20 @@ async function initMermaid() {
 		});
 		appliedMermaidTheme = theme;
 	}
-	return mermaidMod;
+	return mod;
 }
 
 /**
- * Render `source` into `target` through the one serialized queue. On a
- * parse failure `onError` decides what the reader sees. The default is the
- * editor's inline "invalid syntax" marker; the share page keeps the code.
- * `onRendered` runs only once the SVG is in `target`.
+ * Render `source` into `target` through the one serialized queue. When it
+ * cannot draw, `onError` decides what the reader sees, and is told why
+ * (`'invalid'` or `'timeout'`). The default is the editor's inline marker;
+ * the share page keeps the code. `onRendered` runs only once the SVG is in
+ * `target`.
  */
 export function queueMermaidRender(
 	source: string,
 	target: HTMLElement,
-	onError: (target: HTMLElement) => void = markInvalid,
+	onError: (target: HTMLElement, reason: MermaidFailure) => void = markFailed,
 	onRendered?: (target: HTMLElement) => void
 ): void {
 	renderQueue = renderQueue.then(async () => {
@@ -100,7 +188,10 @@ export function queueMermaidRender(
 			// and before anything else can run in the serialized queue.
 			const renderedTheme = appliedMermaidTheme;
 			const id = `mmd-${Math.random().toString(36).slice(2, 10)}`;
-			const { svg } = await m.default.render(id, source);
+			// Bounded, and a render that settles after its deadline writes
+			// nothing: by then the queue has moved on, and a newer render or
+			// clear may own `target` (BUG-3239).
+			const { svg } = await withDeadline(m.default.render(id, source), MERMAID_RENDER_DEADLINE_MS);
 			target.innerHTML = svg;
 			// BUG-3112: the print rule keys on this, because print cannot
 			// re-render (see `.mermaid-diagram[data-mermaid-theme]`).
@@ -109,14 +200,15 @@ export function queueMermaidRender(
 			// error styling left over from a prior failed render.
 			target.classList.remove('mermaid-error');
 			onRendered?.(target);
-		} catch {
-			onError(target);
+		} catch (e) {
+			onError(target, e instanceof MermaidTimeout ? 'timeout' : 'invalid');
 		}
 	});
 }
 
-function markInvalid(target: HTMLElement) {
-	target.textContent = '⚠ Invalid Mermaid syntax';
+function markFailed(target: HTMLElement, reason: MermaidFailure) {
+	target.textContent =
+		reason === 'timeout' ? '⚠ Diagram took too long to render' : '⚠ Invalid Mermaid syntax';
 	target.classList.add('mermaid-error');
 	delete target.dataset.mermaidTheme;
 }
