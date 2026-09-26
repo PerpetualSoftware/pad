@@ -7,6 +7,8 @@
 	import { renderAttachmentUnavailable } from '$lib/markdown/attachments';
 	import DOMPurify from 'dompurify';
 	import PublicCollectionView from '$lib/components/share/PublicCollectionView.svelte';
+	import StaleBodyNotice from '$lib/components/common/StaleBodyNotice.svelte';
+	import { isBodyStale } from '$lib/items/staleBody';
 	import {
 		parsePublicCollection,
 		parsePublicItems,
@@ -57,6 +59,8 @@
 		title: string;
 		fields: Record<string, any>;
 		content: string;
+		/** The server's BUG-3000 marker on `content` (BUG-3050 U3). */
+		contentStale: boolean;
 		collection_name?: string;
 		collection_icon?: string;
 		item_ref?: string;
@@ -420,6 +424,7 @@
 					title: data.item?.title ?? 'Untitled',
 					fields,
 					content: data.item?.content ?? '',
+					contentStale: isBodyStale(data.item),
 					collection_name: data.item?.collection_name,
 					collection_icon: data.item?.collection_icon,
 					item_ref: data.item?.ref ?? data.item?.item_ref
@@ -495,6 +500,7 @@
 					title: data.item?.title ?? 'Untitled',
 					fields,
 					content: data.item?.content ?? '',
+					contentStale: isBodyStale(data.item),
 					collection_name: data.item?.collection_name,
 					collection_icon: data.item?.collection_icon,
 					item_ref: data.item?.ref ?? data.item?.item_ref
@@ -605,6 +611,7 @@
 				{/if}
 
 				{#if itemData.content}
+					{#if itemData.contentStale}<StaleBodyNotice />{/if}
 					<div class="item-content">
 						{@html renderedContent}
 					</div>

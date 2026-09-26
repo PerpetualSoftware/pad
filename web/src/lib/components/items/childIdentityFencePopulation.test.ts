@@ -180,6 +180,8 @@ const POPULATION: string[] = [
 	'lib/components/common/MenuItem.svelte',
 	'lib/components/common/ContentSkeleton.svelte',
 	'lib/components/common/ContentError.svelte',
+	// BUG-3050 U3: static notice text, no script beyond an import; no await, no send.
+	'lib/components/common/StaleBodyNotice.svelte',
 	'lib/components/collections/EditCollectionModal.svelte',
 	'lib/components/ShareDialog.svelte',
 	'lib/components/items/CopyItemDialog.svelte',

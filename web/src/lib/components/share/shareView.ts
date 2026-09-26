@@ -18,6 +18,7 @@ import type { FieldDef } from '$lib/types';
 import { isRelationType, relationValuesOf } from '$lib/items/relationFieldTypes';
 import { UNPARENTED_FILTER_FIELD } from '$lib/collections/unparentedFilter';
 import { fieldMatches, safeString, safeText } from '$lib/fields/fieldShape';
+import { isBodyStale } from '$lib/items/staleBody';
 
 // Re-exported so existing/future imports of `UNPARENTED_FILTER_FIELD` from
 // this module keep working — the canonical definition lives in
@@ -58,6 +59,9 @@ export interface PublicItem {
 	ref: string;
 	fields: Record<string, unknown>;
 	content: string;
+	/** True when the server marked `content` as behind the live document
+	 *  (`content_state`, BUG-3000); renderers say so (BUG-3050 U3). */
+	contentStale: boolean;
 }
 
 // ── Defensive parsing ───────────────────────────────────────────────────────
@@ -160,7 +164,8 @@ export function parsePublicItem(raw: unknown, index = 0): PublicItem {
 		title: typeof obj.title === 'string' && obj.title ? obj.title : 'Untitled',
 		ref,
 		fields: coerceObject(obj.fields),
-		content: typeof obj.content === 'string' ? obj.content : ''
+		content: typeof obj.content === 'string' ? obj.content : '',
+		contentStale: isBodyStale(obj as { content_state?: string })
 	};
 }
 

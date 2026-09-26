@@ -20,6 +20,8 @@
 	import { getFieldValue, itemUrlId, formatItemRef } from '$lib/types';
 	import { relativeTime } from '$lib/utils/markdown';
 	import { fieldMatches } from '$lib/fields/fieldShape';
+	import StaleBodyDot from '$lib/components/common/StaleBodyDot.svelte';
+	import { isBodyStale } from '$lib/items/staleBody';
 
 	const RECENT_SEARCHES_KEY = 'pad-recent-searches';
 	const MAX_RECENT = 10;
@@ -198,7 +200,7 @@
 			// The CommandPalette only reads title/fields/ref/etc., so an
 			// empty content body is fine — and matches the same widening
 			// pattern the collection page uses at TASK-1357.
-			const item: Item = { ...(row as ItemIndexRow), content: '' } as Item;
+			const item: Item = { ...(row as ItemIndexRow), content: '', content_state: undefined } as Item;
 			out.push({
 				item,
 				snippet: '',
@@ -1042,6 +1044,7 @@
 										</div>
 										{#if r.snippet}
 											<div class="result-snippet">
+												{#if isBodyStale(r.item)}<StaleBodyDot />{/if}
 												{stripHtml(r.snippet)}
 											</div>
 										{/if}
@@ -1089,7 +1092,7 @@
 									{/if}
 								</div>
 								{#if r.snippet}
-									<div class="result-snippet">{stripHtml(r.snippet)}</div>
+									<div class="result-snippet">{#if isBodyStale(r.item)}<StaleBodyDot />{/if}{stripHtml(r.snippet)}</div>
 								{/if}
 							</button>
 						{/each}
@@ -1166,7 +1169,7 @@
 										{/if}
 									</div>
 									{#if r.snippet}
-										<div class="result-snippet">{stripHtml(r.snippet)}</div>
+										<div class="result-snippet">{#if isBodyStale(r.item)}<StaleBodyDot />{/if}{stripHtml(r.snippet)}</div>
 									{/if}
 								</button>
 							{/each}

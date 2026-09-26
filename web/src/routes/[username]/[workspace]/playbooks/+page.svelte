@@ -22,6 +22,8 @@
 	import PageHeader from '$lib/components/common/PageHeader.svelte';
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
 	import PlaybookFormFields from '$lib/components/playbooks/PlaybookFormFields.svelte';
+	import StaleBodyDot from '$lib/components/common/StaleBodyDot.svelte';
+	import { isBodyStale } from '$lib/items/staleBody';
 	import {
 		PLAYBOOK_SKELETON_BODY,
 		argumentsToJSON,
@@ -603,6 +605,7 @@
 						<button class="card-header" onclick={() => toggleExpand(item.id)} aria-expanded={isExpanded}>
 							<div class="card-title-row">
 								<span class="card-title" class:deprecated-title={status === 'deprecated'}>{item.title}</span>
+								{#if isBodyStale(item)}<StaleBodyDot />{/if}
 								{#if status}<Chip size="sm" color={statusColor(status)}>{statusLabel(status)}</Chip>{/if}
 							</div>
 							<div class="card-meta">

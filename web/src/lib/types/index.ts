@@ -114,6 +114,8 @@ export interface PublicShareItem {
 	ref?: string;
 	fields?: string;
 	content?: string;
+	/** BUG-3000 marker: `content` is behind the live document (BUG-3050 U3). */
+	content_state?: 'applied_pending_flush';
 }
 
 /** The shape returned by GET /api/v1/s/{token}. Auth/password gates short-circuit
@@ -133,6 +135,8 @@ export interface SharePayload {
 		item_ref?: string;
 		collection_name?: string;
 		collection_icon?: string;
+		/** BUG-3000 marker: `content` is behind the live document (BUG-3050 U3). */
+		content_state?: 'applied_pending_flush';
 	};
 	collection?: PublicShareCollection;
 	items?: PublicShareItem[];
@@ -1528,11 +1532,8 @@ export interface Backlink {
 	 * It describes the SOURCE of each link, never the item the panel is about,
 	 * so a list can mix marked and unmarked rows.
 	 *
-	 * NOTE: the API carries this; no browser surface RENDERS it yet. Where a
-	 * stale marker belongs in a backlinks panel or a command-palette result is
-	 * a UI decision rather than a field copy, tracked as BUG-3050. This
-	 * declaration exists so a consumer can see the field rather than discover
-	 * it in a network tab.
+	 * BacklinksPanel renders it as a muted dot on the marked row only, beside
+	 * the snippet (BUG-3050 U3, `lib/items/staleBody.ts`).
 	 */
 	content_state?: 'applied_pending_flush';
 	updated_at: string;

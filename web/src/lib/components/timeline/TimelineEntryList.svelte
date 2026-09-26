@@ -78,6 +78,9 @@
 		// Version cards.
 		itemSlug?: string;
 		currentContent?: string;
+		/** The server marked `currentContent` as behind the live document
+		 *  (BUG-3000 `content_state`); the diff says so (BUG-3050 U3). */
+		currentContentStale?: boolean;
 		onRestore?: (item: Item) => void;
 		flushBeforeRestore?: () => Promise<void>;
 		restoreFrozen?: boolean;
@@ -105,6 +108,7 @@
 		onRemoveReaction = () => {},
 		itemSlug = '',
 		currentContent = '',
+		currentContentStale = false,
 		onRestore,
 		flushBeforeRestore,
 		restoreFrozen = false
@@ -153,6 +157,7 @@
 						{wsSlug}
 						{itemSlug}
 						{currentContent}
+						{currentContentStale}
 						{onRestore}
 						{flushBeforeRestore}
 						frozen={frozen || restoreFrozen}

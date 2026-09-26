@@ -37,6 +37,9 @@
 		username?: string;
 		itemSlug: string;
 		currentContent: string;
+		/** The server marked `currentContent` as behind the live document
+		 *  (BUG-3000 `content_state`); the diff says so (BUG-3050 U3). */
+		currentContentStale?: boolean;
 		items?: Item[];
 		onRestore?: (item: Item) => void;
 		/**
@@ -128,7 +131,7 @@
 		emptyLabel?: string;
 	}
 
-	let { wsSlug, username = '', itemSlug, currentContent, items = [], onRestore, itemId, collectionId, frozen = false, restoreFrozen = false, flushBeforeRestore, visibleKinds, hostToken = '', parentArchived = false, feed = $bindable(), title = 'Timeline', emptyLabel = 'No timeline entries yet.' }: Props = $props();
+	let { wsSlug, username = '', itemSlug, currentContent, currentContentStale = false, items = [], onRestore, itemId, collectionId, frozen = false, restoreFrozen = false, flushBeforeRestore, visibleKinds, hostToken = '', parentArchived = false, feed = $bindable(), title = 'Timeline', emptyLabel = 'No timeline entries yet.' }: Props = $props();
 
 	// Resolve canEditItem reactively; falls to false if itemId/collectionId
 	// aren't supplied (e.g. an older caller). Folds in the master-freeze gate
@@ -1430,6 +1433,7 @@
 			onRemoveReaction={handleRemoveReaction}
 			{itemSlug}
 			{currentContent}
+			{currentContentStale}
 			{onRestore}
 			{flushBeforeRestore}
 			{restoreFrozen}

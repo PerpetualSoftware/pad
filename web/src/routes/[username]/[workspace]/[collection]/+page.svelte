@@ -312,7 +312,7 @@
 		wsSlug && collSlug
 			? localIndex
 					.getByCollection(wsSlug, collSlug, { includeArchived: showArchived })
-					.map((row) => ({ ...row, content: '' }) as Item)
+					.map((row) => ({ ...row, content: '', content_state: undefined }) as Item)
 			: [],
 	);
 

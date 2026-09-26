@@ -4,6 +4,8 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import type { Backlink } from '$lib/types';
 	import { relativeTime } from '$lib/utils/markdown';
+	import StaleBodyDot from '$lib/components/common/StaleBodyDot.svelte';
+	import { isBodyStale } from '$lib/items/staleBody';
 
 	interface Props {
 		wsSlug: string;
@@ -220,7 +222,7 @@
 									</span>
 								</div>
 								{#if bl.snippet}
-									<div class="snippet">{bl.snippet}</div>
+									<div class="snippet">{#if isBodyStale(bl)}<StaleBodyDot />{/if}{bl.snippet}</div>
 								{/if}
 							</li>
 						{/each}

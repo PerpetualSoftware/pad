@@ -23,6 +23,8 @@
 	import { sseService } from '$lib/services/sse.svelte';
 	import { visibility } from '$lib/services/visibility.svelte';
 	import Editor from '$lib/components/editor/Editor.svelte';
+	import StaleBodyNotice from '$lib/components/common/StaleBodyNotice.svelte';
+	import { isBodyStale } from '$lib/items/staleBody';
 	import EditorBubbleMenu from '$lib/components/editor/EditorBubbleMenu.svelte';
 	import EditorLinkPopover from '$lib/components/editor/EditorLinkPopover.svelte';
 	import RawMarkdownEditor from '$lib/components/editor/RawMarkdownEditor.svelte';
@@ -3748,11 +3750,12 @@
 
 	// Realtime-refresh convenience: applies the content-adoption rule (under
 	// collab the editor reads Y.Doc so adopt server content verbatim; otherwise
-	// preserve the live local content) and the tag overlay.
+	// preserve the live local content) and the tag overlay. The kept body keeps
+	// ITS `content_state` (BUG-3050 U3): the new row's marker describes the new
+	// row's body, and a render reading it would label a body it was not about.
 	function adoptServerItem(updated: Item): Item {
-		return withInflightTags(
-			collabProvider ? updated : { ...updated, content: item?.content ?? updated.content }
-		);
+		if (collabProvider || item?.content == null) return withInflightTags(updated);
+		return withInflightTags({ ...updated, content: item.content, content_state: item.content_state });
 	}
 
 	/**
@@ -4538,7 +4541,7 @@
 					// Newer pending edit; keep local content, adopt
 					// server-side metadata only. The next debounce
 					// cycle will land the queued edit.
-					item = withInflightTags({ ...updated, content: item.content });
+					item = withInflightTags({ ...updated, content: item.content, content_state: item.content_state });
 				}
 			}).catch((e) => {
 				if (!item || item.id !== reqItemId || genAtSave !== loadGeneration) return;
@@ -4660,7 +4663,7 @@
 						// Newer edit pending — keep our local
 						// content but adopt server-side metadata
 						// (timestamps, version, modified_by).
-						item = withInflightTags({ ...updated, content: item.content });
+						item = withInflightTags({ ...updated, content: item.content, content_state: item.content_state });
 					}
 				} catch (e) {
 					// Don't surface A's save failure over B (a superseded
@@ -5377,7 +5380,7 @@
 			// Refresh item to update parent info
 			const refreshed = await api.items.get(targetWs, targetSlug);
 			if (switchedAway(targetItem, gen) || !item) return;
-			item = withInflightTags({ ...refreshed, content: item.content });
+			item = withInflightTags({ ...refreshed, content: item.content, content_state: item.content_state });
 			toastStore.show('Relationship removed', 'success');
 		} catch (e: any) {
 			if (switchedAway(targetItem, gen)) return;
@@ -5428,7 +5431,7 @@
 			// Refresh item to update parent info
 			const refreshed = await api.items.get(targetWs, targetSlug);
 			if (switchedAway(sourceItem, gen) || !item) return;
-			item = withInflightTags({ ...refreshed, content: item.content });
+			item = withInflightTags({ ...refreshed, content: item.content, content_state: item.content_state });
 			toastStore.show('Relationship added', 'success');
 		} catch (e: any) {
 			if (switchedAway(sourceItem, gen)) return;
@@ -6763,6 +6766,7 @@
 						read-only y-binding is deferred to TASK-1266.
 					-->
 					{#if !canEdit}
+						{#if isBodyStale(item)}<StaleBodyNotice />{/if}
 						{#key `${item.id}:false:${identityKey}`}
 							<Editor
 								content={editorContent}
@@ -6922,6 +6926,7 @@
 					{username}
 					{itemSlug}
 					currentContent={item.content ?? ''}
+					currentContentStale={isBodyStale(item)}
 					items={localIndex.getAll(wsSlug)}
 					onRestore={(updated) => { if (handedDown !== identityKey) return; handleVersionRestore(updated); }}
 					flushBeforeRestore={flushCollabBeforeRestore}
@@ -7163,6 +7168,7 @@
 					{username}
 					{itemSlug}
 					currentContent={item.content ?? ''}
+					currentContentStale={isBodyStale(item)}
 					items={localIndex.getAll(wsSlug)}
 					changeContext={timelineChangeContext}
 					hostToken={attachmentHostToken}

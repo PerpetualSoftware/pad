@@ -3,6 +3,7 @@
 	import { api, isContentPendingFlushError } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import DiffView from '$lib/components/versions/DiffView.svelte';
+	import StaleBodyNotice from '$lib/components/common/StaleBodyNotice.svelte';
 	import Chip from '$lib/components/common/Chip.svelte';
 	import { relativeTime } from '$lib/utils/markdown';
 
@@ -11,6 +12,9 @@
 		wsSlug: string;
 		itemSlug: string;
 		currentContent: string;
+		/** The server marked `currentContent` as behind the live document
+		 *  (BUG-3000 `content_state`); the diff says so (BUG-3050 U3). */
+		currentContentStale?: boolean;
 		onRestore?: (item: Item) => void;
 		/**
 		 * PLAN-2154 Phase 2 / D2 / R12 (TASK-2172): master-freeze. The restore
@@ -36,7 +40,7 @@
 		flushBeforeRestore?: () => Promise<void>;
 	}
 
-	let { version, wsSlug, itemSlug, currentContent, onRestore, frozen = false, flushBeforeRestore }: Props = $props();
+	let { version, wsSlug, itemSlug, currentContent, currentContentStale = false, onRestore, frozen = false, flushBeforeRestore }: Props = $props();
 
 	let expanded = $state(false);
 	let confirming = $state(false);
@@ -226,6 +230,7 @@
 				{:else if resolveError}
 					<p class="diff-status">Couldn't load this version's content.</p>
 				{:else if displayContent !== null}
+					{#if currentContentStale}<StaleBodyNotice />{/if}
 					<DiffView oldContent={displayContent} newContent={currentContent} />
 				{/if}
 			</div>
