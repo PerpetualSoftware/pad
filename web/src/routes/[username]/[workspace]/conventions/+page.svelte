@@ -3,9 +3,11 @@
 	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
 	import type { Collection, Item, ItemConventionMetadata } from '$lib/types';
 	import { conventionCreatePayload } from '$lib/conventions/createPayload';
-	import { parseFields, parseSchema, itemUrlId } from '$lib/types';
+	import { parseFields, parseSchema, itemUrlId, formatItemRef } from '$lib/types';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { titleLimitError } from '$lib/items/titleLimit';
+	import { contentWriteFor, isContentPendingFlush } from '$lib/items/contentWrite';
+	import { pendingEditsDialog } from '$lib/stores/pendingEditsDialog.svelte';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import { exportAndDownloadArtifact, importArtifactFile } from '$lib/utils/artifacts';
 	import { SvelteSet, SvelteMap } from 'svelte/reactivity';
@@ -304,23 +306,46 @@
 		}
 	}
 
+	// The row the edit STARTED from (BUG-3050 U1): its body and token, not the
+	// current list row's, which a live refresh may have replaced while editing.
+	let editBase: Pick<Item, 'content' | 'seq' | 'updated_at'> | null = null;
+
 	function startEditing(item: Item) {
 		editingSlug = item.slug;
 		editContent = item.content ?? '';
+		editBase = { content: item.content, seq: item.seq, updated_at: item.updated_at };
 	}
 
 	async function saveEditing(item: Item) {
 		if (!workspace || saving) return;
+		// BUG-3050 U1: the body goes only when it CHANGED, and then with the
+		// token of the row the edit started from, so edits an open tab has not
+		// stored yet are refused (409 content_pending_flush) rather than replaced.
+		const write = contentWriteFor(editContent, editBase ?? item);
+		if (!('content' in write)) {
+			editingSlug = null;
+			return;
+		}
 		saving = true;
 		try {
-			const updated = await api.items.update(workspace, item.slug, { content: editContent });
+			let updated: Item;
+			try {
+				updated = await api.items.update(workspace, item.slug, write);
+			} catch (err) {
+				if (!isContentPendingFlush(err)) throw err;
+				if (!(await pendingEditsDialog.request(formatItemRef(item) ?? item.title))) {
+					toastStore.show("Not saved: the open tab's edits were kept. Your text is still here.", 'info');
+					return;
+				}
+				updated = await api.items.update(workspace, item.slug, { ...write, overwrite_pending_edits: true });
+			}
 			const idx = conventions.findIndex(c => c.id === item.id);
 			if (idx !== -1) conventions[idx] = updated;
 			conventions = [...conventions];
 			editingSlug = null;
 			toastStore.show('Convention updated', 'success');
-		} catch {
-			toastStore.show('Failed to update convention', 'error');
+		} catch (err) {
+			toastStore.show((err as Error)?.message || 'Failed to update convention', 'error');
 		} finally {
 			saving = false;
 		}

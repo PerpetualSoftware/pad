@@ -4,7 +4,7 @@
 	import { ownValue } from '$lib/utils/ownValue';
 	import { goto } from '$app/navigation';
 	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
-	import { parseFields, parseSchema, itemUrlId, type Collection, type Item } from '$lib/types';
+	import { parseFields, parseSchema, itemUrlId, formatItemRef, type Collection, type Item } from '$lib/types';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import {
 		categoricalValueFor,
@@ -13,6 +13,7 @@
 	} from '$lib/collections/categoricalFieldValue';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { copyTitle, titleLimitError } from '$lib/items/titleLimit';
+	import { pendingEditsDialog } from '$lib/stores/pendingEditsDialog.svelte';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import { exportAndDownloadArtifact, importArtifactFile } from '$lib/utils/artifacts';
 	import { statusColor } from '$lib/utils/fieldColors';
@@ -329,6 +330,13 @@
 			// owns the slug and a duplicate would clash on the unique index.
 			if (fields.arguments !== undefined && fields.arguments !== null) {
 				dupFields.arguments = fields.arguments;
+			}
+			// BUG-3050 U1: a source whose stored body is behind an open tab's
+			// edits would be copied WITHOUT them. A create has no token for the
+			// server to refuse on, so the user is asked here instead.
+			if (item.content_state === 'applied_pending_flush' &&
+				!(await pendingEditsDialog.request(formatItemRef(item) ?? item.title, 'duplicate'))) {
+				return;
 			}
 			await api.items.create(wsSlug, 'playbooks', {
 				title: copyTitle(item.title),

@@ -2,9 +2,11 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api/client';
-	import { parseFields, parseSchema, itemUrlId, type Collection, type Item } from '$lib/types';
+	import { parseFields, parseSchema, itemUrlId, formatItemRef, type Collection, type Item } from '$lib/types';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { titleEditError } from '$lib/items/titleLimit';
+	import { contentWriteFor, isContentPendingFlush } from '$lib/items/contentWrite';
+	import { pendingEditsDialog } from '$lib/stores/pendingEditsDialog.svelte';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import { exportAndDownloadArtifact } from '$lib/utils/artifacts';
 	import PlaybookFormFields from '$lib/components/playbooks/PlaybookFormFields.svelte';
@@ -224,11 +226,24 @@
 				{ status, trigger, scope, invocationSlug, args: argumentsToJSON(args) },
 				loadedForm
 			);
-			await api.items.update(wsSlug, item.slug, {
+			// BUG-3050 U1: the body goes only when it CHANGED, and then with the
+			// row's token, so edits an open tab has not stored yet are refused
+			// (409 content_pending_flush) rather than replaced.
+			const payload = {
 				title: title.trim(),
-				content: bodyContent,
+				...contentWriteFor(bodyContent, item),
 				...(Object.keys(fieldsPatch).length ? { fields_patch: fieldsPatch } : {})
-			});
+			};
+			try {
+				await api.items.update(wsSlug, item.slug, payload);
+			} catch (err) {
+				if (!isContentPendingFlush(err)) throw err;
+				if (!(await pendingEditsDialog.request(formatItemRef(item) ?? item.title))) {
+					toastStore.show("Not saved: the open tab's edits were kept. Your changes are still here.", 'info');
+					return;
+				}
+				await api.items.update(wsSlug, item.slug, { ...payload, overwrite_pending_edits: true });
+			}
 			toastStore.show('Playbook saved', 'success');
 			goto(`/${username}/${wsSlug}/playbooks`);
 		} catch (err) {
