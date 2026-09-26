@@ -138,6 +138,10 @@ export interface SharePayload {
 		/** BUG-3000 marker: `content` is behind the live document (BUG-3050 U3). */
 		content_state?: 'applied_pending_flush';
 	};
+	/** Single-item shares only (TASK-2248 U3): defs for the fields the item
+	 *  shows, in schema order. Deliberately NOT the schema: key, label, type,
+	 *  and terminal_options holding at most the item's own current value. */
+	field_defs?: Pick<FieldDef, 'key' | 'label' | 'type' | 'terminal_options'>[];
 	collection?: PublicShareCollection;
 	items?: PublicShareItem[];
 	// Renderable image-attachment refs embedded in the shared content

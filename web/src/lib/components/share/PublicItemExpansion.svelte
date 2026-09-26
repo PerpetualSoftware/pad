@@ -12,15 +12,8 @@
 	// place avoids introducing a second, divergent {@html} source.
 	import type { FieldDef } from '$lib/types';
 	import type { PublicItem } from './shareView';
-	import {
-		visibleFields,
-		formatLabel,
-		formatFieldValue,
-		fieldValueColor,
-		publicRelationText,
-		PUBLIC_RELATION_TITLE,
-	} from './shareView';
-	import { isRelationType } from '$lib/items/relationFieldTypes';
+	import { fieldChips } from './shareView';
+	import PublicFieldChips from './PublicFieldChips.svelte';
 	import StaleBodyNotice from '$lib/components/common/StaleBodyNotice.svelte';
 	import { mermaidBlocks } from './shareMermaid';
 
@@ -36,67 +29,14 @@
 
 	let { item, fields, html, id }: Props = $props();
 
-	// Schema fields that carry a value on this item, in schema order. Computed
-	// fields are dropped (visibleFields) — they aren't part of the shared
-	// snapshot's meaningful data.
-	// A relation NEVER prints its stored value here (BUG-3016). The value is an
-	// item id and a share payload has no index behind it, so the entry says what
-	// it holds — the same placeholder the shared table renders, from the same
-	// helper. `publicRelationText` carries why resolving it is a visibility
-	// question rather than a payload one; IDEA-3066 is the unit that would.
-	let displayFields = $derived(
-		visibleFields(fields)
-			.map((f) => ({
-				field: f,
-				value: isRelationType(f.type)
-					? publicRelationText(f, item.fields[f.key])
-					: formatFieldValue(item.fields[f.key]),
-				placeholder: isRelationType(f.type)
-			}))
-			.filter((entry) => entry.value !== '')
-	);
-
-	// Categorical fields (status/priority/select) carry kebab/snake option keys
-	// the owner sees as title-cased labels — so we label-format + color those.
-	// Everything else is a LITERAL value (dates, IDs, slugs, URLs, free text)
-	// and must render verbatim — title-casing `2026-05-31` or `api_token` would
-	// corrupt it. Mirrors the single-item share view, which renders field values
-	// raw.
-	function isCategorical(field: FieldDef): boolean {
-		return field.key === 'status' || field.key === 'priority' || field.type === 'select';
-	}
-
-	function colorFor(field: FieldDef): string | undefined {
-		const raw = item.fields[field.key];
-		if (typeof raw !== 'string') return undefined;
-		if (isCategorical(field)) return fieldValueColor(field, raw);
-		return undefined;
-	}
-
-	function displayValue(field: FieldDef, value: string): string {
-		// Title Case for categorical values — matches the chip pills on the
-		// card/list/table surfaces (PLAN-2290 Phase 3; no more SHOUTED status).
-		const base = isCategorical(field) ? formatLabel(value) : value;
-		return field.suffix ? `${base} ${field.suffix}` : base;
-	}
+	// Schema fields that carry a value on this item, in schema order, as the
+	// shared rule builds them. The direct item share renders through the same
+	// rule (TASK-2248 U3); `fieldChips` carries the reasoning.
+	let chips = $derived(fieldChips(item.fields, fields));
 </script>
 
 <div class="item-expansion" {id} role="region" aria-label="{item.title} details">
-	{#if displayFields.length > 0}
-		<dl class="expansion-fields">
-			{#each displayFields as { field, value, placeholder } (field.key)}
-				{@const color = colorFor(field)}
-				<div class="field-chip">
-					<dt class="field-chip-label">{field.label || formatLabel(field.key)}</dt>
-					{#if placeholder}
-						<dd class="field-chip-value is-placeholder" title={PUBLIC_RELATION_TITLE}>{value}</dd>
-					{:else}
-						<dd class="field-chip-value" style:color>{displayValue(field, value)}</dd>
-					{/if}
-				</div>
-			{/each}
-		</dl>
-	{/if}
+	<PublicFieldChips {chips} />
 
 	{#if html}
 		{#if item.contentStale}<StaleBodyNotice />{/if}
@@ -105,7 +45,7 @@
 		<div class="expansion-content" {@attach mermaidBlocks(html)}>
 			{@html html}
 		</div>
-	{:else if displayFields.length === 0}
+	{:else if chips.length === 0}
 		<p class="expansion-empty">No additional details.</p>
 	{/if}
 </div>
@@ -122,41 +62,6 @@
 		border: 1px solid var(--card-border, var(--border));
 		border-top: none;
 		border-radius: 0 0 var(--radius-lg) var(--radius-lg);
-	}
-
-	.expansion-fields {
-		display: flex;
-		flex-wrap: wrap;
-		gap: var(--space-2);
-		margin: 0;
-	}
-
-	.field-chip {
-		display: inline-flex;
-		align-items: center;
-		gap: var(--space-1);
-		padding: var(--space-1) var(--space-3);
-		background: var(--bg-tertiary);
-		border-radius: 999px;
-		font-size: 0.82em;
-	}
-
-	.field-chip-label {
-		color: var(--text-muted);
-		font-weight: 500;
-		margin: 0;
-	}
-
-	.field-chip-value {
-		color: var(--text-primary);
-		margin: 0;
-	}
-
-	/* A value this share cannot resolve (BUG-3016) — reads as a note about the
-	   field rather than as its content. Matches PublicTableView's cell. */
-	.field-chip-value.is-placeholder {
-		color: var(--text-muted);
-		font-style: italic;
 	}
 
 	.expansion-empty {

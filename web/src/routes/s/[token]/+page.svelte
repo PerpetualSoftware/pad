@@ -16,10 +16,13 @@
 		parsePublicItems,
 		filterEvaluable,
 		matchesFilter,
+		fieldChips,
 		type PublicCollection,
 		type PublicItem
 	} from '$lib/components/share/shareView';
+	import PublicFieldChips from '$lib/components/share/PublicFieldChips.svelte';
 	import type {
+		FieldDef,
 		PublicShareCollection,
 		PublicShareItem,
 		PublicShareView,
@@ -66,6 +69,9 @@
 		collection_name?: string;
 		collection_icon?: string;
 		item_ref?: string;
+		/** Defs for the fields this item shows (TASK-2248 U3). Empty from an
+		 *  older server, which then renders the values raw, as before. */
+		fieldDefs: FieldDef[];
 	} | null>(null);
 	// Raw `collection` + `items` branches of the share payload, fed straight to
 	// PublicCollectionView (which parses settings/schema/fields defensively and
@@ -444,7 +450,8 @@
 					contentStale: isBodyStale(data.item),
 					collection_name: data.item?.collection_name,
 					collection_icon: data.item?.collection_icon,
-					item_ref: data.item?.ref ?? data.item?.item_ref
+					item_ref: data.item?.ref ?? data.item?.item_ref,
+					fieldDefs: Array.isArray(data.field_defs) ? data.field_defs : []
 				};
 			} else if (data.type === 'collection') {
 				shareType = 'collection';
@@ -520,7 +527,8 @@
 					contentStale: isBodyStale(data.item),
 					collection_name: data.item?.collection_name,
 					collection_icon: data.item?.collection_icon,
-					item_ref: data.item?.ref ?? data.item?.item_ref
+					item_ref: data.item?.ref ?? data.item?.item_ref,
+					fieldDefs: Array.isArray(data.field_defs) ? data.field_defs : []
 				};
 			} else if (data.type === 'collection') {
 				shareType = 'collection';
@@ -614,7 +622,13 @@
 
 				<h1 class="item-title">{itemData.title}</h1>
 
-				{#if Object.keys(itemData.fields).length > 0}
+				{#if itemData.fieldDefs.length > 0}
+					<!-- The collection inline-expand's rule and component (TASK-2248 U3):
+					     labelled, coloured, relations as a note. -->
+					<div class="item-fields">
+						<PublicFieldChips chips={fieldChips(itemData.fields, itemData.fieldDefs)} />
+					</div>
+				{:else if Object.keys(itemData.fields).length > 0}
 					<div class="item-fields">
 						{#each Object.entries(itemData.fields) as [key, value] (key)}
 							{#if value !== null && value !== undefined && value !== ''}
