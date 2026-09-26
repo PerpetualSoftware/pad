@@ -961,7 +961,15 @@ func (s *Store) applyFieldMigrationsTx(tx *sql.Tx, collectionID, workspaceID str
 					touchedIDs = append(touchedIDs, id)
 				}
 			}
-			if len(ids) > 0 {
+			// BUG-3224: a multi_select value is an array, which the scalar
+			// match above never finds.
+			arrayIDs, err := s.renameArrayOptionTx(tx, collectionID, workspaceID, m.Field, oldVal, newVal, ts)
+			if err != nil {
+				return totalAffected, err
+			}
+			totalAffected += int64(len(arrayIDs))
+			touchedIDs = append(touchedIDs, arrayIDs...)
+			if len(ids) > 0 || len(arrayIDs) > 0 {
 				renames = append(renames, map[string]any{
 					"field": m.Field,
 					"from":  oldVal,
