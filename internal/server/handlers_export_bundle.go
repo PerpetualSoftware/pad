@@ -141,8 +141,7 @@ func (s *Server) handleExportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 	}
 
 	w.Header().Set("Content-Type", "application/gzip")
-	w.Header().Set("Content-Disposition",
-		fmt.Sprintf(`attachment; filename="%s-export.tar.gz"`, ws.Slug))
+	w.Header().Set("Content-Disposition", contentDisposition("attachment", ws.Slug+"-export.tar.gz"))
 	// Bundles are streamed; we don't know the final size up front. No
 	// Content-Length header — http.Server falls through to chunked
 	// transfer-encoding, which the gzip+tar pair handles fine.

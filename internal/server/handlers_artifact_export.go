@@ -139,8 +139,7 @@ func (s *Server) handleExportItemArtifact(w http.ResponseWriter, r *http.Request
 	}
 
 	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
-	w.Header().Set("Content-Disposition",
-		fmt.Sprintf("attachment; filename=%q", artifactExportFilename(item)))
+	w.Header().Set("Content-Disposition", contentDisposition("attachment", artifactExportFilename(item)))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(out)
 }
