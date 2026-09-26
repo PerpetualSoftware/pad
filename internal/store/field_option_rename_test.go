@@ -188,6 +188,15 @@ func TestRenameOptionsApplySimultaneously(t *testing.T) {
 		// renamed a is dropped as a duplicate, as with no b entry at all.
 		{"identity entry array", `{"tags":["a","b"]}`, map[string]string{"a": "b", "b": "b"}, `["b"]`},
 		{"identity entry scalar", `{"st":"b"}`, map[string]string{"a": "b", "b": "b"}, `"b"`},
+		// The rest of the population (map shape x stored shape), written out
+		// rather than found a round at a time (CONVE-35).
+		{"many-to-one array", `{"tags":["a","b","c"]}`, map[string]string{"a": "x", "b": "x"}, `["x","c"]`},
+		{"many-to-one scalar", `{"st":"b"}`, map[string]string{"a": "x", "b": "x"}, `"x"`},
+		{"3-cycle array", `{"tags":["a","b","c"]}`, map[string]string{"a": "b", "b": "c", "c": "a"}, `["b","c","a"]`},
+		{"3-cycle scalar", `{"st":"c"}`, map[string]string{"a": "b", "b": "c", "c": "a"}, `"a"`},
+		{"empty array untouched", `{"tags":[]}`, map[string]string{"a": "x"}, `[]`},
+		{"nested array: top level only", `{"tags":["a",["a"],{"a":"a"}]}`, map[string]string{"a": "x"}, `["x",["a"],{"a":"a"}]`},
+		{"non-string element equal in text untouched", `{"tags":["1",1,true]}`, map[string]string{"1": "one", "true": "yes"}, `["one",1,true]`},
 	}
 	for _, tc := range cases {
 		it, err := s.CreateItem(ws.ID, c.ID, models.ItemCreate{Title: tc.name, Fields: `{}`})
