@@ -104,7 +104,7 @@ func TestKnownGapsStillGap(t *testing.T) {
 	// silently (codex round 2). Emptying it is a claim that every recorded gap
 	// has closed, and that claim has a required consequence: the cases move
 	// into Corpus. Assert the count instead.
-	const wantGaps = 1
+	const wantGaps = 0 // BUG-2812 closed the last one
 	if len(KnownGaps) != wantGaps {
 		t.Fatalf("KnownGaps has %d entries, expected %d. If a gap CLOSED, move its case into Corpus and "+
 			"update this count in the same edit. If a gap was ADDED, add it to Corpus's counterpart "+

@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"unicode"
-	"unicode/utf8"
+
+	"github.com/PerpetualSoftware/pad/internal/jsonscan"
 )
 
 // RepeatedMemberError refuses a request object that carries one member more
@@ -72,31 +72,6 @@ func RefuseRepeatedMember(data []byte, member string) error {
 }
 
 // foldJSONName folds a member name the way encoding/json does when it matches
-// an object key to a struct field: ASCII letters upper-cased, every other rune
-// replaced by the smallest rune in its simple case-folding orbit.
-func foldJSONName(name string) string {
-	var b []byte
-	for i := 0; i < len(name); {
-		c := name[i]
-		if c < utf8.RuneSelf {
-			if 'a' <= c && c <= 'z' {
-				c -= 'a' - 'A'
-			}
-			b = append(b, c)
-			i++
-			continue
-		}
-		r, n := utf8.DecodeRuneInString(name[i:])
-		for {
-			r2 := unicode.SimpleFold(r)
-			if r2 <= r {
-				r = r2
-				break
-			}
-			r = r2
-		}
-		b = utf8.AppendRune(b, r)
-		i += n
-	}
-	return string(b)
-}
+// an object key to a struct field. One implementation, jsonscan's, which the
+// body gate's repeated-member check also uses, so the two cannot drift.
+func foldJSONName(name string) string { return jsonscan.FoldName([]byte(name)) }

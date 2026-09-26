@@ -2570,9 +2570,10 @@ func repairBodyNULEscapes(raw []byte) (out []byte, replaced int, declined string
 	// Refusing to act is the safe half of that: the body is returned untouched
 	// and the gate judges it exactly as it would without the flag. A real
 	// export cannot contain duplicate members (json.Marshal does not emit
-	// them), so this costs nothing an operator will meet by accident. Rewriting
-	// such a body faithfully needs a token-preserving pass, which is BUG-2812's
-	// token-walk and not a rider on this.
+	// them), so this costs nothing an operator will meet by accident. The gate
+	// that judges the body next refuses a repeated member of the request's own
+	// structure (BUG-2812); one inside caller data (under `fields`, `schema`,
+	// ...) is exempt there and stored collapsed (BUG-2896).
 	if key, dup := models.FirstDuplicateJSONKey(raw); dup {
 		return raw, 0, "the payload repeats the member " + strconv.Quote(key) +
 			", and repairing it would change which value is imported"
@@ -2709,10 +2710,16 @@ func decodeJSONBytes(raw []byte, v interface{}) error {
 	}
 	// Refuse a decoded NUL BEFORE unmarshalling, so the value never exists
 	// in a Go string that a handler could hand to the store. See
-	// bodyDecodesNUL for why the body needs its own rule and why the check
-	// cannot be a substring search. BUG-2803.
-	if bodyDecodesNUL(raw) {
+	// scanRequestBody for why the body needs its own rule and why the check
+	// cannot be a substring search. BUG-2803. The same scan refuses a
+	// repeated request member (BUG-2812): the typed decode below would merge
+	// it or keep the last copy, depending on the destination field's type.
+	found := scanRequestBody(raw, repeatFoldFor(v))
+	if found.nul {
 		return errJSONBodyNUL
+	}
+	if found.repeat != "" {
+		return &models.RepeatedMemberError{Member: found.repeat}
 	}
 	// json.Unmarshal rather than a Decoder over the buffer: it is the
 	// cheaper of the two by ~2x in total allocation (see readBodyForDecode's

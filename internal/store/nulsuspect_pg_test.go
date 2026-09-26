@@ -51,27 +51,26 @@ func TestDestinationOracleClassifiesRealPostgresErrors(t *testing.T) {
 		}
 	})
 
-	t.Run("a NUL behind a repeated key is refused", func(t *testing.T) {
-		// The whole point. Our predicate accepts this — asserted here so the
-		// case cannot silently become one we catch ourselves — and PostgreSQL
-		// does not.
+	t.Run("a NUL behind a repeated key never reaches the destination", func(t *testing.T) {
+		// Until BUG-2812 this leg measured PostgreSQL refusing the value
+		// through the oracle, the case the suspect path existed for. Our
+		// shared predicate now refuses it too, so the store's own write guard
+		// stops the cast before the server sees it, and the oracle reports
+		// that it COULD NOT ASK, which the preflight treats as a refusal. The
+		// value is never a suspect now either (it is a violation), so the
+		// oracle is not asked about it in practice. PostgreSQL's own answer is
+		// still measured, natively and without our guard, by
+		// TestNativePostgresAgreesWithTheCorpus, where this is a Corpus case.
 		doc := `{"a":"` + esc + `","a":"clean"}`
-		if textguard.ParameterRefused(doc, true) {
-			t.Fatal("the shared predicate now refuses this; the suspect class is obsolete (BUG-2812)")
+		if !textguard.ParameterRefused(doc, true) {
+			t.Fatal("the shared predicate no longer refuses a NUL behind a repeated key (BUG-2812 regressed)")
 		}
 		err := s.CheckJSONBAcceptable(doc)
 		if err == nil {
-			t.Fatal("PostgreSQL accepted a NUL hidden behind a repeated key — the premise this whole " +
-				"design rests on is wrong and the suspect path should be removed")
+			t.Fatal("the oracle accepted a NUL hidden behind a repeated key")
 		}
-		if !errors.Is(err, ErrNULDestinationRefused) {
-			t.Fatalf("the refusal was not classified as a NUL refusal, so the preflight would report it "+
-				"as an unrelated note instead of refusing: %v", err)
-		}
-		// And the classification came from the code we claim to match, not
-		// from some other part of the message.
-		if !strings.Contains(strings.ToUpper(err.Error()), "22P05") {
-			t.Errorf("expected SQLSTATE 22P05 in the error text: %v", err)
+		if !errors.Is(err, ErrDestinationCheckUnavailable) && !errors.Is(err, ErrNULDestinationRefused) {
+			t.Fatalf("the refusal is in neither bucket the preflight refuses on: %v", err)
 		}
 	})
 

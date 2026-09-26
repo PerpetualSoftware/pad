@@ -181,14 +181,12 @@ func (r *NULScanReport) ByColumn() map[string]int {
 // live server and safe to run repeatedly. `pad db migrate-to-pg` calls it as a
 // preflight for exactly that reason.
 //
-// WHAT IT CANNOT DECIDE, IT REPORTS. The predicate shares the HTTP gate's
-// map-model blind spots until BUG-2812's token-walk replaces the decode —
-// today that is a JSON document with LITERAL duplicate keys, where the decode
-// keeps the last one and a NUL in a shadowed value is never seen
-// (textguard.KnownGaps). Closing that HERE is what DOC-2823 forbids: Layer A
-// "must NOT quietly fix either gap on its own", because layers disagreeing
-// about one value is the defect this whole cluster is made of, and
-// TestScanNULInheritsTheRecordedKnownGaps pins the miss.
+// WHAT IT CANNOT DECIDE, IT REPORTS. The predicate shared the HTTP gate's
+// map-model blind spot until BUG-2812 moved both to a token walk: a JSON
+// document with LITERAL duplicate keys, where the decode kept the last one and
+// a NUL in a shadowed value was never seen. That value is now a violation on
+// every layer at once (textguard.Corpus; TestScanNULDetectsEveryRefusedJSONCorpusCase),
+// which is how DOC-2823 required it to close.
 //
 // But the SQL pre-filter matches such a row before the predicate drops it, and
 // an earlier version of this comment recorded that as an accepted residual —

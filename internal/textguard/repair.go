@@ -87,9 +87,9 @@ const (
 // keys), insignificant whitespace, integers wider than float64 (unless the
 // decoder is told to use json.Number), and HTML-ish characters (unless the
 // encoder is told not to escape them). Worse, a document with LITERAL duplicate
-// keys silently loses one on the way through a map — which is one of the two
-// gaps BUG-2812 owns, and a repair is the last place that should quietly drop
-// user data.
+// keys silently loses one on the way through a map — the gap BUG-2812 later
+// closed in the predicate — and a repair is the last place that should quietly
+// drop user data.
 //
 // Scanning the raw text has none of those failure modes: every byte the repair
 // does not deliberately rewrite is copied verbatim, so a document with no live

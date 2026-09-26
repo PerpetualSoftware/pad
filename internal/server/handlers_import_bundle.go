@@ -392,11 +392,21 @@ func (s *Server) importBundle(ctx context.Context, r io.Reader, newName string, 
 			// Content-Type, so it gets the same answer rather than a 500
 			// from Postgres further down (codex round 3).
 			buf = repair.Apply(buf)
-			if bodyDecodesNUL(buf) {
+			found := scanRequestBody(buf, foldMembers)
+			if found.nul {
 				return nil, &importStatusError{
 					status: http.StatusBadRequest, code: "bad_bundle",
 					message: "Bundle pad-export.json could not be decoded: " + errJSONBodyNUL.Error() +
 						nulRepairRemedy(repair),
+				}
+			}
+			// The same door as the JSON import, so the same refusal
+			// (BUG-2812). An export never repeats a member: json.Marshal
+			// cannot emit one.
+			if found.repeat != "" {
+				return nil, &importStatusError{
+					status: http.StatusBadRequest, code: "bad_bundle",
+					message: "Bundle pad-export.json could not be decoded: " + (&models.RepeatedMemberError{Member: found.repeat}).Error(),
 				}
 			}
 			var export models.WorkspaceExport
@@ -529,9 +539,14 @@ func (s *Server) importBundle(ctx context.Context, r io.Reader, newName string, 
 			// resulting state is pinned by a test and stated in the release
 			// note instead of being left incidental.
 			buf = repair.Apply(buf)
-			if bodyDecodesNUL(buf) {
+			found := scanRequestBody(buf, foldMembers)
+			if found.nul {
 				return ws, fmt.Errorf("manifest decode: %w (workspace created but attachments not restored)%s",
 					errJSONBodyNUL, nulRepairRemedy(repair))
+			}
+			if found.repeat != "" {
+				return ws, fmt.Errorf("manifest decode: %w (workspace created but attachments not restored)",
+					&models.RepeatedMemberError{Member: found.repeat})
 			}
 			var manifest models.AttachmentManifest
 			if err := json.Unmarshal(buf, &manifest); err != nil {

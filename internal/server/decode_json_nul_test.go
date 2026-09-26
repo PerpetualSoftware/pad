@@ -13,8 +13,11 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/artifact"
+
+	"github.com/PerpetualSoftware/pad/internal/textguard"
 )
 
 // rawJSONRequest sends a RAW body string. A test cannot marshal a Go map
@@ -578,7 +581,7 @@ func TestBodyDecodesNULGateAgreesWithAnUngatedWalk(t *testing.T) {
 		if err := json.Unmarshal(raw, &v); err != nil {
 			return false
 		}
-		return valueDecodesNUL(v, false)
+		return mapModelDecodesNUL(v, false)
 	}
 
 	esc := escNULLiteral                                     // the six-character NUL escape
@@ -979,77 +982,118 @@ func TestBodyDecodesNULMatchesKeysLikeTheDecoder(t *testing.T) {
 	}
 }
 
-// TestBodyDecodesNULKnownMapModelDisagreements pins the four measured
-// disagreements between this scan's map[string]any model and encoding/json's
-// typed decode (BUG-2803 rounds 16-17; lead ruling: land-and-follow).
-// They are documented on bodyDecodesNUL; this is the instrument that keeps
-// that documentation and the release note from going stale.
-//
-// Two of the four are ACCEPTED over-refusals. The other two are KNOWN GAPS
-// whose fix is the BUG-2812 token-walk unit — so those legs assert the WRONG
-// answer on purpose. That is deliberate and it is the point: when BUG-2812
-// lands, this test FAILS, which is the signal to update the doc comment, the
-// release note and this test together rather than discovering months later
-// that the note describes a version of the check that no longer exists.
-func TestBodyDecodesNULKnownMapModelDisagreements(t *testing.T) {
-	t.Run("accepted over-refusals", func(t *testing.T) {
-		// (3) An unknown field is scanned though no handler reads it. The
-		// scan has no destination type by design, so it cannot tell a
-		// forward-compatible field from a real one. Observable compatibility
-		// change; stated in the release note.
-		unknown := `{"title":"valid","future_field":"a` + escNULLiteral + `b"}`
-		if !bodyDecodesNUL([]byte(unknown)) {
-			t.Error("(3) an unknown field carrying a NUL escape is refused today; if that changed, " +
-				"update the disposition on bodyDecodesNUL and the release note's compatibility line")
-		}
+// TestBodyScanClosesTheMapModelGaps pins the answers to the four measured
+// disagreements between the old map[string]any scan and encoding/json's typed
+// decode (BUG-2803 rounds 16-17), as BUG-2812's token scan gives them. They are
+// documented on the scan ("WHAT CHANGED IN BUG-2812"); this keeps that block
+// true. It replaced TestBodyDecodesNULKnownMapModelDisagreements, which
+// asserted the two WRONG answers on purpose so that it would fail when this
+// landed, and it did.
+func TestBodyScanClosesTheMapModelGaps(t *testing.T) {
+	// (1) A NUL in a shadowed duplicate. The typed decode MERGES a repeated
+	// map member, so the NUL would reach the store. Every occurrence is a
+	// token, so it is seen, and the repeat is reported too.
+	dupKey := `{"fields_patch":{"orphan":"a` + escNULLiteral + `b"},"fields_patch":{"status":"open"}}`
+	if got := scanRequestBody([]byte(dupKey), foldMembers); !got.nul || got.repeat != "fields_patch" {
+		t.Errorf("(1) want the shadowed NUL AND the repeat, got %+v", got)
+	}
 
-		// (4) Case-variant duplicates: the typed decode keeps the LAST
-		// spelling and discards the NUL, the map scan sees both and refuses.
-		// Same root as (1), opposite direction.
-		caseDup := `{"title":"a` + escNULLiteral + `b","TITLE":"safe"}`
-		if !bodyDecodesNUL([]byte(caseDup)) {
-			t.Error("(4) a case-variant duplicate is refused today even though the decode drops the " +
-				"NUL spelling; if that changed, update the disposition on bodyDecodesNUL")
-		}
-	})
+	// (2) A number no float64 holds made the tree decode fail and the scan
+	// answer "no NUL", while the typed decode skipped the unknown field and
+	// stored the NUL title. Numbers are never converted now.
+	scanFail := `{"title":"a` + escNULLiteral + `b","ignored":1e999}`
+	if !bodyDecodesNUL([]byte(scanFail)) {
+		t.Error("(2) a NUL title beside an out-of-range number is not detected")
+	}
 
-	t.Run("known gaps owned by BUG-2812", func(t *testing.T) {
-		// (1) Duplicate keys: map[string]any REPLACES, encoding/json MERGES
-		// into an already-populated map field. The scan structurally cannot
-		// see the shadowed first occurrence.
-		dupKey := `{"fields_patch":{"orphan":"a` + escNULLiteral + `b"},"fields_patch":{"status":"open"}}`
-		if bodyDecodesNUL([]byte(dupKey)) {
-			t.Error("(1) now DETECTED — the map-model duplicate-key gap is closed. That is the " +
-				"BUG-2812 token walk landing: update bodyDecodesNUL's disposition block, the " +
-				"release note's filed-residuals line, and delete this leg")
-		}
+	// (2b) The same hole through a different door: jsontext refuses a lone
+	// surrogate escape that encoding/json accepts (as U+FFFD). Had the scan
+	// called that body malformed it would have reported nothing, and the NUL
+	// beside it would have passed.
+	surrogate := `{"title":"a` + escNULLiteral + `b","x":"\ud800"}`
+	if !bodyDecodesNUL([]byte(surrogate)) {
+		t.Error("(2b) a NUL title beside a lone surrogate escape is not detected")
+	}
 
-		// (2) A scan failure lets a known-bad value through: the overflowing
-		// number fails the `any` unmarshal, this function returns false so the
-		// caller's decode owns the "invalid JSON" message, and the typed
-		// decode then SKIPS the unknown field and accepts the NUL title.
-		scanFail := `{"title":"a` + escNULLiteral + `b","ignored":1e999}`
-		if bodyDecodesNUL([]byte(scanFail)) {
-			t.Error("(2) now DETECTED — the scan-failure passthrough is closed. That is the " +
-				"BUG-2812 token walk landing: update bodyDecodesNUL's disposition block, the " +
-				"release note's filed-residuals line, and delete this leg")
-		}
+	// (3) ACCEPTED over-refusal, unchanged: a field no handler reads is
+	// scanned. Observable compatibility change, stated in BUG-2803's release
+	// note.
+	unknown := `{"title":"valid","future_field":"a` + escNULLiteral + `b"}`
+	if !bodyDecodesNUL([]byte(unknown)) {
+		t.Error("(3) an unknown field carrying a NUL escape is no longer refused; update the " +
+			"disposition on scanRequestBody and the release note's compatibility line")
+	}
 
-		// Premise for both legs above: the SAME bodies with their
-		// disagreement mechanism removed ARE detected. Without this, the two
-		// assertions would pass against a bodyDecodesNUL that detected
-		// nothing at all, and would prove nothing about the gaps they name.
-		singleKey := `{"fields_patch":{"orphan":"a` + escNULLiteral + `b"}}`
-		if !bodyDecodesNUL([]byte(singleKey)) {
-			t.Fatal("premise failed: the duplicate-key body's payload is not detectable even when " +
-				"spelled once, so the (1) leg above is vacuous")
-		}
-		parseable := `{"title":"a` + escNULLiteral + `b","ignored":1}`
-		if !bodyDecodesNUL([]byte(parseable)) {
-			t.Fatal("premise failed: the scan-failure body's payload is not detectable even when " +
-				"the body parses, so the (2) leg above is vacuous")
-		}
-	})
+	// (4) A case-variant duplicate is refused, now as a repeated request
+	// member rather than as an accepted over-refusal.
+	caseDup := `{"title":"a` + escNULLiteral + `b","TITLE":"safe"}`
+	if got := scanRequestBody([]byte(caseDup), foldMembers); got.repeat != "title" {
+		t.Errorf("(4) want the case-variant repeat reported as title, got %+v", got)
+	}
+
+	// Premise for (1) and (2): with the disagreement mechanism removed the
+	// payload is still detected, so neither leg passes against a scan that
+	// detects nothing.
+	if !bodyDecodesNUL([]byte(`{"fields_patch":{"orphan":"a` + escNULLiteral + `b"}}`)) {
+		t.Fatal("premise failed: the duplicate-key payload is not detectable when spelled once")
+	}
+}
+
+// TestBodyScanRefusesRepeatedRequestMembers pins where a repeat counts
+// (BUG-2812 ruling, day 80), and that it is judged on EVERY body rather than
+// only on one that carries an escape.
+func TestBodyScanRefusesRepeatedRequestMembers(t *testing.T) {
+	cases := []struct {
+		name, body, want string
+	}{
+		{"no escape anywhere: still judged", `{"title":"a","title":"b"}`, "title"},
+		{"top level folds case", `{"title":"a","Title":"b"}`, "title"},
+		{"top level folds Unicode the way encoding/json does", `{"k":1,"` + "\u212a" + `":2}`, "k"},
+		{"nested exact repeat", `{"fields_patch":{"status":"a","status":"b"}}`, "status"},
+		{"nested case variants are two map keys", `{"fields_patch":{"status":"a","Status":"b"}}`, ""},
+		{"inside an array element", `{"items":[{"id":"1","id":"2"}]}`, "id"},
+		{"sibling objects share names without repeating", `{"items":[{"id":"1","t":"a"},{"id":"2","t":"b"}]}`, ""},
+		{"a parent's name after a child closes", `{"a":{"x":1},"x":2,"b":{"a":1}}`, ""},
+		// One level down both are compared exactly, so a child's names that
+		// outlived the child would collide with the parent's (at the top level
+		// the parent's are folded and cannot).
+		{"a nested parent's name after a child closes", `{"p":{"a":{"x":1},"x":2}}`, ""},
+		{"a parent repeat across a child", `{"a":1,"c":{"a":2},"A":3}`, "a"},
+		{"caller data under a JSON-encoded key is exempt", `{"fields":{"a":1,"a":2}}`, ""},
+		{"caller data carried as a string is not parsed for repeats", `{"fields":"{\"a\":1,\"a\":2}"}`, ""},
+		{"a distinct member is not a repeat", `{"title":"a","titles":"b"}`, ""},
+		{"malformed: nothing is reported, the decode phrases it", `{"title":"a","title":"b"`, ""},
+		{"trailing value: malformed", `{"title":"a","title":"b"} {}`, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := scanRequestBody([]byte(c.body), foldMembers).repeat; got != c.want {
+				t.Errorf("repeat = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+// TestDecodeJSONRefusesARepeatedMember drives the refusal through the real
+// router, on a member that no per-struct check guards, so the 400 can only come
+// from the body scan.
+func TestDecodeJSONRefusesARepeatedMember(t *testing.T) {
+	srv := testServer(t)
+	ws := createWSWithCollections(t, srv)
+	it := createTaskWithFields(t, srv, ws, "orig", `{"status":"open"}`)
+	path := "/api/v1/workspaces/" + ws + "/items/" + it.Slug
+
+	rr := rawJSONRequest(srv, "PATCH", path, `{"title":"first","title":"second"}`)
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "title appears more than once") {
+		t.Fatalf("want 400 naming title, got %d %s", rr.Code, rr.Body.String())
+	}
+	if got, _ := srv.store.GetItem(it.ID); got == nil || got.Title != "orig" {
+		t.Fatalf("a refused write changed the title: %+v", got)
+	}
+	// Control: the same request with the member once is accepted.
+	if rr := rawJSONRequest(srv, "PATCH", path, `{"title":"second"}`); rr.Code != http.StatusOK {
+		t.Fatalf("control: %d %s", rr.Code, rr.Body.String())
+	}
 }
 
 // TestUnknownFieldRefusalThroughTheHandler is the WIRING leg for release-note
@@ -1154,7 +1198,7 @@ func TestDecodeJSONTrimsOnlyJSONWhitespace(t *testing.T) {
 }
 
 // independentDecodesNUL is a SECOND implementation of the walker's contract,
-// written for the test and deliberately not calling valueDecodesNUL.
+// written for the test and deliberately not calling mapModelDecodesNUL.
 //
 // It exists because TestBodyDecodesNULGateAgreesWithAnUngatedWalk compares the
 // gated function against an "ungated" reference that calls the SAME production
@@ -1370,5 +1414,132 @@ func TestBodyDecodesNULAgainstAnIndependentOracle(t *testing.T) {
 	if !sawTrue || !sawFalse {
 		t.Fatalf("corpus is one-sided (sawTrue=%v sawFalse=%v); agreement over it is vacuous",
 			sawTrue, sawFalse)
+	}
+}
+
+// mapModelDecodesNUL is the gate's walk as it stood before BUG-2812: a walk of
+// the body decoded into map[string]any. It is kept here, and only here, as the
+// UNGATED oracle for the differential below. On the corpus, which has no
+// repeated keys and no out-of-range numbers, the map model and the token scan
+// must agree; the two cases where they may not are the ones BUG-2812 fixed,
+// pinned by TestBodyScanClosesTheMapModelGaps.
+func mapModelDecodesNUL(v any, inUserData bool) bool {
+	// S1 (DOC-2823): once classing is switched OFF there is nothing
+	// request-specific left to do, and the walk is textguard's — literally the
+	// same traversal this function used to carry inline. Delegating rather than
+	// keeping a copy is the point of extracting the package: two walks of the
+	// same shape, in two layers, is the disagreement this cluster exists
+	// because of.
+	if inUserData {
+		return textguard.ValueDecodesNUL(v)
+	}
+	switch t := v.(type) {
+	case string:
+		return textguard.ContainsNUL(t)
+	case map[string]any:
+		for k, sub := range t {
+			if textguard.ContainsNUL(k) {
+				return true
+			}
+			if !inUserData && isJSONEncodedFieldKey(k) {
+				if str, isString := sub.(string); isString {
+					// BOTH checks. The nested walk answers "is there an
+					// escape inside the document this string carries"; it
+					// does NOT answer "does this string itself contain a
+					// NUL", and taking the JSON-encoded branch used to skip
+					// the plain check entirely — so a direct NUL in a
+					// `fields` value was accepted, reopening the door this
+					// whole change exists to close (codex round 9, a
+					// regression introduced by the round-8 restructure).
+					if textguard.ContainsNUL(str) || nestedDocumentDecodesNUL(str) {
+						return true
+					}
+					continue
+				}
+				// The field's NATURAL shape: an array or object whose
+				// elements the server marshals itself. Nothing re-parses
+				// them, so everything below is caller data.
+				if mapModelDecodesNUL(sub, true) {
+					return true
+				}
+				continue
+			}
+			if mapModelDecodesNUL(sub, inUserData) {
+				return true
+			}
+		}
+	case []any:
+		for _, sub := range t {
+			if mapModelDecodesNUL(sub, inUserData) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// TestRepeatFoldFollowsTheTopLevelDestination pins which objects fold member
+// names, from the destination's top-level kind (OpenCode review round 1
+// on BUG-2812 found that "the top level is always a struct" was false: two
+// endpoints decode into a map, and three into a slice of structs).
+func TestRepeatFoldFollowsTheTopLevelDestination(t *testing.T) {
+	type s struct{ A string }
+	for _, c := range []struct {
+		name string
+		dst  any
+		want repeatFold
+	}{
+		{"struct", &s{}, foldMembers},
+		{"pointer to pointer to struct", func() any { p := &s{}; return &p }(), foldMembers},
+		{"slice of structs", &[]s{}, foldElementMembers},
+		{"slice of struct pointers", &[]*s{}, foldElementMembers},
+		{"map", &map[string]string{}, foldNone},
+		{"slice of maps", &[]map[string]int{}, foldNone},
+		{"interface", new(any), foldNone},
+		{"nil", nil, foldNone},
+	} {
+		if got := repeatFoldFor(c.dst); got != c.want {
+			t.Errorf("%s: %v, want %v", c.name, got, c.want)
+		}
+	}
+
+	for _, c := range []struct {
+		name, body string
+		fold       repeatFold
+		want       string
+	}{
+		{"struct: case variants are one field", `{"slug":"a","Slug":"b"}`, foldMembers, "slug"},
+		{"map: case variants are two keys", `{"Foo":"a","foo":"b"}`, foldNone, ""},
+		{"map: an exact repeat still counts", `{"foo":"a","foo":"b"}`, foldNone, "foo"},
+		{"slice of structs: each element folds", `[{"slug":"a","Slug":"b"}]`, foldElementMembers, "slug"},
+		{"slice of structs: elements do not share names", `[{"slug":"a"},{"Slug":"b"}]`, foldElementMembers, ""},
+		{"struct destination, array body: nothing folds", `[{"slug":"a","Slug":"b"}]`, foldMembers, ""},
+	} {
+		if got := scanRequestBody([]byte(c.body), c.fold).repeat; got != c.want {
+			t.Errorf("%s: repeat = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// TestReorderRefusesACaseVariantRepeat is the door the review named: PUT
+// /workspaces/reorder decodes into a slice of structs, where encoding/json
+// reads "Slug" into the slug field and the first value is lost.
+func TestReorderRefusesACaseVariantRepeat(t *testing.T) {
+	srv := testServer(t)
+	owner := mustCreateUser(t, srv, "owner-reorder-2812@example.com", "Owner", "admin")
+	ws := mustCreateOwnedWorkspace(t, srv, "Reorder 2812", owner)
+	tok, err := srv.store.CreateSession(owner.ID, "go-test", "192.0.2.1", "go-test", 24*time.Hour)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	// json.RawMessage marshals compacted but keeps both members.
+	body := json.RawMessage(`[{"slug":"` + ws.Slug + `","Slug":"other","sort_order":1}]`)
+	rr := doAuthedJSON(srv, http.MethodPut, "/api/v1/workspaces/reorder", body, tok)
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "slug appears more than once") {
+		t.Fatalf("want 400 naming slug, got %d %s", rr.Code, rr.Body.String())
+	}
+	control := json.RawMessage(`[{"slug":"` + ws.Slug + `","sort_order":1}]`)
+	if rr := doAuthedJSON(srv, http.MethodPut, "/api/v1/workspaces/reorder", control, tok); rr.Code >= 300 {
+		t.Fatalf("control: %d %s", rr.Code, rr.Body.String())
 	}
 }

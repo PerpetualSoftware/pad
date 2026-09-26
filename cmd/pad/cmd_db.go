@@ -970,10 +970,12 @@ func maskPassword(pgURL string) string {
 //
 // The first is the scan's violations: values every layer refuses. The second is
 // the SUSPECT class — pre-filter matches the predicate did not refuse. Most of
-// those are harmless doubled-backslash literals, but one shape in the set is
-// fatal here and invisible to every layer of ours: a NUL in a value shadowed by
-// a LITERAL duplicate key, which a map-model decode drops (textguard.KnownGaps,
-// which DOC-2823 forbids closing in a single layer).
+// those are harmless doubled-backslash literals. One shape in the set was fatal
+// here and invisible to every layer of ours until BUG-2812: a NUL in a value
+// shadowed by a LITERAL duplicate key, which a map-model decode dropped. The
+// token walk now reports that shape as a violation, so the suspects left are
+// the ones the destination accepts. The path is kept, redundant but correct,
+// until its deletion unit shows no value an earlier release stored can need it.
 //
 // Dropping that class silently was the defect: the scan already HELD those rows
 // as candidates and threw them away, then promised the migration would go

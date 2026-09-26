@@ -11,6 +11,7 @@ import (
 	"go.yaml.in/yaml/v4"
 
 	"github.com/PerpetualSoftware/pad/internal/artifact"
+	"github.com/PerpetualSoftware/pad/internal/textguard"
 )
 
 // defaultImportArtifactMaxBytes caps a single artifact import body. A
@@ -285,13 +286,9 @@ func artifactIsBindableText(art artifact.Artifact) bool {
 	// resolve — and an earlier version of this comment asserted it "cannot
 	// arise here", which was simply wrong.
 	//
-	// So the marshalled form is decoded again and walked with the same
-	// machinery, as caller data (no wire-key list applies to an artifact).
-	// The round trip is what makes every field reachable without a type
-	// switch; the walk is what makes the answer exact.
-	var v any
-	if err := json.Unmarshal(encoded, &v); err != nil {
-		return false
-	}
-	return !valueDecodesNUL(v, true)
+	// So the marshalled form is walked token by token as caller data (no
+	// wire-key list applies to an artifact): every string, key or value, is
+	// checked decoded. Marshalling is what makes every field reachable
+	// without a type switch; the walk is what makes the answer exact.
+	return !textguard.TokensDecodeNUL(encoded)
 }

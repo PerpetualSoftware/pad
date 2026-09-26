@@ -120,6 +120,10 @@ var Corpus = []Case{
 		Name: "JSON scalar document that is clean", Value: `"ordinary"`, IsJSON: true, Refused: false,
 		Why: "the control for the case above. Without it, widening the shape test to scalars could refuse every scalar and still pass.",
 	},
+	{
+		Name: "duplicate key, the NUL in the SHADOWED value", Value: `{"a":"` + EscNUL + `","a":"clean"}`, IsJSON: true, Refused: true,
+		Why: "was the one KnownGaps entry until BUG-2812. encoding/json keeps the LAST duplicate, so the map-model walk never saw the shadowed value, while Postgres 17 refuses it (ERROR: unsupported Unicode escape sequence; its parser reads every occurrence before deduplicating). The token scan sees every occurrence, so every layer now refuses it and Postgres agrees.",
+	},
 }
 
 // StoreOverRefusals are values every OTHER layer accepts and the store's write
@@ -159,11 +163,8 @@ var StoreOverRefusals = []Case{
 //
 // They are kept OUT of Corpus so the differential tests stay green, and
 // asserted separately by TestKnownGapsStillGap. That test fails when a gap
-// CLOSES, which is the signal that BUG-2812 has landed and these entries should
-// move into Corpus with Refused flipped.
-var KnownGaps = []Case{
-	{
-		Name: "duplicate key, the NUL in the SHADOWED value", Value: `{"a":"` + EscNUL + `","a":"clean"}`, IsJSON: true, Refused: true,
-		Why: "codex round 1 finding 2, RATIONALE CORRECTED in round 4. encoding/json keeps the LAST duplicate, so the map-model walk never sees the shadowed value and the escape survives. I first wrote that Postgres accepts it too, 'so the two agree today' - that was asserted, not measured, and it is FALSE. Measured on Postgres 17: ERROR: unsupported Unicode escape sequence, DETAIL: \\u0000 cannot be converted to text. Its parser processes the scalar BEFORE duplicate elimination, while the control {\"a\":\"x\",\"a\":\"clean\"} deduplicates cleanly. So this is a REAL dialect split - Postgres refuses, this guard accepts, SQLite stores - not a shared gap. It stays recorded rather than fixed here because closing it means replacing the shared predicate's decode with a token walk, which is BUG-2812/S4 and moves BOTH layers at once; a fix in Layer A alone is the divergence DOC-2823 forbids.",
-	},
-}
+// CLOSES, which is the signal to move the entry into Corpus.
+//
+// EMPTY since BUG-2812: its one entry, the NUL behind a repeated key, closed
+// when the shared predicate moved to a token walk, and is now a Corpus case.
+var KnownGaps = []Case{}
