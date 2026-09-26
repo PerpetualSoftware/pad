@@ -1106,7 +1106,7 @@ func preflightNULForMigration(src *store.Store, dst *store.Store, fromPath strin
 
 	if n := len(elsewhere); n > 0 {
 		fmt.Fprintf(os.Stderr,
-			"\nNOTE: %d value(s) carrying a NUL are in tables this migration does not copy\n"+
+			"\nNOTE: %d value(s) carrying a NUL or invalid UTF-8 are in tables this migration does not copy\n"+
 				"(users, platform settings, auth data). They do not block it, and\n"+
 				"'%s' will repair them:\n\n", n, repairNULCommandHint)
 		for _, v := range elsewhere {
@@ -1131,8 +1131,8 @@ func preflightNULForMigration(src *store.Store, dst *store.Store, fromPath strin
 		// two differ.
 		fmt.Fprintf(os.Stderr, "  %s (destination refused it; no layer of ours sees this one)\n", sus)
 	}
-	fmt.Fprintf(os.Stderr, "\nEach carries a NUL, which PostgreSQL refuses in a text or jsonb value —\n"+
-		"SQLSTATE 22021 and 22P05. Migrating risks failing partway through the copy, after\n"+
+	fmt.Fprintf(os.Stderr, "\nEach carries a NUL or invalid UTF-8. PostgreSQL refuses a NUL in text (SQLSTATE 22021),\n"+
+		"a NUL escape in jsonb (22P05) and invalid UTF-8 (22021). Migrating risks failing partway through the copy, after\n"+
 		"some workspaces have already moved, so it is refused up front.\n\n"+
 		"Nothing has been migrated. Repair them first:\n\n    %s\n\n"+
 		"then re-run this command. To see the same list without migrating: pad db scan-nul\n",
@@ -1146,7 +1146,7 @@ func preflightNULForMigration(src *store.Store, dst *store.Store, fromPath strin
 	// running the command against a real Postgres, not by a test: the tests
 	// asserted the message CONTAINED "nothing was migrated" and never read the
 	// number.
-	return fmt.Errorf("%d stored value(s) carry a NUL; nothing was migrated", total)
+	return fmt.Errorf("%d stored value(s) carry a NUL or invalid UTF-8; nothing was migrated", total)
 }
 
 // suspectFailure pairs a suspect with the destination's complaint.

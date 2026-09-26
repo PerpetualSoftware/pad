@@ -42,15 +42,23 @@ func dbScanNULCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "scan-nul",
-		Short: "Report stored values carrying a NUL (read-only)",
+		Short: "Report stored values PostgreSQL refuses: a NUL, or invalid UTF-8 (read-only)",
 		Long: `Counts and locates every stored value that violates Pad's NUL invariant:
 a real NUL byte in any protected column, or a JSON escape in a JSON column
-that a JSON parser would decode to one.
+that a JSON parser would decode to one. It also reports every value that is
+not valid UTF-8. That is not a NUL, but PostgreSQL refuses it too (SQLSTATE
+22021 under a UTF8 database), so it breaks a migration in the same way.
+
+Finding invalid UTF-8 means reading every stored value in full, since SQLite
+has no way to test for it in a query; on a large database that takes about as
+long as reading the database once.
 
 Such rows can only have been written by a binary older than the enforcement
 that now refuses them. They are not cosmetic: their workspace exports fine and
 re-imports with a 400, and 'pad db migrate-to-pg' fails partway through the
-copy against PostgreSQL's jsonb parser.
+copy against PostgreSQL. A SQL_ASCII PostgreSQL would accept the invalid-UTF-8
+bytes; they are reported anyway, because nothing on the Pad side can tell which
+encoding a later migration will target.
 
 The scan itself only reads. Opening the database does apply any pending schema
 migrations, exactly as starting the server does — pass --from to inspect a
@@ -90,10 +98,13 @@ func dbRepairNULCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "repair-nul",
-		Short: "Replace stored NULs with U+FFFD (rewrites user content)",
-		Long: `Rewrites every stored value 'pad db scan-nul' reports, replacing each NUL
-with U+FFFD (the Unicode replacement character) and leaving the rest of the
-value byte for byte as it was.
+		Short: "Replace stored NULs and invalid UTF-8 with U+FFFD (rewrites user content)",
+		Long: `Rewrites every stored value 'pad db scan-nul' reports, replacing each NUL,
+and each invalid UTF-8 byte sequence, with U+FFFD (the Unicode replacement
+character) and leaving the rest of the value byte for byte as it was. In a valid
+JSON document an invalid byte can only sit inside a string, so the document
+stays valid JSON with that string's bad bytes replaced; a value that was not
+valid JSON to begin with is not made valid by this.
 
 THIS CHANGES USER CONTENT. It is a separate command, and never part of a
 migration, for that reason: a migration that rewrote stored text would decide
@@ -151,8 +162,8 @@ row.`,
 			}
 
 			if !force {
-				fmt.Fprintf(os.Stderr, "\nThis will rewrite the %d value(s) above, replacing each NUL with "+
-					"U+FFFD, and inspect %d suspect value(s) — rewriting only those that hide a NUL behind "+
+				fmt.Fprintf(os.Stderr, "\nThis will rewrite the %d value(s) above, replacing each NUL and each "+
+					"invalid UTF-8 byte sequence with U+FFFD, and inspect %d suspect value(s) — rewriting only those that hide a NUL behind "+
 					"a repeated key.\n", scan.Total(), len(scan.Suspects))
 				fmt.Fprintf(os.Stderr, "Run with --force to skip this confirmation, or press Ctrl+C to abort.\n")
 				fmt.Fprintf(os.Stderr, "Continue? [y/N] ")
@@ -245,7 +256,8 @@ func resolveNULToolsTarget(fromPath *string) (proceed bool, err error) {
 		if os.Getenv("PAD_DB_DRIVER") == "postgres" {
 			fmt.Fprintln(os.Stderr,
 				"This deployment is PostgreSQL, which refuses these values natively (SQLSTATE 22021 for a\n"+
-					"NUL in text, 22P05 for the escape reaching jsonb), so no stored row can carry one.\n"+
+					"NUL in text or invalid UTF-8, 22P05 for the escape reaching jsonb), so no stored row can\n"+
+					"carry one.\n"+
 					"Nothing to scan or repair.")
 			return false, nil
 		}
@@ -294,12 +306,12 @@ func printNULScanReport(w io.Writer, report *store.NULScanReport, dbPath string)
 	}
 
 	if report.Total() == 0 {
-		fmt.Fprintln(w, "No values carrying a NUL were found.")
+		fmt.Fprintln(w, "No values carrying a NUL or invalid UTF-8 were found.")
 		printNULSuspects(w, report)
 		return
 	}
 
-	fmt.Fprintf(w, "\nFound %d value(s) carrying a NUL:\n\n", report.Total())
+	fmt.Fprintf(w, "\nFound %d value(s) carrying a NUL or invalid UTF-8:\n\n", report.Total())
 
 	byColumn := report.ByColumn()
 	for _, key := range sortedCountKeys(byColumn) {

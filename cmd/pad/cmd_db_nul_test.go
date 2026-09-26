@@ -656,3 +656,79 @@ func plantActivitySuspect(t *testing.T, dbPath, value string) {
 		t.Fatalf("plant: %v", err)
 	}
 }
+
+// TestPreflightRefusesInvalidUTF8 is BUG-3222: PostgreSQL refuses a value that
+// is not valid UTF-8 (SQLSTATE 22021), so the preflight refuses on one in a
+// table the migration copies, and reports without blocking one in a table it
+// does not.
+//
+// The last leg is the case BUG-3220 must keep refused after deleting the NUL
+// suspect path: an invalid byte in a JSON value that ALSO carries the escape
+// text as a harmless literal. Before BUG-3222 only the destination cast on
+// suspects caught it, by coincidence.
+func TestPreflightRefusesInvalidUTF8(t *testing.T) {
+	bad := string([]byte{0x80})
+	backslash := textguard.EscNUL[:1]
+
+	newSource := func(t *testing.T) (*store.Store, string, string) {
+		t.Helper()
+		dbPath := filepath.Join(t.TempDir(), "src.db")
+		s, err := store.New(dbPath)
+		if err != nil {
+			t.Fatalf("open source: %v", err)
+		}
+		t.Cleanup(func() { s.Close() })
+		ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "UTF8"})
+		if err != nil {
+			t.Fatalf("create workspace: %v", err)
+		}
+		return s, dbPath, ws.ID
+	}
+
+	t.Run("control: valid multibyte text passes", func(t *testing.T) {
+		s, path, wsID := newSource(t)
+		plantNULInWorkspaceName(t, path, wsID, "é"+string(rune(0x4E2D))+string(rune(0x1F600)))
+		if err := preflightNULForMigration(s, nil, path); err != nil {
+			t.Fatalf("the preflight refused valid UTF-8: %v", err)
+		}
+	})
+
+	t.Run("invalid UTF-8 in a migrated text column refuses", func(t *testing.T) {
+		s, path, wsID := newSource(t)
+		plantNULInWorkspaceName(t, path, wsID, "bad"+bad+"name")
+		err := preflightNULForMigration(s, nil, path)
+		if err == nil || !strings.HasPrefix(err.Error(), "1 stored value") || !strings.Contains(err.Error(), "nothing was migrated") {
+			t.Fatalf("want a refusal of exactly one value, got %v", err)
+		}
+	})
+
+	t.Run("invalid UTF-8 in a table the migration does not copy is not blocking", func(t *testing.T) {
+		s, path, _ := newSource(t)
+		plantPlatformSetting(t, path, "branding", "site"+bad+"name")
+		scan, err := s.ScanNUL()
+		if err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		if scan.Total() != 1 {
+			t.Fatalf("the scan should report the row; got %v", scan.Violations)
+		}
+		if err := preflightNULForMigration(s, nil, path); err != nil {
+			t.Errorf("the preflight blocked on a table it does not copy: %v", err)
+		}
+	})
+
+	t.Run("the BUG-3220 sliver: invalid byte plus the escape as a literal, in JSON", func(t *testing.T) {
+		s, path, wsID := newSource(t)
+		plantWorkspaceSettings(t, path, wsID, `{"a":"`+bad+`","b":"x`+backslash+textguard.EscNUL+`y"}`)
+		scan, err := s.ScanNUL()
+		if err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		if scan.Total() != 1 || !scan.Violations[0].InvalidUTF8 {
+			t.Fatalf("want one invalid-UTF-8 violation, got %v", scan.Violations)
+		}
+		if err := preflightNULForMigration(s, nil, path); err == nil {
+			t.Fatal("the preflight let the sliver through")
+		}
+	})
+}
