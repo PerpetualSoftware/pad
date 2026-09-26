@@ -110,8 +110,8 @@
 			"id": "M1",
 			"finding": "P1-3",
 			"what": "content-debounce .then loses switchedAway",
-			"old": "api.items.update(wsSlug, reqItem.id, { content: toSave, client_write: nextClientWrite() }).then(() => {\n\t\t\t\tif (switchedAway(reqItem, gen)) return;",
-			"new": "api.items.update(wsSlug, reqItem.id, { content: toSave, client_write: nextClientWrite() }).then(() => {"
+			"old": "}).then((sent) => {\n\t\t\t\tif (switchedAway(reqItem, gen)) return;",
+			"new": "}).then((sent) => {"
 		},
 		{
 			"id": "M2",

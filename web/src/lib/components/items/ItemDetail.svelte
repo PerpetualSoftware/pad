@@ -5,6 +5,15 @@
 	import { api, PadApiError, isUpdateConflictError, type ImportURLResponse } from '$lib/api/client';
 	// Its own statement, so units that only use `api` keep their reviewed hash.
 	import { isSupersededWriteError } from '$lib/api/client';
+	import { isContentPendingFlush } from '$lib/items/contentWrite';
+	import { pendingEditsDialog } from '$lib/stores/pendingEditsDialog.svelte';
+	import {
+		keepRefusedRawDraft,
+		readRefusedRawDraft,
+		clearRefusedRawDraft,
+		refusedRawDraftOffer,
+		type RefusedRawDraft,
+	} from '$lib/items/refusedRawDraft';
 	import { nextClientWrite } from '$lib/items/clientWrite';
 	import { SaveTracker, type SaveToken } from '$lib/items/saveTracker.svelte';
 	import { confirmOpenChildrenOrThrow, isOpenChildrenError } from '$lib/items/openChildrenError';
@@ -24,6 +33,7 @@
 	import { visibility } from '$lib/services/visibility.svelte';
 	import Editor from '$lib/components/editor/Editor.svelte';
 	import StaleBodyNotice from '$lib/components/common/StaleBodyNotice.svelte';
+	import RefusedRawDraftNotice from './RefusedRawDraftNotice.svelte';
 	import { isBodyStale } from '$lib/items/staleBody';
 	import EditorBubbleMenu from '$lib/components/editor/EditorBubbleMenu.svelte';
 	import EditorLinkPopover from '$lib/components/editor/EditorLinkPopover.svelte';
@@ -4186,9 +4196,25 @@
 				toSave = markdownToWikiLinks(toSave, allItems);
 			}
 			toSave = cleanBrokenLinks(toSave);
-			// Stamped, like every content write this pane sends (BUG-3080).
-			api.items.update(wsSlug, reqItem.id, { content: toSave, client_write: nextClientWrite() }).then(() => {
+			// Stamped, like every content write this pane sends (BUG-3080), and
+			// refused rather than replacing another tab's unstored edits
+			// (BUG-3230 U0); overwrite is the user's answer, resent once.
+			const send = (overwrite: boolean) =>
+				api.items.update(wsSlug, reqItem.id, {
+					content: toSave,
+					client_write: nextClientWrite(),
+					refuse_pending_edits: true,
+					...(overwrite ? { overwrite_pending_edits: true } : {}),
+				});
+			send(false).catch(async (e) => {
+				if (switchedAway(reqItem, gen) || !isContentPendingFlush(e)) throw e;
+				const overwrite = await askToOverwritePendingEdits(reqItem.id, gen);
+				if (!overwrite || switchedAway(reqItem, gen)) return null;
+				return send(true);
+			}).then((sent) => {
 				if (switchedAway(reqItem, gen)) return;
+				// Kept: the text was not stored, so the pane stays dirty.
+				if (sent === null) return;
 				// Don't overwrite item -- resetting editorContent would
 				// clobber anything typed since the debounce started.
 				editorStore.setLastSaveTime(Date.now());
@@ -4496,16 +4522,40 @@
 				// user cancels the navigation ("Stay"), clear the dirty
 				// state once it lands so a later unload doesn't re-prompt
 				// / re-PATCH already-saved content.
+				//
+				// BUG-3230 U0: it asks to be REFUSED rather than delete another
+				// tab's unstored edits, and nobody is here to answer a dialog,
+				// so the text is kept in this browser BEFORE the request goes
+				// out (the page may be gone before any answer) and removed only
+				// when a response says it landed. The next open offers it.
+				const draftUser = authStore.userId;
+				keepRefusedRawDraft(draftUser, reqItemId, markdown);
 				return api.items
-					.update(wsSlug, reqItemId, { content: markdown, client_write: nextClientWrite() }, { keepalive: true })
+					.update(
+						wsSlug,
+						reqItemId,
+						{ content: markdown, client_write: nextClientWrite(), refuse_pending_edits: true },
+						{ keepalive: true },
+					)
 					.then(() => {
+						clearRefusedRawDraft(draftUser, reqItemId, markdown);
 						if (item && item.id === reqItemId && genAtSave === loadGeneration && rawContentSaver.pending === markdown) {
 							rawContentSaver.clearPending();
 							editorStore.setDirty(false);
 							localDirty = false;
 						}
 					})
-					.catch(() => {});
+					.catch((e) => {
+						// Superseded: a newer write of this tab landed, so this text
+						// is not what the item should hold.
+						if (isSupersededWriteError(e)) clearRefusedRawDraft(draftUser, reqItemId, markdown);
+						else if (isContentPendingFlush(e)) {
+							toastStore.show(
+								'Your markdown edits were not saved: another tab has edits to this item that are not stored yet. They are kept in this browser, and opening the item offers them back.',
+								'error',
+							);
+						}
+					});
 			}
 			// Debounced raw save.
 			const saveTok = saves.begin();
@@ -4513,7 +4563,16 @@
 			localLastSaveTime = Date.now();
 			// Raw mode: content is already in storage format (with [[wiki links]])
 			const toSave = markdown;
-			return api.items.update(wsSlug, reqItemId, { content: toSave, client_write: nextClientWrite() }).then((updated) => {
+			// BUG-3230 U0: refused, not replaced, while another tab holds edits
+			// the row does not; the user's overwrite answer arms one resend.
+			const overwrite = rawOverwriteArmed;
+			rawOverwriteArmed = false;
+			return api.items.update(wsSlug, reqItemId, {
+				content: toSave,
+				client_write: nextClientWrite(),
+				refuse_pending_edits: true,
+				...(overwrite ? { overwrite_pending_edits: true } : {}),
+			}).then((updated) => {
 				if (!item || item.id !== reqItemId || genAtSave !== loadGeneration) return;
 				editorStore.setLastSaveTime(Date.now());
 				localLastSaveTime = Date.now();
@@ -4547,10 +4606,132 @@
 				if (!item || item.id !== reqItemId || genAtSave !== loadGeneration) return;
 				// A newer write of this tab already landed and owns the outcome.
 				if (isSupersededWriteError(e)) return;
+				// BUG-3230 U0: the text stays pending (and the pane dirty) unless
+				// the user chooses to overwrite, which resends it once.
+				if (isContentPendingFlush(e)) {
+					void askToOverwritePendingEdits(reqItemId, genAtSave).then((ok) => {
+						if (!ok || !item || item.id !== reqItemId || genAtSave !== loadGeneration) return;
+						rawOverwriteArmed = true;
+						if (!rawContentSaver.flushNow()) rawOverwriteArmed = false;
+					});
+					return;
+				}
 				toastStore.show('Failed to save content', 'error');
 			}).finally(() => saves.settle(saveTok));
 		},
 	});
+
+	// BUG-3230 U0: the next raw save sends overwrite_pending_edits, because the
+	// user answered the pending-edits dialog with overwrite. Consumed at send.
+	let rawOverwriteArmed = false;
+	// One pending-edits question at a time from this pane's raw saves: an
+	// overlapping refused save while it is open leaves its text pending.
+	let rawPendingPromptOpen = false;
+
+	/**
+	 * Ask whether a refused raw-mode or fallback write may overwrite another tab's unstored
+	 * edits (BUG-3230 U0). False when a question is already open, when the user
+	 * keeps the edits, or when the pane moved to another item or load meanwhile.
+	 */
+	async function askToOverwritePendingEdits(reqItemId: string, gen: number): Promise<boolean> {
+		if (rawPendingPromptOpen || !item) return false;
+		rawPendingPromptOpen = true;
+		try {
+			const overwrite = await pendingEditsDialog.request(formatItemRef(item) || item.title);
+			if (!item || item.id !== reqItemId || gen !== loadGeneration) return false;
+			return overwrite;
+		} finally {
+			rawPendingPromptOpen = false;
+		}
+	}
+
+	// BUG-3230 U0: markdown an unload save could not store, offered back when
+	// this browser next shows the item. The kept text equal to the stored body
+	// means the unload request landed after its page was gone: cleared silently.
+	let refusedDraft = $state<RefusedRawDraft | null>(null);
+	let refusedDraftBusy = $state(false);
+	$effect(() => {
+		const id = item && itemMatchesRef ? item.id : null;
+		const body = item?.content ?? '';
+		const userId = authStore.userId;
+		untrack(() => {
+			if (!id) {
+				refusedDraft = null;
+				return;
+			}
+			const draft = readRefusedRawDraft(userId, id);
+			const offer = refusedRawDraftOffer(draft, body);
+			if (offer === 'clear') clearRefusedRawDraft(userId, id, draft!.markdown);
+			refusedDraft = offer === 'offer' ? draft : null;
+		});
+	});
+
+	function discardRefusedDraft() {
+		const d = refusedDraft;
+		if (!d || !item) return;
+		clearRefusedRawDraft(authStore.userId, item.id, d.markdown);
+		refusedDraft = null;
+	}
+
+	async function copyRefusedDraft() {
+		const d = refusedDraft;
+		if (!d) return;
+		try {
+			await navigator.clipboard.writeText(d.markdown);
+			toastStore.show('Copied the kept markdown', 'success');
+		} catch {
+			toastStore.show('Could not copy to the clipboard', 'error');
+		}
+	}
+
+	// Restore sends the kept text as the body, under the same refusal as every
+	// raw save; the user answers the dialog if another tab still holds edits.
+	async function restoreRefusedDraft() {
+		const d = refusedDraft;
+		if (!d || !item || refusedDraftBusy) return;
+		if (rawMode && rawContentSaver.pending !== null) {
+			toastStore.show('Wait for your current edits to save, then restore.', 'info');
+			return;
+		}
+		const reqItemId = item.id;
+		const gen = loadGeneration;
+		const userId = authStore.userId;
+		refusedDraftBusy = true;
+		try {
+			let overwrite = false;
+			for (;;) {
+				try {
+					const updated = await api.items.update(wsSlug, reqItemId, {
+						content: d.markdown,
+						client_write: nextClientWrite(),
+						refuse_pending_edits: true,
+						...(overwrite ? { overwrite_pending_edits: true } : {}),
+					});
+					if (!item || item.id !== reqItemId || gen !== loadGeneration) return;
+					clearRefusedRawDraft(userId, reqItemId, d.markdown);
+					refusedDraft = null;
+					// The raw editor shows its seed over item.content; drop it so
+					// the restored body is what it shows.
+					if (rawMode) rawSeedMarkdown = null;
+					item = withInflightTags(updated);
+					toastStore.show('Restored the kept markdown', 'success');
+					return;
+				} catch (e) {
+					if (!item || item.id !== reqItemId || gen !== loadGeneration) return;
+					if (!overwrite && isContentPendingFlush(e)) {
+						const answer = await askToOverwritePendingEdits(reqItemId, gen);
+						if (!answer || !item || item.id !== reqItemId || gen !== loadGeneration) return;
+						overwrite = true;
+						continue;
+					}
+					toastStore.show('Failed to restore the kept markdown', 'error');
+					return;
+				}
+			}
+		} finally {
+			refusedDraftBusy = false;
+		}
+	}
 
 	// One-shot seed for the raw editor when toggling from rich+collab.
 	// items.content stays stale under collab (handleContentUpdate is
@@ -4626,6 +4807,8 @@
 		// the drain empties, as it always did. A token per pass would flicker
 		// between passes while the drain is still sending.
 		const saveTok = saves.begin();
+		// BUG-3230 U0: set when the user answers a refusal with overwrite.
+		let overwriteNext = false;
 		try {
 			for (let i = 0; i < RAW_FLUSH_DRAIN_CAP; i++) {
 				const markdown: string | null = rawContentSaver.pending;
@@ -4634,7 +4817,14 @@
 				try {
 					editorStore.setLastSaveTime(Date.now());
 					localLastSaveTime = Date.now();
-					const updated = await api.items.update(wsSlug, reqItemId, { content: markdown, client_write: nextClientWrite() });
+					const overwrite = overwriteNext;
+					overwriteNext = false;
+					const updated = await api.items.update(wsSlug, reqItemId, {
+						content: markdown,
+						client_write: nextClientWrite(),
+						refuse_pending_edits: true,
+						...(overwrite ? { overwrite_pending_edits: true } : {}),
+					});
 					if (!item || item.id !== reqItemId || genAtFlush !== loadGeneration) {
 						// Navigation completed during the await;
 						// abort and let the new item's state take
@@ -4678,6 +4868,19 @@
 					if (isSupersededWriteError(e)) {
 						if (rawContentSaver.pending === markdown) rawContentSaver.clearPending();
 						continue;
+					}
+					// BUG-3230 U0: another tab holds unstored edits. Overwrite
+					// resends; keeping them leaves this text pending and the
+					// pane in raw mode.
+					if (isContentPendingFlush(e)) {
+						const overwrite = await askToOverwritePendingEdits(reqItemId, genAtFlush);
+						if (genAtFlush !== loadGeneration || !item || item.id !== reqItemId) return false;
+						if (overwrite) {
+							overwriteNext = true;
+							continue;
+						}
+						lastError = true;
+						break;
 					}
 					toastStore.show('Failed to save content', 'error');
 					lastError = true;
@@ -6508,6 +6711,15 @@
 			     Editor, EditorBubbleMenu, provider, collabKey and SSE stay
 			     persistent across an A→B item switch (the no-{#key} perf premise). -->
 			<div class="content-panel">
+				{#if canEdit && refusedDraft}
+					<RefusedRawDraftNotice
+						savedAt={refusedDraft.savedAt}
+						busy={refusedDraftBusy}
+						onrestore={restoreRefusedDraft}
+						oncopy={copyRefusedDraft}
+						ondismiss={discardRefusedDraft}
+					/>
+				{/if}
 				<!-- BUG-2263 invisible freeze: the Rich⇄Markdown toggle renders on
 				     BOTH sides. It IS a provider-LIFECYCLE control (Markdown flushes,
 				     nulls collabKey, DESTROYS the retained provider), but a click

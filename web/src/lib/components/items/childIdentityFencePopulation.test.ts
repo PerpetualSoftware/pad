@@ -182,6 +182,8 @@ const POPULATION: string[] = [
 	'lib/components/common/ContentError.svelte',
 	// BUG-3050 U3: static notice text, no script beyond an import; no await, no send.
 	'lib/components/common/StaleBodyNotice.svelte',
+	// BUG-3230 U0: no requests and no awaits; its buttons call the parent.
+	'lib/components/items/RefusedRawDraftNotice.svelte',
 	'lib/components/collections/EditCollectionModal.svelte',
 	'lib/components/ShareDialog.svelte',
 	'lib/components/items/CopyItemDialog.svelte',
