@@ -132,6 +132,15 @@ func TestFieldValueEqualityIsTypeAware(t *testing.T) {
 		{"abc", []string{}},                   // CAST('abc' AS REAL) = 0 must not fire
 		{`["done"]`, []string{}},              // arrays never match a scalar
 		{`["done", "x"]`, []string{}},         //
+		// Numeric-looking arguments outside the JSON-number grammar never
+		// reach the numeric branch, and the text branch is type-guarded, so
+		// they find no number on either dialect (codex r3, measured).
+		{"01", []string{}},
+		{"+1", []string{}},
+		{" 1", []string{}},
+		{"0x1", []string{}},
+		{"1.0", []string{`1`}},
+		{"1e0", []string{`1`}},
 	}
 	for _, c := range cases {
 		got, err := s.ListItems(ws.ID, models.ItemListParams{CollectionSlug: f.vals.Slug, Fields: map[string]string{"status": c.arg}})
