@@ -685,7 +685,9 @@ func TestRestoreLiveRoomPrunesAndReseeds(t *testing.T) {
 	}
 	maxBefore, _, _ := f.srv.store.MaxOpLogID(f.itemID)
 
-	rr := f.restore(t)
+	// The seeded op is content-bearing, so a bare restore is refused (BUG-3031);
+	// this test is about the prune, which is the override's behaviour.
+	rr := f.restoreOverride(t)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("restore: expected 200, got %d: %s", rr.Code, rr.Body.String())
 	}
@@ -716,7 +718,9 @@ func TestRestorePrunesStalePeerOpAndFencesStaleCursor(t *testing.T) {
 		t.Fatalf("seed peer op: %v", err)
 	}
 
-	rr := f.restore(t)
+	// The seeded op is content-bearing, so a bare restore is refused (BUG-3031);
+	// this test is about the prune, which is the override's behaviour.
+	rr := f.restoreOverride(t)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("restore: %d %s", rr.Code, rr.Body.String())
 	}
@@ -751,7 +755,9 @@ func TestRestoreNoRoomStillPrunesAndWrites(t *testing.T) {
 	if _, err := f.srv.store.AppendYjsUpdate(f.itemID, []byte{0x00, 0x01}, "1"); err != nil {
 		t.Fatalf("seed stale op: %v", err)
 	}
-	rr := f.restore(t)
+	// The seeded op is content-bearing, so a bare restore is refused (BUG-3031);
+	// this test is about the prune, which is the override's behaviour.
+	rr := f.restoreOverride(t)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("restore: %d %s", rr.Code, rr.Body.String())
 	}

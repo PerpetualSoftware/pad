@@ -1013,7 +1013,10 @@ func (m *RoomManager) PruneAndApply(itemID string, applyFn func() error) error {
 // peer discards its in-memory Y.Doc and lazy-seeds from items.content on
 // reconnect. Used by version-restore (BUG-2264): the restored content becomes
 // canonical and every peer converges on it — unflushed edits are discarded,
-// which is exactly restore semantics.
+// which is exactly restore semantics. The restore handler's commit refuses
+// first when content-bearing rows sit above the flush watermark unless the
+// caller consented (BUG-3031); a refused commit rolls back, and this function
+// un-freezes without refreshing anyone.
 //
 // `commit` MUST perform the canonical items.content write, the version row, AND
 // the op-log wipe in ONE store transaction (the restore handler passes

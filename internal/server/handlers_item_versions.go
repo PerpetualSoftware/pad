@@ -206,6 +206,18 @@ func (s *Server) handleRestoreItemVersion(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// The body is optional: a bare POST is the restore it has always been.
+	// overwrite_pending_edits lifts the BUG-3031 refusal below.
+	var body struct {
+		OverwritePendingEdits bool `json:"overwrite_pending_edits"`
+	}
+	if r.ContentLength != 0 {
+		if err := decodeJSON(r, &body); err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", "Invalid JSON body")
+			return
+		}
+	}
+
 	// Get all resolved versions to find the target
 	versions, err := s.store.ListItemVersionsResolved(item.ID, item.Content)
 	if err != nil {
@@ -228,7 +240,10 @@ func (s *Server) handleRestoreItemVersion(w http.ResponseWriter, r *http.Request
 	// Restore = prune + reseed (BUG-2264). A restore makes the old version's
 	// content canonical and DISCARDS whatever peers are currently co-editing —
 	// that is exactly restore semantics, so every peer must converge on the
-	// restored content. When collab is configured, ForceRefreshRoom drives this
+	// restored content. Since BUG-3031 it does so only with the caller's
+	// consent when any of those edits are not in items.content yet (see the
+	// precheck below): unflushed edits would be in no version afterwards, so a
+	// silent discard could not be undone. When collab is configured, ForceRefreshRoom drives this
 	// under the per-item lock: it freezes inbound persistence, runs the commit
 	// (which writes items.content=restored + the "Restored from…" undo-point
 	// version + prunes the ENTIRE op-log in ONE store transaction), publishes the
@@ -293,9 +308,19 @@ func (s *Server) handleRestoreItemVersion(w http.ResponseWriter, r *http.Request
 			baselineSeq      int64
 			baselineCaptured bool
 			reconcile        func() (collab.RestoreReconcileResult, error)
+			// pendingRefusal is set when the precheck refused for unflushed
+			// edits (BUG-3031). Nothing was written, so it cannot have landed.
+			pendingRefusal *store.ContentPendingFlushError
 		)
 		if s.store.D().Driver() == store.DriverPostgres {
 			reconcile = func() (collab.RestoreReconcileResult, error) {
+				// A refusal is a rollback by construction, not a lost ack. Without
+				// this short-circuit an ambiguous re-read would take
+				// ForceRefreshRoom's UNCERTAIN arm and plain-close every peer
+				// over a restore that never wrote anything.
+				if pendingRefusal != nil {
+					return collab.RestoreReconcileResult{Landed: false}, nil
+				}
 				res, fresh, rerr := s.reconcileRestoreCommit(item.ID, content, baselineSeq, baselineCaptured)
 				if rerr == nil && res.Landed {
 					// Reconciled LANDED despite the lost ack: surface the freshly-read
@@ -312,6 +337,26 @@ func (s *Server) handleRestoreItemVersion(w http.ResponseWriter, r *http.Request
 			var maxID int64
 			u, uerr := s.store.UpdateItemWithPreCheck(item.ID, input,
 				func(tx *sql.Tx, existing *models.Item) error {
+					// BUG-3031: the prune below deletes content-bearing op-log rows
+					// that no tab has flushed, and the undo point is minted from
+					// items.content, which does not hold them — so after a restore
+					// nothing anywhere does. Refuse unless the caller says it means
+					// to discard them. The web initiator drains its own editor
+					// first (BUG-2271), which advances the watermark, so this fires
+					// only for edits it could not drain. Checked FIRST, before the
+					// baseline capture, so the Postgres reconcile above never sees
+					// a captured baseline for a restore that wrote nothing. Frozen
+					// conns cannot append, so the count cannot move under us.
+					if !body.OverwritePendingEdits {
+						n, perr := s.store.CountPendingContentRowsTx(tx, item.ID)
+						if perr != nil {
+							return perr
+						}
+						if n > 0 {
+							pendingRefusal = &store.ContentPendingFlushError{ItemID: item.ID, PendingRows: n}
+							return pendingRefusal
+						}
+					}
 					// Capture the pre-restore seq under the per-item + workspace seq
 					// lock, before any mutation (BUG-2276 P2 — see the baselineSeq note
 					// above). `existing` is the row as read at the top of the update tx.
@@ -354,6 +399,10 @@ func (s *Server) handleRestoreItemVersion(w http.ResponseWriter, r *http.Request
 			return maxID, u.Seq, nil
 		}, reconcile)
 		if werr != nil {
+			if pendingRefusal != nil {
+				writeRestorePendingFlushError(w, itemRefOrSlug(*item), pendingRefusal.PendingRows)
+				return
+			}
 			if errors.Is(werr, errRestoreItemGone) {
 				writeError(w, http.StatusNotFound, "not_found", "Item not found")
 				return

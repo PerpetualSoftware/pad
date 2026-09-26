@@ -283,6 +283,17 @@ function isSupersededWriteError(err: unknown): err is PadApiError {
 }
 
 /**
+ * True when the server refused a write because the item holds collaborative
+ * edits no editor has saved yet (BUG-3133 for token-guarded content writes,
+ * BUG-3031 for version restore). Nothing was written. `err.details` carries
+ * `{ ref, pending_rows }`. Retrying unchanged gets the same answer; the caller
+ * either waits for the edits to be saved or resends with the override.
+ */
+function isContentPendingFlushError(err: unknown): err is PadApiError {
+	return err instanceof PadApiError && err.code === 'content_pending_flush';
+}
+
+/**
  * Returns true when `err` is a 404 not_found. BUG-2265 (Codex round 6): a
  * competing RENAME can kill the slug a write targeted, so the request returns
  * 404 instead of 409 — retry paths must treat BOTH as "resolve the fresh
@@ -2032,9 +2043,23 @@ export const api = {
 		get: (ws: string, itemSlug: string, versionId: string) =>
 			request<Version>(`/workspaces/${ws}/items/${itemSlug}/versions/${versionId}`),
 
-		restore: (ws: string, itemSlug: string, versionId: string) =>
+		/**
+		 * BUG-3031: the server refuses a restore with `content_pending_flush` while
+		 * the item holds unsaved edits from another editor session; pass
+		 * `overwritePendingEdits` to discard them. Without it the POST carries no
+		 * body, as before.
+		 */
+		restore: (
+			ws: string,
+			itemSlug: string,
+			versionId: string,
+			opts?: { overwritePendingEdits?: boolean }
+		) =>
 			request<Item>(`/workspaces/${ws}/items/${itemSlug}/versions/${versionId}/restore`, {
-				method: 'POST'
+				method: 'POST',
+				...(opts?.overwritePendingEdits
+					? { body: JSON.stringify({ overwrite_pending_edits: true }) }
+					: {})
 			}),
 
 		/** Activity feed for a single item (all changes, not just content versions). */
@@ -3141,6 +3166,7 @@ export {
 	isRateLimitError,
 	isUpdateConflictError,
 	isSupersededWriteError,
+	isContentPendingFlushError,
 	isNotFoundError,
 	isConflictOrNotFound
 };
