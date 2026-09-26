@@ -3,10 +3,10 @@
 // what the gate refuses and why. No scanner guard covers this page, so a NEW
 // handler here is checked by review alone.
 //
-// None of these units checks the signed-in identity. The loads check the ROUTE
-// (workspace, and the ref for loadItem), which a sign-in as someone else does
-// not change. The advisory list on TASK-3097 carries that. The table records
-// what the code does. It does not claim the code is right.
+// Every unit checks the ROUTE (the loads) where it has one, AND the identity
+// captured at its entry with authStore.identityFence (BUG-3236). A sign-in as
+// someone else does not change the route, so the route checks alone could not
+// see it.
 import { identityGateSuite } from '../../../../../test/identityGateSuite';
 
 identityGateSuite({
@@ -14,11 +14,11 @@ identityGateSuite({
 	source: new URL('./+page.svelte', import.meta.url),
 	table: {
 		asyncFunctions: {
-			loadItem: { reviewed: 'adf633f5560a', why: 'workspace and ref against the route after the fetch, on both arms and in the finally; no identity check' },
-			loadPlaybooks: { reviewed: 'f73fbbb97fd7', why: 'workspace against the route after the fetch, on both arms; no identity check' },
-			loadCollection: { reviewed: '0bf7d6d289ac', why: 'workspace against the route after the fetch, on both arms; no identity check' },
-			save: { reviewed: '2d8574271b2c', why: 'user-initiated save; no check after any await, including the overwrite re-send after the pending-edits dialog' },
-			handleExport: { reviewed: 'c22f48fa6092', why: 'user-initiated export; writes only its own toast and busy flag' },
+			loadItem: { reviewed: '1d65e4a33dc3', why: 'workspace, ref AND the entry identity fence after the fetch, on both arms and in the finally' },
+			loadPlaybooks: { reviewed: '6825e2ad3d9b', why: 'workspace AND the entry identity fence after the fetch, on both arms' },
+			loadCollection: { reviewed: '5e49f16c7659', why: 'workspace AND the entry identity fence after the fetch, on both arms' },
+			save: { reviewed: 'cf7b25c986f0', why: 'user-initiated save; the entry identity fence before the dialog, after its answer (so the overwrite re-send never goes under another identity), before the success report and navigation, on the failure report, and on the finally that clears saving' },
+			handleExport: { reviewed: 'bd5b6bebfde2', why: 'user-initiated export; the entry identity fence before either toast and on the finally that clears exporting' },
 		},
 		nested: [],
 		markup: [],
@@ -44,7 +44,7 @@ identityGateSuite({
 		{
 			cls: 3,
 			what: "loadCollection's success arm loses its own check while its failure arm keeps one",
-			old: "\t\t\tconst coll = await api.collections.get(ws, 'playbooks');\n\t\t\tif (ws !== wsSlug) return;\n",
+			old: "\t\t\tconst coll = await api.collections.get(ws, 'playbooks');\n\t\t\tif (ws !== wsSlug || !isSameIdentity()) return;\n",
 			new: "\t\t\tconst coll = await api.collections.get(ws, 'playbooks');\n",
 			names: 'loadCollection()',
 		},
@@ -58,8 +58,8 @@ identityGateSuite({
 		{
 			cls: 5,
 			what: "loadPlaybooks' success return is made conditional on something that never holds",
-			old: "\t\t\tconst list = await api.items.listByCollection(ws, 'playbooks', {});\n\t\t\tif (ws !== wsSlug) return;\n",
-			new: "\t\t\tconst list = await api.items.listByCollection(ws, 'playbooks', {});\n\t\t\tif (ws !== wsSlug && list === null) return;\n",
+			old: "\t\t\tconst list = await api.items.listByCollection(ws, 'playbooks', {});\n\t\t\tif (ws !== wsSlug || !isSameIdentity()) return;\n",
+			new: "\t\t\tconst list = await api.items.listByCollection(ws, 'playbooks', {});\n\t\t\tif ((ws !== wsSlug || !isSameIdentity()) && list === null) return;\n",
 			names: 'loadPlaybooks()',
 		},
 	],

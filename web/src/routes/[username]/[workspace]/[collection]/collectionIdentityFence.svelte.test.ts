@@ -83,6 +83,16 @@ vi.mock('$lib/stores/toast.svelte', () => ({
 
 const deferredBulk = vi.hoisted(() => [] as Array<{ resolve: (v: unknown) => void; reject: (e: unknown) => void }>);
 const deferredUpdate = vi.hoisted(() => [] as Array<{ resolve: (v: unknown) => void; reject: (e: unknown) => void }>);
+/**
+ * The lane-reorder conflict path (BUG-3238). Off by default, so every other leg
+ * sees the resolving `collections.update` and the `isConflictOrNotFound: false`
+ * it always had.
+ */
+const reorderConflict = vi.hoisted(() => ({
+	on: false,
+	updates: [] as Array<{ resolve: (v: unknown) => void; reject: (e: unknown) => void }>,
+	lists: 0,
+}));
 const upserts = vi.hoisted(() => [] as unknown[]);
 const sseHandlers = vi.hoisted(() => [] as Array<(e: unknown) => unknown>);
 const gotos = vi.hoisted(() => [] as string[]);
@@ -137,8 +147,11 @@ vi.mock('$lib/api/client', () => ({
 	api: {
 		collections: {
 			get: vi.fn(() => new Promise((resolve) => { collectionGets.push({ resolve }); })),
-			list: vi.fn(async () => []),
-			update: vi.fn(async () => ({})),
+			list: vi.fn(async () => {
+				reorderConflict.lists++;
+				return [];
+			}),
+			update: vi.fn(() => (reorderConflict.on ? defer(reorderConflict.updates) : Promise.resolve({}))),
 		},
 		views: { list: vi.fn(async () => []), create: vi.fn(async () => ({})), delete: vi.fn(async () => ({})) },
 		members: { list: vi.fn(async () => ({ members: [], invitations: [] })) },
@@ -154,7 +167,7 @@ vi.mock('$lib/api/client', () => ({
 	PadApiError: class PadApiError extends Error { code = ''; },
 	isPlanLimitError: () => false,
 	planLimitMessage: () => '',
-	isConflictOrNotFound: () => false,
+	isConflictOrNotFound: () => reorderConflict.on,
 }));
 
 vi.mock('$lib/collections/progressMerge', () => ({
@@ -423,6 +436,42 @@ describe('the collection page stops a commit when the identity moves mid-flight'
 	afterEach(() => {
 		cleanup();
 		vi.useRealTimers();
+		reorderConflict.on = false;
+		reorderConflict.updates.length = 0;
+		reorderConflict.lists = 0;
+	});
+
+	// ── A request issued on the previous identity's behalf (BUG-3238) ─────
+	//
+	// The lane-reorder conflict path reseeds with a collections.list AFTER the
+	// failed update. A reorder whose update fails after the identity moved must
+	// not send that request under whoever's cookie is current now.
+
+	async function reorderIntoConflict(flip: boolean) {
+		await mountPage();
+		reorderConflict.on = true;
+		reorderConflict.lists = 0;
+		const onGroupReorder = findProp<(order: string[]) => Promise<void>>('onGroupReorder');
+		expect(onGroupReorder, 'no board view rendered, so the reorder handler was never reached').toBeTruthy();
+		const call = onGroupReorder!(['done', 'open']);
+		const d = await waitFor(() => {
+			if (reorderConflict.updates.length === 0) throw new Error('no schema update yet');
+			return reorderConflict.updates[0]!;
+		});
+		if (flip) flipIdentity();
+		d.reject(new Error('conflict'));
+		await call;
+		await tick();
+	}
+
+	it('CONTROL: a lane reorder that conflicts reseeds with a collections.list', async () => {
+		await reorderIntoConflict(false);
+		expect(reorderConflict.lists, 'the control issued no reseed, so the leg below would measure nothing').toBe(1);
+	});
+
+	it('a lane reorder that conflicts after an identity move issues no reseed request', async () => {
+		await reorderIntoConflict(true);
+		expect(reorderConflict.lists).toBe(0);
 	});
 
 	it('CONTROL: a status change commits when the identity holds', async () => {

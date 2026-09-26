@@ -1,7 +1,9 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { page } from '$app/state';
 	import { api } from '$lib/api/client';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
+	import { authStore } from '$lib/stores/auth.svelte';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import PageHeader from '$lib/components/common/PageHeader.svelte';
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
@@ -21,21 +23,31 @@
 	export const snapshot = scrollRestoration.snapshot;
 
 	$effect(() => {
-		if (wsSlug) loadTags(wsSlug);
+		const ws = wsSlug;
+		// UNTRACKED, so this effect depends on the workspace alone: loadTags
+		// reads the reactive identity epoch synchronously for its fence, and
+		// tracked, that read would add an identity reload path the layout
+		// already owns (BUG-3236).
+		if (ws) untrack(() => loadTags(ws));
 	});
 
 	async function loadTags(ws: string) {
 		loading = true;
 		const seq = ++loadSeq;
+		// The identity that ASKED (BUG-3236). `seq` is a navigation fence and
+		// does not move on an account swap, so it cannot see a list settling in
+		// the window before the layout's identity reload takes the page away:
+		// the same window starred's fence covers.
+		const isSameIdentity = authStore.identityFence();
 		try {
 			const result = await api.tags.list(ws);
-			if (seq !== loadSeq) return;
+			if (seq !== loadSeq || !isSameIdentity()) return;
 			tags = result;
 		} catch {
-			if (seq !== loadSeq) return;
+			if (seq !== loadSeq || !isSameIdentity()) return;
 			tags = [];
 		} finally {
-			if (seq === loadSeq) loading = false;
+			if (seq === loadSeq && isSameIdentity()) loading = false;
 		}
 	}
 

@@ -2336,6 +2336,10 @@
 			// rename) — not the SSE broadcast, which may be missed / reconnecting —
 			// so the token reseeds and the next re-drag doesn't fail forever.
 			if (isConflictOrNotFound(err)) {
+				// A load that has lost its identity issues no requests on its
+				// behalf (the dashboard's rule), so check BEFORE the reseed fetch
+				// as well as after it (BUG-3238).
+				if (!identityHeld(epochAtEntry)) return;
 				try {
 					const list = await api.collections.list(ws);
 					const fresh = list.find((c) => c.id === base.id);
@@ -2581,7 +2585,13 @@
 					bypassNavGuard = false;
 				}, 0);
 			} else {
-				goto(url).finally(() => { bypassNavGuard = false; });
+				// Fenced like the popstate arm above (BUG-3238): the two arms of
+				// one guard must not disagree about whose flag this is.
+				const epochAtSchedule = captureIdentity();
+				goto(url).finally(() => {
+					if (!identityHeld(epochAtSchedule)) return;
+					bypassNavGuard = false;
+				});
 			}
 		};
 		showLeaveDialog = true;
@@ -2630,6 +2640,11 @@
 		// A create failed (already toasted): keep the dialog open with the
 		// still-unsaved drafts so the user can retry or discard.
 		if (outcome === 'failed') return;
+		// A RETURN, not only the conditional write above (BUG-3238). With no
+		// drafts `saveAllDrafts` checks nothing, and an identity change nulls
+		// `pendingNav` (resetPerSessionState), so what this would run is a
+		// pending navigation the NEW user set up by opening the dialog again.
+		if (!identityHeld(epochAtEntry)) return;
 		runPendingNav();
 	}
 

@@ -1,9 +1,11 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api/client';
 	import { parseFields, parseSchema, itemUrlId, formatItemRef, type Collection, type Item } from '$lib/types';
 	import { toastStore } from '$lib/stores/toast.svelte';
+	import { authStore } from '$lib/stores/auth.svelte';
 	import { titleEditError } from '$lib/items/titleLimit';
 	import { contentWriteFor, isContentPendingFlush } from '$lib/items/contentWrite';
 	import { pendingEditsDialog } from '$lib/stores/pendingEditsDialog.svelte';
@@ -87,9 +89,19 @@
 
 	$effect(() => {
 		if (wsSlug && ref) {
-			loadItem(wsSlug, ref);
-			loadPlaybooks(wsSlug);
-			loadCollection(wsSlug);
+			const ws = wsSlug;
+			const r = ref;
+			// UNTRACKED, so this effect depends on the route alone. Each loader
+			// reads the reactive identity epoch synchronously (its fence is
+			// captured before its first await), and tracked, that read would make
+			// an identity change re-run all three loads. That is a reload path
+			// the layout already owns, and it would drop the form mid-save
+			// (BUG-3236).
+			untrack(() => {
+				loadItem(ws, r);
+				loadPlaybooks(ws);
+				loadCollection(ws);
+			});
 		}
 	});
 
@@ -100,12 +112,18 @@
 		// in flight (Codex round 4 P2). The catch path then leaves item
 		// null and the template renders "Playbook not found."
 		item = null;
+		// IDENTITY FENCE, on every unit of this page (BUG-3236). The route
+		// checks below answer "which playbook"; an account swap does not
+		// change the route, so they cannot see a response, or a dialog
+		// answer, that settles in the window before the layout's identity
+		// reload takes the page away. That is the window starred's fence covers.
+		const isSameIdentity = authStore.identityFence();
 		try {
 			const loaded = await api.items.get(ws, slugOrRef);
 			// Stale-response guard: if the user moved away while the
 			// request was in flight, drop the result rather than
 			// rendering data from another route.
-			if (ws !== wsSlug || slugOrRef !== ref) return;
+			if (ws !== wsSlug || slugOrRef !== ref || !isSameIdentity()) return;
 			// `api.items.get` is cross-collection — `/playbooks/TASK-1`
 			// would happily resolve to a task item, and Save would then
 			// rewrite the task's fields as a playbook (Codex round 1 P2).
@@ -136,35 +154,37 @@
 			loadedForm = { status, trigger, scope, invocationSlug, args: argumentsToJSON(args) };
 			storedRaw = { status: fields.status, trigger: fields.trigger, scope: fields.scope };
 		} catch {
-			if (ws !== wsSlug || slugOrRef !== ref) return;
+			if (ws !== wsSlug || slugOrRef !== ref || !isSameIdentity()) return;
 			// Explicit null on the current-request error path so a failed
 			// reload doesn't leave the previous item editable.
 			item = null;
 			toastStore.show('Failed to load playbook', 'error');
 		} finally {
-			if (ws === wsSlug && slugOrRef === ref) loading = false;
+			if (ws === wsSlug && slugOrRef === ref && isSameIdentity()) loading = false;
 		}
 	}
 
 	async function loadPlaybooks(ws: string) {
+		const isSameIdentity = authStore.identityFence();
 		try {
 			const list = await api.items.listByCollection(ws, 'playbooks', {});
-			if (ws !== wsSlug) return;
+			if (ws !== wsSlug || !isSameIdentity()) return;
 			existingPlaybooks = list;
 		} catch {
-			if (ws !== wsSlug) return;
+			if (ws !== wsSlug || !isSameIdentity()) return;
 			existingPlaybooks = [];
 		}
 	}
 
 	async function loadCollection(ws: string) {
 		playbooksCollection = null;
+		const isSameIdentity = authStore.identityFence();
 		try {
 			const coll = await api.collections.get(ws, 'playbooks');
-			if (ws !== wsSlug) return;
+			if (ws !== wsSlug || !isSameIdentity()) return;
 			playbooksCollection = coll;
 		} catch {
-			if (ws !== wsSlug) return;
+			if (ws !== wsSlug || !isSameIdentity()) return;
 			playbooksCollection = null;
 		}
 	}
@@ -213,6 +233,10 @@
 			return;
 		}
 		saving = true;
+		// Captured before the first await. The dialog below can stay open
+		// across an identity change, and its answer must not send
+		// `overwrite_pending_edits` under whoever is signed in by then.
+		const isSameIdentity = authStore.identityFence();
 		try {
 			// BUG-3049: name the five keys this editor owns and send nothing
 			// else. The previous shape spread `parseFields(item)` and replaced
@@ -238,18 +262,25 @@
 				await api.items.update(wsSlug, item.slug, payload);
 			} catch (err) {
 				if (!isContentPendingFlush(err)) throw err;
-				if (!(await pendingEditsDialog.request(formatItemRef(item) ?? item.title))) {
+				if (!isSameIdentity()) return;
+				const overwrite = await pendingEditsDialog.request(formatItemRef(item) ?? item.title);
+				if (!isSameIdentity()) return;
+				if (!overwrite) {
 					toastStore.show("Not saved: the open tab's edits were kept. Your changes are still here.", 'info');
 					return;
 				}
 				await api.items.update(wsSlug, item.slug, { ...payload, overwrite_pending_edits: true });
 			}
+			if (!isSameIdentity()) return;
 			toastStore.show('Playbook saved', 'success');
 			goto(`/${username}/${wsSlug}/playbooks`);
 		} catch (err) {
+			if (!isSameIdentity()) return;
 			toastStore.show((err as Error)?.message || 'Failed to save playbook', 'error');
 		} finally {
-			saving = false;
+			// Only under the identity, like the collection page's busy flags: a
+			// save started by whoever is signed in NOW owns this flag (codex r1).
+			if (isSameIdentity()) saving = false;
 		}
 	}
 
@@ -260,16 +291,19 @@
 	async function handleExport() {
 		if (!item || exporting) return;
 		exporting = true;
+		const isSameIdentity = authStore.identityFence();
 		try {
 			await exportAndDownloadArtifact(wsSlug, itemUrlId(item));
+			if (!isSameIdentity()) return;
 			toastStore.show('Playbook exported', 'success');
 		} catch (err: unknown) {
+			if (!isSameIdentity()) return;
 			toastStore.show(
 				err instanceof Error ? err.message : 'Failed to export playbook',
 				'error'
 			);
 		} finally {
-			exporting = false;
+			if (isSameIdentity()) exporting = false;
 		}
 	}
 </script>
