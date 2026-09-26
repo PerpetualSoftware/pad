@@ -107,7 +107,8 @@ const MaxDocumentTitleRunes = 255
 //
 // BUG-2806 also made the document rename cascade find a link stored in
 // escaped form, which is the reason given below for refusing `|` and `\`.
-// The refusal itself is unchanged: lifting it is a separate decision.
+// That reason no longer holds for the cascade; the refusal stands for the
+// other consumers, and its message now says so (see the branch below).
 //
 // This is BUG-2796 stated as a property rather than as a character blacklist,
 // and the distinction is not cosmetic: the first version of this function
@@ -163,10 +164,13 @@ func wikiTitleRoundTripFailure(title string) string {
 		return `Title may not end with "\" — it would escape the closing bracket of the [[wiki-links]] that point ` +
 			`at this document`
 	}
+	// The reason given to the caller is the TRUE one (lead ruling, BUG-2806).
+	// It used to be "the rename cascade would not find" their escaped links,
+	// which BUG-2806 made false. The refusal stays anyway: lifting it needs
+	// every wiki-link consumer (web rendering and backlinks, MCP, search, the
+	// CLI) to resolve the escaped forms first, which is its own filed item.
 	if strings.ContainsAny(title, `\|`) {
-		return `Title may not contain "\" or "|" — a link to a title containing them can be stored in ` +
-			`escaped form, which the rename cascade would not find, silently leaving those links pointing ` +
-			`at a title that no longer exists`
+		return `Title may not contain "\" or "|" — these characters are not supported in document titles yet`
 	}
 	return ""
 }

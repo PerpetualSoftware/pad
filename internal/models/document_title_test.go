@@ -181,3 +181,15 @@ func TestDocumentTitleRejectsFormsTheCascadeCannotFind(t *testing.T) {
 		}
 	}
 }
+
+// BUG-2806 (lead ruling): `|` and `\` stay refused in new titles, but the
+// reason given is the true one. It used to say the rename cascade could not
+// find their escaped links, which BUG-2806 made false.
+func TestValidateDocumentTitle_PipeAndBackslashReasonIsTrue(t *testing.T) {
+	for _, title := range []string{"A|B", `A\B`} {
+		msg := ValidateDocumentTitle(title)
+		if !strings.Contains(msg, "not supported in document titles yet") || strings.Contains(msg, "cascade") {
+			t.Errorf("%q: refusal %q should give the not-yet-supported reason, not the cascade one", title, msg)
+		}
+	}
+}
