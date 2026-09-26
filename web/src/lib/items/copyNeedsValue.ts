@@ -7,9 +7,11 @@ import { isRelationType } from '$lib/items/relationFieldTypes';
  *
  * Everything else is NOT rendered as a text box. `json` is deliberately
  * read-only in FieldEditor (a plain text input would store the string "[]"
- * where an array belongs), and `multi_select` has no editor in FieldEditor: it
- * used to fall through to the TEXT fallback, which yielded a string where the
- * server requires `[]any`, and since BUG-3052 unit 2 it renders read-only.
+ * where an array belongs). `multi_select` fell through to FieldEditor's TEXT
+ * fallback, a string where the server requires `[]any`; it has had a real
+ * editor since IDEA-3223, but this dialog does not collect it yet, because
+ * whether an empty selection satisfies a REQUIRED multi_select in the copy
+ * preflight is its own question.
  */
 export const COLLECTABLE_TYPES = new Set([
 	'text',

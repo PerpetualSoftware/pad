@@ -57,7 +57,6 @@ import FieldEditor from './FieldEditor.svelte';
 
 const flag = { key: 'blocked', label: 'Blocked', type: 'checkbox' as const };
 const effort = { key: 'effort', label: 'Effort', type: 'number' as const };
-const labels = { key: 'labels', label: 'Labels', type: 'multi_select' as const, options: ['a', 'b'] };
 
 afterEach(() => cleanup());
 
@@ -130,15 +129,5 @@ describe('a value whose shape does not match its field (BUG-3052 unit 2)', () =>
 		const b = render(FieldEditor, { props: { field: effort, value: 5, onchange: vi.fn(), itemId: 'i1' } });
 		expect(mismatch(b.container)).toBeNull();
 		expect((b.container.querySelector('.number-input') as HTMLInputElement).value).toBe('5');
-	});
-});
-
-describe('multi_select has no editor here yet (BUG-3052 unit 2)', () => {
-	it('shows its values read-only with a hint, and no text input that would write a string', () => {
-		const onchange = vi.fn();
-		const { container } = render(FieldEditor, { props: { field: labels, value: ['a', 'b'], onchange, itemId: 'i1' } });
-		expect(container.querySelector('input')).toBeNull();
-		expect(container.textContent).toContain('a, b');
-		expect(container.textContent).toContain("Can't be edited here yet");
 	});
 });
