@@ -10,8 +10,8 @@ identityGateSuite({
 	table: {
 		asyncFunctions: {
 			loadTags: {
-				reviewed: '647f2e65370d',
-				why: 'seq against loadSeq after the fetch, on both arms and in the finally. It has no identity check, unlike starred; the advisory list on TASK-3097 carries that',
+				reviewed: '0f72a690750a',
+				why: 'seq against loadSeq AND the entry identity fence (authStore.identityFence) on both arms; the finally clears loading only under both. Same shape as starred (BUG-3236)',
 			},
 		},
 		nested: [],
@@ -37,23 +37,23 @@ identityGateSuite({
 		},
 		{
 			cls: 3,
-			what: 'the success arm loses its own check',
-			old: '\t\t\tif (seq !== loadSeq) return;\n\t\t\ttags = result;\n',
-			new: '\t\t\ttags = result;\n',
+			what: 'the identity half of the success check is dropped, the sequence half kept',
+			old: '\t\t\tif (seq !== loadSeq || !isSameIdentity()) return;\n\t\t\ttags = result;\n',
+			new: '\t\t\tif (seq !== loadSeq) return;\n\t\t\ttags = result;\n',
 			names: 'loadTags()',
 		},
 		{
 			cls: 4,
-			what: 'the capture keeps its name and stops capturing a new load',
-			old: '\t\tconst seq = ++loadSeq;\n',
-			new: '\t\tconst seq = loadSeq;\n',
+			what: 'the identity fence keeps its name and stops comparing anything',
+			old: '\t\tconst isSameIdentity = authStore.identityFence();\n',
+			new: '\t\tconst isSameIdentity = () => true;\n',
 			names: 'loadTags()',
 		},
 		{
 			cls: 5,
 			what: "the failure arm's return is made conditional on something that never holds",
-			old: '\t\t} catch {\n\t\t\tif (seq !== loadSeq) return;\n',
-			new: '\t\t} catch {\n\t\t\tif (seq !== loadSeq && tags.length < 0) return;\n',
+			old: '\t\t} catch {\n\t\t\tif (seq !== loadSeq || !isSameIdentity()) return;\n',
+			new: '\t\t} catch {\n\t\t\tif ((seq !== loadSeq || !isSameIdentity()) && tags.length < 0) return;\n',
 			names: 'loadTags()',
 		},
 	],
