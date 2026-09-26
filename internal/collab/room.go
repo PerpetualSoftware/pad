@@ -105,6 +105,18 @@ type roomConn struct {
 	// restore goroutine's write can't race readLoop's read.
 	frozen atomic.Bool
 
+	// evicted marks a read-only conn that a no-applier direct write has
+	// outdated (BUG-2103): the op-log it synced from was pruned and
+	// items.content replaced, so its in-memory Y.Doc is stale and it is being
+	// force-refreshed. TERMINAL — nothing clears it; the conn is closed
+	// instead. Deliberately not `frozen`: a restore's failure path un-freezes
+	// every conn, which would thaw this one. And not `canWrite`, which the
+	// auth revalidation loop rewrites. readLoop drops its sync frames and
+	// pickApplier skips it, so a viewer promoted between the eviction and the
+	// close can flip canWrite but can never persist its stale state. Set under
+	// appendMu, the same fence readLoop checks it under.
+	evicted atomic.Bool
+
 	// lastPersistedOpID + frozenDropSeq are the DURABLE persistence-correlation
 	// signals for the designated-applier round-trip (BUG-2276 residual 2). Both
 	// are mutated ONLY by this conn's readLoop under appendMu:
@@ -463,7 +475,7 @@ func (r *Room) readLoop(rc *roomConn) error {
 				r.appendMu.Unlock()
 				continue
 			}
-			if !rc.canWrite.Load() {
+			if !rc.canWrite.Load() || rc.evicted.Load() {
 				r.appendMu.Unlock()
 				continue
 			}
@@ -736,18 +748,24 @@ func (r *Room) closeAllConnsPlain() {
 // the lock (matching closeAll) so a slow write/close can't block the room's
 // addConn/removeConn.
 func (r *Room) forceRefreshAll() {
-	payload, err := json.Marshal(ControlMessage{Type: ControlMessageForceRefresh})
-	if err != nil {
-		slog.Warn("collab: marshal force_refresh frame failed", "item_id", r.itemID, "error", err)
-		payload = nil
-	}
-
 	r.mu.Lock()
 	conns := make([]*roomConn, 0, len(r.conns))
 	for _, rc := range r.conns {
 		conns = append(conns, rc)
 	}
 	r.mu.Unlock()
+	r.forceRefreshConns(conns)
+}
+
+// forceRefreshConns sends force_refresh then closes each of conns, with the
+// same per-conn bound forceRefreshAll documents. The caller must NOT hold
+// appendMu: this is socket I/O.
+func (r *Room) forceRefreshConns(conns []*roomConn) {
+	payload, err := json.Marshal(ControlMessage{Type: ControlMessageForceRefresh})
+	if err != nil {
+		slog.Warn("collab: marshal force_refresh frame failed", "item_id", r.itemID, "error", err)
+		payload = nil
+	}
 
 	// Fan the frame+close out per conn concurrently (additional-P2): a slow peer
 	// already inside a deadline-free WriteMessage would otherwise block the whole
