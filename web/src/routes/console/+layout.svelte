@@ -5,6 +5,7 @@
 	import { api } from '$lib/api/client';
 	import { onMount } from 'svelte';
 	import { isBlockedByModal } from '$lib/a11y/viewerBackdrop';
+	import { clickOutside } from '$lib/utils/clickOutside';
 
 	let { children } = $props();
 	let ready = $state(false);
@@ -69,14 +70,6 @@
 		}
 	}
 
-	function handleWindowClick(event: MouseEvent) {
-		if (!mobileMenuOpen) return;
-		const target = event.target as HTMLElement | null;
-		if (!target) return;
-		if (!target.closest('.console-nav')) {
-			mobileMenuOpen = false;
-		}
-	}
 
 	let initial = $derived(
 		authStore.user?.name?.charAt(0)?.toUpperCase() ??
@@ -84,17 +77,21 @@
 	);
 </script>
 
-<svelte:window onkeydown={handleWindowKeydown} onclick={handleWindowClick} />
+<svelte:window onkeydown={handleWindowKeydown} />
 
 {#if ready}
 	<div class="console-layout">
-		<nav class="console-nav">
+		<!-- `clickOutside` dismisses only on a press that STARTS outside (BUG-3231): a drag begun inside and released outside is not an outside click. -->
+		<nav class="console-nav" use:clickOutside={{ enabled: mobileMenuOpen, onOutside: () => (mobileMenuOpen = false) }}>
 			<div class="nav-left">
 				<a href="/console" class="nav-logo">Pad</a>
 				<!--
-					stopPropagation: this toggle click MUST NOT reach
-					handleWindowClick. See the BUG-1330 note on the SVG below
-					for the full explanation. The CSS `pointer-events: none`
+					stopPropagation: this toggle click once had to be kept from
+					a window click handler (BUG-1330, the note on the SVG below).
+					Outside dismissal is now `clickOutside` on the nav, which
+					reads the pointerdown before any click re-renders the icon,
+					and the toggle is inside the nav anyway (BUG-3231); the guard
+					stays as belt-and-braces. The CSS `pointer-events: none`
 					already moves the click target onto the button, but
 					stopping propagation is belt-and-braces — if a future
 					change adds another element inside the button without the
@@ -280,7 +277,9 @@
 		fires, and the menu slams shut as fast as it opened. Forcing the
 		hamburger SVG and its children to be pointer-event-transparent
 		makes the button the click target, which is never re-rendered.
-		Verified with a Svelte 5 playground repro.
+		Verified with a Svelte 5 playground repro. (Since BUG-3231 the
+		outside dismissal is `clickOutside`, which decides on pointerdown,
+		before the swap, so the hazard no longer applies. The rule is kept.)
 	*/
 	.mobile-hamburger svg,
 	.mobile-hamburger svg * {

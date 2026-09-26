@@ -28,6 +28,7 @@
 	import EmptyState from '../common/EmptyState.svelte';
 	import LaneActionsMenu from './LaneActionsMenu.svelte';
 	import { viewport } from '$lib/stores/breakpoint.svelte';
+	import { clickOutside } from '$lib/utils/clickOutside';
 	import { draftKey, lostLaneLabel, type DraftSaveTarget } from '$lib/collections/laneDrafts';
 
 
@@ -237,12 +238,6 @@
 	// Dismiss the open lane menu on any click outside it (mirrors the
 	// QuickActionsMenu pattern). The menu markup lives under
 	// `.lane-menu-wrap`, so clicks there don't close it.
-	function handleWindowClick(e: MouseEvent) {
-		if (openMenuColumn === null) return;
-		const target = e.target as HTMLElement | null;
-		if (!target) return;
-		if (!target.closest('.lane-menu-wrap')) closeMenu();
-	}
 
 	const flipDurationMs = 200;
 	const touchDragDelayMs = 500;
@@ -785,7 +780,6 @@
 	}
 </script>
 
-<svelte:window onclick={handleWindowClick} />
 
 {#if items.length === 0}
 	<EmptyState {collection} {wsSlug} {oncreate} />
@@ -917,7 +911,11 @@
 					<!-- Kebab shows for create OR any non-empty lane (sort is
 					     always available, even to viewers — TASK-1673). -->
 					{#if onCreateInColumn || colItems.length > 0}
-						<div class="lane-menu-wrap">
+						<!-- `clickOutside` dismisses only on a press that STARTS outside (BUG-3231): a drag begun inside and released outside is not an outside click. -->
+						<div
+							class="lane-menu-wrap"
+							use:clickOutside={{ enabled: openMenuColumn === colValue, onOutside: closeMenu }}
+						>
 							<button
 								class="lane-btn lane-menu-btn"
 								title="Lane actions"

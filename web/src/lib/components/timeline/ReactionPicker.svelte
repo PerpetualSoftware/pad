@@ -1,6 +1,7 @@
 <script lang="ts">
 	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
 	import { viewport } from '$lib/stores/breakpoint.svelte';
+	import { clickOutside } from '$lib/utils/clickOutside';
 
 	interface Props {
 		onSelect: (emoji: string) => void;
@@ -26,22 +27,8 @@
 		onSelect(emoji);
 	}
 
-	function handleClickOutside(event: MouseEvent) {
-		if (pickerEl && !pickerEl.contains(event.target as Node)) {
-			open = false;
-		}
-	}
-
-	$effect(() => {
-		// On mobile the BottomSheet owns dismissal (backdrop tap + Escape +
-		// close button) — skip the outside-click listener so it doesn't race.
-		if (open && !viewport.isMobile) {
-			document.addEventListener('click', handleClickOutside, true);
-			return () => {
-				document.removeEventListener('click', handleClickOutside, true);
-			};
-		}
-	});
+	// Outside dismissal is `clickOutside` on the root, which dismisses only on a press that STARTS outside (BUG-3231): a drag begun inside and released outside is not an outside click.
+	// On mobile the BottomSheet owns dismissal, so it is off there.
 </script>
 
 {#snippet emojiGrid()}
@@ -58,7 +45,11 @@
 	</div>
 {/snippet}
 
-<div class="reaction-picker" bind:this={pickerEl}>
+<div
+	class="reaction-picker"
+	bind:this={pickerEl}
+	use:clickOutside={{ enabled: open && !viewport.isMobile, onOutside: () => (open = false) }}
+>
 	<button class="trigger" type="button" onclick={toggle} title="Add reaction">
 		<svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
 			<circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5" />

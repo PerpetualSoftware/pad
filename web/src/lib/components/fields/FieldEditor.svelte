@@ -37,6 +37,7 @@ handlers — onchange is never called.
 	import { shouldOpenInPane } from '$lib/components/collections/itemCardClick';
 	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
 	import { viewport } from '$lib/stores/breakpoint.svelte';
+	import { clickOutside } from '$lib/utils/clickOutside';
 	import { canonicalValueColor, formatFieldLabel as formatLabel } from '$lib/utils/fieldColors';
 
 	interface Props {
@@ -916,20 +917,12 @@ handlers — onchange is never called.
 		}
 	}
 
-	function handleWindowClick(e: MouseEvent) {
-		// On mobile the BottomSheet owns dismissal (backdrop tap + Escape +
-		// close button) — skip this handler so it doesn't race the sheet.
-		if (viewport.isMobile) return;
-		if (
-			dropdownOpen &&
-			triggerEl &&
-			dropdownEl &&
-			!triggerEl.contains(e.target as Node) &&
-			!dropdownEl.contains(e.target as Node)
-		) {
-			dropdownOpen = false;
-		}
-	}
+	// The desktop dropdown closes through `clickOutside`, which dismisses only on a press that STARTS outside (BUG-3231): a drag begun inside and released outside is not an outside click.
+	// On mobile the BottomSheet branch renders instead and owns dismissal.
+	const dropdownOutside = {
+		onOutside: () => (dropdownOpen = false),
+		extra: () => [triggerEl],
+	};
 
 	// ── Input handlers ─────────────────────────────────────────────────────
 	//
@@ -1351,7 +1344,6 @@ handlers — onchange is never called.
 
 </script>
 
-<svelte:window onclick={handleWindowClick} />
 
 {#snippet relationChip(raw: string)}
 	<!--
@@ -1562,6 +1554,7 @@ handlers — onchange is never called.
 		{:else if dropdownOpen && field.options}
 			<div
 				bind:this={dropdownEl}
+				use:clickOutside={dropdownOutside}
 				class="select-dropdown"
 				role="listbox"
 				aria-label="{field.label} options"
@@ -1880,6 +1873,7 @@ handlers — onchange is never called.
 		{:else if dropdownOpen && multiChoices.length}
 			<div
 				bind:this={dropdownEl}
+				use:clickOutside={dropdownOutside}
 				class="select-dropdown"
 				role="listbox"
 				aria-multiselectable="true"
