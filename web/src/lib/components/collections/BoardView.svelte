@@ -492,9 +492,31 @@
 	// (CONVE-1688).
 	let showUncategorized = $state(false);
 
+	// The lane STRUCTURE the synced data was bucketed for (BUG-3042). The gate
+	// below holds back a DATA re-sync while a drag or its post-drop cooldown is
+	// running, so a card does not jump lanes mid-flight. It was also holding
+	// back a change of structure (a regroup, or a schema retype that refuses
+	// the grouping), which is not what it protects: `columnOrder` follows
+	// `columns` at once, so the lanes switched while `columnData` stayed keyed
+	// by the OLD ones, and the board showed its notice over zero cards until
+	// the gate cleared. A structural change is a different view, not a sync,
+	// so it goes through.
+	//
+	// The column list counts only where it comes from the SCHEMA (a select
+	// field's options: an option removed in the window would otherwise hide
+	// its cards). On a relation board the lanes are derived from the ITEMS, so
+	// a drop that empties a lane would count as a structural change and force
+	// exactly the mid-cooldown re-bucket the gate prevents.
+	let laneStructure = $derived(
+		[groupField, isRelationGroup, !!groupingRefusal, ...(isRelationGroup ? [] : columns)].join('\u0000')
+	);
+	let syncedStructure: string | null = null;
+
 	$effect(() => {
 		const data = propColumnData;
-		if (!isDragging && !dropCooldown) {
+		const structure = laneStructure;
+		if ((!isDragging && !dropCooldown) || structure !== syncedStructure) {
+			syncedStructure = structure;
 			columnData = data;
 			showUncategorized = (data[laneKey(UNCATEGORIZED)]?.length ?? 0) > 0;
 		}
