@@ -373,8 +373,20 @@
 {/if}
 
 <style>
+	/*
+	 * The table's scroller, in BOTH axes (BUG-3164). The collection page makes
+	 * this fill the list's visible region in table view, so the rows scroll
+	 * vertically HERE and the sticky header row sticks against it. It was
+	 * `overflow-x: auto` alone, which computes to auto vertically anyway, so
+	 * this box was already the header's scroll container, but it never
+	 * scrolled vertically (the page did) and `top: 0` never engaged.
+	 * `min-height` keeps a few rows on screen when the page header above takes
+	 * most of a short viewport; the list column scrolls in that case.
+	 */
 	.table-scroll {
-		overflow-x: auto;
+		overflow: auto;
+		flex: 1 1 auto;
+		min-height: 12rem;
 		-webkit-overflow-scrolling: touch;
 	}
 

@@ -7,7 +7,8 @@ import { deleteCollection } from './lib/attachment-viewer';
  * BUG-3165 — the collection list lost its position across the split pane.
  *
  * The list's scroll container changes with the pane: `.main-content` with no
- * pane, `.list-column` with `?item=` open. Nothing carried the position across,
+ * pane, `.list-column` with `?item=` open. (Table view scrolls in its own
+ * `.table-scroll` in both cases since BUG-3164.) Nothing carried the position across,
  * so opening an item from a scrolled list dropped the list to its top (the
  * clicked row off screen), Expand to full page + Back came back to that, and
  * closing after scrolling the column jumped the list somewhere else.
@@ -68,20 +69,33 @@ function rowHeight(page: Page, title: string) {
 	}, [ROW_SEL, TITLE_SEL, title] as const);
 }
 
+// The list's current vertical scroller. Table view scrolls in the table itself,
+// pane or no pane (BUG-3164); otherwise `.list-column` with the pane open and
+// `.main-content` without it.
+// The selectors are tried in order inside each page.evaluate.
+const SCROLLERS = [
+	'.collection-page.table-active .table-scroll',
+	'.collection-page.pane-open .list-column',
+	'.main-content',
+];
+
 /** The first row showing at the top of the list's current scroller, and its viewport top. */
 function topRow(page: Page) {
-	return page.evaluate(([rowSel, titleSel]) => {
-		const col = document.querySelector('.collection-page.pane-open .list-column') ?? document.querySelector('.main-content')!;
+	return page.evaluate(([rowSel, titleSel, scrollers]) => {
+		const col = scrollers.map((sel) => document.querySelector<HTMLElement>(sel)).find(Boolean)!;
 		const top = col.getBoundingClientRect().top;
 		const row = Array.from(document.querySelectorAll<HTMLElement>(rowSel))
 			.find((el) => el.getBoundingClientRect().bottom > top + 1)!;
 		return { title: row.querySelector(titleSel)!.textContent!.trim(), top: Math.round(row.getBoundingClientRect().top) };
-	}, [ROW_SEL, TITLE_SEL] as const);
+	}, [ROW_SEL, TITLE_SEL, SCROLLERS] as const);
 }
 
 /** Scroll the page to 600 and pick a row showing mid-screen (clicking it needs no auto-scroll). */
 async function scrollAndPick(page: Page) {
-	await page.locator('.main-content').evaluate((el) => el.scrollTo({ top: 600 }));
+	await page.evaluate(
+		(scrollers) => scrollers.map((sel) => document.querySelector<HTMLElement>(sel)).find(Boolean)!.scrollTo({ top: 600 }),
+		SCROLLERS,
+	);
 	await page.waitForTimeout(300);
 	const title = await page.evaluate(([rowSel, titleSel]) => {
 		const row = Array.from(document.querySelectorAll<HTMLElement>(rowSel))
@@ -128,9 +142,10 @@ test.describe('BUG-3165: the list keeps its position across the split pane', () 
 			await expect(page.locator('.item-pane')).toHaveCount(0);
 			await page.goBack();
 			await expect(page.locator('.item-pane')).toBeVisible({ timeout: 10_000 });
-			await expect.poll(() => rowTop(page, title), { timeout: 4000, message: 'Back from the full page lost the list position' })
-				.toBeGreaterThan(before - 40);
-			expect(await rowTop(page, title)).toBeLessThan(before + 40);
+			// Poll on the DISTANCE: an unrestored row sits below `before`, so a
+			// one-sided bound is met before the restore runs and races it.
+			await expect.poll(async () => Math.abs((await rowTop(page, title))! - before), { timeout: 4000, message: 'Back from the full page lost the list position' })
+				.toBeLessThan(40);
 		} finally {
 			await deleteCollection(fixture, request, coll.slug);
 		}
@@ -228,7 +243,7 @@ test.describe('BUG-3165: the list keeps its position across the split pane', () 
 		}
 	});
 
-	test('table view: opening an item keeps its row in place', async ({ page, fixture, request }) => {
+	test('table view: opening an item keeps its row in place; Expand to full page + Back returns to it', async ({ page, fixture, request }) => {
 		const { coll } = await setup(page, fixture, request, 'table');
 		try {
 			const { title, before } = await scrollAndPick(page);
@@ -236,6 +251,16 @@ test.describe('BUG-3165: the list keeps its position across the split pane', () 
 			const opened = await rowTop(page, title);
 			expect(opened, 'opening the pane moved the clicked row').toBeGreaterThan(before - 40);
 			expect(opened).toBeLessThan(before + 40);
+
+			// The table is its own scroller since BUG-3164, so the snapshot has to
+			// save and restore IT, not the page.
+			await page.locator('.item-pane button.pane-header-btn[aria-label="Expand to full page"]').click();
+			await page.waitForURL((u) => !u.search.includes('item='), { timeout: 10_000 });
+			await expect(page.locator('.item-pane')).toHaveCount(0);
+			await page.goBack();
+			await expect(page.locator('.item-pane')).toBeVisible({ timeout: 10_000 });
+			await expect.poll(async () => Math.abs((await rowTop(page, title))! - before), { timeout: 4000, message: 'Back from the full page lost the table position' })
+				.toBeLessThan(40);
 		} finally {
 			await deleteCollection(fixture, request, coll.slug);
 		}

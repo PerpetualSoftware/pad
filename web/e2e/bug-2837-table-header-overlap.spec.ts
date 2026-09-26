@@ -105,11 +105,10 @@ test('BUG-2837: long table header labels do not overlap, wrap on one baseline, a
 		expect(a!.x + a!.width, 'the sort arrow is clipped out of its cell').toBeLessThanOrEqual(c!.x + c!.width + 0.5);
 
 		// NOT ASSERTED HERE: that the sticky header covers rows scrolled beneath
-		// it. Measured on unfixed main AND on this fix: the header does not stick
-		// on page scroll at all (its top went to -461px after the page scrolled
-		// 600px), because `.table-scroll`'s horizontal overflow makes it the
-		// sticky container and it never scrolls vertically. Pre-existing, filed
-		// separately, and unchanged by this unit.
+		// it. When this was written the header did not stick at all, because
+		// `.table-scroll` was its sticky container and never scrolled vertically.
+		// BUG-3164 made the table its own vertical scroller; its stickiness is
+		// asserted in bug-3164-table-header-sticky.spec.ts.
 
 		// (c) at the narrowest width: the field columns at their 90px floor.
 		await page.setViewportSize({ width: 800, height: 800 });
