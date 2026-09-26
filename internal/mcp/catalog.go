@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 
 	"github.com/PerpetualSoftware/pad/internal/cmdhelp"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // ─────────────────────────────────────────────────────────────────────
@@ -412,7 +414,7 @@ func paramDefToToolOption(p ParamDef) mcp.ToolOption {
 func makeFanOutHandler(def ToolDef, env ActionEnv) server.ToolHandlerFunc {
 	declared := declaredInputKeys(def)
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		input := req.GetArguments()
+		input := withFieldNumberLiterals(req.GetArguments(), req.Params.RawArguments)
 		if input == nil {
 			input = map[string]any{}
 		}
@@ -440,6 +442,50 @@ func makeFanOutHandler(def ToolDef, env ActionEnv) server.ToolHandlerFunc {
 		result, err := handler(ctx, stripped, env)
 		return applyResultMode(result, err, env.StructuredOnly, env.TextOnly)
 	}
+}
+
+// withFieldNumberLiterals re-reads the `fields` argument from the raw request
+// bytes with every number kept as its literal (json.Number), so a field write
+// through this door keeps the number the caller sent. mcp-go fills Arguments
+// with a plain json.Unmarshal of those same bytes, which turns every number
+// into a float64: 9007199254740993 arrived as 9007199254740992, and 1.10 as
+// 1.1, before any of our code ran (BUG-3217, the MCP half of BUG-3202, whose
+// rule is that a field write keeps its number's literal).
+//
+// ONLY `fields` is re-read. It is the one argument whose numbers are stored
+// as the caller's value; every other numeric param (limit, expected_seq, …)
+// is a control input that its consumers read as float64, and changing its
+// type would widen this fix to every one of them for no stored value.
+//
+// On anything unexpected — no raw bytes, no `fields` in them, bytes that do
+// not decode — the Arguments map is returned untouched, which is the behaviour
+// before this function existed. The map is cloned rather than edited, as the
+// fan-out handler already does, so req.Params.Arguments is never mutated.
+func withFieldNumberLiterals(input map[string]any, raw json.RawMessage) map[string]any {
+	if len(raw) == 0 || input == nil {
+		return input
+	}
+	if _, ok := input["fields"]; !ok {
+		return input
+	}
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &top); err != nil {
+		return input
+	}
+	rawFields, ok := top["fields"]
+	if !ok {
+		return input
+	}
+	var fields any
+	if err := models.DecodeJSONKeepingNumbers(rawFields, &fields); err != nil {
+		return input
+	}
+	out := make(map[string]any, len(input))
+	for k, v := range input {
+		out[k] = v
+	}
+	out["fields"] = fields
+	return out
 }
 
 // applyResultMode keeps only the result channel the configured client exposes
