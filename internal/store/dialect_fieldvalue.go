@@ -5,6 +5,7 @@ import (
 	"math"
 	"regexp"
 	"strconv"
+	"strings"
 )
 
 // Field-value reads that answer the same on both dialects (BUG-3221).
@@ -63,6 +64,14 @@ func numericArg(arg string) (any, bool) {
 	return f, true
 }
 
+// joinFieldEquals ORs the two halves JSONFieldEqualsParts returns.
+func joinFieldEquals(str string, strArgs []any, other string, otherArgs []any) (string, []any) {
+	if other == "" {
+		return "(" + str + ")", strArgs
+	}
+	return "(" + str + " OR " + other + ")", append(append([]any{}, strArgs...), otherArgs...)
+}
+
 // ---------- SQLite ----------
 
 func (d *sqliteDialect) jsonType(column, key string) string {
@@ -80,19 +89,24 @@ func (d *sqliteDialect) JSONFieldText(column, key string) string {
 }
 
 func (d *sqliteDialect) JSONFieldEquals(column, key, arg string) (string, []any) {
+	return joinFieldEquals(d.JSONFieldEqualsParts(column, key, arg))
+}
+
+func (d *sqliteDialect) JSONFieldEqualsParts(column, key, arg string) (string, []any, string, []any) {
 	t := d.jsonType(column, key)
 	v := d.JSONExtractText(column, key)
-	clauses := fmt.Sprintf("(%s = 'text' AND %s = ?)", t, v)
-	args := []any{arg}
+	str := fmt.Sprintf("(%s = ? AND %s = 'text')", v, t)
+	var other []string
+	var otherArgs []any
 	switch arg {
 	case "true", "false":
-		clauses += fmt.Sprintf(" OR %s = '%s'", t, arg)
+		other = append(other, fmt.Sprintf("%s = '%s'", t, arg))
 	}
 	if n, ok := numericArg(arg); ok {
-		clauses += fmt.Sprintf(" OR (%s IN ('integer','real') AND %s = ?)", t, v)
-		args = append(args, n)
+		other = append(other, fmt.Sprintf("(%s IN ('integer','real') AND %s = ?)", t, v))
+		otherArgs = append(otherArgs, n)
 	}
-	return "(" + clauses + ")", args
+	return str, []any{arg}, strings.Join(other, " OR "), otherArgs
 }
 
 func (d *sqliteDialect) JSONFieldOrder(column, key, dir string) string {
@@ -116,21 +130,26 @@ func (d *postgresDialect) JSONFieldText(column, key string) string {
 }
 
 func (d *postgresDialect) JSONFieldEquals(column, key, arg string) (string, []any) {
+	return joinFieldEquals(d.JSONFieldEqualsParts(column, key, arg))
+}
+
+func (d *postgresDialect) JSONFieldEqualsParts(column, key, arg string) (string, []any, string, []any) {
 	t := fmt.Sprintf("jsonb_typeof(%s->'%s')", column, key)
 	v := d.JSONExtractText(column, key)
-	clauses := fmt.Sprintf("(%s = 'string' AND %s = ?)", t, v)
-	args := []any{arg}
+	str := fmt.Sprintf("(%s = ? AND %s = 'string')", v, t)
+	var other []string
+	var otherArgs []any
 	switch arg {
 	case "true", "false":
-		clauses += fmt.Sprintf(" OR (%s = 'boolean' AND %s = '%s')", t, v, arg)
+		other = append(other, fmt.Sprintf("(%s = 'boolean' AND %s = '%s')", t, v, arg))
 	}
 	if _, ok := numericArg(arg); ok {
 		// The argument goes over as text and is cast by Postgres, so the
 		// comparison is exact numeric, not float.
-		clauses += fmt.Sprintf(" OR (%s = 'number' AND (%s->'%s')::numeric = CAST(? AS numeric))", t, column, key)
-		args = append(args, arg)
+		other = append(other, fmt.Sprintf("(%s = 'number' AND (%s->'%s')::numeric = CAST(? AS numeric))", t, column, key))
+		otherArgs = append(otherArgs, arg)
 	}
-	return "(" + clauses + ")", args
+	return str, []any{arg}, strings.Join(other, " OR "), otherArgs
 }
 
 func (d *postgresDialect) JSONFieldOrder(column, key, dir string) string {

@@ -1,7 +1,9 @@
 package store
 
 import (
+	"fmt"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -417,6 +419,64 @@ func TestFieldValueNumberExtremes(t *testing.T) {
 		}
 		if got := match(c.neighbour); got != sqlite {
 			t.Errorf("%s: stored %s vs %s matched=%v on %s, want %v (rounded on SQLite, exact on Postgres)", c.member, c.stored, c.neighbour, got, s.dialect.Driver(), sqlite)
+		}
+	}
+}
+
+// The unique probe must be able to use the invocation_slug partial index
+// (lead review of BUG-3221): a uniqueness check sits on a write path, and a
+// scan grows with the data. SQLite's plan is deterministic. On Postgres the
+// planner is cost-based and this table is tiny, so seq scans are switched off
+// inside the transaction: the assertion is that the index is USABLE, which is
+// the property a change to the query text could take away.
+func TestUniqueHolderQueryUsesTheIndex(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "UniqIdx")
+	c, err := s.CreateCollection(ws.ID, models.CollectionCreate{Name: "PB", Schema: `{"fields":[{"key":"invocation_slug","label":"Slug","type":"text"}]}`})
+	if err != nil {
+		t.Fatalf("collection: %v", err)
+	}
+	for _, val := range []string{"ship", "777", "true"} {
+		query, args := s.uniqueHolderQuery(c.ID, "invocation_slug", val, "none")
+		tx, err := s.db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		explain := "EXPLAIN QUERY PLAN "
+		if s.dialect.Driver() == DriverPostgres {
+			explain = "EXPLAIN "
+			if _, err := tx.Exec(`SET LOCAL enable_seqscan = off`); err != nil {
+				tx.Rollback()
+				t.Fatal(err)
+			}
+		}
+		rows, err := tx.Query(s.q(explain+query), args...)
+		if err != nil {
+			tx.Rollback()
+			t.Fatalf("explain %q: %v", val, err)
+		}
+		cols, _ := rows.Columns()
+		var plan []string
+		for rows.Next() {
+			vals := make([]any, len(cols))
+			ptrs := make([]any, len(cols))
+			for i := range vals {
+				ptrs[i] = &vals[i]
+			}
+			if err := rows.Scan(ptrs...); err != nil {
+				t.Fatal(err)
+			}
+			plan = append(plan, fmt.Sprint(vals[len(vals)-1]))
+		}
+		rows.Close()
+		tx.Rollback()
+		joined := strings.Join(plan, " | ")
+		// The string arm, present for every argument, must reach the index.
+		if !strings.Contains(joined, "idx_items_invocation_slug_per_collection") {
+			t.Errorf("%s: probe for %q does not use the invocation_slug index: %s", s.dialect.Driver(), val, joined)
+		}
+		if strings.Contains(joined, "SCAN items") || strings.Contains(joined, "Seq Scan on items") {
+			t.Errorf("%s: probe for %q scans items: %s", s.dialect.Driver(), val, joined)
 		}
 	}
 }

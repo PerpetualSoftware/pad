@@ -66,18 +66,9 @@ func (s *Store) uniqueFieldConflictsQ(q Queryer, collectionID, excludeItemID str
 		if !validFieldKey.MatchString(def.Key) {
 			return nil, fmt.Errorf("unique field check: unsupported field key %q", def.Key)
 		}
-		// BUG-3221: a holder is found by JSON type, identically on both
-		// dialects.
-		match, matchArgs := s.dialect.JSONFieldEquals("fields", def.Key, val)
-		args := append(append([]any{collectionID}, matchArgs...), excludeItemID)
+		query, args := s.uniqueHolderQuery(collectionID, def.Key, val, excludeItemID)
 		var id string
-		err := q.QueryRow(s.q(fmt.Sprintf(`
-			SELECT id FROM items
-			WHERE collection_id = ?
-			  AND %s
-			  AND id != ?
-			  AND deleted_at IS NULL
-			LIMIT 1`, match)), args...).Scan(&id)
+		err := q.QueryRow(s.q(query), args...).Scan(&id)
 		if err == nil {
 			out = append(out, uniqueConflict{key: def.Key, value: val, holderID: id})
 			continue
@@ -171,4 +162,31 @@ type UniqueFieldConflictError struct {
 
 func (e *UniqueFieldConflictError) Error() string {
 	return UniqueFieldConflictsMessage(e.Keys)
+}
+
+// uniqueHolderQuery finds one live item in the collection other than
+// excludeItemID whose key holds val, by JSON type, identically on both
+// dialects (BUG-3221). The string arm restates the invocation_slug partial
+// index's own predicate (non-NULL, non-empty, live), which is what lets SQLite
+// use that index at all: without it SQLite scanned the collection, before
+// BUG-3221 too. The number/boolean arm exists only for an argument that can
+// match one, as its own UNION ALL arm so it never takes the index away from
+// the string arm; it restates the same predicate, which every number or
+// boolean holder satisfies. Plans pinned by TestUniqueHolderQueryUsesTheIndex.
+func (s *Store) uniqueHolderQuery(collectionID, key, val, excludeItemID string) (string, []any) {
+	ext := s.dialect.JSONExtractText("fields", key)
+	live := fmt.Sprintf("%s IS NOT NULL AND %s != ''", ext, ext)
+	str, strArgs, other, otherArgs := s.dialect.JSONFieldEqualsParts("fields", key, val)
+	arm := `SELECT id FROM items
+			WHERE collection_id = ?
+			  AND %s
+			  AND id != ?
+			  AND deleted_at IS NULL`
+	query := fmt.Sprintf(arm, str+" AND "+live)
+	args := append(append([]any{collectionID}, strArgs...), excludeItemID)
+	if other != "" {
+		query += " UNION ALL " + fmt.Sprintf(arm, "("+other+") AND "+live)
+		args = append(append(append(args, collectionID), otherArgs...), excludeItemID)
+	}
+	return query + " LIMIT 1", args
 }
