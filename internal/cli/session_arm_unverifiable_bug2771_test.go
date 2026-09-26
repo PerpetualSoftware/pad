@@ -2,8 +2,12 @@ package cli
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"testing"
+	"time"
 )
 
 // BUG-2771: an arm-state file whose owner cannot be probed (the unknown
@@ -27,6 +31,10 @@ func headlessEnv(t *testing.T) {
 	t.Helper()
 	triStateEnv(t)
 	t.Setenv("CLAUDE_CODE_MESSAGING_SOCKET", "")
+	// A test run from inside an agent harness inherits its session pid;
+	// each leg names its owner explicitly or runs as "self".
+	t.Setenv("CLAUDE_PID", "")
+	t.Setenv("PAD_SESSION_PID", "")
 }
 
 func armFileExists(t *testing.T, path string) bool {
@@ -169,5 +177,92 @@ func TestRealUnknownVerdictKeepsDisarm(t *testing.T) {
 	}
 	if ResolveAnnouncedArmed() {
 		t.Fatal("the real unknown verdict forgot the disarm")
+	}
+}
+
+// BUG-3227: a headless file is owned by the SESSION process the harness names,
+// not by the command that wrote it. A live child stands in for the session:
+// while it lives the disarm holds, through the real probe, and once it dies
+// the file is reaped. Before the fix the file named the writer, which in this
+// test is the test process itself, so it stayed "alive" after the session
+// died; in a real `pad session disarm` it named the exiting command, so it
+// was dead on arrival.
+func TestHeadlessArmFileIsOwnedByTheSessionProcess(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no pid probe on Windows; that case is LocalArmUnverifiable")
+	}
+	headlessEnv(t)
+	session := exec.Command("sleep", "60")
+	if err := session.Start(); err != nil {
+		t.Fatalf("start stand-in session: %v", err)
+	}
+	t.Cleanup(func() { _ = session.Process.Kill(); _, _ = session.Process.Wait() })
+	t.Setenv("PAD_SESSION_PID", strconv.Itoa(session.Process.Pid))
+
+	path, err := WriteDisarmState()
+	if err != nil {
+		t.Fatalf("WriteDisarmState: %v", err)
+	}
+	if got := SessionArmState(); got != LocalArmOff {
+		t.Fatalf("while the session lives: SessionArmState = %v, want LocalArmOff", got)
+	}
+	if ResolveAnnouncedArmed() {
+		t.Fatal("a held headless disarm was overridden by auto_arm")
+	}
+
+	_ = session.Process.Kill()
+	_, _ = session.Process.Wait()
+	deadline := time.Now().Add(2 * time.Second)
+	for SessionArmState() != LocalArmAbsent && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := SessionArmState(); got != LocalArmAbsent {
+		t.Fatalf("after the session died: SessionArmState = %v, want LocalArmAbsent (file keyed on the writer, not the session)", got)
+	}
+	if armFileExists(t, path) {
+		t.Fatal("the dead session's disarm was not reaped")
+	}
+}
+
+// The verbs refuse a write that did not survive its own read-back: a dead
+// owner, which is what a headless write naming no session process produces.
+func TestVerifyArmStateHeldRefusesAReapedWrite(t *testing.T) {
+	headlessEnv(t)
+	withOwnerVerdict(t, LivenessDead)
+	if _, err := WriteDisarmState(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := VerifyArmStateHeld(); err == nil {
+		t.Fatal("a disarm reaped on arrival was reported as held")
+	}
+}
+
+func TestVerifyArmStateHeldAcceptsHeldStates(t *testing.T) {
+	for _, v := range []Liveness{LivenessAlive, LivenessUnknown} {
+		t.Run(string(v), func(t *testing.T) {
+			headlessEnv(t)
+			t.Setenv("PAD_SESSION_PID", strconv.Itoa(os.Getpid()))
+			withOwnerVerdict(t, v)
+			if _, err := WriteDisarmState(); err != nil {
+				t.Fatal(err)
+			}
+			if state, err := VerifyArmStateHeld(); err != nil {
+				t.Fatalf("verdict %s: state %v refused: %v", v, state, err)
+			}
+		})
+	}
+}
+
+// The in-process case the read-back cannot observe: a headless write naming
+// no session process is owned by the writing command, which is alive during
+// the read-back and dead the moment it exits. It is refused on its source.
+func TestVerifyArmStateHeldRefusesASelfOwnedHeadlessWrite(t *testing.T) {
+	headlessEnv(t) // no PAD_SESSION_PID, no CLAUDE_PID: the owner is "self"
+	withOwnerVerdict(t, LivenessAlive)
+	if _, err := WriteDisarmState(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := VerifyArmStateHeld(); err == nil {
+		t.Fatal("a self-owned headless disarm, dead once the command exits, was reported as held")
 	}
 }

@@ -404,8 +404,12 @@ table in the repo's .pad.toml (a deliberate, committed choice).`,
 			}
 			// Read the state back rather than assume it: where the session's
 			// owner cannot be verified the arm cannot take effect (BUG-2771),
-			// and saying "armed" there would be the lie this verb must not tell.
-			state := cli.SessionArmState()
+			// and where it is already dead the file is gone (BUG-3227).
+			// Saying "armed" in either case is the lie this verb must not tell.
+			state, err := cli.VerifyArmStateHeld()
+			if err != nil {
+				return err
+			}
 			if formatFlag == "json" {
 				return cli.PrintJSON(map[string]any{
 					"armed":       state == cli.LocalArmOn,
@@ -451,6 +455,11 @@ Idempotent.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path, err := cli.WriteDisarmState()
 			if err != nil {
+				return err
+			}
+			// A disarm that did not survive its own read-back never held:
+			// auto_arm is deciding again (BUG-3227). Refuse loudly.
+			if _, err := cli.VerifyArmStateHeld(); err != nil {
 				return err
 			}
 			// Whether auto_arm would otherwise re-arm THIS session tells the

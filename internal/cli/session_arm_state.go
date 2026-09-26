@@ -47,9 +47,13 @@ import (
 //     no socket (a headless agent), the key falls back to the working
 //     directory — PER-REPO semantics, documented as secondary: the
 //     sanctioned headless arming path is .pad.toml auto_arm (D4), not
-//     this file, because a short-lived `pad session arm` in a headless
-//     shell owns nothing long-lived for liveness to track (its own pid
-//     dies with the command). See armStateOwnerAlive.
+//     this file. A headless file is owned by the SESSION process the
+//     harness names (PAD_SESSION_PID, else CLAUDE_PID — CaptureSessionOwner),
+//     never by the short-lived `pad session arm` itself, whose pid is dead
+//     before anyone reads the file (BUG-3227). With no harness to name
+//     one, the owner is the command and the file is dead on arrival; the
+//     arm/disarm verbs read their state back and refuse in that case
+//     rather than report a consent change that did not happen.
 //
 //   - LIFECYCLE (constraint 3). arm writes/overwrites the file
 //     (idempotent). disarm REWRITES it as an explicit OFF marker (S3 —
@@ -85,10 +89,15 @@ type ArmState struct {
 	// and it is carried forward across arm/disarm rewrites so toggling
 	// consent doesn't reset the boot flag. See MarkFirstConnect.
 	Booted bool `json:"booted,omitempty"`
-	// PID is the process that wrote the file. For a socket-keyed session
-	// it is informational (the socket is the liveness signal); for the
-	// headless fallback it IS the liveness signal.
+	// PID: for a socket-keyed session, the process that wrote the file,
+	// informational only (the socket is the liveness signal). For the
+	// headless fallback it IS the liveness signal, so it is the SESSION
+	// owner's pid (see PIDSource), not the writing command's (BUG-3227).
 	PID int `json:"pid"`
+	// PIDSource is where a headless file's PID came from: "PAD_SESSION_PID",
+	// "CLAUDE_PID", or "self" (BUG-3227). Diagnostic only; "self" means the
+	// file names the command that wrote it and is dead on arrival.
+	PIDSource string `json:"session_pid_source,omitempty"`
 	// Socket is CLAUDE_CODE_MESSAGING_SOCKET at arm time, or "" for the
 	// headless fallback. When set, its continued existence on disk is a
 	// necessary liveness signal — it outlives the short-lived arm command
@@ -226,9 +235,17 @@ func writeArmStateFile(disarmed bool) (path string, err error) {
 			}
 		}
 	} else {
-		// Headless: record an owner-identity token so pid reuse can't
-		// revive this file (best effort — empty where unsupported).
-		st.ProcStart, _ = procStartToken(st.PID)
+		// Headless: the owner is the session process, not this command
+		// (BUG-3227). os.Getpid() here is the exiting `pad session arm`,
+		// which read as dead on the very next read, so every headless arm
+		// and disarm was reaped on arrival. CaptureSessionOwner resolves
+		// the same owner the session registry records, with its start
+		// token for the pid-reuse defence.
+		owner, oerr := CaptureSessionOwner()
+		if oerr != nil {
+			return "", fmt.Errorf("cannot record arm state: %w", oerr)
+		}
+		st.PID, st.ProcStart, st.PIDSource = owner.PID, owner.ProcStart, owner.PIDSource
 	}
 	data, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
@@ -456,6 +473,38 @@ func SessionArmState() LocalArmState {
 	}
 	return LocalArmOn
 }
+
+// VerifyArmStateHeld reads this session's arm state back after an arm or
+// disarm write and refuses when the file did not survive the read: its
+// owner was already dead, so it was reaped and auto_arm decides as if the
+// verb had never run (BUG-3227). That happens when a headless write names
+// no session process (no PAD_SESSION_PID or CLAUDE_PID), so the owner is
+// the exiting command itself. Reporting success there would state a
+// consent change that did not happen, which for a disarm is the fail-open
+// this file exists to prevent.
+//
+// The reap is not always observable here. A headless file owned by "self"
+// names THIS command, which is still running during the read-back, so it
+// reads as alive and dies the moment the command exits. Such a file is
+// refused on its recorded source rather than on its verdict. Where the pid
+// cannot be probed at all (Windows) the verdict is unknown instead, and
+// the file is kept as LocalArmUnverifiable (BUG-2771), so that case is
+// not refused.
+func VerifyArmStateHeld() (LocalArmState, error) {
+	state := SessionArmState()
+	if state == LocalArmAbsent {
+		return state, errArmStateNotHeld
+	}
+	if state == LocalArmOn || state == LocalArmOff {
+		if st, _, err := readArmState(); err == nil && st != nil && st.Socket == "" && st.PIDSource == "self" {
+			return state, errArmStateNotHeld
+		}
+	}
+	return state, nil
+}
+
+var errArmStateNotHeld = fmt.Errorf("this session's arm state could not be held: no long-lived session process owns it " +
+	"(set PAD_SESSION_PID to the session's pid, or use .pad.toml push.auto_arm)")
 
 // armStateWellFormed reports whether a parsed ArmState carries the stamps
 // AND invariants writeArmStateFile always produces: a non-empty RFC3339
