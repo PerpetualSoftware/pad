@@ -229,6 +229,17 @@ describe('BUG-3236: the playbook editor does not act for the previous identity',
 		await settle();
 		expect(toasts).not.toContain('Playbook saved');
 		expect(gotos).toEqual([]);
+		// Nor does it clear the busy flag, which after the flip belongs to
+		// whoever is signed in now (codex r1).
+		expect(screen.getByRole('button', { name: /Saving…/ })).toBeTruthy();
+	});
+
+	it('CONTROL: a save that fails uninterrupted clears the busy flag', async () => {
+		await loadedAndEdited();
+		screen.getByRole('button', { name: /^Save$/ }).click();
+		await waitFor(() => expect(updateCalls.length).toBe(1));
+		updateCalls[0]!.d.reject(new Error('boom'));
+		await waitFor(() => expect(screen.getByRole('button', { name: /^Save$/ })).toBeTruthy());
 	});
 
 	it('CONTROL: a save that settles uninterrupted reports and navigates', async () => {

@@ -278,7 +278,9 @@
 			if (!isSameIdentity()) return;
 			toastStore.show((err as Error)?.message || 'Failed to save playbook', 'error');
 		} finally {
-			saving = false;
+			// Only under the identity, like the collection page's busy flags: a
+			// save started by whoever is signed in NOW owns this flag (codex r1).
+			if (isSameIdentity()) saving = false;
 		}
 	}
 
@@ -301,7 +303,7 @@
 				'error'
 			);
 		} finally {
-			exporting = false;
+			if (isSameIdentity()) exporting = false;
 		}
 	}
 </script>
