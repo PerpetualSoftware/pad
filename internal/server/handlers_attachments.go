@@ -852,7 +852,7 @@ func (s *Server) handleGetAttachment(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Pad-Attachment-Derived", derived)
 	}
 	w.Header().Set("Content-Disposition",
-		fmt.Sprintf(`%s; filename=%q`, disposition, sanitizeHeaderFilename(attachments.ServedFilename(att.Filename))))
+		contentDisposition(disposition, sanitizeHeaderFilename(attachments.ServedFilename(att.Filename))))
 
 	// http.ServeContent gives Range, conditional GETs, and 206
 	// responses for free — but it requires an io.ReadSeeker. FSStore

@@ -796,7 +796,7 @@ func (s *Server) handleExportWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s-export.json"`, ws.Slug))
+	w.Header().Set("Content-Disposition", contentDisposition("attachment", ws.Slug+"-export.json"))
 	writeJSON(w, http.StatusOK, export)
 }
 
