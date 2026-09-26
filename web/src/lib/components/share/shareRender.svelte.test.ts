@@ -7,8 +7,9 @@ import { marked } from 'marked';
 import { inertInternalReferences, isInternalHref } from './shareRender';
 
 const ORIGIN = location.origin;
+const PAGE = `${ORIGIN}/s/tok`;
 const titles = new Map([['TASK-5', 'Ship the navbar']]);
-const render = (md: string) => inertInternalReferences(DOMPurify.sanitize(marked(md) as string), titles);
+const render = (md: string) => inertInternalReferences(DOMPurify.sanitize(marked(md) as string), titles, PAGE);
 const doc = (html: string) => {
 	const d = document.createElement('div');
 	d.innerHTML = html;
@@ -72,11 +73,33 @@ describe('share render: internal links become plain text, viewer links stay (C84
 	});
 
 	it('protocol-relative and page-local hrefs are not internal routes', () => {
-		expect(isInternalHref('//example.com/x', ORIGIN)).toBe(false);
-		expect(isInternalHref('#section', ORIGIN)).toBe(false);
-		expect(isInternalHref('?q=1', ORIGIN)).toBe(false);
-		expect(isInternalHref('mailto:a@b.c', ORIGIN)).toBe(false);
-		expect(isInternalHref('/dave/ws', ORIGIN)).toBe(true);
-		expect(isInternalHref(' /dave/ws', ORIGIN)).toBe(true);
+		expect(isInternalHref('//example.com/x', PAGE)).toBe(false);
+		expect(isInternalHref('#section', PAGE)).toBe(false);
+		expect(isInternalHref('?q=1', PAGE)).toBe(false);
+		expect(isInternalHref('mailto:a@b.c', PAGE)).toBe(false);
+		expect(isInternalHref('/dave/ws', PAGE)).toBe(true);
+		expect(isInternalHref(' /dave/ws', PAGE)).toBe(true);
+	});
+
+	// Codex round 1: a raw-prefix test let each of these through. The browser
+	// normalises them before navigating, so the check must too.
+	it('backslashes, dot segments and letter case are judged by where the browser goes', () => {
+		// `\/dave/ws` and `/\dave/ws` are both `//dave/ws` to a browser: a
+		// protocol-relative link to a HOST named dave, so another origin, not a
+		// route of this app. Measured with WHATWG URL, not reasoned.
+		expect(isInternalHref('\\/dave/ws', PAGE)).toBe(false);
+		expect(isInternalHref('/\\dave/ws', PAGE)).toBe(false);
+		expect(isInternalHref('/s/../dave/ws', PAGE)).toBe(true);
+		expect(isInternalHref('/api/v1/s/../../../dave/ws', PAGE)).toBe(true);
+		expect(isInternalHref('/s/%2e%2e/dave/ws', PAGE)).toBe(true);
+		expect(isInternalHref('/S/abc', PAGE)).toBe(true);
+		expect(isInternalHref(`${ORIGIN.toUpperCase()}/dave/ws`, PAGE)).toBe(true);
+		expect(isInternalHref('../dave/ws', PAGE)).toBe(true);
+	});
+
+	it('an image-map area into the app loses its href', () => {
+		const out = inertInternalReferences('<map name="m"><area href="/dave/ws" alt="x"><area href="https://getpad.dev" alt="y"></map>', titles, PAGE);
+		const areas = [...doc(out).querySelectorAll('area')];
+		expect(areas.map((a) => a.getAttribute('href'))).toEqual([null, 'https://getpad.dev']);
 	});
 });

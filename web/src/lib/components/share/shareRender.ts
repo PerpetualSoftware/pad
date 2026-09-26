@@ -17,32 +17,37 @@
  *
  * Runs on a DOM, so it is a no-op without one (SSR): the page's DOMPurify pass
  * is client-only for the same reason. Code spans and code blocks are left
- * alone, since `[[x]]` in code is code.
+ * alone, since `[[x]]` in code is code. A wiki-link whose brackets markdown
+ * split across elements (`[[TA*SK*-5]]`) is matched per text node and stays
+ * as written: it can only ever read as brackets, never become a link.
  */
 import { WIKI_LINK_PATTERN_SOURCE, wikiDisplayText } from '$lib/utils/markdown';
 
 const VIEWER_PATH_PREFIXES = ['/s/', '/api/v1/s/'];
 
-/** True when `href` points into this app somewhere a share viewer cannot follow. */
-export function isInternalHref(href: string, origin: string): boolean {
-	const h = href.trim();
-	let path: string;
-	if (h.startsWith('/') && !h.startsWith('//')) {
-		path = h;
-	} else {
-		let url: URL;
-		try {
-			url = new URL(h, origin);
-		} catch {
-			return false;
-		}
-		if (url.origin !== origin || !/^https?:$/.test(url.protocol)) return false;
-		// A relative href with no leading slash (`foo`, `#x`, `?q`) stays on this
-		// share page; only an absolute same-origin URL names another route.
-		if (!/^[a-z][a-z0-9+.-]*:/i.test(h) && !h.startsWith('//')) return false;
-		path = url.pathname;
+/**
+ * True when `href`, followed from the page at `pageUrl`, lands on this app's
+ * origin somewhere a share viewer cannot follow.
+ *
+ * Decided on the URL the BROWSER would navigate to, never on the href's
+ * spelling: `new URL` applies the same WHATWG parsing a click does, so dot
+ * segments (`/s/../dave/ws`, `%2e%2e`), letter case and backslashes are
+ * normalised before the path is compared. A prefix test on the raw string let
+ * `/s/../dave/ws` through (codex round 1 on TASK-2248 U1). A leading
+ * backslash (`\/x`) is `//x` to a browser: another HOST, so not internal.
+ * Page-local hrefs (`#x`, `?q`) resolve to the share page itself, under `/s/`.
+ */
+export function isInternalHref(href: string, pageUrl: string): boolean {
+	let url: URL;
+	let page: URL;
+	try {
+		page = new URL(pageUrl);
+		url = new URL(href, page);
+	} catch {
+		return false;
 	}
-	return !VIEWER_PATH_PREFIXES.some((p) => path.startsWith(p));
+	if (url.origin !== page.origin) return false;
+	return !VIEWER_PATH_PREFIXES.some((p) => url.pathname.startsWith(p));
 }
 
 function inCode(node: Node): boolean {
@@ -57,16 +62,23 @@ function inCode(node: Node): boolean {
  * viewer. `titleByRef` maps an UPPER-CASE ref (`TASK-5`) to the title the
  * share payload carries for it.
  */
-export function inertInternalReferences(html: string, titleByRef: ReadonlyMap<string, string>): string {
+export function inertInternalReferences(
+	html: string,
+	titleByRef: ReadonlyMap<string, string>,
+	pageUrl: string = typeof location !== 'undefined' ? location.href : 'http://localhost/s/'
+): string {
 	if (typeof document === 'undefined' || !html) return html;
 	const tpl = document.createElement('template');
 	tpl.innerHTML = html;
 	const root = tpl.content;
-	const origin = typeof location !== 'undefined' ? location.origin : 'http://localhost';
 
+	// An image-map <area> is a link too, and has no text to keep: it loses its href.
+	for (const area of Array.from(root.querySelectorAll('area[href]'))) {
+		if (isInternalHref(area.getAttribute('href') ?? '', pageUrl)) area.removeAttribute('href');
+	}
 	for (const a of Array.from(root.querySelectorAll('a[href]'))) {
 		const href = a.getAttribute('href') ?? '';
-		if (isInternalHref(href, origin)) {
+		if (isInternalHref(href, pageUrl)) {
 			const span = document.createElement('span');
 			span.className = 'share-internal-ref';
 			span.title = 'Requires access to this workspace';

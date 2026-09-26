@@ -387,8 +387,11 @@
 	// marked()+DOMPurify on every keystroke or reactive pass. Keyed by the item's
 	// stable `key`. The map is rebuilt whenever the parsed item set changes.
 	let contentCache = $derived.by(() => {
-		// Touch the parsed items so the cache resets when the payload/view changes.
+		// Touch the parsed items so the cache resets when the payload/view changes,
+		// and the ref titles the render pass reads (TASK-2248), so a cached body
+		// can never outlive the titles it was rendered with.
 		effectiveItems;
+		titleByRef;
 		return new Map<string, string>();
 	});
 
