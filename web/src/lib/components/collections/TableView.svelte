@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { safeText } from '$lib/fields/fieldShape';
 	import type { Item, Collection, FieldDef } from '$lib/types';
 	import { isRelationType, relationValuesOf } from '$lib/items/relationFieldTypes';
 	import { narrowRelationRow, relationChipFor, UNRESOLVED_TITLE } from '$lib/collections/relationGroups';
@@ -136,8 +137,10 @@
 				return sortDir === 'asc' ? aVal - bVal : bVal - aVal;
 			}
 
-			const aStr = String(aVal).toLowerCase();
-			const bStr = String(bVal).toLowerCase();
+			// safeText (BUG-3052): String threw on a stored `{"toString":0}`, which
+			// broke the whole sort, and so the table.
+			const aStr = safeText(aVal).toLowerCase();
+			const bStr = safeText(bVal).toLowerCase();
 			const cmp = aStr.localeCompare(bStr);
 			return sortDir === 'asc' ? cmp : -cmp;
 		});
@@ -351,7 +354,9 @@
 								<span class="cell-value">{fields[field.key]}</span>
 							{/if}
 						{:else}
-							<span class="cell-value">{fields[field.key] ?? ''}</span>
+							<!-- safeText (BUG-3052): Svelte's text conversion threw on a
+							     stored `{"toString":0}` and took the table down. -->
+							<span class="cell-value">{safeText(fields[field.key])}</span>
 						{/if}
 					</div>
 				{/each}

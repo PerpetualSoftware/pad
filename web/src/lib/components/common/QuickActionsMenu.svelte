@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { safeString, safeText } from '$lib/fields/fieldShape';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import { categoricalTemplateValue } from '$lib/utils/quick-action-preview';
 	import { tick, untrack } from 'svelte';
@@ -99,10 +100,10 @@
 			collection: collection.name,
 			content: item?.content ? item.content.slice(0, 200) : '',
 			fields: Object.entries(fields)
-				.map(([k, v]) => `${k}: ${v}`)
+				.map(([k, v]) => `${k}: ${safeString(v)}`)
 				.join(', '),
-			plan: item ? String(fields['plan'] ?? '') : '',
-			phase: item ? String(fields['phase'] ?? fields['plan'] ?? '') : ''
+			plan: item ? safeText(fields['plan']) : '',
+			phase: item ? safeText(fields['phase'] ?? fields['plan']) : ''
 		};
 
 		for (const [key, value] of Object.entries(vars)) {

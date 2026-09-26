@@ -193,3 +193,14 @@ describe('lanes named after an Object.prototype member (BUG-3208)', () => {
 		});
 	}
 });
+
+describe('a stored value String() cannot convert (BUG-3052)', () => {
+	const HOSTILE = JSON.parse('{"toString":0}');
+	it('laneValue does not throw, and names the value by its JSON', () => {
+		expect(laneValue(HOSTILE)).toBe('{"toString":0}');
+	});
+	it('bucketByColumn keeps the item, in Uncategorized', () => {
+		const result = bucketByColumn([item('h', { status: HOSTILE })], 'status', ['open']);
+		expect(result.get(UNCATEGORIZED)!.map((i) => i.id)).toEqual(['h']);
+	});
+});

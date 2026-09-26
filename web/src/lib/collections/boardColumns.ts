@@ -12,6 +12,7 @@
 // lane writes back to the field (clearing it).
 import type { Item } from '$lib/types';
 import { parseFields } from '$lib/types';
+import { safeText } from '$lib/fields/fieldShape';
 
 /** Lane key for items with no (or an unrecognised) group value. */
 export const UNCATEGORIZED = '';
@@ -38,9 +39,11 @@ export const UNCATEGORIZED = '';
  * is what stops the two halves drifting apart again.
  */
 export function laneValue(raw: unknown): string {
-	if (typeof raw === 'string') return raw;
-	if (raw == null) return '';
-	return String(raw);
+	// `safeText`, not `String` (BUG-3052): a stored `{"toString":0}` made
+	// `String(raw)` throw here, and every grouped view reads its lanes through
+	// this function, so one hostile value took the whole list or board down.
+	// Identical to `String` for every value it could already convert.
+	return safeText(raw);
 }
 
 /**

@@ -1,4 +1,5 @@
 import type { Collection, Item, ItemIndexRow } from '$lib/types';
+import { safeString, safeText } from '$lib/fields/fieldShape';
 import { formatItemRef, parseFields } from '$lib/types';
 import { fieldDefFor } from '$lib/collections/categoricalFieldValue';
 import { isRelationType, relationValuesOf } from '$lib/items/relationFieldTypes';
@@ -60,7 +61,7 @@ export function categoricalTemplateValue(
 ): string {
 	const field = collection ? fieldDefFor([collection], collection.slug, key) : undefined;
 	if (!field || !isRelationType(field.type)) {
-		return raw === null || raw === undefined ? '' : String(raw);
+		return safeText(raw);
 	}
 	const ids = relationValuesOf(field.type, raw);
 	const labels: string[] = [];
@@ -135,11 +136,13 @@ export function contextFromItem(
 		priority: categoricalTemplateValue(collection, 'priority', fields['priority'], resolve),
 		collection: collection.name,
 		content: item.content ? item.content.slice(0, 200) : '',
+		// safeString / safeText, not `${v}` / String (BUG-3052): a stored
+		// `{"toString":0}` threw here. Same text for every value String handled.
 		fields: Object.entries(fields)
-			.map(([k, v]) => `${k}: ${v}`)
+			.map(([k, v]) => `${k}: ${safeString(v)}`)
 			.join(', '),
-		plan: String(fields['plan'] ?? ''),
-		phase: String(fields['phase'] ?? fields['plan'] ?? '')
+		plan: safeText(fields['plan']),
+		phase: safeText(fields['phase'] ?? fields['plan'])
 	};
 }
 

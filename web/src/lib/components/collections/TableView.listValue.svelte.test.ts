@@ -362,3 +362,18 @@ describe('the table chip asks the same permission question as the card (BUG-3068
 		expect(onStatusChange).not.toHaveBeenCalled();
 	});
 });
+
+// BUG-3052 unit 1: a plain text cell whose stored value Svelte's text
+// conversion cannot convert. `{fields[key] ?? ''}` threw and took the table down.
+describe('a text cell holding a value String() cannot convert (BUG-3052)', () => {
+	it('renders the row, with the value visible as its JSON', () => {
+		const coll = collection([{ key: 'note', label: 'Note', type: 'text' }]);
+		const hostile = { id: 'car-h', workspace_id: 'ws1', collection_id: 'c1', slug: 'car-h', title: 'car-h',
+			content: '', fields: '{"note":{"toString":0}}', tags: '[]', status: 'open',
+			created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z' } as unknown as Item;
+		const screen = render(TableView, { props: { items: [hostile, item('car-2', { note: 'plain' })], collection: coll } as never });
+		expect(screen.container.textContent).toContain('car-h');
+		expect(screen.container.textContent).toContain('{"toString":0}');
+		expect(screen.container.textContent).toContain('plain');
+	});
+});

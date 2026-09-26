@@ -198,3 +198,12 @@ describe('groupItems with falsy-but-present values', () => {
 		expect(total).toBe(items.length);
 	});
 });
+
+describe('matchesFilter on a stored value String() cannot convert (BUG-3052)', () => {
+	it('does not throw, and matches nothing it should not', async () => {
+		const { matchesFilter } = await import('./shareView');
+		const item = { fields: JSON.parse('{"status":{"toString":0}}') } as never;
+		expect(matchesFilter(item, { field: 'status', op: 'eq', value: 'open' })).toBe(false);
+		expect(matchesFilter(item, { field: 'status', op: 'in', value: ['open'] })).toBe(false);
+	});
+});
