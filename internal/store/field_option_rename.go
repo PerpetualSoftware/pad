@@ -5,120 +5,152 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sort"
 )
 
-// renameArrayOptionTx is the multi_select half of an option rename
-// (BUG-3224). The scalar pass in applyFieldMigrationsTx matches rows whose
-// value EQUALS the old option, and an array never equals a scalar, so a
-// multi_select value kept the old option after every rename: an orphan the
-// schema no longer lists and the editor cannot show as selected.
-//
-// It rewrites every string ELEMENT equal to oldVal to newVal, in place, and
-// drops the renamed element when newVal is already in the array, so the
-// rename cannot mint a duplicate a multi_select write would refuse. Other
-// elements keep their bytes, numbers included (json.Number). It returns the
-// ids it rewrote; the caller folds them into its one bulk event.
-func (s *Store) renameArrayOptionTx(tx *sql.Tx, collectionID, workspaceID, field, oldVal, newVal, ts string) ([]string, error) {
+// The multi_select half of an option rename (BUG-3224). The scalar pass in
+// applyFieldMigrationsTx matches rows whose value EQUALS an old option, and an
+// array never equals a scalar, so a multi_select value kept the old option
+// after every rename: an orphan the schema no longer lists and the editor
+// cannot show as selected.
+
+// arrayRow is one array value found holding an old option, read before any
+// row of the rename is written.
+type arrayRow struct{ id, raw string }
+
+// arrayRowsHoldingTx returns every live row of the collection whose field is
+// an ARRAY holding at least one of olds as a string element, each once.
+func (s *Store) arrayRowsHoldingTx(tx *sql.Tx, collectionID, field string, olds []string) ([]arrayRow, error) {
 	if !validFieldKey.MatchString(field) {
 		return nil, fmt.Errorf("rename option: unsupported field key %q", field)
 	}
-	var selectSQL, updateSQL string
+	var selectSQL string
 	if s.dialect.Driver() == DriverPostgres {
 		selectSQL = fmt.Sprintf(`
 			SELECT id, (fields->'%[1]s')::text FROM items
 			WHERE collection_id = ? AND deleted_at IS NULL
 			  AND jsonb_typeof(fields->'%[1]s') = 'array'
 			  AND fields->'%[1]s' @> jsonb_build_array(CAST(? AS text))`, field)
-		updateSQL = fmt.Sprintf(`jsonb_set(COALESCE(fields, '{}')::jsonb, '{%s}', CAST(? AS jsonb))`, field)
 	} else {
 		selectSQL = fmt.Sprintf(`
 			SELECT id, json_extract(fields, '$.%[1]s') FROM items
 			WHERE collection_id = ? AND deleted_at IS NULL
 			  AND json_type(fields, '$.%[1]s') = 'array'
 			  AND EXISTS (SELECT 1 FROM json_each(fields, '$.%[1]s') e WHERE e.type = 'text' AND e.value = ?)`, field)
-		updateSQL = fmt.Sprintf(`json_set(fields, '$.%s', json(?))`, field)
 	}
-
-	rows, err := tx.Query(s.q(selectSQL), collectionID, oldVal)
-	if err != nil {
-		return nil, fmt.Errorf("rename option %s (%s → %s) list arrays: %w", field, oldVal, newVal, err)
-	}
-	type pending struct{ id, value string }
-	var todo []pending
-	for rows.Next() {
-		var id, raw string
-		if err := rows.Scan(&id, &raw); err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("rename option %s scan: %w", field, err)
-		}
-		next, changed, err := renameArrayElements(raw, oldVal, newVal)
+	seen := map[string]bool{}
+	var out []arrayRow
+	for _, oldVal := range olds {
+		rows, err := tx.Query(s.q(selectSQL), collectionID, oldVal)
 		if err != nil {
+			return nil, fmt.Errorf("rename option %s (%s) list arrays: %w", field, oldVal, err)
+		}
+		for rows.Next() {
+			var r arrayRow
+			if err := rows.Scan(&r.id, &r.raw); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("rename option %s scan: %w", field, err)
+			}
+			if !seen[r.id] {
+				seen[r.id] = true
+				out = append(out, r)
+			}
+		}
+		if err := rows.Err(); err != nil {
 			rows.Close()
-			return nil, fmt.Errorf("rename option %s item %s: %w", field, id, err)
+			return nil, fmt.Errorf("rename option %s rows: %w", field, err)
 		}
-		if changed {
-			todo = append(todo, pending{id, next})
-		}
-	}
-	if err := rows.Err(); err != nil {
 		rows.Close()
-		return nil, fmt.Errorf("rename option %s rows: %w", field, err)
 	}
-	rows.Close()
+	return out, nil
+}
 
+// writeRenamedArraysTx rewrites each row's array under the whole rename map
+// at once, bumping seq and updated_at like the scalar pass. It returns the ids
+// it wrote and the old values it renamed somewhere, sorted.
+func (s *Store) writeRenamedArraysTx(tx *sql.Tx, workspaceID, field string, rows []arrayRow, renames map[string]string, ts string) ([]string, []string, error) {
+	if len(rows) == 0 {
+		return nil, nil, nil
+	}
+	setSQL := fmt.Sprintf(`json_set(fields, '$.%s', json(?))`, field)
+	if s.dialect.Driver() == DriverPostgres {
+		setSQL = fmt.Sprintf(`jsonb_set(COALESCE(fields, '{}')::jsonb, '{%s}', CAST(? AS jsonb))`, field)
+	}
 	stmt := s.q(fmt.Sprintf(`
 		UPDATE items
 		SET fields = %s,
 		    updated_at = ?,
 		    seq = `+nextWorkspaceSeqSubquery+`
-		WHERE id = ?`, updateSQL))
+		WHERE id = ?`, setSQL))
 	var touched []string
-	for _, p := range todo {
-		res, err := tx.Exec(stmt, p.value, ts, workspaceID, p.id)
+	renamedSet := map[string]bool{}
+	for _, r := range rows {
+		next, renamed, err := renameArrayElements(r.raw, renames)
 		if err != nil {
-			return nil, fmt.Errorf("rename option %s (%s → %s) row %s: %w", field, oldVal, newVal, p.id, err)
+			return nil, nil, fmt.Errorf("rename option %s item %s: %w", field, r.id, err)
+		}
+		if len(renamed) == 0 {
+			continue
+		}
+		res, err := tx.Exec(stmt, next, ts, workspaceID, r.id)
+		if err != nil {
+			return nil, nil, fmt.Errorf("rename option %s row %s: %w", field, r.id, err)
 		}
 		if n, _ := res.RowsAffected(); n > 0 {
-			touched = append(touched, p.id)
+			touched = append(touched, r.id)
+			for _, o := range renamed {
+				renamedSet[o] = true
+			}
 		}
 	}
-	return touched, nil
+	olds := make([]string, 0, len(renamedSet))
+	for o := range renamedSet {
+		olds = append(olds, o)
+	}
+	sort.Strings(olds)
+	return touched, olds, nil
 }
 
-// renameArrayElements rewrites the string elements of a JSON array equal to
-// oldVal to newVal, in place. A renamed element is dropped instead when newVal
-// is already in the array (or an earlier element was renamed to it); a
-// duplicate the array already held is left alone. changed is false when
-// nothing was renamed.
-func renameArrayElements(raw, oldVal, newVal string) (string, bool, error) {
+// renameArrayElements maps each string element of a JSON array through
+// renames ONCE (a→b, b→c turns ["a","b"] into ["b","c"]). A mapped element is
+// dropped when its new value is already in the result, whether as an element
+// the map does not touch or as an earlier mapped one; a duplicate the array
+// already held among untouched elements is left alone. Other elements keep
+// their value, numbers their literal (json.Number). renamed lists the old
+// values that occurred; empty means the array is unchanged.
+func renameArrayElements(raw string, renames map[string]string) (string, []string, error) {
 	dec := json.NewDecoder(bytes.NewReader([]byte(raw)))
 	dec.UseNumber()
 	var elems []any
 	if err := dec.Decode(&elems); err != nil {
-		return "", false, err
+		return "", nil, err
 	}
-	haveNew := false
+	present := map[string]bool{}
 	for _, e := range elems {
-		if str, ok := e.(string); ok && str == newVal {
-			haveNew = true
+		if str, ok := e.(string); ok {
+			if _, mapped := renames[str]; !mapped {
+				present[str] = true
+			}
 		}
 	}
-	// Only a RENAMED element is ever dropped: a duplicate the array already
-	// held is not this rename's to fix.
 	out := make([]any, 0, len(elems))
-	changed := false
+	renamedSet := map[string]bool{}
 	for _, e := range elems {
-		if str, ok := e.(string); ok && str == oldVal {
-			changed = true
-			if haveNew {
+		if str, ok := e.(string); ok {
+			if newVal, mapped := renames[str]; mapped && newVal != str {
+				renamedSet[str] = true
+				if present[newVal] {
+					continue
+				}
+				present[newVal] = true
+				out = append(out, newVal)
 				continue
 			}
-			e, haveNew = newVal, true
 		}
 		out = append(out, e)
 	}
-	if !changed {
-		return raw, false, nil
+	if len(renamedSet) == 0 {
+		return raw, nil, nil
 	}
 	// SetEscapeHTML(false): Marshal would rewrite <, > and & in the elements
 	// this rename did not touch.
@@ -126,7 +158,12 @@ func renameArrayElements(raw, oldVal, newVal string) (string, bool, error) {
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
 	if err := enc.Encode(out); err != nil {
-		return "", false, err
+		return "", nil, err
 	}
-	return string(bytes.TrimRight(buf.Bytes(), "\n")), true, nil
+	renamed := make([]string, 0, len(renamedSet))
+	for o := range renamedSet {
+		renamed = append(renamed, o)
+	}
+	sort.Strings(renamed)
+	return string(bytes.TrimRight(buf.Bytes(), "\n")), renamed, nil
 }

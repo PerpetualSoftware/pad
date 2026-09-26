@@ -163,3 +163,56 @@ func TestRenameMultiSelectOptionEmitsBulkEvent(t *testing.T) {
 		t.Errorf("bulk event does not carry the rename tags a→x: %s", payloads[0])
 	}
 }
+
+// A rename map is applied simultaneously (codex r1): with a→b and b→c in one
+// call every stored value is mapped once, scalars and arrays alike, however
+// Go orders the map. A swap is the sharpest case.
+func TestRenameOptionsApplySimultaneously(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "RenameChain")
+	c, err := s.CreateCollection(ws.ID, models.CollectionCreate{Name: "Things", Schema: `{"fields":[{"key":"tags","label":"Tags","type":"multi_select","options":["a","b","c"]},{"key":"st","label":"St","type":"select","options":["a","b","c"]}]}`})
+	if err != nil {
+		t.Fatalf("collection: %v", err)
+	}
+	cases := []struct {
+		name, seed string
+		renames    map[string]string
+		want       string // JSON of the field after the rename
+	}{
+		{"chain scalar a", `{"st":"a"}`, map[string]string{"a": "b", "b": "c"}, `"b"`},
+		{"chain scalar b", `{"st":"b"}`, map[string]string{"a": "b", "b": "c"}, `"c"`},
+		{"chain array", `{"tags":["a","b"]}`, map[string]string{"a": "b", "b": "c"}, `["b","c"]`},
+		{"swap scalar", `{"st":"a"}`, map[string]string{"a": "b", "b": "a"}, `"b"`},
+		{"swap array", `{"tags":["a","b","c"]}`, map[string]string{"a": "b", "b": "a"}, `["b","a","c"]`},
+	}
+	for _, tc := range cases {
+		it, err := s.CreateItem(ws.ID, c.ID, models.ItemCreate{Title: tc.name, Fields: `{}`})
+		if err != nil {
+			t.Fatalf("item: %v", err)
+		}
+		if _, err := s.db.Exec(s.q(`UPDATE items SET fields = ? WHERE id = ?`), tc.seed, it.ID); err != nil {
+			t.Fatal(err)
+		}
+		key := "st"
+		if bytes.Contains([]byte(tc.seed), []byte(`"tags"`)) {
+			key = "tags"
+		}
+		if _, err := s.MigrateItemFieldValues(c.ID, []models.FieldMigration{{Field: key, RenameOptions: tc.renames}}); err != nil {
+			t.Fatalf("%s: migrate: %v", tc.name, err)
+		}
+		var fields string
+		if err := s.db.QueryRow(s.q(`SELECT CAST(fields AS TEXT) FROM items WHERE id = ?`), it.ID).Scan(&fields); err != nil {
+			t.Fatal(err)
+		}
+		var got, want map[string]any
+		_ = json.Unmarshal([]byte(fields), &got)
+		_ = json.Unmarshal([]byte(`{"`+key+`":`+tc.want+`}`), &want)
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: fields = %s, want {%q: %s}", tc.name, fields, key, tc.want)
+		}
+		// One item per case: clear it so later cases' renames cannot touch it.
+		if _, err := s.db.Exec(s.q(`UPDATE items SET deleted_at = ? WHERE id = ?`), "2026-01-01T00:00:00Z", it.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
