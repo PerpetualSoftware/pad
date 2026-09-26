@@ -80,7 +80,8 @@ import (
 //     quick-action prompts, the conventions and playbook editors, and
 //     ItemDetail's editor-seed and timeline-diff strings. An earlier version of
 //     this comment described that surface as a pure rendering choice, which was
-//     inaccurate.
+//     inaccurate. BUG-3050 closed it in three units: the writes (U1), the agent
+//     push (U2) and the renders (U3, `web/src/lib/items/staleBody.ts`).
 func TestBodyDerivedTextSitesAreAllRuledOn(t *testing.T) {
 	// The helpers whose output is item-body text under another name. Adding one
 	// here is how this guard learns about a new shape.

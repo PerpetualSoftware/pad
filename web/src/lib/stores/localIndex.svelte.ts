@@ -1635,7 +1635,7 @@ export const localIndex = {
 			// content:'' — link resolution/picker never read the body;
 			// the skinny index rows don't carry it. Matches how the
 			// collection page adapts getByCollection rows to Item.
-			out.push({ ...row, content: '' } as Item);
+			out.push({ ...row, content: '', content_state: undefined } as Item);
 		}
 		out.sort((a, b) => {
 			if (a.updated_at !== b.updated_at) {

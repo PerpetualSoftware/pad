@@ -14,6 +14,8 @@
 	import Button from '$lib/components/common/Button.svelte';
 	import PageHeader from '$lib/components/common/PageHeader.svelte';
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
+	import StaleBodyDot from '$lib/components/common/StaleBodyDot.svelte';
+	import { isBodyStale } from '$lib/items/staleBody';
 
 	const TRIGGERS = ['always','on-task-start','on-task-complete','on-implement','on-commit','on-pr-create','on-plan-start','on-plan-complete','on-plan'] as const;
 	type Trigger = typeof TRIGGERS[number];
@@ -665,6 +667,7 @@
 												<span class="toggle-knob"></span>
 											</button>
 											<span class="row-title">{item.title}</span>
+											{#if isBodyStale(item)}<StaleBodyDot />{/if}
 											{#if convention.category}
 												<span class="badge category-badge">{convention.category}</span>
 											{/if}

@@ -21,6 +21,7 @@
 		PUBLIC_RELATION_TITLE,
 	} from './shareView';
 	import { isRelationType } from '$lib/items/relationFieldTypes';
+	import StaleBodyNotice from '$lib/components/common/StaleBodyNotice.svelte';
 
 	interface Props {
 		item: PublicItem;
@@ -97,6 +98,7 @@
 	{/if}
 
 	{#if html}
+		{#if item.contentStale}<StaleBodyNotice />{/if}
 		<!-- `html` is pre-sanitized by the route's marked()+DOMPurify pipeline.
 		     No new XSS surface — same sanitized source as the single-item view. -->
 		<div class="expansion-content">

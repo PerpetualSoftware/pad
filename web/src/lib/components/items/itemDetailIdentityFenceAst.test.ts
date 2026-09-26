@@ -112,7 +112,7 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	jumpToSection: { reviewed: '17407aeb431b', why: 'switches this instance\'s tab and scrolls to an anchor', may: ['document.getElementById', 'document.getElementById(anchorId).scrollIntoView'] },
 	ensureGraphComp: { reviewed: 'c1565cfb8a18', why: 'lazy-loads a component module into this instance', may: ['ItemGraphComp', 'graphLoadError'] },
 	handleCopyRef: { reviewed: 'a5e0a0394fcc', why: 'switchedAway before the copied flag' },
-	loadData: { reviewed: '8eb393047b3e', why: 'IS the load: myGen against loadGeneration after every await; the BUG-3198 re-read of a changed item runs after the install, keyed on the installed item id, and fences itself on itemGen' },
+	loadData: { reviewed: '7450124bf4bf', why: 'IS the load: myGen against loadGeneration after every await; the BUG-3198 re-read of a changed item runs after the install, keyed on the installed item id, and fences itself on itemGen' },
 	startEditTitle: { reviewed: '17f04352d420', why: 'focuses and sizes the input it opened synchronously', may: ['el', 'titleInputEl.focus', 'titleInputEl.setSelectionRange'] },
 	// Re-reviewed for BUG-2836: saveTitle's own lines are unchanged (the diff
 	// touches only a $derived beside titleDraft and the textarea's aria
@@ -161,7 +161,7 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	updateAssignedUser: { reviewed: '5e4128e45ae7', why: 'gen against loadGeneration on both arms' + SETTLE_NOTE, may: ['saves.settle'] },
 	updateAgentRole: { reviewed: '9b0a6af92cc2', why: 'gen against loadGeneration on both arms' + SETTLE_NOTE, may: ['saves.settle'] },
 	flushRawIfPending: {
-		reviewed: '425804645744',
+		reviewed: 'b25da2794031',
 		why: 'genAtFlush against loadGeneration after each PATCH; the re-entrancy waiter returns state; the finally clears this drain\'s own in-flight flag' + SETTLE_NOTE,
 		may: ['saves.settle', 'rawFlushInFlight'],
 		bareAwaits: ['await new Promise((r) => setTimeout(r, 50));'],
@@ -184,8 +184,8 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	handleCopied: { reviewed: 'f35fb099838d', why: 'switchedAway before adopting the refreshed item' },
 	handleDelete: { reviewed: 'b66adcf84794', why: 'switchedAway on both arms' },
 	handleRestore: { reviewed: 'c3a1732554a4', why: 'switchedAway on every arm' },
-	handleDeleteLink: { reviewed: 'e51f23ad3790', why: 'switchedAway after each await' },
-	handleCreateLink: { reviewed: '473b62faa93a', why: 'switchedAway after each await' },
+	handleDeleteLink: { reviewed: 'd147285bb264', why: 'switchedAway after each await' },
+	handleCreateLink: { reviewed: 'ef19e8ce0bc8', why: 'switchedAway after each await' },
 	handleMove: { reviewed: 'da5513ba767f', why: 'stillOnSource() on every arm, including inside navIfStillCurrent' },
 };
 
@@ -396,7 +396,7 @@ const CONTINUATIONS: SignedRow[] = [
 		may: ['renameOverride'],
 	},
 	{ call: /^setTimeout\($/, body: /copied = false/, why: 'copy-flag reset: switchedAway', reviewed: '8a8d4754017f' },
-	{ call: /api\.items\.get\(wsSlug, itemSlug\)\.catch\($/, body: /./, why: 'loadData item fetch: sets a flag local to that load and re-throws', reviewed: 'f2267a80cece' },
+	{ call: /api\.items\.get\(wsSlug, itemSlug\)\.catch\($/, body: /./, why: 'loadData item fetch: sets a flag local to that load and re-throws', reviewed: 'f46985737ace' },
 	{
 		call: /^setTimeout\($/,
 		body: /staleConnecting = true/,
@@ -412,7 +412,7 @@ const CONTINUATIONS: SignedRow[] = [
 		body: /teardownFlushed/,
 		in: 'onBeforeUnload',
 		code: '() => { teardownFlushed = false; }',
-		why: 're-arms the BUG-3005 teardown latch, itself identity-checked', reviewed: 'e598de5a2771',
+		why: 're-arms the BUG-3005 teardown latch, itself identity-checked', reviewed: '05b21a3dd559',
 		may: ['teardownFlushed'],
 	},
 	{ call: /^queueMicrotask\($/, body: /./, why: 'collab lazy seed: refuses a retired or re-identified context first', reviewed: '197a4a45d219' },
@@ -429,32 +429,32 @@ const CONTINUATIONS: SignedRow[] = [
 		call: /^setTimeout\($/,
 		body: /content: toSave, client_write: nextClientWrite\(\) \}\)\.then/,
 		in: 'handleContentUpdate',
-		why: 'content debounce: loadData clears this timer before its first await, so the callback never runs across a load', reviewed: 'd05baa756ebd',
+		why: 'content debounce: loadData clears this timer before its first await, so the callback never runs across a load', reviewed: '6858c043b334',
 		startSafe: true,
 		pin: (src, unit) => clearsBeforeFirstAwait(src, 'loadData', 'contentDebounceTimer') ?? assignedTo(src, unit, 'contentDebounceTimer'),
 	},
-	{ call: /\{ content: toSave, client_write: nextClientWrite\(\) \}\)\.then\($/, body: /^\(\) =>/, why: 'content save: switchedAway', reviewed: '160532c3b115' },
-	{ call: /showSaved\(saveTok\); \}\)\.catch\($/, body: /./, why: 'content save failure: switchedAway', reviewed: '73e9f73724f5' },
+	{ call: /\{ content: toSave, client_write: nextClientWrite\(\) \}\)\.then\($/, body: /^\(\) =>/, why: 'content save: switchedAway', reviewed: '5afbf6c10e2d' },
+	{ call: /showSaved\(saveTok\); \}\)\.catch\($/, body: /./, why: 'content save failure: switchedAway', reviewed: '0cb1078817c7' },
 	{
 		call: /\.finally\($/,
 		body: /^\(\) => saves\.settle\(saveTok\)$/,
 		in: 'setTimeout(…)',
 		code: '() => saves.settle(saveTok)',
 		why: SETTLE_WHY,
-		reviewed: '4fbcd658ebba',
+		reviewed: '08fccaaec1ae',
 		may: ['saves.settle'],
 	},
-	{ call: /\{ keepalive: true \}\) \.then\($/, body: /./, why: 'raw keepalive save: genAtSave against loadGeneration', reviewed: '758b235c3705' },
-	{ call: /localDirty = false; \} \}\) \.catch\($/, body: /^\(\) => \{\}$/, why: 'raw keepalive failure: empty', reviewed: '66b6e4855355' },
-	{ call: /reqItemId, \{ content: toSave, client_write: nextClientWrite\(\) \}\)\.then\($/, body: /./, why: 'raw foreground save: genAtSave against loadGeneration', reviewed: '109114fbb1b8' },
-	{ call: /content: item\.content \}\); \} \}\)\.catch\($/, body: /./, why: 'raw foreground failure: genAtSave against loadGeneration', reviewed: 'a47d5c0c6f20' },
+	{ call: /\{ keepalive: true \}\) \.then\($/, body: /./, why: 'raw keepalive save: genAtSave against loadGeneration', reviewed: 'b95a7c2a3e88' },
+	{ call: /localDirty = false; \} \}\) \.catch\($/, body: /^\(\) => \{\}$/, why: 'raw keepalive failure: empty', reviewed: '2ad797bd41d1' },
+	{ call: /reqItemId, \{ content: toSave, client_write: nextClientWrite\(\) \}\)\.then\($/, body: /./, why: 'raw foreground save: genAtSave against loadGeneration', reviewed: '05f885ec2567' },
+	{ call: /content: item\.content, content_state: item\.content_state \}\); \} \}\)\.catch\($/, body: /./, why: 'raw foreground failure: genAtSave against loadGeneration', reviewed: '67af6367e790' },
 	{
 		call: /\.finally\($/,
 		body: /^\(\) => saves\.settle\(saveTok\)$/,
 		in: '{save}',
 		code: '() => saves.settle(saveTok)',
 		why: SETTLE_WHY,
-		reviewed: '0ef0106d13cc',
+		reviewed: 'd16dc96fd13d',
 		may: ['saves.settle'],
 	},
 ];
@@ -468,7 +468,9 @@ const CONTINUATIONS: SignedRow[] = [
 const HELPERS: Record<string, string> = {
 	primeCanonicalSeed: '9d90b6bf0245',
 	adoptCollection: 'ab38368cd8fb',
-	adoptServerItem: '198d4de5b450',
+	// BUG-3050 U3: the kept local body keeps ITS content_state. Still synchronous,
+	// reads only collabProvider and item, and commits only through withInflightTags.
+	adoptServerItem: 'e11e0282e197',
 	applyProgress: 'b28014625819',
 	autoResizeTitle: '7b1e2fcd0526',
 	captureIdentity: '01f30996ab05',
@@ -477,7 +479,7 @@ const HELPERS: Record<string, string> = {
 	identityHeld: '1c5505d51f73',
 	navigateToCollectionRoot: '64dce75693d3',
 	refreshPrintMeta: '2312cc481ca5',
-	runTeardownFlush: '8251de42632d',
+	runTeardownFlush: '6c7e2a216f4f',
 	// BUG-3124 unit B: the cursor-advance settle. Synchronous; arms the flusher's
 	// single timer only for the current, identity-held context.
 	showSaved: '456dd972dcf5',
