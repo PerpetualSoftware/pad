@@ -223,7 +223,10 @@ const NESTED: SignedRow[] = [
 /** Async functions in the markup. */
 const MARKUP: SignedRow[] = [
 	{ body: /startGen/, why: 'Rich toggle: startGen against loadGeneration after each await', reviewed: '63a9cce2ed93' },
-	{ body: /genAtToggle/, why: 'Markdown toggle: genAtToggle against loadGeneration after each await', reviewed: '6ad6c1318246' },
+	// Re-reviewed for BUG-3050 U1 (door A4): the raw-seed refusal adds no await;
+	// its post-loop editor read and the rawSeedDecision check run after the
+	// existing genAtToggle fence and write only locals and a toast.
+	{ body: /genAtToggle/, why: 'Markdown toggle: genAtToggle against loadGeneration after each await', reviewed: 'dea496abe16e' },
 ];
 
 const collapse = (s: string) => s.replace(/\s+/g, ' ');

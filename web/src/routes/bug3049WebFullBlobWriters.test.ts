@@ -137,3 +137,25 @@ describe('BUG-3049 — browser item-field writers send a patch, not a blob', () 
 		);
 	});
 });
+
+// BUG-3050 U1, door A4: ItemDetail's raw-editor fallback. The decision lives in
+// $lib/items/rawSeed (rawSeed.test.ts forces every fallback: no provider, a
+// thrown flush, the loop cap, a deduped flush while another tab typed). This
+// guard pins the WIRING, which that test cannot see because ItemDetail cannot
+// be mounted: the switch asks rawSeedDecision, ahead of the mode flip, with the
+// editor read AFTER the flush loop.
+describe('BUG-3050 U1: the raw-editor fallback does not seed from a stale body', () => {
+	it('the raw toggle refuses through rawSeedDecision before rawMode = true', () => {
+		const src = source('../lib/components/items/ItemDetail.svelte');
+		const guard = src.indexOf('rawSeedDecision({ liveNow, lastFlushed: lastFlushedOut, stored: item.content ?? \'\', contentState: item.content_state }).refuse');
+		expect(guard, 'the raw toggle no longer asks rawSeedDecision').toBeGreaterThan(-1);
+		const flip = src.indexOf('rawMode = true;', guard);
+		expect(flip, 'the refusal no longer precedes the raw-mode flip').toBeGreaterThan(guard);
+		expect(src.slice(guard, flip), 'the refusal no longer returns before the flip').toContain('return;');
+		const read = src.indexOf('liveNow = typeof read === \'string\' ? read : undefined;');
+		const loopEnd = src.indexOf('if (aborted) return;');
+		expect(read, 'the live read is gone').toBeGreaterThan(-1);
+		expect(read, 'the live read no longer happens AFTER the flush loop').toBeGreaterThan(loopEnd);
+		expect(read, 'the live read no longer precedes the decision').toBeLessThan(guard);
+	});
+});

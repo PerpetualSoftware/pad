@@ -20,6 +20,7 @@
 	import ToastContainer from '$lib/components/common/ToastContainer.svelte';
 	import CreateWorkspaceModal from '$lib/components/layout/CreateWorkspaceModal.svelte';
 	import OpenChildrenDialog from '$lib/components/OpenChildrenDialog.svelte';
+	import PendingEditsDialog from '$lib/components/PendingEditsDialog.svelte';
 	import { isMod, isInputFocused } from '$lib/utils/keyboard';
 	import { isBlockedByModal } from '$lib/a11y/viewerBackdrop';
 	import KeyboardShortcuts from '$lib/components/common/KeyboardShortcuts.svelte';
@@ -356,6 +357,7 @@
 	/>
 	<ToastContainer />
 	<OpenChildrenDialog />
+	<PendingEditsDialog />
 {:else}
 	{#if showMobileTopbar}
 		<!--
@@ -426,6 +428,7 @@
 	/>
 	<ToastContainer />
 	<OpenChildrenDialog />
+	<PendingEditsDialog />
 	<KeyboardShortcuts visible={showShortcuts} onclose={() => showShortcuts = false} />
 {/if}
 

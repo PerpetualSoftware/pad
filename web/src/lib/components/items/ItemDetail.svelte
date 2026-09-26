@@ -86,6 +86,7 @@
 	import { titleStore } from '$lib/stores/title.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { createLinksRetry, type LinksRetryTarget } from '$lib/items/linksRetry';
+	import { rawSeedDecision } from '$lib/items/rawSeed';
 
 	type RelationshipEntry = {
 		key: string;
@@ -6573,6 +6574,11 @@
 							// Capped at 3 iterations to bound the
 							// transition under aggressive concurrent
 							// typing. Per Codex review round 5.
+							// What the raw-seed decision needs (BUG-3050 U1,
+							// $lib/items/rawSeed): the editor as it stands after the
+							// flush loop, and the last text the loop flushed.
+							let liveNow: string | undefined;
+							let lastFlushedOut: string | null = null;
 							if (collabProvider && editorInstance && item) {
 								const ws = wsSlug;
 								const itemId = item.id;
@@ -6663,6 +6669,9 @@
 									// (PLAN-2105 / TASK-2112; Codex).
 									if (!item || item.id !== itemId || genAtToggle !== loadGeneration) return;
 									if (lastFlushed !== null) rawSeedMarkdown = lastFlushed;
+									lastFlushedOut = lastFlushed;
+									const read = (ed.storage as any).markdown?.getMarkdown?.();
+									liveNow = typeof read === 'string' ? read : undefined;
 								} catch {
 									// Fall through so RawMarkdownEditor
 									// seeds from item.content — BUT still
@@ -6687,6 +6696,19 @@
 							// markdown over a subsequent raw save.
 							// Per Codex review round 5.
 							collabFlusher.cancel();
+							// BUG-3050 U1: the raw editor would start from a stored
+							// body that is behind an open tab's edits, and its
+							// saves carry no version token by design (BUG-3080
+							// orders them with client_write), so the first raw
+							// save would replace those edits. Refuse the switch
+							// instead of seeding it.
+							if (item && rawSeedDecision({ liveNow, lastFlushed: lastFlushedOut, stored: item.content ?? '', contentState: item.content_state }).refuse) {
+								toastStore.show(
+									"Raw mode isn't available yet: this item has edits in an open tab that are not stored, and the raw editor would start from the older body.",
+									'error'
+								);
+								return;
+							}
 							rawMode = true;
 						}}
 						title="Raw markdown editor"
