@@ -2212,8 +2212,10 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	// it means to replace them. Composed into the precheck so every ordering
 	// below — direct, applier, collab-disabled — inherits it from here. The
 	// collab-snapshot flush is exempt: it is the tab writing those edits.
+	// refuse_pending_edits asks for the same refusal with no token (BUG-3230
+	// U0): the pane's raw saves cannot carry one.
 	if input.Content != nil && !collabSnapshot && !input.OverwritePendingEdits &&
-		(input.ExpectedSeq != nil || input.ExpectedUpdatedAt != "") {
+		(input.ExpectedSeq != nil || input.ExpectedUpdatedAt != "" || input.RefusePendingEdits) {
 		openChildrenPrecheck = composePendingContentGuard(s, item.ID, openChildrenPrecheck)
 	}
 	// BUG-3133 D: how many unflushed edit rows the direct path's prune deleted.
