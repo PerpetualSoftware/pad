@@ -6,6 +6,7 @@
 	import { renderMarkedWithAttachments } from '$lib/utils/markdown';
 	import { renderAttachmentUnavailable } from '$lib/markdown/attachments';
 	import DOMPurify from 'dompurify';
+	import { inertInternalReferences } from '$lib/components/share/shareRender';
 	import PublicCollectionView from '$lib/components/share/PublicCollectionView.svelte';
 	import StaleBodyNotice from '$lib/components/common/StaleBodyNotice.svelte';
 	import { isBodyStale } from '$lib/items/staleBody';
@@ -117,6 +118,16 @@
 	let baseParsedItems = $derived.by<PublicItem[]>(() =>
 		parsePublicItems(collectionData?.items)
 	);
+
+	// What a `[[REF]]` may read as on this page: only titles the share's own
+	// payload already carries (TASK-2248). Anything else stays the bare ref,
+	// so the page discloses nothing the owner did not share.
+	let titleByRef = $derived.by<Map<string, string>>(() => {
+		const m = new Map<string, string>();
+		for (const it of baseParsedItems) if (it.ref) m.set(it.ref.toUpperCase(), it.title);
+		if (itemData?.item_ref) m.set(itemData.item_ref.toUpperCase(), itemData.title);
+		return m;
+	});
 
 	let effectiveCollection = $derived.by<PublicCollection>(() => {
 		const coll = baseParsedCollection;
@@ -350,7 +361,9 @@
 				workspaceSlug: '',
 				missing: renderAttachmentUnavailable
 			});
-			return typeof window !== 'undefined' ? DOMPurify.sanitize(raw) : raw;
+			// Wiki-links and internal links are made inert AFTER the sanitizer,
+			// so the pass only ever sees markup DOMPurify already accepted.
+			return typeof window !== 'undefined' ? inertInternalReferences(DOMPurify.sanitize(raw), titleByRef) : raw;
 		} catch {
 			// Sanitize the fallback too — never pass user content to {@html} raw
 			return typeof window !== 'undefined' ? DOMPurify.sanitize(content) : content;
@@ -374,8 +387,11 @@
 	// marked()+DOMPurify on every keystroke or reactive pass. Keyed by the item's
 	// stable `key`. The map is rebuilt whenever the parsed item set changes.
 	let contentCache = $derived.by(() => {
-		// Touch the parsed items so the cache resets when the payload/view changes.
+		// Touch the parsed items so the cache resets when the payload/view changes,
+		// and the ref titles the render pass reads (TASK-2248), so a cached body
+		// can never outlive the titles it was rendered with.
 		effectiveItems;
+		titleByRef;
 		return new Map<string, string>();
 	});
 
