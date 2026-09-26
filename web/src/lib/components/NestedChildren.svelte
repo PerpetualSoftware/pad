@@ -6,6 +6,7 @@
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { collectionsNotStaleFor, categoricalValueFor } from '$lib/collections/categoricalFieldValue';
 	import { shouldOpenInPane } from './collections/itemCardClick';
+	import { fieldMatches } from '$lib/fields/fieldShape';
 
 	interface Props {
 		wsSlug: string;
@@ -100,7 +101,7 @@
 			     is a singleton and the row already carries its `collection_slug`,
 			     which is why this site turned out to be the cheap half after all. -->
 			{@const priority = categoricalValueFor(collectionStore.collections, child, 'priority', fields.priority, collectionsNotStaleFor(collectionStore.collectionsWorkspace, wsSlug))}
-			{@const isDone = terminal.includes(fields.status)}
+			{@const isDone = terminal.some((t) => fieldMatches(fields.status, t))}
 			{@const isExpanded = expandedIds.has(child.id)}
 			{@const canExpand = child.has_children && depth < maxDepth}
 			<div class="nested-item">

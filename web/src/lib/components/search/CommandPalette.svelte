@@ -19,6 +19,7 @@
 	} from '$lib/types';
 	import { getFieldValue, itemUrlId, formatItemRef } from '$lib/types';
 	import { relativeTime } from '$lib/utils/markdown';
+	import { fieldMatches } from '$lib/fields/fieldShape';
 
 	const RECENT_SEARCHES_KEY = 'pad-recent-searches';
 	const MAX_RECENT = 10;
@@ -390,7 +391,7 @@
 		// Apply the status filter chip if active. (Collection filter is
 		// passed through to localSearch.search above.)
 		const filtered = filterStatus
-			? merged.filter((r) => getFieldValue(r.item, 'status') === filterStatus)
+			? merged.filter((r) => fieldMatches(getFieldValue(r.item, 'status'), filterStatus))
 			: merged;
 
 		// Truncate the rendered list to PAGE_SIZE * 2 so cross-workspace

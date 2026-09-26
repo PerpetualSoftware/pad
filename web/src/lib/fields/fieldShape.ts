@@ -27,7 +27,11 @@
 //   - ChildChart start/end dates
 // Unit 2 — renders garbage / writes back a changed type (FieldEditor,
 //   TableView cells): `readAs` + a mismatch marker; waits on a UX ruling.
-// Unit 3 — web misfilters (strict `===` / `includes` on raw values).
+// Unit 3 — web misfilters, routed through `fieldMatches`: the collection
+//   page field filter, ChildItems + NestedChildren done checks, the command
+//   palette status chip, the playbooks trigger/scope filter, shareView
+//   matchesFilter. NOT routed: localSearch flattenFields, which drops
+//   objects from the search index on purpose (see its comment).
 // Unit 4 — server SQL, split out as BUG-3221.
 
 /**
@@ -63,4 +67,32 @@ export function safeText(raw: unknown): string {
 	if (typeof raw === 'string') return raw;
 	if (raw == null) return '';
 	return safeString(raw);
+}
+
+/**
+ * Does a stored field value match a filter's wanted value? TOTAL: it never
+ * throws, for any value JSON can hold.
+ *
+ * The rule is the board's (BUG-3052 unit 3): filtering for X keeps an item IFF
+ * the item sits in lane X, so a value is compared by the same text `laneValue`
+ * groups it under. A strict `raw === wanted` disagreed with the lane for every
+ * value that is not already a string — a `5` stored in a select sat in lane
+ * `'5'` and vanished when you filtered for `'5'` — the same one-value-two-
+ * answers defect TASK-2998 closed for relation values.
+ *
+ * `multi_select` is the one declared type whose value is a SET: an array
+ * matches when ANY element's text equals `wanted`, which is what the public
+ * share's `in` already did. Every other type compares the whole value's text,
+ * so an array stored where one value is declared matches only its joined text
+ * (`['a','b']` → `'a,b'`), exactly the lane it sits in.
+ *
+ * `wanted` is compared as TEXT too (`safeString`), because a saved view's
+ * filter value is JSON and need not be a string.
+ */
+export function fieldMatches(raw: unknown, wanted: unknown, declaredType?: string): boolean {
+	const want = typeof wanted === 'string' ? wanted : safeText(wanted);
+	if (declaredType === 'multi_select' && Array.isArray(raw)) {
+		return raw.some((el) => safeText(el) === want);
+	}
+	return safeText(raw) === want;
 }

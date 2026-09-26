@@ -1,6 +1,7 @@
 // BUG-3052 unit 1: the read-side text conversion never throws.
 import { describe, expect, it } from 'vitest';
-import { safeString, safeText } from './fieldShape';
+import { fieldMatches, safeString, safeText } from './fieldShape';
+import { laneValue } from '$lib/collections/boardColumns';
 
 // A value JSON.parse happily produces, on which String() / `${}` / new Date() throw.
 const HOSTILE = JSON.parse('{"toString":0}');
@@ -37,5 +38,51 @@ describe('safeString', () => {
 	});
 	it('does not throw on the hostile value', () => {
 		expect(safeString(HOSTILE)).toBe('{"toString":0}');
+	});
+});
+
+// BUG-3052 unit 3: a filter keeps exactly the items its lane holds.
+describe('fieldMatches', () => {
+	it('finds a non-string value by the text of the lane it sits in', () => {
+		// Each of these sat in lane `wanted` and was missed by a strict `===`.
+		expect(fieldMatches(5, '5')).toBe(true);
+		expect(fieldMatches(0, '0')).toBe(true);
+		expect(fieldMatches(false, 'false')).toBe(true);
+		expect(fieldMatches(['done'], 'done')).toBe(true);
+	});
+
+	it('agrees with laneValue for every shape JSON can store', () => {
+		const values: unknown[] = ['open', '', 5, 0, -1.5, true, false, null, undefined, ['a', 'b'], [], {}, { a: 1 }, HOSTILE];
+		for (const v of values) {
+			expect(fieldMatches(v, laneValue(v)), `value ${JSON.stringify(v)}`).toBe(true);
+			expect(fieldMatches(v, laneValue(v) + 'x'), `value ${JSON.stringify(v)} vs a different lane`).toBe(false);
+		}
+	});
+
+	it('does not throw on the hostile value', () => {
+		expect(fieldMatches(HOSTILE, 'open')).toBe(false);
+		expect(fieldMatches('open', HOSTILE)).toBe(false);
+		expect(fieldMatches(HOSTILE, '{"toString":0}')).toBe(true);
+	});
+
+	it('a multi_select array matches any one of its values, and only as a set', () => {
+		expect(fieldMatches(['a', 'b'], 'b', 'multi_select')).toBe(true);
+		expect(fieldMatches(['a', 'b'], 'a', 'multi_select')).toBe(true);
+		expect(fieldMatches(['a', 'b'], 'c', 'multi_select')).toBe(false);
+		// A scalar stored where a set is declared is one value.
+		expect(fieldMatches('b', 'b', 'multi_select')).toBe(true);
+		expect(fieldMatches([HOSTILE, 'b'], 'b', 'multi_select')).toBe(true);
+	});
+
+	it('an array stored under a single-value type matches only its joined text', () => {
+		expect(fieldMatches(['a', 'b'], 'b', 'select')).toBe(false);
+		expect(fieldMatches(['a', 'b'], 'a,b', 'select')).toBe(true);
+		expect(fieldMatches(['a', 'b'], 'b')).toBe(false);
+	});
+
+	it('a non-string wanted value (a saved view filter is JSON) compares as its text', () => {
+		expect(fieldMatches('5', 5)).toBe(true);
+		expect(fieldMatches(5, 5)).toBe(true);
+		expect(fieldMatches('true', true)).toBe(true);
 	});
 });

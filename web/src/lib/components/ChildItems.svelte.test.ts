@@ -264,3 +264,38 @@ describe('a child status that is not a string (BUG-3052)', () => {
 		expect([...target.querySelectorAll('.group-label')]).toHaveLength(3);
 	});
 });
+
+describe('ChildItems done styling for a status that is not a string (BUG-3052 unit 3)', () => {
+	let target: HTMLElement;
+	let instance: ReturnType<typeof mount> | undefined;
+	const kid = (id: string, fields: string) => ({
+		id, slug: id, title: `Child ${id}`, collection_slug: 'tasks', fields,
+		created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
+	});
+
+	beforeEach(() => {
+		childrenMock.mockClear();
+		childrenMock.mockImplementation(async () => [
+			kid('a', '{"status":["done"]}'),
+			kid('o', '{"status":"open"}'),
+			kid('h', '{"status":{"toString":0}}'),
+		]);
+		target = document.body.appendChild(document.createElement('div'));
+	});
+
+	afterEach(() => {
+		if (instance) unmount(instance);
+		instance = undefined;
+		target.remove();
+		childrenMock.mockImplementation(async () => []);
+	});
+
+	it('a status stored as ["done"] sits in the done lane, so its row is styled done', async () => {
+		instance = mount(ChildItems, { target, props: { wsSlug: 'ws-1', itemSlug: 'p-1', itemId: 'p-1' } });
+		flushSync();
+		await vi.waitFor(() => expect(target.querySelector('.child-count')).not.toBeNull());
+		flushSync();
+		const done = [...target.querySelectorAll('.child-title.done')].map((el) => el.textContent?.trim());
+		expect(done).toEqual(['Child a']);
+	});
+});

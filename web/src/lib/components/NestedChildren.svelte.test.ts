@@ -24,7 +24,7 @@ vi.mock('$lib/stores/collections.svelte', () => ({ collectionStore: collectionsS
 
 const { default: NestedChildren } = await import('./NestedChildren.svelte');
 
-const item = (id: string, status: string) => ({
+const item = (id: string, status: unknown) => ({
 	id,
 	slug: id,
 	title: id,
@@ -43,7 +43,7 @@ afterEach(() => {
 	childrenMock.mockReset();
 });
 
-async function render(statuses: string[], abandonedOptions: string[]) {
+async function render(statuses: unknown[], abandonedOptions: string[]) {
 	collectionsState.collections = [
 		{
 			slug: 'tasks',
@@ -109,5 +109,13 @@ describe('NestedChildren progress (BUG-3195)', () => {
 		// only `done` makes `cancelled` a delivered terminal: done leaves, and
 		// cancelled now counts as done. The exclusion follows the declaration.
 		expect(await render(['done', 'cancelled', 'open'], ['done'])).toBe('1/2');
+	});
+});
+
+describe('NestedChildren done styling for a status that is not a string (BUG-3052 unit 3)', () => {
+	it('a status stored as ["done"] sits in the done lane, so its row is styled done', async () => {
+		await render([['done'], 'open', 5], []);
+		const done = [...(target?.querySelectorAll('.nested-title.done') ?? [])].map((el) => el.textContent?.trim());
+		expect(done).toEqual(['c0']);
 	});
 });
