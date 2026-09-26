@@ -1,6 +1,13 @@
 // Node-project SOURCE guard: every async commit point on the workspace settings
 // page is fenced on the signed-in identity (BUG-3006).
 //
+// THE GATE BESIDE THIS (TASK-3097): `settings/settingsIdentityGate.test.ts` tables every async unit on
+// this page with the hash of the code it was reviewed on, and refuses any
+// edit to one until its row is re-read. That catches BUG-3084's round-4
+// classes, which a source scanner cannot see. This file catches what the
+// gate does not: the RULE on a NEW handler, which the gate accepts with any
+// row. Keep both. Neither is a duplicate of the other.
+//
 // WHY SOURCE. The page is a SvelteKit route with fourteen independent async
 // commit points across six handler families, a global toast callback and two
 // deferred timers. The behaviour of individual handlers is measured by

@@ -2,6 +2,13 @@
  * BUG-3084 surface 4 — the SOURCE half. `dashboardIdentityFence.svelte.test.ts`
  * beside this file owns the SEMANTICS; this owns the POPULATION.
  *
+ * THE GATE BESIDE THIS (TASK-3097): `dashboardIdentityGate.test.ts` tables every async unit on
+ * this page with the hash of the code it was reviewed on, and refuses any
+ * edit to one until its row is re-read. That catches BUG-3084's round-4
+ * classes, which a source scanner cannot see. This file catches what the
+ * gate does not: the RULE on a NEW handler, which the gate accepts with any
+ * row. Keep both. Neither is a duplicate of the other.
+ *
  * The page is small — one async function, one timer — and the temptation on a
  * small surface is to assert less. The filed survey counted this page as ONE
  * commit point and the widened instrument found two (checkpoint 6); reading
