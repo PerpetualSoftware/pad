@@ -643,6 +643,29 @@ function findItemByRef(items: Item[], ref: string): Item | undefined {
 }
 
 /**
+ * The TEXT a wiki-link body should read as where no link may be emitted
+ * (TASK-2248: the public share page, whose viewers cannot follow an internal
+ * link). Same grammar as the renderers above, resolved in the same order:
+ *   - `[[ws::REF|Display]]` → Display; `[[ws::REF]]` → `ws::REF`;
+ *   - `[[…|Display]]` → Display;
+ *   - `[[REF]]` → the title `titleByRef` holds for it (case-insensitive ref),
+ *     else the ref itself;
+ *   - `[[Title]]` → Title. `[[collection/Title]]` is left whole: with no
+ *     title lookup here, stripping the qualifier would also cut a real title
+ *     containing a slash ("A/B testing").
+ * Never a URL, and never a hint about what exists beyond `titleByRef`.
+ */
+export function wikiDisplayText(body: string, titleByRef: ReadonlyMap<string, string>): string {
+	const xw = parseCrossWorkspaceBody(body);
+	if (xw) return xw.display ?? `${xw.workspace}::${xw.ref}`;
+	const { key: rawKey, displayOverride: rawDisplay } = splitWikiBody(body);
+	if (rawDisplay != null) return unescapeWikiBody(rawDisplay);
+	const key = unescapeWikiBody(rawKey).trim();
+	if (REF_PATTERN.test(key)) return titleByRef.get(key.toUpperCase()) ?? key;
+	return key;
+}
+
+/**
  * Resolve a same-workspace wiki-link body against the in-memory items list.
  * Callers handle the cross-workspace `[[ws::REF]]` form first; this covers
  * everything else. Shared by renderMarkdown (comments, previews) and
