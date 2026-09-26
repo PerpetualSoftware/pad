@@ -80,20 +80,10 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Delete all owned workspaces, sessions, and the user atomically.
-	// If any workspace deletion fails, the entire operation is aborted.
-	workspaces, err := s.store.GetUserWorkspaces(user.ID)
-	if err != nil {
-		writeInternalError(w, err)
-		return
-	}
-
-	var ownedSlugs []string
-	for _, ws := range workspaces {
-		if ws.OwnerID == user.ID {
-			ownedSlugs = append(ownedSlugs, ws.Slug)
-		}
-	}
+	// Owned workspaces, sessions and the user are deleted atomically below.
+	// The owned set is read INSIDE that transaction, under the user-row lock
+	// (BUG-3099): read here, before the Stripe cancel, a workspace minted in
+	// between survived as a live workspace of a deleted user.
 
 	// Cascade Stripe cancel BEFORE the local delete. If this ordering is
 	// reversed, a mid-flight failure would wipe the user's StripeCustomerID
@@ -128,7 +118,7 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 		stripeWasCancelled = true
 	}
 
-	if err := s.store.DeleteAccountAtomic(user.ID, ownedSlugs); err != nil {
+	if err := s.store.DeleteAccountAtomic(user.ID); err != nil {
 		// Cross-system danger zone: if Stripe was already cancelled, the
 		// user's billing is gone but their account data is still present.
 		// Stripe cancel is NOT reversible programmatically. Operator must

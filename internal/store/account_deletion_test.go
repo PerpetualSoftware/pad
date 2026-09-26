@@ -36,7 +36,12 @@ func TestDeleteAccountAtomic_FullyPopulatedUser(t *testing.T) {
 		t.Fatalf("create other user: %v", err)
 	}
 
-	ws := createTestWorkspace(t, s, "Owned")
+	// OWNED means owner_id: the deletion reads its set by owner_id inside
+	// its transaction (BUG-3099), as the handler's list filtered on it.
+	ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "Owned", OwnerID: u.ID})
+	if err != nil {
+		t.Fatalf("create owned workspace: %v", err)
+	}
 	coll := createTestCollection(t, s, ws.ID, "Tasks")
 	item1 := createTestItem(t, s, ws.ID, coll.ID, "Item One", "")
 	item2 := createTestItem(t, s, ws.ID, coll.ID, "Item Two", "")
@@ -151,7 +156,7 @@ func TestDeleteAccountAtomic_FullyPopulatedUser(t *testing.T) {
 	activitiesBefore := count(`SELECT COUNT(*) FROM activities`)
 
 	// The whole point: this must NOT fail on any FK.
-	if err := s.DeleteAccountAtomic(u.ID, []string{ws.Slug}); err != nil {
+	if err := s.DeleteAccountAtomic(u.ID); err != nil {
 		t.Fatalf("DeleteAccountAtomic on fully-populated user: %v", err)
 	}
 

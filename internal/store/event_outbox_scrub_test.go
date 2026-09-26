@@ -526,7 +526,7 @@ func TestDeleteAccountAtomic_ScrubsOutbox(t *testing.T) {
 		return s.emitMemberEventTx(tx, kernelevents.MemberJoined, ws.ID, bystander.ID, "viewer", now())
 	})
 
-	if err := s.DeleteAccountAtomic(deleted.ID, nil); err != nil {
+	if err := s.DeleteAccountAtomic(deleted.ID); err != nil {
 		t.Fatalf("DeleteAccountAtomic: %v", err)
 	}
 
