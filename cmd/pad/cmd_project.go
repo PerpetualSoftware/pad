@@ -989,7 +989,10 @@ enriched activity feed the web UI uses (item refs, titles, change details).`,
 							Changes string `json:"changes"`
 						}
 						if json.Unmarshal([]byte(a.Metadata), &meta) == nil {
-							changes = meta.Changes
+							// Display rule, as the web feed applies it
+							// (BUG-2789): a legacy notes blob would otherwise
+							// fill this table cell and break the layout.
+							changes = cli.FormatChangesForDisplay(meta.Changes)
 						}
 					}
 
@@ -1040,8 +1043,11 @@ enriched activity feed the web UI uses (item refs, titles, change details).`,
 					var meta struct {
 						Changes string `json:"changes"`
 					}
-					if json.Unmarshal([]byte(a.Metadata), &meta) == nil && meta.Changes != "" {
-						fmt.Printf("       %s\n", dim.Sprint(meta.Changes))
+					if json.Unmarshal([]byte(a.Metadata), &meta) == nil {
+						// The same display rule as the markdown table above.
+						if shown := cli.FormatChangesForDisplay(meta.Changes); shown != "" {
+							fmt.Printf("       %s\n", dim.Sprint(shown))
+						}
 					}
 				}
 			}

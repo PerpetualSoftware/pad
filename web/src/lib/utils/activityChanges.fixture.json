@@ -1,0 +1,105 @@
+{
+	"_comment": "Shared by activityChanges.test.ts and internal/cli/activity_changes_test.go (BUG-2789). Each case pins formatChangesForDisplay's output; both implementations must agree with it, so a rule changed in one language fails the other's test. The whitespace and length cases exist because JS \\s/trim() and Go unicode.IsSpace disagree in both directions (U+0085, U+FEFF) and JS length counts UTF-16 units.",
+	"cases": [
+		{
+			"name": "current format, two changes",
+			"input": "status: open \u2192 fixing; priority: low \u2192 high",
+			"display": "status: open \u2192 fixing; priority: low \u2192 high"
+		},
+		{
+			"name": "newly set field keeps its empty from",
+			"input": "status:  \u2192 done",
+			"display": "status:  \u2192 done"
+		},
+		{
+			"name": "suppressed implementation_notes",
+			"input": "status: open \u2192 done; implementation_notes: [] \u2192 [map[id:note-1 summary:Root cause; details: x \u2192 y]]",
+			"display": "status: open \u2192 done; details: x \u2192 y]]"
+		},
+		{
+			"name": "suppressed decision_log alone",
+			"input": "decision_log: [] \u2192 [map[decision:ship it]]",
+			"display": ""
+		},
+		{
+			"name": "arrowless fragment dropped",
+			"input": "status: a \u2192 b; id:note-1775; summary:done",
+			"display": "status: a \u2192 b"
+		},
+		{
+			"name": "no colon dropped",
+			"input": "status: a \u2192 b; just prose here",
+			"display": "status: a \u2192 b"
+		},
+		{
+			"name": "spaced key dropped",
+			"input": "status: a \u2192 b; this is prose: a \u2192 b",
+			"display": "status: a \u2192 b"
+		},
+		{
+			"name": "value with two arrows kept for text",
+			"input": "title: a \u2192 b \u2192 c",
+			"display": "title: a \u2192 b \u2192 c"
+		},
+		{
+			"name": "single-word fragment is a known open limit",
+			"input": "implementation_notes: [map[details:Root; foo: a \u2192 b]]",
+			"display": "foo: a \u2192 b]]"
+		},
+		{
+			"name": "separator spacing normalised",
+			"input": "  status: a \u2192 b ;priority: x \u2192 y  ",
+			"display": "status: a \u2192 b; priority: x \u2192 y"
+		},
+		{
+			"name": "empty input",
+			"input": "",
+			"display": ""
+		},
+		{
+			"name": "U+0085 inside a key: not JS whitespace, so the key stands",
+			"input": "a\u0085b: x \u2192 y",
+			"display": "a\u0085b: x \u2192 y"
+		},
+		{
+			"name": "U+FEFF inside a key: JS whitespace, so the key is dropped",
+			"input": "a\ufeffb: x \u2192 y",
+			"display": ""
+		},
+		{
+			"name": "U+FEFF around a segment: JS trim strips it",
+			"input": "\ufeffstatus: a \u2192 b\ufeff",
+			"display": "status: a \u2192 b"
+		},
+		{
+			"name": "U+0085 around a segment: JS trim keeps it",
+			"input": "\u0085status: a \u2192 b",
+			"display": "\u0085status: a \u2192 b"
+		},
+		{
+			"name": "NBSP inside a key: JS whitespace",
+			"input": "a\u00a0b: x \u2192 y",
+			"display": ""
+		},
+		{
+			"name": "22 CJK key: 66 UTF-8 bytes, 22 UTF-16 units, kept",
+			"input": "\u4f1a\u4f1a\u4f1a\u4f1a\u4f1a\u4f1a\u4f1a\u4f1a\u4f1a\u4f1a\u4f1a\u4f1a\u4f1a\u4f1a\u4f1a\u4f1a\u4f1a\u4f1a\u4f1a\u4f1a\u4f1a\u4f1a: a \u2192 b",
+			"display": "\u4f1a\u4f1a\u4f1a\u4f1a\u4f1a\u4f1a\u4f1a\u4f1a\u4f1a\u4f1a\u4f1a\u4f1a\u4f1a\u4f1a\u4f1a\u4f1a\u4f1a\u4f1a\u4f1a\u4f1a\u4f1a\u4f1a: a \u2192 b"
+		},
+		{
+			"name": "33 emoji key: 33 runes, 66 UTF-16 units, dropped",
+			"input": "\ud83d\udcce\ud83d\udcce\ud83d\udcce\ud83d\udcce\ud83d\udcce\ud83d\udcce\ud83d\udcce\ud83d\udcce\ud83d\udcce\ud83d\udcce\ud83d\udcce\ud83d\udcce\ud83d\udcce\ud83d\udcce\ud83d\udcce\ud83d\udcce\ud83d\udcce\ud83d\udcce\ud83d\udcce\ud83d\udcce\ud83d\udcce\ud83d\udcce\ud83d\udcce\ud83d\udcce\ud83d\udcce\ud83d\udcce\ud83d\udcce\ud83d\udcce\ud83d\udcce\ud83d\udcce\ud83d\udcce\ud83d\udcce\ud83d\udcce: a \u2192 b",
+			"display": ""
+		},
+		{
+			"name": "64-unit ASCII key kept",
+			"input": "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk: a \u2192 b",
+			"display": "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk: a \u2192 b"
+		},
+		{
+			"name": "65-unit ASCII key dropped",
+			"input": "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk: a \u2192 b",
+			"display": ""
+		}
+	]
+}

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { SvelteSet } from 'svelte/reactivity';
 	import { adminFetch } from '$lib/stores/admin.svelte';
 	import { agentNameOf } from '$lib/utils/agentActor';
 	import Chip from '$lib/components/common/Chip.svelte';
@@ -68,6 +69,28 @@
 	let hasMore = $state(false);
 	let loadingMore = $state(false);
 	let requestCounter = 0;
+
+	// Rows whose Details cell is expanded to the full record (BUG-2789). This
+	// is a forensic surface, so its presentation is bounded — one clipped line
+	// per row — but the CONTENT never is: the summary line is a digest that
+	// can clip or omit members (the generic fallback shows three keys), and
+	// expanding shows everything the row holds, in a height-bounded box.
+	const expanded = new SvelteSet<string>();
+
+	function toggleExpanded(id: string) {
+		if (expanded.has(id)) expanded.delete(id);
+		else expanded.add(id);
+	}
+
+	/** The record as stored, indented when it parses; verbatim when it does
+	 *  not, since an unparseable value is still what the row holds. */
+	function fullMetadata(metadata: string): string {
+		try {
+			return JSON.stringify(JSON.parse(metadata), null, 2);
+		} catch {
+			return metadata;
+		}
+	}
 
 	function formatAction(action: string): string {
 		return ACTION_LABELS[action] ?? action.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
@@ -347,7 +370,24 @@
 									{formatAction(entry.action)}
 								</Chip>
 							</td>
-							<td class="details-cell">{formatMetadata(meta, entry.action)}</td>
+							<td class="details-cell">
+								{#if entry.metadata}
+									<button
+										type="button"
+										class="details-toggle"
+										aria-expanded={expanded.has(entry.id)}
+										title={expanded.has(entry.id) ? 'Hide the full record' : 'Show the full record'}
+										onclick={() => toggleExpanded(entry.id)}
+									>
+										<span class="details-summary">{formatMetadata(meta, entry.action)}</span>
+									</button>
+									{#if expanded.has(entry.id)}
+										<pre class="details-full">{fullMetadata(entry.metadata)}</pre>
+									{/if}
+								{:else}
+									{formatMetadata(meta, entry.action)}
+								{/if}
+							</td>
 							<td class="ip-cell">{entry.ip_address || '\u2014'}</td>
 						</tr>
 					{/each}
@@ -465,6 +505,34 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+	.details-toggle {
+		display: block;
+		width: 100%;
+		padding: 0;
+		border: none;
+		background: none;
+		color: inherit;
+		font: inherit;
+		text-align: left;
+		cursor: pointer;
+	}
+	.details-summary {
+		display: block;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	/* The expanded record: bounded in HEIGHT and scrolled, never truncated
+	   (BUG-2789's ruling for this surface). */
+	.details-full {
+		margin: 0.35rem 0 0;
+		max-height: 16rem;
+		overflow: auto;
+		white-space: pre-wrap;
+		overflow-wrap: anywhere;
+		font-family: 'SF Mono', 'Fira Code', 'Fira Mono', Menlo, Consolas, monospace;
+		font-size: 0.75rem;
 	}
 	.ip-cell {
 		font-family: 'SF Mono', 'Fira Code', 'Fira Mono', Menlo, Consolas, monospace;

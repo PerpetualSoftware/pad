@@ -1197,14 +1197,7 @@ func auditLogCmd() *cobra.Command {
 				if ip == "" {
 					ip = "-"
 				}
-				detail := a.Metadata
-				if detail == "" {
-					detail = "-"
-				}
-				// Truncate long metadata
-				if len(detail) > 60 {
-					detail = detail[:57] + "..."
-				}
+				detail := auditLogDetail(a.Metadata)
 				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", ts, a.Action, actorName, ip, detail)
 			}
 			w.Flush()
@@ -1218,6 +1211,39 @@ func auditLogCmd() *cobra.Command {
 	cmd.Flags().IntVar(&limit, "limit", 50, "maximum number of entries")
 
 	return cmd
+}
+
+// auditLogDetail is the Details column of `pad workspace audit-log`: the row's
+// metadata, with a `changes` member passed through the activity display rule
+// (BUG-2789, the same rule `pad project activity` and the web feed apply), cut
+// to 60 characters. The cut counts RUNES: it used to slice bytes, which could
+// split a multi-byte character and print invalid UTF-8. `--format json` is
+// untouched and carries the metadata verbatim.
+func auditLogDetail(metadata string) string {
+	detail := metadata
+	var meta map[string]any
+	if json.Unmarshal([]byte(metadata), &meta) == nil {
+		if changes, ok := meta["changes"].(string); ok {
+			if shown := cli.FormatChangesForDisplay(changes); shown != "" {
+				meta["changes"] = shown
+			} else {
+				delete(meta, "changes")
+			}
+			if len(meta) == 0 {
+				return "-" // the display rule removed the only member
+			}
+			if b, err := json.Marshal(meta); err == nil {
+				detail = string(b)
+			}
+		}
+	}
+	if detail == "" {
+		return "-"
+	}
+	if r := []rune(detail); len(r) > 60 {
+		return string(r[:57]) + "..."
+	}
+	return detail
 }
 
 // repairedNULCount reads the count the server reports for a --repair-nul

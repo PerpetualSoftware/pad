@@ -184,3 +184,17 @@ describe('parseFieldChanges', () => {
 		});
 	});
 });
+
+// BUG-2789. The CLI prints the same activity feed through a Go twin of
+// formatChangesForDisplay (internal/cli/activity_changes.go). This fixture is
+// the shared corpus both test suites assert, so a rule changed in one language
+// fails the other's test rather than drifting silently.
+import fixture from './activityChanges.fixture.json';
+
+describe('formatChangesForDisplay — shared Go/JS fixture (BUG-2789)', () => {
+	for (const c of fixture.cases) {
+		it(c.name, () => {
+			expect(formatChangesForDisplay(c.input)).toBe(c.display);
+		});
+	}
+});
