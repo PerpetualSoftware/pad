@@ -42,6 +42,13 @@ func TestDocumentRenameFollowsEscapedLinks(t *testing.T) {
 				t.Fatal(err)
 			}
 
+			// A linker holding ONLY the escaped link: the scan must find it by
+			// that form, not by the raw literal the first linker also carries.
+			onlyEscaped, err := s.CreateDocument(ws.ID, models.DocumentCreate{Title: "Only escaped", Content: "just " + tc.escapedLink})
+			if err != nil {
+				t.Fatal(err)
+			}
+
 			newTitle := "Fresh"
 			if _, err := s.UpdateDocument(target.ID, models.DocumentUpdate{Title: &newTitle}); err != nil {
 				t.Fatalf("rename: %v", err)
@@ -53,6 +60,13 @@ func TestDocumentRenameFollowsEscapedLinks(t *testing.T) {
 			want := "real [[Fresh]] / other " + tc.otherLink + " / plain [[Unrelated]]"
 			if got.Content != want {
 				t.Fatalf("linker after rename:\n got %q\nwant %q", got.Content, want)
+			}
+			only, err := s.GetDocument(onlyEscaped.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if only.Content != "just [[Fresh]]" {
+				t.Fatalf("a linker holding only the escaped link was not rewritten: %q", only.Content)
 			}
 		})
 	}
