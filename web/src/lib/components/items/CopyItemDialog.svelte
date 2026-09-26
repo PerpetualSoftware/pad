@@ -130,9 +130,7 @@ user hunting for an item that provably does not exist.
 	 * Everything else is NOT rendered as a text box. `json` is deliberately
 	 * read-only in FieldEditor (a plain text input would store the string
 	 * "[]" where an array belongs), `relation` has no picker here, and
-	 * `multi_select` has no editor in FieldEditor (it fell through to the TEXT
-	 * fallback, a string where the server's validation requires `[]any`, until
-	 * BUG-3052 unit 2 made it read-only). So a required field of
+	 * `multi_select` is not collected here yet (see `COLLECTABLE_TYPES`). So a required field of
 	 * any uncollectable type renders an explicit blocked state naming the field
 	 * and its type, rather than a dead Confirm or a lying input.
 	 *

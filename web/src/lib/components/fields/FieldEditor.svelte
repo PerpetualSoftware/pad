@@ -812,6 +812,96 @@ handlers — onchange is never called.
 		}
 	}
 
+	// ── Multi-select (IDEA-3223) ──────────────────────────────────────────
+
+	/** The stored selection, or none; a mismatched value never reaches here (`value` is undefined). */
+	let storedSelection = $derived(Array.isArray(value) ? (value as string[]) : []);
+
+	/**
+	 * What the list shows: the selection we sent while it is outstanding, else
+	 * the stored one. Same display hold the checkbox uses (`typedDisplay`), so a
+	 * toggle shows at once and a refused write returns to the stored value.
+	 */
+	let shownSelection = $derived.by<string[]>(() => {
+		// `typedDisplay` is the one display hold every typed branch shares, so it
+		// can hold another type's text for a moment (a retarget before the
+		// subject-change effect clears it). Only an array we wrote is ours.
+		if (typedDisplay !== null) {
+			try {
+				const held = JSON.parse(typedDisplay);
+				if (Array.isArray(held)) return held;
+			} catch {
+				// not ours
+			}
+		}
+		return storedSelection;
+	});
+
+	/**
+	 * The options, then any stored value that is not one (a renamed or removed
+	 * option), so it can still be seen and removed rather than silently kept.
+	 */
+	let multiChoices = $derived([
+		...(field.options ?? []),
+		...shownSelection.filter((v) => !(field.options ?? []).includes(v)),
+	]);
+
+	function toggleMultiOption(opt: string) {
+		// Toggle what the user last SAW, not the prop (the BUG-3047 rule the
+		// checkbox follows): the prop lags every write until its round trip
+		// lands, so two quick toggles built on it would each drop the other.
+		const base: string[] =
+			awaitingEcho && awaitingEcho.itemId === itemId && Array.isArray(awaitingEcho.sent)
+				? awaitingEcho.sent
+				: storedSelection;
+		const next = base.includes(opt) ? base.filter((v) => v !== opt) : [...base, opt];
+		typedDisplay = JSON.stringify(next);
+		sendTyped(next);
+	}
+
+	function handleMultiKeydown(e: KeyboardEvent) {
+		if (!dropdownOpen) return;
+		const opts = multiChoices;
+		if (e.key === 'ArrowDown') {
+			e.preventDefault();
+			focusedIndex = (focusedIndex + 1) % opts.length;
+		} else if (e.key === 'ArrowUp') {
+			e.preventDefault();
+			focusedIndex = (focusedIndex - 1 + opts.length) % opts.length;
+		} else if (e.key === 'Enter' || e.key === ' ') {
+			e.preventDefault();
+			if (focusedIndex >= 0 && focusedIndex < opts.length) toggleMultiOption(opts[focusedIndex]);
+		} else if (e.key === 'Escape') {
+			e.preventDefault();
+			dropdownOpen = false;
+			triggerEl?.focus();
+		}
+	}
+
+	/**
+	 * Arrow keys once focus is INSIDE the list (a keyboard user who tabbed into
+	 * it): move real focus between the options. Enter and Space are left to the
+	 * focused option's own button, so a toggle cannot fire twice.
+	 */
+	function handleMultiListKeydown(e: KeyboardEvent) {
+		const list = e.currentTarget as HTMLElement;
+		const opts = [...list.querySelectorAll<HTMLButtonElement>('[role="option"]')];
+		const at = opts.indexOf(document.activeElement as HTMLButtonElement);
+		if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+			e.preventDefault();
+			e.stopPropagation();
+			const step = e.key === 'ArrowDown' ? 1 : -1;
+			const next = at < 0 ? 0 : (at + step + opts.length) % opts.length;
+			focusedIndex = next;
+			opts[next]?.focus();
+		} else if (e.key === 'Escape') {
+			e.preventDefault();
+			e.stopPropagation();
+			dropdownOpen = false;
+			triggerEl?.focus();
+		}
+	}
+
 	function handleWindowClick(e: MouseEvent) {
 		// On mobile the BottomSheet owns dismissal (backdrop tap + Escape +
 		// close button) — skip this handler so it doesn't race the sheet.
@@ -953,6 +1043,9 @@ handlers — onchange is never called.
 	 */
 	function sameTypedValue(a: unknown, b: unknown): boolean {
 		const norm = (v: unknown) => (v === null || v === undefined ? '' : v);
+		// A multi-select sends an ARRAY, and its echo is a new array: compared by
+		// identity it never matched (IDEA-3223).
+		if (Array.isArray(a) && Array.isArray(b)) return a.length === b.length && a.every((v, i) => v === b[i]);
 		return norm(a) === norm(b);
 	}
 
@@ -1378,6 +1471,10 @@ handlers — onchange is never called.
 		<div class="readonly-display">
 			<span>{value === undefined || value === null ? '—' : JSON.stringify(value)}</span>
 		</div>
+	{:else if field.type === 'multi_select'}
+		<div class="readonly-display">
+			<span>{storedSelection.length ? storedSelection.map(formatLabel).join(', ') : '—'}</span>
+		</div>
 	{:else if isRelation}
 		<div class="readonly-display">{@render relationChips()}</div>
 	{:else}
@@ -1713,13 +1810,72 @@ handlers — onchange is never called.
 	</div>
 
 {:else if field.type === 'multi_select'}
-	<!-- No multi_select editor exists here yet (BUG-3052 unit 2). The text
-	     input this used to fall to wrote a STRING, which the server refuses
-	     for a multi_select, so the values are shown read-only and the hint
-	     says so rather than leaving a dead field. -->
-	<div class="readonly-display" title="Multi-select values can't be edited here yet.">
-		<span>{Array.isArray(value) && value.length ? value.join(', ') : '—'}</span>
-		<span class="mismatch-note">Can't be edited here yet</span>
+	<!-- Multi-select (IDEA-3223). It used to fall to the text input, which
+	     wrote a STRING the server refuses for a multi_select. Each option is a
+	     toggle; the list stays open so several can be set in one visit. -->
+	{#snippet multiOptions()}
+		{#each multiChoices as option, i (option)}
+			<button
+				class="select-option"
+				class:selected={shownSelection.includes(option)}
+				class:focused={i === focusedIndex}
+				type="button"
+				role="option"
+				aria-selected={shownSelection.includes(option)}
+				onclick={() => toggleMultiOption(option)}
+				onmouseenter={() => (focusedIndex = i)}
+			>
+				<span class="multi-check" aria-hidden="true">{shownSelection.includes(option) ? '✓' : ''}</span>
+				{#if getStatusColor(option)}
+					<span class="color-dot" style:background={getStatusColor(option)}></span>
+				{/if}
+				<span>{formatLabel(option)}</span>
+			</button>
+		{/each}
+	{/snippet}
+
+	<div class="select-wrapper">
+		<button
+			bind:this={triggerEl}
+			class="select-trigger"
+			type="button"
+			aria-label={ariaLabel}
+			aria-haspopup="listbox"
+			aria-expanded={dropdownOpen}
+			onclick={toggleDropdown}
+			onkeydown={handleMultiKeydown}
+		>
+			<span class="select-label">
+				{shownSelection.length ? shownSelection.map(formatLabel).join(', ') : '\u2014'}
+			</span>
+			<svg class="select-chevron" width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+				<path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+			</svg>
+		</button>
+
+		{#if viewport.isMobile && dropdownOpen}
+			<BottomSheet
+				open={dropdownOpen}
+				onclose={() => (dropdownOpen = false)}
+				title="Set {field.label.toLowerCase()}"
+			>
+				<div class="select-sheet-body" role="listbox" aria-multiselectable="true" aria-label="{field.label} options" tabindex="-1" onkeydown={handleMultiListKeydown}>
+					{@render multiOptions()}
+				</div>
+			</BottomSheet>
+		{:else if dropdownOpen && multiChoices.length}
+			<div
+				bind:this={dropdownEl}
+				class="select-dropdown"
+				role="listbox"
+				aria-multiselectable="true"
+				aria-label="{field.label} options"
+				tabindex="-1"
+				onkeydown={handleMultiListKeydown}
+			>
+				{@render multiOptions()}
+			</div>
+		{/if}
 	</div>
 
 {:else}
