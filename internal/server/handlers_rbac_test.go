@@ -38,9 +38,9 @@ func setupRBACEnv(t *testing.T) *rbacTestEnv {
 	var ws models.Workspace
 	parseJSON(t, rr, &ws)
 
-	// Register editor user. As a BEARER, not a cookie: a register signs the
-	// new user in and destroys the session named by the cookie it replaces
-	// (BUG-3011), so a cookie-authenticated admin would lose ownerToken here.
+	// Register editor user, as a BEARER admin (the realistic API caller).
+	// An admin-created register mints no session for the new user
+	// (BUG-3232), so each user signs in below with loginUser.
 	rr = doRequestWithBearer(srv, "POST", "/api/v1/auth/register", ownerToken, map[string]string{
 		"email":    "editor@test.com",
 		"name":     "Editor",

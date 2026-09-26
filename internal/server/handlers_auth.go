@@ -619,12 +619,14 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	// leave it false, inheriting the verified default — so a missed branch
 	// fails SAFE (verified), never write-locked.
 	selfServe := false
+	adminCreated := false
 	if invitation == nil {
 		reqUser := currentUser(r)
 		isAdmin := reqUser != nil && reqUser.Role == "admin"
 		switch {
 		case isAdmin:
 			// Admin-created account — stays verified.
+			adminCreated = true
 		case s.cloudMode && s.emailConfigured():
 			selfServe = true
 		default:
@@ -835,6 +837,21 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 				slog.Error("failed to send verification email", "error", err)
 			}
 		})
+	}
+
+	// An admin creating someone else's account is not signing in as them, so
+	// that path mints no session (BUG-3232). It used to: a live session for
+	// the NEW user, its token returned to the admin and, for a cookie caller,
+	// set as the admin's cookie. Nobody held it; the new user signs in on
+	// their own. The invitation and self-serve paths are the new user signing
+	// up, and keep their session.
+	if adminCreated {
+		s.logAuditEventForUser(models.ActionRegister, r, user.ID, auditMeta(map[string]string{"email": user.Email}))
+		s.autoCreateWorkspace(user)
+		writeJSON(w, http.StatusCreated, map[string]interface{}{
+			"user": sessionUserPayload(user),
+		})
+		return
 	}
 
 	token, err := s.createAuthSession(w, r, user, webSessionTTL)
