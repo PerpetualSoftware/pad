@@ -184,6 +184,10 @@ func TestRenameOptionsApplySimultaneously(t *testing.T) {
 		{"chain array", `{"tags":["a","b"]}`, map[string]string{"a": "b", "b": "c"}, `["b","c"]`},
 		{"swap scalar", `{"st":"a"}`, map[string]string{"a": "b", "b": "a"}, `"b"`},
 		{"swap array", `{"tags":["a","b","c"]}`, map[string]string{"a": "b", "b": "a"}, `["b","a","c"]`},
+		// codex r2: an identity entry is not a rename, so b stays and the
+		// renamed a is dropped as a duplicate, as with no b entry at all.
+		{"identity entry array", `{"tags":["a","b"]}`, map[string]string{"a": "b", "b": "b"}, `["b"]`},
+		{"identity entry scalar", `{"st":"b"}`, map[string]string{"a": "b", "b": "b"}, `"b"`},
 	}
 	for _, tc := range cases {
 		it, err := s.CreateItem(ws.ID, c.ID, models.ItemCreate{Title: tc.name, Fields: `{}`})

@@ -128,7 +128,9 @@ func renameArrayElements(raw string, renames map[string]string) (string, []strin
 	present := map[string]bool{}
 	for _, e := range elems {
 		if str, ok := e.(string); ok {
-			if _, mapped := renames[str]; !mapped {
+			// An identity entry (b→b) is not a rename: b stays, so it is
+			// present for the dedupe exactly as an unmapped element is.
+			if newVal, mapped := renames[str]; !mapped || newVal == str {
 				present[str] = true
 			}
 		}
