@@ -17,6 +17,9 @@ var contentDispositionNames = []string{
 	`quo"te.txt`, `back\slash.txt`,
 	"a b.txt", "a​b.txt", "a b.txt",
 	"résumé.pdf", "会議.pdf", "é.txt", "📎 clip.png",
+	// Characters the extended form must itself percent-encode, beside a rune
+	// that forces that form: a bare '%' there would decode as an escape.
+	"50% résumé.txt", "a'b é.txt", "é;x=y.txt",
 }
 
 func TestContentDispositionRoundTripsEveryName(t *testing.T) {

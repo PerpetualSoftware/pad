@@ -11,8 +11,9 @@ import (
 // `filename="name"` alone: byte-identical to the `%q` form every site used,
 // which is the same string for such a name. Any other name gets RFC 6266's
 // two parameters: an ASCII fallback in `filename`, for clients that do not
-// read the extended form, and the exact name in
-// `filename*=UTF-8''<percent-encoding>` (RFC 8187). A client that reads both
+// read the extended form, and the exact name in `filename*` (RFC 8187: the
+// UTF-8 charset, an empty language tag, the percent-encoded bytes). A client
+// that reads both
 // prefers `filename*`; Go's mime.ParseMediaType, which the CLI and both MCP
 // transports use, does exactly that.
 //
