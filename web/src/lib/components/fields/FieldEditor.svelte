@@ -15,7 +15,7 @@ visual language as the editor but with no inputs, dropdowns, or mutation
 handlers — onchange is never called.
 -->
 <script lang="ts">
-	import { onDestroy, tick } from 'svelte';
+	import { onDestroy, tick, untrack } from 'svelte';
 	import { formatItemRef, type FieldDef, type ItemIndexRow, type PaneTarget } from '$lib/types';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import { rawText, readAs } from '$lib/fields/fieldShape';
@@ -203,10 +203,17 @@ handlers — onchange is never called.
 	});
 
 	/**
-	 * What this component is resolving against: the workspace and the field's
-	 * declared target. A held list belongs to ONE of these and to no other.
+	 * What this component is resolving against: the workspace, the ITEM, the
+	 * field and its type, and the field's declared target. A held list belongs to
+	 * ONE of these and to no other. The item and the type joined in TASK-3048:
+	 * two items share workspace + key + target, and a field retyped in place
+	 * (a live schema edit) keeps its key, so without them a reused editor could
+	 * not tell a hold taken for another row, or under another type's value
+	 * rules, from its own.
 	 */
-	let relationIdentity = $derived(`${wsSlug ?? ''}\u0000${field.key}\u0000${field.collection ?? ''}`);
+	let relationIdentity = $derived(
+		`${wsSlug ?? ''}\u0000${itemId ?? ''}\u0000${field.key}\u0000${field.type}\u0000${field.collection ?? ''}`
+	);
 
 	/**
 	 * The list this component last SENT, held until that write is OVER, STAMPED
@@ -358,6 +365,29 @@ handlers — onchange is never called.
 		if (incoming.length === pending.list.length && incoming.every((e, i) => e === pending.list[i])) {
 			pendingRelation = null;
 		}
+	});
+
+	// Discard a hold when the editor is RETARGETED, so X→Y→X does not revive a
+	// hold from before the excursion (TASK-3048). The stamp fence above already
+	// stops a foreign hold being shown or released by agreement; what it left is
+	// a DORMANT hold that comes back to life on the return, over a value that
+	// may have moved meanwhile. The write it protected still settles through its
+	// ticket (`holdOrder`), and its release finds nothing to release.
+	//
+	// The trigger is a real CHANGE of the identity string, compared against the
+	// previous one, never "the effect re-ran": the note on `pendingRelation`
+	// records that clearing from an effect reading the props directly released
+	// holds on ordinary re-renders mid-write. `lastRelationIdentity` is a plain `let` so writing
+	// it does not re-trigger this effect, and the hold is read untracked so a
+	// new hold being armed does not either.
+	let lastRelationIdentity: string | undefined;
+	$effect(() => {
+		const identity = relationIdentity;
+		if (lastRelationIdentity !== undefined && identity !== lastRelationIdentity) {
+			const pending = untrack(() => pendingRelation);
+			if (pending && pending.identity !== identity) pendingRelation = null;
+		}
+		lastRelationIdentity = identity;
 	});
 
 	/**

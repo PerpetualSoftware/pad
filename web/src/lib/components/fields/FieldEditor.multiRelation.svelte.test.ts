@@ -780,13 +780,119 @@ describe('multi_relation — what the round-8 enumeration found in the round-8 f
 		expect(onchange.mock.calls[0][0]).toEqual([RED.id, BLUE.id]);
 
 		// Same instance, different workspace, and the new item's value is the
-		// list the OLD workspace's hold is carrying.
+		// list the OLD workspace's hold is carrying. The new target shows its
+		// own value, and the next edit bases on it.
 		await rerender({ field: multi, wsSlug: 'other-ws', username: 'dave', value: [RED.id, BLUE.id], onchange });
 		await tick();
-		// Back again. The old hold must still be in force — it was never
-		// confirmed by anything.
+		expect(titles()).toEqual(['Red', 'Blue']);
+		await fireEvent.click(buttons(/^\s*Remove\s*$/)[1]);
+		expect(onchange.mock.calls[1][0]).toEqual([RED.id]);
+
+		// Back again. This used to assert the old hold was still in force, "never
+		// confirmed by anything". TASK-3048 ruled the other way: a retarget
+		// DISCARDS a hold, because on the return it would stand over a value
+		// that may have moved meanwhile. The editor shows the prop.
 		await rerender({ ...editable, value: [GREEN.id, RED.id, BLUE.id], onchange });
 		await tick();
+		expect(titles()).toEqual(['Green', 'Red', 'Blue']);
+	});
+});
+
+describe('multi_relation — the hold is ONE item\'s, ONE type\'s, and ends on a retarget (TASK-3048)', () => {
+	const base = { field: multi, wsSlug: 'ws', username: 'dave', itemId: 'item-x' } as const;
+	const titles = () => [...document.querySelectorAll('.relation-title')].map((n) => n.textContent);
+
+	/** A consumer whose writes settle only when the test says so. */
+	function gatedConsumer() {
+		const gates: Array<() => void> = [];
+		const onchange = vi.fn(() => new Promise<void>((resolve) => gates.push(resolve)));
+		return { onchange, gates };
+	}
+	async function settle() {
+		await tick();
+		await tick();
+		await tick();
+	}
+
+	it('X→Y→X by WORKSPACE does not revive the hold from before the excursion', async () => {
+		// The stamp already hid the hold while on Y; the defect was the RETURN:
+		// the dormant hold came back and stood over a value that may have moved.
+		const { onchange } = gatedConsumer();
+		const { rerender } = render(FieldEditor, { props: { ...base, value: [GREEN.id, RED.id, BLUE.id], onchange } });
+		await tick();
+		await fireEvent.click(buttons(/^\s*Remove\s*$/)[0]);
 		expect(titles()).toEqual(['Red', 'Blue']);
+
+		await rerender({ ...base, wsSlug: 'other-ws', value: [BLUE.id], onchange });
+		await tick();
+		await rerender({ ...base, value: [GREEN.id, RED.id, BLUE.id], onchange });
+		await tick();
+
+		expect(titles()).toEqual(['Green', 'Red', 'Blue']);
+		await fireEvent.click(buttons(/^\s*Remove\s*$/)[2]);
+		expect(onchange.mock.calls[1][0]).toEqual([GREEN.id, RED.id]);
+	});
+
+	it('another ITEM in the same workspace neither shows nor bases on the held list', async () => {
+		// Same workspace, key and target: before the item joined the stamp, a
+		// reused editor could not tell this row's hold from the next row's.
+		const { onchange } = gatedConsumer();
+		const { rerender } = render(FieldEditor, { props: { ...base, value: [GREEN.id, RED.id, BLUE.id], onchange } });
+		await tick();
+		await fireEvent.click(buttons(/^\s*Remove\s*$/)[0]);
+
+		await rerender({ ...base, itemId: 'item-y', value: [BLUE.id, GREEN.id], onchange });
+		await tick();
+		expect(titles()).toEqual(['Blue', 'Green']);
+		await fireEvent.click(buttons(/^\s*Remove\s*$/)[0]);
+		expect(onchange.mock.calls[1][0]).toEqual([GREEN.id]);
+	});
+
+	it('a field retyped away and back does not revive a hold taken under the old rules', async () => {
+		const { onchange } = gatedConsumer();
+		const { rerender } = render(FieldEditor, { props: { ...base, value: [GREEN.id, RED.id, BLUE.id], onchange } });
+		await tick();
+		await fireEvent.click(buttons(/^\s*Remove\s*$/)[0]);
+
+		await rerender({ ...base, field: { ...multi, type: 'relation' as never }, value: RED.id, onchange });
+		await tick();
+		await rerender({ ...base, value: [GREEN.id, RED.id, BLUE.id], onchange });
+		await tick();
+		expect(titles()).toEqual(['Green', 'Red', 'Blue']);
+	});
+
+	it('CONTROL: a re-render with the SAME identity keeps the hold', async () => {
+		const { onchange } = gatedConsumer();
+		const { rerender } = render(FieldEditor, { props: { ...base, value: [GREEN.id, RED.id, BLUE.id], onchange } });
+		await tick();
+		await fireEvent.click(buttons(/^\s*Remove\s*$/)[0]);
+
+		await rerender({ ...base, value: [GREEN.id, RED.id, BLUE.id], onchange });
+		await tick();
+		expect(titles()).toEqual(['Red', 'Blue']);
+		await fireEvent.click(buttons(/^\s*Remove\s*$/)[0]);
+		expect(onchange.mock.calls[1][0]).toEqual([BLUE.id]);
+	});
+
+	it('the discarded write still settles, and its settlement cannot release a NEWER hold', async () => {
+		const { onchange, gates } = gatedConsumer();
+		const { rerender } = render(FieldEditor, { props: { ...base, value: [GREEN.id, RED.id, BLUE.id], onchange } });
+		await tick();
+		await fireEvent.click(buttons(/^\s*Remove\s*$/)[0]); // write 1, held
+
+		await rerender({ ...base, itemId: 'item-y', value: [BLUE.id], onchange });
+		await tick();
+		await rerender({ ...base, value: [GREEN.id, RED.id, BLUE.id], onchange });
+		await tick();
+		await fireEvent.click(buttons(/^\s*Remove\s*$/)[2]); // write 2, held: [Green, Red]
+		expect(titles()).toEqual(['Green', 'Red']);
+
+		gates[0](); // the discarded write settles
+		await settle();
+		expect(titles()).toEqual(['Green', 'Red']);
+
+		gates[1]();
+		await settle();
+		expect(titles()).toEqual(['Green', 'Red', 'Blue']);
 	});
 });
