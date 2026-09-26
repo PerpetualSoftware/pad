@@ -141,3 +141,37 @@ describe('date picker opens from a FOCUSED input (BUG-2858)', () => {
 		expect(document.activeElement).toBe(input);
 	});
 });
+
+// BUG-3225: an RFC3339 value, which the server accepts for a date field,
+// rendered "Invalid Date" because a midnight was appended to the WHOLE string.
+describe('a date field holding an RFC3339 timestamp (BUG-3225)', () => {
+	const label = (c: HTMLElement) => c.querySelector('.date-label')?.textContent?.trim();
+	const dateInput = (c: HTMLElement) => c.querySelector('input[type="date"]') as HTMLInputElement;
+
+	it('shows the day as written, and preselects it in the picker', () => {
+		const { container } = render(FieldEditor, {
+			props: { field, value: '2026-09-26T23:30:00-05:00', onchange: vi.fn(), itemId: 'item-A' },
+		});
+		expect(label(container)).toBe('Sep 26, 2026');
+		expect(dateInput(container).value).toBe('2026-09-26');
+	});
+
+	it('read-only shows the same day', () => {
+		const { container } = render(FieldEditor, {
+			props: { field, value: '2026-09-26T10:00:00Z', onchange: vi.fn(), itemId: 'item-A', readonly: true },
+		});
+		expect(container.textContent).toContain('Sep 26, 2026');
+		expect(container.textContent).not.toContain('Invalid Date');
+	});
+
+	it('control: a bare date is unchanged', () => {
+		const { container } = render(FieldEditor, { props: { field, value: '2026-09-26', onchange: vi.fn(), itemId: 'item-A' } });
+		expect(label(container)).toBe('Sep 26, 2026');
+		expect(dateInput(container).value).toBe('2026-09-26');
+	});
+
+	it('a string that is not a date shows as itself, not "Invalid Date"', () => {
+		const { container } = render(FieldEditor, { props: { field, value: 'next week', onchange: vi.fn(), itemId: 'item-A' } });
+		expect(label(container)).toBe('next week');
+	});
+});

@@ -757,13 +757,27 @@ handlers — onchange is never called.
 		dateTriggerEl?.focus();
 	}
 
+	/**
+	 * The calendar day a stored date names, as written: `YYYY-MM-DD` itself, or
+	 * the day part of an RFC3339 timestamp, which the server also accepts for a
+	 * date field (BUG-3225). No timezone conversion: `2026-09-26T23:30:00-05:00`
+	 * names the 26th, the day its writer wrote. `null` when the string does not
+	 * start with a day.
+	 */
+	function dateDay(dateStr: string): string | null {
+		const m = /^(\d{4}-\d{2}-\d{2})(?:$|T)/.exec(dateStr);
+		return m ? m[1] : null;
+	}
+
 	function formatDate(dateStr: string): string {
-		try {
-			const d = new Date(dateStr + 'T00:00:00');
-			return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-		} catch {
-			return dateStr;
-		}
+		// Appending a midnight to the whole string turned every RFC3339 value
+		// into "Invalid Date" (BUG-3225). And `toLocaleDateString` answers
+		// "Invalid Date" rather than throwing, so the old `catch` never ran: an
+		// unparseable string now shows as itself.
+		const day = dateDay(dateStr);
+		const d = day ? new Date(day + 'T00:00:00') : null;
+		if (!d || isNaN(d.getTime())) return dateStr;
+		return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 	}
 
 	// ── Select dropdown state ──────────────────────────────────────────────
@@ -1607,7 +1621,7 @@ handlers — onchange is never called.
 			bind:this={dateInputEl}
 			class="date-hidden-input"
 			type="date"
-			value={value ?? ''}
+			value={value ? (dateDay(value) ?? '') : ''}
 			onchange={handleDateInput}
 			onkeydown={handleDateKeydown}
 			onfocus={() => (dateInputFocused = true)}
