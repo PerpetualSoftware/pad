@@ -391,24 +391,11 @@ JSON decoder does and kept only the last. PostgreSQL refuses it all the same.
 Since BUG-2812 the checks read every occurrence, so such a row is an ordinary
 violation: listed by the scan and fixed by `pad db repair-nul`.
 
-The preflight also asks the destination directly: any value that merely
-*mentions* a NUL escape and is not already a violation is cast on the target
-database before anything moves, and the migration is refused if PostgreSQL
-rejects it. That check is exact in both directions — a document that only
-writes *about* the escape is accepted, as it should be. `pad db scan-nul` lists
-those values under a separate heading, and `pad db repair-nul` leaves them byte
-for byte as they were.
-
-Two things to know about that check:
-
-- **It errs toward refusing.** If the destination cannot be reached, or a listed
-  row cannot be read back, the migration is refused rather than attempted — an
-  unchecked value is not a passed one. Re-run once the destination is reachable.
-- **It can refuse a migration that would have worked.** The check casts the
-  value as it is stored, and one column — a workspace's `settings` — is
-  normalised on the way in, which happens to drop the hidden value. Such a row
-  is still a value Pad refuses to write today, so `pad db repair-nul` clears it
-  and the migration proceeds.
+A value that merely *mentions* a NUL escape, such as a document that writes
+*about* the escape (a doubled backslash before it), is not a violation.
+PostgreSQL accepts it, the scan does not list it, and the preflight does not
+refuse on it. The scan judges the bytes as stored, so this holds for rows any
+earlier release of Pad wrote as well as for new ones.
 
 ### Importing an export that predates the rule
 

@@ -53,22 +53,6 @@ type NULRepairReport struct {
 	Repaired []NULViolation
 	Skipped  []NULRepairSkip
 	Failed   []NULRepairFailure
-
-	// The suspect class (see NULSuspect), kept in its own buckets so the
-	// violation counts still match what `pad db scan-nul` promised.
-	//
-	// SuspectsClean is the common and boring outcome: the value carried a
-	// literal the scanner had no reason to touch.
-	SuspectsRepaired []NULSuspect
-	SuspectsClean    []NULSuspect
-	SuspectsSkipped  []NULSuspect
-	SuspectsFailed   []NULSuspectFailure
-}
-
-// NULSuspectFailure is a suspect the repair tried and could not complete.
-type NULSuspectFailure struct {
-	Suspect NULSuspect
-	Err     error
 }
 
 // RepairNUL rewrites every offending stored value, replacing each NUL with
@@ -161,29 +145,6 @@ func (s *Store) RepairNUL() (*NULRepairReport, error) {
 		}
 	}
 
-	// SUSPECTS, per the day-54 ruling. Most carry only a harmless literal and
-	// come back unchanged; the one shape that matters — a NUL behind a literal
-	// duplicate key — is fixed here and nowhere else, because the predicate
-	// that gates the ordinary repair cannot see it.
-	//
-	// Reported separately from Repaired so the two counts stay honest: the
-	// scan's violation count is what `pad db scan-nul` promised to change, and
-	// folding suspects into it would make the dry run disagree with the run.
-	for _, sus := range scan.Suspects {
-		if sus.KeyIncomplete {
-			report.SuspectsSkipped = append(report.SuspectsSkipped, sus)
-			continue
-		}
-		changed, err := s.RepairSuspectValue(sus)
-		switch {
-		case err != nil:
-			report.SuspectsFailed = append(report.SuspectsFailed, NULSuspectFailure{Suspect: sus, Err: err})
-		case changed:
-			report.SuspectsRepaired = append(report.SuspectsRepaired, sus)
-		default:
-			report.SuspectsClean = append(report.SuspectsClean, sus)
-		}
-	}
 	return report, nil
 }
 
@@ -289,4 +250,16 @@ func nulBearingKey(v NULViolation) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// nulKeyPredicate renders a WHERE clause addressing one row from its key map.
+func nulKeyPredicate(key map[string]string) (string, []any) {
+	keys := sortedKeys(key)
+	clauses := make([]string, 0, len(keys))
+	args := make([]any, 0, len(keys))
+	for _, k := range keys {
+		clauses = append(clauses, quoteIdent(k)+" = ?")
+		args = append(args, key[k])
+	}
+	return strings.Join(clauses, " AND "), args
 }

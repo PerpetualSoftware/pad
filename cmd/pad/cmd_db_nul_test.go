@@ -3,7 +3,6 @@ package main
 import (
 	"database/sql"
 	"errors"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -73,18 +72,13 @@ func TestMigrateToPgPreflightRefusesAndNamesTheRepair(t *testing.T) {
 
 	// CONTROL FIRST: a clean database passes the preflight. Without this, a
 	// preflight that refused everything would satisfy the assertion below.
-	//
-	// A nil destination is the "no oracle" path: this leg is about the
-	// VIOLATION half, which needs no Postgres, and the suspect half has its own
-	// test that does. The function says so in its output rather than skipping
-	// silently.
-	if err := preflightNULForMigration(s, nil, dbPath); err != nil {
+	if err := preflightNULForMigration(s, dbPath); err != nil {
 		t.Fatalf("preflight refused a clean database: %v", err)
 	}
 
 	plantNULInWorkspaceName(t, dbPath, ws.ID, "bad"+textguard.NUL+"name")
 
-	err = preflightNULForMigration(s, nil, dbPath)
+	err = preflightNULForMigration(s, dbPath)
 	if err == nil {
 		t.Fatal("the preflight accepted a database carrying a value PostgreSQL will refuse — the migration " +
 			"would fail partway through the copy, which is the failure this replaces")
@@ -227,20 +221,17 @@ func TestSameFilePathIdentifiesTheServersDatabase(t *testing.T) {
 	}
 }
 
-// TestPreflightAsksTheDestinationAboutSuspects is the day-54 ruling's whole
-// point, end to end: the preflight refuses a row NO CHECK IN PAD CAN SEE,
-// because it asks the database that is about to reject it.
+// TestPreflightRefusesTheShadowedNULAndPassesTheLiteral covers the two values
+// the deleted SUSPECT class was built around, end to end through the preflight
+// (BUG-3220). It used to need a PostgreSQL destination, because the preflight
+// asked it about each suspect. Since BUG-2812 the scan itself sees the shadowed
+// NUL, so neither leg needs one.
 //
-// Both legs matter and they are opposites. The literal-only leg is the
-// over-refusal control — a preflight that refused every suspect would block
+// Both legs matter and they are opposites. The literal leg is the over-refusal
+// control: a preflight that refused every pre-filter match would block
 // migrations over prose that merely writes about this bug, and would pass the
 // refusal leg while doing it.
-func TestPreflightAsksTheDestinationAboutSuspects(t *testing.T) {
-	dsn := os.Getenv("PAD_TEST_POSTGRES_URL")
-	if dsn == "" {
-		t.Skip("the preflight's oracle needs a real PostgreSQL destination (set PAD_TEST_POSTGRES_URL)")
-	}
-
+func TestPreflightRefusesTheShadowedNULAndPassesTheLiteral(t *testing.T) {
 	esc := textguard.EscNUL
 	backslash := esc[:1]
 
@@ -253,7 +244,7 @@ func TestPreflightAsksTheDestinationAboutSuspects(t *testing.T) {
 		}
 		t.Cleanup(func() { s.Close() })
 
-		ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "Suspect"})
+		ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "Preflight"})
 		if err != nil {
 			t.Fatalf("create workspace: %v", err)
 		}
@@ -261,19 +252,9 @@ func TestPreflightAsksTheDestinationAboutSuspects(t *testing.T) {
 		return s, dbPath
 	}
 
-	dst, err := store.NewPostgres(dsn)
-	if err != nil {
-		t.Fatalf("open destination: %v", err)
-	}
-	defer dst.Close()
-
 	t.Run("a NUL behind a repeated key refuses the migration", func(t *testing.T) {
 		src, path := newSource(t, `{"a":"`+esc+`","a":"clean"}`)
 
-		// Since BUG-2812 our own scan sees this value, so it is refused as a
-		// VIOLATION rather than by the destination oracle. The leg keeps its
-		// point, that the preflight refuses the row PostgreSQL would, with its
-		// premise updated: a violation, and not also a suspect.
 		scan, err := src.ScanNUL()
 		if err != nil {
 			t.Fatalf("scan: %v", err)
@@ -281,23 +262,16 @@ func TestPreflightAsksTheDestinationAboutSuspects(t *testing.T) {
 		if scan.Total() != 1 {
 			t.Fatalf("expected the shadowed NUL as one violation, got %v", scan.Violations)
 		}
-		if len(scan.Suspects) != 0 {
-			t.Fatalf("a violation is also listed as a suspect: %v", scan.Suspects)
-		}
 
-		err = preflightNULForMigration(src, dst, path)
+		err = preflightNULForMigration(src, path)
 		if err == nil {
-			t.Fatal("the preflight accepted a value PostgreSQL refuses — this is the row the ruling " +
-				"exists for, and it is invisible to every check Pad makes")
+			t.Fatal("the preflight accepted a value PostgreSQL refuses")
 		}
 		if !strings.Contains(err.Error(), "nothing was migrated") {
 			t.Errorf("the refusal does not say the migration did not start: %v", err)
 		}
-		// THE COUNT, not just the phrase. The first version of this assertion
-		// read only the phrase, and the message shipped saying "0 stored
-		// value(s) carry a NUL; nothing was migrated" — a refusal whose reason
-		// says there was nothing to refuse, because it counted violations while
-		// the listing counted violations plus refused suspects.
+		// THE COUNT, not just the phrase: an earlier version shipped a refusal
+		// whose message counted a different set than its listing.
 		if !strings.HasPrefix(err.Error(), "1 stored value") {
 			t.Errorf("the refusal miscounts what it refused on: %v", err)
 		}
@@ -310,13 +284,11 @@ func TestPreflightAsksTheDestinationAboutSuspects(t *testing.T) {
 		if err != nil {
 			t.Fatalf("scan: %v", err)
 		}
-		if len(scan.Suspects) != 1 {
-			t.Fatalf("expected the literal to be a suspect, got %d", len(scan.Suspects))
+		if scan.Total() != 0 {
+			t.Fatalf("the literal is reported as a violation: %v", scan.Violations)
 		}
-
-		if err := preflightNULForMigration(src, dst, path); err != nil {
-			t.Fatalf("the preflight refused a value PostgreSQL accepts, so every suspect would block a "+
-				"migration: %v", err)
+		if err := preflightNULForMigration(src, path); err != nil {
+			t.Fatalf("the preflight refused a value PostgreSQL accepts: %v", err)
 		}
 	})
 }
@@ -363,11 +335,8 @@ func plantWorkspaceSettings(t *testing.T, dbPath, wsID, blob string) {
 // TestRepairExitStatusCountsBothFailureBuckets pins the exit code.
 //
 // A repair that leaves data unrepaired and exits 0 is invisible: a script sees
-// success, and an operator who trusts the status moves on. The first version
-// checked only the violation bucket, so a failed SUSPECT repair — the shape
-// that needs the most attention, since no other check sees those values —
-// exited cleanly (codex round 5).
-func TestRepairExitStatusCountsBothFailureBuckets(t *testing.T) {
+// success, and an operator who trusts the status moves on (codex round 5).
+func TestRepairExitStatusCountsFailures(t *testing.T) {
 	boom := errors.New("nope")
 
 	cases := []struct {
@@ -388,21 +357,12 @@ func TestRepairExitStatusCountsBothFailureBuckets(t *testing.T) {
 				Failed: []store.NULRepairFailure{{Err: boom}},
 			},
 			wantErr: true,
-			why:     "the case the first version did catch.",
-		},
-		{
-			name: "only a SUSPECT failed",
-			report: store.NULRepairReport{
-				SuspectsFailed: []store.NULSuspectFailure{{Err: boom}},
-			},
-			wantErr: true,
-			why:     "the case it did not. These are the values no other check in Pad can see.",
+			why:     "a failed repair must exit non-zero.",
 		},
 		{
 			name: "skips are not failures",
 			report: store.NULRepairReport{
-				Skipped:       []store.NULRepairSkip{{Reason: "primary key"}},
-				SuspectsClean: []store.NULSuspect{{Table: "items"}},
+				Skipped: []store.NULRepairSkip{{Reason: "primary key"}},
 			},
 			wantErr: false,
 			why: "a deliberate skip is a reported outcome, not an error; exiting non-zero on it would " +
@@ -456,7 +416,7 @@ func TestPreflightIgnoresTablesTheMigrationDoesNotCopy(t *testing.T) {
 		t.Fatal("platform_settings is listed as migrated; pick a table the migration really skips")
 	}
 
-	if err := preflightNULForMigration(s, nil, dbPath); err != nil {
+	if err := preflightNULForMigration(s, dbPath); err != nil {
 		t.Errorf("the preflight blocked a migration over a table it does not copy: %v", err)
 	}
 
@@ -468,7 +428,7 @@ func TestPreflightIgnoresTablesTheMigrationDoesNotCopy(t *testing.T) {
 	}
 	plantNULInWorkspaceName(t, dbPath, ws.ID, "bad"+textguard.NUL+"name")
 
-	if err := preflightNULForMigration(s, nil, dbPath); err == nil {
+	if err := preflightNULForMigration(s, dbPath); err == nil {
 		t.Error("the preflight accepted a NUL in a table the migration DOES copy")
 	}
 }
@@ -514,158 +474,17 @@ func plantPlatformSetting(t *testing.T, dbPath, key, value string) {
 	}
 }
 
-// TestPreflightDoesNotFailClosedOnUnmigratedSuspects is codex round 10, and it
-// is round 9's over-refusal reintroduced through the other path.
-//
-// The fail-closed rule refuses when a suspect cannot be VERIFIED. Applied
-// before the table filter, an unverifiable suspect in a table the migration
-// never copies blocked the copy.
-//
-// It needs a REAL DESTINATION: the fail-closed branch only runs once there is
-// something to ask, so a nil-destination fixture passes whether or not the
-// ordering is right. The first version of this test made exactly that mistake
-// and proved nothing.
-//
-// "Unverifiable" here is a NULL primary key — SQLite permits one in a declared
-// TEXT PRIMARY KEY, which no other engine does — so the row's value genuinely
-// cannot be read back to be cast.
-func TestPreflightDoesNotFailClosedOnUnmigratedSuspects(t *testing.T) {
-	dsn := os.Getenv("PAD_TEST_POSTGRES_URL")
-	if dsn == "" {
-		t.Skip("the fail-closed branch needs a real destination to be reachable at all")
-	}
-
-	dbPath := filepath.Join(t.TempDir(), "src.db")
-	s, err := store.New(dbPath)
-	if err != nil {
-		t.Fatalf("open source: %v", err)
-	}
-	defer s.Close()
-
-	dst, err := store.NewPostgres(dsn)
-	if err != nil {
-		t.Fatalf("open destination: %v", err)
-	}
-	defer dst.Close()
-
-	// activities.metadata is JSON-classed and its table is NOT migrated. The
-	// value is a doubled-backslash literal, which hits the pre-filter without
-	// decoding to a NUL, so it is a SUSPECT. (Until BUG-2812 the fixture was a
-	// NUL behind a repeated key; the scan now reports that as a violation.)
-	plantActivitySuspect(t, dbPath, `{"note":"x`+textguard.EscNUL[:1]+textguard.EscNUL+`y"}`)
-
-	scan, err := s.ScanNUL()
-	if err != nil {
-		t.Fatalf("scan: %v", err)
-	}
-	if scan.Total() != 0 {
-		t.Fatalf("the fixture should be a suspect, not a violation: %v", scan.Violations)
-	}
-	// The premise, asserted so the test cannot pass because the fixture stopped
-	// being unverifiable: the scan sees the row and cannot address it.
-	if len(scan.Suspects) != 1 {
-		t.Fatalf("expected one suspect, got %d", len(scan.Suspects))
-	}
-	if !scan.Suspects[0].KeyIncomplete {
-		t.Fatalf("the fixture is addressable, so it would be verified rather than failing closed: %v",
-			scan.Suspects[0].Key)
-	}
-
-	// The preflight writes its notes to stderr; capture them so the advisory
-	// below is asserted rather than assumed.
-	stderr := os.Stderr
-	r, w, perr := os.Pipe()
-	if perr != nil {
-		t.Fatalf("pipe: %v", perr)
-	}
-	os.Stderr = w
-	err = preflightNULForMigration(s, dst, dbPath)
-	w.Close()
-	os.Stderr = stderr
-	out, _ := io.ReadAll(r)
-
-	if err != nil {
-		t.Errorf("the preflight failed closed over an unverifiable suspect in a table the migration "+
-			"does not copy: %v", err)
-	}
-
-	// AND it says so. Excluding the row from the destination probe must not
-	// turn into dropping it from the output: a comment that claims these are
-	// reported while the code goes quiet is exactly what the first version of
-	// this filter shipped (codex round 11).
-	if !strings.Contains(string(out), "does not copy") {
-		t.Errorf("the suspect was filtered out of the check AND out of the report; an operator sees "+
-			"nothing about it. stderr was:\n%s", out)
-	}
-	// And the ROW is named, not just counted: a bare number makes the operator
-	// run a second command to learn what this one already knew.
-	if !strings.Contains(string(out), "activities.metadata") {
-		t.Errorf("the advisory does not name the affected table.column. stderr was:\n%s", out)
-	}
-}
-
-// plantActivitySuspect writes a suspect value into a non-migrated table.
-func plantActivitySuspect(t *testing.T, dbPath, value string) {
-	t.Helper()
-
-	raw, err := sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(30000)")
-	if err != nil {
-		t.Fatalf("open raw: %v", err)
-	}
-	defer raw.Close()
-
-	if store.MigratedTables()["activities"] {
-		t.Fatal("activities is listed as migrated; pick a table the migration really skips")
-	}
-	// The triggers go first because the row's NULL primary key is itself
-	// something only LEGACY data carries, written before the triggers existed,
-	// which is the population BUG-2810 is about. (When the fixture was a NUL
-	// behind a repeated key, Layer B refused the value too: SQLite's json_tree
-	// walks tokens, and saw the shadowed member before BUG-2812 made the Go
-	// predicate do the same.)
-	rows, err := raw.Query(
-		`SELECT name FROM sqlite_master WHERE type='trigger' AND name GLOB 'pad_nul_activities_metadata_*'`)
-	if err != nil {
-		t.Fatalf("list triggers: %v", err)
-	}
-	var names []string
-	for rows.Next() {
-		var n string
-		if err := rows.Scan(&n); err != nil {
-			rows.Close()
-			t.Fatalf("scan: %v", err)
-		}
-		names = append(names, n)
-	}
-	rows.Close()
-	if len(names) == 0 {
-		t.Fatal("no activities.metadata triggers found; the fixture would prove nothing")
-	}
-	for _, n := range names {
-		if _, derr := raw.Exec(`DROP TRIGGER IF EXISTS "` + n + `"`); derr != nil {
-			t.Fatalf("drop %s: %v", n, derr)
-		}
-	}
-
-	// id NULL, deliberately: SQLite permits a NULL in a declared TEXT PRIMARY
-	// KEY, which is what makes this row unaddressable and therefore
-	// unverifiable. workspace_id is omitted too — an instance-wide row.
-	if _, err := raw.Exec(
-		`INSERT INTO activities (id, action, actor, source, metadata, created_at)
-		 VALUES (NULL, 'created', 'agent', 'cli', ?, datetime('now'))`, value); err != nil {
-		t.Fatalf("plant: %v", err)
-	}
-}
-
 // TestPreflightRefusesInvalidUTF8 is BUG-3222: PostgreSQL refuses a value that
 // is not valid UTF-8 (SQLSTATE 22021), so the preflight refuses on one in a
 // table the migration copies, and reports without blocking one in a table it
 // does not.
 //
-// The last leg is the case BUG-3220 must keep refused after deleting the NUL
-// suspect path: an invalid byte in a JSON value that ALSO carries the escape
-// text as a harmless literal. Before BUG-3222 only the destination cast on
-// suspects caught it, by coincidence.
+// The last leg is the case BUG-3220 had to keep refused when it deleted the
+// NUL suspect path: an invalid byte in a JSON value that ALSO carries the
+// escape text as a harmless literal. Before BUG-3222 only the destination cast
+// on suspects caught it, by coincidence. BUG-3222 (c31fb06c) made it an
+// ordinary violation, so with that cast gone this preflight still refuses it
+// and asks no destination.
 func TestPreflightRefusesInvalidUTF8(t *testing.T) {
 	bad := string([]byte{0x80})
 	backslash := textguard.EscNUL[:1]
@@ -688,7 +507,7 @@ func TestPreflightRefusesInvalidUTF8(t *testing.T) {
 	t.Run("control: valid multibyte text passes", func(t *testing.T) {
 		s, path, wsID := newSource(t)
 		plantNULInWorkspaceName(t, path, wsID, "é"+string(rune(0x4E2D))+string(rune(0x1F600)))
-		if err := preflightNULForMigration(s, nil, path); err != nil {
+		if err := preflightNULForMigration(s, path); err != nil {
 			t.Fatalf("the preflight refused valid UTF-8: %v", err)
 		}
 	})
@@ -696,7 +515,7 @@ func TestPreflightRefusesInvalidUTF8(t *testing.T) {
 	t.Run("invalid UTF-8 in a migrated text column refuses", func(t *testing.T) {
 		s, path, wsID := newSource(t)
 		plantNULInWorkspaceName(t, path, wsID, "bad"+bad+"name")
-		err := preflightNULForMigration(s, nil, path)
+		err := preflightNULForMigration(s, path)
 		if err == nil || !strings.HasPrefix(err.Error(), "1 stored value") || !strings.Contains(err.Error(), "nothing was migrated") {
 			t.Fatalf("want a refusal of exactly one value, got %v", err)
 		}
@@ -712,7 +531,7 @@ func TestPreflightRefusesInvalidUTF8(t *testing.T) {
 		if scan.Total() != 1 {
 			t.Fatalf("the scan should report the row; got %v", scan.Violations)
 		}
-		if err := preflightNULForMigration(s, nil, path); err != nil {
+		if err := preflightNULForMigration(s, path); err != nil {
 			t.Errorf("the preflight blocked on a table it does not copy: %v", err)
 		}
 	})
@@ -727,7 +546,7 @@ func TestPreflightRefusesInvalidUTF8(t *testing.T) {
 		if scan.Total() != 1 || !scan.Violations[0].InvalidUTF8 {
 			t.Fatalf("want one invalid-UTF-8 violation, got %v", scan.Violations)
 		}
-		if err := preflightNULForMigration(s, nil, path); err == nil {
+		if err := preflightNULForMigration(s, path); err == nil {
 			t.Fatal("the preflight let the sliver through")
 		}
 	})
