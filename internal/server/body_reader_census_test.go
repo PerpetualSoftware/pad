@@ -274,7 +274,8 @@ func TestEveryRequestBodyReaderIsAccountedFor(t *testing.T) {
 		"handlers_cloud.go":          "bodyHasCloudSecret PEEKS at the body and restores the first 64 KiB of it — a larger body loses its tail, a bound that file documents and accepts; the real decode still happens through decodeJSON downstream",
 		"middleware_mcp_audit.go":    "audit capture — parses the body ITSELF and binds the decoded method / params.name to mcp_audit_log.tool_name, so it is a second READER, not a pass-through. That the MCP dispatcher decodes the body again is true and says nothing about what this middleware persists — the earlier rationale here made exactly that mistake and certified it safe (codex round 20). parseMCPRequestBody now runs both caller-derived returns through sanitiseStoredText",
 		"handlers_tokens.go":         "guards on r.Body != nil && r.ContentLength != 0, then decodes THROUGH decodeJSON — so the body is read by the chokepoint, which applies the cap and the NUL rule. The earlier reason here said it never reads the body, which was simply false (codex round 29): a wrong reason in this list is the same defect as a missing entry, since both let a reader pass as reviewed",
-		"handlers_oauth.go":          "KNOWN GAP, tracked as BUG-2811: the OAuth handlers read FORM-encoded bodies (r.Form/FormValue), which no rule in this family covers — the transport rules see the query half of r.Form and not the body half. Listed so this test states the gap instead of being blind to it; measuring it needs a fosite-backed fixture.",
+		"handlers_oauth.go":          "the OAuth handlers read FORM-encoded bodies (r.Form/FormValue). Every POST route they serve is wrapped in ValidateFormBody (BUG-2811), which applies bindableText to the body before these reads. The transport rules cover the query half of r.Form; ValidateFormBody covers the body half",
+		"middleware_form_body.go":    "the form-body chokepoint itself: ValidateFormBody reads a form-encoded body up to net/http's own ParseForm cap, checks it with validQueryText, and hands the same bytes (or the same read error) back to the handler (BUG-2811)",
 		"handlers_watches.go":        "guards on r.Body != nil && r.ContentLength != 0, then decodes THROUGH decodeJSON — the closing-round-4 fix for the chunked-body drop; the one reader expression is the nil check itself, and the body bytes flow through the chokepoint",
 		"handlers_item_lease.go":     "guards on r.Body != nil && r.ContentLength != 0, then decodes THROUGH decodeJSON — same shape as handlers_watches.go; the one reader expression is the nil check, and the body (optional holder/ttl_seconds) flows through the chokepoint, so the caller-text holder gets BUG-2803's NUL refusal before it can reach items.lease_holder",
 		"import_read_deadline.go":    "a PASS-THROUGH, not a reader: it replaces r.Body with a wrapper whose Read arms the connection deadline and delegates, byte for byte, to the original body (BUG-3184). Nothing in the file inspects the bytes; the import route's two decoders (decodeJSONWithLimit, and the bundle path's bodyDecodesNUL on pad-export.json) read them afterwards, unchanged",
@@ -293,6 +294,7 @@ func TestEveryRequestBodyReaderIsAccountedFor(t *testing.T) {
 		"handlers_cloud.go::bodyHasCloudSecret::Body":                                2,
 		"handlers_import_bundle.go::Server.handleImportWorkspaceBundle::Body":        3,
 		"handlers_item_lease.go::Server.resolveLeaseRequest::Body":                   1,
+		"middleware_form_body.go::ValidateFormBody::Body":                            6,
 		"handlers_oauth.go::Server.handleOAuthAuthorize::ParseForm":                  1,
 		"handlers_oauth.go::Server.handleOAuthAuthorizeDecide::ParseForm":            1,
 		"handlers_oauth.go::Server.handleOAuthAuthorizeDecide::FormValue":            1,
@@ -443,9 +445,9 @@ func TestEveryRequestHandoffIsClassified(t *testing.T) {
 		"github.com/go-chi/chi/v5.Mux.ServeHTTP":          "dispatch into the router, as above",
 	}
 	// Body readers by delegation: fosite parses the OAuth form body itself.
-	// These are the handlers BUG-2811 tracks (form bodies are not covered by
-	// the BUG-2803 rule), now counted per call site instead of hidden behind
-	// the handler file's own ParseForm calls.
+	// Each POST handler here sits behind ValidateFormBody (BUG-2811), so the
+	// body fosite parses has already been checked; counted per call site
+	// rather than hidden behind the handler file's own ParseForm calls.
 	readers := map[string]int{
 		"handlers_oauth.go::Server.handleOAuthAuthorize::github.com/ory/fosite.OAuth2Provider.NewAuthorizeRequest":       1,
 		"handlers_oauth.go::Server.handleOAuthAuthorizeDecide::github.com/ory/fosite.OAuth2Provider.NewAuthorizeRequest": 1,
