@@ -114,14 +114,21 @@ describe('BUG-3049 — browser item-field writers send a patch, not a blob', () 
 	});
 
 	it('the playbook editor patches the five keys it owns, and clears the slug with null', () => {
+		// The patch is built in $lib/playbooks/editorPatch since BUG-3075, which
+		// sends only the keys the user CHANGED (editorPatch.test.ts pins that). This
+		// guard keeps its question: a patch, never a blob, naming only these keys.
 		const body = functionBody(
 			source('./[username]/[workspace]/playbooks/[slug]/+page.svelte'),
 			'async function save(',
 		);
-		expectPatchOnly(body, 'playbook editor save', ['status', 'trigger', 'scope', 'arguments']);
+		expectPatchOnly(body, 'playbook editor save', ['playbookFieldsPatch(']);
+		const builder = source('../lib/playbooks/editorPatch.ts');
+		for (const key of ['patch.status', 'patch.trigger', 'patch.scope', 'patch.arguments', 'patch.invocation_slug']) {
+			expect(builder, `the editor patch no longer names ${key}`).toContain(key);
+		}
 		// The clear is a null (a patch delete), not a `delete` on a spread blob:
 		// storing "" would hit the unique index.
-		expect(body, 'the invocation_slug clear is no longer a null patch value').toContain(
+		expect(builder, 'the invocation_slug clear is no longer a null patch value').toContain(
 			'invocation_slug = trimmedSlug ? trimmedSlug : null',
 		);
 		// The blob spread is what made this door revert concurrent writes.
