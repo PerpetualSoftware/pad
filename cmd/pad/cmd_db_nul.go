@@ -157,14 +157,13 @@ row.`,
 				return fmt.Errorf("scan: %w", err)
 			}
 			printNULScanReport(os.Stdout, scan, fromPath)
-			if scan.Total() == 0 && len(scan.Suspects) == 0 {
+			if scan.Total() == 0 {
 				return nil
 			}
 
 			if !force {
 				fmt.Fprintf(os.Stderr, "\nThis will rewrite the %d value(s) above, replacing each NUL and each "+
-					"invalid UTF-8 byte sequence with U+FFFD, and inspect %d suspect value(s) — rewriting only those that hide a NUL behind "+
-					"a repeated key.\n", scan.Total(), len(scan.Suspects))
+					"invalid UTF-8 byte sequence with U+FFFD.\n", scan.Total())
 				fmt.Fprintf(os.Stderr, "Run with --force to skip this confirmation, or press Ctrl+C to abort.\n")
 				fmt.Fprintf(os.Stderr, "Continue? [y/N] ")
 				var confirm string
@@ -180,39 +179,17 @@ row.`,
 				return fmt.Errorf("repair: %w", err)
 			}
 
-			// Only printed when there is something to say. A bare
-			// "Repaired 0 value(s)." above a suspect section that DID repair
-			// something reads as a contradiction.
+			// Only printed when there is something to say.
 			if n := len(report.Repaired); n > 0 {
 				fmt.Fprintf(os.Stdout, "\nRepaired %d value(s).\n", n)
 				for _, v := range report.Repaired {
 					fmt.Fprintf(os.Stdout, "  %s\n", v)
 				}
 			}
-			if n := len(report.SuspectsRepaired); n > 0 {
-				fmt.Fprintf(os.Stdout, "\nRepaired %d value(s) from the suspect list — "+
-					"a NUL hidden behind a repeated JSON key:\n", n)
-				for _, sus := range report.SuspectsRepaired {
-					fmt.Fprintf(os.Stdout, "  %s\n", sus)
-				}
-			}
-			if n := len(report.SuspectsClean); n > 0 {
-				fmt.Fprintf(os.Stdout, "\n%d suspect value(s) needed nothing — they mention the escape "+
-					"without using it.\n", n)
-			}
-			if n := len(report.SuspectsSkipped); n > 0 {
-				fmt.Fprintf(os.Stdout, "\n%d suspect value(s) could not be addressed (NULL key column).\n", n)
-			}
 			if len(report.Skipped) > 0 {
 				fmt.Fprintf(os.Stdout, "\nSkipped %d value(s):\n", len(report.Skipped))
 				for _, sk := range report.Skipped {
 					fmt.Fprintf(os.Stdout, "  %s\n    %s\n", sk.Violation, sk.Reason)
-				}
-			}
-			if n := len(report.SuspectsFailed); n > 0 {
-				fmt.Fprintf(os.Stdout, "\nFailed on %d suspect value(s):\n", n)
-				for _, f := range report.SuspectsFailed {
-					fmt.Fprintf(os.Stdout, "  %s\n    %v\n", f.Suspect, f.Err)
 				}
 			}
 			if len(report.Failed) > 0 {
@@ -307,7 +284,6 @@ func printNULScanReport(w io.Writer, report *store.NULScanReport, dbPath string)
 
 	if report.Total() == 0 {
 		fmt.Fprintln(w, "No values carrying a NUL or invalid UTF-8 were found.")
-		printNULSuspects(w, report)
 		return
 	}
 
@@ -335,37 +311,6 @@ func printNULScanReport(w io.Writer, report *store.NULScanReport, dbPath string)
 	for _, v := range report.Violations {
 		fmt.Fprintf(w, "  %s\n", v)
 	}
-
-	printNULSuspects(w, report)
-}
-
-// printNULSuspects renders the suspect class under its own heading.
-//
-// SEPARATE FROM THE VIOLATIONS, deliberately. These are not values Pad refuses
-// — most are ordinary text that merely contains the escape's leading characters
-// — so listing them among the violations would tell an operator their database
-// is more broken than it is. But one shape in the set is fatal to a PostgreSQL
-// migration and invisible to every check Pad makes, and the honest thing is to
-// say so rather than to drop the whole class silently (day-54 lead ruling on
-// PR #1233).
-//
-// The heading names the resolution rather than leaving the operator to guess:
-// migrate-to-pg decides these by asking the destination, and repair-nul fixes
-// the fatal shape without touching the harmless ones.
-func printNULSuspects(w io.Writer, report *store.NULScanReport) {
-	if len(report.Suspects) == 0 {
-		return
-	}
-	fmt.Fprintf(w, "\nAlso found %d value(s) that MENTION a NUL escape without carrying one:\n\n",
-		len(report.Suspects))
-	for _, sus := range report.Suspects {
-		fmt.Fprintf(w, "  %s\n", sus)
-	}
-	fmt.Fprintln(w, "\n  These are almost always harmless — text that writes about the escape rather than")
-	fmt.Fprintln(w, "  using it. They are listed because ONE shape in this set is not: a NUL hidden behind")
-	fmt.Fprintln(w, "  a repeated JSON key, which PostgreSQL refuses and no check here can see.")
-	fmt.Fprintln(w, "  'pad db migrate-to-pg' resolves each one by asking the destination database, and")
-	fmt.Fprintln(w, "  '"+repairNULCommandHint+"' fixes the fatal shape while leaving the rest alone.")
 }
 
 func sortedCountKeys(m map[string]int) []string {
@@ -419,15 +364,15 @@ func resolvePathForCompare(p string) string {
 
 // nulRepairExitError turns a repair report into the command's exit status.
 //
-// BOTH failure buckets count. The first version printed suspect failures and
-// then returned nil, so a repair that left data unrepaired exited 0 — invisible
-// to any script, and to an operator who trusts the status (codex round 5).
+// A failure counts. An earlier version printed failures and then returned nil,
+// so a repair that left data unrepaired exited 0, invisible to any script and
+// to an operator who trusts the status (codex round 5).
 //
 // Extracted so the decision is testable without a database: the bug was in the
 // decision, not in the repair, and a test that needed a fixture to reach it is
 // a test nobody writes.
 func nulRepairExitError(report *store.NULRepairReport) error {
-	n := len(report.Failed) + len(report.SuspectsFailed)
+	n := len(report.Failed)
 	if n == 0 {
 		return nil
 	}

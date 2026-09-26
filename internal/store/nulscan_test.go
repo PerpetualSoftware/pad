@@ -598,24 +598,23 @@ func TestScanNULDetectsEveryRefusedJSONCorpusCase(t *testing.T) {
 	}
 }
 
-// TestScanNULReportsSuspectsSeparately covers the class the day-54 ruling
-// added: pre-filter matches the predicate does not refuse.
+// TestScanNULReportsOnlyViolations covers the two values the deleted SUSPECT
+// class was built around (BUG-3220): pre-filter matches whose meaning the
+// predicate decides.
 //
-// Until BUG-2812 that class had two members no check here could tell apart: a
-// doubled-backslash literal and a NUL hidden behind a repeated key. The token
-// walk now sees the second, so it is an ordinary VIOLATION, and the only
-// suspect left is the literal, which the destination accepts
-// (TestDestinationOracleClassifiesRealPostgresErrors). The suspect path is
-// kept, redundant but correct, until its deletion unit answers whether any
-// value an EARLIER release stored can still be a suspect.
-func TestScanNULReportsSuspectsSeparately(t *testing.T) {
+// Until BUG-2812 no check here could tell them apart: a doubled-backslash
+// literal and a NUL hidden behind a repeated key. The token walk sees the
+// second, so it is an ordinary VIOLATION, and the literal is reported as
+// nothing at all: it is text that writes ABOUT the escape, which every layer
+// and the destination accept.
+func TestScanNULReportsOnlyViolations(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)
 	if s.dialect.Driver() != DriverSQLite {
 		t.Skip("SQLite only")
 	}
 
-	ws := createTestWorkspace(t, s, "SuspectWS")
+	ws := createTestWorkspace(t, s, "ScanOnlyWS")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
 	literal := createTestItem(t, s, ws.ID, col.ID, "literal", "body")
 	shadowed := createTestItem(t, s, ws.ID, col.ID, "shadowed", "body")
@@ -637,52 +636,34 @@ func TestScanNULReportsSuspectsSeparately(t *testing.T) {
 	if err != nil {
 		t.Fatalf("scan: %v", err)
 	}
-
 	if report.Total() != 1 || report.Violations[0].Key["id"] != shadowed.ID {
 		t.Errorf("want exactly the shadowed-duplicate row as a violation, got %v", report.Violations)
 	}
-
-	got := map[string]bool{}
-	for _, sus := range report.Suspects {
-		got[sus.Key["id"]] = true
-		if sus.Table != "items" || sus.Column != "fields" {
-			t.Errorf("unexpected suspect column %s.%s", sus.Table, sus.Column)
-		}
-		if sus.WorkspaceID != ws.ID {
-			t.Errorf("suspect %v has workspace %q, want %q", sus.Key, sus.WorkspaceID, ws.ID)
-		}
-	}
-	if !got[literal.ID] {
-		t.Error("the doubled-backslash literal is not listed as a suspect")
-	}
-	if got[shadowed.ID] {
-		t.Error("the shadowed-duplicate row is a violation and must not also be a suspect")
-	}
-	if got[clean.ID] {
-		t.Error("a value with no escape at all was listed as a suspect; the pre-filter is over-matching")
+	if report.Violations[0].WorkspaceID != ws.ID {
+		t.Errorf("violation workspace = %q, want %q", report.Violations[0].WorkspaceID, ws.ID)
 	}
 }
 
-// TestRepairSuspectFixesOnlyTheFatalShape guards `pad db repair-nul` on the two
-// values the suspect class was built around.
+// TestRepairNULFixesTheShadowedValueAndLeavesTheLiteral guards `pad db
+// repair-nul` on the same two values.
 //
 // Before BUG-2812, `textguard.Repair` left the shadowed-duplicate value
 // untouched (its gate was a map-model question that answered false for exactly
-// this shape), so the suspect path repaired it instead. The token walk made it
-// an ordinary violation, so the ORDINARY repair now fixes it, and the suspect
-// path is left with only the literal, which it must not change.
+// this shape), so a separate suspect repair existed to fix it. The token walk
+// made it an ordinary violation, so the ORDINARY repair fixes it, and that
+// suspect repair was deleted (BUG-3220).
 //
 // The literal leg is the one that would fail a careless fix: a repair broad
 // enough to catch the shadowed value must still leave a value that merely
 // writes ABOUT the escape byte-identical.
-func TestRepairSuspectFixesOnlyTheFatalShape(t *testing.T) {
+func TestRepairNULFixesTheShadowedValueAndLeavesTheLiteral(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)
 	if s.dialect.Driver() != DriverSQLite {
 		t.Skip("SQLite only")
 	}
 
-	ws := createTestWorkspace(t, s, "SuspectRepairWS")
+	ws := createTestWorkspace(t, s, "RepairShadowWS")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
 	literal := createTestItem(t, s, ws.ID, col.ID, "literal", "body")
 	shadowed := createTestItem(t, s, ws.ID, col.ID, "shadowed", "body")
@@ -692,8 +673,8 @@ func TestRepairSuspectFixesOnlyTheFatalShape(t *testing.T) {
 	literalDoc := `{"note":"x` + backslash + esc + `y"}`
 	shadowedDoc := `{"a":"` + esc + `","a":"clean"}`
 
-	// The premise, asserted rather than assumed: the ORDINARY repair now
-	// reaches the shadowed value (BUG-2812).
+	// The premise, asserted rather than assumed: the ORDINARY repair reaches
+	// the shadowed value (BUG-2812).
 	if got := textguard.Repair(shadowedDoc, true); got == shadowedDoc {
 		t.Fatal("textguard.Repair no longer changes the shadowed value; the predicate has lost " +
 			"duplicate-key awareness")
@@ -708,18 +689,11 @@ func TestRepairSuspectFixesOnlyTheFatalShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("repair: %v", err)
 	}
-	if len(report.SuspectsFailed) != 0 {
-		t.Fatalf("suspect failures: %+v", report.SuspectsFailed)
-	}
-	if len(report.SuspectsRepaired) != 0 {
-		t.Fatalf("repaired %d suspects, want 0 (the shadowed row is a violation now): %+v",
-			len(report.SuspectsRepaired), report.SuspectsRepaired)
+	if len(report.Failed) != 0 {
+		t.Fatalf("repair failures: %+v", report.Failed)
 	}
 	if len(report.Repaired) != 1 || report.Repaired[0].Key["id"] != shadowed.ID {
-		t.Fatalf("want the ordinary repair to fix exactly the shadowed row, got %+v", report.Repaired)
-	}
-	if len(report.SuspectsClean) != 1 || report.SuspectsClean[0].Key["id"] != literal.ID {
-		t.Errorf("the literal was not reported as needing nothing: %+v", report.SuspectsClean)
+		t.Fatalf("want the repair to fix exactly the shadowed row, got %+v", report.Repaired)
 	}
 
 	var gotLiteral, gotShadowed string
@@ -745,30 +719,26 @@ func TestRepairSuspectFixesOnlyTheFatalShape(t *testing.T) {
 	}
 }
 
-// TestSuspectsAreOnlyValuesTheDestinationAccepts is what the collapse
-// notification became once BUG-2812 landed (lead ruling, day 80: keep the
-// suspect path, redundant but correct, and delete it as its own unit).
-//
-// It plants every JSON-classed corpus case and asserts the two things that
-// make keeping the path safe: no value every layer must REFUSE is a suspect
-// (so none reaches the destination oracle as a question), and every suspect
-// is a case every layer must ACCEPT, which is the doubled-backslash class the
-// destination accepts (TestDestinationOracleClassifiesRealPostgresErrors).
-//
-// It says nothing about values an earlier release stored. That is the
-// deletion unit's premise to answer, not this test's.
-func TestSuspectsAreOnlyValuesTheDestinationAccepts(t *testing.T) {
+// TestScanNULReportsNoAcceptedCorpusCase is the other direction of
+// TestScanNULDetectsEveryRefusedJSONCorpusCase: a JSON-classed corpus case
+// every layer must ACCEPT is never reported, even though the pre-filter
+// matches the doubled-backslash ones. With the SUSPECT class deleted
+// (BUG-3220), a pre-filter match the predicate clears is dropped, so this is
+// what keeps that drop from swallowing a refused value or reporting an
+// accepted one.
+func TestScanNULReportsNoAcceptedCorpusCase(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)
 	if s.dialect.Driver() != DriverSQLite {
 		t.Skip("SQLite only")
 	}
-	ws := createTestWorkspace(t, s, "SuspectCorpusWS")
+	ws := createTestWorkspace(t, s, "AcceptedCorpusWS")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
 
 	byID := map[string]textguard.Case{}
+	prefiltered := 0
 	for _, c := range textguard.Corpus {
-		if !c.IsJSON {
+		if !c.IsJSON || c.Refused {
 			continue
 		}
 		item := createTestItem(t, s, ws.ID, col.ID, "corpus", "")
@@ -780,25 +750,22 @@ func TestSuspectsAreOnlyValuesTheDestinationAccepts(t *testing.T) {
 		})
 		if stored {
 			byID[item.ID] = c
+			if strings.Contains(c.Value, nulEscapePrefix) {
+				prefiltered++
+			}
 		}
+	}
+	if prefiltered == 0 {
+		t.Fatal("no accepted corpus case carries the escape prefix, so the pre-filter's over-match " +
+			"this test exists for is not being exercised")
 	}
 	report, err := s.ScanNUL()
 	if err != nil {
 		t.Fatalf("scan: %v", err)
 	}
-	suspects := 0
-	for _, sus := range report.Suspects {
-		c, planted := byID[sus.Key["id"]]
-		if !planted {
-			continue
+	for _, v := range report.Violations {
+		if c, planted := byID[v.Key["id"]]; planted {
+			t.Errorf("a value every layer must ACCEPT is reported as a violation: %s", c.Name)
 		}
-		suspects++
-		if c.Refused {
-			t.Errorf("a value every layer must refuse is a SUSPECT, not a violation: %s", c.Name)
-		}
-	}
-	if suspects == 0 {
-		t.Fatal("no corpus case is a suspect; the doubled-backslash class should be, so the premise " +
-			"this test checks is not being exercised")
 	}
 }
