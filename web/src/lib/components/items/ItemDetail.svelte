@@ -4210,6 +4210,10 @@
 				if (switchedAway(reqItem, gen) || !isContentPendingFlush(e)) throw e;
 				const overwrite = await askToOverwritePendingEdits(reqItem.id, gen);
 				if (!overwrite || switchedAway(reqItem, gen)) return null;
+				// Newer typing since this save was armed has its own debounced
+				// save, which asks again; resending this older text would
+				// replace it.
+				if (lastEditorMarkdown !== markdown) return null;
 				return send(true);
 			}).then((sent) => {
 				if (switchedAway(reqItem, gen)) return;
