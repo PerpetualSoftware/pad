@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { safeString, safeText } from '$lib/fields/fieldShape';
 	import { page, navigating } from '$app/state';
 	import { tick, onMount, onDestroy, untrack } from 'svelte';
 	import { api, PadApiError, isUpdateConflictError, type ImportURLResponse } from '$lib/api/client';
@@ -4770,7 +4771,8 @@
 		// first report of a load is ChildItems' initial fetch, which the load's
 		// own GET /progress already answers, so a load issues no extra request.
 		const sig = items
-			.map((i) => `${i.id}:${parseFields(i).status ?? ''}`)
+			// safeText (BUG-3052): `${}` threw on a stored `{"toString":0}`.
+			.map((i) => `${i.id}:${safeText(parseFields(i).status)}`)
 			.sort()
 			.join('|');
 		const sameLoad = childrenSigGen === loadGeneration;
@@ -4804,7 +4806,8 @@
 
 	function formatFieldDisplay(value: any): string {
 		if (value === null || value === undefined || value === '') return '—';
-		return String(value).replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+		// safeText (BUG-3052): String threw on a stored `{"toString":0}`.
+		return safeText(value).replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 	}
 
 	function relationLabel(ref?: string, title?: string, fallback?: string): string {
@@ -5899,7 +5902,7 @@
 					<button
 						type="button"
 						class="source-chip"
-						title={`Source: ${fields.pad_source_url}${fields.pad_imported_at ? `\nImported: ${fields.pad_imported_at}` : ''}`}
+						title={`Source: ${safeString(fields.pad_source_url)}${fields.pad_imported_at ? `\nImported: ${safeString(fields.pad_imported_at)}` : ''}`}
 						disabled={refreshing}
 						onclick={refreshFromSource}
 					>

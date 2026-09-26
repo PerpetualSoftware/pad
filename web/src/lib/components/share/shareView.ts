@@ -17,6 +17,7 @@
 import type { FieldDef } from '$lib/types';
 import { isRelationType, relationValuesOf } from '$lib/items/relationFieldTypes';
 import { UNPARENTED_FILTER_FIELD } from '$lib/collections/unparentedFilter';
+import { safeString, safeText } from '$lib/fields/fieldShape';
 
 // Re-exported so existing/future imports of `UNPARENTED_FILTER_FIELD` from
 // this module keep working — the canonical definition lives in
@@ -244,16 +245,19 @@ export function matchesFilter(item: PublicItem, filter: unknown): boolean {
 	if (typeof f.field !== 'string') return true;
 	if (f.field === UNPARENTED_FILTER_FIELD) return true;
 	const fieldVal = item.fields[f.field];
+	// `safeText` / `safeString`, not `String` (BUG-3052): a stored
+	// `{"toString":0}` made `String` throw, which took the whole shared view
+	// down. Same comparisons, same answers, for every value `String` handled.
 	if (f.op === 'eq') {
-		return String(fieldVal ?? '') === String(f.value ?? '');
+		return safeText(fieldVal) === safeText(f.value);
 	}
 	if (f.op === 'in') {
-		const wanted = Array.isArray(f.value) ? f.value.map((v) => String(v)) : [String(f.value)];
+		const wanted = Array.isArray(f.value) ? f.value.map((v) => safeString(v)) : [safeString(f.value)];
 		// Tags-style array fields: match if any item value is wanted.
 		if (Array.isArray(fieldVal)) {
-			return fieldVal.some((v) => wanted.includes(String(v)));
+			return fieldVal.some((v) => wanted.includes(safeString(v)));
 		}
-		return wanted.includes(String(fieldVal ?? ''));
+		return wanted.includes(safeText(fieldVal));
 	}
 	return true;
 }

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { safeText } from '$lib/fields/fieldShape';
 	import { page } from '$app/state';
 	import { onMount } from 'svelte';
 	import { api, withRequestDeadline } from '$lib/api/client';
@@ -444,9 +445,10 @@
 	});
 
 	function formatFieldValue(value: unknown): string {
-		if (value === null || value === undefined) return '';
-		if (Array.isArray(value)) return value.join(', ');
-		return String(value);
+		// `safeText` (BUG-3052): `join` and `String` threw on a stored
+		// `{"toString":0}`, element or whole, and took the shared page down.
+		if (Array.isArray(value)) return value.map((v) => safeText(v)).join(', ');
+		return safeText(value);
 	}
 
 	function formatFieldLabel(key: string): string {

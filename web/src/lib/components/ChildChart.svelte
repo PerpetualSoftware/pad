@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { safeText } from '$lib/fields/fieldShape';
 	import type { Item } from '$lib/types';
 	import { countedChildren, isChildDone } from '$lib/collections/childProgress';
 	import { collectionStore } from '$lib/stores/collections.svelte';
@@ -14,6 +15,15 @@
 	}
 
 	let { children, startDate, endDate, wsSlug }: Props = $props();
+
+	// The parent's `start_date` / `end_date` are stored field values, typed
+	// `string` here but not guaranteed to be one (BUG-3052). `new Date` threw on a
+	// stored `{"toString":0}`. Only an OBJECT (arrays included) is converted, to
+	// its safe text; every primitive — a date string, an epoch number, even a
+	// boolean — reaches `new Date` untouched, exactly as before.
+	function dateInput(v: unknown): unknown {
+		return typeof v === 'object' && v !== null ? safeText(v) : v;
+	}
 	// Each child by its own collection's done field and terminal/abandoned
 	// values. An abandoned child is not part of the work any more and leaves
 	// the burndown entirely (BUG-3195).
@@ -49,7 +59,7 @@
 		// ── Determine start date ──────────────────────────────────────────
 		let start: Date;
 		if (startDate) {
-			start = new Date(startDate);
+			start = new Date(dateInput(startDate) as string);
 		} else {
 			// Infer: earliest created_at among the counted children
 			let earliest = new Date(counted[0].created_at);
@@ -64,7 +74,7 @@
 		// ── Determine end date ────────────────────────────────────────────
 		let end: Date;
 		if (endDate) {
-			end = new Date(endDate);
+			end = new Date(dateInput(endDate) as string);
 		} else if (allDone && completions.length > 0) {
 			// All counted children done → last completion date
 			end = new Date(completions[completions.length - 1].date);

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { safeText } from '$lib/fields/fieldShape';
 	import { page } from '$app/state';
 	import { ownValue } from '$lib/utils/ownValue';
 	import { goto } from '$app/navigation';
@@ -220,7 +221,9 @@
 			// what it was sorted BY, which is the same value wearing a different hat.
 			const sa = ownValue(STATUS_ORDER, declaredStatusOf(fa)) ?? 1, sb = ownValue(STATUS_ORDER, declaredStatusOf(fb)) ?? 1;
 			if (sa !== sb) return sa - sb;
-			const ta = fa.trigger ?? '', tb = fb.trigger ?? '';
+			// safeText (BUG-3052): a non-string trigger has no localeCompare, and a
+			// `{"toString":0}` one threw inside the sort.
+			const ta = safeText(fa.trigger), tb = safeText(fb.trigger);
 			if (ta !== tb) return ta.localeCompare(tb);
 			return a.title.localeCompare(b.title);
 		});
@@ -584,8 +587,8 @@
 					     schema lands. The card still renders, with its title, trigger
 					     and steps — the affordance is withheld, not the row. -->
 					{@const status = playbooksCollection ? declaredStatus : ''}
-					{@const trigger = fields.trigger ?? 'manual'}
-					{@const scope = fields.scope ?? 'all'}
+					{@const trigger = fields.trigger == null ? 'manual' : safeText(fields.trigger)}
+					{@const scope = fields.scope == null ? 'all' : safeText(fields.scope)}
 					{@const steps = countSteps(item.content)}
 					{@const isExpanded = expandedId === item.id}
 					<div class="card" class:card-draft={status === 'draft'} class:card-deprecated={status === 'deprecated'}>

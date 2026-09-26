@@ -224,3 +224,43 @@ describe('a child status that names an Object.prototype member (BUG-3054)', () =
 		for (const label of labels) expect(label, label).toMatch(/\(1\)$/);
 	});
 });
+
+// BUG-3052 unit 1: a stored status that is not a string. The group heading
+// called `.replace` on it (a number has none) and the lane key template
+// converted it (`{"toString":0}` cannot be converted), so either one threw and
+// the whole children section failed to render.
+describe('a child status that is not a string (BUG-3052)', () => {
+	let target: HTMLElement;
+	let instance: ReturnType<typeof mount> | undefined;
+	const kid = (id: string, fields: string) => ({
+		id, slug: id, title: `Child ${id}`, collection_slug: 'tasks', fields,
+		created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
+	});
+
+	beforeEach(() => {
+		childrenMock.mockClear();
+		childrenMock.mockImplementation(async () => [
+			kid('n', '{"status":5}'),
+			kid('h', '{"status":{"toString":0}}'),
+			kid('o', '{"status":"open"}'),
+		]);
+		target = document.body.appendChild(document.createElement('div'));
+	});
+
+	afterEach(() => {
+		if (instance) unmount(instance);
+		instance = undefined;
+		target.remove();
+		childrenMock.mockImplementation(async () => []);
+	});
+
+	it('renders every child and a heading for each status', async () => {
+		instance = mount(ChildItems, { target, props: { wsSlug: 'ws-1', itemSlug: 'p-1', itemId: 'p-1' } });
+		flushSync();
+		await vi.waitFor(() => expect(target.querySelector('.child-count')).not.toBeNull());
+		flushSync();
+		const text = target.textContent ?? '';
+		for (const id of ['n', 'h', 'o']) expect(text, `child ${id} is rendered`).toContain(`Child ${id}`);
+		expect([...target.querySelectorAll('.group-label')]).toHaveLength(3);
+	});
+});

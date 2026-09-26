@@ -14,6 +14,7 @@
 	import { parseFields, parseSchema, formatItemRef } from '$lib/types';
 	import { collectionsNotStaleFor, categoricalValueFor } from '$lib/collections/categoricalFieldValue';
 	import { laneKey } from '$lib/collections/boardColumns';
+	import { safeText } from '$lib/fields/fieldShape';
 	import { dndzone, TRIGGERS, SHADOW_ITEM_MARKER_PROPERTY_NAME } from 'svelte-dnd-action';
 	import type { DndEvent } from 'svelte-dnd-action';
 	import {
@@ -136,7 +137,12 @@
 	let groups = $derived.by(() => {
 		const map = new SvelteMap<string, Item[]>();
 		for (const child of children) {
-			const status = parseFields(child).status ?? 'open';
+			// `safeText`, not the raw value (BUG-3052): the group key feeds a
+			// heading formatter and a `lane:` key template, both of which threw on a
+			// stored `{"toString":0}`, and an array or object keyed a group by
+			// identity, one group per child.
+			const raw = parseFields(child).status;
+			const status = raw == null ? 'open' : safeText(raw);
 			if (!map.has(status)) map.set(status, []);
 			map.get(status)!.push(child);
 		}
