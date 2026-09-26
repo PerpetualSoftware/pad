@@ -157,10 +157,10 @@
 			} catch (err) {
 				// BUG-3031: nothing was written. The flush above drained THIS tab's
 				// editor, so the pending edits are another session's, and only the
-				// user can decide to discard them. Same fences as the success path:
-				// the question is about this item, asked of this user.
+				// user can decide to discard them. Same fences as the success path,
+				// first: the question is about this item, asked of this user.
+				if (!isSameIdentity()) return;
 				if (isContentPendingFlushError(err)) {
-					if (!isSameIdentity()) return;
 					if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 					pendingEdits = true;
 					return;
