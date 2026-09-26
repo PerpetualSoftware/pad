@@ -23,6 +23,13 @@ import (
 // displaying `B`, so it was REWRITTEN though it links elsewhere, while the real
 // link `[[A\|B]]` was left stale. newTitle is emitted in the escaped form, so
 // the rewritten bracket reads back as newTitle.
+//
+// It TERMINATES whatever the titles are. The matcher reads only the input and
+// the rewrite goes to a separate builder, so inserted text is never
+// re-examined. That was not always so: an earlier version re-scanned its own
+// output, and a new title that re-embedded the old link (`A]] [[A`) grew the
+// string without bound inside the rename transaction (BUG-2785, codex round
+// 2; the termination test pins it).
 func ReplaceTitle(content, oldTitle, newTitle string) string {
 	newLink := "[[" + escapeWikiBody(newTitle) + "]]"
 	var b strings.Builder
@@ -769,37 +776,4 @@ func bracketRewriteAt(content string, position int, targetTitle string, esc Titl
 		return false, "", 0, false
 	}
 	return qualified, displaySuffix, bracketEnd, true
-}
-
-// replaceAll substitutes every occurrence of old with new, scanning the INPUT
-// once rather than re-scanning its own output.
-//
-// The previous implementation looped `find old in result; splice new in` until
-// no match remained — re-searching the string it was building, including the
-// text it had just inserted. When `new` CONTAINS `old` that never terminates
-// and the string grows without bound.
-//
-// Reachable from a user-supplied document title, and measured rather than
-// argued: ReplaceTitle("x [[A]] y", "A", "A]] [[A") builds `[[A]] [[A]]`, which
-// still contains `[[A]]`, and a probe against the old implementation ran for 3s
-// without terminating before being killed. The caller is inside the rename
-// transaction, so the hang holds that transaction open indefinitely on either
-// dialect. On POSTGRES it also holds the workspace rename advisory lock
-// (BUG-2778), blocking every other rename in that workspace behind it; on
-// SQLITE that advisory lock is a no-op and the equivalent damage is the
-// database-wide write lock the transaction already holds under BEGIN IMMEDIATE.
-// Different mechanism, same outcome for everyone else.
-//
-// strings.Replace with n = -1 has the semantics that were actually wanted:
-// non-overlapping, left-to-right, over the input, so inserted text is never
-// re-examined. A title that re-embeds the old token now produces one
-// substitution per original occurrence and stops.
-//
-// Found by Codex round 2 on BUG-2785 while enumerating ways the cascade's retry
-// could fail to terminate. Pre-existing — but folded into that fix rather than
-// filed, because it is three lines against a server hang, and BUG-2785's retry
-// calls this helper again per attempt, which makes it reachable more often than
-// before.
-func replaceAll(s, old, new string) string {
-	return strings.Replace(s, old, new, -1)
 }
