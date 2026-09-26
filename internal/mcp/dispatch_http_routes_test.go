@@ -517,11 +517,12 @@ func TestRoute_ItemSearch(t *testing.T) {
 	}
 }
 
-func TestRoute_ItemSearch_NormalizesCollectionAlias(t *testing.T) {
-	// CLI parity: `pad item search foo --collection task` normalizes
-	// to "tasks" before calling /search. The store's search filter
-	// matches exact c.slug = ?, so the alias would 0-match without
-	// normalization (Codex review #344 round 2 finding).
+func TestRoute_ItemSearch_SendsCollectionAsTyped(t *testing.T) {
+	// BUG-2659: the collection goes on the wire exactly as sent. /search now
+	// resolves the filter itself, exact match first, so `task` reaches a
+	// collection really named `task`; normalising it here to `tasks` was the
+	// shadow. (It used to be normalised because the filter was a literal
+	// slug match that 0-matched shorthand — Codex review #344 round 2.)
 	_, p, _, err := routeTable["item search"](map[string]any{
 		"workspace":  "docapp",
 		"query":      "OAuth",
@@ -531,8 +532,8 @@ func TestRoute_ItemSearch_NormalizesCollectionAlias(t *testing.T) {
 		t.Fatalf("err: %v", err)
 	}
 	values := mustParseQueryFromPath(t, p)
-	if values.Get("collection") != "tasks" {
-		t.Errorf("collection alias not normalized; got %q", values.Get("collection"))
+	if values.Get("collection") != "task" {
+		t.Errorf("collection was rewritten; got %q, want %q", values.Get("collection"), "task")
 	}
 }
 

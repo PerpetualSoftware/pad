@@ -1677,22 +1677,14 @@ func mapItemMove(input map[string]any) (string, string, []byte, error) {
 // in the query string here (not the path) — the search handler is
 // cross-workspace by design.
 //
-// `collection` is normalized via collections.NormalizeSlug before
-// going on the wire. The search store filters with `c.slug = ?` and
-// would 0-match shorthand inputs ("task" instead of "tasks") without
-// this — Codex review #344 round 2 finding.
+// `collection` goes on the wire exactly as the caller sent it. This
+// dispatcher runs in-process against the same build's /search, which
+// resolves the filter itself, exact match first (BUG-2659); normalising
+// here let `tasks` shadow a collection actually named `task`.
 func mapItemSearch(input map[string]any) (string, string, []byte, error) {
 	query, _ := input["query"].(string)
 	if query == "" {
 		return "", "", nil, fmt.Errorf("query is required")
-	}
-	// Normalize the collection input in-place before buildQuery reads
-	// it. We only mutate the local map so the caller's input isn't
-	// affected — but BuildCLIArgs builds a fresh map per call so this
-	// is also safe in production.
-	if coll, ok := input["collection"].(string); ok && coll != "" {
-		input = cloneStringMap(input)
-		input["collection"] = collections.NormalizeSlug(coll)
 	}
 	q := buildQuery(input, map[string]string{
 		"q":          "query",

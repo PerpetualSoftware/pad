@@ -1017,6 +1017,24 @@ const CmdhelpVersion = "0.1"
 //     browser tab and BUG-3000 carries the open half — so no surface
 //     here states a duration.
 //
+//     0.55 — BUG-2659. BEHAVIOR bump, on the v0.36 / v0.40 grounds: the same
+//     `pad_item.action=search` call can now answer from a DIFFERENT
+//     collection. Its `collection` param reaches /search exactly as sent,
+//     and /search resolves it the way the item routes resolve a collection:
+//     exact slug first, then the singular/alias fallback, an archived
+//     collection still claiming its name, once per workspace in scope. The
+//     remote mapper used to normalise it to the canonical plural first, so
+//     in a workspace holding BOTH `task` and `tasks`, `collection: "task"`
+//     answered from `tasks`; it now answers from `task`. In every other
+//     workspace the result is unchanged, because the shorthand still
+//     resolves, now server-side. An unscoped search resolves per workspace,
+//     so one call can read `task` in one workspace and `tasks` in another.
+//     Local stdio reaches the same behaviour through the CLI, which sends
+//     the name as typed only to a server advertising
+//     `search_collection_resolution` in GET /server/capabilities, and
+//     otherwise normalises exactly as before. No name, enum or param shape
+//     changed.
+//
 //     0.54 — BUG-3217. A `fields` number is decoded from the raw request
 //     bytes with its literal kept, on BOTH transports: mcp-go fills the
 //     tool arguments with a plain json.Unmarshal, so 9007199254740993 used
@@ -1617,7 +1635,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.54"
+const ToolSurfaceVersion = "0.55"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

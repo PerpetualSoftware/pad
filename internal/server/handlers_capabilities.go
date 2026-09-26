@@ -35,6 +35,14 @@ type serverCapabilities struct {
 	// time — a duplicate whenever that check was wrong. Always true here; its
 	// absence means "send the legacy full-fields write".
 	ItemFieldAppend bool `json:"item_field_append"`
+
+	// SearchCollectionResolution is true when GET /search resolves its
+	// `collection` filter with the same exact-first resolver, per workspace
+	// in scope (BUG-2659). A client may then send the collection exactly as
+	// the user typed it. Without it, an older build matches the filter as a
+	// literal slug, so a shorthand (`task` for `tasks`) finds nothing and the
+	// client must keep normalising.
+	SearchCollectionResolution bool `json:"search_collection_resolution"`
 }
 
 // WHAT A BUILD THAT CANNOT DECODE A FORMAT ACTUALLY COSTS THE READER
@@ -77,7 +85,7 @@ type serverCapabilities struct {
 // rather than 500-ing — that signals to the editor "uploads still work,
 // but disable transformation tools."
 func (s *Server) handleServerCapabilities(w http.ResponseWriter, r *http.Request) {
-	resp := serverCapabilities{CollectionResolution: true, ItemFieldAppend: true}
+	resp := serverCapabilities{CollectionResolution: true, ItemFieldAppend: true, SearchCollectionResolution: true}
 	if s.imageProcessor != nil {
 		resp.Image = s.imageProcessor.Capabilities()
 	} else {
