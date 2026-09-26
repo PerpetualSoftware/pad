@@ -26,3 +26,6 @@ vite.config.ts.timestamp-*
 /playwright-report
 /test-results
 /e2e/.auth
+
+# Build source stamp written by vite build (TASK-3233); copied into build/.
+/static/build-source.json

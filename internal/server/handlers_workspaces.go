@@ -97,6 +97,9 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		resp["build_time"] = s.buildTime
 	}
 	resp["cloud_mode"] = s.cloudMode
+	if s.webIdentity != nil {
+		resp["web"] = s.webIdentity
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
