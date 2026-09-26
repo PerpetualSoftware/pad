@@ -85,11 +85,13 @@ async function initMermaid() {
  * Render `source` into `target` through the one serialized queue. On a
  * parse failure `onError` decides what the reader sees. The default is the
  * editor's inline "invalid syntax" marker; the share page keeps the code.
+ * `onRendered` runs only once the SVG is in `target`.
  */
 export function queueMermaidRender(
 	source: string,
 	target: HTMLElement,
-	onError: (target: HTMLElement) => void = markInvalid
+	onError: (target: HTMLElement) => void = markInvalid,
+	onRendered?: (target: HTMLElement) => void
 ): void {
 	renderQueue = renderQueue.then(async () => {
 		try {
@@ -106,6 +108,7 @@ export function queueMermaidRender(
 			// A successful render means the source is now valid — drop any
 			// error styling left over from a prior failed render.
 			target.classList.remove('mermaid-error');
+			onRendered?.(target);
 		} catch {
 			onError(target);
 		}

@@ -7,6 +7,7 @@ const mm = vi.hoisted(() => ({
 	initialize: vi.fn(),
 	render: vi.fn(async (_id: string, source: string) => {
 		if (source.includes('INVALID')) throw new Error('parse error');
+		if (source.includes('HANG')) return new Promise<never>(() => {});
 		return { svg: `<svg data-src="${source.trim().split('\n')[0]}"></svg>` };
 	}),
 }));
@@ -68,5 +69,17 @@ describe('share mermaid (C120)', () => {
 			html: block('graph TD\nP-->Q'),
 		});
 		await vi.waitFor(() => expect(container.querySelector('.expansion-content .share-mermaid svg')).not.toBeNull());
+	});
+
+	// Codex round 1: the code used to be hidden up front and restored only on a
+	// rejection, so a render that never settled left the reader nothing.
+	// LAST IN THE FILE, deliberately: the render queue is one module-level
+	// promise chain, so a render that never settles stalls every render queued
+	// after it. That is true of the editor too, and is filed separately.
+	it('a diagram that never finishes drawing leaves the code on screen', async () => {
+		const d = host(block('HANG graph'));
+		renderMermaidBlocks(d);
+		await vi.waitFor(() => expect(mm.render).toHaveBeenCalledWith(expect.any(String), 'HANG graph'));
+		expect(d.querySelector('pre')!.hidden).toBe(false);
 	});
 });

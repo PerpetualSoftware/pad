@@ -8,9 +8,11 @@
  * 'strict'` and the same mode-following palette. It does not load its own,
  * because mermaid's config is one global.
  *
- * The code block stays in the DOM, hidden while the diagram draws. A parse
- * failure, or a failure to load mermaid at all, removes the diagram and shows
- * the code again. The reader always gets one of the two, never neither.
+ * The code block stays VISIBLE until the diagram is actually drawn, and only
+ * then is hidden, so a mermaid that never settles (a stalled import, a
+ * pathological diagram) leaves the reader the code rather than nothing (codex
+ * round 1 on TASK-2248 U2). A parse failure, or a failure to load mermaid at
+ * all, removes the empty diagram. The reader always gets one of the two.
  */
 import type { Attachment } from 'svelte/attachments';
 import { queueMermaidRender } from '$lib/components/editor/mermaidRender';
@@ -28,11 +30,14 @@ export function renderMermaidBlocks(root: ParentNode): void {
 		const diagram = document.createElement('div');
 		diagram.className = 'mermaid-diagram share-mermaid';
 		pre.before(diagram);
-		pre.hidden = true;
-		queueMermaidRender(source, diagram, (target) => {
-			target.remove();
-			pre.hidden = false;
-		});
+		queueMermaidRender(
+			source,
+			diagram,
+			(target) => target.remove(),
+			() => {
+				pre.hidden = true;
+			}
+		);
 	}
 }
 
