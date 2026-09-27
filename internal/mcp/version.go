@@ -1017,6 +1017,30 @@ const CmdhelpVersion = "0.1"
 //     browser tab and BUG-3000 carries the open half — so no surface
 //     here states a duration.
 //
+//     0.56 — BUG-3244. ADDITIVE bump: `content_state` gains a second value,
+//     `superseded_set_aside`, which no write produces. It reaches this
+//     surface everywhere the POST-0.33 entry below says `content_state`
+//     does: `pad_item` get, `pad_item` list with full=true, `pad_playbook`
+//     run, and the line above the body in the
+//     `pad://workspace/{ws}/items/{ref}` resource. It means an editor
+//     schema-version rebuild SET ASIDE edits that items.content never
+//     received: they are kept, but no tab can restore them, so the
+//     `applied_pending_flush` advice (open the item, re-read later) is
+//     wrong for it and the resource line says so. It wins when both would
+//     apply. A consumer that treats any `content_state` as "the body is
+//     stale" stays correct; one that branches on the word must add a case.
+//     The same value makes every content write refuse, token or not, with
+//     the existing `content_pending_flush` code plus an additive
+//     `details.set_aside_rows`; the structured hint branches on it (it
+//     names `pad item set-aside` and `overwrite_pending_edits`, never
+//     opening the item). `overwrite_pending_edits` still lifts it,
+//     discarding the rows, and they are counted in
+//     `warnings.pruned_pending_edits`. Reading or discarding the rows
+//     alone (GET/DELETE collab-set-aside, `pad item set-aside`) is NOT on
+//     this catalog. No name, enum or param shape changed; the bump is
+//     owed because an agent that learned the one-word vocabulary now
+//     meets a word it does not know, whose remedy differs.
+//
 //     0.55 — BUG-2659. BEHAVIOR bump, on the v0.36 / v0.40 grounds: the same
 //     `pad_item.action=search` call can now answer from a DIFFERENT
 //     collection. Its `collection` param reaches /search exactly as sent,
@@ -1635,7 +1659,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.55"
+const ToolSurfaceVersion = "0.56"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a
