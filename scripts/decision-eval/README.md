@@ -34,8 +34,8 @@ credentials by accident.
 
 `eval.py` defaults to `--model jev-latest`, which is what the day-73 A/B run
 used. `jev-latest` moves without notice, so pass the pinned model to compare
-like with like. `eval2.py` has no `--dry-run`: importing it reads the key and
-calls the API.
+like with like. `eval2.py` has no `--dry-run`: its code runs at the top level,
+so running it at all reads the key and makes the API calls.
 
 ## Regenerating the corpora
 

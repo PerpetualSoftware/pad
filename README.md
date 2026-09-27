@@ -608,14 +608,14 @@ pad workspace join <code>
 
 ### Decision provider (optional)
 
-Pad can ask a small classification model typed questions about your items, such as "does this need a human decision?" or "is this blocked?", and use the answers in the dashboard and playbook routing. It is **off by default**, and off is not a degraded mode: with no provider configured, every surface behaves exactly as it does without the feature, no job is queued and nothing is sent anywhere.
+Pad can ask a small classification model typed questions about your items, such as "does this need a human decision?" or "is this blocked?", and use the answers in the dashboard and playbook routing. It is **off by default**, and off is not a degraded mode: with no provider configured, no decision job is queued and nothing is sent anywhere. The dashboard shows only its graph-derived attention entries, the decisions list is empty, and `playbook match` answers `404 decision_provider_unavailable`.
 
 **What uses it**
 - The dashboard's `attention` list gains `needs_human` entries, and a text-derived `blocked` entry for an item the dependency graph has not already flagged. Only answers computed from the item's *current* state count.
 - `pad playbook match -- "<text>"` (`pad_playbook action=match` over MCP) picks the active playbook that free text asks for. It answers `404 decision_provider_unavailable` with no provider, so callers fall back to slug or trigger routing.
 - `GET /workspaces/{ws}/items/{slug}/decisions` lists an item's latest answers.
 
-Answers are computed **asynchronously**. Creating, updating or moving an item, or commenting on it, queues a job, and a server tick makes the provider call, so no write ever waits on the network. Only open items in non-system collections are asked about.
+Answers are computed **asynchronously**. Creating, updating, restoring or moving an item, and creating, editing or deleting a comment on it, queues a job, and a server tick makes the provider call, so no write ever waits on the network. Only open items in non-system collections are asked about: a job owed for a closed item is dropped at the tick without a call.
 
 **Configure** (later sources win, per field): the config file, then the instance-admin setting (**Console → Admin → Settings**), then the environment.
 
@@ -625,9 +625,9 @@ Answers are computed **asynchronously**. Creating, updating or moving an item, o
 | `PAD_TYPESAFE_API_KEY` | `typesafe_api_key` | the provider key: never logged, and write-only on the admin page |
 | `PAD_DECISION_MODEL` | `decision_model` | model pin; defaults to `jev-1.13.0` (a fixed version, so stored answers stay comparable) |
 
-Because the environment overrides the admin setting, `PAD_DECISION_PROVIDER=none` is how an operator turns off a provider an admin enabled. On Pad Cloud, the environment is the only source. `pad server info` shows what the CLI host's config file and environment resolve to.
+Because the environment overrides the admin setting, `PAD_DECISION_PROVIDER=none` is how an operator turns off a provider an admin enabled. On Pad Cloud, the environment is the only source. `pad server info` shows what the CLI host's config file and environment resolve to. It cannot see the admin setting, so it is not the server's full effective configuration.
 
-**What leaves the box.** Enabling it sends item content to `https://api.typesafe.ai/v1/systemone` (typesafe.ai's Jev). For an item question, that is the title, collection slug, field values, the body clipped to 16,000 characters, and the last 10 comments. For `playbook match`, it is the text you asked about plus the active playbooks' refs, titles, summaries and triggers. Nothing is sent until a provider is enabled, and disabling it stops all further calls at once, with no restart.
+**What leaves the box.** Enabling it sends item content to `https://api.typesafe.ai/v1/systemone` (typesafe.ai's Jev). For an item question, that is the title, collection slug, field values, the body clipped to 16,000 characters, and the last 10 comments. For `playbook match`, it is the text you asked about plus the active playbooks' refs, titles, summaries and triggers. Nothing is sent until a provider is enabled. Disabling it takes effect without a restart: no new call starts, though a request already in flight may finish.
 
 ## Architecture
 
