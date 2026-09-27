@@ -88,7 +88,9 @@ test('BUG-2182: a reader gesture during the restore wait wins', async ({ page, f
 		await page.mouse.wheel(0, 100); // the reader's gesture, during the wait
 		release();
 		await expect(ctx.pane.locator('a', { hasText: ctx.titleB }).last()).toBeAttached({ timeout: 10_000 });
-		await page.waitForTimeout(1500); // past the restore cap
+		// Past the restore cap (RESTORE_CAP_MS, 2500 since BUG-3228), so a restore
+		// that ignored the gesture would have landed by now.
+		await page.waitForTimeout(3000);
 		expect(await ctx.scrollTop(), 'the restore overrode the reader').toBeLessThan(ctx.before / 2);
 	} finally {
 		await page.unrouteAll({ behavior: 'ignoreErrors' });
