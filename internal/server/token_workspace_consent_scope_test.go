@@ -1,8 +1,10 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -295,5 +297,65 @@ func TestHandleAuditLog_DeniedForConsentScopedToken(t *testing.T) {
 	// Wildcard consent: allowed.
 	if got := code([]string{"*"}); got != http.StatusOK {
 		t.Errorf("wildcard-consent admin should get the audit log; got %d", got)
+	}
+}
+
+// BUG-3255: PUT /workspaces/reorder is workspace-global too (no {slug}), so the
+// allow-list never reached it and a consent-scoped request re-ordered the
+// user's workspaces outside the app's consent. No production door carries an
+// allow-list to this route today (REST refuses OAuth bearers, and no MCP action
+// maps to it), so this drives the handler with the context MCPBearerAuth would
+// build, as the other tests in this file do.
+func TestHandleReorderWorkspaces_GatedByConsentAllowList(t *testing.T) {
+	srv := testServer(t)
+	user := mustCreateUser(t, srv, "u@test.com", "U", "member")
+	alpha := mustCreateOwnedWorkspace(t, srv, "Alpha", user)
+	beta := mustCreateOwnedWorkspace(t, srv, "Beta", user)
+
+	reorder := func(allow []string, alphaOrder, betaOrder int) {
+		t.Helper()
+		body, _ := json.Marshal([]map[string]any{
+			{"slug": alpha.Slug, "sort_order": alphaOrder},
+			{"slug": beta.Slug, "sort_order": betaOrder},
+		})
+		req := consentScopedRequest("PUT", "/api/v1/workspaces/reorder", user, allow, nil)
+		req.Body = io.NopCloser(bytes.NewReader(body))
+		req.ContentLength = int64(len(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		srv.handleReorderWorkspaces(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+		}
+	}
+	orders := func() (int, int) {
+		t.Helper()
+		wss, err := srv.store.GetUserWorkspaces(user.ID)
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		got := map[string]int{}
+		for _, ws := range wss {
+			got[ws.Slug] = ws.SortOrder
+		}
+		return got[alpha.Slug], got[beta.Slug]
+	}
+
+	// Consent scoped to alpha: alpha moves, beta must not.
+	reorder([]string{alpha.Slug}, 5, 7)
+	if a, b := orders(); a != 5 || b != 0 {
+		t.Fatalf("consent scoped to alpha: sort_order alpha=%d beta=%d, want 5 and 0 (beta is outside the consent)", a, b)
+	}
+
+	// Wildcard consent covers every membership.
+	reorder([]string{"*"}, 3, 4)
+	if a, b := orders(); a != 3 || b != 4 {
+		t.Fatalf("wildcard consent: sort_order alpha=%d beta=%d, want 3 and 4", a, b)
+	}
+
+	// No allow-list (web session / PAT): no gate, as before.
+	reorder(nil, 1, 2)
+	if a, b := orders(); a != 1 || b != 2 {
+		t.Fatalf("no allow-list: sort_order alpha=%d beta=%d, want 1 and 2", a, b)
 	}
 }

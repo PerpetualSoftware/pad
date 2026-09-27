@@ -271,6 +271,14 @@ func (s *Server) handleReorderWorkspaces(w http.ResponseWriter, r *http.Request)
 		if ws == nil {
 			continue
 		}
+		// OAuth consent scoping (BUG-3255): like the list endpoint above, this
+		// route is workspace-global, so RequireWorkspaceAccess never checks the
+		// token allow-list here. Skip a workspace outside it silently, the same
+		// answer an unknown or non-member slug gets, so the response still says
+		// nothing about which slugs exist. No-op for web session / PAT auth.
+		if !tokenAllowedWorkspaceMatches(r.Context(), ws.Slug) {
+			continue
+		}
 		// Skip silently if the user is not a member of this workspace.
 		// UpdateWorkspaceSortOrder is scoped to the caller's own
 		// workspace_members row (WHERE user_id = ? AND workspace_id = ?),
