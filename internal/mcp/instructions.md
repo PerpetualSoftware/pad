@@ -1,6 +1,6 @@
 Pad is a project tracker for developers and AI agents — issues (TASK, BUG), plans (PLAN), ideas (IDEA), docs (DOC), conventions, comments, and dependencies. Use this server when a user mentions:
 
-- Issue refs like `TASK-5`, `BUG-12`, `PLAN-3`, `IDEA-8` — they are stable, human-readable IDs and the canonical way to address items.
+- Issue refs like `TASK-5`, `BUG-12`, `PLAN-3`, `IDEA-8` — they are stable, human-readable IDs and the canonical way to address items. Use them, never slugs; they are what audit trails and PR titles show.
 - Tasks / issues / items / plans / progress / "what's on my plate" / "what to work on next" / standup / changelog / retrospective.
 - Project conventions, decision records, or "how should this team do X."
 
