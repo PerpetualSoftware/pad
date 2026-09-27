@@ -1676,6 +1676,30 @@ const ContentPendingFlushCode = "content_pending_flush"
 const ContentPendingFlushHint = "Re-reading will not clear this: the stored item is unchanged until the open editor saves its edits. " +
 	"Wait for that and re-read, or resend with overwrite_pending_edits=true to replace them."
 
+// ContentSetAsideHint replaces ContentPendingFlushHint when the refusal is
+// about edits a collab schema-version rebuild set aside (BUG-3244,
+// details.set_aside_rows > 0). Waiting and re-reading cannot clear those: no
+// editor will write them back. Duplicated in internal/mcp; a test
+// asserts the two match.
+const ContentSetAsideHint = "Re-reading will not clear this, and neither will waiting or opening the item: these edits were set aside by an editor upgrade and no editor will write them back. " +
+	"Read them with pad item set-aside <ref>, then resend with overwrite_pending_edits=true to discard them."
+
+// ContentSetAsideRows reads details.set_aside_rows from a content_pending_flush
+// refusal: how many set-aside edit rows caused it. Zero when the refusal was
+// about unflushed edits only, or came from a server that predates BUG-3244.
+func (e *APIError) ContentSetAsideRows() int {
+	if e == nil || len(e.Details) == 0 {
+		return 0
+	}
+	var d struct {
+		SetAsideRows int `json:"set_aside_rows"`
+	}
+	if json.Unmarshal(e.Details, &d) != nil {
+		return 0
+	}
+	return d.SetAsideRows
+}
+
 // AsContentPendingFlush reports whether the server refused the write with
 // content_pending_flush.
 func (e *APIError) AsContentPendingFlush() bool {
@@ -1688,11 +1712,15 @@ func (e *APIError) AsContentPendingFlush() bool {
 // out. It deliberately does NOT say "re-read and retry" — re-reading returns
 // the same row and seq, so that loop never ends.
 func WriteContentPendingFlushError(w io.Writer, apiErr *APIError) {
+	hint, remedy := ContentPendingFlushHint, "Pass --overwrite-pending-edits to replace those edits."
+	if apiErr.ContentSetAsideRows() > 0 {
+		hint, remedy = ContentSetAsideHint, "Pass --overwrite-pending-edits to discard those edits."
+	}
 	envelope := map[string]any{
 		"error": map[string]any{
 			"code":    apiErr.Code,
 			"message": apiErr.Message,
-			"hint":    ContentPendingFlushHint,
+			"hint":    hint,
 			"details": apiErr.Details,
 		},
 	}
@@ -1700,7 +1728,7 @@ func WriteContentPendingFlushError(w io.Writer, apiErr *APIError) {
 		fmt.Fprintln(w, StructuredErrorMarker+string(data))
 	}
 	fmt.Fprintln(w, apiErr.Message)
-	fmt.Fprintln(w, "Pass --overwrite-pending-edits to replace those edits.")
+	fmt.Fprintln(w, remedy)
 }
 
 // StoredStateUnreadableCode is the structured error code for "the item's

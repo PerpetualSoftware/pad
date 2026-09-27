@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { Version, Item } from '$lib/types';
 	import { api, isContentPendingFlushError } from '$lib/api/client';
+	import { pendingEditsReason } from '$lib/items/contentWrite';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import DiffView from '$lib/components/versions/DiffView.svelte';
 	import StaleBodyNotice from '$lib/components/common/StaleBodyNotice.svelte';
@@ -49,6 +50,8 @@
 	// another editor session has not saved. The confirm then asks again, naming
 	// what the restore would discard, and a second yes sends the override.
 	let pendingEdits = $state(false);
+	// BUG-3244: the pending edits were set aside by an editor upgrade, not held by a tab.
+	let pendingSetAside = $state(false);
 
 	// The timeline endpoint serves raw reverse-patch text for diff versions
 	// (is_diff), so version.content is unreadable patch data, not real content.
@@ -97,6 +100,7 @@
 		if (!expanded) {
 			confirming = false;
 			pendingEdits = false;
+			pendingSetAside = false;
 		} else {
 			ensureResolved();
 		}
@@ -109,6 +113,7 @@
 	function cancelRestore() {
 		confirming = false;
 		pendingEdits = false;
+		pendingSetAside = false;
 	}
 
 	async function confirmRestore(overwritePendingEdits: boolean) {
@@ -167,6 +172,7 @@
 				if (isContentPendingFlushError(err)) {
 					if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 					pendingEdits = true;
+					pendingSetAside = pendingEditsReason(err) === 'set_aside';
 					return;
 				}
 				throw err;
@@ -175,6 +181,7 @@
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 			confirming = false;
 			pendingEdits = false;
+			pendingSetAside = false;
 			onRestore?.(updatedItem);
 		} finally {
 			restoring = false;
@@ -242,7 +249,9 @@
 					<div class="confirm-prompt">
 						{#if pendingEdits}
 							<span class="confirm-text confirm-warning" role="alert">
-								This item has unsaved edits from another tab or session. Restoring will discard them, and no version will keep them.
+								{pendingSetAside
+									? 'This item has edits from an earlier editor version that are not in its saved body. Restoring will discard them, and no version will keep them.'
+									: 'This item has unsaved edits from another tab or session. Restoring will discard them, and no version will keep them.'}
 							</span>
 						{:else}
 							<span class="confirm-text">Restore to this version?</span>

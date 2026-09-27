@@ -12,11 +12,31 @@
 <Modal open={!!active} onclose={() => pendingEditsDialog.keep()} labelledby="pending-edits-title" maxWidth="500px">
 	{#if active}
 		<div class="modal-header">
-			<h2 id="pending-edits-title">Unsaved edits in an open tab</h2>
+			<h2 id="pending-edits-title">{active.reason === 'set_aside' ? 'Edits from an earlier editor version' : 'Unsaved edits in an open tab'}</h2>
 			<button class="close-btn" type="button" onclick={() => pendingEditsDialog.keep()} aria-label="Close, keeping the tab's edits">&#10005;</button>
 		</div>
 		<div class="modal-body">
-			{#if active.kind === 'excerpt'}
+			{#if active.reason === 'set_aside'}
+				<!-- BUG-3244: these edits are in no body and opening the item will
+				     not store them, so no branch here offers that. -->
+				{#if active.kind === 'excerpt'}
+					<p>
+						This prompt includes an excerpt of <strong>{active.itemRef}</strong>'s body, which is
+						missing edits an editor upgrade set aside. Opening the item will not restore them.
+					</p>
+				{:else if active.kind === 'duplicate'}
+					<p>
+						<strong>{active.itemRef}</strong> has edits from an earlier editor version that are not in
+						its stored body, and opening it will not restore them. A copy holds the stored body,
+						without them. The original keeps them.
+					</p>
+				{:else}
+					<p>
+						<strong>{active.itemRef}</strong> has edits from an earlier editor version that are not in
+						its stored body, and opening it will not restore them. Saving your body would discard them.
+					</p>
+				{/if}
+			{:else if active.kind === 'excerpt'}
 				<p>
 					This prompt includes an excerpt of <strong>{active.itemRef}</strong>'s body, and the stored
 					body is behind edits in an open tab, so the excerpt may be out of date. Open the item so
@@ -37,10 +57,10 @@
 		</div>
 		<div class="modal-footer">
 			<Button variant="secondary" onclick={() => pendingEditsDialog.keep()}>
-				{active.kind === 'save' ? "Keep the tab's edits" : 'Cancel'}
+				{active.kind === 'save' ? (active.reason === 'set_aside' ? 'Keep those edits' : "Keep the tab's edits") : 'Cancel'}
 			</Button>
 			<Button variant="primary" onclick={() => pendingEditsDialog.overwrite()}>
-				{active.kind === 'duplicate' ? 'Copy the stored body' : active.kind === 'excerpt' ? 'Use it anyway' : 'Overwrite them'}
+				{active.kind === 'duplicate' ? 'Copy the stored body' : active.kind === 'excerpt' ? 'Use it anyway' : active.reason === 'set_aside' ? 'Discard them' : 'Overwrite them'}
 			</Button>
 		</div>
 	{/if}

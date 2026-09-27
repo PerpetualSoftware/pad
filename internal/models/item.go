@@ -342,10 +342,13 @@ type Item struct {
 	// whenever the row is current, which is the overwhelmingly common case, so a
 	// consumer that does not know this field sees byte-identical responses.
 	//
-	// It takes the same values as ItemWriteWarnings.ContentOutcome, deliberately:
-	// a caller should have ONE story about where content is, whether it learned it
+	// Its pending value is ItemWriteWarnings.ContentOutcome's, deliberately: a
+	// caller should have ONE story about where content is, whether it learned it
 	// from a write response or from a read. The name differs because a write
 	// warning describes what a REQUEST did, while this describes what the ROW is.
+	// It has a second value no write produces, superseded_set_aside (BUG-3244,
+	// ContentStateSetAside): edits a schema rebuild set aside, which opening the
+	// item does not restore. It wins when both apply; see IsContentStateStale.
 	//
 	// The predicate is "the op-log holds a CONTENT-BEARING row above
 	// items.content_flushed_op_log_id", i.e. the document is ahead of the row.

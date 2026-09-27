@@ -10,9 +10,12 @@
 //     On a MOVE the source is archived. Archiving is a soft delete that leaves
 //     the op-log alone, and the dormant GC keeps unflushed rows, so the edits
 //     are USUALLY still with the archived original. Not always: a workspace
-//     purge deletes them, and so does the schema-mismatch rebuild when the item
-//     is next opened after an editor schema bump (collab manager
-//     maybeRebuildOnSchemaMismatch). So the wording says "may", never "has".
+//     purge deletes them. (An editor schema bump no longer does: since BUG-3244
+//     the rebuild sets them aside, still on the original.) So the wording says
+//     "may", never "has".
+//   - superseded_set_aside (BUG-3244): the source's missing edits were set
+//     aside by an editor upgrade. They stay with the original, and opening it
+//     will not store them, so the wording offers no "open it, then again".
 import type { ItemCopyResult } from '$lib/types';
 
 export interface CopyResultToast {
@@ -33,7 +36,13 @@ export function copyResultToast(result: ItemCopyResult): CopyResultToast {
 	if (notUnique.length > 0) parts[0] += `, without: ${notUnique.map((d) => d.message).join('; ')}`;
 
 	const stale = !!result.warnings.source_content_state;
-	if (stale) {
+	if (stale && result.warnings.source_content_state === 'superseded_set_aside') {
+		parts.push(
+			moved
+				? 'This item has edits from an earlier editor version that are not in its body, so the moved copy does not include them. They stay with the archived original.'
+				: 'This item has edits from an earlier editor version that are not in its body, so the copy does not include them. They stay with the original.',
+		);
+	} else if (stale) {
 		parts.push(
 			moved
 				? 'An open tab had edits to this item that were not saved yet, so the moved copy may be missing them. The archived original may still hold them: restore it and open it, then move it again once they are saved.'

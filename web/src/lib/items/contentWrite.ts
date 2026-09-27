@@ -17,6 +17,7 @@
 import { PadApiError } from '$lib/api/client';
 import type { Item } from '$lib/types';
 import { occTokenFor } from '$lib/items/occToken';
+import type { PendingEditsReason } from '$lib/stores/pendingEditsDialog.svelte';
 
 /**
  * The body half of an update: nothing when the body is unchanged since load,
@@ -65,4 +66,18 @@ export function contentOutcomeNotice(resp: Pick<Item, 'warnings'> | null | undef
 /** The server refused a token-guarded content write because a tab holds unflushed edits. */
 export function isContentPendingFlush(err: unknown): boolean {
 	return err instanceof PadApiError && err.code === 'content_pending_flush';
+}
+
+/**
+ * Why a content_pending_flush refusal happened (BUG-3244): 'set_aside' when the
+ * server counted edits an editor upgrade set aside (details.set_aside_rows),
+ * which no tab will ever store, else 'pending'. Copy that tells the user what to
+ * do branches on it.
+ */
+export function pendingEditsReason(err: unknown): PendingEditsReason {
+	if (err instanceof PadApiError) {
+		const n = err.details?.set_aside_rows;
+		if (typeof n === 'number' && n > 0) return 'set_aside';
+	}
+	return 'pending';
 }

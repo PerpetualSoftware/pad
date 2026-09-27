@@ -162,7 +162,7 @@ func printBootstrapMarkdown(raw []byte) error {
 	fmt.Printf("## Playbooks (%d)\n", len(b.Playbooks))
 	var stalePlaybookSummaries []string
 	for _, p := range b.Playbooks {
-		if p.ContentState == models.ContentOutcomeAppliedPendingFlush {
+		if models.IsContentStateStale(p.ContentState) {
 			stalePlaybookSummaries = append(stalePlaybookSummaries, p.Ref)
 		}
 		invocation := "—"
