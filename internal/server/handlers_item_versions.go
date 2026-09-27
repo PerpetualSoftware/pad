@@ -450,9 +450,10 @@ func (s *Server) handleRestoreItemVersion(w http.ResponseWriter, r *http.Request
 		})
 	}
 
-	// BUG-3230 U2: additive and omitempty, like a content update's. Absent on the
-	// Postgres lost-ack reconcile path, which re-reads the row and cannot know
-	// how many rows its own lost commit deleted.
+	// BUG-3230 U2: additive and omitempty, like a content update's. On the
+	// Postgres lost-ack path the reconcile re-reads the row, and the count the
+	// precheck captured still applies: it was taken inside the transaction that
+	// landed.
 	if prunedPendingEdits > 0 && updated.Warnings == nil {
 		updated.Warnings = &models.ItemWriteWarnings{PrunedPendingEdits: prunedPendingEdits}
 	}
