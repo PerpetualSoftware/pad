@@ -1,6 +1,9 @@
 package models
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Comment represents a comment on an item.
 type Comment struct {
@@ -42,6 +45,28 @@ type Comment struct {
 	// Populated by handlers for threaded views
 	Replies   []Comment  `json:"replies,omitempty"`
 	Reactions []Reaction `json:"reactions,omitempty"`
+}
+
+// IsEdited reports whether the body changed after creation: create stamps
+// created_at and updated_at with one value, and only an edit moves updated_at
+// (reactions live in their own table). Timestamps are second-precision, so an
+// edit inside the creation second is not seen. Same rule as the web timeline's
+// isEdited (TimelineCommentCard.svelte); TASK-2695 brought it to the CLI.
+func (c Comment) IsEdited() bool {
+	return !c.CreatedAt.IsZero() && c.UpdatedAt.After(c.CreatedAt)
+}
+
+// MarshalJSON adds a derived, read-only `edited` (IsEdited) to every
+// serialised comment, so an agent reading JSON on either MCP transport sees
+// the same marker the CLI table and the web timeline show without comparing
+// timestamps itself (TASK-2695). It is not stored and not read back: Comment
+// has no field for it, so a decode ignores it.
+func (c Comment) MarshalJSON() ([]byte, error) {
+	type plain Comment
+	return json.Marshal(struct {
+		plain
+		Edited bool `json:"edited"`
+	}{plain(c), c.IsEdited()})
 }
 
 // CommentCreate is the input for creating a new comment.

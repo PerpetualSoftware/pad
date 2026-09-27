@@ -1651,6 +1651,24 @@ const CmdhelpVersion = "0.1"
 //     this one either, and it is not a promise that the row will catch
 //     up at all.
 //
+//     0.57 — TASK-2695. ADDITIVE bump (the v0.28 / v0.13 disposition): two
+//     `pad_item` actions, `edit-comment` (ref, comment_id, message) and
+//     `delete-comment` (ref, comment_id), and the `comment_id` param. Web
+//     users could edit and delete comments since PLAN-1662; agents could
+//     only append corrections. Both ride new item-scoped routes,
+//     PATCH/DELETE /items/{ref}/comments/{id}, which answer 404 when the
+//     comment is not on `ref`. That check is the server's on every
+//     transport, and the ACL is the workspace route's unchanged: edit is
+//     author-only (a bearer admin gets no bypass, BUG-1919), delete is
+//     anyone who may edit the item. Remote packages a delete's 204 as the
+//     CLI's JSON, `{deleted, ref, comment_id}`. Every serialised comment
+//     (list-comments on all transports, and the API) now carries a derived
+//     `edited` bool, true once the body changed (updated_at > created_at,
+//     the web timeline's rule). That key is new, not a change to an
+//     existing one. Stdio reaches the actions through the new CLI verbs
+//     `pad item comment-edit` / `comment-delete`, which refuse against a
+//     server that does not advertise `item_scoped_comment_writes`.
+//
 //     Post-0.37, deliberately NO bump (BUG-3098): `workspace_member_limit`
 //     joins the structured 403 allow-list, as ErrWorkspaceMemberLimit with
 //     its own hint (not the plan-limit "upgrade" hint). The server emits it
@@ -1659,7 +1677,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.56"
+const ToolSurfaceVersion = "0.57"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

@@ -124,6 +124,8 @@ func itemCmd() *cobra.Command {
 		bulkUpdateCmd(),
 		commentCmd(),
 		commentsCmd(),
+		commentEditCmd(),
+		commentDeleteCmd(),
 		remindCmd(),
 		remindersCmd(),
 		setAsideCmd(),

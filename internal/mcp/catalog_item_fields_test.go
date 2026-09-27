@@ -1710,7 +1710,8 @@ func TestFieldConflictProperty_SourcesDerivedFromTheDeclaredSchema(t *testing.T)
 		"summary": true, "details": true, // action=note
 		"decision": true, "rationale": true, // action=decide
 		"message": true, "reply_to": true, // action=comment
-		"comment": true, // the audit note on update
+		"comment_id": true, // action=edit-comment / delete-comment (TASK-2695): addresses a comment row, never an item field
+		"comment":    true, // the audit note on update
 
 		// action=remind / ack-reminder (IDEA-2641). Neither writes an item
 		// FIELD: a reminder is a row in its own table addressed by its own

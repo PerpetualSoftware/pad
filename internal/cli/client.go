@@ -52,6 +52,7 @@ type serverCapabilityFlags struct {
 	CollectionResolution       bool `json:"collection_resolution"`
 	ItemFieldAppend            bool `json:"item_field_append"`
 	SearchCollectionResolution bool `json:"search_collection_resolution"`
+	ItemScopedCommentWrites    bool `json:"item_scoped_comment_writes"`
 }
 
 func NewClient(host string, port int) *Client {
@@ -782,8 +783,35 @@ func (c *Client) CreateComment(wsSlug, itemSlug string, input models.CommentCrea
 	return &result, wrapItemNotFound(err, itemSlug, wsSlug)
 }
 
-func (c *Client) DeleteComment(wsSlug, commentID string) error {
-	return c.delete("/workspaces/" + wsSlug + "/comments/" + commentID)
+// UpdateComment replaces a comment's body through the item-scoped route
+// (TASK-2695), which refuses a comment that is not on itemRef. The server's
+// not_found is passed through as-is: it already says whether the ITEM or the
+// COMMENT was missing, and wrapItemNotFound would relabel both as the item.
+func (c *Client) UpdateComment(wsSlug, itemRef, commentID, body string) (*models.Comment, error) {
+	var result models.Comment
+	err := c.patch(itemCommentPath(wsSlug, itemRef, commentID), map[string]string{"body": body}, &result)
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// DeleteComment removes a comment through the item-scoped route (TASK-2695).
+func (c *Client) DeleteComment(wsSlug, itemRef, commentID string) error {
+	return c.delete(itemCommentPath(wsSlug, itemRef, commentID))
+}
+
+func itemCommentPath(wsSlug, itemRef, commentID string) string {
+	return "/workspaces/" + wsSlug + "/items/" + url.PathEscape(itemRef) + "/comments/" + url.PathEscape(commentID)
+}
+
+// ServerSupportsItemScopedCommentWrites reports whether this server routes
+// comment PATCH/DELETE under the item (TASK-2695). An indeterminate probe
+// answers false: sending anyway would turn an older server's unrouted 404
+// into a false "comment not found".
+func (c *Client) ServerSupportsItemScopedCommentWrites() bool {
+	caps, definitive := c.serverCapabilities()
+	return definitive && caps.ItemScopedCommentWrites
 }
 
 // --- Dashboard ---

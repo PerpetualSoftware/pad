@@ -49,6 +49,7 @@ func parityFixtureInput() map[string]any {
 		"title":             "test title",
 		"target_collection": "ideas",
 		"message":           "test message",
+		"comment_id":        "c-1",
 		"summary":           "test summary",
 		"decision":          "test decision",
 		"code":              "123456",

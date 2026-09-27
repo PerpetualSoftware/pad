@@ -31,6 +31,8 @@ function mockApi() {
 		comments: {
 			list: vi.fn(async () => []),
 			create: vi.fn(async () => ({ id: 'c-1' })),
+			updateOnItem: vi.fn(async () => ({ id: 'c-1', body: 'fixed', edited: true })),
+			deleteOnItem: vi.fn(async () => undefined),
 		},
 		dashboard: { get: vi.fn(async () => ({ ok: true })) },
 		next: vi.fn(async () => [{ item_slug: 'task-1', item_title: 'Do it', collection: 'tasks', reason: 'high priority' }]),
@@ -104,7 +106,7 @@ const READ = new Set([
 const isReadOnly = (tool: string, action: string): boolean | undefined => {
 	if (READ.has(`${tool}:${action}`)) return true;
 	if (
-		['create', 'update', 'delete', 'import', 'comment', 'link', 'unlink', 'move',
+		['create', 'update', 'delete', 'import', 'comment', 'edit-comment', 'delete-comment', 'link', 'unlink', 'move',
 			'restore', 'star', 'unstar', 'bulk-update', 'activate'].includes(action)
 	)
 		return false;
@@ -357,6 +359,43 @@ describe('dispatch — pad_item writes', () => {
 			'TASK-1',
 			expect.objectContaining({ body: 'looks good', parent_id: 'c-0' }),
 		);
+	});
+
+	// TASK-2695: the item-scoped client methods, so the server refuses a
+	// comment_id that is not on `ref`, as it does for the CLI and /mcp.
+	it('edit-comment maps ref, comment_id and message to the item-scoped update', async () => {
+		const api = mockApi();
+		const res = parse(
+			await run(api, 'pad_item', {
+				action: 'edit-comment',
+				ref: 'TASK-1',
+				comment_id: 'c-1',
+				message: 'fixed',
+			}),
+		);
+		expect(res.isError).toBe(false);
+		expect(api.comments.updateOnItem).toHaveBeenCalledWith(WS, 'TASK-1', 'c-1', { body: 'fixed' });
+	});
+
+	it('edit-comment refuses a missing comment_id or message without calling the api', async () => {
+		const api = mockApi();
+		const noId = parse(await run(api, 'pad_item', { action: 'edit-comment', ref: 'TASK-1', message: 'x' }));
+		const noBody = parse(await run(api, 'pad_item', { action: 'edit-comment', ref: 'TASK-1', comment_id: 'c-1' }));
+		expect(noId.isError).toBe(true);
+		expect(noId.text).toContain("'comment_id'");
+		expect(noBody.isError).toBe(true);
+		expect(noBody.text).toContain("'message'");
+		expect(api.comments.updateOnItem).not.toHaveBeenCalled();
+	});
+
+	it('delete-comment uses the item-scoped delete and returns the CLI-shaped result', async () => {
+		const api = mockApi();
+		const res = parse(
+			await run(api, 'pad_item', { action: 'delete-comment', ref: 'TASK-1', comment_id: 'c-1' }),
+		);
+		expect(res.isError).toBe(false);
+		expect(api.comments.deleteOnItem).toHaveBeenCalledWith(WS, 'TASK-1', 'c-1');
+		expect(JSON.parse(res.text)).toEqual({ deleted: true, ref: 'TASK-1', comment_id: 'c-1' });
 	});
 
 	it('star/unstar map to the right client methods', async () => {

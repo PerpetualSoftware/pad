@@ -3077,6 +3077,98 @@ func commentsCmd() *cobra.Command {
 	}
 }
 
+// errItemScopedCommentWritesUnsupported is returned before sending when the
+// server does not advertise item_scoped_comment_writes (TASK-2695). An older
+// build has no such route, and its bare 404 would read as "comment not found".
+var errItemScopedCommentWritesUnsupported = errors.New("this server does not support editing or deleting comments from the CLI " +
+	"(it does not advertise item_scoped_comment_writes); upgrade the server, or use the web UI")
+
+func commentEditCmd() *cobra.Command {
+	var useStdin bool
+
+	cmd := &cobra.Command{
+		Use:   "comment-edit <ref> <comment-id> [message]",
+		Short: "Replace the body of a comment on an item",
+		Long: `Replace the body of a comment on an item.
+
+Only the comment's author may edit it; an admin may too, but only from a
+browser session. Get comment IDs from "pad item comments <ref>". An edited
+comment is shown with "edited" in that listing.
+
+  pad item comment-edit TASK-5 3f2a... "corrected threshold is 0.7"
+  pad item comment-edit TASK-5 3f2a... --stdin < note.md`,
+		Args: func(cmd *cobra.Command, args []string) error {
+			if useStdin {
+				return cobra.ExactArgs(2)(cmd, args)
+			}
+			return cobra.ExactArgs(3)(cmd, args)
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var body string
+			if useStdin {
+				b, err := readStdinBody("comment edit")
+				if err != nil {
+					return err
+				}
+				body = b
+			} else {
+				body = args[2]
+			}
+
+			client, _ := getClient()
+			ws := getWorkspace()
+			if !client.ServerSupportsItemScopedCommentWrites() {
+				return errItemScopedCommentWritesUnsupported
+			}
+
+			comment, err := client.UpdateComment(ws, args[0], args[1], body)
+			if err != nil {
+				return err
+			}
+
+			if formatFlag == "json" {
+				return cli.PrintJSON(comment)
+			}
+
+			fmt.Printf("Comment %s on %s updated\n", args[1], args[0])
+			return nil
+		},
+	}
+
+	cmd.Flags().BoolVar(&useStdin, "stdin", false, "read the new body from stdin instead of the message argument (a blank read is refused)")
+	return cmd
+}
+
+func commentDeleteCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "comment-delete <ref> <comment-id>",
+		Short: "Delete a comment from an item",
+		Long: `Delete a comment from an item.
+
+Anyone who may edit the item may delete its comments. Get comment IDs from
+"pad item comments <ref>".`,
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			ws := getWorkspace()
+			if !client.ServerSupportsItemScopedCommentWrites() {
+				return errItemScopedCommentWritesUnsupported
+			}
+
+			if err := client.DeleteComment(ws, args[0], args[1]); err != nil {
+				return err
+			}
+
+			if formatFlag == "json" {
+				return cli.PrintJSON(map[string]any{"deleted": true, "ref": args[0], "comment_id": args[1]})
+			}
+
+			fmt.Printf("Comment %s deleted from %s\n", args[1], args[0])
+			return nil
+		},
+	}
+}
+
 // renderCommentsMarkdown is the markdown counterpart of cli.PrintCommentTable.
 // Comments are not tabular — the terminal form prints an attribution line then
 // the body — so the markdown form keeps that shape rather than forcing a table.
@@ -3095,10 +3187,16 @@ func renderCommentsMarkdown(w io.Writer, comments []models.Comment) {
 		if c.Author != "" && c.Author != c.CreatedBy {
 			badge = c.Author + " (" + c.CreatedBy + ")"
 		}
-		fmt.Fprintf(w, "**%s** · %s via %s\n\n",
+		edited := ""
+		if c.IsEdited() {
+			edited = " · edited"
+		}
+		fmt.Fprintf(w, "**%s** · %s via %s%s · id `%s`\n\n",
 			cli.SanitizeMarkdownText(badge),
 			cli.SanitizeMarkdownText(cli.RelativeTime(c.CreatedAt)),
-			cli.SanitizeMarkdownText(c.Source))
+			cli.SanitizeMarkdownText(c.Source),
+			edited,
+			strings.ReplaceAll(c.ID, "`", ""))
 		fmt.Fprintln(w, c.Body)
 		if i < len(comments)-1 {
 			fmt.Fprintln(w)
@@ -4363,8 +4461,11 @@ func readStdinBody(verb string) (string, error) {
 	}
 	if strings.TrimSpace(string(data)) == "" {
 		hint := "pass a body, or drop --stdin"
-		if verb == "update" {
+		switch verb {
+		case "update":
 			hint = "pass a body, or use --clear-content to empty the body on purpose"
+		case "comment edit":
+			hint = "pass a body, or use comment-delete to remove the comment"
 		}
 		return "", fmt.Errorf("--stdin: the body read from stdin is empty or whitespace-only, so the %s was refused and nothing was sent (a lost heredoc looks like this); %s", verb, hint)
 	}
