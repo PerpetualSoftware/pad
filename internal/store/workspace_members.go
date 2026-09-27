@@ -77,8 +77,16 @@ func (s *Store) AddWorkspaceMember(workspaceID, userID, role string, opts ...Min
 }
 
 // RemoveWorkspaceMember removes a user from a workspace.
+//
+// The user's workspace tab goes with it when no grant keeps them in the
+// workspace (TASK-3256).
 func (s *Store) RemoveWorkspaceMember(workspaceID, userID string) error {
-	result, err := s.db.Exec(
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+	result, err := tx.Exec(
 		s.q("DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?"),
 		workspaceID, userID,
 	)
@@ -89,7 +97,10 @@ func (s *Store) RemoveWorkspaceMember(workspaceID, userID string) error {
 	if n == 0 {
 		return sql.ErrNoRows
 	}
-	return nil
+	if err := s.pruneWorkspaceTabIfNoAccessTx(tx, userID, workspaceID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // RemoveWorkspaceMemberAndRevokeGrants atomically removes a user from a workspace
@@ -118,6 +129,9 @@ func (s *Store) RemoveWorkspaceMemberAndRevokeGrants(workspaceID, userID string)
 	n, _ := result.RowsAffected()
 	if n == 0 {
 		return sql.ErrNoRows
+	}
+	if err := s.pruneWorkspaceTabIfNoAccessTx(tx, userID, workspaceID); err != nil {
+		return err
 	}
 
 	return tx.Commit()

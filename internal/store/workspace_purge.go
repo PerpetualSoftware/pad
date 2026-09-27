@@ -219,6 +219,7 @@ var purgeWorkspaceChildDeletes = []struct{ what, query string }{
 	{"share links", `DELETE FROM share_links WHERE workspace_id = ?`},
 	{"oauth connection workspaces", `DELETE FROM oauth_connection_workspaces WHERE workspace_id = ?`},
 	{"user report layouts", `DELETE FROM user_report_layouts WHERE workspace_id = ?`},
+	{"user workspace tabs", `DELETE FROM user_workspace_tabs WHERE workspace_id = ?`},
 	{"workspace members", `DELETE FROM workspace_members WHERE workspace_id = ?`},
 	{"attachments", `DELETE FROM attachments WHERE workspace_id = ?`},
 	{"detach mcp audit log", `UPDATE mcp_audit_log SET workspace_id = NULL WHERE workspace_id = ?`},

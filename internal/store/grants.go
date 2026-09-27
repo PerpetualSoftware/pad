@@ -83,16 +83,30 @@ func (s *Store) ListCollectionGrants(collectionID string) ([]models.CollectionGr
 }
 
 // DeleteCollectionGrant revokes a collection grant by ID, scoped to a workspace.
+//
+// When it was the grantee's last access to the workspace, their workspace
+// tab goes with it (TASK-3256).
 func (s *Store) DeleteCollectionGrant(id, workspaceID string) error {
-	result, err := s.db.Exec(s.q("DELETE FROM collection_grants WHERE id = ? AND workspace_id = ?"), id, workspaceID)
+	tx, err := s.db.Begin()
 	if err != nil {
-		return fmt.Errorf("delete collection grant: %w", err)
+		return fmt.Errorf("delete collection grant: begin: %w", err)
 	}
-	n, _ := result.RowsAffected()
-	if n == 0 {
+	defer tx.Rollback()
+	var userID string
+	err = tx.QueryRow(s.q("SELECT user_id FROM collection_grants WHERE id = ? AND workspace_id = ?"), id, workspaceID).Scan(&userID)
+	if err == sql.ErrNoRows {
 		return sql.ErrNoRows
 	}
-	return nil
+	if err != nil {
+		return fmt.Errorf("delete collection grant: read: %w", err)
+	}
+	if _, err := tx.Exec(s.q("DELETE FROM collection_grants WHERE id = ? AND workspace_id = ?"), id, workspaceID); err != nil {
+		return fmt.Errorf("delete collection grant: %w", err)
+	}
+	if err := s.pruneWorkspaceTabIfNoAccessTx(tx, userID, workspaceID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // --- Item Grants ---
@@ -171,16 +185,30 @@ func (s *Store) ListItemGrants(itemID string) ([]models.ItemGrant, error) {
 }
 
 // DeleteItemGrant revokes an item grant by ID, scoped to a workspace.
+//
+// When it was the grantee's last access to the workspace, their workspace
+// tab goes with it (TASK-3256).
 func (s *Store) DeleteItemGrant(id, workspaceID string) error {
-	result, err := s.db.Exec(s.q("DELETE FROM item_grants WHERE id = ? AND workspace_id = ?"), id, workspaceID)
+	tx, err := s.db.Begin()
 	if err != nil {
-		return fmt.Errorf("delete item grant: %w", err)
+		return fmt.Errorf("delete item grant: begin: %w", err)
 	}
-	n, _ := result.RowsAffected()
-	if n == 0 {
+	defer tx.Rollback()
+	var userID string
+	err = tx.QueryRow(s.q("SELECT user_id FROM item_grants WHERE id = ? AND workspace_id = ?"), id, workspaceID).Scan(&userID)
+	if err == sql.ErrNoRows {
 		return sql.ErrNoRows
 	}
-	return nil
+	if err != nil {
+		return fmt.Errorf("delete item grant: read: %w", err)
+	}
+	if _, err := tx.Exec(s.q("DELETE FROM item_grants WHERE id = ? AND workspace_id = ?"), id, workspaceID); err != nil {
+		return fmt.Errorf("delete item grant: %w", err)
+	}
+	if err := s.pruneWorkspaceTabIfNoAccessTx(tx, userID, workspaceID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // --- Cross-cutting queries ---
@@ -260,16 +288,25 @@ func (s *Store) listUserItemGrants(workspaceID, userID string) ([]models.ItemGra
 
 // RevokeAllUserGrants deletes all collection and item grants for a user in a workspace.
 // Used when removing a member with "revoke all access" option.
+// The user's workspace tab goes too when they are not a member (TASK-3256).
 func (s *Store) RevokeAllUserGrants(workspaceID, userID string) error {
-	_, err := s.db.Exec(s.q("DELETE FROM collection_grants WHERE workspace_id = ? AND user_id = ?"), workspaceID, userID)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("revoke grants: begin: %w", err)
+	}
+	defer tx.Rollback()
+	_, err = tx.Exec(s.q("DELETE FROM collection_grants WHERE workspace_id = ? AND user_id = ?"), workspaceID, userID)
 	if err != nil {
 		return fmt.Errorf("revoke collection grants: %w", err)
 	}
-	_, err = s.db.Exec(s.q("DELETE FROM item_grants WHERE workspace_id = ? AND user_id = ?"), workspaceID, userID)
+	_, err = tx.Exec(s.q("DELETE FROM item_grants WHERE workspace_id = ? AND user_id = ?"), workspaceID, userID)
 	if err != nil {
 		return fmt.Errorf("revoke item grants: %w", err)
 	}
-	return nil
+	if err := s.pruneWorkspaceTabIfNoAccessTx(tx, userID, workspaceID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // ResolveUserPermission resolves the effective permission for a user on a specific

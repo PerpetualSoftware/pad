@@ -963,7 +963,8 @@ func (s *Store) DeleteUser(id string) error {
 //     worth de-identifying (sessions, tokens, memberships, sent invitations,
 //     issued grants, created share links, MCP audit, OAuth connections).
 //   - Cascade: rows the schema already removes/nulls at DELETE FROM users
-//     time — item_stars, user_report_layouts, {collection,item}_grants.user_id
+//     time — item_stars, user_report_layouts, user_workspace_tabs,
+//     {collection,item}_grants.user_id
 //     (ON DELETE CASCADE); items.assigned_user_id and activities.user_id
 //     (ON DELETE SET NULL; activities gained its FK action in migrations
 //     072/050).
@@ -1008,6 +1009,14 @@ func (s *Store) DeleteAccountAtomic(userID string) error {
 		WHERE owner_id = ? AND deleted_at IS NULL
 	`), ts, ts, userID); err != nil {
 		return fmt.Errorf("delete account: delete owned workspaces: %w", err)
+	}
+	// Other users' tabs for those workspaces go with them, as on any soft
+	// delete (TASK-3256). Every owned workspace is soft-deleted by now.
+	if _, err := tx.Exec(s.q(`
+		DELETE FROM user_workspace_tabs
+		WHERE workspace_id IN (SELECT id FROM workspaces WHERE owner_id = ?)
+	`), userID); err != nil {
+		return fmt.Errorf("delete account: delete tabs of owned workspaces: %w", err)
 	}
 
 	// exec runs one cleanup statement keyed on userID, wrapping the error with
