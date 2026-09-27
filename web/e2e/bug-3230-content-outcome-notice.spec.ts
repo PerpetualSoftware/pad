@@ -11,8 +11,9 @@ import type { SuiteFixture } from './fixtures';
  * this page's next read, keeps the old body until that tab saves. The web
  * discarded the warning and reported a plain success.
  *
- * Tab A has the item open and synced, and types NOTHING, so nothing is pending
- * and the save is accepted rather than refused. It then lands in A's document,
+ * Tab A has the item open and synced, types NOTHING, and the leg waits until
+ * the item reads clean (opening seeds A's document, and the seed is pending
+ * until A stamps it), so the save is accepted rather than refused. It then lands in A's document,
  * which is what A's editor showing the new body proves.
  */
 
@@ -26,13 +27,22 @@ async function createItem(fixture: SuiteFixture, request: APIRequestContext, col
 }
 
 /** Tab A: the item open in a synced collab pane (the docs route opens any collection's item). */
-async function openTab(browser: Browser, fixture: SuiteFixture, ref: string): Promise<Locator> {
+async function openTab(browser: Browser, fixture: SuiteFixture, request: APIRequestContext, ref: string, id: string): Promise<Locator> {
 	const a = await browser.newPage();
 	await browserLogin(a);
 	await a.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/docs?item=${ref}`);
 	const editor = a.locator(EDITOR_SELECTOR);
 	await expect(editor).toBeVisible({ timeout: SYNC_TIMEOUT });
 	await expect(a.locator(SYNCED_BADGE_SELECTOR)).toBeVisible({ timeout: SYNC_TIMEOUT });
+	// PRECONDITION: nothing pending. Opening seeds the tab's document, and that
+	// seed is itself unflushed until the tab stamps or flushes it (BUG-3124);
+	// saving before then is refused as pending edits, which is U0's case, not this one.
+	await expect
+		.poll(async () => {
+			const r = await request.get(`/api/v1/workspaces/${fixture.workspaceSlug}/items/${id}`, { headers: authJson(fixture) });
+			return ((await r.json()) as { content_state?: string }).content_state ?? '';
+		}, { timeout: 20_000, message: 'PRECONDITION: the open tab has nothing pending' })
+		.toBe('');
 	return editor;
 }
 
@@ -51,7 +61,7 @@ test.describe('a body saved into an open tab\'s live document says so (BUG-3230 
 		await row.locator('.row-main').click();
 		await row.getByRole('button', { name: 'Edit' }).click();
 
-		const editor = await openTab(browser, fixture, conv.ref);
+		const editor = await openTab(browser, fixture, request, conv.ref, conv.id);
 
 		await row.locator('.edit-textarea').fill('Body typed on the conventions page.');
 		await row.getByRole('button', { name: 'Save' }).click();
@@ -66,7 +76,7 @@ test.describe('a body saved into an open tab\'s live document says so (BUG-3230 
 		await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/playbooks/${pb.slug}`);
 		await expect(page.locator('.title-input')).toHaveValue(title);
 
-		const editor = await openTab(browser, fixture, pb.ref);
+		const editor = await openTab(browser, fixture, request, pb.ref, pb.id);
 
 		await page.locator('textarea').first().fill('Body typed in the playbook editor.');
 		await page.getByRole('button', { name: /^Save/ }).click();
