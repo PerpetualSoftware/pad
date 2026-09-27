@@ -219,10 +219,13 @@ async function dragToLane(page: Page, title: string, lane: string): Promise<Drag
 		const engaged = (await page.locator('#dnd-action-dragged-el').count()) > 0;
 		await page.mouse.up();
 		if (engaged) {
-			// A started drag writes on drop; wait for it rather than a fixed sleep.
+			// A cross-lane drop writes the card's STATUS, and may also write a
+			// neighbour's sort_order. Wait for the status write itself: waiting for
+			// the first write returned on the neighbour's, before the status write
+			// landed (a CI flake on the BUG-3259 pin).
 			await expect
-				.poll(() => writes.length, { timeout: 5_000 })
-				.toBeGreaterThan(0)
+				.poll(() => writes.some((w) => w.includes('"status"')), { timeout: 5_000 })
+				.toBe(true)
 				.catch(() => {});
 		}
 		return { engaged, writes: [...writes] };
