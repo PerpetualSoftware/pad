@@ -67,10 +67,45 @@ function titleWrites(page: Page, method: 'POST' | 'PATCH', urlPart: string) {
 	return seen;
 }
 
+/**
+ * BUG-3234 instrument: CI once found TWO quick-add buttons for one collection.
+ * Can a user see two (the sidebar list rendered the collection twice), or was
+ * it a transient copy only the locator caught (e.g. a drag-and-drop clone)?
+ * On a strict-mode refusal this names every match and where it sits.
+ */
+async function describeQuickAddMatches(page: Page, selector: string) {
+	return page.evaluate((sel) => {
+		const path = (el: Element) => {
+			const parts: string[] = [];
+			for (let n: Element | null = el; n && n !== document.body; n = n.parentElement) {
+				const cls = [...n.classList].filter((c) => !c.startsWith('svelte-')).slice(0, 3).join('.');
+				parts.unshift(`${n.tagName.toLowerCase()}${n.id ? `#${n.id}` : ''}${cls ? `.${cls}` : ''}`);
+			}
+			return parts.join(' > ');
+		};
+		const matches = [...document.querySelectorAll(sel)].map((el, i) => {
+			const r = el.getBoundingClientRect();
+			const section = el.closest('.nav-section');
+			return `  ${i + 1}) in sidebar list: ${!!section}; in drag clone: ${!!el.closest('#dnd-action-dragged-el')}; ` +
+				`rect ${Math.round(r.x)},${Math.round(r.y)} ${Math.round(r.width)}x${Math.round(r.height)}\n     ${path(el)}`;
+		});
+		const hrefs = [...document.querySelectorAll('.nav-section > a.nav-item')].map((a) => a.getAttribute('href'));
+		const repeated = hrefs.filter((h, i) => hrefs.indexOf(h) !== i);
+		return `${matches.length} match(es) now:\n${matches.join('\n')}\n` +
+			`sidebar list: ${hrefs.length} rows, repeated hrefs: ${JSON.stringify(repeated)}`;
+	}, selector);
+}
+
 async function openQuickAdd(page: Page, collName: string) {
-	const add = page.locator(`button.nav-quick-add[title="New ${collName}"]`);
-	await add.hover({ force: true });
-	await add.click({ force: true });
+	const selector = `button.nav-quick-add[title="New ${collName}"]`;
+	const add = page.locator(selector);
+	try {
+		await add.hover({ force: true });
+		await add.click({ force: true });
+	} catch (e) {
+		if (!String(e).includes('strict mode violation')) throw e;
+		throw new Error(`BUG-3234: more than one quick-add button for "${collName}".\n${await describeQuickAddMatches(page, selector)}\n\n${e}`);
+	}
 	const dialog = page.locator('.quick-add-modal');
 	await expect(dialog).toBeVisible();
 	return { dialog, input: dialog.locator('textarea.quick-add-input') };
