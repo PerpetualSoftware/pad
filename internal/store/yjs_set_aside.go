@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -22,14 +23,21 @@ import (
 // non-content-bearing rows cannot change the document (BUG-3124), so neither
 // is kept.
 
+// setAsideBeforeClearHook, when set by a test, runs inside the transaction
+// after the watermark read and before the DELETE: the gap a concurrent append
+// would land in.
+var setAsideBeforeClearHook func()
+
 // SetAsideAndClearOpLog moves the item's unflushed content-bearing op-log rows
 // to the set-aside table and deletes its whole op-log, in one transaction, so
 // a failure leaves the op-log untouched rather than half moved. It returns how
 // many rows were set aside and how many op-log rows were deleted.
 //
-// The caller must hold the per-item collab setup lock, as the rebuild does: a
-// row appended between the copy and the delete would be deleted without being
-// considered.
+// The rows set aside are chosen from the rows the DELETE itself returned, not
+// by a separate read before it. The setup lock the rebuild holds does not stop
+// a connected peer's readLoop appending, and on Postgres (READ COMMITTED) each
+// statement takes its own snapshot, so a row committed between a copy and a
+// delete would be deleted without being considered.
 func (s *Store) SetAsideAndClearOpLog(itemID string) (setAside, cleared int64, err error) {
 	if itemID == "" {
 		return 0, 0, errors.New("SetAsideAndClearOpLog: itemID is required")
@@ -44,30 +52,60 @@ func (s *Store) SetAsideAndClearOpLog(itemID string) (setAside, cleared int64, e
 		}
 	}()
 
-	now := time.Now().UTC().Format(time.RFC3339)
-	res, err := tx.Exec(s.dialect.Rebind(`
-		INSERT INTO item_yjs_updates_set_aside
-			(item_id, op_log_id, update_data, schema_version, created_at, set_aside_at)
-		SELECT u.item_id, u.id, u.update_data, u.schema_version, u.created_at, ?
-		FROM item_yjs_updates u
-		JOIN items i ON i.id = u.item_id
-		WHERE u.item_id = ?
-		  AND u.id > COALESCE(i.content_flushed_op_log_id, 0)
-		  AND u.content_bearing = TRUE
-		ORDER BY u.id`), now, itemID)
-	if err != nil {
-		return 0, 0, fmt.Errorf("set aside op-log (copy): %w", err)
+	// Read before the delete. A flush that advances it afterwards makes this
+	// value low, which keeps a row the body already holds: an extra row to
+	// discard, never a lost one.
+	var watermark int64
+	if err = tx.QueryRow(s.dialect.Rebind(
+		`SELECT COALESCE(content_flushed_op_log_id, 0) FROM items WHERE id = ?`), itemID).Scan(&watermark); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return 0, 0, fmt.Errorf("set aside op-log (watermark): %w", err)
 	}
-	if setAside, err = res.RowsAffected(); err != nil {
-		return 0, 0, fmt.Errorf("set aside op-log (copy count): %w", err)
+	err = nil
+	if setAsideBeforeClearHook != nil {
+		setAsideBeforeClearHook()
 	}
 
-	res, err = tx.Exec(s.dialect.Rebind(`DELETE FROM item_yjs_updates WHERE item_id = ?`), itemID)
+	type deletedRow struct {
+		id             int64
+		data           []byte
+		schemaVersion  string
+		createdAt      any
+		contentBearing bool
+	}
+	rows, err := tx.Query(s.dialect.Rebind(`
+		DELETE FROM item_yjs_updates WHERE item_id = ?
+		RETURNING id, update_data, schema_version, created_at, content_bearing`), itemID)
 	if err != nil {
 		return 0, 0, fmt.Errorf("set aside op-log (clear): %w", err)
 	}
-	if cleared, err = res.RowsAffected(); err != nil {
-		return 0, 0, fmt.Errorf("set aside op-log (clear count): %w", err)
+	var keep []deletedRow
+	for rows.Next() {
+		var r deletedRow
+		if err = rows.Scan(&r.id, &r.data, &r.schemaVersion, &r.createdAt, &r.contentBearing); err != nil {
+			rows.Close()
+			return 0, 0, fmt.Errorf("set aside op-log (clear scan): %w", err)
+		}
+		cleared++
+		if r.contentBearing && r.id > watermark {
+			keep = append(keep, r)
+		}
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return 0, 0, fmt.Errorf("set aside op-log (clear rows): %w", err)
+	}
+	rows.Close()
+	sort.Slice(keep, func(i, j int) bool { return keep[i].id < keep[j].id })
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, r := range keep {
+		if _, err = tx.Exec(s.dialect.Rebind(`
+			INSERT INTO item_yjs_updates_set_aside
+				(item_id, op_log_id, update_data, schema_version, created_at, set_aside_at)
+			VALUES (?, ?, ?, ?, ?, ?)`), itemID, r.id, r.data, r.schemaVersion, r.createdAt, now); err != nil {
+			return 0, 0, fmt.Errorf("set aside op-log (copy): %w", err)
+		}
+		setAside++
 	}
 	if err = tx.Commit(); err != nil {
 		return 0, 0, fmt.Errorf("set aside op-log (commit): %w", err)
