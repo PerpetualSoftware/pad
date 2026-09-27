@@ -2,7 +2,7 @@
 // always with the row's token.
 import { describe, expect, it } from 'vitest';
 import { PadApiError } from '$lib/api/client';
-import { contentWriteFor, isContentPendingFlush, prunedEditsNotice } from './contentWrite';
+import { contentOutcomeNotice, contentWriteFor, isContentPendingFlush, prunedEditsNotice } from './contentWrite';
 
 const row = { content: 'stored body', seq: 7, updated_at: '2026-09-26T05:00:00Z' };
 
@@ -44,5 +44,17 @@ describe('prunedEditsNotice', () => {
 	it('names the count, singular and plural', () => {
 		expect(prunedEditsNotice({ warnings: { pruned_pending_edits: 1 } })).toBe('1 unsaved change from another tab was discarded.');
 		expect(prunedEditsNotice({ warnings: { pruned_pending_edits: 3 } })).toBe('3 unsaved changes from another tab were discarded.');
+	});
+});
+
+// BUG-3230 U3: a body applied to an open tab's live document, reported outside the pane.
+describe('contentOutcomeNotice', () => {
+	it('is null unless the body went to a live document', () => {
+		expect(contentOutcomeNotice(null)).toBeNull();
+		expect(contentOutcomeNotice({})).toBeNull();
+		expect(contentOutcomeNotice({ warnings: { pruned_pending_edits: 2 } })).toBeNull();
+	});
+	it('says where the body went and when it shows here', () => {
+		expect(contentOutcomeNotice({ warnings: { content_outcome: 'applied_pending_flush' } })).toMatch(/open in another tab.*appears here once it saves/);
 	});
 });
