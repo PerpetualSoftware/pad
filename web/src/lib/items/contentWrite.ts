@@ -47,6 +47,20 @@ export function prunedEditsNotice(resp: Pick<Item, 'warnings'> | null | undefine
 	return `${n} unsaved ${n === 1 ? 'change' : 'changes'} from another tab ${n === 1 ? 'was' : 'were'} discarded.`;
 }
 
+/**
+ * The sentence a write owes its user when its body went to a tab's LIVE
+ * document instead of the stored row (BUG-3230 U3):
+ * `warnings.content_outcome: applied_pending_flush` (BUG-2995). The row, and so
+ * this page's next read, keeps the OLD body until that tab saves, which usually
+ * takes seconds but is not guaranteed (BUG-3000). A save outside the item pane
+ * reports it, because nothing on that page shows the live document. Null
+ * otherwise.
+ */
+export function contentOutcomeNotice(resp: Pick<Item, 'warnings'> | null | undefined): string | null {
+	if (resp?.warnings?.content_outcome !== 'applied_pending_flush') return null;
+	return 'The item is open in another tab, so the new body went to that tab and appears here once it saves.';
+}
+
 /** The server refused a token-guarded content write because a tab holds unflushed edits. */
 export function isContentPendingFlush(err: unknown): boolean {
 	return err instanceof PadApiError && err.code === 'content_pending_flush';

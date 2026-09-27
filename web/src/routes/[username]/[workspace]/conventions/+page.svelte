@@ -6,7 +6,7 @@
 	import { parseFields, parseSchema, itemUrlId, formatItemRef } from '$lib/types';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { titleLimitError } from '$lib/items/titleLimit';
-	import { contentWriteFor, isContentPendingFlush, prunedEditsNotice } from '$lib/items/contentWrite';
+	import { contentOutcomeNotice, contentWriteFor, isContentPendingFlush, prunedEditsNotice } from '$lib/items/contentWrite';
 	import { pendingEditsDialog } from '$lib/stores/pendingEditsDialog.svelte';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import { exportAndDownloadArtifact, importArtifactFile } from '$lib/utils/artifacts';
@@ -345,8 +345,9 @@
 			if (idx !== -1) conventions[idx] = updated;
 			conventions = [...conventions];
 			editingSlug = null;
-			// BUG-3230 U2: an overwrite that deleted another tab's edits says so.
-			const discarded = prunedEditsNotice(updated);
+			// BUG-3230 U2: an overwrite that deleted another tab's edits says so;
+			// U3: a body applied to an open tab's live document says so.
+			const discarded = prunedEditsNotice(updated) ?? contentOutcomeNotice(updated);
 			if (discarded) toastStore.show(`Convention updated. ${discarded}`, 'info');
 			else toastStore.show('Convention updated', 'success');
 		} catch (err) {
