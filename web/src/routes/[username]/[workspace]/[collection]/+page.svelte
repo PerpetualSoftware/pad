@@ -543,6 +543,12 @@
 	// would see them and get a 403 per click (TASK-1672 / Codex round 3).
 	// The single `+` create stays on canEditThisCollection (grant-aware).
 	let canBulkEdit = $derived(['owner', 'editor'].includes(workspaceStore.currentRole ?? ''));
+	// Saved views (BUG-3262), each gate the server handler's own predicate:
+	// saving one is role-gated (handlers_views.go handleCreateView:
+	// requireMinRole "editor", so no grant admits it), while deleting one goes
+	// through requireViewEditable, which is the grant-aware collection edit
+	// check. So a collection-edit grant may delete a view but not save one.
+	let canSaveView = $derived(['owner', 'editor'].includes(workspaceStore.currentRole ?? ''));
 
 	// Persist view mode to localStorage per collection
 	function saveViewMode(mode: ViewMode) {
@@ -3942,12 +3948,14 @@
 													<span class="saved-view-default" title="Default view — applied on entry" aria-label="Default view">📌</span>
 												{/if}
 											</button>
-											<button
-												class="saved-view-delete"
-												onclick={(e) => { e.stopPropagation(); deleteView(view.id, view.name); }}
-												aria-label="Delete view {view.name}"
-												title="Delete view"
-											>&times;</button>
+											{#if canEditThisCollection}
+												<button
+													class="saved-view-delete"
+													onclick={(e) => { e.stopPropagation(); deleteView(view.id, view.name); }}
+													aria-label="Delete view {view.name}"
+													title="Delete view"
+												>&times;</button>
+											{/if}
 										</div>
 									{/each}
 									{#if activeViewId !== null}
@@ -3959,10 +3967,12 @@
 										</MenuItem>
 									{/if}
 								{/if}
-								<div class="menu-divider" role="separator"></div>
-								<MenuItem icon="★" onclick={() => { openSaveView(); viewMenuOpen = false; }}>
-									Save current view…
-								</MenuItem>
+								{#if canSaveView}
+									<div class="menu-divider" role="separator"></div>
+									<MenuItem icon="★" onclick={() => { openSaveView(); viewMenuOpen = false; }}>
+										Save current view…
+									</MenuItem>
+								{/if}
 							</Menu>
 						</div>
 					{/if}

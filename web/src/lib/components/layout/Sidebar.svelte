@@ -578,12 +578,19 @@
 					{#if !isGuest}
 					<div class="section-header">
 						<span class="section-label">Collections</span>
-						<button
-							class="section-add-btn"
-							type="button"
-							onclick={() => { showCreateCollection = true; }}
-							title="New collection"
-						>+</button>
+						<!-- Collection create is owner-only on the server
+						     (handlers_collections.go handleCreateCollection:
+						     requireMinRole "owner"), so the button asks the same
+						     question. It used to render for every member, and
+						     each submit was refused 403 (BUG-3261). -->
+						{#if workspaceStore.isOwner}
+							<button
+								class="section-add-btn"
+								type="button"
+								onclick={() => { showCreateCollection = true; }}
+								title="New collection"
+							>+</button>
+						{/if}
 					</div>
 					{/if}
 					<!-- svelte-ignore a11y_no_static_element_interactions -->

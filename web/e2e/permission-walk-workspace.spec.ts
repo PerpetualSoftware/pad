@@ -1,4 +1,4 @@
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, request, type Page } from '@playwright/test';
 import {
 	ACCOUNT_KEYS,
 	actAs,
@@ -34,9 +34,50 @@ const EDITOR_PLUS: ReadonlySet<AccountKey> = new Set(['owner', 'editor', 'editor
 
 let walk: PermissionWalk;
 
+const VIEW_NAME = 'Walk saved view';
+let viewId: string;
+
 test.beforeAll(async () => {
 	walk = await seedPermissionWalk();
+	const owner = await request.newContext({
+		baseURL: walk.baseURL,
+		extraHTTPHeaders: { Authorization: `Bearer ${walk.accounts.owner.token}` }
+	});
+	try {
+		const r = await owner.post(`/api/v1/workspaces/${walk.workspaceSlug}/collections/tasks/views`, {
+			data: { name: VIEW_NAME, view_type: 'list', config: '{}' }
+		});
+		if (!r.ok()) throw new Error(`seed view failed (${r.status()}): ${await r.text()}`);
+		viewId = ((await r.json()) as { id: string }).id;
+	} finally {
+		await owner.dispose();
+	}
 });
+
+// The server's own answer to the write an affordance performs, as this
+// account. An affordance must render iff this is 2xx: a render the server
+// refuses is a leak, and a hide the server would accept is an over-hide
+// (BUG-3261 / BUG-3262). Each write is harmless to the rest of the file.
+async function serverAccepts(
+	key: AccountKey,
+	method: 'post' | 'patch',
+	path: string,
+	data: unknown
+): Promise<boolean> {
+	const api = await request.newContext({
+		baseURL: walk.baseURL,
+		extraHTTPHeaders: { Authorization: `Bearer ${walk.accounts[key].token}` }
+	});
+	try {
+		const r = await api[method](`/api/v1/workspaces/${walk.workspaceSlug}${path}`, { data });
+		if (r.status() !== 403 && !r.ok()) {
+			throw new Error(`${key} ${method} ${path}: unexpected ${r.status()} ${await r.text()}`);
+		}
+		return r.ok();
+	} finally {
+		await api.dispose();
+	}
+}
 
 async function open(page: Page, key: AccountKey, path: string) {
 	await actAs(page.context(), walk.accounts[key]);
@@ -88,12 +129,14 @@ for (const key of MEMBERS) {
 		await expect(page.getByRole('button', { name: '+ Create Collection' })).toHaveCount(owner ? 1 : 0);
 	});
 
-	test(`${key}: sidebar New collection renders iff owner`, async ({ page }) => {
-		// BUG-3261: renders for every non-owner member. Remove once fixed.
-		test.fail(!owner, 'BUG-3261');
+	// BUG-3261. Rendered for every member before; collection create is
+	// owner-only (handleCreateCollection: requireMinRole "owner").
+	test(`${key}: sidebar New collection renders iff the server accepts collection create`, async ({ page }) => {
+		const accepts = await serverAccepts(key, 'post', '/collections', { name: `Walk probe ${key}` });
+		expect(accepts, 'the server rule this leg encodes').toBe(owner);
 		await open(page, key, '');
 		await expect(page.locator('nav.collection-nav .nav-label', { hasText: /^Tasks$/ })).toBeVisible();
-		await expect(page.locator('button[title="New collection"]')).toHaveCount(owner ? 1 : 0);
+		await expect(page.locator('button[title="New collection"]')).toHaveCount(accepts ? 1 : 0);
 	});
 
 	test(`${key}: Roles board role writes render iff owner`, async ({ page }) => {
@@ -122,15 +165,30 @@ for (const key of ACCOUNT_KEYS) {
 		await expect(menu.getByRole('menuitem', { name: /Manage actions/ })).toHaveCount(key === 'owner' ? 1 : 0);
 	});
 
-	test(`${key}: "Save current view" renders iff editor or above`, async ({ page }) => {
-		// BUG-3262: renders for every account. Remove once fixed.
-		test.fail(!EDITOR_PLUS.has(key), 'BUG-3262');
+	// BUG-3262. Saving a view is ROLE-gated (handleCreateView: requireMinRole
+	// "editor"), so no grant admits it. Deleting one goes through
+	// requireViewEditable, the grant-aware collection edit check, so the
+	// collection-edit grant holders keep the delete. Probed with a same-name
+	// PATCH, which passes the identical gate and changes nothing.
+	test(`${key}: saved views: save and delete render iff the server accepts them`, async ({ page }) => {
+		const canSave = await serverAccepts(key, 'post', '/collections/tasks/views', {
+			name: `Walk probe ${key}`,
+			view_type: 'list',
+			config: '{}'
+		});
+		expect(canSave, 'the server rule this leg encodes').toBe(EDITOR_PLUS.has(key));
+		const canDelete = await serverAccepts(key, 'patch', `/collections/tasks/views/${viewId}`, {
+			name: VIEW_NAME
+		});
+
 		await open(page, key, '/tasks');
 		await page.getByRole('button', { name: 'Change view' }).click();
-		// Presence half: the view menu opened for this account.
-		await expect(page.getByRole('menu').last()).toBeVisible();
-		await expect(page.getByRole('menuitem', { name: /Save current view/ })).toHaveCount(
-			EDITOR_PLUS.has(key) ? 1 : 0
-		);
+		const menu = page.getByRole('menu').last();
+		// Presence half: the menu opened and lists the seeded view.
+		await expect(menu.getByText(VIEW_NAME, { exact: true })).toBeVisible();
+		await expect(menu.getByRole('menuitem', { name: /Save current view/ })).toHaveCount(canSave ? 1 : 0);
+		// The × is visually hidden until hover, which takes it out of the a11y tree, so
+		// count the element itself.
+		await expect(menu.locator(`button[aria-label="Delete view ${VIEW_NAME}"]`)).toHaveCount(canDelete ? 1 : 0);
 	});
 }
