@@ -120,6 +120,9 @@ var migratedRefusalTables = []string{
 	// has not been flushed to items.content, and it is the one BUG-3032 could
 	// detect but not save.
 	"item_yjs_updates",
+	// Edits a schema rebuild set aside (BUG-3244): the only copy of edits no
+	// body holds, the same claim the op-log makes above.
+	"item_yjs_updates_set_aside",
 
 	// Carried by models.WorkspaceExport: these rows now live in PostgreSQL, so
 	// a write here edits a copy that is gone.

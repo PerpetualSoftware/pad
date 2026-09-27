@@ -395,6 +395,34 @@ func (c *Client) UpdateItem(wsSlug, itemSlug string, input models.ItemUpdate) (*
 	return &result, nil
 }
 
+// CollabSetAside is the item's set-aside edits (BUG-3244): op-log rows a collab
+// schema-version rebuild moved out because they can no longer replay.
+type CollabSetAside struct {
+	Ref      string               `json:"ref"`
+	SetAside []models.YjsSetAside `json:"set_aside"`
+}
+
+// ListCollabSetAside reads the item's set-aside edits as raw updates.
+func (c *Client) ListCollabSetAside(wsSlug, itemSlug string) (*CollabSetAside, error) {
+	var result CollabSetAside
+	if err := c.get("/workspaces/"+wsSlug+"/items/"+itemSlug+"/collab-set-aside", &result); err != nil {
+		return nil, wrapItemNotFound(err, itemSlug, wsSlug)
+	}
+	return &result, nil
+}
+
+// DiscardCollabSetAside deletes the item's set-aside edits and returns how many
+// rows it removed.
+func (c *Client) DiscardCollabSetAside(wsSlug, itemSlug string) (int64, error) {
+	var result struct {
+		Discarded int64 `json:"discarded"`
+	}
+	if err := c.deleteWithResult("/workspaces/"+wsSlug+"/items/"+itemSlug+"/collab-set-aside", &result); err != nil {
+		return 0, wrapItemNotFound(err, itemSlug, wsSlug)
+	}
+	return result.Discarded, nil
+}
+
 func (c *Client) DeleteItem(wsSlug, itemSlug string) error {
 	return wrapItemNotFound(c.delete("/workspaces/"+wsSlug+"/items/"+itemSlug), itemSlug, wsSlug)
 }
@@ -2122,6 +2150,20 @@ func (c *Client) delete(path string) error {
 		return c.parseError(resp)
 	}
 	return nil
+}
+
+// deleteWithResult is delete for an endpoint that answers with a body.
+func (c *Client) deleteWithResult(path string, result interface{}) error {
+	req, err := c.newRequest("DELETE", path, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	return c.handleResponse(resp, result)
 }
 
 func (c *Client) handleResponse(resp *http.Response, result interface{}) error {

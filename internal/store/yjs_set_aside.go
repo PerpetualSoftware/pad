@@ -140,6 +140,27 @@ func (s *Store) DeleteYjsSetAsideTx(tx *sql.Tx, itemID string) (int64, error) {
 	return n, nil
 }
 
+// DiscardYjsSetAside is DeleteYjsSetAsideTx in its own transaction, for the
+// explicit discard door, which writes nothing else.
+func (s *Store) DiscardYjsSetAside(itemID string) (int64, error) {
+	if itemID == "" {
+		return 0, errors.New("DiscardYjsSetAside: itemID is required")
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("discard set-aside updates (begin): %w", err)
+	}
+	n, err := s.DeleteYjsSetAsideTx(tx, itemID)
+	if err != nil {
+		_ = tx.Rollback()
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("discard set-aside updates (commit): %w", err)
+	}
+	return n, nil
+}
+
 // parseOpLogTime reads an op-log timestamp: RFC3339 as written, or SQLite's
 // CURRENT_TIMESTAMP form a fixture may use (the same tolerance
 // LoadYjsUpdatesSince applies).

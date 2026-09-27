@@ -378,7 +378,8 @@ var nulExcluded = map[string]string{
 	"decision_jobs.last_error":             "Go error string, server-composed",
 	"item_decisions.answer":                "json.Marshal of decision.Answer: a NUL anywhere in it is written as the six-byte escape, never a raw byte, and the column is TEXT on both dialects so no jsonb parser decodes it (migration 090)",
 	"item_relation_links.source_field_key": "only written by replaceRelationLinks, as a field definition's key value read from collections.schema in the same transaction; that column's classJSON trigger checks every decoded value; migration 088 states the derivation (BUG-3108 writer list)",
-	"item_yjs_updates.update_data":         "BINARY (BLOB/BYTEA), the only such column in either schema. Raw Yjs updates legitimately contain NUL bytes; Layer A exempts it for the same reason and TestBinaryColumnCensus pins that. Surfaced here when the census's type filter was widened to include BLOB affinity, which is correct — the decision to exclude it is a judgement, not an oversight.",
+	"item_yjs_updates_set_aside.update_data": "BINARY (BLOB/BYTEA): op-log frames a schema rebuild moved here verbatim (BUG-3244), so the same raw Yjs bytes as item_yjs_updates.update_data, NULs included, and exempt for the same reason. A bundle import writes it only after base64-decoding the bundle's bytes.",
+	"item_yjs_updates.update_data":         "BINARY (BLOB/BYTEA), one of two such columns in either schema (the other is its set-aside twin, BUG-3244). Raw Yjs updates legitimately contain NUL bytes; Layer A exempts it for the same reason and TestBinaryColumnCensus pins that. Surfaced here when the census's type filter was widened to include BLOB affinity, which is correct — the decision to exclude it is a judgement, not an oversight.",
 }
 
 // ensureNULTriggers re-applies the applied Layer B trigger migrations if any of

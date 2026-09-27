@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -207,5 +208,42 @@ func TestSetAsideRefusesRestoreUntilOverwrite(t *testing.T) {
 	}
 	if n := f.setAsideRows(t); n != 0 {
 		t.Fatalf("set-aside rows after the override restore = %d, want 0", n)
+	}
+}
+
+// Ruling 3: the rows are readable as raw updates and an explicit discard
+// clears the state without writing the body.
+func TestSetAsideReadAndDiscardEndpoints(t *testing.T) {
+	f := newBug3133Fixture(t)
+	f.seedSetAside(t)
+	before, _ := f.srv.store.GetItem(f.item.ID)
+
+	rr := doRequest(f.srv, "GET", f.path+"/collab-set-aside", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET: want 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var got struct {
+		Ref      string               `json:"ref"`
+		SetAside []models.YjsSetAside `json:"set_aside"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.SetAside) != 1 || string(got.SetAside[0].UpdateData) != string(pendingEditFrame) {
+		t.Fatalf("GET set_aside = %+v, want the one seeded frame verbatim", got.SetAside)
+	}
+
+	rr = doRequest(f.srv, "DELETE", f.path+"/collab-set-aside", nil)
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"discarded":1`) {
+		t.Fatalf("DELETE: want 200 discarded 1, got %d: %s", rr.Code, rr.Body.String())
+	}
+	after, _ := f.srv.store.GetItem(f.item.ID)
+	if after.ContentState != "" || after.Content != before.Content || after.Seq != before.Seq {
+		t.Fatalf("after discard: content_state %q, content %q→%q, seq %d→%d",
+			after.ContentState, before.Content, after.Content, before.Seq, after.Seq)
+	}
+	rr = doRequest(f.srv, "GET", f.path+"/collab-set-aside", nil)
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"set_aside":[]`) {
+		t.Fatalf("GET after discard: %d %s", rr.Code, rr.Body.String())
 	}
 }

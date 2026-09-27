@@ -1896,6 +1896,11 @@ func (s *Server) setupRouter() {
 						// Content-free flush-watermark stamp from a caught-up
 						// tab (BUG-3124 unit B). Web-client only; no CLI/MCP.
 						r.Post("/collab-watermark", s.handleStampCollabWatermark)
+						// Edits a collab schema-version rebuild set aside
+						// (BUG-3244): read them as raw updates, or discard
+						// them. CLI: pad item set-aside. Not on MCP.
+						r.Get("/collab-set-aside", s.handleListCollabSetAside)
+						r.Delete("/collab-set-aside", s.handleDiscardCollabSetAside)
 						// Cross-workspace copy PREFLIGHT (PLAN-2357 /
 						// TASK-2364). Reports what a copy into another
 						// workspace would carry, drop and need, and

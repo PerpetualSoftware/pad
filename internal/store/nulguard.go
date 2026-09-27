@@ -116,8 +116,9 @@ func (e *InvalidTextParameterError) Unwrap() error { return ErrInvalidTextParame
 //
 // BINARY is exempt, and that is measured rather than assumed. The invariant is
 // about text and JSON columns; in this store []byte binds BINARY, and
-// item_yjs_updates.update_data — the only BLOB/BYTEA column in either schema —
-// legitimately contains NUL bytes. The first version of this guard checked
+// item_yjs_updates.update_data and its set-aside twin (BUG-3244) — the only
+// BLOB/BYTEA columns in either schema, both raw Yjs frames —
+// legitimately contain NUL bytes. The first version of this guard checked
 // []byte and refused every Yjs op-log append; the existing collab suite caught
 // it immediately. TestBinaryColumnCensus fails when a new binary column
 // appears, which is when that exemption must be re-examined.
