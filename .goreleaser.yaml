@@ -102,13 +102,18 @@ changelog:
   sort: asc
   use: github
   filters:
+    # With `use: github` every entry starts with the full commit hash
+    # (`<sha>: docs(x): ...`), so an exclude anchored at the message never
+    # matched: v0.16.0 shipped 30 docs/test/ci/chore lines under "Other
+    # changes". The prefix is optional so `use: git` would still match; a
+    # scope is allowed (`test(e2e):`, `chore(ci)(deps):`), and so is a list
+    # made only of these types (`docs,test(store):`). A list naming any other
+    # type (`fix,test:`) is kept. The previous tag is pinned by release.yml,
+    # not left to git describe (TASK-3268).
     exclude:
-      - "^docs:"
-      - "^test:"
-      - "^ci:"
-      - "^chore:"
-      - "^Merge pull request"
-      - "^Merge branch"
+      - '^(?:[0-9a-f]+: )?(?:docs|test|ci|chore)(?:,(?:docs|test|ci|chore))*(\(.+\))?!?:'
+      - '^(?:[0-9a-f]+: )?Merge pull request'
+      - '^(?:[0-9a-f]+: )?Merge branch'
   groups:
     # NOTE: with `use: github`, entries are prefixed with the commit hash
     # (e.g. `abc1234: feat(...): ...`), so the regexes allow any prefix

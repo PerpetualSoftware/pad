@@ -104,6 +104,19 @@ jobs:
       - name: Build web UI
         run: cd web && npm ci && npm run build
 
+      # The changelog's start: the highest stable tag below this one, by
+      # version and whatever branch it is on. GoReleaser's own default is git
+      # describe on the tag's parent, which cannot see a tag cut on a
+      # release-X.Y.x branch; from main it chose v0.15.0-rc.1 while v0.16.0
+      # existed (TASK-3268). Fails the run rather than falling back.
+      - name: Resolve the previous release tag
+        id: previous_tag
+        # Assigned first: a failing $(...) inside echo would not fail the step.
+        run: |
+          previous="$(scripts/release-previous-tag.sh "$GITHUB_REF_NAME")"
+          echo "Changelog base: $previous..$GITHUB_REF_NAME"
+          echo "tag=$previous" >> "$GITHUB_OUTPUT"
+
       - name: Run GoReleaser
         id: goreleaser
         # GoReleaser binary is pinned to an exact version (not "~> v2") to
@@ -135,6 +148,7 @@ jobs:
           # version. github.ref_name is unambiguous: it's exactly the
           # tag that triggered the workflow. See PLAYB-1160 failure modes.
           GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
+          GORELEASER_PREVIOUS_TAG: ${{ steps.previous_tag.outputs.tag }}
           # Cross-repo PAT for pushing the brew formula to PerpetualSoftware/homebrew-tap.
           # The default GITHUB_TOKEN above only has access to PerpetualSoftware/pad.
           # Add this secret in repo settings before tagging a release that ships
