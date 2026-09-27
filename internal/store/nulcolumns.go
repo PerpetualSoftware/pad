@@ -366,20 +366,20 @@ func NULProtectedColumns() []nulColumn {
 // on an unlisted column are to fail on every known exclusion or to ignore the
 // class entirely.
 var nulExcluded = map[string]string{
-	"activities.action":                    "fixed enum, models.ValidActions",
-	"event_outbox.last_error":              "Go error string, server-composed",
-	"mcp_audit_log.tool_name":              "server enum, mcp_audit.go",
-	"mcp_audit_log.error_kind":             "server enum, mcp_audit.go",
-	"mcp_audit_log.tool_name_source":       "server enum (models.MCPToolNameSource), CHECK-constrained by migration 096; never request-derived",
-	"attachments.filename_source":          "server enum (attachments.FilenameSource), CHECK-constrained by migration 096; a bundle import may carry the bundle's value, but only after attachments.ValidFilenameSource accepts it",
-	"users.recovery_codes":                 "newline-joined bcrypt hashes of server-generated codes; looks like JSON, is not",
-	"workspace_members.collection_access":  "validated enum all/selected",
-	"decision_jobs.claimed_by":             "runner id minted by the server's decision tick, never request-derived",
-	"decision_jobs.last_error":             "Go error string, server-composed",
-	"item_decisions.answer":                "json.Marshal of decision.Answer: a NUL anywhere in it is written as the six-byte escape, never a raw byte, and the column is TEXT on both dialects so no jsonb parser decodes it (migration 090)",
-	"item_relation_links.source_field_key": "only written by replaceRelationLinks, as a field definition's key value read from collections.schema in the same transaction; that column's classJSON trigger checks every decoded value; migration 088 states the derivation (BUG-3108 writer list)",
+	"activities.action":                      "fixed enum, models.ValidActions",
+	"event_outbox.last_error":                "Go error string, server-composed",
+	"mcp_audit_log.tool_name":                "server enum, mcp_audit.go",
+	"mcp_audit_log.error_kind":               "server enum, mcp_audit.go",
+	"mcp_audit_log.tool_name_source":         "server enum (models.MCPToolNameSource), CHECK-constrained by migration 096; never request-derived",
+	"attachments.filename_source":            "server enum (attachments.FilenameSource), CHECK-constrained by migration 096; a bundle import may carry the bundle's value, but only after attachments.ValidFilenameSource accepts it",
+	"users.recovery_codes":                   "newline-joined bcrypt hashes of server-generated codes; looks like JSON, is not",
+	"workspace_members.collection_access":    "validated enum all/selected",
+	"decision_jobs.claimed_by":               "runner id minted by the server's decision tick, never request-derived",
+	"decision_jobs.last_error":               "Go error string, server-composed",
+	"item_decisions.answer":                  "json.Marshal of decision.Answer: a NUL anywhere in it is written as the six-byte escape, never a raw byte, and the column is TEXT on both dialects so no jsonb parser decodes it (migration 090)",
+	"item_relation_links.source_field_key":   "only written by replaceRelationLinks, as a field definition's key value read from collections.schema in the same transaction; that column's classJSON trigger checks every decoded value; migration 088 states the derivation (BUG-3108 writer list)",
 	"item_yjs_updates_set_aside.update_data": "BINARY (BLOB/BYTEA): op-log frames a schema rebuild moved here verbatim (BUG-3244), so the same raw Yjs bytes as item_yjs_updates.update_data, NULs included, and exempt for the same reason. A bundle import writes it only after base64-decoding the bundle's bytes.",
-	"item_yjs_updates.update_data":         "BINARY (BLOB/BYTEA), one of two such columns in either schema (the other is its set-aside twin, BUG-3244). Raw Yjs updates legitimately contain NUL bytes; Layer A exempts it for the same reason and TestBinaryColumnCensus pins that. Surfaced here when the census's type filter was widened to include BLOB affinity, which is correct — the decision to exclude it is a judgement, not an oversight.",
+	"item_yjs_updates.update_data":           "BINARY (BLOB/BYTEA), one of two such columns in either schema (the other is its set-aside twin, BUG-3244). Raw Yjs updates legitimately contain NUL bytes; Layer A exempts it for the same reason and TestBinaryColumnCensus pins that. Surfaced here when the census's type filter was widened to include BLOB affinity, which is correct — the decision to exclude it is a judgement, not an oversight.",
 }
 
 // ensureNULTriggers re-applies the applied Layer B trigger migrations if any of

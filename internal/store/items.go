@@ -744,15 +744,30 @@ func contentStateSQLFor(alias string) string {
 	// Set-aside rows first (BUG-3244): when an item has both, the edits no tab
 	// can recover are the claim a reader must not miss, and set-aside rows do
 	// not depend on the watermark, so a tab stamping it cannot clear them.
-	return `CASE WHEN EXISTS (
-			SELECT 1 FROM item_yjs_updates_set_aside sa
-			WHERE sa.item_id = ` + alias + `.id
-		) THEN 'superseded_set_aside' WHEN EXISTS (
+	return `CASE WHEN ` + setAsideExistsSQLFor(alias) +
+		` THEN 'superseded_set_aside' WHEN ` + pendingFlushExistsSQLFor(alias) +
+		` THEN 'applied_pending_flush' ELSE '' END`
+}
+
+// pendingFlushExistsSQLFor is the BUG-3000 half of contentStateSQLFor on its
+// own: unflushed content-bearing op-log rows. A door that must ask about the
+// op-log alone uses it, because contentStateSQLFor reports set-aside first and
+// so cannot say whether an item holding both ALSO has op-log rows pending.
+func pendingFlushExistsSQLFor(alias string) string {
+	return `EXISTS (
 			SELECT 1 FROM item_yjs_updates u
 			WHERE u.item_id = ` + alias + `.id
 			  AND u.id > COALESCE(` + alias + `.content_flushed_op_log_id, 0)
 			  AND u.content_bearing = TRUE
-		) THEN 'applied_pending_flush' ELSE '' END`
+		)`
+}
+
+// setAsideExistsSQLFor is the BUG-3244 half: rows a schema rebuild set aside.
+func setAsideExistsSQLFor(alias string) string {
+	return `EXISTS (
+			SELECT 1 FROM item_yjs_updates_set_aside sa
+			WHERE sa.item_id = ` + alias + `.id
+		)`
 }
 
 // getItemScanQ is the one item-row scan behind GetItem, getItemTx and

@@ -869,6 +869,12 @@ func gateLateStale(wsSlug string, stale []store.PendingFlushItem, migratedSoFar 
 // the item, on the same reasoning as ListItemsPendingContentFlush: a refusal
 // exists to tell an operator what to open, and a fabricated "PREFIX-0" sends
 // them looking for something that does not exist.
+//
+// Only applied_pending_flush counts. superseded_set_aside (BUG-3244) marks
+// edits the bundle CARRIES (ItemExport.CollabSetAside), so migrating them loses
+// nothing and opening a tab would not recover them anyway. An item holding
+// both reads superseded_set_aside here, which is why the pre-export gate asks
+// the op-log on its own and runs first.
 func staleBundleItems(data *models.WorkspaceExport) []store.PendingFlushItem {
 	if data == nil {
 		return nil
@@ -879,7 +885,7 @@ func staleBundleItems(data *models.WorkspaceExport) []store.PendingFlushItem {
 	}
 	var out []store.PendingFlushItem
 	for _, it := range data.Items {
-		if it.ContentState == "" {
+		if it.ContentState != models.ContentStatePendingFlush {
 			continue
 		}
 		ref := it.Slug

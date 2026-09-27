@@ -251,6 +251,37 @@ func (s *Store) ExportWorkspaceQ(q Queryer, slug string) (*models.WorkspaceExpor
 		return nil, err
 	}
 
+	// Set-aside edits (BUG-3244), attached to their items. Read through the
+	// same executor as the items, so on the migration's transaction a row and
+	// the content_state that names it come from one snapshot.
+	itemIndex := make(map[string]int, len(export.Items))
+	for i := range export.Items {
+		itemIndex[export.Items[i].ID] = i
+	}
+	setAsideRows, err := q.Query(s.q(`
+		SELECT sa.item_id, sa.op_log_id, sa.update_data, sa.schema_version, sa.created_at, sa.set_aside_at
+		FROM item_yjs_updates_set_aside sa
+		JOIN items i ON i.id = sa.item_id
+		WHERE i.workspace_id = ? AND i.deleted_at IS NULL
+		ORDER BY sa.item_id, sa.op_log_id, sa.id`), ws.ID)
+	if err != nil {
+		return nil, fmt.Errorf("export set-aside edits: %w", err)
+	}
+	defer setAsideRows.Close()
+	for setAsideRows.Next() {
+		var itemID string
+		var r models.YjsSetAsideExport
+		if err := setAsideRows.Scan(&itemID, &r.OpLogID, &r.UpdateData, &r.SchemaVersion, &r.CreatedAt, &r.SetAsideAt); err != nil {
+			return nil, fmt.Errorf("scan set-aside edit: %w", err)
+		}
+		if i, ok := itemIndex[itemID]; ok {
+			export.Items[i].CollabSetAside = append(export.Items[i].CollabSetAside, r)
+		}
+	}
+	if err := setAsideRows.Err(); err != nil {
+		return nil, err
+	}
+
 	// Comments
 	commentRows, err := q.Query(s.q(`
 		SELECT c.id, c.item_id, c.author, c.body, c.created_by, c.source, c.created_at, c.updated_at
@@ -1236,6 +1267,39 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 		}
 	}
 
+	// Import set-aside edits (BUG-3244), so the imported item keeps them and
+	// reads superseded_set_aside as its source did. Every value is checked
+	// BEFORE the insert rather than skipped on a failed one: on Postgres a
+	// failed statement poisons the transaction and loses the whole import (the
+	// BUG-2884 lesson recorded on the reminders loop above). A row that fails
+	// the check is skipped with a warning, matching this file's lenient
+	// precedent; a bundle this server wrote never fails it.
+	for _, it := range data.Items {
+		if len(it.CollabSetAside) == 0 {
+			continue
+		}
+		newItemID := itemMap[it.ID]
+		if !insertedItems[newItemID] {
+			continue
+		}
+		for _, sa := range it.CollabSetAside {
+			createdAt, cerr := normalizeImportedInstant(sa.CreatedAt)
+			setAsideAt, serr := normalizeImportedInstant(sa.SetAsideAt)
+			if len(sa.UpdateData) == 0 || !importSchemaVersionRe.MatchString(sa.SchemaVersion) || cerr != nil || serr != nil {
+				slog.Warn("workspace import: skipping a malformed set-aside edit row",
+					"workspace_id", ws.ID, "item_id", newItemID, "op_log_id", sa.OpLogID)
+				continue
+			}
+			if _, err := tx.Exec(s.q(`
+				INSERT INTO item_yjs_updates_set_aside
+					(item_id, op_log_id, update_data, schema_version, created_at, set_aside_at)
+				VALUES (?, ?, ?, ?, ?, ?)`),
+				newItemID, sa.OpLogID, sa.UpdateData, sa.SchemaVersion, createdAt, setAsideAt); err != nil {
+				return nil, fmt.Errorf("import set-aside edit: %w", err)
+			}
+		}
+	}
+
 	// Import item versions
 	for _, ver := range data.ItemVersions {
 		newItemID := itemMap[ver.ItemID]
@@ -1449,6 +1513,16 @@ type PendingFlushItem struct {
 // hand-written spellings of it would be two chances to drift, and a gate that
 // refused a different set than the bundle marks would be worse than no gate.
 //
+// It asks about the OP-LOG half only (pendingFlushExistsSQLFor), not about
+// set-aside rows (BUG-3244). Those travel in the bundle
+// (ItemExport.CollabSetAside), so migrating an item that holds them loses
+// nothing, and refusing it would send the operator to open a tab that cannot
+// recover them. The op-log half is asked on its own because contentStateSQL
+// reports set-aside FIRST: an item holding both would read superseded_set_aside
+// and hide the pending rows this gate exists for. So the gate refuses a
+// superset of the items the bundle marks applied_pending_flush, and it runs
+// first, on the same snapshot.
+//
 // Why a query rather than a scan of an already-built bundle: the migration's
 // refusal has to be able to say "nothing has been migrated", which means the
 // check must cover EVERY workspace before the first import runs. Exporting them
@@ -1494,7 +1568,7 @@ func (s *Store) ListItemsPendingContentFlushQ(q Queryer, workspaceID string) ([]
 		FROM items i
 		LEFT JOIN collections c ON c.id = i.collection_id
 		WHERE i.workspace_id = ? AND i.deleted_at IS NULL
-		  AND `+contentStateSQL+` <> ''
+		  AND `+pendingFlushExistsSQLFor("i")+`
 		ORDER BY COALESCE(c.prefix, ''), i.item_number`), workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("list items pending content flush: %w", err)

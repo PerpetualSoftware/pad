@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"regexp"
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -159,6 +160,25 @@ func (s *Store) DiscardYjsSetAside(itemID string) (int64, error) {
 		return 0, fmt.Errorf("discard set-aside updates (commit): %w", err)
 	}
 	return n, nil
+}
+
+// importSchemaVersionRe is what a bundle's set-aside schema_version must look
+// like to be imported (BUG-3244). The server stamps short opaque tags ("1",
+// "2-rc1"); anything else did not come from a server and is not stored.
+var importSchemaVersionRe = regexp.MustCompile(`^[A-Za-z0-9._-]{1,32}$`)
+
+// normalizeImportedInstant parses a bundle timestamp in either form the
+// op-log is written in and returns it as the RFC3339 UTC the store writes, so
+// an imported row is indistinguishable from a native one.
+func normalizeImportedInstant(v string) (string, error) {
+	if t, err := time.Parse(time.RFC3339, v); err == nil {
+		return t.UTC().Format(time.RFC3339), nil
+	}
+	t, err := time.Parse("2006-01-02 15:04:05", v)
+	if err != nil {
+		return "", fmt.Errorf("not an instant: %q", v)
+	}
+	return t.UTC().Format(time.RFC3339), nil
 }
 
 // parseOpLogTime reads an op-log timestamp: RFC3339 as written, or SQLite's

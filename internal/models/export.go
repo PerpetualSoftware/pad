@@ -161,18 +161,35 @@ type ItemExport struct {
 	// `pad db migrate-to-pg` — export piped into import across two databases,
 	// after which the source is abandoned — an unflushed body becomes the only
 	// copy. The marker is what lets that door refuse; it is not a repair.
-	ContentState   string `json:"content_state,omitempty"`
-	Fields         string `json:"fields"`
-	Tags           string `json:"tags"`
-	Pinned         bool   `json:"pinned"`
-	SortOrder      int    `json:"sort_order"`
-	ParentID       string `json:"parent_id,omitempty"`
-	CreatedBy      string `json:"created_by"`
-	LastModifiedBy string `json:"last_modified_by"`
-	Source         string `json:"source"`
-	ItemNumber     int    `json:"item_number"`
-	CreatedAt      string `json:"created_at"`
-	UpdatedAt      string `json:"updated_at"`
+	ContentState string `json:"content_state,omitempty"`
+	// CollabSetAside carries the edits a collab schema-version rebuild set
+	// aside on this item (BUG-3244), which no body holds. Unlike the op-log,
+	// which a bundle never carries, these travel: they can only be recovered
+	// by a decoder, not by a tab, so a copy of the rows is the whole of what
+	// can be kept. Additive and omitempty, on the same no-version-bump grounds
+	// as ContentState.
+	CollabSetAside []YjsSetAsideExport `json:"collab_set_aside,omitempty"`
+	Fields         string              `json:"fields"`
+	Tags           string              `json:"tags"`
+	Pinned         bool                `json:"pinned"`
+	SortOrder      int                 `json:"sort_order"`
+	ParentID       string              `json:"parent_id,omitempty"`
+	CreatedBy      string              `json:"created_by"`
+	LastModifiedBy string              `json:"last_modified_by"`
+	Source         string              `json:"source"`
+	ItemNumber     int                 `json:"item_number"`
+	CreatedAt      string              `json:"created_at"`
+	UpdatedAt      string              `json:"updated_at"`
+}
+
+// YjsSetAsideExport is one set-aside edit row in a bundle (BUG-3244). The item
+// it belongs to is the enclosing ItemExport; update_data is base64 in JSON.
+type YjsSetAsideExport struct {
+	OpLogID       int64  `json:"op_log_id"`
+	SchemaVersion string `json:"schema_version"`
+	CreatedAt     string `json:"created_at"`
+	SetAsideAt    string `json:"set_aside_at"`
+	UpdateData    []byte `json:"update_data"`
 }
 
 // CommentExport holds a comment's data for export.
