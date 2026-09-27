@@ -24,8 +24,7 @@ import (
 // is kept.
 
 // setAsideBeforeClearHook, when set by a test, runs inside the transaction
-// after the watermark read and before the DELETE: the gap a concurrent append
-// would land in.
+// before the DELETE: the gap a concurrent append would land in.
 var setAsideBeforeClearHook func()
 
 // SetAsideAndClearOpLog moves the item's unflushed content-bearing op-log rows
@@ -52,19 +51,14 @@ func (s *Store) SetAsideAndClearOpLog(itemID string) (setAside, cleared int64, e
 		}
 	}()
 
-	// Read before the delete. A flush that advances it afterwards makes this
-	// value low, which keeps a row the body already holds: an extra row to
-	// discard, never a lost one.
-	var watermark int64
-	if err = tx.QueryRow(s.dialect.Rebind(
-		`SELECT COALESCE(content_flushed_op_log_id, 0) FROM items WHERE id = ?`), itemID).Scan(&watermark); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return 0, 0, fmt.Errorf("set aside op-log (watermark): %w", err)
-	}
-	err = nil
 	if setAsideBeforeClearHook != nil {
 		setAsideBeforeClearHook()
 	}
 
+	// The DELETE is the transaction's first statement, as the INSERT it
+	// replaces was: on SQLite a read first would take a snapshot that a
+	// concurrent append invalidates, and the write that follows would then
+	// fail with SQLITE_BUSY_SNAPSHOT instead of waiting.
 	type deletedRow struct {
 		id             int64
 		data           []byte
@@ -78,23 +72,36 @@ func (s *Store) SetAsideAndClearOpLog(itemID string) (setAside, cleared int64, e
 	if err != nil {
 		return 0, 0, fmt.Errorf("set aside op-log (clear): %w", err)
 	}
-	var keep []deletedRow
+	var deleted []deletedRow
 	for rows.Next() {
 		var r deletedRow
 		if err = rows.Scan(&r.id, &r.data, &r.schemaVersion, &r.createdAt, &r.contentBearing); err != nil {
 			rows.Close()
 			return 0, 0, fmt.Errorf("set aside op-log (clear scan): %w", err)
 		}
-		cleared++
-		if r.contentBearing && r.id > watermark {
-			keep = append(keep, r)
-		}
+		deleted = append(deleted, r)
 	}
 	if err = rows.Err(); err != nil {
 		rows.Close()
 		return 0, 0, fmt.Errorf("set aside op-log (clear rows): %w", err)
 	}
 	rows.Close()
+	cleared = int64(len(deleted))
+
+	// Read after the delete. A flush that has advanced it covers rows that are
+	// in items.content, so a later value is only more accurate.
+	var watermark int64
+	if err = tx.QueryRow(s.dialect.Rebind(
+		`SELECT COALESCE(content_flushed_op_log_id, 0) FROM items WHERE id = ?`), itemID).Scan(&watermark); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return 0, 0, fmt.Errorf("set aside op-log (watermark): %w", err)
+	}
+	err = nil
+	var keep []deletedRow
+	for _, r := range deleted {
+		if r.contentBearing && r.id > watermark {
+			keep = append(keep, r)
+		}
+	}
 	sort.Slice(keep, func(i, j int) bool { return keep[i].id < keep[j].id })
 
 	now := time.Now().UTC().Format(time.RFC3339)
