@@ -133,9 +133,9 @@
 	// reader's.
 	//
 	// THE CAP MUST CLEAR THE COLLAB SYNC GRACE (BUG-3228). The body renders
-	// only once the collab provider reports `synced`, and the relay never sends
-	// an explicit step2, so that is `SYNC_GRACE_MS` (1 s, wsProvider) after the
-	// connect. The cap used to be 1 s from onReady, so the two timers raced
+	// only once the collab provider reports `synced`. On a connection that gets
+	// no explicit step2, which is every connection to the dumb relay, that is
+	// `SYNC_GRACE_MS` (1 s, wsProvider) after the socket opens. The cap used to be 1 s from onReady, so the two timers raced
 	// and load decided. Measured on 2026-09-27 with an instrumented build,
 	// desktop-chromium, the pane Back spec x300 at 8 workers: restore latency
 	// from onReady was p50 1021 / p90 1138 / p99 1234 / max 1313 ms, and every
