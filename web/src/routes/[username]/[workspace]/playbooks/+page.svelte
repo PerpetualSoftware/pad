@@ -6,6 +6,7 @@
 	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
 	import { parseFields, parseSchema, itemUrlId, formatItemRef, type Collection, type Item } from '$lib/types';
 	import { collectionStore } from '$lib/stores/collections.svelte';
+	import { canCreateIn } from '$lib/collections/canCreateIn';
 	import {
 		categoricalValueFor,
 		categoricalValueForField,
@@ -54,6 +55,11 @@
 
 	let expandedId = $state<string | null>(null);
 	let showNewForm = $state(false);
+	// Create and import render only for an account that may create here
+	// (BUG-3264); the server refuses the rest. An artifact may be either kind,
+	// so import needs either collection.
+	let canCreatePlaybook = $derived(canCreateIn('playbooks'));
+	let canImport = $derived(canCreateIn('playbooks') || canCreateIn('conventions'));
 	let deleting = $state<string | null>(null);
 	let confirmDeleteSlug = $state<string | null>(null);
 	let togglingStatus = $state<string | null>(null);
@@ -448,13 +454,17 @@
 				{#if !showNewForm}
 					<div style="display:flex;gap:var(--space-2);align-items:center;flex-wrap:wrap;">
 						<a href="/{username}/{wsSlug}/library?tab=playbooks" class="new-btn" style="background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border);">📚 Browse Library</a>
+						{#if canImport}
 						<Button
 							variant="secondary"
 							disabled={importing}
 							onclick={openImportPicker}
 							title="Import a playbook or convention from a .pad.md artifact"
 						>{importing ? 'Importing…' : 'Import artifact'}</Button>
+						{/if}
+						{#if canCreatePlaybook}
 						<Button variant="primary" onclick={() => (showNewForm = true)}>+ New Playbook</Button>
+						{/if}
 						<input
 							bind:this={importInputEl}
 							type="file"
@@ -467,7 +477,7 @@
 			{/snippet}
 		</PageHeader>
 
-		{#if showNewForm}
+		{#if showNewForm && canCreatePlaybook}
 			<div class="new-form">
 				<h2>New Playbook</h2>
 				<div class="form-fields">
@@ -550,7 +560,9 @@
 				message="Playbooks are multi-step workflows that guide agents through complex tasks."
 			>
 				{#snippet actions()}
-					<Button variant="primary" onclick={() => (showNewForm = true)}>Create Your First Playbook</Button>
+					{#if canCreatePlaybook}
+						<Button variant="primary" onclick={() => (showNewForm = true)}>Create Your First Playbook</Button>
+					{/if}
 				{/snippet}
 			</EmptyState>
 		{:else}
@@ -654,9 +666,12 @@
 											{togglingStatus === item.slug ? '...' : nextStatusLabel(status)}
 										</Button>
 									{/if}
+									<!-- Duplicate creates a playbook (BUG-3264, codex round 1). -->
+									{#if canCreatePlaybook}
 									<Button variant="secondary" size="sm" disabled={duplicating === item.slug} onclick={() => duplicatePlaybook(item)}>
 										{duplicating === item.slug ? '...' : 'Duplicate'}
 									</Button>
+									{/if}
 									<Button variant="secondary" size="sm" disabled={exportingSlug === item.slug} onclick={() => exportPlaybook(item)} title="Download as a .pad.md artifact">
 										{exportingSlug === item.slug ? '...' : 'Export'}
 									</Button>

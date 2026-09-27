@@ -16,6 +16,7 @@
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
 	import StaleBodyDot from '$lib/components/common/StaleBodyDot.svelte';
 	import { isBodyStale } from '$lib/items/staleBody';
+	import { canCreateIn } from '$lib/collections/canCreateIn';
 
 	const TRIGGERS = ['always','on-task-start','on-task-complete','on-implement','on-commit','on-pr-create','on-plan-start','on-plan-complete','on-plan'] as const;
 	type Trigger = typeof TRIGGERS[number];
@@ -61,6 +62,11 @@
 	let expandedSlug = $state<string | null>(null);
 	let collapsedGroups = new SvelteSet<string>();
 	let showCreate = $state(false);
+	// Create and import render only for an account that may create here
+	// (BUG-3264); the server refuses the rest. An artifact may be either kind,
+	// so import needs either collection.
+	let canCreateConvention = $derived(canCreateIn('conventions'));
+	let canImport = $derived(canCreateIn('conventions') || canCreateIn('playbooks'));
 	let creating = $state(false);
 	let confirmDelete = $state<string | null>(null);
 	let searchQuery = $state('');
@@ -523,6 +529,7 @@
 		<PageHeader title="Conventions" description="Rules that guide agent behavior in this project">
 			{#snippet actions()}
 				<a href="/{username}/{workspace}/library" class="btn btn-secondary">Browse Library</a>
+				{#if canImport}
 				<Button
 					variant="secondary"
 					disabled={importing}
@@ -531,9 +538,12 @@
 				>
 					{importing ? 'Importing…' : 'Import artifact'}
 				</Button>
+				{/if}
+				{#if canCreateConvention}
 				<Button variant="primary" onclick={() => (showCreate = !showCreate)}>
 					{showCreate ? 'Cancel' : '+ New Convention'}
 				</Button>
+				{/if}
 				<input
 					bind:this={importInputEl}
 					type="file"
@@ -544,7 +554,7 @@
 			{/snippet}
 		</PageHeader>
 
-		{#if showCreate}
+		{#if showCreate && canCreateConvention}
 			<form class="create-form" onsubmit={(e) => { e.preventDefault(); handleCreate(); }}>
 				<input type="text" bind:value={newTitle} placeholder="Convention title..." class="input-title" required />
 				<div class="form-row">
