@@ -1,4 +1,4 @@
-import { expect } from '@playwright/test';
+import { expect, type Page } from '@playwright/test';
 import { test } from './fixtures';
 
 /**
@@ -27,6 +27,23 @@ import { test } from './fixtures';
  * The rename-detection oracle is server-attested: the PATCH response's
  * regenerated slug is what the URL must converge to.
  */
+
+/**
+ * Open `path` with the load-time sync seed EMPTY (BUG-3243). The seed
+ * (BUG-3201) asks /changes from about now, truncated to the second and
+ * estimated early, and DELIVERS a non-empty delta as a sync pass, which
+ * reconciles the route's collection slug. A delta holding this spec's fresh
+ * writes that landed after the rename healed the route inside the vacuity
+ * window, so the heal was not the tab-resume's. Letting the writes age past
+ * that window first means the seed delivers nothing; the premise is asserted.
+ */
+async function gotoWithEmptySeed(page: Page, wsSlug: string, path: string) {
+	await page.waitForTimeout(2100);
+	const seed = page.waitForResponse((r) => new URL(r.url()).pathname.endsWith(`/workspaces/${wsSlug}/changes`));
+	await page.goto(path);
+	const seeded = (await (await seed).json()) as { updated: unknown[]; deleted: unknown[] };
+	expect([...seeded.updated, ...seeded.deleted], 'the load-time sync seed was not empty').toEqual([]);
+}
 
 test('BUG-2601: a missed collection-rename SSE is healed by the next sync pass', async ({
 	page,
@@ -64,7 +81,7 @@ test('BUG-2601: a missed collection-rename SSE is healed by the next sync pass',
 		// collection_updated rename event cannot arrive on the primary path.
 		await page.route('**/api/v1/events**', (route) => route.abort());
 
-		await page.goto(`/${fixture.adminUsername}/${ws.slug}/tasks`);
+		await gotoWithEmptySeed(page, ws.slug, `/${fixture.adminUsername}/${ws.slug}/tasks`);
 		await expect(page.getByText('rename-heal probe').first()).toBeVisible();
 
 		// Rename server-side. A name change regenerates the slug
@@ -148,7 +165,7 @@ test('BUG-2601: a missed rename heals the full-page item route too', async ({
 		const item = (await itemResp.json()) as { slug: string };
 
 		await page.route('**/api/v1/events**', (route) => route.abort());
-		await page.goto(`/${fixture.adminUsername}/${ws.slug}/tasks/${item.slug}`);
+		await gotoWithEmptySeed(page, ws.slug, `/${fixture.adminUsername}/${ws.slug}/tasks/${item.slug}`);
 		await expect(page.getByText('item-route heal probe').first()).toBeVisible();
 
 		const renameResp = await request.patch(
