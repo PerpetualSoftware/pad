@@ -10,8 +10,6 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/mark3labs/mcp-go/mcp"
-
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
@@ -281,7 +279,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 	ctx context.Context,
 	input map[string]any,
 	user *models.User,
-) (*mcp.CallToolResult, error) {
+) (*CallToolResult, error) {
 	const cmdKey = "item update"
 
 	workspace, _ := input["workspace"].(string)

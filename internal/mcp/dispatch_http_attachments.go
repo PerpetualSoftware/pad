@@ -10,8 +10,6 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"github.com/mark3labs/mcp-go/mcp"
-
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
@@ -36,7 +34,7 @@ func (d *HTTPHandlerDispatcher) dispatchAttachmentList(
 	ctx context.Context,
 	input map[string]any,
 	user *models.User,
-) (*mcp.CallToolResult, error) {
+) (*CallToolResult, error) {
 	const cmdKey = "attachment list"
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
@@ -117,7 +115,7 @@ func (d *HTTPHandlerDispatcher) dispatchAttachmentShow(
 	ctx context.Context,
 	input map[string]any,
 	user *models.User,
-) (*mcp.CallToolResult, error) {
+) (*CallToolResult, error) {
 	const cmdKey = "attachment show"
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {

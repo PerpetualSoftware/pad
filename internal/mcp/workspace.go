@@ -163,10 +163,10 @@ func SetWorkspaceTool(state *WorkspaceState, bootstrapFetcher BootstrapFetcher) 
 			mcp.Required(),
 		),
 	)
-	handler := func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	handler := func(ctx context.Context, req mcp.CallToolRequest) (*CallToolResult, error) {
 		ws, err := req.RequireString("workspace")
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return errorResult(err.Error()), nil
 		}
 		// On a shared multi-user state (cloud /mcp), a persisted session
 		// default would bleed across users / concurrent sessions
@@ -191,7 +191,7 @@ func SetWorkspaceTool(state *WorkspaceState, bootstrapFetcher BootstrapFetcher) 
 				}
 			}
 			b, _ := json.Marshal(out)
-			return mcp.NewToolResultText(string(b)), nil
+			return textResult(string(b)), nil
 		}
 		state.Set(ws)
 		out := map[string]any{"workspace": ws, "status": "ok"}
@@ -213,7 +213,7 @@ func SetWorkspaceTool(state *WorkspaceState, bootstrapFetcher BootstrapFetcher) 
 			// don't fail the whole call on a bootstrap glitch.
 		}
 		b, _ := json.Marshal(out)
-		return mcp.NewToolResultText(string(b)), nil
+		return textResult(string(b)), nil
 	}
 	return tool, handler
 }

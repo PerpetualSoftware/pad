@@ -12,8 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mark3labs/mcp-go/mcp"
-
 	"github.com/PerpetualSoftware/pad/internal/cli"
 	"github.com/PerpetualSoftware/pad/internal/collections"
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -1405,7 +1403,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemList(
 	ctx context.Context,
 	input map[string]any,
 	user *models.User,
-) (*mcp.CallToolResult, error) {
+) (*CallToolResult, error) {
 	const cmdKey = "item list"
 	method, urlPath, _, err := mapItemList(input)
 	if err != nil {
@@ -1458,7 +1456,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemShow(
 	ctx context.Context,
 	input map[string]any,
 	user *models.User,
-) (*mcp.CallToolResult, error) {
+) (*CallToolResult, error) {
 	const cmdKey = "item show"
 	mapper := routeTable[cmdKey]
 	method, urlPath, body, err := mapper(input)
@@ -1522,7 +1520,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemHistory(
 	ctx context.Context,
 	input map[string]any,
 	user *models.User,
-) (*mcp.CallToolResult, error) {
+) (*CallToolResult, error) {
 	const cmdKey = "item history"
 	workspace, _ := input["workspace"].(string)
 	ref, _ := input["ref"].(string)
@@ -1763,7 +1761,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemCommentDelete(
 	ctx context.Context,
 	input map[string]any,
 	user *models.User,
-) (*mcp.CallToolResult, error) {
+) (*CallToolResult, error) {
 	const cmdKey = "item comment-delete"
 	urlPath, err := itemCommentTarget(input)
 	if err != nil {

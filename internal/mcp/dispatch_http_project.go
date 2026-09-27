@@ -10,8 +10,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/mark3labs/mcp-go/mcp"
-
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/server"
 )
@@ -30,7 +28,7 @@ func (d *HTTPHandlerDispatcher) dispatchProjectReady(
 	ctx context.Context,
 	input map[string]any,
 	user *models.User,
-) (*mcp.CallToolResult, error) {
+) (*CallToolResult, error) {
 	const cmdKey = "project ready"
 	dash, errRes := d.fetchDashboardJSON(ctx, input, user, cmdKey)
 	if errRes != nil {
@@ -58,7 +56,7 @@ func (d *HTTPHandlerDispatcher) dispatchProjectStale(
 	ctx context.Context,
 	input map[string]any,
 	user *models.User,
-) (*mcp.CallToolResult, error) {
+) (*CallToolResult, error) {
 	const cmdKey = "project stale"
 	dash, errRes := d.fetchDashboardJSON(ctx, input, user, cmdKey)
 	if errRes != nil {
@@ -95,7 +93,7 @@ func (d *HTTPHandlerDispatcher) dispatchProjectNext(
 	ctx context.Context,
 	input map[string]any,
 	user *models.User,
-) (*mcp.CallToolResult, error) {
+) (*CallToolResult, error) {
 	const cmdKey = "project next"
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
@@ -124,7 +122,7 @@ func (d *HTTPHandlerDispatcher) dispatchProjectStandup(
 	ctx context.Context,
 	input map[string]any,
 	user *models.User,
-) (*mcp.CallToolResult, error) {
+) (*CallToolResult, error) {
 	const cmdKey = "project standup"
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
@@ -159,7 +157,7 @@ func (d *HTTPHandlerDispatcher) dispatchProjectChangelog(
 	ctx context.Context,
 	input map[string]any,
 	user *models.User,
-) (*mcp.CallToolResult, error) {
+) (*CallToolResult, error) {
 	const cmdKey = "project changelog"
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
@@ -186,7 +184,7 @@ func (d *HTTPHandlerDispatcher) fetchDashboardJSON(
 	input map[string]any,
 	user *models.User,
 	cmdKey string,
-) (map[string]any, *mcp.CallToolResult) {
+) (map[string]any, *CallToolResult) {
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
 		return nil, validationFailedResult(cmdKey, "workspace is required",
@@ -292,7 +290,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemBulkUpdate(
 	ctx context.Context,
 	input map[string]any,
 	user *models.User,
-) (*mcp.CallToolResult, error) {
+) (*CallToolResult, error) {
 	const cmdKey = "item bulk-update"
 
 	workspace, _ := input["workspace"].(string)
@@ -470,7 +468,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemNote(
 	ctx context.Context,
 	input map[string]any,
 	user *models.User,
-) (*mcp.CallToolResult, error) {
+) (*CallToolResult, error) {
 	const cmdKey = "item note"
 
 	workspace, _ := input["workspace"].(string)
@@ -518,7 +516,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemDecide(
 	ctx context.Context,
 	input map[string]any,
 	user *models.User,
-) (*mcp.CallToolResult, error) {
+) (*CallToolResult, error) {
 	const cmdKey = "item decide"
 
 	workspace, _ := input["workspace"].(string)
@@ -595,7 +593,7 @@ func (d *HTTPHandlerDispatcher) dispatchLibraryList(
 	ctx context.Context,
 	input map[string]any,
 	user *models.User,
-) (*mcp.CallToolResult, error) {
+) (*CallToolResult, error) {
 	const cmdKey = "library list"
 	typ, _ := input["type"].(string)
 	typ = strings.ToLower(strings.TrimSpace(typ))
@@ -675,7 +673,7 @@ func (d *HTTPHandlerDispatcher) fetchLibraryEndpoint(
 	ctx context.Context,
 	user *models.User,
 	cmdKey, path string,
-) (any, *mcp.CallToolResult) {
+) (any, *CallToolResult) {
 	req, err := d.buildAuthedRequest(ctx, http.MethodGet, path, nil, user)
 	if err != nil {
 		return nil, dispatcherErrorResult(cmdKey, "build "+path, err)

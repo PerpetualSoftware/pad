@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"sort"
-
-	"github.com/mark3labs/mcp-go/mcp"
 )
 
 // padPlaybookTool exposes the first-class playbook surface from
@@ -105,7 +103,7 @@ var padPlaybookTool = ToolDef{
 //     supports bareword flag PRESENCE (no flag=false form), so a
 //     local-stdio caller cannot override a flag-default-true value;
 //     route through HTTP/in-process MCP for that rare case.
-func actionPlaybookRun(ctx context.Context, input map[string]any, env ActionEnv) (*mcp.CallToolResult, error) {
+func actionPlaybookRun(ctx context.Context, input map[string]any, env ActionEnv) (*CallToolResult, error) {
 	ref, _ := input["ref"].(string)
 	if ref == "" {
 		// Use the structured validation envelope (matches what

@@ -7,8 +7,6 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/mark3labs/mcp-go/mcp"
-
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
@@ -44,7 +42,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemImport(
 	ctx context.Context,
 	input map[string]any,
 	user *models.User,
-) (*mcp.CallToolResult, error) {
+) (*CallToolResult, error) {
 	const cmdKey = "item import"
 
 	workspace, _ := input["workspace"].(string)

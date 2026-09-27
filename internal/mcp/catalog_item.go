@@ -6,8 +6,6 @@ import (
 	"os"
 	"sort"
 	"strings"
-
-	"github.com/mark3labs/mcp-go/mcp"
 )
 
 // padItemTool is the v0.2 tool that consolidates the ~20 v0.1 verb
@@ -569,7 +567,7 @@ var itemLinkRoutes = map[string]itemLinkRoute{
 //     the valid options, same shape as makeFanOutHandler's errMissingAction.
 //   - missing ref or target → BuildCLIArgs catches it as a missing-
 //     positional error.
-func actionItemLink(ctx context.Context, input map[string]any, env ActionEnv) (*mcp.CallToolResult, error) {
+func actionItemLink(ctx context.Context, input map[string]any, env ActionEnv) (*CallToolResult, error) {
 	cmdPath, dispatchInput, err := resolveItemLink(input, true)
 	if err != nil {
 		return errStructured("pad_item.link", err), nil
@@ -579,7 +577,7 @@ func actionItemLink(ctx context.Context, input map[string]any, env ActionEnv) (*
 
 // actionItemUnlink is the symmetric un-create operation. Same routing
 // rules; uses route.unlinkCmdPath instead of route.linkCmdPath.
-func actionItemUnlink(ctx context.Context, input map[string]any, env ActionEnv) (*mcp.CallToolResult, error) {
+func actionItemUnlink(ctx context.Context, input map[string]any, env ActionEnv) (*CallToolResult, error) {
 	cmdPath, dispatchInput, err := resolveItemLink(input, false)
 	if err != nil {
 		return errStructured("pad_item.unlink", err), nil
@@ -677,7 +675,7 @@ func joinSorted(ss []string) string {
 // link_type, etc.). If a future call site needs a different code,
 // give it its own helper rather than overloading this one — keeps
 // the code-per-call-site mapping explicit.
-func errStructured(prefix string, err error) *mcp.CallToolResult {
+func errStructured(prefix string, err error) *CallToolResult {
 	return NewErrorResult(ErrorPayload{
 		Code:    ErrValidationFailed,
 		Message: fmt.Sprintf("%s: %s", prefix, err.Error()),
@@ -695,7 +693,7 @@ func errStructured(prefix string, err error) *mcp.CallToolResult {
 // `ref` (which is scalar across every other action) so the schema
 // stays consistent — agents see a single shape per param name. The
 // rename happens here at dispatch time.
-func actionItemBulkUpdate(ctx context.Context, input map[string]any, env ActionEnv) (*mcp.CallToolResult, error) {
+func actionItemBulkUpdate(ctx context.Context, input map[string]any, env ActionEnv) (*CallToolResult, error) {
 	rawRefs, ok := input["refs"]
 	if !ok || rawRefs == nil {
 		return errStructured("pad_item.bulk-update",
@@ -793,7 +791,7 @@ const (
 // projection parameter). `full: true` opts into complete bodies on
 // both. MCP callers that need one item's body should prefer
 // action=get.
-func actionItemList(ctx context.Context, input map[string]any, env ActionEnv) (*mcp.CallToolResult, error) {
+func actionItemList(ctx context.Context, input map[string]any, env ActionEnv) (*CallToolResult, error) {
 	// Early MCP-side feedback for the parent/unparented conflict; canonical
 	// enforcement lives in validateUnparentedListRequest
 	// (internal/server/handlers_items.go). Keep the two in sync.
@@ -838,7 +836,7 @@ const (
 // The catalog is the right home for the default (rather than either
 // dispatcher) for the reason actionItemList already documents — it is the one
 // place both transports pass through.
-func actionItemHistory(ctx context.Context, input map[string]any, env ActionEnv) (*mcp.CallToolResult, error) {
+func actionItemHistory(ctx context.Context, input map[string]any, env ActionEnv) (*CallToolResult, error) {
 	out := make(map[string]any, len(input)+1)
 	for k, v := range input {
 		out[k] = v
@@ -871,7 +869,7 @@ func actionItemHistory(ctx context.Context, input map[string]any, env ActionEnv)
 //
 // Read-only / side-effect-free: the server's export endpoint only
 // reads the item.
-func actionItemExport(ctx context.Context, input map[string]any, env ActionEnv) (*mcp.CallToolResult, error) {
+func actionItemExport(ctx context.Context, input map[string]any, env ActionEnv) (*CallToolResult, error) {
 	if ref, _ := input["ref"].(string); strings.TrimSpace(ref) == "" {
 		return errStructured("pad_item.export",
 			fmt.Errorf("ref is required (PLAYB-N, CONVE-N, or slug)")), nil
@@ -903,7 +901,7 @@ func actionItemExport(ctx context.Context, input map[string]any, env ActionEnv) 
 // Mutating but not destructive — the server imports the artifact as a
 // draft item (same risk profile as action=create), returning
 // {ref, slug, warnings}.
-func actionItemImport(ctx context.Context, input map[string]any, env ActionEnv) (*mcp.CallToolResult, error) {
+func actionItemImport(ctx context.Context, input map[string]any, env ActionEnv) (*CallToolResult, error) {
 	artifact, _ := input["artifact"].(string)
 	if strings.TrimSpace(artifact) == "" {
 		return errStructured("pad_item.import",

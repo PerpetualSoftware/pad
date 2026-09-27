@@ -9,13 +9,11 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/mark3labs/mcp-go/mcp"
-
 	"github.com/PerpetualSoftware/pad/internal/cmdhelp"
 )
 
 // Dispatcher executes a pad CLI command on behalf of a tool call. It
-// always returns a *mcp.CallToolResult — error paths set IsError on
+// always returns a *CallToolResult — error paths set IsError on
 // the result so MCP clients see structured stderr without having to
 // distinguish protocol errors from tool errors.
 //
@@ -37,7 +35,7 @@ import (
 // registry attaches that input via WithDispatchInput before calling
 // Dispatch.
 type Dispatcher interface {
-	Dispatch(ctx context.Context, cmdPath []string, cliArgs []string) (*mcp.CallToolResult, error)
+	Dispatch(ctx context.Context, cmdPath []string, cliArgs []string) (*CallToolResult, error)
 }
 
 // dispatchInputKey is the unexported context-key type used to forward
@@ -124,9 +122,9 @@ type ExecDispatcher struct {
 
 // Dispatch runs `<Binary> <cmdPath...> <cliArgs...>` and packages the
 // output for an MCP client.
-func (d *ExecDispatcher) Dispatch(ctx context.Context, cmdPath []string, cliArgs []string) (*mcp.CallToolResult, error) {
+func (d *ExecDispatcher) Dispatch(ctx context.Context, cmdPath []string, cliArgs []string) (*CallToolResult, error) {
 	if d.Binary == "" {
-		return mcp.NewToolResultError("dispatcher: binary path not configured"), nil
+		return errorResult("dispatcher: binary path not configured"), nil
 	}
 	// THIS dispatcher is the stdio door, and it cannot express a structured
 	// field value: it runs the CLI with `--field key=value` arguments, and a
@@ -176,14 +174,14 @@ func (d *ExecDispatcher) Dispatch(ctx context.Context, cmdPath []string, cliArgs
 // Shared between ExecDispatcher and HTTPHandlerDispatcher's
 // packageHTTPResponse so both transports produce the same wire
 // shape.
-func packageJSONResult(out string) *mcp.CallToolResult {
+func packageJSONResult(out string) *CallToolResult {
 	trimmed := strings.TrimSpace(out)
 	if !strings.HasPrefix(trimmed, "{") && !strings.HasPrefix(trimmed, "[") {
-		return mcp.NewToolResultText(out)
+		return textResult(out)
 	}
 	var parsed any
 	if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil {
-		return mcp.NewToolResultText(out)
+		return textResult(out)
 	}
 	parsed = normalizeStringEncodedJSONFields(parsed)
 	if arr, ok := parsed.([]any); ok {
@@ -192,9 +190,9 @@ func packageJSONResult(out string) *mcp.CallToolResult {
 		// array. The original JSON text is still returned as the text
 		// fallback so clients that don't parse structured content keep
 		// seeing the raw shape they used to.
-		return mcp.NewToolResultStructured(map[string]any{"items": arr}, out)
+		return structuredResult(map[string]any{"items": arr}, out)
 	}
-	return mcp.NewToolResultStructured(parsed, out)
+	return structuredResult(parsed, out)
 }
 
 // normalizeStringEncodedJSONFields recursively walks a parsed JSON

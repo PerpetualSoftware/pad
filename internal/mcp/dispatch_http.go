@@ -14,7 +14,6 @@ import (
 	"sync"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/PerpetualSoftware/pad/internal/items"
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -275,7 +274,7 @@ var noRemoteEquivalent = map[string]string{
 //     dispatcher does the merge).
 //  6. Otherwise, look up a RouteMapper in routeTable, build the
 //     synthesized request, and execute through the handler chain.
-func (d *HTTPHandlerDispatcher) Dispatch(ctx context.Context, cmdPath, _ []string) (*mcp.CallToolResult, error) {
+func (d *HTTPHandlerDispatcher) Dispatch(ctx context.Context, cmdPath, _ []string) (*CallToolResult, error) {
 	if d.Handler == nil {
 		return NewErrorResult(ErrorPayload{
 			Code:    ErrServerError,
@@ -417,7 +416,7 @@ func (d *HTTPHandlerDispatcher) Dispatch(ctx context.Context, cmdPath, _ []strin
 
 // specialDispatchFn is the signature shared by the dispatcher's
 // special-case route methods.
-type specialDispatchFn func(context.Context, map[string]any, *models.User) (*mcp.CallToolResult, error)
+type specialDispatchFn func(context.Context, map[string]any, *models.User) (*CallToolResult, error)
 
 // specialRoutes maps cmdKeys to the dispatcher methods that handle
 // them in place of a routeTable mapper — commands whose HTTP path
@@ -482,7 +481,7 @@ func (d *HTTPHandlerDispatcher) executeRequest(
 	user *models.User,
 	method, urlPath string,
 	body []byte,
-) (*mcp.CallToolResult, error) {
+) (*CallToolResult, error) {
 	req, err := d.buildAuthedRequest(ctx, method, urlPath, body, user)
 	if err != nil {
 		return buildRequestErrorResult(cmdKey, err), nil
@@ -511,7 +510,7 @@ func (d *HTTPHandlerDispatcher) executeRequest(
 // surface the SAME permission_denied codes as the routeTable path —
 // without the extraction, a scope rejection on those paths degraded
 // to a generic server_error.
-func buildRequestErrorResult(cmdKey string, err error) *mcp.CallToolResult {
+func buildRequestErrorResult(cmdKey string, err error) *CallToolResult {
 	// Most build-request failures are scope-rejection from
 	// buildAuthedRequest's TokenScopeAllows check (PATCH on a
 	// read-only token, etc.). Surface as permission_denied so
@@ -722,7 +721,7 @@ func buildHTTPRequest(ctx context.Context, method, urlPath string, body []byte, 
 // user's workspaces by the token's allow-list — leaking workspace
 // slugs the user didn't consent to expose would be a privacy bug.
 // nil → empty available_workspaces (legacy behaviour).
-func packageHTTPResponse(ctx context.Context, cmdKey string, resp *http.Response, lister WorkspaceLister) (*mcp.CallToolResult, error) {
+func packageHTTPResponse(ctx context.Context, cmdKey string, resp *http.Response, lister WorkspaceLister) (*CallToolResult, error) {
 	defer resp.Body.Close()
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {

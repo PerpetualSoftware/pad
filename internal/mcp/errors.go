@@ -7,8 +7,6 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
-
-	"github.com/mark3labs/mcp-go/mcp"
 )
 
 // ─────────────────────────────────────────────────────────────────────
@@ -283,20 +281,20 @@ type WorkspaceHint struct {
 // with IsError=true. Both the JSON envelope and a human-readable
 // summary are returned: the envelope as structured content for clients
 // that parse it (Claude Desktop, Cursor), the summary as text fallback.
-func NewErrorResult(p ErrorPayload) *mcp.CallToolResult {
+func NewErrorResult(p ErrorPayload) *CallToolResult {
 	envelope := ErrorEnvelope{Error: p}
 	body, err := json.Marshal(envelope)
 	if err != nil {
 		// Marshal of a struct with only string + bool + slice fields
 		// can't realistically fail; defensive fallback returns a plain
 		// errorf so the agent at least sees something.
-		return mcp.NewToolResultErrorf("%s: %s", p.Code, p.Message)
+		return errorResultf("%s: %s", p.Code, p.Message)
 	}
 	// NewToolResultStructured returns a result with content blocks
 	// PLUS structured content. The IsError flag has to be set after
 	// because the structured constructor doesn't accept it as a
 	// parameter — set it here so MCP clients see both.
-	res := mcp.NewToolResultStructured(envelope, string(body))
+	res := structuredResult(envelope, string(body))
 	res.IsError = true
 	return res
 }
@@ -305,7 +303,7 @@ func NewErrorResult(p ErrorPayload) *mcp.CallToolResult {
 // available_workspaces populated by the supplied lookup. Lookup is
 // best-effort: failures (e.g. no auth) yield an envelope with empty
 // AvailableWorkspaces rather than dropping the whole error.
-func noWorkspaceResult(ctx context.Context, lookup WorkspaceLister) *mcp.CallToolResult {
+func noWorkspaceResult(ctx context.Context, lookup WorkspaceLister) *CallToolResult {
 	hints := bestEffortWorkspaceHints(ctx, lookup)
 	return NewErrorResult(ErrorPayload{
 		Code:                ErrNoWorkspace,
@@ -319,7 +317,7 @@ func noWorkspaceResult(ctx context.Context, lookup WorkspaceLister) *mcp.CallToo
 // Same available_workspaces enrichment as no_workspace. Empty slug
 // emits a generic message rather than a misleading `Workspace ""`
 // — happens when the source error doesn't explicitly name the slug.
-func unknownWorkspaceResult(ctx context.Context, slug string, lookup WorkspaceLister) *mcp.CallToolResult {
+func unknownWorkspaceResult(ctx context.Context, slug string, lookup WorkspaceLister) *CallToolResult {
 	hints := bestEffortWorkspaceHints(ctx, lookup)
 	message := "Workspace not visible to this session."
 	if slug != "" {
@@ -375,7 +373,7 @@ func bestEffortWorkspaceHints(ctx context.Context, lookup WorkspaceLister) []Wor
 // envelope unknownWorkspaceResult already built. Returns a zero
 // envelope when the structured content is missing or malformed —
 // callers fall back gracefully.
-func envelopeFrom(res *mcp.CallToolResult) ErrorEnvelope {
+func envelopeFrom(res *CallToolResult) ErrorEnvelope {
 	if res == nil {
 		return ErrorEnvelope{}
 	}
@@ -489,7 +487,7 @@ var allowedStructuredErrorCodes = map[string]struct{}{
 //     can't pre-empt it.
 //   - Marker must start the line after trimming whitespace; markers
 //     embedded mid-line (e.g. in a quoted log message) are ignored.
-func extractStructuredCLIError(stderr string) *mcp.CallToolResult {
+func extractStructuredCLIError(stderr string) *CallToolResult {
 	if !strings.Contains(stderr, structuredErrorMarker) {
 		return nil
 	}
@@ -540,7 +538,7 @@ func extractStructuredCLIError(stderr string) *mcp.CallToolResult {
 // classifyExecError turns an exec.Cmd failure (err + stderr) into a
 // structured envelope. lookup is optional — when supplied, no_workspace
 // errors get available_workspaces enrichment.
-func classifyExecError(ctx context.Context, cmdPath []string, runErr error, stderr string, lookup WorkspaceLister) *mcp.CallToolResult {
+func classifyExecError(ctx context.Context, cmdPath []string, runErr error, stderr string, lookup WorkspaceLister) *CallToolResult {
 	// IDEA-1494 R2: the CLI emits a single `pad-error: {json}` line
 	// on stderr when surfacing the open-children rejection (see
 	// internal/cli/client.go::WriteOpenChildrenError). Detect it
@@ -725,7 +723,7 @@ func extractUnknownWorkspaceSlug(stderr string) string {
 // BUG-987 bug 12: previously BuildCLIArgs failures came out of
 // env.Dispatch as bare mcp.NewToolResultErrorf strings, breaking the
 // structured-envelope invariant that every other error path follows.
-func validationFailedFromBuildErr(cmdPath string, err error) *mcp.CallToolResult {
+func validationFailedFromBuildErr(cmdPath string, err error) *CallToolResult {
 	msg := err.Error()
 	field := extractValidationField(msg)
 	payload := ErrorPayload{
@@ -884,7 +882,7 @@ const (
 // classifyHTTPStatus is the legacy entry point preserved for callers
 // that don't know their resource kind. New callers should use
 // classifyHTTPStatusKind directly.
-func classifyHTTPStatus(ctx context.Context, cmdKey string, status int, body []byte, lookup WorkspaceLister) *mcp.CallToolResult {
+func classifyHTTPStatus(ctx context.Context, cmdKey string, status int, body []byte, lookup WorkspaceLister) *CallToolResult {
 	return classifyHTTPStatusKind(ctx, cmdKey, "", status, body, lookup, ResourceUnknown, "")
 }
 
@@ -917,7 +915,7 @@ func classifyHTTPStatusKind(
 	lookup WorkspaceLister,
 	kind ResourceKind,
 	refOrSlug string,
-) *mcp.CallToolResult {
+) *CallToolResult {
 	bodyText := strings.TrimSpace(string(body))
 	bodyMessage := extractUpstreamMessage(bodyText)
 	if bodyText == "" {
@@ -1075,7 +1073,7 @@ func classify404(
 	lookup WorkspaceLister,
 	kind ResourceKind,
 	refOrSlug string,
-) *mcp.CallToolResult {
+) *CallToolResult {
 	// Workspace-shaped 404s: route through the existing
 	// unknown_workspace path so available_workspaces enrichment fires.
 	// Body-string sniffing is the legacy fallback for callers that
@@ -1496,7 +1494,7 @@ func tooLargeHintFor(route string) string {
 // which tool was invoked; msg is the human-readable issue (e.g.
 // "workspace is required", "ref is required"); fixHint is the
 // recovery suggestion.
-func validationFailedResult(cmdKey, msg, fixHint string) *mcp.CallToolResult {
+func validationFailedResult(cmdKey, msg, fixHint string) *CallToolResult {
 	return NewErrorResult(ErrorPayload{
 		Code:    ErrValidationFailed,
 		Message: fmt.Sprintf("%s: %s", cmdKey, msg),
@@ -1514,7 +1512,7 @@ func validationFailedResult(cmdKey, msg, fixHint string) *mcp.CallToolResult {
 // request", "encode body", "parse current item"); err is the
 // underlying error — its message goes in the hint so debugging
 // info isn't lost.
-func dispatcherErrorResult(cmdKey, op string, err error) *mcp.CallToolResult {
+func dispatcherErrorResult(cmdKey, op string, err error) *CallToolResult {
 	hint := fmt.Sprintf("Internal: %s — %s", op, err.Error())
 	return NewErrorResult(ErrorPayload{
 		Code:    ErrServerError,
@@ -1538,7 +1536,7 @@ func upstreamHTTPErrorResult(
 	lookup WorkspaceLister,
 	kind ResourceKind,
 	refOrSlug string,
-) *mcp.CallToolResult {
+) *CallToolResult {
 	res := classifyHTTPStatusKind(ctx, cmdKey, route, status, body, lookup, kind, refOrSlug)
 	// Layer the per-call op verb into the message so a "prefetch"
 	// failure surfaces distinct from a top-level "execute" failure.
