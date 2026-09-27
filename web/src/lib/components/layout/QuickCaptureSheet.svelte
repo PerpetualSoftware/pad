@@ -17,6 +17,7 @@
 	import { goto } from '$app/navigation';
 	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
 	import { collectionStore } from '$lib/stores/collections.svelte';
+	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { titleLimitError } from '$lib/items/titleLimit';
@@ -39,8 +40,12 @@
 	// Agent/system collections (conventions, playbooks) are structured forms,
 	// not quick-capture targets — mirror the Sidebar's regularCollections split.
 	// Grouped by the bootstrap_include trait, not a slug list. TASK-2657.
+	// Only collections the caller may create in (BUG-3258); the server refuses
+	// the rest.
 	let collections = $derived(
-		collectionStore.collections.filter((c) => !isAgentCollection(c))
+		collectionStore.collections.filter(
+			(c) => !isAgentCollection(c) && workspaceStore.canEditCollection(c.id)
+		)
 	);
 
 	let selectedSlug = $state('');
@@ -120,6 +125,12 @@
 <DockedSheet {open} onclose={close} label="Quick capture">
 	<div class="capture">
 		<h2 class="capture-heading">Quick capture</h2>
+		{#if collections.length === 0}
+			<p class="capture-empty">You can't add items in this workspace.</p>
+			<div class="capture-actions">
+				<button class="capture-cancel" type="button" onclick={close}>Close</button>
+			</div>
+		{:else}
 		<select class="capture-collection" bind:value={selectedSlug} aria-label="Collection">
 			{#each collections as c (c.id)}
 				<option value={c.slug}>{c.icon} {c.name}</option>
@@ -144,10 +155,15 @@
 				{submitting ? 'Adding…' : 'Add'}
 			</button>
 		</div>
+		{/if}
 	</div>
 </DockedSheet>
 
 <style>
+	.capture-empty {
+		margin: 0;
+		color: var(--text-secondary);
+	}
 	.capture {
 		display: flex;
 		flex-direction: column;

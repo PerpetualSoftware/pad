@@ -47,10 +47,9 @@ const EDITS: Record<AccountKey, Coll[]> = {
 };
 const NAME: Record<Coll, string> = { tasks: 'Tasks', ideas: 'Ideas' };
 
-// Accounts whose leg currently fails on a filed leak. Each set is exactly the
-// accounts that see a create affordance for a collection they cannot edit.
-const QUICK_ADD_LEAKS: ReadonlySet<AccountKey> = new Set(['viewer', 'viewerTasksEdit', 'guestItemEdit']);
-const DASHBOARD_LEAKS: ReadonlySet<AccountKey> = new Set(['viewer', 'guestItemEdit']);
+// Accounts whose role may edit every collection, so the dashboard also offers
+// the first non-Tasks collection (BUG-3258).
+const EDITS_ALL: ReadonlySet<AccountKey> = new Set(['owner', 'editor']);
 
 let walk: PermissionWalk;
 
@@ -94,13 +93,15 @@ for (const key of ACCOUNT_KEYS) {
 				await expect(page.locator('button.new-btn'), `${key} on ${coll}`).toHaveCount(
 					EDITS[key].includes(coll) ? 1 : 0
 				);
+				// The sidebar's "+ New {collection}" under the nav (BUG-3258,
+				// codex round 1).
+				await expect(page.locator('button.new-item-btn'), `${key} sidebar on ${coll}`).toHaveCount(
+					EDITS[key].includes(coll) ? 1 : 0
+				);
 			}
 		});
 
 		test('sidebar: quick-add renders iff the account may edit the collection', async ({ page }) => {
-			// BUG-3258: quick-add renders on every visible collection. Remove
-			// once the fix lands; the flip to passing fails this test.
-			test.fail(QUICK_ADD_LEAKS.has(key), 'BUG-3258');
 			await open(page, key, '');
 			for (const coll of SEES[key]) {
 				const entry = sidebarEntry(page, coll);
@@ -112,15 +113,49 @@ for (const key of ACCOUNT_KEYS) {
 		});
 
 		test('dashboard: create buttons render only for a collection the account may edit', async ({ page }) => {
-			// BUG-3258: the dashboard header's create buttons are ungated.
-			test.fail(DASHBOARD_LEAKS.has(key), 'BUG-3258');
 			await open(page, key, '');
 			await expect(page.locator('.dash-header h1')).toBeVisible();
 			await expect(page.getByRole('button', { name: '+ New Task', exact: true })).toHaveCount(
 				EDITS[key].includes('tasks') ? 1 : 0
 			);
+			// The secondary button offers the first non-Tasks collection the
+			// account may edit. Only a whole-workspace editor has one here.
+			await expect(page.locator('.dash-header-actions button')).toHaveCount(
+				(EDITS[key].includes('tasks') ? 1 : 0) + (EDITS_ALL.has(key) ? 1 : 0)
+			);
+		});
+
+		test('Cmd-N: quick-add opens on, and offers, only collections the account may edit', async ({ page }) => {
+			// From Ideas where the account sees it, so the fallback to the
+			// ACTIVE collection is exercised (BUG-3258): an account that
+			// cannot edit Ideas must not get a New Idea dialog there.
+			const onIdeas = SEES[key].includes('ideas');
+			await open(page, key, onIdeas ? '/ideas' : '');
+			if (onIdeas) {
+				await expect(page.getByText(anchorTitle('ideas'), { exact: true }).first()).toBeVisible();
+			} else {
+				await expect(page.locator('.dash-header h1')).toBeVisible();
+			}
+			await page.keyboard.press('ControlOrMeta+n');
+			const modal = page.locator('.quick-add-modal');
 			if (EDITS[key].length === 0) {
-				await expect(page.locator('.dash-header-actions button')).toHaveCount(0);
+				// Absence after a keypress: the owner and editor legs prove the
+				// same press opens the dialog within this wait.
+				await page.waitForTimeout(500);
+				await expect(modal).toHaveCount(0);
+				return;
+			}
+			await expect(modal).toBeVisible();
+			const expectLabel = onIdeas && EDITS[key].includes('ideas') ? 'New Idea' : 'New Task';
+			await expect(modal.locator('.quick-add-label')).toHaveText(expectLabel);
+			const pill = modal.locator('.quick-add-pill');
+			if (EDITS_ALL.has(key)) {
+				await pill.click();
+				await expect(modal.locator('.quick-add-picker-option', { hasText: 'New Idea' })).toHaveCount(1);
+				await expect(modal.locator('.quick-add-picker-option', { hasText: 'New Task' })).toHaveCount(1);
+			} else {
+				// One creatable collection: the picker cannot switch to another.
+				await expect(pill).toBeDisabled();
 			}
 		});
 

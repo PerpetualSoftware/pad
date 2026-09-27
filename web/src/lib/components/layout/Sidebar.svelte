@@ -96,7 +96,13 @@
 		collectionStore.collections.filter(c => isAgentCollection(c))
 	);
 
-	let pickerCollections = $derived(regularCollections);
+	// Create targets are the collections the caller may create in, grant-aware
+	// (BUG-3258). The server refuses the rest, so offering them only let a user
+	// type a title and then be refused.
+	let creatableCollections = $derived(
+		regularCollections.filter(c => workspaceStore.canEditCollection(c.id))
+	);
+	let pickerCollections = $derived(creatableCollections);
 	let canSwitchCollection = $derived(pickerCollections.length > 1);
 
 	$effect(() => {
@@ -146,15 +152,27 @@
 		pickerOpen = false;
 	}
 
-	// Watch for Cmd-N quick-add requests from the layout
+	// Watch for Cmd-N quick-add requests from the layout.
+	//
+	// A request is consumed at once, even while membership is still loading, in
+	// which case no collection reads as creatable and it does nothing. Holding
+	// it until membership settled was tried (codex round 1 on BUG-3258) and
+	// withdrawn: the request is one global flag with no workspace identity, so
+	// every hold had a new cross-workspace timing hole (rounds 2 and 3). The
+	// window is only a workspace's FIRST resolution in a session; a repeat
+	// resolution serves the prior answer (TASK-2988).
 	$effect(() => {
 		if (uiStore.quickAddRequested) {
 			const targetSlug = uiStore.quickAddTargetSlug;
 			uiStore.clearQuickAddRequest();
-			const target = (targetSlug ? regularCollections.find(c => c.slug === targetSlug) : null)
-				?? activeColl
-				?? regularCollections.find(c => c.slug === 'tasks')
-				?? regularCollections[0];
+			// Only a collection the caller may create in (BUG-3258); with none,
+			// Cmd-N does nothing.
+			const creatable = (c: Collection | null | undefined) =>
+				c && creatableCollections.some(x => x.id === c.id) ? c : null;
+			const target = (targetSlug ? creatable(regularCollections.find(c => c.slug === targetSlug)) : null)
+				?? creatable(activeColl)
+				?? creatableCollections.find(c => c.slug === 'tasks')
+				?? creatableCollections[0];
 			if (target) startQuickAdd(target);
 		}
 	});
@@ -178,6 +196,12 @@
 		if (!wsSlug || !quickAddCollection || !quickAddTitle.trim() || quickAddSubmitting) return;
 		const coll = quickAddCollection;
 		const title = quickAddTitle.trim();
+		// Permission can change while the dialog is open (codex round 1 on
+		// BUG-3258); the dialog keeps the collection it opened on.
+		if (!workspaceStore.canEditCollection(coll.id)) {
+			quickAddError = `You can't create items in ${coll.name}.`;
+			return;
+		}
 		// BUG-3115: this used to close the dialog and clear the text BEFORE the
 		// create, so a refused title was simply gone. The dialog now stays up
 		// until the create lands, and a too-long title is refused here without
@@ -616,11 +640,13 @@
 								{#if collection.item_count != null && collection.item_count > 0}
 									<span class="nav-count">{collection.active_item_count}</span>
 								{/if}
-								<button
-									class="nav-quick-add"
-									title="New {collection.name.replace(/s$/, '')}"
-									onclick={(e) => { e.stopPropagation(); e.preventDefault(); startQuickAdd(collection); }}
-								>+</button>
+								{#if workspaceStore.canEditCollection(collection.id)}
+									<button
+										class="nav-quick-add"
+										title="New {collection.name.replace(/s$/, '')}"
+										onclick={(e) => { e.stopPropagation(); e.preventDefault(); startQuickAdd(collection); }}
+									>+</button>
+								{/if}
 							</a>
 						{/each}
 					</div>
@@ -647,7 +673,7 @@
 				{/if}
 			</nav>
 
-			{#if activeCollectionSlug && activeColl && !isAgentCollection(activeColl)}
+			{#if activeCollectionSlug && activeColl && !isAgentCollection(activeColl) && workspaceStore.canEditCollection(activeColl.id)}
 			<div class="actions">
 				<button
 					class="new-item-btn"

@@ -8,6 +8,7 @@
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { titleLimitError } from '$lib/items/titleLimit';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
+	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { toBlockquote } from '$lib/utils/markdown';
 
 	let {
@@ -60,9 +61,13 @@
 
 	// Sort collections: non-agent first, agent-facing last. Membership comes
 	// from the bootstrap_include trait (SPEC-5), not a slug list. TASK-2657.
+	// Only collections the caller may create in (BUG-3258): the editor being
+	// editable says nothing about the TARGET collection, and the server refuses
+	// a create there.
 	let sortedCollections = $derived.by(() => {
-		const normal = collections.filter((c) => !isAgentCollection(c));
-		const agent = collections.filter((c) => isAgentCollection(c));
+		const creatable = collections.filter((c) => workspaceStore.canEditCollection(c.id));
+		const normal = creatable.filter((c) => !isAgentCollection(c));
+		const agent = creatable.filter((c) => isAgentCollection(c));
 		return [...normal, ...agent];
 	});
 
@@ -231,6 +236,13 @@
 			creating = false;
 			return;
 		}
+		// Permission can change while the form is open (codex round 1 on
+		// BUG-3258); the form keeps the slug it was opened with.
+		if (!workspaceStore.canEditCollection(coll.id)) {
+			errorMsg = `You can't create items in ${coll.name}`;
+			creating = false;
+			return;
+		}
 
 		try {
 			const defaultFields = getDefaultFields(coll);
@@ -362,6 +374,7 @@
 			{/if}
 		{/if}
 		{#if !showForm}
+			{#if sortedCollections.length > 0}
 			<button class="extract-btn" onclick={openForm}>
 				<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 					<circle cx="6" cy="6" r="3" />
@@ -372,6 +385,7 @@
 				</svg>
 				Extract
 			</button>
+			{/if}
 		{:else}
 			<div class="extract-form">
 				<div class="form-row">

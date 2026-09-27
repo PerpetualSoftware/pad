@@ -35,7 +35,13 @@ vi.mock('$lib/api/client', () => ({
 }));
 vi.mock('$app/navigation', () => ({ goto: vi.fn(), afterNavigate: vi.fn(), beforeNavigate: vi.fn() }));
 vi.mock('$lib/stores/workspace.svelte', () => ({
-	workspaceStore: { current: { slug: 'ws', owner_username: 'u', is_guest: false } },
+	workspaceStore: {
+		current: { slug: 'ws', owner_username: 'u', is_guest: false },
+		// Every collection is creatable here; the gate itself is walked in
+		// e2e/permission-walk-collections.spec.ts (BUG-3258).
+		canEditCollection: () => true,
+		membershipKnown: true
+	},
 }));
 // A $state-backed double: see the fixture for why a plain array is not one.
 vi.mock('$lib/stores/collections.svelte', async () => await import('./sidebarQuickAdd.fixture.svelte'));
