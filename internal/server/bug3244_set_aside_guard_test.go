@@ -209,6 +209,15 @@ func TestSetAsideRefusesRestoreUntilOverwrite(t *testing.T) {
 	if n := f.setAsideRows(t); n != 0 {
 		t.Fatalf("set-aside rows after the override restore = %d, want 0", n)
 	}
+	// BUG-3230 U2 names how many edits a restore deleted; the set-aside rows
+	// it discarded are counted there, as a content write counts them.
+	var restored models.Item
+	if err := json.Unmarshal(rr.Body.Bytes(), &restored); err != nil {
+		t.Fatalf("decode restore response: %v", err)
+	}
+	if restored.Warnings == nil || restored.Warnings.PrunedPendingEdits != 1 {
+		t.Fatalf("restore warnings.pruned_pending_edits = %+v, want 1 (the discarded set-aside row)", restored.Warnings)
+	}
 }
 
 // Ruling 3: the rows are readable as raw updates and an explicit discard
