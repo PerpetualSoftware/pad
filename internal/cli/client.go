@@ -1692,6 +1692,43 @@ func WriteUpdateConflictError(w io.Writer, apiErr *APIError, uc *UpdateConflictD
 	fmt.Fprintln(w, "Re-read the item (pad item show) and retry with the current timestamp.")
 }
 
+// CommentHasRepliesCode is the structured code for BUG-3252's refusal: a
+// delete of a comment that still has replies. Keep it, and the hint, in
+// lockstep with internal/mcp's allowedStructuredErrorCodes and
+// CommentHasRepliesHint.
+const CommentHasRepliesCode = "comment_has_replies"
+
+// CommentHasRepliesHint is the recovery guidance for CommentHasRepliesCode.
+const CommentHasRepliesHint = "Nothing was deleted. Delete the replies first (the comments whose parent_id is this comment's id), " +
+	"or edit the comment instead of deleting it."
+
+// IsCommentHasReplies reports whether err is BUG-3252's refusal.
+func IsCommentHasReplies(err error) (*APIError, bool) {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.Code == CommentHasRepliesCode {
+		return apiErr, true
+	}
+	return nil, false
+}
+
+// WriteCommentHasRepliesError writes the structured marker line for
+// BUG-3252's refusal, so the stdio MCP transport reports comment_has_replies
+// with its reply count instead of inferring a code from the prose. Like
+// WriteRateLimitedError it prints no human line; cobra prints the message.
+func WriteCommentHasRepliesError(w io.Writer, apiErr *APIError) {
+	body := map[string]any{
+		"code":    CommentHasRepliesCode,
+		"message": apiErr.Message,
+		"hint":    CommentHasRepliesHint,
+	}
+	if len(apiErr.Details) > 0 {
+		body["details"] = apiErr.Details
+	}
+	if data, err := json.Marshal(map[string]any{"error": body}); err == nil {
+		fmt.Fprintln(w, StructuredErrorMarker+string(data))
+	}
+}
+
 // ContentPendingFlushCode is the structured code for BUG-3133's refusal: a
 // content write carrying a version token while a browser tab holds unflushed
 // edits the token cannot see. Keep in lockstep with internal/mcp's

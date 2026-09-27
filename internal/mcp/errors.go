@@ -189,6 +189,13 @@ const (
 	// resend with overwrite_pending_edits=true. Details carries ref/pending_rows.
 	ErrContentPendingFlush ErrorCode = "content_pending_flush"
 
+	// ErrCommentHasReplies fires on HTTP 409 responses that carry
+	// error.code="comment_has_replies" (BUG-3252): delete-comment refused
+	// because the comment still has replies. Nothing was deleted; a retry
+	// refuses identically until the replies are deleted. Details carries
+	// comment_id/reply_count.
+	ErrCommentHasReplies ErrorCode = "comment_has_replies"
+
 	// ErrStoredStateUnreadable fires when an operation is refused because
 	// the ITEM'S STORED STATE cannot be decoded — today, an append to an
 	// implementation_notes / decision_log field whose value is not a list
@@ -442,6 +449,9 @@ var allowedStructuredErrorCodes = map[string]struct{}{
 	// unflushed edits. Distinct from update_conflict because re-reading does
 	// not clear it; the way out is overwrite_pending_edits.
 	"content_pending_flush": {},
+	// BUG-3252: a delete of a comment that still has replies, refused
+	// instead of failing the parent_id FK as a 500. details.reply_count.
+	"comment_has_replies": {},
 	// BUG-2675. The only entry whose marker is written for a LOCALLY
 	// generated refusal rather than an upstream APIError — the CLI's
 	// append helpers refuse before any request is made (see
@@ -971,6 +981,10 @@ func classifyHTTPStatusKind(
 					hint = ContentSetAsideHint
 				}
 			}
+			if upstream.Code == string(ErrCommentHasReplies) {
+				// Retrying refuses identically until the replies are gone.
+				hint = CommentHasRepliesHint
+			}
 			if upstream.Code == string(ErrStoredStateUnreadable) {
 				// Same reason: the stored value stays undecodable, so every
 				// retry refuses identically. Since BUG-3056 the note/decide
@@ -1302,6 +1316,12 @@ func permissionHintFor(bodyMsg, route string) string {
 	}
 	return strings.Join(parts, " ")
 }
+
+// CommentHasRepliesHint is the recovery guidance for ErrCommentHasReplies on
+// the remote transport. Duplicated in internal/cli (CommentHasRepliesHint),
+// whose marker carries it on stdio; keep the two identical.
+const CommentHasRepliesHint = "Nothing was deleted. Delete the replies first (the comments whose parent_id is this comment's id), " +
+	"or edit the comment instead of deleting it."
 
 // ContentPendingFlushHint is the recovery guidance for ErrContentPendingFlush,
 // on both transports. Duplicated in internal/cli (ContentPendingFlushHint) for

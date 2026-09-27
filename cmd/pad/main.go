@@ -73,6 +73,12 @@ func writeRootStructuredError(w io.Writer, err error) {
 	}
 	if apiErr, ok := cli.IsTooLarge(err); ok {
 		cli.WriteTooLargeError(w, apiErr)
+		return
+	}
+	// BUG-3252: only comment-delete receives it today, but a root writer
+	// keeps any later door that deletes a comment from saying server_error.
+	if apiErr, ok := cli.IsCommentHasReplies(err); ok {
+		cli.WriteCommentHasRepliesError(w, apiErr)
 	}
 }
 

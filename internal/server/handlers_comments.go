@@ -9,6 +9,7 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/events"
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/PerpetualSoftware/pad/internal/watchevents"
 )
 
@@ -188,6 +189,18 @@ func (s *Server) handleDeleteComment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.store.DeleteComment(commentID); err != nil {
+		if hr, ok := store.AsCommentHasRepliesError(err); ok {
+			// BUG-3252: a refusal that names why, instead of the FK's 500.
+			// The same answer on every door, since all of them land here.
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error": map[string]any{
+					"code":    "comment_has_replies",
+					"message": hr.Error(),
+					"details": map[string]any{"comment_id": hr.CommentID, "reply_count": hr.Replies},
+				},
+			})
+			return
+		}
 		if err == sql.ErrNoRows {
 			writeError(w, http.StatusNotFound, "not_found", "Comment not found")
 			return

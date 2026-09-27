@@ -160,3 +160,51 @@ func TestStdioPayloadTooLargeClassifiesAsTooLarge(t *testing.T) {
 		t.Fatalf("details = %s, want reason rename_cascade_too_large (err %v)", env.Error.Details, err)
 	}
 }
+
+// BUG-3252, end to end on stdio: delete-comment on a comment with replies
+// reaches the caller as comment_has_replies with the reply count and the
+// hint, instead of server_error. The fake answers with the bytes
+// handleDeleteComment writes for the refusal, and advertises the capability
+// comment-delete checks before sending.
+func TestStdioCommentHasRepliesClassifies(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/v1/server/capabilities" {
+			_, _ = w.Write([]byte(`{"item_scoped_comment_writes":true}`))
+			return
+		}
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"error":{"code":"comment_has_replies","message":"this comment has 1 reply; delete the reply first","details":{"comment_id":"c-1","reply_count":1}}}`))
+	}))
+	defer srv.Close()
+
+	t.Setenv(padHelperEnv, "1")
+	t.Setenv("HOME", t.TempDir())
+	bin, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	d := &mcp.ExecDispatcher{Binary: bin}
+	res, err := d.Dispatch(context.Background(), []string{"item", "comment-delete"},
+		[]string{"--url", srv.URL, "--workspace", "ws", "--format", "json", "--", "TASK-1", "c-1"})
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	env, ok := res.StructuredContent.(mcp.ErrorEnvelope)
+	if !ok {
+		t.Fatalf("PRECONDITION: the call should have failed; got %T", res.StructuredContent)
+	}
+	if env.Error.Code != mcp.ErrCommentHasReplies {
+		t.Fatalf("code = %q (message %q, hint %q), want %q",
+			env.Error.Code, env.Error.Message, env.Error.Hint, mcp.ErrCommentHasReplies)
+	}
+	if env.Error.Hint != mcp.CommentHasRepliesHint {
+		t.Fatalf("hint = %q, want the shared CommentHasRepliesHint", env.Error.Hint)
+	}
+	var details struct {
+		ReplyCount int `json:"reply_count"`
+	}
+	if err := json.Unmarshal(env.Error.Details, &details); err != nil || details.ReplyCount != 1 {
+		t.Fatalf("details = %s, want reply_count 1 (err %v)", env.Error.Details, err)
+	}
+}

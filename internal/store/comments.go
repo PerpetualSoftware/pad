@@ -382,6 +382,32 @@ func (s *Store) ListCommentsBeforeTime(itemID string, before time.Time, beforeID
 //
 // The identifiers are read BEFORE the DELETE, in-tx, because after it there is
 // no row to read them from.
+// CommentHasRepliesError refuses a delete of a comment that still has
+// replies (BUG-3252). Nothing is deleted. Whether such a delete should
+// cascade or leave a tombstone is an open product decision; this refusal is
+// the floor under either.
+type CommentHasRepliesError struct {
+	CommentID string
+	Replies   int
+}
+
+func (e *CommentHasRepliesError) Error() string {
+	noun := "replies"
+	if e.Replies == 1 {
+		noun = "reply"
+	}
+	return fmt.Sprintf("this comment has %d %s; delete the %s first", e.Replies, noun, noun)
+}
+
+// AsCommentHasRepliesError unwraps err to a *CommentHasRepliesError.
+func AsCommentHasRepliesError(err error) (*CommentHasRepliesError, bool) {
+	var e *CommentHasRepliesError
+	if errors.As(err, &e) {
+		return e, true
+	}
+	return nil, false
+}
+
 func (s *Store) DeleteComment(id string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -399,13 +425,42 @@ func (s *Store) DeleteComment(id string) error {
 		return fmt.Errorf("delete comment: read refs: %w", err)
 	}
 
-	result, err := tx.Exec(s.q("DELETE FROM comments WHERE id = ?"), id)
-	if err != nil {
-		return fmt.Errorf("delete comment: %w", err)
+	// comments.parent_id references comments(id) with no ON DELETE, so a
+	// parent with replies cannot be deleted: the bare DELETE used to fail the
+	// FK and reach every door as a 500 (BUG-3252). Refuse it by name instead.
+	// The NOT EXISTS makes the refusal part of the DELETE itself, so a reply
+	// counted as absent a moment earlier cannot slip under it. A zero-row
+	// result is then told apart by counting. Under Postgres READ COMMITTED each
+	// statement takes its own snapshot, so the replies the DELETE saw can be
+	// gone by the count. A comment that still exists with no replies is
+	// therefore deleted on another pass, never reported as missing (codex r2).
+	deleted := false
+	for attempt := 0; attempt < 3 && !deleted; attempt++ {
+		result, err := tx.Exec(s.q(`DELETE FROM comments WHERE id = ?
+			AND NOT EXISTS (SELECT 1 FROM comments r WHERE r.parent_id = ?)`), id, id)
+		if err != nil {
+			return fmt.Errorf("delete comment: %w", err)
+		}
+		if n, _ := result.RowsAffected(); n > 0 {
+			deleted = true
+			break
+		}
+		var replies, self int
+		if err := tx.QueryRow(s.q(`SELECT COUNT(*) FROM comments WHERE parent_id = ?`), id).Scan(&replies); err != nil {
+			return fmt.Errorf("delete comment: count replies: %w", err)
+		}
+		if replies > 0 {
+			return &CommentHasRepliesError{CommentID: id, Replies: replies}
+		}
+		if err := tx.QueryRow(s.q(`SELECT COUNT(*) FROM comments WHERE id = ?`), id).Scan(&self); err != nil {
+			return fmt.Errorf("delete comment: recheck: %w", err)
+		}
+		if self == 0 {
+			return sql.ErrNoRows
+		}
 	}
-	n, _ := result.RowsAffected()
-	if n == 0 {
-		return sql.ErrNoRows
+	if !deleted {
+		return fmt.Errorf("delete comment %s: its replies kept changing during the delete; retry", id)
 	}
 
 	if err := s.emitRefOnlyDeletionTx(tx, kernelevents.CommentDeleted, workspaceID, id, itemID, parentID.String); err != nil {
