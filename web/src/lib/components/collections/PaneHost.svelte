@@ -165,6 +165,9 @@
 	// 2500: lowering it would cut into that tail, not into slack.
 	const RESTORE_CAP_MS = 2500;
 	let cancelRestore: (() => void) | null = null;
+	// The requested ref and workspace the live restore started under.
+	let restoreRef: string | null = null;
+	let restoreWs = '';
 
 	function restorePaneScroll(el: HTMLElement, target: number): () => void {
 		let done = false;
@@ -258,18 +261,23 @@
 	function handleItemReady(ready: boolean) {
 		// The pane is leaving the item it was restoring (a drill, a workspace
 		// switch): a live restore must not reach the next one (BUG-3250 codex
-		// round 1). ItemDetail reports not-ready the moment its item stops
-		// matching the requested ref. A pending restore is left alone: it is
-		// waiting for exactly this item's ready.
+		// round 1). Not-ready alone is not that signal: a same-item reload also
+		// reports it (codex round 2), so cancel only when the requested ref or
+		// workspace is no longer the one the restore started under. A pending
+		// restore is left alone: it is waiting for exactly this item's ready.
 		if (!ready) {
-			cancelRestore?.();
-			cancelRestore = null;
+			if (cancelRestore && (paneMintForRoute !== restoreRef || wsSlug !== restoreWs)) {
+				cancelRestore();
+				cancelRestore = null;
+			}
 			return;
 		}
 		readyGen++;
 		const p = pendingRestore;
 		if (!p || readyGen <= p.gen || !paneEl) return;
 		dropPending();
+		restoreRef = paneMintForRoute;
+		restoreWs = wsSlug;
 		cancelRestore = restorePaneScroll(paneEl, p.target);
 	}
 	if (browser) window.addEventListener('popstate', onPopState);
