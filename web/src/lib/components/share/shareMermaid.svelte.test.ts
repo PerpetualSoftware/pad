@@ -74,8 +74,9 @@ describe('share mermaid (C120)', () => {
 	// Codex round 1: the code used to be hidden up front and restored only on a
 	// rejection, so a render that never settled left the reader nothing.
 	// LAST IN THE FILE, deliberately: the render queue is one module-level
-	// promise chain, so a render that never settles stalls every render queued
-	// after it. That is true of the editor too, and is filed separately.
+	// promise chain, so a render that never settles holds every render queued
+	// after it until its deadline (MERMAID_RENDER_DEADLINE_MS, BUG-3239), and
+	// this file runs on real timers.
 	it('a diagram that never finishes drawing leaves the code on screen', async () => {
 		const d = host(block('HANG graph'));
 		renderMermaidBlocks(d);
