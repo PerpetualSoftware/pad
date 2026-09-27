@@ -589,7 +589,7 @@
 					<!-- svelte-ignore a11y_no_static_element_interactions -->
 					<div
 						class="nav-section"
-						use:dndzone={{items: sidebarCollections, flipDurationMs, type: 'sidebar-collection', dragDisabled: uiStore.isTouch}}
+						use:dndzone={{items: sidebarCollections, flipDurationMs, type: 'sidebar-collection', dragDisabled: uiStore.isTouch || isGuest}}
 						onconsider={handleCollectionConsider}
 						onfinalize={handleCollectionFinalize}
 					>
@@ -600,7 +600,10 @@
 								class:active={activeCollectionSlug === collection.slug}
 								onclick={() => uiStore.onNavigate()}
 							>
-								<span class="drag-handle" title="Drag to reorder">⠿</span>
+								<!-- Reorder is owner-only on the server; a guest never has it (BUG-3254). -->
+								{#if !isGuest}
+									<span class="drag-handle" title="Drag to reorder">⠿</span>
+								{/if}
 								<span class="nav-icon">{collection.icon}</span>
 								<span class="nav-label">{collection.name}</span>
 								{#if collection.item_count != null && collection.item_count > 0}

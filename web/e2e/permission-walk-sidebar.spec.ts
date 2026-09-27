@@ -92,11 +92,8 @@ for (const key of ACCOUNT_KEYS) {
 	// A guest's list is framed as shared with them, and a member's is not.
 	// The presence half is the guest legs, the absence half is the members.
 	test(`sidebar frames the list as shared only for a guest: ${key}`, async ({ page }) => {
-		// BUG-3254: GET /workspaces/{ws} omits is_guest, and a fresh load
-		// resolves the workspace through it, so a guest renders as a member.
-		// Expected to fail until that fix lands; the flip to passing fails
-		// this test, which is the prompt to delete this line.
-		test.fail(GUESTS.has(key), 'BUG-3254');
+		// A fresh load resolves the workspace through GET /workspaces/{ws},
+		// which carries is_guest since BUG-3254.
 		await openWorkspace(page, key);
 		await expect(page.getByText('Shared with you', { exact: true })).toHaveCount(GUESTS.has(key) ? 1 : 0);
 	});
