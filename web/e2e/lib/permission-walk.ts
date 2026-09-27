@@ -1,4 +1,4 @@
-import { request, type APIRequestContext, type BrowserContext } from '@playwright/test';
+import { expect, request, type APIRequestContext, type BrowserContext, type Page } from '@playwright/test';
 import { suiteFixture, quietCrossActorToasts } from '../fixtures';
 
 /**
@@ -245,4 +245,34 @@ export async function seedPermissionWalk(): Promise<PermissionWalk> {
 export async function actAs(context: BrowserContext, account: WalkAccount): Promise<void> {
 	await context.setExtraHTTPHeaders({ Authorization: `Bearer ${account.token}` });
 	await quietCrossActorToasts(context);
+}
+
+/**
+ * Wait until the page can decide what this account may create (BUG-3267).
+ *
+ * Two things feed that decision and both arrive after content can be on screen:
+ *
+ * - Membership (GET /workspaces/{ws}/me). Until it settles every permission
+ *   helper answers "no access", so create and edit chrome is absent for EVERY
+ *   account, the owner included.
+ * - The workspace's collection list, which the sidebar and quick-add build
+ *   their create targets from. With membership settled but the list still
+ *   empty, there is nothing to create in either.
+ *
+ * Before both, a Cmd-N is consumed and ignored (BUG-3258's ruled behaviour),
+ * and an absence holds for any account and proves nothing. A collection page's
+ * items are not this signal: they load separately and can render first.
+ * Measured under 8 workers: the press landed with membership `known` and no
+ * sidebar collections in every failure caught.
+ *
+ * The sidebar publishes the store's own membership flag, so this waits on the
+ * state the product decides from, whether it settled from a request or from a
+ * cached answer. Every walk account sees at least one collection, so a listed
+ * collection is the list's readiness. Call it after every navigation, before
+ * asserting on chrome.
+ */
+export async function waitForAccessSettled(page: Page): Promise<void> {
+	const nav = page.locator('nav.collection-nav');
+	await expect(nav).toHaveAttribute('data-membership', 'known');
+	await expect(nav.locator('.nav-section a.nav-item').first()).toBeVisible();
 }

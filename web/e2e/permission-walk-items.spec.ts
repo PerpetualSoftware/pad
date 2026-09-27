@@ -3,6 +3,7 @@ import {
 	ACCOUNT_KEYS,
 	actAs,
 	seedPermissionWalk,
+	waitForAccessSettled,
 	type AccountKey,
 	type PermissionWalk
 } from './lib/permission-walk';
@@ -79,6 +80,8 @@ function taskFor(which: Which) {
 async function openItem(page: Page, key: AccountKey, which: Which) {
 	await actAs(page.context(), walk.accounts[key]);
 	await page.goto(`${walk.workspacePath}/tasks/${taskFor(which).slug}`);
+	// Chrome is absent for every account until access settles (BUG-3267).
+	await waitForAccessSettled(page);
 	// Presence half: the item itself rendered, editable or not.
 	await expect(
 		page.locator('.title-row').getByText(taskFor(which).title, { exact: true })

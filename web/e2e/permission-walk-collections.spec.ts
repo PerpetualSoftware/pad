@@ -1,8 +1,9 @@
-import { test, expect, type Page, type Response } from '@playwright/test';
+import { test, expect, type Page, type Response, type Route } from '@playwright/test';
 import {
 	ACCOUNT_KEYS,
 	actAs,
 	seedPermissionWalk,
+	waitForAccessSettled,
 	type AccountKey,
 	type PermissionWalk
 } from './lib/permission-walk';
@@ -70,6 +71,8 @@ async function open(page: Page, key: AccountKey, path: string, view?: 'list' | '
 		}, view);
 	}
 	await page.goto(`${walk.workspacePath}${path}`);
+	// Chrome is absent for every account until access settles (BUG-3267).
+	await waitForAccessSettled(page);
 }
 
 function sidebarEntry(page: Page, coll: Coll) {
@@ -169,6 +172,71 @@ for (const key of ACCOUNT_KEYS) {
 				await expect(handles).toHaveCount(0);
 			}
 		});
+	});
+}
+
+// Why every leg waits for access to settle (BUG-3267). The owner may create in
+// every collection, yet a Cmd-N pressed while either input to that decision is
+// still in flight is consumed and ignored: with GET /me held, membership reads
+// `pending`; with the collection list held, membership is `known` and the
+// sidebar lists nothing to create in. The second is the state every failure
+// caught under 8 workers was in. Releasing the held request settles access,
+// the early press still does nothing (it was dropped, not deferred), and the
+// same press then opens the dialog.
+const HOLDS = {
+	membership: (slug: string) => `**/api/v1/workspaces/${slug}/me`,
+	collections: (slug: string) => `**/api/v1/workspaces/${slug}/collections`
+} as const;
+for (const [held, pattern] of Object.entries(HOLDS)) {
+	test(`owner: a Cmd-N pressed while ${held} is loading is ignored, and one after access settles opens quick-add`, async ({
+		page
+	}) => {
+		await actAs(page.context(), walk.accounts.owner);
+		// Every matching request is held until release, in case the page asks twice.
+		const heldRoutes: Route[] = [];
+		let releasing = false;
+		const holding = new Promise<void>((resolve) => {
+			void page.route(pattern(walk.workspaceSlug), (route) => {
+				if (releasing || route.request().method() !== 'GET') return route.continue();
+				heldRoutes.push(route);
+				resolve();
+			});
+		});
+		const release = async () => {
+			releasing = true;
+			await Promise.all(heldRoutes.map((r) => r.continue()));
+		};
+		await page.goto(`${walk.workspacePath}/ideas`);
+		await holding;
+		const nav = page.locator('nav.collection-nav');
+		const listed = nav.locator('.nav-section a.nav-item');
+		if (held === 'membership') {
+			// Content and collections are on screen: only membership is missing.
+			await expect(page.getByText(anchorTitle('ideas'), { exact: true }).first()).toBeVisible();
+			await expect(sidebarEntry(page, 'ideas')).toBeVisible();
+			await expect(nav).toHaveAttribute('data-membership', 'pending');
+		} else {
+			// Membership has an answer: only the collection list is missing.
+			await expect(nav).toHaveAttribute('data-membership', 'known');
+			await expect(listed).toHaveCount(0);
+		}
+
+		const modal = page.locator('.quick-add-modal');
+		await page.keyboard.press('ControlOrMeta+n');
+		await page.waitForTimeout(500);
+		await expect(modal).toHaveCount(0);
+		// Still unsettled, so the press met an early page, not a late one.
+		if (held === 'membership') await expect(nav).toHaveAttribute('data-membership', 'pending');
+		else await expect(listed).toHaveCount(0);
+
+		await release();
+		await waitForAccessSettled(page);
+		await page.waitForTimeout(500);
+		await expect(modal, 'the early press was consumed, not held until access settled').toHaveCount(0);
+
+		await page.keyboard.press('ControlOrMeta+n');
+		await expect(modal).toBeVisible();
+		await expect(modal.locator('.quick-add-label')).toHaveText('New Idea');
 	});
 }
 
