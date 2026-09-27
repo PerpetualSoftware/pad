@@ -1339,6 +1339,8 @@ export interface ItemUpdate {
 	expected_seq?: number;
 	/** BUG-3133: replace edits a tab has not saved back instead of being refused with content_pending_flush. */
 	overwrite_pending_edits?: boolean;
+	/** BUG-3230 U0: ask for the content_pending_flush refusal WITHOUT a version token (the pane's raw saves cannot carry one). */
+	refuse_pending_edits?: boolean;
 	/** BUG-3080: this tab's position in its own sequence of content writes; see ClientWriteStamp. */
 	client_write?: ClientWriteStamp;
 	tags?: string;

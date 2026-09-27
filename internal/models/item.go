@@ -1394,6 +1394,18 @@ type ItemUpdate struct {
 	// It has no effect on a write without a token or without content.
 	OverwritePendingEdits bool `json:"overwrite_pending_edits,omitempty"`
 
+	// RefusePendingEdits asks for the BUG-3133 refusal WITHOUT a version token
+	// (BUG-3230 U0). A content write carrying it is refused with
+	// `content_pending_flush` while the item's op-log holds unflushed
+	// collaborative edits, exactly as a token-carrying write is, but no row
+	// version is compared. It exists for writers that cannot carry a token: the
+	// item pane's raw-markdown saves overlap (the debounce does not wait for the
+	// previous PATCH) and its teardown writes are ordered by ClientWrite, which
+	// forbids a token (BUG-3080). OverwritePendingEdits still lifts it.
+	// Transport-only, like RefuseUndeclaredFields: a server that predates it
+	// ignores the member, which is the old replace-and-prune.
+	RefusePendingEdits bool `json:"refuse_pending_edits,omitempty"`
+
 	// ClientWrite orders ONE browser tab's content writes to an item
 	// (BUG-3080). The pane stamps every content PATCH with a random id minted
 	// per page load and a counter that only rises, and the server refuses a

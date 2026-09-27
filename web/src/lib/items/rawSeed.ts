@@ -3,9 +3,11 @@
 //
 // The raw editor's saves carry no version token by design (BUG-3080 orders a
 // tab's writes with client_write instead), so whatever it starts from is sent
-// back on the first raw save. If that is a body behind a tab's unflushed edits,
-// the save replaces them. So the switch is refused whenever the seed is not
-// the live document.
+// back on the first raw save. If that is a body behind a tab's edits, the save
+// replaces them. Since BUG-3230 U0 a raw save is REFUSED while those edits are
+// still unstored (`refuse_pending_edits`), but once a tab has stored them a
+// stale seed would still overwrite them. So the switch is refused whenever the
+// seed is not the live document.
 //
 // Judged ONCE, from the seed actually used and the editor as it stands after
 // the rich->raw flush loop. Judging by how the loop exited missed a case twice
