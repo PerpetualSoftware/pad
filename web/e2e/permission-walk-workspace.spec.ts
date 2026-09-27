@@ -109,9 +109,7 @@ for (const key of MEMBERS) {
 	});
 
 	test(`${key}: General name field holds the workspace name`, async ({ page }) => {
-		// BUG-3260: on a direct load the field is empty for every member.
-		// Remove once the fix lands.
-		test.fail(true, 'BUG-3260');
+		// BUG-3260: a direct load used to leave this empty for every member.
 		await openSettingsTab(page, key, 'general');
 		await expect(page.locator('#ws-name')).toHaveValue(/^Walk /);
 	});

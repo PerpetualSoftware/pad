@@ -16,8 +16,8 @@ identityGateSuite({
 		asyncFunctions: {
 			refreshCollections: { reviewed: '99eebed18312', why: 'collectionsGen and the workspace, then identityHeld(epochAtEntry), before the commit; a failure commits nothing' },
 			load: {
-				reviewed: '1070cdd4b0df',
-				why: 'loadGen after each await (collectionsGen too for the collections write). It has no identity check, and it re-stamps identityEpochAtLoad BEFORE its awaits, where roles and library re-stamp after the data lands. The advisory list on TASK-3097 carries that',
+				reviewed: 'fedd925ecc86',
+				why: 'loadGen after each await (collectionsGen too for the collections write). It has no identity check, and it re-stamps identityEpochAtLoad BEFORE its awaits, where roles and library re-stamp after the data lands. The advisory list on TASK-3097 carries that. Re-reviewed for BUG-3260: it no longer writes the name or context (an effect seeds them from the settled store), so it commits strictly less than before',
 			},
 			saveName: { reviewed: '9d02b62e22dd', why: `${ENTRY}; the finally clears the button's own busy flag unfenced, on purpose` },
 			saveContext: { reviewed: '74dda10addda', why: `${ENTRY}, including between the update and the shared-store setCurrent; the finally clears its own busy flag` },
