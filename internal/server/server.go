@@ -1933,6 +1933,8 @@ func (s *Server) setupRouter() {
 						r.Post("/links", s.handleCreateItemLink)
 						r.Get("/comments", s.handleListComments)
 						r.Post("/comments", s.handleCreateComment)
+						r.Patch("/comments/{commentID}", s.itemScopedComment(s.handleUpdateComment))
+						r.Delete("/comments/{commentID}", s.itemScopedComment(s.handleDeleteComment))
 						r.Get("/timeline", s.handleListItemTimeline)
 						r.Get("/children", s.handleGetItemChildren)
 						r.Get("/progress", s.handleGetItemProgress)

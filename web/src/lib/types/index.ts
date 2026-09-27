@@ -1574,6 +1574,8 @@ export interface Comment {
 	parent_id?: string;
 	created_at: string;
 	updated_at: string;
+	/** Derived server-side: the body changed after creation (TASK-2695). */
+	edited?: boolean;
 	item_title?: string;
 	item_slug?: string;
 	/**

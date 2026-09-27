@@ -259,6 +259,46 @@ func (s *Server) handleUpdateComment(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, updated)
 }
 
+// itemScopedComment adapts a /comments/{commentID} handler to the item-scoped
+// route /items/{itemSlug}/comments/{commentID} (TASK-2695). It resolves the
+// item and answers 404 unless the comment is on it, then runs next unchanged,
+// so the ACL, validation and events stay the workspace-scoped handler's own.
+//
+// The item-scoped form exists for the agent doors (CLI, both MCP transports),
+// which name a comment by item ref plus id: checking the pairing here, rather
+// than in each client, is what makes the three doors land on one check. The
+// remote MCP dispatcher maps an action to a single HTTP call, so a
+// client-side check could not reach it.
+//
+// A comment that exists on another item answers the same 404 as one that
+// does not exist, so the route says nothing about comments elsewhere.
+func (s *Server) itemScopedComment(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		workspaceID, ok := s.getWorkspaceID(w, r)
+		if !ok {
+			return
+		}
+		item, err := s.store.ResolveItemIncludeDeleted(workspaceID, chi.URLParam(r, "itemSlug"))
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		if item == nil {
+			writeError(w, http.StatusNotFound, "not_found", "Item not found")
+			return
+		}
+		if !s.requireItemVisible(w, r, workspaceID, item) {
+			return
+		}
+		comment, cerr := s.store.GetComment(chi.URLParam(r, "commentID"))
+		if cerr != nil || comment == nil || comment.WorkspaceID != workspaceID || comment.ItemID != item.ID {
+			writeError(w, http.StatusNotFound, "not_found", "Comment not found")
+			return
+		}
+		next(w, r)
+	}
+}
+
 // canEditComment reports whether the requester may edit the given comment:
 // the authenticated author (matching user_id) or a platform admin. A comment
 // with an empty user_id has no provable author, so only admins can edit it.

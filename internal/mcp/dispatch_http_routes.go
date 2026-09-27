@@ -258,6 +258,10 @@ func init() {
 			method:       http.MethodGet,
 			pathTemplate: "/api/v1/workspaces/{workspace}/items/{ref}/comments",
 		}.toRouteMapper(),
+		// TASK-2695: the item-scoped route, so the comment-is-on-ref check
+		// is the server's on this transport as on the CLI's. Delete is a
+		// special route (dispatchItemCommentDelete) for its 204.
+		"item comment-edit": mapItemCommentEdit,
 
 		// `item backlinks` (BUG-2304) — the reverse [[...]] index
 		// (PLAN-1593). The CLI's --format json emits the endpoint's
@@ -1712,6 +1716,66 @@ func cloneStringMap(m map[string]any) map[string]any {
 		out[k] = v
 	}
 	return out
+}
+
+// itemCommentTarget reads the workspace, ref and comment_id every
+// item-scoped comment write needs and builds its path (TASK-2695).
+func itemCommentTarget(input map[string]any) (string, error) {
+	workspace, _ := input["workspace"].(string)
+	ref, _ := input["ref"].(string)
+	commentID, _ := input["comment_id"].(string)
+	if workspace == "" {
+		return "", fmt.Errorf("workspace is required")
+	}
+	if ref == "" {
+		return "", fmt.Errorf("ref is required")
+	}
+	if commentID == "" {
+		return "", fmt.Errorf("comment_id is required")
+	}
+	return fmt.Sprintf("/api/v1/workspaces/%s/items/%s/comments/%s",
+		url.PathEscape(workspace), url.PathEscape(ref), url.PathEscape(commentID)), nil
+}
+
+// mapItemCommentEdit dispatches `pad item comment-edit <ref> <comment-id>
+// <message>` as PATCH {body: <message>}, the rename mapItemComment also makes.
+func mapItemCommentEdit(input map[string]any) (string, string, []byte, error) {
+	urlPath, err := itemCommentTarget(input)
+	if err != nil {
+		return "", "", nil, err
+	}
+	message, _ := input["message"].(string)
+	if message == "" {
+		return "", "", nil, fmt.Errorf("message is required")
+	}
+	body, err := json.Marshal(map[string]any{"body": message})
+	if err != nil {
+		return "", "", nil, fmt.Errorf("encode body: %w", err)
+	}
+	return http.MethodPatch, urlPath, body, nil
+}
+
+// dispatchItemCommentDelete handles `pad item comment-delete <ref>
+// <comment-id>`. The handler answers 204 with no body, which would reach the
+// agent as an empty result, so a success is packaged as the CLI's
+// `--format json` object instead (the dispatchDeleteItemLink precedent).
+func (d *HTTPHandlerDispatcher) dispatchItemCommentDelete(
+	ctx context.Context,
+	input map[string]any,
+	user *models.User,
+) (*mcp.CallToolResult, error) {
+	const cmdKey = "item comment-delete"
+	urlPath, err := itemCommentTarget(input)
+	if err != nil {
+		return validationFailedResult(cmdKey, err.Error(), "Pass ref and comment_id (ids come from list-comments)."), nil
+	}
+	res, err := d.executeRequest(ctx, cmdKey, user, http.MethodDelete, urlPath, nil)
+	if err != nil || res.IsError {
+		return res, err
+	}
+	ref, _ := input["ref"].(string)
+	commentID, _ := input["comment_id"].(string)
+	return packageStructuredResponse(cmdKey, map[string]any{"deleted": true, "ref": ref, "comment_id": commentID})
 }
 
 // mapItemComment dispatches `pad item comment <ref> <message>`.

@@ -453,6 +453,7 @@ func (d *HTTPHandlerDispatcher) buildSpecialRoutes() map[string]specialDispatchF
 		"item note":           d.dispatchItemNote,
 		"item decide":         d.dispatchItemDecide,
 		"item import":         d.dispatchItemImport,
+		"item comment-delete": d.dispatchItemCommentDelete,
 		"project ready":       d.dispatchProjectReady,
 		"project stale":       d.dispatchProjectStale,
 		"project next":        d.dispatchProjectNext,

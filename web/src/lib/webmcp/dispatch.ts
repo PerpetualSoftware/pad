@@ -522,6 +522,18 @@ const HANDLERS: Record<string, Handler> = {
 			parent_id: str(args, 'reply_to'),
 			source: 'web',
 		}),
+	// TASK-2695: item-scoped, so a comment_id not on `ref` is refused here
+	// exactly as on the CLI and /mcp. Delete mirrors their JSON result.
+	'pad_item:edit-comment': (api, ws, args) =>
+		api.comments.updateOnItem(ws, requireRef(args), requireArg(args, 'comment_id'), {
+			body: requireArg(args, 'message'),
+		}),
+	'pad_item:delete-comment': async (api, ws, args) => {
+		const ref = requireRef(args);
+		const commentId = requireArg(args, 'comment_id');
+		await api.comments.deleteOnItem(ws, ref, commentId);
+		return { deleted: true, ref, comment_id: commentId };
+	},
 	'pad_item:bulk-update': (api, ws, args) => {
 		const ids = strArray(args, 'refs');
 		if (!ids || ids.length === 0) {

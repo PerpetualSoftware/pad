@@ -107,6 +107,10 @@ var padItemTool = ToolDef{
 		// the `reply_to` parameter.
 		"comment":       passThrough([]string{"item", "comment"}),
 		"list-comments": passThrough([]string{"item", "comments"}),
+		// TASK-2695: edit/delete ride the item-scoped comment routes, which
+		// refuse a comment_id that is not on `ref` on every transport.
+		"edit-comment":   passThrough([]string{"item", "comment-edit"}),
+		"delete-comment": passThrough([]string{"item", "comment-delete"}),
 
 		// Backlinks ("Mentioned in") — PLAN-1593 / TASK-1596.
 		// Returns inbound `[[...]]` references to the given item.
@@ -156,7 +160,7 @@ var padItemTool = ToolDef{
 // keeping the schema simple to maintain.
 var padItemSchemaParams = []ParamDef{
 	// ── Targeting ──
-	{Name: "ref", Type: "string", Description: "Item reference (e.g. TASK-5, IDEA-12, PLAYB-3, CONVE-7). Required for: update, delete, restore, get, move, link, unlink, deps, star, unstar, comment, list-comments, note, decide, export, remind, claim, release. NOT used for ack-reminder (which addresses a REMINDER by `reminder_id`, since an item can carry several) and NOT used for bulk-update — pass `refs` (array) instead."},
+	{Name: "ref", Type: "string", Description: "Item reference (e.g. TASK-5, IDEA-12, PLAYB-3, CONVE-7). Required for: update, delete, restore, get, move, link, unlink, deps, star, unstar, comment, list-comments, edit-comment, delete-comment, note, decide, export, remind, claim, release. NOT used for ack-reminder (which addresses a REMINDER by `reminder_id`, since an item can carry several) and NOT used for bulk-update — pass `refs` (array) instead."},
 	{Name: "refs", Type: "array<string>", Description: "Item references for batch operations. Required for: bulk-update (one or more refs)."},
 	{Name: "target", Type: "string", Description: "The OTHER end of a relationship. Required for: link, unlink (paired with `ref` and `link_type`). For link_type=blocks, target is the item being blocked; for blocked-by it's the blocker; for supersedes it's the superseded item; etc."},
 	{Name: "link_type", Type: "string", Description: "Type of relationship for action=link/unlink.", Enum: []string{"blocks", "blocked-by", "supersedes", "implements", "split-from"}},
@@ -270,7 +274,8 @@ var padItemSchemaParams = []ParamDef{
 	{Name: "target_collection", Type: "string", Description: "Destination collection slug for action=move. Required for: move."},
 
 	// ── Comments ──
-	{Name: "message", Type: "string", Description: "Comment body. Required for: comment."},
+	{Name: "message", Type: "string", Description: "Comment body. Required for: comment, edit-comment."},
+	{Name: "comment_id", Type: "string", Description: "ID of a comment on `ref` (from list-comments). Required for: edit-comment, delete-comment."},
 	{Name: "reply_to", Type: "string", Description: "Parent comment ID for threading replies. Optional for: comment."},
 	{Name: "comment", Type: "string", Description: "Audit comment explaining the change. Optional for: update."},
 
@@ -411,8 +416,13 @@ Actions:
   comment       — Add a comment.
     Required: ref, message.
     Optional: reply_to (comment ID for threaded reply).
-  list-comments — List comments on an item.
+  list-comments — List comments on an item. Each carries its id and
+    edited (true once its body has been changed).
     Required: ref.
+  edit-comment  — Replace a comment's body. Only its author may.
+    Required: ref, comment_id, message.
+  delete-comment — Delete a comment. Anyone who may edit the item may.
+    Required: ref, comment_id.
   backlinks     — List inbound [[...]] references to an item ("Mentioned in").
     Required: ref.
     Optional: limit (default 50, max 300), offset.

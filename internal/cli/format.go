@@ -644,7 +644,11 @@ func PrintCommentTable(comments []models.Comment) {
 		if c.Author != "" && c.Author != c.CreatedBy {
 			badge = c.Author + " (" + c.CreatedBy + ")"
 		}
-		fmt.Printf("💬 %s  •  %s via %s\n", badge, RelativeTime(c.CreatedAt), c.Source)
+		edited := ""
+		if c.IsEdited() {
+			edited = "  •  edited"
+		}
+		fmt.Printf("💬 %s  •  %s via %s%s  •  id %s\n", badge, RelativeTime(c.CreatedAt), c.Source, edited, c.ID)
 		fmt.Println(c.Body)
 		if i < len(comments)-1 {
 			fmt.Println()

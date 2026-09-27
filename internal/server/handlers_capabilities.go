@@ -43,6 +43,12 @@ type serverCapabilities struct {
 	// literal slug, so a shorthand (`task` for `tasks`) finds nothing and the
 	// client must keep normalising.
 	SearchCollectionResolution bool `json:"search_collection_resolution"`
+
+	// ItemScopedCommentWrites is true when PATCH and DELETE are routed at
+	// /items/{ref}/comments/{id} (TASK-2695). An older build has no such
+	// route and answers a bare 404, which a client would read as "comment
+	// not found", so the CLI refuses instead of sending when this is absent.
+	ItemScopedCommentWrites bool `json:"item_scoped_comment_writes"`
 }
 
 // WHAT A BUILD THAT CANNOT DECODE A FORMAT ACTUALLY COSTS THE READER
@@ -85,7 +91,7 @@ type serverCapabilities struct {
 // rather than 500-ing — that signals to the editor "uploads still work,
 // but disable transformation tools."
 func (s *Server) handleServerCapabilities(w http.ResponseWriter, r *http.Request) {
-	resp := serverCapabilities{CollectionResolution: true, ItemFieldAppend: true, SearchCollectionResolution: true}
+	resp := serverCapabilities{CollectionResolution: true, ItemFieldAppend: true, SearchCollectionResolution: true, ItemScopedCommentWrites: true}
 	if s.imageProcessor != nil {
 		resp.Image = s.imageProcessor.Capabilities()
 	} else {

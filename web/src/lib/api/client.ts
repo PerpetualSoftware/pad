@@ -2108,6 +2108,21 @@ export const api = {
 				method: 'DELETE'
 			}),
 
+		// Item-scoped edit/delete (TASK-2695): the server answers 404 unless
+		// the comment is on itemRef. WebMCP uses these so its edit-comment /
+		// delete-comment land on the same check as the CLI and /mcp.
+		updateOnItem: (ws: string, itemRef: string, commentId: string, data: { body: string }) =>
+			request<Comment>(
+				`/workspaces/${ws}/items/${encodeURIComponent(itemRef)}/comments/${encodeURIComponent(commentId)}`,
+				{ method: 'PATCH', body: JSON.stringify(data) }
+			),
+
+		deleteOnItem: (ws: string, itemRef: string, commentId: string) =>
+			request<void>(
+				`/workspaces/${ws}/items/${encodeURIComponent(itemRef)}/comments/${encodeURIComponent(commentId)}`,
+				{ method: 'DELETE' }
+			),
+
 		reply: (ws: string, commentId: string, data: CommentCreate) =>
 			request<Comment>(`/workspaces/${ws}/comments/${commentId}/replies`, {
 				method: 'POST',

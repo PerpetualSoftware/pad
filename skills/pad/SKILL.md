@@ -206,7 +206,9 @@ pad item remind TASK-5 --remind-at 2026-08-01T09:00:00Z   # arm a one-shot remin
 pad item reminders TASK-5                                  # armed / fired / acknowledged
 pad item ack <reminder-id>                                 # acknowledge a fired reminder
 pad item unremind <reminder-id>
-pad item comments TASK-5
+pad item comments TASK-5                                   # each row shows its id, and "edited" once changed
+pad item comment-edit TASK-5 <comment-id> "..." [--stdin]  # correct your own comment in place instead of appending
+pad item comment-delete TASK-5 <comment-id>
 pad item note TASK-5 "what you did" [--details "..." | --stdin]
 pad item decide TASK-5 "what you chose" [--rationale "..." | --stdin]
 pad item bulk-update --status X TASK-5 TASK-8 ...
