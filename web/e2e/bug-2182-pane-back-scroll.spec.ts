@@ -103,3 +103,53 @@ test('BUG-2182: a reader gesture during the restore wait wins', async ({ page, f
 		await deleteCollection(fixture, request, ctx.coll.slug);
 	}
 });
+
+// BUG-3250: once applied, the restore HOLDS its target until the cap, because
+// parts of the pane settle after the body and move scrollTop (measured: the
+// attachment strip's placeholder and the timeline's loader, 70-90px). A 200px
+// spacer prepended inside the pane's content stands in for that late shift,
+// deterministically.
+async function backAndRestore(page: import('@playwright/test').Page, ctx: Awaited<ReturnType<typeof setup>>) {
+	await page.locator('.pane-back-btn').click();
+	await expect(ctx.pane.locator('a', { hasText: ctx.titleB }).last()).toBeAttached({ timeout: 10_000 });
+	await expect.poll(ctx.scrollTop, { timeout: 3000, message: 'premise: the restore landed' }).toBeGreaterThan(ctx.before - 40);
+	return ctx.scrollTop();
+}
+const shiftContent = (pane: import('@playwright/test').Locator) =>
+	pane.evaluate((el) => {
+		const s = document.createElement('div');
+		s.style.height = '200px';
+		s.dataset.bug3250 = 'spacer';
+		el.querySelector('.item-page')!.prepend(s);
+	});
+
+for (const leg of [
+	{ name: 'a layout shift during the hold is re-applied', before: async () => {}, reapplied: true },
+	{ name: 'a scrollbar-style drag during the hold is honoured', before: async (ctx: any) => { await ctx.pane.evaluate((el: HTMLElement) => { el.scrollTop -= 600; }); }, reapplied: false },
+	// A gesture that scrolls nothing: only the gesture listener can end the hold
+	// here, since a scrolling wheel is also caught by the drag rule above.
+	{ name: 'a wheel gesture during the hold ends it, even one that scrolls nothing', before: async (ctx: any, page: any) => { const b = (await ctx.pane.boundingBox())!; await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2); await page.mouse.wheel(0, 0); }, reapplied: false },
+	{ name: 'the hold ends at the cap, leaving no listener behind', before: async (_ctx: any, page: any) => { await page.waitForTimeout(3000); }, reapplied: false },
+]) {
+	test(`BUG-3250: ${leg.name}`, async ({ page, fixture, request }, testInfo) => {
+		test.skip(testInfo.project.name !== 'desktop-chromium', 'the split pane is a desktop layout');
+		test.setTimeout(60_000);
+		const ctx = await setup(page, fixture, request);
+		try {
+			const restored = await backAndRestore(page, ctx);
+			await leg.before(ctx, page);
+			await page.waitForTimeout(150);
+			const beforeShift = await ctx.scrollTop();
+			await shiftContent(ctx.pane);
+			await page.waitForTimeout(400);
+			const after = await ctx.scrollTop();
+			if (leg.reapplied) {
+				expect(Math.abs(after - restored), `the shift was not re-applied (restored ${restored}, now ${after})`).toBeLessThanOrEqual(3);
+			} else {
+				expect(Math.abs(after - restored), `the restore overrode the reader or outlived its window (restored ${restored}, before the shift ${beforeShift}, now ${after})`).toBeGreaterThan(50);
+			}
+		} finally {
+			await deleteCollection(fixture, request, ctx.coll.slug);
+		}
+	});
+}

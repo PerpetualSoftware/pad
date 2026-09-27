@@ -128,9 +128,18 @@
 	// applied once the pane can scroll that far — waited for with a
 	// ResizeObserver on the pane's content, capped. The reader wins: any
 	// scroll during the wait that is not our own, or a wheel/touch/key
-	// gesture, cancels it. Our own assignment happens only at the moment it
-	// succeeds, so the scroll event it raises is never mistaken for the
-	// reader's.
+	// gesture, cancels it.
+	//
+	// Once applied, the target is HELD until the cap (BUG-3250). Other parts
+	// of the pane settle after the body (the attachment strip's loading
+	// placeholder goes away, the timeline's loader becomes its content), the
+	// browser's scroll anchoring or clamping then moves scrollTop, and a
+	// one-shot restore left the reader 70-90px short of where they were. So
+	// every resize re-applies it. During the hold a scroll is the reader's only
+	// when it moves away from our last assignment while scrollHeight held
+	// still: a clamp or an anchoring shift comes with a height change, and our
+	// own assignment lands on the value we set. That rule is what honours a
+	// scrollbar drag, which raises no gesture event.
 	//
 	// THE CAP MUST CLEAR THE COLLAB SYNC GRACE (BUG-3228). The body renders
 	// only once the collab provider reports `synced`. On a connection that gets
@@ -145,15 +154,23 @@
 	// is a restore that lands late for a reader who has not moved, and any move
 	// cancels it. If the grace comes down, this can come down with it.
 	//
-	// The grace is gone (BUG-3240): the body now waits for the replay itself,
-	// which measured p50 8-241 ms (to 303 replay frames) and up to 740 ms for
-	// about 2,000 frames under 8 workers. Lowering this cap owes its own
-	// measurement of the pane Back spec on that build; it is unchanged here.
+	// The grace is gone (BUG-3240), and since BUG-3250 the cap is also the
+	// window in which the restore HOLDS its target. Re-measured for TASK-3248
+	// on that build, the pane Back spec at 8 workers, ms from onReady: with a
+	// small op-log (x300), first apply p50 75 / p99 281 / max 435, and the
+	// last re-apply after a late layout shift max 320. With a ~300-frame
+	// op-log on the item (x100), first apply p99 and max 1693, and 9/100 runs
+	// had not applied by 2500. That tail predates BUG-3240: the parent build
+	// failed the same variant 6/100 (3 of them at the cap). So the cap stays at
+	// 2500: lowering it would cut into that tail, not into slack.
 	const RESTORE_CAP_MS = 2500;
 	let cancelRestore: (() => void) | null = null;
 
 	function restorePaneScroll(el: HTMLElement, target: number): () => void {
 		let done = false;
+		let applied = false;
+		let lastSet = -1;
+		let lastHeight = el.scrollHeight;
 		const finish = () => {
 			if (done) return;
 			done = true;
@@ -164,14 +181,27 @@
 		};
 		const apply = () => {
 			if (done) return;
-			if (el.scrollHeight - el.clientHeight < target) return;
-			el.scrollTop = target;
-			finish();
+			lastHeight = el.scrollHeight;
+			const max = el.scrollHeight - el.clientHeight;
+			// Before the first apply, wait until the pane can reach the target.
+			if (!applied && max < target) return;
+			applied = true;
+			const want = Math.min(target, max);
+			if (el.scrollTop !== want) el.scrollTop = want;
+			lastSet = el.scrollTop;
 		};
-		// Before the restore lands, the pane sits at 0 while content grows, which
-		// raises no scroll event; a scroll now can only be the reader's.
 		const onScroll = () => {
-			if (!done && el.scrollTop > 2) finish();
+			if (done) return;
+			// Before the restore lands, the pane sits at 0 while content grows,
+			// which raises no scroll event; a scroll now can only be the reader's.
+			if (!applied) {
+				if (el.scrollTop > 2) finish();
+				return;
+			}
+			const height = el.scrollHeight;
+			const readerMoved = Math.abs(el.scrollTop - lastSet) > 2 && height === lastHeight;
+			lastHeight = height;
+			if (readerMoved) finish();
 		};
 		const ro = new ResizeObserver(apply);
 		for (const child of Array.from(el.children)) ro.observe(child);
