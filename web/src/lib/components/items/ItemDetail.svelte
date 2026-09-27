@@ -5238,6 +5238,11 @@
 		// server-side action whose result must land, not be discarded.
 		if (!item || item.id !== updatedItem.id) return;
 		item = withInflightTags(updatedItem);
+		// BUG-3230 U2: a restore the user confirmed over another session's
+		// unsaved edits says how many it discarded, as a body save does. Here,
+		// not in the card: this pane owns the item-scoped toasts.
+		const discarded = prunedEditsNotice(updatedItem);
+		if (discarded) toastStore.show(discarded, 'info');
 	}
 
 	// BUG-2271: flush the LIVE collab editor's markdown into items.content BEFORE

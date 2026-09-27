@@ -106,4 +106,31 @@ test.describe('an overwrite that deletes another tab\'s edits says so (BUG-3230 
 		await dialog.getByRole('button', { name: 'Overwrite them' }).click();
 		await expect(page.getByText(/^\d+ unsaved changes? from another tab (was|were) discarded\.$/)).toBeVisible({ timeout: 10_000 });
 	});
+
+	test('version restore confirmed over the pending edits', async ({ page, browser, fixture, request }) => {
+		const doc = await createItem(fixture, request, 'docs', `Pruned RESTORE ${Date.now()}`, {});
+		// A second body mints a version to restore to.
+		const v = await request.patch(`/api/v1/workspaces/${fixture.workspaceSlug}/items/${doc.slug}`, {
+			headers: authJson(fixture),
+			data: { content: 'Second body.' },
+		});
+		expect(v.ok(), await v.text()).toBeTruthy();
+
+		await strandEdit(browser, fixture, request, doc.ref, doc.id);
+
+		// This page's own pre-restore drain (BUG-2271) would store the stranded
+		// edit, since its editor replays it, and leave nothing to discard. Block it,
+		// so the restore meets the pending edits and asks.
+		await page.route(/source=collab-snapshot/, (r) => r.abort());
+		await browserLogin(page);
+		await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/docs/${doc.slug}`);
+		await expect(page.locator(EDITOR_SELECTOR)).toBeVisible({ timeout: SYNC_TIMEOUT });
+		await page.getByRole('tab', { name: 'Versions' }).click();
+		const card = page.locator('#item-timeline .version-card').first();
+		await card.locator('.card-header').click();
+		await card.getByRole('button', { name: 'Restore this version' }).click();
+		await card.getByRole('button', { name: 'Confirm Restore' }).click();
+		await card.getByRole('button', { name: 'Discard edits and restore' }).click();
+		await expect(page.getByText(/^\d+ unsaved changes? from another tab (was|were) discarded\.$/)).toBeVisible({ timeout: 10_000 });
+	});
 });
