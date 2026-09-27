@@ -8,8 +8,6 @@ import (
 	"net/http/httptest"
 	"net/url"
 
-	"github.com/mark3labs/mcp-go/mcp"
-
 	"github.com/PerpetualSoftware/pad/internal/artifact"
 	"github.com/PerpetualSoftware/pad/internal/collections"
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -44,7 +42,7 @@ func (d *HTTPHandlerDispatcher) dispatchLibraryActivate(
 	ctx context.Context,
 	input map[string]any,
 	user *models.User,
-) (*mcp.CallToolResult, error) {
+) (*CallToolResult, error) {
 	const cmdKey = "library activate"
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
@@ -159,7 +157,7 @@ func (d *HTTPHandlerDispatcher) postLibraryItem(
 	user *models.User,
 	workspace, collection, cmdKey, title, content, fieldsJSON string,
 	convention *models.ItemConventionMetadata,
-) (*mcp.CallToolResult, error) {
+) (*CallToolResult, error) {
 	payload := map[string]any{
 		"title":  title,
 		"fields": fieldsJSON,

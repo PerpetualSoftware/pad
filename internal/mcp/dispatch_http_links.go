@@ -9,8 +9,6 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/mark3labs/mcp-go/mcp"
-
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
@@ -183,7 +181,7 @@ func (d *HTTPHandlerDispatcher) dispatchCreateItemLink(
 	input map[string]any,
 	user *models.User,
 	spec itemLinkSpec,
-) (*mcp.CallToolResult, error) {
+) (*CallToolResult, error) {
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
 		return validationFailedResult(spec.cmdKey, "workspace is required",
@@ -242,7 +240,7 @@ func (d *HTTPHandlerDispatcher) dispatchDeleteItemLink(
 	input map[string]any,
 	user *models.User,
 	spec itemLinkSpec,
-) (*mcp.CallToolResult, error) {
+) (*CallToolResult, error) {
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
 		return validationFailedResult(spec.cmdKey, "workspace is required",
@@ -332,7 +330,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemDeps(
 	ctx context.Context,
 	input map[string]any,
 	user *models.User,
-) (*mcp.CallToolResult, error) {
+) (*CallToolResult, error) {
 	const cmdKey = "item deps"
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
@@ -383,7 +381,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemRelated(
 	ctx context.Context,
 	input map[string]any,
 	user *models.User,
-) (*mcp.CallToolResult, error) {
+) (*CallToolResult, error) {
 	const cmdKey = "item related"
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
@@ -430,7 +428,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemImplementedBy(
 	ctx context.Context,
 	input map[string]any,
 	user *models.User,
-) (*mcp.CallToolResult, error) {
+) (*CallToolResult, error) {
 	const cmdKey = "item implemented-by"
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
@@ -472,7 +470,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemImplementedBy(
 // This matches packageHTTPResponse's pattern: that helper json-decodes
 // the handler's response body into `any` for the structured channel,
 // so synthesized responses use the same path here for shape parity.
-func packageStructuredResponse(cmdKey string, payload any) (*mcp.CallToolResult, error) {
+func packageStructuredResponse(cmdKey string, payload any) (*CallToolResult, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return dispatcherErrorResult(cmdKey, "encode response", err), nil
@@ -483,9 +481,9 @@ func packageStructuredResponse(cmdKey string, payload any) (*mcp.CallToolResult,
 		// payload — but if it ever happens, fall back to the typed
 		// payload + raw body so the caller still gets something
 		// usable instead of an error.
-		return mcp.NewToolResultStructured(payload, string(body)), nil
+		return structuredResult(payload, string(body)), nil
 	}
-	return mcp.NewToolResultStructured(decoded, string(body)), nil
+	return structuredResult(decoded, string(body)), nil
 }
 
 // fetchItem retrieves a full models.Item via the

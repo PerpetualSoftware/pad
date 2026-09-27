@@ -3,8 +3,6 @@ package mcp
 import (
 	"context"
 	"encoding/json"
-
-	"github.com/mark3labs/mcp-go/mcp"
 )
 
 // padMetaTool is the server-introspection tool (v0.4 catalog). Four actions —
@@ -82,7 +80,7 @@ or build documentation. For runtime task work, use pad_item / pad_workspace / et
 // actionMetaServerInfo returns the minimal {name, version} pair.
 // Roughly equivalent to what the MCP handshake exposes, but available
 // post-handshake without a full reconnect.
-func actionMetaServerInfo(_ context.Context, _ map[string]any, env ActionEnv) (*mcp.CallToolResult, error) {
+func actionMetaServerInfo(_ context.Context, _ map[string]any, env ActionEnv) (*CallToolResult, error) {
 	version := env.PadVersion
 	if version == "" {
 		version = FallbackVersion
@@ -95,20 +93,20 @@ func actionMetaServerInfo(_ context.Context, _ map[string]any, env ActionEnv) (*
 	if err != nil {
 		// Marshalling a string-valued map can't realistically fail;
 		// surface as an error result rather than panicking.
-		return mcp.NewToolResultErrorf("pad_meta.server-info: marshal: %s", err.Error()), nil
+		return errorResultf("pad_meta.server-info: marshal: %s", err.Error()), nil
 	}
-	return mcp.NewToolResultStructured(payload, string(body)), nil
+	return structuredResult(payload, string(body)), nil
 }
 
 // actionMetaVersion returns the same MetaPayload that pad://_meta/version
 // serves as a resource. Two surfaces, one source of truth (BuildMetaPayload).
-func actionMetaVersion(_ context.Context, _ map[string]any, env ActionEnv) (*mcp.CallToolResult, error) {
+func actionMetaVersion(_ context.Context, _ map[string]any, env ActionEnv) (*CallToolResult, error) {
 	payload := BuildMetaPayload(env.PadVersion)
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return mcp.NewToolResultErrorf("pad_meta.version: marshal: %s", err.Error()), nil
+		return errorResultf("pad_meta.version: marshal: %s", err.Error()), nil
 	}
-	return mcp.NewToolResultStructured(payload, string(body)), nil
+	return structuredResult(payload, string(body)), nil
 }
 
 // actionMetaBootstrap dispatches to `pad bootstrap` so MCP callers get
@@ -120,7 +118,7 @@ func actionMetaVersion(_ context.Context, _ map[string]any, env ActionEnv) (*mcp
 // (Server.BuildAgentBootstrap) the single source of truth for shape,
 // validation, and visibility filtering. The MCP surface contributes
 // only the discovery affordance, not a divergent implementation.
-func actionMetaBootstrap(ctx context.Context, input map[string]any, env ActionEnv) (*mcp.CallToolResult, error) {
+func actionMetaBootstrap(ctx context.Context, input map[string]any, env ActionEnv) (*CallToolResult, error) {
 	return env.Dispatch(ctx, []string{"bootstrap"}, input)
 }
 
@@ -149,7 +147,7 @@ func actionMetaBootstrap(ctx context.Context, input map[string]any, env ActionEn
 // and the per-tool ParamDefs. This makes the dump self-contained for
 // docs generators: they don't have to reproduce buildToolFromDef's
 // implicit-param logic separately.
-func actionMetaToolSurface(_ context.Context, _ map[string]any, env ActionEnv) (*mcp.CallToolResult, error) {
+func actionMetaToolSurface(_ context.Context, _ map[string]any, env ActionEnv) (*CallToolResult, error) {
 	// Shared serializer (TASK-1891): buildToolSurfacePayload is the
 	// single source of truth for the tool-surface shape, consumed by
 	// both this MCP action and the cycle-free ToolSurfaceJSON() that
@@ -161,7 +159,7 @@ func actionMetaToolSurface(_ context.Context, _ map[string]any, env ActionEnv) (
 	payload := buildToolSurfacePayload(env.Catalog)
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return mcp.NewToolResultErrorf("pad_meta.tool-surface: marshal: %s", err.Error()), nil
+		return errorResultf("pad_meta.tool-surface: marshal: %s", err.Error()), nil
 	}
-	return mcp.NewToolResultStructured(payload, string(body)), nil
+	return structuredResult(payload, string(body)), nil
 }

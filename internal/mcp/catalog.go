@@ -106,7 +106,7 @@ type ParamDef struct {
 //  2. Inline (pad_meta + similar): build the CallToolResult directly
 //     from in-memory state (ToolSurfaceVersion, the catalog itself,
 //     etc.) without dispatching anywhere.
-type ActionFn func(ctx context.Context, input map[string]any, env ActionEnv) (*mcp.CallToolResult, error)
+type ActionFn func(ctx context.Context, input map[string]any, env ActionEnv) (*CallToolResult, error)
 
 // ActionEnv carries everything an action handler needs to either
 // dispatch to a CLI cmdPath or build a result inline. Wired up once
@@ -151,7 +151,7 @@ type ActionEnv struct {
 // Unknown cmdPath produces a "registry bug" error rather than panicking
 // — catches catalog/cmdhelp drift early in tests. A clean run on
 // startup ensures every action's cmdPath maps to a real CLI command.
-func (env ActionEnv) Dispatch(ctx context.Context, cmdPath []string, input map[string]any) (*mcp.CallToolResult, error) {
+func (env ActionEnv) Dispatch(ctx context.Context, cmdPath []string, input map[string]any) (*CallToolResult, error) {
 	if input == nil {
 		input = map[string]any{}
 	}
@@ -184,7 +184,7 @@ func (env ActionEnv) Dispatch(ctx context.Context, cmdPath []string, input map[s
 // reshapes the input or dispatches on a parameter (see actionItemLink
 // for the link_type → cmdPath dispatch pattern).
 func passThrough(cmdPath []string) ActionFn {
-	return func(ctx context.Context, input map[string]any, env ActionEnv) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, input map[string]any, env ActionEnv) (*CallToolResult, error) {
 		return env.Dispatch(ctx, cmdPath, input)
 	}
 }
@@ -413,7 +413,7 @@ func paramDefToToolOption(p ParamDef) mcp.ToolOption {
 // for that collision.
 func makeFanOutHandler(def ToolDef, env ActionEnv) server.ToolHandlerFunc {
 	declared := declaredInputKeys(def)
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*CallToolResult, error) {
 		input := withFieldNumberLiterals(req.GetArguments(), req.Params.RawArguments)
 		if input == nil {
 			input = map[string]any{}
@@ -491,7 +491,7 @@ func withFieldNumberLiterals(input map[string]any, raw json.RawMessage) map[stri
 // applyResultMode keeps only the result channel the configured client exposes
 // to its model. Errors and one-channel results stay untouched so compact mode
 // can never turn a useful result into an empty one.
-func applyResultMode(result *mcp.CallToolResult, err error, structuredOnly, textOnly bool) (*mcp.CallToolResult, error) {
+func applyResultMode(result *CallToolResult, err error, structuredOnly, textOnly bool) (*CallToolResult, error) {
 	if err != nil || result == nil || result.IsError || result.StructuredContent == nil {
 		return result, err
 	}
@@ -561,7 +561,7 @@ func declaredInputKeys(def ToolDef) map[string]bool {
 // keys, so a typo'd or misplaced param was accepted, did nothing, and
 // still returned success — the worst version of wrong. Nil result
 // means the input is clean.
-func rejectUndeclaredKeys(def ToolDef, declared map[string]bool, input map[string]any) *mcp.CallToolResult {
+func rejectUndeclaredKeys(def ToolDef, declared map[string]bool, input map[string]any) *CallToolResult {
 	var unknown []string
 	for k := range input {
 		if !declared[k] {
@@ -601,7 +601,7 @@ func sortedActionNames(def ToolDef) []string {
 // errMissingAction is the structured result returned when the input
 // has no `action` field. Lists the valid actions inline so agents can
 // retry with a correct value.
-func errMissingAction(def ToolDef) *mcp.CallToolResult {
+func errMissingAction(def ToolDef) *CallToolResult {
 	return NewErrorResult(ErrorPayload{
 		Code:    ErrValidationFailed,
 		Message: fmt.Sprintf("%s: missing required field 'action'", def.Name),
@@ -612,7 +612,7 @@ func errMissingAction(def ToolDef) *mcp.CallToolResult {
 // errUnknownAction is the structured result returned when `action` is
 // set but not in the tool's action table. Same listing as
 // errMissingAction so agents can self-correct.
-func errUnknownAction(def ToolDef, action string) *mcp.CallToolResult {
+func errUnknownAction(def ToolDef, action string) *CallToolResult {
 	return NewErrorResult(ErrorPayload{
 		Code:    ErrValidationFailed,
 		Message: fmt.Sprintf("%s: unknown action %q", def.Name, action),

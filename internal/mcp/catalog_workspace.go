@@ -2,8 +2,6 @@ package mcp
 
 import (
 	"context"
-
-	"github.com/mark3labs/mcp-go/mcp"
 )
 
 // padWorkspaceTool exposes workspace-level operations: discovery
@@ -109,7 +107,7 @@ var padWorkspaceTool = ToolDef{
 // `action_filter` in the schema and rename here before dispatch.
 //
 // All other audit-log flags (actor, days, limit) flow through unchanged.
-func actionWorkspaceAuditLog(ctx context.Context, input map[string]any, env ActionEnv) (*mcp.CallToolResult, error) {
+func actionWorkspaceAuditLog(ctx context.Context, input map[string]any, env ActionEnv) (*CallToolResult, error) {
 	if v, ok := input["action_filter"]; ok {
 		// Clone so the caller's map (and req.Params.Arguments) stays
 		// untouched. Same defensive copy makeFanOutHandler does.

@@ -10,8 +10,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/mark3labs/mcp-go/mcp"
-
 	"github.com/PerpetualSoftware/pad/internal/items"
 )
 
@@ -208,7 +206,7 @@ func topLevelConflictKeys() []string {
 // If you are about to add a condition here, say its QUANTIFIER out loud
 // first. Per-key or per-request, this key class or all of them: rounds 15,
 // 16, 17, 19, 20 and 21 were each that question answered by assumption.
-func detectFieldConflicts(prefix string, input map[string]any) *mcp.CallToolResult {
+func detectFieldConflicts(prefix string, input map[string]any) *CallToolResult {
 	// Parsed here rather than passed in, so this pass sees the same inputs
 	// whether or not a `fields` object exists (codex round 14). It used to
 	// run only from inside reshapeItemFields, which returns early without
@@ -576,7 +574,7 @@ var padItemPromotedFieldKeys = map[string]bool{
 // the two writer actions: reshape the `fields` object (when present)
 // into the dedicated-param + `field`-array paths, then dispatch as
 // before. Calls without `fields` are byte-for-byte unchanged.
-func actionItemCreate(ctx context.Context, input map[string]any, env ActionEnv) (*mcp.CallToolResult, error) {
+func actionItemCreate(ctx context.Context, input map[string]any, env ActionEnv) (*CallToolResult, error) {
 	// ONE conflict decision, over the canonical view of every source, run
 	// whether or not a `fields` object is present (lead ruling after round
 	// 13; reach corrected after round 14).
@@ -590,7 +588,7 @@ func actionItemCreate(ctx context.Context, input map[string]any, env ActionEnv) 
 	return env.Dispatch(ctx, []string{"item", "create"}, out)
 }
 
-func actionItemUpdate(ctx context.Context, input map[string]any, env ActionEnv) (*mcp.CallToolResult, error) {
+func actionItemUpdate(ctx context.Context, input map[string]any, env ActionEnv) (*CallToolResult, error) {
 	// ONE conflict decision, over the canonical view of every source, run
 	// whether or not a `fields` object is present (lead ruling after round
 	// 13; reach corrected after round 14).
@@ -638,7 +636,7 @@ func dropInertEmptyParent(input map[string]any) {
 // no-op this contract removes (an agent trying `fields` as a list
 // filter would be the obvious casualty).
 func rejectFieldsParam(prefix string, fn ActionFn) ActionFn {
-	return func(ctx context.Context, input map[string]any, env ActionEnv) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, input map[string]any, env ActionEnv) (*CallToolResult, error) {
 		if _, present := input["fields"]; present {
 			return errStructured(prefix, fmt.Errorf(
 				"fields is only accepted for action=create and action=update; for list filtering use the dedicated params (status, priority, ...)")), nil
@@ -651,7 +649,7 @@ func rejectFieldsParam(prefix string, fn ActionFn) ActionFn {
 // `field`-array paths. Returns the reshaped input, or a structured
 // error result (second return) that the caller surfaces as-is. Input
 // without a `fields` key is returned unchanged.
-func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *mcp.CallToolResult) {
+func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *CallToolResult) {
 	raw, present := input["fields"]
 	if !present {
 		return input, nil
@@ -944,7 +942,7 @@ const fieldsNativeKey = "__fields_native"
 // plus a key→value index. Entries the CLI would reject anyway (no '=')
 // are passed through unindexed rather than pre-empting the CLI's own
 // error surface.
-func parseFieldArray(prefix string, raw any) ([]string, map[string]string, *mcp.CallToolResult) {
+func parseFieldArray(prefix string, raw any) ([]string, map[string]string, *CallToolResult) {
 	byKey := map[string]string{}
 	if raw == nil {
 		return nil, byKey, nil
