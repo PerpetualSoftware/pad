@@ -23,34 +23,14 @@ func (s *Server) handleListAgentRoles(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// When visibility is restricted, recompute item counts from visible items only
-	visibleIDs, visErr := s.visibleCollectionIDs(r, workspaceID)
-	if visErr != nil {
-		writeInternalError(w, visErr)
+	counts, restricted, err := s.visibleRoleItemCounts(r, workspaceID)
+	if err != nil {
+		writeInternalError(w, err)
 		return
 	}
-	if visibleIDs != nil {
-		// For users with item-level grants, use item-level filtering
-		arCollIDs := visibleIDs
-		var arItemIDs []string
-		arFullCollIDs, arGrantedItemIDs, arGrantErr := s.guestResourceFilter(r, workspaceID)
-		if arGrantErr != nil {
-			writeInternalError(w, arGrantErr)
-			return
-		}
-		if len(arGrantedItemIDs) > 0 {
-			arCollIDs = arFullCollIDs
-			arItemIDs = arGrantedItemIDs
-		}
-		visibleItems, _ := s.store.ListItems(workspaceID, models.ItemListParams{CollectionIDs: arCollIDs, ItemIDs: arItemIDs})
-		// Build role → count map from visible items
-		roleCounts := make(map[string]int)
-		for _, item := range visibleItems {
-			if item.AgentRoleID != nil && *item.AgentRoleID != "" {
-				roleCounts[*item.AgentRoleID]++
-			}
-		}
+	if restricted {
 		for i := range roles {
-			roles[i].ItemCount = roleCounts[roles[i].ID]
+			roles[i].ItemCount = counts[roles[i].ID]
 		}
 	}
 
