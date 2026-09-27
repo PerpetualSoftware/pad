@@ -33,6 +33,20 @@ export function contentWriteFor(
 		: { content: body, expected_updated_at: token.value };
 }
 
+/**
+ * The sentence a write owes its user when it DELETED another tab's unsaved
+ * edits (BUG-3230 U2): `warnings.pruned_pending_edits` counts the op-log rows a
+ * direct content write removed. The web sends such a write only after the user
+ * chose to overwrite, so this confirms what their choice did rather than
+ * reporting a surprise. Rows are editor update frames, not keystrokes, so the
+ * count is given as "changes". Null when nothing was deleted.
+ */
+export function prunedEditsNotice(resp: Pick<Item, 'warnings'> | null | undefined): string | null {
+	const n = resp?.warnings?.pruned_pending_edits ?? 0;
+	if (!(n > 0)) return null;
+	return `${n} unsaved ${n === 1 ? 'change' : 'changes'} from another tab ${n === 1 ? 'was' : 'were'} discarded.`;
+}
+
 /** The server refused a token-guarded content write because a tab holds unflushed edits. */
 export function isContentPendingFlush(err: unknown): boolean {
 	return err instanceof PadApiError && err.code === 'content_pending_flush';

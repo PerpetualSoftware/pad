@@ -5,7 +5,7 @@
 	import { api, PadApiError, isUpdateConflictError, type ImportURLResponse } from '$lib/api/client';
 	// Its own statement, so units that only use `api` keep their reviewed hash.
 	import { isSupersededWriteError } from '$lib/api/client';
-	import { isContentPendingFlush } from '$lib/items/contentWrite';
+	import { isContentPendingFlush, prunedEditsNotice } from '$lib/items/contentWrite';
 	import { pendingEditsDialog } from '$lib/stores/pendingEditsDialog.svelte';
 	import {
 		keepRefusedRawDraft,
@@ -4220,6 +4220,9 @@
 				if (switchedAway(reqItem, gen)) return;
 				// Kept: the text was not stored, so the pane stays dirty.
 				if (sent === null) return;
+				// BUG-3230 U2: an overwrite that deleted another tab's edits says so.
+				const discarded = prunedEditsNotice(sent);
+				if (discarded) toastStore.show(discarded, 'info');
 				// Don't overwrite item -- resetting editorContent would
 				// clobber anything typed since the debounce started.
 				editorStore.setLastSaveTime(Date.now());
@@ -4579,6 +4582,9 @@
 				...(overwrite ? { overwrite_pending_edits: true } : {}),
 			}).then((updated) => {
 				if (!item || item.id !== reqItemId || genAtSave !== loadGeneration) return;
+				// BUG-3230 U2: an overwrite that deleted another tab's edits says so.
+				const discarded = prunedEditsNotice(updated);
+				if (discarded) toastStore.show(discarded, 'info');
 				editorStore.setLastSaveTime(Date.now());
 				localLastSaveTime = Date.now();
 				// Raw saves change items.content via a path the
@@ -4715,6 +4721,9 @@
 					if (!item || item.id !== reqItemId || gen !== loadGeneration) return;
 					clearRefusedRawDraft(userId, reqItemId, d.markdown);
 					refusedDraft = null;
+					// BUG-3230 U2: an overwrite that deleted another tab's edits says so.
+					const discarded = prunedEditsNotice(updated);
+					if (discarded) toastStore.show(discarded, 'info');
 					// The raw editor shows its seed over item.content; drop it so
 					// the restored body is what it shows.
 					if (rawMode) rawSeedMarkdown = null;
@@ -4836,6 +4845,9 @@
 						// over.
 						return false;
 					}
+					// BUG-3230 U2: an overwrite that deleted another tab's edits says so.
+					const discarded = prunedEditsNotice(updated);
+					if (discarded) toastStore.show(discarded, 'info');
 					editorStore.setLastSaveTime(Date.now());
 					localLastSaveTime = Date.now();
 					// Raw saves change items.content via a path the
@@ -5226,6 +5238,11 @@
 		// server-side action whose result must land, not be discarded.
 		if (!item || item.id !== updatedItem.id) return;
 		item = withInflightTags(updatedItem);
+		// BUG-3230 U2: a restore the user confirmed over another session's
+		// unsaved edits says how many it discarded, as a body save does. Here,
+		// not in the card: this pane owns the item-scoped toasts.
+		const discarded = prunedEditsNotice(updatedItem);
+		if (discarded) toastStore.show(discarded, 'info');
 	}
 
 	// BUG-2271: flush the LIVE collab editor's markdown into items.content BEFORE

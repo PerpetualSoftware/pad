@@ -2,7 +2,7 @@
 // always with the row's token.
 import { describe, expect, it } from 'vitest';
 import { PadApiError } from '$lib/api/client';
-import { contentWriteFor, isContentPendingFlush } from './contentWrite';
+import { contentWriteFor, isContentPendingFlush, prunedEditsNotice } from './contentWrite';
 
 const row = { content: 'stored body', seq: 7, updated_at: '2026-09-26T05:00:00Z' };
 
@@ -30,5 +30,19 @@ describe('isContentPendingFlush', () => {
 		expect(isContentPendingFlush(make('content_pending_flush'))).toBe(true);
 		expect(isContentPendingFlush(make('update_conflict'))).toBe(false);
 		expect(isContentPendingFlush(new Error('content_pending_flush'))).toBe(false);
+	});
+});
+
+// BUG-3230 U2: the sentence an overwrite owes when it deleted another tab's edits.
+describe('prunedEditsNotice', () => {
+	it('is null when nothing was deleted', () => {
+		expect(prunedEditsNotice(null)).toBeNull();
+		expect(prunedEditsNotice({})).toBeNull();
+		expect(prunedEditsNotice({ warnings: {} })).toBeNull();
+		expect(prunedEditsNotice({ warnings: { pruned_pending_edits: 0 } })).toBeNull();
+	});
+	it('names the count, singular and plural', () => {
+		expect(prunedEditsNotice({ warnings: { pruned_pending_edits: 1 } })).toBe('1 unsaved change from another tab was discarded.');
+		expect(prunedEditsNotice({ warnings: { pruned_pending_edits: 3 } })).toBe('3 unsaved changes from another tab were discarded.');
 	});
 });

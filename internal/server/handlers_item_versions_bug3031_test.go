@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -142,6 +143,15 @@ func TestRestoreOverrideDiscardsPendingEdits(t *testing.T) {
 	if got := f.versionCount(t); got != versions+1 {
 		t.Fatalf("override must mint the undo point: versions %d → %d", versions, got)
 	}
+	// BUG-3230 U2: the response names how many unflushed rows it deleted, as a
+	// content update's does.
+	var resp models.Item
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Warnings == nil || resp.Warnings.PrunedPendingEdits != 1 {
+		t.Fatalf("override restore must report pruned_pending_edits = 1; warnings = %+v", resp.Warnings)
+	}
 }
 
 // No pending edits: a bare POST restores exactly as before, with no body at all.
@@ -152,6 +162,14 @@ func TestRestoreWithoutPendingEditsIsUnchanged(t *testing.T) {
 		t.Fatalf("clean restore: want 200, got %d %s", rr.Code, rr.Body.String())
 	}
 	assertItemContent(t, f.srv, f.itemID, "v1")
+	// BUG-3230 U2: nothing was deleted, so no warnings key on the wire at all.
+	var raw map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &raw); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := raw["warnings"]; present {
+		t.Errorf("a restore that deleted nothing must carry no warnings; got %v", raw["warnings"])
+	}
 }
 
 // Condition (1) of the ruling: the web initiator drains its own editor through

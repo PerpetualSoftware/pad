@@ -280,6 +280,8 @@ func (s *Server) handleRestoreItemVersion(w http.ResponseWriter, r *http.Request
 	}
 
 	var updated *models.Item
+	// BUG-3230 U2: the unflushed rows an overwrite restore deleted.
+	var prunedPendingEdits int
 	if s.collab != nil {
 		// Atomic capture + write + version + op-log prune in one tx: the precheck
 		// hook reads the pre-prune MAX(op-log) AND wipes the op-log inside
@@ -347,16 +349,20 @@ func (s *Server) handleRestoreItemVersion(w http.ResponseWriter, r *http.Request
 					// baseline capture, so the Postgres reconcile above never sees
 					// a captured baseline for a restore that wrote nothing. Frozen
 					// conns cannot append, so the count cannot move under us.
-					if !body.OverwritePendingEdits {
-						n, perr := s.store.CountPendingContentRowsTx(tx, item.ID)
-						if perr != nil {
-							return perr
-						}
-						if n > 0 {
-							pendingRefusal = &store.ContentPendingFlushError{ItemID: item.ID, PendingRows: n}
-							return pendingRefusal
-						}
+					//
+					// BUG-3230 U2: counted on the overwrite path too, because that
+					// is the restore that DELETES them, and the response names how
+					// many (warnings.pruned_pending_edits), as a content update's
+					// does. Counted here, under the same lock, so it is exact.
+					n, perr := s.store.CountPendingContentRowsTx(tx, item.ID)
+					if perr != nil {
+						return perr
 					}
+					if n > 0 && !body.OverwritePendingEdits {
+						pendingRefusal = &store.ContentPendingFlushError{ItemID: item.ID, PendingRows: n}
+						return pendingRefusal
+					}
+					prunedPendingEdits = n
 					// Capture the pre-restore seq under the per-item + workspace seq
 					// lock, before any mutation (BUG-2276 P2 — see the baselineSeq note
 					// above). `existing` is the row as read at the top of the update tx.
@@ -442,6 +448,14 @@ func (s *Server) handleRestoreItemVersion(w http.ResponseWriter, r *http.Request
 			Title:       item.Title,
 			Seq:         updated.Seq,
 		})
+	}
+
+	// BUG-3230 U2: additive and omitempty, like a content update's. On the
+	// Postgres lost-ack path the reconcile re-reads the row, and the count the
+	// precheck captured still applies: it was taken inside the transaction that
+	// landed.
+	if prunedPendingEdits > 0 && updated.Warnings == nil {
+		updated.Warnings = &models.ItemWriteWarnings{PrunedPendingEdits: prunedPendingEdits}
 	}
 
 	writeJSON(w, http.StatusOK, updated)

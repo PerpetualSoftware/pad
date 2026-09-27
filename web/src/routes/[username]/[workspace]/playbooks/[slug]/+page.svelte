@@ -7,7 +7,7 @@
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { titleEditError } from '$lib/items/titleLimit';
-	import { contentWriteFor, isContentPendingFlush } from '$lib/items/contentWrite';
+	import { contentWriteFor, isContentPendingFlush, prunedEditsNotice } from '$lib/items/contentWrite';
 	import { pendingEditsDialog } from '$lib/stores/pendingEditsDialog.svelte';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import { exportAndDownloadArtifact } from '$lib/utils/artifacts';
@@ -258,6 +258,8 @@
 				...contentWriteFor(bodyContent, item),
 				...(Object.keys(fieldsPatch).length ? { fields_patch: fieldsPatch } : {})
 			};
+			// BUG-3230 U2: an overwrite that deleted another tab's edits says so.
+			let discarded: string | null = null;
 			try {
 				await api.items.update(wsSlug, item.slug, payload);
 			} catch (err) {
@@ -269,10 +271,11 @@
 					toastStore.show("Not saved: the open tab's edits were kept. Your changes are still here.", 'info');
 					return;
 				}
-				await api.items.update(wsSlug, item.slug, { ...payload, overwrite_pending_edits: true });
+				discarded = prunedEditsNotice(await api.items.update(wsSlug, item.slug, { ...payload, overwrite_pending_edits: true }));
 			}
 			if (!isSameIdentity()) return;
-			toastStore.show('Playbook saved', 'success');
+			if (discarded) toastStore.show(`Playbook saved. ${discarded}`, 'info');
+			else toastStore.show('Playbook saved', 'success');
 			goto(`/${username}/${wsSlug}/playbooks`);
 		} catch (err) {
 			if (!isSameIdentity()) return;
