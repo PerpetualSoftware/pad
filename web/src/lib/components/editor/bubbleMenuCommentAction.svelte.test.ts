@@ -25,6 +25,11 @@ vi.mock('$lib/api/client', () => ({
 	planLimitMessage: () => '',
 }));
 vi.mock('$lib/stores/toast.svelte', () => ({ toastStore: { show: vi.fn() } }));
+// Extract offers only collections the caller may create in (BUG-3258).
+const editable = vi.hoisted(() => ({ ids: new Set<string>(['c-tasks']) }));
+vi.mock('$lib/stores/workspace.svelte', () => ({
+	workspaceStore: { canEditCollection: (id: string) => editable.ids.has(id) },
+}));
 vi.mock('$lib/stores/localIndex.svelte', () => ({
 	localIndex: { scopeEpochFor: () => 0, upsert: vi.fn() },
 }));
@@ -45,7 +50,7 @@ function mountMenu(opts: { onComment?: (markdown: string) => boolean }) {
 		props: {
 			editor,
 			wsSlug: 'ws',
-			collections: [],
+			collections: [{ id: 'c-tasks', slug: 'tasks', name: 'Tasks', icon: '✓', settings: '{}', schema: '{"fields":[]}' }] as never,
 			onComment: opts.onComment,
 		},
 	}) as Record<string, unknown>;
@@ -123,6 +128,19 @@ describe('selection toolbar — Comment action', () => {
 
 		expect(button('Comment')).not.toBeNull();
 		expect(button('Extract')).not.toBeNull();
+	});
+
+	it('offers no Extract when no collection is one the caller may create in (BUG-3258)', () => {
+		editable.ids.clear();
+		try {
+			mountMenu({ onComment: () => true });
+			selectFirstParagraph();
+
+			expect(button('Comment')).not.toBeNull();
+			expect(button('Extract')).toBeNull();
+		} finally {
+			editable.ids.add('c-tasks');
+		}
 	});
 
 	it('shows nothing at all without a selection', () => {

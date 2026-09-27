@@ -433,8 +433,10 @@
 	}
 
 	let totalItems = $derived(dashboard?.summary.total_items ?? 0);
-	let firstCollection = $derived(collections.filter(c => !c.is_system && c.slug !== 'tasks').sort((a, b) => a.sort_order - b.sort_order)[0]);
-	let hasTasksCollection = $derived(collections.some(c => c.slug === 'tasks'));
+	// The header's create buttons offer only collections the caller may create
+	// in, grant-aware (BUG-3258); the server refuses the rest.
+	let firstCollection = $derived(collections.filter(c => !c.is_system && c.slug !== 'tasks' && workspaceStore.canEditCollection(c.id)).sort((a, b) => a.sort_order - b.sort_order)[0]);
+	let hasTasksCollection = $derived(collections.some(c => c.slug === 'tasks' && workspaceStore.canEditCollection(c.id)));
 	// A workspace with no user-facing collections (only system ones, or none)
 	// has no manual path to create anything from the board. Drives the
 	// web-only escape hatch on the skipped-onboarding board (TASK-1856).
