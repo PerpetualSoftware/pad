@@ -1,4 +1,4 @@
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Page, type Response } from '@playwright/test';
 import {
 	ACCOUNT_KEYS,
 	actAs,
@@ -152,47 +152,97 @@ for (const key of ['owner', 'editor', 'viewer', 'viewerTasksEdit'] as const) {
 // Board drag is gated per ZONE on canEditCollection, not per item. The
 // precedence guest may edit Tasks but only VIEW the granted task, because an
 // item grant beats a collection grant. Dragging that card to another lane is
-// a status write the account does not hold. Measured as "was a write sent",
-// not "is the card draggable", because the drag library's DOM does not say.
-// Each entry is `<status> <item id> <body>`, so a failure names what was sent.
-// The owner leg is the control: the same gesture on an editable card sends
-// its write, so a silent precedence leg means refused, not a broken gesture.
-async function dragToLane(page: Page, title: string, lane: string): Promise<string[]> {
+// a status write the account does not hold. Measured two ways: whether the
+// drag STARTED (svelte-dnd-action's dragged element), and which writes it
+// sent, each recorded as `<status> <item id> <body>` so a failure names them.
+interface DragResult {
+	/** svelte-dnd-action mounted its dragged element: the drag started. */
+	engaged: boolean;
+	writes: string[];
+}
+
+async function dragToLane(page: Page, title: string, lane: string): Promise<DragResult> {
 	const writes: string[] = [];
-	page.on('response', (r) => {
+	const onResponse = (r: Response) => {
 		const path = new URL(r.url()).pathname;
 		if (r.request().method() === 'PATCH' && /\/items\/[^/]+$/.test(path)) {
 			writes.push(`${r.status()} ${path.split('/').pop()} ${r.request().postData() ?? ''}`);
 		}
-	});
-	const card = page.locator('.item-card', { hasText: title });
-	const target = page.getByRole('group', { name: `${lane} column`, exact: true });
-	await expect(card).toBeVisible();
-	await expect(target).toBeVisible();
-	const from = (await card.boundingBox())!;
-	const to = (await target.boundingBox())!;
-	await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
-	await page.mouse.down();
-	await page.mouse.move(from.x + from.width / 2 + 10, from.y + from.height / 2 + 10, { steps: 4 });
-	await page.mouse.move(to.x + to.width / 2, to.y + 80, { steps: 15 });
-	await page.mouse.up();
-	await page.waitForTimeout(1500);
-	return writes;
+	};
+	page.on('response', onResponse);
+	try {
+		const card = page.locator('.item-card', { hasText: title });
+		const target = page.getByRole('group', { name: `${lane} column`, exact: true });
+		await expect(card).toBeVisible();
+		await expect(target).toBeVisible();
+		const from = (await card.boundingBox())!;
+		const to = (await target.boundingBox())!;
+		await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+		await page.mouse.down();
+		await page.mouse.move(from.x + from.width / 2 + 10, from.y + from.height / 2 + 10, { steps: 4 });
+		await page.mouse.move(to.x + to.width / 2, to.y + 80, { steps: 15 });
+		const engaged = (await page.locator('#dnd-action-dragged-el').count()) > 0;
+		await page.mouse.up();
+		if (engaged) {
+			// A started drag writes on drop; wait for it rather than a fixed sleep.
+			await expect
+				.poll(() => writes.length, { timeout: 5_000 })
+				.toBeGreaterThan(0)
+				.catch(() => {});
+		}
+		return { engaged, writes: [...writes] };
+	} finally {
+		page.off('response', onResponse);
+	}
+}
+
+// A gesture can fail to start under load: one CI attempt sent nothing, which
+// read as "not draggable" (TASK-2866). Retry until the drag engages. A card
+// that never engages in three tries counts as not draggable, and each test
+// proves the gesture works in the same run with a control drag.
+// The lane to drag a card INTO: whichever of Open / In-Progress it is not in
+// now. A drop into its own lane is a reorder with no status write, and the
+// world is shared by every test (and every --repeat-each) in a worker.
+async function otherLane(page: Page, title: string): Promise<string> {
+	const inProgress = page
+		.getByRole('group', { name: 'In-Progress column', exact: true })
+		.locator('.item-card', { hasText: title });
+	return (await inProgress.count()) > 0 ? 'Open' : 'In-Progress';
+}
+
+async function dragUntilEngaged(page: Page, title: string, lane: string): Promise<DragResult> {
+	let result: DragResult = { engaged: false, writes: [] };
+	for (let attempt = 0; attempt < 3 && !result.engaged; attempt++) {
+		result = await dragToLane(page, title, lane);
+	}
+	return result;
 }
 
 test('owner: dragging an editable card to another lane sends its write (control)', async ({ page }) => {
 	await open(page, 'owner', '/tasks', 'board');
-	const writes = await dragToLane(page, walk.tasks[1].title, 'In-Progress');
-	expect(writes.length).toBeGreaterThan(0);
+	const title = walk.tasks[1].title;
+	const drag = await dragUntilEngaged(page, title, await otherLane(page, title));
+	expect(drag.engaged).toBe(true);
+	expect(drag.writes.some((w) => w.startsWith('200 '))).toBe(true);
 });
 
-test('guestPrecedence: a view-only card cannot be dragged to another lane', async ({ page }) => {
-	// BUG-3259: drag is gated per zone, so this card drags and its status
-	// write is refused 403. Remove once the fix lands.
-	test.fail(true, 'BUG-3259');
+// BUG-3259 PIN. This asserts today's DEFECT, not the goal: the view-only card
+// engages, and its status write is refused 403. It is a pin rather than
+// test.fail because test.fail would also swallow a failing CONTROL below,
+// and a broken gesture must fail loudly. When BUG-3259 is fixed, flip the
+// two pinned assertions to: engaged false, and no writes.
+test('guestPrecedence: a view-only card is draggable today (BUG-3259 pin)', async ({ page }) => {
 	await open(page, 'guestPrecedence', '/tasks', 'board');
-	const writes = await dragToLane(page, walk.grantedTask.title, 'In-Progress');
-	expect(writes).toHaveLength(0);
+	// In-test control: this guest may edit task C through its collection
+	// grant, so the same gesture on C must start and write.
+	const controlTitle = walk.tasks[2].title;
+	const control = await dragUntilEngaged(page, controlTitle, await otherLane(page, controlTitle));
+	expect(control.engaged, 'control drag did not start: the gesture is broken').toBe(true);
+	expect(control.writes.some((w) => w.startsWith('200 ') && w.includes('"status"'))).toBe(true);
+
+	const viewOnly = await dragUntilEngaged(page, walk.grantedTask.title, await otherLane(page, walk.grantedTask.title));
+	expect(viewOnly.engaged, 'BUG-3259 fixed? Flip this pin').toBe(true);
+	expect(viewOnly.writes.some((w) => w.startsWith('403 ') && w.includes('"status"'))).toBe(true);
 });
 
 // Lane bulk actions (archive, move, tag, priority, assign) sit behind each
