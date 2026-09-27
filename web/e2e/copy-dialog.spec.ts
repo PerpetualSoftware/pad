@@ -759,7 +759,7 @@ test.describe('cross-workspace copy dialog (PLAN-2373 / TASK-2355)', () => {
 			const toast = page.getByText(/may be missing them/).first();
 			await expect(toast).toBeVisible();
 			await expect(toast).toContainText(move ? 'Moved to' : 'Copied to');
-			await expect(toast).toContainText(move ? 'archived original still has them' : 'Copy it again once they are saved');
+			await expect(toast).toContainText(move ? 'archived original may still hold them' : 'Copy it again once they are saved');
 		});
 	}
 });

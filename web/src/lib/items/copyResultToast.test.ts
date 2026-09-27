@@ -39,7 +39,9 @@ describe('copyResultToast', () => {
 		const t = copyResultToast(result({ stale: true, archived: true }));
 		expect(t.type).toBe('info');
 		expect(t.message).toMatch(/^Moved to Other as TASK-9\. /);
-		expect(t.message).toMatch(/archived original still has them/);
+		expect(t.message).toMatch(/archived original may still hold them/);
+		// Never a promise: a purge or a schema-mismatch rebuild can delete them.
+		expect(t.message).not.toMatch(/still has them/);
 	});
 
 	it('not-unique drops keep their wording (BUG-2367), and combine with a stale source', () => {

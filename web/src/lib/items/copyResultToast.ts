@@ -7,9 +7,12 @@
 //     (`warnings.source_content_state`, BUG-3032): an open tab had edits the
 //     source row did not hold yet, so the copy carried the older body. The
 //     server warns rather than refuses because the source keeps those edits.
-//     On a MOVE the source is archived, which does not delete them (archiving is
-//     a soft delete and nothing reaps an item's op-log short of a workspace
-//     purge), so the remedy names the archived original.
+//     On a MOVE the source is archived. Archiving is a soft delete that leaves
+//     the op-log alone, and the dormant GC keeps unflushed rows, so the edits
+//     are USUALLY still with the archived original. Not always: a workspace
+//     purge deletes them, and so does the schema-mismatch rebuild when the item
+//     is next opened after an editor schema bump (collab manager
+//     maybeRebuildOnSchemaMismatch). So the wording says "may", never "has".
 import type { ItemCopyResult } from '$lib/types';
 
 export interface CopyResultToast {
@@ -33,7 +36,7 @@ export function copyResultToast(result: ItemCopyResult): CopyResultToast {
 	if (stale) {
 		parts.push(
 			moved
-				? 'An open tab had edits to this item that were not saved yet, so the moved copy may be missing them. The archived original still has them: restore it, let it save, then move it again.'
+				? 'An open tab had edits to this item that were not saved yet, so the moved copy may be missing them. The archived original may still hold them: restore it and open it, then move it again once they are saved.'
 				: 'An open tab had edits to this item that were not saved yet, so the copy may be missing them. Copy it again once they are saved.',
 		);
 	}
