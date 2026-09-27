@@ -429,23 +429,38 @@ func (s *Store) DeleteComment(id string) error {
 	// parent with replies cannot be deleted: the bare DELETE used to fail the
 	// FK and reach every door as a 500 (BUG-3252). Refuse it by name instead.
 	// The NOT EXISTS makes the refusal part of the DELETE itself, so a reply
-	// counted as absent a moment earlier cannot slip under it; a zero-row
-	// result is then told apart by counting.
-	result, err := tx.Exec(s.q(`DELETE FROM comments WHERE id = ?
-		AND NOT EXISTS (SELECT 1 FROM comments r WHERE r.parent_id = ?)`), id, id)
-	if err != nil {
-		return fmt.Errorf("delete comment: %w", err)
-	}
-	n, _ := result.RowsAffected()
-	if n == 0 {
-		var replies int
+	// counted as absent a moment earlier cannot slip under it. A zero-row
+	// result is then told apart by counting. Under Postgres READ COMMITTED each
+	// statement takes its own snapshot, so the replies the DELETE saw can be
+	// gone by the count. A comment that still exists with no replies is
+	// therefore deleted on another pass, never reported as missing (codex r2).
+	deleted := false
+	for attempt := 0; attempt < 3 && !deleted; attempt++ {
+		result, err := tx.Exec(s.q(`DELETE FROM comments WHERE id = ?
+			AND NOT EXISTS (SELECT 1 FROM comments r WHERE r.parent_id = ?)`), id, id)
+		if err != nil {
+			return fmt.Errorf("delete comment: %w", err)
+		}
+		if n, _ := result.RowsAffected(); n > 0 {
+			deleted = true
+			break
+		}
+		var replies, self int
 		if err := tx.QueryRow(s.q(`SELECT COUNT(*) FROM comments WHERE parent_id = ?`), id).Scan(&replies); err != nil {
 			return fmt.Errorf("delete comment: count replies: %w", err)
 		}
 		if replies > 0 {
 			return &CommentHasRepliesError{CommentID: id, Replies: replies}
 		}
-		return sql.ErrNoRows
+		if err := tx.QueryRow(s.q(`SELECT COUNT(*) FROM comments WHERE id = ?`), id).Scan(&self); err != nil {
+			return fmt.Errorf("delete comment: recheck: %w", err)
+		}
+		if self == 0 {
+			return sql.ErrNoRows
+		}
+	}
+	if !deleted {
+		return fmt.Errorf("delete comment %s: its replies kept changing during the delete; retry", id)
 	}
 
 	if err := s.emitRefOnlyDeletionTx(tx, kernelevents.CommentDeleted, workspaceID, id, itemID, parentID.String); err != nil {
