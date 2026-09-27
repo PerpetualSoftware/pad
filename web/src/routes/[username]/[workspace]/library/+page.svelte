@@ -8,6 +8,7 @@
 	import Chip from '$lib/components/common/Chip.svelte';
 	import { statusColor } from '$lib/utils/fieldColors';
 	import type { LibraryCategory, LibraryConvention, PlaybookCategory, LibraryPlaybook, Item } from '$lib/types';
+	import { canCreateIn } from '$lib/collections/canCreateIn';
 
 	/**
 	 * IDENTITY FENCE — surface 3 of 7 (BUG-3084). Every async commit point on
@@ -211,6 +212,11 @@
 		}
 	}
 
+	// Activate renders only for an account that may create in the collection
+	// the activation writes to (BUG-3264); the server refuses the rest.
+	let canActivateConventions = $derived(canCreateIn('conventions'));
+	let canActivatePlaybooks = $derived(canCreateIn('playbooks'));
+
 	async function activateConvention(convention: LibraryConvention) {
 		if (activeConventionTitles.has(convention.title) || activatingTitle) return;
 		// BOTH QUESTIONS. `pageIdentityHeld()` first, for the reason the roles
@@ -363,7 +369,7 @@
 								<div class="card-action">
 									{#if isActive}
 										<Chip color={statusColor('active')}>Active</Chip>
-									{:else}
+									{:else if canActivateConventions}
 										<button
 											class="activate-btn"
 											disabled={isActivating}
@@ -421,7 +427,7 @@
 								<div class="card-action">
 									{#if isActive}
 										<Chip color={statusColor('active')}>Active</Chip>
-									{:else}
+									{:else if canActivatePlaybooks}
 										<button
 											class="activate-btn"
 											disabled={isActivating}

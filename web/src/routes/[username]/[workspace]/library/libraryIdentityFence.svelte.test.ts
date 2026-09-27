@@ -84,6 +84,10 @@ vi.mock('$lib/api/client', () => ({
 	},
 }));
 
+// Every Activate renders here: this file is about the identity fence, and the
+// permission gate on Activate (BUG-3264) is walked in
+// e2e/permission-walk-system.spec.ts.
+vi.mock('$lib/collections/canCreateIn', () => ({ canCreateIn: () => true }));
 vi.mock('$lib/scroll/restore.svelte', () => ({
 	createScrollRestoration: () => ({ snapshot: { capture: () => null, restore: () => {} } }),
 }));
