@@ -269,6 +269,11 @@ var nulColumns = []nulColumn{
 	// but a config-file string can decode a \u0000 escape to a real NUL, so
 	// the copy is not covered by its source. Second ring.
 	{"item_decisions", "model", classText},
+	// A workspace tab's last_route is the request body's `last_route`
+	// (TASK-3256). The handler refuses control characters, NUL among them,
+	// before the store sees it; the trigger holds the rule for every writer.
+	// The table's other text columns are ids and timestamps the server mints.
+	{"user_workspace_tabs", "last_route", classText},
 }
 
 // nulTriggerMigrations are the generated trigger files, in migration order.
@@ -290,6 +295,7 @@ var nulColumns = []nulColumn{
 var nulTriggerMigrations = []string{
 	"084_nul_invariant_triggers.sql",
 	"094_nul_invariant_triggers_post084.sql",
+	"099_nul_invariant_triggers_post098.sql",
 }
 
 // nulColumnTriggerFile assigns a column to a trigger file other than the
@@ -297,6 +303,8 @@ var nulTriggerMigrations = []string{
 var nulColumnTriggerFile = map[string]string{
 	"items.lease_holder":   "094_nul_invariant_triggers_post084.sql",
 	"item_decisions.model": "094_nul_invariant_triggers_post084.sql",
+	// 098 introduced the table (TASK-3256).
+	"user_workspace_tabs.last_route": "099_nul_invariant_triggers_post098.sql",
 }
 
 // nulTriggerFileFor names the trigger file a column's triggers are rendered

@@ -1757,6 +1757,18 @@ func (s *Server) setupRouter() {
 			// CLI session) and 412s when the claim secret isn't wired.
 			r.Post("/oauth/claim", s.handleOAuthClaim)
 
+			// The caller's open set of workspace tabs (PLAN-3002 U1 /
+			// TASK-3256). User-scoped, outside the /{slug} access subrouter;
+			// each handler checks the workspace against the caller's own
+			// visible set. Web client only.
+			r.Route("/me/workspace-tabs", func(r chi.Router) {
+				r.Get("/", s.handleListWorkspaceTabs)
+				r.Post("/", s.handleOpenWorkspaceTab)
+				r.Put("/", s.handleReorderWorkspaceTabs)
+				r.Delete("/{slug}", s.handleCloseWorkspaceTab)
+				r.Patch("/{slug}", s.handleUpdateWorkspaceTab)
+			})
+
 			// Workspaces
 			r.Route("/workspaces", func(r chi.Router) {
 				r.Get("/", s.handleListWorkspaces)

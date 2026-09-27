@@ -329,12 +329,25 @@ func (s *Store) UpdateWorkspace(slug string, input models.WorkspaceUpdate) (*mod
 	return s.GetWorkspaceBySlug(slug)
 }
 
+// DeleteWorkspace soft-deletes a workspace. Every user's tab for it goes in
+// the same transaction; a restore does not bring them back (TASK-3256,
+// PLAN-3002 Q12).
 func (s *Store) DeleteWorkspace(slug string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var id string
+	err = tx.QueryRow(s.q(`SELECT id FROM workspaces WHERE slug = ? AND deleted_at IS NULL`), slug).Scan(&id)
+	if err != nil {
+		return err // sql.ErrNoRows when no live workspace has the slug
+	}
 	ts := now()
-	result, err := s.db.Exec(s.q(`
+	result, err := tx.Exec(s.q(`
 		UPDATE workspaces SET deleted_at = ?, updated_at = ?
-		WHERE slug = ? AND deleted_at IS NULL
-	`), ts, ts, slug)
+		WHERE id = ? AND deleted_at IS NULL
+	`), ts, ts, id)
 	if err != nil {
 		return err
 	}
@@ -342,7 +355,10 @@ func (s *Store) DeleteWorkspace(slug string) error {
 	if rows == 0 {
 		return sql.ErrNoRows
 	}
-	return nil
+	if err := s.deleteWorkspaceTabsForWorkspace(tx, id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // RestoreWorkspace un-soft-deletes a workspace: it clears deleted_at so

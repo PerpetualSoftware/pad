@@ -251,6 +251,10 @@ user_report_layouts.created_at
 user_report_layouts.updated_at
 user_report_layouts.user_id
 user_report_layouts.workspace_id
+user_workspace_tabs.created_at
+user_workspace_tabs.updated_at
+user_workspace_tabs.user_id
+user_workspace_tabs.workspace_id
 users.created_at
 users.disabled_at
 users.email_verified_at
