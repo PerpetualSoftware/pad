@@ -124,13 +124,21 @@
 	// writes to the same entry, and restoring on those would yank the reader
 	// back to a position they have since scrolled away from.
 	//
-	// The item's content renders after the navigation, so the position is
-	// applied once the pane can scroll that far — waited for with a
-	// ResizeObserver on the pane's content, capped. The reader wins: any
-	// scroll during the wait that is not our own, or a wheel/touch/key
-	// gesture, cancels it.
+	// The item's content can still be growing when the restore starts, so the
+	// position is applied at once, clamped to how far the pane can scroll now,
+	// and then HELD until the cap: a ResizeObserver on the pane's content
+	// re-applies it as the content grows, which walks the reader to the target.
+	// The reader wins: a wheel/touch/key gesture, or a scroll that is not our
+	// own, cancels it.
 	//
-	// Once applied, the target is HELD until the cap (BUG-3250). Other parts
+	// Clamping at once, rather than waiting until the pane can reach the
+	// target, is BUG-3251. The body can render SHORT and grow later: text a
+	// tab typed just before leaving the item reaches the reopened connection
+	// after its replay, seconds later under write load (BUG-3253). A restore
+	// that waited for the full height ran out the cap and left the reader at
+	// the top. Clamped, it degrades to near the target, then exact.
+	//
+	// The hold (BUG-3250) also covers the rest of the pane settling. Other parts
 	// of the pane settle after the body (the attachment strip's loading
 	// placeholder goes away, the timeline's loader becomes its content), the
 	// browser's scroll anchoring or clamping then moves scrollTop, and a
@@ -138,8 +146,8 @@
 	// every resize re-applies it. During the hold a scroll is the reader's only
 	// when it moves away from our last assignment while scrollHeight held
 	// still: a clamp or an anchoring shift comes with a height change, and our
-	// own assignment lands on the value we set. That rule is what honours a
-	// scrollbar drag, which raises no gesture event.
+	// own assignment lands on the value we set. That rule, with the scrollbar's
+	// pointerdown in GESTURES, is what honours a scrollbar drag.
 	//
 	// THE CAP MUST CLEAR THE COLLAB SYNC GRACE (BUG-3228). The body renders
 	// only once the collab provider reports `synced`. On a connection that gets
@@ -158,11 +166,13 @@
 	// window in which the restore HOLDS its target. Re-measured for TASK-3248
 	// on that build, the pane Back spec at 8 workers, ms from onReady: with a
 	// small op-log (x300), first apply p50 75 / p99 281 / max 435, and the
-	// last re-apply after a late layout shift max 320. With a ~300-frame
-	// op-log on the item (x100), first apply p99 and max 1693, and 9/100 runs
-	// had not applied by 2500. That tail predates BUG-3240: the parent build
-	// failed the same variant 6/100 (3 of them at the cap). So the cap stays at
-	// 2500: lowering it would cut into that tail, not into slack.
+	// last re-apply after a late layout shift max 320. With ~300 characters
+	// typed into the item just before leaving it (x100), 9/100 runs had not
+	// applied by 2500. BUG-3251 found that tail was late text, not late
+	// rendering: the body had rendered, 1-4 lines short, and the restore was
+	// waiting for height that arrived after the cap. That is what the clamp
+	// above answers. The cap is unchanged at 2500, and it is now how long late
+	// growth can still carry the reader to the target.
 	const RESTORE_CAP_MS = 2500;
 	let cancelRestore: (() => void) | null = null;
 	// The requested item (openItemRef) and workspace the live restore started under.
@@ -171,7 +181,6 @@
 
 	function restorePaneScroll(el: HTMLElement, target: number): () => void {
 		let done = false;
-		let applied = false;
 		let lastSet = -1;
 		let lastHeight = el.scrollHeight;
 		// No scroll anchoring while the restore runs (BUG-3250 codex round 1):
@@ -193,21 +202,12 @@
 			if (done) return;
 			lastHeight = el.scrollHeight;
 			const max = el.scrollHeight - el.clientHeight;
-			// Before the first apply, wait until the pane can reach the target.
-			if (!applied && max < target) return;
-			applied = true;
 			const want = Math.min(target, max);
 			if (el.scrollTop !== want) el.scrollTop = want;
 			lastSet = el.scrollTop;
 		};
 		const onScroll = () => {
 			if (done) return;
-			// Before the restore lands, the pane sits at 0 while content grows,
-			// which raises no scroll event; a scroll now can only be the reader's.
-			if (!applied) {
-				if (el.scrollTop > 2) finish();
-				return;
-			}
 			const height = el.scrollHeight;
 			const readerMoved = Math.abs(el.scrollTop - lastSet) > 2 && height === lastHeight;
 			lastHeight = height;
@@ -236,7 +236,11 @@
 	// uses for this A→B→A case (BUG-1425).
 	let readyGen = 0;
 	let pendingRestore: { target: number; gen: number } | null = null;
-	const GESTURES = ['wheel', 'touchstart', 'keydown'] as const;
+	// pointerdown is the scrollbar: a press on it lands on the pane itself, and
+	// it is the one reader move the height rule above can miss, when a drag and
+	// late growth share a frame (BUG-3251 codex round 1). A click in the body is
+	// the reader acting on what they see, so it ends the restore too.
+	const GESTURES = ['wheel', 'touchstart', 'keydown', 'pointerdown'] as const;
 
 	// A reader gesture while the item is still loading cancels the pending
 	// restore too, not only one during the height wait: the reader has already
