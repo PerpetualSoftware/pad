@@ -180,8 +180,11 @@ type Room struct {
 	graceTTL      time.Duration
 	onIdle        func(string) // RoomManager.markRoomGone
 
-	mu         sync.Mutex
-	conns      map[*websocket.Conn]*roomConn
+	mu    sync.Mutex
+	conns map[*websocket.Conn]*roomConn
+	// seeder is the one live connection allowed to run the client's
+	// lazy seed (BUG-3240), or nil. Guarded by mu.
+	seeder     *roomConn
 	graceTimer *time.Timer
 	closing    bool // set after the grace timer reclaims this Room
 
@@ -321,9 +324,49 @@ func (r *Room) removeConn(rc *roomConn) {
 	defer r.mu.Unlock()
 
 	delete(r.conns, rc.conn)
+	if r.seeder == rc {
+		r.seeder = nil
+		// Pass the role on, so a peer still waiting on an empty doc is
+		// not left blank. Published on the bus AFTER Unsubscribe above
+		// and after this conn's readLoop returned, so every op it sent
+		// is already queued ahead of the grant in each peer's channel.
+		if next := r.pickSeederLocked(); next != nil {
+			r.seeder = next
+			r.bus.Publish(OpEvent{ItemID: r.itemID, Type: OpTypeSeedGrant, TargetClientID: next.id})
+		}
+	}
 	if len(r.conns) == 0 && r.graceTimer == nil && !r.closing {
 		r.graceTimer = time.AfterFunc(r.graceTTL, r.onGraceExpired)
 	}
+}
+
+// pickSeederLocked returns a live connection that may write, or nil.
+// Caller holds mu.
+func (r *Room) pickSeederLocked() *roomConn {
+	for _, c := range r.conns {
+		if c.canWrite.Load() {
+			return c
+		}
+	}
+	return nil
+}
+
+// claimSeeder makes rc the room's seeder if no live connection holds the
+// role (BUG-3240). Called once per connection, under the per-item setup
+// lock, before its initial op_log_cursor frame. The client seeds only if
+// it holds the role AND its Y.Doc is still empty after the replay, so the
+// grant says nothing about the op-log's contents and needs no query.
+func (r *Room) claimSeeder(rc *roomConn) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.seeder != nil || !rc.canWrite.Load() {
+		return false
+	}
+	if _, live := r.conns[rc.conn]; !live {
+		return false
+	}
+	r.seeder = rc
+	return true
 }
 
 // onGraceExpired runs after graceTTL has passed without a fresh
@@ -554,6 +597,20 @@ func (r *Room) readLoop(rc *roomConn) error {
 // other goroutine surfaces an error and tears down cleanly.
 func (r *Room) writeLoop(rc *roomConn) {
 	for ev := range rc.bus {
+		if ev.Type == OpTypeSeedGrant {
+			if ev.TargetClientID != rc.id {
+				continue
+			}
+			payload, _ := json.Marshal(ControlMessage{Type: ControlMessageSeedGrant})
+			rc.writeMu.Lock()
+			err := rc.conn.WriteMessage(websocket.TextMessage, payload)
+			rc.writeMu.Unlock()
+			if err != nil {
+				_ = rc.conn.Close()
+				return
+			}
+			continue
+		}
 		isSelf := ev.ClientID == rc.id
 		// `isSelf`: we skip the binary echo (the originator already
 		// has the Y.Doc state) but STILL process the cursor logic
@@ -681,6 +738,13 @@ func (r *Room) handleControlMessage(rc *roomConn, data []byte) {
 			return
 		}
 		r.resolveApplierAck(ctl.RequestID, rc)
+	case ControlMessageSyncSafetyNet:
+		// BUG-3240: this connection never saw its post-replay cursor
+		// frame. Should be unreachable; logged so it is not silent.
+		slog.Warn("collab: client sync safety net fired (no post-replay op_log_cursor)",
+			"item_id", r.itemID,
+			"client_id", rc.id,
+		)
 	default:
 		// Unknown control type — drop.
 	}

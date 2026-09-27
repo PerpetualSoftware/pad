@@ -786,6 +786,9 @@ func (m *RoomManager) runConn(room *Room, rc *roomConn, itemLock *sync.Mutex, si
 	payload, perr := json.Marshal(ControlMessage{
 		Type:    ControlMessageOpLogCursor,
 		OpLogID: cursorID,
+		// BUG-3240: this frame is the client's sync-complete signal, and
+		// it names the room's one seeder.
+		Seed: room.claimSeeder(rc),
 	})
 	if perr != nil {
 		rc.writeMu.Unlock()
