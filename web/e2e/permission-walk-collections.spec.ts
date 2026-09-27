@@ -193,6 +193,9 @@ for (const key of ['owner', 'editor', 'viewer', 'viewerTasksEdit'] as const) {
 interface DragResult {
 	/** svelte-dnd-action mounted its dragged element: the drag started. */
 	engaged: boolean;
+	/** The target lane rendered the dragged card before release: the library
+	 *  registered the drop zone, so the release lands there. */
+	entered: boolean;
 	writes: string[];
 }
 
@@ -217,24 +220,41 @@ async function dragToLane(page: Page, title: string, lane: string): Promise<Drag
 		await page.mouse.move(from.x + from.width / 2 + 10, from.y + from.height / 2 + 10, { steps: 4 });
 		await page.mouse.move(to.x + to.width / 2, to.y + 80, { steps: 15 });
 		const engaged = (await page.locator('#dnd-action-dragged-el').count()) > 0;
+		// svelte-dnd-action decides the destination zone on its own schedule, not
+		// on each mousemove, and under load it can lag the pointer. A release
+		// before it has moved the card into the target lane finalizes in the
+		// SOURCE lane and writes nothing. Measured on a failing stress run: the
+		// target lane lacked the card on arrival and had it 400ms later. So hold
+		// until the target lane renders the card.
+		const inTarget = target.locator('.item-card', { hasText: title });
+		const entered =
+			engaged &&
+			(await expect(inTarget)
+				.not.toHaveCount(0, { timeout: 3_000 })
+				.then(() => true)
+				.catch(() => false));
 		await page.mouse.up();
-		if (engaged) {
-			// A started drag writes on drop; wait for it rather than a fixed sleep.
+		if (entered) {
+			// A cross-lane drop writes the card's STATUS, and may also write a
+			// neighbour's sort_order. Wait for the status write itself: waiting for
+			// the first write returned on the neighbour's, before the status write
+			// landed (a CI flake on the BUG-3259 pin).
 			await expect
-				.poll(() => writes.length, { timeout: 5_000 })
-				.toBeGreaterThan(0)
+				.poll(() => writes.some((w) => w.includes('"status"')), { timeout: 5_000 })
+				.toBe(true)
 				.catch(() => {});
 		}
-		return { engaged, writes: [...writes] };
+		return { engaged, entered, writes: [...writes] };
 	} finally {
 		page.off('response', onResponse);
 	}
 }
 
-// A gesture can fail to start under load: one CI attempt sent nothing, which
-// read as "not draggable" (TASK-2866). Retry until the drag engages. A card
-// that never engages in three tries counts as not draggable, and each test
-// proves the gesture works in the same run with a control drag.
+// A gesture can fail under load, either by not starting, or by releasing
+// before the library registered the target lane (TASK-2866: both seen on CI).
+// Retry until it both starts and enters the target lane. A card that never
+// starts in three tries counts as not draggable, and each test proves the
+// gesture works in the same run with a control drag.
 // The lane to drag a card INTO: whichever of Open / In-Progress it is not in
 // now. A drop into its own lane is a reorder with no status write, and the
 // world is shared by every test (and every --repeat-each) in a worker.
@@ -246,8 +266,8 @@ async function otherLane(page: Page, title: string): Promise<string> {
 }
 
 async function dragUntilEngaged(page: Page, title: string, lane: string): Promise<DragResult> {
-	let result: DragResult = { engaged: false, writes: [] };
-	for (let attempt = 0; attempt < 3 && !result.engaged; attempt++) {
+	let result: DragResult = { engaged: false, entered: false, writes: [] };
+	for (let attempt = 0; attempt < 3 && !result.entered; attempt++) {
 		result = await dragToLane(page, title, lane);
 	}
 	return result;
@@ -258,6 +278,7 @@ test('owner: dragging an editable card to another lane sends its write (control)
 	const title = walk.tasks[1].title;
 	const drag = await dragUntilEngaged(page, title, await otherLane(page, title));
 	expect(drag.engaged).toBe(true);
+	expect(drag.entered).toBe(true);
 	expect(drag.writes.some((w) => w.startsWith('200 '))).toBe(true);
 });
 
@@ -273,11 +294,15 @@ test('guestPrecedence: a view-only card is draggable today (BUG-3259 pin)', asyn
 	const controlTitle = walk.tasks[2].title;
 	const control = await dragUntilEngaged(page, controlTitle, await otherLane(page, controlTitle));
 	expect(control.engaged, 'control drag did not start: the gesture is broken').toBe(true);
+	expect(control.entered, 'control drag never reached the target lane').toBe(true);
 	expect(control.writes.some((w) => w.startsWith('200 ') && w.includes('"status"'))).toBe(true);
 
 	const viewOnly = await dragUntilEngaged(page, walk.grantedTask.title, await otherLane(page, walk.grantedTask.title));
 	expect(viewOnly.engaged, 'BUG-3259 fixed? Flip this pin').toBe(true);
-	expect(viewOnly.writes.some((w) => w.startsWith('403 ') && w.includes('"status"'))).toBe(true);
+	expect(viewOnly.entered, 'the view-only card never reached the target lane').toBe(true);
+	expect(viewOnly.writes, 'the drop sent no status write').toEqual(
+		expect.arrayContaining([expect.stringMatching(/^403 .*"status"/)])
+	);
 });
 
 // Lane bulk actions (archive, move, tag, priority, assign) sit behind each
