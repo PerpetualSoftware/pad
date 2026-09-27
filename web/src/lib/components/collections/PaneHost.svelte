@@ -146,8 +146,8 @@
 	// every resize re-applies it. During the hold a scroll is the reader's only
 	// when it moves away from our last assignment while scrollHeight held
 	// still: a clamp or an anchoring shift comes with a height change, and our
-	// own assignment lands on the value we set. That rule is what honours a
-	// scrollbar drag, which raises no gesture event.
+	// own assignment lands on the value we set. That rule, with the scrollbar's
+	// pointerdown in GESTURES, is what honours a scrollbar drag.
 	//
 	// THE CAP MUST CLEAR THE COLLAB SYNC GRACE (BUG-3228). The body renders
 	// only once the collab provider reports `synced`. On a connection that gets
@@ -236,7 +236,11 @@
 	// uses for this A→B→A case (BUG-1425).
 	let readyGen = 0;
 	let pendingRestore: { target: number; gen: number } | null = null;
-	const GESTURES = ['wheel', 'touchstart', 'keydown'] as const;
+	// pointerdown is the scrollbar: a press on it lands on the pane itself, and
+	// it is the one reader move the height rule above can miss, when a drag and
+	// late growth share a frame (BUG-3251 codex round 1). A click in the body is
+	// the reader acting on what they see, so it ends the restore too.
+	const GESTURES = ['wheel', 'touchstart', 'keydown', 'pointerdown'] as const;
 
 	// A reader gesture while the item is still loading cancels the pending
 	// restore too, not only one during the height wait: the reader has already

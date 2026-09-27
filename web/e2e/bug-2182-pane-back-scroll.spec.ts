@@ -210,7 +210,15 @@ test('BUG-3251: a body that is still short when the restore ends leaves the read
 		await page.waitForTimeout(3000);
 		const max = await ctx.pane.evaluate((el) => el.scrollHeight - el.clientHeight);
 		expect(max, 'premise: the body was too short to reach the saved position').toBeLessThan(ctx.before - 100);
-		expect(await ctx.scrollTop(), 'the reader was left at the top').toBeGreaterThan(max - 3);
+		const clamped = await ctx.scrollTop();
+		expect(clamped, 'the reader was left at the top').toBeGreaterThan(max - 3);
+		// Being at the bottom is also what a stick-to-bottom mechanism would
+		// give. This one was a restore: it ended at the cap, so growth after it
+		// leaves the reader where it put them (BUG-3251 codex round 1).
+		await growBody(page);
+		await page.waitForTimeout(400);
+		expect(await ctx.pane.evaluate((el) => el.scrollHeight - el.clientHeight), 'premise: the body grew').toBeGreaterThan(max + 200);
+		expect(Math.abs((await ctx.scrollTop()) - clamped), 'the position moved after the restore ended').toBeLessThanOrEqual(3);
 	} finally {
 		await growBody(page);
 		await deleteCollection(fixture, request, ctx.coll.slug);
@@ -231,6 +239,39 @@ test('BUG-3251: late growth inside the hold carries the reader to the saved posi
 			.toBeGreaterThan(ctx.before - 40);
 		expect(await ctx.scrollTop()).toBeLessThan(ctx.before + 40);
 	} finally {
+		await deleteCollection(fixture, request, ctx.coll.slug);
+	}
+});
+
+// BUG-3251 codex round 1: a scrollbar drag raises no wheel/touch/key event, and
+// the height rule cannot see it when it shares a frame with late growth: the
+// scroll arrives with the height already changed, so it reads as a clamp and
+// the next resize re-applies the target over the reader. The press on the
+// scrollbar is a pointerdown on the pane, and that ends the restore.
+test('BUG-3251: a scrollbar drag in the same frame as late growth is honoured', async ({ page, fixture, request }, testInfo) => {
+	test.skip(testInfo.project.name !== 'desktop-chromium', 'the split pane is a desktop layout');
+	test.setTimeout(60_000);
+	const ctx = await setup(page, fixture, request);
+	try {
+		await shortenBody(page, ctx.bodyHeight - 300);
+		await page.locator('.pane-back-btn').click();
+		await expect(ctx.pane.locator('a', { hasText: ctx.titleB }).last()).toBeAttached({ timeout: 10_000 });
+		const max = () => ctx.pane.evaluate((el) => el.scrollHeight - el.clientHeight);
+		await expect.poll(async () => (await ctx.scrollTop()) - (await max()), { timeout: 3000, message: 'premise: the clamped restore landed' })
+			.toBeGreaterThan(-3);
+		const box = (await ctx.pane.boundingBox())!;
+		await page.mouse.move(box.x + box.width - 4, box.y + box.height / 2);
+		await page.mouse.down();
+		const dragged = await ctx.pane.evaluate((el) => {
+			document.querySelector('style[data-bug3251]')?.remove();
+			el.scrollTop -= 600;
+			return el.scrollTop;
+		});
+		await page.waitForTimeout(400);
+		await page.mouse.up();
+		expect(Math.abs((await ctx.scrollTop()) - dragged), `the restore overrode the drag (dragged to ${dragged})`).toBeLessThanOrEqual(3);
+	} finally {
+		await growBody(page);
 		await deleteCollection(fixture, request, ctx.coll.slug);
 	}
 });
