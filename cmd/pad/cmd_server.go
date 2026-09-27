@@ -392,43 +392,9 @@ func serveCmd() *cobra.Command {
 						return srv.IsCloud() && user != nil && !user.IsEmailVerified()
 					},
 				}
-				if _, regErr := mcpserver.Register(mcpSrv.MCP(), mcpserver.RegistryOptions{
-					Doc: mcpDoc,
-					// Shared multi-user state: this one stateless process
-					// dispatches for every OAuth user, so the session
-					// workspace must NEVER be trusted as a per-call
-					// resolution default — it would bleed across users /
-					// concurrent sessions (BUG-1865). NewSharedWorkspaceState
-					// makes ResolveDefault() always return "", forcing
-					// per-call explicit `workspace` (or the per-user
-					// maybeInjectWorkspace default). Local `pad mcp serve`
-					// (cmd/pad/mcp.go) keeps NewWorkspaceState — it's
-					// single-user-per-process and safe to inject.
-					Workspace:  mcpserver.NewSharedWorkspaceState(),
-					Dispatcher: dispatcher,
-					PadVersion: fullVersion(),
-				}); regErr != nil {
-					return fmt.Errorf("register MCP catalog: %w", regErr)
+				if regErr := registerRemoteMCP(mcpSrv, mcpDoc, dispatcher); regErr != nil {
+					return regErr
 				}
-				mcpserver.RegisterPrompts(mcpSrv.MCP())
-				mcpserver.RegisterMeta(mcpSrv.MCP(), fullVersion())
-
-				// Read-only resource templates (TASK-2101). Parity with
-				// `pad mcp serve` (cmd/pad/mcp.go), which registers them via
-				// an ExecResourceFetcher. That fetcher shells out to the pad
-				// binary, inheriting one user's ~/.pad credentials — unusable
-				// in this shared multi-OAuth-user process. HTTPResourceFetcher
-				// is the in-process equivalent the original TASK-950 comment
-				// deferred: it dispatches each resource read through the same
-				// handler chain (reusing the dispatcher's user resolution +
-				// auth/consent perimeter), so the full resource set — including
-				// the bounded attachment image resource from PR #930 — is now
-				// available over remote /mcp.
-				mcpserver.RegisterResources(
-					mcpSrv.MCP(),
-					mcpserver.NewHTTPResourceFetcher(dispatcher),
-					nil, // no root flags on the remote transport (no --url)
-				)
 				// Stateless mode: every Streamable HTTP request stands
 				// alone, Bearer is the auth, no session resumption to
 				// manage. Matches the spike's verified shape.
@@ -1523,4 +1489,50 @@ func newObservedEventBus(cfg *config.Config, rc *redis.Client, redisKeys redisns
 	bus := events.New()
 	bus.SetObserver(metrics.NewEventsObserver(m))
 	return bus
+}
+
+// registerRemoteMCP registers everything the remote /mcp transport serves on
+// mcpSrv: the catalog, prompts, meta and resources. Extracted from the
+// cloud branch of serverStartCmd (TASK-2306) so the wire-golden test can
+// build the remote server through this same function rather than
+// assembling its own, which would vouch for the test instead of this binding.
+func registerRemoteMCP(mcpSrv *mcpserver.Server, mcpDoc *cmdhelp.Document, dispatcher *mcpserver.HTTPHandlerDispatcher) error {
+	if _, regErr := mcpserver.Register(mcpSrv.MCP(), mcpserver.RegistryOptions{
+		Doc: mcpDoc,
+		// Shared multi-user state: this one stateless process
+		// dispatches for every OAuth user, so the session
+		// workspace must NEVER be trusted as a per-call
+		// resolution default — it would bleed across users /
+		// concurrent sessions (BUG-1865). NewSharedWorkspaceState
+		// makes ResolveDefault() always return "", forcing
+		// per-call explicit `workspace` (or the per-user
+		// maybeInjectWorkspace default). Local `pad mcp serve`
+		// (cmd/pad/mcp.go) keeps NewWorkspaceState — it's
+		// single-user-per-process and safe to inject.
+		Workspace:  mcpserver.NewSharedWorkspaceState(),
+		Dispatcher: dispatcher,
+		PadVersion: fullVersion(),
+	}); regErr != nil {
+		return fmt.Errorf("register MCP catalog: %w", regErr)
+	}
+	mcpserver.RegisterPrompts(mcpSrv.MCP())
+	mcpserver.RegisterMeta(mcpSrv.MCP(), fullVersion())
+
+	// Read-only resource templates (TASK-2101). Parity with
+	// `pad mcp serve` (cmd/pad/mcp.go), which registers them via
+	// an ExecResourceFetcher. That fetcher shells out to the pad
+	// binary, inheriting one user's ~/.pad credentials — unusable
+	// in this shared multi-OAuth-user process. HTTPResourceFetcher
+	// is the in-process equivalent the original TASK-950 comment
+	// deferred: it dispatches each resource read through the same
+	// handler chain (reusing the dispatcher's user resolution +
+	// auth/consent perimeter), so the full resource set — including
+	// the bounded attachment image resource from PR #930 — is now
+	// available over remote /mcp.
+	mcpserver.RegisterResources(
+		mcpSrv.MCP(),
+		mcpserver.NewHTTPResourceFetcher(dispatcher),
+		nil, // no root flags on the remote transport (no --url)
+	)
+	return nil
 }
