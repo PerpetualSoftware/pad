@@ -711,4 +711,55 @@ test.describe('cross-workspace copy dialog (PLAN-2373 / TASK-2355)', () => {
 		await expect(page.locator('.item-pane')).toBeVisible();
 		await expect(more).toBeFocused();
 	});
+
+	// BUG-3230 U1: the copy answers `warnings.source_content_state` when the body
+	// it carried was behind the source's live document (BUG-3032). The server
+	// half is pinned in Go; this leg pins that the PANE reads it, by rewriting
+	// the 201 to carry the field, since this tab's own pre-copy flush would
+	// otherwise clear the stale state it needs. On main the toast was a plain
+	// green "Copied to …", which is what this asserts against.
+	for (const move of [false, true]) {
+		test(`a ${move ? 'move' : 'copy'} whose source body was behind its live document says so`, async ({
+			page,
+			fixture,
+			request,
+		}, testInfo) => {
+			test.skip(testInfo.project.name !== 'desktop-chromium', 'viewport driven explicitly');
+			await page.setViewportSize(DESKTOP);
+			await browserLogin(page);
+			const dest = await seedDestination(request, fixture, move ? 'stale-move' : 'stale-copy', {
+				name: 'Notes',
+				slug: 'notes',
+				fields: [],
+			});
+			const { slug } = await seedDoc(fixture, request, `Copy dialog stale ${move ? 'move' : 'copy'}`);
+			await page.goto(itemUrl(fixture, slug));
+
+			await page.route(/\/copy(\?|$)/, async (route) => {
+				if (route.request().method() !== 'POST') return route.continue();
+				const resp = await route.fetch();
+				const body = await resp.json();
+				body.warnings.source_content_state = 'applied_pending_flush';
+				await route.fulfill({ response: resp, json: body });
+			});
+
+			await openCopyDialog(page);
+			const dialog = copyDialog(page);
+			await dialog.getByLabel('Workspace', { exact: true }).selectOption(dest.wsSlug);
+			const preflight = page.waitForResponse((r) => r.url().includes('/copy/preflight') && r.status() === 200);
+			await dialog.getByLabel('Collection', { exact: true }).selectOption(dest.collSlug);
+			await preflight;
+			if (move) await dialog.getByRole('radio', { name: /^Move — / }).check();
+			const confirm = dialog.getByRole('button', { name: move ? 'Move' : 'Copy', exact: true });
+			await expect(confirm).toBeEnabled();
+			const copyResp = page.waitForResponse((r) => /\/copy(\?|$)/.test(r.url()) && r.request().method() === 'POST');
+			await confirm.click();
+			expect((await copyResp).status()).toBe(201);
+
+			const toast = page.getByText(/may be missing them/).first();
+			await expect(toast).toBeVisible();
+			await expect(toast).toContainText(move ? 'Moved to' : 'Copied to');
+			await expect(toast).toContainText(move ? 'archived original still has them' : 'Copy it again once they are saved');
+		});
+	}
 });

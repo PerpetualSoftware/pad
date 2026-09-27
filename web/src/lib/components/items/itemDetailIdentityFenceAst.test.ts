@@ -157,7 +157,8 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	closeCopyDialog: { reviewed: '1c925f081a26', why: 'restores focus after closing synchronously', may: ['paneMenuTrigger.focus'] },
 	closePushDialog: { reviewed: 'bda8c7529677', why: 'restores focus after closing synchronously', may: ['paneMenuTrigger.focus'] },
 	flushContentBeforeCopy: { reviewed: 'd7083bf9954c', why: 'returns a boolean to the dialog' },
-	handleCopied: { reviewed: 'f35fb099838d', why: 'switchedAway before adopting the refreshed item' },
+	// BUG-3230 U1: the toast moved into copyResultToast, a pure function of the result; still before the await.
+	handleCopied: { reviewed: 'eecddaafa59b', why: 'switchedAway before adopting the refreshed item' },
 	handleDelete: { reviewed: 'b66adcf84794', why: 'switchedAway on both arms' },
 	handleRestore: { reviewed: 'c3a1732554a4', why: 'switchedAway on every arm' },
 	handleDeleteLink: { reviewed: 'd147285bb264', why: 'switchedAway after each await' },
