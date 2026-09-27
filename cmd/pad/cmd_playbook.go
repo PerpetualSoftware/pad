@@ -70,7 +70,7 @@ func playbookListCmd() *cobra.Command {
 			}
 			var staleSummaries []string
 			for _, p := range list {
-				if p.ContentState == models.ContentOutcomeAppliedPendingFlush {
+				if models.IsContentStateStale(p.ContentState) {
 					staleSummaries = append(staleSummaries, p.Ref)
 				}
 				slug := "—"
@@ -347,7 +347,14 @@ Example:
 // is piped into scripts, and the markdown form of both commands exists to be
 // redirected into a file. This one is never in that stream.
 func warnPlaybookBodyStale(contentState string) {
-	if contentState != models.ContentOutcomeAppliedPendingFlush {
+	if contentState == models.ContentStateSetAside {
+		// BUG-3244: no tab will catch this body up, so the advice differs.
+		fmt.Fprintln(os.Stderr, "warning: this playbook has edits from an earlier editor version that "+
+			"are not in its stored body, and opening it will not restore them, so the steps below may "+
+			"be superseded. See them with `pad item set-aside <ref>`.")
+		return
+	}
+	if contentState != models.ContentStatePendingFlush {
 		return
 	}
 	fmt.Fprintln(os.Stderr, "warning: this playbook's stored body is behind its live collaborative "+

@@ -257,6 +257,28 @@ func (r *RelationTargetSet) UnmarshalJSON(b []byte) error {
 // never matching (BUG-2995).
 const ContentOutcomeAppliedPendingFlush = "applied_pending_flush"
 
+// ContentStatePendingFlush is Item.ContentState's value when the op-log holds
+// unflushed content-bearing rows: the live document is ahead of the row, and a
+// tab opening the item can catch the row up. The same string as the write
+// outcome, for the reason given on ContentOutcomeAppliedPendingFlush.
+const ContentStatePendingFlush = ContentOutcomeAppliedPendingFlush
+
+// ContentStateSetAside is Item.ContentState's value when edits the row never
+// received were SET ASIDE by a collab schema-version rebuild (BUG-3244): they
+// were written under an older editor schema, so they can no longer replay into
+// the live document and opening the item does NOT recover them. They are kept,
+// readable as raw updates, until someone recovers or discards them. Advice that
+// names a remedy must branch on this value; a door that only marks the body
+// stale should ask IsContentStateStale instead.
+const ContentStateSetAside = "superseded_set_aside"
+
+// IsContentStateStale reports whether an Item.ContentState value says the
+// stored body is behind edits that exist elsewhere, for any reason. It is the
+// one helper for doors that mark a body stale without saying what to do.
+func IsContentStateStale(state string) bool {
+	return state == ContentStatePendingFlush || state == ContentStateSetAside
+}
+
 // IsReservedItemField reports whether key is system-written metadata rather than
 // a user-facing schema field. Callers that filter, migrate, or render an item's
 // fields map should consult this rather than enumerating the constants.
@@ -320,10 +342,13 @@ type Item struct {
 	// whenever the row is current, which is the overwhelmingly common case, so a
 	// consumer that does not know this field sees byte-identical responses.
 	//
-	// It takes the same values as ItemWriteWarnings.ContentOutcome, deliberately:
-	// a caller should have ONE story about where content is, whether it learned it
+	// Its pending value is ItemWriteWarnings.ContentOutcome's, deliberately: a
+	// caller should have ONE story about where content is, whether it learned it
 	// from a write response or from a read. The name differs because a write
 	// warning describes what a REQUEST did, while this describes what the ROW is.
+	// It has a second value no write produces, superseded_set_aside (BUG-3244,
+	// ContentStateSetAside): edits a schema rebuild set aside, which opening the
+	// item does not restore. It wins when both apply; see IsContentStateStale.
 	//
 	// The predicate is "the op-log holds a CONTENT-BEARING row above
 	// items.content_flushed_op_log_id", i.e. the document is ahead of the row.

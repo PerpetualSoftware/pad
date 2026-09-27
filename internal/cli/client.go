@@ -395,6 +395,34 @@ func (c *Client) UpdateItem(wsSlug, itemSlug string, input models.ItemUpdate) (*
 	return &result, nil
 }
 
+// CollabSetAside is the item's set-aside edits (BUG-3244): op-log rows a collab
+// schema-version rebuild moved out because they can no longer replay.
+type CollabSetAside struct {
+	Ref      string               `json:"ref"`
+	SetAside []models.YjsSetAside `json:"set_aside"`
+}
+
+// ListCollabSetAside reads the item's set-aside edits as raw updates.
+func (c *Client) ListCollabSetAside(wsSlug, itemSlug string) (*CollabSetAside, error) {
+	var result CollabSetAside
+	if err := c.get("/workspaces/"+wsSlug+"/items/"+itemSlug+"/collab-set-aside", &result); err != nil {
+		return nil, wrapItemNotFound(err, itemSlug, wsSlug)
+	}
+	return &result, nil
+}
+
+// DiscardCollabSetAside deletes the item's set-aside edits and returns how many
+// rows it removed.
+func (c *Client) DiscardCollabSetAside(wsSlug, itemSlug string) (int64, error) {
+	var result struct {
+		Discarded int64 `json:"discarded"`
+	}
+	if err := c.deleteWithResult("/workspaces/"+wsSlug+"/items/"+itemSlug+"/collab-set-aside", &result); err != nil {
+		return 0, wrapItemNotFound(err, itemSlug, wsSlug)
+	}
+	return result.Discarded, nil
+}
+
 func (c *Client) DeleteItem(wsSlug, itemSlug string) error {
 	return wrapItemNotFound(c.delete("/workspaces/"+wsSlug+"/items/"+itemSlug), itemSlug, wsSlug)
 }
@@ -1648,6 +1676,30 @@ const ContentPendingFlushCode = "content_pending_flush"
 const ContentPendingFlushHint = "Re-reading will not clear this: the stored item is unchanged until the open editor saves its edits. " +
 	"Wait for that and re-read, or resend with overwrite_pending_edits=true to replace them."
 
+// ContentSetAsideHint replaces ContentPendingFlushHint when the refusal is
+// about edits a collab schema-version rebuild set aside (BUG-3244,
+// details.set_aside_rows > 0). Waiting and re-reading cannot clear those: no
+// editor will write them back. Duplicated in internal/mcp; a test
+// asserts the two match.
+const ContentSetAsideHint = "Re-reading will not clear this, and neither will waiting or opening the item: these edits were set aside by an editor upgrade and no editor will write them back. " +
+	"Read them with pad item set-aside <ref>, then resend with overwrite_pending_edits=true to discard them."
+
+// ContentSetAsideRows reads details.set_aside_rows from a content_pending_flush
+// refusal: how many set-aside edit rows caused it. Zero when the refusal was
+// about unflushed edits only, or came from a server that predates BUG-3244.
+func (e *APIError) ContentSetAsideRows() int {
+	if e == nil || len(e.Details) == 0 {
+		return 0
+	}
+	var d struct {
+		SetAsideRows int `json:"set_aside_rows"`
+	}
+	if json.Unmarshal(e.Details, &d) != nil {
+		return 0
+	}
+	return d.SetAsideRows
+}
+
 // AsContentPendingFlush reports whether the server refused the write with
 // content_pending_flush.
 func (e *APIError) AsContentPendingFlush() bool {
@@ -1660,11 +1712,15 @@ func (e *APIError) AsContentPendingFlush() bool {
 // out. It deliberately does NOT say "re-read and retry" — re-reading returns
 // the same row and seq, so that loop never ends.
 func WriteContentPendingFlushError(w io.Writer, apiErr *APIError) {
+	hint, remedy := ContentPendingFlushHint, "Pass --overwrite-pending-edits to replace those edits."
+	if apiErr.ContentSetAsideRows() > 0 {
+		hint, remedy = ContentSetAsideHint, "Pass --overwrite-pending-edits to discard those edits."
+	}
 	envelope := map[string]any{
 		"error": map[string]any{
 			"code":    apiErr.Code,
 			"message": apiErr.Message,
-			"hint":    ContentPendingFlushHint,
+			"hint":    hint,
 			"details": apiErr.Details,
 		},
 	}
@@ -1672,7 +1728,7 @@ func WriteContentPendingFlushError(w io.Writer, apiErr *APIError) {
 		fmt.Fprintln(w, StructuredErrorMarker+string(data))
 	}
 	fmt.Fprintln(w, apiErr.Message)
-	fmt.Fprintln(w, "Pass --overwrite-pending-edits to replace those edits.")
+	fmt.Fprintln(w, remedy)
 }
 
 // StoredStateUnreadableCode is the structured error code for "the item's
@@ -2122,6 +2178,20 @@ func (c *Client) delete(path string) error {
 		return c.parseError(resp)
 	}
 	return nil
+}
+
+// deleteWithResult is delete for an endpoint that answers with a body.
+func (c *Client) deleteWithResult(path string, result interface{}) error {
+	req, err := c.newRequest("DELETE", path, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	return c.handleResponse(resp, result)
 }
 
 func (c *Client) handleResponse(resp *http.Response, result interface{}) error {

@@ -17,7 +17,17 @@
 /** The one wording every treatment uses. */
 export const STALE_BODY_NOTICE = 'This may not include the latest edits.';
 
-/** True when the server marked this row's body as behind the live document. */
+/** True when the server marked this row's body as behind edits that exist
+ *  elsewhere: unflushed tab edits, or edits an editor upgrade set aside
+ *  (BUG-3244). The notice and dot wording names no remedy, so it fits both;
+ *  copy that DOES name one must branch on the value (isSetAside). */
 export function isBodyStale(row: { content_state?: string | null } | null | undefined): boolean {
-	return row?.content_state === 'applied_pending_flush';
+	return row?.content_state === 'applied_pending_flush' || row?.content_state === 'superseded_set_aside';
+}
+
+/** True when the row's missing edits were set aside by an editor upgrade
+ *  (BUG-3244): opening the item does NOT restore them, so no copy may say it
+ *  will. */
+export function isSetAside(state: string | null | undefined): boolean {
+	return state === 'superseded_set_aside';
 }

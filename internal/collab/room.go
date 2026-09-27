@@ -250,19 +250,15 @@ type opLogStore interface {
 	// returned ID is what the frame is acknowledged with.
 	AppendSyncFrame(itemID string, data []byte, schemaVersion string) (store.SyncFrameAppend, error)
 	LoadYjsUpdatesSince(itemID string, sinceID int64) ([]models.YjsUpdate, error)
-	// LatestYjsUpdateSchemaVersion + PruneYjsUpdatesBefore power the
-	// schema-mismatch rebuild flow (TASK-1268). The room manager
-	// checks the most recent op-log row's stamp on Join and prunes
-	// the entire item's op-log when the persisted version no longer
-	// matches the server's current SCHEMA_VERSION. The latest row's
-	// id is returned alongside the version so the rebuild can detect
-	// when it's about to drop unflushed edits and log a warning.
+	// LatestYjsUpdateSchemaVersion + SetAsideAndClearOpLog power the
+	// schema-mismatch rebuild (TASK-1268). The room manager checks the most
+	// recent op-log row's stamp on Join and empties the item's op-log when
+	// the persisted version no longer matches the server's SCHEMA_VERSION.
+	// SetAsideAndClearOpLog moves the unflushed content-bearing rows to the
+	// set-aside table in the same transaction (BUG-3244), so edits the row
+	// never received are kept, and marked, rather than deleted.
 	LatestYjsUpdateSchemaVersion(itemID string) (string, int64, bool, error)
-	PruneYjsUpdatesBefore(itemID string, before time.Time) (int64, error)
-	// GetItemContentFlushedOpLogID returns the per-item flush
-	// watermark (TASK-1309). Returns (0, false) for items with NULL
-	// watermark or no row.
-	GetItemContentFlushedOpLogID(itemID string) (int64, bool, error)
+	SetAsideAndClearOpLog(itemID string) (setAside, cleared int64, err error)
 	// ListDormantOpLogItemsBefore + PruneItemOpLogIfDormantBefore
 	// power the periodic prune sweep (TASK-1309). Selects items
 	// whose ENTIRE op-log is older than cutoff AND whose

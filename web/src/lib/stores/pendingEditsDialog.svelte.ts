@@ -6,10 +6,14 @@
 import { authStore } from './auth.svelte';
 
 export type PendingEditsKind = 'save' | 'duplicate' | 'excerpt';
+/** 'set_aside': the edits were set aside by an editor upgrade (BUG-3244) and
+ *  opening the item will not store them, so the dialog must not say it will. */
+export type PendingEditsReason = 'pending' | 'set_aside';
 
 interface PendingRequest {
 	itemRef: string;
 	kind: PendingEditsKind;
+	reason: PendingEditsReason;
 	resolve: (overwrite: boolean) => void;
 }
 
@@ -21,9 +25,9 @@ function advanceQueue(): void {
 }
 
 /** Resolves true to OVERWRITE (or, for a duplicate, copy the stored body anyway), false to keep. */
-function request(itemRef: string, kind: PendingEditsKind = 'save'): Promise<boolean> {
+function request(itemRef: string, kind: PendingEditsKind = 'save', reason: PendingEditsReason = 'pending'): Promise<boolean> {
 	return new Promise<boolean>((resolve) => {
-		const entry: PendingRequest = { itemRef, kind, resolve };
+		const entry: PendingRequest = { itemRef, kind, reason, resolve };
 		if (active === null) active = entry;
 		else queue.push(entry);
 	});

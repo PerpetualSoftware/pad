@@ -4,12 +4,14 @@
  * The CollabProvider sends this on every WebSocket connect via a
  * `?schema_version=...` query parameter. The server (1) rejects the
  * upgrade outright if the value doesn't match its own
- * `DefaultSchemaVersion`, and (2) prunes the op-log on first
+ * `DefaultSchemaVersion`, and (2) empties the op-log on first
  * mismatched-vs-persisted connect so the new client doesn't replay
- * old-schema ops that may be incompatible.
+ * old-schema ops that may be incompatible, setting unflushed edits
+ * aside first (BUG-3244).
  *
- * **Frozen (BUG-3244).** The server's mismatch prune also deletes every
- * item's unflushed edits, so a bump is refused until that bug is closed:
+ * **Frozen (BUG-3244).** The server's mismatch rebuild sets every item's
+ * unflushed edits aside, where no editor can restore them until TASK-3246
+ * ships a decoder, so a bump is refused until then:
  * `internal/collab/schema_version_guard_test.go` fails on any change here
  * or to the server constant. The rule below says when one would be owed.
  *

@@ -115,7 +115,7 @@ export interface PublicShareItem {
 	fields?: string;
 	content?: string;
 	/** BUG-3000 marker: `content` is behind the live document (BUG-3050 U3). */
-	content_state?: 'applied_pending_flush';
+	content_state?: 'applied_pending_flush' | 'superseded_set_aside';
 }
 
 /** The shape returned by GET /api/v1/s/{token}. Auth/password gates short-circuit
@@ -136,7 +136,7 @@ export interface SharePayload {
 		collection_name?: string;
 		collection_icon?: string;
 		/** BUG-3000 marker: `content` is behind the live document (BUG-3050 U3). */
-		content_state?: 'applied_pending_flush';
+		content_state?: 'applied_pending_flush' | 'superseded_set_aside';
 	};
 	/** Single-item shares only (TASK-2248 U3): defs for the fields the item
 	 *  shows, in schema order. Deliberately NOT the schema: key, label, type,
@@ -696,7 +696,7 @@ export interface Item {
 	 * field. It matters for surfaces that render `content` straight from the
 	 * API without joining the room.
 	 */
-	content_state?: 'applied_pending_flush';
+	content_state?: 'applied_pending_flush' | 'superseded_set_aside';
 	fields: string;
 	tags: string;
 	pinned: boolean;
@@ -1541,7 +1541,7 @@ export interface Backlink {
 	 * BacklinksPanel renders it as a muted dot on the marked row only, beside
 	 * the snippet (BUG-3050 U3, `lib/items/staleBody.ts`).
 	 */
-	content_state?: 'applied_pending_flush';
+	content_state?: 'applied_pending_flush' | 'superseded_set_aside';
 	updated_at: string;
 	/**
 	 * Optional `[[X|display]]` override. `null` (omitted from JSON) when

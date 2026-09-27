@@ -414,12 +414,21 @@ func formatItemAsMarkdown(jsonBlob string) (string, error) {
 	// reading top-down meets it in the sentence before the text it is
 	// about. The literal state token is included so the line is greppable
 	// by the same name the JSON field uses, not only readable as prose.
-	if state, _ := item["content_state"].(string); state == models.ContentOutcomeAppliedPendingFlush {
+	switch state, _ := item["content_state"].(string); state {
+	case models.ContentStatePendingFlush:
 		fmt.Fprintf(&b, "> **Stale body** (`content_state: %s`) — this item's stored content is "+
 			"behind its live collaborative document. An editor holds edits that have not been "+
 			"written back, so the body below is the previous content. It catches up when a tab "+
 			"next flushes the item, and nothing on the server forces that to happen.\n\n",
-			models.ContentOutcomeAppliedPendingFlush)
+			models.ContentStatePendingFlush)
+	case models.ContentStateSetAside:
+		// BUG-3244: the remedy above is false for this state, so it is not
+		// offered. No MCP action reads set-aside rows; the CLI and API do.
+		fmt.Fprintf(&b, "> **Stale body** (`content_state: %s`) — this item has edits from an "+
+			"earlier editor version that are not in its stored content, and opening the item will "+
+			"not restore them. The body below is the content without them. They can be read or "+
+			"discarded with `pad item set-aside`, or through the item's collab-set-aside API.\n\n",
+			models.ContentStateSetAside)
 	}
 
 	// Body. Pad items often have rich markdown here already; pass

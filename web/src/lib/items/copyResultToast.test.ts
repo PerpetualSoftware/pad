@@ -40,7 +40,7 @@ describe('copyResultToast', () => {
 		expect(t.type).toBe('info');
 		expect(t.message).toMatch(/^Moved to Other as TASK-9\. /);
 		expect(t.message).toMatch(/archived original may still hold them/);
-		// Never a promise: a purge or a schema-mismatch rebuild can delete them.
+		// Never a promise: a workspace purge can delete them.
 		expect(t.message).not.toMatch(/still has them/);
 	});
 

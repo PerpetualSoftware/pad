@@ -1444,6 +1444,9 @@ Examples:
 					// reading this as a server_error.
 					if apiErr.AsContentPendingFlush() {
 						cli.WriteContentPendingFlushError(os.Stderr, apiErr)
+						if apiErr.ContentSetAsideRows() > 0 {
+							return fmt.Errorf("update rejected: the item holds edits an editor upgrade set aside")
+						}
 						return fmt.Errorf("update rejected: the item has unflushed collaborative edits")
 					}
 				}
@@ -3289,7 +3292,7 @@ Examples:
 					// BUG-3033 — the marker describes the SOURCE item of each
 					// link, so the refs named are source refs, not the target
 					// the caller asked about.
-					if bl.ContentState == models.ContentOutcomeAppliedPendingFlush {
+					if models.IsContentStateStale(bl.ContentState) {
 						staleBacklinks = append(staleBacklinks, bl.SourceRef)
 					}
 				}
@@ -3604,7 +3607,7 @@ func searchCmd() *cobra.Command {
 					// BUG-3033. The JSON form carries the marker on the embedded
 					// item; this renderer decodes that item and prints only the
 					// snippet, so without this the signal stops here.
-					if r.Item.ContentState == models.ContentOutcomeAppliedPendingFlush {
+					if models.IsContentStateStale(r.Item.ContentState) {
 						// Ref first, ItemRef as the fallback: the server computes
 						// `ref` on the item it returns, but this renderer must name
 						// something actionable even from a payload that omits it,
@@ -3692,7 +3695,9 @@ Refuses to open when the stored body is behind the item's live
 collaborative document (an editor in a browser tab holds edits not yet
 written back), because saving would replace those edits. Open the item
 in a browser tab so it flushes, then retry — or pass --force to edit the
-stored body anyway.`,
+stored body anyway. It refuses the same way when the item holds edits an
+editor upgrade set aside (see pad item set-aside); opening the item does not
+restore those, and --force discards them.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, cfg := getClient()
@@ -3708,7 +3713,7 @@ stored body anyway.`,
 			// predates edits which exist, and the save replaces the WHOLE body.
 			// The concurrency token below cannot catch this: those edits live in
 			// the op-log, not the row, so the row's seq never moved for them.
-			if item.ContentState == models.ContentOutcomeAppliedPendingFlush && !force {
+			if models.IsContentStateStale(item.ContentState) && !force {
 				return staleEditRefusal(item)
 			}
 
@@ -3742,7 +3747,7 @@ stored body anyway.`,
 				if rerr != nil {
 					return saveEditRecovery(item, edited, rerr)
 				}
-				if latest.ContentState == models.ContentOutcomeAppliedPendingFlush {
+				if models.IsContentStateStale(latest.ContentState) {
 					return saveEditRecovery(item, edited, staleEditRefusal(latest))
 				}
 			}
@@ -3798,6 +3803,12 @@ func staleEditRefusal(item *models.Item) error {
 	name := cli.ItemRef(*item)
 	if name == "" {
 		name = item.Slug
+	}
+	if item.ContentState == models.ContentStateSetAside {
+		return fmt.Errorf("refusing to edit %s: it holds edits from an earlier editor version that are not "+
+			"in its stored content, and opening the item will not restore them. See them with "+
+			"`pad item set-aside %s`; pass --force to edit the stored content anyway, which discards them",
+			name, name)
 	}
 	return fmt.Errorf("refusing to edit %s: its stored content is behind its live collaborative "+
 		"document — an editor holds edits that have not been written back yet, and saving would "+
@@ -4202,13 +4213,33 @@ func warnUndeclaredFields(item *models.Item) {
 // matters more on this path than on the write path, because `pad item show
 // --format markdown` exists precisely to be redirected into a file.
 func warnContentStale(item *models.Item) {
-	if item == nil || item.ContentState != models.ContentOutcomeAppliedPendingFlush {
+	if item == nil {
 		return
 	}
-	fmt.Fprintln(os.Stderr, "warning: this item's stored content is behind its live collaborative "+
-		"document — an editor holds edits that have not been written back yet, so what follows is "+
-		"the previous content. It catches up when a tab next flushes the item, and nothing on the "+
-		"server forces that to happen.")
+	switch item.ContentState {
+	case models.ContentStatePendingFlush:
+		fmt.Fprintln(os.Stderr, "warning: this item's stored content is behind its live collaborative "+
+			"document — an editor holds edits that have not been written back yet, so what follows is "+
+			"the previous content. It catches up when a tab next flushes the item, and nothing on the "+
+			"server forces that to happen.")
+	case models.ContentStateSetAside:
+		fmt.Fprintln(os.Stderr, setAsideNotice(item))
+	}
+}
+
+// setAsideNotice is the one wording of the BUG-3244 state for the CLI's
+// stale-body notices. It must not say a tab will catch the body up: these
+// edits were written under an earlier editor schema and opening the item does
+// not replay them. It names the command that reads or discards them.
+func setAsideNotice(item *models.Item) string {
+	name := cli.ItemRef(*item)
+	if name == "" {
+		name = item.Slug
+	}
+	return fmt.Sprintf("warning: %s has edits from an earlier editor version that are not in its stored "+
+		"content, and opening the item will NOT restore them; what follows is the content without them. "+
+		"See them with `pad item set-aside %s`, or discard them with `pad item set-aside %s --discard`.",
+		name, name, name)
 }
 
 // warnStaleDerivedText prints ONE line to STDERR naming the items whose
@@ -4258,7 +4289,13 @@ func warnStaleDerivedText(what string, refs []string, howToSee string) {
 // It is printed BEFORE the editor is launched. Printed afterwards it would be
 // read, at best, next to a "Updated TASK-5" line — after the damage.
 func warnStaleEditSeed(item *models.Item) {
-	if item == nil || item.ContentState != models.ContentOutcomeAppliedPendingFlush {
+	if item == nil || !models.IsContentStateStale(item.ContentState) {
+		return
+	}
+	if item.ContentState == models.ContentStateSetAside {
+		fmt.Fprintln(os.Stderr, "warning: this item holds edits from an earlier editor version that are "+
+			"not in its stored content. You are editing the content without them, and --force will "+
+			"DISCARD them when you save.")
 		return
 	}
 	fmt.Fprintln(os.Stderr, "warning: this item's stored content is behind its live collaborative "+
@@ -4368,7 +4405,15 @@ func thousands(n int) string {
 // printStaleBodyLine is the TABLE-format stale-body notice: STDOUT, first line
 // (TASK-3132). The markdown and JSON formats do not use it — see showCmd's help.
 func printStaleBodyLine(item *models.Item) {
-	if item == nil || item.ContentState != models.ContentOutcomeAppliedPendingFlush {
+	if item == nil || !models.IsContentStateStale(item.ContentState) {
+		return
+	}
+	if item.ContentState == models.ContentStateSetAside {
+		name := cli.ItemRef(*item)
+		if name == "" {
+			name = item.Slug
+		}
+		fmt.Printf("⚠ stale body: edits from an earlier editor version are set aside and are NOT in the content below; opening the item will not restore them (pad item set-aside %s).\n", name)
 		return
 	}
 	fmt.Println(`⚠ stale body: an editor holds edits not yet written back, so the content below is the PREVIOUS body; it catches up if and when a tab next flushes the item, which nothing guarantees.`)

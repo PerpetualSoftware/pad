@@ -6,7 +6,7 @@
 	import { parseFields, parseSchema, itemUrlId, formatItemRef } from '$lib/types';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { titleLimitError } from '$lib/items/titleLimit';
-	import { contentOutcomeNotice, contentWriteFor, isContentPendingFlush, prunedEditsNotice } from '$lib/items/contentWrite';
+	import { contentOutcomeNotice, contentWriteFor, isContentPendingFlush, pendingEditsReason, prunedEditsNotice } from '$lib/items/contentWrite';
 	import { pendingEditsDialog } from '$lib/stores/pendingEditsDialog.svelte';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import { exportAndDownloadArtifact, importArtifactFile } from '$lib/utils/artifacts';
@@ -335,8 +335,14 @@
 				updated = await api.items.update(workspace, item.slug, write);
 			} catch (err) {
 				if (!isContentPendingFlush(err)) throw err;
-				if (!(await pendingEditsDialog.request(formatItemRef(item) ?? item.title))) {
-					toastStore.show("Not saved: the open tab's edits were kept. Your text is still here.", 'info');
+				const reason = pendingEditsReason(err);
+				if (!(await pendingEditsDialog.request(formatItemRef(item) ?? item.title, 'save', reason))) {
+					toastStore.show(
+						reason === 'set_aside'
+							? "Not saved: the edits an editor upgrade set aside were kept. Your text is still here."
+							: "Not saved: the open tab's edits were kept. Your text is still here.",
+						'info'
+					);
 					return;
 				}
 				updated = await api.items.update(workspace, item.slug, { ...write, overwrite_pending_edits: true });

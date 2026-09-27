@@ -287,7 +287,8 @@ type ItemCopyResultWarnings struct {
 
 	// SourceContentState says the body this copy carried was BEHIND the
 	// source item's live collaborative document (BUG-3032 / BUG-3000). Takes
-	// the one value models.Item.ContentState takes, and is omitted entirely
+	// the values models.Item.ContentState takes (superseded_set_aside since
+	// BUG-3244, for edits a tab cannot restore), and is omitted entirely
 	// when the source row was current — so a clean copy's response is
 	// byte-identical to one produced before this field existed.
 	//

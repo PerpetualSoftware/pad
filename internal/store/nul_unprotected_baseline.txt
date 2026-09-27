@@ -146,6 +146,10 @@ item_yjs_updates.content_hash
 item_yjs_updates.created_at
 item_yjs_updates.item_id
 item_yjs_updates.schema_version
+item_yjs_updates_set_aside.created_at
+item_yjs_updates_set_aside.item_id
+item_yjs_updates_set_aside.schema_version
+item_yjs_updates_set_aside.set_aside_at
 items.agent_role_id
 items.assigned_user_id
 items.collection_id

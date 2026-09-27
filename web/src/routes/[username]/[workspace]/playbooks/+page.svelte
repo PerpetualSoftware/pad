@@ -23,7 +23,7 @@
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
 	import PlaybookFormFields from '$lib/components/playbooks/PlaybookFormFields.svelte';
 	import StaleBodyDot from '$lib/components/common/StaleBodyDot.svelte';
-	import { isBodyStale } from '$lib/items/staleBody';
+	import { isBodyStale, isSetAside } from '$lib/items/staleBody';
 	import {
 		PLAYBOOK_SKELETON_BODY,
 		argumentsToJSON,
@@ -336,8 +336,9 @@
 			// BUG-3050 U1: a source whose stored body is behind an open tab's
 			// edits would be copied WITHOUT them. A create has no token for the
 			// server to refuse on, so the user is asked here instead.
-			if (item.content_state === 'applied_pending_flush' &&
-				!(await pendingEditsDialog.request(formatItemRef(item) ?? item.title, 'duplicate'))) {
+			if (isBodyStale(item) &&
+				!(await pendingEditsDialog.request(formatItemRef(item) ?? item.title, 'duplicate',
+					isSetAside(item.content_state) ? 'set_aside' : 'pending'))) {
 				return;
 			}
 			await api.items.create(wsSlug, 'playbooks', {

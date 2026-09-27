@@ -28,6 +28,10 @@ export interface RawSeedInputs {
 
 export function rawSeedDecision(inputs: RawSeedInputs): { seed: string; refuse: boolean } {
 	const seed = inputs.lastFlushed ?? inputs.stored;
+	// Set-aside edits (BUG-3244) are in no document a live read can see, and the
+	// server refuses every raw save while they exist (the raw saves send
+	// refuse_pending_edits), so the switch is refused up front instead.
+	if (inputs.contentState === 'superseded_set_aside') return { seed, refuse: true };
 	if (typeof inputs.liveNow === 'string') {
 		// A live read exists: the seed must BE it. This tab's own unflushed
 		// typing marks the item too, which is why the marker is not consulted

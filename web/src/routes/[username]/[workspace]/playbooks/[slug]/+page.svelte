@@ -7,7 +7,7 @@
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { titleEditError } from '$lib/items/titleLimit';
-	import { contentOutcomeNotice, contentWriteFor, isContentPendingFlush, prunedEditsNotice } from '$lib/items/contentWrite';
+	import { contentOutcomeNotice, contentWriteFor, isContentPendingFlush, pendingEditsReason, prunedEditsNotice } from '$lib/items/contentWrite';
 	import { pendingEditsDialog } from '$lib/stores/pendingEditsDialog.svelte';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import { exportAndDownloadArtifact } from '$lib/utils/artifacts';
@@ -267,10 +267,16 @@
 			} catch (err) {
 				if (!isContentPendingFlush(err)) throw err;
 				if (!isSameIdentity()) return;
-				const overwrite = await pendingEditsDialog.request(formatItemRef(item) ?? item.title);
+				const reason = pendingEditsReason(err);
+				const overwrite = await pendingEditsDialog.request(formatItemRef(item) ?? item.title, 'save', reason);
 				if (!isSameIdentity()) return;
 				if (!overwrite) {
-					toastStore.show("Not saved: the open tab's edits were kept. Your changes are still here.", 'info');
+					toastStore.show(
+						reason === 'set_aside'
+							? "Not saved: the edits an editor upgrade set aside were kept. Your changes are still here."
+							: "Not saved: the open tab's edits were kept. Your changes are still here.",
+						'info'
+					);
 					return;
 				}
 				const resent = await api.items.update(wsSlug, item.slug, { ...payload, overwrite_pending_edits: true });

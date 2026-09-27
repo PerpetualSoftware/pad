@@ -967,6 +967,9 @@ func classifyHTTPStatusKind(
 				// the row is unchanged, so the re-read returns the same seq
 				// and the retry is refused again (BUG-3133).
 				hint = ContentPendingFlushHint
+				if setAsideRowsIn(upstream.Details) > 0 {
+					hint = ContentSetAsideHint
+				}
 			}
 			if upstream.Code == string(ErrStoredStateUnreadable) {
 				// Same reason: the stored value stays undecodable, so every
@@ -1307,6 +1310,28 @@ func permissionHintFor(bodyMsg, route string) string {
 // the gap the shared allow-list exists to close.
 const ContentPendingFlushHint = "Re-reading will not clear this: the stored item is unchanged until the open editor saves its edits. " +
 	"Wait for that and re-read, or resend with overwrite_pending_edits=true to replace them."
+
+// ContentSetAsideHint replaces ContentPendingFlushHint when the refusal is
+// about edits a collab schema-version rebuild set aside (BUG-3244,
+// details.set_aside_rows > 0). Waiting and re-reading cannot clear those: no
+// editor will write them back. Duplicated in internal/cli; a test
+// asserts the two match.
+const ContentSetAsideHint = "Re-reading will not clear this, and neither will waiting or opening the item: these edits were set aside by an editor upgrade and no editor will write them back. " +
+	"Read them with pad item set-aside <ref>, then resend with overwrite_pending_edits=true to discard them."
+
+// setAsideRowsIn reads set_aside_rows from a refusal's details (BUG-3244).
+func setAsideRowsIn(details json.RawMessage) int {
+	if len(details) == 0 {
+		return 0
+	}
+	var d struct {
+		SetAsideRows int `json:"set_aside_rows"`
+	}
+	if json.Unmarshal(details, &d) != nil {
+		return 0
+	}
+	return d.SetAsideRows
+}
 
 // conflictHintFor generates the actionable hint for ErrConflict.
 func conflictHintFor(bodyMsg, route string) string {

@@ -241,14 +241,12 @@ func (s *Store) LoadYjsUpdatesSince(itemID string, sinceID int64) ([]models.YjsU
 //
 // Used by the schema-mismatch rebuild flow (TASK-1268, PLAN-1248):
 // if the latest persisted version differs from the server's current
-// SCHEMA_VERSION, the room manager prunes the op-log before
+// SCHEMA_VERSION, the room manager empties the op-log before
 // replaying so the new-schema client doesn't replay old-schema ops
-// that may be incompatible. The id is also returned so the rebuild
-// can compare against items.content_flushed_op_log_id and log
-// loudly when the prune is dropping unflushed edits — the user
-// can't recover them (old-schema ops can't replay in new schema)
-// but operators should see when this happens. Per Codex review of
-// TASK-1309 round 4 [P2].
+// that may be incompatible, setting the unflushed content-bearing
+// rows aside first (SetAsideAndClearOpLog, BUG-3244). The id is
+// returned too; the rebuild no longer needs it, since the set-aside
+// query reads the watermark itself.
 //
 // We pick "most recent" rather than "any row" so a server that
 // wrote some old-version rows then was rolled back, then forward
@@ -422,9 +420,10 @@ func (s *Store) ItemRestoreBoundaryOpID(itemID string) (int64, bool, error) {
 // id known to be reflected in items.content, or (0, false) if the
 // item has never been flushed (NULL column value or item missing).
 //
-// Used by the schema-mismatch rebuild path (TASK-1268) to detect
-// when an unsafe prune is about to drop unflushed edits. Per Codex
-// review of TASK-1309 round 4 [P2].
+// The schema-mismatch rebuild used to read it to warn that its prune
+// was about to drop unflushed edits (TASK-1309 round 4). Since BUG-3244
+// the rebuild sets those rows aside instead, in SQL that reads the
+// watermark itself, so no production path calls this today.
 func (s *Store) GetItemContentFlushedOpLogID(itemID string) (int64, bool, error) {
 	if itemID == "" {
 		return 0, false, errors.New("GetItemContentFlushedOpLogID: itemID is required")
@@ -565,10 +564,10 @@ func (s *Store) PruneItemOpLogIfDormantBefore(itemID string, before time.Time) (
 // can't be resolved). This method is retained ONLY for callers that
 // guarantee the suffix doesn't depend on the prefix:
 //
-//   - The schema-mismatch rebuild path (TASK-1268) calls it with a
-//     far-future cutoff to wipe the entire op-log on a version
-//     change — same effective behaviour as the GC sweeper, just
-//     reached via a different signal.
+//   - The schema-mismatch rebuild path (TASK-1268) used to call it
+//     with a far-future cutoff to wipe the entire op-log on a version
+//     change. Since BUG-3244 it calls SetAsideAndClearOpLog, which
+//     keeps the unflushed rows; tests still wipe op-logs with this.
 //   - PruneAndApply's direct-write fallback (TASK-1257) — the
 //     caller guarantees no live readLoop is appending while the
 //     prune+items.content-write runs.

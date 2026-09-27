@@ -32,7 +32,9 @@ import (
 // then add it below.
 func TestBinaryColumnCensus(t *testing.T) {
 	t.Parallel()
-	want := map[string]bool{"item_yjs_updates.update_data": true}
+	// item_yjs_updates_set_aside.update_data holds op-log frames moved verbatim
+	// by a schema rebuild (BUG-3244): the same raw Yjs bytes, NULs included.
+	want := map[string]bool{"item_yjs_updates.update_data": true, "item_yjs_updates_set_aside.update_data": true}
 
 	// One pattern per dialect spelling, applied to the raw migration text so
 	// nothing depends on a Go-side model of the schema.
