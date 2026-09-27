@@ -354,15 +354,29 @@ func (s *Server) handleRestoreItemVersion(w http.ResponseWriter, r *http.Request
 					// is the restore that DELETES them, and the response names how
 					// many (warnings.pruned_pending_edits), as a content update's
 					// does. Counted here, under the same lock, so it is exact.
+					//
+					// BUG-3244: rows a schema rebuild set aside are edits in no
+					// body either, so they refuse the restore the same way, and
+					// the override discards them with the op-log and counts them
+					// into the same warning.
 					n, perr := s.store.CountPendingContentRowsTx(tx, item.ID)
 					if perr != nil {
 						return perr
 					}
-					if n > 0 && !body.OverwritePendingEdits {
-						pendingRefusal = &store.ContentPendingFlushError{ItemID: item.ID, PendingRows: n}
+					sa, serr := s.store.CountYjsSetAsideTx(tx, item.ID)
+					if serr != nil {
+						return serr
+					}
+					if (n > 0 || sa > 0) && !body.OverwritePendingEdits {
+						pendingRefusal = &store.ContentPendingFlushError{ItemID: item.ID, PendingRows: n, SetAsideRows: sa}
 						return pendingRefusal
 					}
-					prunedPendingEdits = n
+					if sa > 0 {
+						if _, derr := s.store.DeleteYjsSetAsideTx(tx, item.ID); derr != nil {
+							return derr
+						}
+					}
+					prunedPendingEdits = n + sa
 					// Capture the pre-restore seq under the per-item + workspace seq
 					// lock, before any mutation (BUG-2276 P2 — see the baselineSeq note
 					// above). `existing` is the row as read at the top of the update tx.
@@ -406,7 +420,7 @@ func (s *Server) handleRestoreItemVersion(w http.ResponseWriter, r *http.Request
 		}, reconcile)
 		if werr != nil {
 			if pendingRefusal != nil {
-				writeRestorePendingFlushError(w, itemRefOrSlug(*item), pendingRefusal.PendingRows)
+				writeRestorePendingFlushError(w, itemRefOrSlug(*item), pendingRefusal)
 				return
 			}
 			if errors.Is(werr, errRestoreItemGone) {

@@ -136,4 +136,53 @@ func TestBUG3244SchemaRebuildKeepsUnflushedEditsMarked(t *testing.T) {
 				"and the body is still stale, so it must not read as current", got, models.ContentStateSetAside)
 		}
 	})
+
+	// Only edits the row never received are kept: a row at or below the flush
+	// watermark is already in items.content, and a SyncStep1 frame cannot
+	// change the document. What is kept is the frame byte for byte, with its
+	// era and original op-log id, because those are what recovery needs.
+	t.Run("bumped: only unflushed content-bearing rows are set aside, verbatim", func(t *testing.T) {
+		f := newBUG3244Fixture(t)
+		flushed := f.append(t, []byte{0x00, 0x02, 0x03, 0x09, 0x08, 0x07}, "1")
+		if err := f.srv.store.SetItemContentFlushedOpLogIDForTesting(f.itemID, flushed); err != nil {
+			t.Fatalf("set watermark: %v", err)
+		}
+		f.append(t, []byte{0x00, 0x00, 0x01, 0x00}, "1") // SyncStep1: never content
+		kept := f.append(t, bug3244Frame, "1")
+		f.joinAt(t, "2")
+
+		rows, err := f.srv.store.ListYjsSetAside(f.itemID)
+		if err != nil {
+			t.Fatalf("ListYjsSetAside: %v", err)
+		}
+		if len(rows) != 1 {
+			t.Fatalf("set-aside rows = %d, want 1 (only the unflushed content-bearing frame): %+v", len(rows), rows)
+		}
+		r := rows[0]
+		if r.OpLogID != kept || string(r.UpdateData) != string(bug3244Frame) || r.SchemaVersion != "1" {
+			t.Fatalf("set-aside row = {op_log_id %d, data %v, era %q}, want {%d, %v, %q}",
+				r.OpLogID, r.UpdateData, r.SchemaVersion, kept, bug3244Frame, "1")
+		}
+		if n := f.opLogRows(t); n != 0 {
+			t.Fatalf("op-log rows = %d, want 0", n)
+		}
+	})
+
+	// Nothing unflushed: the rebuild has nothing to keep, and the item must not
+	// be marked, or every item on the instance would read stale after a bump.
+	t.Run("bumped: a fully flushed item is not marked", func(t *testing.T) {
+		f := newBUG3244Fixture(t)
+		id := f.append(t, bug3244Frame, "1")
+		if err := f.srv.store.SetItemContentFlushedOpLogIDForTesting(f.itemID, id); err != nil {
+			t.Fatalf("set watermark: %v", err)
+		}
+		f.joinAt(t, "2")
+		if got := f.contentState(t); got != "" {
+			t.Fatalf("content_state = %q, want empty", got)
+		}
+		rows, err := f.srv.store.ListYjsSetAside(f.itemID)
+		if err != nil || len(rows) != 0 {
+			t.Fatalf("set-aside rows = %d (err %v), want 0", len(rows), err)
+		}
+	})
 }

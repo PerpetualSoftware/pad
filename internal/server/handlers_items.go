@@ -2214,9 +2214,19 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	// collab-snapshot flush is exempt: it is the tab writing those edits.
 	// refuse_pending_edits asks for the same refusal with no token (BUG-3230
 	// U0): the pane's raw saves cannot carry one.
-	if input.Content != nil && !collabSnapshot && !input.OverwritePendingEdits &&
-		(input.ExpectedSeq != nil || input.ExpectedUpdatedAt != "" || input.RefusePendingEdits) {
-		openChildrenPrecheck = composePendingContentGuard(s, item.ID, openChildrenPrecheck)
+	//
+	// BUG-3244: rows a schema rebuild set aside refuse EVERY such write, token
+	// or not, and overwrite_pending_edits discards them on every path, not just
+	// the direct one: no tab holds them, so the applier replacing the live
+	// document does not touch them.
+	var discardedSetAside int
+	if input.Content != nil && !collabSnapshot {
+		if input.OverwritePendingEdits {
+			openChildrenPrecheck = composeSetAsideDiscard(s, item.ID, openChildrenPrecheck, &discardedSetAside)
+		} else {
+			tokenGuarded := input.ExpectedSeq != nil || input.ExpectedUpdatedAt != "" || input.RefusePendingEdits
+			openChildrenPrecheck = composePendingContentGuard(s, item.ID, tokenGuarded, openChildrenPrecheck)
+		}
 	}
 	// BUG-3133 D: how many unflushed edit rows the direct path's prune deleted.
 	var prunedPendingEdits int
@@ -2287,7 +2297,7 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if pending, ok := store.AsContentPendingFlushError(err); ok {
-			writeContentPendingFlushError(w, itemRefOrSlug(*item), pending.PendingRows)
+			writeContentPendingFlushError(w, itemRefOrSlug(*item), pending)
 			return
 		}
 		// BUG-2804: the item rename cascade refuses renames that would process
@@ -2530,6 +2540,10 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			Decision:           input.DecisionToAppend,
 		}
 	}
+
+	// Set-aside rows an override discarded are edits the write deleted, like the
+	// prune's, so they are reported in the same count (BUG-3244).
+	prunedPendingEdits += discardedSetAside
 
 	// Advisory, post-write, same as create (BUG-2850).
 	if len(undeclaredFields) > 0 || len(droppedDefaults) > 0 || contentAppliedPendingFlush || prunedPendingEdits > 0 {

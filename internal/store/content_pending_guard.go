@@ -24,12 +24,23 @@ import (
 // them is not what it asked for. Re-reading does not clear it — the row, and
 // its seq, are unchanged until a tab flushes — so it is its own error rather
 // than an UpdateConflictError, which callers answer by re-reading and retrying.
+//
+// It also refuses ANY content write, token or not, while the item holds rows a
+// collab schema-version rebuild set aside (BUG-3244, SetAsideRows): those edits
+// are in no body and no tab can restore them, so replacing the body without
+// saying so would lose them for good. Only overwrite_pending_edits discards
+// them.
 type ContentPendingFlushError struct {
-	ItemID      string
-	PendingRows int
+	ItemID       string
+	PendingRows  int
+	SetAsideRows int
 }
 
 func (e *ContentPendingFlushError) Error() string {
+	if e.SetAsideRows > 0 {
+		return fmt.Sprintf("item %s has %d set-aside edit row(s) from an earlier editor schema and %d unflushed collaborative edit row(s); refusing a content write that would replace them",
+			e.ItemID, e.SetAsideRows, e.PendingRows)
+	}
 	return fmt.Sprintf("item %s has %d unflushed collaborative edit row(s); refusing a content write guarded by a version token",
 		e.ItemID, e.PendingRows)
 }

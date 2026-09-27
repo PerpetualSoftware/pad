@@ -470,21 +470,26 @@ func writeContentNotAppliedError(w http.ResponseWriter, ref string, landedFields
 // same row and the same seq, so a read-and-retry loop would spin. The message
 // says what clears it, because nothing server-side does: an open tab flushes
 // within seconds; with no tab, only opening the item or the override.
-func writeContentPendingFlushError(w http.ResponseWriter, ref string, pendingRows int) {
-	writeJSON(w, http.StatusConflict, map[string]any{
-		"error": map[string]any{
-			"code": "content_pending_flush",
-			"message": fmt.Sprintf(
-				"%s has unflushed collaborative edits that are not in the body you read; its version token does not cover them. "+
-					"Wait for the open editor to save them and re-read, or open the item in a browser if none is open, "+
-					"or resend with overwrite_pending_edits to replace them.",
-				ref),
-			"details": map[string]any{
-				"ref":          ref,
-				"pending_rows": pendingRows,
-			},
-		},
-	})
+//
+// BUG-3244: when the item holds rows a schema rebuild set aside, the refusal
+// covers every content write and the message must NOT offer opening the item,
+// because no tab can restore those edits. Same code, so one client branch
+// still handles both; details gain set_aside_rows.
+func writeContentPendingFlushError(w http.ResponseWriter, ref string, e *store.ContentPendingFlushError) {
+	var msg string
+	if e.SetAsideRows > 0 {
+		msg = fmt.Sprintf(
+			"%s has edits from an earlier editor version that are not in its body, and opening the item will not restore them. "+
+				"Read them with `pad item set-aside %s` if they matter, then resend with overwrite_pending_edits to replace the body and discard them.",
+			ref, ref)
+	} else {
+		msg = fmt.Sprintf(
+			"%s has unflushed collaborative edits that are not in the body you read; its version token does not cover them. "+
+				"Wait for the open editor to save them and re-read, or open the item in a browser if none is open, "+
+				"or resend with overwrite_pending_edits to replace them.",
+			ref)
+	}
+	writePendingFlushConflict(w, ref, msg, e)
 }
 
 // writeRestorePendingFlushError answers the BUG-3031 refusal: a version restore
@@ -492,20 +497,39 @@ func writeContentPendingFlushError(w http.ResponseWriter, ref string, pendingRow
 // details as the BUG-3133 refusal, so one client branch handles both; the
 // message differs because a restore carries no version token. It names the loss
 // plainly: the undo point a restore leaves is built from the saved body, so
-// those edits would be in no version afterwards.
-func writeRestorePendingFlushError(w http.ResponseWriter, ref string, pendingRows int) {
+// those edits would be in no version afterwards. Set-aside rows (BUG-3244)
+// branch the remedy for the same reason as above.
+func writeRestorePendingFlushError(w http.ResponseWriter, ref string, e *store.ContentPendingFlushError) {
+	var msg string
+	if e.SetAsideRows > 0 {
+		msg = fmt.Sprintf(
+			"%s has edits from an earlier editor version that are not in its saved body, and opening the item will not restore them. "+
+				"Restoring now would discard them, and no version would keep them. "+
+				"Read them with `pad item set-aside %s` if they matter, then resend with overwrite_pending_edits to discard them.",
+			ref, ref)
+	} else {
+		msg = fmt.Sprintf(
+			"%s has unsaved edits from another editor session that are not in its saved body. "+
+				"Restoring now would discard them, and no version would keep them. "+
+				"Open the item in a browser to save them first, or resend with overwrite_pending_edits to discard them.",
+			ref)
+	}
+	writePendingFlushConflict(w, ref, msg, e)
+}
+
+func writePendingFlushConflict(w http.ResponseWriter, ref, msg string, e *store.ContentPendingFlushError) {
+	details := map[string]any{
+		"ref":          ref,
+		"pending_rows": e.PendingRows,
+	}
+	if e.SetAsideRows > 0 {
+		details["set_aside_rows"] = e.SetAsideRows
+	}
 	writeJSON(w, http.StatusConflict, map[string]any{
 		"error": map[string]any{
-			"code": "content_pending_flush",
-			"message": fmt.Sprintf(
-				"%s has unsaved edits from another editor session that are not in its saved body. "+
-					"Restoring now would discard them, and no version would keep them. "+
-					"Open the item in a browser to save them first, or resend with overwrite_pending_edits to discard them.",
-				ref),
-			"details": map[string]any{
-				"ref":          ref,
-				"pending_rows": pendingRows,
-			},
+			"code":    "content_pending_flush",
+			"message": msg,
+			"details": details,
 		},
 	})
 }

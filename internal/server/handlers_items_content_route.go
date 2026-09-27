@@ -386,20 +386,55 @@ func composePruneWithPrecheck(s *Server, itemID string, inner func(*sql.Tx, *mod
 // between that tx and the applier's setContent: the unguarded window shrinks
 // from read-to-PATCH to one server hop. It is not closed, because appendMu
 // cannot be held across the applier's network round trip.
-func composePendingContentGuard(s *Server, itemID string, inner func(*sql.Tx, *models.Item) error) func(*sql.Tx, *models.Item) error {
+//
+// tokenGuarded says whether the write asked for the BUG-3133 refusal (a version
+// token, or refuse_pending_edits). Set-aside rows (BUG-3244) refuse the write
+// either way, because unlike unflushed rows no tab will ever put them in the
+// body: a tokenless write over them is not "the latest body wins", it is the
+// last copy of those edits being dropped. Only overwrite_pending_edits, which
+// skips this guard, discards them.
+func composePendingContentGuard(s *Server, itemID string, tokenGuarded bool, inner func(*sql.Tx, *models.Item) error) func(*sql.Tx, *models.Item) error {
 	return func(tx *sql.Tx, existing *models.Item) error {
 		if inner != nil {
 			if err := inner(tx, existing); err != nil {
 				return err
 			}
 		}
-		n, err := s.store.CountPendingContentRowsTx(tx, itemID)
+		setAside, err := s.store.CountYjsSetAsideTx(tx, itemID)
 		if err != nil {
 			return err
 		}
-		if n > 0 {
-			return &store.ContentPendingFlushError{ItemID: itemID, PendingRows: n}
+		pending := 0
+		if tokenGuarded || setAside > 0 {
+			if pending, err = s.store.CountPendingContentRowsTx(tx, itemID); err != nil {
+				return err
+			}
 		}
+		if setAside > 0 || (tokenGuarded && pending > 0) {
+			return &store.ContentPendingFlushError{ItemID: itemID, PendingRows: pending, SetAsideRows: setAside}
+		}
+		return nil
+	}
+}
+
+// composeSetAsideDiscard is overwrite_pending_edits' half for set-aside rows
+// (BUG-3244): the caller said it means to replace edits the body does not
+// hold, so the rows a schema rebuild set aside are deleted in the write's own
+// transaction, rolled back with it on any refusal, and counted into
+// warnings.pruned_pending_edits. Assigned rather than added, like the prune's
+// count, so a retried transaction does not double it.
+func composeSetAsideDiscard(s *Server, itemID string, inner func(*sql.Tx, *models.Item) error, discarded *int) func(*sql.Tx, *models.Item) error {
+	return func(tx *sql.Tx, existing *models.Item) error {
+		if inner != nil {
+			if err := inner(tx, existing); err != nil {
+				return err
+			}
+		}
+		n, err := s.store.DeleteYjsSetAsideTx(tx, itemID)
+		if err != nil {
+			return err
+		}
+		*discarded = int(n)
 		return nil
 	}
 }
@@ -462,7 +497,7 @@ func (s *Server) writeTypedItemRefusal(w http.ResponseWriter, item *models.Item,
 	// differently. Kept LAST, after every typed arm, because a substring match can
 	// swallow a typed refusal whose message happens to contain the text.
 	if pending, ok := store.AsContentPendingFlushError(err); ok {
-		writeContentPendingFlushError(w, itemRefOrSlug(*item), pending.PendingRows)
+		writeContentPendingFlushError(w, itemRefOrSlug(*item), pending)
 		return true
 	}
 	if strings.Contains(err.Error(), "UNIQUE constraint") || strings.Contains(err.Error(), "duplicate key") {
