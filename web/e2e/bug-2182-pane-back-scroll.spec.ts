@@ -39,6 +39,7 @@ async function setup(page: import('@playwright/test').Page, fixture: import('./f
 	await page.waitForTimeout(300);
 	const scrollTop = () => pane.evaluate((el) => el.scrollTop);
 	const before = await scrollTop();
+	const bodyHeight = await pane.locator('.ProseMirror').first().evaluate((el) => (el as HTMLElement).offsetHeight);
 	expect(before, 'precondition: the pane scrolled').toBeGreaterThan(300);
 
 	// The popover drills the pane only for a link whose prefix is in the page's
@@ -53,7 +54,7 @@ async function setup(page: import('@playwright/test').Page, fixture: import('./f
 	await expect(page.locator('.pane-back-btn')).toBeVisible({ timeout: 10_000 });
 	await expect(pane.getByText('Target paragraph 0.')).toBeVisible();
 	await page.waitForTimeout(300);
-	return { coll, itemA, titleB, pane, before, scrollTop };
+	return { coll, itemA, titleB, pane, before, scrollTop, bodyHeight };
 }
 
 test('BUG-2182: pane Back returns to the previous item at its scroll position; the new item starts at the top', async ({ page, fixture, request }, testInfo) => {
@@ -173,6 +174,62 @@ test('BUG-3250: drilling to another item during the hold does not carry the rest
 		await expect(ctx.pane.getByText('Target paragraph 0.')).toBeVisible({ timeout: 10_000 });
 		await page.waitForTimeout(1000);
 		expect(await ctx.scrollTop(), "A's restore was carried into B").toBeLessThan(40);
+	} finally {
+		await deleteCollection(fixture, request, ctx.coll.slug);
+	}
+});
+
+// BUG-3251: the body can render SHORT and grow later. Text typed just before
+// leaving the item reaches the reopened connection after its replay, seconds
+// later under write load (BUG-3253). A max-height on the pane's editor stands
+// in for those missing lines, deterministically, and lifting it is the late
+// text landing. The restore clamps at once and holds, so the reader is never
+// left at the top while the body is short.
+// Injected while B is on screen, so A's body is already short when the restore
+// starts; B's body is shorter than the cap, so it is unaffected.
+const shortenBody = (page: import('@playwright/test').Page, maxHeight: number) =>
+	page.evaluate((maxHeight) => {
+		const s = document.createElement('style');
+		s.dataset.bug3251 = 'short';
+		s.textContent = `.item-pane .ProseMirror { max-height: ${maxHeight}px; overflow: hidden; }`;
+		document.head.append(s);
+	}, maxHeight);
+const growBody = (page: import('@playwright/test').Page) =>
+	page.evaluate(() => document.querySelector('style[data-bug3251]')?.remove());
+
+test('BUG-3251: a body that is still short when the restore ends leaves the reader as near as it reaches, not at the top', async ({ page, fixture, request }, testInfo) => {
+	test.skip(testInfo.project.name !== 'desktop-chromium', 'the split pane is a desktop layout');
+	test.setTimeout(60_000);
+	const ctx = await setup(page, fixture, request);
+	try {
+		// A's body renders 300px short and stays short past the cap
+		// (RESTORE_CAP_MS, 2500).
+		await shortenBody(page, ctx.bodyHeight - 300);
+		await page.locator('.pane-back-btn').click();
+		await expect(ctx.pane.locator('a', { hasText: ctx.titleB }).last()).toBeAttached({ timeout: 10_000 });
+		await page.waitForTimeout(3000);
+		const max = await ctx.pane.evaluate((el) => el.scrollHeight - el.clientHeight);
+		expect(max, 'premise: the body was too short to reach the saved position').toBeLessThan(ctx.before - 100);
+		expect(await ctx.scrollTop(), 'the reader was left at the top').toBeGreaterThan(max - 3);
+	} finally {
+		await growBody(page);
+		await deleteCollection(fixture, request, ctx.coll.slug);
+	}
+});
+
+test('BUG-3251: late growth inside the hold carries the reader to the saved position', async ({ page, fixture, request }, testInfo) => {
+	test.skip(testInfo.project.name !== 'desktop-chromium', 'the split pane is a desktop layout');
+	test.setTimeout(60_000);
+	const ctx = await setup(page, fixture, request);
+	try {
+		await shortenBody(page, ctx.bodyHeight - 300);
+		await page.locator('.pane-back-btn').click();
+		await expect(ctx.pane.locator('a', { hasText: ctx.titleB }).last()).toBeAttached({ timeout: 10_000 });
+		await page.waitForTimeout(600);
+		await growBody(page);
+		await expect.poll(ctx.scrollTop, { timeout: 3000, message: 'the late growth was not walked to the saved position' })
+			.toBeGreaterThan(ctx.before - 40);
+		expect(await ctx.scrollTop()).toBeLessThan(ctx.before + 40);
 	} finally {
 		await deleteCollection(fixture, request, ctx.coll.slug);
 	}
