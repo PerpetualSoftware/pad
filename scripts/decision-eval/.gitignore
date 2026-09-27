@@ -1,0 +1,7 @@
+# The eval corpora are exports of a PRIVATE workspace (item titles, bodies,
+# fields, commit subjects), and the results embed that content. Neither is
+# ever committed. See README.md for how to regenerate them.
+*.json
+*.jsonl
+commits.txt
+__pycache__/
