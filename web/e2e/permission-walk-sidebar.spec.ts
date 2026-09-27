@@ -3,6 +3,7 @@ import {
 	ACCOUNT_KEYS,
 	actAs,
 	seedPermissionWalk,
+	waitForAccessSettled,
 	type AccountKey,
 	type PermissionWalk
 } from './lib/permission-walk';
@@ -40,6 +41,8 @@ async function sidebarCollections(page: Page): Promise<string[]> {
 async function openWorkspace(page: Page, key: AccountKey) {
 	await actAs(page.context(), walk.accounts[key]);
 	await page.goto(walk.workspacePath);
+	// Chrome is absent for every account until access settles (BUG-3267).
+	await waitForAccessSettled(page);
 	// Every account in the walk sees at least Tasks. Waiting on it is also
 	// the presence half of each leg's absence assertions.
 	await expect(

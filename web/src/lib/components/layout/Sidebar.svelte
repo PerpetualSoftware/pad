@@ -525,7 +525,17 @@
 >
 	<div class="sidebar-inner">
 		{#if wsSlug}
-			<nav class="collection-nav">
+			<!--
+				`data-membership` says whether the caller's membership has settled
+				(BUG-3267). Every create/edit affordance reads it through the
+				store's helpers, which answer "no access" while it is unknown, so an
+				absence observed before `known` says nothing about the account.
+				The e2e permission walk waits on it; nothing in the app reads it.
+			-->
+			<nav
+				class="collection-nav"
+				data-membership={workspaceStore.membershipKnown ? 'known' : 'pending'}
+			>
 				{#if !isGuest}
 				<a
 					href="{wsPrefix}"

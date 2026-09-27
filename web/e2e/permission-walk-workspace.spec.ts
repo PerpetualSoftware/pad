@@ -3,6 +3,7 @@ import {
 	ACCOUNT_KEYS,
 	actAs,
 	seedPermissionWalk,
+	waitForAccessSettled,
 	type AccountKey,
 	type PermissionWalk
 } from './lib/permission-walk';
@@ -109,6 +110,8 @@ async function serverAccepts(
 async function open(page: Page, key: AccountKey, path: string) {
 	await actAs(page.context(), walk.accounts[key]);
 	await page.goto(`${walk.workspacePath}${path}`);
+	// Chrome is absent for every account until access settles (BUG-3267).
+	await waitForAccessSettled(page);
 }
 
 async function openSettingsTab(page: Page, key: AccountKey, tab: string) {
