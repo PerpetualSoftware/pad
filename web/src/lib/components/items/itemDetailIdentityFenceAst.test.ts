@@ -88,7 +88,7 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	jumpToSection: { reviewed: '17407aeb431b', why: 'switches this instance\'s tab and scrolls to an anchor', may: ['document.getElementById', 'document.getElementById(anchorId).scrollIntoView'] },
 	ensureGraphComp: { reviewed: 'c1565cfb8a18', why: 'lazy-loads a component module into this instance', may: ['ItemGraphComp', 'graphLoadError'] },
 	handleCopyRef: { reviewed: 'a5e0a0394fcc', why: 'switchedAway before the copied flag' },
-	loadData: { reviewed: '3ac8a3aef331', why: 'IS the load: myGen against loadGeneration after every await; the BUG-3198 re-read of a changed item runs after the install, keyed on the installed item id, and fences itself on itemGen' },
+	loadData: { reviewed: 'e3ff5fea0461', why: 'IS the load: myGen against loadGeneration after every await; the BUG-3198 re-read of a changed item runs after the install, keyed on the installed item id, and fences itself on itemGen' },
 	startEditTitle: { reviewed: '17f04352d420', why: 'focuses and sizes the input it opened synchronously', may: ['el', 'titleInputEl.focus', 'titleInputEl.setSelectionRange'] },
 	// Re-reviewed for BUG-2836: saveTitle's own lines are unchanged (the diff
 	// touches only a $derived beside titleDraft and the textarea's aria
@@ -137,7 +137,7 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	updateAssignedUser: { reviewed: '5e4128e45ae7', why: 'gen against loadGeneration on both arms' + SETTLE_NOTE, may: ['saves.settle'] },
 	updateAgentRole: { reviewed: '9b0a6af92cc2', why: 'gen against loadGeneration on both arms' + SETTLE_NOTE, may: ['saves.settle'] },
 	flushRawIfPending: {
-		reviewed: '9030c207f9eb',
+		reviewed: '623e9aa4f426',
 		why: 'genAtFlush against loadGeneration after each PATCH; the re-entrancy waiter returns state; the finally clears this drain\'s own in-flight flag' + SETTLE_NOTE,
 		may: ['saves.settle', 'rawFlushInFlight'],
 		bareAwaits: ['await new Promise((r) => setTimeout(r, 50));'],
@@ -167,13 +167,13 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	// BUG-3230 U0: the pending-edits question for the pane's raw and fallback
 	// saves, and the recovery offer for markdown an unload save could not store.
 	askToOverwritePendingEdits: {
-		reviewed: '17ca7bfd9b4d',
+		reviewed: '4163d3fdc1c1',
 		why: 'item id and gen against loadGeneration after the dialog, before answering; the finally clears this pane\'s own one-question-at-a-time flag',
 		may: ['rawPendingPromptOpen'],
 	},
 	copyRefusedDraft: { reviewed: '839b51b59798', why: 'the copied text was captured before the await; the toast after it describes that copy, whichever item is shown', may: ['toastStore.show'] },
 	restoreRefusedDraft: {
-		reviewed: 'd42be5def01e',
+		reviewed: 'c6fcb77cf248',
 		why: 'item id and gen against loadGeneration after every await; the finally clears this pane\'s own busy flag',
 		may: ['refusedDraftBusy'],
 	},
@@ -193,7 +193,7 @@ const NESTED: SignedRow[] = [
 		may: ['saves.settle'],
 	},
 	// BUG-3230 U0: the legacy content save's refusal handler.
-	{ body: /askToOverwritePendingEdits\(reqItem\.id, gen\)/, why: 'fallback refusal: switchedAway before the question, and again after it before the resend', reviewed: '272399d98b0e' },
+	{ body: /askToOverwritePendingEdits\(reqItem\.id, gen, pendingEditsReason\(e\)\)/, why: 'fallback refusal: switchedAway before the question, and again after it before the resend', reviewed: 'a6be81eb257a' },
 ];
 
 /** Async functions in the markup. */
@@ -202,7 +202,7 @@ const MARKUP: SignedRow[] = [
 	// Re-reviewed for BUG-3050 U1 (door A4): the raw-seed refusal adds no await;
 	// its post-loop editor read and the rawSeedDecision check run after the
 	// existing genAtToggle fence and write only locals and a toast.
-	{ body: /genAtToggle/, why: 'Markdown toggle: genAtToggle against loadGeneration after each await', reviewed: 'dea496abe16e' },
+	{ body: /genAtToggle/, why: 'Markdown toggle: genAtToggle against loadGeneration after each await', reviewed: 'c863d1b87a53' },
 ];
 
 
@@ -217,7 +217,7 @@ const CONTINUATIONS: SignedRow[] = [
 		may: ['renameOverride'],
 	},
 	{ call: /^setTimeout\($/, body: /copied = false/, why: 'copy-flag reset: switchedAway', reviewed: '8a8d4754017f' },
-	{ call: /api\.items\.get\(wsSlug, itemSlug\)\.catch\($/, body: /./, why: 'loadData item fetch: sets a flag local to that load and re-throws', reviewed: 'faaa27d23182' },
+	{ call: /api\.items\.get\(wsSlug, itemSlug\)\.catch\($/, body: /./, why: 'loadData item fetch: sets a flag local to that load and re-throws', reviewed: '76d69526cf05' },
 	{
 		call: /^setTimeout\($/,
 		body: /staleConnecting = true/,
@@ -233,7 +233,7 @@ const CONTINUATIONS: SignedRow[] = [
 		body: /teardownFlushed/,
 		in: 'onBeforeUnload',
 		code: '() => { teardownFlushed = false; }',
-		why: 're-arms the BUG-3005 teardown latch, itself identity-checked', reviewed: '07a11fd90d0b',
+		why: 're-arms the BUG-3005 teardown latch, itself identity-checked', reviewed: '747b66cd731f',
 		may: ['teardownFlushed'],
 	},
 	{ call: /^queueMicrotask\($/, body: /./, why: 'collab lazy seed: refuses a retired or re-identified context first', reviewed: '12e84b8a47be' },
@@ -250,22 +250,22 @@ const CONTINUATIONS: SignedRow[] = [
 		call: /^setTimeout\($/,
 		body: /send\(false\)\.catch\(/,
 		in: 'handleContentUpdate',
-		why: 'content debounce: loadData clears this timer before its first await, so the callback never runs across a load', reviewed: '094f908dfba9',
+		why: 'content debounce: loadData clears this timer before its first await, so the callback never runs across a load', reviewed: 'd4fe195f88b7',
 		startSafe: true,
 		pin: (src, unit) => clearsBeforeFirstAwait(src, 'loadData', 'contentDebounceTimer') ?? assignedTo(src, unit, 'contentDebounceTimer'),
 	},
 	// BUG-3230 U0: the fallback save is refused rather than replacing another
 	// tab's unstored edits; the refusal asks, then resends once on overwrite.
-	{ call: /^send\(false\)\.catch\($/, body: /./, why: 'content save refusal: switchedAway before the question, and again after it before the resend', reviewed: '272399d98b0e' },
-	{ call: /return send\(true\); \}\)\.then\($/, body: /^\(sent\) =>/, why: 'content save: switchedAway', reviewed: '99cbdc519986' },
-	{ call: /showSaved\(saveTok\); \}\)\.catch\($/, body: /./, why: 'content save failure: switchedAway', reviewed: '56f6fd2ab1f8' },
+	{ call: /^send\(false\)\.catch\($/, body: /./, why: 'content save refusal: switchedAway before the question, and again after it before the resend', reviewed: 'a6be81eb257a' },
+	{ call: /return send\(true\); \}\)\.then\($/, body: /^\(sent\) =>/, why: 'content save: switchedAway', reviewed: '44370fb4224d' },
+	{ call: /showSaved\(saveTok\); \}\)\.catch\($/, body: /./, why: 'content save failure: switchedAway', reviewed: '12150813f4ca' },
 	{
 		call: /\.finally\($/,
 		body: /^\(\) => saves\.settle\(saveTok\)$/,
 		in: 'setTimeout(…)',
 		code: '() => saves.settle(saveTok)',
 		why: SETTLE_WHY,
-		reviewed: '670d366fd798',
+		reviewed: '49164b6cc800',
 		may: ['saves.settle'],
 	},
 	// BUG-3230 U0: the unload save keeps its text in this browser before it goes
@@ -279,29 +279,29 @@ const CONTINUATIONS: SignedRow[] = [
 		in: '{save}',
 		code: "() => { clearRefusedRawDraft(draftUser, reqItemId, markdown); if (item && item.id === reqItemId && genAtSave === loadGeneration && rawContentSaver.pending === markdown) { rawContentSaver.clearPending(); editorStore.setDirty(false); localDirty = false; } }",
 		why: 'raw keepalive save: removes the kept text by the captured user and item, then genAtSave against loadGeneration',
-		reviewed: '435849657502',
+		reviewed: 'dca1fdaf45f5',
 		may: ['clearRefusedRawDraft'],
 	},
 	{
 		call: /localDirty = false; \} \}\) \.catch\($/,
 		body: /^\(e\) =>/,
 		in: '{save}',
-		code: "(e) => { if (isSupersededWriteError(e)) clearRefusedRawDraft(draftUser, reqItemId, markdown); else if (isContentPendingFlush(e)) { toastStore.show( 'Your markdown edits were not saved: another tab has edits to this item that are not stored yet. They are kept in this browser, and opening the item offers them back.', 'error', ); } }",
+		code: "(e) => { if (isSupersededWriteError(e)) clearRefusedRawDraft(draftUser, reqItemId, markdown); else if (isContentPendingFlush(e)) { toastStore.show( pendingEditsReason(e) === 'set_aside' ? 'Your markdown edits were not saved: this item has edits an editor upgrade set aside. They are kept in this browser, and opening the item offers them back.' : 'Your markdown edits were not saved: another tab has edits to this item that are not stored yet. They are kept in this browser, and opening the item offers them back.', 'error', ); } }",
 		why: 'raw keepalive failure: a superseded answer removes the kept text by the captured user and item; a refusal is reported whichever item is shown',
-		reviewed: 'cd76a2dbd33c',
-		may: ['isSupersededWriteError', 'clearRefusedRawDraft', 'isContentPendingFlush', 'toastStore.show'],
+		reviewed: '01ab82a9219a',
+		may: ['isSupersededWriteError', 'clearRefusedRawDraft', 'isContentPendingFlush', 'pendingEditsReason', 'toastStore.show'],
 	},
-	{ call: /overwrite_pending_edits: true \} : \{\}\), \}\)\.then\($/, body: /^\(updated\) =>/, why: 'raw foreground save: genAtSave against loadGeneration', reviewed: 'c968ffa55c7f' },
+	{ call: /overwrite_pending_edits: true \} : \{\}\), \}\)\.then\($/, body: /^\(updated\) =>/, why: 'raw foreground save: genAtSave against loadGeneration', reviewed: 'beffa7ca1c70' },
 	// BUG-3230 U0: the answer to a refused raw save arms one resend.
-	{ call: /askToOverwritePendingEdits\(reqItemId, genAtSave\)\.then\($/, body: /./, why: 'raw refusal answer: genAtSave against loadGeneration before arming the resend', reviewed: '9f2fa38e1fb0' },
-	{ call: /content: item\.content, content_state: item\.content_state \}\); \} \}\)\.catch\($/, body: /./, why: 'raw foreground failure: genAtSave against loadGeneration', reviewed: 'd1a5314e65f5' },
+	{ call: /askToOverwritePendingEdits\(reqItemId, genAtSave, pendingEditsReason\(e\)\)\.then\($/, body: /./, why: 'raw refusal answer: genAtSave against loadGeneration before arming the resend', reviewed: 'ff237680d905' },
+	{ call: /content: item\.content, content_state: item\.content_state \}\); \} \}\)\.catch\($/, body: /./, why: 'raw foreground failure: genAtSave against loadGeneration', reviewed: '32f893e4fe98' },
 	{
 		call: /\.finally\($/,
 		body: /^\(\) => saves\.settle\(saveTok\)$/,
 		in: '{save}',
 		code: '() => saves.settle(saveTok)',
 		why: SETTLE_WHY,
-		reviewed: '7f0b66871d51',
+		reviewed: '91d8e94192f9',
 		may: ['saves.settle'],
 	},
 ];
@@ -326,7 +326,7 @@ const HELPERS: Record<string, string> = {
 	identityHeld: '1c5505d51f73',
 	navigateToCollectionRoot: '64dce75693d3',
 	refreshPrintMeta: '2312cc481ca5',
-	runTeardownFlush: '28bce9a45cc2',
+	runTeardownFlush: 'd424dba1db8a',
 	// BUG-3124 unit B: the cursor-advance settle. Synchronous; arms the flusher's
 	// single timer only for the current, identity-held context.
 	showSaved: '456dd972dcf5',
