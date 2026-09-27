@@ -251,9 +251,6 @@ const KNOWN_OUTSIDE_FENCE: Record<string, string> = {
 	'lib/components/items/PushToAgentDialog.svelte::handleCopyInstead::handleDismiss': 'local: after a clipboard write, view-fenced on destroyed/presenceGen',
 	'lib/components/common/QuickActionsMenu.svelte::copyAndAnnounce::announce': 'local: copied/failed kind after a clipboard write',
 	// ── local render of content already on screen ──
-	// ── logging ──
-	'lib/components/ChildItems.svelte::handleFinalize::console.error': 'log',
-	'lib/components/ChildItems.svelte::reorderChild::console.error': 'log',
 	// ── a server fact, true under any identity ──
 	'lib/components/items/ItemAttachmentStrip.svelte::performDelete::announceAttachmentDeleted ×2':
 		'global: a 204/404 is a fact about (ws, id), deliberately ahead of the view fence',

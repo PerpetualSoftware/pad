@@ -8,7 +8,7 @@
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { parseSchema, parseFields, formatItemRef, itemUrlId } from '$lib/types';
 	import { itemComparator, type SortMode } from '$lib/collections/itemSort';
-	import { reorderGroup, disabledDirections, type ReorderDirection } from '$lib/collections/reorder';
+	import { laneOrderAfterMove, disabledDirections, type ReorderDirection } from '$lib/collections/reorder';
 	import { page } from '$app/state';
 	import { canonicalValueColor, formatFieldLabel as formatLabel } from '$lib/utils/fieldColors';
 	import Chip from '$lib/components/common/Chip.svelte';
@@ -167,10 +167,8 @@
 
 	function reorderItem(item: Item, dir: ReorderDirection) {
 		if (!onReorder) return;
-		const updates = reorderGroup(sortedItems, item.id, dir);
-		if (updates.length > 0) {
-			onReorder(updates.map((u) => ({ slug: u.item.id, sort_order: u.sort_order })));
-		}
+		const lane = laneOrderAfterMove(sortedItems, item.id, dir);
+		if (lane.length > 0) onReorder(lane);
 	}
 
 	function relativeTime(dateStr: string): string {
@@ -372,12 +370,17 @@
 				<div class="table-cell col-updated" role="cell"><span class="cell-date">{relativeTime(item.updated_at)}</span></div>
 				{#if canReorder}
 					<div class="table-cell col-actions" role="cell">
-						<ItemActionsMenu
-							{item}
-							label={item.title}
-							disabledDirs={disabledDirections(i, sortedItems.length)}
-							onReorder={(dir) => reorderItem(item, dir)}
-						/>
+						<!-- The column is the table's (collection-level); the menu is
+						     the row's, since an item grant beats a collection grant and
+						     a view-only row cannot be moved (BUG-3259). -->
+						{#if workspaceStore.canEditItem(item)}
+							<ItemActionsMenu
+								{item}
+								label={item.title}
+								disabledDirs={disabledDirections(i, sortedItems.length)}
+								onReorder={(dir) => reorderItem(item, dir)}
+							/>
+						{/if}
 					</div>
 				{/if}
 			</div>

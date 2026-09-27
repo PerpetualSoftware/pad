@@ -28,7 +28,7 @@ identityGateSuite({
 				reviewed: '79b8af40feea',
 				why: `${ENTRY}; the open-children confirm gets identityHeld as its re-check, and the forced re-send checks again; the rethrows stay unfenced so BoardView can undo its optimistic move`,
 			},
-			handleReorder: { reviewed: 'c87eae85bd2d', why: 'optimistic upserts before any await; identityHeld(epochAtEntry) after each update in the loop, before its settle' },
+			handleReorder: { reviewed: '85e3a09f4c5a', why: 'optimistic upserts before any await (persistReorder applies them before its first send); identityHeld(epochAtEntry) after each update, before its settle, and before a refusal restores the original rows (BUG-3259)' },
 			handleGroupReorder: {
 				reviewed: '8a2d335085ec',
 				why: 'collGen, the route, then identityHeld(epochAtEntry) before the collection write; the conflict path checks identity BEFORE its re-read request (BUG-3238) and after it, before the reseed and navigation; both toasts fenced',

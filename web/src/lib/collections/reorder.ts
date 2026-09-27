@@ -126,3 +126,22 @@ export function disabledDirections(index: number, length: number): Set<ReorderDi
 	}
 	return disabled;
 }
+
+/**
+ * The whole group in its order after moving `itemId` per `dir`, as dense
+ * indices: every row, not only the ones whose index changed. Empty when the
+ * move is a no-op.
+ *
+ * `onReorder` takes the whole lane (BUG-3259): it plans the writes around cards
+ * the caller may only view, which it can only do if it sees every card. The
+ * drag paths already hand over the whole lane; the menu paths use this.
+ */
+export function laneOrderAfterMove(
+	ordered: Item[],
+	itemId: string,
+	dir: ReorderDirection
+): { slug: string; sort_order: number }[] {
+	const next = reorderedList(ordered, itemId, dir);
+	if (next === ordered) return [];
+	return next.map((item, index) => ({ slug: item.id, sort_order: index }));
+}

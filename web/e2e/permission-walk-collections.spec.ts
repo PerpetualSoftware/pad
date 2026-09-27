@@ -306,7 +306,7 @@ async function dragToLane(page: Page, title: string, lane: string): Promise<Drag
 			// A cross-lane drop writes the card's STATUS, and may also write a
 			// neighbour's sort_order. Wait for the status write itself: waiting for
 			// the first write returned on the neighbour's, before the status write
-			// landed (a CI flake on the BUG-3259 pin).
+			// landed (a CI flake on the BUG-3259 leg).
 			await expect
 				.poll(() => writes.some((w) => w.includes('"status"')), { timeout: 5_000 })
 				.toBe(true)
@@ -350,12 +350,12 @@ test('owner: dragging an editable card to another lane sends its write (control)
 	expect(drag.writes.some((w) => w.startsWith('200 '))).toBe(true);
 });
 
-// BUG-3259 PIN. This asserts today's DEFECT, not the goal: the view-only card
-// engages, and its status write is refused 403. It is a pin rather than
-// test.fail because test.fail would also swallow a failing CONTROL below,
-// and a broken gesture must fail loudly. When BUG-3259 is fixed, flip the
-// two pinned assertions to: engaged false, and no writes.
-test('guestPrecedence: a view-only card is draggable today (BUG-3259 pin)', async ({ page }) => {
+// BUG-3259: the view-only card does not drag, and nothing is written. The
+// in-test control drags an editable card through the same gesture, and its
+// lane renumber no longer writes the view-only neighbour (it used to send a
+// refused sort_order write for A). A is not a test.fail: a failing CONTROL
+// must fail loudly. The other doors are in permission-walk-move.spec.ts.
+test('guestPrecedence: a view-only card cannot be dragged to another lane (BUG-3259)', async ({ page }) => {
 	await open(page, 'guestPrecedence', '/tasks', 'board');
 	// In-test control: this guest may edit task C through its collection
 	// grant, so the same gesture on C must start and write.
@@ -364,13 +364,11 @@ test('guestPrecedence: a view-only card is draggable today (BUG-3259 pin)', asyn
 	expect(control.engaged, 'control drag did not start: the gesture is broken').toBe(true);
 	expect(control.entered, 'control drag never reached the target lane').toBe(true);
 	expect(control.writes.some((w) => w.startsWith('200 ') && w.includes('"status"'))).toBe(true);
+	expect(control.writes.filter((w) => w.startsWith('403 ')), 'the control drag sent a refused write').toEqual([]);
 
 	const viewOnly = await dragUntilEngaged(page, walk.grantedTask.title, await otherLane(page, walk.grantedTask.title));
-	expect(viewOnly.engaged, 'BUG-3259 fixed? Flip this pin').toBe(true);
-	expect(viewOnly.entered, 'the view-only card never reached the target lane').toBe(true);
-	expect(viewOnly.writes, 'the drop sent no status write').toEqual(
-		expect.arrayContaining([expect.stringMatching(/^403 .*"status"/)])
-	);
+	expect(viewOnly.engaged, 'the view-only card started a drag').toBe(false);
+	expect(viewOnly.writes, 'the view-only card sent writes').toEqual([]);
 });
 
 // Lane bulk actions (archive, move, tag, priority, assign) sit behind each

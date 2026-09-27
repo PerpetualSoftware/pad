@@ -37,6 +37,7 @@
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
+	import { planLaneOrder, persistReorder } from '$lib/collections/reorderPlan';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import { enterWorkspaceIndex } from '$lib/stores/workspaceIndexEntry';
@@ -2237,52 +2238,59 @@
 
 	async function handleReorder(updates: { slug: string; sort_order: number }[]) {
 		if (!wsSlug) return;
+		const ws = wsSlug;
 		const epochAtEntry = captureIdentity();
-		// Only persist items whose sort_order actually changed
-		const dirty: { id: string; sort_order: number }[] = [];
-		for (const { slug, sort_order } of updates) {
-			const item = items.find((i) => i.slug === slug || i.id === slug);
-			if (item && item.sort_order !== sort_order) {
-				// Optimistic local update: upsert into the local index
-				// with the new sort_order BEFORE awaiting the API. The
-				// caller (e.g. ListView) doesn't await onReorder, so it
-				// resyncs its rendered groups from `items` immediately
-				// after drag-end — without an optimistic write the rows
-				// snap back to the old order until the network PATCH
-				// returns. Clearing `seq` on the optimistic copy
-				// bypasses the per-row seq guard so the real API
-				// response (with a higher seq) wins on arrival
-				// (Codex P2 round 3 of TASK-1357).
-				localIndex.upsert(wsSlug, {
-					...item,
-					sort_order,
-					seq: undefined,
-				});
-				dirty.push({ id: item.id, sort_order });
-			}
+		// The views hand over a whole lane in its new on-screen order, as dense
+		// indices. A card the caller may only VIEW (an item grant beats a
+		// collection grant) cannot be renumbered, so the plan leaves it where it
+		// is and fits the others around it, writing only cards whose value
+		// changes (BUG-3259). With every card editable the plan is exactly the
+		// dense renumber this used to send.
+		const lane = [...updates]
+			.sort((a, b) => a.sort_order - b.sort_order)
+			.map(({ slug }) => items.find((i) => i.slug === slug || i.id === slug))
+			.filter((i): i is Item => !!i);
+		const plan = planLaneOrder(lane, (i) => workspaceStore.canEditItem(i));
+		if (!plan.ok) {
+			// No integer room between view-only cards for the card that moved.
+			// Nothing is written, so the lane re-renders from the stored order.
+			toastStore.show("Couldn't keep that order: a card you can only view is in the way.", 'error');
+			return;
 		}
-		if (dirty.length === 0) return;
-		// Persist to API sequentially (SQLite can't handle concurrent
-		// writes), and upsert each returned row so the local index
-		// settles back to the canonical server seq.
-		try {
-			for (const { id, sort_order } of dirty) {
+		if (plan.writes.length === 0) return;
+		// Optimistic local writes first: the callers (e.g. ListView) don't await
+		// onReorder and resync their rendered groups from `items` at once, so
+		// without them the rows snap back until the PATCH returns. Clearing
+		// `seq` on the optimistic copy bypasses the per-row seq guard so the real
+		// response (higher seq) wins on arrival (Codex P2 round 3 of TASK-1357).
+		// Persisted one at a time (SQLite takes one writer). A refusal restores
+		// every card not yet confirmed to its original row, which carries its
+		// original seq, so a fresher SSE row is not overwritten (BUG-3259).
+		let epoch = localIndex.scopeEpochFor(ws);
+		const landed = await persistReorder<Item>(plan.writes, {
+			original: (id) => lane.find((i) => i.id === id),
+			applyLocal: (row) => localIndex.upsert(ws, { ...row, seq: undefined }),
+			// After a refused await: under the identity that made the request only.
+			restoreLocal: (row) => {
+				if (identityHeld(epochAtEntry)) localIndex.upsert(ws, row, epoch);
+			},
+			send: ({ id, sort_order }) => {
 				// Per-iteration epoch: a resync mid-loop must only reject the
 				// settle-upserts for PATCHes issued before it, not later ones
-				// issued under the new scope (BUG-2098). Capturing outside the
-				// loop would wrongly reject every post-resync iteration. The
-				// optimistic pre-writes above are synchronous (no await gap) so
-				// they need no guard.
-				const epoch = localIndex.scopeEpochFor(wsSlug);
-				const updated = await api.items.update(wsSlug, id, { sort_order });
-				// PER-ITERATION, like the scope epoch beside it: the loop is
-				// sequential and an identity change mid-loop must stop the
-				// remaining settles, not just the current one (BUG-3084).
-				if (!identityHeld(epochAtEntry)) return;
-				localIndex.upsert(wsSlug, updated, epoch);
+				// issued under the new scope (BUG-2098).
+				epoch = localIndex.scopeEpochFor(ws);
+				return api.items.update(ws, id, { sort_order });
+			},
+			settle: (updated) => {
+				// PER-ITERATION, like the scope epoch beside it: an identity
+				// change mid-loop must stop the remaining settles (BUG-3084).
+				if (!identityHeld(epochAtEntry)) return false;
+				localIndex.upsert(ws, updated, epoch);
+				return true;
 			}
-		} catch (e) {
-			console.error('Failed to persist sort order:', e);
+		});
+		if (!landed && identityHeld(epochAtEntry)) {
+			console.error('Failed to persist sort order');
 		}
 	}
 

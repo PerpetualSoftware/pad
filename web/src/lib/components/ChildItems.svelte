@@ -15,10 +15,11 @@
 	import { collectionsNotStaleFor, categoricalValueFor } from '$lib/collections/categoricalFieldValue';
 	import { laneKey } from '$lib/collections/boardColumns';
 	import { fieldMatches, safeText } from '$lib/fields/fieldShape';
-	import { dndzone, TRIGGERS, SHADOW_ITEM_MARKER_PROPERTY_NAME } from 'svelte-dnd-action';
+	import { TRIGGERS, SHADOW_ITEM_MARKER_PROPERTY_NAME } from 'svelte-dnd-action';
+	import { lockableDndzone } from '$lib/collections/lockableDndzone';
+	import { planLaneOrder, persistReorder } from '$lib/collections/reorderPlan';
 	import type { DndEvent } from 'svelte-dnd-action';
 	import {
-		reorderGroup,
 		reorderedList,
 		disabledDirections,
 		type ReorderDirection
@@ -199,39 +200,48 @@
 		// stays (the zone gate mirror; a non-editor never reaches finalize anyway).
 		if (!canEdit) return;
 
-		const updates = groupData[laneKey(status)]
-			.filter((i: any) => !i[SHADOW_ITEM_MARKER_PROPERTY_NAME])
-			.map((item, index) => ({ id: item.id, sort_order: index }));
+		await persistChildOrder(
+			groupData[laneKey(status)].filter((i: any) => !i[SHADOW_ITEM_MARKER_PROPERTY_NAME])
+		);
+	}
 
-		// IDENTITY fence (BUG-3095) + the workspace this reorder is about,
-		// both captured before the loop. `wsSlug` was read LIVE inside the loop
-		// before this change, so a workspace switch mid-loop addressed the
-		// remaining PATCHes at the new workspace.
+	// Persist a status group's new order (BUG-3259). A child the caller may only
+	// VIEW (an item grant beats the parent's permission, which is what `canEdit`
+	// is) cannot be renumbered, so the plan leaves it where it is and fits the
+	// others around it, writing only children whose value changes. On a refusal,
+	// or no room to keep the order, the canonical children are reloaded so the
+	// group never shows an order the server did not store.
+	async function persistChildOrder(lane: Item[]) {
+		const plan = planLaneOrder(lane, (c) => workspaceStore.canEditItem(c));
+		if (!plan.ok) {
+			toastStore.show("Couldn't keep that order: an item you can only view is in the way.", 'error');
+			void loadChildren();
+			return;
+		}
+		// IDENTITY fence (BUG-3095) + the workspace this reorder is about, both
+		// captured before the loop. `wsSlug` was read LIVE inside the loop before
+		// that change, so a workspace switch mid-loop addressed the remaining
+		// PATCHes at the new workspace.
+		//
+		// HT-2176 Option A (TASK-2172): NO per-PATCH freeze recheck. A reorder
+		// INITIATED before peeking finishes; breaking mid-loop would persist it
+		// only partially. IDENTITY is checked per write even though FREEZE is not
+		// (BUG-3095): a sign-out mid-loop would otherwise send the remaining
+		// writes on the next user's cookie.
 		const isSameIdentity = authStore.identityFence();
 		const reqWs = wsSlug;
-		try {
-			for (const { id, sort_order } of updates) {
-				// HT-2176 Option A (TASK-2172): NO per-PATCH freeze recheck. The
-				// reorder was INITIATED before peeking (the top guard blocks a NEW
-				// one); breaking mid-loop would persist it only partially, leaving
-				// inconsistent sort_orders. Let the initiated reorder finish.
-				//
-				// IDENTITY is checked per iteration even though FREEZE is not
-				// (BUG-3095), and the two are not in tension. Option A's argument
-				// is that a half-applied reorder is worse than a fully-applied one
-				// the user no longer has permission to make — true while the
-				// SENDER is the same person throughout. It says nothing about a
-				// DIFFERENT user: every iteration after the first sends after the
-				// previous iteration's await, so a sign-out mid-loop would issue
-				// the remaining writes on the next user's cookie. A partial
-				// reorder is the lesser harm there, and it is the only outcome
-				// that keeps the writes attributable to whoever started them.
-				if (!isSameIdentity()) return;
-				await api.items.update(reqWs, id, { sort_order });
-			}
-		} catch (e) {
-			console.error('Failed to persist reorder:', e);
-		}
+		const landed = await persistReorder<Item>(plan.writes, {
+			original: (id) => lane.find((c) => c.id === id),
+			// This component shows the new order from `groupData` already.
+			applyLocal: () => {},
+			restoreLocal: () => {},
+			send: async ({ id, sort_order }) => {
+				if (!isSameIdentity()) throw new Error('identity changed');
+				return api.items.update(reqWs, id, { sort_order });
+			},
+			settle: () => isSameIdentity()
+		});
+		if (!landed && isSameIdentity()) void loadChildren();
 	}
 
 	// Menu-driven reorder (IDEA-1898) — the non-drag counterpart, scoped to
@@ -250,26 +260,9 @@
 		const reordered = reorderedList(grp, child.id, dir);
 		if (reordered === grp) return; // no-op (edge of group)
 
-		// Optimistic: show the new order immediately with dense sort_order.
-		groupData[laneKey(status)] = reordered.map((it, idx) => ({ ...it, sort_order: idx }));
-
-		const updates = reorderGroup(grp, child.id, dir);
-		// IDENTITY fence + captured workspace (BUG-3095) — see handleFinalize
-		// for why the loop needs a per-iteration check and why that does not
-		// reopen Option A's partial-reorder argument.
-		const isSameIdentity = authStore.identityFence();
-		const reqWs = wsSlug;
-		try {
-			for (const u of updates) {
-				// Option A (TASK-2172): no per-PATCH freeze recheck — a reorder
-				// initiated pre-pane finishes fully (see handleFinalize). Identity
-				// IS checked per iteration even though freeze is not (BUG-3095).
-				if (!isSameIdentity()) return;
-				await api.items.update(reqWs, u.item.id, { sort_order: u.sort_order });
-			}
-		} catch (e) {
-			console.error('Failed to persist reorder:', e);
-		}
+		// Optimistic: show the new order immediately.
+		groupData[laneKey(status)] = reordered;
+		await persistChildOrder(reordered);
 	}
 
 	// ── Data loading ─────────────────────────────────────────────────────────
@@ -954,7 +947,7 @@
 				<div class="group-label">{formatLabel(status)} ({(groupData[laneKey(status)] ?? []).length})</div>
 				<div
 					class="child-list"
-					use:dndzone={{
+					use:lockableDndzone={{
 						items: groupData[laneKey(status)] ?? [],
 						flipDurationMs,
 						type: 'child-item',
@@ -982,7 +975,13 @@
 						{@const isDone = terminal.some((t) => fieldMatches(fields.status, t))}
 						{@const isExpanded = expandedIds.has(child.id)}
 						{@const canExpand = child.has_children}
-						<div class="child-item-wrapper">
+						<!-- data-drag-locked: a child the caller may only view cannot be
+						     dragged, though the list allows it (BUG-3259). -->
+						<div
+							class="child-item-wrapper"
+							class:drag-locked={!workspaceStore.canEditItem(child)}
+							data-drag-locked={!workspaceStore.canEditItem(child)}
+						>
 							<div class="child-row-container">
 								{#if canExpand}
 									<button class="expand-toggle" onclick={(e) => { e.preventDefault(); toggleExpand(child); }} title={isExpanded ? 'Collapse' : 'Expand'}>
@@ -1002,7 +1001,9 @@
 										</span>
 									{/if}
 								</a>
-								{#if canEdit && !frozen}
+								<!-- Per child as well (BUG-3259): an item grant can make a
+								     child view-only under a parent the caller may edit. -->
+								{#if canEdit && !frozen && workspaceStore.canEditItem(child)}
 									<ItemActionsMenu
 										item={child}
 										label={child.title}
@@ -1186,6 +1187,12 @@
 
 	.child-row:active {
 		cursor: grabbing;
+	}
+
+	/* A child the caller may only view does not drag (BUG-3259). */
+	.child-item-wrapper.drag-locked .child-row,
+	.child-item-wrapper.drag-locked .child-row:active {
+		cursor: pointer;
 	}
 
 	.child-item-wrapper:last-child .child-row {
