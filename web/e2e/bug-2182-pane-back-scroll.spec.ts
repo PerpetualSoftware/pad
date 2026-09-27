@@ -153,3 +153,27 @@ for (const leg of [
 		}
 	});
 }
+
+// BUG-3250 codex round 1 (P1): the pane element is reused across items, and a
+// link drill is a pushState, which never reaches the popstate cancel. A hold
+// still live when the reader drills on must not write A's position into B.
+// A GUARD, not a red control: today the drill replaces every child of the pane,
+// so the hold's ResizeObserver is left on detached nodes and B was never
+// written even before the explicit cancel (measured 3/3, B rendering 419-504ms
+// into the hold). This pins the outcome if that DOM identity ever changes.
+test('BUG-3250: drilling to another item during the hold does not carry the restore into it', async ({ page, fixture, request }, testInfo) => {
+	test.skip(testInfo.project.name !== 'desktop-chromium', 'the split pane is a desktop layout');
+	test.setTimeout(60_000);
+	const ctx = await setup(page, fixture, request);
+	try {
+		await backAndRestore(page, ctx);
+		// Still inside the hold: drill to B again from the restored position.
+		await ctx.pane.locator('a', { hasText: ctx.titleB }).last().click();
+		await page.locator('.link-href').first().click();
+		await expect(ctx.pane.getByText('Target paragraph 0.')).toBeVisible({ timeout: 10_000 });
+		await page.waitForTimeout(1000);
+		expect(await ctx.scrollTop(), "A's restore was carried into B").toBeLessThan(40);
+	} finally {
+		await deleteCollection(fixture, request, ctx.coll.slug);
+	}
+});

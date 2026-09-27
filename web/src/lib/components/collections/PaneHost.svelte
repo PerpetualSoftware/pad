@@ -171,9 +171,16 @@
 		let applied = false;
 		let lastSet = -1;
 		let lastHeight = el.scrollHeight;
+		// No scroll anchoring while the restore runs (BUG-3250 codex round 1):
+		// an anchoring shift can move scrollTop with no height change, which
+		// the reader rule below would take for the reader. With it off, a
+		// layout shift moves scrollTop only by clamping, which changes height.
+		const prevAnchor = el.style.overflowAnchor;
+		el.style.overflowAnchor = 'none';
 		const finish = () => {
 			if (done) return;
 			done = true;
+			el.style.overflowAnchor = prevAnchor;
 			ro.disconnect();
 			clearTimeout(timer);
 			el.removeEventListener('scroll', onScroll);
@@ -249,7 +256,16 @@
 	}
 
 	function handleItemReady(ready: boolean) {
-		if (!ready) return;
+		// The pane is leaving the item it was restoring (a drill, a workspace
+		// switch): a live restore must not reach the next one (BUG-3250 codex
+		// round 1). ItemDetail reports not-ready the moment its item stops
+		// matching the requested ref. A pending restore is left alone: it is
+		// waiting for exactly this item's ready.
+		if (!ready) {
+			cancelRestore?.();
+			cancelRestore = null;
+			return;
+		}
 		readyGen++;
 		const p = pendingRestore;
 		if (!p || readyGen <= p.gen || !paneEl) return;
