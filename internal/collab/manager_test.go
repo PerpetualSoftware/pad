@@ -35,6 +35,9 @@ type fakeOpLog struct {
 	// it. Missing key = NULL watermark = "never flushed".
 	contentFlushedIDs map[string]int64
 
+	// setAside receives the rows SetAsideAndClearOpLog moves (BUG-3244).
+	setAside []models.YjsUpdate
+
 	// lastRestoreSeqs simulates the DURABLE items.last_restore_seq column
 	// (BUG-2264). Tests populate it to exercise the Join stale-seed fence's
 	// durable read (e.g. a fresh RoomManager on the same store = a "restart"
@@ -171,6 +174,31 @@ func (f *fakeOpLog) PruneYjsUpdatesBefore(itemID string, before time.Time) (int6
 	}
 	f.rows = kept
 	return pruned, nil
+}
+
+// SetAsideAndClearOpLog mirrors the store's rebuild wipe (BUG-3244): rows
+// above the item's watermark (every row when it has none) move to setAside,
+// then every row of the item is deleted. The fake does not model
+// content_bearing; the real classifier is exercised by the server test.
+func (f *fakeOpLog) SetAsideAndClearOpLog(itemID string) (int64, int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	wm, hasWM := f.contentFlushedIDs[itemID]
+	kept := f.rows[:0]
+	var moved, cleared int64
+	for _, r := range f.rows {
+		if r.ItemID != itemID {
+			kept = append(kept, r)
+			continue
+		}
+		cleared++
+		if !hasWM || r.ID > wm {
+			f.setAside = append(f.setAside, r)
+			moved++
+		}
+	}
+	f.rows = kept
+	return moved, cleared, nil
 }
 
 // ListDormantOpLogItemsBefore returns item_ids whose entire op-log

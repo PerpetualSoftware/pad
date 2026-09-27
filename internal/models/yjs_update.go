@@ -19,3 +19,17 @@ type YjsUpdate struct {
 	SchemaVersion string    `json:"schema_version"`
 	CreatedAt     time.Time `json:"created_at"`
 }
+
+// YjsSetAside is an op-log row a collab schema-version rebuild moved out of
+// the op-log because it can no longer replay (BUG-3244). OpLogID is its id in
+// item_yjs_updates before the move; UpdateData is the frame, byte for byte,
+// and SchemaVersion the editor era it was written under.
+type YjsSetAside struct {
+	ID            int64     `json:"id"`
+	ItemID        string    `json:"item_id"`
+	OpLogID       int64     `json:"op_log_id"`
+	UpdateData    []byte    `json:"update_data"`
+	SchemaVersion string    `json:"schema_version"`
+	CreatedAt     time.Time `json:"created_at"`
+	SetAsideAt    time.Time `json:"set_aside_at"`
+}

@@ -741,7 +741,13 @@ var contentStateSQL = contentStateSQLFor("i")
 // predicate would be two chances to drift, and a predicate that disagreed with
 // itself between doors is the shape of the defect this whole family is about.
 func contentStateSQLFor(alias string) string {
+	// Set-aside rows first (BUG-3244): when an item has both, the edits no tab
+	// can recover are the claim a reader must not miss, and set-aside rows do
+	// not depend on the watermark, so a tab stamping it cannot clear them.
 	return `CASE WHEN EXISTS (
+			SELECT 1 FROM item_yjs_updates_set_aside sa
+			WHERE sa.item_id = ` + alias + `.id
+		) THEN 'superseded_set_aside' WHEN EXISTS (
 			SELECT 1 FROM item_yjs_updates u
 			WHERE u.item_id = ` + alias + `.id
 			  AND u.id > COALESCE(` + alias + `.content_flushed_op_log_id, 0)

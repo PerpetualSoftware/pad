@@ -259,6 +259,11 @@ type opLogStore interface {
 	// when it's about to drop unflushed edits and log a warning.
 	LatestYjsUpdateSchemaVersion(itemID string) (string, int64, bool, error)
 	PruneYjsUpdatesBefore(itemID string, before time.Time) (int64, error)
+	// SetAsideAndClearOpLog is the rebuild's op-log wipe (BUG-3244): the
+	// unflushed content-bearing rows move to the set-aside table in the same
+	// transaction that empties the op-log, so edits the row never received
+	// are kept, and marked, rather than deleted.
+	SetAsideAndClearOpLog(itemID string) (setAside, cleared int64, err error)
 	// GetItemContentFlushedOpLogID returns the per-item flush
 	// watermark (TASK-1309). Returns (0, false) for items with NULL
 	// watermark or no row.

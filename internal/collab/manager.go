@@ -495,35 +495,36 @@ func (m *RoomManager) Join(itemID string, conn *websocket.Conn, since int64, con
 	return errTooManyJoinRetries
 }
 
-// distantFuture is the prune-everything cutoff we hand to
-// PruneYjsUpdatesBefore. The store's prune is a strict-less-than on
-// created_at; any row written with a sane RFC3339 timestamp will
-// satisfy `created_at < 9999-01-01`.
+// distantFuture is a prune-everything cutoff for PruneYjsUpdatesBefore. The
+// store's prune is a strict-less-than on created_at; any row written with a
+// sane RFC3339 timestamp satisfies `created_at < 9999-01-01`. The rebuild no
+// longer uses it (it sets rows aside instead); tests that wipe an op-log do.
 var distantFuture = time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)
 
 // maybeRebuildOnSchemaMismatch implements the TASK-1268 rebuild flow.
 //
-// Reads the latest persisted op-log row's schema_version for itemID.
-// If a row exists AND its version differs from the manager's current
-// `schemaVersion`, the entire op-log for the item is pruned. Caller
-// MUST hold the per-item setup lock so a concurrent peer's replayTo
-// can't load the soon-to-be-pruned rows.
+// Reads the latest persisted op-log row's schema_version for itemID. If a row
+// exists AND its version differs from the manager's current `schemaVersion`,
+// the item's op-log is emptied: rows written under another schema cannot
+// replay into a document built with this one. Caller MUST hold the per-item
+// setup lock so a concurrent peer's replayTo can't load the rows being moved.
 //
-// Returns nil on the no-rows path and on the matched-version path —
-// both are "nothing to do". A real DB error from either step short-
-// circuits Join with the same error so the WS upgrade fails loudly.
+// Returns nil on the no-rows path and on the matched-version path — both are
+// "nothing to do". A real DB error short-circuits Join with the same error so
+// the WS upgrade fails loudly, and leaves the op-log untouched.
 //
-// **Data loss disclosure.** When the latest op-log row's id exceeds
-// `items.content_flushed_op_log_id` for the item (i.e. unflushed
-// edits exist), the prune is unrecoverable: those ops are stamped
-// with the OLD schema and can't be replayed against the new schema
-// regardless of where they're stored. Lazy-seed (TASK-1261) will
-// repopulate the Y.Doc from items.content, which is stale relative
-// to the unflushed ops. We log a warn so operators see when a
-// schema bump is dropping unsaved client edits. Per Codex review of
-// TASK-1309 round 4 [P2].
+// **Unflushed edits are set aside, not deleted (BUG-3244).** Content-bearing
+// rows above items.content_flushed_op_log_id are edits items.content never
+// received. They used to be pruned with the rest, and content_state then read
+// clean, so the stale body looked current and the only trace was a WARN.
+// SetAsideAndClearOpLog now moves them to the set-aside table in the same
+// transaction that empties the op-log. They still cannot replay here, and
+// opening the item does not recover them: they hold the item's content_state
+// at superseded_set_aside until they are recovered (TASK-3246) or explicitly
+// discarded. Lazy-seed (TASK-1261) then rebuilds the document from
+// items.content, as before.
 func (m *RoomManager) maybeRebuildOnSchemaMismatch(itemID string) error {
-	latest, latestID, ok, err := m.store.LatestYjsUpdateSchemaVersion(itemID)
+	latest, _, ok, err := m.store.LatestYjsUpdateSchemaVersion(itemID)
 	if err != nil {
 		return err
 	}
@@ -531,44 +532,24 @@ func (m *RoomManager) maybeRebuildOnSchemaMismatch(itemID string) error {
 		return nil
 	}
 
-	// Pre-prune watermark check. Unflushed ops would be lost; we
-	// can't avoid the loss (old-schema ops can't migrate forward),
-	// but we surface it.
-	flushedID, flushedOK, err := m.store.GetItemContentFlushedOpLogID(itemID)
-	if err != nil {
-		// Watermark read failed — proceed with the prune (we still
-		// have to: the schema-mismatch case is non-negotiable) but
-		// log the failure separately.
-		slog.Warn("collab: schema-mismatch rebuild: watermark read failed",
-			"item_id", itemID,
-			"error", err,
-		)
-	} else if !flushedOK || latestID > flushedID {
-		// flushedOK==false → never flushed, every op is unflushed.
-		// latestID > flushedID → some ops past the watermark.
-		// We can't avoid the prune here (old-schema ops can't replay
-		// in the new schema regardless of where they're stored), but
-		// the WARN tells operators a schema bump dropped some
-		// unsaved client edits — they may want to investigate which
-		// items were affected and contact the affected users.
-		// Per Codex review of TASK-1309 round 4 [P2].
-		slog.Warn("collab: schema-mismatch rebuild will drop unflushed ops",
-			"item_id", itemID,
-			"latest_op_log_id", latestID,
-			"content_flushed_op_log_id", flushedID,
-			"watermark_set", flushedOK,
-		)
-	}
-
-	pruned, err := m.store.PruneYjsUpdatesBefore(itemID, distantFuture)
+	setAside, cleared, err := m.store.SetAsideAndClearOpLog(itemID)
 	if err != nil {
 		return err
 	}
-	slog.Info("collab: schema-version mismatch; pruned op-log",
+	if setAside > 0 {
+		slog.Warn("collab: schema-version mismatch; unflushed edits set aside",
+			"item_id", itemID,
+			"server_version", m.schemaVersion,
+			"persisted_version", latest,
+			"rows_set_aside", setAside,
+		)
+	}
+	slog.Info("collab: schema-version mismatch; cleared op-log",
 		"item_id", itemID,
 		"server_version", m.schemaVersion,
 		"persisted_version", latest,
-		"rows_pruned", pruned,
+		"rows_cleared", cleared,
+		"rows_set_aside", setAside,
 	)
 	return nil
 }
