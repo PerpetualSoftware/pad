@@ -7,7 +7,7 @@
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { titleEditError } from '$lib/items/titleLimit';
-	import { contentWriteFor, isContentPendingFlush, prunedEditsNotice } from '$lib/items/contentWrite';
+	import { contentOutcomeNotice, contentWriteFor, isContentPendingFlush, prunedEditsNotice } from '$lib/items/contentWrite';
 	import { pendingEditsDialog } from '$lib/stores/pendingEditsDialog.svelte';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import { exportAndDownloadArtifact } from '$lib/utils/artifacts';
@@ -258,10 +258,12 @@
 				...contentWriteFor(bodyContent, item),
 				...(Object.keys(fieldsPatch).length ? { fields_patch: fieldsPatch } : {})
 			};
-			// BUG-3230 U2: an overwrite that deleted another tab's edits says so.
-			let discarded: string | null = null;
+			// BUG-3230 U2/U3: what the save did beyond saving (another tab's edits
+			// discarded, or the body sent to an open tab's live document).
+			let saveNote: string | null = null;
 			try {
-				await api.items.update(wsSlug, item.slug, payload);
+				// BUG-3230 U3: a body applied to an open tab's live document says so.
+				saveNote = contentOutcomeNotice(await api.items.update(wsSlug, item.slug, payload));
 			} catch (err) {
 				if (!isContentPendingFlush(err)) throw err;
 				if (!isSameIdentity()) return;
@@ -271,10 +273,11 @@
 					toastStore.show("Not saved: the open tab's edits were kept. Your changes are still here.", 'info');
 					return;
 				}
-				discarded = prunedEditsNotice(await api.items.update(wsSlug, item.slug, { ...payload, overwrite_pending_edits: true }));
+				const resent = await api.items.update(wsSlug, item.slug, { ...payload, overwrite_pending_edits: true });
+				saveNote = prunedEditsNotice(resent) ?? contentOutcomeNotice(resent);
 			}
 			if (!isSameIdentity()) return;
-			if (discarded) toastStore.show(`Playbook saved. ${discarded}`, 'info');
+			if (saveNote) toastStore.show(`Playbook saved. ${saveNote}`, 'info');
 			else toastStore.show('Playbook saved', 'success');
 			goto(`/${username}/${wsSlug}/playbooks`);
 		} catch (err) {
