@@ -55,6 +55,9 @@ type OpEvent struct {
 	// frame so peers track their applied-cursor without a round
 	// trip. Per TASK-1319.
 	OpLogID int64
+	// TargetClientID names the one subscriber an OpTypeSeedGrant is
+	// for. Zero on every other event type.
+	TargetClientID uint64
 }
 
 // OpEvent.Type values. Kept narrow on purpose — the server should not
@@ -73,6 +76,13 @@ const (
 	// NEVER persisted, since presence is meaningless after the
 	// originating client disconnects.
 	OpTypeAwareness = "awareness"
+
+	// OpTypeSeedGrant re-issues the room's seeder role (BUG-3240) to
+	// the subscriber whose id is TargetClientID. Never persisted, and
+	// carries no Data. Travelling on the bus is the point: each
+	// subscriber's channel is FIFO, so the grant cannot overtake an op
+	// the departed seeder published before it left.
+	OpTypeSeedGrant = "seed_grant"
 )
 
 // OpBus is the cross-instance pub/sub interface for collab broadcasts.

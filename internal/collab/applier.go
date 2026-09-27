@@ -86,6 +86,20 @@ const (
 	// client is expected to surface a toast and reconnect with
 	// `?since=0`. Per TASK-1319.
 	ControlMessageForceRefresh = "force_refresh"
+
+	// ControlMessageSeedGrant makes the receiving connection the room's
+	// SEEDER (BUG-3240): the one peer allowed to run the lazy seed
+	// (TASK-1261) if its Y.Doc is still empty. The initial op_log_cursor
+	// frame carries the grant as `seed: true`; this frame re-issues it to
+	// a live peer when the seeder leaves. It is published through the bus,
+	// so it reaches that peer AFTER every op the departed seeder sent.
+	ControlMessageSeedGrant = "seed_grant"
+
+	// ControlMessageSyncSafetyNet is sent BY a client whose connection
+	// never delivered the post-replay op_log_cursor frame within its
+	// safety-net window (BUG-3240). It should never happen; the server
+	// logs it so a missing marker is visible.
+	ControlMessageSyncSafetyNet = "sync_safety_net"
 )
 
 // applierFirstTimeoutVar / applierRetryTimeoutVar are vars (rather
@@ -139,6 +153,11 @@ type ControlMessage struct {
 	// the trailing `,"op_log_id":0` they carry is ignored by the
 	// client's discriminated dispatch.
 	OpLogID int64 `json:"op_log_id"`
+
+	// Seed is set on the INITIAL op_log_cursor frame of the connection
+	// the room elects as its seeder (BUG-3240). Omitted otherwise, so an
+	// older client sees the frame it always saw.
+	Seed bool `json:"seed,omitempty"`
 }
 
 // pendingApplierAck tracks one in-flight designated-applier round-trip. The applier

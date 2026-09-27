@@ -236,7 +236,7 @@ const CONTINUATIONS: SignedRow[] = [
 		why: 're-arms the BUG-3005 teardown latch, itself identity-checked', reviewed: '07a11fd90d0b',
 		may: ['teardownFlushed'],
 	},
-	{ call: /^queueMicrotask\($/, body: /./, why: 'collab lazy seed: refuses a retired or re-identified context first', reviewed: '197a4a45d219' },
+	{ call: /^queueMicrotask\($/, body: /./, why: 'collab lazy seed: refuses a retired or re-identified context first', reviewed: '12e84b8a47be' },
 	{ call: /^tick\(\)\.then\($/, body: /./, why: 'schedules a focus frame; commits nothing itself', reviewed: 'b6f7655cb302' },
 	{
 		call: /^requestAnimationFrame\($/,

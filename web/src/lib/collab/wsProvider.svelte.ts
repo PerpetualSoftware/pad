@@ -58,15 +58,16 @@ const RECONNECT_MAX_MS = 30_000;
  *  Three attempts ≈ 1s + 2s + 4s of failure before declaring offline. */
 const OFFLINE_THRESHOLD = 3;
 
-/** Fallback grace before declaring `synced` true on connections that
- *  never receive an explicit syncStep2. The dumb-relay server replays
- *  the op-log as a sequence of BinaryMessage frames but doesn't
- *  generate its own step2; an empty/pruned op-log + first-peer
- *  connect therefore never arrives at the explicit-sync signal. The
- *  grace lets any actual replay land first; after it, downstream
- *  consumers (lazy seed in TASK-1261) can safely treat
- *  `synced` as "the server has shown us everything it has." */
-const SYNC_GRACE_MS = 1_000;
+/** Safety net for a connection whose post-replay `op_log_cursor` frame
+ *  never arrives (BUG-3240). That frame is the sync-complete signal: the
+ *  relay writes it after every replay frame on the same socket, cursor 0
+ *  included. It used to be a 1s GUESS instead, which cost every lone-tab
+ *  open a full second, and which a replay slower than a second (a slow
+ *  link, a long op-log under load) beat: the lazy seed then ran into an
+ *  empty Y.Doc, the late replay added the original seed, and the body was
+ *  stored twice. Measured on BUG-3240's trail. Firing is reported to the
+ *  server, which logs it; it should never happen. */
+const SYNC_SAFETY_NET_MS = 10_000;
 
 /**
  * Handler invoked when the server delivers an `applier_request`
@@ -185,8 +186,9 @@ function clearStoredCursor(itemID: string): void {
  *
  *   - `connecting`   — socket attempting initial open OR open but
  *                      handshake not yet done. Show a neutral spinner.
- *   - `synced`       — socket open AND server has answered our
- *                      syncStep1 (or grace expired). Show green dot.
+ *   - `synced`       — socket open AND this connection's replay is
+ *                      applied (its post-replay op_log_cursor frame, or a
+ *                      peer's syncStep2, or the safety net). Show green dot.
  *   - `reconnecting` — socket dropped after a successful session;
  *                      backoff retry in flight. Show yellow.
  *   - `offline`     — multiple consecutive reconnect failures past
@@ -264,6 +266,29 @@ export class CollabProvider {
 	 * indicator (TASK-1264).
 	 */
 	synced = $state(false);
+
+	/**
+	 * True once THIS connection's replay has been applied: its first
+	 * `op_log_cursor` frame arrived (BUG-3240), or the safety net fired.
+	 * Unlike `synced`, a peer's syncStep2 does not set it, so the lazy seed
+	 * never judges the Y.Doc empty while replay rows are still in flight.
+	 * Reset on every open.
+	 */
+	replayComplete = $state(false);
+
+	/**
+	 * The server elected this connection the room's seeder (BUG-3240): the
+	 * one peer that may run the lazy seed. Set by `seed: true` on the initial
+	 * cursor frame, or by a later `seed_grant` when the previous seeder left.
+	 * Reset on every open, since the server decides per connection.
+	 */
+	seedGranted = $state(false);
+
+	/**
+	 * The safety net fired: no cursor frame, so no grant can be known.
+	 * The lazy seed then falls back to its old awareness election.
+	 */
+	seedByElection = $state(false);
 
 	/**
 	 * Public connection state for UX consumers (TASK-1264). Always
@@ -721,8 +746,11 @@ export class CollabProvider {
 		// don't need an explicit guard.
 		// NB: reconnectAttempts is also NOT reset here — same reason.
 		// Reset is owned by the actual-sync paths (syncStep2 branch +
-		// syncGraceTimer below). Per Codex round 1 [P2].
+		// completeSync). Per Codex round 1 [P2].
 
+		this.replayComplete = false;
+		this.seedGranted = false;
+		this.seedByElection = false;
 		// Initial syncStep1: send our current state vector. Server
 		// replays the op-log (which contains all prior peer ops) so
 		// we end up with a converged Y.Doc. The server itself doesn't
@@ -782,27 +810,25 @@ export class CollabProvider {
 			this.send(encoding.toUint8Array(enc2));
 		}
 
-		// Grace fallback: if we don't see an explicit syncStep2 within
-		// SYNC_GRACE_MS, flip `synced` true anyway. The dumb-relay
-		// server replays the op-log as BinaryMessage frames but never
-		// sends its own step2, so an empty/pruned op-log + first-peer
-		// connect would otherwise leave `synced` stuck at false —
-		// blocking the lazy seed in TASK-1261. The grace gives any
-		// real replay rows time to land first. Per Codex review
-		// round 1.
+		// Safety net (BUG-3240): the post-replay op_log_cursor frame, not a
+		// timer, is what completes the sync (see handleControlMessage). If it
+		// never arrives, complete anyway so the doc is not stuck, fall back to
+		// the lazy seed's awareness election, and tell the server, which logs
+		// it.
 		clearTimeout(this.syncGraceTimer);
+		const netWs = this.ws;
 		this.syncGraceTimer = setTimeout(() => {
-			if (!this.synced) this.synced = true;
-			if (this.connected) {
-				this.state = 'synced';
-				// Treat the grace expiry as a successful sync —
-				// the dumb-relay design means an empty/pruned op-log
-				// + first peer is the canonical "everything is fine"
-				// case. Reset backoff so a subsequent disconnect
-				// starts fresh. Per Codex review round 1 [P2].
-				this.reconnectAttempts = 0;
+			if (this.replayComplete) return;
+			console.warn('collab: no post-replay op_log_cursor within the safety net; completing sync without it');
+			if (netWs && netWs === this.ws && netWs.readyState === WebSocket.OPEN) {
+				try {
+					netWs.send(JSON.stringify({ type: 'sync_safety_net' }));
+				} catch {
+					// Reporting is best effort.
+				}
 			}
-		}, SYNC_GRACE_MS);
+			this.completeSync(true);
+		}, SYNC_SAFETY_NET_MS);
 	};
 
 	private readonly onMessage = (e: MessageEvent): void => {
@@ -900,6 +926,21 @@ export class CollabProvider {
 		}
 	};
 
+	/** Mark this connection's replay applied and the doc synced (BUG-3240). */
+	private completeSync(bySafetyNet: boolean): void {
+		clearTimeout(this.syncGraceTimer);
+		this.syncGraceTimer = undefined;
+		if (bySafetyNet) this.seedByElection = true;
+		this.replayComplete = true;
+		if (!this.synced) this.synced = true;
+		if (this.connected) {
+			this.state = 'synced';
+			// A successful sync: reset the backoff so a later disconnect
+			// starts fresh. Per Codex review round 1 [P2].
+			this.reconnectAttempts = 0;
+		}
+	}
+
 	private handleControlMessage(raw: string, sourceWs: WebSocket | null): void {
 		let msg: {
 			type?: string;
@@ -907,6 +948,7 @@ export class CollabProvider {
 			markdown?: string;
 			expires_at_millis?: number;
 			op_log_id?: number;
+			seed?: boolean;
 		};
 		try {
 			msg = JSON.parse(raw);
@@ -995,6 +1037,14 @@ export class CollabProvider {
 						this.send(encoding.toUint8Array(enc));
 					}
 				}
+				// BUG-3240: the connection's FIRST cursor frame is written after
+				// every replay frame on this socket, and frames are handled in
+				// order, so the replay is applied: the sync is complete. It also
+				// says whether the server elected this connection the seeder.
+				if (!this.replayComplete) {
+					if (msg.seed === true) this.seedGranted = true;
+					this.completeSync(false);
+				}
 				// Never regress the cursor: the server's INITIAL
 				// post-replay cursor frame can in theory follow a
 				// MORE-RECENT live op the previous incarnation
@@ -1012,6 +1062,13 @@ export class CollabProvider {
 					console.warn('collab: onOpLogCursor handler threw', err);
 				}
 				return;
+			}
+			case 'seed_grant': {
+				// BUG-3240: the previous seeder left. The server sends this
+				// through the room's ordered fan-out, so every op that seeder
+				// sent has already been applied here.
+				this.seedGranted = true;
+				break;
 			}
 			case 'force_refresh': {
 				// TASK-1319: server has decided we can't safely

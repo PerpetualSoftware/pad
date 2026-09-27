@@ -144,6 +144,11 @@
 	// causal. 2500 is about 1.9x the loaded max. If it errs long, the only cost
 	// is a restore that lands late for a reader who has not moved, and any move
 	// cancels it. If the grace comes down, this can come down with it.
+	//
+	// The grace is gone (BUG-3240): the body now waits for the replay itself,
+	// which measured p50 8-241 ms (to 303 replay frames) and up to 740 ms for
+	// about 2,000 frames under 8 workers. Lowering this cap owes its own
+	// measurement of the pane Back spec on that build; it is unchanged here.
 	const RESTORE_CAP_MS = 2500;
 	let cancelRestore: (() => void) | null = null;
 

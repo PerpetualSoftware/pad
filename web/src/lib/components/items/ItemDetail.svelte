@@ -3079,7 +3079,17 @@
 	// wild.
 	$effect(() => {
 		if (!collabProvider || !ydoc || !editorInstance || !item) return;
-		if (!collabProvider.synced) return;
+		// The replay must be APPLIED before the fragment can be judged empty
+		// (BUG-3240): `synced` also flips on a peer's syncStep2, which can
+		// land while this connection's replay is still in flight.
+		if (!collabProvider.replayComplete) return;
+		// The server elects ONE seeder per room (BUG-3240). Two tabs electing
+		// by awareness both seeded a fresh doc half the time and stored the
+		// body twice. Only when the post-replay cursor frame never arrived
+		// (the provider's safety net) is the grant unknowable, and the
+		// awareness election below is the fallback. A grant can also arrive
+		// LATER, when the previous seeder leaves; this effect re-runs on it.
+		if (!collabProvider.seedGranted && !collabProvider.seedByElection) return;
 		if (seededProvider === collabProvider) return;
 		seededProvider = collabProvider;
 
@@ -3101,15 +3111,17 @@
 		// the time between checking awareness and dispatching
 		// setContent. Per Codex review round 1.
 		const localId = ydoc.clientID;
-		const peerIds = Array.from(collabProvider.awareness.getStates().keys());
-		// Awareness must include at least our own ID; if it's
-		// empty the awareness handshake hasn't completed yet —
-		// skip this tick and let the next $effect run try again
-		// (a peer's awareness arrival re-triggers via the
-		// `synced` dependency edge).
-		if (peerIds.length === 0) return;
-		const lowestId = peerIds.reduce((min, id) => (id < min ? id : min), peerIds[0]);
-		if (lowestId !== localId) return;
+		if (collabProvider.seedByElection) {
+			const peerIds = Array.from(collabProvider.awareness.getStates().keys());
+			// Awareness must include at least our own ID; if it's
+			// empty the awareness handshake hasn't completed yet —
+			// skip this tick and let the next $effect run try again
+			// (a peer's awareness arrival re-triggers via the
+			// `synced` dependency edge).
+			if (peerIds.length === 0) return;
+			const lowestId = peerIds.reduce((min, id) => (id < min ? id : min), peerIds[0]);
+			if (lowestId !== localId) return;
+		}
 
 		// Match Editor's onUpdate path: seed in URL-form markdown so
 		// wiki-links resolve to clickable refs. The 5s flush will
@@ -3139,10 +3151,12 @@
 			// seed belongs to the identity this context was minted under.
 			if (!ctx || ctx.retired || ctx.identityEpoch !== authStore.identityEpoch) return;
 			if (fragment.length > 0) return;
-			const peerIds2 = Array.from(collabProvider!.awareness.getStates().keys());
-			if (peerIds2.length === 0) return;
-			const lowest2 = peerIds2.reduce((min, id) => (id < min ? id : min), peerIds2[0]);
-			if (lowest2 !== localId) return;
+			if (collabProvider!.seedByElection) {
+				const peerIds2 = Array.from(collabProvider!.awareness.getStates().keys());
+				if (peerIds2.length === 0) return;
+				const lowest2 = peerIds2.reduce((min, id) => (id < min ? id : min), peerIds2[0]);
+				if (lowest2 !== localId) return;
+			}
 			editorInstance!.commands.setContent(seedMd);
 			// Overwrite the ctx-creation effect's eager (best-effort)
 			// seedMd with the EXACT markdown that just landed in the
