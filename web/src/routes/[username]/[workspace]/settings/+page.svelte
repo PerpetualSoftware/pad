@@ -290,10 +290,37 @@
 		untrack(() => {
 			wsName = '';
 			contextEditor = '';
+			nameEdited = false;
+			contextEdited = false;
 			collections = [];
 			members = [];
 			invitations = [];
 			if (wsSlug) load(wsSlug);
+		});
+	});
+
+	// The name and context fields are SEEDED FROM THE STORE, reactively, not
+	// snapshotted inside load() (BUG-3260). load() used to read
+	// `workspaceStore.current` right after `await setCurrent(slug)`. But a
+	// setCurrent that a concurrent call supersedes (the layout makes one for
+	// the same slug on every cold load) returns BEFORE it writes `current`. So
+	// the snapshot read an unset store: an empty name, and a `{}` context that
+	// saveContext would then have written back as "no context".
+	//
+	// Seeded only once the store has SETTLED for this user
+	// (`membershipKnown`) and holds this workspace, so a previous identity's
+	// workspace is never shown. Re-seeded whenever `current` changes, unless
+	// the user has typed in that field since the page's (user, workspace) key
+	// last changed.
+	let nameEdited = false;
+	let contextEdited = false;
+	$effect(() => {
+		void sessionUserId;
+		const cur = workspaceStore.current;
+		if (!workspaceStore.membershipKnown || !cur || cur.slug !== wsSlug) return;
+		untrack(() => {
+			if (!nameEdited) wsName = cur.name;
+			if (!contextEdited) contextEditor = formatContextEditor(cur.context);
 		});
 	});
 
@@ -395,8 +422,8 @@
 		try {
 			await workspaceStore.setCurrent(slug);
 			if (myLoad !== loadGen) return;
-			wsName = workspaceStore.current?.name ?? '';
-			contextEditor = JSON.stringify(workspaceStore.current?.context ?? {}, null, 2);
+			// The name and context are seeded by the effect after the load key
+			// (BUG-3260), not read here: `current` may not be set yet.
 			const fresh = await api.collections.list(slug);
 			if (myLoad !== loadGen) return;
 			if (myColl === collectionsGen) collections = fresh;
@@ -447,12 +474,14 @@
 	}
 
 	function resetContextEditor() {
+		contextEdited = false;
 		contextEditor = formatContextEditor(workspaceStore.current?.context);
 		contextError = '';
 		contextStatus = 'idle';
 	}
 
 	function clearContextEditor() {
+		contextEdited = true;
 		contextEditor = '{}';
 		contextError = '';
 		contextStatus = 'idle';
@@ -853,6 +882,7 @@
 								id="ws-name"
 								type="text"
 								bind:value={wsName}
+								oninput={() => (nameEdited = true)}
 								readonly={!isOwner}
 								onkeydown={(e) => isOwner && e.key === 'Enter' && saveName()}
 							/>
@@ -924,6 +954,7 @@
 						id="workspace-context"
 						class="context-editor mono"
 						bind:value={contextEditor}
+						oninput={() => (contextEdited = true)}
 						spellcheck="false"
 						readonly={!isOwner}
 						rows="18"
