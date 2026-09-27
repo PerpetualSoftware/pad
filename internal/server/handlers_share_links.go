@@ -390,6 +390,68 @@ func (s *Server) requireShareLinkTargetVisible(w http.ResponseWriter, r *http.Re
 // `writeJSON(w, ..., item)` would publish destinations on every public share
 // link. TestMovedTo_ShareLinkNeverCarriesPointer pins both the key set and
 // that specific omission.
+// publicShareFieldDef is what a single-item share tells its reader about one
+// field (TASK-2248 U3, audit C121). The direct item share used to carry no
+// schema at all, so its field chips printed raw keys (`in_progress`) with no
+// colour, while the same item expanded in a COLLECTION share rendered them
+// properly. It is deliberately NOT the FieldDef: a link to one item never
+// disclosed its collection's schema, so this carries only what renders the
+// values the item already shows. There are no option lists, no relation
+// target, no defaults and no validation rules. TerminalOptions is at most the
+// item's own current value, and only when that value is terminal, because
+// that is the one fact the chip colour needs.
+type publicShareFieldDef struct {
+	Key             string   `json:"key"`
+	Label           string   `json:"label"`
+	Type            string   `json:"type"`
+	TerminalOptions []string `json:"terminal_options,omitempty"`
+}
+
+// publicShareFieldDefs returns, in schema order, the defs for the fields the
+// item CARRIES A VALUE for. Computed fields are left out, as the collection
+// share's expansion leaves them out. Returns nil when there is nothing to
+// describe, or when the schema or the fields do not parse, so the caller omits
+// the key and the page falls back to printing the values as it always did.
+func publicShareFieldDefs(schemaJSON, fieldsJSON string) []publicShareFieldDef {
+	s := strings.TrimSpace(schemaJSON)
+	f := strings.TrimSpace(fieldsJSON)
+	if s == "" || f == "" {
+		return nil
+	}
+	var schema models.CollectionSchema
+	if err := models.UnmarshalItemFieldSchema([]byte(s), &schema); err != nil {
+		return nil
+	}
+	var values map[string]any
+	if err := json.Unmarshal([]byte(f), &values); err != nil {
+		return nil
+	}
+	var defs []publicShareFieldDef
+	for _, fd := range schema.Fields {
+		if fd.Computed {
+			continue
+		}
+		v, ok := values[fd.Key]
+		if !ok || v == nil {
+			continue
+		}
+		if str, isStr := v.(string); isStr && strings.TrimSpace(str) == "" {
+			continue
+		}
+		def := publicShareFieldDef{Key: fd.Key, Label: fd.Label, Type: fd.Type}
+		if str, isStr := v.(string); isStr {
+			for _, t := range fd.TerminalOptions {
+				if t == str {
+					def.TerminalOptions = []string{str}
+					break
+				}
+			}
+		}
+		defs = append(defs, def)
+	}
+	return defs
+}
+
 func publicShareItemDTO(item *models.Item) map[string]interface{} {
 	dto := map[string]interface{}{
 		"title":           item.Title,
@@ -554,6 +616,15 @@ func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) 
 		// renderable, so the page falls back to the honest placeholder.
 		if refs := s.mintShareAttachmentRefs(link, item.Content); refs != nil {
 			resp["attachment_refs"] = refs
+		}
+		// Beside the item, not inside it: the item DTO's key set is pinned
+		// (TestMovedTo_ShareLinkNeverCarriesPointer). Scoped by the item's
+		// own collection ID. A lookup failure omits the key rather than
+		// failing the share, which then renders exactly as it did before U3.
+		if coll, err := s.store.GetCollection(item.CollectionID); err == nil && coll != nil {
+			if defs := publicShareFieldDefs(coll.Schema, item.Fields); defs != nil {
+				resp["field_defs"] = defs
+			}
 		}
 		writeJSON(w, http.StatusOK, resp)
 

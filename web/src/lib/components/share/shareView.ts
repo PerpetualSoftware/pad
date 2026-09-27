@@ -482,3 +482,53 @@ export function groupItems(
 	}
 	return result;
 }
+
+/** One field chip as a share renders it (see `fieldChips`). */
+export interface FieldChip {
+	field: FieldDef;
+	/** What the chip prints: label-cased for a categorical value, with any suffix. */
+	text: string;
+	/** A relation, which a share cannot resolve; printed as a note (BUG-3016). */
+	placeholder: boolean;
+	color?: string;
+}
+
+// Categorical fields (status/priority/select) carry kebab/snake option keys
+// the owner sees as title-cased labels, so those are label-formatted and
+// coloured. Everything else is a LITERAL value (dates, IDs, slugs, URLs, free
+// text) and renders verbatim: title-casing `2026-05-31` or `api_token` would
+// corrupt it.
+function isCategorical(field: FieldDef): boolean {
+	return field.key === 'status' || field.key === 'priority' || field.type === 'select';
+}
+
+/**
+ * The chips a shared item shows: schema fields carrying a value, in schema
+ * order, computed fields dropped. ONE rule for both share views (TASK-2248
+ * U3). The collection inline-expand and the direct item share used to
+ * disagree, and the direct share printed raw keys (`in_progress`) with no
+ * colour. A relation never prints its stored value, which is an item id a
+ * share has no index for (BUG-3016).
+ */
+export function fieldChips(values: Record<string, unknown>, fields: FieldDef[]): FieldChip[] {
+	const out: FieldChip[] = [];
+	for (const field of visibleFields(fields)) {
+		const raw = values[field.key];
+		if (isRelationType(field.type)) {
+			const text = publicRelationText(field, raw);
+			if (text !== '') out.push({ field, text, placeholder: true });
+			continue;
+		}
+		const value = formatFieldValue(raw);
+		if (value === '') continue;
+		const categorical = isCategorical(field);
+		const base = categorical ? formatLabel(value) : value;
+		out.push({
+			field,
+			text: field.suffix ? `${base} ${field.suffix}` : base,
+			placeholder: false,
+			color: categorical && typeof raw === 'string' ? fieldValueColor(field, raw) : undefined,
+		});
+	}
+	return out;
+}
