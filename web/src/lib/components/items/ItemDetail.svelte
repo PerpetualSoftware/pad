@@ -78,6 +78,7 @@
 	import EditCollectionModal from '$lib/components/collections/EditCollectionModal.svelte';
 	import ShareDialog from '$lib/components/ShareDialog.svelte';
 	import CopyItemDialog from '$lib/components/items/CopyItemDialog.svelte';
+	import { copyResultToast } from '$lib/items/copyResultToast';
 	import PushToAgentDialog from '$lib/components/items/PushToAgentDialog.svelte';
 	import ItemAttachmentStrip from '$lib/components/items/ItemAttachmentStrip.svelte';
 	import DecisionChips from '$lib/components/items/DecisionChips.svelte';
@@ -5407,22 +5408,11 @@
 	 * archived + provenance banners render now rather than on the next load.
 	 */
 	async function handleCopied(result: ItemCopyResult) {
-		const dest = result.destination;
-		const label = dest.ref ?? dest.slug;
-		const verb = result.source.archived ? 'Moved' : 'Copied';
-		// A value dropped as NOT UNIQUE is named, not folded into a clean
-		// success (BUG-2367): the preview listed it, and the copy's own answer
-		// must say it too.
-		const notUnique = result.warnings.not_unique ?? [];
-		if (notUnique.length > 0) {
-			toastStore.show(
-				`${verb} to ${dest.workspace_name} as ${label}, without: ${notUnique.map((d) => d.message).join('; ')}`,
-				'info',
-				10000,
-			);
-		} else {
-			toastStore.show(`${verb} to ${dest.workspace_name} as ${label}`, 'success');
-		}
+		// A value dropped as NOT UNIQUE (BUG-2367) and a source body behind its
+		// live document (BUG-3230 U1) are named, not folded into a clean success.
+		const done = copyResultToast(result);
+		if (done.duration === undefined) toastStore.show(done.message, done.type);
+		else toastStore.show(done.message, done.type, done.duration);
 		if (!result.source.archived) return;
 		const targetItem = item;
 		if (!targetItem) return;
