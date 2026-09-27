@@ -8,6 +8,11 @@
  * mismatched-vs-persisted connect so the new client doesn't replay
  * old-schema ops that may be incompatible.
  *
+ * **Frozen (BUG-3244).** The server's mismatch prune also deletes every
+ * item's unflushed edits, so a bump is refused until that bug is closed:
+ * `internal/collab/schema_version_guard_test.go` fails on any change here
+ * or to the server constant. The rule below says when one would be owed.
+ *
  * **Bump rule.** Any of these changes is a breaking schema bump and
  * REQUIRES incrementing this constant + the matching
  * `internal/collab/manager.go::DefaultSchemaVersion` in the same

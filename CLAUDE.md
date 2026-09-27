@@ -519,7 +519,14 @@ bump `web/src/lib/collab/schemaVersion.ts::SCHEMA_VERSION` AND
 client announces the version on every WS connect; mismatch returns
 HTTP 400 and the room manager prunes the per-item op-log so the new
 client doesn't replay incompatible old-schema ops. items.content is
-canonical and untouched, so no edit history is lost.
+untouched, but that prune also deletes every UNFLUSHED edit (op-log
+rows above the flush watermark) and clears the item's `content_state`,
+so the stale body then reads as current (BUG-3244, measured). **The
+schema version is therefore FROZEN until BUG-3244 is closed:**
+`internal/collab/schema_version_guard_test.go` fails on any bump, and
+also fails when the two constants disagree. A node-spec change that
+would need a bump waits for that fix, and one that removes or renames a
+node or mark also waits for TASK-3246 (a decoder for the outgoing era).
 
 Pure UI/CSS/behavioural changes that don't alter the persisted
 document shape DO NOT bump the schema version. When in doubt, load
