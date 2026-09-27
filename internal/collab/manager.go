@@ -17,6 +17,10 @@ import (
 // constant itself bumps in lockstep with the web client's
 // `web/src/lib/collab/schemaVersion.ts` SCHEMA_VERSION on any
 // breaking change to the Tiptap extension set or Y.Doc shape.
+//
+// Frozen until BUG-3244 is closed: that prune deletes unflushed edits
+// (see maybeRebuildOnSchemaMismatch), and schema_version_guard_test.go
+// refuses a bump.
 const DefaultSchemaVersion = "1"
 
 // SchemaVersion exposes the version this manager stamps on persisted
