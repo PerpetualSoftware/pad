@@ -55,6 +55,8 @@ describe('contentOutcomeNotice', () => {
 		expect(contentOutcomeNotice({ warnings: { pruned_pending_edits: 2 } })).toBeNull();
 	});
 	it('says where the body went and when it shows here', () => {
-		expect(contentOutcomeNotice({ warnings: { content_outcome: 'applied_pending_flush' } })).toMatch(/open in another tab.*appears here once it saves/);
+		expect(contentOutcomeNotice({ warnings: { content_outcome: 'applied_pending_flush' } })).toMatch(/open in another tab.*Until that tab saves it, this page may still show the old body/);
+		// BUG-3000: the flush is not guaranteed, so nothing promises it will appear.
+		expect(contentOutcomeNotice({ warnings: { content_outcome: 'applied_pending_flush' } })).not.toMatch(/appears|once it saves/);
 	});
 });
