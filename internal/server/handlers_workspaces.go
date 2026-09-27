@@ -544,6 +544,11 @@ func (s *Server) handleGetWorkspace(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// BUG-3254: mark a guest here as the list endpoint does. RequireWorkspaceAccess
+	// admitted this caller on grants alone and recorded that as the "guest" role.
+	// A client that reaches the workspace by URL resolves it through THIS endpoint,
+	// and without the flag it rendered member chrome.
+	ws.IsGuest = workspaceRole(r) == "guest"
 	writeJSON(w, http.StatusOK, ws)
 }
 
