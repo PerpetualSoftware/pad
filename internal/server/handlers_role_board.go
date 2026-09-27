@@ -109,6 +109,22 @@ func (s *Server) handleRoleBoard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Each lane embeds its role, whose item_count the store fills from every
+	// item in the workspace. The lane's items were filtered above and its
+	// count was not (BUG-3257), so recompute it from what the caller may see.
+	counts, restricted, err := s.visibleRoleItemCounts(r, workspaceID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if restricted {
+		for _, lane := range lanes {
+			if lane.Role != nil {
+				lane.Role.ItemCount = counts[lane.Role.ID]
+			}
+		}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"lanes": lanes,
 	})

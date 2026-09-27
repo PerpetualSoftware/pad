@@ -36,6 +36,20 @@ let walk: PermissionWalk;
 
 const VIEW_NAME = 'Walk saved view';
 let viewId: string;
+let laneRoleId: string;
+
+// How many of the role's four items (two tasks, two ideas) each account may
+// see. editorSpecific reads Tasks only; guestItemEdit holds one item grant;
+// guestPrecedence's collection grant on Tasks shows it both tasks.
+const LANE_VISIBLE: Record<AccountKey, number> = {
+	owner: 4,
+	editor: 4,
+	viewer: 4,
+	viewerTasksEdit: 4,
+	guestItemEdit: 1,
+	guestPrecedence: 2,
+	editorSpecific: 2
+};
 
 test.beforeAll(async () => {
 	walk = await seedPermissionWalk();
@@ -49,6 +63,19 @@ test.beforeAll(async () => {
 		});
 		if (!r.ok()) throw new Error(`seed view failed (${r.status()}): ${await r.text()}`);
 		viewId = ((await r.json()) as { id: string }).id;
+
+		// A role on two tasks and both ideas, for the role-count leg (BUG-3257).
+		const role = await owner.post(`/api/v1/workspaces/${walk.workspaceSlug}/agent-roles`, {
+			data: { name: 'Walk lane' }
+		});
+		if (!role.ok()) throw new Error(`seed role failed (${role.status()}): ${await role.text()}`);
+		laneRoleId = ((await role.json()) as { id: string }).id;
+		for (const item of [walk.grantedTask, walk.tasks[1], ...walk.ideas]) {
+			const u = await owner.patch(`/api/v1/workspaces/${walk.workspaceSlug}/items/${item.slug}`, {
+				data: { agent_role_id: laneRoleId }
+			});
+			if (!u.ok()) throw new Error(`assign role to ${item.ref} failed (${u.status()}): ${await u.text()}`);
+		}
 	} finally {
 		await owner.dispose();
 	}
@@ -149,6 +176,30 @@ for (const key of MEMBERS) {
 }
 
 for (const key of ACCOUNT_KEYS) {
+	// BUG-3257. Every role is listed to every reader (roles are workspace
+	// metadata), but a role's item_count describes items, so it counts only
+	// what this account may see: the lane's own filtered items. It used to be
+	// the workspace-wide count (store.ListAgentRoles) on the board.
+	test(`${key}: roles board lane count is the items this account can see`, async () => {
+		const api = await request.newContext({
+			baseURL: walk.baseURL,
+			extraHTTPHeaders: { Authorization: `Bearer ${walk.accounts[key].token}` }
+		});
+		try {
+			const r = await api.get(`/api/v1/workspaces/${walk.workspaceSlug}/roles/board`);
+			expect(r.status(), await r.text()).toBe(200);
+			const { lanes } = (await r.json()) as {
+				lanes: { role: { id: string; item_count?: number } | null; items: unknown[] }[];
+			};
+			const lane = lanes.find((l) => l.role?.id === laneRoleId);
+			expect(lane, 'the role is listed to every reader').toBeTruthy();
+			expect(lane!.items).toHaveLength(LANE_VISIBLE[key]);
+			expect(lane!.role!.item_count ?? 0, 'role.item_count').toBe(LANE_VISIBLE[key]);
+		} finally {
+			await api.dispose();
+		}
+	});
+
 	// The template seeds quick actions on Tasks, so the menu mounts for every
 	// account that sees Tasks: running one is per item. Authoring one is
 	// owner-only (the collection-settings write).
