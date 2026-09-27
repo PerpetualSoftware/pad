@@ -1,0 +1,838 @@
+{
+  "tools": [
+    {
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "description": "Read-only attachment metadata.\n\nActions:\n  list  — List attachments in the workspace with optional filters.\n          Required: workspace.\n          Optional: item (ref/slug), category, collection (collection\n          UUID, not slug), attached, unattached, sort, limit, offset.\n          (attached / unattached are mutually exclusive; item and\n          unattached are mutually exclusive.)\n  show  — Inspect one attachment's metadata (MIME, size, filename, ETag,\n          last-modified) via a HEAD request — no bytes transferred.\n          Required: workspace, attachment_id.\n          Optional: variant (thumb-sm | thumb-md).\n\nUse pad_attachment to discover what files are attached to items and to\nsize / confirm an attachment before deciding what to do with it. This\nsurface is read-only: uploading, downloading, and viewing raw bytes are\nCLI-only (filesystem-bound); an agent that needs the bytes fetches them\nfrom the attachment URL directly.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "description": "The action to perform. See tool description for required parameters per action.",
+            "enum": [
+              "list",
+              "show"
+            ],
+            "type": "string"
+          },
+          "attached": {
+            "description": "Only attachments linked to some item. Optional for action=list. Mutually exclusive with `unattached`.",
+            "type": "boolean"
+          },
+          "attachment_id": {
+            "description": "The attachment's ID. Required for action=show.",
+            "type": "string"
+          },
+          "category": {
+            "description": "Filter by attachment category (e.g. \"image\"). Optional for action=list.",
+            "type": "string"
+          },
+          "collection": {
+            "description": "Filter to attachments on items in this collection, by collection UUID (NOT slug — the value is matched against the raw collection_id). Optional for action=list.",
+            "type": "string"
+          },
+          "item": {
+            "description": "Filter to attachments on this item ref (e.g. TASK-5) or slug. Optional for action=list. Resolved to a UUID before querying.",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Maximum results for action=list. Optional.",
+            "type": "number"
+          },
+          "offset": {
+            "description": "Pagination offset for action=list. Optional.",
+            "type": "number"
+          },
+          "sort": {
+            "description": "Sort order for action=list (e.g. created_at_desc). Optional.",
+            "type": "string"
+          },
+          "unattached": {
+            "description": "Only orphan attachments not linked to any item. Optional for action=list. Mutually exclusive with `attached` and `item`.",
+            "type": "boolean"
+          },
+          "variant": {
+            "description": "Request a derived variant (thumb-sm | thumb-md) for action=show. Optional.",
+            "type": "string"
+          },
+          "workspace": {
+            "description": "Workspace slug to target for this call. An explicit value here ALWAYS wins. Otherwise resolution depends on the server: a single-user local server falls back to the session default set via pad_set_workspace, then the CWD-linked workspace from .pad.toml. A multi-user/remote server does NOT persist a session default, so you must pass workspace explicitly on every call.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "pad_attachment"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "description": "Collection management — list, create, update, and delete collection types.\n\nActions:\n  list    — List collections in the workspace with their schemas + counts.\n            Required: workspace.\n  create  — Create a new collection.\n            Required: workspace, name.\n            Optional: fields OR schema (mutually exclusive), icon, description,\n                      layout, default_view, board_group_by.\n            DSL example:    fields=\"status:select:open,done; priority:select:high,medium,low\"\n            Relation in the DSL: the third part is the TARGET COLLECTION slug,\n            not an options list, and it is required —\n            fields=\"reviewer:relation:people\". A relation with no target is\n            refused rather than built, because such a field cannot accept any\n            value.\n            Schema example: schema={\"fields\":[{\"key\":\"status\",\"type\":\"select\",\"options\":[\"new\",\"done\"],\"terminal_options\":[\"done\"]}]}\n            Prefer schema when terminal_options matters (driving dashboard\n            active/complete counts) or when fields need defaults, computed\n            flags, or suffixes — the DSL cannot express those.\n  update  — Update an existing collection's name, icon, description, prefix,\n            schema, or sort order. Workspace owner only.\n            Required: workspace, slug.\n            Optional: name, icon, description, prefix, fields OR schema\n                      (mutually exclusive), sort_order. Only fields you\n                      explicitly set are mutated; everything else is left\n                      untouched.\n            This is the adaptation primitive for the onboarding playbook\n            (/pad onboard) — rewrite seeded collections to match the\n            project's actual vocabulary instead of template defaults.\n  delete  — Soft-delete a collection. Owner-only. No restore endpoint\n            exists — recovery requires a database backup. Required:\n            workspace, slug.\n            Constraints:\n              - Cannot delete a default (template-seeded) collection.\n                Adapt those via update instead (rename, reshape schema).\n              - Items in the collection are NOT cascaded — they remain\n                in the database with the soft-deleted collection_id.\n                The web UI hides them; raw API queries still surface\n                them.\n\nSchema for an individual collection is included in the list response — read it\nfrom there rather than calling list again. v0.2 does not expose a dedicated\nread-by-slug action; if you need that, file a feature request.\n\nUse pad_collection when an agent needs to discover collection types or set up\na new one. For item-level CRUD inside a collection, use pad_item.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "description": "The action to perform. See tool description for required parameters per action.",
+            "enum": [
+              "create",
+              "delete",
+              "list",
+              "update"
+            ],
+            "type": "string"
+          },
+          "board_group_by": {
+            "description": "Field key to group by when in board view. Optional for action=create. Defaults to \"status\".",
+            "type": "string"
+          },
+          "default_view": {
+            "description": "Default view mode. Optional for action=create.",
+            "enum": [
+              "list",
+              "board",
+              "table"
+            ],
+            "type": "string"
+          },
+          "description": {
+            "description": "Plain-text description of the collection's purpose. Optional for action=create.",
+            "type": "string"
+          },
+          "fields": {
+            "description": "Compact field DSL: \"key:type[:options]; ...\". Optional for action=create. Example: \"status:select:open,done; priority:select:high,medium,low\". For a relation the third part is the TARGET COLLECTION slug rather than an options list, and it is required: \"reviewer:relation:people\" — a relation with no target is refused, since such a field cannot accept any value. Use `schema` instead when you need terminal_options, custom defaults, computed fields, or suffixes — the DSL cannot express those. Mutually exclusive with `schema`.",
+            "type": "string"
+          },
+          "icon": {
+            "description": "Emoji icon for the collection (e.g. \"🐛\"). Optional for action=create.",
+            "type": "string"
+          },
+          "layout": {
+            "description": "UI layout hint. Optional for action=create.",
+            "enum": [
+              "fields-primary",
+              "content-primary",
+              "balanced"
+            ],
+            "type": "string"
+          },
+          "name": {
+            "description": "Display name of the collection. Required for action=create. Optional for action=update — provide to rename.",
+            "type": "string"
+          },
+          "prefix": {
+            "description": "Issue-ID prefix (e.g. \"TASK\", \"BUG\"). Optional for action=update — provide to change how new items in this collection are numbered.",
+            "type": "string"
+          },
+          "schema": {
+            "description": "Structured CollectionSchema: {\"fields\":[{\"key\":\"...\",\"label\":\"...\",\"type\":\"...\",\"options\":[...],\"terminal_options\":[...],\"default\":\"...\",\"required\":bool,\"computed\":bool,\"suffix\":\"...\",\"collection\":\"...\"}]}. Optional for action=create. Use instead of `fields` when you need terminal_options or any FieldDef property the DSL cannot express. Missing `label` values are auto-filled from `key` using Title Case (e.g. due_date → Due Date). Mutually exclusive with `fields`.",
+            "properties": {},
+            "type": "object"
+          },
+          "slug": {
+            "description": "Collection slug (e.g. \"tasks\", \"conventions\"). Required for action=update and action=delete; identifies which collection to mutate.",
+            "type": "string"
+          },
+          "sort_order": {
+            "description": "Display sort order (lower = appears first). Optional for action=update.",
+            "type": "number"
+          },
+          "workspace": {
+            "description": "Workspace slug to target for this call. An explicit value here ALWAYS wins. Otherwise resolution depends on the server: a single-user local server falls back to the session default set via pad_set_workspace, then the CWD-linked workspace from .pad.toml. A multi-user/remote server does NOT persist a session default, so you must pass workspace explicitly on every call.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "pad_collection"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "description": "Item operations — the consolidated CRUD + relationships + comments + notes surface.\n\nActions:\n  create        — Create a new item.\n    Required: collection, title.\n    Optional: status, priority, category, content, parent, role, assign, tags,\n    field, fields.\n    Use the dedicated top-level params (status / priority / category / parent\n    / role / assign / tags) for those named fields — the dispatcher rolls\n    them into the item's fields JSON automatically. The 'field' param is\n    the escape hatch for SCHEMA-DECLARED custom fields without a dedicated\n    param; accepts an array of \"key=value\" strings. The 'fields' OBJECT\n    (the same shape reads return, e.g. {\"status\":\"done\",\"effort\":\"l\"}) is\n    an equivalent write form; the same key with CONFLICTING values in two\n    places is refused rather than resolved.\n    The 'tags' param accepts a JSON array of strings (e.g. [\"v1\",\"frontend\"])\n    — NOT a comma-separated string.\n  update        — Update an item by ref.\n    Required: ref. At least one mutable field.\n    Writing 'content' while a browser tab has the item open sends the\n    markdown to that live document first; the stored copy is updated\n    only by a later collab-snapshot flush — usually from the tab that\n    applied it, though any such write updates the row — and nothing\n    guarantees one happens. The\n    response echoes the content you SENT and carries\n    warnings.content_outcome=\"applied_pending_flush\", which describes\n    this WRITE — the content went to the document, not the row — and is\n    not a live reading of the row, which a concurrent flush may already\n    have updated. A 'get' (or\n    'list' with full=true — a default list carries no content at all)\n    before such a flush lands reads the stored copy and answers with the PREVIOUS\n    content: the lag, not a failed write, so do not re-send on the\n    strength of it. The stored form may also not be byte-identical to what\n    you sent, since the markdown round-trips through the editor, so compare\n    on meaning rather than bytes.\n    Optional: title, status, priority, content, role, assign, parent, comment, tags,\n    field, fields, expected_seq, expected_updated_at, overwrite_pending_edits.\n    Same placement rules as create. Field updates are applied as a\n    field-level MERGE server-side (only the keys you set change; the\n    rest are preserved), so concurrent single-field updates no longer\n    clobber each other. Pass expected_seq (the seq you last read — it is\n    on every item AND every list summary) to make the update fail with\n    code=update_conflict if the item changed since; the error details\n    carry actual_seq to retry with. PREFER IT over expected_updated_at,\n    which is stored at one-second resolution: two writes inside one\n    second both match that token, so neither conflicts and the loser\n    silently overwrites the winner (BUG-3037). Optimistic concurrency\n    for coordinating agents.\n  delete        — Archive an item.\n    Required: ref.\n  restore       — Un-archive (restore) a soft-deleted item by ref.\n    Required: ref.\n  get           — Read an item.\n    Required: ref.\n  list          — List items, optionally filtered.\n    Optional: collection, status, priority, parent, unparented, role, assign, all, limit, full.\n    parent and unparented are mutually exclusive. Results are\n    summary-shaped (no content bodies) unless full=true.\n  move          — Move an item to a different collection.\n    Required: ref, target_collection.\n  link          — Create a relationship between two items.\n    Required: ref, target, link_type.\n    link_type: blocks | blocked-by | supersedes | implements | split-from.\n  unlink        — Remove a relationship.\n    Required: ref, target, link_type.\n  deps          — Show all dependencies (incoming + outgoing) for an item.\n    Required: ref.\n  remind        — Arm a one-shot reminder that fires at a specific instant.\n    Required: ref, remind_at (RFC3339 INSTANT — a bare date is\n    refused, since it names a 24-hour span rather than a moment).\n    When it fires, the item appears in pad_project next/ready\n    carrying the reminder_id, until you acknowledge it. Use this\n    when you defer work: it is how you ask to be reminded.\n  ack-reminder  — Acknowledge a fired reminder so it leaves next/ready.\n    Required: reminder_id (from the fired suggestion, or from\n    the response when you armed it — NOT the item ref, since an\n    item can carry several reminders).\n    Nothing else acknowledges one: completing the item does not,\n    because a reminder may have been armed to fire after the\n    work was done.\n  claim         — Atomically claim an item for execution (lease with expiry).\n    Required: ref. Optional: holder (default: you), ttl (Go\n    duration, default 15m, max 24h).\n    Exactly one concurrent claimer wins; the loser gets a 409\n    naming the live holder and expiry — log it and skip, don't\n    retry in a loop. Re-claim while you hold it to extend the\n    expiry (heartbeat). The lease expires on its own: a crashed\n    holder blocks nobody past the TTL, and there is no reaper\n    to wait for.\n  release       — Release an item's execution lease when you finish.\n    Required: ref. Optional: holder (must match the live\n    holder; releasing someone else's live lease is refused).\n    Idempotent: releasing an absent or expired lease answers\n    released:false with no error, so cleanup never needs to\n    check first.\n  star          — Star an item for quick access.\n    Required: ref.\n  unstar        — Remove star.\n    Required: ref.\n  starred       — List starred items.\n    Optional: all.\n  comment       — Add a comment.\n    Required: ref, message.\n    Optional: reply_to (comment ID for threaded reply).\n  list-comments — List comments on an item. Each carries its id and\n    edited (true once its body has been changed).\n    Required: ref.\n  edit-comment  — Replace a comment's body. Only its author may.\n    Required: ref, comment_id, message.\n  delete-comment — Delete a comment. Anyone who may edit the item may.\n    One that still has replies is refused (409 comment_has_replies).\n    Required: ref, comment_id.\n  backlinks     — List inbound [[...]] references to an item (\"Mentioned in\").\n    Required: ref.\n    Optional: limit (default 50, max 300), offset.\n    Returns same-workspace rows first, then cross-workspace\n    rows (each cross-ws row carries source_workspace_slug).\n    Use this when you need to answer \"what other items\n    reference TASK-5?\" without scanning the full content\n    corpus.\n  history       — Read an item's version history (newest-first, read-only).\n    Required: ref. Optional: limit (default 50, max 300 —\n    the NEWEST N versions), full.\n    Returns a token-light summary per recorded version\n    (id, created_at, created_by, source, change_summary);\n    the resolved content body is omitted. Restoring a\n    version is a web-UI action, not exposed here.\n  bulk-update   — Update status/priority across multiple items.\n    Required: refs (array of refs, e.g. [\"TASK-5\", \"TASK-8\"]),\n    AND at least one of status / priority.\n  note          — Append an implementation note to an item.\n    Required: ref, summary.\n    Optional: details.\n  decide        — Record a decision on an item.\n    Required: ref, decision.\n    Optional: rationale.\n  export        — Export a playbook or convention as a portable artifact.\n    Required: ref (PLAYB-N / CONVE-N, or slug).\n    Returns the artifact TEXT (YAML frontmatter + Markdown\n    body) as the tool result — ready to hand to import in\n    another workspace. Only playbooks and conventions are\n    exportable; the server rejects any other item type.\n    Read-only / side-effect-free.\n  import        — Import a portable artifact as a new DRAFT item.\n    Required: artifact (the full artifact text a prior\n    export produced).\n    Creates a playbook or convention draft (the server\n    gates by the artifact's collection) and returns\n    {ref, slug, warnings}. The item lands as a draft —\n    review and activate it afterward. Mutating but not\n    destructive (creates an item, like create).\n\nALWAYS prefer issue refs (TASK-5, IDEA-12) over slugs.\n\nWhen updating status, include comment=\"why\" so the audit trail tells the team\nWHY the status changed, not just THAT it did.\n\nFor cross-item search use pad_search.action=query — pad_item.list filters within\na single query but doesn't do FTS scoring.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "description": "The action to perform. See tool description for required parameters per action.",
+            "enum": [
+              "ack-reminder",
+              "backlinks",
+              "bulk-update",
+              "claim",
+              "comment",
+              "create",
+              "decide",
+              "delete",
+              "delete-comment",
+              "deps",
+              "edit-comment",
+              "export",
+              "get",
+              "history",
+              "import",
+              "link",
+              "list",
+              "list-comments",
+              "move",
+              "note",
+              "release",
+              "remind",
+              "restore",
+              "star",
+              "starred",
+              "unlink",
+              "unstar",
+              "update"
+            ],
+            "type": "string"
+          },
+          "agent": {
+            "description": "For action=get, return the full item body and meaningful work metadata as compact JSON while omitting internal UUIDs and duplicate join fields. Prefer this for Cursor and Codex reads.",
+            "type": "boolean"
+          },
+          "all": {
+            "description": "Include archived/done items in list responses. Optional for: list, starred.",
+            "type": "boolean"
+          },
+          "artifact": {
+            "description": "Full portable artifact text (YAML frontmatter + Markdown body). Required for: import — this is the artifact a prior `export` produced. NOT the same as `content` (which is just the item's Markdown body).",
+            "type": "string"
+          },
+          "assign": {
+            "description": "User name or email to assign. Optional for: create, update, list filter. To UNASSIGN, use clear_assigned_user=true — an empty `assign` does NOT clear (it reads as \"not provided\", like every other optional string here).",
+            "type": "string"
+          },
+          "category": {
+            "description": "Item category. Optional for: create, update.",
+            "type": "string"
+          },
+          "clear_agent_role": {
+            "description": "Clear the item's agent role (agent_role_id). THE canonical way to remove a role. Optional for: update — update only, since an item is created with no role unless `role` is given. Cannot be combined with setting a role in the same call: that contradiction is REFUSED, not silently resolved.",
+            "type": "boolean"
+          },
+          "clear_assigned_user": {
+            "description": "Unassign the item (clear assigned_user_id). THE canonical way to unassign. Optional for: update — update only, since an item is created unassigned unless `assign` is given. Cannot be combined with assigning a user in the same call (`assign`, or assigned_user_id via `field`): that contradiction is REFUSED, not silently resolved.",
+            "type": "boolean"
+          },
+          "clear_parent": {
+            "description": "Detach the item from its parent (clear the parent link). THE canonical way to un-parent an item. Optional for: update — update only, an item has no parent unless `parent` is given at create. An empty `parent` does NOT clear (it reads as \"not provided\", like every other optional string here). Cannot be combined with setting a parent in the same call: that contradiction is REFUSED, not silently resolved.",
+            "type": "boolean"
+          },
+          "collection": {
+            "description": "Collection slug (e.g. \"tasks\", \"ideas\"). Required for: create. Optional filter for: list.",
+            "type": "string"
+          },
+          "comment": {
+            "description": "Audit comment explaining the change. Optional for: update.",
+            "type": "string"
+          },
+          "comment_id": {
+            "description": "ID of a comment on `ref` (from list-comments). Required for: edit-comment, delete-comment.",
+            "type": "string"
+          },
+          "content": {
+            "description": "Markdown body. Optional for: create, update.",
+            "type": "string"
+          },
+          "decision": {
+            "description": "Decision summary text. Required for: decide.",
+            "type": "string"
+          },
+          "details": {
+            "description": "Long-form note body. Optional for: note.",
+            "type": "string"
+          },
+          "expected_seq": {
+            "description": "Optimistic-concurrency guard for action=update, PREFERRED over expected_updated_at. The `seq` you last read; the update is rejected with code=update_conflict if the item changed since. Unlike expected_updated_at it distinguishes two writes inside the same second. Optional.",
+            "type": "number"
+          },
+          "expected_updated_at": {
+            "description": "Optimistic-concurrency guard for action=update. RFC3339 updated_at you last read; the update is rejected with code=update_conflict if the item changed since. Optional.",
+            "type": "string"
+          },
+          "field": {
+            "description": "Custom field setters for SCHEMA-DECLARED fields without a dedicated top-level param. Array of \"key=value\" strings (e.g. [\"due_date=2026-06-01\",\"effort=l\"]). For status/priority/category/parent/role/assign/tags use the dedicated top-level param instead. Optional for: create, update, list filter, move. implementation_notes, decision_log and convention are REFUSED here on create (BUG-3163), on update (BUG-2627) and on move/copy (BUG-2674) — both reach you as code=validation_failed with the server's explanation in the hint (the server's own finer-grained code is not forwarded, so branch on the message if you need to tell the two apart). Each has its own writer: implementation_notes -\u003e action=note, decision_log -\u003e action=decide, convention -\u003e library activation (no update path at all). github_pr is refused too, on every door (BUG-2696): a `field` value arrived as a string, so the PR data landed double-encoded and no link appeared. Its writer is `pad github link` / `unlink`, which needs a local git checkout and the `gh` CLI; this catalog has no PR-link action yet, so hand PR linking to a human rather than retrying. On CREATE they are refused too (BUG-3163): create the item, then use note / decide on it; convention metadata is written by library activation. On create/update the `fields` OBJECT param is an equivalent alternative.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "fields": {
+            "description": "Field values as one OBJECT (e.g. {\"status\":\"done\",\"effort\":\"l\"}) — the same shape reads return. Only for: create, update. Merges into the same path as `field`/the dedicated params; a key given here AND at the top level (or in `field`) with a DIFFERENT value is REFUSED, not silently resolved. Values keep their JSON type: a number stays a number, and an object or array is written as-is to multi_select / json fields (BUG-2850). Two exceptions: `null` is refused (omit the key to leave a field unchanged), and parent/plan must be a string ref. Structured values require the REMOTE transport — the local stdio server shells out to the CLI, whose --field key=value encoding cannot carry them, and refuses with a message naming the transport.",
+            "properties": {},
+            "type": "object"
+          },
+          "force": {
+            "description": "Override the open-children guard. Optional for: update, bulk-update, move. When the server returns code=open_children, details.open_children lists the blocking child refs so an agent can ship them and retry — or set force=true if the children should be intentionally orphaned.",
+            "type": "boolean"
+          },
+          "full": {
+            "description": "For action=list, return complete item content bodies instead of the default summary shape. For action=history, include each version's resolved content body. Token-expensive on large workspaces — prefer action=get for a single item's body.",
+            "type": "boolean"
+          },
+          "group_by": {
+            "description": "Group-by field. Optional for: list.",
+            "type": "string"
+          },
+          "holder": {
+            "description": "Lease holder identity for action=claim/release. Optional — defaults to the authenticated user. Use a stable per-runner name (e.g. \"sweep-runner-2\") when several runners share one account, so a 409 names which one holds the item.",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Maximum results. Optional for: list, backlinks, history. Each defaults to 50, max 300. For history the window is the NEWEST N versions.",
+            "type": "number"
+          },
+          "link_type": {
+            "description": "Type of relationship for action=link/unlink.",
+            "enum": [
+              "blocks",
+              "blocked-by",
+              "supersedes",
+              "implements",
+              "split-from"
+            ],
+            "type": "string"
+          },
+          "message": {
+            "description": "Comment body. Required for: comment, edit-comment.",
+            "type": "string"
+          },
+          "offset": {
+            "description": "Skip the first N results (paging). Optional for: backlinks.",
+            "type": "number"
+          },
+          "overwrite_pending_edits": {
+            "description": "update: true replaces a tab's unsaved edits instead of refusing token-guarded content (content_pending_flush).",
+            "type": "boolean"
+          },
+          "parent": {
+            "description": "Parent item ref (e.g. PLAN-3). Optional for: create, update, list filter.",
+            "type": "string"
+          },
+          "priority": {
+            "description": "Item priority. Optional for: create, update, list filter, bulk-update.",
+            "type": "string"
+          },
+          "rationale": {
+            "description": "Reasoning behind the decision. Optional for: decide.",
+            "type": "string"
+          },
+          "ref": {
+            "description": "Item reference (e.g. TASK-5, IDEA-12, PLAYB-3, CONVE-7). Required for: update, delete, restore, get, move, link, unlink, deps, star, unstar, comment, list-comments, edit-comment, delete-comment, note, decide, export, remind, claim, release. NOT used for ack-reminder (which addresses a REMINDER by `reminder_id`, since an item can carry several) and NOT used for bulk-update — pass `refs` (array) instead.",
+            "type": "string"
+          },
+          "refs": {
+            "description": "Item references for batch operations. Required for: bulk-update (one or more refs).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "remind_at": {
+            "description": "When a reminder should fire, as an RFC3339 INSTANT (e.g. 2026-08-01T09:00:00Z, or 2026-08-01T09:00:00-04:00 which is stored as the same moment in UTC). Required for: remind. A bare date (2026-08-01) is REFUSED, not assumed to mean midnight — it names a 24-hour span, and choosing an hour inside it would fire at a time nobody picked.",
+            "type": "string"
+          },
+          "reminder_id": {
+            "description": "A reminder's id, as returned when it was armed. Required for: ack-reminder. Acknowledging removes a fired reminder from pad_project's next/ready surface; nothing else acknowledges one, and in particular completing the item does not.",
+            "type": "string"
+          },
+          "reply_to": {
+            "description": "Parent comment ID for threading replies. Optional for: comment.",
+            "type": "string"
+          },
+          "role": {
+            "description": "Agent role slug to assign (e.g. implementer). Optional for: create, update, list filter.",
+            "type": "string"
+          },
+          "sort": {
+            "description": "Sort field. Optional for: list.",
+            "type": "string"
+          },
+          "status": {
+            "description": "Item status (collection-specific enum). Optional for: create, update, list filter, bulk-update.",
+            "type": "string"
+          },
+          "summary": {
+            "description": "Short note headline. Required for: note.",
+            "type": "string"
+          },
+          "tags": {
+            "description": "Tags as a JSON array of strings, e.g. [\"v1\",\"frontend\"]. Optional for: create, update.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "target": {
+            "description": "The OTHER end of a relationship. Required for: link, unlink (paired with `ref` and `link_type`). For link_type=blocks, target is the item being blocked; for blocked-by it's the blocker; for supersedes it's the superseded item; etc.",
+            "type": "string"
+          },
+          "target_collection": {
+            "description": "Destination collection slug for action=move. Required for: move.",
+            "type": "string"
+          },
+          "title": {
+            "description": "Item title. Required for: create. Optional rename for: update.",
+            "type": "string"
+          },
+          "ttl": {
+            "description": "Lease duration for action=claim, as a Go duration (e.g. \"15m\", \"1h\"). Optional — server default 15m, max 24h. Whole seconds cross the wire: minimum 1s (shorter is refused), fractional seconds truncate. A re-claim by the live holder extends the expiry from now (heartbeat); size the TTL to your polling/heartbeat cadence, not to the whole job.",
+            "type": "string"
+          },
+          "unparented": {
+            "description": "For action=list, keep only items with no parent or implements relationship. Mutually exclusive with parent.",
+            "type": "boolean"
+          },
+          "workspace": {
+            "description": "Workspace slug to target for this call. An explicit value here ALWAYS wins. Otherwise resolution depends on the server: a single-user local server falls back to the session default set via pad_set_workspace, then the CWD-linked workspace from .pad.toml. A multi-user/remote server does NOT persist a session default, so you must pass workspace explicitly on every call.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "pad_item"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "description": "Convention + playbook library — global catalog of pre-built entries that workspaces activate into whichever of their collections declares the matching artifact kind (by default, conventions and playbooks).\n\nActions:\n  list     — Browse the library. By default playbooks come back as metadata + a short\n             summary (first non-heading paragraph, ~240 chars); conventions always carry\n             full bodies. Use action=get for the full body of one playbook.\n             Optional: type (conventions|playbooks), category, full.\n  get      — Full body of one entry by exact title. Conventions are checked first,\n             then playbooks — same precedence activate uses, so a title resolves to the\n             same kind in both surfaces.\n             Required: title.\n  activate — Create a workspace item from a library entry by title. The destination is\n             whichever collection DECLARES that artifact kind — normally the workspace's\n             conventions / playbooks collections, but it follows them if they were\n             renamed rather than assuming the name. All fields (trigger, scope, surfaces,\n             enforcement, invocation_slug, arguments) carry through from the library\n             definition.\n             Required: workspace, title.\n\nThe library itself is workspace-agnostic — list/get don't need workspace context. The\nworkspace param is still accepted (and honored by activate) so a session pinned via\npad_set_workspace doesn't need to re-pass it on every call.\n\nUse pad_library when an agent needs to discover available conventions/playbooks (notably\nduring the /pad onboard interview) or activate a curated entry into a workspace.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "description": "The action to perform. See tool description for required parameters per action.",
+            "enum": [
+              "activate",
+              "get",
+              "list"
+            ],
+            "type": "string"
+          },
+          "category": {
+            "description": "Server-side category filter (case-sensitive exact match against LibraryCategory.Name). Only used by action=list.",
+            "type": "string"
+          },
+          "full": {
+            "description": "When true, action=list returns full playbook bodies instead of the default summary. Conventions always carry full bodies (they're short). Use sparingly — agent context blows up fast. Default: false (summary mode).",
+            "type": "boolean"
+          },
+          "title": {
+            "description": "Library entry title to address. Required for action=get and action=activate. Exact match; conventions are checked first, then playbooks.",
+            "type": "string"
+          },
+          "type": {
+            "description": "Filter list results by kind. Only used by action=list. Omit to list both.",
+            "enum": [
+              "conventions",
+              "playbooks"
+            ],
+            "type": "string"
+          },
+          "workspace": {
+            "description": "Workspace slug to target for this call. An explicit value here ALWAYS wins. Otherwise resolution depends on the server: a single-user local server falls back to the session default set via pad_set_workspace, then the CWD-linked workspace from .pad.toml. A multi-user/remote server does NOT persist a session default, so you must pass workspace explicitly on every call.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "pad_library"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "description": "Server introspection — version, capabilities, the hand-curated tool catalog, and the agent bootstrap blob.\n\nActions:\n  server-info   — Server name + runtime version. Lightweight; no params.\n  version       — Full version metadata (pad version, cmdhelp version, tool surface\n                  version, MCP protocol version). Same JSON as pad://_meta/version.\n  tool-surface  — catalog dump: every tool managed by the hand-curated\n                  catalog (the ten resource × action tools — pad_set_workspace\n                  is registered separately and not included), its actions, and\n                  its input schema. tools/list also contains pad_set_workspace\n                  and matches the catalog otherwise — the historical cmdhelp\n                  walker was retired in TASK-981.\n  bootstrap     — Consolidated agent context-load blob (workspace + user + collections\n                  + always-on conventions + roles + playbook metadata + dashboard +\n                  recent activity). On-demand refresh for agents that didn't get the\n                  resource prefetch, or want a fresh snapshot mid-session after lots\n                  of mutations. Equivalent to pad://workspace/{ws}/bootstrap and to\n                  pad_set_workspace's embedded response.\n\nUse pad_meta when an agent needs to discover server capabilities, regenerate context,\nor build documentation. For runtime task work, use pad_item / pad_workspace / etc.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "description": "The action to perform. See tool description for required parameters per action.",
+            "enum": [
+              "bootstrap",
+              "server-info",
+              "tool-surface",
+              "version"
+            ],
+            "type": "string"
+          },
+          "workspace": {
+            "description": "Workspace slug to target for this call. An explicit value here ALWAYS wins. Otherwise resolution depends on the server: a single-user local server falls back to the session default set via pad_set_workspace, then the CWD-linked workspace from .pad.toml. A multi-user/remote server does NOT persist a session default, so you must pass workspace explicitly on every call.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "pad_meta"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "description": "Playbooks — first-class invokable procedures (PLAN-1377).\n\nPlaybooks are agent-executed multi-step workflows that ship in a workspace's\nplaybooks collection. Each can declare a kebab-case `invocation_slug` (e.g.\n\"ship\", \"release\"), and an `## Arguments` section that names + types the\ninputs it expects. Natural language is the canonical way to invoke one\n(\"ship these tasks\"); the slug is a per-surface shortcut — this `pad_playbook`\ntool with `action: run, ref: \u003cslug\u003e` here, `/pad \u003cslug\u003e` in Claude Code,\n`$pad \u003cslug\u003e` in Codex — that resolves to the same playbook.\n\nActions:\n  list  — Workspace playbook catalog. Returns metadata only (no bodies):\n          ref, title, slug, invocation_slug, trigger, scope, status,\n          has_arguments, summary. Sorted with invocation_slug-bearing\n          playbooks first so user-invokable candidates surface\n          at the top.\n          Required: workspace.\n  get   — Full item for one playbook, including body content + structured\n          fields (which carry the canonical `arguments` JSON spec).\n          Required: workspace, ref.\n  run   — Parse args against the playbook's declared spec and return the\n          body + bound_args + any required-but-unbound entries (so the\n          agent can prompt the user instead of failing the call). Side-\n          effect-free: the playbook body is markdown instructions for the\n          agent, not a shell script — the server primes the call; the\n          agent executes the steps.\n          Required: workspace, ref.\n          Optional: args (pre-parsed map), raw_args (CLI-style tokens).\n                    Pass exactly one or merge — see the per-param docs.\n          Draft gate: run refuses a playbook whose status isn't \"active\"\n                    (e.g. one still being drafted), returning a\n                    playbook_not_active error. Pass allow_draft: true to\n                    override and run it anyway. The status is echoed on\n                    both the run and get responses.\n  match — Pick the ACTIVE playbook (or \"none\") that text asks for.\n          Returns choice, confidence, probabilities, model.\n          Required: workspace, text.\n          404 = no provider; fall back to slug/trigger routing.\n\nUse pad_playbook when an agent needs to dispatch a named procedure or read\na playbook's declared argument contract before invoking it. For browsing\nthe underlying items (search, comments, links), use pad_item.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "description": "The action to perform. See tool description for required parameters per action.",
+            "enum": [
+              "get",
+              "list",
+              "match",
+              "run"
+            ],
+            "type": "string"
+          },
+          "allow_draft": {
+            "description": "Escape hatch for the draft-playbook gate. action=run refuses a playbook whose status isn't \"active\" (e.g. one still being drafted) with a playbook_not_active error. Set true to run it anyway. Optional for action=run; default false.",
+            "type": "string"
+          },
+          "args": {
+            "description": "Pre-parsed argument map keyed by the playbook's declared argument names. Use when you've already parsed user intent into discrete values (e.g. an MCP-driven agent). Mutually compatible with raw_args — explicit args take precedence. Optional for action=run.",
+            "properties": {},
+            "type": "object"
+          },
+          "raw_args": {
+            "description": "Raw CLI-style argument tokens (positional values, bareword flag names, key=value pairs). The server applies the strict parsing rules from `pad playbook run`. Use when the agent is forwarding user input verbatim. Optional for action=run.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "ref": {
+            "description": "Playbook identifier — accepts the invocation_slug (e.g. \"ship\"), the item slug (e.g. \"cut-a-pad-release\"), or the issue ref (e.g. PLAYB-1160). Required for action=get and action=run.",
+            "type": "string"
+          },
+          "text": {
+            "description": "Free text to match against active playbooks. Required for action=match.",
+            "type": "string"
+          },
+          "workspace": {
+            "description": "Workspace slug to target for this call. An explicit value here ALWAYS wins. Otherwise resolution depends on the server: a single-user local server falls back to the session default set via pad_set_workspace, then the CWD-linked workspace from .pad.toml. A multi-user/remote server does NOT persist a session default, so you must pass workspace explicitly on every call.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "pad_playbook"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "description": "Project intelligence — computed views over workspace state.\n\nActions:\n  dashboard  — Project overview: collections, active items, plans, attention,\n               blockers, suggested next.\n               Required: workspace.\n  next       — Recommended next item to work on (uses dashboard's suggestion logic).\n               Required: workspace.\n  ready      — Actionable backlog: items Pad considers ready to work on now.\n               The query-oriented counterpart to next (reuses the same\n               suggested-next logic, returns the full list).\n               Required: workspace.\n  stale      — Items needing attention — stalled, blocked, overdue, or\n               otherwise falling out of the active workflow.\n               Required: workspace.\n  standup    — Daily standup report (recent done, in-progress, blockers).\n               Required: workspace.\n               Optional: days (default 1).\n  changelog  — Changelog of completed items.\n               Required: workspace.\n               Optional: days (default 7), since (ISO date), parent (item ref to scope).\n               Use parent=PLAN-N to generate a release-notes view for one plan.\n  report     — Windowed project report: created-vs-completed throughput, net\n               flow, completed-by-collection, current status distribution.\n               Required: workspace.\n               Optional: window (day|week|2wk|month, default week),\n               collections (comma-separated slugs, default all visible).\n  activity   — Recent workspace activity feed (non-streaming): what agents and\n               users changed, with item refs, titles, and field-level change\n               details. Use to catch up on what other agents did since you last\n               worked.\n               Required: workspace.\n               Optional: limit (default 20), actor (user | agent),\n               since (ISO date).\n\nUse pad_project when an agent needs to summarize progress, plan next work,\ncatch up on recent activity, or generate retro / standup / changelog reports.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "description": "The action to perform. See tool description for required parameters per action.",
+            "enum": [
+              "activity",
+              "changelog",
+              "dashboard",
+              "next",
+              "ready",
+              "report",
+              "stale",
+              "standup"
+            ],
+            "type": "string"
+          },
+          "actor": {
+            "description": "Filter by actor category — `user` or `agent`. Optional for action=activity.",
+            "type": "string"
+          },
+          "collections": {
+            "description": "Comma-separated collection slugs to include for action=report (default: all visible, non-system; name a system collection to include it).",
+            "type": "string"
+          },
+          "days": {
+            "description": "Lookback window in days. Optional for action=standup (default 1) and action=changelog (default 7).",
+            "type": "number"
+          },
+          "limit": {
+            "description": "Maximum number of entries to return. Optional for action=activity (default 20).",
+            "type": "number"
+          },
+          "parent": {
+            "description": "Parent item ref (e.g. PLAN-2). Optional for action=changelog — scope the changelog to items under this parent.",
+            "type": "string"
+          },
+          "since": {
+            "description": "ISO date (YYYY-MM-DD) — include entries on or after this date. Optional for action=changelog (mutually exclusive with `days`) and action=activity (applied server-side).",
+            "type": "string"
+          },
+          "window": {
+            "description": "Report window for action=report: day | week | 2wk | month (default week).",
+            "type": "string"
+          },
+          "workspace": {
+            "description": "Workspace slug to target for this call. An explicit value here ALWAYS wins. Otherwise resolution depends on the server: a single-user local server falls back to the session default set via pad_set_workspace, then the CWD-linked workspace from .pad.toml. A multi-user/remote server does NOT persist a session default, so you must pass workspace explicitly on every call.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "pad_project"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "description": "Agent role management — what kind of thinking each item requires.\n\nActions:\n  list    — List roles in the workspace.\n            Required: workspace.\n  create  — Create a new role.\n            Required: workspace, name.\n            Optional: description, icon, tools.\n  update  — Update an existing role's name, slug, description, icon, tools,\n            or sort_order. Only fields you explicitly set are mutated.\n            Required: workspace, slug.\n            Optional: name, description, icon, tools, sort_order, new_slug\n                      (the rename target; pass slug for lookup AND\n                      new_slug for the replacement value).\n            This is the adaptation primitive for the /pad onboard playbook\n            (PLAN-1496): rewriting seeded role descriptions/icons to match\n            the team's actual division of work.\n  delete  — Delete a role by slug.\n            Required: workspace, slug.\n\nRoles let users organize items by what kind of work they require (Planner,\nImplementer, Reviewer, Researcher, etc.). To assign an item to a role, use\npad_item.action=update with the role parameter.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "description": "The action to perform. See tool description for required parameters per action.",
+            "enum": [
+              "create",
+              "delete",
+              "list",
+              "update"
+            ],
+            "type": "string"
+          },
+          "description": {
+            "description": "What kind of work this role does. Optional for action=create and action=update.",
+            "type": "string"
+          },
+          "icon": {
+            "description": "Emoji icon for the role (e.g. \"🔨\"). Optional for action=create and action=update.",
+            "type": "string"
+          },
+          "name": {
+            "description": "Display name of the role (e.g. \"Implementer\"). Required for action=create. Optional for action=update — provide to rename.",
+            "type": "string"
+          },
+          "new_slug": {
+            "description": "Replacement slug when renaming an existing role. Optional for action=update; ignored otherwise.",
+            "type": "string"
+          },
+          "slug": {
+            "description": "Role slug (e.g. \"implementer\") or UUID. Required for action=update and action=delete; identifies which role to mutate. To RENAME a role, also pass new_slug.",
+            "type": "string"
+          },
+          "sort_order": {
+            "description": "Display sort order (lower = appears first). Optional for action=update.",
+            "type": "number"
+          },
+          "tools": {
+            "description": "Comma-separated list of tools/integrations the role uses. Optional for action=create and action=update.",
+            "type": "string"
+          },
+          "workspace": {
+            "description": "Workspace slug to target for this call. An explicit value here ALWAYS wins. Otherwise resolution depends on the server: a single-user local server falls back to the session default set via pad_set_workspace, then the CWD-linked workspace from .pad.toml. A multi-user/remote server does NOT persist a session default, so you must pass workspace explicitly on every call.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "pad_role"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "description": "Full-text search across items.\n\nActions:\n  query  — FTS search across items. Required: workspace, query.\n           Optional filters: collection, status, priority, sort, limit, offset.\n\nUse pad_search when looking for items by content keywords or fuzzy title match.\nFor ref-based lookup (TASK-5, IDEA-12), use pad_item.action=get directly — it's\nfaster and doesn't require a query string.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "description": "The action to perform. See tool description for required parameters per action.",
+            "enum": [
+              "query"
+            ],
+            "type": "string"
+          },
+          "collection": {
+            "description": "Restrict results to items in this collection slug (e.g. \"tasks\"). Optional.",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Maximum results to return. Optional.",
+            "type": "number"
+          },
+          "offset": {
+            "description": "Pagination offset. Optional.",
+            "type": "number"
+          },
+          "priority": {
+            "description": "Restrict results to items with this priority. Optional.",
+            "type": "string"
+          },
+          "query": {
+            "description": "Search query string. FTS syntax supported. Required.",
+            "type": "string"
+          },
+          "sort": {
+            "description": "Sort order for results. Optional.",
+            "type": "string"
+          },
+          "status": {
+            "description": "Restrict results to items with this status. Optional.",
+            "type": "string"
+          },
+          "workspace": {
+            "description": "Workspace slug to target for this call. An explicit value here ALWAYS wins. Otherwise resolution depends on the server: a single-user local server falls back to the session default set via pad_set_workspace, then the CWD-linked workspace from .pad.toml. A multi-user/remote server does NOT persist a session default, so you must pass workspace explicitly on every call.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "pad_search"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "description": "Load workspace context for this MCP session and return an embedded bootstrap blob (collections, conventions, roles, playbook metadata, dashboard) for the given workspace. NOTE: this server serves multiple users from one process and does NOT persist a session default — you MUST pass `workspace=\u003cslug\u003e` explicitly on every subsequent tool call. The response reports status=not_persisted as a reminder.",
+      "inputSchema": {
+        "properties": {
+          "workspace": {
+            "description": "Workspace slug to load context for. On multi-user/remote servers this does not persist; pass workspace explicitly on each call.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace"
+        ],
+        "type": "object"
+      },
+      "name": "pad_set_workspace"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "description": "Workspace operations — discovery, membership, storage, audit log, and lifecycle.\n\nActions:\n  list       — List workspaces visible to the current user. No params; admins see all,\n               regular users see their memberships.\n  members    — List members + pending invitations for a workspace.\n               Required: workspace.\n  invite     — Invite a user to a workspace.\n               Required: workspace, email.\n               Optional: role (owner | editor | viewer; default editor).\n  storage    — Workspace storage usage breakdown (attachments, items, total bytes).\n               Required: workspace.\n  audit-log  — Workspace audit log. ADMIN ONLY — non-admin users get an auth error.\n               Optional: action_filter, actor, days, limit.\n               Note: the underlying endpoint is global, so this returns entries\n               across all workspaces filtered by the supplied params.\n  create     — Create a new workspace.\n               Required: name.\n               Optional: slug (derived from name when omitted), template (e.g.\n               \"startup\" / \"scrum\" / \"blank\").\n               When called over an OAuth-bound MCP session whose grant has\n               may_create_workspaces=true, the new workspace is auto-added to\n               that connection's allow-list — usable immediately, no re-auth.\n               When that grant has may_create_workspaces=FALSE the call is\n               REFUSED with a 403 and no workspace is created (IDEA-2756);\n               retrying will not help. Only the USER can lift it, either by\n               re-authorizing or by enabling the flag on the existing\n               connection at /console/connected-apps.\n  claim      — Redeem a 6-digit claim code to add a workspace to the calling\n               OAuth connection's allow-list.\n               Required: workspace, code.\n               Generate the code in the workspace's web UI (\"Connect project\"\n               modal). Valid for 5–10 minutes (sliding window). Errors: 401\n               invalid_code, 404 not_found (workspace doesn't exist or you're\n               not a member), 412 connection_not_persisted (pre-Phase-C grant\n               — re-authorize).\n  deleted    — List the caller's soft-deleted workspaces still inside the\n               30-day restore window, with days remaining before each is\n               permanently purged. No params. Read-only.\n  restore    — Un-soft-delete a workspace by slug, provided it is still inside\n               the restore window. Owner-only. Mutating but non-destructive.\n               Required: slug.\n\nUse pad_workspace when an agent needs to discover, manage membership, audit\nworkspace activity, recover a soft-deleted workspace, or bring a new/additional\nworkspace into this connection. For item-level operations use pad_item.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "description": "The action to perform. See tool description for required parameters per action.",
+            "enum": [
+              "audit-log",
+              "claim",
+              "create",
+              "deleted",
+              "invite",
+              "list",
+              "members",
+              "restore",
+              "storage"
+            ],
+            "type": "string"
+          },
+          "action_filter": {
+            "description": "Filter audit-log entries by action name (e.g. \"item.created\"). Optional for action=audit-log.",
+            "type": "string"
+          },
+          "actor": {
+            "description": "Filter audit-log entries by actor (user name or \"agent\"). Optional for action=audit-log.",
+            "type": "string"
+          },
+          "code": {
+            "description": "6-digit claim code generated in the workspace's \"Connect project\" modal. Required for action=claim.",
+            "type": "string"
+          },
+          "days": {
+            "description": "Limit audit-log entries to the last N days. Optional for action=audit-log.",
+            "type": "number"
+          },
+          "email": {
+            "description": "Email address to invite. Required for action=invite.",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Maximum entries to return. Optional for action=audit-log.",
+            "type": "number"
+          },
+          "name": {
+            "description": "Human-readable workspace name. Required for action=create.",
+            "type": "string"
+          },
+          "role": {
+            "description": "Role to grant on invite (owner | editor | viewer). Optional for action=invite; defaults to editor.",
+            "enum": [
+              "owner",
+              "editor",
+              "viewer"
+            ],
+            "type": "string"
+          },
+          "slug": {
+            "description": "Workspace slug (kebab-case, globally unique). Optional for action=create (derived from name when omitted); required for action=restore (names the soft-deleted workspace to restore).",
+            "type": "string"
+          },
+          "template": {
+            "description": "Template to seed collections from (e.g. \"startup\", \"scrum\", \"blank\"). Optional for action=create.",
+            "type": "string"
+          },
+          "workspace": {
+            "description": "Workspace slug to target for this call. An explicit value here ALWAYS wins. Otherwise resolution depends on the server: a single-user local server falls back to the session default set via pad_set_workspace, then the CWD-linked workspace from .pad.toml. A multi-user/remote server does NOT persist a session default, so you must pass workspace explicitly on every call.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "pad_workspace"
+    }
+  ]
+}

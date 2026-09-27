@@ -345,6 +345,8 @@ Post-0.30 without a bump (BUG-2995): a successful content write through the desi
 
 Both are also returned by `pad://_meta/version` and `pad_meta.action: version`.
 
+**The wire contract is pinned as golden bytes** (TASK-2306): `cmd/pad/mcp_wire_golden_test.go` compares the `initialize` and `tools/list` results, on BOTH transports, against `cmd/pad/testdata/mcp_wire/*.json`. It uses the production bindings: the real `pad mcp serve` subcommand, and `registerRemoteMCP` behind `NewRemoteTransport`. Any catalog, annotation, schema or `instructions.md` edit moves those bytes. Regenerate with `PAD_UPDATE_MCP_GOLDEN=1 go test ./cmd/pad/ -run TestMCPWireGolden`, and review the testdata diff as the contract diff it is: that diff is where you decide whether the change owes a `ToolSurfaceVersion` bump. A refactor or SDK bump that is meant to be behavior-neutral must leave the files untouched.
+
 **Where result caps live.** Two layers, deliberately different numbers. The MCP catalog action injects the agent-facing default and ceiling (list / backlinks / history: default 50, max 300) because a token budget is only knowable there. The HTTP endpoint's own clamp is a server-resource ceiling on what any caller may ASK for (`maxItemListQueryLimit` = 1000; `maxItemVersionsQueryLimit` = 500, lower because resolving a version can cost a patch application per row), and an ABSENT limit is left unbounded rather than defaulted — a server that truncates a request nobody bounded is a silent-truncation trap for direct API consumers. The CLI carries its own default for the same reason the catalog does.
 
 **Dispatchers.** Two ship in `internal/mcp/`:
