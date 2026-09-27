@@ -15,6 +15,13 @@
  * open, flips `peeking`, and proves it closed. Each was red-first against a
  * mutant that drops exactly that surface's line from the reset (the trail has
  * the receipts).
+ *
+ * ONE LINE HAS NO LEG OF ITS OWN, BY CONSTRUCTION: `paneMenuView = 'root'`.
+ * Dropping it alone is an equivalent mutant. The reset also closes the menu,
+ * and the ⋯ button, the menu's only opener, sets the view to 'root' before it
+ * toggles open, so no reachable state differs. The armed-delete leg covers the
+ * PAIR: dropping `paneMenuOpen = false` AND `paneMenuView = 'root'` together
+ * turns it red, and so does the ⋯ menu leg.
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
@@ -106,6 +113,7 @@ vi.mock('$lib/stores/auth.svelte', () => ({
 	},
 }));
 
+import { api } from '$lib/api/client';
 import ItemDetail from './ItemDetail.svelte';
 
 type StubProps = Record<string, unknown>;
@@ -114,7 +122,18 @@ const stubs = () => (globalThis as { __stubProps?: StubProps[] }).__stubProps ??
 // later returns the parent's CURRENT value.
 const stubWith = (key: string) => stubs().filter((p) => key in p).at(-1);
 
-const props = (over: Record<string, unknown> = {}) => ({ username: 'u', wsSlug: 'ws', collSlug: 'tasks', ref: 'i1', peeking: false, ...over });
+// `peeking` is its OWN signal, flipped directly, never through rerender().
+// testing-library keeps every prop in ONE $state.raw object and replaces it on
+// rerender, so every prop read depends on that one signal: a rerender that
+// changes only `peeking` re-runs the route-load effect as if the item changed,
+// and loadData's item-switch reset then closes every surface itself. That made
+// the first draft of this suite pass against all six drop-one mutants. The
+// PRECONDITION leg below pins that the peek here neither reloads nor remounts.
+let peekingNow = $state(false);
+const props = () => ({
+	username: 'u', wsSlug: 'ws', collSlug: 'tasks', ref: 'i1',
+	get peeking() { return peekingNow; },
+});
 
 async function settle() {
 	flushSync();
@@ -130,8 +149,8 @@ async function mount() {
 	return r;
 }
 
-async function peek(r: Awaited<ReturnType<typeof mount>>) {
-	await r.rerender(props({ peeking: true }));
+async function peek(_r: Awaited<ReturnType<typeof mount>>) {
+	peekingNow = true;
 	await settle();
 }
 
@@ -150,6 +169,7 @@ const menuItem = (label: string) =>
 		| undefined;
 
 beforeEach(() => {
+	peekingNow = false;
 	(globalThis as { __stubProps?: StubProps[] }).__stubProps = [];
 });
 
@@ -159,6 +179,15 @@ afterEach(() => {
 });
 
 describe('peek-begin dismisses every open mutation surface (TASK-2337)', () => {
+	it('PRECONDITION: flipping peeking neither reloads nor remounts the item', async () => {
+		const r = await mount();
+		const gets = vi.mocked(api.items.get).mock.calls.length;
+		const title = r.container.querySelector('button.title');
+		await peek(r);
+		expect(vi.mocked(api.items.get).mock.calls.length, 'the peek reloaded the item').toBe(gets);
+		expect(r.container.querySelector('button.title'), 'the peek remounted the item').toBe(title);
+	});
+
 	it('an in-place title edit closes', async () => {
 		const r = await mount();
 		await fireEvent.click(r.container.querySelector('button.title') as HTMLElement);
@@ -202,6 +231,10 @@ describe('peek-begin dismisses every open mutation surface (TASK-2337)', () => {
 		expect(menuItem('Cancel'), 'premise: the delete confirmation is armed').toBeDefined();
 		await peek(r);
 		expect(menuItem('Cancel'), 'the delete confirmation stayed armed while peeking').toBeUndefined();
+		// Reopening shows the root view, not the confirmation.
+		await openPaneMenu(r);
+		expect(menuItem('Cancel'), 'the delete confirmation came back on reopen').toBeUndefined();
+		expect(menuItem('Delete')).toBeDefined();
 	});
 
 	it('the add-relationship box closes', async () => {
