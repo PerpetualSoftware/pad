@@ -61,6 +61,9 @@ test.describe('attachment viewer — text preview (IDEA-2712)', () => {
 		await page.goto(itemUrl(fixture, doc.slug));
 		await page.locator(TILE).first().click();
 		await expect(page.locator(TEXT_CARD)).toBeVisible();
+		// The card is on screen while the body is still LOADING (BUG-3247): wait
+		// for the document, or a leg can act on an empty, unscrollable card.
+		await expect(page.locator(TEXT_RENDERED)).toBeVisible();
 	}
 
 	test('renders the markdown, through the shared pipeline', async ({ page, fixture, request }) => {
@@ -111,6 +114,8 @@ test.describe('attachment viewer — text preview (IDEA-2712)', () => {
 			}));
 		const before = await behind();
 		expect(await card.evaluate((el) => el.scrollTop)).toBe(0);
+		// PREMISE: there is something to scroll.
+		expect(await card.evaluate((el) => el.scrollHeight > el.clientHeight), 'the card does not overflow').toBe(true);
 
 		await card.hover();
 		await page.mouse.wheel(0, 600);
