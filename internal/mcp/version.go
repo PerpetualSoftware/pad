@@ -1651,6 +1651,19 @@ const CmdhelpVersion = "0.1"
 //     this one either, and it is not a promise that the row will catch
 //     up at all.
 //
+//     0.58 — BUG-3252. BEHAVIOR bump on the v0.45 / v0.42 grounds: no
+//     name, enum or param shape changed, but `pad_item.action=delete-comment`
+//     on a comment that still has replies now answers 409
+//     `comment_has_replies` (details `comment_id`, `reply_count`, and a hint)
+//     on every transport, where it used to be a retryable-looking
+//     `server_error`: the parent_id foreign key has no ON DELETE, so the
+//     delete failed inside the store. Nothing is deleted either way; a retry
+//     refuses identically until the replies are gone. Stdio gets the code
+//     from a marker the CLI root writes (cli.WriteCommentHasRepliesError),
+//     remote from the 409 allow-list. Whether such a delete should cascade
+//     or leave a tombstone is an open product decision; this refusal is the
+//     floor under either.
+//
 //     0.57 — TASK-2695. ADDITIVE bump (the v0.28 / v0.13 disposition): two
 //     `pad_item` actions, `edit-comment` (ref, comment_id, message) and
 //     `delete-comment` (ref, comment_id), and the `comment_id` param. Web
@@ -1677,7 +1690,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.57"
+const ToolSurfaceVersion = "0.58"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

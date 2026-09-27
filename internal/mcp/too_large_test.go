@@ -193,6 +193,9 @@ func TestEveryCLIMarkerCodeIsInTheStdioVocabulary(t *testing.T) {
 		"WriteTooLargeError": func(w *bytes.Buffer) {
 			cli.WriteTooLargeError(w, api("rename_cascade_too_large"))
 		},
+		"WriteCommentHasRepliesError": func(w *bytes.Buffer) {
+			cli.WriteCommentHasRepliesError(w, api("comment_has_replies"))
+		},
 	}
 
 	for name, write := range writers {

@@ -3145,8 +3145,9 @@ func commentDeleteCmd() *cobra.Command {
 		Short: "Delete a comment from an item",
 		Long: `Delete a comment from an item.
 
-Anyone who may edit the item may delete its comments. Get comment IDs from
-"pad item comments <ref>".`,
+Anyone who may edit the item may delete its comments. A comment that still
+has replies is refused and nothing is deleted; delete the replies first.
+Get comment IDs from "pad item comments <ref>".`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()

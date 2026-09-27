@@ -117,6 +117,61 @@ func TestCommentEditDelete_Remote(t *testing.T) {
 	}
 }
 
+// TestDeleteCommentWithReplies_Remote pins BUG-3252 on the remote door: the
+// refusal arrives as comment_has_replies with its count and the shared hint,
+// not as server_error, and both comments survive.
+func TestDeleteCommentWithReplies_Remote(t *testing.T) {
+	s := storetest.NewSQLite(t)
+	srv := server.New(s)
+	t.Cleanup(srv.Stop)
+	owner, err := s.CreateUser(models.UserCreate{Email: "o@example.com", Name: "O", Password: "correct-horse-battery-staple"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "W", Slug: "w3252", OwnerID: owner.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddWorkspaceMember(ws.ID, owner.ID, "owner"); err != nil {
+		t.Fatal(err)
+	}
+	coll, err := s.CreateCollection(ws.ID, models.CollectionCreate{Name: "Tasks", Slug: "tasks", Prefix: "TASK", Schema: `{"fields":[]}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := s.CreateItem(ws.ID, coll.ID, models.ItemCreate{Title: "A"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent, err := s.CreateComment(ws.ID, item.ID, owner.ID, models.CommentCreate{Body: "parent", CreatedBy: "agent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reply, err := s.CreateComment(ws.ID, item.ID, owner.ID, models.CommentCreate{Body: "reply", CreatedBy: "agent", ParentID: parent.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m := mcpserver.NewMCPServer("t", "1", mcpserver.WithToolCapabilities(true))
+	d := &HTTPHandlerDispatcher{Handler: srv, UserResolver: func(context.Context) *models.User { return owner }}
+	if _, err := RegisterCatalog(m, CatalogOptions{Doc: liveCmdhelpDoc(t), Workspace: NewWorkspaceState(ws.Slug), Dispatcher: d, PadVersion: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	ref := fmt.Sprintf("TASK-%d", *item.ItemNumber)
+	resp := respText(t, m.HandleMessage(context.Background(),
+		toolsCall(1, fmt.Sprintf(`{"action":"delete-comment","ref":%q,"comment_id":%q}`, ref, parent.ID))))
+	for _, want := range []string{`"isError":true`, `comment_has_replies`, `\"reply_count\":1`, "Delete the replies first"} {
+		if !strings.Contains(resp, want) {
+			t.Fatalf("response lacks %s: %s", want, resp)
+		}
+	}
+	for _, id := range []string{parent.ID, reply.ID} {
+		if c, err := s.GetComment(id); err != nil || c == nil {
+			t.Fatalf("comment %s did not survive the refusal (err %v)", id, err)
+		}
+	}
+}
+
 // TestCommentEditDelete_Stdio pins the local door's argv: the actions reach
 // the CLI verbs with ref, comment id and body as positionals behind `--`, so
 // a body that starts with "-" is not parsed as a flag (the v0.42 rule).

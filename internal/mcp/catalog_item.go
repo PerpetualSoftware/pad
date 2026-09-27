@@ -422,6 +422,7 @@ Actions:
   edit-comment  — Replace a comment's body. Only its author may.
     Required: ref, comment_id, message.
   delete-comment — Delete a comment. Anyone who may edit the item may.
+    One that still has replies is refused (409 comment_has_replies).
     Required: ref, comment_id.
   backlinks     — List inbound [[...]] references to an item ("Mentioned in").
     Required: ref.

@@ -382,6 +382,32 @@ func (s *Store) ListCommentsBeforeTime(itemID string, before time.Time, beforeID
 //
 // The identifiers are read BEFORE the DELETE, in-tx, because after it there is
 // no row to read them from.
+// CommentHasRepliesError refuses a delete of a comment that still has
+// replies (BUG-3252). Nothing is deleted. Whether such a delete should
+// cascade or leave a tombstone is an open product decision; this refusal is
+// the floor under either.
+type CommentHasRepliesError struct {
+	CommentID string
+	Replies   int
+}
+
+func (e *CommentHasRepliesError) Error() string {
+	noun := "replies"
+	if e.Replies == 1 {
+		noun = "reply"
+	}
+	return fmt.Sprintf("this comment has %d %s; delete the %s first", e.Replies, noun, noun)
+}
+
+// AsCommentHasRepliesError unwraps err to a *CommentHasRepliesError.
+func AsCommentHasRepliesError(err error) (*CommentHasRepliesError, bool) {
+	var e *CommentHasRepliesError
+	if errors.As(err, &e) {
+		return e, true
+	}
+	return nil, false
+}
+
 func (s *Store) DeleteComment(id string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -399,12 +425,26 @@ func (s *Store) DeleteComment(id string) error {
 		return fmt.Errorf("delete comment: read refs: %w", err)
 	}
 
-	result, err := tx.Exec(s.q("DELETE FROM comments WHERE id = ?"), id)
+	// comments.parent_id references comments(id) with no ON DELETE, so a
+	// parent with replies cannot be deleted: the bare DELETE used to fail the
+	// FK and reach every door as a 500 (BUG-3252). Refuse it by name instead.
+	// The NOT EXISTS makes the refusal part of the DELETE itself, so a reply
+	// counted as absent a moment earlier cannot slip under it; a zero-row
+	// result is then told apart by counting.
+	result, err := tx.Exec(s.q(`DELETE FROM comments WHERE id = ?
+		AND NOT EXISTS (SELECT 1 FROM comments r WHERE r.parent_id = ?)`), id, id)
 	if err != nil {
 		return fmt.Errorf("delete comment: %w", err)
 	}
 	n, _ := result.RowsAffected()
 	if n == 0 {
+		var replies int
+		if err := tx.QueryRow(s.q(`SELECT COUNT(*) FROM comments WHERE parent_id = ?`), id).Scan(&replies); err != nil {
+			return fmt.Errorf("delete comment: count replies: %w", err)
+		}
+		if replies > 0 {
+			return &CommentHasRepliesError{CommentID: id, Replies: replies}
+		}
 		return sql.ErrNoRows
 	}
 
