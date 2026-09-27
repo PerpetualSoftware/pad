@@ -71,10 +71,31 @@ async function markItemReads(page: Page, fixture: SuiteFixture, id: string) {
 	});
 }
 
+/**
+ * The pane also installs this item from the /changes delta the sync service
+ * seeds at page load (BUG-3201), which is not under /items/. Unmarked, that row
+ * replaced the marked one whenever it landed last (BUG-3235). The real /changes
+ * row carries the real marker, so marking it here is the same premise as above.
+ */
+async function markChangesRows(page: Page, fixture: SuiteFixture, id: string) {
+	await page.route(`**/api/v1/workspaces/${fixture.workspaceSlug}/changes?*`, async (r) => {
+		const resp = await r.fetch();
+		const json = await resp.json();
+		for (const row of json.updated ?? []) if (row.id === id) row.content_state = MARK;
+		await r.fulfill({ response: resp, json });
+	});
+}
+
 test.describe('stale body renders (BUG-3050 U3)', () => {
 	test.setTimeout(90_000);
 	test.beforeEach(({}, testInfo) => {
 		test.skip(testInfo.project.name !== 'desktop-chromium', 'one project is enough for a render binding');
+	});
+	// A rewriting route can still be awaiting its response when a leg ends;
+	// its read then throws "Response has been disposed" and fails a leg whose
+	// assertions all passed (BUG-3235). Drop the handlers, ignoring that.
+	test.afterEach(async ({ page }) => {
+		await page.unrouteAll({ behavior: 'ignoreErrors' });
 	});
 
 	test('share page: a marked item shows the notice above its body, an unmarked one does not (C1)', async ({ browser, fixture, request }) => {
@@ -146,6 +167,7 @@ test.describe('stale body renders (BUG-3050 U3)', () => {
 		// A viewer's membership, on the one call canEdit derives from.
 		await page.route(`**/api/v1/workspaces/${fixture.workspaceSlug}/me`, (r) => rewrite(r, (j) => { j.role = 'viewer'; j.item_grants = []; j.collection_grants = []; }));
 		await markItemReads(page, fixture, item.id);
+		await markChangesRows(page, fixture, item.id);
 		await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/docs?item=${item.ref}`);
 		await expect(page.getByText(`Viewer body ${stamp}.`)).toBeVisible({ timeout: 15_000 });
 		await expect(page.getByText(NOTICE)).toBeVisible();
@@ -171,7 +193,51 @@ test.describe('stale body renders (BUG-3050 U3)', () => {
 		expect(upd.ok(), await upd.text()).toBeTruthy();
 		await browserLogin(page);
 		await markItemReads(page, fixture, item.id);
+		await markChangesRows(page, fixture, item.id);
 		await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/docs?item=${item.ref}`);
+		await page.getByRole('tab', { name: 'Versions' }).click();
+		const card = page.locator('.card-header').first();
+		await expect(card).toBeVisible({ timeout: 15_000 });
+		await card.click();
+		await expect(page.locator('.diff-container').first()).toBeVisible();
+		await expect(page.locator('.diff-container').first().getByText(NOTICE)).toBeVisible();
+	});
+
+	test('versions tab: the notice survives the page-load /changes delta landing after the item (C5, BUG-3235)', async ({ page, fixture, request }) => {
+		// The pane installs this item from two reads: its own GET, and the
+		// /changes delta the sync service seeds at page load and delivers
+		// (BUG-3201). C5 flaked when that delta held the item and landed LAST,
+		// replacing the marked row. Forced here: the seed's `since` is moved
+		// before the create, so the delta holds the item, and it is held until
+		// the pane shows the body.
+		const since = Date.now() - 2_000;
+		const stamp = Date.now();
+		const item = await create(fixture, request, 'docs', `Diff seed ${stamp}`, `First body ${stamp}.`);
+		const upd = await request.patch(`/api/v1/workspaces/${fixture.workspaceSlug}/items/${item.slug}`, {
+			headers: authJson(fixture),
+			data: { content: `Second body ${stamp}.` },
+		});
+		expect(upd.ok(), await upd.text()).toBeTruthy();
+		await browserLogin(page);
+		await markItemReads(page, fixture, item.id);
+		await markChangesRows(page, fixture, item.id);
+		let release!: () => void;
+		const installed = new Promise<void>((res) => { release = res; });
+		let held = 0;
+		await page.route(`**/api/v1/workspaces/${fixture.workspaceSlug}/changes?*`, async (r) => {
+			if (held++ > 0) return r.fallback();
+			const url = new URL(r.request().url());
+			url.searchParams.set('since', String(since));
+			await installed;
+			await r.fallback({ url: url.toString() });
+		});
+		const seedDelivered = page.waitForResponse((r) => new URL(r.url()).pathname.endsWith('/changes'));
+		await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/docs?item=${item.ref}`);
+		await expect(page.getByRole('button', { name: `Diff seed ${stamp}`, exact: true })).toBeVisible({ timeout: 15_000 });
+		release();
+		// PREMISE: the delta the page received holds this item.
+		const seed = await (await seedDelivered).json();
+		expect(seed.updated.map((u: { id: string }) => u.id), 'the seed delta does not hold the item').toContain(item.id);
 		await page.getByRole('tab', { name: 'Versions' }).click();
 		const card = page.locator('.card-header').first();
 		await expect(card).toBeVisible({ timeout: 15_000 });
