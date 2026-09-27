@@ -158,8 +158,8 @@ func (f *fakeOpLog) GetItemContentFlushedOpLogID(itemID string) (int64, bool, er
 }
 
 // PruneYjsUpdatesBefore deletes every row for itemID whose CreatedAt
-// is strictly less than the cutoff. The schema-mismatch rebuild path
-// passes a far-future cutoff so this becomes "delete every row".
+// is strictly less than the cutoff. Tests pass a far-future cutoff to
+// wipe an op-log; the rebuild itself uses SetAsideAndClearOpLog.
 func (f *fakeOpLog) PruneYjsUpdatesBefore(itemID string, before time.Time) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -7,27 +7,26 @@ import (
 	"testing"
 )
 
-// frozenSchemaVersion is the schema version BUG-3244 freezes. A mismatched
-// join prunes the item's whole op-log (maybeRebuildOnSchemaMismatch), and
-// every content-bearing row above the flush watermark goes with it: the
-// first join after a bump deletes that item's unflushed edits and clears
-// its content_state, so the stale body then reads as current. Until the
-// rebuild preserves those edits, a bump is a data-loss release. Moving this
-// value is the act the guard exists to make visible; do it only in the change
-// that closes BUG-3244.
+// frozenSchemaVersion is the schema version BUG-3244 froze. A mismatched join
+// empties the item's op-log (maybeRebuildOnSchemaMismatch). Since BUG-3244 the
+// unflushed content-bearing rows are SET ASIDE rather than deleted and the item
+// stays marked superseded_set_aside, so a bump no longer loses them silently.
+// But nothing yet turns set-aside rows back into text: until TASK-3246 ships a
+// decoder for the outgoing era, every item with unflushed edits at the moment
+// of a bump is left with edits a user can read only as raw updates or discard.
+// Moving this value is the act the guard exists to make visible, and it needs
+// a ruling on the BUG-3244 / TASK-3246 trail first.
 const frozenSchemaVersion = "1"
 
-func TestSchemaVersionFrozenUntilRebuildPreservesUnflushedEdits(t *testing.T) {
+func TestSchemaVersionFrozenUntilSetAsideEditsAreRecoverable(t *testing.T) {
 	if DefaultSchemaVersion != frozenSchemaVersion {
-		t.Fatalf("DefaultSchemaVersion is %q, frozen at %q: a schema bump prunes every "+
-			"item's unflushed collaborative edits on its next open and then reports the "+
-			"stale body as current (BUG-3244). Before a bump, maybeRebuildOnSchemaMismatch "+
-			"must set the content-bearing rows above the flush watermark aside instead of "+
-			"deleting them, and keep the item marked stale until they are recovered or "+
-			"discarded; closing BUG-3244 without that change does not make a bump safe. "+
-			"A bump that removes or renames a node or mark also needs TASK-3246 (a decoder "+
-			"that recovers the outgoing era's edits). Update frozenSchemaVersion only in "+
-			"that change.",
+		t.Fatalf("DefaultSchemaVersion is %q, frozen at %q. A schema bump sets every "+
+			"item's unflushed collaborative edits aside on its next open (BUG-3244): they "+
+			"are kept and the item reads superseded_set_aside, but no editor can restore "+
+			"them. Before a bump, TASK-3246 must recover the outgoing era's set-aside edits "+
+			"(a decoder for the removed or renamed nodes and marks, or a measurement showing "+
+			"that the new schema decodes the old era as it is), and the lead must rule the "+
+			"freeze lifted on that trail. Update frozenSchemaVersion only in that change.",
 			DefaultSchemaVersion, frozenSchemaVersion)
 	}
 }

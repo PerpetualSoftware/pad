@@ -18,9 +18,9 @@ import (
 // `web/src/lib/collab/schemaVersion.ts` SCHEMA_VERSION on any
 // breaking change to the Tiptap extension set or Y.Doc shape.
 //
-// Frozen until BUG-3244 is closed: that prune deletes unflushed edits
-// (see maybeRebuildOnSchemaMismatch), and schema_version_guard_test.go
-// refuses a bump.
+// Frozen (BUG-3244): the rebuild sets unflushed edits aside, but nothing
+// recovers them until TASK-3246, and schema_version_guard_test.go refuses a
+// bump until that lands and the freeze is ruled lifted.
 const DefaultSchemaVersion = "1"
 
 // SchemaVersion exposes the version this manager stamps on persisted
