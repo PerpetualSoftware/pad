@@ -41,6 +41,12 @@ async function setup(page: import('@playwright/test').Page, fixture: import('./f
 	const before = await scrollTop();
 	expect(before, 'precondition: the pane scrolled').toBeGreaterThan(300);
 
+	// The popover drills the pane only for a link whose prefix is in the page's
+	// FRESH collection list (collectionPrefixMap); before that list lands it
+	// navigates instead, and no Back button appears (BUG-3241). This collection
+	// was created a moment ago, so wait for it: its sidebar row is rendered from
+	// the same store write that marks the list fresh.
+	await expect(page.locator(`.nav-section a[href$="/${coll.slug}"]`)).toBeVisible({ timeout: 15_000 });
 	// A click on an editor link opens its popover; the popover's href drills.
 	await link.click();
 	await page.locator('.link-href').first().click();
