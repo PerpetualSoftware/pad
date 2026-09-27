@@ -126,12 +126,25 @@
 	//
 	// The item's content renders after the navigation, so the position is
 	// applied once the pane can scroll that far — waited for with a
-	// ResizeObserver on the pane's content, capped at ~1s (lead ruling). The
-	// reader wins: any scroll during the wait that is not our own, or a
-	// wheel/touch/key gesture, cancels it. Our own assignment happens only at
-	// the moment it succeeds, so the scroll event it raises is never mistaken
-	// for the reader's.
-	const RESTORE_CAP_MS = 1000;
+	// ResizeObserver on the pane's content, capped. The reader wins: any
+	// scroll during the wait that is not our own, or a wheel/touch/key
+	// gesture, cancels it. Our own assignment happens only at the moment it
+	// succeeds, so the scroll event it raises is never mistaken for the
+	// reader's.
+	//
+	// THE CAP MUST CLEAR THE COLLAB SYNC GRACE (BUG-3228). The body renders
+	// only once the collab provider reports `synced`, and the relay never sends
+	// an explicit step2, so that is `SYNC_GRACE_MS` (1 s, wsProvider) after the
+	// connect. The cap used to be 1 s from onReady, so the two timers raced
+	// and load decided. Measured on 2026-09-27 with an instrumented build,
+	// desktop-chromium, the pane Back spec x300 at 8 workers: restore latency
+	// from onReady was p50 1021 / p90 1138 / p99 1234 / max 1313 ms, and every
+	// failure (7/300) was this cap expiring before the body rendered. With the
+	// grace cut to 300 ms, latency followed it (p50 328 / max 610), which is
+	// causal. 2500 is about 1.9x the loaded max. If it errs long, the only cost
+	// is a restore that lands late for a reader who has not moved, and any move
+	// cancels it. If the grace comes down, this can come down with it.
+	const RESTORE_CAP_MS = 2500;
 	let cancelRestore: (() => void) | null = null;
 
 	function restorePaneScroll(el: HTMLElement, target: number): () => void {
