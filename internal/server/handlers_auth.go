@@ -871,7 +871,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	// the client can land IN it, as an accept does (BUG-3284, PLAN-3002 Q5).
 	// Additive; absent without an invitation.
 	if invitation != nil {
-		resp["accepted_invitation"] = s.invitationAcceptedFields(invitation)
+		resp["accepted_invitation"] = s.invitationAcceptedFields(invitation, invitation.Role)
 	}
 	writeJSON(w, http.StatusCreated, resp)
 }
