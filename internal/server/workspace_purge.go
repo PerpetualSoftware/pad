@@ -9,6 +9,7 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
+	"github.com/PerpetualSoftware/pad/internal/watchevents"
 )
 
 // Scheduled hard-purge of soft-deleted workspaces (TASK-1966).
@@ -266,12 +267,15 @@ func (s *Server) purgeCandidate(ctx context.Context, c store.WorkspacePurgeCandi
 	}
 
 	// Every blob is gone (or still shared by another workspace) — now
-	// it's safe to remove the DB rows.
+	// it's safe to remove the DB rows. The users who had access are read
+	// first, because the purge deletes the rows that name them (TASK-3272).
+	accessUsers := s.workspaceAccessUsers(c.ID)
 	if err := s.store.PurgeWorkspaceData(c.ID); err != nil {
 		slog.Warn("workspace purge: cascade delete failed",
 			"workspace_id", c.ID, "slug", c.Slug, "error", err)
 		return false
 	}
+	s.publishWorkspaceAccessChanged(c.ID, watchevents.AccessPurged, accessUsers, "system", "")
 	return true
 }
 

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/watchevents"
 	"github.com/pquerna/otp/totp"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -118,6 +119,19 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 		stripeWasCancelled = true
 	}
 
+	// TASK-3272: the deletion soft-deletes every live workspace this user
+	// owns. Read who reaches each one BEFORE it happens, so they can be told.
+	// A failed read costs only the hint, never the deletion.
+	ownedAccess := map[string][]string{}
+	if owned, err := s.store.ListOwnedLiveWorkspaceIDs(user.ID); err != nil {
+		slog.Warn("delete account: could not read owned workspaces; no workspace_access_changed will be sent",
+			"user_id", user.ID, "error", err)
+	} else {
+		for _, wsID := range owned {
+			ownedAccess[wsID] = s.workspaceAccessUsers(wsID)
+		}
+	}
+
 	if err := s.store.DeleteAccountAtomic(user.ID); err != nil {
 		// Cross-system danger zone: if Stripe was already cancelled, the
 		// user's billing is gone but their account data is still present.
@@ -163,6 +177,10 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 		"deleted_user_id": user.ID,
 		"email":           user.Email,
 	}))
+
+	for wsID, userIDs := range ownedAccess {
+		s.publishWorkspaceAccessChangedFromRequest(r, wsID, watchevents.AccessDeleted, userIDs...)
+	}
 
 	slog.Info("account deleted", "user_id", user.ID, "email", user.Email)
 	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})

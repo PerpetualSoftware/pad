@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/watchevents"
 )
 
 // Workspace minting has TWO doors — handleCreateWorkspace and
@@ -119,9 +120,10 @@ func validateWorkspaceMintPayload(name string, settings *string) error {
 }
 
 // finishWorkspaceMint runs every side effect a mint owes AFTER the workspace
-// exists: today, adding it to the calling OAuth connection's allow-list
+// exists: adding it to the calling OAuth connection's allow-list
 // (maybeAutoAddCreatorConnection), so an agent that minted a workspace can use
-// it without re-authorising.
+// it without re-authorising, and telling everyone who now reaches it (at mint,
+// the owner just attached) through workspace_access_changed (TASK-3272).
 //
 // It is the back half of beginWorkspaceMint, and exists for the same reason
 // (BUG-2794). The import doors used to skip this step, so an OAuth connection
@@ -136,4 +138,5 @@ func validateWorkspaceMintPayload(name string, settings *string) error {
 // failure logs and never fails the response.
 func (s *Server) finishWorkspaceMint(r *http.Request, workspaceID string) {
 	s.maybeAutoAddCreatorConnection(r, workspaceID)
+	s.publishWorkspaceAccessChangedFromRequest(r, workspaceID, watchevents.AccessGained, s.workspaceAccessUsers(workspaceID)...)
 }
