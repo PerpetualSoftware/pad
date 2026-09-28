@@ -107,3 +107,45 @@ func TestWorkspaceTabs_SoftDeleteLockOrder(t *testing.T) {
 		}
 	}
 }
+
+// A member removal racing that member's own account deletion. Account
+// deletion locks users(U) first and then deletes U's memberships; the
+// removal deletes the membership and then, in its prune, needs users(U) to
+// bump the revision. Unless the removal takes users(U) BEFORE it touches the
+// membership, the two wait on each other.
+func TestWorkspaceTabs_MemberRemovalVsAccountDeletion(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	owner := tabsUser(t, s, "Rdowner")
+	for round := 0; round < 8; round++ {
+		member := tabsUser(t, s, fmt.Sprintf("Rdmember%d", round))
+		ws := tabsWorkspace(t, s, owner, fmt.Sprintf("RD%d", round))
+		if err := s.AddWorkspaceMember(ws.ID, member.ID, "editor"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.OpenWorkspaceTab(member.ID, ws.ID, false); err != nil {
+			t.Fatal(err)
+		}
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		errs := make(chan error, 2)
+		run := func(what string, fn func() error) {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				if err := fn(); err != nil {
+					errs <- fmt.Errorf("%s: %w", what, err)
+				}
+			}()
+		}
+		run("member removal", func() error { return s.RemoveWorkspaceMember(ws.ID, member.ID) })
+		run("account deletion", func() error { return s.DeleteAccountAtomic(member.ID) })
+		close(start)
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			failOnDeadlockOrError(t, fmt.Sprintf("round %d", round), err)
+		}
+	}
+}

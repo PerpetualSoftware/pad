@@ -186,6 +186,11 @@ func (s *Store) RemoveWorkspaceMember(workspaceID, userID string) error {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
 	defer tx.Rollback()
+	// users(U) before any other row: the prune below bumps U's tabs revision,
+	// and every transaction that does takes that lock first (BUG-3285).
+	if err := s.lockUserTabsTx(tx, userID); err != nil {
+		return err
+	}
 	result, err := tx.Exec(
 		s.q("DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?"),
 		workspaceID, userID,
@@ -212,6 +217,11 @@ func (s *Store) RemoveWorkspaceMemberAndRevokeGrants(workspaceID, userID string)
 		return fmt.Errorf("begin transaction: %w", err)
 	}
 	defer tx.Rollback()
+	// users(U) before any other row: the prune below bumps U's tabs revision,
+	// and every transaction that does takes that lock first (BUG-3285).
+	if err := s.lockUserTabsTx(tx, userID); err != nil {
+		return err
+	}
 
 	// Revoke grants first (before removing membership)
 	if _, err := tx.Exec(s.q("DELETE FROM collection_grants WHERE workspace_id = ? AND user_id = ?"), workspaceID, userID); err != nil {

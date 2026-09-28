@@ -380,10 +380,20 @@ type execer interface {
 // deliberate: a member demoted to guest still reaches the workspace, and the
 // read filter, not this delete, decides what a grant set can see.
 //
-// When it deletes a row it bumps the user's tabs revision (BUG-3285), and it
-// bumps FIRST, under the same predicate, so on Postgres the users row is
-// locked before the tab row, the order every tab write locks them in. The
-// reverse order can deadlock against a tab write on the same row.
+// When it deletes a row it bumps the user's tabs revision (BUG-3285).
+//
+// PRECONDITION: the caller took lockUserTabsTx(tx, userID) BEFORE ITS FIRST
+// WRITE. Two things rest on it, both on Postgres:
+//
+//   - Lock order. Account deletion takes users(U) and then deletes U's
+//     memberships; a removal that deleted the membership first and took
+//     users(U) here would wait on it in the other order (measured: 40P01,
+//     TestWorkspaceTabs_MemberRemovalVsAccountDeletion).
+//   - One row set. Every tab write for U holds users(U), so while the caller
+//     holds it no tab row of U's can appear or go, and the conditional bump
+//     and the DELETE below see the same rows. Without it, under READ
+//     COMMITTED, an open committing between the two statements is missed by
+//     the bump's EXISTS and then deleted without a bump (codex round 2).
 func (s *Store) pruneWorkspaceTabIfNoAccessTx(ex execer, userID, workspaceID string) error {
 	const noAccess = `
 		  AND NOT EXISTS (SELECT 1 FROM workspace_members WHERE workspace_id = ? AND user_id = ?)
