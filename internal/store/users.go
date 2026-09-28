@@ -1012,7 +1012,20 @@ func (s *Store) DeleteAccountAtomic(userID string) error {
 	}
 	// Other users' tabs for those workspaces go with them, as on any soft
 	// delete (TASK-3256). Every owned workspace is soft-deleted by now.
-	if err := s.deleteWorkspaceTabsForOwner(tx, userID); err != nil {
+	//
+	// Unlike soft delete, this does NOT bump the holders' tabs revisions
+	// (BUG-3285). Bumping locks each holder's users row, and this transaction
+	// already holds the deleting user's row (step 0), so it would take users
+	// rows out of id order: two concurrent account deletions whose users
+	// hold tabs in each other's workspaces, or one against a soft delete,
+	// could deadlock, where before neither locked another user's row. The
+	// bump would buy nothing here anyway: these workspaces are soft-deleted
+	// in this same transaction, so every tabs answer from now on filters
+	// them out on read whatever its revision.
+	if _, err := tx.Exec(s.q(`
+		DELETE FROM user_workspace_tabs
+		WHERE workspace_id IN (SELECT id FROM workspaces WHERE owner_id = ?)
+	`), userID); err != nil {
 		return fmt.Errorf("delete account: delete tabs of owned workspaces: %w", err)
 	}
 

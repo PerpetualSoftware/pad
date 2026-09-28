@@ -414,20 +414,25 @@ func (s *Store) deleteWorkspaceTabsForWorkspace(ex execer, workspaceID string) e
 	return s.deleteWorkspaceTabsIn(ex, `?`, workspaceID)
 }
 
-// deleteWorkspaceTabsForOwner deletes every user's tab for the workspaces
-// ownerID owns. Account deletion calls it after soft-deleting them all, as
-// soft delete would for each.
-func (s *Store) deleteWorkspaceTabsForOwner(ex execer, ownerID string) error {
-	return s.deleteWorkspaceTabsIn(ex, `SELECT id FROM workspaces WHERE owner_id = ?`, ownerID)
-}
-
 // deleteWorkspaceTabsIn deletes every user's tab whose workspace_id is IN
 // (workspaceIDs), an SQL expression over one bound argument.
 //
 // Every user who held such a row gets a revision bump (BUG-3285), before the
-// delete, for the lock-order reason pruneWorkspaceTabIfNoAccessTx gives.
-// Those users rows are locked in id order first on Postgres, so two deletes
-// sharing users cannot take them in opposite orders.
+// delete. THE LOCK ORDER, on Postgres (SQLite serialises every writer):
+//
+//   - Against a tab write for a holder U: both take users(U) before U's tab
+//     rows (the write through lockUserTabsTx, this through the ordered lock
+//     below and only then the DELETE), so neither holds what the other
+//     waits for. The write's FK check on workspaces takes FOR KEY SHARE,
+//     which the soft delete's NO KEY UPDATE on the workspaces row does not
+//     block.
+//   - Against another such delete: both lock their holders in id order.
+//
+// The caller must hold no other users row when it calls this, or the id
+// order is broken; that is why account deletion does not use it (see
+// DeleteAccountAtomic). A tab a concurrent open commits for the workspace
+// after the holders are read is deleted without a bump; the workspace is
+// soft-deleted by then, so every answer filters it out on read anyway.
 func (s *Store) deleteWorkspaceTabsIn(ex execer, workspaceIDs string, arg string) error {
 	holders := `SELECT user_id FROM user_workspace_tabs WHERE workspace_id IN (` + workspaceIDs + `)`
 	if s.dialect.Driver() == DriverPostgres {

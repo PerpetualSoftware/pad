@@ -229,7 +229,10 @@ func TestWorkspaceTabs_LossPathsBumpTheRevision(t *testing.T) {
 		}
 	})
 
-	t.Run("account deletion bumps the other holders of the owner's workspaces", func(t *testing.T) {
+	// Account deletion deletes other users' tabs on the owner's workspaces but
+	// deliberately does NOT bump them: it would lock users rows out of id
+	// order (see DeleteAccountAtomic).
+	t.Run("account deletion deletes the other holders' tabs without a bump", func(t *testing.T) {
 		t.Parallel()
 		s := testStore(t)
 		owner := tabsUser(t, s, "Laowner")
@@ -249,7 +252,7 @@ func TestWorkspaceTabs_LossPathsBumpTheRevision(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if list.Revision != before+1 || listHas(list, ws.ID) {
+		if list.Revision != before || listHas(list, ws.ID) {
 			t.Fatalf("member after the owner's account deletion: %+v (revision was %d)", list, before)
 		}
 	})
