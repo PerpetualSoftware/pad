@@ -330,7 +330,9 @@
 	}
 
 	async function saveEditing(item: Item) {
-		if (!workspace || saving) return;
+		// Edit access can end while the form is open; the draft stays on
+		// screen to copy, but nothing is sent (BUG-3266).
+		if (!workspace || saving || !workspaceStore.canEditItem(item)) return;
 		// BUG-3050 U1: the body goes only when it CHANGED, and then with the
 		// token of the row the edit started from, so edits an open tab has not
 		// stored yet are refused (409 content_pending_flush) rather than replaced.
@@ -721,7 +723,7 @@
 														onkeydown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); saveEditing(item); } if (e.key === 'Escape') cancelEditing(); }}
 													></textarea>
 													<div class="expanded-actions">
-														<Button variant="primary" size="sm" disabled={saving} onclick={() => saveEditing(item)}>{saving ? 'Saving...' : 'Save'}</Button>
+														<Button variant="primary" size="sm" disabled={saving || !workspaceStore.canEditItem(item)} title={workspaceStore.canEditItem(item) ? undefined : 'You can no longer edit this convention'} onclick={() => saveEditing(item)}>{saving ? 'Saving...' : 'Save'}</Button>
 														<Button variant="secondary" size="sm" onclick={cancelEditing}>Cancel</Button>
 														<span class="edit-hint">⌘+Enter to save · Esc to cancel</span>
 													</div>
