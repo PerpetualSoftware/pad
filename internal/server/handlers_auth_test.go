@@ -294,6 +294,15 @@ func TestInvitationRegistrationFlow(t *testing.T) {
 	if user["role"] != "member" {
 		t.Errorf("expected invitation signup to create member role, got %v", user["role"])
 	}
+	// BUG-3284: the signup names the workspace it joined, so the client can
+	// land in it.
+	accepted, ok := resp["accepted_invitation"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected accepted_invitation on an invitation signup, got %v", resp["accepted_invitation"])
+	}
+	if accepted["workspace_slug"] != ws.Slug || accepted["workspace_id"] != ws.ID || accepted["role"] != "viewer" {
+		t.Errorf("accepted_invitation = %v, want slug %q, id %q, role viewer", accepted, ws.Slug, ws.ID)
+	}
 
 	invitee, err := srv.store.GetUserByEmail("invitee@test.com")
 	if err != nil || invitee == nil {

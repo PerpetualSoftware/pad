@@ -458,8 +458,17 @@ func (s *Server) acceptInvitationCore(w http.ResponseWriter, r *http.Request, in
 // cannot be read back, which does not undo the accept. role is the role the
 // caller holds, which for an existing member is not the invited one (BUG-3281).
 func (s *Server) writeInvitationAccepted(w http.ResponseWriter, inv *models.WorkspaceInvitation, role string) {
+	body := s.invitationAcceptedFields(inv, role)
+	body["accepted"] = true
+	writeJSON(w, http.StatusOK, body)
+}
+
+// invitationAcceptedFields is what every accept tells the client about the
+// workspace it joined: both accept doors above, and registration with an
+// invitation code (BUG-3284), which accepts in the same request. One helper so
+// the three cannot drift.
+func (s *Server) invitationAcceptedFields(inv *models.WorkspaceInvitation, role string) map[string]interface{} {
 	body := map[string]interface{}{
-		"accepted":     true,
 		"workspace_id": inv.WorkspaceID,
 		"role":         role,
 	}
@@ -467,7 +476,7 @@ func (s *Server) writeInvitationAccepted(w http.ResponseWriter, inv *models.Work
 		body["workspace_slug"] = ws.Slug
 		body["owner_username"] = ws.OwnerUsername
 	}
-	writeJSON(w, http.StatusOK, body)
+	return body
 }
 
 // handlePreviewInvitation returns non-consuming metadata about an invitation
