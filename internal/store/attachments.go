@@ -219,6 +219,68 @@ func (s *Store) CreateAttachmentForLiveItem(a *models.Attachment) error {
 	return tx.Commit()
 }
 
+// ErrAttachmentNotAttachable is AttachAttachmentToItem's refusal: the row is
+// not a live, unattached original in this workspace at the moment of the
+// write. That covers a row attached by someone else first and a row the
+// never-attached GC claimed first, so a caller that checked beforehand
+// still has to handle it.
+var ErrAttachmentNotAttachable = errors.New("attachment is not a live unattached original in this workspace")
+
+// AttachAttachmentToItem binds an UNATTACHED attachment (item_id NULL, as
+// `pad attachment upload -` leaves it) to a live item in the same
+// workspace, and its live variants with it, because a variant carries its
+// parent's item_id (TASK-2247). It never reassigns: every UPDATE requires
+// item_id IS NULL, which also makes it and ClaimNeverAttachedAttachment
+// mutually exclusive on the row. Authorization is the caller's.
+//
+// The parent item is pinned the way CreateAttachmentForLiveItem pins it, so
+// an archival cannot commit between the liveness check and the bind.
+func (s *Store) AttachAttachmentToItem(workspaceID, attachmentID, itemID string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin attach attachment tx: %w", err)
+	}
+	defer tx.Rollback() // no-op after Commit
+
+	query := `SELECT workspace_id FROM items WHERE id = ? AND deleted_at IS NULL`
+	if s.dialect.Driver() == DriverPostgres {
+		query += ` FOR NO KEY UPDATE`
+	}
+	var itemWorkspaceID string
+	switch err := tx.QueryRow(s.q(query), itemID).Scan(&itemWorkspaceID); {
+	case err == sql.ErrNoRows:
+		return ErrAttachmentParentItemGone
+	case err != nil:
+		return fmt.Errorf("lock attach target item: %w", err)
+	}
+	if itemWorkspaceID != workspaceID {
+		return ErrAttachmentParentItemGone
+	}
+
+	res, err := tx.Exec(s.q(`
+		UPDATE attachments SET item_id = ?
+		WHERE id = ? AND workspace_id = ? AND item_id IS NULL
+		  AND deleted_at IS NULL AND parent_id IS NULL
+	`), itemID, attachmentID, workspaceID)
+	if err != nil {
+		return fmt.Errorf("attach attachment: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("attach attachment rows: %w", err)
+	}
+	if n != 1 {
+		return ErrAttachmentNotAttachable
+	}
+	if _, err := tx.Exec(s.q(`
+		UPDATE attachments SET item_id = ?
+		WHERE parent_id = ? AND workspace_id = ? AND item_id IS NULL AND deleted_at IS NULL
+	`), itemID, attachmentID, workspaceID); err != nil {
+		return fmt.Errorf("attach attachment variants: %w", err)
+	}
+	return tx.Commit()
+}
+
 // createAttachmentOn is the shared insert body, parameterized over the pool or
 // a transaction so CreateAttachment and CreateAttachmentTx cannot drift.
 func (s *Store) createAttachmentOn(ex sqlExecer, a *models.Attachment) error {

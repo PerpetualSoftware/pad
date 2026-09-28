@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/PerpetualSoftware/pad/internal/attachments"
 	goMime "mime"
@@ -40,10 +41,14 @@ Examples:
   pad attachment view <attachment-id>                # save to temp file, print path
   pad attachment view <attachment-id> -o ./pic.png   # save to a chosen path
   pad attachment upload TASK-5 ./screenshot.png      # upload + attach to item
+  pad attachment attach <attachment-id> TASK-5       # attach an unattached upload
   pad attachment download <attachment-id> ./pic.png  # download to explicit path
 
 Attachments belong to a workspace and may optionally reference an item.
 Pass "-" as the item argument to upload without associating with any item.
+An unattached image does not render on share pages even when an item embeds
+it, because a share serves only attachments its items own. Prefer uploading
+to the item; "pad attachment attach" fixes one after the fact.
 
 For agents: ALWAYS use these CLI commands to read attachments — never read
 directly from ~/.pad/attachments/. The CLI goes through the authenticated
@@ -53,6 +58,7 @@ deployments and respects workspace ACLs.`,
 
 	cmd.AddCommand(
 		attachmentUploadCmd(),
+		attachmentAttachCmd(),
 		attachmentDownloadCmd(),
 		attachmentViewCmd(),
 		attachmentShowCmd(),
@@ -68,7 +74,10 @@ func attachmentUploadCmd() *cobra.Command {
 		Use:   "upload <item-ref-or-dash> <path>",
 		Short: "Upload a file as an item attachment",
 		Long: `Upload a file. The first argument is the parent item (issue ref or slug).
-Use "-" to upload without associating with any item.
+Use "-" to upload without associating with any item. Prefer the item: an
+unattached image does not render on share pages even when an item embeds it,
+because a share serves only attachments its items own. To fix one afterwards,
+run "pad attachment attach <attachment-id> <item-ref>".
 
 Examples:
   pad attachment upload TASK-5 ./screenshot.png
@@ -127,6 +136,47 @@ Examples:
 
 	cmd.Flags().StringVar(&filenameFlag, "filename", "", "override the stored filename (defaults to basename of path)")
 	return cmd
+}
+
+// errAttachmentAttachUnsupported is returned before sending when the server
+// does not advertise attachment_attach (TASK-2247). An older build has no such
+// route, and its bare 404 would read as "attachment not found".
+var errAttachmentAttachUnsupported = errors.New("this server does not support attaching an existing attachment " +
+	"(it does not advertise attachment_attach); upgrade the server")
+
+func attachmentAttachCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "attach <attachment-id> <item-ref>",
+		Short: "Attach an unattached attachment to an item",
+		Long: `Attach an attachment that was uploaded without an item ("upload -") to an item.
+
+Share pages serve only attachments the shared item owns, so an unattached image
+an item embeds renders as a placeholder there until it is attached to that item.
+
+Only an unattached attachment can be attached; one that already belongs to an
+item is refused, never moved. You must be able to edit the item, and you must
+have uploaded the attachment or be a workspace owner.
+
+Examples:
+  pad attachment attach 3f2a9c1e-... TASK-5`,
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			ws := getWorkspace()
+			if !client.ServerSupportsAttachmentAttach() {
+				return errAttachmentAttachUnsupported
+			}
+			result, err := client.AttachAttachment(ws, args[0], args[1])
+			if err != nil {
+				return err
+			}
+			if formatFlag == "json" {
+				return cli.PrintJSON(result)
+			}
+			fmt.Printf("Attached %s to %s\n", result.ID, args[1])
+			return nil
+		},
+	}
 }
 
 func attachmentDownloadCmd() *cobra.Command {
