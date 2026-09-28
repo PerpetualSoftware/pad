@@ -307,6 +307,13 @@ func (s *Server) handleCancelInvitation(w http.ResponseWriter, r *http.Request) 
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// invitationEmailMatches applies the same normalization as CreateInvitation
+// and compares the stored address byte-exactly. EqualFold additionally equates
+// distinct lowercase addresses, such as ſam@x.com and sam@x.com (BUG-3282).
+func invitationEmailMatches(email, invitationEmail string) bool {
+	return strings.ToLower(strings.TrimSpace(email)) == invitationEmail
+}
+
 // handleAcceptInvitation accepts a workspace invitation by code.
 func (s *Server) handleAcceptInvitation(w http.ResponseWriter, r *http.Request) {
 	code := chi.URLParam(r, "code")
@@ -334,7 +341,7 @@ func (s *Server) handleAcceptInvitation(w http.ResponseWriter, r *http.Request) 
 	// match the address on the invite. Otherwise anyone who learns the code
 	// (forwarded email, leaked screenshot, guessed URL) could claim the seat
 	// from a different account.
-	if !strings.EqualFold(strings.TrimSpace(user.Email), inv.Email) {
+	if !invitationEmailMatches(user.Email, inv.Email) {
 		writeError(w, http.StatusForbidden, "invitation_email_mismatch",
 			"This invitation was sent to a different email address. Sign in with that account to accept.")
 		return
