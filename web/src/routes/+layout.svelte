@@ -254,8 +254,7 @@
 			workspaceStore.loadAll();
 			// The open set is per user, so there is none to load without one
 			// (the auth-endpoint-unavailable case). Until it answers, and if it
-			// fails, every workspace reads as having no tab row and route memory
-			// uses the localStorage fallback (TASK-3271).
+			// fails, every workspace reads as having no stored route.
 			if (authStore.authenticated) {
 				tabsStore.load().catch(() => {});
 				// Live gain/loss of workspaces (TASK-3275). One per tab; start()

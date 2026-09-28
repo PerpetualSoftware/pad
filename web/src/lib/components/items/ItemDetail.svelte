@@ -2311,7 +2311,7 @@
 				// momentarily win or lose one update, self-healed by the next
 				// navigation. Accepted, pre-existing property — not worth
 				// cross-tab coordination for a convenience restore cache.
-				// `tabsStore` decides where the route lives (TASK-3271).
+				// The route lives on the workspace's tab row (TASK-3271).
 				const repaired = repairDeadItemLastRoute(tabsStore.routeFor(reqWsSlug), {
 					username: reqUsername,
 					wsSlug: reqWsSlug,

@@ -239,6 +239,11 @@ let pendingCreates: { seq: number; ws: Workspace }[] = [];
 // skipping past it: acting on a still-empty `workspaces` sends `setCurrent`
 // down its single-workspace fallback for no reason (codex round 4).
 const LOAD_ALL_KEY = 'all';
+// Slugs `setCurrent` has refreshed the list for, and whether a list has
+// committed for this identity. See `setCurrent`'s fallback.
+const listRefreshedFor = new Set<string>();
+let listCommitted = false;
+
 const loadAllFlight = createKeyedSingleFlight<string>({
 	setLoading: (v) => { loading = v; },
 });
@@ -360,6 +365,7 @@ export const workspaceStore = {
 			workspaces = pendingCreates.length
 				? [...list, ...pendingCreates.map((c) => c.ws)]
 				: list;
+			listCommitted = true;
 		});
 	},
 
@@ -484,6 +490,18 @@ export const workspaceStore = {
 					resolved = await api.workspaces.get(ws);
 				} catch {
 					resolved = null;
+				}
+				// A workspace the caller can open but the list does not hold
+				// (joined or restored elsewhere, or deep-linked before the list
+				// knew it): refresh the list so it appears there too (TASK-3279,
+				// the stale-list gap in PLAN-3002 §1). Once per slug per page
+				// load, so a workspace the list never carries cannot turn every
+				// navigation into a list request. Not before a list has committed:
+				// the first one is already in flight from the root layout, and
+				// it will carry the workspace if the list can.
+				if (resolved && listCommitted && !listRefreshedFor.has(ws)) {
+					listRefreshedFor.add(ws);
+					void workspaceStore.loadAll().catch(() => {});
 				}
 			}
 		}
@@ -642,6 +660,8 @@ export const workspaceStore = {
 authStore.onIdentityChange(() => {
 	membershipSeq++;
 	workspaces = [];
+	listCommitted = false;
+	listRefreshedFor.clear();
 	// REDUNDANT DEFENCE, and said so rather than implied (BUG-2981). The
 	// obvious story — that without this B's next commit re-appends A's
 	// workspace — does NOT hold, and the mutation matrix is what said so:

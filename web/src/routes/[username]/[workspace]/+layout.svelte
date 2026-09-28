@@ -198,9 +198,9 @@
 	// Per CONVE-606, this is its own effect with a clean dependency list
 	// (wsSlug + pathname + search). Combining with the title sync above
 	// would re-run it on async workspace-name resolution and could
-	// overwrite the saved route at unexpected times. Where the route is
-	// stored (the workspace's tab row, or localStorage for a workspace
-	// with no row) is `tabsStore.noteRoute`'s decision (TASK-3271).
+	// overwrite the saved route at unexpected times. The route is stored on
+	// the workspace's tab row (TASK-3271); the landing effect below opens
+	// that row when the workspace has none (TASK-3279).
 	$effect(() => {
 		if (!wsSlug) return;
 		const route = page.url.pathname + page.url.search;
