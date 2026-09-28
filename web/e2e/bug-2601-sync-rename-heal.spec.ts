@@ -37,6 +37,46 @@ import { test } from './fixtures';
  * window, so the heal was not the tab-resume's. Letting the writes age past
  * that window first means the seed delivers nothing; the premise is asserted.
  */
+/**
+ * What moved the route, for the vacuity guards (BUG-3243). Their failure
+ * used to read only "Received: false", which cannot say whether a sync pass,
+ * a leaked SSE event or a router side effect re-targeted the page. This
+ * records main-frame navigations and the requests that could drive one. An
+ * entry above the rename marker is ms since the recorder started; one below
+ * it is ms since the rename.
+ */
+function routeRecorder(page: Page) {
+	let mark = Date.now();
+	const log: string[] = [];
+	const at = () => `${Date.now() - mark}ms`;
+	const watched = (u: string) => /\/api\/v1\/(events|workspaces\/[^/]+\/(changes|collections))/.test(new URL(u).pathname);
+	page.on('framenavigated', (f) => {
+		if (f === page.mainFrame()) log.push(`${at()} nav ${new URL(f.url()).pathname}`);
+	});
+	page.on('response', (r) => {
+		const u = new URL(r.url());
+		if (watched(r.url())) log.push(`${at()} ${r.request().method()} ${u.pathname}${u.search} -> ${r.status()}`);
+	});
+	page.on('requestfailed', (r) => {
+		if (watched(r.url())) log.push(`${at()} FAILED ${new URL(r.url()).pathname} (${r.failure()?.errorText})`);
+	});
+	return {
+		/** Re-zero the clock at the rename. */
+		markRename: () => {
+			log.push(`${at()} --- rename sent, clock re-zeroed ---`);
+			mark = Date.now();
+		},
+		/** The route is still on the dead slug, or a failure naming what moved it. */
+		expectStranded: (when: string, onDeadSlug: (path: string) => boolean) => {
+			const path = new URL(page.url()).pathname;
+			expect(
+				onDeadSlug(path),
+				`${when}: the route left the dead slug (now ${path}) before the tab-resume. Route log:\n${log.join('\n')}`,
+			).toBe(true);
+		},
+	};
+}
+
 async function gotoWithEmptySeed(page: Page, wsSlug: string, path: string) {
 	await page.waitForTimeout(2100);
 	const seed = page.waitForResponse((r) => new URL(r.url()).pathname.endsWith(`/workspaces/${wsSlug}/changes`));
@@ -80,12 +120,14 @@ test('BUG-2601: a missed collection-rename SSE is healed by the next sync pass',
 		// THE MISSED-SSE CONDITION: the EventSource never connects, so the
 		// collection_updated rename event cannot arrive on the primary path.
 		await page.route('**/api/v1/events**', (route) => route.abort());
+		const routeLog = routeRecorder(page);
 
 		await gotoWithEmptySeed(page, ws.slug, `/${fixture.adminUsername}/${ws.slug}/tasks`);
 		await expect(page.getByText('rename-heal probe').first()).toBeVisible();
 
 		// Rename server-side. A name change regenerates the slug
 		// (store.UpdateCollection), which is what kills the route's slug.
+		routeLog.markRename();
 		const renameResp = await request.patch(
 			`/api/v1/workspaces/${ws.slug}/collections/tasks`,
 			{ headers: auth, data: { name: 'Chores' } },
@@ -97,7 +139,7 @@ test('BUG-2601: a missed collection-rename SSE is healed by the next sync pass',
 		// VACUITY GUARD: with SSE dead, nothing re-targets the route on its
 		// own. If this fails, the "heal" below would not be the sync pass's.
 		await page.waitForTimeout(700);
-		expect(new URL(page.url()).pathname.endsWith('/tasks')).toBeTruthy();
+		routeLog.expectStranded('vacuity guard', (p) => p.endsWith('/tasks'));
 
 		// Tab-resume: hidden long enough to clear the sync service's
 		// MIN_ABSENCE_MS (2s), then visible — the production trigger.
@@ -110,7 +152,7 @@ test('BUG-2601: a missed collection-rename SSE is healed by the next sync pass',
 		// RESUME signal specifically — a broken implementation healing on
 		// the hidden event or a free-running timer fails here (codex
 		// round 7 P2).
-		expect(new URL(page.url()).pathname.endsWith('/tasks')).toBeTruthy();
+		routeLog.expectStranded('inside the hidden window', (p) => p.endsWith('/tasks'));
 		await page.evaluate(() => {
 			Object.defineProperty(document, 'hidden', { configurable: true, get: () => false });
 			document.dispatchEvent(new Event('visibilitychange'));
@@ -165,9 +207,11 @@ test('BUG-2601: a missed rename heals the full-page item route too', async ({
 		const item = (await itemResp.json()) as { slug: string };
 
 		await page.route('**/api/v1/events**', (route) => route.abort());
+		const routeLog = routeRecorder(page);
 		await gotoWithEmptySeed(page, ws.slug, `/${fixture.adminUsername}/${ws.slug}/tasks/${item.slug}`);
 		await expect(page.getByText('item-route heal probe').first()).toBeVisible();
 
+		routeLog.markRename();
 		const renameResp = await request.patch(
 			`/api/v1/workspaces/${ws.slug}/collections/tasks`,
 			{ headers: auth, data: { name: 'Chores' } },
@@ -178,7 +222,7 @@ test('BUG-2601: a missed rename heals the full-page item route too', async ({
 
 		// Vacuity guard: still on the dead segment before the sync pass.
 		await page.waitForTimeout(700);
-		expect(new URL(page.url()).pathname).toContain('/tasks/');
+		routeLog.expectStranded('vacuity guard', (p) => p.includes('/tasks/'));
 
 		await page.evaluate(() => {
 			Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
@@ -187,7 +231,7 @@ test('BUG-2601: a missed rename heals the full-page item route too', async ({
 		await page.waitForTimeout(2200);
 		// Still stranded inside the hidden window (same vacuity pin as the
 		// list-route leg above).
-		expect(new URL(page.url()).pathname).toContain('/tasks/');
+		routeLog.expectStranded('inside the hidden window', (p) => p.includes('/tasks/'));
 		await page.evaluate(() => {
 			Object.defineProperty(document, 'hidden', { configurable: true, get: () => false });
 			document.dispatchEvent(new Event('visibilitychange'));
