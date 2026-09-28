@@ -1,11 +1,14 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
+	import { tabsStore } from '$lib/stores/tabs.svelte';
+	import { authStore } from '$lib/stores/auth.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
 	import { viewport } from '$lib/stores/breakpoint.svelte';
 	import { workspaceRestoreTarget } from '$lib/utils/workspace-route';
 	import RecentlyDeletedWorkspaces from '$lib/components/layout/RecentlyDeletedWorkspaces.svelte';
+	import type { Workspace } from '$lib/types';
 
 	interface Props {
 		/**
@@ -28,6 +31,10 @@
 	// deep. Follows the shared breakpoint store unless the caller forces the
 	// branch via the `mobile` prop.
 	let isMobile = $derived(mobile ?? viewport.isMobile);
+	let otherWorkspaces = $derived.by(() => {
+		const openSlugs = new Set(tabsStore.tabs.map((tab) => tab.slug));
+		return workspaceStore.workspaces.filter((ws) => !openSlugs.has(ws.slug));
+	});
 
 	// Close the sheet if the viewport (or an ancestor-driven `mobile` prop)
 	// crosses above mobile while it's open (e.g. rotation) so returning to
@@ -68,6 +75,15 @@
 		uiStore.openCreateWorkspace();
 	}
 
+	// Choosing a workspace outside the open set keeps its new tab, as in "+" search.
+	async function selectOther(ws: Workspace) {
+		open = false;
+		const isSameIdentity = authStore.identityFence();
+		await tabsStore.open(ws.slug, false).catch(() => {});
+		if (!isSameIdentity()) return;
+		goto(workspaceRestoreTarget(ws));
+	}
+
 </script>
 
 {#snippet workspaceList()}
@@ -76,6 +92,36 @@
 			class="item"
 			class:active={ws.slug === workspaceStore.current?.slug}
 			onclick={() => select(ws)}
+		>
+			{ws.name}
+		</button>
+	{/each}
+	<button class="item create-trigger" onclick={openCreateModal}>
+		+ New Workspace
+	</button>
+{/snippet}
+
+{#snippet mobileWorkspaceList()}
+	{#each tabsStore.tabs as tab (tab.slug)}
+		<button
+			class="item"
+			class:active={tab.slug === workspaceStore.current?.slug}
+			data-ws-slug={tab.slug}
+			style:font-style={tab.ephemeral ? 'italic' : undefined}
+			onclick={() => select(tab)}
+		>
+			{tab.name}
+		</button>
+	{/each}
+	{#if tabsStore.tabs.length > 0 && otherWorkspaces.length > 0}
+		<hr class="workspace-divider" />
+	{/if}
+	{#each otherWorkspaces as ws (ws.slug)}
+		<button
+			class="item"
+			class:active={ws.slug === workspaceStore.current?.slug}
+			data-ws-slug={ws.slug}
+			onclick={() => selectOther(ws)}
 		>
 			{ws.name}
 		</button>
@@ -109,7 +155,13 @@
 			title="Switch workspace"
 		>
 			<div class="sheet-body">
-				{@render workspaceList()}
+				<!-- Until the open set loads, every workspace would look "not open"
+				     and a tap would pin it; show the plain list instead. -->
+				{#if tabsStore.loaded}
+					{@render mobileWorkspaceList()}
+				{:else}
+					{@render workspaceList()}
+				{/if}
 				<RecentlyDeletedWorkspaces active={open} roomy />
 			</div>
 		</BottomSheet>
@@ -174,6 +226,7 @@
 	.item:hover { background: var(--bg-hover); }
 	.item.active { background: var(--bg-active); color: var(--accent-blue); }
 	.create-trigger { color: var(--text-muted); border-top: 1px solid var(--border); }
+	.workspace-divider { width: 100%; margin: var(--space-2) 0; border: 0; border-top: 1px solid var(--border); }
 
 	/* Inside the mobile sheet, give the rows a bit more vertical padding
 	   to be thumb-reachable. */
