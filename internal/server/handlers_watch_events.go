@@ -50,6 +50,12 @@ type watchEventPayload struct {
 	Kind      string `json:"kind"`
 	Actor     string `json:"actor"`
 	Summary   string `json:"summary"`
+	// WorkspaceID and Change are set only on workspace_access_changed
+	// (TASK-3272) and omitted otherwise, so every existing kind's bytes are
+	// unchanged. WorkspaceID is the stable key for a workspace whose slug
+	// may no longer resolve (purged), where Workspace falls back to the ID.
+	WorkspaceID string `json:"workspace_id,omitempty"`
+	Change      string `json:"change,omitempty"`
 }
 
 // handleWatchEventsStream streams the caller's watch/nudge notifications.
@@ -59,7 +65,10 @@ type watchEventPayload struct {
 // Unlike handleSSE (GET /api/v1/events, workspace-scoped), this stream is
 // USER-scoped and spans every workspace the caller belongs to — a watch
 // or a push can land in any of them. It is filtered, server-side,
-// to exactly two things (DR-2: no firehose, no wildcard subscriptions):
+// to exactly two things (DR-2: no firehose, no wildcard subscriptions),
+// plus a third a stream receives only when it opts in with ?access=true:
+// workspace_access_changed addressed to its own user (TASK-3272; see
+// watchStreamDelivers):
 //
 //  1. Notifications on an item the caller has an explicit watch on
 //     (internal/store's watches table), gated by that watch's optional
@@ -213,6 +222,10 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 	// applying just because the optional layer isn't there.
 	ident := parseSessionIdentity(r)
 	armed := ident.Armed
+	// TASK-3272: a stream receives workspace_access_changed only when it
+	// asks for it. Read here rather than into SessionIdentity because it is
+	// a delivery preference of this connection, not presence metadata.
+	access := r.URL.Query().Get(watchAccessQueryParam) == "true"
 	// sessionID hoisted out of the if-block (PLAN-2558 S5, TASK-2588): a
 	// targeted push's predicate (Notification.TargetSessionID) is
 	// evaluated in the select loop below, which needs this connection's
@@ -297,7 +310,7 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 			flusher.Flush()
 		} else {
 			for _, n := range missed {
-				if !watchNotificationVisible(watches, visCache.forWorkspace(n.WorkspaceID), user.ID, sessionID, armed, n) {
+				if !watchStreamDelivers(watches, visCache.forWorkspace(n.WorkspaceID), user.ID, sessionID, armed, access, n) {
 					continue
 				}
 				if err := writeSSEEvent(w, "notification", n.ID, watchEventPayloadFor(s, n)); err != nil {
@@ -349,7 +362,7 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 			if !ok {
 				return
 			}
-			if !watchNotificationVisible(watches, visCache.forWorkspace(n.WorkspaceID), user.ID, sessionID, armed, n) {
+			if !watchStreamDelivers(watches, visCache.forWorkspace(n.WorkspaceID), user.ID, sessionID, armed, access, n) {
 				continue
 			}
 			if err := writeSSEEvent(w, "notification", n.ID, watchEventPayloadFor(s, n)); err != nil {
@@ -748,6 +761,33 @@ func watchNotificationVisible(watches map[string]string, vis watchAccessVisibili
 	return n.Kind == watchevents.KindStatusChange && n.StatusFieldKey == field && n.ToStatus == value
 }
 
+// watchAccessQueryParam is the opt-in for workspace_access_changed
+// (TASK-3272), the sibling of sessionArmedQueryParam and a query parameter
+// for the same reason: a browser EventSource cannot set headers. Only
+// "true" counts.
+const watchAccessQueryParam = "access"
+
+// watchStreamDelivers is the stream's delivery decision. It answers
+// workspace_access_changed itself and hands every other kind to
+// watchNotificationVisible unchanged.
+//
+// The access branch runs BEFORE the visibility check, deliberately: the
+// recipient of a "lost", "deleted" or "purged" event no longer reaches the
+// workspace, so the uniform check would drop exactly the events this kind
+// exists for. What it reveals is safe for that reason too: the recipient is
+// the one user whose access changed, and the workspace is one they reached
+// until this moment. It is addressed traffic exclusive of watch matching,
+// like push, but NOT behind the armed gate: it carries no instruction, and
+// the web tab bar that consumes it (PLAN-3002 U7b) does not arm. An
+// access=true stream is an ordinary /events/stream connection and counts
+// against PAD_SSE_MAX_PER_USER like any other.
+func watchStreamDelivers(watches map[string]string, vis watchAccessVisibility, userID string, sessionID string, armed, access bool, n watchevents.Notification) bool {
+	if n.Kind == watchevents.KindWorkspaceAccessChanged {
+		return access && n.TargetUserID != "" && n.TargetUserID == userID
+	}
+	return watchNotificationVisible(watches, vis, userID, sessionID, armed, n)
+}
+
 // parseWatchPredicate splits a `field=value` predicate string. DOC-2479
 // specs only this single-pair grammar — no boolean combinators.
 func parseWatchPredicate(raw string) (field, value string, ok bool) {
@@ -783,7 +823,7 @@ func watchEventPayloadFor(s *Server, n watchevents.Notification) watchEventPaylo
 	if actor == "" {
 		actor = n.Actor
 	}
-	return watchEventPayload{
+	p := watchEventPayload{
 		ID:        n.ID,
 		Ts:        n.Timestamp,
 		Workspace: workspaceSlug,
@@ -792,4 +832,9 @@ func watchEventPayloadFor(s *Server, n watchevents.Notification) watchEventPaylo
 		Actor:     actor,
 		Summary:   n.Summary,
 	}
+	if n.Kind == watchevents.KindWorkspaceAccessChanged {
+		p.WorkspaceID = n.WorkspaceID
+		p.Change = n.AccessChange
+	}
+	return p
 }

@@ -423,6 +423,40 @@ func (s *Store) UserHasGrantsInWorkspace(workspaceID, userID string) (bool, erro
 	return count > 0, nil
 }
 
+// ListWorkspaceAccessUserIDs returns every user who reaches a workspace: its
+// members, plus every user holding a live grant in it (the same live-grant
+// filter as UserHasGrantsInWorkspace). It does NOT read workspaces.deleted_at,
+// so a soft-deleted workspace still answers with the users who had access,
+// which is what the lifecycle publishers of workspace_access_changed need
+// (TASK-3272). Each user appears once.
+func (s *Store) ListWorkspaceAccessUserIDs(workspaceID string) ([]string, error) {
+	rows, err := s.db.Query(s.q(`
+		SELECT user_id FROM workspace_members WHERE workspace_id = ?
+		UNION
+		SELECT cg.user_id FROM collection_grants cg
+		JOIN collections c ON c.id = cg.collection_id
+		WHERE cg.workspace_id = ? AND c.deleted_at IS NULL
+		UNION
+		SELECT ig.user_id FROM item_grants ig
+		JOIN items i ON i.id = ig.item_id
+		JOIN collections c ON c.id = i.collection_id
+		WHERE ig.workspace_id = ? AND i.deleted_at IS NULL AND c.deleted_at IS NULL
+	`), workspaceID, workspaceID, workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("list workspace access users: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan workspace access user: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // GuestVisibleCollectionIDs returns the collection IDs a guest (non-member with
 // grants) can see. Includes collections with direct collection_grants and
 // collections that contain items the user has item_grants on.

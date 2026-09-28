@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/watchevents"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -103,10 +104,15 @@ func (s *Server) handleCreateCollectionGrant(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// TASK-3272: a grant is a gain only for a user who reached nothing here.
+	reachedBefore, reachErr := s.userReachesWorkspace(workspaceID, userID)
 	grant, err := s.store.CreateCollectionGrant(workspaceID, coll.ID, userID, input.Permission, currentUserID(r))
 	if err != nil {
 		writeError(w, http.StatusConflict, "conflict", "Grant already exists or failed to create")
 		return
+	}
+	if reachErr != nil || !reachedBefore {
+		s.publishWorkspaceAccessChangedFromRequest(r, workspaceID, watchevents.AccessGained, userID)
 	}
 
 	writeJSON(w, http.StatusCreated, grant)
@@ -163,6 +169,7 @@ func (s *Server) handleDeleteCollectionGrant(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusNotFound, "not_found", "Grant not found")
 		return
 	}
+	s.publishLostIfUnreachable(r, workspaceID, grant.UserID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -261,10 +268,15 @@ func (s *Server) handleCreateItemGrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// TASK-3272: a grant is a gain only for a user who reached nothing here.
+	reachedBefore, reachErr := s.userReachesWorkspace(workspaceID, userID)
 	grant, err := s.store.CreateItemGrant(workspaceID, item.ID, userID, input.Permission, currentUserID(r))
 	if err != nil {
 		writeError(w, http.StatusConflict, "conflict", "Grant already exists or failed to create")
 		return
+	}
+	if reachErr != nil || !reachedBefore {
+		s.publishWorkspaceAccessChangedFromRequest(r, workspaceID, watchevents.AccessGained, userID)
 	}
 
 	writeJSON(w, http.StatusCreated, grant)
@@ -311,6 +323,7 @@ func (s *Server) handleDeleteItemGrant(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "Grant not found")
 		return
 	}
+	s.publishLostIfUnreachable(r, workspaceID, grant.UserID)
 	w.WriteHeader(http.StatusNoContent)
 }
 

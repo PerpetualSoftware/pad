@@ -10,6 +10,7 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/email"
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/watchevents"
 )
 
 // handleListMembers returns all members of a workspace.
@@ -138,6 +139,7 @@ func (s *Server) handleInviteMember(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.logWorkspaceAuditEvent(workspaceID, models.ActionMemberInvited, r, auditMeta(map[string]string{"email": existingUser.Email, "role": input.Role, "added_directly": "true"}))
+		s.publishWorkspaceAccessChangedFromRequest(r, workspaceID, watchevents.AccessGained, existingUser.ID)
 		writeJSON(w, http.StatusCreated, map[string]interface{}{
 			"added":   true,
 			"user_id": existingUser.ID,
@@ -239,6 +241,7 @@ func (s *Server) handleRemoveMember(w http.ResponseWriter, r *http.Request) {
 		meta["revoked_grants"] = "true"
 	}
 	s.logWorkspaceAuditEvent(workspaceID, models.ActionMemberRemoved, r, auditMeta(meta))
+	s.publishLostIfUnreachable(r, workspaceID, userID)
 
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -349,6 +352,10 @@ func (s *Server) handleAcceptInvitation(w http.ResponseWriter, r *http.Request) 
 		writeInternalError(w, err)
 		return
 	}
+	// The membership IS the access, so the gain is published here, before
+	// the accept bookkeeping below can fail and 500 over a membership that
+	// has already committed (TASK-3272, codex round 1).
+	s.publishWorkspaceAccessChangedFromRequest(r, inv.WorkspaceID, watchevents.AccessGained, user.ID)
 
 	// Mark invitation as accepted
 	if err := s.store.AcceptInvitation(inv.ID); err != nil {

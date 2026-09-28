@@ -468,3 +468,25 @@ func (s *Store) ListDeletedWorkspaces(userID string, cutoff time.Time) ([]models
 	}
 	return result, rows.Err()
 }
+
+// ListOwnedLiveWorkspaceIDs returns the IDs of the live workspaces a user
+// owns: exactly the set DeleteAccountAtomic soft-deletes, read with the same
+// predicate so a caller can learn it before the delete (TASK-3272).
+func (s *Store) ListOwnedLiveWorkspaceIDs(userID string) ([]string, error) {
+	rows, err := s.db.Query(s.q(`
+		SELECT id FROM workspaces WHERE owner_id = ? AND deleted_at IS NULL
+	`), userID)
+	if err != nil {
+		return nil, fmt.Errorf("list owned workspaces: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan owned workspace: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}

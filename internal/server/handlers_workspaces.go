@@ -15,6 +15,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/events"
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
+	"github.com/PerpetualSoftware/pad/internal/watchevents"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -594,6 +595,9 @@ func (s *Server) handleDeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Read before the write, like every lifecycle door (TASK-3272). A soft
+	// delete keeps these rows, but reading first keeps one rule for all.
+	accessUsers := s.workspaceAccessUsers(ws.ID)
 	err := s.store.DeleteWorkspace(ws.Slug)
 	if errors.Is(err, sql.ErrNoRows) {
 		// Resolved above and gone by the time the delete ran: the
@@ -608,6 +612,7 @@ func (s *Server) handleDeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
+	s.publishWorkspaceAccessChangedFromRequest(r, ws.ID, watchevents.AccessDeleted, accessUsers...)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -763,6 +768,9 @@ func (s *Server) handleRestoreWorkspace(w http.ResponseWriter, r *http.Request) 
 		writeInternalError(w, err)
 		return
 	}
+	// Published once the restore commits, before the re-fetch below can 500
+	// over it (TASK-3272, codex round 1's class).
+	s.publishWorkspaceAccessChangedFromRequest(r, ws.ID, watchevents.AccessRestored, s.workspaceAccessUsers(ws.ID)...)
 
 	// Re-fetch the now-live row so the response carries the fully hydrated,
 	// un-deleted workspace.

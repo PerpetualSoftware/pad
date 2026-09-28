@@ -81,8 +81,9 @@ var ErrBusClosed = errors.New("watchevents: bus is closed")
 // handler maps both to the same 503.
 var ErrNotSubscribed = errors.New("watchevents: this instance has no subscription to the watch channel")
 
-// Notification kinds, matching DOC-2479's event payload contract
-// (kind ∈ {status-change, assignment, comment, ask}) exactly.
+// Notification kinds: DOC-2479's event payload contract (kind ∈
+// {status-change, assignment, comment, ask}), plus push (IDEA-2544) and the
+// opt-in workspace_access_changed (TASK-3272).
 const (
 	KindStatusChange = "status-change"
 	KindAssignment   = "assignment"
@@ -114,6 +115,26 @@ const (
 	// (harness→human) — see TargetUserID's doc comment for the shared
 	// envelope shape the two are meant to converge on.
 	KindPush = "push"
+	// KindWorkspaceAccessChanged tells a user that their access to a whole
+	// workspace changed (TASK-3272, PLAN-3002 U7): they gained it, lost it,
+	// or the workspace was deleted, restored or purged. It carries no item.
+	// It is addressed by TargetUserID and reaches only streams that opted in
+	// with ?access=true (server.watchStreamDelivers), because an installed
+	// `pad watch --stream` prints any kind it does not know as an item line
+	// into an agent session. It is a refetch hint: the read-filtered
+	// GET /me/workspace-tabs is where correctness lives.
+	KindWorkspaceAccessChanged = "workspace_access_changed"
+)
+
+// AccessChange values for KindWorkspaceAccessChanged. Gained and lost are
+// about one user; the other three are workspace lifecycle, fanned out to
+// everyone who had access.
+const (
+	AccessGained   = "gained"
+	AccessLost     = "lost"
+	AccessDeleted  = "deleted"
+	AccessRestored = "restored"
+	AccessPurged   = "purged"
 )
 
 // Notification is one watch-worthy fact: an item's status changed, it was
@@ -189,7 +210,10 @@ type Notification struct {
 	// without a second lookup back into the item.
 	StatusFieldKey string
 	ToStatus       string
-	Timestamp      int64
+	// AccessChange is populated on Kind == KindWorkspaceAccessChanged with
+	// one of the Access* values above.
+	AccessChange string
+	Timestamp    int64
 }
 
 // Bus is the pub/sub surface the watch pipeline's producers and the
