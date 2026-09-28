@@ -307,11 +307,23 @@ func (s *Server) handleCancelInvitation(w http.ResponseWriter, r *http.Request) 
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// invitationEmailMatches applies the same normalization as CreateInvitation
-// and compares the stored address byte-exactly. EqualFold additionally equates
-// distinct lowercase addresses, such as ſam@x.com and sam@x.com (BUG-3282).
+// invitationEmailMatches lowercases ASCII letters only and compares the stored
+// address byte-exactly. Both EqualFold and strings.ToLower equate distinct
+// addresses through Unicode folding: EqualFold matches ſam@x.com to sam@x.com,
+// and ToLower turns the Kelvin sign K into an ASCII k (BUG-3282). Folding only
+// A-Z leaves any non-ASCII rune as itself, so it can never match an ASCII byte.
 func invitationEmailMatches(email, invitationEmail string) bool {
-	return strings.ToLower(strings.TrimSpace(email)) == invitationEmail
+	return asciiLower(strings.TrimSpace(email)) == invitationEmail
+}
+
+func asciiLower(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if 'A' <= c && c <= 'Z' {
+			b[i] = c + ('a' - 'A')
+		}
+	}
+	return string(b)
 }
 
 // handleAcceptInvitation accepts a workspace invitation by code.

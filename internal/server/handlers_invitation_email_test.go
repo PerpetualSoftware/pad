@@ -15,7 +15,7 @@ func TestInvitationEmailMatches(t *testing.T) {
 		{"long_s", "ſam@x.com", "sam@x.com", false},
 		{"case_and_whitespace", " \tSam@X.com\n", "sam@x.com", true},
 		{"different_address", "sam@K.com", "sam@x.com", false},
-		{"kelvin_lowercase", "Kam@x.com", "kam@x.com", true},
+		{"kelvin_lowercase", "Kam@x.com", "kam@x.com", false}, // the ASCII-only fold leaves the Kelvin sign as itself
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := invitationEmailMatches(tc.email, tc.invited); got != tc.want {
@@ -40,9 +40,10 @@ func TestInvitationEmailBinding(t *testing.T) {
 				{"ascii_case", "sam@x.com", "Sam@X.com", true},
 				{"whitespace", "sam@x.com", " \tSAM@X.COM \n", true},
 				{"kelvin_different_address", "sam@x.com", "SAM@K.COM", false},
-				// ToLower itself maps Kelvin sign to k. Preserving the store's
-				// normalization means this pair still matches; rejecting it
-				// requires a separate product decision about email policy.
+				// The accepting account's stored email is already lowercased
+				// by the user store (the Kelvin sign becomes an ASCII k), so on
+				// the accept door this is the ASCII address kam@x.com and
+				// matches. Registration rejects non-ASCII addresses outright.
 				{"kelvin_lowercase", "kam@x.com", "Kam@X.com", true},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
