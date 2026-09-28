@@ -654,7 +654,9 @@
 								</div>
 								<div class="card-divider"></div>
 								<div class="card-actions">
-									<Button variant="secondary" size="sm" onclick={() => goto(`/${username}/${wsSlug}/playbooks/${itemUrlId(item)}`)}>Edit</Button>
+									<!-- The editor opens read-only for an account that may not
+									     write this playbook (BUG-3270), so the link says so. -->
+									<Button variant="secondary" size="sm" onclick={() => goto(`/${username}/${wsSlug}/playbooks/${itemUrlId(item)}`)}>{workspaceStore.canEditItem(item) ? 'Edit' : 'View'}</Button>
 									<!-- DISABLED WHILE THE SCHEMA IS UNKNOWN (BUG-3067 round 7).
 									     Withholding the chip left `status` empty, and this label is
 									     computed FROM it — so every card read "Mark as Draft"

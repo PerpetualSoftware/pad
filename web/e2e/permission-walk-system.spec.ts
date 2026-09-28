@@ -95,10 +95,11 @@ for (const key of ACCOUNT_KEYS) {
 			const empty = page.getByText('No playbooks yet', { exact: true });
 			await expect(card.or(empty)).toBeVisible();
 			if (await card.isVisible()) {
-				// Duplicate sits in an expanded playbook, beside Edit, which
-				// renders for everyone who can open one.
+				// Duplicate sits in an expanded playbook, beside Export, which
+				// renders for everyone who can open one (Edit reads View for an
+				// account that may not write it, BUG-3270).
 				await card.click();
-				await expect(page.getByRole('button', { name: 'Edit', exact: true }).first()).toBeVisible();
+				await expect(page.getByRole('button', { name: 'Export', exact: true }).first()).toBeVisible();
 				await expect(page.getByRole('button', { name: 'Duplicate', exact: true })).toHaveCount(
 					allows.playbooks ? 1 : 0
 				);

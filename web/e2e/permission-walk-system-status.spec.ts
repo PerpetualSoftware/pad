@@ -163,6 +163,29 @@ for (const key of ACCOUNT_KEYS) {
 			await expect(card.getByRole('button', { name: 'Export', exact: true })).toBeVisible();
 			await expect(card.getByRole('button', { name: 'Mark as Active', exact: true })).toHaveCount(edits);
 			await expect(card.getByRole('button', { name: 'Delete', exact: true })).toHaveCount(edits);
+			// The editor link says what it opens (BUG-3270): Edit for an
+			// account that may write the playbook, View for one that may not.
+			await expect(card.getByRole('button', { name: 'Edit', exact: true })).toHaveCount(edits);
+			await expect(card.getByRole('button', { name: 'View', exact: true })).toHaveCount(1 - edits);
+		});
+
+		test('Playbook editor: the form is writable and Save renders iff the server lets the account edit the item', async ({
+			page
+		}) => {
+			await open(page, key, `/playbooks/${slugs.playbooks}`);
+			const edits = serverEdits[key].playbooks;
+			const titleInput = page.getByPlaceholder('Playbook title');
+			// Export renders for everyone who can open the playbook, and the
+			// title shows the loaded item: the presence the rest is read against.
+			await expect(page.getByRole('button', { name: 'Export', exact: true })).toBeVisible();
+			await expect(titleInput).toHaveValue(TITLE.playbooks);
+			await expect(page.getByRole('button', { name: 'Save', exact: true })).toHaveCount(edits ? 1 : 0);
+			const body = page.locator('#pbe-body');
+			const status = page.locator('.edit-sidebar select').first();
+			for (const control of [titleInput, body, status]) {
+				if (edits) await expect(control).toBeEditable();
+				else await expect(control).not.toBeEditable();
+			}
 		});
 	});
 }

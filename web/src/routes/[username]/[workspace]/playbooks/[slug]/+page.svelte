@@ -6,6 +6,7 @@
 	import { parseFields, parseSchema, itemUrlId, formatItemRef, type Collection, type Item } from '$lib/types';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
+	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { titleEditError } from '$lib/items/titleLimit';
 	import { contentOutcomeNotice, contentWriteFor, isContentPendingFlush, pendingEditsReason, prunedEditsNotice } from '$lib/items/contentWrite';
 	import { pendingEditsDialog } from '$lib/stores/pendingEditsDialog.svelte';
@@ -47,6 +48,10 @@
 	let existingPlaybooks = $state<Item[]>([]);
 	let loading = $state(true);
 	let saving = $state(false);
+	// Save is an item update, refused without edit on this playbook
+	// (BUG-3270). Everyone who can open it may still read it here: the
+	// arguments and settings show nowhere else.
+	let canEdit = $derived(!!item && workspaceStore.canEditItem(item));
 	let exporting = $state(false);
 
 	// Scroll position restoration (BUG-1425). Form pages are usually short
@@ -223,7 +228,7 @@
 	let storedMismatches = $derived(storedFormMismatches(storedRaw, statuses, scopes));
 
 	async function save() {
-		if (!item) return;
+		if (!item || !canEdit) return;
 		// BUG-3115: refuse a too-long title before sending; the form keeps it.
 		// Only a CHANGED title: save() always re-sends it, and a legacy title
 		// over the limit is grandfathered by the server as long as it is echoed.
@@ -334,11 +339,16 @@
 					type="text"
 					value={title}
 					placeholder="Playbook title"
+					readonly={!canEdit}
 					oninput={(e) => (title = (e.currentTarget as HTMLInputElement).value)}
 				/>
 			</div>
 			<div class="header-actions">
-				<Button variant="secondary" onclick={cancel}>Cancel</Button>
+				{#if canEdit}
+					<Button variant="secondary" onclick={cancel}>Cancel</Button>
+				{:else}
+					<span class="view-only">View only</span>
+				{/if}
 				<Button
 					variant="secondary"
 					disabled={exporting}
@@ -347,13 +357,15 @@
 				>
 					{exporting ? 'Exporting…' : 'Export'}
 				</Button>
-				<Button
-					variant="primary"
-					disabled={saving || !title.trim()}
-					onclick={save}
-				>
-					{saving ? 'Saving…' : 'Save'}
-				</Button>
+				{#if canEdit}
+					<Button
+						variant="primary"
+						disabled={saving || !title.trim()}
+						onclick={save}
+					>
+						{saving ? 'Saving…' : 'Save'}
+					</Button>
+				{/if}
 			</div>
 		</header>
 
@@ -364,6 +376,9 @@
 						{m.label} is stored as <code>{m.raw}</code>, which this form can't show. It is kept unless you change {m.label.toLowerCase()} here.
 					</p>
 				{/each}
+				<!-- A disabled fieldset disables every control the form renders,
+				     including the argument builder's add and remove buttons. -->
+				<fieldset class="form-fieldset" disabled={!canEdit}>
 				<PlaybookFormFields
 					{wsSlug}
 					selfItemId={item.id}
@@ -384,6 +399,7 @@
 					onArgumentsChange={(a) => (args = a)}
 					onBodyContentChange={(b) => (bodyContent = b)}
 				/>
+				</fieldset>
 			</aside>
 
 			<section class="edit-main">
@@ -392,6 +408,7 @@
 					id="pbe-body"
 					class="body-textarea"
 					value={bodyContent}
+					readonly={!canEdit}
 					oninput={(e) => (bodyContent = (e.currentTarget as HTMLTextAreaElement).value)}
 					placeholder="Describe what this playbook does, its arguments, steps, defaults, and stop conditions."
 				></textarea>
@@ -409,6 +426,16 @@
 		color: var(--text-secondary);
 		border: 1px dashed var(--border);
 		border-radius: var(--radius-sm, 4px);
+	}
+	.form-fieldset {
+		border: none;
+		margin: 0;
+		padding: 0;
+		min-width: 0;
+	}
+	.view-only {
+		font-size: 0.85em;
+		color: var(--text-muted);
 	}
 	.edit-page {
 		max-width: var(--content-max-width);
