@@ -908,6 +908,23 @@ func (s *Server) computeSSEVisibility(r *http.Request, workspaceID string) sseVi
 // demotion). We always GetUser fresh from the store so privilege
 // revocation closes streams within one tick.
 func (s *Server) sseSubscriberStillHasAccess(r *http.Request, workspaceID string) bool {
+	// The WORKSPACE first (BUG-3273). A soft delete keeps membership and
+	// grant rows so a restore can bring them back, so every principal branch
+	// below still answers yes afterwards, while the entry check refuses a
+	// deleted workspace to everyone. GetWorkspaceByID reads only live rows:
+	// nil means deleted or purged, and ends the stream for every principal,
+	// the cookie admin and the fresh-install window included. A store error
+	// is not a deletion and keeps the connection, like the checks below.
+	live, err := s.store.GetWorkspaceByID(workspaceID)
+	if err != nil {
+		slog.Warn("SSE revalidation: GetWorkspaceByID failed; keeping connection open",
+			"workspace_id", workspaceID, "error", err)
+		return true
+	}
+	if live == nil {
+		return false
+	}
+
 	// Fresh-install escape hatch: no users exist → everyone has access.
 	// Matches RequireWorkspaceAccess. Cheap to recheck.
 	if count, _ := s.store.UserCount(); count == 0 {
