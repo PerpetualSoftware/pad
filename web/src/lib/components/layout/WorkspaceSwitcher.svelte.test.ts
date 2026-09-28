@@ -32,7 +32,7 @@ const tab = (slug: string, name: string, ephemeral = false, last_route?: string)
 });
 
 async function mount(openTabs: ReturnType<typeof tab>[]) {
-	mocks.tabs.list.mockResolvedValueOnce({ tabs: openTabs });
+	mocks.tabs.list.mockResolvedValueOnce({ revision: 1, tabs: openTabs });
 	await tabsStore.load();
 	render(WorkspaceSwitcher, { props: { mobile: true } });
 	await fireEvent.click(document.querySelector<HTMLButtonElement>('.switcher .current')!);
@@ -76,7 +76,7 @@ describe('mobile WorkspaceSwitcher', () => {
 
 	it('opens a workspace from the rest as a durable tab before restoring its route', async () => {
 		await mount([tab('alpha', 'Alpha')]);
-		mocks.tabs.open.mockResolvedValueOnce({ tabs: [tab('alpha', 'Alpha'), tab('beta', 'Beta', false, '/u/beta/docs')] });
+		mocks.tabs.open.mockResolvedValueOnce({ revision: 2, tabs: [tab('alpha', 'Alpha'), tab('beta', 'Beta', false, '/u/beta/docs')] });
 		await fireEvent.click(rows()[1]);
 		await tick();
 		expect(mocks.tabs.open).toHaveBeenCalledWith('beta', false);

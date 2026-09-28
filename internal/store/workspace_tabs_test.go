@@ -37,7 +37,8 @@ func tabsWorkspace(t *testing.T, s *Store, owner *models.User, name string) *mod
 
 func tabIDs(t *testing.T, s *Store, userID string) []string {
 	t.Helper()
-	rows, err := s.ListWorkspaceTabRows(userID)
+	list, err := s.ListWorkspaceTabs(userID)
+	rows := list.Rows
 	if err != nil {
 		t.Fatalf("list tabs: %v", err)
 	}
@@ -50,7 +51,8 @@ func tabIDs(t *testing.T, s *Store, userID string) []string {
 
 func tabRow(t *testing.T, s *Store, userID, wsID string) (WorkspaceTabRow, bool) {
 	t.Helper()
-	rows, err := s.ListWorkspaceTabRows(userID)
+	list, err := s.ListWorkspaceTabs(userID)
+	rows := list.Rows
 	if err != nil {
 		t.Fatalf("list tabs: %v", err)
 	}
@@ -141,7 +143,8 @@ func TestWorkspaceTabs_MigrationSeed(t *testing.T) {
 	if !sameIDs(got, want) {
 		t.Fatalf("member seed:\n got %v\nwant %v", got, want)
 	}
-	rows, _ := s.ListWorkspaceTabRows(member.ID)
+	list, _ := s.ListWorkspaceTabs(member.ID)
+	rows := list.Rows
 	for i, r := range rows {
 		if r.Position != i || r.Ephemeral || r.LastRoute != "" {
 			t.Fatalf("seeded row %d = %+v, want position %d, durable, no route", i, r, i)
@@ -170,7 +173,7 @@ func TestWorkspaceTabs_OpenCloseReorderUpdate(t *testing.T) {
 		t.Fatalf("clear: %v", err)
 	}
 
-	must := func(err error) {
+	must := func(_ WorkspaceTabList, err error) {
 		t.Helper()
 		if err != nil {
 			t.Fatal(err)
@@ -218,7 +221,8 @@ func TestWorkspaceTabs_OpenCloseReorderUpdate(t *testing.T) {
 	}
 	// The positions are rewritten, not merely sorted into place: a tie
 	// broken by created_at would hide a reorder that left rows unwritten.
-	reordered, _ := s.ListWorkspaceTabRows(u.ID)
+	reorderedList, _ := s.ListWorkspaceTabs(u.ID)
+	reordered := reorderedList.Rows
 	for i, r := range reordered {
 		if r.Position != i {
 			t.Fatalf("after reorder, row %d (%s) has position %d", i, r.WorkspaceID, r.Position)
@@ -238,7 +242,7 @@ func TestWorkspaceTabs_OpenCloseReorderUpdate(t *testing.T) {
 		t.Fatalf("route not cleared: %+v", r)
 	}
 	must(s.CloseWorkspaceTab(u.ID, b.ID))
-	if err := s.UpdateWorkspaceTab(u.ID, b.ID, WorkspaceTabUpdate{Pin: true}); err == nil || !strings.Contains(err.Error(), "no rows") {
+	if _, err := s.UpdateWorkspaceTab(u.ID, b.ID, WorkspaceTabUpdate{Pin: true}); err == nil || !strings.Contains(err.Error(), "no rows") {
 		t.Fatalf("update of a closed tab: err %v, want sql.ErrNoRows", err)
 	}
 
@@ -270,7 +274,8 @@ func TestWorkspaceTabs_AtMostOneEphemeralUnderConcurrency(t *testing.T) {
 		go func(id string) {
 			defer wg.Done()
 			<-start
-			errs <- s.OpenWorkspaceTab(u.ID, id, true)
+			_, err := s.OpenWorkspaceTab(u.ID, id, true)
+			errs <- err
 		}(ws.ID)
 	}
 	close(start)
@@ -281,7 +286,8 @@ func TestWorkspaceTabs_AtMostOneEphemeralUnderConcurrency(t *testing.T) {
 			t.Fatalf("concurrent open: %v", err)
 		}
 	}
-	rows, err := s.ListWorkspaceTabRows(u.ID)
+	list, err := s.ListWorkspaceTabs(u.ID)
+	rows := list.Rows
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +324,7 @@ func TestWorkspaceTabs_LossPathsDeleteTheRow(t *testing.T) {
 			t.Fatalf("create collection: %v", err)
 		}
 		for _, uid := range []string{owner.ID, member.ID} {
-			if err := s.OpenWorkspaceTab(uid, ws.ID, false); err != nil {
+			if _, err := s.OpenWorkspaceTab(uid, ws.ID, false); err != nil {
 				t.Fatalf("open: %v", err)
 			}
 		}

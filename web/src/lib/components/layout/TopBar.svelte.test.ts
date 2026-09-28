@@ -49,8 +49,12 @@ import TopBar from './TopBar.svelte';
 import { tabsStore } from '$lib/stores/tabs.svelte';
 import { uiStore } from '$lib/stores/ui.svelte';
 
+// Each answer is numbered after the last, as a server processing the
+// requests in the order the test answers them would (BUG-3285).
+let revision = 0;
 function answer(tabs: Tab[]) {
 	return {
+		revision: ++revision,
 		tabs: tabs.map((t, i) => ({
 			owner_username: 'u',
 			is_guest: false,

@@ -215,7 +215,8 @@ func TestWorkspaceTabsAPI_ReadFilterHidesALostWorkspace(t *testing.T) {
 	if _, err := f.srv.store.DB().Exec(`DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?`, ws.ID, f.user.ID); err != nil {
 		t.Fatal(err)
 	}
-	rows, err := f.srv.store.ListWorkspaceTabRows(f.user.ID)
+	list, err := f.srv.store.ListWorkspaceTabs(f.user.ID)
+	rows := list.Rows
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("precondition: the stale row must still be stored: %v %v", rows, err)
 	}
@@ -251,4 +252,35 @@ func TestWorkspaceTabsAPI_RequiresAUser(t *testing.T) {
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("anonymous GET: %d, want 401", rec.Code)
 	}
+}
+
+// Every answer carries the revision (BUG-3285): each door's write answers one
+// above the last, a GET answers the current one without moving it, and a
+// close of a slug outside the visible set writes nothing and answers like a
+// GET.
+func TestWorkspaceTabsAPI_EveryAnswerCarriesTheRevision(t *testing.T) {
+	f := newTabsFixture(t)
+	a := mustCreateOwnedWorkspace(t, f.srv, "RevAlpha", f.user)
+	b := mustCreateOwnedWorkspace(t, f.srv, "RevBeta", f.user)
+
+	_, got, raw := f.do(t, "GET", "/", nil)
+	if _, ok := raw["revision"]; !ok {
+		t.Fatalf("GET answer has no revision member: %v", raw)
+	}
+	last := got.Revision
+	step := func(name, method, path string, body any, bump int64) {
+		t.Helper()
+		code, got, _ := f.do(t, method, path, body)
+		if code != http.StatusOK || got.Revision != last+bump {
+			t.Fatalf("%s: %d revision %d, want %d", name, code, got.Revision, last+bump)
+		}
+		last = got.Revision
+	}
+	step("open a", "POST", "/", map[string]any{"slug": a.Slug}, 1)
+	step("open b", "POST", "/", map[string]any{"slug": b.Slug, "ephemeral": true}, 1)
+	step("reorder", "PUT", "/", []string{b.Slug, a.Slug}, 1)
+	step("patch", "PATCH", "/"+a.Slug, map[string]any{"last_route": "/tabber/" + a.Slug + "/tasks"}, 1)
+	step("close", "DELETE", "/"+b.Slug, nil, 1)
+	step("GET", "GET", "/", nil, 0)
+	step("close of an unknown slug", "DELETE", "/no-such-workspace", nil, 0)
 }

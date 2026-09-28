@@ -100,6 +100,12 @@ func (s *Store) DeleteCollectionGrant(id, workspaceID string) error {
 	if err != nil {
 		return fmt.Errorf("delete collection grant: read: %w", err)
 	}
+	// users(U) before any write: the prune below bumps U's tabs revision, and
+	// every transaction that does takes that lock first (BUG-3285). The read
+	// above takes no lock.
+	if err := s.lockUserTabsTx(tx, userID); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(s.q("DELETE FROM collection_grants WHERE id = ? AND workspace_id = ?"), id, workspaceID); err != nil {
 		return fmt.Errorf("delete collection grant: %w", err)
 	}
@@ -202,6 +208,12 @@ func (s *Store) DeleteItemGrant(id, workspaceID string) error {
 	if err != nil {
 		return fmt.Errorf("delete item grant: read: %w", err)
 	}
+	// users(U) before any write: the prune below bumps U's tabs revision, and
+	// every transaction that does takes that lock first (BUG-3285). The read
+	// above takes no lock.
+	if err := s.lockUserTabsTx(tx, userID); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(s.q("DELETE FROM item_grants WHERE id = ? AND workspace_id = ?"), id, workspaceID); err != nil {
 		return fmt.Errorf("delete item grant: %w", err)
 	}
@@ -295,6 +307,11 @@ func (s *Store) RevokeAllUserGrants(workspaceID, userID string) error {
 		return fmt.Errorf("revoke grants: begin: %w", err)
 	}
 	defer tx.Rollback()
+	// users(U) before any other row: the prune below bumps U's tabs revision,
+	// and every transaction that does takes that lock first (BUG-3285).
+	if err := s.lockUserTabsTx(tx, userID); err != nil {
+		return err
+	}
 	_, err = tx.Exec(s.q("DELETE FROM collection_grants WHERE workspace_id = ? AND user_id = ?"), workspaceID, userID)
 	if err != nil {
 		return fmt.Errorf("revoke collection grants: %w", err)

@@ -21,6 +21,20 @@ import (
 // one user serialise. That is what keeps "at most one ephemeral tab per user"
 // true under concurrent opens without a partial unique index, which the two
 // dialects spell differently.
+//
+// THE REVISION (BUG-3285). Serialising the writes does not order their
+// RESPONSES: two requests from one user are processed in some order, and the
+// client cannot tell from the send order which that was. So every write also
+// bumps users.workspace_tabs_revision under the same lock, and every list
+// carries the revision it was read with, read in ONE statement with the rows
+// (listWorkspaceTabsQ), so a list and its revision are one instant on both
+// dialects. A write reads its list inside its own transaction, after the
+// bump: the answer is the set as that write left it. A list with a higher
+// revision was processed later; equal revisions hold the same rows.
+//
+// The loss paths that delete rows bump too, and bump BEFORE they delete, so
+// on Postgres they take the users row before the tab rows, the order every
+// tab write takes them in.
 
 // WorkspaceTabRow is a stored user_workspace_tabs row.
 type WorkspaceTabRow struct {
@@ -32,32 +46,64 @@ type WorkspaceTabRow struct {
 	UpdatedAt   string
 }
 
-// ListWorkspaceTabRows returns the user's stored tab rows in bar order. It
-// does not filter by visibility; see the note above.
-func (s *Store) ListWorkspaceTabRows(userID string) ([]WorkspaceTabRow, error) {
-	return listWorkspaceTabRowsQ(s, s.db, userID)
+// WorkspaceTabList is a user's stored tab rows in bar order, with the
+// revision they were read at.
+type WorkspaceTabList struct {
+	Revision int64
+	Rows     []WorkspaceTabRow
 }
 
-func listWorkspaceTabRowsQ(s *Store, q Queryer, userID string) ([]WorkspaceTabRow, error) {
+// ListWorkspaceTabs returns the user's stored tab rows in bar order and their
+// revision. It does not filter by visibility; see the note above.
+func (s *Store) ListWorkspaceTabs(userID string) (WorkspaceTabList, error) {
+	return listWorkspaceTabsQ(s, s.db, userID)
+}
+
+// listWorkspaceTabsQ reads the revision and the rows in ONE statement, so
+// they describe one instant even on Postgres READ COMMITTED, where two
+// statements may see two different commits. A user with no tabs yields one
+// row of NULL tab columns; an unknown user yields nothing and revision 0.
+func listWorkspaceTabsQ(s *Store, q Queryer, userID string) (WorkspaceTabList, error) {
 	rows, err := q.Query(s.q(`
-		SELECT workspace_id, position, ephemeral, COALESCE(last_route, ''), created_at, updated_at
-		FROM user_workspace_tabs
-		WHERE user_id = ?
-		ORDER BY position ASC, created_at ASC, workspace_id ASC
+		SELECT u.workspace_tabs_revision, t.workspace_id, t.position, t.ephemeral,
+		       COALESCE(t.last_route, ''), t.created_at, t.updated_at
+		FROM users u
+		LEFT JOIN user_workspace_tabs t ON t.user_id = u.id
+		WHERE u.id = ?
+		ORDER BY t.position ASC, t.created_at ASC, t.workspace_id ASC
 	`), userID)
 	if err != nil {
-		return nil, fmt.Errorf("list workspace tabs: %w", err)
+		return WorkspaceTabList{}, fmt.Errorf("list workspace tabs: %w", err)
 	}
 	defer rows.Close()
-	var out []WorkspaceTabRow
+	var out WorkspaceTabList
 	for rows.Next() {
-		var r WorkspaceTabRow
-		if err := rows.Scan(&r.WorkspaceID, &r.Position, &r.Ephemeral, &r.LastRoute, &r.CreatedAt, &r.UpdatedAt); err != nil {
-			return nil, fmt.Errorf("scan workspace tab: %w", err)
+		var (
+			wsID               sql.NullString
+			position           sql.NullInt64
+			ephemeral          sql.NullBool
+			lastRoute          sql.NullString
+			createdAt, updated sql.NullString
+		)
+		if err := rows.Scan(&out.Revision, &wsID, &position, &ephemeral, &lastRoute, &createdAt, &updated); err != nil {
+			return WorkspaceTabList{}, fmt.Errorf("scan workspace tab: %w", err)
 		}
-		out = append(out, r)
+		if !wsID.Valid {
+			continue // the LEFT JOIN's no-tabs row
+		}
+		out.Rows = append(out.Rows, WorkspaceTabRow{
+			WorkspaceID: wsID.String,
+			Position:    int(position.Int64),
+			Ephemeral:   ephemeral.Bool,
+			LastRoute:   lastRoute.String,
+			CreatedAt:   createdAt.String,
+			UpdatedAt:   updated.String,
+		})
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return WorkspaceTabList{}, fmt.Errorf("list workspace tabs: %w", err)
+	}
+	return out, nil
 }
 
 // VisibleWorkspaceTabs intersects stored rows with the caller's visible
@@ -108,6 +154,26 @@ func (s *Store) lockUserTabsTx(tx *sql.Tx, userID string) error {
 	return nil
 }
 
+// commitUserTabsTx finishes a tab write that holds lockUserTabsTx: it bumps
+// the user's revision, reads the list as this write leaves it, and commits.
+// Every tab write ends here, including one that changed nothing, so its
+// answer is ordered after every write processed before it.
+func (s *Store) commitUserTabsTx(tx *sql.Tx, userID string) (WorkspaceTabList, error) {
+	if _, err := tx.Exec(s.q(`
+		UPDATE users SET workspace_tabs_revision = workspace_tabs_revision + 1 WHERE id = ?
+	`), userID); err != nil {
+		return WorkspaceTabList{}, fmt.Errorf("workspace tabs: bump revision: %w", err)
+	}
+	list, err := listWorkspaceTabsQ(s, tx, userID)
+	if err != nil {
+		return WorkspaceTabList{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return WorkspaceTabList{}, fmt.Errorf("workspace tabs: commit: %w", err)
+	}
+	return list, nil
+}
+
 // OpenWorkspaceTab adds a workspace to the user's open set.
 //
 //   - Already open: a durable open pins an ephemeral tab (PLAN-3002 Q9); an
@@ -119,14 +185,32 @@ func (s *Store) lockUserTabsTx(tx *sql.Tx, userID string) error {
 //     is appended.
 //
 // The caller must already have checked that the user may see the workspace.
-func (s *Store) OpenWorkspaceTab(userID, workspaceID string, ephemeral bool) error {
+func (s *Store) OpenWorkspaceTab(userID, workspaceID string, ephemeral bool) (WorkspaceTabList, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
-		return fmt.Errorf("open workspace tab: begin: %w", err)
+		return WorkspaceTabList{}, fmt.Errorf("open workspace tab: begin: %w", err)
 	}
 	defer tx.Rollback()
 	if err := s.lockUserTabsTx(tx, userID); err != nil {
-		return err
+		return WorkspaceTabList{}, err
+	}
+	// The workspace must still be live, checked under a lock that a soft
+	// delete's update of the row conflicts with (FOR SHARE against its NO KEY
+	// UPDATE; the FK check alone takes KEY SHARE, which does not). An open
+	// that loses a race with a soft delete therefore sees deleted_at and
+	// stores nothing, instead of inserting a row the delete's DELETE never saw
+	// and a restore would bring back (codex round 4 on BUG-3285). The caller
+	// checked visibility before this, so sql.ErrNoRows means that race.
+	live := `SELECT id FROM workspaces WHERE id = ? AND deleted_at IS NULL`
+	if s.dialect.Driver() == DriverPostgres {
+		live += ` FOR SHARE`
+	}
+	var liveID string
+	if err := tx.QueryRow(s.q(live), workspaceID).Scan(&liveID); err != nil {
+		if err == sql.ErrNoRows {
+			return WorkspaceTabList{}, sql.ErrNoRows
+		}
+		return WorkspaceTabList{}, fmt.Errorf("open workspace tab: check workspace: %w", err)
 	}
 	ts := now()
 
@@ -141,12 +225,12 @@ func (s *Store) OpenWorkspaceTab(userID, workspaceID string, ephemeral bool) err
 				UPDATE user_workspace_tabs SET ephemeral = ?, updated_at = ?
 				WHERE user_id = ? AND workspace_id = ?
 			`), s.dialect.BoolToInt(false), ts, userID, workspaceID); err != nil {
-				return fmt.Errorf("open workspace tab: pin: %w", err)
+				return WorkspaceTabList{}, fmt.Errorf("open workspace tab: pin: %w", err)
 			}
 		}
-		return tx.Commit()
+		return s.commitUserTabsTx(tx, userID)
 	case err != sql.ErrNoRows:
-		return fmt.Errorf("open workspace tab: read: %w", err)
+		return WorkspaceTabList{}, fmt.Errorf("open workspace tab: read: %w", err)
 	}
 
 	position := -1
@@ -160,7 +244,7 @@ func (s *Store) OpenWorkspaceTab(userID, workspaceID string, ephemeral bool) err
 			LIMIT 1
 		`), userID, s.dialect.BoolToInt(true)).Scan(&replaced, &replacedPos)
 		if err != nil && err != sql.ErrNoRows {
-			return fmt.Errorf("open workspace tab: read ephemeral: %w", err)
+			return WorkspaceTabList{}, fmt.Errorf("open workspace tab: read ephemeral: %w", err)
 		}
 		if err == nil {
 			position = replacedPos
@@ -170,53 +254,63 @@ func (s *Store) OpenWorkspaceTab(userID, workspaceID string, ephemeral bool) err
 		if _, err := tx.Exec(s.q(`
 			DELETE FROM user_workspace_tabs WHERE user_id = ? AND ephemeral = ?
 		`), userID, s.dialect.BoolToInt(true)); err != nil {
-			return fmt.Errorf("open workspace tab: replace ephemeral: %w", err)
+			return WorkspaceTabList{}, fmt.Errorf("open workspace tab: replace ephemeral: %w", err)
 		}
 	}
 	if position < 0 {
 		if err := tx.QueryRow(s.q(`
 			SELECT COALESCE(MAX(position) + 1, 0) FROM user_workspace_tabs WHERE user_id = ?
 		`), userID).Scan(&position); err != nil {
-			return fmt.Errorf("open workspace tab: next position: %w", err)
+			return WorkspaceTabList{}, fmt.Errorf("open workspace tab: next position: %w", err)
 		}
 	}
 	if _, err := tx.Exec(s.q(`
 		INSERT INTO user_workspace_tabs (user_id, workspace_id, position, ephemeral, last_route, created_at, updated_at)
 		VALUES (?, ?, ?, ?, NULL, ?, ?)
 	`), userID, workspaceID, position, s.dialect.BoolToInt(ephemeral), ts, ts); err != nil {
-		return fmt.Errorf("open workspace tab: insert: %w", err)
+		return WorkspaceTabList{}, fmt.Errorf("open workspace tab: insert: %w", err)
 	}
-	return tx.Commit()
+	return s.commitUserTabsTx(tx, userID)
 }
 
 // CloseWorkspaceTab removes a workspace from the user's open set. Closing a
-// tab that is not open is not an error.
-func (s *Store) CloseWorkspaceTab(userID, workspaceID string) error {
-	if _, err := s.db.Exec(s.q(`
+// tab that is not open is not an error. It takes the per-user lock like every
+// other tab write, so its revision orders it among them (BUG-3285).
+func (s *Store) CloseWorkspaceTab(userID, workspaceID string) (WorkspaceTabList, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return WorkspaceTabList{}, fmt.Errorf("close workspace tab: begin: %w", err)
+	}
+	defer tx.Rollback()
+	if err := s.lockUserTabsTx(tx, userID); err != nil {
+		return WorkspaceTabList{}, err
+	}
+	if _, err := tx.Exec(s.q(`
 		DELETE FROM user_workspace_tabs WHERE user_id = ? AND workspace_id = ?
 	`), userID, workspaceID); err != nil {
-		return fmt.Errorf("close workspace tab: %w", err)
+		return WorkspaceTabList{}, fmt.Errorf("close workspace tab: %w", err)
 	}
-	return nil
+	return s.commitUserTabsTx(tx, userID)
 }
 
 // ReorderWorkspaceTabs rewrites the user's tab positions. The workspaces in
 // order come first, in that order; ids that name no open tab are ignored.
 // Open tabs the list leaves out keep their relative order after it, so a
 // reorder that raced an open on another device does not drop that tab.
-func (s *Store) ReorderWorkspaceTabs(userID string, order []string) error {
+func (s *Store) ReorderWorkspaceTabs(userID string, order []string) (WorkspaceTabList, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
-		return fmt.Errorf("reorder workspace tabs: begin: %w", err)
+		return WorkspaceTabList{}, fmt.Errorf("reorder workspace tabs: begin: %w", err)
 	}
 	defer tx.Rollback()
 	if err := s.lockUserTabsTx(tx, userID); err != nil {
-		return err
+		return WorkspaceTabList{}, err
 	}
-	current, err := listWorkspaceTabRowsQ(s, tx, userID)
+	list, err := listWorkspaceTabsQ(s, tx, userID)
 	if err != nil {
-		return err
+		return WorkspaceTabList{}, err
 	}
+	current := list.Rows
 	open := make(map[string]bool, len(current))
 	for _, r := range current {
 		open[r.WorkspaceID] = true
@@ -240,10 +334,10 @@ func (s *Store) ReorderWorkspaceTabs(userID string, order []string) error {
 			UPDATE user_workspace_tabs SET position = ?, updated_at = ?
 			WHERE user_id = ? AND workspace_id = ?
 		`), i, ts, userID, id); err != nil {
-			return fmt.Errorf("reorder workspace tabs: %w", err)
+			return WorkspaceTabList{}, fmt.Errorf("reorder workspace tabs: %w", err)
 		}
 	}
-	return tx.Commit()
+	return s.commitUserTabsTx(tx, userID)
 }
 
 // WorkspaceTabUpdate is a PATCH to one open tab. Nil / false members are left
@@ -258,14 +352,14 @@ type WorkspaceTabUpdate struct {
 
 // UpdateWorkspaceTab applies u to the user's tab for workspaceID. It returns
 // sql.ErrNoRows when that workspace is not open.
-func (s *Store) UpdateWorkspaceTab(userID, workspaceID string, u WorkspaceTabUpdate) error {
+func (s *Store) UpdateWorkspaceTab(userID, workspaceID string, u WorkspaceTabUpdate) (WorkspaceTabList, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
-		return fmt.Errorf("update workspace tab: begin: %w", err)
+		return WorkspaceTabList{}, fmt.Errorf("update workspace tab: begin: %w", err)
 	}
 	defer tx.Rollback()
 	if err := s.lockUserTabsTx(tx, userID); err != nil {
-		return err
+		return WorkspaceTabList{}, err
 	}
 	var ephemeral bool
 	var lastRoute sql.NullString
@@ -273,9 +367,9 @@ func (s *Store) UpdateWorkspaceTab(userID, workspaceID string, u WorkspaceTabUpd
 		SELECT ephemeral, last_route FROM user_workspace_tabs WHERE user_id = ? AND workspace_id = ?
 	`), userID, workspaceID).Scan(&ephemeral, &lastRoute); err != nil {
 		if err == sql.ErrNoRows {
-			return sql.ErrNoRows
+			return WorkspaceTabList{}, sql.ErrNoRows
 		}
-		return fmt.Errorf("update workspace tab: read: %w", err)
+		return WorkspaceTabList{}, fmt.Errorf("update workspace tab: read: %w", err)
 	}
 	if u.Pin {
 		ephemeral = false
@@ -287,9 +381,9 @@ func (s *Store) UpdateWorkspaceTab(userID, workspaceID string, u WorkspaceTabUpd
 		UPDATE user_workspace_tabs SET ephemeral = ?, last_route = ?, updated_at = ?
 		WHERE user_id = ? AND workspace_id = ?
 	`), s.dialect.BoolToInt(ephemeral), lastRoute, now(), userID, workspaceID); err != nil {
-		return fmt.Errorf("update workspace tab: %w", err)
+		return WorkspaceTabList{}, fmt.Errorf("update workspace tab: %w", err)
 	}
-	return tx.Commit()
+	return s.commitUserTabsTx(tx, userID)
 }
 
 // execer is the write half of *sql.DB and *sql.Tx.
@@ -303,23 +397,100 @@ type execer interface {
 // that path's own delete. Keeping the tab when any grant survives is
 // deliberate: a member demoted to guest still reaches the workspace, and the
 // read filter, not this delete, decides what a grant set can see.
+//
+// When it deletes a row it bumps the user's tabs revision (BUG-3285).
+//
+// PRECONDITION: the caller took lockUserTabsTx(tx, userID) BEFORE ITS FIRST
+// WRITE. Two things rest on it, both on Postgres:
+//
+//   - Lock order. Account deletion takes users(U) and then deletes U's
+//     memberships; a removal that deleted the membership first and took
+//     users(U) here would wait on it in the other order (measured: 40P01,
+//     TestWorkspaceTabs_MemberRemovalVsAccountDeletion).
+//   - One row set. Every tab write for U holds users(U), so while the caller
+//     holds it no tab row of U's can appear or go, and the conditional bump
+//     and the DELETE below see the same rows. Without it, under READ
+//     COMMITTED, an open committing between the two statements is missed by
+//     the bump's EXISTS and then deleted without a bump (codex round 2).
 func (s *Store) pruneWorkspaceTabIfNoAccessTx(ex execer, userID, workspaceID string) error {
-	if _, err := ex.Exec(s.q(`
-		DELETE FROM user_workspace_tabs
-		WHERE user_id = ? AND workspace_id = ?
+	const noAccess = `
 		  AND NOT EXISTS (SELECT 1 FROM workspace_members WHERE workspace_id = ? AND user_id = ?)
 		  AND NOT EXISTS (SELECT 1 FROM collection_grants WHERE workspace_id = ? AND user_id = ?)
-		  AND NOT EXISTS (SELECT 1 FROM item_grants WHERE workspace_id = ? AND user_id = ?)
-	`), userID, workspaceID, workspaceID, userID, workspaceID, userID, workspaceID, userID); err != nil {
+		  AND NOT EXISTS (SELECT 1 FROM item_grants WHERE workspace_id = ? AND user_id = ?)`
+	args := []any{workspaceID, userID, workspaceID, userID, workspaceID, userID}
+	if _, err := ex.Exec(s.q(`
+		UPDATE users SET workspace_tabs_revision = workspace_tabs_revision + 1
+		WHERE id = ? AND EXISTS (
+			SELECT 1 FROM user_workspace_tabs WHERE user_id = ? AND workspace_id = ?`+noAccess+`
+		)
+	`), append([]any{userID, userID, workspaceID}, args...)...); err != nil {
+		return fmt.Errorf("prune workspace tab: bump revision: %w", err)
+	}
+	if _, err := ex.Exec(s.q(`
+		DELETE FROM user_workspace_tabs
+		WHERE user_id = ? AND workspace_id = ?`+noAccess+`
+	`), append([]any{userID, workspaceID}, args...)...); err != nil {
 		return fmt.Errorf("prune workspace tab: %w", err)
 	}
 	return nil
 }
 
-// deleteWorkspaceTabsForWorkspace deletes every user's tab for a workspace.
-// Soft delete calls it; a restore does not bring the rows back (PLAN-3002 Q12:
-// the restorer gets an ephemeral tab from the landing, others reopen it).
+// lockWorkspaceTabHoldersTx locks, on Postgres, the users row of every user
+// holding a tab on workspaceID, in id order. Soft delete calls it BEFORE it
+// touches the workspaces row, and then deleteWorkspaceTabsForWorkspace.
+//
+// THE LOCK ORDER (BUG-3285), on Postgres (SQLite serialises every writer).
+// Every transaction that locks a users row takes it before the other rows
+// it writes:
+//
+//   - A tab write for U: users(U) (lockUserTabsTx), then U's tab rows. Its
+//     FK check on workspaces takes FOR KEY SHARE, which the soft delete's
+//     NO KEY UPDATE on the workspaces row does not block.
+//   - A prune caller (member removal, grant revoke): users(U) before its
+//     first write.
+//   - Account deletion: users(D), then D's owned workspaces rows. A soft
+//     delete that took the workspaces row first and D's users row second
+//     would cross it (measured: 40P01,
+//     TestWorkspaceTabs_SoftDeleteVsOwnerAccountDeletion, codex round 3),
+//     which is why this runs first.
+//   - Two soft deletes: both lock their holders in id order.
+//
+// A user who is not yet a holder is not locked here, so a concurrent open by
+// them is not excluded by this lock. It is excluded by the workspaces row:
+// OpenWorkspaceTab reads it FOR SHARE and requires deleted_at IS NULL, so an
+// open either commits before the soft delete updates the row, and its tab is
+// then removed by the DELETE below, or waits for the soft delete to commit
+// and stores nothing. In the first case, if it committed after this holder
+// read, that user's revision is NOT bumped for the removal; the workspace is
+// soft-deleted by then, so every answer filters the tab out on read, and no
+// row survives for a restore to bring back.
+func (s *Store) lockWorkspaceTabHoldersTx(ex execer, workspaceID string) error {
+	if s.dialect.Driver() != DriverPostgres {
+		return nil
+	}
+	if _, err := ex.Exec(s.q(`
+		SELECT id FROM users
+		WHERE id IN (SELECT user_id FROM user_workspace_tabs WHERE workspace_id = ?)
+		ORDER BY id
+		FOR NO KEY UPDATE
+	`), workspaceID); err != nil {
+		return fmt.Errorf("delete workspace tabs: lock holders: %w", err)
+	}
+	return nil
+}
+
+// deleteWorkspaceTabsForWorkspace deletes every user's tab for a workspace,
+// bumping each holder's tabs revision first (BUG-3285). Soft delete calls it
+// after lockWorkspaceTabHoldersTx; a restore does not bring the rows back
+// (PLAN-3002 Q12: the restorer gets an ephemeral tab from the landing, others
+// reopen it). Account deletion does not use it (see DeleteAccountAtomic).
 func (s *Store) deleteWorkspaceTabsForWorkspace(ex execer, workspaceID string) error {
+	if _, err := ex.Exec(s.q(`
+		UPDATE users SET workspace_tabs_revision = workspace_tabs_revision + 1
+		WHERE id IN (SELECT user_id FROM user_workspace_tabs WHERE workspace_id = ?)
+	`), workspaceID); err != nil {
+		return fmt.Errorf("delete workspace tabs: bump revisions: %w", err)
+	}
 	if _, err := ex.Exec(s.q(`
 		DELETE FROM user_workspace_tabs WHERE workspace_id = ?
 	`), workspaceID); err != nil {

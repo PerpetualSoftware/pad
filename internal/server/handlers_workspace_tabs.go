@@ -32,6 +32,19 @@ const maxWorkspaceTabLastRouteLen = 2048
 
 type workspaceTabsResponse struct {
 	Tabs []models.WorkspaceTab `json:"tabs"`
+	// Revision orders list responses (BUG-3285): a higher one was processed
+	// later, and equal ones hold the same rows. Read with the rows in one
+	// statement; a write's is the revision that write produced. Visibility
+	// is filtered after, so two answers at one revision can differ only in
+	// which rows the caller could see when each was served.
+	//
+	// KNOWN LIMIT, accepted (lead ruling on BUG-3285): the revision only
+	// rises in normal operation, but a database restored from a backup, or
+	// rebuilt by any path that does not carry the column's value, can serve
+	// a LOWER revision than an open page already committed. That
+	// page then refuses every list until it reloads, so its bar freezes; no
+	// data is lost, and a reload recovers it.
+	Revision int64 `json:"revision"`
 }
 
 // tabsVisibleWorkspaces is the set every tab read and write is checked
@@ -54,27 +67,37 @@ func findVisibleWorkspace(visible []models.Workspace, slug string) *models.Works
 	return nil
 }
 
-// writeWorkspaceTabs answers with the caller's current, visibility-filtered
-// open set. Every write answers with it too, so the client never needs a
-// second round trip to learn what the write did.
+// writeWorkspaceTabs answers with list, the caller's open set as a write
+// left it (or as a read found it), filtered to the visible set. Every write
+// answers with it, so the client never needs a second round trip to learn
+// what the write did.
 //
 // The visible set is read AGAIN here rather than reused from the request's
 // start: access revoked while the write ran must not be served from the
 // earlier snapshot (codex round 1 on TASK-3256). A row the write left for a
 // workspace revoked in that window stays stored and is hidden by this filter
 // on every read, which is the design's read-side invariant.
-func (s *Server) writeWorkspaceTabs(w http.ResponseWriter, r *http.Request, userID string) {
+func (s *Server) writeWorkspaceTabs(w http.ResponseWriter, r *http.Request, userID string, list store.WorkspaceTabList) {
 	visible, err := s.tabsVisibleWorkspaces(r, userID)
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
-	rows, err := s.store.ListWorkspaceTabRows(userID)
+	writeJSON(w, http.StatusOK, workspaceTabsResponse{
+		Tabs:     store.VisibleWorkspaceTabs(list.Rows, visible),
+		Revision: list.Revision,
+	})
+}
+
+// readWorkspaceTabs answers with the stored open set, for a request that
+// wrote nothing.
+func (s *Server) readWorkspaceTabs(w http.ResponseWriter, r *http.Request, userID string) {
+	list, err := s.store.ListWorkspaceTabs(userID)
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, workspaceTabsResponse{Tabs: store.VisibleWorkspaceTabs(rows, visible)})
+	s.writeWorkspaceTabs(w, r, userID, list)
 }
 
 // tabsCaller returns the user and their visible set, or writes the refusal.
@@ -98,7 +121,7 @@ func (s *Server) handleListWorkspaceTabs(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusUnauthorized, "unauthorized", "Authentication required")
 		return
 	}
-	s.writeWorkspaceTabs(w, r, userID)
+	s.readWorkspaceTabs(w, r, userID)
 }
 
 // handleOpenWorkspaceTab: POST {slug, ephemeral}. A workspace outside the
@@ -126,11 +149,18 @@ func (s *Server) handleOpenWorkspaceTab(w http.ResponseWriter, r *http.Request) 
 		writeWorkspaceNotFound(w, "Workspace not found")
 		return
 	}
-	if err := s.store.OpenWorkspaceTab(userID, ws.ID, input.Ephemeral); err != nil {
+	list, err := s.store.OpenWorkspaceTab(userID, ws.ID, input.Ephemeral)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			// Soft-deleted after the visibility check above: the same answer
+			// the check would have given a moment later.
+			writeWorkspaceNotFound(w, "Workspace not found")
+			return
+		}
 		writeInternalError(w, err)
 		return
 	}
-	s.writeWorkspaceTabs(w, r, userID)
+	s.writeWorkspaceTabs(w, r, userID, list)
 }
 
 // handleReorderWorkspaceTabs: PUT [slug, …], the bar's full order. Slugs the
@@ -153,11 +183,12 @@ func (s *Server) handleReorderWorkspaceTabs(w http.ResponseWriter, r *http.Reque
 			order = append(order, ws.ID)
 		}
 	}
-	if err := s.store.ReorderWorkspaceTabs(userID, order); err != nil {
+	list, err := s.store.ReorderWorkspaceTabs(userID, order)
+	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
-	s.writeWorkspaceTabs(w, r, userID)
+	s.writeWorkspaceTabs(w, r, userID, list)
 }
 
 // handleCloseWorkspaceTab: DELETE /{slug}. Closing is idempotent, and a slug
@@ -168,13 +199,17 @@ func (s *Server) handleCloseWorkspaceTab(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	if ws := findVisibleWorkspace(visible, chi.URLParam(r, "slug")); ws != nil {
-		if err := s.store.CloseWorkspaceTab(userID, ws.ID); err != nil {
-			writeInternalError(w, err)
-			return
-		}
+	ws := findVisibleWorkspace(visible, chi.URLParam(r, "slug"))
+	if ws == nil {
+		s.readWorkspaceTabs(w, r, userID)
+		return
 	}
-	s.writeWorkspaceTabs(w, r, userID)
+	list, err := s.store.CloseWorkspaceTab(userID, ws.ID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	s.writeWorkspaceTabs(w, r, userID, list)
 }
 
 // handleUpdateWorkspaceTab: PATCH /{slug} {pin?, last_route?}. pin makes an
@@ -217,7 +252,8 @@ func (s *Server) handleUpdateWorkspaceTab(w http.ResponseWriter, r *http.Request
 		}
 		u.LastRoute = &route
 	}
-	if err := s.store.UpdateWorkspaceTab(userID, ws.ID, u); err != nil {
+	list, err := s.store.UpdateWorkspaceTab(userID, ws.ID, u)
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "not_found", "This workspace is not open in a tab")
 			return
@@ -225,7 +261,7 @@ func (s *Server) handleUpdateWorkspaceTab(w http.ResponseWriter, r *http.Request
 		writeInternalError(w, err)
 		return
 	}
-	s.writeWorkspaceTabs(w, r, userID)
+	s.writeWorkspaceTabs(w, r, userID, list)
 }
 
 // validateWorkspaceTabLastRoute accepts only a same-workspace path: the

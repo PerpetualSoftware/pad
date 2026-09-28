@@ -4,8 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
  * TASK-3271 (PLAN-3002 U2): the web tabs store.
  *
  * Every request replaces the whole open set, so the store's two fences are
- * ORDER (the newest-issued answer wins, and an older one never erases a newer
- * write) and IDENTITY (an answer issued as one identity never commits into
+ * ORDER (the answer with the highest server revision wins, BUG-3285, so an
+ * earlier-processed one never erases a later write) and IDENTITY (an answer issued as one identity never commits into
  * another's store). Since TASK-3279 (U5) a landing opens an ephemeral tab,
  * a write in a workspace keeps its ephemeral tab, and last route lives on the
  * tab row only: the localStorage fallback is retired and its keys swept.
@@ -73,8 +73,19 @@ function tab(slug: string, extra: Partial<Tab> = {}): Tab {
 	return { slug, ephemeral: false, position: 0, ...extra };
 }
 
+// Every answer carries a revision (BUG-3285). By default each answer BUILT
+// is numbered after the last one, which models a server processing requests
+// in the order a test builds their answers; a test about crossing requests
+// states its revisions with answerAt.
+let nextRevision = 1;
 function answer(...tabs: Tab[]) {
-	return { tabs: tabs.map((t, i) => ({ name: t.slug, owner_username: 'alice', is_guest: false, created_at: '', updated_at: '', ...t, position: i })) };
+	return answerAt(nextRevision++, ...tabs);
+}
+function answerAt(revision: number, ...tabs: Tab[]) {
+	return {
+		revision,
+		tabs: tabs.map((t, i) => ({ name: t.slug, owner_username: 'alice', is_guest: false, created_at: '', updated_at: '', ...t, position: i })),
+	};
 }
 
 function deferred<T>() {
@@ -102,6 +113,7 @@ async function settle() {
 beforeEach(() => {
 	vi.resetModules();
 	auth.reset();
+	nextRevision = 1;
 	localStorage.clear();
 	for (const fn of Object.values(tabsApi)) fn.mockReset();
 });
@@ -154,27 +166,27 @@ describe('which response commits', () => {
 		tabsApi.list.mockReturnValueOnce(list.promise);
 		const load = store.load();
 
-		tabsApi.open.mockResolvedValueOnce(answer(tab('a'), tab('b')));
+		tabsApi.open.mockResolvedValueOnce(answerAt(2, tab('a'), tab('b')));
 		await store.open('b');
 		expect(slugs(store.tabs)).toEqual(['a', 'b']);
 
-		// The list was issued before the open and answers without it.
-		list.resolve(answer(tab('a')));
+		// The list was processed before the open and answers without it.
+		list.resolve(answerAt(1, tab('a')));
 		await load;
 
 		expect(slugs(store.tabs)).toEqual(['a', 'b']);
 	});
 
-	it('commits the newer write when an older one answers last', async () => {
+	it('commits the later-processed write when the earlier one answers last', async () => {
 		const store = await loadStore();
 		const olderOpen = deferred<ReturnType<typeof answer>>();
 		tabsApi.open.mockReturnValueOnce(olderOpen.promise);
 		const open = store.open('b');
 
-		tabsApi.close.mockResolvedValueOnce(answer(tab('a')));
+		tabsApi.close.mockResolvedValueOnce(answerAt(2, tab('a')));
 		await store.close('b');
 
-		olderOpen.resolve(answer(tab('a'), tab('b')));
+		olderOpen.resolve(answerAt(1, tab('a'), tab('b')));
 		await open;
 
 		expect(slugs(store.tabs)).toEqual(['a']);
@@ -218,12 +230,65 @@ describe('which response commits', () => {
 	});
 });
 
-describe('background writes do not commit the list', () => {
+describe('crossing requests commit by revision, not by send order (BUG-3285)', () => {
+	it('the later-SENT request processed first cannot put a closed tab back', async () => {
+		// The bug's trace: DELETE c sent, then a user action on a sent 22 ms
+		// later; the server ran the second one FIRST, and its answer (still
+		// holding c) arrived first. A send-order ticket committed it last.
+		tabsApi.list.mockResolvedValueOnce(answerAt(1, tab('a'), tab('b'), tab('c')));
+		const store = await loadStore();
+		await store.load();
+
+		const closing = deferred<ReturnType<typeof answer>>();
+		tabsApi.close.mockReturnValueOnce(closing.promise);
+		const reordering = deferred<ReturnType<typeof answer>>();
+		tabsApi.reorder.mockReturnValueOnce(reordering.promise);
+
+		const close = store.close('c');
+		const reorder = store.reorder(['b', 'a', 'c']);
+		reordering.resolve(answerAt(2, tab('b'), tab('a'), tab('c')));
+		await reorder;
+		closing.resolve(answerAt(3, tab('b'), tab('a')));
+		await close;
+
+		expect(slugs(store.tabs)).toEqual(['b', 'a']);
+	});
+
+	it('the same crossing answered in the other order keeps the later-processed list', async () => {
+		tabsApi.list.mockResolvedValueOnce(answerAt(1, tab('a'), tab('b'), tab('c')));
+		const store = await loadStore();
+		await store.load();
+
+		const closing = deferred<ReturnType<typeof answer>>();
+		tabsApi.close.mockReturnValueOnce(closing.promise);
+		const reordering = deferred<ReturnType<typeof answer>>();
+		tabsApi.reorder.mockReturnValueOnce(reordering.promise);
+
+		const close = store.close('c');
+		const reorder = store.reorder(['b', 'a', 'c']);
+		// The close was processed second and answers first; the reorder's
+		// earlier-processed answer, still holding c, arrives after it.
+		closing.resolve(answerAt(3, tab('b'), tab('a')));
+		await close;
+		reordering.resolve(answerAt(2, tab('b'), tab('a'), tab('c')));
+		await reorder;
+
+		expect(slugs(store.tabs)).toEqual(['b', 'a']);
+	});
+
+	it('a read at the committed revision still commits (a visibility change the rows do not record)', async () => {
+		tabsApi.list.mockResolvedValueOnce(answerAt(4, tab('a'), tab('lost')));
+		const store = await loadStore();
+		await store.load();
+		tabsApi.list.mockResolvedValueOnce(answerAt(4, tab('a')));
+		await store.load();
+
+		expect(slugs(store.tabs)).toEqual(['a']);
+	});
+
 	it('a route PATCH processed before a close cannot put the closed tab back', async () => {
-		// The e2e trace: DELETE c sent, PATCH a sent 22 ms later, the server
-		// ran the PATCH first, and its answer (still holding c) arrived first.
 		vi.useFakeTimers();
-		tabsApi.list.mockResolvedValueOnce(answer(tab('a'), tab('c')));
+		tabsApi.list.mockResolvedValueOnce(answerAt(1, tab('a'), tab('c')));
 		const store = await loadStore();
 		await store.load();
 
@@ -237,76 +302,56 @@ describe('background writes do not commit the list', () => {
 		await vi.advanceTimersByTimeAsync(1_000);
 		expect(tabsApi.update).toHaveBeenCalledWith('a', { last_route: '/alice/a/tasks' });
 
-		patching.resolve(answer(tab('a', { last_route: '/alice/a/tasks' }), tab('c')));
+		patching.resolve(answerAt(2, tab('a', { last_route: '/alice/a/tasks' }), tab('c')));
 		await vi.runAllTimersAsync();
-		closing.resolve(answer(tab('a', { last_route: '/alice/a/tasks' })));
+		closing.resolve(answerAt(3, tab('a', { last_route: '/alice/a/tasks' })));
 		await close;
 
 		expect(slugs(store.tabs)).toEqual(['a']);
 		expect(store.routeFor('a')).toBe('/alice/a/tasks');
 	});
 
-	it('a saved route survives a user action whose list was processed before the save', async () => {
+	it('a route PATCH commits its row, and a list processed before it does not undo the route', async () => {
 		vi.useFakeTimers();
-		tabsApi.list.mockResolvedValueOnce(answer(tab('a', { last_route: '/alice/a/old' }), tab('b')));
+		tabsApi.list.mockResolvedValueOnce(answerAt(1, tab('a', { last_route: '/alice/a/old' }), tab('b')));
 		const store = await loadStore();
 		await store.load();
 
-		tabsApi.update.mockResolvedValueOnce(answer(tab('a', { last_route: '/alice/a/new' }), tab('b')));
+		tabsApi.update.mockResolvedValueOnce(answerAt(3, tab('a', { last_route: '/alice/a/new' }), tab('b')));
 		store.noteRoute('a', '/alice/a/new');
 		const reordering = deferred<ReturnType<typeof answer>>();
 		tabsApi.reorder.mockReturnValueOnce(reordering.promise);
 		const reorder = store.reorder(['b', 'a']);
 		await vi.runAllTimersAsync();
+		expect(store.routeFor('a')).toBe('/alice/a/new');
 
-		// The reorder was sent first but processed before the PATCH, so its
-		// list still carries the old route; it commits (a user action).
-		reordering.resolve(answer(tab('b'), tab('a', { last_route: '/alice/a/old' })));
+		// The reorder was processed before the PATCH, so its list still
+		// carries the old route and the old order: it does not commit.
+		reordering.resolve(answerAt(2, tab('b'), tab('a', { last_route: '/alice/a/old' })));
 		await reorder;
 
-		expect(slugs(store.tabs)).toEqual(['b', 'a']);
 		expect(store.routeFor('a')).toBe('/alice/a/new');
+		expect(slugs(store.tabs)).toEqual(['a', 'b']);
 	});
 
-	it('forgets a confirmed route once the tab closes, so a reopen reads the row', async () => {
+	it('a route another device set after this one wins at the next read', async () => {
 		vi.useFakeTimers();
-		tabsApi.list.mockResolvedValueOnce(answer(tab('a'), tab('b')));
+		tabsApi.list.mockResolvedValueOnce(answerAt(1, tab('a')));
 		const store = await loadStore();
 		await store.load();
-		tabsApi.update.mockResolvedValueOnce(answer(tab('a', { last_route: '/alice/a/mine' }), tab('b')));
+		tabsApi.update.mockResolvedValueOnce(answerAt(2, tab('a', { last_route: '/alice/a/mine' })));
 		store.noteRoute('a', '/alice/a/mine');
 		await vi.runAllTimersAsync();
 		expect(store.routeFor('a')).toBe('/alice/a/mine');
 
-		tabsApi.close.mockResolvedValueOnce(answer(tab('b')));
-		await store.close('a');
-		// Reopened later, after another device moved its route on.
-		tabsApi.open.mockResolvedValueOnce(answer(tab('b'), tab('a', { last_route: '/alice/a/elsewhere' })));
-		await store.open('a');
-
-		expect(store.routeFor('a')).toBe('/alice/a/elsewhere');
-	});
-
-	it('forgets a confirmed route once a committed row carries it', async () => {
-		vi.useFakeTimers();
-		tabsApi.list.mockResolvedValueOnce(answer(tab('a')));
-		const store = await loadStore();
-		await store.load();
-		tabsApi.update.mockResolvedValueOnce(answer(tab('a', { last_route: '/alice/a/mine' })));
-		store.noteRoute('a', '/alice/a/mine');
-		await vi.runAllTimersAsync();
-
-		tabsApi.list.mockResolvedValueOnce(answer(tab('a', { last_route: '/alice/a/mine' })));
-		await store.load();
-		// Caught up; a later list from another device's move now wins.
-		tabsApi.list.mockResolvedValueOnce(answer(tab('a', { last_route: '/alice/a/elsewhere' })));
+		tabsApi.list.mockResolvedValueOnce(answerAt(3, tab('a', { last_route: '/alice/a/elsewhere' })));
 		await store.load();
 
 		expect(store.routeFor('a')).toBe('/alice/a/elsewhere');
 	});
 
 	it('a pin a write triggers cannot put a closed tab back either', async () => {
-		tabsApi.list.mockResolvedValueOnce(answer(tab('a'), tab('b', { ephemeral: true }), tab('c')));
+		tabsApi.list.mockResolvedValueOnce(answerAt(1, tab('a'), tab('b', { ephemeral: true }), tab('c')));
 		const store = await loadStore();
 		await store.load();
 
@@ -317,15 +362,38 @@ describe('background writes do not commit the list', () => {
 
 		const close = store.close('c');
 		await reportWrite('b');
-		// The close answers first, from before the pin ran: b still ephemeral.
-		closing.resolve(answer(tab('a'), tab('b', { ephemeral: true })));
+		// The pin was processed first (c still open), the close second.
+		closing.resolve(answerAt(3, tab('a'), tab('b')));
 		await close;
-		// Then the pin, processed before the close: its list still holds c.
-		pinning.resolve(answer(tab('a'), tab('b'), tab('c')));
+		pinning.resolve(answerAt(2, tab('a'), tab('b'), tab('c')));
 		await settle();
 
 		expect(slugs(store.tabs)).toEqual(['a', 'b']);
 		expect(store.tabs.find((t) => t.slug === 'b')?.ephemeral).toBe(false);
+	});
+
+	it('a pin commits its answer, so the kept tab reads durable', async () => {
+		tabsApi.list.mockResolvedValueOnce(answerAt(1, tab('a'), tab('b', { ephemeral: true })));
+		const store = await loadStore();
+		await store.load();
+		tabsApi.update.mockResolvedValueOnce(answerAt(2, tab('a'), tab('b')));
+
+		await reportWrite('b');
+		await settle();
+
+		expect(store.tabs.find((t) => t.slug === 'b')?.ephemeral).toBe(false);
+	});
+
+	it('the next identity\'s first list commits whatever its revision', async () => {
+		tabsApi.list.mockResolvedValueOnce(answerAt(40, tab('first-users')));
+		const store = await loadStore();
+		await store.load();
+
+		auth.fireIdentityChange();
+		tabsApi.list.mockResolvedValueOnce(answerAt(3, tab('second-users')));
+		await store.load();
+
+		expect(slugs(store.tabs)).toEqual(['second-users']);
 	});
 });
 
@@ -404,8 +472,8 @@ describe('last route', () => {
 		// The row the PATCH needs does not exist yet.
 		expect(tabsApi.update).not.toHaveBeenCalled();
 
-		tabsApi.update.mockResolvedValueOnce(answer(tab('ws'), tab('new-ws', { ephemeral: true, last_route: '/alice/new-ws/tasks' })));
 		opening.resolve(answer(tab('ws'), tab('new-ws', { ephemeral: true })));
+		tabsApi.update.mockResolvedValueOnce(answer(tab('ws'), tab('new-ws', { ephemeral: true, last_route: '/alice/new-ws/tasks' })));
 		await landing;
 		await vi.runAllTimersAsync();
 

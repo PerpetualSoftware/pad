@@ -15,22 +15,31 @@ import { authStore } from './auth.svelte';
  * and committing it after the open's answer would erase that tab until the
  * next load. This is BUG-2981's create-vs-load race, and here it covers every
  * write rather than one, which is why it is not fenced the way
- * `workspace.svelte.ts` fences it (a pending-create reconcile). A ticket is
- * taken at dispatch and a high-water mark records the newest ticket that
- * COMMITTED. A response commits only above the mark, so the newest answer wins
- * and a request that fails never locks out one that succeeds.
+ * `workspace.svelte.ts` fences it (a pending-create reconcile).
  *
- * WHOSE RESPONSE COMMITS. The tickets order requests from one identity. A
+ * "Older" means PROCESSED earlier, not SENT earlier (BUG-3285). Two requests
+ * from one user are separate HTTP requests, and the server can run the
+ * later-sent one first; a ticket taken at dispatch then picks the wrong
+ * answer (the measured instance: a close sent, a route PATCH sent 22 ms
+ * later and processed first, its answer still holding the closed tab, and
+ * the tab back in the bar). So the server numbers every list: each write
+ * bumps a per-user `revision` under the lock that serialises the writes, and
+ * answers with the list AS IT LEFT IT together with that revision, read in
+ * one statement. A response commits only when its revision is not below the
+ * committed one. Equal revisions hold the same rows, and a read at the
+ * current revision still commits, so a reload picks up a visibility change
+ * the rows do not record. A request that fails commits nothing and moves
+ * nothing. The one thing that can defeat the rule is a revision that goes
+ * DOWN, which only a restored or re-migrated database does; the bar then
+ * freezes at its last list until the page reloads.
+ *
+ * WHOSE RESPONSE COMMITS. The revision orders responses for one user. A
  * response issued before a sign-out, sign-in or account switch must not commit
  * into the next identity's store (BUG-2991), so every request also captures
  * `authStore.identityFence()`. That is an epoch, not a user id, so A, then B,
- * then A again still drops a response from A's first session. The identity
- * reset below also raises the mark past every ticket issued so far, which
- * drops those responses by the ordering rule too. The two are REDUNDANT, and
- * the mutation matrix says so: removing either alone fails no test, removing
- * both fails the two identity tests. Both stay because each is a property of a
- * different mechanism, and either could be changed by someone who never reads
- * the other.
+ * then A again still drops a response from A's first session. That fence is
+ * the only identity guard: the reset below clears the committed revision, so
+ * the next identity's first list commits whatever its revision.
  *
  * LANDINGS (TASK-3279, PLAN-3002 U5). Every landing in a workspace outside
  * the open set opens it as an EPHEMERAL tab: `land()`, called by the workspace
@@ -47,18 +56,12 @@ import { authStore } from './auth.svelte';
  * reported by the API client (`onWorkspaceWrite`), which is the one place
  * every REST write passes through.
  *
- * BACKGROUND WRITES DO NOT COMMIT THE LIST (TASK-3279, found under 8-worker
- * e2e load, and present on main before it). The ticket order above is the
- * order requests were SENT, and the server may process two in-flight requests
- * from one user in the other order. A route PATCH sent just after a close,
- * but processed before it, answers with a list that still holds the closed
- * tab. Its ticket is the higher one, so it committed and put the tab back in
- * the bar (the trace: DELETE sent, PATCH sent 22 ms later, PATCH answered
- * first). The writes the user did not ask for (a route save after every
- * navigation, the pin a write triggers) therefore update only their own row
- * locally and never replace the list. Only user actions and loads commit.
- * Two user actions in flight at once can still cross; closing that needs a
- * server-side revision on the list.
+ * BACKGROUND WRITES COMMIT LIKE ANY OTHER. The writes the user did not ask
+ * for (a route save after every navigation, the pin a write triggers) went
+ * around the list from TASK-3279 until BUG-3285, because under send-order
+ * tickets their answers were the ones most likely to cross a user action.
+ * The revision orders them like everything else, so they commit through the
+ * same path, and the confirmed-route overlay that patched the gap is gone.
  *
  * LAST ROUTE. A workspace's last route lives on its tab row, and nowhere else.
  * The localStorage fallback TASK-3271 kept for workspaces with no row is
@@ -79,26 +82,14 @@ export const LAST_ROUTE_WRITE_DELAY_MS = 750;
 
 let tabs = $state<WorkspaceTab[]>([]);
 let loaded = $state(false);
-// Routes noted but not yet confirmed by a PATCH. Read ahead of the row, so a
-// switcher href shows the route the user just left instead of the row's older
-// value.
+// Routes noted but not yet answered by their PATCH. Read ahead of the row, so
+// a switcher href shows the route the user just left instead of the row's
+// older value.
 let pendingRoutes = $state<Record<string, string>>({});
-// Routes a PATCH CONFIRMED, read after pending and ahead of the row (codex
-// round 3): a list committed later can have been processed before the PATCH
-// and carry the older route. Pruned at every commit once the row is gone or
-// already carries that route (codex round 4), so it never outlives what it
-// guards against and cannot mask a newer route set on another device after a
-// close and reopen. A KNOWN TRADEOFF (codex round 5): while the entry lives, a
-// newer route another device sets on the same row is masked, because without
-// a list revision an older list and a newer one are indistinguishable here.
-// This device's own last navigation wins until the row catches up, the tab
-// closes, or the page reloads. The revision that removes the ambiguity is
-// BUG-3285.
-let confirmedRoutes = $state<Record<string, string>>({});
 
-// Ticket at dispatch, high-water mark at commit. See "WHICH RESPONSE COMMITS".
-let dispatched = 0;
-let committed = 0;
+// The revision of the committed list; -1 until one commits. See "WHICH
+// RESPONSE COMMITS".
+let committedRevision = -1;
 
 const writeTimers = new Map<string, ReturnType<typeof setTimeout>>();
 // Landing opens in flight, by slug, so a second landing on the same workspace
@@ -129,31 +120,14 @@ function hasRow(slug: string): boolean {
 
 async function send(call: () => Promise<WorkspaceTabsResponse>): Promise<WorkspaceTabsResponse> {
 	const isSameIdentity = authStore.identityFence();
-	const ticket = ++dispatched;
 	const resp = await call();
-	if (isSameIdentity() && ticket > committed) {
-		committed = ticket;
+	if (isSameIdentity() && resp.revision >= committedRevision) {
+		committedRevision = resp.revision;
 		tabs = resp.tabs;
 		loaded = true;
 		sweepLegacyRouteKeys();
-		pruneConfirmedRoutes();
 	}
 	return resp;
-}
-
-// Record a route the server confirmed on the committed row. The PATCH's own
-// response is not committed (background write), so this is how the row learns
-// it; pending is about to be cleared.
-function setRowRoute(slug: string, route: string) {
-	const tab = tabs.find((t) => t.slug === slug);
-	if (tab) tab.last_route = route || undefined;
-}
-
-function pruneConfirmedRoutes() {
-	for (const slug of Object.keys(confirmedRoutes)) {
-		const row = tabs.find((t) => t.slug === slug);
-		if (!row || (row.last_route ?? '') === confirmedRoutes[slug]) delete confirmedRoutes[slug];
-	}
 }
 
 async function flushRoute(slug: string) {
@@ -167,12 +141,9 @@ async function flushRoute(slug: string) {
 	const route = pendingRoutes[slug];
 	if (route === undefined) return;
 	try {
-		// Not through send(): see "BACKGROUND WRITES DO NOT COMMIT THE LIST".
-		await api.workspaces.tabs.update(slug, { last_route: route });
-		if (isSameIdentity()) {
-			setRowRoute(slug, route);
-			confirmedRoutes[slug] = route;
-		}
+		// Its answer carries the row with this route, or a later-processed
+		// list has already committed and carries it (or a newer one).
+		await send(() => api.workspaces.tabs.update(slug, { last_route: route }));
 	} catch {
 		// No row (a 404: closed elsewhere, or the landing failed), a refused
 		// route, or a network failure. Each loses this one route; the next
@@ -186,13 +157,8 @@ async function pinOnWrite(slug: string) {
 	const tab = tabs.find((t) => t.slug === slug);
 	if (!tab?.ephemeral || pinning.has(slug)) return;
 	pinning.add(slug);
-	const isSameIdentity = authStore.identityFence();
 	try {
-		// Not through send(): see "BACKGROUND WRITES DO NOT COMMIT THE LIST".
-		await api.workspaces.tabs.update(slug, { pin: true });
-		if (!isSameIdentity()) return;
-		const kept = tabs.find((t) => t.slug === slug);
-		if (kept) kept.ephemeral = false;
+		await send(() => api.workspaces.tabs.update(slug, { pin: true }));
 	} catch {
 		// The tab stays ephemeral; the next write tries again.
 	} finally {
@@ -273,8 +239,6 @@ export const tabsStore = {
 	routeFor(slug: string): string | null {
 		const pending = pendingRoutes[slug];
 		if (pending !== undefined) return pending || null;
-		const confirmed = confirmedRoutes[slug];
-		if (confirmed !== undefined) return confirmed || null;
 		return tabs.find((t) => t.slug === slug)?.last_route || null;
 	},
 
@@ -303,14 +267,13 @@ export const tabsStore = {
 };
 
 // Everything here belongs to one identity. In-flight responses are dropped by
-// their own fence and by the raised mark; pending writes are dropped outright,
-// since they were routes the previous identity visited.
+// their own fence; pending writes are dropped outright, since they were routes
+// the previous identity visited.
 authStore.onIdentityChange(() => {
-	committed = dispatched;
+	committedRevision = -1;
 	tabs = [];
 	loaded = false;
 	pendingRoutes = {};
-	confirmedRoutes = {};
 	for (const timer of writeTimers.values()) clearTimeout(timer);
 	writeTimers.clear();
 	landings.clear();
