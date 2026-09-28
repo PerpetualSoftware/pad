@@ -118,6 +118,11 @@ const auth = vi.hoisted(() => {
 	};
 });
 vi.mock('$lib/stores/auth.svelte', () => ({ authStore: auth }));
+// An account that may edit the playbook: the editor renders Save only for
+// one (BUG-3270), and every leg here drives Save.
+vi.mock('$lib/stores/workspace.svelte', () => ({
+	workspaceStore: { canEditItem: () => true },
+}));
 bindReactiveEpoch(auth.__hook);
 
 function flipIdentity() {

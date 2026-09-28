@@ -17,7 +17,7 @@ identityGateSuite({
 			loadItem: { reviewed: '1d65e4a33dc3', why: 'workspace, ref AND the entry identity fence after the fetch, on both arms and in the finally' },
 			loadPlaybooks: { reviewed: '6825e2ad3d9b', why: 'workspace AND the entry identity fence after the fetch, on both arms' },
 			loadCollection: { reviewed: '5e49f16c7659', why: 'workspace AND the entry identity fence after the fetch, on both arms' },
-			save: { reviewed: 'e3044b77107a', why: 'user-initiated save; the entry identity fence before the dialog, after its answer (so the overwrite re-send never goes under another identity), before the success report and navigation, on the failure report, and on the finally that clears saving' },
+			save: { reviewed: 'fb8f881517e3', why: 'user-initiated save; the entry identity fence before the dialog, after its answer (so the overwrite re-send never goes under another identity), before the success report and navigation, on the failure report, and on the finally that clears saving. Re-read for BUG-3270: its entry also returns, before any await, when the caller may not edit the item' },
 			handleExport: { reviewed: 'bd5b6bebfde2', why: 'user-initiated export; the entry identity fence before either toast and on the finally that clears exporting' },
 		},
 		nested: [],
