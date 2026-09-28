@@ -1,6 +1,8 @@
 package store
 
 import (
+	"database/sql"
+	"errors"
 	"sync"
 	"testing"
 )
@@ -312,5 +314,35 @@ func TestWorkspaceTabs_ListShapes(t *testing.T) {
 	list, err = s.ListWorkspaceTabs("no-such-user")
 	if err != nil || list.Revision != 0 || len(list.Rows) != 0 {
 		t.Fatalf("unknown user: %+v %v", list, err)
+	}
+}
+
+// An open never inserts a tab for a soft-deleted workspace (codex round 4 on
+// BUG-3285): a tab the soft delete did not see would otherwise outlive it
+// and come back with a restore. The handler checked visibility before the
+// store call, so this is the answer to an open that lost that race.
+func TestWorkspaceTabs_OpenRefusesADeletedWorkspace(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	u := tabsUser(t, s, "Opendel")
+	ws := tabsWorkspace(t, s, u, "OD")
+	if err := s.DeleteWorkspace(ws.Slug); err != nil {
+		t.Fatal(err)
+	}
+	before := tabsRevision(t, s, u.ID)
+	if _, err := s.OpenWorkspaceTab(u.ID, ws.ID, true); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("open of a soft-deleted workspace: err %v, want sql.ErrNoRows", err)
+	}
+	if _, ok := tabRow(t, s, u.ID, ws.ID); ok {
+		t.Fatal("a tab row was stored for a soft-deleted workspace")
+	}
+	if got := tabsRevision(t, s, u.ID); got != before {
+		t.Fatalf("a refused open moved the revision: %d -> %d", before, got)
+	}
+	if err := s.RestoreWorkspace(ws.Slug); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := tabRow(t, s, u.ID, ws.ID); ok {
+		t.Fatal("a restore brought back a tab")
 	}
 }

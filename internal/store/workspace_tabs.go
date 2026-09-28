@@ -194,6 +194,24 @@ func (s *Store) OpenWorkspaceTab(userID, workspaceID string, ephemeral bool) (Wo
 	if err := s.lockUserTabsTx(tx, userID); err != nil {
 		return WorkspaceTabList{}, err
 	}
+	// The workspace must still be live, checked under a lock that a soft
+	// delete's update of the row conflicts with (FOR SHARE against its NO KEY
+	// UPDATE; the FK check alone takes KEY SHARE, which does not). An open
+	// that loses a race with a soft delete therefore sees deleted_at and
+	// stores nothing, instead of inserting a row the delete's DELETE never saw
+	// and a restore would bring back (codex round 4 on BUG-3285). The caller
+	// checked visibility before this, so sql.ErrNoRows means that race.
+	live := `SELECT id FROM workspaces WHERE id = ? AND deleted_at IS NULL`
+	if s.dialect.Driver() == DriverPostgres {
+		live += ` FOR SHARE`
+	}
+	var liveID string
+	if err := tx.QueryRow(s.q(live), workspaceID).Scan(&liveID); err != nil {
+		if err == sql.ErrNoRows {
+			return WorkspaceTabList{}, sql.ErrNoRows
+		}
+		return WorkspaceTabList{}, fmt.Errorf("open workspace tab: check workspace: %w", err)
+	}
 	ts := now()
 
 	var existingEphemeral bool
@@ -437,9 +455,15 @@ func (s *Store) pruneWorkspaceTabIfNoAccessTx(ex execer, userID, workspaceID str
 //     which is why this runs first.
 //   - Two soft deletes: both lock their holders in id order.
 //
-// A tab a concurrent open commits for the workspace after the holders are
-// locked is deleted without a bump. By then the workspace is soft-deleted,
-// so every answer filters it out on read anyway.
+// A user who is not yet a holder is not locked here, so a concurrent open by
+// them is not excluded by this lock. It is excluded by the workspaces row:
+// OpenWorkspaceTab reads it FOR SHARE and requires deleted_at IS NULL, so an
+// open either commits before the soft delete updates the row, and its tab is
+// then removed by the DELETE below, or waits for the soft delete to commit
+// and stores nothing. In the first case, if it committed after this holder
+// read, that user's revision is NOT bumped for the removal; the workspace is
+// soft-deleted by then, so every answer filters the tab out on read, and no
+// row survives for a restore to bring back.
 func (s *Store) lockWorkspaceTabHoldersTx(ex execer, workspaceID string) error {
 	if s.dialect.Driver() != DriverPostgres {
 		return nil

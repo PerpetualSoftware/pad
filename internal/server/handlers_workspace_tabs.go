@@ -151,6 +151,12 @@ func (s *Server) handleOpenWorkspaceTab(w http.ResponseWriter, r *http.Request) 
 	}
 	list, err := s.store.OpenWorkspaceTab(userID, ws.ID, input.Ephemeral)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			// Soft-deleted after the visibility check above: the same answer
+			// the check would have given a moment later.
+			writeWorkspaceNotFound(w, "Workspace not found")
+			return
+		}
 		writeInternalError(w, err)
 		return
 	}
