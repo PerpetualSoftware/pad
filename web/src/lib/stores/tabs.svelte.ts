@@ -79,12 +79,17 @@ export const LAST_ROUTE_WRITE_DELAY_MS = 750;
 
 let tabs = $state<WorkspaceTab[]>([]);
 let loaded = $state(false);
-// The last route THIS SESSION noted per workspace, read ahead of the row. It
-// stays after its PATCH succeeds (codex round 3): a list committed later can
-// have been processed before the PATCH and carry the older route, and the
-// session's own navigation is the newer fact. Dropped when the PATCH fails,
-// since the server then has nothing newer than the row.
+// Routes noted but not yet confirmed by a PATCH. Read ahead of the row, so a
+// switcher href shows the route the user just left instead of the row's older
+// value.
 let pendingRoutes = $state<Record<string, string>>({});
+// Routes a PATCH CONFIRMED, read after pending and ahead of the row (codex
+// round 3): a list committed later can have been processed before the PATCH
+// and carry the older route. Pruned at every commit once the row is gone or
+// already carries that route (codex round 4), so it never outlives what it
+// guards against and cannot mask a newer route set on another device after a
+// close and reopen.
+let confirmedRoutes = $state<Record<string, string>>({});
 
 // Ticket at dispatch, high-water mark at commit. See "WHICH RESPONSE COMMITS".
 let dispatched = 0;
@@ -126,6 +131,7 @@ async function send(call: () => Promise<WorkspaceTabsResponse>): Promise<Workspa
 		tabs = resp.tabs;
 		loaded = true;
 		sweepLegacyRouteKeys();
+		pruneConfirmedRoutes();
 	}
 	return resp;
 }
@@ -136,6 +142,13 @@ async function send(call: () => Promise<WorkspaceTabsResponse>): Promise<Workspa
 function setRowRoute(slug: string, route: string) {
 	const tab = tabs.find((t) => t.slug === slug);
 	if (tab) tab.last_route = route || undefined;
+}
+
+function pruneConfirmedRoutes() {
+	for (const slug of Object.keys(confirmedRoutes)) {
+		const row = tabs.find((t) => t.slug === slug);
+		if (!row || (row.last_route ?? '') === confirmedRoutes[slug]) delete confirmedRoutes[slug];
+	}
 }
 
 async function flushRoute(slug: string) {
@@ -151,11 +164,15 @@ async function flushRoute(slug: string) {
 	try {
 		// Not through send(): see "BACKGROUND WRITES DO NOT COMMIT THE LIST".
 		await api.workspaces.tabs.update(slug, { last_route: route });
-		if (isSameIdentity()) setRowRoute(slug, route);
+		if (isSameIdentity()) {
+			setRowRoute(slug, route);
+			confirmedRoutes[slug] = route;
+		}
 	} catch {
 		// No row (a 404: closed elsewhere, or the landing failed), a refused
 		// route, or a network failure. Each loses this one route; the next
 		// navigation writes again.
+	} finally {
 		if (isSameIdentity() && pendingRoutes[slug] === route) delete pendingRoutes[slug];
 	}
 }
@@ -251,6 +268,8 @@ export const tabsStore = {
 	routeFor(slug: string): string | null {
 		const pending = pendingRoutes[slug];
 		if (pending !== undefined) return pending || null;
+		const confirmed = confirmedRoutes[slug];
+		if (confirmed !== undefined) return confirmed || null;
 		return tabs.find((t) => t.slug === slug)?.last_route || null;
 	},
 
@@ -286,6 +305,7 @@ authStore.onIdentityChange(() => {
 	tabs = [];
 	loaded = false;
 	pendingRoutes = {};
+	confirmedRoutes = {};
 	for (const timer of writeTimers.values()) clearTimeout(timer);
 	writeTimers.clear();
 	landings.clear();

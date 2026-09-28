@@ -268,6 +268,43 @@ describe('background writes do not commit the list', () => {
 		expect(store.routeFor('a')).toBe('/alice/a/new');
 	});
 
+	it('forgets a confirmed route once the tab closes, so a reopen reads the row', async () => {
+		vi.useFakeTimers();
+		tabsApi.list.mockResolvedValueOnce(answer(tab('a'), tab('b')));
+		const store = await loadStore();
+		await store.load();
+		tabsApi.update.mockResolvedValueOnce(answer(tab('a', { last_route: '/alice/a/mine' }), tab('b')));
+		store.noteRoute('a', '/alice/a/mine');
+		await vi.runAllTimersAsync();
+		expect(store.routeFor('a')).toBe('/alice/a/mine');
+
+		tabsApi.close.mockResolvedValueOnce(answer(tab('b')));
+		await store.close('a');
+		// Reopened later, after another device moved its route on.
+		tabsApi.open.mockResolvedValueOnce(answer(tab('b'), tab('a', { last_route: '/alice/a/elsewhere' })));
+		await store.open('a');
+
+		expect(store.routeFor('a')).toBe('/alice/a/elsewhere');
+	});
+
+	it('forgets a confirmed route once a committed row carries it', async () => {
+		vi.useFakeTimers();
+		tabsApi.list.mockResolvedValueOnce(answer(tab('a')));
+		const store = await loadStore();
+		await store.load();
+		tabsApi.update.mockResolvedValueOnce(answer(tab('a', { last_route: '/alice/a/mine' })));
+		store.noteRoute('a', '/alice/a/mine');
+		await vi.runAllTimersAsync();
+
+		tabsApi.list.mockResolvedValueOnce(answer(tab('a', { last_route: '/alice/a/mine' })));
+		await store.load();
+		// Caught up; a later list from another device's move now wins.
+		tabsApi.list.mockResolvedValueOnce(answer(tab('a', { last_route: '/alice/a/elsewhere' })));
+		await store.load();
+
+		expect(store.routeFor('a')).toBe('/alice/a/elsewhere');
+	});
+
 	it('a pin a write triggers cannot put a closed tab back either', async () => {
 		tabsApi.list.mockResolvedValueOnce(answer(tab('a'), tab('b', { ephemeral: true }), tab('c')));
 		const store = await loadStore();
