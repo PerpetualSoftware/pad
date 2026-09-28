@@ -5,6 +5,7 @@
 	import { page } from '$app/state';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { tabsStore } from '$lib/stores/tabs.svelte';
+	import { accessStream } from '$lib/services/accessStream.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import {
 		reloadForIdentityChange,
@@ -255,7 +256,12 @@
 			// (the auth-endpoint-unavailable case). Until it answers, and if it
 			// fails, every workspace reads as having no tab row and route memory
 			// uses the localStorage fallback (TASK-3271).
-			if (authStore.authenticated) tabsStore.load().catch(() => {});
+			if (authStore.authenticated) {
+				tabsStore.load().catch(() => {});
+				// Live gain/loss of workspaces (TASK-3275). One per tab; start()
+				// is idempotent and follows identity changes itself.
+				accessStream.start();
+			}
 		}
 	});
 
