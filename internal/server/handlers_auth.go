@@ -716,8 +716,9 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		//
 		// This is not a new posture — it is making two doors agree.
 		// handleAcceptInvitation (handlers_members.go) is the authenticated
-		// counterpart and has always done exactly this: membership fatal, then
-		// accept fatal, in this order. This door was the one that diverged.
+		// counterpart and refuses the same way: a membership that did not land
+		// leaves the invitation pending. There the two writes commit in one
+		// transaction (BUG-3281); this door was the one that diverged.
 		if addErr := s.store.AddWorkspaceMember(invitation.WorkspaceID, user.ID, invitation.Role, s.workspaceLimitMintOpts()...); addErr != nil {
 			// RECONCILE BEFORE DESTROYING — here too (codex round 2).
 			//
