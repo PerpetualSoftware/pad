@@ -322,12 +322,18 @@ export interface MyInvitationsResponse {
 }
 
 // The success body of both invitation accept routes.
-export interface InvitationAccepted {
-	accepted: boolean;
+// What every accept names about the workspace joined: both accept doors and
+// a signup with an invitation code (BUG-3284). Mirrors the server's
+// invitationAcceptedFields.
+export interface InvitationAcceptedFields {
 	workspace_id: string;
 	role: string;
 	workspace_slug?: string;
 	owner_username?: string;
+}
+
+export interface InvitationAccepted extends InvitationAcceptedFields {
+	accepted: boolean;
 }
 
 // One workspace in the caller's open set: a tab in the workspace tab bar

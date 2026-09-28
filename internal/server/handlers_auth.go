@@ -863,10 +863,17 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	// Auto-create default workspace in cloud mode
 	s.autoCreateWorkspace(user)
 
-	writeJSON(w, http.StatusCreated, map[string]interface{}{
+	resp := map[string]interface{}{
 		"user":  sessionUserPayload(user),
 		"token": token,
-	})
+	}
+	// A signup with an invitation code has already joined the workspace, so
+	// the client can land IN it, as an accept does (BUG-3284, PLAN-3002 Q5).
+	// Additive; absent without an invitation.
+	if invitation != nil {
+		resp["accepted_invitation"] = s.invitationAcceptedFields(invitation, invitation.Role)
+	}
+	writeJSON(w, http.StatusCreated, resp)
 }
 
 // handleLogin validates email/password and creates a session.

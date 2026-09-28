@@ -32,7 +32,6 @@ async function mintAccount(fixture: SuiteFixture, tag: string): Promise<Account>
 		baseURL: fixture.baseURL,
 		extraHTTPHeaders: { Authorization: `Bearer ${fixture.apiToken}` }
 	});
-	const session = await request.newContext({ baseURL: fixture.baseURL });
 	try {
 		const username = `tabs${tag}`;
 		const email = `${username}@example.com`;
@@ -41,6 +40,16 @@ async function mintAccount(fixture: SuiteFixture, tag: string): Promise<Account>
 			await admin.post('/api/v1/auth/register', { data: { email, username, name: `Tabs ${tag}`, password: PASSWORD } }),
 			'register'
 		);
+		return await accountFor(fixture, username, email, tag);
+	} finally {
+		await admin.dispose();
+	}
+}
+
+/** An API handle for an account that already exists, by signing in as it. */
+async function accountFor(fixture: SuiteFixture, username: string, email: string, tag: string): Promise<Account> {
+	const session = await request.newContext({ baseURL: fixture.baseURL });
+	try {
 		await ok(await session.post('/api/v1/auth/login', { data: { email, password: PASSWORD } }), 'login');
 		const csrf = (await session.storageState()).cookies.find(
 			(c) => c.name === 'pad_csrf' || c.name === '__Host-pad_csrf'
@@ -60,7 +69,6 @@ async function mintAccount(fixture: SuiteFixture, tag: string): Promise<Account>
 		});
 		return { username, token, api };
 	} finally {
-		await admin.dispose();
 		await session.dispose();
 	}
 }
@@ -574,6 +582,50 @@ test.describe('landings open an ephemeral tab (TASK-3279)', () => {
 			await expectEphemeral(page, account, shared);
 		} finally {
 			await teardown(invitee);
+			await teardown(inviter);
+		}
+	});
+
+	test('registering from an invitation link lands IN the workspace, on an ephemeral tab (BUG-3284)', async ({
+		browser,
+		fixture
+	}) => {
+		let inviter: World | undefined;
+		let invitee: Account | undefined;
+		// Signed OUT: the suite's default page is the shared admin, and a signed-in
+		// join page accepts as that account instead of offering registration.
+		const context = await browser.newContext({ baseURL: fixture.baseURL, storageState: { cookies: [], origins: [] } });
+		const page = await context.newPage();
+		await page.setViewportSize(DESKTOP);
+		try {
+			inviter = await seed(fixture, ['Signup Target']);
+			const shared = inviter.slugs[0];
+			const tag = `${Date.now()}${Math.floor(Math.random() * 1e6)}`;
+			const username = `tabs${tag}`;
+			const email = `${username}@example.com`;
+			const inv = (await (
+				await ok(
+					await inviter.account.api.post(`/api/v1/workspaces/${shared}/members/invite`, {
+						data: { email, role: 'editor' }
+					}),
+					'invite'
+				)
+			).json()) as { code: string };
+
+			// No account yet, and no session: the join page offers registration.
+			await page.goto(`/join/${inv.code}`);
+			await page.getByPlaceholder('Name', { exact: true }).fill(`Tabs ${tag}`);
+			await page.getByPlaceholder('Username', { exact: true }).fill(username);
+			await page.getByPlaceholder('Password', { exact: true }).fill(PASSWORD);
+			await page.getByPlaceholder('Confirm password').fill(PASSWORD);
+			await page.getByRole('button', { name: 'Create account & join' }).click();
+
+			await expect(page).toHaveURL(new RegExp(`/${inviter.account.username}/${shared}$`));
+			invitee = await accountFor(fixture, username, email, tag);
+			await expectEphemeral(page, invitee, shared);
+		} finally {
+			await context.close();
+			await invitee?.api.dispose();
 			await teardown(inviter);
 		}
 	});

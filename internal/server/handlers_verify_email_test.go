@@ -138,10 +138,15 @@ func TestCloudSignup_UnverifiedThenVerifyUnblocksSameSession(t *testing.T) {
 		User  struct {
 			EmailVerified bool `json:"email_verified"`
 		} `json:"user"`
+		AcceptedInvitation map[string]interface{} `json:"accepted_invitation"`
 	}
 	parseJSON(t, rr, &reg)
 	if reg.Token == "" {
 		t.Fatal("expected a session token from register")
+	}
+	// BUG-3284: only a signup that accepted an invitation names a workspace.
+	if reg.AcceptedInvitation != nil {
+		t.Fatalf("a signup with no invitation carried accepted_invitation: %v", reg.AcceptedInvitation)
 	}
 	if reg.User.EmailVerified {
 		t.Fatal("a self-serve signup must be UNVERIFIED in the response payload")

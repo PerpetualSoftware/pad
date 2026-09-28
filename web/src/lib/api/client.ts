@@ -5,6 +5,7 @@ import type {
 	DeletedWorkspace,
 	MyInvitationsResponse,
 	InvitationAccepted,
+	InvitationAcceptedFields,
 	WorkspaceCreate,
 	WorkspaceUpdate,
 	Collection,
@@ -2617,7 +2618,7 @@ export const api = {
 				body: JSON.stringify({ challenge_token: challengeToken, code: code || undefined, recovery_code: recoveryCode || undefined })
 			}),
 		register: (email: string, name: string, password: string, username?: string, invitation_code?: string) =>
-			request<{ user: { id: string; email: string; username: string; name: string; role: string; email_verified?: boolean }; token: string }>('/auth/register', {
+			request<{ user: { id: string; email: string; username: string; name: string; role: string; email_verified?: boolean }; token: string; accepted_invitation?: InvitationAcceptedFields }>('/auth/register', {
 				method: 'POST',
 				body: JSON.stringify({ email, name, password, ...(username ? { username } : {}), ...(invitation_code ? { invitation_code } : {}) })
 			}),
