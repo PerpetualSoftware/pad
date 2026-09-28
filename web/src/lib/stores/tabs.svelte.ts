@@ -79,6 +79,9 @@ const writeTimers = new Map<string, ReturnType<typeof setTimeout>>();
 // Landing opens in flight, by slug, so a second landing on the same workspace
 // does not send a second POST and a route write can wait for its row.
 const landings = new Map<string, Promise<void>>();
+// The list request in flight, so a landing before the first commit waits for
+// it instead of starting a second one.
+let listing: Promise<void> | null = null;
 // Pins in flight, by slug, so a burst of writes sends one.
 const pinning = new Set<string>();
 let legacySwept = false;
@@ -164,7 +167,13 @@ export const tabsStore = {
 	get loaded() { return loaded; },
 
 	async load(): Promise<void> {
-		await send(() => api.workspaces.tabs.list());
+		const p = send(() => api.workspaces.tabs.list()).then(() => {});
+		listing = p;
+		try {
+			await p;
+		} finally {
+			if (listing === p) listing = null;
+		}
 	},
 
 	/** Open a tab. An ephemeral open replaces the current ephemeral tab. */
@@ -174,20 +183,28 @@ export const tabsStore = {
 
 	/**
 	 * A landing in `slug`: open it as an ephemeral tab unless it is already in
-	 * the open set. Skipped only when a committed list says it has a row;
-	 * before the first list answers the POST is sent anyway, since the server
-	 * leaves an existing row alone. A workspace the caller cannot see answers
-	 * the workspace 404, which rejects here and opens nothing.
+	 * the open set. Decided against a committed list, never blind: until the
+	 * first list answers, this waits for it (or starts one). A blind open
+	 * that reached the server after the user closed the tab would reopen it,
+	 * since a close and an open are separate requests (e2e, 8 workers). A
+	 * workspace the caller cannot see answers the workspace 404, which rejects
+	 * here and opens nothing.
 	 */
 	land(slug: string): Promise<void> {
-		if (loaded && hasRow(slug)) return Promise.resolve();
 		const inFlight = landings.get(slug);
 		if (inFlight) return inFlight;
-		const p = send(() => api.workspaces.tabs.open(slug, true))
-			.then(() => {})
-			.finally(() => {
-				if (landings.get(slug) === p) landings.delete(slug);
-			});
+		const isSameIdentity = authStore.identityFence();
+		const p: Promise<void> = (async () => {
+			if (!loaded) {
+				// A failed list does not decide anything; the open below still
+				// goes, and the server leaves an existing row alone.
+				await (listing ?? tabsStore.load()).catch(() => {});
+			}
+			if (!isSameIdentity() || (loaded && hasRow(slug))) return;
+			await send(() => api.workspaces.tabs.open(slug, true));
+		})().finally(() => {
+			if (landings.get(slug) === p) landings.delete(slug);
+		});
 		landings.set(slug, p);
 		return p;
 	},
@@ -253,4 +270,5 @@ authStore.onIdentityChange(() => {
 	writeTimers.clear();
 	landings.clear();
 	pinning.clear();
+	listing = null;
 });

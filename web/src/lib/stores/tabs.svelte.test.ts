@@ -370,13 +370,72 @@ describe('landings (TASK-3279)', () => {
 		expect(tabsApi.open).not.toHaveBeenCalled();
 	});
 
-	it('still sends before the first list answers, since it cannot know', async () => {
-		tabsApi.open.mockResolvedValueOnce(answer(tab('ws')));
+	it('waits for the first list before deciding, and sends nothing when it shows the tab', async () => {
+		const list = deferred<ReturnType<typeof answer>>();
+		tabsApi.list.mockReturnValueOnce(list.promise);
+		const store = await loadStore();
+		const load = store.load();
+
+		const landing = store.land('ws');
+		await settle();
+		expect(tabsApi.open).not.toHaveBeenCalled();
+
+		list.resolve(answer(tab('ws')));
+		await Promise.all([load, landing]);
+		expect(tabsApi.open).not.toHaveBeenCalled();
+		// It rode the list in flight rather than starting a second one.
+		expect(tabsApi.list).toHaveBeenCalledTimes(1);
+	});
+
+	it('starts the list itself when none is in flight, then opens a missing workspace', async () => {
+		tabsApi.list.mockResolvedValueOnce(answer(tab('ws')));
+		tabsApi.open.mockResolvedValueOnce(answer(tab('ws'), tab('deep', { ephemeral: true })));
 		const store = await loadStore();
 
-		await store.land('ws');
+		await store.land('deep');
 
-		expect(tabsApi.open).toHaveBeenCalledWith('ws', true);
+		expect(tabsApi.list).toHaveBeenCalledTimes(1);
+		expect(tabsApi.open).toHaveBeenCalledWith('deep', true);
+	});
+
+	it('does not reopen a tab closed while the landing waited for the list', async () => {
+		// The e2e failure: a blind open reaching the server after the close
+		// put the tab back. Now the landing sees the committed list.
+		const list = deferred<ReturnType<typeof answer>>();
+		tabsApi.list.mockReturnValueOnce(list.promise);
+		const store = await loadStore();
+		const load = store.load();
+		const landing = store.land('b');
+		list.resolve(answer(tab('a'), tab('b')));
+		await Promise.all([load, landing]);
+
+		tabsApi.close.mockResolvedValueOnce(answer(tab('a')));
+		await store.close('b');
+
+		expect(tabsApi.open).not.toHaveBeenCalled();
+		expect(slugs(store.tabs)).toEqual(['a']);
+	});
+
+	it('opens anyway when the first list fails, since the server decides', async () => {
+		tabsApi.list.mockRejectedValueOnce(new TypeError('network down'));
+		tabsApi.open.mockResolvedValueOnce(answer(tab('deep', { ephemeral: true })));
+		const store = await loadStore();
+
+		await store.land('deep');
+
+		expect(tabsApi.open).toHaveBeenCalledWith('deep', true);
+	});
+
+	it('drops a landing whose identity changed while it waited', async () => {
+		const list = deferred<ReturnType<typeof answer>>();
+		tabsApi.list.mockReturnValueOnce(list.promise);
+		const store = await loadStore();
+		const landing = store.land('deep');
+		auth.fireIdentityChange();
+		list.resolve(answer());
+		await landing;
+
+		expect(tabsApi.open).not.toHaveBeenCalled();
 	});
 
 	it('sends one POST for two landings on the same workspace in flight', async () => {
