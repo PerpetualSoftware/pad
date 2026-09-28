@@ -7,6 +7,7 @@
 	import { parseFields, parseSchema, itemUrlId, formatItemRef, type Collection, type Item } from '$lib/types';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { canCreateIn } from '$lib/collections/canCreateIn';
+	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import {
 		categoricalValueFor,
 		categoricalValueForField,
@@ -294,6 +295,7 @@
 	}
 
 	async function toggleStatus(item: Item) {
+		if (!workspaceStore.canEditItem(item)) return;
 		const fields = parseFields(item);
 		const cur = fields.status ?? 'draft';
 		const next = cur === 'active' ? 'draft' : cur === 'draft' ? 'active' : 'draft';
@@ -661,7 +663,9 @@
 									     contradicts its own action is worse than the wrong chip
 									     this round was fixing; the button waits for the schema
 									     rather than guessing. -->
-									{#if status}
+									<!-- A status change and a delete are item writes, refused
+									     without edit on this playbook (BUG-3266). -->
+									{#if status && workspaceStore.canEditItem(item)}
 										<Button variant="secondary" size="sm" disabled={togglingStatus === item.slug} onclick={() => toggleStatus(item)}>
 											{togglingStatus === item.slug ? '...' : nextStatusLabel(status)}
 										</Button>
@@ -675,7 +679,9 @@
 									<Button variant="secondary" size="sm" disabled={exportingSlug === item.slug} onclick={() => exportPlaybook(item)} title="Download as a .pad.md artifact">
 										{exportingSlug === item.slug ? '...' : 'Export'}
 									</Button>
-									{#if confirmDeleteSlug === item.slug}
+									{#if !workspaceStore.canEditItem(item)}
+										<!-- no delete: see the status button above -->
+									{:else if confirmDeleteSlug === item.slug}
 										<span class="delete-confirm">
 											Delete?
 											<Button variant="danger" size="sm" disabled={deleting === item.slug} onclick={() => deletePlaybook(item.slug)}>{deleting === item.slug ? '...' : 'Yes'}</Button>
