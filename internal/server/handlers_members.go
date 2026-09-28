@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -405,9 +404,6 @@ func (s *Server) acceptInvitationCore(w http.ResponseWriter, r *http.Request, in
 	// cap is decided here, authoritatively, under the per-feature plan-limit
 	// key direct adds take. A refusal rolls the transaction back, so the
 	// invitation stays pending and can be accepted once there is room.
-	// created_at is stored at one-second resolution, so a row stamped before
-	// this second provably predates the call (see the reconcile below).
-	callStart := time.Now().UTC().Truncate(time.Second)
 	added, role, err := s.store.AcceptWorkspaceInvitation(inv.ID, inv.WorkspaceID, user.ID, inv.Role, s.workspaceLimitMintOpts()...)
 	if err != nil {
 		// RECONCILE BEFORE REFUSING (BUG-3026). The store returns the raw
@@ -437,14 +433,12 @@ func (s *Server) acceptInvitationCore(w http.ResponseWriter, r *http.Request, in
 			writeInternalError(w, err)
 			return "", false
 		}
-		// Landed: the caller is a member and the invitation is accepted. A
-		// membership stamped before this call's second was already there, so
-		// access did not change and nothing is published. One stamped within
-		// it may be this call's, so publish: the event is a refetch hint, and a
-		// duplicate is benign where a missed gain is not.
+		// Landed: the caller is a member and the invitation is accepted, so
+		// the store's added (returned with a commit error) is this call's
+		// outcome, and the role is the row's.
 		slog.Warn("invitation accept: the accept reported an error but it landed; reconciled to success",
 			"workspace_id", inv.WorkspaceID, "user_id", user.ID, "error", err)
-		added, role = !member.CreatedAt.Before(callStart), member.Role
+		role = member.Role
 	}
 	if added {
 		// The membership IS the access. The store has committed it (with the

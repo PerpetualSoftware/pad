@@ -361,15 +361,12 @@ func TestAcceptInvitation_CommitErrorReconciles(t *testing.T) {
 			f.expect(since)
 		})
 		// An existing member whose accept landed: success at the held role, and
-		// no gain, because the row predates the call. The row is backdated so
-		// "predates" does not depend on the test crossing a second boundary.
+		// no gain, because the transaction added no member. The member is
+		// added moments before, usually within the same second, which a
+		// created_at comparison could not tell apart (codex round 3).
 		t.Run("landed_existing_member", func(t *testing.T) {
 			f := newAccessFixture(t, d)
 			u := f.member("existing@example.com", "viewer")
-			if _, err := f.srv.store.DB().Exec(f.srv.store.D().Rebind(`UPDATE workspace_members SET created_at = ? WHERE workspace_id = ? AND user_id = ?`),
-				"2026-01-01T00:00:00Z", f.wsID, u.ID); err != nil {
-				t.Fatalf("backdate membership: %v", err)
-			}
 			tok := f.token(u)
 			inv := f.invite(u.Email, "editor")
 			since := f.mark()

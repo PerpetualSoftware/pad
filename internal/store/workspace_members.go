@@ -148,7 +148,10 @@ func (s *Store) commitWorkspaceMemberTx(tx *sql.Tx) error {
 //
 // As with AddWorkspaceMember, an error does not prove nothing was written: a
 // commit can land and report failure (BUG-3026). A caller reads the
-// membership before treating an error as "not accepted".
+// membership and the invitation before treating an error as "not accepted".
+// On a COMMIT error only, added and effectiveRole are still filled in with
+// what the transaction wrote, which is the outcome if it landed; on every
+// earlier error they are zero.
 func (s *Store) AcceptWorkspaceInvitation(invitationID, workspaceID, userID, role string, opts ...MintOption) (added bool, effectiveRole string, err error) {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -165,7 +168,10 @@ func (s *Store) AcceptWorkspaceInvitation(invitationID, workspaceID, userID, rol
 		return false, "", fmt.Errorf("accept workspace invitation: %w", err)
 	}
 	if err := s.commitWorkspaceMemberTx(tx); err != nil {
-		return false, "", fmt.Errorf("accept workspace invitation: %w", err)
+		// added and effectiveRole describe what this transaction wrote, so they
+		// are returned with a commit error: if the caller finds the commit
+		// landed, they are its outcome.
+		return added, effectiveRole, fmt.Errorf("accept workspace invitation: %w", err)
 	}
 	return added, effectiveRole, nil
 }
