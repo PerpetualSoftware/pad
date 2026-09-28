@@ -121,20 +121,32 @@
 		recordAuthMethod(provider);
 	}
 
+	// Land IN the workspace just joined (TASK-3279, PLAN-3002 Q5), after an
+	// accept or a signup with this invitation code (BUG-3284); the workspace
+	// layout opens it as an ephemeral tab. The list is reloaded first so the
+	// new workspace is in it when the layout resolves it. A server that
+	// predates the slug in the response lands on /console.
+	//
+	// The session is re-read first, as /login does after signing in: a signup
+	// or sign-in from this page leaves the client's auth state saying "signed
+	// out", and the landing, the tab bar and the workspace list all wait on
+	// it. A tab that was already signed in as the same user re-reads the same
+	// session, which notifies nobody.
+	async function landInJoinedWorkspace(joined: { workspace_slug?: string; owner_username?: string } | undefined) {
+		await authStore.load().catch(() => {});
+		await workspaceStore.loadAll().catch(() => {});
+		const dest =
+			joined?.workspace_slug && joined.owner_username
+				? `/${encodeURIComponent(joined.owner_username)}/${encodeURIComponent(joined.workspace_slug)}`
+				: '/console';
+		await goto(dest, { replaceState: true });
+	}
+
 	async function acceptInvitation() {
 		status = 'accepting';
 		try {
 			const result = await api.members.acceptInvitation(code);
-			// Land IN the workspace just joined (TASK-3279, PLAN-3002 Q5); the
-			// workspace layout opens it as an ephemeral tab. The list is reloaded
-			// first so the new workspace is in it when the layout resolves it. A
-			// server that predates the slug in the response lands on /console.
-			await workspaceStore.loadAll().catch(() => {});
-			const dest =
-				result.workspace_slug && result.owner_username
-					? `/${encodeURIComponent(result.owner_username)}/${encodeURIComponent(result.workspace_slug)}`
-					: '/console';
-			await goto(dest, { replaceState: true });
+			await landInJoinedWorkspace(result);
 		} catch (err: unknown) {
 			errorMsg = err instanceof Error ? err.message : 'Failed to accept invitation';
 			status = 'error';
@@ -201,10 +213,10 @@
 				if (password !== confirmPassword) { formError = 'Passwords do not match'; submitting = false; return; }
 				// Pass the invitation code so the backend allows registration
 				// and auto-accepts the invitation in one step.
-				await api.auth.register(email.trim(), name.trim(), password, username || undefined, code);
+				const registered = await api.auth.register(email.trim(), name.trim(), password, username || undefined, code);
 				// Registration with invitation_code already accepted the invite,
-				// so redirect directly instead of calling acceptInvitation().
-				await goto('/console', { replaceState: true });
+				// so land directly instead of calling acceptInvitation().
+				await landInJoinedWorkspace(registered.accepted_invitation);
 				return;
 			} else {
 				if (!email.trim()) { formError = 'Email is required'; submitting = false; return; }
