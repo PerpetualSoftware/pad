@@ -3,7 +3,7 @@
 	import type { Item, Collection } from '$lib/types';
 	import { getStatusOptions, parseSchema, parseFields } from '$lib/types';
 	import { itemComparator, type SortMode } from '$lib/collections/itemSort';
-	import { reorderGroup, disabledDirections, adjacentColumn, type ReorderDirection } from '$lib/collections/reorder';
+	import { laneOrderAfterMove, disabledDirections, adjacentColumn, type ReorderDirection } from '$lib/collections/reorder';
 	import {
 		bucketByColumn,
 		formatLaneLabel,
@@ -22,7 +22,9 @@
 	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { columnAccentClassFor } from '$lib/utils/fieldColors';
-	import { dndzone, TRIGGERS, SHADOW_ITEM_MARKER_PROPERTY_NAME } from 'svelte-dnd-action';
+	import { TRIGGERS, SHADOW_ITEM_MARKER_PROPERTY_NAME } from 'svelte-dnd-action';
+	import { workspaceStore } from '$lib/stores/workspace.svelte';
+	import { lockableDndzone } from '$lib/collections/lockableDndzone';
 	import type { DndEvent } from 'svelte-dnd-action';
 	import ItemCard from './ItemCard.svelte';
 	import EmptyState from '../common/EmptyState.svelte';
@@ -703,6 +705,16 @@
 	}
 
 
+	// A card moves (drag, or the card menu's Move entries) only when the lane
+	// allows reordering AND the caller may edit that card (BUG-3259). The
+	// lane's gate is `canEdit` = canEditCollection, and an item grant beats a
+	// collection grant, so a guest may edit a collection yet only VIEW one of
+	// its cards. Moving that card writes its status or sort_order, which the
+	// server refuses.
+	function cardMovable(columnValue: string, item: Item): boolean {
+		return canReorderLane(columnValue) && workspaceStore.canEditItem(item);
+	}
+
 	// Menu-driven reorder (IDEA-1898), lane-relative — the non-drag
 	// counterpart for touch (board drag is disabled on mobile) and long
 	// lanes. Scope is the item's own lane, matching the drag handler.
@@ -711,10 +723,8 @@
 		const grp = (columnData[laneKey(columnValue)] ?? []).filter(
 			(i: any) => !i[SHADOW_ITEM_MARKER_PROPERTY_NAME]
 		);
-		const updates = reorderGroup(grp, item.id, dir);
-		if (updates.length > 0) {
-			onReorder(updates.map((u) => ({ slug: u.item.id, sort_order: u.sort_order })));
-		}
+		const lane = laneOrderAfterMove(grp, item.id, dir);
+		if (lane.length > 0) onReorder(lane);
 	}
 
 	// Menu-driven adjacent-column move (TASK-1908) — the horizontal
@@ -976,7 +986,7 @@
 			<!-- svelte-ignore a11y_no_static_element_interactions -->
 			<div
 				class="column-cards"
-				use:dndzone={{
+				use:lockableDndzone={{
 					items: colItems,
 					flipDurationMs,
 					type: 'board-card',
@@ -1001,7 +1011,13 @@
 				oncontextmenu={(e) => e.preventDefault()}
 			>
 				{#each colItems as item, i (item.id)}
-					<div class="card-wrapper" class:no-drag={noTouchDrag}>
+					<!-- data-drag-locked: a card the caller may only view cannot be
+					     dragged, though the lane allows it (BUG-3259). -->
+					<div
+						class="card-wrapper"
+						class:no-drag={noTouchDrag || !workspaceStore.canEditItem(item)}
+						data-drag-locked={!workspaceStore.canEditItem(item)}
+					>
 						<ItemCard
 							{item}
 							{collection}
@@ -1011,10 +1027,10 @@
 							onStatusClick={onStatusChange}
 							progress={itemProgress?.[item.id] ?? null}
 							{progressLabel}
-							onReorderItem={canReorderLane(colValue) ? (it, dir) => reorderItem(colValue, it, dir) : undefined}
-							onMoveItem={canReorderLane(colValue) ? (it, dir) => moveItem(colValue, it, dir) : undefined}
-							horizontal={canReorderLane(colValue)}
-							reorderDisabledDirs={canReorderLane(colValue) ? moveDisabledDirs(colValue, i, colItems.length) : undefined}
+							onReorderItem={cardMovable(colValue, item) ? (it, dir) => reorderItem(colValue, it, dir) : undefined}
+							onMoveItem={cardMovable(colValue, item) ? (it, dir) => moveItem(colValue, it, dir) : undefined}
+							horizontal={cardMovable(colValue, item)}
+							reorderDisabledDirs={cardMovable(colValue, item) ? moveDisabledDirs(colValue, i, colItems.length) : undefined}
 							{onItemOpen}
 						/>
 					</div>

@@ -19,7 +19,9 @@
 	import Button from '$lib/components/common/Button.svelte';
 	import PageHeader from '$lib/components/common/PageHeader.svelte';
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
-	import { dndzone, TRIGGERS, SHADOW_ITEM_MARKER_PROPERTY_NAME } from 'svelte-dnd-action';
+	import { TRIGGERS, SHADOW_ITEM_MARKER_PROPERTY_NAME } from 'svelte-dnd-action';
+	import { lockableDndzone } from '$lib/collections/lockableDndzone';
+	import { planLaneOrder } from '$lib/collections/reorderPlan';
 	import type { DndEvent } from 'svelte-dnd-action';
 
 	/**
@@ -501,29 +503,52 @@
 			}
 		}
 
-		// Always persist sort order for all items in this lane (covers both
-		// within-lane reorder and cross-lane moves)
-		const reorderUpdates = finalItems.map((item, index) => ({
-			item_id: item.id,
-			role_sort_order: index
-		}));
+		// Persist the lane's order (covers both within-lane reorder and
+		// cross-lane moves). The server refuses the WHOLE batch if it names an
+		// item the caller may only view, so the plan leaves such a card at its
+		// stored order and fits the others around it (BUG-3259). With every
+		// card editable it is the dense renumber this always sent, minus cards
+		// already in place.
+		const plan = planLaneOrder(
+			finalItems.map((item) => ({ id: item.id, sort_order: item.role_sort_order ?? 0 })),
+			(c) => {
+				const item = finalItems.find((i) => i.id === c.id);
+				return !!item && workspaceStore.canEditItem(item);
+			}
+		);
+		const planned = new Map(plan.ok ? plan.writes.map((w) => [w.id, w.sort_order]) : []);
+		const reorderUpdates = [...planned].map(([item_id, role_sort_order]) => ({ item_id, role_sort_order }));
 
 		// Optimistic: update lanes state with new sort orders BEFORE releasing isDragging
 		// See the lost-identity rule at the top of this handler.
 		if (!identityHeld(epochAtEntry)) return;
 		lanes = lanes.map((lane) => {
 			if (laneKey(lane) !== key) return lane;
-			return { ...lane, items: finalItems.map((item, index) => ({ ...item, role_sort_order: index })) };
+			return {
+				...lane,
+				items: finalItems.map((item) => ({ ...item, role_sort_order: planned.get(item.id) ?? item.role_sort_order }))
+			};
 		});
+		if (!plan.ok) {
+			// No integer room between view-only cards: nothing is written.
+			toastStore.show("Couldn't keep that order: a card you can only view is in the way.", 'error');
+		}
 
 		// Now safe to release — lanes has the correct data for the $effect to sync from
 		isDragging = false;
 
+		if (reorderUpdates.length === 0) return;
 		try {
 			await api.agentRoles.reorder(wsSlug, reorderUpdates);
 			if (!identityHeld(epochAtEntry)) return;
 		} catch (err) {
 			console.error('Failed to persist sort order:', err);
+			// A refused batch stored nothing, so the lane shown is an order the
+			// server does not have: reload it, under the identity that made the
+			// request only (BUG-3259 codex round 4; the role write's recovery
+			// above is the same shape).
+			if (!identityHeld(epochAtEntry)) return;
+			await loadData();
 		}
 	}
 
@@ -1023,7 +1048,7 @@
 					<!-- svelte-ignore a11y_no_static_element_interactions -->
 					<div
 						class="lane-items"
-						use:dndzone={{
+						use:lockableDndzone={{
 							items: laneData[laneKey(lane)] ?? [],
 							flipDurationMs,
 							type: 'role-board-card',
@@ -1041,7 +1066,15 @@
 					>
 						{#each (laneData[laneKey(lane)] ?? []) as item (item.id)}
 							{@const coll = collectionForItem(item)}
-							<div class="card-wrapper" class:dimmed={highlightMine && currentUserId && item.assigned_user_id !== currentUserId}>
+							<!-- data-drag-locked: moving a card writes ITS role, so a card
+							     the caller may only view cannot be dragged, though the zone
+							     allows it for anyone with some edit grant (BUG-3259). -->
+							<div
+								class="card-wrapper"
+								class:dimmed={highlightMine && currentUserId && item.assigned_user_id !== currentUserId}
+								class:drag-locked={!workspaceStore.canEditItem(item)}
+								data-drag-locked={!workspaceStore.canEditItem(item)}
+							>
 								{#if coll}
 									<ItemCard {item} collection={coll} compact={true} showCollection={true} />
 								{:else}
@@ -1338,6 +1371,11 @@
 	}
 	.card-wrapper:active {
 		cursor: grabbing;
+	}
+	/* A card the caller may only view does not drag (BUG-3259). */
+	.card-wrapper.drag-locked,
+	.card-wrapper.drag-locked:active {
+		cursor: default;
 	}
 	.card-wrapper.dimmed {
 		opacity: 0.35;

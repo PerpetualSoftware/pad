@@ -23,20 +23,24 @@ const VIEWS = {
 	'../../../routes/[username]/[workspace]/roles/+page.svelte': 1,
 } as const;
 
-/** The text of each `use:dndzone={{ … }}` config, brace-matched. */
+/**
+ * The text of each `use:dndzone={{ … }}` or `use:lockableDndzone={{ … }}`
+ * config, brace-matched. `lockableDndzone` is `dndzone` with per-card locking
+ * (BUG-3259) and takes the same options, so it is the same zone for this guard.
+ */
 function dndzoneConfigs(src: string): string[] {
 	const out: string[] = [];
-	let at = src.indexOf('use:dndzone={{');
-	while (at >= 0) {
+	const opener = /use:(?:lockableDndzone|dndzone)=\{\{/g;
+	for (let m = opener.exec(src); m; m = opener.exec(src)) {
 		let depth = 0;
-		let i = at + 'use:dndzone='.length;
+		let i = m.index + m[0].length - 2;
 		const start = i;
 		for (; i < src.length; i++) {
 			if (src[i] === '{') depth++;
 			else if (src[i] === '}' && --depth === 0) break;
 		}
 		out.push(src.slice(start, i + 1));
-		at = src.indexOf('use:dndzone={{', i);
+		opener.lastIndex = i;
 	}
 	return out;
 }

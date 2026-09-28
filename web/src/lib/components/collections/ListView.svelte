@@ -5,7 +5,7 @@
 	import { parseSchema, parseFields } from '$lib/types';
 	import { itemComparator, type SortMode } from '$lib/collections/itemSort';
 	import { formatLaneLabel, isUngrouped, laneKey, laneValue } from '$lib/collections/boardColumns';
-	import { reorderGroup, disabledDirections, type ReorderDirection } from '$lib/collections/reorder';
+	import { laneOrderAfterMove, disabledDirections, type ReorderDirection } from '$lib/collections/reorder';
 	import {
 		narrowRelationRow,
 		relationLaneAcceptsDrop,
@@ -17,6 +17,8 @@
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { SvelteSet } from 'svelte/reactivity';
 	import { dndzone, TRIGGERS, SHADOW_ITEM_MARKER_PROPERTY_NAME } from 'svelte-dnd-action';
+	import { workspaceStore } from '$lib/stores/workspace.svelte';
+	import { lockableDndzone } from '$lib/collections/lockableDndzone';
 	import type { DndEvent } from 'svelte-dnd-action';
 	import ItemCard from './ItemCard.svelte';
 	import EmptyState from '../common/EmptyState.svelte';
@@ -428,16 +430,16 @@
 	// (sort_order is only honored then), and not while search is
 	// preserving relevance order.
 	let canReorderItems = $derived(canEdit && sortMode === 'manual' && !preserveOrder);
+	// Per card, the menu also needs canEditItem (BUG-3259): an item grant beats
+	// a collection grant, so a card in an editable collection can be view-only.
 
 	function reorderItem(groupName: string, item: Item, dir: ReorderDirection) {
 		if (!onReorder) return;
 		const grp = (groupData[laneKey(groupName)] ?? []).filter(
 			(i: any) => !i[SHADOW_ITEM_MARKER_PROPERTY_NAME]
 		);
-		const updates = reorderGroup(grp, item.id, dir);
-		if (updates.length > 0) {
-			onReorder(updates.map((u) => ({ slug: u.item.id, sort_order: u.sort_order })));
-		}
+		const lane = laneOrderAfterMove(grp, item.id, dir);
+		if (lane.length > 0) onReorder(lane);
 	}
 
 	function toggleGroup(groupName: string) {
@@ -548,7 +550,7 @@
 					<!-- svelte-ignore a11y_no_static_element_interactions -->
 					<div
 						class="group-items"
-						use:dndzone={{
+						use:lockableDndzone={{
 							items: grpItems,
 							flipDurationMs,
 							type: 'list-item',
@@ -571,7 +573,14 @@
 						oncontextmenu={(e) => e.preventDefault()}
 					>
 						{#each grpItems as item, i (item.id)}
-							<div class="list-row" class:kb-focused={focusedItemId === item.id}>
+							<!-- data-drag-locked: a row the caller may only view cannot be
+							     dragged, though the group allows it (BUG-3259). -->
+							<div
+								class="list-row"
+								class:kb-focused={focusedItemId === item.id}
+								class:drag-locked={!workspaceStore.canEditItem(item)}
+								data-drag-locked={!workspaceStore.canEditItem(item)}
+							>
 								<ItemCard
 									{item}
 									{collection}
@@ -581,8 +590,8 @@
 									onStatusClick={onStatusChange}
 									progress={itemProgress?.[item.id] ?? null}
 									{progressLabel}
-									onReorderItem={canReorderItems ? (it, dir) => reorderItem(groupName, it, dir) : undefined}
-									reorderDisabledDirs={canReorderItems ? disabledDirections(i, grpItems.length) : undefined}
+									onReorderItem={canReorderItems && workspaceStore.canEditItem(item) ? (it, dir) => reorderItem(groupName, it, dir) : undefined}
+									reorderDisabledDirs={canReorderItems && workspaceStore.canEditItem(item) ? disabledDirections(i, grpItems.length) : undefined}
 									{onItemOpen}
 								/>
 							</div>
@@ -826,6 +835,12 @@
 
 	.list-row:active {
 		cursor: grabbing;
+	}
+
+	/* A row the caller may only view does not drag (BUG-3259). */
+	.list-row.drag-locked,
+	.list-row.drag-locked:active {
+		cursor: default;
 	}
 
 	.list-row:last-child {

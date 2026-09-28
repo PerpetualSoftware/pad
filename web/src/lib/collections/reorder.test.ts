@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { Item } from '$lib/types';
-import { reorderGroup, reorderedList, disabledDirections, adjacentColumn } from './reorder';
+import { reorderGroup, reorderedList, disabledDirections, adjacentColumn, laneOrderAfterMove } from './reorder';
 
 // Minimal Item stand-in — reorder only touches `id` and `sort_order`.
 function item(id: string, sort_order: number): Item {
@@ -131,5 +131,22 @@ describe('adjacentColumn', () => {
 	it('returns null when the current value is not in the order', () => {
 		expect(adjacentColumn(cols, 'archived', 'left')).toBeNull();
 		expect(adjacentColumn(cols, 'archived', 'right')).toBeNull();
+	});
+});
+
+describe('laneOrderAfterMove (BUG-3259)', () => {
+	const mk = (id: string, sort_order: number) => ({ id, sort_order }) as unknown as Item;
+	it('hands over EVERY row in the new order, unchanged ones included', () => {
+		const lane = [mk('a', 0), mk('b', 1), mk('c', 2), mk('d', 3)];
+		expect(laneOrderAfterMove(lane, 'c', 'up')).toEqual([
+			{ slug: 'a', sort_order: 0 },
+			{ slug: 'c', sort_order: 1 },
+			{ slug: 'b', sort_order: 2 },
+			{ slug: 'd', sort_order: 3 }
+		]);
+	});
+	it('is empty for a no-op move', () => {
+		const lane = [mk('a', 0), mk('b', 1)];
+		expect(laneOrderAfterMove(lane, 'a', 'top')).toEqual([]);
 	});
 });

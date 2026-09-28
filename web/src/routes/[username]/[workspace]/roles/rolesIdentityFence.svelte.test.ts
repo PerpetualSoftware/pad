@@ -114,6 +114,7 @@ vi.mock('$lib/stores/workspace.svelte', () => ({
 		get current() { return { id: 'ws1', slug: 'ws', name: 'WS' }; },
 		get currentMembership() { return { role: 'owner' }; },
 		canEditCollection: () => true,
+		canEditItem: () => true,
 		setCurrent: vi.fn(async () => {}),
 	},
 }));
@@ -131,6 +132,7 @@ vi.mock('svelte-dnd-action', () => ({
 	dndzone: () => ({ destroy: () => {} }),
 	TRIGGERS: { DROPPED_INTO_ZONE: 'droppedIntoZone' },
 	SHADOW_ITEM_MARKER_PROPERTY_NAME: '__dndShadow',
+	DRAGGED_ELEMENT_ID: 'dnd-action-dragged-el',
 }));
 
 import { api } from '$lib/api/client';
@@ -141,6 +143,9 @@ const ROLE = { id: 'r1', name: 'Implementer', slug: 'implementer', icon: '🔨',
 const ITEM = {
 	id: 'i1', slug: 'i1', title: 'Row', item_number: 1, collection_slug: 'tasks',
 	fields: '{}', tags: '[]', agent_role_id: null, assigned_user_id: null,
+	// The API always sends it. Not 0, so a drop to the head of a lane changes it
+	// and persists (the lane renumber writes only cards that move, BUG-3259).
+	role_sort_order: 3,
 };
 
 async function mountPage() {
@@ -277,6 +282,22 @@ describe('the roles board stops a commit when the identity moves mid-flight', ()
 			vi.mocked(api.agentRoles.reorder).mock.calls.length,
 			"the previous session's drag persisted a sort order under the new identity"
 		).toBe(reordersBefore);
+	});
+
+	it('a REFUSED lane renumber reloads the board, so the lane does not keep an order the server refused (BUG-3259)', async () => {
+		await mountPage();
+		vi.mocked(api.agentRoles.reorder).mockRejectedValueOnce(new Error('403'));
+		dropIntoRoleLane();
+		const write = await waitFor(() => {
+			if (itemUpdates.length === 0) throw new Error('no write yet');
+			return itemUpdates[0]!;
+		});
+		const boardsBefore = boardCalls.length;
+		write.resolve({});
+		await waitFor(() => {
+			expect(vi.mocked(api.agentRoles.reorder)).toHaveBeenCalled();
+			expect(boardCalls.length, 'the refused batch did not reload the board').toBe(boardsBefore + 1);
+		});
 	});
 
 	it('CONTROL: a drop whose write completes under a held identity DOES persist the sort order', async () => {
