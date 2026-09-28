@@ -218,6 +218,58 @@ describe('which response commits', () => {
 	});
 });
 
+describe('background writes do not commit the list', () => {
+	it('a route PATCH processed before a close cannot put the closed tab back', async () => {
+		// The e2e trace: DELETE c sent, PATCH a sent 22 ms later, the server
+		// ran the PATCH first, and its answer (still holding c) arrived first.
+		vi.useFakeTimers();
+		tabsApi.list.mockResolvedValueOnce(answer(tab('a'), tab('c')));
+		const store = await loadStore();
+		await store.load();
+
+		const closing = deferred<ReturnType<typeof answer>>();
+		tabsApi.close.mockReturnValueOnce(closing.promise);
+		const patching = deferred<ReturnType<typeof answer>>();
+		tabsApi.update.mockReturnValueOnce(patching.promise);
+
+		store.noteRoute('a', '/alice/a/tasks');
+		const close = store.close('c');
+		await vi.advanceTimersByTimeAsync(1_000);
+		expect(tabsApi.update).toHaveBeenCalledWith('a', { last_route: '/alice/a/tasks' });
+
+		patching.resolve(answer(tab('a', { last_route: '/alice/a/tasks' }), tab('c')));
+		await vi.runAllTimersAsync();
+		closing.resolve(answer(tab('a', { last_route: '/alice/a/tasks' })));
+		await close;
+
+		expect(slugs(store.tabs)).toEqual(['a']);
+		expect(store.routeFor('a')).toBe('/alice/a/tasks');
+	});
+
+	it('a pin a write triggers cannot put a closed tab back either', async () => {
+		tabsApi.list.mockResolvedValueOnce(answer(tab('a'), tab('b', { ephemeral: true }), tab('c')));
+		const store = await loadStore();
+		await store.load();
+
+		const closing = deferred<ReturnType<typeof answer>>();
+		tabsApi.close.mockReturnValueOnce(closing.promise);
+		const pinning = deferred<ReturnType<typeof answer>>();
+		tabsApi.update.mockReturnValueOnce(pinning.promise);
+
+		const close = store.close('c');
+		await reportWrite('b');
+		// The close answers first, from before the pin ran: b still ephemeral.
+		closing.resolve(answer(tab('a'), tab('b', { ephemeral: true })));
+		await close;
+		// Then the pin, processed before the close: its list still holds c.
+		pinning.resolve(answer(tab('a'), tab('b'), tab('c')));
+		await settle();
+
+		expect(slugs(store.tabs)).toEqual(['a', 'b']);
+		expect(store.tabs.find((t) => t.slug === 'b')?.ephemeral).toBe(false);
+	});
+});
+
 describe('last route', () => {
 	it('sweeps leftover pre-U5 keys at the first commit and never reads them', async () => {
 		localStorage.setItem(key('ws'), '/alice/ws/tasks');

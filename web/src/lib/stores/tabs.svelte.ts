@@ -47,6 +47,19 @@ import { authStore } from './auth.svelte';
  * reported by the API client (`onWorkspaceWrite`), which is the one place
  * every REST write passes through.
  *
+ * BACKGROUND WRITES DO NOT COMMIT THE LIST (TASK-3279, found under 8-worker
+ * e2e load, and present on main before it). The ticket order above is the
+ * order requests were SENT, and the server may process two in-flight requests
+ * from one user in the other order. A route PATCH sent just after a close,
+ * but processed before it, answers with a list that still holds the closed
+ * tab. Its ticket is the higher one, so it committed and put the tab back in
+ * the bar (the trace: DELETE sent, PATCH sent 22 ms later, PATCH answered
+ * first). The writes the user did not ask for (a route save after every
+ * navigation, the pin a write triggers) therefore update only their own row
+ * locally and never replace the list. Only user actions and loads commit.
+ * Two user actions in flight at once can still cross; closing that needs a
+ * server-side revision on the list.
+ *
  * LAST ROUTE. A workspace's last route lives on its tab row, and nowhere else.
  * The localStorage fallback TASK-3271 kept for workspaces with no row is
  * retired here, because a landing now opens a row: the first commit sweeps
@@ -115,9 +128,9 @@ async function send(call: () => Promise<WorkspaceTabsResponse>): Promise<Workspa
 	return resp;
 }
 
-// Record a route the server confirmed on the committed row, whether or not
-// that PATCH's own response committed: a response issued later that answered
-// first can hold the row's older value, and pending is about to be cleared.
+// Record a route the server confirmed on the committed row. The PATCH's own
+// response is not committed (background write), so this is how the row learns
+// it; pending is about to be cleared.
 function setRowRoute(slug: string, route: string) {
 	const tab = tabs.find((t) => t.slug === slug);
 	if (tab) tab.last_route = route || undefined;
@@ -134,7 +147,8 @@ async function flushRoute(slug: string) {
 	const route = pendingRoutes[slug];
 	if (route === undefined) return;
 	try {
-		await send(() => api.workspaces.tabs.update(slug, { last_route: route }));
+		// Not through send(): see "BACKGROUND WRITES DO NOT COMMIT THE LIST".
+		await api.workspaces.tabs.update(slug, { last_route: route });
 		if (isSameIdentity()) setRowRoute(slug, route);
 	} catch {
 		// No row (a 404: closed elsewhere, or the landing failed), a refused
@@ -149,8 +163,13 @@ async function pinOnWrite(slug: string) {
 	const tab = tabs.find((t) => t.slug === slug);
 	if (!tab?.ephemeral || pinning.has(slug)) return;
 	pinning.add(slug);
+	const isSameIdentity = authStore.identityFence();
 	try {
-		await send(() => api.workspaces.tabs.update(slug, { pin: true }));
+		// Not through send(): see "BACKGROUND WRITES DO NOT COMMIT THE LIST".
+		await api.workspaces.tabs.update(slug, { pin: true });
+		if (!isSameIdentity()) return;
+		const kept = tabs.find((t) => t.slug === slug);
+		if (kept) kept.ephemeral = false;
 	} catch {
 		// The tab stays ephemeral; the next write tries again.
 	} finally {
