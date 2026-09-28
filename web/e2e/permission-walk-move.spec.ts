@@ -148,6 +148,25 @@ function swapWith(order: string[], mover: string, dir: -1 | 1): string[] {
 	return next;
 }
 
+/**
+ * Open a card's action menu and click one of its Move entries, failing in
+ * seconds with what the menu actually rendered (BUG-3278). The menu HIDES an
+ * entry its position rules out (disabledDirections), so a bare getByRole click
+ * on an absent entry waits out the whole test budget and reports only the
+ * name it waited for. `where` describes the list the entry was chosen from.
+ */
+async function clickMenuEntry(page: Page, trigger: Locator, entry: Locator, where: () => Promise<string>): Promise<void> {
+	await trigger.click();
+	await expect(trigger, 'the card menu opened').toHaveAttribute('aria-expanded', 'true', { timeout: 5_000 });
+	try {
+		await expect(entry.first()).toBeVisible({ timeout: 5_000 });
+	} catch {
+		const rendered = (await page.getByRole('menuitem').allTextContents()).map((t) => t.trim());
+		throw new Error(`menu entry ${entry} not rendered; the open menu has [${rendered.join(', ')}]; ${await where()}`);
+	}
+	await entry.first().click();
+}
+
 /** GET a workspace path as the owner, to read stored state the page does not show. */
 async function ownerRead(path: string): Promise<unknown> {
 	const owner = await request.newContext({
@@ -292,9 +311,13 @@ test.describe('guestPrecedence: a view-only card does not move (BUG-3259)', () =
 			await expect(holder(A()).locator('.iam-trigger'), 'A has no move menu').toHaveCount(0);
 			// The control's menu still MOVES it: a named Move entry, and a write
 			// that names the control lands. Nothing sent is refused.
-			await holder(control).locator('.iam-trigger').click();
 			const move = view === 'board' ? /Move (right|left)/ : /Move (down|up|to top|to bottom)/;
-			await page.getByRole('menuitem', { name: move }).and(page.locator(':not([disabled])')).first().click();
+			await clickMenuEntry(
+				page,
+				holder(control).locator('.iam-trigger'),
+				page.getByRole('menuitem', { name: move }).and(page.locator(':not([disabled])')),
+				async () => `control ${control} among ${peers.join(', ')}`
+			);
 			const controlId = idByTitle.get(control)!;
 			await expect
 				.poll(() => writes.some((w) => w.startsWith('200 ') && w.includes(controlId)), { timeout: 5_000 })
@@ -320,9 +343,13 @@ test.describe('guestPrecedence: a view-only card does not move (BUG-3259)', () =
 		await expect(card(C())).toBeVisible();
 		expect(await laneOf(A()), "A's lane").toBeGreaterThanOrEqual(0);
 		for (let guard = 0; guard < 4 && (await laneOf(C())) !== (await laneOf(A())); guard++) {
-			await card(C()).locator('.iam-trigger').click();
 			const dir = (await laneOf(C())) < (await laneOf(A())) ? 'Move right' : 'Move left';
-			await page.getByRole('menuitem', { name: new RegExp(dir) }).click();
+			await clickMenuEntry(
+				page,
+				card(C()).locator('.iam-trigger'),
+				page.getByRole('menuitem', { name: new RegExp(dir) }),
+				async () => `C in lane ${await laneOf(C())}, A in lane ${await laneOf(A())}`
+			);
 			await expect(page.locator('.iam-trigger[aria-expanded="true"]')).toHaveCount(0);
 		}
 		expect(await laneOf(C())).toBe(await laneOf(A()));
@@ -348,8 +375,15 @@ test.describe('guestPrecedence: a view-only card does not move (BUG-3259)', () =
 		// Only writes the final move sends count: the placement moves above wrote too.
 		const before = writes.length;
 		const moverId = idByTitle.get(pick!.mover)!;
-		await card(pick!.mover).locator('.iam-trigger').click();
-		await page.getByRole('menuitem', { name: pick!.name }).click();
+		await clickMenuEntry(
+			page,
+			card(pick!.mover).locator('.iam-trigger'),
+			page.getByRole('menuitem', { name: pick!.name }),
+			async () => {
+				const now = (await lane.locator('.card-title').allTextContents()).map((t) => t.trim());
+				return `mover ${pick!.mover}; lane when picked [${order.join(', ')}], lane now [${now.join(', ')}]`;
+			}
+		);
 		const moverLanded = () => writes.slice(before).some((w) => w.startsWith('200 ') && w.includes('sort_order') && w.includes(moverId));
 		// Settle on whichever comes first: the mover's write, or a refusal (the
 		// old loop stopped at A's 403, so the mover's write never came).
@@ -370,8 +404,12 @@ test.describe('guestPrecedence: a view-only card does not move (BUG-3259)', () =
 		expect(await pointerEngages(page, child(A()).locator('.child-row')), 'A must not drag').toBe(false);
 		// The control's menu still MOVES it: a write naming B lands.
 		const before = writes.length;
-		await child(B()).locator('.iam-trigger').click();
-		await page.getByRole('menuitem', { name: /Move (down|up|to top|to bottom)/ }).and(page.locator(':not([disabled])')).first().click();
+		await clickMenuEntry(
+			page,
+			child(B()).locator('.iam-trigger'),
+			page.getByRole('menuitem', { name: /Move (down|up|to top|to bottom)/ }).and(page.locator(':not([disabled])')),
+			async () => `child ${B()}`
+		);
 		const bId = idByTitle.get(B())!;
 		await expect.poll(() => writes.slice(before).some((w) => w.startsWith('200 ') && w.includes(bId)), { timeout: 5_000 }).toBe(true);
 		expect(refused(writes)).toEqual([]);
