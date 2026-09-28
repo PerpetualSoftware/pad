@@ -435,7 +435,11 @@ func (s *Server) acceptInvitationCore(w http.ResponseWriter, r *http.Request, in
 		}
 		// Landed: the caller is a member and the invitation is accepted, so
 		// the store's added (returned with a commit error) is this call's
-		// outcome, and the role is the row's.
+		// outcome, and the role is the row's. Residual, accepted: if this
+		// commit genuinely failed and a concurrent accept then added the member
+		// and accepted the invitation, the rows read the same and the gain is
+		// published twice. The event is a refetch hint and a duplicate is
+		// benign (TASK-3272); a missed gain would not be.
 		slog.Warn("invitation accept: the accept reported an error but it landed; reconciled to success",
 			"workspace_id", inv.WorkspaceID, "user_id", user.ID, "error", err)
 		role = member.Role
