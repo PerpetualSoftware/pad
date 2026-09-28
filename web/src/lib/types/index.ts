@@ -356,6 +356,9 @@ export interface WorkspaceTab {
 
 export interface WorkspaceTabsResponse {
 	tabs: WorkspaceTab[];
+	// Orders list answers (BUG-3285): a higher one was processed later, and
+	// equal ones hold the same rows. See tabs.svelte.ts.
+	revision: number;
 }
 
 export interface WorkspaceRepository {

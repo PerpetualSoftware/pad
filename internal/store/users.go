@@ -1012,10 +1012,7 @@ func (s *Store) DeleteAccountAtomic(userID string) error {
 	}
 	// Other users' tabs for those workspaces go with them, as on any soft
 	// delete (TASK-3256). Every owned workspace is soft-deleted by now.
-	if _, err := tx.Exec(s.q(`
-		DELETE FROM user_workspace_tabs
-		WHERE workspace_id IN (SELECT id FROM workspaces WHERE owner_id = ?)
-	`), userID); err != nil {
+	if err := s.deleteWorkspaceTabsForOwner(tx, userID); err != nil {
 		return fmt.Errorf("delete account: delete tabs of owned workspaces: %w", err)
 	}
 

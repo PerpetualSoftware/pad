@@ -1,0 +1,12 @@
+-- Migration 100: a per-user revision on the open set of workspace tabs (BUG-3285, PLAN-3002).
+--
+-- Every write to a user's user_workspace_tabs rows bumps this under the
+-- per-user tabs lock (lockUserTabsTx), and every list response carries the
+-- value it was read with, in the same statement as the rows. The web client
+-- commits a list only when its revision is not below the last one it
+-- committed, so two requests the server processed in the other order than
+-- they were sent can no longer put an older list in the bar.
+--
+-- On users, not on the tabs table: the lock every tab write takes is already
+-- the users row, and a user with no tabs still has a revision.
+ALTER TABLE users ADD COLUMN workspace_tabs_revision INTEGER NOT NULL DEFAULT 0;

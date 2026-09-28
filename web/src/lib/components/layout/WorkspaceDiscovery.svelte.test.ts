@@ -51,8 +51,12 @@ const ws = (slug: string, name: string, extra: { is_guest?: boolean } = {}) => (
 	...extra,
 });
 
+// Each answer is numbered after the last, as a server processing the
+// requests in the order the test answers them would (BUG-3285).
+let revision = 0;
 function answer(slugs: string[], lastRoutes: Record<string, string> = {}) {
 	return {
+		revision: ++revision,
 		tabs: slugs.map((slug, i) => ({
 			slug,
 			name: slug,
