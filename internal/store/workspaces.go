@@ -343,6 +343,11 @@ func (s *Store) DeleteWorkspace(slug string) error {
 	if err != nil {
 		return err // sql.ErrNoRows when no live workspace has the slug
 	}
+	// The tab holders' users rows before the workspaces row: the lock order
+	// account deletion takes (BUG-3285; see lockWorkspaceTabHoldersTx).
+	if err := s.lockWorkspaceTabHoldersTx(tx, id); err != nil {
+		return err
+	}
 	ts := now()
 	result, err := tx.Exec(s.q(`
 		UPDATE workspaces SET deleted_at = ?, updated_at = ?

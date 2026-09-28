@@ -108,6 +108,51 @@ func TestWorkspaceTabs_SoftDeleteLockOrder(t *testing.T) {
 	}
 }
 
+// A soft delete of a workspace racing its owner's account deletion, the
+// owner holding a tab on it (codex round 3 on BUG-3285). Account deletion
+// takes users(D) and then the workspaces row; a soft delete that took the
+// workspaces row first and then its holders' users rows (D among them)
+// would wait on it in the other order. A soft delete that loses the race
+// finds the workspace already deleted, which is sql.ErrNoRows, not a failure.
+func TestWorkspaceTabs_SoftDeleteVsOwnerAccountDeletion(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	for round := 0; round < 8; round++ {
+		d := tabsUser(t, s, fmt.Sprintf("Sdowner%d", round))
+		other := tabsUser(t, s, fmt.Sprintf("Sdother%d", round))
+		ws := tabsWorkspace(t, s, d, fmt.Sprintf("SD%d", round))
+		if err := s.AddWorkspaceMember(ws.ID, other.ID, "editor"); err != nil {
+			t.Fatal(err)
+		}
+		for _, uid := range []string{d.ID, other.ID} {
+			if _, err := s.OpenWorkspaceTab(uid, ws.ID, false); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		errs := make(chan error, 2)
+		run := func(what string, fn func() error) {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				if err := fn(); err != nil {
+					errs <- fmt.Errorf("%s: %w", what, err)
+				}
+			}()
+		}
+		run("soft delete", func() error { return s.DeleteWorkspace(ws.Slug) })
+		run("owner account deletion", func() error { return s.DeleteAccountAtomic(d.ID) })
+		close(start)
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			failOnDeadlockOrError(t, fmt.Sprintf("round %d", round), err)
+		}
+	}
+}
+
 // A member removal racing that member's own account deletion. Account
 // deletion locks users(U) first and then deletes U's memberships; the
 // removal deletes the membership and then, in its prune, needs users(U) to

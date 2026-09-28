@@ -417,52 +417,59 @@ func (s *Store) pruneWorkspaceTabIfNoAccessTx(ex execer, userID, workspaceID str
 	return nil
 }
 
-// deleteWorkspaceTabsForWorkspace deletes every user's tab for a workspace.
-// Soft delete calls it; a restore does not bring the rows back (PLAN-3002 Q12:
-// the restorer gets an ephemeral tab from the landing, others reopen it).
-func (s *Store) deleteWorkspaceTabsForWorkspace(ex execer, workspaceID string) error {
-	return s.deleteWorkspaceTabsIn(ex, `?`, workspaceID)
-}
-
-// deleteWorkspaceTabsIn deletes every user's tab whose workspace_id is IN
-// (workspaceIDs), an SQL expression over one bound argument.
+// lockWorkspaceTabHoldersTx locks, on Postgres, the users row of every user
+// holding a tab on workspaceID, in id order. Soft delete calls it BEFORE it
+// touches the workspaces row, and then deleteWorkspaceTabsForWorkspace.
 //
-// Every user who held such a row gets a revision bump (BUG-3285), before the
-// delete. THE LOCK ORDER, on Postgres (SQLite serialises every writer):
+// THE LOCK ORDER (BUG-3285), on Postgres (SQLite serialises every writer).
+// Every transaction that locks a users row takes it before the other rows
+// it writes:
 //
-//   - Against a tab write for a holder U: both take users(U) before U's tab
-//     rows (the write through lockUserTabsTx, this through the ordered lock
-//     below and only then the DELETE), so neither holds what the other
-//     waits for. The write's FK check on workspaces takes FOR KEY SHARE,
-//     which the soft delete's NO KEY UPDATE on the workspaces row does not
-//     block.
-//   - Against another such delete: both lock their holders in id order.
+//   - A tab write for U: users(U) (lockUserTabsTx), then U's tab rows. Its
+//     FK check on workspaces takes FOR KEY SHARE, which the soft delete's
+//     NO KEY UPDATE on the workspaces row does not block.
+//   - A prune caller (member removal, grant revoke): users(U) before its
+//     first write.
+//   - Account deletion: users(D), then D's owned workspaces rows. A soft
+//     delete that took the workspaces row first and D's users row second
+//     would cross it (measured: 40P01,
+//     TestWorkspaceTabs_SoftDeleteVsOwnerAccountDeletion, codex round 3),
+//     which is why this runs first.
+//   - Two soft deletes: both lock their holders in id order.
 //
-// The caller must hold no other users row when it calls this, or the id
-// order is broken; that is why account deletion does not use it (see
-// DeleteAccountAtomic). A tab a concurrent open commits for the workspace
-// after the holders are read is deleted without a bump; the workspace is
-// soft-deleted by then, so every answer filters it out on read anyway.
-func (s *Store) deleteWorkspaceTabsIn(ex execer, workspaceIDs string, arg string) error {
-	holders := `SELECT user_id FROM user_workspace_tabs WHERE workspace_id IN (` + workspaceIDs + `)`
-	if s.dialect.Driver() == DriverPostgres {
-		if _, err := ex.Exec(s.q(`
-			SELECT id FROM users WHERE id IN (`+holders+`)
-			ORDER BY id
-			FOR NO KEY UPDATE
-		`), arg); err != nil {
-			return fmt.Errorf("delete workspace tabs: lock users: %w", err)
-		}
+// A tab a concurrent open commits for the workspace after the holders are
+// locked is deleted without a bump. By then the workspace is soft-deleted,
+// so every answer filters it out on read anyway.
+func (s *Store) lockWorkspaceTabHoldersTx(ex execer, workspaceID string) error {
+	if s.dialect.Driver() != DriverPostgres {
+		return nil
 	}
 	if _, err := ex.Exec(s.q(`
+		SELECT id FROM users
+		WHERE id IN (SELECT user_id FROM user_workspace_tabs WHERE workspace_id = ?)
+		ORDER BY id
+		FOR NO KEY UPDATE
+	`), workspaceID); err != nil {
+		return fmt.Errorf("delete workspace tabs: lock holders: %w", err)
+	}
+	return nil
+}
+
+// deleteWorkspaceTabsForWorkspace deletes every user's tab for a workspace,
+// bumping each holder's tabs revision first (BUG-3285). Soft delete calls it
+// after lockWorkspaceTabHoldersTx; a restore does not bring the rows back
+// (PLAN-3002 Q12: the restorer gets an ephemeral tab from the landing, others
+// reopen it). Account deletion does not use it (see DeleteAccountAtomic).
+func (s *Store) deleteWorkspaceTabsForWorkspace(ex execer, workspaceID string) error {
+	if _, err := ex.Exec(s.q(`
 		UPDATE users SET workspace_tabs_revision = workspace_tabs_revision + 1
-		WHERE id IN (`+holders+`)
-	`), arg); err != nil {
+		WHERE id IN (SELECT user_id FROM user_workspace_tabs WHERE workspace_id = ?)
+	`), workspaceID); err != nil {
 		return fmt.Errorf("delete workspace tabs: bump revisions: %w", err)
 	}
 	if _, err := ex.Exec(s.q(`
-		DELETE FROM user_workspace_tabs WHERE workspace_id IN (`+workspaceIDs+`)
-	`), arg); err != nil {
+		DELETE FROM user_workspace_tabs WHERE workspace_id = ?
+	`), workspaceID); err != nil {
 		return fmt.Errorf("delete workspace tabs: %w", err)
 	}
 	return nil
