@@ -181,8 +181,12 @@ for (const key of ACCOUNT_KEYS) {
 			await expect(titleInput).toHaveValue(TITLE.playbooks);
 			await expect(page.getByRole('button', { name: 'Save', exact: true })).toHaveCount(edits ? 1 : 0);
 			const body = page.locator('#pbe-body');
-			const status = page.locator('.edit-sidebar select').first();
-			for (const control of [titleInput, body, status]) {
+			// By id: the sidebar renders Trigger and Scope selects before it.
+			const status = page.locator('#pbff-status');
+			// A disabled control still shows the stored value.
+			await expect(status).toHaveValue('draft');
+			const trigger = page.getByLabel('Trigger', { exact: true });
+			for (const control of [titleInput, body, status, trigger]) {
 				if (edits) await expect(control).toBeEditable();
 				else await expect(control).not.toBeEditable();
 			}
