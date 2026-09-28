@@ -43,30 +43,35 @@ func TestDeleteAccountAtomic_ConcurrentWriters(t *testing.T) {
 		// when it removes u's LAST access there, so a grant writer's u holds
 		// that one grant and nothing else.
 		access string
-		run    func(s *Store, w world) error
+		// loses is the one error the writer may return, because the
+		// deletion removed something it needed first (measured on
+		// Postgres). Any other error fails the leg, so a writer that
+		// failed before reaching the contested rows cannot pass.
+		loses string
+		run   func(s *Store, w world) error
 	}{
-		{"collection grant revoke (issued by the deleting user)", accessCollGrant, func(s *Store, w world) error {
+		{"collection grant revoke (issued by the deleting user)", accessCollGrant, "", func(s *Store, w world) error {
 			return s.DeleteCollectionGrant(w.gCollA, w.wa)
 		}},
-		{"item grant revoke (issued by the deleting user)", accessItemGrant, func(s *Store, w world) error {
+		{"item grant revoke (issued by the deleting user)", accessItemGrant, "", func(s *Store, w world) error {
 			return s.DeleteItemGrant(w.gItemA, w.wa)
 		}},
-		{"collection grant revoke (the deleting user is the grantee)", accessMember, func(s *Store, w world) error {
+		{"collection grant revoke (the deleting user is the grantee)", accessMember, "lock user", func(s *Store, w world) error {
 			return s.DeleteCollectionGrant(w.gCollU, w.wu)
 		}},
-		{"member removal from the deleting user's workspace", accessMember, func(s *Store, w world) error {
+		{"member removal from the deleting user's workspace", accessMember, "", func(s *Store, w world) error {
 			return s.RemoveWorkspaceMember(w.wa, w.u.ID)
 		}},
-		{"share link view of the deleting user's link", accessMember, func(s *Store, w world) error {
+		{"share link view of the deleting user's link", accessMember, "", func(s *Store, w world) error {
 			_, err := s.RecordShareLinkView(w.linkA, "fp-u", w.u.ID, nil)
 			return err
 		}},
-		{"assign the deleting user's item to another user", accessMember, func(s *Store, w world) error {
+		{"assign the deleting user's item to another user", accessMember, "", func(s *Store, w world) error {
 			uid := w.u.ID
 			_, err := s.UpdateItem(w.ia, models.ItemUpdate{AssignedUserID: &uid})
 			return err
 		}},
-		{"assign an item to the deleting user", accessMember, func(s *Store, w world) error {
+		{"assign an item to the deleting user", accessMember, "fk_items_assigned_user", func(s *Store, w world) error {
 			aid := w.a.ID
 			_, err := s.UpdateItem(w.iu, models.ItemUpdate{AssignedUserID: &aid})
 			return err
@@ -135,13 +140,13 @@ func TestDeleteAccountAtomic_ConcurrentWriters(t *testing.T) {
 		return w
 	}
 
-	check := func(t *testing.T, s *Store, what string, w world, delErr, wrErr error) {
+	check := func(t *testing.T, s *Store, what, loses string, w world, delErr, wrErr error) {
 		t.Helper()
 		failOnDeadlockOrError(t, what+": account deletion", delErr)
-		// The writer may lose to the deletion honestly (its row or its user
-		// is gone); only a deadlock is this probe's defect on that side.
-		if wrErr != nil && (strings.Contains(wrErr.Error(), "deadlock") || strings.Contains(wrErr.Error(), "40P01")) {
-			t.Fatalf("%s: writer deadlocked: %v", what, wrErr)
+		// Not failOnDeadlockOrError: it forgives sql.ErrNoRows, which is
+		// what a writer that never reached the contested rows returns.
+		if wrErr != nil && (loses == "" || !strings.Contains(wrErr.Error(), loses)) {
+			t.Fatalf("%s: writer: %v", what, wrErr)
 		}
 		if got, err := s.GetUser(w.a.ID); err == nil && got != nil {
 			t.Fatalf("%s: user survived its account deletion", what)
@@ -176,7 +181,7 @@ func TestDeleteAccountAtomic_ConcurrentWriters(t *testing.T) {
 					}()
 					close(start)
 					wg.Wait()
-					check(t, s, fmt.Sprintf("%s round %d", wr.name, round), w, delErr, wrErr)
+					check(t, s, fmt.Sprintf("%s round %d", wr.name, round), wr.loses, w, delErr, wrErr)
 				}
 			})
 		}
@@ -227,7 +232,9 @@ func TestDeleteAccountAtomic_ConcurrentWriters(t *testing.T) {
 					go func() { wrDone <- wr.run(s, w) }()
 					// The writer either finishes against the parked deletion,
 					// or queues behind something the deletion (or the holder)
-					// holds.
+					// holds. The count names the writer without its pid: this
+					// database is the test's own, the holder is idle in its
+					// transaction, and the deletion is the one waiter already.
 					var wrErr error
 					wrFinished := false
 					deadline := time.Now().Add(10 * time.Second)
@@ -248,7 +255,7 @@ func TestDeleteAccountAtomic_ConcurrentWriters(t *testing.T) {
 					if !wrFinished {
 						wrErr = <-wrDone
 					}
-					check(t, s, fmt.Sprintf("%s, %s", park.name, wr.name), w, delErr, wrErr)
+					check(t, s, fmt.Sprintf("%s, %s", park.name, wr.name), wr.loses, w, delErr, wrErr)
 				})
 			}
 		})
