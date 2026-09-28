@@ -248,6 +248,14 @@ export async function actAs(context: BrowserContext, account: WalkAccount): Prom
 }
 
 /**
+ * How long a readiness wait may take; see waitForAccessSettled. Sized from a
+ * measurement: 952 waits across the five walk specs at 8 workers x5 settled at
+ * p50 1771 ms, p99 4416 ms, max 5222 ms, and 3 exceeded the 5 s expect
+ * default the helper used to inherit. 20 s is about 3.8x that max.
+ */
+const READY_TIMEOUT_MS = 20_000;
+
+/**
  * Wait until the page can decide what this account may create (BUG-3267).
  *
  * Two things feed that decision and both arrive after content can be on screen:
@@ -272,7 +280,11 @@ export async function actAs(context: BrowserContext, account: WalkAccount): Prom
  * asserting on chrome.
  */
 export async function waitForAccessSettled(page: Page): Promise<void> {
+	// A readiness wait, not an assertion about speed, so it does not use the
+	// 5 s expect default: under 8 workers an item page's sidebar mounted just
+	// past it while the page was otherwise fine (the screenshot at failure
+	// shows it rendered).
 	const nav = page.locator('nav.collection-nav');
-	await expect(nav).toHaveAttribute('data-membership', 'known');
-	await expect(nav.locator('.nav-section a.nav-item').first()).toBeVisible();
+	await expect(nav).toHaveAttribute('data-membership', 'known', { timeout: READY_TIMEOUT_MS });
+	await expect(nav.locator('.nav-section a.nav-item').first()).toBeVisible({ timeout: READY_TIMEOUT_MS });
 }
