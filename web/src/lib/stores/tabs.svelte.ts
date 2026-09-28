@@ -71,10 +71,14 @@ const writeTimers = new Map<string, ReturnType<typeof setTimeout>>();
 // Workspaces whose key is being moved to their row right now, so a second
 // commit during the PATCH does not start a second one.
 const migrating = new Set<string>();
-// Workspaces whose route was written to localStorage BEFORE the first load
-// answered. That key is newer than anything the row holds, so migration moves
-// it to the row instead of discarding it in the row's favour.
-const notedBeforeLoad = new Set<string>();
+// Workspaces whose key THIS session wrote: a navigation before the first load
+// answered, or one in a workspace that had no row at the time. That key is
+// newer than anything a row opened since can hold, so migration moves it to
+// the row instead of discarding it in the row's favour. A key this set does
+// not name predates the session, and a row that has a route is newer than it.
+// An entry lasts until its key is migrated or removed, not until the next
+// commit: the row may not exist until several commits later (codex round 1).
+const writtenHere = new Set<string>();
 
 function readKey(slug: string): string | null {
 	try {
@@ -86,8 +90,13 @@ function readKey(slug: string): string | null {
 
 function writeKey(slug: string, route: string | null) {
 	try {
-		if (route) localStorage.setItem(lastRouteKey(slug), route);
-		else localStorage.removeItem(lastRouteKey(slug));
+		if (route) {
+			localStorage.setItem(lastRouteKey(slug), route);
+			writtenHere.add(slug);
+		} else {
+			localStorage.removeItem(lastRouteKey(slug));
+			writtenHere.delete(slug);
+		}
 	} catch {
 		// Storage disabled: route memory just does not survive a reload.
 	}
@@ -124,7 +133,7 @@ function migrateKeys() {
 	for (const tab of tabs) {
 		const key = readKey(tab.slug);
 		if (key === null || migrating.has(tab.slug)) continue;
-		if (tab.last_route && !notedBeforeLoad.has(tab.slug)) {
+		if (tab.last_route && !writtenHere.has(tab.slug)) {
 			// The row already has a route, set on some device since the key was
 			// written. The row is the newer record.
 			writeKey(tab.slug, null);
@@ -132,7 +141,6 @@ function migrateKeys() {
 		}
 		void migrateKey(tab.slug, key);
 	}
-	notedBeforeLoad.clear();
 }
 
 async function migrateKey(slug: string, route: string) {
@@ -239,7 +247,6 @@ export const tabsStore = {
 	noteRoute(slug: string, route: string) {
 		if (!hasRow(slug)) {
 			writeKey(slug, route);
-			if (!loaded) notedBeforeLoad.add(slug);
 			return;
 		}
 		pendingRoutes[slug] = route;
@@ -276,5 +283,5 @@ authStore.onIdentityChange(() => {
 	for (const timer of writeTimers.values()) clearTimeout(timer);
 	writeTimers.clear();
 	migrating.clear();
-	notedBeforeLoad.clear();
+	writtenHere.clear();
 });

@@ -317,6 +317,44 @@ describe('last route', () => {
 		expect(localStorage.getItem(key('ws'))).toBeNull();
 	});
 
+	it('keeps a key noted before the first load winning when its row opens several commits later', async () => {
+		// Codex round 1: the "written here" mark used to be dropped at the
+		// first commit, even for a workspace that had no row yet.
+		const store = await loadStore();
+		store.noteRoute('later', '/alice/later/just-now');
+
+		tabsApi.list.mockResolvedValueOnce(answer(tab('ws')));
+		await store.load();
+		await settle();
+		expect(localStorage.getItem(key('later'))).toBe('/alice/later/just-now');
+
+		// Opened on another device meanwhile, with an older route of its own.
+		tabsApi.open.mockResolvedValueOnce(answer(tab('ws'), tab('later', { last_route: '/alice/later/older' })));
+		tabsApi.update.mockResolvedValueOnce(answer(tab('ws'), tab('later', { last_route: '/alice/later/just-now' })));
+		await store.open('later');
+		await settle();
+
+		expect(tabsApi.update).toHaveBeenCalledWith('later', { last_route: '/alice/later/just-now' });
+		expect(store.routeFor('later')).toBe('/alice/later/just-now');
+		expect(localStorage.getItem(key('later'))).toBeNull();
+	});
+
+	it('lets a row\'s route win over a key this session did not write', async () => {
+		// A key left by an earlier session predates anything a row holds now.
+		localStorage.setItem(key('later'), '/alice/later/last-week');
+		tabsApi.list.mockResolvedValueOnce(answer(tab('ws')));
+		const store = await loadStore();
+		await store.load();
+
+		tabsApi.open.mockResolvedValueOnce(answer(tab('ws'), tab('later', { last_route: '/alice/later/today' })));
+		await store.open('later');
+		await settle();
+
+		expect(tabsApi.update).not.toHaveBeenCalled();
+		expect(store.routeFor('later')).toBe('/alice/later/today');
+		expect(localStorage.getItem(key('later'))).toBeNull();
+	});
+
 	it('spends a key the server refuses, and keeps one a failure did not reach', async () => {
 		localStorage.setItem(key('bad'), '/mallory/other/tasks');
 		localStorage.setItem(key('flaky'), '/alice/flaky/tasks');
