@@ -340,26 +340,7 @@ func (s *Server) handleAcceptInvitation(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Add user to workspace. BUG-3098: the accept is where the member count
-	// actually rises, so the cap is decided here, authoritatively, under the
-	// per-feature plan-limit key direct adds take. A refusal returns before
-	// AcceptInvitation, so the invitation stays pending and can be accepted
-	// once there is room. No pre-check: nothing is written before this.
-	if err := s.store.AddWorkspaceMember(inv.WorkspaceID, user.ID, inv.Role, s.workspaceLimitMintOpts()...); err != nil {
-		if s.writeStoreMemberLimitError(w, inv.WorkspaceID, err) {
-			return
-		}
-		writeInternalError(w, err)
-		return
-	}
-	// The membership IS the access, so the gain is published here, before
-	// the accept bookkeeping below can fail and 500 over a membership that
-	// has already committed (TASK-3272, codex round 1).
-	s.publishWorkspaceAccessChangedFromRequest(r, inv.WorkspaceID, watchevents.AccessGained, user.ID)
-
-	// Mark invitation as accepted
-	if err := s.store.AcceptInvitation(inv.ID); err != nil {
-		writeInternalError(w, err)
+	if !s.acceptInvitationCore(w, r, inv, user) {
 		return
 	}
 
@@ -382,11 +363,57 @@ func (s *Server) handleAcceptInvitation(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	s.writeInvitationAccepted(w, inv)
+}
+
+// acceptInvitationCore is the one accept path behind both invitation doors:
+// POST /invitations/{code}/accept and POST /me/invitations/{id}/accept
+// (TASK-3277). Each door decides first whether the caller may accept inv;
+// this does what accepting means: the membership at the invited role, the
+// access-gained publish, and the invitation's accepted_at. It writes the
+// error response and returns false on failure. Proof-of-email handling stays
+// with the caller, because only the code door proves anything.
+func (s *Server) acceptInvitationCore(w http.ResponseWriter, r *http.Request, inv *models.WorkspaceInvitation, user *models.User) bool {
+	// Add user to workspace. BUG-3098: the accept is where the member count
+	// actually rises, so the cap is decided here, authoritatively, under the
+	// per-feature plan-limit key direct adds take. A refusal returns before
+	// AcceptInvitation, so the invitation stays pending and can be accepted
+	// once there is room. No pre-check: nothing is written before this.
+	if err := s.store.AddWorkspaceMember(inv.WorkspaceID, user.ID, inv.Role, s.workspaceLimitMintOpts()...); err != nil {
+		if s.writeStoreMemberLimitError(w, inv.WorkspaceID, err) {
+			return false
+		}
+		writeInternalError(w, err)
+		return false
+	}
+	// The membership IS the access, so the gain is published here, before
+	// the accept bookkeeping below can fail and 500 over a membership that
+	// has already committed (TASK-3272, codex round 1).
+	s.publishWorkspaceAccessChangedFromRequest(r, inv.WorkspaceID, watchevents.AccessGained, user.ID)
+
+	// Mark invitation as accepted
+	if err := s.store.AcceptInvitation(inv.ID); err != nil {
+		writeInternalError(w, err)
+		return false
+	}
+	return true
+}
+
+// writeInvitationAccepted is the success body both accept doors answer with.
+// workspace_slug and owner_username (TASK-3277, additive) let a client open
+// the new workspace without a second lookup; they are empty if the workspace
+// cannot be read back, which does not undo the accept.
+func (s *Server) writeInvitationAccepted(w http.ResponseWriter, inv *models.WorkspaceInvitation) {
+	body := map[string]interface{}{
 		"accepted":     true,
 		"workspace_id": inv.WorkspaceID,
 		"role":         inv.Role,
-	})
+	}
+	if ws, err := s.store.GetWorkspaceByID(inv.WorkspaceID); err == nil && ws != nil {
+		body["workspace_slug"] = ws.Slug
+		body["owner_username"] = ws.OwnerUsername
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 // handlePreviewInvitation returns non-consuming metadata about an invitation
