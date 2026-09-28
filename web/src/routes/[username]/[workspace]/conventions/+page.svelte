@@ -17,6 +17,7 @@
 	import StaleBodyDot from '$lib/components/common/StaleBodyDot.svelte';
 	import { isBodyStale } from '$lib/items/staleBody';
 	import { canCreateIn } from '$lib/collections/canCreateIn';
+	import { workspaceStore } from '$lib/stores/workspace.svelte';
 
 	const TRIGGERS = ['always','on-task-start','on-task-complete','on-implement','on-commit','on-pr-create','on-plan-start','on-plan-complete','on-plan'] as const;
 	type Trigger = typeof TRIGGERS[number];
@@ -201,7 +202,7 @@
 	});
 
 	let grouped = $derived.by(() => {
-		const groups: { trigger: string; items: Item[]; activeCount: number }[] = [];
+		const groups: { trigger: string; items: Item[]; activeCount: number; editableActive: number; editableInactive: number }[] = [];
 		const byTrigger = new SvelteMap<string, Item[]>();
 		for (const item of filtered) {
 			const fields = parseFields(item);
@@ -218,13 +219,17 @@
 			const items = byTrigger.get(trigger);
 			if (!items || items.length === 0) continue;
 			const activeCount = items.filter(i => parseFields(i).status === 'active').length;
-			groups.push({ trigger, items, activeCount });
+			// The bulk buttons write each row, so they count only the rows the
+			// caller may edit (BUG-3266); an item grant can make that a subset.
+			const editable = items.filter(i => workspaceStore.canEditItem(i));
+			const editableActive = editable.filter(i => parseFields(i).status === 'active').length;
+			groups.push({ trigger, items, activeCount, editableActive, editableInactive: editable.length - editableActive });
 		}
 		return groups;
 	});
 
 	async function toggleStatus(item: Item) {
-		if (!workspace) return;
+		if (!workspace || !workspaceStore.canEditItem(item)) return;
 		const fields = parseFields(item);
 		const wasActive = fields.status === 'active';
 		const newStatus = wasActive ? 'disabled' : 'active';
@@ -325,7 +330,9 @@
 	}
 
 	async function saveEditing(item: Item) {
-		if (!workspace || saving) return;
+		// Edit access can end while the form is open; the draft stays on
+		// screen to copy, but nothing is sent (BUG-3266).
+		if (!workspace || saving || !workspaceStore.canEditItem(item)) return;
 		// BUG-3050 U1: the body goes only when it CHANGED, and then with the
 		// token of the row the edit started from, so edits an open tab has not
 		// stored yet are refused (409 content_pending_flush) rather than replaced.
@@ -450,6 +457,7 @@
 		if (!workspace) return;
 		const targetStatus = enable ? 'active' : 'disabled';
 		const toUpdate = group.items.filter(i => {
+			if (!workspaceStore.canEditItem(i)) return false;
 			const s = parseFields(i).status;
 			return enable ? s !== 'active' : s === 'active';
 		});
@@ -652,10 +660,10 @@
 							</button>
 							{#if !collapsed}
 								<div class="group-bulk">
-									{#if group.activeCount < group.items.length}
+									{#if group.editableInactive > 0}
 										<button class="btn btn-tiny" title="Enable all in this group" onclick={() => bulkToggleGroup(group, true)}>Enable all</button>
 									{/if}
-									{#if group.activeCount > 0}
+									{#if group.editableActive > 0}
 										<button class="btn btn-tiny btn-muted" title="Disable all in this group" onclick={() => bulkToggleGroup(group, false)}>Disable all</button>
 									{/if}
 								</div>
@@ -676,16 +684,25 @@
 										onclick={() => toggleExpand(item.slug)}
 										onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleExpand(item.slug); } }}
 									>
-											<button
-												class="toggle-switch"
-												type="button"
-												class:on={active}
-												onclick={(e) => { e.stopPropagation(); toggleStatus(item); }}
-												onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') e.stopPropagation(); }}
-												aria-label={active ? 'Disable convention' : 'Enable convention'}
-											>
-												<span class="toggle-knob"></span>
-											</button>
+											{#if workspaceStore.canEditItem(item)}
+												<button
+													class="toggle-switch"
+													type="button"
+													class:on={active}
+													onclick={(e) => { e.stopPropagation(); toggleStatus(item); }}
+													onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') e.stopPropagation(); }}
+													aria-label={active ? 'Disable convention' : 'Enable convention'}
+												>
+													<span class="toggle-knob"></span>
+												</button>
+											{:else}
+												<!-- The same switch, read-only, for an account that may not
+												     edit this convention (BUG-3266): it still says whether the
+												     rule is on. -->
+												<span class="toggle-switch readonly" class:on={active} role="img" aria-label={active ? 'Active' : 'Inactive'}>
+													<span class="toggle-knob"></span>
+												</span>
+											{/if}
 											<span class="row-title">{item.title}</span>
 											{#if isBodyStale(item)}<StaleBodyDot />{/if}
 											{#if convention.category}
@@ -706,7 +723,7 @@
 														onkeydown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); saveEditing(item); } if (e.key === 'Escape') cancelEditing(); }}
 													></textarea>
 													<div class="expanded-actions">
-														<Button variant="primary" size="sm" disabled={saving} onclick={() => saveEditing(item)}>{saving ? 'Saving...' : 'Save'}</Button>
+														<Button variant="primary" size="sm" disabled={saving || !workspaceStore.canEditItem(item)} title={workspaceStore.canEditItem(item) ? undefined : 'You can no longer edit this convention'} onclick={() => saveEditing(item)}>{saving ? 'Saving...' : 'Save'}</Button>
 														<Button variant="secondary" size="sm" onclick={cancelEditing}>Cancel</Button>
 														<span class="edit-hint">⌘+Enter to save · Esc to cancel</span>
 													</div>
@@ -745,7 +762,9 @@
 														</div>
 													{/if}
 													<div class="expanded-actions">
-														<Button variant="secondary" size="sm" onclick={() => startEditing(item)}>Edit</Button>
+														{#if workspaceStore.canEditItem(item)}
+															<Button variant="secondary" size="sm" onclick={() => startEditing(item)}>Edit</Button>
+														{/if}
 														<Button
 															variant="secondary"
 															size="sm"
@@ -755,7 +774,9 @@
 														>
 															{exportingSlug === item.slug ? 'Exporting…' : 'Export'}
 														</Button>
-														{#if confirmDelete === item.slug}
+														{#if !workspaceStore.canEditItem(item)}
+															<!-- Delete is an item write, refused without edit (BUG-3266). -->
+														{:else if confirmDelete === item.slug}
 															<span class="confirm-text">Delete this convention?</span>
 															<Button variant="danger-solid" size="sm" onclick={() => deleteConvention(item)}>Confirm</Button>
 															<Button variant="secondary" size="sm" onclick={() => (confirmDelete = null)}>Cancel</Button>
@@ -832,6 +853,7 @@
 
 	/* Toggle switch */
 	.toggle-switch { position: relative; width: 36px; height: 20px; border-radius: 10px; background: var(--bg-tertiary); border: 1px solid var(--border); cursor: pointer; flex-shrink: 0; transition: background 0.2s; }
+	.toggle-switch.readonly { cursor: default; opacity: 0.7; }
 	.toggle-switch.on { background: var(--accent-green); border-color: var(--accent-green); }
 	.toggle-knob { position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #fff; transition: transform 0.2s; }
 	.toggle-switch.on .toggle-knob { transform: translateX(16px); }
