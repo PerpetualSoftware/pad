@@ -3,7 +3,8 @@
 // tests drive the real `request()` through the public `api` object with a
 // stubbed fetch, so they vouch for the wiring, not only for the classifier.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { api, onWorkspaceWrite, workspaceWriteSlug } from './client';
+import { api } from './client';
+import { onWorkspaceWrite, workspaceWriteSlug } from './workspaceWrites';
 
 function jsonFetch(status = 200, headers: Record<string, string> = {}) {
 	return vi.fn(

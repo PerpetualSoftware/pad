@@ -19,14 +19,8 @@ const api = vi.hoisted(() => {
 			this.code = e.code;
 		}
 	}
-	const writeListeners = new Set<(slug: string) => void>();
 	return {
 		PadApiError,
-		writeListeners,
-		onWorkspaceWrite(fn: (slug: string) => void) {
-			writeListeners.add(fn);
-			return () => writeListeners.delete(fn);
-		},
 		api: {
 			workspaces: {
 				tabs: {
@@ -110,12 +104,13 @@ beforeEach(() => {
 	auth.reset();
 	localStorage.clear();
 	for (const fn of Object.values(tabsApi)) fn.mockReset();
-	api.writeListeners.clear();
 });
 
-// What the API client does after a successful write under /workspaces/{slug}.
-function reportWrite(slug: string) {
-	for (const fn of api.writeListeners) fn(slug);
+// What the API client does after a successful write: the REAL registry, the
+// same module instance the store subscribed to after `vi.resetModules()`.
+async function reportWrite(slug: string) {
+	const { reportWorkspaceWrite } = await import('$lib/api/workspaceWrites');
+	reportWorkspaceWrite(`/workspaces/${slug}/items/TASK-1`, 'PATCH');
 }
 
 afterEach(() => {
@@ -423,9 +418,9 @@ describe('a write keeps an ephemeral tab (PLAN-3002 Q9)', () => {
 		const pinning = deferred<ReturnType<typeof answer>>();
 		tabsApi.update.mockReturnValueOnce(pinning.promise);
 
-		reportWrite('deep');
-		reportWrite('deep');
-		reportWrite('deep');
+		await reportWrite('deep');
+		await reportWrite('deep');
+		await reportWrite('deep');
 		pinning.resolve(answer(tab('ws'), tab('deep')));
 		await settle();
 
@@ -439,9 +434,9 @@ describe('a write keeps an ephemeral tab (PLAN-3002 Q9)', () => {
 		const store = await loadStore();
 		await store.load();
 
-		reportWrite('ws');
-		reportWrite('reorder');
-		reportWrite('elsewhere');
+		await reportWrite('ws');
+		await reportWrite('reorder');
+		await reportWrite('elsewhere');
 		await settle();
 
 		expect(tabsApi.update).not.toHaveBeenCalled();

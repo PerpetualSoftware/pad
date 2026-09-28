@@ -1,4 +1,5 @@
-import { api, onWorkspaceWrite } from '$lib/api/client';
+import { api } from '$lib/api/client';
+import { onWorkspaceWrite } from '$lib/api/workspaceWrites';
 import type { WorkspaceTab, WorkspaceTabsResponse } from '$lib/types';
 import { authStore } from './auth.svelte';
 
