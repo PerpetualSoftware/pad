@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"sort"
 	"testing"
@@ -205,6 +206,72 @@ func TestMyInvitations_AcceptByID(t *testing.T) {
 		}
 		// Accepting again is the same 404 as any id that is not pending.
 		f.must(f.do("POST", "/api/v1/me/invitations/"+inv.ID+"/accept", meTok, nil), http.StatusNotFound, "re-accept")
+	})
+}
+
+func TestAcceptInvitation_ExistingMemberIsIdempotent(t *testing.T) {
+	forEachDialect(t, func(t *testing.T, d store.DriverType) {
+		f := newAccessFixture(t, d)
+		member := f.member("member@example.com", "viewer")
+		tok := f.token(member)
+		inv := f.invite(member.Email, "editor")
+		since := f.mark()
+
+		rr := f.do("POST", "/api/v1/invitations/"+inv.Code+"/accept", tok, nil)
+		f.must(rr, http.StatusOK, "accept as existing member")
+		var body map[string]any
+		parseJSON(t, rr, &body)
+		if body["workspace_slug"] != f.wsSlug {
+			t.Fatalf("workspace_slug = %v, want %q", body["workspace_slug"], f.wsSlug)
+		}
+		got, err := f.srv.store.GetWorkspaceMember(f.wsID, member.ID)
+		if err != nil || got == nil || got.Role != "viewer" {
+			t.Fatalf("membership = %+v, %v; existing viewer role must remain unchanged", got, err)
+		}
+		if pending, err := f.srv.store.GetInvitationByCode(inv.Code); err != nil || pending != nil {
+			t.Fatalf("invitation remains pending: %+v, %v", pending, err)
+		}
+		f.expect(since)
+	})
+}
+
+func TestAcceptInvitation_ConcurrentCoreAcceptsAreIdempotent(t *testing.T) {
+	forEachDialect(t, func(t *testing.T, d store.DriverType) {
+		f := newAccessFixture(t, d)
+		member := mkUser(t, f.srv, "race@example.com")
+		inv := f.invite(member.Email, "editor")
+		// Both requests have already read the pending invitation, as happens
+		// when the code and by-id doors race. Calling the shared core directly
+		// makes that read timing deterministic for both dialects.
+		start := make(chan struct{})
+		results := make(chan *httptest.ResponseRecorder, 2)
+		for i := 0; i < 2; i++ {
+			go func() {
+				<-start
+				rec := httptest.NewRecorder()
+				ok := f.srv.acceptInvitationCore(rec, httptest.NewRequest("POST", "/", nil), inv, member)
+				if !ok {
+					rec.WriteHeader(http.StatusInternalServerError)
+				}
+				results <- rec
+			}()
+		}
+		close(start)
+		for i := 0; i < 2; i++ {
+			if rr := <-results; rr.Code != http.StatusOK {
+				t.Fatalf("concurrent accept = %d %s, want 200", rr.Code, rr.Body.String())
+			}
+		}
+		var count int
+		if err := f.srv.store.DB().QueryRow(f.srv.store.D().Rebind(`SELECT COUNT(*) FROM workspace_members WHERE workspace_id = ? AND user_id = ?`), f.wsID, member.ID).Scan(&count); err != nil {
+			t.Fatalf("count membership: %v", err)
+		}
+		if count != 1 {
+			t.Fatalf("membership rows = %d, want one", count)
+		}
+		if pending, err := f.srv.store.GetInvitationByCode(inv.Code); err != nil || pending != nil {
+			t.Fatalf("invitation remains pending: %+v, %v", pending, err)
+		}
 	})
 }
 

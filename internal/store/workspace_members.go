@@ -76,6 +76,70 @@ func (s *Store) AddWorkspaceMember(workspaceID, userID, role string, opts ...Min
 	return nil
 }
 
+// AcceptWorkspaceInvitation atomically accepts an invitation and adds the
+// invitee if needed. Existing membership is idempotent: its role is retained
+// and no member event is emitted. The bool reports whether membership was
+// newly added; effectiveRole is the role that should be returned to the caller.
+func (s *Store) AcceptWorkspaceInvitation(invitationID, workspaceID, userID, role string, opts ...MintOption) (added bool, effectiveRole string, err error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, "", fmt.Errorf("accept workspace invitation: %w", err)
+	}
+	defer tx.Rollback()
+
+	mint := resolveMintOptions(opts)
+	// Every accept takes the same workspace lock, even when plan limits are
+	// disabled. That serializes concurrent accepts on Postgres; SQLite already
+	// serializes writers at BEGIN IMMEDIATE.
+	if err := s.acquirePlanLimitLock(tx, workspaceID, "members_per_workspace"); err != nil {
+		return false, "", err
+	}
+
+	err = tx.QueryRow(s.q(`SELECT role FROM workspace_members WHERE workspace_id = ? AND user_id = ?`), workspaceID, userID).Scan(&effectiveRole)
+	if err != nil && err != sql.ErrNoRows {
+		return false, "", fmt.Errorf("check workspace membership for invitation: %w", err)
+	}
+	if err == sql.ErrNoRows {
+		if mint.planLimit {
+			if err := s.enforceWorkspaceLimitTx(tx, workspaceID, "members_per_workspace"); err != nil {
+				return false, "", err
+			}
+		}
+		ts := now()
+		res, insertErr := tx.Exec(s.q(`
+			INSERT INTO workspace_members (workspace_id, user_id, role, created_at)
+			VALUES (?, ?, ?, ?) ON CONFLICT (workspace_id, user_id) DO NOTHING
+		`), workspaceID, userID, role, ts)
+		if insertErr != nil {
+			return false, "", fmt.Errorf("add workspace member for invitation: %w", insertErr)
+		}
+		n, rowsErr := res.RowsAffected()
+		if rowsErr != nil {
+			return false, "", fmt.Errorf("read invitation membership result: %w", rowsErr)
+		}
+		if n == 1 {
+			added, effectiveRole = true, role
+			if err := s.emitMemberEventTx(tx, kernelevents.MemberJoined, workspaceID, userID, role, ts); err != nil {
+				return false, "", err
+			}
+		} else {
+			// A concurrent accept won the unique-key race. Read its role so the
+			// response reflects the membership that actually exists.
+			if err := tx.QueryRow(s.q(`SELECT role FROM workspace_members WHERE workspace_id = ? AND user_id = ?`), workspaceID, userID).Scan(&effectiveRole); err != nil {
+				return false, "", fmt.Errorf("read concurrent invitation membership: %w", err)
+			}
+		}
+	}
+
+	if _, err := tx.Exec(s.q(`UPDATE workspace_invitations SET accepted_at = ? WHERE id = ?`), now(), invitationID); err != nil {
+		return false, "", fmt.Errorf("accept invitation: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, "", fmt.Errorf("commit invitation acceptance: %w", err)
+	}
+	return added, effectiveRole, nil
+}
+
 // RemoveWorkspaceMember removes a user from a workspace.
 //
 // The user's workspace tab goes with it when no grant keeps them in the
