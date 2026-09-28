@@ -50,8 +50,27 @@ async function setup(page: import('@playwright/test').Page, fixture: import('./f
 	await expect(page.locator(`.nav-section a[href$="/${coll.slug}"]`)).toBeVisible({ timeout: 15_000 });
 	// A click on an editor link opens its popover; the popover's href drills.
 	await link.click();
+	const hrefs = await page.locator('.link-href').evaluateAll((els) => els.map((e) => e.getAttribute('href') ?? e.textContent ?? ''));
+	const urlBefore = page.url();
 	await page.locator('.link-href').first().click();
-	await expect(page.locator('.pane-back-btn')).toBeVisible({ timeout: 10_000 });
+	// On failure, say whether the click drilled the pane, navigated the page,
+	// or did nothing (BUG-3241): the bare "not visible" could not tell them apart.
+	try {
+		await expect(page.locator('.pane-back-btn')).toBeVisible({ timeout: 10_000 });
+	} catch (e) {
+		throw new Error(
+			[
+				'BUG-3241: the pane Back button never appeared after the popover click.',
+				`popover .link-href entries: ${JSON.stringify(hrefs)}`,
+				`url before click: ${urlBefore}`,
+				`url now: ${page.url()}`,
+				`item pane present: ${await pane.count()}`,
+				`sidebar row for ${coll.slug}: ${await page.locator(`.nav-section a[href$="/${coll.slug}"]`).count()}`,
+				`popover still open: ${await page.locator('.link-href').count()}`,
+				`cause: ${(e as Error).message.split('\n')[0]}`,
+			].join('\n'),
+		);
+	}
 	await expect(pane.getByText('Target paragraph 0.')).toBeVisible();
 	await page.waitForTimeout(300);
 	return { coll, itemA, titleB, pane, before, scrollTop, bodyHeight };
