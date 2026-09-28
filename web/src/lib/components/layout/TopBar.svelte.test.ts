@@ -32,7 +32,7 @@ vi.mock('$app/navigation', () => ({ goto: mocks.goto }));
 
 vi.mock('$lib/api/client', () => ({
 	PadApiError: class extends Error {},
-	api: { workspaces: { tabs: mocks.tabs } },
+	api: { workspaces: { tabs: mocks.tabs, listDeleted: vi.fn(async () => []) } },
 }));
 
 vi.mock('$lib/stores/workspace.svelte', () => ({
@@ -239,8 +239,11 @@ describe('TopBar: the Q2 highlight', () => {
 	it('opening the create flow from "+" clears it', async () => {
 		await mountWith([ALPHA]);
 		uiStore.highlightAddWorkspace();
-		const add = document.querySelector<HTMLButtonElement>('.workspace-add')!;
-		add.click();
+		document.querySelector<HTMLButtonElement>('.workspace-add')!.click();
+		await tick();
+		flushSync();
+		// "+" opens the discovery surface (U4); its last option is create.
+		document.querySelector<HTMLElement>('.discovery-option.create')!.click();
 		flushSync();
 		expect(uiStore.addWorkspaceHighlighted).toBe(false);
 		uiStore.closeCreateWorkspace();

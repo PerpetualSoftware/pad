@@ -168,7 +168,9 @@ test('workspace export → import round-trip via web UI', async ({ page, fixture
 	await writeFile(bundlePath, bundleBytes);
 
 	// 3. Open the Create Workspace modal and switch to Import.
-	// On desktop the TopBar exposes a "+" button (title="New workspace");
+	// On desktop the TopBar exposes a "+" button (title="Find or create a
+	// workspace", PLAN-3002 U4) whose discovery surface has a "New workspace…"
+	// option;
 	// on mobile that button is hidden behind the layout's collapse.
 	// Try the TopBar trigger first and fall back to opening the
 	// WorkspaceSwitcher dropdown/sheet and clicking its
@@ -188,9 +190,10 @@ test('workspace export → import round-trip via web UI', async ({ page, fixture
 	// rendered by the dashboard route the moment hydration completes.
 	await expect(page.getByRole('heading', { name: /E2E Workspace/i })).toBeVisible();
 
-	const topbarTrigger = page.getByTitle('New workspace');
+	const topbarTrigger = page.getByTitle('Find or create a workspace');
 	if (await topbarTrigger.first().isVisible().catch(() => false)) {
 		await topbarTrigger.first().click();
+		await page.getByRole('option', { name: /new workspace/i }).click();
 	} else {
 		// Mobile path: tap the workspace switcher's current-workspace
 		// button to open the picker, then click "+ New Workspace".
