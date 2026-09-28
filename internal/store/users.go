@@ -1019,6 +1019,23 @@ func (s *Store) DeleteAccountAtomic(userID string) error {
 		return fmt.Errorf("delete account: lock user: %w", err)
 	}
 
+	// 0b. Delete the grants the user issued BEFORE the tabs below (BUG-3288).
+	// A revoke of such a grant that removes the grantee's last access to one
+	// of these workspaces takes the grant row and then the grantee's tab row
+	// there, which is the row step 1 deletes. Deleting the grants after the
+	// tabs took the two rows in the opposite order, and the two transactions
+	// deadlocked (40P01, delete_account_writer_lockorder_test.go). Now both
+	// take the grant row first, so whichever gets it second waits holding
+	// nothing the other needs.
+	for _, stmt := range []struct{ what, query string }{
+		{"delete issued collection grants", "DELETE FROM collection_grants WHERE granted_by = ?"},
+		{"delete issued item grants", "DELETE FROM item_grants WHERE granted_by = ?"},
+	} {
+		if _, err := tx.Exec(s.q(stmt.query), userID); err != nil {
+			return fmt.Errorf("delete account: %s: %w", stmt.what, err)
+		}
+	}
+
 	// 1. Soft-delete every workspace the user OWNS. They keep their rows (and
 	// every item/activity/comment within) so the data stays recoverable; only
 	// the user identity is hard-removed below.
@@ -1098,8 +1115,6 @@ func (s *Store) DeleteAccountAtomic(userID string) error {
 		{"delete sent invitations", "DELETE FROM workspace_invitations WHERE invited_by = ?"},
 		{"delete password reset tokens", "DELETE FROM password_reset_tokens WHERE user_id = ?"},
 		{"delete email verification tokens", "DELETE FROM email_verification_tokens WHERE user_id = ?"},
-		{"delete issued collection grants", "DELETE FROM collection_grants WHERE granted_by = ?"},
-		{"delete issued item grants", "DELETE FROM item_grants WHERE granted_by = ?"},
 		{"delete created share links", "DELETE FROM share_links WHERE created_by = ?"},
 		{"delete mcp audit log", "DELETE FROM mcp_audit_log WHERE user_id = ?"},
 		{"delete oauth connections", "DELETE FROM oauth_connections WHERE user_id = ?"},

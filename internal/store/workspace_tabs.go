@@ -448,7 +448,10 @@ func (s *Store) pruneWorkspaceTabIfNoAccessTx(ex execer, userID, workspaceID str
 //     NO KEY UPDATE on the workspaces row does not block.
 //   - A prune caller (member removal, grant revoke): users(U) before its
 //     first write.
-//   - Account deletion: users(D), then D's owned workspaces rows. A soft
+//   - Account deletion: users(D), then the grant rows D issued, then D's
+//     owned workspaces rows and the tabs on them. A grant revoke prunes a
+//     tab after deleting its grant row, so the grants go first here too
+//     (BUG-3288: taken after the tabs, the two deadlocked). A soft
 //     delete that took the workspaces row first and D's users row second
 //     would cross it (measured: 40P01,
 //     TestWorkspaceTabs_SoftDeleteVsOwnerAccountDeletion, codex round 3),
