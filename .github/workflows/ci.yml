@@ -563,3 +563,16 @@ jobs:
           name: playwright-report
           path: web/playwright-report/
           retention-days: 14
+
+      # A test that fails and then passes on retry leaves the job green, so the
+      # upload above never runs and the flake ships no screenshot, trace or
+      # video, though retain-on-failure kept them in test-results (BUG-3278).
+      # Upload them on a green run only when a failed attempt left a trace; a
+      # run with no flakes uploads nothing.
+      - name: Upload flaky-test evidence
+        if: success() && hashFiles('web/test-results/**/trace.zip') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-flaky-evidence
+          path: web/test-results/
+          retention-days: 7
