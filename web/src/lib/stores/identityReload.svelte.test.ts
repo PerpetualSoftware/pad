@@ -78,9 +78,9 @@ describe('clearPersistentIdentityState', () => {
 		expect(localStorage.getItem('pad-theme')).toBe('dark');
 	});
 
-	it('LAST_ROUTE_PREFIX still matches the key workspace-route.ts builds', async () => {
+	it('LAST_ROUTE_PREFIX still matches the key tabs.svelte.ts builds', async () => {
 		const src = readFileSync(
-			resolve(__dirname, '../utils/workspace-route.ts'),
+			resolve(__dirname, './tabs.svelte.ts'),
 			'utf8',
 		);
 		expect(src).toContain(LAST_ROUTE_PREFIX);

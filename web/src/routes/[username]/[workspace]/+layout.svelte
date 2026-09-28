@@ -2,6 +2,7 @@
 	import { page } from '$app/state';
 	import { onMount, onDestroy, untrack } from 'svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
+	import { tabsStore } from '$lib/stores/tabs.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { editorStore } from '$lib/stores/editor.svelte';
 	import { sseService } from '$lib/services/sse.svelte';
@@ -197,19 +198,15 @@
 	// Per CONVE-606, this is its own effect with a clean dependency list
 	// (wsSlug + pathname + search). Combining with the title sync above
 	// would re-run it on async workspace-name resolution and could
-	// overwrite the saved route at unexpected times. Storage failures
-	// (private-mode quota, disabled storage) are swallowed — restoration
-	// just won't kick in.
+	// overwrite the saved route at unexpected times. Where the route is
+	// stored (the workspace's tab row, or localStorage for a workspace
+	// with no row) is `tabsStore.noteRoute`'s decision (TASK-3271).
 	$effect(() => {
 		if (!wsSlug) return;
-		try {
-			localStorage.setItem(
-				`pad-last-route-${wsSlug}`,
-				page.url.pathname + page.url.search
-			);
-		} catch {
-			// localStorage unavailable; silent no-op.
-		}
+		const route = page.url.pathname + page.url.search;
+		// The store reads `tabs`, which must not become a dependency here: a
+		// tabs commit would re-note the same route.
+		untrack(() => tabsStore.noteRoute(wsSlug, route));
 	});
 
 	// Initialize workspace, load collections, and reconnect SSE when the

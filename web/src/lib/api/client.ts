@@ -62,6 +62,7 @@ import type {
 	CollectionGrant,
 	ItemGrant,
 	WorkspaceMembership,
+	WorkspaceTabsResponse,
 	ShareLink,
 	SharePayload,
 	TOTPSetupResponse,
@@ -1309,6 +1310,40 @@ export const api = {
 				method: 'PUT',
 				body: JSON.stringify(updates)
 			}),
+
+		// The caller's open set of workspace tabs (PLAN-3002 U1). Every write
+		// answers with the whole visibility-filtered set, so the tabs store
+		// commits the answer instead of re-reading.
+		tabs: {
+			list: () => request<WorkspaceTabsResponse>('/me/workspace-tabs'),
+
+			// A second ephemeral open replaces the first, at its position.
+			open: (slug: string, ephemeral: boolean) =>
+				request<WorkspaceTabsResponse>('/me/workspace-tabs', {
+					method: 'POST',
+					body: JSON.stringify({ slug, ephemeral })
+				}),
+
+			// The full order. Slugs that are not open are ignored.
+			reorder: (slugs: string[]) =>
+				request<WorkspaceTabsResponse>('/me/workspace-tabs', {
+					method: 'PUT',
+					body: JSON.stringify(slugs)
+				}),
+
+			close: (slug: string) =>
+				request<WorkspaceTabsResponse>(`/me/workspace-tabs/${encodeURIComponent(slug)}`, {
+					method: 'DELETE'
+				}),
+
+			// `pin` can only be true. `last_route: ''` clears; the server refuses
+			// a route outside the workspace, and 404s a workspace with no tab.
+			update: (slug: string, data: { pin?: true; last_route?: string }) =>
+				request<WorkspaceTabsResponse>(`/me/workspace-tabs/${encodeURIComponent(slug)}`, {
+					method: 'PATCH',
+					body: JSON.stringify(data)
+				})
+		},
 
 		// Generate a 6-digit stateless claim code for this workspace, OR
 		// (when an active OAuth connection of the calling user already

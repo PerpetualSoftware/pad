@@ -4,6 +4,7 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
+	import { tabsStore } from '$lib/stores/tabs.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import {
 		reloadForIdentityChange,
@@ -250,6 +251,11 @@
 		) {
 			workspacesRequested = true;
 			workspaceStore.loadAll();
+			// The open set is per user, so there is none to load without one
+			// (the auth-endpoint-unavailable case). Until it answers, and if it
+			// fails, every workspace reads as having no tab row and route memory
+			// uses the localStorage fallback (TASK-3271).
+			if (authStore.authenticated) tabsStore.load().catch(() => {});
 		}
 	});
 

@@ -91,7 +91,7 @@ export function buildCollectionUrlParams(state: CollectionUrlFilterState, curren
 }
 
 /** The dead item whose failed load should be scrubbed from the persisted
- *  `pad-last-route-{ws}` entry. `itemSlug` is the ref/slug that failed to
+ *  last route for `{ws}` (`tabsStore.routeFor`). `itemSlug` is the ref/slug that failed to
  *  load — for an embedded pane it equals the `?item=` value verbatim, since
  *  the collection page threads `openItemRef` → ItemDetail's `ref` prop →
  *  `itemSlug` unchanged. */
@@ -106,13 +106,13 @@ export interface DeadItemRoute {
 	embedded: boolean;
 }
 
-// `pad-last-route-{ws}` stores `pathname + search` (a root-relative URL). A
+// The stored last route is `pathname + search` (a root-relative URL). A
 // throwaway base lets us parse it with the `URL` API in any environment (no
 // `window`); only the pathname + query are ever read back out.
 const RELATIVE_URL_BASE = 'http://pad.invalid';
 
 /**
- * Repair a persisted `pad-last-route-{ws}` value after the item it points at
+ * Repair a persisted last-route value after the item it points at
  * fails to load (hard-deleted / dead ref). The workspace switcher restores
  * this route on re-entry (TASK-754), so a dead entry would keep re-opening a
  * broken view. Returns one of:

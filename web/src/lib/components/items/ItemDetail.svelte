@@ -99,6 +99,7 @@
 	import { starredStore } from '$lib/stores/starred.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
+	import { tabsStore } from '$lib/stores/tabs.svelte';
 	import { createLinksRetry, type LinksRetryTarget } from '$lib/items/linksRetry';
 	import { rawSeedDecision } from '$lib/items/rawSeed';
 
@@ -2006,7 +2007,7 @@
 		// Capture the URL parts this load was scoped to. Used in the catch
 		// path to detect whether the user has navigated away before this
 		// request rejected — without this the stale catch would clobber a
-		// fresh `pad-last-route-{wsSlug}` written by the workspace +layout
+		// fresh last route for {wsSlug} noted by the workspace +layout
 		// effect after the user moved on (TASK-754 round-2 race guard).
 		const reqUsername = username;
 		const reqWsSlug = wsSlug;
@@ -2304,27 +2305,21 @@
 			// they just don't touch the cache (Codex).
 			if (itemFetchNotFound) {
 				// The read + write below is one synchronous block, so no same-tab
-				// interleaving is possible. Across tabs, `pad-last-route-{ws}` is
+				// interleaving is possible. Across tabs the stored route is
 				// best-effort (last-writer-wins, no CAS — as the +layout writer
-				// that owns this key already is): a concurrent write in another
-				// tab could momentarily win or lose one update, self-healed by the
-				// next navigation. Accepted, pre-existing property — not worth
+				// already is): a concurrent write in another tab could
+				// momentarily win or lose one update, self-healed by the next
+				// navigation. Accepted, pre-existing property — not worth
 				// cross-tab coordination for a convenience restore cache.
-				try {
-					const cacheKey = `pad-last-route-${reqWsSlug}`;
-					const repaired = repairDeadItemLastRoute(localStorage.getItem(cacheKey), {
-						username: reqUsername,
-						wsSlug: reqWsSlug,
-						collSlug: reqCollSlug,
-						itemSlug: reqItemSlug,
-						embedded: reqEmbedded,
-					});
-					if (repaired === null) {
-						localStorage.removeItem(cacheKey);
-					} else if (repaired !== undefined) {
-						localStorage.setItem(cacheKey, repaired);
-					}
-				} catch {}
+				// `tabsStore` decides where the route lives (TASK-3271).
+				const repaired = repairDeadItemLastRoute(tabsStore.routeFor(reqWsSlug), {
+					username: reqUsername,
+					wsSlug: reqWsSlug,
+					collSlug: reqCollSlug,
+					itemSlug: reqItemSlug,
+					embedded: reqEmbedded,
+				});
+				if (repaired !== undefined) tabsStore.setRoute(reqWsSlug, repaired);
 			}
 		} finally {
 			// Only the CURRENT (newest) load owns the shared loading / pending

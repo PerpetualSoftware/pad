@@ -1,11 +1,14 @@
+import { tabsStore } from '$lib/stores/tabs.svelte';
+
 /**
  * Compute the URL to navigate to when "switching to" a workspace —
- * the user's last-visited route in that workspace if we have one
- * cached in localStorage, falling back to the dashboard otherwise.
+ * the user's last-visited route in that workspace if we have one,
+ * falling back to the dashboard otherwise.
  *
  * Implements TASK-754 (workspace switcher: restore last route). The
- * cache entry is written by `[username]/[workspace]/+layout.svelte`'s
- * scroll-to-route persistence effect.
+ * route is read from `tabsStore.routeFor` (the workspace's tab row, else
+ * the pre-U2 localStorage fallback — TASK-3271), and noted by
+ * `[username]/[workspace]/+layout.svelte`'s route persistence effect.
  *
  * The saved value is treated as untrusted input — could be stale,
  * corrupt, or crafted. We canonicalize through `URL` and require:
@@ -26,7 +29,7 @@ export function workspaceRestoreTarget(ws: { slug: string; owner_username?: stri
 	const fallback = `/${ws.owner_username}/${ws.slug}`;
 	if (typeof window === 'undefined') return fallback;
 	try {
-		const saved = localStorage.getItem(`pad-last-route-${ws.slug}`);
+		const saved = tabsStore.routeFor(ws.slug);
 		if (!saved) return fallback;
 		const normalized = new URL(saved, window.location.origin);
 		const path = normalized.pathname;
@@ -41,7 +44,7 @@ export function workspaceRestoreTarget(ws: { slug: string; owner_username?: stri
 			return normalized.pathname + normalized.search + normalized.hash;
 		}
 	} catch {
-		// localStorage unavailable or URL parse failed — fall through.
+		// URL parse failed — fall through.
 	}
 	return fallback;
 }
