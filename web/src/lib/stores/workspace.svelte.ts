@@ -500,8 +500,15 @@ export const workspaceStore = {
 				// the first one is already in flight from the root layout, and
 				// it will carry the workspace if the list can.
 				if (resolved && listCommitted && !listRefreshedFor.has(ws)) {
-					listRefreshedFor.add(ws);
-					void workspaceStore.loadAll().catch(() => {});
+					// Marked before the request so two navigations in flight send
+					// one, and unmarked if it fails, so a transient failure does
+					// not leave the list stale for the rest of the page load
+					// (codex round 1).
+					const refreshed = ws;
+					listRefreshedFor.add(refreshed);
+					void workspaceStore.loadAll().catch(() => {
+						listRefreshedFor.delete(refreshed);
+					});
 				}
 			}
 		}

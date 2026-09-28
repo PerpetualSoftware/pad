@@ -833,8 +833,11 @@ async function request<T>(
 	try {
 		const result = await requestAttempt<T>(path, options, rateLimitAttempt, headers, method, isIdempotent, issuedAs, deadline);
 		// Only GET/HEAD are retried after a 429, and neither is a write, so a
-		// write reaches here once.
-		reportWorkspaceWrite(path, method);
+		// write reaches here once. Reported only to the identity that issued
+		// it: a write that answers after a sign-out or account switch must not
+		// keep a tab in the NEXT account's bar (codex round 1). Same user id
+		// is enough, not an epoch: A's write keeping A's own tab is correct.
+		if (currentIdentity() === issuedAs) reportWorkspaceWrite(path, method);
 		return result;
 	} catch (err) {
 		if (deadline.timedOut()) throw requestTimeoutError(isIdempotent);

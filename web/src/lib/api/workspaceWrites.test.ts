@@ -3,7 +3,7 @@
 // tests drive the real `request()` through the public `api` object with a
 // stubbed fetch, so they vouch for the wiring, not only for the classifier.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { api } from './client';
+import { api, setIdentityProvider } from './client';
 import { onWorkspaceWrite, workspaceWriteSlug } from './workspaceWrites';
 
 function jsonFetch(status = 200, headers: Record<string, string> = {}) {
@@ -27,6 +27,7 @@ beforeEach(() => {
 afterEach(() => {
 	stop();
 	vi.unstubAllGlobals();
+	setIdentityProvider(null);
 });
 
 describe('which requests are workspace writes', () => {
@@ -103,5 +104,25 @@ describe('request() reports a write once it has succeeded', () => {
 		await api.items.update('ws', 'TASK-1', { title: 't' } as never).catch(() => {});
 		expect(fetch).toHaveBeenCalledTimes(1);
 		expect(seen).toEqual([]);
+	});
+
+	it('reports nothing for a write that answers after the identity changed', async () => {
+		let who = 'user-a';
+		setIdentityProvider(() => who);
+		let answer!: (r: Response) => void;
+		vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((res) => (answer = res))));
+		const pending = api.items.update('ws', 'TASK-1', { title: 't' } as never);
+		await Promise.resolve();
+		who = 'user-b';
+		answer(new Response(JSON.stringify({ id: 'x' }), { status: 200 }));
+		await pending.catch(() => {});
+		expect(seen).toEqual([]);
+	});
+
+	it('still reports for the same identity (the control for the leg above)', async () => {
+		setIdentityProvider(() => 'user-a');
+		vi.stubGlobal('fetch', jsonFetch());
+		await api.items.update('ws', 'TASK-1', { title: 't' } as never);
+		expect(seen).toEqual(['ws']);
 	});
 });

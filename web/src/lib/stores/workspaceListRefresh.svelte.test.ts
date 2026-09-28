@@ -114,4 +114,21 @@ describe('workspaceStore: a setCurrent miss refreshes the list', () => {
 
 		expect(api.workspaces.list).not.toHaveBeenCalled();
 	});
+
+	it('tries again on a later landing when the refresh failed', async () => {
+		const { workspaceStore } = await import('./workspace.svelte');
+		api.workspaces.list.mockResolvedValueOnce([HOME]);
+		await workspaceStore.loadAll();
+		api.workspaces.get.mockResolvedValue(DEEP);
+
+		api.workspaces.list.mockRejectedValueOnce(new Error('network down'));
+		await workspaceStore.setCurrent('deep');
+		await settle();
+		api.workspaces.list.mockResolvedValueOnce([HOME, DEEP]);
+		await workspaceStore.setCurrent('deep');
+		await settle();
+
+		expect(api.workspaces.list).toHaveBeenCalledTimes(3);
+		expect(workspaceStore.workspaces.map((w) => w.slug)).toEqual(['home', 'deep']);
+	});
 });
