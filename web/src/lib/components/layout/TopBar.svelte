@@ -106,6 +106,12 @@
 		if (tab.ephemeral) void tabsStore.pin(tab.slug).catch(() => {});
 	}
 
+	function keepTab(e: MouseEvent, tab: WorkspaceTab) {
+		e.preventDefault();
+		e.stopPropagation();
+		void tabsStore.pin(tab.slug).catch(() => {});
+	}
+
 	// Closing a tab (PLAN-3002 Q2, Q3). Only closing the ACTIVE tab moves you,
 	// to where tabLanding says (the one copy of the Q3 rule, shared with the
 	// lost-workspace path; TASK-3280), at that tab's last route. Closing the
@@ -396,6 +402,19 @@
 							</span>
 							<span class="workspace-name">{tab.name}</span>
 						</a>
+						{#if tab.ephemeral}
+							<!-- "Keep open" (PLAN-3002 Q9): the explicit way to keep a
+							     tab a landing opened, beside double-click and drag. -->
+							<button
+								type="button"
+								class="workspace-tab-close workspace-tab-keep"
+								aria-label="Keep {tab.name} open"
+								title="Keep open"
+								onclick={(e) => keepTab(e, tab)}
+							>
+								<svg aria-hidden="true" width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2h4l-.5 4 2.5 2.5v1H4v-1L6.5 6z" /><path d="M8 9.5V14" /></svg>
+							</button>
+						{/if}
 						<button
 							type="button"
 							class="workspace-tab-close"

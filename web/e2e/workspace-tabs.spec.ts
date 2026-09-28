@@ -464,3 +464,222 @@ test.describe('"+" discovery surface (TASK-3276)', () => {
 		}
 	});
 });
+
+/**
+ * TASK-3279 (PLAN-3002 U5): every landing in a visible workspace outside the
+ * open set opens it as an EPHEMERAL tab, and a write there keeps it. Each leg
+ * mints its own account, as above.
+ */
+async function serverTabs(account: Account): Promise<{ slug: string; ephemeral: boolean }[]> {
+	const body = (await (await ok(await account.api.get('/api/v1/me/workspace-tabs'), 'list')).json()) as {
+		tabs: { slug: string; ephemeral: boolean }[];
+	};
+	return body.tabs.map((t) => ({ slug: t.slug, ephemeral: t.ephemeral }));
+}
+
+async function createTask(account: Account, ws: string, title: string): Promise<{ slug: string; ref: string }> {
+	const resp = await ok(
+		await account.api.post(`/api/v1/workspaces/${ws}/collections/tasks/items`, { data: { title } }),
+		`create task in ${ws}`
+	);
+	const item = (await resp.json()) as { slug: string; collection_prefix: string; item_number: number };
+	return { slug: item.slug, ref: `${item.collection_prefix}-${item.item_number}` };
+}
+
+async function userId(account: Account): Promise<string> {
+	const me = (await (await ok(await account.api.get('/api/v1/auth/me'), 'me')).json()) as { id?: string; user?: { id: string } };
+	const id = me.id ?? me.user?.id;
+	if (!id) throw new Error('workspace-tabs seed: /auth/me carried no id');
+	return id;
+}
+
+async function expectEphemeral(page: Page, account: Account, slug: string) {
+	await expect(tab(page, slug)).toHaveClass(/ephemeral/);
+	await expect(tab(page, slug).locator('.workspace-name')).toHaveCSS('font-style', 'italic');
+	await expect.poll(() => serverTabs(account)).toContainEqual({ slug, ephemeral: true });
+}
+
+test.describe('landings open an ephemeral tab (TASK-3279)', () => {
+	test.beforeEach(async ({ page }, testInfo) => {
+		test.skip(testInfo.project.name !== 'desktop-chromium', 'the tab bar is desktop-only (PLAN-3002 Q11)');
+		await page.setViewportSize(DESKTOP);
+	});
+
+	test('a deep link opens one, and a second deep link replaces it', async ({ page, context, fixture }) => {
+		let world: World | undefined;
+		try {
+			world = await seed(fixture, ['Land Home', 'Land Deep', 'Land Next']);
+			const [home, deep, next] = world.slugs;
+			const { account } = world;
+			await setOpenSet(account, [home]);
+			await actAs(context, account);
+
+			await page.goto(`/${account.username}/${deep}/tasks`);
+			await expectEphemeral(page, account, deep);
+			expect(await barOrder(page)).toEqual([home, deep]);
+
+			await page.goto(`/${account.username}/${next}`);
+			await expectEphemeral(page, account, next);
+			await expect(tab(page, deep)).toHaveCount(0);
+			await expect.poll(() => serverOrder(account)).toEqual([home, next]);
+		} finally {
+			await teardown(world);
+		}
+	});
+
+	test('a /-/r/ link opens one', async ({ page, context, fixture }) => {
+		let world: World | undefined;
+		try {
+			world = await seed(fixture, ['Ref Home', 'Ref Target']);
+			const [home, target] = world.slugs;
+			const { account } = world;
+			const task = await createTask(account, target, 'Resolved by ref');
+			await setOpenSet(account, [home]);
+			await actAs(context, account);
+
+			await page.goto(`/-/r/${target}/${task.ref}`);
+			await expect(page).toHaveURL(new RegExp(`/${account.username}/${target}/tasks/${task.ref}$`));
+			await expectEphemeral(page, account, target);
+		} finally {
+			await teardown(world);
+		}
+	});
+
+	test('accepting an invitation link lands IN the workspace, on an ephemeral tab (Q5)', async ({
+		page,
+		context,
+		fixture
+	}) => {
+		let inviter: World | undefined;
+		let invitee: World | undefined;
+		try {
+			inviter = await seed(fixture, ['Join Target']);
+			const shared = inviter.slugs[0];
+			const tag = `${Date.now()}${Math.floor(Math.random() * 1e6)}`;
+			const inv = (await (
+				await ok(
+					await inviter.account.api.post(`/api/v1/workspaces/${shared}/members/invite`, {
+						data: { email: `tabs${tag}@example.com`, role: 'editor' }
+					}),
+					'invite'
+				)
+			).json()) as { code: string };
+			const account = await mintAccount(fixture, tag);
+			invitee = { account, slugs: [await createWorkspace(account, `Join Home ${tag}`)] };
+			await setOpenSet(account, [invitee.slugs[0]]);
+			await actAs(context, account);
+
+			await page.goto(`/join/${inv.code}`);
+			await expect(page).toHaveURL(new RegExp(`/${inviter.account.username}/${shared}$`));
+			await expectEphemeral(page, account, shared);
+		} finally {
+			await teardown(invitee);
+			await teardown(inviter);
+		}
+	});
+
+	test('a guest landing opens one, with the guest marker (Q10)', async ({ page, context, fixture }) => {
+		let owner: World | undefined;
+		let guest: World | undefined;
+		try {
+			owner = await seed(fixture, ['Guest Target']);
+			const shared = owner.slugs[0];
+			const task = await createTask(owner.account, shared, 'Shared by grant');
+			const tag = `${Date.now()}${Math.floor(Math.random() * 1e6)}`;
+			const account = await mintAccount(fixture, `g${tag}`);
+			guest = { account, slugs: [await createWorkspace(account, `Guest Home ${tag}`)] };
+			await ok(
+				await owner.account.api.post(`/api/v1/workspaces/${shared}/items/${task.slug}/grants`, {
+					data: { user_id: await userId(account), permission: 'view' }
+				}),
+				'grant'
+			);
+			await setOpenSet(account, [guest.slugs[0]]);
+			await actAs(context, account);
+
+			await page.goto(`/${owner.account.username}/${shared}/tasks/${task.ref}`);
+			await expectEphemeral(page, account, shared);
+			await expect(tab(page, shared)).toHaveClass(/guest/);
+		} finally {
+			await teardown(guest);
+			await teardown(owner);
+		}
+	});
+
+	test('restoring a deleted workspace reopens it as an ephemeral tab (Q12)', async ({ page, context, fixture }) => {
+		let world: World | undefined;
+		try {
+			world = await seed(fixture, ['Restore Home', 'Restore Me']);
+			const [home, gone] = world.slugs;
+			const { account } = world;
+			await setOpenSet(account, [home, gone]);
+			await ok(await account.api.delete(`/api/v1/workspaces/${gone}`), 'delete');
+			// Soft delete removes every user's row for it (U1).
+			await expect.poll(() => serverOrder(account)).toEqual([home]);
+			await actAs(context, account);
+
+			await page.goto(`/${account.username}/${home}`);
+			await expect(tabs(page)).toHaveCount(1);
+			await page.goto('/console/deleted-workspaces');
+			await page.getByRole('button', { name: /Restore/ }).first().click();
+			await expect.poll(() => serverTabs(account)).toContainEqual({ slug: gone, ephemeral: true });
+
+			await page.goto(`/${account.username}/${home}`);
+			await expect(tab(page, gone)).toHaveClass(/ephemeral/);
+		} finally {
+			await teardown(world);
+		}
+	});
+
+	test('a write in the workspace keeps its tab (Q9)', async ({ page, context, fixture }) => {
+		let world: World | undefined;
+		try {
+			world = await seed(fixture, ['Write Home', 'Write Here']);
+			const [home, here] = world.slugs;
+			const { account } = world;
+			const task = await createTask(account, here, 'Star me');
+			// Seeded ephemeral rather than opened by the landing, so this leg
+			// isolates the write from the landing legs above.
+			await setOpenSet(account, [home, here], [here]);
+			await actAs(context, account);
+
+			await page.goto(`/${account.username}/${here}/tasks/${task.ref}`);
+			await expectEphemeral(page, account, here);
+
+			// Reading alone does not keep it.
+			await page.waitForTimeout(1500);
+			expect(await serverTabs(account)).toContainEqual({ slug: here, ephemeral: true });
+
+			const star = page.getByTitle('Star', { exact: true }).first();
+			const starred = page.waitForResponse(
+				(r) => r.request().method() === 'POST' && r.url().endsWith(`/items/${task.slug}/star`) && r.ok()
+			);
+			await star.click();
+			await starred;
+			await expect(tab(page, here).locator('.workspace-name')).toHaveCSS('font-style', 'normal');
+			await expect.poll(() => serverTabs(account)).toContainEqual({ slug: here, ephemeral: false });
+		} finally {
+			await teardown(world);
+		}
+	});
+
+	test('"Keep open" keeps an ephemeral tab', async ({ page, context, fixture }) => {
+		let world: World | undefined;
+		try {
+			world = await seed(fixture, ['Pin Home', 'Pin Me']);
+			const [home, pin] = world.slugs;
+			const { account } = world;
+			await setOpenSet(account, [home, pin], [pin]);
+			await actAs(context, account);
+
+			await page.goto(`/${account.username}/${home}`);
+			await tab(page, pin).hover();
+			await page.getByRole('button', { name: `Keep ${await tab(page, pin).locator('.workspace-name').innerText()} open` }).click();
+			await expect(tab(page, pin).locator('.workspace-name')).toHaveCSS('font-style', 'normal');
+			await expect(page.getByRole('button', { name: /^Keep .* open$/ })).toHaveCount(0);
+			await expect.poll(() => serverTabs(account)).toContainEqual({ slug: pin, ephemeral: false });
+		} finally {
+			await teardown(world);
+		}
+	});
+});

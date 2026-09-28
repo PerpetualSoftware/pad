@@ -84,6 +84,7 @@ import type {
 	ClaimCodeResponse,
 	ImportArtifactResult
 } from '$lib/types';
+import { reportWorkspaceWrite } from './workspaceWrites';
 import { noteServerDate } from './serverClock';
 
 const BASE = '/api/v1';
@@ -830,7 +831,14 @@ async function request<T>(
 	// the cooldown above, a 429 retry's sleep below — never count against it.
 	const deadline = requestDeadline(requestTimeoutMs, options?.signal);
 	try {
-		return await requestAttempt<T>(path, options, rateLimitAttempt, headers, method, isIdempotent, issuedAs, deadline);
+		const result = await requestAttempt<T>(path, options, rateLimitAttempt, headers, method, isIdempotent, issuedAs, deadline);
+		// Only GET/HEAD are retried after a 429, and neither is a write, so a
+		// write reaches here once. Reported only to the identity that issued
+		// it: a write that answers after a sign-out or account switch must not
+		// keep a tab in the NEXT account's bar (codex round 1). Same user id
+		// is enough, not an epoch: A's write keeping A's own tab is correct.
+		if (currentIdentity() === issuedAs) reportWorkspaceWrite(path, method);
+		return result;
 	} catch (err) {
 		if (deadline.timedOut()) throw requestTimeoutError(isIdempotent);
 		throw err;

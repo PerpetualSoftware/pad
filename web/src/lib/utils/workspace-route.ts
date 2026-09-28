@@ -6,8 +6,8 @@ import { tabsStore } from '$lib/stores/tabs.svelte';
  * falling back to the dashboard otherwise.
  *
  * Implements TASK-754 (workspace switcher: restore last route). The
- * route is read from `tabsStore.routeFor` (the workspace's tab row, else
- * the pre-U2 localStorage fallback — TASK-3271), and noted by
+ * route is read from `tabsStore.routeFor` (the workspace's tab row;
+ * TASK-3271, and since TASK-3279 the row is the only store), and noted by
  * `[username]/[workspace]/+layout.svelte`'s route persistence effect.
  *
  * The saved value is treated as untrusted input — could be stale,

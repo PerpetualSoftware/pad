@@ -8,6 +8,7 @@
 	// adds noise to a surface with nothing to restore.
 	import { api } from '$lib/api/client';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
+	import { tabsStore } from '$lib/stores/tabs.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import type { DeletedWorkspace } from '$lib/types';
 
@@ -61,8 +62,10 @@
 			// Confirmed before refreshing, so a failing reload cannot pass for
 			// a restore failure.
 			toastStore.show(`Restored "${ws.name}"`, 'success');
+			// A restore reopens the workspace as an ephemeral tab, for the
+			// restorer only (TASK-3279, PLAN-3002 Q12).
 			try {
-				await Promise.all([loadDeleted(), workspaceStore.loadAll()]);
+				await Promise.all([loadDeleted(), workspaceStore.loadAll(), tabsStore.land(ws.slug)]);
 			} catch {
 				// Reload failure is non-fatal; the restore went through.
 			}

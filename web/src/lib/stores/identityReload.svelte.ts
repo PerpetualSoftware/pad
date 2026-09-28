@@ -27,7 +27,7 @@ import { CURSOR_STORAGE_PREFIX } from '$lib/collab/wsProvider.svelte';
  */
 /** Must equal `RECENT_SEARCHES_KEY` in CommandPalette.svelte. Pinned by a test. */
 export const RECENT_SEARCHES_KEY = 'pad-recent-searches';
-/** Built by `tabs.svelte.ts` (the fallback for workspaces with no tab row, TASK-3271); the prefix is duplicated, pinned by a test. */
+/** The retired last-route key (TASK-3271's fallback, retired by TASK-3279). `tabs.svelte.ts` sweeps leftovers on its first commit; cleared here too, since a tab still on older code can write one. The prefix is duplicated, pinned by a test. */
 export const LAST_ROUTE_PREFIX = 'pad-last-route-';
 /** Built inline by every page that uses `createScrollRestoration`. */
 export const LAST_SCROLL_PREFIX = 'pad-last-scroll-';
