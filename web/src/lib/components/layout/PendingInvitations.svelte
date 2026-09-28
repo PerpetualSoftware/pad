@@ -59,6 +59,8 @@
 				slug = res.workspace_slug || slug;
 				owner = res.owner_username || owner;
 			} catch (err) {
+				// A different account is signed in now; this failure is not theirs.
+				if (!isSameIdentity()) return;
 				toastStore.show(
 					err instanceof Error && err.message ? err.message : `Couldn't accept the invitation to "${inv.workspace_name}"`,
 					'error'

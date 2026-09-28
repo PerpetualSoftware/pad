@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
 	tabsOpen: vi.fn(async () => {}),
 	toast: vi.fn(),
 	calls: [] as string[],
+	sameIdentity: true,
 }));
 
 vi.mock('$app/navigation', () => ({ goto: mocks.goto }));
@@ -28,7 +29,9 @@ vi.mock('$lib/api/client', () => ({
 }));
 vi.mock('$lib/stores/workspace.svelte', () => ({ workspaceStore: { loadAll: mocks.loadAll } }));
 vi.mock('$lib/stores/tabs.svelte', () => ({ tabsStore: { open: mocks.tabsOpen } }));
-vi.mock('$lib/stores/auth.svelte', () => ({ authStore: { identityFence: () => () => true } }));
+vi.mock('$lib/stores/auth.svelte', () => ({
+	authStore: { identityFence: () => () => mocks.sameIdentity },
+}));
 vi.mock('$lib/stores/toast.svelte', () => ({ toastStore: { show: mocks.toast } }));
 
 import PendingInvitations from './PendingInvitations.svelte';
@@ -61,6 +64,7 @@ async function mount(list: ReturnType<typeof inv>[], verified = true) {
 
 beforeEach(() => {
 	mocks.calls.length = 0;
+	mocks.sameIdentity = true;
 	for (const f of [mocks.goto, mocks.listMyInvitations, mocks.acceptMyInvitation, mocks.loadAll, mocks.tabsOpen, mocks.toast]) {
 		f.mockReset();
 	}
@@ -149,6 +153,33 @@ describe('PendingInvitations', () => {
 		expect(mocks.goto).not.toHaveBeenCalled();
 		expect(mocks.tabsOpen).not.toHaveBeenCalled();
 		expect(mocks.listMyInvitations).toHaveBeenCalledTimes(2);
+	});
+
+	it('after an account switch, neither a success nor a failure acts for the old account', async () => {
+		let settleAccept!: { ok: (v: unknown) => void; fail: (e: Error) => void };
+		const pending = () =>
+			new Promise((ok, fail) => {
+				settleAccept = { ok, fail };
+			});
+		mocks.acceptMyInvitation.mockImplementationOnce(pending).mockImplementationOnce(pending);
+		const { getByRole, onaccepted } = await mount([inv('a', 'Alpha')]);
+		const button = () => getByRole('button', { name: 'Accept the invitation to Alpha' });
+
+		await fireEvent.click(button());
+		mocks.sameIdentity = false;
+		settleAccept.fail(new Error('expired'));
+		await settle();
+		expect(mocks.toast).not.toHaveBeenCalled();
+
+		mocks.sameIdentity = true;
+		await fireEvent.click(button());
+		mocks.sameIdentity = false;
+		settleAccept.ok({ accepted: true, workspace_id: 'w', role: 'editor' });
+		await settle();
+		expect(mocks.toast).not.toHaveBeenCalled();
+		expect(onaccepted).not.toHaveBeenCalled();
+		expect(mocks.goto).not.toHaveBeenCalled();
+		expect(mocks.tabsOpen).not.toHaveBeenCalled();
 	});
 
 	it('a second click while accepting does not send a second accept', async () => {
