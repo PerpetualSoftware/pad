@@ -37,6 +37,22 @@ describe('tabLanding (PLAN-3002 Q3)', () => {
 		expect(tabLanding(before, 'a', tabs('c'))?.slug).toBe('c');
 	});
 
+	// The two legs below give `after` a shape that is NOT `before` minus the
+	// gone tab, which is the only case where these rules differ from their
+	// look-alikes (TASK-3280: "first remaining" vs "last remaining", and
+	// "right neighbour" vs "first remaining").
+	it('the fallback is the FIRST remaining tab, not any remaining tab', () => {
+		const before = tabs('a', 'b', 'c', 'd');
+		// d went, and so did its neighbour c: two tabs remain.
+		expect(tabLanding(before, 'd', tabs('a', 'b'))?.slug).toBe('a');
+	});
+
+	it('when the first tab goes, its right neighbour wins even if it is no longer first', () => {
+		// The refetch also opened x at the front of the bar.
+		const before = tabs('a', 'b', 'c');
+		expect(tabLanding(before, 'a', tabs('x', 'b', 'c'))?.slug).toBe('b');
+	});
+
 	it('lands on the first tab when the gone workspace was never in the bar', () => {
 		expect(tabLanding(tabs('a', 'b'), 'zz', tabs('a', 'b'))?.slug).toBe('a');
 	});
