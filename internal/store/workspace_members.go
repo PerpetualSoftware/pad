@@ -34,46 +34,146 @@ const InvitationTTL = 14 * 24 * time.Hour
 // both invitation accepts (BUG-3098); the owner auto-adds and the ownerless
 // backfill pass nothing.
 func (s *Store) AddWorkspaceMember(workspaceID, userID, role string, opts ...MintOption) error {
-	mint := resolveMintOptions(opts)
-	ts := now()
-
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("add workspace member: %w", err)
 	}
 	defer tx.Rollback()
 
-	if mint.planLimit {
-		if err := s.acquirePlanLimitLock(tx, workspaceID, "members_per_workspace"); err != nil {
-			return err
-		}
-		if err := s.enforceWorkspaceLimitTx(tx, workspaceID, "members_per_workspace"); err != nil {
-			return err
-		}
-	}
-
-	if _, err := tx.Exec(s.q(`
-		INSERT INTO workspace_members (workspace_id, user_id, role, created_at)
-		VALUES (?, ?, ?, ?)
-	`), workspaceID, userID, role, ts); err != nil {
-		return fmt.Errorf("add workspace member: %w", err)
-	}
-
-	if err := s.emitMemberEventTx(tx, kernelevents.MemberJoined, workspaceID, userID, role, ts); err != nil {
+	if _, _, err := s.addWorkspaceMemberTx(tx, workspaceID, userID, role, resolveMintOptions(opts), false); err != nil {
 		return err
 	}
-
-	// Routed through the seam so a test can reproduce the one commit outcome this
-	// path must survive and cannot otherwise be shown (BUG-3026). Nil in
-	// production, where this is tx.Commit().
-	commit := tx.Commit
-	if s.commitAddWorkspaceMember != nil {
-		commit = func() error { return s.commitAddWorkspaceMember(tx) }
-	}
-	if err := commit(); err != nil {
+	if err := s.commitWorkspaceMemberTx(tx); err != nil {
 		return fmt.Errorf("add workspace member: %w", err)
 	}
 	return nil
+}
+
+// addWorkspaceMemberTx is the one membership insert, shared by
+// AddWorkspaceMember and AcceptWorkspaceInvitation so the lock, the cap, the
+// INSERT and the member.joined event cannot drift between them (BUG-3281).
+//
+// With existingOK false it is AddWorkspaceMember's contract, unchanged: a
+// plain INSERT, so an existing membership fails on the primary key. With
+// existingOK true an existing membership is not an error. It is left exactly
+// as it is (role included), nothing is emitted, and added is false. The
+// existence read comes before the cap, so a member of a full workspace is not
+// refused by a limit their accept would not consume.
+//
+// Two concurrent existingOK calls are settled by ON CONFLICT DO NOTHING, not
+// by a lock: the loser's INSERT waits on the winner's key, affects no row, and
+// reads the winner's row back. So the lock is taken exactly where
+// AddWorkspaceMember always took it, under WithPlanLimit only.
+//
+// effectiveRole is the role the membership holds after the call.
+func (s *Store) addWorkspaceMemberTx(tx *sql.Tx, workspaceID, userID, role string, mint mintOptions, existingOK bool) (added bool, effectiveRole string, err error) {
+	if mint.planLimit {
+		if err := s.acquirePlanLimitLock(tx, workspaceID, "members_per_workspace"); err != nil {
+			return false, "", err
+		}
+	}
+
+	readRole := func() (string, error) {
+		var r string
+		err := tx.QueryRow(s.q(`SELECT role FROM workspace_members WHERE workspace_id = ? AND user_id = ?`), workspaceID, userID).Scan(&r)
+		return r, err
+	}
+
+	if existingOK {
+		r, err := readRole()
+		if err == nil {
+			return false, r, nil
+		}
+		if err != sql.ErrNoRows {
+			return false, "", fmt.Errorf("add workspace member: check membership: %w", err)
+		}
+	}
+
+	if mint.planLimit {
+		if err := s.enforceWorkspaceLimitTx(tx, workspaceID, "members_per_workspace"); err != nil {
+			return false, "", err
+		}
+	}
+
+	insert := `
+		INSERT INTO workspace_members (workspace_id, user_id, role, created_at)
+		VALUES (?, ?, ?, ?)`
+	if existingOK {
+		insert += ` ON CONFLICT (workspace_id, user_id) DO NOTHING`
+	}
+	ts := now()
+	res, err := tx.Exec(s.q(insert), workspaceID, userID, role, ts)
+	if err != nil {
+		return false, "", fmt.Errorf("add workspace member: %w", err)
+	}
+	if existingOK {
+		n, err := res.RowsAffected()
+		if err != nil {
+			return false, "", fmt.Errorf("add workspace member: %w", err)
+		}
+		if n == 0 {
+			// A concurrent accept inserted the row after the read above.
+			r, err := readRole()
+			if err != nil {
+				return false, "", fmt.Errorf("add workspace member: read concurrent membership: %w", err)
+			}
+			return false, r, nil
+		}
+	}
+
+	if err := s.emitMemberEventTx(tx, kernelevents.MemberJoined, workspaceID, userID, role, ts); err != nil {
+		return false, "", err
+	}
+	return true, role, nil
+}
+
+// commitWorkspaceMemberTx commits a transaction that ran addWorkspaceMemberTx.
+// It is routed through the seam so a test can reproduce the one commit outcome
+// these paths must survive and cannot otherwise be shown: a commit that lands
+// and reports an error (BUG-3026). Nil in production, where this is
+// tx.Commit().
+func (s *Store) commitWorkspaceMemberTx(tx *sql.Tx) error {
+	if s.commitAddWorkspaceMember != nil {
+		return s.commitAddWorkspaceMember(tx)
+	}
+	return tx.Commit()
+}
+
+// AcceptWorkspaceInvitation accepts an invitation in one transaction: the
+// membership through addWorkspaceMemberTx, then the invitation's accepted_at.
+// An existing membership is an idempotent success (BUG-3281, lead ruling):
+// the invitation is marked accepted and the member keeps their role in either
+// direction, because role changes belong to member management. added reports
+// whether this call created the membership; effectiveRole is the role held.
+//
+// As with AddWorkspaceMember, an error does not prove nothing was written: a
+// commit can land and report failure (BUG-3026). A caller reads the
+// membership and the invitation before treating an error as "not accepted".
+// On a COMMIT error only, added and effectiveRole are still filled in with
+// what the transaction wrote, which is the outcome if it landed; on every
+// earlier error they are zero.
+func (s *Store) AcceptWorkspaceInvitation(invitationID, workspaceID, userID, role string, opts ...MintOption) (added bool, effectiveRole string, err error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, "", fmt.Errorf("accept workspace invitation: %w", err)
+	}
+	defer tx.Rollback()
+
+	added, effectiveRole, err = s.addWorkspaceMemberTx(tx, workspaceID, userID, role, resolveMintOptions(opts), true)
+	if err != nil {
+		return false, "", err
+	}
+	// The first accept's timestamp stands; a concurrent loser leaves it alone.
+	if _, err := tx.Exec(s.q(`UPDATE workspace_invitations SET accepted_at = ? WHERE id = ? AND accepted_at IS NULL`), now(), invitationID); err != nil {
+		return false, "", fmt.Errorf("accept workspace invitation: %w", err)
+	}
+	if err := s.commitWorkspaceMemberTx(tx); err != nil {
+		// added and effectiveRole describe what this transaction wrote, so they
+		// are returned with a commit error: if the caller finds the commit
+		// landed, they are its outcome.
+		return added, effectiveRole, fmt.Errorf("accept workspace invitation: %w", err)
+	}
+	return added, effectiveRole, nil
 }
 
 // RemoveWorkspaceMember removes a user from a workspace.

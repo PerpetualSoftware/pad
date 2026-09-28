@@ -169,6 +169,9 @@ type Store struct {
 	// Nothing else reproduces that state. Every other injection makes the INSERT
 	// genuinely fail, which is the case the code already handled (and which the
 	// existing ghost-user FK test covers).
+	//
+	// AcceptWorkspaceInvitation commits through the same seam
+	// (commitWorkspaceMemberTx, BUG-3281), so one hook drives both paths.
 	commitAddWorkspaceMember func(tx *sql.Tx) error
 
 	// failSeedCollections is a TEST-ONLY seam, nil in production. Same shape and

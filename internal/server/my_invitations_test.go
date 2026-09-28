@@ -1,8 +1,11 @@
 package server
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"sort"
 	"testing"
@@ -205,6 +208,203 @@ func TestMyInvitations_AcceptByID(t *testing.T) {
 		}
 		// Accepting again is the same 404 as any id that is not pending.
 		f.must(f.do("POST", "/api/v1/me/invitations/"+inv.ID+"/accept", meTok, nil), http.StatusNotFound, "re-accept")
+	})
+}
+
+// BUG-3281: an existing member accepting an invitation is an idempotent
+// success. The invitation is marked accepted, the member keeps their role in
+// either direction, the response reports the role they hold, and nothing is
+// published.
+func TestAcceptInvitation_ExistingMemberIsIdempotent(t *testing.T) {
+	forEachDialect(t, func(t *testing.T, d store.DriverType) {
+		for _, c := range []struct{ held, invited string }{
+			{"viewer", "editor"}, // would be an upgrade
+			{"editor", "viewer"}, // would be a downgrade
+		} {
+			t.Run(c.held+"_invited_"+c.invited, func(t *testing.T) {
+				f := newAccessFixture(t, d)
+				member := f.member("member@example.com", c.held)
+				tok := f.token(member)
+				inv := f.invite(member.Email, c.invited)
+				since := f.mark()
+
+				rr := f.do("POST", "/api/v1/invitations/"+inv.Code+"/accept", tok, nil)
+				f.must(rr, http.StatusOK, "accept as existing member")
+				var body map[string]any
+				parseJSON(t, rr, &body)
+				if body["workspace_slug"] != f.wsSlug || body["role"] != c.held {
+					t.Fatalf("body = %v; want workspace_slug %q and the held role %q", body, f.wsSlug, c.held)
+				}
+				got, err := f.srv.store.GetWorkspaceMember(f.wsID, member.ID)
+				if err != nil || got == nil || got.Role != c.held {
+					t.Fatalf("membership = %+v, %v; the %s role must stand", got, err, c.held)
+				}
+				if pending, err := f.srv.store.GetInvitationByCode(inv.Code); err != nil || pending != nil {
+					t.Fatalf("invitation still pending: %+v, %v", pending, err)
+				}
+				f.expect(since) // access did not change
+			})
+		}
+	})
+}
+
+// Two accepts of one invitation that have both read it as pending (two tabs,
+// a double submit, the code door racing the by-id door) both answer 200 with
+// one membership row. The core is called directly so both have already passed
+// the pending read, which is the state the race produces.
+func TestAcceptInvitation_ConcurrentCoreAcceptsAreIdempotent(t *testing.T) {
+	forEachDialect(t, func(t *testing.T, d store.DriverType) {
+		f := newAccessFixture(t, d)
+		member := mkUser(t, f.srv, "race@example.com")
+		inv := f.invite(member.Email, "editor")
+		since := f.mark()
+
+		type result struct {
+			code int
+			body string
+			role string
+		}
+		start := make(chan struct{})
+		results := make(chan result, 2)
+		for i := 0; i < 2; i++ {
+			go func() {
+				<-start
+				rec := httptest.NewRecorder()
+				role, ok := f.srv.acceptInvitationCore(rec, httptest.NewRequest("POST", "/", nil), inv, member)
+				code := rec.Code
+				if !ok && code == http.StatusOK {
+					code = -1 // refused without writing a status
+				}
+				results <- result{code, rec.Body.String(), role}
+			}()
+		}
+		close(start)
+		for i := 0; i < 2; i++ {
+			if r := <-results; r.code != http.StatusOK || r.role != "editor" {
+				t.Fatalf("concurrent accept = %d %q role %q, want 200 editor", r.code, r.body, r.role)
+			}
+		}
+		var count int
+		if err := f.srv.store.DB().QueryRow(f.srv.store.D().Rebind(`SELECT COUNT(*) FROM workspace_members WHERE workspace_id = ? AND user_id = ?`), f.wsID, member.ID).Scan(&count); err != nil {
+			t.Fatalf("count membership: %v", err)
+		}
+		if count != 1 {
+			t.Fatalf("membership rows = %d, want one", count)
+		}
+		if pending, err := f.srv.store.GetInvitationByCode(inv.Code); err != nil || pending != nil {
+			t.Fatalf("invitation still pending: %+v, %v", pending, err)
+		}
+		f.expect(since, f.line("gained", member.Email)) // exactly one gain
+	})
+}
+
+// BUG-3026 on the accept path: the store returns the raw commit error, so a
+// commit that LANDED can report failure, and the core reads the membership
+// before answering. Both arms go through the commit seam the accept shares
+// with AddWorkspaceMember: the landed arm commits and then errors (the honest
+// ack-loss hook), the absent arm errors without committing.
+func TestAcceptInvitation_CommitErrorReconciles(t *testing.T) {
+	forEachDialect(t, func(t *testing.T, d store.DriverType) {
+		t.Run("landed", func(t *testing.T) {
+			f := newAccessFixture(t, d)
+			u := mkUser(t, f.srv, "landed@example.com")
+			tok := f.token(u)
+			inv := f.invite(u.Email, "editor")
+			since := f.mark()
+			fired := 0
+			restore := f.srv.store.SetAddWorkspaceMemberCommitHookForTesting(func(tx *sql.Tx) error {
+				fired++
+				if err := tx.Commit(); err != nil {
+					return err
+				}
+				return errors.New("simulated accept commit ack loss")
+			})
+			rr := f.do("POST", "/api/v1/invitations/"+inv.Code+"/accept", tok, nil)
+			restore()
+			if fired != 1 {
+				t.Fatalf("commit seam fired %d times, want 1: the accept is not committing through it", fired)
+			}
+			f.must(rr, http.StatusOK, "accept whose commit landed and reported an error")
+			var body map[string]any
+			parseJSON(t, rr, &body)
+			if body["role"] != "editor" {
+				t.Fatalf("role = %v, want editor", body["role"])
+			}
+			if pending, err := f.srv.store.GetInvitationByCode(inv.Code); err != nil || pending != nil {
+				t.Fatalf("invitation still pending after a landed commit: %+v, %v", pending, err)
+			}
+			f.expect(since, f.line("gained", u.Email))
+		})
+		t.Run("absent", func(t *testing.T) {
+			f := newAccessFixture(t, d)
+			u := mkUser(t, f.srv, "absent@example.com")
+			tok := f.token(u)
+			inv := f.invite(u.Email, "editor")
+			since := f.mark()
+			fired := 0
+			restore := f.srv.store.SetAddWorkspaceMemberCommitHookForTesting(func(tx *sql.Tx) error {
+				fired++
+				return errors.New("simulated accept commit failure")
+			})
+			rr := f.do("POST", "/api/v1/invitations/"+inv.Code+"/accept", tok, nil)
+			restore()
+			if fired != 1 {
+				t.Fatalf("commit seam fired %d times, want 1", fired)
+			}
+			f.must(rr, http.StatusInternalServerError, "accept whose commit genuinely failed")
+			if m, err := f.srv.store.GetWorkspaceMember(f.wsID, u.ID); err != nil || m != nil {
+				t.Fatalf("membership = %+v, %v; want none", m, err)
+			}
+			if pending, err := f.srv.store.GetInvitationByCode(inv.Code); err != nil || pending == nil {
+				t.Fatalf("the invitation must stay pending for a retry: %+v, %v", pending, err)
+			}
+			f.expect(since)
+		})
+		// An existing member whose accept landed: success at the held role, and
+		// no gain, because the transaction added no member. The member is
+		// added moments before, usually within the same second, which a
+		// created_at comparison could not tell apart (codex round 3).
+		t.Run("landed_existing_member", func(t *testing.T) {
+			f := newAccessFixture(t, d)
+			u := f.member("existing@example.com", "viewer")
+			tok := f.token(u)
+			inv := f.invite(u.Email, "editor")
+			since := f.mark()
+			restore := f.srv.store.SetAddWorkspaceMemberCommitHookForTesting(func(tx *sql.Tx) error {
+				if err := tx.Commit(); err != nil {
+					return err
+				}
+				return errors.New("simulated accept commit ack loss")
+			})
+			rr := f.do("POST", "/api/v1/invitations/"+inv.Code+"/accept", tok, nil)
+			restore()
+			f.must(rr, http.StatusOK, "existing member's accept whose commit landed and reported an error")
+			var body map[string]any
+			parseJSON(t, rr, &body)
+			if body["role"] != "viewer" {
+				t.Fatalf("role = %v, want the held viewer", body["role"])
+			}
+			f.expect(since) // access did not change
+		})
+		// An existing member's row predates the call, so the membership alone
+		// cannot say the commit landed; the invitation's state has to.
+		t.Run("absent_existing_member", func(t *testing.T) {
+			f := newAccessFixture(t, d)
+			u := f.member("existing@example.com", "viewer")
+			tok := f.token(u)
+			inv := f.invite(u.Email, "editor")
+			since := f.mark()
+			restore := f.srv.store.SetAddWorkspaceMemberCommitHookForTesting(func(tx *sql.Tx) error {
+				return errors.New("simulated accept commit failure")
+			})
+			rr := f.do("POST", "/api/v1/invitations/"+inv.Code+"/accept", tok, nil)
+			restore()
+			f.must(rr, http.StatusInternalServerError, "existing member's accept whose commit genuinely failed")
+			if pending, err := f.srv.store.GetInvitationByCode(inv.Code); err != nil || pending == nil {
+				t.Fatalf("the invitation must stay pending: %+v, %v", pending, err)
+			}
+			f.expect(since)
+		})
 	})
 }
 

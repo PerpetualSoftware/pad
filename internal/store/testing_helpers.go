@@ -157,8 +157,9 @@ func (s *Store) SetAfterItemPreLockReadHookForTesting(hook func(itemID string)) 
 	return func() { s.afterItemPreLockRead = prev }
 }
 
-// SetAddWorkspaceMemberCommitHookForTesting routes AddWorkspaceMember's COMMIT
-// through hook for the lifetime of the returned restore function.
+// SetAddWorkspaceMemberCommitHookForTesting routes the COMMIT of
+// AddWorkspaceMember and AcceptWorkspaceInvitation (commitWorkspaceMemberTx,
+// BUG-3281) through hook for the lifetime of the returned restore function.
 //
 // It exists for BUG-3026, and the honest hook is the same as its BUG-2994 twin:
 // call tx.Commit() and return a non-nil error on top, so the membership row really
