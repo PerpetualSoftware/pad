@@ -1,4 +1,4 @@
-import { api, PadApiError } from '$lib/api/client';
+import { api, onWorkspaceWrite } from '$lib/api/client';
 import type { WorkspaceTab, WorkspaceTabsResponse } from '$lib/types';
 import { authStore } from './auth.svelte';
 
@@ -31,26 +31,33 @@ import { authStore } from './auth.svelte';
  * different mechanism, and either could be changed by someone who never reads
  * the other.
  *
- * LAST ROUTE (lead ruling on TASK-3271: option (b), until U5). A workspace's
- * last route is stored on its tab row, and U1 refuses a route for a workspace
- * with no row. Until U5 opens a tab at every landing, a workspace can be
- * visited without having a row, so the pre-U2 localStorage key is kept as the
- * fallback for exactly those workspaces:
- *   - reading: the tab row's route, then the localStorage key, then none (the
- *     caller's dashboard fallback). A read never waits on the network, so
- *     before the first load answers every workspace reads as having no row.
- *   - writing: one place per navigation, never both. PATCH when the workspace
- *     has a row, localStorage when it does not.
- *   - migration: a key is moved to its row, and removed, only once the
- *     workspace has a row. That includes a row opened later in the session,
- *     so migration runs after every commit, not only after the first load.
- *     Every other key is left alone.
+ * LANDINGS (TASK-3279, PLAN-3002 U5). Every landing in a workspace outside
+ * the open set opens it as an EPHEMERAL tab: `land()`, called by the workspace
+ * layout whenever the workspace it shows changes. A deep link, a `/-/r/`
+ * redirect (the server 302s to the item URL, so it arrives as a deep link), a
+ * guest landing, an accepted invitation and a restore all end in that layout,
+ * which is why one call covers them. The server keeps at most one ephemeral
+ * tab, replacing the previous one in its position, and an ephemeral open of a
+ * workspace that already has a row changes nothing, so a redundant landing is
+ * harmless; the store skips it only to save the request.
+ *
+ * DURABILITY (PLAN-3002 Q9). An ephemeral tab is kept by a double-click or a
+ * drag (TopBar), by "Keep open", or by any WRITE in its workspace. Writes are
+ * reported by the API client (`onWorkspaceWrite`), which is the one place
+ * every REST write passes through.
+ *
+ * LAST ROUTE. A workspace's last route lives on its tab row, and nowhere else.
+ * The localStorage fallback TASK-3271 kept for workspaces with no row is
+ * retired here, because a landing now opens a row: the first commit sweeps
+ * any `pad-last-route-*` keys still in storage, and nothing reads or writes
+ * them. A navigation is written once per burst, after the landing for that
+ * workspace (if any) has answered, so the PATCH does not race the row it
+ * needs. A PATCH that finds no row (closed on another device, access lost)
+ * drops that route.
  */
 
-/** The localStorage key for a workspace's last route. Pinned by identityReload's test. */
-export function lastRouteKey(slug: string): string {
-	return `pad-last-route-${slug}`;
-}
+/** The retired pre-U5 localStorage key prefix, kept only to sweep leftovers. */
+const LEGACY_LAST_ROUTE_PREFIX = 'pad-last-route-';
 
 // How long a navigation waits before its route is written, so a burst of
 // navigations costs one PATCH.
@@ -58,9 +65,9 @@ export const LAST_ROUTE_WRITE_DELAY_MS = 750;
 
 let tabs = $state<WorkspaceTab[]>([]);
 let loaded = $state(false);
-// Routes noted for a workspace WITH a row that have not been confirmed by a
-// PATCH yet. Read ahead of the row, so a switcher href shows the route the
-// user just left instead of the row's older value.
+// Routes noted but not yet confirmed by a PATCH. Read ahead of the row, so a
+// switcher href shows the route the user just left instead of the row's older
+// value.
 let pendingRoutes = $state<Record<string, string>>({});
 
 // Ticket at dispatch, high-water mark at commit. See "WHICH RESPONSE COMMITS".
@@ -68,52 +75,27 @@ let dispatched = 0;
 let committed = 0;
 
 const writeTimers = new Map<string, ReturnType<typeof setTimeout>>();
-// Workspaces whose key is being moved to their row right now, so a second
-// commit during the PATCH does not start a second one.
-const migrating = new Set<string>();
-// Workspaces whose key THIS session wrote: a navigation before the first load
-// answered, or one in a workspace that had no row at the time. That key is
-// newer than anything a row opened since can hold, so migration moves it to
-// the row instead of discarding it in the row's favour. A key this set does
-// not name predates the session, and a row that has a route is newer than it.
-// An entry lasts until its key is migrated or removed, not until the next
-// commit: the row may not exist until several commits later (codex round 1).
-const writtenHere = new Set<string>();
+// Landing opens in flight, by slug, so a second landing on the same workspace
+// does not send a second POST and a route write can wait for its row.
+const landings = new Map<string, Promise<void>>();
+// Pins in flight, by slug, so a burst of writes sends one.
+const pinning = new Set<string>();
+let legacySwept = false;
 
-function readKey(slug: string): string | null {
+function sweepLegacyRouteKeys() {
+	if (legacySwept) return;
+	legacySwept = true;
 	try {
-		return localStorage.getItem(lastRouteKey(slug));
-	} catch {
-		return null;
-	}
-}
-
-function writeKey(slug: string, route: string | null) {
-	try {
-		if (route) {
-			localStorage.setItem(lastRouteKey(slug), route);
-			writtenHere.add(slug);
-		} else {
-			localStorage.removeItem(lastRouteKey(slug));
-			writtenHere.delete(slug);
+		for (const key of Object.keys(localStorage)) {
+			if (key.startsWith(LEGACY_LAST_ROUTE_PREFIX)) localStorage.removeItem(key);
 		}
 	} catch {
-		// Storage disabled: route memory just does not survive a reload.
+		// Storage disabled: nothing to sweep.
 	}
 }
 
 function hasRow(slug: string): boolean {
 	return tabs.some((t) => t.slug === slug);
-}
-
-function isNotFound(err: unknown): boolean {
-	return err instanceof PadApiError && err.code === 'not_found';
-}
-
-// The server refused the route itself (outside the workspace, malformed), and
-// will refuse it again.
-function isRouteRefused(err: unknown): boolean {
-	return err instanceof PadApiError && (err.code === 'validation_error' || err.code === 'bad_request');
 }
 
 async function send(call: () => Promise<WorkspaceTabsResponse>): Promise<WorkspaceTabsResponse> {
@@ -124,45 +106,9 @@ async function send(call: () => Promise<WorkspaceTabsResponse>): Promise<Workspa
 		committed = ticket;
 		tabs = resp.tabs;
 		loaded = true;
-		migrateKeys();
+		sweepLegacyRouteKeys();
 	}
 	return resp;
-}
-
-function migrateKeys() {
-	for (const tab of tabs) {
-		const key = readKey(tab.slug);
-		if (key === null || migrating.has(tab.slug)) continue;
-		if (tab.last_route && !writtenHere.has(tab.slug)) {
-			// The row already has a route, set on some device since the key was
-			// written. The row is the newer record.
-			writeKey(tab.slug, null);
-			continue;
-		}
-		void migrateKey(tab.slug, key);
-	}
-}
-
-async function migrateKey(slug: string, route: string) {
-	migrating.add(slug);
-	const isSameIdentity = authStore.identityFence();
-	try {
-		await send(() => api.workspaces.tabs.update(slug, { last_route: route }));
-		if (isSameIdentity()) setRowRoute(slug, route);
-	} catch (err) {
-		// A refused route will be refused again, so the key is spent. Anything
-		// else keeps it: a 404 means the row went away, which makes the key the
-		// workspace's fallback again, and any other failure retries at the
-		// next commit.
-		if (!isRouteRefused(err)) return;
-	} finally {
-		migrating.delete(slug);
-	}
-	if (!isSameIdentity()) return;
-	// Only the value that was moved. A navigation during the PATCH with no row
-	// cannot have written the key, since the row exists, but a sibling browser
-	// tab still on the old code can.
-	if (readKey(slug) === route) writeKey(slug, null);
 }
 
 // Record a route the server confirmed on the committed row, whether or not
@@ -177,25 +123,38 @@ async function flushRoute(slug: string) {
 	const timer = writeTimers.get(slug);
 	if (timer !== undefined) clearTimeout(timer);
 	writeTimers.delete(slug);
+	const isSameIdentity = authStore.identityFence();
+	// The row this PATCH needs may be the one a landing is opening right now.
+	await landings.get(slug)?.catch(() => {});
+	if (!isSameIdentity()) return;
 	const route = pendingRoutes[slug];
 	if (route === undefined) return;
-	const isSameIdentity = authStore.identityFence();
 	try {
 		await send(() => api.workspaces.tabs.update(slug, { last_route: route }));
 		if (isSameIdentity()) setRowRoute(slug, route);
-	} catch (err) {
-		if (!isSameIdentity()) return;
-		if (isNotFound(err)) {
-			// The row went away (closed on another device, access lost). The
-			// workspace has no row now, which is the localStorage case.
-			writeKey(slug, route);
-			void tabsStore.load().catch(() => {});
-		}
-		// Any other failure loses this one route; the next navigation writes again.
+	} catch {
+		// No row (a 404: closed elsewhere, or the landing failed), a refused
+		// route, or a network failure. Each loses this one route; the next
+		// navigation writes again.
 	} finally {
 		if (isSameIdentity() && pendingRoutes[slug] === route) delete pendingRoutes[slug];
 	}
 }
+
+async function pinOnWrite(slug: string) {
+	const tab = tabs.find((t) => t.slug === slug);
+	if (!tab?.ephemeral || pinning.has(slug)) return;
+	pinning.add(slug);
+	try {
+		await send(() => api.workspaces.tabs.update(slug, { pin: true }));
+	} catch {
+		// The tab stays ephemeral; the next write tries again.
+	} finally {
+		pinning.delete(slug);
+	}
+}
+
+onWorkspaceWrite((slug) => void pinOnWrite(slug));
 
 export const tabsStore = {
 	/** The open set, in bar order. Empty until the first load answers. */
@@ -210,6 +169,26 @@ export const tabsStore = {
 	/** Open a tab. An ephemeral open replaces the current ephemeral tab. */
 	async open(slug: string, ephemeral = false): Promise<void> {
 		await send(() => api.workspaces.tabs.open(slug, ephemeral));
+	},
+
+	/**
+	 * A landing in `slug`: open it as an ephemeral tab unless it is already in
+	 * the open set. Skipped only when a committed list says it has a row;
+	 * before the first list answers the POST is sent anyway, since the server
+	 * leaves an existing row alone. A workspace the caller cannot see answers
+	 * the workspace 404, which rejects here and opens nothing.
+	 */
+	land(slug: string): Promise<void> {
+		if (loaded && hasRow(slug)) return Promise.resolve();
+		const inFlight = landings.get(slug);
+		if (inFlight) return inFlight;
+		const p = send(() => api.workspaces.tabs.open(slug, true))
+			.then(() => {})
+			.finally(() => {
+				if (landings.get(slug) === p) landings.delete(slug);
+			});
+		landings.set(slug, p);
+		return p;
 	},
 
 	async close(slug: string): Promise<void> {
@@ -234,21 +213,14 @@ export const tabsStore = {
 	routeFor(slug: string): string | null {
 		const pending = pendingRoutes[slug];
 		if (pending !== undefined) return pending || null;
-		const tab = tabs.find((t) => t.slug === slug);
-		if (tab?.last_route) return tab.last_route;
-		return readKey(slug);
+		return tabs.find((t) => t.slug === slug)?.last_route || null;
 	},
 
 	/**
-	 * Record a navigation to `route` inside `slug`. Written after
-	 * LAST_ROUTE_WRITE_DELAY_MS to the row when the workspace has one, else
-	 * immediately to localStorage.
+	 * Record a navigation to `route` inside `slug`, written to its tab row
+	 * after LAST_ROUTE_WRITE_DELAY_MS.
 	 */
 	noteRoute(slug: string, route: string) {
-		if (!hasRow(slug)) {
-			writeKey(slug, route);
-			return;
-		}
 		pendingRoutes[slug] = route;
 		const prior = writeTimers.get(slug);
 		if (prior !== undefined) clearTimeout(prior);
@@ -263,10 +235,6 @@ export const tabsStore = {
 	 * (an item the route pointed at is gone), not for navigation.
 	 */
 	setRoute(slug: string, route: string | null) {
-		if (!hasRow(slug)) {
-			writeKey(slug, route);
-			return;
-		}
 		pendingRoutes[slug] = route ?? '';
 		void flushRoute(slug);
 	},
@@ -282,6 +250,6 @@ authStore.onIdentityChange(() => {
 	pendingRoutes = {};
 	for (const timer of writeTimers.values()) clearTimeout(timer);
 	writeTimers.clear();
-	migrating.clear();
-	writtenHere.clear();
+	landings.clear();
+	pinning.clear();
 });

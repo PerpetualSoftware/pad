@@ -813,6 +813,9 @@
 			if (!identityHeld(epochAtDelete)) return;
 			toastStore.show(`Workspace "${restored.name || name}" restored`, 'success');
 			// Navigate back into the freshly restored workspace to confirm it.
+			// The landing reopens its tab as ephemeral (TASK-3279, PLAN-3002
+			// Q12); the list reload puts it back in the switcher.
+			void workspaceStore.loadAll().catch(() => {});
 			goto(`/${owner}/${restored.slug || slug}`);
 		} catch {
 			if (!identityHeld(epochAtDelete)) return;

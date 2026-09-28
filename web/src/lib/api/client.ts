@@ -781,6 +781,49 @@ function fetchJsonWithDeadline<T>(url: string, init?: RequestInit): Promise<T> {
 	);
 }
 
+// WORKSPACE WRITES (TASK-3279, PLAN-3002 Q9: an ephemeral tab becomes durable
+// on any write in its workspace). Every REST write passes through `request`, so
+// this is the one place that sees all of them. A write is a successful
+// non-GET/HEAD request under `/workspaces/{slug}`, minus the POSTs that change
+// nothing a user did: the collab watermark (sent by merely opening an item),
+// the copy preflight, and playbook match and run (both side-effect-free).
+// Listeners get the slug as it appears in the path; one that does not name a
+// workspace (`/workspaces/reorder`) matches no tab and is ignored there.
+type WorkspaceWriteListener = (slug: string) => void;
+const workspaceWriteListeners = new Set<WorkspaceWriteListener>();
+const WORKSPACE_WRITE_PATH = /^\/workspaces\/([^/?#]+)(?:[/?#]|$)/;
+const NON_WRITE_POST = /\/(?:collab-watermark|copy\/preflight|playbooks\/match|playbooks\/[^/?#]+\/run)(?:[?#]|$)/;
+
+export function onWorkspaceWrite(listener: WorkspaceWriteListener): () => void {
+	workspaceWriteListeners.add(listener);
+	return () => workspaceWriteListeners.delete(listener);
+}
+
+/** Exported for its test: the slug a successful request wrote to, or null. */
+export function workspaceWriteSlug(path: string, method: string | undefined): string | null {
+	if (!method || method === 'GET' || method === 'HEAD') return null;
+	const m = WORKSPACE_WRITE_PATH.exec(path);
+	if (!m) return null;
+	if (method === 'POST' && NON_WRITE_POST.test(path)) return null;
+	try {
+		return decodeURIComponent(m[1]);
+	} catch {
+		return null;
+	}
+}
+
+function reportWorkspaceWrite(path: string, method: string | undefined) {
+	const slug = workspaceWriteSlug(path, method);
+	if (slug === null) return;
+	for (const listener of workspaceWriteListeners) {
+		try {
+			listener(slug);
+		} catch {
+			// A listener's failure is not the request's.
+		}
+	}
+}
+
 async function request<T>(
 	path: string,
 	options?: RequestInit,
@@ -830,7 +873,11 @@ async function request<T>(
 	// the cooldown above, a 429 retry's sleep below — never count against it.
 	const deadline = requestDeadline(requestTimeoutMs, options?.signal);
 	try {
-		return await requestAttempt<T>(path, options, rateLimitAttempt, headers, method, isIdempotent, issuedAs, deadline);
+		const result = await requestAttempt<T>(path, options, rateLimitAttempt, headers, method, isIdempotent, issuedAs, deadline);
+		// A 429 retry is a nested request() that returns through this one, so
+		// only the outermost call reports.
+		if (rateLimitAttempt === 0) reportWorkspaceWrite(path, method);
+		return result;
 	} catch (err) {
 		if (deadline.timedOut()) throw requestTimeoutError(isIdempotent);
 		throw err;

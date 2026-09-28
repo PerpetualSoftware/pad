@@ -4,6 +4,7 @@
 	import { page } from '$app/state';
 	import { api, type InvitationPreview } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
+	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import SetupRequiredNotice from '$lib/components/auth/SetupRequiredNotice.svelte';
 	import AuthHeader from '$lib/components/auth/AuthHeader.svelte';
 	import AuthFooter from '$lib/components/auth/AuthFooter.svelte';
@@ -124,9 +125,16 @@
 		status = 'accepting';
 		try {
 			const result = await api.members.acceptInvitation(code);
-			// Find the workspace slug to redirect to
-			// The API returns workspace_id, but we need the slug — redirect to root and let the app figure it out
-			await goto('/console', { replaceState: true });
+			// Land IN the workspace just joined (TASK-3279, PLAN-3002 Q5); the
+			// workspace layout opens it as an ephemeral tab. The list is reloaded
+			// first so the new workspace is in it when the layout resolves it. A
+			// server that predates the slug in the response lands on /console.
+			await workspaceStore.loadAll().catch(() => {});
+			const dest =
+				result.workspace_slug && result.owner_username
+					? `/${encodeURIComponent(result.owner_username)}/${encodeURIComponent(result.workspace_slug)}`
+					: '/console';
+			await goto(dest, { replaceState: true });
 		} catch (err: unknown) {
 			errorMsg = err instanceof Error ? err.message : 'Failed to accept invitation';
 			status = 'error';

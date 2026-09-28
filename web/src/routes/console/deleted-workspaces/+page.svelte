@@ -2,6 +2,8 @@
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api/client';
 	import { toastStore } from '$lib/stores/toast.svelte';
+	import { workspaceStore } from '$lib/stores/workspace.svelte';
+	import { tabsStore } from '$lib/stores/tabs.svelte';
 	import PageHeader from '$lib/components/common/PageHeader.svelte';
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
 	import type { DeletedWorkspace } from '$lib/types';
@@ -39,6 +41,11 @@
 			await api.workspaces.restore(ws.slug);
 			workspaces = workspaces.filter((w) => w.slug !== ws.slug);
 			toastStore.show(`Restored "${ws.name}"`, 'success');
+			// Back in the list, and reopened as an ephemeral tab for the
+			// restorer only (TASK-3279, PLAN-3002 Q12). Neither failing makes
+			// the restore a failure.
+			void workspaceStore.loadAll().catch(() => {});
+			void tabsStore.land(ws.slug).catch(() => {});
 		} catch (e) {
 			const msg = e instanceof Error ? e.message : 'Failed to restore workspace';
 			toastStore.show(msg, 'error');

@@ -233,6 +233,19 @@
 		}
 	});
 
+	// A LANDING opens the workspace as an ephemeral tab when it is not already
+	// open (TASK-3279, PLAN-3002 U5). Deep links, `/-/r/` redirects, guest
+	// landings, accepted invitations and restores all arrive here. Tracked:
+	// the slug and whether there is a signed-in user, since on a cold load the
+	// slug is known before auth resolves. NOT tracked: the open set itself, so
+	// closing this workspace's tab does not reopen it before the close
+	// navigates away.
+	$effect(() => {
+		if (!wsSlug || !authStore.authenticated) return;
+		const slug = wsSlug;
+		untrack(() => void tabsStore.land(slug).catch(() => {}));
+	});
+
 	// CLOSE THE STREAM, and let the reload do the rest (BUG-3005, lead ruling
 	// after codex round 3).
 	//
