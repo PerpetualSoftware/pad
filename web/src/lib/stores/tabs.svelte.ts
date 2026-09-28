@@ -88,7 +88,12 @@ let pendingRoutes = $state<Record<string, string>>({});
 // and carry the older route. Pruned at every commit once the row is gone or
 // already carries that route (codex round 4), so it never outlives what it
 // guards against and cannot mask a newer route set on another device after a
-// close and reopen.
+// close and reopen. A KNOWN TRADEOFF (codex round 5): while the entry lives, a
+// newer route another device sets on the same row is masked, because without
+// a list revision an older list and a newer one are indistinguishable here.
+// This device's own last navigation wins until the row catches up, the tab
+// closes, or the page reloads. The revision that removes the ambiguity is
+// BUG-3285.
 let confirmedRoutes = $state<Record<string, string>>({});
 
 // Ticket at dispatch, high-water mark at commit. See "WHICH RESPONSE COMMITS".
