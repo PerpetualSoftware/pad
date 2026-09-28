@@ -79,9 +79,11 @@ export const LAST_ROUTE_WRITE_DELAY_MS = 750;
 
 let tabs = $state<WorkspaceTab[]>([]);
 let loaded = $state(false);
-// Routes noted but not yet confirmed by a PATCH. Read ahead of the row, so a
-// switcher href shows the route the user just left instead of the row's older
-// value.
+// The last route THIS SESSION noted per workspace, read ahead of the row. It
+// stays after its PATCH succeeds (codex round 3): a list committed later can
+// have been processed before the PATCH and carry the older route, and the
+// session's own navigation is the newer fact. Dropped when the PATCH fails,
+// since the server then has nothing newer than the row.
 let pendingRoutes = $state<Record<string, string>>({});
 
 // Ticket at dispatch, high-water mark at commit. See "WHICH RESPONSE COMMITS".
@@ -154,7 +156,6 @@ async function flushRoute(slug: string) {
 		// No row (a 404: closed elsewhere, or the landing failed), a refused
 		// route, or a network failure. Each loses this one route; the next
 		// navigation writes again.
-	} finally {
 		if (isSameIdentity() && pendingRoutes[slug] === route) delete pendingRoutes[slug];
 	}
 }

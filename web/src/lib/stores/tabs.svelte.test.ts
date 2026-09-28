@@ -246,6 +246,28 @@ describe('background writes do not commit the list', () => {
 		expect(store.routeFor('a')).toBe('/alice/a/tasks');
 	});
 
+	it('a saved route survives a user action whose list was processed before the save', async () => {
+		vi.useFakeTimers();
+		tabsApi.list.mockResolvedValueOnce(answer(tab('a', { last_route: '/alice/a/old' }), tab('b')));
+		const store = await loadStore();
+		await store.load();
+
+		tabsApi.update.mockResolvedValueOnce(answer(tab('a', { last_route: '/alice/a/new' }), tab('b')));
+		store.noteRoute('a', '/alice/a/new');
+		const reordering = deferred<ReturnType<typeof answer>>();
+		tabsApi.reorder.mockReturnValueOnce(reordering.promise);
+		const reorder = store.reorder(['b', 'a']);
+		await vi.runAllTimersAsync();
+
+		// The reorder was sent first but processed before the PATCH, so its
+		// list still carries the old route; it commits (a user action).
+		reordering.resolve(answer(tab('b'), tab('a', { last_route: '/alice/a/old' })));
+		await reorder;
+
+		expect(slugs(store.tabs)).toEqual(['b', 'a']);
+		expect(store.routeFor('a')).toBe('/alice/a/new');
+	});
+
 	it('a pin a write triggers cannot put a closed tab back either', async () => {
 		tabsApi.list.mockResolvedValueOnce(answer(tab('a'), tab('b', { ephemeral: true }), tab('c')));
 		const store = await loadStore();
@@ -450,9 +472,10 @@ describe('landings (TASK-3279)', () => {
 		expect(tabsApi.open).toHaveBeenCalledWith('deep', true);
 	});
 
-	it('does not reopen a tab closed while the landing waited for the list', async () => {
-		// The e2e failure: a blind open reaching the server after the close
-		// put the tab back. Now the landing sees the committed list.
+	it('sends no open for a workspace the first list shows open, so a later close stays closed', async () => {
+		// The e2e failure was a blind open that reached the server after the
+		// close and put the tab back. With no open sent, there is nothing to
+		// cross the close.
 		const list = deferred<ReturnType<typeof answer>>();
 		tabsApi.list.mockReturnValueOnce(list.promise);
 		const store = await loadStore();
