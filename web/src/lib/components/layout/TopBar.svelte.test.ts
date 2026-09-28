@@ -1,214 +1,259 @@
 // Runs in the jsdom vitest project (filename ends `.svelte.test.ts`).
 //
-// TASK-2430 — the workspace overflow menu owns Escape and Up/Down on a WINDOW
-// keydown handler. While a viewer is frontmost the app shell is inert, so this
-// handler must not consume Escape (the viewer's) and must not `.focus()` menu
-// items underneath it — which would pull focus out of the frontmost surface and
-// into inert chrome.
+// TASK-3274 (PLAN-3002 U3): the desktop TopBar renders the caller's open set
+// of workspace tabs from `tabsStore`, in one zone. These tests drive the REAL
+// tabs store over a mocked API, so what the bar shows is what a committed
+// server answer says, and a close or pin goes through the store's own door.
 //
-// Each blocked case is paired with an EMPTY-STACK REGRESSION.
-//
-// HOW TO READ THE PAIRS. The BLOCKED tests are what fail if a guard is deleted
-// or weakened. The EMPTY-STACK REGRESSIONS are the opposite check — they fail
-// if a guard declines UNCONDITIONALLY, which is the way a "deference" change
-// silently breaks the app for the 99% of the time no viewer is open. Neither
-// half subsumes the other, and an empty-stack test passing with the guard
-// removed is by design, not a false green. Every guard in the files under test
-// was mutation-verified to kill at least one case here (one documented
-// exception, flagged at the guard itself).
+// This file used to pin the workspace OVERFLOW MENU's window keydown handler
+// (TASK-2430: it must defer Escape and the arrows to a frontmost viewer). The
+// menu and its handler are deleted by this unit, so that defect class no
+// longer has a member here; the last test below pins that the bar registers
+// no window key owner at all, which is what makes the deference moot.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
 import { tick, flushSync } from 'svelte';
 
-const WORKSPACES = [
-	{ id: 'w1', slug: 'alpha', name: 'Alpha', owner_username: 'u' },
-	{ id: 'w2', slug: 'beta', name: 'Beta', owner_username: 'u' },
-	{ id: 'w3', slug: 'gamma', name: 'Gamma', owner_username: 'u' },
-];
+type Tab = { slug: string; name: string; ephemeral?: boolean; is_guest?: boolean; last_route?: string };
 
-vi.mock('$lib/api/client', () => ({
-	api: {
-		workspaces: {
-			list: vi.fn(async () => WORKSPACES),
-			reorder: vi.fn(async () => {}),
-		},
+const mocks = vi.hoisted(() => ({
+	goto: vi.fn(async () => {}),
+	current: { slug: 'beta', name: 'Beta', owner_username: 'u' } as { slug: string; name: string; owner_username: string } | null,
+	tabs: {
+		list: vi.fn(),
+		open: vi.fn(),
+		close: vi.fn(),
+		reorder: vi.fn(),
+		update: vi.fn(),
 	},
 }));
 
-import TopBar from './TopBar.svelte';
-import { workspaceStore } from '$lib/stores/workspace.svelte';
-import { acquire, __resetViewerBackdropForTests } from '$lib/a11y/viewerBackdrop';
+vi.mock('$app/navigation', () => ({ goto: mocks.goto }));
 
-function mountViewer(): HTMLElement {
-	const root = document.createElement('div');
-	root.className = 'attachment-viewer';
-	root.setAttribute('role', 'dialog');
-	document.body.appendChild(root);
-	return root;
-}
+vi.mock('$lib/api/client', () => ({
+	PadApiError: class extends Error {},
+	api: { workspaces: { tabs: mocks.tabs } },
+}));
 
-/**
- * The menu's rendered rows. Matched on the dnd-rewritten role: `svelte-dnd-action`
- * overwrites the authored `role="menu"`/`menuitem"` on this zone with
- * `list`/`listitem`. That is ALSO why the component's own roving-focus query
- * (menuitem-only) matches nothing and its arrow branch does not move focus — a
- * pre-existing defect this task deliberately does not fix, so the arrow tests
- * below assert only what the handler really does today: consume the key.
- */
-function menuRows(): HTMLElement[] {
-	return Array.from(
-		document.querySelectorAll<HTMLElement>('#workspace-overflow-menu [role="listitem"]'),
-	);
-}
-
-function key(k: string): KeyboardEvent {
-	return new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true });
-}
-
-let offsetWidthSpy: PropertyDescriptor | undefined;
-
-beforeEach(async () => {
-	// jsdom lays nothing out, so the visible/overflow split would put every
-	// workspace in the VISIBLE zone and never mount the overflow menu at all.
-	// A tiny available width plus wide pills forces the whole set to overflow.
-	vi.stubGlobal(
-		'ResizeObserver',
-		class {
-			cb: ResizeObserverCallback;
-			constructor(cb: ResizeObserverCallback) {
-				this.cb = cb;
-			}
-			observe(target: Element) {
-				this.cb(
-					[{ target, contentRect: { width: 40 } } as unknown as ResizeObserverEntry],
-					this as unknown as ResizeObserver,
-				);
-			}
-			unobserve() {}
-			disconnect() {}
+vi.mock('$lib/stores/workspace.svelte', () => ({
+	workspaceStore: {
+		get current() {
+			return mocks.current;
 		},
-	);
-	offsetWidthSpy = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetWidth');
-	Object.defineProperty(HTMLElement.prototype, 'offsetWidth', {
-		configurable: true,
-		get: () => 500,
-	});
+		workspaces: [],
+	},
+}));
 
-	await workspaceStore.loadAll();
+import { page } from '$app/state';
+import TopBar from './TopBar.svelte';
+import { tabsStore } from '$lib/stores/tabs.svelte';
+import { uiStore } from '$lib/stores/ui.svelte';
+
+function answer(tabs: Tab[]) {
+	return {
+		tabs: tabs.map((t, i) => ({
+			owner_username: 'u',
+			is_guest: false,
+			ephemeral: false,
+			created_at: '',
+			updated_at: '',
+			...t,
+			position: i,
+		})),
+	};
+}
+
+const ALPHA = { slug: 'alpha', name: 'Alpha' };
+const BETA = { slug: 'beta', name: 'Beta' };
+const GAMMA = { slug: 'gamma', name: 'Gamma' };
+
+async function mountWith(tabs: Tab[]) {
+	mocks.tabs.list.mockResolvedValueOnce(answer(tabs));
+	await tabsStore.load();
 	render(TopBar, { props: {} });
-	// The pill measurement is rAF-deferred; poll until the menu is mounted.
-	for (let i = 0; i < 50 && menuRows().length === 0; i++) {
-		await new Promise((r) => setTimeout(r, 5));
-		flushSync();
-	}
-	// Open the menu through its real trigger.
-	const trigger = document.querySelector<HTMLElement>('.overflow-trigger-wrap button');
-	trigger?.click();
 	await tick();
 	flushSync();
+}
+
+const tabEls = () => Array.from(document.querySelectorAll<HTMLElement>('.workspace-tab'));
+const link = (slug: string) =>
+	document.querySelector<HTMLAnchorElement>(`.workspace-tab[data-ws-slug="${slug}"] a`)!;
+const closeBtn = (slug: string) =>
+	document.querySelector<HTMLButtonElement>(`.workspace-tab[data-ws-slug="${slug}"] .workspace-tab-close`)!;
+
+async function settle() {
+	for (let i = 0; i < 5; i++) await Promise.resolve();
+	await tick();
+	flushSync();
+}
+
+beforeEach(() => {
+	mocks.goto.mockClear();
+	mocks.current = { slug: 'beta', name: 'Beta', owner_username: 'u' };
+	for (const fn of Object.values(mocks.tabs)) fn.mockReset();
+	uiStore.clearAddWorkspaceHighlight();
+	page.url = new URL('http://localhost/u/beta');
+	try {
+		localStorage.clear();
+	} catch {}
 });
 
 afterEach(() => {
 	cleanup();
-	__resetViewerBackdropForTests();
-	// Restore precisely: if `offsetWidth` was NOT an own property of the
-	// prototype, re-defining is wrong — delete, so the stub cannot outlive this
-	// file. (`vi.restoreAllMocks()` does not undo a raw `defineProperty`.)
-	if (offsetWidthSpy) {
-		Object.defineProperty(HTMLElement.prototype, 'offsetWidth', offsetWidthSpy);
-	} else {
-		delete (HTMLElement.prototype as unknown as Record<string, unknown>).offsetWidth;
-	}
-	vi.unstubAllGlobals();
-	vi.restoreAllMocks();
 	document.body.innerHTML = '';
 });
 
-describe('TopBar overflow menu — defers to a frontmost viewer (TASK-2430)', () => {
-	it('mounts an open overflow menu with rows (test fixture sanity)', () => {
-		expect(menuRows().length).toBeGreaterThan(0);
-		expect(document.querySelector('#workspace-overflow-menu')?.classList).toContain('open');
+describe('TopBar tab bar: what it shows', () => {
+	it('renders the open set in bar order, marking the current workspace active', async () => {
+		await mountWith([ALPHA, BETA, GAMMA]);
+		expect(tabEls().map((el) => el.dataset.wsSlug)).toEqual(['alpha', 'beta', 'gamma']);
+		expect(tabEls().filter((el) => el.classList.contains('active')).map((el) => el.dataset.wsSlug)).toEqual(['beta']);
+		expect(link('beta').getAttribute('aria-current')).toBe('page');
 	});
 
-	it('EMPTY-STACK REGRESSION: Escape still closes the menu with no lease held', async () => {
-		window.dispatchEvent(key('Escape'));
-		await tick();
-		flushSync();
-		expect(document.querySelector('#workspace-overflow-menu')?.classList).not.toContain('open');
+	it('renders no overflow menu and no measurement ghost row', async () => {
+		await mountWith([ALPHA, BETA, GAMMA]);
+		expect(document.querySelector('#workspace-overflow-menu')).toBeNull();
+		expect(document.querySelector('.overflow-trigger')).toBeNull();
+		expect(document.querySelector('.workspace-ghost')).toBeNull();
 	});
 
-	it('EMPTY-STACK REGRESSION: ArrowDown is still CONSUMED by the open menu', () => {
-		// What the handler actually does today: `preventDefault()` runs before the
-		// roving-focus query, which (see `menuRows`) matches nothing. So consuming
-		// the key is the whole observable effect, and it is what must not change
-		// when no viewer is present.
-		const before = document.activeElement;
-		const e = key('ArrowDown');
-		window.dispatchEvent(e);
-		expect(e.defaultPrevented).toBe(true);
-		expect(document.activeElement).toBe(before);
+	it('marks an ephemeral tab (italic, PLAN-3002 Q9) and a guest one (Q10)', async () => {
+		await mountWith([ALPHA, { ...BETA, ephemeral: true }, { ...GAMMA, is_guest: true }]);
+		const [a, b, c] = tabEls();
+		expect(a.classList.contains('ephemeral')).toBe(false);
+		expect(b.classList.contains('ephemeral')).toBe(true);
+		expect(c.classList.contains('guest')).toBe(true);
+		expect(link('gamma').title).toBe('Gamma (shared with you)');
 	});
 
-	it('does not consume Escape while a viewer lease is frontmost', async () => {
-		acquire(mountViewer());
-		window.dispatchEvent(key('Escape'));
-		await tick();
-		flushSync();
-		// Menu untouched — the viewer's own Escape owner gets the key.
-		expect(document.querySelector('#workspace-overflow-menu')?.classList).toContain('open');
+	it('keeps real hrefs to each workspace dashboard', async () => {
+		await mountWith([ALPHA, BETA]);
+		expect(link('alpha').getAttribute('href')).toBe('/u/alpha');
+	});
+});
+
+describe('TopBar tab bar: clicks', () => {
+	it('a plain click restores the workspace\'s last route', async () => {
+		await mountWith([{ ...ALPHA, last_route: '/u/alpha/tasks' }, BETA]);
+		link('alpha').dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0, detail: 1 }));
+		expect(mocks.goto).toHaveBeenCalledWith('/u/alpha/tasks');
 	});
 
-	it('does not consume ArrowDown while a viewer lease is frontmost', () => {
-		// The viewer pages its own images with the arrow keys, so the inert menu
-		// underneath must not swallow them — nor reach the `.focus()` call that
-		// follows in the handler, which would pull focus out of the viewer and
-		// into inert chrome the moment the dnd role rewrite is ever fixed.
-		const viewer = mountViewer();
-		const inViewer = document.createElement('button');
-		viewer.appendChild(inViewer);
-		acquire(viewer);
-		inViewer.focus();
+	it('a click on the current workspace goes to its dashboard', async () => {
+		await mountWith([ALPHA, { ...BETA, last_route: '/u/beta/tasks' }]);
+		link('beta').dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0, detail: 1 }));
+		expect(mocks.goto).toHaveBeenCalledWith('/u/beta');
+	});
 
-		const e = key('ArrowDown');
-		window.dispatchEvent(e);
+	it('a modifier click is left to the browser', async () => {
+		await mountWith([ALPHA, BETA]);
+		const e = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0, metaKey: true, detail: 1 });
+		link('alpha').dispatchEvent(e);
 		expect(e.defaultPrevented).toBe(false);
-		expect(document.activeElement).toBe(inViewer);
+		expect(mocks.goto).not.toHaveBeenCalled();
 	});
 
-	it('OWNER ARGUMENT: an Escape ORIGINATING inside the viewer is still declined', async () => {
-		// The discriminating case for "the argument is the SURFACE ASKING TO ACT,
-		// not `event.target`". The other blocked tests dispatch on `window`,
-		// where the target is outside the viewer too, so they would ALSO pass
-		// with the wrong argument. Here the key is pressed with focus inside the
-		// viewer — an `e.target` owner would report "not blocked" and close the
-		// menu underneath it.
-		const viewer = mountViewer();
-		const btn = document.createElement('button');
-		viewer.appendChild(btn);
-		acquire(viewer);
-
-		btn.dispatchEvent(key('Escape'));
-		await tick();
-		flushSync();
-		expect(document.querySelector('#workspace-overflow-menu')?.classList).toContain('open');
+	it('double-click keeps an ephemeral tab, and its second click does not navigate', async () => {
+		await mountWith([ALPHA, { ...BETA, ephemeral: true }]);
+		mocks.tabs.update.mockResolvedValueOnce(answer([ALPHA, BETA]));
+		const second = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0, detail: 2 });
+		link('beta').dispatchEvent(second);
+		link('beta').dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+		await settle();
+		expect(mocks.goto).not.toHaveBeenCalled();
+		expect(second.defaultPrevented).toBe(true);
+		expect(mocks.tabs.update).toHaveBeenCalledWith('beta', { pin: true });
+		expect(tabEls()[1].classList.contains('ephemeral')).toBe(false);
 	});
 
-	it('takes both keys back once the lease is released', async () => {
-		const lease = acquire(mountViewer());
-		window.dispatchEvent(key('Escape'));
-		await tick();
-		flushSync();
-		expect(document.querySelector('#workspace-overflow-menu')?.classList).toContain('open');
+	it('double-click on a kept tab sends nothing', async () => {
+		await mountWith([ALPHA, BETA]);
+		link('alpha').dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+		await settle();
+		expect(mocks.tabs.update).not.toHaveBeenCalled();
+	});
+});
 
-		// Both keys, as the name says: the arrow is consumed again too.
-		lease.release();
-		const arrow = key('ArrowDown');
-		window.dispatchEvent(arrow);
-		expect(arrow.defaultPrevented).toBe(true);
+describe('TopBar tab bar: closing (PLAN-3002 Q2, Q3)', () => {
+	it('closing a tab that is not active stays where you are', async () => {
+		await mountWith([ALPHA, BETA, GAMMA]);
+		mocks.tabs.close.mockResolvedValueOnce(answer([BETA, GAMMA]));
+		closeBtn('alpha').click();
+		await settle();
+		expect(mocks.tabs.close).toHaveBeenCalledWith('alpha');
+		expect(mocks.goto).not.toHaveBeenCalled();
+		expect(tabEls().map((el) => el.dataset.wsSlug)).toEqual(['beta', 'gamma']);
+	});
 
-		window.dispatchEvent(key('Escape'));
-		await tick();
+	it('closing the active tab lands on its left neighbour, at that tab\'s last route', async () => {
+		await mountWith([{ ...ALPHA, last_route: '/u/alpha/docs' }, BETA, GAMMA]);
+		mocks.tabs.close.mockResolvedValueOnce(answer([{ ...ALPHA, last_route: '/u/alpha/docs' }, GAMMA]));
+		closeBtn('beta').click();
+		await settle();
+		expect(mocks.goto).toHaveBeenCalledWith('/u/alpha/docs');
+	});
+
+	it('closing the active FIRST tab lands on the tab that becomes first (lead ruling on Q3)', async () => {
+		mocks.current = { slug: 'alpha', name: 'Alpha', owner_username: 'u' };
+		await mountWith([ALPHA, BETA, GAMMA]);
+		mocks.tabs.close.mockResolvedValueOnce(answer([BETA, GAMMA]));
+		closeBtn('alpha').click();
+		await settle();
+		expect(mocks.goto).toHaveBeenCalledWith('/u/beta');
+	});
+
+	it('closing the last tab lands on /console with "+" highlighted', async () => {
+		await mountWith([BETA]);
+		mocks.tabs.close.mockResolvedValueOnce(answer([]));
+		mocks.goto.mockImplementationOnce(async (url: string) => {
+			page.url = new URL(url, 'http://localhost');
+		});
+		closeBtn('beta').click();
+		await settle();
+		expect(mocks.goto).toHaveBeenCalledWith('/console');
+		expect(uiStore.addWorkspaceHighlighted).toBe(true);
+	});
+
+	it('a close the server refuses moves nothing', async () => {
+		await mountWith([ALPHA, BETA]);
+		mocks.tabs.close.mockRejectedValueOnce(new TypeError('network down'));
+		closeBtn('beta').click();
+		await settle();
+		expect(mocks.goto).not.toHaveBeenCalled();
+		expect(tabEls().map((el) => el.dataset.wsSlug)).toEqual(['alpha', 'beta']);
+	});
+
+	it('the close button does not also follow the tab link', async () => {
+		await mountWith([ALPHA, BETA, GAMMA]);
+		mocks.tabs.close.mockResolvedValueOnce(answer([BETA, GAMMA]));
+		const e = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0, detail: 1 });
+		closeBtn('alpha').dispatchEvent(e);
+		await settle();
+		expect(e.defaultPrevented).toBe(true);
+		expect(mocks.goto).not.toHaveBeenCalled();
+	});
+});
+
+describe('TopBar: the Q2 highlight', () => {
+	it('opening the create flow from "+" clears it', async () => {
+		await mountWith([ALPHA]);
+		uiStore.highlightAddWorkspace();
+		const add = document.querySelector<HTMLButtonElement>('.workspace-add')!;
+		add.click();
 		flushSync();
-		expect(document.querySelector('#workspace-overflow-menu')?.classList).not.toContain('open');
+		expect(uiStore.addWorkspaceHighlighted).toBe(false);
+		uiStore.closeCreateWorkspace();
+	});
+});
+
+describe('TopBar: no window key owner (successor to TASK-2430)', () => {
+	it('consumes neither Escape nor the arrow keys on window', async () => {
+		await mountWith([ALPHA, BETA]);
+		for (const k of ['Escape', 'ArrowDown', 'ArrowUp']) {
+			const e = new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true });
+			window.dispatchEvent(e);
+			expect(e.defaultPrevented, k).toBe(false);
+		}
 	});
 });

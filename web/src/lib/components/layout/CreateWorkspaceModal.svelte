@@ -24,6 +24,7 @@
 	import { onMount, untrack } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
+	import { tabsStore } from '$lib/stores/tabs.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
@@ -215,6 +216,14 @@
 				// for this continuation to close.
 				return;
 			}
+			// Creating a workspace is an explicit choice to work in it, so it
+			// opens as a KEPT tab (PLAN-3002 U3, lead ruling on TASK-3274).
+			// Client-side on purpose: a CLI or MCP create stays out of the open
+			// set. Awaited so the bar shows the tab on arrival; a failed open
+			// still navigates. A new await, so the per-await fence again.
+			await tabsStore.open(ws.slug).catch(() => {});
+			if (!alive || myOp !== opSeq) return;
+			if (authStore.userId !== createUser) return;
 			// Fire the Phase F hook BEFORE close + goto so the consumer can
 			// stage state (e.g. uiStore.requestConnectAfterNavigate) that
 			// the destination route will read on mount. Callback is purely
@@ -278,6 +287,11 @@
 			// per-operation — the same reason `create` needs two checks rather
 			// than one — so the guard sits immediately before the side effects
 			// it protects rather than at the top of the block.
+			if (!alive || myOp !== opSeq) return;
+			if (authStore.userId !== callUser) return;
+			// An import opens as a kept tab too, for create's reason, fenced
+			// the same way.
+			await tabsStore.open(ws.slug).catch(() => {});
 			if (!alive || myOp !== opSeq) return;
 			if (authStore.userId !== callUser) return;
 			// Same Phase F hook as create — claim code is equally useful for

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { browser } from '$app/environment';
@@ -58,6 +58,9 @@
 		const d = new Date(dateStr);
 		return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 	}
+
+	// The Q2 highlight lasts only while this page is up.
+	onDestroy(() => uiStore.clearAddWorkspaceHighlight());
 </script>
 
 <svelte:head>
@@ -73,7 +76,11 @@
 		<section class="section">
 			<div class="section-header">
 				<h2 class="section-title">Your Workspaces</h2>
-				<Button variant="primary" onclick={() => uiStore.openCreateWorkspace()}>Create Workspace</Button>
+				<Button
+					variant="primary"
+					class={uiStore.addWorkspaceHighlighted ? 'add-highlighted' : ''}
+					onclick={() => uiStore.openCreateWorkspace()}
+				>Create Workspace</Button>
 			</div>
 
 			{#if ownedWorkspaces.length === 0}
@@ -141,6 +148,13 @@
 </div>
 
 <style>
+	/* Closing the last workspace tab lands here with the create action
+	   highlighted as the way back in (PLAN-3002 Q2). This page has no
+	   TopBar, so its Create Workspace button is the "+" the ruling names. */
+	.section-header :global(.btn.add-highlighted) {
+		box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-blue) 35%, transparent);
+	}
+
 	.console-page {
 		display: flex;
 		flex-direction: column;
