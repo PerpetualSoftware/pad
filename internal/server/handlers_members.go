@@ -307,6 +307,25 @@ func (s *Server) handleCancelInvitation(w http.ResponseWriter, r *http.Request) 
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// invitationEmailMatches lowercases ASCII letters only and compares the stored
+// address byte-exactly. Both EqualFold and strings.ToLower equate distinct
+// addresses through Unicode folding: EqualFold matches ſam@x.com to sam@x.com,
+// and ToLower turns the Kelvin sign K into an ASCII k (BUG-3282). Folding only
+// A-Z leaves any non-ASCII rune as itself, so it can never match an ASCII byte.
+func invitationEmailMatches(email, invitationEmail string) bool {
+	return asciiLower(strings.TrimSpace(email)) == invitationEmail
+}
+
+func asciiLower(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if 'A' <= c && c <= 'Z' {
+			b[i] = c + ('a' - 'A')
+		}
+	}
+	return string(b)
+}
+
 // handleAcceptInvitation accepts a workspace invitation by code.
 func (s *Server) handleAcceptInvitation(w http.ResponseWriter, r *http.Request) {
 	code := chi.URLParam(r, "code")
@@ -334,7 +353,7 @@ func (s *Server) handleAcceptInvitation(w http.ResponseWriter, r *http.Request) 
 	// match the address on the invite. Otherwise anyone who learns the code
 	// (forwarded email, leaked screenshot, guessed URL) could claim the seat
 	// from a different account.
-	if !strings.EqualFold(strings.TrimSpace(user.Email), inv.Email) {
+	if !invitationEmailMatches(user.Email, inv.Email) {
 		writeError(w, http.StatusForbidden, "invitation_email_mismatch",
 			"This invitation was sent to a different email address. Sign in with that account to accept.")
 		return
