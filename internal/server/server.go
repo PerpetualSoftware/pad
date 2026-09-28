@@ -2034,6 +2034,7 @@ func (s *Server) setupRouter() {
 					//   GET    /attachments/{attachmentID}           — serve blob (TASK-872, supports ?variant=)
 					//   HEAD   /attachments/{attachmentID}           — metadata only (TASK-877 file-chip enrichment)
 					//   POST   /attachments/{attachmentID}/transform — server-side rotate/crop (TASK-879/880)
+					//   POST   /attachments/{attachmentID}/attach    — bind an unattached attachment to an item (TASK-2247)
 					//
 					// chi does not auto-route HEAD to the GET handler, so the
 					// editor's HEAD probe for size + MIME has to be registered
@@ -2045,6 +2046,7 @@ func (s *Server) setupRouter() {
 					r.Get("/attachments/{attachmentID}", s.handleGetAttachment)
 					r.Head("/attachments/{attachmentID}", s.handleGetAttachment)
 					r.Post("/attachments/{attachmentID}/transform", s.handleTransformAttachment)
+					r.Post("/attachments/{attachmentID}/attach", s.handleAttachAttachment)
 					r.Delete("/attachments/{attachmentID}", s.handleDeleteWorkspaceAttachment)
 
 					// Storage usage summary for Settings → Storage and other

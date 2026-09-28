@@ -53,6 +53,7 @@ type serverCapabilityFlags struct {
 	ItemFieldAppend            bool `json:"item_field_append"`
 	SearchCollectionResolution bool `json:"search_collection_resolution"`
 	ItemScopedCommentWrites    bool `json:"item_scoped_comment_writes"`
+	AttachmentAttach           bool `json:"attachment_attach"`
 }
 
 func NewClient(host string, port int) *Client {
@@ -812,6 +813,29 @@ func itemCommentPath(wsSlug, itemRef, commentID string) string {
 func (c *Client) ServerSupportsItemScopedCommentWrites() bool {
 	caps, definitive := c.serverCapabilities()
 	return definitive && caps.ItemScopedCommentWrites
+}
+
+// ServerSupportsAttachmentAttach reports whether this server routes
+// POST /attachments/{id}/attach (TASK-2247). An indeterminate probe answers
+// false, for the same reason as ServerSupportsItemScopedCommentWrites.
+func (c *Client) ServerSupportsAttachmentAttach() bool {
+	caps, definitive := c.serverCapabilities()
+	return definitive && caps.AttachmentAttach
+}
+
+// AttachmentAttachResult is the attach response.
+type AttachmentAttachResult struct {
+	ID     string `json:"id"`
+	ItemID string `json:"item_id"`
+}
+
+// AttachAttachment binds an unattached attachment to an item (TASK-2247).
+// itemRef is sent as typed; the server resolves it like the item routes.
+func (c *Client) AttachAttachment(wsSlug, attachmentID, itemRef string) (*AttachmentAttachResult, error) {
+	var result AttachmentAttachResult
+	err := c.post("/workspaces/"+wsSlug+"/attachments/"+url.PathEscape(attachmentID)+"/attach",
+		map[string]string{"item": itemRef}, &result)
+	return &result, err
 }
 
 // --- Dashboard ---

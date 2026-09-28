@@ -257,6 +257,7 @@ pad attachment list [--item REF] [--category image|video|audio|document|text|arc
 pad attachment show <id>                                  # HEAD; metadata only
 pad attachment view <id> [-o PATH] [--variant thumb-md]   # writes bytes to file, prints path
 pad attachment upload <item-ref|-> <path> [--filename "..."]
+pad attachment attach <id> <item-ref>                    # bind a "-" upload to an item; shares show only images the item owns
 pad attachment download <id> <out-path>
 ```
 

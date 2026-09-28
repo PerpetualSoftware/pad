@@ -49,6 +49,12 @@ type serverCapabilities struct {
 	// route and answers a bare 404, which a client would read as "comment
 	// not found", so the CLI refuses instead of sending when this is absent.
 	ItemScopedCommentWrites bool `json:"item_scoped_comment_writes"`
+
+	// AttachmentAttach is true when POST /attachments/{id}/attach binds an
+	// unattached attachment to an item (TASK-2247). An older build answers
+	// that path with a bare 404, which reads as "attachment not found", so
+	// the CLI refuses instead of sending when this is absent.
+	AttachmentAttach bool `json:"attachment_attach"`
 }
 
 // WHAT A BUILD THAT CANNOT DECODE A FORMAT ACTUALLY COSTS THE READER
@@ -91,7 +97,7 @@ type serverCapabilities struct {
 // rather than 500-ing — that signals to the editor "uploads still work,
 // but disable transformation tools."
 func (s *Server) handleServerCapabilities(w http.ResponseWriter, r *http.Request) {
-	resp := serverCapabilities{CollectionResolution: true, ItemFieldAppend: true, SearchCollectionResolution: true, ItemScopedCommentWrites: true}
+	resp := serverCapabilities{CollectionResolution: true, ItemFieldAppend: true, SearchCollectionResolution: true, ItemScopedCommentWrites: true, AttachmentAttach: true}
 	if s.imageProcessor != nil {
 		resp.Image = s.imageProcessor.Capabilities()
 	} else {

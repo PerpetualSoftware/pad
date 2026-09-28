@@ -100,3 +100,71 @@ test('BUG-2389: a shared item renders attachment refs as honest placeholders, no
 		await anon.close();
 	}
 });
+
+// TASK-2247: an UNATTACHED upload ("pad attachment upload -") that an item
+// embeds is a placeholder on that item's share, because a share serves only
+// attachments the item owns. Attaching it to the item makes the same share
+// render it, with real pixels. The first half is the control: main renders
+// the placeholder here too.
+test('TASK-2247: attaching an unattached upload makes the share render it', async ({
+	page,
+	request,
+	fixture,
+}, testInfo) => {
+	test.skip(testInfo.project.name !== 'desktop-chromium', 'viewport-agnostic; one project is enough');
+
+	const uniq = `${test.info().workerIndex}-${Date.now().toString(36)}`;
+	const boundary = '----t2247';
+	const png = Buffer.from(
+		'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+		'base64',
+	);
+	const upload = await request.post(`/api/v1/workspaces/${fixture.workspaceSlug}/attachments`, {
+		headers: { ...authHeaders(fixture), 'Content-Type': `multipart/form-data; boundary=${boundary}` },
+		data: Buffer.concat([
+			Buffer.from(
+				`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="t2247.png"\r\nContent-Type: image/png\r\n\r\n`,
+			),
+			png,
+			Buffer.from(`\r\n--${boundary}--\r\n`),
+		]),
+	});
+	expect(upload.ok(), await upload.text()).toBeTruthy();
+	const att = (await upload.json()) as { id: string };
+
+	const itemResp = await request.post(`/api/v1/workspaces/${fixture.workspaceSlug}/collections/tasks/items`, {
+		headers: authHeaders(fixture),
+		data: { title: `t2247 attach probe ${uniq}`, content: `![diagram](pad-attachment:${att.id})` },
+	});
+	expect(itemResp.ok(), await itemResp.text()).toBeTruthy();
+	const item = (await itemResp.json()) as { slug: string; id: string };
+	const shareResp = await request.post(
+		`/api/v1/workspaces/${fixture.workspaceSlug}/items/${item.slug}/share-links`,
+		{ headers: authHeaders(fixture), data: {} },
+	);
+	expect(shareResp.ok(), await shareResp.text()).toBeTruthy();
+	const { token } = (await shareResp.json()) as { token: string };
+
+	const anon = await page.context().browser()!.newContext();
+	const anonPage = await anon.newPage();
+	try {
+		await anonPage.goto(`${fixture.baseURL}/s/${token}`);
+		await expect(anonPage.getByText(/t2247 attach probe/)).toBeVisible();
+		await expect(anonPage.locator('.attachment-unavailable'), 'unattached: placeholder').toHaveCount(1);
+
+		const attach = await request.post(
+			`/api/v1/workspaces/${fixture.workspaceSlug}/attachments/${att.id}/attach`,
+			{ headers: authHeaders(fixture), data: { item: item.slug } },
+		);
+		expect(attach.status(), await attach.text()).toBe(200);
+
+		await anonPage.reload();
+		await expect(anonPage.getByText(/t2247 attach probe/)).toBeVisible();
+		await expect(anonPage.locator('.attachment-unavailable'), 'attached: no placeholder').toHaveCount(0);
+		const img = anonPage.locator(`img[src*="/s/${token}/attachments/${att.id}"]`);
+		await expect(img).toHaveCount(1);
+		await expect.poll(() => img.evaluate((el) => (el as HTMLImageElement).naturalWidth), { message: 'the image loaded' }).toBeGreaterThan(0);
+	} finally {
+		await anon.close();
+	}
+});
