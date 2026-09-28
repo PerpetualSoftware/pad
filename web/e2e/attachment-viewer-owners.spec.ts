@@ -522,65 +522,43 @@ test.describe('attachment viewer — global key & gesture owners (TASK-2436)', (
 		await expect(sheet).toHaveCount(0);
 	});
 
-	test('owner 5 — the TopBar overflow menu keeps Escape with no viewer, and stands down under one', async ({
+	test('owner 5 — the TopBar tab bar owns no keys: Escape over the viewer closes the viewer ONLY', async ({
 		page,
 		fixture,
 		request
 	}) => {
-		// The overflow menu only exists when workspaces do not fit the bar, so
-		// the test manufactures that condition and cleans up after itself.
-		// (Its Up/Down branch is knowingly dead in a browser —
-		// `svelte-dnd-action` rewrites the roles it queries — and TASK-2430
-		// deliberately left it that way, so only Escape is asserted.)
-		// Creation happens INSIDE the try, appending as it goes, so a failure
-		// half-way through still cleans up what was already made.
-		const created: string[] = [];
-		try {
-			for (let i = 0; i < 6; i++) {
-				const resp = await request.post('/api/v1/workspaces', {
-					headers: {
-						Authorization: `Bearer ${fixture.apiToken}`,
-						'Content-Type': 'application/json'
-					},
-					data: { name: `Viewer overflow ${Date.now()}-${i}` }
-				});
-				expect(resp.ok(), await resp.text()).toBe(true);
-				created.push(((await resp.json()) as { slug: string }).slug);
-			}
-			await page.setViewportSize({ width: 900, height: 900 });
-			await browserLogin(page);
-			const doc = await seedDoc(fixture, request, 'Owner overflow');
-			await uploadAttachment(fixture, request, doc.id, 'overflow.png');
-			await page.goto(itemUrl(fixture, doc.slug));
+		// This owner used to be the TopBar's workspace OVERFLOW MENU, whose
+		// window keydown handler had to stand down under a viewer (TASK-2430).
+		// The menu and that handler were deleted when the bar became a tab bar
+		// over the open set (TASK-3274), so the bar owns no key at all. What is
+		// left to pin is the consequence: one Escape spends the viewer and
+		// nothing in the bar moves.
+		//
+		// The open set is per user and the bar renders only open tabs, so the
+		// fixture workspace is opened as a tab first. Opening is idempotent, so
+		// a parallel worker doing the same is harmless.
+		const open = await request.post('/api/v1/me/workspace-tabs', {
+			headers: { Authorization: `Bearer ${fixture.apiToken}`, 'Content-Type': 'application/json' },
+			data: { slug: fixture.workspaceSlug, ephemeral: false }
+		});
+		expect(open.ok(), await open.text()).toBe(true);
+		await page.setViewportSize({ width: 1280, height: 800 });
+		await browserLogin(page);
+		const doc = await seedDoc(fixture, request, 'Owner tab bar');
+		await uploadAttachment(fixture, request, doc.id, 'tabbar.png');
+		await page.goto(itemUrl(fixture, doc.slug));
 
-			const trigger = page.locator('[aria-controls="workspace-overflow-menu"]');
-			await expect(trigger).toBeVisible();
-			const menu = page.locator('#workspace-overflow-menu.open');
+		const barTab = page.locator(`header.topbar .workspace-tab[data-ws-slug="${fixture.workspaceSlug}"]`);
+		await expect(barTab).toHaveCount(1);
+		const url = page.url();
 
-			// BASELINE: Escape closes the menu.
-			await trigger.click();
-			await expect(menu).toHaveCount(1);
-			await page.keyboard.press('Escape');
-			await expect(menu).toHaveCount(0);
-
-			// WITH A VIEWER: the menu's window handler must not consume the key.
-			//
-			// ORDER MATTERS, and not for a test-convenience reason: TopBar's
-			// outside-CLICK dismisser is deliberately left unguarded (a pointer
-			// dismisser only tears down lower UI), so opening the viewer by
-			// clicking a tile legitimately closes an already-open overflow menu.
-			// The state under test — menu open BEHIND a frontmost viewer — is
-			// therefore reached by opening the menu second.
-			await openViewer(page);
-			await trigger.evaluate((el) => (el as HTMLElement).click());
-			await expect(menu).toHaveCount(1);
-			await page.keyboard.press('Escape');
-			await expect(page.locator(VIEWER)).toHaveCount(0);
-			await page.waitForTimeout(400);
-			await expect(menu, 'the overflow menu is a LOWER layer and must survive').toHaveCount(1);
-		} finally {
-			for (const slug of created) await deleteWorkspace(fixture, request, slug);
-		}
+		await openViewer(page);
+		await page.keyboard.press('Escape');
+		await expect(page.locator(VIEWER)).toHaveCount(0);
+		await page.waitForTimeout(400);
+		await expect(barTab, 'the tab bar is a LOWER layer and must be untouched').toHaveCount(1);
+		await expect(barTab).toHaveClass(/active/);
+		expect(page.url()).toBe(url);
 	});
 
 	test('owner 6 — the sidebar edge swipe: opens with no viewer, declines under one, and a STRADDLING gesture is abandoned', async ({

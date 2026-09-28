@@ -539,6 +539,13 @@ test.describe('attachment viewer — four-surface parity (TASK-2436)', () => {
 		expect(resp.ok(), await resp.text()).toBe(true);
 		const other = (await resp.json()) as { slug: string };
 		try {
+			// The TopBar renders the caller's OPEN SET (TASK-3274), and an API
+			// create opens no tab, so the other workspace is opened as one.
+			const open = await request.post('/api/v1/me/workspace-tabs', {
+				headers,
+				data: { slug: other.slug, ephemeral: false }
+			});
+			expect(open.ok(), await open.text()).toBe(true);
 			await browserLogin(page);
 			const doc = await seedDoc(fixture, request, 'Lifecycle ws');
 			await uploadAttachment(fixture, request, doc.id, 'life-ws.png');

@@ -15,6 +15,10 @@ let isTouch = $state(browser ? 'ontouchstart' in window : false);
 let keyboardVisible = $state(false);
 let detailPanelOpen = $state(browser ? localStorage.getItem('pad-detail-panel') !== 'closed' && !viewport.isMobile : false);
 let createWorkspaceOpen = $state(false);
+// Set when the last workspace tab is closed and the user lands on /console
+// (PLAN-3002 Q2): the console page highlights its create button as the way
+// back in. Cleared when that page unmounts or the create flow opens.
+let addWorkspaceHighlighted = $state(false);
 let quickAddRequested = $state(false);
 let quickAddTargetSlug = $state<string | null>(null);
 let collectionSearchHandler = $state<(() => void) | null>(null);
@@ -120,7 +124,13 @@ export const uiStore = {
 		if (browser) localStorage.setItem('pad-detail-panel', 'closed');
 	},
 
-	openCreateWorkspace() { createWorkspaceOpen = true; },
+	openCreateWorkspace() {
+		createWorkspaceOpen = true;
+		addWorkspaceHighlighted = false;
+	},
+	get addWorkspaceHighlighted() { return addWorkspaceHighlighted; },
+	highlightAddWorkspace() { addWorkspaceHighlighted = true; },
+	clearAddWorkspaceHighlight() { addWorkspaceHighlighted = false; },
 	closeCreateWorkspace() { createWorkspaceOpen = false; },
 
 	// Quick-add item trigger — sidebar watches this
