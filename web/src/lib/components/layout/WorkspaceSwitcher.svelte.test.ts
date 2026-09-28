@@ -66,6 +66,14 @@ describe('mobile WorkspaceSwitcher', () => {
 		expect(document.querySelector('.sheet-body .workspace-divider')).toBeNull();
 	});
 
+	it('an already-open tab only navigates: tapping an ephemeral one does not keep it', async () => {
+		await mount([tab('alpha', 'Alpha'), tab('beta', 'Beta', true, '/u/beta/docs')]);
+		await fireEvent.click(rows()[1]);
+		await tick();
+		expect(mocks.tabs.open).not.toHaveBeenCalled();
+		expect(mocks.goto).toHaveBeenCalledWith('/u/beta/docs');
+	});
+
 	it('opens a workspace from the rest as a durable tab before restoring its route', async () => {
 		await mount([tab('alpha', 'Alpha')]);
 		mocks.tabs.open.mockResolvedValueOnce({ tabs: [tab('alpha', 'Alpha'), tab('beta', 'Beta', false, '/u/beta/docs')] });
