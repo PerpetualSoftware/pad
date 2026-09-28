@@ -360,6 +360,25 @@ func TestAcceptInvitation_CommitErrorReconciles(t *testing.T) {
 			}
 			f.expect(since)
 		})
+		// An existing member's row predates the call, so the membership alone
+		// cannot say the commit landed; the invitation's state has to.
+		t.Run("absent_existing_member", func(t *testing.T) {
+			f := newAccessFixture(t, d)
+			u := f.member("existing@example.com", "viewer")
+			tok := f.token(u)
+			inv := f.invite(u.Email, "editor")
+			since := f.mark()
+			restore := f.srv.store.SetAddWorkspaceMemberCommitHookForTesting(func(tx *sql.Tx) error {
+				return errors.New("simulated accept commit failure")
+			})
+			rr := f.do("POST", "/api/v1/invitations/"+inv.Code+"/accept", tok, nil)
+			restore()
+			f.must(rr, http.StatusInternalServerError, "existing member's accept whose commit genuinely failed")
+			if pending, err := f.srv.store.GetInvitationByCode(inv.Code); err != nil || pending == nil {
+				t.Fatalf("the invitation must stay pending: %+v, %v", pending, err)
+			}
+			f.expect(since)
+		})
 	})
 }
 

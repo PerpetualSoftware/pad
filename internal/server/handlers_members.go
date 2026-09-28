@@ -410,15 +410,21 @@ func (s *Server) acceptInvitationCore(w http.ResponseWriter, r *http.Request, in
 		// commit error, so a lost acknowledgement lands the membership and the
 		// accept while reporting failure. A 500 there tells a user who has
 		// access that they do not, and a retry finds the invitation already
-		// accepted. The row decides.
+		// accepted. The rows decide, and it takes BOTH: the membership alone
+		// cannot tell a landed commit from a failed one for a caller who was
+		// already a member, whose row predates this call.
 		membershipCheck := s.store.GetWorkspaceMember
 		if s.membershipCheck != nil {
 			membershipCheck = s.membershipCheck
 		}
 		member, cerr := membershipCheck(inv.WorkspaceID, user.ID)
-		if cerr != nil || member == nil {
+		var stored *models.WorkspaceInvitation
+		if cerr == nil && member != nil {
+			stored, cerr = s.store.GetInvitation(inv.ID)
+		}
+		if cerr != nil || member == nil || stored == nil || stored.AcceptedAt == nil {
 			if cerr != nil {
-				slog.Error("invitation accept: the accept failed and the membership read also failed",
+				slog.Error("invitation accept: the accept failed and reading its outcome also failed",
 					"workspace_id", inv.WorkspaceID, "user_id", user.ID, "error", err, "check_error", cerr)
 			}
 			if s.writeStoreMemberLimitError(w, inv.WorkspaceID, err) {
@@ -427,13 +433,11 @@ func (s *Server) acceptInvitationCore(w http.ResponseWriter, r *http.Request, in
 			writeInternalError(w, err)
 			return "", false
 		}
-		// Present: the caller has access, which is what accepting means. The
-		// invitation may still read pending if the transaction genuinely failed
-		// over an existing membership; accepting it again takes the idempotent
-		// path. Whether THIS call created the membership is unknown, so publish:
-		// the event is a refetch hint, and a duplicate is benign where a missed
+		// Landed: the caller is a member and the invitation is accepted.
+		// Whether THIS call created the membership is unknown, so publish: the
+		// event is a refetch hint, and a duplicate is benign where a missed
 		// gain is not.
-		slog.Warn("invitation accept: the accept reported an error but the membership is present; reconciled to success",
+		slog.Warn("invitation accept: the accept reported an error but it landed; reconciled to success",
 			"workspace_id", inv.WorkspaceID, "user_id", user.ID, "error", err)
 		added, role = true, member.Role
 	}
