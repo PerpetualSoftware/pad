@@ -129,6 +129,39 @@ func TestAcceptLimit_Existing_UnderCap_Admitted(t *testing.T) {
 	}
 }
 
+// BUG-3281: an existing member of a workspace at its cap is not refused by
+// the cap, because accepting adds no member. The membership read comes before
+// the count. Control: TestAcceptLimit_Existing_AtCap_RefusedAndPending, the
+// same cap refusing a non-member.
+func TestAcceptLimit_ExistingMember_AtCap_Idempotent(t *testing.T) {
+	e := newAcceptLimitEnv(t)
+	u, err := e.srv.store.CreateUser(models.UserCreate{Email: "member@example.com", Name: "Member", Password: "pw-member-12345"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if err := e.srv.store.AddWorkspaceMember(e.home.ID, u.ID, "viewer"); err != nil {
+		t.Fatalf("AddWorkspaceMember: %v", err)
+	}
+	inv := e.invite(t, u.Email)
+	limit := e.members(t)
+	e.setMemberCap(t, limit)
+	tok, err := e.srv.store.CreateSession(u.ID, "go-test", "192.0.2.1", "", 24*time.Hour)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	rr := doRequestWithCookie(e.srv, "POST", "/api/v1/invitations/"+inv.Code+"/accept", nil, tok)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", rr.Code, rr.Body.String())
+	}
+	if got := e.members(t); got != limit {
+		t.Errorf("members = %d, want unchanged %d", got, limit)
+	}
+	if e.stillPending(t, inv) {
+		t.Error("the invitation is still pending")
+	}
+}
+
 // --- A2: register with an invitation ---
 
 func TestAcceptLimit_Register_AtCap_RefusedNoAccountPending(t *testing.T) {

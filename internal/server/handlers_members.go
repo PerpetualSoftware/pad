@@ -359,7 +359,8 @@ func (s *Server) handleAcceptInvitation(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if !s.acceptInvitationCore(w, r, inv, user) {
+	role, ok := s.acceptInvitationCore(w, r, inv, user)
+	if !ok {
 		return
 	}
 
@@ -382,48 +383,78 @@ func (s *Server) handleAcceptInvitation(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	s.writeInvitationAccepted(w, inv)
+	s.writeInvitationAccepted(w, inv, role)
 }
 
 // acceptInvitationCore is the one accept path behind both invitation doors:
 // POST /invitations/{code}/accept and POST /me/invitations/{id}/accept
 // (TASK-3277). Each door decides first whether the caller may accept inv;
-// this does what accepting means: add membership if needed, publish access
-// gained only for a new membership, and set the invitation's accepted_at. It
-// writes the error response and returns false on failure. Proof-of-email handling stays
-// with the caller, because only the code door proves anything.
-func (s *Server) acceptInvitationCore(w http.ResponseWriter, r *http.Request, inv *models.WorkspaceInvitation, user *models.User) bool {
-	// Add user to workspace. BUG-3098: the accept is where the member count
-	// actually rises, so the cap is decided here, authoritatively, under the
-	// same lock direct adds take. A refusal rolls back before the invitation
-	// can be marked accepted.
+// this does what accepting means: the membership at the invited role, the
+// invitation's accepted_at (both in one store transaction), and the
+// access-gained publish. It returns the role the caller now holds, or writes
+// the error response and returns false. Proof-of-email handling stays with
+// the caller, because only the code door proves anything.
+//
+// A caller who is already a member is an idempotent success (BUG-3281): the
+// invitation is marked accepted, the existing role stands and is what the
+// response reports, and nothing is published, because access did not change.
+// The loser of two concurrent accepts takes the same path.
+func (s *Server) acceptInvitationCore(w http.ResponseWriter, r *http.Request, inv *models.WorkspaceInvitation, user *models.User) (string, bool) {
+	// BUG-3098: the accept is where the member count actually rises, so the
+	// cap is decided here, authoritatively, under the per-feature plan-limit
+	// key direct adds take. A refusal rolls the transaction back, so the
+	// invitation stays pending and can be accepted once there is room.
 	added, role, err := s.store.AcceptWorkspaceInvitation(inv.ID, inv.WorkspaceID, user.ID, inv.Role, s.workspaceLimitMintOpts()...)
 	if err != nil {
-		if s.writeStoreMemberLimitError(w, inv.WorkspaceID, err) {
-			return false
+		// RECONCILE BEFORE REFUSING (BUG-3026). The store returns the raw
+		// commit error, so a lost acknowledgement lands the membership and the
+		// accept while reporting failure. A 500 there tells a user who has
+		// access that they do not, and a retry finds the invitation already
+		// accepted. The row decides.
+		membershipCheck := s.store.GetWorkspaceMember
+		if s.membershipCheck != nil {
+			membershipCheck = s.membershipCheck
 		}
-		writeInternalError(w, err)
-		return false
+		member, cerr := membershipCheck(inv.WorkspaceID, user.ID)
+		if cerr != nil || member == nil {
+			if cerr != nil {
+				slog.Error("invitation accept: the accept failed and the membership read also failed",
+					"workspace_id", inv.WorkspaceID, "user_id", user.ID, "error", err, "check_error", cerr)
+			}
+			if s.writeStoreMemberLimitError(w, inv.WorkspaceID, err) {
+				return "", false
+			}
+			writeInternalError(w, err)
+			return "", false
+		}
+		// Present: the caller has access, which is what accepting means. The
+		// invitation may still read pending if the transaction genuinely failed
+		// over an existing membership; accepting it again takes the idempotent
+		// path. Whether THIS call created the membership is unknown, so publish:
+		// the event is a refetch hint, and a duplicate is benign where a missed
+		// gain is not.
+		slog.Warn("invitation accept: the accept reported an error but the membership is present; reconciled to success",
+			"workspace_id", inv.WorkspaceID, "user_id", user.ID, "error", err)
+		added, role = true, member.Role
 	}
 	if added {
-		// The membership is the access, so publish only when this accept
-		// actually grants access. The store commits membership and acceptance
-		// together before the notification is sent.
+		// The membership IS the access. The store has committed it (with the
+		// accept) before this publish.
 		s.publishWorkspaceAccessChangedFromRequest(r, inv.WorkspaceID, watchevents.AccessGained, user.ID)
 	}
-	inv.Role = role
-	return true
+	return role, true
 }
 
 // writeInvitationAccepted is the success body both accept doors answer with.
 // workspace_slug and owner_username (TASK-3277, additive) let a client open
 // the new workspace without a second lookup; they are empty if the workspace
-// cannot be read back, which does not undo the accept.
-func (s *Server) writeInvitationAccepted(w http.ResponseWriter, inv *models.WorkspaceInvitation) {
+// cannot be read back, which does not undo the accept. role is the role the
+// caller holds, which for an existing member is not the invited one (BUG-3281).
+func (s *Server) writeInvitationAccepted(w http.ResponseWriter, inv *models.WorkspaceInvitation, role string) {
 	body := map[string]interface{}{
 		"accepted":     true,
 		"workspace_id": inv.WorkspaceID,
-		"role":         inv.Role,
+		"role":         role,
 	}
 	if ws, err := s.store.GetWorkspaceByID(inv.WorkspaceID); err == nil && ws != nil {
 		body["workspace_slug"] = ws.Slug

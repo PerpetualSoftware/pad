@@ -81,8 +81,9 @@ func (s *Server) handleAcceptMyInvitation(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusGone, "expired", "This invitation has expired. Ask the inviter to send a new one.")
 		return
 	}
-	if !s.acceptInvitationCore(w, r, inv, user) {
+	role, ok := s.acceptInvitationCore(w, r, inv, user)
+	if !ok {
 		return
 	}
-	s.writeInvitationAccepted(w, inv)
+	s.writeInvitationAccepted(w, inv, role)
 }
