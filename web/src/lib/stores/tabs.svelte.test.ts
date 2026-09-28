@@ -6,9 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
  * Every request replaces the whole open set, so the store's two fences are
  * ORDER (the newest-issued answer wins, and an older one never erases a newer
  * write) and IDENTITY (an answer issued as one identity never commits into
- * another's store). Last route follows the lead's option-(b) ruling: the tab
- * row when the workspace has one, the pre-U2 localStorage key when it does
- * not, and a key moves to its row only once that row exists.
+ * another's store). Since TASK-3279 (U5) a landing opens an ephemeral tab,
+ * a write in a workspace keeps its ephemeral tab, and last route lives on the
+ * tab row only: the localStorage fallback is retired and its keys swept.
  */
 
 const api = vi.hoisted(() => {
@@ -19,8 +19,14 @@ const api = vi.hoisted(() => {
 			this.code = e.code;
 		}
 	}
+	const writeListeners = new Set<(slug: string) => void>();
 	return {
 		PadApiError,
+		writeListeners,
+		onWorkspaceWrite(fn: (slug: string) => void) {
+			writeListeners.add(fn);
+			return () => writeListeners.delete(fn);
+		},
 		api: {
 			workspaces: {
 				tabs: {
@@ -104,7 +110,13 @@ beforeEach(() => {
 	auth.reset();
 	localStorage.clear();
 	for (const fn of Object.values(tabsApi)) fn.mockReset();
+	api.writeListeners.clear();
 });
+
+// What the API client does after a successful write under /workspaces/{slug}.
+function reportWrite(slug: string) {
+	for (const fn of api.writeListeners) fn(slug);
+}
 
 afterEach(() => {
 	vi.useRealTimers();
@@ -212,72 +224,24 @@ describe('which response commits', () => {
 });
 
 describe('last route', () => {
-	it('migrates a key to its row once, uses it, and removes the key', async () => {
+	it('sweeps leftover pre-U5 keys at the first commit and never reads them', async () => {
 		localStorage.setItem(key('ws'), '/alice/ws/tasks');
-		tabsApi.list.mockResolvedValueOnce(answer(tab('ws')));
-		tabsApi.update.mockResolvedValueOnce(answer(tab('ws', { last_route: '/alice/ws/tasks' })));
-		const store = await loadStore();
-
-		await store.load();
-		await settle();
-
-		expect(tabsApi.update).toHaveBeenCalledTimes(1);
-		expect(tabsApi.update).toHaveBeenCalledWith('ws', { last_route: '/alice/ws/tasks' });
-		expect(localStorage.getItem(key('ws'))).toBeNull();
-		expect(store.routeFor('ws')).toBe('/alice/ws/tasks');
-
-		// Used once: a later commit finds no key and sends nothing.
-		tabsApi.list.mockResolvedValueOnce(answer(tab('ws', { last_route: '/alice/ws/tasks' })));
-		await store.load();
-		await settle();
-		expect(tabsApi.update).toHaveBeenCalledTimes(1);
-	});
-
-	it('reads the row\'s own route and discards the key when the row already has one', async () => {
-		localStorage.setItem(key('ws'), '/alice/ws/old');
-		tabsApi.list.mockResolvedValueOnce(answer(tab('ws', { last_route: '/alice/ws/newer' })));
-		const store = await loadStore();
-
-		await store.load();
-		await settle();
-
-		expect(tabsApi.update).not.toHaveBeenCalled();
-		expect(localStorage.getItem(key('ws'))).toBeNull();
-		expect(store.routeFor('ws')).toBe('/alice/ws/newer');
-	});
-
-	it('keeps the localStorage route for a workspace with no row (the fallback)', async () => {
 		localStorage.setItem(key('elsewhere'), '/alice/elsewhere/docs');
+		localStorage.setItem('pad-theme', 'dark');
 		tabsApi.list.mockResolvedValueOnce(answer(tab('ws')));
 		const store = await loadStore();
 
+		// Before any commit, a key is not a route either.
+		expect(store.routeFor('elsewhere')).toBeNull();
 		await store.load();
 		await settle();
 
-		expect(store.routeFor('elsewhere')).toBe('/alice/elsewhere/docs');
-		expect(localStorage.getItem(key('elsewhere'))).toBe('/alice/elsewhere/docs');
-
-		// And a navigation there writes localStorage, not the server.
-		store.noteRoute('elsewhere', '/alice/elsewhere/ideas');
-		expect(localStorage.getItem(key('elsewhere'))).toBe('/alice/elsewhere/ideas');
+		expect(localStorage.getItem(key('ws'))).toBeNull();
+		expect(localStorage.getItem(key('elsewhere'))).toBeNull();
+		expect(localStorage.getItem('pad-theme')).toBe('dark');
+		expect(store.routeFor('ws')).toBeNull();
+		// Swept, not migrated: no key is moved to a row.
 		expect(tabsApi.update).not.toHaveBeenCalled();
-	});
-
-	it('migrates a key when its workspace\'s row is opened later in the session', async () => {
-		localStorage.setItem(key('later'), '/alice/later/tasks');
-		tabsApi.list.mockResolvedValueOnce(answer(tab('ws')));
-		const store = await loadStore();
-		await store.load();
-		await settle();
-		expect(localStorage.getItem(key('later'))).toBe('/alice/later/tasks');
-
-		tabsApi.open.mockResolvedValueOnce(answer(tab('ws'), tab('later')));
-		tabsApi.update.mockResolvedValueOnce(answer(tab('ws'), tab('later', { last_route: '/alice/later/tasks' })));
-		await store.open('later');
-		await settle();
-
-		expect(tabsApi.update).toHaveBeenCalledWith('later', { last_route: '/alice/later/tasks' });
-		expect(localStorage.getItem(key('later'))).toBeNull();
 	});
 
 	it('writes a navigation in a workspace with a row to the server only, once per burst', async () => {
@@ -302,92 +266,62 @@ describe('last route', () => {
 		expect(store.routeFor('ws')).toBe('/alice/ws/c');
 	});
 
-	it('moves a route noted before the first load answers to the row, over the row\'s older value', async () => {
-		const store = await loadStore();
-		store.noteRoute('ws', '/alice/ws/just-now');
-		expect(localStorage.getItem(key('ws'))).toBe('/alice/ws/just-now');
-
-		tabsApi.list.mockResolvedValueOnce(answer(tab('ws', { last_route: '/alice/ws/yesterday' })));
-		tabsApi.update.mockResolvedValueOnce(answer(tab('ws', { last_route: '/alice/ws/just-now' })));
-		await store.load();
-		await settle();
-
-		expect(tabsApi.update).toHaveBeenCalledWith('ws', { last_route: '/alice/ws/just-now' });
-		expect(store.routeFor('ws')).toBe('/alice/ws/just-now');
-		expect(localStorage.getItem(key('ws'))).toBeNull();
-	});
-
-	it('keeps a key noted before the first load winning when its row opens several commits later', async () => {
-		// Codex round 1: the "written here" mark used to be dropped at the
-		// first commit, even for a workspace that had no row yet.
-		const store = await loadStore();
-		store.noteRoute('later', '/alice/later/just-now');
-
+	it('never writes a navigation to localStorage, with or without a row', async () => {
+		vi.useFakeTimers();
 		tabsApi.list.mockResolvedValueOnce(answer(tab('ws')));
+		tabsApi.update.mockResolvedValue(answer(tab('ws')));
+		const store = await loadStore();
 		await store.load();
-		await settle();
-		expect(localStorage.getItem(key('later'))).toBe('/alice/later/just-now');
 
-		// Opened on another device meanwhile, with an older route of its own.
-		tabsApi.open.mockResolvedValueOnce(answer(tab('ws'), tab('later', { last_route: '/alice/later/older' })));
-		tabsApi.update.mockResolvedValueOnce(answer(tab('ws'), tab('later', { last_route: '/alice/later/just-now' })));
-		await store.open('later');
-		await settle();
+		store.noteRoute('ws', '/alice/ws/a');
+		store.noteRoute('elsewhere', '/alice/elsewhere/b');
+		await vi.runAllTimersAsync();
 
-		expect(tabsApi.update).toHaveBeenCalledWith('later', { last_route: '/alice/later/just-now' });
-		expect(store.routeFor('later')).toBe('/alice/later/just-now');
-		expect(localStorage.getItem(key('later'))).toBeNull();
+		expect(localStorage.length).toBe(0);
+		// A workspace with no row in the committed list still goes to the
+		// server, which decides: its landing may have opened one since.
+		expect(tabsApi.update).toHaveBeenCalledWith('elsewhere', { last_route: '/alice/elsewhere/b' });
 	});
 
-	it('lets a row\'s route win over a key this session did not write', async () => {
-		// A key left by an earlier session predates anything a row holds now.
-		localStorage.setItem(key('later'), '/alice/later/last-week');
+	it('writes a route noted during a landing only after the landing answers', async () => {
+		vi.useFakeTimers();
 		tabsApi.list.mockResolvedValueOnce(answer(tab('ws')));
 		const store = await loadStore();
 		await store.load();
 
-		tabsApi.open.mockResolvedValueOnce(answer(tab('ws'), tab('later', { last_route: '/alice/later/today' })));
-		await store.open('later');
-		await settle();
+		const opening = deferred<ReturnType<typeof answer>>();
+		tabsApi.open.mockReturnValueOnce(opening.promise);
+		const landing = store.land('new-ws');
+		store.noteRoute('new-ws', '/alice/new-ws/tasks');
+		await vi.advanceTimersByTimeAsync(5_000);
 
+		// The row the PATCH needs does not exist yet.
 		expect(tabsApi.update).not.toHaveBeenCalled();
-		expect(store.routeFor('later')).toBe('/alice/later/today');
-		expect(localStorage.getItem(key('later'))).toBeNull();
+
+		tabsApi.update.mockResolvedValueOnce(answer(tab('ws'), tab('new-ws', { ephemeral: true, last_route: '/alice/new-ws/tasks' })));
+		opening.resolve(answer(tab('ws'), tab('new-ws', { ephemeral: true })));
+		await landing;
+		await vi.runAllTimersAsync();
+
+		expect(tabsApi.update).toHaveBeenCalledWith('new-ws', { last_route: '/alice/new-ws/tasks' });
+		expect(store.routeFor('new-ws')).toBe('/alice/new-ws/tasks');
 	});
 
-	it('spends a key the server refuses, and keeps one a failure did not reach', async () => {
-		localStorage.setItem(key('bad'), '/mallory/other/tasks');
-		localStorage.setItem(key('flaky'), '/alice/flaky/tasks');
-		tabsApi.list.mockResolvedValueOnce(answer(tab('bad'), tab('flaky')));
-		tabsApi.update.mockImplementation(async (slug: string) => {
-			if (slug === 'bad') throw new api.PadApiError({ code: 'validation_error', message: 'last_route must be a path inside this workspace' });
-			throw new TypeError('network down');
-		});
-		const store = await loadStore();
-
-		await store.load();
-		await settle();
-
-		expect(localStorage.getItem(key('bad'))).toBeNull();
-		expect(localStorage.getItem(key('flaky'))).toBe('/alice/flaky/tasks');
-	});
-
-	it('falls back to localStorage when the row went away before the write', async () => {
+	it('drops the route when the row went away before the write', async () => {
 		vi.useFakeTimers();
 		tabsApi.list.mockResolvedValue(answer(tab('ws')));
 		const store = await loadStore();
 		await store.load();
 		tabsApi.update.mockRejectedValueOnce(new api.PadApiError({ code: 'not_found', message: 'This workspace is not open in a tab' }));
-		tabsApi.list.mockResolvedValue(answer());
 
 		store.noteRoute('ws', '/alice/ws/tasks');
 		await vi.runAllTimersAsync();
 
-		expect(localStorage.getItem(key('ws'))).toBe('/alice/ws/tasks');
-		expect(store.routeFor('ws')).toBe('/alice/ws/tasks');
+		expect(localStorage.length).toBe(0);
+		expect(store.routeFor('ws')).toBeNull();
 	});
 
-	it('clears a repaired route on the row, not in localStorage', async () => {
+	it('clears a repaired route on the row', async () => {
 		tabsApi.list.mockResolvedValueOnce(answer(tab('ws', { last_route: '/alice/ws/tasks/TASK-9' })));
 		tabsApi.update.mockResolvedValueOnce(answer(tab('ws')));
 		const store = await loadStore();
@@ -412,5 +346,104 @@ describe('last route', () => {
 
 		expect(tabsApi.update).not.toHaveBeenCalled();
 		expect(store.routeFor('ws')).toBeNull();
+	});
+});
+
+describe('landings (TASK-3279)', () => {
+	it('opens a workspace outside the open set as an ephemeral tab', async () => {
+		tabsApi.list.mockResolvedValueOnce(answer(tab('ws')));
+		tabsApi.open.mockResolvedValueOnce(answer(tab('ws'), tab('deep', { ephemeral: true })));
+		const store = await loadStore();
+		await store.load();
+
+		await store.land('deep');
+
+		expect(tabsApi.open).toHaveBeenCalledWith('deep', true);
+		expect(store.tabs.map((t) => [t.slug, t.ephemeral])).toEqual([
+			['ws', false],
+			['deep', true],
+		]);
+	});
+
+	it('sends nothing for a workspace a committed list shows open', async () => {
+		tabsApi.list.mockResolvedValueOnce(answer(tab('ws')));
+		const store = await loadStore();
+		await store.load();
+
+		await store.land('ws');
+
+		expect(tabsApi.open).not.toHaveBeenCalled();
+	});
+
+	it('still sends before the first list answers, since it cannot know', async () => {
+		tabsApi.open.mockResolvedValueOnce(answer(tab('ws')));
+		const store = await loadStore();
+
+		await store.land('ws');
+
+		expect(tabsApi.open).toHaveBeenCalledWith('ws', true);
+	});
+
+	it('sends one POST for two landings on the same workspace in flight', async () => {
+		tabsApi.list.mockResolvedValueOnce(answer(tab('ws')));
+		const store = await loadStore();
+		await store.load();
+		const opening = deferred<ReturnType<typeof answer>>();
+		tabsApi.open.mockReturnValueOnce(opening.promise);
+
+		const a = store.land('deep');
+		const b = store.land('deep');
+		opening.resolve(answer(tab('ws'), tab('deep', { ephemeral: true })));
+		await Promise.all([a, b]);
+
+		expect(tabsApi.open).toHaveBeenCalledTimes(1);
+	});
+
+	it('leaves the open set alone when the workspace is not visible', async () => {
+		tabsApi.list.mockResolvedValueOnce(answer(tab('ws')));
+		tabsApi.open.mockRejectedValueOnce(new api.PadApiError({ code: 'not_found', message: 'Workspace not found' }));
+		const store = await loadStore();
+		await store.load();
+
+		await expect(store.land('hidden')).rejects.toThrow('Workspace not found');
+
+		expect(slugs(store.tabs)).toEqual(['ws']);
+		// Not remembered as in flight: a later landing tries again.
+		tabsApi.open.mockResolvedValueOnce(answer(tab('ws')));
+		await store.land('hidden');
+		expect(tabsApi.open).toHaveBeenCalledTimes(2);
+	});
+});
+
+describe('a write keeps an ephemeral tab (PLAN-3002 Q9)', () => {
+	it('pins the ephemeral tab of the workspace written to, once per burst', async () => {
+		tabsApi.list.mockResolvedValueOnce(answer(tab('ws'), tab('deep', { ephemeral: true })));
+		const store = await loadStore();
+		await store.load();
+		const pinning = deferred<ReturnType<typeof answer>>();
+		tabsApi.update.mockReturnValueOnce(pinning.promise);
+
+		reportWrite('deep');
+		reportWrite('deep');
+		reportWrite('deep');
+		pinning.resolve(answer(tab('ws'), tab('deep')));
+		await settle();
+
+		expect(tabsApi.update).toHaveBeenCalledTimes(1);
+		expect(tabsApi.update).toHaveBeenCalledWith('deep', { pin: true });
+		expect(store.tabs.find((t) => t.slug === 'deep')?.ephemeral).toBe(false);
+	});
+
+	it('sends nothing for a write to a durable tab, or to a workspace with no tab', async () => {
+		tabsApi.list.mockResolvedValueOnce(answer(tab('ws'), tab('deep', { ephemeral: true })));
+		const store = await loadStore();
+		await store.load();
+
+		reportWrite('ws');
+		reportWrite('reorder');
+		reportWrite('elsewhere');
+		await settle();
+
+		expect(tabsApi.update).not.toHaveBeenCalled();
 	});
 });

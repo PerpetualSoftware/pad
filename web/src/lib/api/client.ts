@@ -874,9 +874,9 @@ async function request<T>(
 	const deadline = requestDeadline(requestTimeoutMs, options?.signal);
 	try {
 		const result = await requestAttempt<T>(path, options, rateLimitAttempt, headers, method, isIdempotent, issuedAs, deadline);
-		// A 429 retry is a nested request() that returns through this one, so
-		// only the outermost call reports.
-		if (rateLimitAttempt === 0) reportWorkspaceWrite(path, method);
+		// Only GET/HEAD are retried after a 429, and neither is a write, so a
+		// write reaches here once.
+		reportWorkspaceWrite(path, method);
 		return result;
 	} catch (err) {
 		if (deadline.timedOut()) throw requestTimeoutError(isIdempotent);
