@@ -415,4 +415,52 @@ test.describe('"+" discovery surface (TASK-3276)', () => {
 			await teardown(world);
 		}
 	});
+
+	// TASK-3277 (U4b): a pending invitation is listed in "+" and accepting it
+	// lands in the workspace on an EPHEMERAL tab (Q5).
+	test('an invitation in "+" is accepted and lands on an ephemeral tab', async ({ page, context, fixture }) => {
+		let inviter: World | undefined;
+		let invitee: World | undefined;
+		try {
+			inviter = await seed(fixture, ['Invited To']);
+			const shared = inviter.slugs[0];
+			// Invite an address with no account yet, so the invite stays a
+			// pending invitation rather than a direct add, then create the
+			// account (admin-created, hence verified).
+			const tag = `${Date.now()}${Math.floor(Math.random() * 1e6)}`;
+			await ok(
+				await inviter.account.api.post(`/api/v1/workspaces/${shared}/members/invite`, {
+					data: { email: `tabs${tag}@example.com`, role: 'editor' }
+				}),
+				'invite'
+			);
+			const account = await mintAccount(fixture, tag);
+			invitee = { account, slugs: [await createWorkspace(account, `Home ${tag}`)] };
+			const home = invitee.slugs[0];
+			await setOpenSet(account, [home]);
+			await actAs(context, account);
+
+			await page.goto(`/${account.username}/${home}`);
+			await expect(tabs(page)).toHaveCount(1);
+			await page.getByTitle('Find or create a workspace').click();
+			const section = page.getByRole('region', { name: 'Invitations' });
+			await expect(section).toBeVisible();
+			await expect(section.locator('.invitation-item')).toHaveCount(1);
+			await section.getByRole('button', { name: /^Accept the invitation to Invited To/ }).click();
+
+			await expect(page).toHaveURL(new RegExp(`/${inviter.account.username}/${shared}$`));
+			await expect(tab(page, shared)).toHaveCount(1);
+			await expect(tab(page, shared)).toHaveClass(/ephemeral/);
+			await expect.poll(() => serverOrder(account)).toContain(shared);
+
+			// Accepted: the server no longer lists it.
+			const mine = (await (await ok(await account.api.get('/api/v1/me/invitations'), 'list invitations')).json()) as {
+				invitations: unknown[];
+			};
+			expect(mine.invitations).toHaveLength(0);
+		} finally {
+			await teardown(invitee);
+			await teardown(inviter);
+		}
+	});
 });

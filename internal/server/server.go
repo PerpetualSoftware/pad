@@ -1769,6 +1769,12 @@ func (s *Server) setupRouter() {
 				r.Patch("/{slug}", s.handleUpdateWorkspaceTab)
 			})
 
+			// Pending invitations addressed to the caller's verified email,
+			// and accepting one by id (PLAN-3002 U4b / TASK-3277). Web
+			// client only.
+			r.Get("/me/invitations", s.handleListMyInvitations)
+			r.Post("/me/invitations/{id}/accept", s.handleAcceptMyInvitation)
+
 			// Workspaces
 			r.Route("/workspaces", func(r chi.Router) {
 				r.Get("/", s.handleListWorkspaces)
