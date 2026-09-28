@@ -301,6 +301,35 @@ export interface DeletedWorkspace extends Workspace {
 	days_left: number;
 }
 
+// A pending invitation addressed to the caller's verified email
+// (PLAN-3002 U4b / TASK-3277). Mirrors store.MyInvitation. It carries no join
+// code: it is accepted by id through api.members.acceptMyInvitation.
+export interface MyInvitation {
+	id: string;
+	role: string;
+	workspace_slug: string;
+	workspace_name: string;
+	workspace_owner_username: string;
+	invited_by_name: string;
+	created_at: string;
+	expires_at?: string;
+}
+
+export interface MyInvitationsResponse {
+	invitations: MyInvitation[];
+	// False when the caller's email is unverified, which lists nothing.
+	email_verified: boolean;
+}
+
+// The success body of both invitation accept routes.
+export interface InvitationAccepted {
+	accepted: boolean;
+	workspace_id: string;
+	role: string;
+	workspace_slug?: string;
+	owner_username?: string;
+}
+
 // One workspace in the caller's open set: a tab in the workspace tab bar
 // (PLAN-3002 U1 / TASK-3256). Mirrors models.WorkspaceTab. The whole set is
 // server-side, so it is the same on every device.

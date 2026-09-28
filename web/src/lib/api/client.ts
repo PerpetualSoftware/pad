@@ -3,6 +3,8 @@ import type {
 	DecisionSettingsInput,
 	Workspace,
 	DeletedWorkspace,
+	MyInvitationsResponse,
+	InvitationAccepted,
 	WorkspaceCreate,
 	WorkspaceUpdate,
 	Collection,
@@ -2500,7 +2502,15 @@ export const api = {
 		cancelInvitation: (ws: string, invitationId: string) =>
 			request<void>(`/workspaces/${ws}/members/invitations/${invitationId}`, { method: 'DELETE' }),
 		acceptInvitation: (code: string) =>
-			request<{ accepted: boolean; workspace_id: string; role: string }>(`/invitations/${code}/accept`, {
+			request<InvitationAccepted>(`/invitations/${code}/accept`, {
+				method: 'POST'
+			}),
+		// Pending invitations addressed to the caller's VERIFIED email, and
+		// accepting one by id: the list carries no code (only its hash is
+		// stored). PLAN-3002 U4b / TASK-3277.
+		listMyInvitations: () => request<MyInvitationsResponse>('/me/invitations'),
+		acceptMyInvitation: (id: string) =>
+			request<InvitationAccepted>(`/me/invitations/${encodeURIComponent(id)}/accept`, {
 				method: 'POST'
 			}),
 		// Non-consuming, public preview of an invitation (BUG-1934). Used by the

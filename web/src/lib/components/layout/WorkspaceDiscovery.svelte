@@ -18,6 +18,7 @@
 	import { clickOutside } from '$lib/utils/clickOutside';
 	import { workspaceRestoreTarget } from '$lib/utils/workspace-route';
 	import RecentlyDeletedWorkspaces from '$lib/components/layout/RecentlyDeletedWorkspaces.svelte';
+	import PendingInvitations from '$lib/components/layout/PendingInvitations.svelte';
 	import type { Workspace } from '$lib/types';
 
 	interface Props {
@@ -190,7 +191,7 @@
 				{query.trim() ? 'No workspace outside your tabs matches.' : 'Every workspace is already open.'}
 			</p>
 		{/if}
-		<!-- Pending invitations go here: PLAN-3002 U4b / TASK-3277. -->
+		<PendingInvitations active={open} onaccepted={onclose} />
 		<RecentlyDeletedWorkspaces active={open} />
 	</div>
 {/if}
