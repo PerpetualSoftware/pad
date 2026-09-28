@@ -1,5 +1,5 @@
 import { test, expect, type SuiteFixture } from './fixtures';
-import { request, type APIRequestContext, type BrowserContext, type Page } from '@playwright/test';
+import { request, type APIRequestContext, type BrowserContext, type Locator, type Page } from '@playwright/test';
 import { quietCrossActorToasts } from './fixtures';
 
 /**
@@ -103,6 +103,18 @@ async function barOrder(page: Page): Promise<string[]> {
 	return tabs(page).evaluateAll((els) => els.map((el) => (el as HTMLElement).dataset.wsSlug ?? ''));
 }
 
+/** A locator's box once two reads 100 ms apart agree (an animation has settled). */
+async function stableBox(locator: Locator) {
+	let prev = await locator.boundingBox();
+	for (let i = 0; i < 30; i++) {
+		await locator.page().waitForTimeout(100);
+		const next = await locator.boundingBox();
+		if (prev && next && prev.x === next.x && prev.y === next.y && prev.width === next.width) return next;
+		prev = next;
+	}
+	throw new Error('box never settled');
+}
+
 async function closeTab(page: Page, slug: string) {
 	await tab(page, slug).hover();
 	await tab(page, slug).locator('.workspace-tab-close').click();
@@ -152,15 +164,25 @@ test.describe('workspace tab bar (TASK-3274)', () => {
 			await expect(tabs(page)).toHaveCount(2);
 			await expect(page).toHaveURL(new RegExp(`/${a}$`));
 
-			// Drag B in front of A, with a real mouse.
-			const from = await tab(page, b).locator('a').boundingBox();
-			const to = await tab(page, a).locator('a').boundingBox();
-			if (!from || !to) throw new Error('tab has no box');
+			// Drag B in front of A, with a real mouse. The close just reflowed
+			// the zone with a 150 ms FLIP animation, so the boxes are read only
+			// once they hold still: a box read mid-animation aims the drag at
+			// where a tab was, and the drop lands nowhere.
+			const from = await stableBox(tab(page, b).locator('a'));
+			const to = await stableBox(tab(page, a).locator('a'));
 			await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
 			await page.mouse.down();
 			await page.mouse.move(from.x + from.width / 2 - 10, from.y + from.height / 2, { steps: 4 });
+			// The drag has engaged once svelte-dnd-action mounts its clone.
+			await expect(page.locator('#dnd-action-dragged-el')).toHaveCount(1);
 			await page.mouse.move(to.x + 4, to.y + to.height / 2, { steps: 10 });
+			// svelte-dnd-action samples the pointer on an interval, so a
+			// release straight after the last move can drop before it has seen
+			// where the pointer is. Hold over the target until the shadow slot
+			// has moved in front of A, then release.
+			await expect.poll(() => barOrder(page)).toEqual([b, a]);
 			await page.mouse.up();
+			await expect(page.locator('#dnd-action-dragged-el')).toHaveCount(0);
 			await expect.poll(() => barOrder(page)).toEqual([b, a]);
 			await expect.poll(() => serverOrder(account)).toEqual([b, a]);
 			// The drop's synthetic click must not have navigated to B.
@@ -278,7 +300,8 @@ test.describe('workspace tab bar (TASK-3274)', () => {
 
 			await page.goto(`/${account.username}/${home}`);
 			await expect(tabs(page)).toHaveCount(1);
-			await page.getByTitle('New workspace').click();
+			await page.getByTitle('Find or create a workspace').click();
+			await page.getByRole('option', { name: /new workspace/i }).click();
 			const dialog = page.getByRole('dialog', { name: /new workspace/i });
 			await expect(dialog).toBeVisible();
 			const name = `Made here ${Date.now()}`;
@@ -294,6 +317,100 @@ test.describe('workspace tab bar (TASK-3274)', () => {
 			await page.reload();
 			await expect(tabs(page)).toHaveCount(2);
 			await expect(tab(page, created)).not.toHaveClass(/ephemeral/);
+		} finally {
+			await teardown(world);
+		}
+	});
+});
+
+/**
+ * TASK-3276 (PLAN-3002 U4): the "+" discovery surface. Since U3 the bar shows
+ * only the open set, so "+" is how a workspace outside it is reached. The
+ * create path is covered above ('a workspace created with "+" …').
+ */
+test.describe('"+" discovery surface (TASK-3276)', () => {
+	test.beforeEach(async ({ page }, testInfo) => {
+		test.skip(testInfo.project.name !== 'desktop-chromium', 'the tab bar is desktop-only (PLAN-3002 Q11)');
+		await page.setViewportSize(DESKTOP);
+	});
+
+	test('a user with seven workspaces and six tabs reaches the seventh from "+", as a kept tab', async ({
+		page,
+		context,
+		fixture
+	}) => {
+		let world: World | undefined;
+		try {
+			world = await seed(fixture, ['One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seventh']);
+			const { account, slugs } = world;
+			const seventh = slugs[6];
+			await setOpenSet(account, slugs.slice(0, 6));
+			await actAs(context, account);
+
+			await page.goto(`/${account.username}/${slugs[0]}`);
+			await expect(tabs(page)).toHaveCount(6);
+			await expect(tab(page, seventh)).toHaveCount(0);
+
+			await page.getByTitle('Find or create a workspace').click();
+			const search = page.getByRole('combobox', { name: 'Find a workspace' });
+			await expect(search).toBeFocused();
+			// The six open workspaces are not offered; the seventh is.
+			await expect(page.locator('.discovery-option[data-ws-slug]')).toHaveCount(1);
+			await search.fill('Seventh');
+			await page.locator(`.discovery-option[data-ws-slug="${seventh}"]`).click();
+
+			await expect(page).toHaveURL(new RegExp(`/${account.username}/${seventh}$`));
+			await expect(tabs(page)).toHaveCount(7);
+			await expect(tab(page, seventh)).not.toHaveClass(/ephemeral/);
+			await expect.poll(() => serverOrder(account)).toContain(seventh);
+
+			await page.reload();
+			await expect(tab(page, seventh)).toHaveCount(1);
+			await expect(tab(page, seventh)).not.toHaveClass(/ephemeral/);
+		} finally {
+			await teardown(world);
+		}
+	});
+
+	test('keyboard only: open "+", search, arrow, Enter; and Escape returns focus to "+"', async ({
+		page,
+		context,
+		fixture
+	}) => {
+		let world: World | undefined;
+		try {
+			world = await seed(fixture, ['Home', 'Kb Alpha', 'Kb Beta']);
+			const { account, slugs } = world;
+			const [home, , beta] = slugs;
+			await setOpenSet(account, [home]);
+			await actAs(context, account);
+
+			await page.goto(`/${account.username}/${home}`);
+			await expect(tabs(page)).toHaveCount(1);
+			const plus = page.getByTitle('Find or create a workspace');
+			const search = page.getByRole('combobox', { name: 'Find a workspace' });
+
+			// Escape closes and hands focus back to "+".
+			await plus.focus();
+			await page.keyboard.press('Enter');
+			await expect(search).toBeFocused();
+			await page.keyboard.press('Escape');
+			await expect(search).toHaveCount(0);
+			await expect(plus).toBeFocused();
+
+			// Open again from the keyboard, narrow to the two "Kb" workspaces,
+			// step to the second, and take it.
+			await page.keyboard.press('Enter');
+			await expect(search).toBeFocused();
+			await page.keyboard.type('Kb');
+			await expect(page.locator('.discovery-option[data-ws-slug]')).toHaveCount(2);
+			await page.keyboard.press('ArrowDown');
+			await expect(page.locator('.discovery-option[aria-selected="true"]')).toHaveAttribute('data-ws-slug', beta);
+			await page.keyboard.press('Enter');
+
+			await expect(page).toHaveURL(new RegExp(`/${account.username}/${beta}$`));
+			await expect(tab(page, beta)).toHaveCount(1);
+			await expect(tab(page, beta)).not.toHaveClass(/ephemeral/);
 		} finally {
 			await teardown(world);
 		}

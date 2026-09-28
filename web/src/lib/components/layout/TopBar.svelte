@@ -13,6 +13,7 @@
 	import WorkspaceSwitcher from '$lib/components/layout/WorkspaceSwitcher.svelte';
 	import UserMenuResources from '$lib/components/layout/UserMenuResources.svelte';
 	import ConnectWorkspaceModal from '$lib/components/ConnectWorkspaceModal.svelte';
+	import WorkspaceDiscovery from '$lib/components/layout/WorkspaceDiscovery.svelte';
 	import Menu from '$lib/components/common/Menu.svelte';
 	import MenuItem from '$lib/components/common/MenuItem.svelte';
 	import { workspaceRestoreTarget } from '$lib/utils/workspace-route';
@@ -23,6 +24,10 @@
 	let userTriggerEl: HTMLButtonElement | undefined = $state(undefined);
 	let currentTheme = $state<'dark' | 'light'>('dark');
 	let connectOpen = $state(false);
+	// The "+" discovery surface (PLAN-3002 U4): find a workspace that is not
+	// open as a tab, create one, or restore a deleted one.
+	let discoveryOpen = $state(false);
+	let addEl: HTMLButtonElement | undefined = $state(undefined);
 
 	let currentSlug = $derived(workspaceStore.current?.slug ?? '');
 
@@ -407,13 +412,20 @@
 				{/each}
 			</div>
 
-			<button
-				class="workspace-add"
-				onclick={() => uiStore.openCreateWorkspace()}
-				title="New workspace"
-			>
-				<span class="add-icon">+</span>
-			</button>
+			<div class="workspace-add-anchor">
+				<button
+					class="workspace-add"
+					bind:this={addEl}
+					onclick={() => (discoveryOpen = !discoveryOpen)}
+					title="Find or create a workspace"
+					aria-label="Find or create a workspace"
+					aria-haspopup="listbox"
+					aria-expanded={discoveryOpen}
+				>
+					<span class="add-icon">+</span>
+				</button>
+				<WorkspaceDiscovery open={discoveryOpen} onclose={() => (discoveryOpen = false)} trigger={addEl} />
+			</div>
 		</div>
 
 		<div class="topbar-right">
@@ -676,6 +688,10 @@
 		text-overflow: ellipsis;
 	}
 
+	.workspace-add-anchor {
+		position: relative;
+		flex-shrink: 0;
+	}
 	.workspace-add {
 		display: flex;
 		align-items: center;
