@@ -977,6 +977,24 @@ func (s *Store) DeleteAccountAtomic(userID string) error {
 
 	ts := now()
 
+	// Account deletions serialise against each other on Postgres (BUG-3286).
+	// Each one writes rows through a predicate on ITS user (tabs of its owned
+	// workspaces, grants it issued, share links it created, items it
+	// authored) that another user's deletion reaches through that user's FK
+	// cascade or SET NULL at DELETE FROM users. With a mirror-image pair of
+	// such rows two deletions each hold what the other needs, and neither
+	// knows the other's id up front, so no row order can fix it.
+	// delete_account_lockorder_test.go has one ingredient per subtest, and
+	// all five deadlocked before this lock. It is taken before anything else
+	// and only here, so a transaction waiting on it holds nothing, and it
+	// locks no row, so the users-row-first rule below is unchanged. SQLite's
+	// BEGIN IMMEDIATE already serialises every writer.
+	if s.dialect.Driver() == DriverPostgres {
+		if _, err := tx.Exec("SELECT pg_advisory_xact_lock(hashtext('pad:account-deletion'))"); err != nil {
+			return fmt.Errorf("delete account: serialise: %w", err)
+		}
+	}
+
 	// 0. Lock the user's row FIRST, with the lock every limited mint of a
 	// user-scoped row takes (enforceUserLimitTx, BUG-2808). The owned set
 	// below is read under it, so it is exact (BUG-3099): a mint that
@@ -1016,9 +1034,10 @@ func (s *Store) DeleteAccountAtomic(userID string) error {
 	// Unlike soft delete, this does NOT bump the holders' tabs revisions
 	// (BUG-3285). Bumping locks each holder's users row, and this transaction
 	// already holds the deleting user's row (step 0), so it would take users
-	// rows out of id order: two concurrent account deletions whose users
-	// hold tabs in each other's workspaces, or one against a soft delete,
-	// could deadlock, where before neither locked another user's row. The
+	// rows out of id order: an account deletion racing a soft delete or a
+	// tab write by a holder could deadlock, where before it locked no other
+	// user's row. (Two account deletions no longer overlap; see the advisory
+	// lock above.) The
 	// bump would buy nothing here anyway: these workspaces are soft-deleted
 	// in this same transaction, so every tabs answer from now on filters
 	// them out on read whatever its revision.
