@@ -360,6 +360,35 @@ func TestAcceptInvitation_CommitErrorReconciles(t *testing.T) {
 			}
 			f.expect(since)
 		})
+		// An existing member whose accept landed: success at the held role, and
+		// no gain, because the row predates the call. The row is backdated so
+		// "predates" does not depend on the test crossing a second boundary.
+		t.Run("landed_existing_member", func(t *testing.T) {
+			f := newAccessFixture(t, d)
+			u := f.member("existing@example.com", "viewer")
+			if _, err := f.srv.store.DB().Exec(f.srv.store.D().Rebind(`UPDATE workspace_members SET created_at = ? WHERE workspace_id = ? AND user_id = ?`),
+				"2026-01-01T00:00:00Z", f.wsID, u.ID); err != nil {
+				t.Fatalf("backdate membership: %v", err)
+			}
+			tok := f.token(u)
+			inv := f.invite(u.Email, "editor")
+			since := f.mark()
+			restore := f.srv.store.SetAddWorkspaceMemberCommitHookForTesting(func(tx *sql.Tx) error {
+				if err := tx.Commit(); err != nil {
+					return err
+				}
+				return errors.New("simulated accept commit ack loss")
+			})
+			rr := f.do("POST", "/api/v1/invitations/"+inv.Code+"/accept", tok, nil)
+			restore()
+			f.must(rr, http.StatusOK, "existing member's accept whose commit landed and reported an error")
+			var body map[string]any
+			parseJSON(t, rr, &body)
+			if body["role"] != "viewer" {
+				t.Fatalf("role = %v, want the held viewer", body["role"])
+			}
+			f.expect(since) // access did not change
+		})
 		// An existing member's row predates the call, so the membership alone
 		// cannot say the commit landed; the invitation's state has to.
 		t.Run("absent_existing_member", func(t *testing.T) {
