@@ -17,6 +17,7 @@
 	import Menu from '$lib/components/common/Menu.svelte';
 	import MenuItem from '$lib/components/common/MenuItem.svelte';
 	import { workspaceRestoreTarget } from '$lib/utils/workspace-route';
+	import { tabLanding } from '$lib/utils/tabLanding';
 
 	let { mobile = false }: { mobile?: boolean } = $props();
 
@@ -105,16 +106,14 @@
 		if (tab.ephemeral) void tabsStore.pin(tab.slug).catch(() => {});
 	}
 
-	// Closing a tab (PLAN-3002 Q2, Q3). Only closing the ACTIVE tab moves you:
-	// to its left neighbour, or, when it was the first tab, to the tab that
-	// becomes first (its right neighbour; lead ruling on TASK-3274), at that
-	// tab's last route. Closing the last tab lands on /console with "+"
-	// highlighted as the way back in.
+	// Closing a tab (PLAN-3002 Q2, Q3). Only closing the ACTIVE tab moves you,
+	// to where tabLanding says (the one copy of the Q3 rule, shared with the
+	// lost-workspace path; TASK-3280), at that tab's last route. Closing the
+	// last tab lands on /console with "+" highlighted as the way back in.
 	async function closeTab(e: MouseEvent, tab: WorkspaceTab) {
 		e.preventDefault();
 		e.stopPropagation();
-		const before = tabsStore.tabs.map((t) => t.slug);
-		const idx = before.indexOf(tab.slug);
+		const before = tabsStore.tabs.slice();
 		const wasActive = tab.slug === currentSlug;
 		try {
 			await tabsStore.close(tab.slug);
@@ -122,8 +121,8 @@
 			return;
 		}
 		if (!wasActive) return;
-		const after = tabsStore.tabs;
-		if (after.length === 0) {
+		const landing = tabLanding(before, tab.slug, tabsStore.tabs);
+		if (!landing) {
 			// Set once the navigation has landed: /console has no TopBar, so
 			// the console page shows it on its own create button and clears it
 			// when it unmounts.
@@ -131,8 +130,6 @@
 			uiStore.highlightAddWorkspace();
 			return;
 		}
-		const neighbour = idx > 0 ? before[idx - 1] : before[idx + 1];
-		const landing = after.find((t) => t.slug === neighbour) ?? after[0];
 		goto(workspaceRestoreTarget(landing));
 	}
 

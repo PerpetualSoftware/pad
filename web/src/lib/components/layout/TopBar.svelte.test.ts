@@ -194,6 +194,18 @@ describe('TopBar tab bar: closing (PLAN-3002 Q2, Q3)', () => {
 		expect(mocks.goto).toHaveBeenCalledWith('/u/alpha/docs');
 	});
 
+	// The leg above closes the SECOND tab, whose left neighbour is also the
+	// first tab, so it cannot tell "left neighbour" from "first remaining"
+	// (TASK-3280: a closeTab that read the open set after the close passed it).
+	it('closing an active tab further right lands on its left neighbour, not on the first tab', async () => {
+		mocks.current = { slug: 'gamma', name: 'Gamma', owner_username: 'u' };
+		await mountWith([ALPHA, BETA, GAMMA]);
+		mocks.tabs.close.mockResolvedValueOnce(answer([ALPHA, BETA]));
+		closeBtn('gamma').click();
+		await settle();
+		expect(mocks.goto).toHaveBeenCalledWith('/u/beta');
+	});
+
 	it('closing the active FIRST tab lands on the tab that becomes first (lead ruling on Q3)', async () => {
 		mocks.current = { slug: 'alpha', name: 'Alpha', owner_username: 'u' };
 		await mountWith([ALPHA, BETA, GAMMA]);
