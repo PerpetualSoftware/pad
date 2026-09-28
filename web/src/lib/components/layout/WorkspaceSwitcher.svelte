@@ -155,7 +155,13 @@
 			title="Switch workspace"
 		>
 			<div class="sheet-body">
-				{@render mobileWorkspaceList()}
+				<!-- Until the open set loads, every workspace would look "not open"
+				     and a tap would pin it; show the plain list instead. -->
+				{#if tabsStore.loaded}
+					{@render mobileWorkspaceList()}
+				{:else}
+					{@render workspaceList()}
+				{/if}
 				<RecentlyDeletedWorkspaces active={open} roomy />
 			</div>
 		</BottomSheet>
