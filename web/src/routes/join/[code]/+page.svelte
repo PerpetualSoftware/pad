@@ -133,7 +133,11 @@
 	// it. A tab that was already signed in as the same user re-reads the same
 	// session, which notifies nobody.
 	async function landInJoinedWorkspace(joined: { workspace_slug?: string; owner_username?: string } | undefined) {
-		await authStore.load().catch(() => {});
+		const session = await authStore.load().catch(() => null);
+		// load() joins a session read already in flight, and one sent before
+		// this page's sign-in set the cookie answers "signed out" (codex r1).
+		// A second read, sent now, carries the new session.
+		if (!session?.authenticated) await authStore.load().catch(() => {});
 		await workspaceStore.loadAll().catch(() => {});
 		const dest =
 			joined?.workspace_slug && joined.owner_username
