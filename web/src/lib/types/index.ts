@@ -301,6 +301,28 @@ export interface DeletedWorkspace extends Workspace {
 	days_left: number;
 }
 
+// One workspace in the caller's open set: a tab in the workspace tab bar
+// (PLAN-3002 U1 / TASK-3256). Mirrors models.WorkspaceTab. The whole set is
+// server-side, so it is the same on every device.
+export interface WorkspaceTab {
+	slug: string;
+	name: string;
+	owner_username: string;
+	// A workspace reached through grants only (PLAN-3002 Q10).
+	is_guest: boolean;
+	position: number;
+	// Opened by a landing and not kept yet. At most one per user.
+	ephemeral: boolean;
+	// The in-workspace path the tab returns to; absent when none is stored.
+	last_route?: string;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface WorkspaceTabsResponse {
+	tabs: WorkspaceTab[];
+}
+
 export interface WorkspaceRepository {
 	name?: string;
 	role?: string;
