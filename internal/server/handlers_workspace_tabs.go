@@ -37,6 +37,13 @@ type workspaceTabsResponse struct {
 	// statement; a write's is the revision that write produced. Visibility
 	// is filtered after, so two answers at one revision can differ only in
 	// which rows the caller could see when each was served.
+	//
+	// KNOWN LIMIT, accepted (lead ruling on BUG-3285): the revision only
+	// rises in normal operation, but a database restored from a backup, or
+	// rebuilt by any path that does not carry the column's value, can serve
+	// a LOWER revision than an open page already committed. That
+	// page then refuses every list until it reloads, so its bar freezes; no
+	// data is lost, and a reload recovers it.
 	Revision int64 `json:"revision"`
 }
 
