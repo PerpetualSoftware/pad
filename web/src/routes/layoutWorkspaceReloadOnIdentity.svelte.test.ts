@@ -39,6 +39,12 @@ const identityReload = vi.hoisted(() => ({
 }));
 vi.mock('$lib/stores/identityReload.svelte', () => identityReload);
 
+// The per-tab access stream (TASK-3275) is started by this layout. jsdom has
+// no EventSource, and the stream's behaviour is pinned in its own test; here
+// only the binding is observable, so it is a spy.
+const accessStream = vi.hoisted(() => ({ start: vi.fn() }));
+vi.mock('$lib/services/accessStream.svelte', () => ({ accessStream }));
+
 vi.mock('$app/navigation', () => ({
 	goto: vi.fn(),
 	beforeNavigate: () => {},
@@ -82,6 +88,22 @@ beforeEach(() => {
 afterEach(() => {
 	cleanup();
 	authStore.clear();
+});
+
+describe('TASK-3275: the root layout starts the access stream', () => {
+	it('starts it once the signed-in user has loaded, and not before', async () => {
+		api.auth.session.mockResolvedValue({ authenticated: false });
+		render(Layout, { props: { children: childSnippet } });
+		await settle();
+		expect(accessStream.start).not.toHaveBeenCalled();
+		cleanup();
+		authStore.clear();
+
+		api.auth.session.mockResolvedValue(sessionFor('u1'));
+		render(Layout, { props: { children: childSnippet } });
+		await settle();
+		expect(accessStream.start).toHaveBeenCalledTimes(1);
+	});
 });
 
 describe('BUG-2991: the root layout refetches workspaces when the user changes', () => {
