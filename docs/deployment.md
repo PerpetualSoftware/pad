@@ -1196,8 +1196,9 @@ address inside `PAD_TRUSTED_PROXIES` (the proxy sends no `X-Forwarded-For` or
 
 #### Known gaps
 
-- **Tokens are not scoped to workspaces.** A personal API token carries its
-  owner's full access. On http, tokens are the only method, so OAuth's
+- **Tokens are not scoped to workspaces.** A personal API token reaches every
+  workspace its owner can open; its scopes (a read-only token, say) still
+  limit what it may do there. On http, tokens are the only method, so OAuth's
   per-workspace consent does not exist there.
 - **Expired OAuth tokens, codes and PKCE rows are never swept** (BUG-3301,
   Pad Cloud included). An install that turns OAuth on inherits it until that

@@ -458,8 +458,8 @@ OAuth — same tool surface, no local binary. Setup guide at
 [getpad.dev/mcp/remote](https://getpad.dev/mcp/remote).
 
 **Self-hosting?** The same remote MCP endpoint is built in and off by default:
-an admin turns it on, with OAuth on an https deployment and personal API
-tokens on http. See "MCP for agents (self-hosted)" in
+an admin turns it on, with OAuth when its issuer URL is https and personal
+API tokens either way. See "MCP for agents (self-hosted)" in
 [docs/deployment.md](docs/deployment.md).
 
 ## CLI Reference
