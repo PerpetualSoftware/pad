@@ -12,10 +12,11 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/oauth"
 )
 
-// TestMCP_CloudModeOff_RoutesAbsent verifies the negative case:
-// when cloud mode is NOT enabled, every MCP-related route returns
-// 404. This is the self-hosted contract — the binary stays free of
-// MCP-server overhead unless an operator explicitly opts in.
+// TestMCP_CloudModeOff_RoutesAbsent verifies the negative case: a
+// self-host with MCP off answers 404 on every MCP-related route
+// (PLAN-2310 DR-5). The routes are mounted; the per-request gate
+// refuses them. The full route table, in every state, is
+// TestMCPCapability_RouteTable.
 func TestMCP_CloudModeOff_RoutesAbsent(t *testing.T) {
 	t.Parallel()
 	srv := testServer(t)
@@ -38,22 +39,6 @@ func TestMCP_CloudModeOff_RoutesAbsent(t *testing.T) {
 	}
 }
 
-// TestMCP_CloudModeOnButTransportNotWired_RoutesAbsent guards against
-// the regression where someone enables cloud mode but forgets to call
-// SetMCPTransport. The route group is gated on BOTH conditions; this
-// pins the AND.
-func TestMCP_CloudModeOnButTransportNotWired_RoutesAbsent(t *testing.T) {
-	t.Parallel()
-	srv := testServer(t)
-	srv.SetCloudMode("test-secret")
-	// Note: SetMCPTransport NOT called.
-
-	rr := doRequest(srv, "POST", "/mcp", nil)
-	if rr.Code != http.StatusNotFound {
-		t.Errorf("expected 404 when transport not wired, got %d", rr.Code)
-	}
-}
-
 // TestMCP_DiscoveryDoc_PopulatedFromConfig verifies the protected-
 // resource metadata document echoes the URLs we hand SetMCPTransport
 // (no host-derived fallback). Pinning this prevents a regression
@@ -61,7 +46,7 @@ func TestMCP_CloudModeOnButTransportNotWired_RoutesAbsent(t *testing.T) {
 // match the cert in production.
 func TestMCP_DiscoveryDoc_PopulatedFromConfig(t *testing.T) {
 	t.Parallel()
-	srv := mcpEnabledTestServer(t)
+	srv, _ := mcpAndOAuthEnabledTestServer(t)
 
 	rr := doRequest(srv, "GET", "/.well-known/oauth-protected-resource", nil)
 	if rr.Code != http.StatusOK {
@@ -104,7 +89,7 @@ func TestMCP_DiscoveryDoc_PopulatedFromConfig(t *testing.T) {
 // (CONVE-12: the catch-all cannot produce this end state).
 func TestMCP_DiscoveryDoc_PathAwareWellKnown(t *testing.T) {
 	t.Parallel()
-	srv := mcpEnabledTestServer(t)
+	srv, _ := mcpAndOAuthEnabledTestServer(t)
 
 	rrRoot := doRequest(srv, "GET", "/.well-known/oauth-protected-resource", nil)
 	if rrRoot.Code != http.StatusOK {
@@ -153,18 +138,14 @@ func TestMCP_DiscoveryDoc_PathAwareWellKnown(t *testing.T) {
 	}
 }
 
-// TestMCP_DiscoveryRoutes_RequireCloudModePerRoute exercises the
-// requireCloudMode middleware ON each mounted discovery route — which
-// TestMCP_CloudModeOff_RoutesAbsent structurally cannot (it never
-// wires the transport, so registerMCPRoutes bails at its nil-guard and
-// the routes are absent for a different reason; stripping the
-// middleware from a route would still pass that test — codex round 3).
-// Here the routes ARE mounted (cloud on at router build), then the
-// cloud flag is flipped off in-place; only the per-route middleware
-// can refuse from there.
-func TestMCP_DiscoveryRoutes_RequireCloudModePerRoute(t *testing.T) {
+// TestMCP_DiscoveryRoutes_RequireOAuthAvailablePerRoute exercises the
+// requireOAuthAvailable middleware ON each mounted discovery route
+// (PLAN-2310 DR-5). The routes are proved live first, then the OAuth
+// server is removed in place; the routes stay mounted (chi trees are
+// immutable post-build), so only the per-route gate can refuse.
+func TestMCP_DiscoveryRoutes_RequireOAuthAvailablePerRoute(t *testing.T) {
 	t.Parallel()
-	srv := mcpEnabledTestServer(t)
+	srv, _ := mcpAndOAuthEnabledTestServer(t)
 
 	paths := []string{
 		"/.well-known/oauth-protected-resource",
@@ -175,47 +156,43 @@ func TestMCP_DiscoveryRoutes_RequireCloudModePerRoute(t *testing.T) {
 	// refusals below can only come from the per-route middleware.
 	for _, p := range paths {
 		if rr := doRequest(srv, "GET", p, nil); rr.Code != http.StatusOK {
-			t.Fatalf("%s: expected 200 with cloud mode on, got %d", p, rr.Code)
+			t.Fatalf("%s: expected 200 with OAuth available, got %d", p, rr.Code)
 		}
 	}
 
-	// In-package flip of the flag requireCloudMode reads. The routes
-	// stay mounted (chi trees are immutable post-build) — that's the
-	// point: only the middleware stands between the request and the
-	// handler now.
-	srv.cloudMode = false
+	// In-package removal of what oauthAvailable reads. MCP itself stays
+	// available (cloud), so this pins that the documents follow OAuth,
+	// not MCP: a resource document naming an authorization server that
+	// does not exist is what misleads discovery clients.
+	srv.oauthServer = nil
 
 	for _, p := range paths {
 		rr := doRequest(srv, "GET", p, nil)
 		if rr.Code != http.StatusNotFound {
-			t.Errorf("%s: expected 404 from requireCloudMode after cloud flag cleared, got %d (body: %s)", p, rr.Code, rr.Body.String())
+			t.Errorf("%s: expected 404 from requireOAuthAvailable with no OAuth server, got %d (body: %s)", p, rr.Code, rr.Body.String())
 		}
 		var doc protectedResourceMetadata
 		if err := json.Unmarshal(rr.Body.Bytes(), &doc); err == nil && doc.Resource != "" {
-			t.Errorf("%s: metadata doc leaked past requireCloudMode: %+v", p, doc)
+			t.Errorf("%s: metadata doc leaked past requireOAuthAvailable: %+v", p, doc)
 		}
 	}
 }
 
 // TestMCP_AuthServerMetadata_MountedAndGated confirms the RFC 8414
-// authorization-server discovery doc is mounted by the cloud-mode
-// route group AND fail-loud-503s when the OAuth server isn't
-// wired (Codex review #372 round 3 — the MCP routes mount the
-// discovery doc, but the /oauth/* handlers only mount when
-// SetOAuthServer is called; without OAuth the doc must NOT
-// advertise live URLs that 404).
-//
-// mcpEnabledTestServer mounts MCP transport but NOT OAuth, so 503
-// is the correct fail-loud response. The full happy-path 200
-// shape assertions live in TestOAuth_AuthorizationServerMetadata_PopulatedShape
-// (which uses oauthEnabledTestServer).
+// authorization-server discovery doc is refused when the OAuth server
+// isn't wired, even with MCP available: without OAuth the doc must NOT
+// advertise live URLs that 404 (Codex review #372 round 3). It used to
+// answer 503; PLAN-2310 DR-5 gates it on oauthAvailable like the
+// /oauth/* endpoints it names, so it is the same JSON 404 they give.
+// The full happy-path 200 shape assertions live in
+// TestOAuth_AuthorizationServerMetadata_PopulatedShape.
 func TestMCP_AuthServerMetadata_MountedAndGated(t *testing.T) {
 	t.Parallel()
 	srv := mcpEnabledTestServer(t)
 
 	rr := doRequest(srv, "GET", "/.well-known/oauth-authorization-server", nil)
-	if rr.Code != http.StatusServiceUnavailable {
-		t.Errorf("expected 503 (MCP mounted but OAuth disabled), got %d (body: %s)", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("expected 404 (MCP available but OAuth not), got %d (body: %s)", rr.Code, rr.Body.String())
 	}
 }
 
@@ -226,7 +203,7 @@ func TestMCP_AuthServerMetadata_MountedAndGated(t *testing.T) {
 // proceed past the first request.
 func TestMCP_NoToken_Returns401WithWWWAuthenticate(t *testing.T) {
 	t.Parallel()
-	srv := mcpEnabledTestServer(t)
+	srv, _ := mcpAndOAuthEnabledTestServer(t)
 
 	rr := doRequest(srv, "POST", "/mcp", map[string]any{
 		"jsonrpc": "2.0", "id": 1, "method": "initialize",
@@ -357,22 +334,29 @@ func TestMCP_ValidPAT_ReachesTransport(t *testing.T) {
 // TestMCP_NoToken_FallsBackToHostWhenPublicURLUnset pins the
 // regression Codex review #369 round 1 caught: when PAD_MCP_PUBLIC_URL
 // is unset, writeMCPUnauthorized used to drop the WWW-Authenticate
-// header entirely, which breaks fresh-client discovery on cloud-mode
-// deploys that hadn't configured the public URL yet. The fallback
-// derives "https://" + r.Host so the discovery handshake completes.
-func TestMCP_NoToken_FallsBackToHostWhenPublicURLUnset(t *testing.T) {
+// header entirely, which broke fresh-client discovery. The header is
+// still always set; what changed (PLAN-2310 DR-3) is that the URL in it
+// is never derived from the request's Host any more. With no configured
+// MCP URL there is no resource_metadata at all, whatever Host says, and
+// the metadata documents answer 404 rather than advertise a guess.
+func TestMCP_NoToken_NoHostFallbackWhenPublicURLUnset(t *testing.T) {
 	t.Parallel()
 	srv := testServer(t)
 	srv.SetCloudMode("test-secret")
 	stub := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	// Both URLs intentionally empty — simulates a cloud deploy that
-	// hasn't set PAD_MCP_PUBLIC_URL / PAD_AUTH_SERVER_URL yet.
+	// Both URLs intentionally empty, with an OAuth server wired, so the
+	// only thing that could put a URL in the header is the request.
 	srv.SetMCPTransport(stub, "", "", nil)
+	o, err := newTestOAuthServer(t, srv)
+	if err != nil {
+		t.Fatalf("oauth.NewServer: %v", err)
+	}
+	srv.SetOAuthServer(o)
 
 	req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{}`))
-	req.Host = "mcp.test.local"
+	req.Host = "evil.example"
 	req.RemoteAddr = "192.0.2.1:1234"
 	rr := httptest.NewRecorder()
 	srv.ServeHTTP(rr, req)
@@ -380,13 +364,23 @@ func TestMCP_NoToken_FallsBackToHostWhenPublicURLUnset(t *testing.T) {
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", rr.Code)
 	}
-	wwwAuth := rr.Header().Get("WWW-Authenticate")
-	if wwwAuth == "" {
-		t.Fatal("WWW-Authenticate must be set even when PAD_MCP_PUBLIC_URL is unset; got empty header")
+	if got := rr.Header().Get("WWW-Authenticate"); got != `Bearer realm="pad"` {
+		t.Errorf("WWW-Authenticate = %q, want exactly %q (no Host-derived resource_metadata)", got, `Bearer realm="pad"`)
 	}
-	wantSubstring := `resource_metadata="https://mcp.test.local/.well-known/oauth-protected-resource"`
-	if !strings.Contains(wwwAuth, wantSubstring) {
-		t.Errorf("expected fallback resource_metadata derived from r.Host, got %q", wwwAuth)
+
+	for _, path := range []string{
+		"/.well-known/oauth-protected-resource",
+		"/.well-known/oauth-protected-resource/mcp",
+		"/.well-known/oauth-authorization-server",
+	} {
+		req := httptest.NewRequest("GET", path, nil)
+		req.Host = "evil.example"
+		req.RemoteAddr = "192.0.2.1:1234"
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		if rr.Code != http.StatusNotFound || strings.Contains(rr.Body.String(), "evil.example") {
+			t.Errorf("%s with Host evil.example and nothing configured: status %d body %s, want a 404 that names no host", path, rr.Code, rr.Body.String())
+		}
 	}
 }
 
@@ -1293,7 +1287,7 @@ func TestMCPRateLimit_LimiterMapBoundedByValidTokensOnly(t *testing.T) {
 // routes never hit it. This test pins that wiring.
 func TestMCPRateLimit_DiscoveryDocsExempt(t *testing.T) {
 	t.Parallel()
-	srv := mcpEnabledTestServer(t)
+	srv, _ := mcpAndOAuthEnabledTestServer(t)
 
 	// Hammer the protected-resource discovery doc 50 times; expect
 	// zero 429s.

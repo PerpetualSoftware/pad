@@ -6,11 +6,9 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-// MCP transport state. Set at startup by cmd/pad/main.go via
-// SetMCPTransport when the deployment is in cloud mode (PAD_MODE=cloud).
-// Self-hosted deployments leave mcpTransport nil and the routes below
-// don't mount, so the binary stays free of MCP-server overhead unless
-// it's actually serving the public /mcp surface.
+// MCP transport state. Set at startup by cmd/pad via SetMCPTransport on
+// every install (PLAN-2310 DR-4); whether a request may reach it is decided
+// per request by mcpAvailable (DR-5).
 //
 // Why these fields live on Server (not in a separate sub-struct):
 //
@@ -50,11 +48,9 @@ import (
 // server, e.g. "https://app.getpad.dev". Used by
 // handleOAuthProtectedResource to populate "authorization_servers".
 //
-// Both URLs may be left empty in development; the handlers fall back
-// to the request's Host header with a best-effort mcp.→app. rewrite
-// (see rewriteMcpSubdomain). Production deployments should always set
-// PAD_MCP_PUBLIC_URL and PAD_AUTH_SERVER_URL so the discovery
-// document's URLs match the cert + the URL agents paste into Claude.
+// Both come from configuration (config.ResolveMCPEndpoints), never from
+// a request's Host (PLAN-2310 DR-3). Either may be empty when nothing is
+// configured; the documents that need it then answer 404.
 //
 // MUST be called before the first request hits the server, i.e.
 // before ListenAndServe. Setting this after setupRouter has already
@@ -143,12 +139,15 @@ func (s *Server) handleMCPToolSurface(w http.ResponseWriter, _ *http.Request) {
 //     "MUST be available without authentication"). Putting them inside
 //     the auth-required API group would force a special-case exemption.
 //
-// Routes mount only when SetMCPTransport has been called AND cloud mode
-// is enabled. Self-hosted deployments with no cloud secret skip this
-// entirely; deployments running cloud mode without the MCP transport
-// wired (e.g. someone testing a build with PAD_MCP_PUBLIC_URL unset)
-// also skip. No 404 leaks in either case — the routes simply don't
-// exist on the chi tree.
+// The routes mount on every install and are gated per request (PLAN-2310
+// DR-5): /mcp by mcpAvailable, the discovery documents by oauthAvailable.
+// The router is built once, and the MCP setting changes while the process
+// runs, so only a handler can consult it. Unavailable is a JSON 404 that
+// runs before auth and audit, so a request to a disabled /mcp is neither
+// authenticated nor recorded. The protected-resource document is
+// oauthAvailable rather than mcpAvailable because it names an
+// authorization server, and advertising one that does not exist is what
+// misleads discovery clients.
 //
 // Why a Get on /mcp (not just Post): MCP Streamable HTTP supports
 // GET for server-initiated SSE streams (mcp-go's StreamableHTTPServer
@@ -156,8 +155,11 @@ func (s *Server) handleMCPToolSurface(w http.ResponseWriter, _ *http.Request) {
 // would also catch DELETE (session-end notifications). Use the same
 // Mount the streamable_http server expects.
 func (s *Server) registerMCPRoutes(r chi.Router) {
-	if s.mcpTransport == nil || !s.IsCloud() {
-		return
+	// A server with no transport (tests that never wire one) still mounts
+	// the routes, so /mcp answers the JSON 404 rather than the SPA.
+	transport := s.mcpTransport
+	if transport == nil {
+		transport = http.NotFoundHandler()
 	}
 
 	// /mcp — gated by Bearer auth, no CSRF (Bearer auth is immune),
@@ -172,12 +174,11 @@ func (s *Server) registerMCPRoutes(r chi.Router) {
 	// captured as result_status="denied". The audit middleware is a
 	// no-op when the writer hasn't been spawned (selfhost / test
 	// builds), so the chain is safe to mount unconditionally.
-	r.With(s.requireCloudMode, s.MCPBearerAuth, s.MCPAuditLog).Mount("/mcp", s.mcpTransport)
+	r.With(s.requireMCPAvailable, s.MCPBearerAuth, s.MCPAuditLog).Mount("/mcp", transport)
 
-	// Discovery endpoints — unauthenticated, cloud-mode-gated. RFC 9728
-	// (protected-resource) gets the real metadata; RFC 8414 (auth-server)
-	// is the 501 stub TASK-951 fills in.
-	r.With(s.requireCloudMode).Get("/.well-known/oauth-protected-resource", s.handleOAuthProtectedResource)
+	// Discovery endpoints — unauthenticated, oauthAvailable-gated. RFC 9728
+	// (protected-resource) and RFC 8414 (auth-server) metadata.
+	r.With(s.requireOAuthAvailable).Get("/.well-known/oauth-protected-resource", s.handleOAuthProtectedResource)
 	// Path-aware RFC 9728 §3.1 variant (BUG-2266). A client configured
 	// with the path-suffixed transport URL (https://mcp.getpad.dev/mcp —
 	// the shape every FastMCP example uses) constructs its metadata URL
@@ -190,7 +191,7 @@ func (s *Server) registerMCPRoutes(r chi.Router) {
 	// and a wildcard would hand a CDN one cacheable object per
 	// attacker-chosen suffix (codex round 2). /mcp is the only
 	// path-mounted resource, so nothing else needs the variant.
-	r.With(s.requireCloudMode).Get("/.well-known/oauth-protected-resource/mcp", s.handleOAuthProtectedResource)
-	r.With(s.requireCloudMode).Get("/.well-known/oauth-protected-resource/mcp/", s.handleOAuthProtectedResource)
-	r.With(s.requireCloudMode).Get("/.well-known/oauth-authorization-server", s.handleOAuthAuthorizationServer)
+	r.With(s.requireOAuthAvailable).Get("/.well-known/oauth-protected-resource/mcp", s.handleOAuthProtectedResource)
+	r.With(s.requireOAuthAvailable).Get("/.well-known/oauth-protected-resource/mcp/", s.handleOAuthProtectedResource)
+	r.With(s.requireOAuthAvailable).Get("/.well-known/oauth-authorization-server", s.handleOAuthAuthorizationServer)
 }

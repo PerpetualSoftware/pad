@@ -614,7 +614,8 @@ func classifyMCPResult(httpStatus int) (models.MCPAuditResultStatus, string) {
 
 // startMCPAuditWriter constructs the audit writer + spawns its
 // worker goroutine + spawns the periodic retention sweeper. Called
-// once at startup from cmd/pad/main.go (cloud mode only).
+// once at startup, on every install, by SetMCPTransport (PLAN-2310
+// DR-4).
 //
 // No-op if the writer is already running — supports the test pattern
 // where multiple Server instances over a shared store would otherwise

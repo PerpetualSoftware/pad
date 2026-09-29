@@ -9,8 +9,8 @@ import (
 )
 
 // The MCP capability's setting and addressing (PLAN-2310 DR-1, DR-2, DR-3,
-// DR-7). This unit only reads and reports them; route gating arrives with
-// PLAN-2310 U2.
+// DR-7), and the per-request predicates that gate the MCP and OAuth routes
+// (DR-5).
 
 // settingMCPEnabled is the platform_settings key behind the console toggle.
 // It is deliberately NOT in adminManagedSettings: the generic settings PATCH
@@ -67,6 +67,65 @@ func (s *Server) mcpAvailableWith(on bool) bool {
 		return true
 	}
 	return on && s.mcpEndpoints.Usable()
+}
+
+// oauthAvailable is PLAN-2310 DR-1's second predicate: MCP available, an
+// OAuth server constructed, and, off cloud, an https auth-server URL. The
+// server is built at startup only when that URL is https (DR-4), so the
+// scheme check restates the construction rule rather than adding one; it
+// is here so a server wired some other way (a test, a future caller) still
+// cannot offer OAuth over http, which Dave ruled PAT-only.
+func (s *Server) oauthAvailable() bool {
+	if s.oauthServer == nil {
+		return false
+	}
+	if s.cloudMode {
+		return true
+	}
+	return s.mcpAvailable() && s.mcpEndpoints.HTTPS()
+}
+
+// sessionMCPPublicURL is the mcp_public_url the session and setup payloads
+// carry, which the web UI's connect modal keys on. It stays cloud-only
+// here, as it was before SetMCPTransport ran on every install: the modal
+// offers only the OAuth path today, which an http self-host cannot
+// complete. PLAN-2310 DR-8 (unit 6) replaces it with the resolved URL
+// whenever mcpAvailable, alongside the modal's PAT path.
+func (s *Server) sessionMCPPublicURL() string {
+	if !s.cloudMode {
+		return ""
+	}
+	return s.mcpPublicURL
+}
+
+// requireMCPAvailable and requireOAuthAvailable gate the MCP and OAuth
+// routes per request (PLAN-2310 DR-5). The routes are mounted on every
+// install, because the router is built once and the setting changes while
+// the process runs; unavailable answers the same JSON 404 requireCloudMode
+// always has. On the non-API paths (/mcp, /oauth/*, /.well-known/*) they
+// run before any auth, audit or rate limiting, so a request to an
+// unavailable route does nothing but get refused. On the /api/v1 routes
+// they run inside the regular API perimeter (auth, CSRF, rate limit), at
+// the point requireCloudMode did, so an unauthenticated caller still gets
+// the 401 it always got (PLAN-2310 DR-6 keeps that perimeter).
+func (s *Server) requireMCPAvailable(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.mcpAvailable() {
+			writeError(w, http.StatusNotFound, "not_found", "Not found")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) requireOAuthAvailable(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.oauthAvailable() {
+			writeError(w, http.StatusNotFound, "not_found", "Not found")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 type mcpReadiness struct {

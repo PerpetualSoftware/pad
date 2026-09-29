@@ -60,8 +60,7 @@ import (
 //     token_endpoint_auth_methods=none policy. Sub-PR D.
 //
 // All six go via Server.oauthServer (set by SetOAuthServer at
-// startup). When that's nil the routes don't mount — see
-// registerOAuthRoutes.
+// startup). When that's nil they answer 404 — see oauthAvailable.
 
 // SetOAuthServer wires the OAuth 2.1 authorization server (built
 // in cmd/pad/main.go via internal/oauth.NewServer) into the route
@@ -109,14 +108,19 @@ func (s *Server) SetClaimSecret(secret []byte) {
 	s.claimSecret = cp
 }
 
-// registerOAuthRoutes mounts the OAuth endpoints on r. Called from
-// setupRouter at the same level as the MCP routes. No-op when
-// either cloud mode is off or SetOAuthServer was never called —
-// keeps self-hosted deployments free of OAuth-server surface they
-// can't use anyway (no canonical audience, no DCR clients).
-//
-// The discovery document at /.well-known/oauth-authorization-server
-// continues to be served by registerMCPRoutes — it lives there
+// SetShareAssetSecret wires the key for protected share-link image
+// signatures (see Server.shareAssetSecret). Copied like SetClaimSecret;
+// nil clears it.
+func (s *Server) SetShareAssetSecret(secret []byte) {
+	if secret == nil {
+		s.shareAssetSecret = nil
+		return
+	}
+	cp := make([]byte, len(secret))
+	copy(cp, secret)
+	s.shareAssetSecret = cp
+}
+
 // recordOAuthFlow bumps the pad_oauth_flows_total counter with the
 // supplied stage label. No-op when metrics aren't wired (selfhost /
 // tests). Stage vocabulary documented at MCP-961's metric registration
@@ -139,17 +143,23 @@ func (s *Server) observeOAuthFlowDuration(stage string, start time.Time) {
 	s.metrics.OAuthFlowDuration.WithLabelValues(stage).Observe(time.Since(start).Seconds())
 }
 
+// registerOAuthRoutes mounts the OAuth endpoints on r. Called from
+// setupRouter at the same level as the MCP routes, inside a group gated
+// by requireOAuthAvailable. They mount on every install and are gated
+// per request (PLAN-2310 DR-5), because the router is built once and the
+// MCP setting changes while the process runs; each handler also checks
+// oauthAvailable, so none can run over a nil server whatever wraps it.
+//
+// The discovery document at /.well-known/oauth-authorization-server
+// continues to be served by registerMCPRoutes — it lives there
 // because it was the 501 stub from TASK-950, and replacing it in
 // place keeps the URL stable for clients that already discovered
-// the chain. The OAuth-server routes added here are the four flow
+// the chain. The OAuth-server routes added here are the flow
 // endpoints; metadata + protected-resource doc are mounted earlier.
 func (s *Server) registerOAuthRoutes(r interface {
 	Get(pattern string, h http.HandlerFunc)
 	Post(pattern string, h http.HandlerFunc)
 }) {
-	if s.oauthServer == nil || !s.IsCloud() {
-		return
-	}
 	// Every POST here takes ValidateFormBody (BUG-2811): the form-encoded
 	// body is the half of r.Form ValidateQuery cannot see. register is JSON
 	// and passes the content-type gate untouched; it is wrapped so the rule
@@ -225,7 +235,7 @@ type dcrError struct {
 //     allowed set is pad:read / pad:write / pad:admin (TASK-953
 //     adds the workspace allow-list scopes).
 func (s *Server) handleOAuthRegister(w http.ResponseWriter, r *http.Request) {
-	if !s.IsCloud() || s.oauthServer == nil {
+	if !s.oauthAvailable() {
 		http.NotFound(w, r)
 		return
 	}
@@ -565,7 +575,7 @@ func (s *Server) handleOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	defer s.observeOAuthFlowDuration("authorize", start)
 
-	if !s.IsCloud() || s.oauthServer == nil {
+	if !s.oauthAvailable() {
 		http.NotFound(w, r)
 		return
 	}
@@ -713,7 +723,7 @@ func (s *Server) handleOAuthAuthorizeDecide(w http.ResponseWriter, r *http.Reque
 	start := time.Now()
 	defer s.observeOAuthFlowDuration("decide", start)
 
-	if !s.IsCloud() || s.oauthServer == nil {
+	if !s.oauthAvailable() {
 		http.NotFound(w, r)
 		return
 	}
@@ -1090,7 +1100,7 @@ func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	defer s.observeOAuthFlowDuration("token", start)
 
-	if !s.IsCloud() || s.oauthServer == nil {
+	if !s.oauthAvailable() {
 		http.NotFound(w, r)
 		return
 	}
@@ -1195,7 +1205,7 @@ func (s *Server) handleOAuthRevoke(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	defer s.observeOAuthFlowDuration("revoke", start)
 
-	if !s.IsCloud() || s.oauthServer == nil {
+	if !s.oauthAvailable() {
 		http.NotFound(w, r)
 		return
 	}
@@ -1258,7 +1268,7 @@ func (s *Server) handleOAuthRevoke(w http.ResponseWriter, r *http.Request) {
 // to receive the JSON unmarshal. Using oauth.NewSession("") matches
 // the pattern in /oauth/token.
 func (s *Server) handleOAuthIntrospect(w http.ResponseWriter, r *http.Request) {
-	if !s.IsCloud() || s.oauthServer == nil {
+	if !s.oauthAvailable() {
 		http.NotFound(w, r)
 		return
 	}
@@ -1930,17 +1940,11 @@ func (s *Server) validateConsentCSRFToken(r *http.Request) error {
 
 // authServerIssuerURL returns the canonical issuer URL for this
 // authorization server — what /.well-known/oauth-authorization-server
-// emits as `issuer`. Sourced from cfg.AuthServerURL (the
-// PAD_AUTH_SERVER_URL env var); falls back to the request host
-// for local dev. See handlers_well_known.go's existing fallback.
-func (s *Server) authServerIssuerURL(r *http.Request) string {
-	if s.mcpAuthServerURL != "" {
-		return strings.TrimRight(s.mcpAuthServerURL, "/")
-	}
-	if r != nil && r.Host != "" {
-		return "https://" + r.Host
-	}
-	return ""
+// emits as `issuer`. Configuration only (PAD_AUTH_SERVER_URL, else the
+// public origin; PLAN-2310 DR-3), never the request's Host: "" when
+// nothing is configured, and the caller then refuses.
+func (s *Server) authServerIssuerURL() string {
+	return strings.TrimRight(s.mcpAuthServerURL, "/")
 }
 
 // Compile-time guard: oauth.NewSession returns a fosite-compatible

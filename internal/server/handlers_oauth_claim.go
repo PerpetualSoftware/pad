@@ -51,15 +51,15 @@ import (
 //     (Single 404 vocabulary so the endpoint doesn't leak which
 //     workspaces the user knows about vs. is a member of.)
 //   - 412 precondition_failed — claim secret not configured on this
-//     deployment (shouldn't happen in production; self-host without
-//     cloud-mode OAuth doesn't mount this route in the first place,
-//     but the guard is defense in depth for cases where the route
-//     mounts before the secret is wired).
+//     deployment (shouldn't happen in production: startup sets it
+//     wherever it constructs OAuth, and a deployment without OAuth
+//     answers this route 404 before the handler runs, PLAN-2310 DR-5;
+//     the guard is defense in depth).
 //   - 500 internal_error — DB I/O failure.
 func (s *Server) handleOAuthClaim(w http.ResponseWriter, r *http.Request) {
 	// Refuse if the claim secret hasn't been wired. The route is
-	// only mounted when the secret is set (see registerOAuthClaimRoute),
-	// but checking again is cheap and prevents a stray request from
+	// gated on oauthAvailable, and startup sets the secret wherever it
+	// constructs OAuth, but checking again is cheap and prevents a stray request from
 	// reaching DeriveClaimCode with a too-short secret.
 	if len(s.claimSecret) < 16 {
 		writeError(w, http.StatusPreconditionFailed, "claim_disabled",

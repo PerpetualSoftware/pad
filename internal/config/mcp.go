@@ -28,11 +28,13 @@ type MCPEndpoints struct {
 	OriginErr string
 
 	// ResourceURL is the MCP URL clients connect to, and the OAuth
-	// audience: PAD_MCP_PUBLIC_URL, else Origin + "/mcp".
+	// audience: PAD_MCP_PUBLIC_URL in its historical spelling
+	// (historicalOverride), else Origin + "/mcp".
 	ResourceURL    string
 	ResourceURLErr string
 
-	// AuthServerURL is the OAuth issuer: PAD_AUTH_SERVER_URL, else Origin.
+	// AuthServerURL is the OAuth issuer: PAD_AUTH_SERVER_URL in its
+	// historical spelling (historicalOverride), else Origin.
 	AuthServerURL    string
 	AuthServerURLErr string
 }
@@ -47,7 +49,14 @@ func (e MCPEndpoints) Usable() bool {
 // OAuth available (PLAN-2310 DR-4, Dave's ruling: http deployments are
 // PAT-only).
 func (e MCPEndpoints) HTTPS() bool {
-	return e.Usable() && strings.HasPrefix(e.AuthServerURL, "https://")
+	if !e.Usable() {
+		return false
+	}
+	// Parsed rather than prefix-matched: an explicitly set
+	// PAD_AUTH_SERVER_URL keeps its historical spelling, scheme case
+	// included (historicalOverride).
+	u, err := url.Parse(strings.TrimSpace(e.AuthServerURL))
+	return err == nil && strings.EqualFold(u.Scheme, "https")
 }
 
 // Problems lists every configured value that could not be used, as
@@ -84,20 +93,20 @@ func (c *Config) ResolveMCPEndpoints() MCPEndpoints {
 	}
 
 	if c.MCPPublicURL != "" {
-		if u, err := parseMCPURL(c.MCPPublicURL, true); err != nil {
+		if _, err := parseMCPURL(c.MCPPublicURL, true); err != nil {
 			e.ResourceURLErr = fmt.Sprintf("PAD_MCP_PUBLIC_URL %q is not usable: %v", c.MCPPublicURL, err)
 		} else {
-			e.ResourceURL = u
+			e.ResourceURL = historicalOverride(c.MCPPublicURL)
 		}
 	} else if e.Origin != "" {
 		e.ResourceURL = e.Origin + "/mcp"
 	}
 
 	if c.AuthServerURL != "" {
-		if u, err := parseMCPURL(c.AuthServerURL, true); err != nil {
+		if _, err := parseMCPURL(c.AuthServerURL, true); err != nil {
 			e.AuthServerURLErr = fmt.Sprintf("PAD_AUTH_SERVER_URL %q is not usable: %v", c.AuthServerURL, err)
 		} else {
-			e.AuthServerURL = u
+			e.AuthServerURL = historicalOverride(c.AuthServerURL)
 		}
 	} else if e.Origin != "" {
 		e.AuthServerURL = e.Origin
@@ -108,13 +117,26 @@ func (c *Config) ResolveMCPEndpoints() MCPEndpoints {
 	return e
 }
 
+// historicalOverride is the spelling an explicitly set PAD_MCP_PUBLIC_URL or
+// PAD_AUTH_SERVER_URL has always been used in: the value with its trailing
+// slashes trimmed, and nothing else rewritten. It is validated like any
+// other value, but not canonicalised, because the MCP URL is the OAuth
+// audience every issued token is bound to, compared byte-for-byte: a
+// deployment whose value is not canonical (an uppercase host, an explicit
+// :443) would otherwise find every existing token refused after an upgrade
+// (TASK-2317). Only these two variables predate PLAN-2310; the origin and
+// the URLs derived from it are new and take the canonical form.
+func historicalOverride(raw string) string {
+	return strings.TrimRight(raw, "/")
+}
+
 // parseMCPURL accepts an absolute http(s) URL with a host, no user info, no
 // query and no fragment, and returns it in one canonical spelling: scheme
 // and host lower-cased, a default port (443 for https, 80 for http)
-// dropped, and no trailing slash. The canonical form matters because the
-// MCP URL is the OAuth audience, compared byte-for-byte; a value that is
-// already canonical (such as cloud's https://mcp.getpad.dev) comes back
-// unchanged. An origin must also have no path, judged on the escaped path,
+// dropped, and no trailing slash. The canonical form matters because a URL
+// derived from the origin is the OAuth audience, compared byte-for-byte.
+// The two pre-existing overrides are validated here but keep their own
+// spelling (historicalOverride). An origin must also have no path, judged on the escaped path,
 // so an encoded slash (%2F) cannot pass as empty. The MCP and auth-server
 // URLs may have a path.
 func parseMCPURL(raw string, pathAllowed bool) (string, error) {

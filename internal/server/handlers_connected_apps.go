@@ -29,11 +29,11 @@ import (
 // RequireAuth). Owner-scoped via the store: every method takes user.ID
 // so a malicious caller can't see / revoke another user's connections.
 //
-// Cloud-mode-gated at the route level: self-hosted deployments don't
-// run the OAuth surface, so these endpoints would return empty lists
-// + ErrConnectionNotFound 404s. Mounting outside cloud mode would be
-// confusing — the routes are mounted under requireCloudMode at the
-// registration site (server.go).
+// Gated at the route level on oauthAvailable (PLAN-2310 DR-5): a
+// deployment that does not serve OAuth has no grants to manage, so the
+// routes answer 404 there rather than empty lists (server.go wraps them
+// in requireOAuthAvailable). The per-connection audit route is the
+// exception: it is history, and stays available to its owner.
 
 // connectedAppDTO is the wire-form for one connection. Distinct from
 // models.OAuthConnection so the API contract stays decoupled from

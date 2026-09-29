@@ -121,7 +121,9 @@ func TestHandleWorkspaceClaimCode_Disabled412(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateAPIToken: %v", err)
 	}
-	// Deliberately do NOT call SetClaimSecret.
+	// OAuth available, but deliberately do NOT call SetClaimSecret:
+	// the 412 is the handler's own defense behind the route gate.
+	wireOAuthForTest(t, srv)
 	req := httptest.NewRequest("GET", "/api/v1/workspaces/"+ws.Slug+"/claim-code", nil)
 	req.Header.Set("Authorization", "Bearer "+tok.Token)
 	req.RemoteAddr = "192.0.2.1:1234"

@@ -51,7 +51,8 @@ const (
 	// other use of the same deployment secret (notably the 6-digit claim
 	// codes in claim_codes.go, which sign a different payload shape). A
 	// signature minted here can never be mistaken for — or collide with —
-	// one minted anywhere else, even though both key off s.claimSecret.
+	// one minted anywhere else, even though both use the same deployment key
+	// (s.shareAssetSecret and s.claimSecret).
 	shareAssetSigDomain = "share-asset-v1"
 
 	// shareAssetSigTTL is how long a minted asset signature stays valid.
@@ -175,7 +176,7 @@ func (s *Server) handleGetShareLinkAttachment(w http.ResponseWriter, r *http.Req
 	//    ref. Plain links need none.
 	if link.HasPassword || link.RequireAuth {
 		q := r.URL.Query()
-		if !verifyShareAsset(s.claimSecret, link.ID, attachmentID, q.Get("exp"), q.Get("sig"), time.Now()) {
+		if !verifyShareAsset(s.shareAssetSecret, link.ID, attachmentID, q.Get("exp"), q.Get("sig"), time.Now()) {
 			writeShareAttachmentNotFound(w)
 			return
 		}

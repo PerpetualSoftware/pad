@@ -35,10 +35,10 @@ import (
 //     are deliberately the only ones — no scopes, no grant types,
 //     no created_at, nothing that could fingerprint OAuth-server
 //     behaviour or leak when an integration was set up.
-//   - Cloud-mode-only: self-hosted deployments don't host an OAuth
-//     surface, so this endpoint serves no purpose there. The route
-//     is mounted under requireCloudMode at the registration site
-//     (server.go), which 404s outside cloud mode.
+//   - OAuth-only: a deployment that does not serve OAuth has no
+//     clients to describe. The route is wrapped in
+//     requireOAuthAvailable at the registration site (server.go),
+//     which 404s there (PLAN-2310 DR-5).
 //
 // Wire shape:
 //
@@ -67,8 +67,8 @@ type oauthClientPublicInfo struct {
 
 // handleOAuthClientPublicInfo serves the public metadata for a
 // registered OAuth client. Auth-required at the route level (see
-// the /api/v1 group in server.go); cloud-mode-gated at the route
-// level (requireCloudMode wraps the registration).
+// the /api/v1 group in server.go); gated on oauthAvailable at the
+// route level (requireOAuthAvailable wraps the registration).
 //
 // Returns 404 if the client is unknown — explicitly, not 401, so
 // authorized callers can distinguish "this client doesn't exist"
