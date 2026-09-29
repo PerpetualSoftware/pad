@@ -227,9 +227,9 @@ func (s *Server) sessionStatePayload(authenticated bool, user *models.User) map[
 // `pad auth setup` from the host CLI instead of through their proxy.
 // isPlausibleEmail is a cheap pre-filter used to decide whether an email
 // is worth creating a per-email rate-limiter bucket for. NOT a full RFC
-// 5322 validator — it only rejects the two easy ways an attacker could
-// flood the limiter's bucket map: (1) excessively long strings, (2)
-// strings with no '@' at all. Anything shape-like-an-email passes and
+// 5322 validator — it only rejects two easy kinds of junk: (1)
+// excessively long strings, (2) strings with no '@' at all. It does not
+// bound the bucket map; the limiter's cap does (BUG-3308). Anything shape-like-an-email passes and
 // the real validation happens in the store's password check.
 func isPlausibleEmail(s string) bool {
 	// RFC 5321 §4.5.3.1.3 caps the full address at 254 octets.
@@ -914,12 +914,13 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// "reset" — but a legitimate user who remembers their password on try 1
 	// or 2 will never notice the limit.
 	//
-	// Only create a bucket for syntactically plausible emails. Inserting
-	// every attacker-supplied string would let a distributed attacker grow
-	// the bucket map without bound (retention = 2h), which is a memory-DoS
-	// vector — so we pre-filter by RFC 5321 max length (254) and require
-	// at least an '@'. Invalid input still gets the ordinary 401 from the
-	// password check below, just without producing a new limiter entry.
+	// Only create a bucket for syntactically plausible emails: the
+	// pre-filter keeps over-long and '@'-less junk out of the map (RFC 5321
+	// max length 254, at least an '@'). It does not bound the map, since
+	// any "a@b" passes; the limiter's own cap does (BUG-3308), and its
+	// eviction order keeps a sprayed address's drained bucket to the last.
+	// Invalid input still gets the ordinary 401 from the password check
+	// below, just without producing a new limiter entry.
 	if s.rateLimiters != nil && s.rateLimiters.AuthEmail != nil {
 		emailKey := strings.ToLower(strings.TrimSpace(input.Email))
 		if isPlausibleEmail(emailKey) {
