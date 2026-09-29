@@ -240,9 +240,13 @@ export const tabsStore = {
 		// after a sign-out or an account switch, so the old user's order would
 		// go out with the new user's credentials (codex r2). Fence at the call.
 		const isSameIdentity = authStore.identityFence();
-		const run = reorderChain.then(() =>
-			isSameIdentity() ? send(() => api.workspaces.tabs.reorder(slugs)) : undefined
-		);
+		const run = reorderChain.then(() => {
+			// A dropped reorder REJECTS, so a caller's follow-up (the pin a
+			// drag or a keyboard move makes) is skipped too rather than sent
+			// with the next identity's credentials (codex r4).
+			if (!isSameIdentity()) throw new Error('reorder dropped: the signed-in identity changed');
+			return send(() => api.workspaces.tabs.reorder(slugs));
+		});
 		reorderChain = run.then(
 			() => {},
 			() => {}

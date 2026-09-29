@@ -724,7 +724,8 @@ describe('reorder is sent in call order', () => {
 		auth.fireIdentityChange();
 		first.resolve(answer(tab('a'), tab('b')));
 		await p1;
-		await p2;
+		// It REJECTS, so a caller's follow-up pin is skipped too.
+		await expect(p2).rejects.toThrow('identity changed');
 		// Only the first went out; the old user's queued order did not go out
 		// with the new identity.
 		expect(tabsApi.reorder).toHaveBeenCalledTimes(1);
