@@ -729,4 +729,16 @@ describe('reorder is sent in call order', () => {
 		// with the new identity.
 		expect(tabsApi.reorder).toHaveBeenCalledTimes(1);
 	});
+
+	it("an old identity's reorder that never settles does not block the next identity's", async () => {
+		const store = await loadStore();
+		const hung = deferred<ReturnType<typeof answer>>();
+		tabsApi.reorder.mockReturnValueOnce(hung.promise).mockImplementationOnce(async () => answer(tab('b'), tab('a')));
+		void store.reorder(['a', 'b']).catch(() => {});
+		await settle();
+		auth.fireIdentityChange();
+		await store.reorder(['b', 'a']);
+		expect(tabsApi.reorder).toHaveBeenCalledTimes(2);
+		expect(slugs(store.tabs)).toEqual(['b', 'a']);
+	});
 });

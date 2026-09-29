@@ -295,6 +295,10 @@ export const tabsStore = {
 // the previous identity visited.
 authStore.onIdentityChange(() => {
 	committedRevision = -1;
+	// A new identity starts its own reorder queue: the old one's queued calls
+	// are dropped by their fence, but one still in flight that never settled
+	// would otherwise hold every later reorder behind it (codex r3).
+	reorderChain = Promise.resolve();
 	tabs = [];
 	loaded = false;
 	pendingRoutes = {};
