@@ -34,11 +34,21 @@ import (
 // resourceFallback when the server serves it on the read loop itself (as
 // v1.1.0 does) and therefore cannot read EOF until it returns; in that shape
 // EOF cannot cancel it, and the tool calls are still held across the EOF.
+//
+// Two bounds, stated rather than implied. (1) The signal fires inside Read,
+// before the server has handled the EOF, and a server that never cancels
+// emits nothing to wait for, so the release after it is a timed settle: a
+// cancel-at-EOF server whose EOF handling is delayed past eofSettle would
+// pass. That error runs one way only; a server that keeps in-flight calls
+// alive can never be failed by it. (2) A server that runs tool calls on the
+// read loop itself lets only one call in before stdin closes, so the entry
+// gate fails with "only 1 of 4 calls reached"; that means this pin's premise
+// no longer holds, not that EOF cancelled anything.
 
 const (
 	// eofSettle is how long a release waits after EOF was observed, so a
 	// cancel-at-EOF server has cancelled before the release can win the race.
-	eofSettle = 200 * time.Millisecond
+	eofSettle = 500 * time.Millisecond
 	// resourceFallback releases a resource read that blocks the read loop.
 	resourceFallback = time.Second
 )
