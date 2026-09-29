@@ -25,6 +25,14 @@ updates:
     commit-message:
       prefix: "chore(deps)"
       include: scope
+    ignore:
+      # mcp-go v1.1.1 cancels every in-flight stdio request at stdin EOF
+      # (upstream #977), so `pad mcp serve` fed a piped batch answers
+      # `context canceled` for each dispatcher-backed call (TASK-3298).
+      # Only this release is excluded; internal/mcp's
+      # TestStdio_EOFDoesNotCancelInFlightRequests guards the next one.
+      - dependency-name: "github.com/mark3labs/mcp-go"
+        versions: ["1.1.1"]
     groups:
       go-minor-and-patch:
         applies-to: version-updates
