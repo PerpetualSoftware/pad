@@ -89,6 +89,13 @@ type Config struct {
 	MCPPublicURL  string `toml:"mcp_public_url"`  // Canonical URL clients paste into their MCP client (e.g. https://mcp.getpad.dev — matches mcp.stripe.com / mcp.linear.app convention). Published verbatim as RFC 9728 `resource` and used as the OAuth audience binding; pad mounts the transport internally at /mcp and pad-cloud's nginx router transparently rewrites mcp.* root → /mcp so external clients see a single canonical URL regardless of internal path.
 	AuthServerURL string `toml:"auth_server_url"` // Canonical URL of the OAuth authorization server (TASK-951), e.g. https://app.getpad.dev. Embedded in protected-resource metadata's authorization_servers field.
 
+	// MCPEnabledEnv is PAD_MCP_ENABLED parsed (PLAN-2310 DR-2): nil when
+	// unset, otherwise the forced value of the MCP setting, which also
+	// locks the console toggle. MCPEnabledEnvRaw keeps an unparseable value
+	// so the server can warn about it; such a value forces nothing.
+	MCPEnabledEnv    *bool  `toml:"-"`
+	MCPEnabledEnvRaw string `toml:"-"`
+
 	// Encryption
 	EncryptionKey       string `toml:"encryption_key"` // 32-byte hex-encoded AES-256 key for encrypting sensitive fields
 	EncryptionKeySource string `toml:"-"`              // "env", "file", "generated", or "" (unset); populated by EnsureEncryptionKey
@@ -443,6 +450,10 @@ func Load() (*Config, error) {
 	}
 	if v := os.Getenv("PAD_AUTH_SERVER_URL"); v != "" {
 		cfg.AuthServerURL = v
+	}
+	if v := os.Getenv("PAD_MCP_ENABLED"); v != "" {
+		cfg.MCPEnabledEnvRaw = v
+		cfg.MCPEnabledEnv = parseMCPEnabledEnv(v)
 	}
 	if v := os.Getenv("PAD_ENCRYPTION_KEY"); v != "" {
 		cfg.EncryptionKey = v

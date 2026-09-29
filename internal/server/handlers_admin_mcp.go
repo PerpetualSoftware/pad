@@ -1,0 +1,200 @@
+package server
+
+import (
+	"log/slog"
+	"net/http"
+
+	"github.com/PerpetualSoftware/pad/internal/config"
+	"github.com/PerpetualSoftware/pad/internal/models"
+)
+
+// The MCP capability's setting and addressing (PLAN-2310 DR-1, DR-2, DR-3,
+// DR-7). This unit only reads and reports them; route gating arrives with
+// PLAN-2310 U2.
+
+// settingMCPEnabled is the platform_settings key behind the console toggle.
+// It is deliberately NOT in adminManagedSettings: the generic settings PATCH
+// cannot express the environment lock or the cloud refusal.
+const settingMCPEnabled = "mcp_enabled"
+
+// mcpSettingSource says where the effective MCP setting comes from.
+const (
+	mcpSourceSetting     = "setting"
+	mcpSourceEnvironment = "environment"
+	mcpSourceCloud       = "cloud"
+)
+
+// SetMCPConfig installs the resolved MCP addressing and the PAD_MCP_ENABLED
+// override. Called once at startup on every install, before the router is
+// built; neither value changes while the process runs.
+func (s *Server) SetMCPConfig(endpoints config.MCPEndpoints, enabledEnv *bool) {
+	s.mcpEndpoints = endpoints
+	s.mcpEnabledEnv = enabledEnv
+}
+
+// mcpSetting returns the effective value of the MCP setting and its source.
+// Cloud is always on. Otherwise PAD_MCP_ENABLED wins, then the stored
+// setting, read per request with no cache, following webmcp_enabled. A read
+// error counts as off: the capability fails closed.
+func (s *Server) mcpSetting() (bool, string) {
+	if s.cloudMode {
+		return true, mcpSourceCloud
+	}
+	if s.mcpEnabledEnv != nil {
+		return *s.mcpEnabledEnv, mcpSourceEnvironment
+	}
+	v, err := s.store.GetPlatformSetting(settingMCPEnabled)
+	if err != nil {
+		slog.Warn("mcp: reading the mcp_enabled setting failed; treating MCP as off", "error", err)
+		return false, mcpSourceSetting
+	}
+	return v == "true", mcpSourceSetting
+}
+
+// mcpAvailable is PLAN-2310 DR-1's predicate: cloud, or the setting on and
+// a usable public origin configured. A setting that is on without an origin
+// leaves MCP unavailable; the readiness panel says why.
+func (s *Server) mcpAvailable() bool {
+	if s.cloudMode {
+		return true
+	}
+	on, _ := s.mcpSetting()
+	return on && s.mcpEndpoints.Usable()
+}
+
+type mcpReadiness struct {
+	Origin        string   `json:"origin"`
+	OriginVar     string   `json:"origin_var,omitempty"`
+	MCPURL        string   `json:"mcp_url"`
+	AuthServerURL string   `json:"auth_server_url"`
+	HTTPS         bool     `json:"https"`
+	AuthMethods   []string `json:"auth_methods"`
+	Problems      []string `json:"problems"`
+	// State is "on", "off", or "blocked": on in the setting, but not
+	// available because the addressing is not usable. Blocked says why.
+	State   string `json:"state"`
+	Blocked string `json:"blocked,omitempty"`
+	// Resume counts what would work again if MCP were turned on. Turning
+	// it off revokes nothing (PLAN-2310 DR-5).
+	Resume struct {
+		OAuthConnections int `json:"oauth_connections"`
+		PATs             int `json:"pats"`
+	} `json:"resume"`
+}
+
+type mcpSettingsResponse struct {
+	Enabled   bool         `json:"enabled"`
+	Source    string       `json:"source"`
+	Locked    bool         `json:"locked"`
+	Readiness mcpReadiness `json:"readiness"`
+}
+
+func (s *Server) buildMCPSettingsResponse() (mcpSettingsResponse, error) {
+	on, source := s.mcpSetting()
+	ep := s.mcpEndpoints
+	resp := mcpSettingsResponse{
+		Enabled: on,
+		Source:  source,
+		Locked:  source != mcpSourceSetting,
+	}
+	rd := &resp.Readiness
+	rd.Origin, rd.OriginVar = ep.Origin, ep.OriginVar
+	rd.MCPURL, rd.AuthServerURL = ep.ResourceURL, ep.AuthServerURL
+	rd.HTTPS = ep.HTTPS()
+	rd.Problems = ep.Problems()
+	if rd.Problems == nil {
+		rd.Problems = []string{}
+	}
+	switch {
+	case !ep.Usable():
+		rd.AuthMethods = []string{}
+	case rd.HTTPS:
+		rd.AuthMethods = []string{"oauth", "pat"}
+	default:
+		rd.AuthMethods = []string{"pat"}
+	}
+
+	// The state is the DR-1 predicate itself, so the panel reports exactly
+	// what gates the routes.
+	switch {
+	case !on:
+		rd.State = "off"
+	case s.mcpAvailable():
+		rd.State = "on"
+	default:
+		rd.State = "blocked"
+		if len(rd.Problems) > 0 {
+			rd.Blocked = rd.Problems[0]
+		} else {
+			rd.Blocked = "No public origin is configured. Set PAD_URL (or PUBLIC_URL) to the URL this server is reached at."
+		}
+	}
+
+	var err error
+	if rd.Resume.OAuthConnections, err = s.store.CountLiveOAuthConnections(); err != nil {
+		return resp, err
+	}
+	if rd.Resume.PATs, err = s.store.CountMCPUsablePATs(); err != nil {
+		return resp, err
+	}
+	return resp, nil
+}
+
+// handleGetMCPSettings: GET /api/v1/admin/mcp. Admin-only.
+func (s *Server) handleGetMCPSettings(w http.ResponseWriter, r *http.Request) {
+	user := currentUser(r)
+	if user == nil || user.Role != "admin" {
+		writeError(w, http.StatusForbidden, "forbidden", "Admin access required")
+		return
+	}
+	resp, err := s.buildMCPSettingsResponse()
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleUpdateMCPSettings: PUT /api/v1/admin/mcp {enabled}. Admin-only.
+// Refused on Pad Cloud (always on) and when PAD_MCP_ENABLED forces the
+// value: a write that could not take effect must not answer 200.
+func (s *Server) handleUpdateMCPSettings(w http.ResponseWriter, r *http.Request) {
+	user := currentUser(r)
+	if user == nil || user.Role != "admin" {
+		writeError(w, http.StatusForbidden, "forbidden", "Admin access required")
+		return
+	}
+	if s.cloudMode {
+		writeError(w, http.StatusForbidden, "managed_by_operator", "MCP is always on for this instance and is managed by the operator.")
+		return
+	}
+	var in struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := decodeJSON(r, &in); err != nil || in.Enabled == nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "Body must be {\"enabled\": true|false}")
+		return
+	}
+	if s.mcpEnabledEnv != nil {
+		writeError2(w, http.StatusConflict, "set_by_environment",
+			"Set by the server environment (PAD_MCP_ENABLED), which overrides this setting: enabled",
+			map[string]interface{}{"fields": []string{"enabled"}})
+		return
+	}
+	value := "false"
+	if *in.Enabled {
+		value = "true"
+	}
+	if err := s.store.SetPlatformSetting(settingMCPEnabled, value); err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	s.logAuditEvent(models.ActionSettingsChanged, r, settingsChangedMeta([]string{settingMCPEnabled}))
+
+	resp, err := s.buildMCPSettingsResponse()
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}

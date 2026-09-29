@@ -268,6 +268,19 @@ func serveCmd() *cobra.Command {
 			srv.SetBaseURL(cfg.PublicLinkBaseURL())
 			srv.SetCORSOrigins(cfg.CORSOrigins)
 			srv.SetSecureCookies(cfg.SecureCookies)
+
+			// MCP addressing and the PAD_MCP_ENABLED override (PLAN-2310 DR-2,
+			// DR-3), on every install. An unusable value never stops startup,
+			// because PAD_URL also serves the CLI: it is logged, and it keeps
+			// MCP unavailable until fixed.
+			mcpEndpoints := cfg.ResolveMCPEndpoints()
+			for _, problem := range mcpEndpoints.Problems() {
+				slog.Warn("mcp: configuration value not usable", "problem", problem)
+			}
+			if cfg.MCPEnabledEnvRaw != "" && cfg.MCPEnabledEnv == nil {
+				slog.Warn("mcp: PAD_MCP_ENABLED is not true/false; ignoring it", "value", cfg.MCPEnabledEnvRaw)
+			}
+			srv.SetMCPConfig(mcpEndpoints, cfg.MCPEnabledEnv)
 			srv.SetTrustedProxies(cfg.TrustedProxies)
 			srv.SetMetricsToken(cfg.MetricsToken)
 			srv.SetIPChangeEnforce(cfg.IPChangeEnforce)
