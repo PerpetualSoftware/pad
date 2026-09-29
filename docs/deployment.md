@@ -145,8 +145,8 @@ The collaborative editor holds one WebSocket per open item pane
 API rate limit:
 
 - **Dials:** a rate bucket of its own, 5 per second with a burst of 50, keyed
-  like every rate bucket (per user, per client IP for a caller with no
-  resolved user). Only a WebSocket upgrade request counts as a dial. A dial
+  like every rate bucket (per user, or per client address for a caller with
+  no resolved user: an IPv4 address, or an IPv6 client's /64). Only a WebSocket upgrade request counts as a dial. A dial
   does not spend the user's API budget, and REST calls do not spend the dial
   budget. A server restart makes every open tab re-dial within about a second,
   and the burst is sized to cover that. Not configurable, like the other rate
