@@ -404,6 +404,15 @@ type Metrics struct {
 	MCPToolCallDuration  *prometheus.HistogramVec
 	MCPAuthzDenialsTotal *prometheus.CounterVec
 	MCPActiveSessions    prometheus.Gauge
+	// MCPPreAuthDeniedTotal counts /mcp requests refused BEFORE a caller
+	// was identified (PLAN-2310 DR-9, as amended on the plan): the
+	// measurement the DR-9 limits are revised from. Deliberately a
+	// counter and not audit rows, because unauthenticated traffic must
+	// not write to the database (a distributed probe beats the per-address
+	// limit, and every row is a write on a self-host's SQLite). The reason
+	// label is a closed set: "missing_token", "invalid_token",
+	// "rate_limited".
+	MCPPreAuthDeniedTotal *prometheus.CounterVec
 
 	// ContentWritesSupersededTotal counts item content writes the server
 	// REFUSED because the same tab had already applied a newer one
@@ -505,6 +514,11 @@ func New() *Metrics {
 	mcpAuthzDenialsTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pad_mcp_authz_denials_total",
 		Help: "Total number of /mcp authorization denials by reason.",
+	}, []string{"reason"})
+
+	mcpPreAuthDeniedTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "pad_mcp_preauth_denied_total",
+		Help: "Total number of /mcp requests refused before a caller was identified, by reason (missing_token, invalid_token, rate_limited).",
 	}, []string{"reason"})
 
 	// mcp_active_sessions tracks Streamable HTTP sessions inferred
@@ -690,6 +704,7 @@ func New() *Metrics {
 		mcpToolCallsTotal,
 		mcpToolCallDuration,
 		mcpAuthzDenialsTotal,
+		mcpPreAuthDeniedTotal,
 		mcpActiveSessions,
 		contentWritesSupersededTotal,
 		oauthFlowsTotal,
@@ -730,6 +745,7 @@ func New() *Metrics {
 		MCPToolCallsTotal:            mcpToolCallsTotal,
 		MCPToolCallDuration:          mcpToolCallDuration,
 		MCPAuthzDenialsTotal:         mcpAuthzDenialsTotal,
+		MCPPreAuthDeniedTotal:        mcpPreAuthDeniedTotal,
 		MCPActiveSessions:            mcpActiveSessions,
 		ContentWritesSupersededTotal: contentWritesSupersededTotal,
 		OAuthFlowsTotal:              oauthFlowsTotal,
