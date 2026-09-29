@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
+	import { api, isPlanLimitError } from '$lib/api/client';
+	import { showPlanLimitToast } from '$lib/billing/planLimitToast';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
@@ -357,7 +358,7 @@
 			newTokenName = '';
 		} catch (err) {
 			if (isPlanLimitError(err)) {
-				toastStore.show(planLimitMessage(err) + ' Upgrade to Pro', 'error', 6000, '/console/billing');
+				showPlanLimitToast(err);
 			} else {
 				tokenError = err instanceof Error ? err.message : 'Failed to create token';
 			}
@@ -726,12 +727,16 @@
 							{/if}
 						</p>
 					</div>
-					{#if authStore.user?.plan !== 'pro'}
-						<a href="/console/billing" class="primary-btn">
-							{authStore.billingAvailable ? 'Upgrade to Pro' : 'View Plans'}
-						</a>
-					{:else}
-						<a href="/console/billing" class="secondary-btn">Manage Billing</a>
+					<!-- In the mobile apps the card keeps the plan name and description
+					     only: no upgrade, plans or billing link (PLAN-3291 DR-3). -->
+					{#if authStore.commerceAllowed}
+						{#if authStore.user?.plan !== 'pro'}
+							<a href="/console/billing" class="primary-btn">
+								{authStore.billingAvailable ? 'Upgrade to Pro' : 'View Plans'}
+							</a>
+						{:else}
+							<a href="/console/billing" class="secondary-btn">Manage Billing</a>
+						{/if}
 					{/if}
 				</div>
 			</section>

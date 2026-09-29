@@ -898,8 +898,12 @@ func TestTextSafeHelpersAreUsedAtEveryCallSite(t *testing.T) {
 		t.Errorf("truncateBindableText occurrences = %d, want 5 (1 declaration + 4 call sites); "+
 			"a site was added or removed — re-justify and re-pin", safeTruncateUses)
 	}
-	if safeUAUses != 5 {
-		t.Errorf("requestUserAgent occurrences = %d, want 5 (1 declaration + 4 call sites); "+
+	// The fifth requestUserAgent call site is fromNativeShell (TASK-3293),
+	// which only substring-matches the mobile shells' marker to choose
+	// plan-limit copy and binds nothing to a column. It goes through the
+	// helper because this scan admits no other raw reader.
+	if safeUAUses != 6 {
+		t.Errorf("requestUserAgent occurrences = %d, want 6 (1 declaration + 5 call sites); "+
 			"a site was added or removed — re-justify and re-pin", safeUAUses)
 	}
 }

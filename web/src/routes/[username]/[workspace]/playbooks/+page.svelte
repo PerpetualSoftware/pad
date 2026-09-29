@@ -3,7 +3,8 @@
 	import { page } from '$app/state';
 	import { ownValue } from '$lib/utils/ownValue';
 	import { goto } from '$app/navigation';
-	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
+	import { api, isPlanLimitError } from '$lib/api/client';
+	import { showPlanLimitToast } from '$lib/billing/planLimitToast';
 	import { parseFields, parseSchema, itemUrlId, formatItemRef, type Collection, type Item } from '$lib/types';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { canCreateIn } from '$lib/collections/canCreateIn';
@@ -287,7 +288,7 @@
 			await loadPlaybooks(wsSlug);
 		} catch (err: unknown) {
 			if (isPlanLimitError(err)) {
-				toastStore.show(planLimitMessage(err) + ' Upgrade to Pro', 'error', 6000, '/console/billing');
+				showPlanLimitToast(err);
 			} else {
 				toastStore.show((err as Error)?.message || 'Failed to create playbook', 'error');
 			}
@@ -358,7 +359,7 @@
 			await loadPlaybooks(wsSlug);
 		} catch (err: unknown) {
 			if (isPlanLimitError(err)) {
-				toastStore.show(planLimitMessage(err) + ' Upgrade to Pro', 'error', 6000, '/console/billing');
+				showPlanLimitToast(err);
 			} else {
 				toastStore.show((err as Error)?.message || 'Failed to duplicate playbook', 'error');
 			}

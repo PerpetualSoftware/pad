@@ -441,7 +441,7 @@ func (s *Server) handleCopyItem(w http.ResponseWriter, r *http.Request) {
 		}),
 	})
 	if err != nil {
-		s.writeCopyError(w, err)
+		s.writeCopyError(w, r, err)
 		return
 	}
 
@@ -766,7 +766,7 @@ func (s *Server) emitCopyFanout(r *http.Request, res *store.CrossWorkspaceCopyRe
 // writeCopyError maps the store's typed errors onto the statuses the
 // contract promises. Everything the store classifies as a caller-facing
 // rejection has an entry; the default is the DR-13 ambiguity message.
-func (s *Server) writeCopyError(w http.ResponseWriter, err error) {
+func (s *Server) writeCopyError(w http.ResponseWriter, r *http.Request, err error) {
 	// The in-tx authorization re-check, first: it must produce the SAME
 	// response the same denial would have produced at the top of the
 	// request. A caller whose grant was revoked mid-copy learns exactly what
@@ -783,7 +783,7 @@ func (s *Server) writeCopyError(w http.ResponseWriter, err error) {
 
 	var limit *store.ItemLimitError
 	if errors.As(err, &limit) {
-		writePlanLimitError(w, limit.Result)
+		writePlanLimitError(w, r, limit.Result)
 		return
 	}
 

@@ -163,6 +163,14 @@ function notifyIdentityChange() {
 	for (const fn of identityListeners) fn(previousUserId);
 }
 
+// The user-agent token both mobile shells append (PLAN-3291 DR-2). The server
+// matches the same prefix (internal/server/handlers_cloud.go nativeShellMarker).
+export const NATIVE_SHELL_MARKER = 'PadShell/';
+
+function isNativeShell(): boolean {
+	return typeof navigator !== 'undefined' && (navigator.userAgent ?? '').includes(NATIVE_SHELL_MARKER);
+}
+
 export const authStore = {
 	get session() { return session; },
 	get user() { return session?.user ?? null; },
@@ -179,6 +187,19 @@ export const authStore = {
 	// this value — false means the CTA is hidden entirely, not just disabled.
 	// TASK-800.
 	get billingAvailable() { return session?.billing_available ?? false; },
+	// nativeShell is true inside a Pad mobile app's web view: both shells append
+	// the `PadShell/1` marker to every request's user agent (PLAN-3291 DR-2;
+	// pad-mobile AppUserAgent.MARKER / UserAgent.marker). The prefix is matched
+	// so a future `PadShell/2` is still an app. Read live, not cached: it costs a
+	// substring search and has no session to wait for.
+	get nativeShell() { return isNativeShell(); },
+	// commerceAllowed is the ONE choke point every billing surface reads
+	// (PLAN-3291 DR-3): an upgrade call to action, a pricing or billing link, a
+	// plans table. False in the mobile apps, which may carry no purchase path
+	// and no call to action for one (Apple 3.1.3(f), Play's anti-steering rule;
+	// BUG-3290), and false off Pad Cloud, which has no plans. The purchase
+	// buttons additionally need billingAvailable.
+	get commerceAllowed() { return (session?.cloud_mode ?? false) && !isNativeShell(); },
 	// emailConfigured is false on a self-host instance with no transactional
 	// email provider wired. Defaults to true when absent (older servers, or
 	// before the session loads) so reset/invite flows keep their normal copy

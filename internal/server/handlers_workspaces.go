@@ -439,7 +439,7 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 	// beginWorkspaceMint makes the same decision.
 	ws, err := s.store.CreateWorkspace(input, s.planLimitMintOpts(mint.OwnerID)...)
 	if err != nil {
-		if writeStorePlanLimitError(w, err, "") {
+		if writeStorePlanLimitError(w, r, err, "") {
 			return
 		}
 		writeInternalError(w, err)
@@ -938,7 +938,7 @@ func (s *Server) handleImportWorkspace(w http.ResponseWriter, r *http.Request) {
 
 	ws, importReport, err := s.store.ImportWorkspaceWithReport(&data, newName, userID, mint.Source, s.planLimitMintOpts(userID)...)
 	if err != nil {
-		if writeStorePlanLimitError(w, err, "") {
+		if writeStorePlanLimitError(w, r, err, "") {
 			return
 		}
 		// A refusal about the EXPORT the caller supplied is a 400, not a 500

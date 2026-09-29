@@ -79,7 +79,7 @@ func (s *Server) beginWorkspaceMint(w http.ResponseWriter, r *http.Request) (wor
 	// behaviour both doors already had rather than changing it under cover
 	// of a refactor.
 	if userID != "" {
-		if !s.enforceUserPlanLimit(w, userID, "workspaces") {
+		if !s.enforceUserPlanLimit(w, r, userID, "workspaces") {
 			return workspaceMintAuth{}, false
 		}
 	}

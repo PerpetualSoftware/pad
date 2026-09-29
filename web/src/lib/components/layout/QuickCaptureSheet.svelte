@@ -15,7 +15,8 @@
 -->
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
+	import { api, isPlanLimitError } from '$lib/api/client';
+	import { showPlanLimitToast } from '$lib/billing/planLimitToast';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
@@ -96,12 +97,7 @@
 			goto(`${wsPrefix}/${coll.slug}/${itemUrlId(item)}?new=1`);
 		} catch (err: any) {
 			if (isPlanLimitError(err)) {
-				toastStore.show(
-					planLimitMessage(err) + ' Upgrade to Pro',
-					'error',
-					6000,
-					'/console/billing'
-				);
+				showPlanLimitToast(err);
 			} else {
 				toastStore.show(err?.message || 'Failed to create item', 'error');
 			}

@@ -197,7 +197,7 @@ func (s *Server) handleImportArtifact(w http.ResponseWriter, r *http.Request) {
 	// Enforce the workspace item-count limit (workspace-scoped), identical to
 	// handleCreateItem. Writes the 403 plan_limit_exceeded response itself when
 	// the cap is hit; no-op in self-hosted mode.
-	if !s.enforcePlanLimit(w, workspaceID, "items_per_workspace") {
+	if !s.enforcePlanLimit(w, r, workspaceID, "items_per_workspace") {
 		return
 	}
 
@@ -207,7 +207,7 @@ func (s *Server) handleImportArtifact(w http.ResponseWriter, r *http.Request) {
 	// the artifacts most likely to hold pre-validation junk.
 	item, cerr := s.createItemChecked(r, workspaceID, coll, schema, input, normalizedFields, "", relationsCarry)
 	if cerr != nil {
-		cerr.write(w)
+		cerr.write(w, r)
 		return
 	}
 

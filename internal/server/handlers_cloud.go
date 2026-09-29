@@ -1115,7 +1115,7 @@ func (s *Server) handleGetPlanLimits(w http.ResponseWriter, r *http.Request) {
 // The check is ADVISORY: a concurrent request can fill the cap after it. The
 // door's insert must also pass workspaceLimitMintOpts(), which decides the
 // limit authoritatively in the insert's transaction (BUG-2808).
-func (s *Server) enforcePlanLimit(w http.ResponseWriter, workspaceID, feature string) bool {
+func (s *Server) enforcePlanLimit(w http.ResponseWriter, r *http.Request, workspaceID, feature string) bool {
 	if !s.cloudMode {
 		return true // Self-hosted: no limits
 	}
@@ -1141,7 +1141,7 @@ func (s *Server) enforcePlanLimit(w http.ResponseWriter, workspaceID, feature st
 		return false
 	}
 	if !result.Allowed {
-		writePlanLimitError(w, result)
+		writePlanLimitError(w, r, result)
 		return false
 	}
 	if s.planLimitAdmittedHook != nil {
@@ -1153,7 +1153,7 @@ func (s *Server) enforcePlanLimit(w http.ResponseWriter, workspaceID, feature st
 // enforceUserPlanLimit checks a user-scoped plan limit and writes a 403
 // error if the limit is exceeded. Returns true if the operation is allowed.
 // In non-cloud mode, always returns true (no limits enforced).
-func (s *Server) enforceUserPlanLimit(w http.ResponseWriter, userID, feature string) bool {
+func (s *Server) enforceUserPlanLimit(w http.ResponseWriter, r *http.Request, userID, feature string) bool {
 	if !s.cloudMode {
 		return true // Self-hosted: no limits
 	}
@@ -1173,7 +1173,7 @@ func (s *Server) enforceUserPlanLimit(w http.ResponseWriter, userID, feature str
 		return false
 	}
 	if !result.Allowed {
-		writePlanLimitError(w, result)
+		writePlanLimitError(w, r, result)
 		return false
 	}
 	if s.planLimitAdmittedHook != nil {
@@ -1207,12 +1207,12 @@ func (s *Server) workspaceLimitMintOpts() []store.MintOption {
 // writeStorePlanLimitError answers a *store.PlanLimitError with the same 403
 // the advisory pre-check writes, and reports whether err was one. note, when
 // non-empty, is appended to the message.
-func writeStorePlanLimitError(w http.ResponseWriter, err error, note string) bool {
+func writeStorePlanLimitError(w http.ResponseWriter, r *http.Request, err error, note string) bool {
 	var ple *store.PlanLimitError
 	if !errors.As(err, &ple) {
 		return false
 	}
-	writePlanLimitErrorNote(w, &ple.Result, note)
+	writePlanLimitErrorNote(w, r, &ple.Result, note)
 	return true
 }
 
@@ -1220,16 +1220,16 @@ func writeStorePlanLimitError(w http.ResponseWriter, err error, note string) boo
 // The envelope follows the standard {"error":{"code":...,"message":...,"details":{...}}}
 // shape so PadApiError (frontend), cli.APIError (CLI), and the MCP classifier can
 // all parse it uniformly. TASK-788.
-func writePlanLimitError(w http.ResponseWriter, result *store.LimitResult) {
-	writePlanLimitErrorNote(w, result, "")
+func writePlanLimitError(w http.ResponseWriter, r *http.Request, result *store.LimitResult) {
+	writePlanLimitErrorNote(w, r, result, "")
 }
 
-func writePlanLimitErrorNote(w http.ResponseWriter, result *store.LimitResult, note string) {
-	msg := planLimitMessage(result)
+func writePlanLimitErrorNote(w http.ResponseWriter, r *http.Request, result *store.LimitResult, note string) {
+	msg := planLimitMessage(r, result)
 	if note != "" {
 		msg += " " + note
 	}
-	writeError2(w, http.StatusForbidden, "plan_limit_exceeded", msg, planLimitDetails(result))
+	writeError2(w, http.StatusForbidden, "plan_limit_exceeded", msg, planLimitDetails(r, result))
 }
 
 // writeMemberLimitError answers an INVITEE whose accept would take a workspace
@@ -1244,14 +1244,21 @@ func writePlanLimitErrorNote(w http.ResponseWriter, result *store.LimitResult, n
 // contact detail they were not given. With no display name the message says
 // "the workspace owner". A failed lookup degrades to the same wording rather
 // than failing the refusal.
-func (s *Server) writeMemberLimitError(w http.ResponseWriter, workspaceID string, result *store.LimitResult) {
+func (s *Server) writeMemberLimitError(w http.ResponseWriter, r *http.Request, workspaceID string, result *store.LimitResult) {
 	owner := "the workspace owner"
 	if ws, err := s.store.GetWorkspaceByID(workspaceID); err == nil && ws != nil && ws.OwnerID != "" {
 		if u, err := s.store.GetUser(ws.OwnerID); err == nil && u != nil && strings.TrimSpace(u.Name) != "" {
 			owner = "the workspace owner, " + strings.TrimSpace(u.Name) + ","
 		}
 	}
-	msg := fmt.Sprintf("This workspace has reached its %d-member limit. Ask %s to make room or upgrade their plan, then accept this invitation again.", result.Limit, owner)
+	// The mobile apps carry no call to action for a purchase, not even one
+	// addressed to someone else (PLAN-3291 DR-1), so a shell's invitee is told
+	// only to ask for room.
+	remedy := "make room or upgrade their plan"
+	if fromNativeShell(r) {
+		remedy = "make room"
+	}
+	msg := fmt.Sprintf("This workspace has reached its %d-member limit. Ask %s to %s, then accept this invitation again.", result.Limit, owner, remedy)
 	writeError2(w, http.StatusForbidden, "workspace_member_limit", msg, map[string]interface{}{
 		"feature": result.Feature,
 		"limit":   result.Limit,
@@ -1264,7 +1271,7 @@ func (s *Server) writeMemberLimitError(w http.ResponseWriter, workspaceID string
 // 403. Cloud mode only. Returns true if the accept may proceed. It fires
 // planLimitAdmittedHook like enforcePlanLimit, so tests can land a competing
 // member in the window before the authoritative insert.
-func (s *Server) checkMemberLimitForAccept(w http.ResponseWriter, workspaceID string) bool {
+func (s *Server) checkMemberLimitForAccept(w http.ResponseWriter, r *http.Request, workspaceID string) bool {
 	if !s.cloudMode {
 		return true
 	}
@@ -1276,7 +1283,7 @@ func (s *Server) checkMemberLimitForAccept(w http.ResponseWriter, workspaceID st
 		return false
 	}
 	if !result.Allowed {
-		s.writeMemberLimitError(w, workspaceID, result)
+		s.writeMemberLimitError(w, r, workspaceID, result)
 		return false
 	}
 	if s.planLimitAdmittedHook != nil {
@@ -1288,24 +1295,45 @@ func (s *Server) checkMemberLimitForAccept(w http.ResponseWriter, workspaceID st
 // writeStoreMemberLimitError is writeStorePlanLimitError for the accept
 // doors: it answers a *store.PlanLimitError with writeMemberLimitError and
 // reports whether err was one.
-func (s *Server) writeStoreMemberLimitError(w http.ResponseWriter, workspaceID string, err error) bool {
+func (s *Server) writeStoreMemberLimitError(w http.ResponseWriter, r *http.Request, workspaceID string, err error) bool {
 	var ple *store.PlanLimitError
 	if !errors.As(err, &ple) {
 		return false
 	}
-	s.writeMemberLimitError(w, workspaceID, &ple.Result)
+	s.writeMemberLimitError(w, r, workspaceID, &ple.Result)
 	return true
 }
 
+// nativeShellMarker is the user-agent token both mobile shells append to every
+// web-view request (pad-mobile AppUserAgent.MARKER, UserAgent.marker; the
+// shells send "PadShell/1"). PLAN-3291 DR-2 matches the prefix, so a future
+// "PadShell/2" is still an app.
+const nativeShellMarker = "PadShell/"
+
+// fromNativeShell reports whether r came from a Pad mobile app's web view.
+// PLAN-3291 DR-1: the apps carry no purchase path, so a plan-limit refusal
+// addressed to one names no upgrade destination. The user agent is not an
+// authorization boundary and nothing that matters for security reads this;
+// it only decides whether commerce copy is offered. A nil request is not an
+// app.
+func fromNativeShell(r *http.Request) bool {
+	return r != nil && strings.Contains(requestUserAgent(r), nativeShellMarker)
+}
+
 // planLimitDetails is the structured half of a plan-limit refusal, shared by
-// the 403 and by the bulk envelope's per-item failure.
-func planLimitDetails(result *store.LimitResult) map[string]interface{} {
+// the 403 and by the bulk envelope's per-item failure. It takes the request so
+// every door has to say who it is answering (PLAN-3291 DR-3): a request from a
+// mobile shell gets no upgrade_url, and every other request gets the same map
+// as before.
+func planLimitDetails(r *http.Request, result *store.LimitResult) map[string]interface{} {
 	d := map[string]interface{}{
-		"feature":     result.Feature,
-		"limit":       result.Limit,
-		"current":     result.Current,
-		"plan":        result.Plan,
-		"upgrade_url": "/console/billing",
+		"feature": result.Feature,
+		"limit":   result.Limit,
+		"current": result.Current,
+		"plan":    result.Plan,
+	}
+	if !fromNativeShell(r) {
+		d["upgrade_url"] = "/console/billing"
 	}
 	// `requested` appears only where an operation adds more than one at once
 	// (BUG-3103: ImportWorkspace). Every other door leaves Requested zero and
@@ -1329,8 +1357,12 @@ func (s *Server) restoreLimitOpts() []store.MutationOption {
 // planLimitMessage returns a human-readable statement-of-fact sentence for a
 // plan limit violation. Each surface (web toast, CLI, MCP hint) appends its
 // own upgrade call-to-action so the message itself doesn't repeat it (B1 fix).
+// That is also why a mobile shell's request gets the same sentence: it carries
+// no upgrade wording to remove. It takes the request anyway so that any future
+// wording must decide per caller (PLAN-3291 DR-3), and a test pins the
+// shell's sentence free of upgrade words.
 // Uses hyphenated adjective form ("3-member") per B2 fix. TASK-788.
-func planLimitMessage(result *store.LimitResult) string {
+func planLimitMessage(r *http.Request, result *store.LimitResult) string {
 	featureLabel := map[string]string{
 		"items_per_workspace":   "item",
 		"members_per_workspace": "member",

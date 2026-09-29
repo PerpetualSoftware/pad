@@ -102,7 +102,10 @@ class PadApiError extends Error {
 	 *
 	 * For `plan_limit_exceeded` (TASK-788) the shape is:
 	 *   { feature: string, limit: number, current: number, plan: string,
-	 *     upgrade_url: string, requested?: number }
+	 *     upgrade_url?: string, requested?: number }
+ *
+ * `upgrade_url` is absent when the request came from a mobile shell
+ * (PLAN-3291 DR-3).
 	 *
 	 * `requested` appears only where one operation would add MORE THAN ONE of
 	 * the feature at once — today workspace import (BUG-3103) — and is the
@@ -319,18 +322,22 @@ function isConflictOrNotFound(err: unknown): err is PadApiError {
 }
 
 /**
- * Returns a human-readable upgrade-signal message for a plan limit error.
+ * Returns a human-readable statement of a plan limit error, with no upgrade
+ * copy (showPlanLimitToast adds that where commerce is allowed).
  * Falls back to the server-supplied `err.message` if details are unavailable,
  * so the function is always safe to call. TASK-788.
  *
  * Example output:
- *   "You've reached the 3-member limit on the free plan. Upgrade to Pro →"
+ *   "You've reached the 3-member limit on the free plan."
  */
 function planLimitMessage(err: PadApiError): string {
 	// The server already sends a good sentence in err.message (TASK-788).
 	// We use it directly here so there is a single source of truth for the
 	// wording; callers append the upgrade link separately in the UI.
-	return err.message || 'Plan limit reached. Upgrade to Pro to continue.';
+	// Neutral on purpose: this string reaches the mobile apps, which may carry
+	// no upgrade call to action (PLAN-3291 DR-3). showPlanLimitToast adds the
+	// upgrade copy where commerce is allowed.
+	return err.message || 'Plan limit reached.';
 }
 
 /**

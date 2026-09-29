@@ -3,7 +3,8 @@
 	import { roleIcon } from '$lib/utils/roleIcon';
 	import { page } from '$app/state';
 	import { onDestroy, onMount } from 'svelte';
-	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
+	import { api, isPlanLimitError } from '$lib/api/client';
+	import { showPlanLimitToast } from '$lib/billing/planLimitToast';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
@@ -200,7 +201,7 @@
 			// state entirely (BUG-3084).
 			if (!identityHeld(epochAtEntry)) return;
 			if (isPlanLimitError(err)) {
-				toastStore.show(planLimitMessage(err) + ' Upgrade to Pro', 'error', 6000, '/console/billing');
+				showPlanLimitToast(err);
 			} else {
 				// BUG-3115: this used to be console-only, so a refusal looked
 				// like a button that did nothing.

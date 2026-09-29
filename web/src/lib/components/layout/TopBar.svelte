@@ -292,7 +292,8 @@
 					<a href="/console/settings" class="menu-link" role="menuitem" onclick={closeUserMenu}>
 						Settings
 					</a>
-					{#if authStore.cloudMode}
+					<!-- Hidden in the mobile apps: no purchase path there (PLAN-3291 DR-3). -->
+					{#if authStore.commerceAllowed}
 						<a href="/console/billing" class="menu-link" role="menuitem" onclick={closeUserMenu}>
 							Billing
 						</a>

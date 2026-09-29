@@ -4,7 +4,8 @@
 	import { page, navigating } from '$app/state';
 	import { browser } from '$app/environment';
 	import { goto, beforeNavigate, afterNavigate } from '$app/navigation';
-	import { api, PadApiError, isPlanLimitError, planLimitMessage, isConflictOrNotFound } from '$lib/api/client';
+	import { api, PadApiError, isPlanLimitError, isConflictOrNotFound } from '$lib/api/client';
+	import { showPlanLimitToast } from '$lib/billing/planLimitToast';
 	import type { BulkItemFailure, BulkItemsRequest, Collection, Item, PaneTarget, QuickAction, View, ViewConfig } from '$lib/types';
 	import { parseSettings, parseFields, parseSchema, parseTags, getStatusOptions, itemUrlId, formatItemRef } from '$lib/types';
 	import { plansProgressToMap, fetchCollectionProgress } from '$lib/collections/progressMerge';
@@ -2414,7 +2415,7 @@
 		} catch (err: any) {
 			if (!identityHeld(epochAtEntry)) return;
 			if (isPlanLimitError(err)) {
-				toastStore.show(planLimitMessage(err) + ' Upgrade to Pro', 'error', 6000, '/console/billing');
+				showPlanLimitToast(err);
 			} else {
 				toastStore.show(err?.message || 'Failed to create item', 'error');
 			}
@@ -2510,7 +2511,7 @@
 			// user's unsaved text (BUG-3084).
 			if (identityHeld(epochAtEntry)) {
 				if (isPlanLimitError(err)) {
-					toastStore.show(planLimitMessage(err) + ' Upgrade to Pro', 'error', 6000, '/console/billing');
+					showPlanLimitToast(err);
 				} else {
 					toastStore.show(err?.message || 'Failed to create item', 'error');
 				}
@@ -2723,7 +2724,7 @@
 		} catch (err: any) {
 			if (!identityHeld(epochAtEntry)) return;
 			if (isPlanLimitError(err)) {
-				toastStore.show(planLimitMessage(err) + ' Upgrade to Pro', 'error', 6000, '/console/billing');
+				showPlanLimitToast(err);
 			} else {
 				toastStore.show(err?.message || 'Failed to create item', 'error');
 			}

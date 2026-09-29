@@ -166,6 +166,9 @@
 						>
 							Connected Apps
 						</a>
+					{/if}
+					<!-- Hidden in the mobile apps: no purchase path there (PLAN-3291 DR-3). -->
+					{#if authStore.commerceAllowed}
 						<a
 							href="/console/billing"
 							class="nav-link"
