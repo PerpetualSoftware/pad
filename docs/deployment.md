@@ -1108,9 +1108,9 @@ them needs a restart. The toggle does not.
 
 #### Turning it on
 
-An admin turns MCP on and off at runtime, with no restart. On a self-hosted
-install the console does not show the MCP toggle or Connected Apps yet, so use
-the API (an admin's personal API token works):
+An admin turns MCP on and off at runtime, with no restart: in the console
+under **Admin → Settings → MCP for agents** (check **Enable MCP**, then
+**Save MCP Settings**), or through the API with an admin's personal API token:
 
 ```bash
 curl -X PUT https://pad.example.com/api/v1/admin/mcp \
@@ -1180,11 +1180,13 @@ These apply on Pad Cloud too.
 | `/oauth/register` (client registration) | 5/hour, burst 5 | client address |
 | `POST /api/v1/oauth/claim` (claim codes) | 10/min, burst 10 | signed-in user |
 
-A request with a valid token never draws from the `/mcp` bucket. Refusals on
-`/mcp` before a caller is identified are counted in the Prometheus counter
+A request with a valid token never draws from the `/mcp` bucket. Requests to
+`/mcp` refused for a missing or invalid token, and those refused by this
+limit, are counted in the Prometheus counter
 `pad_mcp_preauth_denied_total{reason}` (`missing_token`, `invalid_token`,
-`rate_limited`), not written to the audit log. An address that exhausts the
-limit is logged once at `WARN`.
+`rate_limited`), not written to the audit log. A `421` from the host check
+happens earlier and is not counted there. An address that exhausts the limit
+is logged once at `WARN`.
 
 Behind a proxy, set `PAD_TRUSTED_PROXIES` to the proxy's addresses so the
 limits key on the real client address. Otherwise every request shares the
