@@ -985,8 +985,12 @@ func (s *Store) DeleteUser(id string) error {
 //
 // The retried body is database-only: every statement runs in the attempt's
 // transaction, and nothing outside it (files, email, events, billing) is
-// touched here, so a rolled-back attempt leaves nothing behind. Callers do
-// their external effects after this returns.
+// touched here, so a rolled-back attempt leaves nothing behind and a retry
+// repeats no external effect. The account handler's Stripe cancel runs once,
+// BEFORE this call, on purpose (TASK-690: a cancel that fails must stop the
+// delete); a retry here does not repeat it, and succeeding on a retry is
+// what keeps a late reference from reaching the handler's partial-delete
+// branch.
 //
 // SQLite never retries: BEGIN IMMEDIATE serialises every writer, so no
 // reference can land inside the transaction, and its errors carry no

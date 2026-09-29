@@ -844,6 +844,12 @@ func (s *Store) CreateInvitation(workspaceID, email, role, invitedBy string) (*m
 	if err != nil {
 		return nil, err
 	}
+	if inv == nil {
+		// Deleted between the insert and this read, e.g. by the inviter's
+		// account deletion, which deletes the invitations it sent
+		// (BUG-3289). GetInvitation answers nil, nil for a missing row.
+		return nil, fmt.Errorf("create invitation: deleted concurrently: %w", sql.ErrNoRows)
+	}
 	// Return the plaintext code to the caller (not stored in DB)
 	inv.Code = code
 	return inv, nil
