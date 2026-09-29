@@ -210,6 +210,19 @@ func TestDR9_CloudKeysOnTheForwardedAddress(t *testing.T) {
 	}
 }
 
+// The reason label is a closed set: a code outside it is counted as
+// invalid_token and never mints its own series.
+func TestDR9_PreAuthReasonIsAClosedSet(t *testing.T) {
+	srv := &Server{metrics: metrics.New()}
+	srv.recordMCPPreAuthDenied("caller-chosen-code")
+	if got := counterValue(t, srv.metrics.MCPPreAuthDeniedTotal.WithLabelValues("invalid_token")); got != 1 {
+		t.Errorf("an unknown code: invalid_token = %v, want 1", got)
+	}
+	if got := counterValue(t, srv.metrics.MCPPreAuthDeniedTotal.WithLabelValues("caller-chosen-code")); got != 0 {
+		t.Errorf("an unknown code minted its own series (value %v)", got)
+	}
+}
+
 // An address that exhausts the pre-auth bucket is named in one WARN, not
 // one per refusal.
 func TestDR9_PreAuthLimitWarnsOncePerAddress(t *testing.T) {
