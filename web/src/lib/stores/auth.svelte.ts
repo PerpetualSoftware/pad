@@ -187,6 +187,11 @@ export const authStore = {
 	// this value — false means the CTA is hidden entirely, not just disabled.
 	// TASK-800.
 	get billingAvailable() { return session?.billing_available ?? false; },
+	// oauthAvailable: MCP's OAuth path is available (PLAN-2310 DR-7), which is
+	// what Connected Apps exists for. Always on Pad Cloud; on a self-hosted
+	// install, the admin toggle on with an https origin. An older server that
+	// does not send it offered OAuth only in cloud mode.
+	get oauthAvailable() { return session?.oauth_available ?? session?.cloud_mode ?? false; },
 	// nativeShell is true inside a Pad mobile app's web view: both shells append
 	// the `PadShell/1` marker to every request's user agent (PLAN-3291 DR-2;
 	// pad-mobile AppUserAgent.MARKER / UserAgent.marker). The prefix is matched

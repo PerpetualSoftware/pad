@@ -156,7 +156,9 @@
 					>
 						Deleted workspaces
 					</a>
-					{#if authStore.cloudMode}
+					<!-- Connected Apps lists OAuth grants, so it follows the OAuth path, not
+					     cloud mode (PLAN-2310 DR-7). -->
+					{#if authStore.oauthAvailable}
 						<a
 							href="/console/connected-apps"
 							class="nav-link"

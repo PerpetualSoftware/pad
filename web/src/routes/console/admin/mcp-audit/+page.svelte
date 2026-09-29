@@ -147,7 +147,7 @@
 		</div>
 	{:else if entries.length === 0}
 		<EmptyState
-			title="No MCP audit entries"
+			title="No MCP activity recorded"
 			message="Audit rows appear here as soon as the first /mcp request lands."
 		/>
 	{:else}

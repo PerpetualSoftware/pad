@@ -59,6 +59,8 @@ export interface Stats {
 	users_by_plan: Record<string, number>;
 	workspaces: number;
 	cloud_mode: boolean;
+	mcp_available?: boolean;
+	oauth_available?: boolean;
 }
 
 export interface LimitTiers {

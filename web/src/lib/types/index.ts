@@ -2748,6 +2748,29 @@ export interface ResolvedItemIdentity {
 
 // Decision provider settings (TASK-3121) — GET/PUT /admin/decision-provider.
 // The API key is never returned, masked or otherwise: only api_key_set.
+// MCP over HTTP (PLAN-2310 DR-2 / DR-7): GET/PUT /api/v1/admin/mcp.
+export interface MCPSettings {
+	enabled: boolean;
+	/** Where `enabled` comes from. `environment` and `cloud` are locked. */
+	source: 'setting' | 'environment' | 'cloud';
+	locked: boolean;
+	readiness: {
+		origin: string;
+		origin_var?: string;
+		mcp_url: string;
+		auth_server_url: string;
+		https: boolean;
+		/** `["oauth","pat"]` on https, `["pat"]` on http, `[]` with no usable origin. */
+		auth_methods: string[];
+		/** "VARIABLE value is not usable: reason" lines. */
+		problems: string[];
+		state: 'on' | 'off' | 'blocked';
+		blocked?: string;
+		/** What would work again if MCP were turned on; turning it off revokes nothing. */
+		resume: { oauth_connections: number; pats: number };
+	};
+}
+
 export interface DecisionSettings {
 	/** What the running server uses. */
 	effective: { enabled: boolean; provider: string; model: string; api_key_set: boolean };
