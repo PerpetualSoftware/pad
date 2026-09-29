@@ -90,6 +90,12 @@ func (s *Store) CreateShareLink(workspaceID, targetType, targetID, permission, c
 	if err != nil {
 		return nil, err
 	}
+	if link == nil {
+		// Deleted between the insert and this read, e.g. by its creator's
+		// account deletion, which deletes the links it created (BUG-3289).
+		// GetShareLink answers nil, nil for a missing row.
+		return nil, fmt.Errorf("create share link: deleted concurrently: %w", sql.ErrNoRows)
+	}
 	link.Token = rawToken // Only set on creation
 	return link, nil
 }

@@ -18,9 +18,6 @@ import (
 // it. One subtest per writer, so a red names the writer. Only Postgres
 // discriminates (40P01); SQLite serialises every writer.
 //
-// The deleting user as a share-link VIEWER is not here: that race fails the
-// deletion on a foreign key rather than deadlocking, and is BUG-3289.
-//
 // The deleting user is a. u is another user, a guest or member of a's
 // workspace wa, with a tab on it; wu is a workspace u owns, where a is a
 // member.
@@ -67,6 +64,42 @@ func TestDeleteAccountAtomic_ConcurrentWriters(t *testing.T) {
 		}},
 		{"share link view of the deleting user's link", accessMember, nil, func(s *Store, w world) error {
 			_, err := s.RecordShareLinkView(w.linkA, "fp-u", w.u.ID, nil)
+			return err
+		}},
+		// Writers that insert a row referencing the deleting user through a
+		// foreign key with no ON DELETE action (BUG-3289). Landing after the
+		// cleanup for that table, such a row used to fail the deletion's
+		// DELETE FROM users with 23503.
+		{"share link view by the deleting user", accessMember, refGone, func(s *Store, w world) error {
+			_, err := s.RecordShareLinkView(w.linkU, "fp-a", w.a.ID, nil)
+			return err
+		}},
+		{"share link view by the deleting user of its own link", accessMember, refGone, func(s *Store, w world) error {
+			_, err := s.RecordShareLinkView(w.linkA, "fp-a", w.a.ID, nil)
+			return err
+		}},
+		{"session minted for the deleting user", accessMember, refGone, func(s *Store, w world) error {
+			_, err := s.CreateSession(w.a.ID, "", "", "", time.Hour)
+			return err
+		}},
+		{"password reset for the deleting user", accessMember, refGone, func(s *Store, w world) error {
+			_, err := s.CreatePasswordReset(w.a.ID)
+			return err
+		}},
+		{"api token minted for the deleting user", accessMember, refGone, func(s *Store, w world) error {
+			_, err := s.CreateAPIToken(w.a.ID, models.APITokenCreate{Name: "probe"}, 30, 365)
+			return err
+		}},
+		{"invitation sent by the deleting user", accessMember, refGone, func(s *Store, w world) error {
+			_, err := s.CreateInvitation(w.wu, "invitee-"+w.a.ID[:8]+"@example.com", "viewer", w.a.ID)
+			return err
+		}},
+		{"share link created by the deleting user", accessMember, refGone, func(s *Store, w world) error {
+			_, err := s.CreateShareLink(w.wu, "item", w.iu, "view", w.a.ID, nil)
+			return err
+		}},
+		{"collection grant issued by the deleting user", accessMember, refGone, func(s *Store, w world) error {
+			_, err := s.CreateCollectionGrant(w.wu, w.cu, w.u.ID, "edit", w.a.ID)
 			return err
 		}},
 		{"assign the deleting user's item to another user", accessMember, nil, func(s *Store, w world) error {
@@ -211,6 +244,10 @@ func TestDeleteAccountAtomic_ConcurrentWriters(t *testing.T) {
 		{"parked after tabs", "SET created_by_user_id = NULL", `SELECT id FROM items WHERE id = $1 FOR UPDATE`, func(w world) string { return w.ia }},
 		// Waits in step 3, after step 2 de-identified a's rows.
 		{"parked after de-identify", "DELETE FROM sessions WHERE user_id", `SELECT id FROM sessions WHERE user_id = $1 FOR UPDATE`, func(w world) string { return w.a.ID }},
+		// Waits at DELETE FROM users, after every cleanup statement: KEY SHARE
+		// on the users row is what an inserted reference takes too, so it
+		// conflicts only with the delete (BUG-3289).
+		{"parked before the users delete", "DELETE FROM users WHERE id", `SELECT id FROM users WHERE id = $1 FOR KEY SHARE`, func(w world) string { return w.a.ID }},
 	}
 	for pi, park := range parks {
 		pi, park := pi, park
@@ -283,6 +320,14 @@ const (
 // grant) was deleted by the account deletion. Matched on the sentinel, not on
 // message text: a deadlock taking the same lock carries the same wrapper.
 func userGone(err error) bool { return errors.Is(err, sql.ErrNoRows) }
+
+// refGone is a write referencing the deleting user (or a row it owned) after
+// the deletion removed it: the foreign key refuses it, or the row it updates
+// first is gone.
+func refGone(err error) bool {
+	msg := err.Error()
+	return userGone(err) || strings.Contains(msg, "SQLSTATE 23503") || strings.Contains(msg, "FOREIGN KEY constraint failed")
+}
 
 // assigneeGone is an assignment naming a user the deletion removed: the
 // store's membership check refuses it when the deletion committed first, and

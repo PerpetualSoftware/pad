@@ -7,12 +7,15 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/jackc/pgx/v5/pgconn"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -968,7 +971,101 @@ func (s *Store) DeleteUser(id string) error {
 //     (ON DELETE CASCADE); items.assigned_user_id and activities.user_id
 //     (ON DELETE SET NULL; activities gained its FK action in migrations
 //     072/050).
+//
+// On Postgres a row referencing the user can still commit after the cleanup
+// statement for its table and before the final DELETE FROM users (a login,
+// a share-link view, a grant the user issues in another tab): the users-row
+// lock here is NO KEY UPDATE, which a referencing insert's FOR KEY SHARE does
+// not wait for. The delete then fails its foreign key (BUG-3289). Such a
+// failure rolls the whole attempt back, so it is retried from the top, where
+// the cleanup sees the new row. Taking the users row FOR UPDATE instead
+// would make those inserts wait, but a writer that locks a row this
+// transaction writes later (a share-link view of the user's own link) and
+// then references the user would deadlock against it (measured: 40P01).
+//
+// The retried body is database-only: every statement runs in the attempt's
+// transaction, and nothing outside it (files, email, events, billing) is
+// touched here, so a rolled-back attempt leaves nothing behind and a retry
+// repeats no external effect. The account handler's Stripe cancel runs once,
+// BEFORE this call, on purpose (TASK-690: a cancel that fails must stop the
+// delete); a retry here does not repeat it, and succeeding on a retry is
+// what keeps a late reference from reaching the handler's partial-delete
+// branch.
+//
+// SQLite never retries: BEGIN IMMEDIATE serialises every writer, so no
+// reference can land inside the transaction, and its errors carry no
+// SQLSTATE for lateUserReference to match.
 func (s *Store) DeleteAccountAtomic(userID string) error {
+	for attempt := 1; ; attempt++ {
+		err := s.deleteAccountAtomicOnce(userID)
+		constraint, late := lateUserReference(err)
+		if !late {
+			return err
+		}
+		if attempt == deleteAccountAttempts {
+			slog.Warn("delete account: a reference to the user kept landing after cleanup; giving up",
+				"user_id", userID, "constraint", constraint, "attempts", attempt)
+			return err
+		}
+		slog.Info("delete account: a reference to the user landed after cleanup; retrying",
+			"user_id", userID, "constraint", constraint, "attempt", attempt)
+	}
+}
+
+// deleteAccountAttempts bounds DeleteAccountAtomic's attempts. Each retry
+// needs a new referencing row to commit inside one attempt's window, so a
+// third failure means something is writing references in a loop.
+const deleteAccountAttempts = 3
+
+// lateUserReferenceConstraints are the foreign keys to users with no ON
+// DELETE action, the only ones DELETE FROM users can fail on. A late
+// reference is retried only through one of these, so a constraint added
+// without being listed here fails the deletion as before, and
+// TestLateUserReferenceConstraints_MatchSchema fails until it is listed.
+var lateUserReferenceConstraints = map[string]bool{
+	"api_tokens_user_id_fkey":                true,
+	"collection_grants_granted_by_fkey":      true,
+	"email_verification_tokens_user_id_fkey": true,
+	"fk_items_created_by_user":               true,
+	"fk_items_modified_by_user":              true,
+	"item_grants_granted_by_fkey":            true,
+	"mcp_audit_log_user_id_fkey":             true,
+	"password_reset_tokens_user_id_fkey":     true,
+	"sessions_user_id_fkey":                  true,
+	"share_link_views_viewer_user_id_fkey":   true,
+	"share_links_created_by_fkey":            true,
+	"workspace_invitations_invited_by_fkey":  true,
+	"workspace_members_user_id_fkey":         true,
+}
+
+// finalUserDeleteError marks an error from the final DELETE FROM users, so
+// a foreign-key violation from any earlier statement is never retried. Its
+// text is the error this step always returned.
+type finalUserDeleteError struct{ err error }
+
+func (e *finalUserDeleteError) Error() string {
+	return "delete account: delete user: " + e.err.Error()
+}
+
+func (e *finalUserDeleteError) Unwrap() error { return e.err }
+
+// lateUserReference reports whether err is the final DELETE FROM users
+// failing SQLSTATE 23503 on one of lateUserReferenceConstraints, matched on
+// the driver's code and constraint name rather than on message text, and
+// names the constraint.
+func lateUserReference(err error) (string, bool) {
+	var final *finalUserDeleteError
+	if !errors.As(err, &final) {
+		return "", false
+	}
+	var pgErr *pgconn.PgError
+	if !errors.As(final.err, &pgErr) || pgErr.Code != "23503" {
+		return "", false
+	}
+	return pgErr.ConstraintName, lateUserReferenceConstraints[pgErr.ConstraintName]
+}
+
+func (s *Store) deleteAccountAtomicOnce(userID string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("delete account: begin tx: %w", err)
@@ -1126,8 +1223,8 @@ func (s *Store) DeleteAccountAtomic(userID string) error {
 	}
 
 	// 4. Delete the user record. Remaining references cascade (see doc comment).
-	if err := exec("delete user", "DELETE FROM users WHERE id = ?"); err != nil {
-		return err
+	if _, err := tx.Exec(s.q("DELETE FROM users WHERE id = ?"), userID); err != nil {
+		return &finalUserDeleteError{err: err}
 	}
 
 	if err := tx.Commit(); err != nil {
