@@ -210,6 +210,26 @@ func TestDR9_CloudKeysOnTheForwardedAddress(t *testing.T) {
 	}
 }
 
+// An address that exhausts the pre-auth bucket is named in one WARN, not
+// one per refusal.
+func TestDR9_PreAuthLimitWarnsOncePerAddress(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(prev)
+
+	srv := mcpEnabledTestServer(t)
+	for i := 0; i < 125; i++ {
+		floorRequest(srv, "POST", "/mcp", `{}`, "application/json", "192.0.2.71:1", "")
+	}
+	if n := strings.Count(buf.String(), "exhausted the pre-auth limit"); n != 1 {
+		t.Fatalf("5 refusals past the burst: %d WARN lines, want 1", n)
+	}
+	if !strings.Contains(buf.String(), "ip=192.0.2.71") {
+		t.Fatalf("the WARN does not name the address:\n%s", buf.String())
+	}
+}
+
 // A proxied request that resolves to an address inside the trusted range
 // (the proxy forwarded no client address) is warned about once, loudly;
 // a proxy that forwards the client address is not.

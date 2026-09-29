@@ -754,6 +754,14 @@ func (s *Server) chargeMCPPreAuth(w http.ResponseWriter, r *http.Request) bool {
 		return true
 	}
 	s.recordMCPPreAuthDenied("rate_limited")
+	// The counter carries the volume; this line names the address, once
+	// per address and rate-limited overall, so an operator can find a
+	// prober without enabling debug logging. No database write (the DR-9
+	// amendment: unauthenticated traffic causes none).
+	if s.mcpPreAuthLimited.allow(ip) {
+		slog.Warn("mcp: an address exhausted the pre-auth limit on /mcp (1/s, burst 120) with missing or invalid tokens; answering 429",
+			"ip", ip, "limiter", "mcp_pre_auth")
+	}
 	writeMCPRateLimit(w, r, s.rateLimiters.MCPPreAuth.config)
 	return false
 }
