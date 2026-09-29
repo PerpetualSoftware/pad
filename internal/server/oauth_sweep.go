@@ -30,10 +30,13 @@ import (
 //   - access: the access lifespan (1 h). An inactive and a missing access
 //     row both reject, and fosite never revokes a family on access-token
 //     reuse, so nothing reads one past its expiry.
-//   - authorization codes: the refresh lifespan, not the code's 15 min. A
-//     reused code revokes the chain it produced
-//     (flow_authorize_code_token.go), and a grant keeps exactly one code
-//     row, so keeping it for the chain's lifetime costs one row per grant.
+//   - authorization codes: the code lifespan plus the refresh lifespan, not
+//     the code's 15 min alone. A reused code revokes the chain it produced
+//     (flow_authorize_code_token.go). The code's requested_at is when it
+//     was authorized, and the first refresh token it yields starts its
+//     lifespan at the exchange, up to a code lifespan later. So this keeps
+//     reuse detection for as long as that first refresh token could have
+//     been valid, at one row per grant.
 //   - PKCE: the code lifespan. A successful exchange deletes the row; what
 //     is left belongs to abandoned authorizations, useless once the code
 //     has expired.
@@ -81,7 +84,7 @@ func (s *Server) oauthSweepCutoffs(now time.Time) store.OAuthSweepCutoffs {
 	return store.OAuthSweepCutoffs{
 		AccessTokens:       before(l.AccessToken),
 		RefreshTokens:      before(l.RefreshToken),
-		AuthorizationCodes: before(l.RefreshToken),
+		AuthorizationCodes: before(l.AuthorizeCode + l.RefreshToken),
 		PKCERequests:       before(l.AuthorizeCode),
 	}
 }

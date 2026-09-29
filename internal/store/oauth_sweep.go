@@ -22,8 +22,10 @@ type OAuthSweepCutoffs struct {
 	PKCERequests       time.Time
 }
 
-// OAuthSweepResult is how many rows each table lost, and whether the
-// per-call batch cap stopped a table before it was clean.
+// OAuthSweepResult is how many rows each table lost. Capped reports that a
+// table used its whole batch cap, so rows MAY remain for the next call; it
+// is not a promise that they do (the last full batch may have been the
+// end).
 type OAuthSweepResult struct {
 	AccessTokens       int64
 	RefreshTokens      int64

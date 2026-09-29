@@ -169,7 +169,8 @@ func TestOAuthSweep_LiveChainAndReplay(t *testing.T) {
 }
 
 // The cutoffs follow the running server's lifespans, each padded by the
-// grace, and codes follow the refresh lifespan (BUG-3301 retention).
+// grace; codes add the code lifespan to the refresh lifespan, since the
+// first refresh token starts at the exchange (BUG-3301 retention).
 func TestOAuthSweepCutoffs(t *testing.T) {
 	srv, o := oauthEnabledTestServer(t)
 	l := o.Lifespans()
@@ -178,7 +179,7 @@ func TestOAuthSweepCutoffs(t *testing.T) {
 	want := map[string]time.Time{
 		"access":  now.Add(-(l.AccessToken + oauthSweepGrace)),
 		"refresh": now.Add(-(l.RefreshToken + oauthSweepGrace)),
-		"codes":   now.Add(-(l.RefreshToken + oauthSweepGrace)),
+		"codes":   now.Add(-(l.AuthorizeCode + l.RefreshToken + oauthSweepGrace)),
 		"pkce":    now.Add(-(l.AuthorizeCode + oauthSweepGrace)),
 	}
 	got := map[string]time.Time{"access": c.AccessTokens, "refresh": c.RefreshTokens, "codes": c.AuthorizationCodes, "pkce": c.PKCERequests}
