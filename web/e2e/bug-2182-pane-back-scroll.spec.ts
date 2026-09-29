@@ -30,12 +30,41 @@ async function setup(page: import('@playwright/test').Page, fixture: import('./f
 	expect(a.ok(), await a.text()).toBeTruthy();
 	const itemA = await a.json();
 
+	// BUG-3241's third shape: the link below passed toBeAttached and was then
+	// detached before the scroll, while the pane's side panels fetched in two
+	// waves, which looks like the item detail re-mounting. Record what the
+	// pane fetched and the route it was on, so a failure names the cause.
+	// RelationBacklinksPanel refetches only when it mounts or its item
+	// changes, so its fetches count item-detail mounts (the slug says which).
+	const t0 = Date.now();
+	const paneLog: string[] = [];
+	page.on('request', (r) => {
+		const m = r.url().match(/\/items\/([^/?]+)(\/(links|children|decisions|backlinks|relation-backlinks|timeline|progress))?(\?|$)/);
+		if (!m || r.method() !== 'GET') return;
+		paneLog.push(`+${Date.now() - t0}ms ${m[3] ?? 'item'} ${m[1]} @ ${page.url().replace(/^https?:\/\/[^/]+/, '')}`);
+	});
+	page.on('framenavigated', (f) => {
+		if (f === page.mainFrame()) paneLog.push(`+${Date.now() - t0}ms NAVIGATED ${f.url().replace(/^https?:\/\/[^/]+/, '')}`);
+	});
 	await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/${coll.slug}?item=${itemA.slug}`);
 	// Scoped to the pane: an unscoped match finds B's CARD on the board behind it.
 	const pane = page.locator('.item-pane');
 	const link = pane.locator('a', { hasText: titleB }).last();
 	await expect(link).toBeAttached({ timeout: 15_000 });
-	await link.scrollIntoViewIfNeeded();
+	try {
+		await link.scrollIntoViewIfNeeded();
+	} catch (e) {
+		throw new Error(
+			[
+				'BUG-3241: the link to B detached between toBeAttached and the scroll.',
+				`item-detail mounts (relation-backlinks fetches): ${paneLog.filter((l) => l.includes(' relation-backlinks ')).length}`,
+				`url now: ${page.url()}`,
+				'pane fetches and navigations since goto:',
+				...paneLog,
+				`cause: ${(e as Error).message.split('\n')[0]}`,
+			].join('\n'),
+		);
+	}
 	await page.waitForTimeout(300);
 	const scrollTop = () => pane.evaluate((el) => el.scrollTop);
 	const before = await scrollTop();
