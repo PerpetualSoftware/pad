@@ -111,7 +111,7 @@ func (s *Server) handleInviteMember(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Enforce member count limit (workspace-scoped)
-	if !s.enforcePlanLimit(w, workspaceID, "members_per_workspace") {
+	if !s.enforcePlanLimit(w, r, workspaceID, "members_per_workspace") {
 		return
 	}
 
@@ -132,7 +132,7 @@ func (s *Server) handleInviteMember(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.store.AddWorkspaceMember(workspaceID, existingUser.ID, input.Role, s.workspaceLimitMintOpts()...); err != nil {
-			if writeStorePlanLimitError(w, err, "") {
+			if writeStorePlanLimitError(w, r, err, "") {
 				return
 			}
 			writeInternalError(w, err)

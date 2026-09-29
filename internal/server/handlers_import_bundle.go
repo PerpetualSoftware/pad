@@ -135,13 +135,13 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 
 	staleBodies := &staleBodyTally{}
 	var importReport store.ImportReport
-	ws, err := s.importBundle(r.Context(), gz, newName, mint, repair, staleBodies, &importReport)
+	ws, err := s.importBundle(r, gz, newName, mint, repair, staleBodies, &importReport)
 	if err != nil {
 		// A plan-limit refusal from the store (BUG-2808) is decided before the
 		// import's commit, so the transaction rolled back and there is no
 		// partial workspace to keep or remove: answer the same 403 the
 		// pre-check does and stop.
-		if writeStorePlanLimitError(w, err, "") {
+		if writeStorePlanLimitError(w, r, err, "") {
 			return
 		}
 		// Errors from importBundle are already shaped with status hints —
@@ -277,7 +277,8 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 // Split out from the handler so tests can drive it with a tar.Reader
 // over an in-memory bundle and assert on the resulting state without
 // a live HTTP server.
-func (s *Server) importBundle(ctx context.Context, r io.Reader, newName string, mint workspaceMintAuth, repair *nulRepairTally, staleBodies *staleBodyTally, report *store.ImportReport) (result *models.Workspace, retErr error) {
+func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mint workspaceMintAuth, repair *nulRepairTally, staleBodies *staleBodyTally, report *store.ImportReport) (result *models.Workspace, retErr error) {
+	ctx := req.Context()
 	// The bundle door is the SECOND body shape behind the import route, and
 	// it mints through the same store call, so it takes the same mint
 	// context the JSON path does rather than re-deriving owner and source
@@ -468,8 +469,8 @@ func (s *Server) importBundle(ctx context.Context, r io.Reader, newName string, 
 					return nil, &importStatusError{
 						status:  http.StatusForbidden,
 						code:    "plan_limit_exceeded",
-						message: planLimitMessage(&ple.Result),
-						details: planLimitDetails(&ple.Result),
+						message: planLimitMessage(req, &ple.Result),
+						details: planLimitDetails(req, &ple.Result),
 					}
 				}
 				return nil, fmt.Errorf("import workspace: %w", err)

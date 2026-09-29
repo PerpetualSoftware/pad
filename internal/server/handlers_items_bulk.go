@@ -470,8 +470,8 @@ func (s *Server) applyBulkOp(r *http.Request, workspaceID string, item *models.I
 		if err != nil {
 			var ple *store.PlanLimitError
 			if errors.As(err, &ple) {
-				details, _ := json.Marshal(planLimitDetails(&ple.Result))
-				return nil, &bulkOpError{message: planLimitMessage(&ple.Result), code: "plan_limit_exceeded", details: details}
+				details, _ := json.Marshal(planLimitDetails(r, &ple.Result))
+				return nil, &bulkOpError{message: planLimitMessage(r, &ple.Result), code: "plan_limit_exceeded", details: details}
 			}
 			if err == sql.ErrNoRows {
 				return nil, &bulkOpError{message: "item not found or not archived"}

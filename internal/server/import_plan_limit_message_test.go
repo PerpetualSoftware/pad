@@ -37,7 +37,7 @@ func TestPlanLimitMessage_UntouchedDoorsAreByteIdentical(t *testing.T) {
 	for _, c := range cases {
 		// Requested is left at zero — which is what every door but import
 		// produces — so this is the pre-BUG-3103 rendering.
-		got := planLimitMessage(&store.LimitResult{Feature: c.feature, Limit: c.limit, Current: c.limit, Plan: "free"})
+		got := planLimitMessage(nil, &store.LimitResult{Feature: c.feature, Limit: c.limit, Current: c.limit, Plan: "free"})
 		if got != c.want {
 			t.Errorf("planLimitMessage(%s) = %q, want %q", c.feature, got, c.want)
 		}
@@ -46,7 +46,7 @@ func TestPlanLimitMessage_UntouchedDoorsAreByteIdentical(t *testing.T) {
 
 func TestPlanLimitDetails_UntouchedDoorsAreByteIdentical(t *testing.T) {
 	t.Parallel()
-	got := planLimitDetails(&store.LimitResult{
+	got := planLimitDetails(nil, &store.LimitResult{
 		Feature: "items_per_workspace", Limit: 100, Current: 100, Plan: "free",
 	})
 	want := map[string]interface{}{
@@ -68,7 +68,7 @@ func TestPlanLimitDetails_UntouchedDoorsAreByteIdentical(t *testing.T) {
 // refusal names how many would land versus the limit.
 func TestPlanLimitMessage_ImportNamesWhatWouldLand(t *testing.T) {
 	t.Parallel()
-	got := planLimitMessage(&store.LimitResult{
+	got := planLimitMessage(nil, &store.LimitResult{
 		Feature: "items_per_workspace", Limit: 100, Current: 0, Plan: "free", Requested: 150,
 	})
 	want := "This import would add 150 items, over the 100-item limit on the free plan."
@@ -84,7 +84,7 @@ func TestPlanLimitMessage_ImportNamesWhatWouldLand(t *testing.T) {
 
 func TestPlanLimitDetails_ImportCarriesRequested(t *testing.T) {
 	t.Parallel()
-	got := planLimitDetails(&store.LimitResult{
+	got := planLimitDetails(nil, &store.LimitResult{
 		Feature: "items_per_workspace", Limit: 100, Current: 0, Plan: "free", Requested: 150,
 	})
 	want := map[string]interface{}{

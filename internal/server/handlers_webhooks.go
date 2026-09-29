@@ -32,7 +32,7 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Enforce webhook count limit (workspace-scoped)
-	if !s.enforcePlanLimit(w, workspaceID, "webhooks") {
+	if !s.enforcePlanLimit(w, r, workspaceID, "webhooks") {
 		return
 	}
 
@@ -65,7 +65,7 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 
 	hook, err := s.store.CreateWebhook(workspaceID, input, s.workspaceLimitMintOpts()...)
 	if err != nil {
-		if writeStorePlanLimitError(w, err, "") {
+		if writeStorePlanLimitError(w, r, err, "") {
 			return
 		}
 		writeInternalError(w, err)

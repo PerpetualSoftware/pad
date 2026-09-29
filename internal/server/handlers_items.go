@@ -692,7 +692,7 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Enforce item count limit (workspace-scoped)
-	if !s.enforcePlanLimit(w, workspaceID, "items_per_workspace") {
+	if !s.enforcePlanLimit(w, r, workspaceID, "items_per_workspace") {
 		return
 	}
 
@@ -774,7 +774,7 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 
 	item, cerr := s.createItemChecked(r, workspaceID, coll, schema, input, fieldMap, parentValue, relationsRefuse)
 	if cerr != nil {
-		cerr.write(w)
+		cerr.write(w, r)
 		return
 	}
 
@@ -803,8 +803,8 @@ type itemCreateError struct {
 func (e *itemCreateError) Error() string { return e.message }
 
 // write answers the request with this error.
-func (e *itemCreateError) write(w http.ResponseWriter) {
-	if e.planLimit != nil && writeStorePlanLimitError(w, e.planLimit, "") {
+func (e *itemCreateError) write(w http.ResponseWriter, r *http.Request) {
+	if e.planLimit != nil && writeStorePlanLimitError(w, r, e.planLimit, "") {
 		return
 	}
 	writeError(w, e.status, e.code, e.message)
@@ -2637,13 +2637,13 @@ func (s *Server) handleRestoreItem(w http.ResponseWriter, r *http.Request) {
 	// BUG-3101: a restore raises items_per_workspace's live count. The
 	// advisory pre-check runs only for an archived row, so a live item still
 	// answers not-found below; RestoreItem decides authoritatively.
-	if item.DeletedAt != nil && !s.enforcePlanLimit(w, workspaceID, "items_per_workspace") {
+	if item.DeletedAt != nil && !s.enforcePlanLimit(w, r, workspaceID, "items_per_workspace") {
 		return
 	}
 
 	restored, err := s.store.RestoreItem(item.ID, s.restoreLimitOpts()...)
 	if err != nil {
-		if writeStorePlanLimitError(w, err, "") {
+		if writeStorePlanLimitError(w, r, err, "") {
 			return
 		}
 		if err == sql.ErrNoRows {

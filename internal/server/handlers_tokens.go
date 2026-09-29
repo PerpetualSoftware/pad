@@ -106,7 +106,7 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 	// would otherwise read the refusal as a per-workspace limit.
 	token, err := s.store.CreateAPIToken(userID, input, defaultDays, maxDays, s.planLimitMintOpts(userID)...)
 	if err != nil {
-		if writeStorePlanLimitError(w, err, "This limit counts every API token you own, across all workspaces.") {
+		if writeStorePlanLimitError(w, r, err, "This limit counts every API token you own, across all workspaces.") {
 			return
 		}
 		writeInternalError(w, err)
@@ -215,7 +215,7 @@ func (s *Server) handleCreateUserToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Enforce API token count limit (user-scoped)
-	if !s.enforceUserPlanLimit(w, userID, "api_tokens") {
+	if !s.enforceUserPlanLimit(w, r, userID, "api_tokens") {
 		return
 	}
 
@@ -223,7 +223,7 @@ func (s *Server) handleCreateUserToken(w http.ResponseWriter, r *http.Request) {
 
 	token, err := s.store.CreateAPIToken(userID, input, defaultDays, maxDays, s.planLimitMintOpts(userID)...)
 	if err != nil {
-		if writeStorePlanLimitError(w, err, "") {
+		if writeStorePlanLimitError(w, r, err, "") {
 			return
 		}
 		writeInternalError(w, err)
