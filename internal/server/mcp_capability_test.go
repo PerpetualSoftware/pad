@@ -28,8 +28,11 @@ func testHTTPSEndpoints() config.MCPEndpoints {
 // <origin>/mcp, whose access token then reaches /mcp as its user.
 func TestE2E_HTTPSSelfHostFlow(t *testing.T) {
 	t.Parallel()
+	// The origin's host is httptest's default Host, example.com, so the
+	// shared OAuth helpers' requests carry the configured Host and pass
+	// the DR-6 allowlist (port 443 is the https default on both sides).
 	const (
-		origin   = "https://pad.selfhost.example"
+		origin   = "https://example.com"
 		audience = origin + "/mcp"
 	)
 	srv := testServer(t)

@@ -98,6 +98,13 @@ export default defineConfig({
 			PAD_HOST: E2E_HOST,
 			PAD_PORT: String(E2E_PORT),
 			PAD_DATA_DIR: DATA_DIR,
+			// The public origin the e2e server serves (PLAN-2310 DR-3). MCP
+			// addressing comes from configuration, never the request's Host,
+			// and off cloud /mcp, /oauth/* and /.well-known/oauth-* refuse a
+			// Host that is not configured (DR-6, 421). A spec that exercises
+			// MCP therefore needs this to match the origin the browser and
+			// the test client use.
+			PAD_URL: BASE_URL,
 			PAD_LOG_LEVEL: 'warn',
 			// Every E2E test shares one loopback IP, so the auth limiter
 			// (5 logins/min/IP) trips as soon as a spec logs in a couple of

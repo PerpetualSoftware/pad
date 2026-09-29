@@ -174,11 +174,11 @@ func (s *Server) registerMCPRoutes(r chi.Router) {
 	// captured as result_status="denied". The audit middleware is a
 	// no-op when the writer hasn't been spawned (selfhost / test
 	// builds), so the chain is safe to mount unconditionally.
-	r.With(s.requireMCPAvailable, s.MCPBearerAuth, s.MCPAuditLog).Mount("/mcp", transport)
+	r.With(s.requireMCPAvailable, s.requireConfiguredHost, s.MCPBearerAuth, s.MCPAuditLog).Mount("/mcp", transport)
 
 	// Discovery endpoints — unauthenticated, oauthAvailable-gated. RFC 9728
 	// (protected-resource) and RFC 8414 (auth-server) metadata.
-	r.With(s.requireOAuthAvailable).Get("/.well-known/oauth-protected-resource", s.handleOAuthProtectedResource)
+	r.With(s.requireOAuthAvailable, s.requireConfiguredHost).Get("/.well-known/oauth-protected-resource", s.handleOAuthProtectedResource)
 	// Path-aware RFC 9728 §3.1 variant (BUG-2266). A client configured
 	// with the path-suffixed transport URL (https://mcp.getpad.dev/mcp —
 	// the shape every FastMCP example uses) constructs its metadata URL
@@ -191,7 +191,7 @@ func (s *Server) registerMCPRoutes(r chi.Router) {
 	// and a wildcard would hand a CDN one cacheable object per
 	// attacker-chosen suffix (codex round 2). /mcp is the only
 	// path-mounted resource, so nothing else needs the variant.
-	r.With(s.requireOAuthAvailable).Get("/.well-known/oauth-protected-resource/mcp", s.handleOAuthProtectedResource)
-	r.With(s.requireOAuthAvailable).Get("/.well-known/oauth-protected-resource/mcp/", s.handleOAuthProtectedResource)
-	r.With(s.requireOAuthAvailable).Get("/.well-known/oauth-authorization-server", s.handleOAuthAuthorizationServer)
+	r.With(s.requireOAuthAvailable, s.requireConfiguredHost).Get("/.well-known/oauth-protected-resource/mcp", s.handleOAuthProtectedResource)
+	r.With(s.requireOAuthAvailable, s.requireConfiguredHost).Get("/.well-known/oauth-protected-resource/mcp/", s.handleOAuthProtectedResource)
+	r.With(s.requireOAuthAvailable, s.requireConfiguredHost).Get("/.well-known/oauth-authorization-server", s.handleOAuthAuthorizationServer)
 }
