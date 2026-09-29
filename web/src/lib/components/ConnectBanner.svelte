@@ -189,6 +189,7 @@
 	workspaceSlug={wsSlug}
 	{workspaceName}
 	mcpPublicUrl={authStore.mcpPublicUrl}
+	mcpAuth={authStore.mcpAuth}
 />
 
 <style>

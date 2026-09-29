@@ -6,9 +6,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/PerpetualSoftware/pad/internal/config"
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
@@ -54,11 +56,11 @@ func TestAuthBootstrapFlow(t *testing.T) {
 	}
 	// mcp_public_url is always present (even pre-setup) so the web UI can
 	// render the right onboarding flow before the first admin exists. Empty
-	// when PAD_MCP_PUBLIC_URL is unset (the default for this test server).
+	// while MCP is not available (the default for this test server).
 	if got, ok := session["mcp_public_url"]; !ok {
 		t.Error("expected mcp_public_url field in setup-state session payload")
 	} else if got != "" {
-		t.Errorf("expected mcp_public_url='' when PAD_MCP_PUBLIC_URL unset, got %v", got)
+		t.Errorf("expected mcp_public_url='' while MCP is not available, got %v", got)
 	}
 
 	token := bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
@@ -85,40 +87,86 @@ func TestAuthBootstrapFlow(t *testing.T) {
 	if got, ok := session["mcp_public_url"]; !ok {
 		t.Error("expected mcp_public_url field in authenticated session payload")
 	} else if got != "" {
-		t.Errorf("expected mcp_public_url='' when PAD_MCP_PUBLIC_URL unset, got %v", got)
+		t.Errorf("expected mcp_public_url='' while MCP is not available, got %v", got)
 	}
 }
 
-// On Pad Cloud the /auth/session response must echo the MCP URL verbatim
-// so the web UI can gate the Remote-MCP connect banner on its presence.
-// Off cloud it stays empty even though SetMCPTransport now runs on every
-// install (PLAN-2310 U2): the modal offers only the OAuth path until
-// DR-8 (unit 6), and an http self-host cannot complete it.
-func TestAuthSessionEmitsMCPPublicURLWhenConfigured(t *testing.T) {
-	for _, cloud := range []bool{true, false} {
-		srv := testServer(t)
-		if cloud {
-			srv.SetCloudMode("test-secret")
-		}
-		// Same-package access to the unexported field — equivalent to what
-		// SetMCPTransport sets at startup, but without spawning the audit
-		// writer goroutine that this test doesn't need.
-		srv.mcpPublicURL = "https://mcp.test.example"
+// The session and setup payloads carry the MCP URL and its auth methods
+// exactly when MCP is available (PLAN-2310 DR-8): the resolved URL with
+// ["oauth","pat"] where OAuth is served, ["pat"] on an http self-host, and
+// "" with [] otherwise. The connect modal keys on both, so each state is
+// driven through the router, on the setup payload and the session payload.
+func TestAuthSessionMCPURLAndAuth(t *testing.T) {
+	on, off := true, false
+	cases := []struct {
+		name     string
+		cloud    bool
+		origin   string
+		env      *bool
+		oauth    bool
+		wantURL  string
+		wantAuth []string
+	}{
+		{name: "self-host off, https origin, OAuth built", origin: "https://pad.example.com", env: nil, oauth: true, wantURL: "", wantAuth: []string{}},
+		{name: "self-host forced off", origin: "https://pad.example.com", env: &off, oauth: true, wantURL: "", wantAuth: []string{}},
+		{name: "self-host on, no origin", origin: "", env: &on, wantURL: "", wantAuth: []string{}},
+		{name: "self-host on, unusable origin", origin: "pad.example.com", env: &on, wantURL: "", wantAuth: []string{}},
+		{name: "self-host on, http origin", origin: "http://pad.lan:7777", env: &on, wantURL: "http://pad.lan:7777/mcp", wantAuth: []string{"pat"}},
+		{name: "self-host on, https origin, OAuth built", origin: "https://pad.example.com", env: &on, oauth: true, wantURL: "https://pad.example.com/mcp", wantAuth: []string{"oauth", "pat"}},
+		// An https origin whose OAuth server was not built serves PATs only:
+		// the claim routes and Connected Apps answer 404 there.
+		{name: "self-host on, https origin, no OAuth server", origin: "https://pad.example.com", env: &on, wantURL: "https://pad.example.com/mcp", wantAuth: []string{"pat"}},
+		{name: "cloud", cloud: true, oauth: true, wantURL: "https://mcp.test.example", wantAuth: []string{"oauth", "pat"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := testServer(t)
+			cfg := config.Config{URL: tc.origin}
+			ep := cfg.ResolveMCPEndpoints()
+			srv.SetMCPConfig(ep, tc.env)
+			// Same-package access to the unexported field: what
+			// SetMCPTransport sets at startup, without the audit writer.
+			srv.mcpPublicURL = ep.ResourceURL
+			if tc.cloud {
+				srv.SetCloudMode("test-secret")
+				srv.mcpPublicURL = "https://mcp.test.example"
+			}
+			if tc.oauth {
+				o, err := newTestOAuthServer(t, srv)
+				if err != nil {
+					t.Fatalf("oauth.NewServer: %v", err)
+				}
+				srv.SetOAuthServer(o)
+			}
 
-		rr := doRequest(srv, "GET", "/api/v1/auth/session", nil)
-		if rr.Code != http.StatusOK {
-			t.Fatalf("cloud=%v: session check: expected 200, got %d", cloud, rr.Code)
-		}
+			check := func(which string, rr *httptest.ResponseRecorder) {
+				t.Helper()
+				if rr.Code != http.StatusOK {
+					t.Fatalf("%s: status %d", which, rr.Code)
+				}
+				var session map[string]interface{}
+				parseJSON(t, rr, &session)
+				if got, ok := session["mcp_public_url"]; !ok || got != tc.wantURL {
+					t.Errorf("%s: mcp_public_url = %v (present %v), want %q", which, got, ok, tc.wantURL)
+				}
+				raw, ok := session["mcp_auth"].([]interface{})
+				if !ok {
+					t.Fatalf("%s: mcp_auth = %#v, want an array", which, session["mcp_auth"])
+				}
+				got := make([]string, len(raw))
+				for i, v := range raw {
+					got[i], _ = v.(string)
+				}
+				if strings.Join(got, ",") != strings.Join(tc.wantAuth, ",") {
+					t.Errorf("%s: mcp_auth = %v, want %v", which, got, tc.wantAuth)
+				}
+			}
 
-		var session map[string]interface{}
-		parseJSON(t, rr, &session)
-		want := ""
-		if cloud {
-			want = "https://mcp.test.example"
-		}
-		if session["mcp_public_url"] != want {
-			t.Errorf("cloud=%v: expected mcp_public_url=%q, got %v", cloud, want, session["mcp_public_url"])
-		}
+			// No users yet: the setup payload.
+			check("setup", doRequest(srv, "GET", "/api/v1/auth/session", nil))
+			token := bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
+			check("session", doRequestWithCookie(srv, "GET", "/api/v1/auth/session", nil, token))
+		})
 	}
 }
 

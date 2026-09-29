@@ -1106,11 +1106,16 @@ export interface AuthSession {
 	setup_method?: 'local_cli' | 'docker_exec' | 'cloud' | 'logs_token' | 'open';
 	auth_method: 'password' | 'cloud';
 	cloud_mode?: boolean;
-	// mcp_public_url is the canonical URL clients paste into their MCP-capable
-	// agent (e.g. "https://mcp.getpad.dev"). Empty string when PAD_MCP_PUBLIC_URL
-	// is unset on the server — UI code should use the empty string as the gate
-	// for "Remote MCP not exposed by this instance, fall back to CLI flow."
+	// mcp_public_url is the URL clients paste into their MCP-capable agent
+	// (e.g. "https://mcp.getpad.dev"). Empty string while MCP is not
+	// available on this instance — UI code should use the empty string as
+	// the gate for "Remote MCP not exposed, fall back to CLI flow."
 	mcp_public_url: string;
+	// mcp_auth is how agents authenticate to that URL: ['oauth', 'pat'], or
+	// ['pat'] where the instance serves no OAuth (an http self-host), and
+	// [] while MCP is not available (PLAN-2310 DR-8). Absent on servers that
+	// predate it, which set mcp_public_url only where OAuth was served.
+	mcp_auth?: string[];
 	// billing_available is true when PAD_BILLING_AVAILABLE=true on the server
 	// AND the deployment is in cloud mode. Use authStore.billingAvailable rather
 	// than reading this field directly. TASK-800.

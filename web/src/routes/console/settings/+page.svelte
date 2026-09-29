@@ -743,7 +743,8 @@
 		{/if}
 
 		<!-- API Tokens -->
-		<section class="card">
+		<!-- #api-tokens is the connect modal's link target (PLAN-2310 DR-8). -->
+		<section class="card" id="api-tokens">
 			<h2 class="card-title">API Tokens</h2>
 			<div class="card-body">
 				{#if createdToken}

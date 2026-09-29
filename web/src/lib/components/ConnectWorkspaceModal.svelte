@@ -14,12 +14,18 @@
 		// canonical URLs without baking a build-time origin into the bundle.
 		// Used by the CLI tab to produce a `pad init --url <serverUrl>` snippet.
 		serverUrl: string;
-		// Empty string when the deployment doesn't expose a public MCP URL
-		// (typical self-host without PAD_MCP_PUBLIC_URL). When empty, both the
-		// MCP tab and the claim-code ("Connect code") tab are hidden — they
-		// depend on the remote OAuth server — leaving only CLI, which also
-		// becomes the default.
+		// Empty string while the deployment doesn't serve MCP (a self-host
+		// that has not turned it on). When empty, both the MCP tab and the
+		// claim-code ("Connect code") tab are hidden, leaving only CLI, which
+		// also becomes the default.
 		mcpPublicUrl?: string;
+		// The session's mcp_auth: how agents authenticate to mcpPublicUrl
+		// (PLAN-2310 DR-8). ['oauth', 'pat'] keeps the sign-in path and
+		// offers a personal API token as an alternative; ['pat'] (an http
+		// self-host) makes the token the only path and hides the claim-code
+		// tab, which needs OAuth. undefined means a server that predates the
+		// field, which set mcpPublicUrl only where OAuth was served.
+		mcpAuth?: string[];
 	}
 
 	let {
@@ -27,8 +33,12 @@
 		workspaceSlug,
 		workspaceName = '',
 		serverUrl,
-		mcpPublicUrl = ''
+		mcpPublicUrl = '',
+		mcpAuth
 	}: Props = $props();
+
+	let mcpOAuth = $derived(!!mcpPublicUrl && (mcpAuth ? mcpAuth.includes('oauth') : true));
+	let mcpPat = $derived(!!mcpPublicUrl && !!mcpAuth?.includes('pat'));
 
 	// --- Primary tabs --------------------------------------------------------
 	//
@@ -50,14 +60,13 @@
 	];
 
 	// Default-tab logic. Two cases:
-	//   1. Deployment has a public MCP URL → default to 'mcp'. The visitor
-	//      most likely hasn't connected any agent yet, and authorizing one
-	//      via OAuth is the real first step. A default "All my workspaces"
-	//      grant then covers this workspace with no claim code needed at all.
-	//   2. No public MCP URL (self-host without remote MCP) → both the MCP
-	//      and the claim-code paths are meaningless (no OAuth server to
-	//      authorize against, no grant to claim into). Default to 'cli', the
-	//      only path that works there.
+	//   1. Deployment serves MCP → default to 'mcp'. The visitor most likely
+	//      hasn't connected any agent yet, and connecting one (OAuth sign-in,
+	//      or a personal API token where OAuth isn't served) is the real
+	//      first step. A default "All my workspaces" OAuth grant then covers
+	//      this workspace with no claim code needed at all.
+	//   2. No MCP URL (a self-host that hasn't turned MCP on) → default to
+	//      'cli', the only path that works there.
 	//
 	// We compute this as a $derived rather than $state because we want it to
 	// reset to the appropriate default each time `open` flips true — using
@@ -306,19 +315,143 @@
 			: 'Connect this workspace to your AI agent'
 	);
 
-	// Hide the MCP and claim-code tabs on deployments without a public MCP
-	// URL. Both depend on the remote OAuth server; the session carries the
-	// URL only where it is served (cloud, until PLAN-2310 unit 6), and
-	// elsewhere the claim endpoint answers 404 (a dead tab). That leaves
-	// self-host with just the CLI tab, which is the only path that works
-	// there. (The 'disabled' claimState render stays as defense-in-depth in
-	// case the secret is somehow unset while a public URL is present.)
+	// The MCP tab needs a URL; the claim-code tab also needs OAuth, because a
+	// code adds a workspace to an OAuth grant and the claim endpoint answers
+	// 404 where OAuth is not served (PLAN-2310 DR-5, DR-8). A self-host with
+	// MCP off keeps just the CLI tab; an http self-host with MCP on gets MCP
+	// (token path) and CLI. (The 'disabled' claimState render stays as
+	// defense-in-depth in case the secret is somehow unset while OAuth is
+	// served.)
 	let visibleTabs = $derived(
-		primaryTabs.filter((t) => (t.id !== 'mcp' && t.id !== 'agent') || !!mcpPublicUrl)
+		primaryTabs.filter((t) =>
+			t.id === 'mcp' ? !!mcpPublicUrl : t.id === 'agent' ? mcpOAuth : true
+		)
 	);
 
 	const CONNECTED_APPS_HREF = '/console/connected-apps';
+
+	// --- Personal API token path (PLAN-2310 DR-8) ----------------------------
+	//
+	// The token is minted in console settings, never here: minting needs an
+	// interactive session (BUG-2890) and the settings page is where tokens
+	// are listed and revoked. The configs carry a placeholder for it.
+	const TOKEN_SETTINGS_HREF = '/console/settings#api-tokens';
+	const TOKEN_PLACEHOLDER = 'YOUR_PAD_TOKEN';
+
+	type PatClient = 'claude-code' | 'cursor' | 'windsurf' | 'vscode' | 'claude-desktop';
+
+	// ChatGPT is absent: its connectors authenticate with OAuth only.
+	const patClients: { id: PatClient; label: string; where: string }[] = [
+		{ id: 'claude-code', label: 'Claude Code', where: 'Run in your terminal' },
+		{ id: 'cursor', label: 'Cursor', where: 'Add to ~/.cursor/mcp.json' },
+		{ id: 'windsurf', label: 'Windsurf', where: 'Add to ~/.codeium/windsurf/mcp_config.json' },
+		{ id: 'vscode', label: 'VS Code', where: 'Add to .vscode/mcp.json' },
+		{
+			id: 'claude-desktop',
+			label: 'Claude Desktop',
+			where: 'Add to claude_desktop_config.json (uses mcp-remote, needs Node)'
+		}
+	];
+
+	let patClient = $state<PatClient>('claude-code');
+
+	function patConfig(client: PatClient, url: string): string {
+		const bearer = `Bearer ${TOKEN_PLACEHOLDER}`;
+		const json = (v: unknown) => JSON.stringify(v, null, 2);
+		switch (client) {
+			case 'claude-code':
+				return `claude mcp add --transport http pad ${url} --header "Authorization: ${bearer}"`;
+			case 'cursor':
+				return json({ mcpServers: { pad: { url, headers: { Authorization: bearer } } } });
+			case 'windsurf':
+				return json({
+					mcpServers: { pad: { serverUrl: url, headers: { Authorization: bearer } } }
+				});
+			case 'vscode':
+				return json({
+					servers: { pad: { type: 'http', url, headers: { Authorization: bearer } } }
+				});
+			case 'claude-desktop': {
+				// mcp-remote bridges a remote server into Desktop's stdio
+				// config. The header value goes through env because Desktop
+				// splits args on spaces on some platforms; --allow-http is
+				// needed for a non-localhost http URL.
+				const args = ['mcp-remote', url, '--header', 'Authorization:${PAD_AUTH}'];
+				if (url.startsWith('http:')) args.push('--allow-http');
+				return json({
+					mcpServers: { pad: { command: 'npx', args, env: { PAD_AUTH: bearer } } }
+				});
+			}
+		}
+	}
+
+	let patSnippet = $derived(patConfig(patClient, mcpPublicUrl));
+	let patWhere = $derived(patClients.find((c) => c.id === patClient)?.where ?? '');
 </script>
+
+<!--
+	The personal API token path (PLAN-2310 DR-8): the only path where OAuth is
+	not served, an alternative inside a disclosure where it is. `first` numbers
+	the steps when they continue the tab's own; null leaves them unnumbered.
+-->
+{#snippet patSteps(first: number | null)}
+	<section class="step">
+		<span class="section-label"
+			>{first ? `Step ${first} — ` : ''}Create a personal API token</span
+		>
+		<p class="step-copy">
+			The token signs your agent in as you, with access to every workspace you
+			can open. Keep it out of shared files.
+		</p>
+		<a class="info-panel-link" href={TOKEN_SETTINGS_HREF} data-testid="connect-pat-settings-link"
+			>Create a token in Settings &rarr;</a
+		>
+	</section>
+
+	<section class="step">
+		<span class="section-label"
+			>{first ? `Step ${first + 1} — ` : ''}Add Pad to your client</span
+		>
+		<div class="tab-strip" role="tablist" aria-label="MCP client">
+			{#each patClients as client (client.id)}
+				<button
+					class="tab-btn"
+					class:active={patClient === client.id}
+					role="tab"
+					aria-selected={patClient === client.id}
+					type="button"
+					onclick={() => (patClient = client.id)}
+				>
+					{client.label}
+				</button>
+			{/each}
+		</div>
+		<p class="step-copy">{patWhere}, then replace {TOKEN_PLACEHOLDER} with your token.</p>
+		<div class="code-block">
+			<pre data-testid="connect-pat-config">{patSnippet}</pre>
+			<button
+				class="copy-btn-small"
+				type="button"
+				title="Copy config"
+				onclick={() => handleCopy(patSnippet, 'Config copied')}
+			>
+				<svg
+					width="14"
+					height="14"
+					viewBox="0 0 24 24"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="2"
+					stroke-linecap="round"
+					stroke-linejoin="round"
+				>
+					<rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+					<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+				</svg>
+			</button>
+		</div>
+	</section>
+{/snippet}
 
 <Modal open={open} onclose={() => (open = false)} labelledby="connect-ws-title" maxWidth="560px">
 	<div class="modal-header">
@@ -397,20 +530,20 @@
 							unset while OAuth is served, which startup never
 							produces (PLAN-2310 DR-4 sets them together); a
 							deployment without OAuth answers the claim routes
-							404 instead. Without OAuth,
-							agents connect via stdio MCP (`pad mcp serve`) or
-							the CLI, both of which inherit the user's session
-							token from ~/.pad/credentials.json and see every
-							workspace the user is a member of. There IS no
-							per-workspace OAuth grant to claim into — so the
-							right copy doesn't redirect users to "set something
-							up", it tells them they're already done.
+							404 instead, and this tab is hidden there. Without
+							OAuth, agents connect via the CLI, stdio MCP
+							(`pad mcp serve`) or a personal API token, all of
+							which act as the user and see every workspace the
+							user is a member of. There IS no per-workspace
+							OAuth grant to claim into — so the right copy
+							doesn't redirect users to "set something up", it
+							tells them they're already done.
 						-->
 						<div class="info-panel">
 							<p class="info-panel-body">
 								<strong>No claim code needed on this deployment.</strong>
-								Agents connected via the CLI or stdio MCP use your user
-								session and already have access to every workspace
+								Agents connected with the CLI, stdio MCP or a personal API
+								token act as you and already have access to every workspace
 								you’re a member of.
 							</p>
 						</div>
@@ -510,9 +643,15 @@
 						</div>
 					{:else}
 						<p class="intro-copy">
-							Paste this URL into any MCP-capable AI client. Sign in with your Pad
-							account when prompted, and your agent can read and write everything
-							in this workspace through natural conversation.
+							{#if mcpOAuth}
+								Paste this URL into any MCP-capable AI client. Sign in with your Pad
+								account when prompted, and your agent can read and write everything
+								in this workspace through natural conversation.
+							{:else}
+								Paste this URL into any MCP-capable AI client, with a personal API
+								token for it to sign in with. Your agent can then read and write
+								everything in this workspace through natural conversation.
+							{/if}
 						</p>
 
 						<section class="step">
@@ -542,50 +681,61 @@
 							</div>
 						</section>
 
-						<section class="step">
-							<span class="section-label">Step 2 — Set it up in your client</span>
-							<div class="client-grid">
-								{#each MCP_CLIENTS as client (client.id)}
-									<a
-										class="client-card"
-										href={client.href}
-										target="_blank"
-										rel="noopener noreferrer"
-									>
-										<div class="client-card-text">
-											<span class="client-name">{client.name}</span>
-											<span class="client-subtitle">{client.subtitle}</span>
-										</div>
-										<svg
-											class="client-arrow"
-											width="14"
-											height="14"
-											viewBox="0 0 24 24"
-											fill="none"
-											stroke="currentColor"
-											stroke-width="2"
-											stroke-linecap="round"
-											stroke-linejoin="round"
-											aria-hidden="true"
+						{#if mcpOAuth}
+							<section class="step">
+								<span class="section-label">Step 2 — Set it up in your client</span>
+								<div class="client-grid">
+									{#each MCP_CLIENTS as client (client.id)}
+										<a
+											class="client-card"
+											href={client.href}
+											target="_blank"
+											rel="noopener noreferrer"
 										>
-											<path d="M7 17L17 7" />
-											<path d="M7 7h10v10" />
-										</svg>
-									</a>
-								{/each}
-							</div>
-						</section>
+											<div class="client-card-text">
+												<span class="client-name">{client.name}</span>
+												<span class="client-subtitle">{client.subtitle}</span>
+											</div>
+											<svg
+												class="client-arrow"
+												width="14"
+												height="14"
+												viewBox="0 0 24 24"
+												fill="none"
+												stroke="currentColor"
+												stroke-width="2"
+												stroke-linecap="round"
+												stroke-linejoin="round"
+												aria-hidden="true"
+											>
+												<path d="M7 17L17 7" />
+												<path d="M7 7h10v10" />
+											</svg>
+										</a>
+									{/each}
+								</div>
+							</section>
 
-						<p class="hint">
-							Authorizing with “All my workspaces” (the default) includes this one
-							automatically. If you limit your agent to specific workspaces, use the
-							<button
-								class="inline-link-btn"
-								type="button"
-								onclick={() => (activeTab = 'agent')}>Connect code</button
-							>
-							tab to add this workspace to it.
-						</p>
+							<p class="hint">
+								Authorizing with “All my workspaces” (the default) includes this one
+								automatically. If you limit your agent to specific workspaces, use the
+								<button
+									class="inline-link-btn"
+									type="button"
+									onclick={() => (activeTab = 'agent')}>Connect code</button
+								>
+								tab to add this workspace to it.
+							</p>
+
+							{#if mcpPat}
+								<details class="pat-details">
+									<summary>Or connect with a personal API token</summary>
+									{@render patSteps(null)}
+								</details>
+							{/if}
+						{:else}
+							{@render patSteps(2)}
+						{/if}
 					{/if}
 				{:else}
 					<!-- CLI panel -->
@@ -695,16 +845,13 @@
 						Troubleshooting
 					</a>
 					<!--
-						Hide the Connected apps link on self-host deployments
-						without remote MCP (mcpPublicUrl empty). That page
-						lists OAuth grants only, and a deployment that does
-						not serve OAuth answers its API 404 — so the page
-						would be empty by definition. Linking
-						users there is a dead end; matches the
-						"claim_disabled" copy that tells the same audience
-						they're already done.
+						Hide the Connected apps link where OAuth is not served
+						(PLAN-2310 DR-7 keys that page on OAuth). It lists
+						OAuth grants only, and its API answers 404 there, so
+						linking users to it is a dead end. Token-connected
+						agents are managed under API Tokens in settings.
 					-->
-					{#if mcpPublicUrl}
+					{#if mcpOAuth}
 						<span class="footer-sep">&middot;</span>
 						<a href={CONNECTED_APPS_HREF}>Connected agents &rarr;</a>
 					{/if}
@@ -781,6 +928,34 @@
 	.step {
 		display: flex;
 		flex-direction: column;
+	}
+
+	.step-copy {
+		margin: 0 0 var(--space-2);
+		font-size: 0.85em;
+		color: var(--text-secondary);
+		line-height: 1.5;
+	}
+
+	/* The token path as an alternative under the OAuth path. */
+	.pat-details {
+		border-top: 1px solid var(--border);
+		padding-top: var(--space-3);
+	}
+
+	.pat-details summary {
+		cursor: pointer;
+		font-size: 0.85em;
+		font-weight: 600;
+		color: var(--text-secondary);
+	}
+
+	.pat-details[open] summary {
+		margin-bottom: var(--space-4);
+	}
+
+	.pat-details .step + .step {
+		margin-top: var(--space-4);
 	}
 
 	.hint {

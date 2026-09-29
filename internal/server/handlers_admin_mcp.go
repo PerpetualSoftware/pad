@@ -76,26 +76,44 @@ func (s *Server) mcpAvailableWith(on bool) bool {
 // is here so a server wired some other way (a test, a future caller) still
 // cannot offer OAuth over http, which Dave ruled PAT-only.
 func (s *Server) oauthAvailable() bool {
+	on, _ := s.mcpSetting()
+	return s.oauthAvailableWith(on)
+}
+
+// oauthAvailableWith is oauthAvailable for a setting value already read.
+func (s *Server) oauthAvailableWith(on bool) bool {
 	if s.oauthServer == nil {
 		return false
 	}
 	if s.cloudMode {
 		return true
 	}
-	return s.mcpAvailable() && s.mcpEndpoints.HTTPS()
+	return s.mcpAvailableWith(on) && s.mcpEndpoints.HTTPS()
 }
 
-// sessionMCPPublicURL is the mcp_public_url the session and setup payloads
-// carry, which the web UI's connect modal keys on. It stays cloud-only
-// here, as it was before SetMCPTransport ran on every install: the modal
-// offers only the OAuth path today, which an http self-host cannot
-// complete. PLAN-2310 DR-8 (unit 6) replaces it with the resolved URL
-// whenever mcpAvailable, alongside the modal's PAT path.
-func (s *Server) sessionMCPPublicURL() string {
-	if !s.cloudMode {
-		return ""
+// Auth methods the session and setup payloads advertise in mcp_auth
+// (PLAN-2310 DR-8).
+const (
+	mcpAuthOAuth = "oauth"
+	mcpAuthPAT   = "pat"
+)
+
+// sessionMCP is the mcp_public_url and mcp_auth the session and setup
+// payloads carry, which the web UI's connect modal keys on (PLAN-2310
+// DR-8). While MCP is available the URL is the resolved MCP URL and the
+// methods are ["oauth","pat"] with OAuth or ["pat"] without it (an http
+// self-host); otherwise the URL is "" and the methods are empty. The
+// setting is read once, so a concurrent toggle cannot produce a URL with
+// no methods or the reverse.
+func (s *Server) sessionMCP() (string, []string) {
+	on, _ := s.mcpSetting()
+	if !s.mcpAvailableWith(on) {
+		return "", []string{}
 	}
-	return s.mcpPublicURL
+	if s.oauthAvailableWith(on) {
+		return s.mcpPublicURL, []string{mcpAuthOAuth, mcpAuthPAT}
+	}
+	return s.mcpPublicURL, []string{mcpAuthPAT}
 }
 
 // requireMCPAvailable and requireOAuthAvailable gate the MCP and OAuth

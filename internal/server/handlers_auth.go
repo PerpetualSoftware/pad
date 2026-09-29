@@ -125,6 +125,7 @@ func (s *Server) handleCheckUsername(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) setupStatePayload(setupMethod string) map[string]interface{} {
+	mcpURL, mcpAuth := s.sessionMCP()
 	return map[string]interface{}{
 		"authenticated":     false,
 		"setup_required":    true,
@@ -132,7 +133,8 @@ func (s *Server) setupStatePayload(setupMethod string) map[string]interface{} {
 		"auth_method":       authMethodPassword,
 		"cloud_mode":        s.cloudMode,
 		"email_configured":  s.email != nil,
-		"mcp_public_url":    s.sessionMCPPublicURL(),
+		"mcp_public_url":    mcpURL,
+		"mcp_auth":          mcpAuth,
 		"billing_available": s.cloudMode && s.billingAvailable,
 		// PLAN-2310 DR-7: the web UI keys Connected Apps on oauth_available
 		// rather than cloud_mode. Both are evaluated per request.
@@ -154,15 +156,17 @@ func (s *Server) webMCPEnabled() bool {
 }
 
 func (s *Server) sessionStatePayload(authenticated bool, user *models.User) map[string]interface{} {
-	// mcp_public_url is the canonical URL clients paste into their MCP-capable
-	// agent (e.g. "https://mcp.getpad.dev"). Empty string when PAD_MCP_PUBLIC_URL
-	// is unset — the web UI uses presence/absence as the gate that drives the
-	// connect banner mode (Remote MCP vs CLI install). Always emitted, never
-	// omitted, so the frontend can rely on a string value.
+	// mcp_public_url is the URL clients paste into their MCP-capable agent
+	// (e.g. "https://mcp.getpad.dev"), and mcp_auth the methods it accepts:
+	// ["oauth","pat"], or ["pat"] on an http self-host. While MCP is not
+	// available the URL is "" and the methods are empty (PLAN-2310 DR-8,
+	// sessionMCP). The web UI's connect modal keys on both. Always emitted,
+	// never omitted, so the frontend can rely on a string and an array.
 	//
 	// billing_available is true when PAD_BILLING_AVAILABLE=true and the
 	// deployment is in cloud mode. Used by the web UI to show/hide Stripe
 	// Checkout CTAs. TASK-800.
+	mcpURL, mcpAuth := s.sessionMCP()
 	payload := map[string]interface{}{
 		"authenticated":  authenticated,
 		"setup_required": false,
@@ -174,7 +178,8 @@ func (s *Server) sessionStatePayload(authenticated bool, user *models.User) map[
 		// with no Maileroo key). Low-sensitivity deployment config, same
 		// class as cloud_mode/mcp_public_url.
 		"email_configured":  s.email != nil,
-		"mcp_public_url":    s.sessionMCPPublicURL(),
+		"mcp_public_url":    mcpURL,
+		"mcp_auth":          mcpAuth,
 		"billing_available": s.cloudMode && s.billingAvailable,
 		// PLAN-2310 DR-7: whether MCP and its OAuth path are available now
 		// (the setting, the configured origin and its scheme; always on
