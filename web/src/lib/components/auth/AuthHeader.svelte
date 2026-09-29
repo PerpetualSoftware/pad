@@ -15,6 +15,7 @@
 	// Same pattern as the companion AuthFooter.svelte in this directory.
 
 	import { DOCS_URL, GITHUB_REPO_URL } from '$lib/brand/links';
+	import { authStore } from '$lib/stores/auth.svelte';
 
 	let { cloudMode = false }: { cloudMode?: boolean } = $props();
 
@@ -26,11 +27,14 @@
 	// marketing site" links rather than in-app nav. The Docs and GitHub
 	// addresses come from $lib/brand/links (single source, guarded by
 	// Sidebar.svelte.test.ts); Blog has no constant yet.
-	const navLinks: Array<{ label: string; href: string }> = [
+	// Blog is marketing and is hidden in the mobile apps (PLAN-3291 DR-1,
+	// TASK-3299); Docs and GitHub stay.
+	const allNavLinks: Array<{ label: string; href: string; marketing?: boolean }> = [
 		{ label: 'Docs', href: DOCS_URL },
-		{ label: 'Blog', href: 'https://getpad.dev/blog' },
+		{ label: 'Blog', href: 'https://getpad.dev/blog', marketing: true },
 		{ label: 'GitHub', href: GITHUB_REPO_URL }
 	];
+	const navLinks = $derived(allNavLinks.filter((l) => !(l.marketing && authStore.nativeShell)));
 
 	function handleKeydown(event: KeyboardEvent) {
 		if (event.key === 'Escape' && mobileMenuOpen) {
@@ -48,7 +52,13 @@
 {#if cloudMode}
 	<header class="auth-header">
 		<nav class="auth-header-nav" aria-label="Marketing navigation">
-			<a href="https://getpad.dev/" class="auth-header-wordmark">pad</a>
+			<!-- In the mobile apps the wordmark is not a way to the marketing
+			     site (PLAN-3291 DR-1, TASK-3299). -->
+			{#if authStore.nativeShell}
+				<span class="auth-header-wordmark">pad</span>
+			{:else}
+				<a href="https://getpad.dev/" class="auth-header-wordmark">pad</a>
+			{/if}
 
 			<div class="auth-header-links">
 				{#each navLinks as link (link.label)}

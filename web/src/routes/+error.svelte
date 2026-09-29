@@ -110,6 +110,9 @@
 			<div class="actions">
 				<a href="/" class="primary">Go to home</a>
 				{#if authStore.cloudMode}
+					<!-- Not in the mobile apps: the marketing site is a step towards
+					     a purchase page there (PLAN-3291 DR-1, TASK-3299). -->
+					{#if authStore.commerceAllowed}
 					<a
 						href="https://getpad.dev/"
 						target="_blank"
@@ -118,6 +121,7 @@
 					>
 						Back to getpad.dev
 					</a>
+					{/if}
 					<a
 						href="https://getpad.dev/docs"
 						target="_blank"

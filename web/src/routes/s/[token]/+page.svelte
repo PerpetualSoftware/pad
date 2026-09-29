@@ -3,6 +3,7 @@
 	import { page } from '$app/state';
 	import { onMount } from 'svelte';
 	import { api, withRequestDeadline } from '$lib/api/client';
+	import { authStore } from '$lib/stores/auth.svelte';
 	import { renderMarkedWithAttachments } from '$lib/utils/markdown';
 	import { renderAttachmentUnavailable } from '$lib/markdown/attachments';
 	import DOMPurify from 'dompurify';
@@ -699,7 +700,9 @@
 	</div>
 
 	<footer class="share-footer">
-		<span>Powered by <a href="https://getpad.dev" target="_blank" rel="noopener noreferrer">Pad</a></span>
+		<!-- Gated on the shell, not on commerceAllowed: a self-hosted share page
+		     keeps its link, and only the mobile apps lose it (TASK-3299). -->
+		<span>Powered by {#if authStore.nativeShell}Pad{:else}<a href="https://getpad.dev" target="_blank" rel="noopener noreferrer">Pad</a>{/if}</span>
 	</footer>
 </div>
 

@@ -159,3 +159,54 @@ for (const leg of [
 		}
 	});
 }
+
+/**
+ * TASK-3299: the marketing site is not linked from the app. The auth pages'
+ * header and footer lose the getpad.dev root, blog, FAQ
+ * and contribute links under the shell UA; the legal and docs links stay
+ * (the privacy policy must be reachable in the app). The browser control must
+ * find the marketing links on the same pages. No login: these are the pages a
+ * signed-out shell renders.
+ */
+const MARKETING_LINKS =
+	'a[href="https://getpad.dev/"], a[href="https://getpad.dev"], a[href="https://getpad.dev/blog"], a[href="https://getpad.dev/faq"], a[href="https://getpad.dev/contribute"]';
+
+for (const leg of [
+	{ name: 'app (PadShell UA) links no marketing page', ua: SHELL_UA, shell: true },
+	{ name: 'browser control links the marketing pages', ua: BROWSER_UA, shell: false }
+]) {
+	test(`TASK-3299: ${leg.name}`, async ({ browser }, testInfo) => {
+		test.skip(testInfo.project.name !== 'desktop-chromium', 'UA is the variable, not viewport.');
+		const { baseURL } = suiteFixture();
+		const context = await browser.newContext({ baseURL, userAgent: leg.ua });
+		try {
+			const page = await context.newPage();
+			await page.route('**/api/v1/auth/session', async (route) => {
+				const resp = await route.fetch();
+				const body = await resp.json();
+				body.cloud_mode = true;
+				await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
+			});
+
+			await page.goto('/login');
+			await expect(page.getByRole('link', { name: 'Privacy', exact: true })).toBeVisible();
+			await expect(page.getByRole('link', { name: 'Docs', exact: true }).first()).toBeVisible();
+			const onLogin = await page.locator(MARKETING_LINKS).count();
+			if (leg.shell) expect(onLogin).toBe(0);
+			else expect(onLogin).toBeGreaterThanOrEqual(4); // wordmark, Blog, Contribute, FAQ
+
+			// The register form keeps its Terms and Privacy links in both legs. The
+			// error page's "Back to getpad.dev" is not reachable signed-out (an
+			// unknown route sends the user to /login), so the classification
+			// vitest carries it.
+			await page.goto('/register');
+			await expect(page.locator('a[href="https://getpad.dev/terms"]').first()).toBeVisible();
+			await expect(page.locator('a[href="https://getpad.dev/privacy"]').first()).toBeVisible();
+			const onRegister = await page.locator(MARKETING_LINKS).count();
+			if (leg.shell) expect(onRegister).toBe(0);
+			else expect(onRegister).toBeGreaterThanOrEqual(4);
+		} finally {
+			await context.close();
+		}
+	});
+}
