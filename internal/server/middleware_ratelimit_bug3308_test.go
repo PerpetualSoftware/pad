@@ -80,6 +80,46 @@ func TestIPRateLimiter_FloodCannotEvictADrainedBucket(t *testing.T) {
 	}
 }
 
+// Codex round 1: whole-token levels put a drained bucket on the same
+// level as buckets holding 0.9 tokens, so the sweep chose among them at
+// random. The ranking is finer than a token now, so the drained bucket
+// is never the one evicted. 200 trials: at the old granularity it went
+// in about one trial in eight.
+func TestIPRateLimiter_SweepRanksBelowAToken(t *testing.T) {
+	for trial := 0; trial < 200; trial++ {
+		rl := newIPRateLimiter(rateLimitConfig{Rate: 1, Burst: 2, MaxEntries: 8})
+		now := time.Now()
+		rl.getLimiter("ip:attacker").AllowN(now, 2) // 0 tokens at now
+		for i := 0; i < 7; i++ {
+			// drained 0.9s earlier, so 0.9 tokens at now
+			rl.getLimiter(fmt.Sprintf("ip:k%d", i)).AllowN(now.Add(-900*time.Millisecond), 2)
+		}
+		rl.mu.Lock()
+		rl.evictLocked(now)
+		_, kept := rl.limiters["ip:attacker"]
+		rl.mu.Unlock()
+		rl.Stop()
+		if !kept {
+			t.Fatalf("trial %d: the drained bucket was evicted ahead of buckets holding 0.9 tokens", trial)
+		}
+	}
+}
+
+// A burst of 0 or below has no level to rank by; the sweep must neither
+// panic nor let the map grow.
+func TestIPRateLimiter_NonPositiveBurstStaysBounded(t *testing.T) {
+	for _, burst := range []int{0, -1, -5} {
+		rl := newIPRateLimiter(rateLimitConfig{Rate: 1, Burst: burst, MaxEntries: 8})
+		for i := 0; i < 100; i++ {
+			rl.allow(fmt.Sprintf("ip:k%d", i))
+		}
+		if n := len(rl.limiters); n > 8 {
+			t.Errorf("burst %d: map holds %d keys, over the cap of 8", burst, n)
+		}
+		rl.Stop()
+	}
+}
+
 // Full buckets go first and all at once: dropping one gives nothing, since
 // a fresh limiter starts full. A partly spent bucket survives a sweep that
 // full ones can satisfy.

@@ -557,7 +557,7 @@ func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) 
 		shareKeyHex := hex.EncodeToString(shareKeyHash[:])
 		if s.rateLimiters != nil && s.rateLimiters.SharePasswordIP != nil {
 			key := "sp:" + shareKeyHex + ":" + rateLimitAddr(clientIP(r))
-			if !s.rateLimiters.SharePasswordIP.getLimiter(key).Allow() {
+			if !s.rateLimiters.SharePasswordIP.allow(key) {
 				slog.Warn("rate limited", "share_link_id", link.ID, "limiter", "share_password_ip")
 				writeRateLimitResponse(w, s.rateLimiters.SharePasswordIP.config)
 				return
@@ -565,7 +565,7 @@ func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) 
 		}
 		if s.rateLimiters != nil && s.rateLimiters.SharePasswordShare != nil {
 			key := "sps:" + shareKeyHex
-			if !s.rateLimiters.SharePasswordShare.getLimiter(key).Allow() {
+			if !s.rateLimiters.SharePasswordShare.allow(key) {
 				slog.Warn("rate limited", "share_link_id", link.ID, "limiter", "share_password_share")
 				writeRateLimitResponse(w, s.rateLimiters.SharePasswordShare.config)
 				return

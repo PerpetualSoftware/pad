@@ -46,6 +46,9 @@ const defaultRetention = 30 * time.Minute
 // Reaching it never refuses anyone: it evicts, see evictLocked.
 const defaultMaxEntries = 1 << 16
 
+// evictLevels is how finely evictLocked ranks buckets by their tokens.
+const evictLevels = 1024
+
 // ipRateLimiter tracks per-key rate limiters with automatic cleanup.
 type ipRateLimiter struct {
 	mu         sync.Mutex
@@ -103,10 +106,30 @@ func (rl *ipRateLimiter) Stop() {
 	rl.stopWg.Wait()
 }
 
+// allow charges one token from key's bucket and reports whether the
+// request may proceed. The lookup and the charge happen under one lock
+// hold: a caller that took the pointer and charged it later could spend a
+// bucket the sweep had already evicted and replaced (BUG-3308, codex
+// round 1), getting both the old bucket's tokens and the new one's burst.
+// Every production charge goes through here.
+func (rl *ipRateLimiter) allow(key string) bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	return rl.limiterLocked(key).Allow()
+}
+
+// getLimiter returns key's bucket, creating it if absent, without
+// charging it. Tests read a bucket through it; production code charges
+// through allow instead.
 func (rl *ipRateLimiter) getLimiter(key string) *rate.Limiter {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
+	return rl.limiterLocked(key)
+}
 
+// limiterLocked is the lookup behind allow and getLimiter. Caller holds
+// rl.mu.
+func (rl *ipRateLimiter) limiterLocked(key string) *rate.Limiter {
 	now := time.Now()
 	entry, exists := rl.limiters[key]
 	if !exists {
@@ -136,10 +159,15 @@ func (rl *ipRateLimiter) getLimiter(key string) *rate.Limiter {
 //     indistinguishable from a new one, so dropping it gives nothing.
 //  2. If that is not enough, the fullest buckets first: the owner gains
 //     burst minus the tokens they already had, the smallest gift on
-//     offer. An exhausted bucket goes last, so pushing an attacker's
-//     own drained bucket out takes draining nearly every other bucket
-//     in the map as far, which costs far more requests than the burst
-//     it would win back.
+//     offer.
+//
+// What that buys: a bucket is evicted in step 2 only once the low-water
+// mark's worth of OTHER buckets (57,344 at the default cap) sit at or
+// below its level, so each token handed back is paid for by that many
+// tokens drained from other buckets inside their refill window. Where
+// the attacker can mint keys (any address-keyed bucket) a fresh key is
+// always cheaper than that, and where they cannot (AuthEmail's sprayed
+// address, a share link's link-wide bucket) it is the whole cost.
 func (rl *ipRateLimiter) evictLocked(now time.Time) {
 	low := rl.maxEntries - rl.maxEntries/8
 	if low >= rl.maxEntries {
@@ -147,21 +175,29 @@ func (rl *ipRateLimiter) evictLocked(now time.Time) {
 	}
 	burst := float64(rl.config.Burst)
 	// A bucket that is not full holds between 0 and burst tokens; its
-	// whole-token level orders it. Levels rather than a sort keep the
-	// sweep linear, and two buckets on one level differ by under a token.
+	// level is that fraction of burst in evictLevels steps. Levels rather
+	// than a sort keep the sweep linear, and a fixed count keeps the
+	// histogram's size off the config: two buckets share a level only
+	// when they differ by under burst/evictLevels tokens (codex round 1:
+	// whole-token levels put a drained bucket beside ones at 0.99).
 	type candidate struct {
 		key   string
 		level int
 	}
 	rest := make([]candidate, 0, len(rl.limiters))
-	perLevel := make([]int, rl.config.Burst+1)
+	var perLevel [evictLevels]int
 	for key, entry := range rl.limiters {
 		tokens := entry.limiter.TokensAt(now)
 		if now.Sub(entry.lastSeen) > rl.retention || tokens >= burst {
 			delete(rl.limiters, key)
 			continue
 		}
-		level := int(math.Max(tokens, 0))
+		// burst > tokens >= 0 here, so burst is positive and the level
+		// is in [0, evictLevels).
+		level := int(math.Max(tokens, 0) / burst * evictLevels)
+		if level >= evictLevels {
+			level = evictLevels - 1
+		}
 		rest = append(rest, candidate{key, level})
 		perLevel[level]++
 	}
@@ -598,7 +634,7 @@ func (s *Server) RateLimit(next http.Handler) http.Handler {
 			oauthLimiter, oauthLabel = s.rateLimiters.OAuthDecide, "oauth_decide"
 		}
 		if oauthLimiter != nil {
-			if !oauthLimiter.getLimiter(addr).Allow() {
+			if !oauthLimiter.allow(addr) {
 				slog.Warn("rate limited", "ip", ip, "path", path, "limiter", oauthLabel)
 				writeRateLimitResponse(w, oauthLimiter.config)
 				return
@@ -640,8 +676,7 @@ func (s *Server) RateLimit(next http.Handler) http.Handler {
 			}
 
 			if limiter != nil {
-				l := limiter.getLimiter(addr)
-				if !l.Allow() {
+				if !limiter.allow(addr) {
 					slog.Warn("rate limited", "ip", ip, "path", path, "limiter", "auth")
 					writeRateLimitResponse(w, limiter.config)
 					return
@@ -655,8 +690,7 @@ func (s *Server) RateLimit(next http.Handler) http.Handler {
 		if strings.HasPrefix(path, "/api/v1/admin/") {
 			switch path {
 			case "/api/v1/admin/plan", "/api/v1/admin/stripe-customer-id", "/api/v1/admin/user-by-customer", "/api/v1/admin/stripe-event-processed", "/api/v1/admin/stripe-event-unmark", "/api/v1/admin/payment-failed":
-				l := s.rateLimiters.CloudAdmin.getLimiter(addr)
-				if !l.Allow() {
+				if !s.rateLimiters.CloudAdmin.allow(addr) {
 					slog.Warn("rate limited", "ip", ip, "path", path, "limiter", "cloud_admin")
 					writeRateLimitResponse(w, s.rateLimiters.CloudAdmin.config)
 					return
@@ -673,7 +707,7 @@ func (s *Server) RateLimit(next http.Handler) http.Handler {
 		// only the trailing /preview segment; /invitations/{code}/accept is
 		// authenticated and falls through to the general API limit.
 		if strings.HasPrefix(path, "/api/v1/invitations/") && strings.HasSuffix(path, "/preview") {
-			if !s.rateLimiters.InvitationPreview.getLimiter(addr).Allow() {
+			if !s.rateLimiters.InvitationPreview.allow(addr) {
 				slog.Warn("rate limited", "ip", ip, "path", path, "limiter", "invitation_preview")
 				writeRateLimitResponse(w, s.rateLimiters.InvitationPreview.config)
 				return
@@ -692,7 +726,7 @@ func (s *Server) RateLimit(next http.Handler) http.Handler {
 		// API bucket (codex round 1).
 		if strings.HasPrefix(path, "/api/v1/collab/") && websocket.IsWebSocketUpgrade(r) {
 			key := rateLimitKey(r, addr)
-			if !s.rateLimiters.CollabDial.getLimiter(key).Allow() {
+			if !s.rateLimiters.CollabDial.allow(key) {
 				slog.Warn("rate limited", "key", key, "path", path, "limiter", "collab_dial")
 				writeRateLimitResponse(w, s.rateLimiters.CollabDial.config)
 				return
@@ -709,7 +743,7 @@ func (s *Server) RateLimit(next http.Handler) http.Handler {
 		if path == "/api/v1/oauth/claim" && r.Method == http.MethodPost {
 			if user := currentUser(r); user != nil {
 				key := "user:" + user.ID
-				if !s.rateLimiters.OAuthClaim.getLimiter(key).Allow() {
+				if !s.rateLimiters.OAuthClaim.allow(key) {
 					slog.Warn("rate limited", "key", key, "path", path, "limiter", "oauth_claim")
 					writeRateLimitResponse(w, s.rateLimiters.OAuthClaim.config)
 					return
@@ -721,7 +755,7 @@ func (s *Server) RateLimit(next http.Handler) http.Handler {
 
 		if path == "/api/v1/search" {
 			key := rateLimitKey(r, addr)
-			if !s.rateLimiters.Search.getLimiter(key).Allow() {
+			if !s.rateLimiters.Search.allow(key) {
 				slog.Warn("rate limited", "key", key, "path", path, "limiter", "search")
 				writeRateLimitResponse(w, s.rateLimiters.Search.config)
 				return
@@ -732,7 +766,7 @@ func (s *Server) RateLimit(next http.Handler) http.Handler {
 
 		// General API rate limit
 		key := rateLimitKey(r, addr)
-		if !s.rateLimiters.API.getLimiter(key).Allow() {
+		if !s.rateLimiters.API.allow(key) {
 			slog.Warn("rate limited", "key", key, "path", path, "limiter", "api")
 			writeRateLimitResponse(w, s.rateLimiters.API.config)
 			return
@@ -754,7 +788,7 @@ func (s *Server) allowDecisionProviderCall(w http.ResponseWriter, r *http.Reques
 		return true
 	}
 	key := rateLimitKey(r, rateLimitAddr(clientIP(r)))
-	if !s.rateLimiters.DecisionProvider.getLimiter(key).Allow() {
+	if !s.rateLimiters.DecisionProvider.allow(key) {
 		slog.Warn("rate limited", "key", key, "path", r.URL.Path, "limiter", "decision_provider")
 		writeRateLimitResponse(w, s.rateLimiters.DecisionProvider.config)
 		return false
@@ -843,8 +877,7 @@ func (s *Server) checkMCPRateLimit(w http.ResponseWriter, r *http.Request, beare
 		return true
 	}
 	key := hashTokenForLimiter(bearer)
-	l := s.rateLimiters.MCPPerToken.getLimiter(key)
-	if !l.Allow() {
+	if !s.rateLimiters.MCPPerToken.allow(key) {
 		slog.Warn("mcp rate limited", "path", r.URL.Path, "limiter", "mcp_per_token")
 		writeMCPRateLimit(w, r, s.rateLimiters.MCPPerToken.config)
 		return false
@@ -863,7 +896,7 @@ func (s *Server) chargeMCPPreAuth(w http.ResponseWriter, r *http.Request) bool {
 	}
 	ip := clientIP(r)
 	addr := rateLimitAddr(ip)
-	if s.rateLimiters.MCPPreAuth.getLimiter(addr).Allow() {
+	if s.rateLimiters.MCPPreAuth.allow(addr) {
 		return true
 	}
 	s.recordMCPPreAuthDenied("rate_limited")

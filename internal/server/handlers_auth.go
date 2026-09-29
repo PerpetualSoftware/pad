@@ -924,8 +924,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if s.rateLimiters != nil && s.rateLimiters.AuthEmail != nil {
 		emailKey := strings.ToLower(strings.TrimSpace(input.Email))
 		if isPlausibleEmail(emailKey) {
-			limiter := s.rateLimiters.AuthEmail.getLimiter(emailKey)
-			if !limiter.Allow() {
+			if !s.rateLimiters.AuthEmail.allow(emailKey) {
 				slog.Warn("rate limited", "email", emailKey, "limiter", "auth_email")
 				// Audit even the blocked attempt so an admin can see the
 				// sprayed account in the log.
