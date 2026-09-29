@@ -264,8 +264,11 @@ func serveCmd() *cobra.Command {
 			// generates one on SQLite and refuses to start Postgres without
 			// one. Until BUG-3305 this was cloud-only, so a self-hosted
 			// password or require-auth share page showed a placeholder for
-			// every image. The MAC is domain-separated from the other uses
-			// of this key (shareAssetSigDomain).
+			// every image. The same key also keys encryption at rest, OAuth
+			// and claim codes. The share-asset MAC input carries its own
+			// label (shareAssetSigDomain) and a different shape from the
+			// claim-code input, and each verifier accepts only its own
+			// format (a full hex MAC here, a six-digit code there).
 			srv.SetShareAssetSecret(keyBytes)
 			// PublicLinkBaseURL — not BaseURL() — so the server picks up
 			// PUBLIC_URL from the deployment env (BUG-899). BaseURL() is
