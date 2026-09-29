@@ -129,10 +129,23 @@ func TestDR9_DCRAndSignupBucketsAreIndependent(t *testing.T) {
 // A 100-client schedule against /oauth/token's configured bucket, on a
 // simulated clock: 100 code exchanges in one second, then 100 refreshes
 // spread over each hour for three hours. None may be refused.
+//
+// The schedule runs on a simulated clock, so it drives a limiter built
+// from the production bucket's config. The first leg pins that the route
+// draws from exactly that bucket: one real /oauth/token request spends
+// one token from srv.rateLimiters.OAuthToken for its address, so the
+// schedule below is about the limiter the route actually uses.
 func TestDR9_TokenBucketFitsA100ClientSchedule(t *testing.T) {
-	rls := NewRateLimiters()
-	defer rls.Stop()
-	cfg := rls.OAuthToken.config
+	srv, _ := oauthEnabledTestServer(t)
+	const remote = "192.0.2.81:1"
+	before := srv.rateLimiters.OAuthToken.getLimiter("192.0.2.81").Tokens()
+	floorRequest(srv, "POST", "/oauth/token", "grant_type=authorization_code", "application/x-www-form-urlencoded", remote, "")
+	after := srv.rateLimiters.OAuthToken.getLimiter("192.0.2.81").Tokens()
+	if before-after < 0.5 {
+		t.Fatalf("/oauth/token did not draw from the OAuthToken bucket (tokens %.2f -> %.2f)", before, after)
+	}
+
+	cfg := srv.rateLimiters.OAuthToken.config
 	l := rate.NewLimiter(cfg.Rate, cfg.Burst)
 	t0 := time.Unix(0, 0)
 	for i := 0; i < 100; i++ {
