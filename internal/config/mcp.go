@@ -131,6 +131,12 @@ func parseMCPURL(raw string, pathAllowed bool) (string, error) {
 		return "", fmt.Errorf("it has no host")
 	case strings.HasSuffix(u.Host, ":"):
 		return "", fmt.Errorf("it has an empty port")
+	case strings.Contains(u.Hostname(), "%"):
+		// A zoned IPv6 address (fe80::1%eth0) names an interface on this
+		// machine; no remote client can reach it, and re-spelling it
+		// canonically would have to preserve the %25 escape and the zone's
+		// case. Refuse it rather than emit a malformed URL.
+		return "", fmt.Errorf("a zoned IPv6 address is not a public address")
 	case u.User != nil:
 		return "", fmt.Errorf("it must not carry user info")
 	case u.RawQuery != "" || u.ForceQuery:

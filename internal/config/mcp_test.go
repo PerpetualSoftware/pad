@@ -85,6 +85,10 @@ func TestResolveMCPEndpoints(t *testing.T) {
 			name: "an empty port is unusable", cfg: Config{URL: "https://pad.example.com:"},
 			problem: "empty port",
 		},
+		{
+			name: "a zoned IPv6 address is unusable", cfg: Config{URL: "http://[fe80::1%25eth0]:7777"},
+			problem: "zoned",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
