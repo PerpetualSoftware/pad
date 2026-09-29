@@ -52,6 +52,15 @@ function sources(dir: string): string[] {
 	return out;
 }
 
+function codeOnly(text: string): string {
+	return text
+		.replace(/<!--[\s\S]*?-->/g, '')
+		.replace(/\/\*[\s\S]*?\*\//g, '')
+		.split('\n')
+		.filter((l) => !l.trim().startsWith('//'))
+		.join('\n');
+}
+
 // A comment may name the page; only code can render it.
 function isComment(line: string): boolean {
 	const t = line.trim();
@@ -96,7 +105,9 @@ describe('no commerce outside the commerceAllowed gate', () => {
 
 	it('every gated file reads commerceAllowed', () => {
 		for (const f of files) {
-			if (GATED.has(f.rel)) expect(f.text, f.rel).toMatch(/commerceAllowed/);
+			// In code, not in a comment (TASK-3299: a comment naming the gate let
+			// an ungated mutant survive the sibling guard).
+			if (GATED.has(f.rel)) expect(codeOnly(f.text), f.rel).toMatch(/commerceAllowed/);
 		}
 	});
 });
