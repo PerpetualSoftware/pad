@@ -595,6 +595,7 @@
 				workspaceSlug={workspaceStore.current.slug}
 				workspaceName={workspaceStore.current.name}
 				mcpPublicUrl={authStore.mcpPublicUrl}
+				mcpAuth={authStore.mcpAuth}
 			/>
 		{/if}
 	</header>
@@ -670,6 +671,7 @@
 				workspaceSlug={workspaceStore.current.slug}
 				workspaceName={workspaceStore.current.name}
 				mcpPublicUrl={authStore.mcpPublicUrl}
+				mcpAuth={authStore.mcpAuth}
 			/>
 		{/if}
 	</header>

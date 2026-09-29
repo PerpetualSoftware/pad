@@ -1142,6 +1142,15 @@ The auth methods follow from the scheme of the issuer URL:
 
 The OAuth server is built at startup, and only when the issuer URL is https.
 
+Users find the MCP URL in each workspace's **Connect** dialog (the user menu's
+**Connect a project…**). While MCP is not available the dialog offers only the
+CLI. While it is, the dialog shows the URL: with OAuth it leads with the
+sign-in path and offers a personal API token as an alternative, and without
+OAuth the token is the only path. The token path links
+to where tokens are created and gives per-client configuration (Claude Code,
+Cursor, Windsurf, VS Code, Claude Desktop) carrying the
+`Authorization: Bearer` header. The claim-code tab appears only with OAuth.
+
 #### Behind a reverse proxy
 
 The proxy must forward the original `Host` header (the shipped

@@ -76,26 +76,59 @@ func (s *Server) mcpAvailableWith(on bool) bool {
 // is here so a server wired some other way (a test, a future caller) still
 // cannot offer OAuth over http, which Dave ruled PAT-only.
 func (s *Server) oauthAvailable() bool {
+	on, _ := s.mcpSetting()
+	return s.oauthAvailableWith(on)
+}
+
+// oauthAvailableWith is oauthAvailable for a setting value already read.
+func (s *Server) oauthAvailableWith(on bool) bool {
 	if s.oauthServer == nil {
 		return false
 	}
 	if s.cloudMode {
 		return true
 	}
-	return s.mcpAvailable() && s.mcpEndpoints.HTTPS()
+	return s.mcpAvailableWith(on) && s.mcpEndpoints.HTTPS()
 }
 
-// sessionMCPPublicURL is the mcp_public_url the session and setup payloads
-// carry, which the web UI's connect modal keys on. It stays cloud-only
-// here, as it was before SetMCPTransport ran on every install: the modal
-// offers only the OAuth path today, which an http self-host cannot
-// complete. PLAN-2310 DR-8 (unit 6) replaces it with the resolved URL
-// whenever mcpAvailable, alongside the modal's PAT path.
-func (s *Server) sessionMCPPublicURL() string {
-	if !s.cloudMode {
-		return ""
+// Auth methods the session and setup payloads advertise in mcp_auth
+// (PLAN-2310 DR-8).
+const (
+	mcpAuthOAuth = "oauth"
+	mcpAuthPAT   = "pat"
+)
+
+// sessionMCPState is what the session and setup payloads say about MCP:
+// mcp_available and oauth_available (PLAN-2310 DR-7), and mcp_public_url
+// and mcp_auth (DR-8), which the web UI's connect modal keys on.
+type sessionMCPState struct {
+	Available bool
+	OAuth     bool
+	URL       string
+	Auth      []string
+}
+
+// sessionMCP computes sessionMCPState from ONE read of the setting, so a
+// concurrent toggle cannot produce a payload whose four fields disagree
+// (a URL with no methods, or oauth_available beside a ["pat"]). While MCP
+// is available the URL is the resolved MCP URL and the methods are
+// ["oauth","pat"] with OAuth or ["pat"] without it (an http self-host);
+// otherwise the URL is "" and the methods are empty.
+func (s *Server) sessionMCP() sessionMCPState {
+	on, _ := s.mcpSetting()
+	st := sessionMCPState{
+		Available: s.mcpAvailableWith(on),
+		OAuth:     s.oauthAvailableWith(on),
+		Auth:      []string{},
 	}
-	return s.mcpPublicURL
+	switch {
+	case !st.Available:
+	case st.OAuth:
+		st.URL, st.Auth = s.mcpPublicURL, []string{mcpAuthOAuth, mcpAuthPAT}
+	default:
+		st.URL, st.Auth = s.mcpPublicURL, []string{mcpAuthPAT}
+	}
+	return st
 }
 
 // requireMCPAvailable and requireOAuthAvailable gate the MCP and OAuth

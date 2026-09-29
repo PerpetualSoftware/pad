@@ -900,6 +900,7 @@
 	workspaceSlug={wsSlug}
 	workspaceName={workspaceStore.current?.name ?? ''}
 	mcpPublicUrl={authStore.mcpPublicUrl}
+	mcpAuth={authStore.mcpAuth}
 />
 
 {#if wsSlug}

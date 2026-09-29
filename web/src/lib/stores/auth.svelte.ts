@@ -177,11 +177,14 @@ export const authStore = {
 	get userId() { return session?.user?.id ?? ''; },
 	get authenticated() { return session?.authenticated ?? false; },
 	get cloudMode() { return session?.cloud_mode ?? false; },
-	// mcpPublicUrl is the canonical URL clients paste into their MCP-capable
-	// agent. Empty string ('') when PAD_MCP_PUBLIC_URL is unset on the server.
+	// mcpPublicUrl is the URL clients paste into their MCP-capable agent.
+	// Empty string ('') while MCP is not available on the server.
 	// Components that conditionally render Remote-MCP onboarding UI should
 	// branch on `authStore.mcpPublicUrl !== ''`.
 	get mcpPublicUrl() { return session?.mcp_public_url ?? ''; },
+	// mcpAuth is the session's mcp_auth: the methods agents authenticate
+	// to mcpPublicUrl with. undefined on a server that predates it.
+	get mcpAuth() { return session?.mcp_auth; },
 	// billingAvailable is true when the server has PAD_BILLING_AVAILABLE=true
 	// AND is in cloud mode. Components gate "Upgrade to Pro" Stripe CTAs on
 	// this value — false means the CTA is hidden entirely, not just disabled.
