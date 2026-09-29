@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,12 +25,39 @@ import (
 // release is excluded in .github/dependabot.yml; this test is the pin that
 // keeps any later mcp-go version from bringing the behaviour back unnoticed.
 //
-// The calls are held inside the dispatcher and the fetcher until stdin has
-// been closed, so EOF is guaranteed to arrive while all of them are in
-// flight: three tools/call (served by mcp-go's worker pool, default size 5)
-// and one resources/read, sent last because v1.1.0 serves non-tool requests
-// on the read loop itself. They are released only after EOF has had time to
-// be read, and every id must then answer successfully.
+// Ordering is by observation, not by sleeping. Three tools/call (mcp-go's
+// worker pool, default size 5) and one resources/read are held inside the
+// dispatcher and the fetcher; stdin is closed only once all four are inside.
+// The tool calls are released only AFTER the server's own read of stdin has
+// returned EOF, so on any version the EOF is processed while they are still
+// in flight. The resource read is released on the same signal, or after
+// resourceFallback when the server serves it on the read loop itself (as
+// v1.1.0 does) and therefore cannot read EOF until it returns; in that shape
+// EOF cannot cancel it, and the tool calls are still held across the EOF.
+
+const (
+	// eofSettle is how long a release waits after EOF was observed, so a
+	// cancel-at-EOF server has cancelled before the release can win the race.
+	eofSettle = 200 * time.Millisecond
+	// resourceFallback releases a resource read that blocks the read loop.
+	resourceFallback = time.Second
+)
+
+// eofSignalReader closes seen the first time the wrapped reader returns
+// io.EOF, i.e. when the server's read loop has actually reached EOF.
+type eofSignalReader struct {
+	r    io.Reader
+	once sync.Once
+	seen chan struct{}
+}
+
+func (e *eofSignalReader) Read(p []byte) (int, error) {
+	n, err := e.r.Read(p)
+	if errors.Is(err, io.EOF) {
+		e.once.Do(func() { close(e.seen) })
+	}
+	return n, err
+}
 
 // blockingDispatcher holds each call until release is closed, and reports
 // the context's error instead if the context ends first.
@@ -65,26 +94,39 @@ func (f *blockingFetcher) Fetch(ctx context.Context, _ []string) (string, error)
 func TestStdio_EOFDoesNotCancelInFlightRequests(t *testing.T) {
 	const toolCalls = 3
 	entered := make(chan struct{}, toolCalls+1)
-	release := make(chan struct{})
+	toolRelease := make(chan struct{})
+	resourceRelease := make(chan struct{})
+	var releaseTools, releaseResource sync.Once
+	freeTools := func() { releaseTools.Do(func() { close(toolRelease) }) }
+	freeResource := func() { releaseResource.Do(func() { close(resourceRelease) }) }
 
 	srv := NewServer(Options{Version: "eof-test"})
 	if _, err := RegisterCatalog(srv.MCP(), CatalogOptions{
 		Doc:        liveCmdhelpDoc(t),
 		Workspace:  NewWorkspaceState("docapp"),
-		Dispatcher: &blockingDispatcher{entered: entered, release: release},
+		Dispatcher: &blockingDispatcher{entered: entered, release: toolRelease},
 		PadVersion: "test",
 	}); err != nil {
 		t.Fatalf("RegisterCatalog: %v", err)
 	}
-	RegisterResources(srv.MCP(), &blockingFetcher{entered: entered, release: release}, nil)
+	RegisterResources(srv.MCP(), &blockingFetcher{entered: entered, release: resourceRelease}, nil)
 
-	stdin, stdinW := io.Pipe()
+	pipeR, stdinW := io.Pipe()
+	stdin := &eofSignalReader{r: pipeR, seen: make(chan struct{})}
 	stdoutR, stdout := io.Pipe()
 	done := make(chan error, 1)
 	go func() {
 		done <- srv.RunStdio(context.Background(), stdin, stdout)
 		_ = stdout.Close()
 	}()
+	// On any failure path, unblock every held call and both pipes so no
+	// goroutine outlives the test.
+	t.Cleanup(func() {
+		freeTools()
+		freeResource()
+		_ = stdinW.Close()
+		_ = stdoutR.Close()
+	})
 
 	// Collect every response line until the server closes stdout.
 	type response struct {
@@ -119,6 +161,8 @@ func TestStdio_EOFDoesNotCancelInFlightRequests(t *testing.T) {
 			`{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":"pad_item","arguments":{"action":"get","ref":"TASK-%d"}}}`,
 			10+i, i+1))
 	}
+	// Last, because a server that serves it on the read loop reads nothing
+	// after it until it returns.
 	lines = append(lines, fmt.Sprintf(
 		`{"jsonrpc":"2.0","id":20,"method":"resources/read","params":{"uri":%q}}`, WorkspacesURI))
 
@@ -136,9 +180,21 @@ func TestStdio_EOFDoesNotCancelInFlightRequests(t *testing.T) {
 	}
 	_ = stdinW.Close()
 
-	// Give the read loop time to reach EOF, then let the calls finish.
-	time.Sleep(300 * time.Millisecond)
-	close(release)
+	select {
+	case <-stdin.seen:
+		// Off-loop resource read: EOF arrived with everything still held.
+	case <-time.After(resourceFallback):
+		// On-loop resource read: it must return before EOF can be read.
+		freeResource()
+		select {
+		case <-stdin.seen:
+		case <-time.After(5 * time.Second):
+			t.Fatal("server never read stdin EOF")
+		}
+	}
+	time.Sleep(eofSettle)
+	freeResource()
+	freeTools()
 
 	select {
 	case err := <-done:
