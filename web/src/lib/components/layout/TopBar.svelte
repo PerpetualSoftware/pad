@@ -99,6 +99,69 @@
 		}
 	}
 
+	// ── Tab strip: overflow cues, active tab in view, roving focus (TASK-3306) ──
+	// Tabs shrink to a minimum width; past it the list scrolls. The hidden
+	// scrollbar gave no cue, so a fade marks each side with tabs out of view,
+	// and the active tab is scrolled into view whenever it or the set changes.
+	let listEl: HTMLDivElement | undefined = $state(undefined);
+	let fadeLeft = $state(false);
+	let fadeRight = $state(false);
+	function updateFades() {
+		if (!listEl) return;
+		const { scrollLeft, scrollWidth, clientWidth } = listEl;
+		fadeLeft = scrollLeft > 1;
+		fadeRight = scrollLeft + clientWidth < scrollWidth - 1;
+	}
+	$effect(() => {
+		if (!listEl || typeof ResizeObserver === 'undefined') return;
+		const ro = new ResizeObserver(updateFades);
+		ro.observe(listEl);
+		return () => ro.disconnect();
+	});
+	// The fade width, so a tab brought into view is not left under a fade.
+	const FADE_PX = 24;
+	$effect(() => {
+		const slug = currentSlug;
+		void dndTabs.length;
+		if (!listEl || !slug || isDragging) return;
+		const el = listEl.querySelector<HTMLElement>(`.workspace-tab[data-ws-slug="${CSS.escape(slug)}"]`);
+		if (el) {
+			// Scroll the LIST only: scrollIntoView would also move the page.
+			const left = el.offsetLeft;
+			const right = left + el.offsetWidth;
+			if (left < listEl.scrollLeft + FADE_PX) listEl.scrollLeft = Math.max(0, left - FADE_PX);
+			else if (right > listEl.scrollLeft + listEl.clientWidth - FADE_PX)
+				listEl.scrollLeft = right - listEl.clientWidth + FADE_PX;
+		}
+		updateFades();
+	});
+
+	// Roving focus: one tab link is in the Tab order (the one last focused,
+	// else the active tab, else the first), and the arrow keys, Home and End
+	// move between tabs. The close button of that tab is the next Tab stop;
+	// the others' close buttons are reachable by moving to their tab.
+	let rovingSlug = $state('');
+	let focusSlug = $derived(
+		dndTabs.some((t) => t.slug === rovingSlug)
+			? rovingSlug
+			: dndTabs.some((t) => t.slug === currentSlug)
+				? currentSlug
+				: (dndTabs[0]?.slug ?? '')
+	);
+	function handleTabKeydown(e: KeyboardEvent, index: number) {
+		if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+		let next = -1;
+		if (e.key === 'ArrowRight') next = Math.min(dndTabs.length - 1, index + 1);
+		else if (e.key === 'ArrowLeft') next = Math.max(0, index - 1);
+		else if (e.key === 'Home') next = 0;
+		else if (e.key === 'End') next = dndTabs.length - 1;
+		if (next < 0) return;
+		e.preventDefault();
+		e.stopPropagation();
+		rovingSlug = dndTabs[next].slug;
+		listEl?.querySelectorAll<HTMLElement>('.workspace-item')[next]?.focus();
+	}
+
 	// Double-click keeps an ephemeral tab (PLAN-3002 Q9). The clicks of a
 	// double-click still reach handleWsClick; its detail check stops the
 	// second one from navigating again.
@@ -365,6 +428,10 @@
 			<!-- svelte-ignore a11y_no_static_element_interactions -->
 			<div
 				class="workspace-list"
+				class:fade-left={fadeLeft}
+				class:fade-right={fadeRight}
+				bind:this={listEl}
+				onscroll={updateFades}
 				use:dndzone={{
 					items: dndTabs,
 					flipDurationMs,
@@ -374,13 +441,15 @@
 				onconsider={handleTabsConsider}
 				onfinalize={handleTabsFinalize}
 			>
-				{#each dndTabs as tab (tab.id)}
+				{#each dndTabs as tab, i (tab.id)}
+					<!-- svelte-ignore a11y_no_static_element_interactions -->
 					<div
 						class="workspace-tab"
 						class:active={tab.slug === currentSlug}
 						class:ephemeral={tab.ephemeral}
 						class:guest={tab.is_guest}
 						data-ws-slug={tab.slug}
+						onfocusin={() => (rovingSlug = tab.slug)}
 					>
 						<a
 							href="/{tab.owner_username}/{tab.slug}"
@@ -388,6 +457,8 @@
 							class:active={tab.slug === currentSlug}
 							title={tab.is_guest ? `${tab.name} (shared with you)` : tab.name}
 							aria-current={tab.slug === currentSlug ? 'page' : undefined}
+							tabindex={tab.slug === focusSlug ? 0 : -1}
+							onkeydown={(e) => handleTabKeydown(e, i)}
 							onclick={(e) => handleWsClick(e, tab)}
 							ondblclick={() => handleTabDblClick(tab)}
 						>
@@ -410,6 +481,7 @@
 								type="button"
 								class="workspace-tab-close workspace-tab-keep"
 								aria-label="Keep {tab.name} open"
+								tabindex={tab.slug === focusSlug ? 0 : -1}
 								title="Keep open"
 								onclick={(e) => keepTab(e, tab)}
 							>
@@ -420,6 +492,7 @@
 							type="button"
 							class="workspace-tab-close"
 							aria-label="Close {tab.name}"
+							tabindex={tab.slug === focusSlug ? 0 : -1}
 							title="Close"
 							onclick={(e) => closeTab(e, tab)}
 						>
@@ -567,6 +640,14 @@
 		z-index: 20;
 	}
 
+	/* Desktop: the tab strip starts at the left, after the logo, and stops
+	   short of the collapse button and the avatar (TASK-3306; 72px let the
+	   row run under both). */
+	.topbar:not(.topbar-mobile) {
+		justify-content: flex-start;
+		padding: 0 108px 0 72px;
+	}
+
 	/* Mobile: fixed at top, full viewport width, above sidebar + backdrop */
 	.topbar-mobile {
 		position: fixed;
@@ -578,52 +659,90 @@
 	}
 
 	/*
-		The workspace tab bar (PLAN-3002 U3): the tab list and "+" as one
-		centered group. `flex: 1 1 auto; min-width: 0` lets the row shrink
-		below its content so the list scrolls instead of pushing the user
-		menu off the bar.
+		The workspace tab bar (PLAN-3002 U3, reshaped as tabs by TASK-3306):
+		the tab list and "+" as one left-aligned group, with "+" right after
+		the last tab. The row stretches to the bar's full height so a tab can
+		sit on the bar's bottom border. `min-width: 0` lets it shrink below its
+		content so the list scrolls instead of pushing the user menu off.
 	*/
 	.workspace-row {
 		display: flex;
-		align-items: center;
-		justify-content: center;
+		align-self: stretch;
+		align-items: flex-end;
+		justify-content: flex-start;
 		flex: 1 1 auto;
-		gap: 2px;
+		gap: 4px;
 		min-width: 0;
 	}
 
 	/* One zone, plain horizontal scroll. The scrollbar is hidden: the bar is
 	   a single row of chrome and scrolls by wheel, trackpad and drag. */
 	.workspace-list {
+		position: relative; /* offsetLeft of a tab is measured from here */
 		display: flex;
-		align-items: center;
+		align-self: stretch;
+		align-items: flex-end;
 		gap: 2px;
 		min-width: 0;
 		max-width: 100%;
 		overflow-x: auto;
 		scrollbar-width: none;
 	}
+	/* Past the minimum width the list scrolls; a fade marks each side that
+	   has tabs out of view, since the scrollbar is hidden. */
+	.workspace-list.fade-right {
+		mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent);
+	}
+	.workspace-list.fade-left {
+		mask-image: linear-gradient(to left, #000 calc(100% - 24px), transparent);
+	}
+	.workspace-list.fade-left.fade-right {
+		mask-image: linear-gradient(to right, transparent, #000 24px, #000 calc(100% - 24px), transparent);
+	}
 	.workspace-list::-webkit-scrollbar {
 		display: none;
 	}
 
-	/* A tab: the workspace link plus its close button, which shows on hover,
-	   on keyboard focus within the tab, and always on the active tab. */
+	/* A tab (TASK-3306): the TAB carries the shape and the background, so its
+	   close button sits inside it. 200px while there is room; every tab
+	   shrinks equally as more open, down to 120px (the icon, about six
+	   characters and the X), and past that the list scrolls. The width is a
+	   `width`, not a flex-basis, because a flex container sizes itself from
+	   its items' content: with a basis alone the list took the tabs' content
+	   width and they shrank with room to spare. The active tab takes the
+	   page's background and overlaps the bar's bottom border, so it joins the
+	   content below. The close button shows on hover, on keyboard focus within
+	   the tab, and always on the active tab. */
 	.workspace-tab {
 		position: relative;
 		display: flex;
 		align-items: center;
-		flex-shrink: 0;
-		border-radius: var(--radius);
+		flex: 0 1 auto;
+		width: 200px;
+		min-width: 120px;
+		height: 34px;
+		padding: 0 4px 0 2px;
+		margin-bottom: -1px;
+		border: 1px solid transparent;
+		border-bottom: none;
+		border-radius: 8px 8px 0 0;
+		transition: background 0.15s;
+	}
+	.workspace-tab:hover {
+		background: var(--bg-hover);
+	}
+	.workspace-tab.active {
+		background: var(--bg-primary);
+		border-color: var(--border);
+		z-index: 1;
 	}
 	.workspace-tab-close {
 		display: flex;
 		align-items: center;
 		justify-content: center;
+		flex-shrink: 0;
 		width: 18px;
 		height: 18px;
-		margin-left: -4px;
-		margin-right: 2px;
 		padding: 0;
 		border: none;
 		border-radius: 50%;
@@ -654,14 +773,15 @@
 	.workspace-item {
 		display: flex;
 		align-items: center;
+		flex: 1 1 auto;
+		min-width: 0;
 		gap: var(--space-2);
-		padding: var(--space-1) var(--space-2);
+		padding: var(--space-1) 6px;
 		border-radius: var(--radius);
 		text-decoration: none;
 		color: var(--text-secondary);
 		white-space: nowrap;
-		flex-shrink: 0;
-		transition: background 0.15s, color 0.15s;
+		transition: color 0.15s;
 	}
 	/* Grab cursor on desktop only */
 	.topbar:not(.topbar-mobile) .workspace-item {
@@ -671,12 +791,10 @@
 		cursor: grabbing;
 	}
 	.workspace-item:hover {
-		background: var(--bg-hover);
 		color: var(--text-primary);
 		text-decoration: none;
 	}
 	.workspace-item.active {
-		background: var(--bg-hover);
 		color: var(--text-primary);
 	}
 
@@ -694,19 +812,28 @@
 		transition: background 0.15s, color 0.15s;
 	}
 
+	/* Inside a 34px tab the icon steps down from 24px (TASK-3306). */
+	.workspace-tab .workspace-icon {
+		width: 20px;
+		height: 20px;
+		font-size: 0.68em;
+	}
+
 	.workspace-name {
 		font-size: 0.82em;
 		font-weight: 500;
 	}
-	/* Truncate long workspace names so one tab cannot claim the bar. */
+	/* A long name ends in an ellipsis inside its tab; the link's title
+	   carries the full name. */
 	.workspace-list .workspace-name {
-		max-width: 200px;
+		min-width: 0;
 		overflow: hidden;
 		text-overflow: ellipsis;
 	}
 
 	.workspace-add-anchor {
 		position: relative;
+		align-self: center;
 		flex-shrink: 0;
 	}
 	.workspace-add {
