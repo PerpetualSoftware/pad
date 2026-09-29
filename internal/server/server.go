@@ -303,8 +303,11 @@ type Server struct {
 	// mcpEndpoints and mcpEnabledEnv are the MCP capability's addressing and
 	// the PAD_MCP_ENABLED override (PLAN-2310), set once at startup by
 	// SetMCPConfig. See handlers_admin_mcp.go.
-	mcpEndpoints  config.MCPEndpoints
-	mcpEnabledEnv *bool
+	mcpEndpoints config.MCPEndpoints
+	// mcpMisdirected rate-limits the WARN for Host-allowlist refusals
+	// (PLAN-2310 DR-6, middleware_mcp_host.go).
+	mcpMisdirected misdirectedHostLog
+	mcpEnabledEnv  *bool
 
 	// inFlightUploadHashes tracks content_hash values for uploads
 	// that have called AttachmentStore.Put but not yet inserted the

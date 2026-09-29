@@ -1,6 +1,35 @@
 package server
 
-import "testing"
+import (
+	"bytes"
+	"fmt"
+	"log/slog"
+	"strings"
+	"testing"
+)
+
+// The first 421 per host is logged at WARN; repeats of a host are not,
+// and distinct hosts beyond the overall burst are not either, so a client
+// spraying Host values cannot flood the log.
+func TestMisdirectedHostLog_FirstPerHostRateLimited(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(prev)
+
+	var l misdirectedHostLog
+	l.warnOnce("a.example", "Host", "https://pad.example.com", "192.0.2.1:1")
+	l.warnOnce("a.example", "Host", "https://pad.example.com", "192.0.2.1:1")
+	if n := strings.Count(buf.String(), "received_host=a.example"); n != 1 {
+		t.Fatalf("same host twice: %d lines, want 1", n)
+	}
+	for i := 0; i < 20; i++ {
+		l.warnOnce(fmt.Sprintf("h%d.example", i), "Host", "https://pad.example.com", "192.0.2.1:1")
+	}
+	if n := strings.Count(buf.String(), "level=WARN"); n != 5 {
+		t.Fatalf("21 distinct hosts: %d WARN lines, want 5 (the overall burst)", n)
+	}
+}
 
 // PLAN-2310 DR-6 matching rules for the Host allowlist.
 func TestHostMatchesURL(t *testing.T) {

@@ -553,6 +553,83 @@ func TestMCPCapability_HostAllowlist(t *testing.T) {
 	}
 }
 
+// TestMCPCapability_HostAllowlistBehindAProxy is the lead's TASK-2319
+// ruling: behind a proxy that rewrites Host to the backend's name, the
+// public host arrives in X-Forwarded-Host, which is honoured only from a
+// peer PAD_TRUSTED_PROXIES trusts. From any other peer it is ignored, so a
+// rebinding page cannot pass by sending it. The refusal names the fix.
+func TestMCPCapability_HostAllowlistBehindAProxy(t *testing.T) {
+	f := newCapFixture(t, cfgHTTPS, false, nil, "true")
+	f.srv.SetTrustedProxies("10.0.0.0/8") // before the first request builds the router
+	mcpRoute := capRoute{method: "POST", path: "/mcp", body: `{}`, contentType: "application/json"}
+	send := func(peer, host, xfh string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{}`))
+		req.Host = host
+		req.RemoteAddr = peer
+		req.Header.Set("Content-Type", "application/json")
+		if xfh != "" {
+			req.Header.Set("X-Forwarded-Host", xfh)
+		}
+		rr := httptest.NewRecorder()
+		f.srv.ServeHTTP(rr, req)
+		return rr
+	}
+	const trusted, untrusted = "10.0.0.5:40000", "192.0.2.10:4242"
+	admitted := func(rr *httptest.ResponseRecorder) bool { return rr.Code == http.StatusUnauthorized } // then no token
+
+	for _, tc := range []struct {
+		name, peer, host, xfh string
+		want                  bool
+	}{
+		{"trusted proxy rewrote Host, public host in XFH", trusted, "pad-backend.internal:8080", "pad.example.com", true},
+		{"trusted proxy, XFH first entry is the public host", trusted, "pad-backend.internal", "pad.example.com, pad-backend.internal", true},
+		{"trusted proxy, XFH names a hostile host", trusted, "pad.example.com", "evil.example", false},
+		{"trusted proxy, hostile first entry", trusted, "pad-backend.internal", "evil.example, pad.example.com", false},
+		{"trusted proxy, no XFH, rewritten Host", trusted, "pad-backend.internal", "", false},
+		{"untrusted peer spoofs XFH", untrusted, "evil.example", "pad.example.com", false},
+		{"untrusted peer, configured Host, hostile XFH ignored", untrusted, "pad.example.com", "evil.example", true},
+	} {
+		if got := admitted(send(tc.peer, tc.host, tc.xfh)); got != tc.want {
+			t.Errorf("%s: admitted=%v, want %v", tc.name, got, tc.want)
+		}
+	}
+
+	// No PAD_TRUSTED_PROXIES at all: XFH is never honoured, even from loopback.
+	plain := newCapFixture(t, cfgHTTPS, false, nil, "true")
+	if rr := plain.doAs(t, mcpRoute, "evil.example", "127.0.0.1:51000"); !is421(rr) {
+		t.Errorf("no trusted proxies, hostile Host: status %d, want 421", rr.Code)
+	}
+	req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{}`))
+	req.Host, req.RemoteAddr = "evil.example", "127.0.0.1:51000"
+	req.Header.Set("X-Forwarded-Host", "pad.example.com")
+	rr := httptest.NewRecorder()
+	plain.srv.ServeHTTP(rr, req)
+	if !is421(rr) {
+		t.Errorf("no trusted proxies, XFH from loopback: status %d, want 421 (XFH ignored)", rr.Code)
+	}
+
+	// The refusal names what it saw, what is configured, and the fix.
+	rr = send(trusted, "pad-backend.internal:8080", "")
+	var body struct {
+		Error struct {
+			Message string         `json:"message"`
+			Details map[string]any `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil || !is421(rr) {
+		t.Fatalf("refusal: status %d body %s (%v)", rr.Code, rr.Body.String(), err)
+	}
+	if body.Error.Details["received_host"] != "pad-backend.internal:8080" || body.Error.Details["host_source"] != "Host" ||
+		body.Error.Details["configured_origin"] != "https://pad.example.com" {
+		t.Errorf("refusal details = %v", body.Error.Details)
+	}
+	for _, want := range []string{"pad-backend.internal:8080", "https://pad.example.com", "preserve the Host header", "PAD_TRUSTED_PROXIES"} {
+		if !strings.Contains(body.Error.Message, want) {
+			t.Errorf("refusal message %q does not name %q", body.Error.Message, want)
+		}
+	}
+}
+
 // TestMCPCapability_HostAllowlistRunsBeforeAuthAuditAndLimits: a request
 // refused 421 writes no audit row and draws nothing from a rate limiter.
 // Both halves carry their own control, so neither passes because the
