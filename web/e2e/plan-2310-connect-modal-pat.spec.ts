@@ -52,8 +52,10 @@ test('http self-host: the modal token config reaches /mcp and lists tools', asyn
 		baseURL: fixture.baseURL,
 		extraHTTPHeaders: { Authorization: `Bearer ${fixture.apiToken}` }
 	});
-	await setMCP(admin, true);
 	try {
+		// Inside the try: a failed readiness assertion after the PUT
+		// landed must still turn MCP back off.
+		await setMCP(admin, true);
 		await connectAndListTools(page, fixture);
 	} finally {
 		await setMCP(admin, false);
@@ -80,7 +82,7 @@ async function connectAndListTools(page: Page, fixture: SuiteFixture) {
 	const expectedURL = `${fixture.baseURL}/mcp`;
 	await expect(dialog.locator('pre').first()).toHaveText(expectedURL);
 
-	await dialog.getByRole('tab', { name: 'Cursor', exact: true }).click();
+	await dialog.getByRole('button', { name: 'Cursor', exact: true }).click();
 	const configText = (await dialog.getByTestId('connect-pat-config').textContent()) ?? '';
 	const config = JSON.parse(configText.replace('YOUR_PAD_TOKEN', fixture.apiToken)) as {
 		mcpServers: { pad: { url: string; headers: Record<string, string> } };

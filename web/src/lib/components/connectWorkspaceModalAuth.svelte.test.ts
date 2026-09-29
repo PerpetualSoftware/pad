@@ -107,6 +107,19 @@ describe('ConnectWorkspaceModal auth paths', () => {
 		expect(patConfig()).toBe('');
 	});
 
+	it('the client selector is a group of toggle buttons, not a tablist without panels', () => {
+		render(HTTP_URL, ['pat']);
+		const group = document.querySelector('[role="group"][aria-label="MCP client"]');
+		expect(group).not.toBeNull();
+		const pressed = [...(group?.querySelectorAll('button') ?? [])].map((b) => b.getAttribute('aria-pressed'));
+		expect(pressed).toEqual(['true', 'false', 'false', 'false', 'false']);
+		expect(group?.querySelector('[role="tab"]')).toBeNull();
+		clickClient('Cursor');
+		expect(
+			[...(group?.querySelectorAll('button') ?? [])].map((b) => b.getAttribute('aria-pressed'))
+		).toEqual(['false', 'true', 'false', 'false', 'false']);
+	});
+
 	it('every client config carries the URL and the bearer header, and the JSON ones parse', () => {
 		render(HTTP_URL, ['pat']);
 		expect(patConfig()).toBe(
@@ -131,6 +144,7 @@ describe('ConnectWorkspaceModal auth paths', () => {
 		clickClient('Claude Desktop');
 		const desktop = JSON.parse(patConfig());
 		expect(desktop.mcpServers.pad.args).toEqual([
+			'-y',
 			'mcp-remote',
 			HTTP_URL,
 			'--header',

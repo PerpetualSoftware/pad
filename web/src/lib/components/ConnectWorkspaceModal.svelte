@@ -373,10 +373,11 @@
 				});
 			case 'claude-desktop': {
 				// mcp-remote bridges a remote server into Desktop's stdio
-				// config. The header value goes through env because Desktop
+				// config. -y because Desktop cannot answer npx's install
+				// prompt. The header value goes through env because Desktop
 				// splits args on spaces on some platforms; --allow-http is
 				// needed for a non-localhost http URL.
-				const args = ['mcp-remote', url, '--header', 'Authorization:${PAD_AUTH}'];
+				const args = ['-y', 'mcp-remote', url, '--header', 'Authorization:${PAD_AUTH}'];
 				if (url.startsWith('http:')) args.push('--allow-http');
 				return json({
 					mcpServers: { pad: { command: 'npx', args, env: { PAD_AUTH: bearer } } }
@@ -412,13 +413,12 @@
 		<span class="section-label"
 			>{first ? `Step ${first + 1} — ` : ''}Add Pad to your client</span
 		>
-		<div class="tab-strip" role="tablist" aria-label="MCP client">
+		<div class="tab-strip" role="group" aria-label="MCP client">
 			{#each patClients as client (client.id)}
 				<button
 					class="tab-btn"
 					class:active={patClient === client.id}
-					role="tab"
-					aria-selected={patClient === client.id}
+					aria-pressed={patClient === client.id}
 					type="button"
 					onclick={() => (patClient = client.id)}
 				>
