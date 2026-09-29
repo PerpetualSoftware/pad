@@ -536,7 +536,7 @@
 			<h2 class="section-title">MCP for agents</h2>
 			<p class="section-desc">
 				Lets remote agents (Claude.ai, ChatGPT, Cursor and other MCP clients) use this server at
-				its MCP URL, without installing the Pad CLI. Off by default.
+				its MCP URL, without installing the Pad CLI. Off by default on a self-hosted install.
 			</p>
 
 			<div class="email-card">
