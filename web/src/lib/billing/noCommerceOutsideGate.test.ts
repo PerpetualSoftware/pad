@@ -80,6 +80,20 @@ describe('no commerce outside the commerceAllowed gate', () => {
 		expect(hits).toEqual([]);
 	});
 
+	// The two account menus are not opened by the e2e (codex r2), so their one
+	// Billing link is pinned structurally: its opening tag sits directly under
+	// the commerceAllowed block, comments aside.
+	it('the account menus open their Billing link directly under commerceAllowed', () => {
+		for (const rel of ['lib/components/layout/TopBar.svelte', 'lib/components/layout/YouSheet.svelte']) {
+			const lines = files.find((f) => f.rel === rel)!.text.split('\n');
+			const at = lines.findIndex((l) => /href="\/console\/billing"/.test(l));
+			expect(at, rel).toBeGreaterThan(0);
+			let i = at - 1;
+			while (i >= 0 && isComment(lines[i])) i--;
+			expect(lines[i].trim(), rel).toBe('{#if authStore.commerceAllowed}');
+		}
+	});
+
 	it('every gated file reads commerceAllowed', () => {
 		for (const f of files) {
 			if (GATED.has(f.rel)) expect(f.text, f.rel).toMatch(/commerceAllowed/);
