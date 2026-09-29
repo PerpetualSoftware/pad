@@ -1,9 +1,12 @@
 package server
 
 import (
+	"bytes"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -204,6 +207,36 @@ func TestDR9_CloudKeysOnTheForwardedAddress(t *testing.T) {
 	}
 	if rr := send("198.51.100.7"); rr.Code != http.StatusUnauthorized {
 		t.Fatalf("another client behind the same proxy: status %d, want 401 (own bucket)", rr.Code)
+	}
+}
+
+// A proxied request that resolves to an address inside the trusted range
+// (the proxy forwarded no client address) is warned about once, loudly;
+// a proxy that forwards the client address is not.
+func TestDR9_WarnsWhenResolutionStaysInsideTheTrustedRange(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(prev)
+	warnResolvedInTrustedRange = sync.Once{}
+
+	mw := TrustedProxyRealIP(ParseTrustedProxyCIDRs("172.28.0.0/16"))(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	serve := func(xff string) {
+		req := httptest.NewRequest("GET", "/", nil)
+		req.RemoteAddr = "172.28.0.5:40000"
+		if xff != "" {
+			req.Header.Set("X-Forwarded-For", xff)
+		}
+		mw.ServeHTTP(httptest.NewRecorder(), req)
+	}
+	serve("203.0.113.9")
+	if strings.Contains(buf.String(), "PAD_TRUSTED_PROXIES") {
+		t.Fatalf("warned for a correctly forwarded client address: %s", buf.String())
+	}
+	serve("")
+	serve("")
+	if n := strings.Count(buf.String(), "inside PAD_TRUSTED_PROXIES"); n != 1 {
+		t.Fatalf("resolution inside the trusted range twice: %d warnings, want 1", n)
 	}
 }
 
