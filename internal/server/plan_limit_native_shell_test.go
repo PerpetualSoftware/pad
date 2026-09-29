@@ -152,7 +152,7 @@ func TestPlanLimit_NativeShell_BundleImportDoor(t *testing.T) {
 			srv.cloudMode = true
 			u := mintTestUser(t, srv, "bundle-shell@example.com")
 			tok := loginUser(t, srv, "bundle-shell@example.com", "correct-horse-battery-staple")
-			if err := srv.store.SetUserPlan(u.ID, "free", ""); err != nil {
+			if _, err := srv.store.SetUserPlan(u.ID, store.PlanWrite{Plan: "free", Source: store.PlanSourceManual, Force: true}); err != nil {
 				t.Fatalf("SetUserPlan: %v", err)
 			}
 			src, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Bundle Source", OwnerID: u.ID})
