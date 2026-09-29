@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
@@ -257,5 +258,66 @@ func TestPlanLimitDetails_NativeShellOmitsOnlyUpgradeURL(t *testing.T) {
 	}
 	if msg := planLimitMessage(r, res); msg != "You've reached the 100-item limit on the free plan." {
 		t.Errorf("shell message = %q", msg)
+	}
+}
+
+// The invitee's member-limit refusal (BUG-3098) is its own message, not the
+// plan-limit helpers', and it says "upgrade their plan". Both accept doors,
+// the existing-account accept and register-with-code, must drop that clause
+// for a shell and keep it for a browser (codex r1 on TASK-3293).
+func TestMemberLimitRefusal_NativeShell(t *testing.T) {
+	for _, door := range []string{"existing", "register"} {
+		for _, shell := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/shell=%v", door, shell), func(t *testing.T) {
+				e := newAcceptLimitEnv(t)
+				inv := e.invite(t, door+"@example.com")
+				e.setMemberCap(t, e.members(t))
+
+				var req *http.Request
+				if door == "existing" {
+					u, err := e.srv.store.CreateUser(models.UserCreate{Email: door + "@example.com", Name: "Invitee", Password: "pw-invitee-12345"})
+					if err != nil {
+						t.Fatalf("CreateUser: %v", err)
+					}
+					tok, err := e.srv.store.CreateSession(u.ID, "go-test", "192.0.2.1", "", 24*time.Hour)
+					if err != nil {
+						t.Fatalf("CreateSession: %v", err)
+					}
+					req = httptest.NewRequest("POST", "/api/v1/invitations/"+inv.Code+"/accept", nil)
+					const testCSRF = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+					req.AddCookie(&http.Cookie{Name: "pad_session", Value: tok})
+					req.AddCookie(&http.Cookie{Name: "pad_csrf", Value: testCSRF})
+					req.Header.Set("X-CSRF-Token", testCSRF)
+				} else {
+					body, _ := json.Marshal(map[string]string{
+						"email": door + "@example.com", "name": "New Invitee",
+						"password": "correct-horse-battery-staple", "invitation_code": inv.Code,
+					})
+					req = httptest.NewRequest("POST", "/api/v1/auth/register", bytes.NewReader(body))
+					req.Header.Set("Content-Type", "application/json")
+				}
+				req.RemoteAddr = "192.0.2.1:1234"
+				if shell {
+					req.Header.Set("User-Agent", shellUA)
+				}
+				rr := httptest.NewRecorder()
+				e.srv.ServeHTTP(rr, req)
+
+				var env planLimitEnvelope
+				if err := json.Unmarshal(rr.Body.Bytes(), &env); err != nil || rr.Code != http.StatusForbidden || env.Error.Code != "workspace_member_limit" {
+					t.Fatalf("want 403 workspace_member_limit, got %d %s", rr.Code, rr.Body.String())
+				}
+				hasUpgrade := strings.Contains(strings.ToLower(env.Error.Message), "upgrade")
+				if shell && hasUpgrade {
+					t.Errorf("shell message offers an upgrade: %q", env.Error.Message)
+				}
+				if !shell && !hasUpgrade {
+					t.Errorf("browser message lost its upgrade clause: %q", env.Error.Message)
+				}
+				if !strings.Contains(env.Error.Message, "make room") {
+					t.Errorf("message lost the remedy: %q", env.Error.Message)
+				}
+			})
+		}
 	}
 }

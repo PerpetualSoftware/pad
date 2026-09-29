@@ -122,6 +122,19 @@ for (const leg of [
 				await expect(page.getByRole('button', { name: 'Upgrade to Pro' }).first()).toBeVisible();
 			}
 
+			// The checkout return deep links: web-checkout states, dropped in the app.
+			for (const q of ['success', 'cancelled']) {
+				await page.goto(`/console/billing?checkout=${q}`);
+				await expect(page.getByRole('heading', { name: 'Current Plan' })).toBeVisible();
+				const banner = page.locator('.upgrade-banner');
+				if (leg.shell) {
+					await expect(banner).toHaveCount(0);
+					await expect(page).not.toHaveURL(/checkout=/);
+				} else {
+					await expect(banner).toBeVisible();
+				}
+			}
+
 			// A plan-limit refusal: the toast states the limit; only the browser adds the upgrade.
 			await page.goto('/console');
 			await page.getByRole('button', { name: 'Create Workspace', exact: true }).click();

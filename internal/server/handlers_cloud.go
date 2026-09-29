@@ -1209,14 +1209,21 @@ func writePlanLimitErrorNote(w http.ResponseWriter, r *http.Request, result *sto
 // contact detail they were not given. With no display name the message says
 // "the workspace owner". A failed lookup degrades to the same wording rather
 // than failing the refusal.
-func (s *Server) writeMemberLimitError(w http.ResponseWriter, workspaceID string, result *store.LimitResult) {
+func (s *Server) writeMemberLimitError(w http.ResponseWriter, r *http.Request, workspaceID string, result *store.LimitResult) {
 	owner := "the workspace owner"
 	if ws, err := s.store.GetWorkspaceByID(workspaceID); err == nil && ws != nil && ws.OwnerID != "" {
 		if u, err := s.store.GetUser(ws.OwnerID); err == nil && u != nil && strings.TrimSpace(u.Name) != "" {
 			owner = "the workspace owner, " + strings.TrimSpace(u.Name) + ","
 		}
 	}
-	msg := fmt.Sprintf("This workspace has reached its %d-member limit. Ask %s to make room or upgrade their plan, then accept this invitation again.", result.Limit, owner)
+	// The mobile apps carry no call to action for a purchase, not even one
+	// addressed to someone else (PLAN-3291 DR-1), so a shell's invitee is told
+	// only to ask for room.
+	remedy := "make room or upgrade their plan"
+	if fromNativeShell(r) {
+		remedy = "make room"
+	}
+	msg := fmt.Sprintf("This workspace has reached its %d-member limit. Ask %s to %s, then accept this invitation again.", result.Limit, owner, remedy)
 	writeError2(w, http.StatusForbidden, "workspace_member_limit", msg, map[string]interface{}{
 		"feature": result.Feature,
 		"limit":   result.Limit,
@@ -1229,7 +1236,7 @@ func (s *Server) writeMemberLimitError(w http.ResponseWriter, workspaceID string
 // 403. Cloud mode only. Returns true if the accept may proceed. It fires
 // planLimitAdmittedHook like enforcePlanLimit, so tests can land a competing
 // member in the window before the authoritative insert.
-func (s *Server) checkMemberLimitForAccept(w http.ResponseWriter, workspaceID string) bool {
+func (s *Server) checkMemberLimitForAccept(w http.ResponseWriter, r *http.Request, workspaceID string) bool {
 	if !s.cloudMode {
 		return true
 	}
@@ -1241,7 +1248,7 @@ func (s *Server) checkMemberLimitForAccept(w http.ResponseWriter, workspaceID st
 		return false
 	}
 	if !result.Allowed {
-		s.writeMemberLimitError(w, workspaceID, result)
+		s.writeMemberLimitError(w, r, workspaceID, result)
 		return false
 	}
 	if s.planLimitAdmittedHook != nil {
@@ -1253,12 +1260,12 @@ func (s *Server) checkMemberLimitForAccept(w http.ResponseWriter, workspaceID st
 // writeStoreMemberLimitError is writeStorePlanLimitError for the accept
 // doors: it answers a *store.PlanLimitError with writeMemberLimitError and
 // reports whether err was one.
-func (s *Server) writeStoreMemberLimitError(w http.ResponseWriter, workspaceID string, err error) bool {
+func (s *Server) writeStoreMemberLimitError(w http.ResponseWriter, r *http.Request, workspaceID string, err error) bool {
 	var ple *store.PlanLimitError
 	if !errors.As(err, &ple) {
 		return false
 	}
-	s.writeMemberLimitError(w, workspaceID, &ple.Result)
+	s.writeMemberLimitError(w, r, workspaceID, &ple.Result)
 	return true
 }
 

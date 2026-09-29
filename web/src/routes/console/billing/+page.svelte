@@ -223,8 +223,13 @@
 		// awaited here — onMount returns immediately so Svelte can run the
 		// onDestroy cleanup path synchronously if the user navigates away
 		// before any task resolves (the `destroyed` guard handles that).
+		// A checkout return is a web-checkout state. In the app it is dropped
+		// unread: its banners talk about a payment and link support about one
+		// (PLAN-3291 DR-3, codex r1 on TASK-3293).
 		const checkoutParam = page.url.searchParams.get('checkout');
-		if (checkoutParam === 'success') {
+		if (!authStore.commerceAllowed) {
+			if (checkoutParam) clearCheckoutQuery();
+		} else if (checkoutParam === 'success') {
 			startUpgradeConfirmation();
 		} else if (checkoutParam === 'cancelled') {
 			// User abandoned the Stripe Checkout page. Show a brief notice
@@ -248,7 +253,9 @@
 <div class="billing-page">
 	<h1 class="page-title">Billing</h1>
 
-	{#if upgradeStatus === 'checking'}
+	{#if !commerceAllowed}
+		<!-- no checkout-result banners in the apps -->
+	{:else if upgradeStatus === 'checking'}
 		<div class="upgrade-banner checking" role="status" aria-live="polite">
 			<span class="spinner" aria-hidden="true"></span>
 			<span>Confirming your upgrade…</span>

@@ -677,7 +677,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	// keeps an over-cap signup from creating anything. Advisory: a member that
 	// lands after this check is refused by AddWorkspaceMember below, whose
 	// "absent" branch rolls the account back.
-	if invitation != nil && !s.checkMemberLimitForAccept(w, invitation.WorkspaceID) {
+	if invitation != nil && !s.checkMemberLimitForAccept(w, r, invitation.WorkspaceID) {
 		return
 	}
 
@@ -778,7 +778,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 				}
 				// BUG-3098: a member cap reached after the pre-check is a
 				// refusal the invitee can act on, not a server fault.
-				if s.writeStoreMemberLimitError(w, invitation.WorkspaceID, addErr) {
+				if s.writeStoreMemberLimitError(w, r, invitation.WorkspaceID, addErr) {
 					return
 				}
 				writeInternalError(w, addErr)

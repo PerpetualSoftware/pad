@@ -14,6 +14,12 @@ import { join, relative } from 'node:path';
  * text, so wording it does not match, or a URL built at runtime, slips past.
  * The shell-UA e2e (e2e/task-3293-no-commerce-in-app.spec.ts) checks what
  * actually renders; the server and the shells guard the rest (DR-4, DR-5).
+ *
+ * A gated file is exempt WHOLE: the scan proves only that it reads
+ * commerceAllowed, not that every surface in it sits under that gate. Line
+ * scoping would need a template parser, and a hand one is its own review
+ * loop. What renders inside those files is the e2e's job; it visits settings,
+ * billing (bare and both checkout returns) and the toast with both UAs.
  */
 
 const SRC = fileURLToPath(new URL('../..', import.meta.url));

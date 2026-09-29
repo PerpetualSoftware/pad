@@ -427,7 +427,7 @@ func (s *Server) acceptInvitationCore(w http.ResponseWriter, r *http.Request, in
 				slog.Error("invitation accept: the accept failed and reading its outcome also failed",
 					"workspace_id", inv.WorkspaceID, "user_id", user.ID, "error", err, "check_error", cerr)
 			}
-			if s.writeStoreMemberLimitError(w, inv.WorkspaceID, err) {
+			if s.writeStoreMemberLimitError(w, r, inv.WorkspaceID, err) {
 				return "", false
 			}
 			writeInternalError(w, err)
