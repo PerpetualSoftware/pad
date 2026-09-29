@@ -123,7 +123,7 @@ func newShareAssetFixture(t *testing.T) shareAssetFixture {
 	reg := attachments.NewRegistry()
 	reg.Register(attachments.FSPrefix, fs)
 	srv.SetAttachments(reg, 0)
-	srv.SetClaimSecret(bytes.Repeat([]byte{0x5a}, 32))
+	srv.SetShareAssetSecret(bytes.Repeat([]byte{0x5a}, 32))
 
 	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "ShareAsset"})
 	if err != nil {
@@ -522,7 +522,7 @@ func TestShareAsset_ProtectedWithoutSecretOmitsRef(t *testing.T) {
 	// (the page shows the #1135 placeholder) — never an unsigned bare URL.
 	t.Parallel()
 	f := newShareAssetFixture(t)
-	f.srv.SetClaimSecret(nil) // unconfigured
+	f.srv.SetShareAssetSecret(nil) // unconfigured
 	a1, _ := f.seedImage(t, f.itemID, 0x11)
 	f.setContent(t, f.itemID, imageRef(a1))
 	link := f.createLink(t, "item", f.itemID, &store.ShareLinkOptions{Password: "hunter2"})
@@ -530,5 +530,27 @@ func TestShareAsset_ProtectedWithoutSecretOmitsRef(t *testing.T) {
 	refs := f.resolvedRefs(t, link.Token, "hunter2")
 	if _, ok := refs[a1]; ok {
 		t.Errorf("protected link minted a ref with no secret configured; must omit and degrade to placeholder")
+	}
+}
+
+// TestShareAsset_ClaimSecretDoesNotKeyShareAssets pins the TASK-2317 split
+// (lead ruling B). The claim secret is now set wherever OAuth is
+// constructed, which includes an https self-host with MCP off; share-asset
+// signing must not follow it, or a protected share page on that install
+// would start rendering images it never rendered before (BUG-3305 is the
+// deliberate version of that change). With only the claim secret set, a
+// protected link still omits its ref.
+func TestShareAsset_ClaimSecretDoesNotKeyShareAssets(t *testing.T) {
+	t.Parallel()
+	f := newShareAssetFixture(t)
+	f.srv.SetShareAssetSecret(nil)
+	f.srv.SetClaimSecret(bytes.Repeat([]byte{0x5a}, 32))
+	a1, _ := f.seedImage(t, f.itemID, 0x11)
+	f.setContent(t, f.itemID, imageRef(a1))
+	link := f.createLink(t, "item", f.itemID, &store.ShareLinkOptions{Password: "hunter2"})
+
+	refs := f.resolvedRefs(t, link.Token, "hunter2")
+	if _, ok := refs[a1]; ok {
+		t.Errorf("protected link minted a ref from the claim secret; share assets must keep their own key")
 	}
 }

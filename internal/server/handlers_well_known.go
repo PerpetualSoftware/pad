@@ -22,10 +22,11 @@ import (
 // hitting the discovery chain get a clear "not yet" rather than a
 // 404 that would look like a misconfigured deployment.
 //
-// This handler is mounted under the cloud-mode gate — self-hosted
-// deployments don't expose it (they don't host a public OAuth surface).
-// It's intentionally unauthenticated: discovery documents are public
-// by design (RFC 9728 §3 "MUST be available without authentication").
+// It is available only when OAuth is (requireOAuthAvailable, PLAN-2310
+// DR-5): a document naming an authorization server that does not exist
+// misleads discovery clients. It's intentionally unauthenticated:
+// discovery documents are public by design (RFC 9728 §3 "MUST be
+// available without authentication").
 //
 // Output:
 //
@@ -36,15 +37,11 @@ import (
 //	  "scopes_supported": ["pad:read", "pad:write", "pad:admin"]
 //	}
 //
-// resource and authorization_servers come from runtime config wired at
-// startup via SetMCPTransport (cmd/pad/main.go reads PAD_MCP_PUBLIC_URL
-// and PAD_AUTH_SERVER_URL). When PAD_MCP_PUBLIC_URL is unset we fall
-// back to deriving from the request scheme + host so local testing
-// without those env vars still produces a valid document; ops should
-// always set PAD_MCP_PUBLIC_URL in production so the doc matches the
-// public URL the cert covers.
+// resource and authorization_servers come from configuration wired at
+// startup via SetMCPTransport (config.ResolveMCPEndpoints), never from
+// the request. With either unresolved the document answers 404.
 //
-// PAD_MCP_PUBLIC_URL is published verbatim as the `resource` field —
+// PAD_MCP_PUBLIC_URL, when set, is published verbatim as the `resource` field —
 // no /mcp suffix is appended. The MCP authorization spec requires
 // clients to verify the URL they were given matches `resource` exactly;
 // auto-suffixing would force operators publishing the bare hostname
@@ -53,24 +50,18 @@ import (
 // transport is internally mounted at /mcp on the chi router; pad-cloud's
 // nginx router transparently rewrites mcp.* root → /mcp so external
 // clients see a single canonical URL regardless of internal path.
-func (s *Server) handleOAuthProtectedResource(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleOAuthProtectedResource(w http.ResponseWriter, _ *http.Request) {
+	// Both URLs come from configuration only (PLAN-2310 DR-3). A document
+	// built from the request's Host would let whoever sent the request
+	// choose the resource and the authorization server it names (DNS
+	// rebinding on a LAN box), and an "https://" guess on an http box
+	// names a URL that does not exist. With either unset there is nothing
+	// true to advertise, so the document is not available.
 	resource := strings.TrimRight(s.mcpPublicURL, "/")
-	if resource == "" {
-		// Fallback for local dev where PAD_MCP_PUBLIC_URL isn't set.
-		// Use r.Host as-is; the operator who cares about the path
-		// shape should set the env var explicitly.
-		resource = "https://" + r.Host
-	}
-
 	authServer := strings.TrimRight(s.mcpAuthServerURL, "/")
-	if authServer == "" {
-		// Fallback: assume the auth server lives at the same scheme +
-		// host as the request, with the mcp.* subdomain rewritten to
-		// app.* per PLAN-943 architecture. Imperfect — local dev
-		// against a single host won't have the rewrite — but better
-		// than emitting an empty list. Operators should set
-		// PAD_AUTH_SERVER_URL explicitly in production.
-		authServer = "https://" + rewriteMcpSubdomain(r.Host)
+	if resource == "" || authServer == "" {
+		writeError(w, http.StatusNotFound, "not_found", "Not found")
+		return
 	}
 
 	doc := protectedResourceMetadata{
@@ -127,37 +118,17 @@ func (s *Server) handleOAuthProtectedResource(w http.ResponseWriter, r *http.Req
 // startup; falls back to the request scheme + host so local-dev
 // works without env vars.
 //
-// This handler is mounted under the cloud-mode gate (same group as
-// /.well-known/oauth-protected-resource). It's intentionally
-// unauthenticated — RFC 8414 §3 explicitly says metadata MUST be
-// available without authentication.
-func (s *Server) handleOAuthAuthorizationServer(w http.ResponseWriter, r *http.Request) {
-	// Gate on oauthServer being mounted (Codex review #372 round 3):
-	// the discovery doc lives in the MCP route group, while the
-	// /oauth/* handlers live in the OAuth route group. Cloud
-	// deployments without PAD_MCP_PUBLIC_URL set get the discovery
-	// route mounted (registerMCPRoutes) but NOT the OAuth handlers
-	// (registerOAuthRoutes nil-checks oauthServer). Without this
-	// gate, the document would 200 with URLs that 404 — worse than
-	// no document.
-	//
-	// 503 with a clear error code lets ops detect the
-	// misconfiguration faster than a misleading 200 + clients can
-	// retry with backoff.
-	if s.oauthServer == nil {
-		writeError(w, http.StatusServiceUnavailable, "config_error",
-			"OAuth authorization server is not enabled on this deployment")
-		return
-	}
-
-	issuer := s.authServerIssuerURL(r)
+// It is available only when OAuth is (requireOAuthAvailable, PLAN-2310
+// DR-5), the same gate as the /oauth/* endpoints it names, so it can
+// never 200 with URLs that 404. It's intentionally unauthenticated —
+// RFC 8414 §3 explicitly says metadata MUST be available without
+// authentication.
+func (s *Server) handleOAuthAuthorizationServer(w http.ResponseWriter, _ *http.Request) {
+	issuer := s.authServerIssuerURL()
 	if issuer == "" {
-		// Same fail-loud branch as the protected-resource doc:
-		// without an issuer the document would mislead clients
-		// about the canonical URL. 503 lets ops detect the
-		// misconfiguration faster than a 200 with stub URLs would.
-		writeError(w, http.StatusServiceUnavailable, "config_error",
-			"OAuth authorization server URL is not configured")
+		// Configuration only (PLAN-2310 DR-3): with no configured
+		// issuer there is nothing true to advertise.
+		writeError(w, http.StatusNotFound, "not_found", "Not found")
 		return
 	}
 
@@ -257,16 +228,31 @@ type protectedResourceMetadata struct {
 	ScopesSupported        []string `json:"scopes_supported"`
 }
 
-// rewriteMcpSubdomain best-effort rewrites "mcp.<rest>" to "app.<rest>"
-// so the discovery doc's authorization_servers entry points at the
-// auth vhost when the operator hasn't set PAD_AUTH_SERVER_URL. If the
-// host doesn't start with "mcp.", returns it unchanged — useful for
-// local development against a single host (localhost:7777) where the
-// auth server and protected resource share an origin.
-func rewriteMcpSubdomain(host string) string {
-	const prefix = "mcp."
-	if strings.HasPrefix(host, prefix) {
-		return "app." + host[len(prefix):]
+// protectedResourceMetadataURL is where RFC 9728 §3.1 puts the metadata
+// for resource: the well-known segment inserted between the host and the
+// resource's path. A resource with no path (cloud's https://mcp.getpad.dev)
+// gets <resource>/.well-known/oauth-protected-resource, byte-identical to
+// the concatenation this replaced. A resource with a path (a self-host's
+// <origin>/mcp) gets <origin>/.well-known/oauth-protected-resource/mcp,
+// which registerMCPRoutes mounts; the concatenation would have produced
+// <origin>/mcp/.well-known/..., which is inside /mcp and answers 401. The
+// scheme and host are copied as written, not re-spelled, so an override's
+// historical spelling (config.historicalOverride) survives. "" when
+// resource is empty.
+func protectedResourceMetadataURL(resource string) string {
+	const wellKnown = "/.well-known/oauth-protected-resource"
+	resource = strings.TrimRight(resource, "/")
+	if resource == "" {
+		return ""
 	}
-	return host
+	authority := resource
+	if i := strings.Index(resource, "://"); i >= 0 {
+		authority = resource[i+len("://"):]
+	}
+	slash := strings.Index(authority, "/")
+	if slash < 0 {
+		return resource + wellKnown
+	}
+	split := len(resource) - len(authority) + slash
+	return resource[:split] + wellKnown + resource[split:]
 }

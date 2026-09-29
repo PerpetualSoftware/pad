@@ -846,7 +846,7 @@ func (s *Server) mintShareAttachmentRefs(link *models.ShareLink, contents ...str
 			Height:   variant.Height,
 		}
 		if protected {
-			sig := signShareAsset(s.claimSecret, link.ID, att.ID, exp)
+			sig := signShareAsset(s.shareAssetSecret, link.ID, att.ID, exp)
 			if sig == "" {
 				// Secret unconfigured (self-host without an encryption key):
 				// cannot mint a protected ref. Omit it — the page degrades to

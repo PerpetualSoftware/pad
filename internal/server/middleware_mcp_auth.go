@@ -593,41 +593,18 @@ func extractBearer(h string) (string, bool) {
 // serves — Claude Desktop, Cursor, etc. follow it to begin the OAuth
 // discovery flow described in the MCP authorization spec.
 //
-// URL resolution for the resource_metadata parameter:
-//
-//  1. s.mcpPublicURL (set by SetMCPTransport from PAD_MCP_PUBLIC_URL).
-//     The canonical case — production deployments always set this.
-//  2. Fallback: derive from the request's Host header with "https://"
-//     prefix. Matches handleOAuthProtectedResource's fallback so the
-//     two URLs stay in sync for local dev without env vars set.
-//
-// Codex review #369 round 1 caught a regression where the fallback
-// path dropped the WWW-Authenticate header entirely — that broke MCP
-// client discovery on cloud-mode-without-PAD_MCP_PUBLIC_URL deploys
-// because fresh clients rely on the header to find the metadata doc.
-func (s *Server) writeMCPUnauthorized(w http.ResponseWriter, r *http.Request, code, msg string) {
-	resourceBase := strings.TrimRight(s.mcpPublicURL, "/")
-	if resourceBase == "" && r != nil && r.Host != "" {
-		// Same fallback as handleOAuthProtectedResource — assume HTTPS
-		// because RFC 9728 §3 + MCP authorization spec both require
-		// HTTPS in production, and the test harness doesn't probe the
-		// scheme. Operators on dev hosts running plain HTTP will see
-		// "https://localhost:7777/..." in the header; the test rig
-		// already pins the canonical case via SetMCPTransport.
-		resourceBase = "https://" + r.Host
+// resource_metadata is present only when OAuth is available (PLAN-2310
+// DR-5): with MCP on over http, which is PAT-only, the header is a bare
+// `Bearer realm="pad"`, because there is no metadata document to point
+// at and a client that follows one would start an OAuth flow that cannot
+// complete. The URL comes from configuration, never the request's Host
+// (DR-3); see protectedResourceMetadataURL for its shape.
+func (s *Server) writeMCPUnauthorized(w http.ResponseWriter, _ *http.Request, code, msg string) {
+	challenge := `Bearer realm="pad"`
+	if meta := protectedResourceMetadataURL(s.mcpPublicURL); meta != "" && s.oauthAvailable() {
+		challenge += `, resource_metadata="` + meta + `"`
 	}
-	if resourceBase == "" {
-		// No request and no configured URL — extremely rare (would
-		// only fire if writeMCPUnauthorized is called from a path
-		// that synthesizes a 401 without a request, which today none
-		// do). Fall back to the plain JSON 401 so the response is
-		// still well-formed; agents will get a generic "unauthorized"
-		// rather than a discovery-pointing one.
-		writeError(w, http.StatusUnauthorized, code, msg)
-		return
-	}
-	resourceMeta := resourceBase + "/.well-known/oauth-protected-resource"
-	w.Header().Set("WWW-Authenticate", `Bearer realm="pad", resource_metadata="`+resourceMeta+`"`)
+	w.Header().Set("WWW-Authenticate", challenge)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusUnauthorized)
 	_ = json.NewEncoder(w).Encode(map[string]any{

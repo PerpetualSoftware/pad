@@ -132,7 +132,7 @@ func (s *Server) setupStatePayload(setupMethod string) map[string]interface{} {
 		"auth_method":       authMethodPassword,
 		"cloud_mode":        s.cloudMode,
 		"email_configured":  s.email != nil,
-		"mcp_public_url":    s.mcpPublicURL,
+		"mcp_public_url":    s.sessionMCPPublicURL(),
 		"billing_available": s.cloudMode && s.billingAvailable,
 		"version":           s.version,
 	}
@@ -170,7 +170,7 @@ func (s *Server) sessionStatePayload(authenticated bool, user *models.User) map[
 		// with no Maileroo key). Low-sensitivity deployment config, same
 		// class as cloud_mode/mcp_public_url.
 		"email_configured":  s.email != nil,
-		"mcp_public_url":    s.mcpPublicURL,
+		"mcp_public_url":    s.sessionMCPPublicURL(),
 		"billing_available": s.cloudMode && s.billingAvailable,
 		// webmcp_enabled gates the browser-side WebMCP surface. Read from the
 		// platform_settings kv table; default false when unset/absent or on

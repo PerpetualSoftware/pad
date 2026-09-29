@@ -49,8 +49,9 @@ import (
 //
 // **Error envelope.**
 //   - 412 claim_disabled — deployment hasn't wired the claim secret
-//     (self-host without cloud-mode OAuth). Endpoint exists but
-//     can't produce a redeemable code.
+//     while OAuth is served (defense in depth: startup sets them
+//     together, and without OAuth the route answers 404 before this
+//     handler runs, PLAN-2310 DR-5).
 //   - 401 auth_required — defense in depth (route is RequireAuth).
 //   - 404 — RequireWorkspaceAccess handles non-members.
 //   - 500 internal_error — DB I/O failure on the coverage query.

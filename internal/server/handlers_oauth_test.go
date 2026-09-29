@@ -904,18 +904,13 @@ func TestOAuth_AuthorizationServerMetadata_AdvertisesRevokeIntrospect(t *testing
 	}
 }
 
-// TestOAuth_AuthorizationServerMetadata_503WhenOAuthDisabled pins
-// Codex review #372 round 3: the discovery doc lives in the MCP
-// route group while the /oauth/* handlers live in their own group.
-// A cloud deployment with PAD_MCP_PUBLIC_URL unset gets the MCP
-// routes mounted (so the discovery doc is reachable) but NOT the
-// OAuth handlers (cmd/pad/main.go skips oauth.NewServer wiring
-// because there's no canonical audience). Without the gate, the
-// doc would 200 with /oauth/{register,authorize,token} URLs that
-// 404 — worse for clients than no document at all.
-//
-// Fail-loud 503 lets ops detect the misconfiguration immediately.
-func TestOAuth_AuthorizationServerMetadata_503WhenOAuthDisabled(t *testing.T) {
+// TestOAuth_AuthorizationServerMetadata_404WhenOAuthDisabled pins
+// Codex review #372 round 3: with MCP available but no OAuth server,
+// the doc must not 200 with /oauth/{register,authorize,token} URLs
+// that 404 — worse for clients than no document at all. It used to
+// answer 503; PLAN-2310 DR-5 gates it on oauthAvailable, the same gate
+// as the endpoints it names, so it answers their JSON 404.
+func TestOAuth_AuthorizationServerMetadata_404WhenOAuthDisabled(t *testing.T) {
 	t.Parallel()
 	srv := testServer(t)
 	srv.SetCloudMode("test-secret")
@@ -926,8 +921,8 @@ func TestOAuth_AuthorizationServerMetadata_503WhenOAuthDisabled(t *testing.T) {
 	srv.SetMCPTransport(stub, "https://mcp.test.example", "https://app.test.example", nil)
 
 	rr := doRequest(srv, "GET", "/.well-known/oauth-authorization-server", nil)
-	if rr.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected 503 fail-loud when oauthServer is nil, got %d (body: %s)",
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 when oauthServer is nil, got %d (body: %s)",
 			rr.Code, rr.Body.String())
 	}
 }
@@ -2514,6 +2509,14 @@ func postFormWithCookie(srv *Server, path string, form url.Values, sessionToken,
 // Returns the raw cookie value (hex string).
 func readCSRFFromCookie(t *testing.T, srv *Server, sessionToken string) string {
 	t.Helper()
+	return readCSRFFromCookieFor(t, srv, sessionToken, testCanonicalAudience)
+}
+
+// readCSRFFromCookieFor is readCSRFFromCookie for a server whose OAuth
+// audience is not testCanonicalAudience (an https self-host's
+// <origin>/mcp, PLAN-2310 U2).
+func readCSRFFromCookieFor(t *testing.T, srv *Server, sessionToken, audience string) string {
+	t.Helper()
 	clientID := registerTestClient(t, srv, "https://app.test/cb")
 	verifier := "verifier-the-quick-brown-fox-1234567890-abcdef-1234"
 	challenge := s256Challenge(verifier)
@@ -2524,7 +2527,7 @@ func readCSRFFromCookie(t *testing.T, srv *Server, sessionToken string) string {
 		"scope":                 {"pad:read"},
 		"code_challenge":        {challenge},
 		"code_challenge_method": {"S256"},
-		"audience":              {testCanonicalAudience},
+		"audience":              {audience},
 		// fosite requires state to be ≥8 chars (entropy guard);
 		// authorize_request_handler.go validates this on every flow.
 		"state": {"helper-state-12345"},
@@ -2566,6 +2569,13 @@ func s256Challenge(verifier string) string {
 // per call (fosite requires state ≥8 chars for entropy).
 func runAuthCodeFlow(t *testing.T, srv *Server, sessionToken, csrfTok, clientID, verifier string) map[string]any {
 	t.Helper()
+	return runAuthCodeFlowFor(t, srv, sessionToken, csrfTok, clientID, verifier, testCanonicalAudience)
+}
+
+// runAuthCodeFlowFor is runAuthCodeFlow for a server whose OAuth audience
+// is not testCanonicalAudience.
+func runAuthCodeFlowFor(t *testing.T, srv *Server, sessionToken, csrfTok, clientID, verifier, audience string) map[string]any {
+	t.Helper()
 	if len(verifier) < 43 {
 		t.Fatalf("runAuthCodeFlow: verifier too short (%d chars; RFC 7636 §4.1 needs ≥43)", len(verifier))
 	}
@@ -2582,7 +2592,7 @@ func runAuthCodeFlow(t *testing.T, srv *Server, sessionToken, csrfTok, clientID,
 		"code_challenge":        {challenge},
 		"code_challenge_method": {"S256"},
 		"scope":                 {"pad:read"},
-		"audience":              {testCanonicalAudience},
+		"audience":              {audience},
 		"state":                 {state},
 		"decision":              {"approve"},
 		"csrf_token":            {csrfTok},
@@ -2614,7 +2624,7 @@ func runAuthCodeFlow(t *testing.T, srv *Server, sessionToken, csrfTok, clientID,
 		"client_id":     {clientID},
 		"redirect_uri":  {"https://app.test/cb"},
 		"code_verifier": {verifier},
-		"audience":      {testCanonicalAudience},
+		"audience":      {audience},
 	}
 	trr := postOAuthForm(srv, "/oauth/token", tokenForm)
 	if trr.Code != http.StatusOK {

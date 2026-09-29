@@ -61,6 +61,8 @@ func newClaimTestEnv(t *testing.T) *claimTestEnv {
 	// the encryption key, same length).
 	secret := bytes32ForTest()
 	srv.SetClaimSecret(secret)
+	// The claim routes are gated on oauthAvailable (PLAN-2310 DR-5).
+	wireOAuthForTest(t, srv)
 
 	user, err := srv.store.CreateUser(models.UserCreate{
 		Email: "claim-test@example.com", Name: "Claim Tester", Password: "pw-claim-12345",
@@ -154,7 +156,9 @@ func TestHandleOAuthClaim_ClaimSecretDisabled412(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateAPIToken: %v", err)
 	}
-	// Deliberately do NOT call SetClaimSecret.
+	// OAuth available, but deliberately do NOT call SetClaimSecret:
+	// the 412 is the handler's own defense behind the route gate.
+	wireOAuthForTest(t, srv)
 
 	req := httptest.NewRequest("POST", "/api/v1/oauth/claim",
 		strings.NewReader(`{"workspace":"x","code":"123456"}`))

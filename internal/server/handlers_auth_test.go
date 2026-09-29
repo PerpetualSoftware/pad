@@ -89,25 +89,36 @@ func TestAuthBootstrapFlow(t *testing.T) {
 	}
 }
 
-// When PAD_MCP_PUBLIC_URL is configured (e.g. on Pad Cloud), the
-// /auth/session response must echo the URL verbatim so the web UI can
-// gate the Remote-MCP connect banner on its presence.
+// On Pad Cloud the /auth/session response must echo the MCP URL verbatim
+// so the web UI can gate the Remote-MCP connect banner on its presence.
+// Off cloud it stays empty even though SetMCPTransport now runs on every
+// install (PLAN-2310 U2): the modal offers only the OAuth path until
+// DR-8 (unit 6), and an http self-host cannot complete it.
 func TestAuthSessionEmitsMCPPublicURLWhenConfigured(t *testing.T) {
-	srv := testServer(t)
-	// Same-package access to the unexported field — equivalent to what
-	// SetMCPTransport sets at startup, but without spawning the audit
-	// writer goroutine that this test doesn't need.
-	srv.mcpPublicURL = "https://mcp.test.example"
+	for _, cloud := range []bool{true, false} {
+		srv := testServer(t)
+		if cloud {
+			srv.SetCloudMode("test-secret")
+		}
+		// Same-package access to the unexported field — equivalent to what
+		// SetMCPTransport sets at startup, but without spawning the audit
+		// writer goroutine that this test doesn't need.
+		srv.mcpPublicURL = "https://mcp.test.example"
 
-	rr := doRequest(srv, "GET", "/api/v1/auth/session", nil)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("session check: expected 200, got %d", rr.Code)
-	}
+		rr := doRequest(srv, "GET", "/api/v1/auth/session", nil)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("cloud=%v: session check: expected 200, got %d", cloud, rr.Code)
+		}
 
-	var session map[string]interface{}
-	parseJSON(t, rr, &session)
-	if session["mcp_public_url"] != "https://mcp.test.example" {
-		t.Errorf("expected mcp_public_url='https://mcp.test.example', got %v", session["mcp_public_url"])
+		var session map[string]interface{}
+		parseJSON(t, rr, &session)
+		want := ""
+		if cloud {
+			want = "https://mcp.test.example"
+		}
+		if session["mcp_public_url"] != want {
+			t.Errorf("cloud=%v: expected mcp_public_url=%q, got %v", cloud, want, session["mcp_public_url"])
+		}
 	}
 }
 

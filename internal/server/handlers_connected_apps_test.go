@@ -51,6 +51,8 @@ func connectedAppsTestServer(t *testing.T) (*Server, string) {
 	t.Helper()
 	srv := testServer(t)
 	srv.SetCloudMode("test-secret")
+	// Connected-apps routes are gated on oauthAvailable (PLAN-2310 DR-5).
+	wireOAuthForTest(t, srv)
 	c, err := srv.store.CreateOAuthClient(models.OAuthClientCreate{
 		Name:                    "Claude Desktop",
 		RedirectURIs:            []string{"https://example.test/cb"},

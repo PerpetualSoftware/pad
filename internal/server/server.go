@@ -133,10 +133,9 @@ type Server struct {
 	imageProcessor attachments.Processor
 
 	// MCP Streamable HTTP transport (PLAN-943 TASK-950). Wired via
-	// SetMCPTransport at startup when the deployment is in cloud mode.
-	// nil on self-hosted deployments and on any cloud build that hasn't
-	// constructed the MCP server yet — registerMCPRoutes nil-checks so
-	// the routes don't mount in either case. See handlers_mcp.go.
+	// SetMCPTransport at startup on every install (PLAN-2310 DR-4); nil
+	// only on a server nothing wired (tests). Requests reach it only while
+	// mcpAvailable. See handlers_mcp.go.
 	mcpTransport http.Handler
 	// mcpCallNameKnown bounds the MCP metrics tool label (BUG-2817): a
 	// name it does not know is recorded as "unknown". Nil records every
@@ -157,21 +156,30 @@ type Server struct {
 
 	// OAuth 2.1 authorization server (PLAN-943 TASK-1024 sub-PR B,
 	// HTTP handlers in TASK-1025 sub-PR C). Wired via SetOAuthServer
-	// at startup when the deployment is in cloud mode + has the
-	// fosite-backed server constructed. nil disables the OAuth
-	// surface — registerOAuthRoutes nil-checks so the routes don't
-	// mount on self-hosted deployments. See handlers_oauth.go.
+	// at startup whenever the resolved auth-server URL is https
+	// (PLAN-2310 DR-4). nil disables the OAuth surface: oauthAvailable
+	// is false and every OAuth route answers 404. See handlers_oauth.go.
 	oauthServer *oauth.Server
 
 	// claimSecret is the HMAC key for stateless 6-digit claim codes
 	// (PLAN-1519 / TASK-1521 / IDEA-1517 §4). Wired by SetClaimSecret
 	// at startup — production reuses the deployment's 32-byte
 	// encryption key (cfg.EncryptionKey) since both are server-
-	// stable secrets with equivalent rotation cadence. nil/short →
-	// /api/v1/oauth/claim returns 412 "claim_disabled" on every
-	// request, surfacing a clear misconfiguration signal rather than
-	// silently accepting forgeable codes.
+	// stable secrets with equivalent rotation cadence. Set wherever
+	// OAuth is constructed. nil/short → the claim handlers return 412
+	// "claim_disabled" rather than accept forgeable codes; with OAuth
+	// unavailable the routes answer 404 before reaching them.
 	claimSecret []byte
+
+	// shareAssetSecret keys the short-lived signatures on a protected
+	// share link's image refs (handlers_share_attachments.go). It is the
+	// same deployment key as claimSecret, but a separate field: PLAN-2310
+	// U2 sets the claim secret wherever OAuth is constructed, and this key
+	// must stay set exactly where it always was, so turning on OAuth for
+	// MCP changes nothing on share pages (TASK-2317, lead ruling B).
+	// Setting it on every install is BUG-3305. nil → protected refs are
+	// omitted and the page shows its placeholder.
+	shareAssetSecret []byte
 
 	// oauthMetricsWired records whether wireOAuthMetricsObserver has
 	// already attached the active-tokens callback collector. Re-
@@ -1443,8 +1451,8 @@ func (s *Server) setupRouter() {
 	//     documents (RFC 9728 / RFC 8414); routing them through
 	//     TokenAuth+SessionAuth+RequireAuth would 401 unauth probes.
 	//
-	// No-op when SetMCPTransport hasn't been called or cloud mode is
-	// off — see registerMCPRoutes for the gating.
+	// Mounted on every install and gated per request (PLAN-2310 DR-5) —
+	// see registerMCPRoutes.
 	s.registerMCPRoutes(r)
 
 	// OAuth 2.1 authorization-server flow endpoints (PLAN-943
@@ -1469,9 +1477,10 @@ func (s *Server) setupRouter() {
 	// because they're either session-bound or PKCE-bound; explicit
 	// per-endpoint limits arrive with TASK-959.
 	//
-	// No-op when SetOAuthServer hasn't been called or cloud mode is off.
+	// Mounted on every install; requireOAuthAvailable gates each request
+	// before SessionAuth or RateLimit runs (PLAN-2310 DR-5).
 	r.Group(func(r chi.Router) {
-		r.Use(s.requireCloudMode)
+		r.Use(s.requireOAuthAvailable)
 		r.Use(s.SessionAuth)
 		r.Use(s.RateLimit)
 		s.registerOAuthRoutes(r)
@@ -1688,11 +1697,12 @@ func (s *Server) setupRouter() {
 			// Connected-apps management (TASK-954). Lists every
 			// active OAuth grant chain the user has authorized
 			// (Claude Desktop, Cursor, …) and lets them revoke one.
-			// Cloud-mode-gated because OAuth is a cloud-only
-			// surface — self-hosted deployments would always see
-			// an empty list.
+			// Gated on oauthAvailable (PLAN-2310 DR-5): with no
+			// OAuth there are no grants to manage. The audit route
+			// above is deliberately outside the gate: it is history
+			// of a connection the caller owns.
 			r.Group(func(r chi.Router) {
-				r.Use(s.requireCloudMode)
+				r.Use(s.requireOAuthAvailable)
 				r.Get("/connected-apps", s.handleListConnectedApps)
 				r.Delete("/connected-apps/{id}", s.handleRevokeConnectedApp)
 				// PLAN-1519 / TASK-1524 / IDEA-1517 §3: mutation
@@ -1736,14 +1746,14 @@ func (s *Server) setupRouter() {
 			// OAuth client public-info (PLAN-943 TASK-1027 sub-PR E).
 			// Read-only consent-screen support for OAuth clients
 			// registered via /oauth/register. Auth-required (inherits
-			// RequireAuth from the parent group); cloud-mode-gated so
-			// self-hosted deployments without an OAuth server don't
-			// expose a hollow endpoint. Returns four non-sensitive
+			// RequireAuth from the parent group); gated on
+			// oauthAvailable (PLAN-2310 DR-5) so a deployment without
+			// OAuth does not expose a hollow endpoint. Returns four non-sensitive
 			// fields (client_id, client_name, logo_uri, redirect_uris)
 			// — see handlers_oauth_clients.go for the full leak-surface
 			// rationale.
 			r.Group(func(r chi.Router) {
-				r.Use(s.requireCloudMode)
+				r.Use(s.requireOAuthAvailable)
 				r.Get("/oauth/clients/{id}/public-info", s.handleOAuthClientPublicInfo)
 			})
 
@@ -1763,8 +1773,10 @@ func (s *Server) setupRouter() {
 			// UI's "Connect project" modal. Auth: standard /api/v1 chain
 			// (TokenAuth + RequireAuth); the handler itself short-circuits
 			// the side effect when the caller isn't an OAuth grant (PAT /
-			// CLI session) and 412s when the claim secret isn't wired.
-			r.Post("/oauth/claim", s.handleOAuthClaim)
+			// CLI session). Gated on oauthAvailable (PLAN-2310 DR-5): a
+			// claim grants an OAuth connection, so with no OAuth it is
+			// 404, where it used to be 412 claim_disabled.
+			r.With(s.requireOAuthAvailable).Post("/oauth/claim", s.handleOAuthClaim)
 
 			// The caller's open set of workspace tabs (PLAN-3002 U1 /
 			// TASK-3256). User-scoped, outside the /{slug} access subrouter;
@@ -1824,8 +1836,9 @@ func (s *Server) setupRouter() {
 					// / TASK-1525 / IDEA-1517 §4). Inherits
 					// RequireWorkspaceAccess so any member can pull a code
 					// for any workspace they belong to — membership IS
-					// the consent. See handlers_claim_code.go.
-					r.Get("/claim-code", s.handleWorkspaceClaimCode)
+					// the consent. See handlers_claim_code.go. Gated
+					// on oauthAvailable like the redemption route.
+					r.With(s.requireOAuthAvailable).Get("/claim-code", s.handleWorkspaceClaimCode)
 
 					// Documents (v1 — will be replaced by items in Phase 2)
 					r.Route("/documents", func(r chi.Router) {

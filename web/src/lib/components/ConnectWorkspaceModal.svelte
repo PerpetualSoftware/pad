@@ -307,9 +307,9 @@
 	);
 
 	// Hide the MCP and claim-code tabs on deployments without a public MCP
-	// URL. Both depend on the remote OAuth server, which only mounts under
-	// PAD_MCP_PUBLIC_URL — without it the MCP tab has nothing to show and the
-	// claim endpoint returns claim_disabled (a dead tab). That leaves
+	// URL. Both depend on the remote OAuth server; the session carries the
+	// URL only where it is served (cloud, until PLAN-2310 unit 6), and
+	// elsewhere the claim endpoint answers 404 (a dead tab). That leaves
 	// self-host with just the CLI tab, which is the only path that works
 	// there. (The 'disabled' claimState render stays as defense-in-depth in
 	// case the secret is somehow unset while a public URL is present.)
@@ -393,10 +393,11 @@
 						</div>
 					{:else if claimState.kind === 'disabled'}
 						<!--
-							"claim_disabled" only fires on self-host deployments
-							that don't have `PAD_MCP_PUBLIC_URL` wired — the
-							OAuth server (and with it the claim secret) only
-							mounts under that env var. In that configuration
+							"claim_disabled" fires only if the claim secret is
+							unset while OAuth is served, which startup never
+							produces (PLAN-2310 DR-4 sets them together); a
+							deployment without OAuth answers the claim routes
+							404 instead. Without OAuth,
 							agents connect via stdio MCP (`pad mcp serve`) or
 							the CLI, both of which inherit the user's session
 							token from ~/.pad/credentials.json and see every
@@ -696,9 +697,9 @@
 					<!--
 						Hide the Connected apps link on self-host deployments
 						without remote MCP (mcpPublicUrl empty). That page
-						lists OAuth grants only, and self-host without
-						`PAD_MCP_PUBLIC_URL` never mounts the OAuth server —
-						so the page would be empty by definition. Linking
+						lists OAuth grants only, and a deployment that does
+						not serve OAuth answers its API 404 — so the page
+						would be empty by definition. Linking
 						users there is a dead end; matches the
 						"claim_disabled" copy that tells the same audience
 						they're already done.

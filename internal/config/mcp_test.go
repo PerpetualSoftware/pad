@@ -148,16 +148,33 @@ func TestLoadReadsPadMCPEnabled(t *testing.T) {
 	}
 }
 
-// Cloud's OAuth tokens are bound to the audience cmd_server.go has always
-// built: strings.TrimRight(PAD_MCP_PUBLIC_URL, "/"). The canonical form must
-// be byte-identical for every value cloud has used, or PLAN-2310 U2's switch
-// to the resolved URL would invalidate every issued token.
-func TestResolveMCPEndpoints_CloudAudienceUnchanged(t *testing.T) {
-	for _, v := range []string{"https://mcp.getpad.dev", "https://mcp.getpad.dev/"} {
-		c := Config{PublicURL: "https://app.getpad.dev", MCPPublicURL: v, AuthServerURL: "https://app.getpad.dev"}
+// Issued OAuth tokens are bound to the audience cmd_server.go has always
+// built: strings.TrimRight(PAD_MCP_PUBLIC_URL, "/"). PLAN-2310 U2 builds it
+// from the resolved URL instead, so the resolved URL must be byte-identical
+// to that expression for EVERY value a deployment may have set, not only
+// cloud's canonical one, or an upgrade would refuse every existing token
+// (TASK-2317). PAD_AUTH_SERVER_URL keeps its spelling the same way, so the
+// advertised issuer does not change either.
+func TestResolveMCPEndpoints_OverrideSpellingUnchanged(t *testing.T) {
+	for _, v := range []string{
+		"https://mcp.getpad.dev",
+		"https://mcp.getpad.dev/",
+		"https://MCP.GetPad.dev",     // uppercase host
+		"https://mcp.getpad.dev:443", // explicit default port
+		"HTTPS://mcp.getpad.dev//",   // scheme case, repeated slash
+		"https://pad.example.com/mcp/",
+	} {
+		c := Config{PublicURL: "https://app.getpad.dev", MCPPublicURL: v, AuthServerURL: v}
 		e := c.ResolveMCPEndpoints()
-		if want := strings.TrimRight(v, "/"); e.ResourceURL != want {
+		want := strings.TrimRight(v, "/")
+		if e.ResourceURL != want {
 			t.Errorf("PAD_MCP_PUBLIC_URL=%q resolves to %q, want the historical audience %q", v, e.ResourceURL, want)
+		}
+		if e.AuthServerURL != want {
+			t.Errorf("PAD_AUTH_SERVER_URL=%q resolves to %q, want the historical issuer %q", v, e.AuthServerURL, want)
+		}
+		if !e.HTTPS() {
+			t.Errorf("PAD_AUTH_SERVER_URL=%q: HTTPS() = false, want true", v)
 		}
 	}
 }
