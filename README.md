@@ -457,6 +457,11 @@ MCP server in Claude Desktop, Claude.ai, Cursor, or Windsurf and sign in with
 OAuth — same tool surface, no local binary. Setup guide at
 [getpad.dev/mcp/remote](https://getpad.dev/mcp/remote).
 
+**Self-hosting?** The same remote MCP endpoint is built in and off by default:
+an admin turns it on, with OAuth on an https deployment and personal API
+tokens on http. See "MCP for agents (self-hosted)" in
+[docs/deployment.md](docs/deployment.md).
+
 ## CLI Reference
 
 ```

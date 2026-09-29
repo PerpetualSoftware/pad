@@ -64,7 +64,7 @@ All configuration is via environment variables or a config file (`~/.pad/config.
 |----------|---------|-------------|
 | `PAD_HOST` | `127.0.0.1` | Listen address (`0.0.0.0` for Docker/production) |
 | `PAD_PORT` | `7777` | Listen port |
-| `PAD_URL` | — | Public-facing base URL (e.g., `https://pad.example.com`). Used for invitation, password-reset, and share-link emails. **Required when `PAD_HOST=0.0.0.0`** — otherwise emailed links point at `http://0.0.0.0:port` and are unreachable to recipients. |
+| `PAD_URL` | — | Public-facing base URL (e.g., `https://pad.example.com`). Used for invitation, password-reset, and share-link emails, and as the public origin for [MCP](#mcp-for-agents-self-hosted). **Required when `PAD_HOST=0.0.0.0`** — otherwise emailed links point at `http://0.0.0.0:port` and are unreachable to recipients. |
 | `PUBLIC_URL` | — | Alternative to `PAD_URL` using the generic env-var convention. Server-side only — does not affect CLI mode, does not influence the CLI's API endpoint, and is not persisted to `config.toml`. Precedence: `PAD_URL` > `PUBLIC_URL` > constructed `http://host:port`. |
 | `PAD_DATA_DIR` | `~/.pad` | Data directory for SQLite DB, logs, and config |
 | `PAD_LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, `error` |
@@ -1078,6 +1078,101 @@ degraded, not a peer broken.
 | `PAD_SECURE_COOKIES` | `false` | Set `Secure` flag on session cookies (requires TLS) |
 | `PAD_CORS_ORIGINS` | — | Comma-separated allowed CORS origins |
 
+### MCP for agents (self-hosted)
+
+A self-hosted Pad can serve MCP over HTTP at `/mcp`, so agents with no Pad CLI
+installed (Claude.ai, ChatGPT, Cursor, Windsurf and other remote-MCP clients)
+can use it. It is the same code path Pad Cloud runs. **It is off by default**,
+and an upgraded install gains nothing until an admin turns it on. The local
+stdio server (`pad mcp serve`) is separate and unaffected.
+
+#### Addresses
+
+Every URL an MCP client or an OAuth flow sees comes from configuration, never
+from the request's `Host` header.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PAD_URL` (or `url` in `config.toml`, or `--url`) | — | The public origin: scheme, host and optional port, **no path** (e.g. `https://pad.example.com`). |
+| `PUBLIC_URL` | — | Used as the origin when `PAD_URL` is not set. Unlike emailed links, MCP has **no** `http://host:port` fallback: with neither set, MCP stays unavailable. |
+| `PAD_MCP_PUBLIC_URL` | `<origin>/mcp` | The MCP URL clients connect to. It is also the OAuth audience every token is bound to, so changing it invalidates issued OAuth tokens. |
+| `PAD_AUTH_SERVER_URL` | `<origin>` | The OAuth issuer. |
+| `PAD_MCP_ENABLED` | — | `true` or `false` (also `1`/`0`, `yes`/`no`, `on`/`off`). Forces MCP on or off and locks the admin toggle. Unset leaves it to the toggle. Any other value is ignored with a startup warning. |
+
+A value that is not an absolute `http`/`https` URL (with no user info, query or
+fragment, and for the origin no path) never stops the server: `PAD_URL` also
+tells the CLI where the server is. It is logged as a warning naming the
+variable, and MCP stays unavailable ("blocked", with the reason, in
+`GET /api/v1/admin/mcp`). All five are read at startup, so changing any of
+them needs a restart. The toggle does not.
+
+#### Turning it on
+
+An admin turns MCP on and off at runtime, with no restart. On a self-hosted
+install the console does not show the MCP toggle or Connected Apps yet, so use
+the API (an admin's personal API token works):
+
+```bash
+curl -X PUT https://pad.example.com/api/v1/admin/mcp \
+  -H "Authorization: Bearer <an admin's API token>" \
+  -H "Content-Type: application/json" -d '{"enabled": true}'
+```
+
+`GET /api/v1/admin/mcp` reports `enabled`, where the value comes from
+(`source`: `setting`, `environment` or `cloud`), whether it is `locked`, and a
+readiness readout: the resolved origin, MCP URL and issuer, `https`, the auth
+methods that follow, the effective `state` (`on`, `off`, or `blocked` with
+the reason), and, while it is off, how many OAuth connections and tokens would
+resume. With `PAD_MCP_ENABLED` set, a `PUT` answers `409 set_by_environment`.
+
+MCP is available when the toggle is on **and** a usable origin is configured.
+Until then every MCP and OAuth route answers `404`.
+
+#### https means OAuth and tokens; http means tokens only
+
+The auth methods follow from the scheme of the issuer URL:
+
+- **https:** agents connect with OAuth (dynamic client registration, consent
+  in the browser, per-workspace grants), the same flow as Pad Cloud. A personal
+  API token works too.
+- **http:** personal API tokens only. Every OAuth route and discovery document
+  answers `404`, and `/mcp`'s `401` names no authorization server. Mint a token
+  in **Console → Settings → API Tokens** and give the client
+  `Authorization: Bearer <token>`.
+
+The OAuth server is built at startup, and only when the issuer URL is https.
+
+#### Behind a reverse proxy
+
+The proxy must forward the original `Host` header (the shipped
+`deploy/nginx.conf` does, with `proxy_set_header Host $host`). Off Pad Cloud,
+`/mcp`, `/oauth/*` and `/.well-known/oauth-*` answer `421 Misdirected Request`
+to a `Host` that is not the host of the origin, the MCP URL or the issuer.
+Any loopback spelling is accepted when the origin itself is loopback. This
+closes DNS rebinding on a LAN box. The `/api/v1` routes are not host-checked.
+
+Requests that reach `/mcp` without a valid token, and the OAuth token, consent,
+registration and claim endpoints, are rate-limited per client address, so set
+`PAD_TRUSTED_PROXIES` to your proxy's addresses. Otherwise every request shares
+the proxy's address and one bucket.
+
+#### Known gaps
+
+- **Tokens are not scoped to workspaces.** A personal API token carries its
+  owner's full access. On http, tokens are the only method, so OAuth's
+  per-workspace consent does not exist there.
+- **Expired OAuth tokens, codes and PKCE rows are never swept** (BUG-3301,
+  Pad Cloud included). An install that turns OAuth on inherits it until that
+  lands.
+- **https is configuration, not observation.** An https URL configured on a
+  server actually reached over http advertises OAuth that cannot complete.
+  Pad cannot see TLS a proxy terminates, so the readiness readout reports what
+  is configured.
+- **Turning MCP off revokes nothing.** Grants and tokens become inert and work
+  again when it is turned back on. Revoke them to remove them.
+- **The host check does not replace TLS.** It closes DNS rebinding; it does not
+  protect tokens in transit. That is why http is token-only.
+
 ### Email (Optional)
 
 Email enables sending workspace invitation links. Without it, users can still join via CLI invite codes.
@@ -1358,6 +1453,7 @@ curl -s http://localhost:7777/api/v1/health   # {"status":"ok"}
 - [ ] **TLS:** Reverse proxy with valid certificates
 - [ ] **Secure cookies:** `PAD_SECURE_COOKIES=true` (requires TLS)
 - [ ] **Public URL:** `PAD_URL` set to your public-facing domain
+- [ ] **MCP (optional):** off by default. If you turn it on, serve the origin over https (OAuth needs it), forward `Host` from the proxy, and set `PAD_TRUSTED_PROXIES`
 - [ ] **CORS:** `PAD_CORS_ORIGINS` set if serving from a different domain
 - [ ] **Backups:** PostgreSQL backup strategy in place (see `docs/backup.md`)
 - [ ] **Monitoring:** Prometheus scraping `/metrics`
