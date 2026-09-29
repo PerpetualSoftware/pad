@@ -12,11 +12,13 @@ import "fmt"
 // same way), so the panel's number matches what users see there.
 //
 // It is an upper bound on what would resume, not an exact count. `active`
-// is cleared on revocation, not on expiry, and nothing sweeps expired rows
-// (BUG-3301), so a chain whose refresh token has expired is still counted,
-// exactly as the Connected Apps page still lists it. The count follows the
-// page's definition deliberately, so the two agree. BUG-3301's sweep fixes
-// both at once; an expiry filter here alone would make them disagree.
+// is cleared on revocation, not on expiry. The token reaper's OAuth sweep
+// (BUG-3301) deletes a chain's rows only once its refresh token has been
+// expired for the sweep's grace (24 h) and the next hourly tick has run,
+// so until then an expired chain is still counted, exactly as the
+// Connected Apps page still lists it. The count follows the page's
+// definition deliberately, so the two agree; an expiry filter here alone
+// would make them disagree.
 func (s *Store) CountLiveOAuthConnections() (int, error) {
 	var n int
 	err := s.db.QueryRow(s.q(`
