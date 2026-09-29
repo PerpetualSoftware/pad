@@ -31,6 +31,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/attachments"
 	"github.com/PerpetualSoftware/pad/internal/billing"
 	"github.com/PerpetualSoftware/pad/internal/collab"
+	"github.com/PerpetualSoftware/pad/internal/config"
 	"github.com/PerpetualSoftware/pad/internal/email"
 	"github.com/PerpetualSoftware/pad/internal/events"
 	"github.com/PerpetualSoftware/pad/internal/metrics"
@@ -290,6 +291,12 @@ type Server struct {
 	// decisionSettings holds the decision provider's config-file source and
 	// question sets, and serialises reconfiguration (TASK-3121).
 	decisionSettings decisionSettingsState
+
+	// mcpEndpoints and mcpEnabledEnv are the MCP capability's addressing and
+	// the PAD_MCP_ENABLED override (PLAN-2310), set once at startup by
+	// SetMCPConfig. See handlers_admin_mcp.go.
+	mcpEndpoints  config.MCPEndpoints
+	mcpEnabledEnv *bool
 
 	// inFlightUploadHashes tracks content_hash values for uploads
 	// that have called AttachmentStore.Put but not yet inserted the
@@ -1608,6 +1615,8 @@ func (s *Server) setupRouter() {
 				r.Patch("/settings", s.handleUpdatePlatformSettings)
 				r.Get("/decision-provider", s.handleGetDecisionSettings)
 				r.Put("/decision-provider", s.handleUpdateDecisionSettings)
+				r.Get("/mcp", s.handleGetMCPSettings)
+				r.Put("/mcp", s.handleUpdateMCPSettings)
 				r.Post("/test-email", s.handleTestEmail)
 
 				// Cloud sidecar endpoints — only exist in cloud mode. requireCloudMode
