@@ -87,6 +87,9 @@ let loaded = $state(false);
 // older value.
 let pendingRoutes = $state<Record<string, string>>({});
 
+// Reorders in flight, chained so they are sent in call order (see reorder).
+let reorderChain: Promise<void> = Promise.resolve();
+
 // The revision of the committed list; -1 until one commits. See "WHICH
 // RESPONSE COMMITS".
 let committedRevision = -1;
@@ -221,9 +224,34 @@ export const tabsStore = {
 		await send(() => api.workspaces.tabs.close(slug));
 	},
 
-	/** The full order, as slugs. */
+	/**
+	 * The full order, as slugs. Reorders are SENT one at a time, in call
+	 * order (TASK-3306). The server serialises writes and the revision above
+	 * orders their answers, but neither rejects a stale order: two reorders
+	 * in flight at once could be processed in the other order, storing the
+	 * older one, and the revision would then faithfully commit it. Sending
+	 * them in sequence makes the last call's order the stored one. Only
+	 * reorders queue; other writes are not held behind them. A queued
+	 * reorder whose identity has changed by the time it runs is dropped.
+	 */
 	async reorder(slugs: string[]): Promise<void> {
-		await send(() => api.workspaces.tabs.reorder(slugs));
+		// A queued reorder must not outlive the identity that asked for it:
+		// send() takes its fence when it RUNS, which for a queued call can be
+		// after a sign-out or an account switch, so the old user's order would
+		// go out with the new user's credentials (codex r2). Fence at the call.
+		const isSameIdentity = authStore.identityFence();
+		const run = reorderChain.then(() => {
+			// A dropped reorder REJECTS, so a caller's follow-up (the pin a
+			// drag or a keyboard move makes) is skipped too rather than sent
+			// with the next identity's credentials (codex r4).
+			if (!isSameIdentity()) throw new Error('reorder dropped: the signed-in identity changed');
+			return send(() => api.workspaces.tabs.reorder(slugs));
+		});
+		reorderChain = run.then(
+			() => {},
+			() => {}
+		);
+		await run;
 	},
 
 	/** Keep an ephemeral tab. */
@@ -271,6 +299,10 @@ export const tabsStore = {
 // the previous identity visited.
 authStore.onIdentityChange(() => {
 	committedRevision = -1;
+	// A new identity starts its own reorder queue: the old one's queued calls
+	// are dropped by their fence, but one still in flight that never settled
+	// would otherwise hold every later reorder behind it (codex r3).
+	reorderChain = Promise.resolve();
 	tabs = [];
 	loaded = false;
 	pendingRoutes = {};
