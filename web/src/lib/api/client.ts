@@ -1,5 +1,6 @@
 import type {
 	DecisionSettings,
+	MCPSettings,
 	DecisionSettingsInput,
 	Workspace,
 	DeletedWorkspace,
@@ -1114,6 +1115,12 @@ export interface AuthSession {
 	// AND the deployment is in cloud mode. Use authStore.billingAvailable rather
 	// than reading this field directly. TASK-800.
 	billing_available?: boolean;
+	// mcp_available / oauth_available (PLAN-2310 DR-7): whether MCP, and its
+	// OAuth path, are available right now. Always true on Pad Cloud; on a
+	// self-hosted install they follow the admin toggle, the configured origin
+	// and its scheme. Absent on older servers: treat as cloud_mode.
+	mcp_available?: boolean;
+	oauth_available?: boolean;
 	// email_configured is false when the self-host server has no transactional
 	// email provider (no Maileroo key). The /forgot-password page reads it to
 	// replace "we emailed you a link" with host-recovery guidance, since no
@@ -3146,6 +3153,11 @@ export const api = {
 				method: 'PATCH',
 				body: JSON.stringify(settings)
 			}),
+		// MCP over HTTP (PLAN-2310 DR-2). PUT answers 409 set_by_environment
+		// when PAD_MCP_ENABLED forces the value, 403 on Pad Cloud.
+		getMCPSettings: () => request<MCPSettings>('/admin/mcp'),
+		updateMCPSettings: (enabled: boolean) =>
+			request<MCPSettings>('/admin/mcp', { method: 'PUT', body: JSON.stringify({ enabled }) }),
 		// Decision provider (TASK-3121). The response never carries the API
 		// key — only whether one is set. api_key is write-only.
 		getDecisionSettings: () => request<DecisionSettings>('/admin/decision-provider'),

@@ -9,7 +9,7 @@
 		type LimitTiers
 	} from '$lib/stores/admin.svelte';
 	import { api } from '$lib/api/client';
-	import type { DecisionSettings, DecisionSettingsInput } from '$lib/types';
+	import type { DecisionSettings, DecisionSettingsInput, MCPSettings } from '$lib/types';
 
 	// Plan limits
 	let limits = $state<LimitTiers | null>(null);
@@ -66,6 +66,39 @@
 		decisionKey = '';
 		decisionClearKey = false;
 	}
+
+	// MCP over HTTP (PLAN-2310 DR-7). The toggle writes at once; the readout
+	// is what GET /admin/mcp reports, which is configuration, not an
+	// observation of the deployment (the server cannot see TLS a proxy
+	// terminates).
+	let mcp = $state<MCPSettings | null>(null);
+	let mcpLoadError = $state('');
+	let savingMcp = $state(false);
+	let mcpStatus = $state<{ message: string; type: 'saved' | 'error' } | null>(null);
+
+	async function loadMcp() {
+		try {
+			mcp = await api.admin.getMCPSettings();
+		} catch (e) {
+			mcpLoadError = e instanceof Error ? e.message : 'Failed to load';
+		}
+	}
+
+	async function setMcpEnabled(enabled: boolean) {
+		savingMcp = true;
+		mcpStatus = null;
+		try {
+			mcp = await api.admin.updateMCPSettings(enabled);
+			mcpStatus = { message: 'Saved', type: 'saved' };
+		} catch (e) {
+			mcpStatus = { message: e instanceof Error ? e.message : 'Failed to save', type: 'error' };
+		} finally {
+			savingMcp = false;
+		}
+	}
+
+	const mcpAuthLabel = (methods: string[]) =>
+		methods.includes('oauth') ? 'OAuth and API tokens' : methods.includes('pat') ? 'API tokens only' : 'None';
 
 	async function loadDecision() {
 		try {
@@ -201,6 +234,7 @@
 	onMount(() => {
 		loadSettings();
 		loadDecision();
+		loadMcp();
 	});
 </script>
 
@@ -493,6 +527,91 @@
 			</div>
 		</section>
 
+		<section class="section" data-testid="mcp-section">
+			<h2 class="section-title">MCP for agents</h2>
+			<p class="section-desc">
+				Lets remote agents (Claude.ai, ChatGPT, Cursor and other MCP clients) use this server at
+				its MCP URL, without installing the Pad CLI. Off by default.
+			</p>
+
+			<div class="email-card">
+				{#if mcpLoadError}
+					<p class="save-msg error-msg">Could not load: {mcpLoadError}</p>
+				{:else if !mcp}
+					<p class="save-msg">Loading…</p>
+				{:else}
+					{@const rd = mcp.readiness}
+					<label class="toggle-row">
+						<input
+							type="checkbox"
+							data-testid="mcp-enabled"
+							checked={mcp.enabled}
+							disabled={mcp.locked || savingMcp}
+							onchange={(e) => setMcpEnabled(e.currentTarget.checked)}
+						/>
+						<span>Enable MCP</span>
+						{#if mcp.source === 'environment'}
+							<span class="env-note" data-testid="mcp-lock-note">set by environment (PAD_MCP_ENABLED)</span>
+						{:else if mcp.source === 'cloud'}
+							<span class="env-note" data-testid="mcp-lock-note">managed by the operator</span>
+						{/if}
+					</label>
+
+					<p class="mcp-state" data-testid="mcp-state" data-state={rd.state}>
+						{#if rd.state === 'on'}
+							<span class="mcp-dot on" aria-hidden="true"></span>On: agents can connect.
+						{:else if rd.state === 'blocked'}
+							<span class="mcp-dot blocked" aria-hidden="true"></span>On, but blocked: {rd.blocked}
+						{:else}
+							<span class="mcp-dot" aria-hidden="true"></span>Off: every MCP and OAuth route answers 404.
+						{/if}
+					</p>
+
+					<dl class="mcp-readout" data-testid="mcp-readout">
+						<dt>Public origin</dt>
+						<dd>
+							{#if rd.origin}
+								<code>{rd.origin}</code>{#if rd.origin_var}<span class="env-note">from {rd.origin_var}</span>{/if}
+							{:else if rd.problems.length > 0}
+								not usable <span class="env-note">see above</span>
+							{:else}
+								not set <span class="env-note">set PAD_URL to the URL this server is reached at</span>
+							{/if}
+						</dd>
+						<dt>MCP URL</dt>
+						<dd>{#if rd.mcp_url}<code>{rd.mcp_url}</code>{:else}—{/if}</dd>
+						<dt>https</dt>
+						<dd>{rd.origin ? (rd.https ? 'Yes' : 'No') : '—'}</dd>
+						<dt>Agents sign in with</dt>
+						<dd data-testid="mcp-auth">{mcpAuthLabel(rd.auth_methods)}</dd>
+					</dl>
+
+					{#each rd.problems.filter((p) => p !== rd.blocked) as problem (problem)}
+						<p class="save-msg error-msg" data-testid="mcp-problem">{problem}</p>
+					{/each}
+
+					{#if rd.state === 'off' && (rd.resume.oauth_connections > 0 || rd.resume.pats > 0)}
+						<p class="privacy-line" data-testid="mcp-resume">
+							Turning it on resumes {rd.resume.oauth_connections}
+							{rd.resume.oauth_connections === 1 ? 'OAuth connection' : 'OAuth connections'} and {rd.resume.pats}
+							{rd.resume.pats === 1 ? 'API token' : 'API tokens'}. Turning it off revoked nothing.
+						</p>
+					{/if}
+
+					{#if rd.origin}
+					<p class="privacy-line">
+						This reports configuration, not an observation: the server cannot see TLS a proxy
+						terminates. {rd.https ? 'An https URL on a server actually reached over http advertises OAuth that cannot complete.' : 'Over http, agents use API tokens only.'}
+					</p>
+					{/if}
+
+					{#if mcpStatus}
+						<span class="save-msg" class:error-msg={mcpStatus.type === 'error'}>{mcpStatus.message}</span>
+					{/if}
+				{/if}
+			</div>
+		</section>
+
 		<section class="section">
 			<h2 class="section-title">Integrations</h2>
 			<p class="section-desc">
@@ -711,5 +830,42 @@
 	}
 	.error-msg {
 		color: var(--accent-red, #d33);
+	}
+	.mcp-state {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		font-size: 0.85rem;
+		color: var(--text-primary);
+		margin: 0;
+	}
+	.mcp-dot {
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		background: var(--text-muted);
+		flex-shrink: 0;
+	}
+	.mcp-dot.on {
+		background: var(--accent-green);
+	}
+	.mcp-dot.blocked {
+		background: var(--accent-orange, var(--accent-red));
+	}
+	.mcp-readout {
+		display: grid;
+		grid-template-columns: max-content 1fr;
+		gap: var(--space-1) var(--space-4);
+		margin: 0;
+		font-size: 0.82rem;
+	}
+	.mcp-readout dt {
+		color: var(--text-secondary);
+	}
+	.mcp-readout dd {
+		margin: 0;
+		color: var(--text-primary);
+		min-width: 0;
+		overflow-wrap: anywhere;
 	}
 </style>

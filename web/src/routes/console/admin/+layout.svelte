@@ -23,11 +23,11 @@
 		{ label: 'Users', href: '/console/admin' },
 		{ label: 'Invitations', href: '/console/admin/invitations' },
 		{ label: 'Audit Log', href: '/console/admin/audit-log' },
-		// MCP audit log (TASK-960) — full-table view of every MCP call.
-		// Cloud-only: the /api/v1/admin/mcp-audit endpoint backs the
-		// MCP transport, which only mounts in cloud mode. Hiding the
-		// tab in self-host avoids a "the page always errors" UX.
-		...(cloudMode ? [{ label: 'MCP Audit', href: '/console/admin/mcp-audit' }] : []),
+		// MCP audit log (TASK-960): the full-table view of every MCP call.
+		// Always shown to admins (PLAN-2310 DR-7): its API answers on every
+		// install, MCP on or off, because reading past use while MCP is off
+		// is how an admin audits it. No history renders the empty state.
+		{ label: 'MCP Audit', href: '/console/admin/mcp-audit' },
 		...(cloudMode ? [{ label: 'Billing', href: '/console/admin/billing' }] : []),
 		{ label: 'Settings', href: '/console/admin/settings' }
 	]);

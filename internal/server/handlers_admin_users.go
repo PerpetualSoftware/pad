@@ -855,10 +855,12 @@ func (s *Server) handleAdminStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"users":         userCount,
-		"users_by_plan": planCounts,
-		"workspaces":    len(workspaces),
-		"cloud_mode":    s.cloudMode,
+		"users":           userCount,
+		"users_by_plan":   planCounts,
+		"workspaces":      len(workspaces),
+		"cloud_mode":      s.cloudMode,
+		"mcp_available":   s.mcpAvailable(),
+		"oauth_available": s.oauthAvailable(),
 	})
 }
 

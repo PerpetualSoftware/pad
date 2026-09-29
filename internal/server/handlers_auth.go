@@ -134,7 +134,11 @@ func (s *Server) setupStatePayload(setupMethod string) map[string]interface{} {
 		"email_configured":  s.email != nil,
 		"mcp_public_url":    s.sessionMCPPublicURL(),
 		"billing_available": s.cloudMode && s.billingAvailable,
-		"version":           s.version,
+		// PLAN-2310 DR-7: the web UI keys Connected Apps on oauth_available
+		// rather than cloud_mode. Both are evaluated per request.
+		"mcp_available":   s.mcpAvailable(),
+		"oauth_available": s.oauthAvailable(),
+		"version":         s.version,
 	}
 }
 
@@ -172,6 +176,11 @@ func (s *Server) sessionStatePayload(authenticated bool, user *models.User) map[
 		"email_configured":  s.email != nil,
 		"mcp_public_url":    s.sessionMCPPublicURL(),
 		"billing_available": s.cloudMode && s.billingAvailable,
+		// PLAN-2310 DR-7: whether MCP and its OAuth path are available now
+		// (the setting, the configured origin and its scheme; always on
+		// cloud). The console keys Connected Apps on oauth_available.
+		"mcp_available":   s.mcpAvailable(),
+		"oauth_available": s.oauthAvailable(),
 		// webmcp_enabled gates the browser-side WebMCP surface. Read from the
 		// platform_settings kv table; default false when unset/absent or on
 		// any read error (fail closed). The web client uses it to decide
