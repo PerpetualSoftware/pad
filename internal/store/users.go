@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -968,7 +969,57 @@ func (s *Store) DeleteUser(id string) error {
 //     (ON DELETE CASCADE); items.assigned_user_id and activities.user_id
 //     (ON DELETE SET NULL; activities gained its FK action in migrations
 //     072/050).
+//
+// On Postgres a row referencing the user can still commit after the cleanup
+// statement for its table and before the final DELETE FROM users (a login,
+// a share-link view, a grant the user issues in another tab): the users-row
+// lock here is NO KEY UPDATE, which a referencing insert's FOR KEY SHARE does
+// not wait for. The delete then fails its foreign key (BUG-3289). Such a
+// failure rolls the whole attempt back, so it is retried from the top, where
+// the cleanup sees the new row. Taking the users row FOR UPDATE instead
+// would make those inserts wait, but a writer that locks a row this
+// transaction writes later (a share-link view of the user's own link) and
+// then references the user would deadlock against it.
 func (s *Store) DeleteAccountAtomic(userID string) error {
+	var err error
+	for attempt := 0; attempt < deleteAccountAttempts; attempt++ {
+		err = s.deleteAccountAtomicOnce(userID)
+		var late *lateUserReferenceError
+		if !errors.As(err, &late) {
+			return err
+		}
+	}
+	return err
+}
+
+// deleteAccountAttempts bounds DeleteAccountAtomic's retries. Each retry
+// needs a new referencing row to commit inside one attempt's window, so a
+// third failure means something is writing references in a loop.
+const deleteAccountAttempts = 3
+
+// lateUserReferenceError is the final DELETE FROM users failing its foreign
+// key because a referencing row committed after its table's cleanup.
+type lateUserReferenceError struct{ err error }
+
+func (e *lateUserReferenceError) Error() string {
+	return "delete account: delete user: " + e.err.Error()
+}
+
+func (e *lateUserReferenceError) Unwrap() error { return e.err }
+
+// isForeignKeyViolation reports a foreign-key refusal on either dialect.
+// String matching, like isDeadlockError, because the store is behind
+// database/sql and does not type-assert driver errors.
+func isForeignKeyViolation(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "sqlstate 23503") ||
+		strings.Contains(msg, "foreign key constraint failed")
+}
+
+func (s *Store) deleteAccountAtomicOnce(userID string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("delete account: begin tx: %w", err)
@@ -1126,8 +1177,11 @@ func (s *Store) DeleteAccountAtomic(userID string) error {
 	}
 
 	// 4. Delete the user record. Remaining references cascade (see doc comment).
-	if err := exec("delete user", "DELETE FROM users WHERE id = ?"); err != nil {
-		return err
+	if _, err := tx.Exec(s.q("DELETE FROM users WHERE id = ?"), userID); err != nil {
+		if isForeignKeyViolation(err) {
+			return &lateUserReferenceError{err: err}
+		}
+		return fmt.Errorf("delete account: delete user: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
