@@ -10,6 +10,13 @@ import "fmt"
 // refresh token across the instance. A chain is a request_id, the unit the
 // Connected Apps page lists (ListUserOAuthConnections walks both tables the
 // same way), so the panel's number matches what users see there.
+//
+// It is an upper bound on what would resume, not an exact count. `active`
+// is cleared on revocation, not on expiry, and nothing sweeps expired rows
+// (BUG-3301), so a chain whose refresh token has expired is still counted,
+// exactly as the Connected Apps page still lists it. The count follows the
+// page's definition deliberately, so the two agree. BUG-3301's sweep fixes
+// both at once; an expiry filter here alone would make them disagree.
 func (s *Store) CountLiveOAuthConnections() (int, error) {
 	var n int
 	err := s.db.QueryRow(s.q(`

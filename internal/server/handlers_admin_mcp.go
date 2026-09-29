@@ -82,7 +82,10 @@ type mcpReadiness struct {
 	State   string `json:"state"`
 	Blocked string `json:"blocked,omitempty"`
 	// Resume counts what would work again if MCP were turned on. Turning
-	// it off revokes nothing (PLAN-2310 DR-5).
+	// it off revokes nothing (PLAN-2310 DR-5). The OAuth figure is an
+	// upper bound: it counts chains the way the Connected Apps page lists
+	// them, which includes grants that have expired but were never swept
+	// (BUG-3301).
 	Resume struct {
 		OAuthConnections int `json:"oauth_connections"`
 		PATs             int `json:"pats"`
