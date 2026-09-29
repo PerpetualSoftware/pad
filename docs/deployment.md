@@ -1180,6 +1180,10 @@ These apply on Pad Cloud too.
 | `/oauth/register` (client registration) | 5/hour, burst 5 | client address |
 | `POST /api/v1/oauth/claim` (claim codes) | 10/min, burst 10 | signed-in user |
 
+"Client address" is the IPv4 address itself (an IPv6 client's /64), so every
+address in one /64 shares a bucket, as clients behind one NATed IPv4 address
+do.
+
 A request with a valid token never draws from the `/mcp` bucket. Requests to
 `/mcp` refused for a missing or invalid token, and those refused by this
 limit, are counted in the Prometheus counter
