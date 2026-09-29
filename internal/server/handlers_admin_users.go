@@ -854,13 +854,16 @@ func (s *Server) handleAdminStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// One read of the setting for both booleans (sessionMCP), so a
+	// concurrent toggle cannot report OAuth available with MCP not.
+	mcp := s.sessionMCP()
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"users":           userCount,
 		"users_by_plan":   planCounts,
 		"workspaces":      len(workspaces),
 		"cloud_mode":      s.cloudMode,
-		"mcp_available":   s.mcpAvailable(),
-		"oauth_available": s.oauthAvailable(),
+		"mcp_available":   mcp.Available,
+		"oauth_available": mcp.OAuth,
 	})
 }
 
