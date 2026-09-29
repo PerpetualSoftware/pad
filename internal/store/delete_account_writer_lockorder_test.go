@@ -1,6 +1,8 @@
 package store
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -43,35 +45,36 @@ func TestDeleteAccountAtomic_ConcurrentWriters(t *testing.T) {
 		// when it removes u's LAST access there, so a grant writer's u holds
 		// that one grant and nothing else.
 		access string
-		// loses is the one error the writer may return, because the
-		// deletion removed something it needed first (measured on
-		// Postgres). Any other error fails the leg, so a writer that
-		// failed before reaching the contested rows cannot pass.
-		loses string
+		// loses reports the one error the writer may return in a parked
+		// leg, because the deletion removed something it needed first
+		// (measured on Postgres). nil means it must succeed. Any other
+		// error fails the leg, so a writer that failed before reaching the
+		// contested rows cannot pass.
+		loses func(err error) bool
 		run   func(s *Store, w world) error
 	}{
-		{"collection grant revoke (issued by the deleting user)", accessCollGrant, "", func(s *Store, w world) error {
+		{"collection grant revoke (issued by the deleting user)", accessCollGrant, nil, func(s *Store, w world) error {
 			return s.DeleteCollectionGrant(w.gCollA, w.wa)
 		}},
-		{"item grant revoke (issued by the deleting user)", accessItemGrant, "", func(s *Store, w world) error {
+		{"item grant revoke (issued by the deleting user)", accessItemGrant, nil, func(s *Store, w world) error {
 			return s.DeleteItemGrant(w.gItemA, w.wa)
 		}},
-		{"collection grant revoke (the deleting user is the grantee)", accessMember, "lock user", func(s *Store, w world) error {
+		{"collection grant revoke (the deleting user is the grantee)", accessMember, userGone, func(s *Store, w world) error {
 			return s.DeleteCollectionGrant(w.gCollU, w.wu)
 		}},
-		{"member removal from the deleting user's workspace", accessMember, "", func(s *Store, w world) error {
+		{"member removal from the deleting user's workspace", accessMember, nil, func(s *Store, w world) error {
 			return s.RemoveWorkspaceMember(w.wa, w.u.ID)
 		}},
-		{"share link view of the deleting user's link", accessMember, "", func(s *Store, w world) error {
+		{"share link view of the deleting user's link", accessMember, nil, func(s *Store, w world) error {
 			_, err := s.RecordShareLinkView(w.linkA, "fp-u", w.u.ID, nil)
 			return err
 		}},
-		{"assign the deleting user's item to another user", accessMember, "", func(s *Store, w world) error {
+		{"assign the deleting user's item to another user", accessMember, nil, func(s *Store, w world) error {
 			uid := w.u.ID
 			_, err := s.UpdateItem(w.ia, models.ItemUpdate{AssignedUserID: &uid})
 			return err
 		}},
-		{"assign an item to the deleting user", accessMember, "fk_items_assigned_user", func(s *Store, w world) error {
+		{"assign an item to the deleting user", accessMember, assigneeGone, func(s *Store, w world) error {
 			aid := w.a.ID
 			_, err := s.UpdateItem(w.iu, models.ItemUpdate{AssignedUserID: &aid})
 			return err
@@ -140,12 +143,12 @@ func TestDeleteAccountAtomic_ConcurrentWriters(t *testing.T) {
 		return w
 	}
 
-	check := func(t *testing.T, s *Store, what, loses string, w world, delErr, wrErr error) {
+	check := func(t *testing.T, s *Store, what string, loses func(error) bool, w world, delErr, wrErr error) {
 		t.Helper()
 		failOnDeadlockOrError(t, what+": account deletion", delErr)
 		// Not failOnDeadlockOrError: it forgives sql.ErrNoRows, which is
 		// what a writer that never reached the contested rows returns.
-		if wrErr != nil && (loses == "" || !strings.Contains(wrErr.Error(), loses)) {
+		if wrErr != nil && (loses == nil || !loses(wrErr)) {
 			t.Fatalf("%s: writer: %v", what, wrErr)
 		}
 		if got, err := s.GetUser(w.a.ID); err == nil && got != nil {
@@ -181,7 +184,13 @@ func TestDeleteAccountAtomic_ConcurrentWriters(t *testing.T) {
 					}()
 					close(start)
 					wg.Wait()
-					check(t, s, fmt.Sprintf("%s round %d", wr.name, round), wr.loses, w, delErr, wrErr)
+					// In a free race the whole deletion can also commit
+					// before the writer reads its row (always, on SQLite),
+					// which is an honest loss too.
+					loses := func(err error) bool {
+						return userGone(err) || (wr.loses != nil && wr.loses(err))
+					}
+					check(t, s, fmt.Sprintf("%s round %d", wr.name, round), loses, w, delErr, wrErr)
 				}
 			})
 		}
@@ -269,6 +278,20 @@ const (
 	accessCollGrant = "collection grant"
 	accessItemGrant = "item grant"
 )
+
+// userGone is a writer's loss when a row it reads first (its user, its
+// grant) was deleted by the account deletion. Matched on the sentinel, not on
+// message text: a deadlock taking the same lock carries the same wrapper.
+func userGone(err error) bool { return errors.Is(err, sql.ErrNoRows) }
+
+// assigneeGone is an assignment naming a user the deletion removed: the
+// store's membership check refuses it when the deletion committed first, and
+// the foreign key refuses it when the deletion commits in between.
+func assigneeGone(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "assigned user is not a member of this workspace") ||
+		strings.Contains(msg, "SQLSTATE 23503") || strings.Contains(msg, "FOREIGN KEY constraint failed")
+}
 
 // lockWaiters counts this test database's backends waiting on a lock.
 func lockWaiters(t *testing.T, s *Store) int {
