@@ -37,8 +37,9 @@ func (s *Server) SetTokenReaperConfig(interval time.Duration) {
 }
 
 // StartTokenReaper kicks off the periodic sweep that deletes expired/used
-// email-verification tokens, password-reset tokens, sessions, and CLI-auth
-// sessions. Idempotent — calling twice silently no-ops.
+// email-verification tokens, password-reset tokens, sessions, CLI-auth
+// sessions, and expired OAuth token, code and PKCE rows (BUG-3301,
+// oauth_sweep.go). Idempotent — calling twice silently no-ops.
 //
 // Started from the real server bootstrap path (cmd/pad/main.go), NOT from
 // Server.New, so unit tests that construct a Server don't spawn a background
@@ -107,4 +108,5 @@ func (s *Server) runTokenReaperTick() {
 	if err := s.store.CleanExpiredCLIAuthSessions(); err != nil {
 		slog.Warn("token reaper: clean expired CLI auth sessions failed", "error", err)
 	}
+	s.sweepExpiredOAuthRows()
 }

@@ -51,6 +51,50 @@ type Config struct {
 // Server is pad's OAuth 2.1 authorization server. It composes
 // fosite handlers over the storage adapter and exposes the
 // fosite.OAuth2Provider that sub-PR C's HTTP handlers consume.
+// The default token lifespans, used when Config leaves one zero.
+const (
+	DefaultAccessTokenLifespan   = time.Hour
+	DefaultRefreshTokenLifespan  = 30 * 24 * time.Hour
+	DefaultAuthorizeCodeLifespan = 15 * time.Minute
+)
+
+// Lifespans is the lifetime fosite gives each token type at issuance.
+// The token reaper's expiry sweep (BUG-3301) derives its cutoffs from
+// it, so the sweep and the issuer cannot disagree.
+type Lifespans struct {
+	AccessToken   time.Duration
+	RefreshToken  time.Duration
+	AuthorizeCode time.Duration
+}
+
+// DefaultLifespans is Lifespans with every default applied.
+func DefaultLifespans() Lifespans {
+	return Lifespans{
+		AccessToken:   DefaultAccessTokenLifespan,
+		RefreshToken:  DefaultRefreshTokenLifespan,
+		AuthorizeCode: DefaultAuthorizeCodeLifespan,
+	}
+}
+
+func (c Config) lifespans() Lifespans {
+	l := DefaultLifespans()
+	if c.AccessTokenLifespan != 0 {
+		l.AccessToken = c.AccessTokenLifespan
+	}
+	if c.RefreshTokenLifespan != 0 {
+		l.RefreshToken = c.RefreshTokenLifespan
+	}
+	if c.AuthorizeCodeLifespan != 0 {
+		l.AuthorizeCode = c.AuthorizeCodeLifespan
+	}
+	return l
+}
+
+// Lifespans returns the lifetimes this server issues tokens with.
+func (s *Server) Lifespans() Lifespans {
+	return s.cfg.lifespans()
+}
+
 type Server struct {
 	provider fosite.OAuth2Provider
 	cfg      Config
@@ -109,18 +153,8 @@ func NewServer(cfg Config) (*Server, error) {
 	// see realistic refresh frequency. Defaults are conservative —
 	// short-lived enough to bound replay damage, long enough to
 	// avoid excess refresh churn.
-	access := cfg.AccessTokenLifespan
-	if access == 0 {
-		access = time.Hour
-	}
-	refresh := cfg.RefreshTokenLifespan
-	if refresh == 0 {
-		refresh = 30 * 24 * time.Hour
-	}
-	authCode := cfg.AuthorizeCodeLifespan
-	if authCode == 0 {
-		authCode = 15 * time.Minute
-	}
+	lifespans := cfg.lifespans()
+	access, refresh, authCode := lifespans.AccessToken, lifespans.RefreshToken, lifespans.AuthorizeCode
 
 	fcfg := &fosite.Config{
 		// Spec compliance.

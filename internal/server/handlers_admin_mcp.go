@@ -176,8 +176,8 @@ type mcpReadiness struct {
 	// Resume counts what would work again if MCP were turned on. Turning
 	// it off revokes nothing (PLAN-2310 DR-5). The OAuth figure is an
 	// upper bound: it counts chains the way the Connected Apps page lists
-	// them, which includes grants that have expired but were never swept
-	// (BUG-3301).
+	// them, which includes a grant that expired less than the OAuth sweep's
+	// grace (24 h) plus one reaper tick ago (BUG-3301, oauth_sweep.go).
 	Resume struct {
 		OAuthConnections int `json:"oauth_connections"`
 		PATs             int `json:"pats"`
