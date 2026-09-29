@@ -9,6 +9,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -35,15 +36,22 @@ import (
 // v1.1.0 does) and therefore cannot read EOF until it returns; in that shape
 // EOF cannot cancel it, and the tool calls are still held across the EOF.
 //
+// Each held call reads its own context when it returns, and the test asserts
+// none was cancelled, independently of the JSON-RPC responses: a select does
+// not prefer ctx.Done over a ready release, and a server could cancel yet
+// still answer successfully, so the responses alone cannot prove it.
+//
 // Two bounds, stated rather than implied. (1) The signal fires inside Read,
 // before the server has handled the EOF, and a server that never cancels
 // emits nothing to wait for, so the release after it is a timed settle: a
 // cancel-at-EOF server whose EOF handling is delayed past eofSettle would
 // pass. That error runs one way only; a server that keeps in-flight calls
-// alive can never be failed by it. (2) A server that runs tool calls on the
-// read loop itself lets only one call in before stdin closes, so the entry
-// gate fails with "only 1 of 4 calls reached"; that means this pin's premise
-// no longer holds, not that EOF cancelled anything.
+// alive can never be failed by it. (2) The entry gate needs all four calls
+// in flight at once, so a server that cannot hold them (tool calls served on
+// the read loop, fewer than three concurrent tool workers, or a change that
+// stops these requests reaching the injected handlers) fails it with "only N
+// of 4 calls reached"; that means this pin's premise no longer holds, not
+// that EOF cancelled anything.
 
 const (
 	// eofSettle is how long a release waits after EOF was observed, so a
@@ -69,36 +77,45 @@ func (e *eofSignalReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// blockingDispatcher holds each call until release is closed, and reports
-// the context's error instead if the context ends first.
+// blockingDispatcher holds each call until release is closed or its context
+// ends, then counts the call in cancelled if its context had ended, whichever
+// select branch ran.
 type blockingDispatcher struct {
-	entered chan struct{}
-	release chan struct{}
+	entered   chan struct{}
+	release   chan struct{}
+	cancelled *atomic.Int32
 }
 
 func (d *blockingDispatcher) Dispatch(ctx context.Context, _ []string, _ []string) (*mcp.CallToolResult, error) {
 	d.entered <- struct{}{}
 	select {
 	case <-d.release:
-		return mcp.NewToolResultText("dispatched"), nil
 	case <-ctx.Done():
-		return nil, ctx.Err()
 	}
+	if err := ctx.Err(); err != nil {
+		d.cancelled.Add(1)
+		return nil, err
+	}
+	return mcp.NewToolResultText("dispatched"), nil
 }
 
 type blockingFetcher struct {
-	entered chan struct{}
-	release chan struct{}
+	entered   chan struct{}
+	release   chan struct{}
+	cancelled *atomic.Int32
 }
 
 func (f *blockingFetcher) Fetch(ctx context.Context, _ []string) (string, error) {
 	f.entered <- struct{}{}
 	select {
 	case <-f.release:
-		return `[{"slug":"docapp","name":"Pad"}]`, nil
 	case <-ctx.Done():
-		return "", ctx.Err()
 	}
+	if err := ctx.Err(); err != nil {
+		f.cancelled.Add(1)
+		return "", err
+	}
+	return `[{"slug":"docapp","name":"Pad"}]`, nil
 }
 
 func TestStdio_EOFDoesNotCancelInFlightRequests(t *testing.T) {
@@ -109,17 +126,18 @@ func TestStdio_EOFDoesNotCancelInFlightRequests(t *testing.T) {
 	var releaseTools, releaseResource sync.Once
 	freeTools := func() { releaseTools.Do(func() { close(toolRelease) }) }
 	freeResource := func() { releaseResource.Do(func() { close(resourceRelease) }) }
+	var cancelled atomic.Int32
 
 	srv := NewServer(Options{Version: "eof-test"})
 	if _, err := RegisterCatalog(srv.MCP(), CatalogOptions{
 		Doc:        liveCmdhelpDoc(t),
 		Workspace:  NewWorkspaceState("docapp"),
-		Dispatcher: &blockingDispatcher{entered: entered, release: toolRelease},
+		Dispatcher: &blockingDispatcher{entered: entered, release: toolRelease, cancelled: &cancelled},
 		PadVersion: "test",
 	}); err != nil {
 		t.Fatalf("RegisterCatalog: %v", err)
 	}
-	RegisterResources(srv.MCP(), &blockingFetcher{entered: entered, release: resourceRelease}, nil)
+	RegisterResources(srv.MCP(), &blockingFetcher{entered: entered, release: resourceRelease, cancelled: &cancelled}, nil)
 
 	pipeR, stdinW := io.Pipe()
 	stdin := &eofSignalReader{r: pipeR, seen: make(chan struct{})}
@@ -216,6 +234,9 @@ func TestStdio_EOFDoesNotCancelInFlightRequests(t *testing.T) {
 	}
 	got := <-responses
 
+	if n := cancelled.Load(); n != 0 {
+		t.Errorf("%d held call(s) returned with a cancelled context after stdin EOF", n)
+	}
 	byID := map[int]response{}
 	for _, r := range got {
 		byID[r.ID] = r
