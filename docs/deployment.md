@@ -1147,14 +1147,50 @@ The OAuth server is built at startup, and only when the issuer URL is https.
 The proxy must forward the original `Host` header (the shipped
 `deploy/nginx.conf` does, with `proxy_set_header Host $host`). Off Pad Cloud,
 `/mcp`, `/oauth/*` and `/.well-known/oauth-*` answer `421 Misdirected Request`
-to a `Host` that is not the host of the origin, the MCP URL or the issuer.
-Any loopback spelling is accepted when the origin itself is loopback. This
-closes DNS rebinding on a LAN box. The `/api/v1` routes are not host-checked.
+to a host that is not the host of the origin, the MCP URL or the issuer. This
+closes DNS rebinding on a LAN box, and it runs before authentication, so a
+refused request is neither audited nor rate-charged. The rules:
 
-Requests that reach `/mcp` without a valid token, and the OAuth token, consent,
-registration and claim endpoints, are rate-limited per client address, so set
-`PAD_TRUSTED_PROXIES` to your proxy's addresses. Otherwise every request shares
-the proxy's address and one bucket.
+- The host and port are compared case-insensitively, with the port defaulted
+  from the configured URL's scheme (443 for https, 80 for http).
+- When a configured host is loopback, any loopback spelling (`localhost`,
+  `127.0.0.1`, `[::1]`) on the same port is accepted.
+- A request with no `Host` is refused.
+- A proxy that rewrites `Host` to the backend's own name (Azure Application
+  Gateway, some Kubernetes ingresses) can send the public host in
+  `X-Forwarded-Host` instead. That header is honoured **only** when the
+  connecting address is in `PAD_TRUSTED_PROXIES`; from anyone else it is
+  ignored.
+- While MCP is off these paths answer `404` whatever the host.
+
+The `421` body names the host it received, the header it came from and the
+configured origin. The first refusal for each host is logged at `WARN` (rate
+limited), so a misconfigured proxy shows up in the log. The `/api/v1` routes
+are not host-checked.
+
+#### Rate limits
+
+These apply on Pad Cloud too.
+
+| Route | Limit | Keyed by |
+|-------|-------|----------|
+| `/mcp` with a missing or invalid token | 1/s, burst 120 | client address |
+| `/oauth/token` | 1/s, burst 120 | client address |
+| `/oauth/authorize/decide` (consent) | 10/min, burst 20 | client address |
+| `/oauth/register` (client registration) | 5/hour, burst 5 | client address |
+| `POST /api/v1/oauth/claim` (claim codes) | 10/min, burst 10 | signed-in user |
+
+A request with a valid token never draws from the `/mcp` bucket. Refusals on
+`/mcp` before a caller is identified are counted in the Prometheus counter
+`pad_mcp_preauth_denied_total{reason}` (`missing_token`, `invalid_token`,
+`rate_limited`), not written to the audit log. An address that exhausts the
+limit is logged once at `WARN`.
+
+Behind a proxy, set `PAD_TRUSTED_PROXIES` to the proxy's addresses so the
+limits key on the real client address. Otherwise every request shares the
+proxy's address and one bucket. If a proxied request still resolves to an
+address inside `PAD_TRUSTED_PROXIES` (the proxy sends no `X-Forwarded-For` or
+`X-Real-IP`), the server logs a `WARN` once.
 
 #### Known gaps
 
