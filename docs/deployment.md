@@ -145,8 +145,8 @@ The collaborative editor holds one WebSocket per open item pane
 API rate limit:
 
 - **Dials:** a rate bucket of its own, 5 per second with a burst of 50, keyed
-  like every rate bucket (per user, per client IP for a caller with no
-  resolved user). Only a WebSocket upgrade request counts as a dial. A dial
+  like every rate bucket (per user, or per client address for a caller with
+  no resolved user: an IPv4 address, or an IPv6 client's /64). Only a WebSocket upgrade request counts as a dial. A dial
   does not spend the user's API budget, and REST calls do not spend the dial
   budget. A server restart makes every open tab re-dial within about a second,
   and the burst is sized to cover that. Not configurable, like the other rate
@@ -1188,6 +1188,10 @@ These apply on Pad Cloud too.
 | `/oauth/authorize/decide` (consent) | 10/min, burst 20 | client address |
 | `/oauth/register` (client registration) | 5/hour, burst 5 | client address |
 | `POST /api/v1/oauth/claim` (claim codes) | 10/min, burst 10 | signed-in user |
+
+"Client address" is the IPv4 address itself (an IPv6 client's /64), so every
+address in one /64 shares a bucket, as clients behind one NATed IPv4 address
+do.
 
 A request with a valid token never draws from the `/mcp` bucket. Requests to
 `/mcp` refused for a missing or invalid token, and those refused by this

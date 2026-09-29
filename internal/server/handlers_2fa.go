@@ -292,7 +292,7 @@ func (s *Server) handleTOTPLoginVerify(w http.ResponseWriter, r *http.Request) {
 		if s.rateLimiters != nil && s.rateLimiters.RecoveryCode != nil {
 			h := sha256.Sum256([]byte(input.ChallengeToken))
 			key := "totp:" + hex.EncodeToString(h[:])
-			if !s.rateLimiters.RecoveryCode.getLimiter(key).Allow() {
+			if !s.rateLimiters.RecoveryCode.allow(key) {
 				slog.Warn("rate limited", "user_id", user.ID, "limiter", "totp")
 				writeRateLimitResponse(w, s.rateLimiters.RecoveryCode.config)
 				return
@@ -340,7 +340,7 @@ func (s *Server) handleTOTPLoginVerify(w http.ResponseWriter, r *http.Request) {
 			// never stores the raw HMAC token in-memory.
 			h := sha256.Sum256([]byte(input.ChallengeToken))
 			key := "rc:" + hex.EncodeToString(h[:])
-			if !s.rateLimiters.RecoveryCode.getLimiter(key).Allow() {
+			if !s.rateLimiters.RecoveryCode.allow(key) {
 				slog.Warn("rate limited", "user_id", user.ID, "limiter", "recovery_code")
 				writeRateLimitResponse(w, s.rateLimiters.RecoveryCode.config)
 				return
