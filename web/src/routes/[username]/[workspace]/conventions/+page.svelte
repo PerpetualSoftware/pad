@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
+	import { api, isPlanLimitError } from '$lib/api/client';
+	import { showPlanLimitToast } from '$lib/billing/planLimitToast';
 	import type { Collection, Item, ItemConventionMetadata } from '$lib/types';
 	import { conventionCreatePayload } from '$lib/conventions/createPayload';
 	import { parseFields, parseSchema, itemUrlId, formatItemRef } from '$lib/types';
@@ -286,7 +287,7 @@
 			resetForm();
 		} catch (err: unknown) {
 			if (isPlanLimitError(err)) {
-				toastStore.show(planLimitMessage(err) + ' Upgrade to Pro', 'error', 6000, '/console/billing');
+				showPlanLimitToast(err);
 			} else {
 				toastStore.show((err as Error)?.message || 'Failed to create convention', 'error');
 			}

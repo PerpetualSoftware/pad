@@ -42,6 +42,11 @@
 	// sidecar has Stripe keys loaded — no code change needed at deploy time.
 	// TASK-800.
 	let stripeAvailable = $derived(authStore.billingAvailable);
+	// In the mobile apps this page shows the plan and its limits only: no
+	// plans table, prices, checkout, portal or interest prompt (PLAN-3291
+	// DR-3; BUG-3290). The nav links here are hidden there too; this is the
+	// page's own guard for a deep link.
+	let commerceAllowed = $derived(authStore.commerceAllowed);
 
 	// Checkout-in-progress state. True while the POST /billing/checkout
 	// fetch is in flight so the button shows a spinner and prevents
@@ -284,7 +289,9 @@
 				</p>
 			</div>
 
-			{#if isPro}
+			{#if !commerceAllowed}
+				<!-- no purchase path in the apps -->
+			{:else if isPro}
 				<a href="/billing/portal" class="secondary-btn">Manage Billing</a>
 			{:else if stripeAvailable}
 				<div class="cta-line">
@@ -300,6 +307,33 @@
 		</div>
 	</section>
 
+	{#if !commerceAllowed}
+		<section class="card" data-testid="plan-limits-card">
+			<h2 class="card-title">Plan limits</h2>
+			<div class="card-body compare">
+				<table class="compare-table">
+					<thead>
+						<tr>
+							<th scope="col" class="feature-col">Feature</th>
+							<th scope="col" class="plan-col current">
+								<div class="plan-col-inner">
+									<span class="plan-col-name">{isPro ? 'Pro' : 'Free'}</span>
+								</div>
+							</th>
+						</tr>
+					</thead>
+					<tbody>
+						{#each COMPARE_ROWS as row (row.key)}
+							<tr>
+								<th scope="row" class="feature-col">{row.label}</th>
+								<td class="plan-col current">{formatCompareCell((isPro ? limits?.pro : limits?.free)?.[row.key], row.kind)}</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			</div>
+		</section>
+	{:else}
 	<section class="card">
 		<h2 class="card-title">Compare plans</h2>
 		<div class="card-body compare">
@@ -353,6 +387,7 @@
 			{/if}
 		</div>
 	</section>
+	{/if}
 </div>
 
 <style>

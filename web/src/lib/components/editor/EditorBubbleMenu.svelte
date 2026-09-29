@@ -3,7 +3,8 @@
 	import type { Collection, Item } from '$lib/types';
 	import { isAgentCollection } from '$lib/types';
 	import { createDefaultFields } from '$lib/collections/createDefaults';
-	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
+	import { api, isPlanLimitError } from '$lib/api/client';
+	import { showPlanLimitToast } from '$lib/billing/planLimitToast';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { titleLimitError } from '$lib/items/titleLimit';
@@ -312,7 +313,7 @@
 				return;
 			}
 			if (isPlanLimitError(err)) {
-				toastStore.show(planLimitMessage(err) + ' Upgrade to Pro', 'error', 6000, '/console/billing');
+				showPlanLimitToast(err);
 			} else {
 				errorMsg = err.message || 'Failed to create item';
 			}

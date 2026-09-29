@@ -102,7 +102,8 @@
 					<span class="row-label">Workspaces</span>
 					<span class="row-chev" aria-hidden="true">›</span>
 				</a>
-				{#if authStore.cloudMode}
+				<!-- Hidden in the mobile apps: no purchase path there (PLAN-3291 DR-3). -->
+				{#if authStore.commerceAllowed}
 					<a class="row" href="/console/billing" onclick={onclose}>
 						<span class="row-icon" aria-hidden="true">💳</span>
 						<span class="row-label">Billing</span>

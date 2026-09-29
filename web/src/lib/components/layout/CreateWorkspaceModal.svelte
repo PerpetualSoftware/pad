@@ -27,7 +27,8 @@
 	import { tabsStore } from '$lib/stores/tabs.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
-	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
+	import { api, isPlanLimitError } from '$lib/api/client';
+	import { showPlanLimitToast } from '$lib/billing/planLimitToast';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import type { Workspace, WorkspaceTemplate } from '$lib/types';
 	import { groupTemplatesByCategory } from '$lib/utils/templates';
@@ -240,7 +241,7 @@
 			if (!alive || myOp !== opSeq) return;
 			if (authStore.userId !== createUser) return;
 			if (isPlanLimitError(err)) {
-				toastStore.show(planLimitMessage(err) + ' Upgrade to Pro', 'error', 6000, '/console/billing');
+				showPlanLimitToast(err);
 			} else {
 				toastStore.show('Failed to create workspace', 'error');
 			}

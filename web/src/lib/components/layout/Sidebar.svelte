@@ -9,7 +9,8 @@
 	import { GITHUB_REPO_URL } from '$lib/brand/links';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { goto } from '$app/navigation';
-	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
+	import { api, isPlanLimitError } from '$lib/api/client';
+	import { showPlanLimitToast } from '$lib/billing/planLimitToast';
 	import { parseSettings, itemUrlId, isAgentCollection } from '$lib/types';
 	import { createDefaultFields } from '$lib/collections/createDefaults';
 	import { getActiveKey } from '$lib/nav/destinations';
@@ -232,7 +233,7 @@
 			goto(`${wsPrefix}/${coll.slug}/${itemUrlId(item)}?new=1`);
 		} catch (err: any) {
 			if (isPlanLimitError(err)) {
-				toastStore.show(planLimitMessage(err) + ' Upgrade to Pro', 'error', 6000, '/console/billing');
+				showPlanLimitToast(err);
 			} else if (quickAddSession === session) {
 				// Still open on the text that was refused: say why, in place.
 				quickAddError = err?.message || 'Failed to create item';
