@@ -563,7 +563,7 @@
 						{:else if rd.state === 'blocked'}
 							<span class="mcp-dot blocked" aria-hidden="true"></span>On, but blocked: {rd.blocked}
 						{:else}
-							<span class="mcp-dot" aria-hidden="true"></span>Off: every MCP and OAuth route answers 404.
+							<span class="mcp-dot" aria-hidden="true"></span>Off: agents cannot connect.
 						{/if}
 					</p>
 
