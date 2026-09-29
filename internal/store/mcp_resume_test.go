@@ -73,3 +73,27 @@ func TestCountMCPUsablePATs(t *testing.T) {
 		t.Fatalf("usable PATs = %d, want 1 (live only)", n)
 	}
 }
+
+// A live chain with no oauth_connections row is counted, and the Connected
+// Apps page still lists it: ListUserOAuthConnections takes a defensive
+// fallback for such a chain rather than failing (connected_apps.go). So the
+// panel and the page agree about it.
+func TestCountLiveOAuthConnections_OrphanChainMatchesPage(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	client := seedClient(t, s, "orphan-client")
+	user := seedUser(t, s, "orphan@example.com")
+	seedAccess(t, s, "orphan-chain", client, user, time.Now().UTC(), "{}", "pad:read", true)
+
+	n, err := s.CountLiveOAuthConnections()
+	if err != nil {
+		t.Fatal(err)
+	}
+	conns, err := s.ListUserOAuthConnections(user)
+	if err != nil {
+		t.Fatalf("the page fails on an orphan chain: %v", err)
+	}
+	if n != 1 || len(conns) != 1 {
+		t.Fatalf("count = %d, page lists %d; want both 1", n, len(conns))
+	}
+}

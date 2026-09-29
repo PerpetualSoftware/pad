@@ -55,10 +55,17 @@ func (s *Server) mcpSetting() (bool, string) {
 // a usable public origin configured. A setting that is on without an origin
 // leaves MCP unavailable; the readiness panel says why.
 func (s *Server) mcpAvailable() bool {
+	on, _ := s.mcpSetting()
+	return s.mcpAvailableWith(on)
+}
+
+// mcpAvailableWith is mcpAvailable for a setting value already read, so a
+// caller that also reports the setting reads it once and the two cannot
+// disagree across a concurrent toggle.
+func (s *Server) mcpAvailableWith(on bool) bool {
 	if s.cloudMode {
 		return true
 	}
-	on, _ := s.mcpSetting()
 	return on && s.mcpEndpoints.Usable()
 }
 
@@ -119,7 +126,7 @@ func (s *Server) buildMCPSettingsResponse() (mcpSettingsResponse, error) {
 	switch {
 	case !on:
 		rd.State = "off"
-	case s.mcpAvailable():
+	case s.mcpAvailableWith(on):
 		rd.State = "on"
 	default:
 		rd.State = "blocked"

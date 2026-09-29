@@ -109,29 +109,45 @@ func (c *Config) ResolveMCPEndpoints() MCPEndpoints {
 }
 
 // parseMCPURL accepts an absolute http(s) URL with a host, no user info, no
-// query and no fragment, and returns it without a trailing slash. An origin
-// must also have no path; the MCP and auth-server URLs may have one.
+// query and no fragment, and returns it in one canonical spelling: scheme
+// and host lower-cased, a default port (443 for https, 80 for http)
+// dropped, and no trailing slash. The canonical form matters because the
+// MCP URL is the OAuth audience, compared byte-for-byte; a value that is
+// already canonical (such as cloud's https://mcp.getpad.dev) comes back
+// unchanged. An origin must also have no path, judged on the escaped path,
+// so an encoded slash (%2F) cannot pass as empty. The MCP and auth-server
+// URLs may have a path.
 func parseMCPURL(raw string, pathAllowed bool) (string, error) {
 	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil {
 		return "", fmt.Errorf("does not parse as a URL")
 	}
+	scheme := strings.ToLower(u.Scheme)
+	path := strings.TrimRight(u.EscapedPath(), "/")
 	switch {
-	case u.Scheme != "http" && u.Scheme != "https":
+	case scheme != "http" && scheme != "https":
 		return "", fmt.Errorf("the scheme must be http or https")
-	case u.Host == "" || u.Hostname() == "":
+	case u.Hostname() == "":
 		return "", fmt.Errorf("it has no host")
+	case strings.HasSuffix(u.Host, ":"):
+		return "", fmt.Errorf("it has an empty port")
 	case u.User != nil:
 		return "", fmt.Errorf("it must not carry user info")
 	case u.RawQuery != "" || u.ForceQuery:
 		return "", fmt.Errorf("it must not have a query")
 	case u.Fragment != "":
 		return "", fmt.Errorf("it must not have a fragment")
-	case !pathAllowed && strings.Trim(u.Path, "/") != "":
-		return "", fmt.Errorf("an origin must not have a path (got %q)", u.Path)
+	case !pathAllowed && path != "":
+		return "", fmt.Errorf("an origin must not have a path (got %q)", u.EscapedPath())
 	}
-	out := u.Scheme + "://" + u.Host + strings.TrimRight(u.EscapedPath(), "/")
-	return out, nil
+	host := strings.ToLower(u.Hostname())
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]" // IPv6
+	}
+	if port := u.Port(); port != "" && !(scheme == "https" && port == "443") && !(scheme == "http" && port == "80") {
+		host += ":" + port
+	}
+	return scheme + "://" + host + path, nil
 }
 
 // parseMCPEnabledEnv reads PAD_MCP_ENABLED: true/1/yes/on and

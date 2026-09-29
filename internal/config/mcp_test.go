@@ -62,6 +62,29 @@ func TestResolveMCPEndpoints(t *testing.T) {
 			name: "an override without an origin is still unavailable", cfg: Config{MCPPublicURL: "https://mcp.example.com"},
 			resource: "https://mcp.example.com",
 		},
+		{
+			name: "scheme and host are canonicalised, default port dropped", cfg: Config{URL: " HTTPS://Pad.Example.COM:443/ "},
+			origin: "https://pad.example.com", resource: "https://pad.example.com/mcp", authServer: "https://pad.example.com",
+			usable: true, https: true,
+		},
+		{
+			name: "a non-default port is kept", cfg: Config{URL: "http://pad.lan:8080"},
+			origin: "http://pad.lan:8080", resource: "http://pad.lan:8080/mcp", authServer: "http://pad.lan:8080",
+			usable: true,
+		},
+		{
+			name: "IPv6 host", cfg: Config{URL: "http://[FD00::1]:7777"},
+			origin: "http://[fd00::1]:7777", resource: "http://[fd00::1]:7777/mcp", authServer: "http://[fd00::1]:7777",
+			usable: true,
+		},
+		{
+			name: "an encoded slash is a path, so the origin is unusable", cfg: Config{URL: "https://pad.example.com/%2F"},
+			problem: "path",
+		},
+		{
+			name: "an empty port is unusable", cfg: Config{URL: "https://pad.example.com:"},
+			problem: "empty port",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -118,5 +141,19 @@ func TestLoadReadsPadMCPEnabled(t *testing.T) {
 	}
 	if cfg.MCPEnabledEnv != nil || cfg.MCPEnabledEnvRaw != "sometimes" {
 		t.Fatalf("unparseable value: env=%v raw=%q, want nil and the raw value", cfg.MCPEnabledEnv, cfg.MCPEnabledEnvRaw)
+	}
+}
+
+// Cloud's OAuth tokens are bound to the audience cmd_server.go has always
+// built: strings.TrimRight(PAD_MCP_PUBLIC_URL, "/"). The canonical form must
+// be byte-identical for every value cloud has used, or PLAN-2310 U2's switch
+// to the resolved URL would invalidate every issued token.
+func TestResolveMCPEndpoints_CloudAudienceUnchanged(t *testing.T) {
+	for _, v := range []string{"https://mcp.getpad.dev", "https://mcp.getpad.dev/"} {
+		c := Config{PublicURL: "https://app.getpad.dev", MCPPublicURL: v, AuthServerURL: "https://app.getpad.dev"}
+		e := c.ResolveMCPEndpoints()
+		if want := strings.TrimRight(v, "/"); e.ResourceURL != want {
+			t.Errorf("PAD_MCP_PUBLIC_URL=%q resolves to %q, want the historical audience %q", v, e.ResourceURL, want)
+		}
 	}
 }

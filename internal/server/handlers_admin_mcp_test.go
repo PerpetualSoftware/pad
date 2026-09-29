@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/config"
@@ -63,6 +64,20 @@ func TestAdminMCP_EnableHTTPS(t *testing.T) {
 	// Persisted, not just echoed.
 	if v, _ := srv.store.GetPlatformSetting(settingMCPEnabled); v != "true" {
 		t.Fatalf("stored mcp_enabled = %q, want true", v)
+	}
+	// Audit-logged as a settings change naming the key.
+	events, err := srv.store.ListAuditLog(models.AuditLogParams{Action: models.ActionSettingsChanged, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, e := range events {
+		if strings.Contains(e.Metadata, settingMCPEnabled) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no settings_changed audit event naming %s among %d events", settingMCPEnabled, len(events))
 	}
 }
 

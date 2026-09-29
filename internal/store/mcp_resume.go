@@ -25,16 +25,20 @@ func (s *Store) CountLiveOAuthConnections() (int, error) {
 }
 
 // CountMCPUsablePATs counts personal access tokens that /mcp would accept.
-// It applies the same two rules the request path does, in the same way:
-// MCPBearerAuth refuses a token with no user_id (a legacy workspace token,
-// middleware_mcp_auth.go), and ValidateToken refuses one whose parsed
-// expires_at is before now (api_tokens.go). Expiry is compared as a time
+// It applies the same three rules the request path does, in the same way:
+// MCPBearerAuth refuses a token with no user_id (a legacy workspace token)
+// and one whose user row no longer exists (middleware_mcp_auth.go), and
+// ValidateToken refuses one whose parsed expires_at is before now
+// (api_tokens.go). The user join is defensive: api_tokens.user_id carries a
+// foreign key (migration 068), so no such row can exist today, but the
+// count must not depend on that to agree with /mcp. Expiry is compared as a time
 // here too, not as a string in SQL, so the two cannot disagree about a
 // stored format. Revoking a token deletes its row.
 func (s *Store) CountMCPUsablePATs() (int, error) {
 	rows, err := s.db.Query(s.q(`
-		SELECT expires_at FROM api_tokens
-		WHERE user_id IS NOT NULL AND user_id <> ''`))
+		SELECT t.expires_at FROM api_tokens t
+		JOIN users u ON u.id = t.user_id
+		WHERE t.user_id IS NOT NULL AND t.user_id <> ''`))
 	if err != nil {
 		return 0, fmt.Errorf("count mcp-usable personal access tokens: %w", err)
 	}
