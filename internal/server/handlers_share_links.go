@@ -537,10 +537,13 @@ func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) 
 		//
 		//   1. Per-share+IP bucket. Rejects a single grinder's flood cheaply
 		//      (protecting bcrypt CPU) and turns the offline-fast attack into an
-		//      online crawl. Keyed on SHA-256(share ID)+client IP so the map
-		//      holds no secret; clientIP reads the trusted-proxy value, so it
-		//      can't be spoofed. Because it caps each address at a small burst,
-		//      one caller can't drain the link-wide bucket below.
+		//      online crawl. Keyed on SHA-256(share ID)+client address so the
+		//      map holds no secret; clientIP reads the trusted-proxy value, so
+		//      it can't be spoofed. The address is rateLimitAddr's: an IPv4
+		//      address or an IPv6 /64 (BUG-3308), so viewers sharing one
+		//      share one bucket, as viewers behind one NAT always did. Because
+		//      it caps each address at a small burst, one caller can't drain
+		//      the link-wide bucket below.
 		//   2. Per-share AGGREGATE bucket (all IPs), keyed on SHA-256(share ID),
 		//      charged only after the per-IP gate passes. A botnet rotating
 		//      addresses gets a fresh per-IP burst from each, so the per-IP

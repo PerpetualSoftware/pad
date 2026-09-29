@@ -252,6 +252,36 @@ func TestRateLimit_IPv6KeysOnThe64AtEveryDoor(t *testing.T) {
 	}
 }
 
+// An IPv4 client reaching the server as an IPv4-mapped IPv6 address (a
+// dual-stack listener) keys on the same bucket as its plain IPv4 form,
+// through the router, not only in rateLimitAddr's table.
+func TestRateLimit_IPv4MappedSharesTheIPv4Bucket(t *testing.T) {
+	srv := testServer(t)
+	send := func(remote string) int {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/search?q=x", nil)
+		req.RemoteAddr = remote
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+		return w.Code
+	}
+	exhausted := false
+	for i := 0; i < 50; i++ {
+		if send("192.0.2.7:1234") == http.StatusTooManyRequests {
+			exhausted = true
+			break
+		}
+	}
+	if !exhausted {
+		t.Fatal("50 searches never drew a 429")
+	}
+	if code := send("[::ffff:192.0.2.7]:1234"); code != http.StatusTooManyRequests {
+		t.Errorf("the IPv4-mapped form got %d, want 429: it holds a separate bucket", code)
+	}
+	if code := send("192.0.2.8:1234"); code == http.StatusTooManyRequests {
+		t.Error("a different IPv4 address got 429")
+	}
+}
+
 // The per-address charges that sit outside the middleware and are not
 // reached by a plain request: the decision provider charge (called by a
 // handler just before a provider call, which the test server has none of)
@@ -331,8 +361,11 @@ func TestRateLimit_IPv6KeysOnThe64OutsideTheMiddleware(t *testing.T) {
 		if !exhausted {
 			t.Fatal("50 wrong guesses never drew a 429")
 		}
-		if code := resolveShareWithPassword(srv, link.Token, "wrong", "["+sibling+"]").Code; code != http.StatusTooManyRequests {
-			t.Errorf("%s (same /64) got %d, want 429", sibling, code)
+		// The right password from the sibling is refused too: the gate is
+		// charged before the compare, so a shared bucket is shared for a
+		// viewer who knows the password (codex round 2).
+		if code := resolveShareWithPassword(srv, link.Token, "right", "["+sibling+"]").Code; code != http.StatusTooManyRequests {
+			t.Errorf("%s (same /64) with the right password got %d, want 429", sibling, code)
 		}
 		if code := resolveShareWithPassword(srv, link.Token, "wrong", "["+other+"]").Code; code == http.StatusTooManyRequests {
 			t.Errorf("%s (next /64) got 429", other)

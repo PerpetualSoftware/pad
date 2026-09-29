@@ -161,13 +161,18 @@ func (rl *ipRateLimiter) limiterLocked(key string) *rate.Limiter {
 //     burst minus the tokens they already had, the smallest gift on
 //     offer.
 //
-// What that buys: a bucket is evicted in step 2 only once the low-water
-// mark's worth of OTHER buckets (57,344 at the default cap) sit at or
-// below its level, so each token handed back is paid for by that many
-// tokens drained from other buckets inside their refill window. Where
-// the attacker can mint keys (any address-keyed bucket) a fresh key is
-// always cheaper than that, and where they cannot (AuthEmail's sprayed
-// address, a share link's link-wide bucket) it is the whole cost.
+// What that buys: step 2 evicts a bucket only when at least the
+// low-water mark's worth of OTHER buckets (57,344 at the default cap)
+// hold no more tokens than it does at that moment, to within
+// burst/evictLevels. So to get a drained bucket evicted, an attacker has
+// to hold that many other buckets drained as far at once. Where they can
+// mint keys (any address-keyed bucket) a fresh key is cheaper than that;
+// where they cannot (AuthEmail's sprayed address, a share link's
+// link-wide bucket), it is what the reset costs.
+//
+// The sweep holds rl.mu, so it delays every request on this limiter for
+// its length (about 18 ms at the default cap, BUG-3308's trail), once per
+// cap/8 new keys.
 func (rl *ipRateLimiter) evictLocked(now time.Time) {
 	low := rl.maxEntries - rl.maxEntries/8
 	if low >= rl.maxEntries {
@@ -282,8 +287,10 @@ type RateLimiters struct {
 	// single source IP. Keyed on SHA-256(share ID)+client IP and charged on
 	// every attempt BEFORE the bcrypt compare, so a single grinder is capped
 	// (defeating the offline-fast attack) and can't burn server bcrypt CPU.
-	// Per-IP (not link-wide) so one caller exhausting their own bucket can't
-	// lock every legitimate viewer out. See handleResolveShareLink.
+	// Per address (not link-wide) so one caller exhausting their own bucket
+	// can't lock every legitimate viewer out, only those sharing their
+	// address: an IPv4 address, or an IPv6 /64 (BUG-3308), which is the
+	// IPv6 counterpart of one NATed IPv4 address. See handleResolveShareLink.
 	SharePasswordIP *ipRateLimiter
 	// SharePasswordShare caps the AGGREGATE guess rate against a single share
 	// link across all source IPs — the defense the per-IP bucket alone can't
