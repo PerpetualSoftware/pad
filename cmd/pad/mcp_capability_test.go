@@ -80,6 +80,11 @@ type capFixture struct {
 	ws        *models.Workspace
 	adminPAT  string
 	memberPAT string
+	// host is the Host header requests carry: the configured origin's,
+	// as a client using the configured URL (or a proxy forwarding it)
+	// sends, so the DR-6 allowlist admits them. "example.com" when no
+	// origin is configured.
+	host string
 }
 
 // newCapFixture builds a store the way an existing install has it —
@@ -131,6 +136,10 @@ func newCapFixture(t *testing.T, cfg config.Config, cloud bool, env *bool, setti
 	t.Cleanup(f.srv.Stop)
 	ep := cfg.ResolveMCPEndpoints()
 	f.srv.SetMCPConfig(ep, env)
+	f.host = "example.com"
+	if u, err := url.Parse(ep.Origin); err == nil && u.Host != "" {
+		f.host = u.Host
+	}
 	if cloud {
 		f.srv.SetCloudMode("cap-test-secret")
 	}
@@ -145,6 +154,7 @@ func (f *capFixture) do(t *testing.T, rt capRoute) *httptest.ResponseRecorder {
 	path := strings.ReplaceAll(rt.path, "{ws}", f.ws.Slug)
 	body := strings.ReplaceAll(rt.body, "{ws}", f.ws.Slug)
 	req := httptest.NewRequest(rt.method, path, strings.NewReader(body))
+	req.Host = f.host
 	req.RemoteAddr = "192.0.2.10:4242"
 	if rt.contentType != "" {
 		req.Header.Set("Content-Type", rt.contentType)
@@ -234,7 +244,7 @@ func TestMCPCapability_RouteTable(t *testing.T) {
 				}
 			}
 			if st.mcpOn {
-				f.checkChallenge(t, st.cfg.ResolveMCPEndpoints(), st.oauthOn)
+				f.checkChallenge(t, st.cfg.ResolveMCPEndpoints(), st.oauthOn, st.cloud)
 			}
 		})
 	}
@@ -244,12 +254,17 @@ func TestMCPCapability_RouteTable(t *testing.T) {
 // OAuth available it carries resource_metadata, and following that URL's
 // path through the same router yields the protected-resource document
 // naming the configured MCP URL; with MCP on over http it is exactly
-// `Bearer realm="pad"`. The request carries a hostile Host, so nothing in
-// either answer may come from it (DR-3).
-func (f *capFixture) checkChallenge(t *testing.T, ep config.MCPEndpoints, oauthOn bool) {
+// `Bearer realm="pad"`. On cloud the request carries a hostile Host, so
+// nothing in either answer may come from it (DR-3); off cloud a hostile
+// Host is refused 421 before this point (DR-6, TestMCPCapability_HostAllowlist),
+// so the request carries the configured one.
+func (f *capFixture) checkChallenge(t *testing.T, ep config.MCPEndpoints, oauthOn, cloud bool) {
 	t.Helper()
 	req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{}`))
-	req.Host = "evil.example"
+	req.Host = f.host
+	if cloud {
+		req.Host = "evil.example"
+	}
 	req.RemoteAddr = "192.0.2.10:4242"
 	rr := httptest.NewRecorder()
 	f.srv.ServeHTTP(rr, req)
@@ -277,7 +292,9 @@ func (f *capFixture) checkChallenge(t *testing.T, ep config.MCPEndpoints, oauthO
 		t.Fatalf("resource_metadata %q does not parse: %v", metaURL, err)
 	}
 	doc := httptest.NewRecorder()
-	f.srv.ServeHTTP(doc, httptest.NewRequest("GET", u.Path, nil))
+	docReq := httptest.NewRequest("GET", u.Path, nil)
+	docReq.Host = u.Host
+	f.srv.ServeHTTP(doc, docReq)
 	if doc.Code != http.StatusOK {
 		t.Fatalf("resource_metadata %q: GET %s answered %d; the pointer must resolve", metaURL, u.Path, doc.Code)
 	}
@@ -449,6 +466,139 @@ func TestMCPCapability_HTTPSelfHostPATAndAudit(t *testing.T) {
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("no mcp_audit_log row for the PAT call within 5s: the audit writer is not running off cloud")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// nonAPIRoutes are the DR-5 routes the DR-6 allowlist covers: everything
+// outside /api/v1.
+func nonAPIRoutes() []capRoute {
+	var out []capRoute
+	for _, rt := range capRoutes() {
+		if !strings.HasPrefix(rt.path, "/api/") {
+			out = append(out, rt)
+		}
+	}
+	return out
+}
+
+func (f *capFixture) doAs(t *testing.T, rt capRoute, host, remoteAddr string) *httptest.ResponseRecorder {
+	t.Helper()
+	path := strings.ReplaceAll(rt.path, "{ws}", f.ws.Slug)
+	req := httptest.NewRequest(rt.method, path, strings.NewReader(rt.body))
+	req.Host = host
+	req.RemoteAddr = remoteAddr
+	if rt.contentType != "" {
+		req.Header.Set("Content-Type", rt.contentType)
+	}
+	if rt.auth == "member" {
+		req.Header.Set("Authorization", "Bearer "+f.memberPAT)
+	}
+	rr := httptest.NewRecorder()
+	f.srv.ServeHTTP(rr, req)
+	return rr
+}
+
+func is421(rr *httptest.ResponseRecorder) bool {
+	return rr.Code == http.StatusMisdirectedRequest && strings.Contains(rr.Body.String(), `"misdirected_request"`)
+}
+
+// TestMCPCapability_HostAllowlist is PLAN-2310 DR-6's acceptance, over the
+// production wiring: off cloud, every non-API DR-5 path refuses an
+// unconfigured Host with 421 and admits the configured one, including a
+// proxy-shaped request (loopback socket, configured public Host); a
+// loopback origin admits every loopback spelling; MCP off still answers
+// the gate's 404 whatever the Host; cloud is unchanged.
+func TestMCPCapability_HostAllowlist(t *testing.T) {
+	on := newCapFixture(t, cfgHTTPS, false, nil, "true")
+	for _, rt := range nonAPIRoutes() {
+		if rr := on.doAs(t, rt, "evil.example", "192.0.2.10:4242"); !is421(rr) {
+			t.Errorf("wrong Host: %s %s: status %d body %.200s, want 421", rt.method, rt.path, rr.Code, rr.Body.String())
+		}
+		for _, remote := range []string{"192.0.2.10:4242", "127.0.0.1:51000"} {
+			rr := on.doAs(t, rt, "pad.example.com", remote)
+			if is421(rr) || isGateRefusal(rr) {
+				t.Errorf("configured Host from %s: %s %s: status %d, want it admitted", remote, rt.method, rt.path, rr.Code)
+			}
+		}
+		if rr := on.doAs(t, rt, "PAD.EXAMPLE.COM:443", "192.0.2.10:4242"); is421(rr) {
+			t.Errorf("configured Host, other case and explicit default port: %s %s refused", rt.method, rt.path)
+		}
+	}
+
+	off := newCapFixture(t, cfgHTTPS, false, nil, "")
+	for _, rt := range nonAPIRoutes() {
+		if rr := off.doAs(t, rt, "evil.example", "192.0.2.10:4242"); !isGateRefusal(rr) {
+			t.Errorf("MCP off, wrong Host: %s %s: status %d, want the gate's 404 (the gate runs first)", rt.method, rt.path, rr.Code)
+		}
+	}
+
+	loop := newCapFixture(t, config.Config{URL: "http://127.0.0.1:7777"}, false, nil, "true")
+	mcpRoute := capRoute{method: "POST", path: "/mcp", body: `{}`, contentType: "application/json"}
+	for _, host := range []string{"127.0.0.1:7777", "localhost:7777", "[::1]:7777"} {
+		if rr := loop.doAs(t, mcpRoute, host, "127.0.0.1:51000"); rr.Code != http.StatusUnauthorized {
+			t.Errorf("loopback origin, Host %s: status %d, want 401 (admitted, then no token)", host, rr.Code)
+		}
+	}
+	if rr := loop.doAs(t, mcpRoute, "localhost:7778", "127.0.0.1:51000"); !is421(rr) {
+		t.Errorf("loopback origin, wrong port: status %d, want 421", rr.Code)
+	}
+
+	cloud := newCapFixture(t, cfgCloud, true, nil, "")
+	for _, rt := range nonAPIRoutes() {
+		if rr := cloud.doAs(t, rt, "evil.example", "192.0.2.10:4242"); is421(rr) || isGateRefusal(rr) {
+			t.Errorf("cloud, wrong Host: %s %s: status %d, want cloud's unchanged behaviour (reachable)", rt.method, rt.path, rr.Code)
+		}
+	}
+}
+
+// TestMCPCapability_HostAllowlistRunsBeforeAuthAuditAndLimits: a request
+// refused 421 writes no audit row and draws nothing from a rate limiter.
+// Both halves carry their own control, so neither passes because the
+// instrument is dead: a configured-Host PAT call does write an audit row,
+// and the DCR limiter (5 per hour per address) does refuse the sixth
+// configured-Host registration.
+func TestMCPCapability_HostAllowlistRunsBeforeAuthAuditAndLimits(t *testing.T) {
+	f := newCapFixture(t, cfgHTTPS, false, nil, "true")
+	initialize := capRoute{method: "POST", path: "/mcp", auth: "member", contentType: "application/json",
+		body: `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"cap-test","version":"0"}}}`}
+	register := capRoute{method: "POST", path: "/oauth/register", body: `{}`, contentType: "application/json"}
+
+	for i := 0; i < 6; i++ {
+		if rr := f.doAs(t, initialize, "evil.example", "192.0.2.10:4242"); !is421(rr) {
+			t.Fatalf("wrong-Host PAT call: status %d, want 421", rr.Code)
+		}
+		if rr := f.doAs(t, register, "evil.example", "192.0.2.10:4242"); !is421(rr) {
+			t.Fatalf("wrong-Host register: status %d, want 421", rr.Code)
+		}
+	}
+	time.Sleep(300 * time.Millisecond) // the audit writer is asynchronous
+	if rows, err := f.store.ListMCPAuditByUser(f.member.ID, 10, 0); err != nil || len(rows) != 0 {
+		t.Fatalf("refused requests wrote %d audit rows (err %v), want 0", len(rows), err)
+	}
+
+	for i := 1; i <= 6; i++ {
+		rr := f.doAs(t, register, "pad.example.com", "192.0.2.10:4242")
+		if i <= 5 && rr.Code == http.StatusTooManyRequests {
+			t.Fatalf("configured-Host register %d was rate limited: the refused requests were charged", i)
+		}
+		if i == 6 && rr.Code != http.StatusTooManyRequests {
+			t.Fatalf("configured-Host register 6: status %d, want 429 (control: the DCR limiter is live here)", rr.Code)
+		}
+	}
+
+	if rr := f.doAs(t, initialize, "pad.example.com", "192.0.2.10:4242"); rr.Code != http.StatusOK {
+		t.Fatalf("configured-Host PAT call: status %d", rr.Code)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		rows, err := f.store.ListMCPAuditByUser(f.member.ID, 10, 0)
+		if err == nil && len(rows) == 1 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("control: the configured-Host PAT call wrote %d audit rows (err %v), want 1", len(rows), err)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

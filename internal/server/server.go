@@ -1481,6 +1481,9 @@ func (s *Server) setupRouter() {
 	// before SessionAuth or RateLimit runs (PLAN-2310 DR-5).
 	r.Group(func(r chi.Router) {
 		r.Use(s.requireOAuthAvailable)
+		// PLAN-2310 DR-6: off cloud, refuse an unconfigured Host (421)
+		// before SessionAuth or RateLimit run.
+		r.Use(s.requireConfiguredHost)
 		r.Use(s.SessionAuth)
 		r.Use(s.RateLimit)
 		s.registerOAuthRoutes(r)

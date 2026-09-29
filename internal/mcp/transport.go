@@ -81,13 +81,15 @@ func NewRemoteTransport(srv *server.MCPServer, sessionIDs server.SessionIdManage
 		server.WithStreamableHTTPProtocolVersions(ServedProtocolVersions()...),
 		// mcp-go v0.56 turns on DNS-rebinding protection by default: a request
 		// whose accept socket is loopback but whose Host header is non-loopback
-		// gets a 403. pad-cloud's mcp.getpad.dev vhost sits behind a reverse
-		// proxy that forwards to this process over 127.0.0.1 while preserving
-		// the original Host, so the default would reject every real request.
-		// Disable it to keep the pre-v0.56 behaviour — the browser-driven
-		// rebinding threat it guards against doesn't apply here: this transport
-		// only mounts in cloud mode and every request is Bearer/OAuth
-		// authenticated.
+		// gets a 403. That is exactly what a reverse proxy produces when it
+		// forwards to this process over 127.0.0.1 while preserving the
+		// original Host (pad-cloud's mcp.getpad.dev, and a self-host behind
+		// nginx), so the default would reject every real proxied request, and
+		// it has no allowlist to configure. Rebinding is handled by pad
+		// instead: off cloud, requireConfiguredHost answers 421 to any Host
+		// that is not one of the configured MCP addresses, before auth
+		// (PLAN-2310 DR-6), which is strictly stronger. Cloud keeps its
+		// behaviour, where every request is Bearer/OAuth authenticated.
 		server.WithDisableLocalhostProtection(true),
 	)
 }
