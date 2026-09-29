@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +18,29 @@ import (
 // BUG-3308: per-address buckets key an IPv6 client on its /64, and every
 // limiter's map has a size cap whose eviction cannot hand an attacker back
 // their own drained bucket.
+
+// freezeRefill sets every limiter's refill rate to effectively zero, before
+// any bucket exists, so a test that exhausts a bucket and then probes it
+// measures KEYING, not timing. Under -race the exhaust loop is slow enough
+// that a 5/s bucket (collab dial) refilled past one token between the 429
+// and the next probe (CI run 36635279128). Burst and keying are untouched.
+func freezeRefill(t *testing.T, srv *Server) {
+	t.Helper()
+	v := reflect.ValueOf(srv.rateLimiters).Elem()
+	for i := 0; i < v.NumField(); i++ {
+		lim, ok := v.Field(i).Interface().(*ipRateLimiter)
+		if !ok || lim == nil {
+			continue
+		}
+		lim.mu.Lock()
+		if len(lim.limiters) != 0 {
+			lim.mu.Unlock()
+			t.Fatalf("RateLimiters.%s already holds buckets; freeze before the first request", v.Type().Field(i).Name)
+		}
+		lim.config.Rate = rate.Limit(1e-9)
+		lim.mu.Unlock()
+	}
+}
 
 func TestRateLimitAddr(t *testing.T) {
 	cases := []struct{ in, want string }{
@@ -215,6 +239,7 @@ func TestRateLimit_IPv6KeysOnThe64AtEveryDoor(t *testing.T) {
 				newSrv = testServer
 			}
 			srv := newSrv(t)
+			freezeRefill(t, srv)
 			ctype := d.ctype
 			if ctype == "" {
 				ctype = "application/json"
@@ -258,6 +283,7 @@ func TestRateLimit_IPv6KeysOnThe64AtEveryDoor(t *testing.T) {
 // through the router, not only in rateLimitAddr's table.
 func TestRateLimit_IPv4MappedSharesTheIPv4Bucket(t *testing.T) {
 	srv := testServer(t)
+	freezeRefill(t, srv)
 	send := func(remote string) int {
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/search?q=x", nil)
 		req.RemoteAddr = remote
@@ -310,6 +336,7 @@ func TestRateLimit_IPv6KeysOnThe64OutsideTheMiddleware(t *testing.T) {
 	for _, c := range charges {
 		t.Run(c.name, func(t *testing.T) {
 			srv := testServer(t)
+			freezeRefill(t, srv)
 			exhausted := false
 			for i := 0; i < 500; i++ {
 				if !c.charge(srv, req(first)) {
@@ -331,6 +358,7 @@ func TestRateLimit_IPv6KeysOnThe64OutsideTheMiddleware(t *testing.T) {
 
 	t.Run("share_password_ip", func(t *testing.T) {
 		srv := testServer(t)
+		freezeRefill(t, srv)
 		slug := createWSForTest(t, srv)
 		cr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections", map[string]interface{}{
 			"name": "Shared", "prefix": "SHAR",
