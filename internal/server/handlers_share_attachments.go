@@ -71,7 +71,8 @@ const (
 
 // signShareAsset produces the hex HMAC binding a share link + attachment +
 // expiry together. Returns "" when the secret is too short to sign with
-// (an unconfigured self-host deployment) — the caller treats that as
+// (a Server that never had the key set; production sets it on every
+// install since BUG-3305) — the caller treats that as
 // "cannot mint a protected ref" and degrades to the honest placeholder,
 // never to an unsigned bare URL.
 //

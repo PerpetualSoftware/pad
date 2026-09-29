@@ -851,8 +851,9 @@ func (s *Server) mintShareAttachmentRefs(link *models.ShareLink, contents ...str
 		if protected {
 			sig := signShareAsset(s.shareAssetSecret, link.ID, att.ID, exp)
 			if sig == "" {
-				// Secret unconfigured (self-host without an encryption key):
-				// cannot mint a protected ref. Omit it — the page degrades to
+				// Secret unset (a Server that never had it set; production
+				// sets it on every install, BUG-3305): cannot mint a
+				// protected ref. Omit it — the page degrades to
 				// the #1135 placeholder, NEVER an unsigned bare URL (fork-2
 				// fallback boundary).
 				continue

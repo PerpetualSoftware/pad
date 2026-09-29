@@ -173,12 +173,11 @@ type Server struct {
 
 	// shareAssetSecret keys the short-lived signatures on a protected
 	// share link's image refs (handlers_share_attachments.go). It is the
-	// same deployment key as claimSecret, but a separate field: PLAN-2310
-	// U2 sets the claim secret wherever OAuth is constructed, and this key
-	// must stay set exactly where it always was, so turning on OAuth for
-	// MCP changes nothing on share pages (TASK-2317, lead ruling B).
-	// Setting it on every install is BUG-3305. nil → protected refs are
-	// omitted and the page shows its placeholder.
+	// same deployment key as claimSecret, but a separate field, so what
+	// wires one never moves the other: the claim secret follows OAuth
+	// construction (PLAN-2310 U2), and this one is set on every install at
+	// startup (BUG-3305). nil (a Server that never had it set, as in tests)
+	// → protected refs are omitted and the page shows its placeholder.
 	shareAssetSecret []byte
 
 	// oauthMetricsWired records whether wireOAuthMetricsObserver has
