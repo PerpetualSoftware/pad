@@ -67,18 +67,22 @@
 		decisionClearKey = false;
 	}
 
-	// MCP over HTTP (PLAN-2310 DR-7). The toggle writes at once; the readout
-	// is what GET /admin/mcp reports, which is configuration, not an
+	// MCP over HTTP (PLAN-2310 DR-7). The checkbox edits a draft and Save
+	// writes it, as the page's other sections do: a switch that opens an
+	// endpoint should not flip on a stray click. The readout is what GET
+	// /admin/mcp reports, which is configuration, not an
 	// observation of the deployment (the server cannot see TLS a proxy
 	// terminates).
 	let mcp = $state<MCPSettings | null>(null);
 	let mcpLoadError = $state('');
 	let savingMcp = $state(false);
+	let mcpDraft = $state(false);
 	let mcpStatus = $state<{ message: string; type: 'saved' | 'error' } | null>(null);
 
 	async function loadMcp() {
 		try {
 			mcp = await api.admin.getMCPSettings();
+			mcpDraft = mcp.enabled;
 		} catch (e) {
 			mcpLoadError = e instanceof Error ? e.message : 'Failed to load';
 		}
@@ -89,6 +93,7 @@
 		mcpStatus = null;
 		try {
 			mcp = await api.admin.updateMCPSettings(enabled);
+			mcpDraft = mcp.enabled;
 			mcpStatus = { message: 'Saved', type: 'saved' };
 		} catch (e) {
 			mcpStatus = { message: e instanceof Error ? e.message : 'Failed to save', type: 'error' };
@@ -545,9 +550,9 @@
 						<input
 							type="checkbox"
 							data-testid="mcp-enabled"
-							checked={mcp.enabled}
+							checked={mcpDraft}
 							disabled={mcp.locked || savingMcp}
-							onchange={(e) => setMcpEnabled(e.currentTarget.checked)}
+							onchange={(e) => (mcpDraft = e.currentTarget.checked)}
 						/>
 						<span>Enable MCP</span>
 						{#if mcp.source === 'environment'}
@@ -605,8 +610,20 @@
 					</p>
 					{/if}
 
-					{#if mcpStatus}
-						<span class="save-msg" class:error-msg={mcpStatus.type === 'error'}>{mcpStatus.message}</span>
+					{#if !mcp.locked}
+						<div class="edit-actions">
+							<button
+								class="btn primary"
+								data-testid="mcp-save"
+								disabled={savingMcp || mcpDraft === mcp.enabled}
+								onclick={() => setMcpEnabled(mcpDraft)}
+							>
+								{savingMcp ? 'Saving...' : 'Save MCP Settings'}
+							</button>
+							{#if mcpStatus}
+								<span class="save-msg" class:error-msg={mcpStatus.type === 'error'}>{mcpStatus.message}</span>
+							{/if}
+						</div>
 					{/if}
 				{/if}
 			</div>

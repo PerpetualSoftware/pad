@@ -118,9 +118,10 @@ describe('admin MCP section', () => {
 		expect(host.querySelectorAll('[data-testid="mcp-problem"]').length).toBe(0);
 	});
 
-	it('locked by the environment: toggle disabled with its note', async () => {
+	it('locked by the environment: toggle disabled with its note, no Save', async () => {
 		await mountWith(settings({ source: 'environment', locked: true }));
 		expect((q('mcp-enabled') as HTMLInputElement).disabled).toBe(true);
+		expect(q('mcp-save')).toBeNull();
 		expect(text('mcp-lock-note')).toContain('set by environment');
 	});
 
@@ -130,12 +131,18 @@ describe('admin MCP section', () => {
 		expect(text('mcp-lock-note')).toContain('managed by the operator');
 	});
 
-	it('the toggle writes at once and renders the answer', async () => {
+	it('the checkbox edits a draft; only Save writes, then renders the answer', async () => {
 		await mountWith(settings({ enabled: false }, { state: 'off' }));
 		putMCP.mockResolvedValue(settings({}));
+		const save = q('mcp-save') as HTMLButtonElement;
+		expect(save.disabled, 'nothing to save before a change').toBe(true);
 		const box = q('mcp-enabled') as HTMLInputElement;
 		box.checked = true;
 		box.dispatchEvent(new Event('change', { bubbles: true }));
+		flushSync();
+		expect(putMCP, 'a click on the checkbox alone does not write').not.toHaveBeenCalled();
+		expect(save.disabled).toBe(false);
+		save.click();
 		for (let i = 0; i < 4; i++) await Promise.resolve();
 		await tick();
 		flushSync();
