@@ -96,7 +96,7 @@ func limitedMintFixture(t *testing.T, s *Store, m limitedMint) (owner string, sr
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
-	if err := s.SetUserPlan(u.ID, "free", ""); err != nil {
+	if _, err := s.SetUserPlan(u.ID, PlanWrite{Plan: "free", Source: PlanSourceManual, Force: true}); err != nil {
 		t.Fatalf("SetUserPlan: %v", err)
 	}
 	ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "source", OwnerID: u.ID})
@@ -208,7 +208,7 @@ func TestLimitedMint_WithoutOption_NotEnforced(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
-	if err := s.SetUserPlan(u.ID, "free", ""); err != nil {
+	if _, err := s.SetUserPlan(u.ID, PlanWrite{Plan: "free", Source: PlanSourceManual, Force: true}); err != nil {
 		t.Fatalf("SetUserPlan: %v", err)
 	}
 	if err := s.SetUserPlanOverrides(u.ID, `{"workspaces":0,"api_tokens":0}`); err != nil {
@@ -249,7 +249,7 @@ func TestLimitedMint_CreateAndImportOfOneName_NoLockCycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
-	if err := s.SetUserPlan(u.ID, "free", ""); err != nil {
+	if _, err := s.SetUserPlan(u.ID, PlanWrite{Plan: "free", Source: PlanSourceManual, Force: true}); err != nil {
 		t.Fatalf("SetUserPlan: %v", err)
 	}
 	if err := s.SetUserPlanOverrides(u.ID, `{"workspaces":5}`); err != nil {

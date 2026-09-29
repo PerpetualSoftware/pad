@@ -567,7 +567,7 @@ func TestCopyItemAcrossWorkspaces_ConcurrentCopiesCannotJointlyExceedQuota(t *te
 
 	s := testStore(t)
 	owner := createTestUser(t, s, "joint-quota@example.com", "Owner", "s3cret")
-	if err := s.SetUserPlan(owner.ID, "free", ""); err != nil {
+	if _, err := s.SetUserPlan(owner.ID, PlanWrite{Plan: "free", Source: PlanSourceManual, Force: true}); err != nil {
 		t.Fatalf("SetUserPlan: %v", err)
 	}
 	if err := s.SetUserPlanOverrides(owner.ID, `{"items_per_workspace": 1}`); err != nil {

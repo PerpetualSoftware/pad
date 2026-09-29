@@ -920,7 +920,7 @@ func newQuotaFixture(t *testing.T, limit int) copyFixture {
 	t.Helper()
 	s := testStore(t)
 	owner := createTestUser(t, s, "quota-owner@example.com", "Owner", "s3cret")
-	if err := s.SetUserPlan(owner.ID, "free", ""); err != nil {
+	if _, err := s.SetUserPlan(owner.ID, PlanWrite{Plan: "free", Source: PlanSourceManual, Force: true}); err != nil {
 		t.Fatalf("SetUserPlan: %v", err)
 	}
 	if err := s.SetUserPlanOverrides(owner.ID, fmt.Sprintf(`{"items_per_workspace": %d}`, limit)); err != nil {
@@ -999,7 +999,7 @@ func TestCheckLimitTx_SeesUncommittedRowsInTheTransaction(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)
 	owner := createTestUser(t, s, "tx-count@example.com", "Owner", "s3cret")
-	if err := s.SetUserPlan(owner.ID, "free", ""); err != nil {
+	if _, err := s.SetUserPlan(owner.ID, PlanWrite{Plan: "free", Source: PlanSourceManual, Force: true}); err != nil {
 		t.Fatalf("SetUserPlan: %v", err)
 	}
 	if err := s.SetUserPlanOverrides(owner.ID, `{"items_per_workspace": 1}`); err != nil {
@@ -1481,7 +1481,7 @@ func TestCopyItemAcrossWorkspaces_NoPoolIOUnderLocks(t *testing.T) {
 	// the platform-settings read instead of returning early.
 	s := testStore(t)
 	owner := createTestUser(t, s, "no-pool-io-owner@example.com", "Owner", "s3cret")
-	if err := s.SetUserPlan(owner.ID, "free", ""); err != nil {
+	if _, err := s.SetUserPlan(owner.ID, PlanWrite{Plan: "free", Source: PlanSourceManual, Force: true}); err != nil {
 		t.Fatalf("SetUserPlan: %v", err)
 	}
 	wsA, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "Locked Source", OwnerID: owner.ID})

@@ -13,6 +13,7 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/artifact"
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // BUG-2808: a plan limit is a count taken before the write. When a competing
@@ -36,7 +37,7 @@ func newPlanLimitEnv(t *testing.T) *planLimitEnv {
 	t.Helper()
 	e := newConsentEnv(t, true)
 	e.srv.cloudMode = true
-	if err := e.srv.store.SetUserPlan(e.user.ID, "free", ""); err != nil {
+	if _, err := e.srv.store.SetUserPlan(e.user.ID, store.PlanWrite{Plan: "free", Source: store.PlanSourceManual, Force: true}); err != nil {
 		t.Fatalf("SetUserPlan: %v", err)
 	}
 	all, err := e.srv.store.ListWorkspaces()
@@ -206,7 +207,7 @@ func newTokenLimitEnv(t *testing.T) (*tokenAuthEnv, int) {
 	t.Helper()
 	env := setupTokenAuthEnv(t)
 	env.srv.cloudMode = true
-	if err := env.srv.store.SetUserPlan(env.user.ID, "free", ""); err != nil {
+	if _, err := env.srv.store.SetUserPlan(env.user.ID, store.PlanWrite{Plan: "free", Source: store.PlanSourceManual, Force: true}); err != nil {
 		t.Fatalf("SetUserPlan: %v", err)
 	}
 	limit := ownedTokens(t, env) + 1
@@ -321,7 +322,7 @@ func bundleLimitRace(t *testing.T, compete bool) (*httptest.ResponseRecorder, in
 	srv.cloudMode = true
 	u := mintTestUser(t, srv, "bundle-limit@example.com")
 	tok := loginUser(t, srv, "bundle-limit@example.com", "correct-horse-battery-staple")
-	if err := srv.store.SetUserPlan(u.ID, "free", ""); err != nil {
+	if _, err := srv.store.SetUserPlan(u.ID, store.PlanWrite{Plan: "free", Source: store.PlanSourceManual, Force: true}); err != nil {
 		t.Fatalf("SetUserPlan: %v", err)
 	}
 	src, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Bundle Source", OwnerID: u.ID})

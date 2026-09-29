@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // TestWorkspaceCap_FreeTierAllowsUpToThree verifies that a free-tier user
@@ -29,7 +30,7 @@ func TestWorkspaceCap_FreeTierAllowsUpToThree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
-	if err := srv.store.SetUserPlan(u.ID, "free", ""); err != nil {
+	if _, err := srv.store.SetUserPlan(u.ID, store.PlanWrite{Plan: "free", Source: store.PlanSourceManual, Force: true}); err != nil {
 		t.Fatalf("SetUserPlan(free): %v", err)
 	}
 	token := loginUser(t, srv, "free@test.com", "correct-horse-battery-staple")
@@ -62,7 +63,7 @@ func TestWorkspaceCap_FreeTierBlocksFourth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
-	if err := srv.store.SetUserPlan(u.ID, "free", ""); err != nil {
+	if _, err := srv.store.SetUserPlan(u.ID, store.PlanWrite{Plan: "free", Source: store.PlanSourceManual, Force: true}); err != nil {
 		t.Fatalf("SetUserPlan(free): %v", err)
 	}
 	token := loginUser(t, srv, "free@test.com", "correct-horse-battery-staple")
@@ -130,7 +131,7 @@ func TestWorkspaceCap_ProTierUnlimited(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
-	if err := srv.store.SetUserPlan(u.ID, "pro", ""); err != nil {
+	if _, err := srv.store.SetUserPlan(u.ID, store.PlanWrite{Plan: "pro", Source: store.PlanSourceManual, Force: true}); err != nil {
 		t.Fatalf("SetUserPlan(pro): %v", err)
 	}
 	token := loginUser(t, srv, "pro@test.com", "correct-horse-battery-staple")
@@ -179,7 +180,7 @@ func TestWorkspaceCap_OverrideUnblocks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
-	if err := srv.store.SetUserPlan(u.ID, "free", ""); err != nil {
+	if _, err := srv.store.SetUserPlan(u.ID, store.PlanWrite{Plan: "free", Source: store.PlanSourceManual, Force: true}); err != nil {
 		t.Fatalf("SetUserPlan(free): %v", err)
 	}
 	// Override raises the workspace cap to 10.
@@ -220,7 +221,7 @@ func TestPlanLimitError_ResponseShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateUser(owner): %v", err)
 	}
-	if err := srv.store.SetUserPlan(owner.ID, "free", ""); err != nil {
+	if _, err := srv.store.SetUserPlan(owner.ID, store.PlanWrite{Plan: "free", Source: store.PlanSourceManual, Force: true}); err != nil {
 		t.Fatalf("SetUserPlan(free): %v", err)
 	}
 	ownerToken := loginUser(t, srv, "owner@test.com", "correct-horse-battery-staple")

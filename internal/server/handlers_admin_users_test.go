@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // TestAdminUpdateUser_StorageOverrideRoundTrip pins TASK-883's
@@ -30,7 +31,7 @@ func TestAdminUpdateUser_StorageOverrideRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
-	if err := srv.store.SetUserPlan(target.ID, "free", ""); err != nil {
+	if _, err := srv.store.SetUserPlan(target.ID, store.PlanWrite{Plan: "free", Source: store.PlanSourceManual, Force: true}); err != nil {
 		t.Fatalf("SetUserPlan: %v", err)
 	}
 

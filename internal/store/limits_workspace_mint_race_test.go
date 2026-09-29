@@ -125,7 +125,7 @@ func newLimitedWorkspaceFixture(t *testing.T, s *Store, c limitedWorkspaceInsert
 		return u.ID
 	}
 	owner := user("owner")
-	if err := s.SetUserPlan(owner, "free", ""); err != nil {
+	if _, err := s.SetUserPlan(owner, PlanWrite{Plan: "free", Source: PlanSourceManual, Force: true}); err != nil {
 		t.Fatalf("SetUserPlan: %v", err)
 	}
 	ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "limited", OwnerID: owner})

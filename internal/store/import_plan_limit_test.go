@@ -43,7 +43,7 @@ func importFixture(t *testing.T, s *Store, tag string, capItems, items int) (own
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
-	if err := s.SetUserPlan(owner.ID, "free", ""); err != nil {
+	if _, err := s.SetUserPlan(owner.ID, PlanWrite{Plan: "free", Source: PlanSourceManual, Force: true}); err != nil {
 		t.Fatalf("SetUserPlan: %v", err)
 	}
 
@@ -214,7 +214,7 @@ func TestImportWorkspace_OrphanedItemsDoNotCountTowardTheCap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
-	if err := s.SetUserPlan(owner.ID, "free", ""); err != nil {
+	if _, err := s.SetUserPlan(owner.ID, PlanWrite{Plan: "free", Source: PlanSourceManual, Force: true}); err != nil {
 		t.Fatalf("SetUserPlan: %v", err)
 	}
 	src, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "bug3103-src-orphan", OwnerID: owner.ID})
