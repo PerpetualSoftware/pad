@@ -212,4 +212,60 @@ test.describe('TASK-3306 workspace tabs', () => {
 		await page.keyboard.press('Tab');
 		await expect(page.locator(`.workspace-tab[data-ws-slug="${slugs[0]}"] .workspace-tab-close`).last()).toBeFocused();
 	});
+
+	test('the tab bar costs one Tab stop per tab set, and Ctrl+Shift+Arrow moves a tab (persisted)', async ({ page }) => {
+		test.setTimeout(90_000);
+		await page.setViewportSize({ width: 1440, height: 900 });
+		const { username, slugs } = await asNewUser(page);
+		await openTabs(page, slugs, 3);
+		await show(page, username, slugs[0], 3);
+
+		// Walk Tab from the logo: the zone and the tab wrappers are never
+		// stops (the dndzone defaults put both in the order; codex r1).
+		await page.locator('.pad-logo').focus();
+		const stops: string[] = [];
+		for (let i = 0; i < 5; i++) {
+			await page.keyboard.press('Tab');
+			stops.push(await page.evaluate(() => (document.activeElement as HTMLElement).className.split(' ')[0]));
+		}
+		expect(stops, `Tab stops ${stops}`).not.toContain('workspace-list');
+		expect(stops, `Tab stops ${stops}`).not.toContain('workspace-tab');
+		expect(stops[0]).toBe('workspace-item');
+
+		let putsSent = 0;
+		let putsDone = 0;
+		const isPut = (u: string, m: string) => u.endsWith('/api/v1/me/workspace-tabs') && m === 'PUT';
+		page.on('request', (r) => { if (isPut(r.url(), r.method())) putsSent++; });
+		page.on('requestfinished', (r) => { if (isPut(r.url(), r.method())) putsDone++; });
+		page.on('requestfailed', (r) => { if (isPut(r.url(), r.method())) putsDone++; });
+		const order = () => page.locator('.workspace-tab').evaluateAll((els) => els.map((e) => e.getAttribute('data-ws-slug')));
+		const links = page.locator('.workspace-tab .workspace-item');
+		await links.nth(0).focus();
+		const put = page.waitForResponse((r) => r.url().endsWith('/api/v1/me/workspace-tabs') && r.request().method() === 'PUT');
+		await page.keyboard.press('Control+Shift+ArrowRight');
+		await put;
+		expect(await order()).toEqual([slugs[1], slugs[0], slugs[2]]);
+		// Focus followed the moved tab.
+		await expect(page.locator(`.workspace-tab[data-ws-slug="${slugs[0]}"] .workspace-item`)).toBeFocused();
+		// A move past either end does nothing.
+		await page.keyboard.press('Control+Shift+ArrowLeft');
+		await page.keyboard.press('Control+Shift+ArrowLeft');
+		await page.waitForTimeout(500);
+		expect(await order()).toEqual([slugs[0], slugs[1], slugs[2]]);
+		// No navigation: moving is not opening.
+		expect(new URL(page.url()).pathname).toBe(`/${username}/${slugs[0]}`);
+
+		// Persisted: two quick moves, then a reload shows the stored order.
+		// Wait until every write sent has answered (the second is sent after
+		// the first settles, past any fixed sleep under load), counted from
+		// the test's start so an earlier write's late answer is not taken for
+		// one of these.
+		await page.keyboard.press('Control+Shift+ArrowRight');
+		await page.keyboard.press('Control+Shift+ArrowRight');
+		await expect.poll(order).toEqual([slugs[1], slugs[2], slugs[0]]);
+		await expect.poll(() => putsSent > 0 && putsSent === putsDone, { timeout: 10_000 }).toBe(true);
+		await page.reload();
+		await expect(page.locator('.workspace-tab')).toHaveCount(3, { timeout: 15_000 });
+		expect(await order()).toEqual([slugs[1], slugs[2], slugs[0]]);
+	});
 });

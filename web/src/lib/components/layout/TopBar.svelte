@@ -7,7 +7,7 @@
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { api } from '$lib/api/client';
 	import type { WorkspaceTab } from '$lib/types';
-	import { onMount } from 'svelte';
+	import { onMount, tick } from 'svelte';
 	import { goto } from '$app/navigation';
 	import PadLogo from '$lib/components/layout/PadLogo.svelte';
 	import WorkspaceSwitcher from '$lib/components/layout/WorkspaceSwitcher.svelte';
@@ -148,7 +148,48 @@
 				? currentSlug
 				: (dndTabs[0]?.slug ?? '')
 	);
+	// Ctrl+Shift+Left/Right moves the focused tab: the keyboard's reorder,
+	// since the zone's own keyboard drag needed the tab wrapper focusable,
+	// which put a second Tab stop on every tab (TASK-3306, codex r1). It goes
+	// through the same store write a drag does, and like a drag it keeps an
+	// ephemeral tab (PLAN-3002 Q9). Focus follows the moved tab.
+	// A move applies locally at once and writes through tabsStore.reorder,
+	// which sends reorders in call order (two quick presses used to race two
+	// PUTs, and the server could store the older order: measured 2 in 8 on
+	// the e2e with the writes unchained). The counter holds the store-to-zone
+	// sync off until the last move's write settles.
+	let pendingMoves = 0;
+	function moveTab(index: number, delta: number) {
+		const to = index + delta;
+		if (to < 0 || to >= dndTabs.length || isDragging) return;
+		const items = dndTabs.slice();
+		const [moved] = items.splice(index, 1);
+		items.splice(to, 0, moved);
+		dndTabs = items;
+		rovingSlug = moved.slug;
+		pendingMoves++;
+		persisting = true;
+		void tick().then(() => listEl?.querySelectorAll<HTMLElement>('.workspace-item')[to]?.focus());
+		void (async () => {
+			try {
+				await tabsStore.reorder(items.map((t) => t.slug));
+				if (moved.ephemeral) await tabsStore.pin(moved.slug);
+			} catch {
+				// The store kept its last committed order; the sync shows it.
+			} finally {
+				pendingMoves--;
+				if (pendingMoves === 0) persisting = false;
+			}
+		})();
+	}
+
 	function handleTabKeydown(e: KeyboardEvent, index: number) {
+		if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+			e.preventDefault();
+			e.stopPropagation();
+			moveTab(index, e.key === 'ArrowLeft' ? -1 : 1);
+			return;
+		}
 		if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
 		let next = -1;
 		if (e.key === 'ArrowRight') next = Math.min(dndTabs.length - 1, index + 1);
@@ -436,7 +477,15 @@
 					items: dndTabs,
 					flipDurationMs,
 					type: 'topbar-workspace',
-					dragDisabled: uiStore.isTouch
+					dragDisabled: uiStore.isTouch,
+					// The zone and its items default to tabindex 0, which put
+					// the list and every tab wrapper in the Tab order ahead of
+					// the roving tab link (TASK-3306, codex r1). The zone's
+					// keyboard drag started only from a focused wrapper
+					// (Space on the link does not reach it, measured), so
+					// Ctrl+Shift+Left/Right on the link (moveTab) replaces it.
+					zoneTabIndex: -1,
+					zoneItemTabIndex: -1
 				}}
 				onconsider={handleTabsConsider}
 				onfinalize={handleTabsFinalize}
@@ -458,6 +507,7 @@
 							title={tab.is_guest ? `${tab.name} (shared with you)` : tab.name}
 							aria-current={tab.slug === currentSlug ? 'page' : undefined}
 							tabindex={tab.slug === focusSlug ? 0 : -1}
+							aria-keyshortcuts="Control+Shift+ArrowLeft Control+Shift+ArrowRight"
 							onkeydown={(e) => handleTabKeydown(e, i)}
 							onclick={(e) => handleWsClick(e, tab)}
 							ondblclick={() => handleTabDblClick(tab)}

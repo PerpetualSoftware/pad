@@ -87,6 +87,9 @@ let loaded = $state(false);
 // older value.
 let pendingRoutes = $state<Record<string, string>>({});
 
+// Reorders in flight, chained so they are sent in call order (see reorder).
+let reorderChain: Promise<void> = Promise.resolve();
+
 // The revision of the committed list; -1 until one commits. See "WHICH
 // RESPONSE COMMITS".
 let committedRevision = -1;
@@ -221,9 +224,22 @@ export const tabsStore = {
 		await send(() => api.workspaces.tabs.close(slug));
 	},
 
-	/** The full order, as slugs. */
+	/**
+	 * The full order, as slugs. Reorders are SENT one at a time, in call
+	 * order (TASK-3306). The server serialises writes and the revision above
+	 * orders their answers, but neither rejects a stale order: two reorders
+	 * in flight at once could be processed in the other order, storing the
+	 * older one, and the revision would then faithfully commit it. Sending
+	 * them in sequence makes the last call's order the stored one. Only
+	 * reorders queue; other writes are not held behind them.
+	 */
 	async reorder(slugs: string[]): Promise<void> {
-		await send(() => api.workspaces.tabs.reorder(slugs));
+		const run = reorderChain.then(() => send(() => api.workspaces.tabs.reorder(slugs)));
+		reorderChain = run.then(
+			() => {},
+			() => {}
+		);
+		await run;
 	},
 
 	/** Keep an ephemeral tab. */
