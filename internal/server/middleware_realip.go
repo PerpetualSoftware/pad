@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 )
 
 // peerAddrCtxKey carries the untampered TCP peer address (the original
@@ -77,10 +78,26 @@ func TrustedProxyRealIP(cidrs []*net.IPNet) func(http.Handler) http.Handler {
 			if realIP != "" && net.ParseIP(realIP) != nil {
 				r.RemoteAddr = realIP
 			}
+			// PLAN-2310 DR-9: every per-client limit keys on the address
+			// resolved here. If a proxied request resolves to an address
+			// that is itself inside the trusted range (the proxy forwards
+			// no client address, or forwards its own), every client shares
+			// one bucket and the limits throttle the whole deployment. Say
+			// so once, loudly, on the first such request.
+			if resolved := peerAddr(r.RemoteAddr); resolved != nil && ipInCIDRs(resolved, cidrs) {
+				warnResolvedInTrustedRange.Do(func() {
+					slog.Warn("rate limits: a proxied request resolved to an address inside PAD_TRUSTED_PROXIES, so per-client limits would key on the proxy and throttle every client together; make the proxy send X-Forwarded-For or X-Real-IP with the client address",
+						"resolved", resolved.String())
+				})
+			}
 			next.ServeHTTP(w, r)
 		})
 	}
 }
+
+// warnResolvedInTrustedRange makes TrustedProxyRealIP's misconfiguration
+// warning fire once per process.
+var warnResolvedInTrustedRange sync.Once
 
 // ParseTrustedProxyCIDRs parses a comma-separated list of CIDRs or bare
 // IPs from the PAD_TRUSTED_PROXIES setting. Bare IPs get /32 (IPv4) or

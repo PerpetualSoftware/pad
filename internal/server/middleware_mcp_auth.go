@@ -599,7 +599,19 @@ func extractBearer(h string) (string, bool) {
 // at and a client that follows one would start an OAuth flow that cannot
 // complete. The URL comes from configuration, never the request's Host
 // (DR-3); see protectedResourceMetadataURL for its shape.
-func (s *Server) writeMCPUnauthorized(w http.ResponseWriter, _ *http.Request, code, msg string) {
+//
+// Every caller is a refusal before a caller was identified (missing,
+// malformed or invalid bearer), so this is also where PLAN-2310 DR-9's
+// pre-auth floor lives: each 401 draws from the per-address MCPPreAuth
+// bucket, and once that is empty the answer is 429 instead. Each refusal
+// is counted in pad_mcp_preauth_denied_total and writes nothing to the
+// database (the DR-9 amendment on the plan: unauthenticated traffic must
+// not cause writes).
+func (s *Server) writeMCPUnauthorized(w http.ResponseWriter, r *http.Request, code, msg string) {
+	if !s.chargeMCPPreAuth(w, r) {
+		return
+	}
+	s.recordMCPPreAuthDenied(code)
 	challenge := `Bearer realm="pad"`
 	if meta := protectedResourceMetadataURL(s.mcpPublicURL); meta != "" && s.oauthAvailable() {
 		challenge += `, resource_metadata="` + meta + `"`

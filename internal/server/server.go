@@ -306,8 +306,11 @@ type Server struct {
 	mcpEndpoints config.MCPEndpoints
 	// mcpMisdirected rate-limits the WARN for Host-allowlist refusals
 	// (PLAN-2310 DR-6, middleware_mcp_host.go).
-	mcpMisdirected misdirectedHostLog
-	mcpEnabledEnv  *bool
+	mcpMisdirected warnOncePerKey
+	// mcpPreAuthLimited rate-limits the WARN for an address exhausting
+	// the pre-auth /mcp bucket (PLAN-2310 DR-9, middleware_ratelimit.go).
+	mcpPreAuthLimited warnOncePerKey
+	mcpEnabledEnv     *bool
 
 	// inFlightUploadHashes tracks content_hash values for uploads
 	// that have called AttachmentStore.Put but not yet inserted the

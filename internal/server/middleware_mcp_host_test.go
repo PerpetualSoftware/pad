@@ -4,32 +4,53 @@ import (
 	"bytes"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
 
-// The first 421 per host is logged at WARN; repeats of a host are not,
-// and distinct hosts beyond the overall burst are not either, so a client
-// spraying Host values cannot flood the log.
-func TestMisdirectedHostLog_FirstPerHostRateLimited(t *testing.T) {
+// warnOncePerKey allows the first line per key, never a repeat, and no
+// more than the overall burst for distinct keys, so a client spraying
+// Host values (or addresses) cannot flood the log.
+func TestWarnOncePerKey_FirstPerKeyRateLimited(t *testing.T) {
+	var l warnOncePerKey
+	if !l.allow("a.example") || l.allow("a.example") {
+		t.Fatal("same key twice: want allowed once")
+	}
+	n := 0
+	for i := 0; i < 20; i++ {
+		if l.allow(fmt.Sprintf("h%d.example", i)) {
+			n++
+		}
+	}
+	if n != 4 {
+		t.Fatalf("20 more distinct keys: %d allowed, want 4 (the burst of 5, one already spent)", n)
+	}
+}
+
+// The 421 logs its WARN through warnOncePerKey: one line for a host
+// refused twice.
+func TestMisdirectedHostWarnIsLoggedOncePerHost(t *testing.T) {
 	var buf bytes.Buffer
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
 	defer slog.SetDefault(prev)
 
-	var l misdirectedHostLog
-	l.warnOnce("a.example", "Host", "https://pad.example.com", "192.0.2.1:1")
-	l.warnOnce("a.example", "Host", "https://pad.example.com", "192.0.2.1:1")
-	if n := strings.Count(buf.String(), "received_host=a.example"); n != 1 {
-		t.Fatalf("same host twice: %d lines, want 1", n)
+	srv := testServer(t)
+	srv.SetMCPConfig(testHTTPSEndpoints(), boolPtrForTest(true))
+	h := srv.requireConfiguredHost(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest("POST", "/mcp", nil)
+		req.Host = "evil.example"
+		h.ServeHTTP(httptest.NewRecorder(), req)
 	}
-	for i := 0; i < 20; i++ {
-		l.warnOnce(fmt.Sprintf("h%d.example", i), "Host", "https://pad.example.com", "192.0.2.1:1")
-	}
-	if n := strings.Count(buf.String(), "level=WARN"); n != 5 {
-		t.Fatalf("21 distinct hosts: %d WARN lines, want 5 (the overall burst)", n)
+	if n := strings.Count(buf.String(), "received_host=evil.example"); n != 1 {
+		t.Fatalf("a host refused twice: %d WARN lines, want 1\n%s", n, buf.String())
 	}
 }
+
+func boolPtrForTest(b bool) *bool { return &b }
 
 // PLAN-2310 DR-6 matching rules for the Host allowlist.
 func TestHostMatchesURL(t *testing.T) {

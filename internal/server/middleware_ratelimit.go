@@ -222,6 +222,47 @@ type RateLimiters struct {
 	// backoff. How many sockets a user may HOLD is the separate collab
 	// admission gate (PAD_COLLAB_MAX_PER_USER).
 	CollabDial *ipRateLimiter
+
+	// The MCP and OAuth security floor (PLAN-2310 DR-9). Starting values,
+	// reasoned rather than measured; revise them from the audit data DR-9
+	// adds, not by guesswork. Each is keyed per client address (the
+	// address TrustedProxyRealIP resolves) except OAuthClaim, which is per
+	// authenticated caller. They apply on cloud too: one code path.
+
+	// MCPPreAuth caps /mcp 401s (missing, malformed or invalid bearer) per
+	// address: 1/s, burst 120. An MCP client's first unauthenticated
+	// request draws one 401 (that is how it discovers resource_metadata),
+	// and so does each reconnect. 100 agents behind one office NAT
+	// restarting in the same second fit the burst; sustained, a
+	// second-by-second restart loop of one client never exceeds 1/s. A
+	// valid token never draws from it. Deliberately per address and not
+	// global: a global cap lets one abuser lock every client out of a
+	// small deployment.
+	MCPPreAuth *ipRateLimiter
+	// OAuthToken caps /oauth/token per address: 1/s, burst 120. A client
+	// calls it once per code exchange when it connects, then to refresh.
+	// Access tokens live 1h (internal/oauth/server.go), so 100 clients
+	// refresh about 100 times an hour against a refill of 3,600 an hour,
+	// 36x headroom, and the burst covers 100 clients connecting at once.
+	OAuthToken *ipRateLimiter
+	// OAuthDecide caps /oauth/authorize/decide per address: 10/min, burst
+	// 20. It is a human clicking consent; 20 in a row is already abnormal.
+	OAuthDecide *ipRateLimiter
+	// OAuthRegister caps /oauth/register (RFC 7591 dynamic client
+	// registration) per address: 5/hour, burst 5. The rate is what DCR
+	// always had, but the bucket is its own: it used to share Register
+	// with account signup, so five client registrations locked the
+	// address out of signing up and the reverse.
+	OAuthRegister *ipRateLimiter
+	// OAuthClaim caps POST /api/v1/oauth/claim per AUTHENTICATED CALLER:
+	// 10/min, burst 10. Keyed by user, not address, because the route
+	// requires auth and rotating addresses must not raise the cap. A code
+	// is 6 digits and verifies against the current and previous 300 s
+	// bucket (claim_codes.go), so it stays guessable for about 600 s; in
+	// that window this allows at most 10 + 100 = 110 guesses against 10^6,
+	// about 1.1e-4 per code window. A human redeeming a code they were
+	// shown needs one attempt, perhaps two.
+	OAuthClaim *ipRateLimiter
 }
 
 // NewRateLimiters creates rate limiters with sensible defaults.
@@ -376,6 +417,30 @@ func NewRateLimiters() *RateLimiters {
 			Rate:  rate.Limit(30.0 / 60.0),
 			Burst: 5,
 		}),
+		// PLAN-2310 DR-9; the rationale for each is on its field.
+		MCPPreAuth: newIPRateLimiter(rateLimitConfig{
+			Rate:  rate.Limit(1.0),
+			Burst: 120,
+		}),
+		OAuthToken: newIPRateLimiter(rateLimitConfig{
+			Rate:  rate.Limit(1.0),
+			Burst: 120,
+		}),
+		OAuthDecide: newIPRateLimiter(rateLimitConfig{
+			Rate:  rate.Limit(10.0 / 60.0),
+			Burst: 20,
+		}),
+		// Retention ≥ the refill window (5 ÷ (5/hour) = 1 h), or cleanup
+		// could evict a bucket between registrations; 2 h gives margin.
+		OAuthRegister: newIPRateLimiter(rateLimitConfig{
+			Rate:      rate.Limit(5.0 / 3600.0),
+			Burst:     5,
+			Retention: 2 * time.Hour,
+		}),
+		OAuthClaim: newIPRateLimiter(rateLimitConfig{
+			Rate:  rate.Limit(10.0 / 60.0),
+			Burst: 10,
+		}),
 	}
 }
 
@@ -408,6 +473,11 @@ func (rls *RateLimiters) Stop() {
 		rls.MCPPerToken,
 		rls.DecisionProvider,
 		rls.CollabDial,
+		rls.MCPPreAuth,
+		rls.OAuthToken,
+		rls.OAuthDecide,
+		rls.OAuthRegister,
+		rls.OAuthClaim,
 	} {
 		rl.Stop() // nil-safe via the receiver guard in (*ipRateLimiter).Stop
 	}
@@ -425,25 +495,26 @@ func (s *Server) RateLimit(next http.Handler) http.Handler {
 		path := r.URL.Path
 		ip := clientIP(r)
 
-		// OAuth 2.1 registration endpoint (PLAN-943 TASK-1025).
-		// /oauth/register is open by RFC 7591 design — Claude
-		// Desktop / Cursor self-register without prior auth — but
-		// without a limiter an attacker can flood the oauth_clients
-		// table. Reuse the Register limiter (5/min/IP), same shape
-		// as /api/v1/auth/register's protection. Codex review #372
-		// round 2.
-		//
-		// Other /oauth/* endpoints (authorize, token, decide) ride
-		// session cookies (authorize) or are PKCE-bound to a stored
-		// code (token), so flooding them just spends CPU. They go
-		// through fosite's own internal protections + the future
-		// TASK-959 /mcp limiter; explicit /oauth/* limits beyond
-		// /register can land alongside that work.
-		if path == "/oauth/register" {
-			l := s.rateLimiters.Register.getLimiter(ip)
-			if !l.Allow() {
-				slog.Warn("rate limited", "ip", ip, "path", path, "limiter", "oauth_register")
-				writeRateLimitResponse(w, s.rateLimiters.Register.config)
+		// The OAuth flow endpoints (PLAN-2310 DR-9). /oauth/register is
+		// open by RFC 7591 design, /oauth/token is PKCE-bound and
+		// /oauth/authorize/decide is a human clicking consent; each has
+		// its own per-address bucket (rationale on the RateLimiters
+		// fields). /oauth/authorize, /revoke and /introspect are not
+		// limited here.
+		var oauthLimiter *ipRateLimiter
+		var oauthLabel string
+		switch path {
+		case "/oauth/register":
+			oauthLimiter, oauthLabel = s.rateLimiters.OAuthRegister, "oauth_register"
+		case "/oauth/token":
+			oauthLimiter, oauthLabel = s.rateLimiters.OAuthToken, "oauth_token"
+		case "/oauth/authorize/decide":
+			oauthLimiter, oauthLabel = s.rateLimiters.OAuthDecide, "oauth_decide"
+		}
+		if oauthLimiter != nil {
+			if !oauthLimiter.getLimiter(ip).Allow() {
+				slog.Warn("rate limited", "ip", ip, "path", path, "limiter", oauthLabel)
+				writeRateLimitResponse(w, oauthLimiter.config)
 				return
 			}
 			next.ServeHTTP(w, r)
@@ -542,6 +613,24 @@ func (s *Server) RateLimit(next http.Handler) http.Handler {
 			}
 			next.ServeHTTP(w, r)
 			return
+		}
+
+		// Claim-code redemption (PLAN-2310 DR-9): per authenticated
+		// caller, in place of the general bucket, so rotating addresses
+		// cannot raise the guess rate. TokenAuth and SessionAuth have run
+		// by now; an unauthenticated request falls through to the
+		// general bucket and RequireAuth answers it 401.
+		if path == "/api/v1/oauth/claim" && r.Method == http.MethodPost {
+			if user := currentUser(r); user != nil {
+				key := "user:" + user.ID
+				if !s.rateLimiters.OAuthClaim.getLimiter(key).Allow() {
+					slog.Warn("rate limited", "key", key, "path", path, "limiter", "oauth_claim")
+					writeRateLimitResponse(w, s.rateLimiters.OAuthClaim.config)
+					return
+				}
+				next.ServeHTTP(w, r)
+				return
+			}
 		}
 
 		if path == "/api/v1/search" {
@@ -649,6 +738,46 @@ func (s *Server) checkMCPRateLimit(w http.ResponseWriter, r *http.Request, beare
 		return false
 	}
 	return true
+}
+
+// chargeMCPPreAuth draws one token from the per-address MCPPreAuth bucket
+// for an /mcp refusal made before a caller was identified (PLAN-2310
+// DR-9). It returns false when the bucket is empty, having written the
+// 429 and counted it; the caller must return. A nil limiter set
+// (PAD_DISABLE_RATE_LIMITS, testServer) allows.
+func (s *Server) chargeMCPPreAuth(w http.ResponseWriter, r *http.Request) bool {
+	if s.rateLimiters == nil || s.rateLimiters.MCPPreAuth == nil {
+		return true
+	}
+	ip := clientIP(r)
+	if s.rateLimiters.MCPPreAuth.getLimiter(ip).Allow() {
+		return true
+	}
+	s.recordMCPPreAuthDenied("rate_limited")
+	// The counter carries the volume; this line names the address, once
+	// per address and rate-limited overall, so an operator can find a
+	// prober without enabling debug logging. No database write (the DR-9
+	// amendment: unauthenticated traffic causes none).
+	if s.mcpPreAuthLimited.allow(ip) {
+		slog.Warn("mcp: an address exhausted the pre-auth limit on /mcp (1/s, burst 120) with missing or invalid tokens; answering 429",
+			"ip", ip, "limiter", "mcp_pre_auth")
+	}
+	writeMCPRateLimit(w, r, s.rateLimiters.MCPPreAuth.config)
+	return false
+}
+
+// recordMCPPreAuthDenied counts a pre-auth /mcp refusal. The reason label
+// is a closed set, so a caller-supplied code can never mint a series.
+func (s *Server) recordMCPPreAuthDenied(reason string) {
+	if s.metrics == nil {
+		return
+	}
+	switch reason {
+	case "missing_token", "rate_limited":
+	default:
+		reason = "invalid_token"
+	}
+	s.metrics.MCPPreAuthDeniedTotal.WithLabelValues(reason).Inc()
 }
 
 // hashTokenForLimiter returns a SHA-256 hex digest of the bearer

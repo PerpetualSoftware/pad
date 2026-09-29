@@ -70,7 +70,10 @@ func (s *Server) requireConfiguredHost(next http.Handler) http.Handler {
 		}
 		shown := truncateForMessage(host, 255)
 		origin := s.mcpEndpoints.Origin
-		s.mcpMisdirected.warnOnce(shown, source, origin, rawPeerAddr(r))
+		if s.mcpMisdirected.allow(shown) {
+			slog.Warn("mcp: refused a request whose host is not a configured address (421); if Pad is behind a proxy, preserve the Host header or list the proxy in PAD_TRUSTED_PROXIES",
+				"received_host", shown, "host_source", source, "configured_origin", origin, "peer", rawPeerAddr(r))
+		}
 		writeError2(w, http.StatusMisdirectedRequest, "misdirected_request",
 			fmt.Sprintf("The host %q (from the %s header) is not a configured address for MCP on this server; the configured origin is %s. "+
 				"If Pad is behind a proxy, preserve the Host header, or list the proxy in PAD_TRUSTED_PROXIES so its X-Forwarded-Host is honoured.",
@@ -107,36 +110,37 @@ func truncateForMessage(v string, max int) string {
 	return v[:max] + "..."
 }
 
-// misdirectedHostLog logs the first 421 per received host at WARN, so an
-// operator whose proxy rewrites Host can find the cause without a
-// debugger. It remembers at most misdirectedHostLogCap hosts, and every
-// line also draws from one overall limiter, so a client spraying distinct
-// Host values cannot flood the log.
-type misdirectedHostLog struct {
+// warnOncePerKey decides when an operator-facing WARN is worth a line:
+// the first time a key (a received host, a client address) is seen, and
+// never faster than one overall limiter allows, so a client spraying
+// distinct keys cannot flood the log. It remembers at most
+// warnOncePerKeyCap keys; past that, new keys are still logged through
+// the limiter but not remembered. Used for the DR-6 421s and the DR-9
+// pre-auth limit (PLAN-2310).
+type warnOncePerKey struct {
 	mu      sync.Mutex
 	seen    map[string]struct{}
 	limiter *rate.Limiter
 }
 
-const misdirectedHostLogCap = 1024
+const warnOncePerKeyCap = 1024
 
-func (l *misdirectedHostLog) warnOnce(host, source, origin, peer string) {
+// allow reports whether to log for key, and records it.
+func (l *warnOncePerKey) allow(key string) bool {
 	l.mu.Lock()
+	defer l.mu.Unlock()
 	if l.seen == nil {
 		l.seen = map[string]struct{}{}
 		// Five lines at once, then one a minute.
 		l.limiter = rate.NewLimiter(rate.Every(time.Minute), 5)
 	}
-	if _, ok := l.seen[host]; ok || !l.limiter.Allow() {
-		l.mu.Unlock()
-		return
+	if _, ok := l.seen[key]; ok || !l.limiter.Allow() {
+		return false
 	}
-	if len(l.seen) < misdirectedHostLogCap {
-		l.seen[host] = struct{}{}
+	if len(l.seen) < warnOncePerKeyCap {
+		l.seen[key] = struct{}{}
 	}
-	l.mu.Unlock()
-	slog.Warn("mcp: refused a request whose host is not a configured address (421); if Pad is behind a proxy, preserve the Host header or list the proxy in PAD_TRUSTED_PROXIES",
-		"received_host", host, "host_source", source, "configured_origin", origin, "peer", peer)
+	return true
 }
 
 // hostIsConfigured reports whether host (a request's Host header) names
