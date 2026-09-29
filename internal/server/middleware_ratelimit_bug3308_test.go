@@ -67,8 +67,9 @@ func TestIPRateLimiter_FloodCannotEvictADrainedBucket(t *testing.T) {
 			t.Fatalf("attempt %d inside the burst was refused", i+1)
 		}
 	}
-	// Each flood key spends one token, as a request from a fresh address
-	// does. 1,000 keys is 60+ sweeps at this cap.
+	// Each flood key spends one token (the Allow below), as a request from
+	// a fresh address does. The map sits at its cap of 16 for all but the
+	// first few of the 1,000 keys, so it sweeps over and over.
 	for i := 0; i < 1000; i++ {
 		rl.getLimiter(fmt.Sprintf("ip:flood%d", i)).Allow()
 	}
