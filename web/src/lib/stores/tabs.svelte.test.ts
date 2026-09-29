@@ -681,3 +681,52 @@ describe('a write keeps an ephemeral tab (PLAN-3002 Q9)', () => {
 		expect(tabsApi.update).not.toHaveBeenCalled();
 	});
 });
+
+// TASK-3306: reorders are SENT one at a time, in call order, because the server
+// stores whichever full order it processes last and the revision then commits
+// it faithfully. A queued reorder is fenced by the identity that asked for it.
+describe('reorder is sent in call order', () => {
+	it('does not send the second reorder until the first has answered', async () => {
+		const store = await loadStore();
+		const first = deferred<ReturnType<typeof answer>>();
+		// Each answer is numbered when its request is made, as the server does.
+		tabsApi.reorder.mockReturnValueOnce(first.promise).mockImplementationOnce(async () => answer(tab('b'), tab('a')));
+		const p1 = store.reorder(['a', 'b']);
+		const p2 = store.reorder(['b', 'a']);
+		await settle();
+		expect(tabsApi.reorder).toHaveBeenCalledTimes(1);
+		first.resolve(answer(tab('a'), tab('b')));
+		await p1;
+		await p2;
+		expect(tabsApi.reorder).toHaveBeenCalledTimes(2);
+		expect(tabsApi.reorder.mock.calls.map((c) => c[0])).toEqual([['a', 'b'], ['b', 'a']]);
+		expect(slugs(store.tabs)).toEqual(['b', 'a']);
+	});
+
+	it('a failed reorder does not wedge the ones queued behind it', async () => {
+		const store = await loadStore();
+		tabsApi.reorder.mockRejectedValueOnce(new TypeError('network down')).mockImplementationOnce(async () => answer(tab('b'), tab('a')));
+		const p1 = store.reorder(['a', 'b']);
+		const p2 = store.reorder(['b', 'a']);
+		await expect(p1).rejects.toThrow('network down');
+		await p2;
+		expect(tabsApi.reorder).toHaveBeenCalledTimes(2);
+		expect(slugs(store.tabs)).toEqual(['b', 'a']);
+	});
+
+	it('drops a queued reorder whose identity changed while it waited', async () => {
+		const store = await loadStore();
+		const first = deferred<ReturnType<typeof answer>>();
+		tabsApi.reorder.mockReturnValueOnce(first.promise).mockResolvedValue(answer(tab('x')));
+		const p1 = store.reorder(['a', 'b']);
+		const p2 = store.reorder(['b', 'a']);
+		await settle();
+		auth.fireIdentityChange();
+		first.resolve(answer(tab('a'), tab('b')));
+		await p1;
+		await p2;
+		// Only the first went out; the old user's queued order did not go out
+		// with the new identity.
+		expect(tabsApi.reorder).toHaveBeenCalledTimes(1);
+	});
+});

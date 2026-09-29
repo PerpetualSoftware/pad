@@ -231,10 +231,18 @@ export const tabsStore = {
 	 * in flight at once could be processed in the other order, storing the
 	 * older one, and the revision would then faithfully commit it. Sending
 	 * them in sequence makes the last call's order the stored one. Only
-	 * reorders queue; other writes are not held behind them.
+	 * reorders queue; other writes are not held behind them. A queued
+	 * reorder whose identity has changed by the time it runs is dropped.
 	 */
 	async reorder(slugs: string[]): Promise<void> {
-		const run = reorderChain.then(() => send(() => api.workspaces.tabs.reorder(slugs)));
+		// A queued reorder must not outlive the identity that asked for it:
+		// send() takes its fence when it RUNS, which for a queued call can be
+		// after a sign-out or an account switch, so the old user's order would
+		// go out with the new user's credentials (codex r2). Fence at the call.
+		const isSameIdentity = authStore.identityFence();
+		const run = reorderChain.then(() =>
+			isSameIdentity() ? send(() => api.workspaces.tabs.reorder(slugs)) : undefined
+		);
 		reorderChain = run.then(
 			() => {},
 			() => {}

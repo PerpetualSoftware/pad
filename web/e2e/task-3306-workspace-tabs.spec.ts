@@ -256,14 +256,18 @@ test.describe('TASK-3306 workspace tabs', () => {
 		expect(new URL(page.url()).pathname).toBe(`/${username}/${slugs[0]}`);
 
 		// Persisted: two quick moves, then a reload shows the stored order.
-		// Wait until every write sent has answered (the second is sent after
-		// the first settles, past any fixed sleep under load), counted from
-		// the test's start so an earlier write's late answer is not taken for
-		// one of these.
+		// Counted from the test's start, so an earlier write's late answer is
+		// not taken for one of these.
+		const sentBefore = putsSent;
 		await page.keyboard.press('Control+Shift+ArrowRight');
 		await page.keyboard.press('Control+Shift+ArrowRight');
 		await expect.poll(order).toEqual([slugs[1], slugs[2], slugs[0]]);
-		await expect.poll(() => putsSent > 0 && putsSent === putsDone, { timeout: 10_000 }).toBe(true);
+		// Both of these moves' writes SENT (the second goes out only after the
+		// first settles, so "all sent have answered" alone passes in the gap
+		// between them; codex r2), and every write sent has answered.
+		await expect
+			.poll(() => putsSent >= sentBefore + 2 && putsSent === putsDone, { timeout: 10_000 })
+			.toBe(true);
 		await page.reload();
 		await expect(page.locator('.workspace-tab')).toHaveCount(3, { timeout: 15_000 });
 		expect(await order()).toEqual([slugs[1], slugs[2], slugs[0]]);
