@@ -222,3 +222,38 @@ func TestMigrationPlanSourceBackfill(t *testing.T) {
 		}
 	}
 }
+
+// BackfillUserPlans writes a plan, so it takes the source over as manual: a
+// free user carrying a stripe source (their Stripe subscription ended) must
+// not become self-hosted still labelled stripe. A row it does not touch keeps
+// its source.
+func TestBackfillUserPlans_TakesSourceOver(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	lapsed := createTestUser(t, s, "lapsed-backfill@example.com", "Lapsed", "s3cret")
+	paying := createTestUser(t, s, "paying-backfill@example.com", "Paying", "s3cret")
+	if _, err := s.db.Exec(s.q(`UPDATE users SET plan = 'free', plan_source = 'stripe' WHERE id = ?`), lapsed.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(s.q(`UPDATE users SET plan = 'pro', plan_source = 'stripe' WHERE id = ?`), paying.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.BackfillUserPlans("self-hosted"); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		id, plan, source string
+	}{
+		{lapsed.ID, "self-hosted", PlanSourceManual},
+		{paying.ID, "pro", PlanSourceStripe},
+	} {
+		got, err := s.GetUser(c.id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Plan != c.plan || got.PlanSource != c.source {
+			t.Errorf("user %s = (%q, %q), want (%q, %q)", c.id, got.Plan, got.PlanSource, c.plan, c.source)
+		}
+	}
+}

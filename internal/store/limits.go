@@ -593,16 +593,21 @@ func (s *Store) SetUserPlanOverrides(userID, overridesJSON string) error {
 // BackfillUserPlans sets the plan for all users that have an empty or default plan.
 // In cloud mode, call with "free" to ensure all users have a plan set.
 // In self-hosted mode, call with "self-hosted" to remove all limits.
+//
+// A plan it writes is the system's, not Stripe's, so it takes plan_source
+// over as manual, like any other write that does not lower (TASK-3295).
+// Otherwise a free user carrying a stripe source would become self-hosted
+// still labelled stripe.
 func (s *Store) BackfillUserPlans(targetPlan string) error {
 	var err error
 	if targetPlan == "self-hosted" {
 		// Self-hosted: override free and empty plans to self-hosted
-		_, err = s.db.Exec(s.q(`UPDATE users SET plan = ?, updated_at = ? WHERE plan IN ('', 'free')`),
-			targetPlan, now())
+		_, err = s.db.Exec(s.q(`UPDATE users SET plan = ?, plan_source = ?, updated_at = ? WHERE plan IN ('', 'free')`),
+			targetPlan, PlanSourceManual, now())
 	} else {
 		// Cloud: only fill in empty plans, don't override existing values
-		_, err = s.db.Exec(s.q(`UPDATE users SET plan = ?, updated_at = ? WHERE plan = ''`),
-			targetPlan, now())
+		_, err = s.db.Exec(s.q(`UPDATE users SET plan = ?, plan_source = ?, updated_at = ? WHERE plan = ''`),
+			targetPlan, PlanSourceManual, now())
 	}
 	if err != nil {
 		return fmt.Errorf("backfill user plans: %w", err)
