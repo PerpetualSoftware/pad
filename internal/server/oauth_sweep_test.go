@@ -5,6 +5,8 @@ import (
 	"net/url"
 	"testing"
 	"time"
+
+	"github.com/PerpetualSoftware/pad/internal/oauth"
 )
 
 // BUG-3301, through the real /oauth/token: what each refresh leaves
@@ -187,6 +189,25 @@ func TestOAuthSweepCutoffs(t *testing.T) {
 		if !got[k].Equal(want[k]) {
 			t.Errorf("%s cutoff = %v, want %v", k, got[k], want[k])
 		}
+	}
+	// A negative lifespan is fosite's "never expires": the tables whose
+	// retention depends on it are skipped (a zero cutoff), the rest kept.
+	o2, err := oauth.NewServer(oauth.Config{
+		Store:                srv.store,
+		HMACSecret:           bytes32ForTest(),
+		AllowedAudience:      testCanonicalAudience,
+		RefreshTokenLifespan: -1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.oauthServer = o2
+	c = srv.oauthSweepCutoffs(now)
+	if !c.RefreshTokens.IsZero() || !c.AuthorizationCodes.IsZero() {
+		t.Errorf("refresh lifespan -1: refresh %v, codes %v, want both skipped", c.RefreshTokens, c.AuthorizationCodes)
+	}
+	if c.AccessTokens.IsZero() || c.PKCERequests.IsZero() {
+		t.Errorf("refresh lifespan -1 skipped access or PKCE too: %+v", c)
 	}
 	// Without an OAuth server the package defaults apply.
 	srv.oauthServer = nil

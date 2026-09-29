@@ -78,13 +78,23 @@ func (s *Server) oauthSweepCutoffs(now time.Time) store.OAuthSweepCutoffs {
 	if s.oauthServer != nil {
 		l = s.oauthServer.Lifespans()
 	}
-	before := func(lifespan time.Duration) time.Time {
-		return now.Add(-(lifespan + oauthSweepGrace))
+	// fosite reads a negative lifespan as "never expires", so a table whose
+	// retention depends on one gets a zero cutoff, which the store skips:
+	// no row of a token that cannot expire is ever old enough to delete.
+	before := func(lifespans ...time.Duration) time.Time {
+		var total time.Duration
+		for _, d := range lifespans {
+			if d < 0 {
+				return time.Time{}
+			}
+			total += d
+		}
+		return now.Add(-(total + oauthSweepGrace))
 	}
 	return store.OAuthSweepCutoffs{
 		AccessTokens:       before(l.AccessToken),
 		RefreshTokens:      before(l.RefreshToken),
-		AuthorizationCodes: before(l.AuthorizeCode + l.RefreshToken),
+		AuthorizationCodes: before(l.AuthorizeCode, l.RefreshToken),
 		PKCERequests:       before(l.AuthorizeCode),
 	}
 }
