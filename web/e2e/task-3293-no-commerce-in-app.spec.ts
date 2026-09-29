@@ -48,13 +48,8 @@ async function register(baseURL: string, adminToken: string, tag: string): Promi
 }
 
 async function openAsCloudUser(page: Page, email: string): Promise<void> {
-	await page.goto('/login');
-	await page.getByPlaceholder('Email').fill(email);
-	await page.getByPlaceholder('Password').fill(PASSWORD);
-	await Promise.all([
-		page.waitForResponse((r) => r.url().includes('/api/v1/auth/login') && r.request().method() === 'POST'),
-		page.getByRole('button', { name: /^sign in$/i }).click()
-	]);
+	// Routes first: login reloads the session, and a patch installed after
+	// that fetch settled would leave the page self-hosted (codex r3).
 	await page.route('**/api/v1/auth/session', async (route) => {
 		const resp = await route.fetch();
 		const body = await resp.json();
@@ -76,6 +71,13 @@ async function openAsCloudUser(page: Page, email: string): Promise<void> {
 			})
 		});
 	});
+	await page.goto('/login');
+	await page.getByPlaceholder('Email').fill(email);
+	await page.getByPlaceholder('Password').fill(PASSWORD);
+	await Promise.all([
+		page.waitForResponse((r) => r.url().includes('/api/v1/auth/login') && r.request().method() === 'POST'),
+		page.getByRole('button', { name: /^sign in$/i }).click()
+	]);
 }
 
 async function commerceOn(page: Page): Promise<{ links: number; copy: boolean }> {
