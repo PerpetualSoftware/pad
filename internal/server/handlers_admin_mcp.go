@@ -102,8 +102,12 @@ func (s *Server) sessionMCPPublicURL() string {
 // routes per request (PLAN-2310 DR-5). The routes are mounted on every
 // install, because the router is built once and the setting changes while
 // the process runs; unavailable answers the same JSON 404 requireCloudMode
-// always has. They run before any auth, audit or rate limiting, so a
-// request to an unavailable route does nothing but get refused.
+// always has. On the non-API paths (/mcp, /oauth/*, /.well-known/*) they
+// run before any auth, audit or rate limiting, so a request to an
+// unavailable route does nothing but get refused. On the /api/v1 routes
+// they run inside the regular API perimeter (auth, CSRF, rate limit), at
+// the point requireCloudMode did, so an unauthenticated caller still gets
+// the 401 it always got (PLAN-2310 DR-6 keeps that perimeter).
 func (s *Server) requireMCPAvailable(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !s.mcpAvailable() {
