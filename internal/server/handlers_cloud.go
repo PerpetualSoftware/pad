@@ -1275,7 +1275,7 @@ const nativeShellMarker = "PadShell/"
 // it only decides whether commerce copy is offered. A nil request is not an
 // app.
 func fromNativeShell(r *http.Request) bool {
-	return r != nil && strings.Contains(r.UserAgent(), nativeShellMarker)
+	return r != nil && strings.Contains(requestUserAgent(r), nativeShellMarker)
 }
 
 // planLimitDetails is the structured half of a plan-limit refusal, shared by

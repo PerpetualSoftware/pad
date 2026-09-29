@@ -13,23 +13,23 @@ identityGateSuite({
 	source: new URL('./+page.svelte', import.meta.url),
 	table: {
 		asyncFunctions: {
-			submitNewItem: { reviewed: 'd592b0b54568', why: `${PAGE_AND_ENTRY}; the finally clears newItemSaving only under the identity` },
-			handleLaneDrop: { reviewed: 'd268ae879c85', why: `${PAGE_AND_ENTRY}, including before the recovery reload` },
+			submitNewItem: { reviewed: 'e49c281eb86e', why: `${PAGE_AND_ENTRY}; the finally clears newItemSaving only under the identity` },
+			handleLaneDrop: { reviewed: '9f12cfcf7f38', why: `${PAGE_AND_ENTRY}, including before the recovery reload` },
 			handleDndFinalize: {
 				// Re-reviewed for BUG-3259: the lane renumber is planned around
 				// view-only cards (planLaneOrder), and its no-room toast and the
 				// empty-batch return both sit after the identity check that guards
 				// the optimistic commit. A refused batch reloads the board, after
 				// an identity check, as the role write's recovery does (codex r4).
-				reviewed: '9c9aadb2ef7c',
+				reviewed: 'aabdad24a8ac',
 				why: `${PAGE_AND_ENTRY}; the identity check sits BEFORE the role write, because that write carries currentUserId; a lost-identity exit writes no shared interaction state`,
 			},
 			loadData: {
-				reviewed: 'a0be40bdaf09',
+				reviewed: 'beee4ab0237c',
 				why: 'identityHeld(epochAtEntry) then loadGen on both arms before any commit; re-stamps identityEpochAtLoad only after the data it vouches for; the finally clears loading on loadGen alone, deliberately (#1378)',
 			},
-			saveRole: { reviewed: 'dad11e017451', why: `${PAGE_AND_ENTRY}, per branch` },
-			deleteRole: { reviewed: 'ca46c5c9056d', why: PAGE_AND_ENTRY },
+			saveRole: { reviewed: 'c27f82ace51a', why: `${PAGE_AND_ENTRY}, per branch` },
+			deleteRole: { reviewed: '6d78f8f48bd1', why: PAGE_AND_ENTRY },
 		},
 		nested: [],
 		markup: [],
