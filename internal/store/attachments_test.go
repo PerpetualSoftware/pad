@@ -64,7 +64,7 @@ func TestWorkspaceStorageInfo_FreePlanResolution(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
-	if err := s.SetUserPlan(owner.ID, "free", ""); err != nil {
+	if _, err := s.SetUserPlan(owner.ID, PlanWrite{Plan: "free", Source: PlanSourceManual, Force: true}); err != nil {
 		t.Fatalf("SetUserPlan(free): %v", err)
 	}
 
@@ -109,7 +109,7 @@ func TestWorkspaceStorageInfo_FreePlanResolution(t *testing.T) {
 	// 3. Pro plan: the limit is unlimited regardless of override (Phase 1).
 	// The override_active flag still surfaces the configured override
 	// so the admin UI can show it; it just doesn't affect the limit.
-	if err := s.SetUserPlan(owner.ID, "pro", ""); err != nil {
+	if _, err := s.SetUserPlan(owner.ID, PlanWrite{Plan: "pro", Source: PlanSourceManual, Force: true}); err != nil {
 		t.Fatalf("SetUserPlan(pro): %v", err)
 	}
 	info, err = s.WorkspaceStorageInfo(wsID)

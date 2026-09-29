@@ -379,6 +379,7 @@ var nulExcluded = map[string]string{
 	"mcp_audit_log.tool_name":                "server enum, mcp_audit.go",
 	"mcp_audit_log.error_kind":               "server enum, mcp_audit.go",
 	"mcp_audit_log.tool_name_source":         "server enum (models.MCPToolNameSource), CHECK-constrained by migration 096; never request-derived",
+	"users.plan_source":                      "server enum (store.PlanSource*), validated by SetUserPlan before any write; request-derived only after ValidPlanSource accepts it (TASK-3295)",
 	"attachments.filename_source":            "server enum (attachments.FilenameSource), CHECK-constrained by migration 096; a bundle import may carry the bundle's value, but only after attachments.ValidFilenameSource accepts it",
 	"users.recovery_codes":                   "newline-joined bcrypt hashes of server-generated codes; looks like JSON, is not",
 	"workspace_members.collection_access":    "validated enum all/selected",

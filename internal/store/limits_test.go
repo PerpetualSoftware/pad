@@ -17,7 +17,7 @@ func TestCheckUserLimit_WorkspacesFreeTier(t *testing.T) {
 	s := testStore(t)
 
 	owner := createTestUser(t, s, "owner@example.com", "Owner", "s3cret")
-	if err := s.SetUserPlan(owner.ID, "free", ""); err != nil {
+	if _, err := s.SetUserPlan(owner.ID, PlanWrite{Plan: "free", Source: PlanSourceManual, Force: true}); err != nil {
 		t.Fatalf("SetUserPlan(free): %v", err)
 	}
 
@@ -85,7 +85,7 @@ func TestCheckUserLimit_WorkspacesFreeWithOverride(t *testing.T) {
 	s := testStore(t)
 
 	owner := createTestUser(t, s, "override@example.com", "Override", "s3cret")
-	if err := s.SetUserPlan(owner.ID, "free", ""); err != nil {
+	if _, err := s.SetUserPlan(owner.ID, PlanWrite{Plan: "free", Source: PlanSourceManual, Force: true}); err != nil {
 		t.Fatalf("SetUserPlan(free): %v", err)
 	}
 	// Override raises cap to 10.
@@ -121,7 +121,7 @@ func TestCheckUserLimit_WorkspacesProUnlimited(t *testing.T) {
 	s := testStore(t)
 
 	owner := createTestUser(t, s, "pro@example.com", "Pro", "s3cret")
-	if err := s.SetUserPlan(owner.ID, "pro", ""); err != nil {
+	if _, err := s.SetUserPlan(owner.ID, PlanWrite{Plan: "pro", Source: PlanSourceManual, Force: true}); err != nil {
 		t.Fatalf("SetUserPlan(pro): %v", err)
 	}
 

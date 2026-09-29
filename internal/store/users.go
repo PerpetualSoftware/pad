@@ -30,7 +30,7 @@ var usernameCleanRe = regexp.MustCompile(`[^a-z0-9-]+`)
 var bcryptCost = 12
 
 // user SELECT columns — used by all user queries.
-const userColumns = `id, email, username, name, password_hash, role, avatar_url, totp_secret, totp_enabled, recovery_codes, plan, plan_expires_at, stripe_customer_id, plan_overrides, oauth_providers, password_set, disabled_at, email_verified_at, last_active_at, last_write_at, created_at, updated_at`
+const userColumns = `id, email, username, name, password_hash, role, avatar_url, totp_secret, totp_enabled, recovery_codes, plan, plan_expires_at, plan_source, stripe_customer_id, plan_overrides, oauth_providers, password_set, disabled_at, email_verified_at, last_active_at, last_write_at, created_at, updated_at`
 
 // scanUser scans a user row into a User struct.
 // Note: does NOT decrypt the TOTP secret — call store.decryptUserTOTP() after
@@ -43,7 +43,7 @@ func scanUser(row interface{ Scan(...interface{}) error }) (*models.User, error)
 	err := row.Scan(
 		&u.ID, &u.Email, &u.Username, &u.Name, &u.PasswordHash, &u.Role, &u.AvatarURL,
 		&u.TOTPSecret, &u.TOTPEnabled, &u.RecoveryCodes,
-		&u.Plan, &u.PlanExpiresAt, &u.StripeCustomerID, &u.PlanOverrides, &u.OAuthProviders,
+		&u.Plan, &u.PlanExpiresAt, &u.PlanSource, &u.StripeCustomerID, &u.PlanOverrides, &u.OAuthProviders,
 		&u.PasswordSet,
 		&disabledAt, &emailVerifiedAt, &lastActiveAt, &lastWriteAt, &createdAt, &updatedAt,
 	)
@@ -492,7 +492,7 @@ func (s *Store) SearchUsers(params AdminUserSearchParams) (*AdminUserSearchResul
 		if err := rows.Scan(
 			&entry.ID, &entry.Email, &entry.Username, &entry.Name, &entry.PasswordHash, &entry.Role, &entry.AvatarURL,
 			&entry.TOTPSecret, &entry.TOTPEnabled, &entry.RecoveryCodes,
-			&entry.Plan, &entry.PlanExpiresAt, &entry.StripeCustomerID, &entry.PlanOverrides, &entry.OAuthProviders,
+			&entry.Plan, &entry.PlanExpiresAt, &entry.PlanSource, &entry.StripeCustomerID, &entry.PlanOverrides, &entry.OAuthProviders,
 			&entry.PasswordSet,
 			&disabledAt, &emailVerifiedAt, &lastActiveAt, &lastWriteAt, &createdAt, &updatedAt,
 			&workspaceCount, &storageBytes,

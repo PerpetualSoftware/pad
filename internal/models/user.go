@@ -19,6 +19,7 @@ type User struct {
 	RecoveryCodes    string    `json:"-"`    // Never serialized
 	Plan             string    `json:"plan"` // "free", "pro", or "self-hosted"
 	PlanExpiresAt    string    `json:"plan_expires_at,omitempty"`
+	PlanSource       string    `json:"-"`                           // Who set Plan: "manual" or "stripe" (TASK-3295); surfaced only on admin user responses
 	StripeCustomerID string    `json:"-"`                           // Never serialized
 	PlanOverrides    string    `json:"plan_overrides,omitempty"`    // JSON overrides for per-user limits
 	OAuthProviders   string    `json:"-"`                           // JSON array of linked providers, e.g. ["github","google"]

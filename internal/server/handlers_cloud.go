@@ -307,11 +307,19 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 // handleSetPlan handles POST /api/v1/admin/plan.
 // Called by the pad-cloud sidecar to update a user's billing plan
 // after Stripe subscription events.
+//
+// `source` says who is setting the plan ("manual" when omitted, "stripe"
+// from the sidecar). The store decides whether the write applies: a write
+// lowering the plan to free from a source other than the one that set it is
+// refused (PLAN-3291 DR-6). A refused write is still a 200, with
+// `applied: false` and the plan the user keeps: the sidecar treats any other
+// status as a failure and the Stripe webhook would then retry forever.
 func (s *Server) handleSetPlan(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		UserID      string `json:"user_id"`
 		Plan        string `json:"plan"`
 		ExpiresAt   string `json:"expires_at"`
+		Source      string `json:"source"`
 		CloudSecret string `json:"cloud_secret"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
@@ -339,6 +347,14 @@ func (s *Server) handleSetPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if input.Source == "" {
+		input.Source = store.PlanSourceManual
+	}
+	if !store.ValidPlanSource(input.Source) {
+		writeError(w, http.StatusBadRequest, "bad_request", "source must be 'manual' or 'stripe'")
+		return
+	}
+
 	// 2b. Validate expires_at format if provided
 	if input.ExpiresAt != "" {
 		if _, err := time.Parse(time.RFC3339, input.ExpiresAt); err != nil {
@@ -358,10 +374,26 @@ func (s *Server) handleSetPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 4. Update plan
+	// 4. Update plan, under the plan-source rule
 	oldPlan := targetUser.Plan
-	if err := s.store.SetUserPlan(input.UserID, input.Plan, input.ExpiresAt); err != nil {
+	result, err := s.store.SetUserPlan(input.UserID, store.PlanWrite{
+		Plan: input.Plan, ExpiresAt: input.ExpiresAt, Source: input.Source,
+	})
+	if err != nil {
 		writeInternalError(w, err)
+		return
+	}
+	if !result.Applied {
+		slog.Info("plan update refused: lowering from a source that did not set the plan",
+			"user_id", input.UserID, "requested_plan", input.Plan, "source", input.Source,
+			"held_plan", result.Plan, "held_source", result.Source)
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"user_id":     input.UserID,
+			"plan":        result.Plan,
+			"plan_source": result.Source,
+			"applied":     false,
+			"ok":          true,
+		})
 		return
 	}
 
@@ -375,14 +407,17 @@ func (s *Server) handleSetPlan(w http.ResponseWriter, r *http.Request) {
 		"old_plan":       oldPlan,
 		"new_plan":       input.Plan,
 		"expires_at":     input.ExpiresAt,
+		"source":         input.Source,
 	}))
 
-	slog.Info("plan updated", "user_id", input.UserID, "old_plan", oldPlan, "new_plan", input.Plan)
+	slog.Info("plan updated", "user_id", input.UserID, "old_plan", oldPlan, "new_plan", input.Plan, "source", input.Source)
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"user_id": input.UserID,
-		"plan":    input.Plan,
-		"ok":      true,
+		"user_id":     input.UserID,
+		"plan":        result.Plan,
+		"plan_source": result.Source,
+		"applied":     true,
+		"ok":          true,
 	})
 }
 

@@ -495,14 +495,89 @@ func (s *Store) SeedPlanLimits() error {
 	return nil
 }
 
-// SetUserPlan updates a user's billing plan.
-func (s *Store) SetUserPlan(userID, plan, expiresAt string) error {
-	_, err := s.db.Exec(s.q(`UPDATE users SET plan = ?, plan_expires_at = ?, updated_at = ? WHERE id = ?`),
-		plan, expiresAt, now(), userID)
-	if err != nil {
-		return fmt.Errorf("set user plan: %w", err)
+// Plan sources: who set a user's plan (TASK-3295, PLAN-3291 DR-6). 'apple'
+// and 'google' are reserved for store billing and not accepted yet.
+const (
+	PlanSourceManual = "manual"
+	PlanSourceStripe = "stripe"
+)
+
+// ValidPlanSource reports whether src is a plan source SetUserPlan accepts.
+func ValidPlanSource(src string) bool {
+	return src == PlanSourceManual || src == PlanSourceStripe
+}
+
+// PlanWrite is one write to a user's plan. Source is required: every caller
+// says who is setting the plan, because the lowering rule is decided by it.
+type PlanWrite struct {
+	Plan      string
+	ExpiresAt string
+	Source    string
+	// Force applies the write even when it would lower the plan from a
+	// source other than the one that set it. Only an operator's explicit
+	// choice (the admin user update) sets it.
+	Force bool
+}
+
+// PlanWriteResult says whether a PlanWrite applied, and the plan and source
+// the user holds after it, whichever way it went.
+type PlanWriteResult struct {
+	Applied bool
+	Plan    string
+	Source  string
+}
+
+// SetUserPlan writes a user's billing plan under the plan-source rule
+// (PLAN-3291 DR-6), enforced here rather than by callers:
+//
+//   - a write that LOWERS the plan (new plan free, current plan neither free
+//     nor blank) applies only if its source is the current plan_source, or it
+//     is forced;
+//   - every other write applies and takes plan_source over.
+//
+// So a Stripe cancellation cannot clobber a plan an operator granted, and an
+// operator can still lower anything by forcing. The rule is the UPDATE's own
+// WHERE clause, so it is decided atomically against the row as it stands. A
+// refused write changes nothing, plan_expires_at included, and is not an
+// error: Applied is false.
+func (s *Store) SetUserPlan(userID string, w PlanWrite) (PlanWriteResult, error) {
+	if !ValidPlanSource(w.Source) {
+		return PlanWriteResult{}, fmt.Errorf("set user plan: invalid plan source %q", w.Source)
 	}
-	return nil
+	tx, err := s.db.Begin()
+	if err != nil {
+		return PlanWriteResult{}, fmt.Errorf("set user plan: %w", err)
+	}
+	defer tx.Rollback()
+
+	force := 0 // bound as an int: a bare boolean placeholder is dialect-sensitive
+	if w.Force {
+		force = 1
+	}
+	res, err := tx.Exec(s.q(`
+		UPDATE users SET plan = ?, plan_expires_at = ?, plan_source = ?, updated_at = ?
+		WHERE id = ? AND (? = 1 OR ? <> 'free' OR plan IN ('', 'free') OR plan_source = ?)`),
+		w.Plan, w.ExpiresAt, w.Source, now(), userID, force, w.Plan, w.Source)
+	if err != nil {
+		return PlanWriteResult{}, fmt.Errorf("set user plan: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return PlanWriteResult{}, fmt.Errorf("set user plan: %w", err)
+	}
+
+	out := PlanWriteResult{Applied: n > 0}
+	err = tx.QueryRow(s.q(`SELECT plan, plan_source FROM users WHERE id = ?`), userID).Scan(&out.Plan, &out.Source)
+	if err == sql.ErrNoRows {
+		return PlanWriteResult{}, fmt.Errorf("set user plan: user %s not found", userID)
+	}
+	if err != nil {
+		return PlanWriteResult{}, fmt.Errorf("set user plan: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return PlanWriteResult{}, fmt.Errorf("set user plan: %w", err)
+	}
+	return out, nil
 }
 
 // SetUserPlanOverrides updates per-user limit overrides (JSON string).

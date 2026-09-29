@@ -94,6 +94,7 @@ func (s *Server) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
 		Role            string `json:"role"`
 		Plan            string `json:"plan"`
 		PlanExpiresAt   string `json:"plan_expires_at,omitempty"`
+		PlanSource      string `json:"plan_source"`
 		PlanOverrides   string `json:"plan_overrides,omitempty"`
 		TOTPEnabled     bool   `json:"totp_enabled"`
 		DisabledAt      string `json:"disabled_at,omitempty"`
@@ -117,6 +118,7 @@ func (s *Server) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
 			Role:            u.Role,
 			Plan:            u.Plan,
 			PlanExpiresAt:   u.PlanExpiresAt,
+			PlanSource:      u.PlanSource,
 			PlanOverrides:   u.PlanOverrides,
 			TOTPEnabled:     u.TOTPEnabled,
 			DisabledAt:      u.DisabledAt,
@@ -182,6 +184,7 @@ func (s *Server) handleAdminGetUser(w http.ResponseWriter, r *http.Request) {
 		"role":              user.Role,
 		"plan":              user.Plan,
 		"plan_expires_at":   user.PlanExpiresAt,
+		"plan_source":       user.PlanSource,
 		"plan_overrides":    user.PlanOverrides,
 		"totp_enabled":      user.TOTPEnabled,
 		"disabled_at":       user.DisabledAt,
@@ -349,6 +352,7 @@ func (s *Server) handleAdminGetUserDetail(w http.ResponseWriter, r *http.Request
 			"role":            user.Role,
 			"plan":            user.Plan,
 			"plan_expires_at": user.PlanExpiresAt,
+			"plan_source":     user.PlanSource,
 			"plan_overrides":  user.PlanOverrides,
 			"totp_enabled":    user.TOTPEnabled,
 			"disabled_at":     user.DisabledAt,
@@ -453,7 +457,11 @@ func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 		if input.PlanExpiresAt != nil {
 			expiresAt = *input.PlanExpiresAt
 		}
-		if err := s.store.SetUserPlan(userID, *input.Plan, expiresAt); err != nil {
+		// An operator's explicit choice always applies, lowering included
+		// (PLAN-3291 DR-6), and takes the plan's source over as manual.
+		if _, err := s.store.SetUserPlan(userID, store.PlanWrite{
+			Plan: *input.Plan, ExpiresAt: expiresAt, Source: store.PlanSourceManual, Force: true,
+		}); err != nil {
 			writeInternalError(w, err)
 			return
 		}
@@ -508,6 +516,7 @@ func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 		"plan":            updated.Plan,
 		"plan_overrides":  updated.PlanOverrides,
 		"plan_expires_at": updated.PlanExpiresAt,
+		"plan_source":     updated.PlanSource,
 		"totp_enabled":    updated.TOTPEnabled,
 		"created_at":      updated.CreatedAt,
 		"updated_at":      updated.UpdatedAt,
