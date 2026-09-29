@@ -98,22 +98,37 @@ const (
 	mcpAuthPAT   = "pat"
 )
 
-// sessionMCP is the mcp_public_url and mcp_auth the session and setup
-// payloads carry, which the web UI's connect modal keys on (PLAN-2310
-// DR-8). While MCP is available the URL is the resolved MCP URL and the
-// methods are ["oauth","pat"] with OAuth or ["pat"] without it (an http
-// self-host); otherwise the URL is "" and the methods are empty. The
-// setting is read once, so a concurrent toggle cannot produce a URL with
-// no methods or the reverse.
-func (s *Server) sessionMCP() (string, []string) {
+// sessionMCPState is what the session and setup payloads say about MCP:
+// mcp_available and oauth_available (PLAN-2310 DR-7), and mcp_public_url
+// and mcp_auth (DR-8), which the web UI's connect modal keys on.
+type sessionMCPState struct {
+	Available bool
+	OAuth     bool
+	URL       string
+	Auth      []string
+}
+
+// sessionMCP computes sessionMCPState from ONE read of the setting, so a
+// concurrent toggle cannot produce a payload whose four fields disagree
+// (a URL with no methods, or oauth_available beside a ["pat"]). While MCP
+// is available the URL is the resolved MCP URL and the methods are
+// ["oauth","pat"] with OAuth or ["pat"] without it (an http self-host);
+// otherwise the URL is "" and the methods are empty.
+func (s *Server) sessionMCP() sessionMCPState {
 	on, _ := s.mcpSetting()
-	if !s.mcpAvailableWith(on) {
-		return "", []string{}
+	st := sessionMCPState{
+		Available: s.mcpAvailableWith(on),
+		OAuth:     s.oauthAvailableWith(on),
+		Auth:      []string{},
 	}
-	if s.oauthAvailableWith(on) {
-		return s.mcpPublicURL, []string{mcpAuthOAuth, mcpAuthPAT}
+	switch {
+	case !st.Available:
+	case st.OAuth:
+		st.URL, st.Auth = s.mcpPublicURL, []string{mcpAuthOAuth, mcpAuthPAT}
+	default:
+		st.URL, st.Auth = s.mcpPublicURL, []string{mcpAuthPAT}
 	}
-	return s.mcpPublicURL, []string{mcpAuthPAT}
+	return st
 }
 
 // requireMCPAvailable and requireOAuthAvailable gate the MCP and OAuth

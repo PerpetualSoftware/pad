@@ -125,7 +125,7 @@ func (s *Server) handleCheckUsername(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) setupStatePayload(setupMethod string) map[string]interface{} {
-	mcpURL, mcpAuth := s.sessionMCP()
+	mcp := s.sessionMCP()
 	return map[string]interface{}{
 		"authenticated":     false,
 		"setup_required":    true,
@@ -133,13 +133,13 @@ func (s *Server) setupStatePayload(setupMethod string) map[string]interface{} {
 		"auth_method":       authMethodPassword,
 		"cloud_mode":        s.cloudMode,
 		"email_configured":  s.email != nil,
-		"mcp_public_url":    mcpURL,
-		"mcp_auth":          mcpAuth,
+		"mcp_public_url":    mcp.URL,
+		"mcp_auth":          mcp.Auth,
 		"billing_available": s.cloudMode && s.billingAvailable,
 		// PLAN-2310 DR-7: the web UI keys Connected Apps on oauth_available
 		// rather than cloud_mode. Both are evaluated per request.
-		"mcp_available":   s.mcpAvailable(),
-		"oauth_available": s.oauthAvailable(),
+		"mcp_available":   mcp.Available,
+		"oauth_available": mcp.OAuth,
 		"version":         s.version,
 	}
 }
@@ -166,7 +166,7 @@ func (s *Server) sessionStatePayload(authenticated bool, user *models.User) map[
 	// billing_available is true when PAD_BILLING_AVAILABLE=true and the
 	// deployment is in cloud mode. Used by the web UI to show/hide Stripe
 	// Checkout CTAs. TASK-800.
-	mcpURL, mcpAuth := s.sessionMCP()
+	mcp := s.sessionMCP()
 	payload := map[string]interface{}{
 		"authenticated":  authenticated,
 		"setup_required": false,
@@ -178,14 +178,14 @@ func (s *Server) sessionStatePayload(authenticated bool, user *models.User) map[
 		// with no Maileroo key). Low-sensitivity deployment config, same
 		// class as cloud_mode/mcp_public_url.
 		"email_configured":  s.email != nil,
-		"mcp_public_url":    mcpURL,
-		"mcp_auth":          mcpAuth,
+		"mcp_public_url":    mcp.URL,
+		"mcp_auth":          mcp.Auth,
 		"billing_available": s.cloudMode && s.billingAvailable,
 		// PLAN-2310 DR-7: whether MCP and its OAuth path are available now
 		// (the setting, the configured origin and its scheme; always on
 		// cloud). The console keys Connected Apps on oauth_available.
-		"mcp_available":   s.mcpAvailable(),
-		"oauth_available": s.oauthAvailable(),
+		"mcp_available":   mcp.Available,
+		"oauth_available": mcp.OAuth,
 		// webmcp_enabled gates the browser-side WebMCP surface. Read from the
 		// platform_settings kv table; default false when unset/absent or on
 		// any read error (fail closed). The web client uses it to decide

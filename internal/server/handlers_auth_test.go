@@ -160,6 +160,13 @@ func TestAuthSessionMCPURLAndAuth(t *testing.T) {
 				if strings.Join(got, ",") != strings.Join(tc.wantAuth, ",") {
 					t.Errorf("%s: mcp_auth = %v, want %v", which, got, tc.wantAuth)
 				}
+				// DR-7's booleans come from the same read and must agree
+				// with the URL and the methods.
+				wantAvail, wantOAuth := tc.wantURL != "", len(tc.wantAuth) == 2
+				if session["mcp_available"] != wantAvail || session["oauth_available"] != wantOAuth {
+					t.Errorf("%s: mcp_available = %v, oauth_available = %v, want %v, %v",
+						which, session["mcp_available"], session["oauth_available"], wantAvail, wantOAuth)
+				}
 			}
 
 			// No users yet: the setup payload.
