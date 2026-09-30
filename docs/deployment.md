@@ -1256,7 +1256,11 @@ records one version, attributed to `system` with source `recovery` and the
 summary "recovered from an unsaved editor session" (the op-log records no
 author, so none is guessed). It does not delete the op-log; the next tab to
 open the item replays it as before. Items holding edits set aside by an editor
-upgrade (`content_state: superseded_set_aside`) are not touched.
+upgrade (`content_state: superseded_set_aside`) are not touched. A recovery
+never writes a blank body over a stored one: when an item's edits replay to an
+empty document (which a tab would answer by showing the stored body), the
+stored body is kept, nothing is written, and the item logs the one warning
+below with `last_error_kind=empty_document`.
 
 A job that fails (timeout, memory limit, a worker death, an editor error) is
 retried after 1 minute, then 2; after 3 consecutive failures the item is not
@@ -1268,7 +1272,8 @@ logged one by one; the sweep's summary line (`op-log recovery sweep`, written
 only when something changed) carries their running count as
 `set_aside_skipped_total`. This budget is kept in memory, so a restart grants
 each item its 3 attempts again. An item whose stored edits were written under
-another editor schema version is skipped, and logs the same one warning.
+another editor schema version is skipped, and logs the same one warning
+(`last_error_kind=schema_version`).
 
 With `PAD_MATERIALIZE=off` none of this runs: no worker is ever started, and a
 tab that closed without saving catches up only when a tab next opens the item,

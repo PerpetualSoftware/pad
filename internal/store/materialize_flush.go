@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -214,6 +215,14 @@ const (
 	MaterializeSetAside MaterializeOutcome = "set_aside"
 	// MaterializeGone: the item is missing or soft-deleted.
 	MaterializeGone MaterializeOutcome = "gone"
+	// MaterializeEmptyRefused: the recovered body is blank and the stored one
+	// is not, so nothing was written (BUG-3316). A tab never does this: its
+	// lazy seed (TASK-1261) sees an empty document and seeds FROM
+	// items.content. Recovery cannot see whether the document is empty or
+	// merely renders blank, so it keeps the stored body in both cases, which
+	// is the conservative side of the tab's rule. Decided under the write
+	// lock, against the row being replaced.
+	MaterializeEmptyRefused MaterializeOutcome = "empty_document"
 )
 
 type materializeAbort struct{ outcome MaterializeOutcome }
@@ -321,7 +330,10 @@ func (s *Store) MaterializeFlush(itemID string, cursor int64, markdown string) (
 		Recovered:     true,
 		OpLogCursor:   &c,
 	}
-	updated, err := s.UpdateItemWithPreCheck(itemID, input, func(tx *sql.Tx, _ *models.Item) error {
+	updated, err := s.UpdateItemWithPreCheck(itemID, input, func(tx *sql.Tx, existing *models.Item) error {
+		if strings.TrimSpace(markdown) == "" && existing != nil && strings.TrimSpace(existing.Content) != "" {
+			return &materializeAbort{outcome: MaterializeEmptyRefused}
+		}
 		outcome, err := check(tx, tx)
 		if err != nil {
 			return err
