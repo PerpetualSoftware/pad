@@ -2824,7 +2824,7 @@
 			     Relative, with the absolute time on hover (the History tab's format). -->
 			{#if headerMeta.uploadedAt}
 				{@const at = headerMeta.uploadedAt}
-				<div class="lightbox-meta-detail lightbox-meta-uploaded" title={new Date(at).toLocaleString()}>
+				<div class="lightbox-meta-uploaded" title={new Date(at).toLocaleString()}>
 					Uploaded {relativeTime(at)}{#if headerMeta.uploadedBy}{' · by '}<bdi>{headerMeta.uploadedBy}</bdi>{/if}
 				</div>
 			{/if}
@@ -3306,7 +3306,8 @@
 		text-overflow: ellipsis;
 	}
 
-	.lightbox-meta-detail {
+	.lightbox-meta-detail,
+	.lightbox-meta-uploaded {
 		min-width: 0;
 		font-size: 0.75rem;
 		opacity: 0.85;
