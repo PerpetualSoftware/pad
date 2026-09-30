@@ -119,6 +119,10 @@ func (s *Store) CreateWorkspace(input models.WorkspaceCreate, opts ...MintOption
 	return ws, nil
 }
 
+// workspaceSlugProbedHook, when set by a test, runs between the slug probe and
+// the INSERT: the gap a concurrent create of the same name lands in (BUG-3307).
+var workspaceSlugProbedHook func(slug string)
+
 // createWorkspaceQ is CreateWorkspace against a caller-supplied executor.
 //
 // It exists for ImportWorkspace (BUG-2892), which has to mint the workspace on
@@ -141,19 +145,11 @@ func (s *Store) createWorkspaceQ(q execQueryer, input models.WorkspaceCreate) (*
 		slug = slugify(input.Name)
 	}
 
-	// Workspace slugs are globally unique (not scoped to a workspace
-	// like collection/item slugs), so we use a workspace-specific
-	// uniqueness check rather than the generic uniqueSlug helper.
-	finalSlug, err := s.uniqueWorkspaceSlug(q, slug)
-	if err != nil {
-		return nil, err
-	}
-
 	settings := input.Settings
 	if settings == "" {
 		settings = "{}"
 	}
-	settings, err = models.NormalizeWorkspaceSettings(settings)
+	settings, err := models.NormalizeWorkspaceSettings(settings)
 	if err != nil {
 		return nil, fmt.Errorf("normalize workspace settings: %w", err)
 	}
@@ -164,25 +160,83 @@ func (s *Store) createWorkspaceQ(q execQueryer, input models.WorkspaceCreate) (*
 		}
 	}
 
-	_, err = q.Exec(s.q(`
-		INSERT INTO workspaces (id, name, slug, owner_id, description, settings, source, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`), id, input.Name, finalSlug, input.OwnerID, input.Description, settings, input.Source, ts, ts)
-	if err != nil {
-		return nil, fmt.Errorf("insert workspace: %w", err)
+	// Workspace slugs are globally unique (not scoped to a workspace
+	// like collection/item slugs), so we use a workspace-specific
+	// uniqueness check rather than the generic uniqueSlug helper.
+	//
+	// The probe is a READ, so two creates of one name can both see the
+	// slug free (BUG-3307). The INSERT therefore does not fail on the
+	// slug: ON CONFLICT DO NOTHING inserts no row when another create won,
+	// and this create probes again and takes the next free slug. Not a
+	// caught unique violation, because on Postgres a failed statement
+	// aborts the whole transaction, and ImportWorkspace mints inside the
+	// transaction that carries its collections and items (BUG-2892). Under
+	// READ COMMITTED the INSERT waits for a winner that has not committed
+	// yet, and the next probe, a new statement, sees its row.
+	var finalSlug string
+	for attempt := 0; ; attempt++ {
+		if attempt == maxWorkspaceSlugAttempts {
+			return nil, fmt.Errorf("insert workspace: %w", &WorkspaceSlugContendedError{Slug: slug, Attempts: attempt})
+		}
+		finalSlug, err = s.uniqueWorkspaceSlug(q, slug)
+		if err != nil {
+			return nil, err
+		}
+		if workspaceSlugProbedHook != nil {
+			workspaceSlugProbedHook(finalSlug)
+		}
+		res, err := q.Exec(s.q(`
+			INSERT INTO workspaces (id, name, slug, owner_id, description, settings, source, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT (slug) DO NOTHING
+		`), id, input.Name, finalSlug, input.OwnerID, input.Description, settings, input.Source, ts, ts)
+		if err != nil {
+			return nil, fmt.Errorf("insert workspace: %w", err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return nil, fmt.Errorf("insert workspace: rows affected: %w", err)
+		}
+		if n == 1 {
+			break
+		}
 	}
 
 	return s.getWorkspaceBySlugQ(q, finalSlug)
 }
 
+// maxWorkspaceSlugAttempts bounds createWorkspaceQ's probe-and-insert loop.
+// Each lost attempt means another create committed the probed slug, so the
+// next probe moves past it; running out needs that many creates of one name
+// to land inside one create's window.
+const maxWorkspaceSlugAttempts = 10
+
+// WorkspaceSlugContendedError is returned when every attempt to mint a
+// workspace lost its slug to a concurrent create. It is contention, not a
+// fault, and handlers answer it 409 (BUG-3307).
+type WorkspaceSlugContendedError struct {
+	Slug     string
+	Attempts int
+}
+
+func (e *WorkspaceSlugContendedError) Error() string {
+	return fmt.Sprintf("workspace slug %q: lost to a concurrent create %d times", e.Slug, e.Attempts)
+}
+
 // uniqueWorkspaceSlug probes on the caller's executor for the same reason
 // createWorkspaceQ does: inside an import it must see that transaction's own
 // uncommitted rows, and it must not reach for the pool from inside one.
+//
+// It counts SOFT-DELETED rows too, because the constraint does: slug is
+// globally UNIQUE and soft delete keeps it, so skipping those rows handed a
+// new workspace the slug of one deleted in the last 30 days, and the INSERT
+// failed every time (BUG-3307). The new one takes the next suffix, and the
+// deleted one stays restorable under its own slug.
 func (s *Store) uniqueWorkspaceSlug(q rowQueryer, baseSlug string) (string, error) {
 	slug := baseSlug
 	for i := 2; ; i++ {
 		var count int
-		err := q.QueryRow(s.q("SELECT COUNT(*) FROM workspaces WHERE slug = ? AND deleted_at IS NULL"), slug).Scan(&count)
+		err := q.QueryRow(s.q("SELECT COUNT(*) FROM workspaces WHERE slug = ?"), slug).Scan(&count)
 		if err != nil {
 			return "", err
 		}
