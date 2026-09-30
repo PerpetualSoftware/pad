@@ -75,7 +75,7 @@
 	const shown = $derived(rows.filter((r) => matchesFilter(r, filter, activePerson)));
 
 	function fieldLabel(key: string): string {
-		return changeContext?.fieldFor(key)?.label || key.replace(/_/g, ' ');
+		return (changeContext?.fieldFor(key)?.label || key.replace(/_/g, ' ')).toLowerCase();
 	}
 
 	function titleCase(s: string): string {
@@ -212,7 +212,7 @@
 							<Chip size="sm">{sourceLabel(ev.who.source)}</Chip>
 						{/if}
 						<span class="verb">
-							{#if ev.who.kind === 'agent' && ev.who.user}for <bdi>{ev.who.user}</bdi> · {/if}{eventVerb(
+							{#if ev.who.kind === 'agent' && ev.who.user}for <bdi>{ev.who.user}</bdi>{' · '}{/if}{eventVerb(
 								ev,
 								itemNoun,
 								fieldLabel
@@ -243,7 +243,7 @@
 
 					{#if created}
 						{@const lines = createdLines(ev)}
-						{#if ev.changes.length > 0 || lines !== undefined}
+						{#if ev.changes.length > 0}
 							<div class="field-row">
 								<span class="field-label">Set</span>
 								<span class="values">
@@ -253,8 +253,13 @@
 												><ActivityChangeValue text={c.to} field={changeContext?.fieldFor(c.field)} context={changeContext} /></span
 											>{/if}
 									{/each}
-									{#if lines !== undefined}<span class="muted">· description {lines} {lines === 1 ? 'line' : 'lines'}</span>{/if}
 								</span>
+							</div>
+						{/if}
+						{#if lines !== undefined}
+							<div class="field-row">
+								<span class="field-label">Description</span>
+								<span class="values muted">{lines} {lines === 1 ? 'line' : 'lines'}</span>
 							</div>
 						{/if}
 					{:else}
@@ -338,6 +343,7 @@
 	.filters {
 		display: flex;
 		flex-wrap: wrap;
+		align-items: center;
 		gap: var(--space-2);
 	}
 
@@ -371,8 +377,12 @@
 		background: transparent;
 		color: inherit;
 		font: inherit;
+		line-height: inherit;
+		height: auto;
+		min-height: 0;
+		margin: 0;
+		padding: 0 0.2em 0 0;
 		cursor: pointer;
-		padding-right: 0.2em;
 	}
 
 	.people::after {

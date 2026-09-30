@@ -209,9 +209,10 @@
 	const restoreLabel = $derived(
 		version.is_create ? 'Restore to as created' : run ? 'Restore to before these edits' : 'Restore to before this edit'
 	);
-	const pairLabel = $derived(
-		version.is_create ? 'As created' : run ? `Before these ${run.count} autosaves → after` : 'Before this edit → after'
+	const oldLabel = $derived(
+		version.is_create ? 'Empty' : run ? `Before these ${run.count} autosaves` : 'Before this edit'
 	);
+	const newLabel = $derived(version.is_create ? 'As created' : 'After');
 </script>
 
 <div class="version-card" class:expanded>
@@ -238,11 +239,10 @@
 					<p class="diff-status">Couldn't load this edit's changes.</p>
 				{:else if diffPair !== null}
 					{#if currentContentStale && diffPair.after === currentContent}<StaleBodyNotice />{/if}
-					<div class="pair-head">
-						<span>{pairLabel}</span>
-						{#if !version.is_create}<span class="pair-note">vs the previous version, not vs now</span>{/if}
-					</div>
-					<DiffView oldContent={diffPair.before} newContent={diffPair.after} />
+					<p class="pair-head">
+						{version.is_create ? 'The body as this item was created.' : 'This edit only, not a comparison with the current body.'}
+					</p>
+					<DiffView oldContent={diffPair.before} newContent={diffPair.after} {oldLabel} {newLabel} />
 				{/if}
 			</div>
 
@@ -349,22 +349,11 @@
 	}
 
 	.pair-head {
-		display: flex;
-		justify-content: space-between;
-		gap: var(--space-2);
-		flex-wrap: wrap;
-		padding: var(--space-1) var(--space-2);
+		margin: 0 0 var(--space-1);
 		font-size: 0.8em;
-		font-weight: 600;
-		color: var(--text-secondary);
-		background: var(--bg-tertiary);
-		border-radius: var(--radius-sm, 4px) var(--radius-sm, 4px) 0 0;
-	}
-
-	.pair-note {
-		font-weight: 500;
 		color: var(--text-muted);
 	}
+
 
 	.diff-status {
 		margin: 0;
