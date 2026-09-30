@@ -879,13 +879,13 @@ export function markdownToWikiLinks(markdown: string, items: Item[]): string {
 			// automatically on next load).
 			// Text still equal to the follows-title marker is a link nobody edited
 			// that loaded under an earlier title: it follows the title (BUG-3315).
-			if (displayText === item.title || displayText === marker) {
+			if (displayText === item.title || followsMarker(displayText, marker)) {
 				return `[[${ref}]]`;
 			}
 			return `[[${ref}|${escapeWikiBody(displayText)}]]`;
 		}
 		// Legacy fallback for items without a ref.
-		return `[[${escapeWikiBody(displayText === marker ? item.title : displayText)}]]`;
+		return `[[${escapeWikiBody(followsMarker(displayText, marker) ? item.title : displayText)}]]`;
 	});
 }
 
@@ -903,6 +903,16 @@ export function markdownToWikiLinks(markdown: string, items: Item[]): string {
 function followsTitleMarker(followsTitle: boolean, text: string, item: Item): string {
 	if (!followsTitle || text !== item.title) return '';
 	return ` "${FOLLOWS_TITLE_PREFIX}${text.replace(/[\\"&]/g, '\\$&')}"`;
+}
+
+// Whether a link's text is still the text its follows-title marker recorded.
+// After a trip through the editor the marker comes back as the serializer
+// writes a title (only `"` escaped), so it is compared RAW. Straight from
+// wikiLinksToMarkdown it still carries the load's `\\`, `\"` and `\&`
+// escapes, so it is also compared with backslash escapes undone (codex r3).
+function followsMarker(text: string, marker: string | undefined): boolean {
+	if (marker === undefined) return false;
+	return text === marker || text === marker.replace(/\\([\\"&])/g, '$1');
 }
 
 // Escape a link's display text so the editor's markdown parser reads it as

@@ -55,6 +55,15 @@ describe('a rename no longer pins the old title on an op-logged item (BUG-3315)'
 		});
 	}
 
+	// Straight from the load, without the editor in between, the marker still
+	// carries the load's escapes (codex r3); it must still read as the title.
+	for (const special of ['A & B', 'back\\slash', 'say "hi"']) {
+		it(`the marker straight from the load follows a rename (${JSON.stringify(special)})`, () => {
+			const doc = wikiLinksToMarkdown('see [[TASK-1]] here', [taskTitled(special)], 'ws', 'u');
+			expect(markdownToWikiLinks(doc, after)).toBe('see [[TASK-1]] here');
+		});
+	}
+
 	it('no op-log: a tab seeded after the rename flushes a title-following link', () => {
 		const cascaded = 'see [[New Title]] here';
 		const doc = wikiLinksToMarkdown(cascaded, after, 'ws', 'u');
