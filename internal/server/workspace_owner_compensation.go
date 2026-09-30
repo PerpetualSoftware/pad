@@ -47,10 +47,12 @@ import (
 //
 // THE REMOVAL IS A SOFT DELETE FOLLOWED BY A PURGE, and both halves are needed.
 //
-// The soft delete releases the slug (uniqueWorkspaceSlug filters
-// `deleted_at IS NULL`), so the caller's retry reclaims the name instead of
-// landing on `name-2` — the husk-holds-the-slug symptom BUG-2892 fixed for
-// imports. But a soft delete alone is not "nothing": ListDeletedWorkspaces is
+// The PURGE is what releases the slug, by deleting the row, so the caller's
+// retry reclaims the name instead of landing on `name-2` — the
+// husk-holds-the-slug symptom BUG-2892 fixed for imports. A soft delete alone
+// does not: the slug column is globally UNIQUE and a soft-deleted row keeps
+// it, which is why uniqueWorkspaceSlug counts soft-deleted rows (BUG-3307).
+// And a soft delete alone is not "nothing": ListDeletedWorkspaces is
 // scoped by `workspaces.owner_id`, NOT by membership, so the row would surface
 // in the creator's deleted-workspaces list as a workspace they never knowingly
 // created — and restoring it would hand them back exactly the ownerless

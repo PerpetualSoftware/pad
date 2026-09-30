@@ -486,9 +486,8 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 	// workspace row behind: named, slugged, owned by the caller, holding no
 	// collections and no items.
 	//
-	// The husk was not only clutter. uniqueWorkspaceSlug probes
-	// `WHERE slug = ? AND deleted_at IS NULL`, and a husk is not soft-deleted,
-	// so it kept the slug: an operator who fixed the bundle and retried landed
+	// The husk was not only clutter. A husk is a live row, so it kept the
+	// slug: an operator who fixed the bundle and retried landed
 	// on `name-2`, and that slug is in every URL for the workspace afterwards.
 	// The attempt that stored nothing took the name from the one that worked.
 	tx, err := s.db.Begin()

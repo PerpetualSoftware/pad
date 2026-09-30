@@ -473,6 +473,14 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 						details: planLimitDetails(req, &ple.Result),
 					}
 				}
+				var ce *store.WorkspaceSlugContendedError
+				if errors.As(err, &ce) {
+					return nil, &importStatusError{
+						status:  http.StatusConflict,
+						code:    "conflict",
+						message: "Too many workspaces with this name are being created at once; try again",
+					}
+				}
 				return nil, fmt.Errorf("import workspace: %w", err)
 			}
 			oldItemIDToSlug = make(map[string]string, len(export.Items))

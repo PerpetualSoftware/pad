@@ -442,6 +442,9 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		if writeStorePlanLimitError(w, r, err, "") {
 			return
 		}
+		if writeWorkspaceSlugContended(w, err) {
+			return
+		}
 		writeInternalError(w, err)
 		return
 	}
@@ -952,6 +955,9 @@ func (s *Server) handleImportWorkspace(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "import_failed", v.Reason)
 			return
 		}
+		if writeWorkspaceSlugContended(w, err) {
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "import_failed", err.Error())
 		return
 	}
@@ -980,4 +986,16 @@ func (s *Server) handleImportWorkspace(w http.ResponseWriter, r *http.Request) {
 	staleBodies.SetHeader(w)
 	setImportCollapsedHeader(w, importReport)
 	writeJSON(w, http.StatusCreated, ws)
+}
+
+// writeWorkspaceSlugContended answers 409 when every attempt to mint a
+// workspace lost its slug to a concurrent create (BUG-3307). That is
+// contention, which a retry resolves, not a server fault.
+func writeWorkspaceSlugContended(w http.ResponseWriter, err error) bool {
+	var ce *store.WorkspaceSlugContendedError
+	if !errors.As(err, &ce) {
+		return false
+	}
+	writeError(w, http.StatusConflict, "conflict", "Too many workspaces with this name are being created at once; try again")
+	return true
 }
