@@ -227,7 +227,7 @@
 
 <div class="version-card" class:expanded data-diff={sinceNow ? 'current' : 'edit'}>
 	<div class="summary-row">
-		<span class="row-label">Description</span>
+		<span class="row-label">{sinceNow ? 'Since then' : 'Description'}</span>
 		{#if countsKnown}
 			<span class="lines"
 				><span class="added">+{linesAdded}</span> <span class="removed">−{linesRemoved}</span> lines</span
