@@ -5092,9 +5092,24 @@
 			   column has ~56px left — not enough for the dot plus its inset
 			   plus 12px gaps, and the dot wrapped onto a second line,
 			   re-creating the wasted row IDEA-2297 removed. Six gaps × 8px
-			   saved keeps the bar on one line down to ~340px. Only the gaps
-			   shrink — the controls stay 28px, so touch targets are unchanged. */
+			   saved keeps the bar on one line down to ~340px. */
 			gap: var(--space-1);
+		}
+
+		/* Touch targets (TASK-2244, Dave's ruling day 83): every strip control is
+		   at least 44x44 here, VISIBLY. A transparent hit area on a 28px bordered
+		   button would overlap its neighbour 4px away, so a tap in the gap would
+		   be ambiguous; the buttons themselves grow. Desktop keeps 28px, and the
+		   e2e pins both. */
+		.view-chip,
+		.new-btn,
+		.toolbar-icon-btn,
+		.header-actions :global(.quick-actions-menu > .trigger-btn) {
+			height: 44px;
+			min-width: 44px;
+		}
+		.toolbar-icon-btn {
+			width: 44px;
 		}
 
 		.new-btn-label {
