@@ -688,7 +688,7 @@ export function wikiDisplayText(body: string, titleByRef: ReadonlyMap<string, st
  * `item` is null when nothing resolves (or the match lacks a collection
  * slug); `displayText` is what the caller should render either way.
  */
-function resolveWikiBody(body: string, items: Item[]): { item: Item | null; displayText: string } {
+function resolveWikiBody(body: string, items: Item[]): { item: Item | null; displayText: string; followsTitle: boolean } {
 	// Split optional display override on the FIRST unescaped pipe. We do
 	// this up-front so REF_PATTERN can check the key alone (a ref like
 	// "BUG-585" contains no pipe, so this is a no-op for ref storage).
@@ -700,7 +700,7 @@ function resolveWikiBody(body: string, items: Item[]): { item: Item | null; disp
 	if (REF_PATTERN.test(key.trim())) {
 		const byRef = findItemByRef(items, key.trim());
 		if (byRef && byRef.collection_slug) {
-			return { item: byRef, displayText: displayOverride ?? byRef.title };
+			return { item: byRef, displayText: displayOverride ?? byRef.title, followsTitle: displayOverride == null };
 		}
 		// Intentional fall-through to the legacy title lookups below.
 	}
@@ -712,7 +712,7 @@ function resolveWikiBody(body: string, items: Item[]): { item: Item | null; disp
 		const fullBody = unescapeWikiBody(body);
 		const fullTitleItem = items.find(i => i.title.toLowerCase() === fullBody.toLowerCase());
 		if (fullTitleItem && fullTitleItem.collection_slug) {
-			return { item: fullTitleItem, displayText: fullTitleItem.title };
+			return { item: fullTitleItem, displayText: fullTitleItem.title, followsTitle: true };
 		}
 		// Collection-qualified legacy form whose title contains a pipe.
 		if (fullBody.includes('/')) {
@@ -723,7 +723,7 @@ function resolveWikiBody(body: string, items: Item[]): { item: Item | null; disp
 				i.collection_slug === qualColl
 			);
 			if (qualItem && qualItem.collection_slug) {
-				return { item: qualItem, displayText: qualItem.title };
+				return { item: qualItem, displayText: qualItem.title, followsTitle: true };
 			}
 		}
 	}
@@ -747,7 +747,7 @@ function resolveWikiBody(body: string, items: Item[]): { item: Item | null; disp
 		}
 	}
 
-	return { item: item && item.collection_slug ? item : null, displayText };
+	return { item: item && item.collection_slug ? item : null, displayText, followsTitle: displayOverride == null };
 }
 
 /**
@@ -779,7 +779,7 @@ export function wikiLinksToMarkdown(content: string, items: Item[], workspaceSlu
 				const sameWsItem = findItemByRef(items, xw.ref);
 				if (sameWsItem && sameWsItem.collection_slug) {
 					const text = xw.display ?? sameWsItem.title;
-					return `[${escapeMarkdownLinkText(text)}](${prefix}/${sameWsItem.collection_slug}/${itemUrlId(sameWsItem)})`;
+					return `[${escapeMarkdownLinkText(text)}](${prefix}/${sameWsItem.collection_slug}/${itemUrlId(sameWsItem)}${followsTitleMarker(xw.display == null, text, sameWsItem)})`;
 				}
 				// Ref didn't resolve in the current workspace — leave the
 				// original wiki-link verbatim, matching the legacy fall-through
@@ -794,9 +794,9 @@ export function wikiLinksToMarkdown(content: string, items: Item[], workspaceSlu
 
 		// Same-workspace resolution — shared with renderMarkdown via
 		// resolveWikiBody (see its doc comment for the resolution order).
-		const { item, displayText } = resolveWikiBody(body, items);
+		const { item, displayText, followsTitle } = resolveWikiBody(body, items);
 		if (item && item.collection_slug) {
-			return `[${escapeMarkdownLinkText(displayText)}](${prefix}/${item.collection_slug}/${itemUrlId(item)})`;
+			return `[${escapeMarkdownLinkText(displayText)}](${prefix}/${item.collection_slug}/${itemUrlId(item)}${followsTitleMarker(followsTitle, displayText, item)})`;
 		}
 		// Unresolved: leave the original [[X]] text alone. Emitting a
 		// [text](broken) link here would hijack content that legitimately
@@ -846,7 +846,7 @@ export function markdownToWikiLinks(markdown: string, items: Item[]): string {
 	// contain backslash-escaped chars (\[, \], \\) that tiptap-markdown emits
 	// when serializing link text. The capture allows `\.` sequences so we
 	// don't terminate on an escaped `]` that's really part of the display.
-	return withXwRefs.replace(/\[((?:\\.|[^\]\\])+)\]\(\/(?:[^/]+\/){2,3}([^)]+)\)/g, (_match, rawText: string, slugOrRef: string) => {
+	return withXwRefs.replace(/\[((?:\\.|[^\]\\])+)\]\((\/(?:[^/\s]+\/){2,3}([^)\s]+))(?: "((?:\\"|[^"])*)")?\)/g, (_match, rawText: string, path: string, slugOrRef: string, rawMarker: string | undefined) => {
 		const item = items.find(i => {
 			if (i.slug === slugOrRef) return true;
 			if (i.item_number && i.collection_prefix) {
@@ -854,7 +854,10 @@ export function markdownToWikiLinks(markdown: string, items: Item[]): string {
 			}
 			return false;
 		});
-		if (!item) return _match;
+		// The follows-title marker is load-time state and never belongs in stored
+		// content, so a link whose target is gone keeps its text and href only.
+		if (!item) return rawMarker === undefined ? _match : `[${rawText}](${path})`;
+		const marker = rawMarker === undefined ? undefined : rawMarker.replace(/\\"/g, '"');
 
 		// tiptap-markdown emits backslash-escaped brackets in the link text
 		// (e.g. "Use \[\[ to link"); unescape before comparing/emitting.
@@ -868,14 +871,30 @@ export function markdownToWikiLinks(markdown: string, items: Item[]): string {
 			// Prefer ref-based storage. Omit |Display if it matches the
 			// current item title (renaming the item updates the link text
 			// automatically on next load).
-			if (displayText === item.title) {
+			// Text still equal to the follows-title marker is a link nobody edited
+			// that loaded under an earlier title: it follows the title (BUG-3315).
+			if (displayText === item.title || displayText === marker) {
 				return `[[${ref}]]`;
 			}
 			return `[[${ref}|${escapeWikiBody(displayText)}]]`;
 		}
 		// Legacy fallback for items without a ref.
-		return `[[${escapeWikiBody(displayText)}]]`;
+		return `[[${escapeWikiBody(displayText === marker ? item.title : displayText)}]]`;
 	});
+}
+
+// The load-time marker for a link that FOLLOWS its target's title (BUG-3315),
+// carried in the link mark's existing `title` attribute: `[Title](href "Title")`.
+// It records the text as loaded, and only for a link with no explicit override
+// whose text IS the title. The save then tells "nobody edited this, it was the
+// title then" (follows the title, so `[[REF]]`) from a deliberate or edited
+// display. It never reaches stored content: markdownToWikiLinks consumes it, and
+// SafeLink keeps it out of the DOM so it is not shown as a stale tooltip.
+// Inside a CommonMark link title, `\`, `"` and `&` would be read as an escape,
+// the end of the title and an entity, so each is backslash-escaped.
+function followsTitleMarker(followsTitle: boolean, text: string, item: Item): string {
+	if (!followsTitle || text !== item.title) return '';
+	return ` "${text.replace(/[\\"&]/g, '\\$&')}"`;
 }
 
 // Escape a link's display text so the editor's markdown parser reads it as
@@ -936,10 +955,18 @@ function unescapeMarkdownLinkText(s: string): string {
 }
 
 /**
- * Convert [[broken]] placeholder links back to wiki syntax
+ * Convert [[broken]] placeholder links back to wiki syntax.
+ *
+ * It is the LAST step of every save pipeline (both ItemDetail save paths and
+ * the materializer's flushPipeline), which skip markdownToWikiLinks when the
+ * link index is empty. So it is also where a follows-title marker (BUG-3315,
+ * followsTitleMarker) that nothing consumed is dropped from same-origin links:
+ * the marker is load-time state and must never reach stored content.
  */
 export function cleanBrokenLinks(markdown: string): string {
-	return markdown.replace(/\[([^\]]+)\]\(broken\)/g, '[[$1]]');
+	return markdown
+		.replace(/\[([^\]]+)\]\(broken\)/g, '[[$1]]')
+		.replace(/(\[(?:\\.|[^\]\\])+\]\(\/[^)\s]*) "(?:\\"|[^"])*"\)/g, '$1)');
 }
 
 export function parseTags(tagsJson: string): string[] {
