@@ -170,6 +170,24 @@ type TimelineEntry struct {
 	Version   *Version                `json:"version,omitempty"`
 	Note      *ItemImplementationNote `json:"note,omitempty"`
 	Decision  *ItemDecisionLogEntry   `json:"decision,omitempty"`
+	// AutosaveRun is set on a collab-snapshot version entry that stands for a
+	// collapsed run of autosaves (PLAN-2348 U3): the entry is the run's
+	// NEWEST row, and this says what the dropped older rows were.
+	AutosaveRun *AutosaveRun `json:"autosave_run,omitempty"`
+}
+
+// AutosaveRun describes the collab-snapshot versions one timeline entry
+// stands for. Count includes the entry's own row, so it is at least 2.
+// OldestVersionID is the run's first row: its "before" is the body the run
+// started from, which is what a diff of the whole run pairs with the newest
+// row's "after". The line counts are the SUM of the rows' own counts and are
+// present only when every row in the run carries one.
+type AutosaveRun struct {
+	Count           int       `json:"count"`
+	FirstAt         time.Time `json:"first_at"`
+	OldestVersionID string    `json:"oldest_version_id"`
+	LinesAdded      *int      `json:"lines_added,omitempty"`
+	LinesRemoved    *int      `json:"lines_removed,omitempty"`
 }
 
 // TimelineResponse is the paginated response from the timeline endpoint.

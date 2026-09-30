@@ -580,30 +580,81 @@ func isAutosaveVersion(e models.TimelineEntry) bool {
 
 // collapseAutosaveBursts walks the newest-first entries and drops a
 // collab-snapshot version when the previous kept entry is also a collab-snapshot
-// version within autosaveBurstWindow — i.e. an uninterrupted burst of autosaves
-// collapses to its newest row. Any non-autosave entry between two autosaves
-// breaks the run, so each distinct editing session still leaves one restore point.
+// version by the same writer within autosaveBurstWindow — i.e. an uninterrupted
+// burst of one person's autosaves collapses to its newest row. Any non-autosave
+// entry between two autosaves breaks the run, so each distinct editing session
+// still leaves one restore point.
+//
+// The kept row carries an AutosaveRun describing the rows it stands for
+// (PLAN-2348 U3), so the History tab can say "4 autosaves by Dave · 1:02–1:14"
+// and diff the whole run. A lone autosave carries none. The run is keyed on
+// the writer too: two people's autosaves are two runs, because the History
+// card names one person.
 func collapseAutosaveBursts(entries []models.TimelineEntry) []models.TimelineEntry {
 	if len(entries) == 0 {
 		return entries
 	}
 	kept := entries[:0:0]
 	var lastAutosaveAt time.Time
+	runHead := -1 // index in kept of the current run's newest row
 	for _, e := range entries {
 		if isAutosaveVersion(e) {
-			if !lastAutosaveAt.IsZero() && lastAutosaveAt.Sub(e.CreatedAt) <= autosaveBurstWindow {
-				// Same burst as the autosave we already kept — skip this older one.
+			if runHead >= 0 && kept[runHead].Version.UserID == e.Version.UserID &&
+				lastAutosaveAt.Sub(e.CreatedAt) <= autosaveBurstWindow {
+				// Same burst as the autosave we already kept — fold this older one in.
 				lastAutosaveAt = e.CreatedAt
+				foldAutosave(&kept[runHead], e)
 				continue
 			}
 			lastAutosaveAt = e.CreatedAt
-		} else {
-			// A non-autosave event ends the current burst.
-			lastAutosaveAt = time.Time{}
+			kept = append(kept, e)
+			runHead = len(kept) - 1
+			continue
 		}
+		// A non-autosave event ends the current burst.
+		lastAutosaveAt = time.Time{}
+		runHead = -1
 		kept = append(kept, e)
 	}
 	return kept
+}
+
+// foldAutosave records an older collab-snapshot row into the run its newer
+// neighbour heads.
+func foldAutosave(head *models.TimelineEntry, older models.TimelineEntry) {
+	if head.AutosaveRun == nil {
+		head.AutosaveRun = &models.AutosaveRun{
+			Count:           1,
+			FirstAt:         head.CreatedAt,
+			OldestVersionID: head.Version.ID,
+			LinesAdded:      copyIntPtr(head.Version.LinesAdded),
+			LinesRemoved:    copyIntPtr(head.Version.LinesRemoved),
+		}
+	}
+	run := head.AutosaveRun
+	run.Count++
+	run.FirstAt = older.CreatedAt
+	run.OldestVersionID = older.Version.ID
+	run.LinesAdded = sumKnown(run.LinesAdded, older.Version.LinesAdded)
+	run.LinesRemoved = sumKnown(run.LinesRemoved, older.Version.LinesRemoved)
+}
+
+func copyIntPtr(p *int) *int {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
+}
+
+// sumKnown adds b to a, and is nil once either side is unknown: a sum over a
+// run with an uncounted row would understate the run.
+func sumKnown(a, b *int) *int {
+	if a == nil || b == nil {
+		return nil
+	}
+	v := *a + *b
+	return &v
 }
 
 // exhaustedWindowCursor returns the position the next timeline page must start
@@ -730,9 +781,10 @@ func activityRecordsMore(metadata string) bool {
 	}
 	for k, v := range m {
 		// body_edited (PLAN-2348 U2) marks a body edit the version throttle
-		// wrote no row for. U3 renders it; until then it must not turn a row
-		// that otherwise says nothing into an empty card (lead ruling).
-		if k == "agent" || k == "body_edited" {
+		// wrote no row for. It counts: the History tab (U3) renders it as
+		// "edited the body", grouped into the nearest version's event, so a
+		// row carrying only the marker is the record of that edit.
+		if k == "agent" {
 			continue
 		}
 		if s := strings.TrimSpace(string(v)); s != `""` && s != "null" {
