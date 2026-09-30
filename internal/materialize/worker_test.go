@@ -96,7 +96,7 @@ func TestWorkerRoundTrip(t *testing.T) {
 
 func TestWorkerEmptyInput(t *testing.T) {
 	var out bytes.Buffer
-	if err := RunWorker(bytes.NewReader(nil), &out, pad.MaterializerJS); err != nil {
+	if err := serveWorker(bytes.NewReader(nil), &out, runner(t)); err != nil {
 		t.Fatal(err)
 	}
 	if out.Len() != 0 {
@@ -111,7 +111,7 @@ func TestWorkerTruncatedFrame(t *testing.T) {
 		"body":   append(append([]byte{}, good...), good[:len(good)-3]...),
 	} {
 		var out bytes.Buffer
-		err := RunWorker(bytes.NewReader(in), &out, pad.MaterializerJS)
+		err := serveWorker(bytes.NewReader(in), &out, runner(t))
 		if !errors.Is(err, io.ErrUnexpectedEOF) {
 			t.Errorf("%s: got %v, want ErrUnexpectedEOF", name, err)
 		}
@@ -125,7 +125,7 @@ func TestWorkerOversizedFrame(t *testing.T) {
 	in := make([]byte, 4)
 	binary.BigEndian.PutUint32(in, MaxFrameBytes+1)
 	var out bytes.Buffer
-	if err := RunWorker(bytes.NewReader(in), &out, pad.MaterializerJS); !errors.Is(err, errFrameTooLarge) {
+	if err := serveWorker(bytes.NewReader(in), &out, runner(t)); !errors.Is(err, errFrameTooLarge) {
 		t.Fatalf("got %v", err)
 	}
 	resps := readResponses(t, out.Bytes())

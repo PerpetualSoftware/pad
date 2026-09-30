@@ -201,7 +201,10 @@ jobs:
   native-smoke:
     name: Smoke (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+    # 10 for the smoke itself, plus the materializer bundle build and the
+    # supervisor tests (TASK-2198 U3), which spawn real workers and compile
+    # the package's test binary.
+    timeout-minutes: 35
     defaults:
       run:
         shell: pwsh
@@ -240,14 +243,24 @@ jobs:
           go-version-file: go.mod
 
       - name: Create web build placeholder
-        # The materializer bundle (TASK-2198) is stubbed here too: this job
-        # builds and smoke-tests the binary, and nothing it runs loads the
-        # bundle. internal/materialize.New refuses a placeholder by name.
         run: |
           New-Item -ItemType Directory -Force web/build | Out-Null
           Set-Content web/build/index.html '<!doctype html>'
-          New-Item -ItemType Directory -Force web/build-materializer | Out-Null
-          Set-Content web/build-materializer/materializer.js '// placeholder'
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: web/package-lock.json
+
+      # The materializer bundle (TASK-2198) is built for real here, as in the
+      # go job, and not stubbed: the supervisor tests at the end of this job
+      # spawn real workers that load it, and internal/materialize.New refuses
+      # a placeholder by name. Only the bundle, not the whole web build (the
+      # go job's shape): web/build stays the placeholder above.
+      - name: Build the materializer bundle for embed
+        working-directory: web
+        run: npm ci && node scripts/build-materializer.mjs
 
       - name: Build binary
         run: go build -o "${{ matrix.binary }}" ./cmd/pad
@@ -348,6 +361,24 @@ jobs:
             Pop-Location
           }
           $global:LASTEXITCODE = 0
+
+      # The memory-cap tests below allocate 2 GiB against a 1600 MiB cap, and
+      # the adversarial one drives a real worker to a 2 GiB cap. Logged so a
+      # failure there can be read against what the runner actually had.
+      - name: Runner memory
+        run: |
+          if ($IsMacOS) { sysctl hw.memsize hw.ncpu } else { Get-CimInstance Win32_ComputerSystem | Select-Object TotalPhysicalMemory, NumberOfLogicalProcessors | Format-List }
+
+      # The materializer supervisor (TASK-2198 U3) on each OS's REAL memory
+      # cap, which only these runners have: macOS's parent-side RSS watchdog
+      # (proc_info) and Windows' Job Object with a suspended start. The Go job
+      # covers Linux's RLIMIT_AS. PAD_MATERIALIZE_TEST_NO_SKIP turns the cap
+      # tests' skips into failures, so a cap that stopped running cannot pass
+      # as "skipped".
+      - name: Materializer supervisor and memory cap (TASK-2198 U3)
+        env:
+          PAD_MATERIALIZE_TEST_NO_SKIP: "1"
+        run: go test ./internal/materialize/ -run '^(TestSupervisor.*|TestParseMemLimit|TestConfigFromEnv|TestParsePSRSS|TestDeepNestFrameShallow)$' -count=1 -timeout 20m -v
 
   go-postgres:
     # Backstop only. A hung TEST is caught by -timeout=45m on the steps

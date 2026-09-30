@@ -57,6 +57,13 @@ func RunWorker(r io.Reader, w io.Writer, js []byte) error {
 	if err != nil {
 		return err
 	}
+	return serveWorker(r, w, runner)
+}
+
+// serveWorker is RunWorker's loop over an already-loaded Runner. Split out so
+// the tests of the loop share one loaded bundle instead of paying the load
+// (~25 s under the race detector) per test.
+func serveWorker(r io.Reader, w io.Writer, runner *Runner) error {
 	br := bufio.NewReader(r)
 	bw := bufio.NewWriter(w)
 	for {

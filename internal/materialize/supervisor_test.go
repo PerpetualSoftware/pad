@@ -3,6 +3,7 @@ package materialize
 import (
 	"bufio"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -77,11 +78,18 @@ func runScript(w *bufio.Writer, req WorkerRequest) bool {
 	case "exit":
 		fmt.Fprintln(os.Stderr, "helper: exiting on purpose")
 		os.Exit(3)
-	case "alloc": // allocate arg MiB and touch every page
+	case "alloc": // allocate arg MiB, every byte written with noise
+		// Noise, not a byte per page: macOS compresses idle pages, and a
+		// page of zeros and one 1 would compress away out of the resident
+		// set the watchdog reads.
 		mib, _ := strconv.Atoi(arg)
 		b := make([]byte, mib<<20)
-		for i := 0; i < len(b); i += 4096 {
-			b[i] = 1
+		x := uint64(0x9E3779B97F4A7C15)
+		for i := 0; i+8 <= len(b); i += 8 {
+			x ^= x << 13
+			x ^= x >> 7
+			x ^= x << 17
+			binary.LittleEndian.PutUint64(b[i:], x)
 		}
 		ok(strconv.Itoa(len(b)))
 	case "soft": // what the worker answers when its own interrupt fires
@@ -493,10 +501,10 @@ func TestSupervisorCtxCancelKillsWithoutBackoff(t *testing.T) {
 // TestSupervisorMemoryCapPlatform runs the cap this OS ships with.
 func TestSupervisorMemoryCapPlatform(t *testing.T) {
 	if raceEnabled {
-		t.Skip("the race runtime cannot start under an address-space cap")
+		skipCapTest(t, "the race runtime cannot start under an address-space cap")
 	}
 	if platformMemCap.apply == nil && platformMemCap.rss == nil {
-		t.Skipf("no memory cap on this OS (%s)", platformMemCap.mechanism)
+		skipCapTest(t, "no memory cap on this OS ("+platformMemCap.mechanism+")")
 	}
 	h := newHarness(t, "script", func(c *SupervisorConfig) {
 		c.MemLimit = 1600 << 20
@@ -529,7 +537,7 @@ func TestSupervisorMemoryCapPlatform(t *testing.T) {
 // poll and kill) wherever a sampler exists, so it runs on Linux too.
 func TestSupervisorRSSWatchdog(t *testing.T) {
 	if testRSSSampler == nil {
-		t.Skip("no RSS sampler for tests on this OS")
+		skipCapTest(t, "no RSS sampler for tests on this OS")
 	}
 	h := newHarness(t, "script", func(c *SupervisorConfig) {
 		c.MemLimit = MinMemLimit

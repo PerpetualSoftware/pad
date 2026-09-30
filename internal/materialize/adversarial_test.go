@@ -90,7 +90,7 @@ func TestDeepNestFrameShallow(t *testing.T) {
 // untouched, and the next job must succeed on a fresh worker.
 func TestSupervisorAdversarialDeepNesting(t *testing.T) {
 	if raceEnabled {
-		t.Skip("the race runtime cannot start under an address-space cap")
+		skipCapTest(t, "the race runtime cannot start under an address-space cap")
 	}
 	if testing.Short() {
 		t.Skip("spawns a real worker and drives it to its cap")

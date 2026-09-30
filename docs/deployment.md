@@ -1224,6 +1224,10 @@ address inside `PAD_TRUSTED_PROXIES` (the proxy sends no `X-Forwarded-For` or
 
 ### Op-log materializer worker
 
+**Not active yet.** The worker and the two variables below take effect once
+the materializer is wired into the server (TASK-2198 U4); until then they are
+inert, and setting them changes nothing.
+
 When a browser tab closes without saving, its last edits are only in the
 item's collaborative op-log. Pad can turn that op-log back into the item's
 markdown on the server by running the editor's own JavaScript. It does this in
