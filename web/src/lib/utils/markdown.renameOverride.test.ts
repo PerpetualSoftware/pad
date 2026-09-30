@@ -50,7 +50,7 @@ describe('a rename no longer pins the old title on an op-logged item (BUG-3315)'
 			// Guard: the link text in the document is the pre-rename title, and it
 			// carries the marker. Without this, a change to the seed could make the
 			// next assertion pass vacuously.
-			expect(doc).toBe('see [Old Title](/u/ws/tasks/TASK-1 "Old Title") here');
+			expect(doc).toBe('see [Old Title](/u/ws/tasks/TASK-1 "pad-follows-title:Old Title") here');
 			expect(markdownToWikiLinks(doc, after)).toBe('see [[TASK-1]] here');
 		});
 	}

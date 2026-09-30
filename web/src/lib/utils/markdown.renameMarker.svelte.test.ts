@@ -104,7 +104,23 @@ describe('BUG-3315 U2: a rename does not pin the old title', () => {
 	it('a link to a slug with a space still converts, marker or not', () => {
 		const spaced = { ...task('Old Title'), slug: 'my slug', item_number: undefined } as unknown as Item;
 		expect(saveWith('see [Old Title](/u/ws/tasks/my slug) here', [spaced])).toBe('see [[Old Title]] here');
-		expect(saveWith('see [Old Title](/u/ws/tasks/my slug "Old Title") here', [{ ...spaced, title: 'New Title' } as Item])).toBe('see [[New Title]] here');
+		expect(saveWith('see [Old Title](/u/ws/tasks/my slug "pad-follows-title:Old Title") here', [{ ...spaced, title: 'New Title' } as Item])).toBe('see [[New Title]] here');
+	});
+
+	// Guard (codex r2): a title the USER wrote on an internal link is not a
+	// marker. The save leaves such a link exactly as before U2, and the DOM keeps
+	// the tooltip.
+	it('a user-authored titled internal link is left untouched', () => {
+		const typed = 'see [x](/u/ws/tasks/TASK-1 "my tip") here';
+		expect(saveWith(typed, [task('Old Title')])).toBe(typed);
+		const ed = createHeadlessEditor();
+		try {
+			ed.commands.setContent(typed);
+			expect(ed.getHTML()).toContain('title="my tip"');
+			expect(saveWith((ed.storage as { markdown: { getMarkdown(): string } }).markdown.getMarkdown(), [task('Old Title')])).toBe(typed);
+		} finally {
+			ed.destroy();
+		}
 	});
 
 	it('with no rename, nothing changes', () => {

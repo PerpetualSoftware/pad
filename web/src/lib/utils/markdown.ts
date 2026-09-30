@@ -1,6 +1,7 @@
 import { marked, Renderer, type Tokens } from 'marked';
 import DOMPurify from 'dompurify';
 import type { Item } from '$lib/types';
+import { FOLLOWS_TITLE_PREFIX } from './followsTitle';
 import { itemUrlId } from '$lib/types';
 import {
 	type AttachmentResolver,
@@ -856,8 +857,13 @@ export function markdownToWikiLinks(markdown: string, items: Item[]): string {
 		});
 		// The follows-title marker is load-time state and never belongs in stored
 		// content, so a link whose target is gone keeps its text and href only.
+		// A title that is not ours is the user's: the link is left exactly as it
+		// was, which is what this function did with any titled link before the
+		// marker existed.
+		if (rawMarker !== undefined && !rawMarker.startsWith(FOLLOWS_TITLE_PREFIX)) return _match;
 		if (!item) return rawMarker === undefined ? _match : `[${rawText}](${path})`;
-		const marker = rawMarker === undefined ? undefined : rawMarker.replace(/\\"/g, '"');
+		const marker =
+			rawMarker === undefined ? undefined : rawMarker.slice(FOLLOWS_TITLE_PREFIX.length).replace(/\\"/g, '"');
 
 		// tiptap-markdown emits backslash-escaped brackets in the link text
 		// (e.g. "Use \[\[ to link"); unescape before comparing/emitting.
@@ -884,7 +890,9 @@ export function markdownToWikiLinks(markdown: string, items: Item[]): string {
 }
 
 // The load-time marker for a link that FOLLOWS its target's title (BUG-3315),
-// carried in the link mark's existing `title` attribute: `[Title](href "Title")`.
+// carried in the link mark's existing `title` attribute:
+// `[Title](href "pad-follows-title:Title")`. The prefix is what tells it from a
+// title a user wrote, which is never read, stripped or hidden (codex r2).
 // It records the text as loaded, and only for a link with no explicit override
 // whose text IS the title. The save then tells "nobody edited this, it was the
 // title then" (follows the title, so `[[REF]]`) from a deliberate or edited
@@ -894,7 +902,7 @@ export function markdownToWikiLinks(markdown: string, items: Item[]): string {
 // the end of the title and an entity, so each is backslash-escaped.
 function followsTitleMarker(followsTitle: boolean, text: string, item: Item): string {
 	if (!followsTitle || text !== item.title) return '';
-	return ` "${text.replace(/[\\"&]/g, '\\$&')}"`;
+	return ` "${FOLLOWS_TITLE_PREFIX}${text.replace(/[\\"&]/g, '\\$&')}"`;
 }
 
 // Escape a link's display text so the editor's markdown parser reads it as
@@ -966,7 +974,7 @@ function unescapeMarkdownLinkText(s: string): string {
 export function cleanBrokenLinks(markdown: string): string {
 	return markdown
 		.replace(/\[([^\]]+)\]\(broken\)/g, '[[$1]]')
-		.replace(/(\[(?:\\.|[^\]\\])+\]\(\/[^)]*?) "(?:\\"|[^"])*"\)/g, '$1)');
+		.replace(/(\[(?:\\.|[^\]\\])+\]\(\/[^)]*?) "pad-follows-title:(?:\\"|[^"])*"\)/g, '$1)');
 }
 
 export function parseTags(tagsJson: string): string[] {
