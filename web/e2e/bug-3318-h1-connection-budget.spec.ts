@@ -58,4 +58,51 @@ test.describe('BUG-3318: open pad tabs must not starve a new page of connections
 		// The item page finishes loading: its tab strip renders past the skeleton.
 		await expect(next.getByRole('tab', { name: 'Details' })).toBeVisible({ timeout: 20_000 });
 	});
+
+	test('one tab holds the access stream; when it closes, another takes over and still hears hints', async ({
+		page,
+		context,
+		fixture,
+		request
+	}) => {
+		const accessOpened = (p: Page) => {
+			let n = 0;
+			p.on('request', (r) => {
+				if (new URL(r.url()).pathname === '/api/v1/events/stream') n++;
+			});
+			return () => n;
+		};
+		const tabsFetched = (p: Page) =>
+			p.waitForRequest((r) => new URL(r.url()).pathname === '/api/v1/me/workspace-tabs' && r.method() === 'GET', {
+				timeout: 15_000
+			});
+
+		await browserLogin(page);
+		const leaderCount = accessOpened(page);
+		await openPad(page, `/${fixture.adminUsername}/${fixture.workspaceSlug}`);
+		const follower = await context.newPage();
+		const followerCount = accessOpened(follower);
+		await openPad(follower, `/${fixture.adminUsername}/${fixture.workspaceSlug}/tasks`);
+		expect(leaderCount(), 'the first tab opened the access stream').toBe(1);
+		expect(followerCount(), 'a second tab opened its own access stream').toBe(0);
+
+		// The leader goes. The follower takes the lock, opens the stream, and
+		// its first connect resyncs (a refetch of the open set).
+		const resync = tabsFetched(follower);
+		await page.close();
+		await resync;
+		expect(followerCount(), 'the follower did not take over the stream').toBe(1);
+
+		// A hint after the handover still reaches it: creating a workspace
+		// publishes `gained` to its creator.
+		const refetch = tabsFetched(follower);
+		const made = await request.post('/api/v1/workspaces', {
+			headers: { Authorization: `Bearer ${fixture.apiToken}`, 'Content-Type': 'application/json' },
+			data: { name: `BUG-3318 handover ${Date.now()}`, template: 'blank' }
+		});
+		expect(made.ok(), await made.text()).toBeTruthy();
+		await refetch;
+		const slug = ((await made.json()) as { slug: string }).slug;
+		await request.delete(`/api/v1/workspaces/${slug}`, { headers: { Authorization: `Bearer ${fixture.apiToken}` } });
+	});
 });

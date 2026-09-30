@@ -39,7 +39,7 @@ const identityReload = vi.hoisted(() => ({
 }));
 vi.mock('$lib/stores/identityReload.svelte', () => identityReload);
 
-// The per-tab access stream (TASK-3275) is started by this layout. jsdom has
+// The access stream (TASK-3275; elected per browser since BUG-3318) is started by this layout. jsdom has
 // no EventSource, and the stream's behaviour is pinned in its own test; here
 // only the binding is observable, so it is a spy.
 const accessStream = vi.hoisted(() => ({ start: vi.fn() }));
