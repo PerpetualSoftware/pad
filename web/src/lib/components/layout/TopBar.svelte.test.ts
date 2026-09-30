@@ -91,6 +91,16 @@ async function settle() {
 	flushSync();
 }
 
+/**
+ * A close animates for 140ms before it writes (TASK-3312), so a close test
+ * waits that out first. Without it, the assertions about what a close did or
+ * did not do run before the close happens, and the negative ones pass vacuously.
+ */
+async function settleClose() {
+	await new Promise((r) => setTimeout(r, 200));
+	await settle();
+}
+
 beforeEach(() => {
 	mocks.goto.mockClear();
 	mocks.current = { slug: 'beta', name: 'Beta', owner_username: 'u' };
@@ -184,7 +194,7 @@ describe('TopBar tab bar: closing (PLAN-3002 Q2, Q3)', () => {
 		await mountWith([ALPHA, BETA, GAMMA]);
 		mocks.tabs.close.mockResolvedValueOnce(answer([BETA, GAMMA]));
 		closeBtn('alpha').click();
-		await settle();
+		await settleClose();
 		expect(mocks.tabs.close).toHaveBeenCalledWith('alpha');
 		expect(mocks.goto).not.toHaveBeenCalled();
 		expect(tabEls().map((el) => el.dataset.wsSlug)).toEqual(['beta', 'gamma']);
@@ -194,7 +204,7 @@ describe('TopBar tab bar: closing (PLAN-3002 Q2, Q3)', () => {
 		await mountWith([{ ...ALPHA, last_route: '/u/alpha/docs' }, BETA, GAMMA]);
 		mocks.tabs.close.mockResolvedValueOnce(answer([{ ...ALPHA, last_route: '/u/alpha/docs' }, GAMMA]));
 		closeBtn('beta').click();
-		await settle();
+		await settleClose();
 		expect(mocks.goto).toHaveBeenCalledWith('/u/alpha/docs');
 	});
 
@@ -206,7 +216,7 @@ describe('TopBar tab bar: closing (PLAN-3002 Q2, Q3)', () => {
 		await mountWith([ALPHA, BETA, GAMMA]);
 		mocks.tabs.close.mockResolvedValueOnce(answer([ALPHA, BETA]));
 		closeBtn('gamma').click();
-		await settle();
+		await settleClose();
 		expect(mocks.goto).toHaveBeenCalledWith('/u/beta');
 	});
 
@@ -215,7 +225,7 @@ describe('TopBar tab bar: closing (PLAN-3002 Q2, Q3)', () => {
 		await mountWith([ALPHA, BETA, GAMMA]);
 		mocks.tabs.close.mockResolvedValueOnce(answer([BETA, GAMMA]));
 		closeBtn('alpha').click();
-		await settle();
+		await settleClose();
 		expect(mocks.goto).toHaveBeenCalledWith('/u/beta');
 	});
 
@@ -226,7 +236,7 @@ describe('TopBar tab bar: closing (PLAN-3002 Q2, Q3)', () => {
 			page.url = new URL(url, 'http://localhost');
 		});
 		closeBtn('beta').click();
-		await settle();
+		await settleClose();
 		expect(mocks.goto).toHaveBeenCalledWith('/console');
 		expect(uiStore.addWorkspaceHighlighted).toBe(true);
 	});
@@ -235,7 +245,8 @@ describe('TopBar tab bar: closing (PLAN-3002 Q2, Q3)', () => {
 		await mountWith([ALPHA, BETA]);
 		mocks.tabs.close.mockRejectedValueOnce(new TypeError('network down'));
 		closeBtn('beta').click();
-		await settle();
+		await settleClose();
+		expect(mocks.tabs.close, 'the close was attempted').toHaveBeenCalledWith('beta');
 		expect(mocks.goto).not.toHaveBeenCalled();
 		expect(tabEls().map((el) => el.dataset.wsSlug)).toEqual(['alpha', 'beta']);
 	});
@@ -245,8 +256,9 @@ describe('TopBar tab bar: closing (PLAN-3002 Q2, Q3)', () => {
 		mocks.tabs.close.mockResolvedValueOnce(answer([BETA, GAMMA]));
 		const e = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0, detail: 1 });
 		closeBtn('alpha').dispatchEvent(e);
-		await settle();
+		await settleClose();
 		expect(e.defaultPrevented).toBe(true);
+		expect(mocks.tabs.close, 'the close ran').toHaveBeenCalledWith('alpha');
 		expect(mocks.goto).not.toHaveBeenCalled();
 	});
 });

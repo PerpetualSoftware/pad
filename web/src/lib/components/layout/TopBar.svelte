@@ -7,7 +7,7 @@
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { api } from '$lib/api/client';
 	import type { WorkspaceTab } from '$lib/types';
-	import { onMount, tick } from 'svelte';
+	import { onMount, tick, untrack } from 'svelte';
 	import { goto } from '$app/navigation';
 	import PadLogo from '$lib/components/layout/PadLogo.svelte';
 	import WorkspaceSwitcher from '$lib/components/layout/WorkspaceSwitcher.svelte';
@@ -56,6 +56,116 @@
 		const tabs = tabsStore.tabs;
 		if (!isDragging && !persisting) dndTabs = toItems(tabs);
 	});
+
+	// ── Chrome feel (TASK-3312) ──────────────────────────────────────────
+	// Motion is CSS classes, never Svelte in:/out: transitions: the strip is a
+	// dndzone, and an outgoing element that lingers in the DOM would be counted
+	// among the zone's items.
+	const OPEN_MS = 160;
+	const CLOSE_MS = 140;
+	/** At or above this width every tab shows its ×; below, hover or focus does. */
+	const WIDE_TAB_PX = 150;
+
+	let reduceMotion = $state(false);
+	let opening = $state(new Set<string>());
+	let closing = $state(new Set<string>());
+	/** Width of the tab at the moment its close began, for the collapse keyframe. */
+	let closingFrom = $state<Record<string, number>>({});
+	let narrow = $state(false);
+
+	// Tabs that appear after the first load grow in. The first list is the
+	// page arriving, not a tab opening, so it does not animate.
+	let seenSlugs: Set<string> | null = null;
+	$effect(() => {
+		const slugs = tabsStore.tabs.map((t) => t.slug);
+		if (!tabsStore.loaded) return;
+		if (seenSlugs === null) {
+			seenSlugs = new Set(slugs);
+			return;
+		}
+		const fresh = slugs.filter((s) => !seenSlugs!.has(s));
+		seenSlugs = new Set(slugs);
+		if (fresh.length === 0 || untrack(() => reduceMotion)) return;
+		// Read through untrack: this effect writes `opening`, and a read here
+		// would make it depend on its own write.
+		opening = new Set([...untrack(() => opening), ...fresh]);
+		setTimeout(() => {
+			const next = new Set(opening);
+			for (const s of fresh) next.delete(s);
+			opening = next;
+		}, OPEN_MS);
+	});
+
+	// Close-freeze (Chrome): after a close from this strip, the remaining tabs
+	// keep the widths they had, so the next × lands under a pointer that did
+	// not move and repeated closes need no aiming. Released when the pointer
+	// leaves the strip, on a window resize, and on any tab change that is not
+	// this close settling (an open elsewhere, the access stream): a frozen
+	// strip must never hold widths for a tab set it was not frozen for.
+	let frozen = $state<Record<string, number> | null>(null);
+	let frozenFor: { before: string; after: string } | null = null;
+
+	function freezeWidths(except: string) {
+		if (!listEl) return;
+		const widths: Record<string, number> = {};
+		for (const el of listEl.querySelectorAll<HTMLElement>('.workspace-tab')) {
+			const slug = el.dataset.wsSlug;
+			if (slug && slug !== except) widths[slug] = el.getBoundingClientRect().width;
+		}
+		const slugs = tabsStore.tabs.map((t) => t.slug);
+		frozenFor = { before: slugs.join('\n'), after: slugs.filter((s) => s !== except).join('\n') };
+		frozen = widths;
+	}
+	function releaseFreeze() {
+		frozen = null;
+		frozenFor = null;
+	}
+	$effect(() => {
+		const key = tabsStore.tabs.map((t) => t.slug).join('\n');
+		if (frozenFor && key !== frozenFor.before && key !== frozenFor.after) releaseFreeze();
+	});
+
+	onMount(() => {
+		const motion = window.matchMedia('(prefers-reduced-motion: reduce)');
+		reduceMotion = motion.matches;
+		const onMotion = (e: MediaQueryListEvent) => (reduceMotion = e.matches);
+		motion.addEventListener('change', onMotion);
+		window.addEventListener('resize', releaseFreeze);
+		// One observer for the × rule: every tab shares one width, so the
+		// first tab's width answers for all of them.
+		const measure = () => {
+			const first = listEl?.querySelector<HTMLElement>('.workspace-tab:not(.closing)');
+			narrow = !!first && first.getBoundingClientRect().width < WIDE_TAB_PX;
+		};
+		const ro = new ResizeObserver(measure);
+		const watch = () => {
+			ro.disconnect();
+			if (!listEl) return;
+			ro.observe(listEl);
+			for (const el of listEl.querySelectorAll('.workspace-tab')) ro.observe(el);
+		};
+		watch();
+		const mo = new MutationObserver(watch);
+		if (listEl) mo.observe(listEl, { childList: true });
+		return () => {
+			motion.removeEventListener('change', onMotion);
+			window.removeEventListener('resize', releaseFreeze);
+			ro.disconnect();
+			mo.disconnect();
+		};
+	});
+
+	// Middle-click closes a tab, Chrome's rule (TASK-3312). Kept to these two
+	// handlers so the gesture can be moved (to Ctrl/Cmd+click, say) without
+	// touching the close itself. mousedown's default is the autoscroll cursor;
+	// auxclick's is "open link in a new tab", which closeTab prevents.
+	function handleTabMouseDown(e: MouseEvent) {
+		if (e.button === 1) e.preventDefault();
+	}
+	function handleTabAuxClick(e: MouseEvent, tab: WorkspaceTab) {
+		if (e.button !== 1) return;
+		void closeTab(e, tab);
+	}
 
 	// Drag-end click suppression. After a drop the browser fires a synthetic
 	// `click` on the dragged `<a>`, which svelte-dnd-action does not cancel;
@@ -223,12 +333,26 @@
 	async function closeTab(e: MouseEvent, tab: WorkspaceTab) {
 		e.preventDefault();
 		e.stopPropagation();
+		if (closing.has(tab.slug)) return;
+		freezeWidths(tab.slug);
+		if (!reduceMotion) {
+			const el = listEl?.querySelector<HTMLElement>(`.workspace-tab[data-ws-slug="${CSS.escape(tab.slug)}"]`);
+			closingFrom = { ...closingFrom, [tab.slug]: el?.getBoundingClientRect().width ?? 0 };
+			closing = new Set([...closing, tab.slug]);
+			await new Promise((r) => setTimeout(r, CLOSE_MS));
+		}
 		const before = tabsStore.tabs.slice();
 		const wasActive = tab.slug === currentSlug;
 		try {
 			await tabsStore.close(tab.slug);
 		} catch {
 			return;
+		} finally {
+			if (closing.has(tab.slug)) {
+				const next = new Set(closing);
+				next.delete(tab.slug);
+				closing = next;
+			}
 		}
 		if (!wasActive) return;
 		const landing = tabLanding(before, tab.slug, tabsStore.tabs);
@@ -471,8 +595,10 @@
 				class="workspace-list"
 				class:fade-left={fadeLeft}
 				class:fade-right={fadeRight}
+				class:narrow
 				bind:this={listEl}
 				onscroll={updateFades}
+				onpointerleave={releaseFreeze}
 				use:dndzone={{
 					items: dndTabs,
 					flipDurationMs,
@@ -497,8 +623,15 @@
 						class:active={tab.slug === currentSlug}
 						class:ephemeral={tab.ephemeral}
 						class:guest={tab.is_guest}
+						class:opening={opening.has(tab.slug)}
+						class:closing={closing.has(tab.slug)}
+						class:frozen={!!frozen?.[tab.slug]}
+						style:width={frozen?.[tab.slug] ? `${frozen[tab.slug]}px` : undefined}
+						style:--closing-from={closing.has(tab.slug) ? `${closingFrom[tab.slug]}px` : undefined}
 						data-ws-slug={tab.slug}
 						onfocusin={() => (rovingSlug = tab.slug)}
+						onmousedown={handleTabMouseDown}
+						onauxclick={(e) => handleTabAuxClick(e, tab)}
 					>
 						<a
 							href="/{tab.owner_username}/{tab.slug}"
@@ -512,13 +645,14 @@
 							onclick={(e) => handleWsClick(e, tab)}
 							ondblclick={() => handleTabDblClick(tab)}
 						>
+							<!-- A favicon-like filled square in both states (TASK-3312); an
+							     inactive tab's is the same colour, quieter. A ring filled
+							     only when active read as an avatar. -->
 							<span
 								class="workspace-icon"
-								style="background: {tab.slug === currentSlug
+								style:background={tab.slug === currentSlug
 									? wsColor(tab.name)
-									: 'transparent'}; color: {tab.slug === currentSlug
-									? '#fff'
-									: 'var(--text-secondary)'}; border-color: {wsColor(tab.name)}"
+									: `color-mix(in srgb, ${wsColor(tab.name)} 55%, var(--bg-primary))`}
 							>
 								{wsInitial(tab.name)}
 							</span>
@@ -733,6 +867,15 @@
 		position: relative; /* offsetLeft of a tab is measured from here */
 		display: flex;
 		align-self: stretch;
+		/* The LIST reaches over the bar's 1px bottom border, so the active tab
+		   (and its flares) paint over it and join the page (TASK-3312). A tab's
+		   own negative margin could not: overflow-x: auto makes the list clip
+		   vertically too, so the border always showed under the active tab. */
+		margin-bottom: -1px;
+		/* Room for the active tab's 8px flares at either end: the list clips
+		   what overflows it, so a first or last active tab lost its outer
+		   flare (TASK-3312). */
+		padding: 0 9px;
 		align-items: flex-end;
 		gap: 2px;
 		min-width: 0;
@@ -772,13 +915,115 @@
 		flex: 0 1 auto;
 		width: 200px;
 		min-width: 120px;
-		height: 34px;
+		/* 38px in the 44px bar (TASK-3312; 34 read short, with dead space above). */
+		height: 38px;
 		padding: 0 4px 0 2px;
-		margin-bottom: -1px;
 		border: 1px solid transparent;
 		border-bottom: none;
 		border-radius: 8px 8px 0 0;
-		transition: background 0.15s;
+		transition: background 0.15s, width 0.15s;
+	}
+	/* A frozen tab keeps the width written on it (the close-freeze). */
+	.workspace-tab.frozen {
+		flex-shrink: 0;
+	}
+
+	/* Motion (TASK-3312): a new tab grows in, a closing one collapses. min-width
+	   moves with max-width, since a min-width wins over any max-width. */
+	.workspace-tab.opening {
+		animation: tab-open 160ms ease-out;
+	}
+	@keyframes tab-open {
+		from {
+			min-width: 0;
+			max-width: 0;
+			opacity: 0;
+		}
+		to {
+			min-width: 120px;
+			max-width: 200px;
+			opacity: 1;
+		}
+	}
+	.workspace-tab.closing {
+		animation: tab-close 140ms ease-in forwards;
+		pointer-events: none;
+	}
+	@keyframes tab-close {
+		from {
+			min-width: var(--closing-from);
+			max-width: var(--closing-from);
+		}
+		to {
+			min-width: 0;
+			max-width: 0;
+			padding: 0;
+			opacity: 0;
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.workspace-tab {
+			transition: background 0.15s;
+		}
+		.workspace-tab.opening,
+		.workspace-tab.closing {
+			animation: none;
+		}
+	}
+
+	/* Dividers between inactive tabs (TASK-3312), Chrome's rule: none beside
+	   the hovered or the active tab, and none after the last. The active tab's
+	   pseudo-elements are its flares, so the divider is inactive-only. */
+	.workspace-tab:not(.active)::after {
+		content: '';
+		position: absolute;
+		right: -2px;
+		top: 50%;
+		width: 1px;
+		height: 18px;
+		transform: translateY(-50%);
+		background: var(--border);
+		pointer-events: none;
+	}
+	.workspace-tab:not(.active):hover::after,
+	.workspace-tab:not(.active):has(+ .workspace-tab:hover)::after,
+	.workspace-tab:not(.active):has(+ .workspace-tab.active)::after,
+	.workspace-tab:not(.active):last-child::after {
+		display: none;
+	}
+
+	/* Active-tab flare (TASK-3312): outward curves at the bottom corners, so the
+	   tab flows into the page. Each is an 8px square outside the tab, filled
+	   with the page background and cut by a quarter circle whose rim carries
+	   the border. Tokens, so both themes follow. */
+	.workspace-tab.active::before,
+	.workspace-tab.active::after {
+		content: '';
+		position: absolute;
+		bottom: 0;
+		width: 8px;
+		height: 8px;
+		pointer-events: none;
+	}
+	.workspace-tab.active::before {
+		left: -9px;
+		background: radial-gradient(
+			circle at 0 0,
+			transparent 7.5px,
+			var(--border) 7.5px,
+			var(--border) 8.5px,
+			var(--bg-primary) 8.5px
+		);
+	}
+	.workspace-tab.active::after {
+		right: -9px;
+		background: radial-gradient(
+			circle at 100% 0,
+			transparent 7.5px,
+			var(--border) 7.5px,
+			var(--border) 8.5px,
+			var(--bg-primary) 8.5px
+		);
 	}
 	.workspace-tab:hover {
 		background: var(--bg-hover);
@@ -806,6 +1051,10 @@
 		opacity: 0;
 		transition: opacity 0.15s, background 0.15s, color 0.15s;
 	}
+	/* The × shows on every tab while tabs are wide (TASK-3312, Chrome's rule);
+	   once they are narrow, on hover, keyboard focus and the active tab only.
+	   The Keep-open pin keeps the reveal-only rule at every width. */
+	.workspace-list:not(.narrow) .workspace-tab-close:not(.workspace-tab-keep),
 	.workspace-tab:hover .workspace-tab-close,
 	.workspace-tab:focus-within .workspace-tab-close,
 	.workspace-tab.active .workspace-tab-close {
@@ -835,12 +1084,10 @@
 		white-space: nowrap;
 		transition: color 0.15s;
 	}
-	/* Grab cursor on desktop only */
+	/* The arrow, like Chrome's tabs (TASK-3312). It was grab/grabbing, which
+	   told every click it was a drag; drag works the same without it. */
 	.topbar:not(.topbar-mobile) .workspace-item {
-		cursor: grab;
-	}
-	.topbar:not(.topbar-mobile) .workspace-item:active {
-		cursor: grabbing;
+		cursor: default;
 	}
 	.workspace-item:hover {
 		color: var(--text-primary);
@@ -864,11 +1111,23 @@
 		transition: background 0.15s, color 0.15s;
 	}
 
-	/* Inside a 34px tab the icon steps down from 24px (TASK-3306). */
+	/* In a tab the icon is a favicon-like rounded square, filled in both
+	   states (TASK-3312); the colour is set inline. The initial is NOT white:
+	   white on these palette colours measured 1.67-2.75:1 on the full colour
+	   and 1.39-1.79:1 on the light-mode inactive mix. An inactive icon takes
+	   --text-primary (#191922 on the light mix, #f0f0f4 on the dark mix:
+	   9.74:1 and 4.19:1 at worst), and an active one, on the full colour in
+	   either theme, a fixed dark ink (6.34:1 at worst). */
 	.workspace-tab .workspace-icon {
-		width: 20px;
-		height: 20px;
-		font-size: 0.68em;
+		width: 18px;
+		height: 18px;
+		border: none;
+		border-radius: 4px;
+		color: var(--text-primary);
+		font-size: 0.66em;
+	}
+	.workspace-tab.active .workspace-icon {
+		color: #191922;
 	}
 
 	.workspace-name {
