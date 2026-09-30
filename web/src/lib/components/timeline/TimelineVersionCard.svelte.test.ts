@@ -152,29 +152,6 @@ describe('TimelineVersionCard flush-before-restore (BUG-2271)', () => {
 	});
 });
 
-// TASK-2198 U4: the op-log recovery's version row is the system's, and must
-// not read as a user's edit.
-describe('TimelineVersionCard recovery attribution (TASK-2198 U4)', () => {
-	it('labels a recovery version System / Recovered, and a user version User / Web', () => {
-		const labels = (v: Version) => {
-			const root = target();
-			const inst = mount(TimelineVersionCard, {
-				target: root,
-				props: { version: v, wsSlug: 'ws', itemSlug: 'ITEM-1', currentContent: 'now', onRestore: () => {}, frozen: false },
-			});
-			flushSync();
-			const text = root.querySelector('.badges')?.textContent?.replace(/\s+/g, ' ').trim();
-			unmount(inst);
-			root.remove();
-			return text;
-		};
-		const recovered = {
-			...version,
-			created_by: 'system',
-			source: 'recovery',
-			change_summary: 'recovered from an unsaved editor session',
-		} as unknown as Version;
-		expect(labels(recovered)).toBe('System Recovered');
-		expect(labels(version)).toBe('User Web');
-	});
-});
+// TASK-2198 U4's attribution test (a recovery version reads System /
+// Recovered) moved to HistoryView.svelte.test.ts with PLAN-2348 U3: the card is
+// now a body section, and the event header above it carries the attribution.

@@ -187,3 +187,35 @@ describe('HistoryView: an edit the throttle saved no version for', () => {
 		expect(rows()[1].textContent).toContain('no version was saved for this edit');
 	});
 });
+
+// TASK-2198 U4, moved here from TimelineVersionCard.svelte.test.ts by PLAN-2348
+// U3: the op-log recovery's version row is the system's, and must not read as a
+// user's edit. The card no longer carries attribution; the event header does.
+describe('HistoryView recovery attribution (TASK-2198 U4)', () => {
+	it('labels a recovery version System / Recovered, and a user version by name / Web', () => {
+		const header = (e: TimelineEntry) => {
+			render([e]);
+			const text = root!.querySelector('.head')?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+			if (instance) unmount(instance);
+			instance = null;
+			root?.remove();
+			root = null;
+			return text;
+		};
+		const recovered = header(
+			version('r', 5, {
+				created_by: 'system',
+				source: 'recovery',
+				actor_name: undefined,
+				change_summary: 'recovered from an unsaved editor session'
+			})
+		);
+		expect(recovered).toContain('System');
+		expect(recovered).toContain('Recovered');
+		expect(recovered).not.toContain('Web');
+		const user = header(version('u', 5, { source: 'web' }));
+		expect(user).toContain('Dave');
+		expect(user).toContain('Web');
+		expect(user).not.toContain('System');
+	});
+});
