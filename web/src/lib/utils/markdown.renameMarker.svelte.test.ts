@@ -99,6 +99,14 @@ describe('BUG-3315 U2: a rename does not pin the old title', () => {
 		expect(html).not.toContain('title=');
 	});
 
+	// Guard (codex r1): the save's link match must not narrow what it accepted
+	// before the marker existed, e.g. an href whose last segment has a space.
+	it('a link to a slug with a space still converts, marker or not', () => {
+		const spaced = { ...task('Old Title'), slug: 'my slug', item_number: undefined } as unknown as Item;
+		expect(saveWith('see [Old Title](/u/ws/tasks/my slug) here', [spaced])).toBe('see [[Old Title]] here');
+		expect(saveWith('see [Old Title](/u/ws/tasks/my slug "Old Title") here', [{ ...spaced, title: 'New Title' } as Item])).toBe('see [[New Title]] here');
+	});
+
 	it('with no rename, nothing changes', () => {
 		const { md } = openAndEdit('a [[TASK-1]] and [[TASK-1|label]] b', 'Same');
 		expect(saveWith(md, [task('Same')])).toBe('a [[TASK-1]] and [[TASK-1|label]] b');

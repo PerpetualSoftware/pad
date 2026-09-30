@@ -846,7 +846,7 @@ export function markdownToWikiLinks(markdown: string, items: Item[]): string {
 	// contain backslash-escaped chars (\[, \], \\) that tiptap-markdown emits
 	// when serializing link text. The capture allows `\.` sequences so we
 	// don't terminate on an escaped `]` that's really part of the display.
-	return withXwRefs.replace(/\[((?:\\.|[^\]\\])+)\]\((\/(?:[^/\s]+\/){2,3}([^)\s]+))(?: "((?:\\"|[^"])*)")?\)/g, (_match, rawText: string, path: string, slugOrRef: string, rawMarker: string | undefined) => {
+	return withXwRefs.replace(/\[((?:\\.|[^\]\\])+)\]\((\/(?:[^/]+\/){2,3}([^)]+?))(?: "((?:\\"|[^"])*)")?\)/g, (_match, rawText: string, path: string, slugOrRef: string, rawMarker: string | undefined) => {
 		const item = items.find(i => {
 			if (i.slug === slugOrRef) return true;
 			if (i.item_number && i.collection_prefix) {
@@ -966,7 +966,7 @@ function unescapeMarkdownLinkText(s: string): string {
 export function cleanBrokenLinks(markdown: string): string {
 	return markdown
 		.replace(/\[([^\]]+)\]\(broken\)/g, '[[$1]]')
-		.replace(/(\[(?:\\.|[^\]\\])+\]\(\/[^)\s]*) "(?:\\"|[^"])*"\)/g, '$1)');
+		.replace(/(\[(?:\\.|[^\]\\])+\]\(\/[^)]*?) "(?:\\"|[^"])*"\)/g, '$1)');
 }
 
 export function parseTags(tagsJson: string): string[] {
