@@ -163,6 +163,21 @@ describe('BUG-3315 U2: a rename does not pin the old title', () => {
 				expect(saveWith(md, index)).not.toContain('pad-follows-title');
 			});
 		}
+		// ...and the strip touches ONLY a real link's title (codex, after the
+		// leak fix). Text that merely mentions the marker, as a doc about this
+		// feature does, is content and must survive a save byte-identical.
+		for (const [name, body] of [
+			['inline code span', 'the marker is `[Title](/u/ws/tasks/TASK-1 "pad-follows-title:Title")` in storage'],
+			['fenced code block', 'before\n\n```\n[T](/x "pad-follows-title:T")\n```\n\nafter'],
+			['prose with escaped brackets', 'plain \\[T\\](/x "pad-follows-title:T") text'],
+			['a bare mention', 'writes "pad-follows-title:x") as a title'],
+		] as const) {
+			it(`text that mentions the marker is untouched (${name})`, () => {
+				expect(saveWith(body, [])).toBe(body);
+				expect(saveWith(body, [task('Title')])).toBe(body);
+			});
+		}
+
 		it('the guard is live: a marked document does carry the marker before the save', () => {
 			expect(openAndEdit('see [[TASK-1]] here', 'Old Title').md).toContain('pad-follows-title');
 		});

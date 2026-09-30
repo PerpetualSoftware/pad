@@ -847,7 +847,8 @@ export function markdownToWikiLinks(markdown: string, items: Item[]): string {
 	// contain backslash-escaped chars (\[, \], \\) that tiptap-markdown emits
 	// when serializing link text. The capture allows `\.` sequences so we
 	// don't terminate on an escaped `]` that's really part of the display.
-	return withXwRefs.replace(/\[((?:\\.|[^\]\\])+)\]\((\/(?:[^/]+\/){2,3}([^)]+?))(?: "((?:\\"|[^"])*)")?\)/g, (_match, rawText: string, path: string, slugOrRef: string, rawMarker: string | undefined) => {
+	const code = withXwRefs.includes(FOLLOWS_TITLE_PREFIX) ? codeRanges(withXwRefs) : [];
+	return withXwRefs.replace(/\[((?:\\.|[^\]\\])+)\]\((\/(?:[^/]+\/){2,3}([^)]+?))(?: "((?:\\"|[^"])*)")?\)/g, (_match, rawText: string, path: string, slugOrRef: string, rawMarker: string | undefined, offset: number) => {
 		const item = items.find(i => {
 			if (i.slug === slugOrRef) return true;
 			if (i.item_number && i.collection_prefix) {
@@ -861,6 +862,8 @@ export function markdownToWikiLinks(markdown: string, items: Item[]): string {
 		// was, which is what this function did with any titled link before the
 		// marker existed.
 		if (rawMarker !== undefined && !rawMarker.startsWith(FOLLOWS_TITLE_PREFIX)) return _match;
+		// Marker-shaped text inside code is content, not a link.
+		if (rawMarker !== undefined && inRanges(code, offset)) return _match;
 		if (!item) return rawMarker === undefined ? _match : `[${rawText}](${path})`;
 		const marker =
 			rawMarker === undefined ? undefined : rawMarker.slice(FOLLOWS_TITLE_PREFIX.length).replace(/\\"/g, '"');
@@ -906,6 +909,46 @@ function followsTitleMarker(followsTitle: boolean, text: string, item: Item): st
 	if (!followsTitle || text !== item.title) return '';
 	return ` "${FOLLOWS_TITLE_PREFIX}${text.replace(/[\\"&]/g, '\\$&')}"`;
 }
+
+// The [start, end) ranges of `markdown` inside fenced code blocks and inline
+// code spans, which are content and never link syntax. Marker handling
+// (BUG-3315) skips them, so a doc that MENTIONS the marker, as one about this
+// feature does, survives a save. Deliberately simple CommonMark: a fence is a
+// line of 3+ backticks or tildes (up to 3 spaces of indent), closed by the same
+// character at least as long; an inline span is a backtick run closed by a run
+// of the same length.
+function codeRanges(markdown: string): Array<[number, number]> {
+	const ranges: Array<[number, number]> = [];
+	const fence = /^ {0,3}(`{3,}|~{3,})[^\n]*$/gm;
+	let open: { at: number; ch: string; len: number } | null = null;
+	let m: RegExpExecArray | null;
+	while ((m = fence.exec(markdown)) !== null) {
+		const run = m[1];
+		if (open === null) open = { at: m.index, ch: run[0], len: run.length };
+		else if (run[0] === open.ch && run.length >= open.len && m[0].trim() === run) {
+			ranges.push([open.at, m.index + m[0].length]);
+			open = null;
+		}
+	}
+	if (open !== null) ranges.push([open.at, markdown.length]);
+	const inFence = (i: number) => ranges.some(([a, b]) => i >= a && i < b);
+	const tick = /`+/g;
+	while ((m = tick.exec(markdown)) !== null) {
+		if (inFence(m.index)) continue;
+		const close = markdown.indexOf(m[0], m.index + m[0].length);
+		// A closing run must be exactly as long: not part of a longer run.
+		let c = close;
+		while (c !== -1 && (markdown[c - 1] === '`' || markdown[c + m[0].length] === '`')) {
+			c = markdown.indexOf(m[0], c + 1);
+		}
+		if (c === -1) continue;
+		ranges.push([m.index, c + m[0].length]);
+		tick.lastIndex = c + m[0].length;
+	}
+	return ranges;
+}
+
+const inRanges = (ranges: Array<[number, number]>, i: number) => ranges.some(([a, b]) => i >= a && i < b);
 
 // Whether a link's text is still the text its follows-title marker recorded.
 // After a trip through the editor the marker comes back as the serializer
@@ -984,13 +1027,19 @@ function unescapeMarkdownLinkText(s: string): string {
  * the marker is load-time state and must never reach stored content.
  */
 export function cleanBrokenLinks(markdown: string): string {
-	return markdown
-		.replace(/\[([^\]]+)\]\(broken\)/g, '[[$1]]')
+	const cleaned = markdown.replace(/\[([^\]]+)\]\(broken\)/g, '[[$1]]');
+	if (!cleaned.includes(FOLLOWS_TITLE_PREFIX)) return cleaned;
+	const code = codeRanges(cleaned);
+	return cleaned
 		// Any link, whatever its href: a user who edits an auto link's URL keeps
 		// the marker on the mark, and an external href is never converted. (An
 		// HTML-serialized table does not carry link titles, measured, so there is
 		// no HTML form to strip.)
-		.replace(/ "pad-follows-title:(?:\\"|[^"])*"\)/g, ')');
+		// Only a real link's title: an unescaped `](`, a space-free href, and
+		// never inside code (see codeRanges).
+		.replace(/((?<!\\)\]\((?:\\.|[^)\s\\])+) "pad-follows-title:(?:\\"|[^"])*"\)/g, (m: string, head: string, offset: number) =>
+			inRanges(code, offset) ? m : `${head})`
+		);
 }
 
 export function parseTags(tagsJson: string): string[] {
