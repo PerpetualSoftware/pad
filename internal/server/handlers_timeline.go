@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"sort"
@@ -424,12 +425,6 @@ func structuredTimelineEntries(item *models.Item, before time.Time, beforeID str
 // and decision-log entries into a single chronological stream, applying
 // deduplication and collapsing logic.
 func buildTimeline(comments []models.Comment, activities []models.Activity, versions []models.Version, notes, decisions []models.TimelineEntry) []models.TimelineEntry {
-	// Build a set of version timestamps (rounded to the second) for dedup.
-	versionTimes := make(map[int64]bool, len(versions))
-	for _, v := range versions {
-		versionTimes[v.CreatedAt.Unix()] = true
-	}
-
 	// Activities the fetched comments link to, skipped below. This is NOT the
 	// mechanism that keeps a comment-linked activity off the timeline —
 	// ListDocumentActivityBeforeTime excludes those at the query, which is
@@ -451,6 +446,9 @@ func buildTimeline(comments []models.Comment, activities []models.Activity, vers
 	// event) is consistent. Neither guard can close a gap that lives between
 	// two reads with no shared snapshot; TimelineEntry's doc states the
 	// class.
+	//
+	// Like the query, it spares an "updated" row that records a change: the
+	// comment card does not render it (PLAN-2348 checkpoint 2, defect 5).
 	commentActivityIDs := make(map[string]bool)
 	for _, c := range comments {
 		if c.ActivityID != "" {
@@ -492,9 +490,9 @@ func buildTimeline(comments []models.Comment, activities []models.Activity, vers
 		entries = append(entries, entry)
 	}
 
-	// Add activity entries (with dedup: skip "updated" if a version exists at
-	// same second, and skip activities a fetched comment links to — the
-	// read-skew guard described at the top of the function).
+	// Add activity entries, skipping activities a fetched comment links to
+	// (the read-skew guard described at the top of the function) and
+	// "updated" rows that say nothing a version does not.
 	for i := range activities {
 		a := activities[i]
 
@@ -503,17 +501,22 @@ func buildTimeline(comments []models.Comment, activities []models.Activity, vers
 			continue
 		}
 
-		if commentActivityIDs[a.ID] {
+		changed := a.Action == "updated" && activityChangesText(a.Metadata) != ""
+		if commentActivityIDs[a.ID] && !changed {
 			continue
 		}
 
-		// Skip "updated" activities that coincide with a version snapshot.
-		if a.Action == "updated" && versionTimes[a.CreatedAt.Unix()] {
-			continue
-		}
-
-		// Collapse rapid empty-metadata "updated" entries (within 5 min).
-		if a.Action == "updated" && (a.Metadata == "" || a.Metadata == "{}") {
+		// An "updated" row renders when it carries anything beyond
+		// attribution, and never otherwise. This replaces two skips: "a
+		// version shares its second", which also dropped every FIELD change
+		// sent in the same request as a body edit (PLAN-2348 checkpoint 2,
+		// defect 5), and "the metadata is empty". A row that says nothing is
+		// what a body edit leaves — no metadata for a human, only the agent's
+		// name for an agent — and the version card is that edit's record. Base
+		// showed an agent's such row as an empty card whenever its version
+		// fell in a different second, so whether it rendered depended on a
+		// clock boundary (PLAN-2348 checkpoint 8).
+		if a.Action == "updated" && !activityRecordsMore(a.Metadata) {
 			continue
 		}
 
@@ -711,4 +714,39 @@ func exhaustedWindowCursor(
 // already bounds. A bound that can only fire on a valid id is not protection.
 func validCursorID(v string) bool {
 	return utf8.ValidString(v) && !strings.ContainsRune(v, 0)
+}
+
+// activityRecordsMore reports whether an activity's metadata carries anything
+// beyond attribution (the "agent" key agentMeta adds): a change list, a bulk
+// op, dropped fields. Metadata that does not parse counts as carrying
+// something, so an unreadable row is shown rather than silently dropped.
+func activityRecordsMore(metadata string) bool {
+	if metadata == "" || metadata == "{}" {
+		return false
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(metadata), &m); err != nil {
+		return true
+	}
+	for k, v := range m {
+		if k == "agent" {
+			continue
+		}
+		if s := strings.TrimSpace(string(v)); s != `""` && s != "null" {
+			return true
+		}
+	}
+	return false
+}
+
+// activityChangesText returns the "changes" string an activity's metadata
+// carries, or "" when it has none or the metadata does not parse.
+func activityChangesText(metadata string) string {
+	var m struct {
+		Changes string `json:"changes"`
+	}
+	if err := json.Unmarshal([]byte(metadata), &m); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(m.Changes)
 }

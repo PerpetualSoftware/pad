@@ -15,7 +15,7 @@ import (
 // on the same item by the same writer are coalesced into a single activity
 // entry. "Same writer" is narrower than the account: see
 // CreateActivityDebounced, which refuses to coalesce across actor kinds or
-// agent names sharing one user_id (BUG-2763).
+// agent names sharing one user_id (BUG-2763), or across sources (PLAN-2348).
 const ActivityDebounceCooldown = 5 * time.Minute
 
 // maxDebounceCandidates bounds how many recent rows CreateActivityDebounced
@@ -98,8 +98,12 @@ func (s *Store) createActivityQ(q execQueryer, a models.Activity) (string, error
 //
 // CreateActivityDebounced creates a new activity or updates an existing one if a
 // matching activity (same document, same action, and same WRITER — same user
-// account, same actor kind, and same agent name) was recorded within the
-// cooldown window. Only "updated" actions are debounced; all other actions
+// account, same actor kind, and same agent name — through the same SOURCE)
+// was recorded within the cooldown window. The source is part of the key
+// because one person editing in the web UI and then from the CLI made two
+// changes a History should show apart; merged, the row carried the second
+// door's source and time, and the intermediate value vanished (PLAN-2348
+// checkpoint 2, defect 1). Only "updated" actions are debounced; all other actions
 // always create a new entry.
 //
 // When merging, the existing activity's timestamp is bumped to now and its
@@ -411,10 +415,10 @@ func (s *Store) insertDebouncedOnMiss(a models.Activity, cutoff, incomingAgent s
 func (s *Store) recentDebounceCandidateQ(q rowsQueryer, a models.Activity, cutoff, incomingAgent string) (id, metadata string, ok bool) {
 	rows, err := q.Query(s.q(`
 		SELECT id, metadata FROM activities
-		WHERE document_id = ? AND action = ? AND created_at >= ? AND actor = ?
+		WHERE document_id = ? AND action = ? AND created_at >= ? AND actor = ? AND source = ?
 			AND ((user_id IS NOT NULL AND user_id = ?) OR (user_id IS NULL AND ? = ''))
 		ORDER BY created_at DESC LIMIT ?
-	`), a.DocumentID, a.Action, cutoff, a.Actor, a.UserID, a.UserID, maxDebounceCandidates)
+	`), a.DocumentID, a.Action, cutoff, a.Actor, a.Source, a.UserID, a.UserID, maxDebounceCandidates)
 	if err != nil {
 		return "", "", false
 	}
@@ -896,8 +900,13 @@ func (s *Store) ListDocumentActivity(documentID string, params models.ActivityLi
 // ordered newest-first, limited to `limit` results. Used for cursor-based timeline pagination.
 //
 // Activities a comment links to (comments.activity_id) are EXCLUDED here, at
-// query time. The timeline shows such an activity through its comment's card,
-// never as its own entry — and the only correct place to drop it is the query:
+// query time — except an "updated" one that records a change. A "commented" row IS its comment, so
+// the timeline shows it through the comment's card and never as its own
+// entry. An "updated" row a comment links to (an update sent with --comment)
+// records a field change the comment card does not render, and since comments
+// moved to the Details tab (IDEA-2843) excluding it hid that change from every
+// view (PLAN-2348 checkpoint 2, defect 5). For the rows that are excluded, the
+// only correct place to drop them is the query:
 // comments and activities are read through separately bounded windows over
 // one cursor, so an activity can land inside its window while the comment
 // that links it falls outside the comment window, and a handler that only
@@ -912,7 +921,17 @@ func (s *Store) ListDocumentActivity(documentID string, params models.ActivityLi
 func (s *Store) ListDocumentActivityBeforeTime(documentID string, before time.Time, beforeID string, limit int) ([]models.Activity, error) {
 	ts := before.Format(time.RFC3339)
 	const selectCols = memberActivityCols
-	const notCommentLinked = `AND NOT EXISTS (SELECT 1 FROM comments c WHERE c.activity_id = a.id AND c.item_id = a.document_id)`
+	// The spared "updated" rows are the ones whose metadata carries a
+	// "changes" key: a linked update with nothing but the agent's name (a
+	// --comment sent alone) has nothing for its own card to say. The LIKE is
+	// a superset test (buildTimeline decides exactly), and it reads the text
+	// form because metadata is TEXT on SQLite and JSONB on Postgres, and
+	// json_extract refuses a row whose TEXT does not parse.
+	metaText := "a.metadata"
+	if s.dialect.Driver() == DriverPostgres {
+		metaText = "a.metadata::text"
+	}
+	notCommentLinked := `AND ((a.action = 'updated' AND ` + metaText + ` LIKE '%"changes"%') OR NOT EXISTS (SELECT 1 FROM comments c WHERE c.activity_id = a.id AND c.item_id = a.document_id))`
 	const orderLimit = `ORDER BY a.created_at DESC, a.id DESC LIMIT ?`
 
 	var rows *sql.Rows

@@ -1977,6 +1977,13 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	// 6 of TASK-1309 [P2].
 	if collabSnapshot {
 		input.VersionSource = "collab-snapshot"
+	} else if input.VersionSource == "" {
+		// PLAN-2348 checkpoint 2, defect 3: every other write reached the
+		// version row with no source at all, so UpdateItem's "web" default
+		// labelled an agent's API body edit as a web edit. The request's own
+		// source is stamped here, on VersionSource for the reason above:
+		// items.source must not move on an update.
+		_, input.VersionSource = actorFromRequest(r)
 	}
 
 	// BUG-2542: stamp the writer on single-item updates. Bulk ops already do

@@ -206,7 +206,9 @@ func equalStringMaps(a, b map[string]string) bool {
 // activities being paginated separately, an activity could be fetched while
 // its comment was not, and render as a standalone "commented" card. The
 // activity query now excludes comment-linked rows itself, so the outcome does
-// not depend on which comments happened to be fetched alongside.
+// not depend on which comments happened to be fetched alongside. The linked
+// row here is "commented"; a linked "updated" row is kept since PLAN-2348
+// (internal/server/plan2348_timeline_drops_test.go).
 func TestListDocumentActivityBeforeTime_ExcludesCommentLinkedRows(t *testing.T) {
 	t.Parallel()
 	s, item := agentNameFixture(t)
