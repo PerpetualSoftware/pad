@@ -48,6 +48,7 @@ comment_reactions.id
 comment_reactions.user_id
 comments.activity_id
 comments.created_at
+comments.deleted_at
 comments.id
 comments.item_id
 comments.parent_id
