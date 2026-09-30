@@ -176,6 +176,7 @@ type Supervisor struct {
 	probeWarned bool // a baseline-probe failure has been logged; cleared by a success
 	unsupWarned sync.Once
 	child       *child
+	stopping    *child // forgotten by an idle stop that has not reaped it yet
 	nextID      uint64
 	streak      int       // consecutive deaths
 	nextSpawn   time.Time // no spawn before this
@@ -338,8 +339,16 @@ func (s *Supervisor) idleStop(c *child) {
 		s.mu.Unlock()
 		return
 	}
-	s.child = nil // forgotten, NOT recorded as a death
+	s.child = nil  // forgotten, NOT recorded as a death
+	s.stopping = c // Close still ends and reaps it
 	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		if s.stopping == c {
+			s.stopping = nil
+		}
+		s.mu.Unlock()
+	}()
 	if s.cfg.onIdleStop != nil {
 		s.cfg.onIdleStop()
 	}
@@ -375,7 +384,14 @@ func (s *Supervisor) Close() error {
 	if c != nil && c.idleTimer != nil {
 		c.idleTimer.Stop()
 	}
+	// A worker an idle stop is still ending: Close does not return while it
+	// runs (codex). The idle stop logs its own stop line.
+	stopping := s.stopping
 	s.mu.Unlock()
+	if stopping != nil {
+		stopping.kill("closed")
+		stopping.awaitExit()
+	}
 	if c != nil {
 		c.kill("closed")
 		c.awaitExit()

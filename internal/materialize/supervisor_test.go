@@ -1058,6 +1058,36 @@ func TestSupervisorIdleTimerDuringJob(t *testing.T) {
 	waitIdleStopped(t, h)
 }
 
+// Close during an idle stop does not return while that worker still runs:
+// the stop has already forgotten it, so Close must end and reap it itself.
+func TestSupervisorCloseDuringIdleStop(t *testing.T) {
+	closed := make(chan struct{})
+	var h *harness
+	h = newHarness(t, "script", func(c *SupervisorConfig) {
+		c.idleExact = 200 * time.Millisecond
+		c.idleGrace = time.Minute // the stop would otherwise wait on EOF
+		c.onIdleStop = func() {
+			go func() {
+				_ = h.s.Close()
+				close(closed)
+			}()
+			time.Sleep(100 * time.Millisecond)
+		}
+	})
+	if _, err := h.s.Materialize(context.Background(), script("echo:x")); err != nil {
+		t.Fatal(err)
+	}
+	pid := h.lastPid(t)
+	select {
+	case <-closed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Close did not return")
+	}
+	if err := processGone(pid); err != nil {
+		t.Fatalf("Close returned while the idle-stopping worker still ran: %v", err)
+	}
+}
+
 func TestSupervisorNeverIdle(t *testing.T) {
 	h := newHarness(t, "script", func(c *SupervisorConfig) { c.IdleTimeout = NeverIdle })
 	if _, err := h.s.Materialize(context.Background(), script("echo:x")); err != nil {
