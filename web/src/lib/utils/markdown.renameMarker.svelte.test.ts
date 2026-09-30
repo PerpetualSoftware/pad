@@ -196,6 +196,15 @@ describe('BUG-3315 U2: a rename does not pin the old title', () => {
 			expect(saveWith(body, [])).toBe(body);
 		});
 
+		// Codex r4 (did not reproduce, pinned): runs of different lengths must not
+		// form overlapping spans. In "`a ``b ` LINK `` " the single-backtick span
+		// closes at the third run, and the "``" inside it is content, not an
+		// opener, so LINK sits OUTSIDE code and its marker must go.
+		it('a run inside a span does not open a second, overlapping span', () => {
+			const body = '`a ``b ` [x](/u/ws/tasks/TASK-1 "pad-follows-title:x") ``';
+			expect(saveWith(body, [])).toBe('`a ``b ` [x](/u/ws/tasks/TASK-1) ``');
+		});
+
 		// ...and the code scan is linear. Receipt, local: 40,000 alternating
 		// backtick runs took 267ms under the first version (18x for 10x the input)
 		// and take 9.6ms now (98ms at 400,000). The bound sits between, with room
