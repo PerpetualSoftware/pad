@@ -1265,7 +1265,9 @@ schema version is skipped.
 
 With `PAD_MATERIALIZE=off` none of this runs: no worker is ever started, and a
 tab that closed without saving catches up only when a tab next opens the item,
-which may never happen.
+which may never happen. The same is true while no memory cap can be
+established (see the end of this section): each pending item's job is then
+refused, counted against its 3 attempts, and not logged per item.
 
 - The worker starts on the first job, not at server start, and then stays up
   while jobs keep coming (loading it takes a few seconds). Jobs run one at a

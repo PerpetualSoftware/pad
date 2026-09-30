@@ -1,11 +1,12 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -552,4 +553,39 @@ func TestClientCannotClaimRecoveryVersionSource(t *testing.T) {
 	}
 }
 
-var _ = errors.New
+
+// ErrNoMemoryCap (U3: no cap could be established, so the supervisor refused
+// the job and warned once itself) counts against the budget like any failure,
+// but is not logged per item. The control is ErrChildDied, which is.
+func TestMaterializeNoMemoryCapCountsSilently(t *testing.T) {
+	for _, tc := range []struct {
+		err      error
+		wantWarn bool
+	}{
+		{fmt.Errorf("%w: no cap mechanism on plan9", materialize.ErrNoMemoryCap), false},
+		{fmt.Errorf("%w: exit status 2", materialize.ErrChildDied), true},
+	} {
+		var buf bytes.Buffer
+		clock := time.Now()
+		fake := &fakeMaterializer{fn: func(materialize.Job) (string, error) { return "", tc.err }}
+		f := newRecoveryFixture(t, fake, time.Minute, materializeRecoveryConfig{
+			maxFailures: 3, backoffBase: time.Minute,
+			now:    func() time.Time { return clock },
+			logger: slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})),
+		})
+		it := f.item(t, "Uncapped", "stale")
+		f.appendRows(t, it.ID, contentFrame(1))
+		for i := 0; i < 3; i++ {
+			if res := f.r.process(it.ID); res != mrFailed {
+				t.Fatalf("%v: pass %d = %q, want failed", tc.err, i, res)
+			}
+			clock = clock.Add(time.Hour)
+		}
+		if res := f.r.process(it.ID); res != mrBudgetExceeded || fake.calls.Load() != 3 {
+			t.Fatalf("%v: after K failures %q with %d calls, want budget_exhausted, 3", tc.err, res, fake.calls.Load())
+		}
+		if got := strings.Contains(buf.String(), "level=WARN"); got != tc.wantWarn {
+			t.Fatalf("%v: per-item WARN logged = %v, want %v\n%s", tc.err, got, tc.wantWarn, buf.String())
+		}
+	}
+}

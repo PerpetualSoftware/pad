@@ -98,6 +98,8 @@ type materializeRecoveryConfig struct {
 	maxFailures   int
 	backoffBase   time.Duration
 	now           func() time.Time
+	// logger receives the worker's log lines. Nil: slog.Default().
+	logger *slog.Logger
 }
 
 // materializeResult is what one processing pass did with an item.
@@ -147,6 +149,9 @@ func newMaterializeRecovery(s *Server, m Materializer, cfg materializeRecoveryCo
 	if cfg.now == nil {
 		cfg.now = time.Now
 	}
+	if cfg.logger == nil {
+		cfg.logger = slog.Default()
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &materializeRecovery{
 		s: s, m: m, cfg: cfg, ctx: ctx, cancel: cancel,
@@ -173,7 +178,7 @@ func (s *Server) StartMaterializeRecovery() {
 	r.mu.Unlock()
 
 	s.collab.SetIdleHook(r.onRoomIdle)
-	slog.Info("op-log recovery started",
+	r.cfg.logger.Info("op-log recovery started",
 		"sweep_interval", r.cfg.sweepInterval.String(),
 		"dormancy", r.cfg.dormancy.String(),
 		"max_failures", r.cfg.maxFailures)
@@ -222,7 +227,7 @@ func (s *Server) closeMaterializer() {
 	}
 	if c, ok := r.m.(interface{ Close() error }); ok {
 		if err := c.Close(); err != nil {
-			slog.Warn("op-log recovery: closing the materializer failed", "error", err)
+			r.cfg.logger.Warn("op-log recovery: closing the materializer failed", "error", err)
 		}
 	}
 }
@@ -232,7 +237,7 @@ func (s *Server) closeMaterializer() {
 func (r *materializeRecovery) onRoomIdle(itemID string) {
 	pending, err := r.s.store.ItemHasPendingContent(itemID)
 	if err != nil {
-		slog.Warn("op-log recovery: pending check on room idle failed", "item_id", itemID, "error", err)
+		r.cfg.logger.Warn("op-log recovery: pending check on room idle failed", "item_id", itemID, "error", err)
 		return
 	}
 	if pending {
@@ -244,7 +249,7 @@ func (r *materializeRecovery) onRoomIdle(itemID string) {
 func (r *materializeRecovery) sweep() {
 	ids, err := r.s.store.ListMaterializeCandidates(r.cfg.now().Add(-r.cfg.dormancy), materializeSweepLimit)
 	if err != nil {
-		slog.Warn("op-log recovery: sweep query failed", "error", err)
+		r.cfg.logger.Warn("op-log recovery: sweep query failed", "error", err)
 		return
 	}
 	for _, id := range ids {
@@ -315,7 +320,7 @@ func (r *materializeRecovery) workLoop() {
 func (r *materializeRecovery) processSafely(itemID string) (res materializeResult) {
 	defer func() {
 		if p := recover(); p != nil {
-			slog.Error("op-log recovery: panic processing item",
+			r.cfg.logger.Error("op-log recovery: panic processing item",
 				"item_id", itemID, "panic", p, "stack", string(debug.Stack()))
 			res = mrFailed
 		}
@@ -333,7 +338,7 @@ func (r *materializeRecovery) process(itemID string) materializeResult {
 	}
 	in, err := s.store.LoadMaterializeInput(itemID)
 	if err != nil {
-		slog.Warn("op-log recovery: reading the op-log failed", "item_id", itemID, "error", err)
+		r.cfg.logger.Warn("op-log recovery: reading the op-log failed", "item_id", itemID, "error", err)
 		return mrFailed
 	}
 	if in == nil {
@@ -353,7 +358,7 @@ func (r *materializeRecovery) process(itemID string) materializeResult {
 	for _, v := range in.SchemaVersions {
 		if v != collab.DefaultSchemaVersion {
 			r.exhaust(itemID, in.Cursor, fmt.Sprintf("op-log schema version %q, server %q", v, collab.DefaultSchemaVersion))
-			slog.Info("op-log recovery: skipping item written under another editor schema",
+			r.cfg.logger.Info("op-log recovery: skipping item written under another editor schema",
 				"item_id", itemID, "row_schema_version", v, "server_schema_version", collab.DefaultSchemaVersion)
 			return mrSchemaVersion
 		}
@@ -361,12 +366,12 @@ func (r *materializeRecovery) process(itemID string) materializeResult {
 
 	ws, err := s.store.GetWorkspaceByID(in.WorkspaceID)
 	if err != nil || ws == nil {
-		slog.Warn("op-log recovery: reading the workspace failed", "item_id", itemID, "error", err)
+		r.cfg.logger.Warn("op-log recovery: reading the workspace failed", "item_id", itemID, "error", err)
 		return mrFailed
 	}
 	index, err := s.materializeLinkIndex(in.WorkspaceID)
 	if err != nil {
-		slog.Warn("op-log recovery: building the link index failed", "item_id", itemID, "error", err)
+		r.cfg.logger.Warn("op-log recovery: building the link index failed", "item_id", itemID, "error", err)
 		return mrFailed
 	}
 
@@ -402,13 +407,13 @@ func (r *materializeRecovery) process(itemID string) materializeResult {
 		if r.ctx.Err() != nil {
 			return mrStopped
 		}
-		slog.Warn("op-log recovery: writing the recovered body failed", "item_id", itemID, "error", err)
+		r.cfg.logger.Warn("op-log recovery: writing the recovered body failed", "item_id", itemID, "error", err)
 		return mrFailed
 	}
 	r.forget(itemID)
 	switch outcome {
 	case store.MaterializeApplied:
-		slog.Info("op-log recovery: recovered an item's unsaved editor session",
+		r.cfg.logger.Info("op-log recovery: recovered an item's unsaved editor session",
 			"item_id", itemID, "op_log_cursor", in.Cursor, "rows", len(in.Rows),
 			"pending_rows", in.Pending, "bytes", len(md), "elapsed", time.Since(started).String())
 		if updated != nil {
@@ -485,11 +490,19 @@ func (r *materializeRecovery) recordFailure(itemID string, cursor int64, err err
 
 	attrs := []any{"item_id", itemID, "op_log_cursor", cursor, "failures", failures,
 		"max_failures", r.cfg.maxFailures, "kind", materializeErrorKind(err), "error", err}
-	if failures >= r.cfg.maxFailures {
-		slog.Warn("op-log recovery: giving up on item until its op-log changes", attrs...)
+	// No memory cap could be established, so the supervisor refused the job
+	// without sending it anywhere, and has already warned once for the whole
+	// worker. It counts against the budget like any failure, but a line per
+	// item would repeat that warning for every pending item on every pass.
+	if errors.Is(err, materialize.ErrNoMemoryCap) {
+		r.cfg.logger.Debug("op-log recovery: job refused, no memory cap", attrs...)
 		return
 	}
-	slog.Warn("op-log recovery: materialization failed; will retry after a backoff",
+	if failures >= r.cfg.maxFailures {
+		r.cfg.logger.Warn("op-log recovery: giving up on item until its op-log changes", attrs...)
+		return
+	}
+	r.cfg.logger.Warn("op-log recovery: materialization failed; will retry after a backoff",
 		append(attrs, "retry_after", delay.String())...)
 }
 
@@ -509,6 +522,7 @@ func materializeErrorKind(err error) string {
 		err  error
 		name string
 	}{
+		{materialize.ErrNoMemoryCap, "no_memory_cap"},
 		{materialize.ErrMemoryLimit, "memory_limit"},
 		{materialize.ErrDeadline, "deadline"},
 		{materialize.ErrChildDied, "worker_died"},
