@@ -96,7 +96,8 @@ All configuration is via environment variables or a config file (`~/.pad/config.
 
 Pad has two SSE endpoints and they share one budget. `/api/v1/events` is
 workspace-scoped (the web UI's activity stream); `/api/v1/events/stream` is
-user-scoped (agent watch notifications, `pad watch --stream`). A held
+user-scoped (agent watch notifications, `pad watch --stream`, and the web UI's
+workspace-access stream, `?access=true`). A held
 connection costs a goroutine and a bus subscription whichever one opened it —
 and, on the watch stream only, a session-presence registration in shared Redis —
 so `PAD_SSE_MAX_CONNECTIONS` and `PAD_SSE_MAX_PER_USER` bound them together. Only `PAD_SSE_MAX_PER_WORKSPACE`
@@ -137,6 +138,24 @@ single user can hold `PAD_SSE_MAX_PER_USER` connections *on each replica*. Size
 them per pod and multiply by replica count for the deployment ceiling. Watch
 `pad_stream_connections_active` (per instance) rather than inferring the total
 from the configured number.
+
+#### Serve pad over HTTPS: browsers cap HTTP/1.1 connections
+
+Over plain `http://`, browsers speak HTTP/1.1 and allow **6 connections per
+host**, shared by every tab of that browser. A pad tab's live streams hold
+connections for as long as it is open, so the budget matters. Since BUG-3318
+the web UI holds at most one workspace-access stream per browser and user,
+plus one activity stream per workspace open in any of its tabs (each elected
+across tabs). Before that, every tab held its own access stream, and four or
+five pad tabs could leave a new page with no connection for its first request,
+so it sat on a loading skeleton that never resolved.
+
+Behind TLS, browsers use HTTP/2, which multiplexes every request and stream
+over one connection, and the limit does not apply. Put a TLS-terminating
+reverse proxy (Caddy, nginx) in front of pad for any deployment people use from
+a browser. Pad Cloud already serves HTTP/2. Tabs across many workspaces at once
+still hold one activity stream per workspace over HTTP/1.1; that is tracked
+separately.
 
 #### Collab connection limits
 

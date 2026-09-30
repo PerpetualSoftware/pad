@@ -1,6 +1,7 @@
 // The workspace-access stream (PLAN-3002 U7b, TASK-3275): ONE EventSource per
-// browser tab on GET /api/v1/events/stream?access=true, whose only job is to
-// hear `workspace_access_changed` (TASK-3272) and refetch.
+// browser and user (per tab before BUG-3318, see below) on
+// GET /api/v1/events/stream?access=true, whose only job is to hear
+// `workspace_access_changed` (TASK-3272) and refetch.
 //
 // The event is a REFETCH HINT and is never applied as state. Correctness lives
 // on the read-filtered GET /me/workspace-tabs and the workspace list, so a
@@ -8,9 +9,20 @@
 // For the same reason a reconnect, and a `sync_required`, refetch once: this
 // stream cannot vouch for what it missed, and the fetch does not need it to.
 //
-// Why per TAB and not leader-elected like the workspace stream (sse.svelte.ts):
-// each tab owns its own navigation, and a lost ACTIVE workspace must move the
-// tab that is showing it. The cost is one PAD_SSE_MAX_PER_USER slot per tab.
+// Per tab it ACTS, per browser it CONNECTS (BUG-3318). TASK-3275 chose one
+// stream per tab because "each tab owns its own navigation, and a lost ACTIVE
+// workspace must move the tab that is showing it". That is still how every tab
+// acts: each one runs refetch() for its own route on every hint. What moved is
+// the connection. Over plain HTTP (HTTP/1.1) a browser allows 6 connections
+// per host, and one long-lived stream per tab starved new pages: with four pad
+// tabs open a fifth never got a connection for its first fetch. So ONE tab per
+// browser and user, elected with navigator.locks, holds the stream and relays
+// each hint over a BroadcastChannel; every tab, the leader included, then
+// refetches for itself. When the leader goes (closed, crashed, discarded), the
+// lock passes to a waiting tab, whose first connect counts as a reconnect: it
+// resyncs every tab, so a hint fired during the handover is not lost.
+// Without navigator.locks or BroadcastChannel each tab opens its own stream,
+// as before.
 //
 // Identity: every settle is fenced by authStore.identityFence(), and an
 // identity change closes the source and reopens it for whoever is signed in
@@ -48,6 +60,11 @@ function createAccessStream() {
 	let attempt = 0;
 	let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 	let offIdentity: (() => void) | null = null;
+	// Election state (BUG-3318). `channel` relays hints between this user's
+	// tabs; `releaseLock` ends this tab's leadership.
+	let channel: BroadcastChannel | null = null;
+	let releaseLock: (() => void) | null = null;
+	let lifecycleBound = false;
 
 	// True only for the workspace-scoped 404. Anything else, a success, an
 	// outage, a different error, keeps the tab where it is.
@@ -70,6 +87,129 @@ function createAccessStream() {
 		source = null;
 		s?.close();
 	}
+
+	function electionSupported(): boolean {
+		return (
+			typeof navigator !== 'undefined' &&
+			!!navigator.locks &&
+			typeof navigator.locks.request === 'function' &&
+			typeof BroadcastChannel !== 'undefined'
+		);
+	}
+
+	// Keyed by user: a different account signed in on another tab of this
+	// browser must never hear this user's hints, or hold their stream.
+	function electionName(): string {
+		return `pad-access-${authStore.userId ?? ''}`;
+	}
+
+	type Relay = { kind: 'hint'; hint: AccessHint } | { kind: 'resync' };
+
+	// Act on a hint here, and relay it to the other tabs, which act on it for
+	// their own routes.
+	function deliver(msg: Relay) {
+		if (channel) {
+			try {
+				channel.postMessage(msg);
+			} catch {
+				// A closed channel: this tab is leaving; the next leader resyncs.
+			}
+		}
+		receive(msg);
+	}
+
+	function receive(msg: Relay) {
+		if (msg.kind === 'resync') {
+			void refetch();
+			return;
+		}
+		const hint = msg.hint;
+		if (hint?.kind !== ACCESS_KIND) return;
+		void refetch(hint.change && GONE_CHANGES.has(hint.change) ? hint : undefined);
+	}
+
+	function leaveElection() {
+		const release = releaseLock;
+		releaseLock = null;
+		release?.();
+		const c = channel;
+		channel = null;
+		c?.close();
+	}
+
+	// Join the election: listen on the channel, and queue for the lock. The
+	// grant opens the stream; a grant that had to wait is a TAKEOVER, so its
+	// connect resyncs every tab.
+	function join() {
+		if (!electionSupported()) {
+			open(false);
+			return;
+		}
+		const gen = generation;
+		const name = electionName();
+		const c = new BroadcastChannel(name);
+		channel = c;
+		c.onmessage = (ev: MessageEvent) => {
+			if (gen !== generation || !running) return;
+			receive(ev.data as Relay);
+		};
+		void (async () => {
+			let heldByAnother = false;
+			try {
+				const q = await navigator.locks.query();
+				heldByAnother = !!q.held?.some((l) => l.name === name);
+			} catch {
+				// Unknown: treat the grant as a first connect.
+			}
+			if (gen !== generation || !running) return;
+			navigator.locks
+				.request(name, { mode: 'exclusive' }, () => {
+					if (gen !== generation || !running) return;
+					open(heldByAnother);
+					return new Promise<void>((resolve) => {
+						releaseLock = () => {
+							releaseLock = null;
+							closeSource();
+							resolve();
+						};
+					});
+				})
+				.catch(() => {
+					// The lock manager refused (a sandboxed frame, a policy):
+					// fall back to this tab's own stream, as before BUG-3318.
+					if (gen !== generation || !running || source) return;
+					if (channel === c) {
+						channel = null;
+						c.close();
+					}
+					open(false);
+				});
+		})();
+	}
+
+	// A page entering the back/forward cache must give up the stream and the
+	// lock, so another tab takes over; restored, it rejoins.
+	function bindLifecycle() {
+		if (lifecycleBound || typeof window === 'undefined') return;
+		lifecycleBound = true;
+		window.addEventListener('pagehide', (ev) => {
+			if (!(ev as PageTransitionEvent).persisted || !running) return;
+			generation++;
+			clearTimer();
+			closeSource();
+			leaveElection();
+			parked = true;
+		});
+		window.addEventListener('pageshow', (ev) => {
+			if (!(ev as PageTransitionEvent).persisted || !parked) return;
+			parked = false;
+			if (!running || !authStore.authenticated) return;
+			generation++;
+			attempt = 0;
+			join();
+		});
+	}
+	let parked = false;
 
 	// Refetch both reads. When `gone` names the workspace this tab is inside,
 	// ask the server whether that workspace still resolves for this caller,
@@ -147,8 +287,9 @@ function createAccessStream() {
 		s.addEventListener('connected', () => {
 			if (!current()) return;
 			attempt = 0;
-			// A reconnect cannot know what it missed; one refetch covers it.
-			if (isReconnect) void refetch();
+			// A reconnect cannot know what it missed; one refetch covers it,
+			// in every tab (a takeover counts as a reconnect, BUG-3318).
+			if (isReconnect) deliver({ kind: 'resync' });
 		});
 		s.addEventListener('notification', (ev) => {
 			if (!current()) return;
@@ -159,16 +300,17 @@ function createAccessStream() {
 				return;
 			}
 			if (hint.kind !== ACCESS_KIND) return;
-			void refetch(hint.change && GONE_CHANGES.has(hint.change) ? hint : undefined);
+			deliver({ kind: 'hint', hint });
 		});
 		s.addEventListener('sync_required', () => {
 			if (!current()) return;
-			void refetch();
+			deliver({ kind: 'resync' });
 		});
 		s.addEventListener('unauthorized', () => {
 			if (!current()) return;
 			running = false;
 			closeSource();
+			leaveElection();
 		});
 		s.onerror = () => {
 			if (!current()) return;
@@ -187,24 +329,27 @@ function createAccessStream() {
 					generation++;
 					clearTimer();
 					closeSource();
+					leaveElection();
 					attempt = 0;
-					// Reopen for whoever is signed in NOW, never for the
+					// Rejoin for whoever is signed in NOW, never for the
 					// identity this listener was told about.
-					if (wasRunning && authStore.authenticated) open(false);
+					if (wasRunning && authStore.authenticated) join();
 					else running = false;
 				});
 			}
+			bindLifecycle();
 			if (running) return;
 			running = true;
 			generation++;
 			attempt = 0;
-			open(false);
+			join();
 		},
 		stop() {
 			running = false;
 			generation++;
 			clearTimer();
 			closeSource();
+			leaveElection();
 		},
 		get connected() {
 			return source !== null;

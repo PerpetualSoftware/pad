@@ -4,7 +4,8 @@ import { quietCrossActorToasts } from './fixtures';
 
 /**
  * TASK-3275 (PLAN-3002 U7b): losing a workspace closes its tab LIVE, with no
- * reload, through the per-tab /events/stream?access=true subscription.
+ * reload, through the /events/stream?access=true subscription (one per
+ * browser since BUG-3318, relayed to every tab).
  *
  * Like workspace-tabs.spec.ts, every leg mints its OWN accounts, because the
  * open set is per user and the shared admin's bar is read by other specs in

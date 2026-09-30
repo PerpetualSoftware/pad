@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// TASK-3275: the per-tab workspace-access stream. Every collaborator is a
+// TASK-3275: the workspace-access stream (one per browser since BUG-3318; these
+// legs run without navigator.locks, the per-tab fallback). Every collaborator is a
 // fake, so each test asserts what the service DID: which reads it asked for,
 // where it navigated, how many sources it opened.
 
@@ -329,5 +330,134 @@ describe('accessStream (TASK-3275)', () => {
 		expect(sources).toHaveLength(1);
 		expect(sources[0].closed).toBe(true);
 		expect(s.connected).toBe(false);
+	});
+});
+
+// BUG-3318: over HTTP/1.1 a browser allows 6 connections per host, and one
+// stream per tab starved new pages. One tab per browser holds the stream and
+// relays; every tab still acts for itself. Two freshStream() calls are two
+// tabs: separate module instances sharing the fakes below.
+describe('accessStream election (BUG-3318)', () => {
+	type Waiter = { name: string; run: () => unknown };
+	let held: Set<string>;
+	let queue: Waiter[];
+	let channels: Array<{ name: string; onmessage: ((e: { data: unknown }) => void) | null; closed: boolean }>;
+
+	function grantNext(name: string) {
+		const i = queue.findIndex((w) => w.name === name);
+		if (i === -1) return;
+		const [w] = queue.splice(i, 1);
+		held.add(name);
+		void Promise.resolve(w.run()).then(() => {
+			held.delete(name);
+			grantNext(name);
+		});
+	}
+
+	beforeEach(() => {
+		held = new Set();
+		queue = [];
+		channels = [];
+		const locks = {
+			request: (name: string, _opts: unknown, cb: () => unknown) =>
+				new Promise<void>((resolve) => {
+					queue.push({ name, run: async () => { await cb(); resolve(); } });
+					if (!held.has(name)) grantNext(name);
+				}),
+			query: async () => ({ held: [...held].map((name) => ({ name })) })
+		};
+		Object.defineProperty(navigator, 'locks', { value: locks, configurable: true });
+		class FakeChannel {
+			name: string;
+			onmessage: ((e: { data: unknown }) => void) | null = null;
+			closed = false;
+			constructor(name: string) {
+				this.name = name;
+				channels.push(this);
+			}
+			postMessage(data: unknown) {
+				for (const c of channels) {
+					if (c !== this && !c.closed && c.name === this.name) queueMicrotask(() => c.onmessage?.({ data }));
+				}
+			}
+			close() {
+				this.closed = true;
+			}
+		}
+		vi.stubGlobal('BroadcastChannel', FakeChannel);
+	});
+
+	afterEach(() => {
+		Object.defineProperty(navigator, 'locks', { value: undefined, configurable: true });
+	});
+
+	it('two tabs hold ONE stream, and a hint makes both refetch', async () => {
+		const a = await freshStream();
+		const b = await freshStream();
+		a.start();
+		await flush();
+		b.start();
+		await flush();
+		expect(sources.filter((s) => !s.closed)).toHaveLength(1);
+		sources[0].fire('connected');
+		await flush();
+		expect(h.load).not.toHaveBeenCalled();
+
+		sources[0].fire('notification', hint('gained'));
+		await flush();
+		// Leader and follower each refetched for their own route.
+		expect(h.load).toHaveBeenCalledTimes(2);
+	});
+
+	it('a follower takes over when the leader goes, and its connect resyncs every tab', async () => {
+		const a = await freshStream();
+		const b = await freshStream();
+		const c = await freshStream();
+		a.start();
+		await flush();
+		b.start();
+		c.start();
+		await flush();
+		expect(sources).toHaveLength(1);
+
+		a.stop();
+		await flush();
+		expect(sources[0].closed).toBe(true);
+		expect(sources).toHaveLength(2);
+		expect(sources.filter((s) => !s.closed)).toHaveLength(1);
+
+		// The takeover's connect is a reconnect: the new leader and the
+		// remaining follower both resync, covering a hint fired in the gap.
+		h.load.mockClear();
+		sources[1].fire('connected');
+		await flush();
+		expect(h.load).toHaveBeenCalledTimes(2);
+
+		sources[1].fire('notification', hint('gained'));
+		await flush();
+		expect(h.load).toHaveBeenCalledTimes(4);
+	});
+
+	it("the first leader's first connect is not a resync", async () => {
+		const a = await freshStream();
+		a.start();
+		await flush();
+		sources[0].fire('connected');
+		await flush();
+		expect(h.load).not.toHaveBeenCalled();
+	});
+
+	it('a stopped tab neither streams nor hears relayed hints', async () => {
+		const a = await freshStream();
+		const b = await freshStream();
+		a.start();
+		await flush();
+		b.start();
+		await flush();
+		b.stop();
+		await flush();
+		sources[0].fire('notification', hint('gained'));
+		await flush();
+		expect(h.load).toHaveBeenCalledTimes(1);
 	});
 });
