@@ -980,13 +980,17 @@ function unescapeMarkdownLinkText(s: string): string {
  * It is the LAST step of every save pipeline (both ItemDetail save paths and
  * the materializer's flushPipeline), which skip markdownToWikiLinks when the
  * link index is empty. So it is also where a follows-title marker (BUG-3315,
- * followsTitleMarker) that nothing consumed is dropped from same-origin links:
+ * followsTitleMarker) that nothing consumed is dropped from EVERY link:
  * the marker is load-time state and must never reach stored content.
  */
 export function cleanBrokenLinks(markdown: string): string {
 	return markdown
 		.replace(/\[([^\]]+)\]\(broken\)/g, '[[$1]]')
-		.replace(/(\[(?:\\.|[^\]\\])+\]\(\/[^)]*?) "pad-follows-title:(?:\\"|[^"])*"\)/g, '$1)');
+		// Any link, whatever its href: a user who edits an auto link's URL keeps
+		// the marker on the mark, and an external href is never converted. (An
+		// HTML-serialized table does not carry link titles, measured, so there is
+		// no HTML form to strip.)
+		.replace(/ "pad-follows-title:(?:\\"|[^"])*"\)/g, ')');
 }
 
 export function parseTags(tagsJson: string): string[] {

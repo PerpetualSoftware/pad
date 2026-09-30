@@ -123,6 +123,51 @@ describe('BUG-3315 U2: a rename does not pin the old title', () => {
 		}
 	});
 
+	// THE INVARIANT (lead, before the GO): the marker never reaches stored
+	// markdown, on ANY path where a marked link does not convert back to
+	// [[...]]. Each case is a real save pipeline (flushPipeline, the same steps as
+	// both ItemDetail save paths) over a document a tab really produced.
+	describe('the marker never reaches stored markdown', () => {
+		const other = { ...task('Unrelated'), id: 'id-2', item_number: 2, slug: 'other' } as unknown as Item;
+		const hardBreak = (ed: Doc) => {
+			// Shift-Enter inside the link text: a hard break splits "Old|Title".
+			ed.commands.setTextSelection(8);
+			ed.commands.setHardBreak();
+		};
+		const boldPart = (ed: Doc) => {
+			ed.commands.setTextSelection({ from: 5, to: 8 });
+			ed.commands.toggleBold();
+		};
+		const externalHref = (ed: Doc) => {
+			// The user edits the auto link's URL to an external address; the link
+			// mark keeps its attributes, the marker included.
+			ed.chain().setTextSelection({ from: 5, to: 14 }).extendMarkRange('link').updateAttributes('link', { href: 'https://example.com/x' }).run();
+		};
+		const cases: Array<[string, string, Item[], ((ed: Doc) => void)?]> = [
+			['target deleted (index lacks it)', 'see [[TASK-1]] here', [other]],
+			['empty index (pipelines skip conversion)', 'see [[TASK-1]] here', []],
+			['restricted viewer (target not visible)', 'see [[TASK-1]] here', [other]],
+			['hard break inside the link text, target present', 'see [[TASK-1]] here', [task('Old Title')], hardBreak],
+			['hard break inside the link text, target gone', 'see [[TASK-1]] here', [other], hardBreak],
+			['partial bold inside the link, target gone', 'see [[TASK-1]] here', [other], boldPart],
+			['link in a markdown table, target gone', '| a | b |\n| --- | --- |\n| [[TASK-1]] | x |', [other]],
+			['link in an HTML-serialized table (list in a cell), target gone', '<table><tbody><tr><td><ul><li><p>[[TASK-1]]</p></li></ul></td></tr></tbody></table>', [other]],
+			['URL edited to an external address, target present', 'see [[TASK-1]] here', [task('Old Title')], externalHref],
+			['URL edited to an external address, empty index', 'see [[TASK-1]] here', [], externalHref],
+		];
+		for (const [name, stored, index, edit] of cases) {
+			it(name, () => {
+				const { md } = openAndEdit(stored, 'Old Title', edit);
+				// Guard: the document really carries the marker, or the case proves nothing.
+				expect(md).toContain('pad-follows-title');
+				expect(saveWith(md, index)).not.toContain('pad-follows-title');
+			});
+		}
+		it('the guard is live: a marked document does carry the marker before the save', () => {
+			expect(openAndEdit('see [[TASK-1]] here', 'Old Title').md).toContain('pad-follows-title');
+		});
+	});
+
 	it('with no rename, nothing changes', () => {
 		const { md } = openAndEdit('a [[TASK-1]] and [[TASK-1|label]] b', 'Same');
 		expect(saveWith(md, [task('Same')])).toBe('a [[TASK-1]] and [[TASK-1|label]] b');
