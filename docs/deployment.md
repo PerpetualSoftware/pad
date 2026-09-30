@@ -1266,9 +1266,9 @@ budget`, with its id, failure count and `last_error_kind`, so a stuck item can
 be found in the log. Items skipped because they hold set-aside edits are not
 logged one by one; the sweep's summary line (`op-log recovery sweep`, written
 only when something changed) carries their running count as
-`set_aside_skipped_total`. This budget is kept in memory, so a restart grants each item its 3
-attempts again. An item whose stored edits were written under another editor
-schema version is skipped.
+`set_aside_skipped_total`. This budget is kept in memory, so a restart grants
+each item its 3 attempts again. An item whose stored edits were written under
+another editor schema version is skipped, and logs the same one warning.
 
 With `PAD_MATERIALIZE=off` none of this runs: no worker is ever started, and a
 tab that closed without saving catches up only when a tab next opens the item,
