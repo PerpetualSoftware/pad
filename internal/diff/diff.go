@@ -56,7 +56,9 @@ func CreateReversePatch(oldText, newText string) string {
 	return CreatePatch(newText, oldText)
 }
 
-// FormatDiffSummary returns a human-readable summary of changes.
+// FormatDiffSummary returns a human-readable summary of changes. Its "lines"
+// are character-diff CHUNKS (a one-character edit reads +1/-1); LineCounts is
+// the line-level count the version rows store (PLAN-2348 U2).
 func FormatDiffSummary(oldText, newText string) string {
 	oldLines := strings.Count(oldText, "\n")
 	newLines := strings.Count(newText, "\n")
