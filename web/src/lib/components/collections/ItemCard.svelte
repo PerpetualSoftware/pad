@@ -703,19 +703,20 @@
 	}
 
 	/* Phone width (TASK-3311): each tag is a 44x44 touch target. It grows
-	   visibly to 44 wide and 32 tall, and an invisible extender adds the last
-	   12px, 6 above and 6 below. That fits inside the 12px gap between wrapped
-	   rows and the card's gap above the row (the status chip's extender grows
-	   UP, away from the tags), so no neighbouring control loses area to it. */
+	   visibly to 44 wide and 28 tall (Dave's ruling: not bigger pills), and an
+	   invisible extender adds the last 16px, 8 above and 8 below. That fills the
+	   16px gap between wrapped rows and the card's 8px gap above the row (the
+	   status chip's extender grows UP, away from the tags), so no neighbouring
+	   control loses area to it. */
 	@media (max-width: 768px) {
 		.card-tags {
-			row-gap: 12px;
+			row-gap: 16px;
 		}
 		.card-tag {
 			position: relative;
 			justify-content: center;
 			min-width: 44px;
-			min-height: 32px;
+			min-height: 28px;
 		}
 		.card-tag::after {
 			content: '';
