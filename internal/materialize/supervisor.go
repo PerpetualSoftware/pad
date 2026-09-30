@@ -132,8 +132,11 @@ type memCapImpl struct {
 	// prepare adjusts the command before Start (nil: nothing).
 	prepare func(cmd *exec.Cmd)
 	// attach runs right after Start, before the child is sent anything, and
-	// returns the handle that measures and caps it.
-	attach func(cmd *exec.Cmd) (*capHandle, error)
+	// returns the handle that measures and caps it. A mechanism that can SEE
+	// the cap being hit (Windows' job notifications) calls onLimit, which
+	// kills the child and fails its job with ErrMemoryLimit: the cap must not
+	// depend on the child choosing to die when an allocation is refused.
+	attach func(cmd *exec.Cmd, onLimit func()) (*capHandle, error)
 	// rss, instead of attach: the parent reads the child's resident set as
 	// the baseline and then polls it every watchInterval, killing the child
 	// above baseline + limit.
@@ -435,7 +438,7 @@ func (s *Supervisor) spawn(ctx context.Context) (*child, error) {
 	var handle *capHandle
 	var release func()
 	if s.cap.attach != nil {
-		handle, err = s.cap.attach(cmd)
+		handle, err = s.cap.attach(cmd, func() { c.kill("memory") })
 		if err != nil {
 			_ = cmd.Process.Kill()
 			_ = cmd.Wait()
@@ -764,8 +767,8 @@ func (s *Supervisor) died(c *child) error {
 		reason, err = "closed", ErrClosed
 	case k == "memory":
 		reason = "memory"
-		err = fmt.Errorf("%w (%w): resident set above %s (baseline %s + limit %s); killed by the watchdog",
-			ErrMemoryLimit, ErrChildDied, formatBytes(c.capBytes), formatBytes(c.baseline), formatBytes(s.memLimit))
+		err = fmt.Errorf("%w (%w): reached its %s cap of %s (baseline %s + limit %s); killed by the supervisor",
+			ErrMemoryLimit, ErrChildDied, s.cap.mechanism, formatBytes(c.capBytes), formatBytes(c.baseline), formatBytes(s.memLimit))
 	case k != "":
 		// Killed by us for a reason whose own path returns; not reached in
 		// practice, but never report such a death as a crash.
@@ -918,7 +921,10 @@ type stderrLog struct {
 // pthread_create, whose stack mapping fails under an address-space cap and
 // is reported as "pthread_create failed: Resource temporarily unavailable"
 // (EAGAIN) followed by SIGABRT — measured at the cap on Linux.
-var oomMarkers = []string{"out of memory", "cannot allocate memory", "pthread_create failed"}
+//
+// On Windows a commit refused by the Job Object is "VirtualAlloc of N bytes
+// failed with errno=1455" (ERROR_COMMITMENT_LIMIT).
+var oomMarkers = []string{"out of memory", "cannot allocate memory", "pthread_create failed", "errno=1455"}
 
 func (l *stderrLog) Write(p []byte) (int, error) {
 	l.mu.Lock()

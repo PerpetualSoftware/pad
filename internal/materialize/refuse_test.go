@@ -17,7 +17,7 @@ import (
 func probeCap(probe func() (uint64, error)) *memCapImpl {
 	return &memCapImpl{
 		mechanism: "probe(test)",
-		attach: func(*exec.Cmd) (*capHandle, error) {
+		attach: func(*exec.Cmd, func()) (*capHandle, error) {
 			return &capHandle{baseline: probe, set: func(uint64) error { return nil }}, nil
 		},
 	}

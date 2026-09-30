@@ -29,6 +29,10 @@ import (
 //     job and badly on the next.
 const helperEnv = "PAD_MATERIALIZE_TEST_HELPER"
 
+// inflateEnv makes the script helper inflate its baseline by that many MiB
+// before it answers the readiness probe (inflateBaseline).
+const inflateEnv = "PAD_MATERIALIZE_TEST_INFLATE_MIB"
+
 // journalEnv names a file the script helper appends every JOB it receives to
 // (the readiness probe excluded), so a test can prove what reached a worker.
 const journalEnv = "PAD_MATERIALIZE_TEST_JOURNAL"
@@ -53,6 +57,13 @@ func runHelper(mode string) int {
 		}
 		return 0
 	}
+	if mib, _ := strconv.Atoi(os.Getenv(inflateEnv)); mib > 0 {
+		if err := inflateBaseline(mib); err != nil {
+			fmt.Fprintln(os.Stderr, "helper: inflate:", err)
+			return 8
+		}
+	}
+	warmThreads() // as RunWorker does before readiness
 	r := bufio.NewReader(os.Stdin)
 	w := bufio.NewWriter(os.Stdout)
 	for {
@@ -262,7 +273,7 @@ func (f *fakeClock) slept() []time.Duration {
 // address space (a baseline no plausibility check accepts).
 var fakeCap = &memCapImpl{
 	mechanism: "fake(test)",
-	attach: func(*exec.Cmd) (*capHandle, error) {
+	attach: func(*exec.Cmd, func()) (*capHandle, error) {
 		return &capHandle{
 			baseline: func() (uint64, error) { return 100 << 20, nil },
 			set:      func(uint64) error { return nil },
@@ -559,11 +570,11 @@ func TestSupervisorCtxCancelKillsWithoutBackoff(t *testing.T) {
 // 5. memory cap
 
 // TestSupervisorMemoryCapPlatform runs the cap this OS ships with, which is
-// RELATIVE to the loaded worker: a job may grow it by the limit. Run at two
-// GOMAXPROCS values, because the absolute cap this replaced failed on CI
-// hosts whose runtime reserved more address space than the machine it was
-// measured on; at 64 the baseline is ~350 MiB larger (measured) and the same
-// allocations must give the same answers.
+// RELATIVE to the loaded worker: a job may grow it by the limit. It runs
+// twice: as is, and with the worker's baseline inflated before readiness
+// (inflateBaseline: ~1.5 GiB of never-touched address space on Linux), which
+// stands in for a host whose runtime reserves more than this one — the case
+// the absolute cap this replaced failed on CI.
 func TestSupervisorMemoryCapPlatform(t *testing.T) {
 	if raceEnabled {
 		skipCapTest(t, "the race runtime cannot start under an address-space cap")
@@ -572,14 +583,12 @@ func TestSupervisorMemoryCapPlatform(t *testing.T) {
 		skipCapTest(t, "no memory cap on this OS ("+platformMemCap.mechanism+")")
 	}
 	const limit = 512 << 20
-	for _, procs := range []string{"", "64"} {
-		t.Run("GOMAXPROCS="+procs, func(t *testing.T) {
+	for _, inflate := range []int{0, inflateMiB} {
+		t.Run("baseline+"+strconv.Itoa(inflate)+"MiB", func(t *testing.T) {
 			h := newHarness(t, "script", func(c *SupervisorConfig) {
 				c.MemLimit = limit
 				c.capOverride = nil
-				if procs != "" {
-					c.extraEnv = []string{"GOMAXPROCS=" + procs}
-				}
+				c.extraEnv = []string{inflateEnv + "=" + strconv.Itoa(inflate)}
 			})
 			if _, err := h.s.Materialize(context.Background(), script("echo:warm")); err != nil {
 				t.Fatal(err)
@@ -590,6 +599,14 @@ func TestSupervisorMemoryCapPlatform(t *testing.T) {
 				t.Fatalf("start line: %q", started)
 			}
 			t.Log(started[0])
+			if inflate > 0 {
+				h.s.mu.Lock()
+				b := h.s.child.baseline
+				h.s.mu.Unlock()
+				if b < uint64(inflate)<<20 {
+					t.Fatalf("baseline %d does not include the %d MiB inflation", b, inflate)
+				}
+			}
 			// Comfortably under baseline + limit: fine.
 			if md, err := h.s.Materialize(context.Background(), script("alloc:128")); err != nil || md != strconv.Itoa(128<<20) {
 				t.Fatalf("128 MiB of growth under a 512 MiB limit: %q, %v", md, err)

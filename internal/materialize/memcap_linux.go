@@ -29,7 +29,7 @@ import (
 // runtime: out of memory", which the stderr log recognises.
 var platformMemCap = memCapImpl{
 	mechanism: "rlimit_as",
-	attach: func(cmd *exec.Cmd) (*capHandle, error) {
+	attach: func(cmd *exec.Cmd, _ func()) (*capHandle, error) {
 		pid := cmd.Process.Pid
 		return &capHandle{
 			baseline: func() (uint64, error) { return procVsize(pid) },

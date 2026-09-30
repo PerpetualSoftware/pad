@@ -30,12 +30,15 @@ const (
 	MaxTimeout      = 60 * time.Second
 	DefaultMemLimit = 2 << 30 // 2 GiB
 	// MinMemLimit: the limit is GROWTH beyond the loaded worker (see
-	// memCapImpl), and the measured growth of real work is small: the 50-case
-	// corpus peaks at +10 MiB of address space and +18 MiB resident, and a
-	// 4,000-deep nested document at +194 MiB (TestSupervisorBaselineMeasurements).
-	// 256 MiB lets all of that through while still allowing a tight cap. The
-	// old 1536 MiB floor belonged to the absolute cap, which it had to clear
-	// the runtime's own reservation to start at all.
+	// memCapImpl), and the measured growth of real work is small
+	// (TestSupervisorBaselineMeasurements, real worker, cgo build,
+	// GOMAXPROCS=2 as the supervisor sets it): the 50-case corpus adds
+	// +0 MiB of address space and +24 MiB resident, and a 4,000-deep nested
+	// document — pathological, not a real item — at most +193 MiB of address
+	// space. Threads created after the baseline: 0 in every run at
+	// GOMAXPROCS=2 (warmThreads makes sure of it at higher counts too). 256 MiB
+	// lets all of that through. The old 1536 MiB floor belonged to the
+	// absolute cap, which had to clear the runtime's own reservation.
 	MinMemLimit = 256 << 20
 	MaxMemLimit = 16 << 30
 )

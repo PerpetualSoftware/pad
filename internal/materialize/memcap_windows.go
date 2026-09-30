@@ -24,8 +24,13 @@ import (
 // found by a toolhelp snapshot of the (brand new, single-threaded) process
 // and resumed by id. Any failure on the way kills the still-suspended child.
 //
-// A breach fails the allocation (VirtualAlloc) and the Go runtime dies with
-// "fatal error: out of memory", which the stderr log recognises.
+// A breach fails the allocation (VirtualAlloc, errno=1455). The Go runtime
+// does NOT reliably die of that — CI saw a worker whose 1 GiB allocation was
+// refused sit until the job deadline — so the supervisor does not wait for
+// it: the job is associated with an I/O completion port, and
+// JOB_OBJECT_MSG_PROCESS_MEMORY_LIMIT for the worker's pid kills the worker
+// at once and fails the job with ErrMemoryLimit. The runtime's own "out of
+// memory" / errno=1455 on stderr remains a second signal.
 var platformMemCap = memCapImpl{
 	mechanism: "job_object",
 	prepare: func(cmd *exec.Cmd) {
@@ -52,23 +57,47 @@ type processMemoryCounters struct {
 
 var procK32GetProcessMemoryInfo = windows.NewLazySystemDLL("kernel32.dll").NewProc("K32GetProcessMemoryInfo")
 
-func attachJobObject(cmd *exec.Cmd) (h *capHandle, err error) {
+// Job-object notification messages (winnt.h) and the association struct,
+// which x/sys/windows does not define.
+const (
+	jobObjectMsgProcessMemoryLimit = 9
+	jobObjectMsgJobMemoryLimit     = 10
+)
+
+type jobObjectAssociateCompletionPort struct {
+	CompletionKey  uintptr
+	CompletionPort windows.Handle
+}
+
+func attachJobObject(cmd *exec.Cmd, onLimit func()) (h *capHandle, err error) {
 	pid := uint32(cmd.Process.Pid)
 	job, err := windows.CreateJobObject(nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("CreateJobObject: %w", err)
 	}
-	var proc windows.Handle
+	var proc, port windows.Handle
 	defer func() {
 		if err != nil {
 			if proc != 0 {
 				windows.CloseHandle(proc)
+			}
+			if port != 0 {
+				windows.CloseHandle(port)
 			}
 			windows.CloseHandle(job)
 		}
 	}()
 	if err = setJobLimits(job, 0); err != nil {
 		return nil, err
+	}
+	port, err = windows.CreateIoCompletionPort(windows.InvalidHandle, 0, 0, 1)
+	if err != nil {
+		return nil, fmt.Errorf("CreateIoCompletionPort: %w", err)
+	}
+	assoc := jobObjectAssociateCompletionPort{CompletionKey: uintptr(job), CompletionPort: port}
+	if _, err = windows.SetInformationJobObject(job, windows.JobObjectAssociateCompletionPortInformation,
+		uintptr(unsafe.Pointer(&assoc)), uint32(unsafe.Sizeof(assoc))); err != nil {
+		return nil, fmt.Errorf("associate completion port: %w", err)
 	}
 	proc, err = windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE|
 		windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.PROCESS_VM_READ, false, pid)
@@ -81,6 +110,7 @@ func attachJobObject(cmd *exec.Cmd) (h *capHandle, err error) {
 	if err = resumeProcess(pid); err != nil {
 		return nil, err
 	}
+	go watchJobPort(port, pid, onLimit)
 	return &capHandle{
 		baseline: func() (uint64, error) {
 			var c processMemoryCounters
@@ -93,6 +123,7 @@ func attachJobObject(cmd *exec.Cmd) (h *capHandle, err error) {
 		},
 		set: func(capBytes uint64) error { return setJobLimits(job, capBytes) },
 		release: func() {
+			windows.CloseHandle(port) // ends watchJobPort
 			windows.CloseHandle(proc)
 			windows.CloseHandle(job)
 		},
@@ -148,4 +179,27 @@ func resumeProcess(pid uint32) error {
 		return fmt.Errorf("no thread of process %d to resume", pid)
 	}
 	return nil
+}
+
+// watchJobPort reads the job's notifications until the port is closed and
+// calls onLimit when the worker (pid) hits its memory limit. For job
+// messages the OVERLAPPED pointer carries the process id.
+func watchJobPort(port windows.Handle, pid uint32, onLimit func()) {
+	for {
+		var msg uint32
+		var key uintptr
+		var ov *windows.Overlapped
+		if err := windows.GetQueuedCompletionStatus(port, &msg, &key, &ov, windows.INFINITE); err != nil {
+			if ov == nil {
+				return // the port was closed (ERROR_ABANDONED_WAIT_0) or failed
+			}
+			continue
+		}
+		switch msg {
+		case jobObjectMsgProcessMemoryLimit, jobObjectMsgJobMemoryLimit:
+			if uint32(uintptr(unsafe.Pointer(ov))) == pid {
+				onLimit()
+			}
+		}
+	}
 }
