@@ -354,7 +354,8 @@ func (s *Supervisor) idleStop(c *child) {
 	}
 	// A clean end: close its stdin, and the worker's read loop ends on EOF
 	// with status 0. Kill it only if it does not go.
-	c.killReason.Store("idle")
+	// Claims the reason only if nothing has: Close may already have killed it.
+	c.killReason.CompareAndSwap(nil, "idle")
 	_ = c.stdin.Close()
 	grace := s.cfg.idleGrace
 	if grace <= 0 {
@@ -364,8 +365,13 @@ func (s *Supervisor) idleStop(c *child) {
 		c.kill("idle")
 		c.awaitExit()
 	}
+	// Close may have ended it meanwhile (s.stopping); say so rather than idle.
+	reason := "idle"
+	if c.killedFor() == "closed" {
+		reason = "closed"
+	}
 	s.log.Info("materialize worker stopped",
-		"pid", c.pid, "reason", "idle", "exit", c.exitString(),
+		"pid", c.pid, "reason", reason, "exit", c.exitString(),
 		"idle_for", s.idle.String(),
 		"uptime", s.cfg.now().Sub(c.started).Round(time.Millisecond).String(), "jobs", c.jobs.Load())
 }
