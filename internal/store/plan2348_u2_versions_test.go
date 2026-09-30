@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -208,5 +209,25 @@ func TestItemVersions_ExportImportCarriesCountsNotUser(t *testing.T) {
 		if v.UserID != "" {
 			t.Errorf("user_id travelled across the bundle: %q", v.UserID)
 		}
+	}
+}
+
+// A body the chain walk cannot reconstruct is refused, never served as one
+// side of a diff.
+func TestGetItemVersionDiff_RefusesABrokenChain(t *testing.T) {
+	t.Parallel()
+	f := newU2Fixture(t)
+	item := createTestItem(t, f.s, f.wsID, f.collID, "Doc", "alpha\n")
+	f.update(t, item.ID, "beta\n", "agent", "cli")
+	vs, err := f.s.ListItemVersions(item.ID)
+	if err != nil || len(vs) != 2 {
+		t.Fatalf("precondition: two rows, got %d (%v)", len(vs), err)
+	}
+	if _, err := f.s.db.Exec(f.s.q(`UPDATE item_versions SET content = ?, is_diff = ? WHERE id = ?`),
+		"@@ not a patch @@\n", f.s.dialect.BoolToInt(true), vs[0].ID); err != nil {
+		t.Fatalf("corrupt: %v", err)
+	}
+	if _, err := f.s.GetItemVersionDiff(item.ID, vs[0].ID, "beta\n"); !errors.Is(err, ErrVersionChainBroken) {
+		t.Fatalf("broken row: err = %v, want ErrVersionChainBroken", err)
 	}
 }

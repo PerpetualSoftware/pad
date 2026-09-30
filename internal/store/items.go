@@ -5648,7 +5648,7 @@ func (s *Store) ListItemVersionsResolvedPage(itemID, currentContent string, limi
 		}
 		resolved, applyErr := diff.ApplyPatch(content, versions[i].Content)
 		if applyErr != nil {
-			versions[i].Content = fmt.Sprintf("[patch error: %v]", applyErr)
+			versions[i].Content = fmt.Sprintf(patchErrorPrefix+"%v]", applyErr)
 			versions[i].IsDiff = false
 			continue
 		}
@@ -5686,9 +5686,13 @@ func (s *Store) GetItemVersionResolved(itemID, versionID, currentContent string)
 // Both come from ONE walk of the reverse-patch chain, which is what makes the
 // pair cheap to serve (the client would otherwise need two walks).
 //
-// "The body that replaced it" is exact only when no throttled edit landed in
-// between: a throttled edit writes no row, so its change is folded into the
-// pair of the row before it.
+// A throttled edit writes no row, so its change is folded into the pair of the
+// row before it. The throttle is per (actor, source), so what is folded is
+// that same writer's burst, which is the event a History card shows. A
+// different writer's edit always has a row of its own.
+//
+// A body the chain walk could not reconstruct is refused, never served as one
+// side of a diff (ErrVersionChainBroken).
 func (s *Store) GetItemVersionDiff(itemID, versionID, currentContent string) (*models.ItemVersionDiff, error) {
 	versions, err := s.ListItemVersionsResolved(itemID, currentContent)
 	if err != nil {
@@ -5699,6 +5703,9 @@ func (s *Store) GetItemVersionDiff(itemID, versionID, currentContent string) (*m
 			continue
 		}
 		v := versions[i]
+		if isPatchError(v.Content) || (i > 0 && isPatchError(versions[i-1].Content)) {
+			return nil, ErrVersionChainBroken
+		}
 		if v.IsCreate {
 			return &models.ItemVersionDiff{Version: v, Before: "", After: v.Content}, nil
 		}
@@ -6126,3 +6133,14 @@ func nullIntPtr(n sql.NullInt64) *int {
 	v := int(n.Int64)
 	return &v
 }
+
+// patchErrorPrefix starts the placeholder a version read serves in place of a
+// body its reverse patch could not reconstruct.
+const patchErrorPrefix = "[patch error: "
+
+func isPatchError(content string) bool { return strings.HasPrefix(content, patchErrorPrefix) }
+
+// ErrVersionChainBroken refuses a version diff whose body could not be
+// reconstructed from the reverse-patch chain (PLAN-2348 U2): a placeholder
+// served as one side of a diff would present an invented change.
+var ErrVersionChainBroken = errors.New("version chain: a body could not be reconstructed")

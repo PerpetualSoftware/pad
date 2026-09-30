@@ -14,7 +14,8 @@ type Version struct {
 
 	// PLAN-2348 U2 (item versions only). UserID is who wrote the row;
 	// ActorName is that user's name, joined on read. Both are empty for rows
-	// written before migration 103 and for system rows (recovery).
+	// written before U2 (the column existed, unwritten, since migration 012)
+	// and for system rows (recovery).
 	UserID    string `json:"user_id,omitempty"`
 	ActorName string `json:"actor_name,omitempty"`
 	// LinesAdded / LinesRemoved count the change this row's WRITE recorded:
