@@ -73,6 +73,13 @@ func runCommentTombstonePopulation(t *testing.T, s *Store) {
 		if _, err := s.AddReaction(parent.ID, reactor.ID, "user", "👍"); err != nil {
 			t.Fatal(err)
 		}
+		// Backdated, because timestamps are second-precision: a tombstone
+		// that moved updated_at inside the creation second would not show.
+		const past = "2020-01-02T03:04:05Z"
+		if _, err := s.db.Exec(s.q(`UPDATE comments SET created_at = ?, updated_at = ? WHERE id = ?`), past, past, parent.ID); err != nil {
+			t.Fatal(err)
+		}
+		parent = get(parent.ID)
 		clearOutbox(t, s)
 
 		del(parent.ID)
@@ -81,7 +88,7 @@ func runCommentTombstonePopulation(t *testing.T, s *Store) {
 		if got == nil || !got.Deleted || got.Body != "" {
 			t.Fatalf("parent = %+v, want a tombstone with an empty body", got)
 		}
-		if got.Author != parent.Author || !got.CreatedAt.Equal(parent.CreatedAt) || !got.UpdatedAt.Equal(parent.UpdatedAt) {
+		if got.Author != parent.Author || !got.CreatedAt.Equal(parent.CreatedAt) || !got.UpdatedAt.Equal(parent.UpdatedAt) || got.IsEdited() {
 			t.Fatalf("tombstone moved author/timestamps: before %+v, after %+v", parent, got)
 		}
 		if r := get(reply.ID); r == nil || r.ParentID != parent.ID || r.Deleted {
