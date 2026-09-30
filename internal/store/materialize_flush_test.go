@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PerpetualSoftware/pad/internal/diff"
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
@@ -95,6 +96,15 @@ func TestMaterializeFlushAppliesWhenCaughtUpAndPending(t *testing.T) {
 		if v.CreatedBy != models.VersionCreatedBySystem || v.Source != models.VersionSourceRecovery || v.ChangeSummary != models.RecoveryChangeSummary {
 			t.Fatalf("version attribution = (%q, %q, %q), want (%q, %q, %q)", v.CreatedBy, v.Source, v.ChangeSummary,
 				models.VersionCreatedBySystem, models.VersionSourceRecovery, models.RecoveryChangeSummary)
+		}
+		// PLAN-2348 U2 (#1691): a recovery row is a system row, so no user_id;
+		// it is an update row, not a create; and it records its change's line
+		// counts like any other update, since it goes through the same insert.
+		wantAdded, wantRemoved := diff.LineCounts(before.Content, "recovered body")
+		if v.UserID != "" || v.IsCreate || v.LinesAdded == nil || v.LinesRemoved == nil ||
+			*v.LinesAdded != wantAdded || *v.LinesRemoved != wantRemoved {
+			t.Fatalf("recovery version history data: user %q create %v lines %v/%v, want \"\" false %d/%d",
+				v.UserID, v.IsCreate, v.LinesAdded, v.LinesRemoved, wantAdded, wantRemoved)
 		}
 		// The op-log is NOT pruned: the next tab replays it.
 		if ops, _ := s.LoadYjsUpdatesSince(item.ID, 0); len(ops) != 2 {
