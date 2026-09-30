@@ -80,7 +80,7 @@ buildGoModule {
   # build has other fixed-output derivations (every npm tarball importNpmLock
   # fetches is one), so `grep got:` can hand you a hash that belongs to
   # something else entirely. The script anchors on the go-modules derivation.
-  vendorHash = "sha256-iEqvaMqp7eFWWsOza6Eubs7PSvRCFVc2fP9xp4atuPw=";
+  vendorHash = "sha256-P1bQmbB0KKEjF5L0cGx5hS2VBkcSrZNXmehjrpQIpJM=";
 
   subPackages = [ "cmd/pad" ];
 
