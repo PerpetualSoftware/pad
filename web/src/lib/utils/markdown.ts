@@ -892,7 +892,9 @@ export function markdownToWikiLinks(markdown: string, items: Item[]): string {
 // The load-time marker for a link that FOLLOWS its target's title (BUG-3315),
 // carried in the link mark's existing `title` attribute:
 // `[Title](href "pad-follows-title:Title")`. The prefix is what tells it from a
-// title a user wrote, which is never read, stripped or hidden (codex r2).
+// title a user wrote, which is never read, stripped or hidden (codex r2). The
+// prefix is RESERVED: a title a user writes that itself begins with it is read as
+// a marker (codex r4, ruled by design; nothing in the product writes one).
 // It records the text as loaded, and only for a link with no explicit override
 // whose text IS the title. The save then tells "nobody edited this, it was the
 // title then" (follows the title, so `[[REF]]`) from a deliberate or edited
