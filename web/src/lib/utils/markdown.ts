@@ -918,7 +918,7 @@ function followsTitleMarker(followsTitle: boolean, text: string, item: Item): st
 // character at least as long; an inline span is a backtick run closed by a run
 // of the same length.
 function codeRanges(markdown: string): Array<[number, number]> {
-	const ranges: Array<[number, number]> = [];
+	const fences: Array<[number, number]> = [];
 	const fence = /^ {0,3}(`{3,}|~{3,})[^\n]*$/gm;
 	let open: { at: number; ch: string; len: number } | null = null;
 	let m: RegExpExecArray | null;
@@ -926,29 +926,58 @@ function codeRanges(markdown: string): Array<[number, number]> {
 		const run = m[1];
 		if (open === null) open = { at: m.index, ch: run[0], len: run.length };
 		else if (run[0] === open.ch && run.length >= open.len && m[0].trim() === run) {
-			ranges.push([open.at, m.index + m[0].length]);
+			fences.push([open.at, m.index + m[0].length]);
 			open = null;
 		}
 	}
-	if (open !== null) ranges.push([open.at, markdown.length]);
-	const inFence = (i: number) => ranges.some(([a, b]) => i >= a && i < b);
+	if (open !== null) fences.push([open.at, markdown.length]);
+
+	// Inline spans, in ONE left-to-right pass (codex: the first version rescanned
+	// for each opening run and went superlinear). Collect the backtick runs
+	// outside fences, then pair each unconsumed run with the next run of the
+	// same length. Everything between is inside the span. A per-length pointer
+	// only moves forward.
+	const runs: Array<{ at: number; len: number }> = [];
 	const tick = /`+/g;
+	let f = 0;
 	while ((m = tick.exec(markdown)) !== null) {
-		if (inFence(m.index)) continue;
-		const close = markdown.indexOf(m[0], m.index + m[0].length);
-		// A closing run must be exactly as long: not part of a longer run.
-		let c = close;
-		while (c !== -1 && (markdown[c - 1] === '`' || markdown[c + m[0].length] === '`')) {
-			c = markdown.indexOf(m[0], c + 1);
-		}
-		if (c === -1) continue;
-		ranges.push([m.index, c + m[0].length]);
-		tick.lastIndex = c + m[0].length;
+		while (f < fences.length && fences[f][1] <= m.index) f++;
+		if (f < fences.length && m.index >= fences[f][0]) continue;
+		runs.push({ at: m.index, len: m[0].length });
 	}
-	return ranges;
+	const byLen = new Map<number, number[]>();
+	runs.forEach((r, i) => {
+		const list = byLen.get(r.len);
+		if (list) list.push(i);
+		else byLen.set(r.len, [i]);
+	});
+	const ptr = new Map<number, number>();
+	const spans: Array<[number, number]> = [];
+	for (let i = 0; i < runs.length; i++) {
+		const list = byLen.get(runs[i].len)!;
+		let p = ptr.get(runs[i].len) ?? 0;
+		while (p < list.length && list[p] <= i) p++;
+		ptr.set(runs[i].len, p);
+		if (p === list.length) continue;
+		const j = list[p];
+		spans.push([runs[i].at, runs[j].at + runs[j].len]);
+		i = j;
+	}
+	return [...fences, ...spans].sort((a, b) => a[0] - b[0]);
 }
 
-const inRanges = (ranges: Array<[number, number]>, i: number) => ranges.some(([a, b]) => i >= a && i < b);
+// Whether offset `i` falls in one of the sorted, non-overlapping `ranges`.
+function inRanges(ranges: Array<[number, number]>, i: number): boolean {
+	let lo = 0;
+	let hi = ranges.length - 1;
+	while (lo <= hi) {
+		const mid = (lo + hi) >> 1;
+		if (i < ranges[mid][0]) hi = mid - 1;
+		else if (i >= ranges[mid][1]) lo = mid + 1;
+		else return true;
+	}
+	return false;
+}
 
 // Whether a link's text is still the text its follows-title marker recorded.
 // After a trip through the editor the marker comes back as the serializer
@@ -1035,9 +1064,10 @@ export function cleanBrokenLinks(markdown: string): string {
 		// the marker on the mark, and an external href is never converted. (An
 		// HTML-serialized table does not carry link titles, measured, so there is
 		// no HTML form to strip.)
-		// Only a real link's title: an unescaped `](`, a space-free href, and
+		// Only a real link's title: a `](` preceded by an EVEN number of backslashes
+		// (a link text ending in `\\` is still a link), a space-free href, and
 		// never inside code (see codeRanges).
-		.replace(/((?<!\\)\]\((?:\\.|[^)\s\\])+) "pad-follows-title:(?:\\"|[^"])*"\)/g, (m: string, head: string, offset: number) =>
+		.replace(/((?<=(?:^|[^\\])(?:\\\\)*)\]\((?:\\.|[^)\s\\])+) "pad-follows-title:(?:\\"|[^"])*"\)/g, (m: string, head: string, offset: number) =>
 			inRanges(code, offset) ? m : `${head})`
 		);
 }

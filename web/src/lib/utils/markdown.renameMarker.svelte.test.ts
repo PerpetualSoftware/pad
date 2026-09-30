@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { createHeadlessEditor, flushPipeline } from '$lib/collab/materializer/entry';
-import { wikiLinksToMarkdown } from './markdown';
+import { wikiLinksToMarkdown, cleanBrokenLinks } from './markdown';
 import type { Item } from '$lib/types';
 
 // BUG-3315 U2: a link that FOLLOWS its target's title keeps following it across
@@ -177,6 +177,28 @@ describe('BUG-3315 U2: a rename does not pin the old title', () => {
 				expect(saveWith(body, [task('Title')])).toBe(body);
 			});
 		}
+
+		// Codex r2 of the code-aware strip: a link text ending in a backslash is
+		// serialized `[a\\](...)`. Its `]` follows a backslash, but an even
+		// number of them, so it is a real link and its marker must go.
+		it('a real link whose text ends in a backslash still loses its marker', () => {
+			const { md } = openAndEdit('see [[TASK-1]] here', 'C:\\');
+			expect(md).toContain('pad-follows-title');
+			expect(saveWith(md, [])).not.toContain('pad-follows-title');
+		});
+
+		// ...and the code scan is linear. Receipt, local: 40,000 alternating
+		// backtick runs took 267ms under the first version (18x for 10x the input)
+		// and take 9.6ms now (98ms at 400,000). The bound sits between, with room
+		// for a slower CI machine.
+		it('the code scan stays linear on many backtick runs', () => {
+			const parts: string[] = [];
+			for (let i = 0; i < 40000; i++) parts.push(i % 2 ? '`` x ' : '` x ');
+			const body = parts.join('') + '[T](/u/ws/tasks/TASK-1 "pad-follows-title:T")';
+			const t0 = performance.now();
+			cleanBrokenLinks(body);
+			expect(performance.now() - t0).toBeLessThan(150);
+		});
 
 		it('the guard is live: a marked document does carry the marker before the save', () => {
 			expect(openAndEdit('see [[TASK-1]] here', 'Old Title').md).toContain('pad-follows-title');
