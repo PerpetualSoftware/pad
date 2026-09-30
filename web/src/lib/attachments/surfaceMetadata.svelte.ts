@@ -93,6 +93,9 @@ export interface SurfaceMetadata {
 	readonly fields: SurfaceMetadataSeed;
 	/** A read is in flight (the "Reading details…" / reachability-probe state). */
 	readonly slow: boolean;
+	/** When and by whom the original was uploaded, once a read said (TASK-3319). */
+	readonly uploadedAt: string | null;
+	readonly uploadedBy: string | null;
 	/** The view fence — a consumer's own actions must fence against the same identity. */
 	readonly viewFence: Fence<{ ws: string; att: string }>;
 	/** The paint fence — "does the control the user clicked belong to what's on screen?" */
@@ -165,6 +168,14 @@ export function createSurfaceMetadata(
 	// What the server told us, filling the gaps the event left.
 	let fetchedMime = $state<string | null>(null);
 	let fetchedSize = $state<number | null>(null);
+	// TASK-3319: no seed carries these; the forced probe every entry gets once
+	// per open reads them.
+	let fetchedUploadedAt = $state<string | null>(null);
+	let fetchedUploadedBy = $state<string | null>(null);
+	// What each subject's read said, kept for this machine's life, so arrowing
+	// back to an entry restores it and keeps the complete-seed fast path (no
+	// read at all) instead of reading again. Keyed like the fence: `${ws}:${att}`.
+	const uploadedBySubject = new Map<string, { at: string | null; by: string | null }>();
 	let loading = $state(false);
 	/** 404 — authoritative. Actions go inert. */
 	let missing = $state(false);
@@ -208,6 +219,9 @@ export function createSurfaceMetadata(
 				onSubjectChange?.();
 				fetchedMime = null;
 				fetchedSize = null;
+				const known = req.key === null ? undefined : uploadedBySubject.get(req.key);
+				fetchedUploadedAt = known?.at ?? null;
+				fetchedUploadedBy = known?.by ?? null;
 				missing = false;
 				loadFailed = false;
 			}
@@ -293,6 +307,9 @@ export function createSurfaceMetadata(
 			if (result.status === 'ok') {
 				fetchedMime = result.mime;
 				fetchedSize = result.size;
+				fetchedUploadedAt = result.uploaded_at;
+				fetchedUploadedBy = result.uploaded_by;
+				if (req.key !== null) uploadedBySubject.set(req.key, { at: result.uploaded_at, by: result.uploaded_by });
 				missing = false;
 				loadFailed = false;
 			} else if (result.status === 'missing') {
@@ -340,6 +357,12 @@ export function createSurfaceMetadata(
 		},
 		get slow() {
 			return loading;
+		},
+		get uploadedAt() {
+			return fetchedUploadedAt;
+		},
+		get uploadedBy() {
+			return fetchedUploadedBy;
 		},
 		viewFence,
 		paint,

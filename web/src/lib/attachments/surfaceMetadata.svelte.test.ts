@@ -275,3 +275,35 @@ describe('surfaceMetadata — always-revalidate-per-(open, entry) nonce (T6 + 3c
 		expect(metaRevalidate).toHaveBeenCalledTimes(1);
 	});
 });
+
+// TASK-3319: the viewer captions the upload time and uploader, which no seed
+// carries, so they come from a read and are remembered per entry.
+describe('surfaceMetadata — upload time and uploader (TASK-3319)', () => {
+	const ok = (at: string, by: string | null) => ({ status: 'ok', mime: 'image/png', size: 2048, derived: [], uploaded_at: at, uploaded_by: by });
+
+	it('exposes what the read said, per entry, and restores it on arrow-back with no read', async () => {
+		metaRevalidate.mockResolvedValueOnce(ok('2026-09-30T10:00:00Z', 'Zoë'));
+		const { addr, meta } = harness();
+		await settle();
+		expect(meta.uploadedAt).toBe('2026-09-30T10:00:00Z');
+		expect(meta.uploadedBy).toBe('Zoë');
+
+		metaRevalidate.mockResolvedValueOnce(ok('2026-09-30T11:00:00Z', null));
+		addr.att = ATT_B;
+		flushSync();
+		// A subject change never shows the previous entry's time.
+		expect(meta.uploadedAt).toBeNull();
+		await settle();
+		expect(meta.uploadedAt).toBe('2026-09-30T11:00:00Z');
+		expect(meta.uploadedBy).toBeNull();
+
+		const reads = metaRevalidate.mock.calls.length + metaFetch.mock.calls.length;
+		addr.att = ATT_A;
+		flushSync();
+		await settle();
+		expect(meta.uploadedAt).toBe('2026-09-30T10:00:00Z');
+		expect(meta.uploadedBy).toBe('Zoë');
+		expect(metaRevalidate.mock.calls.length + metaFetch.mock.calls.length, 'arrow-back read again').toBe(reads);
+	});
+
+});

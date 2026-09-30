@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -739,6 +740,9 @@ func (s *Server) handleGetAttachment(w http.ResponseWriter, r *http.Request) {
 	// response header reaches it with no extra request and no per-row lookup on
 	// the list endpoint.
 	servedVariant := models.AttachmentVariantOriginal
+	// The upload, not the served row: a variant's own created_at is when it
+	// was DERIVED (TASK-3319). Captured before the variant swap below.
+	uploadedAt, uploadedBy := att.CreatedAt, att.UploadedBy
 	// Which derived variants EXIST, answered only on the no-variant path.
 	// That path is the editor's metadata HEAD (and plain downloads); the hot
 	// `?variant=thumb-md` image path is untouched and pays nothing. Two indexed
@@ -850,6 +854,20 @@ func (s *Server) handleGetAttachment(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Pad-Attachment-Variant", servedVariant)
 	if derived != "" {
 		w.Header().Set("X-Pad-Attachment-Derived", derived)
+	}
+	// When and by whom the ORIGINAL was uploaded (TASK-3319), for the viewer's
+	// caption. Member route only: the share-page handler serves attachments to
+	// anonymous viewers and does not name the uploader. A name that does not
+	// resolve (a deleted account, a system upload) is simply absent.
+	if !uploadedAt.IsZero() {
+		w.Header().Set("X-Pad-Attachment-Uploaded-At", uploadedAt.UTC().Format(time.RFC3339))
+	}
+	if uploadedBy != "" {
+		if u, uErr := s.store.GetUser(uploadedBy); uErr == nil && u != nil && u.Name != "" {
+			// Percent-encoded UTF-8: a header is read as Latin-1 by browsers,
+			// so a name like "Zoë" would arrive mangled. The client decodes it.
+			w.Header().Set("X-Pad-Attachment-Uploaded-By", url.PathEscape(u.Name))
+		}
 	}
 	w.Header().Set("Content-Disposition",
 		contentDisposition(disposition, sanitizeHeaderFilename(attachments.ServedFilename(att.Filename))))
