@@ -100,6 +100,10 @@ func runScript(w *bufio.Writer, req WorkerRequest) bool {
 		ok("echo:" + arg)
 	case "timeout": // echoes the soft deadline it was handed
 		ok(strconv.FormatInt(req.TimeoutMs, 10))
+	case "sleep": // answer after arg milliseconds
+		ms, _ := strconv.Atoi(arg)
+		time.Sleep(time.Duration(ms) * time.Millisecond)
+		ok("slept:" + arg)
 	case "hang": // a native call nothing can interrupt
 		time.Sleep(time.Hour)
 	case "exit":
@@ -901,5 +905,214 @@ func TestSupervisorCloseBeforeFirstJob(t *testing.T) {
 	}
 	if n := h.f.calls.Load(); n != 0 {
 		t.Fatalf("%d spawns", n)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// idle exit (Dave's ruling on TASK-2198: a worker with no job for
+// PAD_MATERIALIZE_IDLE_TIMEOUT stops, and the next job starts a new one)
+
+// waitIdleStopped polls until the supervisor has no worker.
+func waitIdleStopped(t *testing.T, h *harness) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		h.s.mu.Lock()
+		c := h.s.child
+		h.s.mu.Unlock()
+		if c == nil && len(h.log.find("materialize worker stopped", "reason=idle")) > 0 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("worker not stopped for idleness within 5s: %s", h.log.dump())
+}
+
+func TestSupervisorIdleExit(t *testing.T) {
+	h := newHarness(t, "script", func(c *SupervisorConfig) { c.idleExact = 200 * time.Millisecond })
+	if md, err := h.s.Materialize(context.Background(), script("echo:a")); err != nil || md != "echo:a" {
+		t.Fatalf("first job: %q, %v", md, err)
+	}
+	pid := h.lastPid(t)
+	waitIdleStopped(t, h)
+
+	// A clean stop: INFO, status 0, and no WARN stop line.
+	p := "pid=" + strconv.Itoa(pid)
+	if got := h.log.find("INFO materialize worker stopped", "reason=idle", "exited with status 0", p, "idle_for=200ms"); len(got) != 1 {
+		t.Fatalf("idle stop line: %s", h.log.dump())
+	}
+	if w := h.log.find("WARN materialize worker stopped"); len(w) != 0 {
+		t.Fatalf("an idle stop logged as a kill: %q", w)
+	}
+
+	// The next job starts a new worker, without any backoff wait.
+	if md, err := h.s.Materialize(context.Background(), script("echo:b")); err != nil || md != "echo:b" {
+		t.Fatalf("job after the idle stop: %q, %v", md, err)
+	}
+	if n := h.f.calls.Load(); n != 2 {
+		t.Fatalf("%d spawns; want 2 (lazy respawn after the idle stop)", n)
+	}
+	if got := h.clk.slept(); len(got) != 0 {
+		t.Fatalf("the respawn after an idle stop waited %v; want no backoff", got)
+	}
+	if h.lastPid(t) == pid {
+		t.Fatal("the job ran on the stopped worker")
+	}
+}
+
+// An idle stop is not a death: the backoff streak neither grows nor resets.
+// crash (streak 1) → idle stop → crash (streak 2) must wait 2s; had the idle
+// stop counted it would be 4s.
+func TestSupervisorIdleExitDoesNotTripBackoff(t *testing.T) {
+	h := newHarness(t, "script", func(c *SupervisorConfig) {
+		c.idleExact = 200 * time.Millisecond
+		c.BackoffBase = time.Second
+		c.BackoffMax = time.Minute
+		c.HealthyStretch = time.Hour
+	})
+	if _, err := h.s.Materialize(context.Background(), script("exit")); !errors.Is(err, ErrChildDied) {
+		t.Fatal(err)
+	}
+	if _, err := h.s.Materialize(context.Background(), script("echo:x")); err != nil {
+		t.Fatal(err)
+	}
+	waitIdleStopped(t, h)
+	h.s.mu.Lock()
+	streak := h.s.streak
+	h.s.mu.Unlock()
+	if streak != 1 {
+		t.Fatalf("streak after an idle stop: %d, want 1 (only the crash)", streak)
+	}
+	if _, err := h.s.Materialize(context.Background(), script("exit")); !errors.Is(err, ErrChildDied) {
+		t.Fatal(err)
+	}
+	if _, err := h.s.Materialize(context.Background(), script("echo:y")); err != nil {
+		t.Fatal(err)
+	}
+	want := []time.Duration{time.Second, 2 * time.Second}
+	if got := h.clk.slept(); fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("backoff waits %v, want %v", got, want)
+	}
+}
+
+// A job that arrives while an idle stop is in progress is not lost: it waits
+// for the job slot, finds no worker, and runs on a new one.
+func TestSupervisorJobDuringIdleStop(t *testing.T) {
+	result := make(chan error, 1)
+	var h *harness
+	h = newHarness(t, "script", func(c *SupervisorConfig) {
+		c.idleExact = 200 * time.Millisecond
+		c.onIdleStop = func() {
+			// The stop holds the slot and has forgotten the worker, which
+			// is still alive: exactly the window in question.
+			go func() {
+				md, err := h.s.Materialize(context.Background(), script("echo:during"))
+				if err == nil && md != "echo:during" {
+					err = fmt.Errorf("markdown %q", md)
+				}
+				result <- err
+			}()
+			time.Sleep(100 * time.Millisecond) // let it reach the slot
+		}
+	})
+	if _, err := h.s.Materialize(context.Background(), script("echo:first")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("the job that arrived during the idle stop: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("the job that arrived during the idle stop never finished: %s", h.log.dump())
+	}
+	if n := h.f.calls.Load(); n != 2 {
+		t.Fatalf("%d spawns; want 2 (the job ran on a NEW worker)", n)
+	}
+	if got := h.clk.slept(); len(got) != 0 {
+		t.Fatalf("backoff waits %v; want none", got)
+	}
+}
+
+// The idle timer can fire while a job is running, because it measures from
+// the END of the previous job. The stop must not take that worker: it runs
+// only holding the job slot, and a job still in flight holds it. (Closing
+// stdin alone would let the job finish; the kill after the grace would not,
+// so the grace is shorter than the job here.)
+func TestSupervisorIdleTimerDuringJob(t *testing.T) {
+	h := newHarness(t, "script", func(c *SupervisorConfig) {
+		c.idleExact = 300 * time.Millisecond
+		c.idleGrace = 50 * time.Millisecond
+	})
+	if _, err := h.s.Materialize(context.Background(), script("echo:x")); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond) // the timer fires 100ms into the next job
+	if md, err := h.s.Materialize(context.Background(), script("sleep:400")); err != nil || md != "slept:400" {
+		t.Fatalf("a job running when the idle timer fired: %q, %v", md, err)
+	}
+	if n := h.f.calls.Load(); n != 1 {
+		t.Fatalf("%d spawns; the running job's worker was stopped under it", n)
+	}
+	// And the job's end re-armed the timer: the worker still goes idle later.
+	waitIdleStopped(t, h)
+}
+
+func TestSupervisorNeverIdle(t *testing.T) {
+	h := newHarness(t, "script", func(c *SupervisorConfig) { c.IdleTimeout = NeverIdle })
+	if _, err := h.s.Materialize(context.Background(), script("echo:x")); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	h.s.mu.Lock()
+	c := h.s.child
+	h.s.mu.Unlock()
+	if c == nil || c.idleTimer != nil {
+		t.Fatalf("NeverIdle: child %v, idle timer armed %v", c != nil, c != nil && c.idleTimer != nil)
+	}
+}
+
+func TestSupervisorIdleTimeoutConfig(t *testing.T) {
+	env := func(v string) func(string) string {
+		return func(k string) string {
+			if k == EnvIdleTimeout {
+				return v
+			}
+			return ""
+		}
+	}
+	for _, tc := range []struct {
+		in   string
+		want time.Duration
+		warn bool
+	}{
+		{"", 0, false}, {"0", NeverIdle, false}, {"10m", 10 * time.Minute, false},
+		{"-5m", 0, true}, {"soon", 0, true},
+	} {
+		sink := &logSink{}
+		if got := ConfigFromEnv(env(tc.in), slog.New(sink)).IdleTimeout; got != tc.want {
+			t.Errorf("%q: %v, want %v", tc.in, got, tc.want)
+		}
+		if warned := len(sink.warns()) > 0; warned != tc.warn {
+			t.Errorf("%q: warned %v, want %v: %s", tc.in, warned, tc.warn, sink.dump())
+		}
+	}
+	for _, tc := range []struct {
+		in, want time.Duration
+		clamped  bool
+	}{
+		{0, DefaultIdleTimeout, false}, {NeverIdle, NeverIdle, false},
+		{time.Second, MinIdleTimeout, true}, {48 * time.Hour, MaxIdleTimeout, true},
+		{10 * time.Minute, 10 * time.Minute, false},
+	} {
+		sink := &logSink{}
+		s := NewSupervisor(SupervisorConfig{IdleTimeout: tc.in, Logger: slog.New(sink), capOverride: fakeCap})
+		if s.idle != tc.want {
+			t.Errorf("%v: effective %v, want %v", tc.in, s.idle, tc.want)
+		}
+		if got := len(sink.find(EnvIdleTimeout + " out of range; clamped")); (got == 1) != tc.clamped {
+			t.Errorf("%v: %d clamp warnings, clamped=%v", tc.in, got, tc.clamped)
+		}
+		_ = s.Close()
 	}
 }

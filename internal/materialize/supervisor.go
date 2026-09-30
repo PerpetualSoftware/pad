@@ -96,6 +96,12 @@ type SupervisorConfig struct {
 	// clamped to [MinMemLimit, MaxMemLimit]. What it measures is per OS; see
 	// memCapMechanism.
 	MemLimit uint64
+	// IdleTimeout stops a worker that has had no job for this long (0:
+	// DefaultIdleTimeout; NeverIdle: never), clamped to [MinIdleTimeout,
+	// MaxIdleTimeout]. It is a clean stop, not a death: it is logged at INFO
+	// and never counts toward the respawn backoff. The next job starts a new
+	// worker, as the first did.
+	IdleTimeout time.Duration
 	// Command builds the worker's command. Nil runs this same binary with
 	// WorkerCommand. Stdin, Stdout and Stderr must be left unset.
 	Command func() (*exec.Cmd, error)
@@ -114,7 +120,10 @@ type SupervisorConfig struct {
 	capOverride   *memCapImpl
 	watchInterval time.Duration
 	onSpawn       func(pid int)
-	extraEnv      []string // appended last to the worker's environment
+	extraEnv      []string      // appended last to the worker's environment
+	idleExact     time.Duration // > 0: the idle timeout, unclamped
+	onIdleStop    func()        // runs while an idle stop holds the job slot
+	idleGrace     time.Duration // how long an idle stop waits for EOF before a kill (0: 5s)
 }
 
 // memCapImpl is one OS's way of capping the child; memcap_<os>.go defines
@@ -157,6 +166,7 @@ type Supervisor struct {
 	log      *slog.Logger
 	timeout  time.Duration
 	memLimit uint64
+	idle     time.Duration // NeverIdle: no idle stop
 	cap      memCapImpl
 
 	slot chan struct{} // held for a whole job: the child is serial
@@ -214,6 +224,13 @@ func NewSupervisor(cfg SupervisorConfig) *Supervisor {
 		s.log.Warn("materialize: "+EnvMemLimit+" out of range; clamped",
 			"requested", formatBytes(cfg.MemLimit), "effective", formatBytes(s.memLimit),
 			"min", formatBytes(MinMemLimit), "max", formatBytes(MaxMemLimit))
+	}
+	if cfg.idleExact > 0 {
+		s.idle = cfg.idleExact
+	} else if s.idle, clamped = effectiveIdleTimeout(cfg.IdleTimeout); clamped {
+		s.log.Warn("materialize: "+EnvIdleTimeout+" out of range; clamped",
+			"requested", cfg.IdleTimeout.String(), "effective", s.idle.String(),
+			"min", MinIdleTimeout.String(), "max", MaxIdleTimeout.String())
 	}
 	return s
 }
@@ -274,7 +291,74 @@ func (s *Supervisor) Materialize(ctx context.Context, job Job) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return s.run(ctx, c, job)
+	md, err := s.run(ctx, c, job)
+	s.armIdle(c)
+	return md, err
+}
+
+// armIdle (re)starts c's idle timer after a job, if c is still the worker (a
+// job that killed it has already forgotten it). Called holding the job slot.
+func (s *Supervisor) armIdle(c *child) {
+	if s.idle <= 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.child != c || s.closed {
+		return
+	}
+	c.lastJob = time.Now()
+	if c.idleTimer == nil {
+		c.idleTimer = time.AfterFunc(s.idle, func() { s.idleStop(c) })
+	} else {
+		c.idleTimer.Reset(s.idle)
+	}
+}
+
+// idleStop ends a worker that has had no job for s.idle. It holds the job
+// slot for the whole stop, so no job can be sent to a worker that is going;
+// a job that arrives meanwhile waits for the slot, finds no worker, and starts
+// a new one (ensureChild), with no backoff, because an idle stop records no
+// death. If the slot is taken, a job is running, and its end re-arms the timer.
+func (s *Supervisor) idleStop(c *child) {
+	select {
+	case s.slot <- struct{}{}:
+	default:
+		return
+	}
+	defer func() { <-s.slot }()
+	s.mu.Lock()
+	if s.child != c || s.closed {
+		s.mu.Unlock()
+		return
+	}
+	// A job that ended just as the timer fired re-armed it: not idle yet.
+	if left := s.idle - time.Since(c.lastJob); left > 0 {
+		c.idleTimer.Reset(left)
+		s.mu.Unlock()
+		return
+	}
+	s.child = nil // forgotten, NOT recorded as a death
+	s.mu.Unlock()
+	if s.cfg.onIdleStop != nil {
+		s.cfg.onIdleStop()
+	}
+	// A clean end: close its stdin, and the worker's read loop ends on EOF
+	// with status 0. Kill it only if it does not go.
+	c.killReason.Store("idle")
+	_ = c.stdin.Close()
+	grace := s.cfg.idleGrace
+	if grace <= 0 {
+		grace = 5 * time.Second
+	}
+	if !c.awaitExitFor(grace) {
+		c.kill("idle")
+		c.awaitExit()
+	}
+	s.log.Info("materialize worker stopped",
+		"pid", c.pid, "reason", "idle", "exit", c.exitString(),
+		"idle_for", s.idle.String(),
+		"uptime", s.cfg.now().Sub(c.started).Round(time.Millisecond).String(), "jobs", c.jobs.Load())
 }
 
 // Close kills the worker, if any, and refuses every later job with ErrClosed.
@@ -288,6 +372,9 @@ func (s *Supervisor) Close() error {
 	s.closed = true
 	c := s.child
 	s.child = nil
+	if c != nil && c.idleTimer != nil {
+		c.idleTimer.Stop()
+	}
 	s.mu.Unlock()
 	if c != nil {
 		c.kill("closed")
@@ -317,6 +404,9 @@ type child struct {
 	killOnce   sync.Once
 	killReason atomic.Value // string: why WE killed it
 	stderr     *stderrLog
+
+	idleTimer *time.Timer // guarded by Supervisor.mu
+	lastJob   time.Time   // guarded by Supervisor.mu; wall clock, as the timer is
 
 	gomaxprocs         string
 	baseline, capBytes uint64        // set by armCap before any job

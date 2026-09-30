@@ -22,6 +22,11 @@ const (
 	// BINARY unit, KiB, MiB or GiB ("2048MiB", "2GiB"). Decimal units (MB,
 	// GB) are refused rather than guessed at.
 	EnvMemLimit = "PAD_MATERIALIZE_MEM_LIMIT"
+	// EnvIdleTimeout is how long the worker may sit with no job before it is
+	// stopped, in Go duration syntax ("5m"). "0" means never. A loaded worker
+	// holds ~200 MB resident, which an install that rarely materializes should
+	// not pay for all day; the next job starts a new one, as the first did.
+	EnvIdleTimeout = "PAD_MATERIALIZE_IDLE_TIMEOUT"
 )
 
 const (
@@ -41,6 +46,16 @@ const (
 	// absolute cap, which had to clear the runtime's own reservation.
 	MinMemLimit = 256 << 20
 	MaxMemLimit = 16 << 30
+
+	DefaultIdleTimeout = 5 * time.Minute
+	// MinIdleTimeout keeps a busy install from paying the ~2.6 s bundle load
+	// between jobs that arrive seconds apart.
+	MinIdleTimeout = 30 * time.Second
+	MaxIdleTimeout = 24 * time.Hour
+	// NeverIdle, as SupervisorConfig.IdleTimeout, keeps the worker until Close
+	// (EnvIdleTimeout "0"). The zero value is the default, as for the other
+	// fields.
+	NeverIdle time.Duration = -1
 )
 
 var memLimitRE = regexp.MustCompile(`^([0-9]+)(KiB|MiB|GiB)?$`)
@@ -63,7 +78,7 @@ func ParseMemLimit(s string) (uint64, error) {
 	return n << shift, nil
 }
 
-// ConfigFromEnv reads EnvTimeout and EnvMemLimit through getenv (os.Getenv in
+// ConfigFromEnv reads EnvTimeout, EnvMemLimit and EnvIdleTimeout through getenv (os.Getenv in
 // production). An unset variable takes the default; an unparseable one takes
 // the default and is logged as a warning. Out-of-range values are clamped by
 // NewSupervisor, not here, so a config built by hand gets the same clamp.
@@ -90,7 +105,39 @@ func ConfigFromEnv(getenv func(string) string, logger *slog.Logger) SupervisorCo
 			cfg.MemLimit = n
 		}
 	}
+	if v := getenv(EnvIdleTimeout); v != "" {
+		d, err := time.ParseDuration(strings.TrimSpace(v))
+		switch {
+		case err != nil:
+			logger.Warn("materialize: ignoring invalid "+EnvIdleTimeout+"; using the default",
+				"value", v, "error", err, "default", DefaultIdleTimeout.String())
+		case d < 0:
+			logger.Warn("materialize: ignoring negative "+EnvIdleTimeout+"; using the default (0 means never)",
+				"value", v, "default", DefaultIdleTimeout.String())
+		case d == 0:
+			cfg.IdleTimeout = NeverIdle
+		default:
+			cfg.IdleTimeout = d
+		}
+	}
 	return cfg
+}
+
+// effectiveIdleTimeout applies the default and the clamp; a negative request
+// (NeverIdle) is returned as NeverIdle. The second result says whether a
+// positive request was changed.
+func effectiveIdleTimeout(d time.Duration) (time.Duration, bool) {
+	switch {
+	case d < 0:
+		return NeverIdle, false
+	case d == 0:
+		return DefaultIdleTimeout, false
+	case d < MinIdleTimeout:
+		return MinIdleTimeout, true
+	case d > MaxIdleTimeout:
+		return MaxIdleTimeout, true
+	}
+	return d, false
 }
 
 // effectiveTimeout applies the default and the clamp. The second result says
