@@ -43,8 +43,12 @@
 
 	interface Props {
 		item: Item;
-		/** Fire the vertical reorder. The host has the item + group context bound. */
-		onReorder: (dir: ReorderDirection) => void;
+		/**
+		 * Fire the vertical reorder. The host has the item + group context bound.
+		 * Omitted when the host does not reorder (the card's mobile ⋯ on the
+		 * starred, tags and roles pages), and then no reorder entries render.
+		 */
+		onReorder?: (dir: ReorderDirection) => void;
 		/**
 		 * Fire an adjacent-column move (board only). Only wired by BoardView;
 		 * omitted by every other host, so left/right never fire elsewhere.
@@ -56,9 +60,21 @@
 		disabledDirs?: Set<MenuDirection>;
 		/** Accessible label suffix, e.g. the item title. */
 		label?: string;
+		/**
+		 * The card's ONE touch-sized ⋯ at phone width (TASK-2244, Dave's ruling,
+		 * day 83): star, copy-ref and the ⋮ are not rendered there, and their
+		 * actions become the first entries of this menu. The trigger is 44x44.
+		 * Desktop never sets it, so the reorder-only ⋮ is unchanged there.
+		 */
+		card?: {
+			starred: boolean;
+			onToggleStar: () => void;
+			/** Absent when the item has no ref to copy. */
+			onCopyRef?: () => void;
+		};
 	}
 
-	let { item, onReorder, onMove, horizontal = false, disabledDirs, label }: Props = $props();
+	let { item, onReorder, onMove, horizontal = false, disabledDirs, label, card }: Props = $props();
 
 	interface Action {
 		dir: MenuDirection;
@@ -76,10 +92,20 @@
 		{ dir: 'right', icon: '→', text: 'Move right' }
 	];
 	let actions = $derived(
-		[...VERTICAL_ACTIONS, ...(horizontal ? HORIZONTAL_ACTIONS : [])].filter(
-			(a) => !disabledDirs?.has(a.dir)
-		)
+		onReorder
+			? [...VERTICAL_ACTIONS, ...(horizontal ? HORIZONTAL_ACTIONS : [])].filter(
+					(a) => !disabledDirs?.has(a.dir)
+				)
+			: []
 	);
+	let menuLabel = $derived(
+		card ? (label ? `Actions for ${label}` : 'Item actions') : label ? `Reorder ${label}` : 'Reorder item'
+	);
+
+	function cardPick(run: () => void) {
+		open = false;
+		run();
+	}
 
 	let open = $state(false);
 	let triggerEl = $state<HTMLButtonElement>();
@@ -94,7 +120,7 @@
 		if (dir === 'left' || dir === 'right') {
 			onMove?.(dir);
 		} else {
-			onReorder(dir);
+			onReorder?.(dir);
 		}
 	}
 
@@ -109,20 +135,21 @@
 	}
 </script>
 
-{#if actions.length > 0}
+{#if card || actions.length > 0}
 	<span class="item-actions-menu">
 		<button
 			bind:this={triggerEl}
 			type="button"
 			class="iam-trigger"
+			class:card={!!card}
 			class:open
 			aria-haspopup="menu"
 			aria-expanded={open}
-			aria-label={label ? `Reorder ${label}` : 'Reorder item'}
-			title="Reorder"
+			aria-label={menuLabel}
+			title={card ? 'Actions' : 'Reorder'}
 			onclick={onTriggerClick}
 		>
-			⋮
+			{card ? '⋯' : '⋮'}
 		</button>
 
 		<Menu
@@ -131,8 +158,20 @@
 			trigger={triggerEl}
 			mode="portal"
 			width={188}
-			ariaLabel={label ? `Reorder ${label}` : 'Reorder item'}
+			ariaLabel={menuLabel}
 		>
+			{#if card}
+				<MenuItem icon={card.starred ? '★' : '☆'} onclick={() => cardPick(card.onToggleStar)}>
+					{card.starred ? 'Unstar' : 'Star'}
+				</MenuItem>
+				{#if card.onCopyRef}
+					{@const copy = card.onCopyRef}
+					<MenuItem icon="⧉" onclick={() => cardPick(copy)}>Copy item ID</MenuItem>
+				{/if}
+				{#if actions.length > 0}
+					<div class="menu-divider" role="separator"></div>
+				{/if}
+			{/if}
 			{#each actions as a (a.dir)}
 				<MenuItem icon={a.icon} onclick={() => pick(a.dir)}>{a.text}</MenuItem>
 			{/each}
@@ -165,6 +204,27 @@
 	.iam-trigger.open {
 		opacity: 1;
 		color: var(--text-primary);
+	}
+
+	/* The card's mobile ⋯ (TASK-2244): a 44x44 box, glyph unchanged in size.
+	   Negative block margins keep the box from making the card's top row taller;
+	   the card padding it reaches into holds nothing tappable. */
+	.iam-trigger.card {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 44px;
+		height: 44px;
+		margin: -12px -8px -12px 0;
+		padding: 0;
+		font-size: 1.25em;
+		opacity: 0.7;
+	}
+
+	/* Same rule as ItemDetail's ⋯ menu divider; the class is scoped per file. */
+	.menu-divider {
+		border-top: 1px solid var(--border-subtle);
+		margin: 5px 4px;
 	}
 
 	.iam-trigger:focus-visible {

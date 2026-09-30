@@ -3854,7 +3854,10 @@
 							onclick={() => (viewSheetOpen = true)}
 							aria-label="Change view"
 						>
-							<span class="view-chip-label">View: {viewModeLabel}</span>
+							<!-- No visible "View:" prefix (TASK-2244): at 44px per control the
+							     strip only fits one row at 360 without it. The accessible name is
+							     the aria-label above, so nothing is lost to assistive tech. -->
+							<span class="view-chip-label">{viewModeLabel}</span>
 							<span class="view-chip-caret" aria-hidden="true">▾</span>
 						</button>
 						{#if viewSheetOpen}
@@ -4070,6 +4073,16 @@
 							aria-label="Collection menu"
 							title="More"
 						>⋯</button>
+						<!-- Mobile mount of the realtime badge (IDEA-2297), as a status
+						     badge on this button's corner rather than a flex item of its
+						     own: at 360 a separate dot wrapped alone onto a second row
+						     (TASK-2244, Dave's gate). It stays a role="status" region with
+						     its label, and takes no taps, so the button keeps them. -->
+						{#if viewport.isMobile}
+							<span class="sse-badge">
+								<SSEStatusIndicator compact />
+							</span>
+						{/if}
 						<Menu
 							open={collMenuOpen}
 							onclose={() => (collMenuOpen = false)}
@@ -4104,14 +4117,6 @@
 						</button>
 					{/if}
 
-					<!-- Mobile mount of the realtime badge (IDEA-2297): dot-only, pushed
-					     to the far end of the action bar by .sse-mobile's auto margin
-					     so it shares the toolbar row instead of owning one. -->
-					{#if viewport.isMobile}
-						<span class="sse-mobile">
-							<SSEStatusIndicator compact />
-						</span>
-					{/if}
 				</div>
 			</div>
 
@@ -4702,20 +4707,16 @@
 		flex-wrap: wrap;
 	}
 
-	/* Mobile realtime badge (IDEA-2297). .header-actions is width:100% under
-	   768px, so the auto margin pushes the dot to the trailing edge — the
-	   "justified across from the toolbar" placement — without disturbing
-	   justify-content for the buttons themselves. */
-	.sse-mobile {
+	/* Mobile realtime badge (IDEA-2297, TASK-2244): pinned to the corner of
+	   the collection ⋯ button, so the strip keeps one row at 360 on both
+	   views. .menu-anchor is the button's positioned ancestor. */
+	.sse-badge {
+		position: absolute;
+		top: 4px;
+		right: 4px;
 		display: inline-flex;
-		align-items: center;
-		margin-left: auto;
-		flex-shrink: 0;
-		/* Without this the bare 8px dot sits flush against the content edge,
-		   while every control beside it insets its glyph by the same --space-3
-		   its box uses horizontally. Padding (not margin) so the dot's touch
-		   target still reaches the edge. */
-		padding-right: var(--space-3);
+		pointer-events: none;
+		line-height: 0;
 	}
 
 	/* Uniform control height across the action bar (IDEA-2297). Before this the
@@ -5092,9 +5093,24 @@
 			   column has ~56px left — not enough for the dot plus its inset
 			   plus 12px gaps, and the dot wrapped onto a second line,
 			   re-creating the wasted row IDEA-2297 removed. Six gaps × 8px
-			   saved keeps the bar on one line down to ~340px. Only the gaps
-			   shrink — the controls stay 28px, so touch targets are unchanged. */
+			   saved keeps the bar on one line down to ~340px. */
 			gap: var(--space-1);
+		}
+
+		/* Touch targets (TASK-2244, Dave's ruling day 83): every strip control is
+		   at least 44x44 here, VISIBLY. A transparent hit area on a 28px bordered
+		   button would overlap its neighbour 4px away, so a tap in the gap would
+		   be ambiguous; the buttons themselves grow. Desktop keeps 28px, and the
+		   e2e pins both. */
+		.view-chip,
+		.new-btn,
+		.toolbar-icon-btn,
+		.header-actions :global(.quick-actions-menu > .trigger-btn) {
+			height: 44px;
+			min-width: 44px;
+		}
+		.toolbar-icon-btn {
+			width: 44px;
 		}
 
 		.new-btn-label {
