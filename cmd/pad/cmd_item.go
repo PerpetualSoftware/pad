@@ -3198,7 +3198,7 @@ func renderCommentsMarkdown(w io.Writer, comments []models.Comment) {
 			cli.SanitizeMarkdownText(c.Source),
 			edited,
 			strings.ReplaceAll(c.ID, "`", ""))
-		fmt.Fprintln(w, c.Body)
+		fmt.Fprintln(w, cli.CommentBodyForDisplay(c))
 		if i < len(comments)-1 {
 			fmt.Fprintln(w)
 		}

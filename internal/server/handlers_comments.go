@@ -2,6 +2,7 @@ package server
 
 import (
 	"database/sql"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -122,6 +123,15 @@ func (s *Server) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 	comment, err := s.store.CreateCommentWithActivity(workspaceID, item.ID, currentUserID(r),
 		s.activityForRequest(workspaceID, item.ID, "commented", r, ""), input)
 	if err != nil {
+		// A parent_id in the body reaches the same parent check a reply does.
+		if errors.Is(err, store.ErrCommentDeleted) {
+			writeCommentDeleted(w, input.ParentID)
+			return
+		}
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "not_found", "Parent comment not found")
+			return
+		}
 		writeInternalError(w, err)
 		return
 	}
@@ -188,19 +198,10 @@ func (s *Server) handleDeleteComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A comment with replies is left as a tombstone rather than removed
+	// (BUG-3252); the answer is the same 204 either way. Deleting a
+	// tombstone answers 404, as it is already deleted.
 	if err := s.store.DeleteComment(commentID); err != nil {
-		if hr, ok := store.AsCommentHasRepliesError(err); ok {
-			// BUG-3252: a refusal that names why, instead of the FK's 500.
-			// The same answer on every door, since all of them land here.
-			writeJSON(w, http.StatusConflict, map[string]any{
-				"error": map[string]any{
-					"code":    "comment_has_replies",
-					"message": hr.Error(),
-					"details": map[string]any{"comment_id": hr.CommentID, "reply_count": hr.Replies},
-				},
-			})
-			return
-		}
 		if err == sql.ErrNoRows {
 			writeError(w, http.StatusNotFound, "not_found", "Comment not found")
 			return
@@ -210,6 +211,19 @@ func (s *Server) handleDeleteComment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// writeCommentDeleted refuses a write addressed to a tombstone (BUG-3252):
+// an edit, a reply or a reaction. 409 rather than 404, because the comment is
+// there and still holds its replies; there is simply nothing left to change.
+func writeCommentDeleted(w http.ResponseWriter, commentID string) {
+	writeJSON(w, http.StatusConflict, map[string]any{
+		"error": map[string]any{
+			"code":    "comment_deleted",
+			"message": "this comment was deleted; it cannot be edited, replied to or reacted to",
+			"details": map[string]any{"comment_id": commentID},
+		},
+	})
 }
 
 // handleUpdateComment edits a comment's body. Editing is an authorship
@@ -253,6 +267,10 @@ func (s *Server) handleUpdateComment(w http.ResponseWriter, r *http.Request) {
 
 	updated, err := s.store.UpdateComment(commentID, body)
 	if err != nil {
+		if errors.Is(err, store.ErrCommentDeleted) {
+			writeCommentDeleted(w, commentID)
+			return
+		}
 		if err == sql.ErrNoRows {
 			writeError(w, http.StatusNotFound, "not_found", "Comment not found")
 			return
@@ -397,6 +415,15 @@ func (s *Server) handleCreateReply(w http.ResponseWriter, r *http.Request) {
 	comment, err := s.store.CreateCommentWithActivity(workspaceID, parentComment.ItemID, currentUserID(r),
 		s.activityForRequest(workspaceID, parentComment.ItemID, "commented", r, ""), input)
 	if err != nil {
+		if errors.Is(err, store.ErrCommentDeleted) {
+			writeCommentDeleted(w, commentID)
+			return
+		}
+		if errors.Is(err, sql.ErrNoRows) {
+			// The parent was deleted between the read above and the insert.
+			writeError(w, http.StatusNotFound, "not_found", "Parent comment not found")
+			return
+		}
 		writeInternalError(w, err)
 		return
 	}
@@ -477,6 +504,10 @@ func (s *Server) handleAddReaction(w http.ResponseWriter, r *http.Request) {
 
 	reaction, err := s.store.AddReaction(commentID, userID, actor, input.Emoji)
 	if err != nil {
+		if errors.Is(err, store.ErrCommentDeleted) {
+			writeCommentDeleted(w, commentID)
+			return
+		}
 		writeInternalError(w, err)
 		return
 	}

@@ -5,9 +5,11 @@ import type { TimelineResponse } from '$lib/types';
 /**
  * BUG-3252. Deleting a comment that has replies used to fail the parent_id
  * foreign key, and the delete button showed "An internal error occurred".
- * The server now refuses with 409 comment_has_replies and a message naming
- * the reply count. This pins the web door: the timeline shows the SERVER'S
- * message, the comment stays, and nothing reloads as if it had been deleted.
+ * The server then refused with 409 comment_has_replies and a message naming
+ * the reply count; since the tombstone such a delete succeeds, and only a
+ * server that predates it still sends this refusal. This pins the web door
+ * for any refused delete: the timeline shows the SERVER'S message, the
+ * comment stays, and nothing reloads as if it had been deleted.
  */
 
 const REFUSAL = 'this comment has 1 reply; delete the reply first';

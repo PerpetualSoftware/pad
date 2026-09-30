@@ -161,9 +161,10 @@ func TestStdioPayloadTooLargeClassifiesAsTooLarge(t *testing.T) {
 	}
 }
 
-// BUG-3252, end to end on stdio: delete-comment on a comment with replies
-// reaches the caller as comment_has_replies with the reply count and the
-// hint, instead of server_error. The fake answers with the bytes
+// BUG-3252, end to end on stdio: delete-comment on a comment with replies,
+// against a server that predates comment tombstones, reaches the caller as
+// comment_has_replies with the reply count and the hint, instead of
+// server_error. The fake answers with the bytes
 // handleDeleteComment writes for the refusal, and advertises the capability
 // comment-delete checks before sending.
 func TestStdioCommentHasRepliesClassifies(t *testing.T) {
@@ -206,5 +207,46 @@ func TestStdioCommentHasRepliesClassifies(t *testing.T) {
 	}
 	if err := json.Unmarshal(env.Error.Details, &details); err != nil || details.ReplyCount != 1 {
 		t.Fatalf("details = %s, want reply_count 1 (err %v)", env.Error.Details, err)
+	}
+}
+
+// BUG-3252 tombstone, end to end on stdio: edit-comment addressed to a
+// tombstone reaches the caller as comment_deleted with the shared hint,
+// instead of server_error. The fake answers with the bytes writeCommentDeleted
+// writes.
+func TestStdioCommentDeletedClassifies(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/v1/server/capabilities" {
+			_, _ = w.Write([]byte(`{"item_scoped_comment_writes":true}`))
+			return
+		}
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"error":{"code":"comment_deleted","message":"this comment was deleted; it cannot be edited, replied to or reacted to","details":{"comment_id":"c-1"}}}`))
+	}))
+	defer srv.Close()
+
+	t.Setenv(padHelperEnv, "1")
+	t.Setenv("HOME", t.TempDir())
+	bin, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	d := &mcp.ExecDispatcher{Binary: bin}
+	res, err := d.Dispatch(context.Background(), []string{"item", "comment-edit"},
+		[]string{"--url", srv.URL, "--workspace", "ws", "--format", "json", "--", "TASK-1", "c-1", "revived"})
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	env, ok := res.StructuredContent.(mcp.ErrorEnvelope)
+	if !ok {
+		t.Fatalf("PRECONDITION: the call should have failed; got %T", res.StructuredContent)
+	}
+	if env.Error.Code != mcp.ErrCommentDeleted {
+		t.Fatalf("code = %q (message %q, hint %q), want %q",
+			env.Error.Code, env.Error.Message, env.Error.Hint, mcp.ErrCommentDeleted)
+	}
+	if env.Error.Hint != mcp.CommentDeletedHint {
+		t.Fatalf("hint = %q, want the shared CommentDeletedHint", env.Error.Hint)
 	}
 }

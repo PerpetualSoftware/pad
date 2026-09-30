@@ -1716,8 +1716,10 @@ func WriteUpdateConflictError(w io.Writer, apiErr *APIError, uc *UpdateConflictD
 	fmt.Fprintln(w, "Re-read the item (pad item show) and retry with the current timestamp.")
 }
 
-// CommentHasRepliesCode is the structured code for BUG-3252's refusal: a
-// delete of a comment that still has replies. Keep it, and the hint, in
+// CommentHasRepliesCode is the structured code for BUG-3252's first
+// refusal: a delete of a comment that still has replies. A server with
+// comment tombstones no longer sends it (such a delete leaves a tombstone);
+// it is kept for servers that predate them. Keep it, and the hint, in
 // lockstep with internal/mcp's allowedStructuredErrorCodes and
 // CommentHasRepliesHint.
 const CommentHasRepliesCode = "comment_has_replies"
@@ -1733,6 +1735,42 @@ func IsCommentHasReplies(err error) (*APIError, bool) {
 		return apiErr, true
 	}
 	return nil, false
+}
+
+// CommentDeletedCode is the structured code for a write addressed to a
+// comment tombstone (BUG-3252): an edit, a reply or a reaction. Keep it, and
+// the hint, in lockstep with internal/mcp's allowedStructuredErrorCodes and
+// CommentDeletedHint.
+const CommentDeletedCode = "comment_deleted"
+
+// CommentDeletedHint is the recovery guidance for CommentDeletedCode.
+const CommentDeletedHint = "The comment was deleted and is kept only as a placeholder for its replies, so it cannot be edited, " +
+	"replied to or reacted to. Comment on the item, or reply to one of its replies, instead."
+
+// IsCommentDeleted reports whether err is the tombstone refusal.
+func IsCommentDeleted(err error) (*APIError, bool) {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.Code == CommentDeletedCode {
+		return apiErr, true
+	}
+	return nil, false
+}
+
+// WriteCommentDeletedError writes the structured marker line for the
+// tombstone refusal, so the stdio MCP transport reports comment_deleted
+// instead of inferring a code from the prose.
+func WriteCommentDeletedError(w io.Writer, apiErr *APIError) {
+	body := map[string]any{
+		"code":    CommentDeletedCode,
+		"message": apiErr.Message,
+		"hint":    CommentDeletedHint,
+	}
+	if len(apiErr.Details) > 0 {
+		body["details"] = apiErr.Details
+	}
+	if data, err := json.Marshal(map[string]any{"error": body}); err == nil {
+		fmt.Fprintln(w, StructuredErrorMarker+string(data))
+	}
 }
 
 // WriteCommentHasRepliesError writes the structured marker line for

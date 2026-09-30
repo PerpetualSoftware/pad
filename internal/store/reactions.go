@@ -1,6 +1,8 @@
 package store
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -14,18 +16,28 @@ func (s *Store) AddReaction(commentID, userID, actor, emoji string) (*models.Rea
 
 	// Store empty string (not NULL) for anonymous users so the UNIQUE constraint
 	// on (comment_id, user_id, emoji) works correctly — SQLite treats NULL != NULL.
+	// A tombstone takes no reaction (BUG-3252): the INSERT only fires while
+	// the comment is live.
 	_, err := s.db.Exec(s.q(`
 		INSERT INTO comment_reactions (id, comment_id, user_id, actor, emoji, created_at)
-		VALUES (?, ?, ?, ?, ?, ?)
+		SELECT ?, ?, ?, ?, ?, ?
+		WHERE EXISTS (SELECT 1 FROM comments WHERE id = ? AND deleted_at IS NULL)
 		ON CONFLICT(comment_id, user_id, emoji) DO NOTHING`),
-		id, commentID, userID, actor, emoji, ts,
+		id, commentID, userID, actor, emoji, ts, commentID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("add reaction: %w", err)
 	}
 
 	// Return the reaction (may be existing if ON CONFLICT hit).
-	return s.getReaction(commentID, userID, emoji)
+	r, err := s.getReaction(commentID, userID, emoji)
+	if err != nil && errors.Is(err, sql.ErrNoRows) {
+		var deleted int
+		if qerr := s.db.QueryRow(s.q(`SELECT CASE WHEN deleted_at IS NULL THEN 0 ELSE 1 END FROM comments WHERE id = ?`), commentID).Scan(&deleted); qerr == nil && deleted == 1 {
+			return nil, ErrCommentDeleted
+		}
+	}
+	return r, err
 }
 
 func (s *Store) getReaction(commentID, userID, emoji string) (*models.Reaction, error) {
@@ -73,6 +85,9 @@ func (s *Store) ListReactionsByComments(commentIDs []string) (map[string][]model
 		       COALESCE(u.name, '') as actor_name
 		FROM comment_reactions cr
 		LEFT JOIN users u ON u.id = cr.user_id
+		-- A tombstone shows no reactions (BUG-3252). Its delete removes
+		-- them, and this join hides one a racing AddReaction landed after.
+		JOIN comments c ON c.id = cr.comment_id AND c.deleted_at IS NULL
 		WHERE cr.comment_id IN (`
 	args := make([]interface{}, len(commentIDs))
 	for i, id := range commentIDs {

@@ -1651,6 +1651,21 @@ const CmdhelpVersion = "0.1"
 //     this one either, and it is not a promise that the row will catch
 //     up at all.
 //
+//     0.59 — BUG-3252, the tombstone (ruled over cascade). BEHAVIOR bump
+//     on the v0.58 / v0.45 grounds: no name, enum or param shape changed,
+//     but `pad_item.action=delete-comment` on a comment that still has
+//     replies now SUCCEEDS where v0.58 refused it with 409
+//     `comment_has_replies`. The comment stays as a tombstone: body
+//     emptied, author and timestamps kept, reactions removed, and every
+//     serialised comment gains an additive `omitempty` `deleted: true` for
+//     one. Its replies keep their parent, and deleting its last reply
+//     removes it in the same transaction. `edit-comment` addressed to a
+//     tombstone answers 409 `comment_deleted` (details `comment_id`, and a
+//     hint) on both transports; so do a reply or a reaction, which have no
+//     catalog action. Deleting a tombstone again answers not_found.
+//     `comment_has_replies` stays in the allow-list and the CLI marker for
+//     servers that predate the tombstone.
+//
 //     0.58 — BUG-3252. BEHAVIOR bump on the v0.45 / v0.42 grounds: no
 //     name, enum or param shape changed, but `pad_item.action=delete-comment`
 //     on a comment that still has replies now answers 409
@@ -1690,7 +1705,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.58"
+const ToolSurfaceVersion = "0.59"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

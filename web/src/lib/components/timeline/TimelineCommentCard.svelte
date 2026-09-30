@@ -72,6 +72,8 @@
 	function canEditComment(c: Comment): boolean {
 		// Master-freeze (TASK-2172): a peeking master surfaces no edit affordance.
 		if (frozen) return false;
+		// A tombstone (BUG-3252) has no body to edit; the server refuses it.
+		if (c.deleted) return false;
 		return isAdmin || (!!c.user_id && c.user_id === currentUserId);
 	}
 
@@ -222,7 +224,7 @@
 				</svg>
 			</button>
 		{/if}
-		{#if canEdit}
+		{#if canEdit && !comment.deleted}
 			<button
 				class="delete-btn"
 				type="button"
@@ -241,7 +243,7 @@
 		<div class="activity-label">commented on update</div>
 	{/if}
 
-	{#if editing && !frozen}
+	{#if editing && !frozen && !comment.deleted}
 		<!-- Master-freeze (TASK-2172 / R12): unmount an already-open edit form —
 		     and its CommentEditor direct-upload — the instant the master peeks. -->
 		<div class="edit-compose">
@@ -257,12 +259,15 @@
 				onCancel={() => { editing = false; }}
 			/>
 		</div>
+	{:else if comment.deleted}
+		<div class="comment-body comment-deleted">This comment was deleted.</div>
 	{:else}
 		<div class="comment-body prose">
 			{@html renderMarkdown(comment.body, items, wsSlug, username, undefined, attachmentResolver, 'thumb-sm')}
 		</div>
 	{/if}
 
+	{#if !comment.deleted}
 	<div class="comment-footer">
 		<!--
 			Existing reactions render with counts for everyone (read-only
@@ -293,8 +298,9 @@
 			</button>
 		{/if}
 	</div>
+	{/if}
 
-	{#if showReplyForm && canEdit}
+	{#if showReplyForm && canEdit && !comment.deleted}
 		<div class="reply-compose">
 			<CommentEditor
 				{wsSlug}
@@ -335,7 +341,7 @@
 								</svg>
 							</button>
 						{/if}
-						{#if canEdit}
+						{#if canEdit && !reply.deleted}
 							<button
 								class="delete-btn"
 								type="button"
@@ -350,7 +356,7 @@
 						{/if}
 					</div>
 
-					{#if editingReplyId === reply.id && !frozen}
+					{#if editingReplyId === reply.id && !frozen && !reply.deleted}
 						<!-- Master-freeze (TASK-2172 / R12): same unmount-on-peek as
 						     the comment edit form above. -->
 						<div class="edit-compose">
@@ -366,12 +372,15 @@
 								onCancel={() => { editingReplyId = null; }}
 							/>
 						</div>
+					{:else if reply.deleted}
+						<div class="reply-body comment-deleted">This comment was deleted.</div>
 					{:else}
 						<div class="reply-body prose">
 							{@html renderMarkdown(reply.body, items, wsSlug, username, undefined, attachmentResolver, 'thumb-sm')}
 						</div>
 					{/if}
 
+						{#if !reply.deleted}
 						<div class="reactions-row">
 							{#each replyReactionGroups as group (group.emoji)}
 								<button
@@ -390,6 +399,7 @@
 								<ReactionPicker onSelect={(emoji) => handleAddReplyReaction(reply, emoji)} />
 							{/if}
 						</div>
+						{/if}
 				</div>
 			{/each}
 		</div>
@@ -577,6 +587,12 @@
 		   than-column tables inside the indented replies; allow the rendered
 		   markdown subtree to scroll horizontally rather than spill out. */
 		overflow-x: auto;
+	}
+
+	/* A tombstone (BUG-3252): the placeholder stands where the body was. */
+	.comment-deleted {
+		color: var(--text-muted);
+		font-style: italic;
 	}
 
 	.comment-body :global(p:last-child),
