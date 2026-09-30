@@ -56,7 +56,9 @@ func CreateReversePatch(oldText, newText string) string {
 	return CreatePatch(newText, oldText)
 }
 
-// FormatDiffSummary returns a human-readable summary of changes.
+// FormatDiffSummary returns a human-readable summary of changes. Its "lines"
+// are character-diff CHUNKS (a one-character edit reads +1/-1); LineCounts is
+// the line-level count the version rows store (PLAN-2348 U2).
 func FormatDiffSummary(oldText, newText string) string {
 	oldLines := strings.Count(oldText, "\n")
 	newLines := strings.Count(newText, "\n")
@@ -74,4 +76,26 @@ func FormatDiffSummary(oldText, newText string) string {
 	_ = oldLines
 	_ = newLines
 	return fmt.Sprintf("+%d/-%d lines", added, removed)
+}
+
+// LineCounts returns how many lines a line-level diff of oldText → newText
+// adds and removes (PLAN-2348 U2). It counts the way the web DiffView renders
+// jsdiff's diffLines: each changed run is split on newlines after dropping one
+// trailing newline, so a run "a\nb\n" is two lines. Both sides are Myers
+// line diffs; diffmatchpatch's speed-up heuristics can choose a different,
+// equally valid split on unusual inputs, in which case a count can differ from
+// the rendered diff by the lines those splits trade.
+func LineCounts(oldText, newText string) (added, removed int) {
+	a, b, lines := dmp.DiffLinesToChars(oldText, newText)
+	diffs := dmp.DiffCharsToLines(dmp.DiffMain(a, b, false), lines)
+	for _, d := range diffs {
+		n := strings.Count(strings.TrimSuffix(d.Text, "\n"), "\n") + 1
+		switch d.Type {
+		case difflib.DiffInsert:
+			added += n
+		case difflib.DiffDelete:
+			removed += n
+		}
+	}
+	return added, removed
 }

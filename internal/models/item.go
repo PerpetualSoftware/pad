@@ -541,6 +541,10 @@ type Item struct {
 	// NOT silently fall back to its own stale snapshot — that fallback IS the
 	// defect this field exists to remove.
 	PreUpdate *Item `json:"-"`
+	// BodyEditedWithoutVersion is set by UpdateItem when the update changed
+	// the body and the per-actor throttle wrote no version row, so the edit
+	// has no version to show it (PLAN-2348 U2, for U3's "edited the body").
+	BodyEditedWithoutVersion bool `json:"-"`
 }
 
 // ItemMutationSignal is the race-free status/assignment delta attached to
@@ -1219,6 +1223,9 @@ func uniqueStrings(values []string) []string {
 }
 
 type ItemCreate struct {
+	// ActorUserID is the request's user, stamped on the create's version row
+	// (PLAN-2348 U2). Internal-only.
+	ActorUserID    string  `json:"-"`
 	Title          string  `json:"title"`
 	Content        string  `json:"content,omitempty"`
 	Fields         string  `json:"fields,omitempty"`
@@ -1316,6 +1323,9 @@ type ItemUpdate struct {
 	// bracketing version. Internal-only (`json:"-"`): the store honours it, but
 	// no HTTP client can set it. Only consulted when content actually changes.
 	ForceVersion bool `json:"-"`
+	// ActorUserID is the request's user, stamped on a version row this update
+	// writes (PLAN-2348 U2). Internal-only; empty for system writers.
+	ActorUserID string `json:"-"`
 	// MarkRestoreBoundary stamps items.last_restore_seq with this update's newly
 	// assigned seq, INSIDE the same transaction as the content write + op-log
 	// prune (BUG-2264). Set only by version RESTORE. That durable per-item

@@ -1975,6 +1975,7 @@ func (s *Server) setupRouter() {
 						r.Get("/export", s.handleExportItemArtifact)
 						r.Get("/versions", s.handleListItemVersions)
 						r.Get("/versions/{versionID}", s.handleGetItemVersion)
+						r.Get("/versions/{versionID}/diff", s.handleGetItemVersionDiff)
 						r.Post("/versions/{versionID}/restore", s.handleRestoreItemVersion)
 						r.Get("/activity", s.handleListItemActivity)
 						r.Get("/links", s.handleGetItemLinks)

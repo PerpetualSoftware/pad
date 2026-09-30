@@ -505,6 +505,22 @@ func valueOrEmpty(s string) string {
 	return s
 }
 
+// withActivityMetaKey sets one string key in an activity's JSON metadata,
+// keeping every other key (PLAN-2348 U2). Metadata that does not parse is
+// replaced by an object holding only the key, as appendChange does.
+func withActivityMetaKey(meta, key, value string) string {
+	m := map[string]string{}
+	if meta != "" {
+		_ = json.Unmarshal([]byte(meta), &m)
+	}
+	m[key] = value
+	data, err := json.Marshal(m)
+	if err != nil {
+		return meta
+	}
+	return string(data)
+}
+
 // appendChange adds a change description to existing metadata JSON.
 func appendChange(meta, change string) string {
 	if meta == "" {

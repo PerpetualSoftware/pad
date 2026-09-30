@@ -34,6 +34,7 @@ import type {
 	Comment,
 	CommentCreate,
 	Version,
+	ItemVersionDiff,
 	DashboardResponse,
 	DashboardSuggestion,
 	StandupResponse,
@@ -2121,6 +2122,11 @@ export const api = {
 		 */
 		get: (ws: string, itemSlug: string, versionId: string) =>
 			request<Version>(`/workspaces/${ws}/items/${itemSlug}/versions/${versionId}`),
+
+		/** The change one version row records: the bodies before and after its
+		 *  write, from one server-side chain walk (PLAN-2348 U2). */
+		diff: (ws: string, itemSlug: string, versionId: string) =>
+			request<ItemVersionDiff>(`/workspaces/${ws}/items/${itemSlug}/versions/${versionId}/diff`),
 
 		/**
 		 * BUG-3031: the server refuses a restore with `content_pending_flush` while

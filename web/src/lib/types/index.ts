@@ -1505,6 +1505,22 @@ export interface Version {
 	source: string;
 	is_diff: boolean;
 	created_at: string;
+	/** PLAN-2348 U2 (item versions): who wrote the row. Absent on rows written
+	 *  before migration 103 and on system rows (recovery). */
+	user_id?: string;
+	actor_name?: string;
+	/** Line counts of the change this row's write recorded; absent = unknown. */
+	lines_added?: number;
+	lines_removed?: number;
+	/** Written by item create: the body AS CREATED, not before an edit. */
+	is_create?: boolean;
+}
+
+/** The change one item version row records (PLAN-2348 U2). */
+export interface ItemVersionDiff {
+	version: Version;
+	before: string;
+	after: string;
 }
 
 // ─── Links ───────────────────────────────────────────────────────────────────
