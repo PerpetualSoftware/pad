@@ -111,27 +111,20 @@ for (const { width, view, withDot } of ONE_ROW) {
 }
 
 /**
- * Desktop sizes on the base commit a90f75fd (desktop-chromium, 1280x720), measured
- * by this file's `sizes()` before any change. The view control differs by view
- * because its label does ("List" vs "Board").
+ * Desktop is unchanged. Pinned: what the CSS fixes. Every strip control is 28px
+ * tall, and sort, filters and the collection menu are 30px wide. A text-sized
+ * width (the view label, "+ New Task", the ⚡ trigger) depends on the machine's
+ * fonts: CI measured 77.6 / 101.1 / 34.4 where this box measured 75 / 93.8 / 41,
+ * so those are not pinned. The height is the leak signal, since the phone rule
+ * makes every control 44 tall.
  */
-const DESKTOP_BASE: Record<'list' | 'board', Record<string, { w: number; h: number }>> = {
-	list: {
-		view: { w: 75, h: 28 },
-		sort: { w: 30, h: 28 },
-		filters: { w: 30, h: 28 },
-		'quick actions': { w: 41, h: 28 },
-		'collection menu': { w: 30, h: 28 },
-		new: { w: 93.8, h: 28 },
-	},
-	board: {
-		view: { w: 88.4, h: 28 },
-		sort: { w: 30, h: 28 },
-		filters: { w: 30, h: 28 },
-		'quick actions': { w: 41, h: 28 },
-		'collection menu': { w: 30, h: 28 },
-		new: { w: 93.8, h: 28 },
-	},
+const DESKTOP_FIXED: Record<string, { w?: number; h: number }> = {
+	view: { h: 28 },
+	sort: { w: 30, h: 28 },
+	filters: { w: 30, h: 28 },
+	'quick actions': { h: 28 },
+	'collection menu': { w: 30, h: 28 },
+	new: { h: 28 },
 };
 
 for (const view of ['list', 'board'] as const) {
@@ -142,7 +135,11 @@ for (const view of ['list', 'board'] as const) {
 		await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/tasks?view=${view}`);
 		await expect(strip(page)).toBeVisible();
 
-		expect(await sizes(page, false)).toEqual(DESKTOP_BASE[view]);
+		const measured = await sizes(page, false);
+		for (const [name, want] of Object.entries(DESKTOP_FIXED)) {
+			expect.soft(measured[name].h, `${name} height`).toBe(want.h);
+			if (want.w !== undefined) expect.soft(measured[name].w, `${name} width`).toBe(want.w);
+		}
 	});
 }
 
@@ -313,15 +310,12 @@ test('TASK-2244: on a host without reorder the mobile ⋯ holds only Star and Co
 });
 
 /**
- * Desktop card controls on base a90f75fd (desktop-chromium), measured by this
- * file before any change: identical on list and board.
+ * Desktop card controls are unchanged. Pinned: the copy button, whose CSS fixes
+ * it at 22x22. The star and the ⋮ are glyph-sized and depend on the machine's
+ * fonts (CI measured ⋮ 18 and star 11.9 wide where this box measured 8 and 13),
+ * so for them the check is that they stayed small: the phone rule would make
+ * one 44x44 ⋯ in their place.
  */
-const DESKTOP_CARD_BASE = {
-	'.star-btn': { w: 13, h: 13.3 },
-	'.copy-ref-btn': { w: 22, h: 22 },
-	'.iam-trigger': { w: 8, h: 14 },
-};
-
 for (const view of ['list', 'board'] as const) {
 	test(`TASK-2244: desktop card controls are unchanged (${view})`, async ({ page, fixture, request }, testInfo) => {
 		test.skip(testInfo.project.name !== 'desktop-chromium', 'the desktop leg');
@@ -332,14 +326,16 @@ for (const view of ['list', 'board'] as const) {
 		const c = card(page, titles[1]);
 		await expect(c).toBeVisible();
 
-		const out: Record<string, { w: number; h: number }> = {};
-		for (const sel of Object.keys(DESKTOP_CARD_BASE)) {
+		for (const sel of ['.star-btn', '.copy-ref-btn', '.iam-trigger']) {
 			await expect(c.locator(sel), `${sel} is rendered on desktop`).toHaveCount(1);
-			const b = await c.locator(sel).boundingBox();
-			expect(b).not.toBeNull();
-			out[sel] = { w: Math.round(b!.width * 10) / 10, h: Math.round(b!.height * 10) / 10 };
 		}
-		expect(out).toEqual(DESKTOP_CARD_BASE);
+		const copy = (await c.locator('.copy-ref-btn').boundingBox())!;
+		expect({ w: copy.width, h: copy.height }, 'copy button').toEqual({ w: 22, h: 22 });
+		for (const sel of ['.star-btn', '.iam-trigger']) {
+			const b = (await c.locator(sel).boundingBox())!;
+			expect.soft(b.width, `${sel} width stays small`).toBeLessThan(MIN);
+			expect.soft(b.height, `${sel} height stays small`).toBeLessThan(MIN);
+		}
 		await expect(c.locator('.iam-trigger.card'), 'no card ⋯ on desktop').toHaveCount(0);
 		await expect(c.locator('.starred-mark'), 'no passive mark on desktop').toHaveCount(0);
 	});
