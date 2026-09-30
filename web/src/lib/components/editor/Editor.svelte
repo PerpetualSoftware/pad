@@ -13,7 +13,7 @@
 <script lang="ts">
 	import { onMount, onDestroy, untrack } from 'svelte';
 	import { page } from '$app/state';
-	import { Editor, mergeAttributes } from '@tiptap/core';
+	import { Editor } from '@tiptap/core';
 	import { Plugin } from '@tiptap/pm/state';
 	import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
 	import StarterKit from '@tiptap/starter-kit';
@@ -34,9 +34,9 @@
 		TableMap,
 		columnResizingPluginKey,
 	} from '@tiptap/pm/tables';
-	import Link from '@tiptap/extension-link';
-	import CodeBlock from '@tiptap/extension-code-block';
-	import { codeBlockMarkdownStorage } from './extensions/frontmatter';
+	import { SafeLink, SAFE_LINK_OPTIONS } from './extensions/safeLink';
+	import { PadCodeBlock, PAD_CODE_BLOCK_OPTIONS } from './extensions/padCodeBlock';
+	import { PAD_TABLE_OPTIONS } from './extensions/padTable';
 	import Placeholder from '@tiptap/extension-placeholder';
 	import { createPlainCodeBlockView } from './codeBlockCopy';
 	import { collectMermaidRerenders } from './mermaidTheme';
@@ -439,16 +439,9 @@
 	// CodeBlock with inline mermaid rendering via NodeView.
 	// Key: ignoreMutation prevents ProseMirror's MutationObserver from
 	// detecting our SVG insertion and triggering an infinite re-parse loop.
-	const MermaidCodeBlock = CodeBlock.extend({
-		// A leading frontmatter block round-trips as a codeBlock with language
-		// `frontmatter` (BUG-2692); every other language keeps tiptap-markdown's
-		// default fence spec, reproduced in codeBlockMarkdownStorage.
-		addStorage() {
-			return {
-				...this.parent?.(),
-				markdown: codeBlockMarkdownStorage(this.options.languageClassPrefix),
-			};
-		},
+	// Schema, storage and markdown serialization come from PadCodeBlock
+	// (shared with the headless materializer, TASK-2198).
+	const MermaidCodeBlock = PadCodeBlock.extend({
 		addProseMirrorPlugins() {
 			return [codeBlockCopyPlugin];
 		},
@@ -561,18 +554,6 @@
 		},
 	});
 
-	// Extend Link to render data-href instead of href in the editor DOM.
-	// This prevents mobile browsers from navigating when tapping links —
-	// no href attribute means nothing for the browser to follow.
-	// Mark attributes still store href, so markdown serialization and the
-	// link popover work unchanged.
-	const SafeLink = Link.extend({
-		renderHTML({ HTMLAttributes }) {
-			const merged = mergeAttributes(this.options.HTMLAttributes, HTMLAttributes);
-			const { href, ...rest } = merged;
-			return ['a', { ...rest, 'data-href': href }, 0];
-		},
-	});
 	import { Markdown } from 'tiptap-markdown';
 	import { unescapeDocLinks } from '$lib/utils/markdown';
 	import { formatItemRef, itemUrlId, type Item } from '$lib/types';
@@ -943,9 +924,7 @@
 				link: false, // We use our own SafeLink extension below
 				...(ydoc ? { undoRedo: false } : {}),
 			}),
-			MermaidCodeBlock.configure({
-				HTMLAttributes: { class: 'code-block' },
-			}),
+			MermaidCodeBlock.configure(PAD_CODE_BLOCK_OPTIONS),
 			HtmlBlock,
 			TaskList,
 			TaskItem.configure({ nested: true }),
@@ -953,16 +932,11 @@
 				addProseMirrorPlugins() {
 					return [...(this.parent?.() ?? []), tableCopyPlugin];
 				},
-			}).configure({ resizable: true, HTMLAttributes: { class: 'table-wrapper' } }),
+			}).configure(PAD_TABLE_OPTIONS),
 			TableRow,
 			TableCell,
 			TableHeader,
-			SafeLink.configure({
-				openOnClick: false,
-				autolink: true,
-				linkOnPaste: true,
-				HTMLAttributes: { class: 'editor-link', target: null, rel: null },
-			}),
+			SafeLink.configure(SAFE_LINK_OPTIONS),
 			Placeholder.configure({
 				placeholder: viewport.isMobile ? 'Start writing...' : 'Type / for commands...',
 			}),
