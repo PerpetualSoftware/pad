@@ -1714,6 +1714,21 @@ export interface TimelineEntry {
 	// this is always a usable date.
 	note?: ItemImplementationNote;
 	decision?: ItemDecisionLogEntry;
+	/** Set on a collab-snapshot version entry that stands for a collapsed run
+	 *  of one writer's autosaves; the entry is the run's newest row
+	 *  (PLAN-2348 U3). */
+	autosave_run?: AutosaveRun;
+}
+
+/** The autosaves one timeline entry stands for (PLAN-2348 U3). `count`
+ *  includes the entry's own row. Line counts are sums, absent when any row in
+ *  the run was uncounted. */
+export interface AutosaveRun {
+	count: number;
+	first_at: string;
+	oldest_version_id: string;
+	lines_added?: number;
+	lines_removed?: number;
 }
 
 export interface TimelineResponse {

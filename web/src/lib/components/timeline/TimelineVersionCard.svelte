@@ -1,12 +1,10 @@
 <script lang="ts">
-	import type { Version, Item } from '$lib/types';
+	import type { Version, Item, AutosaveRun } from '$lib/types';
 	import { api, isContentPendingFlushError } from '$lib/api/client';
 	import { pendingEditsReason } from '$lib/items/contentWrite';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import DiffView from '$lib/components/versions/DiffView.svelte';
 	import StaleBodyNotice from '$lib/components/common/StaleBodyNotice.svelte';
-	import Chip from '$lib/components/common/Chip.svelte';
-	import { relativeTime } from '$lib/utils/markdown';
 
 	interface Props {
 		version: Version;
@@ -39,9 +37,22 @@
 		 * non-collab / other callers, who are then byte-identical to before.
 		 */
 		flushBeforeRestore?: () => Promise<void>;
+		/**
+		 * PLAN-2348 U3: the entry stands for a collapsed run of autosaves, and
+		 * `version` is its NEWEST row. The diff then spans the whole run —
+		 * before the oldest row's edit, after the newest's — and restore goes
+		 * to the oldest row, the body the run started from.
+		 */
+		run?: AutosaveRun;
 	}
 
-	let { version, wsSlug, itemSlug, currentContent, currentContentStale = false, onRestore, frozen = false, flushBeforeRestore }: Props = $props();
+	let { version, wsSlug, itemSlug, currentContent, currentContentStale = false, onRestore, frozen = false, flushBeforeRestore, run }: Props = $props();
+
+	/** The row a restore writes back: before the run, or before this edit. */
+	const restoreId = $derived(run ? run.oldest_version_id : version.id);
+	const linesAdded = $derived(run ? run.lines_added : version.lines_added);
+	const linesRemoved = $derived(run ? run.lines_removed : version.lines_removed);
+	const countsKnown = $derived(linesAdded !== undefined && linesRemoved !== undefined);
 
 	let expanded = $state(false);
 	let confirming = $state(false);
@@ -53,39 +64,46 @@
 	// BUG-3244: the pending edits were set aside by an editor upgrade, not held by a tab.
 	let pendingSetAside = $state(false);
 
-	// The timeline endpoint serves raw reverse-patch text for diff versions
-	// (is_diff), so version.content is unreadable patch data, not real content.
-	// Resolve it lazily the first time the card is expanded (BUG-1612). Non-diff
-	// versions already carry full content, so displayContent falls straight through.
-	let fetchedContent = $state<string | null>(null);
+	// PLAN-2348 U3: a card shows ITS OWN edit — the body before the write that
+	// made the row against the body after it — not the row against today's
+	// body, which mixed every later edit into this one (checkpoint 2, defect
+	// 2). The pair comes from the diff endpoint (U2), resolved lazily the
+	// first time the card is expanded.
+	let diffPair = $state<{ before: string; after: string } | null>(null);
 	let resolveError = $state(false);
 	let resolving = $state(false);
-	let displayContent = $derived(version.is_diff ? fetchedContent : version.content);
 
 	async function ensureResolved() {
-		if (!version.is_diff || fetchedContent !== null || resolving) return;
+		if (diffPair !== null || resolving) return;
 		// NAVIGATION fence (TASK-2112): capture the REQUEST identity — the item
 		// and workspace this resolve is about — before the await. This card lives
 		// in the timeline panel that ItemDetail reuses across a no-{#key} item
 		// switch (its itemSlug/wsSlug props change under it), so a lazy
-		// version-content resolve landing after a switch must not write into a
-		// stale card. `resolving` is a local spinner flag, always cleared.
+		// resolve landing after a switch must not write into a stale card.
+		// `resolving` is a local spinner flag, always cleared.
 		const reqSlug = itemSlug;
 		const reqWs = wsSlug;
 		// IDENTITY fence (BUG-3095), a separate question from the one above and
 		// not covered by it: the navigation fence compares slugs, which do not
 		// move when the SIGNED-IN USER changes on the same workspace and item.
-		// The GET is issued before any await here, so it cannot be mis-issued —
-		// what this guards is the COMMIT below, which would otherwise paint one
-		// identity's version text into a card the next identity is reading.
+		// The GETs are issued before any await here, so they cannot be
+		// mis-issued — what this guards is the COMMIT below, which would
+		// otherwise paint one identity's text into a card the next identity is
+		// reading.
 		const isSameIdentity = authStore.identityFence();
+		const oldestId = run?.oldest_version_id;
 		resolving = true;
 		resolveError = false;
 		try {
-			const full = await api.versions.get(reqWs, reqSlug, version.id);
+			const [newest, oldest] = await Promise.all([
+				api.versions.diff(reqWs, reqSlug, version.id),
+				oldestId && oldestId !== version.id
+					? api.versions.diff(reqWs, reqSlug, oldestId)
+					: Promise.resolve(null)
+			]);
 			if (!isSameIdentity()) return;
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
-			fetchedContent = full.content;
+			diffPair = { before: (oldest ?? newest).before, after: newest.after };
 		} catch {
 			if (!isSameIdentity()) return;
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
@@ -161,8 +179,8 @@
 			let updatedItem;
 			try {
 				updatedItem = overwritePendingEdits
-					? await api.versions.restore(reqWs, reqSlug, version.id, { overwritePendingEdits: true })
-					: await api.versions.restore(reqWs, reqSlug, version.id);
+					? await api.versions.restore(reqWs, reqSlug, restoreId, { overwritePendingEdits: true })
+					: await api.versions.restore(reqWs, reqSlug, restoreId);
 			} catch (err) {
 				// BUG-3031: nothing was written. The flush above drained THIS tab's
 				// editor, so the pending edits are another session's, and only the
@@ -188,69 +206,43 @@
 		}
 	}
 
-	// 'system' is the op-log recovery's version row (TASK-2198 U4): the server
-	// rebuilt the body from an editor session that closed without saving, and
-	// the op-log records no author, so it must not read as a user's edit.
-	function actorLabel(actor: string): string {
-		if (actor === 'agent') return 'Agent';
-		if (actor === 'system') return 'System';
-		return 'User';
-	}
-
-	function actorColor(actor: string): string {
-		if (actor === 'agent') return 'var(--accent-purple)';
-		if (actor === 'system') return 'var(--text-secondary)';
-		return 'var(--status-blue)';
-	}
-
-	function sourceLabel(source: string): string {
-		const labels: Record<string, string> = {
-			cli: 'CLI',
-			web: 'Web',
-			skill: 'Skill',
-			'collab-snapshot': 'Autosave',
-			recovery: 'Recovered'
-		};
-		return labels[source] ?? source;
-	}
+	const restoreLabel = $derived(
+		version.is_create ? 'Restore to as created' : run ? 'Restore to before these edits' : 'Restore to before this edit'
+	);
+	const pairLabel = $derived(
+		version.is_create ? 'As created' : run ? `Before these ${run.count} autosaves → after` : 'Before this edit → after'
+	);
 </script>
 
 <div class="version-card" class:expanded>
-	<button class="card-header" type="button" onclick={toggle}>
-		<span class="icon">&#x1F4C4;</span>
-		<div class="header-content">
-			<span class="label">Content updated</span>
-			{#if version.change_summary}
-				<span class="change-summary">{version.change_summary}</span>
-			{/if}
-		</div>
-		<div class="badges">
-			<Chip
-				size="sm"
-				color={actorColor(version.created_by)}
+	<div class="summary-row">
+		<span class="row-label">Description</span>
+		{#if countsKnown}
+			<span class="lines"
+				><span class="added">+{linesAdded}</span> <span class="removed">−{linesRemoved}</span> lines</span
 			>
-				{actorLabel(version.created_by)}
-			</Chip>
-			<Chip size="sm" color="var(--accent-green)">
-				{sourceLabel(version.source)}
-			</Chip>
-		</div>
-		<span class="timestamp" title={new Date(version.created_at).toLocaleString()}>
-			{relativeTime(version.created_at)}
-		</span>
-		<span class="chevron" class:open={expanded}>&#x25B8;</span>
-	</button>
+		{:else}
+			<span class="lines unknown">changed</span>
+		{/if}
+		<button class="toggle" type="button" aria-expanded={expanded} onclick={toggle}>
+			{expanded ? 'Hide changes' : 'Show changes'}<span class="chevron" class:open={expanded} aria-hidden="true">▾</span>
+		</button>
+	</div>
 
 	{#if expanded}
 		<div class="card-body">
 			<div class="diff-container">
 				{#if resolving}
-					<p class="diff-status">Loading version…</p>
+					<p class="diff-status">Loading changes…</p>
 				{:else if resolveError}
-					<p class="diff-status">Couldn't load this version's content.</p>
-				{:else if displayContent !== null}
-					{#if currentContentStale}<StaleBodyNotice />{/if}
-					<DiffView oldContent={displayContent} newContent={currentContent} />
+					<p class="diff-status">Couldn't load this edit's changes.</p>
+				{:else if diffPair !== null}
+					{#if currentContentStale && diffPair.after === currentContent}<StaleBodyNotice />{/if}
+					<div class="pair-head">
+						<span>{pairLabel}</span>
+						{#if !version.is_create}<span class="pair-note">vs the previous version, not vs now</span>{/if}
+					</div>
+					<DiffView oldContent={diffPair.before} newContent={diffPair.after} />
 				{/if}
 			</div>
 
@@ -266,7 +258,7 @@
 									: 'This item has unsaved edits from another tab or session. Restoring will discard them, and no version will keep them.'}
 							</span>
 						{:else}
-							<span class="confirm-text">Restore to this version?</span>
+							<span class="confirm-text">{restoreLabel}?</span>
 						{/if}
 						<div class="confirm-actions">
 							<button
@@ -293,7 +285,7 @@
 						type="button"
 						onclick={startRestore}
 					>
-						Restore this version
+						{restoreLabel}
 					</button>
 				{/if}
 			</div>
@@ -303,61 +295,75 @@
 </div>
 
 <style>
+	/* A section inside a History event card (PLAN-2348 U3), not a card of its
+	   own: the event card owns the border. */
 	.version-card {
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		background: var(--bg-secondary);
-		overflow: hidden;
-	}
-
-	.version-card.expanded {
-		border-color: var(--accent-blue);
-	}
-
-	.card-header {
 		display: flex;
-		align-items: center;
+		flex-direction: column;
 		gap: var(--space-2);
-		width: 100%;
-		padding: var(--space-2) var(--space-3);
-		background: none;
-		border: none;
-		cursor: pointer;
-		text-align: left;
-		color: var(--text-primary);
-		font: inherit;
-	}
-
-	.card-header:hover {
-		background: var(--bg-tertiary);
-	}
-
-	.icon {
-		flex-shrink: 0;
-		font-size: 1em;
-		line-height: 1;
-	}
-
-	.header-content {
-		display: flex;
-		align-items: center;
-		gap: var(--space-2);
-		flex: 1;
 		min-width: 0;
 	}
 
-	.label {
+	.summary-row {
+		display: flex;
+		align-items: baseline;
+		gap: var(--space-3);
+		flex-wrap: wrap;
 		font-size: 0.85em;
-		font-weight: 500;
-		white-space: nowrap;
 	}
 
-	.change-summary {
-		font-size: 0.8em;
+	.row-label {
 		color: var(--text-muted);
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
+		min-width: 6.5em;
+	}
+
+	.lines {
+		color: var(--text-muted);
+	}
+
+	.added {
+		color: var(--accent-green);
+		font-weight: 600;
+	}
+
+	.removed {
+		color: var(--accent-red);
+		font-weight: 600;
+	}
+
+	.toggle {
+		background: none;
+		border: none;
+		padding: 0;
+		font: inherit;
+		font-weight: 600;
+		color: var(--accent-purple);
+		cursor: pointer;
+		display: inline-flex;
+		align-items: center;
+		gap: 0.25em;
+	}
+
+	.toggle:hover {
+		text-decoration: underline;
+	}
+
+	.pair-head {
+		display: flex;
+		justify-content: space-between;
+		gap: var(--space-2);
+		flex-wrap: wrap;
+		padding: var(--space-1) var(--space-2);
+		font-size: 0.8em;
+		font-weight: 600;
+		color: var(--text-secondary);
+		background: var(--bg-tertiary);
+		border-radius: var(--radius-sm, 4px) var(--radius-sm, 4px) 0 0;
+	}
+
+	.pair-note {
+		font-weight: 500;
+		color: var(--text-muted);
 	}
 
 	.diff-status {
@@ -367,35 +373,22 @@
 		color: var(--text-muted);
 	}
 
-	.badges {
-		display: flex;
-		gap: var(--space-1);
-		flex-shrink: 0;
-	}
 
-	.timestamp {
-		font-size: 0.8em;
-		color: var(--text-muted);
-		white-space: nowrap;
-		flex-shrink: 0;
-	}
 
 	.chevron {
-		font-size: 0.75em;
-		color: var(--text-muted);
+		font-size: 0.85em;
 		transition: transform 0.15s ease;
-		flex-shrink: 0;
 	}
 
 	.chevron.open {
-		transform: rotate(90deg);
+		transform: rotate(180deg);
 	}
 
 	.card-body {
-		border-top: 1px solid var(--border);
-		padding: var(--space-3);
-		background: var(--bg-tertiary);
+		display: flex;
+		flex-direction: column;
 	}
+
 
 	.diff-container {
 		margin-bottom: var(--space-3);
