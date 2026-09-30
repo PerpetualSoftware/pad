@@ -51,8 +51,18 @@ test.describe('BUG-3200: a pane-menu move that needs a value opens the picker', 
 		const coll = await seedCollection(request, fixture, `NV Req ${stamp}`, [
 			{ key: 'severity', label: 'Severity', type: 'select', options: ['low', 'high'], required: true },
 		]);
-		const { slug } = await seedDoc(fixture, request, 'Pane move needs value');
+		const { id, slug } = await seedDoc(fixture, request, 'Pane move needs value');
+		const before = (await (
+			await request.get(`/api/v1/workspaces/${fixture.workspaceSlug}/items/${slug}`, { headers: headers(fixture) })
+		).json()) as { id: string; item_number?: number };
+		expect(typeof before.item_number, 'precondition: the item has a ref number to compare').toBe('number');
 		await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/docs/${slug}`);
+		// The handoff must complete as a MOVE (DR-18), never a copy that mints
+		// a new item and ref.
+		const copies: string[] = [];
+		page.on('request', (r) => {
+			if (r.method() === 'POST' && /\/copy(\?|$)/.test(r.url())) copies.push(r.url());
+		});
 
 		const refused = await (await moveFromPaneMenu(page, coll.name));
 		expect(refused.status(), 'precondition: the pane-menu move was refused').toBe(400);
@@ -79,8 +89,16 @@ test.describe('BUG-3200: a pane-menu move that needs a value opens the picker', 
 		const item = await request.get(`/api/v1/workspaces/${fixture.workspaceSlug}/items/${slug}`, {
 			headers: headers(fixture),
 		});
-		const body = (await item.json()) as { collection_slug?: string; fields: string | Record<string, unknown> };
+		const body = (await item.json()) as {
+			id: string;
+			item_number?: number;
+			collection_slug?: string;
+			fields: string | Record<string, unknown>;
+		};
 		expect(body.collection_slug).toBe(coll.slug);
+		expect(body.id, 'the same item moved, not a copy').toBe(id);
+		expect(body.item_number, 'the ref number is unchanged').toBe(before.item_number);
+		expect(copies, 'no copy request was sent').toEqual([]);
 		const fields = typeof body.fields === 'string' ? JSON.parse(body.fields) : body.fields;
 		expect(fields.severity).toBe('high');
 	});
