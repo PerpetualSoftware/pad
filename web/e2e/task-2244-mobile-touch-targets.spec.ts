@@ -87,14 +87,20 @@ for (const { width, view, withDot } of ONE_ROW) {
 		await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/tasks?view=${view}`);
 		await expect(strip(page)).toBeVisible();
 
+		// Same row = each control's vertical centre lies inside the first
+		// control's span. Not equal tops: on one row, sub-pixel layout moves a
+		// top by 1px (measured on base, 61 vs 60), and a wrap moves it by a row.
 		const boxes = [];
 		for (const [name, loc] of stripControls(page, true)) {
 			const box = await loc.boundingBox();
 			expect(box, `${name} has a box`).not.toBeNull();
-			boxes.push({ name, top: Math.round(box!.y) });
+			boxes.push({ name, top: box!.y, bottom: box!.y + box!.height, mid: box!.y + box!.height / 2 });
 		}
 		const rowTop = boxes[0].top;
-		for (const b of boxes) expect(b.top, `${b.name} is on the first row`).toBe(rowTop);
+		for (const b of boxes) {
+			expect(b.mid, `${b.name} is on the first row`).toBeGreaterThan(boxes[0].top);
+			expect(b.mid, `${b.name} is on the first row`).toBeLessThan(boxes[0].bottom);
+		}
 
 		if (withDot) {
 			const dot = await strip(page).locator('.sse-mobile').boundingBox();
@@ -146,12 +152,30 @@ function authHeaders(fixture: SuiteFixture) {
 	return { Authorization: `Bearer ${fixture.apiToken}`, 'Content-Type': 'application/json' };
 }
 
-/** Three open tasks in one board lane, so the middle one has every reorder entry. */
+/**
+ * Three open items in one board lane, so the middle one has every reorder entry,
+ * in a collection of the test's OWN. The shared Tasks lane collects every other
+ * leg's items (and a repeat's), which put a seeded card out of view and tied its
+ * sort_order with strangers'.
+ */
 async function seedLane(request: APIRequestContext, fixture: SuiteFixture, tag: string) {
-	const titles = [`T2244 ${tag} a ${Date.now()}`, `T2244 ${tag} b ${Date.now()}`, `T2244 ${tag} c ${Date.now()}`];
+	const stamp = `${Date.now()}${Math.floor(Math.random() * 1000)}`;
+	const schema = JSON.stringify({
+		fields: [
+			{ key: 'status', label: 'Status', type: 'select', options: ['open', 'done'], default: 'open', terminal_options: ['done'] },
+		],
+	});
+	const coll = await request.post(`/api/v1/workspaces/${fixture.workspaceSlug}/collections`, {
+		headers: authHeaders(fixture),
+		data: { name: `T2244 ${tag} ${stamp}`, prefix: `TT${stamp.slice(-5)}`, schema },
+	});
+	expect(coll.ok(), await coll.text()).toBeTruthy();
+	const collSlug = (await coll.json()).slug as string;
+
+	const titles = ['a', 'b', 'c'].map((x) => `T2244 ${tag} ${x} ${stamp}`);
 	const slugs: string[] = [];
 	for (const title of titles) {
-		const res = await request.post(`/api/v1/workspaces/${fixture.workspaceSlug}/collections/tasks/items`, {
+		const res = await request.post(`/api/v1/workspaces/${fixture.workspaceSlug}/collections/${collSlug}/items`, {
 			headers: authHeaders(fixture),
 			data: { title, fields: JSON.stringify({ status: 'open' }), content: '' },
 		});
@@ -167,7 +191,7 @@ async function seedLane(request: APIRequestContext, fixture: SuiteFixture, tag: 
 		});
 		expect(res.ok(), await res.text()).toBeTruthy();
 	}
-	return { titles, slugs };
+	return { titles, slugs, collSlug };
 }
 
 function card(page: Page, title: string) {
@@ -189,10 +213,10 @@ for (const view of ['list', 'board'] as const) {
 		request,
 	}, testInfo) => {
 		test.skip(testInfo.project.name !== 'mobile-chromium', 'the ruling is <=768px');
-		const { titles } = await seedLane(request, fixture, `shape-${view}`);
+		const { titles, collSlug } = await seedLane(request, fixture, `shape-${view}`);
 
 		await browserLogin(page);
-		await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/tasks?view=${view}`);
+		await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/${collSlug}?view=${view}`);
 		const c = card(page, titles[1]);
 		await expect(c).toBeVisible();
 
@@ -214,11 +238,11 @@ test('TASK-2244: the mobile card ⋯ stars, copies the ID and reorders (board)',
 	request,
 }, testInfo) => {
 	test.skip(testInfo.project.name !== 'mobile-chromium', 'the ruling is <=768px');
-	const { titles, slugs } = await seedLane(request, fixture, 'wire');
+	const { titles, slugs, collSlug } = await seedLane(request, fixture, 'wire');
 
 	await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
 	await browserLogin(page);
-	await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/tasks?view=board`);
+	await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/${collSlug}?view=board`);
 	const c = card(page, titles[2]);
 	await expect(c).toBeVisible();
 	const more = c.locator('.iam-trigger.card');
@@ -230,7 +254,7 @@ test('TASK-2244: the mobile card ⋯ stars, copies the ID and reorders (board)',
 	await page.getByRole('menuitem', { name: 'Star', exact: true }).tap();
 	await expect.poll(() => isStarred(request, fixture, slugs[2])).toBe(true);
 	await expect(c.locator('.starred-mark'), 'a starred card shows the passive mark').toBeVisible();
-	await expect(page, 'the tap did not navigate').toHaveURL(/\/tasks\?view=board/);
+	await expect(page, 'the tap did not navigate').toHaveURL(new RegExp(`/${collSlug}\\?view=board`));
 
 	// Copy: the clipboard receives the ref the card shows.
 	const ref = (await c.locator('.item-ref').innerText()).trim();
@@ -301,10 +325,10 @@ const DESKTOP_CARD_BASE = {
 for (const view of ['list', 'board'] as const) {
 	test(`TASK-2244: desktop card controls are unchanged (${view})`, async ({ page, fixture, request }, testInfo) => {
 		test.skip(testInfo.project.name !== 'desktop-chromium', 'the desktop leg');
-		const { titles } = await seedLane(request, fixture, `desk-${view}`);
+		const { titles, collSlug } = await seedLane(request, fixture, `desk-${view}`);
 
 		await browserLogin(page);
-		await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/tasks?view=${view}`);
+		await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/${collSlug}?view=${view}`);
 		const c = card(page, titles[1]);
 		await expect(c).toBeVisible();
 
@@ -318,5 +342,90 @@ for (const view of ['list', 'board'] as const) {
 		expect(out).toEqual(DESKTOP_CARD_BASE);
 		await expect(c.locator('.iam-trigger.card'), 'no card ⋯ on desktop').toHaveCount(0);
 		await expect(c.locator('.starred-mark'), 'no passive mark on desktop').toHaveCount(0);
+	});
+}
+
+// ── U-c: the status chip's invisible extender ───────────────────────────────
+
+/**
+ * The extender does not change the chip's box, so boundingBox cannot prove it.
+ * The instrument is elementFromPoint, from both sides:
+ *   1. every point of the 44x44 area hits the chip. The area is centred
+ *      horizontally and grows UPWARD from the chip's bottom edge, because a
+ *      centred square took the top of the first tag (measured on this leg);
+ *   2. no point of a neighbour control's box (both tag buttons below, and the
+ *      card ⋯ above) lands on the chip. Asked that way, not as "every point
+ *      hits the neighbour": a rounded tag's corner pixel hits its row, with or
+ *      without any extender, and that is not what the ruling is about. A
+ *      centred extender DID land 20 of tag 0's 40 sampled points on the chip
+ *      (list and board alike; the upward one lands 0), which is the measurement
+ *      that made it upward-only.
+ * The card carries tags on purpose: without them the row below is plain text,
+ * and half 2 would pass on any extender, however large.
+ */
+type Box = { x: number; y: number; w: number; h: number };
+
+/** Sample the box every 4px; `want` says whether a hit on `el` is what is sought. */
+async function probe(target: Locator, box: Box, want: 'hits' | 'avoids') {
+	return target.evaluate(
+		(el, [b, mode]) => {
+			const bad: string[] = [];
+			const step = 4;
+			for (let x = b.x + 0.5; x < b.x + b.w; x += step) {
+				for (let y = b.y + 0.5; y < b.y + b.h; y += step) {
+					const hit = document.elementFromPoint(x, y);
+					const onEl = !!hit && (hit === el || el.contains(hit));
+					if (onEl !== (mode === 'hits')) {
+						bad.push(`${Math.round(x)},${Math.round(y)}→${hit?.className || hit?.tagName}`);
+					}
+				}
+			}
+			return bad;
+		},
+		[box, want] as const,
+	);
+}
+
+for (const view of ['list', 'board'] as const) {
+	test(`TASK-2244: the status chip is tappable across 44x44 and takes nothing from the tags (${view})`, async ({
+		page,
+		fixture,
+		request,
+	}, testInfo) => {
+		test.skip(testInfo.project.name !== 'mobile-chromium', 'the ruling is <=768px');
+		const { titles, slugs, collSlug } = await seedLane(request, fixture, `chip-${view}`);
+		const tagged = await request.patch(`/api/v1/workspaces/${fixture.workspaceSlug}/items/${slugs[1]}`, {
+			headers: authHeaders(fixture),
+			data: { tags: JSON.stringify(['t2244a', 't2244b']) },
+		});
+		expect(tagged.ok(), await tagged.text()).toBeTruthy();
+
+		await browserLogin(page);
+		await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/${collSlug}?view=${view}`);
+		const c = card(page, titles[1]);
+		await expect(c).toBeVisible();
+		// Addressed without the new wrapper class, so the leg also runs on base.
+		const chip = c.locator('.card-meta button', { hasText: /^\s*open\s*$/i });
+		await expect(chip, 'the status chip is a picker on this card').toHaveCount(1);
+		const tags = c.locator('.card-tag');
+		await expect(tags, 'precondition: the tag row the extender must not cover').toHaveCount(2);
+
+		const b = (await chip.boundingBox())!;
+		const area = { x: b.x + b.width / 2 - MIN / 2, y: b.y + b.height - MIN, w: MIN, h: MIN };
+		expect(await probe(chip, area, 'hits'), 'points in the 44x44 area that miss the chip').toEqual([]);
+
+		const neighbours: Array<[string, Locator]> = [
+			['tag 0', tags.nth(0)],
+			['tag 1', tags.nth(1)],
+			['card ⋯', c.locator('.iam-trigger.card')],
+		];
+		for (const [name, n] of neighbours) {
+			if ((await n.count()) === 0) continue; // base has no card ⋯; half 1 already fails there
+			const nb = (await n.boundingBox())!;
+			expect(
+				await probe(chip, { x: nb.x, y: nb.y, w: nb.width, h: nb.height }, 'avoids'),
+				`points of ${name} that land on the status chip`,
+			).toEqual([]);
+		}
 	});
 }

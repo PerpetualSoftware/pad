@@ -302,12 +302,16 @@
 		-->
 		{#if statusField && typeof fields.status === 'string' && fields.status}
 			{#if statusSettable && statusOptions && onStatusClick}
-				<!-- BUG-3157: a picker, never a one-tap cycle — see StatusPicker. -->
-				<StatusPicker
-					value={fields.status}
-					options={statusOptions}
-					onselect={(next) => onStatusClick(item, next)}
-				/>
+				<!-- BUG-3157: a picker, never a one-tap cycle — see StatusPicker.
+				     The wrapper carries the card-only touch extender (TASK-2244); the
+				     table's picker is the same component and keeps its own size. -->
+				<span class="status-hit">
+					<StatusPicker
+						value={fields.status}
+						options={statusOptions}
+						onselect={(next) => onStatusClick(item, next)}
+					/>
+				</span>
 			{:else}
 				<Chip size="sm" color={statusColor(fields.status)}>
 					{formatLabel(fields.status)}
@@ -448,6 +452,32 @@
 	@media (max-width: 768px) {
 		.card-top-row :global(.item-actions-menu) {
 			margin-left: auto;
+		}
+	}
+
+	/* Status chip touch extender (TASK-2244, Dave's ruling day 83). At phone
+	   width the chip's tappable area grows to 44x44 through an invisible ::after,
+	   so the chip does not change size. It grows UPWARD only, into the title,
+	   which is the card link and not a control. The row below can be tag
+	   BUTTONS, and a centred extender took the top of the first tag (measured).
+	   The wrapper is display: contents, so the meta row's layout is untouched.
+	   The e2e probes both sides: the area hits the chip, and no neighbour
+	   control (a tag, the card ⋯) loses any of its own area to it. */
+	.status-hit {
+		display: contents;
+	}
+	@media (max-width: 768px) {
+		.status-hit :global(button) {
+			position: relative;
+		}
+		.status-hit :global(button)::after {
+			content: '';
+			position: absolute;
+			left: 50%;
+			bottom: 0;
+			width: max(100%, 44px);
+			height: 44px;
+			transform: translateX(-50%);
 		}
 	}
 
