@@ -99,6 +99,9 @@ type materializeRecovery struct {
 	setAsideSkipped atomic.Int64
 	setAsideLogged  int64
 
+	// sweepCursor is where the next sweep page starts (sweep goroutine only).
+	sweepCursor store.MaterializeCursor
+
 	// processed, when set by a test, receives each processed item and its
 	// result after the item is done.
 	processed func(itemID string, r materializeResult)
@@ -109,6 +112,7 @@ type materializeRecoveryConfig struct {
 	dormancy      time.Duration
 	maxFailures   int
 	backoffBase   time.Duration
+	sweepLimit    int
 	now           func() time.Time
 	// logger receives the worker's log lines. Nil: slog.Default().
 	logger *slog.Logger
@@ -157,6 +161,9 @@ func newMaterializeRecovery(s *Server, m Materializer, cfg materializeRecoveryCo
 	}
 	if cfg.backoffBase <= 0 {
 		cfg.backoffBase = materializeBackoffBase
+	}
+	if cfg.sweepLimit <= 0 {
+		cfg.sweepLimit = materializeSweepLimit
 	}
 	if cfg.now == nil {
 		cfg.now = time.Now
@@ -259,17 +266,30 @@ func (r *materializeRecovery) onRoomIdle(itemID string) {
 
 // sweep is T1.
 func (r *materializeRecovery) sweep() {
-	ids, err := r.s.store.ListMaterializeCandidates(r.cfg.now().Add(-r.cfg.dormancy), materializeSweepLimit)
+	// One page per tick, continuing from where the last tick stopped and
+	// wrapping to the start after a short page: every candidate is offered
+	// within ceil(candidates / sweepLimit) + 1 ticks, however many of those
+	// ahead of it the room check or the failure budget turn away (see
+	// ListMaterializeCandidates).
+	page, err := r.s.store.ListMaterializeCandidates(r.cfg.now().Add(-r.cfg.dormancy), r.sweepCursor, r.cfg.sweepLimit)
 	if err != nil {
 		r.cfg.logger.Warn("op-log recovery: sweep query failed", "error", err)
 		return
 	}
+	if len(page) < r.cfg.sweepLimit {
+		r.sweepCursor = store.MaterializeCursor{}
+	} else {
+		last := page[len(page)-1]
+		r.sweepCursor = store.MaterializeCursor{LastAt: last.LastAt, ItemID: last.ItemID}
+	}
+	ids := make([]string, 0, len(page))
 	queued := 0
-	for _, id := range ids {
-		if r.s.collab != nil && r.s.collab.HasRoom(id) {
+	for _, c := range page {
+		ids = append(ids, c.ItemID)
+		if r.s.collab != nil && r.s.collab.HasRoom(c.ItemID) {
 			continue
 		}
-		if r.enqueue(id) {
+		if r.enqueue(c.ItemID) {
 			queued++
 		}
 	}

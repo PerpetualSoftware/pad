@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -20,6 +21,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/collab"
 	"github.com/PerpetualSoftware/pad/internal/materialize"
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // TASK-2198 U4: the op-log recovery triggers, worker and failure budget, and
@@ -700,4 +702,54 @@ func TestMaterializeSetAsideSkipsAreCountedNotLogged(t *testing.T) {
 	if len(sweepLines) != 1 || !strings.Contains(sweepLines[0], "set_aside_skipped_total=3") {
 		t.Fatalf("sweep summary lines = %v, want one carrying set_aside_skipped_total=3", sweepLines)
 	}
+}
+
+// STARVATION (codex r1): the sweep reads a bounded page, and the room check
+// and the failure budget filter it afterwards. With materializeSweepLimit+1
+// dormant pending items of which the first materializeSweepLimit fail every
+// time, the last one must still be recovered, within
+// ceil(N / limit) + 1 = 3 sweeps, at the REAL page size.
+func TestMaterializeSweepReachesEveryCandidate(t *testing.T) {
+	clock := time.Now().Add(time.Hour) // rows written now are dormant
+	var targetFrame []byte
+	fake := &fakeMaterializer{fn: func(job materialize.Job) (string, error) {
+		if len(job.Rows) == 1 && bytes.Equal(job.Rows[0], targetFrame) {
+			return "recovered body", nil
+		}
+		return "", fmt.Errorf("%w: exit status 2", materialize.ErrChildDied)
+	}}
+	f := newRecoveryFixture(t, fake, time.Minute, materializeRecoveryConfig{
+		now:    func() time.Time { return clock },
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	n := materializeSweepLimit + 1
+	frameOf := map[string][]byte{}
+	for i := 0; i < n; i++ {
+		it := f.item(t, fmt.Sprintf("Backlog %03d", i), "stale")
+		fr := []byte{0x00, 0x02, 0x05, 0x01, byte(i >> 8), byte(i), 0x7F, 0x00}
+		f.appendRows(t, it.ID, fr)
+		frameOf[it.ID] = fr
+	}
+	all, err := f.srv.store.ListMaterializeCandidates(clock.Add(-materializeDormancy), store.MaterializeCursor{}, 10*n)
+	if err != nil || len(all) != n {
+		t.Fatalf("candidates %d (%v), want %d", len(all), err, n)
+	}
+	target := all[n-1].ItemID // the one every page read from the start leaves out
+	targetFrame = frameOf[target]
+
+	for tick := 1; tick <= 3; tick++ {
+		f.r.sweep()
+		for {
+			id, ok := f.r.dequeue()
+			if !ok {
+				break
+			}
+			if res := f.r.process(id); id == target && res == mrApplied {
+				t.Logf("the %dth candidate was recovered on sweep %d", n, tick)
+				return
+			}
+		}
+		clock = clock.Add(time.Hour) // every backoff expires between ticks
+	}
+	t.Fatalf("the %dth candidate was never recovered in 3 sweeps", n)
 }

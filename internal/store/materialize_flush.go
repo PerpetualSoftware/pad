@@ -132,18 +132,41 @@ func (s *Store) ItemHasPendingContent(itemID string) (bool, error) {
 	return n > 0, nil
 }
 
+// MaterializeCandidate is one row of the recovery sweep's backstop set, with
+// the keyset position (LastAt, ItemID) it sorts at.
+type MaterializeCandidate struct {
+	ItemID string
+	// LastAt is the item's newest op-log created_at, exactly as stored.
+	LastAt string
+}
+
+// MaterializeCursor is a keyset position in the sweep's order. The zero value
+// is the start.
+type MaterializeCursor struct {
+	LastAt string
+	ItemID string
+}
+
 // ListMaterializeCandidates returns up to limit live items whose op-log holds
 // content-bearing rows above the flush watermark, whose NEWEST op-log row is
 // older than before, and which hold no set-aside rows: the recovery sweep's
 // backstop set (the shape of ListDormantOpLogItemsBefore, with the flush
 // predicate inverted). The caller still checks for an open room.
-func (s *Store) ListMaterializeCandidates(before time.Time, limit int) ([]string, error) {
+//
+// KEYSET-PAGED, strictly after `after`, in (newest op-log created_at, item id)
+// order. The caller filters what comes back (open rooms, and the worker's
+// per-item failure budget), so a page read from the start every time would
+// hand back the same items forever once `limit` of them sit filtered, and
+// every candidate behind them would starve. Walking the set page by page and
+// wrapping at the end reaches every candidate however many ineligible ones
+// sort ahead of it.
+func (s *Store) ListMaterializeCandidates(before time.Time, after MaterializeCursor, limit int) ([]MaterializeCandidate, error) {
 	if limit <= 0 {
 		limit = 100
 	}
 	cutoff := before.UTC().Format(time.RFC3339)
 	rows, err := s.db.Query(s.q(`
-		SELECT u.item_id
+		SELECT u.item_id, MAX(u.created_at)
 		FROM item_yjs_updates u
 		JOIN items i ON i.id = u.item_id
 		WHERE i.deleted_at IS NULL
@@ -151,21 +174,22 @@ func (s *Store) ListMaterializeCandidates(before time.Time, limit int) ([]string
 		GROUP BY u.item_id, i.content_flushed_op_log_id
 		HAVING MAX(u.created_at) < ?
 		   AND SUM(CASE WHEN u.content_bearing = TRUE AND u.id > COALESCE(i.content_flushed_op_log_id, 0) THEN 1 ELSE 0 END) > 0
+		   AND (MAX(u.created_at) > ? OR (MAX(u.created_at) = ? AND u.item_id > ?))
 		ORDER BY MAX(u.created_at) ASC, u.item_id ASC
-		LIMIT ?`), cutoff, limit)
+		LIMIT ?`), cutoff, after.LastAt, after.LastAt, after.ItemID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list materialize candidates: %w", err)
 	}
 	defer rows.Close()
-	var ids []string
+	var out []MaterializeCandidate
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		var c MaterializeCandidate
+		if err := rows.Scan(&c.ItemID, &c.LastAt); err != nil {
 			return nil, fmt.Errorf("scan materialize candidate: %w", err)
 		}
-		ids = append(ids, id)
+		out = append(out, c)
 	}
-	return ids, rows.Err()
+	return out, rows.Err()
 }
 
 // MaterializeOutcome is what MaterializeFlush did.

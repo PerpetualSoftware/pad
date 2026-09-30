@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -267,15 +268,15 @@ func TestListMaterializeCandidates(t *testing.T) {
 		appendFrames(t, s, aside.ID, recoveryFrame(3))
 
 		future := time.Now().Add(time.Hour)
-		ids, err := s.ListMaterializeCandidates(future, 10)
+		ids, err := s.ListMaterializeCandidates(future, store.MaterializeCursor{}, 10)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(ids) != 1 || ids[0] != pending.ID {
+		if len(ids) != 1 || ids[0].ItemID != pending.ID {
 			t.Fatalf("candidates = %v, want only the pending item %s", ids, pending.ID)
 		}
 		// Not dormant yet: the newest row is younger than the cutoff.
-		ids, err = s.ListMaterializeCandidates(time.Now().Add(-time.Hour), 10)
+		ids, err = s.ListMaterializeCandidates(time.Now().Add(-time.Hour), store.MaterializeCursor{}, 10)
 		if err != nil || len(ids) != 0 {
 			t.Fatalf("candidates before the dormancy cutoff = %v (%v), want none", ids, err)
 		}
@@ -286,6 +287,50 @@ func TestListMaterializeCandidates(t *testing.T) {
 		has, err = s.ItemHasPendingContent(flushed.ID)
 		if err != nil || has {
 			t.Fatalf("ItemHasPendingContent(flushed) = %v, %v", has, err)
+		}
+	})
+}
+
+// The sweep's read is keyset-paged: walking it one row at a time visits every
+// candidate exactly once, in order, and then comes back empty.
+func TestListMaterializeCandidatesPagesByKeyset(t *testing.T) {
+	eachBackend(t, func(t *testing.T, s *store.Store) {
+		wsID, collID, first := seedStaleItem(t, s)
+		want := map[string]bool{first.ID: true}
+		appendFrames(t, s, first.ID, recoveryFrame(1))
+		for i := byte(2); i <= 5; i++ {
+			it, err := s.CreateItem(wsID, collID, models.ItemCreate{Title: fmt.Sprintf("P%d", i), Content: "x"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			appendFrames(t, s, it.ID, recoveryFrame(i))
+			want[it.ID] = true
+		}
+		future := time.Now().Add(time.Hour)
+		all, err := s.ListMaterializeCandidates(future, store.MaterializeCursor{}, 100)
+		if err != nil || len(all) != 5 {
+			t.Fatalf("full read = %d (%v), want 5", len(all), err)
+		}
+		var cur store.MaterializeCursor
+		var walked []string
+		for i := 0; i < 10; i++ {
+			page, err := s.ListMaterializeCandidates(future, cur, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(page) == 0 {
+				break
+			}
+			walked = append(walked, page[0].ItemID)
+			cur = store.MaterializeCursor{LastAt: page[0].LastAt, ItemID: page[0].ItemID}
+		}
+		if len(walked) != 5 {
+			t.Fatalf("walked %d candidates, want 5", len(walked))
+		}
+		for i, c := range all {
+			if walked[i] != c.ItemID || !want[c.ItemID] {
+				t.Fatalf("page walk order %v differs from the full read", walked)
+			}
 		}
 	})
 }
