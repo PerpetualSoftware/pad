@@ -187,7 +187,20 @@ func TestTimeline_CommentOnlyAgentUpdateHasNoEmptyCard(t *testing.T) {
 // guard: a linked "updated" row is returned only when it carries a change.
 func TestListDocumentActivityBeforeTime_LinkedUpdatedRows(t *testing.T) {
 	t.Parallel()
-	srv := testServer(t)
+	linkedUpdatedRowsLeg(t, testServer(t))
+}
+
+// The same leg on Postgres, where the query reads metadata::text because the
+// column is JSONB there; testServer is always SQLite. Skips unless
+// PAD_TEST_POSTGRES_URL is set (make test-pg).
+func TestListDocumentActivityBeforeTime_LinkedUpdatedRows_Postgres(t *testing.T) {
+	t.Parallel()
+	srv, _ := testServerPostgres(t)
+	linkedUpdatedRowsLeg(t, srv)
+}
+
+func linkedUpdatedRowsLeg(t *testing.T, srv *Server) {
+	t.Helper()
 	token, ws, slug := debounceFixture(t, srv)
 	authedAgentRequest(t, srv, token, "wren", "PATCH", "/api/v1/workspaces/"+ws+"/items/"+slug,
 		map[string]any{"comment": "just a note"})
