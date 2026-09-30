@@ -5,6 +5,7 @@
 	import { isRelationType } from '$lib/items/relationFieldTypes';
 	import { parseFields, parseSchema, parseTags, formatItemRef, itemUrlId } from '$lib/types';
 	import { starredStore } from '$lib/stores/starred.svelte';
+	import { viewport } from '$lib/stores/breakpoint.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
 	import { relativeTime } from '$lib/utils/markdown';
@@ -170,6 +171,9 @@
 	async function copyRef(e: MouseEvent) {
 		e.preventDefault();
 		e.stopPropagation();
+		await writeRef();
+	}
+	async function writeRef() {
 		if (!itemRef) return;
 		const ok = await copyToClipboard(itemRef);
 		if (ok) {
@@ -214,6 +218,7 @@
 		{#if itemRef}
 			<span class="item-ref-wrap">
 				<span class="item-ref">{itemRef}</span>
+				{#if !viewport.isMobile}
 				<button
 					type="button"
 					class="copy-ref-btn"
@@ -228,11 +233,36 @@
 						<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
 					{/if}
 				</button>
+				{/if}
 				<!-- Announce copy success to assistive tech; the icon/color swap
 				     alone is invisible to screen readers (IDEA-1904 a11y review). -->
 				<span class="sr-only" aria-live="polite">{copied ? `Copied ${itemRef}` : ''}</span>
 			</span>
 		{/if}
+		{#if viewport.isMobile}
+			<!--
+				Phone width (TASK-2244, Dave's ruling day 83): star, copy-ref and the
+				⋮ could not each reach 44x44 without overlapping, so ONE 44x44 ⋯
+				carries all three. The starred state stays visible as a passive ★,
+				not a control, so it is not a sub-44 target.
+			-->
+			{#if starred}
+				<span class="starred-mark" aria-label="Starred" role="img">★</span>
+			{/if}
+			<ItemActionsMenu
+				{item}
+				{horizontal}
+				disabledDirs={reorderDisabledDirs}
+				label={item.title}
+				onReorder={onReorderItem ? (dir) => onReorderItem?.(item, dir) : undefined}
+				onMove={onReorderItem && onMoveItem ? (dir) => onMoveItem?.(item, dir) : undefined}
+				card={{
+					starred,
+					onToggleStar: () => starredStore.toggle(wsSlug, item.slug, item.id),
+					onCopyRef: itemRef ? () => void writeRef() : undefined,
+				}}
+			/>
+		{:else}
 		<button
 			class="star-btn"
 			class:starred
@@ -250,6 +280,7 @@
 				onReorder={(dir) => onReorderItem?.(item, dir)}
 				onMove={onMoveItem ? (dir) => onMoveItem?.(item, dir) : undefined}
 			/>
+		{/if}
 		{/if}
 	</div>
 
@@ -409,6 +440,23 @@
 	   would split the free space (see .meta-spacer note below). */
 	.card-top-row .star-btn {
 		margin-left: auto;
+	}
+
+	/* Phone width (TASK-2244): the star button is not rendered, so the ONE auto
+	   margin moves to the ⋯. Media query rather than a class because the markup
+	   branch is `viewport.isMobile`, which is this same query (breakpoint.svelte). */
+	@media (max-width: 768px) {
+		.card-top-row :global(.item-actions-menu) {
+			margin-left: auto;
+		}
+	}
+
+	/* The passive starred mark beside the ref (TASK-2244). Not a control. */
+	.starred-mark {
+		color: var(--accent-amber);
+		font-size: 0.95em;
+		flex-shrink: 0;
+		line-height: 1;
 	}
 
 	/* Reserve horizontal room on the right of the top row for the

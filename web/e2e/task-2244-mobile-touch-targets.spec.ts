@@ -1,6 +1,7 @@
 import { test, expect } from './fixtures';
 import { browserLogin } from './lib/collab-helpers';
-import type { Locator, Page } from '@playwright/test';
+import type { APIRequestContext, Locator, Page } from '@playwright/test';
+import type { SuiteFixture } from './fixtures';
 
 /**
  * TASK-2244 — touch targets at phone width (Dave's ruling, day 83: options 1+3).
@@ -136,5 +137,186 @@ for (const view of ['list', 'board'] as const) {
 		await expect(strip(page)).toBeVisible();
 
 		expect(await sizes(page, false)).toEqual(DESKTOP_BASE[view]);
+	});
+}
+
+// ── U-b: the card's controls ────────────────────────────────────────────────
+
+function authHeaders(fixture: SuiteFixture) {
+	return { Authorization: `Bearer ${fixture.apiToken}`, 'Content-Type': 'application/json' };
+}
+
+/** Three open tasks in one board lane, so the middle one has every reorder entry. */
+async function seedLane(request: APIRequestContext, fixture: SuiteFixture, tag: string) {
+	const titles = [`T2244 ${tag} a ${Date.now()}`, `T2244 ${tag} b ${Date.now()}`, `T2244 ${tag} c ${Date.now()}`];
+	const slugs: string[] = [];
+	for (const title of titles) {
+		const res = await request.post(`/api/v1/workspaces/${fixture.workspaceSlug}/collections/tasks/items`, {
+			headers: authHeaders(fixture),
+			data: { title, fields: JSON.stringify({ status: 'open' }), content: '' },
+		});
+		expect(res.ok(), await res.text()).toBeTruthy();
+		slugs.push((await res.json()).slug);
+	}
+	// Fresh items tie on sort_order, and a tie renders in no fixed order, so the
+	// lane order is set explicitly: a, b, c.
+	for (const [i, slug] of slugs.entries()) {
+		const res = await request.patch(`/api/v1/workspaces/${fixture.workspaceSlug}/items/${slug}`, {
+			headers: authHeaders(fixture),
+			data: { sort_order: (i + 1) * 10 },
+		});
+		expect(res.ok(), await res.text()).toBeTruthy();
+	}
+	return { titles, slugs };
+}
+
+function card(page: Page, title: string) {
+	return page.locator('.item-card').filter({ has: page.locator('.card-title', { hasText: title }) });
+}
+
+async function isStarred(request: APIRequestContext, fixture: SuiteFixture, slug: string) {
+	const res = await request.get(`/api/v1/workspaces/${fixture.workspaceSlug}/items/${slug}/star`, {
+		headers: authHeaders(fixture),
+	});
+	expect(res.ok(), await res.text()).toBeTruthy();
+	return (await res.json()).starred as boolean;
+}
+
+for (const view of ['list', 'board'] as const) {
+	test(`TASK-2244: a mobile card has ONE 44x44 ⋯ and no star, copy or ⋮ (${view})`, async ({
+		page,
+		fixture,
+		request,
+	}, testInfo) => {
+		test.skip(testInfo.project.name !== 'mobile-chromium', 'the ruling is <=768px');
+		const { titles } = await seedLane(request, fixture, `shape-${view}`);
+
+		await browserLogin(page);
+		await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/tasks?view=${view}`);
+		const c = card(page, titles[1]);
+		await expect(c).toBeVisible();
+
+		await expect(c.locator('.star-btn'), 'no star button on mobile').toHaveCount(0);
+		await expect(c.locator('.copy-ref-btn'), 'no copy button on mobile').toHaveCount(0);
+		await expect(c.locator('.iam-trigger:not(.card)'), 'no reorder ⋮ on mobile').toHaveCount(0);
+		const more = c.locator('.iam-trigger.card');
+		await expect(more).toHaveCount(1);
+		const box = await more.boundingBox();
+		expect(box).not.toBeNull();
+		expect(box!.width, `⋯ width (${box!.width}x${box!.height})`).toBeGreaterThanOrEqual(MIN);
+		expect(box!.height, `⋯ height (${box!.width}x${box!.height})`).toBeGreaterThanOrEqual(MIN);
+	});
+}
+
+test('TASK-2244: the mobile card ⋯ stars, copies the ID and reorders (board)', async ({
+	page,
+	fixture,
+	request,
+}, testInfo) => {
+	test.skip(testInfo.project.name !== 'mobile-chromium', 'the ruling is <=768px');
+	const { titles, slugs } = await seedLane(request, fixture, 'wire');
+
+	await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+	await browserLogin(page);
+	await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/tasks?view=board`);
+	const c = card(page, titles[2]);
+	await expect(c).toBeVisible();
+	const more = c.locator('.iam-trigger.card');
+
+	// Star: the server records it, and the card shows the passive mark.
+	expect(await isStarred(request, fixture, slugs[2]), 'precondition: not starred').toBe(false);
+	await expect(c.locator('.starred-mark')).toHaveCount(0);
+	await more.tap();
+	await page.getByRole('menuitem', { name: 'Star', exact: true }).tap();
+	await expect.poll(() => isStarred(request, fixture, slugs[2])).toBe(true);
+	await expect(c.locator('.starred-mark'), 'a starred card shows the passive mark').toBeVisible();
+	await expect(page, 'the tap did not navigate').toHaveURL(/\/tasks\?view=board/);
+
+	// Copy: the clipboard receives the ref the card shows.
+	const ref = (await c.locator('.item-ref').innerText()).trim();
+	await page.evaluate(() => navigator.clipboard.writeText('T2244-SENTINEL'));
+	await more.tap();
+	await page.getByRole('menuitem', { name: 'Copy item ID' }).tap();
+	await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(ref);
+
+	// Reorder: the card moves to the top of its lane, on screen and on the
+	// server (a reload after the write's own response, never after the tap).
+	const lane = page.locator('.board-view .item-card .card-title');
+	const mine = async () => {
+		const all = await lane.allInnerTexts();
+		return all.map((t) => titles.indexOf(t.trim())).filter((i) => i >= 0);
+	};
+	const before = await mine();
+	expect(before[0], `precondition: the card is not already first (${before})`).not.toBe(2);
+	await more.tap();
+	await page.getByRole('menuitem', { name: 'Move to top' }).tap();
+	const moved = [2, ...before.filter((i) => i !== 2)];
+	await expect.poll(mine, 'on screen').toEqual(moved);
+	// persistReorder PATCHes whichever rows' sort_order changes, not always the
+	// moved card, so the server's answer is read by reloading until it agrees.
+	await expect
+		.poll(
+			async () => {
+				await page.reload();
+				await expect(lane.first()).toBeVisible();
+				return mine();
+			},
+			{ message: 'after a reload (the server order)', timeout: 15000 },
+		)
+		.toEqual(moved);
+});
+
+test('TASK-2244: on a host without reorder the mobile ⋯ holds only Star and Copy (starred page)', async ({
+	page,
+	fixture,
+	request,
+}, testInfo) => {
+	test.skip(testInfo.project.name !== 'mobile-chromium', 'the ruling is <=768px');
+	const { titles, slugs } = await seedLane(request, fixture, 'starred');
+	const star = await request.post(`/api/v1/workspaces/${fixture.workspaceSlug}/items/${slugs[0]}/star`, {
+		headers: authHeaders(fixture),
+	});
+	expect(star.ok(), await star.text()).toBeTruthy();
+
+	await browserLogin(page);
+	await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/starred`);
+	const c = card(page, titles[0]);
+	await expect(c).toBeVisible();
+	await expect(c.locator('.starred-mark')).toBeVisible();
+	await c.locator('.iam-trigger.card').tap();
+	const items = page.getByRole('menuitem');
+	await expect(items).toHaveText(['Unstar', 'Copy item ID'].map((t) => new RegExp(t)));
+});
+
+/**
+ * Desktop card controls on base a90f75fd (desktop-chromium), measured by this
+ * file before any change: identical on list and board.
+ */
+const DESKTOP_CARD_BASE = {
+	'.star-btn': { w: 13, h: 13.3 },
+	'.copy-ref-btn': { w: 22, h: 22 },
+	'.iam-trigger': { w: 8, h: 14 },
+};
+
+for (const view of ['list', 'board'] as const) {
+	test(`TASK-2244: desktop card controls are unchanged (${view})`, async ({ page, fixture, request }, testInfo) => {
+		test.skip(testInfo.project.name !== 'desktop-chromium', 'the desktop leg');
+		const { titles } = await seedLane(request, fixture, `desk-${view}`);
+
+		await browserLogin(page);
+		await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/tasks?view=${view}`);
+		const c = card(page, titles[1]);
+		await expect(c).toBeVisible();
+
+		const out: Record<string, { w: number; h: number }> = {};
+		for (const sel of Object.keys(DESKTOP_CARD_BASE)) {
+			await expect(c.locator(sel), `${sel} is rendered on desktop`).toHaveCount(1);
+			const b = await c.locator(sel).boundingBox();
+			expect(b).not.toBeNull();
+			out[sel] = { w: Math.round(b!.width * 10) / 10, h: Math.round(b!.height * 10) / 10 };
+		}
+		expect(out).toEqual(DESKTOP_CARD_BASE);
+		await expect(c.locator('.iam-trigger.card'), 'no card ⋯ on desktop').toHaveCount(0);
+		await expect(c.locator('.starred-mark'), 'no passive mark on desktop').toHaveCount(0);
 	});
 }
