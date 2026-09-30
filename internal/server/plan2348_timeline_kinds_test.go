@@ -3,6 +3,7 @@ package server
 import (
 	"net/http"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -152,5 +153,21 @@ func TestTimelineKinds_UnknownKindIsRefused(t *testing.T) {
 		if rr.Code != http.StatusOK {
 			t.Fatalf("%q = %d, want 200", q, rr.Code)
 		}
+	}
+}
+
+// An empty filtered page is an ordinary answer and must be an empty array:
+// clients call entries.filter(), and a JSON null threw in three e2e specs.
+func TestTimelineKinds_EmptyPageIsAnArrayNotNull(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	ws := createTestWorkspaceViaAPI(t, srv)
+	item := timelineItemWithStructured(t, srv, ws, "", "")
+	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+ws+"/items/"+item.Slug+"/timeline?kinds=comment", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET = %d: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"entries":[]`) {
+		t.Fatalf("an empty page did not serialise entries as []: %s", rr.Body.String())
 	}
 }

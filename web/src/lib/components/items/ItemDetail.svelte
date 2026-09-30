@@ -7209,6 +7209,7 @@
 					{wsSlug}
 					{username}
 					{itemSlug}
+					itemId={itemMatchesRef ? item.id : undefined}
 					currentContent={item.content ?? ''}
 					fetchKinds={HISTORY_KINDS}
 				/>

@@ -260,6 +260,13 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
+	// Never `null`: with a kinds filter an empty page is ordinary (an item
+	// with no comments, asked for comments), and clients read `entries` as an
+	// array. Unfiltered, every item had at least its create activity, so a
+	// nil slice never reached the wire before the filter existed.
+	if entries == nil {
+		entries = []models.TimelineEntry{}
+	}
 	resp := models.TimelineResponse{
 		Entries: entries,
 		HasMore: hasMore,
