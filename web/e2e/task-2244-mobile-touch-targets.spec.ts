@@ -68,14 +68,16 @@ for (const view of ['list', 'board'] as const) {
  * The strip stays ONE row where it fits (the lead's ruling on the 360 checkpoint,
  * option B: the chip drops its visible "View:" prefix). A future control or a
  * longer label would otherwise re-wrap it silently, since every size assertion
- * above still passes on two rows. At 390 the realtime dot must share the row as
- * well. List at 360 is exempt by the same ruling: its wider side padding wraps
- * the dot alone, and the dot is a status, not a control.
+ * above still passes on two rows. The realtime dot is a badge on the collection
+ * ⋯ button's corner, so it can never wrap onto a row of its own: list at 360 used
+ * to wrap it alone, which Dave's gate called awkward, and is now held to one row
+ * too.
  */
 const ONE_ROW: Array<{ width: number; view: 'list' | 'board'; withDot: boolean }> = [
 	{ width: 390, view: 'list', withDot: true },
 	{ width: 390, view: 'board', withDot: true },
 	{ width: 360, view: 'board', withDot: true },
+	{ width: 360, view: 'list', withDot: true },
 ];
 
 for (const { width, view, withDot } of ONE_ROW) {
@@ -103,9 +105,21 @@ for (const { width, view, withDot } of ONE_ROW) {
 		}
 
 		if (withDot) {
-			const dot = await strip(page).locator('.sse-mobile').boundingBox();
+			// The dot rides the collection ⋯ button's corner: its box lies inside
+			// the button's, so it adds no flex item and cannot wrap.
+			// Located by its status role, which the old flex-item placement had
+			// too, so this leg fails on that layout for the wrap, not the selector.
+			const dot = await strip(page).locator('[role="status"][aria-label^="Live updates"] .sse-state-dot').boundingBox();
+			const menu = await page.getByRole('button', { name: 'Collection menu' }).boundingBox();
 			expect(dot, 'the realtime dot has a box').not.toBeNull();
+			expect(menu, 'the collection menu button has a box').not.toBeNull();
 			expect(dot!.y, 'the realtime dot shares the row').toBeLessThan(rowTop + MIN);
+			expect(dot!.x, 'the dot sits on the menu button').toBeGreaterThanOrEqual(menu!.x);
+			expect(dot!.x + dot!.width, 'the dot sits on the menu button').toBeLessThanOrEqual(menu!.x + menu!.width);
+			expect(dot!.y, 'the dot sits on the menu button').toBeGreaterThanOrEqual(menu!.y);
+			expect(dot!.y + dot!.height, 'the dot sits on the menu button').toBeLessThanOrEqual(menu!.y + menu!.height);
+			// It keeps its status region and label.
+			await expect(strip(page).locator('[role="status"][aria-label^="Live updates: "]')).toHaveCount(1);
 		}
 	});
 }
