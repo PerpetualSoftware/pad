@@ -141,8 +141,25 @@
 	// overflow scroll is likewise exempt. Deliberately onclose() and NOT
 	// close(): refocusing the trigger here would scroll the card back
 	// into view and fight the user's scroll.
+	//
+	// A scroll event that was already PENDING when the menu opened is not a
+	// scroll of the open menu's anchor (BUG-3278). Scroll events are
+	// dispatched at the next rendering step, so a scroll that happened just
+	// BEFORE the opening click — a click that first scrolls its card into
+	// view, a tap landing as a momentum scroll ends — arrives after the menu
+	// opened and closed it in the same frame. So until the first animation
+	// frame after opening (which follows that rendering step's scroll
+	// dispatch in practice; the ordering is measured, not guaranteed), a
+	// scroll is ignored if the trigger has not moved since the menu opened.
+	// A scroll that DID move it inside that window still closes the menu,
+	// and so does every scroll after it, judged exactly as before — which
+	// keeps a sticky trigger's pane scroll closing the menu. Resize is
+	// unchanged.
 	$effect(() => {
 		if (!open || useSheet || mode !== 'portal') return;
+		let settled = false;
+		const openedAt = trigger?.getBoundingClientRect();
+		const frame = requestAnimationFrame(() => (settled = true));
 		const dismiss = (e?: Event) => {
 			if (e && e.target instanceof Node) {
 				const t = e.target;
@@ -153,11 +170,17 @@
 				if (exempt?.().some((el) => el && (el === t || el.contains(t)))) return;
 				if (trigger && t !== document && !t.contains(trigger)) return;
 			}
+			if (e?.type === 'scroll' && !settled && trigger && openedAt) {
+				const now = trigger.getBoundingClientRect();
+				const edges = ['left', 'top', 'right', 'bottom'] as const;
+				if (edges.every((k) => Math.abs(now[k] - openedAt[k]) < 1)) return;
+			}
 			onclose();
 		};
 		window.addEventListener('scroll', dismiss, { capture: true, passive: true });
 		window.addEventListener('resize', dismiss, { passive: true });
 		return () => {
+			cancelAnimationFrame(frame);
 			window.removeEventListener('scroll', dismiss, { capture: true });
 			window.removeEventListener('resize', dismiss);
 		};
