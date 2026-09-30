@@ -197,8 +197,13 @@ type materializeAbort struct{ outcome MaterializeOutcome }
 func (e *materializeAbort) Error() string { return "materialize flush: " + string(e.outcome) }
 
 // materializeFlushPrecheckHook, when set by a test, runs inside the write's
-// transaction immediately before the checks.
-var materializeFlushPrecheckHook func(itemID string)
+// transaction immediately before the checks; materializeFlushAfterCheckHook
+// runs after they have passed, before the UPDATE: the window a row committed
+// by another connection lands in on Postgres (READ COMMITTED).
+var (
+	materializeFlushPrecheckHook   func(itemID string)
+	materializeFlushAfterCheckHook func(itemID string)
+)
 
 // MaterializeFlush writes a recovered body to items.content (TASK-2198 U4).
 //
@@ -299,6 +304,9 @@ func (s *Store) MaterializeFlush(itemID string, cursor int64, markdown string) (
 		}
 		if outcome != "" {
 			return &materializeAbort{outcome: outcome}
+		}
+		if materializeFlushAfterCheckHook != nil {
+			materializeFlushAfterCheckHook(itemID)
 		}
 		return nil
 	})
