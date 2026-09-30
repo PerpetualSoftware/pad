@@ -64,6 +64,46 @@ for (const view of ['list', 'board'] as const) {
 }
 
 /**
+ * The strip stays ONE row where it fits (the lead's ruling on the 360 checkpoint,
+ * option B: the chip drops its visible "View:" prefix). A future control or a
+ * longer label would otherwise re-wrap it silently, since every size assertion
+ * above still passes on two rows. At 390 the realtime dot must share the row as
+ * well. List at 360 is exempt by the same ruling: its wider side padding wraps
+ * the dot alone, and the dot is a status, not a control.
+ */
+const ONE_ROW: Array<{ width: number; view: 'list' | 'board'; withDot: boolean }> = [
+	{ width: 390, view: 'list', withDot: true },
+	{ width: 390, view: 'board', withDot: true },
+	{ width: 360, view: 'board', withDot: true },
+];
+
+for (const { width, view, withDot } of ONE_ROW) {
+	test(`TASK-2244: the strip is one row at ${width}px (${view})`, async ({ page, fixture }, testInfo) => {
+		test.skip(testInfo.project.name !== 'mobile-chromium', 'phone widths');
+
+		await page.setViewportSize({ width, height: 844 });
+		await browserLogin(page);
+		await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/tasks?view=${view}`);
+		await expect(strip(page)).toBeVisible();
+
+		const boxes = [];
+		for (const [name, loc] of stripControls(page, true)) {
+			const box = await loc.boundingBox();
+			expect(box, `${name} has a box`).not.toBeNull();
+			boxes.push({ name, top: Math.round(box!.y) });
+		}
+		const rowTop = boxes[0].top;
+		for (const b of boxes) expect(b.top, `${b.name} is on the first row`).toBe(rowTop);
+
+		if (withDot) {
+			const dot = await strip(page).locator('.sse-mobile').boundingBox();
+			expect(dot, 'the realtime dot has a box').not.toBeNull();
+			expect(dot!.y, 'the realtime dot shares the row').toBeLessThan(rowTop + MIN);
+		}
+	});
+}
+
+/**
  * Desktop sizes on the base commit a90f75fd (desktop-chromium, 1280x720), measured
  * by this file's `sizes()` before any change. The view control differs by view
  * because its label does ("List" vs "Board").

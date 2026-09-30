@@ -3854,7 +3854,10 @@
 							onclick={() => (viewSheetOpen = true)}
 							aria-label="Change view"
 						>
-							<span class="view-chip-label">View: {viewModeLabel}</span>
+							<!-- No visible "View:" prefix (TASK-2244): at 44px per control the
+							     strip only fits one row at 360 without it. The accessible name is
+							     the aria-label above, so nothing is lost to assistive tech. -->
+							<span class="view-chip-label">{viewModeLabel}</span>
 							<span class="view-chip-caret" aria-hidden="true">▾</span>
 						</button>
 						{#if viewSheetOpen}
