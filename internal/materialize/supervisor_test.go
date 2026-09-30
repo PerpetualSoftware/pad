@@ -314,6 +314,15 @@ func newHarness(t *testing.T, mode string, tweak func(*SupervisorConfig)) *harne
 		capOverride: testCap(),
 		onSpawn:     func(pid int) { h.pids <- pid },
 	}
+	// The race-built test binary, as a REAL worker, loads the bundle an order
+	// of magnitude slower than a release build (~2.6s). Measured wall-clock to
+	// the first job: 23.4s idle and 49.6s at 2x CPU oversubscription (8-core
+	// box). A CI runner running race packages in parallel crossed the 60s
+	// default ("not ready within 1m0s"). The budget is the test's, not the
+	// product's: the shipped binary is not race-built.
+	if mode == "worker" && raceEnabled {
+		cfg.StartTimeout = 5 * time.Minute
+	}
 	if tweak != nil {
 		tweak(&cfg)
 	}
