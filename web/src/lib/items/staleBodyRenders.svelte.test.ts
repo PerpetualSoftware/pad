@@ -18,7 +18,8 @@ const { backlinkRows } = vi.hoisted(() => ({ backlinkRows: { value: [] as unknow
 vi.mock('$lib/api/client', () => ({
 	api: {
 		items: { backlinks: vi.fn(async () => backlinkRows.value) },
-		versions: { restore: vi.fn(), get: vi.fn(async () => ({ content: '' })) },
+		versions: { restore: vi.fn(), get: vi.fn(async () => ({ content: '' })),
+			diff: vi.fn(async () => ({ before: 'old', after: 'now' })) },
 	},
 }));
 
@@ -97,19 +98,30 @@ describe('timeline: the diff\'s current side says it may be behind (C5)', () => 
 		source: 'web',
 		created_at: '2026-07-20T00:00:00Z',
 	} as unknown as Version;
-	function card(currentContentStale: boolean) {
+	// The newest edit's "after" is the stored body (the diff mock answers
+	// after: 'now', the current content), so its diff is the one that can be
+	// behind the live document.
+	async function card(currentContentStale: boolean) {
 		const root = render(TimelineVersionCard, { version, wsSlug: 'ws', itemSlug: 'ITEM-1', currentContent: 'now', currentContentStale });
-		(root.querySelector('.card-header') as HTMLButtonElement).click();
+		(root.querySelector('.show-changes') as HTMLButtonElement).click();
 		flushSync();
+		await vi.waitFor(() => expect(root.querySelector('.pair-head')).not.toBeNull());
 		return root;
 	}
-	it('marked: the notice is shown with the diff', () => {
-		const root = card(true);
+	it('marked: the notice is shown with the diff', async () => {
+		const root = await card(true);
 		expect(root.querySelector('[data-testid="stale-body-notice"]')?.textContent).toBe(STALE_BODY_NOTICE);
 	});
-	it('unmarked: no notice', () => {
-		const root = card(false);
+	it('unmarked: no notice', async () => {
+		const root = await card(false);
 		expect(root.querySelector('.diff-container')).not.toBeNull();
+		expect(root.querySelector('[data-testid="stale-body-notice"]')).toBeNull();
+	});
+	it('an older edit, whose after is not the stored body, carries no notice', async () => {
+		const root = render(TimelineVersionCard, { version, wsSlug: 'ws', itemSlug: 'ITEM-1', currentContent: 'later', currentContentStale: true });
+		(root.querySelector('.show-changes') as HTMLButtonElement).click();
+		flushSync();
+		await vi.waitFor(() => expect(root.querySelector('.pair-head')).not.toBeNull());
 		expect(root.querySelector('[data-testid="stale-body-notice"]')).toBeNull();
 	});
 });

@@ -2245,9 +2245,16 @@ export const api = {
 		 * an id, while `before_id` alone is a 400 — it matches nothing on its
 		 * own and would silently page from the beginning.
 		 */
-		list: (ws: string, itemSlug: string, params?: { limit?: number; before?: string; before_id?: string }) => {
+		list: (
+			ws: string,
+			itemSlug: string,
+			params?: { limit?: number; before?: string; before_id?: string; kinds?: readonly string[] }
+		) => {
 			const qs = new URLSearchParams();
 			if (params?.limit != null) qs.set('limit', String(params.limit));
+			// PLAN-2348 U3: only these entry kinds, so a view pages through
+			// what it renders. Omitted means every kind.
+			if (params?.kinds?.length) qs.set('kinds', params.kinds.join(','));
 			if (params?.before) qs.set('before', params.before);
 			if (params?.before_id) qs.set('before_id', params.before_id);
 			const suffix = qs.toString() ? `?${qs}` : '';

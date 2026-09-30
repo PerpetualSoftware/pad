@@ -51,8 +51,8 @@ const INLINE_IMG = '.editor-content .ProseMirror img[data-attachment-id]';
 
 /**
  * Comments (and their inline images) live under the item CONTENT on the
- * Details tab — IDEA-2843 moved them out of the Activity tab, which now
- * carries changes and versions only. Details is the tab a pane opens on, so
+ * Details tab — IDEA-2843 moved them out of the Activity tab (changes and versions
+ * are on the History tab now, PLAN-2348 U3). Details is the tab a pane opens on, so
  * there is nothing to click; the wait is what the tab click used to provide.
  */
 async function openCommentsSurface(page: Page): Promise<void> {

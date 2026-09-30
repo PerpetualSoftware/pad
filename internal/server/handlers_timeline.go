@@ -41,6 +41,18 @@ import (
 // the same-second ambiguity just described. `before_id` alone is REFUSED with
 // 400 — the id is only ever the tie-break at the cursor instant, so on its own
 // it matches nothing and silently pages from the beginning.
+//
+// `kinds=<k>[,<k>...]` (PLAN-2348 U3) restricts the page to those entry kinds
+// (comment, activity, version, note, decision), so a view that renders a
+// subset pages through its own entries instead of through ones it discards: a
+// comment-heavy item's History used to open on a page of comments it drops.
+// Absent or empty means every kind, as before; an unknown kind is a 400. The
+// cursor rules are unchanged, since each source is still read under the same
+// predicate. One guard is lost when comments are left out: buildTimeline's
+// read-skew backstop against comment-linked activity is built from the
+// fetched comments, so without them only ListDocumentActivityBeforeTime's
+// query-time exclusion applies. That exclusion is the primary mechanism;
+// the backstop covers a comment deleted between the two reads.
 func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) {
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
@@ -54,6 +66,13 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if !s.requireItemVisible(w, r, workspaceID, item) {
+		return
+	}
+
+	want, kindsOK := parseTimelineKinds(r.URL.Query().Get("kinds"))
+	if !kindsOK {
+		writeError(w, http.StatusBadRequest, "validation_error",
+			"kinds must be a comma-separated list of: comment, activity, version, note, decision")
 		return
 	}
 
@@ -151,10 +170,13 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 	// buildTimeline's dedup/filtering (empty-metadata updates, read actions, etc.).
 	perSource := limit * 3
 
-	comments, err := s.store.ListCommentsBeforeTime(item.ID, before, beforeID, perSource)
-	if err != nil {
-		writeInternalError(w, err)
-		return
+	var comments []models.Comment
+	if want("comment") {
+		comments, err = s.store.ListCommentsBeforeTime(item.ID, before, beforeID, perSource)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
 	}
 
 	// Bulk-load reactions for fetched comments.
@@ -173,16 +195,22 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	activities, err := s.store.ListDocumentActivityBeforeTime(item.ID, before, beforeID, perSource)
-	if err != nil {
-		writeInternalError(w, err)
-		return
+	var activities []models.Activity
+	if want("activity") {
+		activities, err = s.store.ListDocumentActivityBeforeTime(item.ID, before, beforeID, perSource)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
 	}
 
-	versions, err := s.store.ListItemVersionsBeforeTime(item.ID, before, beforeID, perSource)
-	if err != nil {
-		writeInternalError(w, err)
-		return
+	var versions []models.Version
+	if want("version") {
+		versions, err = s.store.ListItemVersionsBeforeTime(item.ID, before, beforeID, perSource)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
 	}
 
 	// Implementation notes and decision-log entries live inside the item's
@@ -192,6 +220,12 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 	// the SQL above uses, or paging would show them on every page instead of
 	// exactly one (BUG-2301).
 	notes, decisions := structuredTimelineEntries(item, before, beforeID, sentinelBeforeID)
+	if !want("note") {
+		notes = nil
+	}
+	if !want("decision") {
+		decisions = nil
+	}
 
 	entries := buildTimeline(comments, activities, versions, notes, decisions)
 
@@ -226,6 +260,13 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
+	// Never `null`: with a kinds filter an empty page is ordinary (an item
+	// with no comments, asked for comments), and clients read `entries` as an
+	// array. Unfiltered, every item had at least its create activity, so a
+	// nil slice never reached the wire before the filter existed.
+	if entries == nil {
+		entries = []models.TimelineEntry{}
+	}
 	resp := models.TimelineResponse{
 		Entries: entries,
 		HasMore: hasMore,
@@ -235,6 +276,26 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 		resp.NextBeforeID = cursorID
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// timelineKinds is every entry kind the timeline serves.
+var timelineKinds = map[string]bool{"comment": true, "activity": true, "version": true, "note": true, "decision": true}
+
+// parseTimelineKinds reads the `kinds` filter. Empty means every kind. It
+// reports false for any piece that is not a known kind, blank pieces
+// included, so a typo is refused rather than read as "nothing".
+func parseTimelineKinds(v string) (func(string) bool, bool) {
+	if v == "" {
+		return func(string) bool { return true }, true
+	}
+	set := map[string]bool{}
+	for _, k := range strings.Split(v, ",") {
+		if !timelineKinds[k] {
+			return nil, false
+		}
+		set[k] = true
+	}
+	return func(k string) bool { return set[k] }, true
 }
 
 // structuredTimelineEntries turns the item's implementation notes and
@@ -580,30 +641,81 @@ func isAutosaveVersion(e models.TimelineEntry) bool {
 
 // collapseAutosaveBursts walks the newest-first entries and drops a
 // collab-snapshot version when the previous kept entry is also a collab-snapshot
-// version within autosaveBurstWindow — i.e. an uninterrupted burst of autosaves
-// collapses to its newest row. Any non-autosave entry between two autosaves
-// breaks the run, so each distinct editing session still leaves one restore point.
+// version by the same writer within autosaveBurstWindow — i.e. an uninterrupted
+// burst of one person's autosaves collapses to its newest row. Any non-autosave
+// entry between two autosaves breaks the run, so each distinct editing session
+// still leaves one restore point.
+//
+// The kept row carries an AutosaveRun describing the rows it stands for
+// (PLAN-2348 U3), so the History tab can say "4 autosaves by Dave · 1:02–1:14"
+// and diff the whole run. A lone autosave carries none. The run is keyed on
+// the writer too: two people's autosaves are two runs, because the History
+// card names one person.
 func collapseAutosaveBursts(entries []models.TimelineEntry) []models.TimelineEntry {
 	if len(entries) == 0 {
 		return entries
 	}
 	kept := entries[:0:0]
 	var lastAutosaveAt time.Time
+	runHead := -1 // index in kept of the current run's newest row
 	for _, e := range entries {
 		if isAutosaveVersion(e) {
-			if !lastAutosaveAt.IsZero() && lastAutosaveAt.Sub(e.CreatedAt) <= autosaveBurstWindow {
-				// Same burst as the autosave we already kept — skip this older one.
+			if runHead >= 0 && kept[runHead].Version.UserID == e.Version.UserID &&
+				lastAutosaveAt.Sub(e.CreatedAt) <= autosaveBurstWindow {
+				// Same burst as the autosave we already kept — fold this older one in.
 				lastAutosaveAt = e.CreatedAt
+				foldAutosave(&kept[runHead], e)
 				continue
 			}
 			lastAutosaveAt = e.CreatedAt
-		} else {
-			// A non-autosave event ends the current burst.
-			lastAutosaveAt = time.Time{}
+			kept = append(kept, e)
+			runHead = len(kept) - 1
+			continue
 		}
+		// A non-autosave event ends the current burst.
+		lastAutosaveAt = time.Time{}
+		runHead = -1
 		kept = append(kept, e)
 	}
 	return kept
+}
+
+// foldAutosave records an older collab-snapshot row into the run its newer
+// neighbour heads.
+func foldAutosave(head *models.TimelineEntry, older models.TimelineEntry) {
+	if head.AutosaveRun == nil {
+		head.AutosaveRun = &models.AutosaveRun{
+			Count:           1,
+			FirstAt:         head.CreatedAt,
+			OldestVersionID: head.Version.ID,
+			LinesAdded:      copyIntPtr(head.Version.LinesAdded),
+			LinesRemoved:    copyIntPtr(head.Version.LinesRemoved),
+		}
+	}
+	run := head.AutosaveRun
+	run.Count++
+	run.FirstAt = older.CreatedAt
+	run.OldestVersionID = older.Version.ID
+	run.LinesAdded = sumKnown(run.LinesAdded, older.Version.LinesAdded)
+	run.LinesRemoved = sumKnown(run.LinesRemoved, older.Version.LinesRemoved)
+}
+
+func copyIntPtr(p *int) *int {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
+}
+
+// sumKnown adds b to a, and is nil once either side is unknown: a sum over a
+// run with an uncounted row would understate the run.
+func sumKnown(a, b *int) *int {
+	if a == nil || b == nil {
+		return nil
+	}
+	v := *a + *b
+	return &v
 }
 
 // exhaustedWindowCursor returns the position the next timeline page must start
@@ -730,9 +842,10 @@ func activityRecordsMore(metadata string) bool {
 	}
 	for k, v := range m {
 		// body_edited (PLAN-2348 U2) marks a body edit the version throttle
-		// wrote no row for. U3 renders it; until then it must not turn a row
-		// that otherwise says nothing into an empty card (lead ruling).
-		if k == "agent" || k == "body_edited" {
+		// wrote no row for. It counts: the History tab (U3) renders it as
+		// "edited the body", grouped into the nearest version's event, so a
+		// row carrying only the marker is the record of that edit.
+		if k == "agent" {
 			continue
 		}
 		if s := strings.TrimSpace(string(v)); s != `""` && s != "null" {

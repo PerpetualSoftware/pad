@@ -7,7 +7,8 @@ import { deleteCollection } from './lib/attachment-viewer';
  * BUG-2872 — an activity change on a `relation` field rendered the item ID the
  * field stores ("owner: → d84fb3b1-…"). It now renders the target's
  * `REF · title` (or "(deleted)" / "Unavailable item"), on the item's
- * Activity tab and the workspace activity page's Audit view, which since
+ * History tab (the Activity tab before PLAN-2348 U3) and the workspace
+ * activity page's Audit view, which since
  * BUG-3181 brings the workspace index up itself. A scalar
  * field's change is unchanged.
  */
@@ -42,11 +43,17 @@ async function seed(fixture: import('./fixtures').SuiteFixture, request: APIRequ
 	return { h, ws, tgt, src, target, item };
 }
 
-/** The item page's Activity tab: the one item-page surface with change pills
- *  (the Details timeline under the content shows other entry kinds). */
-async function openActivityTab(page: Page, fixture: import('./fixtures').SuiteFixture, s: { ws: string; src: { slug: string }; item: { ref: string } }) {
+/** The item page's History tab: the one item-page surface with field changes
+ *  (the Details timeline under the content shows other entry kinds). It
+ *  replaced the Activity tab (PLAN-2348 U3). */
+async function openHistoryTab(page: Page, fixture: import('./fixtures').SuiteFixture, s: { ws: string; src: { slug: string }; item: { ref: string } }) {
 	await page.goto(`/${fixture.adminUsername}/${s.ws}/${s.src.slug}/${s.item.ref}`);
-	await page.getByRole('tab', { name: /activity/i }).click();
+	await page.getByRole('tab', { name: /history/i }).click();
+}
+
+/** The History tab's change row for `key` inside `scope`. */
+function historyField(scope: Locator | Page, key: string): Locator {
+	return scope.locator(`.field-row[data-field="${key}"]`).first();
 }
 
 /** The workspace activity page's Audit view: the `owner` pill of the item's entry. */
@@ -68,20 +75,20 @@ test.describe('BUG-2872: an activity change on a relation field renders the targ
 		test.setTimeout(90_000);
 	});
 
-	test('item Activity tab: REF · title; a scalar change is verbatim', async ({ page, fixture, request }) => {
+	test('item History tab: REF · title; a scalar change is verbatim', async ({ page, fixture, request }) => {
 		await page.setViewportSize({ width: 1400, height: 900 });
 		await browserLogin(page);
 		const s = await seed(fixture, request);
 		try {
-			await openActivityTab(page, fixture, s);
-			const tab = page.locator('[aria-label="Activity"]');
-			const activity = pill(tab, 'owner');
+			await openHistoryTab(page, fixture, s);
+			const tab = page.locator('[aria-label="History"]');
+			const activity = historyField(tab, 'owner');
 			await expect(activity).toBeVisible({ timeout: 10_000 });
 			await expect(activity).toContainText(s.target.ref);
 			await expect(activity).toContainText(s.target.title);
 			expect(await activity.innerText()).not.toMatch(UUID);
 			// A scalar change is untouched.
-			await expect(pill(tab, 'note')).toContainText('plain words');
+			await expect(historyField(tab, 'note')).toContainText('plain words');
 		} finally {
 			await deleteCollection(fixture, request, s.src.slug);
 			await deleteCollection(fixture, request, s.tgt.slug);
@@ -95,8 +102,8 @@ test.describe('BUG-2872: an activity change on a relation field renders the targ
 		try {
 			const del = await request.delete(`/api/v1/workspaces/${s.ws}/items/${s.target.slug}`, { headers: s.h });
 			expect(del.ok(), await del.text()).toBeTruthy();
-			await openActivityTab(page, fixture, s);
-			const p = pill(page.locator('[aria-label="Activity"]'), 'owner');
+			await openHistoryTab(page, fixture, s);
+			const p = historyField(page.locator('[aria-label="History"]'), 'owner');
 			await expect(p).toBeVisible({ timeout: 15_000 });
 			const text = await p.innerText();
 			expect(text).not.toMatch(UUID);
@@ -134,8 +141,8 @@ test.describe('BUG-2872: an activity change on a relation field renders the targ
 		const s = await seed(fixture, request);
 		try {
 			// The item page loads the index; the sidebar link keeps it in memory.
-			await openActivityTab(page, fixture, s);
-			await expect(pill(page.locator('[aria-label="Activity"]'), 'owner')).toContainText(s.target.ref, { timeout: 10_000 });
+			await openHistoryTab(page, fixture, s);
+			await expect(historyField(page.locator('[aria-label="History"]'), 'owner')).toContainText(s.target.ref, { timeout: 10_000 });
 			await page.locator(`a[href$="/${s.ws}/activity"]`).first().click();
 			await page.waitForURL(/\/activity$/);
 			const p = await auditPill(page, s.item.title);

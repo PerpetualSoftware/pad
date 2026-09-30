@@ -556,7 +556,7 @@ describe('ItemTimeline — interactive semantics track the gate (TASK-2431)', ()
 	});
 
 	it('re-applies them when the kind filter rebuilds the cards', async () => {
-		// The pane's Activity / Versions tabs filter the RENDERED set without
+		// A caller's `visibleKinds` filters the RENDERED set without
 		// refetching: `entries` is untouched while every comment card is
 		// destroyed and rebuilt. The rebuilt image keeps working by mouse (the
 		// listeners are delegated to the container), so a pass that missed this

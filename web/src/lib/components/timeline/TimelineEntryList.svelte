@@ -2,8 +2,9 @@
 	/**
 	 * The timeline's rendered entry list — rail chrome plus one card per entry
 	 * (IDEA-2843). Extracted from `ItemTimeline` unchanged, so that the SAME
-	 * list can render in two places: comments under the item content, and
-	 * changes/versions in the pane's Activity and Versions tabs.
+	 * list could render in two places: comments under the item content, and
+	 * changes/versions in the pane's tabs. The pane's changes and versions now
+	 * render through HistoryView (PLAN-2348 U3), which groups them into events.
 	 *
 	 * It is PRESENTATION ONLY. Fetching, the SSE subscription, pagination, the
 	 * attachment-metadata probe, the paint fence and every mutation stay in

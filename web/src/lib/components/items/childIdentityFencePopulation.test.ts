@@ -166,7 +166,9 @@ const POPULATION: string[] = [
 	'lib/components/fields/FieldEditor.svelte',
 	'lib/components/fields/TagInput.svelte',
 	'lib/components/timeline/ItemTimeline.svelte',
-	'lib/components/timeline/TimelineEntryList.svelte',
+	// PLAN-2348 U3: presentation only, no requests and no awaits; it hands
+	// onRestore through to TimelineVersionCard, which owns the fenced restore.
+	'lib/components/timeline/HistoryView.svelte',
 	'lib/components/timeline/TimelineVersionCard.svelte',
 	'lib/components/ChildItems.svelte',
 	'lib/components/BacklinksPanel.svelte',
@@ -191,7 +193,7 @@ const POPULATION: string[] = [
 ];
 
 /**
- * `TimelineVersionCard` is reached through `ItemTimeline`/`TimelineEntryList`
+ * `TimelineVersionCard` is reached through `HistoryView`
  * rather than mounted by ItemDetail directly, so the import check below must
  * not expect it in ItemDetail's import list. It is in the POPULATION because it
  * is where the known member lives.

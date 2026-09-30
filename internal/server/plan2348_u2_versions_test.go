@@ -58,7 +58,9 @@ func TestItemVersionRoutes_WriterAndDiff(t *testing.T) {
 	}
 }
 
-func TestThrottledBodyEdit_MarkerWrittenButNoEmptyCard(t *testing.T) {
+// The marker is the only record of a throttled body edit, so the timeline
+// must serve it (PLAN-2348 U3 flipped the U2 rule that hid it).
+func TestThrottledBodyEdit_MarkerReachesTimeline(t *testing.T) {
 	t.Parallel()
 	srv := testServer(t)
 	token, ws, slug := debounceFixture(t, srv)
@@ -82,9 +84,15 @@ func TestThrottledBodyEdit_MarkerWrittenButNoEmptyCard(t *testing.T) {
 	if !marked {
 		t.Fatalf("precondition: the throttled second edit wrote no body_edited marker: %+v", acts)
 	}
+	served := false
 	for _, e := range updatedActivityEntries(fetchTimelineAuthed(t, srv, token, ws, slug).Entries) {
-		if changesOf(t, e.Activity.Metadata) == "" {
-			t.Fatalf("the marker rendered an empty card before U3: %s", e.Activity.Metadata)
+		var m map[string]string
+		_ = json.Unmarshal([]byte(e.Activity.Metadata), &m)
+		if m["body_edited"] == "true" {
+			served = true
 		}
+	}
+	if !served {
+		t.Fatalf("the timeline dropped the body_edited row, the only record of the throttled edit")
 	}
 }

@@ -47,8 +47,8 @@ export interface TimelineFeed {
  * added to `TimelineEntry`, and a unit test asserts the union covers it.
  */
 export const COMMENT_KINDS = ['comment'] as const;
-export const CHANGE_KINDS = ['activity', 'note', 'decision'] as const;
-export const VERSION_KINDS = ['version'] as const;
+/** The History tab (PLAN-2348 U3), which replaced Activity and Versions. */
+export const HISTORY_KINDS = ['activity', 'version', 'note', 'decision'] as const;
 
 /**
  * Every kind `TimelineEntry` admits. Adding a kind to the type without adding

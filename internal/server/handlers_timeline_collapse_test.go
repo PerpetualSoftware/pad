@@ -119,3 +119,79 @@ func TestCollapseAutosaveBursts(t *testing.T) {
 		})
 	}
 }
+
+func autosaveBy(id, user string, at time.Time, added, removed *int) models.TimelineEntry {
+	e := autosaveEntry(id, at)
+	e.Version.UserID = user
+	e.Version.LinesAdded = added
+	e.Version.LinesRemoved = removed
+	return e
+}
+
+func intp(v int) *int { return &v }
+
+// PLAN-2348 U3: the kept row says what it stands for, and two writers'
+// autosaves are two runs.
+func TestCollapseAutosaveBursts_RunDescribesDroppedRows(t *testing.T) {
+	base := time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC)
+	in := []models.TimelineEntry{
+		autosaveBy("a3", "dave", base.Add(2*time.Minute), intp(3), intp(1)),
+		autosaveBy("a2", "dave", base.Add(time.Minute), intp(5), intp(0)),
+		autosaveBy("a1", "dave", base, intp(10), intp(5)),
+	}
+	out := collapseAutosaveBursts(in)
+	if got := idsOf(out); !equalIDs(got, []string{"a3"}) {
+		t.Fatalf("ids = %v, want [a3]", got)
+	}
+	run := out[0].AutosaveRun
+	if run == nil {
+		t.Fatal("the collapsed row carries no autosave_run")
+	}
+	if run.Count != 3 || run.OldestVersionID != "a1" || !run.FirstAt.Equal(base) {
+		t.Fatalf("run = %+v, want count 3, oldest a1, first_at %v", run, base)
+	}
+	if run.LinesAdded == nil || *run.LinesAdded != 18 || run.LinesRemoved == nil || *run.LinesRemoved != 6 {
+		t.Fatalf("run lines = %v/%v, want +18 -6", run.LinesAdded, run.LinesRemoved)
+	}
+	// The input rows are not mutated: the entries share Version pointers
+	// with the store's slice, and the run lives on the entry only.
+	if in[0].AutosaveRun != nil {
+		t.Fatal("collapse mutated its input entry")
+	}
+}
+
+func TestCollapseAutosaveBursts_SplitsByWriter(t *testing.T) {
+	base := time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC)
+	in := []models.TimelineEntry{
+		autosaveBy("b2", "ann", base.Add(3*time.Minute), intp(1), intp(0)),
+		autosaveBy("b1", "ann", base.Add(2*time.Minute), intp(1), intp(0)),
+		autosaveBy("a2", "dave", base.Add(time.Minute), intp(1), intp(0)),
+		autosaveBy("a1", "dave", base, intp(1), intp(0)),
+	}
+	out := collapseAutosaveBursts(in)
+	if got := idsOf(out); !equalIDs(got, []string{"b2", "a2"}) {
+		t.Fatalf("ids = %v, want [b2 a2]", got)
+	}
+	if out[0].AutosaveRun.Count != 2 || out[1].AutosaveRun.Count != 2 {
+		t.Fatalf("counts = %d/%d, want 2/2", out[0].AutosaveRun.Count, out[1].AutosaveRun.Count)
+	}
+}
+
+func TestCollapseAutosaveBursts_UnknownCountsLeaveRunUncounted(t *testing.T) {
+	base := time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC)
+	out := collapseAutosaveBursts([]models.TimelineEntry{
+		autosaveBy("a2", "dave", base.Add(time.Minute), intp(4), intp(1)),
+		autosaveBy("a1", "dave", base, nil, nil),
+	})
+	if run := out[0].AutosaveRun; run == nil || run.Count != 2 || run.LinesAdded != nil || run.LinesRemoved != nil {
+		t.Fatalf("run = %+v, want count 2 and no line counts", run)
+	}
+}
+
+func TestCollapseAutosaveBursts_LoneAutosaveHasNoRun(t *testing.T) {
+	base := time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC)
+	out := collapseAutosaveBursts([]models.TimelineEntry{autosaveBy("a1", "dave", base, intp(1), intp(0))})
+	if out[0].AutosaveRun != nil {
+		t.Fatalf("a lone autosave carries a run: %+v", out[0].AutosaveRun)
+	}
+}

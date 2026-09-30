@@ -51,11 +51,11 @@
 	import FieldEditor from '$lib/components/fields/FieldEditor.svelte';
 	import TagInput from '$lib/components/fields/TagInput.svelte';
 	import ItemTimeline from '$lib/components/timeline/ItemTimeline.svelte';
-	import TimelineEntryList from '$lib/components/timeline/TimelineEntryList.svelte';
+	import HistoryView from '$lib/components/timeline/HistoryView.svelte';
+	import { groupHistory, itemNoun } from '$lib/components/timeline/historyEvents';
 	import {
 		COMMENT_KINDS,
-		CHANGE_KINDS,
-		VERSION_KINDS,
+		HISTORY_KINDS,
 		type TimelineFeed
 	} from '$lib/components/timeline/feed';
 	import ChildItems from '$lib/components/ChildItems.svelte';
@@ -796,10 +796,12 @@
 	 */
 	const linksRetry = createLinksRetry((target) => retryLinks(target));
 	let workspaceMembers = $state<{ user_id: string; user_name: string; user_email: string; role: string }[]>([]);
-	// Mirrored out of the ONE mounted <ItemTimeline> (IDEA-2843), which now
-	// lives under the content on Details rendering comments. The Activity and
-	// Versions panels render the SAME feed through a second
-	// <TimelineEntryList> — one subscription, one composer, two views.
+	// The History tab's feed, mirrored out of a HEADLESS <ItemTimeline> that
+	// fetches only HISTORY_KINDS (PLAN-2348 U3). The comments <ItemTimeline>
+	// on Details fetches only comments. They were one feed (IDEA-2843), and a
+	// comment-heavy item's History then opened on a page of comments it drops,
+	// painting nothing but "Load more". Two instances, one composer: SSE is
+	// the shared sseService, so the second subscription is one more listener.
 	let timelineFeed = $state<TimelineFeed | undefined>(undefined);
 	// The owning <ItemTimeline>, so the selection toolbar can quote into its
 	// composer (IDEA-2843). Rebinds on the comments section's {#key itemSlug}
@@ -824,7 +826,7 @@
 	// interactive while `peeking` (view-only, side-independent — same class
 	// as star/quick-action prompts). Resets to Details on item switch so a
 	// retargeted pane never opens on a stale tab.
-	type PaneTab = 'details' | 'relationships' | 'activity' | 'versions';
+	type PaneTab = 'details' | 'relationships' | 'history';
 	let activeTab = $state<PaneTab>('details');
 	// Stable per-instance suffix so tab/panel aria-controls pairs stay unique
 	// when TWO ItemDetail instances mount (full-page master + docked pane).
@@ -832,9 +834,11 @@
 	const PANE_TABS: Array<{ id: PaneTab; label: string }> = [
 		{ id: 'details', label: 'Details' },
 		{ id: 'relationships', label: 'Relationships' },
-		{ id: 'activity', label: 'Activity' },
-		{ id: 'versions', label: 'Versions' }
+		{ id: 'history', label: 'History' }
 	];
+	// PLAN-2348 U3: the History tab's events, grouped from the one feed. The
+	// tab's count is this length, so it counts what the tab shows.
+	const historyRows = $derived(groupHistory(timelineFeed?.entries ?? []));
 
 	// The action-bar jump buttons scroll to sections that may live in a
 	// hidden tab: switch first, let the panel become visible, then scroll.
@@ -6522,9 +6526,7 @@
 					class:on={activeTab === t.id}
 					role="tab"
 					aria-selected={activeTab === t.id}
-					aria-controls={t.id === 'activity' || t.id === 'versions'
-						? `pane-panel-feed-${uid}`
-						: `pane-panel-${t.id}-${uid}`}
+					aria-controls={`pane-panel-${t.id}-${uid}`}
 					tabindex={activeTab === t.id ? 0 : -1}
 					onpointerdown={(e) => {
 						// Mouse only: touch pointerdown fires on scroll-start, and a
@@ -6535,7 +6537,9 @@
 					}}
 					onclick={() => (activeTab = t.id)}
 				>
-					{t.label}
+					{t.label}{#if t.id === 'history' && historyRows.length > 0}<span class="tab-count"
+							>{historyRows.length}</span
+						>{/if}
 				</button>
 			{/each}
 		</div>
@@ -7176,7 +7180,6 @@
 				{@const handedDown = identityKey}
 				<ItemTimeline
 					bind:this={timelineRef}
-					bind:feed={timelineFeed}
 					{wsSlug}
 					{username}
 					{itemSlug}
@@ -7192,8 +7195,23 @@
 					restoreFrozen={peeking}
 					parentArchived={itemMatchesRef && isArchived}
 					visibleKinds={[...COMMENT_KINDS]}
+					fetchKinds={COMMENT_KINDS}
 					title="Comments"
 					emptyLabel="No comments yet."
+				/>
+				<!-- The History tab's feed (PLAN-2348 U3): renders nothing here;
+				     HistoryView renders `timelineFeed` in the History panel. Mounted
+				     beside the comments instance so it shares its visibility gate and
+				     identity key. -->
+				<ItemTimeline
+					headless
+					bind:feed={timelineFeed}
+					{wsSlug}
+					{username}
+					{itemSlug}
+					itemId={itemMatchesRef ? item.id : undefined}
+					currentContent={item.content ?? ''}
+					fetchKinds={HISTORY_KINDS}
 				/>
 				{/key}
 				{/if}
@@ -7363,91 +7381,75 @@
 		{/if}
 		</div><!-- /tab-panel Relationships -->
 
-		<!-- Activity / Versions — a SECOND VIEW of the one feed (IDEA-2843).
-		     The owning <ItemTimeline> now lives under the content on Details;
-		     this renders the same entries through `timelineFeed`, so there is
-		     still exactly one subscription and one composer. The composer is
-		     deliberately absent here — comments are on Details now.
+		<!-- History — a SECOND VIEW of the one feed (IDEA-2843, PLAN-2348 U3).
+		     The owning <ItemTimeline> lives under the content on Details; this
+		     renders the same entries grouped into events (`historyRows`), so
+		     there is still exactly one subscription and one composer. Comments
+		     are not here: they render on Details.
 
 		     VERSION RESTORE stays frozen while peeking: it REST-writes this
 		     item's `items.content` directly (not via the Y.Doc applier), so on
 		     a peeking side whose Y.Doc is retained-alive a later collab flush
 		     could overwrite it — a same-item collision (Codex P1, BUG-2263).
 
-		     `note` / `decision` in the Activity filter below are the structured
-		     entries `pad item note` / `pad item decide` write into the item's
-		     fields blob. They belong to Activity, not Versions — things that
-		     happened to the record, not restore points. That whitelist is the
-		     ONLY gate on them: omitting them renders them on NEITHER tab, which
-		     is exactly how the feature shipped invisible the first time
-		     (BUG-2301). `comment` appears in NEITHER filter here, which is the
-		     move itself — it is not an omission of the BUG-2301 kind, because
-		     comments render on Details. -->
+		     `note` / `decision` are in HISTORY_KINDS. That list is the ONLY gate
+		     on them: omitting them renders them nowhere, which is exactly how
+		     the feature shipped invisible the first time (BUG-2301). -->
 		<div
 			class="tab-panel"
-			class:tab-hidden={activeTab !== 'activity' && activeTab !== 'versions'}
+			class:tab-hidden={activeTab !== 'history'}
 			role="tabpanel"
-			id="pane-panel-feed-{uid}"
-			aria-label={activeTab === 'versions' ? 'Versions' : 'Activity'}
+			id="pane-panel-history-{uid}"
+			aria-label="History"
 		>
 		<div id="item-timeline" class="timeline-section">
 			{#if timelineFeed}
 				<!-- Loading and error are the owner's states, mirrored so this view
-				     does not render a FAILED load as an empty timeline — "no entries
-				     yet" and "the server did not answer" look identical otherwise,
-				     and only one of them is the reader's problem (codex round 1).
-
-				     Text rather than the owner's spinner: that spinner carries its
-				     own @keyframes inside ItemTimeline's scoped styles, and copying
-				     an animation across components to say one word is not worth the
-				     second copy to keep in step. -->
+				     does not render a FAILED load as an empty history — "nothing
+				     happened yet" and "the server did not answer" look identical
+				     otherwise, and only one of them is the reader's problem (codex
+				     round 1). -->
 				{#if timelineFeed.loading && timelineFeed.entries.length === 0}
-					<div class="feed-loading">Loading timeline...</div>
+					<div class="feed-loading">Loading history...</div>
 				{/if}
 				{#if timelineFeed.error}
 					<div class="feed-error">{timelineFeed.error}</div>
 				{/if}
-				{@const kinds: readonly string[] =
-					activeTab === 'versions' ? VERSION_KINDS : CHANGE_KINDS}
-				{@const shown = timelineFeed.entries.filter((e) => kinds.includes(e.kind))}
 				{#key identityKey}
 				{@const handedDown = identityKey}
-				<TimelineEntryList
-					entries={shown}
-					showEmpty={shown.length === 0 &&
+				<HistoryView
+					rows={historyRows}
+					itemNoun={itemNoun(collection?.name)}
+					showEmpty={historyRows.length === 0 &&
 						!timelineFeed.loading &&
 						!timelineFeed.error &&
 						!timelineFeed.hasMore}
-					emptyLabel={activeTab === 'versions' ? 'No versions yet.' : 'No changes yet.'}
 					{wsSlug}
-					{username}
 					{itemSlug}
 					currentContent={item.content ?? ''}
 					currentContentStale={isBodyStale(item)}
-					items={localIndex.getAll(wsSlug)}
 					changeContext={timelineChangeContext}
-					hostToken={attachmentHostToken}
 					onRestore={(updated) => { if (handedDown !== identityKey) return; handleVersionRestore(updated); }}
 					flushBeforeRestore={flushCollabBeforeRestore}
 					restoreFrozen={peeking}
 				/>
 				{/key}
 				<!-- Pagination belongs to the ONE feed, so this asks the OWNER for
-				     the next page. Without it these tabs could show older entries
+				     the next page. Without it this tab could show older entries
 				     only by visiting Details and paging there. -->
 				{#if timelineFeed.hasMore}
 					<button
 						class="load-more-btn"
 						type="button"
 						disabled={timelineFeed.loadingMore}
-						onclick={() => timelineFeed?.loadMore(kinds)}
+						onclick={() => timelineFeed?.loadMore(HISTORY_KINDS)}
 					>
 						{timelineFeed.loadingMore ? 'Loading...' : 'Load more'}
 					</button>
 				{/if}
 			{/if}
 		</div>
-		</div><!-- /tab-panel Activity/Versions -->
+		</div><!-- /tab-panel History -->
 		{/key}
 
 	</div>
@@ -7798,6 +7800,13 @@
 	.pane-tab.on {
 		color: var(--text-primary);
 		border-bottom-color: var(--accent-primary, var(--accent-blue));
+	}
+
+	.tab-count {
+		margin-left: 0.4em;
+		font-size: 0.85em;
+		font-weight: 500;
+		color: var(--text-muted);
 	}
 
 	/* Hidden tab panels stay MOUNTED (collab editor, SSE feeds, backlink

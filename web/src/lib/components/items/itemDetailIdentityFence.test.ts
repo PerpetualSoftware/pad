@@ -103,7 +103,7 @@ describe('ItemDetail: children calling back after their own awaits (class C, par
 	 */
 	const CALLBACK_CHILDREN: Record<string, string[]> = {
 		ItemTimeline: ['onRestore'],
-		TimelineEntryList: ['onRestore'],
+		HistoryView: ['onRestore'],
 		QuickActionsMenu: ['oncollectionupdated'],
 		ChildItems: ['onChildrenChange'],
 		BacklinksPanel: ['onCountChange'],
@@ -123,18 +123,30 @@ describe('ItemDetail: children calling back after their own awaits (class C, par
 		const M = MARKUP;
 		for (const [tag, props] of Object.entries(CALLBACK_CHILDREN)) {
 			const starts = [...M.matchAll(new RegExp(`<${tag}\\b`, 'g'))].map((m) => m.index!);
-			expect(starts.length, `<${tag}> is mounted ${starts.length} times — re-point this table`).toBe(1);
-			const at = starts[0]!;
-			const lead = M.slice(Math.max(0, at - 120), at);
-			expect(lead, `<${tag}> is not inside {#key identityKey}`).toMatch(/\{#key identityKey\}\s*\{@const handedDown = identityKey\}\s*$/);
-			const tagText = M.slice(at, M.indexOf('/>', at));
-			for (const prop of props) {
-				const p = tagText.indexOf(`${prop}=`);
-				expect(p, `<${tag}> no longer passes ${prop}`).toBeGreaterThan(-1);
-				const next = tagText.slice(p + prop.length + 1).search(/\n\t*[a-zA-Z]+=\{|\s\/?>?$/);
-				const value = tagText.slice(p, next === -1 ? undefined : p + prop.length + 1 + next);
-				expect(value, `<${tag}> ${prop} does not refuse on handedDown`).toMatch(/handedDown !== identityKey/);
+			expect(starts.length, `<${tag}> is not mounted — re-point this table`).toBeGreaterThan(0);
+			// PLAN-2348 U3 mounts a second, headless <ItemTimeline> that owns the
+			// History feed. A mount passing NO callback prop cannot commit into
+			// this component, so it needs no fence; one passing any callback is
+			// held to the full rule. Each listed prop is still passed somewhere.
+			const passed = new Set<string>();
+			for (const at of starts) {
+				const tagText = M.slice(at, M.indexOf('/>', at));
+				const listed = props.filter((prop) => tagText.includes(`${prop}=`));
+				if (listed.length === 0) {
+					expect(tagText, `a <${tag}> mount passes a callback this table does not list`).not.toMatch(/\bon[a-zA-Z]+=\{/);
+					continue;
+				}
+				const lead = M.slice(Math.max(0, at - 120), at);
+				expect(lead, `<${tag}> is not inside {#key identityKey}`).toMatch(/\{#key identityKey\}\s*\{@const handedDown = identityKey\}\s*$/);
+				for (const prop of listed) {
+					passed.add(prop);
+					const p = tagText.indexOf(`${prop}=`);
+					const next = tagText.slice(p + prop.length + 1).search(/\n\t*[a-zA-Z]+=\{|\s\/?>?$/);
+					const value = tagText.slice(p, next === -1 ? undefined : p + prop.length + 1 + next);
+					expect(value, `<${tag}> ${prop} does not refuse on handedDown`).toMatch(/handedDown !== identityKey/);
+				}
 			}
+			for (const prop of props) expect(passed.has(prop), `<${tag}> no longer passes ${prop}`).toBe(true);
 		}
 	});
 

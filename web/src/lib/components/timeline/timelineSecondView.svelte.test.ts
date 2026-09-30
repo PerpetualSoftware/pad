@@ -9,7 +9,7 @@
 //
 //  1. The mirror carries the WHOLE feed, not the owner's rendered slice. The
 //     owner renders comments only, so publishing `visibleEntries` instead of
-//     `entries` is a one-word edit that leaves Activity and Versions
+//     `entries` is a one-word edit that leaves the History tab
 //     permanently empty with nothing to report.
 //  2. Every entry kind is routed to some view. A kind in none of the three
 //     filters renders NOWHERE — which is how `note` / `decision` shipped
@@ -19,17 +19,16 @@ import { flushSync, mount, unmount } from 'svelte';
 import type { TimelineEntry, TimelineResponse } from '$lib/types';
 import {
 	ALL_TIMELINE_KINDS,
-	CHANGE_KINDS,
 	COMMENT_KINDS,
-	VERSION_KINDS,
+	HISTORY_KINDS,
 	type TimelineFeed
 } from './feed';
 
-const timelineListMock = vi.fn<() => Promise<TimelineResponse>>();
+const timelineListMock = vi.fn<(...args: unknown[]) => Promise<TimelineResponse>>();
 
 vi.mock('$lib/api/client', () => ({
 	api: {
-		timeline: { list: () => timelineListMock() },
+		timeline: { list: (...args: unknown[]) => timelineListMock(...args) },
 		comments: {
 			create: vi.fn(),
 			update: vi.fn(),
@@ -164,7 +163,7 @@ describe('timeline second view — the mirrored error', () => {
 		}) as Record<string, unknown>;
 		await settle();
 
-		// Without this, a failed load reaches the Activity tab as zero entries
+		// Without this, a failed load reaches the History tab as zero entries
 		// and renders as "No timeline entries yet." — an unreachable server
 		// wearing an empty timeline's clothes (codex round 1).
 		expect(state.feed?.error).toBeTruthy();
@@ -258,9 +257,9 @@ describe('timeline second view — filtered pagination', () => {
 		}) as Record<string, unknown>;
 		await settle();
 
-		// A changes view asks for more. Page 2 is comments only — invisible
-		// here — so it must not end the walk.
-		await state.feed!.loadMore(CHANGE_KINDS);
+		// The History view asks for more. Page 2 is comments only — invisible
+		// there — so it must not end the walk.
+		await state.feed!.loadMore(HISTORY_KINDS);
 		await settle();
 
 		const kinds = state.feed!.entries.map((e) => e.kind);
@@ -275,7 +274,7 @@ describe('timeline second view — kind routing', () => {
 	it('renders only the kinds it is handed', () => {
 		app = mount(TimelineEntryList, {
 			target: host,
-			props: { entries: FEED.filter((e) => (CHANGE_KINDS as readonly string[]).includes(e.kind)), wsSlug: 'ws' }
+			props: { entries: FEED.filter((e) => (HISTORY_KINDS as readonly string[]).includes(e.kind) && e.kind !== 'version'), wsSlug: 'ws' }
 		}) as Record<string, unknown>;
 		flushSync();
 
@@ -287,16 +286,69 @@ describe('timeline second view — kind routing', () => {
 	});
 
 	it('routes every kind to some view — none renders nowhere', () => {
-		const routed = new Set<string>([...COMMENT_KINDS, ...CHANGE_KINDS, ...VERSION_KINDS]);
+		const routed = new Set<string>([...COMMENT_KINDS, ...HISTORY_KINDS]);
 		const orphaned = ALL_TIMELINE_KINDS.filter((k) => !routed.has(k));
 
 		// BUG-2301's class, as a test rather than a comment: a kind in none of
-		// the three filters is invisible everywhere and nothing reports it.
+		// the two filters is invisible everywhere and nothing reports it.
 		expect(orphaned).toEqual([]);
 	});
 
-	it('keeps the three views disjoint, so nothing renders twice', () => {
-		const all = [...COMMENT_KINDS, ...CHANGE_KINDS, ...VERSION_KINDS];
+	it('keeps the two views disjoint, so nothing renders twice', () => {
+		const all = [...COMMENT_KINDS, ...HISTORY_KINDS];
 		expect(new Set(all).size).toBe(all.length);
+	});
+});
+
+describe('timeline — a feed that fetches only its kinds (PLAN-2348 U3)', () => {
+	it('sends fetchKinds on the first load and on every page, and a headless owner renders nothing', async () => {
+		const state = $state<{ feed: TimelineFeed | undefined }>({ feed: undefined });
+		timelineListMock.mockReset();
+		timelineListMock
+			.mockResolvedValueOnce({
+				entries: [entry('activity', 'h1')],
+				has_more: true,
+				next_before: '2026-09-02T09:00:00Z',
+				next_before_id: 'h1'
+			} as unknown as TimelineResponse)
+			.mockResolvedValueOnce({ entries: [entry('version', 'h2')], has_more: false } as unknown as TimelineResponse);
+		app = mount(ItemTimeline, {
+			target: host,
+			props: {
+				wsSlug: 'ws',
+				itemSlug: 'TASK-1',
+				currentContent: '',
+				headless: true,
+				fetchKinds: HISTORY_KINDS,
+				get feed() {
+					return state.feed;
+				},
+				set feed(v: TimelineFeed | undefined) {
+					state.feed = v;
+				}
+			}
+		}) as Record<string, unknown>;
+		await settle();
+
+		expect(timelineListMock.mock.calls[0]).toEqual(['ws', 'TASK-1', { kinds: HISTORY_KINDS }]);
+		expect(host.querySelector('.timeline')).toBeNull();
+		expect(host.textContent?.trim()).toBe('');
+		expect(state.feed!.entries.map((e) => e.id)).toEqual(['h1']);
+
+		await state.feed!.loadMore(HISTORY_KINDS);
+		await settle();
+		expect(timelineListMock.mock.calls[1]).toEqual([
+			'ws',
+			'TASK-1',
+			{ before: '2026-09-02T09:00:00Z', before_id: 'h1', kinds: HISTORY_KINDS }
+		]);
+		expect(state.feed!.entries.map((e) => e.id)).toEqual(['h1', 'h2']);
+	});
+
+	it('CONTROL: without fetchKinds the requests carry no kinds, as before', async () => {
+		app = mount(ItemTimeline, { target: host, props: { wsSlug: 'ws', itemSlug: 'TASK-1', currentContent: '' } }) as Record<string, unknown>;
+		await settle();
+		expect(timelineListMock.mock.calls[0]).toEqual(['ws', 'TASK-1']);
+		expect(host.querySelector('.timeline')).not.toBeNull();
 	});
 });
