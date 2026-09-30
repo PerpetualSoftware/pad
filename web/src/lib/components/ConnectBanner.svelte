@@ -193,6 +193,16 @@
 />
 
 <style>
+	/* A card BELOW the desktop tab bar, not against it (TASK-3312): flush,
+	   its top border doubled the bar's own and drew a line under the active
+	   tab, which is meant to flow into the page. Desktop only: phones have no
+	   tab strip, and TASK-3312 leaves them unchanged. */
+	@media (min-width: 769px) {
+		.banner {
+			margin-top: var(--space-2);
+		}
+	}
+
 	.banner {
 		display: flex;
 		align-items: center;

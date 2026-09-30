@@ -872,6 +872,10 @@
 		   own negative margin could not: overflow-x: auto makes the list clip
 		   vertically too, so the border always showed under the active tab. */
 		margin-bottom: -1px;
+		/* Room for the active tab's 8px flares at either end: the list clips
+		   what overflows it, so a first or last active tab lost its outer
+		   flare (TASK-3312). */
+		padding: 0 9px;
 		align-items: flex-end;
 		gap: 2px;
 		min-width: 0;
@@ -1108,14 +1112,22 @@
 	}
 
 	/* In a tab the icon is a favicon-like rounded square, filled in both
-	   states (TASK-3312); the colour is set inline. */
+	   states (TASK-3312); the colour is set inline. The initial is NOT white:
+	   white on these palette colours measured 1.67-2.75:1 on the full colour
+	   and 1.39-1.79:1 on the light-mode inactive mix. An inactive icon takes
+	   --text-primary (#191922 on the light mix, #f0f0f4 on the dark mix:
+	   9.74:1 and 4.19:1 at worst), and an active one, on the full colour in
+	   either theme, a fixed dark ink (6.34:1 at worst). */
 	.workspace-tab .workspace-icon {
 		width: 18px;
 		height: 18px;
 		border: none;
 		border-radius: 4px;
-		color: #fff;
+		color: var(--text-primary);
 		font-size: 0.66em;
+	}
+	.workspace-tab.active .workspace-icon {
+		color: #191922;
 	}
 
 	.workspace-name {

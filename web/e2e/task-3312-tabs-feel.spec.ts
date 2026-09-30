@@ -156,6 +156,44 @@ test.describe('TASK-3312 workspace tabs feel', () => {
 			.toBeGreaterThan(before[1] + 2);
 	});
 
+	test('the first tab, active, keeps its left flare: the list does not clip it and shows no fade', async ({ page }) => {
+		const { username, slugs } = await asNewUser(page);
+		await openTabs(page, slugs, 3);
+		await show(page, username, slugs[0], 3);
+		const geo = await page.evaluate(() => {
+			const list = document.querySelector('.workspace-list')!;
+			const tab = document.querySelector('.workspace-tab.active')!;
+			const flare = getComputedStyle(tab, '::before');
+			return {
+				listLeft: list.getBoundingClientRect().left,
+				tabLeft: tab.getBoundingClientRect().left,
+				flareLeft: parseFloat(flare.left),
+				flareContent: flare.content,
+				fadeLeft: list.classList.contains('fade-left'),
+			};
+		});
+		expect(geo.flareContent, 'the active tab draws a left flare').not.toBe('none');
+		// The list clips at its padding box, so the flare must start inside it.
+		expect(geo.tabLeft + geo.flareLeft, `flare box starts inside the list (${JSON.stringify(geo)})`).toBeGreaterThanOrEqual(geo.listLeft);
+		expect(geo.fadeLeft, 'no left fade over an unscrolled first tab').toBe(false);
+	});
+
+	test('nothing draws a line under the active tab (the connect banner sits below the bar, not against it)', async ({ page }) => {
+		const { username, slugs } = await asNewUser(page);
+		await openTabs(page, slugs, 3);
+		await show(page, username, slugs[1], 3);
+		await expect(page.locator('.banner'), 'precondition: the connect banner is showing').toBeVisible();
+		const under = await page.evaluate(() => {
+			const t = document.querySelector('.workspace-tab.active')!.getBoundingClientRect();
+			const el = document.elementFromPoint(t.x + t.width / 2, t.bottom + 0.5) as HTMLElement;
+			const r = el.getBoundingClientRect();
+			return { tabBottom: t.bottom, el: el.className, top: r.top, borderTop: getComputedStyle(el).borderTopWidth };
+		});
+		// A bordered box whose top edge is the row right under the tab is the line.
+		const lineHere = Math.abs(under.top - under.tabBottom) < 1 && under.borderTop !== '0px';
+		expect(lineHere, `the box under the active tab (${JSON.stringify(under)})`).toBe(false);
+	});
+
 	// The pair below: without the first, "no .closing phase under reduced
 	// motion" passes on a build that never animates at all.
 	for (const motion of ['no-preference', 'reduce'] as const) {
