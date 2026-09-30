@@ -1,6 +1,7 @@
 import { marked, Renderer, type Tokens } from 'marked';
 import DOMPurify from 'dompurify';
 import type { Item } from '$lib/types';
+import { FOLLOWS_TITLE_PREFIX } from './followsTitle';
 import { itemUrlId } from '$lib/types';
 import {
 	type AttachmentResolver,
@@ -688,7 +689,7 @@ export function wikiDisplayText(body: string, titleByRef: ReadonlyMap<string, st
  * `item` is null when nothing resolves (or the match lacks a collection
  * slug); `displayText` is what the caller should render either way.
  */
-function resolveWikiBody(body: string, items: Item[]): { item: Item | null; displayText: string } {
+function resolveWikiBody(body: string, items: Item[]): { item: Item | null; displayText: string; followsTitle: boolean } {
 	// Split optional display override on the FIRST unescaped pipe. We do
 	// this up-front so REF_PATTERN can check the key alone (a ref like
 	// "BUG-585" contains no pipe, so this is a no-op for ref storage).
@@ -700,7 +701,7 @@ function resolveWikiBody(body: string, items: Item[]): { item: Item | null; disp
 	if (REF_PATTERN.test(key.trim())) {
 		const byRef = findItemByRef(items, key.trim());
 		if (byRef && byRef.collection_slug) {
-			return { item: byRef, displayText: displayOverride ?? byRef.title };
+			return { item: byRef, displayText: displayOverride ?? byRef.title, followsTitle: displayOverride == null };
 		}
 		// Intentional fall-through to the legacy title lookups below.
 	}
@@ -712,7 +713,7 @@ function resolveWikiBody(body: string, items: Item[]): { item: Item | null; disp
 		const fullBody = unescapeWikiBody(body);
 		const fullTitleItem = items.find(i => i.title.toLowerCase() === fullBody.toLowerCase());
 		if (fullTitleItem && fullTitleItem.collection_slug) {
-			return { item: fullTitleItem, displayText: fullTitleItem.title };
+			return { item: fullTitleItem, displayText: fullTitleItem.title, followsTitle: true };
 		}
 		// Collection-qualified legacy form whose title contains a pipe.
 		if (fullBody.includes('/')) {
@@ -723,7 +724,7 @@ function resolveWikiBody(body: string, items: Item[]): { item: Item | null; disp
 				i.collection_slug === qualColl
 			);
 			if (qualItem && qualItem.collection_slug) {
-				return { item: qualItem, displayText: qualItem.title };
+				return { item: qualItem, displayText: qualItem.title, followsTitle: true };
 			}
 		}
 	}
@@ -747,7 +748,7 @@ function resolveWikiBody(body: string, items: Item[]): { item: Item | null; disp
 		}
 	}
 
-	return { item: item && item.collection_slug ? item : null, displayText };
+	return { item: item && item.collection_slug ? item : null, displayText, followsTitle: displayOverride == null };
 }
 
 /**
@@ -779,7 +780,7 @@ export function wikiLinksToMarkdown(content: string, items: Item[], workspaceSlu
 				const sameWsItem = findItemByRef(items, xw.ref);
 				if (sameWsItem && sameWsItem.collection_slug) {
 					const text = xw.display ?? sameWsItem.title;
-					return `[${escapeMarkdownLinkText(text)}](${prefix}/${sameWsItem.collection_slug}/${itemUrlId(sameWsItem)})`;
+					return `[${escapeMarkdownLinkText(text)}](${prefix}/${sameWsItem.collection_slug}/${itemUrlId(sameWsItem)}${followsTitleMarker(xw.display == null, text, sameWsItem)})`;
 				}
 				// Ref didn't resolve in the current workspace — leave the
 				// original wiki-link verbatim, matching the legacy fall-through
@@ -794,9 +795,9 @@ export function wikiLinksToMarkdown(content: string, items: Item[], workspaceSlu
 
 		// Same-workspace resolution — shared with renderMarkdown via
 		// resolveWikiBody (see its doc comment for the resolution order).
-		const { item, displayText } = resolveWikiBody(body, items);
+		const { item, displayText, followsTitle } = resolveWikiBody(body, items);
 		if (item && item.collection_slug) {
-			return `[${escapeMarkdownLinkText(displayText)}](${prefix}/${item.collection_slug}/${itemUrlId(item)})`;
+			return `[${escapeMarkdownLinkText(displayText)}](${prefix}/${item.collection_slug}/${itemUrlId(item)}${followsTitleMarker(followsTitle, displayText, item)})`;
 		}
 		// Unresolved: leave the original [[X]] text alone. Emitting a
 		// [text](broken) link here would hijack content that legitimately
@@ -846,7 +847,8 @@ export function markdownToWikiLinks(markdown: string, items: Item[]): string {
 	// contain backslash-escaped chars (\[, \], \\) that tiptap-markdown emits
 	// when serializing link text. The capture allows `\.` sequences so we
 	// don't terminate on an escaped `]` that's really part of the display.
-	return withXwRefs.replace(/\[((?:\\.|[^\]\\])+)\]\(\/(?:[^/]+\/){2,3}([^)]+)\)/g, (_match, rawText: string, slugOrRef: string) => {
+	const code = withXwRefs.includes(FOLLOWS_TITLE_PREFIX) ? codeRanges(withXwRefs) : [];
+	return withXwRefs.replace(/\[((?:\\.|[^\]\\])+)\]\((\/(?:[^/]+\/){2,3}([^)]+?))(?: "((?:\\"|[^"])*)")?\)/g, (_match, rawText: string, path: string, slugOrRef: string, rawMarker: string | undefined, offset: number) => {
 		const item = items.find(i => {
 			if (i.slug === slugOrRef) return true;
 			if (i.item_number && i.collection_prefix) {
@@ -854,7 +856,17 @@ export function markdownToWikiLinks(markdown: string, items: Item[]): string {
 			}
 			return false;
 		});
-		if (!item) return _match;
+		// The follows-title marker is load-time state and never belongs in stored
+		// content, so a link whose target is gone keeps its text and href only.
+		// A title that is not ours is the user's: the link is left exactly as it
+		// was, which is what this function did with any titled link before the
+		// marker existed.
+		if (rawMarker !== undefined && !rawMarker.startsWith(FOLLOWS_TITLE_PREFIX)) return _match;
+		// Marker-shaped text inside code is content, not a link.
+		if (rawMarker !== undefined && inRanges(code, offset)) return _match;
+		if (!item) return rawMarker === undefined ? _match : `[${rawText}](${path})`;
+		const marker =
+			rawMarker === undefined ? undefined : rawMarker.slice(FOLLOWS_TITLE_PREFIX.length).replace(/\\"/g, '"');
 
 		// tiptap-markdown emits backslash-escaped brackets in the link text
 		// (e.g. "Use \[\[ to link"); unescape before comparing/emitting.
@@ -868,14 +880,119 @@ export function markdownToWikiLinks(markdown: string, items: Item[]): string {
 			// Prefer ref-based storage. Omit |Display if it matches the
 			// current item title (renaming the item updates the link text
 			// automatically on next load).
-			if (displayText === item.title) {
+			// Text still equal to the follows-title marker is a link nobody edited
+			// that loaded under an earlier title: it follows the title (BUG-3315).
+			if (displayText === item.title || followsMarker(displayText, marker)) {
 				return `[[${ref}]]`;
 			}
 			return `[[${ref}|${escapeWikiBody(displayText)}]]`;
 		}
 		// Legacy fallback for items without a ref.
-		return `[[${escapeWikiBody(displayText)}]]`;
+		return `[[${escapeWikiBody(followsMarker(displayText, marker) ? item.title : displayText)}]]`;
 	});
+}
+
+// The load-time marker for a link that FOLLOWS its target's title (BUG-3315),
+// carried in the link mark's existing `title` attribute:
+// `[Title](href "pad-follows-title:Title")`. The prefix is what tells it from a
+// title a user wrote, which is never read, stripped or hidden (codex r2). The
+// prefix is RESERVED: a title a user writes that itself begins with it is read as
+// a marker (codex r4, ruled by design; nothing in the product writes one).
+// It records the text as loaded, and only for a link with no explicit override
+// whose text IS the title. The save then tells "nobody edited this, it was the
+// title then" (follows the title, so `[[REF]]`) from a deliberate or edited
+// display. It never reaches stored content: markdownToWikiLinks consumes it, and
+// SafeLink keeps it out of the DOM so it is not shown as a stale tooltip.
+// Inside a CommonMark link title, `\`, `"` and `&` would be read as an escape,
+// the end of the title and an entity, so each is backslash-escaped.
+function followsTitleMarker(followsTitle: boolean, text: string, item: Item): string {
+	if (!followsTitle || text !== item.title) return '';
+	return ` "${FOLLOWS_TITLE_PREFIX}${text.replace(/[\\"&]/g, '\\$&')}"`;
+}
+
+// The [start, end) ranges of `markdown` inside fenced code blocks and inline
+// code spans, which are content and never link syntax. Marker handling
+// (BUG-3315) skips them, so a doc that MENTIONS the marker, as one about this
+// feature does, survives a save. Deliberately simple CommonMark: a fence is a
+// line of 3+ backticks or tildes (up to 3 spaces of indent), closed by the same
+// character at least as long; an inline span is a backtick run closed by a run
+// of the same length.
+function codeRanges(markdown: string): Array<[number, number]> {
+	const fences: Array<[number, number]> = [];
+	const fence = /^ {0,3}(`{3,}|~{3,})[^\n]*$/gm;
+	let open: { at: number; ch: string; len: number } | null = null;
+	let m: RegExpExecArray | null;
+	while ((m = fence.exec(markdown)) !== null) {
+		const run = m[1];
+		if (open === null) open = { at: m.index, ch: run[0], len: run.length };
+		else if (run[0] === open.ch && run.length >= open.len && m[0].trim() === run) {
+			fences.push([open.at, m.index + m[0].length]);
+			open = null;
+		}
+	}
+	if (open !== null) fences.push([open.at, markdown.length]);
+
+	// Inline spans, in ONE left-to-right pass (codex: the first version rescanned
+	// for each opening run and went superlinear). Collect the backtick runs
+	// outside fences, then pair each unconsumed run with the next run of the
+	// same length. Everything between is inside the span. A per-length pointer
+	// only moves forward.
+	// A span never crosses a fenced block (block structure comes first), so a
+	// run is only paired inside its own gap between fences. `gap` numbers it,
+	// and the pairing key is (gap, length), which also keeps every range
+	// disjoint, as inRanges' binary search requires (codex r3).
+	const runs: Array<{ at: number; len: number; gap: number }> = [];
+	const tick = /`+/g;
+	let f = 0;
+	while ((m = tick.exec(markdown)) !== null) {
+		while (f < fences.length && fences[f][1] <= m.index) f++;
+		if (f < fences.length && m.index >= fences[f][0]) continue;
+		runs.push({ at: m.index, len: m[0].length, gap: f });
+	}
+	const key = (r: { len: number; gap: number }) => `${r.gap}:${r.len}`;
+	const byLen = new Map<string, number[]>();
+	runs.forEach((r, i) => {
+		const list = byLen.get(key(r));
+		if (list) list.push(i);
+		else byLen.set(key(r), [i]);
+	});
+	const ptr = new Map<string, number>();
+	const spans: Array<[number, number]> = [];
+	for (let i = 0; i < runs.length; i++) {
+		const k = key(runs[i]);
+		const list = byLen.get(k)!;
+		let p = ptr.get(k) ?? 0;
+		while (p < list.length && list[p] <= i) p++;
+		ptr.set(k, p);
+		if (p === list.length) continue;
+		const j = list[p];
+		spans.push([runs[i].at, runs[j].at + runs[j].len]);
+		i = j;
+	}
+	return [...fences, ...spans].sort((a, b) => a[0] - b[0]);
+}
+
+// Whether offset `i` falls in one of the sorted, non-overlapping `ranges`.
+function inRanges(ranges: Array<[number, number]>, i: number): boolean {
+	let lo = 0;
+	let hi = ranges.length - 1;
+	while (lo <= hi) {
+		const mid = (lo + hi) >> 1;
+		if (i < ranges[mid][0]) hi = mid - 1;
+		else if (i >= ranges[mid][1]) lo = mid + 1;
+		else return true;
+	}
+	return false;
+}
+
+// Whether a link's text is still the text its follows-title marker recorded.
+// After a trip through the editor the marker comes back as the serializer
+// writes a title (only `"` escaped), so it is compared RAW. Straight from
+// wikiLinksToMarkdown it still carries the load's `\\`, `\"` and `\&`
+// escapes, so it is also compared with backslash escapes undone (codex r3).
+function followsMarker(text: string, marker: string | undefined): boolean {
+	if (marker === undefined) return false;
+	return text === marker || text === marker.replace(/\\([\\"&])/g, '$1');
 }
 
 // Escape a link's display text so the editor's markdown parser reads it as
@@ -936,10 +1053,29 @@ function unescapeMarkdownLinkText(s: string): string {
 }
 
 /**
- * Convert [[broken]] placeholder links back to wiki syntax
+ * Convert [[broken]] placeholder links back to wiki syntax.
+ *
+ * It is the LAST step of every save pipeline (both ItemDetail save paths and
+ * the materializer's flushPipeline), which skip markdownToWikiLinks when the
+ * link index is empty. So it is also where a follows-title marker (BUG-3315,
+ * followsTitleMarker) that nothing consumed is dropped from EVERY link:
+ * the marker is load-time state and must never reach stored content.
  */
 export function cleanBrokenLinks(markdown: string): string {
-	return markdown.replace(/\[([^\]]+)\]\(broken\)/g, '[[$1]]');
+	const cleaned = markdown.replace(/\[([^\]]+)\]\(broken\)/g, '[[$1]]');
+	if (!cleaned.includes(FOLLOWS_TITLE_PREFIX)) return cleaned;
+	const code = codeRanges(cleaned);
+	return cleaned
+		// Any link, whatever its href: a user who edits an auto link's URL keeps
+		// the marker on the mark, and an external href is never converted. (An
+		// HTML-serialized table does not carry link titles, measured, so there is
+		// no HTML form to strip.)
+		// Only a real link's title: a `](` preceded by an EVEN number of backslashes
+		// (a link text ending in `\\` is still a link), a space-free href, and
+		// never inside code (see codeRanges).
+		.replace(/((?<=(?:^|[^\\])(?:\\\\)*)\]\((?:\\.|[^)\s\\])+) "pad-follows-title:(?:\\"|[^"])*"\)/g, (m: string, head: string, offset: number) =>
+			inRanges(code, offset) ? m : `${head})`
+		);
 }
 
 export function parseTags(tagsJson: string): string[] {
