@@ -558,6 +558,12 @@ func (s *Server) handleRemoveReaction(w http.ResponseWriter, r *http.Request) {
 	userID := currentUserID(r)
 
 	if err := s.store.RemoveReaction(commentID, userID, emoji); err != nil {
+		// A delete that tombstoned the comment after the read above took
+		// its reactions with it; re-read so that answers the same 409.
+		if again, gerr := s.store.GetComment(commentID); gerr == nil && again != nil && again.Deleted {
+			writeCommentDeleted(w, commentID)
+			return
+		}
 		writeError(w, http.StatusNotFound, "not_found", "Reaction not found")
 		return
 	}
