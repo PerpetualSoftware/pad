@@ -41,6 +41,18 @@ import (
 // the same-second ambiguity just described. `before_id` alone is REFUSED with
 // 400 — the id is only ever the tie-break at the cursor instant, so on its own
 // it matches nothing and silently pages from the beginning.
+//
+// `kinds=<k>[,<k>...]` (PLAN-2348 U3) restricts the page to those entry kinds
+// (comment, activity, version, note, decision), so a view that renders a
+// subset pages through its own entries instead of through ones it discards: a
+// comment-heavy item's History used to open on a page of comments it drops.
+// Absent or empty means every kind, as before; an unknown kind is a 400. The
+// cursor rules are unchanged, since each source is still read under the same
+// predicate. One guard is lost when comments are left out: buildTimeline's
+// read-skew backstop against comment-linked activity is built from the
+// fetched comments, so without them only ListDocumentActivityBeforeTime's
+// query-time exclusion applies. That exclusion is the primary mechanism;
+// the backstop covers a comment deleted between the two reads.
 func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) {
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
@@ -54,6 +66,13 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if !s.requireItemVisible(w, r, workspaceID, item) {
+		return
+	}
+
+	want, kindsOK := parseTimelineKinds(r.URL.Query().Get("kinds"))
+	if !kindsOK {
+		writeError(w, http.StatusBadRequest, "validation_error",
+			"kinds must be a comma-separated list of: comment, activity, version, note, decision")
 		return
 	}
 
@@ -151,10 +170,13 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 	// buildTimeline's dedup/filtering (empty-metadata updates, read actions, etc.).
 	perSource := limit * 3
 
-	comments, err := s.store.ListCommentsBeforeTime(item.ID, before, beforeID, perSource)
-	if err != nil {
-		writeInternalError(w, err)
-		return
+	var comments []models.Comment
+	if want("comment") {
+		comments, err = s.store.ListCommentsBeforeTime(item.ID, before, beforeID, perSource)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
 	}
 
 	// Bulk-load reactions for fetched comments.
@@ -173,16 +195,22 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	activities, err := s.store.ListDocumentActivityBeforeTime(item.ID, before, beforeID, perSource)
-	if err != nil {
-		writeInternalError(w, err)
-		return
+	var activities []models.Activity
+	if want("activity") {
+		activities, err = s.store.ListDocumentActivityBeforeTime(item.ID, before, beforeID, perSource)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
 	}
 
-	versions, err := s.store.ListItemVersionsBeforeTime(item.ID, before, beforeID, perSource)
-	if err != nil {
-		writeInternalError(w, err)
-		return
+	var versions []models.Version
+	if want("version") {
+		versions, err = s.store.ListItemVersionsBeforeTime(item.ID, before, beforeID, perSource)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
 	}
 
 	// Implementation notes and decision-log entries live inside the item's
@@ -192,6 +220,12 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 	// the SQL above uses, or paging would show them on every page instead of
 	// exactly one (BUG-2301).
 	notes, decisions := structuredTimelineEntries(item, before, beforeID, sentinelBeforeID)
+	if !want("note") {
+		notes = nil
+	}
+	if !want("decision") {
+		decisions = nil
+	}
 
 	entries := buildTimeline(comments, activities, versions, notes, decisions)
 
@@ -235,6 +269,26 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 		resp.NextBeforeID = cursorID
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// timelineKinds is every entry kind the timeline serves.
+var timelineKinds = map[string]bool{"comment": true, "activity": true, "version": true, "note": true, "decision": true}
+
+// parseTimelineKinds reads the `kinds` filter. Empty means every kind. It
+// reports false for any piece that is not a known kind, blank pieces
+// included, so a typo is refused rather than read as "nothing".
+func parseTimelineKinds(v string) (func(string) bool, bool) {
+	if v == "" {
+		return func(string) bool { return true }, true
+	}
+	set := map[string]bool{}
+	for _, k := range strings.Split(v, ",") {
+		if !timelineKinds[k] {
+			return nil, false
+		}
+		set[k] = true
+	}
+	return func(k string) bool { return set[k] }, true
 }
 
 // structuredTimelineEntries turns the item's implementation notes and
