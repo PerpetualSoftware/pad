@@ -892,18 +892,21 @@ func (m *RoomManager) UnderItemLock(itemID string, fn func() error) error {
 
 // PruneAndApply runs applyFn under the per-item setup lock so it is
 // strictly serialised with any in-flight Join's addConn+replayTo for
-// the same itemID. Used by the items PATCH handler to prune the
-// op-log + write items.content directly when ApplyExternalContent
-// classifies the request as "no live editors" (ErrNoActiveRoom or
-// ErrNoApplierAvailable).
+// the same itemID. Used by the items PATCH handler's content route
+// (settleContentRoute) to prune the op-log + write items.content
+// directly when HasElectableApplier finds no applier to elect.
 //
 // Returns ErrRoomActiveDuringPrune if a room with a live WRITER conn
-// has appeared since the caller's classification check; otherwise the
-// error from applyFn (if any). The caller is expected to fall
-// through to a plain direct write in the active-room case so the
-// PATCH still completes.
+// exists, BEFORE applyFn runs, so nothing has been written; otherwise
+// the error from applyFn (if any). The caller must NOT answer
+// ErrRoomActiveDuringPrune with a plain direct write: that stores
+// items.content (and a version) while the op-log still holds the old
+// document, so every later tab replays and serves the stale body
+// (BUG-3313, which found one item written that way before #1318
+// removed the fall-through). The content route re-decides instead,
+// within applierSettleBudget, and refuses room_settling on expiry.
 //
-// Why this matters: ApplyExternalContent's "no room" answer is a
+// Why this matters: a "no live writer" answer is a
 // point-in-time snapshot. Without serialisation, a fresh Join can
 // slip in between that check and the prune, replay the
 // soon-to-be-pruned op-log into a new client, and end up with stale
@@ -913,10 +916,9 @@ func (m *RoomManager) UnderItemLock(itemID string, fn func() error) error {
 // Only a live WRITER peer blocks the prune (TASK-265). A read-only
 // peer (workspace viewer / view-only guest) can never persist — its
 // sync frames are dropped and it can't be an applier — so its presence
-// does NOT force the caller onto the unsafe direct-write-without-prune
-// fallback: the op-log is safely pruned even while viewers are
-// attached, so a later editor lazy-seeds from the fresh items.content
-// instead of replaying stale ops.
+// does NOT make the caller wait or refuse: the op-log is safely pruned
+// even while viewers are attached, so a later editor lazy-seeds from
+// the fresh items.content instead of replaying stale ops.
 //
 // After a SUCCESSFUL write, every read-only peer still attached holds a
 // Y.Doc the pruned op-log no longer backs (BUG-2103): it would go on
