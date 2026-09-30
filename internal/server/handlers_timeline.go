@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"sort"
@@ -424,12 +425,6 @@ func structuredTimelineEntries(item *models.Item, before time.Time, beforeID str
 // and decision-log entries into a single chronological stream, applying
 // deduplication and collapsing logic.
 func buildTimeline(comments []models.Comment, activities []models.Activity, versions []models.Version, notes, decisions []models.TimelineEntry) []models.TimelineEntry {
-	// Build a set of version timestamps (rounded to the second) for dedup.
-	versionTimes := make(map[int64]bool, len(versions))
-	for _, v := range versions {
-		versionTimes[v.CreatedAt.Unix()] = true
-	}
-
 	// Activities the fetched comments link to, skipped below. This is NOT the
 	// mechanism that keeps a comment-linked activity off the timeline —
 	// ListDocumentActivityBeforeTime excludes those at the query, which is
@@ -451,6 +446,9 @@ func buildTimeline(comments []models.Comment, activities []models.Activity, vers
 	// event) is consistent. Neither guard can close a gap that lives between
 	// two reads with no shared snapshot; TimelineEntry's doc states the
 	// class.
+	//
+	// Like the query, it spares "updated" rows: those record a change the
+	// comment card does not render (PLAN-2348 checkpoint 2, defect 5).
 	commentActivityIDs := make(map[string]bool)
 	for _, c := range comments {
 		if c.ActivityID != "" {
@@ -492,9 +490,9 @@ func buildTimeline(comments []models.Comment, activities []models.Activity, vers
 		entries = append(entries, entry)
 	}
 
-	// Add activity entries (with dedup: skip "updated" if a version exists at
-	// same second, and skip activities a fetched comment links to — the
-	// read-skew guard described at the top of the function).
+	// Add activity entries, skipping activities a fetched comment links to
+	// (the read-skew guard described at the top of the function) and
+	// "updated" rows that record no change.
 	for i := range activities {
 		a := activities[i]
 
@@ -503,17 +501,18 @@ func buildTimeline(comments []models.Comment, activities []models.Activity, vers
 			continue
 		}
 
-		if commentActivityIDs[a.ID] {
+		if a.Action != "updated" && commentActivityIDs[a.ID] {
 			continue
 		}
 
-		// Skip "updated" activities that coincide with a version snapshot.
-		if a.Action == "updated" && versionTimes[a.CreatedAt.Unix()] {
-			continue
-		}
-
-		// Collapse rapid empty-metadata "updated" entries (within 5 min).
-		if a.Action == "updated" && (a.Metadata == "" || a.Metadata == "{}") {
+		// An "updated" row with no change text has nothing to show: a body
+		// edit records its change as a version, not in `changes`, so its
+		// activity carries at most the agent's name. This used to be two
+		// skips, "the metadata is empty" and "a version shares its second",
+		// and the second also dropped every FIELD change sent in the same
+		// request as a body edit (PLAN-2348 checkpoint 2, defect 5). The
+		// question is whether the row says anything, so ask that.
+		if a.Action == "updated" && activityChangesText(a.Metadata) == "" {
 			continue
 		}
 
@@ -711,4 +710,16 @@ func exhaustedWindowCursor(
 // already bounds. A bound that can only fire on a valid id is not protection.
 func validCursorID(v string) bool {
 	return utf8.ValidString(v) && !strings.ContainsRune(v, 0)
+}
+
+// activityChangesText returns the "changes" string an activity's metadata
+// carries, or "" when it has none or the metadata does not parse.
+func activityChangesText(metadata string) string {
+	var m struct {
+		Changes string `json:"changes"`
+	}
+	if err := json.Unmarshal([]byte(metadata), &m); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(m.Changes)
 }

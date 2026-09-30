@@ -682,6 +682,10 @@ func TestCreateActivityDebounced_WriterIdentitySplitsRuns(t *testing.T) {
 		actor   string // "user" or "agent"
 		agent   string // agent display name, "" for a human write
 		changes string
+		// source is the door the write came through; "" takes the default
+		// below (web for a human, cli for an agent). In want, "" skips the
+		// source assertion.
+		source string
 	}
 	// want is the (actor, agent-name) pair per surviving row, oldest first.
 	for _, tc := range []struct {
@@ -721,6 +725,24 @@ func TestCreateActivityDebounced_WriterIdentitySplitsRuns(t *testing.T) {
 			writes: []write{{actor: "user", changes: "status: open → active"}, {actor: "agent", changes: "priority: low → high"}},
 			want:   []write{{actor: "user", changes: "status: open → active"}, {actor: "agent", changes: "priority: low → high"}},
 		},
+		// PLAN-2348 checkpoint 2, defect 1: one person through two doors.
+		// Merged, the row kept the first door's source and lost the value
+		// in between, so the History could not show either change as made.
+		{
+			name:   "one human through web then cli",
+			writes: []write{{actor: "user", source: "web", changes: "status: open → in-progress"}, {actor: "user", source: "cli", changes: "status: in-progress → done"}},
+			want:   []write{{actor: "user", source: "web", changes: "status: open → in-progress"}, {actor: "user", source: "cli", changes: "status: in-progress → done"}},
+		},
+		{
+			name:   "one agent through cli then mcp",
+			writes: []write{{actor: "agent", agent: "wren", source: "cli", changes: "status: open → active"}, {actor: "agent", agent: "wren", source: "mcp", changes: "priority: low → high"}},
+			want:   []write{{actor: "agent", agent: "wren", source: "cli", changes: "status: open → active"}, {actor: "agent", agent: "wren", source: "mcp", changes: "priority: low → high"}},
+		},
+		{
+			name:   "same human through cli twice still coalesces (control)",
+			writes: []write{{actor: "user", source: "cli", changes: "status: open → active"}, {actor: "user", source: "cli", changes: "priority: low → high"}},
+			want:   []write{{actor: "user", source: "cli"}},
+		},
 		{
 			name:   "same agent twice still coalesces (control)",
 			writes: []write{{actor: "agent", agent: "wren", changes: "status: open → active"}, {actor: "agent", agent: "wren", changes: "priority: low → high"}},
@@ -740,9 +762,12 @@ func TestCreateActivityDebounced_WriterIdentitySplitsRuns(t *testing.T) {
 				if w.agent != "" {
 					meta = fmt.Sprintf(`{"agent":%q,"changes":%q}`, w.agent, w.changes)
 				}
-				source := "web"
-				if w.actor == "agent" {
-					source = "cli"
+				source := w.source
+				if source == "" {
+					source = "web"
+					if w.actor == "agent" {
+						source = "cli"
+					}
 				}
 				if _, err := s.CreateActivityDebounced(models.Activity{
 					WorkspaceID: wsID,
@@ -781,6 +806,9 @@ func TestCreateActivityDebounced_WriterIdentitySplitsRuns(t *testing.T) {
 				}
 				if got.Actor != w.actor {
 					t.Errorf("row for %q: actor = %q, want %q", w.changes, got.Actor, w.actor)
+				}
+				if w.source != "" && got.Source != w.source {
+					t.Errorf("row for %q: source = %q, want %q", w.changes, got.Source, w.source)
 				}
 				if name := models.AgentNameFromMetadata(got.Metadata); name != w.agent {
 					t.Errorf("row for %q: agent name = %q, want %q (metadata %s)", w.changes, name, w.agent, got.Metadata)
