@@ -4,7 +4,8 @@
 	import { tick, onMount, onDestroy, untrack } from 'svelte';
 	import { api, PadApiError, isUpdateConflictError, type ImportURLResponse } from '$lib/api/client';
 	// Its own statement, so units that only use `api` keep their reviewed hash.
-	import { isSupersededWriteError, isMoveNeedsValueRefusal } from '$lib/api/client';
+	import { isSupersededWriteError } from '$lib/api/client';
+	import { isMoveNeedsValueRefusal } from '$lib/api/client';
 	import { isContentPendingFlush, pendingEditsReason, prunedEditsNotice } from '$lib/items/contentWrite';
 	import type { PendingEditsReason } from '$lib/stores/pendingEditsDialog.svelte';
 	import { pendingEditsDialog } from '$lib/stores/pendingEditsDialog.svelte';
@@ -5804,7 +5805,7 @@
 			// path (DR-18) runs the preflight and collects that value, instead of
 			// a toast with no way forward (BUG-3200). The dialog's own call passes
 			// overrides and keeps its inline error, so it never re-opens itself.
-			if (fieldOverrides === undefined && isMoveNeedsValueRefusal(e) && stillOnSource()) {
+			if (stillOnSource() && fieldOverrides === undefined && isMoveNeedsValueRefusal(e)) {
 				copyDialogInitialCollection = targetSlug;
 				copyDialogOpen = true;
 				return { status: 'cancelled' };

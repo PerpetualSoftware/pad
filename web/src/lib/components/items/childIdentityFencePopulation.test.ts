@@ -287,6 +287,8 @@ const KNOWN_CONTINUATIONS: Record<string, string> = {
 	'lib/components/common/Menu.svelte::<callback of $effect>::tick.then': 'ui: placement and focus',
 	'lib/components/common/QuickActionsMenu.svelte::<callback of $effect>::tick.then': 'ui: focus',
 	'lib/components/items/CopyItemDialog.svelte::<callback of $effect>::tick.then': 'ui: focus',
+	'lib/components/items/CopyItemDialog.svelte::resetForOpen::loadDestCollections.then':
+		'fenced: flowGen and identityFence() captured in resetForOpen; selects the BUG-3200 preset only from the list loadDestCollections fenced',
 };
 
 

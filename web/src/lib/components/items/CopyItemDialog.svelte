@@ -392,12 +392,13 @@ user hunting for an item that provably does not exist.
 		destinationLost = '';
 		void loadWorkspaces();
 		const gen = flowGen;
+		const isSameIdentity = authStore.identityFence();
 		void loadDestCollections(destWs).then(() => {
 			// After the list loads, and only if it OFFERS the collection: the
 			// list is the permission filter (canEditCollection), and a select
 			// whose value names an option that has not rendered yet shows the
 			// placeholder while the dialog believes a collection is chosen.
-			if (!initialCollection || gen !== flowGen || destColl) return;
+			if (!initialCollection || gen !== flowGen || !isSameIdentity() || destColl) return;
 			if (destCollections.some((c) => c.slug === initialCollection)) {
 				handleCollectionChange(initialCollection);
 			}
