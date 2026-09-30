@@ -233,7 +233,7 @@
 				><span class="added">+{linesAdded}</span> <span class="removed">−{linesRemoved}</span> lines</span
 			>
 		{:else if sinceNow}
-			<span class="lines unknown">edited since the last saved version</span>
+			<span class="lines unknown">every change since the last saved version, up to now</span>
 		{:else}
 			<span class="lines unknown">changed</span>
 		{/if}
@@ -253,7 +253,7 @@
 					{#if currentContentStale && diffPair.after === currentContent}<StaleBodyNotice />{/if}
 					<p class="pair-head">
 						{sinceNow
-							? 'Edits no version was saved for, up to the current body.'
+							? 'Cumulative: everything that changed since the last saved version, not only this edit.'
 							: version.is_create
 								? 'The body as this item was created.'
 								: 'This edit only, not a comparison with the current body.'}

@@ -169,7 +169,7 @@ describe('HistoryView: an edit the throttle saved no version for', () => {
 		const cards = Array.from(root!.querySelectorAll('.version-card'));
 		expect(cards.map((c) => c.getAttribute('data-diff'))).toEqual(['edit', 'current']);
 		expect(cards[0].textContent).toContain('+5 −0 lines');
-		expect(cards[1].textContent).toContain('edited since the last saved version');
+		expect(cards[1].textContent).toContain('every change since the last saved version, up to now');
 		(cards[1].querySelector('.show-changes') as HTMLButtonElement).click();
 		flushSync();
 		await vi.waitFor(() => expect(cards[1].querySelector('.pair-head')).not.toBeNull());
