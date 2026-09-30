@@ -365,7 +365,8 @@ func (s *Supervisor) spawn(ctx context.Context) (*child, error) {
 	if s.cap.prepare != nil {
 		s.cap.prepare(cmd)
 	}
-	if err := cmd.Start(); err != nil {
+	guardAgainstOrphaning(cmd)
+	if err := startUnlocked(cmd); err != nil {
 		inR.Close()
 		inW.Close()
 		outR.Close()
@@ -465,6 +466,15 @@ func (s *Supervisor) spawn(ctx context.Context) (*child, error) {
 		"mem_limit_bytes", s.memLimit,
 		"mem_cap", s.cap.mechanism)
 	return c, nil
+}
+
+// startUnlocked runs cmd.Start on a fresh goroutine. A new goroutine is never
+// locked to its thread, so the fork happens on a thread the runtime will not
+// retire, which Pdeathsig depends on (orphan_linux.go).
+func startUnlocked(cmd *exec.Cmd) error {
+	done := make(chan error, 1)
+	go func() { done <- cmd.Start() }()
+	return <-done
 }
 
 func (s *Supervisor) newID() uint64 {

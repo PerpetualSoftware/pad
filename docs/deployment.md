@@ -1240,6 +1240,9 @@ kills one worker instead of the server.
   (loading it takes a few seconds). Jobs run one at a time.
 - A job that runs past the timeout is failed and the worker is killed. The
   next job starts a new one.
+- If the server process dies, its worker exits too, so it never runs on
+  without its time and memory limits. On Linux it exits at once; on macOS
+  within about 200ms; on Windows at once.
 - A worker that dies is restarted on the next job, waiting 1s after the first
   death and doubling after each further death, up to 5 minutes. A worker that
   stayed up for a minute resets the wait.

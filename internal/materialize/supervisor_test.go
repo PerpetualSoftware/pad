@@ -37,6 +37,11 @@ func TestMain(m *testing.M) {
 }
 
 func runHelper(mode string) int {
+	if mode == "parent" {
+		return runHelperParent()
+	}
+	// As the real worker command does (cmd/pad/cmd_materialize.go).
+	ExitWhenOrphaned()
 	if mode == "worker" {
 		if err := RunWorker(os.Stdin, os.Stdout, pad.MaterializerJS); err != nil {
 			fmt.Fprintln(os.Stderr, "helper worker:", err)
@@ -111,6 +116,27 @@ func runScript(w *bufio.Writer, req WorkerRequest) bool {
 		return false
 	}
 	return true
+}
+
+// runHelperParent is a supervising process for TestSupervisorOrphanedWorkerExits:
+// it spawns a script worker, prints its pid, then hangs it in a job forever.
+func runHelperParent() int {
+	f := &helperFactory{mode: "script"}
+	s := NewSupervisor(SupervisorConfig{
+		Command:     f.cmd,
+		Timeout:     MaxTimeout,
+		capOverride: testCap(),
+		Logger:      slog.New(slog.NewTextHandler(os.Stderr, nil)),
+		onSpawn:     func(pid int) { fmt.Printf("worker %d\n", pid) },
+	})
+	if _, err := s.Materialize(context.Background(), script("echo:warm")); err != nil {
+		fmt.Fprintln(os.Stderr, "helper parent:", err)
+		return 2
+	}
+	fmt.Println("hanging")
+	_, err := s.Materialize(context.Background(), script("hang"))
+	fmt.Fprintln(os.Stderr, "helper parent: hang returned:", err)
+	return 3
 }
 
 // ---------------------------------------------------------------------------
@@ -648,6 +674,103 @@ func TestSupervisorClampAndEffectiveLog(t *testing.T) {
 	if h.s.cap.mechanism != platformMemCap.mechanism {
 		t.Fatalf("mechanism %q", h.s.cap.mechanism)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// the supervising process dies mid-job
+
+// TestSupervisorOrphanedWorkerExits: when the SUPERVISING process is killed
+// while its worker is inside a job, the worker must not run on without its
+// deadline kill and memory watchdog. Process tree: this test -> a helper
+// parent running a Supervisor -> its worker, hung in a job. SIGKILL the helper
+// parent; the worker must be gone within a second (Linux: Pdeathsig, and the
+// ppid watch; macOS: the ppid watch; Windows: KILL_ON_JOB_CLOSE).
+func TestSupervisorOrphanedWorkerExits(t *testing.T) {
+	parent := exec.Command(os.Args[0], "-test.run=^$")
+	parent.Env = append(os.Environ(), helperEnv+"=parent")
+	var stderr lockedBuffer
+	parent.Stderr = &stderr
+	out, err := parent.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := parent.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = parent.Process.Kill(); _ = parent.Wait() })
+
+	lines := make(chan string, 4)
+	go func() {
+		sc := bufio.NewScanner(out)
+		for sc.Scan() {
+			lines <- sc.Text()
+		}
+		close(lines)
+	}()
+	next := func() string {
+		select {
+		case l, ok := <-lines:
+			if !ok {
+				t.Fatalf("helper parent ended early; stderr:\n%s", stderr.String())
+			}
+			return l
+		case <-time.After(60 * time.Second):
+			t.Fatalf("helper parent silent; stderr:\n%s", stderr.String())
+		}
+		return ""
+	}
+	var worker int
+	if _, err := fmt.Sscanf(next(), "worker %d", &worker); err != nil || worker <= 0 {
+		t.Fatalf("no worker pid: %v", err)
+	}
+	t.Cleanup(func() {
+		if processGone(worker) != nil {
+			if p, err := os.FindProcess(worker); err == nil {
+				_ = p.Kill()
+			}
+		}
+	})
+	if l := next(); l != "hanging" {
+		t.Fatalf("got %q", l)
+	}
+	time.Sleep(300 * time.Millisecond) // the worker is now inside the hung job
+	if processGone(worker) == nil {
+		t.Fatal("premise: the worker must be alive before its parent dies")
+	}
+
+	if err := parent.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	_ = parent.Wait()
+	killed := time.Now()
+	for processGone(worker) != nil {
+		if time.Since(killed) > 5*time.Second {
+			t.Fatalf("worker %d outlived its supervising process by 5s", worker)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	took := time.Since(killed)
+	t.Logf("worker %d gone %s after its parent was killed", worker, took.Round(time.Millisecond))
+	if took > time.Second {
+		t.Fatalf("worker took %s to exit after its parent died; want under 1s", took)
+	}
+}
+
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
 }
 
 // ---------------------------------------------------------------------------

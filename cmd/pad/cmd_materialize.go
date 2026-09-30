@@ -26,6 +26,9 @@ func materializeWorkerCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: false,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Before the bundle loads: a worker whose server died must not
+			// run on without its deadline kill and memory watchdog.
+			materialize.ExitWhenOrphaned()
 			return materialize.RunWorker(os.Stdin, os.Stdout, pad.MaterializerJS)
 		},
 	}
