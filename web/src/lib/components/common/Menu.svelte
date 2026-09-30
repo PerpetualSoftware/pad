@@ -141,8 +141,17 @@
 	// overflow scroll is likewise exempt. Deliberately onclose() and NOT
 	// close(): refocusing the trigger here would scroll the card back
 	// into view and fight the user's scroll.
+	//
+	// "Can move the anchor" is decided by whether the anchor MOVED since
+	// the menu opened, not by the event alone (BUG-3278). A scroll is
+	// dispatched at the next rendering step, so one that happened just
+	// BEFORE the opening click — a click that first scrolled its card into
+	// view, a momentum scroll ending — arrives after the menu is open and
+	// closed it in the same frame, although the position the coords were
+	// taken from is already the scrolled one. Resize is left unconditional.
 	$effect(() => {
 		if (!open || useSheet || mode !== 'portal') return;
+		const openedAt = trigger?.getBoundingClientRect();
 		const dismiss = (e?: Event) => {
 			if (e && e.target instanceof Node) {
 				const t = e.target;
@@ -152,6 +161,10 @@
 				// signal (codex round 1 #2).
 				if (exempt?.().some((el) => el && (el === t || el.contains(t)))) return;
 				if (trigger && t !== document && !t.contains(trigger)) return;
+			}
+			if (e?.type === 'scroll' && trigger && openedAt) {
+				const now = trigger.getBoundingClientRect();
+				if (Math.abs(now.left - openedAt.left) < 1 && Math.abs(now.top - openedAt.top) < 1) return;
 			}
 			onclose();
 		};
