@@ -187,6 +187,15 @@ describe('BUG-3315 U2: a rename does not pin the old title', () => {
 			expect(saveWith(md, [])).not.toContain('pad-follows-title');
 		});
 
+		// Codex r3: a backtick before a fence must not pair with one after it. A
+		// span crossing the fence overlapped the fence's range, and the binary
+		// search then misread offsets. Here the text after the fence is a real
+		// inline span, and the marker-shaped text in it must survive.
+		it('an inline span does not pair across a fenced block', () => {
+			const body = '`\n```\ncode\n```\n` [T](/x "pad-follows-title:T") `';
+			expect(saveWith(body, [])).toBe(body);
+		});
+
 		// ...and the code scan is linear. Receipt, local: 40,000 alternating
 		// backtick runs took 267ms under the first version (18x for 10x the input)
 		// and take 9.6ms now (98ms at 400,000). The bound sits between, with room

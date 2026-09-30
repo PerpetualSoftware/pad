@@ -937,27 +937,33 @@ function codeRanges(markdown: string): Array<[number, number]> {
 	// outside fences, then pair each unconsumed run with the next run of the
 	// same length. Everything between is inside the span. A per-length pointer
 	// only moves forward.
-	const runs: Array<{ at: number; len: number }> = [];
+	// A span never crosses a fenced block (block structure comes first), so a
+	// run is only paired inside its own gap between fences. `gap` numbers it,
+	// and the pairing key is (gap, length), which also keeps every range
+	// disjoint, as inRanges' binary search requires (codex r3).
+	const runs: Array<{ at: number; len: number; gap: number }> = [];
 	const tick = /`+/g;
 	let f = 0;
 	while ((m = tick.exec(markdown)) !== null) {
 		while (f < fences.length && fences[f][1] <= m.index) f++;
 		if (f < fences.length && m.index >= fences[f][0]) continue;
-		runs.push({ at: m.index, len: m[0].length });
+		runs.push({ at: m.index, len: m[0].length, gap: f });
 	}
-	const byLen = new Map<number, number[]>();
+	const key = (r: { len: number; gap: number }) => `${r.gap}:${r.len}`;
+	const byLen = new Map<string, number[]>();
 	runs.forEach((r, i) => {
-		const list = byLen.get(r.len);
+		const list = byLen.get(key(r));
 		if (list) list.push(i);
-		else byLen.set(r.len, [i]);
+		else byLen.set(key(r), [i]);
 	});
-	const ptr = new Map<number, number>();
+	const ptr = new Map<string, number>();
 	const spans: Array<[number, number]> = [];
 	for (let i = 0; i < runs.length; i++) {
-		const list = byLen.get(runs[i].len)!;
-		let p = ptr.get(runs[i].len) ?? 0;
+		const k = key(runs[i]);
+		const list = byLen.get(k)!;
+		let p = ptr.get(k) ?? 0;
 		while (p < list.length && list[p] <= i) p++;
-		ptr.set(runs[i].len, p);
+		ptr.set(k, p);
 		if (p === list.length) continue;
 		const j = list[p];
 		spans.push([runs[i].at, runs[j].at + runs[j].len]);
