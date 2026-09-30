@@ -729,7 +729,10 @@ func activityRecordsMore(metadata string) bool {
 		return true
 	}
 	for k, v := range m {
-		if k == "agent" {
+		// body_edited (PLAN-2348 U2) marks a body edit the version throttle
+		// wrote no row for. U3 renders it; until then it must not turn a row
+		// that otherwise says nothing into an empty card (lead ruling).
+		if k == "agent" || k == "body_edited" {
 			continue
 		}
 		if s := strings.TrimSpace(string(v)); s != `""` && s != "null" {

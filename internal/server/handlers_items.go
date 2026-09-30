@@ -941,6 +941,8 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 		}
 	}
 
+	// PLAN-2348 U2: the create's version row names its user.
+	input.ActorUserID = currentUserID(r)
 	item, err := s.store.CreateItem(workspaceID, coll.ID, input, s.workspaceLimitMintOpts()...)
 	if err != nil {
 		// BUG-2808: the cap, counted under the insert's lock, was reached after
@@ -1975,6 +1977,9 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	// param is the trustworthy server-side signal; the body
 	// VersionSource is client-attacker-controlled. Per Codex round
 	// 6 of TASK-1309 [P2].
+	// PLAN-2348 U2: the version row this update may write names its user.
+	// Internal-only field, so a body cannot set it.
+	input.ActorUserID = currentUserID(r)
 	if collabSnapshot {
 		input.VersionSource = "collab-snapshot"
 	} else if input.VersionSource == "" {
@@ -2418,6 +2423,13 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			assignChange := fmt.Sprintf("assigned: %s → %s", valueOrEmpty(before.AssignedUserName), valueOrEmpty(updated.AssignedUserName))
 			meta = appendChange(meta, assignChange)
 		}
+	}
+	// PLAN-2348 U2: the body changed and the per-actor throttle wrote no
+	// version row, so this activity is the edit's only record. U3's History
+	// renders the marker as "edited the body"; until then buildTimeline
+	// ignores it (lead ruling), so it never becomes an empty card.
+	if updated.BodyEditedWithoutVersion {
+		meta = withActivityMetaKey(meta, "body_edited", "true")
 	}
 	actor, source := actorFromRequest(r)
 	// The error is CHECKED here (BUG-2779). The activity write is

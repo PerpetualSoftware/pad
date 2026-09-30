@@ -179,6 +179,38 @@ func (s *Server) handleGetItemVersion(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, version)
 }
 
+// handleGetItemVersionDiff answers the change one version row records: the
+// bodies before and after its write (PLAN-2348 U2). Same access as reading the
+// version itself.
+func (s *Server) handleGetItemVersionDiff(w http.ResponseWriter, r *http.Request) {
+	workspaceID, ok := s.getWorkspaceID(w, r)
+	if !ok {
+		return
+	}
+	item, err := s.store.ResolveItemIncludeDeleted(workspaceID, chi.URLParam(r, "itemSlug"))
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if item == nil {
+		writeError(w, http.StatusNotFound, "not_found", "Item not found")
+		return
+	}
+	if !s.requireItemVisible(w, r, workspaceID, item) {
+		return
+	}
+	d, err := s.store.GetItemVersionDiff(item.ID, chi.URLParam(r, "versionID"), item.Content)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if d == nil {
+		writeError(w, http.StatusNotFound, "not_found", "Version not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, d)
+}
+
 // handleRestoreItemVersion restores an item's content from a specific version.
 func (s *Server) handleRestoreItemVersion(w http.ResponseWriter, r *http.Request) {
 	workspaceID, ok := s.getWorkspaceID(w, r)
@@ -268,6 +300,7 @@ func (s *Server) handleRestoreItemVersion(w http.ResponseWriter, r *http.Request
 		ChangeSummary:  summary,
 		LastModifiedBy: restoreActor,
 		Source:         restoreSource,
+		ActorUserID:    currentUserID(r), // PLAN-2348 U2
 		// A restore must always leave an undo point + a version bracketing the
 		// content it moves items.content back to, even on a repeat restore within
 		// the version-throttle window (VersionThrottleInterval = 1h).

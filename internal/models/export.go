@@ -224,4 +224,10 @@ type ItemVersionExport struct {
 	Source        string `json:"source"`
 	IsDiff        bool   `json:"is_diff"`
 	CreatedAt     string `json:"created_at"`
+	// PLAN-2348 U2. The line counts and the create marker travel; user_id does
+	// not, because an id from another instance names nobody on this one.
+	// Additive and omitempty: a bundle from before them imports as unknown.
+	LinesAdded   *int `json:"lines_added,omitempty"`
+	LinesRemoved *int `json:"lines_removed,omitempty"`
+	IsCreate     bool `json:"is_create,omitempty"`
 }

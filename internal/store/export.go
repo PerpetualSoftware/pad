@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -371,7 +372,8 @@ func (s *Store) ExportWorkspaceQ(q Queryer, slug string) (*models.WorkspaceExpor
 
 	// Item versions
 	versionRows, err := q.Query(s.q(`
-		SELECT v.id, v.item_id, v.content, v.change_summary, v.created_by, v.source, v.is_diff, v.created_at
+		SELECT v.id, v.item_id, v.content, v.change_summary, v.created_by, v.source, v.is_diff, v.created_at,
+		       v.lines_added, v.lines_removed, v.is_create
 		FROM item_versions v
 		JOIN items i ON v.item_id = i.id
 		WHERE i.workspace_id = ? AND i.deleted_at IS NULL
@@ -382,11 +384,16 @@ func (s *Store) ExportWorkspaceQ(q Queryer, slug string) (*models.WorkspaceExpor
 	defer versionRows.Close()
 	for versionRows.Next() {
 		var ver models.ItemVersionExport
-		var isDiff bool
-		if err := versionRows.Scan(&ver.ID, &ver.ItemID, &ver.Content, &ver.ChangeSummary, &ver.CreatedBy, &ver.Source, &isDiff, &ver.CreatedAt); err != nil {
+		var isDiff, isCreate bool
+		var added, removed sql.NullInt64
+		if err := versionRows.Scan(&ver.ID, &ver.ItemID, &ver.Content, &ver.ChangeSummary, &ver.CreatedBy, &ver.Source, &isDiff, &ver.CreatedAt,
+			&added, &removed, &isCreate); err != nil {
 			return nil, fmt.Errorf("scan item version: %w", err)
 		}
 		ver.IsDiff = isDiff
+		ver.IsCreate = isCreate
+		ver.LinesAdded = nullIntPtr(added)
+		ver.LinesRemoved = nullIntPtr(removed)
 		export.ItemVersions = append(export.ItemVersions, ver)
 	}
 	if err := versionRows.Err(); err != nil {
@@ -1321,10 +1328,11 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 		// deterministic order and imported same-second versions keep a
 		// stable tie-break instead of all defaulting to 0.
 		_, err := tx.Exec(s.q(`
-			INSERT INTO item_versions (id, item_id, content, change_summary, created_by, source, is_diff, created_at, version_seq)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(version_seq), 0) + 1 FROM item_versions WHERE item_id = ?))`),
+			INSERT INTO item_versions (id, item_id, content, change_summary, created_by, source, is_diff, created_at, version_seq,
+			                           lines_added, lines_removed, is_create)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(version_seq), 0) + 1 FROM item_versions WHERE item_id = ?), ?, ?, ?)`),
 			newID(), newItemID, ver.Content, ver.ChangeSummary, ver.CreatedBy, ver.Source, s.dialect.BoolToInt(ver.IsDiff),
-			ver.CreatedAt, newItemID)
+			ver.CreatedAt, newItemID, ver.LinesAdded, ver.LinesRemoved, s.dialect.BoolToInt(ver.IsCreate))
 		if err != nil {
 			// Log detail but skip — version history is non-critical.
 			// Migrated from fmt.Printf to slog.Warn alongside the

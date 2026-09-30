@@ -365,10 +365,16 @@ func (s *Store) insertItemTx(tx *sql.Tx, id, workspaceID, collectionID, slug, ts
 		// version_seq is a per-item monotonic tie-breaker (BUG-2270).
 		// COALESCE(MAX,0)+1 in the same tx; version creation is serialized
 		// per item under the item lock, so MAX+1 is race-safe.
+		// PLAN-2348 U2: a create row holds the body AS CREATED, so its
+		// recorded change is empty → body.
+		added, removed := diff.LineCounts("", input.Content)
 		_, err = tx.Exec(s.q(`
-			INSERT INTO item_versions (id, item_id, content, change_summary, created_by, source, is_diff, created_at, version_seq)
-			VALUES (?, ?, ?, '', ?, ?, ?, ?, (SELECT COALESCE(MAX(version_seq), 0) + 1 FROM item_versions WHERE item_id = ?))
-		`), vid, id, input.Content, createdBy, source, s.dialect.BoolToInt(false), ts, id)
+			INSERT INTO item_versions (id, item_id, content, change_summary, created_by, source, is_diff, created_at, version_seq,
+			                           user_id, lines_added, lines_removed, is_create)
+			VALUES (?, ?, ?, '', ?, ?, ?, ?, (SELECT COALESCE(MAX(version_seq), 0) + 1 FROM item_versions WHERE item_id = ?),
+			        ?, ?, ?, ?)
+		`), vid, id, input.Content, createdBy, source, s.dialect.BoolToInt(false), ts, id,
+			versionUserID(input.ActorUserID), added, removed, s.dialect.BoolToInt(true))
 		if err != nil {
 			return fmt.Errorf("create initial version: %w", err)
 		}
@@ -2784,6 +2790,7 @@ func (s *Store) updateItemWithParentLinkOnce(
 	ts := now()
 
 	// Create version if content is changing
+	bodyEditedWithoutVersion := false
 	if input.Content != nil && *input.Content != existing.Content {
 		createdBy := input.LastModifiedBy
 		if createdBy == "" {
@@ -2832,13 +2839,21 @@ func (s *Store) updateItemWithParentLinkOnce(
 			// created_at, so COALESCE(MAX,0)+1 gives a deterministic order.
 			// Race-safe because version creation is serialized per item
 			// under the item lock (this runs in the update's own tx).
+			// PLAN-2348 U2: an update row holds the body BEFORE its edit, so
+			// its recorded change is that body → the one replacing it.
+			added, removed := diff.LineCounts(existing.Content, *input.Content)
 			_, err = tx.Exec(s.q(`
-				INSERT INTO item_versions (id, item_id, content, change_summary, created_by, source, is_diff, created_at, version_seq)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(version_seq), 0) + 1 FROM item_versions WHERE item_id = ?))
-			`), vid, id, versionContent, input.ChangeSummary, createdBy, source, s.dialect.BoolToInt(isDiff), ts, id)
+				INSERT INTO item_versions (id, item_id, content, change_summary, created_by, source, is_diff, created_at, version_seq,
+				                           user_id, lines_added, lines_removed, is_create)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(version_seq), 0) + 1 FROM item_versions WHERE item_id = ?),
+				        ?, ?, ?, ?)
+			`), vid, id, versionContent, input.ChangeSummary, createdBy, source, s.dialect.BoolToInt(isDiff), ts, id,
+				versionUserID(input.ActorUserID), added, removed, s.dialect.BoolToInt(false))
 			if err != nil {
 				return nil, fmt.Errorf("create version: %w", err)
 			}
+		} else {
+			bodyEditedWithoutVersion = true
 		}
 	}
 
@@ -3211,6 +3226,7 @@ func (s *Store) updateItemWithParentLinkOnce(
 	// changed" would be indistinguishable from "nil because this path forgot
 	// to set it" at exactly the call site that must not guess (BUG-2776).
 	updated.PreUpdate = &preUpdate
+	updated.BodyEditedWithoutVersion = bodyEditedWithoutVersion
 
 	// The choke point (SPEC-3 / TASK-2658). Emitted here — after the in-tx
 	// read-back and after the status/assignment deltas are computed, before
@@ -5662,6 +5678,39 @@ func (s *Store) GetItemVersionResolved(itemID, versionID, currentContent string)
 	return nil, nil
 }
 
+// GetItemVersionDiff returns the change a version row records (PLAN-2348 U2),
+// or nil if the item has no such version. A create row holds the body AS
+// CREATED, so its change is "" → that body. An update row holds the body
+// BEFORE its edit, so its change is that body → the body that replaced it:
+// the next newer row's body, or the item's current content for the newest.
+// Both come from ONE walk of the reverse-patch chain, which is what makes the
+// pair cheap to serve (the client would otherwise need two walks).
+//
+// "The body that replaced it" is exact only when no throttled edit landed in
+// between: a throttled edit writes no row, so its change is folded into the
+// pair of the row before it.
+func (s *Store) GetItemVersionDiff(itemID, versionID, currentContent string) (*models.ItemVersionDiff, error) {
+	versions, err := s.ListItemVersionsResolved(itemID, currentContent)
+	if err != nil {
+		return nil, err
+	}
+	for i := range versions {
+		if versions[i].ID != versionID {
+			continue
+		}
+		v := versions[i]
+		if v.IsCreate {
+			return &models.ItemVersionDiff{Version: v, Before: "", After: v.Content}, nil
+		}
+		after := currentContent
+		if i > 0 {
+			after = versions[i-1].Content
+		}
+		return &models.ItemVersionDiff{Version: v, Before: v.Content, After: after}, nil
+	}
+	return nil, nil
+}
+
 // ListItemVersionsBeforeTime returns versions for an item created before the given time,
 // ordered newest-first, limited to `limit` results. Used for cursor-based timeline pagination.
 //
@@ -5669,7 +5718,7 @@ func (s *Store) GetItemVersionResolved(itemID, versionID, currentContent string)
 // is omitted. See ListCommentsBeforeTime for the rationale (BUG-1086).
 func (s *Store) ListItemVersionsBeforeTime(itemID string, before time.Time, beforeID string, limit int) ([]models.Version, error) {
 	ts := before.Format(time.RFC3339)
-	const selectCols = `id, item_id, content, change_summary, created_by, source, is_diff, created_at`
+	const selectCols = itemVersionCols
 	// Deliberately keeps `id DESC` (NOT version_seq DESC). This is a keyset-
 	// paginated query and the cursor below filters on id (`created_at = ? AND
 	// id < ?`); the ORDER-BY key MUST match the cursor key or a same-second
@@ -5680,37 +5729,54 @@ func (s *Store) ListItemVersionsBeforeTime(itemID string, before time.Time, befo
 	// BUG-2270's same-second determinism lives in the diff-RECONSTRUCTION
 	// paths instead (ListItemVersions / ListItemVersionsResolved /
 	// shouldCreateItemVersion), which are ordered by version_seq DESC.
-	const orderLimit = `ORDER BY created_at DESC, id DESC LIMIT ?`
+	const orderLimit = `ORDER BY v.created_at DESC, v.id DESC LIMIT ?`
 
 	var rows *sql.Rows
 	var err error
 	if beforeID == "" {
 		rows, err = s.db.Query(s.q(`
 			SELECT `+selectCols+`
-			FROM item_versions
-			WHERE item_id = ? AND created_at < ?
+			FROM `+itemVersionFrom+`
+			WHERE v.item_id = ? AND v.created_at < ?
 			`+orderLimit), itemID, ts, limit)
 	} else {
 		rows, err = s.db.Query(s.q(`
 			SELECT `+selectCols+`
-			FROM item_versions
-			WHERE item_id = ? AND (created_at < ? OR (created_at = ? AND id < ?))
+			FROM `+itemVersionFrom+`
+			WHERE v.item_id = ? AND (v.created_at < ? OR (v.created_at = ? AND v.id < ?))
 			`+orderLimit), itemID, ts, ts, beforeID, limit)
 	}
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+	return scanItemVersions(rows)
+}
 
+// itemVersionCols / itemVersionFrom are every item version read's columns and
+// FROM clause: the row, plus the writer's name joined from users as activities
+// do (PLAN-2348 U2). Every column is qualified, because users also has
+// created_at and id.
+const itemVersionCols = `v.id, v.item_id, v.content, v.change_summary, v.created_by, v.source, v.is_diff, v.created_at,
+	COALESCE(v.user_id, ''), COALESCE(u.name, ''), v.lines_added, v.lines_removed, v.is_create`
+
+const itemVersionFrom = `item_versions v LEFT JOIN users u ON u.id = v.user_id`
+
+func scanItemVersions(rows *sql.Rows) ([]models.Version, error) {
 	var versions []models.Version
 	for rows.Next() {
 		var v models.Version
 		var createdAt string
-		var isDiff bool
-		if err := rows.Scan(&v.ID, &v.DocumentID, &v.Content, &v.ChangeSummary, &v.CreatedBy, &v.Source, &isDiff, &createdAt); err != nil {
+		var isDiff, isCreate bool
+		var added, removed sql.NullInt64
+		if err := rows.Scan(&v.ID, &v.DocumentID, &v.Content, &v.ChangeSummary, &v.CreatedBy, &v.Source, &isDiff, &createdAt,
+			&v.UserID, &v.ActorName, &added, &removed, &isCreate); err != nil {
 			return nil, err
 		}
 		v.IsDiff = isDiff
+		v.IsCreate = isCreate
+		v.LinesAdded = nullIntPtr(added)
+		v.LinesRemoved = nullIntPtr(removed)
 		v.CreatedAt = parseTime(createdAt)
 		versions = append(versions, v)
 	}
@@ -5727,10 +5793,10 @@ func (s *Store) ListItemVersions(itemID string) ([]models.Version, error) {
 // still carry patch text, not content; see ListItemVersionsResolvedPage.
 func (s *Store) ListItemVersionsPage(itemID string, limit int) ([]models.Version, error) {
 	query := `
-		SELECT id, item_id, content, change_summary, created_by, source, is_diff, created_at
-		FROM item_versions
-		WHERE item_id = ?
-		ORDER BY created_at DESC, version_seq DESC
+		SELECT ` + itemVersionCols + `
+		FROM ` + itemVersionFrom + `
+		WHERE v.item_id = ?
+		ORDER BY v.created_at DESC, v.version_seq DESC
 	`
 	args := []interface{}{itemID}
 	if limit > 0 {
@@ -5742,20 +5808,7 @@ func (s *Store) ListItemVersionsPage(itemID string, limit int) ([]models.Version
 		return nil, err
 	}
 	defer rows.Close()
-
-	var versions []models.Version
-	for rows.Next() {
-		var v models.Version
-		var createdAt string
-		var isDiff bool
-		if err := rows.Scan(&v.ID, &v.DocumentID, &v.Content, &v.ChangeSummary, &v.CreatedBy, &v.Source, &isDiff, &createdAt); err != nil {
-			return nil, err
-		}
-		v.IsDiff = isDiff
-		v.CreatedAt = parseTime(createdAt)
-		versions = append(versions, v)
-	}
-	return versions, rows.Err()
+	return scanItemVersions(rows)
 }
 
 func scanItems(rows *sql.Rows) ([]models.Item, error) {
@@ -6053,4 +6106,23 @@ func hydrateItemComputedMetadata(item *models.Item) {
 	item.Convention = models.ExtractItemConventionMetadata(item.Fields)
 	item.ImplementationNotes = models.ExtractItemImplementationNotes(item.Fields)
 	item.DecisionLog = models.ExtractItemDecisionLog(item.Fields)
+}
+
+// versionUserID is the user_id stored on a version row: NULL rather than ”
+// for a writer with no user (PLAN-2348 U2).
+func versionUserID(id string) any {
+	if id == "" {
+		return nil
+	}
+	return id
+}
+
+// nullIntPtr turns a nullable integer column into *int: nil for NULL, which
+// the version line counts use for "unknown" (PLAN-2348 U2).
+func nullIntPtr(n sql.NullInt64) *int {
+	if !n.Valid {
+		return nil
+	}
+	v := int(n.Int64)
+	return &v
 }
