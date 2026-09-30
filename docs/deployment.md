@@ -1222,6 +1222,50 @@ address inside `PAD_TRUSTED_PROXIES` (the proxy sends no `X-Forwarded-For` or
 - **The host check does not replace TLS.** It closes DNS rebinding; it does not
   protect tokens in transit. That is why http is token-only.
 
+### Op-log materializer worker
+
+When a browser tab closes without saving, its last edits are only in the
+item's collaborative op-log. Pad can turn that op-log back into the item's
+markdown on the server by running the editor's own JavaScript. It does this in
+a **separate worker process** (the same `pad` binary, started as
+`pad __materialize-worker`), never inside the server: a crafted update can
+make that JavaScript use gigabytes of memory, and in a separate process that
+kills one worker instead of the server.
+
+- The worker starts on the first job, not at server start, and then stays up
+  (loading it takes a few seconds). Jobs run one at a time.
+- A job that runs past the timeout is failed and the worker is killed. The
+  next job starts a new one.
+- A worker that dies is restarted on the next job, waiting 1s after the first
+  death and doubling after each further death, up to 5 minutes. A worker that
+  stayed up for a minute resets the wait.
+- Every worker start logs the effective timeout and memory limit, and every
+  stop logs why (`deadline`, `memory`, `exit`, `protocol`, `start`,
+  `canceled` or `closed`). The worker's stderr goes to the server log, one
+  line per record, tagged with the worker's pid.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PAD_MATERIALIZE_TIMEOUT` | `2s` | Per-job time limit, in Go duration syntax (`2s`, `1500ms`). Clamped to 250ms–60s. |
+| `PAD_MATERIALIZE_MEM_LIMIT` | `2GiB` | Worker memory limit: a whole number of bytes, or a whole number followed by `KiB`, `MiB` or `GiB` with no space (`2048MiB`, `2GiB`, `2147483648`). Decimal units such as `GB` are refused. Clamped to 1536MiB–16GiB. |
+
+A value that cannot be parsed is ignored with a warning, and the default is
+used. A value outside the range is clamped with a warning.
+
+What the memory limit measures depends on the OS:
+
+- **Linux:** the worker's address space (`RLIMIT_AS`), set on the worker
+  process only, before it is given any job. Address space is larger than
+  memory in use: the worker reserves most of 1.5 GB of it before any job,
+  which is why the limit cannot go below 1536MiB.
+- **Windows:** the worker's committed memory, through a Job Object. The worker
+  is started suspended and put in the job before it runs.
+- **macOS:** macOS does not enforce `RLIMIT_AS`, so Pad checks the worker's
+  resident memory every 100ms and kills it above the limit. A worker can go
+  over the limit for up to one check interval before it is stopped.
+- **Other systems:** no memory limit, only the timeout. The start log line
+  says `mem_cap=none`.
+
 ### Email (Optional)
 
 Email enables sending workspace invitation links. Without it, users can still join via CLI invite codes.
