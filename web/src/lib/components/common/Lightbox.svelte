@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { relativeTime } from '$lib/utils/markdown';
 	/**
 	 * Full-screen image viewer for attachment thumbnails (IDEA-1660).
 	 * Opened by a host that captures a click on an `img[data-attachment-id]`
@@ -2817,6 +2818,15 @@
 			<div class="lightbox-meta-name" title={displayName}>{displayName}</div>
 			{#if headerDetail}
 				<div class="lightbox-meta-detail">{headerDetail}</div>
+			{/if}
+			<!-- TASK-3319: when the ORIGINAL was uploaded, and by whom when the server
+			     names them, so a reader can tell the order of a set of screenshots.
+			     Relative, with the absolute time on hover (the History tab's format). -->
+			{#if headerMeta.uploadedAt}
+				{@const at = headerMeta.uploadedAt}
+				<div class="lightbox-meta-detail lightbox-meta-uploaded" title={new Date(at).toLocaleString()}>
+					Uploaded {relativeTime(at)}{#if headerMeta.uploadedBy}{' · by '}<bdi>{headerMeta.uploadedBy}</bdi>{/if}
+				</div>
 			{/if}
 			{#if headerTransient}
 				<!-- DR-10: retryable, BESIDE the name/type it already knows — never a

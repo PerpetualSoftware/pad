@@ -53,6 +53,24 @@ export interface AttachmentMetadata {
 	 *                  server, which is a far bigger change than the bug.
 	 */
 	derived: string[] | 'unknown';
+	/**
+	 * When the ORIGINAL was uploaded (RFC3339) and by whom (a display name), from
+	 * `X-Pad-Attachment-Uploaded-At` / `-Uploaded-By` (TASK-3319). Null when the
+	 * server did not say: an older build, the share route (which names no one),
+	 * or an uploader that does not resolve to a name.
+	 */
+	uploaded_at: string | null;
+	uploaded_by: string | null;
+}
+
+/** The uploader header is percent-encoded UTF-8 (a header reads as Latin-1). */
+function decodeUploader(raw: string | null): string | null {
+	if (!raw) return null;
+	try {
+		return decodeURIComponent(raw) || null;
+	} catch {
+		return null;
+	}
 }
 
 /**
@@ -220,6 +238,8 @@ export function fetchAttachmentMetadata(
 			const derivedHeader = resp.headers.get('x-pad-attachment-derived');
 			return {
 				status: 'ok' as const,
+				uploaded_at: resp.headers.get('x-pad-attachment-uploaded-at') || null,
+				uploaded_by: decodeUploader(resp.headers.get('x-pad-attachment-uploaded-by')),
 				mime,
 				size: Number.isFinite(len) && len >= 0 ? len : 0,
 				derived:
