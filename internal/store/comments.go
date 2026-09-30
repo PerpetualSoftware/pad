@@ -93,6 +93,25 @@ func (s *Store) createCommentTx(tx *sql.Tx, workspaceID, itemID, userID string, 
 		author = createdBy
 	}
 
+	// A reply to a tombstone is refused (BUG-3252). On Postgres the parent
+	// is read FOR KEY SHARE, the lock the reply's foreign-key check takes
+	// anyway, so a delete tombstoning it (FOR UPDATE) either commits first
+	// and is seen here, or waits for this reply and then counts it.
+	if input.ParentID != "" {
+		parentQ := `SELECT CASE WHEN deleted_at IS NULL THEN 0 ELSE 1 END FROM comments WHERE id = ?`
+		if s.dialect.Driver() == DriverPostgres {
+			parentQ += ` FOR KEY SHARE`
+		}
+		var parentDeleted int
+		switch err := tx.QueryRow(s.q(parentQ), input.ParentID).Scan(&parentDeleted); {
+		case errors.Is(err, sql.ErrNoRows):
+			return "", fmt.Errorf("insert comment: parent %s: %w", input.ParentID, sql.ErrNoRows)
+		case err != nil:
+			return "", fmt.Errorf("insert comment: read parent: %w", err)
+		case parentDeleted == 1:
+			return "", ErrCommentDeleted
+		}
+	}
 	// Stamp BEFORE the INSERT — see the ORDERING note on
 	// stampAttachmentRefsTx (BUG-2415, codex round 3).
 	if err := stampAttachmentRefsTx(tx, s, workspaceID, input.Body); err != nil {
@@ -151,11 +170,21 @@ func (s *Store) UpdateComment(id, body string) (*models.Comment, error) {
 	defer tx.Rollback()
 
 	var workspaceID, bodyBefore string
-	if err := tx.QueryRow(s.q(`SELECT workspace_id, body FROM comments WHERE id = ?`), id).Scan(&workspaceID, &bodyBefore); err != nil {
+	var deleted int
+	lockQ := `SELECT workspace_id, body, CASE WHEN deleted_at IS NULL THEN 0 ELSE 1 END FROM comments WHERE id = ?`
+	if s.dialect.Driver() == DriverPostgres {
+		// A tombstoning delete holds this row FOR UPDATE; waiting on it
+		// here means the check below sees the tombstone it commits.
+		lockQ += ` FOR NO KEY UPDATE`
+	}
+	if err := tx.QueryRow(s.q(lockQ), id).Scan(&workspaceID, &bodyBefore, &deleted); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, sql.ErrNoRows
 		}
 		return nil, fmt.Errorf("resolve comment workspace: %w", err)
+	}
+	if deleted == 1 {
+		return nil, ErrCommentDeleted
 	}
 	// Stamp BEFORE the UPDATE — see the ORDERING note on
 	// stampAttachmentRefsTx (BUG-2415, codex round 3).
@@ -229,6 +258,7 @@ func (s *Store) getCommentQ(q Queryer, id string) (*models.Comment, error) {
 		SELECT c.id, c.item_id, c.workspace_id, c.author, COALESCE(c.user_id, ''), c.body,
 		       c.created_by, c.source, COALESCE(c.activity_id, ''), COALESCE(c.parent_id, ''),
 		       c.created_at, c.updated_at,
+		       CASE WHEN c.deleted_at IS NULL THEN 0 ELSE 1 END,
 		       i.title, i.slug
 		FROM comments c
 		JOIN items i ON i.id = c.item_id
@@ -236,10 +266,11 @@ func (s *Store) getCommentQ(q Queryer, id string) (*models.Comment, error) {
 
 	var c models.Comment
 	var createdAt, updatedAt string
+	var deleted int
 	err := row.Scan(
 		&c.ID, &c.ItemID, &c.WorkspaceID, &c.Author, &c.UserID, &c.Body,
 		&c.CreatedBy, &c.Source, &c.ActivityID, &c.ParentID,
-		&createdAt, &updatedAt,
+		&createdAt, &updatedAt, &deleted,
 		&c.ItemTitle, &c.ItemSlug,
 	)
 	if err == sql.ErrNoRows {
@@ -250,6 +281,7 @@ func (s *Store) getCommentQ(q Queryer, id string) (*models.Comment, error) {
 	}
 	c.CreatedAt = parseTime(createdAt)
 	c.UpdatedAt = parseTime(updatedAt)
+	c.Deleted = deleted == 1
 	return &c, nil
 }
 
@@ -282,7 +314,8 @@ func (s *Store) getCommentQ(q Queryer, id string) (*models.Comment, error) {
 // as "no name".
 const commentListCols = `c.id, c.item_id, c.workspace_id, c.author, COALESCE(c.user_id, ''), c.body,
 		       c.created_by, c.source, COALESCE(c.activity_id, ''), COALESCE(c.parent_id, ''),
-		       c.created_at, c.updated_at, a.metadata`
+		       c.created_at, c.updated_at,
+		       CASE WHEN c.deleted_at IS NULL THEN 0 ELSE 1 END, a.metadata`
 
 const commentAgentJoin = `LEFT JOIN activities a ON a.id = c.activity_id AND a.document_id = c.item_id`
 
@@ -292,15 +325,17 @@ func scanComments(rows *sql.Rows) ([]models.Comment, error) {
 		var c models.Comment
 		var createdAt, updatedAt string
 		var activityMeta sql.NullString
+		var deleted int
 		if err := rows.Scan(
 			&c.ID, &c.ItemID, &c.WorkspaceID, &c.Author, &c.UserID, &c.Body,
 			&c.CreatedBy, &c.Source, &c.ActivityID, &c.ParentID,
-			&createdAt, &updatedAt, &activityMeta,
+			&createdAt, &updatedAt, &deleted, &activityMeta,
 		); err != nil {
 			return nil, fmt.Errorf("scan comment: %w", err)
 		}
 		c.CreatedAt = parseTime(createdAt)
 		c.UpdatedAt = parseTime(updatedAt)
+		c.Deleted = deleted == 1
 		if activityMeta.Valid {
 			c.AgentName = models.AgentNameFromMetadata(activityMeta.String)
 		}
@@ -367,9 +402,32 @@ func (s *Store) ListCommentsBeforeTime(itemID string, before time.Time, beforeID
 	return scanComments(rows)
 }
 
-// DeleteComment removes a comment by ID.
-// DeleteComment hard-deletes a comment and emits the ref-only
-// comment.deleted event in the same transaction (SPEC-3 v1.4 / TASK-2658).
+// ErrCommentDeleted refuses a write that addresses a tombstone (BUG-3252):
+// an edit, a reply or a reaction. A tombstone has no body left to edit or
+// answer; its only remaining job is to hold its replies' parent.
+var ErrCommentDeleted = errors.New("this comment was deleted")
+
+// DeleteComment deletes a comment and emits the ref-only comment.deleted
+// event in the same transaction (SPEC-3 v1.4 / TASK-2658).
+//
+// A comment with no replies is hard-deleted. A comment that still has
+// replies becomes a TOMBSTONE (BUG-3252, ruled tombstone over cascade): its
+// body is blanked, its reactions go, deleted_at is set, and the row stays so
+// its replies keep their parent. Author and timestamps are kept, and
+// updated_at is NOT moved, so the derived edited marker reads as it did.
+// Deleting a tombstone answers sql.ErrNoRows, as for a missing comment.
+//
+// Deleting a reply whose parent is a tombstone left with no other reply also
+// hard-deletes that tombstone, in this transaction, and so on up the chain.
+//
+// Locking: the parent row, when there is one, is locked before this row, so
+// every delete takes the two in the same order. On Postgres the target row
+// is locked FOR UPDATE, which conflicts with the FOR KEY SHARE a concurrent
+// reply INSERT's foreign-key check takes, so no reply can appear between the
+// count and the decision. A reply deleted concurrently is seen by the count
+// after the lock (READ COMMITTED reads each statement fresh), and its own
+// delete reaps a tombstone only after it holds this row's lock, so the two
+// serialize. SQLite needs none of it: every transaction is BEGIN IMMEDIATE.
 //
 // Transactional as of TASK-2658 — it was a bare Exec. The delete marker is
 // what resolves the conflict round 7 exposed: without it, a hard-deleted
@@ -378,36 +436,8 @@ func (s *Store) ListCommentsBeforeTime(itemID string, before time.Time, beforeID
 // (breaking the outbox guarantee) and delivering the deleted body forever.
 // With it, the created event still delivers, the deletion is announced
 // ref-only, and retention prunes both — privacy of a frozen payload is
-// temporal, not achieved by deleting rows out from under a consumer.
-//
-// The identifiers are read BEFORE the DELETE, in-tx, because after it there is
-// no row to read them from.
-// CommentHasRepliesError refuses a delete of a comment that still has
-// replies (BUG-3252). Nothing is deleted. Whether such a delete should
-// cascade or leave a tombstone is an open product decision; this refusal is
-// the floor under either.
-type CommentHasRepliesError struct {
-	CommentID string
-	Replies   int
-}
-
-func (e *CommentHasRepliesError) Error() string {
-	noun := "replies"
-	if e.Replies == 1 {
-		noun = "reply"
-	}
-	return fmt.Sprintf("this comment has %d %s; delete the %s first", e.Replies, noun, noun)
-}
-
-// AsCommentHasRepliesError unwraps err to a *CommentHasRepliesError.
-func AsCommentHasRepliesError(err error) (*CommentHasRepliesError, bool) {
-	var e *CommentHasRepliesError
-	if errors.As(err, &e) {
-		return e, true
-	}
-	return nil, false
-}
-
+// temporal, not achieved by deleting rows out from under a consumer. A
+// tombstone announces the same deletion: its words are gone, its row is not.
 func (s *Store) DeleteComment(id string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -415,60 +445,40 @@ func (s *Store) DeleteComment(id string) error {
 	}
 	defer tx.Rollback()
 
-	var workspaceID, itemID string
-	var parentID sql.NullString
-	switch err := tx.QueryRow(s.q(`SELECT workspace_id, item_id, parent_id FROM comments WHERE id = ?`), id).
-		Scan(&workspaceID, &itemID, &parentID); {
-	case errors.Is(err, sql.ErrNoRows):
+	target, err := s.lockCommentForDeleteTx(tx, id)
+	if err != nil {
+		return err
+	}
+	if target == nil || target.deleted {
 		return sql.ErrNoRows
-	case err != nil:
-		return fmt.Errorf("delete comment: read refs: %w", err)
 	}
 
-	// comments.parent_id references comments(id) with no ON DELETE, so a
-	// parent with replies cannot be deleted: the bare DELETE used to fail the
-	// FK and reach every door as a 500 (BUG-3252). Refuse it by name instead.
-	// The NOT EXISTS makes the refusal part of the DELETE itself, so a reply
-	// counted as absent a moment earlier cannot slip under it. A zero-row
-	// result is then told apart by counting. Under Postgres READ COMMITTED each
-	// statement takes its own snapshot, so the replies the DELETE saw can be
-	// gone by the count. A comment that still exists with no replies is
-	// therefore deleted on another pass, never reported as missing (codex r2).
-	deleted := false
-	for attempt := 0; attempt < 3 && !deleted; attempt++ {
-		result, err := tx.Exec(s.q(`DELETE FROM comments WHERE id = ?
-			AND NOT EXISTS (SELECT 1 FROM comments r WHERE r.parent_id = ?)`), id, id)
-		if err != nil {
+	var replies int
+	if err := tx.QueryRow(s.q(`SELECT COUNT(*) FROM comments WHERE parent_id = ?`), id).Scan(&replies); err != nil {
+		return fmt.Errorf("delete comment: count replies: %w", err)
+	}
+	if replies > 0 {
+		if _, err := tx.Exec(s.q(`DELETE FROM comment_reactions WHERE comment_id = ?`), id); err != nil {
+			return fmt.Errorf("delete comment: drop reactions: %w", err)
+		}
+		if _, err := tx.Exec(s.q(`UPDATE comments SET body = '', deleted_at = ? WHERE id = ?`), now(), id); err != nil {
+			return fmt.Errorf("delete comment: tombstone: %w", err)
+		}
+	} else {
+		if _, err := tx.Exec(s.q(`DELETE FROM comments WHERE id = ?`), id); err != nil {
 			return fmt.Errorf("delete comment: %w", err)
 		}
-		if n, _ := result.RowsAffected(); n > 0 {
-			deleted = true
-			break
+		if err := s.reapTombstonesTx(tx, target.parentID); err != nil {
+			return err
 		}
-		var replies, self int
-		if err := tx.QueryRow(s.q(`SELECT COUNT(*) FROM comments WHERE parent_id = ?`), id).Scan(&replies); err != nil {
-			return fmt.Errorf("delete comment: count replies: %w", err)
-		}
-		if replies > 0 {
-			return &CommentHasRepliesError{CommentID: id, Replies: replies}
-		}
-		if err := tx.QueryRow(s.q(`SELECT COUNT(*) FROM comments WHERE id = ?`), id).Scan(&self); err != nil {
-			return fmt.Errorf("delete comment: recheck: %w", err)
-		}
-		if self == 0 {
-			return sql.ErrNoRows
-		}
-	}
-	if !deleted {
-		return fmt.Errorf("delete comment %s: its replies kept changing during the delete; retry", id)
 	}
 
-	if err := s.emitRefOnlyDeletionTx(tx, kernelevents.CommentDeleted, workspaceID, id, itemID, parentID.String); err != nil {
+	if err := s.emitRefOnlyDeletionTx(tx, kernelevents.CommentDeleted, target.workspaceID, id, target.itemID, target.parentID); err != nil {
 		return err
 	}
 	// Deleting a comment changes the recent trail (TASK-3117 ruling 3); see
 	// UpdateComment for why an out-of-window comment costs nothing.
-	if err := s.enqueueDecisionJobsForItemTx(tx, itemID); err != nil {
+	if err := s.enqueueDecisionJobsForItemTx(tx, target.itemID); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -477,9 +487,107 @@ func (s *Store) DeleteComment(id string) error {
 	return nil
 }
 
-// CountComments returns the number of comments for an item.
+type commentDeleteRow struct {
+	workspaceID, itemID, parentID string
+	deleted                       bool
+}
+
+// lockCommentForDeleteTx reads the row DeleteComment acts on. On Postgres
+// it first locks the row's whole ancestor chain, root first, then the row:
+// reapTombstonesTx may walk up that chain, and every delete taking the chain
+// in one order is what keeps two deletes in one thread from deadlocking. It
+// returns nil for a missing comment.
+func (s *Store) lockCommentForDeleteTx(tx *sql.Tx, id string) (*commentDeleteRow, error) {
+	// parent_id is never rewritten after insert (only a workspace purge
+	// clears it), so the chain read here is the chain the reap walks.
+	chain := []string{id}
+	seen := map[string]bool{id: true}
+	for cur := id; ; {
+		var parentID sql.NullString
+		err := tx.QueryRow(s.q(`SELECT parent_id FROM comments WHERE id = ?`), cur).Scan(&parentID)
+		if errors.Is(err, sql.ErrNoRows) {
+			if cur == id {
+				return nil, nil
+			}
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("delete comment: read parent: %w", err)
+		}
+		if !parentID.Valid || parentID.String == "" || seen[parentID.String] {
+			break
+		}
+		seen[parentID.String] = true
+		chain = append(chain, parentID.String)
+		cur = parentID.String
+	}
+	var row *commentDeleteRow
+	for i := len(chain) - 1; i >= 0; i-- {
+		r, err := s.lockCommentRowTx(tx, chain[i])
+		if err != nil {
+			return nil, err
+		}
+		row = r
+	}
+	return row, nil
+}
+
+// lockCommentRowTx reads one comment row, FOR UPDATE on Postgres. It returns
+// nil when the row does not exist.
+func (s *Store) lockCommentRowTx(tx *sql.Tx, id string) (*commentDeleteRow, error) {
+	query := `SELECT workspace_id, item_id, COALESCE(parent_id, ''),
+		CASE WHEN deleted_at IS NULL THEN 0 ELSE 1 END
+		FROM comments WHERE id = ?`
+	if s.dialect.Driver() == DriverPostgres {
+		query += ` FOR UPDATE`
+	}
+	var row commentDeleteRow
+	var deleted int
+	switch err := tx.QueryRow(s.q(query), id).Scan(&row.workspaceID, &row.itemID, &row.parentID, &deleted); {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil, nil
+	case err != nil:
+		return nil, fmt.Errorf("delete comment: lock row: %w", err)
+	}
+	row.deleted = deleted == 1
+	return &row, nil
+}
+
+// reapTombstonesTx hard-deletes the tombstone at id if it has no reply left,
+// then does the same for its parent, and so on up. The caller has just
+// deleted a reply of id, and lockCommentForDeleteTx has already locked the
+// whole chain above it.
+//
+// A reaped tombstone emits no event of its own: its comment.deleted was
+// emitted when it became a tombstone.
+func (s *Store) reapTombstonesTx(tx *sql.Tx, id string) error {
+	for id != "" {
+		row, err := s.lockCommentRowTx(tx, id)
+		if err != nil {
+			return err
+		}
+		if row == nil || !row.deleted {
+			return nil
+		}
+		var replies int
+		if err := tx.QueryRow(s.q(`SELECT COUNT(*) FROM comments WHERE parent_id = ?`), id).Scan(&replies); err != nil {
+			return fmt.Errorf("delete comment: count tombstone replies: %w", err)
+		}
+		if replies > 0 {
+			return nil
+		}
+		if _, err := tx.Exec(s.q(`DELETE FROM comments WHERE id = ?`), id); err != nil {
+			return fmt.Errorf("delete comment: reap tombstone: %w", err)
+		}
+		id = row.parentID
+	}
+	return nil
+}
+
+// CountComments returns the number of comments for an item. Tombstones
+// (BUG-3252) are not counted: nothing is left of them to read.
 func (s *Store) CountComments(itemID string) (int, error) {
 	var count int
-	err := s.db.QueryRow(s.q("SELECT COUNT(*) FROM comments WHERE item_id = ?"), itemID).Scan(&count)
+	err := s.db.QueryRow(s.q("SELECT COUNT(*) FROM comments WHERE item_id = ? AND deleted_at IS NULL"), itemID).Scan(&count)
 	return count, err
 }

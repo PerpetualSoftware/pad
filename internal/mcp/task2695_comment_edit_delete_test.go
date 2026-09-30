@@ -117,9 +117,10 @@ func TestCommentEditDelete_Remote(t *testing.T) {
 	}
 }
 
-// TestDeleteCommentWithReplies_Remote pins BUG-3252 on the remote door: the
-// refusal arrives as comment_has_replies with its count and the shared hint,
-// not as server_error, and both comments survive.
+// TestDeleteCommentWithReplies_Remote pins BUG-3252 on the remote door:
+// delete-comment on a comment with replies succeeds and leaves a tombstone
+// the reply still hangs off, and an edit-comment addressed to that tombstone
+// arrives as comment_deleted with the shared hint, not as server_error.
 func TestDeleteCommentWithReplies_Remote(t *testing.T) {
 	s := storetest.NewSQLite(t)
 	srv := server.New(s)
@@ -160,14 +161,21 @@ func TestDeleteCommentWithReplies_Remote(t *testing.T) {
 	ref := fmt.Sprintf("TASK-%d", *item.ItemNumber)
 	resp := respText(t, m.HandleMessage(context.Background(),
 		toolsCall(1, fmt.Sprintf(`{"action":"delete-comment","ref":%q,"comment_id":%q}`, ref, parent.ID))))
-	for _, want := range []string{`"isError":true`, `comment_has_replies`, `\"reply_count\":1`, "Delete the replies first"} {
-		if !strings.Contains(resp, want) {
-			t.Fatalf("response lacks %s: %s", want, resp)
-		}
+	if strings.Contains(resp, `"isError":true`) {
+		t.Fatalf("delete-comment on a comment with replies failed: %s", resp)
 	}
-	for _, id := range []string{parent.ID, reply.ID} {
-		if c, err := s.GetComment(id); err != nil || c == nil {
-			t.Fatalf("comment %s did not survive the refusal (err %v)", id, err)
+	if c, err := s.GetComment(parent.ID); err != nil || c == nil || !c.Deleted || c.Body != "" {
+		t.Fatalf("parent = %+v (err %v), want a tombstone", c, err)
+	}
+	if c, err := s.GetComment(reply.ID); err != nil || c == nil || c.ParentID != parent.ID {
+		t.Fatalf("reply = %+v (err %v), want it under its parent", c, err)
+	}
+
+	resp = respText(t, m.HandleMessage(context.Background(),
+		toolsCall(2, fmt.Sprintf(`{"action":"edit-comment","ref":%q,"comment_id":%q,"message":"revived"}`, ref, parent.ID))))
+	for _, want := range []string{`"isError":true`, `comment_deleted`, "placeholder for its replies"} {
+		if !strings.Contains(resp, want) {
+			t.Fatalf("edit of a tombstone: response lacks %s: %s", want, resp)
 		}
 	}
 }

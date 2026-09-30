@@ -2,6 +2,8 @@ package server
 
 import (
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -127,12 +129,13 @@ func TestItemScopedCommentWrites(t *testing.T) {
 	})
 }
 
-// TestDeleteCommentWithReplies_Refused409 pins BUG-3252 on both server
-// routes: a comment with replies is refused with 409 comment_has_replies
-// naming the count, the parent and its reply both survive, and once the
-// reply is gone the parent deletes normally. Before the fix both routes
-// answered 500 from the parent_id foreign key.
-func TestDeleteCommentWithReplies_Refused409(t *testing.T) {
+// TestDeleteCommentWithReplies_Tombstones pins BUG-3252 on both server
+// routes: deleting a comment with replies answers 204 and leaves a tombstone
+// (deleted, empty body, author kept) that its reply still hangs off. Writes
+// addressed to the tombstone answer 409 comment_deleted, deleting it again
+// answers 404, and deleting its last reply removes it. Before the 409 floor
+// both routes answered 500 from the parent_id foreign key.
+func TestDeleteCommentWithReplies_Tombstones(t *testing.T) {
 	t.Parallel()
 	env := setupRBACEnv(t)
 	ws := "/api/v1/workspaces/" + env.wsSlug
@@ -152,51 +155,70 @@ func TestDeleteCommentWithReplies_Refused409(t *testing.T) {
 		parseJSON(t, rr, &c)
 		return c["id"].(string)
 	}
-	ids := func() map[string]bool {
+	list := func() map[string]map[string]any {
 		t.Helper()
 		rr := doRequestWithCookie(env.srv, "GET", ws+"/items/"+slug+"/comments", nil, env.ownerToken)
-		var list []map[string]any
-		parseJSON(t, rr, &list)
-		out := map[string]bool{}
-		for _, c := range list {
-			out[c["id"].(string)] = true
+		var rows []map[string]any
+		parseJSON(t, rr, &rows)
+		out := map[string]map[string]any{}
+		for _, c := range rows {
+			out[c["id"].(string)] = c
 		}
 		return out
 	}
-
-	parent := post(ws+"/items/"+slug+"/comments", "parent")
-	reply := post(ws+"/comments/"+parent+"/replies", "reply")
-
-	for _, path := range []string{ws + "/comments/" + parent, ws + "/items/" + slug + "/comments/" + parent} {
-		rr := doRequestWithCookie(env.srv, "DELETE", path, nil, env.editorToken)
+	wantCommentDeleted := func(what string, rr *httptest.ResponseRecorder, id string) {
+		t.Helper()
 		if rr.Code != http.StatusConflict {
-			t.Fatalf("DELETE %s: want 409, got %d: %s", path, rr.Code, rr.Body.String())
+			t.Fatalf("%s: want 409, got %d: %s", what, rr.Code, rr.Body.String())
 		}
 		var body struct {
 			Error struct {
 				Code    string         `json:"code"`
-				Message string         `json:"message"`
 				Details map[string]any `json:"details"`
 			} `json:"error"`
 		}
 		parseJSON(t, rr, &body)
-		if body.Error.Code != "comment_has_replies" || body.Error.Details["reply_count"] != float64(1) ||
-			body.Error.Details["comment_id"] != parent || !strings.Contains(body.Error.Message, "1 reply") {
-			t.Fatalf("DELETE %s: refusal = %+v", path, body.Error)
-		}
-		if got := ids(); !got[parent] || !got[reply] {
-			t.Fatalf("DELETE %s: the refusal destroyed something: %v", path, got)
+		if body.Error.Code != "comment_deleted" || body.Error.Details["comment_id"] != id {
+			t.Fatalf("%s: refusal = %+v", what, body.Error)
 		}
 	}
 
-	if rr := doRequestWithCookie(env.srv, "DELETE", ws+"/comments/"+reply, nil, env.editorToken); rr.Code != http.StatusNoContent {
-		t.Fatalf("delete reply: %d %s", rr.Code, rr.Body.String())
-	}
-	if rr := doRequestWithCookie(env.srv, "DELETE", ws+"/items/"+slug+"/comments/"+parent, nil, env.editorToken); rr.Code != http.StatusNoContent {
-		t.Fatalf("delete parent after its reply: %d %s", rr.Code, rr.Body.String())
-	}
-	if got := ids(); len(got) != 0 {
-		t.Fatalf("comments left after deleting both: %v", got)
+	for _, route := range []string{"workspace", "item-scoped"} {
+		t.Run(route, func(t *testing.T) {
+			parent := post(ws+"/items/"+slug+"/comments", "the words to remove")
+			reply := post(ws+"/comments/"+parent+"/replies", "reply")
+			path := ws + "/comments/" + parent
+			if route == "item-scoped" {
+				path = ws + "/items/" + slug + "/comments/" + parent
+			}
+
+			if rr := doRequestWithCookie(env.srv, "DELETE", path, nil, env.editorToken); rr.Code != http.StatusNoContent {
+				t.Fatalf("DELETE %s: want 204, got %d: %s", path, rr.Code, rr.Body.String())
+			}
+			got := list()
+			p, r := got[parent], got[reply]
+			if p == nil || p["deleted"] != true || p["body"] != "" || p["author"] == "" {
+				t.Fatalf("parent after delete = %v, want a tombstone keeping its author", p)
+			}
+			if r == nil || r["parent_id"] != parent {
+				t.Fatalf("reply after delete = %v, want it under its parent", r)
+			}
+
+			wantCommentDeleted("edit", doRequestWithCookie(env.srv, "PATCH", path, map[string]any{"body": "revived"}, env.editorToken), parent)
+			wantCommentDeleted("reply", doRequestWithCookie(env.srv, "POST", ws+"/comments/"+parent+"/replies", map[string]any{"body": "late"}, env.editorToken), parent)
+			wantCommentDeleted("react", doRequestWithCookie(env.srv, "POST", ws+"/comments/"+parent+"/reactions", map[string]any{"emoji": "👍"}, env.editorToken), parent)
+			wantCommentDeleted("unreact", doRequestWithCookie(env.srv, "DELETE", ws+"/comments/"+parent+"/reactions/"+url.PathEscape("👍"), nil, env.editorToken), parent)
+			if rr := doRequestWithCookie(env.srv, "DELETE", path, nil, env.editorToken); rr.Code != http.StatusNotFound {
+				t.Fatalf("DELETE tombstone: want 404, got %d: %s", rr.Code, rr.Body.String())
+			}
+
+			if rr := doRequestWithCookie(env.srv, "DELETE", ws+"/comments/"+reply, nil, env.editorToken); rr.Code != http.StatusNoContent {
+				t.Fatalf("delete reply: %d %s", rr.Code, rr.Body.String())
+			}
+			if got := list(); got[parent] != nil || got[reply] != nil {
+				t.Fatalf("left after deleting the last reply: %v", got)
+			}
+		})
 	}
 }
 

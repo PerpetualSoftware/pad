@@ -23,6 +23,10 @@ type Comment struct {
 	ParentID   string    `json:"parent_id,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
+	// Deleted marks a tombstone: a comment deleted while it still had
+	// replies, kept so they keep their parent (BUG-3252). Its body is empty;
+	// author and timestamps are the original ones.
+	Deleted bool `json:"deleted,omitempty"`
 
 	// Populated by joins (not stored)
 	ItemTitle string `json:"item_title,omitempty"`

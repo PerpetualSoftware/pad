@@ -500,7 +500,7 @@ func (s *Store) DecisionJobsFailing(workspaceID, questionSet string) (bool, erro
 // RecentComments returns an item's newest n comments, oldest first — the
 // "recent trail" a decision's state carries. Ordered by (created_at, id) so a
 // burst of comments inside one second still has one order, and therefore one
-// state hash.
+// state hash. Tombstones (BUG-3252) are left out: they carry no words.
 func (s *Store) RecentComments(itemID string, n int) ([]models.Comment, error) {
 	if n <= 0 {
 		return nil, nil
@@ -509,7 +509,7 @@ func (s *Store) RecentComments(itemID string, n int) ([]models.Comment, error) {
 		SELECT `+commentListCols+`
 		FROM comments c
 		`+commentAgentJoin+`
-		WHERE c.item_id = ?
+		WHERE c.item_id = ? AND c.deleted_at IS NULL
 		ORDER BY c.created_at DESC, c.id DESC
 		LIMIT ?`), itemID, n)
 	if err != nil {

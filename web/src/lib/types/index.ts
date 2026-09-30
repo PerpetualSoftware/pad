@@ -1636,6 +1636,8 @@ export interface Comment {
 	updated_at: string;
 	/** Derived server-side: the body changed after creation (TASK-2695). */
 	edited?: boolean;
+	/** A tombstone (BUG-3252): deleted while it had replies; body is empty and its replies are kept. */
+	deleted?: boolean;
 	item_title?: string;
 	item_slug?: string;
 	/**

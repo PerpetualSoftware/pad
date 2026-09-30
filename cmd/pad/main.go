@@ -75,10 +75,16 @@ func writeRootStructuredError(w io.Writer, err error) {
 		cli.WriteTooLargeError(w, apiErr)
 		return
 	}
-	// BUG-3252: only comment-delete receives it today, but a root writer
-	// keeps any later door that deletes a comment from saying server_error.
+	// BUG-3252: comment-delete against a server that predates comment
+	// tombstones. A root writer keeps any later door that deletes a comment
+	// from saying server_error.
 	if apiErr, ok := cli.IsCommentHasReplies(err); ok {
 		cli.WriteCommentHasRepliesError(w, apiErr)
+		return
+	}
+	// BUG-3252: an edit, reply or reaction addressed to a tombstone.
+	if apiErr, ok := cli.IsCommentDeleted(err); ok {
+		cli.WriteCommentDeletedError(w, apiErr)
 	}
 }
 

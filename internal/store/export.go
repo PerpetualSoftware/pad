@@ -288,6 +288,9 @@ func (s *Store) ExportWorkspaceQ(q Queryer, slug string) (*models.WorkspaceExpor
 		FROM comments c
 		JOIN items i ON c.item_id = i.id
 		WHERE c.workspace_id = ? AND i.deleted_at IS NULL
+		  -- A tombstone (BUG-3252) carries no words, and import does not
+		  -- restore threading, so there is nothing left for it to hold.
+		  AND c.deleted_at IS NULL
 		ORDER BY c.created_at`), ws.ID)
 	if err != nil {
 		return nil, fmt.Errorf("export comments: %w", err)

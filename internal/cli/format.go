@@ -633,6 +633,16 @@ func PrintActivityTable(activities []models.Activity) {
 // shape agentActor.ts forbids. `--format json` carries the field verbatim
 // for agents and scripts; a terminal-safe rendering (control-character
 // stripping, a fixed-width column) is IDEA-2766's, not this function's.
+// CommentBodyForDisplay is a comment's body, or a placeholder for a
+// tombstone (BUG-3252), whose body is empty and whose replies are still
+// listed.
+func CommentBodyForDisplay(c models.Comment) string {
+	if c.Deleted {
+		return "(deleted)"
+	}
+	return c.Body
+}
+
 func PrintCommentTable(comments []models.Comment) {
 	if len(comments) == 0 {
 		fmt.Println("No comments.")
@@ -649,7 +659,7 @@ func PrintCommentTable(comments []models.Comment) {
 			edited = "  •  edited"
 		}
 		fmt.Printf("💬 %s  •  %s via %s%s  •  id %s\n", badge, RelativeTime(c.CreatedAt), c.Source, edited, c.ID)
-		fmt.Println(c.Body)
+		fmt.Println(CommentBodyForDisplay(c))
 		if i < len(comments)-1 {
 			fmt.Println()
 		}
