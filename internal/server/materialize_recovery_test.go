@@ -588,3 +588,116 @@ func TestMaterializeNoMemoryCapCountsSilently(t *testing.T) {
 		}
 	}
 }
+
+// An item that uses up its budget leaves exactly ONE line naming it, its
+// failure count and the last error kind; a budget reset (op-log growth) and a
+// second exhaustion leave exactly one more.
+func TestMaterializeExhaustionLogsOncePerExhaustion(t *testing.T) {
+	var buf bytes.Buffer
+	clock := time.Now()
+	fake := &fakeMaterializer{fn: func(materialize.Job) (string, error) {
+		return "", fmt.Errorf("%w: exit status 2", materialize.ErrChildDied)
+	}}
+	f := newRecoveryFixture(t, fake, time.Minute, materializeRecoveryConfig{
+		maxFailures: 3, backoffBase: time.Minute,
+		now:    func() time.Time { return clock },
+		logger: slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})),
+	})
+	it := f.item(t, "Stuck", "stale")
+	f.appendRows(t, it.ID, contentFrame(1))
+	const msg = "exhausted its failure budget"
+	exhaustLines := func() []string {
+		var out []string
+		for _, l := range strings.Split(buf.String(), "\n") {
+			if strings.Contains(l, msg) {
+				out = append(out, l)
+			}
+		}
+		return out
+	}
+	drive := func(passes int) {
+		for i := 0; i < passes; i++ {
+			f.r.process(it.ID)
+			clock = clock.Add(time.Hour)
+		}
+	}
+
+	drive(3 + 5) // K failures, then five refused passes
+	lines := exhaustLines()
+	if len(lines) != 1 {
+		t.Fatalf("exhaustion lines after one exhaustion = %d, want 1\n%s", len(lines), buf.String())
+	}
+	for _, want := range []string{"level=WARN", "item_id=" + it.ID, "failures=3", "last_error_kind=worker_died"} {
+		if !strings.Contains(lines[0], want) {
+			t.Fatalf("exhaustion line lacks %q: %s", want, lines[0])
+		}
+	}
+
+	f.appendRows(t, it.ID, contentFrame(2)) // op-log grows: the budget resets
+	drive(3 + 5)
+	if n := len(exhaustLines()); n != 2 {
+		t.Fatalf("exhaustion lines after a reset and a second exhaustion = %d, want 2\n%s", n, buf.String())
+	}
+	if fake.calls.Load() != 6 {
+		t.Fatalf("materializer calls %d, want 6", fake.calls.Load())
+	}
+
+	// The schema-version skip is an exhaustion too, logged once.
+	buf.Reset()
+	old := f.item(t, "Old schema", "stale")
+	if _, err := f.srv.store.AppendYjsUpdate(old.ID, contentFrame(3), "0-old"); err != nil {
+		t.Fatal(err)
+	}
+	f.r.process(old.ID)
+	f.r.process(old.ID)
+	if l := exhaustLines(); len(l) != 1 || !strings.Contains(l[0], "last_error_kind=schema_version") {
+		t.Fatalf("schema-version exhaustion lines = %v", l)
+	}
+}
+
+// Items skipped for set-aside rows are counted, reported on the sweep's one
+// summary line, and never logged per item.
+func TestMaterializeSetAsideSkipsAreCountedNotLogged(t *testing.T) {
+	var buf bytes.Buffer
+	fake := &fakeMaterializer{}
+	f := newRecoveryFixture(t, fake, time.Minute, materializeRecoveryConfig{
+		logger: slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})),
+	})
+	it := f.item(t, "Aside", "stale")
+	f.appendRows(t, it.ID, contentFrame(1))
+	if _, _, err := f.srv.store.SetAsideAndClearOpLog(it.ID); err != nil {
+		t.Fatal(err)
+	}
+	f.appendRows(t, it.ID, contentFrame(2)) // pending again, over set-aside rows
+
+	f.r.onRoomIdle(it.ID) // the room trigger does queue it: its op-log is pending
+	if q := f.queueSnapshot(); len(q) != 1 {
+		t.Fatalf("queue = %v", q)
+	}
+	for i := 0; i < 3; i++ {
+		if res := f.r.process(it.ID); res != mrSetAside {
+			t.Fatalf("process = %q, want set_aside", res)
+		}
+	}
+	if n := f.r.setAsideSkipped.Load(); n != 3 {
+		t.Fatalf("set-aside skip count = %d, want 3", n)
+	}
+	if fake.calls.Load() != 0 {
+		t.Fatal("a set-aside item reached the materializer")
+	}
+	if strings.Contains(buf.String(), it.ID) {
+		t.Fatalf("set-aside skips logged per item:\n%s", buf.String())
+	}
+
+	f.r.sweep()
+	f.r.sweep() // no news: no second line
+	var sweepLines []string
+	for _, l := range strings.Split(buf.String(), "\n") {
+		if strings.Contains(l, "op-log recovery sweep") {
+			sweepLines = append(sweepLines, l)
+		}
+	}
+	if len(sweepLines) != 1 || !strings.Contains(sweepLines[0], "set_aside_skipped_total=3") {
+		t.Fatalf("sweep summary lines = %v, want one carrying set_aside_skipped_total=3", sweepLines)
+	}
+}

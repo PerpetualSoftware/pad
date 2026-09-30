@@ -8,6 +8,7 @@ import (
 	"runtime/debug"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/collab"
@@ -69,6 +70,10 @@ type materializeBudget struct {
 	opLogMax    int64
 	nextAttempt time.Time
 	lastErr     string
+	lastKind    string
+	// exhaustionLogged: the one exhaustion line for this budget has been
+	// written. A fresh budget (after the op-log grows) starts false again.
+	exhaustionLogged bool
 }
 
 type materializeRecovery struct {
@@ -86,6 +91,13 @@ type materializeRecovery struct {
 	queue   []string
 	wake    chan struct{}
 	budget  map[string]*materializeBudget
+
+	// setAsideSkipped counts items the worker skipped because they hold rows a
+	// schema rebuild set aside (BUG-3244), over the process lifetime; reported
+	// by the sweep's summary line, never per item. setAsideLogged is the value
+	// the last summary line carried.
+	setAsideSkipped atomic.Int64
+	setAsideLogged  int64
 
 	// processed, when set by a test, receives each processed item and its
 	// result after the item is done.
@@ -252,11 +264,24 @@ func (r *materializeRecovery) sweep() {
 		r.cfg.logger.Warn("op-log recovery: sweep query failed", "error", err)
 		return
 	}
+	queued := 0
 	for _, id := range ids {
 		if r.s.collab != nil && r.s.collab.HasRoom(id) {
 			continue
 		}
-		r.enqueue(id)
+		if r.enqueue(id) {
+			queued++
+		}
+	}
+	// ONE summary line per sweep, and only when it has news: items queued, or
+	// a set-aside skip since the last line. Set-aside items never come from
+	// this query (it excludes them); they reach the worker through the room
+	// trigger or a race, and are counted there, not logged per item.
+	skipped := r.setAsideSkipped.Load()
+	if queued > 0 || skipped != r.setAsideLogged {
+		r.setAsideLogged = skipped
+		r.cfg.logger.Info("op-log recovery sweep",
+			"candidates", len(ids), "queued", queued, "set_aside_skipped_total", skipped)
 	}
 }
 
@@ -346,6 +371,7 @@ func (r *materializeRecovery) process(itemID string) materializeResult {
 		return mrGone
 	}
 	if in.SetAside > 0 {
+		r.setAsideSkipped.Add(1)
 		return mrSetAside
 	}
 	if in.Pending == 0 {
@@ -358,8 +384,6 @@ func (r *materializeRecovery) process(itemID string) materializeResult {
 	for _, v := range in.SchemaVersions {
 		if v != collab.DefaultSchemaVersion {
 			r.exhaust(itemID, in.Cursor, fmt.Sprintf("op-log schema version %q, server %q", v, collab.DefaultSchemaVersion))
-			r.cfg.logger.Info("op-log recovery: skipping item written under another editor schema",
-				"item_id", itemID, "row_schema_version", v, "server_schema_version", collab.DefaultSchemaVersion)
 			return mrSchemaVersion
 		}
 	}
@@ -428,6 +452,7 @@ func (r *materializeRecovery) process(itemID string) materializeResult {
 	case store.MaterializeNothingPending:
 		return mrNothing
 	case store.MaterializeSetAside:
+		r.setAsideSkipped.Add(1)
 		return mrSetAside
 	default:
 		return mrGone
@@ -480,30 +505,60 @@ func (r *materializeRecovery) budgetSlotLocked(itemID string) *materializeBudget
 func (r *materializeRecovery) recordFailure(itemID string, cursor int64, err error) {
 	r.mu.Lock()
 	b := r.budgetSlotLocked(itemID)
+	kind := materializeErrorKind(err)
 	b.failures++
 	b.opLogMax = cursor
 	b.lastErr = err.Error()
+	b.lastKind = kind
 	delay := r.cfg.backoffBase << (b.failures - 1)
 	b.nextAttempt = r.cfg.now().Add(delay)
 	failures := b.failures
+	logExhaustion := r.claimExhaustionLogLocked(b)
 	r.mu.Unlock()
 
 	attrs := []any{"item_id", itemID, "op_log_cursor", cursor, "failures", failures,
-		"max_failures", r.cfg.maxFailures, "kind", materializeErrorKind(err), "error", err}
+		"max_failures", r.cfg.maxFailures, "kind", kind, "error", err}
 	// No memory cap could be established, so the supervisor refused the job
 	// without sending it anywhere, and has already warned once for the whole
 	// worker. It counts against the budget like any failure, but a line per
-	// item would repeat that warning for every pending item on every pass.
+	// item would repeat that warning for every pending item on every pass —
+	// so even its exhaustion line is DEBUG.
 	if errors.Is(err, materialize.ErrNoMemoryCap) {
-		r.cfg.logger.Debug("op-log recovery: job refused, no memory cap", attrs...)
+		if logExhaustion {
+			r.logExhaustion(slog.LevelDebug, itemID, failures, kind, err.Error())
+		} else {
+			r.cfg.logger.Debug("op-log recovery: job refused, no memory cap", attrs...)
+		}
 		return
 	}
-	if failures >= r.cfg.maxFailures {
-		r.cfg.logger.Warn("op-log recovery: giving up on item until its op-log changes", attrs...)
+	if logExhaustion {
+		r.logExhaustion(slog.LevelWarn, itemID, failures, kind, err.Error())
 		return
 	}
 	r.cfg.logger.Warn("op-log recovery: materialization failed; will retry after a backoff",
 		append(attrs, "retry_after", delay.String())...)
+}
+
+// claimExhaustionLogLocked reports whether b has just used up the budget and
+// its exhaustion line has not been written yet, and marks it written. Once per
+// budget: admit refuses an exhausted item without reaching recordFailure, and
+// only op-log growth (which deletes the budget) can start a new one.
+func (r *materializeRecovery) claimExhaustionLogLocked(b *materializeBudget) bool {
+	if b.failures < r.cfg.maxFailures || b.exhaustionLogged {
+		return false
+	}
+	b.exhaustionLogged = true
+	return true
+}
+
+// logExhaustion is the ONE line a stuck item leaves: which item, how many
+// failures, and the kind of the last one. WARN, because from here on the item's
+// newest edits stay out of its stored body until someone edits it again, which
+// an operator should be able to find with a grep and no database column; it
+// cannot become noise, since it is written once per exhaustion.
+func (r *materializeRecovery) logExhaustion(level slog.Level, itemID string, failures int, kind, lastErr string) {
+	r.cfg.logger.Log(r.ctx, level, "op-log recovery: item exhausted its failure budget; not retried until its op-log changes",
+		"item_id", itemID, "failures", failures, "last_error_kind", kind, "last_error", lastErr)
 }
 
 // exhaust marks the item as not to be tried until its op-log changes.
@@ -513,7 +568,12 @@ func (r *materializeRecovery) exhaust(itemID string, cursor int64, why string) {
 	b.failures = r.cfg.maxFailures
 	b.opLogMax = cursor
 	b.lastErr = why
+	b.lastKind = "schema_version"
+	logExhaustion := r.claimExhaustionLogLocked(b)
 	r.mu.Unlock()
+	if logExhaustion {
+		r.logExhaustion(slog.LevelWarn, itemID, r.cfg.maxFailures, "schema_version", why)
+	}
 }
 
 // materializeErrorKind names the typed materialize error, for the log line.
