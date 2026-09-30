@@ -878,11 +878,15 @@ export function markdownToWikiLinks(markdown: string, items: Item[]): string {
 	});
 }
 
-// Escape the characters that would terminate or unbalance a markdown link's
-// text span. `\` must be doubled first so it doesn't interfere with the
-// subsequent bracket escapes.
+// Escape a link's display text so the editor's markdown parser reads it as
+// LITERAL text. Brackets would terminate or unbalance the span, and the rest are
+// the characters its inline rules act on (BUG-3315): `*` `_` and `~` become
+// emphasis or strikethrough, `` ` `` code, `<` an HTML tag (html is enabled, so
+// `<topic>` was dropped), and `&` an entity (`&gt;` was decoded). Every one of
+// them is ASCII punctuation, which CommonMark lets a backslash escape anywhere.
+// A single pass, so an escape's own backslash is never escaped again.
 function escapeMarkdownLinkText(s: string): string {
-	return s.replace(/\\/g, '\\\\').replace(/([\[\]])/g, '\\$1');
+	return s.replace(/[\\[\]*_~`<>&]/g, '\\$&');
 }
 
 // Escape the characters that would terminate a [[...]] wiki-link body, or
@@ -915,11 +919,20 @@ function splitWikiBody(body: string): { key: string; displayOverride: string | n
 	return { key: body, displayOverride: null };
 }
 
-// Inverse of escapeMarkdownLinkText. Also undoes the \[\[ / \]\] escapes that
-// tiptap-markdown inserts to prevent its own output from looking like our
-// wiki-link sentinels.
+// Recover a link's literal display text from the SERIALIZER's output. That is not
+// the inverse of escapeMarkdownLinkText, because the serializer escapes its own
+// way. It backslash-escapes ASCII punctuation (including the \[\[ / \]\] it
+// inserts so its output never looks like our wiki-link sentinels), and writes
+// `<`, `>` and `&` as entities. Undoing only the bracket escapes, as this used to,
+// left `&gt;` and `\*` in the text, so a title containing them never compared
+// equal to itself, and the first save of any item linking one pinned the mangled
+// text as an override (BUG-3315). A single pass, so `\&gt;` (a literal `&gt;`)
+// is not decoded twice.
+const LINK_TEXT_ENTITIES: Record<string, string> = { lt: '<', gt: '>', amp: '&', quot: '"', '#39': "'" };
 function unescapeMarkdownLinkText(s: string): string {
-	return s.replace(/\\(\[|\]|\\)/g, '$1');
+	return s.replace(/\\([!-/:-@[-`{-~])|&(lt|gt|amp|quot|#39);/g, (_m, punct: string | undefined, ent: string | undefined) =>
+		punct ?? LINK_TEXT_ENTITIES[ent as string]
+	);
 }
 
 /**
