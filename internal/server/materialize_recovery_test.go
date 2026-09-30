@@ -711,9 +711,9 @@ func TestMaterializeSetAsideSkipsAreCountedNotLogged(t *testing.T) {
 // ceil(N / limit) + 1 = 3 sweeps, at the REAL page size.
 func TestMaterializeSweepReachesEveryCandidate(t *testing.T) {
 	clock := time.Now().Add(time.Hour) // rows written now are dormant
-	var targetFrame []byte
+	var targetFrame, healedFrame []byte
 	fake := &fakeMaterializer{fn: func(job materialize.Job) (string, error) {
-		if len(job.Rows) == 1 && bytes.Equal(job.Rows[0], targetFrame) {
+		if len(job.Rows) == 1 && (bytes.Equal(job.Rows[0], targetFrame) || bytes.Equal(job.Rows[0], healedFrame)) {
 			return "recovered body", nil
 		}
 		return "", fmt.Errorf("%w: exit status 2", materialize.ErrChildDied)
@@ -737,19 +737,42 @@ func TestMaterializeSweepReachesEveryCandidate(t *testing.T) {
 	target := all[n-1].ItemID // the one every page read from the start leaves out
 	targetFrame = frameOf[target]
 
-	for tick := 1; tick <= 3; tick++ {
-		f.r.sweep()
-		for {
-			id, ok := f.r.dequeue()
-			if !ok {
-				break
+	// runUntil sweeps up to 3 times, draining the queue after each, and
+	// reports the sweep on which want was recovered (0: never).
+	runUntil := func(want string) int {
+		for tick := 1; tick <= 3; tick++ {
+			f.r.sweep()
+			hit := false
+			for {
+				id, ok := f.r.dequeue()
+				if !ok {
+					break
+				}
+				if res := f.r.process(id); id == want && res == mrApplied {
+					hit = true
+				}
 			}
-			if res := f.r.process(id); id == target && res == mrApplied {
-				t.Logf("the %dth candidate was recovered on sweep %d", n, tick)
-				return
+			clock = clock.Add(time.Hour) // every backoff expires between ticks
+			if hit {
+				return tick
 			}
 		}
-		clock = clock.Add(time.Hour) // every backoff expires between ticks
+		return 0
 	}
-	t.Fatalf("the %dth candidate was never recovered in 3 sweeps", n)
+	tick := runUntil(target)
+	if tick == 0 {
+		t.Fatalf("the %dth candidate was never recovered in 3 sweeps", n)
+	}
+	t.Logf("the %dth candidate was recovered on sweep %d", n, tick)
+
+	// And the walk WRAPS: the first candidate starts succeeding (its op-log,
+	// and so its place in the order, unchanged; two failures, so still inside
+	// its budget) and is reached again after the cursor has passed it.
+	first := all[0].ItemID
+	healedFrame = frameOf[first]
+	if tick := runUntil(first); tick == 0 {
+		t.Fatal("after the cursor passed it, the first candidate was never offered again")
+	} else {
+		t.Logf("the first candidate was recovered on sweep %d after the wrap", tick)
+	}
 }

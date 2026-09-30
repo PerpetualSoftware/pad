@@ -1244,7 +1244,9 @@ waits:
   away, plus the time the jobs queued ahead of it take.
 - **A sweep every minute** picks up items the first trigger could not: unsaved
   edits whose newest op-log row is more than 2 minutes old and whose item has
-  no open room (for example after a server restart).
+  no open room (for example after a server restart). It takes 200 at a time
+  and continues where the last sweep stopped, so a large backlog is worked
+  through in turn rather than the same 200 being retried.
 
 A recovery writes the body only if the op-log has not changed since the job
 was built and no tab has the item open; otherwise it does nothing and the next
@@ -1259,7 +1261,12 @@ upgrade (`content_state: superseded_set_aside`) are not touched.
 A job that fails (timeout, memory limit, a worker death, an editor error) is
 retried after 1 minute, then 2; after 3 consecutive failures the item is not
 tried again until new edits arrive for it. Each failure is logged with its
-kind. This budget is kept in memory, so a restart grants each item its 3
+kind, and an item that gives up logs one warning, `item exhausted its failure
+budget`, with its id, failure count and `last_error_kind`, so a stuck item can
+be found in the log. Items skipped because they hold set-aside edits are not
+logged one by one; the sweep's summary line (`op-log recovery sweep`, written
+only when something changed) carries their running count as
+`set_aside_skipped_total`. This budget is kept in memory, so a restart grants each item its 3
 attempts again. An item whose stored edits were written under another editor
 schema version is skipped.
 
