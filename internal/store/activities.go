@@ -738,6 +738,17 @@ func collapseChanges(s string) string {
 	return sb.String()
 }
 
+// memberActivityCols is the column list for every activity read a WORKSPACE
+// reader can reach: the item timeline, the item and document activity lists and
+// the workspace feed (and through that the MCP and CLI activity doors). Those
+// readers include viewers and guests holding a grant, so the member's
+// ip_address and user_agent are NOT selected: the two trailing positions are
+// empty literals, which keeps scanActivitiesWithUser shared. Only the
+// instance-admin audit reads (ListAuditLog, ListUserActivity) select the real
+// columns (BUG-3314). activities_member_cols_test.go fails if any of the three
+// member reads returns either value again.
+const memberActivityCols = `a.id, COALESCE(a.workspace_id, ''), COALESCE(a.document_id, ''), a.action, a.actor, a.source, a.metadata, COALESCE(a.user_id, ''), a.created_at, COALESCE(u.name, ''), '', ''`
+
 // ListUserActivity returns activities originated by the given user, in
 // reverse-chronological order. Powers the Activity tab of the admin user
 // modal (T1554 consumer). Filters to activities where a.user_id = userID —
@@ -795,7 +806,7 @@ func (s *Store) ListUserActivity(userID string, params models.ActivityListParams
 
 func (s *Store) ListWorkspaceActivity(workspaceID string, params models.ActivityListParams) ([]models.Activity, error) {
 	query := `
-		SELECT a.id, COALESCE(a.workspace_id, ''), COALESCE(a.document_id, ''), a.action, a.actor, a.source, a.metadata, COALESCE(a.user_id, ''), a.created_at, COALESCE(u.name, ''), COALESCE(a.ip_address, ''), COALESCE(a.user_agent, '')
+		SELECT ` + memberActivityCols + `
 		FROM activities a
 		LEFT JOIN users u ON a.user_id = u.id
 		WHERE a.workspace_id = ?
@@ -844,7 +855,7 @@ func (s *Store) ListWorkspaceActivity(workspaceID string, params models.Activity
 
 func (s *Store) ListDocumentActivity(documentID string, params models.ActivityListParams) ([]models.Activity, error) {
 	query := `
-		SELECT a.id, COALESCE(a.workspace_id, ''), COALESCE(a.document_id, ''), a.action, a.actor, a.source, a.metadata, COALESCE(a.user_id, ''), a.created_at, COALESCE(u.name, ''), COALESCE(a.ip_address, ''), COALESCE(a.user_agent, '')
+		SELECT ` + memberActivityCols + `
 		FROM activities a
 		LEFT JOIN users u ON a.user_id = u.id
 		WHERE a.document_id = ?
@@ -900,7 +911,7 @@ func (s *Store) ListDocumentActivity(documentID string, params models.ActivityLi
 // is omitted. See ListCommentsBeforeTime for the rationale (BUG-1086).
 func (s *Store) ListDocumentActivityBeforeTime(documentID string, before time.Time, beforeID string, limit int) ([]models.Activity, error) {
 	ts := before.Format(time.RFC3339)
-	const selectCols = `a.id, COALESCE(a.workspace_id, ''), COALESCE(a.document_id, ''), a.action, a.actor, a.source, a.metadata, COALESCE(a.user_id, ''), a.created_at, COALESCE(u.name, ''), COALESCE(a.ip_address, ''), COALESCE(a.user_agent, '')`
+	const selectCols = memberActivityCols
 	const notCommentLinked = `AND NOT EXISTS (SELECT 1 FROM comments c WHERE c.activity_id = a.id AND c.item_id = a.document_id)`
 	const orderLimit = `ORDER BY a.created_at DESC, a.id DESC LIMIT ?`
 
