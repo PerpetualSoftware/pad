@@ -19,9 +19,8 @@ import { flushSync, mount, unmount } from 'svelte';
 import type { TimelineEntry, TimelineResponse } from '$lib/types';
 import {
 	ALL_TIMELINE_KINDS,
-	CHANGE_KINDS,
 	COMMENT_KINDS,
-	VERSION_KINDS,
+	HISTORY_KINDS,
 	type TimelineFeed
 } from './feed';
 
@@ -258,9 +257,9 @@ describe('timeline second view — filtered pagination', () => {
 		}) as Record<string, unknown>;
 		await settle();
 
-		// A changes view asks for more. Page 2 is comments only — invisible
-		// here — so it must not end the walk.
-		await state.feed!.loadMore(CHANGE_KINDS);
+		// The History view asks for more. Page 2 is comments only — invisible
+		// there — so it must not end the walk.
+		await state.feed!.loadMore(HISTORY_KINDS);
 		await settle();
 
 		const kinds = state.feed!.entries.map((e) => e.kind);
@@ -275,7 +274,7 @@ describe('timeline second view — kind routing', () => {
 	it('renders only the kinds it is handed', () => {
 		app = mount(TimelineEntryList, {
 			target: host,
-			props: { entries: FEED.filter((e) => (CHANGE_KINDS as readonly string[]).includes(e.kind)), wsSlug: 'ws' }
+			props: { entries: FEED.filter((e) => (HISTORY_KINDS as readonly string[]).includes(e.kind) && e.kind !== 'version'), wsSlug: 'ws' }
 		}) as Record<string, unknown>;
 		flushSync();
 
@@ -287,16 +286,16 @@ describe('timeline second view — kind routing', () => {
 	});
 
 	it('routes every kind to some view — none renders nowhere', () => {
-		const routed = new Set<string>([...COMMENT_KINDS, ...CHANGE_KINDS, ...VERSION_KINDS]);
+		const routed = new Set<string>([...COMMENT_KINDS, ...HISTORY_KINDS]);
 		const orphaned = ALL_TIMELINE_KINDS.filter((k) => !routed.has(k));
 
 		// BUG-2301's class, as a test rather than a comment: a kind in none of
-		// the three filters is invisible everywhere and nothing reports it.
+		// the two filters is invisible everywhere and nothing reports it.
 		expect(orphaned).toEqual([]);
 	});
 
-	it('keeps the three views disjoint, so nothing renders twice', () => {
-		const all = [...COMMENT_KINDS, ...CHANGE_KINDS, ...VERSION_KINDS];
+	it('keeps the two views disjoint, so nothing renders twice', () => {
+		const all = [...COMMENT_KINDS, ...HISTORY_KINDS];
 		expect(new Set(all).size).toBe(all.length);
 	});
 });

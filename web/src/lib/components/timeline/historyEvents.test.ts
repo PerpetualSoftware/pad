@@ -6,6 +6,7 @@ import {
 	matchesFilter,
 	peopleOf,
 	dayLabel,
+	itemNoun,
 	whoName,
 	type HistoryEvent
 } from './historyEvents';
@@ -239,5 +240,16 @@ describe('dayLabel', () => {
 		expect(dayLabel(new Date(2026, 8, 30, 0, 5).toISOString(), now)).toBe('Today');
 		expect(dayLabel(new Date(2026, 8, 29, 23, 55).toISOString(), now)).toBe('Yesterday');
 		expect(dayLabel(new Date(2026, 8, 20, 12).toISOString(), now)).not.toMatch(/Today|Yesterday/);
+	});
+});
+
+describe('itemNoun', () => {
+	it('singularises collection names and falls back to item', () => {
+		expect(itemNoun('Tasks')).toBe('task');
+		expect(itemNoun('Companies')).toBe('company');
+		expect(itemNoun('Status')).toBe('status');
+		expect(itemNoun('Feedback')).toBe('feedback');
+		expect(itemNoun('🚀 Launches')).toBe('item');
+		expect(itemNoun(undefined)).toBe('item');
 	});
 });

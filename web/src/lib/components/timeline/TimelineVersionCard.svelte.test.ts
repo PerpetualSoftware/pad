@@ -32,6 +32,7 @@ vi.mock('$lib/api/client', () => ({
 			// Never reached (the fixture version is non-diff so ensureResolved
 			// short-circuits), but present so the module shape is complete.
 			get: vi.fn(async () => ({ content: '' })),
+			diff: vi.fn(async () => ({ before: 'old', after: 'now' })),
 		},
 	},
 }));
@@ -65,7 +66,7 @@ describe('TimelineVersionCard restore gate (BUG-2263)', () => {
 		});
 		flushSync();
 		// The restore-area lives inside the expanded card body — expand it first.
-		(root.querySelector('.card-header') as HTMLButtonElement).click();
+		(root.querySelector('.toggle') as HTMLButtonElement).click();
 		flushSync();
 		return root;
 	}
@@ -107,7 +108,7 @@ describe('TimelineVersionCard flush-before-restore (BUG-2271)', () => {
 			},
 		});
 		flushSync();
-		(root.querySelector('.card-header') as HTMLButtonElement).click(); // expand
+		(root.querySelector('.toggle') as HTMLButtonElement).click(); // expand
 		flushSync();
 		(root.querySelector('.btn-restore') as HTMLButtonElement).click(); // startRestore
 		flushSync();

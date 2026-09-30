@@ -1,6 +1,7 @@
 import type { Activity, TimelineEntry } from '$lib/types';
 import { parseFieldChanges, type FieldChange } from '$lib/utils/activityChanges';
 import { agentNameOf } from '$lib/utils/agentActor';
+import { HISTORY_KINDS } from './feed';
 
 /**
  * The History tab's unit is an EVENT, not a row (PLAN-2348 checkpoint 2): one
@@ -16,8 +17,6 @@ import { agentNameOf } from '$lib/utils/agentActor';
 /** How close two rows must be to belong to one event. */
 export const BURST_WINDOW_MS = 2 * 60 * 1000;
 
-/** The kinds History renders. Comments render on Details. */
-export const HISTORY_KINDS = ['activity', 'version', 'note', 'decision'] as const;
 
 export type ActorKind = 'user' | 'agent' | 'system';
 
@@ -276,9 +275,14 @@ function joinPhrases(parts: string[]): string {
  * The sentence after the writer's name: "changed status", "edited the
  * description and added a note". `noun` is the item's kind ("task").
  */
+/** The event is the item's creation. */
+export function isCreateEvent(ev: HistoryEvent): boolean {
+	return ev.actions.some((a) => a.action === 'created') || ev.versions.some((v) => v.version?.is_create);
+}
+
 export function eventVerb(ev: HistoryEvent, noun = 'item', fieldLabel: (key: string) => string = (k) => k): string {
 	const parts: string[] = [];
-	const created = ev.actions.some((a) => a.action === 'created') || ev.versions.some((v) => v.version?.is_create);
+	const created = isCreateEvent(ev);
 	if (created) parts.push(`created this ${noun}`);
 	for (const a of ev.actions) {
 		if (a.action === 'created') continue;
@@ -362,4 +366,17 @@ export function dayLabel(at: string, now: Date = new Date()): string {
 		day: 'numeric',
 		...(d.getFullYear() !== now.getFullYear() ? { year: 'numeric' } : {})
 	});
+}
+
+/**
+ * The item's kind for "created this task", from its collection's name.
+ * English plural rules only as far as the default and template collections
+ * need them; anything unusual reads as "item" rather than a wrong word.
+ */
+export function itemNoun(collectionName: string | undefined | null): string {
+	const n = (collectionName ?? '').trim().toLowerCase();
+	if (!/^[a-z][a-z ]*$/.test(n)) return 'item';
+	if (n.endsWith('ies')) return n.slice(0, -3) + 'y';
+	if (n.endsWith('ss') || n.endsWith('us') || !n.endsWith('s')) return n;
+	return n.slice(0, -1);
 }

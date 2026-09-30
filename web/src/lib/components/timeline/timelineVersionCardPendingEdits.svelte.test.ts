@@ -21,7 +21,8 @@ vi.mock('$lib/api/client', async (importOriginal) => {
 		...actual,
 		api: {
 			...actual.api,
-			versions: { ...actual.api.versions, restore, get: vi.fn(async () => ({ content: '' })) },
+			versions: { ...actual.api.versions, restore, get: vi.fn(async () => ({ content: '' })),
+			diff: vi.fn(async () => ({ before: 'old', after: 'now' })) },
 		},
 	};
 });
@@ -68,7 +69,7 @@ describe('TimelineVersionCard pending-edits refusal (BUG-3031)', () => {
 			props: { version, wsSlug: 'ws', itemSlug: 'ITEM-1', currentContent: 'now', onRestore },
 		});
 		flushSync();
-		(root.querySelector('.card-header') as HTMLButtonElement).click();
+		(root.querySelector('.toggle') as HTMLButtonElement).click();
 		flushSync();
 		(root.querySelector('.btn-restore') as HTMLButtonElement).click();
 		flushSync();
