@@ -1,10 +1,12 @@
 package main
 
 import (
+	"log/slog"
 	"os"
 
 	pad "github.com/PerpetualSoftware/pad"
 	"github.com/PerpetualSoftware/pad/internal/materialize"
+	"github.com/PerpetualSoftware/pad/internal/server"
 	"github.com/spf13/cobra"
 )
 
@@ -32,4 +34,21 @@ func materializeWorkerCmd() *cobra.Command {
 			return materialize.RunWorker(os.Stdin, os.Stdout, pad.MaterializerJS)
 		},
 	}
+}
+
+// newMaterializerFromEnv builds the op-log recovery worker's Materializer
+// (TASK-2198 U4): a materialize.Supervisor configured from
+// PAD_MATERIALIZE_TIMEOUT / PAD_MATERIALIZE_MEM_LIMIT. It returns nil, and
+// never calls build, when PAD_MATERIALIZE=off: then no Supervisor exists and
+// no worker process is ever spawned. build is NewSupervisor in production.
+func newMaterializerFromEnv(getenv func(string) string, logger *slog.Logger, build func(materialize.SupervisorConfig) server.Materializer) server.Materializer {
+	if !materialize.Enabled(getenv, logger) {
+		logger.Info("op-log recovery disabled (" + materialize.EnvSwitch + "=off)")
+		return nil
+	}
+	return build(materialize.ConfigFromEnv(getenv, logger))
+}
+
+func newSupervisorMaterializer(cfg materialize.SupervisorConfig) server.Materializer {
+	return materialize.NewSupervisor(cfg)
 }

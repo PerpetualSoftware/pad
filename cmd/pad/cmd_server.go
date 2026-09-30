@@ -705,6 +705,15 @@ func serveCmd() *cobra.Command {
 			}
 			srv.StartOpLogGC()
 
+			// Op-log recovery (TASK-2198 U4). Rebuilds items.content from the
+			// collaborative op-log when a tab went away without flushing,
+			// in a capped child process (`pad __materialize-worker`) started
+			// on the first job, not here. PAD_MATERIALIZE=off disables it
+			// entirely; PAD_MATERIALIZE_TIMEOUT / PAD_MATERIALIZE_MEM_LIMIT
+			// tune the worker. docs/deployment.md, "Op-log materializer worker".
+			srv.SetMaterializer(newMaterializerFromEnv(os.Getenv, slog.Default(), newSupervisorMaterializer))
+			srv.StartMaterializeRecovery()
+
 			// Token reaper (PLAN-1933 DR-5 / TASK-1936). Periodic sweep
 			// that deletes expired/used email-verification tokens,
 			// password-reset tokens, sessions, CLI-auth sessions and expired

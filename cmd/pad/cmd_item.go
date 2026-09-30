@@ -4427,12 +4427,13 @@ func warnStaleEditSeed(item *models.Item) {
 // scripts and a warning on stdout would corrupt the JSON they parse.
 //
 // It deliberately states no duration, and BUG-3000's day-64 measurement is why
-// that must stay: the flush is NOT guaranteed to land at all. Nothing server-side
-// moves applier content into items.content — the op-log GC's flush-coverage guard
-// deliberately retains those rows rather than flushing them — so the row catches up
-// only when a tab next opens the item. Any number here would be a claim this
-// command cannot support. (This comment previously said the question was "not
-// established"; it now is.)
+// that must stay: the flush is NOT guaranteed to land at all. The tab flushes it,
+// or, once the item's room has closed, the server's op-log recovery does
+// (TASK-2198 U4); that recovery can fail, and an operator can turn it off
+// (PAD_MATERIALIZE=off), in which case the row catches up only when a tab next
+// opens the item. Any number here would be a claim this command cannot
+// support. (This comment previously said the question was "not established";
+// it now is.)
 func warnContentPendingFlush(item *models.Item) {
 	if item == nil || item.Warnings == nil {
 		return

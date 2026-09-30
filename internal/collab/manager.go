@@ -146,6 +146,65 @@ type RoomManager struct {
 	// column read in the common (same-process) case.
 	lastRestoreSeqMu sync.Mutex
 	lastRestoreSeqs  map[string]int64
+
+	// idleHook, when set, is called with the item's id after a room has been
+	// reclaimed at the end of its grace TTL (TASK-2198 U4: the op-log
+	// recovery trigger). Called outside m.mu, from the grace timer's
+	// goroutine; it must not block.
+	idleHookMu sync.Mutex
+	idleHook   func(itemID string)
+}
+
+// SetIdleHook installs fn as the room-reclaimed callback (see idleHook). Nil
+// removes it.
+func (m *RoomManager) SetIdleHook(fn func(itemID string)) {
+	m.idleHookMu.Lock()
+	m.idleHook = fn
+	m.idleHookMu.Unlock()
+}
+
+// ErrRoomOpen is returned by UnderItemLockIfNoRoom when the item has a room.
+var ErrRoomOpen = errors.New("collab: a room is open for the item")
+
+// UnderItemLockIfNoRoom runs fn under the per-item setup lock, and only when
+// no room exists for the item; otherwise it returns ErrRoomOpen without
+// calling fn. A room counts from its creation until its grace TTL reclaims
+// it, whether or not a connection is attached.
+//
+// While fn runs nothing can append to the item's op-log: every append
+// happens through a room (a connection's readLoop, or the designated
+// applier), and Join creates a room only while holding this same lock. The op-log
+// recovery write (TASK-2198 U4) relies on that; it also re-checks the op-log
+// inside its own transaction.
+func (m *RoomManager) UnderItemLockIfNoRoom(itemID string, fn func() error) error {
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return errManagerClosed
+	}
+	m.mu.Unlock()
+	lock := m.itemLock(itemID)
+	lock.Lock()
+	defer lock.Unlock()
+	m.mu.Lock()
+	closed, open := m.closed, m.rooms[itemID] != nil
+	m.mu.Unlock()
+	if closed {
+		return errManagerClosed
+	}
+	if open {
+		return ErrRoomOpen
+	}
+	return fn()
+}
+
+// HasRoom reports whether a room exists for the item right now. Racy by
+// nature; a caller that acts on the answer re-checks under the lock
+// (UnderItemLockIfNoRoom).
+func (m *RoomManager) HasRoom(itemID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.rooms[itemID] != nil
 }
 
 // SetRestoreBoundary records a restore boundary for itemID, keeping the
@@ -841,9 +900,16 @@ func (m *RoomManager) getOrCreate(itemID string) *Room {
 // Join mints a fresh Room.
 func (m *RoomManager) markRoomGone(itemID string) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	delete(m.rooms, itemID)
+	m.mu.Unlock()
 	slog.Debug("collab: room reclaimed after grace TTL", "item_id", itemID)
+
+	m.idleHookMu.Lock()
+	hook := m.idleHook
+	m.idleHookMu.Unlock()
+	if hook != nil {
+		hook(itemID)
+	}
 }
 
 // RoomCount is a test/debug accessor. Production code shouldn't make

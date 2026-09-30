@@ -1,0 +1,90 @@
+[
+	{
+		"name": "ref-link-other-text",
+		"markdown": "See [shown text](/alice/ws/secrets/SECR-1) here.",
+		"rows": [
+			"AAKxAQEHlhEABwEHZGVmYXVsdAMJcGFyYWdyYXBoBwCWEQAGBACWEQEEU2VlIIaWEQUEbGlua1R7ImhyZWYiOiIvYWxpY2Uvd3Mvc2VjcmV0cy9TRUNSLTEiLCJ0YXJnZXQiOm51bGwsInJlbCI6bnVsbCwiY2xhc3MiOiIiLCJ0aXRsZSI6bnVsbH2ElhEGCnNob3duIHRleHSGlhEQBGxpbmsEbnVsbISWEREGIGhlcmUuAA=="
+		],
+		"raw": "See [shown text](/alice/ws/secrets/SECR-1) here."
+	},
+	{
+		"name": "ref-link-old-title",
+		"markdown": "See [Old Codename](/alice/ws/secrets/SECR-1) here.",
+		"rows": [
+			"AAKzAQEHlhEABwEHZGVmYXVsdAMJcGFyYWdyYXBoBwCWEQAGBACWEQEEU2VlIIaWEQUEbGlua1R7ImhyZWYiOiIvYWxpY2Uvd3Mvc2VjcmV0cy9TRUNSLTEiLCJ0YXJnZXQiOm51bGwsInJlbCI6bnVsbCwiY2xhc3MiOiIiLCJ0aXRsZSI6bnVsbH2ElhEGDE9sZCBDb2RlbmFtZYaWERIEbGluawRudWxshJYREwYgaGVyZS4A"
+		],
+		"raw": "See [Old Codename](/alice/ws/secrets/SECR-1) here."
+	},
+	{
+		"name": "slug-link-slug-text",
+		"markdown": "See [the plan](/alice/ws/secrets/secret-launch-codename) here.",
+		"rows": [
+			"AAK/AQEHlhEABwEHZGVmYXVsdAMJcGFyYWdyYXBoBwCWEQAGBACWEQEEU2VlIIaWEQUEbGlua2R7ImhyZWYiOiIvYWxpY2Uvd3Mvc2VjcmV0cy9zZWNyZXQtbGF1bmNoLWNvZGVuYW1lIiwidGFyZ2V0IjpudWxsLCJyZWwiOm51bGwsImNsYXNzIjoiIiwidGl0bGUiOm51bGx9hJYRBgh0aGUgcGxhboaWEQ4EbGluawRudWxshJYRDwYgaGVyZS4A"
+		],
+		"raw": "See [the plan](/alice/ws/secrets/secret-launch-codename) here."
+	},
+	{
+		"name": "text-equals-current-title",
+		"markdown": "See [Secret Launch Codename](/alice/ws/secrets/SECR-1) here.",
+		"rows": [
+			"AAK9AQEHlhEABwEHZGVmYXVsdAMJcGFyYWdyYXBoBwCWEQAGBACWEQEEU2VlIIaWEQUEbGlua1R7ImhyZWYiOiIvYWxpY2Uvd3Mvc2VjcmV0cy9TRUNSLTEiLCJ0YXJnZXQiOm51bGwsInJlbCI6bnVsbCwiY2xhc3MiOiIiLCJ0aXRsZSI6bnVsbH2ElhEGFlNlY3JldCBMYXVuY2ggQ29kZW5hbWWGlhEcBGxpbmsEbnVsbISWER0GIGhlcmUuAA=="
+		],
+		"raw": "See [Secret Launch Codename](/alice/ws/secrets/SECR-1) here."
+	},
+	{
+		"name": "broken-link",
+		"markdown": "See [gone text](broken) here.",
+		"rows": [
+			"AAKeAQEHlhEABwEHZGVmYXVsdAMJcGFyYWdyYXBoBwCWEQAGBACWEQEEU2VlIIaWEQUEbGlua0J7ImhyZWYiOiJicm9rZW4iLCJ0YXJnZXQiOm51bGwsInJlbCI6bnVsbCwiY2xhc3MiOiIiLCJ0aXRsZSI6bnVsbH2ElhEGCWdvbmUgdGV4dIaWEQ8EbGluawRudWxshJYREAYgaGVyZS4A"
+		],
+		"raw": "See [[gone text]] here."
+	},
+	{
+		"name": "cross-workspace",
+		"markdown": "See [xw text](/-/r/other/SECR-1) here.",
+		"rows": [
+			"AAKnAQEHlhEABwEHZGVmYXVsdAMJcGFyYWdyYXBoBwCWEQAGBACWEQEEU2VlIIaWEQUEbGlua017ImhyZWYiOiIvLS9yL290aGVyL1NFQ1ItMSIsInRhcmdldCI6bnVsbCwicmVsIjpudWxsLCJjbGFzcyI6IiIsInRpdGxlIjpudWxsfYSWEQYHeHcgdGV4dIaWEQ0EbGluawRudWxshJYRDgYgaGVyZS4A"
+		],
+		"raw": "See [xw text](/-/r/other/SECR-1) here."
+	},
+	{
+		"name": "typed-wiki-literal",
+		"markdown": "Typed \\[\\[SECR-1\\]\\] literal.",
+		"rows": [
+			"AAJAAQOWEQAHAQdkZWZhdWx0AwlwYXJhZ3JhcGgHAJYRAAYEAJYRARlUeXBlZCBbW1NFQ1ItMV1dIGxpdGVyYWwuAA=="
+		],
+		"raw": "Typed [[SECR-1]] literal."
+	},
+	{
+		"name": "public-ref-link",
+		"markdown": "See [the public plan](/alice/ws/public/PUB-2) here.",
+		"rows": [
+			"AAK0AQEHlhEABwEHZGVmYXVsdAMJcGFyYWdyYXBoBwCWEQAGBACWEQEEU2VlIIaWEQUEbGlua1J7ImhyZWYiOiIvYWxpY2Uvd3MvcHVibGljL1BVQi0yIiwidGFyZ2V0IjpudWxsLCJyZWwiOm51bGwsImNsYXNzIjoiIiwidGl0bGUiOm51bGx9hJYRBg90aGUgcHVibGljIHBsYW6GlhEVBGxpbmsEbnVsbISWERYGIGhlcmUuAA=="
+		],
+		"raw": "See [the public plan](/alice/ws/public/PUB-2) here."
+	},
+	{
+		"name": "marker-follows-title",
+		"markdown": "See [Secret Launch Codename](/alice/ws/secrets/SECR-1 \"pad-follows-title:Secret Launch Codename\") here.",
+		"rows": [
+			"AALjAQEHlhEABwEHZGVmYXVsdAMJcGFyYWdyYXBoBwCWEQAGBACWEQEEU2VlIIaWEQUEbGlua3p7ImhyZWYiOiIvYWxpY2Uvd3Mvc2VjcmV0cy9TRUNSLTEiLCJ0YXJnZXQiOm51bGwsInJlbCI6bnVsbCwiY2xhc3MiOiIiLCJ0aXRsZSI6InBhZC1mb2xsb3dzLXRpdGxlOlNlY3JldCBMYXVuY2ggQ29kZW5hbWUifYSWEQYWU2VjcmV0IExhdW5jaCBDb2RlbmFtZYaWERwEbGluawRudWxshJYRHQYgaGVyZS4A"
+		],
+		"raw": "See [Secret Launch Codename](/alice/ws/secrets/SECR-1) here."
+	},
+	{
+		"name": "marker-renamed",
+		"markdown": "See [Old Codename](/alice/ws/secrets/SECR-1 \"pad-follows-title:Old Codename\") here.",
+		"rows": [
+			"AALPAQEHlhEABwEHZGVmYXVsdAMJcGFyYWdyYXBoBwCWEQAGBACWEQEEU2VlIIaWEQUEbGlua3B7ImhyZWYiOiIvYWxpY2Uvd3Mvc2VjcmV0cy9TRUNSLTEiLCJ0YXJnZXQiOm51bGwsInJlbCI6bnVsbCwiY2xhc3MiOiIiLCJ0aXRsZSI6InBhZC1mb2xsb3dzLXRpdGxlOk9sZCBDb2RlbmFtZSJ9hJYRBgxPbGQgQ29kZW5hbWWGlhESBGxpbmsEbnVsbISWERMGIGhlcmUuAA=="
+		],
+		"raw": "See [Old Codename](/alice/ws/secrets/SECR-1) here."
+	},
+	{
+		"name": "marker-external-href",
+		"markdown": "See [Old Codename](https://example.com/x \"pad-follows-title:Old Codename\") here.",
+		"rows": [
+			"AALMAQEHlhEABwEHZGVmYXVsdAMJcGFyYWdyYXBoBwCWEQAGBACWEQEEU2VlIIaWEQUEbGlua217ImhyZWYiOiJodHRwczovL2V4YW1wbGUuY29tL3giLCJ0YXJnZXQiOm51bGwsInJlbCI6bnVsbCwiY2xhc3MiOiIiLCJ0aXRsZSI6InBhZC1mb2xsb3dzLXRpdGxlOk9sZCBDb2RlbmFtZSJ9hJYRBgxPbGQgQ29kZW5hbWWGlhESBGxpbmsEbnVsbISWERMGIGhlcmUuAA=="
+		],
+		"raw": "See [Old Codename](https://example.com/x) here."
+	}
+]

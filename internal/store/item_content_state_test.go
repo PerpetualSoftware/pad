@@ -12,8 +12,10 @@ import (
 // BUG-3000: a read that serves items.content must say so when that content is
 // behind the item's live collaborative document.
 //
-// The window is UNBOUNDED, which is what makes the marker worth having rather than
-// a documentation note: nothing server-side moves applier content into the row.
+// The window was UNBOUNDED when this was written, which is what made the marker
+// worth having rather than a documentation note. Since TASK-2198 U4 the server's
+// op-log recovery closes it after the item's room closes, when it is on and the
+// job succeeds; the op-log GC below still never does.
 // PruneSweep's candidate query requires MAX(op-log.id) <= content_flushed_op_log_id,
 // so an item in exactly this state is EXCLUDED from the sweep — its op-log rows are
 // retained (the content is durable) and the row stays behind until a tab next opens

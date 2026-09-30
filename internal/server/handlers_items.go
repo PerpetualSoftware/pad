@@ -1990,6 +1990,11 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		// items.source must not move on an update.
 		_, input.VersionSource = actorFromRequest(r)
 	}
+	// TASK-2198 U4: "recovery" labels the server's own op-log recovery write
+	// in the version history. A client may not claim it.
+	if input.VersionSource == models.VersionSourceRecovery {
+		input.VersionSource = ""
+	}
 
 	// BUG-2542: stamp the writer on single-item updates. Bulk ops already do
 	// this (handlers_items_bulk.go), but this path did not, so an agent's

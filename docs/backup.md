@@ -251,11 +251,15 @@ since otherwise no server is running to make one — that workspace is refused t
 That refusal does **not** claim nothing has been migrated: earlier workspaces in
 the run are already in PostgreSQL, and it says so with the count.
 
-Opening the item in the web UI is the only remedy, and that is structural rather
-than an omission: Pad's collaboration server is a dumb relay that stores opaque
-Yjs updates without parsing them, so nothing server-side can turn those updates
-back into markdown — only a client can. This is also why the escape hatch is
-named for what it does to the data:
+There are two remedies. Opening each item in the web UI lets the tab flush it.
+Or start the Pad server with op-log recovery on (the default; see
+[Op-log materializer worker](deployment.md#op-log-materializer-worker)) and
+leave it running for a few minutes: it rebuilds each such body from the op-log
+in the background, then stop it and re-run the migration. The migration itself
+never recovers anything, because it runs with the server stopped, and a
+recovery can fail or be turned off (`PAD_MATERIALIZE=off`), so the refusal
+stays. This is also why the escape hatch is named for what it does to the
+data:
 
 ```bash
 pad db migrate-to-pg --discard-unflushed-edits

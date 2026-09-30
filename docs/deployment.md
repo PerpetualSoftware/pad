@@ -1224,17 +1224,57 @@ address inside `PAD_TRUSTED_PROXIES` (the proxy sends no `X-Forwarded-For` or
 
 ### Op-log materializer worker
 
-**Not active yet.** The worker and the two variables below take effect once
-the materializer is wired into the server (TASK-2198 U4); until then they are
-inert, and setting them changes nothing.
-
 When a browser tab closes without saving, its last edits are only in the
-item's collaborative op-log. Pad can turn that op-log back into the item's
-markdown on the server by running the editor's own JavaScript. It does this in
+item's collaborative op-log, and the item's stored body (what the API, the
+CLI, MCP and search read, marked `content_state: applied_pending_flush`) is
+behind them. Pad turns that op-log back into the item's markdown on the server
+by running the editor's own JavaScript, and stores the result. It does this in
 a **separate worker process** (the same `pad` binary, started as
 `pad __materialize-worker`), never inside the server: a crafted update can
 make that JavaScript use gigabytes of memory, and in a separate process that
 kills one worker instead of the server.
+
+**When recovery happens.** Only in the background, never while a request
+waits:
+
+- **When the item's editing room closes.** A room stays open while any tab has
+  the item open, and for 60 seconds after the last one leaves. When it closes
+  with unsaved edits in the op-log, the item is queued. A tab that closed
+  without saving is therefore normally recovered about a minute after it went
+  away, plus the time the jobs queued ahead of it take.
+- **A sweep every minute** picks up items the first trigger could not: unsaved
+  edits whose newest op-log row is more than 2 minutes old and whose item has
+  no open room (for example after a server restart). It takes 200 at a time
+  and continues where the last sweep stopped, so a large backlog is worked
+  through in turn rather than the same 200 being retried.
+
+A recovery writes the body only if the op-log has not changed since the job
+was built and no tab has the item open; otherwise it does nothing and the next
+trigger tries again. It bumps the item's `seq`, so a writer holding an older
+`expected_seq` is refused rather than overwriting the recovered text, and it
+records one version, attributed to `system` with source `recovery` and the
+summary "recovered from an unsaved editor session" (the op-log records no
+author, so none is guessed). It does not delete the op-log; the next tab to
+open the item replays it as before. Items holding edits set aside by an editor
+upgrade (`content_state: superseded_set_aside`) are not touched.
+
+A job that fails (timeout, memory limit, a worker death, an editor error) is
+retried after 1 minute, then 2; after 3 consecutive failures the item is not
+tried again until new edits arrive for it. Each failure is logged with its
+kind, and an item that gives up logs one warning, `item exhausted its failure
+budget`, with its id, failure count and `last_error_kind`, so a stuck item can
+be found in the log. Items skipped because they hold set-aside edits are not
+logged one by one; the sweep's summary line (`op-log recovery sweep`, written
+only when something changed) carries their running count as
+`set_aside_skipped_total`. This budget is kept in memory, so a restart grants
+each item its 3 attempts again. An item whose stored edits were written under
+another editor schema version is skipped, and logs the same one warning.
+
+With `PAD_MATERIALIZE=off` none of this runs: no worker is ever started, and a
+tab that closed without saving catches up only when a tab next opens the item,
+which may never happen. The same is true while no memory cap can be
+established (see the end of this section): each pending item's job is then
+refused, counted against its 3 attempts, and not logged per item.
 
 - The worker starts on the first job, not at server start, and then stays up
   while jobs keep coming (loading it takes a few seconds). Jobs run one at a
@@ -1260,6 +1300,7 @@ kills one worker instead of the server.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `PAD_MATERIALIZE` | `on` | `off` (or `0`, `false`, `no`) disables op-log recovery entirely: no worker process is started and no trigger runs. Any other value leaves it on; an unrecognised one is logged. |
 | `PAD_MATERIALIZE_TIMEOUT` | `2s` | Per-job time limit, in Go duration syntax (`2s`, `1500ms`). Clamped to 250ms–60s. |
 | `PAD_MATERIALIZE_IDLE_TIMEOUT` | `5m` | How long the worker may sit with no job before it is stopped (it holds about 200 MB resident while it runs), in Go duration syntax. `0` means never stop it. Clamped to 30s–24h. |
 | `PAD_MATERIALIZE_MEM_LIMIT` | `2GiB` | How much memory one job may add to the loaded worker (see below): a whole number of bytes, or a whole number followed by `KiB`, `MiB` or `GiB` with no space (`2048MiB`, `2GiB`, `2147483648`). Decimal units such as `GB` are refused. Clamped to 256MiB–16GiB. |

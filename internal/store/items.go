@@ -2806,6 +2806,12 @@ func (s *Store) updateItemWithParentLinkOnce(
 		if source == "" {
 			source = "web"
 		}
+		// TASK-2198 U4: an op-log recovery is the system's write, not a
+		// guessed author's (op-log rows carry no user id).
+		if input.Recovered {
+			createdBy = models.VersionCreatedBySystem
+			source = models.VersionSourceRecovery
+		}
 
 		// ForceVersion (e.g. a version restore) and a title change both bypass
 		// the per-(actor, source) throttle so a bracketing snapshot is always
@@ -2916,7 +2922,12 @@ func (s *Store) updateItemWithParentLinkOnce(
 		// cannot delete them. When the cursor is missing (older
 		// clients, malformed bodies) we behave as before — no
 		// advancement.
-		if input.VersionSource != "collab-snapshot" {
+		//
+		// An op-log RECOVERY (input.Recovered, TASK-2198 U4) takes the
+		// cursor-gated arm too: its markdown was rebuilt from the rows up to
+		// its cursor and no further, so stamping MAX would claim a row that
+		// committed after the job was built.
+		if input.VersionSource != "collab-snapshot" && !input.Recovered {
 			sets = append(sets, "content_flushed_op_log_id = (SELECT COALESCE(MAX(id), 0) FROM item_yjs_updates WHERE item_id = ?)")
 			args = append(args, id)
 		} else if input.OpLogCursor != nil {

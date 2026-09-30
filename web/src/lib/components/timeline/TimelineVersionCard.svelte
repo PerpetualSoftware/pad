@@ -188,8 +188,19 @@
 		}
 	}
 
+	// 'system' is the op-log recovery's version row (TASK-2198 U4): the server
+	// rebuilt the body from an editor session that closed without saving, and
+	// the op-log records no author, so it must not read as a user's edit.
 	function actorLabel(actor: string): string {
-		return actor === 'agent' ? 'Agent' : 'User';
+		if (actor === 'agent') return 'Agent';
+		if (actor === 'system') return 'System';
+		return 'User';
+	}
+
+	function actorColor(actor: string): string {
+		if (actor === 'agent') return 'var(--accent-purple)';
+		if (actor === 'system') return 'var(--text-secondary)';
+		return 'var(--status-blue)';
 	}
 
 	function sourceLabel(source: string): string {
@@ -197,7 +208,8 @@
 			cli: 'CLI',
 			web: 'Web',
 			skill: 'Skill',
-			'collab-snapshot': 'Autosave'
+			'collab-snapshot': 'Autosave',
+			recovery: 'Recovered'
 		};
 		return labels[source] ?? source;
 	}
@@ -215,7 +227,7 @@
 		<div class="badges">
 			<Chip
 				size="sm"
-				color={version.created_by === 'agent' ? 'var(--accent-purple)' : 'var(--status-blue)'}
+				color={actorColor(version.created_by)}
 			>
 				{actorLabel(version.created_by)}
 			</Chip>
