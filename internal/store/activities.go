@@ -15,7 +15,7 @@ import (
 // on the same item by the same writer are coalesced into a single activity
 // entry. "Same writer" is narrower than the account: see
 // CreateActivityDebounced, which refuses to coalesce across actor kinds or
-// agent names sharing one user_id (BUG-2763).
+// agent names sharing one user_id (BUG-2763), or across sources (PLAN-2348).
 const ActivityDebounceCooldown = 5 * time.Minute
 
 // maxDebounceCandidates bounds how many recent rows CreateActivityDebounced
