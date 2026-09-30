@@ -36,14 +36,24 @@ function setup() {
 	const unrelated = document.createElement('div');
 	document.body.append(scroller, unrelated);
 	let top = 100;
+	let left = 40;
+	let width = 18;
 	vi.spyOn(trigger, 'getBoundingClientRect').mockImplementation(
-		() => ({ left: 40, top, right: 58, bottom: top + 14, width: 18, height: 14, x: 40, y: top, toJSON: () => ({}) }) as DOMRect
+		() =>
+			({ left, top, right: left + width, bottom: top + 14, width, height: 14, x: left, y: top, toJSON: () => ({}) }) as DOMRect
 	);
 	const onclose = vi.fn();
 	render(Menu, { props: { open: true, onclose, trigger, mode: 'portal', children: body } });
 	flushSync();
 	expect(document.body.querySelector('.menu-content'), 'precondition: the portal panel rendered').not.toBeNull();
-	return { scroller, unrelated, onclose, moveTrigger: (dy: number) => (top += dy) };
+	return {
+		scroller,
+		unrelated,
+		onclose,
+		moveTrigger: (dy: number) => (top += dy),
+		shiftTrigger: (dx: number) => (left += dx),
+		growTrigger: (dw: number) => (width += dw),
+	};
 }
 
 describe('Menu portal scroll-dismiss (BUG-3278)', () => {
@@ -56,6 +66,20 @@ describe('Menu portal scroll-dismiss (BUG-3278)', () => {
 	it('CONTROL: a scroll before the first frame that MOVED the trigger closes the menu', () => {
 		const { scroller, onclose, moveTrigger } = setup();
 		moveTrigger(-233);
+		scroller.dispatchEvent(new Event('scroll'));
+		expect(onclose).toHaveBeenCalledTimes(1);
+	});
+
+	it('CONTROL: a scroll before the first frame that moved the trigger SIDEWAYS closes the menu', () => {
+		const { scroller, onclose, shiftTrigger } = setup();
+		shiftTrigger(-120);
+		scroller.dispatchEvent(new Event('scroll'));
+		expect(onclose).toHaveBeenCalledTimes(1);
+	});
+
+	it('CONTROL: a scroll before the first frame that resized the trigger in place closes the menu', () => {
+		const { scroller, onclose, growTrigger } = setup();
+		growTrigger(30);
 		scroller.dispatchEvent(new Event('scroll'));
 		expect(onclose).toHaveBeenCalledTimes(1);
 	});

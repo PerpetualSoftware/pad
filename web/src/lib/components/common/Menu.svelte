@@ -172,7 +172,8 @@
 			}
 			if (e?.type === 'scroll' && !settled && trigger && openedAt) {
 				const now = trigger.getBoundingClientRect();
-				if (Math.abs(now.left - openedAt.left) < 1 && Math.abs(now.top - openedAt.top) < 1) return;
+				const edges = ['left', 'top', 'right', 'bottom'] as const;
+				if (edges.every((k) => Math.abs(now[k] - openedAt[k]) < 1)) return;
 			}
 			onclose();
 		};
