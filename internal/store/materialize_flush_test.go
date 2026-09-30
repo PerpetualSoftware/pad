@@ -3,6 +3,7 @@ package store_test
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -340,6 +341,38 @@ func TestListMaterializeCandidatesPagesByKeyset(t *testing.T) {
 		for i, c := range all {
 			if walked[i] != c.ItemID || !want[c.ItemID] {
 				t.Fatalf("page walk order %v differs from the full read", walked)
+			}
+		}
+	})
+}
+
+// BUG-3316: a recovery that renders BLANK never replaces a stored body. A
+// tab's lazy seed (TASK-1261) seeds from items.content when its replayed
+// document is empty; recovery keeps the stored body instead, and writes
+// nothing at all: not the body, not a version row, not seq, not the watermark.
+// (Found by the pre-rollout dry run: a load-test item's op-log of 90 tiny rows
+// replays to an empty document over a 1,285-byte body.)
+func TestMaterializeFlushRefusesBlankOverAStoredBody(t *testing.T) {
+	eachBackend(t, func(t *testing.T, s *store.Store) {
+		for _, blank := range []string{"", "  \n\n\t"} {
+			_, _, item := seedStaleItem(t, s)
+			cursor := appendFrames(t, s, item.ID, recoveryFrame(1))
+			before, _ := s.GetItem(item.ID)
+			if strings.TrimSpace(before.Content) == "" {
+				t.Fatalf("precondition: the stored body %q must be non-blank", before.Content)
+			}
+			nv := versionCount(t, s, item.ID)
+			wm, _, _ := s.GetItemContentFlushedOpLogID(item.ID)
+
+			outcome, updated, err := s.MaterializeFlush(item.ID, cursor, blank)
+			if err != nil || outcome != store.MaterializeEmptyRefused || updated != nil {
+				t.Fatalf("%q: MaterializeFlush = %q, %v, %v; want %q", blank, outcome, updated, err, store.MaterializeEmptyRefused)
+			}
+			got, _ := s.GetItem(item.ID)
+			wm2, _, _ := s.GetItemContentFlushedOpLogID(item.ID)
+			if got.Content != before.Content || got.Seq != before.Seq || versionCount(t, s, item.ID) != nv || wm2 != wm {
+				t.Fatalf("%q: something was written: content %q->%q seq %d->%d versions %d->%d watermark %d->%d",
+					blank, before.Content, got.Content, before.Seq, got.Seq, nv, versionCount(t, s, item.ID), wm, wm2)
 			}
 		}
 	})

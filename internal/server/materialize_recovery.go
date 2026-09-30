@@ -127,6 +127,7 @@ const (
 	mrNothing        materializeResult = "nothing_pending"
 	mrRoomOpen       materializeResult = "room_open"
 	mrSetAside       materializeResult = "set_aside"
+	mrEmptyRefused   materializeResult = "empty_document" // BUG-3316: never a blank body over a stored one
 	mrCursorMoved    materializeResult = "cursor_moved"
 	mrGone           materializeResult = "gone"
 	mrBudgetExceeded materializeResult = "budget_exhausted"
@@ -403,7 +404,7 @@ func (r *materializeRecovery) process(itemID string) materializeResult {
 	}
 	for _, v := range in.SchemaVersions {
 		if v != collab.DefaultSchemaVersion {
-			r.exhaust(itemID, in.Cursor, fmt.Sprintf("op-log schema version %q, server %q", v, collab.DefaultSchemaVersion))
+			r.exhaust(itemID, in.Cursor, "schema_version", fmt.Sprintf("op-log schema version %q, server %q", v, collab.DefaultSchemaVersion))
 			return mrSchemaVersion
 		}
 	}
@@ -474,9 +475,25 @@ func (r *materializeRecovery) process(itemID string) materializeResult {
 	case store.MaterializeSetAside:
 		r.setAsideSkipped.Add(1)
 		return mrSetAside
+	case store.MaterializeEmptyRefused:
+		// Terminal until the op-log changes: retrying would replay the same
+		// empty document every sweep (BUG-3316).
+		r.exhaust(itemID, in.Cursor, "empty_document",
+			fmt.Sprintf("the op-log replays to an empty document and the stored body is %d bytes; kept the stored body", storedLen(s, itemID)))
+		return mrEmptyRefused
 	default:
 		return mrGone
 	}
+}
+
+// storedLen is the item's stored body length, for the empty_document log
+// line only (a rare path, so one extra read).
+func storedLen(s *Server, itemID string) int {
+	it, err := s.store.GetItem(itemID)
+	if err != nil || it == nil {
+		return -1
+	}
+	return len(it.Content)
 }
 
 // admit applies the failure budget. The budget resets when the op-log has
@@ -581,18 +598,19 @@ func (r *materializeRecovery) logExhaustion(level slog.Level, itemID string, fai
 		"item_id", itemID, "failures", failures, "last_error_kind", kind, "last_error", lastErr)
 }
 
-// exhaust marks the item as not to be tried until its op-log changes.
-func (r *materializeRecovery) exhaust(itemID string, cursor int64, why string) {
+// exhaust marks the item as not to be tried until its op-log changes, and
+// writes its one exhaustion line with kind as last_error_kind.
+func (r *materializeRecovery) exhaust(itemID string, cursor int64, kind, why string) {
 	r.mu.Lock()
 	b := r.budgetSlotLocked(itemID)
 	b.failures = r.cfg.maxFailures
 	b.opLogMax = cursor
 	b.lastErr = why
-	b.lastKind = "schema_version"
+	b.lastKind = kind
 	logExhaustion := r.claimExhaustionLogLocked(b)
 	r.mu.Unlock()
 	if logExhaustion {
-		r.logExhaustion(slog.LevelWarn, itemID, r.cfg.maxFailures, "schema_version", why)
+		r.logExhaustion(slog.LevelWarn, itemID, r.cfg.maxFailures, kind, why)
 	}
 }
 

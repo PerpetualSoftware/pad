@@ -836,6 +836,54 @@ func TestMaterializeRecoverySecondPassIsHarmless(t *testing.T) {
 	}
 }
 
+// BUG-3316, through the recovery worker: an op-log that replays to an empty
+// document never blanks the stored body. The item is refused as terminal, is
+// not replayed again until its op-log changes, and leaves ONE WARN line naming
+// empty_document.
+func TestMaterializeRecoveryRefusesAnEmptyDocument(t *testing.T) {
+	var buf bytes.Buffer
+	fake := &fakeMaterializer{fn: func(materialize.Job) (string, error) { return "", nil }}
+	f := newRecoveryFixture(t, fake, time.Minute, materializeRecoveryConfig{
+		logger: slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})),
+	})
+	it := f.item(t, "Load test target", "a stored body a tab would seed from")
+	f.appendRows(t, it.ID, contentFrame(1))
+	nv := len(mustVersions(t, f, it.ID))
+
+	if res := f.r.process(it.ID); res != mrEmptyRefused {
+		t.Fatalf("process = %q, want %q", res, mrEmptyRefused)
+	}
+	got, _ := f.srv.store.GetItem(it.ID)
+	if got.Content != "a stored body a tab would seed from" || len(mustVersions(t, f, it.ID)) != nv {
+		t.Fatalf("the stored body was touched: %q, versions %d -> %d", got.Content, nv, len(mustVersions(t, f, it.ID)))
+	}
+	for i := 0; i < 3; i++ {
+		if res := f.r.process(it.ID); res != mrBudgetExceeded {
+			t.Fatalf("pass %d after the refusal = %q, want %q (terminal until the op-log changes)", i, res, mrBudgetExceeded)
+		}
+	}
+	if n := fake.calls.Load(); n != 1 {
+		t.Fatalf("the empty document was replayed %d times, want 1", n)
+	}
+	var lines []string
+	for _, l := range strings.Split(buf.String(), "\n") {
+		if strings.Contains(l, "exhausted its failure budget") {
+			lines = append(lines, l)
+		}
+	}
+	if len(lines) != 1 || !strings.Contains(lines[0], "level=WARN") || !strings.Contains(lines[0], "last_error_kind=empty_document") ||
+		!strings.Contains(lines[0], "item_id="+it.ID) {
+		t.Fatalf("exhaustion lines = %q, want one WARN naming empty_document", lines)
+	}
+
+	// New edits reset it: the op-log grew, so the item is tried again.
+	f.appendRows(t, it.ID, contentFrame(2))
+	fake.fn = func(materialize.Job) (string, error) { return "typed after all", nil }
+	if res := f.r.process(it.ID); res != mrApplied {
+		t.Fatalf("after the op-log grew: %q, want %q", res, mrApplied)
+	}
+}
+
 func mustVersions(t *testing.T, f *recoveryFixture, itemID string) []models.Version {
 	t.Helper()
 	vs, err := f.srv.store.ListItemVersions(itemID)
