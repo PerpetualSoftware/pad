@@ -264,6 +264,12 @@ type Server struct {
 	// StartOpLogGC; Stop() signals the loop via stopOpLogGC.
 	opLogGC opLogGCConfig
 
+	// materializeRecovery is the op-log recovery worker (TASK-2198 U4): it
+	// rebuilds items.content from an item's collaborative op-log after the tab
+	// holding those edits went away without flushing them. Nil until
+	// SetMaterializer; started by StartMaterializeRecovery; Stop() stops it.
+	materializeRecovery *materializeRecovery
+
 	// tokenReaper holds the periodic-sweep config + lifecycle for the
 	// short-lived-credential reaper (PLAN-1933 DR-5 / TASK-1936).
 	// Mirrors orphanGC/opLogGC. Configured via SetTokenReaperConfig +
@@ -553,6 +559,10 @@ func (s *Server) Stop() {
 	// Yjs op-log prune sweeper (TASK-1309). Same lifecycle pattern;
 	// signals BEFORE Wait() so the goroutine sees the close and exits.
 	s.stopOpLogGC()
+	// Op-log recovery worker (TASK-2198 U4). Signalled BEFORE collab.Close and
+	// bg.Wait: cancelling its context kills a job in flight (the supervisor
+	// kills the worker process), so the goroutine drains promptly.
+	s.stopMaterializeRecovery()
 	// Short-lived-credential reaper (PLAN-1933 DR-5 / TASK-1936). Same
 	// lifecycle pattern; signal BEFORE Wait() so the goroutine exits.
 	s.stopTokenReaper()
@@ -589,6 +599,8 @@ func (s *Server) Stop() {
 		s.collab.Close()
 	}
 	s.bg.Wait()
+	// The worker PROCESS goes after bg.Wait, when nothing can hand it a job.
+	s.closeMaterializer()
 	// Watch/nudge bus (BUG-2651). Closed AFTER bg.Wait() so a background
 	// producer cannot publish into a bus that is already tearing down; both
 	// implementations are safe if one does anyway (MemoryBus finds no

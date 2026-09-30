@@ -272,6 +272,17 @@ const ContentStatePendingFlush = ContentOutcomeAppliedPendingFlush
 // stale should ask IsContentStateStale instead.
 const ContentStateSetAside = "superseded_set_aside"
 
+// The version-row attribution of an op-log recovery (ItemUpdate.Recovered,
+// TASK-2198 U4). item_versions.created_by and .source carry no CHECK
+// constraint on either dialect; "system" is already the created_by of
+// template-seeded items. The web timeline labels them "System" / "Recovered";
+// `pad item history` prints them as stored.
+const (
+	VersionCreatedBySystem = "system"
+	VersionSourceRecovery  = "recovery"
+	RecoveryChangeSummary  = "recovered from an unsaved editor session"
+)
+
 // IsContentStateStale reports whether an Item.ContentState value says the
 // stored body is behind edits that exist elsewhere, for any reason. It is the
 // one helper for doors that mark a body stale without saying what to do.
@@ -1332,8 +1343,18 @@ type ItemUpdate struct {
 	// boundary is what Join reads to force_refresh a client whose ?content_seq
 	// seed predates the restore — surviving a server restart, unlike the
 	// in-memory fast-path. Internal-only (`json:"-"`); no HTTP client can set it.
-	MarkRestoreBoundary bool    `json:"-"`
-	Comment             *string `json:"comment,omitempty"`
+	MarkRestoreBoundary bool `json:"-"`
+	// Recovered marks the op-log materializer's write (TASK-2198 U4): the
+	// server rebuilt items.content from the item's collaborative op-log after
+	// the tab holding those edits went away without flushing them. The store
+	// attributes the version row to the system (VersionCreatedBySystem /
+	// VersionSourceRecovery) rather than to a guessed author, because op-log
+	// rows carry no user id, and advances the flush watermark only to
+	// OpLogCursor and only when that cursor is still MAX(op-log id), exactly
+	// as a collab-snapshot flush does. Internal-only (`json:"-"`); no HTTP
+	// client can set it.
+	Recovered bool    `json:"-"`
+	Comment   *string `json:"comment,omitempty"`
 	// OpLogCursor is the highest item_yjs_updates.id the calling client
 	// has applied into its local Y.Doc (TASK-1319). Used by the
 	// collab-snapshot flush PATCH to advance the op-log GC watermark

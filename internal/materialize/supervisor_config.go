@@ -29,6 +29,30 @@ const (
 	EnvIdleTimeout = "PAD_MATERIALIZE_IDLE_TIMEOUT"
 )
 
+// EnvSwitch turns op-log recovery off entirely: PAD_MATERIALIZE=off (or 0,
+// false, no; case-insensitive) and the server constructs no Supervisor,
+// installs no trigger and never spawns a worker. Unset, or any other value,
+// leaves it on; a value that is neither a recognised on nor off word is
+// logged and read as on.
+const EnvSwitch = "PAD_MATERIALIZE"
+
+// Enabled reads EnvSwitch through getenv.
+func Enabled(getenv func(string) string, logger *slog.Logger) bool {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	v := strings.ToLower(strings.TrimSpace(getenv(EnvSwitch)))
+	switch v {
+	case "off", "0", "false", "no", "disabled":
+		return false
+	case "", "on", "1", "true", "yes", "enabled":
+		return true
+	}
+	logger.Warn("materialize: unrecognised "+EnvSwitch+" value; op-log recovery stays ON (set it to off to disable)",
+		"value", getenv(EnvSwitch))
+	return true
+}
+
 const (
 	DefaultTimeout  = 2 * time.Second
 	MinTimeout      = 250 * time.Millisecond
