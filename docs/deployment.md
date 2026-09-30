@@ -1222,6 +1222,72 @@ address inside `PAD_TRUSTED_PROXIES` (the proxy sends no `X-Forwarded-For` or
 - **The host check does not replace TLS.** It closes DNS rebinding; it does not
   protect tokens in transit. That is why http is token-only.
 
+### Op-log materializer worker
+
+**Not active yet.** The worker and the two variables below take effect once
+the materializer is wired into the server (TASK-2198 U4); until then they are
+inert, and setting them changes nothing.
+
+When a browser tab closes without saving, its last edits are only in the
+item's collaborative op-log. Pad can turn that op-log back into the item's
+markdown on the server by running the editor's own JavaScript. It does this in
+a **separate worker process** (the same `pad` binary, started as
+`pad __materialize-worker`), never inside the server: a crafted update can
+make that JavaScript use gigabytes of memory, and in a separate process that
+kills one worker instead of the server.
+
+- The worker starts on the first job, not at server start, and then stays up
+  while jobs keep coming (loading it takes a few seconds). Jobs run one at a
+  time.
+- A job that runs past the timeout is failed and the worker is killed. The
+  next job starts a new one.
+- If the server process dies, its worker exits too, so it never runs on
+  without its time and memory limits. On Linux it exits at once; on macOS
+  within about 200ms; on Windows at once.
+- A worker with no job for the idle timeout (5 minutes by default) is stopped
+  cleanly, because a loaded worker holds about 200 MB of resident memory for as
+  long as it runs. The next job starts a new one, with no wait. An idle stop is
+  not a death and does not count toward the restart wait below.
+- A worker that dies is restarted on the next job, waiting 1s after the first
+  death and doubling after each further death, up to 5 minutes. A worker that
+  stayed up for a minute resets the wait.
+- Every worker start logs the timeout, the worker's measured memory
+  baseline, the memory limit and the resulting cap, and every stop logs why
+  (`deadline`, `memory`, `exit`, `protocol`, `start`, `canceled`, `closed`,
+  or `idle`, which is logged at INFO rather than as a warning). The worker's
+  stderr goes to the server log, one line per record, tagged with the worker's
+  pid.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PAD_MATERIALIZE_TIMEOUT` | `2s` | Per-job time limit, in Go duration syntax (`2s`, `1500ms`). Clamped to 250ms–60s. |
+| `PAD_MATERIALIZE_IDLE_TIMEOUT` | `5m` | How long the worker may sit with no job before it is stopped (it holds about 200 MB resident while it runs), in Go duration syntax. `0` means never stop it. Clamped to 30s–24h. |
+| `PAD_MATERIALIZE_MEM_LIMIT` | `2GiB` | How much memory one job may add to the loaded worker (see below): a whole number of bytes, or a whole number followed by `KiB`, `MiB` or `GiB` with no space (`2048MiB`, `2GiB`, `2147483648`). Decimal units such as `GB` are refused. Clamped to 256MiB–16GiB. |
+
+A value that cannot be parsed is ignored with a warning, and the default is
+used. A value outside the range is clamped with a warning.
+
+The memory limit is **growth beyond the loaded worker**. Once the worker has
+loaded, and before it is given any job, Pad measures its memory use (the
+baseline) and caps it at baseline + limit. What "memory" means depends on the
+OS, and the three are not the same measure:
+
+- **Linux:** virtual **address space** (`RLIMIT_AS`, set on the worker process
+  only). A loaded worker already holds about 1.4 GB of address space, more on
+  hosts with many CPUs; the limit is added on top of whatever it holds.
+- **macOS:** **resident memory** (RSS), watched by Pad every 100ms, because
+  macOS does not enforce `RLIMIT_AS`. A worker can go over the cap for up to
+  one check interval before it is stopped.
+- **Windows:** the worker's **committed memory**, as a Job Object limit. The
+  worker is started suspended and put in the job before it runs.
+
+Linux, macOS and Windows are the supported platforms. **If no memory cap can
+be established** (any other OS, or the baseline measurement failing or
+reading an implausible value), Pad does not materialize at all: no worker is
+given a job, one warning is logged, and items keep today's behaviour until a
+worker can be capped. That is safe, because materialization is a recovery
+enhancement; the server does not need it to run.
+
 ### Email (Optional)
 
 Email enables sending workspace invitation links. Without it, users can still join via CLI invite codes.

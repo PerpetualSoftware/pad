@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"runtime"
+	"sync"
 	"time"
 )
 
@@ -57,6 +59,42 @@ func RunWorker(r io.Reader, w io.Writer, js []byte) error {
 	if err != nil {
 		return err
 	}
+	warmThreads()
+	return serveWorker(r, w, runner)
+}
+
+// warmThreads brings the worker's thread set to steady state BEFORE it reads
+// the readiness probe, i.e. before the supervisor measures the baseline the
+// memory cap is relative to (supervisor.go armCap). Every P runs an
+// allocating goroutine at once, so the runtime starts an M for each, and a
+// GC starts its workers. Threads created only later — during a job — would
+// otherwise come out of that job's budget: on a cgo build each reserves an
+// 8 MiB stack, and CI measured the growth this closes.
+func warmThreads() {
+	n := runtime.GOMAXPROCS(0)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			var keep [][]byte
+			for range 32 {
+				keep = append(keep, make([]byte, 64<<10))
+			}
+			runtime.KeepAlive(keep)
+		}()
+	}
+	close(start)
+	wg.Wait()
+	runtime.GC()
+}
+
+// serveWorker is RunWorker's loop over an already-loaded Runner. Split out so
+// the tests of the loop share one loaded bundle instead of paying the load
+// (~25 s under the race detector) per test.
+func serveWorker(r io.Reader, w io.Writer, runner *Runner) error {
 	br := bufio.NewReader(r)
 	bw := bufio.NewWriter(w)
 	for {
