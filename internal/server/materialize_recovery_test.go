@@ -75,8 +75,12 @@ type recoveryFixture struct {
 
 	mu        sync.Mutex
 	processed []string
-	results   map[string]materializeResult
-	done      chan string
+	// results holds EVERY pass's result per item, in order. An item can be
+	// processed twice: dequeue clears its queued mark before the pass runs,
+	// so a sweep during a slow pass re-enqueues it, and the second pass finds
+	// nothing pending. Keeping only the last result read that as a failure.
+	results map[string][]materializeResult
+	done    chan string
 }
 
 // newRecoveryFixture: a test server with a room manager (grace TTL grace) and
@@ -89,13 +93,13 @@ func newRecoveryFixture(t *testing.T, m Materializer, grace time.Duration, cfg m
 	rm := collab.NewRoomManagerWithConfig(srv.store, bus, collab.RoomManagerConfig{GraceTTL: grace})
 	t.Cleanup(rm.Close)
 	srv.SetCollabRoomManager(rm)
-	f := &recoveryFixture{srv: srv, rm: rm, results: map[string]materializeResult{}, done: make(chan string, 256)}
+	f := &recoveryFixture{srv: srv, rm: rm, results: map[string][]materializeResult{}, done: make(chan string, 256)}
 	if m != nil {
 		f.r = newMaterializeRecovery(srv, m, cfg)
 		f.r.processed = func(id string, res materializeResult) {
 			f.mu.Lock()
 			f.processed = append(f.processed, id)
-			f.results[id] = res
+			f.results[id] = append(f.results[id], res)
 			f.mu.Unlock()
 			f.done <- id
 		}
@@ -135,20 +139,27 @@ func (f *recoveryFixture) appendRows(t *testing.T, itemID string, rows ...[]byte
 	return last
 }
 
-func (f *recoveryFixture) waitProcessed(t *testing.T, itemID string, within time.Duration) materializeResult {
+// waitApplied waits until a pass APPLIED itemID and returns mrApplied; at the
+// deadline it returns the last result seen, or fails if there was none.
+func (f *recoveryFixture) waitApplied(t *testing.T, itemID string, within time.Duration) materializeResult {
 	t.Helper()
 	deadline := time.After(within)
 	for {
 		f.mu.Lock()
-		res, ok := f.results[itemID]
+		rs := append([]materializeResult(nil), f.results[itemID]...)
 		f.mu.Unlock()
-		if ok {
-			return res
+		for _, r := range rs {
+			if r == mrApplied {
+				return mrApplied
+			}
 		}
 		select {
 		case <-f.done:
 		case <-deadline:
-			t.Fatalf("item %s was not processed within %s", itemID, within)
+			if len(rs) == 0 {
+				t.Fatalf("item %s was not processed within %s", itemID, within)
+			}
+			return rs[len(rs)-1]
 		}
 	}
 }
@@ -232,7 +243,7 @@ func TestMaterializeRoomIdleRecoversThroughTheHook(t *testing.T) {
 	dialAndClose(t, ts.URL, clean.ID)
 	dialAndClose(t, ts.URL, pending.ID)
 
-	if res := f.waitProcessed(t, pending.ID, 5*time.Second); res != mrApplied {
+	if res := f.waitApplied(t, pending.ID, 5*time.Second); res != mrApplied {
 		t.Fatalf("pending item result %q, want applied", res)
 	}
 	got, _ := f.srv.store.GetItem(pending.ID)
@@ -485,7 +496,7 @@ func TestMaterializeRecoveryEndToEnd(t *testing.T) {
 
 	f.srv.StartMaterializeRecovery()
 	for _, c := range cases {
-		if res := f.waitProcessed(t, c.item.ID, 60*time.Second); res != mrApplied {
+		if res := f.waitApplied(t, c.item.ID, 60*time.Second); res != mrApplied {
 			t.Fatalf("%s: result %q, want applied", c.c.Name, res)
 		}
 	}
@@ -775,4 +786,61 @@ func TestMaterializeSweepReachesEveryCandidate(t *testing.T) {
 	} else {
 		t.Logf("the first candidate was recovered on sweep %d after the wrap", tick)
 	}
+}
+
+// The double pass, pinned (main's red at cb99879d). dequeue clears an item's
+// queued mark before its pass runs, so a sweep during a slow pass re-enqueues
+// it; after the first pass applies, the second finds nothing pending. That is
+// harmless: it writes nothing. The fixture must not read it as a failure.
+func TestMaterializeRecoverySecondPassIsHarmless(t *testing.T) {
+	slow := &fakeMaterializer{fn: func(materialize.Job) (string, error) {
+		time.Sleep(150 * time.Millisecond)
+		return "recovered body", nil
+	}}
+	f := newRecoveryFixture(t, slow, time.Minute, materializeRecoveryConfig{
+		sweepInterval: 20 * time.Millisecond,
+		now:           func() time.Time { return time.Now().Add(time.Hour) },
+	})
+	it := f.item(t, "Slow", "stale")
+	f.appendRows(t, it.ID, contentFrame(1))
+	f.srv.StartMaterializeRecovery()
+	if res := f.waitApplied(t, it.ID, 10*time.Second); res != mrApplied {
+		t.Fatalf("result %q, want applied", res)
+	}
+	after, _ := f.srv.store.GetItem(it.ID)
+	nv := len(mustVersions(t, f, it.ID))
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		f.mu.Lock()
+		n := len(f.results[it.ID])
+		f.mu.Unlock()
+		if n >= 2 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	f.mu.Lock()
+	rs := append([]materializeResult(nil), f.results[it.ID]...)
+	f.mu.Unlock()
+	if len(rs) < 2 || rs[1] != mrNothing {
+		t.Fatalf("results %v: the instrument no longer reproduces the second pass", rs)
+	}
+	// With both passes recorded, the wait still reports the apply: this is
+	// the assertion a last-result-wins fixture failed on CI.
+	if res := f.waitApplied(t, it.ID, time.Second); res != mrApplied {
+		t.Fatalf("after the second pass the wait reports %q, want applied", res)
+	}
+	got, _ := f.srv.store.GetItem(it.ID)
+	if got.Content != after.Content || got.Seq != after.Seq || len(mustVersions(t, f, it.ID)) != nv {
+		t.Fatalf("the second pass wrote: seq %d->%d versions %d->%d", after.Seq, got.Seq, nv, len(mustVersions(t, f, it.ID)))
+	}
+}
+
+func mustVersions(t *testing.T, f *recoveryFixture, itemID string) []models.Version {
+	t.Helper()
+	vs, err := f.srv.store.ListItemVersions(itemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return vs
 }
