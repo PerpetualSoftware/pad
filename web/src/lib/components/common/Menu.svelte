@@ -142,16 +142,19 @@
 	// close(): refocusing the trigger here would scroll the card back
 	// into view and fight the user's scroll.
 	//
-	// "Can move the anchor" is decided by whether the anchor MOVED since
-	// the menu opened, not by the event alone (BUG-3278). A scroll is
-	// dispatched at the next rendering step, so one that happened just
-	// BEFORE the opening click — a click that first scrolled its card into
-	// view, a momentum scroll ending — arrives after the menu is open and
-	// closed it in the same frame, although the position the coords were
-	// taken from is already the scrolled one. Resize is left unconditional.
+	// A scroll event that was already PENDING when the menu opened is not a
+	// scroll of the open menu's anchor (BUG-3278). Scroll events are
+	// dispatched at the next rendering step, so a scroll that happened just
+	// BEFORE the opening click — a click that first scrolls its card into
+	// view, a tap landing as a momentum scroll ends — arrives after the menu
+	// opened and closed it in the same frame. Scroll events are ignored
+	// until the first animation frame after opening, which runs after that
+	// rendering step's scroll dispatch; every later scroll is judged exactly
+	// as before. Resize is unchanged.
 	$effect(() => {
 		if (!open || useSheet || mode !== 'portal') return;
-		const openedAt = trigger?.getBoundingClientRect();
+		let settled = false;
+		const frame = requestAnimationFrame(() => (settled = true));
 		const dismiss = (e?: Event) => {
 			if (e && e.target instanceof Node) {
 				const t = e.target;
@@ -162,15 +165,13 @@
 				if (exempt?.().some((el) => el && (el === t || el.contains(t)))) return;
 				if (trigger && t !== document && !t.contains(trigger)) return;
 			}
-			if (e?.type === 'scroll' && trigger && openedAt) {
-				const now = trigger.getBoundingClientRect();
-				if (Math.abs(now.left - openedAt.left) < 1 && Math.abs(now.top - openedAt.top) < 1) return;
-			}
+			if (e?.type === 'scroll' && !settled) return;
 			onclose();
 		};
 		window.addEventListener('scroll', dismiss, { capture: true, passive: true });
 		window.addEventListener('resize', dismiss, { passive: true });
 		return () => {
+			cancelAnimationFrame(frame);
 			window.removeEventListener('scroll', dismiss, { capture: true });
 			window.removeEventListener('resize', dismiss);
 		};
