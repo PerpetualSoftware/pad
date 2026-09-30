@@ -553,7 +553,6 @@ func TestClientCannotClaimRecoveryVersionSource(t *testing.T) {
 	}
 }
 
-
 // ErrNoMemoryCap (U3: no cap could be established, so the supervisor refused
 // the job and warned once itself) counts against the budget like any failure,
 // but is not logged per item. The control is ErrChildDied, which is.
