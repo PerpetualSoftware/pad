@@ -6,6 +6,8 @@
 
 # Web build output
 web/build/
+# The headless materializer bundle (TASK-2198), embedded by embed.go.
+web/build-materializer/
 # Both, deliberately. Only web/node_modules/ was listed, because that is the
 # only one a correct invocation creates — but running vitest from the REPO ROOT
 # instead of web/ makes a root-level node_modules/ with a vitest cache in it,

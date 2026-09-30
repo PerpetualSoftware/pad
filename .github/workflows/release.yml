@@ -68,6 +68,13 @@ jobs:
       - name: Create web build placeholder for tests
         run: mkdir -p web/build && echo "placeholder" > web/build/.gitkeep
 
+      # Built for real, not stubbed: internal/materialize's tests run the
+      # materializer bundle (TASK-2198). The "Build web UI" step below
+      # rebuilds it, with the rest of the web build, for the release binaries.
+      - name: Build the materializer bundle for tests
+        working-directory: web
+        run: npm ci && node scripts/build-materializer.mjs
+
       - name: Run tests
         # Explicit -timeout, same reasoning as ci.yml's steps (TASK-2545):
         # `go test` defaults to 10m per test binary, and this is the RELEASE

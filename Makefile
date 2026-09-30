@@ -285,7 +285,8 @@ lint:
 # module vulns are naturally suppressed since their symbols aren't linked in.
 # Mirrors the "Run govulncheck" step in CI's Go job — keep the two in sync.
 #
-# The build needs web/build to exist for the //go:embed directive. Locally
+# The build needs web/build (and web/build-materializer/materializer.js,
+# TASK-2198) to exist for the //go:embed directives. Locally
 # `make web` / `make install` provides the real assets; the guard below
 # drops a placeholder when it's absent (e.g. a fresh clone) so a standalone
 # `make vuln` never fails on the embed. `go install foo@vX.Y.Z` is idempotent
@@ -299,6 +300,7 @@ lint:
 vuln:
 	go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
 	@[ -n "$$(ls -A web/build 2>/dev/null)" ] || { mkdir -p web/build && echo placeholder > web/build/.gitkeep; }
+	@[ -f web/build-materializer/materializer.js ] || { mkdir -p web/build-materializer && echo '// placeholder' > web/build-materializer/materializer.js; }
 	go build -o pad-vulnscan ./cmd/pad
 	$(GOVULNCHECK) -mode binary pad-vulnscan; status=$$?; rm -f pad-vulnscan; exit $$status
 
