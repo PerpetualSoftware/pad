@@ -900,7 +900,7 @@ func (s *Store) ListDocumentActivity(documentID string, params models.ActivityLi
 // ordered newest-first, limited to `limit` results. Used for cursor-based timeline pagination.
 //
 // Activities a comment links to (comments.activity_id) are EXCLUDED here, at
-// query time — except an "updated" one. A "commented" row IS its comment, so
+// query time — except an "updated" one that records a change. A "commented" row IS its comment, so
 // the timeline shows it through the comment's card and never as its own
 // entry. An "updated" row a comment links to (an update sent with --comment)
 // records a field change the comment card does not render, and since comments
@@ -921,7 +921,17 @@ func (s *Store) ListDocumentActivity(documentID string, params models.ActivityLi
 func (s *Store) ListDocumentActivityBeforeTime(documentID string, before time.Time, beforeID string, limit int) ([]models.Activity, error) {
 	ts := before.Format(time.RFC3339)
 	const selectCols = memberActivityCols
-	const notCommentLinked = `AND (a.action = 'updated' OR NOT EXISTS (SELECT 1 FROM comments c WHERE c.activity_id = a.id AND c.item_id = a.document_id))`
+	// The spared "updated" rows are the ones whose metadata carries a
+	// "changes" key: a linked update with nothing but the agent's name (a
+	// --comment sent alone) has nothing for its own card to say. The LIKE is
+	// a superset test (buildTimeline decides exactly), and it reads the text
+	// form because metadata is TEXT on SQLite and JSONB on Postgres, and
+	// json_extract refuses a row whose TEXT does not parse.
+	metaText := "a.metadata"
+	if s.dialect.Driver() == DriverPostgres {
+		metaText = "a.metadata::text"
+	}
+	notCommentLinked := `AND ((a.action = 'updated' AND ` + metaText + ` LIKE '%"changes"%') OR NOT EXISTS (SELECT 1 FROM comments c WHERE c.activity_id = a.id AND c.item_id = a.document_id))`
 	const orderLimit = `ORDER BY a.created_at DESC, a.id DESC LIMIT ?`
 
 	var rows *sql.Rows

@@ -425,6 +425,12 @@ func structuredTimelineEntries(item *models.Item, before time.Time, beforeID str
 // and decision-log entries into a single chronological stream, applying
 // deduplication and collapsing logic.
 func buildTimeline(comments []models.Comment, activities []models.Activity, versions []models.Version, notes, decisions []models.TimelineEntry) []models.TimelineEntry {
+	// Build a set of version timestamps (rounded to the second) for dedup.
+	versionTimes := make(map[int64]bool, len(versions))
+	for _, v := range versions {
+		versionTimes[v.CreatedAt.Unix()] = true
+	}
+
 	// Activities the fetched comments link to, skipped below. This is NOT the
 	// mechanism that keeps a comment-linked activity off the timeline —
 	// ListDocumentActivityBeforeTime excludes those at the query, which is
@@ -447,8 +453,8 @@ func buildTimeline(comments []models.Comment, activities []models.Activity, vers
 	// two reads with no shared snapshot; TimelineEntry's doc states the
 	// class.
 	//
-	// Like the query, it spares "updated" rows: those record a change the
-	// comment card does not render (PLAN-2348 checkpoint 2, defect 5).
+	// Like the query, it spares an "updated" row that records a change: the
+	// comment card does not render it (PLAN-2348 checkpoint 2, defect 5).
 	commentActivityIDs := make(map[string]bool)
 	for _, c := range comments {
 		if c.ActivityID != "" {
@@ -492,7 +498,7 @@ func buildTimeline(comments []models.Comment, activities []models.Activity, vers
 
 	// Add activity entries, skipping activities a fetched comment links to
 	// (the read-skew guard described at the top of the function) and
-	// "updated" rows that record no change.
+	// "updated" rows that say nothing a version does not.
 	for i := range activities {
 		a := activities[i]
 
@@ -501,19 +507,21 @@ func buildTimeline(comments []models.Comment, activities []models.Activity, vers
 			continue
 		}
 
-		if a.Action != "updated" && commentActivityIDs[a.ID] {
+		changed := a.Action == "updated" && activityChangesText(a.Metadata) != ""
+		if commentActivityIDs[a.ID] && !changed {
 			continue
 		}
 
-		// An "updated" row with no change text has nothing to show: a body
-		// edit records its change as a version, not in `changes`, so its
-		// activity carries at most the agent's name. This used to be two
-		// skips, "the metadata is empty" and "a version shares its second",
-		// and the second also dropped every FIELD change sent in the same
-		// request as a body edit (PLAN-2348 checkpoint 2, defect 5). The
-		// question is whether the row says anything, so ask that.
-		if a.Action == "updated" && activityChangesText(a.Metadata) == "" {
-			continue
+		// The "updated" skips, unchanged except that a row carrying anything
+		// beyond attribution is never skipped: the same-second skip also
+		// dropped every FIELD change sent in the same request as a body edit
+		// (PLAN-2348 checkpoint 2, defect 5). A row that says nothing — no
+		// metadata, or only the agent's name, which is what a body edit's
+		// activity carries — still yields to a version in its second.
+		if a.Action == "updated" && !activityRecordsMore(a.Metadata) {
+			if a.Metadata == "" || a.Metadata == "{}" || versionTimes[a.CreatedAt.Unix()] {
+				continue
+			}
 		}
 
 		entry := models.TimelineEntry{
@@ -710,6 +718,29 @@ func exhaustedWindowCursor(
 // already bounds. A bound that can only fire on a valid id is not protection.
 func validCursorID(v string) bool {
 	return utf8.ValidString(v) && !strings.ContainsRune(v, 0)
+}
+
+// activityRecordsMore reports whether an activity's metadata carries anything
+// beyond attribution (the "agent" key agentMeta adds): a change list, a bulk
+// op, dropped fields. Metadata that does not parse counts as carrying
+// something, so an unreadable row is shown rather than silently dropped.
+func activityRecordsMore(metadata string) bool {
+	if metadata == "" || metadata == "{}" {
+		return false
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(metadata), &m); err != nil {
+		return true
+	}
+	for k, v := range m {
+		if k == "agent" {
+			continue
+		}
+		if s := strings.TrimSpace(string(v)); s != `""` && s != "null" {
+			return true
+		}
+	}
+	return false
 }
 
 // activityChangesText returns the "changes" string an activity's metadata
