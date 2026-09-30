@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -60,7 +61,27 @@ var (
 	// ErrJobTooLarge: the encoded request exceeds MaxFrameBytes. Nothing was
 	// sent.
 	ErrJobTooLarge = errors.New("materialize: job exceeds the worker frame limit")
+	// ErrNoMemoryCap: no memory cap could be established for a worker — the
+	// OS has no cap mechanism, or the baseline probe failed or read an
+	// implausible value — so the job was refused and NOTHING was sent to a
+	// worker. Materialization is a recovery enhancement; without a cap it is
+	// off, never uncapped.
+	ErrNoMemoryCap = errors.New("materialize: no memory cap could be established; job refused")
 )
+
+// MaxPlausibleBaseline bounds the memory baseline a loaded worker may report
+// before the cap is armed. The largest measured (Linux address space, real
+// worker, TestSupervisorBaselineMeasurements) is 1704 MiB at GOMAXPROCS=64;
+// resident and committed baselines are far smaller (~75 MiB RSS). 8 GiB is
+// ~4.8x the largest, so a reading above it is not a loaded-but-idle worker:
+// it is a broken probe, or a worker that ran away before its first job, and
+// a cap derived from it would be meaningless.
+const MaxPlausibleBaseline = 8 << 30
+
+// workerGOMAXPROCS is the worker's GOMAXPROCS. It runs one job at a time and
+// gains nothing from more Ps; fewer Ps means fewer threads and a smaller,
+// steadier address-space baseline.
+const workerGOMAXPROCS = "2"
 
 // WorkerCommand is the argv[1] that runs the worker (cmd/pad/cmd_materialize.go).
 const WorkerCommand = "__materialize-worker"
@@ -93,21 +114,37 @@ type SupervisorConfig struct {
 	capOverride   *memCapImpl
 	watchInterval time.Duration
 	onSpawn       func(pid int)
+	extraEnv      []string // appended last to the worker's environment
 }
 
 // memCapImpl is one OS's way of capping the child; memcap_<os>.go defines
-// platformMemCap.
+// platformMemCap. The cap is RELATIVE: once the worker has loaded its
+// bundle, and before it is sent any job, its current usage is read as a
+// baseline and the cap is set to baseline + limit. What "usage" is differs
+// per OS: address space (Linux), committed memory (Windows), resident set
+// (macOS).
 type memCapImpl struct {
 	// mechanism names it in the start log line.
 	mechanism string
+	// unsupported: this OS has no cap, so no worker is ever started and every
+	// job is refused with ErrNoMemoryCap.
+	unsupported bool
 	// prepare adjusts the command before Start (nil: nothing).
 	prepare func(cmd *exec.Cmd)
-	// apply caps the started child before it is sent anything. Its release
-	// runs after the child is reaped. Nil: no cap.
-	apply func(cmd *exec.Cmd, limit uint64) (release func(), err error)
-	// rss, when set, makes the parent poll the child's resident set every
-	// watchInterval and kill it above the limit.
+	// attach runs right after Start, before the child is sent anything, and
+	// returns the handle that measures and caps it.
+	attach func(cmd *exec.Cmd) (*capHandle, error)
+	// rss, instead of attach: the parent reads the child's resident set as
+	// the baseline and then polls it every watchInterval, killing the child
+	// above baseline + limit.
 	rss func(pid int) (uint64, error)
+}
+
+// capHandle measures and caps one started child.
+type capHandle struct {
+	baseline func() (uint64, error)
+	set      func(capBytes uint64) error
+	release  func() // after the child is reaped; may be nil
 }
 
 // Supervisor owns at most one worker process and runs jobs through it one at
@@ -121,12 +158,14 @@ type Supervisor struct {
 
 	slot chan struct{} // held for a whole job: the child is serial
 
-	mu        sync.Mutex
-	closed    bool
-	child     *child
-	nextID    uint64
-	streak    int       // consecutive deaths
-	nextSpawn time.Time // no spawn before this
+	mu          sync.Mutex
+	closed      bool
+	probeWarned bool // a baseline-probe failure has been logged; cleared by a success
+	unsupWarned sync.Once
+	child       *child
+	nextID      uint64
+	streak      int       // consecutive deaths
+	nextSpawn   time.Time // no spawn before this
 }
 
 // NewSupervisor builds a Supervisor. It starts no process: the first job does.
@@ -221,6 +260,13 @@ func (s *Supervisor) Materialize(ctx context.Context, job Job) (string, error) {
 	}
 	defer func() { <-s.slot }()
 
+	if s.cap.unsupported {
+		s.unsupWarned.Do(func() {
+			s.log.Warn("materialize: no memory cap mechanism on this OS; op-log materialization is disabled",
+				"goos", runtime.GOOS)
+		})
+		return "", fmt.Errorf("%w: no cap mechanism on %s", ErrNoMemoryCap, runtime.GOOS)
+	}
 	c, err := s.ensureChild(ctx)
 	if err != nil {
 		return "", err
@@ -268,6 +314,10 @@ type child struct {
 	killOnce   sync.Once
 	killReason atomic.Value // string: why WE killed it
 	stderr     *stderrLog
+
+	gomaxprocs         string
+	baseline, capBytes uint64        // set by armCap before any job
+	rssCap             atomic.Uint64 // the watchdog's threshold (macOS)
 }
 
 func (c *child) kill(reason string) {
@@ -365,7 +415,10 @@ func (s *Supervisor) spawn(ctx context.Context) (*child, error) {
 	if s.cap.prepare != nil {
 		s.cap.prepare(cmd)
 	}
-	guardAgainstOrphaning(cmd)
+	guardAgainstOrphaning(cmd) // also materialises cmd.Env
+	cmd.Env = append(cmd.Env, "GOMAXPROCS="+workerGOMAXPROCS)
+	cmd.Env = append(cmd.Env, s.cfg.extraEnv...)
+	c.gomaxprocs = lastEnv(cmd.Env, "GOMAXPROCS")
 	if err := startUnlocked(cmd); err != nil {
 		inR.Close()
 		inW.Close()
@@ -379,16 +432,18 @@ func (s *Supervisor) spawn(ctx context.Context) (*child, error) {
 	c.started = s.cfg.now()
 	c.stderr.setPid(c.pid) // the stderr copier is already running
 
+	var handle *capHandle
 	var release func()
-	if s.cap.apply != nil {
-		release, err = s.cap.apply(cmd, s.memLimit)
+	if s.cap.attach != nil {
+		handle, err = s.cap.attach(cmd)
 		if err != nil {
 			_ = cmd.Process.Kill()
 			_ = cmd.Wait()
 			inW.Close()
 			outR.Close()
-			return nil, s.startFailed(c, fmt.Errorf("apply memory cap (%s): %w", s.cap.mechanism, err))
+			return nil, s.startFailed(c, fmt.Errorf("attach memory cap (%s): %w", s.cap.mechanism, err))
 		}
+		release = handle.release
 	}
 
 	go func() {
@@ -416,10 +471,6 @@ func (s *Supervisor) spawn(ctx context.Context) (*child, error) {
 			}
 		}
 	}()
-	if s.cap.rss != nil {
-		go s.watchRSS(c)
-	}
-
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -457,15 +508,98 @@ func (s *Supervisor) spawn(ctx context.Context) (*child, error) {
 		return nil, s.fail(c, "protocol", fmt.Errorf("%w: unexpected answer to the readiness probe: %+v", ErrProtocol, resp))
 	}
 
+	// The worker is loaded and has been sent nothing but the probe: measure
+	// it and cap it before the first job. No job ever goes to a worker whose
+	// cap is not confirmed.
+	if err := s.armCap(c, handle); err != nil {
+		return nil, err
+	}
+
 	s.log.Info("materialize worker started",
 		"pid", c.pid,
 		"ready_ms", s.cfg.now().Sub(c.started).Milliseconds(),
 		"timeout", s.timeout.String(),
 		"soft_timeout", softTimeout(s.timeout).String(),
+		"mem_cap", s.cap.mechanism,
+		"mem_baseline", formatBytes(c.baseline),
 		"mem_limit", formatBytes(s.memLimit),
+		"mem_cap_effective", formatBytes(c.capBytes),
+		"mem_baseline_bytes", c.baseline,
 		"mem_limit_bytes", s.memLimit,
-		"mem_cap", s.cap.mechanism)
+		"mem_cap_effective_bytes", c.capBytes,
+		"gomaxprocs", c.gomaxprocs)
 	return c, nil
+}
+
+// armCap reads the loaded worker's baseline and caps it at baseline +
+// memLimit. A baseline that cannot be read, or is implausible, goes to
+// onBaselineProbeFailure; a cap that cannot be set fails the start.
+func (s *Supervisor) armCap(c *child, h *capHandle) error {
+	var baseline func() (uint64, error)
+	var set func(uint64) error
+	switch {
+	case s.cap.rss != nil:
+		baseline = func() (uint64, error) { return s.cap.rss(c.pid) }
+		set = func(capBytes uint64) error {
+			c.rssCap.Store(capBytes)
+			go s.watchRSS(c)
+			return nil
+		}
+	case h != nil:
+		baseline, set = h.baseline, h.set
+	default:
+		return s.onBaselineProbeFailure(c, errors.New("no cap mechanism attached"), 0)
+	}
+	b, err := baseline()
+	if err == nil && (b == 0 || b > MaxPlausibleBaseline) {
+		return s.onBaselineProbeFailure(c, fmt.Errorf("implausible baseline %d bytes (plausible: 1..%d)", b, uint64(MaxPlausibleBaseline)), b)
+	}
+	if err != nil {
+		return s.onBaselineProbeFailure(c, err, 0)
+	}
+	capBytes := b + s.memLimit
+	if err := set(capBytes); err != nil {
+		return s.fail(c, "start", fmt.Errorf("%w: set memory cap (%s) to %d: %v", ErrStart, s.cap.mechanism, capBytes, err))
+	}
+	c.baseline, c.capBytes = b, capBytes
+	s.mu.Lock()
+	s.probeWarned = false // a later failure is news again
+	s.mu.Unlock()
+	return nil
+}
+
+// onBaselineProbeFailure is the one place that decides what happens when a
+// worker's memory baseline cannot be established (lead ruling: REFUSE). The
+// worker is killed without being sent a job, and the job fails with
+// ErrNoMemoryCap. One WARN names the cause; further failures stay silent
+// until a probe succeeds again, because every refused job starts (and
+// probes) a new worker and a WARN per job would be per-job noise — the
+// caller counts refusals against its own failure budget.
+func (s *Supervisor) onBaselineProbeFailure(c *child, cause error, value uint64) error {
+	err := fmt.Errorf("%w: %s baseline probe failed: %v", ErrNoMemoryCap, s.cap.mechanism, cause)
+	s.mu.Lock()
+	first := !s.probeWarned
+	s.probeWarned = true
+	s.mu.Unlock()
+	if first {
+		s.log.Warn("materialize: could not establish the worker's memory cap; refusing to materialize until a worker's probe succeeds",
+			"pid", c.pid, "mechanism", s.cap.mechanism, "cause", cause.Error(), "value", value)
+	}
+	c.kill("no_memory_cap")
+	c.awaitExit()
+	s.stoppedQuiet(c)
+	return err
+}
+
+// lastEnv is the value os/exec gives key in env: the last one wins.
+func lastEnv(env []string, key string) string {
+	v := ""
+	for _, kv := range env {
+		if k, val, ok := strings.Cut(kv, "="); ok && k == key {
+			v = val
+		}
+	}
+	return v
 }
 
 // startUnlocked runs cmd.Start on a fresh goroutine. A new goroutine is never
@@ -630,15 +764,16 @@ func (s *Supervisor) died(c *child) error {
 		reason, err = "closed", ErrClosed
 	case k == "memory":
 		reason = "memory"
-		err = fmt.Errorf("%w (%w): resident set above %s; killed by the watchdog", ErrMemoryLimit, ErrChildDied, formatBytes(s.memLimit))
+		err = fmt.Errorf("%w (%w): resident set above %s (baseline %s + limit %s); killed by the watchdog",
+			ErrMemoryLimit, ErrChildDied, formatBytes(c.capBytes), formatBytes(c.baseline), formatBytes(s.memLimit))
 	case k != "":
 		// Killed by us for a reason whose own path returns; not reached in
 		// practice, but never report such a death as a crash.
 		reason, err = k, fmt.Errorf("%w: killed (%s)", ErrChildDied, k)
 	case c.stderr.oom.Load():
 		reason = "memory"
-		err = fmt.Errorf("%w (%w): %s; the Go runtime reported out of memory under a %s cap",
-			ErrMemoryLimit, ErrChildDied, c.exitString(), formatBytes(s.memLimit))
+		err = fmt.Errorf("%w (%w): %s; the Go runtime reported out of memory under a %s cap (baseline %s + limit %s)",
+			ErrMemoryLimit, ErrChildDied, c.exitString(), formatBytes(c.capBytes), formatBytes(c.baseline), formatBytes(s.memLimit))
 	default:
 		reason = "exit"
 		err = fmt.Errorf("%w: %s", ErrChildDied, c.exitString())
@@ -671,6 +806,19 @@ func (s *Supervisor) stopped(c *child, reason string, err error) {
 	}
 	s.mu.Unlock()
 	s.logStop(c, reason, delay, "detail", err.Error())
+}
+
+// stoppedQuiet forgets a child killed by onBaselineProbeFailure and schedules
+// the respawn, like stopped, without the stop line (that path logs its own
+// single WARN).
+func (s *Supervisor) stoppedQuiet(c *child) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.child != c {
+		return
+	}
+	s.child = nil
+	s.recordDeathLocked(c)
 }
 
 func (s *Supervisor) logStop(c *child, reason string, delay time.Duration, extra ...any) {
@@ -713,7 +861,7 @@ func (s *Supervisor) watchRSS(c *child) {
 			if err != nil {
 				continue // gone, or not yet visible; exit is seen above
 			}
-			if rss > s.memLimit {
+			if rss > c.rssCap.Load() {
 				c.kill("memory")
 				return
 			}
@@ -765,7 +913,12 @@ type stderrLog struct {
 // error: runtime: out of memory" / "fatal error: out of memory", and the mmap
 // failure ("cannot allocate memory", ENOMEM). On Windows a VirtualAlloc
 // failure is followed by the same "fatal error: out of memory".
-var oomMarkers = []string{"out of memory", "cannot allocate memory"}
+//
+// A cgo build (`make build`; releases are CGO_ENABLED=0) starts threads with
+// pthread_create, whose stack mapping fails under an address-space cap and
+// is reported as "pthread_create failed: Resource temporarily unavailable"
+// (EAGAIN) followed by SIGABRT — measured at the cap on Linux.
+var oomMarkers = []string{"out of memory", "cannot allocate memory", "pthread_create failed"}
 
 func (l *stderrLog) Write(p []byte) (int, error) {
 	l.mu.Lock()

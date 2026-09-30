@@ -1246,32 +1246,40 @@ kills one worker instead of the server.
 - A worker that dies is restarted on the next job, waiting 1s after the first
   death and doubling after each further death, up to 5 minutes. A worker that
   stayed up for a minute resets the wait.
-- Every worker start logs the effective timeout and memory limit, and every
-  stop logs why (`deadline`, `memory`, `exit`, `protocol`, `start`,
-  `canceled` or `closed`). The worker's stderr goes to the server log, one
+- Every worker start logs the timeout, the worker's measured memory
+  baseline, the memory limit and the resulting cap, and every stop logs why
+  (`deadline`, `memory`, `exit`, `protocol`, `start`, `canceled` or
+  `closed`). The worker's stderr goes to the server log, one
   line per record, tagged with the worker's pid.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PAD_MATERIALIZE_TIMEOUT` | `2s` | Per-job time limit, in Go duration syntax (`2s`, `1500ms`). Clamped to 250ms–60s. |
-| `PAD_MATERIALIZE_MEM_LIMIT` | `2GiB` | Worker memory limit: a whole number of bytes, or a whole number followed by `KiB`, `MiB` or `GiB` with no space (`2048MiB`, `2GiB`, `2147483648`). Decimal units such as `GB` are refused. Clamped to 1536MiB–16GiB. |
+| `PAD_MATERIALIZE_MEM_LIMIT` | `2GiB` | How much memory one job may add to the loaded worker (see below): a whole number of bytes, or a whole number followed by `KiB`, `MiB` or `GiB` with no space (`2048MiB`, `2GiB`, `2147483648`). Decimal units such as `GB` are refused. Clamped to 256MiB–16GiB. |
 
 A value that cannot be parsed is ignored with a warning, and the default is
 used. A value outside the range is clamped with a warning.
 
-What the memory limit measures depends on the OS:
+The memory limit is **growth beyond the loaded worker**. Once the worker has
+loaded, and before it is given any job, Pad measures its memory use (the
+baseline) and caps it at baseline + limit. What "memory" means depends on the
+OS, and the three are not the same measure:
 
-- **Linux:** the worker's address space (`RLIMIT_AS`), set on the worker
-  process only, before it is given any job. Address space is larger than
-  memory in use: the worker reserves most of 1.5 GB of it before any job,
-  which is why the limit cannot go below 1536MiB.
-- **Windows:** the worker's committed memory, through a Job Object. The worker
-  is started suspended and put in the job before it runs.
-- **macOS:** macOS does not enforce `RLIMIT_AS`, so Pad checks the worker's
-  resident memory every 100ms and kills it above the limit. A worker can go
-  over the limit for up to one check interval before it is stopped.
-- **Other systems:** no memory limit, only the timeout. The start log line
-  says `mem_cap=none`.
+- **Linux:** virtual **address space** (`RLIMIT_AS`, set on the worker process
+  only). A loaded worker already holds about 1.4 GB of address space, more on
+  hosts with many CPUs; the limit is added on top of whatever it holds.
+- **macOS:** **resident memory** (RSS), watched by Pad every 100ms, because
+  macOS does not enforce `RLIMIT_AS`. A worker can go over the cap for up to
+  one check interval before it is stopped.
+- **Windows:** the worker's **committed memory**, as a Job Object limit. The
+  worker is started suspended and put in the job before it runs.
+
+Linux, macOS and Windows are the supported platforms. **If no memory cap can
+be established** (any other OS, or the baseline measurement failing or
+reading an implausible value), Pad does not materialize at all: no worker is
+given a job, one warning is logged, and items keep today's behaviour until a
+worker can be capped. That is safe, because materialization is a recovery
+enhancement; the server does not need it to run.
 
 ### Email (Optional)
 

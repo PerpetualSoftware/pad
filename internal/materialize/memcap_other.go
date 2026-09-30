@@ -2,7 +2,6 @@
 
 package materialize
 
-// Any other OS: no memory cap, only the deadline kill. The start log line
-// names the mechanism "none" (the effective-values line, logged at every
-// worker start).
-var platformMemCap = memCapImpl{mechanism: "none"}
+// Any other OS: no way to cap the worker, so the Supervisor never starts one
+// and refuses every job with ErrNoMemoryCap (one WARN per Supervisor).
+var platformMemCap = memCapImpl{mechanism: "none", unsupported: true}

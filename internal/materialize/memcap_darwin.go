@@ -12,8 +12,10 @@ import (
 )
 
 // macOS: RLIMIT_AS is accepted but not enforced, so the cap is a parent-side
-// watchdog: every 100 ms the parent reads the child's resident set size and
-// kills it above the limit (ErrMemoryLimit). What it measures is RESIDENT
+// watchdog. Once the worker has loaded its bundle and before it is sent any
+// job, the parent reads its resident set size as the BASELINE; from then on,
+// every 100 ms, it kills the worker when its resident set exceeds baseline +
+// limit (ErrMemoryLimit). What it measures is RESIDENT
 // memory, where Linux caps address space and Windows committed memory.
 //
 // The window is the poll interval: a child can allocate for up to 100 ms

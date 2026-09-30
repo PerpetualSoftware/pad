@@ -378,7 +378,7 @@ jobs:
       - name: Materializer supervisor and memory cap (TASK-2198 U3)
         env:
           PAD_MATERIALIZE_TEST_NO_SKIP: "1"
-        run: go test ./internal/materialize/ -run '^(TestSupervisor.*|TestParseMemLimit|TestConfigFromEnv|TestParsePSRSS|TestDeepNestFrameShallow)$' -count=1 -timeout 20m -v
+        run: go test ./internal/materialize/ -run '^(TestSupervisor.*|TestParseMemLimit|TestConfigFromEnv|TestParsePSRSS|TestPSRSSLive|TestParseStatVsize|TestStderrOOMMarkers|TestDeepNestFrameShallow)$' -count=1 -timeout 20m -v
 
   go-postgres:
     # Backstop only. A hung TEST is caught by -timeout=45m on the steps

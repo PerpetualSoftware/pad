@@ -101,7 +101,7 @@ func TestSupervisorAdversarialDeepNesting(t *testing.T) {
 	}
 	frame := deepNestFrame(depth, "blockquote")
 	h := newHarness(t, "worker", func(c *SupervisorConfig) {
-		c.MemLimit = 2 << 30
+		c.MemLimit = 1 << 30
 		c.Timeout = 30 * time.Second
 		c.capOverride = nil
 	})

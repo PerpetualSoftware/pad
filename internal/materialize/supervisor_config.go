@@ -16,9 +16,11 @@ const (
 	// EnvTimeout is the per-job hard deadline, in Go duration syntax
 	// ("2s", "1500ms"). Past it the worker process is KILLED.
 	EnvTimeout = "PAD_MATERIALIZE_TIMEOUT"
-	// EnvMemLimit caps the worker's memory: a whole number of bytes, or a
-	// whole number followed by a BINARY unit, KiB, MiB or GiB ("2048MiB",
-	// "2GiB"). Decimal units (MB, GB) are refused rather than guessed at.
+	// EnvMemLimit is how much memory one job may add to the loaded worker
+	// (the cap is baseline + limit; what "memory" is differs per OS, see
+	// memCapImpl): a whole number of bytes, or a whole number followed by a
+	// BINARY unit, KiB, MiB or GiB ("2048MiB", "2GiB"). Decimal units (MB,
+	// GB) are refused rather than guessed at.
 	EnvMemLimit = "PAD_MATERIALIZE_MEM_LIMIT"
 )
 
@@ -27,12 +29,14 @@ const (
 	MinTimeout      = 250 * time.Millisecond
 	MaxTimeout      = 60 * time.Second
 	DefaultMemLimit = 2 << 30 // 2 GiB
-	// MinMemLimit is the lowest RLIMIT_AS at which the worker could even
-	// start (measured): the Linux cap limits ADDRESS SPACE, not heap, and
-	// the Go runtime plus the loaded bundle reserve most of this before the
-	// first job. Below it every spawn would die and nothing would ever
-	// materialize.
-	MinMemLimit = 1536 << 20
+	// MinMemLimit: the limit is GROWTH beyond the loaded worker (see
+	// memCapImpl), and the measured growth of real work is small: the 50-case
+	// corpus peaks at +10 MiB of address space and +18 MiB resident, and a
+	// 4,000-deep nested document at +194 MiB (TestSupervisorBaselineMeasurements).
+	// 256 MiB lets all of that through while still allowing a tight cap. The
+	// old 1536 MiB floor belonged to the absolute cap, which it had to clear
+	// the runtime's own reservation to start at all.
+	MinMemLimit = 256 << 20
 	MaxMemLimit = 16 << 30
 )
 

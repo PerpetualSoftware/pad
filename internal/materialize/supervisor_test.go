@@ -29,6 +29,10 @@ import (
 //     job and badly on the next.
 const helperEnv = "PAD_MATERIALIZE_TEST_HELPER"
 
+// journalEnv names a file the script helper appends every JOB it receives to
+// (the readiness probe excluded), so a test can prove what reached a worker.
+const journalEnv = "PAD_MATERIALIZE_TEST_JOURNAL"
+
 func TestMain(m *testing.M) {
 	if mode := os.Getenv(helperEnv); mode != "" {
 		os.Exit(runHelper(mode))
@@ -63,6 +67,13 @@ func runHelper(mode string) int {
 		if req.SchemaVersion == "" { // the readiness probe
 			_ = writeFrame(w, WorkerResponse{ID: req.ID, Error: "materialize: schema version mismatch: probe"})
 			continue
+		}
+		if j := os.Getenv(journalEnv); j != "" {
+			f, err := os.OpenFile(j, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+			if err == nil {
+				fmt.Fprintln(f, req.SchemaVersion)
+				f.Close()
+			}
 		}
 		if !runScript(w, req) {
 			return 0
@@ -163,6 +174,7 @@ type logSink struct {
 func (l *logSink) Enabled(context.Context, slog.Level) bool { return true }
 func (l *logSink) Handle(_ context.Context, r slog.Record) error {
 	var b strings.Builder
+	b.WriteString(r.Level.String() + " ")
 	b.WriteString(r.Message)
 	r.Attrs(func(a slog.Attr) bool {
 		fmt.Fprintf(&b, " %s=%v", a.Key, a.Value)
@@ -189,6 +201,18 @@ next:
 			}
 		}
 		out = append(out, r)
+	}
+	return out
+}
+
+func (l *logSink) warns() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []string
+	for _, r := range l.recs {
+		if strings.HasPrefix(r, "WARN ") {
+			out = append(out, r)
+		}
 	}
 	return out
 }
@@ -233,14 +257,24 @@ func (f *fakeClock) slept() []time.Duration {
 	return append([]time.Duration(nil), f.sleeps...)
 }
 
-var noCap = &memCapImpl{mechanism: "none(test)"}
+// fakeCap reports a fixed baseline and caps nothing: for tests whose subject
+// is not the cap, and for race builds, whose runtime reserves terabytes of
+// address space (a baseline no plausibility check accepts).
+var fakeCap = &memCapImpl{
+	mechanism: "fake(test)",
+	attach: func(*exec.Cmd) (*capHandle, error) {
+		return &capHandle{
+			baseline: func() (uint64, error) { return 100 << 20, nil },
+			set:      func(uint64) error { return nil },
+		}, nil
+	},
+}
 
 // testCap is the cap for tests that are not about the cap: the platform's,
-// except under the race detector, whose runtime reserves terabytes of
-// address space and cannot start under RLIMIT_AS at all.
+// except under the race detector.
 func testCap() *memCapImpl {
 	if raceEnabled {
-		return noCap
+		return fakeCap
 	}
 	return nil
 }
@@ -524,39 +558,56 @@ func TestSupervisorCtxCancelKillsWithoutBackoff(t *testing.T) {
 // ---------------------------------------------------------------------------
 // 5. memory cap
 
-// TestSupervisorMemoryCapPlatform runs the cap this OS ships with.
+// TestSupervisorMemoryCapPlatform runs the cap this OS ships with, which is
+// RELATIVE to the loaded worker: a job may grow it by the limit. Run at two
+// GOMAXPROCS values, because the absolute cap this replaced failed on CI
+// hosts whose runtime reserved more address space than the machine it was
+// measured on; at 64 the baseline is ~350 MiB larger (measured) and the same
+// allocations must give the same answers.
 func TestSupervisorMemoryCapPlatform(t *testing.T) {
 	if raceEnabled {
 		skipCapTest(t, "the race runtime cannot start under an address-space cap")
 	}
-	if platformMemCap.apply == nil && platformMemCap.rss == nil {
+	if platformMemCap.unsupported {
 		skipCapTest(t, "no memory cap on this OS ("+platformMemCap.mechanism+")")
 	}
-	h := newHarness(t, "script", func(c *SupervisorConfig) {
-		c.MemLimit = 1600 << 20
-		c.capOverride = nil
-	})
-	if _, err := h.s.Materialize(context.Background(), script("echo:warm")); err != nil {
-		t.Fatal(err)
+	const limit = 512 << 20
+	for _, procs := range []string{"", "64"} {
+		t.Run("GOMAXPROCS="+procs, func(t *testing.T) {
+			h := newHarness(t, "script", func(c *SupervisorConfig) {
+				c.MemLimit = limit
+				c.capOverride = nil
+				if procs != "" {
+					c.extraEnv = []string{"GOMAXPROCS=" + procs}
+				}
+			})
+			if _, err := h.s.Materialize(context.Background(), script("echo:warm")); err != nil {
+				t.Fatal(err)
+			}
+			pid := h.lastPid(t)
+			started := h.log.find("materialize worker started", "pid="+strconv.Itoa(pid))
+			if len(started) != 1 || !strings.Contains(started[0], "mem_limit=512MiB") || !strings.Contains(started[0], "mem_baseline=") {
+				t.Fatalf("start line: %q", started)
+			}
+			t.Log(started[0])
+			// Comfortably under baseline + limit: fine.
+			if md, err := h.s.Materialize(context.Background(), script("alloc:128")); err != nil || md != strconv.Itoa(128<<20) {
+				t.Fatalf("128 MiB of growth under a 512 MiB limit: %q, %v", md, err)
+			}
+			// Over it: killed on the cap.
+			md, err := h.s.Materialize(context.Background(), script("alloc:1024"))
+			if !errors.Is(err, ErrMemoryLimit) || !errors.Is(err, ErrChildDied) {
+				t.Fatalf("1 GiB of growth under a 512 MiB limit: %q, %v; want ErrMemoryLimit", md, err)
+			}
+			if got := h.log.find("materialize worker stopped", "reason=memory", "pid="+strconv.Itoa(pid)); len(got) != 1 {
+				t.Fatalf("stop line: %q", got)
+			}
+			if md, err := h.s.Materialize(context.Background(), script("echo:ok")); err != nil || md != "echo:ok" {
+				t.Fatalf("after the memory kill: %q, %v", md, err)
+			}
+			t.Logf("over-cap error: %v", err)
+		})
 	}
-	pid := h.lastPid(t)
-	md, err := h.s.Materialize(context.Background(), script("alloc:2048"))
-	if !errors.Is(err, ErrMemoryLimit) || !errors.Is(err, ErrChildDied) {
-		t.Fatalf("2 GiB under a 1600 MiB cap: %q, %v; want ErrMemoryLimit", md, err)
-	}
-	if got := h.log.find("materialize worker stopped", "reason=memory", "pid="+strconv.Itoa(pid)); len(got) != 1 {
-		t.Fatalf("stop line: %q", got)
-	}
-	if md, err := h.s.Materialize(context.Background(), script("echo:ok")); err != nil || md != "echo:ok" {
-		t.Fatalf("after the memory kill: %q, %v", md, err)
-	}
-	// Within the cap, the same helper allocates fine: the cap is what failed
-	// it. (Small: RLIMIT_AS counts address space, and an idle Go test binary
-	// already reserves ~1.4 GB of it — measured VmSize 1393132 kB.)
-	if md, err := h.s.Materialize(context.Background(), script("alloc:64")); err != nil || md != strconv.Itoa(64<<20) {
-		t.Fatalf("64 MiB under the cap: %q, %v", md, err)
-	}
-	t.Logf("error: %v", err)
 }
 
 // TestSupervisorRSSWatchdog drives the macOS mechanism (a parent-side RSS
@@ -566,7 +617,7 @@ func TestSupervisorRSSWatchdog(t *testing.T) {
 		skipCapTest(t, "no RSS sampler for tests on this OS")
 	}
 	h := newHarness(t, "script", func(c *SupervisorConfig) {
-		c.MemLimit = MinMemLimit
+		c.MemLimit = 512 << 20
 		c.capOverride = &memCapImpl{mechanism: "rss_watchdog(test)", rss: testRSSSampler}
 		c.watchInterval = 100 * time.Millisecond
 	})
@@ -574,9 +625,9 @@ func TestSupervisorRSSWatchdog(t *testing.T) {
 		t.Fatal(err)
 	}
 	pid := h.lastPid(t)
-	md, err := h.s.Materialize(context.Background(), script("alloc:2048"))
+	md, err := h.s.Materialize(context.Background(), script("alloc:1024"))
 	if !errors.Is(err, ErrMemoryLimit) {
-		t.Fatalf("2 GiB resident under a 1536 MiB watchdog: %q, %v", md, err)
+		t.Fatalf("1 GiB resident under a baseline + 512 MiB watchdog: %q, %v", md, err)
 	}
 	if !strings.Contains(err.Error(), "watchdog") {
 		t.Fatalf("not attributed to the watchdog: %v", err)
@@ -648,7 +699,7 @@ func TestSupervisorClampAndEffectiveLog(t *testing.T) {
 		clampLogs int
 	}{
 		{0, 0, "2s", "2GiB", 0},
-		{time.Millisecond, 1 << 30, "250ms", "1536MiB", 2},
+		{time.Millisecond, 128 << 20, "250ms", "256MiB", 2},
 		{10 * time.Minute, 64 << 30, "1m0s", "16GiB", 2},
 		{5 * time.Second, 4 << 30, "5s", "4GiB", 0},
 	}
@@ -656,7 +707,7 @@ func TestSupervisorClampAndEffectiveLog(t *testing.T) {
 		h := newHarness(t, "script", func(c *SupervisorConfig) {
 			c.Timeout = tc.timeout
 			c.MemLimit = tc.mem
-			c.capOverride = noCap // the value is under test, not the cap
+			c.capOverride = fakeCap // the value is under test, not the cap
 		})
 		if got := len(h.log.find("out of range; clamped")); got != tc.clampLogs {
 			t.Errorf("%v/%d: %d clamp warnings, want %d: %s", tc.timeout, tc.mem, got, tc.clampLogs, h.log.dump())
@@ -664,7 +715,7 @@ func TestSupervisorClampAndEffectiveLog(t *testing.T) {
 		if _, err := h.s.Materialize(context.Background(), script("echo:x")); err != nil {
 			t.Fatal(err)
 		}
-		got := h.log.find("materialize worker started", "timeout="+tc.wantT+" ", "mem_limit="+tc.wantM+" ", "mem_cap=none(test)")
+		got := h.log.find("materialize worker started", "timeout="+tc.wantT+" ", "mem_limit="+tc.wantM+" ", "mem_cap=fake(test)")
 		if len(got) != 1 {
 			t.Errorf("%v/%d: effective-values line missing: %s", tc.timeout, tc.mem, h.log.dump())
 		}

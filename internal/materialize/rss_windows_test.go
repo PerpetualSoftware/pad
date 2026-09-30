@@ -7,22 +7,6 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// processMemoryCounters is PROCESS_MEMORY_COUNTERS (psapi.h).
-type processMemoryCounters struct {
-	Cb                         uint32
-	PageFaultCount             uint32
-	PeakWorkingSetSize         uintptr
-	WorkingSetSize             uintptr
-	QuotaPeakPagedPoolUsage    uintptr
-	QuotaPagedPoolUsage        uintptr
-	QuotaPeakNonPagedPoolUsage uintptr
-	QuotaNonPagedPoolUsage     uintptr
-	PagefileUsage              uintptr
-	PeakPagefileUsage          uintptr
-}
-
-var procK32GetProcessMemoryInfo = windows.NewLazySystemDLL("kernel32.dll").NewProc("K32GetProcessMemoryInfo")
-
 // testRSSSampler reads the working set, so the watchdog mechanism (macOS's
 // cap) is exercised on Windows too. Windows' own cap is the Job Object.
 var testRSSSampler = func(pid int) (uint64, error) {
