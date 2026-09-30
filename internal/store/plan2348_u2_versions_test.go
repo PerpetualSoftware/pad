@@ -165,3 +165,48 @@ func TestMigration103_BackfillsTheCreateMarker(t *testing.T) {
 		t.Fatalf("after backfill: rows %d, create row marked %v, update row marked %v", len(vs), len(vs) == 2 && vs[1].IsCreate, len(vs) > 0 && vs[0].IsCreate)
 	}
 }
+
+// A bundle carries the line counts and the create marker, and NOT user_id: an
+// id from another instance names nobody on this one.
+func TestItemVersions_ExportImportCarriesCountsNotUser(t *testing.T) {
+	t.Parallel()
+	f := newU2Fixture(t)
+	item, err := f.s.CreateItem(f.wsID, f.collID, models.ItemCreate{Title: "Doc", Content: "a\nb\n", CreatedBy: "user", Source: "web", ActorUserID: f.user.ID})
+	if err != nil {
+		t.Fatalf("CreateItem: %v", err)
+	}
+	f.update(t, item.ID, "a\n", "agent", "cli")
+
+	ws, err := f.s.GetWorkspaceByID(f.wsID)
+	if err != nil || ws == nil {
+		t.Fatalf("GetWorkspaceByID: %v", err)
+	}
+	exp, err := f.s.ExportWorkspace(ws.Slug)
+	if err != nil {
+		t.Fatalf("ExportWorkspace: %v", err)
+	}
+	imported, err := f.s.ImportWorkspace(exp, "U2 copy "+newID()[:6], "", "")
+	if err != nil {
+		t.Fatalf("ImportWorkspace: %v", err)
+	}
+	items, err := f.s.ListItems(imported.ID, models.ItemListParams{})
+	if err != nil || len(items) != 1 {
+		t.Fatalf("precondition: one imported item, got %d (%v)", len(items), err)
+	}
+	vs, err := f.s.ListItemVersions(items[0].ID)
+	if err != nil || len(vs) != 2 {
+		t.Fatalf("precondition: two imported version rows, got %d (%v)", len(vs), err)
+	}
+	upd, crt := vs[0], vs[1]
+	if !crt.IsCreate || upd.IsCreate {
+		t.Errorf("is_create did not travel: create %v, update %v", crt.IsCreate, upd.IsCreate)
+	}
+	if !intIs(crt.LinesAdded, 2) || !intIs(upd.LinesRemoved, 1) {
+		t.Errorf("counts did not travel: create +%v, update −%v", crt.LinesAdded, upd.LinesRemoved)
+	}
+	for _, v := range vs {
+		if v.UserID != "" {
+			t.Errorf("user_id travelled across the bundle: %q", v.UserID)
+		}
+	}
+}
