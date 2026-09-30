@@ -425,12 +425,6 @@ func structuredTimelineEntries(item *models.Item, before time.Time, beforeID str
 // and decision-log entries into a single chronological stream, applying
 // deduplication and collapsing logic.
 func buildTimeline(comments []models.Comment, activities []models.Activity, versions []models.Version, notes, decisions []models.TimelineEntry) []models.TimelineEntry {
-	// Build a set of version timestamps (rounded to the second) for dedup.
-	versionTimes := make(map[int64]bool, len(versions))
-	for _, v := range versions {
-		versionTimes[v.CreatedAt.Unix()] = true
-	}
-
 	// Activities the fetched comments link to, skipped below. This is NOT the
 	// mechanism that keeps a comment-linked activity off the timeline —
 	// ListDocumentActivityBeforeTime excludes those at the query, which is
@@ -512,16 +506,18 @@ func buildTimeline(comments []models.Comment, activities []models.Activity, vers
 			continue
 		}
 
-		// The "updated" skips, unchanged except that a row carrying anything
-		// beyond attribution is never skipped: the same-second skip also
-		// dropped every FIELD change sent in the same request as a body edit
-		// (PLAN-2348 checkpoint 2, defect 5). A row that says nothing — no
-		// metadata, or only the agent's name, which is what a body edit's
-		// activity carries — still yields to a version in its second.
+		// An "updated" row renders when it carries anything beyond
+		// attribution, and never otherwise. This replaces two skips: "a
+		// version shares its second", which also dropped every FIELD change
+		// sent in the same request as a body edit (PLAN-2348 checkpoint 2,
+		// defect 5), and "the metadata is empty". A row that says nothing is
+		// what a body edit leaves — no metadata for a human, only the agent's
+		// name for an agent — and the version card is that edit's record. Base
+		// showed an agent's such row as an empty card whenever its version
+		// fell in a different second, so whether it rendered depended on a
+		// clock boundary (PLAN-2348 checkpoint 8).
 		if a.Action == "updated" && !activityRecordsMore(a.Metadata) {
-			if a.Metadata == "" || a.Metadata == "{}" || versionTimes[a.CreatedAt.Unix()] {
-				continue
-			}
+			continue
 		}
 
 		entry := models.TimelineEntry{

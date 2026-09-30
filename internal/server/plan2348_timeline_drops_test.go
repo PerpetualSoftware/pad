@@ -230,3 +230,31 @@ func TestListDocumentActivityBeforeTime_LinkedUpdatedRows(t *testing.T) {
 		t.Fatalf("linked updated rows returned: with a change %d (want 1), without %d (want 0)", withChange, without)
 	}
 }
+
+// The flake behind TestTimeline_AgentBodyOnlyEditHasNoEmptyCard, made
+// deterministic: an agent's attribution-only row whose version landed in the
+// NEXT second. Base rendered it as an empty card, because its skip asked
+// whether a version shared the second; whether it rendered hung on a clock
+// boundary (PLAN-2348 checkpoint 8).
+func TestBuildTimeline_AttributionOnlyRowAcrossASecondBoundary(t *testing.T) {
+	t.Parallel()
+	at := time.Date(2026, 9, 30, 9, 0, 0, 900_000_000, time.UTC)
+	acts := []models.Activity{
+		{ID: "a-agent", Action: "updated", Metadata: `{"agent":"wren"}`, CreatedAt: at},
+		{ID: "a-bulk", Action: "updated", Metadata: `{"bulk_op":"set-priority"}`, CreatedAt: at},
+	}
+	versions := []models.Version{{ID: "v1", CreatedAt: at.Add(200 * time.Millisecond)}}
+
+	shown := map[string]bool{}
+	for _, e := range buildTimeline(nil, acts, versions, nil, nil) {
+		if e.Kind == "activity" && e.Activity != nil {
+			shown[e.Activity.ID] = true
+		}
+	}
+	if shown["a-agent"] {
+		t.Error("an attribution-only updated row rendered because its version fell in the next second")
+	}
+	if !shown["a-bulk"] {
+		t.Error("control: the bulk row must render")
+	}
+}
