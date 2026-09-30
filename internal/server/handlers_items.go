@@ -2430,9 +2430,10 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// PLAN-2348 U2: the body changed and the per-actor throttle wrote no
-	// version row, so this activity is the edit's only record. U3's History
-	// renders the marker as "edited the body"; until then buildTimeline
-	// ignores it (lead ruling), so it never becomes an empty card.
+	// version row, so this activity is the edit's only record. The History
+	// tab (U3) renders the marker as "edited the description" and, when it is
+	// the newest body change, diffs the last saved version against the
+	// current body.
 	if updated.BodyEditedWithoutVersion {
 		meta = withActivityMetaKey(meta, "body_edited", "true")
 	}

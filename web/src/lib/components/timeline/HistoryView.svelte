@@ -17,7 +17,6 @@
 	import TimelineVersionCard from './TimelineVersionCard.svelte';
 	import {
 		eventVerb,
-		isCreateEvent,
 		whoName,
 		sourceLabel,
 		matchesFilter,
@@ -102,9 +101,20 @@
 		return 'av-user';
 	}
 
-	function createdLines(ev: HistoryEvent): number | undefined {
-		return ev.versions.find((v) => v.version?.is_create)?.version?.lines_added;
-	}
+	/**
+	 * The newest saved version in the feed, and the index of its row. A
+	 * throttled edit (`bodyEdited`) at or after that row is part of the
+	 * current body's difference from it, so it can show that diff; an older
+	 * one sits between two saved versions and cannot be isolated.
+	 */
+	const newestVersion = $derived.by(() => {
+		for (let i = 0; i < rows.length; i++) {
+			const r = rows[i];
+			const v = r.type === 'autosave' ? r.entry.version : r.versions[0]?.version;
+			if (v) return { index: i, version: v };
+		}
+		return null;
+	});
 
 	function movedMeta(ev: HistoryEvent): { from?: string; to?: string; dropped?: string; notUnique?: string } | null {
 		const moved = ev.actions.find((a) => a.action === 'moved');
@@ -199,7 +209,6 @@
 			{:else}
 				{@const ev = row}
 				{@const moved = movedMeta(ev)}
-				{@const created = isCreateEvent(ev)}
 				<article class="card">
 					<header class="head">
 						<bdi class="name">{whoName(ev.who)}</bdi>
@@ -264,17 +273,8 @@
 							</span>
 						</div>
 					{/each}
-					{#if created}
-						{@const lines = createdLines(ev)}
-						{#if lines !== undefined}
-							<div class="field-row">
-								<span class="field-label">Description</span>
-								<span class="values muted">{lines} {lines === 1 ? 'line' : 'lines'}</span>
-							</div>
-						{/if}
-					{/if}
 
-					{#each ev.versions.filter((v) => !v.version?.is_create) as v (v.id)}
+					{#each ev.versions as v (v.id)}
 						{#if v.version}
 							<TimelineVersionCard
 								version={v.version}
@@ -289,10 +289,22 @@
 						{/if}
 					{/each}
 					{#if ev.bodyEdited}
-						<div class="field-row">
-							<span class="field-label">Description</span>
-							<span class="values muted">changed (no version was saved for this edit)</span>
-						</div>
+						{#if newestVersion && newestVersion.index >= rows.indexOf(ev)}
+							<TimelineVersionCard
+								version={newestVersion.version}
+								sinceNow
+								{wsSlug}
+								{itemSlug}
+								{currentContent}
+								{currentContentStale}
+								frozen={restoreFrozen}
+							/>
+						{:else}
+							<div class="field-row">
+								<span class="field-label">Description</span>
+								<span class="values muted">changed (no version was saved for this edit)</span>
+							</div>
+						{/if}
 					{/if}
 
 					{#each ev.notes as n (n.id)}

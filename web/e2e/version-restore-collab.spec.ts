@@ -334,7 +334,7 @@ test('an unflushed live edit is captured in the restore undo-point via the UI (B
 	await page.getByRole('tab', { name: /History/ }).click();
 	const card = page.locator('#item-timeline .version-card').first();
 	await card.locator('.show-changes').click(); // expand
-	await card.getByRole('button', { name: 'Restore to before this edit' }).click();
+	await card.getByRole('button', { name: /^Restore to / }).click();
 	// Allow collab-snapshot PATCHes ONLY from here, so the first (and only) gamma
 	// PATCH that lands is the pre-restore flush the confirm click triggers.
 	allowSnapshotFlush = true;

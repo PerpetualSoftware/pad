@@ -169,6 +169,16 @@ describe('groupHistory', () => {
 		expect(withVersion).toHaveLength(1);
 		expect(withVersion[0].bodyEdited).toBe(false);
 		expect(withVersion[0].versions).toHaveLength(1);
+
+		// A create row is not the edit's record: the throttle keeps the marker.
+		const afterCreate = events([
+			activity('u', 20, { source: 'cli', meta: { body_edited: 'true' } }),
+			version('c', 11, { source: 'cli', is_create: true }),
+			activity('c', 10, { action: 'created', source: 'cli' })
+		]);
+		expect(afterCreate).toHaveLength(1);
+		expect(afterCreate[0].bodyEdited).toBe(true);
+		expect(eventVerb(afterCreate[0], 'doc')).toBe('created this doc and edited the description');
 	});
 
 	it('an event with nothing to show is dropped, never an empty card (defect 6)', () => {

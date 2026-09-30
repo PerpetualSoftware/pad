@@ -157,3 +157,33 @@ describe('HistoryView', () => {
 		expect(root!.querySelector('.day')?.textContent).toBe('Today');
 	});
 });
+
+describe('HistoryView: an edit the throttle saved no version for', () => {
+	it('beside a create, shows the create section and a since-now diff against the current body', async () => {
+		render([
+			activity('u', 5, { source: 'cli', meta: { body_edited: 'true' } }),
+			version('c', 6, { source: 'cli', is_create: true, lines_added: 5, lines_removed: 0 }),
+			activity('c', 7, { action: 'created', source: 'cli' })
+		]);
+		expect(rows()).toHaveLength(1);
+		const cards = Array.from(root!.querySelectorAll('.version-card'));
+		expect(cards.map((c) => c.getAttribute('data-diff'))).toEqual(['edit', 'current']);
+		expect(cards[0].textContent).toContain('+5 −0 lines');
+		expect(cards[1].textContent).toContain('edited since the last saved version');
+		(cards[1].querySelector('.show-changes') as HTMLButtonElement).click();
+		flushSync();
+		await vi.waitFor(() => expect(cards[1].querySelector('.pair-head')).not.toBeNull());
+		// No row holds the since-now state, so there is nothing to restore to.
+		expect(cards[1].querySelector('.btn-restore')).toBeNull();
+	});
+
+	it('older than a saved version, it cannot be isolated and says so', () => {
+		render([
+			version('v', 5, { source: 'web' }),
+			activity('u', 300, { source: 'cli', meta: { body_edited: 'true' } })
+		]);
+		expect(rows()).toHaveLength(2);
+		expect(rows()[1].querySelector('.version-card')).toBeNull();
+		expect(rows()[1].textContent).toContain('no version was saved for this edit');
+	});
+});

@@ -53,8 +53,10 @@ export interface HistoryEvent {
 	versions: TimelineEntry[];
 	/**
 	 * A body edit the version throttle wrote no row for (the U2 `body_edited`
-	 * marker). True only when the event holds no version row, because a
-	 * version row already says the body changed and carries the diff.
+	 * marker). True only when the event holds no EDIT version row, because an
+	 * edit row already says the body changed and carries the diff. A create
+	 * row does not: an edit inside the throttle right after a create leaves
+	 * the create row as the item's only version, and the edit only here.
 	 */
 	bodyEdited: boolean;
 	notes: TimelineEntry[];
@@ -191,7 +193,7 @@ function addToEvent(ev: HistoryEvent, e: TimelineEntry) {
 }
 
 function finish(ev: HistoryEvent): HistoryEvent {
-	if (ev.versions.length > 0) ev.bodyEdited = false;
+	if (ev.versions.some((v) => !v.version?.is_create)) ev.bodyEdited = false;
 	// Notes and decisions read oldest first inside a card, the order written.
 	ev.notes.reverse();
 	ev.decisions.reverse();

@@ -183,7 +183,7 @@ test.describe('stale body renders (BUG-3050 U3)', () => {
 		await expect(page.getByText(NOTICE)).toHaveCount(0);
 	});
 
-	test('versions tab: the diff against a marked current body shows the notice (C5)', async ({ page, fixture, request }) => {
+	test('history tab: the diff against a marked current body shows the notice (C5)', async ({ page, fixture, request }) => {
 		const stamp = Date.now();
 		const item = await create(fixture, request, 'docs', `Diff ${stamp}`, `First body ${stamp}.`);
 		const upd = await request.patch(`/api/v1/workspaces/${fixture.workspaceSlug}/items/${item.slug}`, {
@@ -196,14 +196,17 @@ test.describe('stale body renders (BUG-3050 U3)', () => {
 		await markChangesRows(page, fixture, item.id);
 		await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/docs?item=${item.ref}`);
 		await page.getByRole('tab', { name: /History/ }).click();
-		const card = page.locator('.show-changes').first();
+		// The update is inside the version throttle (same writer and door), so
+		// no row holds it: the History shows it as the diff from the last saved
+		// version to the current body, which is the diff with a current side.
+		const card = page.locator('.version-card[data-diff="current"]').first();
 		await expect(card).toBeVisible({ timeout: 15_000 });
-		await card.click();
-		await expect(page.locator('.diff-container').first()).toBeVisible();
-		await expect(page.locator('.diff-container').first().getByText(NOTICE)).toBeVisible();
+		await card.locator('.show-changes').click();
+		await expect(card.locator('.diff-container')).toBeVisible();
+		await expect(card.locator('.diff-container').getByText(NOTICE)).toBeVisible();
 	});
 
-	test('versions tab: the notice survives the page-load /changes delta landing after the item (C5, BUG-3235)', async ({ page, fixture, request }) => {
+	test('history tab: the notice survives the page-load /changes delta landing after the item (C5, BUG-3235)', async ({ page, fixture, request }) => {
 		// The pane installs this item from two reads: its own GET, and the
 		// /changes delta the sync service seeds at page load and delivers
 		// (BUG-3201). C5 flaked when that delta held the item and landed LAST,
@@ -239,11 +242,14 @@ test.describe('stale body renders (BUG-3050 U3)', () => {
 		const seed = await (await seedDelivered).json();
 		expect(seed.updated.map((u: { id: string }) => u.id), 'the seed delta does not hold the item').toContain(item.id);
 		await page.getByRole('tab', { name: /History/ }).click();
-		const card = page.locator('.show-changes').first();
+		// The update is inside the version throttle (same writer and door), so
+		// no row holds it: the History shows it as the diff from the last saved
+		// version to the current body, which is the diff with a current side.
+		const card = page.locator('.version-card[data-diff="current"]').first();
 		await expect(card).toBeVisible({ timeout: 15_000 });
-		await card.click();
-		await expect(page.locator('.diff-container').first()).toBeVisible();
-		await expect(page.locator('.diff-container').first().getByText(NOTICE)).toBeVisible();
+		await card.locator('.show-changes').click();
+		await expect(card.locator('.diff-container')).toBeVisible();
+		await expect(card.locator('.diff-container').getByText(NOTICE)).toBeVisible();
 	});
 
 	async function dotsIn(page: Page, rowSelector: string, title: string) {

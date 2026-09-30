@@ -128,7 +128,7 @@ test.describe('an overwrite that deletes another tab\'s edits says so (BUG-3230 
 		await page.getByRole('tab', { name: /History/ }).click();
 		const card = page.locator('#item-timeline .version-card').first();
 		await card.locator('.show-changes').click();
-		await card.getByRole('button', { name: 'Restore to before this edit' }).click();
+		await card.getByRole('button', { name: /^Restore to / }).click();
 		await card.getByRole('button', { name: 'Confirm Restore' }).click();
 		await card.getByRole('button', { name: 'Discard edits and restore' }).click();
 		await expect(page.getByText(/^\d+ unsaved changes? from another tab (was|were) discarded\.$/)).toBeVisible({ timeout: 10_000 });

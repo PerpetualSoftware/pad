@@ -44,15 +44,23 @@
 		 * to the oldest row, the body the run started from.
 		 */
 		run?: AutosaveRun;
+		/**
+		 * PLAN-2348 U3: show the body's edits since `version` — the newest
+		 * saved version — up to the current body. For an edit the version
+		 * throttle wrote no row for (`body_edited`), this is the only diff that
+		 * holds it. The current body is on one side, so the stale-body notice
+		 * applies; there is no restore, because no row holds that state.
+		 */
+		sinceNow?: boolean;
 	}
 
-	let { version, wsSlug, itemSlug, currentContent, currentContentStale = false, onRestore, frozen = false, flushBeforeRestore, run }: Props = $props();
+	let { version, wsSlug, itemSlug, currentContent, currentContentStale = false, onRestore, frozen = false, flushBeforeRestore, run, sinceNow = false }: Props = $props();
 
 	/** The row a restore writes back: before the run, or before this edit. */
 	const restoreId = $derived(run ? run.oldest_version_id : version.id);
 	const linesAdded = $derived(run ? run.lines_added : version.lines_added);
 	const linesRemoved = $derived(run ? run.lines_removed : version.lines_removed);
-	const countsKnown = $derived(linesAdded !== undefined && linesRemoved !== undefined);
+	const countsKnown = $derived(!sinceNow && linesAdded !== undefined && linesRemoved !== undefined);
 
 	let expanded = $state(false);
 	let confirming = $state(false);
@@ -103,7 +111,9 @@
 			]);
 			if (!isSameIdentity()) return;
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
-			diffPair = { before: (oldest ?? newest).before, after: newest.after };
+			diffPair = sinceNow
+				? { before: newest.after, after: currentContent }
+				: { before: (oldest ?? newest).before, after: newest.after };
 		} catch {
 			if (!isSameIdentity()) return;
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
@@ -210,18 +220,20 @@
 		version.is_create ? 'Restore to as created' : run ? 'Restore to before these edits' : 'Restore to before this edit'
 	);
 	const oldLabel = $derived(
-		version.is_create ? 'Empty' : run ? `Before these ${run.count} autosaves` : 'Before this edit'
+		sinceNow ? 'Last saved version' : version.is_create ? 'Empty' : run ? `Before these ${run.count} autosaves` : 'Before this edit'
 	);
-	const newLabel = $derived(version.is_create ? 'As created' : 'After');
+	const newLabel = $derived(sinceNow ? 'Now' : version.is_create ? 'As created' : 'After');
 </script>
 
-<div class="version-card" class:expanded>
+<div class="version-card" class:expanded data-diff={sinceNow ? 'current' : 'edit'}>
 	<div class="summary-row">
 		<span class="row-label">Description</span>
 		{#if countsKnown}
 			<span class="lines"
 				><span class="added">+{linesAdded}</span> <span class="removed">−{linesRemoved}</span> lines</span
 			>
+		{:else if sinceNow}
+			<span class="lines unknown">edited since the last saved version</span>
 		{:else}
 			<span class="lines unknown">changed</span>
 		{/if}
@@ -240,14 +252,19 @@
 				{:else if diffPair !== null}
 					{#if currentContentStale && diffPair.after === currentContent}<StaleBodyNotice />{/if}
 					<p class="pair-head">
-						{version.is_create ? 'The body as this item was created.' : 'This edit only, not a comparison with the current body.'}
+						{sinceNow
+							? 'Edits no version was saved for, up to the current body.'
+							: version.is_create
+								? 'The body as this item was created.'
+								: 'This edit only, not a comparison with the current body.'}
 					</p>
 					<DiffView oldContent={diffPair.before} newContent={diffPair.after} {oldLabel} {newLabel} />
 				{/if}
 			</div>
 
-			<!-- Master-freeze (TASK-2172 / R12): a peeking master hides restore. -->
-			{#if !frozen}
+			<!-- Master-freeze (TASK-2172 / R12): a peeking master hides restore.
+			     A since-now diff has no restore: no version row holds its state. -->
+			{#if !frozen && !sinceNow}
 			<div class="restore-area">
 				{#if confirming}
 					<div class="confirm-prompt">
