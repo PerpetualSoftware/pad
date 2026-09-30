@@ -1017,10 +1017,14 @@ func classifyHTTPStatusKind(
 			Hint:    conflictHintFor(bodyMessage, route),
 		})
 	case http.StatusUnprocessableEntity, http.StatusBadRequest:
+		hint := validationHintFor(bodyMessage, route)
+		if h := moveNeedsValueHintFor(extractUpstreamErrorEnvelope(bodyText), bodyMessage); h != "" {
+			hint = h
+		}
 		return NewErrorResult(ErrorPayload{
 			Code:    ErrValidationFailed,
 			Message: "Validation failed.",
-			Hint:    validationHintFor(bodyMessage, route),
+			Hint:    hint,
 		})
 	case http.StatusTooManyRequests:
 		// BUG-1430: pre-existing behavior collapsed 429 into the
@@ -1397,6 +1401,30 @@ func validationHintFor(bodyMsg, route string) string {
 	}
 	parts = append(parts, "Adjust the input shape and retry.")
 	return strings.Join(parts, " ")
+}
+
+// moveNeedsValueHintFor names the fix for a move or copy refused for a
+// destination value only the caller can supply (BUG-3200): a required field
+// with no value, or a change between open, done and abandoned the caller did
+// not name. The code and the payload shape stay validation_failed; only the
+// hint is specific, because a structured needs_value on this catalog waits on
+// the catalog decision (BUG-3200 trail). "" for any other refusal.
+func moveNeedsValueHintFor(up upstreamErrorEnvelope, bodyMsg string) string {
+	switch up.Code {
+	case "missing_required_fields":
+		return fmt.Sprintf("Backend: %s Supply each named field in the same call: field: [\"<key>=<value>\"].", bodyMsg)
+	case "state_change_requires_value":
+		var d struct {
+			Field   string   `json:"field"`
+			Options []string `json:"options"`
+		}
+		_ = json.Unmarshal(up.Details, &d)
+		if d.Field == "" || len(d.Options) == 0 {
+			return fmt.Sprintf("Backend: %s Name the destination's done field in the same call: field: [\"<field>=<value>\"].", bodyMsg)
+		}
+		return fmt.Sprintf("Backend: %s Name the value in the same call: field: [\"%s=<%s>\"].", bodyMsg, d.Field, strings.Join(d.Options, "|"))
+	}
+	return ""
 }
 
 // upstreamHintFor generates the actionable hint for ErrUpstreamError.
