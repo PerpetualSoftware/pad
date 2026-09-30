@@ -3,8 +3,9 @@
  * anchor. A click that first scrolls its card into view (Playwright does;
  * so does a momentum scroll ending under a tap) gets that scroll's event
  * dispatched AFTER the menu opens, and the dismiss closed it in the same
- * frame. Scroll events are now ignored until the first animation frame after
- * the menu opens; every later scroll is judged as before.
+ * frame. Until the first animation frame after opening, a scroll is now
+ * ignored if the trigger has not moved; every later scroll is judged as
+ * before.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
@@ -34,11 +35,15 @@ function setup() {
 	scroller.appendChild(trigger);
 	const unrelated = document.createElement('div');
 	document.body.append(scroller, unrelated);
+	let top = 100;
+	vi.spyOn(trigger, 'getBoundingClientRect').mockImplementation(
+		() => ({ left: 40, top, right: 58, bottom: top + 14, width: 18, height: 14, x: 40, y: top, toJSON: () => ({}) }) as DOMRect
+	);
 	const onclose = vi.fn();
 	render(Menu, { props: { open: true, onclose, trigger, mode: 'portal', children: body } });
 	flushSync();
 	expect(document.body.querySelector('.menu-content'), 'precondition: the portal panel rendered').not.toBeNull();
-	return { scroller, unrelated, onclose };
+	return { scroller, unrelated, onclose, moveTrigger: (dy: number) => (top += dy) };
 }
 
 describe('Menu portal scroll-dismiss (BUG-3278)', () => {
@@ -48,7 +53,14 @@ describe('Menu portal scroll-dismiss (BUG-3278)', () => {
 		expect(onclose).not.toHaveBeenCalled();
 	});
 
-	it('CONTROL: the same scroll one frame later closes the menu', async () => {
+	it('CONTROL: a scroll before the first frame that MOVED the trigger closes the menu', () => {
+		const { scroller, onclose, moveTrigger } = setup();
+		moveTrigger(-233);
+		scroller.dispatchEvent(new Event('scroll'));
+		expect(onclose).toHaveBeenCalledTimes(1);
+	});
+
+	it('CONTROL: the same unmoved scroll one frame later closes the menu, as on main (a sticky trigger)', async () => {
 		const { scroller, onclose } = setup();
 		await nextFrame();
 		scroller.dispatchEvent(new Event('scroll'));

@@ -147,13 +147,18 @@
 	// dispatched at the next rendering step, so a scroll that happened just
 	// BEFORE the opening click — a click that first scrolls its card into
 	// view, a tap landing as a momentum scroll ends — arrives after the menu
-	// opened and closed it in the same frame. Scroll events are ignored
-	// until the first animation frame after opening, which runs after that
-	// rendering step's scroll dispatch; every later scroll is judged exactly
-	// as before. Resize is unchanged.
+	// opened and closed it in the same frame. So until the first animation
+	// frame after opening (which follows that rendering step's scroll
+	// dispatch in practice; the ordering is measured, not guaranteed), a
+	// scroll is ignored if the trigger has not moved since the menu opened.
+	// A scroll that DID move it inside that window still closes the menu,
+	// and so does every scroll after it, judged exactly as before — which
+	// keeps a sticky trigger's pane scroll closing the menu. Resize is
+	// unchanged.
 	$effect(() => {
 		if (!open || useSheet || mode !== 'portal') return;
 		let settled = false;
+		const openedAt = trigger?.getBoundingClientRect();
 		const frame = requestAnimationFrame(() => (settled = true));
 		const dismiss = (e?: Event) => {
 			if (e && e.target instanceof Node) {
@@ -165,7 +170,10 @@
 				if (exempt?.().some((el) => el && (el === t || el.contains(t)))) return;
 				if (trigger && t !== document && !t.contains(trigger)) return;
 			}
-			if (e?.type === 'scroll' && !settled) return;
+			if (e?.type === 'scroll' && !settled && trigger && openedAt) {
+				const now = trigger.getBoundingClientRect();
+				if (Math.abs(now.left - openedAt.left) < 1 && Math.abs(now.top - openedAt.top) < 1) return;
+			}
 			onclose();
 		};
 		window.addEventListener('scroll', dismiss, { capture: true, passive: true });
