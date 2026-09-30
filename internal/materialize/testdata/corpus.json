@@ -192,7 +192,7 @@
    }
   ],
   "workspace_slug": "ws",
-  "expected": "title: \"Synthetic\"\\\ntags:` [a, `b\\]\n\n1. \n2. second\n3. third\n\n[report.pdf](pad-attachment:a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d)\n\n![diagram](pad-attachment:5c6d7e8f-9a0b-4c1d-8e2f-3a4b5c6d7e8f)\n\n[report.pdf](pad-attachment:a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d)\n\nParagr\n\nParagraph li\\\nnking [[other::TASK-9|shown]] \n\n- i~~nlin~~g [external](https://example.com/a?b=c) inline.\n\nPpng [[Legacy\\\\` https://x.tes]][[t/pd]][[oc]] i\\[[other::TASK-9|nline.\n\nParagraph li\\|nking [shown]][[ i]]nlin\\\ne.\n\nParagraph linking [[PLAN-7|custom text]] inline."
+  "expected": "title: \"Synthetic\"\\\ntags:` [a, `b\\]\n\n1. \n2. second\n3. third\n\n[report.pdf](pad-attachment:a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d)\n\n![diagram](pad-attachment:5c6d7e8f-9a0b-4c1d-8e2f-3a4b5c6d7e8f)\n\n[report.pdf](pad-attachment:a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d)\n\nParagr\n\nParagraph li\\\nnking [[other::TASK-9|shown]] \n\n- i~~nlin~~g [external](https://example.com/a?b=c) inline.\n\nPpng [[Legacy` https://x.tes]][[t/pd]][[oc]] i\\[[other::TASK-9|nline.\n\nParagraph li\\|nking [shown]][[ i]]nlin\\\ne.\n\nParagraph linking [[PLAN-7|custom text]] inline."
  },
  {
   "name": "seed-31676",
@@ -2326,7 +2326,7 @@
    }
   ],
   "workspace_slug": "ws",
-  "expected": "| a | b |\n| --- | --- |\n| 1 | 2 |\n| x |  |\n\ninking [[PLAN-7|custom text]] inline.\n\n```go\nfunc main() {\n\tprintln(\"hi\")\n}\n```\n\nParag|raph linking [[other::TASK-9|shown]] inl\\\nine.\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n| x | y |\n\n> #quoted line emoji 🎉second line\n\n---\n\n> quoted line\n> second line\n\n# He\\\nading one\n\n<table class=\"table-wrapper\" style=\"min-width: 25px;\">\n<colgroup><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td colspan=\"1\" rowspan=\"1\"><ul class=\"tight\" data-tight=\"true\"><li><p>wi`t<a class=\"editor-link\" data-href=\"/-/r/other/TASK-9\">h ima</a>ge</p></li></ul><p>TAS&lt;b&gt;K-3]] and [[</p></td></tr></tbody>\n</table>\n\n> Paragr\\\n> aph linking [[Legac&lt;b&gt;y doc]] inline.\n\nParagraph linking [[other::TASK-9]] inline.\n\nRoadma\n\n~~p\\]\\]~~\n\n#Paragraph linking [unknown](/alice/ws/tasks/TASK-999) inline.\n\n[report.pdf](pad-attachment:a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d)"
+  "expected": "| a | b |\n| --- | --- |\n| 1 | 2 |\n| x |  |\n\ninking [[PLAN-7|custom text]] inline.\n\n```go\nfunc main() {\n\tprintln(\"hi\")\n}\n```\n\nParag|raph linking [[other::TASK-9|shown]] inl\\\nine.\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n| x | y |\n\n> #quoted line emoji 🎉second line\n\n---\n\n> quoted line\n> second line\n\n# He\\\nading one\n\n<table class=\"table-wrapper\" style=\"min-width: 25px;\">\n<colgroup><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td colspan=\"1\" rowspan=\"1\"><ul class=\"tight\" data-tight=\"true\"><li><p>wi`t<a class=\"editor-link\" data-href=\"/-/r/other/TASK-9\">h ima</a>ge</p></li></ul><p>TAS&lt;b&gt;K-3]] and [[</p></td></tr></tbody>\n</table>\n\n> Paragr\\\n> aph linking [[Legac<b>y doc]] inline.\n\nParagraph linking [[other::TASK-9]] inline.\n\nRoadma\n\n~~p\\]\\]~~\n\n#Paragraph linking [unknown](/alice/ws/tasks/TASK-999) inline.\n\n[report.pdf](pad-attachment:a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d)"
  },
  {
   "name": "seed-324679",
