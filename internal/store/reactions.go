@@ -1,8 +1,6 @@
 package store
 
 import (
-	"database/sql"
-	"errors"
 	"fmt"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -14,30 +12,43 @@ func (s *Store) AddReaction(commentID, userID, actor, emoji string) (*models.Rea
 	id := newID()
 	ts := now()
 
+	// A tombstone takes no reaction (BUG-3252). On Postgres the comment is
+	// read FOR KEY SHARE, which a tombstoning delete's FOR UPDATE blocks, so
+	// the check sees a tombstone that commits first, and a delete that comes
+	// second counts and removes this reaction. SQLite serialises the two.
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("add reaction: %w", err)
+	}
+	defer tx.Rollback()
+	checkQ := `SELECT CASE WHEN deleted_at IS NULL THEN 0 ELSE 1 END FROM comments WHERE id = ?`
+	if s.dialect.Driver() == DriverPostgres {
+		checkQ += ` FOR KEY SHARE`
+	}
+	var deleted int
+	if err := tx.QueryRow(s.q(checkQ), commentID).Scan(&deleted); err != nil {
+		return nil, fmt.Errorf("add reaction: read comment: %w", err)
+	}
+	if deleted == 1 {
+		return nil, ErrCommentDeleted
+	}
+
 	// Store empty string (not NULL) for anonymous users so the UNIQUE constraint
 	// on (comment_id, user_id, emoji) works correctly — SQLite treats NULL != NULL.
-	// A tombstone takes no reaction (BUG-3252): the INSERT only fires while
-	// the comment is live.
-	_, err := s.db.Exec(s.q(`
+	if _, err := tx.Exec(s.q(`
 		INSERT INTO comment_reactions (id, comment_id, user_id, actor, emoji, created_at)
-		SELECT ?, ?, ?, ?, ?, ?
-		WHERE EXISTS (SELECT 1 FROM comments WHERE id = ? AND deleted_at IS NULL)
+		VALUES (?, ?, ?, ?, ?, ?)
 		ON CONFLICT(comment_id, user_id, emoji) DO NOTHING`),
-		id, commentID, userID, actor, emoji, ts, commentID,
-	)
-	if err != nil {
+		id, commentID, userID, actor, emoji, ts,
+	); err != nil {
+		return nil, fmt.Errorf("add reaction: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("add reaction: %w", err)
 	}
 
 	// Return the reaction (may be existing if ON CONFLICT hit).
-	r, err := s.getReaction(commentID, userID, emoji)
-	if err != nil && errors.Is(err, sql.ErrNoRows) {
-		var deleted int
-		if qerr := s.db.QueryRow(s.q(`SELECT CASE WHEN deleted_at IS NULL THEN 0 ELSE 1 END FROM comments WHERE id = ?`), commentID).Scan(&deleted); qerr == nil && deleted == 1 {
-			return nil, ErrCommentDeleted
-		}
-	}
-	return r, err
+	return s.getReaction(commentID, userID, emoji)
 }
 
 func (s *Store) getReaction(commentID, userID, emoji string) (*models.Reaction, error) {
@@ -86,7 +97,8 @@ func (s *Store) ListReactionsByComments(commentIDs []string) (map[string][]model
 		FROM comment_reactions cr
 		LEFT JOIN users u ON u.id = cr.user_id
 		-- A tombstone shows no reactions (BUG-3252). Its delete removes
-		-- them, and this join hides one a racing AddReaction landed after.
+		-- them and AddReaction refuses new ones; the join is the read-side
+		-- backstop for a row either could miss.
 		JOIN comments c ON c.id = cr.comment_id AND c.deleted_at IS NULL
 		WHERE cr.comment_id IN (`
 	args := make([]interface{}, len(commentIDs))

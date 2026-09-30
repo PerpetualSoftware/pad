@@ -3,6 +3,7 @@ package server
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -206,6 +207,7 @@ func TestDeleteCommentWithReplies_Tombstones(t *testing.T) {
 			wantCommentDeleted("edit", doRequestWithCookie(env.srv, "PATCH", path, map[string]any{"body": "revived"}, env.editorToken), parent)
 			wantCommentDeleted("reply", doRequestWithCookie(env.srv, "POST", ws+"/comments/"+parent+"/replies", map[string]any{"body": "late"}, env.editorToken), parent)
 			wantCommentDeleted("react", doRequestWithCookie(env.srv, "POST", ws+"/comments/"+parent+"/reactions", map[string]any{"emoji": "👍"}, env.editorToken), parent)
+			wantCommentDeleted("unreact", doRequestWithCookie(env.srv, "DELETE", ws+"/comments/"+parent+"/reactions/"+url.PathEscape("👍"), nil, env.editorToken), parent)
 			if rr := doRequestWithCookie(env.srv, "DELETE", path, nil, env.editorToken); rr.Code != http.StatusNotFound {
 				t.Fatalf("DELETE tombstone: want 404, got %d: %s", rr.Code, rr.Body.String())
 			}

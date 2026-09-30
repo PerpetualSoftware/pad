@@ -219,6 +219,7 @@ func TestCommentTombstones_Concurrent_Postgres(t *testing.T) {
 	ws := createTestWorkspace(t, s, "Tombstone races")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
 	item := createTestItem(t, s, ws.ID, col.ID, "Raced", "")
+	reactor := createTestUser(t, s, "racer-"+newID()[:8]+"@example.com", "Racer", "password123")
 
 	const rounds = 40
 	for i := 0; i < rounds; i++ {
@@ -232,15 +233,20 @@ func TestCommentTombstones_Concurrent_Postgres(t *testing.T) {
 		}
 
 		var wg sync.WaitGroup
-		errs := make([]error, 3)
+		errs := make([]error, 4)
 		start := make(chan struct{})
-		wg.Add(3)
+		wg.Add(4)
 		go func() { defer wg.Done(); <-start; errs[0] = s.DeleteComment(parent.ID) }()
 		go func() { defer wg.Done(); <-start; errs[1] = s.DeleteComment(reply.ID) }()
 		go func() {
 			defer wg.Done()
 			<-start
 			_, errs[2] = s.CreateComment(ws.ID, item.ID, "", models.CommentCreate{Body: "late", ParentID: parent.ID})
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			_, errs[3] = s.AddReaction(parent.ID, reactor.ID, "user", "👍")
 		}()
 		close(start)
 		done := make(chan struct{})
@@ -260,6 +266,20 @@ func TestCommentTombstones_Concurrent_Postgres(t *testing.T) {
 		if errs[2] != nil && !errors.Is(errs[2], ErrCommentDeleted) && !errors.Is(errs[2], sql.ErrNoRows) {
 			t.Fatalf("round %d: late reply: %v", i, errs[2])
 		}
+		// A reaction racing the delete is refused, lands before it and goes
+		// with it, or lands on a comment that was hard-deleted (its FK then
+		// refuses it). Never a reaction row on a tombstone.
+		if errs[3] != nil && !errors.Is(errs[3], ErrCommentDeleted) && !errors.Is(errs[3], sql.ErrNoRows) {
+			t.Logf("round %d: late reaction: %v", i, errs[3])
+		}
+		var stray int
+		if err := s.db.QueryRow(s.q(`SELECT COUNT(*) FROM comment_reactions cr JOIN comments c ON c.id = cr.comment_id
+			WHERE c.deleted_at IS NOT NULL`)).Scan(&stray); err != nil {
+			t.Fatal(err)
+		}
+		if stray != 0 {
+			t.Fatalf("round %d: %d reaction(s) stored on a tombstone", i, stray)
+		}
 		assertNoChildlessTombstone(t, s, item.ID, i)
 	}
 }
@@ -273,5 +293,77 @@ func assertNoChildlessTombstone(t *testing.T, s *Store, itemID string, round int
 	}
 	if n != 0 {
 		t.Fatalf("round %d: %d tombstone(s) with no reply left", round, n)
+	}
+}
+
+// Postgres only, deterministic: a reaction that arrives while a tombstoning
+// delete holds the comment must wait for it and then be refused. The delete's
+// lock is held by hand here, so the interleaving the random race above can
+// miss is forced: without the reaction's FOR KEY SHARE it reads the comment
+// as live, returns at once, and its row outlives the delete that should have
+// removed it.
+func TestAddReactionWaitsForTombstone_Postgres(t *testing.T) {
+	pgURL := os.Getenv("PAD_TEST_POSTGRES_URL")
+	if pgURL == "" {
+		t.Skip("PAD_TEST_POSTGRES_URL not set")
+	}
+	s := testStorePostgres(t, pgURL)
+	ws := createTestWorkspace(t, s, "Reaction wait")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	item := createTestItem(t, s, ws.ID, col.ID, "Waited", "")
+	reactor := createTestUser(t, s, "waiter-"+newID()[:8]+"@example.com", "Waiter", "password123")
+	parent, err := s.CreateComment(ws.ID, item.ID, "", models.CommentCreate{Body: "p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateComment(ws.ID, item.ID, "", models.CommentCreate{Body: "r", ParentID: parent.ID}); err != nil {
+		t.Fatal(err)
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`SELECT id FROM comments WHERE id = $1 FOR UPDATE`, parent.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.AddReaction(parent.ID, reactor.ID, "user", "👍")
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("AddReaction returned (%v) while the delete held the comment; it must wait", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	// Finish the delete the way DeleteComment tombstones.
+	if _, err := tx.Exec(`DELETE FROM comment_reactions WHERE comment_id = $1`, parent.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`UPDATE comments SET body = '', deleted_at = $1 WHERE id = $2`, now(), parent.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrCommentDeleted) {
+			t.Fatalf("AddReaction after the tombstone committed: want ErrCommentDeleted, got %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("AddReaction never returned after the delete committed")
+	}
+	var n int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM comment_reactions WHERE comment_id = $1`, parent.ID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("%d reaction(s) stored on the tombstone", n)
 	}
 }

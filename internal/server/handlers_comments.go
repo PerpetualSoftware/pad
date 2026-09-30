@@ -548,6 +548,13 @@ func (s *Server) handleRemoveReaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if commentObj.Deleted {
+		// Its reactions went with the delete (BUG-3252); say why, rather
+		// than "Reaction not found".
+		writeCommentDeleted(w, commentID)
+		return
+	}
+
 	userID := currentUserID(r)
 
 	if err := s.store.RemoveReaction(commentID, userID, emoji); err != nil {
