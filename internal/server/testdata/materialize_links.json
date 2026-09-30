@@ -62,5 +62,29 @@
 			"AAK0AQEHlhEABwEHZGVmYXVsdAMJcGFyYWdyYXBoBwCWEQAGBACWEQEEU2VlIIaWEQUEbGlua1J7ImhyZWYiOiIvYWxpY2Uvd3MvcHVibGljL1BVQi0yIiwidGFyZ2V0IjpudWxsLCJyZWwiOm51bGwsImNsYXNzIjoiIiwidGl0bGUiOm51bGx9hJYRBg90aGUgcHVibGljIHBsYW6GlhEVBGxpbmsEbnVsbISWERYGIGhlcmUuAA=="
 		],
 		"raw": "See [the public plan](/alice/ws/public/PUB-2) here."
+	},
+	{
+		"name": "marker-follows-title",
+		"markdown": "See [Secret Launch Codename](/alice/ws/secrets/SECR-1 \"pad-follows-title:Secret Launch Codename\") here.",
+		"rows": [
+			"AALjAQEHlhEABwEHZGVmYXVsdAMJcGFyYWdyYXBoBwCWEQAGBACWEQEEU2VlIIaWEQUEbGlua3p7ImhyZWYiOiIvYWxpY2Uvd3Mvc2VjcmV0cy9TRUNSLTEiLCJ0YXJnZXQiOm51bGwsInJlbCI6bnVsbCwiY2xhc3MiOiIiLCJ0aXRsZSI6InBhZC1mb2xsb3dzLXRpdGxlOlNlY3JldCBMYXVuY2ggQ29kZW5hbWUifYSWEQYWU2VjcmV0IExhdW5jaCBDb2RlbmFtZYaWERwEbGluawRudWxshJYRHQYgaGVyZS4A"
+		],
+		"raw": "See [Secret Launch Codename](/alice/ws/secrets/SECR-1) here."
+	},
+	{
+		"name": "marker-renamed",
+		"markdown": "See [Old Codename](/alice/ws/secrets/SECR-1 \"pad-follows-title:Old Codename\") here.",
+		"rows": [
+			"AALPAQEHlhEABwEHZGVmYXVsdAMJcGFyYWdyYXBoBwCWEQAGBACWEQEEU2VlIIaWEQUEbGlua3B7ImhyZWYiOiIvYWxpY2Uvd3Mvc2VjcmV0cy9TRUNSLTEiLCJ0YXJnZXQiOm51bGwsInJlbCI6bnVsbCwiY2xhc3MiOiIiLCJ0aXRsZSI6InBhZC1mb2xsb3dzLXRpdGxlOk9sZCBDb2RlbmFtZSJ9hJYRBgxPbGQgQ29kZW5hbWWGlhESBGxpbmsEbnVsbISWERMGIGhlcmUuAA=="
+		],
+		"raw": "See [Old Codename](/alice/ws/secrets/SECR-1) here."
+	},
+	{
+		"name": "marker-external-href",
+		"markdown": "See [Old Codename](https://example.com/x \"pad-follows-title:Old Codename\") here.",
+		"rows": [
+			"AALMAQEHlhEABwEHZGVmYXVsdAMJcGFyYWdyYXBoBwCWEQAGBACWEQEEU2VlIIaWEQUEbGlua217ImhyZWYiOiJodHRwczovL2V4YW1wbGUuY29tL3giLCJ0YXJnZXQiOm51bGwsInJlbCI6bnVsbCwiY2xhc3MiOiIiLCJ0aXRsZSI6InBhZC1mb2xsb3dzLXRpdGxlOk9sZCBDb2RlbmFtZSJ9hJYRBgxPbGQgQ29kZW5hbWWGlhESBGxpbmsEbnVsbISWERMGIGhlcmUuAA=="
+		],
+		"raw": "See [Old Codename](https://example.com/x) here."
 	}
 ]

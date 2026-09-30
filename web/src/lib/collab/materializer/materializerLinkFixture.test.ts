@@ -38,6 +38,12 @@ const CASES: Array<{ name: string; markdown: string }> = [
 	{ name: 'cross-workspace', markdown: 'See [xw text](/-/r/other/SECR-1) here.' },
 	{ name: 'typed-wiki-literal', markdown: 'Typed \\[\\[SECR-1\\]\\] literal.' },
 	{ name: 'public-ref-link', markdown: 'See [the public plan](/alice/ws/public/PUB-2) here.' },
+	// BUG-3315 U2: a tab loads a link that follows its target's title with the
+	// follows-title marker in the link's title attribute, and the marker lives
+	// in the Y.Doc. Recovery must strip it exactly as a tab's save does.
+	{ name: 'marker-follows-title', markdown: 'See [Secret Launch Codename](/alice/ws/secrets/SECR-1 "pad-follows-title:Secret Launch Codename") here.' },
+	{ name: 'marker-renamed', markdown: 'See [Old Codename](/alice/ws/secrets/SECR-1 "pad-follows-title:Old Codename") here.' },
+	{ name: 'marker-external-href', markdown: 'See [Old Codename](https://example.com/x "pad-follows-title:Old Codename") here.' },
 ];
 
 interface FixtureCase {
@@ -52,6 +58,10 @@ function build(): FixtureCase[] {
 	try {
 		return CASES.map((c) => {
 			ed.commands.setContent(c.markdown);
+			// A marker case is only a marker case if the document holds it.
+			if (c.name.startsWith('marker-')) {
+				expect((ed.storage as unknown as { markdown: { getMarkdown(): string } }).markdown.getMarkdown()).toContain('pad-follows-title');
+			}
 			const doc = new Y.Doc();
 			doc.clientID = 2198;
 			prosemirrorToYXmlFragment(ed.state.doc, doc.getXmlFragment('default'));
@@ -76,6 +86,6 @@ describe('materializer link fixture (TASK-2198 U4)', () => {
 		expect(committed).toEqual(cases);
 		// Each document holds a link (or the literal), so the fixture is about
 		// what it claims to be about.
-		for (const c of cases) expect(c.raw).toMatch(/SECR-1|secret-launch-codename|gone text|PUB-2/);
+		for (const c of cases) expect(c.raw).toMatch(/SECR-1|secret-launch-codename|gone text|PUB-2|example\.com/);
 	});
 });

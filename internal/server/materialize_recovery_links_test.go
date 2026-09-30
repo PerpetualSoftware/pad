@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -126,6 +127,10 @@ func TestMaterializeLinkIndexContributesNoTitle(t *testing.T) {
 		"cross-workspace":           "See [[other::SECR-1|xw text]] here.",
 		"typed-wiki-literal":        "Typed [[SECR-1]] literal.",
 		"public-ref-link":           "See [[PUB-2|the public plan]] here.",
+		// BUG-3315 U2: a follows-title link follows the title, renamed or not.
+		"marker-follows-title": "See [[SECR-1]] here.",
+		"marker-renamed":       "See [[SECR-1]] here.",
+		"marker-external-href": "See [Old Codename](https://example.com/x) here.",
 	}
 	for _, c := range loadLinkFixture(t) {
 		got := recoverCase(t, f, c)
@@ -187,6 +192,58 @@ func TestMaterializeLinkToRestrictedItemSurvives(t *testing.T) {
 	}
 	if md != "See [shown text](/alice/ws/secrets/SECR-1) here." {
 		t.Fatalf("restricted-index counterfactual = %q", md)
+	}
+}
+
+// BUG-3315 U2: a tab since #1688 loads a link that follows its target's title
+// with the follows-title marker, and the marker lives in the Y.Doc. Recovery
+// replays that document, so it must strip the marker exactly as a tab's save
+// does: on the production path (whole-workspace index), with a restricted
+// index (the target unseen), and with none. The marker must never reach
+// items.content.
+func TestMaterializeRecoveryStripsFollowsTitleMarker(t *testing.T) {
+	f, _, _ := newLinkWorld(t)
+	full, err := f.srv.materializeLinkIndex(f.ws.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restricted []materialize.LinkEntry
+	for _, e := range full {
+		if e.CollectionPrefix != "SECR" {
+			restricted = append(restricted, e)
+		}
+	}
+	n := 0
+	for _, c := range loadLinkFixture(t) {
+		if !strings.HasPrefix(c.Name, "marker-") {
+			continue
+		}
+		n++
+		// Guard: the op-log really carries the marker.
+		carries := false
+		for _, r := range decodeRows(t, c.Rows) {
+			carries = carries || bytes.Contains(r, []byte("pad-follows-title"))
+		}
+		if !carries {
+			t.Fatalf("%s: the fixture's op-log does not carry the marker", c.Name)
+		}
+		if got := recoverCase(t, f, c); strings.Contains(got, "pad-follows-title") {
+			t.Errorf("%s: production recovery stored the marker: %q", c.Name, got)
+		}
+		for name, idx := range map[string][]materialize.LinkEntry{"restricted": restricted, "empty": {}} {
+			md, err := recoveryRunner(t).Materialize(context.Background(), materialize.Job{
+				Rows: decodeRows(t, c.Rows), SchemaVersion: collab.DefaultSchemaVersion, LinkIndex: idx, WorkspaceSlug: "ws",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(md, "pad-follows-title") {
+				t.Errorf("%s, %s index: recovery kept the marker: %q", c.Name, name, md)
+			}
+		}
+	}
+	if n != 3 {
+		t.Fatalf("%d marker cases in the fixture, want 3", n)
 	}
 }
 
