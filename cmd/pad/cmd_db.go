@@ -606,13 +606,13 @@ Steps:
 			// per item rather than a scan of pre-built bundles, which would mean
 			// holding every workspace in memory to read one field.
 			//
-			// The remedy is the only one there is: a browser tab. No Go code in
-			// this repo can decode a Yjs update payload (the dumb-relay design),
-			// so nothing server-side can move op-log content into items.content
-			// — and the two server-side paths that touch the op-log,
-			// PruneAndApply and ForceRefreshRoom, write CALLER-supplied content
-			// and prune, which would DISCARD exactly these edits. That is why
-			// the escape hatch is named for what it does to the data.
+			// The remedy is a browser tab, or a RUNNING server's op-log recovery
+			// (TASK-2198 U4, internal/materialize), which this command cannot
+			// use: it runs with the server stopped. The two other server-side
+			// paths that touch the op-log, PruneAndApply and ForceRefreshRoom,
+			// write CALLER-supplied content and prune, which would DISCARD
+			// exactly these edits. That is why the escape hatch is named for
+			// what it does to the data.
 			pendingByWorkspace := map[string][]store.PendingFlushItem{}
 			pendingTotal := 0
 			for _, ws := range workspaces {
@@ -933,11 +933,11 @@ func gateUnflushedEdits(workspaces []models.Workspace, pending map[string][]stor
 			fmt.Fprintf(&b, "    %-12s %s\n", it.Ref, it.Title)
 		}
 	}
-	// The only remedy there is. No Go code in this repo can decode a Yjs update
-	// payload (the dumb-relay design), so nothing server-side can move op-log
-	// content into items.content — and the two server-side paths that touch the
-	// op-log, PruneAndApply and ForceRefreshRoom, write CALLER-supplied content
-	// and prune, which would DISCARD exactly these edits.
+	// The remedy a stopped server leaves. A running server's op-log recovery
+	// (TASK-2198 U4) also moves this content into items.content, but this
+	// command runs with the server stopped; the other two server-side paths
+	// that touch the op-log, PruneAndApply and ForceRefreshRoom, write
+	// CALLER-supplied content and prune, which would DISCARD exactly these edits.
 	fmt.Fprint(&b, "\nOpen each of those items in the web UI so the tab flushes its pending edits\n")
 	fmt.Fprint(&b, "into the database, then re-run this command. To migrate anyway and lose those\n")
 	fmt.Fprint(&b, "edits, re-run with --discard-unflushed-edits.\n")

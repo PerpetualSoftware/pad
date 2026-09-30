@@ -73,8 +73,8 @@ func TestGateUnflushedEditsRefusesAndNamesEveryAffectedItem(t *testing.T) {
 		t.Errorf("refusal does not end by promising nothing was migrated:\n%s", msg)
 	}
 	// The remedy and the escape hatch both have to be IN the refusal: a refusal
-	// with no way forward is a trap, and per BUG-3000 the flush may never happen
-	// on its own.
+	// with no way forward is a trap, and the command runs with the server stopped,
+	// so the server's op-log recovery (TASK-2198 U4) cannot help it.
 	if !strings.Contains(msg, "web UI") {
 		t.Errorf("refusal does not name the only remedy (open the item so a tab flushes):\n%s", msg)
 	}

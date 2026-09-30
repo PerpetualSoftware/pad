@@ -1651,6 +1651,20 @@ const CmdhelpVersion = "0.1"
 //     this one either, and it is not a promise that the row will catch
 //     up at all.
 //
+//     0.60 — TASK-2198 U4, op-log recovery. BEHAVIOR bump on the v0.59 /
+//     v0.39 grounds: no tool name, action enum or param shape changed, but
+//     `content_state: "applied_pending_flush"` — on `pad_item` get / full
+//     list, `pad_playbook` run and the item resource's line above the body —
+//     now CLEARS ON ITS OWN. When the item's collab room closes (60s after
+//     its last tab leaves) or a one-minute sweep finds it dormant, the server
+//     rebuilds the body from the op-log in a worker process and stores it:
+//     the body changes, `seq` moves (a held `expected_seq` then answers
+//     `update_conflict`, where it used to answer `content_pending_flush`),
+//     and the history gains a version by `system` / `recovery`. Before it the
+//     row caught up only when a tab next opened the item. Not a guarantee: a
+//     failed job, an item with set-aside rows and PAD_MATERIALIZE=off all
+//     leave the old behaviour, so "re-read later, never re-send" stands.
+//
 //     0.59 — BUG-3252, the tombstone (ruled over cascade). BEHAVIOR bump
 //     on the v0.58 / v0.45 grounds: no name, enum or param shape changed,
 //     but `pad_item.action=delete-comment` on a comment that still has
@@ -1705,7 +1719,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.59"
+const ToolSurfaceVersion = "0.60"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

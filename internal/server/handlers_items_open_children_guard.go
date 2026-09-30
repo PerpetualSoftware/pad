@@ -468,8 +468,10 @@ func writeContentNotAppliedError(w http.ResponseWriter, ref string, landedFields
 // carrying a version token while the item's op-log holds unflushed
 // collaborative edits. 409, but NOT update_conflict — re-reading returns the
 // same row and the same seq, so a read-and-retry loop would spin. The message
-// says what clears it, because nothing server-side does: an open tab flushes
-// within seconds; with no tab, only opening the item or the override.
+// says what clears it: an open tab flushes within seconds; with no tab, opening
+// the item, the override, or the server's own op-log recovery once the item's
+// room has closed (TASK-2198 U4), which can fail or be turned off, so the
+// message does not promise it.
 //
 // BUG-3244: when the item holds rows a schema rebuild set aside, the refusal
 // covers every content write and the message must NOT offer opening the item,
