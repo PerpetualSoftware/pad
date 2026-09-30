@@ -99,6 +99,18 @@ func TestMaterializeFlushAppliesWhenCaughtUpAndPending(t *testing.T) {
 		if ops, _ := s.LoadYjsUpdatesSince(item.ID, 0); len(ops) != 2 {
 			t.Fatalf("op-log rows after recovery = %d, want 2 (never pruned)", len(ops))
 		}
+		// A second recovery moments later still writes its own version row:
+		// the per-(actor, source) throttle must not let a recovery move the
+		// body with no version bracketing it.
+		cursor2 := appendFrames(t, s, item.ID, recoveryFrame(3))
+		if outcome, _, err := s.MaterializeFlush(item.ID, cursor2, "recovered again"); err != nil || outcome != store.MaterializeApplied {
+			t.Fatalf("second MaterializeFlush = %q, %v", outcome, err)
+		}
+		if n := versionCount(t, s, item.ID); n != versionsBefore+2 {
+			t.Fatalf("versions after two recoveries %d, want %d", n, versionsBefore+2)
+		}
+		before, _ = s.GetItem(item.ID)
+		before.Seq = got.Seq // the token a caller read after the FIRST recovery
 
 		// A writer holding the pre-recovery seq is refused, not allowed to
 		// overwrite the recovered text (BUG-3037 / BUG-3133).
