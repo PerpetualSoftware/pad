@@ -163,7 +163,7 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	handleRestore: { reviewed: 'c3a1732554a4', why: 'switchedAway on every arm' },
 	handleDeleteLink: { reviewed: 'd147285bb264', why: 'switchedAway after each await' },
 	handleCreateLink: { reviewed: 'ef19e8ce0bc8', why: 'switchedAway after each await' },
-	handleMove: { reviewed: 'da5513ba767f', why: 'stillOnSource() on every arm, including inside navIfStillCurrent' },
+	handleMove: { reviewed: '1422377a9e74', why: 'stillOnSource() on every arm, including inside navIfStillCurrent, and before the BUG-3200 needs-value handoff writes the dialog state' },
 	// BUG-3230 U0: the pending-edits question for the pane's raw and fallback
 	// saves, and the recovery offer for markdown an unload save could not store.
 	askToOverwritePendingEdits: {

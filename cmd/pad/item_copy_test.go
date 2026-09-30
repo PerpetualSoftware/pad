@@ -2119,3 +2119,45 @@ func TestItemMoveStateChangeHint(t *testing.T) {
 		t.Fatal("no details must print no hint")
 	}
 }
+
+// BUG-3200: `item move` refused as missing_required_fields prints what the
+// same-workspace copy preflight says each field needs, as `item copy` does.
+func TestItemMoveNeedsValueHint(t *testing.T) {
+	input := map[string]any{"target_collection": "tasks", "field_overrides": map[string]any{"size": "xl"}}
+
+	var got cli.ItemCopyRequest
+	var out bytes.Buffer
+	itemMoveNeedsValueHint(&out, "docapp", input, func(req cli.ItemCopyRequest) (*cli.ItemCopyPreflight, error) {
+		got = req
+		return fullPreflight(), nil
+	})
+	if got.TargetWorkspace != "docapp" || got.TargetCollection != "tasks" || !got.ArchiveSource || got.FieldOverrides["size"] != "xl" {
+		t.Fatalf("preflight request = %+v, want the move's own workspace, collection and overrides, as a move", got)
+	}
+	for _, want := range []string{"priority", "low", "high", "--field"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("hint lacks %q:\n%s", want, out.String())
+		}
+	}
+
+	t.Run("CONTROL: a failed preflight prints nothing", func(t *testing.T) {
+		var out bytes.Buffer
+		itemMoveNeedsValueHint(&out, "docapp", input, func(cli.ItemCopyRequest) (*cli.ItemCopyPreflight, error) {
+			return nil, fmt.Errorf("404")
+		})
+		if out.Len() != 0 {
+			t.Fatalf("printed %q", out.String())
+		}
+	})
+	t.Run("CONTROL: a preflight with nothing to add prints nothing", func(t *testing.T) {
+		var out bytes.Buffer
+		pre := fullPreflight()
+		pre.Fields.NeedsValue = nil
+		itemMoveNeedsValueHint(&out, "docapp", input, func(cli.ItemCopyRequest) (*cli.ItemCopyPreflight, error) {
+			return pre, nil
+		})
+		if out.Len() != 0 {
+			t.Fatalf("printed %q", out.String())
+		}
+	})
+}

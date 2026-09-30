@@ -97,6 +97,13 @@ user hunting for an item that provably does not exist.
 		) => Promise<{ status: 'ok' | 'cancelled' | 'failed'; message?: string }>;
 		/** Cross-workspace success. The parent owns navigation / toasts. */
 		oncopied: (result: ItemCopyResult) => void;
+		/**
+		 * Open with this collection of the SOURCE workspace already chosen, so
+		 * the preflight runs at once (BUG-3200). The pane menu's move sets it
+		 * when the server refused a move for a value only the user can supply,
+		 * handing the user to the needs_value picker instead of a toast.
+		 */
+		initialCollection?: string;
 	}
 
 	let {
@@ -109,7 +116,8 @@ user hunting for an item that provably does not exist.
 		sourceUnavailable = false,
 		flushContent,
 		onmove,
-		oncopied
+		oncopied,
+		initialCollection = ''
 	}: Props = $props();
 
 	const uid = $props.id();
@@ -383,7 +391,18 @@ user hunting for an item that provably does not exist.
 		staleReview = '';
 		destinationLost = '';
 		void loadWorkspaces();
-		void loadDestCollections(destWs);
+		const gen = flowGen;
+		const isSameIdentity = authStore.identityFence();
+		void loadDestCollections(destWs).then(() => {
+			// After the list loads, and only if it OFFERS the collection: the
+			// list is the permission filter (canEditCollection), and a select
+			// whose value names an option that has not rendered yet shows the
+			// placeholder while the dialog believes a collection is chosen.
+			if (!initialCollection || gen !== flowGen || !isSameIdentity() || destColl) return;
+			if (destCollections.some((c) => c.slug === initialCollection)) {
+				handleCollectionChange(initialCollection);
+			}
+		});
 	}
 
 	function cancelPending() {

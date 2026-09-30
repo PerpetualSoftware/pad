@@ -5,6 +5,7 @@
 	import { api, PadApiError, isUpdateConflictError, type ImportURLResponse } from '$lib/api/client';
 	// Its own statement, so units that only use `api` keep their reviewed hash.
 	import { isSupersededWriteError } from '$lib/api/client';
+	import { isMoveNeedsValueRefusal } from '$lib/api/client';
 	import { isContentPendingFlush, pendingEditsReason, prunedEditsNotice } from '$lib/items/contentWrite';
 	import type { PendingEditsReason } from '$lib/stores/pendingEditsDialog.svelte';
 	import { pendingEditsDialog } from '$lib/stores/pendingEditsDialog.svelte';
@@ -5346,6 +5347,12 @@
 	// ── Cross-workspace copy / move dialog (PLAN-2373 / TASK-2355) ──────────
 
 	let copyDialogOpen = $state(false);
+	/**
+	 * The collection the copy dialog opens on. Empty for the ⋯ entry; set when
+	 * a pane-menu move was refused for a value only the user can supply, so the
+	 * dialog's preflight shows the needs_value picker at once (BUG-3200).
+	 */
+	let copyDialogInitialCollection = $state('');
 
 	/**
 	 * Close the copy dialog and put focus back on the ⋯ pane-menu trigger.
@@ -5791,6 +5798,16 @@
 				if (stillOnSource()) {
 					toastStore.show('Move cancelled', 'info');
 				}
+				return { status: 'cancelled' };
+			}
+			// The pane menu's move (no overrides) refused for a value only the
+			// user can supply: hand it to the copy dialog, whose same-workspace
+			// path (DR-18) runs the preflight and collects that value, instead of
+			// a toast with no way forward (BUG-3200). The dialog's own call passes
+			// overrides and keeps its inline error, so it never re-opens itself.
+			if (stillOnSource() && fieldOverrides === undefined && isMoveNeedsValueRefusal(e)) {
+				copyDialogInitialCollection = targetSlug;
+				copyDialogOpen = true;
 				return { status: 'cancelled' };
 			}
 			if (stillOnSource()) toastStore.show(e.message ?? 'Failed to move item', 'error');
@@ -6374,6 +6391,7 @@
 								onclick={() => {
 									paneMenuOpen = false;
 									paneMenuView = 'root';
+									copyDialogInitialCollection = '';
 									copyDialogOpen = true;
 								}}
 								disabled={moving}
@@ -7456,6 +7474,7 @@
 				sourceRef={formatItemRef(item) || item.slug}
 				sourceUnavailable={isArchived}
 				flushContent={flushContentBeforeCopy}
+				initialCollection={copyDialogInitialCollection}
 				onmove={(targetSlug, fieldOverrides) =>
 					handedDown !== identityKey
 						? Promise.resolve({ status: 'cancelled' as const })

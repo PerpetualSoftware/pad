@@ -1853,6 +1853,16 @@ Examples:
 							fmt.Fprintln(os.Stderr, hint)
 						}
 					}
+					// BUG-3200: the refusal names the field but not the values
+					// it takes or the flag that sets it. The copy preflight, a
+					// read, answers both for a same-workspace destination, which
+					// is what `item copy` already renders.
+					if apiErr.Code == "missing_required_fields" {
+						itemMoveNeedsValueHint(os.Stderr, ws, input, func(req cli.ItemCopyRequest) (*cli.ItemCopyPreflight, error) {
+							pre, _, perr := client.CopyItemPreflight(ws, args[0], req)
+							return pre, perr
+						})
+					}
 				}
 				return err
 			}
@@ -4519,6 +4529,29 @@ func printStaleBodyLine(item *models.Item) {
 		return
 	}
 	fmt.Println(`⚠ stale body: an editor holds edits not yet written back, so the content below is the PREVIOUS body; it catches up if and when a tab next flushes the item, which nothing guarantees.`)
+}
+
+// itemMoveNeedsValueHint prints the needs_value rows the copy preflight reports
+// for a same-workspace move that was refused as missing_required_fields: each
+// field, the values it takes, and the `--field` that supplies it (BUG-3200).
+// Best effort: a preflight that fails, or reports nothing to add (an older
+// server, a raced schema), prints nothing, and the server's own message stands.
+func itemMoveNeedsValueHint(out io.Writer, ws string, input map[string]any, preflight func(cli.ItemCopyRequest) (*cli.ItemCopyPreflight, error)) {
+	target, _ := input["target_collection"].(string)
+	overrides, _ := input["field_overrides"].(map[string]any)
+	if target == "" {
+		return
+	}
+	pre, err := preflight(cli.ItemCopyRequest{
+		TargetWorkspace:  ws,
+		TargetCollection: target,
+		FieldOverrides:   overrides,
+		ArchiveSource:    true,
+	})
+	if err != nil || pre == nil || len(pre.Fields.NeedsValue) == 0 {
+		return
+	}
+	_ = renderItemCopyNeedsValue(out, pre, overrides)
 }
 
 // itemMoveStateChangeHint turns a state_change_requires_value refusal's details

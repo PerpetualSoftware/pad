@@ -314,6 +314,20 @@ function isNotFoundError(err: unknown): err is PadApiError {
 }
 
 /**
+ * A move refused for a destination value only the user can supply: a required
+ * field with no value (`missing_required_fields`), or a change between open,
+ * done and abandoned the caller did not name (`state_change_requires_value`,
+ * BUG-2367). The copy dialog's needs_value picker collects exactly these, so a
+ * move that meets one is handed to it (BUG-3200).
+ */
+export function isMoveNeedsValueRefusal(err: unknown): boolean {
+	return (
+		err instanceof PadApiError &&
+		(err.code === 'missing_required_fields' || err.code === 'state_change_requires_value')
+	);
+}
+
+/**
  * True when `err` is either an optimistic-concurrency 409 OR a rename-induced
  * 404 — the two ways a concurrent collection change can defeat a slug-targeted
  * write (BUG-2265). Retry paths branch on this to resolve-by-id and retry.
