@@ -259,6 +259,17 @@ func serveCmd() *cobra.Command {
 
 			srv := server.New(s)
 			srv.SetVersion(version, commit, buildTime)
+			// Protected share-link image signatures, on every install
+			// (BUG-3305). keyBytes always exists here: EnsureEncryptionKey
+			// generates one on SQLite and refuses to start Postgres without
+			// one. Until BUG-3305 this was cloud-only, so a self-hosted
+			// password or require-auth share page showed a placeholder for
+			// every image. The same key also keys encryption at rest, OAuth
+			// and claim codes. The share-asset MAC input carries its own
+			// label (shareAssetSigDomain) and a different shape from the
+			// claim-code input, and each verifier accepts only its own
+			// format (a full hex MAC here, a six-digit code there).
+			srv.SetShareAssetSecret(keyBytes)
 			// PublicLinkBaseURL — not BaseURL() — so the server picks up
 			// PUBLIC_URL from the deployment env (BUG-899). BaseURL() is
 			// CLI-client-only and would leak the same env var into local
@@ -341,16 +352,6 @@ func serveCmd() *cobra.Command {
 				}
 				srv.SetCloudMode(cfg.CloudSecret)
 				slog.Info("Cloud mode enabled")
-
-				// Protected share-link image signatures, keyed exactly where
-				// they always were: cloud with PAD_MCP_PUBLIC_URL set, which
-				// is where the claim secret they used to share was set. The
-				// claim secret now follows OAuth construction (wireMCP), and
-				// this must not move with it (TASK-2317, lead ruling B).
-				// Every install getting the key is BUG-3305.
-				if cfg.MCPPublicURL != "" {
-					srv.SetShareAssetSecret(keyBytes)
-				}
 
 				// Reverse pad → pad-cloud client (TASK-690). Used by
 				// handleDeleteAccount to cancel Stripe subscriptions + delete

@@ -83,7 +83,7 @@ func TestShareAssetSig_ExpTampered(t *testing.T) {
 }
 
 func TestShareAssetSig_UnconfiguredSecret(t *testing.T) {
-	// A too-short secret (self-host without an encryption key) cannot sign —
+	// A too-short or unset secret (a Server that never had the key set) cannot sign —
 	// signShareAsset returns "" so the mint side degrades to the placeholder,
 	// and verify never accepts.
 	t.Parallel()
@@ -533,13 +533,13 @@ func TestShareAsset_ProtectedWithoutSecretOmitsRef(t *testing.T) {
 	}
 }
 
-// TestShareAsset_ClaimSecretDoesNotKeyShareAssets pins the TASK-2317 split
-// (lead ruling B). The claim secret is now set wherever OAuth is
-// constructed, which includes an https self-host with MCP off; share-asset
-// signing must not follow it, or a protected share page on that install
-// would start rendering images it never rendered before (BUG-3305 is the
-// deliberate version of that change). With only the claim secret set, a
-// protected link still omits its ref.
+// TestShareAsset_ClaimSecretDoesNotKeyShareAssets pins the TASK-2317 split:
+// share-asset signing reads its own field, never the claim secret. Both are
+// set from the same deployment key today (BUG-3305 sets the share-asset
+// one on every install), but they are wired at different points, and a
+// signer that silently fell back to the claim secret would depend on
+// OAuth being constructed. With only the claim secret set, a protected
+// link still omits its ref.
 func TestShareAsset_ClaimSecretDoesNotKeyShareAssets(t *testing.T) {
 	t.Parallel()
 	f := newShareAssetFixture(t)
