@@ -16,8 +16,11 @@ let
   };
 
   # SvelteKit static build (web/build) that gets embedded into the Go
-  # binary via `//go:embed all:web/build` in embed.go. Built separately
-  # so the Go derivation only needs a file copy, not a Node toolchain.
+  # binary via `//go:embed all:web/build` in embed.go, plus the headless
+  # materializer bundle (web/build-materializer, TASK-2198) embedded the same
+  # way; `npm run build` produces both. Built separately so the Go derivation
+  # only needs a file copy, not a Node toolchain. $out holds the two as
+  # $out/build and $out/build-materializer.
   # Uses importNpmLock (per-package fetchurl against web/package-lock.json's
   # own integrity hashes) rather than buildNpmPackage's npmDepsHash, so npm
   # dependency updates never require discovering/updating a separate hash.
@@ -48,7 +51,9 @@ let
 
     installPhase = ''
       runHook preInstall
-      cp -r build $out
+      mkdir -p $out
+      cp -r build $out/build
+      cp -r build-materializer $out/build-materializer
       runHook postInstall
     '';
   };
@@ -75,7 +80,7 @@ buildGoModule {
   # build has other fixed-output derivations (every npm tarball importNpmLock
   # fetches is one), so `grep got:` can hand you a hash that belongs to
   # something else entirely. The script anchors on the go-modules derivation.
-  vendorHash = "sha256-iEqvaMqp7eFWWsOza6Eubs7PSvRCFVc2fP9xp4atuPw=";
+  vendorHash = "sha256-P1bQmbB0KKEjF5L0cGx5hS2VBkcSrZNXmehjrpQIpJM=";
 
   subPackages = [ "cmd/pad" ];
 
@@ -100,12 +105,15 @@ buildGoModule {
     runHook postCheck
   '';
 
-  # Populate web/build with the real SvelteKit output before `go build`
-  # runs, so `//go:embed all:web/build` in embed.go has real files to
-  # embed. postPatch runs after patchPhase, before configure/build.
+  # Populate web/build and web/build-materializer with the real outputs
+  # before `go build` runs, so the //go:embed directives in embed.go have
+  # real files to embed (and internal/materialize's tests, run by the
+  # checkPhase, have the real bundle). postPatch runs after patchPhase,
+  # before configure/build.
   postPatch = ''
-    rm -rf web/build
-    cp -r ${webUI} web/build
+    rm -rf web/build web/build-materializer
+    cp -r ${webUI}/build web/build
+    cp -r ${webUI}/build-materializer web/build-materializer
   '';
 
   env.CGO_ENABLED = 0;

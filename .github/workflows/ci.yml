@@ -59,6 +59,20 @@ jobs:
       - name: Create web build placeholder for embed
         run: mkdir -p web/build && echo "placeholder" > web/build/.gitkeep
 
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: web/package-lock.json
+
+      # The materializer bundle (TASK-2198) is embedded like web/build, but it
+      # is built for real rather than stubbed: internal/materialize's tests run
+      # it (TestCorpusParity replays the corpus through it in goja), so a
+      # placeholder would fail them. Only the bundle, not the whole web build.
+      - name: Build the materializer bundle for embed
+        working-directory: web
+        run: npm ci && node scripts/build-materializer.mjs
+
       - name: Run go vet
         run: go vet ./...
 
@@ -226,9 +240,14 @@ jobs:
           go-version-file: go.mod
 
       - name: Create web build placeholder
+        # The materializer bundle (TASK-2198) is stubbed here too: this job
+        # builds and smoke-tests the binary, and nothing it runs loads the
+        # bundle. internal/materialize.New refuses a placeholder by name.
         run: |
           New-Item -ItemType Directory -Force web/build | Out-Null
           Set-Content web/build/index.html '<!doctype html>'
+          New-Item -ItemType Directory -Force web/build-materializer | Out-Null
+          Set-Content web/build-materializer/materializer.js '// placeholder'
 
       - name: Build binary
         run: go build -o "${{ matrix.binary }}" ./cmd/pad
@@ -372,6 +391,20 @@ jobs:
 
       - name: Create web build placeholder for embed
         run: mkdir -p web/build && echo "placeholder" > web/build/.gitkeep
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: web/package-lock.json
+
+      # The materializer bundle (TASK-2198) is embedded like web/build, but it
+      # is built for real rather than stubbed: internal/materialize's tests run
+      # it (TestCorpusParity replays the corpus through it in goja), so a
+      # placeholder would fail them. Only the bundle, not the whole web build.
+      - name: Build the materializer bundle for embed
+        working-directory: web
+        run: npm ci && node scripts/build-materializer.mjs
 
       - name: Run tests against PostgreSQL
         env:

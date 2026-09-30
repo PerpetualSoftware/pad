@@ -13,6 +13,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=web-builder /app/web/build ./web/build
+COPY --from=web-builder /app/web/build-materializer ./web/build-materializer
 
 # Build metadata. All three are caller-passed via --build-arg (see
 # pad-cloud/scripts/build-pad.sh for the production wrapper that

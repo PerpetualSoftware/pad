@@ -179,6 +179,8 @@ func newRootCmd() *cobra.Command {
 		watchCmdGroup(),
 		pushCmd(),
 		sessionCmd(),
+		// Hidden; the server's materializer worker process (TASK-2198).
+		materializeWorkerCmd(),
 	)
 
 	rootCmd.SetHelpCommand(helpCmd())
