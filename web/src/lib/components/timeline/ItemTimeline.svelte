@@ -147,8 +147,8 @@
 	let entries: TimelineEntry[] = $state([]);
 
 	// Render-side filter over the one merged feed. The instance stays
-	// mounted across filter changes (SSE subscriptions live on) — the pane's
-	// Activity/Versions tabs drive this (PLAN-2290 Phase 4). undefined = all.
+	// mounted across filter changes (SSE subscriptions live on) — ItemDetail
+	// passes comments only (PLAN-2290 Phase 4, IDEA-2843). undefined = all.
 	let visibleEntries = $derived(
 		visibleKinds ? entries.filter((e) => visibleKinds.includes(e.kind)) : entries
 	);
@@ -604,8 +604,8 @@
 	// BACK OFF an element (a probe can resolve a MIME that turns a thumbnail
 	// from viewable-by-assumption into refused).
 	$effect(() => {
-		// `visibleEntries`, NOT `entries`: the pane's Activity / Versions tabs
-		// filter the rendered set without refetching, so flipping away from
+		// `visibleEntries`, NOT `entries`: a caller's `visibleKinds`
+		// filters the rendered set without refetching, so flipping away from
 		// comments and back DESTROYS and rebuilds every comment card while
 		// `entries` never changes. Tracking the raw list left those rebuilt
 		// images mouse-openable (the delegated listeners live on the container,
@@ -934,7 +934,7 @@
 	//
 	// The `note` / `decision` kinds (BUG-2301) inherit this deliberately. They
 	// are written by `pad item note` / `pad item decide`, which PATCH the item
-	// and so emit `item_updated` — an open Activity tab will not show a new one
+	// and so emit `item_updated` — an open History tab will not show a new one
 	// until the next natural refresh. That is the same staleness version
 	// entries have always had, and these kinds have no web writer at all, so no
 	// user performs the action and then waits on this view. Flagged twice in

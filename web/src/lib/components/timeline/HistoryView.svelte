@@ -241,48 +241,37 @@
 						</div>
 					{/if}
 
+					<!-- A create row carries no field changes of its own (the created
+					     activity records none), so any change here came from an update
+					     folded into the same event, and reads as from → to like any other. -->
+					{#each ev.changes as c (c.field)}
+						{@const fromColor = chipColor(c.field, c.from)}
+						{@const toColor = chipColor(c.field, c.to)}
+						<div class="field-row" data-field={c.field}>
+							<span class="field-label">{titleCase(fieldLabel(c.field))}</span>
+							<span class="values">
+								<s class="from">
+									{#if fromColor}<Chip size="sm" color={fromColor}>{c.from}</Chip>{:else}<ActivityChangeValue
+											text={c.from}
+											field={changeContext?.fieldFor(c.field)}
+											context={changeContext}
+										/>{/if}
+								</s>
+								<span class="arrow" aria-label="to">→</span>
+								{#if toColor}<Chip size="sm" color={toColor}>{c.to}</Chip>{:else}<span class="to"
+										><ActivityChangeValue text={c.to} field={changeContext?.fieldFor(c.field)} context={changeContext} /></span
+									>{/if}
+							</span>
+						</div>
+					{/each}
 					{#if created}
 						{@const lines = createdLines(ev)}
-						{#if ev.changes.length > 0}
-							<div class="field-row">
-								<span class="field-label">Set</span>
-								<span class="values">
-									{#each ev.changes as c (c.field)}
-										{@const color = chipColor(c.field, c.to)}
-										{#if color}<Chip size="sm" {color}>{c.to}</Chip>{:else}<span
-												><ActivityChangeValue text={c.to} field={changeContext?.fieldFor(c.field)} context={changeContext} /></span
-											>{/if}
-									{/each}
-								</span>
-							</div>
-						{/if}
 						{#if lines !== undefined}
 							<div class="field-row">
 								<span class="field-label">Description</span>
 								<span class="values muted">{lines} {lines === 1 ? 'line' : 'lines'}</span>
 							</div>
 						{/if}
-					{:else}
-						{#each ev.changes as c (c.field)}
-							{@const fromColor = chipColor(c.field, c.from)}
-							{@const toColor = chipColor(c.field, c.to)}
-							<div class="field-row">
-								<span class="field-label">{titleCase(fieldLabel(c.field))}</span>
-								<span class="values">
-									<s class="from">
-										{#if fromColor}<Chip size="sm" color={fromColor}>{c.from}</Chip>{:else}<ActivityChangeValue
-												text={c.from}
-												field={changeContext?.fieldFor(c.field)}
-												context={changeContext}
-											/>{/if}
-									</s>
-									<span class="arrow" aria-label="to">→</span>
-									{#if toColor}<Chip size="sm" color={toColor}>{c.to}</Chip>{:else}<span class="to"
-											><ActivityChangeValue text={c.to} field={changeContext?.fieldFor(c.field)} context={changeContext} /></span
-										>{/if}
-								</span>
-							</div>
-						{/each}
 					{/if}
 
 					{#each ev.versions.filter((v) => !v.version?.is_create) as v (v.id)}

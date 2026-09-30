@@ -66,7 +66,7 @@ describe('TimelineVersionCard restore gate (BUG-2263)', () => {
 		});
 		flushSync();
 		// The restore-area lives inside the expanded card body — expand it first.
-		(root.querySelector('.toggle') as HTMLButtonElement).click();
+		(root.querySelector('.show-changes') as HTMLButtonElement).click();
 		flushSync();
 		return root;
 	}
@@ -108,7 +108,7 @@ describe('TimelineVersionCard flush-before-restore (BUG-2271)', () => {
 			},
 		});
 		flushSync();
-		(root.querySelector('.toggle') as HTMLButtonElement).click(); // expand
+		(root.querySelector('.show-changes') as HTMLButtonElement).click(); // expand
 		flushSync();
 		(root.querySelector('.btn-restore') as HTMLButtonElement).click(); // startRestore
 		flushSync();

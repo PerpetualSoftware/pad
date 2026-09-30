@@ -195,8 +195,8 @@ test.describe('stale body renders (BUG-3050 U3)', () => {
 		await markItemReads(page, fixture, item.id);
 		await markChangesRows(page, fixture, item.id);
 		await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/docs?item=${item.ref}`);
-		await page.getByRole('tab', { name: 'Versions' }).click();
-		const card = page.locator('.card-header').first();
+		await page.getByRole('tab', { name: /History/ }).click();
+		const card = page.locator('.show-changes').first();
 		await expect(card).toBeVisible({ timeout: 15_000 });
 		await card.click();
 		await expect(page.locator('.diff-container').first()).toBeVisible();
@@ -238,8 +238,8 @@ test.describe('stale body renders (BUG-3050 U3)', () => {
 		// PREMISE: the delta the page received holds this item.
 		const seed = await (await seedDelivered).json();
 		expect(seed.updated.map((u: { id: string }) => u.id), 'the seed delta does not hold the item').toContain(item.id);
-		await page.getByRole('tab', { name: 'Versions' }).click();
-		const card = page.locator('.card-header').first();
+		await page.getByRole('tab', { name: /History/ }).click();
+		const card = page.locator('.show-changes').first();
 		await expect(card).toBeVisible({ timeout: 15_000 });
 		await card.click();
 		await expect(page.locator('.diff-container').first()).toBeVisible();

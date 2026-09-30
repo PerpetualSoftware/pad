@@ -103,7 +103,7 @@ describe('timeline: the diff\'s current side says it may be behind (C5)', () => 
 	// behind the live document.
 	async function card(currentContentStale: boolean) {
 		const root = render(TimelineVersionCard, { version, wsSlug: 'ws', itemSlug: 'ITEM-1', currentContent: 'now', currentContentStale });
-		(root.querySelector('.toggle') as HTMLButtonElement).click();
+		(root.querySelector('.show-changes') as HTMLButtonElement).click();
 		flushSync();
 		await vi.waitFor(() => expect(root.querySelector('.pair-head')).not.toBeNull());
 		return root;
@@ -119,7 +119,7 @@ describe('timeline: the diff\'s current side says it may be behind (C5)', () => 
 	});
 	it('an older edit, whose after is not the stored body, carries no notice', async () => {
 		const root = render(TimelineVersionCard, { version, wsSlug: 'ws', itemSlug: 'ITEM-1', currentContent: 'later', currentContentStale: true });
-		(root.querySelector('.toggle') as HTMLButtonElement).click();
+		(root.querySelector('.show-changes') as HTMLButtonElement).click();
 		flushSync();
 		await vi.waitFor(() => expect(root.querySelector('.pair-head')).not.toBeNull());
 		expect(root.querySelector('[data-testid="stale-body-notice"]')).toBeNull();

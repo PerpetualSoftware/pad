@@ -9,7 +9,7 @@
 //
 //  1. The mirror carries the WHOLE feed, not the owner's rendered slice. The
 //     owner renders comments only, so publishing `visibleEntries` instead of
-//     `entries` is a one-word edit that leaves Activity and Versions
+//     `entries` is a one-word edit that leaves the History tab
 //     permanently empty with nothing to report.
 //  2. Every entry kind is routed to some view. A kind in none of the three
 //     filters renders NOWHERE — which is how `note` / `decision` shipped
@@ -163,7 +163,7 @@ describe('timeline second view — the mirrored error', () => {
 		}) as Record<string, unknown>;
 		await settle();
 
-		// Without this, a failed load reaches the Activity tab as zero entries
+		// Without this, a failed load reaches the History tab as zero entries
 		// and renders as "No timeline entries yet." — an unreachable server
 		// wearing an empty timeline's clothes (codex round 1).
 		expect(state.feed?.error).toBeTruthy();

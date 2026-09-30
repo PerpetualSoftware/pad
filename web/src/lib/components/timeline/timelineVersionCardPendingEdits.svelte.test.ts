@@ -69,7 +69,7 @@ describe('TimelineVersionCard pending-edits refusal (BUG-3031)', () => {
 			props: { version, wsSlug: 'ws', itemSlug: 'ITEM-1', currentContent: 'now', onRestore },
 		});
 		flushSync();
-		(root.querySelector('.toggle') as HTMLButtonElement).click();
+		(root.querySelector('.show-changes') as HTMLButtonElement).click();
 		flushSync();
 		(root.querySelector('.btn-restore') as HTMLButtonElement).click();
 		flushSync();

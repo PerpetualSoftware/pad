@@ -125,10 +125,10 @@ test.describe('an overwrite that deletes another tab\'s edits says so (BUG-3230 
 		await browserLogin(page);
 		await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/docs/${doc.slug}`);
 		await expect(page.locator(EDITOR_SELECTOR)).toBeVisible({ timeout: SYNC_TIMEOUT });
-		await page.getByRole('tab', { name: 'Versions' }).click();
+		await page.getByRole('tab', { name: /History/ }).click();
 		const card = page.locator('#item-timeline .version-card').first();
-		await card.locator('.card-header').click();
-		await card.getByRole('button', { name: 'Restore this version' }).click();
+		await card.locator('.show-changes').click();
+		await card.getByRole('button', { name: 'Restore to before this edit' }).click();
 		await card.getByRole('button', { name: 'Confirm Restore' }).click();
 		await card.getByRole('button', { name: 'Discard edits and restore' }).click();
 		await expect(page.getByText(/^\d+ unsaved changes? from another tab (was|were) discarded\.$/)).toBeVisible({ timeout: 10_000 });

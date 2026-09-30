@@ -329,11 +329,12 @@ test('an unflushed live edit is captured in the restore undo-point via the UI (B
 			r.ok(),
 		{ timeout: 30_000 }
 	);
-	// Version cards moved under the Versions tab (PLAN-2290 Phase 4).
-	await page.getByRole('tab', { name: 'Versions' }).click();
+	// Version cards are on the History tab (PLAN-2348 U3; the Versions tab
+	// before that, PLAN-2290 Phase 4).
+	await page.getByRole('tab', { name: /History/ }).click();
 	const card = page.locator('#item-timeline .version-card').first();
-	await card.locator('.card-header').click(); // expand
-	await card.getByRole('button', { name: 'Restore this version' }).click();
+	await card.locator('.show-changes').click(); // expand
+	await card.getByRole('button', { name: 'Restore to before this edit' }).click();
 	// Allow collab-snapshot PATCHes ONLY from here, so the first (and only) gamma
 	// PATCH that lands is the pre-restore flush the confirm click triggers.
 	allowSnapshotFlush = true;

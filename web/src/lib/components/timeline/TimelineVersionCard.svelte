@@ -225,7 +225,7 @@
 		{:else}
 			<span class="lines unknown">changed</span>
 		{/if}
-		<button class="toggle" type="button" aria-expanded={expanded} onclick={toggle}>
+		<button class="show-changes" type="button" aria-expanded={expanded} onclick={toggle}>
 			{expanded ? 'Hide changes' : 'Show changes'}<span class="chevron" class:open={expanded} aria-hidden="true">▾</span>
 		</button>
 	</div>
@@ -331,7 +331,7 @@
 		font-weight: 600;
 	}
 
-	.toggle {
+	.show-changes {
 		background: none;
 		border: none;
 		padding: 0;
@@ -344,7 +344,7 @@
 		gap: 0.25em;
 	}
 
-	.toggle:hover {
+	.show-changes:hover {
 		text-decoration: underline;
 	}
 

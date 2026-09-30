@@ -119,7 +119,7 @@ function renderAndRestore(flush: () => Promise<void>) {
 		},
 	});
 	flushSync();
-	(root.querySelector('.toggle') as HTMLButtonElement).click();
+	(root.querySelector('.show-changes') as HTMLButtonElement).click();
 	flushSync();
 	// The confirm flow is two presses: arm, then confirm.
 	const buttons = () => Array.from(root!.querySelectorAll('button')) as HTMLButtonElement[];

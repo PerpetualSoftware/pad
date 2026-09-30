@@ -407,7 +407,7 @@ test.describe('attachment lifecycle completeness — 3c-iii browser proof (TASK-
 		// Details now, so the switch that proves the panel is CSS-hidden rather
 		// than unmounted has to go OUT and BACK — leaving on Activity would
 		// assert against a hidden panel and pass for the wrong reason.
-		await page.getByRole('tab', { name: 'Activity' }).click();
+		await page.getByRole('tab', { name: /History/ }).click();
 		await page.getByRole('tab', { name: 'Details' }).click();
 		await expect(page.locator(tlMissing)).toBeVisible();
 	});

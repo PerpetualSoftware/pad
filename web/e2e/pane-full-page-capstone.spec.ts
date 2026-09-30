@@ -330,8 +330,8 @@ test.describe('full-page pane host CAPSTONE (PLAN-2154 Phase 2 / TASK-2175)', ()
 		await expect(col.locator('button.link-delete-btn')).toHaveCount(1);
 		await expect(col.locator('button.add-relationship-btn')).toBeVisible();
 		// Details tab: the comment composer, under the content (IDEA-2843 —
-		// it used to be behind the Activity tab, which now carries changes and
-		// versions only). Return to Details first, since the Relationships
+		// it used to be behind the Activity tab; changes and versions are on the
+		// History tab now, PLAN-2348 U3). Return to Details first, since the Relationships
 		// click above left us elsewhere; the peek-era editor checks below need
 		// this tab anyway.
 		await col.getByRole('tab', { name: 'Details' }).click();
@@ -410,8 +410,8 @@ test.describe('full-page pane host CAPSTONE (PLAN-2154 Phase 2 / TASK-2175)', ()
 			.toBe('edited-while-peeking');
 
 		// ── Close (un-peek) → the content editor is typeable again; nothing else was
-		//    ever frozen, so it is unchanged (composer asserted DOM-present — it's under
-		//    the Activity tab). ──
+		//    ever frozen, so it is unchanged (composer asserted DOM-present — it's on
+		//    the Details tab, under the content). ──
 		await pane.locator('button[aria-label="Close pane"]').click();
 		await expect(pane).toBeHidden();
 		await expect(col.locator('button.title', { hasText: 'FP freeze master' })).toBeVisible();

@@ -59,7 +59,7 @@ test('BUG-3160: an open timeline shows a change the debounce merge folded into a
 		await patchNote(request, fixture, item.slug, first); // opens the "updated" row
 
 		await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/${coll.slug}/${item.slug}`);
-		await page.getByRole('tab', { name: 'Activity' }).or(page.getByRole('button', { name: 'Activity' })).first().click();
+		await page.getByRole('tab', { name: /History/ }).or(page.getByRole('button', { name: /History/ })).first().click();
 		// PRECONDITION: the timeline is loaded and shows the row as it stood.
 		await expect(page.getByText(first).first()).toBeVisible();
 
