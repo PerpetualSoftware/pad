@@ -125,13 +125,25 @@
 		 * dead end, and today both tabs page through the same cursor.
 		 */
 		feed?: TimelineFeed;
+		/**
+		 * PLAN-2348 U3: ask the server for only these kinds, so pages are spent
+		 * on what this instance's views render. Undefined = every kind. Unlike
+		 * `visibleKinds` this changes what is FETCHED, so a feed filtered here
+		 * cannot serve a view that renders other kinds.
+		 */
+		fetchKinds?: readonly string[];
+		/**
+		 * Render nothing: the instance exists to own a feed (fetch, SSE refresh,
+		 * pagination) that a host renders elsewhere through `feed`.
+		 */
+		headless?: boolean;
 		/** Heading for this view — it renders a slice, not "the timeline". */
 		title?: string;
 		/** Empty-state line, phrased for the kinds this view renders. */
 		emptyLabel?: string;
 	}
 
-	let { wsSlug, username = '', itemSlug, currentContent, currentContentStale = false, items = [], onRestore, itemId, collectionId, frozen = false, restoreFrozen = false, flushBeforeRestore, visibleKinds, hostToken = '', parentArchived = false, feed = $bindable(), title = 'Timeline', emptyLabel = 'No timeline entries yet.' }: Props = $props();
+	let { wsSlug, username = '', itemSlug, currentContent, currentContentStale = false, items = [], onRestore, itemId, collectionId, frozen = false, restoreFrozen = false, flushBeforeRestore, visibleKinds, hostToken = '', parentArchived = false, feed = $bindable(), fetchKinds, headless = false, title = 'Timeline', emptyLabel = 'No timeline entries yet.' }: Props = $props();
 
 	// Resolve canEditItem reactively; falls to false if itemId/collectionId
 	// aren't supplied (e.g. an older caller). Folds in the master-freeze gate
@@ -692,7 +704,9 @@
 		// it started.
 		let owned = false;
 		try {
-			const resp: TimelineResponse = await api.timeline.list(reqWs, reqSlug);
+			const resp: TimelineResponse = fetchKinds
+				? await api.timeline.list(reqWs, reqSlug, { kinds: fetchKinds })
+				: await api.timeline.list(reqWs, reqSlug);
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 			if (!isSameIdentity()) return;
 			if (ticket <= viewApplied) return;
@@ -841,7 +855,8 @@
 				const appliedAtDispatch = viewApplied;
 				const resp: TimelineResponse = await api.timeline.list(reqWs, reqSlug, {
 					before: cursor.before,
-					before_id: cursor.before_id
+					before_id: cursor.before_id,
+					...(fetchKinds ? { kinds: fetchKinds } : {})
 				});
 				if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 				if (!isSameIdentity()) return;
@@ -1007,7 +1022,9 @@
 		// and 8).
 		const ticket = ++viewDispatch;
 		try {
-			const resp: TimelineResponse = await api.timeline.list(reqWs, reqSlug);
+			const resp: TimelineResponse = fetchKinds
+				? await api.timeline.list(reqWs, reqSlug, { kinds: fetchKinds })
+				: await api.timeline.list(reqWs, reqSlug);
 			if (destroyed) return;
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 			if (!isSameIdentity()) return;
@@ -1358,6 +1375,7 @@
 
 </script>
 
+{#if !headless}
 <section class="timeline">
 	<header class="timeline-header">
 		<!-- Title and count describe what this view RENDERS, not the whole feed
@@ -1446,6 +1464,7 @@
 		{/if}
 	{/if}
 </section>
+{/if}
 
 <!--
 	The timeline no longer mounts `Lightbox` directly (T4a, TASK-2489). An activated

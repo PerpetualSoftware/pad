@@ -21,7 +21,7 @@ import type { Comment, TimelineEntry, TimelineResponse } from '$lib/types';
  * itself.
  */
 
-type ListParams = { limit?: number; before?: string; before_id?: string } | undefined;
+type ListParams = { limit?: number; before?: string; before_id?: string; kinds?: readonly string[] } | undefined;
 
 const pages: TimelineResponse[] = [];
 const timelineListMock = vi.fn(async (_ws: string, _slug: string, _params: ListParams) => {
@@ -647,5 +647,21 @@ describe('SSE refresh: roll-off is not deletion (BUG-2773)', () => {
 
 		expect(timelineListMock.mock.calls.length, 'no retry for a superseded refresh').toBe(before);
 		expect(shows('newer state'), 'and the newer view is untouched').toBe(true);
+	});
+});
+
+describe('SSE refresh keeps the fetch kinds (PLAN-2348 U3)', () => {
+	it('a feed that fetches only its kinds refreshes with the same kinds', async () => {
+		pages.length = 0;
+		timelineListMock.mockClear();
+		app = mount(ItemTimeline, {
+			target: host,
+			props: { wsSlug: 'ws', itemSlug: 'TASK-1', currentContent: '', headless: true, fetchKinds: ['activity', 'version'] }
+		}) as Record<string, unknown>;
+		await settle();
+		await fireRefresh();
+		const calls = timelineListMock.mock.calls;
+		expect(calls.length).toBeGreaterThanOrEqual(2);
+		expect(calls[calls.length - 1][2]).toEqual({ kinds: ['activity', 'version'] });
 	});
 });

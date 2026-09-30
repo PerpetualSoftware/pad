@@ -796,10 +796,12 @@
 	 */
 	const linksRetry = createLinksRetry((target) => retryLinks(target));
 	let workspaceMembers = $state<{ user_id: string; user_name: string; user_email: string; role: string }[]>([]);
-	// Mirrored out of the ONE mounted <ItemTimeline> (IDEA-2843), which now
-	// lives under the content on Details rendering comments. The Activity and
-	// Versions panels render the SAME feed through a second
-	// <TimelineEntryList> — one subscription, one composer, two views.
+	// The History tab's feed, mirrored out of a HEADLESS <ItemTimeline> that
+	// fetches only HISTORY_KINDS (PLAN-2348 U3). The comments <ItemTimeline>
+	// on Details fetches only comments. They were one feed (IDEA-2843), and a
+	// comment-heavy item's History then opened on a page of comments it drops,
+	// painting nothing but "Load more". Two instances, one composer: SSE is
+	// the shared sseService, so the second subscription is one more listener.
 	let timelineFeed = $state<TimelineFeed | undefined>(undefined);
 	// The owning <ItemTimeline>, so the selection toolbar can quote into its
 	// composer (IDEA-2843). Rebinds on the comments section's {#key itemSlug}
@@ -7178,7 +7180,6 @@
 				{@const handedDown = identityKey}
 				<ItemTimeline
 					bind:this={timelineRef}
-					bind:feed={timelineFeed}
 					{wsSlug}
 					{username}
 					{itemSlug}
@@ -7194,8 +7195,22 @@
 					restoreFrozen={peeking}
 					parentArchived={itemMatchesRef && isArchived}
 					visibleKinds={[...COMMENT_KINDS]}
+					fetchKinds={COMMENT_KINDS}
 					title="Comments"
 					emptyLabel="No comments yet."
+				/>
+				<!-- The History tab's feed (PLAN-2348 U3): renders nothing here;
+				     HistoryView renders `timelineFeed` in the History panel. Mounted
+				     beside the comments instance so it shares its visibility gate and
+				     identity key. -->
+				<ItemTimeline
+					headless
+					bind:feed={timelineFeed}
+					{wsSlug}
+					{username}
+					{itemSlug}
+					currentContent={item.content ?? ''}
+					fetchKinds={HISTORY_KINDS}
 				/>
 				{/key}
 				{/if}

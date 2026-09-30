@@ -24,11 +24,11 @@ import {
 	type TimelineFeed
 } from './feed';
 
-const timelineListMock = vi.fn<() => Promise<TimelineResponse>>();
+const timelineListMock = vi.fn<(...args: unknown[]) => Promise<TimelineResponse>>();
 
 vi.mock('$lib/api/client', () => ({
 	api: {
-		timeline: { list: () => timelineListMock() },
+		timeline: { list: (...args: unknown[]) => timelineListMock(...args) },
 		comments: {
 			create: vi.fn(),
 			update: vi.fn(),
@@ -297,5 +297,58 @@ describe('timeline second view — kind routing', () => {
 	it('keeps the two views disjoint, so nothing renders twice', () => {
 		const all = [...COMMENT_KINDS, ...HISTORY_KINDS];
 		expect(new Set(all).size).toBe(all.length);
+	});
+});
+
+describe('timeline — a feed that fetches only its kinds (PLAN-2348 U3)', () => {
+	it('sends fetchKinds on the first load and on every page, and a headless owner renders nothing', async () => {
+		const state = $state<{ feed: TimelineFeed | undefined }>({ feed: undefined });
+		timelineListMock.mockReset();
+		timelineListMock
+			.mockResolvedValueOnce({
+				entries: [entry('activity', 'h1')],
+				has_more: true,
+				next_before: '2026-09-02T09:00:00Z',
+				next_before_id: 'h1'
+			} as unknown as TimelineResponse)
+			.mockResolvedValueOnce({ entries: [entry('version', 'h2')], has_more: false } as unknown as TimelineResponse);
+		app = mount(ItemTimeline, {
+			target: host,
+			props: {
+				wsSlug: 'ws',
+				itemSlug: 'TASK-1',
+				currentContent: '',
+				headless: true,
+				fetchKinds: HISTORY_KINDS,
+				get feed() {
+					return state.feed;
+				},
+				set feed(v: TimelineFeed | undefined) {
+					state.feed = v;
+				}
+			}
+		}) as Record<string, unknown>;
+		await settle();
+
+		expect(timelineListMock.mock.calls[0]).toEqual(['ws', 'TASK-1', { kinds: HISTORY_KINDS }]);
+		expect(host.querySelector('.timeline')).toBeNull();
+		expect(host.textContent?.trim()).toBe('');
+		expect(state.feed!.entries.map((e) => e.id)).toEqual(['h1']);
+
+		await state.feed!.loadMore(HISTORY_KINDS);
+		await settle();
+		expect(timelineListMock.mock.calls[1]).toEqual([
+			'ws',
+			'TASK-1',
+			{ before: '2026-09-02T09:00:00Z', before_id: 'h1', kinds: HISTORY_KINDS }
+		]);
+		expect(state.feed!.entries.map((e) => e.id)).toEqual(['h1', 'h2']);
+	});
+
+	it('CONTROL: without fetchKinds the requests carry no kinds, as before', async () => {
+		app = mount(ItemTimeline, { target: host, props: { wsSlug: 'ws', itemSlug: 'TASK-1', currentContent: '' } }) as Record<string, unknown>;
+		await settle();
+		expect(timelineListMock.mock.calls[0]).toEqual(['ws', 'TASK-1']);
+		expect(host.querySelector('.timeline')).not.toBeNull();
 	});
 });
