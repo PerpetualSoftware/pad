@@ -681,9 +681,18 @@ func (s *Server) RateLimit(next http.Handler) http.Handler {
 				// Other auth endpoints (session check, logout) — use general API limit
 				limiter = s.rateLimiters.API
 			}
+			// The auth buckets are per address. The general API bucket is
+			// keyed as the general arm below keys it (user, else address):
+			// charging it under the bare address here gave an anonymous
+			// caller a second API bucket, and a signed-in one an address
+			// bucket beside their user bucket (BUG-3310).
+			key := addr
+			if limiter == s.rateLimiters.API {
+				key = rateLimitKey(r, addr)
+			}
 
 			if limiter != nil {
-				if !limiter.allow(addr) {
+				if !limiter.allow(key) {
 					slog.Warn("rate limited", "ip", ip, "path", path, "limiter", "auth")
 					writeRateLimitResponse(w, limiter.config)
 					return
