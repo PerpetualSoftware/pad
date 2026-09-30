@@ -670,9 +670,10 @@ func TestCreateWorkspace_SeedFails_RefusesAndLeavesNoWorkspace(t *testing.T) {
 
 // THE SLUG MUST COME BACK, on every compensated arm (BUG-2715, ruling (d)).
 //
-// The comments in the helper claim the removal frees the name — uniqueWorkspaceSlug
-// filters `deleted_at IS NULL`, and the purge removes the row outright — so a
-// caller's retry reclaims it. That was an ASSERTION, not a measurement, and it
+// The comments in the helper claim the removal frees the name — the purge
+// removes the row outright (a soft delete alone does not: the slug column is
+// globally UNIQUE, and uniqueWorkspaceSlug counts soft-deleted rows since
+// BUG-3307) — so a caller's retry reclaims it. That was an ASSERTION, not a measurement, and it
 // is the same claim BUG-2892 had to fix for imports when it turned out false:
 // a husk that keeps its slug sends the retry to `name-2`, which is a worse
 // outcome than the failure, because the user asked for a name and silently got
