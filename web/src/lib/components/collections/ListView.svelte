@@ -539,6 +539,7 @@
 								<button
 									class="archive-group-btn"
 									title="Archive all {formatLaneLabel(groupName).toLowerCase()} items"
+									aria-label="Archive all {formatLaneLabel(groupName).toLowerCase()} items"
 									onclick={(e) => { e.stopPropagation(); confirmArchiveGroup = groupName; }}
 								>&#128451;</button>
 							{/if}
@@ -692,6 +693,35 @@
 		opacity: 0;
 		transition: opacity 0.15s;
 		line-height: 1;
+	}
+
+	/* Hover-revealed, so a keyboard user and a touch user need their own way
+	   to see it (TASK-3311): focus reveals it everywhere, and a device with no
+	   hover shows it at the resting opacity the card's copy button uses. */
+	.archive-group-btn:focus-visible {
+		opacity: 1;
+	}
+	@media (hover: none) {
+		.archive-group-btn {
+			opacity: 0.65;
+		}
+	}
+	/* Phone width: a 44x44 touch target through an invisible extender, so the
+	   group header keeps its height (TASK-3311). The header's other contents
+	   are the label and the count, which are not controls. */
+	@media (max-width: 768px) {
+		.archive-group-btn {
+			position: relative;
+		}
+		.archive-group-btn::after {
+			content: '';
+			position: absolute;
+			left: 50%;
+			top: 50%;
+			width: 44px;
+			height: 44px;
+			transform: translate(-50%, -50%);
+		}
 	}
 
 	.archive-group-btn:hover {

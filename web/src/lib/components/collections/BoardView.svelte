@@ -1246,10 +1246,13 @@
 	/* The lane menu panel + its drill-down styles live in
 	   LaneActionsMenu.svelte (TASK-1672). */
 
+	/* Phone width: 44x44 touch targets (TASK-3311; TASK-2244 took the strip
+	   and cards to the same size). They grow visibly: the lane header has the
+	   room, and a visible target is one a thumb can aim at. */
 	@media (max-width: 768px) {
 		.lane-btn {
-			min-width: 32px;
-			height: 32px;
+			min-width: 44px;
+			height: 44px;
 		}
 	}
 

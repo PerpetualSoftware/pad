@@ -346,7 +346,7 @@
 		<div class="card-tags">
 			{#each tags as tag, i (i)}
 				<button type="button" class="card-tag" onclick={(e) => openTag(e, tag)} title="View items tagged “{tag}”">
-					{tag}
+					<span class="card-tag-text">{tag}</span>
 				</button>
 			{/each}
 		</div>
@@ -687,6 +687,12 @@
 		font-weight: 500;
 		cursor: pointer;
 		max-width: 12rem;
+	}
+
+	/* The ellipsis clips the TEXT, not the button: a clipping button would clip
+	   its own phone-width touch extender (TASK-3311). */
+	.card-tag-text {
+		min-width: 0;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
@@ -694,6 +700,32 @@
 
 	.card-tag:hover {
 		filter: brightness(1.15);
+	}
+
+	/* Phone width (TASK-3311): each tag is a 44x44 touch target. It grows
+	   visibly to 44 wide and 32 tall, and an invisible extender adds the last
+	   12px, 6 above and 6 below. That fits inside the 12px gap between wrapped
+	   rows and the card's gap above the row (the status chip's extender grows
+	   UP, away from the tags), so no neighbouring control loses area to it. */
+	@media (max-width: 768px) {
+		.card-tags {
+			row-gap: 12px;
+		}
+		.card-tag {
+			position: relative;
+			justify-content: center;
+			min-width: 44px;
+			min-height: 32px;
+		}
+		.card-tag::after {
+			content: '';
+			position: absolute;
+			left: 0;
+			right: 0;
+			top: 50%;
+			height: 44px;
+			transform: translateY(-50%);
+		}
 	}
 
 	.card-progress {
