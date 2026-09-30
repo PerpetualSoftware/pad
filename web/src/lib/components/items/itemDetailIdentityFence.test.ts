@@ -103,7 +103,7 @@ describe('ItemDetail: children calling back after their own awaits (class C, par
 	 */
 	const CALLBACK_CHILDREN: Record<string, string[]> = {
 		ItemTimeline: ['onRestore'],
-		TimelineEntryList: ['onRestore'],
+		HistoryView: ['onRestore'],
 		QuickActionsMenu: ['oncollectionupdated'],
 		ChildItems: ['onChildrenChange'],
 		BacklinksPanel: ['onCountChange'],
