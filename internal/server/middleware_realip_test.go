@@ -251,6 +251,23 @@ func TestTrustedProxyRealIP_BUG3323_ResolvesRightmostUntrustedHop(t *testing.T) 
 	}
 }
 
+// A proxy that appends its hop as a SEPARATE X-Forwarded-For field leaves
+// the client's own value in the first field, the only one Header.Get reads.
+func TestTrustedProxyRealIP_BUG3323_ReadsEveryXFFField(t *testing.T) {
+	var seen string
+	mw := TrustedProxyRealIP(ParseTrustedProxyCIDRs("10.0.0.0/8"))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = r.RemoteAddr
+	}))
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "10.0.0.5:12345"
+	req.Header.Add("X-Forwarded-For", "6.6.6.6")
+	req.Header.Add("X-Forwarded-For", "198.51.100.7")
+	mw.ServeHTTP(httptest.NewRecorder(), req)
+	if seen != "198.51.100.7" {
+		t.Errorf("resolved %q from two XFF fields, want the appended client 198.51.100.7", seen)
+	}
+}
+
 // The same headers from an UNTRUSTED peer change nothing, walk or no walk.
 func TestTrustedProxyRealIP_BUG3323_UntrustedPeerStillIgnored(t *testing.T) {
 	var seen string

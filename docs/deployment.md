@@ -1232,7 +1232,11 @@ proxy in the chain, not only the last one. Entries to the left of that hop
 were written by the client and are ignored, and an `ip:port` entry is read as
 its address. `X-Real-IP` is used only when there is no `X-Forwarded-For`,
 because a proxy that only appends to `X-Forwarded-For` passes a client's own
-`X-Real-IP` through unchanged.
+`X-Real-IP` through unchanged. Every trusted proxy must therefore APPEND the
+address it received the request from to `X-Forwarded-For` (nginx's
+`$proxy_add_x_forwarded_for`, and the default of most proxies and ingress
+controllers). A proxy that sets `X-Real-IP` but forwards a client's
+`X-Forwarded-For` unchanged would let the client choose its address.
 
 #### Known gaps
 

@@ -68,7 +68,10 @@ func TrustedProxyRealIP(cidrs []*net.IPNet) func(http.Handler) http.Handler {
 			// taking the leftmost X-Forwarded-For entry as this used to,
 			// let any client behind such a proxy choose its address.
 			var realIP string
-			if v := r.Header.Get("X-Forwarded-For"); strings.TrimSpace(v) != "" {
+			// Every X-Forwarded-For field, in order: a proxy may append its
+			// hop as a SECOND field rather than to the client's, and
+			// Header.Get would read only the client's (BUG-3323 review).
+			if v := strings.Join(r.Header.Values("X-Forwarded-For"), ","); strings.TrimSpace(v) != "" {
 				realIP = forwardedClientIP(v, cidrs)
 			} else if v := strings.TrimSpace(r.Header.Get("X-Real-IP")); v != "" {
 				realIP = v
