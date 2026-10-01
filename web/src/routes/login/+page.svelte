@@ -98,7 +98,7 @@
 				oauthBanner = {
 					kind: 'generic',
 					tone: 'error',
-					message: 'This account has two-factor authentication on. Sign in with your password and your 2FA code.'
+					message: "This account has two-factor authentication on, and the code step couldn't open. Please sign in again."
 				};
 				break;
 			case 'account_disabled':

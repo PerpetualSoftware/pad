@@ -93,8 +93,10 @@ func TestOAuthLogin_TOTPUser_GetsChallengeNotSession(t *testing.T) {
 	if body.Error.Code != "two_factor_required" {
 		t.Errorf("code = %q, want two_factor_required", body.Error.Code)
 	}
-	if !strings.Contains(body.Error.Message, "2FA code") {
-		t.Errorf("message %q does not tell a native shell what to do", body.Error.Message)
+	// A provider-created account has no password anyone knows, so the
+	// message must point at the web code step, never at a password.
+	if !strings.Contains(body.Error.Message, "on the web") || strings.Contains(strings.ToLower(body.Error.Message), "password") {
+		t.Errorf("message %q must send a native shell to the web and not ask for a password", body.Error.Message)
 	}
 	if body.Token != "" {
 		t.Error("a session token was returned past the second factor")

@@ -282,7 +282,9 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 	// forwards it from a trusted peer (PAD_TRUSTED_PROXIES), so a spoofed
 	// header from anyone else binds the challenge to the spoofer's own
 	// address and nothing more. The message is for the native shells, which
-	// have no 2FA step after social sign-in yet.
+	// have no 2FA step after social sign-in yet. It does not say "use your
+	// password": an account created through a provider has a random one
+	// nobody knows (CreateOAuthUser), and TOTP setup does not require it.
 	if user.TOTPEnabled {
 		s.logAuditEventForUser(models.ActionOAuthLoginFailed, r, user.ID, auditMeta(map[string]string{
 			"provider": input.Provider,
@@ -291,7 +293,7 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 		}))
 		challenge := generateTwoFAChallenge(user.ID, clientIP(r), s.twoFAChallengeSecret)
 		writeError2(w, http.StatusForbidden, "two_factor_required",
-			"This account has two-factor authentication turned on. Sign in with your password and your 2FA code.",
+			"This account has two-factor authentication turned on. Sign in on the web to finish with your 2FA code.",
 			map[string]interface{}{"challenge_token": challenge})
 		return
 	}
