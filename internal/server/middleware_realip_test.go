@@ -131,7 +131,7 @@ func TestTrustedProxyRealIP_TrustedPeer_XRealIPUsed(t *testing.T) {
 	}
 }
 
-func TestTrustedProxyRealIP_TrustedPeer_XFFFirstEntryUsed(t *testing.T) {
+func TestTrustedProxyRealIP_TrustedPeer_XFFTrustedHopSkipped(t *testing.T) {
 	var seen string
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seen = r.RemoteAddr
@@ -145,7 +145,7 @@ func TestTrustedProxyRealIP_TrustedPeer_XFFFirstEntryUsed(t *testing.T) {
 	mw.ServeHTTP(httptest.NewRecorder(), req)
 
 	if seen != "198.51.100.7" {
-		t.Fatalf("XFF first entry not honored: %s", seen)
+		t.Fatalf("XFF client behind a trusted hop not honored: %s", seen)
 	}
 }
 
@@ -200,5 +200,86 @@ func TestTrustedProxyRealIP_TrustedPeer_InvalidHeaderIgnored(t *testing.T) {
 
 	if seen != "10.0.0.5:12345" {
 		t.Fatalf("invalid header was trusted: %s", seen)
+	}
+}
+
+// BUG-3323: from a trusted peer, the client is the first X-Forwarded-For hop
+// outside the trusted CIDRs counted from the RIGHT, and X-Forwarded-For wins
+// over X-Real-IP. Every proxy appends the address it received from, so the
+// entries left of the first untrusted one, and an X-Real-IP that an
+// append-only proxy passed through, are whatever the client sent. The rows
+// marked "spoof" are the shapes the leftmost-entry, X-Real-IP-first parse
+// resolved to the attacker's chosen address.
+func TestTrustedProxyRealIP_BUG3323_ResolvesRightmostUntrustedHop(t *testing.T) {
+	cases := []struct {
+		name      string
+		xff, xrip string
+		want      string
+	}{
+		{"spoof: client-supplied entry left of the appended client", "6.6.6.6, 198.51.100.7", "", "198.51.100.7"},
+		{"spoof: client X-Real-IP passed through by an XFF-only proxy", "198.51.100.7", "6.6.6.6", "198.51.100.7"},
+		{"cloud shape: router overwrote X-Real-IP and appended the client", "6.6.6.6, 198.51.100.7, 198.51.100.7", "198.51.100.7", "198.51.100.7"},
+		{"several trusted hops are skipped", "198.51.100.7, 10.0.0.9, 10.0.0.5", "", "198.51.100.7"},
+		{"every hop trusted: the leftmost", "10.0.0.9, 10.0.0.8", "", "10.0.0.9"},
+		{"spoof: Azure-style ip:port entry", "6.6.6.6, 198.51.100.7:51234", "", "198.51.100.7"},
+		{"bracketed IPv6 with port", "[2001:db8::1]:443", "", "2001:db8::1"},
+		{"an unparseable entry stops the walk at the last address read", "198.51.100.7, garbage, 10.0.0.9", "", "10.0.0.9"},
+		{"only garbage: the peer is kept", "garbage", "", "10.0.0.5:12345"},
+		{"no XFF: X-Real-IP", "", "198.51.100.7", "198.51.100.7"},
+		{"blank XFF falls back to X-Real-IP", "  ", "198.51.100.7", "198.51.100.7"},
+	}
+	cidrs := ParseTrustedProxyCIDRs("10.0.0.0/8")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var seen string
+			mw := TrustedProxyRealIP(cidrs)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				seen = r.RemoteAddr
+			}))
+			req := httptest.NewRequest("GET", "/", nil)
+			req.RemoteAddr = "10.0.0.5:12345"
+			if tc.xff != "" {
+				req.Header.Set("X-Forwarded-For", tc.xff)
+			}
+			if tc.xrip != "" {
+				req.Header.Set("X-Real-IP", tc.xrip)
+			}
+			mw.ServeHTTP(httptest.NewRecorder(), req)
+			if seen != tc.want {
+				t.Errorf("resolved %q, want %q", seen, tc.want)
+			}
+		})
+	}
+}
+
+// A proxy that appends its hop as a SEPARATE X-Forwarded-For field leaves
+// the client's own value in the first field, the only one Header.Get reads.
+func TestTrustedProxyRealIP_BUG3323_ReadsEveryXFFField(t *testing.T) {
+	var seen string
+	mw := TrustedProxyRealIP(ParseTrustedProxyCIDRs("10.0.0.0/8"))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = r.RemoteAddr
+	}))
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "10.0.0.5:12345"
+	req.Header.Add("X-Forwarded-For", "6.6.6.6")
+	req.Header.Add("X-Forwarded-For", "198.51.100.7")
+	mw.ServeHTTP(httptest.NewRecorder(), req)
+	if seen != "198.51.100.7" {
+		t.Errorf("resolved %q from two XFF fields, want the appended client 198.51.100.7", seen)
+	}
+}
+
+// The same headers from an UNTRUSTED peer change nothing, walk or no walk.
+func TestTrustedProxyRealIP_BUG3323_UntrustedPeerStillIgnored(t *testing.T) {
+	var seen string
+	mw := TrustedProxyRealIP(ParseTrustedProxyCIDRs("10.0.0.0/8"))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = r.RemoteAddr
+	}))
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "203.0.113.9:4000"
+	req.Header.Set("X-Forwarded-For", "6.6.6.6, 198.51.100.7")
+	req.Header.Set("X-Real-IP", "6.6.6.6")
+	mw.ServeHTTP(httptest.NewRecorder(), req)
+	if seen != "203.0.113.9:4000" {
+		t.Errorf("an untrusted peer's headers were honoured: %q", seen)
 	}
 }
