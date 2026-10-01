@@ -126,6 +126,9 @@ export function headlessExtensions(markdownOverrides: Record<string, unknown> = 
 		TableHeader,
 		SafeLink.configure(SAFE_LINK_OPTIONS),
 		Placeholder.configure({ placeholder: 'Type / for commands...' }),
+		// linkify stays off (tiptap-markdown's default) unless markdown-it is
+		// >= 14.3.1: below that, linkify: true parses in quadratic time
+		// (GHSA-253c-mchw-3w2r), and this bundle runs on the server.
 		Markdown.configure({
 			html: true,
 			transformPastedText: true,
