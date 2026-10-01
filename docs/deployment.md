@@ -1302,9 +1302,9 @@ be found in the log. Items skipped because they hold set-aside edits are not
 logged one by one; the sweep's summary line (`op-log recovery sweep`, written
 only when something changed) carries their running count as
 `set_aside_skipped_total`. An item that has given up is no longer counted
-among that line's `candidates` or queued: the line reports how many such items
-the sweep held back as `exhausted_skipped`, when that number changes, and the
-item is offered again once new edits arrive. This budget is kept in memory, so a restart grants
+among that line's `candidates` or queued. The line reports how many items
+have given up as `exhausted_total`, and is written when that number changes.
+The item is offered again once new edits arrive. This budget is kept in memory, so a restart grants
 each item its 3 attempts again. An item whose stored edits were written under
 another editor schema version is skipped, and logs the same one warning
 (`last_error_kind=schema_version`).
