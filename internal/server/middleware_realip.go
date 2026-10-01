@@ -60,19 +60,18 @@ func TrustedProxyRealIP(cidrs []*net.IPNet) func(http.Handler) http.Handler {
 				return
 			}
 
-			// Peer is a trusted proxy — accept X-Real-IP or the first
-			// entry of X-Forwarded-For as the client IP.
+			// Peer is a trusted proxy. X-Forwarded-For wins when present,
+			// resolved by forwardedClientIP; X-Real-IP is read only when
+			// there is no X-Forwarded-For (BUG-3323). The order matters: a
+			// proxy that only APPENDS to X-Forwarded-For passes a client's
+			// own X-Real-IP through untouched, so preferring X-Real-IP, or
+			// taking the leftmost X-Forwarded-For entry as this used to,
+			// let any client behind such a proxy choose its address.
 			var realIP string
-			if v := strings.TrimSpace(r.Header.Get("X-Real-IP")); v != "" {
+			if v := r.Header.Get("X-Forwarded-For"); strings.TrimSpace(v) != "" {
+				realIP = forwardedClientIP(v, cidrs)
+			} else if v := strings.TrimSpace(r.Header.Get("X-Real-IP")); v != "" {
 				realIP = v
-			} else if v := r.Header.Get("X-Forwarded-For"); v != "" {
-				for _, p := range strings.Split(v, ",") {
-					p = strings.TrimSpace(p)
-					if p != "" {
-						realIP = p
-						break
-					}
-				}
 			}
 
 			if realIP != "" && net.ParseIP(realIP) != nil {
@@ -155,4 +154,45 @@ func ipInCIDRs(ip net.IP, cidrs []*net.IPNet) bool {
 		}
 	}
 	return false
+}
+
+// forwardedClientIP resolves the client address from an X-Forwarded-For
+// chain the way nginx's real_ip_recursive does (BUG-3323): walk it right to
+// left, skipping hops inside the trusted CIDRs, and take the first address
+// outside them. Every proxy APPENDS the address it received the request
+// from, so only the entries to the right of the first untrusted one were
+// written by proxies we trust; anything to its left came from the client.
+// When every entry is trusted, the leftmost is the best answer, and the
+// caller's in-trusted-range warning reports it. An entry that does not parse
+// as an IP stops the walk: nothing to its left can be vouched for, so the
+// last address that did parse is returned, and "" when none did.
+func forwardedClientIP(xff string, cidrs []*net.IPNet) string {
+	parts := strings.Split(xff, ",")
+	last := ""
+	for i := len(parts) - 1; i >= 0; i-- {
+		ip := parseForwardedIP(parts[i])
+		if ip == nil {
+			return last
+		}
+		last = ip.String()
+		if !ipInCIDRs(ip, cidrs) {
+			return last
+		}
+	}
+	return last
+}
+
+// parseForwardedIP reads one X-Forwarded-For entry. Some proxies append the
+// peer's port, as "203.0.113.7:51234" or "[2001:db8::1]:51234" (Azure
+// Application Gateway does), so an entry that is not a bare address is
+// retried as host:port.
+func parseForwardedIP(entry string) net.IP {
+	entry = strings.TrimSpace(entry)
+	if ip := net.ParseIP(entry); ip != nil {
+		return ip
+	}
+	if host, _, err := net.SplitHostPort(entry); err == nil {
+		return net.ParseIP(host)
+	}
+	return nil
 }
