@@ -14,6 +14,7 @@
 		type AuthMethod
 	} from '$lib/auth/lastMethod';
 	import { navigateToRedirectTarget, redirectQueryFragment, validateRedirect } from '$lib/auth/redirect';
+	import { readChallengeFragment } from '$lib/auth/challengeFragment';
 
 	let email = $state('');
 	let password = $state('');
@@ -26,6 +27,9 @@
 	let step = $state<'credentials' | '2fa'>('credentials');
 	let challengeToken = $state('');
 	let totpCode = $state('');
+	// True when the code step was opened by an OAuth challenge, so the
+	// password method is not recorded as the last-used one.
+	let challengeFromOAuth = false;
 
 	// Banner for ?error= redirects coming back from pad-cloud's OAuth
 	// handlers. Distinct from `error` above (which is driven by form
@@ -90,6 +94,13 @@
 					message: 'Too many sign-in attempts. Wait a few minutes, then try again.'
 				};
 				break;
+			case 'two_factor_required':
+				oauthBanner = {
+					kind: 'generic',
+					tone: 'error',
+					message: 'This account has two-factor authentication on. Sign in with your password and your 2FA code.'
+				};
+				break;
 			case 'account_disabled':
 				oauthBanner = {
 					kind: 'generic',
@@ -114,12 +125,43 @@
 		history.replaceState(history.state, '', url.pathname + (url.search || '') + url.hash);
 	}
 
+	// The provider has stood in for the password, so a challenge in the
+	// fragment opens straight on the code step (BUG-3322).
+	function readChallengeFromFragment() {
+		if (typeof window === 'undefined') return;
+		const found = readChallengeFragment(window.location.href);
+		if (!found) return;
+		challengeToken = found.challenge;
+		challengeFromOAuth = true;
+		step = '2fa';
+		history.replaceState(history.state, '', found.cleaned);
+	}
+
+	// ?notice= is an informational landing, distinct from ?error=.
+	function readNoticeFromQuery() {
+		if (typeof window === 'undefined') return;
+		const url = new URL(window.location.href);
+		const notice = url.searchParams.get('notice');
+		if (!notice) return;
+		if (notice === 'password_reset') {
+			oauthBanner = {
+				kind: 'generic',
+				tone: 'info',
+				message: 'Your password is updated. Sign in with it and your 2FA code.'
+			};
+		}
+		url.searchParams.delete('notice');
+		history.replaceState(history.state, '', url.pathname + (url.search || '') + url.hash);
+	}
+
 	function dismissOAuthBanner() {
 		oauthBanner = null;
 	}
 
 	onMount(async () => {
 		readOAuthErrorFromQuery();
+		readNoticeFromQuery();
+		readChallengeFromFragment();
 		// Read the last-used method before the session check so the banner
 		// can render on the same paint as the form (no flash on slow
 		// networks). Suppress the banner if pad-cloud just bounced us back
@@ -203,7 +245,7 @@
 				await api.auth.verify2FA(challengeToken, undefined, code);
 			}
 
-			recordAuthMethod('password');
+			if (!challengeFromOAuth) recordAuthMethod('password');
 			await authStore.load();
 			await navigateToRedirectTarget(redirectTarget);
 		} catch (err: unknown) {
@@ -220,6 +262,7 @@
 	function handleBack() {
 		step = 'credentials';
 		challengeToken = '';
+		challengeFromOAuth = false;
 		totpCode = '';
 		error = '';
 	}

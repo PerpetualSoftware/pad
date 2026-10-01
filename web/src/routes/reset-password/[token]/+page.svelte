@@ -37,7 +37,13 @@
 
 		loading = true;
 		try {
-			await api.auth.resetPassword(token, password);
+			const result = await api.auth.resetPassword(token, password);
+			// A 2FA account gets no session from a reset (BUG-3322): the
+			// new password is set, and the TOTP step happens at sign-in.
+			if (result.requires_login) {
+				await goto('/login?notice=password_reset', { replaceState: true });
+				return;
+			}
 			await goto('/console', { replaceState: true });
 		} catch (err: unknown) {
 			if (err instanceof Error) {

@@ -1493,6 +1493,20 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 		slog.Error("failed to invalidate sessions after password reset", "error", err)
 	}
 
+	// Two-factor (BUG-3322): a reset link proves the mailbox, which is the
+	// FIRST factor's recovery, not the second. A user with TOTP on gets the
+	// new password and no session, and signs in through /login, where the
+	// TOTP step applies. This used to mint a full session here, so access to
+	// the inbox alone defeated 2FA.
+	if user.TOTPEnabled {
+		s.logAuditEventForUser(models.ActionPasswordReset, r, user.ID, auditMeta(map[string]string{"email": user.Email}))
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"ok":             true,
+			"requires_login": true,
+		})
+		return
+	}
+
 	// Create a fresh session so the user is logged in
 	sessionToken, err := s.store.CreateSession(user.ID, "web", clientIP(r), r.UserAgent(), webSessionTTL)
 	if err != nil {

@@ -2715,7 +2715,7 @@ export const api = {
 				body: JSON.stringify({ email })
 			}),
 		resetPassword: (token: string, password: string) =>
-			request<{ ok: boolean; user: { id: string; email: string; username: string; name: string; role: string }; token: string }>('/auth/reset-password', {
+			request<{ ok: boolean; requires_login?: boolean; user?: { id: string; email: string; username: string; name: string; role: string }; token?: string }>('/auth/reset-password', {
 				method: 'POST',
 				body: JSON.stringify({ token, password })
 			}),
