@@ -627,7 +627,7 @@ func (s *Server) handleOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
 		// redirect_uri, audience mismatch). Counts as "failed" — these
 		// never reach a consent screen so they're not "started" either.
 		s.recordOAuthFlow("failed")
-		s.oauthServer.Provider().WriteAuthorizeError(ctx, w, ar, err)
+		s.oauthServer.Provider().WriteAuthorizeError(ctx, s.authorizeResponseWriter(w), ar, err)
 		return
 	}
 
@@ -774,7 +774,7 @@ func (s *Server) handleOAuthAuthorizeDecide(w http.ResponseWriter, r *http.Reque
 	ar, err := s.oauthServer.Provider().NewAuthorizeRequest(ctx, r)
 	if err != nil {
 		s.recordOAuthFlow("failed")
-		s.oauthServer.Provider().WriteAuthorizeError(ctx, w, ar, err)
+		s.oauthServer.Provider().WriteAuthorizeError(ctx, s.authorizeResponseWriter(w), ar, err)
 		return
 	}
 
@@ -785,7 +785,7 @@ func (s *Server) handleOAuthAuthorizeDecide(w http.ResponseWriter, r *http.Reque
 		// (high abandonment % = clients asking for too much, or
 		// confusing consent UI).
 		s.recordOAuthFlow("abandoned")
-		s.oauthServer.Provider().WriteAuthorizeError(ctx, w, ar,
+		s.oauthServer.Provider().WriteAuthorizeError(ctx, s.authorizeResponseWriter(w), ar,
 			fosite.ErrAccessDenied.WithHint("The user denied the consent."))
 		return
 	}
@@ -885,7 +885,7 @@ func (s *Server) handleOAuthAuthorizeDecide(w http.ResponseWriter, r *http.Reque
 		slog.Warn("oauth: fosite NewAuthorizeResponse failed after persisting connection; row orphaned",
 			"request_id", ar.GetID(), "error", err)
 		s.recordOAuthFlow("failed")
-		s.oauthServer.Provider().WriteAuthorizeError(ctx, w, ar, err)
+		s.oauthServer.Provider().WriteAuthorizeError(ctx, s.authorizeResponseWriter(w), ar, err)
 		return
 	}
 
@@ -896,7 +896,7 @@ func (s *Server) handleOAuthAuthorizeDecide(w http.ResponseWriter, r *http.Reque
 	// after a completed consent is a rare client bug, not a flow-
 	// level signal).
 	s.recordOAuthFlow("completed")
-	s.oauthServer.Provider().WriteAuthorizeResponse(ctx, w, ar, resp)
+	s.oauthServer.Provider().WriteAuthorizeResponse(ctx, s.authorizeResponseWriter(w), ar, resp)
 }
 
 // consentDecision is the structured result of parseConsentPayload —

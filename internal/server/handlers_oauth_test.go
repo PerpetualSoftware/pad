@@ -824,19 +824,13 @@ func snippetAround(body, marker string, n int) string {
 	return body[i:end]
 }
 
-// TestOAuth_AuthorizationServerMetadata_OmitsRFC9207IssFlag pins
-// Codex review #372 round 2: authorization_response_iss_parameter_supported
-// (RFC 9207) is intentionally omitted because fosite v0.49 doesn't
-// add iss=<issuer> to authorize redirects, so claiming support would
-// mislead RFC 9207-aware clients into rejecting the response.
-//
-// Advertised-but-broken metadata is worse than absent metadata —
-// RFC 8414 §2 marks the field OPTIONAL.
-//
-// (Sub-PR D fills in revocation_endpoint and introspection_endpoint;
-// the previous OmitsUnimplementedEndpoints test asserted those were
-// also absent — those assertions moved to AdvertisesRevokeIntrospect.)
-func TestOAuth_AuthorizationServerMetadata_OmitsRFC9207IssFlag(t *testing.T) {
+// TestOAuth_AuthorizationServerMetadata_AdvertisesRFC9207IssFlag: the flag
+// is advertised now that every authorize redirect carries iss (TASK-3321 U0a,
+// oauth_iss.go). It used to be pinned ABSENT (codex #372 round 2) because the
+// parameter was not sent, and an advertised flag with no parameter makes an
+// RFC 9207 client reject every response. TestOAuth_AuthorizeRedirectsCarryIss
+// is the half that keeps the flag honest.
+func TestOAuth_AuthorizationServerMetadata_AdvertisesRFC9207IssFlag(t *testing.T) {
 	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 
@@ -847,8 +841,8 @@ func TestOAuth_AuthorizationServerMetadata_OmitsRFC9207IssFlag(t *testing.T) {
 	var doc map[string]any
 	parseJSON(t, rr, &doc)
 
-	if v, ok := doc["authorization_response_iss_parameter_supported"]; ok {
-		t.Errorf("doc must NOT advertise authorization_response_iss_parameter_supported (RFC 9207 not actually implemented); got %v", v)
+	if v := doc["authorization_response_iss_parameter_supported"]; v != true {
+		t.Errorf("authorization_response_iss_parameter_supported = %v, want true", v)
 	}
 }
 
