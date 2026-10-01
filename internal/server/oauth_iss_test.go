@@ -112,6 +112,46 @@ func TestOAuth_AuthorizeRedirectsCarryIss(t *testing.T) {
 	})
 }
 
+// form_post would answer with an HTML page carrying no iss, so it is refused
+// at both authorize endpoints before fosite writes anything in that mode.
+func TestOAuth_AuthorizeRefusesFormPost(t *testing.T) {
+	t.Parallel()
+	srv, _ := oauthEnabledTestServer(t)
+	_, sessionToken := loginTestUser(t, srv)
+	clientID := registerTestClient(t, srv, "https://app.test/cb")
+	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
+	params := url.Values{
+		"client_id":             {clientID},
+		"response_type":         {"code"},
+		"response_mode":         {"form_post"},
+		"redirect_uri":          {"https://app.test/cb"},
+		"scope":                 {"pad:read"},
+		"code_challenge":        {s256Challenge("abc-12345-the-quick-brown-fox-1234567890")},
+		"code_challenge_method": {"S256"},
+		"audience":              {testCanonicalAudience},
+		"state":                 {"state-form-post"},
+	}
+	rr := doRequestWithCookie(srv, "GET", "/oauth/authorize?"+params.Encode(), nil, sessionToken)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("GET authorize with form_post = %d, want 400: %s", rr.Code, rr.Body.String())
+	}
+	form := url.Values{}
+	for k, v := range params {
+		form[k] = v
+	}
+	form.Set("decision", "approve")
+	form.Set("csrf_token", csrfTok)
+	form.Set("capability_tier", "read")
+	form.Set("allowed_workspaces", "*")
+	rr = postFormWithCookie(srv, "/oauth/authorize/decide", form, sessionToken, csrfTok)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("decide with form_post = %d, want 400: %s", rr.Code, rr.Body.String())
+	}
+	if loc := rr.Header().Get("Location"); loc != "" {
+		t.Errorf("a refused form_post still redirected to %q", loc)
+	}
+}
+
 func TestWithIssParam(t *testing.T) {
 	const iss = "https://app.getpad.dev"
 	cases := []struct{ in, want string }{

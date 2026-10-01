@@ -621,6 +621,10 @@ func (s *Server) handleOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
 		r.URL.RawQuery = q.Encode()
 	}
 
+	if refuseUnsupportedResponseMode(w, r) {
+		s.recordOAuthFlow("failed")
+		return
+	}
 	ar, err := s.oauthServer.Provider().NewAuthorizeRequest(ctx, r)
 	if err != nil {
 		// TASK-961: malformed authorize request (bad client_id, missing
@@ -771,6 +775,10 @@ func (s *Server) handleOAuthAuthorizeDecide(w http.ResponseWriter, r *http.Reque
 	translateResourceToAudience(r, s.oauthServer.AllowedAudience())
 
 	ctx := r.Context()
+	if refuseUnsupportedResponseMode(w, r) {
+		s.recordOAuthFlow("failed")
+		return
+	}
 	ar, err := s.oauthServer.Provider().NewAuthorizeRequest(ctx, r)
 	if err != nil {
 		s.recordOAuthFlow("failed")

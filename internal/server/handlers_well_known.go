@@ -172,6 +172,9 @@ func (s *Server) handleOAuthAuthorizationServer(w http.ResponseWriter, _ *http.R
 		// advertising it without the parameter makes an RFC 9207 client
 		// reject every response.
 		AuthorizationResponseIssParameterSupported: true,
+		// The modes whose redirects carry iss; form_post is refused at the
+		// authorize endpoints (refuseUnsupportedResponseMode).
+		ResponseModesSupported: []string{"query", "fragment"},
 	}
 	w.Header().Set("Content-Type", "application/json")
 	// Same 1-hour cache as the protected-resource doc.
@@ -210,6 +213,9 @@ type authServerMetadata struct {
 	ResourceIndicatorsSupported            bool     `json:"resource_indicators_supported"`
 	// AuthorizationResponseIssParameterSupported: RFC 9207 §3.
 	AuthorizationResponseIssParameterSupported bool `json:"authorization_response_iss_parameter_supported"`
+	// ResponseModesSupported: RFC 8414 §2 (defaults to query and fragment
+	// when absent; listed so form_post is visibly not offered).
+	ResponseModesSupported []string `json:"response_modes_supported"`
 }
 
 // protectedResourceMetadata is the RFC 9728 wire format. Field names

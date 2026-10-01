@@ -79,3 +79,28 @@ func withIssParam(loc, issuer string) string {
 	u.RawQuery = q.Encode()
 	return u.String()
 }
+
+// supportedResponseModes are the response modes whose redirects carry iss.
+// fosite also implements form_post, an HTML page that POSTs the response,
+// which has no Location for issRedirectWriter to extend (codex review). This
+// server never needed it, so it is refused rather than half-supported: the
+// metadata advertises RFC 9207, and a mode that silently drops iss would make
+// that claim false. Empty is the default (query for the code flow).
+var supportedResponseModes = map[string]bool{"": true, "query": true, "fragment": true}
+
+// refuseUnsupportedResponseMode answers 400 for a response_mode outside
+// supportedResponseModes, before fosite builds the request, so not even the
+// error response goes out in that mode. It reports whether it wrote one.
+// It reads r.Form, which both authorize handlers have already parsed
+// (ParseForm), so it reads no body of its own.
+func refuseUnsupportedResponseMode(w http.ResponseWriter, r *http.Request) bool {
+	if supportedResponseModes[r.Form.Get("response_mode")] {
+		return false
+	}
+	w.Header().Set("Content-Type", "application/json")
+	writeJSON(w, http.StatusBadRequest, map[string]string{
+		"error":             "invalid_request",
+		"error_description": "response_mode must be query or fragment",
+	})
+	return true
+}
