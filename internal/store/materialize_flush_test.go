@@ -261,7 +261,7 @@ func TestLoadMaterializeInputReadsTheWholeOpLog(t *testing.T) {
 func TestListMaterializeCandidates(t *testing.T) {
 	eachBackend(t, func(t *testing.T, s *store.Store) {
 		wsID, collID, pending := seedStaleItem(t, s)
-		appendFrames(t, s, pending.ID, recoveryFrame(1))
+		pendingMax := appendFrames(t, s, pending.ID, recoveryFrame(1))
 
 		flushed, err := s.CreateItem(wsID, collID, models.ItemCreate{Title: "Flushed", Content: "x"})
 		if err != nil {
@@ -285,6 +285,15 @@ func TestListMaterializeCandidates(t *testing.T) {
 		}
 		if len(ids) != 1 || ids[0].ItemID != pending.ID {
 			t.Fatalf("candidates = %v, want only the pending item %s", ids, pending.ID)
+		}
+		// OpLogMax is the quantity the failure budget is keyed on
+		// (BUG-3325): MAX(id), the same as MaterializeInput.Cursor.
+		in, err := s.LoadMaterializeInput(pending.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ids[0].OpLogMax != pendingMax || ids[0].OpLogMax != in.Cursor {
+			t.Fatalf("OpLogMax = %d, want the last row %d = Cursor %d", ids[0].OpLogMax, pendingMax, in.Cursor)
 		}
 		// Not dormant yet: the newest row is younger than the cutoff.
 		ids, err = s.ListMaterializeCandidates(time.Now().Add(-time.Hour), store.MaterializeCursor{}, 10)

@@ -892,3 +892,84 @@ func mustVersions(t *testing.T, f *recoveryFixture, itemID string) []models.Vers
 	}
 	return vs
 }
+
+// BUG-3325: an item whose failure budget is spent for its current op-log was
+// still a sweep candidate. The sweep queued it on every tick, the worker
+// refused it, and every tick logged "candidates=1 queued=1", forever. It is
+// now held back by the same predicate admit applies, reported once as
+// exhausted_skipped, and offered again as soon as its op-log grows. An item
+// only backing off (failed, not exhausted) is still offered.
+func TestMaterializeSweepSkipsExhaustedItems(t *testing.T) {
+	var buf bytes.Buffer
+	clock := time.Now().Add(time.Hour) // rows written now are dormant
+	fake := &fakeMaterializer{fn: func(materialize.Job) (string, error) {
+		return "", fmt.Errorf("%w: exit status 2", materialize.ErrChildDied)
+	}}
+	f := newRecoveryFixture(t, fake, time.Minute, materializeRecoveryConfig{
+		maxFailures: 3, backoffBase: time.Minute,
+		now:    func() time.Time { return clock },
+		logger: slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})),
+	})
+	stuck := f.item(t, "Stuck", "stale")
+	f.appendRows(t, stuck.ID, contentFrame(1))
+	for i := 0; i < 3; i++ { // spend the budget
+		f.r.process(stuck.ID)
+		clock = clock.Add(time.Hour)
+	}
+	if res, _ := f.r.admit(stuck.ID, f.r.budget[stuck.ID].opLogMax); res != mrBudgetExceeded {
+		t.Fatalf("fixture: budget not exhausted (%q)", res)
+	}
+	sweepLines := func() []string {
+		var out []string
+		for _, l := range strings.Split(buf.String(), "\n") {
+			if strings.Contains(l, "op-log recovery sweep") {
+				out = append(out, l)
+			}
+		}
+		return out
+	}
+
+	buf.Reset()
+	for i := 0; i < 5; i++ {
+		f.r.sweep()
+	}
+	if q := f.queueSnapshot(); len(q) != 0 {
+		t.Fatalf("the sweep queued an exhausted item: %v", q)
+	}
+	lines := sweepLines()
+	if len(lines) != 1 {
+		t.Fatalf("sweep lines over 5 sweeps = %d, want 1 (the change to exhausted_skipped)\n%s", len(lines), buf.String())
+	}
+	for _, want := range []string{"candidates=0", "queued=0", "exhausted_skipped=1"} {
+		if !strings.Contains(lines[0], want) {
+			t.Fatalf("sweep line lacks %q: %s", want, lines[0])
+		}
+	}
+
+	// A one-failure item is backing off, not exhausted: still a candidate.
+	backing := f.item(t, "Backing off", "stale")
+	f.appendRows(t, backing.ID, contentFrame(2))
+	f.r.process(backing.ID)
+	buf.Reset()
+	f.r.sweep()
+	if q := f.queueSnapshot(); len(q) != 1 || q[0] != backing.ID {
+		t.Fatalf("queue = %v, want only the backing-off item", q)
+	}
+	f.r.dequeue()
+
+	// The stuck item's op-log grows: it is offered again.
+	f.appendRows(t, stuck.ID, contentFrame(3))
+	buf.Reset()
+	f.r.sweep()
+	q := f.queueSnapshot()
+	found := false
+	for _, id := range q {
+		found = found || id == stuck.ID
+	}
+	if !found {
+		t.Fatalf("an item whose op-log grew was not offered again: %v", q)
+	}
+	if l := sweepLines(); len(l) != 1 || !strings.Contains(l[0], "exhausted_skipped=0") {
+		t.Fatalf("sweep lines after the op-log grew = %v, want one with exhausted_skipped=0", l)
+	}
+}
