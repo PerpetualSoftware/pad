@@ -7,7 +7,7 @@ Pad provides built-in tooling for database backup, restore, and migration betwee
 | Command | Description |
 |---------|-------------|
 | `pad db backup` | Database backup — SQLite (`VACUUM INTO`, default) or PostgreSQL (`pg_dump`) |
-| `pad db restore <file>` | Database restore — SQLite (file copy) or PostgreSQL (`psql`) |
+| `pad db restore <file>` | Database restore — SQLite (staged atomic replacement) or PostgreSQL (`psql`) |
 | `pad db migrate-to-pg` | One-time SQLite → PostgreSQL migration |
 | `pad workspace export` | Application-level JSON export (portable) |
 | `pad workspace import` | Application-level JSON import |
@@ -61,9 +61,29 @@ pad db restore ~/backups/pad-20250101.db
 pad server start
 ```
 
-Restore writes the backup over the resolved database path and clears any stale
-`-wal`/`-shm` sidecars. Use `--force` to skip the confirmation prompt and
-override the live-server guard (not recommended while the server is running).
+Restore first copies the complete backup (including legacy `-wal`/`-shm`
+sidecars when present) into a private staging directory beside the destination.
+SQLite then creates a checked, self-contained database from that copy. The
+original backup is not changed. Empty, malformed, unreadable, or non-file inputs
+fail before the live database is opened. Allow disk space for both the staged
+backup and its self-contained copy, plus a temporary copy of the current live
+database when it has journal sidecars.
+
+Before atomically replacing the main database, restore checkpoints existing
+live WAL data through SQLite and clears the checkpointed sidecars. Preparation
+or publication failures retain the original committed contents, although a
+successful checkpoint can change the physical files. If SQLite cannot
+checkpoint an existing WAL (for example, a locked or corrupt live database),
+restore refuses to discard it. A damaged main file without sidecars can still
+be replaced. Destination symlinks are preserved; atomic replacement creates a
+new inode, so other hard links retain the old database. Existing database file
+mode bits are retained, along with its owner and group on Unix. Custom ACLs and
+other filesystem metadata are not copied; reapply them before restarting if
+your deployment requires them. The destination directory must be writable.
+
+Use `--force` to skip the confirmation prompt and override the live-server
+guard. Keep the server stopped throughout restore, including when using
+`--force`; it does not make concurrent database access safe.
 
 ## PostgreSQL Backups
 
@@ -107,6 +127,12 @@ pad db restore /backups/pad-backup.sql
 # Skip confirmation (for automated restore)
 pad db restore --force /backups/pad-backup.sql
 ```
+
+Restore uses `psql --single-transaction --set=ON_ERROR_STOP=on --no-psqlrc`.
+A SQL error returns a command failure and rolls back the transaction instead
+of reporting completion. User startup files cannot change these settings.
+These guarantees apply to Pad/`pg_dump` backups; custom scripts that explicitly
+commit or change transaction/error handling can override them.
 
 ### Cloud Database Snapshots
 

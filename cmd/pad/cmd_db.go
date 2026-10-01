@@ -3,7 +3,6 @@ package main
 import (
 	"database/sql"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/url"
 	"os"
@@ -209,8 +208,10 @@ func dbRestoreCmd() *cobra.Command {
 		Short: "Restore a database from a backup",
 		Long: `Restores a Pad database from a backup created by 'pad db backup'.
 
-For PostgreSQL: restores from a SQL dump using psql. Requires PAD_DATABASE_URL.
-For SQLite (default): copies the backup file over the live database, whose path
+For PostgreSQL: restores in one transaction using psql, stopping on SQL errors
+and ignoring psql startup files. Requires PAD_DATABASE_URL.
+For SQLite (default): stages and checks the backup before atomically replacing
+the live database after checkpointing existing WAL data. The database path
 is resolved the same way the server resolves it (PAD_DB_PATH > PAD_DATA_DIR/pad.db
 > ~/.pad/pad.db). Stop the server first — restore refuses to run while it detects
 a live server (a running WAL checkpoint could clobber the restored file); use
@@ -253,6 +254,8 @@ WARNING: This will overwrite the current database contents.`,
 				psqlArgs := []string{
 					"--file", inputFile,
 					"--single-transaction",
+					"--no-psqlrc",
+					"--set=ON_ERROR_STOP=on",
 				}
 
 				psqlCmd, err := postgresClient("psql", dbURL, psqlArgs...)
@@ -272,7 +275,7 @@ WARNING: This will overwrite the current database contents.`,
 				return nil
 			}
 
-			// SQLite restore via file copy
+			// SQLite restore via staged, self-contained publication
 			cfg, err := config.Load()
 			if err != nil {
 				return fmt.Errorf("load config: %w", err)
@@ -311,51 +314,8 @@ WARNING: This will overwrite the current database contents.`,
 
 			fmt.Fprintf(os.Stderr, "Restoring SQLite database %s from %s...\n", dstPath, inputFile)
 
-			src, err := os.Open(inputFile)
-			if err != nil {
-				return fmt.Errorf("open backup file: %w", err)
-			}
-			defer src.Close()
-
-			dst, err := os.Create(dstPath)
-			if err != nil {
-				return fmt.Errorf("open database for writing: %w", err)
-			}
-			defer dst.Close()
-
-			if _, err := io.Copy(dst, src); err != nil {
-				return fmt.Errorf("copy backup: %w", err)
-			}
-
-			// Also restore WAL and SHM files if they exist alongside the backup
-			for _, suffix := range []string{"-wal", "-shm"} {
-				walPath := inputFile + suffix
-				if _, err := os.Stat(walPath); err == nil {
-					walSrc, err := os.Open(walPath)
-					if err != nil {
-						return fmt.Errorf("open %s: %w", suffix, err)
-					}
-					walDst, err := os.Create(dstPath + suffix)
-					if err != nil {
-						walSrc.Close()
-						return fmt.Errorf("create %s: %w", suffix, err)
-					}
-					_, copyErr := io.Copy(walDst, walSrc)
-					walSrc.Close()
-					walDst.Close()
-					if copyErr != nil {
-						return fmt.Errorf("copy %s: %w", suffix, copyErr)
-					}
-				} else {
-					// No WAL/SHM in backup (the VACUUM INTO path produces none):
-					// remove any stale sidecar at the target. A leftover -wal/-shm
-					// would let SQLite replay old WAL state over the freshly
-					// restored main DB on next open, so a remove failure is fatal
-					// rather than a silent success.
-					if err := os.Remove(dstPath + suffix); err != nil && !os.IsNotExist(err) {
-						return fmt.Errorf("remove stale %s: %w", suffix, err)
-					}
-				}
+			if err := restoreSQLite(inputFile, dstPath); err != nil {
+				return err
 			}
 
 			fmt.Fprintln(os.Stderr, "Restore complete. Restart the Pad server to pick up the restored database.")

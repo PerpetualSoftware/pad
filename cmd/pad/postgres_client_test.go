@@ -188,6 +188,36 @@ func TestPostgresBackupRestoreConnection(t *testing.T) {
 			t.Fatalf("round trip: value=%q err=%v", value, err)
 		}
 	}
+	t.Run("SQL failure rolls back and overrides psqlrc", func(t *testing.T) {
+		psqlrc := filepath.Join(t.TempDir(), "psqlrc")
+		if err := os.WriteFile(psqlrc, []byte("\\set ON_ERROR_STOP off\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PSQLRC", psqlrc)
+		t.Setenv("PAD_DATABASE_URL", targetURL)
+		failedArchive := filepath.Join(t.TempDir(), "sql-error.sql")
+		if err := os.WriteFile(failedArchive, []byte("UPDATE recovery_probe SET value='uncommitted restore';\nSELECT 1/0;\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		restore := dbRestoreCmd()
+		restore.SetArgs([]string{"--force", failedArchive})
+		if err := restore.Execute(); err == nil {
+			t.Error("restore returned success after a SQL error rolled back its transaction")
+		}
+		var value string
+		if err := target.QueryRow("SELECT value FROM recovery_probe").Scan(&value); err != nil || value != "restored row" {
+			t.Fatalf("failed restore changed target: value=%q err=%v", value, err)
+		}
+		// The same ambient psqlrc must not break a subsequent valid restore.
+		validRestore := dbRestoreCmd()
+		validRestore.SetArgs([]string{"--force", archive})
+		if err := validRestore.Execute(); err != nil {
+			t.Fatal(err)
+		}
+		if err := target.QueryRow("SELECT value FROM recovery_probe").Scan(&value); err != nil || value != "restored row" {
+			t.Fatalf("valid restore after SQL error: value=%q err=%v", value, err)
+		}
+	})
 	missing := *u
 	missing.Path, missing.RawPath = "/pad_missing_"+strings.ReplaceAll(uuid.NewString(), "-", ""), ""
 	t.Setenv("PAD_DATABASE_URL", missing.String())
