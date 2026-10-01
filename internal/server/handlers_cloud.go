@@ -263,17 +263,46 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Update avatar if they don't have one
-		if user.AvatarURL == "" && input.AvatarURL != "" {
-			avatar := input.AvatarURL
-			s.store.UpdateUser(user.ID, models.UserUpdate{AvatarURL: &avatar})
-		}
 	}
 
 	// 6. Reject disabled accounts
 	if user.IsDisabled() {
 		writeError(w, http.StatusForbidden, "account_disabled", "Your account has been disabled. Contact an administrator.")
 		return
+	}
+
+	// 6b. Two-factor (BUG-3322). The provider stands in for the password,
+	// not for the second factor: a user who turned on TOTP gets the same
+	// challenge password login hands out (handleLogin), and no session until
+	// /auth/2fa/login-verify accepts a code. It used to mint a full session
+	// here. A refusal rather than a 200 so a sidecar that predates this
+	// reads it as a failed login and sets no cookie; the challenge rides in
+	// details for one that knows to continue. The challenge binds to
+	// clientIP, which is the BROWSER's address only when the sidecar
+	// forwards it from a trusted peer (PAD_TRUSTED_PROXIES), so a spoofed
+	// header from anyone else binds the challenge to the spoofer's own
+	// address and nothing more. The message is for the native shells, which
+	// have no 2FA step after social sign-in yet. It does not say "use your
+	// password": an account created through a provider has a random one
+	// nobody knows (CreateOAuthUser), and TOTP setup does not require it.
+	if user.TOTPEnabled {
+		s.logAuditEventForUser(models.ActionOAuthLoginFailed, r, user.ID, auditMeta(map[string]string{
+			"provider": input.Provider,
+			"email":    input.Email,
+			"reason":   "two_factor_required",
+		}))
+		challenge := generateTwoFAChallenge(user.ID, clientIP(r), s.twoFAChallengeSecret)
+		writeError2(w, http.StatusForbidden, "two_factor_required",
+			"This account has two-factor authentication turned on. Sign in on the web to finish with your 2FA code.",
+			map[string]interface{}{"challenge_token": challenge})
+		return
+	}
+
+	// Fill a missing avatar only once the sign-in has passed every check
+	// above, the second factor included (BUG-3322 review).
+	if !isNewUser && user.AvatarURL == "" && input.AvatarURL != "" {
+		avatar := input.AvatarURL
+		s.store.UpdateUser(user.ID, models.UserUpdate{AvatarURL: &avatar})
 	}
 
 	// 7. Create session. Uses webSessionTTL (not a longer OAuth-specific
