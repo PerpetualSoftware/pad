@@ -263,11 +263,6 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Update avatar if they don't have one
-		if user.AvatarURL == "" && input.AvatarURL != "" {
-			avatar := input.AvatarURL
-			s.store.UpdateUser(user.ID, models.UserUpdate{AvatarURL: &avatar})
-		}
 	}
 
 	// 6. Reject disabled accounts
@@ -299,6 +294,13 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 			"This account has two-factor authentication turned on. Sign in with your password and your 2FA code.",
 			map[string]interface{}{"challenge_token": challenge})
 		return
+	}
+
+	// Fill a missing avatar only once the sign-in has passed every check
+	// above, the second factor included (BUG-3322 review).
+	if !isNewUser && user.AvatarURL == "" && input.AvatarURL != "" {
+		avatar := input.AvatarURL
+		s.store.UpdateUser(user.ID, models.UserUpdate{AvatarURL: &avatar})
 	}
 
 	// 7. Create session. Uses webSessionTTL (not a longer OAuth-specific

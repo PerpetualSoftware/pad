@@ -48,7 +48,19 @@ func oauthLoginBody(email string) map[string]interface{} {
 		"email":          email,
 		"name":           "Two Factor",
 		"email_verified": true,
+		"avatar_url":     "https://avatars.example.com/u/1.png",
 	}
+}
+
+// avatarOf reads the stored avatar, which oauth-login fills for an existing
+// account that has none, but only once the sign-in has passed TOTP.
+func avatarOf(t *testing.T, srv *Server, userID string) string {
+	t.Helper()
+	u, err := srv.store.GetUser(userID)
+	if err != nil || u == nil {
+		t.Fatalf("GetUser: %v", err)
+	}
+	return u.AvatarURL
 }
 
 type bug3322ErrorBody struct {
@@ -65,9 +77,12 @@ type bug3322ErrorBody struct {
 func TestOAuthLogin_TOTPUser_GetsChallengeNotSession(t *testing.T) {
 	srv := testServer(t)
 	srv.SetCloudMode(oauthProviderTestSecret)
-	_, secret := linkedTOTPUser(t, srv, "totp-oauth@example.com", true)
+	userID, secret := linkedTOTPUser(t, srv, "totp-oauth@example.com", true)
 
 	rr := postOAuthLogin(t, srv, oauthLoginBody("totp-oauth@example.com"))
+	if got := avatarOf(t, srv, userID); got != "" {
+		t.Errorf("a refused sign-in changed the account: avatar = %q", got)
+	}
 	if rr.Code != http.StatusForbidden {
 		t.Fatalf("oauth-login for a TOTP user: got %d, want 403: %s", rr.Code, rr.Body.String())
 	}
@@ -109,11 +124,14 @@ func TestOAuthLogin_TOTPUser_GetsChallengeNotSession(t *testing.T) {
 func TestOAuthLogin_NonTOTPUser_StillGetsSession(t *testing.T) {
 	srv := testServer(t)
 	srv.SetCloudMode(oauthProviderTestSecret)
-	linkedTOTPUser(t, srv, "plain-oauth@example.com", false)
+	userID, _ := linkedTOTPUser(t, srv, "plain-oauth@example.com", false)
 
 	rr := postOAuthLogin(t, srv, oauthLoginBody("plain-oauth@example.com"))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("oauth-login without TOTP: got %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	if got := avatarOf(t, srv, userID); got == "" {
+		t.Error("a successful sign-in did not fill the missing avatar")
 	}
 	if !sessionCookieSet(srv, rr) {
 		t.Error("oauth-login without TOTP set no session cookie")
