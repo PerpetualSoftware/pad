@@ -165,9 +165,11 @@ func liftSecuritySchemes(body []byte) ([]byte, bool) {
 	return out, true
 }
 
-// bufferedResponse holds a response so it can be rewritten. It does not
-// implement http.Flusher, so the transport answers JSON rather than
-// upgrading to an event stream.
+// bufferedResponse holds a response so it can be rewritten. It must not
+// implement http.Flusher: mcp-go upgrades a response to an event stream
+// only through a writer that can flush (and the remote transport has no
+// event store), so without one tools/list is always a JSON body
+// (TestBufferedResponseCannotStream).
 type bufferedResponse struct {
 	header http.Header
 	status int

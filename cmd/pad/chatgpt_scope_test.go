@@ -160,3 +160,48 @@ func TestChatGPTScope_SufficientGrantsAreNotChallenged(t *testing.T) {
 		}
 	}
 }
+
+// tools/list asked for the way ChatGPT asks (Accept: application/json,
+// text/event-stream) answers a JSON body whose every tool carries
+// securitySchemes at the top level. Streamable HTTP can answer with an
+// event stream instead, but only by flushing notifications mid-request,
+// and WithChatGPTToolSchemes hands the transport a writer that cannot
+// flush (TestBufferedResponseCannotStream), so the answer is JSON.
+func TestChatGPTToolsList_JSONWithTopLevelSchemes(t *testing.T) {
+	h := newChatGPTScopeHarness(t)
+	_, session := h.post(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":`+goldenClientInfo+`}`, "", `["pad:read"]`)
+	h.post(`{"jsonrpc":"2.0","method":"notifications/initialized"}`, session, `["pad:read"]`)
+	req, _ := http.NewRequest(http.MethodPost, h.ts.URL, strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("Mcp-Session-Id", session)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Fatalf("tools/list answered %q, want a JSON body: %s", ct, raw)
+	}
+	var env struct {
+		Result struct {
+			Tools []map[string]json.RawMessage `json:"tools"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatalf("undecodable tools/list: %s", raw)
+	}
+	if len(env.Result.Tools) != len(mcpserver.ChatGPTCatalog) {
+		t.Fatalf("tools/list listed %d tools, want %d", len(env.Result.Tools), len(mcpserver.ChatGPTCatalog))
+	}
+	for _, tool := range env.Result.Tools {
+		var meta struct {
+			SecuritySchemes json.RawMessage `json:"securitySchemes"`
+		}
+		_ = json.Unmarshal(tool["_meta"], &meta)
+		if len(tool["securitySchemes"]) == 0 || string(tool["securitySchemes"]) != string(meta.SecuritySchemes) {
+			t.Errorf("%s: top-level securitySchemes %s, _meta copy %s", tool["name"], tool["securitySchemes"], meta.SecuritySchemes)
+		}
+	}
+}

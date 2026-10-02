@@ -69,3 +69,13 @@ func TestWithChatGPTToolSchemes_PassesEverythingElseThrough(t *testing.T) {
 		})
 	}
 }
+
+// The writer WithChatGPTToolSchemes hands the transport must not stream:
+// mcp-go upgrades a response to an event stream only through a writer that
+// can flush, and a streamed tools/list would leave the rewrite nothing to
+// rewrite.
+func TestBufferedResponseCannotStream(t *testing.T) {
+	if _, ok := any(&bufferedResponse{}).(http.Flusher); ok {
+		t.Fatal("bufferedResponse implements http.Flusher, so tools/list could be answered as an event stream")
+	}
+}
