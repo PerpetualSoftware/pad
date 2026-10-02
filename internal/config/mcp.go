@@ -33,6 +33,14 @@ type MCPEndpoints struct {
 	ResourceURL    string
 	ResourceURLErr string
 
+	// ChatGPTResourceURL is the ChatGPT catalog's MCP URL and its OWN OAuth
+	// audience (TASK-3321 U2a, ruling (i)): the /mcp resource with
+	// "/chatgpt" appended to its MCP path, so https://mcp.getpad.dev (whose
+	// root the cloud proxy maps to /mcp) gives https://mcp.getpad.dev/mcp/chatgpt
+	// and https://pad.example/mcp gives https://pad.example/mcp/chatgpt. Empty
+	// when ResourceURL is. A token is bound to exactly one of the two.
+	ChatGPTResourceURL string
+
 	// AuthServerURL is the OAuth issuer: PAD_AUTH_SERVER_URL in its
 	// historical spelling (historicalOverride), else Origin.
 	AuthServerURL    string
@@ -102,6 +110,8 @@ func (c *Config) ResolveMCPEndpoints() MCPEndpoints {
 		e.ResourceURL = e.Origin + "/mcp"
 	}
 
+	e.ChatGPTResourceURL = chatGPTResourceURL(e.ResourceURL)
+
 	if c.AuthServerURL != "" {
 		if _, err := parseMCPURL(c.AuthServerURL, true); err != nil {
 			e.AuthServerURLErr = fmt.Sprintf("PAD_AUTH_SERVER_URL %q is not usable: %v", c.AuthServerURL, err)
@@ -115,6 +125,24 @@ func (c *Config) ResolveMCPEndpoints() MCPEndpoints {
 	// An override without an origin still leaves MCP unavailable, because
 	// the other value falls back to the origin. Usable() is the gate.
 	return e
+}
+
+// chatGPTResourceURL derives the ChatGPT catalog's resource from the /mcp
+// one: its path, or "/mcp" when it is the bare host the cloud proxy maps
+// to /mcp, followed by "/chatgpt", which is where the catalog is mounted.
+func chatGPTResourceURL(resource string) string {
+	if resource == "" {
+		return ""
+	}
+	u, err := url.Parse(resource)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	path := strings.TrimRight(u.Path, "/")
+	if path == "" {
+		path = "/mcp"
+	}
+	return u.Scheme + "://" + u.Host + path + "/chatgpt"
 }
 
 // historicalOverride is the spelling an explicitly set PAD_MCP_PUBLIC_URL or

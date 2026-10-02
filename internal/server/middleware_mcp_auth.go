@@ -283,7 +283,14 @@ func (s *Server) handleMCPOAuthAuth(w http.ResponseWriter, r *http.Request, toke
 	// the grant-side check should already prevent foreign audiences,
 	// but the resource server validating its own incoming tokens is
 	// the spec's primary defense.
-	canonical := s.oauthServer.AllowedAudience()
+	// The canonical audience is the MOUNT's (TASK-3321 U2a): /mcp checks
+	// the /mcp resource, and the ChatGPT catalog's mount checks its own, so
+	// a token bound to one is refused at the other. A route that sets no
+	// resource is /mcp's.
+	canonical := mcpResourceFromContext(r.Context())
+	if canonical == "" {
+		canonical = s.oauthServer.AllowedAudience()
+	}
 	if canonical == "" {
 		// Misconfigured server — no canonical audience to check
 		// against. Fail-closed: refuse the token rather than
@@ -625,4 +632,25 @@ func (s *Server) writeMCPUnauthorized(w http.ResponseWriter, r *http.Request, co
 			"message": msg,
 		},
 	})
+}
+
+// ctxMCPResource carries the canonical OAuth resource of the MCP mount a
+// request arrived on (TASK-3321 U2a). Set only by WithMCPResource in the
+// route table, never from the request.
+const ctxMCPResource contextKey = "mcp_resource"
+
+// WithMCPResource returns middleware stamping the mount's canonical resource
+// on the request, for MCPBearerAuth's audience check. Install it BEFORE
+// MCPBearerAuth on any MCP mount other than /mcp.
+func WithMCPResource(resource string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxMCPResource, resource)))
+		})
+	}
+}
+
+func mcpResourceFromContext(ctx context.Context) string {
+	v, _ := ctx.Value(ctxMCPResource).(string)
+	return v
 }

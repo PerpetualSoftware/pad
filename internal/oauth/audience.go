@@ -84,10 +84,10 @@ func NormalizeAudience(s string) string {
 }
 
 // audienceMatchingStrategy returns a fosite.AudienceMatchingStrategy
-// that enforces "every requested audience must equal the configured
-// canonical audience, and no other audience is permitted." Closes
-// over the canonical URL because fosite expects a function value of
-// type AudienceMatchingStrategy on its Config.
+// that enforces "the requested audience must be exactly one of the
+// configured canonical audiences, and no other audience is permitted."
+// Closes over the canonical URLs because fosite expects a function value
+// of type AudienceMatchingStrategy on its Config.
 //
 // Two-sided check:
 //
@@ -112,9 +112,9 @@ func NormalizeAudience(s string) string {
 //
 // Returns errors wrapped via fosite.ErrInvalidRequest so the OAuth
 // error response carries the right shape (RFC 6749 §4.1.2.1).
-func audienceMatchingStrategy(canonical string) fosite.AudienceMatchingStrategy {
+func audienceMatchingStrategy(canonicals []string) fosite.AudienceMatchingStrategy {
 	return func(haystack []string, needle []string) error {
-		if canonical == "" {
+		if len(canonicals) == 0 || canonicals[0] == "" {
 			// Defensive: a server constructed without an audience is
 			// a configuration bug, not a per-request failure. Refuse
 			// the validation so the misconfigured handler errors
@@ -122,37 +122,50 @@ func audienceMatchingStrategy(canonical string) fosite.AudienceMatchingStrategy 
 			return fosite.ErrServerError.WithHint("OAuth server has no canonical audience configured.")
 		}
 
-		canonicalNorm := NormalizeAudience(canonical)
-
-		// Haystack (client.Audience) must include canonical (after
-		// trailing-slash normalization). Without this, a DCR client
-		// registered before audience-population shipped (sub-PR C
-		// work) could still drive flows. Reject.
-		if !audienceListContainsNormalized(haystack, canonicalNorm) {
-			return fosite.ErrInvalidRequest.WithHintf(
-				"Client is not authorized for the canonical audience %q.",
-				canonical,
-			)
-		}
-
-		// Needle (request.RequestedAudience) must be exactly { canonical }.
-		// Empty needle means the client didn't request any resource —
-		// per PLAN-943's enforcement, every grant is audience-restricted,
-		// so we refuse the no-audience path.
+		// Needle (request.RequestedAudience) must name exactly ONE of the
+		// canonical resources (TASK-3321 U2a: the /mcp URL or the ChatGPT
+		// catalog's). Every element must normalize to that same resource,
+		// so a token is never valid for both: each mount checks its own
+		// canonical, and a two-resource token would pass both. Empty
+		// needle means the client didn't request any resource; per
+		// PLAN-943 every grant is audience-restricted, so it is refused.
 		if len(needle) == 0 {
 			return fosite.ErrInvalidRequest.WithHint(
 				"resource parameter is required (RFC 8707).",
 			)
 		}
+		target := ""
 		for _, n := range needle {
-			if NormalizeAudience(n) != canonicalNorm {
+			nn := NormalizeAudience(n)
+			match := ""
+			for _, c := range canonicals {
+				if NormalizeAudience(c) == nn {
+					match = NormalizeAudience(c)
+					break
+				}
+			}
+			if match == "" {
 				return fosite.ErrInvalidRequest.WithHintf(
-					"Requested audience %q is not the canonical audience %q.",
-					n, canonical,
+					"Requested audience %q is not a resource this server issues tokens for.", n,
 				)
 			}
+			if target != "" && target != match {
+				return fosite.ErrInvalidRequest.WithHint(
+					"A token is bound to one resource; request one resource at a time.",
+				)
+			}
+			target = match
 		}
 
+		// Haystack (client.Audience) must include the requested canonical
+		// (after trailing-slash normalization). Without this, a DCR client
+		// registered before audience-population shipped (sub-PR C work)
+		// could still drive flows. Reject.
+		if !audienceListContainsNormalized(haystack, target) {
+			return fosite.ErrInvalidRequest.WithHintf(
+				"Client is not authorized for the audience %q.", target,
+			)
+		}
 		return nil
 	}
 }

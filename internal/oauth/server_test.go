@@ -166,7 +166,7 @@ func TestNewServer_RefreshTokenScopesIsEmpty(t *testing.T) {
 
 func TestAudienceStrategy_RejectsEmptyNeedle(t *testing.T) {
 	canonical := "https://mcp.test.example/mcp"
-	strat := audienceMatchingStrategy(canonical)
+	strat := audienceMatchingStrategy([]string{canonical})
 	err := strat([]string{canonical}, []string{})
 	if err == nil {
 		t.Fatal("expected error for empty requested audience (RFC 8707 mandates resource= per PLAN-943)")
@@ -179,7 +179,7 @@ func TestAudienceStrategy_RejectsEmptyNeedle(t *testing.T) {
 
 func TestAudienceStrategy_RejectsMismatchedNeedle(t *testing.T) {
 	canonical := "https://mcp.test.example/mcp"
-	strat := audienceMatchingStrategy(canonical)
+	strat := audienceMatchingStrategy([]string{canonical})
 	err := strat([]string{canonical}, []string{"https://other.example/mcp"})
 	if err == nil {
 		t.Fatal("expected rejection of cross-server audience")
@@ -196,7 +196,7 @@ func TestAudienceStrategy_RejectsClientWithoutCanonical(t *testing.T) {
 	// validator must still reject. This pins the haystack-side
 	// gate.
 	canonical := "https://mcp.test.example/mcp"
-	strat := audienceMatchingStrategy(canonical)
+	strat := audienceMatchingStrategy([]string{canonical})
 	err := strat([]string{} /* haystack: client has nothing */, []string{canonical})
 	if err == nil {
 		t.Fatal("expected rejection when client.Audience doesn't include canonical")
@@ -205,7 +205,7 @@ func TestAudienceStrategy_RejectsClientWithoutCanonical(t *testing.T) {
 
 func TestAudienceStrategy_AcceptsCanonicalOnly(t *testing.T) {
 	canonical := "https://mcp.test.example/mcp"
-	strat := audienceMatchingStrategy(canonical)
+	strat := audienceMatchingStrategy([]string{canonical})
 	if err := strat([]string{canonical}, []string{canonical}); err != nil {
 		t.Errorf("canonical=canonical roundtrip must succeed; got %v", err)
 	}
@@ -238,7 +238,7 @@ func TestAudienceStrategy_TrailingSlashEquivalence(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			strat := audienceMatchingStrategy(tc.canonical)
+			strat := audienceMatchingStrategy([]string{tc.canonical})
 			if err := strat([]string{tc.canonical}, []string{tc.needle}); err != nil {
 				t.Errorf("canonical=%q needle=%q must compare equal; got %v", tc.canonical, tc.needle, err)
 			}
@@ -306,7 +306,7 @@ func TestAudienceStrategy_PathSlashIsNotEquivalent(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.canonical+"_vs_"+tc.needle, func(t *testing.T) {
-			strat := audienceMatchingStrategy(tc.canonical)
+			strat := audienceMatchingStrategy([]string{tc.canonical})
 			if err := strat([]string{tc.canonical}, []string{tc.needle}); err == nil {
 				t.Errorf("canonical=%q needle=%q must NOT compare equal (path-slash distinction)", tc.canonical, tc.needle)
 			}
@@ -319,7 +319,7 @@ func TestAudienceStrategy_RejectsMultipleAudiences(t *testing.T) {
 	// extras is rejected — RFC 8707 audience-restriction means
 	// every issued token is scoped to ONLY one resource.
 	canonical := "https://mcp.test.example/mcp"
-	strat := audienceMatchingStrategy(canonical)
+	strat := audienceMatchingStrategy([]string{canonical})
 	err := strat([]string{canonical}, []string{canonical, "https://other.example/mcp"})
 	if err == nil {
 		t.Fatal("expected rejection when needle includes canonical AND another audience")
@@ -331,7 +331,7 @@ func TestAudienceStrategy_NoCanonicalIsServerError(t *testing.T) {
 	// configuration bug; the strategy refuses validation so the
 	// misconfigured handler errors at the first request rather
 	// than silently issuing wide-open tokens.
-	strat := audienceMatchingStrategy("")
+	strat := audienceMatchingStrategy([]string{""})
 	err := strat([]string{"anything"}, []string{"anything"})
 	if err == nil {
 		t.Fatal("expected ServerError when canonical is empty")
@@ -958,4 +958,33 @@ func equalArguments(a, b fosite.Arguments) bool {
 		}
 	}
 	return true
+}
+
+// TASK-3321 U2a: with two canonical resources, a request may name exactly
+// one; both together, a foreign one, or none are refused, and the client's
+// audience must include the one requested.
+func TestAudienceMatchingStrategy_TwoCanonicals(t *testing.T) {
+	const a, b = "https://mcp.example", "https://mcp.example/mcp/chatgpt"
+	strat := audienceMatchingStrategy([]string{a, b})
+	both := []string{a, b}
+	cases := []struct {
+		name     string
+		haystack []string
+		needle   []string
+		ok       bool
+	}{
+		{"first resource", both, []string{a}, true},
+		{"second resource", both, []string{b}, true},
+		{"root trailing slash still matches", both, []string{a + "/"}, true},
+		{"both at once", both, []string{a, b}, false},
+		{"foreign", both, []string{"https://evil.example"}, false},
+		{"none", both, nil, false},
+		{"client not authorized for the requested one", []string{a}, []string{b}, false},
+	}
+	for _, c := range cases {
+		err := strat(c.haystack, c.needle)
+		if (err == nil) != c.ok {
+			t.Errorf("%s: err = %v, want ok=%v", c.name, err, c.ok)
+		}
+	}
 }
