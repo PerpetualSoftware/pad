@@ -92,6 +92,11 @@ func TestBUG3354_DecompressionBombRefused(t *testing.T) {
 	if rr.Code != http.StatusRequestEntityTooLarge || !strings.Contains(rr.Body.String(), "bundle_too_large") {
 		t.Fatalf("bomb: got %d %s, want 413 bundle_too_large", rr.Code, rr.Body.String())
 	}
+	// The refusal tells an operator which setting raises the limit.
+	if !strings.Contains(rr.Body.String(), "PAD_IMPORT_BUNDLE_MAX_BYTES") ||
+		!strings.Contains(rr.Body.String(), fmt.Sprint(dest.decompressedBundleCap())) {
+		t.Fatalf("the 413 must state the effective limit and the setting that raises it: %s", rr.Body.String())
+	}
 	if workspaceListed(t, dest, "BombWS") {
 		t.Fatal("the workspace minted before the bomb entry was not rolled back")
 	}

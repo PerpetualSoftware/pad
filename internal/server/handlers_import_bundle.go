@@ -145,6 +145,14 @@ func (s *Server) decompressedBundleCap() int64 {
 	return s.effectiveImportBundleMaxBytes()*importBundleExpansionFactor + 2*importMetadataMaxBytes
 }
 
+// decompressedCapMessage is the 413 for the decompressed ceiling. It states
+// the effective limit and how it is derived, so an operator with a
+// legitimately large export knows which setting raises it.
+func (s *Server) decompressedCapMessage(detail string) string {
+	return fmt.Sprintf("Bundle expands past %d bytes once decompressed%s. The limit is %dx the import body cap (%d bytes) plus %d bytes for metadata; raise PAD_IMPORT_BUNDLE_MAX_BYTES on this server to import a larger export.",
+		s.decompressedBundleCap(), detail, importBundleExpansionFactor, s.effectiveImportBundleMaxBytes(), 2*importMetadataMaxBytes)
+}
+
 // effectiveImportBundleMaxBytes is the compressed-body cap in force.
 func (s *Server) effectiveImportBundleMaxBytes() int64 {
 	if s.importBundleMaxBytes > 0 {
@@ -446,7 +454,7 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 		// Whichever read noticed it (a header, a blob, a skipped entry), an
 		// exhausted budget is the bundle's size, not a malformed stream.
 		if retErr != nil && budget.exceeded {
-			retErr = bundleTooLargeError(fmt.Sprintf("Bundle expands past %d bytes once decompressed", decompressedCap))
+			retErr = bundleTooLargeError(s.decompressedCapMessage(""))
 		}
 		if retErr != nil && budget.headersTripped {
 			retErr = bundleTooLargeError(fmt.Sprintf("Bundle has too many entries (more than %d tar header blocks)", importBundleMaxHeaderBlocks))
@@ -497,7 +505,7 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 		// Refuse an entry that declares more than the budget has left before
 		// inflating any of it. hdr.Size is the LOGICAL size, holes included.
 		if hdr.Size > logicalRemaining {
-			return ws, bundleTooLargeError(fmt.Sprintf("Bundle expands past %d bytes once decompressed (entry %q declares %d)", decompressedCap, hdr.Name, hdr.Size))
+			return ws, bundleTooLargeError(s.decompressedCapMessage(fmt.Sprintf(" (entry %q declares %d bytes)", hdr.Name, hdr.Size)))
 		}
 		logicalRemaining -= hdr.Size
 		if hdr.Typeflag != tar.TypeReg && hdr.Typeflag != tar.TypeRegA { //nolint:staticcheck // TypeRegA accepted for older bundles
