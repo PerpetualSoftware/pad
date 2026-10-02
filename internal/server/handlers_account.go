@@ -28,9 +28,14 @@ const accountDeleteReauthWindow = 10 * time.Minute
 // requestSessionInfo is the session the request was authenticated with,
 // from a padsess_ bearer or the session cookie, or nil.
 func (s *Server) requestSessionInfo(r *http.Request) *store.SessionInfo {
+	// The same reading TokenAuth gives the header (trimmed, so padding does
+	// not hide the session), and a bearer of any kind is the credential: a
+	// cookie riding alongside it did not authenticate the request.
 	token := ""
-	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer padsess_") {
-		token = strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
+	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+		if t := strings.TrimSpace(strings.TrimPrefix(auth, "Bearer ")); strings.HasPrefix(t, "padsess_") {
+			token = t
+		}
 	} else {
 		for _, name := range []string{sessionCookieName(s.secureCookies), "pad_session"} {
 			if c, err := r.Cookie(name); err == nil && c.Value != "" {

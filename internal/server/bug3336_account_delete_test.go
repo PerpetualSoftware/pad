@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // BUG-3336: account deletion is irreversible and soft-deletes every owned
@@ -165,4 +166,77 @@ func TestBUG3336_RotationKeepsTheSignInTime(t *testing.T) {
 	if rr := deleteAccountReq(srv, map[string]any{"confirm": true}, rotated); rr.Code != http.StatusForbidden {
 		t.Fatalf("confirm-only with a rotated old session: %d %s, want 403", rr.Code, rr.Body.String())
 	}
+}
+
+// codex round 2: approving a CLI sign-in from an existing session is not a
+// fresh sign-in. The CLI session it mints carries the approver's sign-in
+// time, so it cannot confirm-delete; and a PAT cannot approve at all.
+func TestBUG3336_CLIApprovalDoesNotMintAFreshSignIn(t *testing.T) {
+	srv, u, token := oauthOnlyCloud(t)
+	ageAllSessions(t, srv, u.ID, time.Hour)
+	pending, err := srv.store.CreateCLIAuthSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rr := doRequestWithCookieFrom(srv, "POST", "/api/v1/auth/cli/sessions/"+pending.Code+"/approve", nil, token, "198.51.100.7:5555"); rr.Code != http.StatusOK {
+		t.Fatalf("approve: %d %s", rr.Code, rr.Body.String())
+	}
+	approved, err := srv.store.GetCLIAuthSession(pending.Code)
+	if err != nil || approved == nil || approved.Token == "" {
+		t.Fatalf("approved CLI session: %+v %v", approved, err)
+	}
+	if rr := doRequestWithBearer(srv, "POST", "/api/v1/auth/delete-account", approved.Token, map[string]any{"confirm": true}); rr.Code != http.StatusForbidden {
+		t.Fatalf("confirm-only with a CLI session minted by an old one: %d %s, want 403", rr.Code, rr.Body.String())
+	}
+	stillThere(t, srv, u.ID)
+
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Owned", OwnerID: u.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pat, err := srv.store.CreateAPIToken(u.ID, models.APITokenCreate{Name: "leaked", WorkspaceID: ws.ID}, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, _ := srv.store.CreateCLIAuthSession()
+	if rr := doRequestWithBearer(srv, "POST", "/api/v1/auth/cli/sessions/"+again.Code+"/approve", pat.Token, nil); rr.Code != http.StatusForbidden || errorCode(t, rr) != "session_required" {
+		t.Fatalf("PAT approving a CLI sign-in: %d %s, want 403 session_required", rr.Code, rr.Body.String())
+	}
+}
+
+// The session a request authenticated with is found the way TokenAuth reads
+// the header, padding included; and a rotation with no readable session of
+// the user mints nothing that could read as freshly signed in.
+func TestBUG3336_RotationNeedsTheRequestSession(t *testing.T) {
+	srv, u, token := oauthOnlyCloud(t)
+	req := httptest.NewRequest("POST", "/api/v1/auth/oauth-unlink", nil)
+	req.Header.Set("Authorization", "Bearer  "+token+" ")
+	if info := srv.requestSessionInfo(req); info == nil || info.User.ID != u.ID {
+		t.Fatalf("a padded bearer session was not found: %+v", info)
+	}
+	if _, ok := srv.rotateSessionsAfterCredentialChange(httptest.NewRecorder(), httptest.NewRequest("POST", "/", nil), u); ok {
+		t.Fatal("a rotation with no request session minted a session")
+	}
+}
+
+// A rotation never extends a session past SessionMaxLifetime from its
+// original sign-in.
+func TestBUG3336_RotationKeepsTheLifetimeCap(t *testing.T) {
+	srv, u, token := oauthOnlyCloud(t)
+	ageAllSessions(t, srv, u.ID, store.SessionMaxLifetime-24*time.Hour)
+	req := httptest.NewRequest("POST", "/", nil)
+	req.AddCookie(&http.Cookie{Name: sessionCookieName(srv.secureCookies), Value: token})
+	rotated, ok := srv.rotateSessionsAfterCredentialChange(httptest.NewRecorder(), req, u)
+	if !ok {
+		t.Fatal("rotation failed")
+	}
+	var expiresAt string
+	if err := srv.store.DB().QueryRow(`SELECT expires_at FROM sessions WHERE user_id = ? ORDER BY expires_at DESC LIMIT 1`, u.ID).Scan(&expiresAt); err != nil {
+		t.Fatal(err)
+	}
+	exp, _ := time.Parse(time.RFC3339, expiresAt)
+	if until := time.Until(exp); until > 25*time.Hour {
+		t.Fatalf("rotation of an 89-day-old session expires in %v; the cap is a day away", until)
+	}
+	_ = rotated
 }

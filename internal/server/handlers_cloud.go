@@ -531,6 +531,12 @@ func (s *Server) handleOAuthLink(w http.ResponseWriter, r *http.Request) {
 // Removes a linked OAuth provider. Requires the user to have a usable password
 // (to prevent locking themselves out).
 func (s *Server) handleOAuthUnlink(w http.ResponseWriter, r *http.Request) {
+	// It rotates every session and mints a new one (BUG-3336, BUG-3349).
+	if isAPITokenAuth(r) {
+		writeError(w, http.StatusForbidden, "session_required",
+			"Unlinking a sign-in provider requires an interactive session, not an API token")
+		return
+	}
 	user := currentUser(r)
 	if user == nil {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "Authentication required")
