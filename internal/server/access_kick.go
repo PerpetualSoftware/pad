@@ -160,10 +160,46 @@ func (s *Server) SetAccessKickTransport(t accesskick.Transport) {
 		s.accessKickStop()
 		s.accessKickStop = nil
 	}
+	if s.accessKickWorker != nil {
+		close(s.accessKickWorker.done)
+		s.accessKickWorker = nil
+	}
 	s.accessKickTransport = t
 	if t != nil {
 		s.accessKickStop = t.Subscribe(s.applyAccessKick)
+		s.accessKickWorker = startKickPublisher(t)
 	}
+}
+
+// kickPublisherQueue bounds the kicks waiting for the remote publisher. Past
+// it, a kick is dropped for OTHER instances only (this one was kicked
+// directly) and their revalidation tick covers it.
+const kickPublisherQueue = 1024
+
+// kickPublisher publishes kicks to the transport from ONE background
+// goroutine, so no request waits on Redis (codex r2): a stalled Redis costs
+// the queue, never the handler that just committed an access change.
+type kickPublisher struct {
+	ch   chan accesskick.Message
+	done chan struct{}
+}
+
+func startKickPublisher(t accesskick.Transport) *kickPublisher {
+	p := &kickPublisher{ch: make(chan accesskick.Message, kickPublisherQueue), done: make(chan struct{})}
+	go func() {
+		for {
+			select {
+			case <-p.done:
+				return
+			case m := <-p.ch:
+				if err := t.Publish(context.Background(), m); err != nil {
+					slog.Warn("access kicks: publish failed; other instances fall back to the revalidation tick",
+						"user_id", m.UserID, "workspace_id", m.WorkspaceID, "error", err)
+				}
+			}
+		}
+	}()
+	return p
 }
 
 // invalidateUserAccess tells every instance that userID's access or
@@ -184,18 +220,21 @@ func (s *Server) publishAccessKick(m accesskick.Message) {
 	if m.UserID == "" && m.WorkspaceID == "" {
 		return
 	}
+	// THIS instance's connections are kicked now, directly. The transport
+	// also delivers the kick back here; a second kick coalesces.
+	s.applyAccessKick(m)
 	s.accessKickMu.Lock()
-	t := s.accessKickTransport
+	w := s.accessKickWorker
 	s.accessKickMu.Unlock()
-	if t == nil {
-		// One instance: kick directly.
-		s.applyAccessKick(m)
-		return
+	if w == nil {
+		return // one instance
 	}
-	if err := t.Publish(context.Background(), m); err != nil {
-		slog.Warn("access kicks: publish failed; other instances fall back to the revalidation tick",
-			"user_id", m.UserID, "workspace_id", m.WorkspaceID, "error", err)
-		s.applyAccessKick(m)
+	select {
+	case w.ch <- m:
+	case <-w.done:
+	default:
+		slog.Warn("access kicks: publisher queue full; other instances fall back to the revalidation tick",
+			"user_id", m.UserID, "workspace_id", m.WorkspaceID)
 	}
 }
 

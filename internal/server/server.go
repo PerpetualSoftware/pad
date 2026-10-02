@@ -109,6 +109,7 @@ type Server struct {
 	accessKickMu          sync.Mutex
 	accessKickTransport   accesskick.Transport
 	accessKickStop        func()
+	accessKickWorker      *kickPublisher
 	sessionPresence       SessionPresence      // live event-stream connections per user (optional, PLAN-2558 S1)
 	redisHealth           *RedisHealth         // cached Redis reachability, reported by /api/v1/health/ready and pad_redis_up (optional, BUG-2727)
 	collab                *collab.RoomManager  // Yjs collab room manager (PLAN-1248); optional

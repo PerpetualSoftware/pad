@@ -49,13 +49,19 @@ type RedisTransport struct {
 	channel string
 }
 
-// NewRedisTransport returns a transport on keys' access_kicks channel.
+// NewRedisTransport returns a transport on keys' access_kicks channel. It
+// uses its OWN client, cloned from client's options with context timeouts
+// enabled: the shared client leaves ContextTimeoutEnabled off, so command I/O
+// ignores a context deadline and a stalled Redis held a publish for the
+// client's full 5s read timeout (codex r2).
 func NewRedisTransport(client *redis.Client, keys redisns.Keys) *RedisTransport {
-	return &RedisTransport{client: client, channel: keys.Name(ChannelSuffix)}
+	opts := *client.Options()
+	opts.ContextTimeoutEnabled = true
+	return &RedisTransport{client: redis.NewClient(&opts), channel: keys.Name(ChannelSuffix)}
 }
 
-// Publish sends m. Bounded, so a Redis outage costs the caller (a request
-// handler that just committed an access change) at most a second.
+// Publish sends m, bounded at a second. The server calls it from a
+// background worker, never on a request path.
 func (t *RedisTransport) Publish(ctx context.Context, m Message) error {
 	payload, err := json.Marshal(m)
 	if err != nil {

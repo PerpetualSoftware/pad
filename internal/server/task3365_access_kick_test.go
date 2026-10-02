@@ -405,3 +405,42 @@ func TestTASK3365_PartialRevokeStillKicks(t *testing.T) {
 	f.must(f.do("DELETE", "/api/v1/workspaces/"+f.wsSlug+"/members/"+u.ID+"?revoke_grants=false", f.ownerTok, nil), http.StatusNoContent, "remove member, keep grant")
 	waitKick(t, kick, "partial revoke")
 }
+
+type blockingTransport struct{ release chan struct{} }
+
+func (b *blockingTransport) Publish(ctx context.Context, _ accesskick.Message) error {
+	select {
+	case <-b.release:
+	case <-ctx.Done():
+	}
+	return nil
+}
+func (b *blockingTransport) Subscribe(func(accesskick.Message)) func() { return func() {} }
+
+// A stalled transport never delays the request that published the kick, and
+// this instance's own connections are kicked at once (codex r2).
+func TestTASK3365_StalledTransportDoesNotBlockTheRequest(t *testing.T) {
+	srv := testServer(t)
+	bt := &blockingTransport{release: make(chan struct{})}
+	defer close(bt.release)
+	srv.SetAccessKickTransport(bt)
+	t.Cleanup(func() { srv.SetAccessKickTransport(nil) })
+	kick, unreg := srv.accessKicks().register("u1", "")
+	defer unreg()
+
+	// In a goroutine with a deadline, so a regression that publishes on the
+	// caller fails here instead of hanging the binary.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 2*kickPublisherQueue; i++ { // fills and overflows the queue
+			srv.invalidateUserAccess("u1")
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatalf("%d kicks against a stalled transport were still blocking the caller after 1s", 2*kickPublisherQueue)
+	}
+	waitKick(t, kick, "local kick with a stalled transport")
+}
