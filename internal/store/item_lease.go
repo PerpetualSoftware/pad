@@ -42,9 +42,16 @@ func (e *LeaseHeldError) Error() string {
 // crashed holder; the handler bounds ttl before it gets here).
 //
 // On contention it returns *LeaseHeldError naming the live holder.
-func (s *Store) ClaimItemLease(itemID, holder string, ttl time.Duration) (*models.ItemLease, error) {
+// userID is the authenticated claimer (BUG-3341). A lease is "ours" when its
+// label matches AND it was claimed by this user, or by nobody recorded (a
+// lease from before migration 104, honoured on its label alone until it
+// expires). A claim stamps userID, so refreshing a legacy lease binds it.
+// Empty userID stores NULL: the label-only behaviour, for callers with no
+// signed-in user.
+func (s *Store) ClaimItemLease(itemID, holder, userID string, ttl time.Duration) (*models.ItemLease, error) {
 	nowStr := now()
 	expiresStr := time.Now().UTC().Add(ttl).Format(time.RFC3339)
+	uid := leaseUserArg(userID)
 
 	// The predicate is the arbiter: unclaimed, expired, or already ours.
 	// All SET expressions read the PRE-update row (standard SQL, both
@@ -52,14 +59,16 @@ func (s *Store) ClaimItemLease(itemID, holder string, ttl time.Duration) (*model
 	res, err := s.db.Exec(s.q(`
 		UPDATE items SET
 			lease_acquired_at = CASE
-				WHEN lease_holder = ? AND lease_expires_at > ? THEN lease_acquired_at
+				WHEN lease_holder = ? AND (lease_user_id IS NULL OR lease_user_id = ?) AND lease_expires_at > ? THEN lease_acquired_at
 				ELSE ?
 			END,
 			lease_holder = ?,
+			lease_user_id = ?,
 			lease_expires_at = ?
 		WHERE id = ?
-		  AND (lease_holder IS NULL OR lease_expires_at IS NULL OR lease_expires_at <= ? OR lease_holder = ?)
-	`), holder, nowStr, nowStr, holder, expiresStr, itemID, nowStr, holder)
+		  AND (lease_holder IS NULL OR lease_expires_at IS NULL OR lease_expires_at <= ?
+		       OR (lease_holder = ? AND (lease_user_id IS NULL OR lease_user_id = ?)))
+	`), holder, uid, nowStr, nowStr, holder, uid, expiresStr, itemID, nowStr, holder, uid)
 	if err != nil {
 		return nil, err
 	}
@@ -88,11 +97,13 @@ func (s *Store) ClaimItemLease(itemID, holder string, ttl time.Duration) (*model
 // releasing an absent or expired lease is a no-op (released=false), never
 // an error — cleanup code must not special-case "did I still hold this".
 // Releasing another holder's LIVE lease is refused with *LeaseHeldError.
-func (s *Store) ReleaseItemLease(itemID, holder string) (bool, error) {
+func (s *Store) ReleaseItemLease(itemID, holder, userID string) (bool, error) {
+	// Only the lease's own user may release it, with its label (BUG-3341);
+	// a pre-migration lease (NULL user) on its label alone.
 	res, err := s.db.Exec(s.q(`
-		UPDATE items SET lease_holder = NULL, lease_acquired_at = NULL, lease_expires_at = NULL
-		WHERE id = ? AND lease_holder = ?
-	`), itemID, holder)
+		UPDATE items SET lease_holder = NULL, lease_user_id = NULL, lease_acquired_at = NULL, lease_expires_at = NULL
+		WHERE id = ? AND lease_holder = ? AND (lease_user_id IS NULL OR lease_user_id = ?)
+	`), itemID, holder, leaseUserArg(userID))
 	if err != nil {
 		return false, err
 	}
@@ -108,7 +119,9 @@ func (s *Store) ReleaseItemLease(itemID, holder string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if lease != nil && lease.Holder != holder {
+	// A live lease that is not ours: another label, or our label claimed by
+	// another user. Either way the caller does not hold it.
+	if lease != nil {
 		return false, &LeaseHeldError{Holder: lease.Holder, AcquiredAt: lease.AcquiredAt, ExpiresAt: lease.ExpiresAt}
 	}
 	return false, nil
@@ -179,4 +192,13 @@ func (s *Store) readItemLeaseRow(itemID string) (*models.ItemLease, error) {
 		lease.AcquiredAt = parseTime(*acquiredAt)
 	}
 	return lease, nil
+}
+
+// leaseUserArg is the SQL argument for a lease's user: NULL when there is no
+// signed-in user, so the row keeps the label-only behaviour.
+func leaseUserArg(userID string) any {
+	if userID == "" {
+		return nil
+	}
+	return userID
 }
