@@ -1726,6 +1726,18 @@ const CmdhelpVersion = "0.1"
 //     unchanged. A client that confirms destructive tools will now
 //     confirm pad_workspace calls.
 //
+//     0.62 — BUG-3326. ADDITIVE bump on the v0.53 / v0.28 grounds: no
+//     tool name, action enum or param shape moved. Over REMOTE /mcp,
+//     `pad_set_workspace` now embeds the workspace bootstrap under
+//     `bootstrap`, as the stdio transport always did and as the tool's
+//     description already promised: registerRemoteMCP passed no
+//     BootstrapFetcher, so the response carried only {workspace, status:
+//     not_persisted, note}. The embed is the bootstrap resource's own
+//     in-process read (HTTPResourceFetcher), run as the token's user
+//     through the dispatcher's scope/consent perimeter, so a workspace the
+//     caller cannot read embeds nothing; a failed fetch stays non-fatal,
+//     as on stdio. Stdio is unchanged.
+//
 //     Post-0.37, deliberately NO bump (BUG-3098): `workspace_member_limit`
 //     joins the structured 403 allow-list, as ErrWorkspaceMemberLimit with
 //     its own hint (not the plan-limit "upgrade" hint). The server emits it
@@ -1734,7 +1746,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.61"
+const ToolSurfaceVersion = "0.62"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a
