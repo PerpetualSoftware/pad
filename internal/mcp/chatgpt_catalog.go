@@ -225,7 +225,7 @@ var ChatGPTCatalog = []ChatGPTTool{
 	},
 	{
 		Name:        "item_history",
-		Description: "List an item's saved versions, newest first: when each was saved, and whether a person, an agent or ChatGPT made it.",
+		Description: "List an item's saved versions, newest first: when each was saved and who made it, with whether that was a person, an agent or ChatGPT.",
 		Source:      ChatGPTSource{"pad_item", "history"},
 		Params:      []string{chatGPTWorkspaceParam, "ref", "limit"},
 		Required:    []string{chatGPTWorkspaceParam, "ref"},

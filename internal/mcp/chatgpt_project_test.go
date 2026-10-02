@@ -112,3 +112,25 @@ func TestChatGPTProjection_TextFallbackIsProjected(t *testing.T) {
 		t.Errorf("text fallback not projected: %s", text)
 	}
 }
+
+// A display name that is an email address reaches ChatGPT as "a Pad user"
+// in every person field, and nowhere else is a name touched (TASK-3321).
+func TestChatGPTProjection_EmailShapedNamesAreMasked(t *testing.T) {
+	v := map[string]any{
+		"user":       map[string]any{"name": "jane@example.com"},
+		"workspace":  map[string]any{"name": "Acme Launch"},
+		"author":     "jane@example.com",
+		"actor_name": "Jane Doe",
+		"by_role":    []any{map[string]any{"role_name": "Dev", "assigned_users": []any{"jane@example.com", "Sam"}}},
+	}
+	maskEmailShapedNames(v, "")
+	b, _ := json.Marshal(v)
+	if strings.Contains(string(b), "@") {
+		t.Errorf("an email-shaped name survived: %s", b)
+	}
+	for _, keep := range []string{"Acme Launch", "Jane Doe", `"Sam"`} {
+		if !strings.Contains(string(b), keep) {
+			t.Errorf("an ordinary name %s was masked: %s", keep, b)
+		}
+	}
+}
