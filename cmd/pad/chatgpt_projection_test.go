@@ -218,15 +218,12 @@ func TestChatGPTProjection_NoIdentifiersOrEmailsLeak(t *testing.T) {
 				sort.Strings(l)
 				t.Errorf("leaks:\n  %s", strings.Join(l, "\n  "))
 			}
-			// The text fallback is the projected value, not the raw body.
-			var text string
-			for _, ct := range res.Content {
-				if tc, ok := ct.(mcp.TextContent); ok {
-					text = tc.Text
-				}
-			}
-			if emailShaped.MatchString(text) || strings.Contains(text, `"workspace_id"`) {
-				t.Errorf("the text fallback carries what the structured content dropped: %.300s", text)
+			// The text fallback gets the same sweep (codex review): a client
+			// that reads only text must not see what the structured content
+			// dropped.
+			if l := leaks(c.tool+"(text)", textJSON(t, res), allowed); len(l) > 0 {
+				sort.Strings(l)
+				t.Errorf("text fallback leaks:\n  %s", strings.Join(l, "\n  "))
 			}
 		})
 	}
@@ -274,3 +271,53 @@ func TestChatGPTProjection_KeepsWhatTheToolsAreFor(t *testing.T) {
 		t.Errorf("list_collections schema is not an object: %v", first[0])
 	}
 }
+
+func textJSON(t *testing.T, res *mcp.CallToolResult) any {
+	t.Helper()
+	for _, ct := range res.Content {
+		if tc, ok := ct.(mcp.TextContent); ok {
+			var v any
+			if err := json.Unmarshal([]byte(tc.Text), &v); err != nil {
+				t.Fatalf("text fallback is not JSON: %.200s", tc.Text)
+			}
+			return v
+		}
+	}
+	return nil
+}
+
+// Error results are swept too: an error that embeds item data must not
+// carry what a success would have dropped (codex review).
+func TestChatGPTProjection_ErrorPathsDoNotLeak(t *testing.T) {
+	f := newProjectionFixture(t)
+	for _, c := range []struct {
+		tool string
+		args map[string]any
+	}{
+		{"get_item", map[string]any{"workspace": f.ws, "ref": "TASK-99999"}},
+		{"get_item", map[string]any{"workspace": "no-such-workspace", "ref": f.task1}},
+		{"create_item", map[string]any{"workspace": f.ws, "collection": "tasks", "title": "x", "status": "not-a-status"}},
+		// The raw validation hint quotes the id it could not resolve.
+		{"create_item", map[string]any{"workspace": f.ws, "collection": "deliverables", "title": "x",
+			"fields": map[string]any{"owner": "9b1c0a6e-1111-4222-8333-444455556666"}}},
+	} {
+		res, v := f.call(t, c.tool, c.args)
+		if !res.IsError {
+			t.Errorf("%s %v did not fail", c.tool, c.args)
+			continue
+		}
+		if l := leaks(c.tool, v, nil); len(l) > 0 {
+			t.Errorf("%s error leaks: %v", c.tool, l)
+		}
+		if l := leaks(c.tool+"(text)", textJSON(t, res), nil); len(l) > 0 {
+			t.Errorf("%s error text leaks: %v", c.tool, l)
+		}
+		// Error prose can embed an id mid-sentence.
+		b, _ := json.Marshal(res)
+		if uuidAnywhere.Match(b) {
+			t.Errorf("%s error carries an id inside its text: %s", c.tool, b)
+		}
+	}
+}
+
+var uuidAnywhere = regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)

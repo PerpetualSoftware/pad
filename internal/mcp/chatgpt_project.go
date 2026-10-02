@@ -210,16 +210,23 @@ func projectChatGPTResult(t ChatGPTTool, in map[string]any, res *CallToolResult)
 		return nil
 	}
 	if res.IsError {
-		return neutralizePlanLimit(res)
+		return projectChatGPTError(res)
 	}
 	value, ok := resultJSON(res)
 	if !ok {
-		if t.Name == "archive_item" {
-			// The source answers 204 with no body; say what happened.
-			value = map[string]any{"ref": in["ref"], "archived": true}
-		} else {
-			return res
+		if t.Name != "archive_item" {
+			// Every other source answers JSON. Anything else is not
+			// something the shapes can vouch for, so it does not pass
+			// (codex review: fail closed).
+			return NewErrorResult(ErrorPayload{Code: ErrServerError, Message: t.Name + " returned an unexpected response"})
 		}
+		// The source answers 204 with no body; say what happened. The ref
+		// is the caller's own input, echoed only when it is not an id.
+		answer := map[string]any{"archived": true}
+		if ref, _ := in["ref"].(string); ref != "" && !uuidValue.MatchString(ref) {
+			answer["ref"] = ref
+		}
+		value = answer
 	}
 	s, ok := chatGPTResponseShapes[t.Name]
 	if !ok {
@@ -408,21 +415,45 @@ func relationRefs(target any) any {
 	}
 }
 
-// neutralizePlanLimit rewrites a plan-limit refusal for ChatGPT: the /mcp
-// message and hint point at the upgrade page, which OpenAI's commerce rules
-// forbid a plugin to promote. Every other error passes unchanged.
-func neutralizePlanLimit(res *CallToolResult) *CallToolResult {
+// errorShape is what an error envelope may carry to ChatGPT. details (which
+// can hold item data, ids and the upgrade link) and every other key are
+// dropped (codex review).
+var errorShape = shape{"error": shapeWith(shapeKeys("code", "message", "hint", "field", "expected"), shape{
+	"available_workspaces": shapeKeys("slug", "name"),
+})}
+
+var uuidInText = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
+
+// projectChatGPTError minimizes an error result: the envelope is projected
+// through errorShape, ids inside its text are masked, and a plan-limit
+// refusal is replaced by a neutral sentence, because the /mcp message and
+// hint point at the upgrade page, which OpenAI's commerce rules forbid a
+// plugin to promote.
+func projectChatGPTError(res *CallToolResult) *CallToolResult {
 	value, ok := resultJSON(res)
-	if !ok {
-		return res
-	}
 	env, _ := value.(map[string]any)
 	e, _ := env["error"].(map[string]any)
-	if code, _ := e["code"].(string); code != string(ErrPlanLimitExceeded) {
-		return res
+	if !ok || e == nil {
+		return NewErrorResult(ErrorPayload{Code: ErrServerError, Message: "The request failed."})
 	}
-	return NewErrorResult(ErrorPayload{
-		Code:    ErrPlanLimitExceeded,
-		Message: "This workspace has reached a limit of its current plan, so this change cannot be made.",
-	})
+	if code, _ := e["code"].(string); code == string(ErrPlanLimitExceeded) {
+		return NewErrorResult(ErrorPayload{
+			Code:    ErrPlanLimitExceeded,
+			Message: "This workspace has reached a limit of its current plan, so this change cannot be made.",
+		})
+	}
+	projected := errorShape.apply(value).(map[string]any)
+	pe := projected["error"].(map[string]any)
+	for _, k := range []string{"message", "hint"} {
+		if s, ok := pe[k].(string); ok {
+			pe[k] = uuidInText.ReplaceAllString(s, "(id)")
+		}
+	}
+	b, err := json.Marshal(projected)
+	if err != nil {
+		return NewErrorResult(ErrorPayload{Code: ErrServerError, Message: "The request failed."})
+	}
+	out := structuredResult(projected, string(b))
+	out.IsError = true
+	return out
 }

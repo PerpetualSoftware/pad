@@ -504,7 +504,9 @@ func chatGPTHandler(t ChatGPTTool, source server.ToolHandlerFunc) server.ToolHan
 		// what update_item's description promises.
 		res, err := source(padserver.WithChatGPTSurface(ctx), out)
 		if err != nil {
-			return res, err
+			// A Go error would reach the client as a protocol error carrying
+			// its text; answer a plain failure instead (codex review).
+			return NewErrorResult(ErrorPayload{Code: ErrServerError, Message: "The request failed."}), nil
 		}
 		// TASK-3321 U3: minimize the response before it leaves (R2).
 		return projectChatGPTResult(t, in, res), nil

@@ -58,9 +58,38 @@ func TestChatGPTProjection_PlanLimitIsNeutral(t *testing.T) {
 	if !got.IsError || !strings.Contains(string(b), string(ErrPlanLimitExceeded)) {
 		t.Errorf("the refusal lost its error code or flag: %s", b)
 	}
-	other := NewErrorResult(ErrorPayload{Code: ErrNotFound, Message: "no such item"})
-	if projectChatGPTResult(ChatGPTTool{Name: "get_item"}, nil, other) != other {
-		t.Error("a non-plan-limit error was rewritten")
+}
+
+// Other errors keep their code, message and hint, lose any other member,
+// and have ids masked (codex review).
+func TestChatGPTProjection_ErrorsAreMinimized(t *testing.T) {
+	src := NewErrorResult(ErrorPayload{
+		Code:    ErrNotFound,
+		Message: "item 9b1c0a6e-1111-4222-8333-444455556666 not found",
+		Hint:    "check the ref",
+		Details: json.RawMessage(`{"assigned_user_email":"a@b.co"}`),
+	})
+	got := projectChatGPTResult(ChatGPTTool{Name: "get_item"}, nil, src)
+	b, _ := json.Marshal(got)
+	if !got.IsError || !strings.Contains(string(b), string(ErrNotFound)) || !strings.Contains(string(b), "check the ref") {
+		t.Errorf("the error lost its code, flag or hint: %s", b)
+	}
+	if strings.Contains(string(b), "9b1c0a6e") || strings.Contains(string(b), "a@b.co") || strings.Contains(string(b), "details") {
+		t.Errorf("the error still carries ids, emails or details: %s", b)
+	}
+}
+
+// A success that is not JSON fails closed; archive_item, whose source
+// answers no body, confirms without echoing an id.
+func TestChatGPTProjection_NonJSONFailsClosed(t *testing.T) {
+	if got := projectChatGPTResult(ChatGPTTool{Name: "get_item"}, nil, textResult("plain words")); !got.IsError {
+		t.Errorf("a non-JSON success passed through: %+v", got)
+	}
+	got := projectChatGPTResult(ChatGPTTool{Name: "archive_item"},
+		map[string]any{"ref": "9b1c0a6e-1111-4222-8333-444455556666"}, textResult(""))
+	b, _ := json.Marshal(got.StructuredContent)
+	if strings.Contains(string(b), "9b1c0a6e") || !strings.Contains(string(b), `"archived":true`) {
+		t.Errorf("archive answer = %s, want archived:true without the id", b)
 	}
 }
 
