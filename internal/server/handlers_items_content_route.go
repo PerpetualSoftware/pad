@@ -282,6 +282,12 @@ func (s *Server) applierFirstWrite(
 	// write is gated on Content != nil, so a nil here means the row write touches
 	// neither items.content nor the version chain's content bracket.
 	rowInput.Content = nil
+	// ...but the edit still owes a version of the body it replaces (BUG-3327):
+	// it used to write none, so an agent's edit made while a tab had the item
+	// open was missing from History. ExternalContent versions it in this same
+	// row write's transaction, before the live document changes, and is never
+	// written to the row.
+	rowInput.ExternalContent = &content
 
 	updated, uerr := s.store.UpdateItemWithParentLink(item.ID, rowInput, openChildrenPrecheck, parentLink)
 	if uerr != nil {

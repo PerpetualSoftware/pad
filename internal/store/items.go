@@ -2789,9 +2789,16 @@ func (s *Store) updateItemWithParentLinkOnce(
 
 	ts := now()
 
-	// Create version if content is changing
+	// Create version if content is changing. The new body is Content, or on
+	// the applier path ExternalContent, which goes to the live document
+	// rather than the row (BUG-3327): either way the body before the edit
+	// is what a version must keep.
 	bodyEditedWithoutVersion := false
-	if input.Content != nil && *input.Content != existing.Content {
+	newBody := input.Content
+	if newBody == nil {
+		newBody = input.ExternalContent
+	}
+	if newBody != nil && *newBody != existing.Content {
 		createdBy := input.LastModifiedBy
 		if createdBy == "" {
 			createdBy = "user"
@@ -2834,8 +2841,13 @@ func (s *Store) updateItemWithParentLinkOnce(
 			vid := newID()
 			versionContent := existing.Content
 			isDiff := false
-			patch := diff.CreateReversePatch(existing.Content, *input.Content)
-			if diff.IsDiffSmaller(patch, existing.Content) {
+			patch := diff.CreateReversePatch(existing.Content, *newBody)
+			// A reverse patch is resolved backwards from the ROW's body, which
+			// on the applier path (ExternalContent, BUG-3327) is still the old
+			// body until the tab's flush lands: a patch would resolve against
+			// the wrong base in that window. The full body resolves the same
+			// whatever the row holds.
+			if input.Content != nil && diff.IsDiffSmaller(patch, existing.Content) {
 				versionContent = patch
 				isDiff = true
 			}
@@ -2847,7 +2859,7 @@ func (s *Store) updateItemWithParentLinkOnce(
 			// under the item lock (this runs in the update's own tx).
 			// PLAN-2348 U2: an update row holds the body BEFORE its edit, so
 			// its recorded change is that body → the one replacing it.
-			added, removed := diff.LineCounts(existing.Content, *input.Content)
+			added, removed := diff.LineCounts(existing.Content, *newBody)
 			_, err = tx.Exec(s.q(`
 				INSERT INTO item_versions (id, item_id, content, change_summary, created_by, source, is_diff, created_at, version_seq,
 				                           user_id, lines_added, lines_removed, is_create)
