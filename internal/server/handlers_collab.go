@@ -563,7 +563,8 @@ func (s *Server) authorizeCollabAccess(r *http.Request, item *models.Item) (coll
 	// zero-user instance, so a read-scoped token stays read-only here
 	// too (collabTokenWriteScopeAllowed returns true for the no-token
 	// anonymous setup caller, whose scopes are empty = unrestricted).
-	if count, _ := s.store.UserCount(); count == 0 {
+	// A count that cannot be read is not an empty instance (BUG-3334).
+	if count, err := s.userCount(); err == nil && count == 0 {
 		return collabAccess{canWrite: s.collabTokenWriteScopeAllowed(r)}, nil
 	}
 

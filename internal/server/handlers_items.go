@@ -781,8 +781,9 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	createVisIDs, _ := s.visibleCollectionIDs(r, workspaceID)
-	if err := s.enrichItemForResponse(r, item, createVisIDs); err != nil {
+	// The visibility checked before the write, not a second, unchecked
+	// resolution after it (BUG-3334).
+	if err := s.enrichItemForResponse(r, item, visibleIDs); err != nil {
 		writeInternalError(w, err)
 		return
 	}
@@ -1083,7 +1084,11 @@ func (s *Server) handleGetItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	enrichVisIDs, _ := s.visibleCollectionIDs(r, workspaceID)
+	enrichVisIDs, err := s.visibleCollectionIDs(r, workspaceID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
 	if err := s.enrichItemForResponse(r, item, enrichVisIDs); err != nil {
 		writeInternalError(w, err)
 		return
@@ -1265,6 +1270,14 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	}
 	// Check edit permission (grant-aware for guests)
 	if !s.requireEditPermission(w, r, workspaceID, item.ID, item.CollectionID) {
+		return
+	}
+	// The response's visibility, resolved BEFORE the write (BUG-3334): an
+	// error here is a 500 with nothing written, where resolving it after
+	// would report a committed write as failed.
+	updateVisIDs, err := s.visibleCollectionIDs(r, workspaceID)
+	if err != nil {
+		writeInternalError(w, err)
 		return
 	}
 
@@ -2559,7 +2572,6 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	updateVisIDs, _ := s.visibleCollectionIDs(r, workspaceID)
 	if err := s.enrichItemForResponse(r, updated, updateVisIDs); err != nil {
 		writeInternalError(w, err)
 		return
@@ -2693,6 +2705,13 @@ func (s *Server) handleRestoreItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Resolved before the write, as in handleUpdateItem (BUG-3334).
+	restoreVisIDs, err := s.visibleCollectionIDs(r, workspaceID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+
 	restored, err := s.store.RestoreItem(item.ID, s.restoreLimitOpts()...)
 	if err != nil {
 		if writeStorePlanLimitError(w, r, err, "") {
@@ -2718,7 +2737,6 @@ func (s *Server) handleRestoreItem(w http.ResponseWriter, r *http.Request) {
 	s.logActivity(workspaceID, restored.ID, "restored", r)
 	s.publishItemEventWithName(sseItemRestored, workspaceID, restored.ID, restored.Title, restored.CollectionSlug, actor, actorNameFromRequest(r), source, restored.Seq)
 
-	restoreVisIDs, _ := s.visibleCollectionIDs(r, workspaceID)
 	if err := s.enrichItemForResponse(r, restored, restoreVisIDs); err != nil {
 		writeInternalError(w, err)
 		return
@@ -3176,8 +3194,8 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	s.publishItemEventWithName(sseItemMoved, workspaceID, moved.ID, moved.Title, targetColl.Slug, actor, actorNameForMove, source, moved.Seq)
 	s.publishWatchNotifications(workspaceID, moved, actor, actorNameForMove)
 
-	moveVisIDs, _ := s.visibleCollectionIDs(r, workspaceID)
-	if err := s.enrichItemForResponse(r, moved, moveVisIDs); err != nil {
+	// The visibility checked before the write (BUG-3334).
+	if err := s.enrichItemForResponse(r, moved, targetVisibleIDs); err != nil {
 		writeInternalError(w, err)
 		return
 	}
@@ -3638,7 +3656,11 @@ func (s *Server) handleGetItemProgress(w http.ResponseWriter, r *http.Request) {
 
 	// Get visibility filter; when restricted, compute progress from
 	// visible children only so hidden child counts don't leak.
-	progVisIDs, _ := s.visibleCollectionIDs(r, workspaceID)
+	progVisIDs, progVisErr := s.visibleCollectionIDs(r, workspaceID)
+	if progVisErr != nil {
+		writeInternalError(w, progVisErr)
+		return
+	}
 	progFullCollIDs, progGrantedItemIDs, progGrantErr := s.guestResourceFilter(r, workspaceID)
 	if progGrantErr != nil {
 		writeInternalError(w, progGrantErr)

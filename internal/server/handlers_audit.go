@@ -10,6 +10,16 @@ import (
 // handleAuditLog returns a filtered audit log. Admin-only.
 // Supports filtering by action, user (user ID), workspace, days, and pagination.
 func (s *Server) handleAuditLog(w http.ResponseWriter, r *http.Request) {
+	// The platform audit log spans every workspace, and a platform admin's
+	// authority over it belongs to the admin's own interactive session (a
+	// browser cookie or a `pad auth login` CLI session), not to a PAT that
+	// carries their identity (BUG-3334, the BUG-1616 split drawn where
+	// BUG-2890 drew it). Checked before the role, as handleCreateToken does.
+	if isAPITokenAuth(r) {
+		writeError(w, http.StatusForbidden, "session_required",
+			"The platform audit log requires an interactive session, not an API token")
+		return
+	}
 	user := currentUser(r)
 	if user == nil || user.Role != "admin" {
 		writeError(w, http.StatusForbidden, "forbidden", "Admin access required")

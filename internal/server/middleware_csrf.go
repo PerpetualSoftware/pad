@@ -219,9 +219,10 @@ func (s *Server) CSRFProtect(next http.Handler) http.Handler {
 			return
 		}
 
-		// No users exist (fresh install) — skip CSRF
-		count, err := s.store.UserCount()
-		if err != nil || count == 0 {
+		// No users exist (fresh install) — skip CSRF. A count that cannot be
+		// read is not a fresh install, so the check below still runs
+		// (BUG-3334).
+		if count, err := s.userCount(); err == nil && count == 0 {
 			next.ServeHTTP(w, r)
 			return
 		}
