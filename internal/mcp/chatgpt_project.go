@@ -10,8 +10,18 @@ import (
 
 // Response minimization for the ChatGPT catalog (TASK-3321 U3, ruling R2).
 // OpenAI's review requires tool responses to carry only what the request
-// needs: no internal identifiers, no emails, no counters or diagnostics. Each
-// ChatGPT tool's response is projected through an ALLOW-LIST shape, so a key
+// needs, with no counters or diagnostics.
+//
+// THE PERSONAL-DATA POLICY, exactly (Dave's ruling on TASK-3345 #2): PAD ADDS
+// NO PERSONAL DATA. What Pad itself attaches to a response (internal ids,
+// account emails, an email-shaped display name, which is masked below) is
+// stripped. What the USER wrote passes through unchanged: item titles and
+// bodies, comments, and custom field values are the user's own data in a
+// workspace they chose to connect, so an email address typed into an item
+// body reaches ChatGPT as typed. "No personal data" is NOT the claim and must
+// not be written anywhere this policy is described.
+//
+// Each ChatGPT tool's response is projected through an ALLOW-LIST shape, so a key
 // nobody listed is dropped: a field added to models.Item tomorrow cannot reach
 // ChatGPT without someone deciding it should. The population and every
 // keep/drop decision are on TASK-3321 (U3 plan checkpoint).

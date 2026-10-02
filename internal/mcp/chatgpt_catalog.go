@@ -16,7 +16,9 @@ import (
 
 // The ChatGPT catalog (TASK-3321 U1) is a second tool surface, served at its
 // own URL, shaped for OpenAI's plugin directory: one tool per operation, the
-// three hints set per operation, and (U3) responses minimized. It is a
+// three hints set per operation, and (U3) responses minimized: Pad adds no
+// personal data, while what the user wrote passes through unchanged (the
+// exact policy is stated at the top of chatgpt_project.go). It is a
 // PROJECTION of Catalog, never a fork: every entry names the /mcp
 // (tool, action) it stands for and is executed by that tool's own fan-out
 // handler, so validation, dispatch and every server-side rule are the ones
