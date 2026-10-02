@@ -400,11 +400,20 @@ func (s *Store) VisibleCollectionIDsQ(q Queryer, workspaceID, userID string) ([]
 	// Also include collections that contain items with item grants, so the
 	// collection appears in navigation. The actual item-level filtering is
 	// handled by the request handlers for members who also have item grants.
+	//
+	// Live collections only (BUG-3333). Unlike the member's assigned
+	// collections and direct collection grants above, which already gave
+	// them the whole collection (and stay, so a grant on a deleted
+	// collection remains revocable), this is a nav-only promotion. For a
+	// deleted collection GuestVisibleResources returns no item grant, so the
+	// handlers fell back to this list and served EVERY live item in the
+	// deleted collection to a member granted one of them.
 	itemCollRows, err := q.Query(s.q(`
 		SELECT DISTINCT i.collection_id
 		FROM item_grants ig
 		JOIN items i ON i.id = ig.item_id
-		WHERE ig.workspace_id = ? AND ig.user_id = ? AND i.deleted_at IS NULL
+		JOIN collections c ON c.id = i.collection_id
+		WHERE ig.workspace_id = ? AND ig.user_id = ? AND i.deleted_at IS NULL AND c.deleted_at IS NULL
 	`), workspaceID, userID)
 	if err != nil {
 		return nil, fmt.Errorf("get member item grant collections: %w", err)
