@@ -273,7 +273,10 @@ func TestItemLease_GetItemCarriesLiveLeaseOmitsExpired(t *testing.T) {
 
 	// Expire it directly at the store (a crashed holder), then re-read:
 	// the key must be gone with no reaper having run.
-	if _, err := f.srv.store.ClaimItemLease(f.item.ID, "runner", -2*time.Second); err != nil {
+	// Directly, not by re-claiming: a lease is bound to its claimer
+	// (BUG-3341), so a store re-claim as another identity is refused.
+	if _, err := f.srv.store.DB().Exec(`UPDATE items SET lease_expires_at = ? WHERE id = ?`,
+		time.Now().UTC().Add(-2*time.Second).Format(time.RFC3339), f.item.ID); err != nil {
 		t.Fatalf("expire lease: %v", err)
 	}
 	if _, present := get()["lease"]; present {

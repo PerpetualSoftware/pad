@@ -56,7 +56,7 @@ func (s *Server) handleClaimItem(w http.ResponseWriter, r *http.Request) {
 		ttl = time.Duration(input.TTLSeconds) * time.Second
 	}
 
-	lease, err := s.store.ClaimItemLease(item.ID, holder, ttl)
+	lease, err := s.store.ClaimItemLease(item.ID, holder, currentUserID(r), ttl)
 	if err != nil {
 		var held *store.LeaseHeldError
 		if errors.As(err, &held) {
@@ -83,7 +83,7 @@ func (s *Server) handleReleaseItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	released, err := s.store.ReleaseItemLease(item.ID, holder)
+	released, err := s.store.ReleaseItemLease(item.ID, holder, currentUserID(r))
 	if err != nil {
 		var held *store.LeaseHeldError
 		if errors.As(err, &held) {
@@ -123,6 +123,12 @@ func (s *Server) resolveLeaseRequest(w http.ResponseWriter, r *http.Request) (it
 		return nil, "", input, false
 	}
 	if !s.requireItemVisible(w, r, workspaceID, resolved) {
+		return nil, "", input, false
+	}
+	// A lease is a write to the item's execution state: claiming one blocks
+	// others from working it, and releasing one ends someone's claim. It
+	// takes edit permission, grant-aware like any item edit (BUG-3341).
+	if !s.requireEditPermission(w, r, workspaceID, resolved.ID, resolved.CollectionID) {
 		return nil, "", input, false
 	}
 

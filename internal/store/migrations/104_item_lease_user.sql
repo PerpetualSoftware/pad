@@ -1,0 +1,11 @@
+-- Migration 104: bind an item execution lease to the user who claimed it
+-- (BUG-3341). lease_holder is a free-form label ("sweep-runner", an agent
+-- name) and used to authorize refresh and release on its own, so anyone who
+-- could reach the item could end or extend another user's lease by naming its
+-- label. A lease now records the claimer, and refresh/release require the
+-- same user AND the same label.
+--
+-- NULL for leases claimed before this migration: those keep refreshing and
+-- releasing on the label alone until they expire (at most 24h), so a deploy
+-- breaks no live lease; the first refresh by a signed-in caller binds it.
+ALTER TABLE items ADD COLUMN lease_user_id TEXT;
