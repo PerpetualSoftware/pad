@@ -447,6 +447,15 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 		if entries > importBundleMaxEntries {
 			return ws, bundleTooLargeError(fmt.Sprintf("Bundle has more than %d entries", importBundleMaxEntries))
 		}
+		// The tar reader accepts a NEGATIVE size on some entry types (base-256
+		// encoding), and charging one would raise the budget it is charged to.
+		// No exporter writes one.
+		if hdr.Size < 0 {
+			return ws, &importStatusError{
+				status: http.StatusBadRequest, code: "bad_bundle",
+				message: fmt.Sprintf("Bundle entry %q declares a negative size", hdr.Name),
+			}
+		}
 		// Refuse an entry that declares more than the budget has left before
 		// inflating any of it. hdr.Size is the LOGICAL size, holes included.
 		if hdr.Size > logicalRemaining {

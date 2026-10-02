@@ -319,3 +319,60 @@ func TestBUG3354_ReaderOverflowConvertsTo413(t *testing.T) {
 		t.Fatal("the partial workspace was not rolled back")
 	}
 }
+
+// Codex r2: the tar reader accepts a negative base-256 size on a directory
+// header, and charging it raised the logical budget, re-opening the sparse
+// bypass. A negative size is refused outright.
+func TestBUG3354_NegativeSizeRefused(t *testing.T) {
+	raw := rawTarEntry(t, "pad-export.json", tar.TypeReg, exportJSONFrom(t))
+	dir := rawTarEntry(t, "dir/", tar.TypeDir, nil)
+	// Size field (bytes 124..135) in base-256: high bit set, two's complement.
+	negSize := int64(-1) << 40
+	neg := uint64(negSize)
+	for i := 124; i < 128; i++ {
+		dir[i] = 0xff
+	}
+	for i := 0; i < 8; i++ {
+		dir[128+i] = byte(neg >> (56 - 8*i))
+	}
+	for i := 148; i < 156; i++ {
+		dir[i] = ' '
+	}
+	sum := 0
+	for _, b := range dir[:512] {
+		sum += int(b)
+	}
+	copy(dir[148:156], fmt.Sprintf("%06o\x00 ", sum))
+	raw = append(raw, dir...)
+	// Behind it, sparse entries whose logical size only fits the budget the
+	// negative size would have inflated.
+	for i := 0; i < 3; i++ {
+		pax := paxRecord("GNU.sparse.major", "0") +
+			paxRecord("GNU.sparse.minor", "1") +
+			paxRecord("GNU.sparse.size", fmt.Sprint(96<<20)) +
+			paxRecord("GNU.sparse.numblocks", "1") +
+			paxRecord("GNU.sparse.map", "0,0")
+		raw = append(raw, rawTarEntry(t, "pax", tar.TypeXHeader, []byte(pax))...)
+		raw = append(raw, rawTarEntry(t, fmt.Sprintf("filler-%d.bin", i), tar.TypeReg, nil)...)
+	}
+	raw = append(raw, make([]byte, 1024)...)
+
+	// Precondition: the reader really does hand back the negative size.
+	tr := tar.NewReader(bytes.NewReader(raw))
+	if _, err := tr.Next(); err != nil {
+		t.Fatalf("read export: %v", err)
+	}
+	if hdr, err := tr.Next(); err != nil || hdr.Size >= 0 {
+		t.Fatalf("precondition: want a negative-size directory header, got %+v, %v", hdr, err)
+	}
+
+	srv, _ := testServerWithAttachments(t)
+	srv.SetImportBundleMaxBytes(1 << 20)
+	rr := postBundle(srv, "NegWS", gzipBytes(t, raw))
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "negative size") {
+		t.Fatalf("negative size: got %d %s, want 400 naming the negative size", rr.Code, rr.Body.String())
+	}
+	if workspaceListed(t, srv, "NegWS") {
+		t.Fatal("the partial workspace was not rolled back")
+	}
+}
