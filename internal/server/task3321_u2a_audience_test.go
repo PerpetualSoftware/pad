@@ -101,7 +101,53 @@ func mintWithResource(t *testing.T, srv *Server, sess oauthSession, resource str
 	var resp map[string]any
 	parseJSON(t, trr, &resp)
 	tok, _ := resp["access_token"].(string)
+	lastRefresh, _ = resp["refresh_token"].(string)
+	lastClientID = clientID
 	return tok, http.StatusOK
+}
+
+// lastRefresh and lastClientID are the most recent mint's refresh token and
+// client, for the refresh leg.
+var lastRefresh, lastClientID string
+
+// A refreshed token keeps its ONE resource: refreshing a ChatGPT token (even
+// asking for the /mcp resource) yields a token still refused at /mcp.
+func TestU2a_RefreshKeepsTheBinding(t *testing.T) {
+	srv := twoResourceOAuthServer(t)
+	sess := newOAuthSession(t, srv)
+	if _, code := mintWithResource(t, srv, sess, testChatGPTResource); code != http.StatusOK {
+		t.Fatalf("mint: %d", code)
+	}
+	refreshed := 0
+	for _, ask := range []string{"", testCanonicalAudience} {
+		form := url.Values{
+			"grant_type":    {"refresh_token"},
+			"refresh_token": {lastRefresh},
+			"client_id":     {lastClientID},
+		}
+		if ask != "" {
+			form.Set("resource", ask)
+		}
+		rr := postOAuthForm(srv, "/oauth/token", form)
+		if rr.Code != http.StatusOK {
+			// Refusing to widen is also a pass; it must not be a /mcp token.
+			continue
+		}
+		var resp map[string]any
+		parseJSON(t, rr, &resp)
+		tok, _ := resp["access_token"].(string)
+		lastRefresh, _ = resp["refresh_token"].(string)
+		refreshed++
+		if got := atMount(srv, "", tok); got != http.StatusUnauthorized {
+			t.Errorf("refresh (resource=%q) gave a token accepted at /mcp: %d", ask, got)
+		}
+		if got := atMount(srv, testChatGPTResource, tok); got != http.StatusOK {
+			t.Errorf("refresh (resource=%q) gave a token refused at its own mount: %d", ask, got)
+		}
+	}
+	if refreshed == 0 {
+		t.Fatal("no refresh succeeded, so this test measured nothing")
+	}
 }
 
 // atMount presents token to an MCP mount: /mcp (no resource stamped) or the
