@@ -1,6 +1,16 @@
 {
   "tools": [
     {
+      "_meta": {
+        "securitySchemes": [
+          {
+            "scopes": [
+              "pad:write"
+            ],
+            "type": "oauth2"
+          }
+        ]
+      },
       "annotations": {
         "readOnlyHint": false,
         "destructiveHint": false,
@@ -34,9 +44,27 @@
         ],
         "type": "object"
       },
-      "name": "add_comment"
+      "name": "add_comment",
+      "securitySchemes": [
+        {
+          "scopes": [
+            "pad:write"
+          ],
+          "type": "oauth2"
+        }
+      ]
     },
     {
+      "_meta": {
+        "securitySchemes": [
+          {
+            "scopes": [
+              "pad:write"
+            ],
+            "type": "oauth2"
+          }
+        ]
+      },
       "annotations": {
         "readOnlyHint": false,
         "destructiveHint": true,
@@ -61,9 +89,27 @@
         ],
         "type": "object"
       },
-      "name": "archive_item"
+      "name": "archive_item",
+      "securitySchemes": [
+        {
+          "scopes": [
+            "pad:write"
+          ],
+          "type": "oauth2"
+        }
+      ]
     },
     {
+      "_meta": {
+        "securitySchemes": [
+          {
+            "scopes": [
+              "pad:write"
+            ],
+            "type": "oauth2"
+          }
+        ]
+      },
       "annotations": {
         "readOnlyHint": false,
         "destructiveHint": false,
@@ -125,9 +171,27 @@
         ],
         "type": "object"
       },
-      "name": "create_item"
+      "name": "create_item",
+      "securitySchemes": [
+        {
+          "scopes": [
+            "pad:write"
+          ],
+          "type": "oauth2"
+        }
+      ]
     },
     {
+      "_meta": {
+        "securitySchemes": [
+          {
+            "scopes": [
+              "pad:read"
+            ],
+            "type": "oauth2"
+          }
+        ]
+      },
       "annotations": {
         "readOnlyHint": true,
         "destructiveHint": false,
@@ -152,9 +216,27 @@
         ],
         "type": "object"
       },
-      "name": "get_item"
+      "name": "get_item",
+      "securitySchemes": [
+        {
+          "scopes": [
+            "pad:read"
+          ],
+          "type": "oauth2"
+        }
+      ]
     },
     {
+      "_meta": {
+        "securitySchemes": [
+          {
+            "scopes": [
+              "pad:read"
+            ],
+            "type": "oauth2"
+          }
+        ]
+      },
       "annotations": {
         "readOnlyHint": true,
         "destructiveHint": false,
@@ -179,9 +261,27 @@
         ],
         "type": "object"
       },
-      "name": "get_playbook"
+      "name": "get_playbook",
+      "securitySchemes": [
+        {
+          "scopes": [
+            "pad:read"
+          ],
+          "type": "oauth2"
+        }
+      ]
     },
     {
+      "_meta": {
+        "securitySchemes": [
+          {
+            "scopes": [
+              "pad:read"
+            ],
+            "type": "oauth2"
+          }
+        ]
+      },
       "annotations": {
         "readOnlyHint": true,
         "destructiveHint": false,
@@ -201,9 +301,27 @@
         ],
         "type": "object"
       },
-      "name": "get_workspace_overview"
+      "name": "get_workspace_overview",
+      "securitySchemes": [
+        {
+          "scopes": [
+            "pad:read"
+          ],
+          "type": "oauth2"
+        }
+      ]
     },
     {
+      "_meta": {
+        "securitySchemes": [
+          {
+            "scopes": [
+              "pad:read"
+            ],
+            "type": "oauth2"
+          }
+        ]
+      },
       "annotations": {
         "readOnlyHint": true,
         "destructiveHint": false,
@@ -228,9 +346,27 @@
         ],
         "type": "object"
       },
-      "name": "item_dependencies"
+      "name": "item_dependencies",
+      "securitySchemes": [
+        {
+          "scopes": [
+            "pad:read"
+          ],
+          "type": "oauth2"
+        }
+      ]
     },
     {
+      "_meta": {
+        "securitySchemes": [
+          {
+            "scopes": [
+              "pad:read"
+            ],
+            "type": "oauth2"
+          }
+        ]
+      },
       "annotations": {
         "readOnlyHint": true,
         "destructiveHint": false,
@@ -259,9 +395,27 @@
         ],
         "type": "object"
       },
-      "name": "item_history"
+      "name": "item_history",
+      "securitySchemes": [
+        {
+          "scopes": [
+            "pad:read"
+          ],
+          "type": "oauth2"
+        }
+      ]
     },
     {
+      "_meta": {
+        "securitySchemes": [
+          {
+            "scopes": [
+              "pad:write"
+            ],
+            "type": "oauth2"
+          }
+        ]
+      },
       "annotations": {
         "readOnlyHint": false,
         "destructiveHint": false,
@@ -303,9 +457,27 @@
         ],
         "type": "object"
       },
-      "name": "link_items"
+      "name": "link_items",
+      "securitySchemes": [
+        {
+          "scopes": [
+            "pad:write"
+          ],
+          "type": "oauth2"
+        }
+      ]
     },
     {
+      "_meta": {
+        "securitySchemes": [
+          {
+            "scopes": [
+              "pad:read"
+            ],
+            "type": "oauth2"
+          }
+        ]
+      },
       "annotations": {
         "readOnlyHint": true,
         "destructiveHint": false,
@@ -325,9 +497,27 @@
         ],
         "type": "object"
       },
-      "name": "list_collections"
+      "name": "list_collections",
+      "securitySchemes": [
+        {
+          "scopes": [
+            "pad:read"
+          ],
+          "type": "oauth2"
+        }
+      ]
     },
     {
+      "_meta": {
+        "securitySchemes": [
+          {
+            "scopes": [
+              "pad:read"
+            ],
+            "type": "oauth2"
+          }
+        ]
+      },
       "annotations": {
         "readOnlyHint": true,
         "destructiveHint": false,
@@ -352,9 +542,27 @@
         ],
         "type": "object"
       },
-      "name": "list_comments"
+      "name": "list_comments",
+      "securitySchemes": [
+        {
+          "scopes": [
+            "pad:read"
+          ],
+          "type": "oauth2"
+        }
+      ]
     },
     {
+      "_meta": {
+        "securitySchemes": [
+          {
+            "scopes": [
+              "pad:read"
+            ],
+            "type": "oauth2"
+          }
+        ]
+      },
       "annotations": {
         "readOnlyHint": true,
         "destructiveHint": false,
@@ -414,9 +622,27 @@
         ],
         "type": "object"
       },
-      "name": "list_items"
+      "name": "list_items",
+      "securitySchemes": [
+        {
+          "scopes": [
+            "pad:read"
+          ],
+          "type": "oauth2"
+        }
+      ]
     },
     {
+      "_meta": {
+        "securitySchemes": [
+          {
+            "scopes": [
+              "pad:read"
+            ],
+            "type": "oauth2"
+          }
+        ]
+      },
       "annotations": {
         "readOnlyHint": true,
         "destructiveHint": false,
@@ -436,9 +662,27 @@
         ],
         "type": "object"
       },
-      "name": "list_playbooks"
+      "name": "list_playbooks",
+      "securitySchemes": [
+        {
+          "scopes": [
+            "pad:read"
+          ],
+          "type": "oauth2"
+        }
+      ]
     },
     {
+      "_meta": {
+        "securitySchemes": [
+          {
+            "scopes": [
+              "pad:read"
+            ],
+            "type": "oauth2"
+          }
+        ]
+      },
       "annotations": {
         "readOnlyHint": true,
         "destructiveHint": false,
@@ -451,9 +695,27 @@
         "required": [],
         "type": "object"
       },
-      "name": "list_workspaces"
+      "name": "list_workspaces",
+      "securitySchemes": [
+        {
+          "scopes": [
+            "pad:read"
+          ],
+          "type": "oauth2"
+        }
+      ]
     },
     {
+      "_meta": {
+        "securitySchemes": [
+          {
+            "scopes": [
+              "pad:read"
+            ],
+            "type": "oauth2"
+          }
+        ]
+      },
       "annotations": {
         "readOnlyHint": true,
         "destructiveHint": false,
@@ -473,9 +735,27 @@
         ],
         "type": "object"
       },
-      "name": "project_dashboard"
+      "name": "project_dashboard",
+      "securitySchemes": [
+        {
+          "scopes": [
+            "pad:read"
+          ],
+          "type": "oauth2"
+        }
+      ]
     },
     {
+      "_meta": {
+        "securitySchemes": [
+          {
+            "scopes": [
+              "pad:read"
+            ],
+            "type": "oauth2"
+          }
+        ]
+      },
       "annotations": {
         "readOnlyHint": true,
         "destructiveHint": false,
@@ -495,9 +775,27 @@
         ],
         "type": "object"
       },
-      "name": "ready_items"
+      "name": "ready_items",
+      "securitySchemes": [
+        {
+          "scopes": [
+            "pad:read"
+          ],
+          "type": "oauth2"
+        }
+      ]
     },
     {
+      "_meta": {
+        "securitySchemes": [
+          {
+            "scopes": [
+              "pad:read"
+            ],
+            "type": "oauth2"
+          }
+        ]
+      },
       "annotations": {
         "readOnlyHint": true,
         "destructiveHint": false,
@@ -529,9 +827,27 @@
         ],
         "type": "object"
       },
-      "name": "recent_activity"
+      "name": "recent_activity",
+      "securitySchemes": [
+        {
+          "scopes": [
+            "pad:read"
+          ],
+          "type": "oauth2"
+        }
+      ]
     },
     {
+      "_meta": {
+        "securitySchemes": [
+          {
+            "scopes": [
+              "pad:write"
+            ],
+            "type": "oauth2"
+          }
+        ]
+      },
       "annotations": {
         "readOnlyHint": false,
         "destructiveHint": false,
@@ -556,9 +872,27 @@
         ],
         "type": "object"
       },
-      "name": "restore_item"
+      "name": "restore_item",
+      "securitySchemes": [
+        {
+          "scopes": [
+            "pad:write"
+          ],
+          "type": "oauth2"
+        }
+      ]
     },
     {
+      "_meta": {
+        "securitySchemes": [
+          {
+            "scopes": [
+              "pad:read"
+            ],
+            "type": "oauth2"
+          }
+        ]
+      },
       "annotations": {
         "readOnlyHint": true,
         "destructiveHint": false,
@@ -607,9 +941,27 @@
         ],
         "type": "object"
       },
-      "name": "search"
+      "name": "search",
+      "securitySchemes": [
+        {
+          "scopes": [
+            "pad:read"
+          ],
+          "type": "oauth2"
+        }
+      ]
     },
     {
+      "_meta": {
+        "securitySchemes": [
+          {
+            "scopes": [
+              "pad:write"
+            ],
+            "type": "oauth2"
+          }
+        ]
+      },
       "annotations": {
         "readOnlyHint": false,
         "destructiveHint": false,
@@ -678,9 +1030,27 @@
         ],
         "type": "object"
       },
-      "name": "update_item"
+      "name": "update_item",
+      "securitySchemes": [
+        {
+          "scopes": [
+            "pad:write"
+          ],
+          "type": "oauth2"
+        }
+      ]
     },
     {
+      "_meta": {
+        "securitySchemes": [
+          {
+            "scopes": [
+              "pad:read"
+            ],
+            "type": "oauth2"
+          }
+        ]
+      },
       "annotations": {
         "readOnlyHint": true,
         "destructiveHint": false,
@@ -700,7 +1070,15 @@
         ],
         "type": "object"
       },
-      "name": "what_next"
+      "name": "what_next",
+      "securitySchemes": [
+        {
+          "scopes": [
+            "pad:read"
+          ],
+          "type": "oauth2"
+        }
+      ]
     }
   ]
 }

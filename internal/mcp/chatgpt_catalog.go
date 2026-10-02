@@ -453,6 +453,9 @@ func buildChatGPTTool(t ChatGPTTool, params []ParamDef) mcp.Tool {
 		opts = append(opts, paramDefToToolOption(p))
 	}
 	tool := mcp.NewTool(t.Name, opts...)
+	// TASK-3321 U2c: the scope this tool needs. tools/list also carries it
+	// at the top level (WithChatGPTToolSchemes); this is the _meta mirror.
+	tool.Meta = mcp.NewMetaFromMap(map[string]any{"securitySchemes": chatGPTSecuritySchemes(t)})
 	if len(t.Required) > 0 {
 		tool.InputSchema.Required = append([]string(nil), t.Required...)
 		sort.Strings(tool.InputSchema.Required)
@@ -469,6 +472,11 @@ func chatGPTHandler(t ChatGPTTool, source server.ToolHandlerFunc) server.ToolHan
 		declared[p] = true
 	}
 	return func(ctx context.Context, req mcp.CallToolRequest) (*CallToolResult, error) {
+		// TASK-3321 U2c: a write with a read-only grant answers the
+		// challenge that lets ChatGPT ask for the wider one.
+		if !chatGPTScopeAllowed(ctx, t) {
+			return chatGPTScopeDenied(ctx), nil
+		}
 		in := req.GetArguments()
 		var undeclared []string
 		for k := range in {
