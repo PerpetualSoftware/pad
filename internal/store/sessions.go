@@ -18,10 +18,30 @@ type SessionInfo struct {
 	User      *models.User
 	IPAddress string
 	UAHash    string
+	// Kind is how the session was issued: SessionKindCLI or SessionKindWeb
+	// (BUG-3350). Only a web session is accepted as a browser cookie.
+	Kind string
 	// CreatedAt is when the sign-in this session descends from happened: a
 	// rotation (CreateSessionIssuedAt) carries it over rather than restarting
 	// it (BUG-3336).
 	CreatedAt time.Time
+}
+
+// Session kinds (BUG-3350). A CLI session is a bearer credential only; a web
+// session is the browser's cookie (and may also be sent as a bearer).
+const (
+	SessionKindWeb = "web"
+	SessionKindCLI = "cli"
+)
+
+// SessionKindFor maps a session's device label to its kind. The CLI's two
+// sign-in paths label their sessions "cli-browser-auth" (browser approval)
+// and "cli" (`pad auth login -i`).
+func SessionKindFor(deviceInfo string) string {
+	if deviceInfo == "cli" || deviceInfo == "cli-browser-auth" {
+		return SessionKindCLI
+	}
+	return SessionKindWeb
 }
 
 // ErrUserDisabled is returned when a session would be created for an account
@@ -87,9 +107,9 @@ func (s *Store) CreateSessionIssuedAt(userID, deviceInfo, ipAddress, userAgent s
 		return "", fmt.Errorf("insert session: %w", err)
 	}
 	if _, err := tx.Exec(s.q(`
-		INSERT INTO sessions (id, user_id, token_hash, device_info, ip_address, ua_hash, expires_at, created_at, renew_ttl_seconds)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`), id, userID, tokenHash, deviceInfo, ipAddress, uaHash, expiresAt, ts, int64(ttl/time.Second)); err != nil {
+		INSERT INTO sessions (id, user_id, token_hash, device_info, ip_address, ua_hash, expires_at, created_at, renew_ttl_seconds, kind)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`), id, userID, tokenHash, deviceInfo, ipAddress, uaHash, expiresAt, ts, int64(ttl/time.Second), SessionKindFor(deviceInfo)); err != nil {
 		return "", fmt.Errorf("insert session: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -106,10 +126,10 @@ func (s *Store) ValidateSession(token string) (*SessionInfo, error) {
 	hash := sha256.Sum256([]byte(token))
 	tokenHash := hex.EncodeToString(hash[:])
 
-	var userID, expiresAt, ipAddress, uaHash, createdAt string
+	var userID, expiresAt, ipAddress, uaHash, createdAt, kind string
 	err := s.db.QueryRow(s.q(`
-		SELECT user_id, expires_at, ip_address, ua_hash, created_at FROM sessions WHERE token_hash = ?
-	`), tokenHash).Scan(&userID, &expiresAt, &ipAddress, &uaHash, &createdAt)
+		SELECT user_id, expires_at, ip_address, ua_hash, created_at, kind FROM sessions WHERE token_hash = ?
+	`), tokenHash).Scan(&userID, &expiresAt, &ipAddress, &uaHash, &createdAt, &kind)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -135,6 +155,7 @@ func (s *Store) ValidateSession(token string) (*SessionInfo, error) {
 		IPAddress: ipAddress,
 		UAHash:    uaHash,
 		CreatedAt: parseTime(createdAt),
+		Kind:      kind,
 	}, nil
 }
 

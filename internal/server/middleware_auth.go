@@ -296,7 +296,8 @@ func (s *Server) SessionAuth(next http.Handler) http.Handler {
 		}
 
 		session, err := s.store.ValidateSession(cookie.Value)
-		if err != nil || session == nil {
+		// A CLI session is a bearer credential, never a cookie (BUG-3350).
+		if err != nil || session == nil || !cookieKindAccepted(session) {
 			next.ServeHTTP(w, r)
 			return
 		}
