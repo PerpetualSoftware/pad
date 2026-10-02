@@ -57,6 +57,28 @@ func TestBUG3340_RestrictedOwnerCannotManageWebhooks(t *testing.T) {
 	}
 	var hook models.Webhook
 	parseJSON(t, rr, &hook)
+	// The list shows a restricted owner each webhook's id (to delete it) but
+	// not its URL; the unrestricted owner sees the URL.
+	urls := func(cookie string) map[string]string {
+		t.Helper()
+		rr := doRequestWithCookie(srv, "GET", base, nil, cookie)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("list: %d %s", rr.Code, rr.Body.String())
+		}
+		var hooks []models.Webhook
+		parseJSON(t, rr, &hooks)
+		out := map[string]string{}
+		for _, h := range hooks {
+			out[h.ID] = h.URL
+		}
+		return out
+	}
+	if got, ok := urls(coCookie)[hook.ID]; !ok || got != "" {
+		t.Errorf("restricted owner list: present=%v url=%q, want the hook listed with no URL", ok, got)
+	}
+	if got := urls(ownerCookie)[hook.ID]; got != "https://8.8.8.8/hook" {
+		t.Errorf("control: unrestricted owner list url = %q", got)
+	}
 	if rr := doRequestWithCookie(srv, "POST", base+"/"+hook.ID+"/test", nil, coCookie); rr.Code != http.StatusForbidden {
 		t.Errorf("restricted owner test-fire: %d %s, want 403", rr.Code, rr.Body.String())
 	}

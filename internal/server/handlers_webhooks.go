@@ -108,10 +108,24 @@ func (s *Server) handleListWebhooks(w http.ResponseWriter, r *http.Request) {
 		hooks = []models.Webhook{}
 	}
 
+	// An owner restricted to specific collections sees the webhooks (they may
+	// delete any of them) but not their destination URLs (BUG-3340): a URL can
+	// itself be the credential to the receiver's stored request bodies, which
+	// carry every collection's items.
+	visibleIDs, err := s.visibleCollectionIDs(r, workspaceID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	restricted := visibleIDs != nil
+
 	// Never echo the raw signing secret in a list response (BUG-2057).
 	masked := make([]models.Webhook, len(hooks))
 	for i, hook := range hooks {
 		masked[i] = maskWebhookSecret(hook)
+		if restricted {
+			masked[i].URL = ""
+		}
 	}
 
 	writeJSON(w, http.StatusOK, masked)

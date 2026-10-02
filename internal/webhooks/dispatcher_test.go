@@ -21,6 +21,22 @@ type mockStore struct {
 	failures map[string]bool // id -> last failed state
 	updated  chan string     // signals when UpdateWebhookFailure is called
 	listErr  error           // when set, ListWebhooks fails
+	deleted  map[string]bool // workspace id -> soft-deleted
+}
+
+func (m *mockStore) WorkspaceLive(workspaceID string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return !m.deleted[workspaceID], nil
+}
+
+func (m *mockStore) deleteWorkspace(workspaceID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.deleted == nil {
+		m.deleted = map[string]bool{}
+	}
+	m.deleted[workspaceID] = true
 }
 
 func newMockStore(hooks []models.Webhook) *mockStore {

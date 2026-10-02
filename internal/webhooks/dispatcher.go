@@ -2,6 +2,7 @@ package webhooks
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -53,6 +54,10 @@ const (
 	deliverySuccess deliveryResult = iota
 	deliveryTransient
 	deliveryPermanent
+	// deliverySuppressed: the hook's workspace was soft-deleted after the
+	// hook list was read (BUG-3340). Nothing was sent and nothing is owed; it
+	// is not the endpoint's failure, so it does not count against the hook.
+	deliverySuppressed
 )
 
 // WebhookStore is the interface the dispatcher needs to fetch webhooks
@@ -60,7 +65,21 @@ const (
 type WebhookStore interface {
 	ListWebhooks(workspaceID string) ([]models.Webhook, error)
 	UpdateWebhookFailure(id string, failed bool) error
+	// WorkspaceLive reports whether the workspace exists and is not
+	// soft-deleted. ListWebhooks already returns nothing for a deleted
+	// workspace; this is re-checked before every send, retry and redirect,
+	// because a delivery holding a hook list read before the deletion would
+	// otherwise keep sending item content after it (BUG-3340).
+	WorkspaceLive(workspaceID string) (bool, error)
 }
+
+// errWorkspaceGone stops a redirect whose webhook's workspace was deleted
+// while the request was in flight (BUG-3340).
+var errWorkspaceGone = errors.New("webhook workspace was deleted")
+
+// webhookWorkspaceKey carries the delivering hook's workspace on the request
+// context, so checkRedirect can re-check it before following a hop.
+type webhookWorkspaceKey struct{}
 
 // WebhookPayload is the JSON body sent to each webhook endpoint.
 type WebhookPayload struct {
@@ -224,6 +243,11 @@ func NewDispatcher(store WebhookStore) *Dispatcher {
 // caps the redirect chain length. Without it, an allowed public endpoint
 // could 302 the delivery to an internal address.
 func (d *Dispatcher) checkRedirect(req *http.Request, via []*http.Request) error {
+	if wsID, _ := req.Context().Value(webhookWorkspaceKey{}).(string); wsID != "" {
+		if live, err := d.store.WorkspaceLive(wsID); err != nil || !live {
+			return errWorkspaceGone
+		}
+	}
 	if len(via) >= maxWebhookRedirects {
 		return fmt.Errorf("%w: stopped after %d redirects", errRedirectRejected, maxWebhookRedirects)
 	}
@@ -338,6 +362,10 @@ func (d *Dispatcher) DeliverEvent(dv Delivery) (DeliveryOutcome, error) {
 		}
 		out.Matched++
 		switch d.deliver(hook, body) {
+		case deliverySuppressed:
+			// The workspace was deleted mid-delivery: this hook no longer
+			// selects the event, and nothing is owed to it.
+			out.Matched--
 		case deliverySuccess:
 			out.Succeeded++
 		case deliveryPermanent:
@@ -360,6 +388,9 @@ func (d *Dispatcher) deliver(hook models.Webhook, body []byte) deliveryResult {
 	result := deliveryPermanent
 	for attempt := 1; attempt <= maxDeliveryAttempts; attempt++ {
 		result = d.attemptDeliver(hook, body)
+		if result == deliverySuppressed {
+			return result // not the endpoint's failure; record nothing
+		}
 		if result != deliveryTransient {
 			break // success or permanent failure — no point retrying
 		}
@@ -377,6 +408,19 @@ func (d *Dispatcher) deliver(hook models.Webhook, body []byte) deliveryResult {
 // classifies the outcome. It does NOT record the result — deliver owns the
 // single terminal store write so the retry loop doesn't churn the store.
 func (d *Dispatcher) attemptDeliver(hook models.Webhook, body []byte) deliveryResult {
+	// Re-check the workspace before every attempt, retries included: the
+	// hook list may predate a deletion (BUG-3340). A lookup error is treated
+	// as transient, so a database blip delays a delivery rather than
+	// dropping it or sending it unchecked.
+	live, err := d.store.WorkspaceLive(hook.WorkspaceID)
+	if err != nil {
+		slog.Error("webhook workspace liveness check failed", "webhook_id", hook.ID, "error", err)
+		return deliveryTransient
+	}
+	if !live {
+		return deliverySuppressed
+	}
+
 	// Defense in depth: re-validate URL before making the request. An
 	// SSRF block is permanent — retrying won't make the target public.
 	if !d.SkipSSRF {
@@ -386,7 +430,9 @@ func (d *Dispatcher) attemptDeliver(hook models.Webhook, body []byte) deliveryRe
 		}
 	}
 
-	req, err := http.NewRequest(http.MethodPost, hook.URL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(
+		context.WithValue(context.Background(), webhookWorkspaceKey{}, hook.WorkspaceID),
+		http.MethodPost, hook.URL, bytes.NewReader(body))
 	if err != nil {
 		// A malformed URL/method won't fix itself on retry.
 		slog.Error("failed to create webhook request", "url", hook.URL, "error", err)
@@ -405,6 +451,9 @@ func (d *Dispatcher) attemptDeliver(hook models.Webhook, body []byte) deliveryRe
 	if err != nil {
 		// A blocked/looping redirect is permanent — the SSRF guard won't
 		// relent on retry, so don't waste attempts on it.
+		if errors.Is(err, errWorkspaceGone) {
+			return deliverySuppressed
+		}
 		if errors.Is(err, errRedirectRejected) {
 			slog.Warn("blocked webhook redirect", "url", hook.URL, "error", err)
 			return deliveryPermanent
