@@ -65,19 +65,29 @@ func (s *Server) beginWorkspaceMint(w http.ResponseWriter, r *http.Request) (wor
 
 	userID := currentUserID(r)
 
+	// A mint with no user is the fresh-install setup flow and nothing else
+	// (BUG-3353, settling BUG-2809's open question): a user-less legacy
+	// workspace token minted unowned, unlimited workspaces with any slug.
+	// RequireAuth already refuses such a token on this route; this is the
+	// door's own answer, so a new route onto it cannot reopen the hole.
+	if userID == "" {
+		count, err := s.userCount()
+		if err != nil || count != 0 || tokenWorkspaceID(r) != "" {
+			writeError(w, http.StatusForbidden, "legacy_token_not_allowed",
+				"Creating a workspace requires a signed-in user")
+			return workspaceMintAuth{}, false
+		}
+	}
+
 	// Plan limit, user-scoped (BUG-2793). An import IS a new workspace and
 	// counts, with no exemption for re-importing something you previously
 	// owned — export provenance is not trustworthy enough to gate billing
 	// on, and the at-limit case that deserves relief (undoing a delete) is
 	// served by the restore endpoint, which mints nothing.
 	//
-	// The `userID != ""` guard is not defensive padding: a legacy workspace
-	// token resolves no user, and charging an unattributable mint against
-	// nobody's plan is not a limit. Whether such a caller should be able to
-	// mint an UNOWNED workspace at all is a live question on BUG-2809's
-	// trail, deliberately not decided here — this function preserves the
-	// behaviour both doors already had rather than changing it under cover
-	// of a refactor.
+	// The `userID != ""` guard is not defensive padding: past the check
+	// above, an empty userID is the fresh-install mint, which has no plan to
+	// charge.
 	if userID != "" {
 		if !s.enforceUserPlanLimit(w, r, userID, "workspaces") {
 			return workspaceMintAuth{}, false

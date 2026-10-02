@@ -576,8 +576,8 @@ func (s *Server) authorizeCollabAccess(r *http.Request, item *models.Item) (coll
 		if tokenWsID == wsID {
 			return collabAccess{canWrite: s.collabTokenWriteScopeAllowed(r)}, nil
 		}
-		return collabAccess{}, newStatusError(http.StatusForbidden, "forbidden",
-			"Token not authorized for this workspace")
+		// The same answer handleCollab gives a missing item (BUG-3353).
+		return collabAccess{}, newStatusError(http.StatusNotFound, "not_found", "Item not found")
 	}
 
 	user := currentUser(r)

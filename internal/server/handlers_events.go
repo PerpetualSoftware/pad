@@ -91,7 +91,8 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	if currentUser(r) == nil {
 		tokenWsID := tokenWorkspaceID(r)
 		if tokenWsID != "" && tokenWsID != ws.ID {
-			writeError(w, http.StatusForbidden, "forbidden", "Token not authorized for this workspace")
+			// Indistinguishable from a missing workspace (BUG-3353).
+			writeWorkspaceNotFound(w, "Workspace not found")
 			return
 		}
 	}

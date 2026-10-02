@@ -242,12 +242,23 @@ func (s *Server) TokenAuth(next http.Handler) http.Handler {
 		// scopes (mirrors what MCPBearerAuth already stashes). Per TASK-265.
 		ctx = WithTokenScopes(ctx, apiToken.Scopes)
 
-		// Resolve user from token's user_id (new user-owned tokens)
+		// Resolve user from token's user_id (new user-owned tokens). A
+		// user-owned token is never downgraded to a user-less one (BUG-3353):
+		// the request would otherwise carry only the token's workspace and
+		// reach every route a legacy workspace token reaches, with nobody's
+		// authority. A user that cannot be read is a 500; one that is gone,
+		// a 401.
 		if apiToken.UserID != "" {
 			user, err := s.store.GetUser(apiToken.UserID)
-			if err == nil && user != nil {
-				ctx = context.WithValue(ctx, ctxCurrentUser, user)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "internal_error", "Token validation failed")
+				return
 			}
+			if user == nil {
+				writeError(w, http.StatusUnauthorized, "unauthorized", "Invalid or expired token")
+				return
+			}
+			ctx = context.WithValue(ctx, ctxCurrentUser, user)
 		}
 
 		// Store workspace ID from the token if workspace-scoped
@@ -399,6 +410,54 @@ func isPublicAPIPath(path string) bool {
 		path == "/api/v1/server/capabilities"
 }
 
+// legacyTokenRoutes are the global routes a user-less legacy workspace token
+// may use (BUG-3353). Each is either confined to the token's workspace by its
+// own handler, or serves static content.
+var legacyTokenRoutes = map[string]string{
+	"/api/v1/workspaces":         http.MethodGet, // its own workspace only (handleListWorkspaces)
+	"/api/v1/search":             "",             // searchFanOutWorkspaces: the token's workspace
+	"/api/v1/events":             "",             // refuses any workspace but the token's
+	"/api/v1/templates":          http.MethodGet,
+	"/api/v1/convention-library": http.MethodGet,
+	"/api/v1/playbook-library":   http.MethodGet,
+	"/api/v1/library/entry":      http.MethodGet,
+	"/api/v1/mcp/tool-surface":   http.MethodGet,
+}
+
+// legacyWorkspaceSegmentsRefused are the names under /api/v1/workspaces/ that
+// are global routes, not a workspace slug.
+var legacyWorkspaceSegmentsRefused = map[string]bool{
+	"reorder": true, "import": true, "deleted": true,
+}
+
+// legacyTokenRouteAllowed reports whether a user-less legacy workspace token
+// may use r's route. Workspace-scoped routes are allowed, because
+// RequireWorkspaceAccess pins the token to its own workspace there, and so is
+// a page the SPA serves. The collab socket checks the item's workspace
+// against the token's. Everything else is refused.
+func legacyTokenRouteAllowed(r *http.Request) bool {
+	path := r.URL.Path
+	if !strings.HasPrefix(path, "/api/") {
+		return true
+	}
+	if method, ok := legacyTokenRoutes[path]; ok {
+		return method == "" || method == r.Method
+	}
+	if strings.HasPrefix(path, "/api/v1/collab/") {
+		return true
+	}
+	if rest, ok := strings.CutPrefix(path, "/api/v1/workspaces/"); ok {
+		slug, tail, _ := strings.Cut(rest, "/")
+		if slug == "" || legacyWorkspaceSegmentsRefused[slug] {
+			return false
+		}
+		// Restore addresses a DELETED workspace, so RequireWorkspaceAccess
+		// does not run on it.
+		return tail != "restore"
+	}
+	return false
+}
+
 // RequireAuth middleware blocks unauthenticated requests when users exist
 // in the system. When no users exist (fresh install), all requests pass
 // through to allow the setup flow.
@@ -494,6 +553,17 @@ func (s *Server) RequireAuth(next http.Handler) http.Handler {
 			return
 		}
 		if tokenWorkspaceID(r) != "" {
+			// A user-less legacy workspace token carries one workspace and no
+			// one's authority, so it is admitted only where its reach is that
+			// workspace (BUG-3353). Deny by default: a route added later is
+			// refused until someone decides it is safe for such a token, and
+			// TestBUG3353_EveryGlobalRouteRefusesALegacyToken walks the
+			// router to hold that.
+			if !legacyTokenRouteAllowed(r) {
+				writeError(w, http.StatusForbidden, "legacy_token_not_allowed",
+					"This workspace token cannot be used here. Use a personal access token or sign in.")
+				return
+			}
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -663,7 +733,9 @@ func (s *Server) RequireWorkspaceAccess(next http.Handler) http.Handler {
 				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
-			writeError(w, http.StatusForbidden, "forbidden", "Token not authorized for this workspace")
+			// The same answer as a workspace that does not exist (BUG-3353):
+			// a 403 here told a workspace token which slugs are real.
+			writeWorkspaceNotFound(w, "Workspace not found")
 			return
 		}
 

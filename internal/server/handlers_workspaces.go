@@ -234,8 +234,30 @@ func (s *Server) handleListWorkspaces(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A user-less legacy workspace token sees its own workspace only
+	// (BUG-3353): it used to fall into the bootstrap branch below and list
+	// every tenant on the instance.
+	if tokenWsID := tokenWorkspaceID(r); tokenWsID != "" {
+		ws, err := s.store.GetWorkspaceByID(tokenWsID)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		out := []models.Workspace{}
+		if ws != nil {
+			out = append(out, *ws)
+		}
+		writeJSON(w, http.StatusOK, out)
+		return
+	}
+
 	// Pre-auth / fresh-install bootstrap: list everything so the setup
-	// flow can find any seeded workspace.
+	// flow can find any seeded workspace. Only on an instance that READS as
+	// empty (BUG-3353; the BUG-3334 rule for the count).
+	if count, err := s.userCount(); err != nil || count != 0 {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "Authentication required")
+		return
+	}
 	workspaces, err := s.store.ListWorkspaces()
 	if err != nil {
 		writeInternalError(w, err)
@@ -428,14 +450,15 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 	// (BUG-1557). The import door now gets the same value from the same
 	// place, which it previously got not at all.
 	input.Source = mint.Source
-	if mint.OwnerID != "" {
-		input.OwnerID = mint.OwnerID
-	}
+	// The owner is the authenticated user, never the body (BUG-3353): a
+	// body owner_id let a caller with no user attribute a workspace to
+	// anyone, spend their plan quota, and plant it in their reach. The
+	// only no-user mint left is the fresh-install one, which has no user
+	// to name.
+	input.OwnerID = mint.OwnerID
 
 	// The limit is enabled only for an AUTHENTICATED owner (mint.OwnerID),
-	// which input.OwnerID equals by this point. For a caller with no
-	// resolved user input.OwnerID is whatever the body said, and a body must
-	// not be able to spend someone else's plan. The pre-check in
+	// which input.OwnerID now always equals. The pre-check in
 	// beginWorkspaceMint makes the same decision.
 	ws, err := s.store.CreateWorkspace(input, s.planLimitMintOpts(mint.OwnerID)...)
 	if err != nil {
