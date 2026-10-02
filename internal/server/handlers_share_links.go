@@ -519,8 +519,10 @@ func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) 
 			})
 			return
 		}
-		// Restrict to specific email (stored normalized; normalize user email too)
-		if link.RestrictToEmail != "" && strings.ToLower(strings.TrimSpace(user.Email)) != link.RestrictToEmail {
+		// Restrict to specific email (stored normalized; normalize user email too).
+		// BUG-3348: the address must be VERIFIED — anyone can register an
+		// account under an address they do not own.
+		if link.RestrictToEmail != "" && (!user.IsEmailVerified() || strings.ToLower(strings.TrimSpace(user.Email)) != link.RestrictToEmail) {
 			writeError(w, http.StatusForbidden, "forbidden", "This link is restricted")
 			return
 		}

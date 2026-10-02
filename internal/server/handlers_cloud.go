@@ -495,6 +495,14 @@ func (s *Server) handleOAuthLink(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "No account found with that email")
 		return
 	}
+	// BUG-3348: never attach the address owner's provider to an account
+	// that has not proven the address. Whoever registered it holds its
+	// password, so the owner would be signing in to an account somebody
+	// else can also read.
+	if !user.IsEmailVerified() {
+		writeError(w, http.StatusForbidden, "email_not_verified", "Verify this account's email address before linking a sign-in provider")
+		return
+	}
 
 	// 5. Check if already linked
 	if user.HasOAuthProvider(input.Provider) {

@@ -124,8 +124,13 @@ func (s *Server) handleInviteMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if existingUser != nil {
-		// User exists — add them directly
+	// BUG-3348: only an account that has PROVEN this address is added
+	// directly. Anyone can register an address on a self-serve instance, so
+	// an unverified account matching the invite is not evidence of who will
+	// read the workspace; it gets the ordinary invitation below, whose code
+	// goes to the address itself. Accepting it verifies the account.
+	if existingUser != nil && existingUser.IsEmailVerified() {
+		// User exists and owns the address — add them directly
 		alreadyMember, _ := s.store.IsWorkspaceMember(workspaceID, existingUser.ID)
 		if alreadyMember {
 			writeError(w, http.StatusConflict, "conflict", "User is already a member of this workspace")
