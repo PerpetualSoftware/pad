@@ -23,6 +23,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/PerpetualSoftware/pad/internal/netpolicy"
 )
 
 // DefaultTimeout caps how long Fetch waits for a single upstream request.
@@ -275,7 +277,6 @@ func newSafeTransport(allowLocal bool, timeout time.Duration) *http.Transport {
 		Timeout:   timeout,
 		KeepAlive: 30 * time.Second,
 	}
-	resolver := net.DefaultResolver
 	return &http.Transport{
 		// Proxy intentionally nil — see function docstring.
 		Proxy: nil,
@@ -295,7 +296,7 @@ func newSafeTransport(allowLocal bool, timeout time.Duration) *http.Transport {
 
 			// Hostname — resolve once, validate every IP, dial the first
 			// allowed one. This single resolution is the dial target.
-			ips, err := resolver.LookupIP(ctx, "ip", host)
+			ips, err := lookupIP(ctx, "ip", host)
 			if err != nil {
 				return nil, fmt.Errorf("urlimport: resolve %q: %w", host, err)
 			}
@@ -326,35 +327,18 @@ func newSafeTransport(allowLocal bool, timeout time.Duration) *http.Transport {
 	}
 }
 
-// isPrivateIP returns true for any IP we refuse to fetch from. This
-// includes loopback, RFC1918, IPv4/IPv6 link-local (catches the AWS/GCP/
-// Azure cloud-metadata IP 169.254.169.254), IPv6 unique-local, CGNAT,
-// and the unspecified address.
-func isPrivateIP(ip net.IP) bool {
-	if ip.IsLoopback() ||
-		ip.IsLinkLocalUnicast() ||
-		ip.IsLinkLocalMulticast() ||
-		ip.IsUnspecified() ||
-		ip.IsPrivate() {
-		return true
-	}
-	// CGNAT (RFC 6598) — not covered by IsPrivate but commonly used on
-	// the LAN side of consumer routers / mobile carriers.
-	if cgnatCIDR.Contains(ip) {
-		return true
-	}
-	return false
-}
+// lookupIP is the dialer's resolver, a variable so tests can make a
+// hostname resolve to a chosen address without real DNS.
+var lookupIP = net.DefaultResolver.LookupIP
 
-// cgnatCIDR is precomputed at init so isPrivateIP stays allocation-free
-// and concurrency-safe (no shared map writes).
-var cgnatCIDR = func() *net.IPNet {
-	_, n, err := net.ParseCIDR("100.64.0.0/10")
-	if err != nil {
-		panic(fmt.Errorf("urlimport: parse cgnat cidr: %w", err))
-	}
-	return n
-}()
+// isPrivateIP reports whether a URL import may not connect to ip. The
+// policy is the one shared with webhook delivery (BUG-3358): see
+// netpolicy.Blocked. It used to stop at loopback, RFC 1918, link-local and
+// CGNAT, so an import reached ranges such as 198.18.0.0/15 that webhooks
+// already refused, and the import door returns the fetched body.
+func isPrivateIP(ip net.IP) bool {
+	return netpolicy.Blocked(ip)
+}
 
 // redactURL hides credentials from log/error output. We already reject
 // credential-bearing URLs at validation time, but Go can hand us an
