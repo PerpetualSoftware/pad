@@ -28,6 +28,10 @@ const (
 	// ctxIsAPIToken is set to true when the request is authenticated via an API token
 	// (as opposed to a session cookie or CLI session token).
 	ctxIsAPIToken contextKey = "is_api_token"
+	// ctxChatGPTSurface marks a request the ChatGPT MCP catalog dispatched
+	// in-process (TASK-3321 U1b). Only Go code in this process can set it;
+	// no header or body reaches it.
+	ctxChatGPTSurface contextKey = "chatgpt_surface"
 	// ctxTokenScopes carries the JSON-encoded scopes string from the
 	// validated API token (e.g. `["read"]`, `["*"]`). Stashed by
 	// MCPBearerAuth so the in-process MCP dispatcher can re-check

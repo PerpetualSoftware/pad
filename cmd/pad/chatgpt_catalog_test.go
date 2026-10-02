@@ -16,6 +16,7 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/cmdhelp"
 	mcpserver "github.com/PerpetualSoftware/pad/internal/mcp"
+	padserver "github.com/PerpetualSoftware/pad/internal/server"
 )
 
 // TASK-3321 U1: the ChatGPT catalog's wire contract, pinned like /mcp's
@@ -68,18 +69,20 @@ type recordingDispatcher struct {
 }
 
 type recordedDispatch struct {
-	Path  []string
-	Args  []string
-	Input map[string]any
+	Path    []string
+	Args    []string
+	Input   map[string]any
+	ChatGPT bool // the ChatGPT door's context marker reached the dispatch (TASK-3321 U1b)
 }
 
 func (d *recordingDispatcher) Dispatch(ctx context.Context, cmdPath, args []string) (*mcp.CallToolResult, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.calls = append(d.calls, recordedDispatch{
-		Path:  append([]string(nil), cmdPath...),
-		Args:  append([]string(nil), args...),
-		Input: mcpserver.DispatchInputFromContext(ctx),
+		Path:    append([]string(nil), cmdPath...),
+		Args:    append([]string(nil), args...),
+		Input:   mcpserver.DispatchInputFromContext(ctx),
+		ChatGPT: padserver.ChatGPTSurfaceFromContext(ctx),
 	})
 	return mcp.NewToolResultText(`{"ok":true}`), nil
 }
@@ -159,6 +162,19 @@ func TestChatGPTCatalog_DispatchesExactlyAsItsSource(t *testing.T) {
 			got := rec.take()
 			wantRes := call(mcpSrv.MCP(), srcTool, srcArgs)
 			want := rec.take()
+			// The one intended difference: every ChatGPT dispatch carries the
+			// door's marker, and no /mcp dispatch does.
+			for i := range got {
+				if !got[i].ChatGPT {
+					t.Errorf("a %s dispatch lacks the ChatGPT door marker", e.Name)
+				}
+				got[i].ChatGPT = false
+			}
+			for _, w := range want {
+				if w.ChatGPT {
+					t.Errorf("a /mcp %s dispatch carries the ChatGPT door marker", e.Source)
+				}
+			}
 			if !reflect.DeepEqual(got, want) {
 				t.Errorf("dispatch differs from %s:\n  chatgpt: %+v\n  source:  %+v", e.Source, got, want)
 			}

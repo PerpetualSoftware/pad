@@ -10,6 +10,8 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+
+	padserver "github.com/PerpetualSoftware/pad/internal/server"
 )
 
 // The ChatGPT catalog (TASK-3321 U1) is a second tool surface, served at its
@@ -494,7 +496,11 @@ func chatGPTHandler(t ChatGPTTool, source server.ToolHandlerFunc) server.ToolHan
 		out.Params.Name = t.Source.Tool
 		out.Params.Arguments = args
 		out.Params.RawArguments = chatGPTRawArguments(req.Params.RawArguments, t)
-		return source(ctx, out)
+		// Mark the ChatGPT door (TASK-3321 U1b). The HTTP dispatcher builds
+		// its in-process request from this context, and the item update
+		// handler then saves a version before every content change, which is
+		// what update_item's description promises.
+		return source(padserver.WithChatGPTSurface(ctx), out)
 	}
 }
 
