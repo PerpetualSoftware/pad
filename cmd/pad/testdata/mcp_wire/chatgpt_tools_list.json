@@ -1,0 +1,732 @@
+{
+  "tools": [
+    {
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "description": "Add a comment to an item, optionally as a reply to another comment.",
+      "inputSchema": {
+        "properties": {
+          "message": {
+            "description": "Comment text, in markdown.",
+            "type": "string"
+          },
+          "ref": {
+            "description": "Item reference, for example TASK-12 or BUG-3.",
+            "type": "string"
+          },
+          "reply_to": {
+            "description": "Id of the comment this replies to.",
+            "type": "string"
+          },
+          "workspace": {
+            "description": "Workspace slug, from list_workspaces. Pass it on every call.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message",
+          "ref",
+          "workspace"
+        ],
+        "type": "object"
+      },
+      "name": "add_comment"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "description": "Archive an item by its ref. It disappears from lists and search; restore_item brings it back. Confirm with the user before archiving.",
+      "inputSchema": {
+        "properties": {
+          "ref": {
+            "description": "Item reference, for example TASK-12 or BUG-3.",
+            "type": "string"
+          },
+          "workspace": {
+            "description": "Workspace slug, from list_workspaces. Pass it on every call.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ref",
+          "workspace"
+        ],
+        "type": "object"
+      },
+      "name": "archive_item"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "description": "Create an item in a collection: a title, and optionally content (markdown), status, priority, parent and other fields. Returns the new item's ref.",
+      "inputSchema": {
+        "properties": {
+          "assign": {
+            "description": "Name or email of a workspace member.",
+            "type": "string"
+          },
+          "collection": {
+            "description": "Collection slug, for example tasks or ideas (see list_collections).",
+            "type": "string"
+          },
+          "content": {
+            "description": "Item body, in markdown. Replaces the whole body.",
+            "type": "string"
+          },
+          "fields": {
+            "description": "Other field values as an object, for example {\"effort\": \"m\"}, using the field names from list_collections.",
+            "properties": {},
+            "type": "object"
+          },
+          "parent": {
+            "description": "Ref of the parent item, for example PLAN-3.",
+            "type": "string"
+          },
+          "priority": {
+            "description": "Priority value, for example low, medium, high or critical.",
+            "type": "string"
+          },
+          "status": {
+            "description": "Status value. The allowed values depend on the collection (see list_collections).",
+            "type": "string"
+          },
+          "tags": {
+            "description": "Tags, as a list of strings.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "title": {
+            "description": "Item title.",
+            "type": "string"
+          },
+          "workspace": {
+            "description": "Workspace slug, from list_workspaces. Pass it on every call.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "collection",
+          "title",
+          "workspace"
+        ],
+        "type": "object"
+      },
+      "name": "create_item"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "description": "Get one item by its ref (for example TASK-12): its title, fields, full content and links.",
+      "inputSchema": {
+        "properties": {
+          "ref": {
+            "description": "Item reference, for example TASK-12 or BUG-3.",
+            "type": "string"
+          },
+          "workspace": {
+            "description": "Workspace slug, from list_workspaces. Pass it on every call.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ref",
+          "workspace"
+        ],
+        "type": "object"
+      },
+      "name": "get_item"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "description": "Get one playbook's steps by its ref or invocation slug, to read or follow.",
+      "inputSchema": {
+        "properties": {
+          "ref": {
+            "description": "Item reference, for example TASK-12 or BUG-3.",
+            "type": "string"
+          },
+          "workspace": {
+            "description": "Workspace slug, from list_workspaces. Pass it on every call.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ref",
+          "workspace"
+        ],
+        "type": "object"
+      },
+      "name": "get_playbook"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "description": "Get a workspace's overview: its collections and their fields, always-on conventions, playbooks and current activity.",
+      "inputSchema": {
+        "properties": {
+          "workspace": {
+            "description": "Workspace slug, from list_workspaces. Pass it on every call.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace"
+        ],
+        "type": "object"
+      },
+      "name": "get_workspace_overview"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "description": "Show what an item blocks, what blocks it, and its parent and children.",
+      "inputSchema": {
+        "properties": {
+          "ref": {
+            "description": "Item reference, for example TASK-12 or BUG-3.",
+            "type": "string"
+          },
+          "workspace": {
+            "description": "Workspace slug, from list_workspaces. Pass it on every call.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ref",
+          "workspace"
+        ],
+        "type": "object"
+      },
+      "name": "item_dependencies"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "description": "List an item's saved versions, newest first: who changed it and when.",
+      "inputSchema": {
+        "properties": {
+          "limit": {
+            "description": "Maximum number of results.",
+            "type": "number"
+          },
+          "ref": {
+            "description": "Item reference, for example TASK-12 or BUG-3.",
+            "type": "string"
+          },
+          "workspace": {
+            "description": "Workspace slug, from list_workspaces. Pass it on every call.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ref",
+          "workspace"
+        ],
+        "type": "object"
+      },
+      "name": "item_history"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "description": "Link two items, for example mark one as blocking another.",
+      "inputSchema": {
+        "properties": {
+          "link_type": {
+            "description": "How the items relate: blocks, blocked-by, implements, split-from or supersedes.",
+            "enum": [
+              "blocks",
+              "blocked-by",
+              "supersedes",
+              "implements",
+              "split-from"
+            ],
+            "type": "string"
+          },
+          "ref": {
+            "description": "Item reference, for example TASK-12 or BUG-3.",
+            "type": "string"
+          },
+          "target": {
+            "description": "Ref of the other item.",
+            "type": "string"
+          },
+          "workspace": {
+            "description": "Workspace slug, from list_workspaces. Pass it on every call.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "link_type",
+          "ref",
+          "target",
+          "workspace"
+        ],
+        "type": "object"
+      },
+      "name": "link_items"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "description": "List a workspace's collections (for example Tasks, Bugs, Ideas, Docs) with their fields and allowed values. Use it before create_item to pick a collection and valid field values.",
+      "inputSchema": {
+        "properties": {
+          "workspace": {
+            "description": "Workspace slug, from list_workspaces. Pass it on every call.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace"
+        ],
+        "type": "object"
+      },
+      "name": "list_collections"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "description": "List an item's comments, oldest first.",
+      "inputSchema": {
+        "properties": {
+          "ref": {
+            "description": "Item reference, for example TASK-12 or BUG-3.",
+            "type": "string"
+          },
+          "workspace": {
+            "description": "Workspace slug, from list_workspaces. Pass it on every call.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ref",
+          "workspace"
+        ],
+        "type": "object"
+      },
+      "name": "list_comments"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "description": "List a workspace's items, optionally narrowed to one collection, status, priority, assignee or parent. Returns summaries; use get_item for an item's full content.",
+      "inputSchema": {
+        "properties": {
+          "all": {
+            "description": "Include done and archived items.",
+            "type": "boolean"
+          },
+          "assign": {
+            "description": "Name or email of a workspace member.",
+            "type": "string"
+          },
+          "collection": {
+            "description": "Collection slug, for example tasks or ideas (see list_collections).",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Maximum number of results.",
+            "type": "number"
+          },
+          "offset": {
+            "description": "Number of results to skip, for paging.",
+            "type": "number"
+          },
+          "parent": {
+            "description": "Ref of the parent item, for example PLAN-3.",
+            "type": "string"
+          },
+          "priority": {
+            "description": "Priority value, for example low, medium, high or critical.",
+            "type": "string"
+          },
+          "sort": {
+            "description": "Sort order, for example updated or priority.",
+            "type": "string"
+          },
+          "status": {
+            "description": "Status value. The allowed values depend on the collection (see list_collections).",
+            "type": "string"
+          },
+          "unparented": {
+            "description": "Only items that have no parent.",
+            "type": "boolean"
+          },
+          "workspace": {
+            "description": "Workspace slug, from list_workspaces. Pass it on every call.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace"
+        ],
+        "type": "object"
+      },
+      "name": "list_items"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "description": "List a workspace's playbooks: reusable step-by-step procedures the team has written down.",
+      "inputSchema": {
+        "properties": {
+          "workspace": {
+            "description": "Workspace slug, from list_workspaces. Pass it on every call.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace"
+        ],
+        "type": "object"
+      },
+      "name": "list_playbooks"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "description": "List the Pad workspaces you can open, with each one's slug. Start here: every other tool takes a workspace slug. If the list is empty, create a workspace at https://app.getpad.dev first.",
+      "inputSchema": {
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "list_workspaces"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "description": "Get a workspace's dashboard: what is in progress, what needs attention, and active plans.",
+      "inputSchema": {
+        "properties": {
+          "workspace": {
+            "description": "Workspace slug, from list_workspaces. Pass it on every call.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace"
+        ],
+        "type": "object"
+      },
+      "name": "project_dashboard"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "description": "List the items that are ready to be worked on: open, unblocked, in priority order.",
+      "inputSchema": {
+        "properties": {
+          "limit": {
+            "description": "Maximum number of results.",
+            "type": "number"
+          },
+          "workspace": {
+            "description": "Workspace slug, from list_workspaces. Pass it on every call.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace"
+        ],
+        "type": "object"
+      },
+      "name": "ready_items"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "description": "List what changed recently in a workspace, newest first, optionally since a date.",
+      "inputSchema": {
+        "properties": {
+          "actor": {
+            "description": "Only changes by people (user) or by agents (agent).",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Maximum number of results.",
+            "type": "number"
+          },
+          "since": {
+            "description": "Only changes on or after this date (YYYY-MM-DD).",
+            "type": "string"
+          },
+          "workspace": {
+            "description": "Workspace slug, from list_workspaces. Pass it on every call.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace"
+        ],
+        "type": "object"
+      },
+      "name": "recent_activity"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "description": "Restore an archived item by its ref.",
+      "inputSchema": {
+        "properties": {
+          "ref": {
+            "description": "Item reference, for example TASK-12 or BUG-3.",
+            "type": "string"
+          },
+          "workspace": {
+            "description": "Workspace slug, from list_workspaces. Pass it on every call.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ref",
+          "workspace"
+        ],
+        "type": "object"
+      },
+      "name": "restore_item"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "description": "Full-text search over a workspace's items. Returns matching items with their ref (for example TASK-12), title and status.",
+      "inputSchema": {
+        "properties": {
+          "collection": {
+            "description": "Collection slug, for example tasks or ideas (see list_collections).",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Maximum number of results.",
+            "type": "number"
+          },
+          "offset": {
+            "description": "Number of results to skip, for paging.",
+            "type": "number"
+          },
+          "priority": {
+            "description": "Priority value, for example low, medium, high or critical.",
+            "type": "string"
+          },
+          "query": {
+            "description": "Words to search for.",
+            "type": "string"
+          },
+          "sort": {
+            "description": "Sort order, for example updated or priority.",
+            "type": "string"
+          },
+          "status": {
+            "description": "Status value. The allowed values depend on the collection (see list_collections).",
+            "type": "string"
+          },
+          "workspace": {
+            "description": "Workspace slug, from list_workspaces. Pass it on every call.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query",
+          "workspace"
+        ],
+        "type": "object"
+      },
+      "name": "search"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "description": "Choose the workspace to work in and get its overview (collections, conventions, playbooks, what is active). Pass the workspace slug from list_workspaces. Later calls still name the workspace explicitly.",
+      "inputSchema": {
+        "properties": {
+          "workspace": {
+            "description": "Workspace slug, from list_workspaces.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace"
+        ],
+        "type": "object"
+      },
+      "name": "set_workspace"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "description": "Change an item: its title, content, status, priority, parent or fields. Only what you pass changes. Every content change is saved as a version first, so it can be undone from the item's History. Use add_comment to explain a status change.",
+      "inputSchema": {
+        "properties": {
+          "assign": {
+            "description": "Name or email of a workspace member.",
+            "type": "string"
+          },
+          "clear_parent": {
+            "description": "Set true to detach the item from its parent.",
+            "type": "boolean"
+          },
+          "content": {
+            "description": "Item body, in markdown. Replaces the whole body.",
+            "type": "string"
+          },
+          "expected_seq": {
+            "description": "The item's seq from your last read. If the item changed since, the update is refused instead of overwriting the other change.",
+            "type": "number"
+          },
+          "fields": {
+            "description": "Other field values as an object, for example {\"effort\": \"m\"}, using the field names from list_collections.",
+            "properties": {},
+            "type": "object"
+          },
+          "parent": {
+            "description": "Ref of the parent item, for example PLAN-3.",
+            "type": "string"
+          },
+          "priority": {
+            "description": "Priority value, for example low, medium, high or critical.",
+            "type": "string"
+          },
+          "ref": {
+            "description": "Item reference, for example TASK-12 or BUG-3.",
+            "type": "string"
+          },
+          "status": {
+            "description": "Status value. The allowed values depend on the collection (see list_collections).",
+            "type": "string"
+          },
+          "tags": {
+            "description": "Tags, as a list of strings.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "title": {
+            "description": "Item title.",
+            "type": "string"
+          },
+          "workspace": {
+            "description": "Workspace slug, from list_workspaces. Pass it on every call.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ref",
+          "workspace"
+        ],
+        "type": "object"
+      },
+      "name": "update_item"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "description": "Recommend what to work on next in a workspace.",
+      "inputSchema": {
+        "properties": {
+          "workspace": {
+            "description": "Workspace slug, from list_workspaces. Pass it on every call.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace"
+        ],
+        "type": "object"
+      },
+      "name": "what_next"
+    }
+  ]
+}
