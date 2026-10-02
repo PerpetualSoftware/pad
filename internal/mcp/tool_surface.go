@@ -148,22 +148,49 @@ var readOnlyActions = map[string]map[string]bool{
 // destructive at tool level regardless, so their additive writes are
 // deliberately not enumerated — one judgment per load-bearing line.
 //
-//   - pad_workspace: create (new workspace), invite (adds an
-//     invitation/member), claim (redeems an invite code — joins),
-//     restore (un-soft-delete; the catalog itself documents it
-//     "mutating but non-destructive", TASK-1973).
+//   - pad_workspace: create (new workspace), claim (redeems an invite
+//     code — joins), restore (un-soft-delete; the catalog itself
+//     documents it "mutating but non-destructive", TASK-1973). NOT
+//     invite (TASK-3321 U0b): it sends an email to whatever address the
+//     caller names, and a send cannot be taken back, which is exactly
+//     what OpenAI's tool review (and the MCP spec's destructiveHint)
+//     means by destructive. With invite unlisted the tool's hint is true.
 //   - pad_library: activate copies a library entry into the workspace
 //     as a new item.
 var additiveWriteActions = map[string]map[string]bool{
 	"pad_workspace": {
 		"create":  true,
-		"invite":  true,
 		"claim":   true,
 		"restore": true,
 	},
 	"pad_library": {
 		"activate": true,
 	},
+}
+
+// openWorldActions lists the actions that reach entities OUTSIDE the pad
+// server's own workspace data (TASK-3321 U0b): a tool carrying any of them
+// advertises OpenWorldHint:true. Everything else operates on the caller's
+// bounded workspace, a closed world.
+//
+//   - pad_workspace.invite emails an arbitrary address.
+//   - pad_playbook.match sends the caller's free text to the configured
+//     decision provider, a third-party model API (internal/decision).
+//     It is a READ: open-world is about where data goes, not whether
+//     anything is written, so a read can carry it (codex review).
+var openWorldActions = map[string]map[string]bool{
+	"pad_workspace": {
+		"invite": true,
+	},
+	"pad_playbook": {
+		"match": true,
+	},
+}
+
+// isOpenWorldAction reports whether (toolName, action) reaches outside the
+// pad server's own data. Defaults to false.
+func isOpenWorldAction(toolName, action string) bool {
+	return openWorldActions[toolName][action]
 }
 
 // isAdditiveWriteAction reports whether (toolName, action) is a

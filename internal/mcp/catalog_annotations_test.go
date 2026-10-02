@@ -43,9 +43,10 @@ func TestCatalogTools_AnnotationsExplicit(t *testing.T) {
 		// actions are reads.
 		"pad_playbook": read,
 
-		// Writes are invite/create/claim/restore — all additive
-		// (restore is documented "mutating but non-destructive").
-		"pad_workspace": additive,
+		// create/claim/restore are additive, but invite SENDS an email
+		// to an arbitrary address, which cannot be taken back
+		// (TASK-3321 U0b), so the tool is destructive.
+		"pad_workspace": destructive,
 		// activate copies a library entry in as a new item.
 		"pad_library": additive,
 
@@ -68,7 +69,7 @@ func TestCatalogTools_AnnotationsExplicit(t *testing.T) {
 			readOnly:    class == read,
 			destructive: class == destructive,
 			idempotent:  class == read,
-			openWorld:   false,
+			openWorld:   openWorldTools[def.Name],
 		})
 	}
 	for name := range table {
@@ -128,6 +129,36 @@ func TestAdditiveWriteActions_NoStaleEntries(t *testing.T) {
 			}
 			if isReadOnlyAction(tool, action) {
 				t.Errorf("additiveWriteActions[%s][%s] is also in readOnlyActions — an action can't be both a read and an additive write", tool, action)
+			}
+		}
+	}
+}
+
+// openWorldTools is this test's own decision about which tools reach
+// outside the pad server's data (TASK-3321 U0b), written out rather than
+// read back from openWorldActions so the two can disagree and fail.
+var openWorldTools = map[string]bool{
+	"pad_workspace": true, // invite emails an arbitrary address
+	"pad_playbook":  true, // match sends text to the decision provider
+}
+
+// TestOpenWorldActions_NoStaleEntries: every openWorldActions entry names a
+// real catalog (tool, action) pair. Reads are allowed: open-world is where
+// data goes, not whether anything is written (pad_playbook.match).
+func TestOpenWorldActions_NoStaleEntries(t *testing.T) {
+	byName := map[string]ToolDef{}
+	for _, def := range Catalog {
+		byName[def.Name] = def
+	}
+	for tool, set := range openWorldActions {
+		def, ok := byName[tool]
+		if !ok {
+			t.Errorf("openWorldActions has tool %q not in Catalog (stale entry)", tool)
+			continue
+		}
+		for action := range set {
+			if _, ok := def.Actions[action]; !ok {
+				t.Errorf("openWorldActions[%s][%s] has no matching Catalog action (stale entry)", tool, action)
 			}
 		}
 	}

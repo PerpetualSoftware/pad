@@ -1711,6 +1711,21 @@ const CmdhelpVersion = "0.1"
 //     `pad item comment-edit` / `comment-delete`, which refuse against a
 //     server that does not advertise `item_scoped_comment_writes`.
 //
+//     0.61 — TASK-3321 U0b. BEHAVIOR bump on the v0.20 grounds (an
+//     annotation change; no tool name, action enum or param shape moved).
+//     `pad_workspace` now advertises destructiveHint:true and
+//     openWorldHint:true, where v0.20 called it all-additive and every
+//     tool closed-world. Its `invite` action SENDS an email to an address
+//     the caller names: a send cannot be taken back, which the MCP spec's
+//     destructiveHint (and OpenAI's plugin review) counts as destructive,
+//     and an arbitrary recipient is outside the server's own data, which
+//     is what openWorldHint means. `pad_playbook` also becomes
+//     openWorldHint:true (still read-only and non-destructive): its
+//     `match` action sends the caller's text to the configured decision
+//     provider, a third-party model API. Every other tool's block is
+//     unchanged. A client that confirms destructive tools will now
+//     confirm pad_workspace calls.
+//
 //     Post-0.37, deliberately NO bump (BUG-3098): `workspace_member_limit`
 //     joins the structured 403 allow-list, as ErrWorkspaceMemberLimit with
 //     its own hint (not the plan-limit "upgrade" hint). The server emits it
@@ -1719,7 +1734,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.60"
+const ToolSurfaceVersion = "0.61"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

@@ -289,20 +289,26 @@ func (e *catalogError) Error() string { return e.msg }
 //   - Any write action → ReadOnlyHint:false, IdempotentHint:false.
 //     DestructiveHint then depends on WHAT the writes can do:
 //     false when every write is purely additive (additiveWriteActions
-//     in tool_surface.go — pad_workspace, pad_library; codex round 1:
-//     invite/create/claim/restore/activate never overwrite or remove,
-//     so marking them destructive would reintroduce the
-//     prompt-training harm at tool level), true when any action can
-//     overwrite or delete (pad_item, pad_collection, pad_role) — the
-//     conservative tool-level truth and the same wire values mcp-go
-//     defaulted to for exactly those tools.
-//   - OpenWorldHint:false for all tools: every pad tool operates on the
-//     pad server's own workspace data, a closed world — nothing here
-//     reaches external entities the way e.g. a web search does.
+//     in tool_surface.go — pad_library; codex round 1: create/claim/
+//     restore/activate never overwrite or remove, so marking them
+//     destructive would reintroduce the prompt-training harm at tool
+//     level), true when any action can overwrite, delete or SEND
+//     (pad_item, pad_collection, pad_role, and pad_workspace since its
+//     invite sends email, TASK-3321 U0b) — the conservative tool-level
+//     truth.
+//   - OpenWorldHint:true only for a tool with an action in
+//     openWorldActions (pad_workspace.invite emails an arbitrary
+//     address; pad_playbook.match sends text to the decision provider);
+//     every other pad tool operates on the pad server's own workspace
+//     data, a closed world.
 func annotationForDef(def ToolDef) mcp.ToolAnnotation {
 	allReadOnly := true
 	destructive := false
+	openWorld := false
 	for action := range def.Actions {
+		if isOpenWorldAction(def.Name, action) {
+			openWorld = true
+		}
 		if isReadOnlyAction(def.Name, action) {
 			continue
 		}
@@ -315,7 +321,7 @@ func annotationForDef(def ToolDef) mcp.ToolAnnotation {
 		ReadOnlyHint:    mcp.ToBoolPtr(allReadOnly),
 		DestructiveHint: mcp.ToBoolPtr(destructive),
 		IdempotentHint:  mcp.ToBoolPtr(allReadOnly),
-		OpenWorldHint:   mcp.ToBoolPtr(false),
+		OpenWorldHint:   mcp.ToBoolPtr(openWorld),
 	}
 }
 
