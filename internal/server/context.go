@@ -281,6 +281,13 @@ func structuredEntryAuthor(r *http.Request) string {
 	return actor
 }
 
+// ChatGPTDoorVersionsContent is the U1b guarantee the ChatGPT catalog's
+// update_item description makes: a content write through the ChatGPT door
+// is versioned first (handleUpdateItem, isChatGPTSurface). The ChatGPT
+// mount refuses to be wired without it (TASK-3321 U2b);
+// TestChatGPTDoorVersionsContentIsTrue keeps it honest.
+const ChatGPTDoorVersionsContent = true
+
 // WithChatGPTSurface marks ctx as a call from the ChatGPT MCP catalog
 // (TASK-3321 U1b). The item update handler reads it to save a version
 // before every content change from that door, so each one can be undone

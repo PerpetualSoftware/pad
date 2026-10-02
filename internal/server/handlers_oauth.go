@@ -1472,6 +1472,7 @@ button.primary:hover:not(:disabled) { background: #1e54d4; }
 </head>
 <body>
 <h1>Authorize {{.ClientName}}</h1>
+{{if .Surface}}<p class="surface">Connecting Pad's <strong>{{.Surface}}</strong> tools.</p>{{end}}
 <p>Signed in as <strong>{{.Username}}</strong>{{if .UserEmail}} ({{.UserEmail}}){{end}}.</p>
 
 <div class="client-card">
@@ -1658,7 +1659,13 @@ button.primary:hover:not(:disabled) { background: #1e54d4; }
 // consentData is the template's data shape. Field names match the
 // template's references; adding a new field requires updating both.
 type consentData struct {
-	ClientName       string
+	ClientName string
+	// Surface names the Pad surface being connected when it is not /mcp
+	// (TASK-3321 U2b): "ChatGPT" when the request names the ChatGPT
+	// catalog's resource. Set by the server from the requested audience,
+	// never from the client's own name, so a user is not approving an
+	// unlabelled second door.
+	Surface          string
 	ClientLogoURL    string
 	Username         string
 	UserEmail        string
@@ -1821,6 +1828,7 @@ func (s *Server) renderConsent(w http.ResponseWriter, r *http.Request, ar fosite
 
 	data := consentData{
 		ClientName:       clientName,
+		Surface:          s.consentSurface(ar),
 		ClientLogoURL:    logo,
 		Username:         user.Name,
 		UserEmail:        user.Email,
@@ -1963,3 +1971,19 @@ var _ fosite.Session = (*oauth.Session)(nil)
 // dummyContextSilencer keeps the context import live in case future
 // adds (e.g. cancellation propagation through fosite calls) drop it.
 var _ = context.Background
+
+// consentSurface is the label for the Pad surface a consent request
+// connects, from the audience it requested: "ChatGPT" for the ChatGPT
+// catalog's resource, "" for /mcp (TASK-3321 U2b).
+func (s *Server) consentSurface(ar fosite.AuthorizeRequester) string {
+	if s.chatGPTResource == "" {
+		return ""
+	}
+	want := oauth.NormalizeAudience(s.chatGPTResource)
+	for _, a := range ar.GetRequestedAudience() {
+		if oauth.NormalizeAudience(a) == want {
+			return "ChatGPT"
+		}
+	}
+	return ""
+}

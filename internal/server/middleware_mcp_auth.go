@@ -620,7 +620,13 @@ func (s *Server) writeMCPUnauthorized(w http.ResponseWriter, r *http.Request, co
 	}
 	s.recordMCPPreAuthDenied(code)
 	challenge := `Bearer realm="pad"`
-	if meta := protectedResourceMetadataURL(s.mcpPublicURL); meta != "" && s.oauthAvailable() {
+	// The challenge names THIS mount's metadata document (TASK-3321 U2b):
+	// the ChatGPT mount stamps its own resource.
+	resource := mcpResourceFromContext(r.Context())
+	if resource == "" {
+		resource = s.mcpPublicURL
+	}
+	if meta := protectedResourceMetadataURL(resource); meta != "" && s.oauthAvailable() {
 		challenge += `, resource_metadata="` + meta + `"`
 	}
 	w.Header().Set("WWW-Authenticate", challenge)

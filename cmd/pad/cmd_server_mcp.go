@@ -135,6 +135,7 @@ func wireMCP(cmd *cobra.Command, srv *server.Server, s *store.Store, ep config.M
 	// argument bounds the tool metrics label by the tools this server
 	// actually registered (BUG-2817).
 	srv.SetMCPTransport(streamable, ep.ResourceURL, ep.AuthServerURL, mcpSrv.IsKnownCallName)
+	wireChatGPTMCP(srv, mcpDoc, dispatcher, ep)
 	slog.Info("MCP /mcp transport constructed; served only while MCP is available",
 		"mcp_url", ep.ResourceURL,
 		"auth_server", ep.AuthServerURL,

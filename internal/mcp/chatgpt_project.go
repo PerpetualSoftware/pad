@@ -506,3 +506,19 @@ func maskEmailShapedNames(v any, parent string) {
 		}
 	}
 }
+
+// ChatGPTCatalogReady reports whether the ChatGPT catalog may be served
+// (TASK-3321 U2b's prerequisite gate): it validates against the /mcp
+// catalog, and every tool has a response shape, so no response leaves
+// unminimized (U3).
+func ChatGPTCatalogReady() error {
+	if err := ValidateChatGPTCatalog(); err != nil {
+		return err
+	}
+	for _, e := range ChatGPTCatalog {
+		if _, ok := chatGPTResponseShapes[e.Name]; !ok {
+			return &catalogError{msg: e.Name + " has no response shape"}
+		}
+	}
+	return nil
+}
