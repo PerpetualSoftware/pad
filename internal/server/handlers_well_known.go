@@ -167,17 +167,14 @@ func (s *Server) handleOAuthAuthorizationServer(w http.ResponseWriter, _ *http.R
 		RevocationEndpointAuthMethodsSupported: []string{"none"},
 		ScopesSupported:                        []string{"pad:read", "pad:write", "pad:admin"},
 		ResourceIndicatorsSupported:            true,
-		// authorization_response_iss_parameter_supported (RFC 9207)
-		// is intentionally OMITTED. Advertising it would imply that
-		// /authorize redirects carry iss=<issuer> in the response
-		// query string — but fosite v0.49 doesn't add it natively
-		// and we don't post-process WriteAuthorizeResponse to inject
-		// it. RFC 9207-aware clients (currently rare; not yet
-		// required by Claude Desktop) would treat the missing
-		// parameter as a protocol violation and reject the response.
-		// Codex review #372 round 2 caught the discrepancy; we'll
-		// add the parameter in a future PR alongside any RFC 9207
-		// requirement we encounter from a client.
+		// RFC 9207: every authorize redirect carries iss (oauth_iss.go,
+		// TASK-3321 U0a), so it is advertised. The two land together:
+		// advertising it without the parameter makes an RFC 9207 client
+		// reject every response.
+		AuthorizationResponseIssParameterSupported: true,
+		// The modes whose redirects carry iss; form_post is refused at the
+		// authorize endpoints (refuseUnsupportedResponseMode).
+		ResponseModesSupported: []string{"query", "fragment"},
 	}
 	w.Header().Set("Content-Type", "application/json")
 	// Same 1-hour cache as the protected-resource doc.
@@ -214,6 +211,11 @@ type authServerMetadata struct {
 	RevocationEndpointAuthMethodsSupported []string `json:"revocation_endpoint_auth_methods_supported"`
 	ScopesSupported                        []string `json:"scopes_supported"`
 	ResourceIndicatorsSupported            bool     `json:"resource_indicators_supported"`
+	// AuthorizationResponseIssParameterSupported: RFC 9207 §3.
+	AuthorizationResponseIssParameterSupported bool `json:"authorization_response_iss_parameter_supported"`
+	// ResponseModesSupported: RFC 8414 §2 (defaults to query and fragment
+	// when absent; listed so form_post is visibly not offered).
+	ResponseModesSupported []string `json:"response_modes_supported"`
 }
 
 // protectedResourceMetadata is the RFC 9728 wire format. Field names
