@@ -525,36 +525,24 @@ func TestProjectIntelEndpoints_BearerAdminRestrictedMemberIsScoped(t *testing.T)
 }
 
 // TestProjectChangelogEndpoint_GuestParentFilter_ItemGrantOnlyCollection
-// pins codex R1 P1 (TASK-1916, root cause pre-existing since TASK-1894 but
-// imported into MCP wire behavior by this consolidation): a guest whose
-// granted item's PARENT lives in an item-grant-only collection must still
-// get that parent's link fields populated so ?parent= matches it.
+// pins how ?parent= treats an item-grant guest whose granted item's PARENT
+// they were not granted.
 //
-// enrichItemsWithParent's visibility check runs against the PARENT item's
-// own collection (item_lineage.go: it fetches the parent via GetParentMap
-// and checks isCollectionVisible(parent.CollectionID, vis) — NOT the
-// child's collection), so both the granted child AND its parent must sit
-// in the SAME item-grant-only collection ("tasks" here) for the bug to
-// reproduce:
-//   - The guest holds a DIRECT collection grant elsewhere ("ideas") — this
-//     is what makes guestResourceFilter's fullCollIDs non-nil (and
-//     therefore narrower than the nav-lenient visibleCollectionIDs set);
-//     with zero direct collection grants, fullCollIDs stays nil
-//     ("unrestricted"), which would mask the bug.
-//   - The guest ALSO holds an item-level grant on `child` (in "tasks"),
-//     whose parent `parentItem` also lives in "tasks". GuestVisibleCollectionIDs
-//     (nav-lenient) includes "tasks" because of the item grant "so the
-//     collection appears in navigation" (requireCollectionFullyVisible's
-//     doc comment), but guestResourceFilter's fullCollIDs deliberately
-//     excludes item-grant-only collections.
+// FLIPPED by BUG-3366 (Dave's ruling on TASK-3345 #4: HIDE). This test used
+// to require the guest to see that parent's link fields and match ?parent=
+// on it (codex R1 P1, TASK-1916), because enrichItemsWithParent authorized
+// the parent by its COLLECTION, which is navigation-lenient for item grants.
+// Lineage is now checked per item, the relation_targets policy, so an
+// ungranted parent is not named to the guest, and filtering by it matches
+// nothing. Granting the parent too restores the match; that control is the
+// second half. TASK-1916's other point stands: the changelog still enriches
+// with the nav set rather than the narrowed one, so a GRANTED parent in an
+// item-grant-only collection is found.
 //
-// Pre-fix, handleGetProjectChangelog passed the narrowed collIDs (missing
-// "tasks") into enrichItemsWithParent instead of the nav-lenient set
-// handleListItems uses — isCollectionVisible(parentItem's "tasks", narrowed)
-// failed, so the parent link never got populated on `child`, and
-// itemMatchesParentFilter silently dropped `child` from ?parent= results
-// even though the caller is legitimately allowed to see it (it's already in
-// the unfiltered changelog).
+// Setup, unchanged: the guest holds a DIRECT collection grant elsewhere
+// ("ideas"), which makes guestResourceFilter's fullCollIDs non-nil, and an
+// item-level grant on `child` in "tasks", whose parent `parentItem` also
+// lives in "tasks".
 func TestProjectChangelogEndpoint_GuestParentFilter_ItemGrantOnlyCollection(t *testing.T) {
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
@@ -633,12 +621,25 @@ func TestProjectChangelogEndpoint_GuestParentFilter_ItemGrantOnlyCollection(t *t
 	}
 	var resp ChangelogResponse
 	parseJSON(t, rr, &resp)
-	if resp.Total != 1 {
-		t.Fatalf("expected the granted child item to match ?parent=%s (parent lives in an item-grant-only collection), got total=%d: %+v",
-			parentItem.Ref, resp.Total, resp)
+	if resp.Total != 0 {
+		t.Fatalf("an ungranted parent must not be matchable by an item-grant guest (BUG-3366), got total=%d: %+v", resp.Total, resp)
 	}
+	if strings.Contains(rr.Body.String(), "Q1 Launch") {
+		t.Fatalf("the ungranted parent's title reached the guest: %s", rr.Body.String())
+	}
+
+	// Control: once the parent is granted too, ?parent= matches the child.
+	if _, err := srv.store.CreateItemGrant(ws.ID, parentItem.ID, guest.ID, "view", granter.ID); err != nil {
+		t.Fatalf("CreateItemGrant parent: %v", err)
+	}
+	rr = doRequestWithCookie(srv, "GET", "/api/v1/workspaces/"+slug+"/changelog?parent="+parentItem.Ref, nil, token)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("guest changelog after granting the parent: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	resp = ChangelogResponse{}
+	parseJSON(t, rr, &resp)
 	if len(resp.Groups) != 1 || len(resp.Groups[0].Items) != 1 || resp.Groups[0].Items[0].Ref != child.Ref {
-		t.Fatalf("expected only the granted child %s, got %+v", child.Ref, resp.Groups)
+		t.Fatalf("with the parent granted, expected only the child %s, got total=%d %+v", child.Ref, resp.Total, resp.Groups)
 	}
 }
 
