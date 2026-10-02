@@ -49,8 +49,15 @@ func TestBUG3339_ShareLinkStopsResolvingWhenWorkspaceDeleted(t *testing.T) {
 		return rec
 	}
 
-	if rec := resolve(); rec.Code != http.StatusOK {
+	rec := resolve()
+	if rec.Code != http.StatusOK {
 		t.Fatalf("precondition: the link should resolve, got %d %s", rec.Code, rec.Body.String())
+	}
+	// No answer may be cached, or a cache would outlive the deletion.
+	for name, r := range map[string]*httptest.ResponseRecorder{"200": rec, "404": unknown()} {
+		if cc := r.Header().Get("Cache-Control"); cc != "private, no-store" {
+			t.Errorf("%s answer Cache-Control = %q, want private, no-store", name, cc)
+		}
 	}
 
 	if err := srv.store.DeleteWorkspace(ws.Slug); err != nil {
