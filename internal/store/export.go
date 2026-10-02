@@ -1417,7 +1417,10 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 	}
 
 	if report != nil {
-		report.ItemIDs = itemMap
+		// insertedItemMap, not itemMap: itemMap also names items the import
+		// skipped (their collection was missing), whose ids exist nowhere
+		// (codex r2).
+		report.ItemIDs = insertedItemMap
 	}
 	return ws, nil
 }

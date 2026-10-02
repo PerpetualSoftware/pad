@@ -780,6 +780,15 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 				}
 				continue
 			}
+			// Before any check that can fail, so a repeat always takes the
+			// reject-and-roll-back path (codex r2).
+			if rehydratedPaths[hdr.Name] {
+				return ws, &importStatusError{
+					status: http.StatusBadRequest, code: "bad_bundle",
+					message: "Bundle contains attachment blob " + hdr.Name + " more than once",
+				}
+			}
+			rehydratedPaths[hdr.Name] = true
 			if hdr.Size > blobCap {
 				return ws, fmt.Errorf("blob %s exceeds %d-byte cap (declared %d) — raise PAD_ATTACHMENT_MAX_BYTES on this server to allow",
 					hdr.Name, blobCap, hdr.Size)
@@ -788,13 +797,6 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 			if err != nil {
 				return ws, fmt.Errorf("read blob %s: %w", hdr.Name, err)
 			}
-			if rehydratedPaths[hdr.Name] {
-				return ws, &importStatusError{
-					status: http.StatusBadRequest, code: "bad_bundle",
-					message: "Bundle contains attachment blob " + hdr.Name + " more than once",
-				}
-			}
-			rehydratedPaths[hdr.Name] = true
 			newAttID, err := s.rehydrateAttachment(ctx, ws.ID, entry, blob,
 				itemIDMap, ownerID)
 			if err != nil {

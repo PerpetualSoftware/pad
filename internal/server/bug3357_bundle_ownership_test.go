@@ -165,3 +165,33 @@ func TestBUG3357_RepeatedBlobEntryRefused(t *testing.T) {
 		t.Fatalf("control: %d %s", rr.Code, rr.Body.String())
 	}
 }
+
+// Codex r2: the repeat check runs before anything that can fail, so a repeat
+// whose second copy is over the per-blob cap still takes the reject-and-roll-
+// back path instead of the keep path.
+func TestBUG3357_OversizedRepeatStillRollsBack(t *testing.T) {
+	bundle, blobPath := bundleWithAttachmentOnBeta(t)
+	gz, _ := gzip.NewReader(bytes.NewReader(bundle))
+	tr := tar.NewReader(gz)
+	var entries []bundleEntry
+	for {
+		hdr, err := tr.Next()
+		if err != nil {
+			break
+		}
+		body, _ := io.ReadAll(tr)
+		entries = append(entries, bundleEntry{hdr.Name, body})
+		if hdr.Name == blobPath {
+			entries = append(entries, bundleEntry{hdr.Name, make([]byte, 64<<10)})
+		}
+	}
+	dest, _ := testServerWithAttachments(t)
+	dest.attachmentMaxBytes = 32 << 10 // the real blob fits, the repeat does not
+	rr := postBundle(dest, "OversizeRepeatWS", gzipTar(t, entries))
+	if rr.Code != http.StatusBadRequest || !bytes.Contains(rr.Body.Bytes(), []byte("more than once")) {
+		t.Fatalf("oversized repeat: got %d %s, want 400 naming the repeat", rr.Code, rr.Body.String())
+	}
+	if workspaceListed(t, dest, "OversizeRepeatWS") {
+		t.Fatal("the partial workspace was kept")
+	}
+}

@@ -73,3 +73,29 @@ func TestBUG3357_DuplicateSourceIDsRefused(t *testing.T) {
 		t.Fatalf("control import: %v", err)
 	}
 }
+
+// Codex r2: ImportReport.ItemIDs names only items that were actually
+// inserted. An item the import skips (its collection is missing) has an id
+// that exists nowhere, and the bundle door would attach to it.
+func TestBUG3357_ItemIDsOmitSkippedItems(t *testing.T) {
+	data := dupFixture(t)
+	skipped := data.Items[0].ID
+	data.Items[0].CollectionID = "no-such-collection"
+	dst := testStore(t)
+	ws, report, err := dst.ImportWorkspaceWithReport(data, "bug3357-skip", "", "api")
+	if err != nil || ws == nil {
+		t.Fatalf("import: %v", err)
+	}
+	if _, ok := report.ItemIDs[skipped]; ok {
+		t.Fatalf("ItemIDs names the skipped item %s", skipped)
+	}
+	for _, it := range data.Items[1:] {
+		newID, ok := report.ItemIDs[it.ID]
+		if !ok {
+			t.Fatalf("ItemIDs is missing inserted item %s", it.ID)
+		}
+		if got, err := dst.GetItem(newID); err != nil || got == nil {
+			t.Fatalf("ItemIDs maps %s to %s, which does not exist (%v)", it.ID, newID, err)
+		}
+	}
+}
