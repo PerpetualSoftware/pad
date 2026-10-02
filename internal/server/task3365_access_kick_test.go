@@ -406,12 +406,17 @@ func TestTASK3365_PartialRevokeStillKicks(t *testing.T) {
 	waitKick(t, kick, "partial revoke")
 }
 
-type blockingTransport struct{ release chan struct{} }
+type blockingTransport struct {
+	release   chan struct{}
+	cancelled chan struct{}
+	once      sync.Once
+}
 
 func (b *blockingTransport) Publish(ctx context.Context, _ accesskick.Message) error {
 	select {
 	case <-b.release:
 	case <-ctx.Done():
+		b.once.Do(func() { close(b.cancelled) })
 	}
 	return nil
 }
@@ -421,10 +426,8 @@ func (b *blockingTransport) Subscribe(func(accesskick.Message)) func() { return 
 // this instance's own connections are kicked at once (codex r2).
 func TestTASK3365_StalledTransportDoesNotBlockTheRequest(t *testing.T) {
 	srv := testServer(t)
-	bt := &blockingTransport{release: make(chan struct{})}
-	defer close(bt.release)
+	bt := &blockingTransport{release: make(chan struct{}), cancelled: make(chan struct{})}
 	srv.SetAccessKickTransport(bt)
-	t.Cleanup(func() { srv.SetAccessKickTransport(nil) })
 	kick, unreg := srv.accessKicks().register("u1", "")
 	defer unreg()
 
@@ -443,4 +446,13 @@ func TestTASK3365_StalledTransportDoesNotBlockTheRequest(t *testing.T) {
 		t.Fatalf("%d kicks against a stalled transport were still blocking the caller after 1s", 2*kickPublisherQueue)
 	}
 	waitKick(t, kick, "local kick with a stalled transport")
+
+	// Clearing the transport cancels the publish its worker is blocked in
+	// (codex r3), without the transport ever being released.
+	srv.SetAccessKickTransport(nil)
+	select {
+	case <-bt.cancelled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("clearing the transport did not cancel the worker's blocked publish")
+	}
 }

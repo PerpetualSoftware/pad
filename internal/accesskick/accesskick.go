@@ -57,7 +57,19 @@ type RedisTransport struct {
 func NewRedisTransport(client *redis.Client, keys redisns.Keys) *RedisTransport {
 	opts := *client.Options()
 	opts.ContextTimeoutEnabled = true
+	// The source client's push-notification processor is ITS state: reusing
+	// it registers the clone's handlers on the original's registry (codex r3:
+	// duplicate MOVING registrations, and a panic with maintenance
+	// notifications on). NewClient builds a fresh one when this is nil.
+	opts.PushNotificationProcessor = nil
 	return &RedisTransport{client: redis.NewClient(&opts), channel: keys.Name(ChannelSuffix)}
+}
+
+// Close releases the transport's own client. The server closes a transport
+// it replaces or clears (SetAccessKickTransport), so a caller hands over
+// ownership on installing one.
+func (t *RedisTransport) Close() error {
+	return t.client.Close()
 }
 
 // Publish sends m, bounded at a second. The server calls it from a

@@ -17,6 +17,8 @@ func TestRoundTrip(t *testing.T) {
 	shared := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	defer shared.Close()
 	a, b := NewRedisTransport(shared, redisns.Default), NewRedisTransport(shared, redisns.Default)
+	defer a.Close()
+	defer b.Close()
 	got := make(chan Message, 1)
 	stop := b.Subscribe(func(m Message) { got <- m })
 	defer stop()
@@ -62,6 +64,7 @@ func TestPublishIsBoundedAgainstAStalledServer(t *testing.T) {
 	shared := redis.NewClient(&redis.Options{Addr: ln.Addr().String(), ReadTimeout: 5 * time.Second})
 	defer shared.Close()
 	tr := NewRedisTransport(shared, redisns.Default)
+	defer tr.Close()
 	start := time.Now()
 	err = tr.Publish(context.Background(), Message{UserID: "u1"})
 	if err == nil {
@@ -69,5 +72,18 @@ func TestPublishIsBoundedAgainstAStalledServer(t *testing.T) {
 	}
 	if d := time.Since(start); d > 2500*time.Millisecond {
 		t.Fatalf("publish took %v; the 1s bound was not honoured", d)
+	}
+}
+
+// codex r3: the clone gets its own push-notification processor rather than
+// the source client's.
+func TestCloneDoesNotShareTheNotificationProcessor(t *testing.T) {
+	mr := miniredis.RunT(t)
+	shared := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer shared.Close()
+	tr := NewRedisTransport(shared, redisns.Default)
+	defer tr.Close()
+	if p := shared.Options().PushNotificationProcessor; p != nil && p == tr.client.Options().PushNotificationProcessor {
+		t.Fatal("the transport's client shares the source client's push-notification processor")
 	}
 }

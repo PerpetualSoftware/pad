@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"math/rand"
 	"sync"
@@ -161,8 +162,15 @@ func (s *Server) SetAccessKickTransport(t accesskick.Transport) {
 		s.accessKickStop = nil
 	}
 	if s.accessKickWorker != nil {
-		close(s.accessKickWorker.done)
+		s.accessKickWorker.stop()
 		s.accessKickWorker = nil
+	}
+	// An installed transport is the server's: a replaced or cleared one that
+	// owns resources is closed (codex r3).
+	if c, ok := s.accessKickTransport.(io.Closer); ok {
+		if err := c.Close(); err != nil {
+			slog.Warn("access kicks: closing the replaced transport failed", "error", err)
+		}
 	}
 	s.accessKickTransport = t
 	if t != nil {
@@ -180,19 +188,29 @@ const kickPublisherQueue = 1024
 // goroutine, so no request waits on Redis (codex r2): a stalled Redis costs
 // the queue, never the handler that just committed an access change.
 type kickPublisher struct {
-	ch   chan accesskick.Message
-	done chan struct{}
+	ch     chan accesskick.Message
+	done   chan struct{}
+	cancel context.CancelFunc
+}
+
+// stop ends the worker, cancelling a publish it is blocked in (codex r3: a
+// stalled transport otherwise kept its worker and queue alive after being
+// replaced).
+func (p *kickPublisher) stop() {
+	close(p.done)
+	p.cancel()
 }
 
 func startKickPublisher(t accesskick.Transport) *kickPublisher {
-	p := &kickPublisher{ch: make(chan accesskick.Message, kickPublisherQueue), done: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	p := &kickPublisher{ch: make(chan accesskick.Message, kickPublisherQueue), done: make(chan struct{}), cancel: cancel}
 	go func() {
 		for {
 			select {
 			case <-p.done:
 				return
 			case m := <-p.ch:
-				if err := t.Publish(context.Background(), m); err != nil {
+				if err := t.Publish(ctx, m); err != nil {
 					slog.Warn("access kicks: publish failed; other instances fall back to the revalidation tick",
 						"user_id", m.UserID, "workspace_id", m.WorkspaceID, "error", err)
 				}
