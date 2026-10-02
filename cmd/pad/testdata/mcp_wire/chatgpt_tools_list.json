@@ -237,7 +237,7 @@
         "idempotentHint": true,
         "openWorldHint": false
       },
-      "description": "List an item's saved versions, newest first: who changed it and when.",
+      "description": "List an item's saved versions, newest first: when each was saved, and whether a person, an agent or ChatGPT made it.",
       "inputSchema": {
         "properties": {
           "limit": {
@@ -482,13 +482,9 @@
         "idempotentHint": true,
         "openWorldHint": false
       },
-      "description": "List the items that are ready to be worked on: open, unblocked, in priority order.",
+      "description": "List the few items that are ready to be worked on next: open, unblocked, in priority order.",
       "inputSchema": {
         "properties": {
-          "limit": {
-            "description": "Maximum number of results.",
-            "type": "number"
-          },
           "workspace": {
             "description": "Workspace slug, from list_workspaces. Pass it on every call.",
             "type": "string"
