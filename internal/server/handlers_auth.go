@@ -314,6 +314,10 @@ func (s *Server) validateSessionCookie(r *http.Request) *models.User {
 // error we write a 500 response and return ok=false — the caller should
 // return immediately.
 func (s *Server) rotateSessionsAfterCredentialChange(w http.ResponseWriter, r *http.Request, user *models.User) (string, bool) {
+	var issuedAt time.Time
+	if info := s.requestSessionInfo(r); info != nil && info.User.ID == user.ID {
+		issuedAt = info.CreatedAt
+	}
 	if err := s.store.DeleteUserSessions(user.ID); err != nil {
 		// Best-effort: even if deletion fails we must still mint a new
 		// session for the caller, but log loudly so the operator knows
@@ -322,7 +326,10 @@ func (s *Server) rotateSessionsAfterCredentialChange(w http.ResponseWriter, r *h
 			"user_id", user.ID, "error", err)
 	}
 
-	token, err := s.store.CreateSession(user.ID, "web", clientIP(r), r.UserAgent(), webSessionTTL)
+	// The new session inherits the replaced one's sign-in time, read above
+	// before the delete (BUG-3336): a credential change made with a session
+	// is not a fresh sign-in.
+	token, err := s.store.CreateSessionIssuedAt(user.ID, "web", clientIP(r), r.UserAgent(), webSessionTTL, issuedAt)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error",
 			"Credentials updated but failed to refresh session. Please sign in again.")

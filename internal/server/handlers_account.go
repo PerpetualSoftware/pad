@@ -9,12 +9,45 @@ import (
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/PerpetualSoftware/pad/internal/watchevents"
 	"github.com/pquerna/otp/totp"
 	"golang.org/x/crypto/bcrypt"
 )
 
 // --- Account Deletion (GDPR Article 17 — Right to Erasure) ---
+
+// accountDeleteReauthWindow is how recently the session must have been
+// signed in for a confirm-only (passwordless) account deletion (BUG-3336).
+// Without a password to check, a recent sign-in is the proof of identity: a
+// stolen or long-lived session is not enough, and the real user signs in
+// again. A credential-change rotation does not restart the clock
+// (CreateSessionIssuedAt).
+const accountDeleteReauthWindow = 10 * time.Minute
+
+// requestSessionInfo is the session the request was authenticated with,
+// from a padsess_ bearer or the session cookie, or nil.
+func (s *Server) requestSessionInfo(r *http.Request) *store.SessionInfo {
+	token := ""
+	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer padsess_") {
+		token = strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
+	} else {
+		for _, name := range []string{sessionCookieName(s.secureCookies), "pad_session"} {
+			if c, err := r.Cookie(name); err == nil && c.Value != "" {
+				token = c.Value
+				break
+			}
+		}
+	}
+	if token == "" {
+		return nil
+	}
+	info, err := s.store.ValidateSession(token)
+	if err != nil || info == nil || info.User == nil {
+		return nil
+	}
+	return info
+}
 
 // handleDeleteAccount handles POST /api/v1/auth/delete-account.
 // Requires password confirmation. Deletes the user and all owned data.
@@ -63,6 +96,16 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else if input.Confirm && s.cloudMode && !fullUser.HasPassword() {
+		// The flag alone is not proof the account has no password: an account
+		// that signed up with one before password_set existed, and later
+		// linked OAuth, reads false too. So confirm-only also needs a recent
+		// sign-in (codex review).
+		info := s.requestSessionInfo(r)
+		if info == nil || info.User.ID != fullUser.ID || time.Since(info.CreatedAt) > accountDeleteReauthWindow {
+			writeError(w, http.StatusForbidden, "reauth_required",
+				"For your security, sign in again to delete your account")
+			return
+		}
 		// Cloud mode only: allow confirm-only deletion for OAuth-registered users
 		// who never set a password. The session itself is the proof of identity.
 		// An account WITH a password gives it (BUG-3336): confirm used to be
