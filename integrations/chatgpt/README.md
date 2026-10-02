@@ -21,6 +21,17 @@ Nothing here has been submitted or registered. The package is not submittable un
 
 The full list, with the draft submission metadata and the demo account's seed data, is DOC-3328 ("ChatGPT plugin submission draft") in the Pad workspace.
 
+## Resetting the reviewer's demo workspace
+
+The test cases run against a workspace called Acme Launch (`acme-launch`), whose contents are specified in DOC-3328 section 4. `scripts/chatgpt-review-seed.sh` resets it to that state through the pad CLI, as whichever account the CLI is signed in as. It creates no account: set the reviewer account up first, then `pad auth login` as it against the target instance.
+
+```bash
+PAD_URL=https://app.getpad.dev scripts/chatgpt-review-seed.sh --workspace acme-launch --yes
+PAD_URL=https://app.getpad.dev scripts/chatgpt-review-seed.sh --workspace acme-launch --verify-only
+```
+
+A reset archives every live item outside Conventions and Playbooks, creates the workspace (startup template) and a Bugs collection if they are missing, re-creates the seed items, links and comments, and then checks every test case's precondition. `--verify-only` runs only the check. Test cases P4 and P5 change the workspace, so reset it between review runs. The test cases name items by title, so the new refs each reset creates do not matter. Set `PAD_REVIEW_SECOND_TOKEN` (an API token of a second member of the workspace) to have the bug's two comments come from someone else.
+
 ## Building the ZIP
 
 Zip the contents of this directory, not the directory itself, so `plugin.json` sits at the root of the archive. Leave out `README.md`. Never add reviewer credentials, the challenge token or any other secret: those go in the submission form, not the package.
