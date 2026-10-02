@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -92,7 +93,9 @@ func TestBUG3355_LastOwnerCannotLeave(t *testing.T) {
 		// Two owners: one may go.
 		f.must(f.do("DELETE", f.membersPath(other.ID), lastTok, nil), http.StatusNoContent, "remove one of two owners")
 
-		// Now "last" is the only owner: demoting or removing them is refused.
+		// Now "last" is the only owner: demoting them is refused. (Removing
+		// them needs another owner to do it, and there is none; the store's
+		// removal guard is pinned in the store test.)
 		promoted := f.member("p@example.com", "viewer")
 		rr := f.do("PATCH", f.membersPath(last.ID), lastTok, map[string]any{"role": "editor"})
 		if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "last_owner") {
@@ -108,21 +111,20 @@ func TestBUG3355_LastOwnerCannotLeave(t *testing.T) {
 	})
 }
 
-// Two owners demoting each other at once must not both succeed: the owner
-// rows are read FOR UPDATE on Postgres (SQLite serializes every write
-// transaction), so the second re-reads the first's result.
-func TestBUG3355_ConcurrentDemotionsKeepAnOwner(t *testing.T) {
+// Owners racing to demote each other cannot strip a workspace of its
+// CANONICAL owner, the invariant's anchor: that row is refused whatever runs
+// concurrently, so the workspace keeps an owner. Each losing call must fail
+// with the invariant's error, not with a deadlock or another 500.
+func TestBUG3355_ConcurrentDemotionsKeepTheCanonicalOwner(t *testing.T) {
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		for round := 0; round < 10; round++ {
 			f := newAccessFixture(t, d)
 			a := f.member(fmt.Sprintf("a%d@example.com", round), "owner")
 			b := f.member(fmt.Sprintf("b%d@example.com", round), "owner")
-			if _, err := f.srv.store.DB().Exec(f.srv.store.D().Rebind(`UPDATE workspace_members SET role = 'editor' WHERE workspace_id = ? AND user_id = ?`), f.wsID, f.owner.ID); err != nil {
-				t.Fatalf("set up legacy state: %v", err)
-			}
+			targets := []string{f.owner.ID, a.ID, b.ID}
 			var wg sync.WaitGroup
-			errs := make([]error, 2)
-			for i, id := range []string{a.ID, b.ID} {
+			errs := make([]error, len(targets))
+			for i, id := range targets {
 				wg.Add(1)
 				go func(i int, id string) {
 					defer wg.Done()
@@ -130,14 +132,16 @@ func TestBUG3355_ConcurrentDemotionsKeepAnOwner(t *testing.T) {
 				}(i, id)
 			}
 			wg.Wait()
-			owners := 0
-			for _, id := range []string{a.ID, b.ID} {
-				if f.roleOf(id) == "owner" {
-					owners++
+			if !errors.Is(errs[0], store.ErrCanonicalOwner) {
+				t.Fatalf("round %d: demoting the canonical owner returned %v, want ErrCanonicalOwner", round, errs[0])
+			}
+			for i, err := range errs[1:] {
+				if err != nil {
+					t.Fatalf("round %d: demoting co-owner %d returned %v, want success", round, i, err)
 				}
 			}
-			if owners != 1 {
-				t.Fatalf("round %d: %d owners left (errors %v, %v), want exactly 1", round, owners, errs[0], errs[1])
+			if got := f.roleOf(f.owner.ID); got != "owner" {
+				t.Fatalf("round %d: canonical owner's role is %q", round, got)
 			}
 		}
 	})

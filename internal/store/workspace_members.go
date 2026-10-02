@@ -852,13 +852,16 @@ var ErrLastOwner = errors.New("a workspace must keep at least one owner")
 // from owner or removes them. It refuses the canonical owner outright, and
 // refuses the workspace's last owner member.
 //
-// The owner membership rows are read FOR UPDATE on Postgres, so two
-// demotions racing to leave zero owners serialize here and the second
-// re-reads the first's result. On SQLite every transaction already holds the
-// database write lock (_txlock=immediate). The rows locked are membership
-// rows, not the workspace row: member removal takes users(U) first
-// (BUG-3285) and soft delete locks the workspace before users, so a
-// workspace-row lock here would order the two the other way round.
+// The canonical-owner check is the invariant's anchor, and needs no lock:
+// owner_id changes only by an ownership transfer, which does not exist, and
+// the canonical owner holds an owner membership in every live workspace
+// (census 2026-10-02: 28 of 28 on the dev instance), so refusing to demote or
+// remove that one row keeps every such workspace with an owner whatever runs
+// concurrently. The last-owner count below only matters for a legacy row
+// whose canonical owner is NOT an owner member, and is best-effort there: it
+// takes no row locks, deliberately. Locking the other owners' rows FOR UPDATE
+// (codex r1) neither serialized a concurrent promote-then-demote under READ
+// COMMITTED nor kept a lock order account deletion could agree with.
 func (s *Store) guardOwnerLossTx(tx *sql.Tx, workspaceID, userID string) error {
 	var ownerID sql.NullString
 	switch err := tx.QueryRow(s.q(`SELECT owner_id FROM workspaces WHERE id = ?`), workspaceID).Scan(&ownerID); {
@@ -870,11 +873,7 @@ func (s *Store) guardOwnerLossTx(tx *sql.Tx, workspaceID, userID string) error {
 		return ErrCanonicalOwner
 	}
 
-	query := `SELECT user_id FROM workspace_members WHERE workspace_id = ? AND role = 'owner'`
-	if s.dialect.Driver() == DriverPostgres {
-		query += ` FOR UPDATE`
-	}
-	rows, err := tx.Query(s.q(query), workspaceID)
+	rows, err := tx.Query(s.q(`SELECT user_id FROM workspace_members WHERE workspace_id = ? AND role = 'owner'`), workspaceID)
 	if err != nil {
 		return fmt.Errorf("read workspace owners: %w", err)
 	}
