@@ -249,3 +249,11 @@ func TestChatGPTCatalog_KeepsFieldNumberLiterals(t *testing.T) {
 		}
 	}
 }
+
+// As shipped, the ChatGPT mount's prerequisites hold (TASK-3321 U2b): U1b's
+// versioning door and U3's response shapes for every tool.
+func TestChatGPTMountPrerequisitesHold(t *testing.T) {
+	if err := chatGPTMountPrerequisites(); err != nil {
+		t.Fatalf("the ChatGPT mount would not be wired: %v", err)
+	}
+}

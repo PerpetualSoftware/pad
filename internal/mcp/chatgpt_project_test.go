@@ -134,3 +134,17 @@ func TestChatGPTProjection_EmailShapedNamesAreMasked(t *testing.T) {
 		}
 	}
 }
+
+// The mount's prerequisite gate (TASK-3321 U2b): the catalog is ready only
+// when every tool has a response shape.
+func TestChatGPTCatalogReady_RefusesAMissingShape(t *testing.T) {
+	if err := ChatGPTCatalogReady(); err != nil {
+		t.Fatalf("the shipped catalog is not ready: %v", err)
+	}
+	saved := chatGPTResponseShapes["get_item"]
+	delete(chatGPTResponseShapes, "get_item")
+	t.Cleanup(func() { chatGPTResponseShapes["get_item"] = saved })
+	if err := ChatGPTCatalogReady(); err == nil {
+		t.Fatal("a catalog with a tool lacking a response shape was reported ready")
+	}
+}

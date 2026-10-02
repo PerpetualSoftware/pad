@@ -1117,6 +1117,7 @@ from the request's `Host` header.
 | `PAD_MCP_PUBLIC_URL` | `<origin>/mcp` | The MCP URL clients connect to. It is also the OAuth audience every token is bound to, so changing it invalidates issued OAuth tokens. |
 | `PAD_AUTH_SERVER_URL` | `<origin>` | The OAuth issuer. |
 | `PAD_MCP_ENABLED` | — | `true` or `false` (also `1`/`0`, `yes`/`no`, `on`/`off`). Forces MCP on or off and locks the admin toggle. Unset leaves it to the toggle. Any other value is ignored with a startup warning. |
+| `PAD_CHATGPT_MCP_ENABLED` | off | `true` serves the ChatGPT tool catalog at `<MCP URL>/chatgpt` (for the bare cloud host, `https://mcp.getpad.dev/mcp/chatgpt`). That URL is a separate OAuth resource: its tokens do not work at the MCP URL, and the MCP URL's tokens and every personal access token are refused there. It is served only while OAuth is available, so it needs an `https` issuer. Anything other than `true` leaves it off (404). |
 
 A value that is not an absolute `http`/`https` URL (with no user info, query or
 fragment, and for the origin no path) never stops the server: `PAD_URL` also

@@ -142,6 +142,11 @@ type Server struct {
 	// name as "unknown", so an unwired server cannot mint caller-chosen
 	// series. Set by SetMCPTransport.
 	mcpCallNameKnown func(string) bool
+
+	// The ChatGPT catalog's mount (TASK-3321 U2b, handlers_chatgpt_mcp.go).
+	chatGPTTransport http.Handler
+	chatGPTResource  string
+	chatGPTEnabled   bool
 	mcpPublicURL     string // canonical public URL of the MCP vhost (e.g. https://mcp.getpad.dev)
 	mcpAuthServerURL string // canonical URL of the OAuth auth server (e.g. https://app.getpad.dev), TASK-951
 
@@ -1471,6 +1476,7 @@ func (s *Server) setupRouter() {
 	// Mounted on every install and gated per request (PLAN-2310 DR-5) —
 	// see registerMCPRoutes.
 	s.registerMCPRoutes(r)
+	s.registerChatGPTMCPRoutes(r)
 
 	// OAuth 2.1 authorization-server flow endpoints (PLAN-943
 	// TASK-1025 sub-PR C). /oauth/{register,authorize,token,
