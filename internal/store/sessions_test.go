@@ -227,6 +227,13 @@ func TestWorkspaceMemberCRUD(t *testing.T) {
 		}
 	}
 
+	// A second owner, so u may step down (BUG-3355: a workspace keeps at
+	// least one owner).
+	u2 := createTestUser(t, s, "second@test.com", "Second", "password123")
+	if err := s.AddWorkspaceMember(ws.ID, u2.ID, "owner"); err != nil {
+		t.Fatalf("AddWorkspaceMember second owner: %v", err)
+	}
+
 	// Update role
 	err = s.UpdateWorkspaceMemberRole(ws.ID, u.ID, "editor")
 	if err != nil {

@@ -1593,8 +1593,11 @@ func TestWorkspaceAllowList_LiveMembershipRevocation(t *testing.T) {
 
 	// Revoke membership. Reuse the store directly so the test
 	// doesn't depend on an admin-only API path.
-	if err := srv.store.RemoveWorkspaceMember(ws.ID, user.ID); err != nil {
-		t.Fatalf("RemoveWorkspaceMember: %v", err)
+	// BUG-3355: the store refuses to remove a workspace's only owner, which
+	// this user is; the test needs the membership simply gone, so it deletes
+	// the row directly.
+	if _, err := srv.store.DB().Exec(srv.store.D().Rebind(`DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?`), ws.ID, user.ID); err != nil {
+		t.Fatalf("delete membership: %v", err)
 	}
 
 	// Same token now — must NOT succeed (live membership check).
