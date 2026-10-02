@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { api, isPlanLimitError } from '$lib/api/client';
+	import { api, isPlanLimitError, PadApiError } from '$lib/api/client';
 	import { showPlanLimitToast } from '$lib/billing/planLimitToast';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
@@ -89,6 +89,9 @@
 	let deleteTotpCode = $state('');
 	let deleteSaving = $state(false);
 	let deleteError = $state('');
+	// The server asks for a recent sign-in before a confirm-only delete
+	// (BUG-3336, reauth_required); the block then offers to sign in again.
+	let deleteNeedsReauth = $state(false);
 
 	// Which identity check the confirm block demands. Email/password accounts
 	// (and every self-host account) re-enter their password; cloud OAuth-only
@@ -465,6 +468,7 @@
 			authStore.clear();
 			window.location.href = '/login';
 		} catch (err) {
+			deleteNeedsReauth = err instanceof PadApiError && err.code === 'reauth_required';
 			// Render the server message VERBATIM. billing_cancel_failed /
 			// partial_delete carry account-state truth ("your account was NOT
 			// deleted", "your billing was cancelled but…") that must NOT be
@@ -472,6 +476,16 @@
 			deleteError = err instanceof Error ? err.message : 'Failed to delete your account. Please try again.';
 			deleteSaving = false;
 		}
+	}
+
+	// /login sends a signed-in visitor straight on, so a fresh sign-in starts
+	// with a sign-out. It lands back here to finish the delete.
+	async function signInAgainToDelete() {
+		try {
+			await api.auth.logout();
+		} catch {}
+		authStore.clear();
+		window.location.href = '/login?redirect=' + encodeURIComponent('/console/settings');
 	}
 
 	function formatDate(dateStr: string): string {
@@ -903,6 +917,11 @@
 
 						{#if deleteError}
 							<p class="error" role="alert" aria-live="assertive">{deleteError}</p>
+						{/if}
+						{#if deleteNeedsReauth}
+							<div class="btn-row">
+								<Button variant="secondary" onclick={signInAgainToDelete}>Sign in again</Button>
+							</div>
 						{/if}
 
 						<div class="btn-row">

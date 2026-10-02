@@ -539,6 +539,14 @@ func generateTempPassword() (string, error) {
 // If email is configured, sends a reset link. Otherwise returns a temporary password.
 // POST /api/v1/admin/users/{userID}/reset-password
 func (s *Server) handleAdminResetPassword(w http.ResponseWriter, r *http.Request) {
+	// It can hand back a temporary password, and that password signs in as
+	// a fresh session: an API token must not be able to buy one (BUG-3336,
+	// the BUG-2890 line).
+	if isAPITokenAuth(r) {
+		writeError(w, http.StatusForbidden, "session_required",
+			"Resetting a password requires an interactive session, not an API token")
+		return
+	}
 	if !requireAdmin(w, r) {
 		return
 	}

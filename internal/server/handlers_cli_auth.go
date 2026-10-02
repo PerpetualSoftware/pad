@@ -99,6 +99,14 @@ func (s *Server) handlePollCLIAuthSession(w http.ResponseWriter, r *http.Request
 // Called from the browser by an authenticated user.
 // POST /api/v1/auth/cli/sessions/{code}/approve
 func (s *Server) handleApproveCLIAuthSession(w http.ResponseWriter, r *http.Request) {
+	// Approval mints a 30-day session, so it is an interactive-session
+	// action (BUG-3336, BUG-3349): a PAT that could approve would outlive
+	// its own revocation through the session it minted.
+	if isAPITokenAuth(r) {
+		writeError(w, http.StatusForbidden, "session_required",
+			"Approving a CLI sign-in requires an interactive session, not an API token")
+		return
+	}
 	code := chi.URLParam(r, "code")
 	if code == "" {
 		writeError(w, http.StatusBadRequest, "bad_request", "Missing session code")
@@ -135,8 +143,16 @@ func (s *Server) handleApproveCLIAuthSession(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Create a new session token for the CLI (long-lived, 30 days)
-	token, err := s.store.CreateSession(user.ID, "cli-browser-auth", clientIP(r), "", 30*24*time.Hour)
+	// Create a new session token for the CLI (long-lived, 30 days). It is
+	// dated by the approving session's sign-in (BUG-3336): approving from an
+	// existing session is not a fresh sign-in, so it must not hand out a
+	// session that reads as one.
+	approver := s.requestSessionInfo(r)
+	if approver == nil || approver.User.ID != user.ID {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "You must be logged in to approve a CLI session")
+		return
+	}
+	token, err := s.store.CreateSessionIssuedAt(user.ID, "cli-browser-auth", clientIP(r), "", 30*24*time.Hour, approver.CreatedAt)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to create session")
 		return
