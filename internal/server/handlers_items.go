@@ -1992,12 +1992,14 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	}
 	// TASK-2198 U4: "recovery" labels the server's own op-log recovery write
 	// in the version history. A client may not claim it. Nor "chatgpt", which
-	// only the ChatGPT door below sets (TASK-3321 U1b).
-	if input.VersionSource == models.VersionSourceRecovery || input.VersionSource == models.VersionSourceChatGPT {
+	// only the ChatGPT door below sets (TASK-3321 U1b); a claim of it gets the
+	// request's own source instead. A collab-snapshot flush never reaches
+	// here with either: the branch above has already overwritten its label.
+	if input.VersionSource == models.VersionSourceRecovery {
 		input.VersionSource = ""
-		if !collabSnapshot {
-			_, input.VersionSource = actorFromRequest(r)
-		}
+	}
+	if input.VersionSource == models.VersionSourceChatGPT {
+		_, input.VersionSource = actorFromRequest(r)
 	}
 	// TASK-3321 U1b (ruling (b)): every content change through the ChatGPT
 	// catalog is saved as a version FIRST, bypassing the 1h throttle, so it

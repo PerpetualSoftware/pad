@@ -91,12 +91,21 @@ func TestU1b_PlainAPIIsNotForcedAndCannotClaimTheLabel(t *testing.T) {
 			t.Fatalf("edit %d: %d %s", i, rr.Code, rr.Body.String())
 		}
 	}
+	// A collab-snapshot flush claiming the label in its body keeps the
+	// flush's own label (codex review).
+	rr := doRequest(srv, "PATCH", path+"?source=collab-snapshot", map[string]any{"content": "third body", "version_source": "chatgpt"})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("flush: %d %s", rr.Code, rr.Body.String())
+	}
 	sources := versionSources(t, srv, item.ID)
 	if n := countSource(sources, models.VersionSourceChatGPT); n != 0 {
 		t.Errorf("a plain API body claimed the chatgpt label %d times: %v", n, sources)
 	}
-	if len(sources) != 1 {
-		t.Errorf("plain API edits left %d versions, want 1 (the second is throttled): %v", len(sources), sources)
+	if countSource(sources, "collab-snapshot") != 1 {
+		t.Errorf("the flush did not keep its collab-snapshot label: %v", sources)
+	}
+	if len(sources) != 2 {
+		t.Errorf("versions = %v, want 2 (the second API edit is throttled; the flush is a new source)", sources)
 	}
 }
 
