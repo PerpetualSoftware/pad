@@ -1096,6 +1096,7 @@ degraded, not a peer broken.
 |----------|---------|-------------|
 | `PAD_SECURE_COOKIES` | `false` | Set `Secure` flag on session cookies (requires TLS) |
 | `PAD_CORS_ORIGINS` | — | Comma-separated allowed CORS origins |
+| `PAD_ADMIN_API_TOKENS` | off | `allow` lets an admin's API token (PAT) use the platform administration API (`/api/v1/admin/*`, and creating accounts). By default these require an interactive session, a browser or `pad auth login`, because a leaked admin token could otherwise create and promote accounts. For operators who script admin tasks; logs a warning at startup; ignored on Pad Cloud. |
 
 ### MCP for agents (self-hosted)
 

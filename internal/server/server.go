@@ -72,6 +72,10 @@ type Server struct {
 	// load-bearing, not incidental (codex round 3).
 	afterItemPreRead func(itemID string)
 
+	// adminAPITokensAllowed is PAD_ADMIN_API_TOKENS=allow, read at startup
+	// (BUG-3361). See adminAcceptsAPITokens.
+	adminAPITokensAllowed bool
+
 	// visibleCollectionIDsFault is a TEST-ONLY seam, nil in production
 	// (BUG-3334). When set, visibleCollectionIDs calls it first and returns
 	// its error. Every handler that resolves visibility through the helper
@@ -654,12 +658,45 @@ func New(s *store.Store) *Server {
 	if disabled, _ := strconv.ParseBool(os.Getenv("PAD_DISABLE_RATE_LIMITS")); disabled {
 		rl = nil
 	}
-	return &Server{
-		store:            s,
-		rateLimiters:     rl,
-		storageInfoCache: newStorageInfoCache(storageInfoTTL),
-		clientWrites:     newClientWriteMarks(),
+	// PAD_ADMIN_API_TOKENS=allow is the self-host escape hatch for operators
+	// who script platform administration with a PAT (BUG-3361). Off by
+	// default, never honoured in cloud mode, and loud when on.
+	adminTokens := os.Getenv("PAD_ADMIN_API_TOKENS") == "allow"
+	if adminTokens {
+		slog.Warn("PAD_ADMIN_API_TOKENS=allow: platform administration accepts API tokens. " +
+			"A leaked admin token can then administer the instance; prefer a CLI session (`pad auth login`). " +
+			"Ignored in cloud mode.")
 	}
+	return &Server{
+		store:                 s,
+		rateLimiters:          rl,
+		storageInfoCache:      newStorageInfoCache(storageInfoTTL),
+		clientWrites:          newClientWriteMarks(),
+		adminAPITokensAllowed: adminTokens,
+	}
+}
+
+// adminAcceptsAPITokens reports whether platform administration accepts an
+// API token: only when the operator opted in, and never on Pad Cloud.
+func (s *Server) adminAcceptsAPITokens() bool {
+	return s.adminAPITokensAllowed && !s.cloudMode
+}
+
+// refuseAPITokenForAdmin guards every /api/v1/admin route (BUG-3361). An
+// admin's PAT carries their identity, not their platform authority: one used
+// to be enough to register an account, promote it to admin, sign in as it,
+// and reset any password. A browser or `pad auth login` CLI session is
+// required, the line BUG-2890 drew for token minting. The cloud sidecar
+// authenticates with the cloud secret, never a PAT, so it is unaffected.
+func (s *Server) refuseAPITokenForAdmin(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isAPITokenAuth(r) && !s.adminAcceptsAPITokens() {
+			writeError(w, http.StatusForbidden, "session_required",
+				"Platform administration requires an interactive session, not an API token")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // Init2FASecret loads the 2FA challenge signing key from platform_settings.
@@ -1664,6 +1701,7 @@ func (s *Server) setupRouter() {
 
 			// Admin endpoints (admin-only, handlers check role internally)
 			r.Route("/admin", func(r chi.Router) {
+				r.Use(s.refuseAPITokenForAdmin)
 				r.Get("/settings", s.handleGetPlatformSettings)
 				r.Patch("/settings", s.handleUpdatePlatformSettings)
 				r.Get("/decision-provider", s.handleGetDecisionSettings)
