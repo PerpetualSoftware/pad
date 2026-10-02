@@ -1051,7 +1051,7 @@ func TestDocumentCRUD(t *testing.T) {
 	}
 
 	// Restore
-	restored, err := s.RestoreDocument(doc.ID)
+	restored, err := s.RestoreDocument(doc.WorkspaceID, doc.ID)
 	if err != nil {
 		t.Fatalf("RestoreDocument error: %v", err)
 	}

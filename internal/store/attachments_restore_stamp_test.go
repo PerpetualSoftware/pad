@@ -59,7 +59,7 @@ func TestRestoreDocument_ReStampsAttachmentRefs(t *testing.T) {
 	if err := f.s.DeleteDocument(doc.ID); err != nil {
 		t.Fatalf("DeleteDocument (soft): %v", err)
 	}
-	if _, err := f.s.RestoreDocument(doc.ID); err != nil {
+	if _, err := f.s.RestoreDocument(doc.WorkspaceID, doc.ID); err != nil {
 		t.Fatalf("RestoreDocument: %v", err)
 	}
 
