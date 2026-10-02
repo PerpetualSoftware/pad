@@ -498,14 +498,27 @@ func (d *Dispatcher) attemptDeliver(hook models.Webhook, body []byte) deliveryRe
 	}
 
 	resp, err := d.client.Do(req)
+	// The connection check decides the outcome whether or not Do errored:
+	// net/http can still return an already-buffered response after the close
+	// and cancel (codex r4), and that must not count as a delivery.
+	if connGone.Load() || connUnknown.Load() {
+		if resp != nil {
+			resp.Body.Close()
+		}
+		if connGone.Load() {
+			return deliverySuppressed
+		}
+		slog.Error("webhook workspace liveness unknown mid-delivery", "webhook_id", hook.ID, "error", err)
+		return deliveryDeferred
+	}
 	if err != nil {
 		// A blocked/looping redirect is permanent — the SSRF guard won't
 		// relent on retry, so don't waste attempts on it.
-		if connGone.Load() || errors.Is(err, errWorkspaceGone) {
+		if errors.Is(err, errWorkspaceGone) {
 			return deliverySuppressed
 		}
-		if connUnknown.Load() || errors.Is(err, errWorkspaceUnknown) {
-			slog.Error("webhook workspace liveness unknown mid-delivery", "webhook_id", hook.ID, "error", err)
+		if errors.Is(err, errWorkspaceUnknown) {
+			slog.Error("webhook workspace liveness unknown at a redirect", "webhook_id", hook.ID, "error", err)
 			return deliveryDeferred
 		}
 		if errors.Is(err, errRedirectRejected) {
