@@ -28,6 +28,17 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// An API token never deletes the account it belongs to (BUG-3336): the
+	// delete is irreversible and takes every owned workspace with it, so a
+	// leaked token must not be enough. A browser session or a `pad auth
+	// login` CLI session is required, the line BUG-2890 drew for minting.
+	// Checked before the body, so a token cannot probe the password either.
+	if isAPITokenAuth(r) {
+		writeError(w, http.StatusForbidden, "session_required",
+			"Deleting your account requires an interactive session, not an API token")
+		return
+	}
+
 	var input struct {
 		Password string `json:"password"`
 		Confirm  bool   `json:"confirm"`
@@ -51,9 +62,11 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusForbidden, "forbidden", "Incorrect password")
 			return
 		}
-	} else if input.Confirm && s.cloudMode {
+	} else if input.Confirm && s.cloudMode && !fullUser.HasPassword() {
 		// Cloud mode only: allow confirm-only deletion for OAuth-registered users
 		// who never set a password. The session itself is the proof of identity.
+		// An account WITH a password gives it (BUG-3336): confirm used to be
+		// accepted from any cloud account, so a session alone could delete it.
 		// In self-hosted mode, password is always required to prevent accidental
 		// or coerced account deletion.
 	} else {
