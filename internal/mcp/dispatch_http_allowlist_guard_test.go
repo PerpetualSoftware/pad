@@ -160,8 +160,9 @@ var allowlistCoverage = map[string]allowlistClassification{
 	"item search": {filtersAllowlist,
 		"handlers_search.go handleSearch — BOTH branches: the named-workspace branch via tokenAllowedWorkspaceMatches in " +
 			"the handler, which returns empty rather than 403 so the token cannot confirm the workspace exists (BUG-2102); the " +
-			"no-workspace fan-out via filterWorkspacesByTokenAllowlist in searchFanOutWorkspaces; and searchAccessFor re-checks " +
-			"tokenAllowedWorkspaceMatches for every workspace either branch reaches (BUG-3331)"},
+			"no-workspace fan-out via filterWorkspacesByTokenAllowlist in searchFanOutWorkspaces (for a signed-in caller); and " +
+			"searchAccessFor checks tokenAllowedWorkspaceMatches first, for every caller and every workspace either branch " +
+			"reaches (BUG-3331)"},
 
 	// --- Workspace-global, structurally exempt ---
 	"library list": {exempt,

@@ -252,7 +252,8 @@ func (a searchAccess) none() bool {
 //   - The fresh-install window (no users at all) reads everything.
 //   - A request with no user is a legacy workspace-scoped token: its own
 //     workspace in full, nothing else.
-//   - A token whose consent allow-list excludes ws reads nothing (BUG-2102).
+//   - A token whose consent allow-list excludes ws reads nothing (BUG-2102),
+//     checked before anything else.
 //   - A platform admin on a cookie session reads everything; on a bearer, the
 //     admin is an ordinary user and only membership counts (BUG-1616), not
 //     even a guest grant.
@@ -262,6 +263,11 @@ func (a searchAccess) none() bool {
 //   - A non-member reads exactly what is granted to them, which with no
 //     grants is nothing.
 func (s *Server) searchAccessFor(r *http.Request, ws *models.Workspace) (searchAccess, error) {
+	// The consent allow-list first, for every caller, as RequireWorkspaceAccess
+	// orders it.
+	if !tokenAllowedWorkspaceMatches(r.Context(), ws.Slug) {
+		return searchAccess{}, nil
+	}
 	user := currentUser(r)
 	if user == nil {
 		count, err := s.store.UserCount()
@@ -274,9 +280,6 @@ func (s *Server) searchAccessFor(r *http.Request, ws *models.Workspace) (searchA
 		if tokenWsID := tokenWorkspaceID(r); tokenWsID != "" && tokenWsID == ws.ID {
 			return searchAccess{unrestricted: true}, nil
 		}
-		return searchAccess{}, nil
-	}
-	if !tokenAllowedWorkspaceMatches(r.Context(), ws.Slug) {
 		return searchAccess{}, nil
 	}
 	bearer := isBearerAuth(r)
