@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"math/rand"
 	"net/http"
 	"strconv"
 	"time"
@@ -410,12 +409,21 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	// and spike load once a minute forever after. After the first fire
 	// we reset to the regular interval for a steady cadence.
 	revalInterval := sseMembershipRevalInterval
-	firstDelay := revalInterval
-	if revalInterval > 0 {
-		firstDelay = time.Duration(rand.Int63n(int64(revalInterval)))
-	}
+	firstDelay := revalFirstDelay(revalInterval)
 	membershipCheck := time.NewTimer(firstDelay)
 	defer membershipCheck.Stop()
+
+	// TASK-3365: a kick runs the membership check NOW (an access or
+	// credential change was published for this user or workspace) by firing
+	// its timer at once; the timer stays as the backstop for a dropped kick.
+	// A legacy workspace-token stream has no user and is reached through the
+	// workspace.
+	var kickUserID string
+	if u := currentUser(r); u != nil {
+		kickUserID = u.ID
+	}
+	kick, unregisterKick := s.accessKicks().register(kickUserID, ws.ID)
+	defer unregisterKick()
 
 	// Bounds how often this connection can be told mid-stream that it has a
 	// hole — see gapAnnouncer for why a slow subscriber needs bounding and
@@ -537,6 +545,14 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 			}
 			flusher.Flush()
 
+		case <-kick:
+			if !membershipCheck.Stop() {
+				select {
+				case <-membershipCheck.C:
+				default:
+				}
+			}
+			membershipCheck.Reset(0)
 		case <-membershipCheck.C:
 			// The CREDENTIAL first (BUG-3007). The access check below asks
 			// whether this USER may still see this workspace, and a sign-out

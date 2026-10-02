@@ -329,10 +329,39 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 	// Test seam (BUG-2570): a test may substitute its own tick source so
 	// each revalidation tick happens exactly when the test says, and never
 	// otherwise. Read once at setup — see watchRevalTickOverride's doc.
-	revalC := reval.C
+	tickC := reval.C
 	if ch := s.watchRevalTickOverride.Load(); ch != nil {
-		revalC = *ch
+		tickC = *ch
 	}
+	// TASK-3365: a kick runs the revalidation tick NOW (an access or
+	// credential change was published for this user). The tick source is a
+	// ticker (or a test's channel), which cannot be fired early, so a small
+	// forwarder merges ticks and kicks into one channel the loop below reads;
+	// buffered(1), so a burst coalesces into one revalidation. It stops with
+	// the stream.
+	// Registered under the wildcard workspace too: this stream spans every
+	// workspace, so every workspace kick must reach it (codex r1).
+	kick, unregisterKick := s.accessKicks().register(user.ID, workspaceWildcard)
+	defer unregisterKick()
+	revalC := make(chan time.Time, 1)
+	forwardDone := make(chan struct{})
+	defer close(forwardDone)
+	go func() {
+		for {
+			var now time.Time
+			select {
+			case <-forwardDone:
+				return
+			case now = <-tickC:
+			case <-kick:
+				now = time.Now()
+			}
+			select {
+			case revalC <- now:
+			default:
+			}
+		}
+	}()
 
 	// Same per-connection bound as the activity stream — see gapAnnouncer.
 	gapAnn := newGapAnnouncer(s.gapCooldown())

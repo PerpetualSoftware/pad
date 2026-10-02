@@ -3,7 +3,6 @@ package server
 import (
 	"errors"
 	"log/slog"
-	"math/rand"
 	"net/http"
 	"strconv"
 	"time"
@@ -331,14 +330,29 @@ func (s *Server) collabRevalidationLoop(
 
 	// First-fire jitter: rand.Int63n is fine for spread purposes —
 	// the security argument doesn't depend on unpredictability.
-	first := time.Duration(rand.Int63n(int64(interval)))
+	first := revalFirstDelay(interval)
 	timer := time.NewTimer(first)
 	defer timer.Stop()
+
+	// TASK-3365: a kick runs this same tick NOW (an access or credential
+	// change was published for this user or workspace). It drains the timer
+	// and fires it at once, so the tick body below is the only revalidation
+	// there is; the ticker stays as the backstop for a dropped kick.
+	kick, unregister := s.accessKicks().register(userID, item.WorkspaceID)
+	defer unregister()
 
 	for {
 		select {
 		case <-stop:
 			return
+		case <-kick:
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timer.Reset(0)
 		case <-timer.C:
 			// The CREDENTIAL first (BUG-3007). Everything below asks what
 			// the principal captured at UPGRADE time may do — `currentUser(r)`

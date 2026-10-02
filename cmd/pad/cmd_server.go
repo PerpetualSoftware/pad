@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 
 	pad "github.com/PerpetualSoftware/pad"
+	"github.com/PerpetualSoftware/pad/internal/accesskick"
 	"github.com/PerpetualSoftware/pad/internal/attachments"
 	"github.com/PerpetualSoftware/pad/internal/cli"
 	"github.com/PerpetualSoftware/pad/internal/cmdhelp"
@@ -621,6 +622,12 @@ func serveCmd() *cobra.Command {
 				slog.Info("Watch notification bus using in-memory (single instance)")
 			}
 			srv.SetWatchEventsBus(watchBus)
+			// TASK-3365: access kicks cross instances on their own Redis
+			// channel, on the same PAD_REDIS_URL switch as the buses above.
+			// Without Redis there is one instance and kicks stay local.
+			if watchRedis != nil {
+				srv.SetAccessKickTransport(accesskick.NewRedisTransport(watchRedis, redisKeys))
+			}
 
 			// Live-session presence registry (PLAN-2558 S1), on the SAME
 			// PAD_REDIS_URL switch as both buses above (BUG-2698). The

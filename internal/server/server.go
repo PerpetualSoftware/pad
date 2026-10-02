@@ -28,6 +28,7 @@ import (
 	"github.com/go-chi/cors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/PerpetualSoftware/pad/internal/accesskick"
 	"github.com/PerpetualSoftware/pad/internal/attachments"
 	"github.com/PerpetualSoftware/pad/internal/billing"
 	"github.com/PerpetualSoftware/pad/internal/collab"
@@ -90,17 +91,25 @@ type Server struct {
 	// TestUserCountFaultIsNilInProduction.
 	userCountFault func() error
 
-	store                 *store.Store
-	router                *chi.Mux
-	routerOnce            sync.Once            // ensures setupRouter runs once, after all config
-	admitOnce             sync.Once            // lazily builds streamAdmit for servers that never call SetSSELimits
-	streamGaugeFor        *metrics.Metrics     // the metrics instance pad_stream_connections_active is registered on (BUG-2726)
-	httpServer            *http.Server         // underlying HTTP server (set during ListenAndServe)
-	webFS                 fs.FS                // embedded web UI static files (optional)
-	webIdentity           *webBuildIdentity    // what webFS is, computed once in SetWebUI (TASK-3233)
-	events                events.EventBus      // real-time event bus (optional)
-	publishFailures       publishFailureLog    // rate-bounds publishActivityEvent's failure log (BUG-2732)
-	watchEvents           watchevents.Bus      // watch/nudge notification bus (optional, TASK-2533)
+	store           *store.Store
+	router          *chi.Mux
+	routerOnce      sync.Once         // ensures setupRouter runs once, after all config
+	admitOnce       sync.Once         // lazily builds streamAdmit for servers that never call SetSSELimits
+	streamGaugeFor  *metrics.Metrics  // the metrics instance pad_stream_connections_active is registered on (BUG-2726)
+	httpServer      *http.Server      // underlying HTTP server (set during ListenAndServe)
+	webFS           fs.FS             // embedded web UI static files (optional)
+	webIdentity     *webBuildIdentity // what webFS is, computed once in SetWebUI (TASK-3233)
+	events          events.EventBus   // real-time event bus (optional)
+	publishFailures publishFailureLog // rate-bounds publishActivityEvent's failure log (BUG-2732)
+	watchEvents     watchevents.Bus   // watch/nudge notification bus (optional, TASK-2533)
+	// accessKick indexes live connections for immediate revalidation
+	// (TASK-3365); created on first use by accessKicks().
+	accessKickOnce        sync.Once
+	accessKick            *accessKicker
+	accessKickMu          sync.Mutex
+	accessKickTransport   accesskick.Transport
+	accessKickStop        func()
+	accessKickWorker      *kickPublisher
 	sessionPresence       SessionPresence      // live event-stream connections per user (optional, PLAN-2558 S1)
 	redisHealth           *RedisHealth         // cached Redis reachability, reported by /api/v1/health/ready and pad_redis_up (optional, BUG-2727)
 	collab                *collab.RoomManager  // Yjs collab room manager (PLAN-1248); optional
