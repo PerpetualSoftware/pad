@@ -384,6 +384,7 @@ var nulExcluded = map[string]string{
 	"users.recovery_codes":                   "newline-joined bcrypt hashes of server-generated codes; looks like JSON, is not",
 	"workspace_members.collection_access":    "validated enum all/selected",
 	"decision_jobs.claimed_by":               "runner id minted by the server's decision tick, never request-derived",
+	"items.lease_user_id":                    "the authenticated caller's server-generated user id, set only by ClaimItemLease from the session; never request-derived (BUG-3341, migration 104)",
 	"decision_jobs.last_error":               "Go error string, server-composed",
 	"item_decisions.answer":                  "json.Marshal of decision.Answer: a NUL anywhere in it is written as the six-byte escape, never a raw byte, and the column is TEXT on both dialects so no jsonb parser decodes it (migration 090)",
 	"item_relation_links.source_field_key":   "only written by replaceRelationLinks, as a field definition's key value read from collections.schema in the same transaction; that column's classJSON trigger checks every decoded value; migration 088 states the derivation (BUG-3108 writer list)",
