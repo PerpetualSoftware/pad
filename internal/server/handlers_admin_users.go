@@ -646,13 +646,10 @@ func (s *Server) handleAdminDisableUser(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusNotFound, "not_found", "User not found")
 		return
 	}
-	if err := s.store.DisableUser(userID); err != nil {
-		writeInternalError(w, err)
-		return
-	}
-
-	// Always invalidate sessions (also handles retry after partial failure)
-	if err := s.store.DeleteUserSessions(userID); err != nil {
+	// Every credential, not only sessions, in one transaction (BUG-3349): a
+	// PAT or an MCP grant kept working after a disable. Idempotent, so a
+	// retry after a failure redoes all of it.
+	if err := s.store.DisableUserAndRevokeAccess(userID); err != nil {
 		writeInternalError(w, err)
 		return
 	}
@@ -663,7 +660,7 @@ func (s *Server) handleAdminDisableUser(w http.ResponseWriter, r *http.Request) 
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":      true,
-		"message": "User disabled and sessions invalidated",
+		"message": "User disabled; sessions, API tokens and connected apps revoked",
 	})
 }
 

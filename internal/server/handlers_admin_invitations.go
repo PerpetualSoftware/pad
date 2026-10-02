@@ -79,6 +79,9 @@ func (s *Server) handleAdminResendInvitation(w http.ResponseWriter, r *http.Requ
 	}
 
 	inv, err := s.store.CreateInvitation(old.WorkspaceID, old.Email, old.Role, inviterID)
+	if writeAccountDisabledIf(w, err) {
+		return
+	}
 	if err != nil {
 		writeInternalError(w, err)
 		return

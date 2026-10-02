@@ -589,6 +589,27 @@ func (s *Store) insertOAuthRequestRow(table string, req models.OAuthRequest) err
 	}
 	requestedStr := requestedAt.UTC().Format(time.RFC3339)
 
+	// No credential for a disabled subject, decided under its users row in
+	// the insert's transaction (BUG-3349): the token endpoint's own check runs
+	// before fosite persists, so a disable committing in between would
+	// otherwise leave an active token its revoke never saw.
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("oauth: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if req.Subject != "" {
+		if err := s.requireActiveUserTx(tx, req.Subject); err != nil {
+			return err
+		}
+	}
+	if err := s.insertOAuthRequestRowTx(tx, table, req, requestedStr); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) insertOAuthRequestRowTx(tx *sql.Tx, table string, req models.OAuthRequest, requestedStr string) error {
 	// Always TRUE on insert for the three flagged tables. Callers
 	// drop a row to inactive via Invalidate / Rotate /
 	// RevokeXxxFamily; pre-seeding inactive isn't a supported flow.
@@ -596,7 +617,7 @@ func (s *Store) insertOAuthRequestRow(table string, req models.OAuthRequest) err
 
 	switch table {
 	case "oauth_authorization_codes":
-		_, err := s.db.Exec(s.q(`
+		_, err := tx.Exec(s.q(`
 			INSERT INTO oauth_authorization_codes (
 				signature, request_id, requested_at, client_id,
 				scopes, granted_scopes, request_form, session_data,
@@ -609,7 +630,7 @@ func (s *Store) insertOAuthRequestRow(table string, req models.OAuthRequest) err
 			return fmt.Errorf("insert auth code: %w", err)
 		}
 	case "oauth_access_tokens":
-		_, err := s.db.Exec(s.q(`
+		_, err := tx.Exec(s.q(`
 			INSERT INTO oauth_access_tokens (
 				signature, request_id, requested_at, client_id,
 				scopes, granted_scopes, request_form, session_data,
@@ -626,7 +647,7 @@ func (s *Store) insertOAuthRequestRow(table string, req models.OAuthRequest) err
 		if req.AccessTokenSignature != "" {
 			accessSig = req.AccessTokenSignature
 		}
-		_, err := s.db.Exec(s.q(`
+		_, err := tx.Exec(s.q(`
 			INSERT INTO oauth_refresh_tokens (
 				signature, request_id, access_token_signature, requested_at,
 				client_id, scopes, granted_scopes, request_form, session_data,
@@ -641,7 +662,7 @@ func (s *Store) insertOAuthRequestRow(table string, req models.OAuthRequest) err
 	case "oauth_pkce_requests":
 		// PKCE rows have no active column — fosite's lifecycle is
 		// "exists or deleted", not "active or revoked".
-		_, err := s.db.Exec(s.q(`
+		_, err := tx.Exec(s.q(`
 			INSERT INTO oauth_pkce_requests (
 				signature, request_id, requested_at, client_id,
 				scopes, granted_scopes, request_form, session_data,

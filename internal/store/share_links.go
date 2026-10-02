@@ -76,14 +76,28 @@ func (s *Store) CreateShareLink(workspaceID, targetType, targetID, permission, c
 		}
 	}
 
-	_, err = s.db.Exec(s.q(`
+	// A share link is a credential a disabled account cannot mint (BUG-3349,
+	// requireActiveUserTx). Suspension on resolve covers links made before.
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("create share link: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if createdBy != "" {
+		if err := s.requireActiveUserTx(tx, createdBy); err != nil {
+			return nil, err
+		}
+	}
+	if _, err := tx.Exec(s.q(`
 		INSERT INTO share_links (id, token_hash, target_type, target_id, workspace_id, permission, created_by,
 		                         password_hash, expires_at, max_views, require_auth, restrict_to_email, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`), id, tokenHash, targetType, targetID, workspaceID, permission, createdBy,
-		passwordHash, expiresAt, maxViews, s.dialect.BoolToInt(requireAuth), restrictToEmail, ts)
-	if err != nil {
+		passwordHash, expiresAt, maxViews, s.dialect.BoolToInt(requireAuth), restrictToEmail, ts); err != nil {
 		return nil, fmt.Errorf("create share link: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("create share link: commit: %w", err)
 	}
 
 	link, err := s.GetShareLink(id)
@@ -146,6 +160,11 @@ func (s *Store) GetShareLink(id string) (*models.ShareLink, error) {
 // deleting a workspace only marks it, and its links must stop serving at once
 // rather than for the whole restore window. Restoring the workspace brings
 // the link back. Every public share route resolves the token here.
+//
+// A link whose creator is disabled is suspended the same way (BUG-3349): not
+// found while the account is disabled, serving again if it is re-enabled. It
+// is a content artifact others rely on, and a disable can be a mistake, so it
+// is not deleted.
 func (s *Store) GetShareLinkByToken(token string) (*models.ShareLink, error) {
 	hash := hashShareToken(token)
 	var id string
@@ -153,6 +172,9 @@ func (s *Store) GetShareLinkByToken(token string) (*models.ShareLink, error) {
 		SELECT sl.id FROM share_links sl
 		JOIN workspaces w ON w.id = sl.workspace_id
 		WHERE sl.token_hash = ? AND w.deleted_at IS NULL
+		  AND NOT EXISTS (
+		      SELECT 1 FROM users u WHERE u.id = sl.created_by AND u.disabled_at IS NOT NULL
+		  )
 	`), hash).Scan(&id)
 	if err == sql.ErrNoRows {
 		return nil, nil

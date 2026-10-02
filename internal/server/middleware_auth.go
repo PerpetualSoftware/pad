@@ -458,12 +458,33 @@ func legacyTokenRouteAllowed(r *http.Request) bool {
 	return false
 }
 
+// disabledAccountPathAllowed is what a disabled account may still do: sign
+// out, and ask for its session state (which reports account_disabled).
+func disabledAccountPathAllowed(r *http.Request) bool {
+	switch r.URL.Path {
+	case "/api/v1/auth/logout":
+		return r.Method == http.MethodPost
+	case "/api/v1/auth/session":
+		return r.Method == http.MethodGet
+	}
+	return false
+}
+
 // RequireAuth middleware blocks unauthenticated requests when users exist
 // in the system. When no users exist (fresh install), all requests pass
 // through to allow the setup flow.
 func (s *Server) RequireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
+
+		// A disabled account is refused BEFORE the public exemption
+		// (BUG-3349): /api/v1/auth/* is public, so a disabled user's surviving
+		// credential used to reach /auth/export and the rest of it. Signing
+		// out, and the session check that says why, stay open.
+		if user := currentUser(r); user != nil && user.IsDisabled() && !disabledAccountPathAllowed(r) {
+			writeError(w, http.StatusForbidden, "account_disabled", "Your account has been disabled. Contact an administrator.")
+			return
+		}
 
 		// Auth endpoints, share link resolution, health, and the public
 		// plan-limits endpoint are always exempt from auth.

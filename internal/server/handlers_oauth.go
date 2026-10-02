@@ -640,6 +640,11 @@ func (s *Server) handleOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
 	// when no cookie is present — at this point currentUser(r)
 	// returns the resolved user or nil.
 	user := currentUser(r)
+	// A disabled account's session is no sign-in here (BUG-3349): these
+	// routes sit outside RequireAuth.
+	if user != nil && user.IsDisabled() {
+		user = nil
+	}
 	if user == nil {
 		// 302 → /login?redirect=/oauth/authorize?<original-query>.
 		// The login page (web/src/routes/login/+page.svelte) +
@@ -733,6 +738,9 @@ func (s *Server) handleOAuthAuthorizeDecide(w http.ResponseWriter, r *http.Reque
 	}
 
 	user := currentUser(r)
+	if user != nil && user.IsDisabled() {
+		user = nil // as above (BUG-3349)
+	}
 	if user == nil {
 		// Session expired between consent render + decision POST.
 		// Fall back to login redirect with the decision page's URL
@@ -1133,6 +1141,16 @@ func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.oauthServer.Provider().WriteAccessError(ctx, w, ar, err)
 		return
+	}
+	// No tokens for an account that is gone or disabled (BUG-3349): an
+	// authorization code or refresh token issued before a disable would
+	// otherwise exchange for fresh ones, and work again after a re-enable.
+	if subject := ar.GetSession().GetSubject(); subject != "" {
+		u, uerr := s.store.GetUser(subject)
+		if uerr != nil || u == nil || u.IsDisabled() {
+			s.oauthServer.Provider().WriteAccessError(ctx, w, ar, fosite.ErrInvalidGrant.WithHint("The account is not available."))
+			return
+		}
 	}
 
 	// fosite's auth-code + refresh-token handlers

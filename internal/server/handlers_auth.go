@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
@@ -337,6 +338,10 @@ func (s *Server) rotateSessionsAfterCredentialChange(w http.ResponseWriter, r *h
 		return "", false
 	}
 	token, err := s.store.CreateSessionIssuedAt(user.ID, "web", clientIP(r), r.UserAgent(), webSessionTTL, info.CreatedAt)
+	if errors.Is(err, store.ErrUserDisabled) {
+		writeError(w, http.StatusForbidden, "account_disabled", "Your account has been disabled. Contact an administrator.")
+		return "", false
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error",
 			"Credentials updated but failed to refresh session. Please sign in again.")
@@ -1048,15 +1053,21 @@ func (s *Server) handleSessionCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Try to resolve user from context (set by middleware)
+	// Try to resolve user from context (set by middleware), then the session
+	// cookie directly (auth endpoints are exempt from middleware).
 	user := currentUser(r)
-	if user != nil {
-		writeJSON(w, http.StatusOK, s.sessionStatePayload(true, user))
-		return
+	if user == nil {
+		user = s.validateSessionCookie(r)
 	}
-
-	// Try session cookie directly (since auth endpoints are exempt from middleware)
-	if user := s.validateSessionCookie(r); user != nil {
+	if user != nil {
+		if user.IsDisabled() {
+			// Not signed in, and why (BUG-3349): the web app shows the
+			// disabled notice instead of a sign-in form that cannot work.
+			payload := s.sessionStatePayload(false, nil)
+			payload["account_disabled"] = true
+			writeJSON(w, http.StatusOK, payload)
+			return
+		}
 		writeJSON(w, http.StatusOK, s.sessionStatePayload(true, user))
 		return
 	}
@@ -1608,7 +1619,17 @@ func (s *Server) handleVerifyEmail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A disabled account does not act, here either (BUG-3349): refuse before
+	// the token is consumed, so it still works if the account is re-enabled.
+	if pending, err := s.store.LookupEmailVerification(input.Token); err == nil && pending != nil && pending.IsDisabled() {
+		writeError(w, http.StatusForbidden, "account_disabled", "Your account has been disabled. Contact an administrator.")
+		return
+	}
 	user, err := s.store.ConsumeEmailVerification(input.Token)
+	if errors.Is(err, store.ErrUserDisabled) {
+		writeError(w, http.StatusForbidden, "account_disabled", "Your account has been disabled. Contact an administrator.")
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to verify email")
 		return

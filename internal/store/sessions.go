@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"time"
 
@@ -22,6 +23,10 @@ type SessionInfo struct {
 	// it (BUG-3336).
 	CreatedAt time.Time
 }
+
+// ErrUserDisabled is returned when a session would be created for an account
+// that is disabled, or does not exist.
+var ErrUserDisabled = errors.New("user is disabled")
 
 // CreateSession generates a random session token, stores its SHA-256 hash,
 // and returns the plaintext token (prefixed with "padsess_"). The plaintext
@@ -67,12 +72,28 @@ func (s *Store) CreateSessionIssuedAt(userID, deviceInfo, ipAddress, userAgent s
 	}
 	expiresAt := expires.Format(time.RFC3339)
 
-	_, err := s.db.Exec(s.q(`
+	// Only for an account that is not disabled, decided under the users row
+	// (BUG-3349, requireActiveUserTx): a request admitted before a disable,
+	// minting after it, would otherwise leave a session its revoke never saw.
+	tx, err := s.db.Begin()
+	if err != nil {
+		return "", fmt.Errorf("insert session: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := s.requireActiveUserTx(tx, userID); err != nil {
+		if errors.Is(err, ErrUserDisabled) {
+			return "", err
+		}
+		return "", fmt.Errorf("insert session: %w", err)
+	}
+	if _, err := tx.Exec(s.q(`
 		INSERT INTO sessions (id, user_id, token_hash, device_info, ip_address, ua_hash, expires_at, created_at, renew_ttl_seconds)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`), id, userID, tokenHash, deviceInfo, ipAddress, uaHash, expiresAt, ts, int64(ttl/time.Second))
-	if err != nil {
+	`), id, userID, tokenHash, deviceInfo, ipAddress, uaHash, expiresAt, ts, int64(ttl/time.Second)); err != nil {
 		return "", fmt.Errorf("insert session: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return "", fmt.Errorf("insert session: commit: %w", err)
 	}
 
 	return plaintext, nil

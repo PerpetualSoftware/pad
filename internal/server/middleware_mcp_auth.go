@@ -156,6 +156,12 @@ func (s *Server) handleMCPPATAuth(w http.ResponseWriter, r *http.Request, token 
 		s.writeMCPUnauthorized(w, r, "invalid_token", "Token references an unknown user.")
 		return
 	}
+	// A disabled account's credential ends here too (BUG-3349): disabling
+	// revokes its tokens, and this holds for one minted in between.
+	if user.IsDisabled() {
+		s.writeMCPUnauthorized(w, r, "invalid_token", "This account has been disabled.")
+		return
+	}
 
 	// Per-token rate limit (TASK-959). Runs AFTER ALL PAT validation
 	// gates pass: ValidateToken, the legacy-workspace-scoped guard,
@@ -335,6 +341,11 @@ func (s *Server) handleMCPOAuthAuth(w http.ResponseWriter, r *http.Request, toke
 		// layer is failing. Either way, the bearer can't represent
 		// a valid identity — reject.
 		s.writeMCPUnauthorized(w, r, "invalid_token", "Token references an unknown user.")
+		return
+	}
+	// A disabled account's grant ends here too (BUG-3349).
+	if user.IsDisabled() {
+		s.writeMCPUnauthorized(w, r, "invalid_token", "This account has been disabled.")
 		return
 	}
 

@@ -279,6 +279,11 @@ func (s *Server) handleTOTPLoginVerify(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "Invalid 2FA verification")
 		return
 	}
+	// A challenge issued before a disable mints nothing after it (BUG-3349).
+	if user.IsDisabled() {
+		writeError(w, http.StatusForbidden, "account_disabled", "Your account has been disabled. Contact an administrator.")
+		return
+	}
 
 	verified := false
 

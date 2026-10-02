@@ -2,6 +2,7 @@ package store
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,6 +22,16 @@ import (
 
 func newTestClient(t *testing.T, s *Store) *models.OAuthClient {
 	t.Helper()
+	// The subjects these tests mint for are real, active users: a token for
+	// a subject that is disabled or gone is refused (BUG-3349).
+	for _, id := range []string{"user-123", "user-x"} {
+		if _, err := s.db.Exec(s.q(`
+			INSERT INTO users (id, email, username, name, password_hash, role, plan, created_at, updated_at)
+			VALUES (?, ?, ?, ?, '', 'member', 'free', ?, ?)
+		`), id, id+"@oauth-test.example", id, id, now(), now()); err != nil && !strings.Contains(strings.ToLower(err.Error()), "unique") && !strings.Contains(strings.ToLower(err.Error()), "duplicate") {
+			t.Fatalf("seed user %s: %v", id, err)
+		}
+	}
 	c, err := s.CreateOAuthClient(models.OAuthClientCreate{
 		Name:                    "Test Client",
 		RedirectURIs:            []string{"https://example.test/callback"},

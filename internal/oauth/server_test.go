@@ -39,7 +39,17 @@ import (
 // helper (import cycle); this package has no such constraint.
 func testStoreOAuth(t *testing.T) *store.Store {
 	t.Helper()
-	return storetest.NewSQLite(t)
+	s := storetest.NewSQLite(t)
+	// The subjects these tests mint for are real, active users: storage
+	// refuses a token for a subject that is disabled or gone (BUG-3349).
+	for _, id := range []string{"u", "user-1", "user-123", "user-42", "user-456", "user-x"} {
+		if _, err := s.DB().Exec(`INSERT INTO users (id, email, username, name, password_hash, role, plan, created_at, updated_at)
+			VALUES (?, ?, ?, ?, '', 'member', 'free', datetime('now'), datetime('now'))`,
+			id, id+"@oauth-test.example", "u_"+id, id); err != nil {
+			t.Fatalf("seed user %s: %v", id, err)
+		}
+	}
+	return s
 }
 
 // =====================================================================

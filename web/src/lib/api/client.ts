@@ -1146,6 +1146,11 @@ export interface AuthSession {
 	// replace "we emailed you a link" with host-recovery guidance, since no
 	// email can actually be sent. Absent on older servers — treat as true.
 	email_configured?: boolean;
+	// account_disabled is true when the request's credential belongs to a
+	// disabled account (BUG-3349): authenticated is false, and the sign-in
+	// page explains why instead of offering a sign-in that cannot work.
+	// Absent on older servers and for every other caller.
+	account_disabled?: boolean;
 	// version is the server build version (same value as HealthResponse.version),
 	// surfaced on /auth/session so clients — notably the mobile shells — can read
 	// it in the call they already make on connect (IDEA-1826). Empty string only

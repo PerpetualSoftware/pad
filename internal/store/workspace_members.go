@@ -917,12 +917,27 @@ func (s *Store) CreateInvitation(workspaceID, email, role, invitedBy string) (*m
 	ts := now()
 	expiresAt := time.Now().UTC().Add(InvitationTTL).Format(time.RFC3339)
 
-	_, err := s.db.Exec(s.q(`
+	// An invitation is a credential a disabled inviter cannot mint (BUG-3349,
+	// requireActiveUserTx): the code becomes a membership for whoever redeems
+	// it.
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("insert invitation: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if invitedBy != "" {
+		if err := s.requireActiveUserTx(tx, invitedBy); err != nil {
+			return nil, err
+		}
+	}
+	if _, err := tx.Exec(s.q(`
 		INSERT INTO workspace_invitations (id, workspace_id, email, role, invited_by, code, code_hash, created_at, expires_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`), id, workspaceID, strings.ToLower(strings.TrimSpace(email)), role, invitedBy, id, codeHash, ts, expiresAt)
-	if err != nil {
+	`), id, workspaceID, strings.ToLower(strings.TrimSpace(email)), role, invitedBy, id, codeHash, ts, expiresAt); err != nil {
 		return nil, fmt.Errorf("insert invitation: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("insert invitation: commit: %w", err)
 	}
 
 	inv, err := s.GetInvitation(id)

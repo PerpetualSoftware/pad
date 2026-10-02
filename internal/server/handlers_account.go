@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -16,6 +17,18 @@ import (
 )
 
 // --- Account Deletion (GDPR Article 17 — Right to Erasure) ---
+
+// writeAccountDisabledIf answers 403 account_disabled when err is the store's
+// refusal to mint a credential for a disabled account (BUG-3349): a request
+// admitted before a disable, reaching its insert after it. Reports whether it
+// wrote.
+func writeAccountDisabledIf(w http.ResponseWriter, err error) bool {
+	if !errors.Is(err, store.ErrUserDisabled) {
+		return false
+	}
+	writeError(w, http.StatusForbidden, "account_disabled", "Your account has been disabled. Contact an administrator.")
+	return true
+}
 
 // accountDeleteReauthWindow is how recently the session must have been
 // signed in for a confirm-only (passwordless) account deletion (BUG-3336).
