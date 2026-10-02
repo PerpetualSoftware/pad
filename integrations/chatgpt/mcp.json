@@ -3,7 +3,7 @@
   "mcpServers": {
     "pad": {
       "type": "streamable-http",
-      "url": "https://app.getpad.dev/mcp/chatgpt"
+      "url": "https://mcp.getpad.dev/mcp/chatgpt"
     }
   }
 }

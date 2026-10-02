@@ -20,8 +20,9 @@ import (
 
 const chatGPTPluginDir = "../../integrations/chatgpt"
 
-// chatGPTPluginMCPURL is where U2 mounts the catalog on Pad Cloud.
-const chatGPTPluginMCPURL = "https://app.getpad.dev/mcp/chatgpt"
+// chatGPTPluginMCPURL is where U2 mounts the catalog on Pad Cloud: the MCP
+// host, beside the canonical /mcp resource (ruled on TASK-3321).
+const chatGPTPluginMCPURL = "https://mcp.getpad.dev/mcp/chatgpt"
 
 type pluginTestCase struct {
 	Description      string `json:"description"`

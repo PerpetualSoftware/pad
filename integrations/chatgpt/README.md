@@ -5,7 +5,7 @@ The plugin package for OpenAI's plugin directory (TASK-3321 U4), in the Agent Pl
 | File | What it is |
 |---|---|
 | `plugin.json` | Manifest: package identity, listing metadata under `extensions["com.openai"].interface`, and the review test cases (exactly 5 positive and 3 negative) under `extensions["com.openai"].review.test_cases`. |
-| `mcp.json` | The one MCP server: Pad Cloud's ChatGPT catalog at `https://app.getpad.dev/mcp/chatgpt`. |
+| `mcp.json` | The one MCP server: Pad Cloud's ChatGPT catalog at `https://mcp.getpad.dev/mcp/chatgpt`. |
 | `skills/pad/SKILL.md` | The MCP-only Pad skill. It names only the 21 tools in `internal/mcp/chatgpt_catalog.go`, with no CLI, shell or local paths. |
 | `assets/` | `logo.png` and `composer-icon.png`, currently copies of `web/static/icon-512.png`. |
 
