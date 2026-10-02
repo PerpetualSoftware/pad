@@ -742,8 +742,20 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 					manifest.Version, exportBundleVersion)
 			}
 			manifestByPath = make(map[string]*models.AttachmentManifestEntry, len(manifest.Entries))
+			// BUG-3357: references are remapped by attachment id
+			// (oldAttachToNew), so two entries sharing one would both be
+			// rehydrated and every pad-attachment: reference would land on
+			// whichever was written last. Refused, like a duplicate item id.
+			seenAttachIDs := make(map[string]bool, len(manifest.Entries))
 			for i := range manifest.Entries {
 				e := &manifest.Entries[i]
+				if e.ID != "" && seenAttachIDs[e.ID] {
+					return ws, &importStatusError{
+						status: http.StatusBadRequest, code: "bad_bundle",
+						message: fmt.Sprintf("Bundle manifest has a duplicate attachment id %q", e.ID),
+					}
+				}
+				seenAttachIDs[e.ID] = true
 				manifestByPath[bundleAttachmentPath(e.ID, e.Filename)] = e
 			}
 			manifestSeen = true

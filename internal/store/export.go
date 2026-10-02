@@ -467,9 +467,46 @@ func (s *Store) ImportWorkspaceWithReport(data *models.WorkspaceExport, newName 
 	return ws, report, err
 }
 
+// checkImportSourceIDs refuses an export in which two collections, or two
+// items, share a source id (BUG-3357). The import remaps every reference by
+// that id (an item's collection, its parent, links, comments, versions,
+// reminders, relation fields), so a duplicate collapses two rows into one
+// mapping and every reference to the id lands silently on whichever row was
+// written last. It runs before the transaction opens, so a refused bundle
+// writes nothing. An EMPTY id is not checked: nothing references it.
+//
+// Comment, link and version ids are deliberately not checked: no other row
+// refers to them, so a duplicate there cannot misdirect anything.
+func checkImportSourceIDs(data *models.WorkspaceExport) error {
+	seen := make(map[string]bool, len(data.Collections))
+	for _, c := range data.Collections {
+		if c.ID == "" {
+			continue
+		}
+		if seen[c.ID] {
+			return invalidf("the export has a duplicate collection id %q; every collection must have its own id", c.ID)
+		}
+		seen[c.ID] = true
+	}
+	seen = make(map[string]bool, len(data.Items))
+	for _, it := range data.Items {
+		if it.ID == "" {
+			continue
+		}
+		if seen[it.ID] {
+			return invalidf("the export has a duplicate item id %q; every item must have its own id", it.ID)
+		}
+		seen[it.ID] = true
+	}
+	return nil
+}
+
 func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ownerID string, source string, report *ImportReport, opts ...MintOption) (*models.Workspace, error) {
 	if data.Version != 1 {
 		return nil, fmt.Errorf("unsupported export version: %d", data.Version)
+	}
+	if err := checkImportSourceIDs(data); err != nil {
+		return nil, err
 	}
 
 	mintOpts := resolveMintOptions(opts)
