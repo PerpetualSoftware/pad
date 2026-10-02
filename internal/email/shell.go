@@ -76,7 +76,7 @@ func buildHTMLShell(bodyHTML, footerNoteHTML string, cloudMode bool) string {
     <a href="https://getpad.dev/subprocessors" style="color: #999; text-decoration: underline;">Sub-processors</a>
   </p>
   <p style="font-size: 11px; color: #aaa; margin-top: 8px;">
-    &copy; %d Pad &middot; Perpetual Software
+    &copy; %d Pad &middot; Perpetual Software LLC
   </p>
 `, year))
 	}
@@ -115,7 +115,7 @@ Privacy:        https://getpad.dev/privacy
 Terms:          https://getpad.dev/terms
 Sub-processors: https://getpad.dev/subprocessors
 
-(c) %d Pad — Perpetual Software`, year))
+(c) %d Pad — Perpetual Software LLC`, year))
 	}
 	return b.String()
 }

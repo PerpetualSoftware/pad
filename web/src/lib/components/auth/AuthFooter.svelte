@@ -65,7 +65,7 @@
 					rel="noopener noreferrer"
 					class="auth-footer-perpetual"
 				>
-					Perpetual Software
+					Perpetual Software LLC
 				</a>
 			</p>
 			<nav class="auth-footer-links" aria-label="Site navigation">

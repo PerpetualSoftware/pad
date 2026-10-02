@@ -31,8 +31,15 @@ type pluginTestCase struct {
 	ExpectedBehavior string `json:"expected_behavior"`
 }
 
+// chatGPTPluginPublisher is the legal entity, the only name the listing may
+// use: there is no dba, so never "Perpetual Software" without "LLC".
+const chatGPTPluginPublisher = "Perpetual Software LLC"
+
 type pluginManifest struct {
-	Name       string `json:"name"`
+	Name   string `json:"name"`
+	Author struct {
+		Name string `json:"name"`
+	} `json:"author"`
 	Extensions map[string]struct {
 		Apps      any `json:"apps"`
 		Hooks     any `json:"hooks"`
@@ -87,6 +94,9 @@ func TestChatGPTPlugin_Manifest(t *testing.T) {
 	if !regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`).MatchString(m.Name) || len(m.Name) > 64 {
 		t.Errorf("name %q: want lowercase letters, numbers and single hyphens, at most 64", m.Name)
 	}
+	if m.Author.Name != chatGPTPluginPublisher {
+		t.Errorf("author.name = %q, want %q", m.Author.Name, chatGPTPluginPublisher)
+	}
 	oa, ok := m.Extensions["com.openai"]
 	if !ok {
 		t.Fatal(`plugin.json has no extensions["com.openai"]`)
@@ -135,6 +145,9 @@ func TestChatGPTPlugin_Manifest(t *testing.T) {
 		if len([]rune(c)) > 120 {
 			t.Errorf("capability %q over 120 characters", c)
 		}
+	}
+	if in.DeveloperName != chatGPTPluginPublisher {
+		t.Errorf("developerName = %q, want %q", in.DeveloperName, chatGPTPluginPublisher)
 	}
 	checkContrast(t, "brandColor", in.BrandColor, "#FFFFFF")
 	checkContrast(t, "brandColorDark", in.BrandColorDark, "#212121")

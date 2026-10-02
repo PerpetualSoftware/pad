@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "description": "Pad is a project workspace for tasks, bugs, ideas, plans and docs. This plugin connects ChatGPT to your Pad Cloud workspaces so you can find, read, create and update items, comment on them, and see what to work on next.",
   "author": {
-    "name": "Perpetual Software",
+    "name": "Perpetual Software LLC",
     "url": "https://www.getpad.dev"
   },
   "homepage": "https://www.getpad.dev",
@@ -23,7 +23,7 @@
         "displayName": "Pad",
         "shortDescription": "Your projects, tasks and docs",
         "longDescription": "Pad keeps a team's work in one workspace: tasks, bugs, ideas, plans and docs, each with a short ref like TASK-12, a status and priority, markdown content, comments, and links between items.\n\nWith this plugin you can, from a conversation:\n- open one of your Pad workspaces and get an overview of what is in progress and what needs attention\n- ask what to work on next, or for the ready backlog\n- search for items and read them in full, with their comments, history and dependencies\n- create items, update their status, fields and content, comment on them, and link them\n- archive an item (after you confirm) and restore it\n- read the team's playbooks and follow their steps\n\nIt is for people who already use Pad, or want to start: you need a Pad Cloud account at app.getpad.dev, and you sign in when you connect. Every content change made through the plugin is saved as a version first, so it can be undone from the item's History in Pad.\n\nLimitations: the plugin cannot create or delete workspaces, invite people, change a workspace's collections or fields, manage roles, or permanently delete items. Those are done in Pad itself.",
-        "developerName": "Perpetual Software",
+        "developerName": "Perpetual Software LLC",
         "category": "Productivity",
         "capabilities": [
           "Read",
