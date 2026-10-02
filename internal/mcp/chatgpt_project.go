@@ -189,7 +189,7 @@ var chatGPTResponseShapes = map[string]shape{
 	"restore_item":      itemShape,
 	"add_comment":       commentShape,
 	"list_comments":     shapeList(commentShape),
-	"item_history":      shapeList(shapeKeys("created_at", "created_by", "source", "change_summary")),
+	"item_history":      shapeList(shapeKeys("created_at", "created_by", "source", "change_summary", "actor_name")),
 	"item_dependencies": shapeList(linkShape),
 	"link_items":        linkShape,
 	"project_dashboard": dashboardShape,
@@ -239,6 +239,7 @@ func projectChatGPTResult(t ChatGPTTool, in map[string]any, res *CallToolResult)
 	}
 	projected := s.apply(value)
 	rewriteRelationValues(projected, value)
+	maskEmailShapedNames(projected, "")
 	b, err := json.Marshal(projected)
 	if err != nil {
 		return NewErrorResult(ErrorPayload{Code: ErrServerError, Message: "could not encode the response"})
@@ -456,4 +457,52 @@ func projectChatGPTError(res *CallToolResult) *CallToolResult {
 	out := structuredResult(projected, string(b))
 	out.IsError = true
 	return out
+}
+
+// personNameKeys are the keys whose values are a person's display name.
+// "name" counts only inside a "user" object; elsewhere it names a
+// workspace, collection or role.
+var personNameKeys = map[string]bool{
+	"author": true, "agent_name": true, "actor_name": true, "assigned_user": true,
+	"assigned_user_name": true, "owner_username": true, "assigned_users": true,
+}
+
+// emailLike matches a value containing an email address.
+var emailLike = regexp.MustCompile(`[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}`)
+
+// maskedPersonName replaces a display name that is (or contains) an email
+// address. A user can set their display name to their email, and a name is
+// shown wherever a person is; OpenAI's review forbids emails in responses.
+// It is not replaced by the local part, which would be a new identifier
+// (lead's ruling on TASK-3321).
+const maskedPersonName = "a Pad user"
+
+// maskEmailShapedNames replaces email-shaped person names in place.
+func maskEmailShapedNames(v any, parent string) {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, e := range t {
+			isName := personNameKeys[k] || (k == "name" && parent == "user")
+			if isName {
+				switch x := e.(type) {
+				case string:
+					if emailLike.MatchString(x) {
+						t[k] = maskedPersonName
+					}
+				case []any:
+					for i, el := range x {
+						if s, ok := el.(string); ok && emailLike.MatchString(s) {
+							x[i] = maskedPersonName
+						}
+					}
+				}
+				continue
+			}
+			maskEmailShapedNames(e, k)
+		}
+	case []any:
+		for _, e := range t {
+			maskEmailShapedNames(e, parent)
+		}
+	}
 }

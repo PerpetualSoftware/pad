@@ -38,11 +38,18 @@ type projectionFixture struct {
 
 func newProjectionFixture(t *testing.T) projectionFixture {
 	t.Helper()
+	return newProjectionFixtureNamed(t, "Olivia Owner")
+}
+
+// newProjectionFixtureNamed is the fixture with the owner's display name set
+// to ownerName (an email-shaped one exercises the name mask).
+func newProjectionFixtureNamed(t *testing.T, ownerName string) projectionFixture {
+	t.Helper()
 	s := storetest.NewSQLite(t)
 	api := padserver.New(s)
 	t.Cleanup(api.Stop)
 
-	owner, err := s.CreateUser(models.UserCreate{Email: "owner@example.com", Name: "Olivia Owner", Password: "correct-horse-battery-staple"})
+	owner, err := s.CreateUser(models.UserCreate{Email: "owner@example.com", Name: ownerName, Password: "correct-horse-battery-staple"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,11 +100,11 @@ func newProjectionFixture(t *testing.T) projectionFixture {
 	if _, err := s.CreateItemLink(ws.ID, models.ItemLinkCreate{TargetID: t2.ID, LinkType: "blocks"}, t1.ID); err != nil {
 		t.Fatal(err)
 	}
-	c, err := s.CreateComment(ws.ID, t1.ID, owner.ID, models.CommentCreate{Body: "Seen in prod.", Author: "Olivia Owner"})
+	c, err := s.CreateComment(ws.ID, t1.ID, owner.ID, models.CommentCreate{Body: "Seen in prod.", Author: ownerName})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.CreateComment(ws.ID, t1.ID, owner.ID, models.CommentCreate{Body: "Fix incoming.", Author: "Olivia Owner", ParentID: c.ID}); err != nil {
+	if _, err := s.CreateComment(ws.ID, t1.ID, owner.ID, models.CommentCreate{Body: "Fix incoming.", Author: ownerName, ParentID: c.ID}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -171,7 +178,14 @@ func leaks(path string, v any, allowedIDKeys map[string]bool) []string {
 }
 
 func TestChatGPTProjection_NoIdentifiersOrEmailsLeak(t *testing.T) {
-	f := newProjectionFixture(t)
+	// Twice: with an ordinary display name, and with one that IS an email
+	// address (a user can set that), which every person field must mask.
+	for _, name := range []string{"Olivia Owner", "olivia.owner@example.com"} {
+		t.Run(name, func(t *testing.T) { sweepAllTools(t, newProjectionFixtureNamed(t, name)) })
+	}
+}
+
+func sweepAllTools(t *testing.T, f projectionFixture) {
 	ws := f.ws
 	calls := []struct {
 		tool string
@@ -321,3 +335,20 @@ func TestChatGPTProjection_ErrorPathsDoNotLeak(t *testing.T) {
 }
 
 var uuidAnywhere = regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)
+
+// item_history names who made each change (the display name #1714 added),
+// and masks a name that is an email address.
+func TestChatGPTProjection_HistoryNamesTheEditor(t *testing.T) {
+	for name, want := range map[string]string{"Olivia Owner": "Olivia Owner", "olivia.owner@example.com": "a Pad user"} {
+		f := newProjectionFixtureNamed(t, name)
+		f.call(t, "update_item", map[string]any{"workspace": f.ws, "ref": f.task1, "content": "Edited through ChatGPT."})
+		_, v := f.call(t, "item_history", map[string]any{"workspace": f.ws, "ref": f.task1})
+		rows, _ := v.(map[string]any)["items"].([]any)
+		if len(rows) == 0 {
+			t.Fatalf("%s: no history rows", name)
+		}
+		if got := rows[0].(map[string]any)["actor_name"]; got != want {
+			t.Errorf("owner %q: newest row actor_name = %v, want %q", name, got, want)
+		}
+	}
+}

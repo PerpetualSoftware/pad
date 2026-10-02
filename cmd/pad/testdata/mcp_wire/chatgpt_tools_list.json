@@ -237,7 +237,7 @@
         "idempotentHint": true,
         "openWorldHint": false
       },
-      "description": "List an item's saved versions, newest first: when each was saved, and whether a person, an agent or ChatGPT made it.",
+      "description": "List an item's saved versions, newest first: when each was saved and who made it, with whether that was a person, an agent or ChatGPT.",
       "inputSchema": {
         "properties": {
           "limit": {
