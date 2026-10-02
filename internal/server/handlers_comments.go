@@ -281,7 +281,7 @@ func (s *Server) handleUpdateComment(w http.ResponseWriter, r *http.Request) {
 
 	actor, source := actorFromRequest(r)
 	var title, collSlug string
-	if item, ierr := s.store.GetItem(updated.ItemID); ierr == nil && item != nil {
+	if item, ierr := s.store.GetItemIncludeDeleted(updated.ItemID); ierr == nil && item != nil {
 		title = item.Title
 		collSlug = item.CollectionSlug
 	}
@@ -433,7 +433,7 @@ func (s *Server) handleCreateReply(w http.ResponseWriter, r *http.Request) {
 	replyCollSlug := ""
 	replyItemRef := ""
 	replyCollID := ""
-	if replyItem, err := s.store.GetItem(parentComment.ItemID); err == nil && replyItem != nil {
+	if replyItem, err := s.store.GetItemIncludeDeleted(parentComment.ItemID); err == nil && replyItem != nil {
 		replyCollSlug = replyItem.CollectionSlug
 		replyItemRef = replyItem.Ref
 		replyCollID = replyItem.CollectionID
@@ -608,9 +608,11 @@ func (s *Server) publishReactionEvent(eventType string, comment *models.Comment)
 	if s.events == nil || comment == nil {
 		return
 	}
-	// Resolve the item's collection slug so SSE filtering can scope this event
+	// Resolve the item's collection slug so SSE filtering can scope this
+	// event. Include archived items: this runs after the write, and a
+	// concurrent archive must not blank the collection (BUG-3343).
 	collSlug := ""
-	if item, err := s.store.GetItem(comment.ItemID); err == nil && item != nil {
+	if item, err := s.store.GetItemIncludeDeleted(comment.ItemID); err == nil && item != nil {
 		collSlug = item.CollectionSlug
 	}
 	s.publishActivityEvent(events.Event{

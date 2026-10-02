@@ -662,6 +662,15 @@ func sseEventVisibleFor(vis sseVisibility, sseUserID string, event events.Event)
 	if event.Type == events.CollectionUpdated && event.CollectionID != "" {
 		return vis.visibleCollIDSet[event.CollectionID]
 	}
+	if collection == "" && itemID != "" {
+		// An ITEM event that lost its collection (the post-write lookup
+		// raced a concurrent archive, BUG-3343) is not workspace-level: it
+		// names one item and its title. This subscriber's access is
+		// restricted (the unrestricted case returned above), and with no
+		// collection there is no way to confirm the item is visible to
+		// them, so it is not delivered.
+		return false
+	}
 	if collection == "" {
 		// Events without a collection (workspace-level, legacy docs) are
 		// only sent to actual members, not guests — they may contain
