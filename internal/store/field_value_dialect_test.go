@@ -153,7 +153,7 @@ func TestFieldValueEqualityIsTypeAware(t *testing.T) {
 			t.Errorf("ListItems status=%q = %v, want %v", c.arg, g, w)
 		}
 
-		r, err := s.Search(SearchParams{Query: "zebra", Workspace: ws.Slug, Collection: f.vals.Slug, FieldFilters: map[string]string{"status": c.arg}, Limit: 100})
+		r, err := s.Search(SearchParams{Unrestricted: true, Query: "zebra", Workspace: ws.Slug, Collection: f.vals.Slug, FieldFilters: map[string]string{"status": c.arg}, Limit: 100})
 		if err != nil {
 			t.Fatalf("Search %q: %v", c.arg, err)
 		}
@@ -280,7 +280,7 @@ func TestFieldValueRenderedTextAgrees(t *testing.T) {
 	}
 
 	wantGroups := map[string]int{"done": 1, "5": 2, "true": 1, "1": 1, "1000": 2, "0": 1}
-	r, err := s.Search(SearchParams{Query: "zebra", Workspace: ws.Slug, Collection: f.vals.Slug, Limit: 100})
+	r, err := s.Search(SearchParams{Unrestricted: true, Query: "zebra", Workspace: ws.Slug, Collection: f.vals.Slug, Limit: 100})
 	if err != nil || r.Facets == nil {
 		t.Fatalf("Search facets: %v", err)
 	}

@@ -97,9 +97,63 @@ func (s *Server) handleListCollections(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		colls = filtered
+		if err := s.scopeCollectionCountsToGrants(r, workspaceID, colls); err != nil {
+			writeInternalError(w, err)
+			return
+		}
 	}
 
 	writeJSON(w, http.StatusOK, colls)
+}
+
+// scopeCollectionCountsToGrants rewrites item_count and active_item_count on
+// the collections the caller sees only because they hold an item grant inside
+// them (BUG-3331). The store counts every item in a collection, and such a
+// caller may see only the granted ones, so the whole-collection numbers would
+// tell them how much hidden work the collection holds. Collections the caller
+// sees in full keep the store's counts. The same leak is why bootstrap
+// recomputes its counts (handlers_bootstrap.go).
+func (s *Server) scopeCollectionCountsToGrants(r *http.Request, workspaceID string, colls []models.Collection) error {
+	fullCollIDs, grantedItemIDs, err := s.guestResourceFilter(r, workspaceID)
+	if err != nil || len(grantedItemIDs) == 0 {
+		return err
+	}
+	full := make(map[string]bool, len(fullCollIDs))
+	for _, id := range fullCollIDs {
+		full[id] = true
+	}
+	count := func(nonTerminal bool) (map[string]int, error) {
+		items, err := s.store.ListItems(workspaceID, models.ItemListParams{
+			CollectionIDs: []string{},
+			ItemIDs:       grantedItemIDs,
+			NonTerminal:   nonTerminal,
+			NoContent:     true,
+		})
+		if err != nil {
+			return nil, err
+		}
+		out := map[string]int{}
+		for _, it := range items {
+			out[it.CollectionID]++
+		}
+		return out, nil
+	}
+	total, err := count(false)
+	if err != nil {
+		return err
+	}
+	active, err := count(true)
+	if err != nil {
+		return err
+	}
+	for i := range colls {
+		if full[colls[i].ID] {
+			continue
+		}
+		colls[i].ItemCount = total[colls[i].ID]
+		colls[i].ActiveItemCount = active[colls[i].ID]
+	}
+	return nil
 }
 
 // validateCollectionTraits parses and validates an inbound traits blob.

@@ -109,7 +109,7 @@ func TestDirectRefSearchResultsDoNotClaimTheirTitleIsStale(t *testing.T) {
 	// Store.Search, not Store.SearchItems: the title-only direct-ref path lives
 	// in the former, which is also what GET /api/v1/search — and therefore the
 	// CLI renderer that raised this — goes through.
-	byRef, err := s.Search(SearchParams{WorkspaceIDs: []string{ws.ID}, Query: ref})
+	byRef, err := s.Search(SearchParams{Unrestricted: true, WorkspaceIDs: []string{ws.ID}, Query: ref})
 	if err != nil {
 		t.Fatalf("Search(ref): %v", err)
 	}
@@ -139,7 +139,7 @@ func TestDirectRefSearchResultsDoNotClaimTheirTitleIsStale(t *testing.T) {
 	// with its own scan and its own clearing. Removing the marker-clearing from
 	// only that one left this test green (codex round 4), because it queried a
 	// prefixed ref and never a bare number.
-	byNumber, err := s.Search(SearchParams{WorkspaceIDs: []string{ws.ID}, Query: numericPartOf(ref)})
+	byNumber, err := s.Search(SearchParams{Unrestricted: true, WorkspaceIDs: []string{ws.ID}, Query: numericPartOf(ref)})
 	if err != nil {
 		t.Fatalf("Search(number): %v", err)
 	}
@@ -163,7 +163,7 @@ func TestDirectRefSearchResultsDoNotClaimTheirTitleIsStale(t *testing.T) {
 	// FTS lookup over the same, still-stale item: here the snippet IS cut from
 	// the body, so the marker must SURVIVE. Without this leg the fix above could
 	// be "clear it everywhere", which would delete the signal it exists for.
-	byText, err := s.Search(SearchParams{WorkspaceIDs: []string{ws.ID}, Query: "haystack"})
+	byText, err := s.Search(SearchParams{Unrestricted: true, WorkspaceIDs: []string{ws.ID}, Query: "haystack"})
 	if err != nil {
 		t.Fatalf("Search(text): %v", err)
 	}
