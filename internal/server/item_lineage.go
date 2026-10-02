@@ -10,18 +10,16 @@ import (
 
 // enrichItemsWithParent batch-populates parent link info on a slice of items.
 // Used by list endpoints where calling enrichItemForResponse per-item is too expensive.
-// visibleIDs controls which parent collections are allowed; nil means all visible.
+// visibleIDs nil means an unrestricted caller; non-nil means restricted, and
+// each parent is then checked per item (BUG-3366).
 func (s *Server) enrichItemsWithParent(r *http.Request, workspaceID string, items []models.Item, visibleIDs ...[]string) {
 	if len(items) == 0 {
 		return
 	}
-	// Extract the optional visibility filter
-	var vis []string
-	hasVis := false
-	if len(visibleIDs) > 0 && visibleIDs[0] != nil {
-		vis = visibleIDs[0]
-		hasVis = true
-	}
+	// A non-nil visibility filter marks a RESTRICTED caller; what each
+	// restricted caller may see is then decided per item (BUG-3366), so only
+	// its presence matters here.
+	hasVis := len(visibleIDs) > 0 && visibleIDs[0] != nil
 
 	// U6 hydration runs BEFORE the parent-map early return below. The two are
 	// unrelated decorations, and a workspace with no parent links at all would
@@ -58,7 +56,13 @@ func (s *Server) enrichItemsWithParent(r *http.Request, workspaceID string, item
 		return
 	}
 	// Populate items — only set parent fields when the parent resolved and
-	// passed the visibility filter.
+	// passed the visibility filter. A restricted caller is checked PER PARENT
+	// (BUG-3366), the relation_targets policy: collection visibility is
+	// navigation-lenient for item grants and would name an ungranted parent.
+	var parentVisible func(id string) bool
+	if hasVis {
+		parentVisible = s.itemVisibleFor(r, workspaceID)
+	}
 	for i := range items {
 		pid, ok := parentMap[items[i].ID]
 		if !ok {
@@ -68,8 +72,7 @@ func (s *Server) enrichItemsWithParent(r *http.Request, workspaceID string, item
 		if !ok {
 			continue
 		}
-		// Skip parents from hidden collections
-		if hasVis && !isCollectionVisible(info.CollectionID, vis) {
+		if parentVisible != nil && !parentVisible(pid) {
 			continue
 		}
 		items[i].ParentLinkID = pid
@@ -81,20 +84,24 @@ func (s *Server) enrichItemsWithParent(r *http.Request, workspaceID string, item
 }
 
 // enrichItemForResponse populates derived closure and parent info on a single item.
-// An optional visibleIDs slice filters related items so hidden-collection metadata
-// is not leaked. Pass nil (or omit) for full access.
+// An optional non-nil visibleIDs marks a restricted caller, whose related items
+// are then checked per item (BUG-3366) so ungranted ones are not named. Pass
+// nil (or omit) for full access.
 func (s *Server) enrichItemForResponse(r *http.Request, item *models.Item, visibleIDs ...[]string) error {
 	if item == nil {
 		return nil
 	}
 
-	var vis []string
 	hasVis := len(visibleIDs) > 0 && visibleIDs[0] != nil
+
+	// A restricted caller is checked PER ITEM for everything this response
+	// names (BUG-3366): see itemVisibleFor.
+	var visible func(id string) bool
 	if hasVis {
-		vis = visibleIDs[0]
+		visible = s.itemVisibleFor(r, item.WorkspaceID)
 	}
 
-	closure, err := s.deriveItemClosure(item, vis)
+	closure, err := s.deriveItemClosure(item, visible)
 	if err != nil {
 		return err
 	}
@@ -113,17 +120,9 @@ func (s *Server) enrichItemForResponse(r *http.Request, item *models.Item, visib
 		return err
 	}
 	if parentLink != nil {
-		parentVisible := true
-		if hasVis {
-			// A lookup that fails, or finds nothing, is not a visible parent
-			// (BUG-3334).
-			parent, perr := s.store.GetItem(parentLink.TargetID)
-			if perr != nil {
-				return perr
-			}
-			parentVisible = parent != nil && isCollectionVisible(parent.CollectionID, vis)
-		}
-		if parentVisible {
+		// A lookup that fails, or finds nothing, is not a visible parent
+		// (BUG-3334); itemVisibleFor fails closed.
+		if visible == nil || visible(parentLink.TargetID) {
 			item.ParentLinkID = parentLink.TargetID
 			item.ParentRef = parentLink.TargetRef
 			item.ParentTitle = parentLink.TargetTitle
@@ -136,9 +135,9 @@ func (s *Server) enrichItemForResponse(r *http.Request, item *models.Item, visib
 }
 
 // deriveItemClosure computes derived closure (superseded, implemented, split)
-// from item links. When vis is non-nil, links to items in hidden collections
-// are excluded.
-func (s *Server) deriveItemClosure(item *models.Item, vis []string) (*models.ItemDerivedClosure, error) {
+// from item links. When visible is non-nil, a link whose other side it
+// refuses is excluded (BUG-3366: per item, not per collection).
+func (s *Server) deriveItemClosure(item *models.Item, visible func(id string) bool) (*models.ItemDerivedClosure, error) {
 	links, err := s.store.GetItemLinks(item.ID)
 	if err != nil {
 		return nil, err
@@ -151,18 +150,14 @@ func (s *Server) deriveItemClosure(item *models.Item, vis []string) (*models.Ite
 
 	for _, link := range links {
 		// If visibility is restricted, check that the "other side" is visible
-		if vis != nil {
+		if visible != nil {
 			otherID := link.SourceID
 			if otherID == item.ID {
 				otherID = link.TargetID
 			}
 			// A lookup that fails, or finds nothing, is not a visible item
-			// (BUG-3334).
-			other, oerr := s.store.GetItem(otherID)
-			if oerr != nil {
-				return nil, oerr
-			}
-			if other == nil || !isCollectionVisible(other.CollectionID, vis) {
+			// (BUG-3334); itemVisibleFor fails closed.
+			if !visible(otherID) {
 				continue
 			}
 		}

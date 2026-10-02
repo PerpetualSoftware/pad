@@ -57,31 +57,7 @@ func (s *Server) hydrateRelationTargets(r *http.Request, workspaceID string, ite
 		return
 	}
 
-	// workspaceRole(r) is the right role here, unlike in the cross-workspace
-	// copy: every item being enriched belongs to the workspace in the URL,
-	// which is the workspace that role was stashed for.
-	user, role, bearer := currentUser(r), workspaceRole(r), isBearerAuth(r)
-
-	// One decision per DISTINCT target, reused across every item pointing at
-	// it. A list page of 50 items sharing one target asks once.
-	allowed := map[string]bool{}
-	visible := func(id string) bool {
-		if seen, done := allowed[id]; done {
-			return seen
-		}
-		item, err := s.store.GetItem(id)
-		if err != nil || item == nil {
-			allowed[id] = false
-			return false
-		}
-		seen, err := s.checkItemVisible(workspaceID, item, user, role, bearer)
-		if err != nil {
-			// Fail CLOSED. An error here is not a licence to disclose.
-			seen = false
-		}
-		allowed[id] = seen
-		return seen
-	}
+	visible := s.itemVisibleFor(r, workspaceID)
 
 	for i := range items {
 		perField, ok := targets[items[i].ID]
@@ -115,6 +91,41 @@ func (s *Server) hydrateRelationTargets(r *http.Request, workspaceID string, ite
 			}
 		}
 		items[i].RelationTargets = out
+	}
+}
+
+// itemVisibleFor returns the per-item visibility decision for the caller of
+// r, for items of workspaceID: the policy every enrichment that NAMES another
+// item applies to that item (relation targets, and since BUG-3366 lineage and
+// closure). Collection visibility is not enough there: it is navigation-
+// lenient for item grants, so an item-grant guest would be shown the title
+// and ref of ungranted items in a granted item's collection.
+//
+// One decision per DISTINCT id, memoized for the life of the returned
+// function, so a list page of 50 items sharing one parent asks once. A lookup
+// that fails, or finds nothing, is NOT visible: fail closed.
+func (s *Server) itemVisibleFor(r *http.Request, workspaceID string) func(id string) bool {
+	// workspaceRole(r) is the right role here, unlike in the cross-workspace
+	// copy: every item being enriched belongs to the workspace in the URL,
+	// which is the workspace that role was stashed for.
+	user, role, bearer := currentUser(r), workspaceRole(r), isBearerAuth(r)
+	allowed := map[string]bool{}
+	return func(id string) bool {
+		if seen, done := allowed[id]; done {
+			return seen
+		}
+		item, err := s.store.GetItem(id)
+		if err != nil || item == nil || item.WorkspaceID != workspaceID {
+			allowed[id] = false
+			return false
+		}
+		seen, err := s.checkItemVisible(workspaceID, item, user, role, bearer)
+		if err != nil {
+			// Fail CLOSED. An error here is not a licence to disclose.
+			seen = false
+		}
+		allowed[id] = seen
+		return seen
 	}
 }
 
