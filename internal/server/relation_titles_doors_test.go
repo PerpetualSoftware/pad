@@ -605,3 +605,34 @@ func TestRelationTitleDoors_ProbeFindsAVisibleMatchNotAnArbitraryOne(t *testing.
 		t.Errorf("the caller CAN see the match in %q, so they are owed the specific reason; the probe reaches %q first and must keep walking rather than filtering one arbitrary row: %s", openColl.Name, hiddenColl.Name, body)
 	}
 }
+
+// BUG-3366 (codex r1): a LEGACY target, whose item_number is NULL, hydrates
+// with a title but no ref. Redaction used to key on the ref alone, so an
+// ungranted legacy target's title reached an item-grant guest. Any target
+// that would name an item is now checked.
+func TestRelationTitleDoors_LegacyTargetWithoutRefIsRedacted(t *testing.T) {
+	f := newDoorFixture(t)
+	if _, err := f.srv.store.DB().Exec(f.srv.store.D().Rebind(`UPDATE items SET item_number = NULL WHERE id = ?`), f.target.ID); err != nil {
+		t.Fatalf("make the target legacy: %v", err)
+	}
+	pointsAtSecret := f.seed(`{"owner_ref":"` + f.target.ID + `"}`)
+	member := restrictedTitleFixture(t, f, "legacy-grant@example.com", pointsAtSecret)
+
+	rr := f.callAs(member, "editor", f.srv.handleGetItem, "GET",
+		"/api/v1/workspaces/"+f.ws.Slug+"/items/"+pointsAtSecret.Slug,
+		map[string]string{"itemSlug": pointsAtSecret.Slug}, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("get: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var out models.Item
+	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	secret := scalarTarget(t, out.RelationTargets["owner_ref"])
+	if secret.Title != "" || secret.Ref != "" {
+		t.Errorf("an ungranted LEGACY target hydrated as %+v", secret)
+	}
+	if secret.ID != f.target.ID {
+		t.Errorf("the stored id was dropped: %+v", secret)
+	}
+}

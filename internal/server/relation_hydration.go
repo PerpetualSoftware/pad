@@ -71,7 +71,10 @@ func (s *Server) hydrateRelationTargets(r *http.Request, workspaceID string, ite
 		// would withhold what the caller may see, and redacting none would
 		// disclose what they may not.
 		redact := func(target models.RelationTarget) models.RelationTarget {
-			if target.Ref != "" && !visible(target.ID) {
+			// Ref OR Title: a legacy target (item_number NULL) resolves with a
+			// title and no ref, and keying on the ref alone let its title through
+			// (BUG-3366, codex r1).
+			if (target.Ref != "" || target.Title != "") && !visible(target.ID) {
 				// Resolved, but not for these eyes. Keep the id — the value IS
 				// stored — and drop what would disclose the target.
 				return models.RelationTarget{ID: target.ID}
