@@ -1110,7 +1110,10 @@ func (s *Store) DeleteDocument(id string) error {
 	return nil
 }
 
-func (s *Store) RestoreDocument(id string) (*models.Document, error) {
+// RestoreDocument un-archives a document of workspaceID. Both the read and the
+// update are scoped to that workspace, so a document of another workspace is
+// sql.ErrNoRows and is never touched (BUG-3335).
+func (s *Store) RestoreDocument(workspaceID, id string) (*models.Document, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, err
@@ -1120,10 +1123,10 @@ func (s *Store) RestoreDocument(id string) (*models.Document, error) {
 	// Read the soft-deleted document's content + workspace inside the tx so
 	// we can re-stamp its attachment references before it becomes live again.
 	// GetDocument filters deleted_at IS NULL, so it can't see this row yet.
-	var content, workspaceID string
+	var content string
 	if err := tx.QueryRow(s.q(`
-		SELECT content, workspace_id FROM documents WHERE id = ? AND deleted_at IS NOT NULL
-	`), id).Scan(&content, &workspaceID); err != nil {
+		SELECT content FROM documents WHERE id = ? AND workspace_id = ? AND deleted_at IS NOT NULL
+	`), id, workspaceID).Scan(&content); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, sql.ErrNoRows
 		}
@@ -1149,8 +1152,8 @@ func (s *Store) RestoreDocument(id string) (*models.Document, error) {
 	ts := now()
 	result, err := tx.Exec(s.q(`
 		UPDATE documents SET deleted_at = NULL, updated_at = ?, status = 'draft'
-		WHERE id = ? AND deleted_at IS NOT NULL
-	`), ts, id)
+		WHERE id = ? AND workspace_id = ? AND deleted_at IS NOT NULL
+	`), ts, id, workspaceID)
 	if err != nil {
 		return nil, err
 	}

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -297,18 +298,17 @@ func (s *Server) handleRestoreDocument(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The store restores only a document of this workspace (BUG-3335): one of
+	// another workspace is not found and is never written, so there is
+	// nothing to compensate.
 	docID := chi.URLParam(r, "docID")
-	doc, err := s.store.RestoreDocument(docID)
-	if err != nil {
+	doc, err := s.store.RestoreDocument(workspaceID, docID)
+	if errors.Is(err, sql.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "not_found", "Document not found or not archived")
 		return
 	}
-
-	// Verify the restored doc belongs to this workspace
-	if doc.WorkspaceID != workspaceID {
-		// Re-delete it since it shouldn't have been restored under this workspace
-		_ = s.store.DeleteDocument(docID)
-		writeError(w, http.StatusNotFound, "not_found", "Document not found or not archived")
+	if err != nil {
+		writeInternalError(w, err)
 		return
 	}
 
