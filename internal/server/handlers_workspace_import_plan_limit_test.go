@@ -175,48 +175,42 @@ func TestImportWorkspace_SelfHostedIsUnaffected(t *testing.T) {
 	}
 }
 
-// TestImportWorkspace_NoResolvedUserIsNotCharged mirrors the create side's
-// `userID != ""` guard. A legacy workspace token resolves no user, and there
-// is nobody to charge — the guard is not defensive padding, it is the
-// difference between "no limit applies" and a nil lookup.
-//
-// SCOPE, stated because this test locks in a 201 and someone will read that as
-// approval: it pins the GUARD's behaviour, not a judgement that userless
-// workspace creation is fine. It also drives the handler directly rather than
-// through a real legacy token, so it does not prove that token shape reaches
-// here — only that the guard does what create's does when no user resolves.
-// Whether these doors should mint unowned workspaces at all is BUG-2809.
-func TestImportWorkspace_NoResolvedUserIsNotCharged(t *testing.T) {
+// TestImportWorkspace_NoResolvedUserIsRefused pins the answer to the question
+// this test used to leave to BUG-2809: on an initialized instance, a caller
+// with no resolved user mints NOTHING (BUG-3353). It drives the handler
+// directly, so this is the mint door's own refusal, independent of
+// RequireAuth's legacy-token gate in front of it. "Nothing" is asserted as a
+// fact about the data: no workspace is created and nobody is charged.
+func TestImportWorkspace_NoResolvedUserIsRefused(t *testing.T) {
 	srv, user := importLimitFixture(t, store.DefaultFreeLimits.Workspaces)
 
 	before, err := srv.store.CheckUserLimit(user.ID, "workspaces")
 	if err != nil {
 		t.Fatalf("read the user's limit: %v", err)
 	}
+	var wsBefore int
+	if err := srv.store.DB().QueryRow(`SELECT COUNT(*) FROM workspaces`).Scan(&wsBefore); err != nil {
+		t.Fatal(err)
+	}
 
 	rr := importRequest(t, srv, nil, "application/json", exportBody(t))
 
-	if rr.Code != http.StatusCreated {
-		t.Fatalf("import with no resolved user returned %d, want 201 — there is nobody to charge: %s",
+	if rr.Code != http.StatusForbidden || !strings.Contains(rr.Body.String(), "legacy_token_not_allowed") {
+		t.Fatalf("import with no resolved user returned %d, want 403 legacy_token_not_allowed: %s",
 			rr.Code, rr.Body.String())
 	}
-
-	// "Not charged" asserted as a FACT about the data, not inferred from a
-	// status code (codex round 3). A regression that quietly attributed the
-	// import to the at-limit fixture user would return 201 too, and pass on
-	// the check above alone.
 	after, err := srv.store.CheckUserLimit(user.ID, "workspaces")
 	if err != nil {
 		t.Fatalf("re-check the user's limit: %v", err)
 	}
 	if after.Current != before.Current {
-		t.Errorf("the fixture user's workspace count moved %d -> %d; an import with no resolved "+
-			"user was attributed to them", before.Current, after.Current)
+		t.Errorf("the fixture user's workspace count moved %d -> %d", before.Current, after.Current)
 	}
-
-	var created models.Workspace
-	parseJSON(t, rr, &created)
-	if created.OwnerID != "" {
-		t.Errorf("workspace created with owner %q by a caller with no resolved user", created.OwnerID)
+	var wsAfter int
+	if err := srv.store.DB().QueryRow(`SELECT COUNT(*) FROM workspaces`).Scan(&wsAfter); err != nil {
+		t.Fatal(err)
+	}
+	if wsAfter != wsBefore {
+		t.Errorf("workspaces %d -> %d: a refused import created one", wsBefore, wsAfter)
 	}
 }
