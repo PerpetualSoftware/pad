@@ -50,7 +50,7 @@
               "description": "Connect and orient: list the user's workspaces, open the demo workspace, and recommend one item to work on next.",
               "prompt": "Open my Acme Launch workspace in Pad and tell me what I should work on next.",
               "tools_triggered": "list_workspaces, get_workspace_overview, what_next",
-              "expected_behavior": "Calls list_workspaces, finds acme-launch, calls get_workspace_overview for it, then what_next. Replies with one recommended item by ref and title (an open, unblocked, high-priority task from the seeded data) and a one-line reason. No other item details are dumped."
+              "expected_behavior": "Calls list_workspaces, finds acme-launch, calls get_workspace_overview for it, then what_next. Replies with what_next's first recommendation by ref and title and a one-line reason. On a freshly reset demo workspace that is the in-progress task 'Write onboarding checklist'; once P4 has marked it done, it is 'Ship pricing page v2'. No other item details are dumped."
             },
             {
               "description": "Find and read: full-text search for a bug by description, then read it in full and summarize it.",
