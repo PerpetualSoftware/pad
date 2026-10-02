@@ -214,6 +214,28 @@ func (s *Server) handleCreateUserToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A token may be pinned only to a live workspace the caller belongs to
+	// (BUG-3346). Anything else is the workspace 404, identical for a
+	// workspace that does not exist and one the caller is not in.
+	if input.WorkspaceID != "" {
+		ws, err := s.store.GetWorkspaceByID(input.WorkspaceID)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		var member *models.WorkspaceMember
+		if ws != nil && ws.DeletedAt == nil {
+			if member, err = s.store.GetWorkspaceMember(ws.ID, userID); err != nil {
+				writeInternalError(w, err)
+				return
+			}
+		}
+		if member == nil {
+			writeWorkspaceNotFound(w, "Workspace not found")
+			return
+		}
+	}
+
 	// Enforce API token count limit (user-scoped)
 	if !s.enforceUserPlanLimit(w, r, userID, "api_tokens") {
 		return

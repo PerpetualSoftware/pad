@@ -671,6 +671,9 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
+	if !s.requireRawParentInWorkspace(w, workspaceID, input.ParentID) {
+		return
+	}
 
 	// BUG-2833 / BUG-2831. This used to be `input.Title == ""` inline, which is
 	// how create and update came to disagree: the rule was a literal in one
@@ -1290,6 +1293,9 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	if !s.requireRawParentInWorkspace(w, workspaceID, input.ParentID) {
 		return
 	}
 
@@ -4135,4 +4141,27 @@ func (s *Server) handleListItemActivity(w http.ResponseWriter, r *http.Request) 
 	}
 
 	writeJSON(w, http.StatusOK, activities)
+}
+
+// requireRawParentInWorkspace refuses a top-level parent_id that does not name
+// a live item in the workspace the route authorized (BUG-3346). The store
+// writes it to items.parent_id as given and trusts its caller to have checked
+// (CreateItemTx's TRUST BOUNDARY note), and this was the caller that did not:
+// a foreign ID created a cross-workspace reference that could block the other
+// workspace's purge. Empty (a clear) and absent pass. Same 400 whether the ID
+// names nothing or another workspace's item, so it confirms nothing.
+func (s *Server) requireRawParentInWorkspace(w http.ResponseWriter, workspaceID string, parentID *string) bool {
+	if parentID == nil || *parentID == "" {
+		return true
+	}
+	parent, err := s.store.GetItem(*parentID)
+	if err != nil {
+		writeInternalError(w, err)
+		return false
+	}
+	if parent == nil || parent.WorkspaceID != workspaceID {
+		writeError(w, http.StatusBadRequest, "validation_error", "parent_id does not name an item in this workspace")
+		return false
+	}
+	return true
 }
