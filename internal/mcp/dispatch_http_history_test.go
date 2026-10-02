@@ -181,3 +181,44 @@ func TestDispatchItemHistory_UnknownItemIsNotFound(t *testing.T) {
 		}
 	}
 }
+
+// TASK-3321 (ToolSurface 0.63): a summary row names WHO made the change, the
+// display name the server joins on read. It said only "user" or "agent".
+func TestDispatchItemHistory_SummaryNamesTheEditor(t *testing.T) {
+	t.Parallel()
+	s := storetest.NewSQLite(t)
+	srv := server.New(s)
+	t.Cleanup(srv.Stop)
+	owner, err := s.CreateUser(models.UserCreate{Email: "owner@example.com", Name: "Olivia Owner", Password: "correct-horse-battery-staple"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "Hist WS", Slug: "hist-ws", OwnerID: owner.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddWorkspaceMember(ws.ID, owner.ID, "owner"); err != nil {
+		t.Fatal(err)
+	}
+	coll, err := s.CreateCollection(ws.ID, models.CollectionCreate{Name: "Tasks", Slug: "tasks", Prefix: "TASK", Schema: `{"fields":[]}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	it, err := s.CreateItem(ws.ID, coll.ID, models.ItemCreate{Title: "Versioned", Content: "first body"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := "second body"
+	if _, err := s.UpdateItem(it.ID, models.ItemUpdate{Content: &next, LastModifiedBy: "user", VersionSource: "web", ActorUserID: owner.ID, ForceVersion: true}); err != nil {
+		t.Fatal(err)
+	}
+	d := &HTTPHandlerDispatcher{Handler: srv, UserResolver: func(context.Context) *models.User { return owner }}
+	text := dispatchHistory(t, d, map[string]any{"workspace": "hist-ws", "ref": it.Ref})
+	var rows []map[string]any
+	if err := json.Unmarshal([]byte(text), &rows); err != nil {
+		t.Fatalf("decode: %v\n%s", err, text)
+	}
+	if len(rows) == 0 || rows[0]["actor_name"] != "Olivia Owner" {
+		t.Fatalf("newest row does not name the editor: %s", text)
+	}
+}

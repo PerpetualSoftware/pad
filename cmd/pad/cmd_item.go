@@ -1533,6 +1533,28 @@ type itemVersionSummary struct {
 	CreatedBy     string `json:"created_by"`
 	Source        string `json:"source"`
 	ChangeSummary string `json:"change_summary,omitempty"`
+	// ActorName is the display name of the user who made the change
+	// (TASK-3321: history could say only "user" or "agent"). Empty for rows
+	// with no user, such as recovery writes and versions from before
+	// migration 103.
+	ActorName string `json:"actor_name,omitempty"`
+}
+
+// toItemVersionSummaries is the summary projection, which stdio MCP's
+// pad_item.history returns as it stands.
+func toItemVersionSummaries(versions []models.Version) []itemVersionSummary {
+	summaries := make([]itemVersionSummary, 0, len(versions))
+	for _, v := range versions {
+		summaries = append(summaries, itemVersionSummary{
+			ID:            v.ID,
+			CreatedAt:     v.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+			CreatedBy:     v.CreatedBy,
+			Source:        v.Source,
+			ChangeSummary: v.ChangeSummary,
+			ActorName:     v.ActorName,
+		})
+	}
+	return summaries
 }
 
 // defaultItemHistoryLimit bounds `pad item history` when the caller does not
@@ -1615,17 +1637,7 @@ Examples:
 				if full {
 					return cli.PrintJSON(versions)
 				}
-				summaries := make([]itemVersionSummary, 0, len(versions))
-				for _, v := range versions {
-					summaries = append(summaries, itemVersionSummary{
-						ID:            v.ID,
-						CreatedAt:     v.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
-						CreatedBy:     v.CreatedBy,
-						Source:        v.Source,
-						ChangeSummary: v.ChangeSummary,
-					})
-				}
-				return cli.PrintJSON(summaries)
+				return cli.PrintJSON(toItemVersionSummaries(versions))
 			}
 
 			if len(versions) == 0 {

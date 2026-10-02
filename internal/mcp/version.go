@@ -1738,6 +1738,14 @@ const CmdhelpVersion = "0.1"
 //     caller cannot read embeds nothing; a failed fetch stays non-fatal,
 //     as on stdio. Stdio is unchanged.
 //
+//     0.63 — TASK-3321 (lead-ruled as its own PR). ADDITIVE bump on the
+//     v0.53 / v0.28 grounds: every `pad_item.action=history` summary row,
+//     on both transports, gains an `omitempty` `actor_name`, the display
+//     name of the user who made the change. Rows could say only
+//     `created_by: "user"` or `"agent"`, although the server joins the name
+//     on every read. Empty for rows with no user (recovery writes, versions
+//     from before migration 103). No name, enum or param moved.
+//
 //     Post-0.37, deliberately NO bump (BUG-3098): `workspace_member_limit`
 //     joins the structured 403 allow-list, as ErrWorkspaceMemberLimit with
 //     its own hint (not the plan-limit "upgrade" hint). The server emits it
@@ -1746,7 +1754,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.62"
+const ToolSurfaceVersion = "0.63"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a
