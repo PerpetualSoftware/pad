@@ -269,7 +269,7 @@ because Tailwind/Svelte tooling will warn without it.
       © 2026 Pad
       <span class="mx-1">·</span>
       <a href="https://perpetualsoftware.org" target="_blank" rel="noopener noreferrer" class="text-text-muted/60 transition-colors hover:text-text-secondary">
-        Perpetual Software
+        Perpetual Software LLC
       </a>
     </p>
     <div class="flex flex-wrap items-center justify-center gap-x-6 gap-y-3">
@@ -310,9 +310,9 @@ secondary navigation, not a CTA strip.
 
 ### Copyright line
 
-- Format: `© <current year> Pad · Perpetual Software`
+- Format: `© <current year> Pad · Perpetual Software LLC`
 - The middot is `&middot;` (`·`). Not `|`, not `-`, not `/`.
-- "Perpetual Software" links to `https://perpetualsoftware.org` with
+- "Perpetual Software LLC" links to `https://perpetualsoftware.org` with
   the muted treatment shown above.
 - Year is the current calendar year. If you're updating this doc, also
   audit the inline `2026` in `pad-web/src/routes/+layout.svelte` line 142.

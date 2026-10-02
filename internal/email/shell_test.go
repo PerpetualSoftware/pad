@@ -61,7 +61,7 @@ func TestBuildHTMLShellCloudIncludesMarketingFooter(t *testing.T) {
 		"getpad.dev/privacy",
 		"getpad.dev/terms",
 		"getpad.dev/subprocessors",
-		"Pad &middot; Perpetual Software",
+		"Pad &middot; Perpetual Software LLC",
 	} {
 		if !strings.Contains(out, marker) {
 			t.Errorf("Cloud output missing marketing-footer marker %q", marker)
@@ -105,7 +105,7 @@ func TestBuildPlainShellMatchesHTMLBranching(t *testing.T) {
 
 	if !strings.Contains(cloud, "github.com/PerpetualSoftware/pad") ||
 		!strings.Contains(cloud, "getpad.dev/docs") ||
-		!strings.Contains(cloud, "Perpetual Software") {
+		!strings.Contains(cloud, "Perpetual Software LLC") {
 		t.Error("Cloud plain shell should include the marketing link block + copyright")
 	}
 }
