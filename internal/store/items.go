@@ -2839,9 +2839,13 @@ func (s *Store) updateItemWithParentLinkOnce(
 			// a full-body version, and the tab's flush that follows would store
 			// it a second time. That second row would then carry the agent's
 			// change in History under the tab user's name, leaving the agent's
-			// own row as an empty change. An unforced write skips a version
-			// whose body the newest version already holds verbatim.
-			if shouldVersion {
+			// own row as an empty change. So a FLUSH (collab-snapshot) skips a
+			// version whose body the newest version already holds verbatim.
+			// Only a flush: any other writer's edit owes its own row even when
+			// an earlier throttled edit brought the body back to a versioned
+			// one (codex review), or that writer's change would read as the
+			// earlier writer's.
+			if shouldVersion && source == "collab-snapshot" {
 				dup, derr := s.newestVersionIsFullBody(tx, id, existing.Content)
 				if derr != nil {
 					return nil, fmt.Errorf("check duplicate version: %w", derr)

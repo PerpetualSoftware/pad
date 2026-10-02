@@ -127,3 +127,40 @@ func TestBUG3327_ApplierPathBodyEditLeavesAVersion(t *testing.T) {
 		t.Errorf("oldest version resolves to %q, want the empty initial body", last.Content)
 	}
 }
+
+// The flush dedupe is limited to flushes (codex review, round 2): a user's
+// A->B (versioned) then B->A (throttled, same writer) leaves the newest row
+// holding A, and a DIFFERENT writer's A->C must still get its own row rather
+// than have its change read as the first writer's.
+func TestBUG3327_DedupeSkipsOnlyFlushes(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+	item := createTaskWithFields(t, srv, slug, "Item", `{"status":"open"}`)
+	patch := func(content string, headers map[string]string) {
+		t.Helper()
+		rr := doRequestWithHeaders(srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+item.Slug,
+			map[string]interface{}{"content": content}, headers)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("PATCH %q: %d %s", content, rr.Code, rr.Body.String())
+		}
+	}
+	agent := map[string]string{"X-Pad-Agent": "test-agent"}
+	patch("body A", nil)   // the user writes A
+	patch("body B", agent) // a different writer: versions A as a full body
+	patch("body A", agent) // same writer within the hour: throttled, no row
+	before, err := srv.store.ListItemVersions(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(before) == 0 || before[0].IsDiff || before[0].Content != "body A" {
+		t.Fatalf("fixture: the newest version must be a full-body \"body A\", got %+v", before)
+	}
+	patch("body C", nil) // the user again: a different writer from the newest row
+	after, err := srv.store.ListItemVersions(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before)+1 {
+		t.Fatalf("versions %d -> %d: the user's A->C was deduped against the agent's row", len(before), len(after))
+	}
+}
