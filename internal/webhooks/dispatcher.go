@@ -453,23 +453,33 @@ func (d *Dispatcher) attemptDeliver(hook models.Webhook, body []byte) deliveryRe
 	// reused connection fails with nothing written, and a deletion can land
 	// during dial or TLS setup. GotConn fires for every connection the
 	// request is about to be written on, after any TLS handshake and before
-	// the request is written, so re-checking there and cancelling closes
-	// those windows. A request already being written at the instant of a
-	// deletion cannot be recalled; that is the irreducible window.
+	// the request is written, so re-checking there, closing the connection
+	// and cancelling closes those windows. A request already being written
+	// at the instant of a deletion cannot be recalled; that is the
+	// irreducible window.
 	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), webhookWorkspaceKey{}, hook.WorkspaceID))
 	defer cancel()
 	var connGone, connUnknown atomic.Bool
 	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
-		GotConn: func(httptrace.GotConnInfo) {
+		GotConn: func(info httptrace.GotConnInfo) {
 			live, err := d.store.WorkspaceLive(hook.WorkspaceID)
-			switch {
-			case err != nil:
-				connUnknown.Store(true)
-				cancel()
-			case !live:
-				connGone.Store(true)
-				cancel()
+			if err == nil && live {
+				return
 			}
+			if err != nil {
+				connUnknown.Store(true)
+			} else {
+				connGone.Store(true)
+			}
+			// Cancelling alone is not a write barrier: HTTP/1 queues the
+			// request before it checks the context, so its writer can still
+			// send the whole request (codex r3). Closing the connection is:
+			// no byte can be written to it. The cancel then stops any
+			// transport-internal retry on a fresh connection.
+			if info.Conn != nil {
+				_ = info.Conn.Close()
+			}
+			cancel()
 		},
 	})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, hook.URL, bytes.NewReader(body))
