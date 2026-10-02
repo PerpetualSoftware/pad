@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // BUG-3327: a body edit that takes the designated-applier path (a tab has the
@@ -162,5 +163,42 @@ func TestBUG3327_DedupeSkipsOnlyFlushes(t *testing.T) {
 	}
 	if len(after) != len(before)+1 {
 		t.Fatalf("versions %d -> %d: the user's A->C was deduped against the agent's row", len(before), len(after))
+	}
+}
+
+// Codex review, round 3: an ORDINARY flush (no applier edit before it) after a
+// throttled revert to a versioned body must still version. Only an
+// applier-path row, which postdates the item's last direct content write, may
+// be treated as the flush's duplicate.
+func TestBUG3327_FlushAfterThrottledRevertStillVersions(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+	item := createTaskWithFields(t, srv, slug, "Item", `{"status":"open"}`)
+	patch := func(path, content string, headers map[string]string) {
+		t.Helper()
+		rr := doRequestWithHeaders(srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+path,
+			map[string]interface{}{"content": content}, headers)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("PATCH %q: %d %s", content, rr.Code, rr.Body.String())
+		}
+	}
+	agent := map[string]string{"X-Pad-Agent": "test-agent"}
+	patch("", "body A", nil)
+	patch("", "body B", agent) // versions A as a full body
+	// The revert must land in a LATER second than A's version, or this is the
+	// documented same-second residual rather than the case under test.
+	time.Sleep(1100 * time.Millisecond)
+	patch("", "body A", agent) // throttled: no row, but content_flushed_at moves
+	before, err := srv.store.ListItemVersions(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	patch("?source=collab-snapshot", "body C", nil) // an ordinary tab flush
+	after, err := srv.store.ListItemVersions(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before)+1 {
+		t.Fatalf("versions %d -> %d: an ordinary flush was treated as an applier duplicate", len(before), len(after))
 	}
 }

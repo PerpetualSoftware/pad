@@ -2846,7 +2846,7 @@ func (s *Store) updateItemWithParentLinkOnce(
 			// one (codex review), or that writer's change would read as the
 			// earlier writer's.
 			if shouldVersion && source == "collab-snapshot" {
-				dup, derr := s.newestVersionIsFullBody(tx, id, existing.Content)
+				dup, derr := s.newestVersionIsUnflushedApplierRow(tx, id, existing.Content)
 				if derr != nil {
 					return nil, fmt.Errorf("check duplicate version: %w", derr)
 				}
@@ -5626,29 +5626,47 @@ func buildItemSort(sort string, dialect Dialect) string {
 // and the pool test's item leg was a TITLE-only update, which never reaches
 // this branch. A test that exercises one arm of an optional path is not
 // evidence about the other arm.
-// newestVersionIsFullBody reports whether the item's newest version is a
-// full-body row (not a reverse patch) whose content is exactly body. Only a
-// full-body row can be compared without resolving the chain, and that is the
-// row an applier-path edit writes (BUG-3327).
-func (s *Store) newestVersionIsFullBody(q rowQueryer, itemID, body string) (bool, error) {
-	var content string
+// newestVersionIsUnflushedApplierRow reports whether the item's newest
+// version is the row an applier-path edit wrote (BUG-3327) for exactly
+// body, still waiting for the tab's flush to land the new body in the row.
+// Such a row is recognised positively, not by its content alone (codex
+// review): it is a full-body, non-create row, and it is NEWER than the
+// item's content_flushed_at. Every direct content write bumps
+// content_flushed_at in the same write as its version, so only an
+// applier-path version (whose row write leaves content alone) can postdate
+// it. A throttled revert to an earlier versioned body moves
+// content_flushed_at past that version, so it does not match (but see the
+// same-second residual below).
+func (s *Store) newestVersionIsUnflushedApplierRow(q rowQueryer, itemID, body string) (bool, error) {
+	var content, createdAt string
+	var flushedAt sql.NullString
 	var isDiff, isCreate bool
 	err := q.QueryRow(s.q(`
-		SELECT content, is_diff, is_create
-		FROM item_versions
-		WHERE item_id = ?
-		ORDER BY created_at DESC, version_seq DESC
+		SELECT v.content, v.is_diff, v.is_create, v.created_at, i.content_flushed_at
+		FROM item_versions v
+		JOIN items i ON i.id = v.item_id
+		WHERE v.item_id = ?
+		ORDER BY v.created_at DESC, v.version_seq DESC
 		LIMIT 1
-	`), itemID).Scan(&content, &isDiff, &isCreate)
+	`), itemID).Scan(&content, &isDiff, &isCreate, &createdAt, &flushedAt)
 	if err == sql.ErrNoRows {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	// A create row holds the body AS CREATED, which is also the row's body
-	// until the first edit, and the first edit still owes its own row.
-	return !isDiff && !isCreate && content == body, nil
+	if isDiff || isCreate || content != body {
+		return false, nil
+	}
+	if !flushedAt.Valid || flushedAt.String == "" {
+		return true, nil
+	}
+	// Not-before rather than after: both are stored at one-second
+	// resolution, and an applier edit routinely lands in the same second as
+	// the last direct write. The residual is a versioned A->B and a throttled
+	// revert B->A inside ONE second, then a flush: that flush's version is
+	// skipped and its change reads under A->B's row.
+	return !parseTime(createdAt).Before(parseTime(flushedAt.String)), nil
 }
 
 func (s *Store) shouldCreateItemVersion(q rowQueryer, itemID, actor, source string) (bool, error) {
