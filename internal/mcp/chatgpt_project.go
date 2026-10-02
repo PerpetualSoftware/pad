@@ -419,7 +419,7 @@ func relationRefs(target any) any {
 // can hold item data, ids and the upgrade link) and every other key are
 // dropped (codex review).
 var errorShape = shape{"error": shapeWith(shapeKeys("code", "message", "hint", "field", "expected"), shape{
-	"available_workspaces": shapeKeys("slug", "name"),
+	"available_workspaces": shapeKeys("slug", "name", "default"),
 })}
 
 var uuidInText = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
@@ -444,7 +444,7 @@ func projectChatGPTError(res *CallToolResult) *CallToolResult {
 	}
 	projected := errorShape.apply(value).(map[string]any)
 	pe := projected["error"].(map[string]any)
-	for _, k := range []string{"message", "hint"} {
+	for _, k := range []string{"message", "hint", "field", "expected"} {
 		if s, ok := pe[k].(string); ok {
 			pe[k] = uuidInText.ReplaceAllString(s, "(id)")
 		}

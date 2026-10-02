@@ -64,15 +64,22 @@ func TestChatGPTProjection_PlanLimitIsNeutral(t *testing.T) {
 // and have ids masked (codex review).
 func TestChatGPTProjection_ErrorsAreMinimized(t *testing.T) {
 	src := NewErrorResult(ErrorPayload{
-		Code:    ErrNotFound,
-		Message: "item 9b1c0a6e-1111-4222-8333-444455556666 not found",
-		Hint:    "check the ref",
-		Details: json.RawMessage(`{"assigned_user_email":"a@b.co"}`),
+		Code:                ErrNotFound,
+		Message:             "item 9b1c0a6e-1111-4222-8333-444455556666 not found",
+		Hint:                "check the ref",
+		Field:               "owner 9b1c0a6e-1111-4222-8333-444455556666",
+		Expected:            "an item in 9b1c0a6e-1111-4222-8333-444455556666",
+		AvailableWorkspaces: []WorkspaceHint{{Slug: "acme", Name: "Acme Launch"}},
+		Details:             json.RawMessage(`{"assigned_user_email":"a@b.co"}`),
 	})
 	got := projectChatGPTResult(ChatGPTTool{Name: "get_item"}, nil, src)
 	b, _ := json.Marshal(got)
 	if !got.IsError || !strings.Contains(string(b), string(ErrNotFound)) || !strings.Contains(string(b), "check the ref") {
 		t.Errorf("the error lost its code, flag or hint: %s", b)
+	}
+	// What a caller recovers with survives: the workspace list.
+	if !strings.Contains(string(b), `"slug":"acme"`) || !strings.Contains(string(b), "Acme Launch") {
+		t.Errorf("available_workspaces did not survive: %s", b)
 	}
 	if strings.Contains(string(b), "9b1c0a6e") || strings.Contains(string(b), "a@b.co") || strings.Contains(string(b), "details") {
 		t.Errorf("the error still carries ids, emails or details: %s", b)
