@@ -28,6 +28,7 @@ import (
 	"github.com/go-chi/cors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/PerpetualSoftware/pad/internal/accesskick"
 	"github.com/PerpetualSoftware/pad/internal/attachments"
 	"github.com/PerpetualSoftware/pad/internal/billing"
 	"github.com/PerpetualSoftware/pad/internal/collab"
@@ -105,6 +106,9 @@ type Server struct {
 	// (TASK-3365); created on first use by accessKicks().
 	accessKickOnce        sync.Once
 	accessKick            *accessKicker
+	accessKickMu          sync.Mutex
+	accessKickTransport   accesskick.Transport
+	accessKickStop        func()
 	sessionPresence       SessionPresence      // live event-stream connections per user (optional, PLAN-2558 S1)
 	redisHealth           *RedisHealth         // cached Redis reachability, reported by /api/v1/health/ready and pad_redis_up (optional, BUG-2727)
 	collab                *collab.RoomManager  // Yjs collab room manager (PLAN-1248); optional
@@ -977,10 +981,6 @@ func (s *Server) SetEventBus(bus events.EventBus) {
 // that doesn't exercise watches) still serves every other endpoint.
 func (s *Server) SetWatchEventsBus(bus watchevents.Bus) {
 	s.watchEvents = bus
-	if bus != nil {
-		// TASK-3365: this instance's one subscription for access kicks.
-		go s.runAccessKickSubscriber(bus)
-	}
 }
 
 // SetSessionPresence attaches the live-session registry read by

@@ -339,7 +339,9 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 	// forwarder merges ticks and kicks into one channel the loop below reads;
 	// buffered(1), so a burst coalesces into one revalidation. It stops with
 	// the stream.
-	kick, unregisterKick := s.accessKicks().register(user.ID, "")
+	// Registered under the wildcard workspace too: this stream spans every
+	// workspace, so every workspace kick must reach it (codex r1).
+	kick, unregisterKick := s.accessKicks().register(user.ID, workspaceWildcard)
 	defer unregisterKick()
 	revalC := make(chan time.Time, 1)
 	forwardDone := make(chan struct{})
@@ -811,13 +813,6 @@ const watchAccessQueryParam = "access"
 func watchStreamDelivers(watches map[string]string, vis watchAccessVisibility, userID string, sessionID string, armed, access bool, n watchevents.Notification) bool {
 	if n.Kind == watchevents.KindWorkspaceAccessChanged {
 		return access && n.TargetUserID != "" && n.TargetUserID == userID
-	}
-	// TASK-3365: server-internal, never delivered. LOAD-BEARING: an unknown
-	// kind falls through to watchNotificationVisible below, which could
-	// deliver it, and an installed `pad watch --stream` prints any kind it
-	// does not know as an item line into an agent session.
-	if n.Kind == watchevents.KindAccessInvalidated {
-		return false
 	}
 	return watchNotificationVisible(watches, vis, userID, sessionID, armed, n)
 }

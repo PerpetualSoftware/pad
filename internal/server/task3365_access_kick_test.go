@@ -6,10 +6,16 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
+
+	"github.com/PerpetualSoftware/pad/internal/accesskick"
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/redisns"
 	"github.com/PerpetualSoftware/pad/internal/watchevents"
 )
 
@@ -77,81 +83,138 @@ func TestTASK3365_KickerCoalescesAndIsNonBlocking(t *testing.T) {
 	}
 }
 
-// LOAD-BEARING (lead): the internal kind must never reach a client, whatever
-// the stream asked for and whoever it is addressed to.
-func TestTASK3365_AccessInvalidatedIsNeverDelivered(t *testing.T) {
-	// The caller sees everything and watches the item unconditionally, so
-	// the generic path below the drop WOULD deliver any kind on this item:
-	// the control proves it, and only the explicit drop refuses ours.
-	watches := map[string]string{"item1": ""}
-	full := watchAccessVisibility{fullAccess: true}
-	control := watchevents.Notification{Kind: watchevents.KindComment, WorkspaceID: "w1", ItemID: "item1"}
-	if !watchStreamDelivers(watches, full, "u1", "s1", true, true, control) {
-		t.Fatal("control: an ordinary notification on a watched item should be delivered")
-	}
-	for _, n := range []watchevents.Notification{
-		{Kind: watchevents.KindAccessInvalidated, TargetUserID: "u1", WorkspaceID: "w1"},
-		{Kind: watchevents.KindAccessInvalidated, TargetUserID: "u1", WorkspaceID: "w1", ItemID: "item1"},
-	} {
-		for _, access := range []bool{false, true} {
-			for _, armed := range []bool{false, true} {
-				if watchStreamDelivers(watches, full, "u1", "s1", armed, access, n) {
-					t.Fatalf("access_invalidated delivered (item=%q access=%v armed=%v)", n.ItemID, access, armed)
-				}
-			}
-		}
+// deterministicFirstTick makes a connection's first revalidation land a full
+// interval out instead of anywhere inside it (codex r1): with the interval at
+// an hour, nothing but a kick can re-check during a test.
+func deterministicFirstTick(t *testing.T) {
+	t.Helper()
+	prev := revalFirstDelay
+	revalFirstDelay = func(interval time.Duration) time.Duration { return interval }
+	t.Cleanup(func() { revalFirstDelay = prev })
+}
+
+func miniredisTransport(t *testing.T) (*miniredis.Miniredis, func() accesskick.Transport) {
+	t.Helper()
+	mr := miniredis.RunT(t)
+	return mr, func() accesskick.Transport {
+		client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+		t.Cleanup(func() { _ = client.Close() })
+		return accesskick.NewRedisTransport(client, redisns.Default)
 	}
 }
 
-// Kicks travel the bus, so a revocation on one instance reaches connections
-// held by another.
+func waitKick(t *testing.T, ch <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("%s: no kick within 2s", what)
+	}
+}
+
+// Kicks travel their own transport, so a revocation on one instance reaches
+// connections held by another, including a workspace kick reaching a watch
+// stream through the wildcard.
 func TestTASK3365_KickCrossesInstances(t *testing.T) {
-	bus := watchevents.New()
-	defer bus.Close()
+	_, newTransport := miniredisTransport(t)
 	a, b := testServer(t), testServer(t)
-	a.SetWatchEventsBus(bus)
-	b.SetWatchEventsBus(bus)
+	a.SetAccessKickTransport(newTransport())
+	b.SetAccessKickTransport(newTransport())
+	t.Cleanup(func() { a.SetAccessKickTransport(nil); b.SetAccessKickTransport(nil) })
+
 	userKick, unregUser := b.accessKicks().register("u1", "")
 	defer unregUser()
 	wsKick, unregWS := b.accessKicks().register("", "w1")
 	defer unregWS()
+	watchKick, unregWatch := b.accessKicks().register("u9", workspaceWildcard)
+	defer unregWatch()
 
-	wait := func(ch <-chan struct{}, what string) {
-		t.Helper()
-		select {
-		case <-ch:
-		case <-time.After(2 * time.Second):
-			t.Fatalf("%s: the kick did not reach the other instance", what)
-		}
-	}
-	// The subscriber goroutines start asynchronously; publish until seen.
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		a.invalidateUserAccess("u1")
-		select {
-		case <-userKick:
-			goto userDone
-		case <-time.After(20 * time.Millisecond):
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("user kick never crossed instances")
-		}
-	}
-userDone:
+	a.invalidateUserAccess("u1")
+	waitKick(t, userKick, "user kick")
 	a.invalidateWorkspaceAccess("w1")
-	wait(wsKick, "workspace kick")
-	// The existing workspace_access_changed publication kicks too, so the
-	// doors that already publish it need no second call.
-	if err := bus.Publish(watchevents.Notification{Kind: watchevents.KindWorkspaceAccessChanged, TargetUserID: "u1", AccessChange: watchevents.AccessLost}); err != nil {
-		t.Fatal(err)
+	waitKick(t, wsKick, "workspace kick")
+	waitKick(t, watchKick, "workspace kick reaching a watch stream")
+	// The existing access-changed helper kicks too.
+	a.publishWorkspaceAccessChanged("w1", watchevents.AccessLost, []string{"u1"}, "", "")
+	waitKick(t, userKick, "workspace_access_changed")
+}
+
+// Kicks never touch the client watch bus (codex r1): no sequence id, no
+// replay slot, no entry in any client's queue.
+func TestTASK3365_KicksDoNotUseTheClientWatchBus(t *testing.T) {
+	_, newTransport := miniredisTransport(t)
+	srv := testServer(t)
+	bus := watchevents.New()
+	defer bus.Close()
+	srv.SetWatchEventsBus(bus)
+	srv.SetAccessKickTransport(newTransport())
+	t.Cleanup(func() { srv.SetAccessKickTransport(nil) })
+	kick, unreg := srv.accessKicks().register("u1", "w1")
+	defer unreg()
+	for i := 0; i < 100; i++ {
+		srv.invalidateUserAccess("u1")
+		srv.invalidateWorkspaceAccess("w1")
 	}
-	wait(userKick, "workspace_access_changed")
+	waitKick(t, kick, "kick")
+	if got := bus.EventsSince(0); len(got) != 0 {
+		t.Fatalf("kicks put %d notifications on the client watch bus", len(got))
+	}
+}
+
+type countingTransport struct {
+	mu                sync.Mutex
+	subscribes, stops int
+	handle            func(accesskick.Message)
+}
+
+func (c *countingTransport) Publish(_ context.Context, m accesskick.Message) error {
+	c.mu.Lock()
+	h := c.handle
+	c.mu.Unlock()
+	if h != nil {
+		h(m)
+	}
+	return nil
+}
+
+func (c *countingTransport) Subscribe(h func(accesskick.Message)) func() {
+	c.mu.Lock()
+	c.subscribes++
+	c.handle = h
+	c.mu.Unlock()
+	return func() {
+		c.mu.Lock()
+		c.stops++
+		c.handle = nil
+		c.mu.Unlock()
+	}
+}
+
+// Installing the same transport twice subscribes once; replacing it stops
+// the previous subscription (codex r1).
+func TestTASK3365_TransportInstallIsIdempotent(t *testing.T) {
+	srv := testServer(t)
+	first, second := &countingTransport{}, &countingTransport{}
+	srv.SetAccessKickTransport(first)
+	srv.SetAccessKickTransport(first)
+	if first.subscribes != 1 {
+		t.Fatalf("same transport installed twice subscribed %d times", first.subscribes)
+	}
+	srv.SetAccessKickTransport(second)
+	if first.stops != 1 || second.subscribes != 1 {
+		t.Fatalf("replacement: first stops=%d, second subscribes=%d", first.stops, second.subscribes)
+	}
+	srv.SetAccessKickTransport(nil)
+	if second.stops != 1 {
+		t.Fatalf("nil did not stop the subscription (stops=%d)", second.stops)
+	}
 }
 
 func TestTASK3365_CollabClosesOnKickWithoutWaitingForTheTick(t *testing.T) {
 	orig := collabMembershipRevalInterval
 	collabMembershipRevalInterval = time.Hour
 	defer func() { collabMembershipRevalInterval = orig }()
+	deterministicFirstTick(t)
 
 	srv := testServerWithCollab(t)
 	bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
@@ -205,11 +268,12 @@ func TestTASK3365_SSEClosesOnKickWithoutWaitingForTheTick(t *testing.T) {
 	prev := sseMembershipRevalInterval
 	sseMembershipRevalInterval = time.Hour
 	t.Cleanup(func() { sseMembershipRevalInterval = prev })
+	deterministicFirstTick(t)
 
 	srv := testServerWithEvents(t)
-	bus := watchevents.New()
-	defer bus.Close()
-	srv.SetWatchEventsBus(bus) // the kick goes through the bus here
+	_, newTransport := miniredisTransport(t)
+	srv.SetAccessKickTransport(newTransport()) // the kick goes through Redis here
+	t.Cleanup(func() { srv.SetAccessKickTransport(nil) })
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 	owner := mkUserRole(t, srv, "owner@example.com", "admin")
@@ -325,4 +389,19 @@ func TestTASK3365_WatchStreamClosesOnKickWhenItsCredentialDies(t *testing.T) {
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
+}
+
+// A removal that leaves the user SOME access (a grant) still narrows it, so
+// the user's connections are kicked even though "lost" is not published.
+func TestTASK3365_PartialRevokeStillKicks(t *testing.T) {
+	f := newAccessFixture(t, "sqlite")
+	u := f.member("partial@example.com", "editor")
+	it := f.seedItem()
+	if _, err := f.srv.store.CreateItemGrant(f.wsID, it.ID, u.ID, "view", f.owner.ID); err != nil {
+		t.Fatal(err)
+	}
+	kick, unreg := f.srv.accessKicks().register(u.ID, "")
+	defer unreg()
+	f.must(f.do("DELETE", "/api/v1/workspaces/"+f.wsSlug+"/members/"+u.ID+"?revoke_grants=false", f.ownerTok, nil), http.StatusNoContent, "remove member, keep grant")
+	waitKick(t, kick, "partial revoke")
 }

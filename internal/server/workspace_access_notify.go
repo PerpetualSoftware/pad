@@ -29,6 +29,17 @@ import (
 // and actorName describe who caused the change; a request-less caller (the
 // scheduled purge) passes "system" and "".
 func (s *Server) publishWorkspaceAccessChanged(workspaceID, change string, userIDs []string, actor, actorName string) {
+	// TASK-3365: every door that changes whether a user reaches a workspace
+	// comes through here, so it kicks their live connections to re-check
+	// NOW, bus or no bus. Lifecycle changes kick the whole workspace too, which
+	// reaches legacy workspace-token streams that have no user.
+	for _, uid := range userIDs {
+		s.invalidateUserAccess(uid)
+	}
+	switch change {
+	case watchevents.AccessDeleted, watchevents.AccessRestored, watchevents.AccessPurged:
+		s.invalidateWorkspaceAccess(workspaceID)
+	}
 	if s.watchEvents == nil {
 		return
 	}
@@ -91,6 +102,10 @@ func (s *Server) workspaceAccessUsers(workspaceID string) []string {
 // two grants, still reaches it. A failed read publishes anyway, because the
 // event only asks the client to refetch.
 func (s *Server) publishLostIfUnreachable(r *http.Request, workspaceID, userID string) {
+	// TASK-3365: a removal or revoke that leaves the user SOME access still
+	// narrows it, so their connections re-check whether or not "lost" goes
+	// out below.
+	s.invalidateUserAccess(userID)
 	reaches, err := s.userReachesWorkspace(workspaceID, userID)
 	if err == nil && reaches {
 		return

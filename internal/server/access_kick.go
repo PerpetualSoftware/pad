@@ -1,12 +1,13 @@
 package server
 
 import (
-	"errors"
+	"context"
 	"log/slog"
+	"math/rand"
 	"sync"
 	"time"
 
-	"github.com/PerpetualSoftware/pad/internal/watchevents"
+	"github.com/PerpetualSoftware/pad/internal/accesskick"
 )
 
 // TASK-3365 (Dave's ruling on TASK-3345 #3): revoking access must reach live
@@ -18,11 +19,11 @@ import (
 // the bus dropped.
 //
 // A kick is addressed to a USER (their access or credential changed) or to a
-// WORKSPACE (it was deleted, restored or purged). It travels on the watch bus
-// as watchevents.KindAccessInvalidated, which is cross-instance on cloud, and
-// every instance runs one subscriber (runAccessKickSubscriber) that kicks the
-// connections it holds. The kind is internal: watchStreamDelivers drops it,
-// so it never reaches a client.
+// WORKSPACE (it was deleted, restored or purged). Across instances it travels
+// on its own transport (internal/accesskick: Redis pub/sub on cloud), NOT on
+// the client watch bus, whose sequence ids, replay buffer and per-client
+// queues kicks must not consume (codex r1). With no transport (one instance)
+// a kick is applied locally.
 //
 // The residual is accepted (lead ruling): frames already in flight between
 // the revoking commit and the kick landing are processed under the old
@@ -124,6 +125,10 @@ func kickAll(set map[*kickReg]struct{}) int {
 	return len(set)
 }
 
+// workspaceWildcard is the workspace key of a connection that spans every
+// workspace (the watch stream): every workspace kick reaches it too.
+const workspaceWildcard = "*"
+
 // accessKicks returns the server's kicker, created on first use so every
 // constructor path (tests included) gets one.
 func (s *Server) accessKicks() *accessKicker {
@@ -131,84 +136,75 @@ func (s *Server) accessKicks() *accessKicker {
 	return s.accessKick
 }
 
-// applyAccessKick kicks the local connections a notification addresses. It
-// reacts to the internal KindAccessInvalidated and to the existing
-// KindWorkspaceAccessChanged, which every door that changes whether a user
-// reaches a workspace already publishes, so those doors need no second call.
-func (s *Server) applyAccessKick(n watchevents.Notification) {
-	switch n.Kind {
-	case watchevents.KindAccessInvalidated, watchevents.KindWorkspaceAccessChanged:
-	default:
-		return
-	}
+// applyAccessKick kicks this instance's connections a message addresses.
+func (s *Server) applyAccessKick(m accesskick.Message) {
 	k := s.accessKicks()
-	k.kickUser(n.TargetUserID)
-	if n.Kind == watchevents.KindAccessInvalidated ||
-		n.AccessChange == watchevents.AccessDeleted ||
-		n.AccessChange == watchevents.AccessRestored ||
-		n.AccessChange == watchevents.AccessPurged {
-		// Workspace lifecycle reaches every connection on it, including
-		// legacy workspace-token streams that have no user to address.
-		k.kickWorkspace(n.WorkspaceID)
+	k.kickUser(m.UserID)
+	if m.WorkspaceID != "" {
+		k.kickWorkspace(m.WorkspaceID)
+		k.kickWorkspace(workspaceWildcard)
 	}
 }
 
-// runAccessKickSubscriber holds this instance's one subscription to the watch
-// bus for kicks. It resubscribes after a failure (a Redis outage refuses the
-// subscription) with capped backoff, and exits when the bus is closed.
-func (s *Server) runAccessKickSubscriber(bus watchevents.Bus) {
-	backoff := time.Second
-	for {
-		ch, _, err := bus.Subscribe()
-		if errors.Is(err, watchevents.ErrBusClosed) {
-			return
-		}
-		if err != nil {
-			slog.Warn("access kicks: watch bus subscription refused, retrying", "error", err, "in", backoff)
-			time.Sleep(backoff)
-			if backoff < 30*time.Second {
-				backoff *= 2
-			}
-			continue
-		}
-		backoff = time.Second
-		for n := range ch {
-			s.applyAccessKick(n)
-		}
-		// The channel closed: the bus closed, or dropped this subscriber.
-		// Loop to resubscribe; a closed bus refuses and ends the loop.
+// SetAccessKickTransport installs the cross-instance kick transport and
+// subscribes this instance to it. Idempotent for the same transport;
+// installing a different one stops the previous subscription, and nil
+// stops it and leaves kicks local.
+func (s *Server) SetAccessKickTransport(t accesskick.Transport) {
+	s.accessKickMu.Lock()
+	defer s.accessKickMu.Unlock()
+	if t == s.accessKickTransport {
+		return
+	}
+	if s.accessKickStop != nil {
+		s.accessKickStop()
+		s.accessKickStop = nil
+	}
+	s.accessKickTransport = t
+	if t != nil {
+		s.accessKickStop = t.Subscribe(s.applyAccessKick)
 	}
 }
 
 // invalidateUserAccess tells every instance that userID's access or
 // credential changed, so their live connections re-check now. Best-effort:
-// a failed publish leaves the 60s tick as the backstop, and is logged.
+// a failed publish still kicks this instance, and leaves the others to their
+// revalidation tick.
 func (s *Server) invalidateUserAccess(userID string) {
-	s.publishAccessInvalidated(watchevents.Notification{TargetUserID: userID})
+	s.publishAccessKick(accesskick.Message{UserID: userID})
 }
 
 // invalidateWorkspaceAccess is invalidateUserAccess for every connection on
 // a workspace.
 func (s *Server) invalidateWorkspaceAccess(workspaceID string) {
-	s.publishAccessInvalidated(watchevents.Notification{WorkspaceID: workspaceID})
+	s.publishAccessKick(accesskick.Message{WorkspaceID: workspaceID})
 }
 
-func (s *Server) publishAccessInvalidated(n watchevents.Notification) {
-	if n.TargetUserID == "" && n.WorkspaceID == "" {
+func (s *Server) publishAccessKick(m accesskick.Message) {
+	if m.UserID == "" && m.WorkspaceID == "" {
 		return
 	}
-	n.Kind = watchevents.KindAccessInvalidated
-	n.Timestamp = time.Now().Unix()
-	if s.watchEvents == nil {
-		// No bus: this instance is the only one, so kick directly.
-		s.applyAccessKick(n)
+	s.accessKickMu.Lock()
+	t := s.accessKickTransport
+	s.accessKickMu.Unlock()
+	if t == nil {
+		// One instance: kick directly.
+		s.applyAccessKick(m)
 		return
 	}
-	if err := s.watchEvents.Publish(n); err != nil {
-		// Other instances are left to their tick; THIS instance's
-		// connections can still be reached, so kick them directly.
+	if err := t.Publish(context.Background(), m); err != nil {
 		slog.Warn("access kicks: publish failed; other instances fall back to the revalidation tick",
-			"user_id", n.TargetUserID, "workspace_id", n.WorkspaceID, "error", err)
-		s.applyAccessKick(n)
+			"user_id", m.UserID, "workspace_id", m.WorkspaceID, "error", err)
+		s.applyAccessKick(m)
 	}
+}
+
+// revalFirstDelay is a connection's first revalidation delay: jittered
+// across one interval so a reconnect herd does not re-check in lockstep. A
+// variable so tests can make the first tick deterministic.
+var revalFirstDelay = func(interval time.Duration) time.Duration {
+	if interval <= 0 {
+		return interval
+	}
+	return time.Duration(rand.Int63n(int64(interval)))
 }

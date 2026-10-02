@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"math/rand"
 	"net/http"
 	"strconv"
 	"time"
@@ -410,10 +409,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	// and spike load once a minute forever after. After the first fire
 	// we reset to the regular interval for a steady cadence.
 	revalInterval := sseMembershipRevalInterval
-	firstDelay := revalInterval
-	if revalInterval > 0 {
-		firstDelay = time.Duration(rand.Int63n(int64(revalInterval)))
-	}
+	firstDelay := revalFirstDelay(revalInterval)
 	membershipCheck := time.NewTimer(firstDelay)
 	defer membershipCheck.Stop()
 

@@ -3,7 +3,6 @@ package server
 import (
 	"errors"
 	"log/slog"
-	"math/rand"
 	"net/http"
 	"strconv"
 	"time"
@@ -331,7 +330,7 @@ func (s *Server) collabRevalidationLoop(
 
 	// First-fire jitter: rand.Int63n is fine for spread purposes —
 	// the security argument doesn't depend on unpredictability.
-	first := time.Duration(rand.Int63n(int64(interval)))
+	first := revalFirstDelay(interval)
 	timer := time.NewTimer(first)
 	defer timer.Stop()
 

@@ -124,12 +124,6 @@ const (
 	// into an agent session. It is a refetch hint: the read-filtered
 	// GET /me/workspace-tabs is where correctness lives.
 	KindWorkspaceAccessChanged = "workspace_access_changed"
-	// KindAccessInvalidated is SERVER-INTERNAL (TASK-3365): a user's access
-	// or credential changed (TargetUserID), or a whole workspace's did
-	// (WorkspaceID), so every instance's live connections for it must
-	// re-check now instead of on their next revalidation tick. It is never
-	// delivered to a client: server.watchStreamDelivers drops it.
-	KindAccessInvalidated = "access_invalidated"
 )
 
 // AccessChange values for KindWorkspaceAccessChanged. Gained and lost are
