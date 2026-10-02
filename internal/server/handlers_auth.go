@@ -320,6 +320,9 @@ func (s *Server) rotateSessionsAfterCredentialChange(w http.ResponseWriter, r *h
 	// this user is not a state to mint from: every session is still revoked
 	// and the caller signs in again, rather than receiving a session that
 	// would read as freshly signed in.
+	// TASK-3365: every session is revoked below, so the user's live
+	// connections re-check their credential now, not on their next tick.
+	defer s.invalidateUserAccess(user.ID)
 	info := s.requestSessionInfo(r)
 	if err := s.store.DeleteUserSessions(user.ID); err != nil {
 		// Best-effort: even if deletion fails we must still mint a new
@@ -411,10 +414,17 @@ func (s *Server) destroyReplacedSessions(r *http.Request) {
 		if err != nil || cookie.Value == "" {
 			continue
 		}
+		// TASK-3365: the replaced session may be another user's, still
+		// streaming in this browser; kick whoever held it.
+		var replacedUserID string
+		if info, verr := s.store.ValidateSession(cookie.Value); verr == nil && info != nil && info.User != nil {
+			replacedUserID = info.User.ID
+		}
 		if err := s.store.DeleteSession(cookie.Value); err != nil {
 			slog.Warn("sign-in could not destroy the session it replaced",
 				"cookie", name, "error", err)
 		}
+		s.invalidateUserAccess(replacedUserID)
 	}
 }
 
@@ -1078,6 +1088,29 @@ func (s *Server) handleSessionCheck(w http.ResponseWriter, r *http.Request) {
 // handleLogout destroys the session and clears the cookie.
 // It handles both cookie-based sessions (web) and Bearer token sessions (CLI).
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	// TASK-3365: the sessions presented here end below, so their OWNERS' live
+	// connections re-check their credential now. Resolved per session, not
+	// taken from the request's principal: a request can carry one user's
+	// bearer and another's cookie, and both are deleted (codex r1 on PR2).
+	var loggedOut []string
+	defer func() {
+		for _, id := range loggedOut {
+			s.invalidateUserAccess(id)
+		}
+	}()
+	sessionOwner := func(token string) {
+		if info, err := s.store.ValidateSession(token); err == nil && info != nil && info.User != nil {
+			loggedOut = append(loggedOut, info.User.ID)
+		}
+	}
+	if cookie, err := r.Cookie(sessionCookieName(s.secureCookies)); err == nil {
+		sessionOwner(cookie.Value)
+	}
+	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+		if token := strings.TrimSpace(strings.TrimPrefix(auth, "Bearer ")); strings.HasPrefix(token, "padsess_") {
+			sessionOwner(token)
+		}
+	}
 	// Revoke cookie-based session
 	if cookie, err := r.Cookie(sessionCookieName(s.secureCookies)); err == nil {
 		_ = s.store.DeleteSession(cookie.Value)
@@ -1436,6 +1469,8 @@ func (s *Server) handleLocalReset(w http.ResponseWriter, r *http.Request) {
 			writeInternalError(w, err)
 			return
 		}
+		// TASK-3365: their live connections re-check now.
+		s.invalidateUserAccess(user.ID)
 		s.logAuditEvent(models.ActionPasswordResetByAdmin, r, auditMeta(map[string]string{
 			"target_user_id": user.ID,
 			"method":         "localhost_temp_password",
@@ -1539,6 +1574,8 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.DeleteUserSessions(user.ID); err != nil {
 		slog.Error("failed to invalidate sessions after password reset", "error", err)
 	}
+	// TASK-3365: their live connections re-check now.
+	s.invalidateUserAccess(user.ID)
 
 	// Two-factor (BUG-3322): a reset link proves the mailbox, which is the
 	// FIRST factor's recovery, not the second. A user with TOTP on gets the

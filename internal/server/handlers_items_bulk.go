@@ -451,6 +451,9 @@ func (s *Server) applyBulkOp(r *http.Request, workspaceID string, item *models.I
 		if err := s.store.DeleteItem(item.ID, store.WithEventBatch(batchID)); err != nil {
 			return nil, bulkStoreError(err)
 		}
+		// TASK-3365: see handleDeleteItem. Per item; kicks coalesce per
+		// connection, so a bulk archive costs each connection one re-check.
+		s.invalidateWorkspaceAccess(item.WorkspaceID)
 		// DeleteItem bumps seq; re-read so the batch event carries the
 		// post-archive cursor. Falls back to the pre-delete row on a
 		// lookup miss (downstream backfills on a stale/zero seq).
@@ -484,6 +487,10 @@ func (s *Server) applyBulkOp(r *http.Request, workspaceID string, item *models.I
 			}
 			return nil, bulkStoreError(err)
 		}
+		// TASK-3365: a restored item is reachable again through grants it
+		// kept, so connections on this workspace re-check now (codex r2).
+		s.invalidateWorkspaceAccess(item.WorkspaceID)
+
 		return restored, nil
 
 	case "move":
@@ -1176,6 +1183,8 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 		}
 		return nil, bulkStoreError(err)
 	}
+	// TASK-3365: see handleMoveItem.
+	s.invalidateWorkspaceAccess(item.WorkspaceID)
 	if len(notUnique) > 0 {
 		if moved.Warnings == nil {
 			moved.Warnings = &models.ItemWriteWarnings{}

@@ -2654,6 +2654,9 @@ func (s *Server) handleDeleteItem(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
+	// TASK-3365: an archived item leaves every view and its collab room;
+	// connections on this workspace re-check now.
+	s.invalidateWorkspaceAccess(item.WorkspaceID)
 
 	// Fetch the post-delete row so the SSE event carries the new
 	// `seq` (DeleteItem bumps it). Falls back to 0 if the row is
@@ -2732,6 +2735,9 @@ func (s *Server) handleRestoreItem(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
+	// TASK-3365: a restored item is reachable again through grants it kept,
+	// so connections on this workspace re-check now (codex r2 on PR2).
+	s.invalidateWorkspaceAccess(item.WorkspaceID)
 
 	actor, source := actorFromRequest(r)
 	s.logActivity(workspaceID, restored.ID, "restored", r)
@@ -3152,6 +3158,9 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
+	// TASK-3365: a move can take an item out of a collection a guest or a
+	// restricted member may see; connections on this workspace re-check now.
+	s.invalidateWorkspaceAccess(item.WorkspaceID)
 
 	// Log activity with metadata about the move (audit trail). The
 	// moved-out tombstone signal (BUG-1675) is recorded durably in

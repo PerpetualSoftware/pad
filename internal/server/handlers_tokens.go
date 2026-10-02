@@ -163,6 +163,9 @@ func (s *Server) handleDeleteToken(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
+	// TASK-3365: a legacy workspace token's streams have no user and are
+	// reached through the workspace; they re-check their credential now.
+	s.invalidateWorkspaceAccess(workspaceID)
 
 	s.logAuditEvent(models.ActionTokenRevoked, r, auditMeta(map[string]string{"token_id": tokenID}))
 
@@ -274,6 +277,8 @@ func (s *Server) handleDeleteUserToken(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
+	// TASK-3365: connections opened with this token re-check it now.
+	s.invalidateUserAccess(userID)
 
 	s.logAuditEvent(models.ActionTokenRevoked, r, auditMeta(map[string]string{"token_id": tokenID}))
 
@@ -318,6 +323,9 @@ func (s *Server) handleRotateUserToken(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
+	// TASK-3365: the old secret is dead; connections opened with it
+	// re-check now.
+	s.invalidateUserAccess(userID)
 
 	s.logAuditEvent(models.ActionTokenRotated, r, auditMeta(map[string]string{"token_id": tokenID}))
 

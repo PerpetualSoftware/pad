@@ -202,6 +202,8 @@ func (s *Server) handleRevokeConnectedApp(w http.ResponseWriter, r *http.Request
 		writeInternalError(w, err)
 		return
 	}
+	// TASK-3365: connections opened with this grant re-check now.
+	s.invalidateUserAccess(user.ID)
 
 	// Best-effort audit-trail entry. Failure here doesn't undo the
 	// revoke — the OAuth token chain is already inactive.
@@ -542,5 +544,7 @@ func (s *Server) handleRemoveConnectedAppWorkspace(w http.ResponseWriter, r *htt
 		writeInternalError(w, err)
 		return
 	}
+	// TASK-3365: a connection narrowed off this workspace re-checks now.
+	s.invalidateUserAccess(user.ID)
 	s.respondWithConnection(w, user.ID, id)
 }
