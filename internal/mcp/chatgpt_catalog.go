@@ -225,7 +225,7 @@ var ChatGPTCatalog = []ChatGPTTool{
 	},
 	{
 		Name:        "item_history",
-		Description: "List an item's saved versions, newest first: who changed it and when.",
+		Description: "List an item's saved versions, newest first: when each was saved, and whether a person, an agent or ChatGPT made it.",
 		Source:      ChatGPTSource{"pad_item", "history"},
 		Params:      []string{chatGPTWorkspaceParam, "ref", "limit"},
 		Required:    []string{chatGPTWorkspaceParam, "ref"},
@@ -269,10 +269,12 @@ var ChatGPTCatalog = []ChatGPTTool{
 		Hints:       ChatGPTHints{ReadOnly: true},
 	},
 	{
-		Name:        "ready_items",
-		Description: "List the items that are ready to be worked on: open, unblocked, in priority order.",
+		Name: "ready_items",
+		// No limit: the server caps this list at 3 on every transport, so a
+		// limit param would advertise a knob that does nothing (TASK-3321 U3).
+		Description: "List the few items that are ready to be worked on next: open, unblocked, in priority order.",
 		Source:      ChatGPTSource{"pad_project", "ready"},
-		Params:      []string{chatGPTWorkspaceParam, "limit"},
+		Params:      []string{chatGPTWorkspaceParam},
 		Required:    []string{chatGPTWorkspaceParam},
 		Hints:       ChatGPTHints{ReadOnly: true},
 	},
@@ -305,7 +307,7 @@ var ChatGPTCatalog = []ChatGPTTool{
 // ChatGPTExclusions are the /mcp operations deliberately not on the ChatGPT
 // surface, each with its reason (TASK-3321 U1-T, lead-ruled).
 var ChatGPTExclusions = map[ChatGPTSource]string{
-	{Tool: chatGPTSetWorkspaceSource}: "on this shared server it persists nothing and returns no overview (no BootstrapFetcher on the remote transport); get_workspace_overview is the connect step",
+	{Tool: chatGPTSetWorkspaceSource}: "on this shared server it persists no session workspace, so it would only duplicate get_workspace_overview, the connect step",
 	{"pad_item", "bulk-update"}:       "batch overwrite with a large blast radius and little chat value",
 	{"pad_item", "move"}:              "drops fields the target collection does not declare; confusing in chat",
 	{"pad_item", "delete-comment"}:    "destructive, rarely needed",
@@ -500,7 +502,14 @@ func chatGPTHandler(t ChatGPTTool, source server.ToolHandlerFunc) server.ToolHan
 		// its in-process request from this context, and the item update
 		// handler then saves a version before every content change, which is
 		// what update_item's description promises.
-		return source(padserver.WithChatGPTSurface(ctx), out)
+		res, err := source(padserver.WithChatGPTSurface(ctx), out)
+		if err != nil {
+			// A Go error would reach the client as a protocol error carrying
+			// its text; answer a plain failure instead (codex review).
+			return NewErrorResult(ErrorPayload{Code: ErrServerError, Message: "The request failed."}), nil
+		}
+		// TASK-3321 U3: minimize the response before it leaves (R2).
+		return projectChatGPTResult(t, in, res), nil
 	}
 }
 
