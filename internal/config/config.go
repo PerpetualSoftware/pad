@@ -88,6 +88,10 @@ type Config struct {
 	// Claude Desktop.
 	MCPPublicURL  string `toml:"mcp_public_url"`  // Canonical URL clients paste into their MCP client (e.g. https://mcp.getpad.dev — matches mcp.stripe.com / mcp.linear.app convention). Published verbatim as RFC 9728 `resource` and used as the OAuth audience binding; pad mounts the transport internally at /mcp and pad-cloud's nginx router transparently rewrites mcp.* root → /mcp so external clients see a single canonical URL regardless of internal path.
 	AuthServerURL string `toml:"auth_server_url"` // Canonical URL of the OAuth authorization server (TASK-951), e.g. https://app.getpad.dev. Embedded in protected-resource metadata's authorization_servers field.
+	// OpenAIAppsChallenge is the domain-verification token OpenAI's plugin
+	// dashboard issues, served verbatim at /.well-known/openai-apps-challenge
+	// on cloud (TASK-3321 G4). Validated in ResolveMCPEndpoints.
+	OpenAIAppsChallenge string `toml:"openai_apps_challenge"`
 
 	// MCPEnabledEnv is PAD_MCP_ENABLED parsed (PLAN-2310 DR-2): nil when
 	// unset, otherwise the forced value of the MCP setting, which also
@@ -450,6 +454,9 @@ func Load() (*Config, error) {
 	}
 	if v := os.Getenv("PAD_AUTH_SERVER_URL"); v != "" {
 		cfg.AuthServerURL = v
+	}
+	if v := os.Getenv("PAD_OPENAI_APPS_CHALLENGE"); v != "" {
+		cfg.OpenAIAppsChallenge = v
 	}
 	if v := os.Getenv("PAD_MCP_ENABLED"); v != "" {
 		cfg.MCPEnabledEnvRaw = v

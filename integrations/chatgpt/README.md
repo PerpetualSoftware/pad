@@ -19,6 +19,10 @@ Nothing here has been submitted or registered. The package is not submittable un
 - `https://www.getpad.dev/support` exists (it answers 404 today; `supportURL` points at it);
 - the reviewer demo account, demo video, domain challenge token and org verification are done (ops).
 
+## Domain verification
+
+Pad Cloud serves OpenAI's domain challenge at `https://mcp.getpad.dev/.well-known/openai-apps-challenge` once the token from the plugin dashboard is set as `PAD_OPENAI_APPS_CHALLENGE` (or `openai_apps_challenge` in the config file) in the pad-cloud environment. The body is the token alone, as text/plain. It answers only on cloud and only on the MCP URL's host; anywhere else, and while the variable is unset, it is the same JSON 404 as any other unpublished `/.well-known` path. A value with whitespace or a control character inside it is refused at startup with a warning rather than served. The token is configuration, so it never goes in this package.
+
 The full list, with the draft submission metadata and the demo account's seed data, is DOC-3328 ("ChatGPT plugin submission draft") in the Pad workspace.
 
 ## Resetting the reviewer's demo workspace

@@ -45,6 +45,13 @@ type MCPEndpoints struct {
 	// historical spelling (historicalOverride), else Origin.
 	AuthServerURL    string
 	AuthServerURLErr string
+
+	// AppsChallenge is PAD_OPENAI_APPS_CHALLENGE, trimmed: the token OpenAI's
+	// domain verification fetches from /.well-known/openai-apps-challenge,
+	// whose body must be the token and nothing else (TASK-3321 G4). Empty
+	// when unset or unusable; AppsChallengeErr then says why.
+	AppsChallenge    string
+	AppsChallengeErr string
 }
 
 // Usable reports whether MCP can be addressed at all: an origin and the
@@ -72,7 +79,7 @@ func (e MCPEndpoints) HTTPS() bool {
 // problem; it is the default, and MCP simply stays unavailable.
 func (e MCPEndpoints) Problems() []string {
 	var out []string
-	for _, p := range []string{e.OriginErr, e.ResourceURLErr, e.AuthServerURLErr} {
+	for _, p := range []string{e.OriginErr, e.ResourceURLErr, e.AuthServerURLErr, e.AppsChallengeErr} {
 		if p != "" {
 			out = append(out, p)
 		}
@@ -122,6 +129,8 @@ func (c *Config) ResolveMCPEndpoints() MCPEndpoints {
 		e.AuthServerURL = e.Origin
 	}
 
+	e.AppsChallenge, e.AppsChallengeErr = resolveAppsChallenge(c.OpenAIAppsChallenge)
+
 	// An override without an origin still leaves MCP unavailable, because
 	// the other value falls back to the origin. Usable() is the gate.
 	return e
@@ -143,6 +152,31 @@ func chatGPTResourceURL(resource string) string {
 		path = "/mcp"
 	}
 	return u.Scheme + "://" + u.Host + path + "/chatgpt"
+}
+
+// maxAppsChallengeLen bounds the token. OpenAI documents no length; this
+// only refuses a value that is plainly not a token.
+const maxAppsChallengeLen = 1024
+
+// resolveAppsChallenge trims the configured token and refuses one that
+// cannot be served as exactly itself: the route's body is the token alone,
+// so whitespace or a control character inside it, which a copy-paste of a
+// multi-line value produces, would publish something other than what was
+// issued.
+func resolveAppsChallenge(raw string) (token, problem string) {
+	v := strings.TrimSpace(raw)
+	if v == "" {
+		return "", ""
+	}
+	if len(v) > maxAppsChallengeLen {
+		return "", fmt.Sprintf("PAD_OPENAI_APPS_CHALLENGE is %d bytes, over the %d-byte limit; not serving it", len(v), maxAppsChallengeLen)
+	}
+	for _, r := range v {
+		if r <= ' ' || r == 0x7f {
+			return "", "PAD_OPENAI_APPS_CHALLENGE contains whitespace or a control character; the challenge body must be the token alone, so it is not served"
+		}
+	}
+	return v, ""
 }
 
 // historicalOverride is the spelling an explicitly set PAD_MCP_PUBLIC_URL or

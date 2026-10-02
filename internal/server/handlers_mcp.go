@@ -194,6 +194,9 @@ func (s *Server) registerMCPRoutes(r chi.Router) {
 	r.With(s.requireOAuthAvailable, s.requireConfiguredHost).Get("/.well-known/oauth-protected-resource/mcp", s.handleOAuthProtectedResource)
 	r.With(s.requireOAuthAvailable, s.requireConfiguredHost).Get("/.well-known/oauth-protected-resource/mcp/", s.handleOAuthProtectedResource)
 	r.With(s.requireOAuthAvailable, s.requireConfiguredHost).Get("/.well-known/oauth-authorization-server", s.handleOAuthAuthorizationServer)
+	// OpenAI's plugin domain verification (TASK-3321 G4). Ungated by
+	// design: see handleOpenAIAppsChallenge.
+	r.Get("/.well-known/openai-apps-challenge", s.handleOpenAIAppsChallenge)
 
 	// Every other /.well-known/ path is a JSON 404 (TASK-3321 U0a). It used to
 	// fall through to the SPA catch-all, which answers 200 text/html, so a
@@ -202,9 +205,6 @@ func (s *Server) registerMCPRoutes(r chi.Router) {
 	// parse. chi prefers the exact routes above, so they are unaffected, and
 	// this one carries no gate: "not published" is true on every install.
 	r.HandleFunc("/.well-known/*", func(w http.ResponseWriter, _ *http.Request) {
-		// writeError leaves Content-Type to the /api/v1 middleware, which
-		// does not run here.
-		w.Header().Set("Content-Type", "application/json")
-		writeError(w, http.StatusNotFound, "not_found", "Not found")
+		writeWellKnownNotFound(w)
 	})
 }
