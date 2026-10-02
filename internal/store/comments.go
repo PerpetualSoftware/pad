@@ -93,17 +93,20 @@ func (s *Store) createCommentTx(tx *sql.Tx, workspaceID, itemID, userID string, 
 		author = createdBy
 	}
 
-	// A reply to a tombstone is refused (BUG-3252). On Postgres the parent
+	// The parent must be a comment on this same item, in this workspace
+	// (BUG-3346): the route authorized the item, and a parent anywhere else
+	// is answered exactly like one that does not exist. A reply to a
+	// tombstone is refused (BUG-3252). On Postgres the parent
 	// is read FOR KEY SHARE, the lock the reply's foreign-key check takes
 	// anyway, so a delete tombstoning it (FOR UPDATE) either commits first
 	// and is seen here, or waits for this reply and then counts it.
 	if input.ParentID != "" {
-		parentQ := `SELECT CASE WHEN deleted_at IS NULL THEN 0 ELSE 1 END FROM comments WHERE id = ?`
+		parentQ := `SELECT CASE WHEN deleted_at IS NULL THEN 0 ELSE 1 END FROM comments WHERE id = ? AND workspace_id = ? AND item_id = ?`
 		if s.dialect.Driver() == DriverPostgres {
 			parentQ += ` FOR KEY SHARE`
 		}
 		var parentDeleted int
-		switch err := tx.QueryRow(s.q(parentQ), input.ParentID).Scan(&parentDeleted); {
+		switch err := tx.QueryRow(s.q(parentQ), input.ParentID, workspaceID, itemID).Scan(&parentDeleted); {
 		case errors.Is(err, sql.ErrNoRows):
 			return "", fmt.Errorf("insert comment: parent %s: %w", input.ParentID, sql.ErrNoRows)
 		case err != nil:
