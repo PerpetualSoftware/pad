@@ -2,6 +2,7 @@ package webhooks
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -11,6 +12,8 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptrace"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -53,6 +56,14 @@ const (
 	deliverySuccess deliveryResult = iota
 	deliveryTransient
 	deliveryPermanent
+	// deliverySuppressed: the hook's workspace was soft-deleted after the
+	// hook list was read (BUG-3340). Nothing was sent and nothing is owed; it
+	// is not the endpoint's failure, so it does not count against the hook.
+	deliverySuppressed
+	// deliveryDeferred: the workspace's liveness could not be determined (a
+	// store error). Nothing was sent, the event is still owed (the outbox
+	// keeps it pending), and it is not charged to the endpoint (BUG-3340).
+	deliveryDeferred
 )
 
 // WebhookStore is the interface the dispatcher needs to fetch webhooks
@@ -60,7 +71,25 @@ const (
 type WebhookStore interface {
 	ListWebhooks(workspaceID string) ([]models.Webhook, error)
 	UpdateWebhookFailure(id string, failed bool) error
+	// WorkspaceLive reports whether the workspace exists and is not
+	// soft-deleted. ListWebhooks already returns nothing for a deleted
+	// workspace; this is re-checked before every send, retry and redirect,
+	// because a delivery holding a hook list read before the deletion would
+	// otherwise keep sending item content after it (BUG-3340).
+	WorkspaceLive(workspaceID string) (bool, error)
 }
+
+// errWorkspaceGone stops a request whose webhook's workspace was deleted while
+// it was in flight; errWorkspaceUnknown stops one whose workspace could not be
+// checked (BUG-3340). The first is suppressed, the second deferred.
+var (
+	errWorkspaceGone    = errors.New("webhook workspace was deleted")
+	errWorkspaceUnknown = errors.New("webhook workspace liveness unknown")
+)
+
+// webhookWorkspaceKey carries the delivering hook's workspace on the request
+// context, so checkRedirect can re-check it before following a hop.
+type webhookWorkspaceKey struct{}
 
 // WebhookPayload is the JSON body sent to each webhook endpoint.
 type WebhookPayload struct {
@@ -224,6 +253,15 @@ func NewDispatcher(store WebhookStore) *Dispatcher {
 // caps the redirect chain length. Without it, an allowed public endpoint
 // could 302 the delivery to an internal address.
 func (d *Dispatcher) checkRedirect(req *http.Request, via []*http.Request) error {
+	if wsID, _ := req.Context().Value(webhookWorkspaceKey{}).(string); wsID != "" {
+		live, err := d.store.WorkspaceLive(wsID)
+		if err != nil {
+			return errWorkspaceUnknown
+		}
+		if !live {
+			return errWorkspaceGone
+		}
+	}
 	if len(via) >= maxWebhookRedirects {
 		return fmt.Errorf("%w: stopped after %d redirects", errRedirectRejected, maxWebhookRedirects)
 	}
@@ -338,6 +376,14 @@ func (d *Dispatcher) DeliverEvent(dv Delivery) (DeliveryOutcome, error) {
 		}
 		out.Matched++
 		switch d.deliver(hook, body) {
+		case deliverySuppressed:
+			// The workspace was deleted mid-delivery: this hook no longer
+			// selects the event, and nothing is owed to it.
+			out.Matched--
+		case deliveryDeferred:
+			// Liveness unknown: still owed, so the outbox must not ack.
+			out.Transient++
+			out.LastError = "workspace liveness unknown for " + hook.ID
 		case deliverySuccess:
 			out.Succeeded++
 		case deliveryPermanent:
@@ -360,6 +406,9 @@ func (d *Dispatcher) deliver(hook models.Webhook, body []byte) deliveryResult {
 	result := deliveryPermanent
 	for attempt := 1; attempt <= maxDeliveryAttempts; attempt++ {
 		result = d.attemptDeliver(hook, body)
+		if result == deliverySuppressed || result == deliveryDeferred {
+			return result // not the endpoint's doing; record nothing
+		}
 		if result != deliveryTransient {
 			break // success or permanent failure — no point retrying
 		}
@@ -377,6 +426,19 @@ func (d *Dispatcher) deliver(hook models.Webhook, body []byte) deliveryResult {
 // classifies the outcome. It does NOT record the result — deliver owns the
 // single terminal store write so the retry loop doesn't churn the store.
 func (d *Dispatcher) attemptDeliver(hook models.Webhook, body []byte) deliveryResult {
+	// Re-check the workspace before every attempt, retries included: the
+	// hook list may predate a deletion (BUG-3340). A lookup error defers the
+	// delivery: nothing is sent, the event stays owed, and the endpoint is
+	// not charged with a failure it did not cause.
+	live, err := d.store.WorkspaceLive(hook.WorkspaceID)
+	if err != nil {
+		slog.Error("webhook workspace liveness check failed", "webhook_id", hook.ID, "error", err)
+		return deliveryDeferred
+	}
+	if !live {
+		return deliverySuppressed
+	}
+
 	// Defense in depth: re-validate URL before making the request. An
 	// SSRF block is permanent — retrying won't make the target public.
 	if !d.SkipSSRF {
@@ -386,7 +448,41 @@ func (d *Dispatcher) attemptDeliver(hook models.Webhook, body []byte) deliveryRe
 		}
 	}
 
-	req, err := http.NewRequest(http.MethodPost, hook.URL, bytes.NewReader(body))
+	// The check above runs once per attempt, but net/http can send more
+	// than once inside a single Do: it re-dials and replays the body after a
+	// reused connection fails with nothing written, and a deletion can land
+	// during dial or TLS setup. GotConn fires for every connection the
+	// request is about to be written on, after any TLS handshake and before
+	// the request is written, so re-checking there, closing the connection
+	// and cancelling closes those windows. A request already being written
+	// at the instant of a deletion cannot be recalled; that is the
+	// irreducible window.
+	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), webhookWorkspaceKey{}, hook.WorkspaceID))
+	defer cancel()
+	var connGone, connUnknown atomic.Bool
+	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+		GotConn: func(info httptrace.GotConnInfo) {
+			live, err := d.store.WorkspaceLive(hook.WorkspaceID)
+			if err == nil && live {
+				return
+			}
+			if err != nil {
+				connUnknown.Store(true)
+			} else {
+				connGone.Store(true)
+			}
+			// Cancelling alone is not a write barrier: HTTP/1 queues the
+			// request before it checks the context, so its writer can still
+			// send the whole request (codex r3). Closing the connection is:
+			// no byte can be written to it. The cancel then stops any
+			// transport-internal retry on a fresh connection.
+			if info.Conn != nil {
+				_ = info.Conn.Close()
+			}
+			cancel()
+		},
+	})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, hook.URL, bytes.NewReader(body))
 	if err != nil {
 		// A malformed URL/method won't fix itself on retry.
 		slog.Error("failed to create webhook request", "url", hook.URL, "error", err)
@@ -402,9 +498,29 @@ func (d *Dispatcher) attemptDeliver(hook models.Webhook, body []byte) deliveryRe
 	}
 
 	resp, err := d.client.Do(req)
+	// The connection check decides the outcome whether or not Do errored:
+	// net/http can still return an already-buffered response after the close
+	// and cancel (codex r4), and that must not count as a delivery.
+	if connGone.Load() || connUnknown.Load() {
+		if resp != nil {
+			resp.Body.Close()
+		}
+		if connGone.Load() {
+			return deliverySuppressed
+		}
+		slog.Error("webhook workspace liveness unknown mid-delivery", "webhook_id", hook.ID, "error", err)
+		return deliveryDeferred
+	}
 	if err != nil {
 		// A blocked/looping redirect is permanent — the SSRF guard won't
 		// relent on retry, so don't waste attempts on it.
+		if errors.Is(err, errWorkspaceGone) {
+			return deliverySuppressed
+		}
+		if errors.Is(err, errWorkspaceUnknown) {
+			slog.Error("webhook workspace liveness unknown at a redirect", "webhook_id", hook.ID, "error", err)
+			return deliveryDeferred
+		}
 		if errors.Is(err, errRedirectRejected) {
 			slog.Warn("blocked webhook redirect", "url", hook.URL, "error", err)
 			return deliveryPermanent
