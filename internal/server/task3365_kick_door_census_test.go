@@ -6,6 +6,8 @@ import (
 	"go/token"
 	"net/http"
 	"net/http/httptest"
+
+	"github.com/PerpetualSoftware/pad/internal/models"
 	"os"
 	"path/filepath"
 	"sort"
@@ -290,4 +292,34 @@ func TestTASK3365_RestoreAndBulkDoorsKick(t *testing.T) {
 	drain()
 	f.must(f.do("POST", base+"/items/bulk", f.ownerTok, map[string]any{"ids": []string{b.ID}, "op": "restore"}), http.StatusOK, "bulk restore")
 	waitKick(t, wsKick, "bulk restore")
+}
+
+// Account deletion removes the grants the user ISSUED, possibly in a
+// workspace someone else owns, and kicks that workspace's connections (codex
+// r1/r2 on PR2; lead: prove the door). The workspace is NOT the deleted
+// user's, so the owned-workspace kick cannot be what fires.
+func TestTASK3365_AccountDeleteKicksIssuedGrantWorkspaces(t *testing.T) {
+	srv := testServer(t)
+	issuerID, token := bootstrapAccountDeleteUser(t, srv, "")
+	owner := mkUser(t, srv, "elsewhere-owner@test.com")
+	grantee := mkUser(t, srv, "grantee@test.com")
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Elsewhere", OwnerID: owner.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coll, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{Name: "Things", Schema: `{"fields":[]}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.store.CreateCollectionGrant(ws.ID, coll.ID, grantee.ID, "view", issuerID); err != nil {
+		t.Fatal(err)
+	}
+	wsKick, unreg := srv.accessKicks().register("", ws.ID)
+	defer unreg()
+
+	rr := deleteAccountReq(srv, map[string]interface{}{"password": "correct-horse-battery-staple"}, token)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("delete-account: got %d: %s", rr.Code, rr.Body.String())
+	}
+	waitKick(t, wsKick, "workspace of a grant the deleted user issued")
 }
