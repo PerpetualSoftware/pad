@@ -220,7 +220,16 @@ func (s *Store) CreateOAuthConnection(c OAuthConnection) error {
 	if c.UserID == "" {
 		return fmt.Errorf("oauth_connections: user_id required")
 	}
-	_, err := s.db.Exec(s.q(`
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("oauth_connections: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	// No grant for a disabled account (BUG-3349, requireActiveUserTx).
+	if err := s.requireActiveUserTx(tx, c.UserID); err != nil {
+		return err
+	}
+	_, err = tx.Exec(s.q(`
         INSERT INTO oauth_connections (
             request_id, user_id, name,
             may_create_workspaces, all_current_workspaces, include_future_workspaces
@@ -234,7 +243,7 @@ func (s *Store) CreateOAuthConnection(c OAuthConnection) error {
 	if err != nil {
 		return fmt.Errorf("oauth_connections: insert: %w", err)
 	}
-	return nil
+	return tx.Commit()
 }
 
 // RenameConnection updates the human-readable name. Touches updated_at.

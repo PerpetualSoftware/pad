@@ -129,6 +129,9 @@ func (s *Server) handleCreateItemShareLink(w http.ResponseWriter, r *http.Reques
 	}
 
 	link, err := s.store.CreateShareLink(workspaceID, "item", item.ID, "view", currentUserID(r), opts)
+	if writeAccountDisabledIf(w, err) {
+		return
+	}
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -197,6 +200,9 @@ func (s *Server) handleCreateCollectionShareLink(w http.ResponseWriter, r *http.
 	}
 
 	link, err := s.store.CreateShareLink(workspaceID, "collection", coll.ID, "view", currentUserID(r), collOpts)
+	if writeAccountDisabledIf(w, err) {
+		return
+	}
 	if err != nil {
 		writeInternalError(w, err)
 		return

@@ -160,6 +160,9 @@ func (s *Server) handleInviteMember(w http.ResponseWriter, r *http.Request) {
 
 	// User doesn't exist — create an invitation
 	inv, err := s.store.CreateInvitation(workspaceID, input.Email, input.Role, inviterID)
+	if writeAccountDisabledIf(w, err) {
+		return
+	}
 	if err != nil {
 		writeInternalError(w, err)
 		return

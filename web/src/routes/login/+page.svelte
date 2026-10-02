@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
-	import { api } from '$lib/api/client';
+	import { api, PadApiError } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import SetupRequiredNotice from '$lib/components/auth/SetupRequiredNotice.svelte';
 	import AuthHeader from '$lib/components/auth/AuthHeader.svelte';
@@ -20,6 +20,8 @@
 	let password = $state('');
 	let error = $state('');
 	let setupRequired = $state(false);
+	// The server says this browser's account is disabled (BUG-3349).
+	let accountDisabled = $state(false);
 	let setupMethod = $state<'local_cli' | 'docker_exec' | 'cloud' | 'logs_token' | 'open' | undefined>(undefined);
 	let loading = $state(false);
 
@@ -178,6 +180,7 @@
 		try {
 			const session = await api.auth.session();
 			cloudMode = session.cloud_mode ?? false;
+			accountDisabled = session.account_disabled === true;
 			if (session.setup_required) {
 				setupRequired = true;
 				setupMethod = session.setup_method;
@@ -216,7 +219,12 @@
 			await authStore.load();
 			await navigateToRedirectTarget(redirectTarget);
 		} catch (err: unknown) {
-			if (err instanceof Error) {
+			// A disabled account's sign-in is refused; say so with the
+			// notice, not as a wrong password (BUG-3349).
+			if (err instanceof PadApiError && err.code === 'account_disabled') {
+				accountDisabled = true;
+				error = '';
+			} else if (err instanceof Error) {
 				error = err.message || 'Invalid email or password.';
 			} else {
 				error = 'Invalid email or password.';
@@ -249,7 +257,10 @@
 			await authStore.load();
 			await navigateToRedirectTarget(redirectTarget);
 		} catch (err: unknown) {
-			if (err instanceof Error) {
+			if (err instanceof PadApiError && err.code === 'account_disabled') {
+				accountDisabled = true;
+				error = '';
+			} else if (err instanceof Error) {
 				error = err.message || 'Invalid code. Please try again.';
 			} else {
 				error = 'Invalid code. Please try again.';
@@ -295,6 +306,12 @@
 	<div class="login-card">
 		{#if !cloudMode}
 			<h1 class="logo">Pad</h1>
+		{/if}
+
+		{#if accountDisabled}
+			<div class="oauth-banner error-tone" role="alert" aria-live="polite">
+				<p class="oauth-banner-msg">Your account has been disabled. Contact an administrator.</p>
+			</div>
 		{/if}
 
 		{#if oauthBanner}

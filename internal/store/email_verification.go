@@ -118,10 +118,20 @@ func (s *Store) ConsumeEmailVerification(token string) (*models.User, error) {
 	}
 
 	// Side-effect: mark the user's email verified.
-	if _, err := tx.Exec(s.q(`
-		UPDATE users SET email_verified_at = ?, updated_at = ? WHERE id = ?
-	`), now(), now(), userID); err != nil {
+	// Only an account that is not disabled is verified, decided by the
+	// update itself (BUG-3349): a disable committing between the handler's
+	// look-up and here would otherwise still be verified. Rolling back keeps
+	// the token unspent. A conditional UPDATE rather than requireActiveUserTx:
+	// a FOR SHARE read followed by this UPDATE of the same row is the
+	// share-then-upgrade order that deadlocks two concurrent callers.
+	res, err := tx.Exec(s.q(`
+		UPDATE users SET email_verified_at = ?, updated_at = ? WHERE id = ? AND disabled_at IS NULL
+	`), now(), now(), userID)
+	if err != nil {
 		return nil, fmt.Errorf("set email verified: %w", err)
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return nil, ErrUserDisabled
 	}
 
 	if err := tx.Commit(); err != nil {

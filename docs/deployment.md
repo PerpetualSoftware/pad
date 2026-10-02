@@ -1409,6 +1409,24 @@ password reset generated (email not configured) ... reset_path=/reset-password/<
 
 Open `<base-url>/reset-password/<token>` to finish the reset by hand.
 
+### Disabling an account
+
+An admin disables an account from the console, or with `POST /api/v1/admin/users/{id}/disable`. Disabling ends every credential the account holds, in one step:
+- its sessions;
+- its API tokens;
+- its connected apps (MCP/OAuth grants and their tokens).
+
+Any authorization code still in flight is refused at exchange.
+
+While the account is disabled:
+- it can't sign in, through any route, including 2FA verification or a CLI approval that started before the disable;
+- the sign-in page shows "Your account has been disabled";
+- share links it created are suspended: they answer like an unknown link, and serve again if the account is re-enabled.
+
+Re-enabling restores none of the revoked credentials. The user signs in again, mints new tokens and reconnects apps.
+
+Webhooks are not affected. A webhook belongs to its workspace, not to the user who created it, so a disabled owner's workspaces keep delivering events. To stop that, delete the webhook or the workspace.
+
 ## Deployment Options
 
 ### Single Binary (SQLite)

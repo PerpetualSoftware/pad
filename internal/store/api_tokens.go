@@ -69,23 +69,31 @@ func (s *Store) CreateAPIToken(userID string, input models.APITokenCreate, defau
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 	args := []any{id, wsID, userID, input.Name, tokenHash, prefix, scopes, expiresAt, ts}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("insert api token: begin: %w", err)
+	}
+	defer tx.Rollback()
+	// The plan-limit lock first: it is the stronger lock on the same users
+	// row, so the active-account read below waits on nothing (see
+	// requireActiveUserTx; the other order deadlocks two concurrent mints).
 	if resolveMintOptions(opts).planLimit {
-		tx, err := s.db.Begin()
-		if err != nil {
-			return nil, fmt.Errorf("insert api token: begin: %w", err)
-		}
-		defer tx.Rollback()
 		if err := s.enforceUserLimitTx(tx, userID, "api_tokens", 0); err != nil {
 			return nil, err
 		}
-		if _, err := tx.Exec(s.q(insert), args...); err != nil {
-			return nil, fmt.Errorf("insert api token: %w", err)
+	}
+	// No token for a disabled account, decided under its row (BUG-3349): a
+	// mint admitted before a disable would otherwise outlive the revoke.
+	if userID != "" {
+		if err := s.requireActiveUserTx(tx, userID); err != nil {
+			return nil, err
 		}
-		if err := tx.Commit(); err != nil {
-			return nil, fmt.Errorf("insert api token: commit: %w", err)
-		}
-	} else if _, err := s.db.Exec(s.q(insert), args...); err != nil {
+	}
+	if _, err := tx.Exec(s.q(insert), args...); err != nil {
 		return nil, fmt.Errorf("insert api token: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("insert api token: commit: %w", err)
 	}
 
 	token, err := s.getAPIToken(id)

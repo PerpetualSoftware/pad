@@ -899,6 +899,86 @@ func (s *Store) DisableUser(userID string) error {
 	return nil
 }
 
+// requireActiveUserTx is the one gate every credential-minting insert passes
+// (BUG-3349): it reads the user's row inside the insert's own transaction,
+// FOR SHARE on Postgres, and refuses with ErrUserDisabled when the account is
+// disabled or gone. FOR SHARE conflicts with the row lock a disable's UPDATE
+// and an account deletion take, so a mint and a disable serialize. Either the
+// mint commits first and the disable revokes it, or the disable commits
+// first and the mint sees it. Neither locks the other's rows first, so there
+// is no cycle. SQLite serializes writers.
+//
+// A caller that also takes the users row FOR NO KEY UPDATE (the plan-limit
+// lock, enforceUserLimitTx) must take THAT first: FOR SHARE then an upgrade
+// lets two concurrent mints each hold the share and wait on the other's
+// (a deadlock). After the stronger lock, this read waits on nothing.
+//
+// A caller that UPDATEs the users row itself should not call this at all:
+// make the UPDATE conditional on `disabled_at IS NULL` and treat zero rows as
+// ErrUserDisabled, which decides it under the UPDATE's own lock with no share
+// to upgrade from. ConsumeEmailVerification does exactly that. TestEveryCredentialInsertRequires
+// AnActiveUser holds every insert into a credential table to calling it.
+func (s *Store) requireActiveUserTx(tx *sql.Tx, userID string) error {
+	q := `SELECT CASE WHEN disabled_at IS NULL THEN 0 ELSE 1 END FROM users WHERE id = ?`
+	if s.dialect.Driver() == DriverPostgres {
+		q += ` FOR SHARE`
+	}
+	var disabled int
+	switch err := tx.QueryRow(s.q(q), userID).Scan(&disabled); {
+	case errors.Is(err, sql.ErrNoRows):
+		// Gone, which callers may also want to tell apart (an account
+		// deletion that won the race), so it matches both.
+		return fmt.Errorf("%w: %w", ErrUserDisabled, sql.ErrNoRows)
+	case err != nil:
+		return fmt.Errorf("read user: %w", err)
+	case disabled == 1:
+		return ErrUserDisabled
+	}
+	return nil
+}
+
+// DisableUserAndRevokeAccess disables the account and ends every credential
+// it holds, in one transaction (BUG-3349): sessions, API tokens, and OAuth
+// (MCP) grants, both the connection rows and every access and refresh token
+// issued to the user. Disabling used to delete sessions only, so a PAT or an
+// MCP connection kept working, and re-enabling would have revived them.
+// Nothing here is restored by EnableUser: the user signs in, mints tokens
+// and reconnects apps again.
+func (s *Store) DisableUserAndRevokeAccess(userID string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("disable user: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	ts := now()
+	stmts := []struct {
+		what, query string
+		args        []any
+	}{
+		{"disable", `UPDATE users SET disabled_at = ?, updated_at = ? WHERE id = ?`, []any{ts, ts, userID}},
+		{"delete sessions", `DELETE FROM sessions WHERE user_id = ?`, []any{userID}},
+		{"delete api tokens", `DELETE FROM api_tokens WHERE user_id = ?`, []any{userID}},
+		{"revoke oauth access tokens", `UPDATE oauth_access_tokens SET active = ? WHERE subject = ?`, []any{s.dialect.BoolToInt(false), userID}},
+		{"revoke oauth refresh tokens", `UPDATE oauth_refresh_tokens SET active = ? WHERE subject = ?`, []any{s.dialect.BoolToInt(false), userID}},
+		// An authorization code not yet exchanged carries no subject column,
+		// but shares its request id with the connection row the consent step
+		// wrote: deactivate it before that row goes, or a re-enable would let
+		// it exchange (codex review). PKCE rows ride the same request id.
+		{"revoke oauth authorization codes", `UPDATE oauth_authorization_codes SET active = ? WHERE request_id IN (SELECT request_id FROM oauth_connections WHERE user_id = ?)`, []any{s.dialect.BoolToInt(false), userID}},
+		{"delete oauth pkce requests", `DELETE FROM oauth_pkce_requests WHERE request_id IN (SELECT request_id FROM oauth_connections WHERE user_id = ?)`, []any{userID}},
+		{"delete oauth connections", `DELETE FROM oauth_connections WHERE user_id = ?`, []any{userID}},
+	}
+	for _, st := range stmts {
+		if _, err := tx.Exec(s.q(st.query), st.args...); err != nil {
+			return fmt.Errorf("disable user: %s: %w", st.what, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("disable user: commit: %w", err)
+	}
+	return nil
+}
+
 // EnableUser re-enables a disabled user account by clearing disabled_at.
 func (s *Store) EnableUser(userID string) error {
 	_, err := s.db.Exec(s.q(`UPDATE users SET disabled_at = NULL, updated_at = ? WHERE id = ?`),

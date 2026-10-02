@@ -1,7 +1,9 @@
 package server
 
 import (
+	"errors"
 	"fmt"
+	"github.com/PerpetualSoftware/pad/internal/store"
 	"net"
 	"net/http"
 	"strings"
@@ -153,6 +155,11 @@ func (s *Server) handleApproveCLIAuthSession(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	token, err := s.store.CreateSessionIssuedAt(user.ID, "cli-browser-auth", clientIP(r), "", 30*24*time.Hour, approver.CreatedAt)
+	if errors.Is(err, store.ErrUserDisabled) {
+		// Disabled between this request's admission and the mint (BUG-3349).
+		writeError(w, http.StatusForbidden, "account_disabled", "Your account has been disabled. Contact an administrator.")
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to create session")
 		return
