@@ -697,13 +697,20 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	// Create user. Only the cloud self-serve branch starts UNVERIFIED (DR-3);
 	// admin-created and invited signups inherit the verified default.
+	// BUG-3348: an invitation code does not prove the address — the inviter
+	// is handed the same code in the invite response. Where the instance can
+	// prove an address (cloud with a deliverable verification email), an
+	// invited signup starts unverified and confirms by the emailed link, like
+	// self-serve. Elsewhere every account is verified, as before.
+	needsVerification := selfServe || (invitation != nil && s.cloudMode && s.emailConfigured())
+
 	user, err := s.store.CreateUser(models.UserCreate{
 		Email:      input.Email,
 		Username:   input.Username,
 		Name:       input.Name,
 		Password:   input.Password,
 		Role:       "member",
-		Unverified: selfServe,
+		Unverified: needsVerification,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to create user")
@@ -823,9 +830,9 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Cloud self-serve signup: mint + send the email-verification link. The
-	// selfServe gate above already guaranteed emailConfigured() (sender wired
-	// + usable base URL), so the link is deliverable.
+	// Cloud self-serve or invited signup: mint + send the email-verification
+	// link. needsVerification is only true when emailConfigured() holds
+	// (sender wired + usable base URL), so the link is deliverable.
 	//
 	// Token creation is REQUIRED to complete signup (invariant: never leave a
 	// user who can't verify). If minting the token fails we roll the user back
@@ -833,7 +840,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	// account would be write-locked with no link. Only the async SEND is
 	// best-effort: a send failure keeps the account (the token exists) and the
 	// user recovers via POST /auth/resend-verification.
-	if selfServe {
+	if needsVerification {
 		vtoken, verr := s.store.CreateEmailVerification(user.ID)
 		if verr != nil {
 			slog.Error("failed to create email verification token; rolling back signup", "error", verr, "user_id", user.ID)

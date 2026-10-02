@@ -424,7 +424,10 @@ func TestCloudRegister_UnverifiableConfig_StaysClosed(t *testing.T) {
 // and the invite-accept carve-out lets an unverified cloud user reach it.
 // ---------------------------------------------------------------------
 
-func TestInviteAccept_VerifiesUnverifiedUser(t *testing.T) {
+// BUG-3348 (inverts DR-1): the invitation code is handed to the INVITER in
+// the invite response, so holding it proves nothing about the address.
+// Accepting by code grants the membership and leaves the account unverified.
+func TestInviteAccept_CodeDoesNotVerify(t *testing.T) {
 	srv := testServer(t)
 	bootstrapFirstUser(t, srv, "admin@pad.test", "Admin")
 	srv.cloudMode = true // so RequireVerifiedEmail is live and the carve-out matters
@@ -466,13 +469,16 @@ func TestInviteAccept_VerifiesUnverifiedUser(t *testing.T) {
 		t.Fatalf("accept invitation (unverified user, cloud carve-out): expected 200, got %d: %s", rr.Code, rr.Body.String())
 	}
 
-	// The account is now verified — proving "invited = verified" for later
-	// accepts, not just register-with-code.
+	// The membership landed — the accept itself still works.
+	if member, err := srv.store.IsWorkspaceMember(ws.ID, u.ID); err != nil || !member {
+		t.Fatalf("accept did not grant membership (member=%v err=%v)", member, err)
+	}
+	// ...and the account is still unverified: the code is not proof.
 	u2, err := srv.store.GetUser(u.ID)
 	if err != nil || u2 == nil {
 		t.Fatalf("GetUser after accept: %v", err)
 	}
-	if !u2.IsEmailVerified() {
-		t.Fatal("accepting an email-bound invitation should verify the account (DR-1)")
+	if u2.IsEmailVerified() {
+		t.Fatal("accepting by the inviter-visible code verified the account (BUG-3348)")
 	}
 }

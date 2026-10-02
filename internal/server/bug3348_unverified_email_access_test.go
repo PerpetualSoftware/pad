@@ -4,7 +4,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
@@ -150,4 +152,71 @@ func TestBUG3348_OAuthLinkRefusesUnverifiedAccount(t *testing.T) {
 	if rr := link(); rr.Code != http.StatusOK {
 		t.Fatalf("verified oauth-link: got %d %s", rr.Code, rr.Body.String())
 	}
+}
+
+// The inviter is handed the invitation code, so registering with it proves
+// nothing about the address either. On cloud with a deliverable verification
+// email the invited signup starts unverified and is sent the link; the
+// membership still lands. Self-hosted (control) is unchanged: verified.
+func TestBUG3348_RegisterWithInvitationCodeDoesNotVerifyOnCloud(t *testing.T) {
+	register := func(srv *Server) {
+		t.Helper()
+		admin, err := srv.store.GetUserByEmail("admin@pad.test")
+		if err != nil || admin == nil {
+			t.Fatalf("admin lookup: %v", err)
+		}
+		ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Invite WS", OwnerID: admin.ID})
+		if err != nil {
+			t.Fatalf("CreateWorkspace: %v", err)
+		}
+		inv, err := srv.store.CreateInvitation(ws.ID, "victim@example.com", "editor", admin.ID)
+		if err != nil {
+			t.Fatalf("CreateInvitation: %v", err)
+		}
+		rr := doRequest(srv, "POST", "/api/v1/auth/register", map[string]string{
+			"email":           "victim@example.com",
+			"name":            "Victim",
+			"password":        "correct-horse-battery-staple",
+			"invitation_code": inv.Code,
+		})
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("register with invitation: %d %s", rr.Code, rr.Body.String())
+		}
+		u, err := srv.store.GetUserByEmail("victim@example.com")
+		if err != nil || u == nil {
+			t.Fatalf("lookup: %v", err)
+		}
+		if member, err := srv.store.IsWorkspaceMember(ws.ID, u.ID); err != nil || !member {
+			t.Fatalf("invited signup did not join (member=%v err=%v)", member, err)
+		}
+	}
+
+	t.Run("cloud", func(t *testing.T) {
+		srv, mails := newCloudEmailServer(t)
+		register(srv)
+		u, _ := srv.store.GetUserByEmail("victim@example.com")
+		if u.IsEmailVerified() {
+			t.Fatal("registering with the inviter-visible code verified the account on cloud")
+		}
+		// The address is proven by the emailed link instead.
+		select {
+		case m := <-mails:
+			if m.to != "victim@example.com" {
+				t.Fatalf("verification mail went to %q", m.to)
+			}
+			extractVerifyToken(t, m)
+		case <-time.After(5 * time.Second):
+			t.Fatal("no verification email sent to the invited signup")
+		}
+	})
+
+	t.Run("self-hosted control", func(t *testing.T) {
+		srv := testServer(t)
+		bootstrapFirstUser(t, srv, "admin@pad.test", "Admin")
+		register(srv)
+		u, _ := srv.store.GetUserByEmail("victim@example.com")
+		if !u.IsEmailVerified() {
+			t.Fatal("self-hosted invited signup should stay verified")
+		}
+	})
 }
