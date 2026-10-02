@@ -36,13 +36,22 @@ const exportBundleVersion = 1
 // and before any export content is read from the store or written to the
 // response — a 403 here must never follow partial output.
 func (s *Server) requireUnrestrictedExportAccess(w http.ResponseWriter, r *http.Request, workspaceID string) bool {
+	return s.requireUnrestrictedAccess(w, r, workspaceID, "Workspace export requires unrestricted workspace access")
+}
+
+// requireUnrestrictedAccess denies, with 403 and message, a caller whose
+// workspace access is scoped to specific collections. It gates the
+// capabilities that hand out the WHOLE workspace regardless of the caller's
+// own visibility: full export (BUG-1922) and webhooks (BUG-3340), which carry
+// item snapshots from every collection.
+func (s *Server) requireUnrestrictedAccess(w http.ResponseWriter, r *http.Request, workspaceID, message string) bool {
 	visibleIDs, err := s.visibleCollectionIDs(r, workspaceID)
 	if err != nil {
 		writeInternalError(w, err)
 		return false
 	}
 	if visibleIDs != nil {
-		writeError(w, http.StatusForbidden, "forbidden", "Workspace export requires unrestricted workspace access")
+		writeError(w, http.StatusForbidden, "forbidden", message)
 		return false
 	}
 	return true

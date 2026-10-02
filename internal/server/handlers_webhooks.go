@@ -21,6 +21,11 @@ func maskWebhookSecret(hook models.Webhook) models.Webhook {
 	return hook
 }
 
+// webhookUnrestrictedMessage is the 403 for an owner restricted to specific
+// collections (BUG-3340). Deleting a webhook stays open to them: removal is
+// revocation and hands out nothing.
+const webhookUnrestrictedMessage = "Webhooks require unrestricted workspace access"
+
 // handleCreateWebhook registers a new webhook for a workspace.
 func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 	if !requireMinRole(w, r, "owner") {
@@ -28,6 +33,11 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
+		return
+	}
+	// A webhook receives item snapshots from every collection, so only an
+	// owner who can see the whole workspace may create one (BUG-3340).
+	if !s.requireUnrestrictedAccess(w, r, workspaceID, webhookUnrestrictedMessage) {
 		return
 	}
 
@@ -142,6 +152,9 @@ func (s *Server) handleTestWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
+		return
+	}
+	if !s.requireUnrestrictedAccess(w, r, workspaceID, webhookUnrestrictedMessage) {
 		return
 	}
 
