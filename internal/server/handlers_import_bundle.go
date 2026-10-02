@@ -65,6 +65,13 @@ const importBundleExpansionFactor int64 = 4
 // attachment plus two metadata files, so this is ~180x the largest observed.
 const importBundleMaxEntries = 100_000
 
+// importBundleMaxHeaderBlocks bounds the 512-byte header blocks read,
+// extension headers included (PAX records, GNU long names), which the entry
+// count above cannot see. An exported entry costs one header block, or a few
+// more with a long name; real exports have hundreds of entries (receipt
+// above), so two blocks per permitted entry still leaves wide headroom.
+const importBundleMaxHeaderBlocks = 2 * importBundleMaxEntries
+
 // errBundleTooLarge is returned by bundleBudgetReader once the decompressed
 // stream passes its ceiling.
 var errBundleTooLarge = errors.New("bundle exceeds its decompressed size limit")
@@ -364,6 +371,14 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 	tr := tar.NewReader(budget)
 	blobCap := s.effectiveBlobMaxBytes()
 	entries := 0
+	// Two more counters, because the physical byte count alone is not the
+	// whole cost (codex r1). A sparse entry's holes are synthesized by the tar
+	// reader ABOVE the counted stream, so logical bytes get their own budget,
+	// charged by each entry's declared size. And Next consumes PAX and GNU
+	// extension headers internally, so the entry count cannot see them; the
+	// header blocks Next reads are counted instead.
+	logicalRemaining := decompressedCap
+	headerBlocks := int64(0)
 
 	var ws *models.Workspace
 
@@ -413,7 +428,15 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 	manifestSeen := false
 
 	for {
+		before := budget.remaining
 		hdr, err := tr.Next()
+		// Every entry's body is read to its end before the next Next (the
+		// skip arms below drain it), so what Next consumed is headers plus at
+		// most one block of the previous entry's padding.
+		headerBlocks += (before - budget.remaining) / 512
+		if headerBlocks > importBundleMaxHeaderBlocks {
+			return ws, bundleTooLargeError(fmt.Sprintf("Bundle has too many entries (more than %d tar header blocks)", importBundleMaxHeaderBlocks))
+		}
 		if err == io.EOF {
 			break
 		}
@@ -425,11 +448,17 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 			return ws, bundleTooLargeError(fmt.Sprintf("Bundle has more than %d entries", importBundleMaxEntries))
 		}
 		// Refuse an entry that declares more than the budget has left before
-		// inflating any of it.
-		if hdr.Size > budget.remaining {
+		// inflating any of it. hdr.Size is the LOGICAL size, holes included.
+		if hdr.Size > logicalRemaining {
 			return ws, bundleTooLargeError(fmt.Sprintf("Bundle expands past %d bytes once decompressed (entry %q declares %d)", decompressedCap, hdr.Name, hdr.Size))
 		}
+		logicalRemaining -= hdr.Size
 		if hdr.Typeflag != tar.TypeReg && hdr.Typeflag != tar.TypeRegA { //nolint:staticcheck // TypeRegA accepted for older bundles
+			// Drain it here rather than leave it to Next, so Next's
+			// consumption above stays headers only.
+			if _, err := io.Copy(io.Discard, io.LimitReader(tr, hdr.Size)); err != nil {
+				return ws, fmt.Errorf("skip entry %s: %w", hdr.Name, err)
+			}
 			continue
 		}
 

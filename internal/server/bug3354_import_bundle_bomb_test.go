@@ -176,3 +176,146 @@ func TestBUG3354_BudgetReader(t *testing.T) {
 		t.Fatalf("under limit: got %q %v", got, err)
 	}
 }
+
+// rawTarEntry writes one ustar entry with an arbitrary typeflag (tar.Writer
+// refuses to emit raw extension headers itself), fixing up the checksum.
+func rawTarEntry(t *testing.T, name string, flag byte, body []byte) []byte {
+	t.Helper()
+	var out bytes.Buffer
+	tw := tar.NewWriter(&out)
+	if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(body)), Format: tar.FormatUSTAR}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write(body); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	raw := out.Bytes()
+	raw[156] = flag
+	for i := 148; i < 156; i++ {
+		raw[i] = ' '
+	}
+	sum := 0
+	for _, b := range raw[:512] {
+		sum += int(b)
+	}
+	copy(raw[148:156], fmt.Sprintf("%06o\x00 ", sum))
+	return raw
+}
+
+func paxRecord(key, value string) string {
+	payload := key + "=" + value + "\n"
+	n := len(payload) + 2
+	for {
+		record := fmt.Sprintf("%d %s", n, payload)
+		if len(record) == n {
+			return record
+		}
+		n = len(record)
+	}
+}
+
+func gzipBytes(t *testing.T, raw []byte) []byte {
+	t.Helper()
+	var out bytes.Buffer
+	gw := gzip.NewWriter(&out)
+	if _, err := gw.Write(raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return out.Bytes()
+}
+
+// Codex r1 P1: a GNU sparse entry's holes are synthesized by the tar reader
+// above the counted stream, so a few KiB of physical bytes declared hundreds
+// of MiB. Each entry's declared (logical) size is charged against its own
+// budget.
+func TestBUG3354_SparseEntriesChargedLogically(t *testing.T) {
+	raw := rawTarEntry(t, "pad-export.json", tar.TypeReg, exportJSONFrom(t))
+	const logicalSize = 96 << 20
+	for i := 0; i < 3; i++ {
+		pax := paxRecord("GNU.sparse.major", "0") +
+			paxRecord("GNU.sparse.minor", "1") +
+			paxRecord("GNU.sparse.size", fmt.Sprint(logicalSize)) +
+			paxRecord("GNU.sparse.numblocks", "1") +
+			paxRecord("GNU.sparse.map", "0,0")
+		raw = append(raw, rawTarEntry(t, "pax", tar.TypeXHeader, []byte(pax))...)
+		raw = append(raw, rawTarEntry(t, fmt.Sprintf("filler-%d.bin", i), tar.TypeReg, nil)...)
+	}
+	raw = append(raw, make([]byte, 1024)...)
+	srv, _ := testServerWithAttachments(t)
+	srv.SetImportBundleMaxBytes(1 << 20)
+	if 3*logicalSize <= srv.decompressedBundleCap() {
+		t.Fatalf("precondition: %d logical bytes must pass the %d ceiling", 3*logicalSize, srv.decompressedBundleCap())
+	}
+	rr := postBundle(srv, "SparseWS", gzipBytes(t, raw))
+	if rr.Code != http.StatusRequestEntityTooLarge || !strings.Contains(rr.Body.String(), "bundle_too_large") {
+		t.Fatalf("sparse entries: got %d %s, want 413 bundle_too_large", rr.Code, rr.Body.String())
+	}
+	if workspaceListed(t, srv, "SparseWS") {
+		t.Fatal("the partial workspace was not rolled back")
+	}
+}
+
+// Codex r1 P2: extension headers are consumed inside Next, invisible to the
+// entry count. The header blocks Next reads are counted instead.
+func TestBUG3354_ExtensionHeaderChainRefused(t *testing.T) {
+	raw := rawTarEntry(t, "pad-export.json", tar.TypeReg, exportJSONFrom(t))
+	extension := rawTarEntry(t, "pax", tar.TypeXHeader, nil) // one block each
+	raw = append(raw, bytes.Repeat(extension, importBundleMaxHeaderBlocks+1)...)
+	raw = append(raw, rawTarEntry(t, "filler.bin", tar.TypeReg, nil)...)
+	raw = append(raw, make([]byte, 1024)...)
+	srv, _ := testServerWithAttachments(t)
+	srv.SetImportBundleMaxBytes(1 << 20)
+	body := gzipBytes(t, raw)
+	if int64(len(body)) >= srv.effectiveImportBundleMaxBytes() || int64(len(raw)) >= srv.decompressedBundleCap() {
+		t.Fatalf("precondition: the chain must fit both byte ceilings (body %d, raw %d)", len(body), len(raw))
+	}
+	rr := postBundle(srv, "ChainWS", body)
+	if rr.Code != http.StatusRequestEntityTooLarge || !strings.Contains(rr.Body.String(), "header blocks") {
+		t.Fatalf("extension-header chain: got %d %s, want 413 naming the header-block cap", rr.Code, rr.Body.String())
+	}
+	if workspaceListed(t, srv, "ChainWS") {
+		t.Fatal("the partial workspace was not rolled back")
+	}
+}
+
+// The counted reader itself trips, not the declared-size check: the entry
+// declares a size that fits, and only its padding crosses the ceiling. The
+// deferred conversion answers 413 and the minted workspace is rolled back.
+func TestBUG3354_ReaderOverflowConvertsTo413(t *testing.T) {
+	srv, _ := testServerWithAttachments(t)
+	srv.SetImportBundleMaxBytes(1 << 20)
+	var out bytes.Buffer
+	out.Write(rawTarEntry(t, "pad-export.json", tar.TypeReg, exportJSONFrom(t)))
+	tw := tar.NewWriter(&out)
+	size := srv.decompressedBundleCap() - int64(out.Len()) - 512 - 1
+	if err := tw.WriteHeader(&tar.Header{Name: "filler.bin", Mode: 0o644, Size: size}); err != nil {
+		t.Fatal(err)
+	}
+	chunk := make([]byte, 1<<20)
+	for left := size; left > 0; {
+		n := int64(len(chunk))
+		if n > left {
+			n = left
+		}
+		if _, err := tw.Write(chunk[:n]); err != nil {
+			t.Fatal(err)
+		}
+		left -= n
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	rr := postBundle(srv, "PaddingWS", gzipBytes(t, out.Bytes()))
+	if rr.Code != http.StatusRequestEntityTooLarge || !strings.Contains(rr.Body.String(), "bundle_too_large") {
+		t.Fatalf("reader overflow: got %d %s, want 413 bundle_too_large", rr.Code, rr.Body.String())
+	}
+	if workspaceListed(t, srv, "PaddingWS") {
+		t.Fatal("the partial workspace was not rolled back")
+	}
+}
