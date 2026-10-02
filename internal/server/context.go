@@ -291,6 +291,12 @@ func WithChatGPTSurface(ctx context.Context) context.Context {
 }
 
 func isChatGPTSurface(r *http.Request) bool {
-	v, _ := r.Context().Value(ctxChatGPTSurface).(bool)
+	return ChatGPTSurfaceFromContext(r.Context())
+}
+
+// ChatGPTSurfaceFromContext reports whether ctx carries the ChatGPT door's
+// marker. Exported so the MCP side can prove the marker reaches its dispatch.
+func ChatGPTSurfaceFromContext(ctx context.Context) bool {
+	v, _ := ctx.Value(ctxChatGPTSurface).(bool)
 	return v
 }
