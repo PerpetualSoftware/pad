@@ -1334,6 +1334,16 @@ type ItemUpdate struct {
 	// bracketing version. Internal-only (`json:"-"`): the store honours it, but
 	// no HTTP client can set it. Only consulted when content actually changes.
 	ForceVersion bool `json:"-"`
+	// ExternalContent is the body an update sends to the item's LIVE
+	// collaborative document instead of to items.content: the designated-
+	// applier path, taken while a tab has the item open (BUG-3327). The row
+	// write runs with Content nil, so without this the store never reached
+	// its version write and the edit was in no version. The store versions
+	// ExternalContent exactly as it would Content (same throttle, attribution
+	// and reverse patch of the body before the edit) and never writes it to
+	// the row; the tab's next flush does. Internal-only, and ignored when
+	// Content is set.
+	ExternalContent *string `json:"-"`
 	// ActorUserID is the request's user, stamped on a version row this update
 	// writes (PLAN-2348 U2). Internal-only; empty for system writers.
 	ActorUserID string `json:"-"`

@@ -2789,9 +2789,16 @@ func (s *Store) updateItemWithParentLinkOnce(
 
 	ts := now()
 
-	// Create version if content is changing
+	// Create version if content is changing. The new body is Content, or on
+	// the applier path ExternalContent, which goes to the live document
+	// rather than the row (BUG-3327): either way the body before the edit
+	// is what a version must keep.
 	bodyEditedWithoutVersion := false
-	if input.Content != nil && *input.Content != existing.Content {
+	newBody := input.Content
+	if newBody == nil {
+		newBody = input.ExternalContent
+	}
+	if newBody != nil && *newBody != existing.Content {
 		createdBy := input.LastModifiedBy
 		if createdBy == "" {
 			createdBy = "user"
@@ -2828,14 +2835,36 @@ func (s *Store) updateItemWithParentLinkOnce(
 			if err != nil {
 				return nil, fmt.Errorf("check version throttle: %w", err)
 			}
+			// BUG-3327: an applier-path edit already stored this exact body as
+			// a full-body version, and the tab's flush that follows would store
+			// it a second time. That second row would then carry the agent's
+			// change in History under the tab user's name, leaving the agent's
+			// own row as an empty change. So a FLUSH (collab-snapshot) skips a
+			// version whose body the newest version already holds verbatim.
+			// Only a flush: any other writer's edit owes its own row even when
+			// an earlier throttled edit brought the body back to a versioned
+			// one (codex review), or that writer's change would read as the
+			// earlier writer's.
+			if shouldVersion && source == "collab-snapshot" {
+				dup, derr := s.newestVersionIsUnflushedApplierRow(tx, id, existing.Content)
+				if derr != nil {
+					return nil, fmt.Errorf("check duplicate version: %w", derr)
+				}
+				shouldVersion = !dup
+			}
 		}
 
 		if shouldVersion {
 			vid := newID()
 			versionContent := existing.Content
 			isDiff := false
-			patch := diff.CreateReversePatch(existing.Content, *input.Content)
-			if diff.IsDiffSmaller(patch, existing.Content) {
+			patch := diff.CreateReversePatch(existing.Content, *newBody)
+			// A reverse patch is resolved backwards from the ROW's body, which
+			// on the applier path (ExternalContent, BUG-3327) is still the old
+			// body until the tab's flush lands: a patch would resolve against
+			// the wrong base in that window. The full body resolves the same
+			// whatever the row holds.
+			if input.Content != nil && diff.IsDiffSmaller(patch, existing.Content) {
 				versionContent = patch
 				isDiff = true
 			}
@@ -2847,7 +2876,7 @@ func (s *Store) updateItemWithParentLinkOnce(
 			// under the item lock (this runs in the update's own tx).
 			// PLAN-2348 U2: an update row holds the body BEFORE its edit, so
 			// its recorded change is that body → the one replacing it.
-			added, removed := diff.LineCounts(existing.Content, *input.Content)
+			added, removed := diff.LineCounts(existing.Content, *newBody)
 			_, err = tx.Exec(s.q(`
 				INSERT INTO item_versions (id, item_id, content, change_summary, created_by, source, is_diff, created_at, version_seq,
 				                           user_id, lines_added, lines_removed, is_create)
@@ -5597,6 +5626,53 @@ func buildItemSort(sort string, dialect Dialect) string {
 // and the pool test's item leg was a TITLE-only update, which never reaches
 // this branch. A test that exercises one arm of an optional path is not
 // evidence about the other arm.
+// newestVersionIsUnflushedApplierRow reports whether the item's newest
+// version is the row an applier-path edit wrote (BUG-3327) for exactly
+// body, still waiting for the tab's flush to land the new body in the row.
+// Such a row is recognised positively, not by its content alone (codex
+// review): it is a full-body, non-create row, and it is NEWER than the
+// item's content_flushed_at. Every direct content write bumps
+// content_flushed_at in the same write as its version, so only an
+// applier-path version (whose row write leaves content alone) can postdate
+// it. A throttled revert to an earlier versioned body moves
+// content_flushed_at past that version, so it does not match (but see the
+// same-second residual below).
+func (s *Store) newestVersionIsUnflushedApplierRow(q rowQueryer, itemID, body string) (bool, error) {
+	var content, createdAt string
+	var flushedAt sql.NullString
+	var isDiff, isCreate bool
+	err := q.QueryRow(s.q(`
+		SELECT v.content, v.is_diff, v.is_create, v.created_at, i.content_flushed_at
+		FROM item_versions v
+		JOIN items i ON i.id = v.item_id
+		WHERE v.item_id = ?
+		ORDER BY v.created_at DESC, v.version_seq DESC
+		LIMIT 1
+	`), itemID).Scan(&content, &isDiff, &isCreate, &createdAt, &flushedAt)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if isDiff || isCreate || content != body {
+		return false, nil
+	}
+	// No timestamp is no evidence (codex review): migration 052 leaves
+	// content_flushed_at NULL on items with op-log rows, and treating that as
+	// "unflushed" would let an ordinary flush lose its version. Without it the
+	// skip does not apply, and the cost is a duplicate row, never a lost one.
+	if !flushedAt.Valid || flushedAt.String == "" {
+		return false, nil
+	}
+	// Not-before rather than after: both are stored at one-second
+	// resolution, and an applier edit routinely lands in the same second as
+	// the last direct write. The residual is a versioned A->B and a throttled
+	// revert B->A inside ONE second, then a flush: that flush's version is
+	// skipped and its change reads under A->B's row.
+	return !parseTime(createdAt).Before(parseTime(flushedAt.String)), nil
+}
+
 func (s *Store) shouldCreateItemVersion(q rowQueryer, itemID, actor, source string) (bool, error) {
 	var createdBy, src, createdAt string
 	err := q.QueryRow(s.q(`
