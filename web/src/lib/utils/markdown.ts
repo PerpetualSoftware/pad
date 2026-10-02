@@ -212,15 +212,43 @@ const MARKDOWN_ALLOWED_ATTR = [
  */
 export function sanitizeMarkdownHtml(html: string): string {
 	if (typeof window === 'undefined') return '';
-	return DOMPurify.sanitize(html, {
-		ALLOWED_TAGS: [...MARKDOWN_ALLOWED_TAGS],
-		ALLOWED_ATTR: [...MARKDOWN_ALLOWED_ATTR],
-		ALLOW_DATA_ATTR: false,
-		// Keep target="_blank" on external links (marked renderer sets it).
-		ADD_ATTR: ['target'],
-		// Disallow unknown protocols outright.
-		ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|ftp|tel):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i
-	});
+	DOMPurify.addHook('afterSanitizeAttributes', enforceNoOpener);
+	try {
+		return DOMPurify.sanitize(html, {
+			ALLOWED_TAGS: [...MARKDOWN_ALLOWED_TAGS],
+			ALLOWED_ATTR: [...MARKDOWN_ALLOWED_ATTR],
+			ALLOW_DATA_ATTR: false,
+			// Keep target="_blank" on external links (marked renderer sets it).
+			ADD_ATTR: ['target'],
+			// Disallow unknown protocols outright.
+			ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|ftp|tel):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i
+		});
+	} finally {
+		DOMPurify.removeHook('afterSanitizeAttributes', enforceNoOpener);
+	}
+}
+
+/**
+ * BUG-3359: any element that opens its link somewhere other than the current
+ * browsing context leaves the sanitizer with `noopener noreferrer` and never
+ * `opener`. Raw HTML in markdown bypasses the safe link renderer, and the
+ * allowlist keeps the author's `target` and `rel`, so
+ * `<a target="_blank" rel="opener">` used to reach `{@html}` with
+ * `window.opener` live in the new tab (reverse tabnabbing). Other `rel`
+ * tokens the author wrote are kept. Run as an `afterSanitizeAttributes` hook
+ * by both sanitizers.
+ */
+function enforceNoOpener(node: Element): void {
+	if (!node.hasAttribute || !node.hasAttribute('target')) return;
+	const target = (node.getAttribute('target') ?? '').trim().toLowerCase();
+	if (target === '' || target === '_self') return;
+	const tokens = (node.getAttribute('rel') ?? '')
+		.split(/\s+/)
+		.filter((t) => t !== '' && t.toLowerCase() !== 'opener');
+	for (const t of ['noopener', 'noreferrer']) {
+		if (!tokens.some((x) => x.toLowerCase() === t)) tokens.push(t);
+	}
+	node.setAttribute('rel', tokens.join(' '));
 }
 
 // HTML block allowlist. Permits everything markdown allows plus structural
@@ -313,6 +341,7 @@ export function sanitizeHtmlBlock(html: string): string {
 		}
 	};
 	DOMPurify.addHook('uponSanitizeElement', hook);
+	DOMPurify.addHook('afterSanitizeAttributes', enforceNoOpener);
 	try {
 		return DOMPurify.sanitize(html, {
 			ALLOWED_TAGS: [...HTML_BLOCK_ALLOWED_TAGS],
@@ -322,7 +351,8 @@ export function sanitizeHtmlBlock(html: string): string {
 			ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|ftp|tel):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i
 		});
 	} finally {
-		DOMPurify.removeHook('uponSanitizeElement');
+		DOMPurify.removeHook('uponSanitizeElement', hook);
+		DOMPurify.removeHook('afterSanitizeAttributes', enforceNoOpener);
 	}
 }
 
