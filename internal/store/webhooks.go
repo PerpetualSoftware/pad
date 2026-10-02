@@ -134,12 +134,31 @@ func (s *Store) GetWebhookScoped(id, workspaceID string) (*models.Webhook, error
 }
 
 // ListWebhooks returns all webhooks for a workspace.
+// WorkspaceLive reports whether a workspace exists and is not soft-deleted.
+// The webhook dispatcher re-checks it before every send (BUG-3340).
+func (s *Store) WorkspaceLive(workspaceID string) (bool, error) {
+	var one int
+	err := s.db.QueryRow(s.q(`SELECT 1 FROM workspaces WHERE id = ? AND deleted_at IS NULL`), workspaceID).Scan(&one)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("workspace live: %w", err)
+	}
+	return true, nil
+}
+
+// ListWebhooks lists a workspace's webhooks. A soft-deleted workspace has
+// none (BUG-3340): the dispatcher's two delivery paths list through here, so
+// its events are dropped rather than delivered during the restore window, and
+// a restore brings the webhooks back.
 func (s *Store) ListWebhooks(workspaceID string) ([]models.Webhook, error) {
 	rows, err := s.db.Query(s.q(`
-		SELECT id, workspace_id, url, secret, events, active, created_at, updated_at, last_triggered_at, failure_count
-		FROM webhooks
-		WHERE workspace_id = ?
-		ORDER BY created_at ASC
+		SELECT wh.id, wh.workspace_id, wh.url, wh.secret, wh.events, wh.active, wh.created_at, wh.updated_at, wh.last_triggered_at, wh.failure_count
+		FROM webhooks wh
+		JOIN workspaces w ON w.id = wh.workspace_id
+		WHERE wh.workspace_id = ? AND w.deleted_at IS NULL
+		ORDER BY wh.created_at ASC
 	`), workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("list webhooks: %w", err)

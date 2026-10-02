@@ -21,6 +21,11 @@ func maskWebhookSecret(hook models.Webhook) models.Webhook {
 	return hook
 }
 
+// webhookUnrestrictedMessage is the 403 for an owner restricted to specific
+// collections (BUG-3340). Deleting a webhook stays open to them: removal is
+// revocation and hands out nothing.
+const webhookUnrestrictedMessage = "Webhooks require unrestricted workspace access"
+
 // handleCreateWebhook registers a new webhook for a workspace.
 func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 	if !requireMinRole(w, r, "owner") {
@@ -28,6 +33,11 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
+		return
+	}
+	// A webhook receives item snapshots from every collection, so only an
+	// owner who can see the whole workspace may create one (BUG-3340).
+	if !s.requireUnrestrictedAccess(w, r, workspaceID, webhookUnrestrictedMessage) {
 		return
 	}
 
@@ -98,10 +108,24 @@ func (s *Server) handleListWebhooks(w http.ResponseWriter, r *http.Request) {
 		hooks = []models.Webhook{}
 	}
 
+	// An owner restricted to specific collections sees the webhooks (they may
+	// delete any of them) but not their destination URLs (BUG-3340): a URL can
+	// itself be the credential to the receiver's stored request bodies, which
+	// carry every collection's items.
+	visibleIDs, err := s.visibleCollectionIDs(r, workspaceID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	restricted := visibleIDs != nil
+
 	// Never echo the raw signing secret in a list response (BUG-2057).
 	masked := make([]models.Webhook, len(hooks))
 	for i, hook := range hooks {
 		masked[i] = maskWebhookSecret(hook)
+		if restricted {
+			masked[i].URL = ""
+		}
 	}
 
 	writeJSON(w, http.StatusOK, masked)
@@ -142,6 +166,9 @@ func (s *Server) handleTestWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
+		return
+	}
+	if !s.requireUnrestrictedAccess(w, r, workspaceID, webhookUnrestrictedMessage) {
 		return
 	}
 
