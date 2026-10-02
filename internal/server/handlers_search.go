@@ -90,6 +90,12 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			empty()
 			return
 		}
+		// OAuth consent scoping (BUG-2102), checked here as well as in
+		// searchAccessFor so the enforcement is visible at the handler.
+		if !tokenAllowedWorkspaceMatches(r.Context(), ws.Slug) {
+			empty()
+			return
+		}
 		access, err := s.searchAccessFor(r, ws)
 		if err != nil {
 			writeInternalError(w, err)
@@ -223,16 +229,6 @@ func (s *Server) resolveSearchCollectionFilter(params store.SearchParams) ([]str
 		}
 	}
 	return ids, nil
-}
-
-func removeString(ss []string, s string) []string {
-	result := ss[:0]
-	for _, v := range ss {
-		if v != s {
-			result = append(result, v)
-		}
-	}
-	return result
 }
 
 // searchAccess is what one caller may read in one workspace through /search

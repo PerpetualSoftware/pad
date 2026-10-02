@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -28,6 +29,9 @@ type bug3331Env struct {
 	bearers                map[string]string
 	legacyWorkspaceTokenWS string // the workspace the user-less token is scoped to
 	legacyWorkspaceToken   string
+	wsID, otherID          string
+	users                  map[string]*models.User
+	alphaSlug              string
 }
 
 func bug3331Setup(t *testing.T) *bug3331Env {
@@ -78,6 +82,8 @@ func bug3331Setup(t *testing.T) *bug3331Env {
 		return got.Ref
 	}
 	e.refAlpha, e.refBravo, e.refCharlie, e.refOther = refOf(alpha), refOf(bravo), refOf(charlie), refOf(otherItem)
+	e.wsID, e.otherID, e.alphaSlug = ws.ID, other.ID, alpha.Slug
+	e.users = map[string]*models.User{}
 
 	tasks, err := srv.store.GetCollectionBySlug(ws.ID, "tasks")
 	if err != nil || tasks == nil {
@@ -119,6 +125,7 @@ func bug3331Setup(t *testing.T) *bug3331Env {
 
 	for _, u := range []*models.User{outsider, guestItem, guestColl, member, restricted, admin2} {
 		key := u.Name
+		e.users[key] = u
 		// Sessions are minted directly: /auth/login is rate-limited per IP.
 		sess, err := srv.store.CreateSession(u.ID, "web-test", "192.0.2.1", "", webSessionTTL)
 		if err != nil {
@@ -313,10 +320,60 @@ func TestBUG3331_CollectionCountsScopedToGrants(t *testing.T) {
 	if got := counts("guestitem")["docs"]; got != [2]int{1, 1} {
 		t.Errorf("item-grant guest sees docs counts %v, want [1 1] (the granted item only)", got)
 	}
+	// Close the granted item: the active count must follow it, independently
+	// of item_count.
+	rr := doRequestWithCookie(e.srv, "PATCH", "/api/v1/workspaces/"+e.wsSlug+"/items/"+e.alphaSlug,
+		map[string]any{"fields_patch": map[string]any{"status": "archived"}}, e.ownerCookie)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("archive alpha: %d %s", rr.Code, rr.Body.String())
+	}
+	if got := counts("guestitem")["docs"]; got != [2]int{1, 0} {
+		t.Errorf("item-grant guest sees docs counts %v after closing the granted item, want [1 0]", got)
+	}
 	if got := counts("guestcoll")["tasks"]; got != [2]int{1, 1} {
 		t.Errorf("collection-grant guest sees tasks counts %v, want [1 1]", got)
 	}
-	if got := counts("member")["docs"]; got != [2]int{2, 2} {
-		t.Errorf("member sees docs counts %v, want the store's [2 2]", got)
+	// The member sees the whole collection: two items, one still active.
+	if got := counts("member")["docs"]; got != [2]int{2, 1} {
+		t.Errorf("member sees docs counts %v, want the store's [2 1]", got)
+	}
+}
+
+// Codex r1 test gaps: the bare-number lookup and the filtered total for a
+// restricted caller, and a fan-out over workspaces with DIFFERENT access,
+// where one workspace's full access must not widen the other's grants.
+func TestBUG3331_RestrictedNumberLookupTotalAndMixedFanOut(t *testing.T) {
+	e := bug3331Setup(t)
+	g := e.asCookie("guestitem")
+
+	// The bare item number of an ungranted item finds nothing.
+	num := strings.SplitN(e.refBravo, "-", 2)[1]
+	if got := e.search(t, g, num, e.wsSlug); len(got) != 0 {
+		t.Errorf("bare number %s (ungranted %s): got %v, want none", num, e.refBravo, got)
+	}
+	numA := strings.SplitN(e.refAlpha, "-", 2)[1]
+	if got := e.search(t, g, numA, e.wsSlug); !equalRefs(got, sortedRefs("Zebra alpha")) {
+		t.Errorf("bare number %s (granted %s): got %v, want [Zebra alpha]", numA, e.refAlpha, got)
+	}
+
+	// The total counts only what the caller may see.
+	res := g("/api/v1/search?" + url.Values{"q": {"zebra"}, "workspace": {e.wsSlug}}.Encode())
+	var resp struct {
+		Total int `json:"total"`
+	}
+	if err := jsonUnmarshalString(res.body, &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Total != 1 {
+		t.Errorf("total = %d, want 1 (the granted item only)", resp.Total)
+	}
+
+	// Full member of Other, item-grant guest of Target: the fan-out returns
+	// all of Other and only the granted item of Target.
+	if err := e.srv.store.AddWorkspaceMember(e.otherID, e.users["guestitem"].ID, "editor"); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.search(t, g, "zebra", ""); !equalRefs(got, sortedRefs("Zebra alpha", "Zebra other")) {
+		t.Errorf("mixed fan-out: got %v, want [Zebra alpha Zebra other]", got)
 	}
 }
