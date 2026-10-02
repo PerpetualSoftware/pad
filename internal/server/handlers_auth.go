@@ -314,6 +314,12 @@ func (s *Server) validateSessionCookie(r *http.Request) *models.User {
 // error we write a 500 response and return ok=false — the caller should
 // return immediately.
 func (s *Server) rotateSessionsAfterCredentialChange(w http.ResponseWriter, r *http.Request, user *models.User) (string, bool) {
+	// The session being replaced dates the new one (BUG-3336). Every caller
+	// is a session-only door, so a request without a readable session of
+	// this user is not a state to mint from: every session is still revoked
+	// and the caller signs in again, rather than receiving a session that
+	// would read as freshly signed in.
+	info := s.requestSessionInfo(r)
 	if err := s.store.DeleteUserSessions(user.ID); err != nil {
 		// Best-effort: even if deletion fails we must still mint a new
 		// session for the caller, but log loudly so the operator knows
@@ -322,7 +328,15 @@ func (s *Server) rotateSessionsAfterCredentialChange(w http.ResponseWriter, r *h
 			"user_id", user.ID, "error", err)
 	}
 
-	token, err := s.store.CreateSession(user.ID, "web", clientIP(r), r.UserAgent(), webSessionTTL)
+	// The new session inherits the replaced one's sign-in time, read above
+	// before the delete (BUG-3336): a credential change made with a session
+	// is not a fresh sign-in.
+	if info == nil || info.User.ID != user.ID {
+		writeError(w, http.StatusInternalServerError, "internal_error",
+			"Credentials updated but failed to refresh session. Please sign in again.")
+		return "", false
+	}
+	token, err := s.store.CreateSessionIssuedAt(user.ID, "web", clientIP(r), r.UserAgent(), webSessionTTL, info.CreatedAt)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error",
 			"Credentials updated but failed to refresh session. Please sign in again.")
@@ -1150,6 +1164,14 @@ func (s *Server) handleUpdateCurrentUser(w http.ResponseWriter, r *http.Request)
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
+		return
+	}
+	// A password change rotates every session and mints a new one, so it is
+	// an interactive-session action (BUG-3336, BUG-3349): an API token may
+	// still edit the profile.
+	if input.NewPassword != "" && isAPITokenAuth(r) {
+		writeError(w, http.StatusForbidden, "session_required",
+			"Changing your password requires an interactive session, not an API token")
 		return
 	}
 

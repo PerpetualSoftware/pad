@@ -9,12 +9,53 @@ import (
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/PerpetualSoftware/pad/internal/watchevents"
 	"github.com/pquerna/otp/totp"
 	"golang.org/x/crypto/bcrypt"
 )
 
 // --- Account Deletion (GDPR Article 17 — Right to Erasure) ---
+
+// accountDeleteReauthWindow is how recently the session must have been
+// signed in for a confirm-only (passwordless) account deletion (BUG-3336).
+// Without a password to check, a recent sign-in is the proof of identity: a
+// stolen or long-lived session is not enough, and the real user signs in
+// again. A credential-change rotation does not restart the clock
+// (CreateSessionIssuedAt).
+const accountDeleteReauthWindow = 10 * time.Minute
+
+// requestSessionInfo is the session the request was authenticated with, or
+// nil. It follows the credential the middleware recorded (ctxAuthKind) rather
+// than re-reading the wire, the way credentialLiveness does: a bearer that did
+// not authenticate (an invalid one falls through to the cookie on /auth/*) is
+// not the session, and a valid PAT is no session at all. A request no
+// middleware authenticated (handlers that fall back to validateSessionCookie)
+// is read from the cookie.
+func (s *Server) requestSessionInfo(r *http.Request) *store.SessionInfo {
+	token := ""
+	switch authKind(r) {
+	case authKindAPIToken:
+		return nil
+	case authKindSessionBearer:
+		token = strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+	default:
+		for _, name := range []string{sessionCookieName(s.secureCookies), "pad_session"} {
+			if c, err := r.Cookie(name); err == nil && c.Value != "" {
+				token = c.Value
+				break
+			}
+		}
+	}
+	if token == "" {
+		return nil
+	}
+	info, err := s.store.ValidateSession(token)
+	if err != nil || info == nil || info.User == nil {
+		return nil
+	}
+	return info
+}
 
 // handleDeleteAccount handles POST /api/v1/auth/delete-account.
 // Requires password confirmation. Deletes the user and all owned data.
@@ -25,6 +66,17 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	if user == nil {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "Not logged in")
+		return
+	}
+
+	// An API token never deletes the account it belongs to (BUG-3336): the
+	// delete is irreversible and takes every owned workspace with it, so a
+	// leaked token must not be enough. A browser session or a `pad auth
+	// login` CLI session is required, the line BUG-2890 drew for minting.
+	// Checked before the body, so a token cannot probe the password either.
+	if isAPITokenAuth(r) {
+		writeError(w, http.StatusForbidden, "session_required",
+			"Deleting your account requires an interactive session, not an API token")
 		return
 	}
 
@@ -51,9 +103,21 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusForbidden, "forbidden", "Incorrect password")
 			return
 		}
-	} else if input.Confirm && s.cloudMode {
+	} else if input.Confirm && s.cloudMode && !fullUser.HasPassword() {
+		// The flag alone is not proof the account has no password: an account
+		// that signed up with one before password_set existed, and later
+		// linked OAuth, reads false too. So confirm-only also needs a recent
+		// sign-in (codex review).
+		info := s.requestSessionInfo(r)
+		if info == nil || info.User.ID != fullUser.ID || time.Since(info.CreatedAt) > accountDeleteReauthWindow {
+			writeError(w, http.StatusForbidden, "reauth_required",
+				"For your security, sign in again to delete your account")
+			return
+		}
 		// Cloud mode only: allow confirm-only deletion for OAuth-registered users
 		// who never set a password. The session itself is the proof of identity.
+		// An account WITH a password gives it (BUG-3336): confirm used to be
+		// accepted from any cloud account, so a session alone could delete it.
 		// In self-hosted mode, password is always required to prevent accidental
 		// or coerced account deletion.
 	} else {

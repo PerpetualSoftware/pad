@@ -348,8 +348,14 @@ func TestWorkspaceAccessChanged_AccountDeletion(t *testing.T) {
 			t.Fatal(err)
 		}
 
+		// An interactive session, not the fixture's PAT: an API token cannot
+		// delete its own account (BUG-3336).
+		sess, err := f.srv.store.CreateSession(f.owner.ID, "cli-browser-auth", "192.0.2.1", "", time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
 		since := f.mark()
-		f.must(f.do("POST", "/api/v1/auth/delete-account", f.ownerTok,
+		f.must(f.do("POST", "/api/v1/auth/delete-account", sess,
 			map[string]any{"password": "correct-horse-battery-staple"}), http.StatusOK, "delete account")
 		got := f.accessSince(since)
 		// The deleted owner is still in the recipient set (read before the

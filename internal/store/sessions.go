@@ -17,6 +17,10 @@ type SessionInfo struct {
 	User      *models.User
 	IPAddress string
 	UAHash    string
+	// CreatedAt is when the sign-in this session descends from happened: a
+	// rotation (CreateSessionIssuedAt) carries it over rather than restarting
+	// it (BUG-3336).
+	CreatedAt time.Time
 }
 
 // CreateSession generates a random session token, stores its SHA-256 hash,
@@ -24,6 +28,17 @@ type SessionInfo struct {
 // is returned exactly once and never stored. IP address and User-Agent hash
 // are stored for session binding validation.
 func (s *Store) CreateSession(userID, deviceInfo, ipAddress, userAgent string, ttl time.Duration) (string, error) {
+	return s.CreateSessionIssuedAt(userID, deviceInfo, ipAddress, userAgent, ttl, time.Time{})
+}
+
+// CreateSessionIssuedAt is CreateSession for a session that replaces an
+// existing one (credential-change rotation): created_at is the REPLACED
+// session's, so the sign-in it descends from stays dated where it happened.
+// That keeps rotation from making a session look freshly signed in
+// (BUG-3336's re-auth window) or from extending SessionMaxLifetime, which is
+// measured from created_at. The expiry is capped at that lifetime too. A
+// zero issuedAt means a new sign-in, now.
+func (s *Store) CreateSessionIssuedAt(userID, deviceInfo, ipAddress, userAgent string, ttl time.Duration, issuedAt time.Time) (string, error) {
 	// Generate 32 random bytes → hex → prefix
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
@@ -43,7 +58,14 @@ func (s *Store) CreateSession(userID, deviceInfo, ipAddress, userAgent string, t
 
 	id := newID()
 	ts := now()
-	expiresAt := time.Now().UTC().Add(ttl).Format(time.RFC3339)
+	expires := time.Now().UTC().Add(ttl)
+	if !issuedAt.IsZero() {
+		ts = issuedAt.UTC().Format(time.RFC3339)
+		if limit := issuedAt.UTC().Add(SessionMaxLifetime); expires.After(limit) {
+			expires = limit
+		}
+	}
+	expiresAt := expires.Format(time.RFC3339)
 
 	_, err := s.db.Exec(s.q(`
 		INSERT INTO sessions (id, user_id, token_hash, device_info, ip_address, ua_hash, expires_at, created_at, renew_ttl_seconds)
@@ -63,10 +85,10 @@ func (s *Store) ValidateSession(token string) (*SessionInfo, error) {
 	hash := sha256.Sum256([]byte(token))
 	tokenHash := hex.EncodeToString(hash[:])
 
-	var userID, expiresAt, ipAddress, uaHash string
+	var userID, expiresAt, ipAddress, uaHash, createdAt string
 	err := s.db.QueryRow(s.q(`
-		SELECT user_id, expires_at, ip_address, ua_hash FROM sessions WHERE token_hash = ?
-	`), tokenHash).Scan(&userID, &expiresAt, &ipAddress, &uaHash)
+		SELECT user_id, expires_at, ip_address, ua_hash, created_at FROM sessions WHERE token_hash = ?
+	`), tokenHash).Scan(&userID, &expiresAt, &ipAddress, &uaHash, &createdAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -91,6 +113,7 @@ func (s *Store) ValidateSession(token string) (*SessionInfo, error) {
 		User:      user,
 		IPAddress: ipAddress,
 		UAHash:    uaHash,
+		CreatedAt: parseTime(createdAt),
 	}, nil
 }
 
