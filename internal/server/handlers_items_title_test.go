@@ -285,7 +285,7 @@ func TestWriteTypedItemRefusalIncludesTitleRefusal(t *testing.T) {
 	// pass a boolean-only assertion (codex round 1, this unit).
 	refused := func(err error) bool {
 		rec := httptest.NewRecorder()
-		got := srv.writeTypedItemRefusal(rec, item, err)
+		got := srv.writeTypedItemRefusal(rec, item, err, false)
 		if got {
 			if rec.Code < 400 || rec.Code > 499 {
 				t.Errorf("a recognised refusal wrote status %d; a refusal must answer 4xx or the "+
@@ -336,7 +336,7 @@ func TestWriteTypedItemRefusalIncludesTitleRefusal(t *testing.T) {
 		`pq: duplicate key value violates unique constraint "items_invocation_slug_idx"`,
 	} {
 		rec := httptest.NewRecorder()
-		if !srv.writeTypedItemRefusal(rec, item, errors.New(msg)) {
+		if !srv.writeTypedItemRefusal(rec, item, errors.New(msg), false) {
 			t.Errorf("a unique-constraint race (%q) must be recognised; unrecognised it answers 500 "+
 				"for a request the server understood and declined", msg)
 			continue

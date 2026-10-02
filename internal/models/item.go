@@ -280,7 +280,11 @@ const ContentStateSetAside = "superseded_set_aside"
 const (
 	VersionCreatedBySystem = "system"
 	VersionSourceRecovery  = "recovery"
-	RecoveryChangeSummary  = "recovered from an unsaved editor session"
+	// VersionSourceChatGPT labels a version saved before a content change
+	// made through the ChatGPT catalog (TASK-3321 U1b). A client may not
+	// claim it.
+	VersionSourceChatGPT  = "chatgpt"
+	RecoveryChangeSummary = "recovered from an unsaved editor session"
 )
 
 // IsContentStateStale reports whether an Item.ContentState value says the
@@ -1344,6 +1348,11 @@ type ItemUpdate struct {
 	// the row; the tab's next flush does. Internal-only, and ignored when
 	// Content is set.
 	ExternalContent *string `json:"-"`
+	// ChatGPTDoor marks an update made through the ChatGPT catalog
+	// (TASK-3321 U1b), set by the handler from an in-process context marker.
+	// Refusals then speak to a chat user rather than to an API caller.
+	// Internal-only.
+	ChatGPTDoor bool `json:"-"`
 	// ActorUserID is the request's user, stamped on a version row this update
 	// writes (PLAN-2348 U2). Internal-only; empty for system writers.
 	ActorUserID string `json:"-"`

@@ -280,3 +280,17 @@ func structuredEntryAuthor(r *http.Request) string {
 	actor, _ := actorFromRequest(r)
 	return actor
 }
+
+// WithChatGPTSurface marks ctx as a call from the ChatGPT MCP catalog
+// (TASK-3321 U1b). The item update handler reads it to save a version
+// before every content change from that door, so each one can be undone
+// from History. It is set by the ChatGPT tool handler in-process, never
+// from the wire.
+func WithChatGPTSurface(ctx context.Context) context.Context {
+	return context.WithValue(ctx, ctxChatGPTSurface, true)
+}
+
+func isChatGPTSurface(r *http.Request) bool {
+	v, _ := r.Context().Value(ctxChatGPTSurface).(bool)
+	return v
+}

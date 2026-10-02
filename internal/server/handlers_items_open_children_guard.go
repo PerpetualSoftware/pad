@@ -477,14 +477,23 @@ func writeContentNotAppliedError(w http.ResponseWriter, ref string, landedFields
 // covers every content write and the message must NOT offer opening the item,
 // because no tab can restore those edits. Same code, so one client branch
 // still handles both; details gain set_aside_rows.
-func writeContentPendingFlushError(w http.ResponseWriter, ref string, e *store.ContentPendingFlushError) {
+func writeContentPendingFlushError(w http.ResponseWriter, ref string, e *store.ContentPendingFlushError, chatGPT bool) {
 	var msg string
-	if e.SetAsideRows > 0 {
+	switch {
+	case chatGPT && e.SetAsideRows > 0:
+		// TASK-3321 U1b: a chat user can do nothing with set-aside rows or
+		// overwrite_pending_edits; tell them where to go.
+		msg = fmt.Sprintf("%s has older unsaved edits that need attention in Pad before it can be changed here. Open it at app.getpad.dev.", ref)
+	case chatGPT:
+		// Recovery's two-minute dormancy (TASK-2198 U4) makes "a couple of
+		// minutes" true once the tab closes; an open tab saves within seconds.
+		msg = fmt.Sprintf("%s is being edited in Pad right now; its changes will save within a couple of minutes. Try again shortly.", ref)
+	case e.SetAsideRows > 0:
 		msg = fmt.Sprintf(
 			"%s has edits from an earlier editor version that are not in its body, and opening the item will not restore them. "+
 				"Read them with `pad item set-aside %s` if they matter, then resend with overwrite_pending_edits to replace the body and discard them.",
 			ref, ref)
-	} else {
+	default:
 		msg = fmt.Sprintf(
 			"%s has unflushed collaborative edits that are not in the body you read; its version token does not cover them. "+
 				"Wait for the open editor to save them and re-read, or open the item in a browser if none is open, "+

@@ -180,7 +180,7 @@ func (s *Server) routeContentUpdate(
 		return contentRouteHandled, nil
 
 	default: // settleDirectFailed
-		if s.writeTypedItemRefusal(w, item, paErr) {
+		if s.writeTypedItemRefusal(w, item, paErr, input.ChatGPTDoor) {
 			return contentRouteHandled, nil
 		}
 		// Terminal: no second write. The first attempt's outcome is unknown — it may
@@ -294,7 +294,7 @@ func (s *Server) applierFirstWrite(
 		// THE POINT OF THE WHOLE CHANGE: this refusal happens before
 		// ApplyExternalContent is ever called, so there is no Y.Doc write, no
 		// op-log row, and nothing for a later flush to carry.
-		if s.writeTypedItemRefusal(w, item, uerr) {
+		if s.writeTypedItemRefusal(w, item, uerr, input.ChatGPTDoor) {
 			return contentRouteHandled, nil
 		}
 		writeInternalError(w, uerr)
@@ -453,7 +453,7 @@ func composeSetAsideDiscard(s *Server, itemID string, inner func(*sql.Tx, *model
 // missed, and isDeterministicWriteFailure carries a comment saying so). One function
 // consulted by every ordering is what stops the count drifting again: anyone adding a
 // typed refusal to store.UpdateItem changes this and every path inherits it.
-func (s *Server) writeTypedItemRefusal(w http.ResponseWriter, item *models.Item, err error) bool {
+func (s *Server) writeTypedItemRefusal(w http.ResponseWriter, item *models.Item, err error, chatGPT bool) bool {
 	// A nil error is not a refusal. The typed arms below all tolerate nil (errors.As
 	// and the write helpers check), but the string-matching arm dereferences, so
 	// without this a caller asking "is this a refusal?" about success panics. Caught
@@ -503,7 +503,7 @@ func (s *Server) writeTypedItemRefusal(w http.ResponseWriter, item *models.Item,
 	// differently. Kept LAST, after every typed arm, because a substring match can
 	// swallow a typed refusal whose message happens to contain the text.
 	if pending, ok := store.AsContentPendingFlushError(err); ok {
-		writeContentPendingFlushError(w, itemRefOrSlug(*item), pending)
+		writeContentPendingFlushError(w, itemRefOrSlug(*item), pending, chatGPT)
 		return true
 	}
 	if strings.Contains(err.Error(), "UNIQUE constraint") || strings.Contains(err.Error(), "duplicate key") {

@@ -1991,9 +1991,28 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		_, input.VersionSource = actorFromRequest(r)
 	}
 	// TASK-2198 U4: "recovery" labels the server's own op-log recovery write
-	// in the version history. A client may not claim it.
-	if input.VersionSource == models.VersionSourceRecovery {
+	// in the version history. A client may not claim it. Nor "chatgpt", which
+	// only the ChatGPT door below sets (TASK-3321 U1b).
+	if input.VersionSource == models.VersionSourceRecovery || input.VersionSource == models.VersionSourceChatGPT {
 		input.VersionSource = ""
+		if !collabSnapshot {
+			_, input.VersionSource = actorFromRequest(r)
+		}
+	}
+	// TASK-3321 U1b (ruling (b)): every content change through the ChatGPT
+	// catalog is saved as a version FIRST, bypassing the 1h throttle, so it
+	// can always be undone from History; that is what lets update_item be
+	// non-destructive. The body must then be the live one, so a tab's
+	// unflushed edits refuse the write (409 content_pending_flush) rather
+	// than be missing from the version and lost to an undo. Field-only
+	// updates write no version; the activity records them.
+	if isChatGPTSurface(r) && !collabSnapshot {
+		input.ChatGPTDoor = true
+		if input.Content != nil {
+			input.ForceVersion = true
+			input.VersionSource = models.VersionSourceChatGPT
+			input.RefusePendingEdits = true
+		}
 	}
 
 	// BUG-2542: stamp the writer on single-item updates. Bulk ops already do
@@ -2314,7 +2333,7 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if pending, ok := store.AsContentPendingFlushError(err); ok {
-			writeContentPendingFlushError(w, itemRefOrSlug(*item), pending)
+			writeContentPendingFlushError(w, itemRefOrSlug(*item), pending, input.ChatGPTDoor)
 			return
 		}
 		// BUG-2804: the item rename cascade refuses renames that would process
