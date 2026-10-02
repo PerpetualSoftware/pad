@@ -5658,8 +5658,12 @@ func (s *Store) newestVersionIsUnflushedApplierRow(q rowQueryer, itemID, body st
 	if isDiff || isCreate || content != body {
 		return false, nil
 	}
+	// No timestamp is no evidence (codex review): migration 052 leaves
+	// content_flushed_at NULL on items with op-log rows, and treating that as
+	// "unflushed" would let an ordinary flush lose its version. Without it the
+	// skip does not apply, and the cost is a duplicate row, never a lost one.
 	if !flushedAt.Valid || flushedAt.String == "" {
-		return true, nil
+		return false, nil
 	}
 	// Not-before rather than after: both are stored at one-second
 	// resolution, and an applier edit routinely lands in the same second as
