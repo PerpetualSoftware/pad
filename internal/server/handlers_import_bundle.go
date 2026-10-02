@@ -44,6 +44,82 @@ const defaultImportBundleMaxBytes int64 = 2 << 30 // 2 GiB
 // item count, not attachment sizes.
 const importMetadataMaxBytes int64 = 100 << 20 // 100 MiB
 
+// BUG-3354: the body cap above bounds the COMPRESSED bytes. Gzip expands up
+// to ~1000:1, so a 2 GiB body could decompress to terabytes, and entries the
+// import discards (unmanifested blobs, unknown names) were inflated in full
+// just to be thrown away: hours of CPU for one authenticated request. Two
+// ceilings now apply to the tar stream itself, both answered with 413.
+//
+// importBundleExpansionFactor bounds the DECOMPRESSED bytes at a multiple of
+// the body cap, plus room for the two metadata files (see
+// decompressedBundleCap): 8 GiB + 200 MiB at the default 2 GiB. It is an
+// absolute ceiling, not a ratio of the body actually sent, so a 200 MiB
+// bundle may still expand 40x. Attachments are mostly images, which barely
+// compress; the metadata allowance is separate because JSON compresses far
+// more than 4x and its cap does not move with the body cap.
+const importBundleExpansionFactor int64 = 4
+
+// importBundleMaxEntries bounds the number of tar headers read. Receipt
+// (2026-10-02): the largest workspace on the dev instance holds 558
+// attachment rows (8 workspaces, mean 128), and an export writes one entry per
+// attachment plus two metadata files, so this is ~180x the largest observed.
+const importBundleMaxEntries = 100_000
+
+// errBundleTooLarge is returned by bundleBudgetReader once the decompressed
+// stream passes its ceiling.
+var errBundleTooLarge = errors.New("bundle exceeds its decompressed size limit")
+
+// bundleBudgetReader counts the bytes read through it and fails once more
+// than limit bytes have been read. A stream that ends EXACTLY at the limit
+// still reads to EOF.
+type bundleBudgetReader struct {
+	r         io.Reader
+	remaining int64
+	exceeded  bool
+}
+
+func (b *bundleBudgetReader) Read(p []byte) (int, error) {
+	if b.exceeded {
+		return 0, errBundleTooLarge
+	}
+	if b.remaining <= 0 {
+		// At the limit: one probe byte tells a stream that ends here from
+		// one that keeps going.
+		var probe [1]byte
+		n, err := b.r.Read(probe[:])
+		if n > 0 {
+			b.exceeded = true
+			return 0, errBundleTooLarge
+		}
+		return 0, err
+	}
+	if int64(len(p)) > b.remaining {
+		p = p[:b.remaining]
+	}
+	n, err := b.r.Read(p)
+	b.remaining -= int64(n)
+	return n, err
+}
+
+// decompressedBundleCap is the ceiling on the tar stream: a multiple of the
+// body cap for attachment bytes, plus both metadata files at their own cap.
+func (s *Server) decompressedBundleCap() int64 {
+	return s.effectiveImportBundleMaxBytes()*importBundleExpansionFactor + 2*importMetadataMaxBytes
+}
+
+// effectiveImportBundleMaxBytes is the compressed-body cap in force.
+func (s *Server) effectiveImportBundleMaxBytes() int64 {
+	if s.importBundleMaxBytes > 0 {
+		return s.importBundleMaxBytes
+	}
+	return defaultImportBundleMaxBytes
+}
+
+// bundleTooLargeError is the 413 every bundle ceiling answers with.
+func bundleTooLargeError(message string) *importStatusError {
+	return &importStatusError{status: http.StatusRequestEntityTooLarge, code: "bundle_too_large", message: message}
+}
+
 // effectiveBlobMaxBytes returns the per-blob ceiling for bundle
 // import — matches whatever the upload handler accepts so an
 // operator who raised PAD_ATTACHMENT_MAX_BYTES on the source can
@@ -111,10 +187,7 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	// Bound the request body BEFORE the gzip reader spools any of it.
-	maxBytes := s.importBundleMaxBytes
-	if maxBytes <= 0 {
-		maxBytes = defaultImportBundleMaxBytes
-	}
+	maxBytes := s.effectiveImportBundleMaxBytes()
 	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
 
 	gz, err := gzip.NewReader(r.Body)
@@ -284,8 +357,13 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 	// context the JSON path does rather than re-deriving owner and source
 	// from the request down here (BUG-2809).
 	ownerID := mint.OwnerID
-	tr := tar.NewReader(r)
+	// BUG-3354: every byte the tar reader sees, header and padding included,
+	// is counted against the decompressed ceiling.
+	budget := &bundleBudgetReader{r: r, remaining: s.decompressedBundleCap()}
+	decompressedCap := budget.remaining
+	tr := tar.NewReader(budget)
 	blobCap := s.effectiveBlobMaxBytes()
+	entries := 0
 
 	var ws *models.Workspace
 
@@ -319,6 +397,11 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 			}
 			panic(p)
 		}
+		// Whichever read noticed it (a header, a blob, a skipped entry), an
+		// exhausted budget is the bundle's size, not a malformed stream.
+		if retErr != nil && budget.exceeded {
+			retErr = bundleTooLargeError(fmt.Sprintf("Bundle expands past %d bytes once decompressed", decompressedCap))
+		}
 		if retErr != nil && result == nil && ws != nil {
 			result = ws
 		}
@@ -336,6 +419,15 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 		}
 		if err != nil {
 			return nil, fmt.Errorf("read tar entry: %w", err)
+		}
+		entries++
+		if entries > importBundleMaxEntries {
+			return ws, bundleTooLargeError(fmt.Sprintf("Bundle has more than %d entries", importBundleMaxEntries))
+		}
+		// Refuse an entry that declares more than the budget has left before
+		// inflating any of it.
+		if hdr.Size > budget.remaining {
+			return ws, bundleTooLargeError(fmt.Sprintf("Bundle expands past %d bytes once decompressed (entry %q declares %d)", decompressedCap, hdr.Name, hdr.Size))
 		}
 		if hdr.Typeflag != tar.TypeReg && hdr.Typeflag != tar.TypeRegA { //nolint:staticcheck // TypeRegA accepted for older bundles
 			continue
