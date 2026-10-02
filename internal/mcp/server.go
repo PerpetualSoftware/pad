@@ -34,6 +34,15 @@ type Options struct {
 	// Debug enables verbose stderr logging from the MCP server.
 	// stdout is reserved for JSON-RPC traffic; logs always go to stderr.
 	Debug bool
+
+	// Instructions replaces the initialize instructions when non-empty.
+	// Empty keeps Instructions (instructions.md). The ChatGPT catalog sets
+	// its own (TASK-3321), because /mcp's name tools it does not serve.
+	Instructions string
+
+	// Experimental replaces capabilities.experimental when non-nil. Nil
+	// keeps experimentalCapabilities().
+	Experimental map[string]any
 }
 
 // NewServer constructs a pad MCP server. Call Run(ctx) to start it.
@@ -46,6 +55,14 @@ func NewServer(opts Options) *Server {
 	version := opts.Version
 	if version == "" {
 		version = FallbackVersion
+	}
+	instructions := Instructions
+	if opts.Instructions != "" {
+		instructions = opts.Instructions
+	}
+	experimental := opts.Experimental
+	if experimental == nil {
+		experimental = experimentalCapabilities()
 	}
 	mcp := server.NewMCPServer(
 		ServerName,
@@ -62,14 +79,14 @@ func NewServer(opts Options) *Server {
 		// contract directly in the handshake at
 		// capabilities.experimental.padCmdhelp, so external agents can
 		// detect compatibility without reading pad://_meta/version first.
-		server.WithExperimental(experimentalCapabilities()),
+		server.WithExperimental(experimental),
 		// Server-level instructions (TASK-971). Tells agents WHEN to
 		// reach for pad and orients them to the tool surface +
 		// resources before they make their first call. Embedded at
 		// build time from instructions.md so the source of truth is
 		// versioned with the binary; HTTPHandlerDispatcher (PLAN-943)
 		// advertises the same string.
-		server.WithInstructions(Instructions),
+		server.WithInstructions(instructions),
 	)
 	return &Server{mcp: mcp, debug: opts.Debug}
 }
