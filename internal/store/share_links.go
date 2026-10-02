@@ -141,11 +141,19 @@ func (s *Store) GetShareLink(id string) (*models.ShareLink, error) {
 	return &link, nil
 }
 
-// GetShareLinkByToken looks up a share link by its raw token (hashes it first).
+// GetShareLinkByToken looks up a share link by its raw token (hashes it
+// first). A link whose workspace is soft-deleted is not found (BUG-3339):
+// deleting a workspace only marks it, and its links must stop serving at once
+// rather than for the whole restore window. Restoring the workspace brings
+// the link back. Every public share route resolves the token here.
 func (s *Store) GetShareLinkByToken(token string) (*models.ShareLink, error) {
 	hash := hashShareToken(token)
 	var id string
-	err := s.db.QueryRow(s.q("SELECT id FROM share_links WHERE token_hash = ?"), hash).Scan(&id)
+	err := s.db.QueryRow(s.q(`
+		SELECT sl.id FROM share_links sl
+		JOIN workspaces w ON w.id = sl.workspace_id
+		WHERE sl.token_hash = ? AND w.deleted_at IS NULL
+	`), hash).Scan(&id)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

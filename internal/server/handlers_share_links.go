@@ -479,6 +479,11 @@ func publicShareItemDTO(item *models.Item) map[string]interface{} {
 // handleResolveShareLink is the /s/{token} route. It resolves a share link
 // token and returns the shared content. Anonymous users are ALWAYS read-only (D8).
 func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) {
+	// Never cacheable, on every answer (BUG-3339): a cached 200 would keep
+	// serving content after its workspace is deleted without reaching the
+	// lookup below, and a cached 404 would outlive a restore. The attachment
+	// route sets the same header.
+	w.Header().Set("Cache-Control", "private, no-store")
 	token := chi.URLParam(r, "token")
 	if token == "" {
 		writeError(w, http.StatusNotFound, "not_found", "Not found")
