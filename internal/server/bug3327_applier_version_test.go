@@ -84,4 +84,46 @@ func TestBUG3327_ApplierPathBodyEditLeavesAVersion(t *testing.T) {
 	if newest.CreatedBy != "agent" {
 		t.Errorf("newest version created_by = %q, want agent", newest.CreatedBy)
 	}
+
+	// The tab's flush lands the new body in the row (codex review). It must
+	// not store the replaced body a second time, which would put the agent's
+	// change in History under the tab user's row; and the chain must still
+	// resolve, with the agent's row's change reading previous -> next.
+	if rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"?source=collab-snapshot",
+		map[string]interface{}{"content": next}); rr.Code != http.StatusOK {
+		t.Fatalf("flush PATCH: %d %s", rr.Code, rr.Body.String())
+	}
+	flushed, err := srv.store.ListItemVersions(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(flushed) != len(after) {
+		t.Errorf("versions %d -> %d across the flush: the replaced body was stored twice", len(after), len(flushed))
+	}
+	row, err = srv.store.GetItem(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.Content != next {
+		t.Fatalf("flush did not land: row = %q", row.Content)
+	}
+	resolved, err = srv.store.ListItemVersionsResolved(item.ID, row.Content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved[0].Content != previous || resolved[0].CreatedBy != "agent" {
+		t.Errorf("after the flush, newest version = %q by %q, want the replaced body by agent", resolved[0].Content, resolved[0].CreatedBy)
+	}
+	d, err := srv.store.GetItemVersionDiff(item.ID, resolved[0].ID, row.Content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Before != previous || d.After != next {
+		t.Errorf("the agent's version records %q -> %q, want previous -> next", d.Before, d.After)
+	}
+	// Older versions still resolve: the seed write's version is the body
+	// before `previous`, which was empty.
+	if last := resolved[len(resolved)-1]; last.Content != "" {
+		t.Errorf("oldest version resolves to %q, want the empty initial body", last.Content)
+	}
 }

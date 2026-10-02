@@ -2835,6 +2835,19 @@ func (s *Store) updateItemWithParentLinkOnce(
 			if err != nil {
 				return nil, fmt.Errorf("check version throttle: %w", err)
 			}
+			// BUG-3327: an applier-path edit already stored this exact body as
+			// a full-body version, and the tab's flush that follows would store
+			// it a second time. That second row would then carry the agent's
+			// change in History under the tab user's name, leaving the agent's
+			// own row as an empty change. An unforced write skips a version
+			// whose body the newest version already holds verbatim.
+			if shouldVersion {
+				dup, derr := s.newestVersionIsFullBody(tx, id, existing.Content)
+				if derr != nil {
+					return nil, fmt.Errorf("check duplicate version: %w", derr)
+				}
+				shouldVersion = !dup
+			}
 		}
 
 		if shouldVersion {
@@ -5609,6 +5622,31 @@ func buildItemSort(sort string, dialect Dialect) string {
 // and the pool test's item leg was a TITLE-only update, which never reaches
 // this branch. A test that exercises one arm of an optional path is not
 // evidence about the other arm.
+// newestVersionIsFullBody reports whether the item's newest version is a
+// full-body row (not a reverse patch) whose content is exactly body. Only a
+// full-body row can be compared without resolving the chain, and that is the
+// row an applier-path edit writes (BUG-3327).
+func (s *Store) newestVersionIsFullBody(q rowQueryer, itemID, body string) (bool, error) {
+	var content string
+	var isDiff, isCreate bool
+	err := q.QueryRow(s.q(`
+		SELECT content, is_diff, is_create
+		FROM item_versions
+		WHERE item_id = ?
+		ORDER BY created_at DESC, version_seq DESC
+		LIMIT 1
+	`), itemID).Scan(&content, &isDiff, &isCreate)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	// A create row holds the body AS CREATED, which is also the row's body
+	// until the first edit, and the first edit still owes its own row.
+	return !isDiff && !isCreate && content == body, nil
+}
+
 func (s *Store) shouldCreateItemVersion(q rowQueryer, itemID, actor, source string) (bool, error) {
 	var createdBy, src, createdAt string
 	err := q.QueryRow(s.q(`
