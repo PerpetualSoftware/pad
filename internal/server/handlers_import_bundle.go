@@ -464,7 +464,11 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 		}
 	}()
 	var manifestByPath map[string]*models.AttachmentManifestEntry
-	var oldItemIDToSlug, slugToNewID map[string]string
+	// Source item id -> new item id, from the store's import (BUG-3357).
+	var itemIDMap map[string]string
+	// Blob paths already rehydrated: a second tar entry at one path would
+	// rehydrate the attachment twice, and references would follow the last.
+	rehydratedPaths := map[string]bool{}
 	oldAttachToNew := map[string]string{}
 	exportSeen := false
 	manifestSeen := false
@@ -659,14 +663,7 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 				}
 				return nil, fmt.Errorf("import workspace: %w", err)
 			}
-			oldItemIDToSlug = make(map[string]string, len(export.Items))
-			for _, it := range export.Items {
-				oldItemIDToSlug[it.ID] = it.Slug
-			}
-			slugToNewID, err = s.store.WorkspaceItemSlugMap(ws.ID)
-			if err != nil {
-				return ws, fmt.Errorf("build slug→id map: %w", err)
-			}
+			itemIDMap = rep.ItemIDs
 			exportSeen = true
 			if s.importBundleAfterMintHook != nil {
 				s.importBundleAfterMintHook()
@@ -742,8 +739,20 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 					manifest.Version, exportBundleVersion)
 			}
 			manifestByPath = make(map[string]*models.AttachmentManifestEntry, len(manifest.Entries))
+			// BUG-3357: references are remapped by attachment id
+			// (oldAttachToNew), so two entries sharing one would both be
+			// rehydrated and every pad-attachment: reference would land on
+			// whichever was written last. Refused, like a duplicate item id.
+			seenAttachIDs := make(map[string]bool, len(manifest.Entries))
 			for i := range manifest.Entries {
 				e := &manifest.Entries[i]
+				if e.ID != "" && seenAttachIDs[e.ID] {
+					return ws, &importStatusError{
+						status: http.StatusBadRequest, code: "bad_bundle",
+						message: fmt.Sprintf("Bundle manifest has a duplicate attachment id %q", e.ID),
+					}
+				}
+				seenAttachIDs[e.ID] = true
 				manifestByPath[bundleAttachmentPath(e.ID, e.Filename)] = e
 			}
 			manifestSeen = true
@@ -771,6 +780,15 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 				}
 				continue
 			}
+			// Before any check that can fail, so a repeat always takes the
+			// reject-and-roll-back path (codex r2).
+			if rehydratedPaths[hdr.Name] {
+				return ws, &importStatusError{
+					status: http.StatusBadRequest, code: "bad_bundle",
+					message: "Bundle contains attachment blob " + hdr.Name + " more than once",
+				}
+			}
+			rehydratedPaths[hdr.Name] = true
 			if hdr.Size > blobCap {
 				return ws, fmt.Errorf("blob %s exceeds %d-byte cap (declared %d) — raise PAD_ATTACHMENT_MAX_BYTES on this server to allow",
 					hdr.Name, blobCap, hdr.Size)
@@ -780,7 +798,7 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 				return ws, fmt.Errorf("read blob %s: %w", hdr.Name, err)
 			}
 			newAttID, err := s.rehydrateAttachment(ctx, ws.ID, entry, blob,
-				oldItemIDToSlug, slugToNewID, ownerID)
+				itemIDMap, ownerID)
 			if err != nil {
 				slog.Warn("import: rehydrate failed",
 					"attachment_id", entry.ID, "error", err)
@@ -879,7 +897,7 @@ func (s *Server) rehydrateAttachment(
 	workspaceID string,
 	entry *models.AttachmentManifestEntry,
 	blob []byte,
-	oldItemIDToSlug, slugToNewID map[string]string,
+	itemIDMap map[string]string,
 	ownerID string,
 ) (string, error) {
 	// Defense in depth: re-validate the MIME against the allowlist on
@@ -927,14 +945,13 @@ func (s *Server) rehydrateAttachment(
 		return "", fmt.Errorf("store.Put: %w", err)
 	}
 
-	// Translate the old item id (from the manifest) into the new id
-	// via item.slug, which ImportWorkspace preserves.
+	// Translate the old item id (from the manifest) into the new id through
+	// the import's own id map (BUG-3357). The slug used to be the bridge, but
+	// the import renames a slug two items share, so it named the wrong item.
 	var newItemIDPtr *string
 	if entry.ItemID != "" {
-		if slug, ok := oldItemIDToSlug[entry.ItemID]; ok {
-			if newID, ok := slugToNewID[slug]; ok && newID != "" {
-				newItemIDPtr = &newID
-			}
+		if newID, ok := itemIDMap[entry.ItemID]; ok && newID != "" {
+			newItemIDPtr = &newID
 		}
 	}
 

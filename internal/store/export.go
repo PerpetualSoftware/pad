@@ -450,6 +450,12 @@ type ImportReport struct {
 	// SQLite's json_extract (first occurrence) and Go and Postgres (last) read
 	// the same value. Every other blob is stored verbatim.
 	CollapsedDuplicateKeys int
+	// ItemIDs maps each imported item's SOURCE id to its new id, set on a
+	// successful import (BUG-3357). The bundle door attaches rehydrated
+	// attachments through it: it used to go through the item SLUG, which the
+	// import renames when two items share one, so an attachment landed on
+	// the wrong item.
+	ItemIDs map[string]string
 }
 
 // ImportWorkspace is ImportWorkspaceWithReport for callers with no use for the
@@ -467,9 +473,50 @@ func (s *Store) ImportWorkspaceWithReport(data *models.WorkspaceExport, newName 
 	return ws, report, err
 }
 
+// checkImportSourceIDs refuses an export in which two collections, or two
+// items, share a source id (BUG-3357). The import remaps every reference by
+// that id (an item's collection, its parent, links, comments, versions,
+// reminders, relation fields), so a duplicate collapses two rows into one
+// mapping and every reference to the id lands silently on whichever row was
+// written last. It runs before the transaction opens, so a refused bundle
+// writes nothing. An EMPTY id counts like any other (codex r1): the maps key
+// on "" too, so two rows without an id collide and a reference written as ""
+// resolves to whichever came last. One row without an id stays importable,
+// as it always was: a hand-built export may omit ids, and a lone "" is
+// unambiguous.
+//
+// Comment, link and version ids are deliberately not checked: no other row
+// refers to them, so a duplicate there cannot misdirect anything.
+func checkImportSourceIDs(data *models.WorkspaceExport) error {
+	seen := make(map[string]bool, len(data.Collections))
+	for _, c := range data.Collections {
+		if seen[c.ID] {
+			if c.ID == "" {
+				return invalidf("the export has more than one collection with no id; every collection must have its own id")
+			}
+			return invalidf("the export has a duplicate collection id %q; every collection must have its own id", c.ID)
+		}
+		seen[c.ID] = true
+	}
+	seen = make(map[string]bool, len(data.Items))
+	for _, it := range data.Items {
+		if seen[it.ID] {
+			if it.ID == "" {
+				return invalidf("the export has more than one item with no id; every item must have its own id")
+			}
+			return invalidf("the export has a duplicate item id %q; every item must have its own id", it.ID)
+		}
+		seen[it.ID] = true
+	}
+	return nil
+}
+
 func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ownerID string, source string, report *ImportReport, opts ...MintOption) (*models.Workspace, error) {
 	if data.Version != 1 {
 		return nil, fmt.Errorf("unsupported export version: %d", data.Version)
+	}
+	if err := checkImportSourceIDs(data); err != nil {
+		return nil, err
 	}
 
 	mintOpts := resolveMintOptions(opts)
@@ -1369,6 +1416,12 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 		return nil, fmt.Errorf("commit import: %w", err)
 	}
 
+	if report != nil {
+		// insertedItemMap, not itemMap: itemMap also names items the import
+		// skipped (their collection was missing), whose ids exist nowhere
+		// (codex r2).
+		report.ItemIDs = insertedItemMap
+	}
 	return ws, nil
 }
 
