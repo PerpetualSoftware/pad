@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"strings"
 
@@ -63,7 +64,13 @@ func wireChatGPTMCP(srv *server.Server, doc *cmdhelp.Document, dispatcher mcpser
 		slog.Error("chatgpt mcp: building the catalog failed; /mcp/chatgpt is not served", "error", err)
 		return
 	}
-	transport := mcpserver.NewRemoteTransport(gpt.MCP(), &padMCPGenerateOnlySessionIDManager{})
-	srv.SetChatGPTMCPTransport(transport, ep.ChatGPTResourceURL, enabled, gpt.IsKnownCallName)
+	srv.SetChatGPTMCPTransport(newChatGPTTransport(gpt), ep.ChatGPTResourceURL, enabled, gpt.IsKnownCallName)
 	slog.Info("ChatGPT MCP transport constructed", "url", ep.ChatGPTResourceURL, "enabled", enabled)
+}
+
+// newChatGPTTransport is the HTTP handler /mcp/chatgpt serves: the remote
+// transport, with each tool's securitySchemes lifted to the top level of
+// tools/list (TASK-3321 U2c). The wire golden test builds the same one.
+func newChatGPTTransport(gpt *mcpserver.Server) http.Handler {
+	return mcpserver.WithChatGPTToolSchemes(mcpserver.NewRemoteTransport(gpt.MCP(), &padMCPGenerateOnlySessionIDManager{}))
 }

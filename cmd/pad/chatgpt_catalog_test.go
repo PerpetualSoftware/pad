@@ -29,7 +29,7 @@ func TestChatGPTWireGolden(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ts := httptest.NewServer(mcpserver.NewRemoteTransport(srv.MCP(), &padMCPGenerateOnlySessionIDManager{}))
+	ts := httptest.NewServer(newChatGPTTransport(srv))
 	defer ts.Close()
 	post := func(body, session string) ([]byte, string) {
 		t.Helper()

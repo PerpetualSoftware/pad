@@ -660,3 +660,11 @@ func mcpResourceFromContext(ctx context.Context) string {
 	v, _ := ctx.Value(ctxMCPResource).(string)
 	return v
 }
+
+// MCPResourceMetadataURLFromContext is the protected-resource metadata URL
+// of the MCP mount the request arrived on, or "" off a mount. The ChatGPT
+// catalog names it in a tool's insufficient_scope challenge (TASK-3321
+// U2c).
+func MCPResourceMetadataURLFromContext(ctx context.Context) string {
+	return protectedResourceMetadataURL(mcpResourceFromContext(ctx))
+}
