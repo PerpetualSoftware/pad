@@ -164,3 +164,28 @@ func TestChatGPTCatalog_DescriptionsSpeakForThisSurface(t *testing.T) {
 	}
 	check("instructions", ChatGPTInstructions)
 }
+
+// There is no session workspace on the ChatGPT server (shared state,
+// BUG-1865), so every tool that acts inside a workspace must REQUIRE the
+// slug: an optional one would fall back to nothing. list_workspaces is the
+// one tool that takes none.
+func TestChatGPTCatalog_WorkspaceIsRequiredWhereverItIsTaken(t *testing.T) {
+	for _, e := range ChatGPTCatalog {
+		takes, requires := false, false
+		for _, p := range e.Params {
+			takes = takes || p == chatGPTWorkspaceParam
+		}
+		for _, r := range e.Required {
+			requires = requires || r == chatGPTWorkspaceParam
+		}
+		if e.Name == "list_workspaces" {
+			if takes {
+				t.Errorf("list_workspaces takes a workspace")
+			}
+			continue
+		}
+		if !takes || !requires {
+			t.Errorf("%s: workspace taken=%v required=%v, want both", e.Name, takes, requires)
+		}
+	}
+}
