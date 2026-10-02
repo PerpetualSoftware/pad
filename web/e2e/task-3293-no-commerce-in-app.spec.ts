@@ -92,8 +92,8 @@ for (const leg of [
 ]) {
 	test(`TASK-3293: ${leg.name}`, async ({ browser }, testInfo) => {
 		test.skip(testInfo.project.name !== 'desktop-chromium', 'UA is the variable, not viewport; one project keeps auth rate-limit pressure down.');
-		const { baseURL, apiToken } = suiteFixture();
-		const email = await register(baseURL, apiToken, leg.shell ? 's' : 'b');
+		const { baseURL, adminSessionToken } = suiteFixture();
+		const email = await register(baseURL, adminSessionToken, leg.shell ? 's' : 'b');
 		const context = await browser.newContext({ baseURL, userAgent: leg.ua });
 		try {
 			const page = await context.newPage();

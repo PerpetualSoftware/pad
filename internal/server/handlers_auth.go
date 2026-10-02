@@ -655,6 +655,12 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		reqUser := currentUser(r)
 		isAdmin := reqUser != nil && reqUser.Role == "admin"
 		switch {
+		case isAdmin && isAPITokenAuth(r) && !s.adminAcceptsAPITokens():
+			// Creating an account is platform administration (BUG-3361):
+			// with a PAT, it was the first step of minting a second admin.
+			writeError(w, http.StatusForbidden, "session_required",
+				"Creating an account requires an interactive session, not an API token")
+			return
 		case isAdmin:
 			// Admin-created account — stays verified.
 			adminCreated = true

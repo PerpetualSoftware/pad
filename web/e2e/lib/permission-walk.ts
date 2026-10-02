@@ -153,10 +153,12 @@ async function createItems(
 
 /** Seed one walk world. Each call builds a fresh, independent one. */
 export async function seedPermissionWalk(): Promise<PermissionWalk> {
-	const { baseURL, apiToken } = suiteFixture();
+	const { baseURL, adminSessionToken } = suiteFixture();
 	const tag = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 
-	const admin = await bearer(baseURL, apiToken);
+	// Account creation is platform administration: the admin's session, not
+	// its API token (BUG-3361).
+	const admin = await bearer(baseURL, adminSessionToken);
 	const accounts = {} as Record<AccountKey, WalkAccount>;
 	try {
 		for (const key of ACCOUNT_KEYS) {

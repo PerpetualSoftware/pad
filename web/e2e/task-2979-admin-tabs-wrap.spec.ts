@@ -46,7 +46,9 @@ async function probeAdminTabs(page: Page) {
 
 test('TASK-2979: no admin console tab is clipped at 320px', async ({ browser, fixture }) => {
 	const context = await browser.newContext({ viewport: NARROW });
-	await context.setExtraHTTPHeaders({ Authorization: `Bearer ${fixture.apiToken}` });
+	// The admin console is platform administration: the admin's session,
+	// not its API token (BUG-3361).
+	await context.setExtraHTTPHeaders({ Authorization: `Bearer ${fixture.adminSessionToken}` });
 	const page = await context.newPage();
 	try {
 		await page.goto(`${fixture.baseURL}/console/admin`);
@@ -75,6 +77,7 @@ test('TASK-2979: no admin console tab is clipped at 320px', async ({ browser, fi
 test('TASK-2979: the wrap rule is inert on desktop', async ({ page, fixture }, testInfo) => {
 	test.skip(testInfo.project.name !== 'desktop-chromium', 'this is the desktop control leg');
 
+	await page.context().setExtraHTTPHeaders({ Authorization: `Bearer ${fixture.adminSessionToken}` });
 	await page.goto(`/console/admin`);
 	await expect(page.locator('.admin-tabs .admin-tab').first()).toBeVisible();
 

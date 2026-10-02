@@ -26,6 +26,10 @@ export interface SuiteFixture {
 	adminEmail: string;
 	adminUsername: string;
 	apiToken: string;
+	// The admin's own session token (padsess_), for platform-administration
+	// calls: /api/v1/admin/* and account creation refuse an API token
+	// (BUG-3361). Sent as a Bearer, it is not bound to a User-Agent.
+	adminSessionToken: string;
 }
 
 function loadSuiteFixture(): SuiteFixture {

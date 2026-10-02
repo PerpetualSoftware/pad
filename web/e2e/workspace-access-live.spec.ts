@@ -32,7 +32,7 @@ async function ok(resp: Awaited<ReturnType<APIRequestContext['get']>>, what: str
 async function mintAccount(fixture: SuiteFixture, tag: string): Promise<Account> {
 	const admin = await request.newContext({
 		baseURL: fixture.baseURL,
-		extraHTTPHeaders: { Authorization: `Bearer ${fixture.apiToken}` }
+		extraHTTPHeaders: { Authorization: `Bearer ${fixture.adminSessionToken}` }
 	});
 	const session = await request.newContext({ baseURL: fixture.baseURL });
 	try {

@@ -60,6 +60,10 @@ export default async function globalSetup(config: FullConfig) {
 	if (!login.ok()) {
 		throw new Error(`login failed (${login.status()}): ${await login.text()}`);
 	}
+	const loginPayload = (await login.json()) as { token?: string };
+	if (!loginPayload.token) {
+		throw new Error('login succeeded but response missing the session token');
+	}
 
 	// State-changing endpoints require the CSRF double-submit header
 	// matching the pad_csrf cookie issued at login.
@@ -128,7 +132,8 @@ export default async function globalSetup(config: FullConfig) {
 				workspaceSlug: resolvedSlug,
 				adminEmail: ADMIN_EMAIL,
 				adminUsername: me.username,
-				apiToken: tokenPayload.token
+				apiToken: tokenPayload.token,
+				adminSessionToken: loginPayload.token
 			},
 			null,
 			2
