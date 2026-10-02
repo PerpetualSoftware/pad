@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
@@ -66,175 +67,91 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// Normalize defaults early so early-return paths have correct values.
 	params.Normalize()
 
-	// When no specific workspace is given, scope search to the user's
-	// workspaces so results never leak across workspace boundaries.
-	if params.Workspace == "" {
-		user := currentUser(r)
-		if user != nil {
-			workspaces, err := s.store.GetUserWorkspaces(user.ID)
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, "internal_error", "Failed to resolve user workspaces")
-				return
-			}
-			// OAuth consent scoping (BUG-2102): /search is workspace-global
-			// when no workspace is given — it fans out over EVERY membership.
-			// RequireWorkspaceAccess never runs here, so a consent-scoped
-			// token would otherwise get item titles + content across
-			// workspaces it wasn't granted. Restrict the fan-out to the
-			// allow-list. No-op for PAT / web session (nil allow-list).
-			workspaces = filterWorkspacesByTokenAllowlist(r.Context(), workspaces)
-			for _, ws := range workspaces {
-				params.WorkspaceIDs = append(params.WorkspaceIDs, ws.ID)
-			}
-			// If user has no workspaces, return empty results
-			if len(params.WorkspaceIDs) == 0 {
-				writeJSON(w, http.StatusOK, &store.SearchResponse{
-					Results: []store.SearchResult{},
-					Limit:   params.Limit,
-					Offset:  params.Offset,
-				})
-				return
-			}
-			// Apply per-workspace collection visibility filtering.
-			// Collect all visible collection IDs across user's workspaces.
-			// For guest workspaces, also collect item-level grants.
-			allVisibleCollIDs := []string{} // non-nil empty = "no access" by default
-			var allVisibleItemIDs []string
-			needsCollFilter := false
-			for _, ws := range workspaces {
-				if ws.IsGuest {
-					// Guest workspace: use item-level filtering
-					fullCollIDs, grantedItemIDs, grantErr := s.store.GuestVisibleResources(ws.ID, user.ID)
-					if grantErr != nil {
-						params.WorkspaceIDs = removeString(params.WorkspaceIDs, ws.ID)
-						continue
-					}
-					needsCollFilter = true
-					allVisibleCollIDs = append(allVisibleCollIDs, fullCollIDs...)
-					allVisibleItemIDs = append(allVisibleItemIDs, grantedItemIDs...)
-					continue
-				}
-				visIDs, err := s.store.VisibleCollectionIDs(ws.ID, user.ID)
-				if err != nil {
-					params.WorkspaceIDs = removeString(params.WorkspaceIDs, ws.ID)
-					continue
-				}
-				if visIDs != nil {
-					needsCollFilter = true
-					// For restricted members with item grants, separate full-access
-					// collections from item-granted collections
-					_, itemGrants, _ := s.store.GuestVisibleResources(ws.ID, user.ID)
-					if len(itemGrants) > 0 {
-						memberColls, _ := s.store.GetMemberCollectionAccess(ws.ID, user.ID)
-						sysColls, _ := s.store.ListSystemCollectionIDs(ws.ID)
-						collGrants, _, _ := s.store.GuestVisibleResources(ws.ID, user.ID)
-						fullSet := make(map[string]bool)
-						for _, id := range memberColls {
-							fullSet[id] = true
-						}
-						for _, id := range sysColls {
-							fullSet[id] = true
-						}
-						for _, id := range collGrants {
-							fullSet[id] = true
-						}
-						for id := range fullSet {
-							allVisibleCollIDs = append(allVisibleCollIDs, id)
-						}
-						allVisibleItemIDs = append(allVisibleItemIDs, itemGrants...)
-					} else {
-						allVisibleCollIDs = append(allVisibleCollIDs, visIDs...)
-					}
-				} else {
-					// "all" access — include all collections from this workspace
-					colls, _ := s.store.ListCollections(ws.ID)
-					for _, c := range colls {
-						allVisibleCollIDs = append(allVisibleCollIDs, c.ID)
-					}
-				}
-			}
-			if needsCollFilter {
-				params.CollectionIDs = allVisibleCollIDs
-			}
-			if len(allVisibleItemIDs) > 0 {
-				params.ItemIDs = allVisibleItemIDs
-			}
-		}
-		// If no user (fresh install, no auth), allow unscoped search
+	empty := func() {
+		writeJSON(w, http.StatusOK, &store.SearchResponse{
+			Results: []store.SearchResult{},
+			Limit:   params.Limit,
+			Offset:  params.Offset,
+		})
 	}
 
-	// Apply collection visibility filter when searching a specific workspace
+	// /search is not behind RequireWorkspaceAccess, so it decides access
+	// itself, through searchAccessFor, which reaches the same answer that
+	// middleware would for each workspace (BUG-3331). A workspace the caller
+	// cannot read contributes nothing; the answer is an empty result, never a
+	// 403, so a slug's existence is not confirmed (the BUG-2102 shape).
 	if params.Workspace != "" {
-		ws, _ := s.store.GetWorkspaceBySlug(params.Workspace)
-		if ws != nil {
-			// OAuth consent scoping (BUG-2102): a token consented to specific
-			// workspaces must not read another one's item content by naming it
-			// here, even a co-membership. Return empty (not 403) so the token
-			// can't confirm the workspace exists. No-op for PAT / web session.
-			if !tokenAllowedWorkspaceMatches(r.Context(), ws.Slug) {
-				writeJSON(w, http.StatusOK, &store.SearchResponse{
-					Results: []store.SearchResult{},
-					Limit:   params.Limit,
-					Offset:  params.Offset,
-				})
+		ws, err := s.store.GetWorkspaceBySlug(params.Workspace)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		if ws == nil {
+			empty()
+			return
+		}
+		// OAuth consent scoping (BUG-2102), checked here as well as in
+		// searchAccessFor so the enforcement is visible at the handler.
+		if !tokenAllowedWorkspaceMatches(r.Context(), ws.Slug) {
+			empty()
+			return
+		}
+		access, err := s.searchAccessFor(r, ws)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		if access.none() {
+			empty()
+			return
+		}
+		params.Unrestricted = access.unrestricted
+		params.CollectionIDs = access.collectionIDs
+		params.ItemIDs = access.itemIDs
+	} else {
+		workspaces, err := s.searchFanOutWorkspaces(r)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		allUnrestricted := true
+		for _, ws := range workspaces {
+			access, err := s.searchAccessFor(r, ws)
+			if err != nil {
+				writeInternalError(w, err)
 				return
 			}
-			user := currentUser(r)
-			visibleIDs, visErr := s.visibleCollectionIDs(r, ws.ID)
-			if visErr != nil {
-				writeInternalError(w, visErr)
-				return
+			if access.none() {
+				continue
 			}
-			params.CollectionIDs = visibleIDs
-
-			// For users with item grants (guests or restricted members),
-			// apply item-level filtering so item grants don't leak entire
-			// collections in search results.
-			// Note: /search is not behind RequireWorkspaceAccess, so we
-			// can't use guestResourceFilter (needs workspaceRole). We check
-			// membership and collection access directly.
-			if user != nil {
-				needsItemFilter := false
-				member, _ := s.store.GetWorkspaceMember(ws.ID, user.ID)
-				if member == nil {
-					// Guest (non-member)
-					needsItemFilter = true
-				} else if member.CollectionAccess == "specific" {
-					// Restricted member — check if they have item grants
-					_, itemGrants, _ := s.store.GuestVisibleResources(ws.ID, user.ID)
-					needsItemFilter = len(itemGrants) > 0
+			params.WorkspaceIDs = append(params.WorkspaceIDs, ws.ID)
+			if access.unrestricted {
+				// Collection IDs are unique across workspaces, so a full-access
+				// workspace joins the union as all of its collections.
+				colls, err := s.store.ListCollections(ws.ID)
+				if err != nil {
+					writeInternalError(w, err)
+					return
 				}
-
-				if needsItemFilter {
-					grantCollIDs, grantedItemIDs, grantErr := s.store.GuestVisibleResources(ws.ID, user.ID)
-					if grantErr != nil {
-						writeInternalError(w, grantErr)
-						return
-					}
-					// For restricted members, merge member collections into full access set
-					fullCollIDs := grantCollIDs
-					if member != nil {
-						memberColls, _ := s.store.GetMemberCollectionAccess(ws.ID, user.ID)
-						sysColls, _ := s.store.ListSystemCollectionIDs(ws.ID)
-						fullSet := make(map[string]bool)
-						for _, id := range grantCollIDs {
-							fullSet[id] = true
-						}
-						for _, id := range memberColls {
-							fullSet[id] = true
-						}
-						for _, id := range sysColls {
-							fullSet[id] = true
-						}
-						fullCollIDs = make([]string, 0, len(fullSet))
-						for id := range fullSet {
-							fullCollIDs = append(fullCollIDs, id)
-						}
-					}
-					params.CollectionIDs = fullCollIDs
-					params.ItemIDs = grantedItemIDs
+				for _, c := range colls {
+					params.CollectionIDs = append(params.CollectionIDs, c.ID)
 				}
+				continue
 			}
+			allUnrestricted = false
+			params.CollectionIDs = append(params.CollectionIDs, access.collectionIDs...)
+			params.ItemIDs = append(params.ItemIDs, access.itemIDs...)
+		}
+		if len(params.WorkspaceIDs) == 0 {
+			empty()
+			return
+		}
+		if allUnrestricted {
+			// Every workspace in scope is fully visible: scope by workspace
+			// alone, as the named-workspace path does for full access.
+			params.Unrestricted = true
+			params.CollectionIDs = nil
+			params.ItemIDs = nil
 		}
 	}
 
@@ -314,12 +231,143 @@ func (s *Server) resolveSearchCollectionFilter(params store.SearchParams) ([]str
 	return ids, nil
 }
 
-func removeString(ss []string, s string) []string {
-	result := ss[:0]
-	for _, v := range ss {
-		if v != s {
-			result = append(result, v)
+// searchAccess is what one caller may read in one workspace through /search
+// (BUG-3331): everything, nothing, or the union of whole collections and
+// individually granted items.
+type searchAccess struct {
+	unrestricted  bool
+	collectionIDs []string
+	itemIDs       []string
+}
+
+func (a searchAccess) none() bool {
+	return !a.unrestricted && len(a.collectionIDs) == 0 && len(a.itemIDs) == 0
+}
+
+// searchAccessFor decides what the caller may read in ws, reaching the same
+// answer RequireWorkspaceAccess and the item routes' visibility filters reach,
+// because /search is mounted outside that middleware and must not be a wider
+// door than the item routes:
+//
+//   - The fresh-install window (no users at all) reads everything.
+//   - A request with no user is a legacy workspace-scoped token: its own
+//     workspace in full, nothing else.
+//   - A token whose consent allow-list excludes ws reads nothing (BUG-2102),
+//     checked before anything else.
+//   - A platform admin on a cookie session reads everything; on a bearer, the
+//     admin is an ordinary user and only membership counts (BUG-1616), not
+//     even a guest grant.
+//   - A member with "all" collection access reads everything; a restricted
+//     member reads their collections, the system collections, and anything
+//     granted to them.
+//   - A non-member reads exactly what is granted to them, which with no
+//     grants is nothing.
+func (s *Server) searchAccessFor(r *http.Request, ws *models.Workspace) (searchAccess, error) {
+	// The consent allow-list first, for every caller, as RequireWorkspaceAccess
+	// orders it.
+	if !tokenAllowedWorkspaceMatches(r.Context(), ws.Slug) {
+		return searchAccess{}, nil
+	}
+	user := currentUser(r)
+	if user == nil {
+		count, err := s.store.UserCount()
+		if err != nil {
+			return searchAccess{}, err
+		}
+		if count == 0 {
+			return searchAccess{unrestricted: true}, nil
+		}
+		if tokenWsID := tokenWorkspaceID(r); tokenWsID != "" && tokenWsID == ws.ID {
+			return searchAccess{unrestricted: true}, nil
+		}
+		return searchAccess{}, nil
+	}
+	bearer := isBearerAuth(r)
+	if user.Role == "admin" && !bearer {
+		return searchAccess{unrestricted: true}, nil
+	}
+	member, err := s.store.GetWorkspaceMember(ws.ID, user.ID)
+	if err != nil {
+		return searchAccess{}, err
+	}
+	if member == nil {
+		if user.Role == "admin" && bearer {
+			return searchAccess{}, nil
+		}
+		colls, items, err := s.store.GuestVisibleResources(ws.ID, user.ID)
+		if err != nil {
+			return searchAccess{}, err
+		}
+		return searchAccess{collectionIDs: colls, itemIDs: items}, nil
+	}
+	if member.CollectionAccess == "all" || member.CollectionAccess == "" {
+		return searchAccess{unrestricted: true}, nil
+	}
+	grantColls, itemGrants, err := s.store.GuestVisibleResources(ws.ID, user.ID)
+	if err != nil {
+		return searchAccess{}, err
+	}
+	memberColls, err := s.store.GetMemberCollectionAccess(ws.ID, user.ID)
+	if err != nil {
+		return searchAccess{}, err
+	}
+	sysColls, err := s.store.ListSystemCollectionIDs(ws.ID)
+	if err != nil {
+		return searchAccess{}, err
+	}
+	seen := map[string]bool{}
+	var colls []string
+	for _, group := range [][]string{memberColls, sysColls, grantColls} {
+		for _, id := range group {
+			if !seen[id] {
+				seen[id] = true
+				colls = append(colls, id)
+			}
 		}
 	}
-	return result
+	return searchAccess{collectionIDs: colls, itemIDs: itemGrants}, nil
+}
+
+// searchFanOutWorkspaces lists the workspaces an unscoped search covers: the
+// caller's memberships and guest workspaces, narrowed to a token's consent
+// allow-list (BUG-2102); for a legacy workspace token with no user, only its
+// own workspace; in the fresh-install window, every workspace.
+func (s *Server) searchFanOutWorkspaces(r *http.Request) ([]*models.Workspace, error) {
+	user := currentUser(r)
+	if user == nil {
+		count, err := s.store.UserCount()
+		if err != nil {
+			return nil, err
+		}
+		if count == 0 {
+			all, err := s.store.ListWorkspaces()
+			if err != nil {
+				return nil, err
+			}
+			out := make([]*models.Workspace, 0, len(all))
+			for i := range all {
+				out = append(out, &all[i])
+			}
+			return out, nil
+		}
+		tokenWsID := tokenWorkspaceID(r)
+		if tokenWsID == "" {
+			return nil, nil
+		}
+		ws, err := s.store.GetWorkspaceByID(tokenWsID)
+		if err != nil || ws == nil {
+			return nil, err
+		}
+		return []*models.Workspace{ws}, nil
+	}
+	memberships, err := s.store.GetUserWorkspaces(user.ID)
+	if err != nil {
+		return nil, err
+	}
+	memberships = filterWorkspacesByTokenAllowlist(r.Context(), memberships)
+	out := make([]*models.Workspace, 0, len(memberships))
+	for i := range memberships {
+		out = append(out, &memberships[i])
+	}
+	return out, nil
 }
