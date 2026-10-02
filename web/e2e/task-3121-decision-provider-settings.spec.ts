@@ -23,7 +23,10 @@ const MODEL = 'jev-e2e-pin';
 test('TASK-3121: a saved decision key is write-only in the page', async ({ page, fixture, request }, testInfo) => {
 	test.skip(testInfo.project.name !== 'desktop-chromium', 'one writer to the shared instance setting');
 
-	const auth = { Authorization: `Bearer ${fixture.apiToken}` };
+	// Platform administration takes the admin's session, not its API token
+	// (BUG-3361): for these calls and for the page.
+	const auth = { Authorization: `Bearer ${fixture.adminSessionToken}` };
+	await page.context().setExtraHTTPHeaders(auth);
 	// Precondition: this leg assumes the environment sets none of the fields
 	// (otherwise the inputs are disabled and the save is refused), and that
 	// nothing enabled decisions on the shared server.
