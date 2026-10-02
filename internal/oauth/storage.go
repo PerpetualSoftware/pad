@@ -49,8 +49,8 @@ import (
 //     correctly (esp. ErrInvalidatedAuthorizeCode → triggers grant-
 //     family revocation in handler/oauth2/flow_authorize_code_token.go).
 type Storage struct {
-	store             *store.Store
-	canonicalAudience string
+	store              *store.Store
+	canonicalAudiences []string
 
 	// onTokenRevoked is an optional observer that fires AFTER each
 	// successful access-token family revocation. Wired by cmd/pad
@@ -126,10 +126,10 @@ func (s *Storage) observeRevocation(requestID, kind string) {
 // multi-resource AS will need explicit per-client policy anyway. Codex
 // review #371 round 1 caught the gap where the adapter returned
 // Audience=nil and every flow failed validation.
-func NewStorage(s *store.Store, canonicalAudience string) *Storage {
+func NewStorage(s *store.Store, canonicalAudiences ...string) *Storage {
 	return &Storage{
-		store:             s,
-		canonicalAudience: canonicalAudience,
+		store:              s,
+		canonicalAudiences: canonicalAudiences,
 	}
 }
 
@@ -552,8 +552,10 @@ func (s *Storage) oauthRequestToFositeRequest(stored *models.OAuthRequest, sessi
 // fast.
 func (s *Storage) modelClientToFosite(c *models.OAuthClient) fosite.Client {
 	var audience []string
-	if s.canonicalAudience != "" {
-		audience = []string{s.canonicalAudience}
+	for _, a := range s.canonicalAudiences {
+		if a != "" {
+			audience = append(audience, a)
+		}
 	}
 	return &fosite.DefaultClient{
 		ID:            c.ID,

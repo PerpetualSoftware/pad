@@ -166,6 +166,11 @@ func wireMCP(cmd *cobra.Command, srv *server.Server, s *store.Store, ep config.M
 		Store:           s,
 		HMACSecret:      keyBytes,
 		AllowedAudience: audience,
+		// The ChatGPT catalog's resource is a second canonical audience
+		// (TASK-3321 U2a, ruling (i)). Tokens are bound to one of the two,
+		// never both, and each mount checks its own. A request naming no
+		// resource is still bound to /mcp's.
+		AdditionalAudiences: []string{ep.ChatGPTResourceURL},
 	})
 	if err != nil {
 		return fmt.Errorf("init OAuth server: %w", err)

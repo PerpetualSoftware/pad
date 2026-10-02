@@ -40,6 +40,12 @@ type Config struct {
 	// `resource` per the audienceMatchingStrategy in audience.go.
 	AllowedAudience string
 
+	// AdditionalAudiences are further canonical resources this server
+	// issues tokens for (TASK-3321 U2a: the ChatGPT catalog's URL). Every
+	// token is still bound to exactly ONE resource, the one its request
+	// named; a request naming none is bound to AllowedAudience, as before.
+	AdditionalAudiences []string
+
 	// Optional lifespan overrides — sensible defaults below if zero.
 	// Operators who need shorter access tokens (e.g. compliance
 	// regimes) override via env vars in sub-PR C's wiring.
@@ -198,7 +204,7 @@ func NewServer(cfg Config) (*Server, error) {
 
 		// Custom audience strategy (RFC 8707). Rejects any audience
 		// that isn't the canonical MCP resource URL. See audience.go.
-		AudienceMatchingStrategy: audienceMatchingStrategy(cfg.AllowedAudience),
+		AudienceMatchingStrategy: audienceMatchingStrategy(cfg.allowedAudiences()),
 
 		// Strategies fosite needs to introspect:
 		// (no extra config — defaults handle these)
@@ -208,7 +214,7 @@ func NewServer(cfg Config) (*Server, error) {
 	// pass audienceMatchingStrategy's haystack-side check. Single-
 	// resource AS for v1 — every client implicitly allowed for the
 	// configured audience. See storage.go modelClientToFosite.
-	storage := NewStorage(cfg.Store, cfg.AllowedAudience)
+	storage := NewStorage(cfg.Store, cfg.allowedAudiences()...)
 	strategy := compose.NewOAuth2HMACStrategy(fcfg)
 
 	provider := compose.Compose(
@@ -269,6 +275,22 @@ func (s *Server) Storage() *Storage {
 // before fosite's downstream validation runs.
 func (s *Server) AllowedAudience() string {
 	return s.cfg.AllowedAudience
+}
+
+// AllowedAudiences is every canonical resource the server issues tokens
+// for: AllowedAudience first, then AdditionalAudiences.
+func (s *Server) AllowedAudiences() []string {
+	return s.cfg.allowedAudiences()
+}
+
+func (c Config) allowedAudiences() []string {
+	out := []string{c.AllowedAudience}
+	for _, a := range c.AdditionalAudiences {
+		if a != "" && NormalizeAudience(a) != NormalizeAudience(c.AllowedAudience) {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 // IntrospectToken validates an opaque OAuth access token without
