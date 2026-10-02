@@ -1505,6 +1505,11 @@ type itemVersionSummary struct {
 	CreatedBy     string `json:"created_by"`
 	Source        string `json:"source"`
 	ChangeSummary string `json:"change_summary,omitempty"`
+	// ActorName is the display name of the user who made the change
+	// (TASK-3321: history could say only "user" or "agent"). Empty for rows
+	// with no user, such as recovery writes and versions from before
+	// migration 103.
+	ActorName string `json:"actor_name,omitempty"`
 }
 
 // dispatchItemHistory is the hand-written dispatcher for `item history`
@@ -1588,6 +1593,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemHistory(
 			CreatedBy:     v.CreatedBy,
 			Source:        v.Source,
 			ChangeSummary: v.ChangeSummary,
+			ActorName:     v.ActorName,
 		})
 	}
 	enc, err := json.Marshal(summaries)
