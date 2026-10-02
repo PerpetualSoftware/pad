@@ -57,6 +57,10 @@ var allowedDirectPublishFiles = map[string]allowedPublishSite{
 	// for every other producer.
 	// One call, inside publishWatchNotification itself.
 	"handlers_watch_notify.go": {1, "publishWatchNotification: the single best-effort discard"},
+	// TASK-3365: a refused access kick still reaches THIS instance's own
+	// connections, so the publisher acts on the error by kicking locally.
+	// One call, in publishAccessInvalidated.
+	"access_kick.go": {1, "access kicks: a refused publish falls back to a local kick"},
 }
 
 func TestWatchEventsPublishSitesAreRuled(t *testing.T) {
