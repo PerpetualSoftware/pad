@@ -139,6 +139,11 @@ type MaterializeCandidate struct {
 	ItemID string
 	// LastAt is the item's newest op-log created_at, exactly as stored.
 	LastAt string
+	// OpLogMax is MAX(id) over ALL of the item's op-log rows, the same
+	// quantity as MaterializeInput.Cursor, so the sweep can tell an item whose
+	// failure budget is exhausted for THIS op-log apart from one whose op-log
+	// grew since (BUG-3325).
+	OpLogMax int64
 }
 
 // MaterializeCursor is a keyset position in the sweep's order. The zero value
@@ -167,7 +172,7 @@ func (s *Store) ListMaterializeCandidates(before time.Time, after MaterializeCur
 	}
 	cutoff := before.UTC().Format(time.RFC3339)
 	rows, err := s.db.Query(s.q(`
-		SELECT u.item_id, MAX(u.created_at)
+		SELECT u.item_id, MAX(u.created_at), MAX(u.id)
 		FROM item_yjs_updates u
 		JOIN items i ON i.id = u.item_id
 		WHERE i.deleted_at IS NULL
@@ -185,7 +190,7 @@ func (s *Store) ListMaterializeCandidates(before time.Time, after MaterializeCur
 	var out []MaterializeCandidate
 	for rows.Next() {
 		var c MaterializeCandidate
-		if err := rows.Scan(&c.ItemID, &c.LastAt); err != nil {
+		if err := rows.Scan(&c.ItemID, &c.LastAt, &c.OpLogMax); err != nil {
 			return nil, fmt.Errorf("scan materialize candidate: %w", err)
 		}
 		out = append(out, c)

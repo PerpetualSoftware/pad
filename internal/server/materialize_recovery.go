@@ -99,6 +99,13 @@ type materializeRecovery struct {
 	setAsideSkipped atomic.Int64
 	setAsideLogged  int64
 
+	// exhaustedLogged is the exhausted_total the last summary line carried
+	// (sweep goroutine only). An exhausted item stays one until its op-log
+	// changes, so the line reports a change in that population, not its
+	// presence. It is counted over the budget map, not per sweep page: a page
+	// count would differ between pages of one stable population (BUG-3325).
+	exhaustedLogged int
+
 	// sweepCursor is where the next sweep page starts (sweep goroutine only).
 	sweepCursor store.MaterializeCursor
 
@@ -283,10 +290,17 @@ func (r *materializeRecovery) sweep() {
 		last := page[len(page)-1]
 		r.sweepCursor = store.MaterializeCursor{LastAt: last.LastAt, ItemID: last.ItemID}
 	}
-	ids := make([]string, 0, len(page))
-	queued := 0
+	candidates, queued := 0, 0
 	for _, c := range page {
-		ids = append(ids, c.ItemID)
+		// An item whose failure budget is spent for this same op-log is not
+		// a candidate: admit would refuse it, and offering it anyway queued
+		// it on every tick forever (BUG-3325). The budget lives in memory,
+		// so the query cannot exclude it; this is the same predicate admit
+		// applies. A grown op-log is offered again, and admit resets it.
+		if r.exhaustedFor(c.ItemID, c.OpLogMax) {
+			continue
+		}
+		candidates++
 		if r.s.collab != nil && r.s.collab.HasRoom(c.ItemID) {
 			continue
 		}
@@ -294,16 +308,51 @@ func (r *materializeRecovery) sweep() {
 			queued++
 		}
 	}
-	// ONE summary line per sweep, and only when it has news: items queued, or
-	// a set-aside skip since the last line. Set-aside items never come from
-	// this query (it excludes them); they reach the worker through the room
+	// ONE summary line per sweep, and only when it has news: items queued, a
+	// set-aside skip since the last line, or a change in how many items have
+	// spent their failure budget. Set-aside items never come from this
+	// query (it excludes them); they reach the worker through the room
 	// trigger or a race, and are counted there, not logged per item.
 	skipped := r.setAsideSkipped.Load()
-	if queued > 0 || skipped != r.setAsideLogged {
+	exhausted := r.exhaustedCount()
+	if queued > 0 || skipped != r.setAsideLogged || exhausted != r.exhaustedLogged {
 		r.setAsideLogged = skipped
+		r.exhaustedLogged = exhausted
 		r.cfg.logger.Info("op-log recovery sweep",
-			"candidates", len(ids), "queued", queued, "set_aside_skipped_total", skipped)
+			"candidates", candidates, "queued", queued, "set_aside_skipped_total", skipped,
+			"exhausted_total", exhausted)
 	}
+}
+
+// exhaustedCount is how many items hold a spent failure budget right now. A
+// budget whose op-log has since grown still counts until the worker admits
+// the item and resets it, which happens on the sweep that offers it.
+func (r *materializeRecovery) exhaustedCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for _, b := range r.budget {
+		if b.failures >= r.cfg.maxFailures {
+			n++
+		}
+	}
+	return n
+}
+
+// exhaustedFor reports whether itemID's failure budget is spent for an op-log
+// whose MAX(id) is opLogMax: the refusal admit would give it, read without
+// changing anything (BUG-3325).
+func (r *materializeRecovery) exhaustedFor(itemID string, opLogMax int64) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.budget[itemID].spentFor(opLogMax, r.cfg.maxFailures)
+}
+
+// spentFor is the one exhaustion predicate admit and the sweep share: the
+// budget recorded at the last failure still applies (the op-log has not moved
+// past it) and its failures reached the limit.
+func (b *materializeBudget) spentFor(opLogMax int64, maxFailures int) bool {
+	return b != nil && opLogMax <= b.opLogMax && b.failures >= maxFailures
 }
 
 // enqueue adds itemID unless it is already queued. Never blocks; a full queue
@@ -509,7 +558,7 @@ func (r *materializeRecovery) admit(itemID string, cursor int64) (materializeRes
 		delete(r.budget, itemID)
 		return "", true
 	}
-	if b.failures >= r.cfg.maxFailures {
+	if b.spentFor(cursor, r.cfg.maxFailures) {
 		return mrBudgetExceeded, false
 	}
 	if r.cfg.now().Before(b.nextAttempt) {
