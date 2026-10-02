@@ -511,9 +511,13 @@ func writeDCRError(w http.ResponseWriter, status int, code, msg string) {
 //
 // Mutates r.Form in place. r MUST have ParseForm called before this;
 // the OAuth handlers below parse before invoking fosite.
-func translateResourceToAudience(r *http.Request, canonical string) {
+//
+// It reports whether it DEFAULTED a missing resource (TASK-3363): callers
+// record that through noteResourceMissing, which phase 2 turns into a
+// refusal.
+func translateResourceToAudience(r *http.Request, canonical string) (defaulted bool) {
 	if r == nil || r.Form == nil {
-		return
+		return false
 	}
 	if existing := r.Form["audience"]; len(existing) > 0 {
 		// Caller passed audience= — defer to it as canonical and
@@ -521,11 +525,11 @@ func translateResourceToAudience(r *http.Request, canonical string) {
 		// (when both audience= AND resource= are sent and disagree)
 		// isn't worth the complexity for the v1 stub; if this becomes
 		// a real source of confusion we can warn here later.
-		return
+		return false
 	}
 	if resources := r.Form["resource"]; len(resources) > 0 {
 		r.Form["audience"] = append([]string(nil), resources...)
-		return
+		return false
 	}
 	// Neither key sent — inject canonical so fosite + the audience
 	// strategy see the one we'd have rejected the request for not
@@ -534,19 +538,72 @@ func translateResourceToAudience(r *http.Request, canonical string) {
 	if canonical != "" {
 		r.Form["audience"] = []string{canonical}
 		r.Form["resource"] = []string{canonical}
-		// Audit signal so ops can track how often this fallback
-		// fires + which clients trigger it. A spike from a new
-		// client_id is the earliest detectable shape of a confused-
-		// deputy attempt (per the security note above). client_id
-		// is intentionally pulled directly from the form rather than
-		// from a parsed AuthorizeRequest, because translation runs
-		// BEFORE fosite parses; an empty value just means the client
-		// also omitted client_id (fosite will reject downstream).
-		slog.Warn("oauth/authorize: client omitted RFC 8707 resource= param, defaulting to canonical audience",
-			"client_id", r.Form.Get("client_id"),
-			"audience", canonical,
-		)
+		return true
 	}
+	return false
+}
+
+// noteResourceMissing records a request that omitted the RFC 8707
+// resource parameter and was defaulted to the canonical audience (TASK-3363
+// phase 1, Dave's ruling on TASK-3345 #1). Phase 2, a release later, refuses
+// such a request with invalid_target; until then this measures who would
+// break: one log line naming the client (id and registered name) and one
+// pad_oauth_resource_missing_total increment per endpoint. The defaulting is
+// what lets a client registered through DCR replay a token cross-server.
+func (s *Server) noteResourceMissing(r *http.Request, endpoint string) {
+	clientID := r.Form.Get("client_id")
+	if clientID == "" {
+		// A client authenticating at the token endpoint with HTTP Basic
+		// sends its id there instead, form-urlencoded (RFC 6749 §2.3.1).
+		if user, _, ok := r.BasicAuth(); ok {
+			if decoded, err := url.QueryUnescape(user); err == nil {
+				clientID = decoded
+			}
+		}
+	}
+	clientName := ""
+	if clientID != "" {
+		if c, err := s.store.GetOAuthClient(clientID); err == nil && c != nil {
+			clientName = c.Name
+		}
+	}
+	// The counter takes every request; the log takes one line per client per
+	// hour, so a popular client that omits resource cannot flood it.
+	if s.metrics != nil {
+		s.metrics.OAuthResourceMissingTotal.WithLabelValues(endpoint).Inc()
+	}
+	if s.resourceMissingWarnDue(clientID) {
+		slog.Warn("oauth: client omitted the RFC 8707 resource parameter; defaulted to the canonical audience (refused from the next phase). Logged once per client per hour; pad_oauth_resource_missing_total counts every request",
+			"endpoint", endpoint, "client_id", clientID, "client_name", clientName)
+	}
+}
+
+// resourceMissingWarnInterval is how often noteResourceMissing logs one
+// client (TASK-3363).
+const resourceMissingWarnInterval = time.Hour
+
+// resourceMissingWarnMax bounds the per-client map: DCR lets anyone register
+// clients, so the map must not grow without limit. When it is full it is
+// cleared, which at worst logs some clients again early.
+const resourceMissingWarnMax = 10000
+
+// resourceMissingWarnDue reports whether clientID's warning is due, and
+// records that it was logged.
+func (s *Server) resourceMissingWarnDue(clientID string) bool {
+	now := time.Now()
+	if s.resourceMissingNow != nil {
+		now = s.resourceMissingNow()
+	}
+	s.resourceMissingMu.Lock()
+	defer s.resourceMissingMu.Unlock()
+	if last, ok := s.resourceMissingLast[clientID]; ok && now.Sub(last) < resourceMissingWarnInterval {
+		return false
+	}
+	if s.resourceMissingLast == nil || len(s.resourceMissingLast) >= resourceMissingWarnMax {
+		s.resourceMissingLast = make(map[string]time.Time)
+	}
+	s.resourceMissingLast[clientID] = now
+	return true
 }
 
 // handleOAuthAuthorize is the entry point for the authorization-code
@@ -588,7 +645,9 @@ func (s *Server) handleOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid query string", http.StatusBadRequest)
 		return
 	}
-	translateResourceToAudience(r, s.oauthServer.AllowedAudience())
+	if translateResourceToAudience(r, s.oauthServer.AllowedAudience()) {
+		s.noteResourceMissing(r, "authorize")
+	}
 
 	// BUG-2088: `scope` is optional (RFC 6749 §3.1.2) and our advertised
 	// scopes_supported is only advisory, so a client (e.g. Claude Code)
@@ -780,7 +839,9 @@ func (s *Server) handleOAuthAuthorizeDecide(w http.ResponseWriter, r *http.Reque
 	}
 
 	// RFC 8707 resource= → fosite audience= (Codex #372 round 1).
-	translateResourceToAudience(r, s.oauthServer.AllowedAudience())
+	if translateResourceToAudience(r, s.oauthServer.AllowedAudience()) {
+		s.noteResourceMissing(r, "decide")
+	}
 
 	ctx := r.Context()
 	if refuseUnsupportedResponseMode(w, r) {
@@ -1129,7 +1190,9 @@ func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid form body", http.StatusBadRequest)
 		return
 	}
-	translateResourceToAudience(r, s.oauthServer.AllowedAudience())
+	if translateResourceToAudience(r, s.oauthServer.AllowedAudience()) {
+		s.noteResourceMissing(r, "token")
+	}
 
 	// Empty session for fosite to populate from storage. The auth
 	// code's stored session_data carries the user's Subject; fosite
