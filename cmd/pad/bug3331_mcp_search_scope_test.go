@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -73,4 +74,19 @@ func TestBUG3331_RemoteMCPSearchScopesToVisibleItems(t *testing.T) {
 	if n := count(tok.Token); n != 0 {
 		t.Fatalf("a non-member found %d result(s) in another workspace over remote MCP", n)
 	}
+}
+
+// doWithBearer is backported from main (cmd/pad/bug3326_remote_set_workspace_test.go,
+// #1710) so this release branch's BUG-3331 test compiles without BUG-3326.
+func (f *capFixture) doWithBearer(t *testing.T, rt capRoute, pat string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(rt.method, rt.path, strings.NewReader(rt.body))
+	req.Host = f.host
+	req.RemoteAddr = "192.0.2.10:4242"
+	req.Header.Set("Content-Type", rt.contentType)
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("Authorization", "Bearer "+pat)
+	rr := httptest.NewRecorder()
+	f.srv.ServeHTTP(rr, req)
+	return rr
 }
