@@ -22,9 +22,18 @@ type mockStore struct {
 	updated  chan string     // signals when UpdateWebhookFailure is called
 	listErr  error           // when set, ListWebhooks fails
 	deleted  map[string]bool // workspace id -> soft-deleted
+	// liveFn, when set, answers WorkspaceLive instead of deleted (for
+	// scripting a sequence of answers or errors).
+	liveFn func(workspaceID string) (bool, error)
 }
 
 func (m *mockStore) WorkspaceLive(workspaceID string) (bool, error) {
+	m.mu.Lock()
+	fn := m.liveFn
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(workspaceID)
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return !m.deleted[workspaceID], nil

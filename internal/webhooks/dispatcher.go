@@ -12,6 +12,8 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptrace"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -58,6 +60,10 @@ const (
 	// hook list was read (BUG-3340). Nothing was sent and nothing is owed; it
 	// is not the endpoint's failure, so it does not count against the hook.
 	deliverySuppressed
+	// deliveryDeferred: the workspace's liveness could not be determined (a
+	// store error). Nothing was sent, the event is still owed (the outbox
+	// keeps it pending), and it is not charged to the endpoint (BUG-3340).
+	deliveryDeferred
 )
 
 // WebhookStore is the interface the dispatcher needs to fetch webhooks
@@ -73,9 +79,13 @@ type WebhookStore interface {
 	WorkspaceLive(workspaceID string) (bool, error)
 }
 
-// errWorkspaceGone stops a redirect whose webhook's workspace was deleted
-// while the request was in flight (BUG-3340).
-var errWorkspaceGone = errors.New("webhook workspace was deleted")
+// errWorkspaceGone stops a request whose webhook's workspace was deleted while
+// it was in flight; errWorkspaceUnknown stops one whose workspace could not be
+// checked (BUG-3340). The first is suppressed, the second deferred.
+var (
+	errWorkspaceGone    = errors.New("webhook workspace was deleted")
+	errWorkspaceUnknown = errors.New("webhook workspace liveness unknown")
+)
 
 // webhookWorkspaceKey carries the delivering hook's workspace on the request
 // context, so checkRedirect can re-check it before following a hop.
@@ -244,7 +254,11 @@ func NewDispatcher(store WebhookStore) *Dispatcher {
 // could 302 the delivery to an internal address.
 func (d *Dispatcher) checkRedirect(req *http.Request, via []*http.Request) error {
 	if wsID, _ := req.Context().Value(webhookWorkspaceKey{}).(string); wsID != "" {
-		if live, err := d.store.WorkspaceLive(wsID); err != nil || !live {
+		live, err := d.store.WorkspaceLive(wsID)
+		if err != nil {
+			return errWorkspaceUnknown
+		}
+		if !live {
 			return errWorkspaceGone
 		}
 	}
@@ -366,6 +380,10 @@ func (d *Dispatcher) DeliverEvent(dv Delivery) (DeliveryOutcome, error) {
 			// The workspace was deleted mid-delivery: this hook no longer
 			// selects the event, and nothing is owed to it.
 			out.Matched--
+		case deliveryDeferred:
+			// Liveness unknown: still owed, so the outbox must not ack.
+			out.Transient++
+			out.LastError = "workspace liveness unknown for " + hook.ID
 		case deliverySuccess:
 			out.Succeeded++
 		case deliveryPermanent:
@@ -388,8 +406,8 @@ func (d *Dispatcher) deliver(hook models.Webhook, body []byte) deliveryResult {
 	result := deliveryPermanent
 	for attempt := 1; attempt <= maxDeliveryAttempts; attempt++ {
 		result = d.attemptDeliver(hook, body)
-		if result == deliverySuppressed {
-			return result // not the endpoint's failure; record nothing
+		if result == deliverySuppressed || result == deliveryDeferred {
+			return result // not the endpoint's doing; record nothing
 		}
 		if result != deliveryTransient {
 			break // success or permanent failure — no point retrying
@@ -409,13 +427,13 @@ func (d *Dispatcher) deliver(hook models.Webhook, body []byte) deliveryResult {
 // single terminal store write so the retry loop doesn't churn the store.
 func (d *Dispatcher) attemptDeliver(hook models.Webhook, body []byte) deliveryResult {
 	// Re-check the workspace before every attempt, retries included: the
-	// hook list may predate a deletion (BUG-3340). A lookup error is treated
-	// as transient, so a database blip delays a delivery rather than
-	// dropping it or sending it unchecked.
+	// hook list may predate a deletion (BUG-3340). A lookup error defers the
+	// delivery: nothing is sent, the event stays owed, and the endpoint is
+	// not charged with a failure it did not cause.
 	live, err := d.store.WorkspaceLive(hook.WorkspaceID)
 	if err != nil {
 		slog.Error("webhook workspace liveness check failed", "webhook_id", hook.ID, "error", err)
-		return deliveryTransient
+		return deliveryDeferred
 	}
 	if !live {
 		return deliverySuppressed
@@ -430,9 +448,31 @@ func (d *Dispatcher) attemptDeliver(hook models.Webhook, body []byte) deliveryRe
 		}
 	}
 
-	req, err := http.NewRequestWithContext(
-		context.WithValue(context.Background(), webhookWorkspaceKey{}, hook.WorkspaceID),
-		http.MethodPost, hook.URL, bytes.NewReader(body))
+	// The check above runs once per attempt, but net/http can send more
+	// than once inside a single Do: it re-dials and replays the body after a
+	// reused connection fails with nothing written, and a deletion can land
+	// during dial or TLS setup. GotConn fires for every connection the
+	// request is about to be written on, after any TLS handshake and before
+	// the request is written, so re-checking there and cancelling closes
+	// those windows. A request already being written at the instant of a
+	// deletion cannot be recalled; that is the irreducible window.
+	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), webhookWorkspaceKey{}, hook.WorkspaceID))
+	defer cancel()
+	var connGone, connUnknown atomic.Bool
+	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+		GotConn: func(httptrace.GotConnInfo) {
+			live, err := d.store.WorkspaceLive(hook.WorkspaceID)
+			switch {
+			case err != nil:
+				connUnknown.Store(true)
+				cancel()
+			case !live:
+				connGone.Store(true)
+				cancel()
+			}
+		},
+	})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, hook.URL, bytes.NewReader(body))
 	if err != nil {
 		// A malformed URL/method won't fix itself on retry.
 		slog.Error("failed to create webhook request", "url", hook.URL, "error", err)
@@ -451,8 +491,12 @@ func (d *Dispatcher) attemptDeliver(hook models.Webhook, body []byte) deliveryRe
 	if err != nil {
 		// A blocked/looping redirect is permanent — the SSRF guard won't
 		// relent on retry, so don't waste attempts on it.
-		if errors.Is(err, errWorkspaceGone) {
+		if connGone.Load() || errors.Is(err, errWorkspaceGone) {
 			return deliverySuppressed
+		}
+		if connUnknown.Load() || errors.Is(err, errWorkspaceUnknown) {
+			slog.Error("webhook workspace liveness unknown mid-delivery", "webhook_id", hook.ID, "error", err)
+			return deliveryDeferred
 		}
 		if errors.Is(err, errRedirectRejected) {
 			slog.Warn("blocked webhook redirect", "url", hook.URL, "error", err)
