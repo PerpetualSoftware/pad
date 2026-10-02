@@ -266,7 +266,7 @@ func TestBUG3354_SparseEntriesChargedLogically(t *testing.T) {
 func TestBUG3354_ExtensionHeaderChainRefused(t *testing.T) {
 	raw := rawTarEntry(t, "pad-export.json", tar.TypeReg, exportJSONFrom(t))
 	extension := rawTarEntry(t, "pax", tar.TypeXHeader, nil) // one block each
-	raw = append(raw, bytes.Repeat(extension, importBundleMaxHeaderBlocks+1)...)
+	raw = append(raw, bytes.Repeat(extension, int(importBundleMaxHeaderBlocks)+1)...)
 	raw = append(raw, rawTarEntry(t, "filler.bin", tar.TypeReg, nil)...)
 	raw = append(raw, make([]byte, 1024)...)
 	srv, _ := testServerWithAttachments(t)
@@ -374,5 +374,47 @@ func TestBUG3354_NegativeSizeRefused(t *testing.T) {
 	}
 	if workspaceListed(t, srv, "NegWS") {
 		t.Fatal("the partial workspace was not rolled back")
+	}
+}
+
+// countingBody counts the bytes the handler pulls from the request body.
+type countingBody struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countingBody) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
+}
+
+// Codex r3: Next walks a whole extension chain internally, so a header limit
+// checked after it returns is refused only after all the work is done. The
+// limit is enforced inside the walk: a chain of three times the cap, under
+// the default byte ceilings, is refused having read about a third of it.
+func TestBUG3354_HeaderLimitStopsTheWalk(t *testing.T) {
+	raw := rawTarEntry(t, "pad-export.json", tar.TypeReg, exportJSONFrom(t))
+	extension := rawTarEntry(t, "pax", tar.TypeXHeader, nil) // one block each
+	raw = append(raw, bytes.Repeat(extension, 3*int(importBundleMaxHeaderBlocks))...)
+	raw = append(raw, rawTarEntry(t, "filler.bin", tar.TypeReg, nil)...)
+	raw = append(raw, make([]byte, 1024)...)
+	body := gzipBytes(t, raw)
+
+	srv, _ := testServerWithAttachments(t)
+	if int64(len(raw)) >= srv.decompressedBundleCap() {
+		t.Fatalf("precondition: the chain must fit the byte ceiling, so only the header limit can stop it")
+	}
+	cb := &countingBody{r: bytes.NewReader(body)}
+	req := httptest.NewRequest("POST", "/api/v1/workspaces/import?name=WalkWS", cb)
+	req.Header.Set("Content-Type", "application/gzip")
+	req.RemoteAddr = "127.0.0.1:1234"
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusRequestEntityTooLarge || !strings.Contains(rr.Body.String(), "header blocks") {
+		t.Fatalf("chain: got %d %s, want 413 naming the header-block cap", rr.Code, rr.Body.String())
+	}
+	if cb.n*2 > int64(len(body)) {
+		t.Fatalf("refused only after reading %d of %d body bytes: the limit did not stop the walk", cb.n, len(body))
 	}
 }

@@ -70,7 +70,7 @@ const importBundleMaxEntries = 100_000
 // count above cannot see. An exported entry costs one header block, or a few
 // more with a long name; real exports have hundreds of entries (receipt
 // above), so two blocks per permitted entry still leaves wide headroom.
-const importBundleMaxHeaderBlocks = 2 * importBundleMaxEntries
+const importBundleMaxHeaderBlocks int64 = 2 * importBundleMaxEntries
 
 // errBundleTooLarge is returned by bundleBudgetReader once the decompressed
 // stream passes its ceiling.
@@ -83,9 +83,40 @@ type bundleBudgetReader struct {
 	r         io.Reader
 	remaining int64
 	exceeded  bool
+
+	// headerWindow, while headerArmed, is a second, temporary limit around
+	// each tar.Reader.Next call: the header bytes still allowed. Next walks
+	// a whole PAX/GNU extension chain internally, so a limit checked after
+	// it returns bounds nothing (codex r3); this one stops the walk.
+	headerArmed    bool
+	headerWindow   int64
+	headersTripped bool
 }
 
+// errBundleTooManyHeaders is returned once a Next call reads past its
+// header window.
+var errBundleTooManyHeaders = errors.New("bundle exceeds its tar header limit")
+
 func (b *bundleBudgetReader) Read(p []byte) (int, error) {
+	if b.headersTripped {
+		return 0, errBundleTooManyHeaders
+	}
+	if !b.headerArmed {
+		return b.read(p)
+	}
+	if b.headerWindow <= 0 {
+		b.headersTripped = true
+		return 0, errBundleTooManyHeaders
+	}
+	if int64(len(p)) > b.headerWindow {
+		p = p[:b.headerWindow]
+	}
+	n, err := b.read(p)
+	b.headerWindow -= int64(n)
+	return n, err
+}
+
+func (b *bundleBudgetReader) read(p []byte) (int, error) {
 	if b.exceeded {
 		return 0, errBundleTooLarge
 	}
@@ -417,6 +448,9 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 		if retErr != nil && budget.exceeded {
 			retErr = bundleTooLargeError(fmt.Sprintf("Bundle expands past %d bytes once decompressed", decompressedCap))
 		}
+		if retErr != nil && budget.headersTripped {
+			retErr = bundleTooLargeError(fmt.Sprintf("Bundle has too many entries (more than %d tar header blocks)", importBundleMaxHeaderBlocks))
+		}
 		if retErr != nil && result == nil && ws != nil {
 			result = ws
 		}
@@ -429,12 +463,16 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 
 	for {
 		before := budget.remaining
+		// Arm the header window for this Next: the blocks still allowed,
+		// plus one for the previous entry's padding.
+		budget.headerArmed, budget.headerWindow = true, (importBundleMaxHeaderBlocks-headerBlocks+1)*512
 		hdr, err := tr.Next()
+		budget.headerArmed = false
 		// Every entry's body is read to its end before the next Next (the
 		// skip arms below drain it), so what Next consumed is headers plus at
 		// most one block of the previous entry's padding.
 		headerBlocks += (before - budget.remaining) / 512
-		if headerBlocks > importBundleMaxHeaderBlocks {
+		if budget.headersTripped || headerBlocks > importBundleMaxHeaderBlocks {
 			return ws, bundleTooLargeError(fmt.Sprintf("Bundle has too many entries (more than %d tar header blocks)", importBundleMaxHeaderBlocks))
 		}
 		if err == io.EOF {
