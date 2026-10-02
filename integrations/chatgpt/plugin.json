@@ -1,0 +1,98 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "pad",
+  "version": "0.1.0",
+  "description": "Pad is a project workspace for tasks, bugs, ideas, plans and docs. This plugin connects ChatGPT to your Pad Cloud workspaces so you can find, read, create and update items, comment on them, and see what to work on next.",
+  "author": {
+    "name": "Perpetual Software",
+    "url": "https://www.getpad.dev"
+  },
+  "homepage": "https://www.getpad.dev",
+  "repository": "https://github.com/PerpetualSoftware/pad",
+  "license": "Apache-2.0",
+  "keywords": [
+    "project-management",
+    "tasks",
+    "bugs",
+    "planning",
+    "docs"
+  ],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Pad",
+        "shortDescription": "Your projects, tasks and docs",
+        "longDescription": "Pad keeps a team's work in one workspace: tasks, bugs, ideas, plans and docs, each with a short ref like TASK-12, a status and priority, markdown content, comments, and links between items.\n\nWith this plugin you can, from a conversation:\n- open one of your Pad workspaces and get an overview of what is in progress and what needs attention\n- ask what to work on next, or for the ready backlog\n- search for items and read them in full, with their comments, history and dependencies\n- create items, update their status, fields and content, comment on them, and link them\n- archive an item (after you confirm) and restore it\n- read the team's playbooks and follow their steps\n\nIt is for people who already use Pad, or want to start: you need a Pad Cloud account at app.getpad.dev, and you sign in when you connect. Every content change made through the plugin is saved as a version first, so it can be undone from the item's History in Pad.\n\nLimitations: the plugin cannot create or delete workspaces, invite people, change a workspace's collections or fields, manage roles, or permanently delete items. Those are done in Pad itself.",
+        "developerName": "Perpetual Software",
+        "category": "Productivity",
+        "capabilities": [
+          "Read",
+          "Write"
+        ],
+        "websiteURL": "https://www.getpad.dev",
+        "supportURL": "https://www.getpad.dev/support",
+        "privacyPolicyURL": "https://www.getpad.dev/privacy",
+        "termsOfServiceURL": "https://www.getpad.dev/terms",
+        "defaultPrompt": [
+          "What should I work on next in Pad?",
+          "Find the open bugs in my Pad workspace and summarize them.",
+          "Add a task to Pad: update the onboarding checklist."
+        ],
+        "brandColor": "#9268F8",
+        "brandColorDark": "#9268F8",
+        "composerIcon": "./assets/composer-icon.png",
+        "logo": "./assets/logo.png"
+      },
+      "review": {
+        "test_cases": {
+          "positive": [
+            {
+              "description": "Connect and orient: list the user's workspaces, open the demo workspace, and recommend one item to work on next.",
+              "prompt": "Open my Acme Launch workspace in Pad and tell me what I should work on next.",
+              "tools_triggered": "list_workspaces, get_workspace_overview, what_next",
+              "expected_behavior": "Calls list_workspaces, finds acme-launch, calls get_workspace_overview for it, then what_next. Replies with one recommended item by ref and title (an open, unblocked, high-priority task from the seeded data) and a one-line reason. No other item details are dumped."
+            },
+            {
+              "description": "Find and read: full-text search for a bug by description, then read it in full and summarize it.",
+              "prompt": "In Acme Launch, find the bug about the login page timing out and summarize it for me.",
+              "tools_triggered": "search, get_item",
+              "expected_behavior": "Calls search with a query about the login timeout in workspace acme-launch, then get_item on the matching BUG ref. Replies with the bug's ref, title, status, priority and a short summary of its content. No internal IDs or email addresses appear."
+            },
+            {
+              "description": "Create: add a task with a priority after confirming the details with the user.",
+              "prompt": "Add a high-priority task to Acme Launch to fix the broken password reset email.",
+              "tools_triggered": "list_collections, create_item",
+              "expected_behavior": "Checks the Tasks collection and its priority values (list_collections or the overview), states the task it will create and asks for confirmation, then calls create_item in collection tasks with a title about the password reset email and priority high. Replies with the new item's TASK ref."
+            },
+            {
+              "description": "Update with an audit trail: change a task's status and record why in a comment.",
+              "prompt": "I finished the 'Write onboarding checklist' task in Acme Launch. Mark it done and note that the checklist is linked from the welcome doc.",
+              "tools_triggered": "search, update_item, add_comment",
+              "expected_behavior": "Finds the task with search, confirms the change, calls update_item with status done, and calls add_comment on the same ref with a note that the checklist is linked from the welcome doc. Replies confirming the ref, the new status, and that a comment was added."
+            },
+            {
+              "description": "Archive with confirmation: a destructive action is confirmed with the user before it runs, and can be reversed.",
+              "prompt": "Archive the 'Old landing page copy' idea in Acme Launch, it's obsolete.",
+              "tools_triggered": "search, archive_item",
+              "expected_behavior": "Finds the idea with search, then asks the user to confirm archiving it, naming its ref and title. Only after the user confirms, calls archive_item on that ref. Replies that the item is archived and can be brought back with restore."
+            }
+          ],
+          "negative": [
+            {
+              "description": "Out of scope and destructive: the plugin has no tool to delete a workspace. Expected: it says workspaces are deleted in Pad at app.getpad.dev, and calls no tool that changes anything.",
+              "prompt": "Delete my Acme Launch workspace in Pad."
+            },
+            {
+              "description": "Out of scope, and would email a third party: the plugin has no tool to invite people. Expected: it says invitations are sent from Pad at app.getpad.dev, and sends nothing.",
+              "prompt": "Invite jane@example.com to my Acme Launch workspace in Pad as an editor."
+            },
+            {
+              "description": "Unrelated request: nothing to do with the user's Pad projects. Expected: ChatGPT answers without calling any Pad tool.",
+              "prompt": "What's a good recipe for banana bread?"
+            }
+          ]
+        }
+      }
+    }
+  }
+}
