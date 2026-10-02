@@ -25,18 +25,21 @@ import (
 // (CreateSessionIssuedAt).
 const accountDeleteReauthWindow = 10 * time.Minute
 
-// requestSessionInfo is the session the request was authenticated with,
-// from a padsess_ bearer or the session cookie, or nil.
+// requestSessionInfo is the session the request was authenticated with, or
+// nil. It follows the credential the middleware recorded (ctxAuthKind) rather
+// than re-reading the wire, the way credentialLiveness does: a bearer that did
+// not authenticate (an invalid one falls through to the cookie on /auth/*) is
+// not the session, and a valid PAT is no session at all. A request no
+// middleware authenticated (handlers that fall back to validateSessionCookie)
+// is read from the cookie.
 func (s *Server) requestSessionInfo(r *http.Request) *store.SessionInfo {
-	// The same reading TokenAuth gives the header (trimmed, so padding does
-	// not hide the session), and a bearer of any kind is the credential: a
-	// cookie riding alongside it did not authenticate the request.
 	token := ""
-	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
-		if t := strings.TrimSpace(strings.TrimPrefix(auth, "Bearer ")); strings.HasPrefix(t, "padsess_") {
-			token = t
-		}
-	} else {
+	switch authKind(r) {
+	case authKindAPIToken:
+		return nil
+	case authKindSessionBearer:
+		token = strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+	default:
 		for _, name := range []string{sessionCookieName(s.secureCookies), "pad_session"} {
 			if c, err := r.Cookie(name); err == nil && c.Value != "" {
 				token = c.Value

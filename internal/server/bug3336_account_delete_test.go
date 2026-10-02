@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -209,13 +210,74 @@ func TestBUG3336_CLIApprovalDoesNotMintAFreshSignIn(t *testing.T) {
 // the user mints nothing that could read as freshly signed in.
 func TestBUG3336_RotationNeedsTheRequestSession(t *testing.T) {
 	srv, u, token := oauthOnlyCloud(t)
+	// As TokenAuth records a padded session bearer.
 	req := httptest.NewRequest("POST", "/api/v1/auth/oauth-unlink", nil)
 	req.Header.Set("Authorization", "Bearer  "+token+" ")
+	req = req.WithContext(context.WithValue(req.Context(), ctxAuthKind, authKindSessionBearer))
 	if info := srv.requestSessionInfo(req); info == nil || info.User.ID != u.ID {
 		t.Fatalf("a padded bearer session was not found: %+v", info)
 	}
 	if _, ok := srv.rotateSessionsAfterCredentialChange(httptest.NewRecorder(), httptest.NewRequest("POST", "/", nil), u); ok {
 		t.Fatal("a rotation with no request session minted a session")
+	}
+	// ...and it still revoked every session the user had.
+	if info, _ := srv.store.ValidateSession(token); info != nil {
+		t.Fatal("a rotation with no request session left the user's sessions alive")
+	}
+}
+
+// The session is the credential that AUTHENTICATED the request: a stale
+// bearer that TokenAuth let fall through to the cookie on /auth/* does not
+// hide the cookie session, so a legitimate CLI approval still works.
+func TestBUG3336_StaleBearerBesideAValidCookie(t *testing.T) {
+	srv, _, token := oauthOnlyCloud(t)
+	pending, _ := srv.store.CreateCLIAuthSession()
+	req := httptest.NewRequest("POST", "/api/v1/auth/cli/sessions/"+pending.Code+"/approve", nil)
+	req.RemoteAddr = "198.51.100.7:5555"
+	req.AddCookie(&http.Cookie{Name: "pad_session", Value: token})
+	const csrf = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	req.AddCookie(&http.Cookie{Name: "pad_csrf", Value: csrf})
+	req.Header.Set("X-CSRF-Token", csrf)
+	req.Header.Set("Authorization", "Bearer pad_not-a-real-token")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("CLI approval with a valid cookie beside a stale bearer: %d %s, want 200", rr.Code, rr.Body.String())
+	}
+}
+
+// Each session-minting door refuses an API token, and nothing is changed or
+// revoked behind the refusal.
+func TestBUG3336_SessionMintingDoorsRefuseAPIToken(t *testing.T) {
+	srv := testServer(t)
+	srv.cloudMode = true
+	id, sess := bootstrapAccountDeleteUser(t, srv, "")
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Owned", OwnerID: id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pat, err := srv.store.CreateAPIToken(id, models.APITokenCreate{Name: "leaked", WorkspaceID: ws.ID}, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, door := range []struct {
+		method, path string
+		body         map[string]any
+	}{
+		{"PATCH", "/api/v1/auth/me", map[string]any{"current_password": "correct-horse-battery-staple", "new_password": "a-brand-new-long-passphrase-3336"}},
+		{"POST", "/api/v1/auth/oauth-unlink", map[string]any{"provider": "github"}},
+		{"POST", "/api/v1/admin/users/" + id + "/reset-password", nil},
+	} {
+		rr := doRequestWithBearer(srv, door.method, door.path, pat.Token, door.body)
+		if rr.Code != http.StatusForbidden || errorCode(t, rr) != "session_required" {
+			t.Errorf("PAT on %s %s: %d %s, want 403 session_required", door.method, door.path, rr.Code, rr.Body.String())
+		}
+	}
+	if info, _ := srv.store.ValidateSession(sess); info == nil {
+		t.Fatal("a refused door revoked the user's sessions")
+	}
+	if u, _ := srv.store.ValidatePassword("delete-me@test.com", "correct-horse-battery-staple"); u == nil {
+		t.Fatal("a refused password change changed the password")
 	}
 }
 
