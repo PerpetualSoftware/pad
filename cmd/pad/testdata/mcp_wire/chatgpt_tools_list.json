@@ -188,7 +188,7 @@
         "idempotentHint": true,
         "openWorldHint": false
       },
-      "description": "Get a workspace's overview: its collections and their fields, always-on conventions, playbooks and current activity.",
+      "description": "Open a workspace: get its overview, with its collections and their fields, always-on conventions, playbooks and current activity. Call it first for the workspace the user picked from list_workspaces.",
       "inputSchema": {
         "properties": {
           "workspace": {
@@ -612,28 +612,6 @@
         "type": "object"
       },
       "name": "search"
-    },
-    {
-      "annotations": {
-        "readOnlyHint": true,
-        "destructiveHint": false,
-        "idempotentHint": true,
-        "openWorldHint": false
-      },
-      "description": "Choose the workspace to work in and get its overview (collections, conventions, playbooks, what is active). Pass the workspace slug from list_workspaces. Later calls still name the workspace explicitly.",
-      "inputSchema": {
-        "properties": {
-          "workspace": {
-            "description": "Workspace slug, from list_workspaces.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "workspace"
-        ],
-        "type": "object"
-      },
-      "name": "set_workspace"
     },
     {
       "annotations": {

@@ -31,7 +31,8 @@ import (
 const ChatGPTToolSurfaceVersion = "0.1"
 
 // chatGPTSetWorkspaceSource is the Source.Tool naming pad_set_workspace,
-// which is not in Catalog (it has no action enum).
+// which is not in Catalog (it has no action enum). It is an exclusion; the
+// constant keeps it inside the parity guard.
 const chatGPTSetWorkspaceSource = "pad_set_workspace"
 
 //go:embed chatgpt_instructions.md
@@ -124,19 +125,8 @@ var ChatGPTCatalog = []ChatGPTTool{
 		Hints:       ChatGPTHints{ReadOnly: true},
 	},
 	{
-		Name:        "set_workspace",
-		Description: "Choose the workspace to work in and get its overview (collections, conventions, playbooks, what is active). Pass the workspace slug from list_workspaces. Later calls still name the workspace explicitly.",
-		Source:      ChatGPTSource{chatGPTSetWorkspaceSource, ""},
-		Params:      []string{chatGPTWorkspaceParam},
-		Required:    []string{chatGPTWorkspaceParam},
-		// Read-only HERE: on this shared server it persists nothing
-		// (workspace.go, NewSharedWorkspaceState) and only returns the
-		// overview. /mcp says readOnly:false for the local stdio server's sake.
-		Hints: ChatGPTHints{ReadOnly: true},
-	},
-	{
 		Name:        "get_workspace_overview",
-		Description: "Get a workspace's overview: its collections and their fields, always-on conventions, playbooks and current activity.",
+		Description: "Open a workspace: get its overview, with its collections and their fields, always-on conventions, playbooks and current activity. Call it first for the workspace the user picked from list_workspaces.",
 		Source:      ChatGPTSource{"pad_meta", "bootstrap"},
 		Params:      []string{chatGPTWorkspaceParam},
 		Required:    []string{chatGPTWorkspaceParam},
@@ -247,6 +237,10 @@ var ChatGPTCatalog = []ChatGPTTool{
 		Required:    []string{chatGPTWorkspaceParam, "ref"},
 		Hints:       ChatGPTHints{ReadOnly: true},
 	},
+	// link_type selects among the source's link commands (block,
+	// blocked-by, implements, ...; resolveItemLink). That is one operation,
+	// "relate two items", whose kinds are an enumerated, disclosed
+	// parameter, not a route to undisclosed operations (codex review).
 	{
 		Name:          "link_items",
 		Description:   "Link two items, for example mark one as blocking another.",
@@ -309,52 +303,53 @@ var ChatGPTCatalog = []ChatGPTTool{
 // ChatGPTExclusions are the /mcp operations deliberately not on the ChatGPT
 // surface, each with its reason (TASK-3321 U1-T, lead-ruled).
 var ChatGPTExclusions = map[ChatGPTSource]string{
-	{"pad_item", "bulk-update"}:    "batch overwrite with a large blast radius and little chat value",
-	{"pad_item", "move"}:           "drops fields the target collection does not declare; confusing in chat",
-	{"pad_item", "delete-comment"}: "destructive, rarely needed",
-	{"pad_item", "edit-comment"}:   "overwrite; deferred to v2",
-	{"pad_item", "unlink"}:         "deferred to v2",
-	{"pad_item", "claim"}:          "agent lease semantics, not a chat concept",
-	{"pad_item", "release"}:        "agent lease semantics, not a chat concept",
-	{"pad_item", "remind"}:         "deferred to v2",
-	{"pad_item", "ack-reminder"}:   "deferred to v2",
-	{"pad_item", "star"}:           "personal UI state",
-	{"pad_item", "unstar"}:         "personal UI state",
-	{"pad_item", "starred"}:        "personal UI state",
-	{"pad_item", "note"}:           "structured implementation-note writer for coding agents",
-	{"pad_item", "decide"}:         "structured decision-log writer for coding agents",
-	{"pad_item", "import"}:         "artifact files, not chat",
-	{"pad_item", "export"}:         "artifact files, not chat",
-	{"pad_item", "backlinks"}:      "deferred to v2",
-	{"pad_workspace", "create"}:    "cloud signup creates the first workspace; a user with none is pointed at app.getpad.dev",
-	{"pad_workspace", "invite"}:    "sends email to an arbitrary address; kept to the web app",
-	{"pad_workspace", "claim"}:     "workspace lifecycle; web app",
-	{"pad_workspace", "restore"}:   "workspace lifecycle; web app",
-	{"pad_workspace", "deleted"}:   "workspace lifecycle; web app",
-	{"pad_workspace", "members"}:   "returns member emails (fails data minimization)",
-	{"pad_workspace", "audit-log"}: "returns IP addresses and user agents (fails data minimization)",
-	{"pad_workspace", "storage"}:   "administration",
-	{"pad_collection", "create"}:   "workspace configuration; web app or onboarding",
-	{"pad_collection", "update"}:   "workspace configuration; web app or onboarding",
-	{"pad_collection", "delete"}:   "workspace configuration; web app or onboarding",
-	{"pad_role", "create"}:         "workspace configuration; web app or onboarding",
-	{"pad_role", "update"}:         "workspace configuration; web app or onboarding",
-	{"pad_role", "delete"}:         "workspace configuration; web app or onboarding",
-	{"pad_role", "list"}:           "agent-role configuration, not used in chat",
-	{"pad_project", "changelog"}:   "deferred to v2 (long output)",
-	{"pad_project", "standup"}:     "deferred to v2 (long output)",
-	{"pad_project", "report"}:      "deferred to v2 (long output)",
-	{"pad_project", "stale"}:       "overlaps ready_items and the dashboard's attention list; v2",
-	{"pad_library", "list"}:        "workspace configuration",
-	{"pad_library", "get"}:         "workspace configuration",
-	{"pad_library", "activate"}:    "workspace configuration (creates items)",
-	{"pad_meta", "server-info"}:    "operator diagnostics (fails data minimization)",
-	{"pad_meta", "tool-surface"}:   "operator diagnostics (fails data minimization)",
-	{"pad_meta", "version"}:        "operator diagnostics (fails data minimization)",
-	{"pad_playbook", "match"}:      "needs the decision provider and sends text to it; v2",
-	{"pad_playbook", "run"}:        "returns a body for an agent to execute; get_playbook serves read-and-follow",
-	{"pad_attachment", "list"}:     "metadata only with no display story yet; v2",
-	{"pad_attachment", "show"}:     "metadata only with no display story yet; v2",
+	{Tool: chatGPTSetWorkspaceSource}: "on this shared server it persists nothing and returns no overview (no BootstrapFetcher on the remote transport); get_workspace_overview is the connect step",
+	{"pad_item", "bulk-update"}:       "batch overwrite with a large blast radius and little chat value",
+	{"pad_item", "move"}:              "drops fields the target collection does not declare; confusing in chat",
+	{"pad_item", "delete-comment"}:    "destructive, rarely needed",
+	{"pad_item", "edit-comment"}:      "overwrite; deferred to v2",
+	{"pad_item", "unlink"}:            "deferred to v2",
+	{"pad_item", "claim"}:             "agent lease semantics, not a chat concept",
+	{"pad_item", "release"}:           "agent lease semantics, not a chat concept",
+	{"pad_item", "remind"}:            "deferred to v2",
+	{"pad_item", "ack-reminder"}:      "deferred to v2",
+	{"pad_item", "star"}:              "personal UI state",
+	{"pad_item", "unstar"}:            "personal UI state",
+	{"pad_item", "starred"}:           "personal UI state",
+	{"pad_item", "note"}:              "structured implementation-note writer for coding agents",
+	{"pad_item", "decide"}:            "structured decision-log writer for coding agents",
+	{"pad_item", "import"}:            "artifact files, not chat",
+	{"pad_item", "export"}:            "artifact files, not chat",
+	{"pad_item", "backlinks"}:         "deferred to v2",
+	{"pad_workspace", "create"}:       "cloud signup creates the first workspace; a user with none is pointed at app.getpad.dev",
+	{"pad_workspace", "invite"}:       "sends email to an arbitrary address; kept to the web app",
+	{"pad_workspace", "claim"}:        "workspace lifecycle; web app",
+	{"pad_workspace", "restore"}:      "workspace lifecycle; web app",
+	{"pad_workspace", "deleted"}:      "workspace lifecycle; web app",
+	{"pad_workspace", "members"}:      "returns member emails (fails data minimization)",
+	{"pad_workspace", "audit-log"}:    "returns IP addresses and user agents (fails data minimization)",
+	{"pad_workspace", "storage"}:      "administration",
+	{"pad_collection", "create"}:      "workspace configuration; web app or onboarding",
+	{"pad_collection", "update"}:      "workspace configuration; web app or onboarding",
+	{"pad_collection", "delete"}:      "workspace configuration; web app or onboarding",
+	{"pad_role", "create"}:            "workspace configuration; web app or onboarding",
+	{"pad_role", "update"}:            "workspace configuration; web app or onboarding",
+	{"pad_role", "delete"}:            "workspace configuration; web app or onboarding",
+	{"pad_role", "list"}:              "agent-role configuration, not used in chat",
+	{"pad_project", "changelog"}:      "deferred to v2 (long output)",
+	{"pad_project", "standup"}:        "deferred to v2 (long output)",
+	{"pad_project", "report"}:         "deferred to v2 (long output)",
+	{"pad_project", "stale"}:          "overlaps ready_items and the dashboard's attention list; v2",
+	{"pad_library", "list"}:           "workspace configuration",
+	{"pad_library", "get"}:            "workspace configuration",
+	{"pad_library", "activate"}:       "workspace configuration (creates items)",
+	{"pad_meta", "server-info"}:       "operator diagnostics (fails data minimization)",
+	{"pad_meta", "tool-surface"}:      "operator diagnostics (fails data minimization)",
+	{"pad_meta", "version"}:           "operator diagnostics (fails data minimization)",
+	{"pad_playbook", "match"}:         "needs the decision provider and sends text to it; v2",
+	{"pad_playbook", "run"}:           "returns a body for an agent to execute; get_playbook serves read-and-follow",
+	{"pad_attachment", "list"}:        "metadata only with no display story yet; v2",
+	{"pad_attachment", "show"}:        "metadata only with no display story yet; v2",
 }
 
 // ChatGPTExperimentalCapabilities is the ChatGPT server's
@@ -377,8 +372,7 @@ func ChatGPTExperimentalCapabilities() map[string]any {
 // ChatGPTCatalogOptions configures RegisterChatGPTCatalog: the same inputs
 // /mcp's registration takes, so both surfaces run on one registry.
 type ChatGPTCatalogOptions struct {
-	Catalog          CatalogOptions
-	BootstrapFetcher BootstrapFetcher
+	Catalog CatalogOptions
 }
 
 // RegisterChatGPTCatalog installs the ChatGPT catalog's tools on srv. Each
@@ -400,19 +394,9 @@ func RegisterChatGPTCatalog(srv *server.MCPServer, opts ChatGPTCatalogOptions) (
 		StructuredOnly: opts.Catalog.StructuredOnly,
 		TextOnly:       opts.Catalog.TextOnly,
 	}
-	_, setWorkspace := SetWorkspaceTool(opts.Catalog.Workspace, opts.BootstrapFetcher)
 	for _, t := range ChatGPTCatalog {
-		var source server.ToolHandlerFunc
-		var params []ParamDef
-		if t.Source.Tool == chatGPTSetWorkspaceSource {
-			source = setWorkspace
-			params = []ParamDef{{Name: chatGPTWorkspaceParam, Type: "string", Description: "Workspace slug, from list_workspaces."}}
-		} else {
-			def, _ := catalogDef(t.Source.Tool)
-			source = makeFanOutHandler(def, env)
-			params = chatGPTParams(t, def)
-		}
-		srv.AddTool(buildChatGPTTool(t, params), chatGPTHandler(t, source))
+		def, _ := catalogDef(t.Source.Tool)
+		srv.AddTool(buildChatGPTTool(t, chatGPTParams(t, def)), chatGPTHandler(t, makeFanOutHandler(def, env)))
 	}
 	return len(ChatGPTCatalog), nil
 }
@@ -509,13 +493,42 @@ func chatGPTHandler(t ChatGPTTool, source server.ToolHandlerFunc) server.ToolHan
 		out := req
 		out.Params.Name = t.Source.Tool
 		out.Params.Arguments = args
-		// The source handler re-reads `fields` from the raw bytes to keep a
-		// number's literal (BUG-3217); hand it the same arguments as bytes.
-		if raw, err := json.Marshal(args); err == nil {
-			out.Params.RawArguments = raw
-		}
+		out.Params.RawArguments = chatGPTRawArguments(req.Params.RawArguments, t)
 		return source(ctx, out)
 	}
+}
+
+// chatGPTRawArguments is the caller's raw argument bytes with the source
+// action and Fixed inputs spliced in. The source handler re-reads `fields`
+// from these bytes so a number keeps the literal the caller sent
+// (BUG-3217); re-marshalling the DECODED arguments instead would hand it
+// float64s that already lost it (codex review). Each original value stays
+// as its own raw bytes. With no raw bytes, or bytes that are not a JSON
+// object, nil is returned and the source falls back to the decoded map, as
+// it does for any request without them.
+func chatGPTRawArguments(raw json.RawMessage, t ChatGPTTool) json.RawMessage {
+	if len(raw) == 0 {
+		return nil
+	}
+	obj := map[string]json.RawMessage{}
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return nil
+	}
+	for k, v := range t.Fixed {
+		b, err := json.Marshal(v)
+		if err != nil {
+			return nil
+		}
+		obj[k] = b
+	}
+	if t.Source.Action != "" {
+		obj["action"], _ = json.Marshal(t.Source.Action)
+	}
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return nil
+	}
+	return out
 }
 
 // ValidateChatGPTCatalog checks the catalog against Catalog: every entry's
@@ -557,9 +570,6 @@ func ValidateChatGPTCatalog() error {
 		}
 		if t.Hints.ReadOnly && t.Hints.Destructive {
 			problems = append(problems, fmt.Sprintf("%s: read-only and destructive", t.Name))
-		}
-		if t.Source.Tool == chatGPTSetWorkspaceSource {
-			continue
 		}
 		def, ok := catalogDef(t.Source.Tool)
 		if !ok {

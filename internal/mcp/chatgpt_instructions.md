@@ -1,6 +1,6 @@
 Pad is a project workspace: items such as tasks, bugs, ideas, plans and docs, organized in collections, each item with a short ref like TASK-12, fields like status and priority, markdown content, comments and links.
 
-Start with list_workspaces, then set_workspace with the slug the user wants. Every other tool takes that workspace slug; pass it on each call.
+Start with list_workspaces, then get_workspace_overview for the workspace the user wants. Every other tool takes that workspace slug; pass it on each call.
 
 To find something, use search or list_items, then get_item for one item's full content. Use list_collections before create_item to pick a collection and valid field values. Refer to items by their ref.
 

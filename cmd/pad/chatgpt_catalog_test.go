@@ -196,3 +196,40 @@ func TestChatGPTCatalog_RefusesUndeclaredParams(t *testing.T) {
 		t.Fatalf("a refused call still dispatched %d time(s)", n)
 	}
 }
+
+// A `fields` number keeps the literal the caller sent through the ChatGPT
+// door, as it does through /mcp (BUG-3217): the projection must hand the
+// source handler the caller's raw bytes, not a re-encoding of the decoded
+// float64s (codex review of U1).
+func TestChatGPTCatalog_KeepsFieldNumberLiterals(t *testing.T) {
+	root := newRootCmd()
+	doc := cmdhelp.Build(root, root, cmdhelp.Options{Binary: "pad", Version: fullVersion(), Homepage: padHomepage, MaxDepth: -1})
+	rec := &recordingDispatcher{}
+	gpt, err := newChatGPTMCPServer(doc, rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := []byte(`{"workspace":"ws","ref":"TASK-1","fields":{"big":9007199254740993,"dec":1.10}}`)
+	var args map[string]any
+	if err := json.Unmarshal(raw, &args); err != nil {
+		t.Fatal(err)
+	}
+	req := mcp.CallToolRequest{}
+	req.Params.Name = "update_item"
+	req.Params.Arguments = args
+	req.Params.RawArguments = raw
+	res, err := gpt.MCP().GetTool("update_item").Handler(context.Background(), req)
+	if err != nil || res.IsError {
+		t.Fatalf("update_item: %v %+v", err, res)
+	}
+	calls := rec.take()
+	if len(calls) != 1 {
+		t.Fatalf("dispatches = %d, want 1", len(calls))
+	}
+	joined := strings.Join(calls[0].Args, " ")
+	for _, lit := range []string{"9007199254740993", "1.10"} {
+		if !strings.Contains(joined, lit) {
+			t.Errorf("dispatched args lost the literal %s: %s", lit, joined)
+		}
+	}
+}
