@@ -114,10 +114,11 @@ func (s *WorkspaceState) ResolveDefault() string {
 //
 // bootstrapFetcher is optional. When non-nil, the response embeds the
 // AgentBootstrap JSON under `bootstrap`, so a single set-workspace call
-// hands the agent a fully-loaded session. When nil (e.g. early in
-// pad-cloud's HTTP dispatch where no CLI is available yet), the
-// response shape stays {workspace, status} and clients can fetch
-// bootstrap separately via pad_meta.action=bootstrap or the resource.
+// hands the agent a fully-loaded session. Both production transports
+// wire one: stdio an ExecBootstrapFetcher, remote /mcp its in-process
+// HTTPResourceFetcher (BUG-3326). When nil, the response carries no
+// `bootstrap` and clients can fetch it separately via
+// pad_meta.action=bootstrap or the resource.
 func SetWorkspaceTool(state *WorkspaceState, bootstrapFetcher BootstrapFetcher) (mcp.Tool, server.ToolHandlerFunc) {
 	// The tool BEHAVES differently per deployment, so the description must
 	// too (BUG-1865): a single-user local server persists the session

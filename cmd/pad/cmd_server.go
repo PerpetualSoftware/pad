@@ -1333,6 +1333,10 @@ func newObservedEventBus(cfg *config.Config, rc *redis.Client, redisKeys redisns
 // build the remote server through this same function rather than
 // assembling its own, which would vouch for the test instead of this binding.
 func registerRemoteMCP(mcpSrv *mcpserver.Server, mcpDoc *cmdhelp.Document, dispatcher *mcpserver.HTTPHandlerDispatcher) error {
+	// One in-process fetcher serves both the resources and
+	// pad_set_workspace's bootstrap embed (BUG-3326), so the embed reads
+	// through the same per-user auth/consent perimeter as the resource.
+	resourceFetcher := mcpserver.NewHTTPResourceFetcher(dispatcher)
 	if _, regErr := mcpserver.Register(mcpSrv.MCP(), mcpserver.RegistryOptions{
 		Doc: mcpDoc,
 		// Shared multi-user state: this one stateless process
@@ -1345,9 +1349,10 @@ func registerRemoteMCP(mcpSrv *mcpserver.Server, mcpDoc *cmdhelp.Document, dispa
 		// maybeInjectWorkspace default). Local `pad mcp serve`
 		// (cmd/pad/mcp.go) keeps NewWorkspaceState — it's
 		// single-user-per-process and safe to inject.
-		Workspace:  mcpserver.NewSharedWorkspaceState(),
-		Dispatcher: dispatcher,
-		PadVersion: fullVersion(),
+		Workspace:        mcpserver.NewSharedWorkspaceState(),
+		Dispatcher:       dispatcher,
+		BootstrapFetcher: resourceFetcher,
+		PadVersion:       fullVersion(),
 	}); regErr != nil {
 		return fmt.Errorf("register MCP catalog: %w", regErr)
 	}
@@ -1367,7 +1372,7 @@ func registerRemoteMCP(mcpSrv *mcpserver.Server, mcpDoc *cmdhelp.Document, dispa
 	// available over remote /mcp.
 	mcpserver.RegisterResources(
 		mcpSrv.MCP(),
-		mcpserver.NewHTTPResourceFetcher(dispatcher),
+		resourceFetcher,
 		nil, // no root flags on the remote transport (no --url)
 	)
 	return nil
