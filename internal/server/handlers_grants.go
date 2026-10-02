@@ -93,7 +93,9 @@ func (s *Server) handleCreateCollectionGrant(w http.ResponseWriter, r *http.Requ
 			writeInternalError(w, err)
 			return
 		}
-		if user == nil {
+		// BUG-3348: an account that has not verified this address is not
+		// its owner, so it answers exactly like an address with no account.
+		if user == nil || !user.IsEmailVerified() {
 			writeError(w, http.StatusNotFound, "not_found", "User not found")
 			return
 		}
@@ -257,7 +259,9 @@ func (s *Server) handleCreateItemGrant(w http.ResponseWriter, r *http.Request) {
 			writeInternalError(w, err)
 			return
 		}
-		if user == nil {
+		// BUG-3348: an account that has not verified this address is not
+		// its owner, so it answers exactly like an address with no account.
+		if user == nil || !user.IsEmailVerified() {
 			writeError(w, http.StatusNotFound, "not_found", "User not found")
 			return
 		}

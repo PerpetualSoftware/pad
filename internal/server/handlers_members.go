@@ -124,8 +124,13 @@ func (s *Server) handleInviteMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if existingUser != nil {
-		// User exists — add them directly
+	// BUG-3348: only an account that has PROVEN this address is added
+	// directly. Anyone can register an address on a self-serve instance, so
+	// an unverified account matching the invite is not evidence of who will
+	// read the workspace; it gets the ordinary invitation below, whose code
+	// goes to the address itself. Accepting it verifies the account.
+	if existingUser != nil && existingUser.IsEmailVerified() {
+		// User exists and owns the address — add them directly
 		alreadyMember, _ := s.store.IsWorkspaceMember(workspaceID, existingUser.ID)
 		if alreadyMember {
 			writeError(w, http.StatusConflict, "conflict", "User is already a member of this workspace")
@@ -364,24 +369,12 @@ func (s *Server) handleAcceptInvitation(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// DR-1: accepting an email-bound invitation proves control of that email
-	// address, so verify the account if it's still unverified. This makes
-	// "invited = verified" hold for later accepts too — an existing unverified
-	// self-signup who accepts an invite becomes verified. Because currentUser
-	// is re-read fresh from the DB per request (ValidateSession → GetUser),
-	// this flip unblocks the user's subsequent mutations under
-	// RequireVerifiedEmail immediately, in the same session. Best-effort: a
-	// failure here doesn't undo the accepted membership.
-	if !user.IsEmailVerified() {
-		if err := s.store.SetUserEmailVerified(user.ID); err != nil {
-			slog.Error("failed to mark email verified on invite accept", "error", err, "user_id", user.ID)
-		} else {
-			s.logAuditEventForUser(models.ActionEmailVerified, r, user.ID, auditMeta(map[string]string{
-				"email":  user.Email,
-				"method": "invitation_accept",
-			}))
-		}
-	}
+	// BUG-3348: accepting does NOT verify the account's email. DR-1 read
+	// holding the code as proof of the address, but the inviter is handed
+	// the same code in the invite response, so an owner could invite an
+	// address squatted by an unverified account, redeem the code as that
+	// account, and leave it verified as somebody else. The address is proven
+	// only by the verification link.
 
 	s.writeInvitationAccepted(w, inv, role)
 }
