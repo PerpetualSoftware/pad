@@ -50,7 +50,7 @@ test('http self-host: the modal token config reaches /mcp and lists tools', asyn
 
 	const admin = await playwrightRequest.newContext({
 		baseURL: fixture.baseURL,
-		extraHTTPHeaders: { Authorization: `Bearer ${fixture.apiToken}` }
+		extraHTTPHeaders: { Authorization: `Bearer ${fixture.adminSessionToken}` }
 	});
 	try {
 		// Inside the try: a failed readiness assertion after the PUT

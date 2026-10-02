@@ -17,11 +17,11 @@ export const NAMES = [
 export type Box = { x: number; y: number; width: number; height: number };
 
 export async function asNewUser(page: Page): Promise<{ username: string; slugs: string[] }> {
-	const { baseURL, apiToken } = suiteFixture();
+	const { baseURL, adminSessionToken } = suiteFixture();
 	const suffix = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
 	const email = `e2e-tabs-${suffix}@example.com`;
 	const username = `e2etabs${suffix}`;
-	const api = await playwrightRequest.newContext({ baseURL, extraHTTPHeaders: { Authorization: `Bearer ${apiToken}` } });
+	const api = await playwrightRequest.newContext({ baseURL, extraHTTPHeaders: { Authorization: `Bearer ${adminSessionToken}` } });
 	try {
 		const r = await api.post('/api/v1/auth/register', { data: { email, username, name: 'Tabs', password: PASSWORD } });
 		if (!r.ok()) throw new Error(`register failed (${r.status()}): ${await r.text()}`);

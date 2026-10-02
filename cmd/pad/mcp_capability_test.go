@@ -72,14 +72,15 @@ func capRoutes() []capRoute {
 }
 
 type capFixture struct {
-	store     *store.Store
-	srv       *server.Server
-	keyBytes  []byte
-	admin     *models.User
-	member    *models.User
-	ws        *models.Workspace
-	adminPAT  string
-	memberPAT string
+	store        *store.Store
+	srv          *server.Server
+	keyBytes     []byte
+	admin        *models.User
+	member       *models.User
+	ws           *models.Workspace
+	adminPAT     string // for /mcp, which takes a PAT
+	adminSession string // for /api/v1/admin, which refuses one (BUG-3361)
+	memberPAT    string
 	// host is the Host header requests carry: the configured origin's,
 	// as a client using the configured URL (or a proxy forwarding it)
 	// sends, so the DR-6 allowlist admits them. "example.com" when no
@@ -126,6 +127,11 @@ func newCapFixture(t *testing.T, cfg config.Config, cloud bool, env *bool, setti
 		}
 		*u.dst = tok.Token
 	}
+	// The admin drives /api/v1/admin, which refuses an API token (BUG-3361):
+	// a CLI session, as `pad auth login` gives an operator.
+	if f.adminSession, err = s.CreateSession(f.admin.ID, "cli-browser-auth", "192.0.2.10", "", time.Hour); err != nil {
+		t.Fatalf("CreateSession admin: %v", err)
+	}
 	if setting != "" {
 		if err := s.SetPlatformSetting("mcp_enabled", setting); err != nil {
 			t.Fatalf("SetPlatformSetting: %v", err)
@@ -163,7 +169,7 @@ func (f *capFixture) do(t *testing.T, rt capRoute) *httptest.ResponseRecorder {
 	case "member":
 		req.Header.Set("Authorization", "Bearer "+f.memberPAT)
 	case "admin":
-		req.Header.Set("Authorization", "Bearer "+f.adminPAT)
+		req.Header.Set("Authorization", "Bearer "+f.adminSession)
 	}
 	rr := httptest.NewRecorder()
 	f.srv.ServeHTTP(rr, req)

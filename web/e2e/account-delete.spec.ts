@@ -97,9 +97,9 @@ test.describe('Danger Zone: delete my account', () => {
 	});
 
 	test('password branch removes the account and redirects to /login', async ({ browser }) => {
-		const { baseURL, apiToken } = suiteFixture();
+		const { baseURL, adminSessionToken } = suiteFixture();
 		const identity = throwawayIdentity('pw');
-		await createThrowawayUser(baseURL, apiToken, identity, 'Delete PW');
+		await createThrowawayUser(baseURL, adminSessionToken, identity, 'Delete PW');
 
 		const context = await browser.newContext({ baseURL });
 		try {
@@ -129,7 +129,7 @@ test.describe('Danger Zone: delete my account', () => {
 		// (A GET on the generous API limiter, so it adds no /auth rate pressure.)
 		const admin = await playwrightRequest.newContext({
 			baseURL,
-			extraHTTPHeaders: { Authorization: `Bearer ${apiToken}` }
+			extraHTTPHeaders: { Authorization: `Bearer ${adminSessionToken}` }
 		});
 		try {
 			const resp = await admin.get(
@@ -145,9 +145,9 @@ test.describe('Danger Zone: delete my account', () => {
 	});
 
 	test('cloud OAuth-only typed-confirm branch redirects to /login', async ({ browser }) => {
-		const { baseURL, apiToken } = suiteFixture();
+		const { baseURL, adminSessionToken } = suiteFixture();
 		const identity = throwawayIdentity('cloud');
-		await createThrowawayUser(baseURL, apiToken, identity, 'Delete Cloud');
+		await createThrowawayUser(baseURL, adminSessionToken, identity, 'Delete Cloud');
 
 		const context = await browser.newContext({ baseURL });
 		try {
