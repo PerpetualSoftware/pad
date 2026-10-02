@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -191,6 +192,9 @@ func (s *Store) RemoveWorkspaceMember(workspaceID, userID string) error {
 	if err := s.lockUserTabsTx(tx, userID); err != nil {
 		return err
 	}
+	if err := s.guardOwnerLossTx(tx, workspaceID, userID); err != nil {
+		return err
+	}
 	result, err := tx.Exec(
 		s.q("DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?"),
 		workspaceID, userID,
@@ -220,6 +224,9 @@ func (s *Store) RemoveWorkspaceMemberAndRevokeGrants(workspaceID, userID string)
 	// users(U) before any other row: the prune below bumps U's tabs revision,
 	// and every transaction that does takes that lock first (BUG-3285).
 	if err := s.lockUserTabsTx(tx, userID); err != nil {
+		return err
+	}
+	if err := s.guardOwnerLossTx(tx, workspaceID, userID); err != nil {
 		return err
 	}
 
@@ -806,7 +813,17 @@ func (s *Store) IsWorkspaceMember(workspaceID, userID string) (bool, error) {
 
 // UpdateWorkspaceMemberRole changes a member's role in a workspace.
 func (s *Store) UpdateWorkspaceMemberRole(workspaceID, userID, role string) error {
-	result, err := s.db.Exec(
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+	if role != "owner" {
+		if err := s.guardOwnerLossTx(tx, workspaceID, userID); err != nil {
+			return err
+		}
+	}
+	result, err := tx.Exec(
 		s.q("UPDATE workspace_members SET role = ? WHERE workspace_id = ? AND user_id = ?"),
 		role, workspaceID, userID,
 	)
@@ -816,6 +833,66 @@ func (s *Store) UpdateWorkspaceMemberRole(workspaceID, userID, role string) erro
 	n, _ := result.RowsAffected()
 	if n == 0 {
 		return sql.ErrNoRows
+	}
+	return tx.Commit()
+}
+
+// ErrCanonicalOwner refuses demoting or removing a workspace's canonical
+// owner (workspaces.owner_id) through the member doors (BUG-3355). owner_id
+// sets the workspace's URL, who may restore it and whose plan it counts
+// against, so authority must not move away from it; moving owner_id itself
+// is an ownership transfer, a separate operation.
+var ErrCanonicalOwner = errors.New("the workspace's owner cannot be demoted or removed; transfer ownership first")
+
+// ErrLastOwner refuses a demotion or removal that would leave a workspace
+// with no owner member (BUG-3355).
+var ErrLastOwner = errors.New("a workspace must keep at least one owner")
+
+// guardOwnerLossTx is called inside the transaction that demotes userID away
+// from owner or removes them. It refuses the canonical owner outright, and
+// refuses the workspace's last owner member.
+//
+// The owner membership rows are read FOR UPDATE on Postgres, so two
+// demotions racing to leave zero owners serialize here and the second
+// re-reads the first's result. On SQLite every transaction already holds the
+// database write lock (_txlock=immediate). The rows locked are membership
+// rows, not the workspace row: member removal takes users(U) first
+// (BUG-3285) and soft delete locks the workspace before users, so a
+// workspace-row lock here would order the two the other way round.
+func (s *Store) guardOwnerLossTx(tx *sql.Tx, workspaceID, userID string) error {
+	var ownerID sql.NullString
+	switch err := tx.QueryRow(s.q(`SELECT owner_id FROM workspaces WHERE id = ?`), workspaceID).Scan(&ownerID); {
+	case errors.Is(err, sql.ErrNoRows):
+		// No workspace: the write below finds no member row either.
+	case err != nil:
+		return fmt.Errorf("read workspace owner: %w", err)
+	case ownerID.Valid && ownerID.String == userID:
+		return ErrCanonicalOwner
+	}
+
+	query := `SELECT user_id FROM workspace_members WHERE workspace_id = ? AND role = 'owner'`
+	if s.dialect.Driver() == DriverPostgres {
+		query += ` FOR UPDATE`
+	}
+	rows, err := tx.Query(s.q(query), workspaceID)
+	if err != nil {
+		return fmt.Errorf("read workspace owners: %w", err)
+	}
+	defer rows.Close()
+	owners, isOwner := 0, false
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return fmt.Errorf("read workspace owners: %w", err)
+		}
+		owners++
+		isOwner = isOwner || id == userID
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read workspace owners: %w", err)
+	}
+	if isOwner && owners <= 1 {
+		return ErrLastOwner
 	}
 	return nil
 }

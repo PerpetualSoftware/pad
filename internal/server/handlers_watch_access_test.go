@@ -48,8 +48,11 @@ func TestFilterWatchesByCurrentAccess_ExcludesRevokedMembership(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetWorkspaceBySlug: %v", err)
 	}
-	if err := srv.store.RemoveWorkspaceMember(ws.ID, user.ID); err != nil {
-		t.Fatalf("RemoveWorkspaceMember: %v", err)
+	// BUG-3355: the store refuses to remove a workspace's only owner, which
+	// this user is; the test needs the membership simply gone, so it deletes
+	// the row directly.
+	if _, err := srv.store.DB().Exec(srv.store.D().Rebind(`DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?`), ws.ID, user.ID); err != nil {
+		t.Fatalf("delete membership: %v", err)
 	}
 
 	filtered := srv.filterWatchesByCurrentAccess(noBearerRequest(), user.ID, watches)
@@ -146,8 +149,11 @@ func TestListWatches_ExcludesRevokedAccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetWorkspaceBySlug: %v", err)
 	}
-	if err := srv.store.RemoveWorkspaceMember(ws.ID, user.ID); err != nil {
-		t.Fatalf("RemoveWorkspaceMember: %v", err)
+	// BUG-3355: the store refuses to remove a workspace's only owner, which
+	// this user is; the test needs the membership simply gone, so it deletes
+	// the row directly.
+	if _, err := srv.store.DB().Exec(srv.store.D().Rebind(`DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?`), ws.ID, user.ID); err != nil {
+		t.Fatalf("delete membership: %v", err)
 	}
 
 	rr = bearerCall(t, srv, "GET", "/api/v1/watches", tok.Token, nil)

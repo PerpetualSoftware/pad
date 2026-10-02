@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -10,6 +12,7 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/email"
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/PerpetualSoftware/pad/internal/watchevents"
 )
 
@@ -228,17 +231,16 @@ func (s *Server) handleRemoveMember(w http.ResponseWriter, r *http.Request) {
 	// ?revoke_grants=false → explicitly keep grants (user becomes a guest)
 	// ?revoke_grants=true or omitted → delete all grants (full removal)
 	revokeGrants := r.URL.Query().Get("revoke_grants") != "false"
+	var removeErr error
 	if revokeGrants {
 		// Atomic: remove member and revoke all grants in one transaction
-		if err := s.store.RemoveWorkspaceMemberAndRevokeGrants(workspaceID, userID); err != nil {
-			writeError(w, http.StatusNotFound, "not_found", "Member not found")
-			return
-		}
+		removeErr = s.store.RemoveWorkspaceMemberAndRevokeGrants(workspaceID, userID)
 	} else {
-		if err := s.store.RemoveWorkspaceMember(workspaceID, userID); err != nil {
-			writeError(w, http.StatusNotFound, "not_found", "Member not found")
-			return
-		}
+		removeErr = s.store.RemoveWorkspaceMember(workspaceID, userID)
+	}
+	if removeErr != nil {
+		writeMemberChangeError(w, removeErr)
+		return
 	}
 
 	meta := map[string]string{"user_id": userID}
@@ -277,9 +279,17 @@ func (s *Server) handleUpdateMemberRole(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "bad_request", "role is required")
 		return
 	}
+	// BUG-3355: an unknown role used to reach the column's CHECK constraint
+	// and come back as a misleading 404 "Member not found".
+	switch input.Role {
+	case "owner", "editor", "viewer":
+	default:
+		writeError(w, http.StatusBadRequest, "bad_request", "role must be owner, editor or viewer")
+		return
+	}
 
 	if err := s.store.UpdateWorkspaceMemberRole(workspaceID, userID, input.Role); err != nil {
-		writeError(w, http.StatusNotFound, "not_found", "Member not found")
+		writeMemberChangeError(w, err)
 		return
 	}
 
@@ -289,6 +299,23 @@ func (s *Server) handleUpdateMemberRole(w http.ResponseWriter, r *http.Request) 
 		"user_id": userID,
 		"role":    input.Role,
 	})
+}
+
+// writeMemberChangeError answers a failed role change or member removal.
+// A missing member is 404; the owner invariants (BUG-3355) are 409 with their
+// own codes, so a client can tell "transfer ownership first" from "promote
+// someone else first"; anything else is a server error, not a 404.
+func writeMemberChangeError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		writeError(w, http.StatusNotFound, "not_found", "Member not found")
+	case errors.Is(err, store.ErrCanonicalOwner):
+		writeError(w, http.StatusConflict, "canonical_owner", "This is the workspace's owner, who cannot be demoted or removed; transfer ownership first")
+	case errors.Is(err, store.ErrLastOwner):
+		writeError(w, http.StatusConflict, "last_owner", "A workspace must keep at least one owner; make another member an owner first")
+	default:
+		writeInternalError(w, err)
+	}
 }
 
 // handleCancelInvitation deletes a pending invitation.
