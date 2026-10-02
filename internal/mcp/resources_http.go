@@ -111,6 +111,22 @@ func (f *HTTPResourceFetcher) Fetch(ctx context.Context, args []string) (string,
 	}
 }
 
+// Bootstrap satisfies BootstrapFetcher, so the remote transport's
+// pad_set_workspace embeds the same blob its bootstrap resource serves
+// (BUG-3326). It is the resource read itself, run as the dispatcher's
+// resolved user through the same auth/consent perimeter, so the embed can
+// never reach a workspace the token cannot read.
+func (f *HTTPResourceFetcher) Bootstrap(ctx context.Context, workspace string) ([]byte, error) {
+	if workspace == "" {
+		return nil, fmt.Errorf("bootstrap fetcher: workspace is required")
+	}
+	body, err := f.Fetch(ctx, []string{"bootstrap", "--workspace", workspace, "--format", "json"})
+	if err != nil {
+		return nil, err
+	}
+	return []byte(body), nil
+}
+
 // FetchBytes serves the attachment-download resource read in-process,
 // bounding retained output at the resource limit so a large blob can't
 // balloon memory in the shared cloud process (the stdout-cap analog of
