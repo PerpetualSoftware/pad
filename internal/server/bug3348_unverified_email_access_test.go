@@ -1,6 +1,8 @@
 package server
 
 import (
+	"database/sql"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -219,4 +221,57 @@ func TestBUG3348_RegisterWithInvitationCodeDoesNotVerifyOnCloud(t *testing.T) {
 			t.Fatal("self-hosted invited signup should stay verified")
 		}
 	})
+}
+
+// Codex r2: when the invited signup's membership write fails and its outcome
+// cannot be read, the handler KEEPS the account (BUG-2715) and returns early.
+// That account is unverified on cloud, so it must already have been sent its
+// verification link — a retry hits the duplicate-email 409.
+func TestBUG3348_InvitedSignupKeptAfterMembershipFailureStillGetsLink(t *testing.T) {
+	srv, mails := newCloudEmailServer(t)
+	admin, err := srv.store.GetUserByEmail("admin@pad.test")
+	if err != nil || admin == nil {
+		t.Fatalf("admin lookup: %v", err)
+	}
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Invite WS", OwnerID: admin.ID})
+	if err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	inv, err := srv.store.CreateInvitation(ws.ID, "kept@example.com", "editor", admin.ID)
+	if err != nil {
+		t.Fatalf("CreateInvitation: %v", err)
+	}
+
+	restore := srv.store.SetAddWorkspaceMemberCommitHookForTesting(func(tx *sql.Tx) error {
+		_ = tx.Rollback()
+		return errSimMemberAckLoss
+	})
+	t.Cleanup(restore)
+	srv.membershipCheck = func(string, string) (*models.WorkspaceMember, error) {
+		return nil, errors.New("simulated membership read failure")
+	}
+	t.Cleanup(func() { srv.membershipCheck = nil })
+
+	doRequest(srv, "POST", "/api/v1/auth/register", map[string]string{
+		"email":           "kept@example.com",
+		"name":            "Kept",
+		"password":        "correct-horse-battery-staple",
+		"invitation_code": inv.Code,
+	})
+	u, err := srv.store.GetUserByEmail("kept@example.com")
+	if err != nil || u == nil {
+		t.Fatalf("precondition: the unreadable arm keeps the account (err=%v)", err)
+	}
+	if u.IsEmailVerified() {
+		t.Fatal("kept invited signup is verified on cloud")
+	}
+	select {
+	case m := <-mails:
+		if m.to != "kept@example.com" {
+			t.Fatalf("verification mail went to %q", m.to)
+		}
+		extractVerifyToken(t, m)
+	case <-time.After(5 * time.Second):
+		t.Fatal("kept unverified account was never sent a verification link")
+	}
 }

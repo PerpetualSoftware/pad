@@ -717,6 +717,42 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Cloud self-serve or invited signup: mint + send the email-verification
+	// link. needsVerification is only true when emailConfigured() holds
+	// (sender wired + usable base URL), so the link is deliverable.
+	//
+	// Token creation is REQUIRED to complete signup (invariant: never leave a
+	// user who can't verify). If minting the token fails we roll the user back
+	// and 500 — otherwise the duplicate-email 409 would block a retry and the
+	// account would be write-locked with no link. Only the async SEND is
+	// best-effort: a send failure keeps the account (the token exists) and the
+	// user recovers via POST /auth/resend-verification.
+	//
+	// It runs BEFORE the invitation's membership and accept writes (BUG-3348
+	// codex r2): once a membership row exists DeleteUser cannot roll the
+	// account back, and the invitation path's own early returns would skip
+	// a later send, stranding an unverified account with no link. A rollback
+	// further down can leave an already-sent link pointing at a deleted
+	// account, which is inert.
+	if needsVerification {
+		vtoken, verr := s.store.CreateEmailVerification(user.ID)
+		if verr != nil {
+			slog.Error("failed to create email verification token; rolling back signup", "error", verr, "user_id", user.ID)
+			if derr := s.store.DeleteUser(user.ID); derr != nil {
+				slog.Error("failed to roll back user after verification-token error", "error", derr, "user_id", user.ID)
+			}
+			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to start email verification")
+			return
+		}
+		verifyURL := s.baseURL + "/verify-email/" + vtoken
+		toEmail, toName := user.Email, user.Name
+		s.goAsync(func() {
+			if err := s.email.SendEmailVerification(context.Background(), toEmail, toName, verifyURL); err != nil {
+				slog.Error("failed to send verification email", "error", err)
+			}
+		})
+	}
+
 	// If registering via invitation, automatically add the user to the
 	// workspace and mark the invitation as accepted.
 	if invitation != nil {
@@ -828,35 +864,6 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 				"workspace_id", invitation.WorkspaceID, "user_id", user.ID,
 				"invitation_id", invitation.ID, "error", err)
 		}
-	}
-
-	// Cloud self-serve or invited signup: mint + send the email-verification
-	// link. needsVerification is only true when emailConfigured() holds
-	// (sender wired + usable base URL), so the link is deliverable.
-	//
-	// Token creation is REQUIRED to complete signup (invariant: never leave a
-	// user who can't verify). If minting the token fails we roll the user back
-	// and 500 — otherwise the duplicate-email 409 would block a retry and the
-	// account would be write-locked with no link. Only the async SEND is
-	// best-effort: a send failure keeps the account (the token exists) and the
-	// user recovers via POST /auth/resend-verification.
-	if needsVerification {
-		vtoken, verr := s.store.CreateEmailVerification(user.ID)
-		if verr != nil {
-			slog.Error("failed to create email verification token; rolling back signup", "error", verr, "user_id", user.ID)
-			if derr := s.store.DeleteUser(user.ID); derr != nil {
-				slog.Error("failed to roll back user after verification-token error", "error", derr, "user_id", user.ID)
-			}
-			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to start email verification")
-			return
-		}
-		verifyURL := s.baseURL + "/verify-email/" + vtoken
-		toEmail, toName := user.Email, user.Name
-		s.goAsync(func() {
-			if err := s.email.SendEmailVerification(context.Background(), toEmail, toName, verifyURL); err != nil {
-				slog.Error("failed to send verification email", "error", err)
-			}
-		})
 	}
 
 	// An admin creating someone else's account is not signing in as them, so
