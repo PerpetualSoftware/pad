@@ -1719,9 +1719,12 @@ const CmdhelpVersion = "0.1"
 //     the caller names: a send cannot be taken back, which the MCP spec's
 //     destructiveHint (and OpenAI's plugin review) counts as destructive,
 //     and an arbitrary recipient is outside the server's own data, which
-//     is what openWorldHint means. Every other tool's block is unchanged.
-//     A client that confirms destructive tools will now confirm
-//     pad_workspace calls.
+//     is what openWorldHint means. `pad_playbook` also becomes
+//     openWorldHint:true (still read-only and non-destructive): its
+//     `match` action sends the caller's text to the configured decision
+//     provider, a third-party model API. Every other tool's block is
+//     unchanged. A client that confirms destructive tools will now
+//     confirm pad_workspace calls.
 //
 //     Post-0.37, deliberately NO bump (BUG-3098): `workspace_member_limit`
 //     joins the structured 403 allow-list, as ErrWorkspaceMemberLimit with

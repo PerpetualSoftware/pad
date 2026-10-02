@@ -139,11 +139,12 @@ func TestAdditiveWriteActions_NoStaleEntries(t *testing.T) {
 // read back from openWorldActions so the two can disagree and fail.
 var openWorldTools = map[string]bool{
 	"pad_workspace": true, // invite emails an arbitrary address
+	"pad_playbook":  true, // match sends text to the decision provider
 }
 
 // TestOpenWorldActions_NoStaleEntries: every openWorldActions entry names a
-// real catalog (tool, action) pair, and none is a read (a read that reaches
-// the outside world would need its own decision).
+// real catalog (tool, action) pair. Reads are allowed: open-world is where
+// data goes, not whether anything is written (pad_playbook.match).
 func TestOpenWorldActions_NoStaleEntries(t *testing.T) {
 	byName := map[string]ToolDef{}
 	for _, def := range Catalog {
@@ -158,9 +159,6 @@ func TestOpenWorldActions_NoStaleEntries(t *testing.T) {
 		for action := range set {
 			if _, ok := def.Actions[action]; !ok {
 				t.Errorf("openWorldActions[%s][%s] has no matching Catalog action (stale entry)", tool, action)
-			}
-			if isReadOnlyAction(tool, action) {
-				t.Errorf("openWorldActions[%s][%s] is also read-only; decide it explicitly", tool, action)
 			}
 		}
 	}

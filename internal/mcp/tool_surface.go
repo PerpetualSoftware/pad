@@ -174,9 +174,16 @@ var additiveWriteActions = map[string]map[string]bool{
 // bounded workspace, a closed world.
 //
 //   - pad_workspace.invite emails an arbitrary address.
+//   - pad_playbook.match sends the caller's free text to the configured
+//     decision provider, a third-party model API (internal/decision).
+//     It is a READ: open-world is about where data goes, not whether
+//     anything is written, so a read can carry it (codex review).
 var openWorldActions = map[string]map[string]bool{
 	"pad_workspace": {
 		"invite": true,
+	},
+	"pad_playbook": {
+		"match": true,
 	},
 }
 

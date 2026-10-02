@@ -297,9 +297,10 @@ func (e *catalogError) Error() string { return e.msg }
 //     invite sends email, TASK-3321 U0b) — the conservative tool-level
 //     truth.
 //   - OpenWorldHint:true only for a tool with an action in
-//     openWorldActions (pad_workspace.invite, which emails an arbitrary
-//     address); every other pad tool operates on the pad server's own
-//     workspace data, a closed world.
+//     openWorldActions (pad_workspace.invite emails an arbitrary
+//     address; pad_playbook.match sends text to the decision provider);
+//     every other pad tool operates on the pad server's own workspace
+//     data, a closed world.
 func annotationForDef(def ToolDef) mcp.ToolAnnotation {
 	allReadOnly := true
 	destructive := false
