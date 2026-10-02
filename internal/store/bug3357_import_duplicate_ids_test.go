@@ -40,6 +40,10 @@ func TestBUG3357_DuplicateSourceIDsRefused(t *testing.T) {
 		"collection": func(d *models.WorkspaceExport) {
 			d.Collections[1].ID = d.Collections[0].ID
 		},
+		// Two rows without an id collide on "" (codex r1); one is allowed.
+		"item-empty": func(d *models.WorkspaceExport) {
+			d.Items[0].ID, d.Items[1].ID = "", ""
+		},
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -52,8 +56,9 @@ func TestBUG3357_DuplicateSourceIDsRefused(t *testing.T) {
 			if !ok {
 				t.Fatalf("import with a duplicate %s id: err = %v (ws = %v), want a ValidationError", name, err, ws)
 			}
-			if !strings.Contains(v.Reason, "duplicate") || !strings.Contains(v.Reason, name) {
-				t.Errorf("reason %q should name the duplicate %s id", v.Reason, name)
+			kind := strings.TrimSuffix(name, "-empty")
+			if !strings.Contains(v.Reason, kind) || !(strings.Contains(v.Reason, "duplicate") || strings.Contains(v.Reason, "no id")) {
+				t.Errorf("reason %q should name the %s collision", v.Reason, kind)
 			}
 			if ws != nil || workspaceExists(t, dst, dstName) {
 				t.Error("the refused import left a workspace behind")

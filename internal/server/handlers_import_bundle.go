@@ -464,7 +464,11 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 		}
 	}()
 	var manifestByPath map[string]*models.AttachmentManifestEntry
-	var oldItemIDToSlug, slugToNewID map[string]string
+	// Source item id -> new item id, from the store's import (BUG-3357).
+	var itemIDMap map[string]string
+	// Blob paths already rehydrated: a second tar entry at one path would
+	// rehydrate the attachment twice, and references would follow the last.
+	rehydratedPaths := map[string]bool{}
 	oldAttachToNew := map[string]string{}
 	exportSeen := false
 	manifestSeen := false
@@ -659,14 +663,7 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 				}
 				return nil, fmt.Errorf("import workspace: %w", err)
 			}
-			oldItemIDToSlug = make(map[string]string, len(export.Items))
-			for _, it := range export.Items {
-				oldItemIDToSlug[it.ID] = it.Slug
-			}
-			slugToNewID, err = s.store.WorkspaceItemSlugMap(ws.ID)
-			if err != nil {
-				return ws, fmt.Errorf("build slug→id map: %w", err)
-			}
+			itemIDMap = rep.ItemIDs
 			exportSeen = true
 			if s.importBundleAfterMintHook != nil {
 				s.importBundleAfterMintHook()
@@ -791,8 +788,15 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 			if err != nil {
 				return ws, fmt.Errorf("read blob %s: %w", hdr.Name, err)
 			}
+			if rehydratedPaths[hdr.Name] {
+				return ws, &importStatusError{
+					status: http.StatusBadRequest, code: "bad_bundle",
+					message: "Bundle contains attachment blob " + hdr.Name + " more than once",
+				}
+			}
+			rehydratedPaths[hdr.Name] = true
 			newAttID, err := s.rehydrateAttachment(ctx, ws.ID, entry, blob,
-				oldItemIDToSlug, slugToNewID, ownerID)
+				itemIDMap, ownerID)
 			if err != nil {
 				slog.Warn("import: rehydrate failed",
 					"attachment_id", entry.ID, "error", err)
@@ -891,7 +895,7 @@ func (s *Server) rehydrateAttachment(
 	workspaceID string,
 	entry *models.AttachmentManifestEntry,
 	blob []byte,
-	oldItemIDToSlug, slugToNewID map[string]string,
+	itemIDMap map[string]string,
 	ownerID string,
 ) (string, error) {
 	// Defense in depth: re-validate the MIME against the allowlist on
@@ -939,14 +943,13 @@ func (s *Server) rehydrateAttachment(
 		return "", fmt.Errorf("store.Put: %w", err)
 	}
 
-	// Translate the old item id (from the manifest) into the new id
-	// via item.slug, which ImportWorkspace preserves.
+	// Translate the old item id (from the manifest) into the new id through
+	// the import's own id map (BUG-3357). The slug used to be the bridge, but
+	// the import renames a slug two items share, so it named the wrong item.
 	var newItemIDPtr *string
 	if entry.ItemID != "" {
-		if slug, ok := oldItemIDToSlug[entry.ItemID]; ok {
-			if newID, ok := slugToNewID[slug]; ok && newID != "" {
-				newItemIDPtr = &newID
-			}
+		if newID, ok := itemIDMap[entry.ItemID]; ok && newID != "" {
+			newItemIDPtr = &newID
 		}
 	}
 
