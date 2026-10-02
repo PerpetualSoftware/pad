@@ -551,12 +551,17 @@ func (s *Store) GuestVisibleResourcesIncludeDeleted(workspaceID, userID string) 
 // GuestVisibleResourcesIncludeDeletedQ is GuestVisibleResourcesIncludeDeleted
 // parameterized over its executor (see Queryer).
 func (s *Store) GuestVisibleResourcesIncludeDeletedQ(q Queryer, workspaceID, userID string) (fullCollectionIDs []string, grantedItemIDs []string, err error) {
-	// Collections with direct grants — include soft-deleted
-	// collections so the client can flush their items from its
-	// local index via the items query below.
+	// Collections with direct grants, live ones only (BUG-3333). A
+	// soft-deleted collection's items stay live, so including the
+	// collection here did not flush them from a client's index: it served
+	// them as live upserts to a guest who can no longer see them. The
+	// client learns a collection went away from access_epoch, which
+	// changes when the collection leaves the visible set and triggers its
+	// authoritative resync (IDEA-2898).
 	rows, err := q.Query(s.q(`
 		SELECT DISTINCT cg.collection_id FROM collection_grants cg
-		WHERE cg.workspace_id = ? AND cg.user_id = ?
+		JOIN collections c ON c.id = cg.collection_id
+		WHERE cg.workspace_id = ? AND cg.user_id = ? AND c.deleted_at IS NULL
 	`), workspaceID, userID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("guest collection grants (include deleted): %w", err)
@@ -577,11 +582,14 @@ func (s *Store) GuestVisibleResourcesIncludeDeletedQ(q Queryer, workspaceID, use
 	// tombstones flow through /items-changes. The grant row itself
 	// is the source of truth for visibility; the item's
 	// deleted_at is what the delta endpoint USES to mark
-	// `deleted:true` on the wire.
+	// `deleted:true` on the wire. An item in a soft-deleted collection
+	// is excluded, as the live path excludes it (BUG-3333).
 	itemRows, err := q.Query(s.q(`
 		SELECT DISTINCT ig.item_id
 		FROM item_grants ig
-		WHERE ig.workspace_id = ? AND ig.user_id = ?
+		JOIN items i ON i.id = ig.item_id
+		JOIN collections c ON c.id = i.collection_id
+		WHERE ig.workspace_id = ? AND ig.user_id = ? AND c.deleted_at IS NULL
 	`), workspaceID, userID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("guest item grants (include deleted): %w", err)
