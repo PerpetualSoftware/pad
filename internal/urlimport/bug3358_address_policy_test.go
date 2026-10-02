@@ -23,6 +23,16 @@ func TestBUG3358_LiteralReservedAddressRefused(t *testing.T) {
 	}
 }
 
+// The dialer screens a literal address itself, independent of ValidateURL
+// (which the literal test above exits through).
+func TestBUG3358_DialerScreensLiteral(t *testing.T) {
+	tr := newSafeTransport(false, DefaultTimeout)
+	_, err := tr.DialContext(context.Background(), "tcp", "198.18.0.1:80")
+	if err == nil || !strings.Contains(err.Error(), "blocked dial to private/reserved IP 198.18.0.1") {
+		t.Fatalf("dial of a literal reserved address: got %v, want the dial-time refusal", err)
+	}
+}
+
 func stubLookup(t *testing.T, answers map[string]string) {
 	t.Helper()
 	prev := lookupIP
@@ -68,8 +78,11 @@ func TestBUG3358_RedirectToReservedAddressRefused(t *testing.T) {
 		f := NewFetcher()
 		f.Transport = &redirectFirstHop{from: "start.test", to: target, next: newSafeTransport(false, DefaultTimeout)}
 		_, err := f.Fetch(context.Background(), "http://start.test/")
-		if err == nil || !strings.Contains(err.Error(), "198.18.0.1") {
-			t.Fatalf("redirect to %s: got %v, want a refusal naming 198.18.0.1", target, err)
+		// The refusal itself, not any error naming the address (a connection
+		// failure would name it too): the redirect check's, or the dialer's.
+		if err == nil || !(strings.Contains(err.Error(), "redirect to") && strings.Contains(err.Error(), "private or reserved IP 198.18.0.1")) &&
+			!strings.Contains(err.Error(), "private/reserved IP 198.18.0.1") {
+			t.Fatalf("redirect to %s: got %v, want the policy refusal for 198.18.0.1", target, err)
 		}
 	}
 }
