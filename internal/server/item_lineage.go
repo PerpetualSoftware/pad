@@ -115,9 +115,13 @@ func (s *Server) enrichItemForResponse(r *http.Request, item *models.Item, visib
 	if parentLink != nil {
 		parentVisible := true
 		if hasVis {
-			if parent, perr := s.store.GetItem(parentLink.TargetID); perr == nil && parent != nil {
-				parentVisible = isCollectionVisible(parent.CollectionID, vis)
+			// A lookup that fails, or finds nothing, is not a visible parent
+			// (BUG-3334).
+			parent, perr := s.store.GetItem(parentLink.TargetID)
+			if perr != nil {
+				return perr
 			}
+			parentVisible = parent != nil && isCollectionVisible(parent.CollectionID, vis)
 		}
 		if parentVisible {
 			item.ParentLinkID = parentLink.TargetID
@@ -152,10 +156,14 @@ func (s *Server) deriveItemClosure(item *models.Item, vis []string) (*models.Ite
 			if otherID == item.ID {
 				otherID = link.TargetID
 			}
-			if other, oerr := s.store.GetItem(otherID); oerr == nil && other != nil {
-				if !isCollectionVisible(other.CollectionID, vis) {
-					continue
-				}
+			// A lookup that fails, or finds nothing, is not a visible item
+			// (BUG-3334).
+			other, oerr := s.store.GetItem(otherID)
+			if oerr != nil {
+				return nil, oerr
+			}
+			if other == nil || !isCollectionVisible(other.CollectionID, vis) {
+				continue
 			}
 		}
 

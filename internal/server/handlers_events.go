@@ -777,20 +777,26 @@ type sseVisibility struct {
 func (s *Server) computeSSEVisibility(r *http.Request, workspaceID string) sseVisibility {
 	var v sseVisibility
 
-	// Resolve the current user fresh from the store. Fall back to the
-	// cached snapshot if the lookup fails so transient DB errors don't
-	// widen visibility unexpectedly.
+	// Resolve the current user fresh from the store. A user row that cannot
+	// be read (or is gone) denies every event until a later recompute reads
+	// it (BUG-3334). The cached snapshot is as old as the connection, so
+	// filtering by it would keep a demoted admin's bypass, or a disabled
+	// user's access, through the fault. The stream itself stays open
+	// (sseSubscriberStillHasAccess keeps it on a store error, BUG-3007);
+	// this filter is the fail-closed line.
 	var user *models.User
 	if cached := currentUser(r); cached != nil {
-		if fresh, err := s.store.GetUser(cached.ID); err == nil && fresh != nil {
-			user = fresh
-		} else {
+		fresh, err := s.store.GetUser(cached.ID)
+		if err != nil || fresh == nil {
 			if err != nil {
-				slog.Warn("SSE: GetUser failed during visibility recompute; using cached snapshot",
+				slog.Warn("SSE: GetUser failed during visibility recompute; denying all events",
 					"user_id", cached.ID, "error", err)
 			}
-			user = cached
+			v.visibleSlugSet = make(map[string]bool)
+			v.isGuest = true
+			return v
 		}
+		user = fresh
 	}
 
 	// Collection-level visibility first. Mirrors visibleCollectionIDs
@@ -847,8 +853,11 @@ func (s *Server) computeSSEVisibility(r *http.Request, workspaceID string) sseVi
 	//   item-level grants, otherwise they're filtered by visibleSlugSet alone
 	needsItemFilter := member == nil
 	if member != nil && member.CollectionAccess == "specific" {
-		_, itemGrants, _ := s.store.GuestVisibleResources(workspaceID, user.ID)
-		needsItemFilter = len(itemGrants) > 0
+		// An unreadable grant set needs the filter (BUG-3334): skipping it
+		// would let item-grant-anchored collections through whole. The
+		// lookup below runs again and fails closed on its own error.
+		_, itemGrants, gerr := s.store.GuestVisibleResources(workspaceID, user.ID)
+		needsItemFilter = gerr != nil || len(itemGrants) > 0
 	}
 	if !needsItemFilter {
 		return v
@@ -926,8 +935,10 @@ func (s *Server) sseSubscriberStillHasAccess(r *http.Request, workspaceID string
 	}
 
 	// Fresh-install escape hatch: no users exist → everyone has access.
-	// Matches RequireWorkspaceAccess. Cheap to recheck.
-	if count, _ := s.store.UserCount(); count == 0 {
+	// Matches RequireWorkspaceAccess. Cheap to recheck. A count that cannot
+	// be read does not short-circuit to "everyone has access": the principal
+	// checks below still decide (BUG-3334).
+	if count, err := s.userCount(); err == nil && count == 0 {
 		return true
 	}
 

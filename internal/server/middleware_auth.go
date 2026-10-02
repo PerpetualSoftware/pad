@@ -462,9 +462,12 @@ func (s *Server) RequireAuth(next http.Handler) http.Handler {
 			return
 		}
 
-		// If no users exist, allow everything (fresh install / setup mode)
-		count, err := s.store.UserCount()
-		if err != nil || count == 0 {
+		// If no users exist, allow everything (fresh install / setup mode).
+		// Only a count READ as zero is an empty instance: a count that
+		// cannot be read falls through to the authentication check below, so
+		// a signed-in caller keeps working and an anonymous one is refused
+		// (BUG-3334).
+		if count, err := s.userCount(); err == nil && count == 0 {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -640,9 +643,10 @@ func (s *Server) RequireWorkspaceAccess(next http.Handler) http.Handler {
 		// Store resolved workspace ID in context for downstream handlers
 		ctx := context.WithValue(r.Context(), ctxResolvedWorkspaceID, ws.ID)
 
-		// Fresh install: no users → everyone gets owner access
-		count, _ := s.store.UserCount()
-		if count == 0 {
+		// Fresh install: no users → everyone gets owner access. A count that
+		// cannot be read never grants it (BUG-3334); the request goes on to
+		// the principal checks below.
+		if count, err := s.userCount(); err == nil && count == 0 {
 			ctx = context.WithValue(ctx, ctxWorkspaceRole, "owner")
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return

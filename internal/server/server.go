@@ -72,6 +72,24 @@ type Server struct {
 	// load-bearing, not incidental (codex round 3).
 	afterItemPreRead func(itemID string)
 
+	// visibleCollectionIDsFault is a TEST-ONLY seam, nil in production
+	// (BUG-3334). When set, visibleCollectionIDs calls it first and returns
+	// its error. Every handler that resolves visibility through the helper
+	// has already passed requireItemVisible, which runs the same store query,
+	// so a fault that persists cannot reach the helper's own error handling:
+	// only a fault between the two queries can, and this makes that one
+	// deterministic. TestVisibleCollectionIDsFaultIsNilInProduction holds New
+	// to leaving it nil. Same synchronisation rule as afterItemPreRead.
+	visibleCollectionIDsFault func() error
+
+	// userCountFault is a TEST-ONLY seam, nil in production (BUG-3334). When
+	// set, userCount calls it first and returns its error. The fresh-install
+	// checks it feeds sit behind a workspace lookup that also reads the users
+	// table, so a real fault on that table stops the request at the lookup:
+	// only a fault on the count alone reaches them. Held nil by
+	// TestUserCountFaultIsNilInProduction.
+	userCountFault func() error
+
 	store                 *store.Store
 	router                *chi.Mux
 	routerOnce            sync.Once            // ensures setupRouter runs once, after all config
@@ -2890,7 +2908,25 @@ func (s *Server) getWorkspace(w http.ResponseWriter, r *http.Request) (*models.W
 // bearer-gate consumers (buildDashboardResponse, handleListItems, the graph
 // handler, handleCreateItem's collection-visibility check, and every other
 // direct caller) still granting a bearer admin an unrestricted view.
+// userCount is store.UserCount behind the BUG-3334 test seam. Every
+// fresh-install check reads it, and every one of them grants the bypass only
+// when it answers zero WITHOUT an error: a count that cannot be read is not
+// an empty instance.
+func (s *Server) userCount() (int, error) {
+	if s.userCountFault != nil {
+		if err := s.userCountFault(); err != nil {
+			return 0, err
+		}
+	}
+	return s.store.UserCount()
+}
+
 func (s *Server) visibleCollectionIDs(r *http.Request, workspaceID string) ([]string, error) {
+	if s.visibleCollectionIDsFault != nil {
+		if err := s.visibleCollectionIDsFault(); err != nil {
+			return nil, err
+		}
+	}
 	user := currentUser(r)
 	if user == nil || (user.Role == "admin" && !isBearerAuth(r)) {
 		return nil, nil // No filtering for admins (cookie session) or unauthenticated
