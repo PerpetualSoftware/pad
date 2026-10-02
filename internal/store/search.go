@@ -40,11 +40,18 @@ func placeholders(n int) string {
 }
 
 type SearchParams struct {
-	Query         string
-	Workspace     string   // workspace slug, optional — scopes to single workspace
-	WorkspaceIDs  []string // workspace IDs to scope results to (used when no specific workspace is given)
-	CollectionIDs []string // permission filter: restrict to these collection IDs (nil = no filter)
-	ItemIDs       []string // permission filter: additionally allow these specific item IDs (for item-level grants)
+	Query        string
+	Workspace    string   // workspace slug, optional — scopes to single workspace
+	WorkspaceIDs []string // workspace IDs to scope results to (used when no specific workspace is given)
+	// The permission filter (BUG-3331). An item is returned only if its
+	// collection is in CollectionIDs or the item itself is in ItemIDs. Both
+	// empty matches NOTHING, whether nil or not, unless Unrestricted is set:
+	// "the caller can see every item in scope" must be said explicitly, so a
+	// zero-visibility caller can never be mistaken for an unfiltered one.
+	// Unrestricted with non-empty IDs still applies the IDs.
+	CollectionIDs []string
+	ItemIDs       []string
+	Unrestricted  bool
 
 	// Content filters (applied on top of permission filters)
 	Collection string // collection slug — scope search to a single collection
@@ -95,11 +102,9 @@ func (p *SearchParams) Normalize() {
 func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 	params.Normalize()
 
-	// Non-nil empty CollectionIDs means "no visible collections" — return
-	// empty results immediately, unless ItemIDs are also provided (item-level
-	// grants may still allow access to specific items even without full
-	// collection access).
-	if params.CollectionIDs != nil && len(params.CollectionIDs) == 0 && len(params.ItemIDs) == 0 {
+	// No visible collections and no granted items, and not explicitly
+	// unrestricted: nothing is visible (BUG-3331).
+	if !params.Unrestricted && len(params.CollectionIDs) == 0 && len(params.ItemIDs) == 0 {
 		return &SearchResponse{Results: []SearchResult{}, Limit: params.Limit, Offset: params.Offset}, nil
 	}
 
@@ -141,25 +146,7 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 			}
 		}
 
-		if len(params.CollectionIDs) > 0 && len(params.ItemIDs) > 0 {
-			refQuery += ` AND (i.collection_id IN (` + placeholders(len(params.CollectionIDs)) + `) OR i.id IN (` + placeholders(len(params.ItemIDs)) + `))`
-			for _, id := range params.CollectionIDs {
-				refArgs = append(refArgs, id)
-			}
-			for _, id := range params.ItemIDs {
-				refArgs = append(refArgs, id)
-			}
-		} else if len(params.CollectionIDs) > 0 {
-			refQuery += ` AND i.collection_id IN (` + placeholders(len(params.CollectionIDs)) + `)`
-			for _, id := range params.CollectionIDs {
-				refArgs = append(refArgs, id)
-			}
-		} else if len(params.ItemIDs) > 0 {
-			refQuery += ` AND i.id IN (` + placeholders(len(params.ItemIDs)) + `)`
-			for _, id := range params.ItemIDs {
-				refArgs = append(refArgs, id)
-			}
-		}
+		refQuery, refArgs = appendSearchPermissionFilter(refQuery, refArgs, params)
 
 		// Apply content filters to ref lookup too
 		refQuery, refArgs = appendSearchCollectionFilter(refQuery, refArgs, params)
@@ -252,25 +239,7 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 			}
 		}
 
-		if len(params.CollectionIDs) > 0 && len(params.ItemIDs) > 0 {
-			numQuery += ` AND (i.collection_id IN (` + placeholders(len(params.CollectionIDs)) + `) OR i.id IN (` + placeholders(len(params.ItemIDs)) + `))`
-			for _, id := range params.CollectionIDs {
-				numArgs = append(numArgs, id)
-			}
-			for _, id := range params.ItemIDs {
-				numArgs = append(numArgs, id)
-			}
-		} else if len(params.CollectionIDs) > 0 {
-			numQuery += ` AND i.collection_id IN (` + placeholders(len(params.CollectionIDs)) + `)`
-			for _, id := range params.CollectionIDs {
-				numArgs = append(numArgs, id)
-			}
-		} else if len(params.ItemIDs) > 0 {
-			numQuery += ` AND i.id IN (` + placeholders(len(params.ItemIDs)) + `)`
-			for _, id := range params.ItemIDs {
-				numArgs = append(numArgs, id)
-			}
-		}
+		numQuery, numArgs = appendSearchPermissionFilter(numQuery, numArgs, params)
 
 		// Apply content filters to numeric lookup too
 		numQuery, numArgs = appendSearchCollectionFilter(numQuery, numArgs, params)
@@ -436,25 +405,7 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 		}
 	}
 
-	if len(params.CollectionIDs) > 0 && len(params.ItemIDs) > 0 {
-		query += ` AND (i.collection_id IN (` + placeholders(len(params.CollectionIDs)) + `) OR i.id IN (` + placeholders(len(params.ItemIDs)) + `))`
-		for _, id := range params.CollectionIDs {
-			args = append(args, id)
-		}
-		for _, id := range params.ItemIDs {
-			args = append(args, id)
-		}
-	} else if len(params.CollectionIDs) > 0 {
-		query += ` AND i.collection_id IN (` + placeholders(len(params.CollectionIDs)) + `)`
-		for _, id := range params.CollectionIDs {
-			args = append(args, id)
-		}
-	} else if len(params.ItemIDs) > 0 {
-		query += ` AND i.id IN (` + placeholders(len(params.ItemIDs)) + `)`
-		for _, id := range params.ItemIDs {
-			args = append(args, id)
-		}
-	}
+	query, args = appendSearchPermissionFilter(query, args, params)
 
 	// Collection filter — the resolved per-workspace set, or a literal slug.
 	query, args = appendSearchCollectionFilter(query, args, params)
@@ -666,25 +617,7 @@ func (s *Store) appendSearchFilters(query string, args []interface{}, params Sea
 		}
 	}
 
-	if len(params.CollectionIDs) > 0 && len(params.ItemIDs) > 0 {
-		query += ` AND (i.collection_id IN (` + placeholders(len(params.CollectionIDs)) + `) OR i.id IN (` + placeholders(len(params.ItemIDs)) + `))`
-		for _, id := range params.CollectionIDs {
-			args = append(args, id)
-		}
-		for _, id := range params.ItemIDs {
-			args = append(args, id)
-		}
-	} else if len(params.CollectionIDs) > 0 {
-		query += ` AND i.collection_id IN (` + placeholders(len(params.CollectionIDs)) + `)`
-		for _, id := range params.CollectionIDs {
-			args = append(args, id)
-		}
-	} else if len(params.ItemIDs) > 0 {
-		query += ` AND i.id IN (` + placeholders(len(params.ItemIDs)) + `)`
-		for _, id := range params.ItemIDs {
-			args = append(args, id)
-		}
-	}
+	query, args = appendSearchPermissionFilter(query, args, params)
 
 	query, args = appendSearchCollectionFilter(query, args, params)
 
@@ -827,6 +760,36 @@ func sanitizePGFTSQuery(q string) string {
 // appendSearchCollectionFilter adds the collection content filter to a search
 // query. A resolved CollectionFilterIDs set (BUG-2659) wins; a bare Collection
 // slug is the literal match callers inside the store still use.
+// appendSearchPermissionFilter adds the permission predicate every search
+// query path shares: the ref lookup, the number lookup, the FTS query, and the
+// count and facet queries (BUG-3331). An item matches if its collection is
+// visible or it is granted individually. With neither set and Unrestricted
+// unset it adds a predicate that matches nothing, so a zero-visibility caller
+// can never read as unfiltered, even on a path that skipped Search's early
+// return.
+func appendSearchPermissionFilter(query string, args []interface{}, params SearchParams) (string, []interface{}) {
+	colls, items := params.CollectionIDs, params.ItemIDs
+	switch {
+	case len(colls) > 0 && len(items) > 0:
+		query += ` AND (i.collection_id IN (` + placeholders(len(colls)) + `) OR i.id IN (` + placeholders(len(items)) + `))`
+	case len(colls) > 0:
+		query += ` AND i.collection_id IN (` + placeholders(len(colls)) + `)`
+	case len(items) > 0:
+		query += ` AND i.id IN (` + placeholders(len(items)) + `)`
+	case params.Unrestricted:
+		return query, args
+	default:
+		return query + ` AND 1 = 0`, args
+	}
+	for _, id := range colls {
+		args = append(args, id)
+	}
+	for _, id := range items {
+		args = append(args, id)
+	}
+	return query, args
+}
+
 func appendSearchCollectionFilter(query string, args []interface{}, params SearchParams) (string, []interface{}) {
 	if params.CollectionFilterIDs != nil {
 		if len(params.CollectionFilterIDs) == 0 {

@@ -352,7 +352,7 @@ func everyContentBearingReadDoor(t *testing.T, s *store.Store) {
 	})
 
 	t.Run("Search", func(t *testing.T) {
-		resp, err := s.Search(store.SearchParams{WorkspaceIDs: []string{wsID}, Query: "Stale"})
+		resp, err := s.Search(store.SearchParams{Unrestricted: true, WorkspaceIDs: []string{wsID}, Query: "Stale"})
 		if err != nil {
 			t.Fatalf("Search: %v", err)
 		}

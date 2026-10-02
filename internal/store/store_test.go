@@ -1207,7 +1207,7 @@ func TestFTSSearch(t *testing.T) {
 	s.CreateItem(ws.ID, docsCollID, models.ItemCreate{Title: "Auth Flow", Content: "OAuth2 authentication flow for API"})
 	s.CreateItem(ws.ID, docsCollID, models.ItemCreate{Title: "Data Model", Content: "Database schema and models"})
 
-	resp, err := s.Search(SearchParams{Query: "authentication"})
+	resp, err := s.Search(SearchParams{Unrestricted: true, Query: "authentication"})
 	if err != nil {
 		t.Fatalf("Search error: %v", err)
 	}
@@ -1247,13 +1247,13 @@ func TestFTSSearchScoped(t *testing.T) {
 	s.CreateItem(ws2.ID, docs2ID, models.ItemCreate{Title: "Doc B", Content: "authentication in workspace 2"})
 
 	// Unscoped — should find both
-	resp, _ := s.Search(SearchParams{Query: "authentication"})
+	resp, _ := s.Search(SearchParams{Unrestricted: true, Query: "authentication"})
 	if len(resp.Results) != 2 {
 		t.Errorf("unscoped: expected 2 results, got %d", len(resp.Results))
 	}
 
 	// Scoped — should find one
-	resp, _ = s.Search(SearchParams{Query: "authentication", Workspace: ws1.Slug})
+	resp, _ = s.Search(SearchParams{Unrestricted: true, Query: "authentication", Workspace: ws1.Slug})
 	if len(resp.Results) != 1 {
 		t.Errorf("scoped: expected 1 result, got %d", len(resp.Results))
 	}
@@ -1281,7 +1281,7 @@ func TestSearchCollectionFilter(t *testing.T) {
 	s.CreateItem(ws.ID, ideasID, models.ItemCreate{Title: "New authentication provider", Fields: `{"status":"new"}`})
 
 	// Unfiltered — should find all 3
-	resp, err := s.Search(SearchParams{Query: "authentication", Workspace: ws.Slug})
+	resp, err := s.Search(SearchParams{Unrestricted: true, Query: "authentication", Workspace: ws.Slug})
 	if err != nil {
 		t.Fatalf("unfiltered search: %v", err)
 	}
@@ -1290,7 +1290,7 @@ func TestSearchCollectionFilter(t *testing.T) {
 	}
 
 	// Filter by collection slug — only tasks
-	resp, err = s.Search(SearchParams{Query: "authentication", Workspace: ws.Slug, Collection: "tasks"})
+	resp, err = s.Search(SearchParams{Unrestricted: true, Query: "authentication", Workspace: ws.Slug, Collection: "tasks"})
 	if err != nil {
 		t.Fatalf("collection filter search: %v", err)
 	}
@@ -1304,7 +1304,7 @@ func TestSearchCollectionFilter(t *testing.T) {
 	}
 
 	// Filter by collection slug — only ideas
-	resp, err = s.Search(SearchParams{Query: "authentication", Workspace: ws.Slug, Collection: "ideas"})
+	resp, err = s.Search(SearchParams{Unrestricted: true, Query: "authentication", Workspace: ws.Slug, Collection: "ideas"})
 	if err != nil {
 		t.Fatalf("collection=ideas search: %v", err)
 	}
@@ -1333,7 +1333,7 @@ func TestSearchFieldFilters(t *testing.T) {
 	s.CreateItem(ws.ID, tasksID, models.ItemCreate{Title: "Fix signup bug", Fields: `{"status":"done","priority":"high"}`})
 
 	// Filter by status=open — should find 2
-	resp, err := s.Search(SearchParams{
+	resp, err := s.Search(SearchParams{Unrestricted: true,
 		Query:        "bug",
 		Workspace:    ws.Slug,
 		FieldFilters: map[string]string{"status": "open"},
@@ -1346,7 +1346,7 @@ func TestSearchFieldFilters(t *testing.T) {
 	}
 
 	// Filter by priority=high — should find 2
-	resp, err = s.Search(SearchParams{
+	resp, err = s.Search(SearchParams{Unrestricted: true,
 		Query:        "bug",
 		Workspace:    ws.Slug,
 		FieldFilters: map[string]string{"priority": "high"},
@@ -1359,7 +1359,7 @@ func TestSearchFieldFilters(t *testing.T) {
 	}
 
 	// Combine filters: status=open AND priority=high — should find 1
-	resp, err = s.Search(SearchParams{
+	resp, err = s.Search(SearchParams{Unrestricted: true,
 		Query:        "bug",
 		Workspace:    ws.Slug,
 		FieldFilters: map[string]string{"status": "open", "priority": "high"},
@@ -1397,7 +1397,7 @@ func TestSearchCollectionAndFieldFilters(t *testing.T) {
 	s.CreateItem(ws.ID, ideasID, models.ItemCreate{Title: "Search autocomplete feature", Fields: `{"status":"new"}`})
 
 	// Collection + field filter: tasks with status=open
-	resp, err := s.Search(SearchParams{
+	resp, err := s.Search(SearchParams{Unrestricted: true,
 		Query:        "search",
 		Workspace:    ws.Slug,
 		Collection:   "tasks",
@@ -1438,7 +1438,7 @@ func TestSearchPagination(t *testing.T) {
 	}
 
 	// Default pagination — should get all 5
-	resp, err := s.Search(SearchParams{Query: "widget", Workspace: ws.Slug})
+	resp, err := s.Search(SearchParams{Unrestricted: true, Query: "widget", Workspace: ws.Slug})
 	if err != nil {
 		t.Fatalf("default pagination: %v", err)
 	}
@@ -1453,7 +1453,7 @@ func TestSearchPagination(t *testing.T) {
 	}
 
 	// Limit=2 — should get 2 results but total still 5
-	resp, err = s.Search(SearchParams{Query: "widget", Workspace: ws.Slug, Limit: 2})
+	resp, err = s.Search(SearchParams{Unrestricted: true, Query: "widget", Workspace: ws.Slug, Limit: 2})
 	if err != nil {
 		t.Fatalf("limit=2: %v", err)
 	}
@@ -1468,7 +1468,7 @@ func TestSearchPagination(t *testing.T) {
 	}
 
 	// Offset=3, Limit=2 — should get 2 results (items 4 and 5)
-	resp, err = s.Search(SearchParams{Query: "widget", Workspace: ws.Slug, Limit: 2, Offset: 3})
+	resp, err = s.Search(SearchParams{Unrestricted: true, Query: "widget", Workspace: ws.Slug, Limit: 2, Offset: 3})
 	if err != nil {
 		t.Fatalf("offset=3, limit=2: %v", err)
 	}
@@ -1483,7 +1483,7 @@ func TestSearchPagination(t *testing.T) {
 	}
 
 	// Offset beyond results — should get 0 results
-	resp, err = s.Search(SearchParams{Query: "widget", Workspace: ws.Slug, Offset: 10})
+	resp, err = s.Search(SearchParams{Unrestricted: true, Query: "widget", Workspace: ws.Slug, Offset: 10})
 	if err != nil {
 		t.Fatalf("offset=10: %v", err)
 	}
@@ -1515,7 +1515,7 @@ func TestSearchSorting(t *testing.T) {
 	s.CreateItem(ws.ID, tasksID, models.ItemCreate{Title: "Bravo gadget", Fields: `{"status":"open"}`})
 
 	// Sort by title ascending
-	resp, err := s.Search(SearchParams{Query: "gadget", Workspace: ws.Slug, Sort: "title", Order: "asc"})
+	resp, err := s.Search(SearchParams{Unrestricted: true, Query: "gadget", Workspace: ws.Slug, Sort: "title", Order: "asc"})
 	if err != nil {
 		t.Fatalf("sort by title: %v", err)
 	}
@@ -1530,7 +1530,7 @@ func TestSearchSorting(t *testing.T) {
 	}
 
 	// Sort by title descending
-	resp, err = s.Search(SearchParams{Query: "gadget", Workspace: ws.Slug, Sort: "title", Order: "desc"})
+	resp, err = s.Search(SearchParams{Unrestricted: true, Query: "gadget", Workspace: ws.Slug, Sort: "title", Order: "desc"})
 	if err != nil {
 		t.Fatalf("sort by title desc: %v", err)
 	}
@@ -1564,7 +1564,7 @@ func TestSearchFacets(t *testing.T) {
 	s.CreateItem(ws.ID, tasksID, models.ItemCreate{Title: "Widget tests", Fields: `{"status":"open","priority":"low"}`})
 	s.CreateItem(ws.ID, ideasID, models.ItemCreate{Title: "Widget dashboard", Fields: `{"status":"new"}`})
 
-	resp, err := s.Search(SearchParams{Query: "widget", Workspace: ws.Slug})
+	resp, err := s.Search(SearchParams{Unrestricted: true, Query: "widget", Workspace: ws.Slug})
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -1592,7 +1592,7 @@ func TestSearchFacets(t *testing.T) {
 	}
 
 	// Facets should reflect full result set even with pagination
-	resp, err = s.Search(SearchParams{Query: "widget", Workspace: ws.Slug, Limit: 1})
+	resp, err = s.Search(SearchParams{Unrestricted: true, Query: "widget", Workspace: ws.Slug, Limit: 1})
 	if err != nil {
 		t.Fatalf("paginated search: %v", err)
 	}
@@ -1685,7 +1685,7 @@ func TestSearch_BareNumericQueryFindsItemByNumber(t *testing.T) {
 	}
 
 	// Bare numeric query "2" should find the item with item_number=2.
-	resp, err := s.Search(SearchParams{Query: "2", Workspace: ws.Slug})
+	resp, err := s.Search(SearchParams{Unrestricted: true, Query: "2", Workspace: ws.Slug})
 	if err != nil {
 		t.Fatalf("Search error: %v", err)
 	}
@@ -1702,7 +1702,7 @@ func TestSearch_BareNumericQueryFindsItemByNumber(t *testing.T) {
 	}
 
 	// A non-existent number should not surface as a direct hit.
-	resp, err = s.Search(SearchParams{Query: "9999", Workspace: ws.Slug})
+	resp, err = s.Search(SearchParams{Unrestricted: true, Query: "9999", Workspace: ws.Slug})
 	if err != nil {
 		t.Fatalf("Search error: %v", err)
 	}
@@ -1713,7 +1713,7 @@ func TestSearch_BareNumericQueryFindsItemByNumber(t *testing.T) {
 	}
 
 	// Whitespace around a bare number should still resolve.
-	resp, err = s.Search(SearchParams{Query: "  2  ", Workspace: ws.Slug})
+	resp, err = s.Search(SearchParams{Unrestricted: true, Query: "  2  ", Workspace: ws.Slug})
 	if err != nil {
 		t.Fatalf("Search error: %v", err)
 	}
@@ -1755,7 +1755,7 @@ func TestSearch_BareNumericQueryDedupsAgainstFTS(t *testing.T) {
 		t.Fatalf("expected target.ItemNumber=1, got %v", target.ItemNumber)
 	}
 
-	resp, err := s.Search(SearchParams{Query: "1", Workspace: ws.Slug})
+	resp, err := s.Search(SearchParams{Unrestricted: true, Query: "1", Workspace: ws.Slug})
 	if err != nil {
 		t.Fatalf("Search error: %v", err)
 	}
@@ -1810,7 +1810,7 @@ func TestSearch_BareNumericQueryPaginatesAcrossWorkspaces(t *testing.T) {
 	allWs := []string{ws1.ID, ws2.ID, ws3.ID}
 
 	// Page 0: limit=1 — must return exactly one direct hit, not all three.
-	resp, err := s.Search(SearchParams{Query: "1", WorkspaceIDs: allWs, Limit: 1})
+	resp, err := s.Search(SearchParams{Unrestricted: true, Query: "1", WorkspaceIDs: allWs, Limit: 1})
 	if err != nil {
 		t.Fatalf("page 0: %v", err)
 	}
@@ -1827,7 +1827,7 @@ func TestSearch_BareNumericQueryPaginatesAcrossWorkspaces(t *testing.T) {
 
 	// Page 1: limit=1, offset=1 — must return the second direct hit, NOT
 	// fall through to FTS rows after dropping all direct hits.
-	resp, err = s.Search(SearchParams{Query: "1", WorkspaceIDs: allWs, Limit: 1, Offset: 1})
+	resp, err = s.Search(SearchParams{Unrestricted: true, Query: "1", WorkspaceIDs: allWs, Limit: 1, Offset: 1})
 	if err != nil {
 		t.Fatalf("page 1: %v", err)
 	}
@@ -1842,7 +1842,7 @@ func TestSearch_BareNumericQueryPaginatesAcrossWorkspaces(t *testing.T) {
 	}
 
 	// Page 2: limit=1, offset=2 — third direct hit.
-	resp, err = s.Search(SearchParams{Query: "1", WorkspaceIDs: allWs, Limit: 1, Offset: 2})
+	resp, err = s.Search(SearchParams{Unrestricted: true, Query: "1", WorkspaceIDs: allWs, Limit: 1, Offset: 2})
 	if err != nil {
 		t.Fatalf("page 2: %v", err)
 	}
@@ -1852,7 +1852,7 @@ func TestSearch_BareNumericQueryPaginatesAcrossWorkspaces(t *testing.T) {
 
 	// Single-page (limit=10) — must return all three direct hits, in
 	// deterministic order (by workspace_id then id).
-	resp, err = s.Search(SearchParams{Query: "1", WorkspaceIDs: allWs, Limit: 10})
+	resp, err = s.Search(SearchParams{Unrestricted: true, Query: "1", WorkspaceIDs: allWs, Limit: 10})
 	if err != nil {
 		t.Fatalf("single page: %v", err)
 	}
@@ -1864,7 +1864,7 @@ func TestSearch_BareNumericQueryPaginatesAcrossWorkspaces(t *testing.T) {
 	}
 
 	// Stable ordering — same query twice gives the same order.
-	resp2, _ := s.Search(SearchParams{Query: "1", WorkspaceIDs: allWs, Limit: 10})
+	resp2, _ := s.Search(SearchParams{Unrestricted: true, Query: "1", WorkspaceIDs: allWs, Limit: 10})
 	for i := range resp.Results {
 		if i >= len(resp2.Results) {
 			break
