@@ -243,6 +243,13 @@ func TestTASK3352_ConsumeInvitationProofRules(t *testing.T) {
 	if ok, err := srv.store.ConsumeInvitationProof(invC.ID, c.ID, invC.Proof); err != nil || ok {
 		t.Errorf("an expired invitation's proof verified: %v %v", ok, err)
 	}
+	// An empty expiry reads as expired (IsExpired), so it verifies nothing.
+	if _, err := srv.store.DB().Exec(`UPDATE workspace_invitations SET expires_at = '' WHERE id = ?`, invC.ID); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := srv.store.ConsumeInvitationProof(invC.ID, c.ID, invC.Proof); err != nil || ok {
+		t.Errorf("an invitation with an empty expiry verified: %v %v", ok, err)
+	}
 
 	if err := srv.store.DisableUser(b.ID); err != nil {
 		t.Fatal(err)

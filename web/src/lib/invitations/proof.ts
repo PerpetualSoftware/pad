@@ -17,7 +17,13 @@ const key = (code: string) => `pad.invite-proof.${code}`;
 /** Reads `#proof=` from a fragment, '' when absent or malformed. */
 export function proofFromHash(hash: string): string {
 	const m = /(?:^#|&)proof=([^&]*)/.exec(hash);
-	const v = m ? decodeURIComponent(m[1]) : '';
+	if (!m) return '';
+	let v = '';
+	try {
+		v = decodeURIComponent(m[1]);
+	} catch {
+		return ''; // a malformed escape (`#proof=%`) is no proof, not a crash
+	}
 	return PROOF_RE.test(v) ? v : '';
 }
 

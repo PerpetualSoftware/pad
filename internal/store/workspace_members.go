@@ -1008,7 +1008,7 @@ func (s *Store) ConsumeInvitationProof(invitationID, userID, proof string) (bool
 	res, err = tx.Exec(s.q(`
 		UPDATE workspace_invitations SET proof_hash = ''
 		WHERE id = ? AND proof_hash = ? AND proof_hash <> ''
-		  AND (expires_at IS NULL OR expires_at = '' OR expires_at > ?)`),
+		  AND (expires_at IS NULL OR expires_at > ?)`),
 		invitationID, invitationProofHash(proof), time.Now().UTC().Format(time.RFC3339))
 	if err != nil {
 		return false, fmt.Errorf("consume invitation proof: %w", err)

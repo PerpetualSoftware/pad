@@ -14,6 +14,7 @@ describe('invitation proof', () => {
 		expect(proofFromHash('')).toBe('');
 		expect(proofFromHash('#proof=short')).toBe('');
 		expect(proofFromHash(`#proof=${P.toUpperCase()}`)).toBe('');
+		expect(proofFromHash('#proof=%')).toBe('');
 	});
 
 	it('keeps the proof per code across a visit without the fragment', () => {
