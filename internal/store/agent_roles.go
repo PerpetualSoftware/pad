@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -436,7 +437,13 @@ type RoleSortUpdate struct {
 	RoleSortOrder int    `json:"role_sort_order"`
 }
 
+// ErrRoleSortItemNotFound reports that an UpdateRoleSortOrder entry named
+// no live item in the workspace, so the batch was rolled back (BUG-3342).
+var ErrRoleSortItemNotFound = errors.New("role sort: item not found in workspace")
+
 // UpdateRoleSortOrder batch-updates role_sort_order for a list of items.
+// Every entry must update exactly one live item in workspaceID, or the
+// whole batch is rolled back with ErrRoleSortItemNotFound (BUG-3342).
 // Each updated row also gets a fresh workspace-scoped seq so delta-sync
 // clients see the reorder (PLAN-1343 / TASK-1352). Without this, a
 // client polling /items-changes?since=cursor would miss role-board
@@ -459,15 +466,23 @@ func (s *Store) UpdateRoleSortOrder(workspaceID string, updates []RoleSortUpdate
 	// seq than the row before it. Statements within a single
 	// transaction see each other's effects on both SQLite and
 	// Postgres (READ COMMITTED).
-	stmt, err := tx.Prepare(s.q("UPDATE items SET role_sort_order = ?, seq = " + nextWorkspaceSeqSubquery + " WHERE id = ? AND workspace_id = ?"))
+	stmt, err := tx.Prepare(s.q("UPDATE items SET role_sort_order = ?, seq = " + nextWorkspaceSeqSubquery + " WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL"))
 	if err != nil {
 		return fmt.Errorf("prepare role sort update: %w", err)
 	}
 	defer stmt.Close()
 
 	for _, u := range updates {
-		if _, err := stmt.Exec(u.RoleSortOrder, workspaceID, u.ItemID, workspaceID); err != nil {
+		res, err := stmt.Exec(u.RoleSortOrder, workspaceID, u.ItemID, workspaceID)
+		if err != nil {
 			return fmt.Errorf("update role sort for %s: %w", u.ItemID, err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("update role sort for %s: rows affected: %w", u.ItemID, err)
+		}
+		if n != 1 {
+			return fmt.Errorf("%w: %s", ErrRoleSortItemNotFound, u.ItemID)
 		}
 	}
 
