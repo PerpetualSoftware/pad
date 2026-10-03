@@ -211,6 +211,26 @@ func (s *Store) uniqueUsernameTx(tx *sql.Tx, base, userID string) (string, error
 			return username, nil
 		}
 	}
+	// Nothing derived from the name will do: every candidate fails the rules
+	// (a fallback the generator leaves invalid, like "foo--bar") or is held.
+	// A random one still lets the claim through.
+	for i := 0; i < 20; i++ {
+		raw := make([]byte, 4)
+		if _, err := rand.Read(raw); err != nil {
+			return "", fmt.Errorf("account claim: random username: %w", err)
+		}
+		username := "user-" + hex.EncodeToString(raw)
+		if s.usernameValidator != nil && s.usernameValidator(username) != nil {
+			continue
+		}
+		var taken int
+		if err := tx.QueryRow(s.q(`SELECT COUNT(*) FROM users WHERE username = ? AND id <> ?`), username, userID).Scan(&taken); err != nil {
+			return "", fmt.Errorf("account claim: username: %w", err)
+		}
+		if taken == 0 {
+			return username, nil
+		}
+	}
 	return "", fmt.Errorf("account claim: no free username for %q", base)
 }
 

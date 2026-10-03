@@ -287,3 +287,28 @@ func TestTASK3351_ClaimRetriesALostUsername(t *testing.T) {
 		t.Errorf("after the retry: username %q verified %v", after.Username, after.IsEmailVerified())
 	}
 }
+
+// When nothing derived from the name passes the rules or is free, the claim
+// still gets a valid username rather than failing (codex round 6,
+// TASK-3351): a name with no usable characters over an address whose local
+// part the generator leaves invalid ("foo--bar").
+func TestTASK3351_ClaimFallsBackToARandomUsername(t *testing.T) {
+	s := testStore(t)
+	s.SetUsernameValidator(func(u string) error {
+		if strings.Contains(u, "--") {
+			return errors.New("double hyphen")
+		}
+		return nil
+	})
+	u, err := s.CreateUser(models.UserCreate{Email: "foo--bar@example.com", Name: "x", Username: "squat-4", Password: "password123", Unverified: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ClaimAccountByProvider(u.ID, "google", "", "李雷"); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	after, _ := s.GetUser(u.ID)
+	if !strings.HasPrefix(after.Username, "user-") || strings.Contains(after.Username, "--") {
+		t.Errorf("username %q", after.Username)
+	}
+}
