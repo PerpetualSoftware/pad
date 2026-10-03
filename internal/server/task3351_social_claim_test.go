@@ -195,3 +195,140 @@ func TestTASK3351_SubjectMustBePrintable(t *testing.T) {
 		}
 	}
 }
+
+// --- U3: social claim ---
+
+type socialClaimResp struct {
+	Token              string   `json:"token"`
+	Claimed            bool     `json:"claimed"`
+	StrippedWorkspaces []string `json:"stripped_workspaces"`
+	DeletedWorkspaces  []string `json:"deleted_workspaces"`
+}
+
+func newSocialSquat(t *testing.T) squatFixture {
+	t.Helper()
+	f := newSquatFixture(t)
+	f.srv.cloudSecrets = []string{oauthProviderTestSecret}
+	return f
+}
+
+// The address's owner signs in with a provider that vouches for the address,
+// on an account somebody else registered and never verified. The account is
+// claimed: every credential reset, access elsewhere stripped, owned
+// workspaces deleted, and the owner signed in, with a notice by email.
+func TestTASK3351_GoogleClaimsAnUnverifiedAccount(t *testing.T) {
+	f := newSocialSquat(t)
+	f.plant(t)
+	s := f.srv.store
+	owned := count(t, f.srv, `SELECT COUNT(*) FROM workspaces WHERE owner_id = ? AND deleted_at IS NULL`, f.squatter.ID)
+
+	rr := postOAuthLogin(t, f.srv, map[string]interface{}{
+		"provider": "google", "email": "victim@example.com", "email_verified": true, "subject": "g-victim", "name": "Real Owner",
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("social claim: %d %s", rr.Code, rr.Body.String())
+	}
+	var resp socialClaimResp
+	parseJSON(t, rr, &resp)
+	if !resp.Claimed || resp.Token == "" {
+		t.Fatalf("response: %+v", resp)
+	}
+	if len(resp.StrippedWorkspaces) != 1 || resp.StrippedWorkspaces[0] != "Admin WS" || len(resp.DeletedWorkspaces) != owned {
+		t.Errorf("reported %+v (owned %d)", resp, owned)
+	}
+
+	// The claimant's session works; the squatter's credentials do not.
+	if rr := doRequestWithCookie(f.srv, "GET", "/api/v1/auth/me", nil, resp.Token); rr.Code != http.StatusOK {
+		t.Errorf("claimant session: %d", rr.Code)
+	}
+	if rr := doRequestWithCookie(f.srv, "GET", "/api/v1/auth/me", nil, f.sessTok); rr.Code == http.StatusOK {
+		t.Error("the squatter's session survived")
+	}
+	if ok, _ := s.ValidatePassword("victim@example.com", "squatter-password-123"); ok != nil {
+		t.Error("the squatter's password survived")
+	}
+	for what, q := range map[string]string{
+		"api tokens":    `SELECT COUNT(*) FROM api_tokens WHERE user_id = ?`,
+		"cli handoffs":  `SELECT COUNT(*) FROM cli_auth_sessions WHERE user_id = ?`,
+		"memberships":   `SELECT COUNT(*) FROM workspace_members WHERE user_id = ? AND workspace_id = '` + f.adminWS.ID + `'`,
+		"item grants":   `SELECT COUNT(*) FROM item_grants WHERE user_id = ?`,
+		"watches":       `SELECT COUNT(*) FROM watches WHERE user_id = ?`,
+		"owned live ws": `SELECT COUNT(*) FROM workspaces WHERE owner_id = ? AND deleted_at IS NULL`,
+	} {
+		if n := count(t, f.srv, q, f.squatter.ID); n != 0 {
+			t.Errorf("%s survived the claim: %d", what, n)
+		}
+	}
+	u, _ := s.GetUser(f.squatter.ID)
+	if u.Name != "Real Owner" {
+		t.Errorf("the registrant's display name survived: %q", u.Name)
+	}
+	if !u.IsEmailVerified() || !u.HasOAuthProvider("google") || u.PasswordSet {
+		t.Errorf("after: verified=%v google=%v password_set=%v", u.IsEmailVerified(), u.HasOAuthProvider("google"), u.PasswordSet)
+	}
+	if n := oauthIdentityRows(t, f.srv, "google", "g-victim"); n != 1 {
+		t.Errorf("subject not bound: %d", n)
+	}
+
+	// The notice reaches the mailbox owner and names what was removed.
+	m := waitMail(t, f.mails)
+	if m.to != "victim@example.com" || !strings.Contains(m.body, "Admin WS") {
+		t.Errorf("notice: to=%q subject=%q", m.to, m.subject)
+	}
+}
+
+// GitHub claims only for the account's primary address (TASK-3351 ruling
+// 2). A sidecar that does not say so claims nothing.
+func TestTASK3351_GitHubClaimsOnlyThePrimaryAddress(t *testing.T) {
+	f := newSocialSquat(t)
+	rr := postOAuthLogin(t, f.srv, map[string]interface{}{
+		"provider": "github", "email": "victim@example.com", "email_verified": true,
+	})
+	if rr.Code != http.StatusForbidden || !strings.Contains(rr.Body.String(), "oauth_provider_not_linked") {
+		t.Fatalf("github without email_primary: %d %s", rr.Code, rr.Body.String())
+	}
+	rr = postOAuthLogin(t, f.srv, map[string]interface{}{
+		"provider": "github", "email": "victim@example.com", "email_verified": true, "email_primary": false,
+	})
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("github, secondary address: %d %s", rr.Code, rr.Body.String())
+	}
+	if rr := doRequestWithCookie(f.srv, "GET", "/api/v1/auth/me", nil, f.sessTok); rr.Code != http.StatusOK {
+		t.Fatalf("a refused claim changed the account: squatter session %d", rr.Code)
+	}
+	rr = postOAuthLogin(t, f.srv, map[string]interface{}{
+		"provider": "github", "email": "victim@example.com", "email_verified": true, "email_primary": true,
+	})
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"claimed":true`) {
+		t.Fatalf("github primary: %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+// A verified account is never claimed: its owner proved the address.
+func TestTASK3351_VerifiedAccountIsNotClaimable(t *testing.T) {
+	f := newSocialSquat(t)
+	rr := postOAuthLogin(t, f.srv, map[string]interface{}{
+		"provider": "google", "email": "admin@pad.test", "email_verified": true,
+	})
+	if rr.Code != http.StatusForbidden || !strings.Contains(rr.Body.String(), "oauth_provider_not_linked") {
+		t.Fatalf("verified account: %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+// Billing is never moved by a claim (ruling 4): refused with a support
+// contact, and nothing changes.
+func TestTASK3351_SocialClaimRefusesBilling(t *testing.T) {
+	f := newSocialSquat(t)
+	if _, err := f.srv.store.DB().Exec(`UPDATE users SET stripe_customer_id = 'cus_x' WHERE id = ?`, f.squatter.ID); err != nil {
+		t.Fatal(err)
+	}
+	rr := postOAuthLogin(t, f.srv, map[string]interface{}{
+		"provider": "google", "email": "victim@example.com", "email_verified": true,
+	})
+	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "account_claim_needs_support") {
+		t.Fatalf("billing: %d %s", rr.Code, rr.Body.String())
+	}
+	if rr := doRequestWithCookie(f.srv, "GET", "/api/v1/auth/me", nil, f.sessTok); rr.Code != http.StatusOK {
+		t.Fatalf("the refused claim changed the account: %d", rr.Code)
+	}
+}

@@ -59,15 +59,9 @@ type AccountClaim struct {
 func (s *Store) ClaimAccountByVerification(token string) (*AccountClaim, error) {
 	sum := sha256.Sum256([]byte(token))
 	tokenHash := hex.EncodeToString(sum[:])
-
-	// An unusable password: a random secret nobody keeps.
-	raw := make([]byte, 32)
-	if _, err := rand.Read(raw); err != nil {
-		return nil, fmt.Errorf("account claim: random password: %w", err)
-	}
-	unusable, err := bcrypt.GenerateFromPassword([]byte(hex.EncodeToString(raw)), bcryptCost)
+	unusable, err := unusablePasswordHash()
 	if err != nil {
-		return nil, fmt.Errorf("account claim: hash password: %w", err)
+		return nil, err
 	}
 
 	tx, err := s.db.Begin()
@@ -88,14 +82,64 @@ func (s *Store) ClaimAccountByVerification(token string) (*AccountClaim, error) 
 	if err != nil {
 		return nil, fmt.Errorf("account claim: spend token: %w", err)
 	}
+	claim, err := s.claimAccountTx(tx, userID, unusable, ts)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("account claim: commit: %w", err)
+	}
+	return claim, nil
+}
 
+// ClaimAccountByProvider is ClaimAccountByVerification for a sign-in
+// provider that vouched for the address (TASK-3351): the provider's verified
+// assertion stands in for the mailed token. The same core, the same rules:
+// only a live, never-verified account with no billing customer.
+func (s *Store) ClaimAccountByProvider(userID string) (*AccountClaim, error) {
+	unusable, err := unusablePasswordHash()
+	if err != nil {
+		return nil, err
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("account claim: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	claim, err := s.claimAccountTx(tx, userID, unusable, now())
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("account claim: commit: %w", err)
+	}
+	return claim, nil
+}
+
+// unusablePasswordHash is a random secret nobody keeps.
+func unusablePasswordHash() ([]byte, error) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return nil, fmt.Errorf("account claim: random password: %w", err)
+	}
+	h, err := bcrypt.GenerateFromPassword([]byte(hex.EncodeToString(raw)), bcryptCost)
+	if err != nil {
+		return nil, fmt.Errorf("account claim: hash password: %w", err)
+	}
+	return h, nil
+}
+
+// claimAccountTx is the claim itself, inside the caller's transaction: lock
+// the account, check it is claimable, reset every credential, strip access
+// elsewhere and soft-delete what it owns.
+func (s *Store) claimAccountTx(tx *sql.Tx, userID string, unusable []byte, ts string) (*AccountClaim, error) {
 	lockQ := `SELECT COALESCE(email_verified_at, ''), CASE WHEN disabled_at IS NULL THEN 0 ELSE 1 END, COALESCE(stripe_customer_id, '') FROM users WHERE id = ?`
 	if s.dialect.Driver() == DriverPostgres {
 		lockQ += ` FOR NO KEY UPDATE`
 	}
 	var verifiedAt, customer string
 	var disabled int
-	err = tx.QueryRow(s.q(lockQ), userID).Scan(&verifiedAt, &disabled, &customer)
+	err := tx.QueryRow(s.q(lockQ), userID).Scan(&verifiedAt, &disabled, &customer)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrClaimNotEligible
 	}
@@ -144,6 +188,10 @@ func (s *Store) ClaimAccountByVerification(token string) (*AccountClaim, error) 
 		{"reset credentials", `UPDATE users SET password_hash = ?, password_set = ?, totp_secret = '', totp_enabled = ?, recovery_codes = '',
 			email_verified_at = ?, updated_at = ?, credential_epoch = credential_epoch + 1 WHERE id = ?`,
 			[]any{string(unusable), s.dialect.BoolToInt(false), s.dialect.BoolToInt(false), ts, ts, userID}},
+		// Sign-in providers linked before the claim were linked by someone
+		// else (TASK-3351); the claimant links their own.
+		{"unlink providers", `UPDATE users SET oauth_providers = '' WHERE id = ?`, []any{userID}},
+		{"delete provider bindings", `DELETE FROM user_oauth_identities WHERE user_id = ?`, []any{userID}},
 		{"delete sessions", `DELETE FROM sessions WHERE user_id = ?`, []any{userID}},
 		{"delete api tokens", `DELETE FROM api_tokens WHERE user_id = ?`, []any{userID}},
 		{"revoke oauth access tokens", `UPDATE oauth_access_tokens SET active = ? WHERE subject = ?`, []any{s.dialect.BoolToInt(false), userID}},
@@ -171,9 +219,6 @@ func (s *Store) ClaimAccountByVerification(token string) (*AccountClaim, error) 
 	}
 	if err := tx.QueryRow(s.q(`SELECT credential_epoch FROM users WHERE id = ?`), userID).Scan(&claim.Epoch); err != nil {
 		return nil, fmt.Errorf("account claim: read epoch: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("account claim: commit: %w", err)
 	}
 	return claim, nil
 }

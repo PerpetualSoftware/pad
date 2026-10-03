@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -204,6 +205,10 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 		// Optional: a sidecar that predates it sends none, and the login
 		// proceeds as before.
 		Subject string `json:"subject"`
+		// EmailPrimary: the address is the provider account's PRIMARY one.
+		// Only GitHub's matters (TASK-3351 ruling 2): an account claim from
+		// GitHub requires it to be true, so an absent value claims nothing.
+		EmailPrimary *bool `json:"email_primary"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
@@ -285,6 +290,7 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	isNewUser := false
+	var claim *store.AccountClaim
 	if user == nil {
 		// Create new user from OAuth
 		if input.Name == "" {
@@ -318,7 +324,57 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// Existing user — require explicit provider linking.
 		// The user must have previously linked this provider from their settings.
-		if !user.HasOAuthProvider(input.Provider) {
+		//
+		// Except an account nobody ever verified (TASK-3351): it may have
+		// been registered by someone other than the address's owner, and the
+		// provider has just vouched that the caller owns the address. The
+		// owner claims it, which resets every credential the registrant
+		// held, as the verification-link claim does (BUG-3382).
+		if !user.HasOAuthProvider(input.Provider) && !user.IsEmailVerified() && providerVouchesForClaim(input.Provider, input.EmailPrimary) {
+			c, err := s.store.ClaimAccountByProvider(user.ID)
+			switch {
+			case err == nil:
+				claim = c
+			case errors.Is(err, store.ErrClaimNeedsSupport):
+				writeError(w, http.StatusConflict, "account_claim_needs_support",
+					"This account has billing attached, so it can't be claimed automatically. Contact support@getpad.dev and we'll sort it out.")
+				return
+			case errors.Is(err, store.ErrClaimNotEligible):
+				// Verified, disabled or gone since the read: refuse below.
+			default:
+				writeInternalError(w, err)
+				return
+			}
+		}
+		if claim != nil {
+			s.invalidateUserAccess(user.ID)
+			if err := s.store.AddOAuthProvider(user.ID, input.Provider); err != nil {
+				writeInternalError(w, err)
+				return
+			}
+			claimed, err := s.store.GetUser(user.ID)
+			if err != nil || claimed == nil {
+				writeInternalError(w, fmt.Errorf("oauth-login: re-read claimed account: %v", err))
+				return
+			}
+			user = claimed
+			// The display name was the registrant's choice; the provider's
+			// is the owner's.
+			if input.Name != "" && input.Name != user.Name {
+				name := input.Name
+				if renamed, err := s.store.UpdateUser(user.ID, models.UserUpdate{Name: &name}); err == nil && renamed != nil {
+					user = renamed
+				}
+			}
+			// The session is fenced on the epoch the claim produced.
+			user.CredentialEpoch = claim.Epoch
+			s.logAuditEventForUser(models.ActionAccountClaimed, r, user.ID, auditMeta(map[string]string{
+				"provider":            input.Provider,
+				"stripped_workspaces": strconv.Itoa(len(claim.StrippedWorkspaces)),
+				"deleted_workspaces":  strconv.Itoa(len(claim.DeletedWorkspaces)),
+			}))
+			s.sendAccountClaimedNotice(user, input.Provider, claim)
+		} else if !user.HasOAuthProvider(input.Provider) {
 			slog.Warn("oauth-login: rejected — provider not linked",
 				"provider", input.Provider,
 				"email", input.Email,
@@ -406,10 +462,48 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 	}))
 
 	// 8. Return session info
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	resp := map[string]interface{}{
 		"user":     sessionUserPayload(user),
 		"token":    token,
 		"new_user": isNewUser,
+	}
+	if claim != nil {
+		resp["claimed"] = true
+		resp["stripped_workspaces"] = nonNilStrings(claim.StrippedWorkspaces)
+		resp["deleted_workspaces"] = nonNilStrings(claim.DeletedWorkspaces)
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// providerVouchesForClaim: whether a provider's verified assertion of an
+// address is enough to claim the never-verified account registered with it
+// (TASK-3351 ruling 2). GitHub reports every verified address on an account,
+// not only its own, so only the primary one counts, and only when the
+// sidecar says so.
+func providerVouchesForClaim(provider string, emailPrimary *bool) bool {
+	if provider == "github" {
+		return emailPrimary != nil && *emailPrimary
+	}
+	return true
+}
+
+// sendAccountClaimedNotice tells the address's owner what the claim removed
+// (TASK-3351 ruling 3). The sign-in ends in a redirect through the sidecar,
+// so the response's lists may never be shown; the mailbox is the channel
+// that reaches the right person. Without email, it is logged.
+func (s *Server) sendAccountClaimedNotice(user *models.User, provider string, claim *store.AccountClaim) {
+	if s.email == nil || s.baseURL == "" {
+		slog.Info("account claimed by provider sign-in; no email configured for the notice",
+			"user_id", user.ID, "provider", provider,
+			"stripped_workspaces", len(claim.StrippedWorkspaces), "deleted_workspaces", len(claim.DeletedWorkspaces))
+		return
+	}
+	to, name := user.Email, user.Name
+	stripped, deleted := claim.StrippedWorkspaces, claim.DeletedWorkspaces
+	s.goAsync(func() {
+		if err := s.email.SendAccountClaimed(context.Background(), to, name, provider, stripped, deleted); err != nil {
+			slog.Error("failed to send account-claimed notice", "error", err, "user_id", user.ID)
+		}
 	})
 }
 
