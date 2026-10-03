@@ -99,19 +99,8 @@ func (s *Server) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Set author from authenticated user if available
-	if u := currentUser(r); u != nil && input.Author == "" {
-		input.Author = u.Name
-	}
-
-	// Derive actor/source from auth context
-	actor, source := actorFromRequest(r)
-	if input.CreatedBy == "" {
-		input.CreatedBy = actor
-	}
-	if input.Source == "" {
-		input.Source = source
-	}
+	stampCommentAttribution(r, &input)
+	actor, source := input.CreatedBy, input.Source
 
 	// The "commented" activity and the comment that links to it commit in ONE
 	// transaction (BUG-2716). The order inside is still forced — the comment
@@ -389,20 +378,8 @@ func (s *Server) handleCreateReply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Set author from current user if not provided.
-	if input.Author == "" {
-		if u := currentUser(r); u != nil {
-			input.Author = u.Name
-		}
-	}
-
-	actor, source := actorFromRequest(r)
-	if input.CreatedBy == "" {
-		input.CreatedBy = actor
-	}
-	if input.Source == "" {
-		input.Source = source
-	}
+	stampCommentAttribution(r, &input)
+	actor, source := input.CreatedBy, input.Source
 	input.ParentID = commentID
 
 	// The `commented` activity and the reply commit in ONE transaction,

@@ -66,6 +66,11 @@ func TestCollabSnapshotHTTPSourceStamping(t *testing.T) {
 	}
 	var created models.Item
 	parseJSON(t, rr, &created)
+	// The body's "source" no longer sets items.source (BUG-3372); give the
+	// item the CLI provenance this test is about directly.
+	if _, err := srv.store.DB().Exec(`UPDATE items SET source = 'cli' WHERE id = ?`, created.ID); err != nil {
+		t.Fatal(err)
+	}
 
 	// One-second sleep so the next version row gets a distinct
 	// RFC3339-second timestamp.

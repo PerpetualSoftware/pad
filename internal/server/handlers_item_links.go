@@ -143,7 +143,7 @@ func (s *Server) handleCreateItemLink(w http.ResponseWriter, r *http.Request) {
 	// Use SetParentLink which handles upsert and cycle detection.
 	if input.LinkType == models.ItemLinkTypeParent {
 		actor, _ := actorFromRequest(r)
-		link, err := s.store.SetParentLink(workspaceID, item.ID, target.ID, actor)
+		link, err := s.store.SetParentLinkAs(workspaceID, item.ID, target.ID, actor, currentUserID(r))
 		if err != nil {
 			if strings.Contains(err.Error(), "cycle") {
 				writeError(w, http.StatusBadRequest, "bad_request", err.Error())
@@ -161,11 +161,10 @@ func (s *Server) handleCreateItemLink(w http.ResponseWriter, r *http.Request) {
 	// through to here. The CLI doesn't send created_by, so the store defaulted
 	// it to "user" and an agent's `pad item block` recorded a human. The parent
 	// branch above already passes the actor to SetParentLink; this mirrors it.
-	// An explicit body value still wins, same as everywhere else (BUG-2542).
-	if input.CreatedBy == "" {
-		linkActor, _ := actorFromRequest(r)
-		input.CreatedBy = linkActor
-	}
+	// BUG-3372: always the request's kind (a body value used to win), and the
+	// account in item_links.user_id, which no link insert used to fill.
+	input.CreatedBy, _ = actorFromRequest(r)
+	input.UserID = currentUserID(r)
 
 	link, err := s.store.CreateItemLink(workspaceID, input, item.ID)
 	if err != nil {

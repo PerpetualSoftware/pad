@@ -80,10 +80,10 @@ func TestItemAttribution_AgentVsHuman(t *testing.T) {
 	}
 }
 
-// An explicit body value still wins, so a caller that knows better than the
-// header (an agent recording a write it made on a human's behalf, say) is not
-// overridden by it. This is the contract the Source field already had.
-func TestItemAttribution_ExplicitBodyValueWins(t *testing.T) {
+// A body value no longer wins (BUG-3372, reversing the BUG-2542 contract):
+// the writer's kind is the request's, so an agent cannot file its write as a
+// human's, nor a human as an agent's, by saying so in the body.
+func TestItemAttribution_BodyValueDoesNotWin(t *testing.T) {
 	srv := testServer(t)
 	ws := createTestWorkspaceViaAPI(t, srv)
 
@@ -93,8 +93,8 @@ func TestItemAttribution_ExplicitBodyValueWins(t *testing.T) {
 	var item models.Item
 	decodeAttributionBody(t, rr, &item)
 
-	if item.CreatedBy != "user" {
-		t.Errorf("created_by = %q, want %q — an explicit body value must beat the header", item.CreatedBy, "user")
+	if item.CreatedBy != "agent" {
+		t.Errorf("created_by = %q, want %q — the X-Pad-Agent request decides, not the body", item.CreatedBy, "agent")
 	}
 }
 

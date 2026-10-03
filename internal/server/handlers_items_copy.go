@@ -404,6 +404,7 @@ func (s *Server) handleCopyItem(w http.ResponseWriter, r *http.Request) {
 		// than by two implementations (night-11 finding; lead ruling day-58).
 		RelationVisibility: s.relationVisibility(r, dst.Role),
 		Actor:              actorID,
+		ActorUserID:        currentUserID(r),
 		CreatedBy:          actor,
 		Source:             actorSource,
 		ArchiveSource:      input.ArchiveSource,

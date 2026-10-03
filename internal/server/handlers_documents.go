@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/go-chi/chi/v5"
 
@@ -357,7 +358,7 @@ func actorFromRequest(r *http.Request) (actor, source string) {
 	source = "web"
 
 	// If an agent name header is present, mark as agent
-	if r.Header.Get("X-Pad-Agent") != "" {
+	if agentNameFromRequest(r) != "" {
 		actor = "agent"
 	}
 
@@ -378,10 +379,55 @@ func actorFromRequest(r *http.Request) (actor, source string) {
 	return actor, source
 }
 
+// maxAgentNameRunes bounds the self-declared agent name (BUG-3372).
+const maxAgentNameRunes = 64
+
+// agentNameFromRequest is the X-Pad-Agent header as stored: trimmed, control
+// characters removed, at most maxAgentNameRunes. The header is a client's
+// self-description and cannot be verified; it only ever labels the caller's
+// OWN writes (user_id is still the authenticated account), so it is kept as
+// the agent signal. What it may not do is carry an unbounded or
+// control-laden string into every activity row and timeline chip
+// (BUG-3372).
+func agentNameFromRequest(r *http.Request) string {
+	raw := r.Header.Get("X-Pad-Agent")
+	if raw == "" {
+		return ""
+	}
+	var b strings.Builder
+	n := 0
+	for _, c := range strings.TrimSpace(raw) {
+		if unicode.IsControl(c) {
+			continue
+		}
+		if n == maxAgentNameRunes {
+			break
+		}
+		b.WriteRune(c)
+		n++
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// stampCommentAttribution sets a new comment's author, created_by and source
+// from the request, whatever the body said (BUG-3372). The body could name any
+// author: a member posting as another member, or as "Support team", in the
+// trail the conventions treat as the audit record. The author is the signed-in
+// account's display name; with no account (a fresh install, a legacy workspace
+// token) it is left empty and the store labels it by kind. created_by and
+// source are what actorFromRequest derives.
+func stampCommentAttribution(r *http.Request, input *models.CommentCreate) {
+	input.Author = ""
+	if u := currentUser(r); u != nil {
+		input.Author = u.Name
+	}
+	input.CreatedBy, input.Source = actorFromRequest(r)
+}
+
 // agentMeta returns metadata JSON with the agent name if X-Pad-Agent is set,
 // merged with any existing metadata. Returns empty string if no agent.
 func agentMeta(r *http.Request, existingMeta string) string {
-	agentName := r.Header.Get("X-Pad-Agent")
+	agentName := agentNameFromRequest(r)
 	if agentName == "" {
 		return existingMeta
 	}

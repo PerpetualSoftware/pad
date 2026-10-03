@@ -1865,6 +1865,9 @@ type ItemLinkCreate struct {
 	TargetID  string `json:"target_id"`
 	LinkType  string `json:"link_type,omitempty"`
 	CreatedBy string `json:"created_by,omitempty"`
+	// UserID is the account writing the link, stored in item_links.user_id
+	// (BUG-3372). Internal-only: the handler sets it from the request.
+	UserID string `json:"-"`
 }
 
 // MaxItemTitleRunes bounds an item title at write time.

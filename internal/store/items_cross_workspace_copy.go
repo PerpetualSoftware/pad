@@ -230,6 +230,12 @@ type CrossWorkspaceCopyRequest struct {
 	CreatedBy string
 	Source    string
 
+	// ActorUserID is the signed-in account making the copy, written to the
+	// new row's created_by_user_id / last_modified_by_user_id (BUG-3372).
+	// Separate from Actor, which falls back to a non-account value when no
+	// user is signed in; "" names no account.
+	ActorUserID string
+
 	// ArchiveSource turns the copy into a move (DR-1): the source is
 	// soft-deleted in the same transaction, workspace A's seq advances, and
 	// the provenance row records that seq. A plain copy leaves A completely
@@ -800,6 +806,8 @@ func (s *Store) copyItemAcrossWorkspacesTx(req CrossWorkspaceCopyRequest, source
 		AgentRoleID:    nil,
 		CreatedBy:      req.CreatedBy,
 		Source:         req.Source,
+		// BUG-3372: the copier is the account that created the new row.
+		ActorUserID: req.ActorUserID,
 	}, mintOptions{}) // the copy checks its own limit with CheckLimitTx
 	if err != nil {
 		return nil, err

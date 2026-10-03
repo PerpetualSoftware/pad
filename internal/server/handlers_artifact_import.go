@@ -189,10 +189,8 @@ func (s *Server) handleImportArtifact(w http.ResponseWriter, r *http.Request) {
 	// role — "user" or "agent" — and consumers compare it to those literals
 	// (TimelineVersionCard.svelte). An imported item
 	// therefore matched neither and rendered as neither. Found while fixing
-	// BUG-2542; it also would have defeated that fix here, since a non-empty
-	// CreatedBy suppresses the actor stamp. The user's identity is already
-	// carried by the items.created_by_user_id column, which no create path
-	// currently populates — separate gap, not widened into this change.
+	// BUG-2542. The user's identity is carried by items.created_by_user_id,
+	// which createItemChecked fills from the request since BUG-3372.
 
 	// Enforce the workspace item-count limit (workspace-scoped), identical to
 	// handleCreateItem. Writes the 403 plan_limit_exceeded response itself when
