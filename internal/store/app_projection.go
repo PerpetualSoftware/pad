@@ -28,9 +28,9 @@ import (
 // block beside its snapshot, computed on the mutation's own transaction. The
 // app dispatcher (SPEC-6 U5) builds app DTOs from this block alone.
 //
-// The block is written for every event today. SPEC-6 writes it only for
-// workspaces with an installed app, and the gate lands with the installs table
-// (DOC-3371 decomposition, U4/U5). It never reaches an owner webhook: the
+// The block is written only while the workspace has an installed app, in any
+// state but uninstalled (DOC-3371 §5, TASK-3392), decided on the mutation's
+// own transaction: events before the first install carry none. It never reaches an owner webhook: the
 // outbox drain strips it first (stripAppProjection).
 //
 // A data-shape problem never fails the mutation (lead ruling on #1763): an
@@ -118,6 +118,24 @@ type commentAppProjection struct {
 	ParentCommentID string `json:"parent_comment_id,omitempty"`
 }
 
+// workspaceHasInstalledAppTx reports whether the workspace has an app
+// installed, in any state but uninstalled: a disabled install can be enabled
+// again and its dispatcher still needs the events in between.
+func (s *Store) workspaceHasInstalledAppTx(tx *sql.Tx, workspaceID string) (bool, error) {
+	if workspaceID == "" {
+		return false, nil
+	}
+	var one int
+	err := tx.QueryRow(s.q(`SELECT 1 FROM app_installs WHERE workspace_id = ? AND state <> 'uninstalled' LIMIT 1`), workspaceID).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("app projection: read installs: %w", err)
+	}
+	return true, nil
+}
+
 // userDisplayTx returns a user's display name, or "" when the account is gone.
 func (s *Store) userDisplayTx(tx *sql.Tx, userID string) (string, error) {
 	if userID == "" {
@@ -189,6 +207,9 @@ func projectFieldsBySchema(fieldsJSON, schemaJSON string) (map[string]any, strin
 // buildItemAppProjectionTx freezes the block for an item event, reading the
 // item's creator and its collection's schema on the mutation's transaction.
 func (s *Store) buildItemAppProjectionTx(tx *sql.Tx, item *models.Item) (*itemAppProjection, error) {
+	if ok, err := s.workspaceHasInstalledAppTx(tx, item.WorkspaceID); err != nil || !ok {
+		return nil, err
+	}
 	var creatorID, createdVia sql.NullString
 	err := tx.QueryRow(s.q(`SELECT created_by_user_id, created_via_app FROM items WHERE id = ?`), item.ID).Scan(&creatorID, &createdVia)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -224,10 +245,13 @@ func (s *Store) buildItemAppProjectionTx(tx *sql.Tx, item *models.Item) (*itemAp
 // buildCommentAppProjectionTx freezes the block for a comment event. author is
 // the comment's own author column, the display used when the account is gone.
 func (s *Store) buildCommentAppProjectionTx(tx *sql.Tx, itemID, userID, author, kind, parentID string) (*commentAppProjection, error) {
-	var collectionID string
-	err := tx.QueryRow(s.q(`SELECT collection_id FROM items WHERE id = ?`), itemID).Scan(&collectionID)
+	var collectionID, workspaceID string
+	err := tx.QueryRow(s.q(`SELECT collection_id, workspace_id FROM items WHERE id = ?`), itemID).Scan(&collectionID, &workspaceID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("app projection: read comment item: %w", err)
+	}
+	if ok, err := s.workspaceHasInstalledAppTx(tx, workspaceID); err != nil || !ok {
+		return nil, err
 	}
 	display, err := s.userDisplayTx(tx, userID)
 	if err != nil {

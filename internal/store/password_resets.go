@@ -17,6 +17,10 @@ const resetTokenTTL = 1 * time.Hour
 // Returns the plaintext token (to embed in the reset URL). The token is
 // stored as a SHA-256 hash — the plaintext cannot be recovered.
 func (s *Store) CreatePasswordReset(userID string) (string, error) {
+	// A bot never gets a reset link (TASK-3392).
+	if err := s.refuseAppPrincipalQ(s.db, userID); err != nil {
+		return "", err
+	}
 	// Invalidate any existing unused tokens for this user
 	_, _ = s.db.Exec(s.q(`
 		UPDATE password_reset_tokens SET used_at = ? WHERE user_id = ? AND used_at IS NULL

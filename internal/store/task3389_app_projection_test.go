@@ -59,6 +59,9 @@ func task3389Fixture(t *testing.T) (*Store, *models.Workspace, *models.Collectio
 	if err != nil {
 		t.Fatalf("CreateCollection: %v", err)
 	}
+	// The block is written only once the workspace has an installed app
+	// (TASK-3392).
+	task3392Install(t, s, ws.ID, "inst-"+ws.ID, "active")
 	u := createTestUser(t, s, "ada-3389@example.com", "Ada Projection", "password123")
 	return s, ws, coll, u
 }

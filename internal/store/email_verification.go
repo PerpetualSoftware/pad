@@ -27,6 +27,11 @@ const verificationTokenTTL = 24 * time.Hour
 // invalidate-prior-unused-tokens-on-mint behavior is KEPT so a
 // resend-verification silently burns the previous link.
 func (s *Store) CreateEmailVerification(userID string) (string, error) {
+	// A bot never gets a verification link, which is the token the
+	// verify-claim spends (TASK-3392).
+	if err := s.refuseAppPrincipalQ(s.db, userID); err != nil {
+		return "", err
+	}
 	// Invalidate any existing unused tokens for this user so a resend
 	// invalidates the previous verification link.
 	_, _ = s.db.Exec(s.q(`

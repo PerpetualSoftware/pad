@@ -181,7 +181,9 @@ func (s *Store) ValidateSession(token string) (*SessionInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	if user == nil {
+	// A bot's session, however it came to exist, resolves to nothing
+	// (TASK-3392).
+	if user == nil || user.IsApp() {
 		return nil, nil
 	}
 
