@@ -30,7 +30,7 @@ var usernameCleanRe = regexp.MustCompile(`[^a-z0-9-]+`)
 var bcryptCost = 12
 
 // user SELECT columns — used by all user queries.
-const userColumns = `id, email, username, name, password_hash, role, avatar_url, totp_secret, totp_enabled, recovery_codes, plan, plan_expires_at, plan_source, stripe_customer_id, plan_overrides, oauth_providers, password_set, disabled_at, email_verified_at, last_active_at, last_write_at, created_at, updated_at`
+const userColumns = `id, email, username, name, password_hash, role, avatar_url, totp_secret, totp_enabled, recovery_codes, plan, plan_expires_at, plan_source, stripe_customer_id, plan_overrides, oauth_providers, password_set, disabled_at, email_verified_at, last_active_at, last_write_at, created_at, updated_at, credential_epoch`
 
 // scanUser scans a user row into a User struct.
 // Note: does NOT decrypt the TOTP secret — call store.decryptUserTOTP() after
@@ -46,6 +46,7 @@ func scanUser(row interface{ Scan(...interface{}) error }) (*models.User, error)
 		&u.Plan, &u.PlanExpiresAt, &u.PlanSource, &u.StripeCustomerID, &u.PlanOverrides, &u.OAuthProviders,
 		&u.PasswordSet,
 		&disabledAt, &emailVerifiedAt, &lastActiveAt, &lastWriteAt, &createdAt, &updatedAt,
+		&u.CredentialEpoch,
 	)
 	if disabledAt.Valid {
 		u.DisabledAt = disabledAt.String
@@ -190,6 +191,9 @@ func (s *Store) UpdateUser(id string, input models.UserUpdate) (*models.User, er
 		// (clears the OAuth placeholder-hash state set by CreateOAuthUser).
 		sets = append(sets, "password_set = ?")
 		args = append(args, true)
+		// A new password is a credential change: a sign-in that checked the
+		// old one must not mint a session after it (BUG-3382).
+		sets = append(sets, "credential_epoch = credential_epoch + 1")
 	}
 	if input.AvatarURL != nil {
 		sets = append(sets, "avatar_url = ?")
@@ -495,6 +499,7 @@ func (s *Store) SearchUsers(params AdminUserSearchParams) (*AdminUserSearchResul
 			&entry.Plan, &entry.PlanExpiresAt, &entry.PlanSource, &entry.StripeCustomerID, &entry.PlanOverrides, &entry.OAuthProviders,
 			&entry.PasswordSet,
 			&disabledAt, &emailVerifiedAt, &lastActiveAt, &lastWriteAt, &createdAt, &updatedAt,
+			&entry.CredentialEpoch,
 			&workspaceCount, &storageBytes,
 		); err != nil {
 			return nil, fmt.Errorf("search users scan: %w", err)
@@ -915,7 +920,7 @@ func throttleTime(ts string) string {
 
 // DisableUser soft-disables a user account by setting disabled_at.
 func (s *Store) DisableUser(userID string) error {
-	_, err := s.db.Exec(s.q(`UPDATE users SET disabled_at = ?, updated_at = ? WHERE id = ?`),
+	_, err := s.db.Exec(s.q(`UPDATE users SET disabled_at = ?, updated_at = ?, credential_epoch = credential_epoch + 1 WHERE id = ?`),
 		now(), now(), userID)
 	if err != nil {
 		return fmt.Errorf("disable user: %w", err)
@@ -979,7 +984,7 @@ func (s *Store) DisableUserAndRevokeAccess(userID string) error {
 		what, query string
 		args        []any
 	}{
-		{"disable", `UPDATE users SET disabled_at = ?, updated_at = ? WHERE id = ?`, []any{ts, ts, userID}},
+		{"disable", `UPDATE users SET disabled_at = ?, updated_at = ?, credential_epoch = credential_epoch + 1 WHERE id = ?`, []any{ts, ts, userID}},
 		{"delete sessions", `DELETE FROM sessions WHERE user_id = ?`, []any{userID}},
 		{"delete api tokens", `DELETE FROM api_tokens WHERE user_id = ?`, []any{userID}},
 		{"revoke oauth access tokens", `UPDATE oauth_access_tokens SET active = ? WHERE subject = ?`, []any{s.dialect.BoolToInt(false), userID}},

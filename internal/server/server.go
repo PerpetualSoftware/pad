@@ -1686,6 +1686,9 @@ func (s *Server) setupRouter() {
 				// RequireVerifiedEmail's exempt list so an unverified user
 				// can reach them to clear their own unverified state.
 				r.Post("/verify-email", s.handleVerifyEmail)
+				// BUG-3382: the mailbox owner claims a never-verified
+				// account someone else registered with their address.
+				r.Post("/verify-email/claim", s.handleClaimByVerification)
 				r.Post("/resend-verification", s.handleResendVerification)
 
 				// Two-factor authentication

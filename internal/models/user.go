@@ -7,29 +7,33 @@ import (
 
 // User represents a registered user in the system.
 type User struct {
-	ID               string    `json:"id"`
-	Email            string    `json:"email"`
-	Username         string    `json:"username"` // Unique handle; empty until set
-	Name             string    `json:"name"`
-	PasswordHash     string    `json:"-"`    // Never serialized
-	Role             string    `json:"role"` // "admin" or "member"
-	AvatarURL        string    `json:"avatar_url,omitempty"`
-	TOTPSecret       string    `json:"-"` // Never serialized
-	TOTPEnabled      bool      `json:"totp_enabled"`
-	RecoveryCodes    string    `json:"-"`    // Never serialized
-	Plan             string    `json:"plan"` // "free", "pro", or "self-hosted"
-	PlanExpiresAt    string    `json:"plan_expires_at,omitempty"`
-	PlanSource       string    `json:"-"`                           // Who set Plan: "manual" or "stripe" (TASK-3295); surfaced only on admin user responses
-	StripeCustomerID string    `json:"-"`                           // Never serialized
-	PlanOverrides    string    `json:"plan_overrides,omitempty"`    // JSON overrides for per-user limits
-	OAuthProviders   string    `json:"-"`                           // JSON array of linked providers, e.g. ["github","google"]
-	PasswordSet      bool      `json:"password_set"`                // True if the user explicitly set a password (vs. OAuth placeholder hash)
-	DisabledAt       string    `json:"disabled_at,omitempty"`       // Non-empty = account disabled
-	EmailVerifiedAt  string    `json:"email_verified_at,omitempty"` // Non-empty = email verified (mirror DisabledAt). Empty/NULL = unverified. PLAN-1933 / TASK-1935.
-	LastActiveAt     string    `json:"last_active_at,omitempty"`    // Last authenticated API request (any read or write)
-	LastWriteAt      string    `json:"last_write_at,omitempty"`     // Last mutating action (item/comment/attachment); see Store.TouchUserWrite. PLAN-1542 / TASK-1543.
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	ID               string `json:"id"`
+	Email            string `json:"email"`
+	Username         string `json:"username"` // Unique handle; empty until set
+	Name             string `json:"name"`
+	PasswordHash     string `json:"-"`    // Never serialized
+	Role             string `json:"role"` // "admin" or "member"
+	AvatarURL        string `json:"avatar_url,omitempty"`
+	TOTPSecret       string `json:"-"` // Never serialized
+	TOTPEnabled      bool   `json:"totp_enabled"`
+	RecoveryCodes    string `json:"-"`    // Never serialized
+	Plan             string `json:"plan"` // "free", "pro", or "self-hosted"
+	PlanExpiresAt    string `json:"plan_expires_at,omitempty"`
+	PlanSource       string `json:"-"`                        // Who set Plan: "manual" or "stripe" (TASK-3295); surfaced only on admin user responses
+	StripeCustomerID string `json:"-"`                        // Never serialized
+	PlanOverrides    string `json:"plan_overrides,omitempty"` // JSON overrides for per-user limits
+	OAuthProviders   string `json:"-"`                        // JSON array of linked providers, e.g. ["github","google"]
+	PasswordSet      bool   `json:"password_set"`             // True if the user explicitly set a password (vs. OAuth placeholder hash)
+	// CredentialEpoch is bumped by every credential change (password reset or
+	// change, disable, account claim). A sign-in mints a session only if the
+	// epoch it read when checking the credential is still current (BUG-3382).
+	CredentialEpoch int64     `json:"-"`
+	DisabledAt      string    `json:"disabled_at,omitempty"`       // Non-empty = account disabled
+	EmailVerifiedAt string    `json:"email_verified_at,omitempty"` // Non-empty = email verified (mirror DisabledAt). Empty/NULL = unverified. PLAN-1933 / TASK-1935.
+	LastActiveAt    string    `json:"last_active_at,omitempty"`    // Last authenticated API request (any read or write)
+	LastWriteAt     string    `json:"last_write_at,omitempty"`     // Last mutating action (item/comment/attachment); see Store.TouchUserWrite. PLAN-1542 / TASK-1543.
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 // IsDisabled returns true if the user account has been disabled.

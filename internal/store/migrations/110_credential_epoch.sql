@@ -1,0 +1,11 @@
+-- Migration 110: a per-account credential epoch (BUG-3382, TASK-3351).
+--
+-- Every sign-in checks a credential (a password, a provider assertion, a 2FA
+-- code, an approving session) and THEN mints a session, in a separate step. A
+-- credential change landing between the two (a reset, a change, a disable, an
+-- account claim) used to be invisible to the mint: CreateSession checked only
+-- disabled_at, so a login that validated the OLD password could still mint a
+-- session just after every session was deleted. The epoch is bumped by every
+-- credential change; a mint carries the epoch it read when it checked the
+-- credential, and inserts only if it is unchanged.
+ALTER TABLE users ADD COLUMN credential_epoch INTEGER NOT NULL DEFAULT 0;

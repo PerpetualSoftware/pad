@@ -181,8 +181,9 @@ func TestCloudSignup_UnverifiedThenVerifyUnblocksSameSession(t *testing.T) {
 		t.Fatalf("pre-verify item-create: expected 403 email_not_verified, got %d: %s", rr.Code, rr.Body.String())
 	}
 
-	// Verify the email.
-	rr = doRequest(srv, "POST", "/api/v1/auth/verify-email", map[string]string{"token": token})
+	// Verify the email, from the session that registered it (BUG-3382: a
+	// link verifies only for a request signed in as its account).
+	rr = doRequestWithCookie(srv, "POST", "/api/v1/auth/verify-email", map[string]string{"token": token}, reg.Token)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("verify-email: expected 200, got %d: %s", rr.Code, rr.Body.String())
 	}
@@ -251,6 +252,10 @@ func TestResendVerification_InvalidatesPriorTokenAndIsEnumerationSafe(t *testing
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("register: expected 201, got %d: %s", rr.Code, rr.Body.String())
 	}
+	var reg struct {
+		Token string `json:"token"`
+	}
+	parseJSON(t, rr, &reg)
 	firstToken := extractVerifyToken(t, waitMail(t, mails))
 
 	// Resend → always 200, and a NEW token lands in the inbox.
@@ -269,8 +274,9 @@ func TestResendVerification_InvalidatesPriorTokenAndIsEnumerationSafe(t *testing
 		t.Fatalf("stale first token: expected 400 (invalidated by resend), got %d: %s", rr.Code, rr.Body.String())
 	}
 
-	// The new token still verifies.
-	rr = post("/api/v1/auth/verify-email", map[string]string{"token": secondToken})
+	// The new token still verifies, for the account's own session (BUG-3382).
+	ipN++
+	rr = doRequestWithCookieFrom(srv, "POST", "/api/v1/auth/verify-email", map[string]string{"token": secondToken}, reg.Token, "203.0.113."+strconv.Itoa(ipN)+":1234")
 	if rr.Code != http.StatusOK {
 		t.Fatalf("new token verify: expected 200, got %d: %s", rr.Code, rr.Body.String())
 	}

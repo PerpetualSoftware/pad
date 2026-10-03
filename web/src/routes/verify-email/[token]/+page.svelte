@@ -2,16 +2,27 @@
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
-	import { api } from '$lib/api/client';
+	import { api, PadApiError } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import AuthHeader from '$lib/components/auth/AuthHeader.svelte';
 	import AuthFooter from '$lib/components/auth/AuthFooter.svelte';
 
 	let token = $derived(page.params.token ?? '');
 
-	// verifying → success (terminal, redirects) | error (terminal, offers resend).
-	let status = $state<'verifying' | 'success' | 'error'>('verifying');
+	// verifying → success (terminal, redirects) | error (terminal, offers resend)
+	// | needs-session (BUG-3382: the link was opened without a session for the
+	// account it names; offers sign-in, or a claim when it wasn't them).
+	let status = $state<'verifying' | 'success' | 'error' | 'needs-session'>('verifying');
 	let error = $state('');
+
+	// needs-session details, from the 409's details.
+	let pendingEmail = $state('');
+	let canClaim = $state(false);
+	// idle → confirming → claiming → claimed (terminal) | failed (retryable).
+	let claimState = $state<'idle' | 'confirming' | 'claiming' | 'claimed' | 'failed'>('idle');
+	let claimError = $state('');
+	let claimed = $state<{ reset_path: string; stripped_workspaces: string[]; deleted_workspaces: string[] } | null>(null);
+	let signInHref = $derived(`/login?redirect=${encodeURIComponent(`/verify-email/${token}`)}`);
 
 	// Mirrors VerifyEmailBanner's resend flow: idle → sending → sent (terminal) ;
 	// error is retryable.
@@ -44,12 +55,32 @@
 			status = 'success';
 			await goto('/console', { replaceState: true });
 		} catch (err: unknown) {
+			if (err instanceof PadApiError && err.code === 'verify_needs_session') {
+				pendingEmail = typeof err.details?.email === 'string' ? err.details.email : '';
+				canClaim = err.details?.can_claim === true;
+				status = 'needs-session';
+				return;
+			}
 			if (err instanceof Error) {
 				error = err.message || 'This verification link is invalid or has expired.';
 			} else {
 				error = 'This verification link is invalid or has expired.';
 			}
 			status = 'error';
+		}
+	}
+
+	async function claim() {
+		if (claimState === 'claiming') return;
+		claimState = 'claiming';
+		claimError = '';
+		try {
+			claimed = await api.auth.claimByVerification(token);
+			claimState = 'claimed';
+		} catch (err: unknown) {
+			claimError =
+				err instanceof Error && err.message ? err.message : 'Could not claim this address. Try again.';
+			claimState = 'failed';
 		}
 	}
 
@@ -87,6 +118,61 @@
 			<div class="status" role="status">
 				<span>Email verified — redirecting…</span>
 			</div>
+		{:else if status === 'needs-session'}
+			{#if claimState === 'claimed' && claimed}
+				<p class="subtitle">Address claimed</p>
+				<div class="form claim">
+					<p>
+						Every password, session and token on this account has been reset. Set a password to
+						sign in.
+					</p>
+					{#if claimed.deleted_workspaces.length > 0}
+						<p>Workspaces created by whoever registered this address were deleted:</p>
+						<ul>
+							{#each claimed.deleted_workspaces as name, i (i)}<li>{name}</li>{/each}
+						</ul>
+					{/if}
+					{#if claimed.stripped_workspaces.length > 0}
+						<p>The account was removed from workspaces it had joined:</p>
+						<ul>
+							{#each claimed.stripped_workspaces as name, i (i)}<li>{name}</li>{/each}
+						</ul>
+					{/if}
+					{#if claimed.reset_path}
+						<a class="button-link" href={claimed.reset_path}>Set a password</a>
+					{:else}
+						<a class="button-link" href="/forgot-password">Set a password</a>
+					{/if}
+				</div>
+			{:else}
+				<p class="subtitle">Sign in to verify</p>
+				<div class="form claim">
+					<p>
+						This link verifies {pendingEmail || 'this address'}. Sign in to that account to finish
+						verifying.
+					</p>
+					<a class="button-link" href={signInHref}>Sign in to verify</a>
+					{#if canClaim}
+						{#if claimState === 'idle'}
+							<button class="secondary" onclick={() => (claimState = 'confirming')}>
+								I didn't register this account
+							</button>
+						{:else}
+							<p>
+								If someone else registered your address, you can claim it. This resets every
+								password, session and token on the account, deletes workspaces it created, and
+								removes it from workspaces it joined. You then set your own password.
+							</p>
+							{#if claimState === 'failed'}
+								<p class="error" role="alert">{claimError}</p>
+							{/if}
+							<button onclick={claim} disabled={claimState === 'claiming'}>
+								{claimState === 'claiming' ? 'Claiming…' : 'Claim this address'}
+							</button>
+						{/if}
+					{/if}
+				</div>
+			{/if}
 		{:else}
 			<p class="subtitle">This verification link is invalid or expired.</p>
 			<div class="form">
@@ -219,6 +305,35 @@
 
 	button:hover:not(:disabled) { opacity: 0.9; }
 	button:disabled { opacity: 0.6; cursor: not-allowed; }
+
+	.claim {
+		text-align: left;
+		color: var(--text-secondary);
+		font-size: 0.85rem;
+	}
+
+	.claim ul {
+		margin: 0;
+		padding-left: var(--space-5);
+	}
+
+	.button-link {
+		display: block;
+		text-align: center;
+		padding: var(--space-3) var(--space-4);
+		background: var(--accent-blue);
+		color: #fff;
+		border-radius: var(--radius);
+		font-size: 0.95rem;
+		font-weight: 500;
+		text-decoration: none;
+	}
+
+	button.secondary {
+		background: transparent;
+		color: var(--accent-blue);
+		border: 1px solid var(--border);
+	}
 
 	.signin-link {
 		display: inline-block;

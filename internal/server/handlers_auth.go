@@ -348,7 +348,9 @@ func (s *Server) rotateSessionsAfterCredentialChange(w http.ResponseWriter, r *h
 	if info.Kind == store.SessionKindCLI {
 		device = "cli"
 	}
-	token, err := s.store.CreateSessionIssuedAt(user.ID, device, clientIP(r), r.UserAgent(), webSessionTTL, info.CreatedAt)
+	// Fenced on the epoch of the user the caller passes, which is the
+	// credential state this rotation follows (BUG-3382).
+	token, err := s.store.CreateSessionFenced(user.ID, user.CredentialEpoch, device, clientIP(r), r.UserAgent(), webSessionTTL, info.CreatedAt)
 	if errors.Is(err, store.ErrUserDisabled) {
 		writeError(w, http.StatusForbidden, "account_disabled", "Your account has been disabled. Contact an administrator.")
 		return "", false
@@ -382,7 +384,14 @@ func (s *Server) createAuthSession(w http.ResponseWriter, r *http.Request, user 
 	if isCLIClient(r) {
 		device = "cli"
 	}
-	token, err := s.store.CreateSession(user.ID, device, clientIP(r), r.UserAgent(), ttl)
+	// Fenced on the credential epoch read when the sign-in checked its
+	// credential (BUG-3382): user is the account as that check loaded it.
+	token, err := s.store.CreateSessionFenced(user.ID, user.CredentialEpoch, device, clientIP(r), r.UserAgent(), ttl, time.Time{})
+	if errors.Is(err, store.ErrCredentialsChanged) {
+		writeError(w, http.StatusUnauthorized, "credentials_changed",
+			"Your sign-in details changed while you were signing in. Sign in again.")
+		return "", err
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to create session")
 		return "", err
@@ -1158,7 +1167,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// If 2FA is enabled, return a challenge token instead of a full session.
 	// The challenge token is HMAC-signed, IP-bound, and expires in 5 minutes.
 	if user.TOTPEnabled {
-		challenge := generateTwoFAChallenge(user.ID, clientIP(r), s.twoFAChallengeSecret)
+		challenge := generateTwoFAChallengeAt(user.ID, clientIP(r), user.CredentialEpoch, s.twoFAChallengeSecret)
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"requires_2fa":    true,
 			"challenge_token": challenge,
@@ -1715,7 +1724,8 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 	// Update password
 	password := input.Password
 	update := models.UserUpdate{Password: &password}
-	if _, err := s.store.UpdateUser(user.ID, update); err != nil {
+	updated, err := s.store.UpdateUser(user.ID, update)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to update password")
 		return
 	}
@@ -1741,8 +1751,9 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create a fresh session so the user is logged in
-	sessionToken, err := s.store.CreateSession(user.ID, "web", clientIP(r), r.UserAgent(), webSessionTTL)
+	// Create a fresh session so the user is logged in, fenced on the epoch
+	// this reset produced (BUG-3382).
+	sessionToken, err := s.store.CreateSessionFenced(updated.ID, updated.CredentialEpoch, "web", clientIP(r), r.UserAgent(), webSessionTTL, time.Time{})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", "Password updated but failed to create session")
 		return
@@ -1806,11 +1817,31 @@ func (s *Server) handleVerifyEmail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	pending, err := s.store.LookupEmailVerification(input.Token)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to verify email")
+		return
+	}
 	// A disabled account does not act, here either (BUG-3349): refuse before
 	// the token is consumed, so it still works if the account is re-enabled.
-	if pending, err := s.store.LookupEmailVerification(input.Token); err == nil && pending != nil && pending.IsDisabled() {
+	if pending != nil && pending.IsDisabled() {
 		writeError(w, http.StatusForbidden, "account_disabled", "Your account has been disabled. Contact an administrator.")
 		return
+	}
+	// BUG-3382: the link verifies only for a request signed in as the
+	// account it names. Registration mails this link to the ADDRESS, and the
+	// address may belong to someone other than whoever registered it: a
+	// squatter's account, verified by the real owner's click, would keep the
+	// squatter's password and sessions. A clicker who is not signed in as
+	// that account is told to sign in, or, if it was not them, to claim the
+	// address (handleClaimByVerification). The token is not spent.
+	if pending != nil {
+		if cu := currentUser(r); cu == nil || cu.ID != pending.ID {
+			writeError2(w, http.StatusConflict, "verify_needs_session",
+				"Sign in to the account registered with this address to verify it. If you didn't register it, you can claim the address.",
+				map[string]interface{}{"email": pending.Email, "can_claim": !pending.IsEmailVerified()})
+			return
+		}
 	}
 	user, err := s.store.ConsumeEmailVerification(input.Token)
 	if errors.Is(err, store.ErrUserDisabled) {
@@ -1843,6 +1874,70 @@ func (s *Server) handleVerifyEmail(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":   true,
 		"user": sessionUserPayload(user),
+	})
+}
+
+// handleClaimByVerification: POST /api/v1/auth/verify-email/claim {token}.
+//
+// The verification link was mailed to the address, so whoever holds it owns
+// the mailbox. When the account registered with that address was never
+// verified, its credentials may be a squatter's (BUG-3382): the claim resets
+// every one of them (store.ClaimAccountByVerification) and answers with a
+// password-reset path, where the claimant sets a password and is signed in.
+// The previous holder's live connections are kicked now.
+func (s *Server) handleClaimByVerification(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Token string `json:"token"`
+	}
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
+		return
+	}
+	input.Token = strings.TrimSpace(input.Token)
+	if input.Token == "" {
+		writeError(w, http.StatusBadRequest, "validation_error", "Verification token is required")
+		return
+	}
+	claim, err := s.store.ClaimAccountByVerification(input.Token)
+	if errors.Is(err, store.ErrClaimNotEligible) {
+		writeError(w, http.StatusBadRequest, "invalid_token",
+			"This link is invalid or has expired, or the address is already verified. Request a new link, or sign in.")
+		return
+	}
+	if errors.Is(err, store.ErrClaimNeedsSupport) {
+		writeError(w, http.StatusConflict, "account_claim_needs_support",
+			"This account has billing attached, so it can't be claimed automatically. Contact support@getpad.dev and we'll sort it out.")
+		return
+	}
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	// Every session of the account is gone; its live connections end now.
+	s.invalidateUserAccess(claim.UserID)
+	s.logAuditEventForUser(models.ActionAccountClaimed, r, claim.UserID, auditMeta(map[string]string{
+		"stripped_workspaces": strconv.Itoa(len(claim.StrippedWorkspaces)),
+		"deleted_workspaces":  strconv.Itoa(len(claim.DeletedWorkspaces)),
+	}))
+
+	resetToken, err := s.store.CreatePasswordReset(claim.UserID)
+	if err != nil {
+		// The account is claimed and safe; the claimant can still use
+		// forgot-password to set a password.
+		slog.Error("account claim: could not mint the set-password link", "error", err, "user_id", claim.UserID)
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"claimed":             true,
+			"reset_path":          "",
+			"stripped_workspaces": nonNilStrings(claim.StrippedWorkspaces),
+			"deleted_workspaces":  nonNilStrings(claim.DeletedWorkspaces),
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"claimed":             true,
+		"reset_path":          "/reset-password/" + resetToken,
+		"stripped_workspaces": nonNilStrings(claim.StrippedWorkspaces),
+		"deleted_workspaces":  nonNilStrings(claim.DeletedWorkspaces),
 	})
 }
 

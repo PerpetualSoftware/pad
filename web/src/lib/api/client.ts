@@ -2747,9 +2747,21 @@ export const api = {
 		// The token in the link is the credential, so this is a bare POST with
 		// no form. Returns the freshly-verified user so the SPA can refresh its
 		// auth store without a second round-trip; 400 invalid_token when the
-		// link is invalid, expired, or already used.
+		// link is invalid, expired, or already used; 409 verify_needs_session
+		// (details {email, can_claim}) when the request has no session for the
+		// account the link names (BUG-3382).
 		verifyEmailToken: (token: string) =>
 			request<{ ok: boolean; user: { id: string; email: string; username: string; name: string; role: string } }>('/auth/verify-email', {
+				method: 'POST',
+				body: JSON.stringify({ token })
+			}),
+		// Claim the address the verification link was mailed to (BUG-3382).
+		// Offered when the link is opened without a session for its account
+		// (409 verify_needs_session with details.can_claim). Resets every
+		// credential on the account and answers with a set-password path;
+		// 409 account_claim_needs_support when billing is attached.
+		claimByVerification: (token: string) =>
+			request<{ claimed: boolean; reset_path: string; stripped_workspaces: string[]; deleted_workspaces: string[] }>('/auth/verify-email/claim', {
 				method: 'POST',
 				body: JSON.stringify({ token })
 			}),
