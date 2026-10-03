@@ -87,6 +87,15 @@ func TestTask3392_PasswordLoginAnswersABotAsUnknown(t *testing.T) {
 func TestTask3392_ResetAndVerificationDoorsAnswerABotAsUnknown(t *testing.T) {
 	srv := testServer(t)
 	bootstrapFirstUser(t, srv, "admin-3392r@example.com", "Admin")
+	// With email configured, forgot-password and resend would mint a link
+	// for any account they accept. The store's mints refuse a bot too, and
+	// the door would then still answer 200, so the answer alone cannot tell
+	// the two gates apart: the log can. A door that refuses first never
+	// attempts the mint.
+	sender, _ := newMailSink(t)
+	srv.baseURL = "https://pad.test"
+	srv.SetEmailSender(sender)
+	logs := captureLogs(t)
 	bot := task3392Bot(t, srv, "inst-reset")
 
 	task3392SameAnswer(t, "forgot-password",
@@ -109,6 +118,9 @@ func TestTask3392_ResetAndVerificationDoorsAnswerABotAsUnknown(t *testing.T) {
 		if n := countRows(t, srv, `SELECT COUNT(*) FROM `+table+` WHERE user_id = ?`, bot.ID); n != 0 {
 			t.Errorf("%d %s minted for a bot", n, table)
 		}
+	}
+	if strings.Contains(logs.String(), "failed to create") {
+		t.Errorf("a door attempted a link mint for a bot before refusing it:\n%s", logs.String())
 	}
 	after, err := srv.store.GetUser(bot.ID)
 	if err != nil || after == nil {
