@@ -1352,7 +1352,8 @@ type AdminUserWorkspaceDetail struct {
 	ItemsOpen int `json:"items_open"`
 	// ItemsTotal counts all non-deleted items in the workspace.
 	ItemsTotal int `json:"items_total"`
-	// MembersCount counts workspace_members rows (includes the owner).
+	// MembersCount counts the workspace's people (includes the owner); an
+	// installed app's bot is not one (TASK-3392).
 	MembersCount int `json:"members_count"`
 	// StorageBytes mirrors WorkspaceStorageUsage's definition: SUM of
 	// non-deleted attachment size_bytes (including derived blobs).

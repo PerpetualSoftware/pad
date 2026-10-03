@@ -557,3 +557,25 @@ func TestTask3392_OwnerBackfillSkipsBots(t *testing.T) {
 		t.Errorf("owner_id = %q, want the human %q (bot %q)", owner.String, human.ID, bot.ID)
 	}
 }
+
+// The admin user-detail member count counts people.
+func TestTask3392_AdminMemberCountIsPeople(t *testing.T) {
+	s := testStore(t)
+	owner := createTestUser(t, s, "mc@test.com", "Owner", "password123")
+	ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "Count", OwnerID: owner.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddWorkspaceMember(ws.ID, owner.ID, "owner"); err != nil {
+		t.Fatal(err)
+	}
+	bot := task3392Bot(t, s, "inst-mc")
+	task3392Member(t, s, ws.ID, bot.ID, "editor")
+	got, err := s.GetUserWorkspacesDetailed(owner.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].MembersCount != 1 {
+		t.Errorf("detail = %+v, want one workspace with 1 member", got)
+	}
+}
