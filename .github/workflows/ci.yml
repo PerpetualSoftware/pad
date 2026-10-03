@@ -449,9 +449,13 @@ jobs:
           set -euo pipefail
           key=/usr/share/keyrings/pgdg.asc
           curl -fsSL -o /tmp/pgdg.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
-          fpr=$(gpg --show-keys --with-colons /tmp/pgdg.asc | awk -F: '$1 == "fpr" { print $10; exit }')
-          if [ "$fpr" != "B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8" ]; then
-            echo "PGDG key fingerprint mismatch: got $fpr" >&2
+          # signed-by trusts EVERY key in the file, so the file must hold
+          # exactly one primary key and it must be PGDG's.
+          keys=$(gpg --show-keys --with-colons /tmp/pgdg.asc)
+          pubs=$(printf '%s\n' "$keys" | awk -F: '$1 == "pub"' | wc -l)
+          fpr=$(printf '%s\n' "$keys" | awk -F: '$1 == "fpr" { print $10; exit }')
+          if [ "$pubs" != "1" ] || [ "$fpr" != "B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8" ]; then
+            echo "PGDG key check failed: $pubs primary key(s), first fingerprint $fpr" >&2
             exit 1
           fi
           sudo install -m 0644 /tmp/pgdg.asc "$key"
