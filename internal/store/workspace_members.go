@@ -979,9 +979,10 @@ func invitationProofHash(proof string) string {
 // slow request can pass the handler's check and cross it), or for a disabled
 // account.
 //
-// The caller has already checked that the account's email is the
-// invitation's: the proof proves the MAILBOX, the match ties it to this
-// account.
+// The caller MUST have checked that the account's email is the invitation's
+// (invitationEmailMatches) before calling: the proof proves the MAILBOX, the
+// match ties it to this account. Both callers do, handleAcceptInvitation and
+// handleRegister; a new caller owes the same check.
 //
 // The user row is locked first, the order requireActiveUserTx establishes for
 // a write that pairs an account with something else.
