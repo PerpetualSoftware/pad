@@ -504,10 +504,10 @@ func (s *Server) applyBulkOp(r *http.Request, workspaceID string, item *models.I
 		return s.bulkFieldUpdate(r, workspaceID, item, map[string]any{"priority": req.Priority}, req.Force, visibleIDs, actor, source, batchID, droppedFields)
 
 	case "tag":
-		return s.bulkTagUpdate(item, req.Tags, true, actor, source, batchID)
+		return s.bulkTagUpdate(item, req.Tags, true, actor, source, currentUserID(r), batchID)
 
 	case "untag":
-		return s.bulkTagUpdate(item, req.Tags, false, actor, source, batchID)
+		return s.bulkTagUpdate(item, req.Tags, false, actor, source, currentUserID(r), batchID)
 
 	case "assign":
 		input := models.ItemUpdate{
@@ -516,6 +516,7 @@ func (s *Server) applyBulkOp(r *http.Request, workspaceID string, item *models.I
 			ClearAssignedUser: req.ClearAssignedUser,
 			ClearAgentRole:    req.ClearAgentRole,
 			LastModifiedBy:    actor,
+			ActorUserID:       currentUserID(r), // BUG-3372
 			Source:            source,
 		}
 		updated, err := s.store.UpdateItem(item.ID, input, store.WithEventBatch(batchID))
@@ -814,6 +815,7 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 	input := models.ItemUpdate{
 		FieldsPatch:    patch,
 		LastModifiedBy: actor,
+		ActorUserID:    currentUserID(r), // BUG-3372
 		Source:         source,
 	}
 
@@ -837,7 +839,7 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 
 // bulkTagUpdate adds (add=true) or removes (add=false) the given tags
 // from the item's tag set, preserving existing order and de-duplicating.
-func (s *Server) bulkTagUpdate(item *models.Item, tags []string, add bool, actor, source, batchID string) (*models.Item, *bulkOpError) {
+func (s *Server) bulkTagUpdate(item *models.Item, tags []string, add bool, actor, source, actorUserID, batchID string) (*models.Item, *bulkOpError) {
 	existing := []string{}
 	if item.Tags != "" && item.Tags != "[]" {
 		_ = json.Unmarshal([]byte(item.Tags), &existing)
@@ -877,6 +879,7 @@ func (s *Server) bulkTagUpdate(item *models.Item, tags []string, add bool, actor
 	updated, err := s.store.UpdateItem(item.ID, models.ItemUpdate{
 		Tags:           &tagsStr,
 		LastModifiedBy: actor,
+		ActorUserID:    actorUserID, // BUG-3372
 		Source:         source,
 	}, store.WithEventBatch(batchID))
 	if err != nil {

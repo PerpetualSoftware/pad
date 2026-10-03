@@ -81,6 +81,9 @@ func (s *Server) handleCreateDocument(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// BUG-3372: attribution is the request's, never the body's.
+	input.CreatedBy, input.Source = actorFromRequest(r)
+
 	doc, err := s.store.CreateDocument(workspaceID, input)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint") {
@@ -168,6 +171,9 @@ func (s *Server) handleUpdateDocument(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid status")
 		return
 	}
+
+	// BUG-3372: attribution is the request's, never the body's.
+	input.LastModifiedBy, input.Source = actorFromRequest(r)
 
 	updated, err := s.store.UpdateDocument(doc.ID, input)
 	if err != nil {

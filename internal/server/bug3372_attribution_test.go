@@ -216,3 +216,45 @@ func TestBUG3372_CopyRecordsTheCopiersAccount(t *testing.T) {
 		t.Errorf("copy: created_by_user_id=%q last_modified_by_user_id=%q, want %s", by, mod, f.user.ID)
 	}
 }
+
+// A bulk edit records the account that made it, as a single update does.
+func TestBUG3372_BulkUpdateRecordsTheAccount(t *testing.T) {
+	f := newAttributionFixture(t)
+	bulk := f.do(t, "POST", "/items/bulk", map[string]any{"op": "tag", "ids": []string{f.item.ID}, "tags": []string{"x3372"}})
+	if updated, _ := bulk["updated"].([]any); len(updated) != 1 {
+		t.Fatalf("bulk tag did not update the item: %v", bulk)
+	}
+	_, mod := readUserColumns(t, f.srv, `SELECT created_by_user_id, last_modified_by_user_id FROM items WHERE id = ?`, f.item.ID)
+	if mod != f.user.ID {
+		t.Errorf("bulk tag: last_modified_by_user_id=%q, want %s", mod, f.user.ID)
+	}
+}
+
+// The legacy document endpoints are still mounted; they stamp attribution
+// from the request too.
+func TestBUG3372_DocumentAttributionIsTheRequests(t *testing.T) {
+	f := newAttributionFixture(t)
+	for _, forged := range []bool{false, true} {
+		name := map[bool]string{false: "control", true: "forged"}[forged]
+		t.Run(name, func(t *testing.T) {
+			body := map[string]any{"title": "doc " + name, "content": "x"}
+			if forged {
+				body["created_by"] = "agent"
+				body["source"] = "skill"
+			}
+			doc := f.do(t, "POST", "/documents", body)
+			if doc["created_by"] != "user" || doc["source"] != "web" {
+				t.Errorf("create: created_by=%v source=%v, want user/web", doc["created_by"], doc["source"])
+			}
+			patch := map[string]any{"content": "y"}
+			if forged {
+				patch["last_modified_by"] = "agent"
+				patch["source"] = "skill"
+			}
+			upd := f.do(t, "PATCH", "/documents/"+doc["id"].(string), patch)
+			if upd["last_modified_by"] != "user" {
+				t.Errorf("update: last_modified_by=%v, want user", upd["last_modified_by"])
+			}
+		})
+	}
+}
