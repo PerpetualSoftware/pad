@@ -184,6 +184,7 @@ func (s *Server) handleAdminGetUser(w http.ResponseWriter, r *http.Request) {
 		"role":              user.Role,
 		"plan":              user.Plan,
 		"plan_expires_at":   user.PlanExpiresAt,
+		"plan_expired":      user.PlanExpired(time.Now()), // stored plan shown as is; entitlement is free (BUG-3356)
 		"plan_source":       user.PlanSource,
 		"plan_overrides":    user.PlanOverrides,
 		"totp_enabled":      user.TOTPEnabled,
@@ -352,6 +353,7 @@ func (s *Server) handleAdminGetUserDetail(w http.ResponseWriter, r *http.Request
 			"role":            user.Role,
 			"plan":            user.Plan,
 			"plan_expires_at": user.PlanExpiresAt,
+			"plan_expired":    user.PlanExpired(time.Now()),
 			"plan_source":     user.PlanSource,
 			"plan_overrides":  user.PlanOverrides,
 			"totp_enabled":    user.TOTPEnabled,

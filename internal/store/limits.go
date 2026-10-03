@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -128,10 +129,8 @@ func (s *Store) checkLimitOn(q Queryer, workspaceID, feature string) (*LimitResu
 	}
 
 	// Self-hosted and pro always allowed
-	plan := user.Plan
-	if plan == "" {
-		plan = "free"
-	}
+	// Expiry is enforced here, where entitlement is decided (BUG-3356).
+	plan := user.EffectivePlan(time.Now())
 	if plan == "self-hosted" || plan == "pro" {
 		return &LimitResult{Allowed: true, Feature: feature, Limit: -1, Current: 0, Plan: plan}, nil
 	}
@@ -182,10 +181,8 @@ func (s *Store) checkUserLimitOn(q Queryer, userID, feature string) (*LimitResul
 		return nil, fmt.Errorf("check user limit: user not found")
 	}
 
-	plan := user.Plan
-	if plan == "" {
-		plan = "free"
-	}
+	// Expiry is enforced here, where entitlement is decided (BUG-3356).
+	plan := user.EffectivePlan(time.Now())
 	if plan == "self-hosted" || plan == "pro" {
 		return &LimitResult{Allowed: true, Feature: feature, Limit: -1, Current: 0, Plan: plan}, nil
 	}
@@ -517,7 +514,25 @@ type PlanWrite struct {
 	// source other than the one that set it. Only an operator's explicit
 	// choice (the admin user update) sets it.
 	Force bool
+	// Revision orders writes derived from Stripe (BUG-3356): when it is
+	// above zero the write applies only if it is greater than the stored
+	// plan_revision, which it then replaces. Zero is no revision (a manual
+	// write, or a sidecar that predates it) and leaves the stored one alone.
+	Revision int64
+	// SubscriptionID is the Stripe subscription the plan was derived from,
+	// stored alongside a revisioned write.
+	SubscriptionID string
 }
+
+// Reasons a PlanWrite was refused.
+const (
+	// PlanRefusedSource: it would lower the plan from a source other than
+	// the one that set it (PLAN-3291 DR-6).
+	PlanRefusedSource = "source"
+	// PlanRefusedStaleRevision: its revision is not newer than the one the
+	// stored plan came from (BUG-3356).
+	PlanRefusedStaleRevision = "stale_revision"
+)
 
 // PlanWriteResult says whether a PlanWrite applied, and the plan and source
 // the user holds after it, whichever way it went.
@@ -525,6 +540,9 @@ type PlanWriteResult struct {
 	Applied bool
 	Plan    string
 	Source  string
+	// Reason is set when Applied is false: PlanRefusedSource or
+	// PlanRefusedStaleRevision.
+	Reason string
 }
 
 // SetUserPlan writes a user's billing plan under the plan-source rule
@@ -540,6 +558,10 @@ type PlanWriteResult struct {
 // WHERE clause, so it is decided atomically against the row as it stands. A
 // refused write changes nothing, plan_expires_at included, and is not an
 // error: Applied is false.
+//
+// A write carrying a Revision must also be newer than the stored one
+// (BUG-3356), in the same WHERE clause, so two Stripe-derived writes that
+// arrive out of order cannot leave the older one standing.
 func (s *Store) SetUserPlan(userID string, w PlanWrite) (PlanWriteResult, error) {
 	if !ValidPlanSource(w.Source) {
 		return PlanWriteResult{}, fmt.Errorf("set user plan: invalid plan source %q", w.Source)
@@ -554,10 +576,19 @@ func (s *Store) SetUserPlan(userID string, w PlanWrite) (PlanWriteResult, error)
 	if w.Force {
 		force = 1
 	}
+	if w.Revision < 0 {
+		return PlanWriteResult{}, fmt.Errorf("set user plan: negative revision %d", w.Revision)
+	}
 	res, err := tx.Exec(s.q(`
-		UPDATE users SET plan = ?, plan_expires_at = ?, plan_source = ?, updated_at = ?
-		WHERE id = ? AND (? = 1 OR ? <> 'free' OR plan IN ('', 'free') OR plan_source = ?)`),
-		w.Plan, w.ExpiresAt, w.Source, now(), userID, force, w.Plan, w.Source)
+		UPDATE users SET plan = ?, plan_expires_at = ?, plan_source = ?, updated_at = ?,
+		       plan_revision = CASE WHEN ? > 0 THEN ? ELSE plan_revision END,
+		       plan_subscription_id = CASE WHEN ? > 0 THEN ? ELSE plan_subscription_id END
+		WHERE id = ? AND (? = 1 OR ? <> 'free' OR plan IN ('', 'free') OR plan_source = ?)
+		  AND (? = 0 OR ? > plan_revision)`),
+		w.Plan, w.ExpiresAt, w.Source, now(),
+		w.Revision, w.Revision, w.Revision, w.SubscriptionID,
+		userID, force, w.Plan, w.Source,
+		w.Revision, w.Revision)
 	if err != nil {
 		return PlanWriteResult{}, fmt.Errorf("set user plan: %w", err)
 	}
@@ -567,12 +598,19 @@ func (s *Store) SetUserPlan(userID string, w PlanWrite) (PlanWriteResult, error)
 	}
 
 	out := PlanWriteResult{Applied: n > 0}
-	err = tx.QueryRow(s.q(`SELECT plan, plan_source FROM users WHERE id = ?`), userID).Scan(&out.Plan, &out.Source)
+	var storedRevision int64
+	err = tx.QueryRow(s.q(`SELECT plan, plan_source, plan_revision FROM users WHERE id = ?`), userID).Scan(&out.Plan, &out.Source, &storedRevision)
 	if err == sql.ErrNoRows {
 		return PlanWriteResult{}, fmt.Errorf("set user plan: user %s not found", userID)
 	}
 	if err != nil {
 		return PlanWriteResult{}, fmt.Errorf("set user plan: %w", err)
+	}
+	if !out.Applied {
+		out.Reason = PlanRefusedSource
+		if w.Revision > 0 && w.Revision <= storedRevision {
+			out.Reason = PlanRefusedStaleRevision
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return PlanWriteResult{}, fmt.Errorf("set user plan: %w", err)

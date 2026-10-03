@@ -358,7 +358,7 @@ func (s *Server) handleExportAccount(w http.ResponseWriter, r *http.Request) {
 		"username":     user.Username,
 		"name":         user.Name,
 		"role":         user.Role,
-		"plan":         user.Plan,
+		"plan":         user.EffectivePlan(time.Now()), // expiry enforced (BUG-3356)
 		"totp_enabled": user.TOTPEnabled,
 		"created_at":   user.CreatedAt,
 		"updated_at":   user.UpdatedAt,

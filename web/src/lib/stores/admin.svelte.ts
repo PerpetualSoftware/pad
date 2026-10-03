@@ -15,6 +15,8 @@ export interface AdminUser {
 	role: string;
 	plan: string;
 	plan_expires_at: string | null;
+	// BUG-3356: the stored plan has passed its expiry; entitlement is free.
+	plan_expired?: boolean;
 	/**
 	 * Per-user limit overrides as a raw JSON string (e.g.
 	 * `{"storage_bytes":10737418240}`). The API returns the raw
