@@ -250,14 +250,14 @@ func (s *Server) runOrphanGCSweep(ctx context.Context, graceCutoff time.Time) (*
 		// per-hash lock will replace this server-wide mutex.
 		blobDeleted := false
 		alreadyReclaimed := reclaimedThisSweep[a.ContentHash]
-		s.inFlightHashesMu.Lock()
-		inFlight := s.inFlightHashes[a.ContentHash] > 0
+		s.inFlight.Lock()
+		inFlight := s.inFlight.CountLocked(a.ContentHash) > 0
 		if others == 0 && !inFlight && !alreadyReclaimed {
 			store, resolveErr := s.attachments.Resolve(a.StorageKey)
 			if resolveErr != nil {
 				slog.Warn("orphan GC: resolve backend failed",
 					"attachment_id", a.ID, "storage_key", a.StorageKey, "error", resolveErr)
-				s.inFlightHashesMu.Unlock()
+				s.inFlight.Unlock()
 				res.Skipped++
 				continue
 			}
@@ -278,7 +278,7 @@ func (s *Server) runOrphanGCSweep(ctx context.Context, graceCutoff time.Time) (*
 				blobDeleted = true
 			}
 		}
-		s.inFlightHashesMu.Unlock()
+		s.inFlight.Unlock()
 
 		if blobDeleted {
 			res.BlobsReclaimed++
@@ -328,7 +328,7 @@ type rowlessBlobSweepResult struct {
 // runs inside markUploadInFlight (its documented contract), and the copy
 // path's row clones only reference hashes that already have a live
 // source row (so they were never candidates) — which leaves exactly two
-// interleavings for a fresh writer, both closed under inFlightHashesMu:
+// interleavings for a fresh writer, both closed under the InFlight lock:
 // it marked before we locked (in-flight check skips), or it marks after
 // we delete (its Put finds the file missing and rewrites it — Put is
 // create-if-absent by contract). Between those sits the writer that
@@ -389,9 +389,9 @@ func (s *Server) runRowlessBlobSweep(ctx context.Context, blobCutoff time.Time) 
 					continue
 				}
 
-				s.inFlightHashesMu.Lock()
-				if s.inFlightHashes[b.Hash] > 0 {
-					s.inFlightHashesMu.Unlock()
+				s.inFlight.Lock()
+				if s.inFlight.CountLocked(b.Hash) > 0 {
+					s.inFlight.Unlock()
 					continue
 				}
 				if s.rowlessPreDeleteHook != nil {
@@ -399,18 +399,18 @@ func (s *Server) runRowlessBlobSweep(ctx context.Context, blobCutoff time.Time) 
 				}
 				exists, err := s.store.AttachmentRowsExistForHash(b.Hash)
 				if err != nil {
-					s.inFlightHashesMu.Unlock()
+					s.inFlight.Unlock()
 					slog.Warn("rowless-blob sweep: delete-time row re-check failed",
 						"backend", prefix, "hash", b.Hash, "error", err)
 					res.Skipped++
 					continue
 				}
 				if exists {
-					s.inFlightHashesMu.Unlock()
+					s.inFlight.Unlock()
 					continue
 				}
 				delErr := backend.Delete(ctx, b.Key)
-				s.inFlightHashesMu.Unlock()
+				s.inFlight.Unlock()
 				if delErr != nil {
 					slog.Warn("rowless-blob sweep: blob delete failed",
 						"backend", prefix, "storage_key", b.Key, "error", delErr)

@@ -372,8 +372,7 @@ type Server struct {
 	// addresses the entry but not the inc/dec interleaving). Codex
 	// P1 round 2 caught the prior sync.Map version racing on
 	// release-vs-reload of the same hash.
-	inFlightHashesMu sync.Mutex
-	inFlightHashes   map[string]int64
+	inFlight attachments.InFlight
 	// workspaceReclaimMu serializes every reclaim-blobs-then-purge sequence in
 	// this process: the retention sweeper's per-candidate step and
 	// removeUnusableWorkspace's (BUG-3094, codex round 1 P2). The reclaimer's
@@ -1127,29 +1126,11 @@ func (s *Server) SetImageProcessor(p attachments.Processor) {
 // hash. Returns a release func the caller MUST defer; the release
 // decrements and removes the entry once it hits zero. Used by the
 // upload handler to fence Put + CreateAttachment against orphan-GC
-// blob deletions of the same hash.
-//
-// Increment + map-store + decrement + delete all run under one
-// mutex so a concurrent uploadInFlight call can't observe a stale
-// "0" between the last release-decrement and the next-upload
-// increment. The earlier sync.Map version split increment from
-// LoadOrStore-then-atomic-add and missed that window (Codex P1 on
-// PR #307 round 2).
+// blob deletions of the same hash. The counter is attachments.InFlight,
+// shared with the app store (TASK-3396); its doc carries the locking
+// rationale (Codex P1 on PR #307 round 2).
 func (s *Server) markUploadInFlight(hash string) func() {
-	s.inFlightHashesMu.Lock()
-	if s.inFlightHashes == nil {
-		s.inFlightHashes = make(map[string]int64)
-	}
-	s.inFlightHashes[hash]++
-	s.inFlightHashesMu.Unlock()
-	return func() {
-		s.inFlightHashesMu.Lock()
-		defer s.inFlightHashesMu.Unlock()
-		s.inFlightHashes[hash]--
-		if s.inFlightHashes[hash] <= 0 {
-			delete(s.inFlightHashes, hash)
-		}
-	}
+	return s.inFlight.Mark(hash)
 }
 
 // uploadInFlight reports whether any upload is currently materializing
@@ -1157,9 +1138,14 @@ func (s *Server) markUploadInFlight(hash string) func() {
 // deleting a blob — if an upload just finished Put but hasn't
 // inserted the row yet, GC must NOT reclaim the blob.
 func (s *Server) uploadInFlight(hash string) bool {
-	s.inFlightHashesMu.Lock()
-	defer s.inFlightHashesMu.Unlock()
-	return s.inFlightHashes[hash] > 0
+	return s.inFlight.Active(hash)
+}
+
+// UploadInFlight is the process's upload hash guard, shared with the app
+// store so an app upload fences against the same orphan-GC sweep the human
+// uploads do (TASK-3396).
+func (s *Server) UploadInFlight() *attachments.InFlight {
+	return &s.inFlight
 }
 
 // SetImportBundleMaxBytes overrides the default 2 GiB cap on a

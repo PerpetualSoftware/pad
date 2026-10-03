@@ -300,7 +300,7 @@ func (s *Server) purgeCandidate(ctx context.Context, c store.WorkspacePurgeCandi
 // deployment (CLAUDE.md: "single-instance everywhere" for v1). Two
 // separate server PROCESSES sweeping concurrently could both observe the
 // other's row and both skip the delete, orphaning the physical blob — the
-// same cross-process limitation the orphan GC has (its inFlightHashes
+// same cross-process limitation the orphan GC has (its InFlight
 // guard is a per-process mutex, not distributed). A distributed purge
 // lock / backend-enumeration reclaimer is deferred with multi-instance
 // support (out of scope for v1).
@@ -334,8 +334,8 @@ func (s *Server) reclaimWorkspaceBlobs(ctx context.Context, c store.WorkspacePur
 		// markUploadInFlight (an upload of the same content to another
 		// workspace, Put done but row not yet inserted) blocks until we
 		// finish — closing the TOCTOU window the orphan GC documents.
-		s.inFlightHashesMu.Lock()
-		inFlight := s.inFlightHashes[a.ContentHash] > 0
+		s.inFlight.Lock()
+		inFlight := s.inFlight.CountLocked(a.ContentHash) > 0
 		var delErr error
 		deleted := false
 		if !inFlight {
@@ -351,7 +351,7 @@ func (s *Server) reclaimWorkspaceBlobs(ctx context.Context, c store.WorkspacePur
 				deleted = true
 			}
 		}
-		s.inFlightHashesMu.Unlock()
+		s.inFlight.Unlock()
 
 		if inFlight {
 			// An upload of this content is racing us — defer so we don't

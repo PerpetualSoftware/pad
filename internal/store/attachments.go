@@ -1506,12 +1506,18 @@ func (s *Store) CreateAttachmentVariantIfParentLive(a *models.Attachment) (bool,
 	// variants that already exist, so a variant inserted from the snapshot
 	// stayed unbound under a bound parent until orphan GC reaped it. Under
 	// this lock no bind can land between the read and the insert.
-	query := `SELECT item_id FROM attachments WHERE id = ? AND deleted_at IS NULL`
+	//
+	// The parent's uploader and via_app are read the same way and copied
+	// (TASK-3396, DOC-3371 §4 "variants inherit their parent's binding"), so
+	// a thumbnail of an app upload is attributed and app-visible exactly as
+	// its original is, whatever the caller's snapshot said.
+	query := `SELECT item_id, uploaded_by, via_app FROM attachments WHERE id = ? AND deleted_at IS NULL`
 	if s.dialect.Driver() == DriverPostgres {
 		query += ` FOR NO KEY UPDATE`
 	}
-	var parentItemID sql.NullString
-	switch err := tx.QueryRow(s.q(query), *a.ParentID).Scan(&parentItemID); {
+	var parentItemID, parentViaApp sql.NullString
+	var parentUploader string
+	switch err := tx.QueryRow(s.q(query), *a.ParentID).Scan(&parentItemID, &parentUploader, &parentViaApp); {
 	case errors.Is(err, sql.ErrNoRows):
 		// Parent gone or tombstoned — refuse, no row minted.
 		return false, nil
@@ -1525,17 +1531,18 @@ func (s *Store) CreateAttachmentVariantIfParentLive(a *models.Attachment) (bool,
 	} else {
 		a.ItemID = nil
 	}
+	a.UploadedBy = parentUploader
 
 	source, err := attachmentFilenameSource(a)
 	if err != nil {
 		return false, err
 	}
 	if _, err := tx.Exec(s.q(`
-		INSERT INTO attachments (`+attachmentColumns+`)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO attachments (`+attachmentColumns+`, via_app)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`), a.ID, a.WorkspaceID, a.ItemID, a.UploadedBy, a.StorageKey, a.ContentHash,
 		a.MimeType, a.SizeBytes, a.Filename, a.Width, a.Height, a.ParentID, a.Variant,
-		ts, nil, source, importedFlag(a)); err != nil {
+		ts, nil, source, importedFlag(a), parentViaApp); err != nil {
 		return false, fmt.Errorf("create variant row: %w", err)
 	}
 	if err := tx.Commit(); err != nil {

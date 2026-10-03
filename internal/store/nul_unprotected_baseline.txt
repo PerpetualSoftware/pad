@@ -31,6 +31,7 @@ attachments.last_referenced_at
 attachments.parent_id
 attachments.storage_key
 attachments.variant
+attachments.via_app
 attachments.workspace_id
 cli_auth_sessions.code
 cli_auth_sessions.created_at

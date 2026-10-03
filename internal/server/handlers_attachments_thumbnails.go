@@ -292,7 +292,7 @@ func (s *Server) persistThumbnail(
 		// protection as the GC sweep, using the CONFIGURED grace — a
 		// longer operator grace must keep a still-restorable peer's
 		// bytes). The count runs first; the in-flight re-check + Delete
-		// then hold inFlightHashesMu, mirroring the sweep's fence, so a
+		// then hold the InFlight lock, mirroring the sweep's fence, so a
 		// concurrent upload registering this hash between our check and
 		// the Delete cannot lose its bytes (codex round 1 P1). We hold
 		// one registration ourselves — > 1 means someone else does too.
@@ -305,8 +305,8 @@ func (s *Server) persistThumbnail(
 		// sweep holds this mutex across a backend resolve + FS delete
 		// already; one bounded DB count under it is the same class.
 		graceCutoff := time.Now().Add(-s.orphanGCGraceConfigured())
-		s.inFlightHashesMu.Lock()
-		if s.inFlightHashes[hash] <= 1 {
+		s.inFlight.Lock()
+		if s.inFlight.CountLocked(hash) <= 1 {
 			others, cErr := s.store.CountProtectingAttachmentsForHash(hash, "", graceCutoff)
 			if cErr != nil {
 				slog.Warn("thumbnails: refusal cleanup count failed — blob stranded for manual cleanup",
@@ -318,7 +318,7 @@ func (s *Server) persistThumbnail(
 				}
 			}
 		}
-		s.inFlightHashesMu.Unlock()
+		s.inFlight.Unlock()
 		slog.Info("thumbnails: skipped, parent deleted during derivation",
 			"parent_id", parent.ID, "variant", variant)
 		return nil
