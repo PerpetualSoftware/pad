@@ -99,6 +99,21 @@ func TestBUG3379_ImportedCommentsAndVersionsAreMarked(t *testing.T) {
 		}
 	}
 
+	// A local edit right after the import starts its own, unmarked version
+	// instead of being throttled into the imported one.
+	if rr := doRequest(dst, "PATCH", "/api/v1/workspaces/"+dstSlug+"/items/"+item.Slug,
+		map[string]any{"content": "edited here"}); rr.Code != http.StatusOK {
+		t.Fatalf("local edit: %d %s", rr.Code, rr.Body.String())
+	}
+	rr = doRequest(dst, "GET", "/api/v1/workspaces/"+dstSlug+"/items/"+item.Slug+"/versions", nil)
+	var afterEdit []models.Version
+	parseJSON(t, rr, &afterEdit)
+	if len(afterEdit) != len(versions)+1 {
+		t.Errorf("versions after a local edit = %d, want %d (a new, native row)", len(afterEdit), len(versions)+1)
+	} else if afterEdit[0].Imported {
+		t.Error("the newest version after a local edit is marked imported")
+	}
+
 	// A comment written natively in the imported workspace is not marked.
 	if rr := doRequest(dst, "POST", "/api/v1/workspaces/"+dstSlug+"/items/"+item.Slug+"/comments",
 		map[string]any{"body": "written here"}); rr.Code != http.StatusCreated {

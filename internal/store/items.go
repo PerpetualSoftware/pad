@@ -5696,18 +5696,26 @@ func (s *Store) newestVersionIsUnflushedApplierRow(q rowQueryer, itemID, body st
 
 func (s *Store) shouldCreateItemVersion(q rowQueryer, itemID, actor, source string) (bool, error) {
 	var createdBy, src, createdAt string
+	var imported int
 	err := q.QueryRow(s.q(`
-		SELECT created_by, source, created_at
+		SELECT created_by, source, created_at, imported
 		FROM item_versions
 		WHERE item_id = ?
 		ORDER BY created_at DESC, version_seq DESC
 		LIMIT 1
-	`), itemID).Scan(&createdBy, &src, &createdAt)
+	`), itemID).Scan(&createdBy, &src, &createdAt, &imported)
 	if err == sql.ErrNoRows {
 		return true, nil // No versions yet
 	}
 	if err != nil {
 		return false, err
+	}
+
+	// An imported row is someone else's history (BUG-3379): a local edit
+	// always starts its own version rather than landing inside it, where it
+	// would read as part of the imported, unverified change.
+	if imported == 1 {
+		return true, nil
 	}
 
 	// Actor or source changed — always snapshot
