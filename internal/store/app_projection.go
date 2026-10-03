@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"sync"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -29,6 +31,12 @@ import (
 // (DOC-3371 decomposition, U4/U5). It never reaches an owner webhook: the
 // outbox drain strips it first (stripAppProjection).
 //
+// A data-shape problem never fails the mutation (lead ruling on #1763): an
+// unparseable schema, a non-object fields blob, or a field type this build
+// does not know degrades the item block to `fields` omitted plus
+// `partial: true`, logged once per collection. Only database errors
+// propagate. The dispatcher treats a partial block as ref-only.
+//
 // Identity in the block is erased on account deletion: ScrubOutboxUserRefsTx
 // drops creator.user_id like any other frozen user id, and also the
 // creator.display beside it, which no generic key match could tie to the
@@ -51,8 +59,32 @@ type itemAppProjection struct {
 	CollectionID string               `json:"collection_id"`
 	Creator      appProjectionCreator `json:"creator"`
 	// Fields holds the item's field values projected by the EVENT-TIME
-	// schema: declared keys only, never a relation or multi_relation.
-	Fields map[string]any `json:"fields"`
+	// schema: declared keys only, never a relation or multi_relation. It is
+	// omitted, and Partial set, when the schema or the blob could not be read.
+	// A pointer, so a clean block with nothing to project still carries
+	// "fields": {} and only a partial block omits the key.
+	Fields  *map[string]any `json:"fields,omitempty"`
+	Partial bool            `json:"partial,omitempty"`
+}
+
+// appProjectionFieldTypes is every field type validateFieldType
+// (internal/items/validate.go) knows. A schema declaring any other type
+// projects partial: this build cannot say what its values mean.
+var appProjectionFieldTypes = map[string]bool{
+	"text": true, "url": true, "number": true, "checkbox": true, "date": true,
+	"select": true, "multi_select": true, "relation": true, "multi_relation": true,
+	"json": true,
+}
+
+// appProjectionWarned holds the collection ids already logged as partial, so a
+// malformed collection logs once per process rather than once per write.
+var appProjectionWarned sync.Map
+
+func warnPartialAppProjection(collectionID, reason string) {
+	if _, seen := appProjectionWarned.LoadOrStore(collectionID, true); seen {
+		return
+	}
+	slog.Warn("app projection: partial block, fields omitted", "collection_id", collectionID, "reason", reason)
 }
 
 // commentAppProjection is the block on a comment event, deletion included.
@@ -84,46 +116,50 @@ func (s *Store) userDisplayTx(tx *sql.Tx, userID string) (string, error) {
 }
 
 // projectFieldsBySchema keeps only the keys the schema declares, minus
-// relation and multi_relation fields. Numbers keep their literal form.
-func projectFieldsBySchema(fieldsJSON, schemaJSON string) (map[string]any, error) {
-	out := map[string]any{}
-	if fieldsJSON == "" {
-		return out, nil
-	}
+// relation and multi_relation fields. Numbers keep their literal form. It never
+// fails: a data-shape problem returns a non-empty reason, and the caller marks
+// the block partial.
+func projectFieldsBySchema(fieldsJSON, schemaJSON string) (map[string]any, string) {
 	// Item-field reasoning reads the schema through the item-field decoder,
 	// which strips grandfathered reserved-key declarations (BUG-2685).
 	var schema models.CollectionSchema
 	if schemaJSON != "" {
 		if err := models.UnmarshalItemFieldSchema([]byte(schemaJSON), &schema); err != nil {
-			return nil, fmt.Errorf("app projection: parse schema: %w", err)
+			return nil, "schema does not parse: " + err.Error()
 		}
 	}
 	allowed := make(map[string]bool, len(schema.Fields))
 	for _, fd := range schema.Fields {
+		if !appProjectionFieldTypes[fd.Type] {
+			return nil, fmt.Sprintf("field %q has unknown type %q", fd.Key, fd.Type)
+		}
 		if fd.Type == "relation" || fd.IsMultiRelation() {
 			continue
 		}
 		allowed[fd.Key] = true
 	}
-	// A stored blob that is not a JSON object (legacy corruption BUG-3163
-	// repairs) projects to no fields. It must never fail the write: the
-	// repair of exactly such a blob goes through this path.
+	out := map[string]any{}
+	if fieldsJSON == "" {
+		return out, ""
+	}
+	// A stored blob that is not a JSON object is legacy corruption BUG-3163
+	// repairs; the repair write goes through this path.
 	dec := json.NewDecoder(bytes.NewReader([]byte(fieldsJSON)))
 	dec.UseNumber()
 	var doc any
 	if err := dec.Decode(&doc); err != nil {
-		return out, nil
+		return nil, "fields blob does not parse"
 	}
 	raw, ok := doc.(map[string]any)
 	if !ok {
-		return out, nil
+		return nil, "fields blob is not an object"
 	}
 	for k, v := range raw {
 		if allowed[k] {
 			out[k] = v
 		}
 	}
-	return out, nil
+	return out, ""
 }
 
 // buildItemAppProjectionTx freezes the block for an item event, reading the
@@ -146,16 +182,19 @@ func (s *Store) buildItemAppProjectionTx(tx *sql.Tx, item *models.Item) (*itemAp
 		return nil, fmt.Errorf("app projection: read collection schema: %w", err)
 	}
 	schema := schemaCol.String
-	fields, err := projectFieldsBySchema(item.Fields, schema)
-	if err != nil {
-		return nil, err
-	}
-	return &itemAppProjection{
+	p := &itemAppProjection{
 		V:            appProjectionVersion,
 		CollectionID: item.CollectionID,
 		Creator:      appProjectionCreator{UserID: creatorID.String, Display: display, Kind: item.CreatedBy},
-		Fields:       fields,
-	}, nil
+	}
+	fields, reason := projectFieldsBySchema(item.Fields, schema)
+	if reason != "" {
+		warnPartialAppProjection(item.CollectionID, reason)
+		p.Partial = true
+		return p, nil
+	}
+	p.Fields = &fields
+	return p, nil
 }
 
 // buildCommentAppProjectionTx freezes the block for a comment event. author is
