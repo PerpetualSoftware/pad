@@ -95,6 +95,11 @@ type Activity struct {
 	IPAddress   string    `json:"ip_address,omitempty"`
 	UserAgent   string    `json:"user_agent,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
+	// ViaApp is the app install the write came through, empty for every
+	// human and agent write (SPEC-6, TASK-3390). It is part of the debounce
+	// identity, so an app's activity and a human's never merge. Not
+	// serialized yet: the app's display name is resolved for the API in U6.
+	ViaApp string `json:"-"`
 
 	// Enrichment fields — populated by handlers, not stored in DB
 	ItemTitle      string `json:"item_title,omitempty"`

@@ -2,6 +2,7 @@ activities.created_at
 activities.document_id
 activities.id
 activities.user_id
+activities.via_app
 activities.workspace_id
 agent_roles.created_at
 agent_roles.id
@@ -60,6 +61,7 @@ comments.item_id
 comments.parent_id
 comments.updated_at
 comments.user_id
+comments.via_app
 comments.workspace_id
 custom_templates.created_at
 custom_templates.id
@@ -120,6 +122,7 @@ item_links.id
 item_links.source_id
 item_links.target_id
 item_links.user_id
+item_links.via_app
 item_links.workspace_id
 item_relation_links.source_item_id
 item_relation_links.target_item_id
@@ -139,6 +142,7 @@ item_versions.created_at
 item_versions.id
 item_versions.item_id
 item_versions.user_id
+item_versions.via_app
 item_wiki_links.source_item_id
 item_wiki_links.target_item_id
 item_wiki_links.target_kind
@@ -163,6 +167,7 @@ items.collection_id
 items.content_flushed_at
 items.created_at
 items.created_by_user_id
+items.created_via_app
 items.deleted_at
 items.id
 items.last_modified_by_user_id
@@ -170,6 +175,7 @@ items.lease_acquired_at
 items.lease_expires_at
 items.parent_id
 items.updated_at
+items.via_app
 items.workspace_id
 mcp_audit_log.args_hash
 mcp_audit_log.id

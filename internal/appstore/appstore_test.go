@@ -49,7 +49,7 @@ func fixture(t *testing.T) (*store.Store, store.FenceSpec) {
 // nothing at all: the census baseline every U2 mutation is measured against.
 func TestCheckFence_WritesNothing(t *testing.T) {
 	s, spec := fixture(t)
-	a := New(s)
+	a := New(s, Options{})
 	ctx := context.Background()
 
 	writes := storetest.CaptureWrites(t, s, func() {

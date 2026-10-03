@@ -53,6 +53,10 @@ type appProjectionCreator struct {
 	UserID  string `json:"user_id,omitempty"`
 	Display string `json:"display,omitempty"`
 	Kind    string `json:"kind,omitempty"`
+	// ViaApp is the install that created the item (items.created_via_app),
+	// empty for an item a person or agent created directly (SPEC-6 §5,
+	// TASK-3390).
+	ViaApp string `json:"via_app,omitempty"`
 }
 
 // itemAppProjection is the block on an item event.
@@ -185,8 +189,8 @@ func projectFieldsBySchema(fieldsJSON, schemaJSON string) (map[string]any, strin
 // buildItemAppProjectionTx freezes the block for an item event, reading the
 // item's creator and its collection's schema on the mutation's transaction.
 func (s *Store) buildItemAppProjectionTx(tx *sql.Tx, item *models.Item) (*itemAppProjection, error) {
-	var creatorID sql.NullString
-	err := tx.QueryRow(s.q(`SELECT created_by_user_id FROM items WHERE id = ?`), item.ID).Scan(&creatorID)
+	var creatorID, createdVia sql.NullString
+	err := tx.QueryRow(s.q(`SELECT created_by_user_id, created_via_app FROM items WHERE id = ?`), item.ID).Scan(&creatorID, &createdVia)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("app projection: read item creator: %w", err)
 	}
@@ -205,7 +209,7 @@ func (s *Store) buildItemAppProjectionTx(tx *sql.Tx, item *models.Item) (*itemAp
 	p := &itemAppProjection{
 		V:            appProjectionVersion,
 		CollectionID: item.CollectionID,
-		Creator:      appProjectionCreator{UserID: creatorID.String, Display: display, Kind: item.CreatedBy},
+		Creator:      appProjectionCreator{UserID: creatorID.String, Display: display, Kind: item.CreatedBy, ViaApp: createdVia.String},
 	}
 	fields, reason := projectFieldsBySchema(item.Fields, schema)
 	if reason != "" {

@@ -21,18 +21,55 @@ package appstore
 
 import (
 	"context"
+	"errors"
 
+	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // Store runs app mutations. It holds the human store concretely and reaches
 // the database only through store.FencedTx.
 type Store struct {
-	s *store.Store
+	s    *store.Store
+	opts Options
+}
+
+// Options are the server's settings for app writes.
+type Options struct {
+	// PlanLimit enforces plan caps (items_per_workspace) in the fence, as
+	// the human paths do on Pad Cloud. Off on self-host.
+	PlanLimit bool
+	// ETagKey is the SERVER-ONLY key app etags are computed under. No app
+	// ever holds it (DOC-3371 §4).
+	ETagKey []byte
 }
 
 // New wraps the store for app writes.
-func New(s *store.Store) *Store { return &Store{s: s} }
+func New(s *store.Store, opts Options) *Store { return &Store{s: s, opts: opts} }
+
+// MinETagKeyLen is the shortest server key etags may be computed under. A
+// missing or short key would let an app test candidate seq values offline
+// against an etag it observed.
+const MinETagKeyLen = 32
+
+// ErrNoETagKey: the server configured no usable etag key, so no etag can be
+// issued or checked. A configuration error, not a request error.
+var ErrNoETagKey = errors.New("app store: no etag key configured")
+
+func (a *Store) etagKeyUsable() error {
+	if len(a.opts.ETagKey) < MinETagKeyLen {
+		return ErrNoETagKey
+	}
+	return nil
+}
+
+// ETag is the concurrency token an app sees for an item.
+func (a *Store) ETag(spec store.FenceSpec, item *models.Item) (string, error) {
+	if err := a.etagKeyUsable(); err != nil {
+		return "", err
+	}
+	return store.AppItemETag(a.opts.ETagKey, spec.InstallID, item.ID, item.Seq), nil
+}
 
 // CheckFence opens and commits an empty fenced transaction: whether a request
 // admitted under spec may still write. It writes nothing. U1 has no
