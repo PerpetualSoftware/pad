@@ -703,6 +703,17 @@
 		}
 	}
 
+	// TASK-3376: system collections are ordinary choices for a restricted
+	// member. Moving a member from All to Specific starts with them checked,
+	// so restricting someone does not silently stop their agents loading the
+	// workspace's rules. A member already restricted keeps their saved list.
+	function setAccessMode(next: 'all' | 'specific') {
+		if (next === 'specific' && accessMode !== 'specific' && accessCollectionIds.length === 0) {
+			accessCollectionIds = systemCollections.map((c) => c.id);
+		}
+		accessMode = next;
+	}
+
 	function toggleAccessCollection(collId: string) {
 		if (accessCollectionIds.includes(collId)) {
 			accessCollectionIds = accessCollectionIds.filter(id => id !== collId);
@@ -1042,7 +1053,7 @@
 													id="access-mode-{member.user_id}"
 													class="role-select"
 													value={accessMode}
-													onchange={(e) => { accessMode = (e.target as HTMLSelectElement).value as 'all' | 'specific'; }}
+													onchange={(e) => { setAccessMode((e.target as HTMLSelectElement).value as 'all' | 'specific'); }}
 												>
 													<option value="all">All collections</option>
 													<option value="specific">Specific collections</option>
@@ -1062,13 +1073,22 @@
 														</label>
 													{/each}
 													{#each systemCollections as coll (coll.id)}
-														<label class="access-coll-item access-coll-system" title="System collection — always visible">
-															<input type="checkbox" checked disabled />
+														<label class="access-coll-item access-coll-system">
+															<input
+																type="checkbox"
+																checked={accessCollectionIds.includes(coll.id)}
+																onchange={() => toggleAccessCollection(coll.id)}
+															/>
 															<span class="access-coll-icon">{coll.icon || '#'}</span>
 															<span class="access-coll-name">{coll.name}</span>
 															<Chip size="sm" color="var(--accent-gray)">system</Chip>
 														</label>
 													{/each}
+													{#if systemCollections.length > 0}
+														<p class="access-coll-hint">
+															{systemCollections.map((c) => c.name).join(' and ')} hold the rules and procedures agents load. Unchecked, this member's agents won't receive them.
+														</p>
+													{/if}
 												</div>
 											{/if}
 											<div class="access-actions">
@@ -1387,8 +1407,7 @@
 	.access-coll-item input[type="checkbox"] { margin: 0; cursor: pointer; }
 	.access-coll-icon { font-size: 0.95em; }
 	.access-coll-name { flex: 1; }
-	.access-coll-system { opacity: 0.6; cursor: default; }
-	.access-coll-system:hover { background: none; }
+	.access-coll-hint { margin: var(--space-1) var(--space-2) 0; font-size: 0.8em; color: var(--text-muted); }
 	.access-actions { display: flex; align-items: center; gap: var(--space-2); }
 	.invitations-section { margin-top: var(--space-4); }
 	.invitations-section h3 { font-size: 0.9em; color: var(--text-muted); margin-bottom: var(--space-2); }

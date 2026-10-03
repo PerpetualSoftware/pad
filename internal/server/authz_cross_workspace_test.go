@@ -691,9 +691,13 @@ func TestCrossWorkspace_GrantsWidenNeverNarrow(t *testing.T) {
 
 // --- System collections ------------------------------------------------
 
-// Restricted members keep access to system collections (conventions,
-// playbooks). That allowance survives the item-grant filtering branch,
-// which is the shape that used to 404 them.
+// A system collection (conventions, playbooks) is an ordinary collection
+// for a restricted member: reachable only when it is in their
+// member_collection_access, for reads AND writes (TASK-3376, Dave's day-84
+// ruling). Before it, every restricted member reached every system
+// collection implicitly, and an editor among them could write it. The
+// listed leg is the control: the same scopes pass once the collection is
+// granted, so the unlisted denials are about the listing, not the fixture.
 func TestCrossWorkspace_RestrictedMemberSystemCollection(t *testing.T) {
 	f := newCrossWSFixture(t)
 	sysColl, err := f.srv.store.CreateCollection(f.wsB.ID, models.CollectionCreate{Name: "Conventions B", IsSystem: true})
@@ -712,24 +716,35 @@ func TestCrossWorkspace_RestrictedMemberSystemCollection(t *testing.T) {
 	}
 	r := f.request(u, reqOpts{wsRoleCtx: "editor", wsIDCtx: f.wsA.ID})
 
-	assertAllowed(t, f.srv.AuthorizeCrossWorkspaceRead(r, f.wsB.Slug, CrossWorkspaceItemScope(sysItem)),
-		"restricted member reads a system-collection item")
-	assertAllowed(t, f.srv.AuthorizeCrossWorkspaceEdit(r, f.wsB.Slug, CrossWorkspaceCollectionScope(sysColl.ID)),
-		"restricted member creates into a system collection")
-	// The non-system collection they were NOT granted stays hidden — the
-	// system allowance must not blanket the workspace.
-	assertDenied(t, f.srv.AuthorizeCrossWorkspaceRead(r, f.wsB.Slug, CrossWorkspaceItemScope(f.hiddenIB)),
-		CrossWorkspaceItemNotVisible, "system allowance is not a blanket pass")
+	assertDenied(t, f.srv.AuthorizeCrossWorkspaceRead(r, f.wsB.Slug, CrossWorkspaceItemScope(sysItem)),
+		CrossWorkspaceItemNotVisible, "unlisted system collection: item read")
+	assertDenied(t, f.srv.AuthorizeCrossWorkspaceEdit(r, f.wsB.Slug, CrossWorkspaceCollectionScope(sysColl.ID)),
+		CrossWorkspaceCollectionNotVisible, "unlisted system collection: create into it")
 
-	// Activate the item-grant filtering branch with an unrelated grant.
-	// The system allowance must survive it.
+	// The fixture's ordinary hidden collection is the baseline these
+	// denials must match.
+	assertDenied(t, f.srv.AuthorizeCrossWorkspaceRead(r, f.wsB.Slug, CrossWorkspaceItemScope(f.hiddenIB)),
+		CrossWorkspaceItemNotVisible, "unlisted ordinary collection, same refusal")
+
+	// The item-grant filtering branch used to carry its own system union
+	// (server.go item rule c). An unrelated grant activates it; the
+	// unlisted system collection must stay closed through it.
 	if _, err := f.srv.store.CreateItemGrant(f.wsB.ID, f.hiddenIB.ID, u.ID, "view", f.ownerBoth.ID); err != nil {
 		t.Fatalf("CreateItemGrant: %v", err)
 	}
+	assertDenied(t, f.srv.AuthorizeCrossWorkspaceRead(r, f.wsB.Slug, CrossWorkspaceItemScope(sysItem)),
+		CrossWorkspaceItemNotVisible, "unlisted system collection with item-grant filtering active")
+	assertDenied(t, f.srv.AuthorizeCrossWorkspaceEdit(r, f.wsB.Slug, CrossWorkspaceCollectionScope(sysColl.ID)),
+		CrossWorkspaceCollectionNotVisible, "unlisted system collection scope with item-grant filtering active")
+
+	// Control: listed, it behaves like any granted collection.
+	if err := f.srv.store.SetMemberCollectionAccess(f.wsB.ID, u.ID, "specific", []string{f.collB.ID, sysColl.ID}); err != nil {
+		t.Fatalf("SetMemberCollectionAccess (listed): %v", err)
+	}
 	assertAllowed(t, f.srv.AuthorizeCrossWorkspaceRead(r, f.wsB.Slug, CrossWorkspaceItemScope(sysItem)),
-		"system-collection item with item-grant filtering active")
+		"listed system collection: item read")
 	assertAllowed(t, f.srv.AuthorizeCrossWorkspaceEdit(r, f.wsB.Slug, CrossWorkspaceCollectionScope(sysColl.ID)),
-		"system collection scope with item-grant filtering active")
+		"listed system collection: create into it")
 }
 
 // --- Grants on soft-deleted resources ----------------------------------
@@ -1136,4 +1151,38 @@ func TestCrossWorkspace_WriteCollectionNotFoundRefusesForeignVerdicts(t *testing
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("workspace-only denial: got %d, want 403: %s", rec.Code, rec.Body.String())
 	}
+}
+
+// A restricted editor who can SEE an item in another workspace only through a
+// VIEW grant may not edit it through the cross-workspace authorizer
+// (TASK-3376, PR #1756 codex round 2 P1): the base role reaches only the
+// member's listed collections. The edit grant is the control.
+func TestCrossWorkspace_RestrictedEditorViewGrantIsNotEdit(t *testing.T) {
+	f := newCrossWSFixture(t)
+	u := f.member("vg@example.com", "vguser", "editor", f.wsA)
+	if err := f.srv.store.AddWorkspaceMember(f.wsB.ID, u.ID, "editor"); err != nil {
+		t.Fatalf("AddWorkspaceMember: %v", err)
+	}
+	if err := f.srv.store.SetMemberCollectionAccess(f.wsB.ID, u.ID, "specific", []string{f.collB.ID}); err != nil {
+		t.Fatalf("SetMemberCollectionAccess: %v", err)
+	}
+	g, err := f.srv.store.CreateItemGrant(f.wsB.ID, f.hiddenIB.ID, u.ID, "view", f.ownerBoth.ID)
+	if err != nil {
+		t.Fatalf("CreateItemGrant: %v", err)
+	}
+	r := f.request(u, reqOpts{wsRoleCtx: "editor", wsIDCtx: f.wsA.ID})
+
+	assertAllowed(t, f.srv.AuthorizeCrossWorkspaceRead(r, f.wsB.Slug, CrossWorkspaceItemScope(f.hiddenIB)),
+		"precondition: the view grant makes the item readable")
+	assertDenied(t, f.srv.AuthorizeCrossWorkspaceEdit(r, f.wsB.Slug, CrossWorkspaceItemScope(f.hiddenIB)),
+		CrossWorkspaceInsufficientPermission, "view grant is not edit for a restricted editor")
+
+	if err := f.srv.store.DeleteItemGrant(g.ID, f.wsB.ID); err != nil {
+		t.Fatalf("DeleteItemGrant: %v", err)
+	}
+	if _, err := f.srv.store.CreateItemGrant(f.wsB.ID, f.hiddenIB.ID, u.ID, "edit", f.ownerBoth.ID); err != nil {
+		t.Fatalf("CreateItemGrant edit: %v", err)
+	}
+	assertAllowed(t, f.srv.AuthorizeCrossWorkspaceEdit(r, f.wsB.Slug, CrossWorkspaceItemScope(f.hiddenIB)),
+		"control: an edit grant edits")
 }

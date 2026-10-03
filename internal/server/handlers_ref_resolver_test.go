@@ -517,15 +517,15 @@ func TestCheckItemVisible_AdminBearerRestrictedRoleDeniedOnHiddenCollection(t *t
 	}
 }
 
-// TestRefResolver_RestrictedMemberWithSystemCollection pins round-2 P1.2:
-// a restricted member with conventions/playbooks (system collections)
-// access plus an item grant in an UNRELATED collection must be able to
-// resolve refs that live in the system collection. Pre-round-2,
-// checkItemVisible's item-grants branch only consulted direct
-// collection_grants + member_collection_access — not system collections —
-// so a restricted member could LIST conventions via the existing API
-// (VisibleCollectionIDs includes system collections) but 404'd on
-// detail-fetch / ref-resolve.
+// TestRefResolver_RestrictedMemberWithSystemCollection pins round-2 P1.2
+// as TASK-3376 restated it: a restricted member who is entitled to a
+// system collection, plus an item grant in an UNRELATED collection (which
+// turns on checkItemVisible's item-grants branch), must be able to resolve
+// refs in that system collection. Since TASK-3376 the entitlement is the
+// member_collection_access listing, as for any collection; an unlisted
+// system collection resolves to 404 like any hidden one. Both legs run
+// through the item-grants branch, so the listed 302 is the control for the
+// unlisted 404.
 func TestRefResolver_RestrictedMemberWithSystemCollection(t *testing.T) {
 	f := newRefResolverFixture(t)
 
@@ -599,11 +599,21 @@ func TestRefResolver_RestrictedMemberWithSystemCollection(t *testing.T) {
 		t.Fatalf("CreateAPIToken: %v", err)
 	}
 
-	// Resolver should redirect — system collections must remain visible
-	// to restricted members even when the item-grants branch fires.
+	// Unlisted: hidden like any collection the member is not given.
+	rr = f.doAuth(tok.Token, "GET", "/-/r/"+f.ws.Slug+"/"+sysItem.Ref, nil)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("restricted member on an UNLISTED system collection: expected 404, got %d body=%s",
+			rr.Code, rr.Body.String())
+	}
+
+	// Listed: the item-grants branch must still find it through the
+	// member's collection list.
+	if err := f.srv.store.SetMemberCollectionAccess(f.ws.ID, member.ID, "specific", []string{collA.ID, sysColl.ID}); err != nil {
+		t.Fatalf("SetMemberCollectionAccess (listed): %v", err)
+	}
 	rr = f.doAuth(tok.Token, "GET", "/-/r/"+f.ws.Slug+"/"+sysItem.Ref, nil)
 	if rr.Code != http.StatusFound {
-		t.Fatalf("restricted member on system collection: expected 302, got %d body=%s",
+		t.Fatalf("restricted member on a LISTED system collection: expected 302, got %d body=%s",
 			rr.Code, rr.Body.String())
 	}
 	if !strings.Contains(rr.Header().Get("Location"), "/"+sysColl.Slug+"/") {

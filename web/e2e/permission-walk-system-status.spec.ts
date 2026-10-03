@@ -23,6 +23,12 @@ import {
  * PATCH answers for Delete too. The PATCH writes the value the item already
  * holds, so the probe does not move the world the legs then read.
  *
+ * editorSpecific is restricted to Tasks, so since TASK-3376 it does not see
+ * the system collections at all (they are ordinary collections for a
+ * restricted member, reached only when listed). Its probe answers 404, the
+ * item legs below do not apply to it, and a leg of their own pins that
+ * contract instead.
+ *
  * Its own spec, with its own world, because granting the guests a convention
  * and a playbook would take the playbooks empty state away from the guests in
  * permission-walk-system.spec.ts, which walks that state's create door.
@@ -45,6 +51,9 @@ let walk: PermissionWalk;
 const slugs = {} as Record<Sys, string>;
 // What the server answered to a status PATCH on each seeded item, per account.
 const serverEdits: Record<string, Record<Sys, boolean>> = {};
+// Accounts the server hides the seeded items from (404). TASK-3376: exactly
+// editorSpecific, whose collection access lists Tasks only.
+const HIDDEN: ReadonlySet<AccountKey> = new Set(['editorSpecific']);
 
 test.beforeAll(async () => {
 	walk = await seedPermissionWalk();
@@ -94,10 +103,12 @@ test.beforeAll(async () => {
 			const res = await api.patch(`/api/v1/workspaces/${walk.workspaceSlug}/items/${slugs[coll]}`, {
 				data: { fields_patch: { status: 'draft' } }
 			});
-			// Every account can see both items (members by role, guests by
-			// grant), so 200 or 403 are the only answers this walk reasons
-			// about; anything else means the probe itself is broken.
-			expect([200, 403], `${key} PATCH ${coll}: ${res.status()} ${await res.text()}`).toContain(res.status());
+			// Every account but the HIDDEN ones can see both items (members
+			// by role and collection access, guests by grant), so 200 or 403
+			// are the answers this walk reasons about; a HIDDEN account must
+			// get 404 (TASK-3376). Anything else means the probe is broken.
+			const allowed = HIDDEN.has(key) ? [404] : [200, 403];
+			expect(allowed, `${key} PATCH ${coll}: ${res.status()} ${await res.text()}`).toContain(res.status());
 			serverEdits[key][coll] = res.status() === 200;
 		}
 		await api.dispose();
@@ -106,7 +117,7 @@ test.beforeAll(async () => {
 	// tell a per-item gate from a role constant.
 	const guests: AccountKey[] = ['guestItemEdit', 'guestPrecedence'];
 	for (const coll of ['conventions', 'playbooks'] as const) {
-		for (const group of [ACCOUNT_KEYS.filter((k) => !guests.includes(k)), guests]) {
+		for (const group of [ACCOUNT_KEYS.filter((k) => !guests.includes(k) && !HIDDEN.has(k)), guests]) {
 			const answers = new Set(group.map((k) => serverEdits[k][coll]));
 			expect(answers.size, `server answers for ${coll} over ${group}: ${JSON.stringify(serverEdits)}`).toBe(2);
 		}
@@ -120,7 +131,20 @@ async function open(page: Page, key: AccountKey, path: string) {
 	await waitForAccessSettled(page);
 }
 
-for (const key of ACCOUNT_KEYS) {
+// TASK-3376: a member restricted to Tasks does not see the system collections
+// unless they are listed for it. The beforeAll probe already required 404 on
+// both seeded items; this leg pins that the pages agree and show it nothing.
+test('editorSpecific: the system collections are not in its reach', async ({ page }) => {
+	for (const coll of ['conventions', 'playbooks'] as const) {
+		expect(serverEdits.editorSpecific[coll], `editorSpecific can edit ${coll}`).toBe(false);
+	}
+	await open(page, 'editorSpecific', '/conventions');
+	await expect(page.getByText(TITLE.conventions, { exact: true })).toHaveCount(0);
+	await open(page, 'editorSpecific', '/playbooks');
+	await expect(page.getByText(TITLE.playbooks, { exact: true })).toHaveCount(0);
+});
+
+for (const key of ACCOUNT_KEYS.filter((k) => !HIDDEN.has(k))) {
 	test.describe(key, () => {
 		test('Conventions: toggle, Enable all, Edit and Delete render iff the server lets the account edit the item', async ({
 			page

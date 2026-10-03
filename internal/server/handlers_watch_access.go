@@ -94,8 +94,8 @@ type watchAccessVisibility struct {
 	// including a collection ID merely because the caller has an item
 	// grant somewhere inside it, which is exactly the leak this field
 	// must not reproduce. Built from GuestVisibleResources'
-	// fullCollectionIDs (+ GetMemberCollectionAccess/
-	// ListSystemCollectionIDs for a member) instead — see
+	// fullCollectionIDs (+ GetMemberCollectionAccess for a member)
+	// instead — see
 	// computeWatchAccessVisibility.
 	visibleCollIDs map[string]bool
 	// grantedItemIDs are individually-granted items (guest item grants,
@@ -133,8 +133,9 @@ func (v watchAccessVisibility) allows(collectionID, itemID string) bool {
 // GuestVisibleResources' fullCollectionIDs return (populated ONLY from
 // direct collection_grants — never widened by an item grant) as the
 // "genuinely full access" set, exactly like computeSSEVisibility's own
-// fullCollSet construction, with GetMemberCollectionAccess +
-// ListSystemCollectionIDs layered on for an actual workspace member.
+// fullCollSet construction, with GetMemberCollectionAccess layered on for
+// an actual workspace member. (A ListSystemCollectionIDs layer was removed
+// by TASK-3376: system collections are listed like any other.)
 //
 // Admin bypass (TASK-2533 codex round 2 finding 2 — the argument below
 // REPLACES a now-falsified one, not just a code fix): this used to treat
@@ -192,7 +193,8 @@ func (v watchAccessVisibility) allows(collectionID, itemID string) bool {
 //
 // Population (CONVE-18): four store calls in this function could fail —
 // GetWorkspaceMember, GuestVisibleResources, GetMemberCollectionAccess,
-// ListSystemCollectionIDs. All four now report. The last two were not
+// ListSystemCollectionIDs (the last removed since by TASK-3376, leaving
+// three). All of them report. The last two were not
 // merely swallowed but discarded into `_`, which is how they escaped
 // round 1's sweep. Search boundary: this function only; the sibling
 // resolver computeSSEVisibility (handlers_events.go) has the same shape
@@ -246,16 +248,7 @@ func (s *Server) computeWatchAccessVisibility(bearerAuth bool, user *models.User
 				"workspace_id", workspaceID, "user_id", user.ID, "error", mcErr)
 			return watchAccessVisibility{}, mcErr
 		}
-		sysColls, scErr := s.store.ListSystemCollectionIDs(workspaceID)
-		if scErr != nil {
-			slog.Warn("watch-access: failed to list system collections, denying all in workspace",
-				"workspace_id", workspaceID, "error", scErr)
-			return watchAccessVisibility{}, scErr
-		}
 		for _, id := range memberColls {
-			fullCollSet[id] = true
-		}
-		for _, id := range sysColls {
 			fullCollSet[id] = true
 		}
 	}

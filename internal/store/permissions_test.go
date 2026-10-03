@@ -110,7 +110,10 @@ func TestVisibleCollectionIDs_SpecificAccess(t *testing.T) {
 	}
 }
 
-func TestVisibleCollectionIDs_SystemCollectionsAlwaysVisible(t *testing.T) {
+// System collections are ordinary collections for a restricted member: seen
+// only when listed (TASK-3376). The listed leg is the control, so the
+// unlisted absence is about the listing and not the fixture.
+func TestVisibleCollectionIDs_SystemCollectionsOnlyWhenListed(t *testing.T) {
 	t.Parallel()
 	s, ws, _, member := setupPermissionTest(t)
 
@@ -124,23 +127,35 @@ func TestVisibleCollectionIDs_SystemCollectionsAlwaysVisible(t *testing.T) {
 			conventionsID = c.ID
 		}
 	}
-
-	// Set member to specific access with only "tasks"
-	_ = s.SetMemberCollectionAccess(ws.ID, member.ID, "specific", []string{tasksID})
-
-	ids, err := s.VisibleCollectionIDs(ws.ID, member.ID)
-	if err != nil {
-		t.Fatalf("VisibleCollectionIDs: %v", err)
+	if tasksID == "" || conventionsID == "" {
+		t.Fatalf("fixture lacks tasks or conventions: tasks=%q conventions=%q", tasksID, conventionsID)
 	}
 
-	idSet := make(map[string]bool)
-	for _, id := range ids {
-		idSet[id] = true
+	visible := func() map[string]bool {
+		t.Helper()
+		ids, err := s.VisibleCollectionIDs(ws.ID, member.ID)
+		if err != nil {
+			t.Fatalf("VisibleCollectionIDs: %v", err)
+		}
+		set := make(map[string]bool)
+		for _, id := range ids {
+			set[id] = true
+		}
+		return set
 	}
 
-	// Conventions is system → always visible even though not explicitly granted
-	if !idSet[conventionsID] {
-		t.Error("expected conventions (system) collection to always be visible")
+	if err := s.SetMemberCollectionAccess(ws.ID, member.ID, "specific", []string{tasksID}); err != nil {
+		t.Fatalf("SetMemberCollectionAccess: %v", err)
+	}
+	if visible()[conventionsID] {
+		t.Error("an unlisted system collection is visible to a restricted member")
+	}
+
+	if err := s.SetMemberCollectionAccess(ws.ID, member.ID, "specific", []string{tasksID, conventionsID}); err != nil {
+		t.Fatalf("SetMemberCollectionAccess (listed): %v", err)
+	}
+	if !visible()[conventionsID] {
+		t.Error("a listed system collection is not visible to a restricted member")
 	}
 }
 

@@ -913,11 +913,7 @@ func (s *Server) computeSSEVisibility(r *http.Request, workspaceID string) sseVi
 	}
 	if member != nil {
 		memberColls, _ := s.store.GetMemberCollectionAccess(workspaceID, user.ID)
-		sysColls, _ := s.store.ListSystemCollectionIDs(workspaceID)
 		for _, id := range memberColls {
-			fullCollIDSet[id] = true
-		}
-		for _, id := range sysColls {
 			fullCollIDSet[id] = true
 		}
 	}
