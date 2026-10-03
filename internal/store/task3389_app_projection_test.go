@@ -486,3 +486,30 @@ func TestTask3389_PartialLoggedOncePerCollection(t *testing.T) {
 		t.Errorf("partial logged %d times for one collection, want 1:\n%s", n, buf.String())
 	}
 }
+
+// codex r3 P2: a blob holding a valid object followed by trailing bytes is not
+// a JSON object. It must project partial, not as a clean block of the leading
+// object's fields.
+func TestTask3389_TrailingGarbageBlobIsPartial(t *testing.T) {
+	for _, blob := range []string{`{"status":"open"} garbage`, `{"status":"open"}{"size":"l"}`} {
+		fields, reason := projectFieldsBySchema(blob, task3389Schema)
+		if reason == "" {
+			t.Errorf("blob %q projected clean %v, want partial", blob, fields)
+		}
+	}
+	if _, reason := projectFieldsBySchema(`{"status":"open"}  `+"\n", task3389Schema); reason != "" {
+		t.Errorf("trailing whitespace marked partial: %s", reason)
+	}
+}
+
+// codex r3 P3: the once-per-collection registry stops growing at its cap.
+func TestTask3389_WarnRegistryIsCapped(t *testing.T) {
+	saved := appProjectionWarnCount.Load()
+	appProjectionWarnCount.Store(appProjectionWarnCap)
+	t.Cleanup(func() { appProjectionWarnCount.Store(saved) })
+	id := "task3389-cap-probe"
+	warnPartialAppProjection(id, "probe")
+	if _, stored := appProjectionWarned.Load(id); stored {
+		t.Error("registry grew past its cap")
+	}
+}

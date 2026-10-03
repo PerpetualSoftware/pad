@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -77,12 +79,25 @@ var appProjectionFieldTypes = map[string]bool{
 }
 
 // appProjectionWarned holds the collection ids already logged as partial, so a
-// malformed collection logs once per process rather than once per write.
-var appProjectionWarned sync.Map
+// malformed collection logs once per process rather than once per write. It is
+// capped: past appProjectionWarnCap distinct collections, further ones log on
+// every write instead of growing the set.
+var (
+	appProjectionWarned    sync.Map
+	appProjectionWarnCount atomic.Int64
+)
+
+const appProjectionWarnCap = 10000
 
 func warnPartialAppProjection(collectionID, reason string) {
-	if _, seen := appProjectionWarned.LoadOrStore(collectionID, true); seen {
+	if _, seen := appProjectionWarned.Load(collectionID); seen {
 		return
+	}
+	if appProjectionWarnCount.Load() < appProjectionWarnCap {
+		if _, seen := appProjectionWarned.LoadOrStore(collectionID, true); seen {
+			return
+		}
+		appProjectionWarnCount.Add(1)
 	}
 	slog.Warn("app projection: partial block, fields omitted", "collection_id", collectionID, "reason", reason)
 }
@@ -149,6 +164,11 @@ func projectFieldsBySchema(fieldsJSON, schemaJSON string) (map[string]any, strin
 	var doc any
 	if err := dec.Decode(&doc); err != nil {
 		return nil, "fields blob does not parse"
+	}
+	// One value and nothing after it: a single Decode stops at the end of the
+	// first value, so trailing bytes would otherwise project as clean.
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, "fields blob has trailing data"
 	}
 	raw, ok := doc.(map[string]any)
 	if !ok {
