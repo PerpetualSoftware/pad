@@ -2561,9 +2561,12 @@ export const api = {
 			}),
 		cancelInvitation: (ws: string, invitationId: string) =>
 			request<void>(`/workspaces/${ws}/members/invitations/${invitationId}`, { method: 'DELETE' }),
-		acceptInvitation: (code: string) =>
+		// `proof` is the mailbox-only secret from the invitation email's link
+		// (TASK-3352); sending it verifies the address. The code never does.
+		acceptInvitation: (code: string, proof?: string) =>
 			request<InvitationAccepted>(`/invitations/${code}/accept`, {
-				method: 'POST'
+				method: 'POST',
+				...(proof ? { body: JSON.stringify({ proof }) } : {})
 			}),
 		// Pending invitations addressed to the caller's VERIFIED email, and
 		// accepting one by id: the list carries no code (only its hash is
@@ -2668,10 +2671,24 @@ export const api = {
 				method: 'POST',
 				body: JSON.stringify({ challenge_token: challengeToken, code: code || undefined, recovery_code: recoveryCode || undefined })
 			}),
-		register: (email: string, name: string, password: string, username?: string, invitation_code?: string) =>
+		register: (
+			email: string,
+			name: string,
+			password: string,
+			username?: string,
+			invitation_code?: string,
+			invitation_proof?: string
+		) =>
 			request<{ user: { id: string; email: string; username: string; name: string; role: string; email_verified?: boolean }; token: string; accepted_invitation?: InvitationAcceptedFields }>('/auth/register', {
 				method: 'POST',
-				body: JSON.stringify({ email, name, password, ...(username ? { username } : {}), ...(invitation_code ? { invitation_code } : {}) })
+				body: JSON.stringify({
+					email,
+					name,
+					password,
+					...(username ? { username } : {}),
+					...(invitation_code ? { invitation_code } : {}),
+					...(invitation_proof ? { invitation_proof } : {})
+				})
 			}),
 		// First-run bootstrap with a logs-token (TASK-1167). The token is
 		// transmitted via the X-Bootstrap-Token header — never the URL or

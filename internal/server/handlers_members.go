@@ -202,11 +202,24 @@ func (s *Server) handleInviteMember(w http.ResponseWriter, r *http.Request) {
 				wsName = ws.Name
 			}
 			unsubURL := email.UnsubscribeURL(s.baseURL, inv.Email, s.unsubscribeSecret())
-			if err := s.email.SendInvitation(context.Background(), inv.Email, inviterName, wsName, joinURL, unsubURL); err != nil {
+			if err := s.email.SendInvitation(context.Background(), inv.Email, inviterName, wsName, invitationEmailURL(joinURL, inv.Proof), unsubURL); err != nil {
 				slog.Error("failed to send invitation email", "error", err)
 			}
 		})
 	}
+}
+
+// invitationEmailURL is the join link the invitation EMAIL carries: the
+// shareable join URL plus the mailbox-only proof in the fragment (TASK-3352).
+// A fragment never reaches the server, so the proof stays out of request
+// logs and Referer headers; the join page reads it and sends it in the body.
+// Only the email gets this URL. The invite response's join_url, the settings
+// page and copy-link carry the code alone.
+func invitationEmailURL(joinURL, proof string) string {
+	if proof == "" {
+		return joinURL
+	}
+	return joinURL + "#proof=" + proof
 }
 
 // handleRemoveMember removes a user from a workspace.
@@ -366,6 +379,17 @@ func asciiLower(s string) string {
 // handleAcceptInvitation accepts a workspace invitation by code.
 func (s *Server) handleAcceptInvitation(w http.ResponseWriter, r *http.Request) {
 	code := chi.URLParam(r, "code")
+	// An optional body: {"proof": "..."}, the mailbox-only secret from the
+	// invitation email's link (TASK-3352). Older clients send no body.
+	var body struct {
+		Proof string `json:"proof"`
+	}
+	if r.ContentLength != 0 {
+		if err := decodeJSON(r, &body); err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
+			return
+		}
+	}
 
 	inv, err := s.store.GetInvitationByCode(code)
 	if err != nil {
@@ -399,6 +423,14 @@ func (s *Server) handleAcceptInvitation(w http.ResponseWriter, r *http.Request) 
 	role, ok := s.acceptInvitationCore(w, r, inv, user)
 	if !ok {
 		return
+	}
+	// TASK-3352: the email link's proof verifies the address; the code just
+	// spent never does (BUG-3348). The email match above ties the mailbox to
+	// this account. A wrong or spent proof changes nothing.
+	if body.Proof != "" && !user.IsEmailVerified() {
+		if _, perr := s.store.ConsumeInvitationProof(inv.ID, user.ID, strings.TrimSpace(body.Proof)); perr != nil {
+			slog.Error("invitation proof: consume failed; account stays unverified", "error", perr, "user_id", user.ID)
+		}
 	}
 
 	// BUG-3348: accepting does NOT verify the account's email. DR-1 read

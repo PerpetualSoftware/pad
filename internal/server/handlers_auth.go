@@ -597,6 +597,9 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		Name           string `json:"name"`
 		Password       string `json:"password"`
 		InvitationCode string `json:"invitation_code"`
+		// InvitationProof is the mailbox-only secret from the invitation
+		// EMAIL's link (TASK-3352). It, never the code, verifies the address.
+		InvitationProof string `json:"invitation_proof"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
@@ -770,6 +773,23 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to create user")
 		return
+	}
+
+	// TASK-3352: an invited signup that came through the invitation EMAIL
+	// carries its mailbox-only proof, which proves the address the code
+	// cannot. Spending it verifies the new account, so no separate
+	// verification email is needed. A wrong or spent proof changes nothing:
+	// the signup proceeds exactly as it would without one.
+	if needsVerification && invitation != nil && input.InvitationProof != "" {
+		ok, perr := s.store.ConsumeInvitationProof(invitation.ID, user.ID, strings.TrimSpace(input.InvitationProof))
+		if perr != nil {
+			slog.Error("invitation proof: consume failed; continuing unverified", "error", perr, "user_id", user.ID)
+		} else if ok {
+			needsVerification = false
+			if fresh, ferr := s.store.GetUser(user.ID); ferr == nil && fresh != nil {
+				user = fresh
+			}
+		}
 	}
 
 	// Cloud self-serve or invited signup: mint + send the email-verification

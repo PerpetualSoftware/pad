@@ -295,6 +295,7 @@ workspace_invitations.code_hash
 workspace_invitations.created_at
 workspace_invitations.expires_at
 workspace_invitations.id
+workspace_invitations.proof_hash
 workspace_invitations.role
 workspace_invitations.workspace_id
 workspace_members.created_at

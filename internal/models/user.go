@@ -137,15 +137,20 @@ type Session struct {
 
 // WorkspaceInvitation represents a pending invitation to join a workspace.
 type WorkspaceInvitation struct {
-	ID          string     `json:"id"`
-	WorkspaceID string     `json:"workspace_id"`
-	Email       string     `json:"email"`
-	Role        string     `json:"role"`
-	InvitedBy   string     `json:"invited_by"`
-	Code        string     `json:"code"`
-	AcceptedAt  *time.Time `json:"accepted_at,omitempty"`
-	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
-	CreatedAt   time.Time  `json:"created_at"`
+	ID          string `json:"id"`
+	WorkspaceID string `json:"workspace_id"`
+	Email       string `json:"email"`
+	Role        string `json:"role"`
+	InvitedBy   string `json:"invited_by"`
+	Code        string `json:"code"`
+	// Proof is the mailbox-only secret minted with the invitation
+	// (TASK-3352), set only on the struct CreateInvitation returns, for the
+	// email sender. It never serialises: the inviter must not be able to see
+	// it, because consuming it marks the invitee's address verified.
+	Proof      string     `json:"-"`
+	AcceptedAt *time.Time `json:"accepted_at,omitempty"`
+	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
 }
 
 // IsExpired reports whether an invitation is past its expiration window.
