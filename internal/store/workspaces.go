@@ -137,6 +137,12 @@ var workspaceSlugProbedHook func(slug string)
 // and under MaxOpenConns(1) there is none to wait for — the deadlock class
 // BUG-2778 and BUG-2409 are both instances of.
 func (s *Store) createWorkspaceQ(q execQueryer, input models.WorkspaceCreate) (*models.Workspace, error) {
+	// A bot never owns a workspace (TASK-3392).
+	if input.OwnerID != "" {
+		if err := s.refuseAppPrincipalQ(q, input.OwnerID); err != nil {
+			return nil, err
+		}
+	}
 	id := newID()
 	ts := now()
 

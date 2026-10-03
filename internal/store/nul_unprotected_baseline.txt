@@ -277,6 +277,7 @@ users.created_at
 users.disabled_at
 users.email_verified_at
 users.id
+users.kind
 users.last_active_at
 users.last_write_at
 users.password_hash

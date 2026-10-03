@@ -606,7 +606,8 @@ func (s *Server) authorizeCollabAccess(r *http.Request, item *models.Item) (coll
 	if err != nil {
 		return collabAccess{}, err
 	}
-	if fresh == nil {
+	// A bot is no collaborator (TASK-3392).
+	if fresh == nil || fresh.IsApp() {
 		return collabAccess{}, newStatusError(http.StatusForbidden, "forbidden", "User not found")
 	}
 	if fresh.IsDisabled() {

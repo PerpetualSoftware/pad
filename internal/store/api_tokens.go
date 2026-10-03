@@ -114,6 +114,10 @@ func (s *Store) CreateAPIToken(userID string, input models.APITokenCreate, defau
 // expiryDays controls the new expiry: 0 keeps the original, >0 sets a new one.
 // maxLifetimeDays enforces a ceiling on the new expiry (0 = no limit).
 func (s *Store) RotateAPIToken(tokenID, userID string, expiryDays, maxLifetimeDays int) (*models.APITokenWithSecret, error) {
+	// A rotation mints a secret: never for a bot (TASK-3392).
+	if err := s.refuseAppPrincipalQ(s.db, userID); err != nil {
+		return nil, err
+	}
 	// Verify the token exists and belongs to the user
 	existing, err := s.getAPIToken(tokenID)
 	if err != nil {
@@ -279,21 +283,28 @@ func (s *Store) validateToken(token string, touch bool) (*models.APIToken, error
 	var t models.APIToken
 	var expiresAt, lastUsedAt, userID *string
 	var workspaceID *string
-	var createdAt string
+	var createdAt, ownerKind string
 
 	err := s.db.QueryRow(s.q(`
-		SELECT id, workspace_id, user_id, name, prefix, scopes, expires_at, last_used_at, created_at
-		FROM api_tokens
-		WHERE token_hash = ?
+		SELECT t.id, t.workspace_id, t.user_id, t.name, t.prefix, t.scopes, t.expires_at, t.last_used_at, t.created_at,
+		       COALESCE(u.kind, 'human')
+		FROM api_tokens t
+		LEFT JOIN users u ON u.id = t.user_id
+		WHERE t.token_hash = ?
 	`), tokenHash).Scan(
 		&t.ID, &workspaceID, &userID, &t.Name, &t.Prefix, &t.Scopes,
-		&expiresAt, &lastUsedAt, &createdAt,
+		&expiresAt, &lastUsedAt, &createdAt, &ownerKind,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("validate token: %w", err)
+	}
+	// A bot's API token, however it came to exist, resolves to nothing
+	// (TASK-3392). An install's own credential is a different door.
+	if ownerKind == models.UserKindApp {
+		return nil, nil
 	}
 
 	if workspaceID != nil {

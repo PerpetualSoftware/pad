@@ -606,7 +606,7 @@ func (s *Server) pushSessionVisibility(userID, workspaceID, collectionID, itemID
 					"user_id", userID, "error", err)
 				return false, err
 			}
-			if user == nil || user.IsDisabled() {
+			if user == nil || user.IsDisabled() || user.IsApp() {
 				return false, nil
 			}
 			vis, verr := s.computeWatchAccessVisibility(bearerAuth, user, workspaceID)

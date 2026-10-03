@@ -2,6 +2,7 @@ package models
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 )
 
@@ -27,13 +28,41 @@ type User struct {
 	// CredentialEpoch is bumped by every credential change (password reset or
 	// change, disable, account claim). A sign-in mints a session only if the
 	// epoch it read when checking the credential is still current (BUG-3382).
-	CredentialEpoch int64     `json:"-"`
+	CredentialEpoch int64 `json:"-"`
+	// Kind is "human", or "app" for an installed app's bot principal
+	// (SPEC-6 §3, TASK-3392). Not serialized: no payload carries it.
+	Kind            string    `json:"-"`
 	DisabledAt      string    `json:"disabled_at,omitempty"`       // Non-empty = account disabled
 	EmailVerifiedAt string    `json:"email_verified_at,omitempty"` // Non-empty = email verified (mirror DisabledAt). Empty/NULL = unverified. PLAN-1933 / TASK-1935.
 	LastActiveAt    string    `json:"last_active_at,omitempty"`    // Last authenticated API request (any read or write)
 	LastWriteAt     string    `json:"last_write_at,omitempty"`     // Last mutating action (item/comment/attachment); see Store.TouchUserWrite. PLAN-1542 / TASK-1543.
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+// UserKindHuman and UserKindApp are the values of users.kind.
+const (
+	UserKindHuman = "human"
+	UserKindApp   = "app"
+)
+
+// IsApp reports whether the user is an installed app's bot principal. A bot
+// can never sign in, hold a session, be claimed, be an admin or own anything.
+func (u *User) IsApp() bool { return u != nil && u.Kind == UserKindApp }
+
+// AppPrincipalEmailDomain is the reserved domain of every bot principal's
+// email, app+<install-id>@apps.pad.invalid. .invalid can never resolve
+// (RFC 2606), and no person may register, be invited at, or bootstrap with an
+// address in it, so a bot's address can never be taken before its install
+// creates it.
+const AppPrincipalEmailDomain = "apps.pad.invalid"
+
+// IsReservedAppEmail reports whether email is in the bot principals' domain,
+// compared case-insensitively after trimming, as the users table stores it.
+func IsReservedAppEmail(email string) bool {
+	e := strings.ToLower(strings.TrimSpace(email))
+	at := strings.LastIndexByte(e, '@')
+	return at >= 0 && e[at+1:] == AppPrincipalEmailDomain
 }
 
 // IsDisabled returns true if the user account has been disabled.

@@ -17,6 +17,10 @@ const resetTokenTTL = 1 * time.Hour
 // Returns the plaintext token (to embed in the reset URL). The token is
 // stored as a SHA-256 hash — the plaintext cannot be recovered.
 func (s *Store) CreatePasswordReset(userID string) (string, error) {
+	// A bot never gets a reset link (TASK-3392).
+	if err := s.refuseAppPrincipalQ(s.db, userID); err != nil {
+		return "", err
+	}
 	// Invalidate any existing unused tokens for this user
 	_, _ = s.db.Exec(s.q(`
 		UPDATE password_reset_tokens SET used_at = ? WHERE user_id = ? AND used_at IS NULL
@@ -60,6 +64,8 @@ func (s *Store) LookupPasswordReset(token string) (*models.User, error) {
 	err := s.db.QueryRow(s.q(`
 		SELECT user_id FROM password_reset_tokens
 		WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?
+		  -- A bot's token is no token (TASK-3392).
+		  AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id = password_reset_tokens.user_id AND u.kind = 'app')
 	`), tokenHash, now()).Scan(&userID)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -96,6 +102,8 @@ func (s *Store) ConsumePasswordReset(token string) (*models.User, error) {
 		UPDATE password_reset_tokens
 		SET used_at = ?
 		WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?
+		  -- A bot's token is no token (TASK-3392).
+		  AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id = password_reset_tokens.user_id AND u.kind = 'app')
 		RETURNING user_id, (SELECT credential_epoch FROM users WHERE users.id = password_reset_tokens.user_id)
 	`), now(), tokenHash, now()).Scan(&userID, &epoch)
 

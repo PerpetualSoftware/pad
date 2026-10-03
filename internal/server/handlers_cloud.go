@@ -238,7 +238,8 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	input.Email = strings.ToLower(strings.TrimSpace(input.Email))
-	if input.Email == "" || !emailRegexp.MatchString(input.Email) {
+	// No provider can vouch for an installed app's address (TASK-3392).
+	if input.Email == "" || !emailRegexp.MatchString(input.Email) || models.IsReservedAppEmail(input.Email) {
 		writeError(w, http.StatusBadRequest, "bad_request", "valid email is required")
 		return
 	}
@@ -729,7 +730,8 @@ func (s *Server) handleOAuthLink(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
-	if user == nil {
+	// A bot is no account to link a provider to (TASK-3392).
+	if user == nil || user.IsApp() {
 		writeError(w, http.StatusNotFound, "not_found", "No account found with that email")
 		return
 	}

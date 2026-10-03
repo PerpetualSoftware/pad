@@ -121,6 +121,15 @@ func (s *Server) handleApproveCLIAuthSession(w http.ResponseWriter, r *http.Requ
 	if user == nil {
 		user = s.validateSessionCookie(r)
 	}
+	// A bot is no signed-in person (TASK-3392). This is the THIRD layer, kept
+	// as defence in depth: a bot never reaches here today, because (1)
+	// ValidateSession resolves a bot's session to nothing, so currentUser and
+	// validateSessionCookie return nil for it, and (2) the approver check
+	// below requires a resolved session belonging to this same user. Neither
+	// delete this as dead code nor rely on it alone; no test can isolate it.
+	if user.IsApp() {
+		user = nil
+	}
 	if user == nil {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "You must be logged in to approve a CLI session")
 		return

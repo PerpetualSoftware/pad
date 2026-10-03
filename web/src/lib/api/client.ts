@@ -2546,6 +2546,9 @@ export const api = {
 			request<{
 				members: { workspace_id: string; user_id: string; role: string; created_at: string; user_name: string; user_email: string }[];
 				invitations: { id: string; email: string; role: string; code: string; join_url?: string; created_at: string }[];
+				// Installed apps' bot principals (TASK-3392), never in `members`.
+				// Absent when the instance's policy hides them.
+				apps?: { id: string; display_name: string; app_name?: string; role: string }[];
 			}>(`/workspaces/${ws}/members`),
 		invite: (ws: string, email: string, role: string) =>
 			request<{ added?: boolean; invited?: boolean; code?: string; join_url?: string; email: string; role: string; name?: string; user_id?: string }>(

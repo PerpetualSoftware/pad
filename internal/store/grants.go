@@ -11,6 +11,13 @@ import (
 
 // CreateCollectionGrant creates a direct grant on a collection for a user.
 func (s *Store) CreateCollectionGrant(workspaceID, collectionID, userID, permission, grantedBy string) (*models.CollectionGrant, error) {
+	// A bot is never a grantee (TASK-3392): its access is its install's
+	// companion collections. A grant row would also give grant revocation a
+	// lock on the bot's users row, which account deletion's bot purge takes
+	// in the other order.
+	if err := s.refuseAppPrincipalQ(s.db, userID); err != nil {
+		return nil, err
+	}
 	id := newID()
 	ts := now()
 
@@ -119,6 +126,10 @@ func (s *Store) DeleteCollectionGrant(id, workspaceID string) error {
 
 // CreateItemGrant creates a direct grant on an item for a user.
 func (s *Store) CreateItemGrant(workspaceID, itemID, userID, permission, grantedBy string) (*models.ItemGrant, error) {
+	// A bot is never a grantee (TASK-3392); see CreateCollectionGrant.
+	if err := s.refuseAppPrincipalQ(s.db, userID); err != nil {
+		return nil, err
+	}
 	id := newID()
 	ts := now()
 

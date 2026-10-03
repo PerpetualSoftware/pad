@@ -516,7 +516,8 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	input.Email = strings.TrimSpace(input.Email)
 	input.Name = strings.TrimSpace(input.Name)
 
-	if input.Email == "" || !emailRegexp.MatchString(input.Email) {
+	// The bot principals' reserved domain is no person's address (TASK-3392).
+	if input.Email == "" || !emailRegexp.MatchString(input.Email) || models.IsReservedAppEmail(input.Email) {
 		writeError(w, http.StatusBadRequest, "validation_error", "Valid email is required")
 		return
 	}
@@ -621,7 +622,8 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	input.Name = strings.TrimSpace(input.Name)
 	input.InvitationCode = strings.TrimSpace(input.InvitationCode)
 
-	if input.Email == "" || !emailRegexp.MatchString(input.Email) {
+	// The bot principals' reserved domain is no person's address (TASK-3392).
+	if input.Email == "" || !emailRegexp.MatchString(input.Email) || models.IsReservedAppEmail(input.Email) {
 		writeError(w, http.StatusBadRequest, "validation_error", "Valid email is required")
 		return
 	}
@@ -1527,7 +1529,8 @@ func (s *Server) handleForgotPassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	user, err := s.store.GetUserByEmail(input.Email)
-	if err != nil || user == nil {
+	// A bot gets the unknown-address answer (TASK-3392).
+	if err != nil || user == nil || user.IsApp() {
 		// Don't reveal whether the email exists
 		writeJSON(w, http.StatusOK, okResponse)
 		return
@@ -1617,7 +1620,8 @@ func (s *Server) handleLocalReset(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
-	if user == nil {
+	// A bot is no account to recover (TASK-3392).
+	if user == nil || user.IsApp() {
 		writeError(w, http.StatusNotFound, "not_found", "No account found with that email")
 		return
 	}
@@ -1990,8 +1994,9 @@ func (s *Server) handleResendVerification(w http.ResponseWriter, r *http.Request
 	}
 
 	user, err := s.store.GetUserByEmail(input.Email)
-	if err != nil || user == nil || user.IsEmailVerified() {
-		// Unknown email or an already-verified account: no-op, same response.
+	if err != nil || user == nil || user.IsEmailVerified() || user.IsApp() {
+		// Unknown email, an already-verified account or a bot (TASK-3392):
+		// no-op, same response.
 		writeJSON(w, http.StatusOK, okResponse)
 		return
 	}

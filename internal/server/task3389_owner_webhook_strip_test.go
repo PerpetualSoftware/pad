@@ -20,6 +20,12 @@ import (
 // delivered-body absence is the strip working, not the block missing.
 func TestTask3389_OwnerWebhooksNeverCarryTheAppProjection(t *testing.T) {
 	srv, sink, ws := drainFixture(t)
+	// The block is written only once the workspace has an installed app
+	// (TASK-3392).
+	if _, err := srv.store.DB().Exec(`INSERT INTO app_installs (id, workspace_id, origin, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
+		"inst-drain", ws.ID, "https://portal.example", "2026-10-03T00:00:00Z", "2026-10-03T00:00:00Z"); err != nil {
+		t.Fatalf("plant install: %v", err)
+	}
 	col := createDrainCollection(t, srv, ws.ID)
 
 	item := createDrainItem(t, srv, ws.ID, col.ID, "Single")

@@ -27,6 +27,11 @@ const verificationTokenTTL = 24 * time.Hour
 // invalidate-prior-unused-tokens-on-mint behavior is KEPT so a
 // resend-verification silently burns the previous link.
 func (s *Store) CreateEmailVerification(userID string) (string, error) {
+	// A bot never gets a verification link, which is the token the
+	// verify-claim spends (TASK-3392).
+	if err := s.refuseAppPrincipalQ(s.db, userID); err != nil {
+		return "", err
+	}
 	// Invalidate any existing unused tokens for this user so a resend
 	// invalidates the previous verification link.
 	_, _ = s.db.Exec(s.q(`
@@ -68,6 +73,8 @@ func (s *Store) LookupEmailVerification(token string) (*models.User, error) {
 	err := s.db.QueryRow(s.q(`
 		SELECT user_id FROM email_verification_tokens
 		WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?
+		  -- A bot's token is no token (TASK-3392).
+		  AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id = email_verification_tokens.user_id AND u.kind = 'app')
 	`), tokenHash, now()).Scan(&userID)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -109,6 +116,8 @@ func (s *Store) ConsumeEmailVerification(token string) (*models.User, error) {
 	err = tx.QueryRow(s.q(`
 		SELECT user_id FROM email_verification_tokens
 		WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?
+		  -- A bot's token is no token (TASK-3392).
+		  AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id = email_verification_tokens.user_id AND u.kind = 'app')
 	`), tokenHash, now()).Scan(&userID)
 	if err == sql.ErrNoRows {
 		return nil, nil // Invalid, expired, or already used

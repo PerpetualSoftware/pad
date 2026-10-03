@@ -68,6 +68,11 @@ func (s *Store) AddWorkspaceMember(workspaceID, userID, role string, opts ...Min
 //
 // effectiveRole is the role the membership holds after the call.
 func (s *Store) addWorkspaceMemberTx(tx *sql.Tx, workspaceID, userID, role string, mint mintOptions, existingOK bool) (added bool, effectiveRole string, err error) {
+	// A bot's membership comes from its install (addAppPrincipalMemberTx),
+	// never from the member door, an invitation or a backfill (TASK-3392).
+	if err := s.refuseAppPrincipalQ(tx, userID); err != nil {
+		return false, "", err
+	}
 	if mint.planLimit {
 		if err := s.acquirePlanLimitLock(tx, workspaceID, "members_per_workspace"); err != nil {
 			return false, "", err
@@ -192,6 +197,10 @@ func (s *Store) RemoveWorkspaceMember(workspaceID, userID string) error {
 	if err := s.lockUserTabsTx(tx, userID); err != nil {
 		return err
 	}
+	// Removing a bot is uninstalling its app (TASK-3392).
+	if err := s.refuseAppPrincipalQ(tx, userID); err != nil {
+		return err
+	}
 	if err := s.guardOwnerLossTx(tx, workspaceID, userID); err != nil {
 		return err
 	}
@@ -224,6 +233,10 @@ func (s *Store) RemoveWorkspaceMemberAndRevokeGrants(workspaceID, userID string)
 	// users(U) before any other row: the prune below bumps U's tabs revision,
 	// and every transaction that does takes that lock first (BUG-3285).
 	if err := s.lockUserTabsTx(tx, userID); err != nil {
+		return err
+	}
+	// Removing a bot is uninstalling its app (TASK-3392).
+	if err := s.refuseAppPrincipalQ(tx, userID); err != nil {
 		return err
 	}
 	if err := s.guardOwnerLossTx(tx, workspaceID, userID); err != nil {
@@ -291,7 +304,7 @@ func (s *Store) ListWorkspaceMembers(workspaceID string) ([]models.WorkspaceMemb
 		       u.name, u.email, u.username
 		FROM workspace_members wm
 		JOIN users u ON u.id = wm.user_id
-		WHERE wm.workspace_id = ?
+		WHERE wm.workspace_id = ? AND u.kind = 'human'
 		ORDER BY wm.created_at ASC
 	`), workspaceID)
 	if err != nil {
@@ -772,6 +785,10 @@ func (s *Store) UpdateWorkspaceMemberRole(workspaceID, userID, role string) erro
 		return fmt.Errorf("begin transaction: %w", err)
 	}
 	defer tx.Rollback()
+	// A bot's role belongs to its install (TASK-3392).
+	if err := s.refuseAppPrincipalQ(tx, userID); err != nil {
+		return err
+	}
 	if role != "owner" {
 		if err := s.guardOwnerLossTx(tx, workspaceID, userID); err != nil {
 			return err
@@ -827,7 +844,10 @@ func (s *Store) guardOwnerLossTx(tx *sql.Tx, workspaceID, userID string) error {
 		return ErrCanonicalOwner
 	}
 
-	rows, err := tx.Query(s.q(`SELECT user_id FROM workspace_members WHERE workspace_id = ? AND role = 'owner'`), workspaceID)
+	// A bot is never an owner; if one were planted it would still not be
+	// "another owner" (TASK-3392).
+	rows, err := tx.Query(s.q(`SELECT wm.user_id FROM workspace_members wm JOIN users u ON u.id = wm.user_id
+		WHERE wm.workspace_id = ? AND wm.role = 'owner' AND u.kind = 'human'`), workspaceID)
 	if err != nil {
 		return fmt.Errorf("read workspace owners: %w", err)
 	}
@@ -856,6 +876,9 @@ func (s *Store) guardOwnerLossTx(tx *sql.Tx, workspaceID, userID string) error {
 // Generates a 128-bit (16-byte) random code and stores only its SHA-256 hash.
 // The plaintext code is returned once to be shared with the invitee.
 func (s *Store) CreateInvitation(workspaceID, email, role, invitedBy string) (*models.WorkspaceInvitation, error) {
+	if models.IsReservedAppEmail(email) {
+		return nil, ErrReservedAppEmail
+	}
 	// Generate a random 128-bit join code (32 hex chars)
 	raw := make([]byte, 16)
 	if _, err := rand.Read(raw); err != nil {
@@ -1138,7 +1161,7 @@ func (s *Store) backfillWorkspaceOwners() error {
 	// Find the first admin user (if any)
 	var adminID string
 	err := s.db.QueryRow(
-		s.q("SELECT id FROM users WHERE role = 'admin' ORDER BY created_at ASC LIMIT 1"),
+		s.q("SELECT id FROM users WHERE role = 'admin' AND kind = 'human' ORDER BY created_at ASC LIMIT 1"),
 	).Scan(&adminID)
 	if err == sql.ErrNoRows {
 		return nil // No users yet — nothing to backfill
@@ -1203,17 +1226,17 @@ func (s *Store) backfillWorkspaceOwners() error {
 
 		// Try: earliest member with "owner" role
 		err := s.db.QueryRow(s.q(`
-			SELECT user_id FROM workspace_members
-			WHERE workspace_id = ? AND role = 'owner'
-			ORDER BY created_at ASC LIMIT 1
+			SELECT wm.user_id FROM workspace_members wm JOIN users u ON u.id = wm.user_id
+			WHERE wm.workspace_id = ? AND wm.role = 'owner' AND u.kind = 'human'
+			ORDER BY wm.created_at ASC LIMIT 1
 		`), wsID).Scan(&ownerID)
 
 		if err == sql.ErrNoRows {
 			// Try: earliest member regardless of role
 			err = s.db.QueryRow(s.q(`
-				SELECT user_id FROM workspace_members
-				WHERE workspace_id = ?
-				ORDER BY created_at ASC LIMIT 1
+				SELECT wm.user_id FROM workspace_members wm JOIN users u ON u.id = wm.user_id
+				WHERE wm.workspace_id = ? AND u.kind = 'human'
+				ORDER BY wm.created_at ASC LIMIT 1
 			`), wsID).Scan(&ownerID)
 		}
 
@@ -1329,7 +1352,8 @@ type AdminUserWorkspaceDetail struct {
 	ItemsOpen int `json:"items_open"`
 	// ItemsTotal counts all non-deleted items in the workspace.
 	ItemsTotal int `json:"items_total"`
-	// MembersCount counts workspace_members rows (includes the owner).
+	// MembersCount counts the workspace's people (includes the owner); an
+	// installed app's bot is not one (TASK-3392).
 	MembersCount int `json:"members_count"`
 	// StorageBytes mirrors WorkspaceStorageUsage's definition: SUM of
 	// non-deleted attachment size_bytes (including derived blobs).
@@ -1388,7 +1412,7 @@ func (s *Store) GetUserWorkspacesDetailed(userID string) ([]AdminUserWorkspaceDe
 				WHERE i.workspace_id = w.id AND i.deleted_at IS NULL AND ` + openClause + `),
 			(SELECT COUNT(*) FROM items i
 				WHERE i.workspace_id = w.id AND i.deleted_at IS NULL),
-			(SELECT COUNT(*) FROM workspace_members wm2 WHERE wm2.workspace_id = w.id),
+			(SELECT COUNT(*) FROM workspace_members wm2 JOIN users u2 ON u2.id = wm2.user_id WHERE wm2.workspace_id = w.id AND u2.kind = 'human'),
 			(SELECT COALESCE(SUM(a.size_bytes), 0) FROM attachments a
 				WHERE a.workspace_id = w.id AND a.deleted_at IS NULL),
 			(SELECT MAX(i.updated_at) FROM items i

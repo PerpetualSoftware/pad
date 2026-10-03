@@ -277,7 +277,9 @@ func (s *Server) handleTOTPLoginVerify(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
-	if user == nil || !user.TOTPEnabled {
+	// A bot gets the no-such-account answer, before its code is checked
+	// (TASK-3392).
+	if user == nil || !user.TOTPEnabled || user.IsApp() {
 		time.Sleep(500 * time.Millisecond)
 		writeError(w, http.StatusUnauthorized, "unauthorized", "Invalid 2FA verification")
 		return

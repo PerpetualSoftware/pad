@@ -66,12 +66,14 @@ var allowedStoreMethodsInsideDoor = map[string]string{
 	"emitItemUpdateEventsTx":   "INSERT INTO event_outbox for the item it is given (status_changed and/or updated)",
 	"buildItemAppProjectionTx": "reads the item's creator and collection schema",
 	"userDisplayTx":            "reads a user's display name",
-	"outboxRowCap":             "reads in-memory config; no SQL",
-	"outboxClaimableRowCap":    "reads in-memory config; no SQL",
-	"enqueueDecisionJobsTx":    "INSERT ... ON CONFLICT DO UPDATE on decision_jobs for the item it is given; no-op without a provider",
-	"decisionSetResolver":      "loads an in-memory pointer; no SQL",
-	"createActivityQ":          "INSERT INTO activities on the executor it is given (the fence's tx)",
-	"recentDebounceCandidateQ": "reads activities",
+	// U4 (TASK-3392).
+	"workspaceHasInstalledAppTx": "reads app_installs (does the workspace have an install not uninstalled)",
+	"outboxRowCap":               "reads in-memory config; no SQL",
+	"outboxClaimableRowCap":      "reads in-memory config; no SQL",
+	"enqueueDecisionJobsTx":      "INSERT ... ON CONFLICT DO UPDATE on decision_jobs for the item it is given; no-op without a provider",
+	"decisionSetResolver":        "loads an in-memory pointer; no SQL",
+	"createActivityQ":            "INSERT INTO activities on the executor it is given (the fence's tx)",
+	"recentDebounceCandidateQ":   "reads activities",
 }
 
 // reviewedStoreFuncs are package-level internal/store functions that are part

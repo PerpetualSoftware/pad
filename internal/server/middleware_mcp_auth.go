@@ -152,7 +152,8 @@ func (s *Server) handleMCPPATAuth(w http.ResponseWriter, r *http.Request, token 
 		return
 	}
 	user, err := s.store.GetUser(apiToken.UserID)
-	if err != nil || user == nil {
+	// A bot's credential is no person's (TASK-3392): unknown, like a gone one.
+	if err != nil || user == nil || user.IsApp() {
 		s.writeMCPUnauthorized(w, r, "invalid_token", "Token references an unknown user.")
 		return
 	}
@@ -336,10 +337,11 @@ func (s *Server) handleMCPOAuthAuth(w http.ResponseWriter, r *http.Request, toke
 		return
 	}
 	user, err := s.store.GetUser(userID)
-	if err != nil || user == nil {
+	if err != nil || user == nil || user.IsApp() {
 		// User was deleted between grant and use, OR the storage
 		// layer is failing. Either way, the bearer can't represent
-		// a valid identity — reject.
+		// a valid identity — reject. A bot subject is no person either
+		// (TASK-3392).
 		s.writeMCPUnauthorized(w, r, "invalid_token", "Token references an unknown user.")
 		return
 	}

@@ -29,7 +29,7 @@ var usernameCleanRe = regexp.MustCompile(`[^a-z0-9-]+`)
 var bcryptCost = 12
 
 // user SELECT columns — used by all user queries.
-const userColumns = `id, email, username, name, password_hash, role, avatar_url, totp_secret, totp_enabled, recovery_codes, plan, plan_expires_at, plan_source, stripe_customer_id, plan_overrides, oauth_providers, password_set, disabled_at, email_verified_at, last_active_at, last_write_at, created_at, updated_at, credential_epoch`
+const userColumns = `id, email, username, name, password_hash, role, avatar_url, totp_secret, totp_enabled, recovery_codes, plan, plan_expires_at, plan_source, stripe_customer_id, plan_overrides, oauth_providers, password_set, disabled_at, email_verified_at, last_active_at, last_write_at, created_at, updated_at, credential_epoch, kind`
 
 // scanUser scans a user row into a User struct.
 // Note: does NOT decrypt the TOTP secret — call store.decryptUserTOTP() after
@@ -45,7 +45,7 @@ func scanUser(row interface{ Scan(...interface{}) error }) (*models.User, error)
 		&u.Plan, &u.PlanExpiresAt, &u.PlanSource, &u.StripeCustomerID, &u.PlanOverrides, &u.OAuthProviders,
 		&u.PasswordSet,
 		&disabledAt, &emailVerifiedAt, &lastActiveAt, &lastWriteAt, &createdAt, &updatedAt,
-		&u.CredentialEpoch,
+		&u.CredentialEpoch, &u.Kind,
 	)
 	if disabledAt.Valid {
 		u.DisabledAt = disabledAt.String
@@ -84,8 +84,15 @@ func (s *Store) decryptUserTOTP(u *models.User) error {
 	return nil
 }
 
+// ErrReservedAppEmail refuses a person's account, invitation or bootstrap at
+// an address in the bot principals' reserved domain (TASK-3392).
+var ErrReservedAppEmail = errors.New("this email address is reserved")
+
 // CreateUser creates a new user with a hashed password.
 func (s *Store) CreateUser(input models.UserCreate) (*models.User, error) {
+	if models.IsReservedAppEmail(input.Email) {
+		return nil, ErrReservedAppEmail
+	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcryptCost)
 	if err != nil {
 		return nil, fmt.Errorf("hash password: %w", err)
@@ -243,7 +250,9 @@ func (s *Store) ValidatePassword(email, password string) (*models.User, error) {
 	if err != nil {
 		return nil, err
 	}
-	if u == nil {
+	// A bot is refused before its credential is looked at, with the same
+	// answer as a wrong password (TASK-3392).
+	if u == nil || u.IsApp() {
 		return nil, nil
 	}
 
@@ -268,7 +277,7 @@ func (s *Store) ValidatePassword(email, password string) (*models.User, error) {
 
 // ListUsers returns all users.
 func (s *Store) ListUsers() ([]models.User, error) {
-	rows, err := s.db.Query(s.q(`SELECT ` + userColumns + ` FROM users ORDER BY created_at ASC`))
+	rows, err := s.db.Query(s.q(`SELECT ` + userColumns + ` FROM users WHERE kind = 'human' ORDER BY created_at ASC`))
 	if err != nil {
 		return nil, fmt.Errorf("list users: %w", err)
 	}
@@ -410,7 +419,8 @@ func (s *Store) SearchUsers(params AdminUserSearchParams) (*AdminUserSearchResul
 		params.Offset = 0
 	}
 
-	var where []string
+	// The admin user list is people only (TASK-3392).
+	where := []string{"u.kind = 'human'"}
 	var args []interface{}
 
 	if params.Query != "" {
@@ -514,7 +524,7 @@ func (s *Store) SearchUsers(params AdminUserSearchParams) (*AdminUserSearchResul
 			&entry.Plan, &entry.PlanExpiresAt, &entry.PlanSource, &entry.StripeCustomerID, &entry.PlanOverrides, &entry.OAuthProviders,
 			&entry.PasswordSet,
 			&disabledAt, &emailVerifiedAt, &lastActiveAt, &lastWriteAt, &createdAt, &updatedAt,
-			&entry.CredentialEpoch,
+			&entry.CredentialEpoch, &entry.Kind,
 			&workspaceCount, &storageBytes,
 		); err != nil {
 			return nil, fmt.Errorf("search users scan: %w", err)
@@ -600,7 +610,9 @@ func prefixColumns(cols, prefix string) string {
 // UserCount returns the total number of registered users.
 func (s *Store) UserCount() (int, error) {
 	var count int
-	err := s.db.QueryRow(s.q("SELECT COUNT(*) FROM users")).Scan(&count)
+	// People only (TASK-3392): an installed app's bot is not a user of the
+	// instance. All 19 callers are census rows on TASK-3392.
+	err := s.db.QueryRow(s.q("SELECT COUNT(*) FROM users WHERE kind = 'human'")).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("count users: %w", err)
 	}
@@ -649,6 +661,7 @@ func (s *Store) CountBillingAggregates(since time.Time) (*BillingAggregates, err
 	now := time.Now()
 	rows, err := s.db.Query(s.q(`SELECT COALESCE(plan, ''), COALESCE(plan_expires_at, ''), COUNT(*)
 		FROM users
+		WHERE kind = 'human'
 		GROUP BY COALESCE(plan, ''), COALESCE(plan_expires_at, '')`))
 	if err != nil {
 		return nil, fmt.Errorf("count users by plan: %w", err)
@@ -668,7 +681,7 @@ func (s *Store) CountBillingAggregates(since time.Time) (*BillingAggregates, err
 
 	cutoff := since.UTC().Format(time.RFC3339)
 	proRows, err := s.db.Query(
-		s.q(`SELECT COALESCE(plan_expires_at, ''), COUNT(*) FROM users WHERE plan = 'pro' AND created_at > ?
+		s.q(`SELECT COALESCE(plan_expires_at, ''), COUNT(*) FROM users WHERE plan = 'pro' AND kind = 'human' AND created_at > ?
 			GROUP BY COALESCE(plan_expires_at, '')`),
 		cutoff,
 	)
@@ -697,6 +710,9 @@ func (s *Store) CountBillingAggregates(since time.Time) (*BillingAggregates, err
 // OAuth users can later set a password via the password reset flow if they want.
 func (s *Store) CreateOAuthUser(email, name, avatarURL string) (*models.User, error) {
 	// Generate a random 64-byte password the user will never use
+	if models.IsReservedAppEmail(email) {
+		return nil, ErrReservedAppEmail
+	}
 	randomPwd := make([]byte, 64)
 	if _, err := rand.Read(randomPwd); err != nil {
 		return nil, fmt.Errorf("generate random password: %w", err)
@@ -940,12 +956,13 @@ func (s *Store) DisableUser(userID string) error {
 // to upgrade from. ConsumeEmailVerification does exactly that. TestEveryCredentialInsertRequires
 // AnActiveUser holds every insert into a credential table to calling it.
 func (s *Store) requireActiveUserTx(tx *sql.Tx, userID string) error {
-	q := `SELECT CASE WHEN disabled_at IS NULL THEN 0 ELSE 1 END FROM users WHERE id = ?`
+	q := `SELECT CASE WHEN disabled_at IS NULL THEN 0 ELSE 1 END, kind FROM users WHERE id = ?`
 	if s.dialect.Driver() == DriverPostgres {
 		q += ` FOR SHARE`
 	}
 	var disabled int
-	switch err := tx.QueryRow(s.q(q), userID).Scan(&disabled); {
+	var kind string
+	switch err := tx.QueryRow(s.q(q), userID).Scan(&disabled, &kind); {
 	case errors.Is(err, sql.ErrNoRows):
 		// Gone, which callers may also want to tell apart (an account
 		// deletion that won the race), so it matches both.
@@ -954,6 +971,10 @@ func (s *Store) requireActiveUserTx(tx *sql.Tx, userID string) error {
 		return fmt.Errorf("read user: %w", err)
 	case disabled == 1:
 		return ErrUserDisabled
+	case kind == models.UserKindApp:
+		// No person's credential is ever minted for a bot (TASK-3392). It
+		// matches ErrUserDisabled too, so every caller already refuses it.
+		return fmt.Errorf("%w: %w", ErrUserDisabled, ErrAppPrincipal)
 	}
 	return nil
 }
@@ -1018,13 +1039,20 @@ func (s *Store) SetUserRole(userID, role string) error {
 	var result sql.Result
 	var err error
 
+	// A bot is never an admin (TASK-3392).
+	if role == "admin" {
+		if err := s.refuseAppPrincipalQ(s.db, userID); err != nil {
+			return err
+		}
+	}
+
 	if role == "member" {
 		// Atomic guard: only demote if another admin remains.
 		result, err = s.db.Exec(s.q(`
 			UPDATE users SET role = ?, updated_at = ?
 			WHERE id = ? AND (
 				role != 'admin'
-				OR (SELECT COUNT(*) FROM users WHERE role = 'admin' AND id != ?) > 0
+				OR (SELECT COUNT(*) FROM users WHERE role = 'admin' AND kind = 'human' AND id != ?) > 0
 			)
 		`), role, now(), userID, userID)
 	} else {
@@ -1311,6 +1339,31 @@ func (s *Store) deleteAccountAtomicOnce(userID string, issuedGrantWorkspaces *[]
 		return fmt.Errorf("delete account: delete tabs of owned workspaces: %w", err)
 	}
 
+	// 1b. The bots of installs in those workspaces go with them, with every
+	// credential and reference they hold (lead ruling on TASK-3392: no
+	// orphan principals). A bot is a member of its install's workspace only.
+	// Deleting a bot locks its users row; nothing a person does locks one
+	// (a bot holds no session), and account deletions do not overlap (the
+	// advisory lock above), so this adds no lock-order hazard.
+	if err := s.purgeAppPrincipalsOfOwnedWorkspacesTx(tx, userID); err != nil {
+		return fmt.Errorf("delete account: %w", err)
+	}
+
+	if err := s.eraseUserTx(tx, userID); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("delete account: commit: %w", err)
+	}
+	return nil
+}
+
+// eraseUserTx removes one account and every reference to it, in the caller's
+// transaction: the de-identify, outbox scrub, delete and final delete steps of
+// account deletion. Account deletion runs it for the account and for each bot
+// it purges, so a purged bot leaves exactly what a deleted person leaves.
+func (s *Store) eraseUserTx(tx *sql.Tx, userID string) error {
 	// exec runs one cleanup statement keyed on userID, wrapping the error with
 	// context. Each statement clears a reference to the user so the final
 	// DELETE FROM users can't trip a foreign-key constraint.
@@ -1376,9 +1429,6 @@ func (s *Store) deleteAccountAtomicOnce(userID string, issuedGrantWorkspaces *[]
 		return &finalUserDeleteError{err: err}
 	}
 
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("delete account: commit: %w", err)
-	}
 	return nil
 }
 
@@ -1703,4 +1753,46 @@ func (s *Store) ConsumeRecoveryCode(userID, code string) (bool, error) {
 		return false, nil
 	}
 	return true, tx.Commit()
+}
+
+// appPrincipalPasswordHash is every bot principal's password_hash. It is not a
+// bcrypt string, so bcrypt refuses to compare against it and no password can
+// ever match. The kind gate is what refuses a bot at every sign-in door; this
+// is the second lock, never the first.
+const appPrincipalPasswordHash = "!app-principal:no-password"
+
+// CreateAppUserTx creates the bot principal an installed app acts as when it
+// acts as itself (SPEC-6 §3, TASK-3392). It is the only path that writes
+// kind = 'app': CreateUser and CreateOAuthUser refuse the reserved domain.
+// It takes the install transaction, which creates the bot, its membership and
+// the install client together. The bot has no password (password_set false),
+// no verified email, and an address no person can hold:
+// app+<install-id>@apps.pad.invalid.
+func (s *Store) CreateAppUserTx(tx *sql.Tx, installID, displayName string) (*models.User, error) {
+	installID = strings.TrimSpace(installID)
+	if installID == "" {
+		return nil, errors.New("create app user: install id is required")
+	}
+	name := strings.TrimSpace(displayName)
+	if name == "" {
+		return nil, errors.New("create app user: display name is required")
+	}
+	email := "app+" + strings.ToLower(installID) + "@" + models.AppPrincipalEmailDomain
+	id := newID()
+	base := "app-" + strings.ToLower(installID)
+	if len(base) > 16 {
+		base = base[:16]
+	}
+	username, err := s.uniqueUsernameTx(tx, base, id)
+	if err != nil {
+		return nil, fmt.Errorf("create app user: %w", err)
+	}
+	ts := now()
+	if _, err := tx.Exec(s.q(`
+		INSERT INTO users (id, email, username, name, password_hash, role, password_set, kind, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, 'member', ?, 'app', ?, ?)
+	`), id, email, username, name, appPrincipalPasswordHash, false, ts, ts); err != nil {
+		return nil, fmt.Errorf("create app user: insert: %w", err)
+	}
+	return s.GetUserQ(tx, id)
 }

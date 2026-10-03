@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/PerpetualSoftware/pad/internal/models"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -281,13 +282,13 @@ func unusablePasswordHash() ([]byte, error) {
 // becomes claimantName, or the address's local part when that is empty; the
 // username is generated from it and kept unique.
 func (s *Store) claimAccountTx(tx *sql.Tx, userID string, unusable []byte, ts, claimantName string, spend func(*sql.Tx) error) (*AccountClaim, error) {
-	lockQ := `SELECT COALESCE(email_verified_at, ''), CASE WHEN disabled_at IS NULL THEN 0 ELSE 1 END, COALESCE(stripe_customer_id, ''), email FROM users WHERE id = ?`
+	lockQ := `SELECT COALESCE(email_verified_at, ''), CASE WHEN disabled_at IS NULL THEN 0 ELSE 1 END, COALESCE(stripe_customer_id, ''), email, kind FROM users WHERE id = ?`
 	if s.dialect.Driver() == DriverPostgres {
 		lockQ += ` FOR NO KEY UPDATE`
 	}
-	var verifiedAt, customer, email string
+	var verifiedAt, customer, email, kind string
 	var disabled int
-	err := tx.QueryRow(s.q(lockQ), userID).Scan(&verifiedAt, &disabled, &customer, &email)
+	err := tx.QueryRow(s.q(lockQ), userID).Scan(&verifiedAt, &disabled, &customer, &email, &kind)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrClaimNotEligible
 	}
@@ -302,7 +303,10 @@ func (s *Store) claimAccountTx(tx *sql.Tx, userID string, unusable []byte, ts, c
 			return nil, err
 		}
 	}
-	if verifiedAt != "" || disabled == 1 {
+	// A bot's address is never verified, so without the kind it would be
+	// exactly the account a claim takes (TASK-3392). Same answer as any
+	// other ineligible account.
+	if verifiedAt != "" || disabled == 1 || kind == models.UserKindApp {
 		return nil, ErrClaimNotEligible
 	}
 	if customer != "" {

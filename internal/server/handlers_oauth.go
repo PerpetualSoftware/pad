@@ -701,8 +701,8 @@ func (s *Server) handleOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
 	user := currentUser(r)
 	// A disabled account's session is no sign-in here (BUG-3349): these
 	// routes sit outside RequireAuth.
-	if user != nil && user.IsDisabled() {
-		user = nil
+	if user != nil && (user.IsDisabled() || user.IsApp()) {
+		user = nil // a bot is no signed-in person either (TASK-3392)
 	}
 	if user == nil {
 		// 302 → /login?redirect=/oauth/authorize?<original-query>.
@@ -797,8 +797,8 @@ func (s *Server) handleOAuthAuthorizeDecide(w http.ResponseWriter, r *http.Reque
 	}
 
 	user := currentUser(r)
-	if user != nil && user.IsDisabled() {
-		user = nil // as above (BUG-3349)
+	if user != nil && (user.IsDisabled() || user.IsApp()) {
+		user = nil // as above (BUG-3349, TASK-3392)
 	}
 	if user == nil {
 		// Session expired between consent render + decision POST.
@@ -1210,7 +1210,7 @@ func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 	// otherwise exchange for fresh ones, and work again after a re-enable.
 	if subject := ar.GetSession().GetSubject(); subject != "" {
 		u, uerr := s.store.GetUser(subject)
-		if uerr != nil || u == nil || u.IsDisabled() {
+		if uerr != nil || u == nil || u.IsDisabled() || u.IsApp() {
 			s.oauthServer.Provider().WriteAccessError(ctx, w, ar, fosite.ErrInvalidGrant.WithHint("The account is not available."))
 			return
 		}
