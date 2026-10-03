@@ -124,6 +124,20 @@ describe('HistoryView', () => {
 		expect(text).toContain('+18 −6 lines');
 	});
 
+	it('marks imported rows, an autosave and a recovery included (BUG-3379)', () => {
+		render([
+			version('imp-auto', 5, { source: 'collab-snapshot', imported: true }),
+			activity('gap', 30),
+			version('imp-rec', 60, { source: 'recovery', created_by: 'system', imported: true }),
+			activity('gap2', 90),
+			version('native', 120)
+		]);
+		const marked = rows().filter((r) => r.querySelector('[title^="Imported with the workspace"]'));
+		expect(marked.map((r) => r.getAttribute('data-row-type'))).toEqual(['autosave', 'event']);
+		// Control: the native version row carries no marker.
+		expect(rows()[rows().length - 1].querySelector('[title^="Imported with the workspace"]')).toBeNull();
+	});
+
 	it('a throttled body edit renders as an edit, not an empty card', () => {
 		render([activity('a', 5, { actor: 'agent', source: 'cli', meta: { agent: 'wren', body_edited: 'true' } })]);
 		expect(rows()).toHaveLength(1);

@@ -110,7 +110,8 @@ export function whoOf(e: TimelineEntry): HistoryWho {
 		const v = e.version;
 		// A recovery row is the server's own write of a crashed tab's edits
 		// (TASK-2198 U4): never a user, never Web, whatever else it carries.
-		if (v.source === 'recovery' || v.created_by === 'system') return { kind: 'system', source: 'recovery' };
+		if (v.source === 'recovery' || v.created_by === 'system')
+			return { kind: 'system', source: 'recovery', imported: v.imported === true ? true : undefined };
 		return {
 			kind: v.created_by === 'agent' ? 'agent' : 'user',
 			user: nonEmpty(v.actor_name),

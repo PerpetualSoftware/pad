@@ -182,6 +182,9 @@
 						<span>
 							{row.count === 1 ? 'Autosaved' : `${row.count} autosaves`} by <bdi>{whoName(row.who)}</bdi> while editing
 						</span>
+						{#if row.who.imported}
+							<span class="imported" title={IMPORTED_TITLE}><Chip size="sm">Imported</Chip></span>
+						{/if}
 						<span class="muted">·</span>
 						<span class="muted" title={new Date(row.at).toLocaleString()}
 							>{row.count > 1 ? `${timeOf(row.firstAt)}–${timeOf(row.at)}` : timeOf(row.at)}</span

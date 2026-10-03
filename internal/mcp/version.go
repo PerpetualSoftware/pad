@@ -1741,13 +1741,15 @@ const CmdhelpVersion = "0.1"
 //     0.64 — BUG-3379. ADDITIVE bump on the v0.53 grounds (bump if and only
 //     if the field reaches a response): a comment and an attachment row a
 //     WORKSPACE IMPORT wrote gain an `omitempty` `imported: true`, on both
-//     transports, wherever the comment / attachment JSON passes through
-//     (`pad_item.action=comments`, `pad_attachment.action=list`, the full
-//     item reads that embed comments). Import keeps the export's author
+//     transports, and so does an imported VERSION row: it reaches
+//     `pad_item.action=comments`, `pad_attachment.action=list` and
+//     `pad_item.action=history` with `full: true`. History SUMMARY rows are
+//     projected to fixed keys and do not carry it, nor does
+//     `pad_attachment.action=show` or the attachment resource, which build
+//     their metadata from HEAD headers. Import keeps the export's author
 //     strings and uploader ids verbatim (BUG-3372 ruling (1)); the flag says
 //     they were not verified here. Absent on every other row, so a consumer
-//     that ignores it is unaffected. History SUMMARY rows are projected to
-//     fixed keys and do not carry it. Rows imported before this shipped are
+//     that ignores it is unaffected. Rows imported before this shipped are
 //     not marked: nothing stored distinguishes them.
 //
 //     0.63 — TASK-3321 (lead-ruled as its own PR). ADDITIVE bump on the

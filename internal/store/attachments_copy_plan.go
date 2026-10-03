@@ -574,6 +574,9 @@ func (p *AttachmentCopyPlan) appendRow(req AttachmentCopyRequest, src models.Att
 	dst.ID = newID()
 	dst.WorkspaceID = req.TargetWorkspaceID
 	dst.UploadedBy = req.UploadedBy
+	// The copier uploads the clone, so it is not an imported row even when
+	// its source was (BUG-3379): its uploader is a local account.
+	dst.Imported = false
 	dst.ItemID = nil
 	if req.TargetItemID != "" {
 		itemID := req.TargetItemID
