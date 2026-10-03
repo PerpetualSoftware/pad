@@ -145,3 +145,24 @@ func TestTASK3351_DeletionClaimAndVerifyDoNotDeadlock(t *testing.T) {
 		t.Fatalf("claim: %v", claimErr)
 	}
 }
+
+// A link claim that waits for the account lock past its token's expiry
+// claims nothing (codex round 3, TASK-3351): expiry is checked when the
+// token is spent, not when it was found.
+func TestTASK3351_LinkClaimChecksExpiryAfterTheWait(t *testing.T) {
+	s := testStore(t)
+	u := createUnverifiedUser(t, s, "late@example.com")
+	expires := time.Now().UTC().Add(time.Second).Format(time.RFC3339)
+	insertVerificationToken(t, s, u.ID, "padver_late", expires, nil)
+	claimAfterUserLockHook = func() {
+		claimAfterUserLockHook = nil
+		time.Sleep(2100 * time.Millisecond) // the token expires while the claim waits
+	}
+	t.Cleanup(func() { claimAfterUserLockHook = nil })
+	if _, err := s.ClaimAccountByVerification("padver_late"); !errors.Is(err, ErrClaimNotEligible) {
+		t.Fatalf("claim after expiry: %v, want ErrClaimNotEligible", err)
+	}
+	if after, _ := s.GetUser(u.ID); after.IsEmailVerified() {
+		t.Error("an expired token claimed the account")
+	}
+}

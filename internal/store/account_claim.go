@@ -85,11 +85,14 @@ func (s *Store) ClaimAccountByVerification(token string) (*AccountClaim, error) 
 		return nil, fmt.Errorf("account claim: find token: %w", err)
 	}
 	spend := func(tx *sql.Tx) error {
+		// The clock is read again: the account lock may have been waited
+		// for, and the token may have expired meanwhile.
+		at := now()
 		var spentBy string
 		err := tx.QueryRow(s.q(`
 			UPDATE email_verification_tokens SET used_at = ?
 			WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?
-			RETURNING user_id`), ts, tokenHash, ts).Scan(&spentBy)
+			RETURNING user_id`), at, tokenHash, at).Scan(&spentBy)
 		if errors.Is(err, sql.ErrNoRows) || (err == nil && spentBy != userID) {
 			return ErrClaimNotEligible
 		}
