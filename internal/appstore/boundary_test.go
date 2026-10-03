@@ -49,6 +49,9 @@ func TestAppstoreBoundaryCatchesEachRule(t *testing.T) {
 		"oncevar":            "func-value",
 		// codex round 3
 		"genericifacebody": "interface-call",
+		// codex round 4
+		"genericconstraint": "interface-call",
+		"genericnested":     "interface-call",
 	}
 	var roots []string
 	for fixture := range fixtures {

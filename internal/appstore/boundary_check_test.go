@@ -258,11 +258,15 @@ func (ix *index) walkRoot(rootPkg *packages.Package) []violation {
 				if irecv := recvOf(inst); irecv != nil {
 					if iface, ok := irecv.Underlying().(*types.Interface); ok {
 						// A generic body is walked once, with its type
-						// parameters unbound: Mutator[T] cannot be checked
-						// against what T will be. Refused rather than
-						// propagated (codex round 3).
-						if !door && mentionsTypeParam(irecv) {
-							report(p, n.Pos(), "interface-call", "%s calls %s on interface %s, whose type arguments are unbound here", u.name, inst.Name(), irecv)
+						// parameters unbound, so no interface it dispatches
+						// through can be checked against what will
+						// implement it: Mutator[T], an anonymous constraint,
+						// a type parameter hidden in a func, alias, slice or
+						// map argument. Codex rounds 3 and 4 found each in
+						// turn; the class is closed by refusing interface
+						// dispatch inside ANY generic body (error excepted).
+						if !door && isGenericUnit(u) && !isErrorIface(irecv) {
+							report(p, n.Pos(), "interface-call", "%s calls %s on interface %s inside a generic body", u.name, inst.Name(), irecv)
 						} else if !door && !isErrorIface(irecv) && implementedByStore(iface, ix.storeImpls) {
 							report(p, n.Pos(), "interface-call", "%s calls %s on interface %s, which an internal/store type implements", u.name, inst.Name(), irecv)
 						}
@@ -390,23 +394,14 @@ func isStaticOrBuiltin(p *packages.Package, fun ast.Expr) bool {
 	return staticCallee(p, fun) != nil
 }
 
-// mentionsTypeParam reports whether t is, or is instantiated with, a type
-// parameter.
-func mentionsTypeParam(t types.Type) bool {
-	switch t := t.(type) {
-	case *types.TypeParam:
-		return true
-	case *types.Pointer:
-		return mentionsTypeParam(t.Elem())
-	case *types.Named:
-		args := t.TypeArgs()
-		for i := 0; i < args.Len(); i++ {
-			if mentionsTypeParam(args.At(i)) {
-				return true
-			}
-		}
+// isGenericUnit: a function or method with type parameters, its own or its
+// receiver's.
+func isGenericUnit(u unit) bool {
+	if u.fn == nil {
+		return false
 	}
-	return false
+	sig, ok := u.fn.Type().(*types.Signature)
+	return ok && (sig.TypeParams().Len() > 0 || sig.RecvTypeParams().Len() > 0)
 }
 
 func isFuncType(t types.Type) bool {
