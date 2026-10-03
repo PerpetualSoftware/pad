@@ -21,7 +21,8 @@ import (
 // wiring (consent screen → INSERT) lands in Phase C; mutation UI in Phase D.
 // The only Phase-A behavioural change is the dual-read gate in
 // internal/server/middleware_mcp_auth.go that consults OAuthConnectionAccess
-// alongside the legacy session.Extra path.
+// alongside the legacy session.Extra path. Since BUG-3337 a connection
+// row, when present, is authoritative and Extra is not consulted.
 //
 // Update lifecycle: created in /authorize/decide (Phase C); deleted when
 // the connection is fully revoked. The per-token `oauth_*_tokens.active`
