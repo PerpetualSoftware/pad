@@ -437,6 +437,55 @@ jobs:
         working-directory: web
         run: npm ci && node scripts/build-materializer.mjs
 
+      # pad's backup and restore shell out to pg_dump and psql, and pg_dump
+      # refuses to dump a server newer than itself. ubuntu-latest ships the
+      # 16 clients against this job's 17 server, so the native round trip
+      # (TestPostgresBackupRestoreConnection) could never run here (TASK-2962).
+      # The PGDG signing key is checked against its published fingerprint
+      # before the repository is trusted, in the spirit of the action pins
+      # above.
+      - name: Install PostgreSQL 17 clients
+        run: |
+          set -euo pipefail
+          key=/usr/share/keyrings/pgdg.asc
+          curl -fsSL -o /tmp/pgdg.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          # signed-by trusts EVERY key in the file, so the file must hold
+          # exactly one primary key and it must be PGDG's.
+          keys=$(gpg --show-keys --with-colons /tmp/pgdg.asc)
+          pubs=$(printf '%s\n' "$keys" | awk -F: '$1 == "pub"' | wc -l)
+          fpr=$(printf '%s\n' "$keys" | awk -F: '$1 == "fpr" { print $10; exit }')
+          if [ "$pubs" != "1" ] || [ "$fpr" != "B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8" ]; then
+            echo "PGDG key check failed: $pubs primary key(s), first fingerprint $fpr" >&2
+            exit 1
+          fi
+          sudo install -m 0644 /tmp/pgdg.asc "$key"
+          echo "deb [signed-by=$key] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list > /dev/null
+          sudo apt-get update -o Dir::Etc::sourcelist=/etc/apt/sources.list.d/pgdg.list -o Dir::Etc::sourceparts=- -o APT::Get::List-Cleanup=0
+          sudo apt-get install -y --no-install-recommends postgresql-client-17
+          echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
+
+      - name: Check the PostgreSQL clients match the server
+        run: |
+          set -euo pipefail
+          for tool in pg_dump psql; do
+            "$tool" --version
+            "$tool" --version | grep -Eq ' 17\.' || { echo "$tool is not version 17" >&2; exit 1; }
+          done
+
+      # Runs the native backup/restore round trip ALONE and verbosely, and
+      # fails unless it PASSED: in the quiet suite below a skip and a pass
+      # look the same, which is how this test went unrun in CI. It creates
+      # and drops its own uuid-named databases, so it needs the superuser the
+      # service starts with, not the suite's shared database.
+      - name: Native backup/restore round trip against PostgreSQL
+        env:
+          PAD_TEST_POSTGRES_TOOLS_URL: "postgres://pad:pad@localhost:5432/pad?sslmode=disable"
+        run: |
+          set -euo pipefail
+          go test ./cmd/pad/ -run '^TestPostgresBackupRestoreConnection$' -count=1 -v | tee /tmp/roundtrip.log
+          grep -q '^--- PASS: TestPostgresBackupRestoreConnection ' /tmp/roundtrip.log || { echo "round trip did not run to a PASS" >&2; exit 1; }
+
       - name: Run tests against PostgreSQL
         env:
           PAD_TEST_POSTGRES_URL: "postgres://pad:pad@localhost:5432/pad?sslmode=disable"
