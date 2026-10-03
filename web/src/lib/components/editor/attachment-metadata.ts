@@ -61,6 +61,12 @@ export interface AttachmentMetadata {
 	 */
 	uploaded_at: string | null;
 	uploaded_by: string | null;
+	/**
+	 * The upload came in with a workspace import (BUG-3379),
+	 * `X-Pad-Attachment-Imported: 1`. Its uploader is the source instance's
+	 * claim, so the server names no one and the caption says "imported".
+	 */
+	uploaded_imported: boolean;
 }
 
 /** The uploader header is percent-encoded UTF-8 (a header reads as Latin-1). */
@@ -240,6 +246,7 @@ export function fetchAttachmentMetadata(
 				status: 'ok' as const,
 				uploaded_at: resp.headers.get('x-pad-attachment-uploaded-at') || null,
 				uploaded_by: decodeUploader(resp.headers.get('x-pad-attachment-uploaded-by')),
+				uploaded_imported: resp.headers.get('x-pad-attachment-imported') === '1',
 				mime,
 				size: Number.isFinite(len) && len >= 0 ? len : 0,
 				derived:

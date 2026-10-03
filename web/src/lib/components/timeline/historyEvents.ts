@@ -32,6 +32,9 @@ export interface HistoryWho {
 	agent?: string;
 	user?: string;
 	source?: string;
+	/** A row a workspace import wrote (BUG-3379): its kind and source came
+	 *  from the export, unverified. */
+	imported?: boolean;
 }
 
 export interface HistoryEvent {
@@ -107,11 +110,13 @@ export function whoOf(e: TimelineEntry): HistoryWho {
 		const v = e.version;
 		// A recovery row is the server's own write of a crashed tab's edits
 		// (TASK-2198 U4): never a user, never Web, whatever else it carries.
-		if (v.source === 'recovery' || v.created_by === 'system') return { kind: 'system', source: 'recovery' };
+		if (v.source === 'recovery' || v.created_by === 'system')
+			return { kind: 'system', source: 'recovery', imported: v.imported === true ? true : undefined };
 		return {
 			kind: v.created_by === 'agent' ? 'agent' : 'user',
 			user: nonEmpty(v.actor_name),
-			source: NO_SOURCE.has(v.source) ? undefined : v.source
+			source: NO_SOURCE.has(v.source) ? undefined : v.source,
+			imported: v.imported === true ? true : undefined
 		};
 	}
 	// Notes and decisions record the actor kind only.
@@ -127,7 +132,15 @@ function agrees(a: string | undefined, b: string | undefined): boolean {
 }
 
 export function sameWriter(a: HistoryWho, b: HistoryWho): boolean {
-	return a.kind === b.kind && agrees(a.agent, b.agent) && agrees(a.user, b.user) && agrees(a.source, b.source);
+	// An imported row never merges with a native one (BUG-3379): one
+	// verified, one not, are different writers whatever they claim.
+	return (
+		a.kind === b.kind &&
+		agrees(a.agent, b.agent) &&
+		agrees(a.user, b.user) &&
+		agrees(a.source, b.source) &&
+		(a.imported ?? false) === (b.imported ?? false)
+	);
 }
 
 function mergeWho(a: HistoryWho, b: HistoryWho): HistoryWho {
@@ -135,7 +148,8 @@ function mergeWho(a: HistoryWho, b: HistoryWho): HistoryWho {
 		kind: a.kind,
 		agent: a.agent ?? b.agent,
 		user: a.user ?? b.user,
-		source: a.source ?? b.source
+		source: a.source ?? b.source,
+		imported: a.imported ?? b.imported
 	};
 }
 

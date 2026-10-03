@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { Comment, Item, Reaction } from '$lib/types';
 	import { relativeTime, renderMarkdown } from '$lib/utils/markdown';
+	import { IMPORTED_TITLE } from '$lib/utils/imported';
 	import type { AttachmentResolver } from '$lib/markdown/attachments';
 	import CommentEditor from '$lib/components/CommentEditor.svelte';
 	import ReactionPicker from './ReactionPicker.svelte';
@@ -210,6 +211,9 @@
 		{#if comment.author}
 			<span class="author-name">{comment.author}</span>
 		{/if}
+		{#if comment.imported}
+			<span class="imported-marker" title={IMPORTED_TITLE}>· imported</span>
+		{/if}
 		<span class="source-badge">{getSourceLabel(comment.source)}</span>
 		<span class="spacer"></span>
 		<span class="timestamp" title={new Date(comment.created_at).toLocaleString()}>{relativeTime(comment.created_at)}</span>
@@ -327,6 +331,9 @@
 						>
 						{#if reply.author}
 							<span class="author-name">{reply.author}</span>
+						{/if}
+						{#if reply.imported}
+							<span class="imported-marker" title={IMPORTED_TITLE}>· imported</span>
 						{/if}
 						<span class="spacer"></span>
 						<span class="timestamp" title={new Date(reply.created_at).toLocaleString()}>{relativeTime(reply.created_at)}</span>
@@ -552,7 +559,8 @@
 		background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
 	}
 
-	.edited-marker {
+	.edited-marker,
+	.imported-marker {
 		font-size: 0.7em;
 		color: var(--text-muted);
 		font-style: italic;

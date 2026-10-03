@@ -967,6 +967,9 @@ func (s *Server) rehydrateAttachment(
 		WorkspaceID: workspaceID,
 		ItemID:      newItemIDPtr,
 		UploadedBy:  uploadedBy,
+		// BUG-3379: uploadedBy is the bundle's claim, kept for fidelity
+		// (BUG-3372 ruling (1)) and never resolved to a local name.
+		Imported:    true,
 		StorageKey:  storageKey,
 		ContentHash: hash,
 		MimeType:    allowed.MIME,

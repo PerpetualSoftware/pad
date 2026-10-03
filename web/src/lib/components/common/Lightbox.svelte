@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { relativeTime } from '$lib/utils/markdown';
+	import { IMPORTED_TITLE } from '$lib/utils/imported';
 	/**
 	 * Full-screen image viewer for attachment thumbnails (IDEA-1660).
 	 * Opened by a host that captures a click on an `img[data-attachment-id]`
@@ -2825,7 +2826,7 @@
 			{#if headerMeta.uploadedAt}
 				{@const at = headerMeta.uploadedAt}
 				<div class="lightbox-meta-uploaded" title={new Date(at).toLocaleString()}>
-					Uploaded {relativeTime(at)}{#if headerMeta.uploadedBy}{' · by '}<bdi>{headerMeta.uploadedBy}</bdi>{/if}
+					Uploaded {relativeTime(at)}{#if headerMeta.uploadImported}{' · '}<span title={IMPORTED_TITLE}>imported</span>{:else if headerMeta.uploadedBy}{' · by '}<bdi>{headerMeta.uploadedBy}</bdi>{/if}
 				</div>
 			{/if}
 			{#if headerTransient}

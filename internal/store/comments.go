@@ -261,7 +261,7 @@ func (s *Store) getCommentQ(q Queryer, id string) (*models.Comment, error) {
 		SELECT c.id, c.item_id, c.workspace_id, c.author, COALESCE(c.user_id, ''), c.body,
 		       c.created_by, c.source, COALESCE(c.activity_id, ''), COALESCE(c.parent_id, ''),
 		       c.created_at, c.updated_at,
-		       CASE WHEN c.deleted_at IS NULL THEN 0 ELSE 1 END,
+		       CASE WHEN c.deleted_at IS NULL THEN 0 ELSE 1 END, c.imported,
 		       i.title, i.slug
 		FROM comments c
 		JOIN items i ON i.id = c.item_id
@@ -269,11 +269,11 @@ func (s *Store) getCommentQ(q Queryer, id string) (*models.Comment, error) {
 
 	var c models.Comment
 	var createdAt, updatedAt string
-	var deleted int
+	var deleted, imported int
 	err := row.Scan(
 		&c.ID, &c.ItemID, &c.WorkspaceID, &c.Author, &c.UserID, &c.Body,
 		&c.CreatedBy, &c.Source, &c.ActivityID, &c.ParentID,
-		&createdAt, &updatedAt, &deleted,
+		&createdAt, &updatedAt, &deleted, &imported,
 		&c.ItemTitle, &c.ItemSlug,
 	)
 	if err == sql.ErrNoRows {
@@ -285,6 +285,7 @@ func (s *Store) getCommentQ(q Queryer, id string) (*models.Comment, error) {
 	c.CreatedAt = parseTime(createdAt)
 	c.UpdatedAt = parseTime(updatedAt)
 	c.Deleted = deleted == 1
+	c.Imported = imported == 1
 	return &c, nil
 }
 
@@ -318,7 +319,7 @@ func (s *Store) getCommentQ(q Queryer, id string) (*models.Comment, error) {
 const commentListCols = `c.id, c.item_id, c.workspace_id, c.author, COALESCE(c.user_id, ''), c.body,
 		       c.created_by, c.source, COALESCE(c.activity_id, ''), COALESCE(c.parent_id, ''),
 		       c.created_at, c.updated_at,
-		       CASE WHEN c.deleted_at IS NULL THEN 0 ELSE 1 END, a.metadata`
+		       CASE WHEN c.deleted_at IS NULL THEN 0 ELSE 1 END, c.imported, a.metadata`
 
 const commentAgentJoin = `LEFT JOIN activities a ON a.id = c.activity_id AND a.document_id = c.item_id`
 
@@ -328,17 +329,18 @@ func scanComments(rows *sql.Rows) ([]models.Comment, error) {
 		var c models.Comment
 		var createdAt, updatedAt string
 		var activityMeta sql.NullString
-		var deleted int
+		var deleted, imported int
 		if err := rows.Scan(
 			&c.ID, &c.ItemID, &c.WorkspaceID, &c.Author, &c.UserID, &c.Body,
 			&c.CreatedBy, &c.Source, &c.ActivityID, &c.ParentID,
-			&createdAt, &updatedAt, &deleted, &activityMeta,
+			&createdAt, &updatedAt, &deleted, &imported, &activityMeta,
 		); err != nil {
 			return nil, fmt.Errorf("scan comment: %w", err)
 		}
 		c.CreatedAt = parseTime(createdAt)
 		c.UpdatedAt = parseTime(updatedAt)
 		c.Deleted = deleted == 1
+		c.Imported = imported == 1
 		if activityMeta.Valid {
 			c.AgentName = models.AgentNameFromMetadata(activityMeta.String)
 		}

@@ -1179,8 +1179,8 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 			return nil, err
 		}
 		_, err := tx.Exec(s.q(`
-			INSERT INTO comments (id, item_id, workspace_id, author, body, created_by, source, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+			INSERT INTO comments (id, item_id, workspace_id, author, body, created_by, source, created_at, updated_at, imported)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`),
 			newID(), newItemID, ws.ID, cm.Author, cm.Body, cm.CreatedBy, cm.Source,
 			cm.CreatedAt, cm.UpdatedAt)
 		if err != nil {
@@ -1375,8 +1375,8 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 		// stable tie-break instead of all defaulting to 0.
 		_, err := tx.Exec(s.q(`
 			INSERT INTO item_versions (id, item_id, content, change_summary, created_by, source, is_diff, created_at, version_seq,
-			                           lines_added, lines_removed, is_create)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(version_seq), 0) + 1 FROM item_versions WHERE item_id = ?), ?, ?, ?)`),
+			                           lines_added, lines_removed, is_create, imported)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(version_seq), 0) + 1 FROM item_versions WHERE item_id = ?), ?, ?, ?, 1)`),
 			newID(), newItemID, ver.Content, ver.ChangeSummary, ver.CreatedBy, ver.Source, s.dialect.BoolToInt(ver.IsDiff),
 			ver.CreatedAt, newItemID, ver.LinesAdded, ver.LinesRemoved, s.dialect.BoolToInt(ver.IsCreate))
 		if err != nil {

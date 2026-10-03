@@ -1514,6 +1514,9 @@ export interface Version {
 	lines_removed?: number;
 	/** Written by item create: the body AS CREATED, not before an edit. */
 	is_create?: boolean;
+	/** Written by a workspace import (BUG-3379): created_by / source came from
+	 *  the export and were not verified here. */
+	imported?: boolean;
 }
 
 /** The change one item version row records (PLAN-2348 U2). */
@@ -1654,6 +1657,9 @@ export interface Comment {
 	edited?: boolean;
 	/** A tombstone (BUG-3252): deleted while it had replies; body is empty and its replies are kept. */
 	deleted?: boolean;
+	/** Written by a workspace import (BUG-3379): the author string came from the
+	 *  export and was never verified against an account here. */
+	imported?: boolean;
 	item_title?: string;
 	item_slug?: string;
 	/**

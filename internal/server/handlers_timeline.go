@@ -660,7 +660,11 @@ func collapseAutosaveBursts(entries []models.TimelineEntry) []models.TimelineEnt
 	runHead := -1 // index in kept of the current run's newest row
 	for _, e := range entries {
 		if isAutosaveVersion(e) {
+			// An imported row never folds into a native one or back (BUG-3379):
+			// both often have no user id, and the run keeps only its head's
+			// provenance.
 			if runHead >= 0 && kept[runHead].Version.UserID == e.Version.UserID &&
+				kept[runHead].Version.Imported == e.Version.Imported &&
 				lastAutosaveAt.Sub(e.CreatedAt) <= autosaveBurstWindow {
 				// Same burst as the autosave we already kept — fold this older one in.
 				lastAutosaveAt = e.CreatedAt

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -847,9 +848,9 @@ func TestCopyItemAcrossWorkspaces_AttachmentInsertFailureRollsBackTheItem(t *tes
 	id := newID()
 	if _, err := f.s.db.Exec(f.s.q(`
 		INSERT INTO attachments (`+attachmentColumns+`)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`), id, f.wsA.ID, nil, "uploader", "", newID(), "image/png", 10, "keyless.png",
-		nil, nil, nil, nil, now(), nil, "caller"); err != nil {
+		nil, nil, nil, nil, now(), nil, "caller", 0); err != nil {
 		t.Fatalf("insert keyless attachment: %v", err)
 	}
 
@@ -1545,5 +1546,36 @@ func TestCopyItemAcrossWorkspaces_NoPoolIOUnderLocks(t *testing.T) {
 		}
 	case <-time.After(30 * time.Second):
 		t.Fatal("copy deadlocked with MaxOpenConns(1): pool I/O while holding the workspace advisory locks (BUG-2409)")
+	}
+}
+
+// BUG-3379: the copier uploads the clone, so a copy of an imported
+// attachment is not itself marked imported.
+func TestCopyItemAcrossWorkspaces_CloneOfImportedAttachmentIsNotImported(t *testing.T) {
+	t.Parallel()
+	f := newCopyFixture(t)
+	orig := f.attachIn(t, f.wsA.ID, "carried.png", 4096)
+	if _, err := f.s.db.Exec(f.s.q(`UPDATE attachments SET imported = 1 WHERE id = ?`), orig.ID); err != nil {
+		t.Fatal(err)
+	}
+	src := createTestItem(t, f.s, f.wsA.ID, f.colA.ID, "Imported image", fmt.Sprintf("![x](pad-attachment:%s)", orig.ID))
+
+	req := f.req()
+	req.SourceItemID = src.ID
+	res := f.copy(t, req)
+
+	m := regexp.MustCompile(`pad-attachment:([0-9a-f-]{36})`).FindStringSubmatch(res.Item.Content)
+	if m == nil || m[1] == orig.ID {
+		t.Fatalf("copied body does not reference a clone: %q", res.Item.Content)
+	}
+	clone, err := f.s.GetAttachment(m[1])
+	if err != nil || clone == nil {
+		t.Fatalf("GetAttachment(clone): %v", err)
+	}
+	if clone.Imported {
+		t.Error("the clone of an imported attachment is marked imported")
+	}
+	if src, _ := f.s.GetAttachment(orig.ID); src == nil || !src.Imported {
+		t.Error("control: the source attachment lost its imported mark")
 	}
 }

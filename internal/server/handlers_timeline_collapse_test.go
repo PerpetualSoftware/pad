@@ -195,3 +195,20 @@ func TestCollapseAutosaveBursts_LoneAutosaveHasNoRun(t *testing.T) {
 		t.Fatalf("a lone autosave carries a run: %+v", out[0].AutosaveRun)
 	}
 }
+
+// BUG-3379: an imported autosave never folds into a native one or back. Both
+// usually carry no user id, so the user check alone let them merge, and the
+// run keeps only its head's provenance.
+func TestCollapseAutosaveBursts_ImportedNeverFoldsWithNative(t *testing.T) {
+	base := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	native := autosaveEntry("native", base)
+	imported := autosaveEntry("imported", base.Add(-time.Minute))
+	imported.Version.Imported = true
+	if got := idsOf(collapseAutosaveBursts([]models.TimelineEntry{native, imported})); !equalIDs(got, []string{"native", "imported"}) {
+		t.Errorf("collapsed to %v, want both kept", got)
+	}
+	// Control: two native autosaves in the same window still fold.
+	if got := idsOf(collapseAutosaveBursts([]models.TimelineEntry{native, autosaveEntry("older", base.Add(-time.Minute))})); !equalIDs(got, []string{"native"}) {
+		t.Errorf("control collapsed to %v, want [native]", got)
+	}
+}
