@@ -2,6 +2,7 @@ package store
 
 import (
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -210,5 +211,79 @@ func TestTASK3351_ClaimResetsTheRegistrantsIdentity(t *testing.T) {
 	after, _ = s.GetUser(v.ID)
 	if after.Name != "mailbox" || after.Username != "mailbox" {
 		t.Errorf("link claim: name=%q username=%q, want mailbox / mailbox", after.Name, after.Username)
+	}
+}
+
+// The regenerated username passes the username rules: a reserved name is
+// skipped, and a suffix never pushes it past the length limit (codex round
+// 5, TASK-3351).
+func TestTASK3351_ClaimUsernameFollowsTheRules(t *testing.T) {
+	s := testStore(t)
+	s.SetUsernameValidator(func(u string) error {
+		if u == "support" {
+			return errors.New("reserved")
+		}
+		if len(u) > maxUsernameLen {
+			return errors.New("too long")
+		}
+		return nil
+	})
+	u, err := s.CreateUser(models.UserCreate{Email: "support@example.com", Name: "x", Username: "squat-1", Password: "password123", Unverified: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ClaimAccountByProvider(u.ID, "google", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := s.GetUser(u.ID)
+	if after.Username != "support-2" {
+		t.Errorf("reserved: username %q, want support-2", after.Username)
+	}
+
+	long := strings.Repeat("a", 45)
+	holder := strings.Repeat("a", maxUsernameLen)
+	if _, err := s.CreateUser(models.UserCreate{Email: "holder@example.com", Name: "h", Username: holder, Password: "password123"}); err != nil {
+		t.Fatal(err)
+	}
+	v, err := s.CreateUser(models.UserCreate{Email: "long@example.com", Name: "x", Username: "squat-2", Password: "password123", Unverified: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ClaimAccountByProvider(v.ID, "google", "", long); err != nil {
+		t.Fatal(err)
+	}
+	after, _ = s.GetUser(v.ID)
+	if len(after.Username) > maxUsernameLen || !strings.HasSuffix(after.Username, "-2") {
+		t.Errorf("long: username %q (%d chars)", after.Username, len(after.Username))
+	}
+}
+
+// Another account taking the chosen username before the claim writes it
+// makes the claim retry with the next one, not fail (codex round 5,
+// TASK-3351). Postgres only: SQLite's BEGIN IMMEDIATE holds every other
+// writer out for the claim's whole transaction, so the race cannot happen
+// there (and the insert below would wait on it).
+func TestTASK3351_ClaimRetriesALostUsername(t *testing.T) {
+	s := testStore(t)
+	if s.dialect.Driver() != DriverPostgres {
+		t.Skip("the race needs concurrent writers; run under make test-pg")
+	}
+	u, err := s.CreateUser(models.UserCreate{Email: "race2@example.com", Name: "x", Username: "squat-3", Password: "password123", Unverified: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimAfterUsernameHook = func(username string) {
+		claimAfterUsernameHook = nil
+		if _, err := s.CreateUser(models.UserCreate{Email: "sniper@example.com", Name: "s", Username: username, Password: "password123"}); err != nil {
+			t.Errorf("taking %q: %v", username, err)
+		}
+	}
+	t.Cleanup(func() { claimAfterUsernameHook = nil })
+	if _, err := s.ClaimAccountByProvider(u.ID, "google", "", "Race Two"); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	after, _ := s.GetUser(u.ID)
+	if after.Username != "race-two-2" || !after.IsEmailVerified() {
+		t.Errorf("after the retry: username %q verified %v", after.Username, after.IsEmailVerified())
 	}
 }

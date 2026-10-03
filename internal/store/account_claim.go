@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"golang.org/x/crypto/bcrypt"
@@ -58,6 +59,10 @@ type AccountClaim struct {
 // The caller then gives the claimant a way to set a password and kicks the
 // account's live connections.
 func (s *Store) ClaimAccountByVerification(token string) (*AccountClaim, error) {
+	return claimWithRetry(func() (*AccountClaim, error) { return s.claimAccountByVerificationOnce(token) })
+}
+
+func (s *Store) claimAccountByVerificationOnce(token string) (*AccountClaim, error) {
 	sum := sha256.Sum256([]byte(token))
 	tokenHash := hex.EncodeToString(sum[:])
 	unusable, err := unusablePasswordHash()
@@ -124,6 +129,12 @@ func (s *Store) ClaimAccountByVerification(token string) (*AccountClaim, error) 
 // name is the provider's display name for the claimant, used to reset the
 // account's name and username; empty falls back to the address.
 func (s *Store) ClaimAccountByProvider(userID, provider, subject, name string) (*AccountClaim, error) {
+	return claimWithRetry(func() (*AccountClaim, error) {
+		return s.claimAccountByProviderOnce(userID, provider, subject, name)
+	})
+}
+
+func (s *Store) claimAccountByProviderOnce(userID, provider, subject, name string) (*AccountClaim, error) {
 	unusable, err := unusablePasswordHash()
 	if err != nil {
 		return nil, err
@@ -158,20 +169,69 @@ func (s *Store) ClaimAccountByProvider(userID, provider, subject, name string) (
 // account lock, which is where a concurrent verification interleaves.
 var claimAfterUserLockHook func()
 
-// uniqueUsernameTx returns base, or base-2, base-3, ..., the first no OTHER
-// account holds, read in the claim's transaction.
+// SetUsernameValidator sets the rule a generated username must pass. The
+// server installs ValidateUsername, which this package cannot import.
+func (s *Store) SetUsernameValidator(v func(string) error) { s.usernameValidator = v }
+
+// maxUsernameLen matches the server's ValidateUsername limit.
+const maxUsernameLen = 39
+
+// usernameCandidate is base for n == 1, else base-n, with base cut short so
+// the result stays within maxUsernameLen.
+func usernameCandidate(base string, n int) string {
+	if n == 1 {
+		return base
+	}
+	sfx := "-" + strconv.Itoa(n)
+	if len(base)+len(sfx) > maxUsernameLen {
+		base = strings.TrimRight(base[:maxUsernameLen-len(sfx)], "-")
+	}
+	return base + sfx
+}
+
+// uniqueUsernameTx returns the first of base, base-2, base-3, ... that
+// passes the username rules (reserved names included) and that no OTHER
+// account holds, read in the claim's transaction. Another account can still
+// take it before the claim commits; the unique index then refuses the write
+// and the claim is retried (claimWithRetry).
 func (s *Store) uniqueUsernameTx(tx *sql.Tx, base, userID string) (string, error) {
-	username := base
-	for suffix := 2; ; suffix++ {
-		var n int
-		if err := tx.QueryRow(s.q(`SELECT COUNT(*) FROM users WHERE username = ? AND id <> ?`), username, userID).Scan(&n); err != nil {
+	for n := 1; n <= 1000; n++ {
+		username := usernameCandidate(base, n)
+		if s.usernameValidator != nil && s.usernameValidator(username) != nil {
+			continue
+		}
+		var taken int
+		if err := tx.QueryRow(s.q(`SELECT COUNT(*) FROM users WHERE username = ? AND id <> ?`), username, userID).Scan(&taken); err != nil {
 			return "", fmt.Errorf("account claim: username: %w", err)
 		}
-		if n == 0 {
+		if taken == 0 {
+			if claimAfterUsernameHook != nil {
+				claimAfterUsernameHook(username)
+			}
 			return username, nil
 		}
-		username = fmt.Sprintf("%s-%d", base, suffix)
 	}
+	return "", fmt.Errorf("account claim: no free username for %q", base)
+}
+
+// claimAfterUsernameHook, when set by a test, runs once the claim has picked
+// a username, which is where another account can take it.
+var claimAfterUsernameHook func(username string)
+
+// claimWithRetry runs one claim attempt again when it lost its username to
+// another account between choosing and writing it. The attempt's
+// transaction rolled back whole (a link claim's token included), so a
+// retry starts clean.
+func claimWithRetry(attempt func() (*AccountClaim, error)) (*AccountClaim, error) {
+	var err error
+	for i := 0; i < 3; i++ {
+		var claim *AccountClaim
+		claim, err = attempt()
+		if err == nil || !isUniqueViolation(err) {
+			return claim, err
+		}
+	}
+	return nil, err
 }
 
 // unusablePasswordHash is a random secret nobody keeps.

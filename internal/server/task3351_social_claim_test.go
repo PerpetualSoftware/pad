@@ -332,3 +332,21 @@ func TestTASK3351_SocialClaimRefusesBilling(t *testing.T) {
 		t.Fatalf("the refused claim changed the account: %d", rr.Code)
 	}
 }
+
+// With the server's real username rules: a provider name that would
+// generate a reserved username never gets it.
+func TestTASK3351_SocialClaimNeverAssignsAReservedUsername(t *testing.T) {
+	f := newSocialSquat(t)
+	rr := postOAuthLogin(t, f.srv, map[string]interface{}{
+		// "console" is reserved and, unlike "admin" here, not already held,
+		// so only the rules keep the claim from assigning it.
+		"provider": "google", "email": "victim@example.com", "email_verified": true, "name": "Console",
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("claim: %d %s", rr.Code, rr.Body.String())
+	}
+	u, _ := f.srv.store.GetUser(f.squatter.ID)
+	if u.Username == "console" || ValidateUsername(u.Username) != nil {
+		t.Errorf("claimed username %q fails the username rules: %v", u.Username, ValidateUsername(u.Username))
+	}
+}

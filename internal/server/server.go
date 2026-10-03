@@ -661,6 +661,12 @@ func (s *Server) Stop() {
 }
 
 func New(s *store.Store) *Server {
+	// An account claim regenerates the claimed account's username
+	// (TASK-3351); it must pass the same rules a chosen one does, reserved
+	// names included.
+	if s != nil {
+		s.SetUsernameValidator(ValidateUsername)
+	}
 	rl := NewRateLimiters()
 	// PAD_DISABLE_RATE_LIMITS turns off ALL HTTP rate limiting when set to a
 	// truthy value. It exists ONLY for the E2E harness (BUG-2089): every
