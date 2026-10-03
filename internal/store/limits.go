@@ -388,7 +388,7 @@ func (s *Store) featureCountOn(q rowQueryer, workspaceID, ownerID, feature strin
 	case "items_per_workspace":
 		err = q.QueryRow(s.q(`SELECT COUNT(*) FROM items WHERE workspace_id = ? AND deleted_at IS NULL`), workspaceID).Scan(&count)
 	case "members_per_workspace":
-		// Bots are a seat only if the Q2 decision says so (TASK-3392).
+		// Bots are not seats (SPEC-6 §11 Q2, TASK-3392).
 		if appPrincipalMemberPolicy.CountsAsSeat {
 			err = q.QueryRow(s.q(`SELECT COUNT(*) FROM workspace_members WHERE workspace_id = ?`), workspaceID).Scan(&count)
 		} else {

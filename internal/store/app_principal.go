@@ -71,12 +71,11 @@ func (s *Store) addAppPrincipalMemberTx(tx *sql.Tx, workspaceID, botUserID, role
 }
 
 // ---------------------------------------------------------------------------
-// DECISION POINT: SPEC-6 §11 Q2, waiting on Dave.
-//
-// Do bots appear in member lists, and do they count as Pad Cloud seats? The
-// defaults are the lead's lean: a separate Apps section, and no seat. Both
-// positions of both switches are pinned by TestTask3392_MemberListAndSeatPolicy,
-// so the answer is a change to the default below and nothing else.
+// SPEC-6 §11 Q2, decided by Dave (DOC-3371, the answers comment): bots are
+// listed in a separate Apps section of the member list, and are not Pad Cloud
+// seats. Both positions of both switches stay pinned by
+// TestTask3392_MemberListAndSeatPolicy, so revisiting the decision is a change
+// to the default below and nothing else.
 //
 // Independent of the answer: a bot is never in the `members` list itself (so
 // it is never an assignee candidate, and never what keeps an unusable
@@ -88,13 +87,13 @@ type AppMemberListMode int
 
 const (
 	// AppMembersSeparate lists bots in their own `apps` array beside
-	// `members` (the lead's lean).
+	// `members` (the decision).
 	AppMembersSeparate AppMemberListMode = iota
 	// AppMembersHidden lists them nowhere.
 	AppMembersHidden
 )
 
-// AppPrincipalMemberPolicy is the Q2 decision.
+// AppPrincipalMemberPolicy holds the Q2 decision.
 type AppPrincipalMemberPolicy struct {
 	MemberList   AppMemberListMode
 	CountsAsSeat bool

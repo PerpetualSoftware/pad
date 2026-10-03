@@ -399,7 +399,8 @@ func TestTask3392_AccountDeletionPurgesTheBotsOfItsWorkspaces(t *testing.T) {
 	}
 }
 
-// SPEC-6 §11 Q2: both switch positions of the one decision point.
+// SPEC-6 §11 Q2 (decided: separate Apps section, no seat): the default is
+// the decision, and both positions of both switches stay pinned.
 func TestTask3392_MemberListAndSeatPolicy(t *testing.T) {
 	saved := appPrincipalMemberPolicy
 	t.Cleanup(func() { appPrincipalMemberPolicy = saved })
@@ -434,7 +435,7 @@ func TestTask3392_MemberListAndSeatPolicy(t *testing.T) {
 	}
 
 	if appPrincipalMemberPolicy.MemberList != AppMembersSeparate || appPrincipalMemberPolicy.CountsAsSeat {
-		t.Fatalf("default policy = %+v, want separate list and no seat (lead's lean)", appPrincipalMemberPolicy)
+		t.Fatalf("default policy = %+v, want separate list and no seat (Dave, SPEC-6 §11 Q2)", appPrincipalMemberPolicy)
 	}
 	apps, err := s.ListWorkspaceAppPrincipals(ws.ID)
 	if err != nil {

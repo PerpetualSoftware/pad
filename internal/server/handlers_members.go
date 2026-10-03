@@ -81,9 +81,9 @@ func (s *Server) handleListMembers(w http.ResponseWriter, r *http.Request) {
 		"members":     members,
 		"invitations": enrichedInvs,
 	}
-	// Installed apps' bots are never in `members`. Under the SPEC-6 §11 Q2
-	// decision point they are listed in their own `apps` array, or nowhere
-	// (store.appPrincipalMemberPolicy, TASK-3392).
+	// Installed apps' bots are never in `members`; per SPEC-6 §11 Q2 they
+	// are listed in their own `apps` array (store.appPrincipalMemberPolicy,
+	// TASK-3392).
 	if store.AppPrincipalsListed() {
 		apps, err := s.store.ListWorkspaceAppPrincipals(workspaceID)
 		if err != nil {
