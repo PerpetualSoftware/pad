@@ -58,6 +58,12 @@ func validOAuthSubject(subject string) bool {
 // account, and unlinking and relinking the provider then binds the new
 // provider account. A store error that is not a mismatch is a 500.
 func (s *Server) refuseOAuthSubject(w http.ResponseWriter, r *http.Request, userID, provider, email string, err error) {
+	if errors.Is(err, store.ErrOAuthProviderNotLinked) {
+		// Unlinked while this sign-in was in flight.
+		writeError(w, http.StatusForbidden, "oauth_provider_not_linked",
+			provider+" is no longer linked to this account. Sign in another way and link it again from account settings.")
+		return
+	}
 	if !errors.Is(err, store.ErrOAuthSubjectMismatch) {
 		writeInternalError(w, err)
 		return
@@ -304,17 +310,16 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 		}
 		isNewUser = true
 
-		// Auto-link the provider for new OAuth users
-		if err := s.store.AddOAuthProvider(user.ID, input.Provider); err != nil {
-			slog.Error("oauth-login: failed to link provider", "error", err, "user_id", user.ID)
-		}
-		if input.Subject != "" {
-			if err := s.store.BindOAuthIdentity(user.ID, input.Provider, input.Subject); err != nil {
-				// A brand-new account cannot hold a binding, so a mismatch
-				// means this provider account is already bound elsewhere.
+		// Auto-link the provider for new OAuth users, binding the
+		// provider account in the same write (TASK-3351).
+		if err := s.store.LinkOAuthProvider(user.ID, input.Provider, input.Subject); err != nil {
+			if errors.Is(err, store.ErrOAuthSubjectMismatch) {
+				// The precheck above passed, so another sign-in bound this
+				// provider account in between.
 				s.refuseOAuthSubject(w, r, user.ID, input.Provider, input.Email, err)
 				return
 			}
+			slog.Error("oauth-login: failed to link provider", "error", err, "user_id", user.ID)
 		}
 
 		slog.Info("oauth-login: created new user", "provider", input.Provider, "email", input.Email, "user_id", user.ID)
@@ -331,10 +336,14 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 		// owner claims it, which resets every credential the registrant
 		// held, as the verification-link claim does (BUG-3382).
 		if !user.HasOAuthProvider(input.Provider) && !user.IsEmailVerified() && providerVouchesForClaim(input.Provider, input.EmailPrimary) {
-			c, err := s.store.ClaimAccountByProvider(user.ID)
+			c, err := s.store.ClaimAccountByProvider(user.ID, input.Provider, input.Subject)
 			switch {
 			case err == nil:
 				claim = c
+			case errors.Is(err, store.ErrOAuthSubjectMismatch):
+				// Rolled back: the account is unchanged.
+				s.refuseOAuthSubject(w, r, user.ID, input.Provider, input.Email, err)
+				return
 			case errors.Is(err, store.ErrClaimNeedsSupport):
 				writeError(w, http.StatusConflict, "account_claim_needs_support",
 					"This account has billing attached, so it can't be claimed automatically. Contact support@getpad.dev and we'll sort it out.")
@@ -348,10 +357,6 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 		}
 		if claim != nil {
 			s.invalidateUserAccess(user.ID)
-			if err := s.store.AddOAuthProvider(user.ID, input.Provider); err != nil {
-				writeInternalError(w, err)
-				return
-			}
 			claimed, err := s.store.GetUser(user.ID)
 			if err != nil || claimed == nil {
 				writeInternalError(w, fmt.Errorf("oauth-login: re-read claimed account: %v", err))
@@ -748,7 +753,7 @@ func (s *Server) handleOAuthLink(w http.ResponseWriter, r *http.Request) {
 	// 5. Check if already linked
 	if user.HasOAuthProvider(input.Provider) {
 		if input.Subject != "" {
-			if err := s.store.BindOAuthIdentity(user.ID, input.Provider, input.Subject); err != nil {
+			if err := s.store.LinkOAuthProvider(user.ID, input.Provider, input.Subject); err != nil {
 				s.refuseOAuthSubject(w, r, user.ID, input.Provider, input.Email, err)
 				return
 			}
@@ -761,16 +766,10 @@ func (s *Server) handleOAuthLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 6. Bind the provider account first, so a subject already bound to
-	// another pad account links nothing; then link the provider.
-	if input.Subject != "" {
-		if err := s.store.BindOAuthIdentity(user.ID, input.Provider, input.Subject); err != nil {
-			s.refuseOAuthSubject(w, r, user.ID, input.Provider, input.Email, err)
-			return
-		}
-	}
-	if err := s.store.AddOAuthProvider(user.ID, input.Provider); err != nil {
-		writeInternalError(w, err)
+	// 6. Link the provider, binding its account in the same write: a
+	// subject already bound to another pad account links nothing.
+	if err := s.store.LinkOAuthProvider(user.ID, input.Provider, input.Subject); err != nil {
+		s.refuseOAuthSubject(w, r, user.ID, input.Provider, input.Email, err)
 		return
 	}
 

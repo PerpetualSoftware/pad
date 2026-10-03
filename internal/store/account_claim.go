@@ -95,8 +95,12 @@ func (s *Store) ClaimAccountByVerification(token string) (*AccountClaim, error) 
 // ClaimAccountByProvider is ClaimAccountByVerification for a sign-in
 // provider that vouched for the address (TASK-3351): the provider's verified
 // assertion stands in for the mailed token. The same core, the same rules:
-// only a live, never-verified account with no billing customer.
-func (s *Store) ClaimAccountByProvider(userID string) (*AccountClaim, error) {
+// only a live, never-verified account with no billing customer. The
+// claimant's provider is linked, and its account `subject` bound when given,
+// in the SAME transaction: a subject bound to another account
+// (ErrOAuthSubjectMismatch) rolls the whole claim back, so a refused sign-in
+// changes nothing.
+func (s *Store) ClaimAccountByProvider(userID, provider, subject string) (*AccountClaim, error) {
 	unusable, err := unusablePasswordHash()
 	if err != nil {
 		return nil, err
@@ -106,8 +110,32 @@ func (s *Store) ClaimAccountByProvider(userID string) (*AccountClaim, error) {
 		return nil, fmt.Errorf("account claim: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	// Lock order: the account's verification tokens before the account,
+	// the order ConsumeEmailVerification and the link claim take them, so
+	// the two cannot deadlock on Postgres. SQLite serializes writers.
+	if s.dialect.Driver() == DriverPostgres {
+		rows, err := tx.Query(s.q(`SELECT id FROM email_verification_tokens WHERE user_id = ? FOR UPDATE`), userID)
+		if err != nil {
+			return nil, fmt.Errorf("account claim: lock verification tokens: %w", err)
+		}
+		for rows.Next() {
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("account claim: lock verification tokens: %w", err)
+		}
+	}
 	claim, err := s.claimAccountTx(tx, userID, unusable, now())
 	if err != nil {
+		return nil, err
+	}
+	// The claim cleared every provider; this one is the claimant's.
+	if subject != "" {
+		if err := s.bindOAuthIdentityTx(tx, userID, provider, subject); err != nil {
+			return nil, err
+		}
+	}
+	if err := s.writeUserProvidersTx(tx, userID, []string{provider}); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -115,6 +143,10 @@ func (s *Store) ClaimAccountByProvider(userID string) (*AccountClaim, error) {
 	}
 	return claim, nil
 }
+
+// claimAfterUserLockHook, when set by a test, runs once the claim holds the
+// account lock, which is where a concurrent verification interleaves.
+var claimAfterUserLockHook func()
 
 // unusablePasswordHash is a random secret nobody keeps.
 func unusablePasswordHash() ([]byte, error) {
@@ -145,6 +177,9 @@ func (s *Store) claimAccountTx(tx *sql.Tx, userID string, unusable []byte, ts st
 	}
 	if err != nil {
 		return nil, fmt.Errorf("account claim: lock user: %w", err)
+	}
+	if claimAfterUserLockHook != nil {
+		claimAfterUserLockHook()
 	}
 	if verifiedAt != "" || disabled == 1 {
 		return nil, ErrClaimNotEligible
