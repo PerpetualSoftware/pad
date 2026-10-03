@@ -38,6 +38,21 @@ func writeAccountDisabledIf(w http.ResponseWriter, err error) bool {
 // (CreateSessionIssuedAt).
 const accountDeleteReauthWindow = 10 * time.Minute
 
+// cookieKindAccepted reports whether a session may be used as a browser
+// cookie: only a web session (BUG-3350). A CLI session presented as a cookie
+// is not a credential, so it cannot pick up the cookie-only platform-admin
+// bypass a bearer is denied (BUG-1616).
+func cookieKindAccepted(info *store.SessionInfo) bool {
+	return info != nil && info.Kind != store.SessionKindCLI
+}
+
+// isCLIClient reports whether the request marked itself as the pad CLI
+// (X-Pad-Client: cli), whose sign-ins mint CLI sessions (BUG-3350). The
+// marker can only narrow what a session may do, so it needs no proof.
+func isCLIClient(r *http.Request) bool {
+	return r.Header.Get("X-Pad-Client") == "cli"
+}
+
 // requestSessionInfo is the session the request was authenticated with, or
 // nil. It follows the credential the middleware recorded (ctxAuthKind) rather
 // than re-reading the wire, the way credentialLiveness does: a bearer that did
@@ -46,7 +61,7 @@ const accountDeleteReauthWindow = 10 * time.Minute
 // middleware authenticated (handlers that fall back to validateSessionCookie)
 // is read from the cookie.
 func (s *Server) requestSessionInfo(r *http.Request) *store.SessionInfo {
-	token := ""
+	token, fromCookie := "", false
 	switch authKind(r) {
 	case authKindAPIToken:
 		return nil
@@ -55,7 +70,7 @@ func (s *Server) requestSessionInfo(r *http.Request) *store.SessionInfo {
 	default:
 		for _, name := range []string{sessionCookieName(s.secureCookies), "pad_session"} {
 			if c, err := r.Cookie(name); err == nil && c.Value != "" {
-				token = c.Value
+				token, fromCookie = c.Value, true
 				break
 			}
 		}
@@ -65,6 +80,9 @@ func (s *Server) requestSessionInfo(r *http.Request) *store.SessionInfo {
 	}
 	info, err := s.store.ValidateSession(token)
 	if err != nil || info == nil || info.User == nil {
+		return nil
+	}
+	if fromCookie && !cookieKindAccepted(info) {
 		return nil
 	}
 	return info

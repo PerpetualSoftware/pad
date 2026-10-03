@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"mime"
 	"net"
 	"net/http"
+	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -281,7 +284,7 @@ func (s *Server) validateSessionCookie(r *http.Request) *models.User {
 		}
 	}
 	session, _ := s.store.ValidateSession(cookie.Value)
-	if session == nil || session.User == nil {
+	if session == nil || session.User == nil || !cookieKindAccepted(session) {
 		return nil
 	}
 	// Session binding: a User-Agent change is logged for visibility but not
@@ -340,7 +343,12 @@ func (s *Server) rotateSessionsAfterCredentialChange(w http.ResponseWriter, r *h
 			"Credentials updated but failed to refresh session. Please sign in again.")
 		return "", false
 	}
-	token, err := s.store.CreateSessionIssuedAt(user.ID, "web", clientIP(r), r.UserAgent(), webSessionTTL, info.CreatedAt)
+	// The replacement keeps the replaced session's kind (BUG-3350).
+	device := "web"
+	if info.Kind == store.SessionKindCLI {
+		device = "cli"
+	}
+	token, err := s.store.CreateSessionIssuedAt(user.ID, device, clientIP(r), r.UserAgent(), webSessionTTL, info.CreatedAt)
 	if errors.Is(err, store.ErrUserDisabled) {
 		writeError(w, http.StatusForbidden, "account_disabled", "Your account has been disabled. Contact an administrator.")
 		return "", false
@@ -349,6 +357,9 @@ func (s *Server) rotateSessionsAfterCredentialChange(w http.ResponseWriter, r *h
 		writeError(w, http.StatusInternalServerError, "internal_error",
 			"Credentials updated but failed to refresh session. Please sign in again.")
 		return "", false
+	}
+	if device == "cli" {
+		return token, true // a bearer; no cookie (BUG-3350)
 	}
 
 	http.SetCookie(w, &http.Cookie{
@@ -365,10 +376,19 @@ func (s *Server) rotateSessionsAfterCredentialChange(w http.ResponseWriter, r *h
 }
 
 func (s *Server) createAuthSession(w http.ResponseWriter, r *http.Request, user *models.User, ttl time.Duration) (string, error) {
-	token, err := s.store.CreateSession(user.ID, "web", clientIP(r), r.UserAgent(), ttl)
+	// The CLI's sign-in mints a CLI session and no cookie (BUG-3350): its
+	// token travels as a bearer, and as a cookie it would be refused anyway.
+	device := "web"
+	if isCLIClient(r) {
+		device = "cli"
+	}
+	token, err := s.store.CreateSession(user.ID, device, clientIP(r), r.UserAgent(), ttl)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to create session")
 		return "", err
+	}
+	if device == "cli" {
+		return token, nil
 	}
 
 	http.SetCookie(w, &http.Cookie{
@@ -940,7 +960,111 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleLogin validates email/password and creates a session.
+// refuseCrossSiteSignIn guards the sign-in doors CSRF exempts (BUG-3350).
+// Without it, a cross-site text/plain form could post a JSON-shaped body and
+// sign the victim's browser into the ATTACKER's account (login CSRF). A
+// sign-in must be application/json, which a cross-site form cannot send
+// without a CORS preflight, and when the browser names an Origin it must be
+// this server or an allowed CORS origin. Headless clients (curl, the CLI)
+// send no Origin and keep working. Reports whether it refused.
+func (s *Server) refuseCrossSiteSignIn(w http.ResponseWriter, r *http.Request) bool {
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		writeError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "Sign-in requires a JSON request body")
+		return true
+	}
+	if origin := r.Header.Get("Origin"); origin != "" && !s.signInOriginAllowed(origin, r) {
+		writeError(w, http.StatusForbidden, "forbidden", "Cross-site sign-in is not allowed")
+		return true
+	}
+	return false
+}
+
+// signInOriginAllowed accepts this server's own origin (the request's own
+// scheme and Host, or the configured base URL) and the configured CORS
+// origins, including the localhost defaults the dev server relies on.
+// Everything is compared as parsed, lower-cased components (scheme, host
+// name, effective port), never as string prefixes. An origin carrying
+// userinfo, a path, a query or a fragment is not a browser's serialized
+// Origin and is refused. A pattern ending ":*" allows any port, as
+// parseCORSOrigins writes them, matching go-chi/cors.
+func (s *Server) signInOriginAllowed(origin string, r *http.Request) bool {
+	o, ok := parseOriginParts(origin)
+	if !ok {
+		return false
+	}
+	reqScheme := cliAuthScheme(r, s.trustedProxyCIDRs)
+	if self, ok := parseOriginParts(reqScheme + "://" + r.Host); ok && o.same(self) {
+		return true
+	}
+	// TLS terminated upstream with no trusted proxy configured: the request
+	// reads as http, but the browser's page is https on the same host. An
+	// https Origin for an http request is never a downgrade; the reverse
+	// (an http page posting to an https server) stays refused.
+	if reqScheme == "http" && o.scheme == "https" && !strings.Contains(r.Host, ":") {
+		if self, ok := parseOriginParts("https://" + r.Host); ok && o.same(self) {
+			return true
+		}
+	}
+	if s.baseURL != "" {
+		if base, ok := parseOriginParts(s.baseURL); ok && o.same(base) {
+			return true
+		}
+	}
+	for _, allowed := range parseCORSOrigins(s.corsOrigins) {
+		pattern := strings.TrimSpace(allowed)
+		anyPort := strings.HasSuffix(pattern, ":*")
+		p, ok := parseOriginParts(strings.TrimSuffix(pattern, ":*"))
+		if !ok {
+			continue
+		}
+		if o.scheme == p.scheme && o.host == p.host && (anyPort || o.port == p.port) {
+			return true
+		}
+	}
+	return false
+}
+
+type originParts struct{ scheme, host, port string }
+
+func (a originParts) same(b originParts) bool { return a == b }
+
+// parseOriginParts splits a serialized origin into lower-cased scheme, host
+// name and effective port (the scheme's default when none is written).
+func parseOriginParts(raw string) (originParts, bool) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.User != nil || u.Host == "" || u.Opaque != "" ||
+		(u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+		return originParts{}, false
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return originParts{}, false
+	}
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	// The forms a browser serializes: an IP literal in canonical form
+	// ([0:0:0:0:0:0:0:1] is [::1]) and a port without leading zeros.
+	if ip := net.ParseIP(host); ip != nil {
+		host = ip.String()
+	}
+	port := u.Port()
+	if port != "" {
+		n, err := strconv.Atoi(port)
+		if err != nil || n < 0 || n > 65535 {
+			return originParts{}, false
+		}
+		port = strconv.Itoa(n)
+	}
+	if port == "" {
+		port = map[string]string{"http": "80", "https": "443"}[scheme]
+	}
+	return originParts{scheme: scheme, host: host, port: port}, host != ""
+}
+
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	if s.refuseCrossSiteSignIn(w, r) {
+		return
+	}
 	// If no users exist, no login needed
 	count, err := s.store.UserCount()
 	if err != nil {

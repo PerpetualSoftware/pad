@@ -2232,6 +2232,9 @@ func (c *Client) newRequest(method, path string, body io.Reader) (*http.Request,
 	if c.agentName != "" {
 		req.Header.Set("X-Pad-Agent", c.agentName)
 	}
+	// Marks the CLI's sign-ins so the server issues a CLI session, which is
+	// never accepted as a browser cookie (BUG-3350).
+	req.Header.Set("X-Pad-Client", "cli")
 	return req, nil
 }
 

@@ -222,6 +222,7 @@ schema_migrations.version
 sessions.created_at
 sessions.expires_at
 sessions.id
+sessions.kind
 sessions.token_hash
 sessions.ua_hash
 sessions.user_id

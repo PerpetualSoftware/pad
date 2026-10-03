@@ -238,6 +238,9 @@ func (s *Server) handleTOTPDisable(w http.ResponseWriter, r *http.Request) {
 // code or recovery code. The challenge token is HMAC-signed, IP-bound,
 // and short-lived to prove the user already passed password verification.
 func (s *Server) handleTOTPLoginVerify(w http.ResponseWriter, r *http.Request) {
+	if s.refuseCrossSiteSignIn(w, r) { // BUG-3350, as handleLogin
+		return
+	}
 	var input struct {
 		ChallengeToken string `json:"challenge_token"`
 		Code           string `json:"code"`
