@@ -382,8 +382,10 @@ func (s *Store) LimitConnectionToCurrentWorkspaces(requestID, userID string) (in
 
 // snapshotCurrentWorkspacesSQL inserts, for one connection, a row per
 // live workspace the wildcard reaches for a user today: membership, or a
-// collection or item grant. Args: request_id, added_by, then the user id
-// three times. Shared by the limit action and the startup narrowing so
+// LIVE collection or item grant (the filter UserHasGrantsInWorkspace uses:
+// a grant on a soft-deleted item or collection confers nothing, so it must
+// not put its workspace in the list either). Args: request_id, added_by,
+// then the user id three times. Shared by the limit action and the startup narrowing so
 // the two can never snapshot different sets (BUG-3338).
 func (s *Store) snapshotCurrentWorkspacesSQL() string {
 	sel := `
@@ -391,8 +393,13 @@ func (s *Store) snapshotCurrentWorkspacesSQL() string {
           FROM workspaces w
          WHERE w.deleted_at IS NULL
            AND (w.id IN (SELECT workspace_id FROM workspace_members WHERE user_id = ?)
-                OR w.id IN (SELECT workspace_id FROM collection_grants WHERE user_id = ?)
-                OR w.id IN (SELECT workspace_id FROM item_grants WHERE user_id = ?))`
+                OR w.id IN (SELECT cg.workspace_id FROM collection_grants cg
+                              JOIN collections c ON c.id = cg.collection_id
+                             WHERE cg.user_id = ? AND c.deleted_at IS NULL)
+                OR w.id IN (SELECT ig.workspace_id FROM item_grants ig
+                              JOIN items i ON i.id = ig.item_id
+                              JOIN collections c ON c.id = i.collection_id
+                             WHERE ig.user_id = ? AND i.deleted_at IS NULL AND c.deleted_at IS NULL))`
 	if s.dialect.Driver() == DriverPostgres {
 		return `INSERT INTO oauth_connection_workspaces (request_id, workspace_id, added_by)` + sel +
 			` ON CONFLICT (request_id, workspace_id) DO NOTHING`

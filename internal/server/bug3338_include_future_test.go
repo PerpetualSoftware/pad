@@ -154,6 +154,22 @@ func TestBUG3338_LimitToCurrentKeepsGuestWorkspaces(t *testing.T) {
 		t.Fatalf("CreateCollectionGrant: %v", err)
 	}
 	mustSeedWorkspaceForMutation(t, srv, owner.ID, "bug3338-unrelated", "owner")
+	// A grant on deleted content confers nothing, so its workspace stays out.
+	deadWSID, _ := mustSeedWorkspaceForMutation(t, srv, owner.ID, "bug3338-dead-grant", "owner")
+	deadColl := mustCollection(t, srv, deadWSID, "Gone")
+	deadItem := mustItem(t, srv, deadWSID, mustCollection(t, srv, deadWSID, "Tasks").ID, "deleted")
+	if _, err := srv.store.CreateItemGrant(deadWSID, deadItem.ID, user.ID, "view", owner.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.store.CreateCollectionGrant(deadWSID, deadColl.ID, user.ID, "view", owner.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.store.DeleteItem(deadItem.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.store.DeleteCollection(deadColl.ID, ""); err != nil {
+		t.Fatal(err)
+	}
 
 	if rr := doAuthedJSON(srv, "POST", "/api/v1/connected-apps/bug3338-guest/limit-to-current", nil, tok); rr.Code != http.StatusOK {
 		t.Fatalf("limit-to-current: %d %s", rr.Code, rr.Body.String())
@@ -165,7 +181,7 @@ func TestBUG3338_LimitToCurrentKeepsGuestWorkspaces(t *testing.T) {
 	want := []string{mine, itemWS, collWS}
 	sort.Strings(want)
 	if !reflect.DeepEqual(access.WorkspaceSlugs, want) {
-		t.Errorf("limited to %v, want %v (member + both guest workspaces, not the unrelated one)", access.WorkspaceSlugs, want)
+		t.Errorf("limited to %v, want %v (member + both live guest workspaces; not the unrelated one, nor one reached only through grants on deleted content)", access.WorkspaceSlugs, want)
 	}
 }
 
