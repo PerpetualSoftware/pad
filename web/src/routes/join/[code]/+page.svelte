@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { goto } from '$app/navigation';
+	import { goto, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
 	import { api, type InvitationPreview } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
@@ -11,8 +11,14 @@
 	import AuthOAuthButtons from '$lib/components/auth/AuthOAuthButtons.svelte';
 	import { recordAuthMethod, getLastAuthMethod, type AuthMethod } from '$lib/auth/lastMethod';
 	import { validateRedirect } from '$lib/auth/redirect';
+	import { captureInvitationProof, clearInvitationProof } from '$lib/invitations/proof';
 
 	let code = $derived(page.params.code ?? '');
+	// TASK-3352: the mailbox-only proof from the invitation EMAIL's link
+	// (`#proof=…`). Sent with the accept or the signup, it verifies the
+	// address; the code alone never does. Captured on mount, kept for this tab
+	// across a sign-in round trip, and stripped from the address bar.
+	let proof = $state('');
 	// OAuth completes outside the SPA and returns via a full-page navigation to
 	// this same /join/<code> URL, where onMount's session probe sees
 	// `authenticated` and calls acceptInvitation. Thread the code through the
@@ -53,6 +59,11 @@
 	let checkTimeout: ReturnType<typeof setTimeout> | null = null;
 
 	onMount(async () => {
+		proof = captureInvitationProof(code, window.location.hash);
+		if (window.location.hash) {
+			replaceState(window.location.pathname + window.location.search, page.state);
+		}
+
 		// Read the last-used auth method so the OAuth buttons can paint the
 		// "Last used" pill on first render. Fails silent in SSR / private mode.
 		const last = getLastAuthMethod();
@@ -149,7 +160,8 @@
 	async function acceptInvitation() {
 		status = 'accepting';
 		try {
-			const result = await api.members.acceptInvitation(code);
+			const result = await api.members.acceptInvitation(code, proof || undefined);
+			clearInvitationProof(code);
 			await landInJoinedWorkspace(result);
 		} catch (err: unknown) {
 			errorMsg = err instanceof Error ? err.message : 'Failed to accept invitation';
@@ -217,7 +229,15 @@
 				if (password !== confirmPassword) { formError = 'Passwords do not match'; submitting = false; return; }
 				// Pass the invitation code so the backend allows registration
 				// and auto-accepts the invitation in one step.
-				const registered = await api.auth.register(email.trim(), name.trim(), password, username || undefined, code);
+				const registered = await api.auth.register(
+					email.trim(),
+					name.trim(),
+					password,
+					username || undefined,
+					code,
+					proof || undefined
+				);
+				clearInvitationProof(code);
 				// Registration with invitation_code already accepted the invite,
 				// so land directly instead of calling acceptInvitation().
 				await landInJoinedWorkspace(registered.accepted_invitation);

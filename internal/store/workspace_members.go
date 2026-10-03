@@ -913,6 +913,15 @@ func (s *Store) CreateInvitation(workspaceID, email, role, invitedBy string) (*m
 	hash := sha256.Sum256([]byte(code))
 	codeHash := hex.EncodeToString(hash[:])
 
+	// The mailbox-only proof (TASK-3352): a second 128-bit secret that only
+	// the invitation EMAIL carries. Hash stored, plaintext returned once.
+	rawProof := make([]byte, 16)
+	if _, err := rand.Read(rawProof); err != nil {
+		return nil, fmt.Errorf("generate invitation proof: %w", err)
+	}
+	proof := hex.EncodeToString(rawProof)
+	proofHash := invitationProofHash(proof)
+
 	id := newID()
 	ts := now()
 	expiresAt := time.Now().UTC().Add(InvitationTTL).Format(time.RFC3339)
@@ -931,9 +940,9 @@ func (s *Store) CreateInvitation(workspaceID, email, role, invitedBy string) (*m
 		}
 	}
 	if _, err := tx.Exec(s.q(`
-		INSERT INTO workspace_invitations (id, workspace_id, email, role, invited_by, code, code_hash, created_at, expires_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`), id, workspaceID, strings.ToLower(strings.TrimSpace(email)), role, invitedBy, id, codeHash, ts, expiresAt); err != nil {
+		INSERT INTO workspace_invitations (id, workspace_id, email, role, invited_by, code, code_hash, created_at, expires_at, proof_hash)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`), id, workspaceID, strings.ToLower(strings.TrimSpace(email)), role, invitedBy, id, codeHash, ts, expiresAt, proofHash); err != nil {
 		return nil, fmt.Errorf("insert invitation: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -952,7 +961,72 @@ func (s *Store) CreateInvitation(workspaceID, email, role, invitedBy string) (*m
 	}
 	// Return the plaintext code to the caller (not stored in DB)
 	inv.Code = code
+	inv.Proof = proof
 	return inv, nil
+}
+
+func invitationProofHash(proof string) string {
+	h := sha256.Sum256([]byte(proof))
+	return hex.EncodeToString(h[:])
+}
+
+// ConsumeInvitationProof spends an invitation's mailbox-only proof
+// (TASK-3352): if proof is the one minted with invitationID, it is cleared
+// and userID's email is marked verified, in one transaction, so the proof is
+// single-use and the verification happens iff it is spent. It returns false,
+// with nothing changed, for a wrong, empty or already-used proof, for an
+// invitation past its expiry (decided here, inside the transaction, since a
+// slow request can pass the handler's check and cross it), or for a disabled
+// account.
+//
+// The caller MUST have checked that the account's email is the invitation's
+// (invitationEmailMatches) before calling: the proof proves the MAILBOX, the
+// match ties it to this account. Both callers do, handleAcceptInvitation and
+// handleRegister; a new caller owes the same check.
+//
+// The user row is locked first, the order requireActiveUserTx establishes for
+// a write that pairs an account with something else.
+func (s *Store) ConsumeInvitationProof(invitationID, userID, proof string) (bool, error) {
+	if invitationID == "" || userID == "" || proof == "" {
+		return false, nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, fmt.Errorf("consume invitation proof: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	res, err := tx.Exec(s.q(`UPDATE users SET updated_at = updated_at WHERE id = ? AND disabled_at IS NULL`), userID)
+	if err != nil {
+		return false, fmt.Errorf("consume invitation proof: lock user: %w", err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return false, fmt.Errorf("consume invitation proof: lock user: %w", err)
+	} else if n == 0 {
+		return false, nil // gone or disabled
+	}
+
+	res, err = tx.Exec(s.q(`
+		UPDATE workspace_invitations SET proof_hash = ''
+		WHERE id = ? AND proof_hash = ? AND proof_hash <> ''
+		  AND (expires_at IS NULL OR expires_at > ?)`),
+		invitationID, invitationProofHash(proof), time.Now().UTC().Format(time.RFC3339))
+	if err != nil {
+		return false, fmt.Errorf("consume invitation proof: %w", err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return false, fmt.Errorf("consume invitation proof: %w", err)
+	} else if n == 0 {
+		return false, nil
+	}
+
+	if _, err := tx.Exec(s.q(`UPDATE users SET email_verified_at = ?, updated_at = ? WHERE id = ?`), now(), now(), userID); err != nil {
+		return false, fmt.Errorf("consume invitation proof: verify: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("consume invitation proof: commit: %w", err)
+	}
+	return true, nil
 }
 
 // GetInvitation retrieves an invitation by ID.

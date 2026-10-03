@@ -1,0 +1,11 @@
+-- Migration 109: a mailbox-only proof on workspace invitations (TASK-3352).
+--
+-- BUG-3348 stopped an invitation CODE from verifying the invitee's email: the
+-- inviter sees the code (invite response, settings, copy-link), so holding it
+-- proves nothing about the mailbox. The emailed join link now carries a second
+-- secret that only the email contains. Its SHA-256 is stored here; the
+-- plaintext is never stored and never returned by any API. Consuming it (on
+-- accept or register through that link) marks the address verified and clears
+-- the hash, so it is single-use and bound to this invitation. '' = no proof
+-- (invitations created before this, or already consumed).
+ALTER TABLE workspace_invitations ADD COLUMN proof_hash TEXT NOT NULL DEFAULT '';
