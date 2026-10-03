@@ -93,7 +93,7 @@ func TestTask3392_ResetAndVerificationDoorsAnswerABotAsUnknown(t *testing.T) {
 	// the two gates apart: the log can. A door that refuses first never
 	// attempts the mint.
 	sender, _ := newMailSink(t)
-	srv.baseURL = "https://pad.test"
+	srv.baseURL = "https://app.getpad.dev"
 	srv.SetEmailSender(sender)
 	logs := captureLogs(t)
 	bot := task3392Bot(t, srv, "inst-reset")
