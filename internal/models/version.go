@@ -26,6 +26,9 @@ type Version struct {
 	// IsCreate marks a row written by item create, which holds the body AS
 	// CREATED; an update row holds the body BEFORE its edit.
 	IsCreate bool `json:"is_create,omitempty"`
+	// Imported marks a row a workspace import wrote (BUG-3379): its
+	// created_by and source came from the export, unverified here.
+	Imported bool `json:"imported,omitempty"`
 }
 
 // ItemVersionDiff is the change one item version row records (PLAN-2348 U2):

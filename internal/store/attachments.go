@@ -35,7 +35,7 @@ type WorkspaceStorageInfo struct {
 // alignment with migrations/047_attachments.sql + pgmigrations/026_attachments.sql.
 const attachmentColumns = `id, workspace_id, item_id, uploaded_by, storage_key, content_hash,
 	mime_type, size_bytes, filename, width, height, parent_id, variant, created_at, deleted_at,
-	filename_source`
+	filename_source, imported`
 
 // attachmentFilenameSource is the filename_source an insert writes (BUG-2819).
 // An unset value is stored as "unknown" — the honest answer for a row whose
@@ -52,6 +52,14 @@ func attachmentFilenameSource(a *models.Attachment) (string, error) {
 	return a.FilenameSource, nil
 }
 
+// importedFlag is attachments.imported for a row being inserted (BUG-3379).
+func importedFlag(a *models.Attachment) int {
+	if a.Imported {
+		return 1
+	}
+	return 0
+}
+
 // scanAttachment scans a single row into a models.Attachment, handling
 // nullables via *string / *int.
 func scanAttachment(row interface {
@@ -61,12 +69,13 @@ func scanAttachment(row interface {
 	var itemID, parentID, variant, deletedAt *string
 	var width, height *int
 	var createdAt string
+	var imported int
 
 	err := row.Scan(
 		&a.ID, &a.WorkspaceID, &itemID, &a.UploadedBy, &a.StorageKey, &a.ContentHash,
 		&a.MimeType, &a.SizeBytes, &a.Filename, &width, &height,
 		&parentID, &variant, &createdAt, &deletedAt,
-		&a.FilenameSource,
+		&a.FilenameSource, &imported,
 	)
 	if err != nil {
 		return nil, err
@@ -78,6 +87,7 @@ func scanAttachment(row interface {
 	a.Height = height
 	a.CreatedAt = parseTime(createdAt)
 	a.DeletedAt = parseTimePtr(deletedAt)
+	a.Imported = imported == 1
 	return &a, nil
 }
 
@@ -303,11 +313,11 @@ func (s *Store) createAttachmentOn(ex sqlExecer, a *models.Attachment) error {
 	}
 	_, err = ex.Exec(s.q(`
 		INSERT INTO attachments (`+attachmentColumns+`)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`),
 		a.ID, a.WorkspaceID, a.ItemID, a.UploadedBy, a.StorageKey, a.ContentHash,
 		a.MimeType, a.SizeBytes, a.Filename, a.Width, a.Height,
-		a.ParentID, a.Variant, ts, nil, source,
+		a.ParentID, a.Variant, ts, nil, source, importedFlag(a),
 	)
 	if err != nil {
 		return fmt.Errorf("create attachment: %w", err)
@@ -701,7 +711,7 @@ func (s *Store) WorkspaceAttachments(workspaceID string, filters AttachmentListF
 	// the joined items table.
 	const aliasedAttachmentColumns = `a.id, a.workspace_id, a.item_id, a.uploaded_by, a.storage_key, a.content_hash,
 		a.mime_type, a.size_bytes, a.filename, a.width, a.height, a.parent_id, a.variant, a.created_at, a.deleted_at,
-		a.filename_source`
+		a.filename_source, a.imported`
 
 	// Same rationale as the count query above: include soft-deleted
 	// parent items so the row is still visible for users who would
@@ -747,6 +757,7 @@ func (s *Store) WorkspaceAttachments(workspaceID string, filters AttachmentListF
 		var itemID, parentID, variant, deletedAt *string
 		var width, height *int
 		var createdAt string
+		var imported int
 
 		// Item + collection columns from the LEFT JOIN. All nullable.
 		var itemTitle, itemSlug, itemDeletedAt *string
@@ -756,7 +767,7 @@ func (s *Store) WorkspaceAttachments(workspaceID string, filters AttachmentListF
 			&a.ID, &a.WorkspaceID, &itemID, &a.UploadedBy, &a.StorageKey, &a.ContentHash,
 			&a.MimeType, &a.SizeBytes, &a.Filename, &width, &height,
 			&parentID, &variant, &createdAt, &deletedAt,
-			&a.FilenameSource,
+			&a.FilenameSource, &imported,
 			&itemTitle, &itemSlug, &itemDeletedAt,
 			&collSlug, &collName,
 		); err != nil {
@@ -769,6 +780,7 @@ func (s *Store) WorkspaceAttachments(workspaceID string, filters AttachmentListF
 		a.Height = height
 		a.CreatedAt = parseTime(createdAt)
 		a.DeletedAt = parseTimePtr(deletedAt)
+		a.Imported = imported == 1
 
 		row := AttachmentListItem{Attachment: a}
 		if itemTitle != nil {
@@ -1506,10 +1518,10 @@ func (s *Store) CreateAttachmentVariantIfParentLive(a *models.Attachment) (bool,
 	}
 	if _, err := tx.Exec(s.q(`
 		INSERT INTO attachments (`+attachmentColumns+`)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`), a.ID, a.WorkspaceID, a.ItemID, a.UploadedBy, a.StorageKey, a.ContentHash,
 		a.MimeType, a.SizeBytes, a.Filename, a.Width, a.Height, a.ParentID, a.Variant,
-		ts, nil, source); err != nil {
+		ts, nil, source, importedFlag(a)); err != nil {
 		return false, fmt.Errorf("create variant row: %w", err)
 	}
 	if err := tx.Commit(); err != nil {

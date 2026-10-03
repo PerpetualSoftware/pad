@@ -37,6 +37,12 @@ type Attachment struct {
 
 	CreatedAt time.Time  `json:"created_at"`
 	DeletedAt *time.Time `json:"deleted_at,omitempty"`
+
+	// Imported marks a row a workspace bundle import wrote, and any variant
+	// derived from it (BUG-3379). Its UploadedBy is the SOURCE instance's
+	// claim: an id that means nothing here, or one that happens to name a
+	// local account. It is never resolved to a name.
+	Imported bool `json:"imported,omitempty"`
 }
 
 // Attachment variants.

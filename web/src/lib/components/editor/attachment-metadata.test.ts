@@ -50,7 +50,7 @@ describe('fetchAttachmentMetadata — result arms', () => {
 
 		// `derived: 'unknown'` because these fixtures set no
 		// `x-pad-attachment-derived` header — the older-server case (BUG-2964).
-		expect(result).toEqual({ status: 'ok', mime: 'image/png', size: 4096, derived: 'unknown', uploaded_at: null, uploaded_by: null });
+		expect(result).toEqual({ status: 'ok', mime: 'image/png', size: 4096, derived: 'unknown', uploaded_at: null, uploaded_by: null, uploaded_imported: false });
 		// HEAD, not GET — a GET would pull the whole blob across the wire.
 		expect(fetchMock).toHaveBeenCalledWith(url(uuid), {
 			method: 'HEAD',
@@ -70,7 +70,8 @@ describe('fetchAttachmentMetadata — result arms', () => {
 			size: 0,
 			derived: 'unknown',
 			uploaded_at: null,
-			uploaded_by: null
+			uploaded_by: null,
+			uploaded_imported: false
 		});
 	});
 
@@ -141,7 +142,8 @@ describe('fetchAttachmentMetadata — caching is per-arm', () => {
 			size: 7,
 			derived: 'unknown',
 			uploaded_at: null,
-			uploaded_by: null
+			uploaded_by: null,
+			uploaded_imported: false
 		});
 		expect(fetchMock).toHaveBeenCalledTimes(2);
 	});
@@ -220,7 +222,8 @@ describe('fetchAttachmentMetadata — caching is per-arm', () => {
 			size: 3,
 			derived: 'unknown',
 			uploaded_at: null,
-			uploaded_by: null
+			uploaded_by: null,
+			uploaded_imported: false
 		});
 		expect(fetchMock).toHaveBeenCalledTimes(2);
 	});
@@ -243,7 +246,8 @@ describe('revalidateAttachmentMetadata — existence probes ignore the cache', (
 			size: 10,
 			derived: 'unknown',
 			uploaded_at: null,
-			uploaded_by: null
+			uploaded_by: null,
+			uploaded_imported: false
 		});
 
 		// The row is deleted by someone else; the cached `ok` still says live.
@@ -368,7 +372,8 @@ describe('invalidateAttachmentMetadataForWorkspace (BUG-2509)', () => {
 			size: 7,
 			derived: 'unknown',
 			uploaded_at: null,
-			uploaded_by: null
+			uploaded_by: null,
+			uploaded_imported: false
 		});
 		expect(fetchMock).toHaveBeenCalledTimes(2);
 	});
@@ -450,7 +455,7 @@ describe('fetchAttachmentMetadata — derived-variant header (BUG-2964)', () => 
 		const uuid = freshUuid();
 		fetchMock.mockResolvedValue(head(200, { 'content-type': 'image/heic' }));
 		const r = await fetchAttachmentMetadata('ws', uuid, url);
-		expect(r).toMatchObject({ status: 'ok', derived: 'unknown', uploaded_at: null, uploaded_by: null });
+		expect(r).toMatchObject({ status: 'ok', derived: 'unknown', uploaded_at: null, uploaded_by: null, uploaded_imported: false });
 		invalidateAttachmentMetadata('ws', uuid);
 	});
 
@@ -561,6 +566,6 @@ describe('fetchAttachmentMetadata — upload time and uploader (TASK-3319)', () 
 			head(200, { 'content-type': 'image/png', 'content-length': '10', 'x-pad-attachment-uploaded-by': '%E0%A4%A' })
 		);
 		const r = await fetchAttachmentMetadata('ws', freshUuid(), url);
-		expect(r).toMatchObject({ status: 'ok', uploaded_at: null, uploaded_by: null });
+		expect(r).toMatchObject({ status: 'ok', uploaded_at: null, uploaded_by: null, uploaded_imported: false });
 	});
 });

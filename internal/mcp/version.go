@@ -1738,6 +1738,18 @@ const CmdhelpVersion = "0.1"
 //     caller cannot read embeds nothing; a failed fetch stays non-fatal,
 //     as on stdio. Stdio is unchanged.
 //
+//     0.64 — BUG-3379. ADDITIVE bump on the v0.53 grounds (bump if and only
+//     if the field reaches a response): a comment and an attachment row a
+//     WORKSPACE IMPORT wrote gain an `omitempty` `imported: true`, on both
+//     transports, wherever the comment / attachment JSON passes through
+//     (`pad_item.action=comments`, `pad_attachment.action=list`, the full
+//     item reads that embed comments). Import keeps the export's author
+//     strings and uploader ids verbatim (BUG-3372 ruling (1)); the flag says
+//     they were not verified here. Absent on every other row, so a consumer
+//     that ignores it is unaffected. History SUMMARY rows are projected to
+//     fixed keys and do not carry it. Rows imported before this shipped are
+//     not marked: nothing stored distinguishes them.
+//
 //     0.63 — TASK-3321 (lead-ruled as its own PR). ADDITIVE bump on the
 //     v0.53 / v0.28 grounds: every `pad_item.action=history` summary row,
 //     on both transports, gains an `omitempty` `actor_name`, the display
@@ -1754,7 +1766,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.63"
+const ToolSurfaceVersion = "0.64"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

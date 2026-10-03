@@ -5873,7 +5873,7 @@ func (s *Store) ListItemVersionsBeforeTime(itemID string, before time.Time, befo
 // do (PLAN-2348 U2). Every column is qualified, because users also has
 // created_at and id.
 const itemVersionCols = `v.id, v.item_id, v.content, v.change_summary, v.created_by, v.source, v.is_diff, v.created_at,
-	COALESCE(v.user_id, ''), COALESCE(u.name, ''), v.lines_added, v.lines_removed, v.is_create`
+	COALESCE(v.user_id, ''), COALESCE(u.name, ''), v.lines_added, v.lines_removed, v.is_create, v.imported`
 
 const itemVersionFrom = `item_versions v LEFT JOIN users u ON u.id = v.user_id`
 
@@ -5884,12 +5884,14 @@ func scanItemVersions(rows *sql.Rows) ([]models.Version, error) {
 		var createdAt string
 		var isDiff, isCreate bool
 		var added, removed sql.NullInt64
+		var imported int
 		if err := rows.Scan(&v.ID, &v.DocumentID, &v.Content, &v.ChangeSummary, &v.CreatedBy, &v.Source, &isDiff, &createdAt,
-			&v.UserID, &v.ActorName, &added, &removed, &isCreate); err != nil {
+			&v.UserID, &v.ActorName, &added, &removed, &isCreate, &imported); err != nil {
 			return nil, err
 		}
 		v.IsDiff = isDiff
 		v.IsCreate = isCreate
+		v.Imported = imported == 1
 		v.LinesAdded = nullIntPtr(added)
 		v.LinesRemoved = nullIntPtr(removed)
 		v.CreatedAt = parseTime(createdAt)

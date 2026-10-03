@@ -96,6 +96,8 @@ export interface SurfaceMetadata {
 	/** When and by whom the original was uploaded, once a read said (TASK-3319). */
 	readonly uploadedAt: string | null;
 	readonly uploadedBy: string | null;
+	/** The upload came in with a workspace import; its uploader is unverified (BUG-3379). */
+	readonly uploadImported: boolean;
 	/** The view fence — a consumer's own actions must fence against the same identity. */
 	readonly viewFence: Fence<{ ws: string; att: string }>;
 	/** The paint fence — "does the control the user clicked belong to what's on screen?" */
@@ -172,10 +174,11 @@ export function createSurfaceMetadata(
 	// per open reads them.
 	let fetchedUploadedAt = $state<string | null>(null);
 	let fetchedUploadedBy = $state<string | null>(null);
+	let fetchedUploadImported = $state(false);
 	// What each subject's read said, kept for this machine's life, so arrowing
 	// back to an entry restores it and keeps the complete-seed fast path (no
 	// read at all) instead of reading again. Keyed like the fence: `${ws}:${att}`.
-	const uploadedBySubject = new Map<string, { at: string | null; by: string | null }>();
+	const uploadedBySubject = new Map<string, { at: string | null; by: string | null; imported: boolean }>();
 	let loading = $state(false);
 	/** 404 — authoritative. Actions go inert. */
 	let missing = $state(false);
@@ -222,6 +225,7 @@ export function createSurfaceMetadata(
 				const known = req.key === null ? undefined : uploadedBySubject.get(req.key);
 				fetchedUploadedAt = known?.at ?? null;
 				fetchedUploadedBy = known?.by ?? null;
+				fetchedUploadImported = known?.imported ?? false;
 				missing = false;
 				loadFailed = false;
 			}
@@ -309,7 +313,13 @@ export function createSurfaceMetadata(
 				fetchedSize = result.size;
 				fetchedUploadedAt = result.uploaded_at;
 				fetchedUploadedBy = result.uploaded_by;
-				if (req.key !== null) uploadedBySubject.set(req.key, { at: result.uploaded_at, by: result.uploaded_by });
+				fetchedUploadImported = result.uploaded_imported;
+				if (req.key !== null)
+					uploadedBySubject.set(req.key, {
+						at: result.uploaded_at,
+						by: result.uploaded_by,
+						imported: result.uploaded_imported
+					});
 				missing = false;
 				loadFailed = false;
 			} else if (result.status === 'missing') {
@@ -360,6 +370,9 @@ export function createSurfaceMetadata(
 		},
 		get uploadedAt() {
 			return fetchedUploadedAt;
+		},
+		get uploadImported() {
+			return fetchedUploadImported;
 		},
 		get uploadedBy() {
 			return fetchedUploadedBy;

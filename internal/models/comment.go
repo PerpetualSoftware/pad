@@ -27,6 +27,10 @@ type Comment struct {
 	// replies, kept so they keep their parent (BUG-3252). Its body is empty;
 	// author and timestamps are the original ones.
 	Deleted bool `json:"deleted,omitempty"`
+	// Imported marks a comment a workspace import wrote (BUG-3379): its
+	// author string came from the export and was never verified against an
+	// account here. Set only by the import door.
+	Imported bool `json:"imported,omitempty"`
 
 	// Populated by joins (not stored)
 	ItemTitle string `json:"item_title,omitempty"`

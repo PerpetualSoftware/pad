@@ -742,7 +742,7 @@ func (s *Server) handleGetAttachment(w http.ResponseWriter, r *http.Request) {
 	servedVariant := models.AttachmentVariantOriginal
 	// The upload, not the served row: a variant's own created_at is when it
 	// was DERIVED (TASK-3319). Captured before the variant swap below.
-	uploadedAt, uploadedBy := att.CreatedAt, att.UploadedBy
+	uploadedAt, uploadedBy, uploadImported := att.CreatedAt, att.UploadedBy, att.Imported
 	// Which derived variants EXIST, answered only on the no-variant path.
 	// That path is the editor's metadata HEAD (and plain downloads); the hot
 	// `?variant=thumb-md` image path is untouched and pays nothing. Two indexed
@@ -862,7 +862,13 @@ func (s *Server) handleGetAttachment(w http.ResponseWriter, r *http.Request) {
 	if !uploadedAt.IsZero() {
 		w.Header().Set("X-Pad-Attachment-Uploaded-At", uploadedAt.UTC().Format(time.RFC3339))
 	}
-	if uploadedBy != "" {
+	// An imported upload's uploaded_by is the source instance's claim
+	// (BUG-3379): an id that means nothing here, or one that names a local
+	// account the importer chose. It is never resolved; the client is told
+	// the row was imported instead.
+	if uploadImported {
+		w.Header().Set("X-Pad-Attachment-Imported", "1")
+	} else if uploadedBy != "" {
 		if u, uErr := s.store.GetUser(uploadedBy); uErr == nil && u != nil && u.Name != "" {
 			// Percent-encoded UTF-8: a header is read as Latin-1 by browsers,
 			// so a name like "Zoë" would arrive mangled. The client decodes it.

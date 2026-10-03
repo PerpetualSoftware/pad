@@ -266,6 +266,7 @@ func (s *Server) persistThumbnail(
 		WorkspaceID: parent.WorkspaceID,
 		ItemID:      parent.ItemID,
 		UploadedBy:  parent.UploadedBy,
+		Imported:    parent.Imported, // BUG-3379
 		StorageKey:  storageKey,
 		ContentHash: hash,
 		MimeType:    attachments.ThumbnailMime(format),

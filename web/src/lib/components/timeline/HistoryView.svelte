@@ -13,6 +13,7 @@
 	import type { ChangeContext } from '$lib/timeline/changeContext';
 	import { statusColor, priorityColor } from '$lib/utils/fieldColors';
 	import Chip from '$lib/components/common/Chip.svelte';
+	import { IMPORTED_TITLE } from '$lib/utils/imported';
 	import ActivityChangeValue from './ActivityChangeValue.svelte';
 	import TimelineVersionCard from './TimelineVersionCard.svelte';
 	import {
@@ -214,6 +215,9 @@
 						<bdi class="name">{whoName(ev.who)}</bdi>
 						{#if ev.who.kind === 'agent'}
 							<Chip size="sm" color="var(--accent-purple)">Agent</Chip>
+						{/if}
+						{#if ev.who.imported}
+							<span class="imported" title={IMPORTED_TITLE}><Chip size="sm">Imported</Chip></span>
 						{/if}
 						{#if ev.who.kind === 'system'}
 							<Chip size="sm">Recovered</Chip>

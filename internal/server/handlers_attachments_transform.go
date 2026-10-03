@@ -313,6 +313,7 @@ func (s *Server) handleTransformAttachment(w http.ResponseWriter, r *http.Reques
 		WorkspaceID: parent.WorkspaceID,
 		ItemID:      parent.ItemID,
 		UploadedBy:  parent.UploadedBy,
+		Imported:    parent.Imported, // BUG-3379: the uploader claim travels with it
 		StorageKey:  storageKey,
 		ContentHash: hash,
 		MimeType:    attachments.ThumbnailMime(outFormat),
