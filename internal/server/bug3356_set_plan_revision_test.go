@@ -62,3 +62,16 @@ func TestBUG3356_SetPlanRefusesANegativeRevision(t *testing.T) {
 		t.Errorf("status %d, want 400: %s", rr.Code, rr.Body.String())
 	}
 }
+
+func TestBUG3356_SetPlanRefusesAMalformedSubscriptionID(t *testing.T) {
+	srv, _, u := planSourceServer(t)
+	for _, id := range []string{"sub_\x00broken", "sub broken", string(make([]byte, 256))} {
+		body := map[string]any{"user_id": u.ID, "plan": "pro", "source": "stripe", "revision": 5, "subscription_id": id, "cloud_secret": planSourceSecret}
+		req := cloudAdminReq(t, "POST", "/api/v1/admin/plan", body, map[string]string{"X-Cloud-Secret": planSourceSecret})
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		if rr.Code != http.StatusBadRequest {
+			t.Errorf("subscription_id %q: status %d, want 400", id, rr.Code)
+		}
+	}
+}

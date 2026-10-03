@@ -71,7 +71,9 @@ func TestSetUserPlan_RevisionOrdersStripeWrites(t *testing.T) {
 	if _, err := s.SetUserPlan(u.ID, PlanWrite{Plan: "pro", Source: PlanSourceManual, Force: true}); err != nil {
 		t.Fatal(err)
 	}
-	if res := write("free", 900, "sub_1"); res.Applied || res.Reason != PlanRefusedSource {
+	// (A revision newer than the manual write's fence, so only the source
+	// rule refuses it.)
+	if res := write("free", time.Now().Add(time.Hour).UnixMilli(), "sub_1"); res.Applied || res.Reason != PlanRefusedSource {
 		t.Errorf("stripe lowering a manual grant = %+v, want refused by the source rule", res)
 	}
 
@@ -129,5 +131,80 @@ func TestCheckUserLimitTreatsAnExpiredPlanAsFree(t *testing.T) {
 	}
 	if res.Plan != "free" || res.Limit < 0 {
 		t.Errorf("expired pro = %+v, want free limits", res)
+	}
+}
+
+// Real revisions are unix milliseconds, beyond int4 (codex: Postgres
+// inferred int4 for the bare placeholders and refused them).
+func TestSetUserPlan_MillisecondRevisions(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	u := createTestUser(t, s, "ms3356@example.com", "Ms", "s3cret")
+	base := time.Now().UnixMilli()
+	if res, err := s.SetUserPlan(u.ID, PlanWrite{Plan: "pro", Source: PlanSourceStripe, Revision: base, SubscriptionID: "sub_ms"}); err != nil || !res.Applied {
+		t.Fatalf("ms revision: %+v %v", res, err)
+	}
+	if res, err := s.SetUserPlan(u.ID, PlanWrite{Plan: "free", Source: PlanSourceStripe, Revision: base - 1}); err != nil || res.Applied {
+		t.Fatalf("older ms revision: %+v %v", res, err)
+	}
+	if rev, _ := readPlanRevision(t, s, u.ID); rev != base {
+		t.Errorf("stored revision = %d, want %d", rev, base)
+	}
+}
+
+// A manual decision fences a Stripe write already in flight: a fetch taken
+// before the operator acted cannot land after and undo it. A fetch taken
+// after still applies.
+func TestSetUserPlan_ManualWriteFencesInFlightStripe(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	u := createTestUser(t, s, "fence3356@example.com", "Fence", "s3cret")
+	before := time.Now().Add(-10 * time.Second).UnixMilli()
+	inFlight := time.Now().Add(-5 * time.Second).UnixMilli()
+
+	if res, err := s.SetUserPlan(u.ID, PlanWrite{Plan: "pro", Source: PlanSourceStripe, Revision: before}); err != nil || !res.Applied {
+		t.Fatalf("stripe pro: %+v %v", res, err)
+	}
+	if res, err := s.SetUserPlan(u.ID, PlanWrite{Plan: "free", Source: PlanSourceManual, Force: true}); err != nil || !res.Applied {
+		t.Fatalf("admin downgrade: %+v %v", res, err)
+	}
+	res, err := s.SetUserPlan(u.ID, PlanWrite{Plan: "pro", Source: PlanSourceStripe, Revision: inFlight})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Applied || res.Reason != PlanRefusedStaleRevision || res.Plan != "free" {
+		t.Errorf("a fetch from before the admin downgrade = %+v, want refused stale_revision holding free", res)
+	}
+	later := time.Now().Add(time.Second).UnixMilli()
+	if res, err := s.SetUserPlan(u.ID, PlanWrite{Plan: "pro", Source: PlanSourceStripe, Revision: later}); err != nil || !res.Applied {
+		t.Errorf("a fetch from after the downgrade = %+v %v, want applied", res, err)
+	}
+}
+
+// The billing aggregates count by effective plan: an expired pro is free.
+func TestCountBillingAggregates_ExpiredProIsFree(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	live := createTestUser(t, s, "live3356@example.com", "Live", "s3cret")
+	gone := createTestUser(t, s, "gone3356@example.com", "Gone", "s3cret")
+	for _, c := range []struct {
+		id, exp string
+	}{
+		{live.ID, time.Now().Add(time.Hour).UTC().Format(time.RFC3339)},
+		{gone.ID, time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)},
+	} {
+		if _, err := s.db.Exec(s.q(`UPDATE users SET plan = 'pro', plan_expires_at = ? WHERE id = ?`), c.exp, c.id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	agg, err := s.CountBillingAggregates(time.Now().Add(-24 * time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agg.CustomersByPlan["pro"] != 1 || agg.CustomersByPlan["free"] != 1 {
+		t.Errorf("by plan = %v, want 1 pro and 1 free", agg.CustomersByPlan)
+	}
+	if agg.NewProSignups != 1 {
+		t.Errorf("new pro signups = %d, want 1 (the expired one is not pro)", agg.NewProSignups)
 	}
 }

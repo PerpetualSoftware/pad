@@ -333,6 +333,21 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 
 // --- Admin Plan Endpoint (TASK-431) ---
 
+// validSubscriptionID accepts "" or a Stripe-shaped id (sub_...): letters,
+// digits, '_' and '-', at most 255 bytes. The column has no database NUL
+// trigger, so this door is what keeps control bytes out (BUG-3356).
+func validSubscriptionID(id string) bool {
+	if len(id) > 255 {
+		return false
+	}
+	for _, r := range id {
+		if !(r == '_' || r == '-' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')) {
+			return false
+		}
+	}
+	return true
+}
+
 // countPlanWrite counts one /admin/plan write by source and outcome
 // (BUG-3356).
 func (s *Server) countPlanWrite(source, outcome string) {
@@ -399,6 +414,10 @@ func (s *Server) handleSetPlan(w http.ResponseWriter, r *http.Request) {
 
 	if input.Revision < 0 {
 		writeError(w, http.StatusBadRequest, "bad_request", "revision must not be negative")
+		return
+	}
+	if !validSubscriptionID(input.SubscriptionID) {
+		writeError(w, http.StatusBadRequest, "bad_request", "subscription_id must be at most 255 letters, digits, '_' or '-'")
 		return
 	}
 

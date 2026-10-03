@@ -854,12 +854,10 @@ func (s *Server) handleAdminStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	planCounts := map[string]int{}
+	now := time.Now()
 	for _, u := range users {
-		plan := u.Plan
-		if plan == "" {
-			plan = "free"
-		}
-		planCounts[plan]++
+		// Effective plan: an expired plan counts as free (BUG-3356).
+		planCounts[u.EffectivePlan(now)]++
 	}
 
 	workspaces, err := s.store.ListWorkspaces()

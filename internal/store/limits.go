@@ -579,14 +579,51 @@ func (s *Store) SetUserPlan(userID string, w PlanWrite) (PlanWriteResult, error)
 	if w.Revision < 0 {
 		return PlanWriteResult{}, fmt.Errorf("set user plan: negative revision %d", w.Revision)
 	}
+
+	// Read the row under its lock first (Postgres FOR UPDATE; SQLite's
+	// transaction already holds the write lock), so a refusal's reason is
+	// decided from the same row version the UPDATE below is judged against.
+	lockSQL := `SELECT plan, plan_source, plan_revision FROM users WHERE id = ?`
+	if s.dialect.Driver() == DriverPostgres {
+		lockSQL += ` FOR UPDATE`
+	}
+	var heldPlan, heldSource string
+	var heldRevision int64
+	err = tx.QueryRow(s.q(lockSQL), userID).Scan(&heldPlan, &heldSource, &heldRevision)
+	if err == sql.ErrNoRows {
+		return PlanWriteResult{}, fmt.Errorf("set user plan: user %s not found", userID)
+	}
+	if err != nil {
+		return PlanWriteResult{}, fmt.Errorf("set user plan: %w", err)
+	}
+
+	// A manual write fences Stripe writes already in flight (BUG-3356): it
+	// raises the stored revision to now, in the same unix-ms the sidecar's
+	// fetch time uses, so a fetch taken before the operator's decision
+	// cannot land after it and undo it. A later fetch still applies, under
+	// the source rule. This compares two clocks, pad's and the sidecar's,
+	// which run on the same host today; skew between them narrows or
+	// widens the fence by that much.
+	var fence int64
+	if w.Source == PlanSourceManual {
+		fence = time.Now().UnixMilli()
+	}
+
+	// Revisions are unix milliseconds, beyond int4: every placeholder they
+	// bind to is cast, or Postgres infers int4 from the literal it is
+	// compared with and refuses the value.
 	res, err := tx.Exec(s.q(`
 		UPDATE users SET plan = ?, plan_expires_at = ?, plan_source = ?, updated_at = ?,
-		       plan_revision = CASE WHEN ? > 0 THEN ? ELSE plan_revision END,
-		       plan_subscription_id = CASE WHEN ? > 0 THEN ? ELSE plan_subscription_id END
+		       plan_revision = CASE
+		           WHEN CAST(? AS BIGINT) > 0 THEN CAST(? AS BIGINT)
+		           WHEN CAST(? AS BIGINT) > plan_revision THEN CAST(? AS BIGINT)
+		           ELSE plan_revision END,
+		       plan_subscription_id = CASE WHEN CAST(? AS BIGINT) > 0 THEN ? ELSE plan_subscription_id END
 		WHERE id = ? AND (? = 1 OR ? <> 'free' OR plan IN ('', 'free') OR plan_source = ?)
-		  AND (? = 0 OR ? > plan_revision)`),
+		  AND (CAST(? AS BIGINT) = 0 OR CAST(? AS BIGINT) > plan_revision)`),
 		w.Plan, w.ExpiresAt, w.Source, now(),
-		w.Revision, w.Revision, w.Revision, w.SubscriptionID,
+		w.Revision, w.Revision, fence, fence,
+		w.Revision, w.SubscriptionID,
 		userID, force, w.Plan, w.Source,
 		w.Revision, w.Revision)
 	if err != nil {
@@ -597,18 +634,12 @@ func (s *Store) SetUserPlan(userID string, w PlanWrite) (PlanWriteResult, error)
 		return PlanWriteResult{}, fmt.Errorf("set user plan: %w", err)
 	}
 
-	out := PlanWriteResult{Applied: n > 0}
-	var storedRevision int64
-	err = tx.QueryRow(s.q(`SELECT plan, plan_source, plan_revision FROM users WHERE id = ?`), userID).Scan(&out.Plan, &out.Source, &storedRevision)
-	if err == sql.ErrNoRows {
-		return PlanWriteResult{}, fmt.Errorf("set user plan: user %s not found", userID)
-	}
-	if err != nil {
-		return PlanWriteResult{}, fmt.Errorf("set user plan: %w", err)
-	}
-	if !out.Applied {
+	out := PlanWriteResult{Applied: n > 0, Plan: heldPlan, Source: heldSource}
+	if out.Applied {
+		out.Plan, out.Source = w.Plan, w.Source
+	} else {
 		out.Reason = PlanRefusedSource
-		if w.Revision > 0 && w.Revision <= storedRevision {
+		if w.Revision > 0 && w.Revision <= heldRevision {
 			out.Reason = PlanRefusedStaleRevision
 		}
 	}
